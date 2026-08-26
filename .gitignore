@@ -1,0 +1,82 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.npmrc
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.tsbuildinfo
+coverage/
+.nyc_output/
+.serena/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Raw or extracted original-client formats. Keep the source repository code-only even if someone
+# copies a client file into an otherwise tracked directory.
+*.[Mm][Pp][Qq]
+*.[Dd][Bb][Cc]
+*.[Dd][Bb]2
+*.[Bb][Ll][Pp]
+*.[Mm]2
+*.[Ss][Kk][Ii][Nn]
+*.[Ww][Mm][Oo]
+*.[Aa][Dd][Tt]
+*.[Ww][Dd][Tt]
+*.[Ww][Dd][Ll]
+*.[Ww][Aa][Vv]
+*.[Mm][Pp]3
+*.[Oo][Gg][Gg]
+FrameXML/
+DBFilesClient/
+
+# Generated locally from the user's own WoW/TSWoW installation. Public source files under
+# src/generated/ are data-free facades; these implementations must never be redistributed.
+src/generated/client-data/
+src/generated/protocol-data/
+
+# CI checks out the exact compatible TrinityCore source here to regenerate protocol tables.
+.trinitycore/
+
+# Generated asset caches. Rebuilt on demand by the gateway from the local
+# 3.3.5a client and the tswow dataset; see README.
+data/terrain-textures/
+data/terrain-layers/
+data/item-icons/
+data/visual-tiles/
+data/visual-models/
+data/textures/
+data/liquid/
+data/terrain-splat/
+data/horizon/
+# 6,136 MB of .wav and .mp3 sit in the archives. The cache holds only what was asked for,
+# and it must never hold anything git is looking at.
+data/sound/
+
+# Minimap tile indexes, extracted from md5translate.trs by
+# tools/generate-minimap-index.mjs.
+data/minimap/
+
+# Dumped from the tswow world database by tools/generate-*-metadata.mjs.
+data/creatures.json
+data/items.json
+
+# Extracted from the client MPQs by tools/generate-spell-icons.mjs
+# and tools/generate-creature-metadata.mjs.
+public/icons/
+public/creature-icons/
+public/portraits/*.png
+
+
+# Reference checkout, its own git repository.
+CPPClientExample/
+
+# Scratch.
+/research/
+New Text Document.txt

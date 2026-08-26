@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A shield, because the browser asks for something and a 404 in the console is a distraction
+       from the ones that matter. Drawn rather than fetched: no binary in the repository for this. -->
+  <path d="M16 2 4 6v11c0 7 5 11.5 12 13 7-1.5 12-6 12-13V6z" fill="#14110b" stroke="#e6ce7b" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M16 9v13" stroke="#e6ce7b" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M9.5 13h13" stroke="#e6ce7b" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,13 @@
+COLUMNS
+int ID
+int<GroundEffectDoodad::ID> DoodadID
+int DoodadWeight
+int Density
+int<TerrainType::ID> Sound
+
+BUILD 3.0.1.8303-3.3.5.12340
+$id$ID<32>
+DoodadID<32>[4]
+DoodadWeight<32>[4]
+Density<32>
+Sound<32>

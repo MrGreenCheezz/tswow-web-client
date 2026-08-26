@@ -1,0 +1,127 @@
+{
+  "kind": "addon",
+  "id": "example-screen",
+  "name": { "ru": "Пример окна", "en": "Example screen" },
+  "enabled": true,
+  "format": 1,
+  "updated": "2026-08-23T00:00:00.000Z",
+  "params": {
+    "screen": {
+      "id": "root",
+      "type": "Frame",
+      "name": "ExampleScreen",
+      "width": 320,
+      "height": 200,
+      "anchor": { "point": "CENTER", "relativeTo": "parent", "relativePoint": "CENTER", "x": 0, "y": 0 },
+      "backdrop": "dialog",
+      "backdropColor": [1, 1, 1, 1],
+      "borderColor": [1, 1, 1, 1],
+      "strata": "DIALOG",
+      "movable": true,
+      "mouse": true,
+      "hidden": true,
+      "closeButton": true,
+      "escClose": true,
+      "title": { "ru": "Пример модуля", "en": "Module example" },
+      "titleTexture": false,
+      "children": [
+        {
+          "id": "player-name",
+          "type": "Text",
+          "name": "",
+          "width": 288,
+          "height": 20,
+          "bind": "playerName",
+          "font": "GameFontNormalLarge",
+          "justifyH": "LEFT",
+          "anchor": { "point": "TOPLEFT", "relativeTo": "parent", "relativePoint": "TOPLEFT", "x": 16, "y": -16 },
+          "conditions": []
+        },
+        {
+          "id": "player-level",
+          "type": "Text",
+          "name": "",
+          "width": 288,
+          "height": 16,
+          "text": { "ru": "Уровень {player.level} · {world.subzone or world.zone} · {world.clock}", "en": "" },
+          "font": "GameFontHighlightSmall",
+          "justifyH": "LEFT",
+          "anchor": { "point": "TOPLEFT", "relativeTo": "player-name", "relativePoint": "BOTTOMLEFT", "x": 0, "y": -2 },
+          "conditions": []
+        },
+        {
+          "id": "player-health",
+          "type": "StatusBar",
+          "name": "",
+          "width": 288,
+          "height": 18,
+          "bind": "playerHealth",
+          "color": [0.15, 0.75, 0.2, 1],
+          "background": [0, 0, 0, 0.5],
+          "showText": true,
+          "anchor": { "point": "TOPLEFT", "relativeTo": "player-level", "relativePoint": "BOTTOMLEFT", "x": 0, "y": -10 },
+          "conditions": []
+        },
+        {
+          "id": "target-health",
+          "type": "StatusBar",
+          "name": "",
+          "width": 288,
+          "height": 18,
+          "bind": "targetHealth",
+          "color": [0.8, 0.2, 0.2, 1],
+          "background": [0, 0, 0, 0.5],
+          "showText": true,
+          "anchor": { "point": "TOPLEFT", "relativeTo": "player-health", "relativePoint": "BOTTOMLEFT", "x": 0, "y": -6 },
+          "conditions": [
+            { "when": "noTarget", "then": "hide" }
+          ]
+        },
+        {
+          "id": "no-target",
+          "type": "Text",
+          "name": "",
+          "width": 288,
+          "height": 18,
+          "text": { "ru": "Цели нет", "en": "" },
+          "font": "GameFontDisableSmall",
+          "justifyH": "LEFT",
+          "anchor": { "point": "TOPLEFT", "relativeTo": "player-health", "relativePoint": "BOTTOMLEFT", "x": 0, "y": -6 },
+          "conditions": [
+            { "when": "hasTarget", "then": "hide" }
+          ]
+        },
+        {
+          "id": "say",
+          "type": "Button",
+          "name": "",
+          "width": 140,
+          "height": 24,
+          "text": { "ru": "Сказать «привет»", "en": "" },
+          "tooltip": { "ru": "Отправит /say в чат. Действия окна включает М6.", "en": "" },
+          "template": "UIPanelButtonTemplate",
+          "action": { "type": "chat", "text": { "ru": "/say Привет из модуля", "en": "" } },
+          "anchor": { "point": "BOTTOMLEFT", "relativeTo": "parent", "relativePoint": "BOTTOMLEFT", "x": 16, "y": 16 },
+          "conditions": []
+        },
+        {
+          "id": "in-combat",
+          "type": "Text",
+          "name": "",
+          "width": 140,
+          "height": 24,
+          "text": { "ru": "В бою", "en": "" },
+          "font": "GameFontRed",
+          "justifyH": "RIGHT",
+          "anchor": { "point": "BOTTOMRIGHT", "relativeTo": "parent", "relativePoint": "BOTTOMRIGHT", "x": -16, "y": 16 },
+          "conditions": [
+            { "when": "outOfCombat", "then": "hide" }
+          ]
+        }
+      ],
+      "events": []
+    },
+    "slash": "example",
+    "packets": { "enabled": false, "opcodeIn": 0, "opcodeOut": 0 }
+  }
+}

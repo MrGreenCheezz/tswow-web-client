@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Лаборатория персонажа · TSWoW WebClient</title>
+    <!--
+      Styles live here rather than in src/browser/style.css on purpose: that file is 69 KiB of game
+      HUD, none of which this page has, and the lab has to keep working while the interface it is
+      diagnosing is being taken apart.
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      /* The same line style.css carries, and for the same reason: `[hidden] { display: none }` is
+         a rule in the browser's own stylesheet, and any author rule beats it whatever its
+         specificity — so the `canvas { display: block }` below would have kept both canvases on
+         the screen at once, the contact sheet under a full-size stray view of its last cell. */
+      [hidden] { display: none !important; }
+      body {
+        margin: 0;
+        background: #0f1216;
+        color: #d7dee8;
+        font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 460px;
+        height: 100vh;
+      }
+      main { position: relative; min-width: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #lab-sheet { width: auto; height: auto; max-width: 100%; }
+      #lab-stage { position: absolute; inset: 0; overflow: auto; }
+      aside {
+        border-left: 1px solid #262c35;
+        overflow-y: auto;
+        padding: 12px 14px 40px;
+        background: #12161b;
+      }
+      h1 { font-size: 15px; margin: 0 0 2px; }
+      #lab-title { color: #8fb7e8; font-weight: 600; }
+      #lab-progress, #lab-summary { margin: 4px 0 10px; color: #93a2b5; }
+      #lab-progress.bad { color: #ff9aa8; }
+      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #7b8798; margin: 14px 0 4px; }
+      section p {
+        display: grid;
+        grid-template-columns: 62px 96px 1fr;
+        gap: 6px;
+        margin: 0;
+        padding: 1px 0;
+        border-bottom: 1px solid #1b2027;
+        font-variant-numeric: tabular-nums;
+      }
+      #lab-geosets p { grid-template-columns: 56px 56px 56px 64px 1fr; }
+      #lab-materials p { grid-template-columns: 52px 52px 92px 52px 1fr; }
+      #lab-slots p { grid-template-columns: 44px 96px 1fr; }
+      #lab-attached p { grid-template-columns: 74px 1fr 74px 116px; }
+      #lab-textures p { grid-template-columns: 1fr 82px 96px; }
+      section p span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      section p.head { color: #7b8798; border-bottom-color: #333c48; }
+      section p.muted { color: #5f6a78; }
+      section p.bad { color: #ffb4c0; }
+      button { background: #222a34; color: #d7dee8; border: 1px solid #38424f; border-radius: 3px; padding: 3px 9px; }
+      button:disabled { opacity: .4; }
+      code { color: #b8c7da; }
+      .hint { color: #6d7787; margin: 10px 0 0; display: block; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="lab-stage">
+        <canvas id="lab-canvas"></canvas>
+        <canvas id="lab-sheet" hidden></canvas>
+      </div>
+    </main>
+    <aside>
+      <h1><span id="lab-title">Лаборатория персонажа</span></h1>
+      <p id="lab-progress">Запуск…</p>
+      <p id="lab-summary"></p>
+      <p><button id="lab-stop" type="button">Прервать</button></p>
+
+      <section>
+        <h2>Геосеты</h2>
+        <div id="lab-geosets"></div>
+      </section>
+      <section>
+        <h2>Слоты текстур модели</h2>
+        <div id="lab-slots"></div>
+      </section>
+      <section>
+        <h2>Материалы</h2>
+        <div id="lab-materials"></div>
+      </section>
+      <section>
+        <h2>Приаттаченные вещи</h2>
+        <div id="lab-attached"></div>
+      </section>
+      <section>
+        <h2>Файлы</h2>
+        <div id="lab-textures"></div>
+      </section>
+
+      <p class="hint">
+        Строка запроса:
+        <code>?race=1&amp;sex=0&amp;skin=2&amp;face=3&amp;hair=4&amp;hairColor=2&amp;facialHair=5&amp;items=6:7:9892,7:8:10141</code>
+        — <code>items</code> это <code>slot:inventoryType:displayId</code>.
+        <code>&amp;display=</code> и <code>&amp;model=</code> берут модель мимо расы,
+        <code>&amp;geosets=</code> рисует ровно перечисленные геосеты,
+        <code>&amp;animation=</code> держит другую позу,
+        <code>&amp;sheath=</code> — что вынуто из ножен (по умолчанию 1, ближний бой:
+        убранное оружие клиент не рисует вовсе),
+        <code>&amp;sheet=hair</code> и <code>&amp;sheet=legs</code> — контактные листы
+        (<code>&amp;legs=</code> — display id штанов).
+        Шлюз берётся с этого же хоста, порт 8090; вход в игру не нужен.
+      </p>
+    </aside>
+    <script type="module" src="/src/browser/lab/CharacterLab.ts"></script>
+  </body>
+</html>

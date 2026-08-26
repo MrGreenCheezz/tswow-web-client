@@ -1,0 +1,332 @@
+// Acknowledging the movement changes the server pushes.
+//
+// None of this existed, and its absence is the difference between a session that survives a
+// portal and one that does not. Player::TeleportTo sends the new position and then waits: until
+// the client acknowledges, HandleMovementOpcodes discards every movement packet the player sends
+// (MovementHandler.cpp:285). So a hearthstone, a dungeon portal, a spirit-healer revive or the
+// dungeon-finder button left the character frozen until relog.
+//
+// Speed is the same shape. Unit::SetSpeedRate pushes a PlayerMovementPendingChange and only
+// applies the new rate in the ack handler, so a mount, a sprint or a hamstring did nothing at
+// all — and the pending queue grew for the whole session.
+//
+// Layouts were read out of the core this project already generates its opcode table from, not
+// guessed: MovementHandler.cpp for the client side and MovementPacketSender.cpp for the server's.
+
+import { OPCODES } from "../generated/opcodes.js";
+import { PacketReader } from "../protocol/PacketReader.js";
+import { PacketWriter } from "../protocol/PacketWriter.js";
+import { readMovementInfo, writeMovementInfoBody, type MovementInfo } from "./MovementProtocol.js";
+
+/** The nine rates the server can force, and the opcode pair that carries each. */
+export const FORCED_SPEEDS = [
+  { server: OPCODES.SMSG_FORCE_RUN_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_RUN_SPEED_CHANGE_ACK, name: "run", extraByte: true },
+  { server: OPCODES.SMSG_FORCE_RUN_BACK_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_RUN_BACK_SPEED_CHANGE_ACK, name: "runBack", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_SWIM_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_SWIM_SPEED_CHANGE_ACK, name: "swim", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK, name: "swimBack", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_WALK_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_WALK_SPEED_CHANGE_ACK, name: "walk", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_TURN_RATE_CHANGE, ack: OPCODES.CMSG_FORCE_TURN_RATE_CHANGE_ACK, name: "turnRate", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_FLIGHT_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_FLIGHT_SPEED_CHANGE_ACK, name: "flight", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE, ack: OPCODES.CMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE_ACK, name: "flightBack", extraByte: false },
+  { server: OPCODES.SMSG_FORCE_PITCH_RATE_CHANGE, ack: OPCODES.CMSG_FORCE_PITCH_RATE_CHANGE_ACK, name: "pitchRate", extraByte: false },
+] as const;
+
+export type ForcedSpeedName = (typeof FORCED_SPEEDS)[number]["name"];
+
+const FORCED_SPEED_BY_OPCODE: ReadonlyMap<number, (typeof FORCED_SPEEDS)[number]> =
+  new Map(FORCED_SPEEDS.map((entry) => [entry.server as number, entry]));
+
+/**
+ * Movement states the server toggles and expects an ack for.
+ *
+ * All nine share one body — packed guid, a counter, then the mover's MovementInfo — and the two
+ * with a trailing value append it. HandleMoveRootAck, HandleMoveHoverAck and
+ * HandleMoveSetCollisionHgtAck in the core all read exactly that.
+ */
+export const MOVEMENT_TOGGLES = [
+  { server: OPCODES.SMSG_FORCE_MOVE_ROOT, ack: OPCODES.CMSG_FORCE_MOVE_ROOT_ACK, name: "root" },
+  { server: OPCODES.SMSG_FORCE_MOVE_UNROOT, ack: OPCODES.CMSG_FORCE_MOVE_UNROOT_ACK, name: "unroot" },
+  { server: OPCODES.SMSG_MOVE_WATER_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "waterWalk" },
+  { server: OPCODES.SMSG_MOVE_LAND_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "landWalk" },
+  { server: OPCODES.SMSG_MOVE_FEATHER_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "featherFall" },
+  { server: OPCODES.SMSG_MOVE_NORMAL_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "normalFall" },
+  { server: OPCODES.SMSG_MOVE_SET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "hover", trailing: "u32" },
+  { server: OPCODES.SMSG_MOVE_UNSET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "unsetHover", trailing: "u32" },
+  { server: OPCODES.SMSG_MOVE_SET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "canFly", trailing: "u32" },
+  { server: OPCODES.SMSG_MOVE_UNSET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "cannotFly", trailing: "u32" },
+  { server: OPCODES.SMSG_MOVE_GRAVITY_DISABLE, ack: OPCODES.CMSG_MOVE_GRAVITY_DISABLE_ACK, name: "gravityOff" },
+  { server: OPCODES.SMSG_MOVE_GRAVITY_ENABLE, ack: OPCODES.CMSG_MOVE_GRAVITY_ENABLE_ACK, name: "gravityOn" },
+  { server: OPCODES.SMSG_MOVE_SET_COLLISION_HGT, ack: OPCODES.CMSG_MOVE_SET_COLLISION_HGT_ACK, name: "collisionHeight", trailing: "f32" },
+] as const;
+
+const TOGGLE_BY_OPCODE: ReadonlyMap<number, (typeof MOVEMENT_TOGGLES)[number]> =
+  new Map(MOVEMENT_TOGGLES.map((entry) => [entry.server as number, entry]));
+
+export interface ForcedSpeed {
+  guid: bigint;
+  counter: number;
+  speed: number;
+  name: ForcedSpeedName;
+}
+
+export interface MovementToggle {
+  guid: bigint;
+  counter: number;
+  name: string;
+  /** The value the server sent along with a hover, can-fly or collision-height change. */
+  value: number | undefined;
+  ackOpcode: number;
+}
+
+export interface NewWorld {
+  mapId: number;
+  x: number;
+  y: number;
+  z: number;
+  orientation: number;
+}
+
+export function isForcedSpeed(opcode: number): boolean {
+  return FORCED_SPEED_BY_OPCODE.has(opcode);
+}
+
+export function isMovementToggle(opcode: number): boolean {
+  return TOGGLE_BY_OPCODE.has(opcode);
+}
+
+/** The toggle an opcode names, for the blocks batched inside `SMSG_MULTIPLE_MOVES`. */
+export function movementToggleFor(opcode: number): { name: string; ackOpcode: number } | undefined {
+  const entry = TOGGLE_BY_OPCODE.get(opcode);
+  return entry && { name: entry.name, ackOpcode: entry.ack };
+}
+
+/** `packedGuid, u32 counter, [u8 for run only], f32 speed` — MovementPacketSender.cpp:71-77. */
+export function parseForcedSpeed(opcode: number, payload: Uint8Array): ForcedSpeed {
+  const entry = FORCED_SPEED_BY_OPCODE.get(opcode);
+  if (!entry) throw new Error(`Opcode 0x${opcode.toString(16)} is not a forced speed change`);
+  const reader = new PacketReader(payload);
+  const guid = reader.packedGuid();
+  const counter = reader.u32();
+  // The run change carries one byte the client is expected to ignore, added in 2.1.0.
+  if (entry.extraByte) reader.u8();
+  const speed = reader.f32();
+  return { guid, counter, speed, name: entry.name };
+}
+
+/** `packedGuid, u32 counter, MovementInfo, f32 speed` — HandleForceSpeedChangeAck. */
+export function buildForcedSpeedAck(speed: ForcedSpeed, movement: MovementInfo): Uint8Array {
+  const writer = new PacketWriter().packedGuid(speed.guid).u32(speed.counter);
+  writeMovementInfoBody(writer, movement);
+  return writer.f32(speed.speed).toUint8Array();
+}
+
+export function ackOpcodeForSpeed(name: ForcedSpeedName): number {
+  const entry = FORCED_SPEEDS.find((candidate) => candidate.name === name);
+  if (!entry) throw new Error(`Unknown speed ${name}`);
+  return entry.ack;
+}
+
+/** `packedGuid, u32 counter, [value]`. */
+export function parseMovementToggle(opcode: number, payload: Uint8Array): MovementToggle {
+  const entry = TOGGLE_BY_OPCODE.get(opcode);
+  if (!entry) throw new Error(`Opcode 0x${opcode.toString(16)} is not a movement toggle`);
+  const reader = new PacketReader(payload);
+  const guid = reader.packedGuid();
+  // Root sends a timestamp rather than a counter, but it occupies the same word and the server
+  // only checks that the ack echoes it.
+  const counter = reader.remaining >= 4 ? reader.u32() : 0;
+  let value: number | undefined;
+  const trailing = "trailing" in entry ? entry.trailing : undefined;
+  if (trailing === "u32" && reader.remaining >= 4) value = reader.u32();
+  else if (trailing === "f32" && reader.remaining >= 4) value = reader.f32();
+  return { guid, counter, name: entry.name, value, ackOpcode: entry.ack };
+}
+
+/** `packedGuid, u32 counter, MovementInfo, [value]`. */
+export function buildMovementToggleAck(toggle: MovementToggle, movement: MovementInfo): Uint8Array {
+  const writer = new PacketWriter().packedGuid(toggle.guid).u32(toggle.counter);
+  writeMovementInfoBody(writer, movement);
+  if (toggle.value !== undefined) {
+    // Hover and can-fly echo a word, collision height a float. Both occupy four bytes and the
+    // server reads whichever its handler expects, so echoing the raw value is right either way.
+    if (toggle.name === "collisionHeight") writer.f32(toggle.value);
+    else writer.u32(toggle.value);
+  }
+  return writer.toUint8Array();
+}
+
+/** SMSG_NEW_WORLD: `u32 map, f32 x, f32 y, f32 z, f32 o`. */
+export function parseNewWorld(payload: Uint8Array): NewWorld {
+  const reader = new PacketReader(payload);
+  const mapId = reader.u32();
+  const x = reader.f32();
+  const y = reader.f32();
+  const z = reader.f32();
+  const orientation = reader.f32();
+  return { mapId, x, y, z, orientation };
+}
+
+/** SMSG_TRANSFER_PENDING: `u32 map`, then optional transport fields this client ignores. */
+export function parseTransferPending(payload: Uint8Array): number {
+  return new PacketReader(payload).u32();
+}
+
+/**
+ * MSG_MOVE_TELEPORT_ACK, server side: `packedGuid, u32 counter, MovementInfo`. The reply is
+ * `packedGuid, u32 counter, u32 time` — HandleMoveTeleportAck reads exactly those three.
+ */
+export function parseTeleportRequest(payload: Uint8Array): { guid: bigint; counter: number; movement: MovementInfo } {
+  const reader = new PacketReader(payload);
+  const guid = reader.packedGuid();
+  const counter = reader.u32();
+  const movement = readMovementInfo(reader);
+  return { guid, counter, movement };
+}
+
+export function buildTeleportAck(guid: bigint, counter: number, time: number): Uint8Array {
+  return new PacketWriter().packedGuid(guid).u32(counter).u32(time).toUint8Array();
+}
+
+/** MSG_MOVE_WORLDPORT_ACK carries no body; the core's handler ignores what it is given. */
+export function buildWorldportAck(): Uint8Array {
+  return new Uint8Array(0);
+}
+
+// Slice P4's additions to the same conversation: a knock back to acknowledge, the batch of state
+// changes a character logs in holding, and who is allowed to move what.
+
+export interface KnockBack {
+  guid: bigint;
+  counter: number;
+  /** The horizontal direction, as its cosine and sine. Cosine first, which is not the usual order. */
+  directionCos: number;
+  directionSin: number;
+  /** Yards a second across the ground. */
+  speedXY: number;
+  /** Yards a second upwards. The wire already carries it negated, so it is used as it arrives. */
+  speedZ: number;
+}
+
+/**
+ * `SMSG_MOVE_KNOCK_BACK`: `packedGuid, u32 counter, f32 cos, f32 sin, f32 speedXY, f32 speedZ`.
+ *
+ * Three traps in six fields. The direction pair is written cosine-first here
+ * (`Position.cpp:170-175` streams x then y) and **sine-first** in the `MSG_MOVE_KNOCK_BACK` the
+ * server mirrors to everyone else and in the jump block of a MovementInfo — swapping them turns
+ * the character ninety degrees. The vertical speed is written as `float(-speedZ)`, already
+ * negated. And the counter is a literal zero at both senders, so it says nothing.
+ *
+ * Until the ack comes back the server has not moved the unit at all: `HandleMoveKnockBackAck`
+ * (`MovementHandler.cpp:611`) is what commits the position.
+ */
+export function parseKnockBack(payload: Uint8Array): KnockBack {
+  const reader = new PacketReader(payload);
+  const guid = reader.packedGuid();
+  const counter = reader.u32();
+  const directionCos = reader.f32();
+  const directionSin = reader.f32();
+  const speedXY = reader.f32();
+  return { guid, counter, directionCos, directionSin, speedXY, speedZ: reader.f32() };
+}
+
+/** `CMSG_MOVE_KNOCK_BACK_ACK`: `packedGuid, u32 counter, MovementInfo` — `MovementHandler.cpp:611`. */
+export function buildKnockBackAck(knockBack: KnockBack, movement: MovementInfo): Uint8Array {
+  const writer = new PacketWriter().packedGuid(knockBack.guid).u32(knockBack.counter);
+  writeMovementInfoBody(writer, movement);
+  return writer.toUint8Array();
+}
+
+/**
+ * `SMSG_MULTIPLE_MOVES`: the state a character is already in when it enters the world.
+ *
+ * `u32 remainingBytes`, then blocks of `u8 size, u16 opcode, packedGuid, u32 counter`. Sent once
+ * from `SendInitialPacketsAfterAddToMap` (`Player.cpp:23300`) and only when the character holds
+ * at least one of root, feather fall, water walking or hover — so its absence is the normal case.
+ *
+ * Two ways to mis-read it. The size byte **includes** the two-byte opcode that follows it, so
+ * skipping `size` bytes after reading the opcode overruns every block by two; and the leading
+ * word is a byte count rather than a block count, so the loop ends at the buffer, not at a
+ * number. Each block is a `SMSG_FORCE_*` / `SMSG_MOVE_*` body, and each still wants its own
+ * acknowledgement — a character that never sends them is one the server keeps waiting for.
+ */
+export function parseMultipleMoves(payload: Uint8Array): { opcode: number; guid: bigint; counter: number }[] {
+  const reader = new PacketReader(payload);
+  reader.u32();
+  const moves: { opcode: number; guid: bigint; counter: number }[] = [];
+  while (reader.remaining > 3) {
+    const size = reader.u8();
+    const opcode = reader.u16();
+    const guid = reader.packedGuid();
+    const counter = reader.u32();
+    moves.push({ opcode, guid, counter });
+    // The block's own bookkeeping, checked rather than trusted: a size that does not match what
+    // was read means this is not the packet it says it is, and reading on would be guessing.
+    if (size !== 2 + counterBlockSize(guid) + 4) break;
+  }
+  return moves;
+}
+
+/** How many bytes a packed guid occupies: one mask byte plus its non-zero bytes. */
+function counterBlockSize(guid: bigint): number {
+  let bytes = 1;
+  for (let value = guid; value > 0n; value >>= 8n) {
+    if ((value & 0xffn) !== 0n) bytes++;
+  }
+  return bytes;
+}
+
+/**
+ * `SMSG_CLIENT_CONTROL_UPDATE`: `packedGuid target, u8 allowed`.
+ *
+ * Who the client is allowed to move — normally its own character, and a creature or a vehicle
+ * while it is possessing one. Answering matters more than it looks: the server drops every
+ * movement packet from a client that has not named its mover with `CMSG_SET_ACTIVE_MOVER`
+ * (`WorldSession::IsRightUnitBeingMoved`), and sends no error when it does. A client that ignores
+ * this packet is one whose character silently stops moving.
+ *
+ * The reply spells the same guid the other way round — full eight bytes rather than packed.
+ */
+export function parseClientControlUpdate(payload: Uint8Array): { guid: bigint; allowed: boolean } {
+  const reader = new PacketReader(payload);
+  const guid = reader.packedGuid();
+  return { guid, allowed: reader.u8() !== 0 };
+}
+
+/** `TransferAbortReason`, `Player.h:636-653`, worded for the player. */
+const TRANSFER_ABORT_TEXT: Readonly<Record<number, string>> = {
+  1: "Переход невозможен",
+  2: "Подземелье заполнено",
+  3: "Экземпляр не найден",
+  4: "Слишком много подземелий",
+  6: "В подземелье идёт бой",
+  7: "Нужно дополнение",
+  8: "Другая сложность",
+  9: "Вход закрыт",
+  10: "Слишком много подземелий на этом мире",
+  11: "Нужна группа",
+  15: "Только для своего мира",
+  16: "Эта карта недоступна",
+};
+
+export interface TransferAborted {
+  mapId: number;
+  reason: number;
+  /** The expansion, the difficulty or a message index — only three reasons carry one. */
+  argument: number | undefined;
+  text: string;
+}
+
+/**
+ * `SMSG_TRANSFER_ABORTED`: `u32 map, u8 reason`, and one more byte for reasons 7, 8 and 9.
+ *
+ * The extra byte is conditional at the sender (`Player.cpp:23388-23395`), so reading a fixed six
+ * bytes throws on every other refusal. Nothing is acknowledged and no teleport is left pending:
+ * the player simply stays where they are, which is why saying so is the whole of the handling.
+ */
+export function parseTransferAborted(payload: Uint8Array): TransferAborted {
+  const reader = new PacketReader(payload);
+  const mapId = reader.u32();
+  const reason = reader.u8();
+  const argument = reader.remaining > 0 ? reader.u8() : undefined;
+  return { mapId, reason, argument, text: TRANSFER_ABORT_TEXT[reason] ?? `переход отклонён (${reason})` };
+}

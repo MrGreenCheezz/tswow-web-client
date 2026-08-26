@@ -1,0 +1,825 @@
+// Decoding WVM9: the model as the M2 describes it, with nothing resolved.
+//
+// Everything appearance-specific — which file fills a texture slot, which geosets a character
+// shows — is decided here, in the browser, against the one artifact every appearance shares.
+//
+// v6 also stops pretending the artifact holds every pose. It lists every animation the model can
+// play and carries the keyframes of the locomotion set; the rest arrive as a WVA1 block the first
+// time something asks for one.
+//
+// v7 carries the emitters. A particle system in this game is very often the whole effect — a
+// bonfire without one is an unlit log — and until now the header slot they live in was counted
+// and dropped. Nothing here simulates anything: these are the file's own numbers, in the file's
+// own units, for whoever draws them. Every emitter record leads with its own length so a reader
+// can step over one it does not understand.
+//
+// v8 carries what colour a batch is and whether it is drawn at all. Up to v7 each batch's
+// `colorIndex` and `textureWeight` were decoded here and read by nothing, because the two tables
+// they index were not in the file — so every batch in the game drew at (1, 1, 1) and opacity 1.
+// That is why the ZZZZ over a sleeping unit is a blazing white glyph that never fades instead of
+// three green letters at 15% strength rising one after another. It also carries the type-0
+// `M2Camera`: the frame the original client puts a portrait in.
+//
+// v9 carries `M2TextureTransform`, the matrix a batch's UVs are run through. Up to v8 each batch's
+// `textureTransform` index was decoded here — it has been on line 421 since v4 — and the table it
+// points at was not in the file, so 517 batches in 174 models under `spells\` drew a texture that
+// should be turning, flowing or breathing as one pinned in place.
+
+/** M2Material.blending_mode, in the file's own order. */
+export const BLEND_OPAQUE = 0;
+export const BLEND_ALPHA_KEY = 1;
+export const BLEND_ALPHA = 2;
+export const BLEND_NO_ALPHA_ADD = 3;
+export const BLEND_ADD = 4;
+export const BLEND_MOD = 5;
+export const BLEND_MOD2X = 6;
+export const BLEND_BLEND_ADD = 7;
+
+export const MATERIAL_UNLIT = 0x01;
+export const MATERIAL_UNFOGGED = 0x02;
+export const MATERIAL_TWO_SIDED = 0x04;
+export const MATERIAL_BILLBOARD = 0x08;
+export const MATERIAL_NO_DEPTH_TEST = 0x10;
+export const MATERIAL_NO_DEPTH_WRITE = 0x20;
+
+export const TEXTURE_WRAP_X = 0x01;
+export const TEXTURE_WRAP_Y = 0x02;
+
+/** M2Texture.type. 0 names its own file; the rest are filled per appearance. */
+export const TEXTURE_TYPE_OWN = 0;
+export const TEXTURE_TYPE_BODY = 1;
+export const TEXTURE_TYPE_OBJECT_SKIN = 2;
+export const TEXTURE_TYPE_HAIR = 6;
+export const TEXTURE_TYPE_SKIN_EXTRA = 8;
+
+export const BONE_SPHERICAL_BILLBOARD = 0x08;
+export const BONE_CYLINDRICAL_BILLBOARD_X = 0x10;
+export const BONE_CYLINDRICAL_BILLBOARD_Y = 0x20;
+export const BONE_CYLINDRICAL_BILLBOARD_Z = 0x40;
+export const BONE_ANY_BILLBOARD =
+  BONE_SPHERICAL_BILLBOARD | BONE_CYLINDRICAL_BILLBOARD_X | BONE_CYLINDRICAL_BILLBOARD_Y | BONE_CYLINDRICAL_BILLBOARD_Z;
+
+export interface WvmTextureSlot {
+  /** M2Texture.type: 0 self-named, otherwise the client supplies the file. */
+  type: number;
+  flags: number;
+  /** MPQ path, for type 0 only. */
+  path: string;
+}
+
+export interface WvmSubmesh {
+  /**
+   * Geoset number, as `family * 100 + variant`, with one variant of each family visible.
+   *
+   * Read off the twenty playable character models: family 0 (ids 0 to 25) is the hairstyle, 1 to 3 the
+   * facial hair, 4 gloves, 5 boots, 7 ears, 8 sleeves, 9 kneepads, 10 the shirt hem, 11 trousers,
+   * 12 the tabard, 13 the legs, 15 the cloak, 17 the eye glow, 18 the belt. Families 6, 14 and 16
+   * do not exist.
+   */
+  geosetId: number;
+  indexStart: number;
+  indexCount: number;
+}
+
+export interface WvmBatch {
+  submesh: number;
+  blendMode: number;
+  materialFlags: number;
+  /** Draw order, most negative first, then materialLayer, then file order. */
+  priorityPlane: number;
+  materialLayer: number;
+  /** Indices into the texture table, one per texture unit; -1 when the unit is unused. */
+  textures: number[];
+  /** Which UV set each unit samples. */
+  uvSets: number[];
+  shaderId: number;
+  colorIndex: number;
+  textureWeight: number;
+  textureTransform: number;
+}
+
+export interface WvmSkeletonClip {
+  animationId: number;
+  /** Seconds. */
+  duration: number;
+  channels: Array<{ bone: number; kind: 0 | 1 | 2; times: Float32Array; values: Float32Array }>;
+}
+
+export interface WvmSkeleton {
+  parents: Int16Array;
+  flags: Uint16Array;
+  pivots: Float32Array;
+  /** The clips that travelled with the model — locomotion, and nothing else. */
+  clips: WvmSkeletonClip[];
+  /**
+   * Every animation the model can play, shipped here or not.
+   *
+   * Whether a wolf can swim is a fact about the wolf, and up to v5 the artifact could not say it:
+   * a missing clip meant either "this model cannot" or "the exporter did not pick that one".
+   */
+  animations: number[];
+}
+
+/**
+ * A place on a bone where another model hangs: a helm on the head, a sword in the right hand.
+ *
+ * `position` is in model space, not the bone's, so what a mesh parented to that bone needs is
+ * `position - pivot`. That difference is exactly zero in every one of the 20,155 attachment
+ * records this client ships; it is carried anyway rather than assumed.
+ */
+export interface WvmAttachment {
+  id: number;
+  bone: number;
+  position: [number, number, number];
+}
+
+/** M2Attachment ids, named from where they sit on the twenty playable models. */
+export const ATTACHMENT_SHIELD = 0;
+/**
+ * The same number on the other kind of model: on a horse, point 0 is "MountMain", the saddle.
+ *
+ * Two names for one id because the table is per model and the meaning is per model with it —
+ * a character hangs a shield off point 0 and a mount seats its rider there, and no model is ever
+ * asked for both. Named rather than written as a bare `0` at the two call sites, because a
+ * `boneOf(mountWvm, …, ATTACHMENT_SHIELD)` would read as a bug that it is not.
+ */
+export const ATTACHMENT_MOUNT_SEAT = 0;
+export const ATTACHMENT_HAND_RIGHT = 1;
+export const ATTACHMENT_HAND_LEFT = 2;
+export const ATTACHMENT_SHOULDER_RIGHT = 5;
+export const ATTACHMENT_SHOULDER_LEFT = 6;
+export const ATTACHMENT_HELM = 11;
+export const ATTACHMENT_BACK = 12;
+
+/**
+ * One `M2Track`: keyed on the animation timeline, with one sub-track per sequence.
+ *
+ * `globalSequence` of −1 means it runs on whatever the model is currently playing; anything else
+ * names a loop in `globalSequences` that runs on the world's clock — which is what makes a torch
+ * flicker while nobody moves.
+ */
+export interface WvmTrack {
+  interpolation: number;
+  globalSequence: number;
+  components: number;
+  tracks: Array<{ sequence: number; times: Uint32Array; values: Float32Array }>;
+}
+
+/** One `FBlock`: keyed on a single particle's life, 0 at birth and 1 at death. */
+export interface WvmRamp {
+  components: number;
+  times: Float32Array;
+  values: Float32Array;
+}
+
+export interface WvmParticleEmitter {
+  id: number;
+  flags: number;
+  position: [number, number, number];
+  bone: number;
+  texture: number;
+  blendType: number;
+  emitterType: number;
+  /**
+   * The two bytes at 0x2C and 0x2D of the record, under the names the layout gives them.
+   *
+   * They do not hold what those names promise. `headorTail` is documented as an enum of 0, 1 and
+   * 2, and across the twenty-six emitters of the local models the byte takes the values 0, 4, 6,
+   * 8, 9, 16, 19, 24 and 32 — as `fp_2_5` fixed point those are 0, 1/8, 3/16, 1/4, 9/32, 1/2,
+   * 19/32, 3/4 and 1, which is the `multiTextureParamX` pair that sits at this offset from
+   * Burning Crusade onwards. They travel because they are in the record; nothing reads them as a
+   * mode, and every emitter draws a head.
+   */
+  particleType: number;
+  headTail: number;
+  particleColorIndex: number;
+  textureTileRotation: number;
+  textureRows: number;
+  textureColumns: number;
+  lifespanVary: number;
+  emissionRateVary: number;
+  scaleVary: [number, number];
+  tailLength: number;
+  twinkleSpeed: number;
+  twinklePercent: number;
+  twinkleScaleMin: number;
+  twinkleScaleMax: number;
+  burstMultiplier: number;
+  drag: number;
+  baseSpin: number;
+  baseSpinVary: number;
+  spin: number;
+  spinVary: number;
+  windVector: [number, number, number];
+  windTime: number;
+  followSpeed1: number;
+  followScale1: number;
+  followSpeed2: number;
+  followScale2: number;
+  splinePoints: Float32Array;
+  emissionSpeed: WvmTrack;
+  speedVariation: WvmTrack;
+  verticalRange: WvmTrack;
+  horizontalRange: WvmTrack;
+  gravity: WvmTrack;
+  lifespan: WvmTrack;
+  emissionRate: WvmTrack;
+  emissionAreaLength: WvmTrack;
+  emissionAreaWidth: WvmTrack;
+  zSource: WvmTrack;
+  enabledIn: WvmTrack;
+  color: WvmRamp;
+  opacity: WvmRamp;
+  scale: WvmRamp;
+  headCell: WvmRamp;
+  tailCell: WvmRamp;
+}
+
+/** What a ribbon's material said, resolved by the tool: the M2's own table is not in the artifact. */
+export interface WvmRibbonMaterial {
+  blendMode: number;
+  flags: number;
+}
+
+export interface WvmRibbonEmitter {
+  id: number;
+  bone: number;
+  position: [number, number, number];
+  /**
+   * Indices into `WvmModel.textures`, used directly.
+   *
+   * Two reference clients call this a texture-*lookup* index, which would need a step through the
+   * model's combo table first. It does not: across all 1,502 ribbon emitters in the client every
+   * raw value is in range of the texture table, and 742 of them are out of range of the combo
+   * table — 249 because the model has no combo table at all.
+   */
+  textures: Uint16Array;
+  materials: WvmRibbonMaterial[];
+  edgesPerSecond: number;
+  edgeLifetime: number;
+  gravity: number;
+  textureRows: number;
+  textureColumns: number;
+  priorityPlane: number;
+  ribbonColorIndex: number;
+  textureTransformLookupIndex: number;
+  color: WvmTrack;
+  alpha: WvmTrack;
+  heightAbove: WvmTrack;
+  heightBelow: WvmTrack;
+  textureSlot: WvmTrack;
+  visibility: WvmTrack;
+}
+
+/**
+ * One `M2Color`: what a batch is painted and how opaque that paint is, over the animation.
+ *
+ * Two tracks rather than four components, because the file stores them apart and in different
+ * widths — the colour as three floats, the alpha as fixed16 — and because a great many batches
+ * carry a white colour with a fading alpha, which is a fade and not a tint.
+ */
+export interface WvmColour {
+  rgb: WvmTrack;
+  alpha: WvmTrack;
+}
+
+/**
+ * One `M2TextureTransform`: where a batch's texture is, which way round and how big, over the
+ * animation.
+ *
+ * Three tracks rather than one matrix, because the file stores three and because they move on
+ * different clocks — a rune circle whose translation runs on the model's animation and whose
+ * rotation is bound to a global loop is one record with two timelines in it. The rotation is a
+ * plain quaternion, four floats; see `readTextureTransforms` in tools/m2.mjs for the measurement
+ * that settled that against the packed form a bone track uses.
+ */
+export interface WvmTextureTransform {
+  translation: WvmTrack;
+  rotation: WvmTrack;
+  scaling: WvmTrack;
+}
+
+/**
+ * The camera the original client frames a portrait with, when the model carries one.
+ *
+ * `fov` is the file's own number in radians. Whether the angle is the vertical or the diagonal
+ * one is the single thing about this record that cannot be settled without looking at a screen —
+ * for HumanMale it is the difference between a bust and a face — so it travels as stored.
+ */
+export interface WvmCamera {
+  fov: number;
+  near: number;
+  far: number;
+  position: [number, number, number];
+  target: [number, number, number];
+}
+
+export interface WvmModel {
+  positions: Float32Array;
+  normals: Float32Array;
+  uv0: Float32Array;
+  uv1: Float32Array;
+  boneIndices?: Uint8Array;
+  boneWeights?: Float32Array;
+  indices: Uint16Array | Uint32Array;
+  submeshes: WvmSubmesh[];
+  batches: WvmBatch[];
+  textures: WvmTextureSlot[];
+  attachments: WvmAttachment[];
+  bounds: { min: [number, number, number]; max: [number, number, number]; radius: number };
+  skeleton?: WvmSkeleton;
+  /** Loop durations in milliseconds. A track bound to one runs on this rather than on an animation. */
+  globalSequences: Uint32Array;
+  particleEmitters: WvmParticleEmitter[];
+  ribbonEmitters: WvmRibbonEmitter[];
+  /** Indexed by `WvmBatch.colorIndex`; 0xFFFF and anything past the end mean "no colour". */
+  colours: WvmColour[];
+  /** Indexed by `WvmBatch.textureWeight`, which the tool has already resolved through the combo table. */
+  textureWeights: WvmTrack[];
+  /** Indexed by `WvmBatch.textureTransform`, resolved through the combo table by the tool as well. */
+  textureTransforms: WvmTextureTransform[];
+  /** Absent on 193 of the 1,323 readable creature models, and on most scenery. */
+  portraitCamera?: WvmCamera;
+}
+
+const HEADER_SIZE = 72;
+const SUBMESH_SIZE = 12;
+const BATCH_SIZE = 20;
+const ATTACHMENT_SIZE = 16;
+const SKINNED = 0x01;
+const PORTRAIT_CAMERA = 0x02;
+const CAMERA_SIZE = 36;
+const WVA1_HEADER_SIZE = 12;
+const decoder = new TextDecoder();
+
+export function isWvm9(data: ArrayBuffer): boolean {
+  return data.byteLength >= 4 && decoder.decode(new Uint8Array(data, 0, 4)) === "WVM9";
+}
+
+export function decodeWvm9(data: ArrayBuffer): WvmModel {
+  if (!isWvm9(data)) throw new Error("Not a WVM9 model");
+  const view = new DataView(data);
+  const vertexCount = view.getUint32(4, true);
+  const indexCount = view.getUint32(8, true);
+  const indexBytes = view.getUint8(12);
+  const skinned = (view.getUint8(13) & SKINNED) !== 0;
+  const submeshCount = view.getUint16(14, true);
+  const batchCount = view.getUint16(16, true);
+  const textureCount = view.getUint16(18, true);
+  const skeletonOffset = view.getUint32(20, true);
+  const total = view.getUint32(24, true);
+  const attachmentCount = view.getUint16(56, true);
+  const animationCount = view.getUint16(58, true);
+  const globalSequenceCount = view.getUint16(60, true);
+  const particleCount = view.getUint16(62, true);
+  const ribbonCount = view.getUint16(64, true);
+  const colourCount = view.getUint16(66, true);
+  const weightCount = view.getUint16(68, true);
+  const transformCount = view.getUint16(70, true);
+  const hasCamera = (view.getUint8(13) & PORTRAIT_CAMERA) !== 0;
+
+  if (total !== data.byteLength) throw new Error(`WVM9 says it is ${total} bytes but ${data.byteLength} arrived`);
+  if (indexBytes !== 2 && indexBytes !== 4) throw new Error("WVM9 index width is invalid");
+  // Zero is a real answer here: nearly a third of the models a spell names have no geometry at
+  // all and are nothing but emitters.
+  if (vertexCount > 4_000_000) throw new Error("WVM9 vertex count is out of range");
+
+  const bounds = {
+    min: [view.getFloat32(28, true), view.getFloat32(32, true), view.getFloat32(36, true)] as [number, number, number],
+    max: [view.getFloat32(40, true), view.getFloat32(44, true), view.getFloat32(48, true)] as [number, number, number],
+    radius: view.getFloat32(52, true),
+  };
+
+  let offset = HEADER_SIZE;
+  const take = (count: number): Float32Array => {
+    const values = new Float32Array(count);
+    for (let index = 0; index < count; index++) values[index] = view.getFloat32(offset + index * 4, true);
+    offset += count * 4;
+    return values;
+  };
+  const positions = take(vertexCount * 3);
+  const normals = take(vertexCount * 3);
+  const uv0 = take(vertexCount * 2);
+  const uv1 = take(vertexCount * 2);
+
+  let boneIndices: Uint8Array | undefined;
+  let boneWeights: Float32Array | undefined;
+  if (skinned) {
+    boneIndices = new Uint8Array(data.slice(offset, offset + vertexCount * 4));
+    offset += vertexCount * 4;
+    const raw = new Uint8Array(data, offset, vertexCount * 4);
+    // three.js wants normalised weights; the file stores them as a byte each summing to 255.
+    boneWeights = new Float32Array(vertexCount * 4);
+    for (let index = 0; index < raw.length; index++) boneWeights[index] = raw[index]! / 255;
+    offset += vertexCount * 4;
+  }
+
+  const indices = indexBytes === 2 ? new Uint16Array(indexCount) : new Uint32Array(indexCount);
+  for (let index = 0; index < indexCount; index++) {
+    indices[index] = indexBytes === 2 ? view.getUint16(offset + index * 2, true) : view.getUint32(offset + index * 4, true);
+  }
+  offset += indexCount * indexBytes;
+
+  const submeshes: WvmSubmesh[] = [];
+  for (let index = 0; index < submeshCount; index++) {
+    const at = offset + index * SUBMESH_SIZE;
+    submeshes.push({
+      geosetId: view.getUint16(at, true),
+      indexStart: view.getUint32(at + 4, true),
+      indexCount: view.getUint32(at + 8, true),
+    });
+  }
+  offset += submeshCount * SUBMESH_SIZE;
+
+  const batches: WvmBatch[] = [];
+  for (let index = 0; index < batchCount; index++) {
+    const at = offset + index * BATCH_SIZE;
+    const units = view.getUint8(at + 6);
+    const uvMask = view.getUint8(at + 7);
+    const textures: number[] = [];
+    const uvSets: number[] = [];
+    for (let unit = 0; unit < Math.min(2, units); unit++) {
+      textures.push(view.getInt16(at + 8 + unit * 2, true));
+      uvSets.push((uvMask >> unit) & 1);
+    }
+    batches.push({
+      submesh: view.getUint16(at, true),
+      blendMode: view.getUint8(at + 2),
+      materialFlags: view.getUint8(at + 3),
+      priorityPlane: view.getInt8(at + 4),
+      materialLayer: view.getUint8(at + 5),
+      textures,
+      uvSets,
+      textureWeight: view.getInt16(at + 12, true),
+      textureTransform: view.getInt16(at + 14, true),
+      shaderId: view.getUint16(at + 16, true),
+      colorIndex: view.getUint16(at + 18, true),
+    });
+  }
+  offset += batchCount * BATCH_SIZE;
+
+  const textures: WvmTextureSlot[] = [];
+  for (let index = 0; index < textureCount; index++) {
+    const type = view.getUint16(offset, true);
+    const flags = view.getUint16(offset + 2, true);
+    const length = view.getUint16(offset + 4, true);
+    const path = length === 0 ? "" : decoder.decode(new Uint8Array(data, offset + 6, length));
+    textures.push({ type, flags, path });
+    offset += 6 + length;
+  }
+
+  const attachments: WvmAttachment[] = [];
+  for (let index = 0; index < attachmentCount; index++) {
+    const at = offset + index * ATTACHMENT_SIZE;
+    attachments.push({
+      id: view.getUint16(at, true),
+      bone: view.getUint16(at + 2, true),
+      position: [view.getFloat32(at + 4, true), view.getFloat32(at + 8, true), view.getFloat32(at + 12, true)],
+    });
+  }
+  offset += attachmentCount * ATTACHMENT_SIZE;
+
+  const animations: number[] = [];
+  for (let index = 0; index < animationCount; index++) animations.push(view.getUint16(offset + index * 2, true));
+  offset += animationCount * 2;
+
+  const globalSequences = new Uint32Array(globalSequenceCount);
+  for (let index = 0; index < globalSequenceCount; index++) globalSequences[index] = view.getUint32(offset + index * 4, true);
+  offset += globalSequenceCount * 4;
+
+  const particleEmitters: WvmParticleEmitter[] = [];
+  for (let index = 0; index < particleCount; index++) {
+    const size = view.getUint16(offset, true);
+    if (size < 4 || offset + size > data.byteLength) break;
+    particleEmitters.push(decodeParticleEmitter(view, offset));
+    offset += size;
+  }
+  const ribbonEmitters: WvmRibbonEmitter[] = [];
+  for (let index = 0; index < ribbonCount; index++) {
+    const size = view.getUint16(offset, true);
+    if (size < 4 || offset + size > data.byteLength) break;
+    ribbonEmitters.push(decodeRibbonEmitter(view, offset));
+    offset += size;
+  }
+
+  const colours: WvmColour[] = [];
+  for (let index = 0; index < colourCount; index++) {
+    const rgb = decodeTrack(view, offset);
+    offset += rgb.size;
+    const alpha = decodeTrack(view, offset);
+    offset += alpha.size;
+    colours.push({ rgb: rgb.track, alpha: alpha.track });
+  }
+  const textureWeights: WvmTrack[] = [];
+  for (let index = 0; index < weightCount; index++) {
+    const weight = decodeTrack(view, offset);
+    offset += weight.size;
+    textureWeights.push(weight.track);
+  }
+  const textureTransforms: WvmTextureTransform[] = [];
+  for (let index = 0; index < transformCount; index++) {
+    const translation = decodeTrack(view, offset);
+    offset += translation.size;
+    const rotation = decodeTrack(view, offset);
+    offset += rotation.size;
+    const scaling = decodeTrack(view, offset);
+    offset += scaling.size;
+    textureTransforms.push({ translation: translation.track, rotation: rotation.track, scaling: scaling.track });
+  }
+
+  const model: WvmModel = {
+    positions, normals, uv0, uv1, indices, submeshes, batches, textures, attachments, bounds,
+    globalSequences, particleEmitters, ribbonEmitters, colours, textureWeights, textureTransforms,
+  };
+  if (hasCamera && offset + CAMERA_SIZE <= data.byteLength) {
+    model.portraitCamera = {
+      fov: view.getFloat32(offset, true),
+      near: view.getFloat32(offset + 4, true),
+      far: view.getFloat32(offset + 8, true),
+      position: [view.getFloat32(offset + 12, true), view.getFloat32(offset + 16, true), view.getFloat32(offset + 20, true)],
+      target: [view.getFloat32(offset + 24, true), view.getFloat32(offset + 28, true), view.getFloat32(offset + 32, true)],
+    };
+  }
+  if (boneIndices) model.boneIndices = boneIndices;
+  if (boneWeights) model.boneWeights = boneWeights;
+  if (skeletonOffset > 0) model.skeleton = { ...decodeSkeleton(data, skeletonOffset), animations };
+  return model;
+}
+
+/**
+ * The animations that did not travel with the model, decoded against the rig that did.
+ *
+ * `bones` is what the caller already has; a block built for a different model would pose bones
+ * that mean something else there, so the counts have to agree before a single key is read.
+ */
+export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkeletonClip[] {
+  if (data.byteLength < WVA1_HEADER_SIZE || decoder.decode(new Uint8Array(data, 0, 4)) !== "WVA1") {
+    throw new Error("Not a WVA1 animation block");
+  }
+  const view = new DataView(data);
+  if (view.getUint32(4, true) !== data.byteLength) throw new Error("WVA1 length disagrees with the response");
+  const boneCount = view.getUint16(8, true);
+  if (boneCount !== bones) throw new Error(`WVA1 is rigged for ${boneCount} bones, the model has ${bones}`);
+  return readClips(view, data, WVA1_HEADER_SIZE, view.getUint16(10, true), boneCount);
+}
+
+function decodeSkeleton(data: ArrayBuffer, start: number): Omit<WvmSkeleton, "animations"> {
+  const view = new DataView(data);
+  const boneCount = view.getUint16(start, true);
+  const clipCount = view.getUint16(start + 2, true);
+  if (boneCount === 0 || boneCount > 1024 || clipCount > 1024) {
+    throw new Error("WVM6 skeleton header is out of range");
+  }
+
+  let offset = start + 4;
+  const parents = new Int16Array(boneCount);
+  const flags = new Uint16Array(boneCount);
+  const pivots = new Float32Array(boneCount * 3);
+  for (let bone = 0; bone < boneCount; bone++) {
+    parents[bone] = view.getInt16(offset, true);
+    flags[bone] = view.getUint16(offset + 2, true);
+    for (let axis = 0; axis < 3; axis++) pivots[bone * 3 + axis] = view.getFloat32(offset + 4 + axis * 4, true);
+    // A forward reference would pose a child before its parent; root it instead.
+    if (parents[bone]! >= bone) parents[bone] = -1;
+    offset += 16;
+  }
+
+  return { parents, flags, pivots, clips: readClips(view, data, offset, clipCount, boneCount) };
+}
+
+/** The clip encoding, which the model artifact and the animation block share byte for byte. */
+function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: number, boneCount: number): WvmSkeletonClip[] {
+  let offset = start;
+  const clips: WvmSkeletonClip[] = [];
+  for (let clip = 0; clip < clipCount; clip++) {
+    const animationId = view.getUint16(offset, true);
+    const duration = view.getUint32(offset + 4, true);
+    const channelCount = view.getUint32(offset + 8, true);
+    offset += 12;
+    const channels: WvmSkeletonClip["channels"] = [];
+    for (let index = 0; index < channelCount; index++) {
+      const bone = view.getUint16(offset, true);
+      const kind = view.getUint8(offset + 2) as 0 | 1 | 2;
+      const keys = view.getUint32(offset + 4, true);
+      offset += 8;
+      const times = new Float32Array(keys);
+      for (let key = 0; key < keys; key++) {
+        times[key] = view.getUint32(offset + key * 4, true) / 1000;
+      }
+      offset += keys * 4;
+      const components = kind === 1 ? 4 : 3;
+      const values = new Float32Array(keys * components);
+      for (let key = 0; key < keys; key++) {
+        for (let part = 0; part < components; part++) {
+          if (kind === 1) {
+            // M2CompQuat: int16 per component, x y z w, mapped back onto [-1, 1].
+            const raw = view.getInt16(offset + (key * 4 + part) * 2, true);
+            values[key * 4 + part] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
+          } else {
+            values[key * components + part] = view.getFloat32(offset + (key * components + part) * 4, true);
+          }
+        }
+      }
+      offset += keys * components * (kind === 1 ? 2 : 4);
+      if (bone < boneCount) channels.push({ bone, kind, times, values });
+    }
+    clips.push({ animationId, duration: duration / 1000, channels });
+  }
+  if (offset > data.byteLength) throw new Error("Animation clips run past the end of the block");
+  return clips;
+}
+
+/** The URL the gateway serves one client texture from. Content is keyed on the path, so every
+ * model that uses the same file shares one download and one GPU texture. */
+export function textureUrl(baseUrl: string, mpqPath: string): string {
+  return `${baseUrl}/texture?path=${encodeURIComponent(mpqPath.replaceAll("/", "\\"))}`;
+}
+
+/**
+ * Every client-owned texture a model can draw, including its mesh, particle and ribbon paths.
+ *
+ * Spell effects are admitted as a composite phase, so waiting only for the WVM bytes is not
+ * enough: the model can be present while one of its alpha-keyed particle maps is still a
+ * transparent three.js placeholder.  Keep this resolver next to the WVM shape so the renderer
+ * and the effect builder share the exact same slot rules.  Unused texture-table entries are not
+ * fetched; only slots referenced by a mesh batch or an emitter participate in readiness.
+ */
+export function modelOwnTexturePaths(model: WvmModel): string[] {
+  const indices = new Set<number>();
+  for (const batch of model.batches) {
+    for (const index of batch.textures) if (index >= 0) indices.add(index);
+  }
+  for (const emitter of model.particleEmitters) {
+    if (emitter.texture >= 0) indices.add(emitter.texture);
+  }
+  for (const ribbon of model.ribbonEmitters) {
+    for (const index of ribbon.textures) if (index >= 0) indices.add(index);
+  }
+  const paths: string[] = [];
+  for (const index of indices) {
+    const slot = model.textures[index];
+    if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) continue;
+    paths.push(slot.path);
+  }
+  return [...new Set(paths)];
+}
+
+/* --- Emitters -------------------------------------------------------------------------------
+   The mirror of what `tools/wvm.mjs` wrote. Two shapes, kept apart on purpose: a track is keyed
+   on the animation and nests per sequence, a ramp is keyed on one particle's own life and does
+   not nest at all. */
+
+function decodeTrack(view: DataView, at: number): { track: WvmTrack; size: number } {
+  const interpolation = view.getUint8(at);
+  const globalSequence = view.getInt8(at + 1);
+  const components = view.getUint8(at + 2);
+  const subCount = view.getUint8(at + 3);
+  const tracks: WvmTrack["tracks"] = [];
+  let offset = at + 4;
+  for (let index = 0; index < subCount; index++) {
+    const sequence = view.getUint16(offset, true);
+    const keys = view.getUint16(offset + 2, true);
+    offset += 4;
+    const times = new Uint32Array(keys);
+    for (let key = 0; key < keys; key++) times[key] = view.getUint32(offset + key * 4, true);
+    offset += keys * 4;
+    const values = new Float32Array(keys * components);
+    for (let value = 0; value < keys * components; value++) values[value] = view.getFloat32(offset + value * 4, true);
+    offset += keys * components * 4;
+    tracks.push({ sequence, times, values });
+  }
+  return { track: { interpolation, globalSequence, components, tracks }, size: offset - at };
+}
+
+function decodeRamp(view: DataView, at: number): { ramp: WvmRamp; size: number } {
+  const components = view.getUint8(at);
+  const keys = view.getUint16(at + 2, true);
+  const times = new Float32Array(keys);
+  for (let key = 0; key < keys; key++) times[key] = view.getFloat32(at + 4 + key * 4, true);
+  const valuesAt = at + 4 + keys * 4;
+  const values = new Float32Array(keys * components);
+  for (let value = 0; value < keys * components; value++) values[value] = view.getFloat32(valuesAt + value * 4, true);
+  return { ramp: { components, times, values }, size: 4 + keys * 4 + keys * components * 4 };
+}
+
+const PARTICLE_TRACK_NAMES = [
+  "emissionSpeed", "speedVariation", "verticalRange", "horizontalRange", "gravity", "lifespan",
+  "emissionRate", "emissionAreaLength", "emissionAreaWidth", "zSource", "enabledIn",
+] as const;
+const PARTICLE_RAMP_NAMES = ["color", "opacity", "scale", "headCell", "tailCell"] as const;
+
+function decodeParticleEmitter(view: DataView, at: number): WvmParticleEmitter {
+  const splinePointCount = view.getUint16(at + 38, true);
+  let offset = at + 40;
+  const float = (): number => {
+    const value = view.getFloat32(offset, true);
+    offset += 4;
+    return value;
+  };
+  const lifespanVary = float();
+  const emissionRateVary = float();
+  const scaleVary: [number, number] = [float(), float()];
+  const tailLength = float();
+  const twinkleSpeed = float();
+  const twinklePercent = float();
+  const twinkleScaleMin = float();
+  const twinkleScaleMax = float();
+  const burstMultiplier = float();
+  const drag = float();
+  const baseSpin = float();
+  const baseSpinVary = float();
+  const spin = float();
+  const spinVary = float();
+  const windVector: [number, number, number] = [float(), float(), float()];
+  const windTime = float();
+  const followSpeed1 = float();
+  const followScale1 = float();
+  const followSpeed2 = float();
+  const followScale2 = float();
+
+  const splinePoints = new Float32Array(splinePointCount * 3);
+  for (let value = 0; value < splinePoints.length; value++) splinePoints[value] = view.getFloat32(offset + value * 4, true);
+  offset += splinePoints.length * 4;
+
+  const tracks: Record<string, WvmTrack> = {};
+  for (const name of PARTICLE_TRACK_NAMES) {
+    const decoded = decodeTrack(view, offset);
+    tracks[name] = decoded.track;
+    offset += decoded.size;
+  }
+  const ramps: Record<string, WvmRamp> = {};
+  for (const name of PARTICLE_RAMP_NAMES) {
+    const decoded = decodeRamp(view, offset);
+    ramps[name] = decoded.ramp;
+    offset += decoded.size;
+  }
+
+  return {
+    id: view.getInt32(at + 2, true),
+    flags: view.getUint32(at + 6, true),
+    position: [view.getFloat32(at + 10, true), view.getFloat32(at + 14, true), view.getFloat32(at + 18, true)],
+    bone: view.getUint16(at + 22, true),
+    texture: view.getUint16(at + 24, true),
+    blendType: view.getUint8(at + 26),
+    emitterType: view.getUint8(at + 27),
+    particleType: view.getUint8(at + 28),
+    headTail: view.getUint8(at + 29),
+    particleColorIndex: view.getUint16(at + 30, true),
+    textureTileRotation: view.getInt16(at + 32, true),
+    textureRows: view.getUint16(at + 34, true),
+    textureColumns: view.getUint16(at + 36, true),
+    lifespanVary, emissionRateVary, scaleVary, tailLength,
+    twinkleSpeed, twinklePercent, twinkleScaleMin, twinkleScaleMax,
+    burstMultiplier, drag, baseSpin, baseSpinVary, spin, spinVary,
+    windVector, windTime, followSpeed1, followScale1, followSpeed2, followScale2,
+    splinePoints,
+    emissionSpeed: tracks["emissionSpeed"]!, speedVariation: tracks["speedVariation"]!,
+    verticalRange: tracks["verticalRange"]!, horizontalRange: tracks["horizontalRange"]!,
+    gravity: tracks["gravity"]!, lifespan: tracks["lifespan"]!, emissionRate: tracks["emissionRate"]!,
+    emissionAreaLength: tracks["emissionAreaLength"]!, emissionAreaWidth: tracks["emissionAreaWidth"]!,
+    zSource: tracks["zSource"]!, enabledIn: tracks["enabledIn"]!,
+    color: ramps["color"]!, opacity: ramps["opacity"]!, scale: ramps["scale"]!,
+    headCell: ramps["headCell"]!, tailCell: ramps["tailCell"]!,
+  };
+}
+
+const RIBBON_TRACK_NAMES = ["color", "alpha", "heightAbove", "heightBelow", "textureSlot", "visibility"] as const;
+
+function decodeRibbonEmitter(view: DataView, at: number): WvmRibbonEmitter {
+  const textureCount = view.getUint8(at + 22);
+  const materialCount = view.getUint8(at + 23);
+  let offset = at + 44;
+  const textures = new Uint16Array(textureCount);
+  for (let index = 0; index < textureCount; index++) textures[index] = view.getUint16(offset + index * 2, true);
+  offset += textureCount * 2;
+  const materials: WvmRibbonMaterial[] = [];
+  for (let index = 0; index < materialCount; index++) {
+    materials.push({ blendMode: view.getUint8(offset + index * 2), flags: view.getUint8(offset + index * 2 + 1) });
+  }
+  offset += materialCount * 2;
+
+  const tracks: Record<string, WvmTrack> = {};
+  for (const name of RIBBON_TRACK_NAMES) {
+    const decoded = decodeTrack(view, offset);
+    tracks[name] = decoded.track;
+    offset += decoded.size;
+  }
+
+  return {
+    id: view.getInt32(at + 2, true),
+    bone: view.getUint32(at + 6, true),
+    position: [view.getFloat32(at + 10, true), view.getFloat32(at + 14, true), view.getFloat32(at + 18, true)],
+    textures, materials,
+    edgesPerSecond: view.getFloat32(at + 24, true),
+    edgeLifetime: view.getFloat32(at + 28, true),
+    gravity: view.getFloat32(at + 32, true),
+    textureRows: view.getUint16(at + 36, true),
+    textureColumns: view.getUint16(at + 38, true),
+    priorityPlane: view.getInt16(at + 40, true),
+    ribbonColorIndex: view.getInt8(at + 42),
+    textureTransformLookupIndex: view.getInt8(at + 43),
+    color: tracks["color"]!, alpha: tracks["alpha"]!,
+    heightAbove: tracks["heightAbove"]!, heightBelow: tracks["heightBelow"]!,
+    textureSlot: tracks["textureSlot"]!, visibility: tracks["visibility"]!,
+  };
+}

@@ -1,0 +1,107 @@
+{
+    "kind": "addon",
+    "id": "proverochnyy-ekran",
+    "name": {
+        "ru": "Проверочный экран",
+        "en": ""
+    },
+    "params": {
+        "screen": {
+            "id": "root",
+            "type": "Frame",
+            "name": "ProverochnyyEkran",
+            "width": 384,
+            "height": 288,
+            "anchor": {
+                "point": "CENTER",
+                "relativeTo": "parent",
+                "relativePoint": "CENTER",
+                "x": -76,
+                "y": 9
+            },
+            "backdrop": "dialog",
+            "backdropColor": [
+                1,
+                1,
+                1,
+                1
+            ],
+            "borderColor": [
+                1,
+                1,
+                1,
+                1
+            ],
+            "strata": "DIALOG",
+            "movable": true,
+            "mouse": true,
+            "hidden": true,
+            "closeButton": true,
+            "escClose": true,
+            "title": {
+                "ru": "Моё окно",
+                "en": ""
+            },
+            "titleTexture": true,
+            "children": [
+                {
+                    "id": "texture-1",
+                    "type": "Texture",
+                    "name": "",
+                    "width": 64,
+                    "height": 64,
+                    "texture": "Interface\\CharacterFrame\\TemporaryPortrait",
+                    "texCoords": [
+                        0,
+                        1,
+                        0,
+                        1
+                    ],
+                    "color": [
+                        1,
+                        1,
+                        1,
+                        1
+                    ],
+                    "layer": "ARTWORK",
+                    "solid": false,
+                    "anchor": {
+                        "point": "TOPLEFT",
+                        "relativeTo": "parent",
+                        "relativePoint": "TOPLEFT",
+                        "x": 16,
+                        "y": -24
+                    },
+                    "conditions": []
+                },
+                {
+                    "id": "model-1",
+                    "type": "Model",
+                    "name": "",
+                    "width": 200,
+                    "height": 220,
+                    "unit": "player",
+                    "creature": 0,
+                    "rotation": 0,
+                    "anchor": {
+                        "point": "TOPLEFT",
+                        "relativeTo": "parent",
+                        "relativePoint": "TOPLEFT",
+                        "x": 89,
+                        "y": -40
+                    },
+                    "conditions": []
+                }
+            ],
+            "events": []
+        },
+        "slash": "testUI",
+        "packets": {
+            "enabled": false,
+            "opcodeIn": 0,
+            "opcodeOut": 0
+        }
+    },
+    "enabled": true,
+    "updated": "2026-08-18T11:36:13.844Z"
+}

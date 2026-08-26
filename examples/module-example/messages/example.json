@@ -1,0 +1,50 @@
+{
+  "messages": [
+    {
+      "name": "example.Request",
+      "opcode": 4001,
+      "direction": "out",
+      "doc": "Кнопка окна нажата. Клиент -> сервер, одним фрагментом.",
+      "fields": [
+        { "name": "value", "type": "f64", "doc": "То самое число, которое пишет packet.WriteDouble(value)." }
+      ]
+    },
+    {
+      "name": "example.State",
+      "opcode": 4002,
+      "direction": "in",
+      "doc": "Ответ лайвскрипта. Сервер -> клиент.",
+      "fields": [
+        { "name": "gold", "type": "u32", "doc": "WriteUInt32" },
+        { "name": "title", "type": "string", "doc": "WriteString: u32 длины и байты без NUL" },
+        {
+          "name": "guid",
+          "type": "u64",
+          "doc": "WriteUInt64(player.GetGUIDLow()): GetGUID() отдаёт TSGUID, а не число. В клиенте bigint"
+        },
+        {
+          "name": "tag",
+          "type": "fixedString",
+          "size": 12,
+          "doc": "Старая раскладка @MsgString(12): u8 длины и ровно 12 байт"
+        },
+        {
+          "name": "prices",
+          "type": "array",
+          "capacity": 8,
+          "of": { "type": "u32" },
+          "doc": "Старая раскладка @MsgPrimitiveArray(8): u8 счётчика и ровно 8 слотов"
+        },
+        {
+          "name": "seller",
+          "type": "nested",
+          "fields": [
+            { "name": "entry", "type": "u32" },
+            { "name": "friendly", "type": "u8" }
+          ],
+          "doc": "Старая раскладка @MsgClass: поля просто подряд, без обёртки"
+        }
+      ]
+    }
+  ]
+}

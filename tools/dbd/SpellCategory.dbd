@@ -1,0 +1,7 @@
+COLUMNS
+int ID
+int Flags
+
+BUILD 3.0.1.8303-3.3.5.12340
+$id$ID<32>
+Flags<32>

@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible client, gateway or rendering defect
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include passwords, tokens, private server addresses or copyrighted game files.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include the expected result and the actual result.
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Commit
+      description: The output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Browser UI
+        - Rendering / assets
+        - Gateway
+        - Authentication / world protocol
+        - Tooling / setup
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: "1. Start ...\n2. Open ...\n3. Observe ..."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, locale and compatible TSWoW/TrinityCore revision. Redact paths.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed credentials, account details, private addresses and local paths.
+          required: true
+        - label: I did not attach WoW client files or other copyrighted game data.
+          required: true

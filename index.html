@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>TSWoW WebClient</title>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <p class="eyebrow">TSWoW · 3.3.5a</p>
+        <h1>WebClient</h1>
+        <p class="muted">WebGL terrain · WMO/M2 · существа · бой и заклинания</p>
+
+        <form id="login-form">
+          <label>
+            Gateway
+            <input id="gateway" name="gateway" type="url" value="ws://127.0.0.1:8090/auth" required />
+          </label>
+          <label>
+            Аккаунт
+            <input id="username" name="username" autocomplete="username" maxlength="16" required />
+          </label>
+          <label>
+            Пароль
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <label>
+            Authenticator <span class="muted">(если включён)</span>
+            <input id="token" name="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+          </label>
+          <button type="submit">Получить список миров</button>
+        </form>
+
+        <p id="status" role="status" aria-live="polite">Gateway и authserver должны быть запущены.</p>
+        <div id="realms" aria-label="Игровые миры"></div>
+      </section>
+
+      <section id="character-panel" class="panel" hidden>
+        <p class="eyebrow">Worldserver</p>
+        <h2>Персонажи</h2>
+        <p id="character-status" role="status" aria-live="polite"></p>
+        <div id="characters" aria-label="Персонажи аккаунта"></div>
+
+        <form id="create-form">
+          <h3>Новый персонаж</h3>
+          <label>
+            Имя
+            <input id="character-name" maxlength="12" required />
+          </label>
+          <div class="form-row">
+            <label>
+              Раса
+              <select id="character-race"></select>
+            </label>
+            <label>
+              Класс
+              <select id="character-class"></select>
+            </label>
+            <label>
+              Пол
+              <select id="character-gender"></select>
+            </label>
+          </div>
+          <!-- The five appearance bytes. The form used to send none of them, and zero is a legal
+               appearance — so every character created here was born with skin 0, face 0 and hair
+               0, and for a human male hair 0 is the bald row. The choices are counted out of
+               CharSections by the gateway, per race and sex, because how many hairstyles a draenei
+               has is a fact about the client's own tables and not a number to guess. -->
+          <div class="form-row" id="character-look">
+            <label>Кожа<select id="character-skin"></select></label>
+            <label>Лицо<select id="character-face"></select></label>
+            <label>Причёска<select id="character-hair"></select></label>
+            <label>Цвет<select id="character-hair-color"></select></label>
+            <label id="character-facial-label">Борода<select id="character-facial"></select></label>
+          </div>
+          <button type="submit">Создать</button>
+        </form>
+      </section>
+
+      <section id="world-panel" hidden>
+        <div id="world-viewport">
+          <canvas id="world-3d-canvas" aria-hidden="true"></canvas>
+          <canvas id="world-canvas" aria-label="Упрощённая трёхмерная сцена мира"></canvas>
+
+          <!-- The action bar builds its own slots; this is where they go. -->
+          <div id="action-bar"></div>
+
+          <!-- The top-left corner is one column, not five boxes with five guessed `top` values.
+               The player frame, its aura strip, the secondary frames, the party and the combat log
+               all lived at hard offsets and drew over each other the moment any of them had
+               content: twenty-four player auras are three rows and 110px, which reached straight
+               through the swing warning at 138 and the combat log at 168. Same shape as
+               `.right-rail`, and for the same reason. -->
+          <div id="left-rail" class="left-rail">
+            <div id="player-hud" class="unit-frame player-frame">
+              <img id="player-icon" class="class-portrait" alt="" hidden />
+              <div class="unit-frame-body">
+                <strong id="player-hud-name">Персонаж</strong>
+                <span id="player-hud-details">Ожидание параметров…</span>
+                <div class="health-track"><span id="player-health-bar"></span><em id="player-health-text"></em></div>
+                <div class="power-track"><span id="player-power-bar"></span></div>
+                <!-- Filled at runtime by the widget kit; the frame only says where it goes. -->
+                <div id="player-experience"></div>
+                <div id="player-cast"></div>
+              </div>
+            </div>
+            <div id="player-auras" class="aura-strip player-auras" aria-label="Эффекты персонажа"></div>
+            <!-- Every frame in slice I2 builds its own contents; the page only says where. -->
+            <div id="secondary-frames" class="secondary-frames">
+              <div id="tot-frame" aria-label="Цель цели"></div>
+              <div id="focus-frame" aria-label="Фокус"></div>
+              <div id="pet-frame" aria-label="Питомец"></div>
+            </div>
+            <div id="party-frames" class="party-frames" aria-label="Группа"></div>
+            <p id="swing-warning" class="swing-warning" role="status" hidden></p>
+            <div id="combat-log" class="combat-log" role="log" aria-label="Боевой журнал" hidden></div>
+          </div>
+
+          <!-- The target and its auras are a column of their own. The button row hangs 30px below
+               the frame on `bottom: -30px`, and the aura strip started at a hard `top: 91px` in the
+               same column — so the auras painted over the six buttons, being a later sibling at the
+               same z-index. Here the strip starts where the buttons end. -->
+          <div id="target-rail" class="target-rail">
+            <div id="target-panel" class="unit-frame target-frame" hidden>
+              <img id="target-icon" alt="" />
+              <div class="unit-frame-body">
+                <strong id="target-name">Цель не выбрана</strong>
+                <span id="target-details" class="muted"></span>
+                <div class="health-track target-health"><span id="target-health-bar"></span><em id="target-health-text"></em></div>
+                <div id="target-power"></div>
+                <div id="target-cast"></div>
+              </div>
+              <!-- One row, not six buttons pinned to the same two coordinates. Only the ones the
+                   target can actually answer are shown; the rest are hidden rather than greyed.
+                   It carries an id because it is also the `target-frame/actions` slot (М7): a
+                   module's patch file puts its own button in this row beside the client's. -->
+              <div id="target-actions" class="frame-actions">
+                <button id="attack-button" class="frame-action" type="button" disabled aria-label="Автоатака">⚔</button>
+                <button id="interact-button" class="frame-action" type="button" hidden aria-label="Поговорить">💬</button>
+                <button id="loot-button" class="frame-action" type="button" hidden aria-label="Обыскать">🖐</button>
+                <button id="vendor-button" class="frame-action" type="button" hidden aria-label="Торговать">🛒</button>
+                <button id="trainer-button" class="frame-action" type="button" hidden aria-label="Обучение">🎓</button>
+                <button id="banker-button" class="frame-action" type="button" hidden aria-label="Банк">🏦</button>
+              </div>
+              <button id="clear-target-button" class="frame-close" type="button" disabled aria-label="Сбросить цель">×</button>
+            </div>
+            <div id="target-auras" class="aura-strip target-auras" aria-label="Эффекты цели" hidden></div>
+          </div>
+
+          <!-- The bag bar builds its own buttons: backpack, four bags, keyring. -->
+          <div id="bag-bar" class="bag-bar" aria-label="Сумки"></div>
+
+          <div id="game-buttons">
+            <button id="character-toggle" type="button" title="Персонаж (C)">C</button>
+            <button id="inventory-toggle" type="button" title="Инвентарь (B)">B</button>
+            <button id="spellbook-toggle" type="button" title="Книга заклинаний (P)">P</button>
+            <button id="talents-toggle" type="button" title="Таланты (N)">N</button>
+            <button id="professions-toggle" type="button" title="Навыки и профессии (J)">J</button>
+            <button id="diagnostics-toggle" type="button" title="Диагностика">⚙</button>
+          </div>
+
+          <section id="character-window" class="game-window character-window" hidden>
+            <header><strong id="character-window-title">Персонаж</strong><button class="window-close" type="button" data-close="character-window">×</button></header>
+            <div id="character-stats" class="character-stats"></div>
+            <div id="equipment-slots" class="equipment-slots" aria-label="Экипировка персонажа"></div>
+            <!-- The equipment manager builds its own rows; the page only says where. -->
+            <div id="equipment-sets" class="equipment-sets" aria-label="Наборы экипировки"></div>
+          </section>
+
+          <section id="inventory-window" class="game-window inventory-window" hidden>
+            <header><strong>Инвентарь</strong><button class="window-close" type="button" data-close="inventory-window">×</button></header>
+            <div id="inventory-money" class="inventory-money"></div>
+            <p id="inventory-message" class="muted" role="status" aria-live="polite"></p>
+            <div id="inventory-slots" class="inventory-slots" aria-label="Сумки персонажа"></div>
+          </section>
+
+          <section id="spellbook-window" class="game-window spellbook-window" hidden>
+            <header><strong>Книга заклинаний</strong><button class="window-close" type="button" data-close="spellbook-window">×</button></header>
+            <p id="spell-status" role="status" aria-live="polite">Ожидание списка заклинаний…</p>
+            <!-- The search box and the rank switch stand in the book's own header, where the
+                 original client keeps `ShowAllSpellRanksCheckBox` (`SpellBookFrame.xml:376`): the
+                 switch belongs to the book that obeys it, not to the settings window. -->
+            <div class="spellbook-controls">
+              <input id="spellbook-search" type="search" autocomplete="off" placeholder="Поиск по названию" aria-label="Поиск заклинания">
+              <label><input id="spellbook-hide-ranks" type="checkbox" checked>Только высшие ранги</label>
+            </div>
+            <!-- One tab per skill line the character has spells in; built at runtime. -->
+            <div id="spellbook-tabs" class="spellbook-tabs" aria-label="Разделы книги"></div>
+            <div id="spellbook-list" class="spellbook-list" aria-label="Активные известные заклинания"></div>
+          </section>
+
+          <section id="gossip-window" class="game-window gossip-window" hidden>
+            <header><strong id="gossip-title">Разговор</strong><button class="window-close" type="button" data-close="gossip-window">×</button></header>
+            <p id="gossip-text" class="gossip-text">Ожидание ответа NPC…</p>
+            <div id="gossip-options" class="gossip-options"></div>
+            <div id="gossip-quests" class="gossip-quests"></div>
+          </section>
+
+          <section id="quest-window" class="game-window quest-window" hidden>
+            <header><strong id="quest-title">Задание</strong><button class="window-close" type="button" data-close="quest-window">×</button></header>
+            <div class="quest-scroll">
+              <p id="quest-body" class="quest-body"></p>
+              <h4>Цели</h4>
+              <p id="quest-objectives" class="quest-objectives"></p>
+              <div id="quest-required" class="quest-items"></div>
+              <h4>Награды</h4>
+              <div id="quest-rewards" class="quest-items"></div>
+              <p id="quest-status" class="muted"></p>
+            </div>
+            <footer id="quest-actions" class="quest-actions"></footer>
+          </section>
+
+          <!-- The right edge is one column, not four boxes with four guessed `top` values: the
+               minimap and the quest tracker append themselves here at runtime. -->
+          <div id="right-rail" class="right-rail">
+            <div id="boss-frames" class="boss-frames" aria-label="Боссы"></div>
+            <div id="arena-frames" class="arena-frames" aria-label="Арена"></div>
+          </div>
+          <div id="raid-frames" class="raid-frames" aria-label="Рейд"></div>
+
+          <aside id="auction-window" class="game-window mail-window" hidden>
+            <header><strong>Аукцион</strong><button class="window-close" type="button" data-close="auction-window">×</button></header>
+            <p id="auction-message" class="muted" role="status" aria-live="polite"></p>
+            <p>
+              <input id="auction-search" maxlength="60" placeholder="Поиск по названию" />
+              <button id="auction-find" type="button">Искать</button>
+              <button id="auction-mine" type="button">Мои лоты</button>
+            </p>
+            <div id="auction-list" aria-label="Лоты"></div>
+          </aside>
+
+          <aside id="lfg-window" class="game-window" hidden>
+            <header><strong>Поиск подземелья</strong><button class="window-close" type="button" data-close="lfg-window">×</button></header>
+            <p id="lfg-message" class="muted" role="status" aria-live="polite"></p>
+            <p id="lfg-queue" class="muted"></p>
+            <div id="lfg-proposal" hidden>
+              <p id="lfg-proposal-text"></p>
+              <p>
+                <button id="lfg-accept" type="button">Согласиться</button>
+                <button id="lfg-decline" type="button">Отказаться</button>
+              </p>
+            </div>
+            <p>
+              <label><input id="lfg-tank" type="checkbox" /> Танк</label>
+              <label><input id="lfg-healer" type="checkbox" /> Лекарь</label>
+              <label><input id="lfg-damage" type="checkbox" checked /> Урон</label>
+            </p>
+            <p>
+              <input id="lfg-dungeons" maxlength="80" placeholder="Id подземелий через запятую" />
+              <button id="lfg-join" type="button">В очередь</button>
+              <button id="lfg-leave" type="button">Выйти</button>
+              <button id="lfg-teleport" type="button">Телепорт</button>
+            </p>
+          </aside>
+
+          <aside id="guild-window" class="game-window mail-window" hidden>
+            <header><strong id="guild-title">Гильдия</strong><button class="window-close" type="button" data-close="guild-window">×</button></header>
+            <p id="guild-message" class="muted" role="status" aria-live="polite"></p>
+            <p id="guild-motd" class="muted"></p>
+            <div id="guild-roster" aria-label="Состав гильдии"></div>
+          </aside>
+
+          <aside id="guild-invite" class="game-window" hidden>
+            <header><strong>Приглашение в гильдию</strong></header>
+            <p id="guild-invite-text"></p>
+            <p>
+              <button id="guild-accept" type="button">Принять</button>
+              <button id="guild-decline" type="button">Отказаться</button>
+            </p>
+          </aside>
+
+          <aside id="mail-window" class="game-window mail-window" hidden>
+            <header><strong>Почта</strong><button class="window-close" type="button" data-close="mail-window">×</button></header>
+            <p id="mail-message" class="muted" role="status" aria-live="polite"></p>
+            <div id="mail-list" aria-label="Письма"></div>
+            <details id="mail-compose">
+              <summary>Написать письмо</summary>
+              <p><input id="mail-to" maxlength="12" placeholder="Кому" /></p>
+              <p><input id="mail-subject" maxlength="64" placeholder="Тема" /></p>
+              <p><textarea id="mail-body" maxlength="500" rows="3" placeholder="Текст"></textarea></p>
+              <p><label>Золото <input id="mail-money" type="number" min="0" step="1" value="0" /></label></p>
+              <p><button id="mail-send" type="button">Отправить</button></p>
+            </details>
+          </aside>
+
+          <aside id="trade-window" class="game-window" hidden>
+            <header><strong id="trade-title">Обмен</strong><button class="window-close" type="button" data-close="trade-window">×</button></header>
+            <p id="trade-message" class="muted" role="status" aria-live="polite"></p>
+            <h4>Вы предлагаете</h4>
+            <div id="trade-mine" aria-label="Ваше предложение"></div>
+            <p>
+              <label>Золото <input id="trade-gold" type="number" min="0" step="1" value="0" /></label>
+              <button id="trade-set-gold" type="button">Указать</button>
+            </p>
+            <h4 id="trade-their-title">Вам предлагают</h4>
+            <div id="trade-theirs" aria-label="Предложение партнёра"></div>
+            <p>
+              <button id="trade-accept" type="button">Принять обмен</button>
+              <button id="trade-cancel" type="button">Отменить</button>
+            </p>
+          </aside>
+
+          <aside id="duel-window" class="game-window" hidden>
+            <header><strong>Дуэль</strong></header>
+            <p id="duel-text"></p>
+            <p>
+              <button id="duel-accept" type="button">Принять</button>
+              <button id="duel-decline" type="button">Отказаться</button>
+            </p>
+          </aside>
+
+          <aside id="group-invite" class="game-window" hidden>
+            <header><strong>Приглашение в группу</strong></header>
+            <p id="group-invite-text"></p>
+            <p>
+              <button id="group-accept" type="button">Принять</button>
+              <button id="group-decline" type="button">Отказаться</button>
+            </p>
+          </aside>
+
+          <section id="chat-window" class="chat-window">
+            <!-- The dock builds its own tabs: which ones exist depends on the channels this
+                 character has joined, so the set is not knowable from the page. -->
+            <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Вкладки чата"></div>
+            <div id="chat-log" role="log" aria-label="Чат" aria-live="polite"></div>
+            <form id="chat-form" autocomplete="off">
+              <input id="chat-input" maxlength="255" placeholder="Enter — написать · /help — список команд · /dance и остальные эмоции" />
+            </form>
+          </section>
+
+          <aside id="loot-window" class="game-window" hidden>
+            <header><strong>Добыча</strong><button class="window-close" type="button" data-close="loot-window">×</button></header>
+            <p id="loot-error" class="error" hidden></p>
+            <button id="loot-money" type="button" hidden></button>
+            <div id="loot-items" aria-label="Предметы добычи"></div>
+          </aside>
+
+          <aside id="vendor-window" class="game-window" hidden>
+            <header><strong>Торговец</strong><button class="window-close" type="button" data-close="vendor-window">×</button></header>
+            <p id="merchant-message" class="muted" role="status" aria-live="polite"></p>
+            <div id="vendor-items" aria-label="Товары"></div>
+            <p class="muted">Чтобы продать, откройте сумки и нажмите на предмет при открытом торговце.</p>
+            <h4 id="buyback-title" hidden>Выкуп</h4>
+            <div id="buyback-items" aria-label="Выкуп"></div>
+          </aside>
+
+          <aside id="trainer-window" class="game-window" hidden>
+            <header><strong>Обучение</strong><button class="window-close" type="button" data-close="trainer-window">×</button></header>
+            <p id="trainer-greeting" class="muted"></p>
+            <p id="trainer-message" class="muted" role="status" aria-live="polite"></p>
+            <div id="trainer-spells" aria-label="Доступные заклинания"></div>
+          </aside>
+
+          <aside id="death-window" class="game-window" hidden>
+            <header><strong>Смерть</strong></header>
+            <p id="death-status" role="status" aria-live="polite"></p>
+            <p>
+              <button id="death-release" type="button">Освободить дух</button>
+              <button id="death-reclaim" type="button" hidden>Забрать тело</button>
+              <button id="death-spirit" type="button" hidden>Воскреснуть у духа</button>
+            </p>
+            <div id="resurrect-request" hidden>
+              <p id="resurrect-text"></p>
+              <button id="resurrect-accept" type="button">Принять воскрешение</button>
+              <button id="resurrect-decline" type="button">Отказаться</button>
+            </div>
+          </aside>
+
+          <aside id="diagnostics-window" class="game-window diagnostics-window" hidden>
+            <header><strong>Состояние клиента</strong><button class="window-close" type="button" data-close="diagnostics-window">×</button></header>
+            <div id="diagnostics-tabs"></div>
+            <div id="diagnostics-state">
+              <p id="world-status" role="status" aria-live="polite"></p>
+              <p id="player-position" class="muted"></p>
+              <p id="movement-status" class="muted">Movement: ожидание active mover…</p>
+              <p id="terrain-status" class="muted">Terrain: ожидание карты…</p>
+              <p id="environment-status" class="muted">Environment: ожидание VMAP…</p>
+              <p id="render-status" class="muted">Render: ожидание позиции…</p>
+              <p id="creature-status" class="muted">Creature data: ожидание объектов…</p>
+              <p id="model-status" class="muted">Models: ожидание обликов…</p>
+              <p id="combat-status" class="muted">Кликните по существу, чтобы выбрать цель.</p>
+              <p id="capsule-status" class="muted">Капсулы: ожидание кадра…</p>
+              <div id="capsule-reasons" aria-label="Почему юнит остаётся капсулой"></div>
+              <p id="unhandled-status" class="muted">Опкоды: необработанных пакетов пока нет.</p>
+              <p>
+                <button id="unhandled-save" type="button">Сохранить отчёт по опкодам</button>
+                <button id="reset-layout" type="button">Сбросить раскладку окон</button>
+              </p>
+              <div id="unhandled-opcodes" aria-label="Необработанные опкоды"></div>
+              <div id="world-objects" aria-label="Ближайшие объекты мира"></div>
+            </div>
+            <div id="diagnostics-packets" hidden>
+              <p id="custom-packet-status" class="muted">Пакеты модулей: ни одной схемы и ни одного пакета.</p>
+              <div id="custom-packet-modules" aria-label="Схемы сообщений модулей"></div>
+              <div id="custom-packet-list" aria-label="Кастомные опкоды"></div>
+              <div id="custom-packet-warnings" aria-label="Предупреждения кастомного транспорта"></div>
+            </div>
+            <div id="diagnostics-windows" hidden>
+              <p id="module-window-status" class="muted">Окна модулей: ни одного окна не загружено.</p>
+              <p>
+                <button id="module-window-example" type="button">Показать пример</button>
+                <button id="module-window-studio" type="button">Показать экран владельца</button>
+                <button id="module-patch-example" type="button">Применить правку</button>
+                <button id="module-window-builder" type="button">Редактор окон</button>
+              </p>
+              <div id="module-window-list" aria-label="Окна модулей"></div>
+              <div id="module-window-problems" aria-label="Замечания разбора окон"></div>
+            </div>
+          </aside>
+
+          <p class="controls">W/S движение · A/D поворот · Q/E стрейф · ПКМ вращение камеры · колесо зум · 1 атака · P книга · B сумки · C персонаж</p>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/browser/main.ts"></script>
+  </body>
+</html>

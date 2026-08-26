@@ -1,0 +1,27 @@
+COLUMNS
+int<ItemClass::ClassID> ClassID
+int SubClassID
+int PrerequisiteProficiency
+int PostrequisiteProficiency
+int Flags
+int DisplayFlags
+int WeaponParrySeq
+int WeaponReadySeq
+int WeaponAttackSeq
+int WeaponSwingSize
+locstring DisplayName_lang
+locstring VerboseName_lang
+
+BUILD 3.0.1.8303-3.3.5.12340
+ClassID<32>
+SubClassID<32>
+PrerequisiteProficiency<32>
+PostrequisiteProficiency<32>
+Flags<32>
+DisplayFlags<32>
+WeaponParrySeq<32>
+WeaponReadySeq<32>
+WeaponAttackSeq<32>
+WeaponSwingSize<32>
+DisplayName_lang
+VerboseName_lang

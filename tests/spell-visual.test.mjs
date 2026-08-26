@@ -1,0 +1,521 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  parseSpellGo, TARGET_FLAG_CORPSE_ALLY, TARGET_FLAG_CORPSE_ENEMY, TARGET_FLAG_DEST_LOCATION,
+  TARGET_FLAG_GAMEOBJECT, TARGET_FLAG_ITEM, TARGET_FLAG_SOURCE_LOCATION, TARGET_FLAG_STRING,
+  TARGET_FLAG_TRADE_ITEM, TARGET_FLAG_UNIT, TARGET_FLAG_UNIT_MINIPET,
+} from "../dist/code/world/SpellProtocol.js";
+import { parseSpellVisuals } from "../dist/code/gateway/SpellVisual.js";
+import {
+  CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED, MISSILE_MAX_SECONDS,
+  expiredInstances, missileDirection, missilePoint, missileSeconds, planSpellAuraDone, planSpellAuraState, planSpellCastStart,
+  planSpellVisual,
+} from "../dist/code/browser/SpellVisuals.js";
+
+let dbcDirectory;
+try {
+  dbcDirectory = (await import("../tools/paths.mjs")).dbcDirectory();
+} catch {
+  dbcDirectory = undefined;
+}
+const withDataset = { skip: dbcDirectory ? false : "no tswow dataset on this machine" };
+
+/* --- SMSG_SPELL_GO ---------------------------------------------------------------------------- */
+
+/** A packed guid, as the wire writes one: a mask byte then the non-zero bytes. */
+function packed(value) {
+  const bytes = [0];
+  for (let index = 0; index < 8; index++) {
+    const byte = Number((value >> BigInt(index * 8)) & 0xffn);
+    if (byte === 0) continue;
+    bytes[0] |= 1 << index;
+    bytes.push(byte);
+  }
+  return bytes;
+}
+
+function full(value) {
+  const bytes = [];
+  for (let index = 0; index < 8; index++) bytes.push(Number((value >> BigInt(index * 8)) & 0xffn));
+  return bytes;
+}
+
+function u32(value) {
+  return [value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >>> 24) & 0xff];
+}
+
+function f32(value) {
+  return [...new Uint8Array(Float32Array.of(value).buffer)];
+}
+
+function spellGo({ caster = 5n, unit = 5n, spellId = 133, hits = [], misses = [], destination } = {}) {
+  return Uint8Array.from([
+    ...packed(caster), ...packed(unit),
+    1,                       // castCount
+    ...u32(spellId),
+    ...u32(0),               // castFlags
+    ...u32(1234),            // timestamp
+    hits.length, ...hits.flatMap(full),
+    // A reflect writes the result of the reflection after its reason, and nothing else does.
+    misses.length, ...misses.flatMap(({ guid, reason }) => [...full(guid), reason, ...(reason === 11 ? [0] : [])]),
+    ...(destination ? [...u32(0x40), ...packed(0n), ...f32(destination.x), ...f32(destination.y), ...f32(destination.z)] : []),
+  ]);
+}
+
+test("a cast says who it landed on, not just that it happened", () => {
+  // The header alone stops at the timestamp, and the renderer was left guessing the target from
+  // UNIT_FIELD_TARGET — empty for every area spell, stale for anything mid-swap, and absent for
+  // whatever a totem does. The hit list is eleven bytes further in and is the server's own answer.
+  const packet = spellGo({ caster: 0x1234n, unit: 0x1234n, spellId: 133, hits: [7n, 9n, 0xdeadbeefn] });
+  const cast = parseSpellGo(packet);
+  assert.equal(cast.spellId, 133);
+  assert.equal(cast.casterUnit, 0x1234n);
+  assert.deepEqual(cast.hits, [7n, 9n, 0xdeadbeefn]);
+  assert.deepEqual(cast.misses, []);
+});
+
+test("a miss carries its reason, and a reflect carries one byte more", () => {
+  // SPELL_MISS_REFLECT is the only reason that writes the result of the reflection after itself,
+  // and it is 11. Three is a dodge — this repository's own MISS_REASONS says so and the reference
+  // client agrees — so reading three as the reflect ate a byte after every dodged attack and
+  // shifted every target behind it.
+  const cast = parseSpellGo(spellGo({
+    hits: [1n],
+    misses: [{ guid: 2n, reason: 1 }, { guid: 3n, reason: 11 }, { guid: 4n, reason: 2 }],
+  }));
+  assert.deepEqual(cast.hits, [1n]);
+  assert.deepEqual(cast.misses.map((miss) => miss.guid), [2n, 3n, 4n]);
+  assert.deepEqual(cast.misses.map((miss) => miss.reason), [1, 11, 2]);
+});
+
+test("a dodge does not eat the target behind it", () => {
+  // The case the wrong constant broke: three is the commonest miss reason there is, and reading
+  // it as a reflect took a byte that belonged to the next guid.
+  const cast = parseSpellGo(spellGo({
+    misses: [{ guid: 0x11n, reason: 3 }, { guid: 0x22n, reason: 3 }, { guid: 0x33n, reason: 4 }],
+  }));
+  assert.deepEqual(cast.misses.map((miss) => miss.guid), [0x11n, 0x22n, 0x33n]);
+  assert.deepEqual(cast.misses.map((miss) => miss.reason), [3, 3, 4]);
+});
+
+test("a packet that stops early stops the reader with it", () => {
+  // A legacy/private packet can still stop after the target lists.
+  const packet = spellGo({ hits: [1n, 2n] }).slice(0, 20);
+  const cast = parseSpellGo(packet);
+  assert.ok(Array.isArray(cast.hits));
+  assert.ok(cast.hits.length <= 2);
+});
+
+test("SpellCastTargets destination is parsed when present, and remains optional for old packets", () => {
+  const old = parseSpellGo(spellGo({ hits: [1n] }));
+  assert.equal(old.targets, undefined);
+  const cast = parseSpellGo(spellGo({
+    destination: { x: 10.5, y: -2.25, z: 7 },
+  }));
+  assert.equal(cast.targets.targetFlags, 0x40);
+  assert.deepEqual(cast.targets.destination, { x: 10.5, y: -2.25, z: 7 });
+});
+
+test("SpellCastTargets consumes the mutually-exclusive GUID groups before source/destination/string", () => {
+  const flags = TARGET_FLAG_UNIT | TARGET_FLAG_ITEM | TARGET_FLAG_SOURCE_LOCATION
+    | TARGET_FLAG_DEST_LOCATION | TARGET_FLAG_STRING;
+  // Keep this fixture explicit: the target section is the real wire order, with both GUID groups
+  // before the coordinate fields. The old short fixture above remains a separate regression.
+  const base = spellGo({ hits: [1n] });
+  const target = [
+    ...u32(flags), ...packed(0x1234n), ...packed(0x5678n),
+    ...packed(0n), ...f32(1), ...f32(2), ...f32(3), ...packed(0n),
+    ...f32(10), ...f32(20), ...f32(30),
+    ...new TextEncoder().encode("chain"), 0,
+  ];
+  const cast = parseSpellGo(Uint8Array.from([...base, ...target]));
+  assert.equal(TARGET_FLAG_STRING, 0x2000);
+  assert.equal(cast.targets.targetFlags, flags);
+  assert.equal(cast.targets.unitTarget, 0x1234n);
+  assert.equal(cast.targets.itemTarget, 0x5678n);
+  assert.deepEqual(cast.targets.source, { x: 1, y: 2, z: 3 });
+  assert.deepEqual(cast.targets.destination, { x: 10, y: 20, z: 30 });
+  assert.equal(cast.targets.targetString, "chain");
+  for (const objectFlag of [TARGET_FLAG_UNIT, TARGET_FLAG_UNIT_MINIPET, TARGET_FLAG_GAMEOBJECT,
+    TARGET_FLAG_CORPSE_ENEMY, TARGET_FLAG_CORPSE_ALLY]) {
+    const objectTarget = spellGo({ hits: [1n] });
+    const objectCast = parseSpellGo(Uint8Array.from([
+      ...objectTarget, ...u32(objectFlag | TARGET_FLAG_TRADE_ITEM), ...packed(0x99n), ...packed(0x88n),
+    ]));
+    assert.equal(objectCast.targets.itemTarget, 0x88n);
+    assert.equal(objectFlag === TARGET_FLAG_GAMEOBJECT ? objectCast.targets.gameObjectTarget : objectCast.targets.unitTarget, 0x99n);
+  }
+});
+
+/* --- The DBC chain ---------------------------------------------------------------------------- */
+
+test("a spell resolves to the models the client shows for it", withDataset, async () => {
+  // Four tables deep: Spell.SpellVisualID to SpellVisual to SpellVisualKit to
+  // SpellVisualEffectName. The last one stores `.mdx`, which is Warcraft III's extension and is
+  // not in the archives at all; the file on disk is `.m2`.
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const read = (name) => readFile(join(dbcDirectory, name));
+  const visuals = parseSpellVisuals(
+    await read("Spell.dbc"), await read("SpellVisual.dbc"),
+    await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"));
+
+  const fireball = visuals.get(133);
+  assert.ok(fireball, "Fireball has a visual");
+  assert.ok(fireball.precast, "and a wind-up");
+  const hands = fireball.precast.effects.map((effect) => effect.attachment).sort((a, b) => a - b);
+  assert.deepEqual(hands, [21, 22], "one flourish in each spell hand");
+  for (const effect of fireball.precast.effects) {
+    assert.ok(effect.path.toLowerCase().endsWith(".m2"), `${effect.path} is an m2, not an mdx`);
+    assert.ok(/fire/i.test(effect.path), `${effect.path} is a fire effect`);
+  }
+  assert.ok(fireball.missile, "and a bolt");
+  assert.ok(/fireball/i.test(fireball.missile.path), fireball.missile.path);
+  // Spell.Speed, in yards a second. Nothing on the wire says how long a bolt is in the air.
+  assert.equal(fireball.missile.speed, 24);
+
+  // The school shows in the file names, which is the cheapest possible check that the chain is
+  // not returning the same rows for everything.
+  assert.ok(/ice|frost/i.test(visuals.get(116).precast.effects[0].path), "Frostbolt is cold");
+  assert.ok(/nature/i.test(visuals.get(5185).precast.effects[0].path), "Healing Touch is nature");
+  assert.ok(/shadow/i.test(visuals.get(686).precast.effects[0].path), "Shadow Bolt is shadow");
+});
+
+test("Paladin Judgement keeps its complete authored impact model family", withDataset, async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const read = (name) => readFile(join(dbcDirectory, name));
+  const visuals = parseSpellVisuals(
+    await read("Spell.dbc"), await read("SpellVisual.dbc"),
+    await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"));
+  for (const [spellId, suffix] of [[20271, "judgement_impact_chest.m2"],
+    [53407, "judgement_impact_chest_red.m2"], [53408, "judgement_impact_chest_blue.m2"]]) {
+    const impact = visuals.get(spellId)?.impact;
+    assert.ok(impact, `${spellId} has an impact phase`);
+    assert.deepEqual(impact.effects.map((effect) => effect.path.toLowerCase()), [`spells\\${suffix}`]);
+    assert.equal(impact.effects[0].attachment, 34, `${spellId} remains target-bound`);
+  }
+});
+
+test("every model a spell names is one the archives can serve", withDataset, async () => {
+  // A `.mdl` row is a `zzOLD__` leftover and no such file exists; dropping them here is what keeps
+  // the browser from asking for a model that will 404 on every cast for the rest of the session.
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const read = (name) => readFile(join(dbcDirectory, name));
+  const visuals = parseSpellVisuals(
+    await read("Spell.dbc"), await read("SpellVisual.dbc"),
+    await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"));
+
+  let paths = 0;
+  for (const visual of visuals.values()) {
+    for (const phase of [
+      "precast", "cast", "impact", "state", "stateDone", "channel", "casterImpact", "targetImpact",
+      "missileTargeting", "instantArea", "impactArea", "persistentArea",
+    ]) {
+      for (const effect of visual[phase]?.effects ?? []) {
+        assert.ok(effect.path.toLowerCase().endsWith(".m2"), effect.path);
+        assert.ok(effect.scale > 0, `${effect.path} has a scale`);
+        paths++;
+      }
+    }
+    if (visual.missile) assert.ok(visual.missile.path.toLowerCase().endsWith(".m2"), visual.missile.path);
+  }
+  assert.ok(paths > 50_000, `the table is whole: ${paths} placements`);
+  assert.ok(visuals.size > 25_000, `and reaches most of the spellbook: ${visuals.size} spells`);
+});
+
+/* --- The plan ---------------------------------------------------------------------------------- */
+
+const kit = (paths, attachment = 22, animation = -1) => ({
+  startAnimation: -1,
+  animation,
+  effects: paths.map((path) => ({ path, attachment, scale: 1 })),
+  sound: 0,
+});
+
+test("a bolt takes as long as the distance and the spell's own speed say", () => {
+  // 24 yards at 24 yards a second is one second, and nothing on the wire says so — Spell.Speed is
+  // the only place the number lives.
+  assert.equal(missileSeconds(24, 24), 1);
+  assert.ok(Math.abs(missileSeconds(48, 24) - 2) < 1e-9);
+  // Zero-speed authored missiles use the one corpus-wide fallback, not disappearance.
+  assert.equal(missileSeconds(24, 0), 24 / MISSILE_FALLBACK_SPEED);
+  assert.ok(missileSeconds(0.01, 0) > 0, "fallback remains positive for every non-zero distance");
+  // And a bolt fired at somebody standing on top of you arrives at once rather than flickering.
+  assert.equal(missileSeconds(0.2, 24), 0);
+  assert.equal(missileSeconds(1000, 24), MISSILE_MAX_SECONDS, "a long shot is capped, not endless");
+});
+
+test("a bolt leaves the hand and arrives at the target, bowing in between", () => {
+  const from = { x: 0, y: 0, z: 10 };
+  const to = { x: 30, y: 0, z: 10 };
+  const out = { x: 0, y: 0, z: 0 };
+  // Both ends exactly, or the bolt is thrown from beside the caster at something beside the
+  // target. The arc has to vanish there and only there.
+  assert.deepEqual(missilePoint(from, to, 0, out), { x: 0, y: 0, z: 10 });
+  assert.deepEqual(missilePoint(from, to, 1, out), { x: 30, y: 0, z: 10 });
+  const middle = missilePoint(from, to, 0.5, { x: 0, y: 0, z: 0 });
+  assert.equal(middle.x, 15);
+  assert.ok(Math.abs(middle.z - (10 + 30 * MISSILE_ARC)) < 1e-9, `${middle.z} at the top of the arc`);
+  // Off both ends it holds rather than flying on past.
+  assert.deepEqual(missilePoint(from, to, 2, out), { x: 30, y: 0, z: 10 });
+});
+
+test("a bolt's facing follows the 3D tangent of its bowed flight", () => {
+  const direction = { x: 0, y: 0, z: 0 };
+  missileDirection({ x: 0, y: 0, z: 0 }, { x: 30, y: 8, z: 10 }, 0.5, direction);
+  // At the apex the bow has no vertical derivative, so the tangent is exactly the endpoint
+  // delta. This catches the old yaw-only path, which could not expose a target's z component.
+  assert.deepEqual(direction, { x: 30, y: 8, z: 10 });
+  missileDirection({ x: 0, y: 0, z: 0 }, { x: 30, y: 8, z: 10 }, 0, direction);
+  assert.ok(direction.z > 10, "the launch tangent follows the upward arc");
+});
+
+test("a cast plays now and its flash plays when the bolt gets there", () => {
+  const visual = {
+    id: 133,
+    cast: kit(["Spells\\Fire_Cast_Hand.m2"], 22, 53),
+    impact: kit(["Spells\\Fireball_Impact.m2"], 34),
+    missile: { path: "Spells\\Fireball_Missile.m2", scale: 1, attachment: 22, speed: 24 },
+  };
+  const now = 1000;
+  const plan = planSpellVisual(visual, {
+    caster: 1n,
+    casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
+  }, now);
+
+  const cast = plan.instances.find((one) => one.path.includes("Cast_Hand"));
+  assert.ok(cast);
+  assert.equal(cast.anchor, 1n, "the flourish is on the caster");
+  assert.equal(cast.startedAt, now);
+  assert.equal(cast.endsAt, now + CAST_KIT_MS);
+
+  const bolt = plan.instances.find((one) => one.flight);
+  assert.ok(bolt, "there is a bolt");
+  assert.equal(bolt.startedAt, now);
+  // 24 yards at 24 yards a second.
+  assert.equal(bolt.endsAt, now + 1000);
+  assert.deepEqual(bolt.flight.to, { x: 24, y: 0, z: 0 });
+
+  const impact = plan.instances.find((one) => one.path.includes("Impact"));
+  assert.ok(impact, "and a flash at the far end");
+  assert.equal(impact.anchor, 2n, "on the target");
+  assert.equal(impact.startedAt, bolt.endsAt, "when the bolt arrives, not when it left");
+  assert.equal(impact.endsAt, bolt.endsAt + IMPACT_KIT_MS);
+
+  assert.deepEqual(plan.animations, [{ guid: 1n, animation: 53, at: 1000, hold: 0, mode: "once" }]);
+  assert.deepEqual(plan.sounds, []);
+});
+
+test("precast and channel plans are real timed kits, and all impact phases coexist", () => {
+  const visual = {
+    id: 1,
+    precast: kit(["Spells\\Precast.m2"], 21, 52),
+    channel: kit(["Spells\\Channel.m2"], 22, 125),
+    casterImpact: kit(["Spells\\CasterImpact.m2"], 19),
+    missileTargeting: kit(["Spells\\Targeting.m2"], 34),
+    impact: kit(["Spells\\Impact.m2"], 34),
+    targetImpact: kit(["Spells\\TargetImpact.m2"], 34),
+    instantArea: kit(["Spells\\InstantArea.m2"], 22),
+    impactArea: kit(["Spells\\ImpactArea.m2"], 23),
+    persistentArea: kit(["Spells\\PersistentArea.m2"], 24),
+    durationMs: 8_000,
+    missile: { path: "Spells\\Missile.m2", scale: 1, attachment: 22, speed: 0, sound: 12 },
+    missileSound: 13,
+    animEventSound: 14,
+  };
+  const cast = {
+    caster: 1n,
+    casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
+    destination: { x: 12, y: 3, z: 0 },
+  };
+  const start = planSpellCastStart(visual, { ...cast, castTime: 1500, channel: false }, 100);
+  assert.equal(start.instances[0].startedAt, 100);
+  assert.equal(start.instances[0].endsAt, 1600);
+  const channel = planSpellCastStart(visual, { ...cast, castTime: 2000, channel: true }, 100);
+  assert.equal(channel.instances[0].endsAt, 2100);
+  const plan = planSpellVisual(visual, cast, 1000);
+  assert.equal(plan.instances.filter((one) => one.flight).length, 1, "zero speed still flies");
+  const directImpacts = plan.instances.filter((one) =>
+    one.path.endsWith("\\Impact.m2") || one.path.endsWith("\\TargetImpact.m2"));
+  assert.equal(directImpacts.length, 2);
+  assert.ok(plan.instances.some((one) => one.path.includes("Targeting")));
+  assert.deepEqual(plan.instances.find((one) => one.path.includes("InstantArea")).position, cast.destination);
+  for (const instance of plan.instances.filter((one) => one.path.includes("Area"))) {
+    assert.deepEqual(instance.position, cast.destination);
+    assert.equal(instance.anchor, undefined, "area effects do not attach to the caster");
+  }
+  assert.equal(plan.instances.find((one) => one.path.includes("CasterImpact")).startedAt, 2_000);
+  assert.equal(plan.instances.find((one) => one.path.includes("PersistentArea")).endsAt, 10_000);
+  assert.deepEqual(plan.sounds.map((sound) => sound.sound).sort((a, b) => a - b), [13, 14]);
+});
+
+test("unit spell playback separates one-shots from held poses and preserves startAnimation", () => {
+  const cast = { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [] };
+  const visual = {
+    id: 1,
+    cast: {
+      startAnimation: 11, animation: 22,
+      effects: [{ path: "Spells\\Cast.m2", attachment: 22, scale: 1 }], sound: 0,
+    },
+    precast: {
+      startAnimation: 31, animation: 32,
+      effects: [{ path: "Spells\\Precast.m2", attachment: 22, scale: 1 }], sound: 0,
+    },
+  };
+  const go = planSpellVisual(visual, cast, 1_000);
+  assert.deepEqual(go.animations, [{
+    guid: 1n, animation: 11, at: 1_000, hold: 0, mode: "once",
+    followUp: { animation: 22, mode: "once", hold: 0 },
+  }]);
+  const start = planSpellCastStart(visual, { ...cast, castTime: 1_500 }, 2_000);
+  assert.deepEqual(start.animations, [{
+    guid: 1n, animation: 31, at: 2_000, hold: 0, mode: "once",
+    followUp: { animation: 32, mode: "hold", hold: 1_500 },
+  }]);
+  assert.equal(start.instances[0].fitToModel, undefined,
+    "packet-owned precast lifetime is not extended by a model clip");
+});
+
+test("finite spell VFX can fit a model clip without extending flights or persistent auras", () => {
+  const visual = {
+    id: 1,
+    missile: { path: "Spells\\Bolt.m2", scale: 1, attachment: 22, speed: 24 },
+    cast: { startAnimation: -1, animation: -1,
+      effects: [{ path: "Spells\\Cast.m2", attachment: 22, scale: 1 }], sound: 0 },
+    impact: { startAnimation: -1, animation: -1,
+      effects: [{ path: "Spells\\Impact.m2", attachment: 22, scale: 1 }], sound: 0 },
+    persistentArea: { startAnimation: -1, animation: -1,
+      effects: [{ path: "Spells\\Area.m2", attachment: -1, scale: 1 }], sound: 0 },
+    durationMs: 4_000,
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
+  }, 0);
+  assert.equal(plan.instances.find((one) => one.path.endsWith("Cast.m2")).fitToModel, true);
+  const persistent = plan.instances.find((one) => one.path.endsWith("Area.m2"));
+  assert.equal(persistent.fitToModel, undefined);
+  assert.equal(persistent.modelPlayback, "hold",
+    "persistent area model clips loop for the packet-owned lifetime");
+  assert.equal(plan.instances.find((one) => one.flight).fitToModel, undefined);
+});
+
+test("future impact animations carry their absolute arrival time", () => {
+  const visual = {
+    id: 1,
+    missile: { path: "Spells\\Missile.m2", scale: 1, attachment: 22, speed: 24 },
+    impact: kit(["Spells\\Impact.m2"], 34, 53),
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
+  }, 500);
+  assert.deepEqual(plan.animations, [{ guid: 2n, animation: 53, at: 1500, hold: 0, mode: "once" }]);
+});
+
+test("a synthetic static target keeps effects but never asks unit 0 to animate", () => {
+  const visual = {
+    id: 1,
+    cast: kit(["Spells\\Cast.m2"], 22, 51),
+    impact: kit(["Spells\\Impact.m2"], 34, 52),
+    instantArea: kit(["Spells\\Area.m2"], 22, 53),
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n,
+    casterPoint: { x: 1, y: 2, z: 3 },
+    targets: [{ guid: 0n, point: { x: 40, y: 41, z: 42 } }],
+    destination: { x: 40, y: 41, z: 42 },
+  }, 1000);
+  assert.ok(plan.instances.some((instance) => instance.path.endsWith("Impact.m2")));
+  assert.ok(plan.instances.some((instance) => instance.path.endsWith("Area.m2")));
+  assert.ok(plan.animations.some((animation) => animation.guid === 1n && animation.animation === 51));
+  assert.ok(plan.animations.every((animation) => animation.guid !== 0n));
+});
+
+test("missile launch sound is emitted exactly once for a multi-target cast", () => {
+  const visual = {
+    id: 2,
+    missile: { path: "Spells\\Bolt.m2", scale: 1, attachment: 22, speed: 24 },
+    missileSound: 71,
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [
+      { guid: 2n, point: { x: 24, y: 0, z: 0 } },
+      { guid: 3n, point: { x: 48, y: 0, z: 0 } },
+    ],
+  }, 100);
+  assert.deepEqual(plan.sounds, [{ sound: 71, point: { x: 0, y: 0, z: 0 }, at: 100 }]);
+});
+
+test("StateDoneKit is a finite removal plan, including a sound-only kit", () => {
+  const plan = planSpellAuraDone({ id: 1, stateDone: { startAnimation: -1, animation: -1, effects: [], sound: 99 } }, {
+    guid: 2n, point: { x: 1, y: 2, z: 3 },
+  }, 500);
+  assert.deepEqual(plan.instances, []);
+  assert.deepEqual(plan.sounds, [{ sound: 99, point: { x: 1, y: 2, z: 3 }, at: 500 }]);
+});
+
+test("StateKit keeps world-bound effects positioned for the aura lifetime", () => {
+  const plan = planSpellAuraState({ id: 1, state: kit(["Spells\\StateGround.m2"], -1) }, {
+    guid: 2n, point: { x: 4, y: 5, z: 6 },
+  }, 500, 2_500);
+  assert.deepEqual(plan.instances, [{
+    path: "Spells\\StateGround.m2", scale: 1, attachment: -1,
+    position: { x: 4, y: 5, z: 6 }, startedAt: 500, endsAt: 2_500, modelPlayback: "hold",
+  }]);
+});
+
+test("an instant spell lands on the frame it is cast", () => {
+  const visual = { id: 1, impact: kit(["Spells\\Holy_Impact.m2"], 34) };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 3, y: 0, z: 0 } }],
+  }, 500);
+  assert.equal(plan.instances.length, 1);
+  assert.equal(plan.instances[0].startedAt, 500, "no flight, no wait");
+});
+
+test("a spell that hit eight things is drawn hitting eight things", () => {
+  // The reason the hit list is parsed at all. Reading the caster's target field gives one target
+  // for a spell that landed on a whole pull.
+  const visual = {
+    id: 1,
+    impact: kit(["Spells\\Arcane_Impact.m2"], 34),
+    missile: { path: "Spells\\Arcane_Missile.m2", scale: 1, attachment: 22, speed: 30 },
+  };
+  const targets = Array.from({ length: 8 }, (_, index) => ({
+    guid: BigInt(index + 10),
+    point: { x: 15 + index, y: index, z: 0 },
+  }));
+  const plan = planSpellVisual(visual, { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets }, 0);
+  assert.equal(plan.instances.filter((one) => one.flight).length, 8, "eight bolts");
+  assert.equal(plan.instances.filter((one) => one.path.includes("Impact")).length, 8, "eight flashes");
+  // Each flash waits for its own bolt: the far target's is later than the near one's.
+  const flashes = plan.instances.filter((one) => one.path.includes("Impact"));
+  assert.ok(flashes[7].startedAt > flashes[0].startedAt, "and the far one lands later");
+});
+
+test("a world effect stands on the ground rather than inside somebody", () => {
+  // Attachment −1 is not an attachment. A rune circle belongs under the target's feet, and hung
+  // on a bone it would be drawn inside their chest.
+  const visual = { id: 1, cast: kit(["Spells\\Rune_Circle.m2"], -1) };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 4, y: 5, z: 6 }, targets: [],
+  }, 0);
+  assert.equal(plan.instances.length, 1);
+  assert.equal(plan.instances[0].anchor, undefined);
+  assert.deepEqual(plan.instances[0].position, { x: 4, y: 5, z: 6 });
+});
+
+test("what is over is over, and only that", () => {
+  const instances = [
+    { endsAt: 100 }, { endsAt: 500 }, { endsAt: 99 }, { endsAt: 1000 },
+  ];
+  assert.deepEqual(expiredInstances(instances, 500), [0, 1, 2]);
+  assert.deepEqual(expiredInstances(instances, 0), []);
+});

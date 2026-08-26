@@ -1,0 +1,1428 @@
+:root {
+  /* Declared once, and it is the whole fix for the white scrollbars. Up to forty-four surfaces in
+     this client scroll, and not one of them named a colour, so every one of them took the light
+     system look — a white trough down the side of a black panel. `color-scheme` darkens the bars,
+     the resize corner and the default controls without a single selector, and it is the only form
+     that works in both engines. The pair below is the gold trim on top of that; `scrollbar-color`
+     and `::-webkit-scrollbar` must never both be used, because in Chromium the first cancels the
+     second and the rules would be dead. */
+  color-scheme: dark;
+  scrollbar-width: thin;
+  scrollbar-color: #6d5a34 #0f1216;
+
+  color: #f2ead7;
+  background: #090b0d;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  font-synthesis: none;
+
+  /* The bottom edge, published once. Three things live there — the action bar, the chat dock and
+     the raid grid — and each used to carry its own guess at how tall the others were, so the chat
+     covered two action slots at 1280px and five at 1024px, and the raid grid's last two rows sat
+     under the chat. Each now starts where the one below it ends. */
+  --action-bar-height: 54px;
+  --chat-log-height: 190px;
+  --chat-height: calc(var(--chat-log-height) + 62px);
+  --chat-bottom: calc(var(--action-bar-height) + 18px);
+
+  /* And the right edge, for the same reason. `--side-bars` is how many of the two vertical action
+     bars are switched on — written by `ActionBar.ts`, read by everything standing on that edge, so
+     the minimap, the bag bar and the game buttons do not each carry their own guess about whether
+     a twelve-button column is in front of them. */
+  --side-bars: 0;
+  --side-bar-slot: 34px;
+  /* A column is the slot plus its own 6px padding and 1px border on each side; the 4px is the gap
+     to the next one and the room left over its right offset. Written out rather than rounded,
+     because two pixels of arithmetic here is two pixels of the minimap under an action bar. */
+  --side-bars-width: calc(var(--side-bars) * (var(--side-bar-slot) + 18px));
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: radial-gradient(circle at top, #25313b, #090b0d 65%); }
+body.world-active { overflow: hidden; }
+
+main {
+  display: grid;
+  min-height: 100vh;
+  align-content: center;
+  justify-items: center;
+  gap: 20px;
+  padding: 24px;
+}
+
+.panel {
+  width: min(100%, 540px);
+  padding: 32px;
+  border: 1px solid #405263;
+  border-radius: 16px;
+  background: #18212af2;
+  box-shadow: 0 24px 80px #000b;
+}
+
+h1 { margin: 4px 0; font-size: 2.4rem; }
+h3 { margin: 0; }
+.eyebrow, .muted { color: #9aabb9; }
+.eyebrow { margin: 0; letter-spacing: .12em; text-transform: uppercase; }
+.success { color: #78e6ad; }
+.error { color: #ff8d8d; }
+
+form { display: grid; gap: 16px; margin: 28px 0 20px; }
+label { display: grid; gap: 6px; }
+/* A 44px touch target, for the login and character forms this rule was written for. */
+input, select, button { min-height: 44px; border: 1px solid #435565; border-radius: 8px; font: inherit; }
+input, select { padding: 0 12px; color: inherit; background: #0e151b; }
+button { color: #09140e; background: #5ee0a0; cursor: pointer; font-weight: 700; }
+/* A disabled button has to stay readable: it is the one that carries the tooltip saying why it is
+   disabled, so it is read more carefully than an enabled one. `.48` multiplied into whatever
+   colour the button already had — measured 1.92:1 on a trainer's class-coloured row — so the
+   fading is done once, by the colour, and not again by the alpha. */
+button:disabled { cursor: default; opacity: .78; }
+button:not(:disabled):hover { filter: brightness(1.18); }
+:focus-visible { outline: 2px solid #ead58c; outline-offset: 2px; }
+.danger { color: #250909; background: #ff8d8d; }
+.actions, .form-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.actions button { min-height: 36px; padding: 0 12px; }
+#realms, #characters { display: grid; gap: 10px; }
+#realms article, #characters article {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #10171e;
+}
+#realms span, #characters span { color: #aab6c2; }
+
+#world-panel {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #101820;
+}
+
+#world-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: linear-gradient(#263f55, #17251e);
+}
+
+/* The two canvases that *are* the world, named rather than matched by tag: as a descendant rule
+   this also caught the minimap's canvas and stretched it over the whole viewport. */
+#world-canvas,
+#world-3d-canvas {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#world-canvas { z-index: 2; cursor: crosshair; touch-action: none; }
+#world-canvas.camera-dragging { cursor: grabbing; }
+#world-3d-canvas { pointer-events: none; }
+
+.unit-frame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(300px, 34vw);
+  padding: 7px 10px 7px 7px;
+  border: 2px solid #8c7749;
+  border-radius: 11px;
+  background: linear-gradient(180deg, #1b1b19ee, #060707ee);
+  box-shadow: inset 0 0 0 1px #d6c88b55, 0 4px 16px #000b;
+}
+
+/*
+ * Two columns down the left edge, and the reason is the same one `.right-rail` was built for.
+ * Before this the player frame sat at `top: 18`, its aura strip at a hard 91, the swing warning at
+ * 138, the combat log at 168, the party frames at 96 and the secondary frames at 96/left 200 — six
+ * independent guesses about how tall the others were. The player aura budget is 24 icons, which at
+ * 34px and a 4px gap inside 300px is three rows and 110px, so a fully buffed character's strip ran
+ * from 91 to 201 and covered the swing warning and the combat log outright.
+ *
+ * `align-items: start` matters: without it a flex column stretches its children to its own width
+ * and the party frames, which are 180px by design, would become 300.
+ */
+.left-rail, .target-rail {
+  position: absolute;
+  z-index: 3;
+  top: 18px;
+  display: flex;
+  width: min(300px, 34vw);
+  flex-direction: column;
+  align-items: start;
+  gap: 8px;
+}
+/* Bounded at the bottom, the way `.right-rail` is: a column that grows without a limit is a
+   column that runs off a 720px screen the moment a fully buffed character joins a party. What
+   gives is the combat log, which is the one member of the column that has no fixed size and the
+   one whose oldest lines are the least worth keeping on screen. */
+.left-rail { left: 18px; bottom: 92px; overflow: hidden; }
+.left-rail > .combat-log { min-height: 0; overflow: hidden; }
+.target-rail { left: min(340px, 38vw); }
+/* The button row hangs 30px below the frame on `bottom: -30px`, outside the box the column
+   measures — so the column is told about it here rather than letting the auras land on it. */
+.target-rail > .target-frame { margin-bottom: 30px; }
+/* The class portrait is one cell of the client's own 256x256 atlas, four across and four down, so
+   it is shown at natural size with the box moved over the cell rather than scaled. The window is
+   six pixels narrower than a 64px cell here and eighteen narrower under the media query below,
+   which is why the script measures the box it is drawn in and insets the cell by half the
+   difference instead of writing one number down.
+
+   Written the long way, and that is this line's whole history: as a bare `.class-portrait` it is
+   one class — (0,1,0) — against the (0,1,1) of `.unit-frame > img` below, which is one class and
+   one type, so it lost the cascade whatever order the two stood in and the portrait computed to
+   `object-fit: cover`. That squeezes the entire 256px sheet into the 58px ring and then lets
+   `object-position` shove it by an offset counted in the sheet's *own* pixels — the druid's -190 —
+   which leaves nothing at all inside the ring. Handing the path back its backslashes was not by
+   itself enough to draw the icon. */
+.unit-frame > img.class-portrait { object-fit: none; }
+
+.unit-frame > img {
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  border: 2px solid #b79b58;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #1c2931;
+}
+.unit-frame > canvas.portrait-canvas {
+  display: none;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  border: 2px solid #b79b58;
+  border-radius: 50%;
+  background: #1c2931;
+  image-rendering: auto;
+}
+.unit-frame > canvas.portrait-canvas[data-portrait-ready="true"] { display: block; }
+.unit-frame-body { display: grid; min-width: 0; flex: 1; gap: 3px; }
+.unit-frame-body strong { overflow: hidden; color: #f6df8d; text-overflow: ellipsis; white-space: nowrap; text-shadow: 1px 1px #000; }
+.unit-frame-body > span { overflow: hidden; color: #ddd4bc; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The numbers moved onto the bars in Ж5.1, and a track has to be tall enough to hold one. At
+   .68rem the type is 10.88px, and the same floor `.ui-bar-text` carries applies here for the same
+   reason: a track shorter than its own type puts the baseline past the bottom edge. The power
+   track carries no number and only grows enough to stay in proportion. */
+.health-track, .power-track {
+  position: relative;
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid #080a08;
+  border-radius: 3px;
+  background: #260c0c;
+  box-shadow: inset 0 1px 3px #000;
+}
+.health-track > span, .power-track > span { display: block; width: 0; height: 100%; transition: width 120ms linear; }
+.health-track > span { background: linear-gradient(#46d368, #177733); }
+.power-track { height: 12px; background: #091c32; }
+.health-track > em {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: .68rem; line-height: 1; font-style: normal; font-variant-numeric: tabular-nums;
+  color: #f2e7cd; text-shadow: 0 1px 2px #000;
+}
+.power-track > span { background: linear-gradient(#3d9ee8, #1757a3); }
+/* The bar is coloured by the unit's own power type, in the order UNIT_FIELD_POWER1 runs. Mana is
+   the blue above; runes are drawn as one bar here rather than as the six the original client
+   shows. */
+.power-track > span[data-power="1"] { background: linear-gradient(#e0674a, #a3341c); }
+.power-track > span[data-power="2"] { background: linear-gradient(#b7d34a, #7d9420); }
+.power-track > span[data-power="3"] { background: linear-gradient(#f2e05a, #b8a41c); }
+.power-track > span[data-power="4"] { background: linear-gradient(#8fd34a, #4f9420); }
+.power-track > span[data-power="5"] { background: linear-gradient(#9a9ea6, #5c6068); }
+.power-track > span[data-power="6"] { background: linear-gradient(#4ad7d3, #1c8f8b); }
+/*
+ * …and off again inside the game, where every widget sizes itself.
+ *
+ * Left global it fought the whole kit: the minimap's 22px round buttons came out as 22×44 ovals
+ * covering the bottom of the circle, action slots grew to 40×44, glyph sockets to 34×44, and a
+ * raid frame was twice as tall as the grid that lays it out.
+ */
+#world-viewport input,
+#world-viewport select,
+#world-viewport button { min-height: 0; }
+
+.frame-close, .frame-action {
+  min-width: 25px;
+  min-height: 25px;
+  padding: 0;
+  color: #ead99e;
+  border-color: #6d5c38;
+  background: #181715e8;
+}
+.frame-close { position: absolute; top: -9px; right: -9px; }
+/* A row rather than a stack: five of these used to share one `right` and only the last one drawn
+   was visible, so a vendor showed a bank button. */
+.frame-actions { position: absolute; right: 5px; bottom: -30px; display: flex; gap: 4px; }
+
+.aura-strip {
+  display: flex;
+  max-width: min(300px, 34vw);
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.aura-icon { position: relative; width: 34px; height: 34px; overflow: hidden; border: 2px solid #5ca46f; border-radius: 4px; box-shadow: 0 2px 6px #000b; }
+.aura-icon.debuff { border-color: #bd5656; }
+.aura-icon img { width: 100%; height: 100%; object-fit: cover; }
+.aura-icon strong { position: absolute; z-index: 2; right: 1px; bottom: 0; color: #fff; font-size: .68rem; text-shadow: 1px 1px 2px #000; }
+.aura-duration { position: absolute; z-index: 2; right: 1px; bottom: 0; left: 1px; overflow: hidden; color: #fff; font-size: .58rem; text-align: center; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.aura-icon:has(strong) .aura-duration { bottom: auto; top: 0; }
+
+#game-buttons {
+  position: absolute;
+  z-index: 4;
+  right: calc(22px + var(--side-bars-width));
+  bottom: 22px;
+  display: flex;
+  gap: 7px;
+}
+#game-buttons button {
+  width: 42px;
+  min-height: 42px;
+  padding: 0;
+  color: #e6ce7b;
+  border: 2px solid #756037;
+  border-radius: 50%;
+  background: radial-gradient(circle, #34322b, #0c0e0f 70%);
+  box-shadow: 0 3px 10px #000b;
+}
+
+.game-window {
+  position: absolute;
+  z-index: 5;
+  top: 92px;
+  width: min(430px, calc(100vw - 32px));
+  min-width: 240px;
+  max-width: calc(100vw - 16px);
+  min-height: 90px;
+  max-height: 72vh;
+  overflow: auto;
+  border: 2px solid #8b7445;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #292720f5, #0b0d0ff8 65%);
+  box-shadow: inset 0 0 0 1px #d7c27b44, 0 10px 35px #000d;
+  resize: both;
+}
+.game-window header.window-drag-handle {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+.game-window header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  color: #f4df92;
+  border-bottom: 1px solid #625433;
+  background: #171714f5;
+}
+.window-close { width: 28px; min-height: 28px; padding: 0; color: #dfc982; background: #2d2119; }
+
+/*
+ * Where each window appears the FIRST time. GameWindowManager pins it to pixels from there on,
+ * so these only have to keep the windows from landing on top of each other and on top of the
+ * party frames down the left edge.
+ */
+.character-window { left: 18px; }
+.inventory-window { right: 18px; }
+.spellbook-window { left: 50%; width: min(560px, calc(100vw - 32px)); transform: translateX(-50%); }
+.gossip-window { top: 150px; left: 50%; width: min(520px, calc(100vw - 32px)); transform: translateX(-50%); }
+.quest-window { top: 74px; left: 50%; width: min(600px, calc(100vw - 32px)); transform: translateX(-50%); }
+.diagnostics-window { top: 65px; right: 18px; width: min(480px, calc(100vw - 32px)); padding-bottom: 12px; }
+/*
+ * NPC and world windows share a middle lane: to their left is the character sheet, to their
+ * right the bags, and those are the panes they are actually used together with.
+ */
+#vendor-window { top: 92px; left: 466px; width: min(340px, calc(100vw - 32px)); }
+#trainer-window { top: 132px; left: 510px; }
+#mail-window { top: 92px; left: 466px; }
+#auction-window { top: 92px; left: 466px; width: min(520px, calc(100vw - 32px)); }
+#guild-window { top: 92px; left: 466px; width: min(480px, calc(100vw - 32px)); }
+#lfg-window { top: 92px; left: 466px; }
+#loot-window { top: 470px; left: 466px; width: min(340px, calc(100vw - 32px)); }
+#trade-window { top: 118px; left: 50%; transform: translateX(-50%); }
+#death-window { top: 244px; left: 50%; width: min(380px, calc(100vw - 32px)); transform: translateX(-50%); }
+#duel-window { top: 204px; left: 50%; width: min(360px, calc(100vw - 32px)); transform: translateX(-50%); }
+#group-invite { top: 150px; left: 50%; width: min(360px, calc(100vw - 32px)); transform: translateX(-50%); }
+#guild-invite { top: 178px; left: 50%; width: min(360px, calc(100vw - 32px)); transform: translateX(-50%); }
+/*
+ * The window is two panes now, so its lines sit one level deeper than they did: `> p` alone matched
+ * nothing once the state lines moved inside `#diagnostics-state`, and all eleven of them lost their
+ * margin at the same moment.
+ */
+.diagnostics-window > p, .diagnostics-window > div > p, .diagnostics-window #world-objects { margin: 8px 12px; }
+.diagnostics-window #diagnostics-tabs { margin: 8px 12px 0; }
+.diagnostics-window #world-objects { display: grid; gap: 6px; }
+.diagnostics-window article { display: grid; gap: 2px; padding: 7px; border-radius: 5px; background: #10171ed9; font-size: .78rem; }
+.diagnostics-window article span { color: #aab6c2; }
+.diagnostics-window #custom-packet-modules p, .diagnostics-window #custom-packet-warnings p { margin: 4px 12px; font-size: .78rem; }
+.custom-packet { display: grid; gap: 2px; margin: 8px 12px; padding: 7px; border-radius: 5px; background: #10171ed9; font-size: .78rem; }
+.custom-packet p { margin: 0; }
+.custom-packet-title { color: #d8e2ec; }
+/* A decoded value and a hex dump are both long and both read a character at a time. */
+.custom-packet-body { font-family: ui-monospace, Consolas, "Courier New", monospace; word-break: break-all; color: #aab6c2; }
+.custom-packet-unclaimed .custom-packet-title { color: #e6ce7b; }
+.custom-packet-error .custom-packet-body { color: #f0a0a0; }
+
+/* Two rules left over from a sheet that no longer exists.
+
+   The sheet used to be a flat list of stat lines, and two columns of them was right. Slice П3 made
+   it sections — «Общее», «Характеристики», «Бой», «Сопротивления», «Репутация» — and the grid
+   started laying out the *sections* two across instead: five of them in two columns leaves a hole
+   under the last one, and because a grid item stretches by default a short section was pulled to
+   the height of whatever sat beside it, with its own rows floating in the gap. Sections stack now.
+
+   And `.character-stats span` gave a dark pill to every span inside, which after П3 means both
+   halves of every `.ui-line` — a label and its value, read as two unrelated tablets pushed to
+   opposite edges by the line's own `space-between`. Worse, at (0,1,1) it outranks
+   `.ui-line-label` at (0,1,0), so the label lost its muted colour and label and value came out
+   identical. The plate belongs to the section, not to every span in it. */
+.character-stats { display: flex; flex-direction: column; gap: 10px; margin: 12px; }
+.sheet-section { padding: 8px 10px; border-radius: 6px; background: #0e1114aa; }
+.equipment-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; padding: 0 12px 14px; }
+.inventory-money { padding: 10px 12px 0; color: #efcf67; text-align: right; }
+.inventory-slots { display: grid; gap: 10px; padding: 12px; }
+.bag-section h4 { margin: 0 0 5px; color: #d9c77f; font-size: .78rem; }
+.bag-grid { display: grid; grid-template-columns: repeat(8, minmax(36px, 1fr)); gap: 5px; }
+
+.item-slot {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 46px;
+  padding: 3px;
+  color: #c8c0ac;
+  border: 2px solid #4d4b43;
+  border-radius: 5px;
+  background: radial-gradient(circle, #30343a, #101316 75%);
+}
+.equipment-slots .item-slot { align-items: center; gap: 8px; }
+.item-slot .item-icon { position: relative; display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; color: #8d8a80; border-radius: 3px; background: #080a0c; }
+.item-slot .item-icon img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 3px; }
+.item-slot .slot-label { overflow: hidden; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.item-slot .stack-count { position: absolute; right: 3px; bottom: 1px; color: #fff; font-size: .72rem; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.quality-0 { border-color: #777; }
+.quality-1 { border-color: #eee; }
+.quality-2 { border-color: #37c95a; }
+.quality-3 { border-color: #318cec; }
+.quality-4 { border-color: #a64ee8; }
+.quality-5, .quality-6, .quality-7 { border-color: #e9902c; }
+
+#spell-status { margin: 10px 12px 0; color: #e6d8ad; font-size: .76rem; text-align: center; }
+.spell-button {
+  position: relative;
+  display: block;
+  width: 52px;
+  min-width: 52px;
+  height: 52px;
+  min-height: 52px;
+  padding: 2px;
+  overflow: hidden;
+  color: #fff;
+  border: 2px solid #6f674f;
+  border-radius: 5px;
+  background: #090b0c;
+}
+.spell-icon { position: absolute; inset: 2px; overflow: hidden; border-radius: 2px; background: #26343e; }
+.spell-icon img { width: 100%; height: 100%; object-fit: cover; }
+.spell-label { display: none; }
+.spell-button small { position: absolute; z-index: 3; top: 0; right: 3px; color: #f7e7a2; font-size: .65rem; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.spell-cooldown { position: absolute; z-index: 2; inset: 2px; display: grid; place-items: center; color: #fff; border-radius: 2px; background: conic-gradient(#05080bd0 var(--sweep, 0deg), transparent 0); font-size: .82rem; font-variant-numeric: tabular-nums; text-shadow: 1px 1px #000; }
+.spell-cooldown[hidden] { display: none; }
+.spell-button.cooling .spell-icon img { filter: grayscale(.55) brightness(.38); }
+/*
+ * K1: the whole book is one scrolling list, and the pager is gone.
+ *
+ * The window is a flex column that stops growing at the `.game-window` ceiling of 72vh, and only
+ * the list scrolls inside it — so the status line, the search box and the tab strip stay on screen
+ * where a page footer used to send the player back and forth twelve spells at a time.
+ */
+.spellbook-window { display: flex; overflow: hidden; flex-direction: column; }
+.spellbook-controls { display: flex; align-items: center; gap: 10px; padding: 8px 12px 0; color: #e6d8ad; font-size: .76rem; }
+.spellbook-controls input[type="search"] { flex: 1; min-width: 0; min-height: 30px; padding: 0 8px; color: #f1e6c2; border: 1px solid #79663d; border-radius: 4px; background: #1b1913; }
+.spellbook-controls label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.spellbook-list { display: grid; overflow-y: auto; min-height: 0; flex: 1; grid-template-columns: repeat(2, 1fr); align-content: start; gap: 6px; padding: 12px; }
+.spellbook-list .spell-button { display: grid; width: 100%; height: 48px; grid-template-columns: 42px 1fr; align-items: center; text-align: left; }
+.spellbook-list .spell-icon { inset: 3px auto 3px 3px; width: 40px; }
+.spellbook-list .spell-cooldown { inset: 3px auto 3px 3px; width: 40px; }
+.spellbook-list .spell-label { display: block; grid-column: 2; overflow: hidden; padding: 0 7px; color: #eee4c9; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.gossip-text { min-height: 62px; margin: 0; padding: 14px; color: #efe2b9; white-space: pre-line; }
+.gossip-options, .gossip-quests { display: grid; gap: 6px; padding: 0 12px 12px; }
+.gossip-option, .gossip-quest { min-height: 38px; padding: 7px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
+.gossip-quest { color: #ffd85b; border-color: #78662d; }
+.quest-scroll { max-height: calc(100vh - 230px); overflow: auto; padding: 4px 14px 14px; }
+.quest-scroll h4 { margin: 12px 0 6px; color: #d9c77f; }
+.quest-body, .quest-objectives { color: #e9dfc2; white-space: pre-line; }
+.quest-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.quest-item { display: flex; min-height: 46px; align-items: center; gap: 8px; padding: 4px; color: #e6dcc0; border: 2px solid #706b5b; border-radius: 5px; background: #111417; text-align: left; }
+.quest-item img { width: 36px; height: 36px; object-fit: cover; border-radius: 3px; }
+.quest-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid #625433; background: #171714f5; }
+.quest-actions button { min-height: 36px; padding: 0 14px; color: #ead58c; border-color: #79663d; background: #26231c; }
+
+.controls {
+  position: absolute;
+  z-index: 3;
+  bottom: 83px;
+  left: 50%;
+  margin: 0;
+  padding: 4px 10px;
+  transform: translateX(-50%);
+  color: #d6ceb7aa;
+  border-radius: 5px;
+  background: #06090b88;
+  font-size: .7rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.creature-icon { width: 38px; height: 38px; border: 1px solid #6f8291; border-radius: 50%; object-fit: cover; }
+
+@media (max-width: 760px) {
+  .left-rail, .target-rail { width: 46vw; }
+  .target-rail { left: auto; right: 12px; }
+  .left-rail { left: 12px; }
+  .unit-frame > img, .unit-frame > canvas.portrait-canvas { width: 46px; height: 46px; }
+  #game-buttons { right: 8px; }
+  .bag-bar { right: 8px; }
+  /* Below the target frame, which takes the top-right corner once the screen narrows. */
+  .right-rail { right: calc(8px + var(--side-bars-width)); width: 130px; }
+  /* Two twelve-button columns and a 130px rail do not both fit across a 760px screen. */
+  :root { --side-bar-slot: 26px; }
+  .minimap { width: 124px; }
+  #minimap-canvas { width: 116px; height: 116px; }
+  .boss-frames, .arena-frames { width: 124px; }
+  .bag-grid { grid-template-columns: repeat(6, minmax(36px, 1fr)); }
+  .controls { display: none; }
+}
+
+#loot-items { display: grid; gap: 6px; padding: 0 12px 12px; }
+.loot-slot { min-height: 34px; padding: 6px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
+.loot-slot:disabled, .loot-slot[aria-disabled="true"] { color: #8a7f66; background: #1b1813; cursor: default; }
+#loot-money { margin: 0 12px 8px; color: #f0d98a; border-color: #7a6a3f; background: #2a2418; }
+#death-window p { padding: 0 12px 8px; }
+#death-window button { margin-right: 8px; }
+
+#vendor-items, #trainer-spells { display: grid; gap: 6px; padding: 0 12px 12px; }
+.vendor-item, .trainer-spell { min-height: 34px; padding: 6px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
+.vendor-item:disabled, .trainer-spell:disabled,
+.vendor-item[aria-disabled="true"] { color: #8a7f66; background: #1b1813; cursor: default; }
+
+/* The loot row and the shelf row carry the item's picture and its quality now. Two classes deep
+   because `.quality-*` above is one, and `.loot-slot` is written after it: on equal specificity
+   the later rule wins, and the row's own brown border would have taken every colour back. */
+.loot-slot, .vendor-item { display: flex; align-items: center; gap: 8px; }
+.loot-slot-icon, .vendor-item-icon { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 3px; object-fit: cover; }
+.loot-slot.quality-0, .vendor-item.quality-0, .trade-item.quality-0 { border-color: #777; }
+.loot-slot.quality-1, .vendor-item.quality-1, .trade-item.quality-1 { border-color: #eee; }
+.loot-slot.quality-2, .vendor-item.quality-2, .trade-item.quality-2 { border-color: #37c95a; }
+.loot-slot.quality-3, .vendor-item.quality-3, .trade-item.quality-3 { border-color: #318cec; }
+.loot-slot.quality-4, .vendor-item.quality-4, .trade-item.quality-4 { border-color: #a64ee8; }
+.loot-slot.quality-5, .vendor-item.quality-5, .trade-item.quality-5,
+.loot-slot.quality-6, .vendor-item.quality-6, .trade-item.quality-6,
+.loot-slot.quality-7, .vendor-item.quality-7, .trade-item.quality-7 { border-color: #e9902c; }
+#merchant-message, #trainer-message, #trainer-greeting { padding: 0 12px 8px; }
+
+.item-slot { position: relative; }
+/* Positioned from script and put on the body: a game window is `overflow: auto`, and a menu
+   inside one is clipped by it. Above the tooltip for the same reason.
+
+   And above `#world-panel`, which is the whole point of the number. The world panel is
+   `position: fixed; z-index: 100; inset: 0` with an opaque background, and both it and these
+   overlays sit in the root stacking context — `main` and `body` create none — so 45 against 100
+   is compared directly and 45 loses. The menu was in the DOM, painted over by a solid rectangle,
+   and the hit test at those coordinates went to whatever was inside the world panel. Clicking an
+   item did nothing; clicking again dismissed a menu nobody could see. That is why items could not
+   be used at all: the "Использовать" entry works, and there was no way to reach it. */
+.item-menu { position: fixed; z-index: 210; display: grid; gap: 2px; min-width: 140px; padding: 6px; border: 1px solid #6f603c; border-radius: 6px; background: #16130e; box-shadow: 0 6px 18px #000a; }
+.item-menu strong { padding: 2px 4px 4px; color: #ead58c; font-size: 12px; }
+.item-menu button { padding: 5px 8px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
+.item-prompt { min-width: 190px; }
+.item-prompt-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; color: #cfc3a0; font-size: 12px; }
+.item-prompt-field input, .item-prompt-field select { width: 96px; padding: 3px 5px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: 12px; }
+.item-prompt-actions { display: flex; gap: 4px; margin-top: 4px; }
+.item-prompt-actions button { flex: 1 1 0; text-align: center; }
+.item-prompt-cancel { color: #c6bda4; }
+#inventory-message { padding: 0 12px 8px; }
+.item-slot[draggable="true"] { cursor: grab; }
+.item-slot[role="button"] { cursor: pointer; }
+.item-slot:focus-visible { outline: 2px solid #ead58c; outline-offset: 1px; }
+
+/* Slice I7: the minimap, its clock and the zone under the character. */
+.minimap {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  width: 168px;
+  pointer-events: none;
+}
+.minimap > * { pointer-events: auto; }
+/* The three lines around the circle stand on the world, not on a panel: the right rail has no
+   background of its own, so at any ordinary camera pitch they are written on sky. A shadow is not
+   contrast — measured against the four authored sky bands, the clock reached 1.02:1 and the
+   subzone 1.10:1 — so they carry their own plate. */
+.minimap-clock { padding: 2px 6px; border-radius: 4px; background: #0c0a08cc; color: #e0d4ac; font-size: .72rem; text-shadow: 0 1px 2px #000; }
+#minimap-canvas { width: 160px; height: 160px; cursor: crosshair; border-radius: 50%; background: #0b1014; box-shadow: 0 3px 12px #000a; }
+/* Below the circle, not on it: the rim is where `clampToCircle` parks anything to the south. */
+.minimap-controls { display: flex; gap: 4px; }
+.minimap-button { width: 22px; height: 22px; padding: 0; color: #e6ce7b; border: 1px solid #756037; border-radius: 50%; background: #14110bd9; font-size: .78rem; line-height: 1; }
+.minimap-button:disabled { color: #7a704f; opacity: .55; }
+.minimap-button.is-active { color: #14110b; border-color: #e6ce7b; background: #e6ce7b; }
+.minimap-zone { max-width: 168px; padding: 2px 6px; overflow: hidden; border-radius: 4px; background: #0c0a08cc; color: #ead58c; font-size: .82rem; text-align: center; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; white-space: nowrap; }
+.minimap-subzone { max-width: 168px; padding: 2px 6px; overflow: hidden; border-radius: 4px; background: #0c0a08cc; color: #cfc2a0; font-size: .72rem; text-align: center; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; white-space: nowrap; }
+
+.tracking-menu { top: 200px; right: 200px; width: min(260px, calc(100vw - 32px)); }
+.tracking-list { display: grid; gap: 5px; padding: 10px 12px 12px; }
+.tracking-row { display: flex; align-items: center; gap: 8px; padding: 3px; border: 1px solid transparent; border-radius: 5px; color: #d7cfb4; font-size: .78rem; }
+.tracking-row.is-active { border-color: #e6ce7b; background: #2a2418; color: #ead58c; }
+.tracking-row .ui-icon-button { width: 28px; height: 28px; flex: 0 0 auto; }
+.tracking-off { padding: 5px 8px; color: #ead58c; border-color: #6f603c; background: #242018; font-size: .76rem; }
+.tracking-list p.muted { margin: 0; }
+
+.world-map { top: 60px; left: 50%; width: min(1040px, calc(100vw - 32px)); max-height: 84vh; transform: translateX(-50%); }
+.world-map-bar { display: flex; gap: 6px; padding: 10px 12px 6px; }
+.world-map-picker { flex: 1 1 auto; min-width: 0; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .78rem; }
+.world-map-bar button { padding: 4px 9px; color: #ead58c; border-color: #6f603c; background: #242018; font-size: .76rem; }
+.world-map-canvas { display: block; width: calc(100% - 24px); margin: 0 12px; border: 1px solid #6f603c; border-radius: 4px; background: #120f0a; }
+.world-map-status { margin: 6px 12px 12px; font-size: .76rem; }
+
+/* Slice I6: the bag bar, the bags' own windows, the keyring and the bank. */
+.bag-bar { position: absolute; z-index: 4; right: calc(22px + var(--side-bars-width)); bottom: 72px; display: flex; gap: 5px; }
+.bag-bar-button { position: relative; width: 38px; height: 38px; padding: 0; color: #e6ce7b; border: 2px solid #756037; border-radius: 6px; background: #14110bd9; font-size: 1rem; }
+.bag-bar-button > img { width: 100%; height: 100%; border-radius: 4px; object-fit: cover; }
+.bag-bar-free { position: absolute; right: 2px; bottom: 0; color: #fff; font-size: .64rem; font-style: normal; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.bag-window { top: auto; right: 18px; bottom: 120px; width: min(372px, calc(100vw - 32px)); }
+/* No padding of its own: `.ui-panel-body` already pads, and doubling it left the eighth
+   column outside a 320px window and every bag opening with a horizontal scrollbar. */
+.bag-window .bag-grid, .keyring-window .bag-grid { padding: 0; }
+.keyring-window { width: min(372px, calc(100vw - 32px)); }
+.bank-window { width: min(420px, calc(100vw - 32px)); left: 18px; top: 90px; }
+.bank-window .bag-grid { padding: 0; }
+.bank-bags { display: flex; gap: 5px; }
+.bank-bags .item-slot { width: 42px; min-height: 42px; }
+.bank-slot-locked { display: grid; place-items: center; color: #7d7566; border-style: dashed; }
+.bank-buy { align-self: start; padding: 6px 10px; color: #ead58c; border-color: #6f603c; background: #242018; }
+.bank-window .inventory-slots { padding: 0; }
+
+.equipment-sets { display: grid; gap: 5px; padding: 0 12px 14px; }
+.equipment-set { display: flex; align-items: center; gap: 6px; }
+.equipment-set strong { flex: 1 1 auto; overflow: hidden; color: #ead58c; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.equipment-set button { padding: 4px 7px; color: #ead58c; border-color: #6f603c; background: #242018; font-size: .72rem; }
+.equipment-set input { flex: 1 1 auto; min-width: 0; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .74rem; }
+.equipment-set p.muted { margin: 0; }
+#buyback-title { margin: 4px 12px 6px; color: #d9c77f; font-size: .78rem; }
+#buyback-items { display: grid; gap: 6px; padding: 0 12px 12px; }
+
+/* Slice I8: the chat dock. Its height is published as a custom property because two other
+   things sit on the same bottom edge — the action bar and the raid grid — and used to be given
+   their own guesses at how tall the chat was. At 1024px wide the chat covered five action
+   slots. */
+.chat-window {
+  position: absolute; z-index: 20; bottom: var(--chat-bottom); left: 12px;
+  display: grid; gap: 4px; width: min(440px, 42vw);
+}
+.chat-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.chat-tab {
+  padding: 2px 8px; border: 1px solid #3c352a; border-radius: 3px 3px 0 0; background: #0c0a08cc;
+  color: #b6ab8e; font: inherit; font-size: .72rem; cursor: pointer;
+}
+.chat-tab:hover { border-color: #6f603c; color: #ead58c; }
+.chat-tab.is-active { border-color: #e6ce7b; background: #1a160e; color: #ead58c; }
+/* An unread count on a tab the player is not looking at. Bracketed rather than coloured alone:
+   a colour is the one thing a stylesheet cannot promise every player can see. */
+.chat-tab[data-unread]::after { content: " (" attr(data-unread) ")"; color: #e6ce7b; }
+#chat-log { display: grid; gap: 2px; max-height: var(--chat-log-height); padding: 6px 8px; overflow-y: auto; border: 1px solid #3c352a; background: #0c0a08cc; font-size: 12px; line-height: 1.35; }
+#chat-log p { margin: 0; overflow-wrap: anywhere; }
+#chat-input { width: 100%; padding: 5px 8px; color: #ead58c; border: 1px solid #6f603c; background: #16130ecc; font-size: 12px; }
+.chat-say { color: #ffffff; }
+.chat-yell { color: #ff4040; }
+.chat-whisper { color: #ff80ff; }
+.chat-party { color: #aaaaff; }
+.chat-raid { color: #ff7f00; }
+.chat-raid-warning { color: #ff4800; font-weight: 700; }
+.chat-guild { color: #40ff40; }
+.chat-officer { color: #40c040; }
+.chat-channel { color: #ffc0c0; }
+.chat-emote { color: #ff8040; }
+.chat-achievement { color: #ffff00; }
+.chat-system { color: #ffff00; }
+.chat-other { color: #c8c0a8; }
+/* A link has to beat the per-type colour on its own paragraph, which is why this is not simply
+   `color: inherit` with a class: `#chat-log p` is an id selector and wins otherwise. The colour
+   itself is set inline, from the item's quality. */
+#chat-log a.chat-link {
+  color: inherit; text-decoration: none; cursor: pointer; border-bottom: 1px dotted currentcolor;
+}
+#chat-log a.chat-link:hover, #chat-log a.chat-link:focus-visible { border-bottom-style: solid; }
+/* The combat tab. Same vocabulary as the overlay over the world — dealt, taken, crit, avoided —
+   because they are the same lines, kept rather than dropped after the eighth. */
+#chat-log .combat-line { color: #d8cba6; }
+#chat-log .combat-line.taken { color: #e08a7a; }
+#chat-log .combat-line.crit { color: #ffd76a; font-weight: 700; }
+#chat-log .combat-line.avoided { color: #9fb0c4; }
+#chat-log .combat-line.reward { color: #9ad17a; }
+#chat-log .combat-line.muted { color: #9b917a; }
+
+/* In the left column, under the secondary frames. Its own width stays 180px — the column does
+   not stretch its children — because a party frame is a party frame at any screen size. */
+.party-frames { display: grid; gap: 4px; width: 180px; }
+.party-member { padding: 4px 6px; border: 1px solid #3c352a; background: #0c0a08cc; font-size: 12px; }
+.party-member.offline { opacity: 0.5; }
+.party-member.leader strong::before { content: "★ "; color: #f0d98a; }
+.party-member .health-track { height: 5px; margin-top: 3px; }
+.party-member button { margin-top: 3px; padding: 2px 6px; font-size: 11px; }
+#group-invite p { padding: 0 12px 8px; }
+#group-invite button { margin-right: 8px; }
+
+#trade-mine, #trade-theirs { display: grid; gap: 4px; min-height: 26px; padding: 0 12px 8px; }
+#trade-window h4 { margin: 4px 0 4px; padding: 0 12px; color: #ead58c; font-size: 12px; }
+#trade-window p { padding: 0 12px 8px; }
+#trade-window button { margin-right: 8px; }
+#trade-gold { width: 96px; margin-left: 6px; }
+.trade-item { padding: 4px 8px; border: 1px solid #3c352a; background: #16130e; font-size: 12px; }
+.trade-accepted { color: #40ff40; }
+#duel-window p { padding: 0 12px 8px; }
+#duel-window button { margin-right: 8px; }
+
+.mail-window { max-height: 70vh; overflow-y: auto; }
+#mail-list { display: grid; gap: 6px; padding: 0 12px 8px; }
+.mail-entry { padding: 6px 8px; border: 1px solid #3c352a; background: #16130e; font-size: 12px; }
+.mail-entry.unread { border-color: #8a7742; }
+.mail-entry strong { display: block; color: #ead58c; }
+.mail-entry .mail-meta { color: #a89a7c; }
+.mail-entry button { margin: 4px 6px 0 0; padding: 2px 6px; font-size: 11px; }
+#mail-compose { padding: 0 12px 10px; }
+#mail-compose summary { color: #ead58c; cursor: pointer; font-size: 12px; }
+#mail-compose input, #mail-compose textarea { width: 100%; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#mail-compose p { padding: 4px 0 0; }
+#mail-money { width: 100px; }
+#mail-message { padding: 0 12px 6px; }
+
+#guild-roster { display: grid; gap: 3px; padding: 0 12px 10px; }
+.guild-member { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border: 1px solid #2c261d; background: #16130e; font-size: 12px; }
+.guild-member.offline { opacity: 0.55; }
+.guild-member strong { color: #ead58c; }
+.guild-member .guild-meta { color: #a89a7c; }
+#guild-message, #guild-motd { padding: 0 12px 6px; }
+#guild-invite p { padding: 0 12px 8px; }
+#guild-invite button { margin-right: 8px; }
+
+#auction-list { display: grid; gap: 4px; padding: 0 12px 10px; }
+.auction-entry { padding: 5px 8px; border: 1px solid #3c352a; background: #16130e; font-size: 12px; }
+.auction-entry strong { color: #ead58c; }
+.auction-entry .auction-meta { display: block; color: #a89a7c; }
+.auction-entry button { margin: 4px 6px 0 0; padding: 2px 6px; font-size: 11px; }
+#auction-window p, #lfg-window p { padding: 0 12px 8px; }
+#auction-search, #lfg-dungeons { width: 190px; margin-right: 6px; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#lfg-window label { margin-right: 10px; color: #ead58c; font-size: 12px; }
+#lfg-proposal { padding-bottom: 4px; border-bottom: 1px solid #3c352a; }
+
+/* Combat feedback. The swing warning is sticky, because the server says "out of range" once and
+   never says it is resolved; only a landed swing clears it. */
+.swing-warning {
+  position: relative;
+  z-index: 4;
+  margin: 0;
+  padding: 3px 9px;
+  border: 1px solid #8a5a2b;
+  background: #2a1a0dcc;
+  color: #f0b869;
+  font-size: 12px;
+}
+.combat-log {
+  display: grid;
+  width: min(300px, 34vw);
+  gap: 1px;
+  pointer-events: none;
+}
+.combat-log span {
+  padding: 1px 7px;
+  background: #0c0a07a8;
+  color: #d8cba6;
+  font-size: 12px;
+  text-shadow: 1px 1px 2px #000;
+}
+.combat-log .dealt { color: #d8cba6; }
+.combat-log .taken { color: #e08a7a; }
+.combat-log .crit { color: #ffd76a; font-weight: 700; }
+.combat-log .avoided { color: #9fb0c4; }
+.combat-log .reward { color: #9ad17a; }
+/* Announcements — a level, a discovery, a quest handed in — read as a banner rather than as one
+   more hit. Without a rule of their own they were the same grey as «Кабан: 47». */
+.combat-log .muted { color: #b3a98d; font-style: italic; }
+
+/* Slice I8: the layer over the world that holds speech bubbles and rising damage numbers.
+   `pointer-events: none` throughout, because #world-canvas below it owns click-to-target and the
+   camera drag, and z-index 2 with a later position in the markup puts it over both canvases and
+   under every frame and window. */
+.head-overlay { position: absolute; z-index: 2; inset: 0; overflow: hidden; pointer-events: none; }
+.head-overlay > * { position: absolute; top: 0; left: 0; will-change: transform; }
+.chat-bubble {
+  max-width: 260px; padding: 4px 9px; border: 1px solid #6f603c; border-radius: 9px;
+  background: #12100acc; color: #f2ead7; font-size: 12px; line-height: 1.3; text-align: center;
+  text-shadow: 0 1px 2px #000;
+}
+.chat-bubble.chat-yell { border-color: #ff4040; color: #ffd0d0; }
+.chat-bubble.chat-emote { border-color: #ff8040; color: #ffd9c0; }
+.combat-float {
+  font-size: 15px; font-weight: 700; color: #f0e2b8; text-shadow: 0 1px 3px #000, 0 0 6px #000;
+  font-variant-numeric: tabular-nums;
+}
+.combat-float.is-crit { font-size: 21px; }
+.combat-float[data-kind="damage"] { color: #ffdd6a; }
+.combat-float[data-kind="taken"] { color: #ff6a5a; }
+.combat-float[data-kind="heal"] { color: #7fe08a; }
+.combat-float[data-kind="power"] { color: #6fd0f2; }
+.combat-float[data-kind="miss"] { color: #b9c6d4; font-size: 13px; font-weight: 500; }
+
+/* Slice I9's shared pieces: the floating menu, the confirmation and the tab strip. All three
+   were hand-rolled two or three times before four more windows wanted them. The menu and the
+   confirmation live on the body beside the item menu, because every game window is
+   `overflow: auto` and would clip them — and above the world panel's 100, or they are painted
+   over by it and cannot be clicked. */
+.ui-menu {
+  position: fixed; z-index: 210; display: grid; gap: 2px; min-width: 160px; max-width: min(320px, 92vw);
+  padding: 6px; border: 1px solid #6f603c; border-radius: 6px; background: #16130e;
+  box-shadow: 0 6px 18px #000a;
+}
+.ui-menu > strong { padding: 2px 4px 4px; color: #ead58c; font-size: 12px; }
+.ui-menu > button {
+  min-height: 0; padding: 5px 8px; color: #ead58c; border-color: #6f603c; background: #242018;
+  text-align: left; font-size: .78rem;
+}
+.ui-menu > button:hover:not(:disabled), .ui-menu > button:focus-visible { border-color: #e6ce7b; color: #fff0bb; }
+.ui-menu > button:disabled { color: #8a8270; background: #1b1813; cursor: default; }
+.ui-menu-danger { color: #f0a08c !important; border-color: #8a4a3a !important; }
+.ui-confirm > p { margin: 0; padding: 0 4px; color: #d6cbaa; font-size: .78rem; line-height: 1.35; }
+.ui-confirm-actions { display: flex; gap: 6px; margin-top: 6px; }
+.ui-confirm-actions > button { flex: 1 1 auto; min-height: 0; padding: 5px 8px; font-size: .78rem; }
+
+.ui-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.ui-tab {
+  min-height: 0; padding: 3px 9px; border: 1px solid #24405e; border-radius: 3px; background: #0d1a2b;
+  color: #cfe0f2; font: inherit; font-size: .76rem; cursor: pointer;
+}
+.ui-tab:hover, .ui-tab:focus-visible { border-color: #3d6a9c; }
+.ui-tab.is-active { border-color: #ffd479; color: #ffd479; }
+.ui-tab[data-badge]::after { content: " (" attr(data-badge) ")"; color: #e6ce7b; }
+
+/* Slice I9's windows. Each gets its own first placement: a runtime panel with no rule of its own
+   inherits `.game-window`'s top and no left, and every one of them lands in the same corner. */
+.ready-check { top: 140px; left: 50%; width: 260px; }
+.guild-bank { top: 80px; left: 320px; width: min(680px, calc(100vw - 32px)); }
+.calendar-window { top: 70px; left: 300px; width: min(560px, calc(100vw - 32px)); }
+.social-window { top: 110px; left: 420px; width: min(380px, calc(100vw - 32px)); }
+.scoreboard { top: 70px; left: 220px; width: min(760px, calc(100vw - 32px)); }
+.arena-window { top: 100px; left: 380px; width: min(440px, calc(100vw - 32px)); }
+
+/* The loot roll dialogs, stacked over the middle of the world where the original client puts
+   them. Not draggable and not remembered: they last sixty seconds. */
+.loot-rolls {
+  position: absolute; z-index: 21; top: 120px; left: 50%; display: grid; gap: 6px; width: 260px;
+  transform: translateX(-50%);
+}
+.loot-roll {
+  display: grid; gap: 5px; padding: 7px 9px; border: 1px solid #6d5a34; border-radius: 6px;
+  background: #12100acc; box-shadow: 0 4px 14px #0008;
+}
+.loot-roll-header { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.loot-roll-header > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
+.loot-roll-timer { color: #e6ce7b; font-size: .74rem; font-variant-numeric: tabular-nums; }
+.loot-roll-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.loot-roll-actions > button { flex: 1 1 auto; min-height: 0; padding: 4px 6px; font-size: .74rem; }
+.loot-roll-votes { margin: 0; color: #a89a7c; font-size: .72rem; }
+.loot-master-row { display: flex; gap: 5px; align-items: center; font-size: .76rem; }
+.loot-master-row > span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loot-master-row select { min-height: 0; max-width: 110px; padding: 2px 4px; font-size: .72rem; }
+.loot-master-row button { min-height: 0; padding: 3px 6px; font-size: .72rem; }
+
+.ready-check-actions { display: flex; gap: 6px; }
+.ready-check-actions > button { flex: 1 1 auto; min-height: 0; padding: 4px 8px; font-size: .78rem; }
+.ready-check-answers { display: grid; gap: 2px; max-height: 220px; overflow-y: auto; }
+.ready-check-row { display: flex; justify-content: space-between; gap: 8px; font-size: .78rem; }
+.ready-yes { color: #7fd48a; }
+.ready-no { color: #e07d6a; }
+
+/* Leader, assistant and the two tank flags, in front of the name on a unit frame. */
+.ui-unit-role { font-style: normal; font-size: .74rem; color: #ffd479; }
+.ui-unit-frame.is-ready { box-shadow: inset 2px 0 0 #7fd48a; }
+.ui-unit-frame.is-not-ready { box-shadow: inset 2px 0 0 #e07d6a; }
+
+.guild-rank { display: grid; gap: 2px; padding: 5px 0; border-bottom: 1px solid #6d5a3455; }
+.guild-log-line { margin: 0; padding: 2px 0; color: #c8bd9d; font-size: .76rem; }
+
+.guild-bank-grid { --ui-slot-size: 34px; gap: 2px; }
+.guild-bank-log { display: grid; gap: 2px; max-height: 260px; overflow-y: auto; }
+.guild-bank-log > p { margin: 0; color: #c8bd9d; font-size: .76rem; }
+.guild-bank-money { margin: 4px 0 0; color: #e6ce7b; font-size: .78rem; }
+.guild-bank-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.guild-bank-actions > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+
+.social-form { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.social-form input { min-height: 0; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .76rem; }
+.social-form button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+.social-list { display: grid; gap: 3px; max-height: 320px; overflow-y: auto; }
+.social-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid #6d5a3433; }
+.social-row > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
+.social-meta { color: #a89a7c; font-size: .74rem; text-align: right; }
+.social-row button { min-height: 0; padding: 2px 6px; font-size: .72rem; }
+
+.scoreboard-table { display: grid; gap: 1px; overflow-x: auto; }
+.scoreboard-team { margin-top: 6px; color: #e6ce7b; font-size: .82rem; }
+.scoreboard-row {
+  display: grid; gap: 4px; padding: 2px 0;
+  grid-template-columns: minmax(110px, 1.6fr) repeat(calc(var(--scoreboard-columns, 6) - 1), minmax(56px, 1fr));
+  font-size: .76rem; font-variant-numeric: tabular-nums;
+}
+.scoreboard-head { color: #8fa6bd; border-bottom: 1px solid #6d5a3455; }
+.scoreboard-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.scoreboard-name { text-align: left !important; color: #ead58c; }
+
+.arena-team { display: grid; gap: 3px; padding: 6px 0; border-bottom: 1px solid #6d5a3455; }
+.arena-meta { color: #a89a7c; font-size: .74rem; }
+.arena-member { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; font-size: .78rem; }
+.arena-member.offline { opacity: .6; }
+.arena-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.arena-actions > button, .arena-invite button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+.arena-invite { display: grid; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid #6d5a3455; }
+.arena-invite > p { margin: 0; font-size: .8rem; }
+
+.calendar-header { display: flex; gap: 8px; align-items: center; justify-content: center; }
+.calendar-header > button { min-height: 0; padding: 2px 8px; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.calendar-weekday { padding: 2px; color: #8fa6bd; font-size: .72rem; text-align: center; }
+.calendar-day { min-height: 46px; padding: 2px; border: 1px solid #3c352a; background: #0f0d09; }
+.calendar-blank { border-color: transparent; background: transparent; }
+.calendar-number { color: #a89a7c; font-size: .7rem; }
+.calendar-event {
+  display: block; width: 100%; min-height: 0; margin-top: 2px; padding: 1px 3px; overflow: hidden;
+  border: 0; border-radius: 2px; background: #2a2418; color: #ead58c; font-size: .68rem;
+  text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.calendar-detail { display: grid; gap: 4px; margin-top: 8px; }
+.calendar-detail > p { margin: 0; font-size: .78rem; }
+.calendar-answers { display: flex; flex-wrap: wrap; gap: 5px; }
+.calendar-answers > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+.calendar-invites { display: grid; gap: 2px; max-height: 180px; overflow-y: auto; font-size: .76rem; }
+.calendar-invites > div { display: flex; justify-content: space-between; gap: 8px; }
+.calendar-lockouts { margin-top: 8px; }
+.calendar-lockouts > p { margin: 0; font-size: .74rem; }
+
+/* Slice I10. The curtain, the one place errors are shown, the pet and vehicle bar, and the two
+   windows the system slice adds. */
+
+/* Over everything inside the world panel, which is itself z-index 100 over the login screen. */
+.loading-screen {
+  position: absolute; z-index: 60; inset: 0; display: flex; gap: 14px;
+  flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 40%, #1d2b3a, #0a0f14 70%);
+}
+.loading-screen > strong { color: #ead58c; font-size: 1.1rem; letter-spacing: .02em; }
+.loading-screen > p { margin: 0; color: #9d9584; font-size: .84rem; }
+.loading-hint { max-width: 420px; text-align: center; }
+.loading-bar { overflow: hidden; width: min(320px, 60vw); height: 4px; border-radius: 2px; background: #1d2730; }
+.loading-bar > i { display: block; width: 40%; height: 100%; background: linear-gradient(90deg, #6d5a34, #e6ce7b); animation: loading-slide 1.4s ease-in-out infinite; }
+@keyframes loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* The one surface every refusal reaches. Over the middle of the world, where the original client
+   puts it and where a player watching a fight is already looking. */
+.notices {
+  position: absolute; z-index: 22; top: 34%; left: 50%; display: grid; gap: 3px;
+  width: min(420px, 70vw); transform: translateX(-50%); pointer-events: none; text-align: center;
+}
+.notice { margin: 0; font-size: .86rem; text-shadow: 0 1px 3px #000, 0 0 8px #000; }
+.notice-error { color: #ff6a5a; }
+.notice-info { color: #e6ce7b; }
+.notice-success { color: #7fd48a; }
+
+/* The pet bar, and the vehicle bar, which are the same packet and the same widget. */
+.pet-bar {
+  position: absolute; z-index: 6; bottom: calc(var(--action-bar-height) + 74px); left: 50%;
+  display: grid; gap: 4px; justify-items: center; transform: translateX(-50%);
+}
+.pet-bar-row { display: flex; gap: 3px; padding: 4px 5px; border: 1px solid #4a5a6d; border-radius: 7px; background: #0b0d0fcc; }
+.pet-bar.is-vehicle .pet-bar-row { border-color: #8a6a34; }
+.pet-bar .ui-icon-button { width: 32px; height: 32px; }
+.pet-bar .ui-icon-button > span { font-size: .62rem; color: #b6a878; }
+.pet-bar-exit { display: flex; gap: 4px; }
+.pet-bar-exit > button { min-height: 0; padding: 2px 8px; font-size: .72rem; }
+
+.settings-window { top: 90px; left: 400px; width: min(400px, calc(100vw - 32px)); }
+.settings-window h4 { margin: 10px 0 2px; color: #d9c77f; font-size: .78rem; }
+.settings-window h4:first-child { margin-top: 0; }
+.setting-row { padding: 3px 0; }
+.setting-label { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: .82rem; }
+.setting-label input[type="checkbox"] { order: 2; width: 16px; height: 16px; min-height: 0; }
+.setting-label input[type="number"] { width: 80px; min-height: 0; padding: 3px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .78rem; }
+.setting-hint { margin: 1px 0 0; font-size: .72rem; }
+
+.macro-window { top: 80px; left: 360px; width: min(420px, calc(100vw - 32px)); }
+.macro-grid { display: grid; gap: 3px; margin-bottom: 8px; }
+.macro-slot {
+  min-height: 0; height: 34px; padding: 2px; overflow: hidden; border: 1px solid #4a5a6d;
+  border-radius: 4px; background: #131a22; color: #cfe0f2; font-size: .68rem; cursor: pointer;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.macro-slot.macro-empty { border-style: dashed; color: #5f6b78; }
+.macro-slot.is-active { border-color: #ffd479; color: #ffd479; }
+.macro-editor { display: grid; gap: 5px; }
+.macro-editor input, .macro-editor textarea {
+  width: 100%; min-height: 0; padding: 5px 7px; color: #ead58c; border: 1px solid #6f603c;
+  background: #16130e; font: inherit; font-size: .8rem; resize: vertical;
+}
+.macro-editor > p { margin: 0; font-size: .74rem; }
+.macro-problems { color: #e0a06a; }
+.macro-actions { display: flex; gap: 6px; }
+.macro-actions > button { flex: 1 1 auto; min-height: 0; padding: 5px 8px; font-size: .78rem; }
+
+/* A timestamp in front of a chat line, when the setting asks for one. */
+.chat-time { color: #7f7867; font-variant-numeric: tabular-nums; }
+
+/* --- Widget kit (src/browser/ui/Widgets.ts) --------------------------------------------------
+   One idea of what a bar, a slot and a tooltip look like, so that the panels still to be written
+   do not each invent their own. Everything here is named ui-*. */
+.ui-panel-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
+.ui-line { display: flex; justify-content: space-between; gap: 10px; font-size: .82rem; }
+.ui-line-label { color: #9d9584; }
+
+.ui-bar { position: relative; height: 12px; overflow: hidden; border-radius: 6px; background: #120f0a; box-shadow: inset 0 0 0 1px #00000080; }
+.ui-bar > span { display: block; width: 0; height: 100%; background: linear-gradient(#3d9ee8, #1757a3); transition: width 120ms linear; }
+.ui-bar > em { position: absolute; inset: 0; display: grid; place-items: center; font-size: .68rem; line-height: 1; font-style: normal; color: #f2e7cd; text-shadow: 0 1px 2px #000; }
+/* The floor for a bar with a number in it, and the reason `Bar` puts a class on itself: every
+   window that wanted a thinner track — the skills list at 8px, the party frames at 9px, the raid
+   grid at 6px — was overriding a height without knowing whether anything was written inside. Where
+   nothing is, the thin track stands; where something is, this holds the type off the bottom edge. */
+.ui-bar-text { min-height: 12px; }
+.ui-bar-health > span { background: linear-gradient(#46d368, #177733); }
+.ui-bar-experience > span { background: linear-gradient(#a55bd8, #5b2b86); }
+.ui-bar-cast > span { background: linear-gradient(#f2d16a, #a8791c); }
+/* Power colours, in the order UNIT_FIELD_POWER1 runs. */
+.ui-bar > span[data-variant="1"] { background: linear-gradient(#e0674a, #a3341c); }
+.ui-bar > span[data-variant="2"] { background: linear-gradient(#b7d34a, #7d9420); }
+.ui-bar > span[data-variant="3"] { background: linear-gradient(#f2e05a, #b8a41c); }
+.ui-bar > span[data-variant="4"] { background: linear-gradient(#8fd34a, #4f9420); }
+.ui-bar > span[data-variant="5"] { background: linear-gradient(#9a9ea6, #5c6068); }
+.ui-bar > span[data-variant="6"] { background: linear-gradient(#4ad7d3, #1c8f8b); }
+
+.ui-slots { display: grid; grid-template-columns: repeat(auto-fill, var(--ui-slot-size, 38px)); gap: 5px; }
+.ui-slot { position: relative; width: var(--ui-slot-size, 38px); height: var(--ui-slot-size, 38px); padding: 0; border: 1px solid #6d5a34; border-radius: 5px; background: #16130d; }
+.ui-slot > img { width: 100%; height: 100%; border-radius: 4px; object-fit: cover; }
+.ui-slot-empty { border-style: dashed; opacity: .55; }
+.ui-slot-label { font-size: .7rem; color: #d9c77f; }
+.ui-slot-count { position: absolute; right: 2px; bottom: 1px; font-size: .66rem; font-style: normal; color: #fff; text-shadow: 0 1px 2px #000; }
+.ui-slot[data-quality="2"] { border-color: #1eff00; }
+.ui-slot[data-quality="3"] { border-color: #0070dd; }
+.ui-slot[data-quality="4"] { border-color: #a335ee; }
+.ui-slot[data-quality="5"] { border-color: #ff8000; }
+
+.ui-icon-button { position: relative; width: 40px; height: 40px; padding: 0; border: 1px solid #6d5a34; border-radius: 5px; background: #16130d; }
+.ui-icon-button > img { width: 100%; height: 100%; border-radius: 4px; }
+.ui-icon-sweep { position: absolute; inset: 0; pointer-events: none; border-radius: 4px; background: conic-gradient(#000000b0 var(--sweep, 0deg), transparent 0); }
+.ui-icon-cooldown { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; pointer-events: none; color: #fff; font-size: .72rem; font-variant-numeric: tabular-nums; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.ui-icon-button > .ui-icon-cooldown { color: #fff; font-size: .72rem; }
+.ui-icon-cooldown[hidden] { display: none; }
+/* On the button, not on its image: a slot showing a key letter rather than an icon was
+   never greyed at all, so an empty-looking slot and an unusable one looked the same. */
+.ui-on-cooldown { filter: grayscale(.6); }
+.ui-unusable { filter: grayscale(1) brightness(.55); }
+.ui-on-cooldown .ui-icon-sweep, .ui-unusable .ui-icon-sweep { filter: none; }
+
+/* Under the menus and over everything else: a tooltip must not cover the menu it explains. */
+.ui-tooltip { position: fixed; z-index: 205; display: grid; gap: 2px; max-width: 300px; padding: 7px 10px; pointer-events: none; border: 1px solid #8b7445; border-radius: 6px; background: #0d0f12f5; box-shadow: 0 6px 18px #000b; font-size: .78rem; color: #e8dfc9; }
+.ui-tooltip strong { color: #ffd100; font-size: .84rem; }
+.ui-tooltip-footer { color: #9d9584; font-size: .72rem; }
+/* Item quality, the one place a colour carries meaning rather than decoration. */
+.ui-tooltip strong[data-quality="0"] { color: #9d9d9d; }
+.ui-tooltip strong[data-quality="1"] { color: #ffffff; }
+.ui-tooltip strong[data-quality="2"] { color: #1eff00; }
+/* Two of the seven are the client's own values and two of the seven fail on this background:
+   #0070dd reads 3.99:1 in a tooltip and 2.66:1 in the chat over bright sky, #a335ee 3.93 and 2.63.
+   Lightened along their own hue rather than replaced, so blue is still blue and epic still purple. */
+.ui-tooltip strong[data-quality="3"] { color: #3d9fff; }
+.ui-tooltip strong[data-quality="4"] { color: #c07bff; }
+.ui-tooltip strong[data-quality="5"] { color: #ff8000; }
+.ui-tooltip strong[data-quality="6"], .ui-tooltip strong[data-quality="7"] { color: #e6cc80; }
+/* An item tooltip is not a list of equal sentences. The five tones are the reference client's own
+   (`wowee/src/ui/item_tooltip.cpp:339` green stats, `:358` a requirement in `kPaleRed`, `:381`
+   `kCyan` spells, `:598` gold flavour), and «Требуется уровень» in red is the one line here whose
+   colour is a fact and not a decoration: it is the answer to «why can I not equip this». */
+.ui-tooltip-stat { color: #1eff00; }
+.ui-tooltip-unmet { color: #ff6b5e; }
+.ui-tooltip-spell { color: #6fe3e3; }
+.ui-tooltip-flavour { color: #ffd98c; font-style: italic; }
+.ui-tooltip-gold { color: #ffd100; }
+.ui-tooltip-muted { color: #a9a08c; }
+
+.game-menu { width: min(240px, calc(100vw - 32px)); }
+.game-menu .ui-panel-body > button { width: 100%; }
+
+/* The action bar and the cast bars, both built by the widget kit at runtime. */
+#action-bar { position: absolute; bottom: 14px; left: 50%; z-index: 6; display: flex; gap: 4px; transform: translateX(-50%); padding: 5px 6px; border: 1px solid #6d5a34; border-radius: 8px; background: #0b0d0fcc; }
+#action-bar .ui-icon-button > span:not(.ui-icon-cooldown) { font-size: .74rem; color: #b6a878; }
+#player-cast, #target-cast { margin-top: 3px; }
+.ui-bar-cast { height: 14px; }
+#target-power { margin-top: 3px; }
+.ui-bar-target-power { height: 8px; }
+/* A channel runs the other way and is not the same yellow as a cast. */
+.ui-bar-cast > span[data-variant="channel"] { background: linear-gradient(#8fd0f2, #2b6f9c); }
+
+/* The bindings window: one row per action, two keys each, built entirely at runtime. */
+/* The window itself scrolls under its sticky header, like every other one here. */
+.keybindings-window { width: min(400px, calc(100vw - 32px)); }
+.keybindings-window .ui-panel-body { gap: 2px; }
+.ui-binding-group { margin: 9px 0 2px; color: #d9c77f; font-size: .76rem; }
+.ui-binding-group:first-of-type { margin-top: 0; }
+.ui-binding-row { display: grid; grid-template-columns: 1fr 92px 92px; gap: 6px; align-items: center; font-size: .8rem; }
+.ui-binding-key { padding: 2px 6px; border: 1px solid #6d5a34; border-radius: 4px; background: #16130d; font-size: .76rem; color: #e8dfc9; }
+.ui-binding-capturing { border-color: #f2d16a; color: #f2d16a; }
+
+/* Breath, fatigue and fire, over the middle of the world view where they cannot be missed. */
+#mirror-timers { position: absolute; top: 74px; left: 50%; z-index: 6; display: flex; flex-direction: column; gap: 4px; width: 200px; transform: translateX(-50%); pointer-events: none; }
+.mirror-timer { display: flex; flex-direction: column; gap: 2px; font-size: .72rem; text-shadow: 0 1px 3px #000; }
+.ui-bar-mirror > span { background: linear-gradient(#5fd3f2, #1c7fa8); }
+
+/* The quest log and the tracker beside the world. */
+.quest-log { width: min(380px, calc(100vw - 32px)); }
+.quest-entry { display: flex; flex-direction: column; gap: 4px; padding: 7px 0; border-bottom: 1px solid #6d5a3455; }
+.quest-entry .actions { display: flex; gap: 6px; margin-top: 3px; }
+.quest-entry .actions button { padding: 3px 8px; font-size: .74rem; }
+.quest-complete { color: #7fd48a; }
+.quest-failed { color: #e07d6a; }
+.quest-objective-done { color: #7fd48a; }
+/* Written on the world for the same reason the minimap's labels are, and with the same answer.
+   Measured over the four sky bands the tracker's own colour reached 1.26:1. */
+#quest-tracker { display: flex; overflow-y: auto; max-height: 40vh; flex-direction: column; gap: 9px; width: 100%; padding: 4px 8px; border-radius: 4px; background: #0c0a08cc; pointer-events: none; font-size: .78rem; text-shadow: 0 1px 3px #000; }
+.quest-track { display: flex; flex-direction: column; gap: 2px; }
+.quest-track strong { color: #e8d9a8; font-size: .8rem; }
+
+/* The character sheet, which is a stack of small labelled sections. */
+/* Spacing is the column's `gap` now — see `.character-stats` — so the section only carries its
+   own plate and its heading. */
+.sheet-section h4 { margin: 0 0 3px; color: #d9c77f; font-size: .76rem; }
+.character-stats .ui-line { padding: 1px 0; }
+
+/* Slice I2's unit frames. One rule set for thirteen kinds of frame, because they are one widget:
+   the differences are a size class and where the container puts them. */
+.ui-unit-frame {
+  position: relative; display: grid; gap: 2px; width: 100%; padding: 3px 5px; text-align: left;
+  border: 1px solid #24405e; border-radius: 3px; background: #0a1522d9; color: inherit;
+  font: inherit; cursor: pointer;
+}
+.ui-unit-frame .ui-unit-portrait {
+  display: none;
+  grid-row: 1 / span 3;
+  width: 42px;
+  height: 42px;
+  border: 1px solid #b79b58;
+  border-radius: 50%;
+  background: #1c2931;
+}
+.ui-unit-frame .ui-unit-portrait[data-portrait-ready="true"] { display: block; }
+.ui-unit-frame:hover { border-color: #3d6a9c; }
+.ui-unit-header { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.ui-unit-header > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
+.ui-unit-mark { font-style: normal; font-size: .78rem; color: #ffd479; }
+.ui-unit-level { margin-left: auto; font-size: .74rem; color: #8fa6bd; font-variant-numeric: tabular-nums; }
+.ui-unit-frame .ui-bar { height: 9px; }
+.ui-unit-size-compact .ui-bar { height: 7px; }
+.ui-unit-size-grid { gap: 1px; padding: 2px 3px; }
+.ui-unit-size-grid .ui-bar { height: 6px; }
+.ui-unit-size-grid .ui-unit-header > strong { font-size: .72rem; }
+
+/* A raid member outside the client's grid is alive and unreachable: the frame says so by fading
+   rather than by emptying, because an empty bar reads as a corpse. */
+.ui-unit-frame.is-far { opacity: .72; }
+/* Dashed and dimmed, but not past reading: at `.4` the name measured 3.31:1 and the level 2.13:1,
+   and the whole point of an offline frame is that it still tells you who is missing. */
+.ui-unit-frame.is-offline { opacity: .62; border-style: dashed; }
+.ui-unit-frame.is-dead { border-color: #5e2430; }
+.ui-unit-frame.is-dead .ui-unit-header > strong { text-decoration: line-through; }
+.ui-unit-frame.is-away .ui-unit-header::after { content: "AFK"; margin-left: auto; font-size: .66rem; color: #d0a33c; }
+.ui-unit-frame.is-active { box-shadow: inset 0 0 0 1px #ffd479; }
+
+.ui-unit-list { display: grid; gap: 3px; }
+/* Its own class rather than `ui-unit-list`, so it has to set the display itself. */
+.ui-raid-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
+
+/* Reaction, threat and the raid mark are attributes rather than classes, so the player and target
+   frames — which are page markup and carry buttons no other frame has — wear the same ones. */
+.ui-unit-frame[data-reaction="hostile"], .unit-frame[data-reaction="hostile"] { border-left: 3px solid #c8443c; }
+.ui-unit-frame[data-reaction="neutral"], .unit-frame[data-reaction="neutral"] { border-left: 3px solid #d0b23c; }
+.ui-unit-frame[data-reaction="friendly"], .unit-frame[data-reaction="friendly"] { border-left: 3px solid #4a9e54; }
+.ui-unit-frame[data-threat="some"], .unit-frame[data-threat="some"] { outline: 1px solid #6d7a3a; }
+.ui-unit-frame[data-threat="high"], .unit-frame[data-threat="high"] { outline: 1px solid #c08a2c; }
+.ui-unit-frame[data-threat="tanking"], .unit-frame[data-threat="tanking"] { outline: 1px solid #c8443c; }
+.unit-frame[data-mark] { position: relative; }
+.unit-frame[data-mark]::before {
+  content: attr(data-mark); position: absolute; top: 2px; right: 26px; z-index: 3;
+  font-size: .9rem; color: #ffd479; text-shadow: 1px 1px #000;
+}
+
+/* In the left column now, under the player's own auras, rather than beside the party frames at a
+   guessed `left: 200px` that any wider frame would have run into. */
+.secondary-frames { display: grid; gap: 4px; width: 150px; }
+/*
+ * One column down the right edge. Before this the minimap sat at `top: 14`, the quest tracker at
+ * 96, the boss frames at 128 and the arena frames at a flat 300 — four independent guesses that
+ * drew on top of each other the moment any of them had content.
+ */
+.right-rail {
+  position: absolute;
+  z-index: 6;
+  top: 14px;
+  right: calc(12px + var(--side-bars-width));
+  bottom: 92px;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  width: 186px;
+  pointer-events: none;
+}
+.right-rail > * { flex: 0 0 auto; pointer-events: auto; }
+/* Named rather than `:empty` on everything in the rail: a `<canvas>` has no child nodes either,
+   and a blanket rule took the minimap's own picture out of the layout. */
+.boss-frames:empty, .arena-frames:empty { display: none; }
+.boss-frames, .arena-frames { width: 170px; }
+/* Above the chat dock, and scrolling rather than running off the top: forty frames in eight
+   subgroups are taller than the space left over, and silently cutting the last subgroup is how a
+   raid loses the people at the bottom of it. */
+.raid-frames {
+  position: absolute; z-index: 6; left: 12px; width: min(560px, 46vw);
+  bottom: calc(var(--chat-bottom) + var(--chat-height) + 8px);
+  overflow-y: auto; max-height: calc(100vh - var(--chat-bottom) - var(--chat-height) - 120px);
+}
+
+/* Slice I5: the talent window, the spellbook's tabs and the skills window. */
+.talents-window { width: 420px; }
+.talents-header, .talents-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.talents-tab {
+  padding: 3px 8px; border: 1px solid #24405e; border-radius: 3px; background: #0d1a2b;
+  color: #cfe0f2; font: inherit; font-size: .78rem; cursor: pointer;
+}
+.talents-tab.is-active { border-color: #ffd479; color: #ffd479; }
+.talents-tab:disabled, .talents-tab[aria-disabled="true"] { opacity: .45; cursor: default; }
+
+/* The grid is the tree: a talent sits at its own tier and column, and the arrows are stretched
+   between two cells underneath rather than drawn over the top. */
+.talents-grid { position: relative; display: grid; gap: 6px; justify-content: center; margin-bottom: 8px; }
+.talent {
+  position: relative; display: grid; place-items: center; padding: 0;
+  border: 1px solid #33475f; border-radius: 3px; background: #0a1522; cursor: pointer;
+}
+.talent > img { width: 100%; height: 100%; object-fit: cover; border-radius: 2px; filter: grayscale(1) brightness(.6); }
+.talent.is-learned > img { filter: none; }
+.talent.is-learned { border-color: #4a9e54; }
+.talent.is-maxed { border-color: #ffd479; }
+/* Blocked talents are marked rather than `disabled`: a disabled button swallows pointer events,
+   and the tooltip explaining why it is blocked is the whole reason to hover one. */
+.talent:disabled, .talent[aria-disabled="true"] { cursor: default; }
+.talent > em {
+  position: absolute; right: 1px; bottom: 0; font-style: normal; font-size: .66rem;
+  color: #ffd479; text-shadow: 1px 1px #000;
+}
+.talent-arrow {
+  align-self: stretch; justify-self: center; width: 2px; margin: -3px 0;
+  background: #2b3f57; pointer-events: none;
+}
+.talent-arrow.is-open { background: #4a9e54; }
+
+/* `align-items: start` matters: the panel body is a column flexbox, so a stretched row would
+   pull each round slot into an oval. */
+.talents-glyphs { display: grid; grid-template-columns: repeat(6, 34px); grid-auto-rows: 34px; align-items: start; gap: 4px; margin-bottom: 6px; }
+.glyph-slot {
+  width: 34px; height: 34px; display: grid; place-items: center; padding: 0;
+  border: 1px dashed #33475f; border-radius: 50%; background: #0a1522; color: #6f8299;
+  font: inherit; font-size: .7rem; cursor: pointer;
+}
+.glyph-slot.is-filled { border-style: solid; border-color: #7a63c9; }
+.glyph-slot > img { width: 100%; height: 100%; border-radius: 50%; }
+
+.spellbook-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.spellbook-tab {
+  padding: 2px 7px; border: 1px solid #24405e; border-radius: 3px; background: #0d1a2b;
+  color: #cfe0f2; font: inherit; font-size: .74rem; cursor: pointer;
+}
+.spellbook-tab.is-active { border-color: #ffd479; color: #ffd479; }
+
+.professions-window { width: 320px; }
+.profession-section { margin-bottom: 10px; }
+.profession-section > h4 { margin: 0 0 4px; font-size: .8rem; color: #8fa6bd; }
+.profession-row { margin-bottom: 5px; }
+/* The skill bar carries no number of its own — see `Professions.ts`, where the value moved out to
+   the row's own line. That is what lets it stay this thin. */
+.ui-bar-skill { height: 8px; }
+.ui-bar-skill > span { background: linear-gradient(#c8a04a, #8a6a1c); }
+
+/* The four extra bars, in a column anchored above the main one.
+
+   `#action-bar` is `position: absolute` with its own centring transform, so a row appended beside
+   it in normal flow has no position and lands in a corner behind the world. The column repeats the
+   anchor rather than inheriting it, and is anchored by its *bottom* with no height of its own: a
+   bar switched on grows the stack upward, one switched off closes the gap, and no row has to know
+   how many are below it. 72px is the main bar's own height plus its 14px offset. */
+#action-bar-extras {
+  position: absolute; bottom: 72px; left: 50%; z-index: 6;
+  display: flex; flex-direction: column; gap: 4px;
+  transform: translateX(-50%);
+}
+.action-bar-extra {
+  display: flex; gap: 4px; padding: 5px 6px;
+  border: 1px solid #6d5a34; border-radius: 8px; background: #0b0d0fcc;
+}
+.action-bar-extra[hidden] { display: none; }
+.action-bar-extra .ui-icon-button > span:not(.ui-icon-cooldown) { font-size: .74rem; color: #b6a878; }
+
+/* The two vertical bars, on end at the right edge, which is where the original client puts them.
+   `right2` is inboard of `right`, again as it is there.
+
+   Twelve buttons at the ordinary 40px is 500px of column, and on a 720px screen with the frames
+   above and the bags below that does not fit. So the column is bounded by the viewport and the
+   buttons are a grid of twelve equal rows inside it: they take whatever height there is and stay
+   square. `--side-bar-slot` is only what the *neighbours* are told to expect — the buttons
+   themselves never read it. */
+#action-bar-side {
+  position: absolute; z-index: 6;
+  top: 14px; right: 14px; bottom: 118px;
+  display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 4px;
+}
+.action-bar-side-column {
+  display: grid; gap: 4px; padding: 5px 6px;
+  /* Twelve equal rows inside whatever height there is. The column asks for exactly the height
+     twelve ordinary buttons want and is clamped to the box above, so on a tall screen the buttons
+     are their usual size and on a short one they shrink together rather than the twelfth falling
+     off the bottom. */
+  grid-template-rows: repeat(12, 1fr);
+  height: calc(12 * var(--side-bar-slot) + 11 * 4px + 12px);
+  max-height: 100%;
+  border: 1px solid #6d5a34; border-radius: 8px; background: #0b0d0fcc;
+}
+.action-bar-side-column[hidden] { display: none; }
+.action-bar-side-column .ui-icon-button {
+  width: auto; height: auto; max-width: var(--side-bar-slot); aspect-ratio: 1; min-height: 0;
+  justify-self: center;
+}
+.action-bar-side-column .ui-icon-button > span:not(.ui-icon-cooldown) { font-size: .66rem; color: #b6a878; }
+
+/* Assigned action keys sit over the icon, like WoW's corner labels. Keep this after the generic
+   row typography above so the key remains the compact, high-contrast overlay in every bar. */
+#action-bar .ui-action-button > .ui-icon-key,
+.action-bar-extra .ui-action-button > .ui-icon-key,
+.action-bar-side-column .ui-action-button > .ui-icon-key {
+  position: absolute; z-index: 3; top: 1px; left: 2px; max-width: calc(100% - 4px);
+  overflow: hidden; color: #f3e6b0; font-size: .58rem; font-weight: 700; line-height: 1;
+  white-space: nowrap; text-overflow: ellipsis; pointer-events: none;
+  text-shadow: 1px 1px 2px #000, -1px -1px 2px #000;
+}
+
+/* Module windows: a screen a definition file drew, and the diagnostics pane that lists them.
+
+   The window itself is an ordinary `.game-window`, so it drags, raises and remembers its place
+   like every other one; what is different is inside. A definition gives every widget its own
+   width, height and anchor, so the surface is one positioned box with absolutely positioned
+   children and no layout of its own — nothing here may stretch or reflow a widget, because the
+   same file is drawn a second time by a Lua addon in the real client and the two have to agree
+   pixel for pixel. That is also why the body loses its padding: the anchor already said where the
+   widget goes, measured from the frame's own edge. */
+.module-window { width: auto; min-width: 0; }
+.module-window .ui-panel-body { padding: 0; }
+.wnd-root { position: relative; overflow: hidden; }
+.wnd-backdrop { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; pointer-events: none; object-fit: fill; }
+.wnd-frame, .wnd-texture, .wnd-text, .wnd-model, .wnd-repeat, .wnd-scroll { position: absolute; }
+.wnd-frame { border-radius: 4px; }
+.wnd-texture > .wnd-texture-image { pointer-events: none; }
+.wnd-text { overflow: hidden; line-height: 1.15; text-shadow: 0 1px 2px #000; }
+.wnd-text[data-shadow="off"] { text-shadow: none; }
+/* WoW's two outline flags. `WindowRender` has written `data-outline` since М5 and nothing read it,
+   so a definition carrying the studio's own `outline: "OUTLINE"` drew the same as one without —
+   which is why М8's inspector could not offer the field without offering a control that moves no
+   pixel. `paint-order` puts the stroke behind the glyph so a 1px outline does not eat a 10px font. */
+.wnd-text[data-outline] { paint-order: stroke fill; -webkit-text-stroke: 1px #000; }
+.wnd-text[data-outline="THICKOUTLINE"] { -webkit-text-stroke: 2px #000; }
+.wnd-button { padding: 0; border: 1px solid #6d5a34; border-radius: 5px; background: linear-gradient(#2f2b21, #171512); color: #f0e2bb; font-size: .8rem; }
+.wnd-button:disabled { opacity: .5; }
+.wnd-check { display: flex; align-items: center; gap: 5px; font-size: .76rem; }
+.wnd-edit > input, .wnd-edit > textarea { width: 100%; height: 100%; box-sizing: border-box; }
+.wnd-slider { display: flex; align-items: center; gap: 6px; font-size: .72rem; }
+.wnd-slider > input { flex: 1; }
+.wnd-slider > em { min-width: 2.5em; font-style: normal; text-align: right; }
+.wnd-dropdown { display: flex; align-items: center; gap: 6px; font-size: .76rem; }
+.wnd-dropdown > select { flex: 1; }
+/* The bar's own colours come from the definition, so the kit's default is the fallback rather
+   than the rule. Scoped to a module window: nothing built-in sets these properties. */
+.module-window .ui-bar { width: 100%; height: 100%; background: var(--ui-bar-background, #120f0a); }
+.module-window .ui-bar > span { background: var(--ui-bar-color, linear-gradient(#3d9ee8, #1757a3)); }
+/* A `Model` widget is a labelled placeholder until the 3D portrait has a slice of its own; it says
+   which unit it stands for so that "not drawn yet" cannot be mistaken for "wrong unit". */
+.wnd-model {
+  display: grid; place-items: center; padding: 4px;
+  border: 1px dashed #6d5a34; border-radius: 4px;
+  color: #9d8f6a; font-size: .68rem; text-align: center;
+}
+/* The host a built-in appends for a module's patch to fill (М7): a box that is not there.
+   `display: contents` means the widget inside becomes a child of the *panel* for layout, so a
+   module's button sits in the target frame's button row beside the client's own six rather than in
+   a wrapper of its own — and a host with nothing in it, which is every host in every session with
+   no modules loaded, generates no box and takes no room. */
+.ui-slot-host { display: contents; }
+/* And the box a panel's own content is redrawn inside, so that the host beside it is never removed
+   — see `Slots.slotSiblings`. `display: contents` again, and for the same reason: the character
+   sheet's sections and the spellbook's tabs stay flex children of the panel itself, so the column
+   gap and the wrapping row are exactly what they were before there was a wrapper at all. */
+.ui-slot-siblings { display: contents; }
+.module-window-row { padding: 3px 0; border-bottom: 1px solid #2a2721; }
+.module-window-row.is-open .module-window-title { color: #d9c77f; }
+.module-window-title { font-size: .78rem; }
+/* The window editor (М8). A panel of three panes beside the window it is editing: the preview is
+   the real window, drawn by the runtime renderer into the viewport like any other, so nothing here
+   styles it — only the outline that says which widget the tree has selected. */
+.window-builder { width: 22rem; }
+.builder-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+.builder-tree, .builder-inspector { max-height: 16rem; overflow-y: auto; }
+.builder-row { display: flex; align-items: center; gap: 4px; }
+.builder-row-name { flex: 1; padding: 1px 4px; border: 0; background: none; color: #cfc3a4; font-size: .74rem; text-align: left; }
+.builder-row.is-selected .builder-row-name { color: #f0d98a; }
+.builder-row-into { padding: 0 4px; font-size: .68rem; }
+/* The two lists under the fields: what the widget does, and when it is shown. A heading carrying
+   the «+» that adds to it, then a line per entry carrying the «−» that takes it away, then that
+   entry's own fields, indented so that a list of three actions reads as three things and not as
+   twelve rows. */
+.builder-group {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; padding-top: 4px; border-top: 1px solid #2a2721;
+  color: #d9c77f; font-size: .74rem;
+}
+.builder-entry { display: flex; align-items: center; gap: 6px; padding: 2px 0 1px; color: #9d8f6a; font-size: .72rem; }
+.builder-group > span, .builder-entry > span { flex: 1; }
+.builder-group-add, .builder-entry-drop, .builder-clear { padding: 0 6px; font-size: .74rem; }
+.builder-entry ~ .builder-field > label { flex-basis: 8.5rem; padding-left: 1rem; }
+.builder-field { display: flex; align-items: center; gap: 6px; padding: 1px 0; font-size: .74rem; }
+.builder-field > label { flex: 0 0 9.5rem; color: #9d8f6a; }
+.builder-field > input[type="text"], .builder-field > input[type="number"], .builder-field > select { flex: 1; min-width: 0; }
+.builder-field > input[type="color"] { width: 2.75rem; height: 1.25rem; padding: 0; }
+/* What the expression on the left evaluates to right now, against the same published view the
+   binding pass reads. Narrow on purpose: it is a check, not a column of data. */
+.builder-live { max-width: 8rem; overflow: hidden; color: #8fae7a; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.builder-json-pane { display: flex; flex-direction: column; gap: 4px; }
+.builder-json { min-height: 14rem; font-family: ui-monospace, monospace; font-size: .7rem; resize: vertical; }
+/* The selection outline is drawn *inside* the widget's own box (`outline-offset: -1px`), because a
+   ring around it would move every neighbour by a pixel and the whole point of this editor is that
+   what is on screen is what ships. */
+.builder-selected { outline: 1px dashed #f0d98a; outline-offset: -1px; }

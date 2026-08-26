@@ -1,0 +1,19 @@
+COLUMNS
+int ID
+int<ItemClass::ClassID> ClassID
+int<ItemSubClass::SubClassID> SubclassID
+int Sound_Override_Subclassid
+int Material
+int<ItemDisplayInfo::ID> DisplayInfoID
+int InventoryType
+int SheatheType
+
+BUILD 3.0.1.8303-3.3.5.12340
+$id$ID<32>
+ClassID<32>
+SubclassID<32>
+Sound_Override_Subclassid<32>
+Material<32>
+DisplayInfoID<32>
+InventoryType<32>
+SheatheType<32>
