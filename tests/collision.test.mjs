@@ -15,6 +15,7 @@ import {
 } from "../dist/code/browser/game/CollisionLiquid.js";
 import { parseVMapModelGroups } from "../dist/code/gateway/VMapModel.js";
 import { parseVMapTile } from "../dist/code/gateway/VMapProtocol.js";
+import { isValidWmoLiquid } from "../dist/code/browser/WorldRenderer3D.js";
 
 let vmapsDirectory;
 try {
@@ -552,6 +553,63 @@ test("a model's own water crosses the wire even when its rooms do not", async ()
   const whole = decodeCollisionModel(encodeCollisionModel(groups).buffer);
   assert.equal(whole.groups[1].liquid.tilesY, 3);
   assert.deepEqual([...whole.groups[1].vertices], [5, 5, 5, 6, 5, 5, 5, 6, 5]);
+});
+
+test("non-finite MLIQ values drop only water and preserve solid collision", () => {
+  const solid = {
+    bounds: { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 },
+    flags: 0x2000, groupId: 893,
+    vertices: Float32Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0),
+    indices: Uint32Array.of(0, 1, 2),
+  };
+  const validLiquid = {
+    tilesX: 1, tilesY: 1, cornerX: 5, cornerY: 6, cornerZ: 7, type: 13,
+    heights: Float32Array.of(7, 7, 7, 7), flags: Uint8Array.of(0),
+  };
+  const invalids = [
+    { name: "cornerX NaN", liquid: { ...validLiquid, cornerX: Number.NaN } },
+    { name: "cornerY Infinity", liquid: { ...validLiquid, cornerY: Number.POSITIVE_INFINITY } },
+    { name: "cornerZ -Infinity", liquid: { ...validLiquid, cornerZ: Number.NEGATIVE_INFINITY } },
+    { name: "height Infinity", liquid: { ...validLiquid, heights: Float32Array.of(7, Infinity, 7, 7) } },
+  ];
+  for (const { name, liquid } of invalids) {
+    const model = decodeCollisionModel(encodeCollisionModel([
+      solid,
+      {
+        bounds: { minX: 5, minY: 5, minZ: 5, maxX: 6, maxY: 6, maxZ: 6 },
+        flags: 0x1809, groupId: 904, liquid,
+        vertices: Float32Array.of(5, 5, 5, 6, 5, 5, 5, 6, 5),
+        indices: Uint32Array.of(0, 1, 2),
+      },
+    ]).buffer);
+    assert.equal(model.groups[1].liquid, undefined, `${name} must fail open for liquid only`);
+    assert.deepEqual([...model.groups[0].vertices], [0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    assert.deepEqual([...model.groups[0].indices], [0, 1, 2]);
+    assert.deepEqual([...model.groups[1].vertices], [5, 5, 5, 6, 5, 5, 5, 6, 5]);
+  }
+});
+
+test("injected WMO liquid is rejected before geometry when its numeric streams are invalid", () => {
+  const liquid = {
+    tilesX: 1, tilesY: 1, cornerX: 0, cornerY: 0, cornerZ: 0, type: 13,
+    heights: Float32Array.of(0, 0, Number.NaN, 0), flags: Uint8Array.of(0),
+  };
+  assert.equal(isValidWmoLiquid(liquid), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, heights: Float32Array.of(0, 0, 0, 0) }), true);
+  assert.equal(isValidWmoLiquid({ ...liquid, heights: undefined }), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, flags: null }), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, tilesX: 0, heights: new Float32Array(2) }), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, heights: Float32Array.of(0, 0, 0, 0, 0) }), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, type: Number.NaN }), false);
+  assert.equal(isValidWmoLiquid({ ...liquid, cornerX: Number.MAX_VALUE }), false);
+  // High cell-mask bits are authored data, not an invalid numeric liquid.
+  assert.equal(isValidWmoLiquid({
+    ...liquid, heights: Float32Array.of(0, 0, 0, 0), flags: Uint8Array.of(0xff),
+  }), true);
+  const throwing = { ...liquid };
+  Object.defineProperty(throwing, "heights", { get() { throw new Error("poison"); } });
+  assert.doesNotThrow(() => isValidWmoLiquid(throwing));
+  assert.equal(isValidWmoLiquid(throwing), false);
 });
 
 test("WMO liquid uses the rendered triangle diagonal and tests the transformed camera eye", () => {

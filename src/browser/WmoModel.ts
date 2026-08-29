@@ -1,5 +1,5 @@
 /**
- * Reading a WWM1 artifact: one WMO as the rooms it is made of.
+ * Reading a WWM1/WWM2 artifact: one WMO as the rooms it is made of.
  *
  * The encoder and the byte layout live in `tools/wwm.mjs`, which is where the format is written
  * down. What matters here is the shape it arrives in: a header that always carries every group's
@@ -8,13 +8,17 @@
  * metadata, and the handful of rooms the player is standing in are fetched one at a time afterwards.
  */
 
-const MAGIC = "WWM1";
+import { VISUAL_MODEL_ROUTE_VERSION } from "./Wvm.js";
+
+const MAGIC_WWM1 = "WWM1";
+const MAGIC_WWM2 = "WWM2";
 const HEADER_SIZE = 24;
 const GROUP_SIZE = 40;
 const BLOCK_HEADER_SIZE = 16;
 const RUN_SIZE = 16;
 const LIGHT_SIZE = 28;
 const COMPLETE = 0x01;
+const AUTHORED_NORMALS = 0x01;
 const LEGACY_METADATA_MAGIC = "WME1";
 const LEGACY_METADATA_HEADER_SIZE = 8;
 const METADATA_MAGIC = "WME2";
@@ -36,7 +40,7 @@ export const WMO_GROUP_INDOOR = 0x2000;
 /**
  * Which light a run of triangles is drawn in, as the WMO's own batch order states it.
  *
- * Not the group's flag: a quarter of Stormwind's triangles sit in exterior batches inside groups
+ * Not the group's flag: 175,137 of Stormwind's triangles sit in exterior batches inside groups
  * marked indoor — the outward faces of its rooms — and lighting those by the group would put a
  * street-facing wall in a windowless room. A transition batch counts as interior; see the encoder.
  */
@@ -137,6 +141,8 @@ export interface WmoGroupMesh {
   uvs: Float32Array;
   /** Baked vertex light, RGBA. White where the artist left the group unpainted. */
   colours: Uint8Array;
+  /** Optional authored MONR normals in model space, one finite float3 per vertex. */
+  normals?: Float32Array;
   indices: Uint16Array | Uint32Array;
   runs: WmoRun[];
   /** Which of the model's lamps hang in this group, by index into its light table. */
@@ -146,9 +152,11 @@ export interface WmoGroupMesh {
 export interface WmoGroup {
   /** Model-space bounds, as the group file records them. */
   bounds: WmoBounds;
+  /** False means the source/wire bounds are malformed; retain them but never use them to cull. */
+  boundsValid?: boolean;
   flags: number;
   indoor: boolean;
-  /** The artifact found an exterior-lit run, including one inside an indoor MOGP group. */
+  /** Legacy wire bit: this group has an exterior or transition run needing the long boundary leash. */
   exterior: boolean;
   /** The slice of {@link WmoPortals.references} that leaves this group. */
   portalStart: number;
@@ -205,11 +213,56 @@ export interface WmoModel {
   complete: boolean;
 }
 
+function validWmoBounds(bounds: WmoBounds): boolean {
+  return Number.isFinite(bounds.minX) && Number.isFinite(bounds.minY) && Number.isFinite(bounds.minZ)
+    && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.maxY) && Number.isFinite(bounds.maxZ)
+    && bounds.minX <= bounds.maxX && bounds.minY <= bounds.maxY && bounds.minZ <= bounds.maxZ;
+}
+
+function inertWmoLight(): WmoLight {
+  return {
+    position: [0, 0, 0], colour: [0, 0, 0], intensity: 0,
+    attenuationStart: 0, attenuationEnd: 0, attenuates: false,
+  };
+}
+
+function validWmoLight(light: WmoLight): boolean {
+  try {
+    const position = light?.position;
+    const colour = light?.colour;
+    if (!Array.isArray(position) || position.length !== 3
+      || !Array.isArray(colour) || colour.length !== 3) return false;
+    const [x, y, z] = position;
+    const [red, green, blue] = colour;
+    return [x, y, z, red, green, blue, light.intensity,
+      light.attenuationStart, light.attenuationEnd].every(Number.isFinite)
+      && red >= 0 && red <= 255 && green >= 0 && green <= 255
+      && blue >= 0 && blue <= 255
+      && light.intensity >= 0 && light.attenuationStart >= 0
+      && light.attenuationEnd >= light.attenuationStart;
+  } catch {
+    return false;
+  }
+}
+
+function decodeWmoLight(view: DataView, bytes: Uint8Array, offset: number): WmoLight {
+  const light: WmoLight = {
+    position: [view.getFloat32(offset, true), view.getFloat32(offset + 4, true), view.getFloat32(offset + 8, true)],
+    intensity: view.getFloat32(offset + 12, true),
+    attenuationStart: view.getFloat32(offset + 16, true),
+    attenuationEnd: view.getFloat32(offset + 20, true),
+    colour: [bytes[offset + 24]!, bytes[offset + 25]!, bytes[offset + 26]!],
+    attenuates: (bytes[offset + 27]! & 1) !== 0,
+  };
+  return validWmoLight(light) ? light : inertWmoLight();
+}
+
 export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
   if (data.byteLength < HEADER_SIZE) throw new Error("WMO model is truncated");
   const bytes = new Uint8Array(data);
   const view = new DataView(data);
-  if (new TextDecoder().decode(bytes.subarray(0, 4)) !== MAGIC) throw new Error("WMO model has an invalid header");
+  const magic = new TextDecoder().decode(bytes.subarray(0, 4));
+  if (magic !== MAGIC_WWM1 && magic !== MAGIC_WWM2) throw new Error("WMO model has an invalid header");
   const groupCount = view.getUint32(4, true);
   const textureCount = view.getUint16(8, true);
   const ambient: [number, number, number] = [bytes[10]!, bytes[11]!, bytes[12]!];
@@ -225,15 +278,17 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
   const blockLengths: number[] = [];
   for (let index = 0; index < groupCount; index++, offset += GROUP_SIZE) {
     const flags = view.getUint32(offset + 24, true);
+    const bounds = {
+      minX: view.getFloat32(offset, true),
+      minY: view.getFloat32(offset + 4, true),
+      minZ: view.getFloat32(offset + 8, true),
+      maxX: view.getFloat32(offset + 12, true),
+      maxY: view.getFloat32(offset + 16, true),
+      maxZ: view.getFloat32(offset + 20, true),
+    };
     groups.push({
-      bounds: {
-        minX: view.getFloat32(offset, true),
-        minY: view.getFloat32(offset + 4, true),
-        minZ: view.getFloat32(offset + 8, true),
-        maxX: view.getFloat32(offset + 12, true),
-        maxY: view.getFloat32(offset + 16, true),
-        maxZ: view.getFloat32(offset + 20, true),
-      },
+      bounds,
+      ...(validWmoBounds(bounds) ? {} : { boundsValid: false }),
       flags,
       indoor: (flags & WMO_GROUP_INDOOR) !== 0,
       // Old WWM1 artifacts have no metadata section. Keep their original range behavior: the
@@ -256,7 +311,14 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
     offset += 2;
     if (size > 1000 || offset + size > data.byteLength) throw new Error("WMO model texture URL is invalid");
     const url = decoder.decode(bytes.subarray(offset, offset + size));
-    textureUrls.push(url ? `${baseUrl}${url}` : "");
+    // WMO PNGs are rewritten beside their model whenever the active MPQ source stamp changes.
+    // They keep the same content-address-shaped route, however, so the browser also needs the
+    // visual artifact generation carried by the model request. A generic URL in an older/test
+    // artifact stays untouched; only the gateway-owned WMO texture route is coordinated.
+    const versioned = url.startsWith("/visual/texture/")
+      ? `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(VISUAL_MODEL_ROUTE_VERSION)}`
+      : url;
+    textureUrls.push(versioned ? `${baseUrl}${versioned}` : "");
     offset += size;
   }
   // The texture table is padded so that everything after it starts on a four-byte boundary.
@@ -265,14 +327,9 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
   const lights: WmoLight[] = [];
   if (offset + lightCount * LIGHT_SIZE > data.byteLength) throw new Error("WMO model light table is truncated");
   for (let index = 0; index < lightCount; index++, offset += LIGHT_SIZE) {
-    lights.push({
-      position: [view.getFloat32(offset, true), view.getFloat32(offset + 4, true), view.getFloat32(offset + 8, true)],
-      intensity: view.getFloat32(offset + 12, true),
-      attenuationStart: view.getFloat32(offset + 16, true),
-      attenuationEnd: view.getFloat32(offset + 20, true),
-      colour: [bytes[offset + 24]!, bytes[offset + 25]!, bytes[offset + 26]!],
-      attenuates: (bytes[offset + 27]! & 1) !== 0,
-    });
+    // Keep the table ordinal stable: MOLR references are source indices, so a malformed optional
+    // lamp becomes inert rather than shifting every later lamp onto the wrong wall.
+    lights.push(decodeWmoLight(view, bytes, offset));
   }
 
   for (const [index, size] of blockLengths.entries()) {
@@ -280,7 +337,15 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
     if (offset + size > data.byteLength) throw new Error("WMO model group block is truncated");
     const block = decodeWwmGroup(data.slice(offset, offset + size));
     if (block.index !== index) throw new Error("WMO model group block is out of order");
-    groups[index]!.mesh = block.mesh;
+    if (magic === MAGIC_WWM1 && block.mesh.normals !== undefined) {
+      throw new Error("WWM1 group block carries authored normals");
+    }
+    const group = groups[index]!;
+    if (block.mesh.positions.length / 3 !== group.vertexCount
+      || block.mesh.indices.length / 3 !== group.triangleCount) {
+      throw new Error("WMO model group block counts disagree with its root table");
+    }
+    group.mesh = block.mesh;
     offset += size;
   }
   const metadataOffset = view.getUint32(20, true);
@@ -569,7 +634,10 @@ export function wmoVertexLight(
   }
   for (const reference of mesh.lightRefs) {
     const lamp = lights[reference];
-    if (!lamp || lamp.intensity <= 0) continue;
+    // Optional light data is not allowed to turn one malformed MOLT record into NaN vertex light.
+    // The decoder preserves ordinals with inert placeholders, while this guard protects direct
+    // callers that supply a decoded-like object themselves.
+    if (!lamp || !validWmoLight(lamp) || lamp.intensity <= 0) continue;
     const reach = lamp.attenuates ? Math.max(lamp.attenuationEnd, lamp.attenuationStart) : Infinity;
     for (let vertex = 0; vertex < vertexCount; vertex++) {
       const dx = lamp.position[0] - mesh.positions[vertex * 3]!;
@@ -612,21 +680,36 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
   const indexCount = view.getUint32(4, true);
   const runCount = view.getUint16(8, true);
   const indexBytes = view.getUint8(10);
+  const streamFlags = view.getUint8(11);
   const index = view.getUint16(12, true);
   const lightRefCount = view.getUint16(14, true);
   if (vertexCount === 0 || vertexCount > 1_000_000 || indexCount % 3 !== 0 || indexCount > 6_000_000
-    || (indexBytes !== 2 && indexBytes !== 4)) throw new Error("WMO group has invalid counts");
-  const indexOffset = BLOCK_HEADER_SIZE + vertexCount * 24;
+    || (indexBytes !== 2 && indexBytes !== 4) || (streamFlags & ~AUTHORED_NORMALS) !== 0) {
+    throw new Error("WMO group has invalid counts or stream flags");
+  }
+  const hasNormals = (streamFlags & AUTHORED_NORMALS) !== 0;
+  const vertexStride = 24 + (hasNormals ? 12 : 0);
+  const indexOffset = BLOCK_HEADER_SIZE + vertexCount * vertexStride;
   const runOffset = indexOffset + ((indexCount * indexBytes + 3) & ~3);
   const lightOffset = runOffset + runCount * RUN_SIZE;
-  if (lightOffset + lightRefCount * 2 > data.byteLength) throw new Error("WMO group is truncated");
+  const expectedLength = lightOffset + ((lightRefCount * 2 + 3) & ~3);
+  if (!Number.isSafeInteger(expectedLength) || expectedLength !== data.byteLength) throw new Error("WMO group length is invalid or truncated");
 
   const positions = new Float32Array(data.slice(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + vertexCount * 12));
   const uvs = new Float32Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 12, BLOCK_HEADER_SIZE + vertexCount * 20));
-  const colours = new Uint8Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 20, indexOffset));
+  const colours = new Uint8Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 20, BLOCK_HEADER_SIZE + vertexCount * 24));
+  for (const value of positions) if (!Number.isFinite(value)) throw new Error("WMO group position stream is not finite");
+  for (const value of uvs) if (!Number.isFinite(value)) throw new Error("WMO group UV stream is not finite");
+  const normals = hasNormals
+    ? new Float32Array(data.slice(BLOCK_HEADER_SIZE + vertexCount * 24, indexOffset))
+    : undefined;
+  if (normals) {
+    for (const value of normals) if (!Number.isFinite(value)) throw new Error("WMO group normal stream is not finite");
+  }
   const indices = indexBytes === 2
     ? new Uint16Array(data.slice(indexOffset, indexOffset + indexCount * 2))
     : new Uint32Array(data.slice(indexOffset, indexOffset + indexCount * 4));
+  for (const value of indices) if (value >= vertexCount) throw new Error("WMO group index is out of range");
   const runs: WmoRun[] = [];
   for (let run = 0; run < runCount; run++) {
     const at = runOffset + run * RUN_SIZE;
@@ -643,5 +726,5 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
     });
   }
   const lightRefs = new Uint16Array(data.slice(lightOffset, lightOffset + lightRefCount * 2));
-  return { index, mesh: { positions, uvs, colours, indices, runs, lightRefs } };
+  return { index, mesh: { positions, uvs, colours, indices, runs, lightRefs, ...(normals ? { normals } : {}) } };
 }

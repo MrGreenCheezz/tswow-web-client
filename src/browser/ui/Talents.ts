@@ -2,6 +2,7 @@ import { MAX_GLYPH_SLOTS } from "../../world/CharacterProgressProtocol.js";
 import type { TalentsInfo } from "../../world/CharacterProgressProtocol.js";
 import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
+import { spellCastAllowed } from "../SpellCastGuard.js";
 import { Panel, attachTooltip } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
@@ -162,7 +163,8 @@ function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petFami
     const known = spell !== undefined && (world?.knownSpells.some((entry) => entry.id === spell) ?? false);
     const isActive = index === (info?.activeSpec ?? 0);
     const button = tabButton(`Специализация ${index + 1}`, isActive, () => {
-      if (spell !== undefined && known && !isActive) world?.castSpell(spell);
+      if (spell !== undefined && known && !isActive && world
+        && (game.world !== world || spellCastAllowed(world, spell))) world.castSpell(spell);
     });
     // Not `disabled`: "dual specialisation has not been bought" is the whole content of this
     // button for a character who has not bought it, and a disabled button never shows it.

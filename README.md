@@ -61,6 +61,12 @@ Windows 10/11 is the currently tested runtime. Much of the TypeScript toolchain 
 but the complete TSWoW asset workflow and case-sensitive filesystem behavior are not yet verified
 on Linux or macOS.
 
+TSWoW can keep using its legacy Node runtime: its `start.bat` invokes the bundled
+`bin/node/node.exe`, not the Node executable from the system `PATH`. For a side-by-side setup,
+extract portable Node.js 22 x64 to `.runtime/node/` or set `WEBCLIENT_NODE_DIR`.
+`start-gateway.bat` and `start-web.bat` prefer that runtime and change `PATH` only inside their own
+processes; `.runtime/` is Git-ignored and must never be published.
+
 ## Quick start
 
 1. Clone the repository and install exactly the locked dependencies:
@@ -114,6 +120,14 @@ The gateway generates most visual assets on first request. To reduce first-visit
 you may run `build-assets.bat` after the database-related settings in `.env` are correct. This
 optional warm-up can take time and creates ignored local caches.
 
+When switching between HD and classic client packs, run `npm run assets:visual-dbc` after changing
+the archives. The automatic `data/visual-dbc` overlay is accepted only when all generated `.src`
+stamps match the current `CLIENT_DIR` archive chain; a stale overlay is ignored. An explicitly set
+`VISUAL_DBC_DIR` trusts its DBC files and therefore must be kept in sync manually, but the
+patch-W/X/Y/Z-specific geoset policy still requires the matching `.src` sidecars. To roll back from HD
+to classic, remove `patch-W.MPQ`, `patch-X.MPQ`, `patch-Y.MPQ` and `patch-Z.MPQ` from the client's
+`Data/` directory, regenerate the visual DBC overlay, restart the gateway and reload the page.
+
 ## Configuration
 
 `.env` is loaded by gateway and tool scripts but is never committed. Vite also reads the same file
@@ -122,6 +136,7 @@ for browser settings whose names begin with `VITE_`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLIENT_DIR` | portable sibling search | WoW directory containing `Data/` |
+| `VISUAL_DBC_DIR` | stamped `data/visual-dbc` auto-detection | Explicit visual DBC overlay override; trusted as-is |
 | `TSWOW_INSTALL` | `../tswow-install` | TSWoW installation containing `modules/` |
 | `TSWOW_DATASET` | derived from install | Direct dataset override |
 | `TRINITYCORE_DIR` | `../tswow/cores/TrinityCore` | Local protocol/client-table generation and verification |
@@ -157,6 +172,7 @@ See [.env.example](.env.example) for dataset path overrides, cache directories a
 | `npm run check:generated` | Verify tracked DBC layouts and ignored local generated data |
 | `npm run modules:check` | Validate module UI and custom-message definitions |
 | `npm run build:full` | Full configured-workspace verification followed by the build |
+| `npm run assets:visual-dbc` | Re-extract visual DBC files and stamp them against the current client pack |
 | `npm run assets:restamp` | Add/update source stamps without rerendering asset caches |
 
 Additional `assets:*` and `*:generate` commands are listed in [package.json](package.json).

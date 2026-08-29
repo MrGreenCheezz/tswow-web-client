@@ -2,6 +2,9 @@ import type { EmoteData } from "../world/EmoteRules.js";
 
 export type { EmoteData };
 
+/** Bump when the client-media EmotesTextSound payload changes so an open tab cannot keep silence. */
+export const EMOTE_ROUTE_VERSION = "3";
+
 /**
  * Every text emote, fetched once for the session.
  *
@@ -28,10 +31,12 @@ export class EmoteClient {
     if (this.#data || this.#pending) return;
     this.#pending = (async () => {
       try {
-        const response = await fetch(`${this.#baseUrl}/dbc/emotes`);
+        const response = await fetch(`${this.#baseUrl}/dbc/emotes?v=${EMOTE_ROUTE_VERSION}`);
         if (!response.ok) throw new Error(`Emote gateway returned ${response.status}`);
         const value = await response.json() as EmoteData;
-        if (!Array.isArray(value.emotes)) throw new Error("malformed emote data");
+        if (!Array.isArray(value.emotes) || (value.sounds !== undefined && !Array.isArray(value.sounds))) {
+          throw new Error("malformed emote data");
+        }
         this.#data = value;
         this.onLoaded?.(value);
       } catch (error) {

@@ -4,7 +4,8 @@ import { POWER, isLootable, player as playerFields, unit } from "../../world/Fie
 import { WorldObjectState, isWorldObjectDead } from "../../world/WorldState.js";
 import { SELF, WorldStore } from "../../world/WorldStore.js";
 import { creatureIconSource, creatureTypeName } from "../CreatureMetadata.js";
-import { EquippedItem, UnitModel } from "../CreatureModelClient.js";
+import type { CreatureModelClient, EquippedItem, UnitModel } from "../CreatureModelClient.js";
+import type { ItemMetadataClient } from "../ItemMetadata.js";
 import { game } from "../game/Context.js";
 import { Bar } from "./Widgets.js";
 import { showAuras } from "./Auras.js";
@@ -50,9 +51,13 @@ export const barWidth = (value: number | undefined, maximum: number | undefined)
  * and hair have to be looked up from its appearance bytes, and until that answer arrives the unit
  * keeps its stand-in rather than appearing untextured for good.
  */
-export function unitModel(object: WorldObjectState): UnitModel | undefined {
+export function unitModelFor(
+  object: WorldObjectState,
+  creatureModels: CreatureModelClient | undefined,
+  itemMetadata: ItemMetadataClient | undefined,
+): UnitModel | undefined {
   const displayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
-  const metadata = game.creatureModels?.get(displayId);
+  const metadata = creatureModels?.get(displayId);
   if (!metadata || object.typeId !== 4) return metadata;
   // A player who is not currently in their own body: a cat, a bear, a sheep, a ghost wolf. The
   // server writes NATIVEDISPLAYID once, in `Player::InitDisplayIds`, and moves DISPLAYID for every
@@ -69,11 +74,21 @@ export function unitModel(object: WorldObjectState): UnitModel | undefined {
   const bytes = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset) ?? 0;
   const look = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES.offset) ?? 0;
   const look2 = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES_2.offset) ?? 0;
-  const appearance = game.creatureModels?.playerAppearance(
+  const equipment = visibleEquipmentFor(object, itemMetadata);
+  const appearance = creatureModels?.playerAppearance(
     bytes & 0xff, (bytes >>> 16) & 0xff,
     look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
-    look2 & 0xff, visibleEquipment(object));
-  return appearance === undefined ? undefined : { ...metadata, appearance };
+    look2 & 0xff, equipment);
+  return appearance === undefined ? undefined : {
+    ...metadata,
+    appearance,
+    appearancePending: visibleEquipmentMetadataPendingFor(object, itemMetadata),
+  };
+}
+
+/** The live wrapper retains the UI's current clients; replay callers pass the captured ones. */
+export function unitModel(object: WorldObjectState): UnitModel | undefined {
+  return unitModelFor(object, game.creatureModels, game.itemMetadata);
 }
 
 /**
@@ -89,9 +104,20 @@ export function unitModel(object: WorldObjectState): UnitModel | undefined {
  * variations. That is also why this is not `unitModel` reading a second field — `unitModel` exists
  * to decide whether the *player's* face belongs on the record, and a horse has no such question.
  */
-export function mountModel(object: WorldObjectState): UnitModel | undefined {
+export function mountModelFor(
+  object: WorldObjectState,
+  creatureModels: CreatureModelClient | undefined,
+): UnitModel | undefined {
   const displayId = unit.mountDisplayId(object) ?? 0;
-  return displayId > 0 ? game.creatureModels?.get(displayId) : undefined;
+  if (displayId <= 0 || !creatureModels) return undefined;
+  // Requests are owned by the once-per-world-update pass in `ui/WorldView.ts`; this lookup stays
+  // read-only so portrait/replay callers do not start network work merely by asking for a mount.
+  return creatureModels.get(displayId);
+}
+
+/** The live wrapper retains the UI's current creature-model client. */
+export function mountModel(object: WorldObjectState): UnitModel | undefined {
+  return mountModelFor(object, game.creatureModels);
 }
 
 /**
@@ -100,7 +126,10 @@ export function mountModel(object: WorldObjectState): UnitModel | undefined {
  * serves for bags and tooltips, so the appearance request needs no new lookup — but an item that
  * has not been fetched yet is skipped rather than waited for, and appears a frame later.
  */
-export function visibleEquipment(object: WorldObjectState): EquippedItem[] {
+export function visibleEquipmentFor(
+  object: WorldObjectState,
+  itemMetadata: ItemMetadataClient | undefined,
+): EquippedItem[] {
   const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
   const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
   // Which word an item came from is its EQUIPMENT_SLOT, and that is not the same thing as its
@@ -111,16 +140,43 @@ export function visibleEquipment(object: WorldObjectState): EquippedItem[] {
     if (entry > 0) worn.push({ slot, entry });
   }
   if (worn.length === 0) return [];
-  void game.itemMetadata?.load(worn.map(({ entry }) => entry)).catch(() => undefined);
+  void itemMetadata?.load(worn.map(({ entry }) => entry)).catch(() => undefined);
 
   const equipment: EquippedItem[] = [];
   for (const { slot, entry } of worn) {
-    const item = game.itemMetadata?.get(entry);
+    const item = itemMetadata?.get(entry);
     if (item && item.displayId > 0) {
-      equipment.push({ slot, inventoryType: item.inventoryType, displayId: item.displayId });
+      equipment.push({
+        slot, inventoryType: item.inventoryType, displayId: item.displayId,
+        ...(item.subClass === undefined ? {} : { subClass: item.subClass }),
+      });
     }
   }
   return equipment;
+}
+
+/** Whether the appearance request is currently based on a partial visible-item snapshot. */
+export function visibleEquipmentMetadataPendingFor(
+  object: WorldObjectState,
+  itemMetadata: ItemMetadataClient | undefined,
+): boolean {
+  const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
+  const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
+  for (let slot = 0; slot < 19; slot++) {
+    const entry = object.fields.get(first + slot * stride) ?? 0;
+    if (entry <= 0) continue;
+    const item = itemMetadata?.get(entry);
+    if (!item) return true;
+    // A dump row has display/inventory data but no ItemSubClass until the live item query lands.
+    // Slot 17 is the only one where that missing field changes a visible action (wand vs gun).
+    if (slot === 17 && item.subClass === undefined) return true;
+  }
+  return false;
+}
+
+/** The live wrapper retains the UI's current item-metadata client. */
+export function visibleEquipment(object: WorldObjectState): EquippedItem[] {
+  return visibleEquipmentFor(object, game.itemMetadata);
 }
 
 /**

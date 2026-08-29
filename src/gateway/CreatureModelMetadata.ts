@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { openDbc } from "./Dbc.js";
 import { validAssetPath } from "./AssetPath.js";
 import { CharacterAppearanceIndex, type CharacterAppearance } from "./CharacterAppearance.js";
@@ -140,15 +141,20 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
 }
 
 export async function loadCreatureModelMetadata(dbcDirectory: string,
-  textures?: Promise<CharacterTextureIndex | undefined>): Promise<Map<number, CreatureModelMetadata>> {
+  textures?: Promise<CharacterTextureIndex | undefined>,
+  visualDbcDirectory = dbcDirectory,
+  coordinatedVisuals = false): Promise<Map<number, CreatureModelMetadata>> {
   const [displayInfo, modelData, characters] = await Promise.all([
-    readFile(`${dbcDirectory}/CreatureDisplayInfo.dbc`),
-    readFile(`${dbcDirectory}/CreatureModelData.dbc`),
+    // Display ids stay on the wire, while an HD patch deliberately redirects them to replacement
+    // models and skins. Mixing dataset rows with patched M2s produces stretched or flat textures.
+    readFile(join(visualDbcDirectory, "CreatureDisplayInfo.dbc")),
+    readFile(join(visualDbcDirectory, "CreatureModelData.dbc")),
     // Its own index rather than the route's, because this map is built once and held: the appearance
     // of every display is baked into it. The archives' listing is the shared half — Т7 puts the
     // spelling that exists first, and the eight displays whose bake is not in the client get the
     // body `forPlayer` assembled instead of an empty one.
-    CharacterAppearanceIndex.load(dbcDirectory, textures).catch(() => undefined),
+    CharacterAppearanceIndex.load(
+      dbcDirectory, textures, visualDbcDirectory, coordinatedVisuals).catch(() => undefined),
   ]);
   return parseCreatureModelMetadata(displayInfo, modelData, characters);
 }

@@ -10,7 +10,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import {
-  SOURCE_MISSING_EXIT, socketPeerAddress, startGateway, visualModelCacheNamespace,
+  SOURCE_MISSING_EXIT, isCharacterVisualTexture, socketPeerAddress, startGateway, visualModelCacheNamespace,
 } from "../dist/code/gateway/Gateway.js";
 import { SOURCE_MISSING_EXIT as generatorMissingExit } from "../tools/generate-texture.mjs";
 import { isLoopbackAddress } from "../dist/code/gateway/ModuleIndex.js";
@@ -702,6 +702,26 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     });
     assert.equal(visualTexture.status, 200);
     assert.equal(visualTexture.headers.get("content-type"), "image/png");
+    const initialTextureTag = visualTexture.headers.get("etag");
+    assert.match(initialTextureTag ?? "", /^"[0-9a-f]{40}"$/, "WMO textures need a content validator");
+    assert.equal(visualTexture.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+
+    // A republished WMO keeps the same hash-keyed filename. A browser must therefore be able to
+    // revalidate the old URL and receive the new bytes instead of retaining the former 24-hour
+    // response. The conditional request also pins the 304 path used by a normal browser cache.
+    const republishedTexture = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x01);
+    await writeFile(join(visualModelsDirectory, `${visualHash}-0.png`), republishedTexture);
+    const refreshedTexture = await fetch(`http://127.0.0.1:${gateway.port}/visual/texture/${visualHash}-0.png`, {
+      headers: { origin: "http://127.0.0.1:5173", "if-none-match": initialTextureTag },
+    });
+    assert.equal(refreshedTexture.status, 200, "changed WMO bytes must invalidate the old validator");
+    assert.notEqual(refreshedTexture.headers.get("etag"), initialTextureTag);
+    assert.deepEqual(new Uint8Array(await refreshedTexture.arrayBuffer()), republishedTexture);
+    const refreshedTag = refreshedTexture.headers.get("etag");
+    const unchangedTexture = await fetch(`http://127.0.0.1:${gateway.port}/visual/texture/${visualHash}-0.png`, {
+      headers: { origin: "http://127.0.0.1:5173", "if-none-match": refreshedTag },
+    });
+    assert.equal(unchangedTexture.status, 304, "unchanged WMO bytes should use conditional revalidation");
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/visual/model?path=..%5Csecret.m2`, {
       headers: { origin: "http://127.0.0.1:5173" },
     })).status, 400);
@@ -727,6 +747,7 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     iconId: 7,
     iconPath: "Interface\\Icons\\Spell_Fire_FlameBolt",
     passive: false,
+    autoRepeat: false,
     // The bit that actually means "keep me out of the spellbook", carried beside the passive one
     // because they are different questions: a passive spell is listed and greyed, a hidden one is
     // not listed at all.
@@ -972,10 +993,10 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
 });
 
 test("the two artifact namespaces move independently and never collide", () => {
-  // З2 takes WMO to 15 and Э1's WVM9 follows at 16. The families invalidate independently while
+  // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
   assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v16");
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v15");
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v17");
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {
@@ -1017,6 +1038,57 @@ test("a rebuilt DBC is answered without restarting the gateway", async () => {
   } finally {
     await gateway.close();
     await rm(dbcDirectory, { recursive: true, force: true });
+  }
+});
+
+test("emote route keeps dataset text and active client-media sound rows separate", async () => {
+  const dbcDirectory = await mkdtemp(join(tmpdir(), "webclient-emote-dbc-"));
+  const audioDbcDirectory = await mkdtemp(join(tmpdir(), "webclient-emote-audio-"));
+  const strings = stringBlock(["wave", "Иван машет рукой."]);
+  const text = Array(19).fill(0);
+  text[0] = 101;
+  text[1] = strings.offsets.get("wave");
+  text[2] = 3;
+  text[3] = 201;
+  const sentence = Array(18).fill(0);
+  sentence[0] = 201;
+  sentence[1] = strings.offsets.get("Иван машет рукой.");
+  await writeFile(join(dbcDirectory, "EmotesText.dbc"), dbcFixture(19, [text], strings.bytes));
+  await writeFile(join(dbcDirectory, "EmotesTextData.dbc"), dbcFixture(18, [sentence], strings.bytes));
+  await writeFile(join(audioDbcDirectory, "EmotesTextSound.dbc"), dbcFixture(5, [
+    [1, 101, 1, 0, 2942],
+  ], new Uint8Array([0])));
+  const gateway = await startGateway({
+    host: "127.0.0.1", port: 0,
+    auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    dbcDirectory, audioDbcDirectory, datasetPollMs: 0,
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/dbc/emotes?v=2`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.emotes[0].command, "wave");
+    assert.deepEqual(body.sounds, [{ id: 1, textEmoteId: 101, raceId: 1, gender: 0, soundId: 2942 }]);
+    // The audio DBC is one of the fingerprinted client-media inputs: replacing the override is
+    // visible without restarting the gateway, while the dataset-owned text row stays untouched.
+    await writeFile(join(audioDbcDirectory, "EmotesTextSound.dbc"), dbcFixture(5, [
+      [1, 101, 1, 0, 2943],
+      [2, 101, 1, 1, 2944],
+    ], new Uint8Array([0])));
+    const changed = await fetch(`http://127.0.0.1:${gateway.port}/dbc/emotes?v=2`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.deepEqual((await changed.json()).sounds, [
+      { id: 1, textEmoteId: 101, raceId: 1, gender: 0, soundId: 2943 },
+      { id: 2, textEmoteId: 101, raceId: 1, gender: 1, soundId: 2944 },
+    ]);
+  } finally {
+    await gateway.close();
+    await rm(dbcDirectory, { recursive: true, force: true });
+    await rm(audioDbcDirectory, { recursive: true, force: true });
   }
 });
 
@@ -1173,6 +1245,196 @@ test("a cache entry from before stamps existed is served as it stands, and the p
     await gateway.close();
     await rm(client, { recursive: true, force: true });
     await rm(texturesDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an unstamped character texture is regenerated against the active visual pack", async () => {
+  assert.equal(isCharacterVisualTexture("Creature/Wolf/WolfSkin.blp"), true,
+    "HD creature skins follow the same coordinated cache policy as playable characters");
+  const client = await mkdtemp(join(tmpdir(), "webclient-character-pack-"));
+  const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-character-textures-"));
+  const texturePath = "Character\\Human\\Male\\HumanMaleSkin00_00.blp";
+  const loose = join(client, "Data", "patch-W.MPQ", ...texturePath.split("\\"));
+  await mkdir(join(client, "Data", "patch-W.MPQ", "Character", "Human", "Male"), { recursive: true });
+  await writeFile(loose, "PNG-FROM-ACTIVE-HD-PACK");
+  const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
+  await writeFile(join(texturesDirectory, `${id}.png`), "PNG-FROM-STALE-STOCK-CACHE");
+
+  let generated = 0;
+  const generateTexture = async (path) => {
+    generated++;
+    const chain = await openClientArchives(client);
+    try {
+      const data = await chain.read(path);
+      assert.ok(data);
+      const destination = join(texturesDirectory, `${createHash("sha1").update(`texture-v1\0${path.toLowerCase()}`).digest("hex")}.png`);
+      await writeFile(destination, data);
+      await writeSourceStamp(destination, await sourceStamp(chain, { paths: [path] }));
+    } finally {
+      chain.close();
+    }
+  };
+  const gateway = await startGateway({
+    host: "127.0.0.1", port: 0,
+    auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    clientDirectory: client, texturesDirectory, generateTexture, datasetPollMs: 0,
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/texture?v=1&path=${encodeURIComponent(texturePath)}`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "PNG-FROM-ACTIVE-HD-PACK");
+    assert.equal(generated, 1, "the legacy stock cache must not win for a visual character path");
+    assert.doesNotReject(readFile(stampSidecar(join(texturesDirectory, `${id}.png`))));
+  } finally {
+    await gateway.close();
+    await rm(client, { recursive: true, force: true });
+    await rm(texturesDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an unstamped visual model is regenerated against the active HD pack", async () => {
+  const client = await mkdtemp(join(tmpdir(), "webclient-model-pack-"));
+  const visualModelsDirectory = await mkdtemp(join(tmpdir(), "webclient-model-cache-"));
+  const modelPath = "Character\\Human\\Male\\HumanMale.m2";
+  const loose = join(client, "Data", "patch-W.MPQ", ...modelPath.split("\\"));
+  await mkdir(join(client, "Data", "patch-W.MPQ", "Character", "Human", "Male"), { recursive: true });
+  await writeFile(loose, "WVM-FROM-ACTIVE-HD-PACK");
+  const hash = createHash("sha1")
+    .update(`${visualModelCacheNamespace(modelPath)}\0${modelPath.toLowerCase()}`).digest("hex");
+  const destination = join(visualModelsDirectory, `${hash}.bin`);
+  await writeFile(destination, "WVM-FROM-STALE-STOCK-CACHE");
+
+  let generated = 0;
+  const generateVisualModel = async (path, requestedHash) => {
+    generated++;
+    assert.equal(requestedHash, hash);
+    const chain = await openClientArchives(client);
+    try {
+      const data = await chain.read(path);
+      assert.ok(data);
+      await writeFile(destination, data);
+      await writeSourceStamp(destination, await sourceStamp(chain, { paths: [path] }));
+    } finally {
+      chain.close();
+    }
+  };
+  const gateway = await startGateway({
+    host: "127.0.0.1", port: 0,
+    auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    clientDirectory: client, visualModelsDirectory, generateVisualModel, datasetPollMs: 0,
+  });
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${gateway.port}/visual/model?path=${encodeURIComponent(modelPath)}&v=1`,
+      { headers: { origin: "http://127.0.0.1:5173" } },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "WVM-FROM-ACTIVE-HD-PACK");
+    assert.equal(generated, 1, "an unstamped stock artifact must not survive the HD model switch");
+    await assert.doesNotReject(readFile(stampSidecar(destination)));
+  } finally {
+    await gateway.close();
+    await rm(client, { recursive: true, force: true });
+    await rm(visualModelsDirectory, { recursive: true, force: true });
+  }
+});
+
+test("cached HD character assets revalidate to classic bytes after the pack is removed", async () => {
+  const client = await mkdtemp(join(tmpdir(), "webclient-hd-classic-client-"));
+  const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-hd-classic-textures-"));
+  const visualModelsDirectory = await mkdtemp(join(tmpdir(), "webclient-hd-classic-models-"));
+  const texturePath = "Character\\Human\\Male\\HumanMaleSkin00_00.blp";
+  const modelPath = "Character\\Human\\Male\\HumanMale.m2";
+  const textureId = createHash("sha1")
+    .update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
+  const modelHash = createHash("sha1")
+    .update(`${visualModelCacheNamespace(modelPath)}\0${modelPath.toLowerCase()}`).digest("hex");
+  const writePack = async (name, generation) => {
+    const root = join(client, "Data", name, "Character", "Human", "Male");
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "HumanMaleSkin00_00.blp"), `PNG-FROM-${generation}`);
+    await writeFile(join(root, "HumanMale.m2"), `WVM-FROM-${generation}`);
+  };
+  await writePack("patch-W.MPQ", "HD");
+
+  let textureBuilds = 0;
+  let modelBuilds = 0;
+  const publish = async (path, destination) => {
+    const chain = await openClientArchives(client);
+    try {
+      const data = await chain.read(path);
+      assert.ok(data, `${path} is present in the active synthetic pack`);
+      await writeFile(destination, data);
+      await writeSourceStamp(destination, await sourceStamp(chain, { paths: [path] }));
+    } finally {
+      chain.close();
+    }
+  };
+  const gateway = await startGateway({
+    host: "127.0.0.1", port: 0,
+    auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    clientDirectory: client,
+    texturesDirectory,
+    visualModelsDirectory,
+    datasetPollMs: 0,
+    generateTexture: async (path) => {
+      textureBuilds++;
+      await publish(path, join(texturesDirectory, `${textureId}.png`));
+    },
+    generateVisualModel: async (path, hash) => {
+      modelBuilds++;
+      assert.equal(hash, modelHash);
+      await publish(path, join(visualModelsDirectory, `${modelHash}.bin`));
+    },
+  });
+  const headers = { origin: "http://127.0.0.1:5173" };
+  const textureUrl = `http://127.0.0.1:${gateway.port}/texture?v=2&path=${encodeURIComponent(texturePath)}`;
+  const modelUrl = `http://127.0.0.1:${gateway.port}/visual/model?path=${encodeURIComponent(modelPath)}&v=2`;
+  try {
+    const hdTexture = await fetch(textureUrl, { headers });
+    const hdModel = await fetch(modelUrl, { headers });
+    assert.equal(await hdTexture.text(), "PNG-FROM-HD");
+    assert.equal(await hdModel.text(), "WVM-FROM-HD");
+    assert.equal(hdTexture.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    assert.equal(hdModel.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    const textureTag = hdTexture.headers.get("etag");
+    const modelTag = hdModel.headers.get("etag");
+    assert.match(textureTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(modelTag ?? "", /^"[0-9a-f]{40}"$/);
+
+    assert.equal((await fetch(textureUrl, {
+      headers: { ...headers, "if-none-match": textureTag },
+    })).status, 304, "unchanged coordinated textures use conditional revalidation");
+    assert.equal((await fetch(modelUrl, {
+      headers: { ...headers, "if-none-match": modelTag },
+    })).status, 304, "unchanged visual models use conditional revalidation");
+
+    await rm(join(client, "Data", "patch-W.MPQ"), { recursive: true, force: true });
+    await writePack("patch-3.MPQ", "CLASSIC");
+    const classicTexture = await fetch(textureUrl, {
+      headers: { ...headers, "if-none-match": textureTag },
+    });
+    const classicModel = await fetch(modelUrl, {
+      headers: { ...headers, "if-none-match": modelTag },
+    });
+    assert.equal(classicTexture.status, 200, "changed texture bytes invalidate the HD validator");
+    assert.equal(classicModel.status, 200, "changed model bytes invalidate the HD validator");
+    assert.equal(await classicTexture.text(), "PNG-FROM-CLASSIC");
+    assert.equal(await classicModel.text(), "WVM-FROM-CLASSIC");
+    assert.notEqual(classicTexture.headers.get("etag"), textureTag);
+    assert.notEqual(classicModel.headers.get("etag"), modelTag);
+    assert.equal(textureBuilds, 2, "the same texture key is rebuilt once per active pack");
+    assert.equal(modelBuilds, 2, "the same model key is rebuilt once per active pack");
+  } finally {
+    await gateway.close();
+    await rm(client, { recursive: true, force: true });
+    await rm(texturesDirectory, { recursive: true, force: true });
+    await rm(visualModelsDirectory, { recursive: true, force: true });
   }
 });
 

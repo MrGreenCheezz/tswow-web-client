@@ -79,6 +79,19 @@ test("V4 future visual animations are not early and are consumed once by the ren
     "future impact animations are dispatched only when due");
 });
 
+test("mount-special packets are routed to the mount node and not the rider", async () => {
+  const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const enterWorld = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
+  assert.match(enterWorld, /world\.events\.on\("MOUNT_SPECIAL"[\s\S]*playMountSpecial\(guid\)/,
+    "the server edge must reach the renderer");
+  assert.match(renderer, /isUnitFlying\(object\.movementFlags, object\.motion\?\.flying === true\)/,
+    "the rider's authoritative movement flag resolves flying mounts even without a spline");
+  assert.match(renderer, /#poseMount\(unit, object\.guid,[\s\S]*mountSpecialAnimation\(pose\.flight === true\)/,
+    "the rider guid is used to resolve the mount's ground/flying sequence");
+  assert.match(renderer, /this\.#playAnimation\(mount, animation, false, now, true\)/,
+    "the one-shot is played on the mount PosedModel, not the rider");
+});
+
 test("V5 spell effect budget never alternates between halves of one composite kit", () => {
   const entries = [
     { key: "impact", handleId: 10, distance: 10 },
@@ -368,8 +381,14 @@ test("V4 visual effects gate emitters and follow moving roots, while explicit po
 test("V4 spell unit clips run once for their full duration and lead into held primaries", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /next\.setLoop\(wantedLoop, Infinity\)/);
-  assert.match(source, /fullDuration \? 0 : ANIMATION_BLEND \* 1000/,
+  assert.match(source, /const blendDuration = loop \? ANIMATION_BLEND : ACTION_ANIMATION_BLEND/,
+    "one-shots use the shorter hand-off while continuous poses keep the default blend");
+  assert.match(source, /fullDuration \? 0 : blendDuration \* 1000/,
     "visual one-shots are not shortened by the crossfade blend");
+  assert.match(source, /const blend = animationBlend\(previous\.loop === THREE\.LoopRepeat, loop\)/,
+    "continuous transitions choose their blend policy from both loop modes");
+  assert.match(source, /next\.crossFadeFrom\(previous, blend\.duration, blend\.warp\)/,
+    "loop transitions cross-fade with phase synchronisation");
   assert.match(source, /if \(pending\.sequenceAt === 0\)/,
     "lead-in timing is armed once and cannot move every frame");
   assert.match(source, /pending\.sequence\?\.mode === "hold"/,
@@ -433,6 +452,14 @@ test("V4 visual cleanup and cancellation are ownership-scoped", async () => {
   assert.match(source, /cancelUnitAction\(guid: bigint\): void/);
   assert.match(source, /if \(!pending\?\.cancelable\) return;/,
     "ordinary one-shots are not interrupted by the held-action cancel seam");
+  assert.match(source, /if \(terminalPose && unit\.overlayPreservesLocomotion === true\) this\.#clearOverlay\(unit\);/,
+    "terminal/death poses clear a locomotion-preserving upper action immediately");
+  assert.match(source, /if \(unit\.overlayActionKind === "shoot" && unit\.overlayAction\)/,
+    "shoot cancellation stops the active ranged overlay without re-resolving weapon metadata");
+  assert.match(source, /if \(unit\.actionKind === "shoot" && unit\.action\)/,
+    "full-body held shoot cancellation also stops the actual active action");
+  assert.match(source, /#promoteActionToLocomotionOverlay\(unit, now\)/,
+    "movement after an already-started one-shot transfers it to the filtered upper layer");
 });
 
 test("Ж4.3 nothing is ranked into the scene only to be drawn as a stand-in", () => {

@@ -16,6 +16,7 @@ import {
   CreationMemo, creationClasses, creationRaces, isCreationData,
 } from "../dist/code/browser/ui/CharacterCreation.js";
 import { loadCharacterCreation } from "../dist/code/gateway/CharacterCreation.js";
+import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 
 /**
  * Enough of a document for two modules that hold element handles at import time.
@@ -42,7 +43,8 @@ function domStub() {
   globalThis.window = { addEventListener() {}, devicePixelRatio: 1 };
 }
 domStub();
-const { POWER_NAMES, powerName } = await import("../dist/code/browser/ui/Frames.js");
+const { POWER_NAMES, powerName, visibleEquipmentFor, visibleEquipmentMetadataPendingFor } =
+  await import("../dist/code/browser/ui/Frames.js");
 const { qualityName } = await import("../dist/code/browser/ui/ItemSlots.js");
 
 let dbcDirectory;
@@ -61,6 +63,27 @@ const withClassIconData = {
 };
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+
+test("visible ranged equipment carries its subclass and reports late item metadata", async () => {
+  const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
+  const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
+  const object = { fields: new Map([[first + 17 * stride, 1234]]) };
+  const unresolved = { get: () => undefined, load: async () => undefined };
+  assert.equal(visibleEquipmentMetadataPendingFor(object, unresolved), true);
+  const itemMetadata = {
+    get: (entry) => entry === 1234 ? {
+      displayId: 8106, inventoryType: 15, subClass: 2,
+    } : undefined,
+    load: async () => undefined,
+  };
+  assert.equal(visibleEquipmentMetadataPendingFor(object, itemMetadata), false);
+  assert.deepEqual(visibleEquipmentFor(object, itemMetadata), [{
+    slot: 17, inventoryType: 15, displayId: 8106, subClass: 2,
+  }]);
+  assert.equal(visibleEquipmentMetadataPendingFor(object, {
+    get: () => ({ displayId: 8106, inventoryType: 15 }), load: async () => undefined,
+  }), true, "the ranged row stays pending until ItemSubClass arrives");
+});
 
 /**
  * Every string literal in a source file, as the compiler sees it: raw text and runtime value.

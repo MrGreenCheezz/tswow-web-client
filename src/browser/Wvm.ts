@@ -350,7 +350,31 @@ const SKINNED = 0x01;
 const PORTRAIT_CAMERA = 0x02;
 const CAMERA_SIZE = 36;
 const WVA1_HEADER_SIZE = 12;
+const SKELETON_HEADER_SIZE = 4;
+const BONE_SIZE = 16;
+const CLIP_HEADER_SIZE = 12;
+const CHANNEL_HEADER_SIZE = 8;
 const decoder = new TextDecoder();
+
+function checkedBytes(count: number, stride: number, label: string): number {
+  if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(stride) || stride < 0
+    || count > Math.floor(Number.MAX_SAFE_INTEGER / stride)) {
+    throw new Error(`${label} size is out of range`);
+  }
+  return count * stride;
+}
+
+function checkedEnd(start: number, length: number, limit: number, label: string): number {
+  if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) || length < 0
+    || start > limit || length > limit - start) {
+    throw new Error(`${label} runs past the end of the block`);
+  }
+  return start + length;
+}
+
+function checkedCountEnd(start: number, count: number, stride: number, limit: number, label: string): number {
+  return checkedEnd(start, checkedBytes(count, stride, label), limit, label);
+}
 
 export function isWvm9(data: ArrayBuffer): boolean {
   return data.byteLength >= 4 && decoder.decode(new Uint8Array(data, 0, 4)) === "WVM9";
@@ -358,6 +382,7 @@ export function isWvm9(data: ArrayBuffer): boolean {
 
 export function decodeWvm9(data: ArrayBuffer): WvmModel {
   if (!isWvm9(data)) throw new Error("Not a WVM9 model");
+  if (data.byteLength < HEADER_SIZE) throw new Error("WVM9 header is truncated");
   const view = new DataView(data);
   const vertexCount = view.getUint32(4, true);
   const indexCount = view.getUint32(8, true);
@@ -383,6 +408,11 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   // Zero is a real answer here: nearly a third of the models a spell names have no geometry at
   // all and are nothing but emitters.
   if (vertexCount > 4_000_000) throw new Error("WVM9 vertex count is out of range");
+  preflightWvm9(view, data.byteLength, {
+    vertexCount, indexCount, indexBytes, skinned, submeshCount, batchCount, textureCount,
+    skeletonOffset, attachmentCount, animationCount, globalSequenceCount, particleCount,
+    ribbonCount, colourCount, weightCount, transformCount, hasCamera,
+  });
 
   const bounds = {
     min: [view.getFloat32(28, true), view.getFloat32(32, true), view.getFloat32(36, true)] as [number, number, number],
@@ -559,8 +589,12 @@ export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkelet
   const view = new DataView(data);
   if (view.getUint32(4, true) !== data.byteLength) throw new Error("WVA1 length disagrees with the response");
   const boneCount = view.getUint16(8, true);
+  if (boneCount === 0 || boneCount > 1024) throw new Error("WVA1 bone count is out of range");
   if (boneCount !== bones) throw new Error(`WVA1 is rigged for ${boneCount} bones, the model has ${bones}`);
-  return readClips(view, data, WVA1_HEADER_SIZE, view.getUint16(10, true), boneCount);
+  const clipCount = view.getUint16(10, true);
+  const end = preflightClips(view, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+  if (end !== data.byteLength) throw new Error("WVA1 has trailing bytes after its clips");
+  return readClips(view, data, WVA1_HEADER_SIZE, clipCount, boneCount);
 }
 
 function decodeSkeleton(data: ArrayBuffer, start: number): Omit<WvmSkeleton, "animations"> {
@@ -585,6 +619,173 @@ function decodeSkeleton(data: ArrayBuffer, start: number): Omit<WvmSkeleton, "an
   }
 
   return { parents, flags, pivots, clips: readClips(view, data, offset, clipCount, boneCount) };
+}
+
+interface Wvm9Layout {
+  vertexCount: number;
+  indexCount: number;
+  indexBytes: number;
+  skinned: boolean;
+  submeshCount: number;
+  batchCount: number;
+  textureCount: number;
+  skeletonOffset: number;
+  attachmentCount: number;
+  animationCount: number;
+  globalSequenceCount: number;
+  particleCount: number;
+  ribbonCount: number;
+  colourCount: number;
+  weightCount: number;
+  transformCount: number;
+  hasCamera: boolean;
+}
+
+function preflightWvm9(view: DataView, length: number, layout: Wvm9Layout): void {
+  let offset = HEADER_SIZE;
+  offset = checkedCountEnd(offset, layout.vertexCount, 40, length, "WVM9 vertex streams");
+  if (layout.skinned) offset = checkedCountEnd(offset, layout.vertexCount, 8, length, "WVM9 skin streams");
+  offset = checkedCountEnd(offset, layout.indexCount, layout.indexBytes, length, "WVM9 index stream");
+  offset = checkedCountEnd(offset, layout.submeshCount, SUBMESH_SIZE, length, "WVM9 submesh table");
+  offset = checkedCountEnd(offset, layout.batchCount, BATCH_SIZE, length, "WVM9 batch table");
+
+  checkedCountEnd(offset, layout.textureCount, 6, length, "WVM9 texture table headers");
+  for (let index = 0; index < layout.textureCount; index++) {
+    checkedEnd(offset, 6, length, "WVM9 texture header");
+    const pathLength = view.getUint16(offset + 4, true);
+    offset = checkedEnd(offset + 6, pathLength, length, "WVM9 texture path");
+  }
+
+  offset = checkedCountEnd(offset, layout.attachmentCount, ATTACHMENT_SIZE, length, "WVM9 attachment table");
+  offset = checkedCountEnd(offset, layout.animationCount, 2, length, "WVM9 animation table");
+  offset = checkedCountEnd(offset, layout.globalSequenceCount, 4, length, "WVM9 global sequence table");
+
+  checkedCountEnd(offset, layout.particleCount, 2, length, "WVM9 particle emitter headers");
+  for (let index = 0; index < layout.particleCount; index++) {
+    checkedEnd(offset, 2, length, "WVM9 particle emitter header");
+    const size = view.getUint16(offset, true);
+    if (size < 4) throw new Error("WVM9 particle emitter size is out of range");
+    const end = checkedEnd(offset, size, length, "WVM9 particle emitter");
+    preflightParticleEmitter(view, offset, end);
+    offset = end;
+  }
+
+  checkedCountEnd(offset, layout.ribbonCount, 2, length, "WVM9 ribbon emitter headers");
+  for (let index = 0; index < layout.ribbonCount; index++) {
+    checkedEnd(offset, 2, length, "WVM9 ribbon emitter header");
+    const size = view.getUint16(offset, true);
+    if (size < 4) throw new Error("WVM9 ribbon emitter size is out of range");
+    const end = checkedEnd(offset, size, length, "WVM9 ribbon emitter");
+    preflightRibbonEmitter(view, offset, end);
+    offset = end;
+  }
+
+  for (let index = 0; index < layout.colourCount; index++) {
+    offset = preflightTrack(view, offset, length, 3);
+    offset = preflightTrack(view, offset, length, 1);
+  }
+  for (let index = 0; index < layout.weightCount; index++) offset = preflightTrack(view, offset, length, 1);
+  for (let index = 0; index < layout.transformCount; index++) {
+    offset = preflightTrack(view, offset, length, 3);
+    offset = preflightTrack(view, offset, length, 4);
+    offset = preflightTrack(view, offset, length, 3);
+  }
+  if (layout.hasCamera) offset = checkedEnd(offset, CAMERA_SIZE, length, "WVM9 portrait camera");
+
+  if ((layout.skeletonOffset !== 0) !== layout.skinned) {
+    throw new Error("WVM9 skin flag and skeleton offset disagree");
+  }
+  if (layout.skeletonOffset === 0) {
+    if (offset !== length) throw new Error("WVM9 has trailing bytes after its body");
+    return;
+  }
+  if (layout.skeletonOffset !== offset) throw new Error("WVM9 skeleton offset disagrees with the body");
+  const skeletonEnd = preflightSkeleton(view, layout.skeletonOffset, length);
+  if (skeletonEnd !== length) throw new Error("WVM9 has trailing bytes after its skeleton");
+}
+
+function preflightSkeleton(view: DataView, start: number, limit: number): number {
+  checkedEnd(start, SKELETON_HEADER_SIZE, limit, "WVM9 skeleton header");
+  const boneCount = view.getUint16(start, true);
+  const clipCount = view.getUint16(start + 2, true);
+  if (boneCount === 0 || boneCount > 1024 || clipCount > 1024) {
+    throw new Error("WVM9 skeleton header is out of range");
+  }
+  const clipsAt = checkedCountEnd(start + SKELETON_HEADER_SIZE, boneCount, BONE_SIZE, limit, "WVM9 bone table");
+  return preflightClips(view, clipsAt, clipCount, boneCount, limit);
+}
+
+function preflightClips(view: DataView, start: number, clipCount: number, boneCount: number, limit: number): number {
+  if (clipCount > 1024) throw new Error("Animation clip count is out of range");
+  checkedCountEnd(start, clipCount, CLIP_HEADER_SIZE, limit, "Animation clip headers");
+  let offset = start;
+  for (let clip = 0; clip < clipCount; clip++) {
+    checkedEnd(offset, CLIP_HEADER_SIZE, limit, "Animation clip header");
+    const channelCount = view.getUint32(offset + 8, true);
+    offset += CLIP_HEADER_SIZE;
+    checkedCountEnd(offset, channelCount, CHANNEL_HEADER_SIZE, limit, "Animation channel headers");
+    for (let channel = 0; channel < channelCount; channel++) {
+      checkedEnd(offset, CHANNEL_HEADER_SIZE, limit, "Animation channel header");
+      const bone = view.getUint16(offset, true);
+      const kind = view.getUint8(offset + 2);
+      const keys = view.getUint32(offset + 4, true);
+      if (bone >= boneCount) throw new Error("Animation channel bone is out of range");
+      if (kind !== 0 && kind !== 1 && kind !== 2) throw new Error("Animation channel kind is invalid");
+      offset += CHANNEL_HEADER_SIZE;
+      offset = checkedCountEnd(offset, keys, 4, limit, "Animation key times");
+      const components = kind === 1 ? 4 : 3;
+      offset = checkedCountEnd(offset, keys, checkedBytes(components, kind === 1 ? 2 : 4, "Animation key values"), limit,
+        "Animation key values");
+    }
+  }
+  return offset;
+}
+
+function preflightTrack(view: DataView, at: number, limit: number, expectedComponents: number): number {
+  checkedEnd(at, 4, limit, "WVM9 track header");
+  const components = view.getUint8(at + 2);
+  const subCount = view.getUint8(at + 3);
+  if (components !== expectedComponents) throw new Error("WVM9 track component count is invalid");
+  let offset = at + 4;
+  checkedCountEnd(offset, subCount, 4, limit, "WVM9 sub-track headers");
+  for (let index = 0; index < subCount; index++) {
+    checkedEnd(offset, 4, limit, "WVM9 sub-track header");
+    const keys = view.getUint16(offset + 2, true);
+    offset += 4;
+    offset = checkedCountEnd(offset, keys, 4, limit, "WVM9 track times");
+    offset = checkedCountEnd(offset, keys, checkedBytes(components, 4, "WVM9 track values"), limit, "WVM9 track values");
+  }
+  return offset;
+}
+
+function preflightRamp(view: DataView, at: number, limit: number, expectedComponents: number): number {
+  checkedEnd(at, 4, limit, "WVM9 ramp header");
+  const components = view.getUint8(at);
+  const keys = view.getUint16(at + 2, true);
+  if (components !== expectedComponents) throw new Error("WVM9 ramp component count is invalid");
+  let offset = checkedCountEnd(at + 4, keys, 4, limit, "WVM9 ramp times");
+  offset = checkedCountEnd(offset, keys, checkedBytes(components, 4, "WVM9 ramp values"), limit, "WVM9 ramp values");
+  return offset;
+}
+
+function preflightParticleEmitter(view: DataView, at: number, limit: number): void {
+  checkedEnd(at, 40 + 23 * 4, limit, "WVM9 particle emitter fixed fields");
+  const splinePointCount = view.getUint16(at + 38, true);
+  if (splinePointCount > 4095) throw new Error("WVM9 particle spline count is out of range");
+  let offset = checkedCountEnd(at + 40 + 23 * 4, splinePointCount, 12, limit, "WVM9 particle spline");
+  for (let index = 0; index < PARTICLE_TRACK_NAMES.length; index++) offset = preflightTrack(view, offset, limit, 1);
+  const components = [3, 1, 2, 1, 1];
+  for (const count of components) offset = preflightRamp(view, offset, limit, count);
+}
+
+function preflightRibbonEmitter(view: DataView, at: number, limit: number): void {
+  checkedEnd(at, 44, limit, "WVM9 ribbon emitter fixed fields");
+  const textureCount = view.getUint8(at + 22);
+  const materialCount = view.getUint8(at + 23);
+  let offset = checkedCountEnd(at + 44, textureCount, 2, limit, "WVM9 ribbon textures");
+  offset = checkedCountEnd(offset, materialCount, 2, limit, "WVM9 ribbon materials");
+  const components = [3, 1, 1, 1, 1, 1];
+  for (const count of components) offset = preflightTrack(view, offset, limit, count);
 }
 
 /** The clip encoding, which the model artifact and the animation block share byte for byte. */
@@ -629,10 +830,56 @@ function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: 
   return clips;
 }
 
+/**
+ * The version of the coordinated character/item texture route.
+ *
+ * The gateway deliberately marks texture responses immutable for a week. Bumping this value when
+ * a visual patch is republished makes a browser leave an old URL behind immediately, while equal
+ * paths in the same visual generation still share one download and one GPU texture.
+ */
+export const TEXTURE_ROUTE_VERSION = "2";
+
+/**
+ * Browser-cache generation shared by visual models, animation sidecars and embedded WMO PNGs.
+ *
+ * Generation 2 is the one-time rollover from the former 24-hour WMO texture response to the
+ * revalidated ETag contract. Without a new URL, a response cached before that header change could
+ * remain fresh for the rest of its original day even though the gateway itself was already fixed.
+ */
+export const VISUAL_MODEL_ROUTE_VERSION = "2";
+
+const COORDINATED_VISUAL_TEXTURE_PREFIXES = [
+  "character\\", "creature\\", "item\\objectcomponents\\", "item\\texturecomponents\\",
+  "textures\\bakednpctextures\\",
+] as const;
+
+/** The paths whose bytes arrive together with the coordinated visual M2/DBC overlay. */
+export function isCoordinatedVisualTexturePath(path: string): boolean {
+  const normalised = path.replaceAll("/", "\\").toLowerCase();
+  return COORDINATED_VISUAL_TEXTURE_PREFIXES.some((prefix) => normalised.startsWith(prefix));
+}
+
 /** The URL the gateway serves one client texture from. Content is keyed on the path, so every
- * model that uses the same file shares one download and one GPU texture. */
+ * model that uses the same file shares one download and one GPU texture. The bounded version is
+ * added only to visual paths because the gateway's seven-day immutable response otherwise keeps
+ * an old HD/stock choice alive after the visual pack changes. */
 export function textureUrl(baseUrl: string, mpqPath: string): string {
-  return `${baseUrl}/texture?path=${encodeURIComponent(mpqPath.replaceAll("/", "\\"))}`;
+  const path = mpqPath.replaceAll("/", "\\");
+  const version = isCoordinatedVisualTexturePath(path) ? `v=${TEXTURE_ROUTE_VERSION}&` : "";
+  return `${baseUrl}/texture?${version}path=${encodeURIComponent(path)}`;
+}
+
+/** Versioned URL for one visual model or one streamed WMO group. */
+export function visualModelUrl(baseUrl: string, mpqPath: string, group?: number): string {
+  const path = mpqPath.replaceAll("/", "\\");
+  const groupQuery = group === undefined ? "" : `&group=${group}`;
+  return `${baseUrl}/visual/model?path=${encodeURIComponent(path)}${groupQuery}&v=${VISUAL_MODEL_ROUTE_VERSION}`;
+}
+
+/** Versioned URL for the held-back animation sidecar paired with a visual model. */
+export function visualAnimationsUrl(baseUrl: string, mpqPath: string): string {
+  const path = mpqPath.replaceAll("/", "\\");
+  return `${baseUrl}/visual/animations?path=${encodeURIComponent(path)}&v=${VISUAL_MODEL_ROUTE_VERSION}`;
 }
 
 /**

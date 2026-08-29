@@ -2,6 +2,9 @@ import type { SpellMetadata } from "../gateway/SpellMetadata.js";
 
 export type { SpellMetadata };
 
+/** `SPELL_AURA_MOUNTED` in WotLK's `AuraType` enum. */
+export const SPELL_AURA_MOUNTED = 78;
+
 /** A button is usable only after its DBC row arrived and it is not passive. */
 export function spellButtonUsable(metadata: Pick<SpellMetadata, "passive"> | undefined): boolean {
   return metadata !== undefined && !metadata.passive;
@@ -27,7 +30,9 @@ export class SpellMetadataClient {
       // hour of the defect after the gateway had stopped serving it. The guard below does not list
       // the field on purpose: an absent one reads as `0 & 1`, which is a wrong word rather than a
       // thrown repaint, and refusing the whole record would cost the player their book instead.
-      const response = await fetch(`${this.#baseUrl}/dbc/spells?ids=${missing.slice(offset, offset + 200).join(",")}&v=7`);
+      // v=8 carries `SPELL_ATTR2_AUTOREPEAT_FLAG`. Treating an hour-old Auto Shot as an ordinary
+      // cast restarts the server repeat container and floods the player with cast failures.
+      const response = await fetch(`${this.#baseUrl}/dbc/spells?ids=${missing.slice(offset, offset + 200).join(",")}&v=8`);
       if (!response.ok) throw new Error(`Spell metadata gateway returned ${response.status}`);
       const value: unknown = await response.json();
       if (!Array.isArray(value) || !value.every(isSpellMetadata)) throw new Error("Spell metadata gateway returned invalid data");
@@ -47,6 +52,7 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && typeof spell.iconId === "number"
     && typeof spell.iconPath === "string"
     && typeof spell.passive === "boolean"
+    && typeof spell.autoRepeat === "boolean"
     && typeof spell.powerType === "number"
     && typeof spell.powerCost === "number"
     && typeof spell.recoveryTime === "number"

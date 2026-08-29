@@ -54,11 +54,15 @@ import type { WvmParticleEmitter, WvmRamp, WvmRibbonEmitter, WvmTrack } from "./
  */
 /** Particles rise along world up rather than along the emitter's own. */
 export const PARTICLE_FLAG_WORLD_UP = 0x00000008;
+/** A pinned emitter still draws particle heads, but deliberately does not stretch them into tails. */
+export const PARTICLE_FLAG_DO_NOT_TRAIL = 0x00000010;
 export const PARTICLE_FLAG_BURST = 0x00000040;
 /** Particles stay in the model's frame, so posing the emitter carries them with it. */
 export const PARTICLE_FLAG_MODEL_SPACE = 0x00000080;
 /** The quad stretches from where the particle was born to where it is now. Set on 18% of them. */
 export const PARTICLE_FLAG_PINNED = 0x00000400;
+/** Quads remain in the emitter's local XY plane instead of turning to face the camera. */
+export const PARTICLE_FLAG_XY_QUAD = 0x00001000;
 export const PARTICLE_FLAG_OUTWARD = 0x00020000;
 export const PARTICLE_FLAG_INWARD = 0x00040000;
 /** ScaleVary works on x and y separately; without it, x varies both and y is unused. */
@@ -239,7 +243,8 @@ export interface ParticleSystem {
   readonly emitter: WvmParticleEmitter;
   readonly globalSequences: Uint32Array;
   readonly particles: Particle[];
-  readonly random: () => number;
+  /** Mutable only so a replay epoch can restore the original deterministic stream in place. */
+  random: () => number;
   /** Fractional particles owed from previous steps. */
   pending: number;
   /** Where the emitter's origin was last step, so the follow terms can see it move. */
@@ -271,6 +276,21 @@ export function createParticleSystem(
   };
 }
 
+/** Rewinds one simulation without replacing any retained typed backing or authored input. */
+export function resetParticleSystem(system: ParticleSystem, seed: number): void {
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError("particle seed must be a uint32");
+  }
+  system.particles.length = 0;
+  system.random = seededRandom(seed);
+  system.pending = 0;
+  system.originX = 0;
+  system.originY = 0;
+  system.originZ = 0;
+  system.placed = false;
+  system.matrix.set(IDENTITY);
+}
+
 /** `matrix * (x, y, z, 1)`, written into `out`. */
 function transformPoint(m: ArrayLike<number>, x: number, y: number, z: number, out: number[]): void {
   out[0] = m[0]! * x + m[4]! * y + m[8]! * z + m[12]!;
@@ -283,6 +303,27 @@ function transformVector(m: ArrayLike<number>, x: number, y: number, z: number, 
   out[0] = m[0]! * x + m[4]! * y + m[8]! * z;
   out[1] = m[1]! * x + m[5]! * y + m[9]! * z;
   out[2] = m[2]! * x + m[6]! * y + m[10]! * z;
+}
+
+/** The inverse of the affine 3x3, used to aim a model-space billboard before applying its scale. */
+function inverseTransformVector(
+  m: ArrayLike<number>, x: number, y: number, z: number, out: number[],
+): boolean {
+  const a00 = m[0]!; const a01 = m[4]!; const a02 = m[8]!;
+  const a10 = m[1]!; const a11 = m[5]!; const a12 = m[9]!;
+  const a20 = m[2]!; const a21 = m[6]!; const a22 = m[10]!;
+  const b01 = a22 * a11 - a12 * a21;
+  const b11 = a12 * a20 - a10 * a22;
+  const b21 = a10 * a21 - a11 * a20;
+  const determinant = a00 * b01 + a01 * b11 + a02 * b21;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-8) return false;
+  out[0] = (b01 * x + (a02 * a21 - a01 * a22) * y
+    + (a01 * a12 - a02 * a11) * z) / determinant;
+  out[1] = (b11 * x + (a00 * a22 - a02 * a20) * y
+    + (a02 * a10 - a00 * a12) * z) / determinant;
+  out[2] = (b21 * x + (a01 * a20 - a00 * a21) * y
+    + (a00 * a11 - a01 * a10) * z) / determinant;
+  return true;
 }
 
 function normalise(out: number[]): void {
@@ -305,6 +346,7 @@ function spread(random: () => number): number {
 
 const scratchA: number[] = [0, 0, 0];
 const scratchB: number[] = [0, 0, 0];
+const scratchC: number[] = [0, 0, 0];
 const scratchRamp: number[] = [0, 0, 0];
 
 /**
@@ -789,7 +831,9 @@ export function writeParticleQuads(
   const { emitter, particles } = system;
   const columns = Math.max(1, emitter.textureColumns);
   const rows = Math.max(1, emitter.textureRows);
-  const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0;
+  const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0
+    && (emitter.flags & PARTICLE_FLAG_DO_NOT_TRAIL) === 0;
+  const xyQuad = (emitter.flags & PARTICLE_FLAG_XY_QUAD) !== 0;
   const capacity = Math.floor(buffers.positions.length / 12);
 
   let quads = 0;
@@ -834,6 +878,62 @@ export function writeParticleQuads(
     let centreX = x;
     let centreY = y;
     let centreZ = z;
+
+    if (system.modelSpace && !xyQuad) {
+      // MODEL_SPACE means the complete particle quad stays in the emitter frame, not only its
+      // centre. Aim the local billboard at the camera, then carry the normalised local axes
+      // through the frame so a hand/effect scale reaches its width and height as well. The old
+      // path transformed only the centre and left a scaled MODEL_SPACE spark at its authored
+      // size. `shaman_thunder.m2` is the shipped hand-effect seam that exposes this most clearly.
+      const rightInModel = inverseTransformVector(system.matrix,
+        view.rightX, view.rightY, view.rightZ, scratchA);
+      const upInModel = inverseTransformVector(system.matrix,
+        view.upX, view.upY, view.upZ, scratchB);
+      if (rightInModel && upInModel) {
+        normalise(scratchA);
+        transformVector(system.matrix, scratchA[0]!, scratchA[1]!, scratchA[2]!, scratchC);
+        const rightScale = Math.hypot(scratchC[0]!, scratchC[1]!, scratchC[2]!);
+        normalise(scratchC);
+        axisX = scratchC[0]!;
+        axisY = scratchC[1]!;
+        axisZ = scratchC[2]!;
+
+        normalise(scratchB);
+        transformVector(system.matrix, scratchB[0]!, scratchB[1]!, scratchB[2]!, scratchC);
+        const upScale = Math.hypot(scratchC[0]!, scratchC[1]!, scratchC[2]!);
+        normalise(scratchC);
+        sideX = scratchC[0]!;
+        sideY = scratchC[1]!;
+        sideZ = scratchC[2]!;
+        if (rightScale > 1e-8) halfWidth *= rightScale;
+        if (upScale > 1e-8) halfHeight *= upScale;
+      }
+    }
+
+    if (xyQuad && !pinned) {
+      // The authored plane is the emitter's own XY, carried into world space by the same matrix
+      // that places its particles. This is intentionally camera-independent: rotating the view
+      // must not make a ground rune or planar magical seal stand up to face it.
+      // PINNED takes precedence when both flags are present: its birth-to-head tail is the shape,
+      // while XY_QUAD only defines the plane of an ordinary head. Three shipped spell emitters set
+      // both, so this ordering is deliberate rather than an accidental second overwrite below.
+      transformVector(system.matrix, 1, 0, 0, scratchA);
+      transformVector(system.matrix, 0, 1, 0, scratchB);
+      const widthScale = Math.hypot(scratchA[0]!, scratchA[1]!, scratchA[2]!);
+      const heightScale = Math.hypot(scratchB[0]!, scratchB[1]!, scratchB[2]!);
+      normalise(scratchA);
+      normalise(scratchB);
+      axisX = scratchA[0]!;
+      axisY = scratchA[1]!;
+      axisZ = scratchA[2]!;
+      sideX = scratchB[0]!;
+      sideY = scratchB[1]!;
+      sideZ = scratchB[2]!;
+      if (system.modelSpace) {
+        if (widthScale > 1e-8) halfWidth *= widthScale;
+        if (heightScale > 1e-8) halfHeight *= heightScale;
+      }
+    }
 
     if (pinned) {
       let alongX = x - bornX;
@@ -893,12 +993,18 @@ export function writeParticleQuads(
     } else if (particle.spin !== 0) {
       const cos = Math.cos(particle.spin);
       const sin = Math.sin(particle.spin);
-      axisX = view.rightX * cos + view.upX * sin;
-      axisY = view.rightY * cos + view.upY * sin;
-      axisZ = view.rightZ * cos + view.upZ * sin;
-      sideX = view.upX * cos - view.rightX * sin;
-      sideY = view.upY * cos - view.rightY * sin;
-      sideZ = view.upZ * cos - view.rightZ * sin;
+      const baseAxisX = axisX;
+      const baseAxisY = axisY;
+      const baseAxisZ = axisZ;
+      const baseSideX = sideX;
+      const baseSideY = sideY;
+      const baseSideZ = sideZ;
+      axisX = baseAxisX * cos + baseSideX * sin;
+      axisY = baseAxisY * cos + baseSideY * sin;
+      axisZ = baseAxisZ * cos + baseSideZ * sin;
+      sideX = baseSideX * cos - baseAxisX * sin;
+      sideY = baseSideY * cos - baseAxisY * sin;
+      sideZ = baseSideZ * cos - baseAxisZ * sin;
     }
 
     const dx = axisX * halfWidth;
@@ -973,6 +1079,12 @@ export const RIBBON_CAPACITY = 256;
 
 export function createRibbonSystem(ribbon: WvmRibbonEmitter, globalSequences: Uint32Array): RibbonSystem {
   return { ribbon, globalSequences, edges: [], pending: 0 };
+}
+
+/** Rewinds one trail while retaining its authored tracks and array identity. */
+export function resetRibbonSystem(system: RibbonSystem): void {
+  system.edges.length = 0;
+  system.pending = 0;
 }
 
 /**

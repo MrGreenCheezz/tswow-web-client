@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  lightingProfile, normaliseLightingQuality, shadowMaterialEligible, unitCastsEnhancedShadow,
+  lightingProfile, normaliseLightingQuality, shadowMaterialEligible,
+  stabiliseDirectionalShadowCenter, unitCastsEnhancedShadow,
 } from "../dist/code/browser/LightingQuality.js";
 import {
   defaultSettings, parseSettings, settingDefinition,
@@ -38,6 +39,37 @@ test("balanced and high profiles change bounded shadow work, never authored ligh
   assert.equal(unitCastsEnhancedShadow(0, 32.01, balanced), false);
   assert.equal(unitCastsEnhancedShadow(-1, 10, balanced), false);
   assert.equal(unitCastsEnhancedShadow(1.5, 10, balanced), false);
+});
+
+test("lighting quality enables a bounded single-shader immersive grade without depending on shadows", () => {
+  const off = lightingProfile(0, { shadowMaps: true, maxTextureSize: 4096 });
+  const balanced = lightingProfile(1, { shadowMaps: true, maxTextureSize: 4096 });
+  const highWithoutShadows = lightingProfile(2, { shadowMaps: false, maxTextureSize: 0 });
+  assert.equal(off.immersiveStrength, 0);
+  assert.equal(balanced.immersiveStrength, 0.65);
+  assert.equal(highWithoutShadows.immersiveStrength, 1,
+    "the ALU-only light grade must survive capability fallback independently of the shadow pass");
+});
+
+test("directional shadow centre snaps only in the light plane", () => {
+  const direction = { x: 0, y: 1, z: 1 };
+  const first = stabiliseDirectionalShadowCenter(
+    { x: 10.031, y: 20.017, z: 30.009 }, direction, 32, 512);
+  const alongLight = stabiliseDirectionalShadowCenter(
+    { x: 10.031, y: 25.017, z: 35.009 }, direction, 32, 512);
+  assert.ok(Math.abs(first.x - alongLight.x) < 1e-9);
+  assert.ok(Math.abs((alongLight.y - first.y) - 5) < 1e-9);
+  assert.ok(Math.abs((alongLight.z - first.z) - 5) < 1e-9);
+
+  const nearby = stabiliseDirectionalShadowCenter(
+    { x: 10.041, y: 20.017, z: 30.009 }, direction, 32, 512);
+  assert.ok(Math.abs(first.x - nearby.x) < 1e-9);
+  assert.ok(Math.abs(first.y - nearby.y) < 1e-9);
+  assert.ok(Math.abs(first.z - nearby.z) < 1e-9);
+  assert.deepEqual(
+    stabiliseDirectionalShadowCenter({ x: 1, y: 2, z: 3 }, direction, 0, 512),
+    { x: 1, y: 2, z: 3 },
+  );
 });
 
 test("unsupported or small contexts keep enhanced light and gracefully drop shadow resolution", () => {
@@ -84,13 +116,49 @@ test("lighting quality is an account setting with off, balanced and high values"
   assert.equal(parseSettings('{"lightingQuality":99}')?.lightingQuality, 2);
 });
 
+test("character atlas anisotropy is an opt-in account experiment", async () => {
+  const definition = settingDefinition("characterAtlasAnisotropy");
+  assert.ok(definition);
+  assert.equal(definition.group, "Мир");
+  assert.equal(definition.kind, "boolean");
+  assert.equal(definition.fallback, false);
+  assert.match(definition.hint ?? "", /A\/B/i);
+  assert.equal(defaultSettings().characterAtlasAnisotropy, false);
+  assert.equal(parseSettings('{"characterAtlasAnisotropy":false}')?.characterAtlasAnisotropy, false);
+  assert.equal(parseSettings('{"characterAtlasAnisotropy":true}')?.characterAtlasAnisotropy, true);
+
+  const settings = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
+  assert.match(settings, /setCharacterAtlasAnisotropy\(settingBoolean\(values, "characterAtlasAnisotropy"\)\)/);
+});
+
 test("world integration confines shadow flags to ranked units and terrain receivers", async () => {
   const [world, settings] = await Promise.all([
     readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8"),
   ]);
   assert.match(settings, /setLightingQuality\(settingNumber\(values, "lightingQuality"\)\)/);
-  assert.match(world, /unitCastsEnhancedShadow\(rank,[\s\S]*Math\.hypot\([\s\S]*this\.#lightingProfile\)/);
+  const updateStart = world.indexOf("  #updateUnits(");
+  const updateEnd = world.indexOf("  #wmoGroupBorrowers(", updateStart);
+  assert.ok(updateStart >= 0 && updateEnd > updateStart, "unit admission method is findable");
+  const updateUnits = world.slice(updateStart, updateEnd);
+  const candidatePush = updateUnits.indexOf("candidates.push({");
+  const admissionCallText = "const admission = selectUnitAdmission(candidates, UNIT_BUDGET);";
+  const admissionCall = updateUnits.indexOf(admissionCallText, candidatePush);
+  const admittedLoopText = "for (const [rank, { value: object, distance }] of admission.admitted.entries())";
+  const admittedLoop = updateUnits.indexOf(admittedLoopText, admissionCall);
+  const shadowCallText = "unitCastsEnhancedShadow(rank, distance, this.#lightingProfile)";
+  const shadowCall = updateUnits.indexOf(shadowCallText, admittedLoop);
+  const distanceText = "const distance = Math.hypot(object.position.x - player.x, object.position.y - player.y);";
+  const distanceRead = updateUnits.indexOf(distanceText);
+  assert.ok(distanceRead >= 0 && candidatePush > distanceRead && admissionCall > candidatePush
+    && admittedLoop > admissionCall && shadowCall > admittedLoop,
+    "unit candidates flow through admission to the ranked shadow call");
+  assert.equal(updateUnits.slice(admissionCall, admissionCall + admissionCallText.length), admissionCallText);
+  assert.equal(updateUnits.slice(admittedLoop, admittedLoop + admittedLoopText.length), admittedLoopText);
+  assert.equal(updateUnits.slice(shadowCall, shadowCall + shadowCallText.length), shadowCallText);
+  assert.match(updateUnits.slice(distanceRead, admissionCall),
+    /const distance = Math\.hypot\(object\.position\.x - player\.x, object\.position\.y - player\.y\);[\s\S]*candidates\.push\(\{[\s\S]*distance: Number\.isFinite\(distance\) \? distance : Number\.MAX_VALUE,/,
+    "the candidate retains the finite distance derived from the unit/player positions");
   assert.match(world, /unit\.node\.traverse/);
   assert.match(world, /terrain\.mesh\.receiveShadow = shadows/);
   const policy = world.slice(world.indexOf("#applyUnitShadow"), world.indexOf("setRenderScale", world.indexOf("#applyUnitShadow")));

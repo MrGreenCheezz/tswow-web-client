@@ -3,6 +3,7 @@ import { LOCK_KEY_SKILL } from "../../world/LockRules.js";
 import { readByte, readField, trackedTypesFromMask, worldObject } from "../../world/Fields.js";
 import type { WorldObjectState, WorldState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
+import { spellCastAllowed } from "../SpellCastGuard.js";
 import { IconButton, Panel } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
 
@@ -182,7 +183,7 @@ export function showTracking(): void {
       // either way: cast to start, cancel the aura to stop, and let the fields say what happened.
       onClick: () => {
         if (active) world.cancelAura(spell.spellId);
-        else world.castSpell(spell.spellId);
+        else if (game.world !== world || spellCastAllowed(world, spell.spellId)) world.castSpell(spell.spellId);
       },
     });
     button.setUsable(true);

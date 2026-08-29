@@ -4,6 +4,38 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 import { removeStampsUnder } from "./tools/source-stamp.mjs";
 
+/** Browser dependencies are explicit so Vite never has to crawl the full application on startup. */
+export const BROWSER_OPTIMIZED_DEPENDENCIES = Object.freeze(["three"]);
+
+/**
+ * Generator inputs and local extracted caches are served/read on demand, never hot-reloaded.
+ * Keeping them out of chokidar is load-bearing on Windows: `data/` alone contains tens of
+ * thousands of files and otherwise creates one cold-start watcher storm per Vite process.
+ */
+export const DEV_SERVER_WATCH_IGNORES = Object.freeze([
+  "**/data/**",
+  "**/CPPClientExample/**",
+  "**/.runtime/**",
+  "**/.vite-cache/**",
+  "**/dist/**",
+  "**/public/icons/**",
+  "**/public/creature-icons/**",
+  "**/public/portraits/**",
+]);
+
+/** Isolate dependency metadata when QA/dev servers intentionally use different ports. */
+export function viteCacheDirectory(fallbackPort, argv = process.argv) {
+  let requested;
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index];
+    if (argument === "--port") requested = argv[index + 1];
+    else if (argument.startsWith("--port=")) requested = argument.slice("--port=".length);
+  }
+  const parsed = Number.parseInt(requested ?? "", 10);
+  const selected = Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : fallbackPort;
+  return `.vite-cache/${selected}`;
+}
+
 /**
  * Keeps local client-derived caches and source stamps out of the production web directory.
  *
@@ -71,15 +103,25 @@ function port(value, fallback) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const webPort = port(env.WEB_PORT, 5173);
   const allowedHosts = (env.WEB_ALLOWED_HOSTS ?? "")
     .split(",")
     .map((host) => host.trim())
     .filter(Boolean);
   return {
+    cacheDir: viteCacheDirectory(webPort),
+    optimizeDeps: {
+      include: [...BROWSER_OPTIMIZED_DEPENDENCIES],
+      noDiscovery: true,
+      holdUntilCrawlEnd: false,
+    },
     server: {
       host: env.WEB_HOST || "127.0.0.1",
-      port: port(env.WEB_PORT, 5173),
+      port: webPort,
       strictPort: true,
+      watch: {
+        ignored: [...DEV_SERVER_WATCH_IGNORES],
+      },
       ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
     },
     plugins: [keepBuildLocalOnly()],

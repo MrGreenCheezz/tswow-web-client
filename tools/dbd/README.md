@@ -46,6 +46,26 @@ build is decisive: 18 fields of 72 bytes is `int ID` plus one `locstring`, and n
 `node tools/fetch-dbd.mjs` will replace it with the upstream version, which is the same two
 columns. Nothing here depends on which of the two is on disk.
 
+## Local addition: EmotesTextSound
+
+`EmotesTextSound.dbd` is the fixed WotLK client-media overlay used by the web client. It is kept
+separate from the dataset-owned `EmotesText` and `EmotesTextData`: the extractor reads this table
+from the active client archive chain so a visual/audio patch can add source race/sex variants
+without changing gameplay metadata. Its WDBC header is five 32-bit fields — `ID`, `EmotesTextID`,
+`RaceID`, `SexID` and `SoundID` — and `tests/dbc.test.mjs` validates that exact layout against the
+real file. The definition follows the WoWDBDefs field names and the TrinityCore 3.3.5 schema; it
+is vendored locally so extraction and tests remain offline.
+
+## Local addition: SpellVisualKitModelAttach
+
+`SpellVisualKitModelAttach.dbd` is the 3.3.5 client-visual table used to attach an effect model to
+a spell-visual kit with an attachment point and authored transform. It is a local fixed-build
+definition, written from the active WDBC header and the TrinityCore/WotLK field contract rather
+than silently treating this visual table as gameplay metadata. The header is exactly ten
+32-bit values (40 bytes): `ID`, `ParentSpellVisualKitID`, `SpellVisualEffectNameID`, `AttachmentID`,
+three offsets and `Yaw`/`Pitch`/`Roll`. `tests/dbc.test.mjs` validates the live header and
+`tests/spell-visual.test.mjs` exercises the parent/effect/transform mapping.
+
 ## Local addition: SpellCategory
 
 `SpellCategory.dbd` is a two-field fixed-layout definition written here for the WotLK dataset:

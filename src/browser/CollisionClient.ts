@@ -1,4 +1,5 @@
 import { decodeCollisionModel, type CollisionModel } from "../world/CollisionFormat.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { CollisionModel };
 
@@ -21,7 +22,11 @@ export class CollisionClient {
   readonly #requested = new Set<string>();
   readonly #requestedGroups = new Set<string>();
   readonly #queue: string[] = [];
+  readonly #errors = new Set<string>();
   #active = 0;
+  #pending = 0;
+  #success = 0;
+  #error = 0;
   /** Bumped whenever geometry lands, so the world knows to rebuild what it could not build before. */
   #revision = 0;
 
@@ -33,6 +38,17 @@ export class CollisionClient {
 
   get revision(): number {
     return this.#revision;
+  }
+
+  /** Immutable exact model/group request counters; requested names are lifetime cache state. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    return Object.freeze({
+      // Queue entries are pending work too; lifetime requested names below are not.
+      pending: this.#pending + this.#queue.length,
+      success: this.#success,
+      error: this.#errors.size,
+      generation: this.#revision,
+    });
   }
 
   /** The model, or undefined until it lands. A model the client does not ship resolves to null. */
@@ -63,6 +79,7 @@ export class CollisionClient {
     const missing = groups.filter((group) => !this.#requestedGroups.has(`${name}#${group}`));
     if (missing.length === 0) return;
     for (const group of missing) this.#requestedGroups.add(`${name}#${group}`);
+    this.#pending++;
     void this.#fetchGroups(name, missing);
   }
 
@@ -71,6 +88,7 @@ export class CollisionClient {
       const name = this.#queue.shift();
       if (!name) return;
       this.#active++;
+      this.#pending++;
       void this.#load(name).finally(() => {
         this.#active--;
         this.#drain();
@@ -79,6 +97,15 @@ export class CollisionClient {
   }
 
   async #load(name: string): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#pending--;
+      this.#revision++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?v=3`);
       if (response.status === 204 || response.status === 404) {
@@ -86,24 +113,51 @@ export class CollisionClient {
         // 404 remains accepted for older gateways; the current route uses 204 so the browser does
         // not report an expected render-only lookup as a failed resource.
         this.#models.set(name, null);
+        this.#errors.delete(name);
+        settle(true);
         return;
       }
       if (!response.ok) throw new Error(`Collision gateway returned ${response.status}`);
       this.#models.set(name, decodeCollisionModel(await response.arrayBuffer()));
-      this.#revision++;
+      this.#errors.delete(name);
+      settle(true);
     } catch (error) {
       this.#models.set(name, null);
+      this.#errors.add(name);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      settle(false);
     }
   }
 
   async #fetchGroups(name: string, groups: readonly number[]): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#pending--;
+      this.#revision++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?groups=${groups.join(",")}&v=3`);
-      if (!response.ok || response.status === 204) return;
+      if (!response.ok || response.status === 204) {
+        if (response.status === 204) {
+          for (const group of groups) this.#errors.delete(`${name}#${group}`);
+        } else {
+          for (const group of groups) this.#errors.add(`${name}#${group}`);
+        }
+        settle(response.status === 204);
+        return;
+      }
       const answer = decodeCollisionModel(await response.arrayBuffer());
       const model = this.#models.get(name);
-      if (!model) return;
+      if (!model) {
+        settle(true);
+        return;
+      }
       for (const group of groups) {
         const source = answer.groups[group];
         const target = model.groups[group];
@@ -111,9 +165,14 @@ export class CollisionClient {
         target.vertices = source.vertices;
         target.indices = source.indices;
       }
-      this.#revision++;
+      for (const group of groups) this.#errors.delete(`${name}#${group}`);
+      settle(true);
     } catch (error) {
+      for (const group of groups) this.#errors.add(`${name}#${group}`);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      settle(false);
     }
   }
 

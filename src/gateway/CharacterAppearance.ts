@@ -119,6 +119,11 @@ export interface CharacterAppearance {
    */
   skinExtra?: string;
   /**
+   * The appearance rows and the model archives are one coordinated visual pack. Optional so an
+   * older/classic gateway keeps its original wire shape and model-specific corrections stay off.
+   */
+  coordinatedVisuals?: true;
+  /**
    * Geoset ids to draw. Everything else in the model stays hidden — which is the whole point,
    * since a character file carries every variant of every family.
    */
@@ -181,6 +186,40 @@ const FAMILY_CLOAK = 15;
 const FAMILY_EYE_GLOW = 17;
 const FAMILY_BELT = 18;
 
+/**
+ * The installed HD non-hoof profiles' fifth boot variant carries the foot section, while Tauren's
+ * fifth is the only authored worn shaft. The old group variants either stop at the ankle or are
+ * absent, so an item with an `_FO` component silently painted pixels that no selected triangles
+ * could sample. This is a measured profile table, not a family-wide 501 -> 505 fallback: Troll and
+ * Draenei retain their authored bare/hoof spellings, and Tauren keeps its own authored variants.
+ */
+const FOOT_TEXTURE_BOOT_VARIANT = 5;
+const FOOT_TEXTURE_PROFILES = new Set([
+  "1/0", "1/1", // Human
+  "2/0", "2/1", // Orc
+  "3/0", "3/1", // Dwarf
+  "4/0", "4/1", // Night Elf
+  "5/0", "5/1", // Scourge
+  "7/0", "7/1", // Gnome
+  "10/0", "10/1", // Blood Elf
+]);
+
+/**
+ * Active patch-W adds the second belt mesh to these profiles, while their ordinary family-18
+ * variant is absent. This is intentionally a profile table, not a resolver fallback: the gateway
+ * must not turn a stock model's missing 1801 into an arbitrary 1802.
+ */
+const BELT_1802_PROFILES = new Set([
+  "1/1", // HumanFemale
+  "2/0", // OrcMale
+  "3/0", // DwarfMale
+  "4/1", // NightElfFemale
+  "5/1", // ScourgeFemale
+  "6/1", // TaurenFemale
+  "7/1", // GnomeFemale
+  "10/0", // BloodElfMale
+]);
+
 /** An id from a family and the variant number an item or a default names. */
 function geosetId(family: number, variant: number): number {
   return family * 100 + variant;
@@ -199,10 +238,11 @@ const SCALP_GEOSET = 1;
 /**
  * What a character with nothing equipped shows, by family.
  *
- * Families this omits — sleeves, kneepads, the shirt hem, trousers, the tabard and the belt —
- * have no variant 1 in any model, so bare skin is genuinely "draw nothing" for them. The ones
- * listed do have a bare variant, and leaving them out is what left a character with no hands and
- * no feet.
+ * Families this omits — sleeves, kneepads, the shirt hem, trousers and the tabard — have no
+ * neutral variant in any model, so bare skin is genuinely "draw nothing" for them. The belt is
+ * seeded separately below because the active model generation has a profile-specific neutral
+ * variant (1801 or 1802). The ones listed do have a bare variant, and leaving them out is what
+ * left a character with no hands and no feet.
  *
  * The ears default to variant 2, not 1. Measured on every race: 701 is a 2 to 10 triangle plug and
  * 702 is the real ear — HumanMale 6 vs 14 triangles, TaurenMale 4 vs 20 — and NightElf and Troll
@@ -330,6 +370,20 @@ const EQUIPMENT_SLOT_MAINHAND = 15;
 const EQUIPMENT_SLOT_OFFHAND = 16;
 const EQUIPMENT_SLOT_RANGED = 17;
 
+/**
+ * CreatureDisplayInfoExtra.NPCItemDisplay is not an untyped list. In the 3.3.5 client its eleven
+ * columns are the visible character slots, in this order: head, shoulders, shirt, chest, waist,
+ * legs, feet, wrists, hands, tabard and back. The DBC stores ItemDisplayInfo ids only, so these
+ * inventory types are the missing half needed to apply their component textures/geoset groups.
+ * Keep this beside the slot constants rather than guessing from an item's model or texture name.
+ */
+const NPC_ITEM_INVENTORY_TYPES: readonly number[] = [
+  1, 3, 4, 5, 6, 7, 8, 9, 10, 19, 16,
+];
+const NPC_EQUIPMENT_SLOTS: readonly number[] = [
+  0, 2, 3, 4, 5, 6, 7, 8, 9, 18, 14,
+];
+
 /** INVTYPE_SHIELD, which hangs off the forearm rather than being held. */
 const INVENTORY_TYPE_SHIELD = 14;
 const INVENTORY_TYPE_CHEST = 5;
@@ -372,6 +426,8 @@ export interface EquippedItem {
   slot: number;
   inventoryType: number;
   displayId: number;
+  /** ItemSubClass, when the item query supplied it; needed to distinguish wands from guns. */
+  subClass?: number;
 }
 
 /**
@@ -384,6 +440,8 @@ export interface AttachedModel {
   slot: number;
   /** INVTYPE_*, which is how a shield is told from a held off-hand weapon. */
   inventoryType: number;
+  /** ItemSubClass, when available; ranged animation selection uses it for wand-vs-gun. */
+  subClass?: number;
   /** Left or right, for the two-piece slots. Shoulders are two separate meshes. */
   side: "left" | "right";
   /** Full MPQ path of the item's M2. */
@@ -427,7 +485,10 @@ export class CharacterAppearanceIndex {
   /** `race/sex/variation` to the three facial-hair geoset variants. */
   readonly #facialHair = new Map<string, [number, number, number, number]>();
   /** Extended display records: a creature wearing a character model has a full appearance. */
-  readonly #npc = new Map<number, { race: number; sex: number; skin: number; face: number; hairStyle: number; hairColor: number; facialHair: number; bake: string }>();
+  readonly #npc = new Map<number, {
+    race: number; sex: number; skin: number; face: number; hairStyle: number; hairColor: number;
+    facialHair: number; items: number[]; bake: string;
+  }>();
   /**
    * ItemDisplayInfo: the eight component textures, the three geoset groups, the left and right
    * models, and their textures — one of which, for a cloak, is the cape itself, since a cloak is
@@ -449,6 +510,8 @@ export class CharacterAppearanceIndex {
   readonly #raceModels = new Map<string, number>();
   /** HelmetGeosetVisData: seven per-race bitmasks saying what a helmet covers up. */
   readonly #helmetVisibility = new Map<number, number[]>();
+  /** True only when character rows come from a coordinated client-visual overlay. */
+  #coordinatedVisuals = false;
   /**
    * What the client archives really hold, where the DBCs only name a file.
    *
@@ -465,16 +528,21 @@ export class CharacterAppearanceIndex {
    * `loadCreatureModelMetadata` so the two indexes pay for one run between them.
    */
   static async load(dbcDirectory: string,
-    textures?: Promise<CharacterTextureIndex | undefined>): Promise<CharacterAppearanceIndex> {
+    textures?: Promise<CharacterTextureIndex | undefined>,
+    visualDbcDirectory = dbcDirectory,
+    coordinatedVisuals = false): Promise<CharacterAppearanceIndex> {
     const index = new CharacterAppearanceIndex();
+    index.#coordinatedVisuals = coordinatedVisuals;
     const [sections, hair, facial, extra, itemDisplay, races, helmets, held] = await Promise.all([
-      openDbcFile(dbcDirectory, "CharSections"),
-      openDbcFile(dbcDirectory, "CharHairGeosets"),
-      openDbcFile(dbcDirectory, "CharacterFacialHairStyles"),
-      openDbcFile(dbcDirectory, "CreatureDisplayInfoExtra"),
+      // These rows describe the client model and its textures, not server mechanics. An HD model
+      // patch changes them together with the M2s, so the two generations must stay paired.
+      openDbcFile(visualDbcDirectory, "CharSections"),
+      openDbcFile(visualDbcDirectory, "CharHairGeosets"),
+      openDbcFile(visualDbcDirectory, "CharacterFacialHairStyles"),
+      openDbcFile(visualDbcDirectory, "CreatureDisplayInfoExtra"),
       openDbcFile(dbcDirectory, "ItemDisplayInfo"),
       openDbcFile(dbcDirectory, "ChrRaces"),
-      openDbcFile(dbcDirectory, "HelmetGeosetVisData"),
+      openDbcFile(visualDbcDirectory, "HelmetGeosetVisData"),
       textures,
     ]);
     index.#textures = held;
@@ -581,6 +649,7 @@ export class CharacterAppearanceIndex {
         hairStyle: extra.int(row, "HairStyleID"),
         hairColor: extra.int(row, "HairColorID"),
         facialHair: extra.int(row, "FacialHairID"),
+        items: NPC_ITEM_INVENTORY_TYPES.map((_, slot) => extra.int(row, "NPCItemDisplay", slot)),
         bake: texturePath(`Textures\\BakedNpcTextures\\${extra.string(row, "BakeName").replaceAll("/", "\\")}`),
       });
     }
@@ -792,7 +861,7 @@ export class CharacterAppearanceIndex {
       .filter((item) => SLOT_APPEARANCE[this.#effectiveType(item)] !== undefined)
       .sort((left, right) => PAINT_ORDER.indexOf(this.#effectiveType(left)) - PAINT_ORDER.indexOf(this.#effectiveType(right)));
 
-    const families = this.#geosetFamilies(worn);
+    const families = this.#geosetFamilies(race, sex, worn);
     for (const item of worn) this.#paint(item, sex, body);
 
     return {
@@ -805,6 +874,7 @@ export class CharacterAppearanceIndex {
       // not become one: the horns and the hide sample texture type 8 with their own UVs, so
       // painting it into the 512x512 body would put it on the wrong geometry twice over.
       skinExtra: skinRow?.textures[1] ?? "",
+      ...(this.#coordinatedVisuals ? { coordinatedVisuals: true as const } : {}),
       geosets: this.#geosets(race, sex, hairStyle, hairColor, facialHair,
         families, this.#hiddenFamilies(race, sex, equipment)),
       attached: this.#attached(race, sex, equipment),
@@ -867,6 +937,7 @@ export class CharacterAppearanceIndex {
           side,
           model,
           texture: texture ? texturePath(`Item\\ObjectComponents\\${directory}\\${texture}.blp`) : "",
+          ...(item.subClass === undefined ? {} : { subClass: item.subClass }),
         });
       }
     }
@@ -887,7 +958,23 @@ export class CharacterAppearanceIndex {
   forNpc(extendedDisplayId: number): CharacterAppearance | undefined {
     const npc = this.#npc.get(extendedDisplayId);
     if (!npc) return undefined;
-    const appearance = this.forPlayer(npc.race, npc.sex, npc.skin, npc.face, npc.hairStyle, npc.hairColor, npc.facialHair);
+    // The eleven NPCItemDisplay columns carry the same ItemDisplayInfo component/geoset data as
+    // player equipment. Their position is authoritative for the inventory type; there is no
+    // Item.dbc row here from which to recover it. This slice intentionally takes only items painted
+    // into the baked body (shirt through cloak). Head and shoulders require their own attached M2s:
+    // feeding them through forPlayer and then discarding `attached` would apply helmet hide rules
+    // without drawing the helmet, which measurably removed the hair from 53 existing NPC looks.
+    const equipment = npc.items
+      .map((displayId, slot) => ({
+        slot: NPC_EQUIPMENT_SLOTS[slot] ?? -1,
+        inventoryType: NPC_ITEM_INVENTORY_TYPES[slot] ?? 0,
+        displayId,
+      }))
+      .filter((item) => item.slot >= 0 && item.displayId > 0
+        && item.inventoryType !== 1 && item.inventoryType !== 3);
+    const appearance = this.forPlayer(
+      npc.race, npc.sex, npc.skin, npc.face, npc.hairStyle, npc.hairColor, npc.facialHair, equipment);
+    appearance.attached = [];
     // A baked texture is a finished body and replaces every layer that would have made one.
     // 15,451 of the client's 24,263 displays have one.
     //
@@ -956,14 +1043,24 @@ export class CharacterAppearanceIndex {
    * `family * 100 + value + 1` and a value of 0 is meaningful, not absent. That off-by-one is
    * measurable: gloves carry values 0..3 against family 4's variants 1..4, boots 0..4 against
    * family 5's 1..5, cloaks 0..5 against family 15's 1..6. Dropping the +1 emits 401 for a glove
-   * that should be 402, and emits 801, 901, 1001, 1101 and 1801 — five ids that exist in no
-   * playable model at all — for the families whose bare state is "draw nothing".
+   * that should be 402, and emits 801, 901, 1001, 1101 and 1801. Stock 3.3.5 playable models do
+   * not carry those variants, but coordinated HD replacements may: the installed HumanMale adds
+   * authored 1801/1802 belt meshes, and several other patch-W profiles add 1802 only. The browser
+   * resolves this list against the model it actually loaded, so a missing stock id is harmless while
+   * dropping the profile's authored id here makes the HD mesh unreachable.
    *
    * One id per family, because the browser is handed an explicit list and draws everything on it:
    * seeding plain legs (1301) and then adding a robe skirt (1302) would draw both.
-   */
-  #geosetFamilies(worn: readonly EquippedItem[]): Map<number, number> {
+  */
+  #geosetFamilies(race: number, sex: number, worn: readonly EquippedItem[]): Map<number, number> {
     const families = new Map<number, number>(NAKED_VARIANTS);
+    // The neutral waist is authored in active patch-W, but its variant differs by profile. Keep
+    // this model-aware seed in the gateway rather than teaching the browser to invent a belt.
+    // It is not a stock default: several classic models really carry 1802, so relying on the
+    // browser to drop the id would leak the HD waist into an otherwise classic naked appearance.
+    if (this.#coordinatedVisuals) {
+      families.set(FAMILY_BELT, BELT_1802_PROFILES.has(`${race}/${sex}`) ? 2 : 1);
+    }
     for (const item of worn) {
       const display = this.#itemDisplays.get(item.displayId);
       if (!display) continue;
@@ -972,7 +1069,20 @@ export class CharacterAppearanceIndex {
       for (let group = 0; group < slot.families.length; group++) {
         const family = slot.families[group];
         if (family === undefined) continue;
-        const variant = (display.geosetGroups[group] ?? 0) + 1;
+        let variant = (display.geosetGroups[group] ?? 0) + 1;
+        if (this.#coordinatedVisuals && family === FAMILY_BOOTS && display.textures[7]
+          && (FOOT_TEXTURE_PROFILES.has(`${race}/${sex}`)
+            || (race === 6 && variant === 1))) {
+          variant = FOOT_TEXTURE_BOOT_VARIANT;
+        }
+        if (this.#coordinatedVisuals && family === FAMILY_BELT && variant === 1
+          && BELT_1802_PROFILES.has(`${race}/${sex}`)) {
+          variant = 2;
+        }
+        // In active patch-W, the measured non-hoof profiles use 505 for the authored worn boot
+        // shaft, while Troll/Draenei have different bare/hoof semantics. Scope this correction to
+        // the profile table and an actual FootTexture component; naked appearances and leg-only
+        // rows retain their old family choice.
         // The legs are the one family two slots drive: a chest piece claims them to become a robe,
         // and a trousers item claims them to stay plain. A long garment wins whichever slot it
         // came from, so a robe survives the trousers underneath it.
@@ -1086,10 +1196,10 @@ export class CharacterAppearanceIndex {
     }
 
     for (const [family, variant] of families) {
-      // Sleeves, kneepads, the shirt hem, trousers, the tabard and the belt have no variant 1 in
-      // any model, so a group value of 0 on those means the garment adds no geometry. Emitting
-      // 801, 901, 1001, 1101 or 1801 anyway would only send the browser five ids to discard.
-      if (variant === 1 && !NAKED_VARIANTS.has(family)) continue;
+      // In stock data, variant 1 on a non-naked garment family means "draw nothing". A coordinated
+      // HD model may author that formerly-empty variant (notably HumanMale's 1801 belt), so only
+      // that profile is allowed to publish it.
+      if (!this.#coordinatedVisuals && variant === 1 && !NAKED_VARIANTS.has(family)) continue;
       if (hidden.has(family)) continue;
       geosets.add(geosetId(family, variant));
     }

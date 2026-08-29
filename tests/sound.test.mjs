@@ -24,9 +24,9 @@ import {
 } from "../dist/code/world/CombatProtocol.js";
 import { game } from "../dist/code/browser/game/Context.js";
 import { forgetGameSounds, playCreatureSound, retryPendingSounds } from "../dist/code/browser/game/GameSounds.js";
-import {
-  forgetCombatSounds, playSwingSounds, updateCombatSounds,
-} from "../dist/code/browser/game/CombatSounds.js";
+import * as combatSounds from "../dist/code/browser/game/CombatSounds.js";
+
+const { forgetCombatSounds, playSwingSounds, updateCombatSounds } = combatSounds;
 
 let dbcDirectory;
 try {
@@ -39,6 +39,20 @@ const withDataset = { skip: dbcDirectory ? false : "no tswow dataset on this mac
 const SEP = String.fromCharCode(92);
 const FOOTSTEP = ["Sound", "Character", "Footsteps", "mFootSmallDirtA.wav"].join(SEP);
 const ORIGIN = { origin: "http://localhost:5173" };
+
+test("beneficial and utility spell logs never manufacture combat voices", () => {
+  assert.equal(typeof combatSounds.spellCombatVoices, "function");
+  assert.deepEqual(combatSounds.spellCombatVoices({
+    kind: "heal", casterGuid: 1n, targetGuid: 1n, critical: false,
+  }), [], "self-healing must not grunt and cry as if it were a weapon hit");
+  assert.deepEqual(combatSounds.spellCombatVoices({
+    kind: "utility", casterGuid: 1n, targetGuid: 2n, critical: false,
+  }), []);
+  assert.deepEqual(combatSounds.spellCombatVoices({
+    kind: "damage", casterGuid: 1n, targetGuid: 2n, critical: true,
+  }), [{ guid: 1n, voice: "exertionCritical" }],
+  "damage may use the caster's effort voice; target injury already comes from FLOATING_TEXT");
+});
 
 test("Ж2.1 a sound path has one spelling, and the gateway and the generator agree on it", () => {
   // `SoundEntries` writes the same file several ways: 45 of the 20,642 slots join their directory

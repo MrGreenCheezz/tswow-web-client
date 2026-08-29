@@ -190,6 +190,23 @@ export function buildCastSpell(
 }
 
 /**
+ * Starts the server-owned ranged repeat container against one explicit unit.
+ *
+ * TrinityCore's duplicate guard compares this incoming guid with the active repeat target. A
+ * targetless ordinary cast packet therefore restarts Auto Shot/Shoot on every press; keep this
+ * unit-bearing shape dedicated to spells carrying `SPELL_ATTR2_AUTOREPEAT_FLAG`.
+ */
+export function buildAutoRepeatCastSpell(spellId: number, castCount: number, targetGuid: bigint): Uint8Array {
+  return new PacketWriter()
+    .u8(castCount)
+    .u32(spellId)
+    .u8(0)
+    .u32(TARGET_FLAG_UNIT)
+    .packedGuid(targetGuid)
+    .toUint8Array();
+}
+
+/**
  * Casts at a game object rather than at a creature — the only way a chest, an ore vein or a herb
  * is ever opened.
  *

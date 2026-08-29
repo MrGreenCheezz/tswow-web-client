@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { SpellVisualCoordinator } from "../dist/code/browser/SpellVisualLifecycle.js";
+import { SpellVisualCoordinator, usesStockRangedRelease } from "../dist/code/browser/SpellVisualLifecycle.js";
 
 class Events {
   #listeners = new Map();
@@ -141,7 +141,7 @@ test("GO waits for authored metadata instead of double-playing generic release",
   assert.equal(ref.calls.plans.length, 1);
 });
 
-test("missing-metadata GO fallback is retained until a renderer becomes ready", () => {
+test("a resolved no-visual GO remains animation-silent when a renderer becomes ready", () => {
   let now = 1000;
   const source = metadata();
   const ref = rendererRef();
@@ -155,18 +155,19 @@ test("missing-metadata GO fallback is retained until a renderer becomes ready", 
   ref.set(ref.renderer);
   coordinator.tick();
   coordinator.tick();
-  assert.equal(ref.calls.actions.filter((action) => action.action === "cast").length, 1);
+  assert.equal(ref.calls.actions.length, 0,
+    "absence of an authored kit is data, not permission to invent a generic cast");
 });
 
-test("queued GO fallback expires by TTL and is invalidated by a world epoch", () => {
+test("an explicit queued ranged release expires by TTL and is invalidated by a world epoch", () => {
   let now = 1000;
   const source = metadata();
+  source.put(75, { id: 75, autoRepeat: true });
   const ref = rendererRef();
   const current = world();
   const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.get, now: () => now, ttlMs: 2000 });
   coordinator.bindWorld(current);
-  current.events.emit("SPELL_GO", go());
-  coordinator.onLoaded([7]);
+  current.events.emit("SPELL_GO", go(75));
   now = 4001;
   ref.set(ref.renderer);
   coordinator.tick();
@@ -175,14 +176,62 @@ test("queued GO fallback expires by TTL and is invalidated by a world epoch", ()
   const ref2 = rendererRef();
   let now2 = 1000;
   const current2 = world();
-  const coordinator2 = new SpellVisualCoordinator({ metadata: metadata(), renderer: ref2.get, now: () => now2 });
+  const source2 = metadata();
+  source2.put(75, { id: 75, autoRepeat: true });
+  const coordinator2 = new SpellVisualCoordinator({ metadata: source2, renderer: ref2.get, now: () => now2 });
   coordinator2.bindWorld(current2);
-  current2.events.emit("SPELL_GO", go());
-  coordinator2.onLoaded([7]);
+  current2.events.emit("SPELL_GO", go(75));
   coordinator2.worldChanged(current2);
   ref2.set(ref2.renderer);
   coordinator2.tick();
-  assert.equal(ref2.calls.actions.length, 0, "teleport epoch must drop queued fallback");
+  assert.equal(ref2.calls.actions.length, 0, "teleport epoch must drop queued release");
+});
+
+test("Auto Shot uses the explicit ranged release action and no generic cast pose", () => {
+  const source = metadata();
+  source.put(75, { id: 75, autoRepeat: true });
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer });
+  coordinator.bindWorld(current);
+
+  current.events.emit("SPELL_GO", go(75));
+
+  assert.deepEqual(ref.calls.actions, [{ guid: 1n, action: "shoot", hold: undefined }]);
+});
+
+test("an auto-repeat row with an authored caster animation does not invent a weapon shot", () => {
+  const autoVisual = { ...visual(), autoRepeat: true };
+  const source = metadata(autoVisual);
+  source.put(75);
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer });
+  coordinator.bindWorld(current);
+
+  current.events.emit("SPELL_GO", go(75));
+
+  assert.deepEqual(ref.calls.order, ["visual"]);
+  assert.equal(ref.calls.currentAction, "visual", "the DBC kit remains the caster authority");
+  assert.deepEqual(ref.calls.actions, []);
+});
+
+test("the generic ranged fallback is limited to stock Auto Shot and wand Shoot", () => {
+  assert.equal(usesStockRangedRelease(75, { id: 75, autoRepeat: true }), true);
+  assert.equal(usesStockRangedRelease(5019, { id: 5019, autoRepeat: true }), true);
+  for (const spellId of [1485, 31317, 38196]) {
+    assert.equal(usesStockRangedRelease(spellId, { id: spellId, autoRepeat: true }), false,
+      `${spellId} carries the repeat bit but is not a stock ranged release`);
+  }
+
+  const source = metadata();
+  source.put(1485, { id: 1485, autoRepeat: true });
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer });
+  coordinator.bindWorld(current);
+  current.events.emit("SPELL_GO", go(1485));
+  assert.deepEqual(ref.calls.actions, [], "an unrelated repeat-flag row stays animation-silent");
 });
 
 test("renderer-ready transition renders a deferred cast start exactly once", () => {
@@ -201,7 +250,7 @@ test("renderer-ready transition renders a deferred cast start exactly once", () 
   assert.equal(ref.calls.plans.length, 1);
 });
 
-test("GO uses generic release pose only for missing or sound-only cast kits", () => {
+test("GO uses only an authored release pose; a sound-only kit stays animation-silent", () => {
   let now = 1000;
   const ref = rendererRef();
   const source = metadata(visual());
@@ -221,7 +270,7 @@ test("GO uses generic release pose only for missing or sound-only cast kits", ()
   const coordinator2 = new SpellVisualCoordinator({ metadata: source2, renderer: ref2.renderer, now: () => now });
   coordinator2.bindWorld(current2);
   current2.events.emit("SPELL_GO", go());
-  assert.equal(ref2.calls.actions.filter((action) => action.action === "cast").length, 1);
+  assert.equal(ref2.calls.actions.length, 0);
 });
 
 test("start delay retimes a loaded handle and stop cancels it", () => {
@@ -241,7 +290,7 @@ test("start delay retimes a loaded handle and stop cancels it", () => {
   assert.ok(ref.calls.cancelled.length > 0);
 });
 
-test("late authored precast replaces, rather than cancels, the generic fallback action", () => {
+test("late authored precast arrives without a speculative pose preceding it", () => {
   let now = 1000;
   const source = metadata();
   const ref = rendererRef();
@@ -249,12 +298,12 @@ test("late authored precast replaces, rather than cancels, the generic fallback 
   const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
   coordinator.bindWorld(current);
   current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 1000, channel: false });
-  assert.equal(ref.calls.currentAction, "fallback");
+  assert.equal(ref.calls.currentAction, undefined);
   source.put(7, visual());
   coordinator.onLoaded([7]);
-  assert.deepEqual(ref.calls.order, ["fallback", "cancel", "visual"]);
+  assert.deepEqual(ref.calls.order, ["visual"]);
   assert.equal(ref.calls.currentAction, "visual",
-    "the authored visual action survives cancellation of the old fallback");
+    "the authored visual action is the first and only pose");
 });
 
 test("sound-only precast dispatches once across cast delay refreshes", () => {
@@ -365,7 +414,7 @@ test("a metadata-pending channel survives SPELL_GO and replays when its row arri
   assert.ok(ref.calls.cancelled.length > cancelledAfterLoad);
 });
 
-test("a resolved no-visual start installs its generic stance when renderer arrives late", () => {
+test("a resolved no-visual start remains pose-silent when renderer arrives late", () => {
   let now = 1000;
   const source = metadata();
   const ref = rendererRef();
@@ -377,7 +426,7 @@ test("a resolved no-visual start installs its generic stance when renderer arriv
   ref.set(ref.renderer);
   coordinator.tick();
   coordinator.tick();
-  assert.equal(ref.calls.actions.filter((action) => action.action === "precast").length, 1);
+  assert.equal(ref.calls.actions.length, 0);
 });
 
 test("initial aura snapshot restores persistent state without replaying add sound", () => {
@@ -396,6 +445,33 @@ test("initial aura snapshot restores persistent state without replaying add soun
   coordinator.onLoaded([7]);
   assert.equal(sounds.length, 0);
   assert.ok([...ref.calls.states.at(-1).values()][0].some((effect) => effect.path === "state.m2"));
+});
+
+test("persistent aura state preserves duplicate authored model-attach occurrences", () => {
+  const authored = visual();
+  const shared = {
+    path: "Spells\\AuraLayer.m2", attachment: 17, scale: 1,
+    transform: { offset: [0, 0, 0], rotation: [0, 0, 0] },
+  };
+  authored.state = kit({ effects: [
+    { ...shared, occurrence: "model-attach:4085" },
+    { ...shared, occurrence: "model-attach:4086" },
+  ] });
+  const source = metadata(authored);
+  source.put(7);
+  const ref = rendererRef();
+  const current = world();
+  current.auras.set(2n, new Map([[3, {
+    slot: 3, spellId: 7, flags: 0, casterLevel: 1, applications: 1,
+  }]]));
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer });
+  coordinator.bindWorld(current);
+
+  const effects = [...ref.calls.states.at(-1).values()][0];
+  assert.deepEqual(effects.map((effect) => effect.occurrence), [
+    "model-attach:4085", "model-attach:4086",
+  ], "the lifecycle must not discard the DBC row identity before renderer reconciliation");
+  assert.equal(effects[0].path, effects[1].path, "the regression is two otherwise identical effects");
 });
 
 test("epoch invalidates queued sounds and old world replay", () => {
@@ -484,11 +560,10 @@ test("failed enterWorld login cleans only its own spell visual coordinator/clien
   const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
   assert.match(source, /if \(game\.spellVisualCoordinator === spellVisualCoordinator\) \{[\s\S]*?spellVisualCoordinator\.clear\(\);/);
   assert.match(source, /if \(game\.spellVisuals === spellVisuals\) \{[\s\S]*?spellVisuals\.onLoaded = undefined;[\s\S]*?game\.spellVisuals = undefined;/);
-  assert.match(source, /const unsubscribeSpellExertion = world\.events\.on\("SPELL_GO"/);
-  assert.equal((source.match(/world\.events\.on\("SPELL_GO"/g) ?? []).length, 1,
-    "one exertion listener is installed per enter attempt");
-  assert.match(source, /spellVisualCoordinator\.epoch === epoch/);
-  assert.match(source, /unsubscribeSpellExertion\(\);/);
+  assert.equal((source.match(/world\.events\.on\("SPELL_GO"/g) ?? []).length, 0,
+    "SPELL_GO must not manufacture a creature exertion for healing or utility casts");
+  assert.match(source, /for \(const voice of spellCombatVoices\(line\)\)/,
+    "semantic combat-log classification owns the optional damage effort voice");
   const sounds = await readFile(new URL("../src/browser/game/GameSounds.ts", import.meta.url), "utf8");
   assert.match(sounds, /playCreatureSound\(guid: bigint, which: CreatureSound, guard\?: \(\) => boolean\)/);
   assert.match(sounds, /deferSound\(\(\) => playCreatureSound\(guid, which, guard\)\)/);

@@ -221,7 +221,7 @@ test("the lab page can hide the canvas it is not drawing into", async () => {
 });
 
 test("the lab reads a look out of the query string the way the client spells one", async () => {
-  const query = parseLabQuery("?race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=7:8:10141,6:7:9892");
+  const query = parseLabQuery("?race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=7:8:10141,6:7:9892,17:26:8106:19");
   assert.equal(query.race, 6);
   assert.equal(query.sex, 1);
   assert.equal(query.skin, 2);
@@ -232,6 +232,7 @@ test("the lab reads a look out of the query string the way the client spells one
   assert.deepEqual(query.items, [
     { slot: 7, inventoryType: 8, displayId: 10141 },
     { slot: 6, inventoryType: 7, displayId: 9892 },
+    { slot: 17, inventoryType: 26, displayId: 8106, subClass: 19 },
   ]);
   assert.equal(query.sheet, undefined);
   assert.equal(query.animation, "Stand");
@@ -250,11 +251,16 @@ test("the lab reads a look out of the query string the way the client spells one
   // field being added, and the constant's rule now says "changes what it answers", not "gains a
   // field". A returning browser would otherwise have drawn an hour more of green beards. 5 rather
   // than 4: Т7 puts the spelling the archives really hold first, which changes `path` itself on
-  // three layers in four of a dressed character.
-  assert.equal(CHARACTER_APPEARANCE_VERSION, 5, "5 is the version that asks the archives which file exists");
+  // three layers in four of a dressed character. 6 adds the optional ranged weapon subclass;
+  // 7 selects installed visual DBC rows, 8 publishes the patch's garment geosets, and 9 selects
+  // the foot-capable HumanMale/Tauren boot meshes and profile-scoped belt selection. 11 seeds the
+  // neutral belt for naked and NPC appearances. 12 publishes the measured all-profile worn-boot
+  // selection. 13 marks that policy as coordinated so classic keeps its original choices.
+  assert.equal(CHARACTER_APPEARANCE_VERSION, 13,
+    "13 separates coordinated visual geosets from the classic appearance payload");
   assert.equal(
     appearanceQuery(query),
-    `${version}&race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=6%3A7%3A9892%2C7%3A8%3A10141`);
+    `${version}&race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=17%3A26%3A8106%3A19%2C6%3A7%3A9892%2C7%3A8%3A10141`);
   assert.equal(appearanceQuery(parseLabQuery("")),
     `${version}&race=1&sex=0&skin=0&face=0&hair=0&hairColor=0&facialHair=0`);
   // And it really is the client's own number, not a second constant that happens to agree.
@@ -267,6 +273,15 @@ test("the lab refuses a query it would otherwise draw the wrong character for", 
   assert.throws(() => parseLabQuery("?hair=300"), /hair=300/);
   assert.throws(() => parseLabQuery("?skin=-1"), /skin=-1/);
   assert.throws(() => parseLabQuery("?items=6:7"), /items=6:7/);
+  assert.throws(() => parseLabQuery("?items=17:26:8106:256"), /items=17:26:8106:256/);
+  assert.throws(() => parseLabQuery("?items=19:7:9892"), /items=19:7:9892/);
+  assert.throws(() => parseLabQuery("?items=6:31:9892"), /items=6:31:9892/);
+  assert.throws(() => parseLabQuery("?items=6:7:0"), /items=6:7:0/);
+  assert.throws(() => parseLabQuery("?items=6:7:1000001"), /items=6:7:1000001/);
+  assert.throws(
+    () => parseLabItems(Array.from({ length: 21 }, (_, slot) => `${slot % 19}:7:${slot + 1}`).join(",")),
+    /не больше 20 предметов/,
+  );
   assert.throws(() => parseLabQuery("?sheet=faces"), /sheet=faces/);
   assert.throws(() => parseLabQuery("?display=0"), /display=0/);
   assert.throws(() => parseLabQuery("?sheath=3"), /sheath=3/);
@@ -294,6 +309,14 @@ test("the lab page carries every element the lab reaches for", async () => {
   assert.ok(ids.length >= 9, `the lab should be asking for its panel; found ${ids.length}`);
   for (const id of ids) assert.ok(html.includes(`id="${id}"`), `character-lab.html has no #${id}`);
   assert.match(html, /<script type="module" src="\/src\/browser\/lab\/CharacterLab\.ts"><\/script>/);
+});
+
+test("the lab advances animations with the supported Timer API", async () => {
+  const source = await readFile(new URL("../src/browser/lab/CharacterLab.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /THREE\.Clock/, "three.Clock is deprecated");
+  assert.match(source, /let timer: THREE\.Timer \| undefined/);
+  assert.match(source, /timer\.update\(timestamp\)/);
+  assert.match(source, /timer\.getDelta\(\)/);
 });
 
 test("the lab reaches the shipping modules and none of the login flow", async () => {
@@ -332,7 +355,7 @@ test("Т3 a gateway older than the bundle hides the appearance controls instead 
   // straight into `fillLook`, where `values.entries()` on a number throws inside a `void`ed
   // promise — the loop over the five selects aborts on the first, all five are left empty, and the
   // form submits five zeros, which is the bald character the whole slice is about.
-  assert.equal(CHARACTER_OPTIONS_VERSION, 3, "1 was the counts, 2 the lists, 3 the lists the core accepts");
+  assert.equal(CHARACTER_OPTIONS_VERSION, 5, "5 rolls over the formerly cached visual DBC generation");
   assert.equal(isCharacterOptions({ skins: 15, faces: 24, hairStyles: 17, hairColors: 13, facialHairs: 9 }), false,
     "the counts an older gateway answers are not the lists this bundle reads");
   assert.equal(isCharacterOptions({

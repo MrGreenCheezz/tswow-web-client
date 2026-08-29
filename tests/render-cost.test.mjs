@@ -1,27 +1,342 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
-import { FRAME_WINDOW, FrameClock, RESELECT_DISTANCE, shouldReselect } from "../dist/code/browser/RenderStats.js";
+import {
+  FRAME_WINDOW, FrameCadenceClock, FrameClock, FullFrameClock, LONG_FRAME_THRESHOLD_MS,
+  makeRenderTelemetrySnapshot, makeRendererTelemetrySnapshot,
+  RESELECT_DISTANCE, shouldReselect,
+} from "../dist/code/browser/RenderStats.js";
 import {
   instanceCapacity, instanceable, instanceableBuild, placeEnvironmentNode, ADT_MODEL_TO_SCENE,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { buildModel } from "../dist/code/browser/ModelBuild.js";
 
-test("the frame clock reports the mean, the rate and the frame the player actually feels", () => {
+test("the frame clock reports work duration without presenting its reciprocal as real FPS", () => {
   const clock = new FrameClock(100);
   assert.equal(clock.average, 0, "nothing measured is zero and not a division by it");
-  assert.equal(clock.fps, 0);
   assert.equal(clock.worst, 0);
 
   for (let frame = 0; frame < 95; frame++) clock.add(16);
   for (let frame = 0; frame < 5; frame++) clock.add(80);
   assert.equal(clock.count, 100);
   assert.ok(Math.abs(clock.average - 19.2) < 1e-9, `${clock.average}`);
-  assert.ok(Math.abs(clock.fps - 1000 / 19.2) < 1e-9);
   // The whole reason the worst frame is reported beside the mean: this run stutters five times a
   // second and its mean says 19 ms, which reads as a comfortable sixty. A ninety-fifth percentile
   // would say 16 here — 95% of these frames really are good — which is why it is the maximum.
   assert.equal(clock.worst, 80);
+});
+
+test("frame cadence uses consecutive RAF timestamps and leaves the first frame as a baseline", () => {
+  const cadence = new FrameCadenceClock(4);
+  assert.equal(cadence.observe(1_000), undefined);
+  assert.equal(cadence.fps, 0);
+  assert.equal(cadence.observe(1_016), 16);
+  assert.equal(cadence.observe(1_034), 18);
+  assert.equal(cadence.fps, 1000 / 17);
+  cadence.observe(Number.NaN);
+  assert.equal(cadence.fps, 1000 / 17);
+  cadence.reset();
+  assert.equal(cadence.fps, 0);
+
+  const monotonic = new FrameCadenceClock(4);
+  assert.equal(monotonic.observe(1_034), undefined);
+  assert.equal(monotonic.observe(900), undefined); // Must not replace the valid baseline.
+  assert.equal(monotonic.observe(1_050), 16);
+  assert.equal(monotonic.fps, 62.5);
+});
+
+test("the full-frame clock measures callback work, including throws, but not idle time", () => {
+  let time = 100;
+  const clock = new FullFrameClock(8, () => time);
+
+  clock.measure(() => { time += 4; });
+  time += 1_000; // Time between animation callbacks must not enter the next sample.
+  assert.throws(() => clock.measure(() => {
+    time += 9;
+    throw new Error("frame failed");
+  }), /frame failed/);
+
+  assert.deepEqual(clock.snapshot(), {
+    count: 2,
+    average: 6.5,
+    worst: 9,
+    longFrames: 0,
+    p50: 4,
+    p95: 9,
+    p99: 9,
+  });
+});
+
+test("the full-frame clock's stateful path rejects misuse and records failed work", () => {
+  let time = 100;
+  const clock = new FullFrameClock(8, () => time);
+
+  assert.throws(() => clock.end(), /before begin/);
+  clock.begin();
+  assert.throws(() => clock.begin(), /while active/);
+  time += 12;
+  assert.equal(clock.end(), 12);
+  assert.equal(clock.snapshot().count, 1);
+  assert.equal(clock.snapshot().worst, 12);
+
+  let failedElapsed = 0;
+  assert.throws(() => {
+    clock.begin();
+    try {
+      time += 7;
+      throw new Error("frame failed");
+    } finally {
+      // A caller's finally block is what closes the stateful path around a throwing frame.
+      failedElapsed = clock.end();
+    }
+  }, /frame failed/);
+  assert.equal(failedElapsed, 7);
+  assert.equal(clock.snapshot().count, 2);
+  assert.equal(clock.snapshot().worst, 12);
+});
+
+test("render telemetry is immutable and keeps renderer counters separate from full-frame CPU", () => {
+  const fullFrame = new FrameClock(4);
+  fullFrame.add(16);
+  const rendererCpu = new FrameClock(4);
+  rendererCpu.add(5);
+  const renderer = makeRendererTelemetrySnapshot({
+    cpu: rendererCpu.snapshot(),
+    gpu: { status: "pending", pending: 1, dropped: 2 },
+    observedFps: 59.94,
+    drawCalls: 7,
+    triangles: 1_024,
+    unitsDrawn: 12,
+    unitsDropped: 3,
+    gameObjectsDrawn: 20,
+    gameObjectsDropped: 4,
+    effectsDrawn: 5,
+    effectsDropped: 1,
+    groundCoverDrawn: 32,
+    groundCoverSelected: 64,
+    groundCoverSelectionDroppedCells: 2,
+    groundCoverResidentMeshes: 3,
+    wmoPortalModels: 2,
+    wmoPortalCandidates: 11,
+    wmoPortalCulled: 6,
+    textureCount: 18,
+    geometryCount: 9,
+  });
+  const resources = {
+    terrain: { resident: 1, failed: 2, active: 3, typedPayloadBytes: 4 },
+    environment: {
+      residentTiles: 5, knownMissingTiles: 6, failedTiles: 7, activeTiles: 8, residentObjects: 9,
+      residentModels: 10, knownMissingModels: 11, deferredModels: 12, failedModels: 13,
+      queuedModels: 14, activeModels: 15, queuedGroups: 16, activeGroups: 17,
+      deferredGroups: 18, failedGroups: 19, residentAnimations: 20, failedAnimations: 21,
+      deferredAnimations: 0, queuedAnimations: 0, activeAnimations: 22,
+    },
+    terrainSplat: { resident: 20, failed: 21, active: 22, decodedLayerBytes: 23, layerRequestEntries: 24 },
+    assetWarmup: { accepted: 25, queued: 26, active: 27, closed: false },
+  };
+  const capture = makeRenderTelemetrySnapshot(1234, fullFrame.snapshot(), renderer, resources);
+
+  assert.equal(capture.capturedAt, 1234);
+  assert.equal(capture.fullFrame.average, 16);
+  assert.equal(capture.renderer.cpu.average, 5);
+  assert.equal(capture.renderer.observedFps, 59.94);
+  assert.deepEqual(capture.renderer, renderer);
+  assert.deepEqual(capture.resources, resources);
+  assert.equal(Object.isFrozen(capture), true);
+  assert.equal(Object.isFrozen(capture.fullFrame), true);
+  assert.equal(Object.isFrozen(capture.renderer), true);
+  assert.equal(Object.isFrozen(capture.renderer.cpu), true);
+  assert.equal(Object.isFrozen(capture.renderer.gpu), true);
+  assert.equal(Object.isFrozen(capture.resources), true);
+  for (const resource of Object.values(capture.resources)) assert.equal(Object.isFrozen(resource), true);
+  assert.equal(capture.renderer.textureCount, 18);
+  assert.equal(capture.renderer.geometryCount, 9);
+  assert.equal(capture.renderer.groundCoverDrawn, 32);
+  assert.equal(capture.renderer.groundCoverSelected, 64);
+  assert.equal(Object.hasOwn(capture.renderer, "residentBytes"), false,
+    "telemetry exposes exact object counts, not guessed byte claims");
+  assert.throws(() => { capture.renderer.drawCalls = 99; }, TypeError);
+  assert.throws(() => { capture.resources.terrain.resident = 99; }, TypeError);
+  assert.throws(() => { capture.resources.environment = undefined; }, TypeError);
+  assert.throws(() => { capture.resources = {}; }, TypeError);
+});
+
+test("the renderer envelope spans draw entry through dirty portrait readback and restores in finally", async () => {
+  const [rendererSource, loopSource] = await Promise.all([
+    readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8"),
+  ]);
+  const beginStart = rendererSource.indexOf("  beginRenderFrame(): void {");
+  const endStart = rendererSource.indexOf("  endRenderFrame(): number | undefined {");
+  const portraitCleanup = rendererSource.indexOf("  /** Drops all portrait instances", endStart);
+  assert.ok(beginStart >= 0 && endStart > beginStart && portraitCleanup > endStart,
+    "renderer envelope source boundaries must exist");
+  const begin = rendererSource.slice(
+    beginStart,
+    endStart,
+  );
+  const end = rendererSource.slice(
+    endStart,
+    portraitCleanup,
+  );
+  const drawStart = rendererSource.indexOf("  draw(\n");
+  const drawEnd = rendererSource.indexOf("  /**\n   * Lighting quality", drawStart);
+  const frameStart = loopSource.indexOf("function frame(now: number): void {");
+  const frameEnd = loopSource.indexOf("export function animate(now: number): void {");
+  assert.ok(drawStart >= 0 && drawEnd > drawStart && frameStart >= 0 && frameEnd > frameStart,
+    "draw/frame source boundaries must exist");
+  const draw = rendererSource.slice(drawStart, drawEnd);
+  const frame = loopSource.slice(frameStart, frameEnd);
+  assert.ok(frame.indexOf("game.renderer?.markFrameNotRendered();") < frame.indexOf("renderer.beginRenderFrame();"),
+    "a loading/hidden/throwing pre-render frame clears stale submission counters");
+
+  assert.ok(begin.indexOf("performance.now()") < begin.indexOf("this.#renderer.info.reset()"),
+    "CPU timing begins before renderer counter setup and draw entry");
+  assert.equal((begin.match(/this\.#renderer\.info\.reset\(\)/g) ?? []).length, 1);
+  assert.equal((begin.match(/this\.#gpuTimer\.beginFrame\(\)/g) ?? []).length, 1);
+  assert.equal(draw.includes("this.#renderer.info.reset()"), false,
+    "the world pass cannot reset away portrait-inclusive counters");
+  assert.equal(draw.includes("this.#gpuTimer.beginFrame()"), false,
+    "the world pass cannot open a second GPU query");
+  assert.equal(end.includes("finally {"), true);
+  assert.equal((end.match(/this\.#gpuTimer\.endFrame\(\)/g) ?? []).length, 1);
+  assert.ok(end.indexOf("this.#gpuTimer.endFrame()") < end.indexOf("this.#renderer.info.render.calls"));
+  assert.ok(end.indexOf("this.#renderer.info.render.calls") < end.indexOf("this.#renderer.info.autoReset ="),
+    "counters are read after all passes and before the saved auto-reset mode is restored");
+
+  const envelopeStart = frame.indexOf("renderer.beginRenderFrame();");
+  const worldDraw = frame.indexOf("renderer.draw(", envelopeStart);
+  const portraits = frame.indexOf("renderer.renderPortraits(now);", worldDraw);
+  const envelopeEnd = frame.indexOf("renderer.endRenderFrame();", portraits);
+  assert.ok(envelopeStart >= 0 && envelopeStart < worldDraw && worldDraw < portraits && portraits < envelopeEnd);
+  assert.equal(frame.slice(portraits, envelopeEnd).includes("} finally {"), true,
+    "a throwing world/portrait pass still closes the renderer envelope");
+});
+
+test("draw clears per-frame admission counters before a player-less early return", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const resetStart = source.indexOf("  #resetFrameCounters(): void {");
+  const resetEnd = source.indexOf("\n  }", resetStart);
+  const resets = source.slice(resetStart, resetEnd);
+  const drawStart = source.indexOf("  draw(\n");
+  const draw = source.slice(drawStart, source.indexOf("    if (wmoFloor", drawStart));
+  const playerGuard = draw.indexOf("if (!player?.position)");
+  assert.ok(resetStart >= 0 && resetEnd > resetStart && drawStart >= 0 && playerGuard >= 0);
+  assert.ok(draw.indexOf("this.#resetFrameCounters();") < playerGuard,
+    "draw entry resets counters before its player-less return");
+  for (const reset of [
+    "this.#drawCalls = 0;", "this.#triangles = 0;", "this.#unitsDrawn = 0;",
+    "this.#unitsDropped = 0;", "this.#gameObjectsDrawn = 0;", "this.#gameObjectsDropped = 0;",
+    "this.#doodadsPosed = 0;", "this.#effectsDrawn = 0;", "this.#effectsDropped = 0;",
+    "this.#groundCoverDrawn = 0;", "this.#wmoPortalModels = 0;",
+    "this.#wmoPortalCandidates = 0;", "this.#wmoPortalCulled = 0;", "this.#standIns.idle();",
+  ]) {
+    assert.equal(resets.includes(reset), true, `${reset} must be part of the shared reset`);
+  }
+  assert.equal(draw.includes("this.#groundCoverSelected = 0;"), false,
+    "selection state may survive, but groundCoverDrawn is the frame-submission count");
+});
+
+test("animate re-arms exactly one RAF even when frame work or final telemetry throws", async () => {
+  const source = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  const animateStart = source.indexOf("export function animate(now: number): void {");
+  const animateEnd = source.indexOf("export function startRenderLoop(): void {");
+  assert.ok(animateStart >= 0 && animateEnd > animateStart, "animate source boundaries must exist");
+  const animate = source.slice(animateStart, animateEnd);
+  assert.equal((animate.match(/requestAnimationFrame\(animate\)/g) ?? []).length, 1);
+  const clockEnd = animate.indexOf("fullFrameClock.end()");
+  const outerFinally = animate.lastIndexOf("} finally {", clockEnd);
+  const checkpoint = animate.indexOf("captureRenderTelemetry(now)", clockEnd);
+  const raf = animate.indexOf("requestAnimationFrame(animate)", clockEnd);
+  assert.ok(outerFinally >= 0 && clockEnd > outerFinally && checkpoint > clockEnd && raf > checkpoint,
+    "resource capture is outside the full-frame CPU sample and still precedes RAF re-arm");
+  assert.equal(animate.slice(clockEnd, raf).includes("} finally {"), true,
+    "RAF scheduling is itself the finally of full-frame finalization");
+});
+
+test("render telemetry keeps an immutable empty resources aggregate when clients are absent", () => {
+  const fullFrame = new FrameClock(1).snapshot();
+  const capture = makeRenderTelemetrySnapshot(7, fullFrame, undefined);
+  assert.deepEqual(capture.resources, {});
+  assert.equal(Object.isFrozen(capture), true);
+  assert.equal(Object.isFrozen(capture.resources), true);
+  assert.throws(() => { capture.resources.terrain = {}; }, TypeError);
+});
+
+test("the frame snapshot uses nearest-rank percentiles and is immutable", () => {
+  const clock = new FrameClock(4);
+  clock.add(40);
+  clock.add(10);
+  clock.add(30);
+  clock.add(20);
+  clock.add(5); // Wrap the ring: the live window is now 10, 30, 20, 5.
+
+  const snapshot = clock.snapshot();
+  assert.deepEqual(snapshot, {
+    count: 4,
+    average: 16.25,
+    worst: 30,
+    longFrames: 0,
+    p50: 10,
+    p95: 30,
+    p99: 30,
+  });
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.throws(() => { snapshot.p50 = 999; }, TypeError);
+});
+
+test("the frame snapshot handles incomplete, one-frame and reset windows", () => {
+  const clock = new FrameClock(8);
+  clock.add(40);
+  clock.add(10);
+  clock.add(30);
+  assert.deepEqual(clock.snapshot(), {
+    count: 3,
+    average: 80 / 3,
+    worst: 40,
+    longFrames: 0,
+    p50: 30,
+    p95: 40,
+    p99: 40,
+  });
+
+  const single = new FrameClock(1);
+  single.add(17);
+  assert.deepEqual(single.snapshot(), {
+    count: 1,
+    average: 17,
+    worst: 17,
+    longFrames: 0,
+    p50: 17,
+    p95: 17,
+    p99: 17,
+  });
+
+  clock.reset();
+  assert.deepEqual(clock.snapshot(), {
+    count: 0,
+    average: 0,
+    worst: 0,
+    longFrames: 0,
+    p50: 0,
+    p95: 0,
+    p99: 0,
+  });
+});
+
+test("the long-frame count uses a strict 50 ms boundary and the live ring window", () => {
+  assert.equal(LONG_FRAME_THRESHOLD_MS, 50);
+  const clock = new FrameClock(3);
+  clock.add(50);
+  clock.add(50.001);
+  clock.add(75);
+  assert.equal(clock.snapshot().longFrames, 2, "exactly 50 ms is not long");
+
+  clock.add(16); // Drops the 50 ms sample; the two long samples remain in the window.
+  assert.equal(clock.snapshot().longFrames, 2);
+  clock.add(17); // Drops the 50.001 ms sample too.
+  assert.equal(clock.snapshot().longFrames, 1);
 });
 
 test("the frame window forgets, so a hitch does not haunt the reading forever", () => {
@@ -46,6 +361,15 @@ test("a frame time that is not a number is dropped rather than poisoning the mea
   clock.add(-5);
   assert.equal(clock.count, 1);
   assert.equal(clock.average, 16);
+  assert.deepEqual(clock.snapshot(), {
+    count: 1,
+    average: 16,
+    worst: 16,
+    longFrames: 0,
+    p50: 16,
+    p95: 16,
+    p99: 16,
+  });
   clock.reset();
   assert.equal(clock.count, 0);
   assert.equal(clock.average, 0);

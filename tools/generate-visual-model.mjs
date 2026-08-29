@@ -149,7 +149,7 @@ if (modelPath.toLowerCase().endsWith(".m2")) {
   console.log(`Generated M2 ${modelPath}: ${model.positions.length / 3} vertices, ${model.indices.length / 3} triangles, `
     + `${model.submeshes.length} submeshes, ${model.batches.length} batches, texture slots ${slots}${rig}`);
 } else {
-  // A WMO publishes as WWM1: its groups, each one able to travel on its own. They have no geosets
+  // A WMO publishes as WWM1/WWM2: its groups, each one able to travel on its own. They have no geosets
   // and no skeleton, and what they do have instead is a hundred rooms nobody can see at once.
   const rootWmo = await require(modelPath, "WMO");
   const dependencies = wmoDependencies(rootWmo, modelPath);

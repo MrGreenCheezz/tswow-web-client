@@ -10,6 +10,8 @@
 
 import * as THREE from "three";
 import { textureUrl } from "./Wvm.js";
+import { knownLogicalTextureBytes, type RetainedResourceVisitor } from "./ResourceAccounting.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
@@ -56,9 +58,18 @@ import type { BodyLayer, CharacterAppearance, CharacterOptions } from "../gatewa
  * crown and Т3's three changes of mind about hair — the colour's picture where the row named none,
  * no wig where the row does not exist, and the wig back for a race the table never mentions. 5: Т7's
  * `candidates`, the spellings of an item's component texture in the order the archives hold them —
- * which changes `path` itself on 76.2% of the layers a dressed character paints.
+ * which changes `path` itself on 76.2% of the layers a dressed character paints. 6 adds the
+ * optional weapon subclass to attached equipment, distinguishing a wand from a gun. 7 switches
+ * visual-only character rows to the DBCs shipped with the installed HD model patch. 8 publishes
+ * variant-1 garment geosets authored by that patch (notably HumanMale belt 1801). 9 selects the
+ * foot-capable HumanMale boot mesh when an installed-patch item actually paints the foot section.
+ * 10 selects profile-scoped belt 1802 and the Tauren worn boot shaft, while the world renderer
+ * validates alternate foot meshes against the model's own UVs. 11 seeds the active patch's
+ * model-aware neutral belt in player and NPC appearances. 12 publishes the measured 505 worn-boot
+ * choice for every non-hoof profile that actually paints a FootTexture component. 13 marks the
+ * coordinated visual profile explicitly so patch-W-only geoset policy cannot leak into classic.
  */
-export const CHARACTER_APPEARANCE_VERSION = 5;
+export const CHARACTER_APPEARANCE_VERSION = 13;
 
 /**
  * And the same for `/dbc/creature-models`, which answers `max-age=3600` too and whose ids are
@@ -74,9 +85,15 @@ export const CHARACTER_APPEARANCE_VERSION = 5;
  * Т7's `candidates`, and the eight baked displays that now carry an assembled body instead of a
  * bake the archives do not hold. 6 adds `mountHeight`, which `CreatureModelData` has always held
  * and this route never read — and the browser now *requires* it (`CreatureModelClient.isMetadata`),
- * so an hour of pre-upgrade answers would be an hour of every unit standing as a capsule.
+ * so an hour of pre-upgrade answers would be an hour of every unit standing as a capsule. 7 moves
+ * creature display/model indirection and baked NPC names to the installed visual DBC overlay. 8
+ * carries the matching HumanMale foot-capable appearance into baked/equipped NPC responses. 9
+ * carries the active patch's model-aware neutral belt into NPC responses as well. 10 carries the
+ * measured all-profile worn-boot choice into the same cached creature payload. 11 applies the
+ * authoritative baked-NPC body item columns, including the waist and feet displays. 12 carries
+ * the coordinated-profile marker embedded in the appearance.
  */
-export const CREATURE_MODEL_VERSION = 6;
+export const CREATURE_MODEL_VERSION = 12;
 
 /**
  * And for `/dbc/character-options`, which is the third route answering `max-age=3600` off a query
@@ -91,9 +108,11 @@ export const CREATURE_MODEL_VERSION = 6;
  * counts it looks for are arrays — so the bump is not a nicety. 3: the same lists, shorter by the
  * 98 hairstyles and 2 hair colours the core refuses at creation whatever the class — a change of
  * values and not of shape, which is exactly the kind that went unbumped on the two routes above
- * until the review, and which an hour of cache would otherwise go on offering.
+ * until the review, and which an hour of cache would otherwise go on offering. 4 switches the
+ * offered hair/geoset rows to the installed visual model patch. 5 rolls over the former cached
+ * HD answer when visual metadata becomes non-cacheable across pack switches.
  */
-export const CHARACTER_OPTIONS_VERSION = 3;
+export const CHARACTER_OPTIONS_VERSION = 5;
 
 /**
  * Whether an answer to that route is the lists this bundle reads and not the counts before them.
@@ -196,15 +215,168 @@ export const IMAGE_RETRY_BACKOFF_MS: readonly number[] = [2_000, 8_000, 30_000];
  */
 export const ATLAS_FAILURE_LIMIT = 512;
 
+/** Soft residency defaults. Logical texture bytes are an allocation estimate, never a VRAM claim. */
+export const CHARACTER_ATLAS_CACHE_COUNT_LIMIT = 96;
+export const CHARACTER_ATLAS_KNOWN_LOGICAL_TEXTURE_BYTE_LIMIT = 128 * 1024 * 1024;
+export const CHARACTER_ATLAS_SOURCE_CACHE_COUNT_LIMIT = 512;
+/** Exact decoded surface area. Browser-owned decoded byte storage remains unknown. */
+export const CHARACTER_ATLAS_SOURCE_DECODED_PIXEL_LIMIT = 64 * 1024 * 1024;
+export const CHARACTER_ATLAS_SOURCE_RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024;
+export const CHARACTER_ATLAS_SOURCE_ENTRY_PIXEL_LIMIT = 1024 * 1024;
+
+export interface CharacterAtlasResidencyLimits {
+  readonly atlasCount: number;
+  readonly atlasKnownLogicalTextureBytes: number;
+  readonly sourceCount: number;
+  readonly sourceDecodedPixels: number;
+  readonly sourceResponseBytes: number;
+  readonly sourceEntryPixels: number;
+}
+
+export interface CharacterAtlasClientOptions {
+  readonly limits?: Partial<CharacterAtlasResidencyLimits>;
+}
+
+export interface CharacterAtlasResidencyStats {
+  readonly atlases: Readonly<{
+    readonly count: number;
+    readonly knownLogicalTextureBytes: number;
+    readonly unknownLogicalTextureCount: number;
+    readonly pinnedCount: number;
+    readonly overflowCount: number;
+    readonly overflowKnownLogicalTextureBytes: number;
+  }>;
+  readonly sources: Readonly<{
+    readonly count: number;
+    readonly uniqueReadyBitmaps: number;
+    readonly decodedPixels: number;
+    /** Ready bitmap identities whose browser-owned decoded byte size is deliberately unsupported. */
+    readonly decodedByteSizeUnsupportedCount: number;
+    readonly activeLeases: number;
+    readonly pinnedCount: number;
+    readonly terminalCount: number;
+    readonly overflowCount: number;
+    readonly overflowDecodedPixels: number;
+  }>;
+}
+
+type CharacterAtlasImageStatus = "pending" | "ready" | "terminal";
+
+interface CharacterAtlasBitmapOwnership {
+  readonly image: ImageBitmap;
+  readonly pixels: number;
+  /** Resource-level LRU token: touching any aliased path promotes the shared decoded surface. */
+  lastTouch: number;
+  references: number;
+}
+
+interface CharacterAtlasImageEntry {
+  readonly path: string;
+  readonly epoch: number;
+  readonly requestId: number;
+  readonly abort: AbortController;
+  status: CharacterAtlasImageStatus;
+  promise: Promise<ImageBitmap | undefined>;
+  image?: ImageBitmap;
+  bitmap?: CharacterAtlasBitmapOwnership;
+  readonly leases: Set<CharacterAtlasImageLease>;
+}
+
+interface CharacterAtlasImageLease {
+  readonly entry: CharacterAtlasImageEntry;
+  readonly owner: CharacterAtlasComposeRequest;
+  image?: ImageBitmap;
+  released: boolean;
+}
+
+interface CharacterAtlasEntry {
+  readonly key: string;
+  readonly texture: THREE.Texture;
+  knownLogicalTextureBytes: number | undefined;
+}
+
+interface CharacterAtlasComposeRequest {
+  readonly key: string;
+  readonly epoch: number;
+  readonly requestId: number;
+  readonly leases: Set<CharacterAtlasImageLease>;
+  promise: Promise<THREE.Texture | undefined>;
+}
+
+class DeterministicCharacterAtlasImageError extends Error {}
+
+/** A renderer capability that is not finite or below three's baseline cannot improve sampling. */
+export function normalizeCharacterAtlasAnisotropy(maxAnisotropy: number): number {
+  return Number.isFinite(maxAnisotropy) ? Math.max(1, maxAnisotropy) : 1;
+}
+
+/**
+ * Applies the sampling state owned by a character atlas before it is handed to a world material.
+ *
+ * Supplied textures deliberately stay untouched in `ModelBuild`; this is the atlas/renderer
+ * integration point instead. The return value lets callers and tests tell an actual state change
+ * from an idempotent handoff, so `needsUpdate` is not bumped once per frame.
+ */
+export function configureCharacterAtlasTexture(texture: THREE.Texture, maxAnisotropy: number): boolean {
+  const anisotropy = normalizeCharacterAtlasAnisotropy(maxAnisotropy);
+  let changed = false;
+  if (texture.colorSpace !== THREE.SRGBColorSpace) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    changed = true;
+  }
+  if (texture.wrapS !== THREE.ClampToEdgeWrapping) {
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    changed = true;
+  }
+  if (texture.wrapT !== THREE.ClampToEdgeWrapping) {
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    changed = true;
+  }
+  if (texture.flipY !== false) {
+    texture.flipY = false;
+    changed = true;
+  }
+  if (texture.anisotropy !== anisotropy) {
+    texture.anisotropy = anisotropy;
+    changed = true;
+  }
+  if (changed) texture.needsUpdate = true;
+  return changed;
+}
+
 /** Composes one character body texture. Layers are painted in the order the gateway lists them. */
 export class CharacterAtlasClient {
   readonly #baseUrl: string;
-  readonly #images = new Map<string, Promise<ImageBitmap | undefined>>();
-  readonly #atlases = new Map<string, THREE.Texture>();
+  readonly #limits: CharacterAtlasResidencyLimits;
+  readonly #images = new Map<string, CharacterAtlasImageEntry>();
+  readonly #atlases = new Map<string, CharacterAtlasEntry>();
+  /** Raw appearance keys; the client instance/epoch, not a rewritten key, is the session boundary. */
+  #residencyPins = new Set<string>();
+  #readinessKeys = new Set<string>();
+  #hasCommittedFootprint = false;
+  #atlasKnownLogicalTextureBytes = 0;
+  #sourceDecodedPixels = 0;
+  #sourceBitmapCount = 0;
+  #bitmapOwnership = new WeakMap<ImageBitmap, CharacterAtlasBitmapOwnership>();
   /** Incremented for every successful repaint, including an in-place CanvasTexture update. */
   readonly #generations = new Map<string, number>();
   /** Compositions under way, so one look is painted once however many units are waiting on it. */
-  readonly #composing = new Map<string, Promise<THREE.Texture | undefined>>();
+  readonly #composing = new Map<string, CharacterAtlasComposeRequest>();
+  /** Image paths with a request actually in flight; resolved image promises are cache, not work. */
+  readonly #activeImages = new Set<string>();
+  /** Looks whose current atlas can never become complete without a new owner/cache epoch. */
+  readonly #terminalFailures = new Set<string>();
+  /** Exact successful image/composition settles; errors are current terminal failures below. */
+  #success = 0;
+  #generation = 0;
+  #epoch = 0;
+  #requestSequence = 0;
+  #imageTouchSequence = 0;
+  #disposed = false;
+  /** A decoder is expected to return a fresh bitmap, but non-standard implementations need this guard. */
+  readonly #closedImages = new WeakSet<ImageBitmap>();
+  /** THREE emits disposal listeners synchronously and on every call; ownership closes exactly once. */
+  readonly #disposedTextures = new WeakSet<THREE.Texture>();
   /**
    * Paths whose picture did not come: how many times it has been asked for, and when to ask again.
    *
@@ -246,18 +418,131 @@ export class CharacterAtlasClient {
    * @param now the clock the backoff is measured against. Injected so a test can drive half a
    * minute of waiting without spending it.
    */
-  constructor(baseUrl: string, now: () => number = Date.now) {
+  constructor(baseUrl: string, now: () => number = Date.now, options: CharacterAtlasClientOptions = {}) {
     this.#baseUrl = baseUrl;
     this.#now = now;
+    const limits: CharacterAtlasResidencyLimits = {
+      atlasCount: options.limits?.atlasCount ?? CHARACTER_ATLAS_CACHE_COUNT_LIMIT,
+      atlasKnownLogicalTextureBytes: options.limits?.atlasKnownLogicalTextureBytes
+        ?? CHARACTER_ATLAS_KNOWN_LOGICAL_TEXTURE_BYTE_LIMIT,
+      sourceCount: options.limits?.sourceCount ?? CHARACTER_ATLAS_SOURCE_CACHE_COUNT_LIMIT,
+      sourceDecodedPixels: options.limits?.sourceDecodedPixels
+        ?? CHARACTER_ATLAS_SOURCE_DECODED_PIXEL_LIMIT,
+      sourceResponseBytes: options.limits?.sourceResponseBytes
+        ?? CHARACTER_ATLAS_SOURCE_RESPONSE_LIMIT_BYTES,
+      sourceEntryPixels: options.limits?.sourceEntryPixels
+        ?? CHARACTER_ATLAS_SOURCE_ENTRY_PIXEL_LIMIT,
+    };
+    for (const [name, value] of Object.entries(limits)) {
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new RangeError(`character atlas ${name} limit must be a positive safe integer`);
+      }
+    }
+    this.#limits = Object.freeze(limits);
+  }
+
+  /** Immutable asynchronous work snapshot for the formal replay readiness barrier. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    const active = (key: string): boolean => !this.#hasCommittedFootprint || this.#readinessKeys.has(key);
+    let pendingImages = 0;
+    for (const entry of this.#images.values()) {
+      if (entry.status !== "pending") continue;
+      if (!this.#hasCommittedFootprint
+        || [...entry.leases].some((lease) => !lease.released && active(lease.owner.key))) {
+        pendingImages++;
+      }
+    }
+    return Object.freeze({
+      // `#images` also holds resolved successful promises, so only this set is pending. A
+      // composition remains pending until its canvas has been painted and installed. A finite
+      // failed-look deadline is scheduled retry work as well; an Infinity entry is terminal. A
+      // due retry already present in `#composing` is counted there once, not twice.
+      pending: pendingImages + [...this.#composing.keys()].filter(active).length
+        + [...this.#failed.entries()]
+          .filter(([key, { until }]) => active(key)
+            && until !== Infinity && !this.#composing.has(key)).length,
+      success: this.#success,
+      // Candidate 404s and retryable gateway failures are not owner-terminal errors. They remain
+      // pending while retryable; only a look with no possible retry is fail-closed here.
+      error: [...this.#terminalFailures].filter(active).length,
+      generation: this.#generation,
+    });
+  }
+
+  /** Immutable exact current atlas/source residency and soft-budget overflow. */
+  get residencyStats(): Readonly<CharacterAtlasResidencyStats> {
+    let atlasUnknown = 0;
+    let atlasPinned = 0;
+    for (const entry of this.#atlases.values()) {
+      if (entry.knownLogicalTextureBytes === undefined) atlasUnknown++;
+      if (this.#atlasPinned(entry.key)) atlasPinned++;
+    }
+    let activeLeases = 0;
+    let sourcePinned = 0;
+    let terminalCount = 0;
+    for (const entry of this.#images.values()) {
+      activeLeases += entry.leases.size;
+      if (entry.status === "pending" || entry.leases.size > 0) sourcePinned++;
+      if (entry.status === "terminal") terminalCount++;
+    }
+    return Object.freeze({
+      atlases: Object.freeze({
+        count: this.#atlases.size,
+        knownLogicalTextureBytes: this.#atlasKnownLogicalTextureBytes,
+        unknownLogicalTextureCount: atlasUnknown,
+        pinnedCount: atlasPinned,
+        overflowCount: Math.max(0, this.#atlases.size - this.#limits.atlasCount),
+        overflowKnownLogicalTextureBytes: Math.max(
+          0, this.#atlasKnownLogicalTextureBytes - this.#limits.atlasKnownLogicalTextureBytes,
+        ),
+      }),
+      sources: Object.freeze({
+        count: this.#images.size,
+        uniqueReadyBitmaps: this.#sourceBitmapCount,
+        decodedPixels: this.#sourceDecodedPixels,
+        decodedByteSizeUnsupportedCount: this.#sourceBitmapCount,
+        activeLeases,
+        pinnedCount: sourcePinned,
+        terminalCount,
+        overflowCount: Math.max(0, this.#images.size - this.#limits.sourceCount),
+        overflowDecodedPixels: Math.max(
+          0, this.#sourceDecodedPixels - this.#limits.sourceDecodedPixels,
+        ),
+      }),
+    });
+  }
+
+  get revision(): number {
+    return this.#generation;
+  }
+
+  /** Applies a renderer's current atlas policy to every cached body without replacing its Texture. */
+  setAnisotropy(maxAnisotropy: number): void {
+    for (const { texture } of this.#atlases.values()) {
+      configureCharacterAtlasTexture(texture, maxAnisotropy);
+    }
+  }
+
+  /** Visits cached atlases and decoded sources without inventing browser-owned decoded bytes. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const entry of this.#atlases.values()) visitor.referenceGpuTexture(entry, entry.texture);
+    for (const entry of this.#images.values()) {
+      if (entry.image) visitor.referenceUnsupported(entry, entry.image);
+    }
   }
 
   /** A finished texture if it has been composed, otherwise undefined while it is being built. */
   get(key: string): THREE.Texture | undefined {
-    return this.#atlases.get(key);
+    if (this.#disposed) return undefined;
+    const entry = this.#atlases.get(key);
+    if (!entry) return undefined;
+    this.#touchAtlas(entry);
+    return entry.texture;
   }
 
   /** A stable repaint token for consumers that cache a rendered image of the atlas. */
   generation(key: string): number {
+    if (this.#disposed) return 0;
     return this.#generations.get(key) ?? 0;
   }
 
@@ -266,100 +551,177 @@ export class CharacterAtlasClient {
    * frames rather than waiting, because a unit is drawn as a stand-in until its body is ready.
    */
   async compose(key: string, layers: readonly BodyLayer[]): Promise<THREE.Texture | undefined> {
-    const existing = this.#atlases.get(key);
+    if (this.#disposed) return undefined;
+    const existingEntry = this.#atlases.get(key);
+    if (existingEntry) this.#touchAtlas(existingEntry);
+    const existing = existingEntry?.texture;
     const pendingRetry = this.#failed.get(key);
     const waiting = pendingRetry !== undefined && this.#now() < pendingRetry.until;
     // A finished body, or one that is short a layer whose next attempt is not due yet. Falling
     // through with a texture in hand is the recomposition: the missing layer's wait is over.
     if (existing && (pendingRetry === undefined || waiting)) return existing;
     if (layers.length === 0) return undefined;
+    // An exhausted look is terminal ownership, not a reason to allocate another canvas or
+    // re-request the same paths on every frame. `release`/`retain` remove this ledger when a new
+    // owner appears, so a genuine new ownership epoch can still retry it.
+    if (this.#terminalFailures.has(key)) return existing;
     // One composition per look, not one per caller. The renderer asks again on every frame a body
     // is not ready, and once for each unit wearing that look, so a single second of waiting at
     // 60 fps produced sixty 512x512 canvases for one character — all but the last thrown away,
     // and the last one replacing a texture other builds were already holding.
     const inFlight = this.#composing.get(key);
-    if (inFlight) return inFlight;
+    if (inFlight) return inFlight.promise;
     // And one composition per *failure*, not one per frame after it. Checked after `#composing`
     // so a build under way is still shared, and before any work at all.
     if (waiting) return undefined;
-    const pending = this.#build(key, layers).finally(() => this.#composing.delete(key));
-    this.#composing.set(key, pending);
-    return pending;
+    const request: CharacterAtlasComposeRequest = {
+      key,
+      epoch: this.#epoch,
+      requestId: ++this.#requestSequence,
+      leases: new Set(),
+      promise: Promise.resolve(undefined),
+    };
+    let resolveRequest!: (texture: THREE.Texture | undefined) => void;
+    const requestPromise = new Promise<THREE.Texture | undefined>((resolve) => {
+      resolveRequest = resolve;
+    });
+    request.promise = requestPromise;
+    // Publish the exact request before starting any source call. A synchronous test loader may
+    // re-enter compose(); it must receive this same facade rather than start duplicate ownership.
+    this.#composing.set(key, request);
+    let settled = false;
+    const settle = (texture: THREE.Texture | undefined): void => {
+      if (settled || !this.#isCurrentCompose(request)) return;
+      settled = true;
+      this.#generation++;
+      const failure = this.#failed.get(key);
+      if (this.#terminalFailures.has(key)
+        || failure?.until === Infinity
+        || texture === undefined && failure === undefined) {
+        this.#terminalFailures.add(key);
+      } else if (failure === undefined) {
+        this.#terminalFailures.delete(key);
+      }
+      if (texture !== undefined) this.#success++;
+    };
+    const pending = this.#build(request, layers)
+      .then((texture) => {
+        if (!this.#isCurrentCompose(request)) return undefined;
+        settle(texture);
+        return texture;
+      }, () => {
+        if (!this.#isCurrentCompose(request)) return undefined;
+        // A synchronous canvas/decoder rejection is an owned terminal look, too. Record it through
+        // the same Infinity ledger as an exhausted image request so a renderer frame cannot retry
+        // the rejected composition forever. Production callers deliberately fire-and-forget this
+        // work, so the owned failure resolves empty instead of escaping as an unhandled rejection.
+        this.#defer(key, layers, Infinity);
+        settle(undefined);
+        return undefined;
+      })
+      .finally(() => {
+        if (this.#composing.get(key) === request) {
+          this.#composing.delete(key);
+          this.#pruneImageFailures();
+          this.#evictAtlases();
+        }
+      });
+    // The facade was installed before #build began, so even a synchronous reentrant caller shares
+    // this settlement. The owned work handles its own failures above; keep the facade non-rejecting
+    // even if a future cleanup callback unexpectedly throws.
+    void pending.then(resolveRequest, () => resolveRequest(undefined));
+    return requestPromise;
   }
 
-  async #build(key: string, layers: readonly BodyLayer[]): Promise<THREE.Texture | undefined> {
+  async #build(request: CharacterAtlasComposeRequest,
+    layers: readonly BodyLayer[]): Promise<THREE.Texture | undefined> {
+    const { key } = request;
     const spellings = layers.map((layer) => layerPaths(layer));
-    const images = await Promise.all(spellings.map(async (paths) => {
+    const leases = await Promise.all(spellings.map(async (paths) => {
       for (const path of paths) {
-        const image = await this.#image(path);
-        if (image) return image;
+        // A released primary candidate can settle empty after its last lease aborts. Do not let
+        // that stale continuation acquire an alternate-path lease that did not exist when release
+        // walked the request's ownership set.
+        if (!this.#isCurrentCompose(request)) return undefined;
+        const lease = await this.#image(path, request);
+        if (lease) return lease;
       }
       return undefined;
     }));
-    // When — if ever — a layer that did not arrive could arrive. Only the layers with no picture
-    // are asked about: a layer that painted from its second spelling has a failure recorded against
-    // its first, and recomposing a finished body to change which spelling it used would be work for
-    // no pixels.
-    const retryAt = this.#retryAt(spellings, images);
-    // Before the canvas, not after it: a look that resolves to nothing is exactly the case this
-    // whole ledger exists for, and allocating 512x512 to discover it is the cost that was being
-    // paid sixty times a second.
-    if (!images.some((image) => image !== undefined)) {
-      this.#defer(key, layers, retryAt);
-      return undefined;
-    }
-    // Painted into the canvas the last composition used, when there was one. A material holds the
-    // Texture object, not the atlas map, so a body that gains its missing trousers has to gain them
-    // *in place* — a new CanvasTexture would sit in this map with nothing sampling it. Nothing is
-    // cleared first because a layer only ever goes from missing to present: every layer that
-    // painted before paints again from the image cache, in the same order, over the same rectangle.
-    const previous = this.#atlases.get(key);
-    const canvas = (previous?.image as HTMLCanvasElement | undefined) ?? document.createElement("canvas");
-    canvas.width = BODY_TEXTURE_SIZE;
-    canvas.height = BODY_TEXTURE_SIZE;
-    const context = canvas.getContext("2d");
-    if (!context) return undefined;
-
-    let painted = 0;
-    for (let index = 0; index < layers.length; index++) {
-      const image = images[index];
-      if (!image) continue;
-      const section = layers[index]!.section;
-      if (!section) {
-        // No section: this is the whole body, either the base skin or a baked NPC texture.
-        context.drawImage(image, 0, 0, BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE);
-      } else {
-        const rect = SECTIONS[section];
-        if (!rect) continue;
-        // Facial hair ships at half the rectangle's size, so every layer is scaled to fit rather
-        // than assumed to match.
-        context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+    try {
+      const images = leases.map((lease) => lease?.image);
+      // `release` and `dispose` are ownership boundaries. A request that crossed either may finish
+      // its shared image reads, but it must not allocate a canvas or publish into a replacement key.
+      if (!this.#isCurrentCompose(request)) return undefined;
+      // When — if ever — a layer that did not arrive could arrive. Only the layers with no picture
+      // are asked about: a layer that painted from its second spelling has a failure recorded against
+      // its first, and recomposing a finished body to change which spelling it used would be work for
+      // no pixels.
+      const retryAt = this.#retryAt(spellings, images);
+      // Before the canvas, not after it: a look that resolves to nothing is exactly the case this
+      // whole ledger exists for, and allocating 512x512 to discover it is the cost that was being
+      // paid sixty times a second.
+      if (!images.some((image) => image !== undefined)) {
+        this.#defer(key, layers, retryAt);
+        return undefined;
       }
-      painted++;
-    }
-    // Every picture arrived and every one of them named a rectangle this client does not have.
-    // Nothing about that changes on the next frame, so it is remembered for good.
-    if (painted === 0) {
-      this.#defer(key, layers, retryAt);
-      return undefined;
-    }
+      // Painted into the canvas the last composition used, when there was one. A material holds the
+      // Texture object, not the atlas map, so a body that gains its missing trousers has to gain them
+      // *in place* — a new CanvasTexture would sit in this map with nothing sampling it.
+      const previous = this.#atlases.get(key);
+      const canvas = (previous?.texture.image as HTMLCanvasElement | undefined)
+        ?? document.createElement("canvas");
+      canvas.width = BODY_TEXTURE_SIZE;
+      canvas.height = BODY_TEXTURE_SIZE;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        this.#defer(key, layers, Infinity);
+        return undefined;
+      }
 
-    const texture = previous ?? new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    // The body atlas is sampled inside its rectangles; tiling would pull a neighbour's pixels in.
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.flipY = false;
-    // The whole of the in-place repaint on the GPU side: the canvas behind this texture has new
-    // pixels in it, so every material already sampling it gets them on the next frame.
-    texture.needsUpdate = true;
-    this.#atlases.set(key, texture);
-    this.#generations.set(key, (this.#generations.get(key) ?? 0) + 1);
-    // A body that painted in full is not in the ledger at all; one still short a layer stays, so
-    // `refresh` comes back for it when that layer's wait is over.
-    if (retryAt === Infinity) this.#failed.delete(key);
-    else this.#defer(key, layers, retryAt);
-    return texture;
+      let painted = 0;
+      for (let index = 0; index < layers.length; index++) {
+        const image = images[index];
+        if (!image) continue;
+        const section = layers[index]!.section;
+        if (!section) {
+          context.drawImage(image, 0, 0, BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE);
+        } else {
+          const rect = SECTIONS[section];
+          if (!rect) continue;
+          context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+        }
+        painted++;
+      }
+      if (painted === 0) {
+        this.#defer(key, layers, retryAt);
+        return undefined;
+      }
+
+      const texture = previous?.texture ?? new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.flipY = false;
+      texture.needsUpdate = true;
+      const entry = previous ?? { key, texture, knownLogicalTextureBytes: undefined };
+      this.#setAtlasEntry(entry);
+      this.#generations.set(key, (this.#generations.get(key) ?? 0) + 1);
+      if (painted === layers.length) {
+        this.#failed.delete(key);
+        this.#terminalFailures.delete(key);
+      } else if (retryAt === Infinity) {
+        this.#failed.delete(key);
+        this.#markTerminal(key);
+      } else {
+        this.#defer(key, layers, retryAt);
+      }
+      return texture;
+    } finally {
+      for (const lease of leases) {
+        if (lease) this.#releaseImageLease(lease);
+      }
+    }
   }
 
   /**
@@ -388,12 +750,15 @@ export class CharacterAtlasClient {
     // the pixels it has and stops waiting for the rest, which is the right way round to be wrong.
     this.#failed.delete(key);
     this.#failed.set(key, { until, layers });
-    this.#nextRefresh = Math.min(this.#nextRefresh, until);
+    if (until === Infinity) this.#markTerminal(key);
+    this.#recomputeNextRefresh();
     while (this.#failed.size > ATLAS_FAILURE_LIMIT) {
       const oldest = this.#failed.keys().next().value;
       if (oldest === undefined) break;
       this.#failed.delete(oldest);
+      this.#terminalFailures.delete(oldest);
     }
+    this.#recomputeNextRefresh();
   }
 
   /**
@@ -409,10 +774,17 @@ export class CharacterAtlasClient {
    * on the handful of frames where something is actually due.
    */
   refresh(): void {
+    if (this.#disposed) return;
     if (this.#now() < this.#nextRefresh) return;
     let next = Infinity;
     for (const [key, pending] of this.#failed) {
       if (!this.#atlases.has(key)) continue;
+      // After the renderer has committed a submitted-frame footprint, dormant warm atlases are
+      // residency only. Retrying one inside a formal run would add unrelated network/composition
+      // work and advance global readiness generations even though no submitted borrower can see
+      // the result. Re-entry is not lost: commitPins() recomputes #nextRefresh from the newly active
+      // raw keys, so an already-due dormant retry starts as soon as that appearance is submitted.
+      if (this.#hasCommittedFootprint && !this.#readinessKeys.has(key)) continue;
       if (pending.until <= this.#now()) void this.compose(key, pending.layers);
       else next = Math.min(next, pending.until);
     }
@@ -428,49 +800,135 @@ export class CharacterAtlasClient {
     return this.#failed.size;
   }
 
-  #image(path: string): Promise<ImageBitmap | undefined> {
-    const pending = this.#images.get(path);
-    if (pending) return pending;
-    // A path is in `#images` only while it is in flight or has answered with a picture; a failure
-    // is taken back out, so this is what stands between a retry and a request storm.
-    const failure = this.#imageFailures.get(path);
-    if (failure && this.#now() < failure.after) return Promise.resolve(undefined);
-    const attempt = (failure?.attempts ?? 0) + 1;
-    // The bookkeeping hangs off the promise rather than living inside it, because it deletes the
-    // very entry the line below adds: a `fetch` that threw synchronously would otherwise be
-    // cleaned up first and then cached as a permanent undefined.
-    const request = this.#fetchImage(path).then((answer) => {
-      if (answer.image) {
-        this.#imageFailures.delete(path);
-        return answer.image;
+  #image(path: string, owner: CharacterAtlasComposeRequest): Promise<CharacterAtlasImageLease | undefined> {
+    if (this.#disposed) return Promise.resolve(undefined);
+    let entry = this.#images.get(path);
+    if (entry) {
+      this.#touchImage(entry);
+      if (entry.status === "terminal") return Promise.resolve(undefined);
+    } else {
+      const failure = this.#imageFailures.get(path);
+      if (failure && this.#now() < failure.after) return Promise.resolve(undefined);
+      entry = this.#startImage(path, (failure?.attempts ?? 0) + 1);
+    }
+    const lease: CharacterAtlasImageLease = { entry, owner, released: false };
+    entry.leases.add(lease);
+    owner.leases.add(lease);
+    return entry.promise.then((image) => {
+      if (lease.released || !image || entry?.image !== image) {
+        this.#releaseImageLease(lease);
+        return undefined;
       }
-      this.#images.delete(path);
-      // No wait left, or an answer that will not change: `Infinity`, which the guard above reads
-      // as "never" without a second field saying so.
-      const wait = answer.transient ? IMAGE_RETRY_BACKOFF_MS[attempt - 1] : undefined;
-      this.#imageFailures.set(path, {
-        attempts: attempt,
-        after: wait === undefined ? Infinity : this.#now() + wait,
-      });
+      lease.image = image;
+      return lease;
+    }, () => {
+      this.#releaseImageLease(lease);
       return undefined;
     });
-    this.#images.set(path, request);
-    return request;
   }
 
-  async #fetchImage(path: string): Promise<{ image?: ImageBitmap; transient?: boolean }> {
+  #startImage(path: string, attempt: number): CharacterAtlasImageEntry {
+    const entry: CharacterAtlasImageEntry = {
+      path,
+      epoch: this.#epoch,
+      requestId: ++this.#requestSequence,
+      abort: new AbortController(),
+      status: "pending",
+      promise: Promise.resolve(undefined),
+      leases: new Set(),
+    };
+    this.#activeImages.add(path);
+    this.#images.set(path, entry);
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled || !this.#isCurrentImage(entry)) return;
+      settled = true;
+      this.#activeImages.delete(path);
+      this.#generation++;
+      if (success) this.#success++;
+    };
+    let request: Promise<ImageBitmap | undefined>;
     try {
-      const response = await fetch(textureUrl(this.#baseUrl, path));
-      // 404 is the gateway saying the archives do not hold this file, and asking three more times
-      // gets three more 404s. 5xx is the gateway failing to make a picture it may well make next
-      // time — a generation lane busy, a child that died — and that is what the backoff is for.
-      // 408 and 429 are the two 4xx that mean "later", not "no".
-      if (!response.ok) {
-        return { transient: response.status >= 500 || response.status === 408 || response.status === 429 };
-      }
-      return { image: await createImageBitmap(await response.blob()) };
+      request = this.#fetchImage(path, entry.abort.signal)
+        .then((answer) => {
+          if (!this.#isCurrentImage(entry)) {
+            if (answer.image) this.#closeUnownedImage(answer.image);
+            return undefined;
+          }
+          if (answer.image) {
+            this.#admitImage(entry, answer.image, answer.pixels!);
+            this.#imageFailures.delete(path);
+            settle(true);
+            this.#evictImages();
+            return answer.image;
+          }
+          this.#recordImageFailure(path, attempt, answer.transient === true);
+          settle(false);
+          if (answer.terminal === true) {
+            entry.status = "terminal";
+            this.#touchImage(entry);
+            this.#evictImages();
+          } else if (this.#images.get(path) === entry) {
+            this.#images.delete(path);
+          }
+          return undefined;
+        })
+        .catch(() => {
+          if (!this.#isCurrentImage(entry)) return undefined;
+          this.#recordImageFailure(path, attempt, true);
+          settle(false);
+          this.#images.delete(path);
+          return undefined;
+        });
     } catch {
-      // A throw is the network or a picture that would not decode, never an answer.
+      if (this.#isCurrentImage(entry)) {
+        this.#recordImageFailure(path, attempt, true);
+        settle(false);
+        this.#images.delete(path);
+      }
+      request = Promise.resolve(undefined);
+    }
+    entry.promise = request;
+    return entry;
+  }
+
+  async #fetchImage(path: string, signal: AbortSignal): Promise<{
+    image?: ImageBitmap;
+    pixels?: number;
+    transient?: boolean;
+    terminal?: boolean;
+  }> {
+    try {
+      const response = await fetch(textureUrl(this.#baseUrl, path), { signal });
+      if (signal.aborted) return { transient: true };
+      // 404 and deterministic size violations are exact session/path answers. Gateway or network
+      // faults retain the existing 2/8/30 second retry policy.
+      if (!response.ok) {
+        const transient = response.status >= 500 || response.status === 408 || response.status === 429;
+        return { transient, terminal: !transient };
+      }
+      const blob = await readBoundedCharacterAtlasImage(response, this.#limits.sourceResponseBytes);
+      // A minimal fetch polyfill may ignore AbortSignal. Do not decode or publish its answer after
+      // the last exact compose owner has left, even in that non-standard environment.
+      if (signal.aborted) return { transient: true };
+      const image = await createImageBitmap(blob);
+      try {
+        if (signal.aborted) {
+          this.#closeUnownedImage(image);
+          return { transient: true };
+        }
+        if (this.#closedImages.has(image)) return { terminal: true };
+        const pixels = decodedImagePixels(image, this.#limits.sourceEntryPixels);
+        if (pixels !== undefined) return { image, pixels };
+        this.#closeUnownedImage(image);
+        return { terminal: true };
+      } catch {
+        this.#closeUnownedImage(image);
+        return { terminal: true };
+      }
+    } catch (error) {
+      if (error instanceof DeterministicCharacterAtlasImageError) return { terminal: true };
+      // A throw is the network or a decoder failure, never a definitive source answer.
       return { transient: true };
     }
   }
@@ -487,11 +945,26 @@ export class CharacterAtlasClient {
    * are the cheap half, and a body that is composed again would only have to fetch them back.
    */
   release(key: string): void {
-    const texture = this.#atlases.get(key);
-    if (!texture) return;
-    texture.dispose();
-    this.#atlases.delete(key);
+    if (this.#disposed) return;
+    const composing = this.#composing.get(key);
+    if (composing) {
+      // Invalidate publication first. Releasing its exact leases may synchronously abort the last
+      // pending source request, whose callbacks must already see this compose as stale.
+      this.#composing.delete(key);
+      for (const lease of [...composing.leases]) this.#releaseImageLease(lease);
+    }
+    const entry = this.#atlases.get(key);
+    // Remove the complete ownership boundary before invoking external disposal listeners. A
+    // listener is allowed to compose the same raw key synchronously; it must see an empty slot and
+    // the outer release must not subsequently delete its replacement.
+    if (entry) this.#dropAtlasOwnership(entry);
     this.#generations.delete(key);
+    this.#terminalFailures.delete(key);
+    this.#failed.delete(key);
+    this.#recomputeNextRefresh();
+    this.#pruneImageFailures();
+    if (entry) this.#disposeTexture(entry.texture);
+    this.#evictImages();
   }
 
   /**
@@ -503,18 +976,390 @@ export class CharacterAtlasClient {
    * never get that far.
    */
   retain(keys: ReadonlySet<string>): void {
-    for (const key of [...this.#atlases.keys()]) {
+    if (this.#disposed) return;
+    const owned = new Set([
+      ...this.#atlases.keys(),
+      ...this.#composing.keys(),
+      ...this.#failed.keys(),
+      ...this.#terminalFailures,
+    ]);
+    for (const key of owned) {
       if (!keys.has(key)) this.release(key);
     }
   }
 
+  /**
+   * Cancels asynchronous/failure ownership that no submitted-frame borrower can still reach.
+   *
+   * Kept separate from `retain`: a small successful atlas cache is allowed to stay warm, while a
+   * no-paint 500/404 must not keep formal readiness pending/failed after its unit has left view.
+   */
+  pruneInactiveWork(keys: ReadonlySet<string>): void {
+    if (this.#disposed) return;
+    // A partial atlas may still be sampled by an inactive built-cache entry. Keep its retry ledger
+    // dormant so it can resume on re-entry; only no-atlas capsule work is safe to cancel outright.
+    const owned = new Set([...this.#composing.keys(), ...this.#failed.keys(), ...this.#terminalFailures]);
+    for (const key of owned) {
+      if (!keys.has(key) && !this.#atlases.has(key)) this.release(key);
+    }
+    this.#recomputeNextRefresh();
+  }
+
+  /** Replaces the last submitted frame's exact atlas pins and applies both soft residency caps. */
+  commitPins(residencyKeys: ReadonlySet<string>, readinessKeys: ReadonlySet<string> = residencyKeys): void {
+    if (this.#disposed) return;
+    this.#residencyPins = new Set(residencyKeys);
+    this.#readinessKeys = new Set(readinessKeys);
+    this.#hasCommittedFootprint = true;
+    this.#recomputeNextRefresh();
+    this.#evictAtlases();
+    this.#evictImages();
+  }
+
   dispose(): void {
-    for (const texture of this.#atlases.values()) texture.dispose();
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#epoch++;
+    const textures = new Set([...this.#atlases.values()].map((entry) => entry.texture));
+    const images = [...this.#images.values()]
+      .map((entry) => entry.image)
+      .filter((image): image is ImageBitmap => image !== undefined);
+    const pendingAborts = [...this.#images.values()]
+      .filter((entry) => entry.status === "pending")
+      .map((entry) => entry.abort);
+    // Make the whole client inert before any synchronous THREE disposal listener can re-enter it.
+    // Cleanup callbacks therefore observe the same empty state as every later caller, and a
+    // throwing listener cannot prevent the remaining owned resources from being released.
     this.#atlases.clear();
+    this.#residencyPins.clear();
+    this.#readinessKeys.clear();
+    this.#hasCommittedFootprint = false;
     this.#generations.clear();
+    for (const entry of this.#images.values()) {
+      for (const lease of entry.leases) lease.released = true;
+      entry.leases.clear();
+    }
     this.#images.clear();
+    this.#bitmapOwnership = new WeakMap();
+    this.#atlasKnownLogicalTextureBytes = 0;
+    this.#sourceDecodedPixels = 0;
+    this.#sourceBitmapCount = 0;
+    this.#composing.clear();
+    this.#activeImages.clear();
     this.#imageFailures.clear();
     this.#failed.clear();
+    this.#terminalFailures.clear();
     this.#nextRefresh = Infinity;
+    this.#success = 0;
+    this.#generation = 0;
+    for (const abort of pendingAborts) {
+      try { abort.abort(); } catch { /* ownership is already inert; continue teardown */ }
+    }
+    for (const texture of textures) this.#disposeTexture(texture);
+    for (const image of images) this.#closeImage(image);
   }
+
+  #atlasPinned(key: string): boolean {
+    return this.#residencyPins.has(key) || this.#composing.has(key);
+  }
+
+  #touchAtlas(entry: CharacterAtlasEntry): void {
+    if (this.#atlases.get(entry.key) !== entry) return;
+    this.#atlases.delete(entry.key);
+    this.#atlases.set(entry.key, entry);
+  }
+
+  #setAtlasEntry(entry: CharacterAtlasEntry): void {
+    const current = this.#atlases.get(entry.key);
+    if (current && current !== entry) {
+      this.#dropAtlasOwnership(current);
+      this.#disposeTexture(current.texture);
+    } else if (current?.knownLogicalTextureBytes !== undefined) {
+      this.#atlasKnownLogicalTextureBytes -= current.knownLogicalTextureBytes;
+    }
+    entry.knownLogicalTextureBytes = knownLogicalTextureBytes(entry.texture);
+    if (entry.knownLogicalTextureBytes !== undefined) {
+      this.#atlasKnownLogicalTextureBytes += entry.knownLogicalTextureBytes;
+    }
+    this.#atlases.delete(entry.key);
+    this.#atlases.set(entry.key, entry);
+    this.#evictAtlases();
+  }
+
+  /** Removes only client ownership/cost. External callbacks run after this boundary. */
+  #dropAtlasOwnership(entry: CharacterAtlasEntry): void {
+    if (this.#atlases.get(entry.key) !== entry) return;
+    this.#atlases.delete(entry.key);
+    if (entry.knownLogicalTextureBytes !== undefined) {
+      this.#atlasKnownLogicalTextureBytes -= entry.knownLogicalTextureBytes;
+    }
+  }
+
+  #evictAtlases(): void {
+    const evicted: CharacterAtlasEntry[] = [];
+    for (const entry of [...this.#atlases.values()]) {
+      const countOverflow = this.#atlases.size > this.#limits.atlasCount;
+      const byteOverflow = this.#atlasKnownLogicalTextureBytes
+        > this.#limits.atlasKnownLogicalTextureBytes;
+      if (!countOverflow && !byteOverflow) break;
+      if (this.#atlasPinned(entry.key)) continue;
+      if (!countOverflow && byteOverflow && (entry.knownLogicalTextureBytes ?? 0) === 0) continue;
+      this.#dropAtlasOwnership(entry);
+      this.#generations.delete(entry.key);
+      this.#failed.delete(entry.key);
+      this.#terminalFailures.delete(entry.key);
+      evicted.push(entry);
+    }
+    if (evicted.length > 0) {
+      this.#recomputeNextRefresh();
+      this.#pruneImageFailures();
+    }
+    for (const entry of evicted) this.#disposeTexture(entry.texture);
+  }
+
+  #disposeTexture(texture: THREE.Texture): void {
+    if (this.#disposedTextures.has(texture)) return;
+    this.#disposedTextures.add(texture);
+    try { texture.dispose(); } catch { /* client ownership is already closed; continue cleanup */ }
+  }
+
+  #touchImage(entry: CharacterAtlasImageEntry): void {
+    if (this.#images.get(entry.path) !== entry) return;
+    if (entry.bitmap) entry.bitmap.lastTouch = ++this.#imageTouchSequence;
+    this.#images.delete(entry.path);
+    this.#images.set(entry.path, entry);
+  }
+
+  #admitImage(entry: CharacterAtlasImageEntry, image: ImageBitmap, pixels: number): void {
+    let ownership = this.#bitmapOwnership.get(image);
+    if (!ownership) {
+      ownership = { image, pixels, lastTouch: ++this.#imageTouchSequence, references: 0 };
+      this.#bitmapOwnership.set(image, ownership);
+      this.#sourceDecodedPixels += pixels;
+      this.#sourceBitmapCount++;
+    } else {
+      ownership.lastTouch = ++this.#imageTouchSequence;
+    }
+    ownership.references++;
+    entry.status = "ready";
+    entry.image = image;
+    entry.bitmap = ownership;
+    this.#touchImage(entry);
+  }
+
+  #releaseImageLease(lease: CharacterAtlasImageLease): void {
+    if (lease.released) return;
+    lease.released = true;
+    lease.entry.leases.delete(lease);
+    lease.owner.leases.delete(lease);
+    if (this.#disposed) return;
+    const entry = lease.entry;
+    if (entry.status === "pending" && entry.leases.size === 0 && this.#isCurrentImage(entry)) {
+      // Pending reads are shared only by their exact leases. Once the last borrower leaves, remove
+      // current ownership before aborting so an ignored/late transport result cannot advance global
+      // readiness generations or admit a dormant bitmap during a formal run.
+      this.#images.delete(entry.path);
+      this.#activeImages.delete(entry.path);
+      try { entry.abort.abort(); } catch { /* late completion remains stale by exact identity */ }
+      return;
+    }
+    this.#evictImages();
+  }
+
+  #removeImageEntry(entry: CharacterAtlasImageEntry): void {
+    if (this.#images.get(entry.path) !== entry || entry.status === "pending" || entry.leases.size > 0) return;
+    this.#images.delete(entry.path);
+    const ownership = entry.bitmap;
+    delete entry.image;
+    delete entry.bitmap;
+    if (!ownership) return;
+    ownership.references--;
+    if (ownership.references > 0) return;
+    this.#bitmapOwnership.delete(ownership.image);
+    this.#sourceDecodedPixels -= ownership.pixels;
+    this.#sourceBitmapCount--;
+    this.#closeImage(ownership.image);
+  }
+
+  #evictImages(): void {
+    for (const entry of [...this.#images.values()]) {
+      const countOverflow = this.#images.size > this.#limits.sourceCount;
+      const pixelOverflow = this.#sourceDecodedPixels > this.#limits.sourceDecodedPixels;
+      if (!countOverflow && !pixelOverflow) break;
+      if (entry.status === "pending" || entry.leases.size > 0) continue;
+      // Removing one alias path does not release its shared decoded surface. Under pixel-only
+      // pressure, preserve LRU entries that cannot improve the violated metric and scan onward to
+      // an ownership whose final reference really does reduce it.
+      if (!countOverflow && pixelOverflow
+        && (entry.bitmap === undefined || entry.bitmap.references !== 1)) continue;
+      this.#removeImageEntry(entry);
+      if (!this.#images.has(entry.path)) this.#imageFailures.delete(entry.path);
+    }
+
+    if (this.#images.size > this.#limits.sourceCount
+      || this.#sourceDecodedPixels <= this.#limits.sourceDecodedPixels) return;
+    // If every candidate aliases the same surface, no single path can improve pixel pressure.
+    // Remove the oldest complete unpinned ownership group instead; a group containing a pending or
+    // leased path remains an exact active pin and may honestly overflow until that lease leaves.
+    const groups = new Map<CharacterAtlasBitmapOwnership, CharacterAtlasImageEntry[]>();
+    for (const entry of this.#images.values()) {
+      if (!entry.bitmap) continue;
+      const group = groups.get(entry.bitmap) ?? [];
+      group.push(entry);
+      groups.set(entry.bitmap, group);
+    }
+    const oldestOwnerships = [...groups.entries()]
+      .sort(([left], [right]) => left.lastTouch - right.lastTouch);
+    for (const [ownership, group] of oldestOwnerships) {
+      if (this.#sourceDecodedPixels <= this.#limits.sourceDecodedPixels) break;
+      if (group.length !== ownership.references
+        || group.some((entry) => entry.status === "pending" || entry.leases.size > 0)) continue;
+      for (const entry of group) {
+        this.#removeImageEntry(entry);
+        if (!this.#images.has(entry.path)) this.#imageFailures.delete(entry.path);
+      }
+    }
+  }
+
+  #closeUnownedImage(image: ImageBitmap): void {
+    if ((this.#bitmapOwnership.get(image)?.references ?? 0) > 0) return;
+    this.#closeImage(image);
+  }
+
+  #isCurrentCompose(request: CharacterAtlasComposeRequest): boolean {
+    return !this.#disposed
+      && request.epoch === this.#epoch
+      && this.#composing.get(request.key) === request;
+  }
+
+  #isCurrentImage(entry: CharacterAtlasImageEntry): boolean {
+    return !this.#disposed
+      && entry.epoch === this.#epoch
+      && this.#images.get(entry.path) === entry;
+  }
+
+  #closeImage(image: ImageBitmap): void {
+    if (this.#closedImages.has(image)) return;
+    this.#closedImages.add(image);
+    try { image.close(); } catch { /* best-effort release must continue through every bitmap */ }
+  }
+
+  /** Failure paths are owned by retained/in-flight looks; discard stale terminal path state. */
+  #pruneImageFailures(): void {
+    if (this.#composing.size > 0) return;
+    const owned = new Set<string>();
+    for (const { layers } of this.#failed.values()) {
+      for (const layer of layers) {
+        for (const path of layerPaths(layer)) owned.add(path);
+      }
+    }
+    for (const path of this.#imageFailures.keys()) {
+      if (!owned.has(path)) this.#imageFailures.delete(path);
+    }
+  }
+
+  #recordImageFailure(path: string, attempts: number, transient: boolean): void {
+    const wait = transient ? IMAGE_RETRY_BACKOFF_MS[attempts - 1] : undefined;
+    this.#imageFailures.set(path, {
+      attempts,
+      after: wait === undefined ? Infinity : this.#now() + wait,
+    });
+  }
+
+  /** Keep terminal look ownership bounded just like retry ownership. */
+  #markTerminal(key: string): void {
+    this.#terminalFailures.delete(key);
+    this.#terminalFailures.add(key);
+    while (this.#terminalFailures.size > ATLAS_FAILURE_LIMIT) {
+      const oldest = this.#terminalFailures.values().next().value;
+      if (oldest === undefined) break;
+      this.#terminalFailures.delete(oldest);
+    }
+  }
+
+  #recomputeNextRefresh(): void {
+    this.#nextRefresh = Infinity;
+    // A look with no atlas is still a renderer-driven capsule. Scheduling it here would leave an
+    // already-due deadline behind after it leaves view and turn refresh's O(1) guard into a scan of
+    // the whole failure ledger every frame. Only partial atlases are owned by refresh.
+    for (const [key, { until }] of this.#failed) {
+      if (this.#atlases.has(key)
+        && (!this.#hasCommittedFootprint || this.#readinessKeys.has(key))) {
+        this.#nextRefresh = Math.min(this.#nextRefresh, until);
+      }
+    }
+  }
+}
+
+/** Exact decoded surface area, with multiplication performed only after an overflow-safe check. */
+export function decodedCharacterAtlasImagePixels(
+  image: Pick<ImageBitmap, "width" | "height">,
+  limit: number = CHARACTER_ATLAS_SOURCE_ENTRY_PIXEL_LIMIT,
+): number | undefined {
+  return decodedImagePixels(image, limit);
+}
+
+function decodedImagePixels(image: Pick<ImageBitmap, "width" | "height">, limit: number): number | undefined {
+  const { width, height } = image;
+  if (!Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0) {
+    return undefined;
+  }
+  if (width > Math.floor(limit / height)) return undefined;
+  return width * height;
+}
+
+/**
+ * Reads one encoded source under a hard cap before decoding it.
+ *
+ * The current local 3,298-file PNG corpus tops out at 612,032 bytes and 512x512 pixels. The 4 MiB
+ * response and 1024x1024 decoded caps are conservative format guards, not performance claims.
+ */
+async function readBoundedCharacterAtlasImage(response: Response, limit: number): Promise<Blob> {
+  const header = response.headers?.get?.("content-length")?.trim();
+  if (header !== undefined && /^[0-9]+$/.test(header) && Number(header) > limit) {
+    try { await response.body?.cancel(); } catch { /* preserve the deterministic size answer */ }
+    throw new DeterministicCharacterAtlasImageError(
+      `Character image response declares ${header} bytes; limit is ${limit}`,
+    );
+  }
+
+  const reader = response.body?.getReader?.();
+  if (reader) {
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        length += value.byteLength;
+        if (length > limit) {
+          try { await reader.cancel(); } catch { /* preserve the deterministic size answer */ }
+          throw new DeterministicCharacterAtlasImageError(
+            `Character image response exceeded ${limit} bytes while streaming`,
+          );
+        }
+        chunks.push(value);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* do not mask a deterministic overflow answer */ }
+    }
+    const joined = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new Blob([joined.buffer], { type: response.headers?.get?.("content-type") ?? "" });
+  }
+
+  // Minimal Response polyfills expose only blob(). This checks before decode, but cannot prevent
+  // that synthetic implementation from allocating its complete Blob while reading it.
+  const blob = await response.blob();
+  if (blob.size > limit) {
+    throw new DeterministicCharacterAtlasImageError(
+      `Character image response contains ${blob.size} bytes; limit is ${limit}`,
+    );
+  }
+  return blob;
 }

@@ -3,6 +3,7 @@ export type Unsubscribe = () => void;
 
 import type { SpellGo } from "./SpellProtocol.js";
 import type { ActiveAura } from "./AuraProtocol.js";
+import type { TextEmote } from "./ChatProtocol.js";
 
 type AnyListener = (payload: unknown) => void;
 
@@ -122,6 +123,8 @@ export interface WorldEvents {
 export interface WorldPacketEvents {
   /** A ranged auto-repeat (Auto Shot or wand Shoot) stopped for this unit. */
   STOP_AUTOREPEAT_SPELL: { guid: bigint };
+  /** `SMSG_TEXT_EMOTE`: the source and text-emote tuple, before any client-side sentence lookup. */
+  TEXT_EMOTE: TextEmote;
   /** A unit began a cast or a channel. `castTime` is what is left to run, in milliseconds. */
   SPELL_CAST_START: { casterGuid: bigint; spellId: number; castTime: number; channel: boolean };
   /** The cast ended, whether it landed, was interrupted or was cancelled. */
@@ -159,8 +162,15 @@ export interface WorldPacketEvents {
     removed: readonly ActiveAura[];
     updated: readonly { before: ActiveAura; after: ActiveAura }[];
   };
-  /** One line of the spell combat log, already worded. */
-  COMBAT_LOG: { casterGuid: bigint; targetGuid: bigint; spellId: number; text: string; critical: boolean };
+  /** One line of the spell combat log, already worded and semantically classified. */
+  COMBAT_LOG: {
+    casterGuid: bigint;
+    targetGuid: bigint;
+    spellId: number;
+    text: string;
+    critical: boolean;
+    kind: "damage" | "heal" | "utility" | "kill";
+  };
   /** Damage or healing worth showing over a unit's head. */
   FLOATING_TEXT: { guid: bigint; amount: number; kind: "damage" | "heal" | "power" | "miss"; critical: boolean; text?: string };
   ACTION_BUTTONS_CHANGED: Record<string, never>;

@@ -1,4 +1,5 @@
 import type { TransportKeyframe, TransportPath } from "../gateway/TransportPaths.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { TransportKeyframe, TransportPath };
 
@@ -116,6 +117,29 @@ export class TransportPathClient {
   readonly #baseUrl: string;
   readonly #paths = new Map<number, TransportPath>();
   readonly #requested = new Set<number>();
+  readonly #loading = new Set<number>();
+  readonly #errors = new Set<number>();
+  #revision = 0;
+  #success = 0;
+  #error = 0;
+
+  /** Immutable exact request counters; the lifetime requested set is not active work. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    return Object.freeze({
+      pending: this.#loading.size,
+      success: this.#success,
+      error: this.#errors.size,
+      generation: this.#revision,
+    });
+  }
+
+  get revision(): number {
+    return this.#revision;
+  }
+
+  get generation(): number {
+    return this.#revision;
+  }
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -129,12 +153,22 @@ export class TransportPathClient {
     if (known) return known;
     if (entry > 0 && !this.#requested.has(entry)) {
       this.#requested.add(entry);
+      this.#loading.add(entry);
       void this.#load(entry);
     }
     return undefined;
   }
 
   async #load(entry: number): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loading.delete(entry);
+      this.#revision++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/dbc/transport-paths?entries=${entry}`);
       if (!response.ok) throw new Error(`Transport path gateway returned ${response.status}`);
@@ -147,9 +181,15 @@ export class TransportPathClient {
       // An entry the gateway did not answer for still has to be remembered, or it is asked for
       // again on the next frame.
       if (!this.#paths.has(entry)) this.#paths.set(entry, { entry, period: 0, frames: [] });
+      this.#errors.delete(entry);
+      settle(true);
     } catch (error) {
       this.#paths.set(entry, { entry, period: 0, frames: [] });
+      this.#errors.add(entry);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      settle(false);
     }
   }
 }

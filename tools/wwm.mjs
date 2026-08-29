@@ -1,4 +1,4 @@
-// WWM1: one WMO, group by group.
+// WWM1/WWM2: one WMO, group by group. WWM2 is selected when authored MONR normals are present.
 //
 // A building used to publish the way a doodad does — every vertex it has, merged into one mesh,
 // one artifact. That works for a tavern and not for a city. Stormwind is 286 groups, 761,902
@@ -10,14 +10,16 @@
 // the same shape the collision format uses for the same reason (src/world/CollisionFormat.ts).
 // The header carries every group's box, flags and size whether or not its geometry came with it,
 // so the browser can decide which handful of a city's rooms it is standing in and ask for only
-// those. Measured from Stormwind's five districts with interiors kept to 60 m and the outdoor
-// shell to 230, that is 17 to 28 groups and 4 to 7 MB rather than 26.
+// those. Measured from Stormwind's five districts with interiors kept to 60 yd and the outdoor
+// shell to 250 yd, that is 64 to 108 groups for the room-plus-boundary candidate set rather than
+// the full 286-group city. Transition-lit doorway and street seams use the same bounded leash as
+// the shell; the group's own AABB still caps the distance test.
 //
 // Under the triangle budget the whole model travels in the header's own file, which is what
 // almost every building is: of the 15 WMOs placed across seven Azeroth and Kalimdor tiles, the
 // median is 4,238 triangles in a single group and only Stormwind is over.
 //
-//   0  char[4] "WWM1"
+//   0  char[4] "WWM1" or "WWM2" (WWM2 carries authored MONR normals in flagged blocks)
 //   4  u32   groupCount
 //   8  u16   textureCount
 //  10  u8    ambient red
@@ -71,12 +73,13 @@
 //   4  u32   indexCount
 //   8  u16   runCount
 //  10  u8    bytes per index, 2 or 4
-//  11  u8    reserved, written zero
+//  11  u8    stream flags: bit 0 means a float3 authored normal stream follows colours
 //  12  u16   which group this is, so a stale cache cannot pass one room off as another
 //  14  u16   lightRefCount: how many of the model's lamps hang in this group
 //  16  f32[3] × vertexCount positions, in model space
 //  ..  f32[2] × vertexCount texture coordinates
 //  ..  u8[4]  × vertexCount baked colours, RGBA; white where the group has none
+//  ..  f32[3] × vertexCount authored normals when block flag bit 0 is set
 //  ..  the index list, numbered from this group's own first vertex, padded to a multiple of four
 //  ..  the runs, 16 bytes each: u32 start, u32 count, u16 material, u8 blendMode,
 //      u8 materialFlags, u8 lighting, u8 reserved, u16 reserved
@@ -94,6 +97,10 @@
 const encoder = new TextEncoder();
 
 export const WWM1_MAGIC = "WWM1";
+/** WWM2 is the WWM1 envelope plus optional authored MONR normals in each group block. */
+export const WWM2_MAGIC = "WWM2";
+/** Bit 0 of a group block's byte 11: one finite float3 normal per vertex follows the legacy streams. */
+export const WWM_AUTHORED_NORMALS = 0x01;
 export const WWM1_HEADER_SIZE = 24;
 export const WWM1_GROUP_SIZE = 40;
 export const WWM1_BLOCK_HEADER_SIZE = 16;
@@ -130,25 +137,45 @@ export const WWM1_FOG_LIMIT = 255;
  */
 export const WWM_TRIANGLE_BUDGET = 50_000;
 
+function assertFloat32Stream(values, label) {
+  for (const value of values) {
+    if (!Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
+      throw new Error(`WWM1 group ${label} stream is not Float32-representable`);
+    }
+  }
+}
+
 /** The bytes of one group's geometry, blocked so that the same encoding serves both files. */
 export function encodeWwmGroup(group, index) {
   const vertexCount = group.positions.length / 3;
   const indexCount = group.indices.length;
   if (!Number.isInteger(vertexCount) || vertexCount === 0 || vertexCount > 1_000_000) throw new Error("WWM1 group vertex count is invalid");
   if (group.uvs.length !== vertexCount * 2 || group.colours.length !== vertexCount * 4) throw new Error("WWM1 group vertex streams disagree on the vertex count");
+  assertFloat32Stream(group.positions, "position");
+  assertFloat32Stream(group.uvs, "UV");
   if (indexCount % 3 !== 0 || indexCount > 6_000_000) throw new Error("WWM1 group index list is invalid");
   if (group.runs.length > 65_535 || index > 65_535) throw new Error("WWM1 group run table is too large");
   const lightRefs = group.lightRefs ?? [];
   if (lightRefs.length > 65_535) throw new Error("WWM1 group light reference table is too large");
+  const hasNormals = group.normals !== undefined;
+  if (hasNormals) {
+    if (group.normals.length !== vertexCount * 3) throw new Error("WWM2 group normal stream disagrees with the vertex count");
+    for (const value of group.normals) {
+      if (!Number.isFinite(Math.fround(value))) throw new Error("WWM2 group normal stream is not Float32-representable");
+    }
+  }
   const wide = vertexCount > 65_536;
   const indexBytes = wide ? 4 : 2;
   const indexLength = align4(indexCount * indexBytes);
   const runLength = group.runs.length * WWM1_RUN_SIZE;
-  const data = Buffer.alloc(WWM1_BLOCK_HEADER_SIZE + vertexCount * 24 + indexLength + runLength + align4(lightRefs.length * 2));
+  const vertexStride = 24 + (hasNormals ? 12 : 0);
+  const indexOffset = WWM1_BLOCK_HEADER_SIZE + vertexCount * vertexStride;
+  const data = Buffer.alloc(indexOffset + indexLength + runLength + align4(lightRefs.length * 2));
   data.writeUInt32LE(vertexCount, 0);
   data.writeUInt32LE(indexCount, 4);
   data.writeUInt16LE(group.runs.length, 8);
   data.writeUInt8(indexBytes, 10);
+  data.writeUInt8(hasNormals ? WWM_AUTHORED_NORMALS : 0, 11);
   data.writeUInt16LE(index, 12);
   data.writeUInt16LE(lightRefs.length, 14);
   let offset = WWM1_BLOCK_HEADER_SIZE;
@@ -156,13 +183,16 @@ export function encodeWwmGroup(group, index) {
   for (const value of group.uvs) data.writeFloatLE(value, offset), offset += 4;
   data.set(group.colours, offset);
   offset += vertexCount * 4;
+  if (hasNormals) {
+    for (const value of group.normals) data.writeFloatLE(value, offset), offset += 4;
+  }
   for (const value of group.indices) {
     if (value >= vertexCount) throw new Error("WWM1 group index is out of range");
     if (wide) data.writeUInt32LE(value, offset);
     else data.writeUInt16LE(value, offset);
     offset += indexBytes;
   }
-  offset = WWM1_BLOCK_HEADER_SIZE + vertexCount * 24 + indexLength;
+  offset = indexOffset + indexLength;
   for (const run of group.runs) {
     if (run.start + run.count > indexCount || run.count % 3 !== 0) throw new Error("WWM1 run does not fit its group");
     data.writeUInt32LE(run.start, offset);
@@ -193,7 +223,7 @@ export function encodeWwm(model, textureUrls, include) {
   if (textures.some((value) => value.length > 1000)) throw new Error("WWM1 texture URL is too long");
   const textureLength = align4(textures.reduce((total, value) => total + 2 + value.length, 0));
 
-  const lights = model.lights ?? [];
+  const lights = safeWmoLights(model.lights);
   if (lights.length > 65_535) throw new Error("WWM1 light table is too large");
   // Portal data is an optional optimisation. An unusual/sentinel MOPR record must not turn a WMO
   // whose geometry is perfectly usable into a generator failure; an invalid graph is encoded as
@@ -204,6 +234,9 @@ export function encodeWwm(model, textureUrls, include) {
   const portalReferences = portalGraph.references;
   const portalVertexCount = portalVertices.length / 3;
   const blocks = groups.map((group, index) => (include && !include.has(index) ? undefined : encodeWwmGroup(group, index)));
+  // Keep truly legacy artifacts byte-for-byte WWM1-compatible. A root carrying authored MONR
+  // streams is WWM2; the block flag remains the source of truth for standalone group responses.
+  const wwm2 = groups.some((group) => group.normals !== undefined);
   const bodyLength = blocks.reduce((total, block) => total + (block?.length ?? 0), 0);
   const tableLength = groups.length * WWM1_GROUP_SIZE;
   const lightLength = lights.length * WWM1_LIGHT_SIZE;
@@ -219,7 +252,7 @@ export function encodeWwm(model, textureUrls, include) {
   const fogLength = WWM1_FOG_HEADER_SIZE + groups.length * WWM1_FOG_GROUP_SIZE + fogs.length * WWM1_FOG_SIZE;
   const metadataLength = legacyMetadataLength + extensionLength + fogLength;
   const data = Buffer.alloc(WWM1_HEADER_SIZE + tableLength + textureLength + lightLength + bodyLength + metadataLength);
-  data.write(WWM1_MAGIC, 0, "ascii");
+  data.write(wwm2 ? WWM2_MAGIC : WWM1_MAGIC, 0, "ascii");
   data.writeUInt32LE(groups.length, 4);
   data.writeUInt16LE(textures.length, 8);
   for (let channel = 0; channel < 3; channel++) data.writeUInt8(clampByte(model.ambient?.[channel] ?? 0), 10 + channel);
@@ -266,8 +299,11 @@ export function encodeWwm(model, textureUrls, include) {
   data.write(WWM1_METADATA_MAGIC, metadataOffset, "ascii");
   data.writeUInt32LE(groups.length, metadataOffset + 4);
   for (const [index, group] of groups.entries()) {
+    // `exterior` is the legacy wire name for a long-range street-boundary group. Transition
+    // batches are still lit as interior by the renderer, but they commonly hold the doorway/wall
+    // seam between a room and the outdoor shell and must not disappear on the 60-yard room leash.
     const exterior = group.exterior === true
-      || (group.runs?.some((run) => run.lighting === 0) ?? false);
+      || (group.runs?.some((run) => run.lighting === 0 || run.lighting === 2) ?? false);
     data.writeUInt8(exterior ? 1 : 0, metadataOffset + WWM1_METADATA_HEADER_SIZE + index);
   }
 
@@ -281,7 +317,7 @@ export function encodeWwm(model, textureUrls, include) {
   offset = extensionOffset + WWM1_EXTENSION_HEADER_SIZE;
   for (const [index, group] of groups.entries()) {
     const exterior = group.exterior === true
-      || (group.runs?.some((run) => run.lighting === 0) ?? false);
+      || (group.runs?.some((run) => run.lighting === 0 || run.lighting === 2) ?? false);
     data.writeUInt8(exterior ? 1 : 0, offset);
     data.writeUInt16LE(portalGraph.ranges[index].count, offset + 2);
     data.writeUInt32LE(portalGraph.ranges[index].start, offset + 4);
@@ -332,6 +368,27 @@ export function encodeWwm(model, textureUrls, include) {
     offset += WWM1_FOG_SIZE;
   }
   return data;
+}
+
+/** Preserve MOLT ordinals while making malformed optional lights inert for every CPU consumer. */
+function safeWmoLights(lights) {
+  if (!Array.isArray(lights)) return [];
+  return lights.map((light) => {
+    const position = light?.position;
+    const valid = position?.length === 3
+      && [...position, light.intensity, light.attenuationStart, light.attenuationEnd].every(Number.isFinite)
+      && light.intensity >= 0 && light.attenuationStart >= 0
+      && light.attenuationEnd >= light.attenuationStart;
+    return valid ? light : {
+      type: light?.type ?? 0,
+      attenuates: false,
+      colour: [0, 0, 0],
+      position: [0, 0, 0],
+      intensity: 0,
+      attenuationStart: 0,
+      attenuationEnd: 0,
+    };
+  });
 }
 
 /**

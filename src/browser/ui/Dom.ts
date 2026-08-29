@@ -65,6 +65,7 @@ export const movementStatus = element<HTMLParagraphElement>("movement-status");
 export const terrainStatus = element<HTMLParagraphElement>("terrain-status");
 export const environmentStatus = element<HTMLParagraphElement>("environment-status");
 export const renderStatus = element<HTMLParagraphElement>("render-status");
+export const fullFrameStatus = element<HTMLParagraphElement>("full-frame-status");
 export const creatureStatus = element<HTMLParagraphElement>("creature-status");
 export const modelStatus = element<HTMLParagraphElement>("model-status");
 export const targetPanel = element<HTMLElement>("target-panel");

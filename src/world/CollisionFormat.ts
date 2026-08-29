@@ -47,6 +47,11 @@ export interface CollisionLiquid {
   flags: Uint8Array;
 }
 
+/** A wire float must remain representable as a finite IEEE-754 single precision value. */
+function finiteFloat32(value: number): boolean {
+  return Number.isFinite(value) && Number.isFinite(Math.fround(value));
+}
+
 /** Bytes one liquid grid takes on the wire: the header, a height per corner, a byte per cell. */
 function liquidBytes(liquid: CollisionLiquid | undefined): number {
   if (!liquid) return 0;
@@ -209,18 +214,30 @@ export function decodeCollisionModel(payload: ArrayBuffer): CollisionModel {
     const tilesY = view.getUint32(cursor + 4, true);
     const corners = (tilesX + 1) * (tilesY + 1);
     if (24 + corners * 4 + tilesX * tilesY !== size) throw new Error("Collision model liquid does not match its size");
+    const cornerX = view.getFloat32(cursor + 8, true);
+    const cornerY = view.getFloat32(cursor + 12, true);
+    const cornerZ = view.getFloat32(cursor + 16, true);
     const heights = new Float32Array(corners);
-    for (let corner = 0; corner < corners; corner++) heights[corner] = view.getFloat32(cursor + 24 + corner * 4, true);
-    group.liquid = {
-      tilesX,
-      tilesY,
-      cornerX: view.getFloat32(cursor + 8, true),
-      cornerY: view.getFloat32(cursor + 12, true),
-      cornerZ: view.getFloat32(cursor + 16, true),
-      type: view.getUint32(cursor + 20, true),
-      heights,
-      flags: bytes.slice(cursor + 24 + corners * 4, cursor + size),
-    };
+    let finite = finiteFloat32(cornerX) && finiteFloat32(cornerY) && finiteFloat32(cornerZ);
+    for (let corner = 0; corner < corners; corner++) {
+      const height = view.getFloat32(cursor + 24 + corner * 4, true);
+      heights[corner] = height;
+      finite = finite && finiteFloat32(height);
+    }
+    // A corrupt liquid must not poison the model's otherwise useful solid collision. Keep the
+    // cursor and all group headers/geometry intact, but omit only this optional payload.
+    if (finite) {
+      group.liquid = {
+        tilesX,
+        tilesY,
+        cornerX,
+        cornerY,
+        cornerZ,
+        type: view.getUint32(cursor + 20, true),
+        heights,
+        flags: bytes.slice(cursor + 24 + corners * 4, cursor + size),
+      };
+    }
     cursor += size;
   }
 

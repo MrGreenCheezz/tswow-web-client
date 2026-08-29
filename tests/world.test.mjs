@@ -22,7 +22,14 @@ import { SPLINE_MOVE_STATES } from "../dist/code/world/SplineStateProtocol.js";
 import { isUnitMoving, MOVEMENT_FLAG_TRANSLATING, poseAnimation } from "../dist/code/browser/AnimatedModel.js";
 import { ANIMATION_IDS } from "../dist/code/generated/animations.js";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
-import { buildCombatGuid, parseAttackStart, parseAttackStop, parseHealthUpdate } from "../dist/code/world/CombatProtocol.js";
+import {
+  SHEATH_MELEE,
+  buildCombatGuid,
+  buildSetSheathed,
+  parseAttackStart,
+  parseAttackStop,
+  parseHealthUpdate,
+} from "../dist/code/world/CombatProtocol.js";
 import { parseMonsterMove } from "../dist/code/world/MonsterMoveProtocol.js";
 import {
   TARGET_FLAG_DEST_LOCATION,
@@ -396,6 +403,262 @@ test("world client activates the player mover before movement", async () => {
     buildCastSpell(133, 1, { x: 2, y: 3, z: 4 }),
   );
   assert.equal(client.cooldownRemaining(133), 0, "a request is not a cooldown before the server accepts it");
+  client.close();
+});
+
+test("mount auto-dispel precedes an ordinary spell without predicting server state", () => {
+  const guid = 0x1234n;
+  const connection = {
+    sent: [],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  client.state.selfGuid = guid;
+  client.state.move(guid, { flags: 0, position: { x: 1, y: 2, z: 3, orientation: 0 } });
+  const player = client.state.objects.get(guid);
+  player.fields.set(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset, 2404);
+  client.knownSpells = [{ id: 133, slot: 0 }];
+
+  client.castSpell(133);
+
+  assert.deepEqual(
+    connection.sent.map(({ opcode, payload }) => [opcode, payload.byteLength]),
+    [
+      [OPCODES.CMSG_CANCEL_MOUNT_AURA, 0],
+      [OPCODES.CMSG_CAST_SPELL, 23],
+    ],
+    "the realm must see the dismount request before the cast",
+  );
+  assert.equal(
+    player.fields.get(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset),
+    2404,
+    "the field remains server-authoritative until the update arrives",
+  );
+  client.close();
+});
+
+function mountCastHarness({ flags = 0, mountDisplayId = 0, knownSpells = [{ id: 133, slot: 0 }], mountSpellIds = [], activeAuras = [] } = {}) {
+  const guid = 0x1234n;
+  const connection = {
+    sent: [],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  client.state.selfGuid = guid;
+  client.state.move(guid, { flags: 0, position: { x: 1, y: 2, z: 3, orientation: 0 } });
+  const player = client.state.objects.get(guid);
+  player.fields.set(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, flags);
+  player.fields.set(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset, mountDisplayId);
+  client.knownSpells = knownSpells;
+  client.setMountSpellIds(mountSpellIds);
+  if (activeAuras.length > 0) {
+    client.auras.set(guid, new Map(activeAuras.map((spellId, slot) => [slot, {
+      slot, spellId, flags: 0, casterLevel: 80, applications: 1,
+    }])));
+  }
+  return { client, connection, player };
+}
+
+test("the spellbook Attack action toggles the melee swing protocol instead of casting spell 6603", () => {
+  const { client, connection } = mountCastHarness({ knownSpells: [] });
+  const victim = 0x5678n;
+  client.state.move(victim, { flags: 0, position: { x: 5, y: 2, z: 3, orientation: 0 } });
+  client.selectTarget(victim);
+  connection.sent.length = 0;
+
+  client.castSpell(6603);
+  client.castSpell(6603);
+
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_ATTACK_SWING,
+    OPCODES.CMSG_ATTACK_STOP,
+    OPCODES.CMSG_SET_SHEATHED,
+  ]);
+  assert.equal(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_CAST_SPELL), false);
+  client.close();
+});
+
+test("Auto Shot is one unit-targeted repeat request; pressing it again cancels instead of recasting", () => {
+  const { client, connection } = mountCastHarness({ knownSpells: [{ id: 75, slot: 0 }] });
+  assert.equal(typeof client.setAutoRepeatSpellIds, "function");
+  const victim = 0x5678n;
+  client.state.move(victim, { flags: 0, position: { x: 20, y: 2, z: 3, orientation: 0 } });
+  client.selectTarget(victim);
+  client.setAutoRepeatSpellIds([75]);
+  connection.sent.length = 0;
+
+  client.castSpell(75);
+  client.castSpell(75);
+
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_CAST_SPELL,
+    OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
+    OPCODES.CMSG_SET_SHEATHED,
+  ]);
+  const cast = connection.sent.find(({ opcode }) => opcode === OPCODES.CMSG_CAST_SPELL)?.payload;
+  const expected = new PacketWriter().u8(1).u32(75).u8(0).u32(TARGET_FLAG_UNIT).packedGuid(victim).toUint8Array();
+  assert.deepEqual(cast, expected, "the repeat guard in TrinityCore compares this explicit unit guid");
+  assert.equal(client.autoRepeatSpellId, undefined);
+  client.close();
+});
+
+test("melee and ranged auto-combat switch modes with explicit wire cancellation", () => {
+  const { client, connection } = mountCastHarness({ knownSpells: [{ id: 75, slot: 0 }] });
+  const victim = 0x5678n;
+  client.state.move(victim, { flags: 0, position: { x: 5, y: 2, z: 3, orientation: 0 } });
+  client.state.objects.get(victim).typeId = 3;
+  client.state.setField(victim, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100);
+  client.selectTarget(victim);
+  client.setAutoRepeatSpellIds([75]);
+  client.startAttack();
+  connection.sent.length = 0;
+
+  client.castSpell(75);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_ATTACK_STOP,
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_CAST_SPELL,
+  ]);
+  assert.equal(client.attacking, false);
+  assert.equal(client.autoRepeatSpellId, 75);
+
+  connection.sent.length = 0;
+  client.startAttack();
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_SET_SHEATHED,
+    OPCODES.CMSG_ATTACK_SWING,
+  ]);
+  assert.equal(client.autoRepeatSpellId, undefined);
+  assert.equal(client.attacking, true);
+  client.close();
+});
+
+test("Auto Shot refuses a dead or stale selected target before sending a repeat request", () => {
+  for (const stale of [false, true]) {
+    const { client, connection } = mountCastHarness({ knownSpells: [{ id: 75, slot: 0 }] });
+    const victim = 0x5678n;
+    client.state.move(victim, { flags: 0, position: { x: 5, y: 2, z: 3, orientation: 0 } });
+    client.state.objects.get(victim).typeId = 3;
+    client.state.setField(victim, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, stale ? 100 : 0);
+    client.selectTarget(victim);
+    if (stale) client.state.objects.delete(victim);
+    client.setAutoRepeatSpellIds([75]);
+    connection.sent.length = 0;
+
+    client.castSpell(75);
+
+    assert.deepEqual(connection.sent, [], stale ? "removed target" : "dead target");
+    assert.equal(client.autoRepeatSpellId, undefined);
+    client.close();
+  }
+});
+
+test("UNIT_FLAG_MOUNT dismounts even when MOUNTDISPLAYID is zero", () => {
+  const { client, connection, player } = mountCastHarness({ flags: 0x08000000 });
+  client.castSpell(133);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_CANCEL_MOUNT_AURA,
+    OPCODES.CMSG_CAST_SPELL,
+  ]);
+  assert.equal(player.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), 0x08000000,
+    "the client waits for the server to clear the mounted bit");
+  client.close();
+});
+
+test("reapplying the active mount toggles it off without allocating a cast", () => {
+  const mountSpell = 23214;
+  const { client, connection } = mountCastHarness({
+    mountDisplayId: 2404,
+    knownSpells: [{ id: mountSpell, slot: 0 }, { id: 133, slot: 1 }],
+    mountSpellIds: [mountSpell],
+    activeAuras: [mountSpell],
+  });
+  client.castSpell(mountSpell, 10_000);
+  assert.deepEqual(connection.sent.map(({ opcode, payload }) => [opcode, payload.byteLength]), [
+    [OPCODES.CMSG_CANCEL_MOUNT_AURA, 0],
+  ]);
+  assert.equal(client.auras.get(0x1234n)?.get(0)?.spellId, mountSpell,
+    "the client does not predict the aura removal");
+  // The toggle did not consume a cast count: the next spell starts at one after the server update
+  // eventually clears the mounted fields (the test simulates only that authoritative field change).
+  client.state.setField(0x1234n, UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset, 0);
+  client.state.setField(0x1234n, UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, 0);
+  client.castSpell(133);
+  assert.deepEqual(connection.sent.at(-1).payload, buildCastSpell(133, 1, { x: 1, y: 2, z: 3 }));
+  client.close();
+});
+
+test("an active non-mount aura does not suppress the ordinary cast", () => {
+  const ordinarySpell = 133;
+  const { client, connection } = mountCastHarness({
+    mountDisplayId: 2404,
+    knownSpells: [{ id: ordinarySpell, slot: 0 }],
+    mountSpellIds: [23214],
+    activeAuras: [ordinarySpell],
+  });
+  client.castSpell(ordinarySpell);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_CANCEL_MOUNT_AURA,
+    OPCODES.CMSG_CAST_SPELL,
+  ]);
+  client.close();
+});
+
+test("opening a lock also dismounts before its direct spell cast", () => {
+  const objectGuid = 0x9999n;
+  const { client, connection } = mountCastHarness({ mountDisplayId: 2404 });
+  client.state.move(objectGuid, { flags: 0, position: { x: 4, y: 5, z: 6, orientation: 0 } });
+  client.state.objects.get(objectGuid).typeId = 5;
+  client.openLock(objectGuid, 133);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_CANCEL_MOUNT_AURA,
+    OPCODES.CMSG_CAST_SPELL,
+  ]);
+  client.close();
+});
+
+test("a different mount dismounts and then casts", () => {
+  const activeMount = 23214;
+  const nextMount = 75207;
+  const { client, connection } = mountCastHarness({
+    mountDisplayId: 2404,
+    knownSpells: [{ id: activeMount, slot: 0 }, { id: nextMount, slot: 1 }],
+    mountSpellIds: [activeMount, nextMount],
+    activeAuras: [activeMount],
+  });
+  client.castSpell(nextMount);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [
+    OPCODES.CMSG_CANCEL_MOUNT_AURA,
+    OPCODES.CMSG_CAST_SPELL,
+  ]);
+  client.close();
+});
+
+test("an unmounted active mount spell remains a normal cast", () => {
+  const mountSpell = 23214;
+  const { client, connection } = mountCastHarness({
+    knownSpells: [{ id: mountSpell, slot: 0 }],
+    mountSpellIds: [mountSpell],
+    activeAuras: [mountSpell],
+  });
+  client.castSpell(mountSpell);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode), [OPCODES.CMSG_CAST_SPELL]);
+  client.close();
+});
+
+test("an unknown spell does not dismount the player", () => {
+  const { client, connection } = mountCastHarness({ mountDisplayId: 2404 });
+  client.castSpell(999_999);
+  assert.deepEqual(connection.sent, []);
   client.close();
 });
 
@@ -1371,7 +1634,37 @@ test("П1 the three mount packets are announced instead of being parsed and drop
   client.close();
 });
 
-test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid without stopping melee autoattack", async () => {
+test("text-emote audio edge is distinct from the animation-only SMSG_EMOTE edge", async () => {
+  const guid = 0x1234n;
+  const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const connection = {
+    sent: [],
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_EMOTE, payload: new PacketWriter().u32(3).u64(guid).toUint8Array() },
+      { opcode: OPCODES.SMSG_TEXT_EMOTE, payload: new PacketWriter()
+        .u64(guid).u32(101).u32(0).u32(0).toUint8Array() },
+    ],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  const textEvents = [];
+  const animationEvents = [];
+  client.events.on("TEXT_EMOTE", (event) => textEvents.push(event));
+  client.onEmote = (source, emoteId) => animationEvents.push({ source, emoteId });
+  await client.loginCharacter(guid);
+  for (let round = 0; round < 6; round++) await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(textEvents.length, 1, "only SMSG_TEXT_EMOTE produces the audio-bearing event");
+  assert.deepEqual(textEvents[0], { guid, textEmoteId: 101, emoteNumber: 0, targetName: "" });
+  assert.deepEqual(animationEvents, [{ source: guid, emoteId: 3 }],
+    "SMSG_EMOTE remains a separate animation callback and cannot double-play sound");
+  client.close();
+});
+
+test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, restores sheath, and does not echo cancel", async () => {
   const guid = 3n;
   const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
   const connection = {
@@ -1389,6 +1682,8 @@ test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid without stopping melee auto
   const stopped = [];
   const errors = [];
   client.attacking = true;
+  client.autoRepeatSpellId = 75;
+  client.state.selfGuid = guid;
   client.events.on("STOP_AUTOREPEAT_SPELL", (event) => stopped.push(event.guid));
   client.onPacketError = (opcode, error) => errors.push([opcode, error.message]);
 
@@ -1396,7 +1691,12 @@ test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid without stopping melee auto
   for (let round = 0; round < 4; round++) await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(stopped, [guid]);
-  assert.equal(client.attacking, true, "ranged auto-repeat and melee autoattack are separate states");
+  assert.equal(client.attacking, true, "a defensive inconsistent-state recovery does not stop melee");
+  assert.equal(client.autoRepeatSpellId, undefined);
+  assert.equal(connection.sent.some(({ opcode }) => opcode === OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL), false,
+    "the server already performed the cancellation");
+  assert.deepEqual(connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_SET_SHEATHED).at(-1)?.payload,
+    buildSetSheathed(SHEATH_MELEE));
   assert.deepEqual(errors, []);
   assert.equal(client.unhandledOpcodes.entries.has(OPCODES.SMSG_CANCEL_AUTO_REPEAT), false);
   client.close();

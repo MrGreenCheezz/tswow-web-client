@@ -212,6 +212,11 @@ export function clearWorldContext(): void {
   game.spellVisualCoordinator = undefined;
   game.assetWarmup?.dispose();
   game.assetWarmup = undefined;
+  game.renderer?.clearTerrain();
+  game.renderer?.clearWorldResources();
+  game.liquids?.dispose();
+  game.terrainSplat?.dispose();
+  game.environment?.dispose();
   game.world = undefined;
   game.store = undefined;
   game.terrain = undefined;

@@ -12,16 +12,17 @@
 // matrix comes from.
 
 import * as THREE from "three";
-import { applyBlendMode, applyFogMode } from "./ModelBuild.js";
+import { applyBlendMode, applyFogMode, privateTextureView } from "./ModelBuild.js";
 import {
   EMITTER_CAPACITY, RIBBON_CAPACITY,
   createParticleSystem, createQuadBuffers, createRibbonSystem,
   primeParticleSystem, stepParticles, stepParticlesCatchUp,
-  stepRibbon, stepRibbonCatchUp,
+  resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
   writeParticleQuads, writeRibbonStrip,
   type BillboardView, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
+import type { ResourceOwnerId, RetainedResourceVisitor } from "./ResourceAccounting.js";
 
 /** One emitter: its simulation, the buffers it fills and the mesh those buffers are attached to. */
 interface DrawnEmitter {
@@ -30,9 +31,19 @@ interface DrawnEmitter {
   readonly material: THREE.Material;
   readonly buffers: QuadBuffers;
   readonly bone: number;
+  /** Particle-emitter index folded into its build seed; retained for exact epoch rewinds. */
+  readonly seedOffset: number;
   readonly particles?: ParticleSystem;
   readonly ribbon?: RibbonSystem;
 }
+
+interface ParticleFantasyGlowBinding {
+  previousCompile: THREE.Material["onBeforeCompile"];
+  previousKey: string;
+  enabled: boolean;
+}
+
+const PARTICLE_FANTASY_GLOW_BINDINGS = new WeakMap<THREE.Material, ParticleFantasyGlowBinding>();
 
 /**
  * Everything one model instance emits, and the one group it all lives in.
@@ -44,10 +55,44 @@ interface DrawnEmitter {
 export interface ModelEffects {
   readonly group: THREE.Group;
   readonly emitters: DrawnEmitter[];
-  /** MPQ paths of every texture this build loaded, so the caller can free them with it. */
+  /** Exact Texture objects/views this effect retains, deduplicated by authored path. */
   readonly textures: THREE.Texture[];
-  /** Scoped spell texture caches retain maps across casts; those maps are not owned by this instance. */
+  /** False only for callers that deliberately hand this instance externally-owned Texture objects. */
   readonly disposeTextures: boolean;
+}
+
+/** Applies a profile toggle to already-spawned spell emitters without resetting their simulation. */
+export function setModelEffectsFantasyGlow(effects: ModelEffects, enabled: boolean): void {
+  for (const emitter of effects.emitters) {
+    const binding = PARTICLE_FANTASY_GLOW_BINDINGS.get(emitter.material);
+    if (!binding || binding.enabled === enabled) continue;
+    binding.enabled = enabled;
+    emitter.material.needsUpdate = true;
+  }
+}
+
+/** Visits the exact typed backing stores retained by an effect simulation. */
+export function visitModelEffectsResources(
+  visitor: RetainedResourceVisitor,
+  ownerId: ResourceOwnerId,
+  effects: ModelEffects,
+): void {
+  const seen = new WeakSet<object>();
+  const reference = (view: ArrayBufferView | undefined): void => {
+    if (!view) return;
+    const backing = view.buffer as object;
+    if (seen.has(backing)) return;
+    seen.add(backing);
+    visitor.referenceCpu(ownerId, view);
+  };
+
+  for (const emitter of effects.emitters) {
+    if (emitter.particles) {
+      reference(emitter.particles.matrix);
+      reference(emitter.particles.globalSequences);
+    }
+    if (emitter.ribbon) reference(emitter.ribbon.globalSequences);
+  }
 }
 
 /** Where each emitter of a model is this frame, and what time it is for its tracks. */
@@ -90,8 +135,12 @@ export function buildModelEffects(
     loadTexture: (url: string) => THREE.Texture;
     /** Set false when the callback is a shared scoped cache rather than an instance owner. */
     disposeTextures?: boolean;
+    /** Clone each loaded base once per effect path before mutating its sampler state. */
+    privateTextureViews?: boolean;
     /** Seeds the emitters, so two placements of one model do not spark in lockstep. */
     seed?: number;
+    /** Single-pass additive lift for spell-owned emitters; never set for world ambience. */
+    fantasyGlow?: boolean;
   },
 ): ModelEffects | undefined {
   if (model.particleEmitters.length === 0 && model.ribbonEmitters.length === 0) return undefined;
@@ -104,6 +153,7 @@ export function buildModelEffects(
   const textures: THREE.Texture[] = [];
   const loaded = new Map<string, THREE.Texture>();
   const seed = options.seed ?? 1;
+  const disposeTextures = options.privateTextureViews === true || options.disposeTextures !== false;
 
   const texture = (slotIndex: number): THREE.Texture | undefined => {
     const slot = model.textures[slotIndex];
@@ -112,7 +162,8 @@ export function buildModelEffects(
     if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) return undefined;
     let value = loaded.get(slot.path);
     if (!value) {
-      value = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+      const base = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+      value = options.privateTextureViews === true ? privateTextureView(base) : base;
       value.colorSpace = THREE.SRGBColorSpace;
       // The client's UVs put v = 0 at the top of the image; three's default upload flips it.
       value.flipY = false;
@@ -132,12 +183,14 @@ export function buildModelEffects(
     const buffers = createQuadBuffers(EMITTER_CAPACITY);
     // An emitter record carries no material flags of its own — only a blend type — so its fog and
     // its sidedness follow from that alone.
-    const drawn = buildDrawn(buffers, map, emitter.blendType, 0);
+    const drawn = buildDrawn(buffers, map, emitter.blendType, 0, options.fantasyGlow);
+    const seedOffset = Math.imul(index, 0x9e3779b1) >>> 0;
     emitters.push({
       ...drawn,
       buffers,
       bone: emitter.bone,
-      particles: createParticleSystem(emitter, model.globalSequences, seed + index * 0x9e3779b1),
+      seedOffset,
+      particles: createParticleSystem(emitter, model.globalSequences, (seed + seedOffset) >>> 0),
     });
     group.add(drawn.mesh);
   });
@@ -151,23 +204,26 @@ export function buildModelEffects(
     // resolves it and WVM7 carries both halves — and only half of it was arriving here: of the 854
     // ribbons under `spells\`, **827 carry `MATERIAL_UNFOGGED`** and every one of them was being
     // fogged, because `MeshBasicMaterial.fog` defaults to `true` and nothing said otherwise.
-    const drawn = buildDrawn(buffers, map, material?.blendMode ?? 2, material?.flags ?? 0);
+    const drawn = buildDrawn(
+      buffers, map, material?.blendMode ?? 2, material?.flags ?? 0, options.fantasyGlow,
+    );
     emitters.push({
       ...drawn,
       buffers,
       bone: ribbon.bone,
+      seedOffset: 0,
       ribbon: createRibbonSystem(ribbon, model.globalSequences),
     });
     group.add(drawn.mesh);
   });
 
   if (emitters.length === 0) {
-    if (options.disposeTextures !== false) {
+    if (disposeTextures) {
       for (const value of textures) value.dispose();
     }
     return undefined;
   }
-  return { group, emitters, textures, disposeTextures: options.disposeTextures !== false };
+  return { group, emitters, textures, disposeTextures };
 }
 
 function buildDrawn(
@@ -175,6 +231,7 @@ function buildDrawn(
   map: THREE.Texture,
   blendMode: number,
   materialFlags: number,
+  fantasyGlow: boolean | undefined,
 ): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material } {
   const geometry = new THREE.BufferGeometry();
   const position = new THREE.BufferAttribute(buffers.positions, 3);
@@ -221,6 +278,28 @@ function buildDrawn(
   // the fog colour in".
   material.fog = (materialFlags & MATERIAL_UNFOGGED) === 0;
   applyFogMode(material, blendMode);
+  if (fantasyGlow !== undefined && (blendMode === 3 || blendMode === 4)) {
+    const previousCompile = material.onBeforeCompile;
+    const previousKey = material.customProgramCacheKey();
+    const binding: ParticleFantasyGlowBinding = { previousCompile, previousKey, enabled: fantasyGlow };
+    PARTICLE_FANTASY_GLOW_BINDINGS.set(material, binding);
+    material.onBeforeCompile = (shader, renderer) => {
+      binding.previousCompile.call(material, shader, renderer);
+      if (!binding.enabled) return;
+      const marker = "#include <color_fragment>";
+      if (shader.fragmentShader.split(marker).length - 1 !== 1) {
+        throw new Error("Particle fantasy glow expected exactly one MeshBasic color marker");
+      }
+      shader.fragmentShader = shader.fragmentShader.replace(marker, `${marker}
+      /* particle-fantasy-glow-v1 */
+      float particleFantasyEnergy = smoothstep(0.08, 0.92, diffuseColor.a);
+      diffuseColor.rgb *= 1.20 + particleFantasyEnergy * 0.24;`);
+    };
+    material.customProgramCacheKey = () => binding.enabled
+      ? `${binding.previousKey}|particle-fantasy-glow-v1`
+      : binding.previousKey;
+    if (fantasyGlow) material.needsUpdate = true;
+  }
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
@@ -275,6 +354,29 @@ export function updateModelEffects(
     markUpdated(drawn.geometry.getAttribute("position") as THREE.BufferAttribute, quads * 4);
     markUpdated(drawn.geometry.getAttribute("uv") as THREE.BufferAttribute, quads * 4);
     markUpdated(drawn.geometry.getAttribute("color") as THREE.BufferAttribute, quads * 4);
+  }
+}
+
+/**
+ * Rewinds all simulations and dynamic draw buffers in place.
+ *
+ * Geometry, attributes, materials, textures and authored global-sequence arrays keep their exact
+ * identities. Only values produced by temporal evolution are cleared.
+ */
+export function resetModelEffects(effects: ModelEffects, seed: number): void {
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError("model-effects seed must be a uint32");
+  }
+  for (const drawn of effects.emitters) {
+    if (drawn.particles) resetParticleSystem(drawn.particles, (seed + drawn.seedOffset) >>> 0);
+    if (drawn.ribbon) resetRibbonSystem(drawn.ribbon);
+    drawn.buffers.positions.fill(0);
+    drawn.buffers.uvs.fill(0);
+    drawn.buffers.colors.fill(0);
+    drawn.geometry.setDrawRange(0, 0);
+    for (const name of ["position", "uv", "color"]) {
+      (drawn.geometry.getAttribute(name) as THREE.BufferAttribute).clearUpdateRanges();
+    }
   }
 }
 

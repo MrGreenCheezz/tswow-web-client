@@ -38,6 +38,8 @@ import { encodeCustom, type CustomMessage } from "../../world/CustomCodec.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { playerInventory } from "../Inventory.js";
+import { game } from "../game/Context.js";
+import { spellCastAllowed } from "../SpellCastGuard.js";
 import { macroLines } from "./MacroModel.js";
 import {
   evaluate, formatExpressionValue, type ExprNode, type ExpressionHelpers, type ExpressionScope,
@@ -160,7 +162,10 @@ const ITEM_ENTRY_OFFSET = UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset;
 export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandSpec>> = {
   castSpell: {
     world: "castSpell", usage: "castSpell(<номер заклинания>)",
-    run: (args, _host, world) => world.castSpell(args.number(0)),
+    run: (args, _host, world) => {
+      const spellId = args.number(0);
+      if (game.world !== world || spellCastAllowed(world, spellId)) world.castSpell(spellId);
+    },
   },
   castSpellByName: {
     // The studio's «применить заклинание» carries a name a designer typed, so the id is looked up
@@ -172,7 +177,7 @@ export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandS
         host.onProblem?.(`castSpell: у персонажа нет заклинания «${args.text(0)}»`);
         return;
       }
-      world.castSpell(id);
+      if (game.world !== world || spellCastAllowed(world, id)) world.castSpell(id);
     },
   },
   cancelAura: {

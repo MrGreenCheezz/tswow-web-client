@@ -13,12 +13,29 @@
  */
 
 import { game } from "../game/Context.js";
+import { syncMountSpellIds } from "../MountSpells.js";
+import type { SpellMetadataClient } from "../SpellMetadata.js";
+import type { WorldClient } from "../../world/WorldClient.js";
 
 /** Ids already asked for, whether or not the answer arrived. */
 const asked = new Set<number>();
 /** Ids waiting for the next batch, so a wave of casts is one request rather than twenty. */
 const pending = new Set<number>();
 let scheduled = false;
+/** Invalidates every in-flight metadata response when the character/world changes. */
+let metadataEpoch = 0;
+
+export function spellMetadataEpoch(): number {
+  return metadataEpoch;
+}
+
+export function isCurrentSpellMetadataRequest(
+  world: WorldClient | undefined,
+  client: SpellMetadataClient,
+  epoch: number,
+): boolean {
+  return epoch === metadataEpoch && game.world === world && game.spellMetadataClient === client;
+}
 
 export function spellName(spellId: number): string {
   const metadata = game.spells.get(spellId);
@@ -62,10 +79,17 @@ export function ensureSpellNames(ids: Iterable<number>, onLoaded?: () => void): 
     pending.clear();
     const told = [...listeners];
     listeners.clear();
+    const world = game.world;
+    const epoch = metadataEpoch;
     try {
-      for (const [id, metadata] of await client.load(batch)) game.spells.set(id, metadata);
+      const loaded = await client.load(batch);
+      if (!isCurrentSpellMetadataRequest(world, client, epoch)) return;
+      for (const [id, metadata] of loaded) game.spells.set(id, metadata);
+      syncMountSpellIds();
       for (const listener of told) listener();
     } catch (error) {
+      if (!isCurrentSpellMetadataRequest(world, client, epoch)) return;
+      syncMountSpellIds();
       // A failed batch is retried by nothing: the ids stay in `asked`, and the placeholder stands.
       console.warn("Spell metadata unavailable", error);
     }
@@ -74,6 +98,7 @@ export function ensureSpellNames(ids: Iterable<number>, onLoaded?: () => void): 
 
 /** Forgets the session's asking, for a character that is no longer the one being played. */
 export function clearSpellNames(): void {
+  metadataEpoch += 1;
   asked.clear();
   pending.clear();
   listeners.clear();

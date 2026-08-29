@@ -14,9 +14,11 @@ import {
 import { spellIconUrl } from "./IconImage.js";
 import { castSpell, spellTooltip } from "./Spellbook.js";
 import { spellButtonUsable } from "../SpellMetadata.js";
+import { spellPowerAvailable } from "../SpellCastGuard.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { settingOn } from "./Settings.js";
-import { unit, worldObject } from "../../world/Fields.js";
+import { worldObject } from "../../world/Fields.js";
+import { MELEE_AUTO_ATTACK_SPELL_ID } from "../../world/WorldClient.js";
 import { ACTION_BAR_SLOTS, bindingsOf, describeChord, EXTRA_ACTION_BAR_SLOTS } from "../input/Bindings.js";
 import { unknownLabel } from "./Format.js";
 
@@ -76,7 +78,7 @@ const DRAG_FORMAT = "application/x-webclient-action";
 
 /** One button, wired to a fixed row. The main bar passes the live page; an extra bar its own. */
 function buildButton(column: number, barPage: () => number, bar?: ExtraActionBar): IconButton {
-  const button = new IconButton({ label: slotKey(column, bar), onClick: () => useSlot(column, barPage()) });
+  const button = new IconButton({ key: slotKey(column, bar), onClick: () => useSlot(column, barPage()) });
   button.root.classList.add("ui-action-button");
   attachTooltip(button.root, () => slotTooltip(column, barPage(), bar));
   button.root.draggable = true;
@@ -152,7 +154,7 @@ function build(): void {
   buildExtraRows();
   if (slots.length > 0) return;
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
-    const button = new IconButton({ label: slotKey(column), onClick: () => useSlot(column) });
+    const button = new IconButton({ key: slotKey(column), onClick: () => useSlot(column) });
     button.root.classList.add("ui-action-button");
     // Attached once and reading the slot when it is shown: the contents change far more often
     // than the button does, and a `title` on a greyed-out slot is never displayed at all.
@@ -270,12 +272,19 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = page):
   // looks pressable and does nothing is worse than one that says why.
   if (content.type === ACTION_BUTTON_EQUIPMENT_SET) return "Наборы экипировки с панели пока не надеваются";
   if (content.type !== ACTION_BUTTON_SPELL) return "";
+  // 6603 is a client combat action and is therefore intentionally absent from both learned-spell
+  // and Spell.dbc metadata gates. Spellbook.castSpell routes it to the melee swing protocol.
+  if (content.action === MELEE_AUTO_ATTACK_SPELL_ID) return "";
   const metadata = game.spells.get(content.action);
   if (!metadata) return "Данные заклинания загружаются";
   if (!spellButtonUsable(metadata)) return "Пассивное заклинание нельзя применить";
+  const togglingMount = world.isActiveMountSpell(content.action);
+  // This press sends only CMSG_CANCEL_MOUNT_AURA. Recovery, GCD and the spell's power cost belong
+  // to a new cast and must not make dismounting unavailable.
+  if (togglingMount) return "";
   if (world.cooldownRemaining(content.action, now) > 0) return "Восстанавливается";
   if ((metadata?.startRecoveryTime ?? 0) > 0 && game.globalCooldownUntil > now) return "Восстанавливается";
-  if ((metadata?.powerCost ?? 0) > currentPower()) return "Не хватает ресурса";
+  if (!spellPowerAvailable(world, metadata)) return "Не хватает ресурса";
   return "";
 }
 
@@ -372,7 +381,7 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
     const content = contentOf(column, barPage);
     const key = slotKey(column, bar);
     if (!content) {
-      button.setContent({ label: key, title: `Слот ${column + 1} пуст` });
+      button.setContent({ key, title: `Слот ${column + 1} пуст` });
       button.setCooldown(0);
       button.setUsable(true);
       continue;
@@ -383,8 +392,7 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
       // does not — which is what made this defect look like an empty bar rather than a slow one.
       button.setContent({
         icon: spellIcon(content.action),
-        label: metadata ? undefined : key,
-        key: metadata ? key : undefined,
+        key,
         title: metadata ? undefined : `Заклинание ${content.action} · загружается`,
       });
     } else if (content.type === ACTION_BUTTON_ITEM) {
@@ -393,8 +401,7 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
       const metadata = game.itemMetadata?.get(content.action);
       button.setContent({
         icon: metadata && game.itemMetadata ? game.itemMetadata.iconUrl(metadata) : undefined,
-        label: metadata ? undefined : key,
-        key: metadata ? key : undefined,
+        key,
       });
     } else if (content.type === ACTION_BUTTON_MACRO) {
       // A macro has no icon in this client, so it shows what the original client shows when a
@@ -402,7 +409,7 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
       // an empty slot.
       button.setContent({ label: macroLabel(macroAt(content.action), content.action), key });
     } else {
-      button.setContent({ label: key });
+      button.setContent({ key });
     }
     if (content.type !== ACTION_BUTTON_SPELL) {
       button.setCooldown(0);
@@ -455,13 +462,6 @@ function updateRow(buttons: readonly IconButton[], barPage: number, now: number)
 }
 
 /** What the character has to spend, of whichever power it actually uses. */
-function currentPower(): number {
-  const world = game.world;
-  const guid = world?.state.selfGuid;
-  const self = guid === undefined ? undefined : world?.state.objects.get(guid);
-  return self ? unit.power(self) ?? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY;
-}
-
 /** Which page the bar shows. Shift and a number switch pages, as in the original client. */
 export function turnActionPage(next: number): void {
   page = Math.max(0, Math.min(PAGES - 1, next));

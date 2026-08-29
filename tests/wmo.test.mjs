@@ -192,14 +192,14 @@ test("and the renderer picks the material by that rule, not by the batch on its 
   // pinned elsewhere for the same reason (`light.test.mjs`, `wmo-occlusion.test.mjs`,
   // `portraits.test.mjs`, `tone-mapping.test.mjs`).
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const method = source.indexOf("#wmoRunMaterial(name: string");
+  const method = source.indexOf("  #wmoRunMaterial(");
   assert.ok(method > 0, "the material for one run is still chosen in one named place");
   const body = source.slice(method, source.indexOf("\n  }", method));
   assert.match(body, /const interior = wmoRunIsInterior\(group, run\)/,
     "the group and the batch together decide which material a run gets");
   assert.doesNotMatch(body, /run\.lighting !== WMO_LIGHT_EXTERIOR/,
     "and the batch order alone must not decide it again behind the rule's back");
-  assert.match(source.slice(0, method), /this\.#wmoRunMaterial\(name, model, group, run\)/,
+  assert.match(source.slice(0, method), /this\.#wmoRunMaterial\(model, group, run\)/,
     "the group reaches it: dropping the argument is the same defect one call up");
 });
 
@@ -239,28 +239,37 @@ test("a model over the budget travels as its boxes, and its rooms arrive one at 
   assert.deepEqual([...room.mesh.positions], [...arrived.groups[1].mesh.positions]);
 });
 
-test("an indoor group with exterior runs keeps the exterior range without widening its box", () => {
-  const root = houseRoot();
-  const model = wmoGroupMeshes(parseWmoVisual(root, [houseGroup({
-    flags: 0x2000,
-    batches: [[0, 1, 0], [1, 1, 0]],
-    counts: [0, 1, 1],
-    box: [100, 200, 300, 110, 210, 310],
-  })], "World\\Buildings\\House.wmo"));
-  const encoded = encodeWwm(model, model.textures.map(() => "/wall.png"), new Set());
-  const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "");
-  const group = decoded.groups[0];
-  assert.equal(group.flags, 0x2000, "the artifact bit is not exposed as an MOGP flag");
-  assert.equal(group.indoor, true);
-  assert.equal(group.exterior, true, "the header carries the run-derived artifact property");
+test("an indoor street-boundary run keeps the long range without changing its authored light", () => {
+  for (const [name, counts, boundaryLight] of [
+    ["exterior", [0, 1, 1], WMO_LIGHT_EXTERIOR],
+    ["transition", [1, 1, 0], WMO_LIGHT_TRANSITION],
+  ]) {
+    const root = houseRoot();
+    const model = wmoGroupMeshes(parseWmoVisual(root, [houseGroup({
+      flags: 0x2000,
+      batches: [[0, 1, 0], [1, 1, 0]],
+      counts,
+      box: [100, 200, 300, 110, 210, 310],
+    })], "World\\Buildings\\House.wmo"));
+    const encoded = encodeWwm(model, model.textures.map(() => "/wall.png"), new Set([0]));
+    const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "");
+    const group = decoded.groups[0];
+    assert.equal(group.flags, 0x2000, `${name}: artifact bit is not exposed as an MOGP flag`);
+    assert.equal(group.indoor, true);
+    assert.equal(group.exterior, true, `${name}: header carries the boundary-demand property`);
+    const boundaryRun = group.mesh.runs.find((run) => run.lighting === boundaryLight);
+    assert.ok(boundaryRun, `${name}: authored run survives the artifact`);
+    assert.equal(wmoRunIsInterior(group, boundaryRun), name === "transition",
+      `${name}: demand metadata must not rewrite the run's lighting semantics`);
 
-  const placement = { id: 1, kind: "wmo", name: "House.wmo", x: 0, y: 0, z: 0,
-    rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 };
-  const boxes = wmoGroupBoxes(decoded, placement);
-  const farOutside = wmoGroupsInRange(decoded, boxes, { x: 200, y: -205, z: 0, orientation: 0 });
-  assert.deepEqual(farOutside, [], "the group AABB still bounds selection");
-  const outsideButClose = wmoGroupsInRange(decoded, boxes, { x: 0, y: -205, z: 0, orientation: 0 });
-  assert.deepEqual(outsideButClose, [0], "the exterior run gets 250 yd, not the 60 yd indoor leash");
+    const placement = { id: 1, kind: "wmo", name: "House.wmo", x: 0, y: 0, z: 0,
+      rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 };
+    const boxes = wmoGroupBoxes(decoded, placement);
+    const farOutside = wmoGroupsInRange(decoded, boxes, { x: 200, y: -205, z: 0, orientation: 0 });
+    assert.deepEqual(farOutside, [], `${name}: group AABB still bounds selection`);
+    const outsideButClose = wmoGroupsInRange(decoded, boxes, { x: 0, y: -205, z: 0, orientation: 0 });
+    assert.deepEqual(outsideButClose, [0], `${name}: boundary gets 250 yd, not the 60 yd room leash`);
+  }
 });
 
 test("artifact metadata preserves every MOGP flag bit and old WWM1 headers", () => {
@@ -352,6 +361,71 @@ test("a truncated WMO artifact is refused rather than half-read", () => {
   const block = encodeWwmGroup(model.groups[0], 0);
   const blockBuffer = block.buffer.slice(block.byteOffset, block.byteOffset + block.byteLength);
   assert.throws(() => decodeWwmGroup(blockBuffer.slice(0, blockBuffer.byteLength - 8)), /truncated/);
+});
+
+test("WWM roots enforce their normal envelope and embedded group counts", () => {
+  const source = wmoGroupMeshes(parseWmoVisual(houseRoot([], 2), [
+    houseGroup({ box: [-1, -1, -1, 1, 1, 1] }),
+    houseGroup({ box: [2, -1, -1, 4, 1, 1] }),
+  ], "World\\Buildings\\TwoRooms.wmo"));
+  source.groups[0].normals = new Float32Array(source.groups[0].positions.length);
+  source.groups[0].normals.fill(1);
+  const encoded = encodeWwm(source, source.textures.map(() => "/wall.png"));
+  const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "");
+  assert.equal(encoded.subarray(0, 4).toString("ascii"), "WWM2");
+  assert.ok(decoded.groups[0].mesh?.normals);
+  assert.equal(decoded.groups[1].mesh?.normals, undefined, "WWM2 permits mixed normal-bearing groups");
+
+  const oldRoot = Buffer.from(encoded);
+  oldRoot.write("WWM1", 0, "ascii");
+  assert.throws(
+    () => decodeWwm(oldRoot.buffer.slice(oldRoot.byteOffset, oldRoot.byteOffset + oldRoot.byteLength), ""),
+    /WWM1 group block carries authored normals/,
+  );
+
+  const wrongCounts = Buffer.from(encoded);
+  wrongCounts.writeUInt32LE(99, 24 + 28);
+  assert.throws(
+    () => decodeWwm(wrongCounts.buffer.slice(wrongCounts.byteOffset, wrongCounts.byteOffset + wrongCounts.byteLength), ""),
+    /counts disagree with its root table/,
+  );
+});
+
+test("normal streams require Float32 representability", () => {
+  const model = wmoGroupMeshes(parseWmoVisual(houseRoot(), [houseGroup()], "World\\Buildings\\House.wmo"));
+  const group = { ...model.groups[0], normals: new Array(model.groups[0].positions.length).fill(Number.MAX_VALUE) };
+  assert.throws(() => encodeWwmGroup(group, 0), /Float32-representable/);
+});
+
+test("malformed MOGP bounds fail open without losing a valid group", () => {
+  const model = wmoGroupMeshes(parseWmoVisual(houseRoot(), [houseGroup({ box: [Number.NaN, -2, -3, 4, 5, 6] })], "World\\Buildings\\House.wmo"));
+  assert.equal(model.groups[0].boundsValid, false);
+  const encoded = encodeWwm(model, model.textures.map(() => "/wall.png"));
+  const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "");
+  assert.equal(decoded.groups[0].boundsValid, false);
+  const placement = { id: 1, kind: "wmo", name: "House.wmo", x: 0, y: 0, z: 0,
+    rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 };
+  const boxes = wmoGroupBoxes(decoded, placement);
+  assert.equal(boxes[0], undefined);
+  assert.deepEqual(wmoGroupsInRange(decoded, boxes, { x: 999, y: 999, z: 0, orientation: 0 }), [0]);
+});
+
+test("invalid MOLT records stay inert without shifting MOLR ordinals", () => {
+  const root = houseRoot([
+    { colour: [255, 0, 0], position: [Infinity, 0, 0], intensity: 1, start: 1, end: 2 },
+    { colour: [255, 255, 255], position: [0, 0, 1], intensity: 1, start: 1, end: 2 },
+  ]);
+  const model = wmoGroupMeshes(parseWmoVisual(root, [houseGroup({ lightRefs: [1] })], "World\\Buildings\\House.wmo"));
+  const encoded = encodeWwm(model, model.textures.map(() => "/wall.png"));
+  const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "");
+  assert.equal(decoded.lights.length, 2);
+  assert.equal(decoded.lights[0].intensity, 0);
+  assert.equal(decoded.lights[1].intensity, 1);
+  assert.deepEqual([...decoded.groups[0].mesh.lightRefs], [1]);
+  const normals = new Float32Array(decoded.groups[0].mesh.positions.length);
+  for (let at = 2; at < normals.length; at += 3) normals[at] = 1;
+  const light = wmoVertexLight(decoded.groups[0].mesh, normals, [0, 0, 0], decoded.lights);
+  assert.ok(light.every(Number.isFinite));
 });
 
 test("a room is lit by the ambient, the colours baked into it and the lamps hung in it", () => {
@@ -695,21 +769,23 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   const triangles = (chosen) => chosen.reduce((total, index) => total + model.groups[index].triangleCount, 0);
   const whole = model.groups.reduce((total, group) => total + group.triangleCount, 0);
 
-  // Measured, not chosen: exterior-lit runs inside an indoor group use the city's 250 yd leash too,
-  // while groups remain bounded by their own AABB. Before the exterior marker, only the outdoor
-  // shell used that leash and the rooms below were the smaller 60 yd set. The wider outer leash
-  // stays below 40% of this city's triangles in every measured district.
+  // Measured, not chosen: exterior- or transition-lit runs inside an indoor group use the city's
+  // 250 yd leash too, while groups remain bounded by their own AABB. Before the boundary marker,
+  // only the outdoor shell used that leash and the rooms below were the smaller 60 yd set. The
+  // wider outer leash stays below half of this city's triangles in every measured district. The
+  // transition seam is intentionally broader than the old 40% room-only candidate set, but it is
+  // still bounded by each group's own AABB and never approaches the full 286-group city.
   for (const [name, x, y, groups, wanted] of [
-    ["Trade District", -8831, 619, 82, 245_330],
-    ["Old Town", -8721, 386, 54, 177_624],
-    ["Mage Quarter", -8995, 864, 48, 218_162],
-    ["Cathedral Square", -8603, 789, 77, 262_875],
-    ["Dwarven District", -8427, 599, 50, 215_386],
+    ["Trade District", -8831, 619, 108, 300_594],
+    ["Old Town", -8721, 386, 68, 203_371],
+    ["Mage Quarter", -8995, 864, 64, 256_224],
+    ["Cathedral Square", -8603, 789, 98, 304_158],
+    ["Dwarven District", -8427, 599, 68, 257_173],
   ]) {
     const chosen = wmoGroupsInRange(model, boxes, { x, y, z: 100, orientation: 0 });
     assert.equal(chosen.length, groups, `${name}: rooms drawn`);
     assert.equal(triangles(chosen), wanted, `${name}: triangles`);
-    assert.ok(triangles(chosen) / whole < 0.40, `${name}: the group-AABB budget is bounded`);
+    assert.ok(triangles(chosen) / whole < 0.50, `${name}: the group-AABB budget is bounded`);
     const cameraModel = new THREE.Vector3(x, 100, -y).applyMatrix4(worldToModel);
     const portal = selectWmoPortalGroups(
       model.groups, model.portals, chosen, cameraModel, new THREE.Matrix4().identity().elements);
@@ -746,8 +822,8 @@ test("Orgrimmar keeps its exterior-lit shell in the WWM header", withOrgrimmar, 
   assert.equal(model.groups.filter((group) => group.indoor).length, 142);
   const exterior = model.groups.filter((group) => group.exterior);
   const indoorExterior = exterior.filter((group) => group.indoor);
-  assert.equal(exterior.length, 22, "the real city has a per-group exterior marker");
-  assert.equal(indoorExterior.length, 20, "indoor exterior shell groups are not discarded");
+  assert.equal(exterior.length, 57, "the real city has a per-group boundary marker");
+  assert.equal(indoorExterior.length, 55, "indoor exterior/transition shell groups are not discarded");
   assert.ok(exterior.length < model.groups.length, "the flag is per-group, not whole-WMO");
   assert.equal(source.groups.reduce((total, group) => total + group.indices.length / 3, 0), 338_444);
   assert.equal(model.groups.reduce((total, group) => total + group.triangleCount, 0), 338_444);

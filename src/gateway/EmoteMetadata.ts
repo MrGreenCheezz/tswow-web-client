@@ -8,13 +8,15 @@
 // The command list is the table's own `Name` column. Nothing about which emotes exist, what they
 // are called or what they say is written down in this client.
 
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import { openDbcFile } from "./Dbc.js";
-import type { EmoteData, EmoteEntry } from "../world/EmoteRules.js";
+import type { EmoteData, EmoteEntry, EmoteSound } from "../world/EmoteRules.js";
 
 /** `EmotesText.EmoteText[16]` — sixteen row ids into `EmotesTextData`, most of them zero. */
 const EMOTE_TEXT_SLOTS = 16;
 
-export async function loadEmoteData(dbcDirectory: string): Promise<EmoteData> {
+export async function loadEmoteData(dbcDirectory: string, audioDbcDirectory?: string): Promise<EmoteData> {
   const [texts, sentences] = await Promise.all([
     openDbcFile(dbcDirectory, "EmotesText"),
     openDbcFile(dbcDirectory, "EmotesTextData"),
@@ -37,5 +39,28 @@ export async function loadEmoteData(dbcDirectory: string): Promise<EmoteData> {
     }
     emotes.push({ id: texts.id(row), command, emoteId: texts.int(row, "EmoteID"), text });
   }
-  return { emotes };
+  // EmotesTextSound is client-media metadata from the active visual/audio override only. Never
+  // fall back to a dataset copy: the text and command rows above remain the server dataset's
+  // contract, while a patch may add sounds for newly authored client emotes.
+  const sounds: EmoteSound[] = [];
+  if (audioDbcDirectory) {
+    try {
+      await access(join(audioDbcDirectory, "EmotesTextSound.dbc"));
+    } catch (error) {
+      // The client-media audio overlay is optional; no active file means no sound rows.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return { emotes, sounds };
+    }
+    const soundRows = await openDbcFile(audioDbcDirectory, "EmotesTextSound");
+    for (const row of soundRows.rows()) {
+      sounds.push({
+        id: soundRows.id(row),
+        textEmoteId: soundRows.int(row, "EmotesTextID"),
+        raceId: soundRows.int(row, "RaceID"),
+        gender: soundRows.int(row, "SexID"),
+        soundId: soundRows.int(row, "SoundID"),
+      });
+    }
+  }
+  return { emotes, sounds };
 }

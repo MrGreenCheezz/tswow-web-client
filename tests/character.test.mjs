@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { BODY_SECTIONS, BODY_TEXTURE_SIZE, CharacterAppearanceIndex } from "../dist/code/gateway/CharacterAppearance.js";
 import { loadCreatureModelMetadata } from "../dist/code/gateway/CreatureModelMetadata.js";
@@ -10,6 +12,22 @@ try {
   dbcDirectory = undefined;
 }
 const withDataset = { skip: dbcDirectory ? false : "no tswow dataset on this machine" };
+const visualDbcDirectory = resolve(
+  process.env.VISUAL_DBC_DIR ?? join(process.cwd(), "data", "visual-dbc"));
+let patchWVisuals = false;
+try {
+  const stamp = JSON.parse(readFileSync(resolve(
+    visualDbcDirectory, "CreatureModelData.dbc.src"), "utf8"));
+  patchWVisuals = stamp.sources?.some((source) => /^patch-w\.mpq$/i.test(source.name)) === true;
+} catch {
+  patchWVisuals = false;
+}
+const withVisualDbc = {
+  skip: dbcDirectory && patchWVisuals
+    && existsSync(resolve(visualDbcDirectory, "CharSections.dbc"))
+    ? false
+    : "no extracted client visual DBC overlay on this machine",
+};
 
 let index;
 async function load() {
@@ -113,6 +131,32 @@ test("a creature wearing a character model uses its baked body", withDataset, as
   // A bake is a finished body, so it replaces the layers rather than sitting on top of them.
   assert.match(baked.body[0].path, /BakedNpcTextures/i);
   assert.ok(baked.geosets.length > 0);
+});
+
+test("an HD model uses the visual patch's extra skin, bake and display mapping", withVisualDbc, async () => {
+  const appearances = await CharacterAppearanceIndex.load(
+    dbcDirectory, undefined, visualDbcDirectory, true);
+  const tauren = appearances.forPlayer(6, 0, 0, 0, 0, 0, 0);
+  assert.match(tauren.skinExtra, /TaurenMaleSkin00_00_Extra\.blp$/i,
+    "the HD hide samples texture type 8, which the dataset DBC does not name");
+
+  const npc = appearances.forNpc(1526);
+  assert.ok(npc, "the HD display's extended appearance exists");
+  assert.match(npc.body[0]?.path ?? "", /CreatureDisplayExtra-01526_HD\.blp$/i,
+    "an HD character model must not receive the stock hashed NPC bake");
+
+  // NPCs take the same no-equipment path as players before an optional bake replaces the body.
+  // Display 16's active extended record is a baked HumanMale, so its authored neutral waist must
+  // survive the bake and reach the creature-model payload as well.
+  const bakedHuman = appearances.forNpc(3265);
+  assert.ok(bakedHuman?.body.length === 1 && !bakedHuman.body[0]?.section,
+    "the NPC neutral-belt fixture is a baked appearance");
+  assert.ok(bakedHuman.geosets.includes(1801),
+    `the baked HumanMale NPC keeps its neutral belt: ${bakedHuman.geosets}`);
+
+  const models = await loadCreatureModelMetadata(dbcDirectory, undefined, visualDbcDirectory, true);
+  assert.equal(models.get(14)?.model, "Character\\Human\\Female\\HumanFemale.m2",
+    "the display id must resolve through the same visual DBCs as the installed model patch");
 });
 
 test("equipment paints its component textures and shows its geosets", withDataset, async () => {
@@ -391,9 +435,11 @@ test("a ranged weapon is a model like any other", withDataset, async () => {
   // Slot 17 was missing from the directory table, so a hunter's bow and a rogue's thrown weapon
   // resolved to nothing at all.
   // Worn Shortbow.
-  const bow = appearanceIndex.forPlayer(1, 0, 0, 0, 0, 0, 0, [{ slot: 17, inventoryType: 15, displayId: 8106 }]);
+  const bow = appearanceIndex.forPlayer(1, 0, 0, 0, 0, 0, 0,
+    [{ slot: 17, inventoryType: 15, displayId: 8106, subClass: 2 }]);
   assert.equal(bow.attached.length, 1);
   assert.ok(/\\Weapon\\/i.test(bow.attached[0].model), `a bow went to ${bow.attached[0].model}`);
+  assert.equal(bow.attached[0].subClass, 2, "the appearance keeps the ranged subclass for pose selection");
 });
 
 /** Every extended display that resolves to a tauren, over the ids this dataset uses. */
@@ -500,7 +546,7 @@ test("Т1 a display that names no appearance gets the plain look of its own race
   assert.ok(human, "a human male model has to resolve");
   assert.ok(human.body.length > 0, "and it has a body to paint, which is what stopped the torso being green");
   assert.deepEqual(human.geosets.filter((id) => id >= 400), [401, 501, 702, 1301, 1501],
-    `the naked families — hands, shins, ears, thighs, collar — got ${human.geosets}`);
+    `the classic naked families — hands, shins, ears, thighs, collar — got ${human.geosets}`);
   const naga = appearanceIndex.forModel("CHARACTER\\Naga_\\Male\\Naga_Male.m2");
   assert.match(naga?.skinExtra ?? "", /Naga_MaleSkin00_\d\d_Extra\.blp$/i, "an underscore in a race name is part of it");
   assert.equal(appearanceIndex.forModel("Character\\Human\\Female\\HumanFemale.m2")?.body[0]?.path,
@@ -980,7 +1026,11 @@ test("Т3 a race the section table says nothing about keeps the hair the geoset 
     assert.equal(undescribed, 601, `601 extended rows name a wig for a race with no hair rows, not ${undescribed}`);
     assert.equal(wigless, 0, `${wigless} of them lost it`);
     // And the goblin end to end: the wig is on the list, and so is the cap `Showscalp` asks for.
-    assert.deepEqual(appearanceIndex.forNpc(4599).geosets, [0, 1, 2, 401, 501, 702, 1301, 1501]);
+    // NPCItemDisplay legitimately adds unrelated clothing families, so this hair regression must
+    // not freeze the complete outfit as an accidental oracle.
+    const goblin = appearanceIndex.forNpc(4599).geosets;
+    assert.ok(goblin.includes(2), `the baked goblin keeps its authored wig: ${goblin}`);
+    assert.ok(goblin.includes(1), `the baked goblin keeps the Showscalp cap: ${goblin}`);
 
     // The night elf is untouched by the guard, which is the point of making it per profile: her
     // table has 132 hair rows and says plainly that colour 8 is not one of them.

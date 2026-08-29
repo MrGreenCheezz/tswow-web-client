@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 import {
   parseSpellGo, TARGET_FLAG_CORPSE_ALLY, TARGET_FLAG_CORPSE_ENEMY, TARGET_FLAG_DEST_LOCATION,
   TARGET_FLAG_GAMEOBJECT, TARGET_FLAG_ITEM, TARGET_FLAG_SOURCE_LOCATION, TARGET_FLAG_STRING,
   TARGET_FLAG_TRADE_ITEM, TARGET_FLAG_UNIT, TARGET_FLAG_UNIT_MINIPET,
 } from "../dist/code/world/SpellProtocol.js";
-import { parseSpellVisuals } from "../dist/code/gateway/SpellVisual.js";
+import { applySpellVisualTransformFrame, composeSpellVisualTransform } from "../dist/code/browser/WorldRenderer3D.js";
+import { loadSpellVisuals, parseSpellVisuals } from "../dist/code/gateway/SpellVisual.js";
 import {
   CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED, MISSILE_MAX_SECONDS,
   expiredInstances, missileDirection, missilePoint, missileSeconds, planSpellAuraDone, planSpellAuraState, planSpellCastStart,
-  planSpellVisual,
+  planSpellVisual, spellVisualTransformEuler, spellVisualTransformOffset,
 } from "../dist/code/browser/SpellVisuals.js";
 
 let dbcDirectory;
@@ -19,6 +21,35 @@ try {
   dbcDirectory = undefined;
 }
 const withDataset = { skip: dbcDirectory ? false : "no tswow dataset on this machine" };
+
+function modelAttachPayload(rows) {
+  const payload = new Uint8Array(20 + rows.length * 40 + 1);
+  const view = new DataView(payload.buffer);
+  payload.set([0x57, 0x44, 0x42, 0x43]); // WDBC
+  view.setUint32(4, rows.length, true);
+  view.setUint32(8, 10, true);
+  view.setUint32(12, 40, true);
+  view.setUint32(16, 1, true);
+  rows.forEach((row, index) => {
+    const offset = 20 + index * 40;
+    view.setInt32(offset, row.id, true);
+    view.setInt32(offset + 4, row.parent, true);
+    view.setInt32(offset + 8, row.effect, true);
+    view.setInt32(offset + 12, row.attachment, true);
+    for (let component = 0; component < 3; component++) {
+      view.setFloat32(offset + 16 + component * 4, row.offset?.[component] ?? 0, true);
+    }
+    view.setFloat32(offset + 28, row.yaw ?? 0, true);
+    view.setFloat32(offset + 32, row.pitch ?? 0, true);
+    view.setFloat32(offset + 36, row.roll ?? 0, true);
+  });
+  return payload;
+}
+
+// patch-W's row 1061 stores this exact float (raw bits 1070134723), rather than an idealized
+// mathematical PI/2. Keep the fixture at the authored value so a later DBC conversion cannot
+// silently normalize the Cone of Cold orientation.
+const CONE_OF_COLD_PITCH = 1.57000005245;
 
 /* --- SMSG_SPELL_GO ---------------------------------------------------------------------------- */
 
@@ -179,6 +210,101 @@ test("a spell resolves to the models the client shows for it", withDataset, asyn
   assert.ok(/ice|frost/i.test(visuals.get(116).precast.effects[0].path), "Frostbolt is cold");
   assert.ok(/nature/i.test(visuals.get(5185).precast.effects[0].path), "Healing Touch is nature");
   assert.ok(/shadow/i.test(visuals.get(686).precast.effects[0].path), "Shadow Bolt is shadow");
+});
+
+test("SpellVisualKitModelAttach merges kit 1027 with its authored transform and drops dangling parents", withDataset, async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const read = (name) => readFile(join(dbcDirectory, name));
+  const visuals = parseSpellVisuals(
+    await read("Spell.dbc"), await read("SpellVisual.dbc"),
+    await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"), undefined,
+    modelAttachPayload([
+      { id: 1061, parent: 1027, effect: 4884, attachment: 17, pitch: CONE_OF_COLD_PITCH },
+      { id: 5001, parent: 20015, effect: 4884, attachment: 18, offset: [-0.37, 0, -0.64], yaw: -0.25 },
+      { id: 5002, parent: 1027, effect: 4884, attachment: 18, yaw: Number.NaN },
+    ]));
+  const coneEffects = visuals.get(120)?.cast?.effects.filter((candidate) =>
+    candidate.path.includes("ConeofCold_Mouth"));
+  const effect = coneEffects?.[0];
+  assert.ok(effect, "Cone of Cold reaches the kit row");
+  assert.equal(coneEffects.length, 1, "malformed transforms are omitted, not converted to zero");
+  assert.equal(effect.attachment, 17);
+  assert.deepEqual(effect.transform.offset, [0, 0, 0]);
+  assert.ok(Math.abs(effect.transform.rotation[1] - CONE_OF_COLD_PITCH) < 1e-7);
+  assert.equal([...visuals.values()].flatMap((visual) => Object.values(visual)
+    .flatMap((phase) => phase?.effects ?? [])).filter((candidate) =>
+      candidate.transform?.offset[0] === -0.37).length, 0,
+    "rows whose parent kit is absent do not become dangling spell effects");
+  const instance = planSpellVisual(visuals.get(120), {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [],
+  }, 100).instances.find((candidate) => candidate.path.includes("ConeofCold_Mouth"));
+  assert.deepEqual(instance.transform.offset, [0, 0, 0]);
+  assert.deepEqual(spellVisualTransformOffset(instance.transform, true), { x: 0, y: 0, z: 0 });
+  assert.deepEqual(spellVisualTransformEuler(instance.transform), {
+    x: 0, y: instance.transform.rotation[1], z: 0, order: "ZYX",
+  });
+});
+
+test("visual DBC override replaces only model-attach input", withDataset, async () => {
+  const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const overrideDirectory = await mkdtemp(join(tmpdir(), "spell-visual-"));
+  try {
+    // A deliberately invalid gameplay DBC in the visual directory proves that the override is
+    // scoped to the visual-only table; the loader must continue reading Spell/SpellVisual/etc.
+    await writeFile(join(overrideDirectory, "Spell.dbc"), Buffer.from("not a dbc"));
+    await writeFile(join(overrideDirectory, "SpellVisualKitModelAttach.dbc"), modelAttachPayload([
+      { id: 1061, parent: 1027, effect: 4884, attachment: 17, pitch: CONE_OF_COLD_PITCH },
+    ]));
+    const visuals = await loadSpellVisuals(dbcDirectory, overrideDirectory);
+    const effect = visuals.get(120)?.cast?.effects.find((candidate) =>
+      candidate.path.includes("ConeofCold_Mouth"));
+    assert.ok(effect, "the override row is loaded through the normal dataset chain");
+    assert.equal(effect.attachment, 17);
+    assert.ok(Math.abs(effect.transform.rotation[1] - CONE_OF_COLD_PITCH) < 1e-7);
+    // The dataset gameplay table remains authoritative even though a same-named file is present
+    // beside the visual override.
+    assert.ok(visuals.get(133)?.precast, "gameplay DBCs are not redirected to the overlay");
+  } finally {
+    await rm(overrideDirectory, { recursive: true, force: true });
+  }
+});
+
+test("model-attach transforms preserve M2 offset axes and rotation composition", () => {
+  const transform = { offset: [1.25, -2, 3], rotation: [0.3, 0.4, -0.2] };
+  assert.deepEqual(spellVisualTransformOffset(transform, true), { x: 1.25, y: -2, z: 3 });
+  assert.deepEqual(spellVisualTransformOffset(transform, false), { x: 1.25, y: 3, z: 2 });
+  assert.deepEqual(spellVisualTransformEuler(transform), { x: -0.2, y: 0.4, z: 0.3, order: "ZYX" });
+
+  const local = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.2, 0.4, 0.3, "ZYX"));
+  const modelToScene = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
+  const sceneToModel = modelToScene.clone().invert();
+  const expected = [
+    modelToScene.clone().multiply(local),
+    local.clone(),
+    modelToScene.clone().multiply(local).multiply(sceneToModel),
+    local.clone().multiply(sceneToModel),
+  ];
+  const actual = [
+    composeSpellVisualTransform(transform, false, false),
+    composeSpellVisualTransform(transform, true, false),
+    composeSpellVisualTransform(transform, false, true),
+    composeSpellVisualTransform(transform, true, true),
+  ];
+  for (let index = 0; index < actual.length; index++) {
+    assert.ok(actual[index].angleTo(expected[index]) < 1e-7, `composition ${index}`);
+  }
+
+  // Exercise the renderer-facing helper as well as the pure quaternion function: a regression
+  // that computes the right answer but forgets to copy it onto the frame leaves the live effect
+  // visibly unrotated while still passing the composition table above.
+  const frame = new THREE.Object3D();
+  frame.quaternion.identity();
+  applySpellVisualTransformFrame(frame, transform, true, true);
+  assert.ok(frame.quaternion.angleTo(expected[3]) < 1e-7, "frame receives authored rotation");
+  assert.deepEqual(frame.position.toArray(), [1.25, -2, 3], "attached offset reaches the frame");
 });
 
 test("Paladin Judgement keeps its complete authored impact model family", withDataset, async () => {

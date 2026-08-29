@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { TerrainGrid } from "./Terrain.js";
+import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 
 /** Ground textures are republished at this size so one array can hold all of a tile's layers. */
 const LAYER_SIZE = 256;
@@ -24,6 +25,38 @@ export interface TerrainSplat {
   colours?: THREE.Texture;
 }
 
+export interface TerrainSplatStats {
+  readonly resident: number;
+  readonly failed: number;
+  readonly active: number;
+  /** Bytes in successfully decoded, shared RGBA layer pixel arrays only. */
+  readonly decodedLayerBytes: number;
+  /** Number of unique layer ids retained in the request/result promise cache. */
+  readonly layerRequestEntries: number;
+}
+
+interface LayerRecord {
+  readonly id: string;
+  readonly promise: Promise<Uint8ClampedArray>;
+  pixels?: Uint8ClampedArray;
+  leases: number;
+}
+
+interface TerrainSplatTileRecord {
+  readonly splat: TerrainSplat;
+  readonly layers: ReadonlyMap<string, LayerRecord>;
+  /** Every loader handle is owned even if a non-standard loader resolves with a different object. */
+  readonly textures: ReadonlySet<THREE.Texture>;
+}
+
+interface TerrainSplatRequest {
+  readonly key: string;
+  readonly epoch: number;
+  readonly layers: Map<string, LayerRecord>;
+  readonly textures: Set<THREE.Texture>;
+  cancelled: boolean;
+}
+
 /**
  * The ingredients the terrain shader blends per tile: every ground texture the tile uses stacked
  * into one array, the alpha maps that fade between them, and the per-chunk list naming which four
@@ -32,10 +65,17 @@ export interface TerrainSplat {
 export class TerrainSplatClient {
   onStatus: ((message: string, error: boolean) => void) | undefined;
   readonly #baseUrl: string;
-  readonly #tiles = new Map<string, TerrainSplat | null>();
-  readonly #loading = new Set<string>();
-  /** Neighbouring tiles share ground textures, so each one is only decoded once. */
-  readonly #layerCache = new Map<string, Promise<Uint8ClampedArray>>();
+  readonly #tiles = new Map<string, TerrainSplatTileRecord | null>();
+  readonly #requests = new Map<string, TerrainSplatRequest>();
+  /** Present after the first production active-set update; absent preserves direct-get compatibility. */
+  #activeKeys: Set<string> | undefined;
+  /** Neighbouring tiles share one decoded record while at least one tile/request leases it. */
+  readonly #layers = new Map<string, LayerRecord>();
+  /** Texture.dispose dispatches an event repeatedly, so ownership needs its own exact-once guard. */
+  readonly #disposedTextures = new WeakSet<THREE.Texture>();
+  #decodedLayerBytes = 0;
+  #epoch = 0;
+  #disposed = false;
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -43,24 +83,152 @@ export class TerrainSplatClient {
     this.#baseUrl = url.origin;
   }
 
+  get stats(): TerrainSplatStats {
+    let resident = 0;
+    let failed = 0;
+    for (const tile of this.#tiles.values()) {
+      if (tile === null) failed++;
+      else resident++;
+    }
+    return Object.freeze({
+      resident,
+      failed,
+      active: this.#requests.size,
+      decodedLayerBytes: this.#decodedLayerBytes,
+      layerRequestEntries: this.#layers.size,
+    });
+  }
+
+  /** Counts decoded shared pixels, per-tile copies, and each retained logical texture allocation. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const [id, layer] of this.#layers) {
+      if (layer.pixels) visitor.referenceCpu(`terrain-splat-layer:${id}`, layer.pixels);
+    }
+    for (const tile of this.#tiles.values()) {
+      if (!tile) continue;
+      const layerData = tile.splat.layers.image.data;
+      if (layerData) visitor.referenceCpu(tile, layerData);
+      for (const texture of tile.textures) visitor.referenceGpuTexture(tile, texture);
+    }
+    for (const request of this.#requests.values()) {
+      for (const texture of request.textures) {
+        if (!this.#disposedTextures.has(texture)) visitor.referenceGpuTexture(request, texture);
+      }
+    }
+  }
+
+  /** Makes the GPU tile cache exactly the renderer's visible footprint. */
+  setActiveTiles(map: number | undefined, grids: Iterable<TerrainGrid>): void {
+    if (this.#disposed) return;
+    const active = new Set<string>();
+    if (map !== undefined) {
+      for (const grid of grids) active.add(`${map}/${grid.x}/${grid.y}`);
+    }
+    this.#activeKeys = active;
+    for (const [key, request] of this.#requests) {
+      if (!active.has(key)) this.#cancelRequest(request);
+    }
+    for (const key of this.#tiles.keys()) {
+      if (!active.has(key)) this.#evict(key);
+    }
+  }
+
   /** Returns the tile's splat once it has loaded, and starts the download the first time. */
   get(map: number, grid: TerrainGrid): TerrainSplat | undefined {
     const key = `${map}/${grid.x}/${grid.y}`;
     const tile = this.#tiles.get(key);
-    if (tile) return tile;
-    if (tile === undefined && !this.#loading.has(key)) {
-      this.#loading.add(key);
-      void this.#load(map, grid, key);
-    }
+    if (tile) return tile.splat;
+    if (this.#disposed || tile === null || this.#requests.has(key)) return undefined;
+    if (this.#activeKeys !== undefined && !this.#activeKeys.has(key)) return undefined;
+    const request: TerrainSplatRequest = {
+      key,
+      epoch: this.#epoch,
+      layers: new Map(),
+      textures: new Set(),
+      cancelled: false,
+    };
+    this.#requests.set(key, request);
+    void this.#load(map, grid, request);
     return undefined;
   }
 
-  async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
+  /** Cancels every logical request and releases all resident CPU/GPU ownership. */
+  dispose(): void {
+    this.#epoch++;
+    this.#disposed = true;
+    this.#activeKeys = new Set();
+    for (const request of [...this.#requests.values()]) this.#cancelRequest(request);
+    for (const key of [...this.#tiles.keys()]) this.#evict(key);
+    this.onStatus = undefined;
+  }
+
+  #isCurrent(request: TerrainSplatRequest): boolean {
+    return !this.#disposed
+      && !request.cancelled
+      && request.epoch === this.#epoch
+      && this.#requests.get(request.key) === request
+      && (this.#activeKeys === undefined || this.#activeKeys.has(request.key));
+  }
+
+  #cancelRequest(request: TerrainSplatRequest): void {
+    if (request.cancelled) return;
+    request.cancelled = true;
+    if (this.#requests.get(request.key) === request) this.#requests.delete(request.key);
+    this.#disposeRequestTextures(request);
+    this.#releaseRequestLayers(request);
+  }
+
+  #evict(key: string): void {
+    const tile = this.#tiles.get(key);
+    if (tile === undefined) return;
+    this.#tiles.delete(key);
+    if (!tile) return;
+    for (const texture of tile.textures) this.#disposeTexture(texture);
+    for (const layer of tile.layers.values()) this.#releaseLayer(layer);
+  }
+
+  #disposeTexture(texture: THREE.Texture): void {
+    if (this.#disposedTextures.has(texture)) return;
+    this.#disposedTextures.add(texture);
+    try { texture.dispose(); } catch { /* best-effort release must continue through every sibling */ }
+  }
+
+  #trackTexture(request: TerrainSplatRequest, texture: THREE.Texture): void {
+    if (!this.#isCurrent(request)) {
+      this.#disposeTexture(texture);
+      return;
+    }
+    request.textures.add(texture);
+  }
+
+  #disposeRequestTextures(request: TerrainSplatRequest): void {
+    for (const texture of request.textures) this.#disposeTexture(texture);
+    request.textures.clear();
+  }
+
+  #releaseRequestLayers(request: TerrainSplatRequest): void {
+    for (const layer of request.layers.values()) this.#releaseLayer(layer);
+    request.layers.clear();
+  }
+
+  #releaseLayer(layer: LayerRecord): void {
+    layer.leases--;
+    if (layer.leases !== 0 || this.#layers.get(layer.id) !== layer) return;
+    this.#layers.delete(layer.id);
+    if (layer.pixels) {
+      this.#decodedLayerBytes -= layer.pixels.byteLength;
+      delete layer.pixels;
+    }
+  }
+
+  async #load(map: number, grid: TerrainGrid, request: TerrainSplatRequest): Promise<void> {
+    let installed = false;
     try {
       const base = `${this.#baseUrl}/terrain-splat/${map}/${grid.x}/${grid.y}`;
       const response = await fetch(base);
       if (!response.ok) throw new Error(`Terrain splat gateway returned ${response.status}`);
       const value: unknown = await response.json();
+      if (!this.#isCurrent(request)) return;
       const layers = (value as { layers?: unknown }).layers;
       if (!Array.isArray(layers) || layers.length === 0 || layers.length > MAX_LAYERS
         || !layers.every((id) => typeof id === "string" && /^[0-9a-f]{40}$/.test(id))) {
@@ -68,16 +236,25 @@ export class TerrainSplatClient {
       }
 
       const painted = (value as { mccv?: unknown }).mccv === true;
-      const [pixels, alpha, index, colours] = await Promise.all([
-        Promise.all(layers.map((id: string) => this.#layerPixels(id))),
-        loadTexture(`${base}/alpha.png`),
-        loadTexture(`${base}/index.png`),
-        painted ? loadTexture(`${base}/mccv.png`) : Promise.resolve(undefined),
+      for (const id of new Set(layers)) request.layers.set(id, this.#acquireLayer(id));
+      const results = await Promise.allSettled([
+        Promise.all(layers.map((id) => request.layers.get(id)!.promise)),
+        this.#loadTexture(request, `${base}/alpha.png`),
+        this.#loadTexture(request, `${base}/index.png`),
+        painted ? this.#loadTexture(request, `${base}/mccv.png`) : Promise.resolve(undefined),
       ]);
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      if (!this.#isCurrent(request)) return;
+      const pixels = (results[0] as PromiseFulfilledResult<Uint8ClampedArray[]>).value;
+      const alpha = (results[1] as PromiseFulfilledResult<THREE.Texture>).value;
+      const index = (results[2] as PromiseFulfilledResult<THREE.Texture>).value;
+      const colours = (results[3] as PromiseFulfilledResult<THREE.Texture | undefined>).value;
 
       const data = new Uint8Array(LAYER_SIZE * LAYER_SIZE * 4 * layers.length);
       for (let layer = 0; layer < pixels.length; layer++) data.set(pixels[layer]!, layer * LAYER_SIZE * LAYER_SIZE * 4);
       const array = new THREE.DataArrayTexture(data, LAYER_SIZE, LAYER_SIZE, layers.length);
+      this.#trackTexture(request, array);
       array.format = THREE.RGBAFormat;
       array.type = THREE.UnsignedByteType;
       array.colorSpace = THREE.SRGBColorSpace;
@@ -118,30 +295,86 @@ export class TerrainSplatClient {
         colours.needsUpdate = true;
       }
 
-      this.#tiles.set(key, { layers: array, alpha, index, ...(colours ? { colours } : {}) });
-      this.onStatus?.(`Terrain splat: ${[...this.#tiles.values()].filter(Boolean).length} тайлов`, false);
+      if (!this.#isCurrent(request)) return;
+      const splat: TerrainSplat = { layers: array, alpha, index, ...(colours ? { colours } : {}) };
+      const tile: TerrainSplatTileRecord = {
+        splat,
+        layers: new Map(request.layers),
+        textures: new Set(request.textures),
+      };
+      request.layers.clear();
+      request.textures.clear();
+      this.#tiles.set(request.key, tile);
+      installed = true;
+      this.#reportStatus(`Terrain splat: ${[...this.#tiles.values()].filter(Boolean).length} тайлов`, false);
     } catch (error) {
-      this.#tiles.set(key, null);
-      this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+      if (this.#isCurrent(request)) {
+        this.#tiles.set(request.key, null);
+        this.#reportStatus(error instanceof Error ? error.message : String(error), true);
+      }
     } finally {
-      this.#loading.delete(key);
+      if (!installed) {
+        this.#disposeRequestTextures(request);
+        this.#releaseRequestLayers(request);
+      }
+      if (this.#requests.get(request.key) === request) this.#requests.delete(request.key);
     }
   }
 
-  #layerPixels(id: string): Promise<Uint8ClampedArray> {
-    let pixels = this.#layerCache.get(id);
-    if (!pixels) {
-      pixels = decodeImagePixels(`${this.#baseUrl}/terrain-layer/${id}.png`, LAYER_SIZE);
-      this.#layerCache.set(id, pixels);
-    }
-    return pixels;
+  #reportStatus(message: string, error: boolean): void {
+    try { this.onStatus?.(message, error); } catch { /* observers do not participate in ownership */ }
   }
-}
 
-function loadTexture(url: string): Promise<THREE.Texture> {
-  return new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load(url, resolve, undefined, () => reject(new Error(`Failed to load ${url}`)));
-  });
+  #acquireLayer(id: string): LayerRecord {
+    let layer = this.#layers.get(id);
+    if (!layer) {
+      const promise = decodeImagePixels(`${this.#baseUrl}/terrain-layer/${id}.png`, LAYER_SIZE);
+      layer = { id, promise, leases: 0 };
+      this.#layers.set(id, layer);
+      const exact = layer;
+      void promise.then((pixels) => {
+        if (this.#layers.get(id) !== exact) return;
+        exact.pixels = pixels;
+        this.#decodedLayerBytes += pixels.byteLength;
+      }, () => undefined);
+    }
+    layer.leases++;
+    return layer;
+  }
+
+  #loadTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
+    return new Promise((resolve, reject) => {
+      let handle: THREE.Texture | undefined;
+      let failed = false;
+      let settled = false;
+      try {
+        handle = new THREE.TextureLoader().load(
+          url,
+          (texture) => {
+            this.#trackTexture(request, texture);
+            if (settled) return;
+            settled = true;
+            resolve(texture);
+          },
+          undefined,
+          () => {
+            if (settled) return;
+            settled = true;
+            failed = true;
+            if (handle) this.#disposeTexture(handle);
+            reject(new Error(`Failed to load ${url}`));
+          },
+        );
+        this.#trackTexture(request, handle);
+        if (failed || !this.#isCurrent(request)) this.#disposeTexture(handle);
+      } catch (error) {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      }
+    });
+  }
 }
 
 /** Reads one PNG back to raw bytes, which is the only way to stack them into a texture array. */
@@ -222,4 +455,94 @@ export function applyTerrainSplat(
   material.customProgramCacheKey = () => `${previousKey}|${splatKey}`;
   material.color.setHex(0xffffff);
   material.needsUpdate = true;
+}
+
+export const TERRAIN_MICRO_NORMAL_PROFILE_VERSION = 1;
+
+type TerrainShaderSource = Parameters<THREE.Material["onBeforeCompile"]>[0];
+type TerrainShaderRenderer = Parameters<THREE.Material["onBeforeCompile"]>[1];
+
+interface TerrainMicroNormalBinding {
+  readonly previousCompile: (shader: TerrainShaderSource, renderer: TerrainShaderRenderer) => void;
+  readonly previousKey: string;
+  enabled: boolean;
+}
+
+const TERRAIN_MICRO_NORMAL_BINDINGS = new WeakMap<THREE.MeshLambertMaterial, TerrainMicroNormalBinding>();
+const TERRAIN_NORMAL_MARKER = "#include <normal_fragment_maps>";
+
+/**
+ * Gives splatted terrain a small albedo-derived normal before the authored world-light block.
+ * The profile is shader-only: no texture, geometry, draw-call or render-pass ownership is added.
+ * Its zero path preserves the exact source and cache key captured from the splat/world-light chain.
+ */
+export function setTerrainSplatMicroNormals(
+  material: THREE.MeshLambertMaterial,
+  enabled: boolean,
+): void {
+  const existing = TERRAIN_MICRO_NORMAL_BINDINGS.get(material);
+  if (existing) {
+    if (existing.enabled !== enabled) {
+      existing.enabled = enabled;
+      material.needsUpdate = true;
+    }
+    return;
+  }
+
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey();
+  const binding: TerrainMicroNormalBinding = { previousCompile, previousKey, enabled };
+  TERRAIN_MICRO_NORMAL_BINDINGS.set(material, binding);
+  material.onBeforeCompile = (shader, renderer) => {
+    binding.previousCompile.call(material, shader, renderer);
+    if (!binding.enabled) return;
+    injectTerrainMicroNormals(shader);
+  };
+  material.customProgramCacheKey = () => binding.enabled
+    ? `${binding.previousKey}|terrain-micro-normal-v${TERRAIN_MICRO_NORMAL_PROFILE_VERSION}`
+    : binding.previousKey;
+  if (enabled) material.needsUpdate = true;
+}
+
+function injectTerrainMicroNormals(shader: TerrainShaderSource): void {
+  if (shader.fragmentShader.includes("terrain-micro-normal-v1")) return;
+  const normalMarkers = shader.fragmentShader.split(TERRAIN_NORMAL_MARKER).length - 1;
+  if (normalMarkers !== 1) {
+    throw new Error(`terrain micro-normal expected one normal marker, found ${normalMarkers}`);
+  }
+  const splatColours = shader.fragmentShader.split("vec3 splatColour =").length - 1;
+  if (splatColours !== 1) {
+    throw new Error(`terrain micro-normal expected one splat colour, found ${splatColours}`);
+  }
+  shader.fragmentShader = shader.fragmentShader.replace(TERRAIN_NORMAL_MARKER, `${TERRAIN_NORMAL_MARKER}
+      /* terrain-micro-normal-v1 */
+      float terrainMicroHeight = dot(splatColour, vec3(0.2126, 0.7152, 0.0722));
+      vec2 terrainMicroGradient = vec2(
+        dFdx(terrainMicroHeight),
+        dFdy(terrainMicroHeight)
+      );
+      // Layer indices change at chunk borders; fading there prevents an unrelated neighbour from
+      // becoming a false height step. Texture minification already removes sub-pixel detail, and
+      // this explicit distance gate prevents distant shimmer before that point.
+      vec2 terrainChunkUv = fract(vSplatUv * 16.0);
+      vec2 terrainChunkEdge = min(terrainChunkUv, 1.0 - terrainChunkUv);
+      float terrainChunkFade = smoothstep(0.0, 0.04, min(terrainChunkEdge.x, terrainChunkEdge.y));
+      float terrainDistanceFade = 1.0 - smoothstep(50.0, 125.0, length(vViewPosition));
+      terrainMicroGradient *= 0.08 * terrainChunkFade * terrainDistanceFade;
+
+      // These vectors and the normal are all view-space. This is the bounded form of Three's own
+      // derivative bump basis, fed by the already blended albedo instead of another texture.
+      vec3 terrainSigmaXRaw = dFdx(-vViewPosition);
+      vec3 terrainSigmaYRaw = dFdy(-vViewPosition);
+      vec3 terrainSigmaX = terrainSigmaXRaw
+        * inversesqrt(max(dot(terrainSigmaXRaw, terrainSigmaXRaw), 1e-8));
+      vec3 terrainSigmaY = terrainSigmaYRaw
+        * inversesqrt(max(dot(terrainSigmaYRaw, terrainSigmaYRaw), 1e-8));
+      vec3 terrainR1 = cross(terrainSigmaY, normal);
+      vec3 terrainR2 = cross(normal, terrainSigmaX);
+      float terrainDet = dot(terrainSigmaX, terrainR1) * faceDirection;
+      vec3 terrainSurfaceGradient = sign(terrainDet)
+        * (terrainMicroGradient.x * terrainR1 + terrainMicroGradient.y * terrainR2);
+      normal = normalize(max(abs(terrainDet), 1e-4) * normal - terrainSurfaceGradient);
+  `);
 }

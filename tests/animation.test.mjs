@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 import { animationFileSuffix, m2Animations, parseM2Skeleton } from "../tools/m2.mjs";
 import { encodeWvaAnimations } from "../tools/wvm.mjs";
 import { BASE_ANIMATION_NAMES, baseAnimationIds, loadAnimationCatalog } from "../tools/animations.mjs";
 import { decodeWvaAnimations } from "../dist/code/browser/Wvm.js";
 import {
-  actionAnimation, addSkinnedClips, animationTransition, chooseAnimation, poseAnimation,
-  isTerminalUnitPose, needsSidecarAnimations, poseTransition, readyAnimation, resolveAnimation,
-  shouldCrossFadeAnimation, shouldStopPreviousAnimation, weaponPose,
+  actionAnimation, addSkinnedClips, animationBlend, animationFadeWindow, animationTransition, chooseAnimation, pendingActionExpired,
+  pendingActionFate, poseAnimation,
+  isTerminalUnitPose, needsSidecarAnimations, poseTransition, readyAnimation, resolveActionAnimation,
+  resolveAnimation, resolveSpellVisualAnimation,
+  shouldCrossFadeAnimation, shouldStopPreviousAnimation, SHOOT_METADATA_WAIT, weaponPose,
+  locomotionBoneMask, locomotionOverlayClip, mountSpecialAnimation, isUnitFlying,
+  shouldPromoteActionToLocomotionOverlay,
 } from "../dist/code/browser/AnimatedModel.js";
 import {
   UNIT_STAND_STATE_DEAD, UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_SIT_LOW_CHAIR,
@@ -33,6 +38,20 @@ const withAnimationData = {
 };
 
 const HUMAN_MALE = "Character/Human/Male/HumanMale";
+const PLAYABLE_RIGS = [
+  "Character/Human/Male/HumanMale", "Character/Human/Female/HumanFemale",
+  "Character/NightElf/Male/NightElfMale", "Character/NightElf/Female/NightElfFemale",
+  "Character/Orc/Male/OrcMale", "Character/Orc/Female/OrcFemale",
+  "Character/Dwarf/Male/DwarfMale", "Character/Dwarf/Female/DwarfFemale",
+  "Character/Tauren/Male/TaurenMale", "Character/Tauren/Female/TaurenFemale",
+  "Character/Troll/Male/TrollMale", "Character/Troll/Female/TrollFemale",
+  "Character/Gnome/Male/GnomeMale", "Character/Gnome/Female/GnomeFemale",
+  "Character/BloodElf/Male/BloodElfMale", "Character/BloodElf/Female/BloodElfFemale",
+  "Character/Draenei/Male/DraeneiMale", "Character/Draenei/Female/DraeneiFemale",
+  // Some client extracts omit the Undead pair; keeping the canonical paths here makes the
+  // audit cover them automatically when the archives include them.
+  "Character/Scourge/Male/ScourgeMale", "Character/Scourge/Female/ScourgeFemale",
+];
 
 /** The model, and the contents of every `.anim` beside it. */
 async function loadAnimations(base) {
@@ -45,6 +64,64 @@ async function loadAnimations(base) {
     files.set(animation.external, await archives.read(`${base}${animation.external}.anim`));
   }
   return { m2, animations, files };
+}
+
+/** Build the same bone hierarchy/clip shape that AnimatedModel hands to THREE's mixer. */
+function threeClip(source, skeleton, animationId) {
+  const tracks = [];
+  for (const channel of source.channels) {
+    const name = `bone${channel.bone}`;
+    const times = Float32Array.from(channel.times, (time) => time / 1000);
+    if (channel.kind === 1) {
+      const values = new Float32Array(channel.values.length);
+      for (let index = 0; index < channel.values.length; index++) {
+        const raw = channel.values[index];
+        values[index] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
+      }
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, times, values));
+      continue;
+    }
+    if (channel.kind === 2) {
+      tracks.push(new THREE.VectorKeyframeTrack(`${name}.scale`, times, channel.values));
+      continue;
+    }
+    const parent = skeleton.parents[channel.bone];
+    const rest = [0, 1, 2].map((axis) =>
+      skeleton.pivots[channel.bone * 3 + axis]
+      - (parent >= 0 ? skeleton.pivots[parent * 3 + axis] : 0));
+    const values = new Float32Array(channel.values.length);
+    for (let key = 0; key < times.length; key++) {
+      for (let axis = 0; axis < 3; axis++) {
+        values[key * 3 + axis] = rest[axis] + channel.values[key * 3 + axis];
+      }
+    }
+    tracks.push(new THREE.VectorKeyframeTrack(`${name}.position`, times, values));
+  }
+  return new THREE.AnimationClip(`test-${animationId}`, source.duration / 1000, tracks);
+}
+
+function threeRig(parents, pivots) {
+  const root = new THREE.Group();
+  const bones = [];
+  for (let index = 0; index < parents.length; index++) {
+    const bone = new THREE.Bone();
+    bone.name = `bone${index}`;
+    const parent = parents[index];
+    const pivot = pivots.slice(index * 3, index * 3 + 3);
+    if (parent >= 0) {
+      bone.position.set(
+        pivot[0] - pivots[parent * 3],
+        pivot[1] - pivots[parent * 3 + 1],
+        pivot[2] - pivots[parent * 3 + 2],
+      );
+      bones[parent].add(bone);
+    } else {
+      bone.position.set(...pivot);
+      root.add(bone);
+    }
+    bones.push(bone);
+  }
+  return { root, bones, mixer: new THREE.AnimationMixer(root) };
 }
 
 /** A unit doing nothing, which every case varies one thing from. */
@@ -70,6 +147,257 @@ test("the names the client plays are the ones AnimationData.dbc assigns", withCl
     assert.ok(catalog.idByName.has(name), `${name} is not in AnimationData.dbc`);
   }
   assert.deepEqual([...baseAnimationIds(catalog)].sort((a, b) => a - b), [...BASE_ANIMATIONS]);
+});
+
+test("animation blends cross-fade continuous poses and preserve one-shot timing", () => {
+  assert.deepEqual(animationBlend(true, true), { duration: 0.18, warp: false },
+    "loop cross-fades must not warp clip time; malformed/HD duration ratios otherwise freeze or speed up live poses");
+  assert.deepEqual(animationBlend(true, false), { duration: 0.12, warp: false });
+  assert.deepEqual(animationBlend(false, true), { duration: 0.12, warp: false });
+  assert.deepEqual(animationBlend(false, false), { duration: 0.12, warp: false });
+});
+
+test("locomotion overlays filter bilateral lower-body branches instead of freezing the legs", () => {
+  // A compact humanoid-like rig: the lower branches drop from the hip and separate laterally,
+  // while the upper branch stays high. This is the only skeleton information WVM exposes without
+  // names, and it is enough to keep a moving cast from taking over the legs.
+  const parents = Int16Array.from([-1, 0, 1, 1, 2, 3]);
+  const pivots = Float32Array.from([
+    0, 0, 1.0,
+    0, 0, 0.9,
+    0, -0.2, 0.5,
+    0, 0.2, 0.5,
+    0, -0.2, 0.1,
+    0, 0.2, 0.1,
+  ]);
+  const mask = locomotionBoneMask(parents, pivots);
+  assert.deepEqual([...mask], [1, 1, 1, 1, 1, 1], "both leg branches and their ancestors stay on gait");
+
+  const clip = new THREE.AnimationClip("cast", 0.8, [
+    new THREE.QuaternionKeyframeTrack("bone1.quaternion", [0, 0.8], [0, 0, 0, 1, 0, 0, 0, 1]),
+    new THREE.QuaternionKeyframeTrack("bone4.quaternion", [0, 0.8], [0, 0, 0, 1, 0, 0, 0, 1]),
+  ]);
+  const overlay = locomotionOverlayClip(clip, mask);
+  assert.deepEqual(overlay.tracks.map((track) => track.name), [],
+    "a clip that only keys the lower body becomes a harmless upper-body overlay");
+  assert.equal(overlay.duration, clip.duration);
+});
+
+test("a moving instant cast leaves the locomotion action driving the legs", () => {
+  const parents = [-1, 0, 1, 1, 2, 3];
+  const bones = [];
+  parents.forEach((parent, index) => {
+    const bone = new THREE.Bone();
+    bone.name = `bone${index}`;
+    if (parent >= 0) bones[parent].add(bone);
+    bones.push(bone);
+  });
+  const mixer = new THREE.AnimationMixer(bones[0]);
+  const run = new THREE.AnimationClip("run", 0.8, [
+    new THREE.QuaternionKeyframeTrack("bone4.quaternion", [0, 0.4, 0.8], [
+      0, 0, 0, 1, 0, Math.SQRT1_2, 0, Math.SQRT1_2, 0, 0, 0, 1,
+    ]),
+  ]);
+  const cast = new THREE.AnimationClip("instant-cast", 0.8, [
+    new THREE.QuaternionKeyframeTrack("bone0.quaternion", [0, 0.8], [
+      0, 0, 0, 1, 0, 0, Math.SQRT1_2, Math.SQRT1_2,
+    ]),
+    new THREE.QuaternionKeyframeTrack("bone4.quaternion", [0, 0.8], [
+      0, 0, 0, 1, 0, 0, 0, 1,
+    ]),
+  ]);
+  const mask = locomotionBoneMask(Int16Array.from(parents), Float32Array.from([
+    0, 0, 1.0, 0, 0, 0.9, 0, -0.2, 0.5, 0, 0.2, 0.5, 0, -0.2, 0.1, 0, 0.2, 0.1,
+  ]));
+  const gait = mixer.clipAction(run).setLoop(THREE.LoopRepeat, Infinity).play();
+  const overlay = mixer.clipAction(locomotionOverlayClip(cast, mask))
+    .setLoop(THREE.LoopOnce, 1).play();
+  mixer.update(0.2);
+  const legAtStart = bones[4].quaternion.y;
+  mixer.update(0.2);
+  const legDuringCast = bones[4].quaternion.y;
+  assert.notEqual(legAtStart, legDuringCast, "base gait keeps advancing a leg during the cast");
+  assert.equal(overlay.isRunning(), true, "the instant cast remains active on its upper layer");
+  gait.stop();
+});
+
+test("a real character keeps every moving gait under a cast overlay", withClient, async () => {
+  const loaded = await loadAnimations(HUMAN_MALE);
+  assert.ok(loaded, "HumanMale should be in the client");
+  const wanted = new Set([
+    ANIMATION_IDS.Run, ANIMATION_IDS.Walkbackwards,
+    ANIMATION_IDS.ShuffleLeft, ANIMATION_IDS.ShuffleRight,
+    ANIMATION_IDS.RunLeft, ANIMATION_IDS.RunRight,
+    ANIMATION_IDS.SpellCastOmni,
+  ]);
+  const source = parseM2Skeleton(loaded.m2, { wanted, animations: loaded.files });
+  assert.ok(source, "HumanMale should expose locomotion and SpellCastOmni clips");
+  const parents = Int16Array.from(source.bones.map((bone) => bone.parent));
+  const pivots = Float32Array.from(source.bones.flatMap((bone) => bone.pivot));
+  const mask = locomotionBoneMask(parents, pivots);
+  const lower = [...mask].flatMap((value, bone) => value ? [bone] : []);
+  assert.ok(lower.length > 0, "the real rig should expose lower-body bones");
+
+  const castSource = source.clips.find((clip) => clip.animationId === ANIMATION_IDS.SpellCastOmni);
+  assert.ok(castSource, "HumanMale should expose SpellCastOmni");
+  assert.ok(castSource.channels.some((channel) => channel.bone === 1 && channel.kind === 0),
+    "the regression fixture must include HumanMale's keyed root/pelvis translation");
+  // Bone numbering belongs to the model generation: HD HumanMale's first spine track is bone3,
+  // while the stock rig uses that number for the common leg ancestor. The invariant is that some
+  // authored cast branch remains above the model-derived lower-body boundary.
+  assert.ok(castSource.channels.some((channel) => mask[channel.bone] === 0),
+    "the cast must still have an upper-body branch after the lower-body boundary");
+  const cast = threeClip(castSource, { parents, pivots }, ANIMATION_IDS.SpellCastOmni);
+  const overlay = locomotionOverlayClip(cast, mask);
+  assert.ok(overlay.tracks.length > 0, "the cast should retain upper-body tracks");
+  assert.equal(overlay.tracks.some((track) => {
+    const match = /^bone(\d+)\./.exec(track.name);
+    return match !== null && mask[Number(match[1])] === 1;
+  }), false, "the filtered cast must not key any lower-body ancestor");
+
+  const clipById = new Map(source.clips.map((clip) => [clip.animationId, clip]));
+  const directions = [
+    MOVEMENT_FLAGS.forward, MOVEMENT_FLAGS.backward,
+    MOVEMENT_FLAGS.strafeLeft, MOVEMENT_FLAGS.strafeRight,
+  ];
+  for (const flags of directions) {
+    const chosen = chooseAnimation(clipById, standing({ movementFlags: flags }));
+    assert.ok(chosen, `HumanMale should expose a gait for flags 0x${flags.toString(16)}`);
+    const animationId = chosen.animation;
+    const gaitSource = clipById.get(animationId);
+    assert.ok(gaitSource, `HumanMale should expose gait clip ${animationId}`);
+    assert.equal(poseAnimation({ ...standing({ movementFlags: flags }), spline: false }).wanted[0],
+      flags === MOVEMENT_FLAGS.forward ? ANIMATION_IDS.Run
+        : flags === MOVEMENT_FLAGS.backward ? ANIMATION_IDS.Walkbackwards
+          : flags === MOVEMENT_FLAGS.strafeLeft ? ANIMATION_IDS.RunLeft : ANIMATION_IDS.RunRight,
+      `moving flags 0x${flags.toString(16)} should request the authored gait before fallback`);
+    const gait = threeClip(gaitSource, { parents, pivots }, animationId);
+    const pose = (withCast) => {
+      const rig = threeRig(parents, pivots);
+      rig.mixer.clipAction(gait).setLoop(THREE.LoopRepeat, Infinity).play();
+      if (withCast) rig.mixer.clipAction(overlay).setLoop(THREE.LoopOnce, 1).play();
+      rig.mixer.update(0.3);
+      rig.root.updateWorldMatrix(true, true);
+      return lower.map((bone) => rig.bones[bone].getWorldPosition(new THREE.Vector3()).toArray());
+    };
+    const basePose = pose(false);
+    const castPose = pose(true);
+    assert.deepEqual(castPose, basePose,
+      `cast must not move lower-body world positions for flags 0x${flags.toString(16)}`);
+  }
+
+  // Every ancestor of a lower-body branch is part of the layer boundary. If a cast keys one of
+  // those ancestors, its translation/rotation moves the legs even when the thigh tracks were
+  // removed. This catches the real HumanMale bone1 translation that the old mask left exposed.
+  for (const bone of lower) {
+    for (let ancestor = parents[bone]; ancestor >= 0; ancestor = parents[ancestor]) {
+      assert.equal(mask[ancestor], 1,
+        `bone${ancestor} is an ancestor of lower-body bone${bone} and must stay on locomotion`);
+    }
+  }
+});
+
+test("an idle-to-move transition promotes a still-running one-shot to the upper layer", () => {
+  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, "cast", THREE.LoopOnce), true);
+  assert.equal(shouldPromoteActionToLocomotionOverlay(false, false, "cast", THREE.LoopOnce), false,
+    "an idle cast still owns the body until movement actually starts");
+  assert.equal(shouldPromoteActionToLocomotionOverlay(true, true, "cast", THREE.LoopOnce), false,
+    "an existing locomotion overlay must not be promoted twice");
+  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, "cast", THREE.LoopRepeat), false,
+    "held actions are not converted while their action record remains authoritative");
+  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, undefined, THREE.LoopOnce), false,
+    "pose-only clips have no semantic one-shot owner to transfer");
+});
+
+test("mount special resolves to the generated ground/flying mount sequences", () => {
+  assert.equal(mountSpecialAnimation(false), ANIMATION_IDS.MountSpecial);
+  assert.equal(mountSpecialAnimation(true), ANIMATION_IDS.FlyMountSpecial);
+  assert.notEqual(mountSpecialAnimation(false), ANIMATION_IDS.Mount,
+    "the mount trick must not replace the persistent gait");
+});
+
+test("mount special flight reads the movement flag even without a spline", () => {
+  assert.equal(mountSpecialAnimation(isUnitFlying(MOVEMENT_FLAGS.flying)), ANIMATION_IDS.FlyMountSpecial,
+    "a standing/hovering flying mount uses the flying special");
+  assert.equal(mountSpecialAnimation(isUnitFlying(0)), ANIMATION_IDS.MountSpecial,
+    "a ground mount keeps the ground special");
+  assert.equal(mountSpecialAnimation(isUnitFlying(0, true)), ANIMATION_IDS.FlyMountSpecial,
+    "a flying spline remains supported when its movement word is empty");
+});
+
+test("locomotion overlay fades instead of stopping at the blend boundary", () => {
+  assert.deepEqual(animationFadeWindow(0.8), { start: 0.68, end: 0.8 });
+  assert.deepEqual(animationFadeWindow(0.8, true), { start: 0.8, end: 0.92 });
+
+  const root = new THREE.Bone();
+  root.name = "bone0";
+  const leg = new THREE.Bone();
+  leg.name = "bone1";
+  root.add(leg);
+  const mixer = new THREE.AnimationMixer(root);
+  const gait = mixer.clipAction(new THREE.AnimationClip("gait", 0.8, [
+    new THREE.QuaternionKeyframeTrack("bone1.quaternion", [0, 0.8], [
+      0, 0, 0, 1, 0, Math.SQRT1_2, 0, Math.SQRT1_2,
+    ]),
+  ])).setLoop(THREE.LoopRepeat, Infinity).play();
+  const cast = mixer.clipAction(new THREE.AnimationClip("cast", 0.8, [
+    new THREE.QuaternionKeyframeTrack("bone0.quaternion", [0, 0.8], [
+      0, 0, 0, 1, 0, 0, Math.SQRT1_2, Math.SQRT1_2,
+    ]),
+  ])).setLoop(THREE.LoopOnce, 1);
+  cast.clampWhenFinished = true;
+  cast.play();
+  mixer.update(0.68);
+  cast.fadeOut(0.12);
+  assert.equal(cast.isRunning(), true, "the overlay remains live when its fade window starts");
+  const legAtFadeStart = leg.quaternion.y;
+  assert.ok(Math.abs(gait.getEffectiveWeight() - 1) < 1e-6,
+    "the base gait stays at full weight when the overlay starts fading");
+  mixer.update(0.06);
+  assert.ok(cast.getEffectiveWeight() > 0 && cast.getEffectiveWeight() < 1,
+    "the overlay weight is blended, not snapped");
+  assert.ok(Math.abs(gait.getEffectiveWeight() - 1) < 1e-6,
+    "the gait is not faded in from zero by the upper-body transition");
+  assert.notEqual(leg.quaternion.y, legAtFadeStart, "the leg continues through the fade window");
+  mixer.update(0.06);
+  assert.ok(gait.getEffectiveWeight() > 0.9, "locomotion owns the layer after the fade window");
+  gait.stop();
+});
+
+test("the playable-rig audit keeps a small lower-body mask and upper cast tracks", withClient, async () => {
+  const audited = [];
+  const wanted = new Set([
+    ANIMATION_IDS.SpellCastOmni, ANIMATION_IDS.SpellCast, ANIMATION_IDS.AttackUnarmed,
+  ]);
+  for (const base of PLAYABLE_RIGS) {
+    const loaded = await loadAnimations(base);
+    if (!loaded) continue;
+    const skeleton = parseM2Skeleton(loaded.m2, { wanted, animations: loaded.files });
+    assert.ok(skeleton, `${base} should expose one audited action clip`);
+    const parents = Int16Array.from(skeleton.bones.map((bone) => bone.parent));
+    const pivots = Float32Array.from(skeleton.bones.flatMap((bone) => bone.pivot));
+    const mask = locomotionBoneMask(parents, pivots);
+    const masked = mask.reduce((sum, value) => sum + value, 0);
+    assert.ok(masked > 0, `${base} should have lower-body bones`);
+    assert.ok(masked < parents.length * 0.35,
+      `${base} lower-body mask should not capture the whole skeleton (${masked}/${parents.length})`);
+
+    const source = skeleton.clips.find((clip) =>
+      clip.channels.some((channel) => mask[channel.bone] === 1)
+      && clip.channels.some((channel) => mask[channel.bone] !== 1));
+    assert.ok(source, `${base} should have an action with lower and upper tracks`);
+    const tracks = source.channels.map((channel) => new THREE.NumberKeyframeTrack(
+      `bone${channel.bone}.audit`, [0, Math.max(0.001, source.duration / 1000)], [0, 1]));
+    const upper = locomotionOverlayClip(
+      new THREE.AnimationClip(`audit-${base}`, source.duration / 1000, tracks), mask);
+    assert.ok(upper.tracks.length > 0, `${base} cast overlay should retain upper tracks`);
+    assert.equal(upper.tracks.some((track) => {
+      const bone = Number(/^bone(\d+)/.exec(track.name)?.[1]);
+      return mask[bone] === 1;
+    }), false, `${base} cast overlay should remove lower tracks`);
+    audited.push({ base, bones: parents.length, masked, tracks: source.channels.length });
+  }
+  assert.ok(audited.length >= 18, `expected the 18 playable rigs in this client, got ${audited.length}`);
 });
 
 test("the shipped set is locomotion, and combat is what is held back", () => {
@@ -423,21 +751,61 @@ test("the swing a unit makes is the weapon it is visibly holding", () => {
   assert.equal(weaponPose(mainHand(17)), "twoHand", "INVTYPE_2HWEAPON");
   assert.equal(weaponPose([{ slot: 17, inventoryType: 15 }]), "bow");
   assert.equal(weaponPose([{ slot: 17, inventoryType: 26 }]), "gun", "INVTYPE_RANGEDRIGHT");
+  assert.equal(weaponPose([{ slot: 17, inventoryType: 26, subClass: 19 }]), "wand",
+    "ItemSubClass.Wand overrides the shared ranged-right inventory type");
   assert.equal(weaponPose([{ slot: 17, inventoryType: 25 }]), "thrown");
   // A hunter carries both. What is in the hands decides the melee swing.
   assert.equal(weaponPose([{ slot: 17, inventoryType: 15 }, { slot: 15, inventoryType: 13 }]), "oneHand");
+  assert.equal(weaponPose([{ slot: 17, inventoryType: 15 }, { slot: 15, inventoryType: 13 }], "ranged"), "bow",
+    "a shot is selected from the ranged slot even while a melee weapon is equipped");
   // A shield is not a weapon and does not change the swing.
   assert.equal(weaponPose([{ slot: 16, inventoryType: 14 }]), "unarmed");
 
   assert.deepEqual(actionAnimation("attack", "twoHand"),
     [ANIMATION_IDS.Attack2H, ANIMATION_IDS.Attack1H, ANIMATION_IDS.AttackUnarmed]);
   assert.deepEqual(actionAnimation("attack", "unarmed"), [ANIMATION_IDS.AttackUnarmed]);
+  assert.deepEqual(actionAnimation("shoot", "bow"),
+    [ANIMATION_IDS.FireBow, ANIMATION_IDS.AttackBow],
+    "a bow releases its projectile instead of making the generic bow attack");
+  assert.deepEqual(actionAnimation("shoot", "gun"),
+    [ANIMATION_IDS.AttackRifle, ANIMATION_IDS.FireBow, ANIMATION_IDS.AttackBow]);
+  assert.deepEqual(actionAnimation("shoot", "wand"),
+    [ANIMATION_IDS.SpellCastDirected, ANIMATION_IDS.SpellCastOmni, ANIMATION_IDS.SpellCast]);
   assert.deepEqual(readyAnimation("bow"), [ANIMATION_IDS.ReadyBow, ANIMATION_IDS.ReadyUnarmed]);
   // A model with only the unarmed swing still swings: every list ends where the chain does.
   assert.equal(resolveAnimation(new Set([ANIMATION_IDS.AttackUnarmed]), actionAnimation("attack", "gun")),
     ANIMATION_IDS.AttackUnarmed);
   assert.equal(resolveAnimation(new Set([ANIMATION_IDS.SpellCastOmni]), actionAnimation("cast", "unarmed")),
     ANIMATION_IDS.SpellCastOmni);
+  assert.equal(resolveActionAnimation(new Set([ANIMATION_IDS.AttackUnarmed]), "shoot", "bow"), undefined,
+    "a missing ranged clip must never become a melee punch");
+  assert.equal(resolveActionAnimation(new Set([ANIMATION_IDS.AttackUnarmed]), "shoot", "wand"), undefined,
+    "a missing wand release must stay pose-silent rather than become a melee punch");
+  assert.equal(resolveActionAnimation(new Set([ANIMATION_IDS.SpellCastDirected]), "shoot", "wand"),
+    ANIMATION_IDS.SpellCastDirected);
+  assert.equal(resolveSpellVisualAnimation(new Set([ANIMATION_IDS.AttackUnarmed]), [ANIMATION_IDS.SpellCastOmni]),
+    undefined, "a missing authored cast clip must never cross into the melee fallback family");
+  assert.equal(resolveSpellVisualAnimation(new Set([ANIMATION_IDS.SpellCast]), [ANIMATION_IDS.SpellCastOmni]),
+    ANIMATION_IDS.SpellCast, "semantically equivalent spell fallbacks remain available");
+});
+
+test("a shoot waits for late appearance metadata only inside its bounded window", () => {
+  assert.ok(SHOOT_METADATA_WAIT > 900 && SHOOT_METADATA_WAIT <= 1_500,
+    "appearance gets a small extension after the sidecar wait, not an open-ended replay window");
+  assert.equal(pendingActionFate({
+    hasClip: false, promised: false, metadataPending: true, now: 1_000,
+    waitUntil: 1_000 + SHOOT_METADATA_WAIT,
+  }), "wait");
+  assert.equal(pendingActionFate({
+    hasClip: false, promised: false, metadataPending: true, now: 1_000 + SHOOT_METADATA_WAIT,
+    waitUntil: 1_000 + SHOOT_METADATA_WAIT,
+  }), "drop", "a late event is not replayed after the bounded window");
+  assert.equal(pendingActionExpired("shoot", false, 1_000 + SHOOT_METADATA_WAIT - 1, 1_000 + SHOOT_METADATA_WAIT),
+    false, "a release inside the window remains eligible");
+  assert.equal(pendingActionExpired("shoot", false, 1_000 + SHOOT_METADATA_WAIT, 1_000 + SHOOT_METADATA_WAIT),
+    true, "a late clip cannot revive an expired one-shot");
+  assert.equal(pendingActionExpired("shoot", true, 9_000, 1_000), false,
+    "only the one-shot path expires; a held action owns its own hold deadline");
 });
 
 test("an emote names its pose through Emotes.dbc, and states are the ones that hold", withAnimationData, () => {

@@ -2,6 +2,8 @@ import type { WmoBounds, WmoPortals } from "./WmoModel.js";
 
 export interface WmoOcclusionGroup {
   bounds: WmoBounds;
+  /** False means the source bounds are retained for diagnostics but cannot authorize culling. */
+  boundsValid?: boolean;
   indoor: boolean;
   exterior: boolean;
   portalStart: number;
@@ -61,7 +63,7 @@ export function selectWmoPortalGroups(
 
   const seeds: number[] = [];
   for (const [index, group] of groups.entries()) {
-    if (!validBounds(group.bounds)) return fallback;
+    if (group.boundsValid === false || !validBounds(group.bounds)) return fallback;
     // Exterior-lit faces inside an indoor MOGP group are still part of the city shell, and their
     // broad AABB commonly contains streets/courtyards. Only a wholly interior group is evidence
     // strong enough to seed culling.

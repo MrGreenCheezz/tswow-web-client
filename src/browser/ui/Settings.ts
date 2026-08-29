@@ -90,6 +90,20 @@ export function applySettings(): void {
   // Static WMO rooms only. Old artifacts, open air and moving world objects retain their distance
   // selection even while this option is enabled.
   game.renderer?.setWmoOcclusion(settingBoolean(values, "wmoOcclusion"));
+  // R1 A/B candidate only: the renderer's default remains anisotropy 1, and this setting can roll
+  // its cached character atlases back to that baseline without changing their ownership.
+  game.renderer?.setCharacterAtlasAnisotropy(settingBoolean(values, "characterAtlasAnisotropy"));
+  // R5 faithful-plus profile: aerial fog remains a blocked no-op, while the independently
+  // reversible terrain and water leaves are enabled by current defaults. Explicit false restores
+  // the source/key-equivalent baseline branch and formal benchmark variants set every leaf.
+  game.renderer?.setExperimentalShaderProfile?.({
+    aerialHeightFog: settingBoolean(values, "experimentalAerialHeightFog"),
+    terrainMicroNormals: settingBoolean(values, "experimentalTerrainMicroNormals"),
+    waterFresnel: settingBoolean(values, "experimentalWaterFresnel"),
+    waterMicroWaves: settingBoolean(values, "experimentalWaterMicroWaves"),
+    waterSunSparkle: settingBoolean(values, "experimentalWaterSunSparkle"),
+    fantasyGlow: settingBoolean(values, "experimentalFantasyGlow"),
+  });
   // How far the ground cover reaches, and whether its density is read per detail cell. Pushed for
   // the same reason as the render scale: it is read deep inside a frame, and a copy kept anywhere
   // else is a copy that can be stale. Outside the world `game.groundCover` is undefined, which

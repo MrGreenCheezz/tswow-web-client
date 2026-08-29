@@ -2,6 +2,7 @@ import { unit } from "../../world/Fields.js";
 import { REACTION_FRIENDLY, REACTION_NEUTRAL, UNIT_FLAG_IN_COMBAT } from "../../world/FactionRules.js";
 import { enemiesAround, nextTarget, type TargetCandidate } from "../../world/TargetSearch.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import type { FactionClient } from "../FactionClient.js";
 import { createCamera } from "../SimpleScene.js";
 import { cameraPivotHeight, game } from "./Context.js";
 
@@ -13,13 +14,22 @@ import { cameraPivotHeight, game } from "./Context.js";
  * meets the units in view. Until it lands everything reads neutral, which costs Tab and a plate
  * colour and nothing else.
  */
-export function reactionTo(object: WorldObjectState): number {
-  const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+export function reactionBetween(
+  self: WorldObjectState | undefined,
+  object: WorldObjectState,
+  factions: FactionClient | undefined,
+): number {
   const mine = self ? unit.factionTemplate(self) : undefined;
   const theirs = unit.factionTemplate(object);
   if (mine === undefined || theirs === undefined) return REACTION_NEUTRAL;
-  return game.factions?.reaction(mine, theirs) ?? REACTION_NEUTRAL;
+  return factions?.reaction(mine, theirs) ?? REACTION_NEUTRAL;
+}
+
+/** The live wrapper retains the current world and faction client. */
+export function reactionTo(object: WorldObjectState): number {
+  const world = game.world;
+  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  return reactionBetween(self, object, game.factions);
 }
 
 /**

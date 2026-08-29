@@ -11,7 +11,7 @@ import {
   type SpellVisualPlan,
   type VisualSound,
 } from "./SpellVisuals.js";
-import type { SpellVisualMetadata } from "../gateway/SpellVisual.js";
+import type { SpellVisualEffectTransform, SpellVisualMetadata } from "../gateway/SpellVisual.js";
 
 /** The finite effects the renderer owns while an aura is present. */
 export interface StateVisualDescriptor {
@@ -19,6 +19,9 @@ export interface StateVisualDescriptor {
   path: string;
   attachment: number;
   scale: number;
+  /** Stable authored occurrence for duplicate model-attach rows; never an array position. */
+  occurrence?: string;
+  transform?: SpellVisualEffectTransform;
 }
 
 /** The deliberately small renderer surface used by the lifecycle coordinator. */
@@ -29,7 +32,7 @@ export interface SpellVisualLifecycleRenderer {
   retimeSpellVisual?(handle: unknown, absoluteEndsAt: number): void;
   cancelUnitAction?(guid: bigint): void;
   clearSpellVisuals?(): void;
-  playUnitAction?(guid: bigint, action: "precast" | "channel" | "cast", hold?: number): void;
+  playUnitAction?(guid: bigint, action: "precast" | "channel" | "cast" | "shoot", hold?: number): void;
 }
 
 export interface SpellVisualMetadataSource {
@@ -60,6 +63,19 @@ export interface SpellVisualLifecycleWorld {
   };
   readonly auras: ReadonlyMap<bigint, ReadonlyMap<number, ActiveAura>>;
   readonly targetGuid: bigint | undefined;
+}
+
+/**
+ * The only stock 3.3.5 SPELL_GO rows whose missing visual is itself the ranged release.
+ *
+ * `SPELL_ATTR2_AUTOREPEAT_FLAG` is broader than the client action: the local DBC also marks a
+ * handful of NPC/non-weapon rows (for example 1485, 31317 and 38196). Treating that bit alone as
+ * permission to invent a bow/gun/wand pose makes those casts visibly wrong. Keep the DBC bit in
+ * metadata for the spellbook/repeat-container logic, but make this visual fallback an explicit,
+ * bounded stock mapping until a server-side ranged-release semantic is available.
+ */
+export function usesStockRangedRelease(spellId: number, metadata: SpellVisualMetadata): boolean {
+  return metadata.autoRepeat === true && (spellId === 75 || spellId === 5019);
 }
 
 interface PendingVisual {
@@ -107,6 +123,8 @@ interface StateVisualOwnership {
 interface PendingFallback {
   key: string;
   guid: bigint;
+  /** An explicit DBC-authored semantic action; ordinary spells never enter this queue. */
+  action: "shoot";
   epoch: number;
   world: SpellVisualLifecycleWorld;
   receivedAt: number;
@@ -124,8 +142,6 @@ interface ActiveStart {
   handle: unknown;
   /** Sound-only start plans have no renderer handle; remember that their one dispatch happened. */
   soundDispatched: boolean;
-  fallbackAction: boolean;
-  fallbackEndsAt: number;
 }
 
 interface Options {
@@ -265,10 +281,8 @@ export class SpellVisualCoordinator {
           if (entry.spellId !== id) continue;
           queue.splice(index, 1);
           if (entry.epoch !== this.#epoch || now - entry.receivedAt > this.#ttl) continue;
-          // A missing row is itself a resolved result. Replay it so GO can install the generic
-          // release fallback; aura/start replays simply become no-ops when no authored visual
-          // exists. Waiting for this result is important: a fallback emitted before a late
-          // authored cast kit would otherwise produce two release poses.
+          // A missing row is itself a resolved result. Replaying it makes every event a no-op;
+          // absence of authored animation data is not permission to invent an attack pose.
           if (!visual && !this.#knownNoVisual.has(id)) continue;
           entry.replay(now);
           if (entry.kind === "aura") stateMayHaveChanged = true;
@@ -487,47 +501,48 @@ export class SpellVisualCoordinator {
     // Snapshot anchor positions at receipt. Metadata may arrive after the unit has moved, but the
     // missile and its sounds belong to where this packet happened, not where the next frame finds it.
     const capturedCast = this.#spellCast(world, cast);
-    let fallbackPlayed = false;
-    const fallbackCaster = cast.casterUnit !== 0n ? cast.casterUnit : cast.casterGuid;
-    const playFallback = (): void => {
-      if (fallbackPlayed) return;
+    let rangedReleasePlayed = false;
+    const releaseCaster = cast.casterUnit !== 0n ? cast.casterUnit : cast.casterGuid;
+    const playRangedRelease = (): void => {
+      if (rangedReleasePlayed) return;
       const renderer = this.#renderer();
       if (!renderer?.playUnitAction) {
-        this.#queueFallback({ key, guid: fallbackCaster, epoch: this.#epoch, world, receivedAt: now });
+        this.#queueFallback({
+          key, guid: releaseCaster, action: "shoot", epoch: this.#epoch, world, receivedAt: now,
+        });
         return;
       }
       this.#forgetFallback(key);
-      renderer.playUnitAction(fallbackCaster, "cast");
-      fallbackPlayed = true;
+      renderer.playUnitAction(releaseCaster, "shoot");
+      rangedReleasePlayed = true;
     };
-    const replay = (replayNow: number): void => {
-      const metadata = this.#getVisual(cast.spellId);
-      const spellCast = capturedCast ?? this.#spellCast(world, cast);
-      if (!metadata || !spellCast) {
-        if (!matchingChannel) playFallback();
+      const replay = (replayNow: number): void => {
+        const metadata = this.#getVisual(cast.spellId);
+        const spellCast = capturedCast ?? this.#spellCast(world, cast);
+        if (!metadata) return;
+        if (!spellCast) {
+          if (usesStockRangedRelease(cast.spellId, metadata)) playRangedRelease();
         return;
       }
-      // An authored cast-kit animation owns the release pose. Sound/effect-only kits still need
-      // the generic one-shot action, which is also the safe first-event fallback while metadata
-      // is in flight.
-      const hasCastAnimation = metadata.cast !== undefined
-        && (metadata.cast.animation >= 0 || metadata.cast.startAnimation >= 0);
-      if (hasCastAnimation || matchingChannel) this.#forgetFallback(key);
-      else playFallback();
       const plan = planSpellVisual(metadata, spellCast, now);
       const currentActive = this.#starts.get(cast.casterUnit) ?? this.#starts.get(cast.casterGuid);
       const channelStillOwnsCaster = currentActive?.spellId === cast.spellId && currentActive.channel;
+      const hasAuthoredCasterAnimation = plan.animations.some((animation) =>
+        animation.guid === cast.casterUnit || animation.guid === cast.casterGuid);
       this.#dispatchPlan(
         channelStillOwnsCaster ? suppressCasterActionAnimations(plan, currentActive.casterGuid) : plan,
         now, replayNow, world,
       );
+      // Stock Auto Shot and wand Shoot have no SpellVisualID, so the repeat flag supplies their
+      // ranged release. Other DBC rows carry the same repeat bit together with a real caster kit;
+      // that authored pose wins instead of being replaced by a generic weapon shot.
+      if (usesStockRangedRelease(cast.spellId, metadata) && !hasAuthoredCasterAnimation) {
+        playRangedRelease();
+      }
     };
     if (!visual) {
       this.#metadataSource.get(cast.spellId);
-      // Do not guess while metadata is in flight. If the eventual row has an authored cast kit,
-      // playing the generic pose now would make the same GO release twice.
-      if (this.#knownNoVisual.has(cast.spellId) && !matchingChannel) playFallback();
-      else {
+      if (!this.#knownNoVisual.has(cast.spellId)) {
         this.#enqueue({ kind: "go", spellId: cast.spellId, key, receivedAt: now, epoch: this.#epoch, replay });
       }
       return;
@@ -544,7 +559,6 @@ export class SpellVisualCoordinator {
       casterGuid: event.casterGuid, spellId: event.spellId, channel: event.channel,
       startedAt: now, receivedAt: now, casterPoint: this.#objectPoint(world, event.casterGuid),
       duration: Math.max(0, event.castTime), handle: undefined, soundDispatched: false,
-      fallbackAction: false, fallbackEndsAt: 0,
     };
     this.#starts.set(event.casterGuid, active);
     this.#dropPendingStarts(event.casterGuid);
@@ -556,7 +570,6 @@ export class SpellVisualCoordinator {
       if (!this.#knownNoVisual.has(active.spellId)) {
         this.#enqueue({ kind: "start", spellId: active.spellId, key, receivedAt: now, epoch: this.#epoch, replay: render });
       }
-      this.#fallbackStart(active, now);
     } else {
       render(now);
     }
@@ -570,18 +583,9 @@ export class SpellVisualCoordinator {
       return;
     }
     const visual = this.#getVisual(active.spellId);
-    if (!visual) {
-      // A resolved no-visual row still needs the generic held stance. This is especially
-      // important when the renderer was absent during the packet and only becomes available
-      // after onLoaded has replayed the pending start.
-      this.#fallbackStart(active, now);
-      return;
-    }
+    if (!visual) return;
     const objectPoint = active.casterPoint ?? this.#objectPoint(world, active.casterGuid);
-    if (!objectPoint) {
-      this.#fallbackStart(active, now);
-      return;
-    }
+    if (!objectPoint) return;
     const plan = planSpellCastStart(visual, {
       caster: active.casterGuid, casterPoint: objectPoint, targets: [],
       castTime: active.duration, channel: active.channel,
@@ -600,35 +604,11 @@ export class SpellVisualCoordinator {
     // again before the renderer-ready frame renders the visual.
     if (!renderer) return;
 
-    // If metadata arrived after the generic fallback pose was installed, cancel that fallback
-    // before inserting the authored visual action. Otherwise cancelUnitAction would see the new
-    // visual held action and remove the very pose we just resolved.
-    if (plan.animations.length > 0 && active.fallbackAction) {
-      renderer?.cancelUnitAction?.(active.casterGuid);
-      active.fallbackAction = false;
-      active.fallbackEndsAt = 0;
-    }
     this.#cancelHandle(active);
     if (plan.instances.length > 0 || plan.animations.length > 0 || plan.sounds.length > 0) {
       active.handle = this.#dispatchPlan(plan, active.receivedAt, now, world, false);
       if (plan.sounds.length > 0 && !hasRenderable) active.soundDispatched = true;
-      // An effect/sound-only precast still needs the stance fallback; only an authored animation
-      // owns that pose and suppresses the generic action.
-      if (plan.animations.length === 0) this.#fallbackStart(active, now);
-    } else {
-      this.#fallbackStart(active, now);
     }
-  }
-
-  #fallbackStart(active: ActiveStart, now: number): void {
-    const renderer = this.#renderer();
-    if (!renderer?.playUnitAction) return;
-    const hold = Math.max(0, active.startedAt + active.duration - now);
-    const endsAt = now + hold;
-    if (active.fallbackAction && endsAt <= active.fallbackEndsAt) return;
-    renderer.playUnitAction(active.casterGuid, active.channel ? "channel" : "precast", hold);
-    active.fallbackAction = true;
-    active.fallbackEndsAt = endsAt;
   }
 
   #cancelHandle(active: ActiveStart): void {
@@ -639,9 +619,6 @@ export class SpellVisualCoordinator {
 
   #cancelStart(active: ActiveStart): void {
     this.#cancelHandle(active);
-    if (active.fallbackAction) this.#renderer()?.cancelUnitAction?.(active.casterGuid);
-    active.fallbackAction = false;
-    active.fallbackEndsAt = 0;
   }
 
   #onCastDelayed(world: SpellVisualLifecycleWorld, event: WorldPacketEvents["SPELL_CAST_DELAYED"]): void {
@@ -657,7 +634,6 @@ export class SpellVisualCoordinator {
     } else {
       this.#renderStart(world, active, now);
     }
-    if (active.fallbackAction) this.#fallbackStart(active, now);
   }
 
   #onChannelUpdate(world: SpellVisualLifecycleWorld, event: WorldPacketEvents["SPELL_CHANNEL_UPDATE"]): void {
@@ -679,7 +655,6 @@ export class SpellVisualCoordinator {
     } else {
       this.#renderStart(world, active, now);
     }
-    if (active.fallbackAction) this.#fallbackStart(active, now);
   }
 
   #onCastStop(world: SpellVisualLifecycleWorld, event: WorldPacketEvents["SPELL_CAST_STOP"]): void {
@@ -799,7 +774,11 @@ export class SpellVisualCoordinator {
         if (!visual?.state) continue;
         const effects = byUnit.get(guid) ?? [];
         for (const effect of visual.state.effects) {
-          effects.push({ spellId: aura.spellId, path: effect.path, attachment: effect.attachment, scale: effect.scale });
+          effects.push({
+            spellId: aura.spellId, path: effect.path, attachment: effect.attachment, scale: effect.scale,
+            ...(effect.occurrence ? { occurrence: effect.occurrence } : {}),
+            ...(effect.transform ? { transform: effect.transform } : {}),
+          });
         }
         if (effects.length > 0) byUnit.set(guid, effects);
       }
@@ -933,7 +912,7 @@ export class SpellVisualCoordinator {
         this.#pendingFallbacks.splice(index, 1);
         continue;
       }
-      renderer.playUnitAction(pending.guid, "cast");
+      renderer.playUnitAction(pending.guid, pending.action);
       this.#pendingFallbacks.splice(index, 1);
     }
   }

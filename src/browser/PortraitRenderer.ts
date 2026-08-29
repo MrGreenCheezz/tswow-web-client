@@ -1,12 +1,18 @@
 import * as THREE from "three";
 import {
-  applyBillboardBones, instantiateSkinned,
+  applyBillboardBones, disposeSkinnedInstance, instantiateSkinned,
   type SkinnedInstance,
   type SkinnedTemplate,
 } from "./AnimatedModel.js";
 import { portraitCameraSpec } from "./PortraitCamera.js";
 import type { BuiltModel } from "./ModelBuild.js";
+import {
+  type RetainedResourceVisitor,
+  visitGeometryBuffers,
+  visitMaterialTextures,
+} from "./ResourceAccounting.js";
 import type { WvmModel } from "./Wvm.js";
+import { cloneMaterialForPortrait } from "./WorldLighting.js";
 
 export const PORTRAIT_SLOTS = ["player", "target", "focus", "tot", "pet"] as const;
 export type PortraitSlot = (typeof PORTRAIT_SLOTS)[number];
@@ -33,11 +39,68 @@ export interface PortraitSource {
 
 export type PortraitSourceProvider = (guid: bigint) => PortraitSource | undefined;
 
+/**
+ * Clone only the material shells used by one portrait surface.
+ *
+ * ModelBuild materials can carry world-only `onBeforeCompile` and program-cache hooks (notably
+ * the authored world-light equation). The WorldLighting helper removes only that outer wrapper,
+ * while retaining any authored second-layer/fog/fantasy chain. Textures and geometry are still
+ * borrowed from the build and must not be disposed by this helper's caller through the material
+ * clones.
+ */
+export function clonePortraitMaterials(materials: readonly THREE.Material[]): THREE.Material[] {
+  return materials.map(cloneMaterialForPortrait);
+}
+
+/** Release material shells owned by one portrait surface; their borrowed maps stay alive. */
+export function disposePortraitMaterials(materials: readonly THREE.Material[] | undefined): void {
+  for (const material of materials ?? []) material.dispose();
+}
+
+/**
+ * Returns a cheap readiness token for the maps a built portrait actually samples.
+ *
+ * Model textures are loaded after a WVM has been built. A static portrait can therefore paint a
+ * transparent/black first frame while the world model is still waiting for its PNG, then remain
+ * frozen forever because the appearance key did not change. Texture.version is incremented by
+ * three when the loader installs the image; dimensions cover small loader implementations that
+ * mutate the image without replacing the Texture object. Atlas repaint generations still travel
+ * through PortraitSource.key and do not need a second invalidation path here.
+ */
+export function portraitTextureRevision(built: Pick<BuiltModel, "materials">): string {
+  const revision: string[] = [];
+  for (const material of built.materials) {
+    const maps = material as THREE.Material & {
+      map?: THREE.Texture | null;
+      alphaMap?: THREE.Texture | null;
+    };
+    for (const texture of [maps.map, maps.alphaMap]) {
+      if (!texture) {
+        revision.push("-");
+        continue;
+      }
+      const image = texture.image as { width?: unknown; height?: unknown } | undefined;
+      const width = typeof image?.width === "number" ? image.width : 0;
+      const height = typeof image?.height === "number" ? image.height : 0;
+      revision.push(`${texture.uuid}:${texture.version}:${width}x${height}`);
+    }
+  }
+  return revision.join("|");
+}
+
 interface PortraitSurface {
   group: THREE.Group;
   target: THREE.WebGLRenderTarget;
   root: THREE.Object3D | undefined;
   skinned: SkinnedInstance | undefined;
+  /** Per-surface material shells; their maps are borrowed from the shared build. */
+  materials: THREE.Material[] | undefined;
+  /** Exact shared cache entry borrowed by root/skinned while this surface retains it. */
+  built: BuiltModel | undefined;
+  /** Raw build/atlas key retained by the material maps borrowed through `built`. */
+  buildKey: string | undefined;
+  /** Texture-loader revision last painted into the 2D portrait. */
+  textureRevision: string | undefined;
   sourceKey: string | undefined;
   output: HTMLCanvasElement | undefined;
   pixels: Uint8Array;
@@ -122,6 +185,7 @@ export class PortraitRenderer {
       // cheap surface checks above, so ordinary non-portrait units still pay no provider call.
       const source = this.#source(guid);
       if (!source || surface.sourceKey !== source.key) return true;
+      if (surface.textureRevision !== portraitTextureRevision(source.built)) return true;
     }
     return false;
   }
@@ -159,6 +223,57 @@ export class PortraitRenderer {
     return live;
   }
 
+  /** Exact cache entries retained now or needed by the next invalidated portrait paint. */
+  liveBuilds(): Set<BuiltModel> {
+    const live = this.retainedBuilds();
+    for (const target of this.#targets.values()) {
+      if (target.guid === undefined) continue;
+      const source = this.#source(target.guid);
+      if (source) live.add(source.built);
+    }
+    return live;
+  }
+
+  /** Exact cache entries physically retained by existing portrait roots. */
+  retainedBuilds(): Set<BuiltModel> {
+    const retained = new Set<BuiltModel>();
+    for (const surface of this.#surfaces.values()) {
+      if (surface.built) retained.add(surface.built);
+    }
+    return retained;
+  }
+
+  /** Raw cache/atlas keys physically retained by existing portrait roots. */
+  retainedBuildKeys(): Set<string> {
+    const retained = new Set<string>();
+    for (const surface of this.#surfaces.values()) {
+      if (surface.buildKey) retained.add(surface.buildKey);
+    }
+    return retained;
+  }
+
+  /** Accounts only resources retained by live portrait surfaces and their borrowed scene roots. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const surface of this.#surfaces.values()) {
+      visitor.referenceCpu(surface, surface.pixels);
+      visitor.referenceCpu(surface, surface.flipped);
+      visitor.referenceGpuRenderTarget(surface, surface.target);
+      if (surface.output) visitor.referenceUnsupported(surface, surface.output);
+      surface.root?.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (mesh.geometry?.isBufferGeometry === true) {
+          visitGeometryBuffers(visitor, object, mesh.geometry);
+        }
+        if (mesh.material) visitMaterialTextures(visitor, mesh.material);
+      });
+      const skeleton = surface.skinned?.skeleton;
+      if (skeleton) {
+        if (skeleton.boneMatrices) visitor.referenceCpu(skeleton, skeleton.boneMatrices);
+        if (skeleton.boneTexture) visitor.referenceGpuTexture(skeleton, skeleton.boneTexture);
+      }
+    }
+  }
+
   /** Render invalidated portraits. Returns the number of readbacks performed. */
   render(_now = performance.now()): number {
     let rendered = 0;
@@ -175,10 +290,15 @@ export class PortraitRenderer {
       }
       const surface = this.#surface(slot, target.canvas);
       const sourceKey = source.key;
+      const textureRevision = portraitTextureRevision(source.built);
       if (surface.sourceKey !== sourceKey || surface.sourceGuid !== target.guid) {
         this.#replaceModel(surface, source);
         surface.sourceKey = sourceKey;
         surface.sourceGuid = target.guid;
+        surface.dirty = true;
+      } else if (surface.textureRevision !== textureRevision) {
+        // A late TextureLoader completion changes only the pixels. Keep the captured pose and
+        // repaint the existing root instead of needlessly rebuilding the rig.
         surface.dirty = true;
       }
       surface.output = target.canvas;
@@ -188,6 +308,7 @@ export class PortraitRenderer {
       this.#captureStaticPose(surface, source);
       if (this.#paint(slot, surface, source)) {
         surface.dirty = false;
+        surface.textureRevision = textureRevision;
         rendered++;
       }
     }
@@ -223,7 +344,10 @@ export class PortraitRenderer {
       });
       surface = {
         group: this.#slotGroups.get(slot)!,
-        target, root: undefined, skinned: undefined, sourceKey: undefined, output: canvas,
+        target, root: undefined, skinned: undefined, materials: undefined,
+        built: undefined, buildKey: undefined,
+        textureRevision: undefined,
+        sourceKey: undefined, output: canvas,
         pixels: new Uint8Array(width * height * 4),
         flipped: new Uint8ClampedArray(width * height * 4),
         width, height, dirty: true, staticPoseCaptured: false, sourceGuid: undefined,
@@ -242,13 +366,14 @@ export class PortraitRenderer {
 
   #replaceModel(surface: PortraitSurface, source: PortraitSource): void {
     this.#disposeModel(surface);
+    const materials = clonePortraitMaterials(source.built.materials);
     let root: THREE.Object3D;
     if (source.template) {
-      const instance = instantiateSkinned(source.template, source.built.materials);
+      const instance = instantiateSkinned(source.template, materials);
       surface.skinned = instance;
       root = instance.root;
     } else {
-      const mesh = new THREE.Mesh(source.built.geometry, source.built.materials);
+      const mesh = new THREE.Mesh(source.built.geometry, materials);
       mesh.quaternion.set(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
       surface.skinned = undefined;
       root = mesh;
@@ -256,18 +381,23 @@ export class PortraitRenderer {
     root.scale.setScalar(source.scale > 0 ? source.scale : 1);
     surface.group.add(root);
     surface.root = root;
+    surface.materials = materials;
+    surface.built = source.built;
+    surface.buildKey = source.buildKey ?? source.key;
+    surface.textureRevision = undefined;
     surface.staticPoseCaptured = false;
   }
 
   #disposeModel(surface: PortraitSurface): void {
-    if (surface.skinned) {
-      surface.skinned.mixer.stopAllAction();
-      surface.skinned.mixer.uncacheRoot(surface.skinned.root);
-      surface.skinned.skeleton.dispose();
-    }
+    disposeSkinnedInstance(surface.skinned);
+    disposePortraitMaterials(surface.materials);
     surface.root?.removeFromParent();
     surface.root = undefined;
     surface.skinned = undefined;
+    surface.materials = undefined;
+    surface.built = undefined;
+    surface.buildKey = undefined;
+    surface.textureRevision = undefined;
     surface.sourceKey = undefined;
     surface.sourceGuid = undefined;
     surface.staticPoseCaptured = false;

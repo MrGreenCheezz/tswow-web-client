@@ -3,6 +3,7 @@ import test from "node:test";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
+import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import {
   HITINFO_BLOCK, HITINFO_CRITICAL, HITINFO_FULL_ABSORB, HITINFO_MISS, HITINFO_PARTIAL_RESIST,
   SHEATH_MELEE, SHEATH_RANGED, SHEATH_UNARMED,
@@ -199,5 +200,123 @@ test("Н1б a melee swing reaches onSwing and nothing else, so no blow is heard 
   assert.equal(swings.length, 1, "the swing itself arrives");
   assert.equal(swings[0].damage, 47);
   assert.deepEqual(heard, [], "and nothing else does, so the sound of it is played once");
+  client.close();
+});
+
+test("spell combat-log events preserve damage versus healing semantics", async () => {
+  const connection = fakeConnection();
+  connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD,
+    new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const client = new WorldClient(connection);
+  await client.loginCharacter(0x1234n);
+  await settle();
+
+  const lines = [];
+  client.events.on("COMBAT_LOG", (line) => lines.push(line));
+  connection.push(OPCODES.SMSG_SPELLHEALLOG, new PacketWriter()
+    .packedGuid(0x1234n).packedGuid(0x1234n).u32(2050).u32(60).u32(0).u32(0).u8(0).u8(0)
+    .toUint8Array());
+  connection.push(OPCODES.SMSG_SPELLNONMELEEDAMAGELOG, new PacketWriter()
+    .packedGuid(9n).packedGuid(0x1234n)
+    .u32(133).u32(47).u32(0).u8(4).u32(0).u32(0).u8(0).u8(0).u32(0).u32(0)
+    .toUint8Array());
+  await settle();
+
+  assert.deepEqual(lines.map((line) => line.kind), ["heal", "damage"]);
+  client.close();
+});
+
+test("an active Auto Shot reports one failure edge instead of repeating the same cast error", async () => {
+  const connection = fakeConnection();
+  connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD,
+    new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const client = new WorldClient(connection);
+  await client.loginCharacter(0x1234n);
+  await settle();
+  assert.equal(typeof client.setAutoRepeatSpellIds, "function");
+
+  client.knownSpells = [{ id: 75, slot: 0 }];
+  client.state.selfGuid = 0x1234n;
+  client.state.move(0x1234n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } });
+  client.state.move(9n, { flags: 0, position: { x: 20, y: 0, z: 0, orientation: 0 } });
+  client.state.setField(9n, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100);
+  client.selectTarget(9n);
+  client.setAutoRepeatSpellIds([75]);
+  const failures = [];
+  client.onSpellStatus = (message, error) => { if (error) failures.push(message); };
+  client.castSpell(75);
+  assert.equal(client.autoRepeatSpellId, 75);
+
+  const failure = new PacketWriter().u8(1).u32(75).u8(42).toUint8Array();
+  connection.push(OPCODES.SMSG_CAST_FAILED, failure);
+  connection.push(OPCODES.SMSG_CAST_FAILED, failure);
+  connection.push(OPCODES.SMSG_CAST_FAILED, failure);
+  await settle();
+
+  assert.equal(client.autoRepeatSpellId, 75, "ordinary ranged failures leave Auto Shot active");
+  assert.equal(failures.length, 1);
+  client.close();
+});
+
+test("a target health death edge cancels Auto Shot on the server and clears local repeat state", async () => {
+  const connection = fakeConnection();
+  connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD,
+    new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const client = new WorldClient(connection);
+  await client.loginCharacter(0x1234n);
+  await settle();
+
+  client.knownSpells = [{ id: 75, slot: 0 }];
+  client.state.selfGuid = 0x1234n;
+  client.state.move(0x1234n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } });
+  client.state.move(9n, { flags: 0, position: { x: 20, y: 0, z: 0, orientation: 0 } });
+  client.state.objects.get(9n).typeId = 3;
+  client.state.setField(9n, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100);
+  client.selectTarget(9n);
+  client.setAutoRepeatSpellIds([75]);
+  client.castSpell(75);
+  connection.sent.length = 0;
+
+  connection.push(OPCODES.SMSG_HEALTH_UPDATE,
+    new PacketWriter().packedGuid(9n).u32(0).toUint8Array());
+  await settle();
+
+  assert.equal(client.autoRepeatSpellId, undefined);
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode).filter((opcode) =>
+    opcode === OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL || opcode === OPCODES.CMSG_SET_SHEATHED), [
+    OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL,
+    OPCODES.CMSG_SET_SHEATHED,
+  ]);
+  client.close();
+});
+
+test("a disappearing melee target sends ATTACK_STOP before clearing local combat state", async () => {
+  const connection = fakeConnection();
+  connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD,
+    new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const client = new WorldClient(connection);
+  await client.loginCharacter(0x1234n);
+  await settle();
+
+  client.state.selfGuid = 0x1234n;
+  client.state.move(0x1234n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } });
+  client.state.move(9n, { flags: 0, position: { x: 2, y: 0, z: 0, orientation: 0 } });
+  client.state.objects.get(9n).typeId = 3;
+  client.state.setField(9n, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100);
+  client.selectTarget(9n);
+  client.startAttack();
+  connection.sent.length = 0;
+
+  connection.push(OPCODES.SMSG_UPDATE_OBJECT,
+    new PacketWriter().u32(1).u8(4).u32(1).packedGuid(9n).toUint8Array());
+  await settle();
+
+  assert.deepEqual(connection.sent.map(({ opcode }) => opcode).filter((opcode) =>
+    opcode === OPCODES.CMSG_ATTACK_STOP || opcode === OPCODES.CMSG_SET_SHEATHED), [
+    OPCODES.CMSG_ATTACK_STOP,
+    OPCODES.CMSG_SET_SHEATHED,
+  ]);
+  assert.equal(client.attacking, false);
+  assert.equal(client.targetGuid, undefined);
   client.close();
 });

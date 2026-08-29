@@ -19,7 +19,10 @@
 // below are the ones the client's own effects run to, and a model that turns out to be longer is
 // cut off rather than left standing.
 
-import type { SpellVisualKit, SpellVisualMetadata } from "../gateway/SpellVisual.js";
+import type {
+  SpellVisualEffectTransform, SpellVisualKit, SpellVisualMetadata,
+} from "../gateway/SpellVisual.js";
+export type { SpellVisualEffectTransform };
 
 /**
  * How long a cast flourish stands on the caster.
@@ -48,6 +51,24 @@ export const MISSILE_ARC = 0.08;
 
 export type Point = { x: number; y: number; z: number };
 
+/** Convert a model-attach offset into the parent frame used by the renderer. */
+export function spellVisualTransformOffset(
+  transform: SpellVisualEffectTransform,
+  attachedToUnit: boolean,
+): Point {
+  const [x, y, z] = transform.offset;
+  // A bone's world matrix already contains M2_TO_SCENE. A free-standing node is in scene space.
+  return attachedToUnit ? { x, y, z } : { x, y: z, z: -y };
+}
+
+/** Euler components for the DBC's Rz(yaw) * Ry(pitch) * Rx(roll) convention. */
+export function spellVisualTransformEuler(
+  transform: SpellVisualEffectTransform,
+): { x: number; y: number; z: number; order: "ZYX" } {
+  const [yaw, pitch, roll] = transform.rotation;
+  return { x: roll, y: pitch, z: yaw, order: "ZYX" };
+}
+
 /** One model to show: what, where, and between which two moments. */
 export interface VisualInstance {
   path: string;
@@ -56,6 +77,8 @@ export interface VisualInstance {
   anchor?: bigint;
   /** The M2 attachment id on that unit, or −1 for a placement in the world. */
   attachment: number;
+  /** Optional DBC-authored local transform from SpellVisualKitModelAttach. */
+  transform?: SpellVisualEffectTransform;
   /** Where it stands, when it stands anywhere. */
   position?: Point;
   /** A missile flies from one to the other over its whole life. */
@@ -191,6 +214,7 @@ function kitInstances(
       endsAt,
       ...(fitToModel ? { fitToModel: true } : {}),
       ...(modelPlayback === "hold" ? { modelPlayback: "hold" as const } : {}),
+      ...(effect.transform ? { transform: effect.transform } : {}),
     };
     if (effect.attachment < 0 || guid === 0n) instance.position = { ...at };
     else instance.anchor = guid;
@@ -216,6 +240,7 @@ function areaKitInstances(
     endsAt,
     ...(fitToModel ? { fitToModel: true } : {}),
     ...(modelPlayback === "hold" ? { modelPlayback: "hold" as const } : {}),
+    ...(effect.transform ? { transform: effect.transform } : {}),
   }));
 }
 

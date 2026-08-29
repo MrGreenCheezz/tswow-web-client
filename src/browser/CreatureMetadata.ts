@@ -2,6 +2,7 @@ import type { CreatureMetadata } from "../gateway/CreatureMetadata.js";
 import type { EventBus, WorldPacketEvents } from "../world/EventBus.js";
 import type { CreatureTemplate } from "../world/QueryCacheProtocol.js";
 import { creatureFamilyIconUrl, spellIconUrl } from "./ui/IconImage.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { CreatureMetadata };
 
@@ -66,13 +67,44 @@ export class CreatureMetadataClient {
   readonly #baseUrl: string;
   readonly #cache = new Map<number, CreatureMetadata>();
   readonly #requested = new Set<number>();
+  readonly #httpPending = new Set<number>();
+  readonly #wirePending = new Set<number>();
+  readonly #failures = new Map<number, { attempts: number; after: number }>();
   #world: CreatureQuerySource | undefined;
   #changed: (() => void) | undefined;
+  #pendingRequests = 0;
+  #success = 0;
+  #error = 0;
+  #generation = 0;
+  readonly #now: () => number;
 
-  constructor(gatewayWebSocketUrl: string) {
+  /** Immutable current ownership; unresolved world queries remain pending after HTTP settles. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    const pending = new Set<number>([...this.#httpPending, ...this.#wirePending]);
+    for (const [entry, failure] of this.#failures) {
+      if (failure.after !== Infinity && !this.#httpPending.has(entry)) pending.add(entry);
+    }
+    return Object.freeze({
+      pending: pending.size,
+      success: this.#success,
+      error: [...this.#failures.values()].filter((failure) => failure.after === Infinity).length,
+      generation: this.#generation,
+    });
+  }
+
+  get generation(): number {
+    return this.#generation;
+  }
+
+  get revision(): number {
+    return this.#generation;
+  }
+
+  constructor(gatewayWebSocketUrl: string, now: () => number = Date.now) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#now = now;
   }
 
   /**
@@ -104,9 +136,12 @@ export class CreatureMetadataClient {
       // new ones arrive — a name that is one build old reads better than no name at all.
       if (change.kind === "cleared") {
         this.#requested.clear();
+        this.#wirePending.clear();
+        this.#failures.clear();
         return;
       }
       if (change.kind !== "creature" || typeof change.id !== "number") return;
+      this.#wirePending.delete(change.id);
       this.#absorb(change.id);
     });
   }
@@ -116,30 +151,73 @@ export class CreatureMetadataClient {
   }
 
   async load(entries: readonly number[]): Promise<boolean> {
-    const missing = [...new Set(entries)].filter((entry) => entry > 0 && !this.#requested.has(entry));
+    const now = this.#now();
+    const missing = [...new Set(entries)].filter((entry) => entry > 0 && !this.#requested.has(entry)
+      && (this.#failures.get(entry)?.after ?? 0) <= now);
     if (missing.length === 0) return false;
-    for (const entry of missing) this.#requested.add(entry);
+    for (const entry of missing) {
+      this.#requested.add(entry);
+      this.#httpPending.add(entry);
+      this.#failures.delete(entry);
+    }
+    this.#pendingRequests += missing.length;
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#pendingRequests -= missing.length;
+      for (const entry of missing) this.#httpPending.delete(entry);
+      this.#generation++;
+      if (success) this.#success += missing.length;
+      else this.#error += missing.length;
+    };
     // Before the fetch, and for every entry rather than only for the ones the dump misses: the
     // wire is the newer of the two answers, and a gateway that is down must not also cost the
     // names the world session could have given. `WorldClient.creatureTemplate` remembers what it
     // has asked, so this is one `CMSG_CREATURE_QUERY` per entry for the life of the session even
     // when the fetch below fails and re-arms these entries.
-    for (const entry of missing) this.#world?.creatureTemplate(entry);
+    try {
+      for (const entry of missing) {
+        const template = this.#world?.creatureTemplate(entry);
+        if (this.#world && !template) this.#wirePending.add(entry);
+        else this.#absorb(entry, false);
+      }
+    } catch (error) {
+      for (const entry of missing) {
+        this.#requested.delete(entry);
+        this.#httpPending.delete(entry);
+      }
+      settle(false);
+      throw error;
+    }
     try {
       const response = await fetch(`${this.#baseUrl}/data/creatures?entries=${missing.join(",")}`);
       if (!response.ok) throw new Error(`Creature metadata gateway returned ${response.status}`);
       const value: unknown = await response.json();
       if (!Array.isArray(value) || !value.every(isCreatureMetadata)) throw new Error("Creature metadata gateway returned invalid data");
       for (const metadata of value) {
+        const previous = this.#cache.get(metadata.entry);
         this.#cache.set(metadata.entry, metadata);
+        if (!sameCreatureMetadata(previous, metadata)) this.#generation++;
         // The query went out before this fetch and may already have been answered. The wire is the
         // newer of the two, so it goes back on top rather than being lost to the dump landing
         // second; the caller repaints for the whole batch, so this one does not.
         this.#absorb(metadata.entry, false);
       }
+      settle(true);
       return true;
     } catch (error) {
       for (const entry of missing) this.#requested.delete(entry);
+      for (const entry of missing) this.#httpPending.delete(entry);
+      for (const entry of missing) {
+        const attempts = (this.#failures.get(entry)?.attempts ?? 0) + 1;
+        const wait = CREATURE_METADATA_RETRY_MS[attempts - 1];
+        this.#failures.set(entry, {
+          attempts,
+          after: wait === undefined ? Infinity : this.#now() + wait,
+        });
+      }
+      settle(false);
       throw error;
     }
   }
@@ -159,7 +237,7 @@ export class CreatureMetadataClient {
     if (!template?.found) return;
     const known = this.#cache.get(entry);
     if (known && known.name === template.name && known.subname === template.subName) return;
-    this.#cache.set(entry, known
+    const next = known
       ? { ...known, name: template.name, subname: template.subName }
       : {
         entry,
@@ -168,9 +246,20 @@ export class CreatureMetadataClient {
         type: template.creatureType,
         family: template.creatureFamily,
         rank: template.classification,
-      });
+      };
+    if (!sameCreatureMetadata(known, next)) {
+      this.#cache.set(entry, next);
+      this.#generation++;
+    }
     if (repaint) this.#changed?.();
   }
+}
+
+const CREATURE_METADATA_RETRY_MS: readonly number[] = [2_000, 8_000, 30_000];
+
+function sameCreatureMetadata(left: CreatureMetadata | undefined, right: CreatureMetadata): boolean {
+  return left?.entry === right.entry && left.name === right.name && left.subname === right.subname
+    && left.type === right.type && left.family === right.family && left.rank === right.rank;
 }
 
 function isCreatureMetadata(value: unknown): value is CreatureMetadata {

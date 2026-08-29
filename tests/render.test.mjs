@@ -12,7 +12,7 @@ import * as THREE from "three";
 import {
   ADT_MODEL_TO_SCENE, buildTerrainMaterial, locatedWmoFog, mountInstanceMatches,
   placeEnvironmentNode, placementDistance, selectEnvironment, shouldRefreshWaterForNeighbour,
-  staticWmoPlacementMatches, surfaceNormal, uniqueVisualWmoPlacement,
+  staticWmoPlacementMatches, stateVisualKey, surfaceNormal, uniqueVisualWmoPlacement,
   waterCornerDepths, waterCornerHeight,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { EnvironmentClient, MODEL_BACKGROUND_RESERVATION_MS } from "../dist/code/browser/Terrain.js";
@@ -22,6 +22,24 @@ import { buildModel } from "../dist/code/browser/ModelBuild.js";
 import { encodeWvm9 } from "../tools/wvm.mjs";
 import { decodeWvm9 } from "../dist/code/browser/Wvm.js";
 import { mountNesting, mountSeatOffset } from "../dist/code/browser/Attachment.js";
+
+test("state visuals retain identical authored occurrences and distinguish scale", () => {
+  const effect = {
+    spellId: 120, path: "Spells\\ConeofCold_Mouth.m2", attachment: 17, scale: 1,
+    occurrence: "model-attach:1061", transform: {
+      offset: [0, 0, 0], rotation: [0, 1.57, 0],
+    },
+  };
+  const first = stateVisualKey(7n, effect);
+  const duplicate = stateVisualKey(7n, { ...effect, occurrence: "model-attach:1062" });
+  assert.notEqual(first, duplicate, "two equal rows keep two renderer nodes");
+  assert.deepEqual(new Set([first, duplicate]), new Set([
+    stateVisualKey(7n, effect),
+    stateVisualKey(7n, { ...effect, occurrence: "model-attach:1062" }),
+  ]), "stable row identity survives the next reconciliation");
+  assert.notEqual(first, stateVisualKey(7n, { ...effect, scale: 1.25 }),
+    "a changed authored scale is an update, not the old visual identity");
+});
 
 test("terrain is diffuse-only while retaining normal lighting and fog", () => {
   const material = buildTerrainMaterial();
@@ -554,7 +572,10 @@ test("Ж0 a model that did not come is asked for again, and one the client has n
   globalThis.fetch = async (url) => {
     const address = String(url);
     asked.push(address);
-    return answers.get(address.replace(/^.*\/visual\/model\?path=|^.*\/environment\/model\//, "")) ?? { ok: false, status: 404 };
+    const visualPath = address.includes("/visual/model?")
+      ? encodeURIComponent(new URL(address).searchParams.get("path") ?? "")
+      : address.replace(/^.*\/environment\/model\//, "");
+    return answers.get(visualPath) ?? { ok: false, status: 404 };
   };
   const clock = { now: 1_000 };
   const settle = async () => { for (let turn = 0; turn < 4; turn++) await new Promise((resolve) => setImmediate(resolve)); };
@@ -650,16 +671,11 @@ function texturedQuad() {
 }
 
 test("Ж0 a model built for the world samples its textures at the renderer's anisotropy", () => {
-  // `renderer.capabilities.getMaxAnisotropy()` was asked for in exactly three places, all of them
-  // in `WorldRenderer3D.ts` — the ground splat (`:3374`), the WMO batches (`:4194`) and the merged
-  // doodad build (`:5366`). Everything that goes through `ModelBuild` and resolves its texture by
-  // path — every creature, every animated doodad, every spell effect, hair and cloak and the
-  // armour slots — stayed at three.js's default of 1, so a foliage card or a shoulder plate seen
-  // at a glancing angle was sampled a mip or more too deep. Not the character's body: it is
-  // supplied as a texture object rather than a path and takes the `supplied` branch of
-  // `buildMaterial`, which returns before this is set. That surface is still at 1 and belongs to
-  // `CharacterAtlas.ts:346`. The value stays the caller's to supply: with no renderer to ask
-  // (the character lab, this test) it is 1 rather than invented.
+  // `renderer.capabilities.getMaxAnisotropy()` is passed to the path-resolved textures built for the
+  // world — every creature, animated doodad, spell effect, hair, cloak and armour slot. A supplied
+  // texture takes the separate `buildMaterial` branch and remains caller-owned; the world renderer
+  // configures its character atlas before handing it to this builder, while the character lab and
+  // this isolated test have no renderer from which to derive a value.
   const built = (options) => buildModel(texturedQuad(), {
     modelPath: "Creature\\Bear\\Bear.m2",
     baseUrl: "https://example.invalid",
@@ -674,12 +690,12 @@ test("Ж0 a model built for the world samples its textures at the renderer's ani
   // The one surface it does not reach, written down so it is not rediscovered as a fresh defect: a
   // texture handed in rather than resolved by path stays the caller's and the builder sets nothing
   // on it, `anisotropy` included. That is exactly how a character's body arrives — a composed
-  // atlas, not a file — so the largest surface a player has is still sampled at 1 until
-  // `CharacterAtlas.ts:346` asks for the maximum beside the wrap flags it already sets.
+  // atlas, not a file — so the baseline remains sampled at 1 until the opt-in renderer integration
+  // asks for the maximum beside the wrap flags the atlas already sets.
   const body = new THREE.Texture();
   assert.equal(built({ anisotropy: 16, slotTextures: new Map([[0, body]]) }), body,
     "a supplied texture is the map itself, untouched");
-  assert.equal(body.anisotropy, 1, "so the character body is the debt this slice did not pay");
+  assert.equal(body.anisotropy, 1, "the builder leaves the caller-owned texture untouched");
 });
 
 test("Э1 WVM9 carries the texture transforms across the wire whole", () => {

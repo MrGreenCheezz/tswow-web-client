@@ -76,6 +76,34 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Порталы зданий не рисуют комнаты за стенами. Выключить — оставить только отсечение по дальности.",
   },
   {
+    id: "characterAtlasAnisotropy", label: "Эксперимент: фильтрация атласов персонажей", group: "Мир", kind: "boolean", fallback: false,
+    hint: "A/B-кандидат: максимум фильтрации видеокарты делает тело чётче под углом, но может расходовать больше bandwidth. Выключено до телеметрии R1.",
+  },
+  {
+    id: "experimentalAerialHeightFog", label: "Эксперимент: faithful-plus высотный туман", group: "Мир", kind: "boolean", fallback: false,
+    hint: "Экспериментальный профиль aerial/height fog пока заблокирован и ничего не меняет; оставлено для будущего безопасного среза.",
+  },
+  {
+    id: "experimentalTerrainMicroNormals", label: "Faithful-plus: микрорельеф земли", group: "Мир", kind: "boolean", fallback: true,
+    hint: "Добавляет небольшой микрорельеф splat-текстурам в авторском свете. Вдали и у границ чанков эффект затухает; выключение возвращает baseline shader.",
+  },
+  {
+    id: "experimentalWaterFresnel", label: "Faithful-plus: Fresnel воды", group: "Мир", kind: "boolean", fallback: true,
+    hint: "Мягко усиливает отражённый край воды и океана. Включено по умолчанию; выключение возвращает исходный shader.",
+  },
+  {
+    id: "experimentalWaterMicroWaves", label: "Faithful-plus: микроволны воды", group: "Мир", kind: "boolean", fallback: true,
+    hint: "Добавляет мелкую анимацию normal и цвета воды. Включено по умолчанию и не меняет геометрию поверхности.",
+  },
+  {
+    id: "experimentalWaterSunSparkle", label: "Faithful-plus: солнечные блики воды", group: "Мир", kind: "boolean", fallback: true,
+    hint: "Добавляет направленные солнечные блики над поверхностью; под водой эффект подавляется. Выключение возвращает baseline.",
+  },
+  {
+    id: "experimentalFantasyGlow", label: "Faithful-plus: фэнтезийное свечение", group: "Мир", kind: "boolean", fallback: true,
+    hint: "Усиливает только авторские additive-эффекты заклинаний и собственное свечение магмы/слизи. Без bloom, новых источников света и дополнительных проходов.",
+  },
+  {
     // The original client's own «Ground Clutter Radius»: ground cover gets a ceiling of its own
     // rather than a share of the doodad range, which is what the reference client does and says
     // why — "grass stops between 70 and 140 yards in the original client while doodads run to the

@@ -1,6 +1,7 @@
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
+import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { clearFocusOn } from "../game/Targeting.js";
 import {
@@ -48,7 +49,9 @@ import { EmoteClient } from "../EmoteClient.js";
 import {
   CHAT_MSG_EMOTE, CHAT_MSG_MONSTER_EMOTE, CHAT_MSG_MONSTER_SAY, CHAT_MSG_MONSTER_YELL, CHAT_MSG_SAY,
   CHAT_MSG_TEXT_EMOTE, CHAT_MSG_YELL,
+  type TextEmote,
 } from "../../world/ChatProtocol.js";
+import { emoteSoundId } from "../../world/EmoteRules.js";
 import { EnvironmentClient, TerrainClient } from "../Terrain.js";
 import { TerrainSplatClient } from "../TerrainSplat.js";
 import { GroundCoverClient } from "../GroundCover.js";
@@ -74,7 +77,7 @@ import { forgetZoneSound } from "../game/ZoneSound.js";
 import {
   forgetGameSounds, playCreatureSound, playKit, playUiSound, retryPendingSounds,
 } from "../game/GameSounds.js";
-import { forgetCombatSounds, playSwingSounds } from "../game/CombatSounds.js";
+import { forgetCombatSounds, playSwingSounds, spellCombatVoices } from "../game/CombatSounds.js";
 import { applySoundVolumes } from "../ui/Settings.js";
 import { TextureBitmapCache } from "../TextureBitmaps.js";
 import { SessionAssetWarmup } from "../AssetWarmup.js";
@@ -105,6 +108,9 @@ import { showCharacterSheet } from "../ui/CharacterSheet.js";
  * a ceiling, so a unit that dances out of sight is not still dancing when it comes back.
  */
 const EMOTE_STATE_HOLD = 600_000;
+
+/** A text-emote sound may wait for the media table and kit, but never indefinitely. */
+const EMOTE_SOUND_WAIT = 1_200;
 
 /** What the original client puts in a bubble over a head: speech and emotes, not channels. */
 const BUBBLE_TYPES: ReadonlySet<number> = new Set([
@@ -198,19 +204,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   game.spellVisualCoordinator = spellVisualCoordinator;
   spellVisuals.onLoaded = (ids) => spellVisualCoordinator.onLoaded(ids);
   spellVisualCoordinator.bindWorld(world);
-  // Spell visuals own spell-kit sounds; creature exertion is independent CreatureSoundData and
-  // must remain exactly once for every authoritative GO.
-  const unsubscribeSpellExertion = world.events.on("SPELL_GO", (cast) => {
-    if (game.world !== world || game.spellVisualCoordinator !== spellVisualCoordinator) return;
-    const epoch = spellVisualCoordinator.epoch;
-    playCreatureSound(
-      cast.casterUnit !== 0n ? cast.casterUnit : cast.casterGuid,
-      "exertion",
-      () => game.world === world
-        && game.spellVisualCoordinator === spellVisualCoordinator
-        && spellVisualCoordinator.epoch === epoch,
-    );
-  });
   world.onStateChange = queueWorldState;
   world.onWorldError = (error) => {
     if (game.world !== world) return;
@@ -299,6 +292,50 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // A stance is held until the unit moves; anything else is over when it has played once.
     if (emote) game.renderer?.playUnitEmote(guid, emote.animation, emote.state ? EMOTE_STATE_HOLD : 0);
   };
+  // `SMSG_TEXT_EMOTE` is the sound-bearing edge. `SMSG_EMOTE` above is animation-only, so a
+  // server pair of packets still produces exactly one audio lookup. The bounded queue covers the
+  // normal login race where EmotesTextSound or the audio system lands a frame later. An unknown
+  // source is intentionally not queued: without its race, sex and position the client would have
+  // to guess both which voice to play and where it came from.
+  const pendingTextEmoteSounds: Array<{ emote: TextEmote; deadline: number }> = [];
+  const tryPlayTextEmoteSound = (emote: TextEmote): boolean => {
+    const source = world.state.objects.get(emote.guid);
+    if (!source) return true; // Unknown source is deliberately silent, never guessed.
+    const raceId = unit.race(source);
+    const gender = unit.gender(source);
+    const at = source.position;
+    if (raceId === undefined || gender === undefined || !at) return false;
+    if (!world.emotes || !game.soundKits || !game.sound) return false;
+    const soundId = emoteSoundId(world.emotes, emote.textEmoteId, raceId, gender);
+    if (soundId === undefined || soundId <= 0) return true;
+    const guard = (): boolean => {
+      if (game.world !== world) return false;
+      const current = world.state.objects.get(emote.guid);
+      return current === source && unit.race(current) === raceId && unit.gender(current) === gender;
+    };
+    playKit(soundId, { channel: "effects", at: { ...at }, guard });
+    return true;
+  };
+  const flushTextEmoteSounds = (): void => {
+    const now = performance.now();
+    const keep: Array<{ emote: TextEmote; deadline: number }> = [];
+    for (const pending of pendingTextEmoteSounds) {
+      if (pending.deadline <= now) continue;
+      if (!tryPlayTextEmoteSound(pending.emote)) keep.push(pending);
+    }
+    pendingTextEmoteSounds.splice(0, pendingTextEmoteSounds.length, ...keep);
+  };
+  world.events.on("TEXT_EMOTE", (emote) => {
+    if (!tryPlayTextEmoteSound(emote)) {
+      const deadline = performance.now() + EMOTE_SOUND_WAIT;
+      if (pendingTextEmoteSounds.length < 32) pendingTextEmoteSounds.push({ emote, deadline });
+    }
+  });
+  world.events.on("MOUNT_SPECIAL", ({ guid }) => {
+    // The packet names the rider, but the authored MountSpecial/FlyMountSpecial sequence belongs
+    // to the mount node underneath it. The renderer keeps the edge until that node is available.
+    game.renderer?.playMountSpecial(guid);
+  });
   world.onExperience = (gain) => {
     pushCombatLine(gain.victim === 0n ? `+${gain.total} опыта` : `+${gain.total} опыта за убийство`, "reward");
   };
@@ -499,12 +536,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.events.on("QUEST_GIVER_STATUS", () => {
     // Nothing to redraw: the marks are painted from the map every frame by the scene.
   });
-  // Every blow that lands, whether or not it had a spell behind it. Auto-attack produces no
-  // `SMSG_SPELL_GO` at all, so the swing above never fires for it — which is why melee was the one
-  // thing in the game with no sound of any kind.
+  // Only real spell damage adds a creature effort voice. Authored SpellVisualKit sounds remain
+  // untouched; healing and utility rows are deliberately silent here.
   world.events.on("COMBAT_LOG", (line) => {
-    if (line.casterGuid !== 0n) playCreatureSound(line.casterGuid, "exertion");
-    if (line.targetGuid !== 0n) playCreatureSound(line.targetGuid, "injury");
+    for (const voice of spellCombatVoices(line)) playCreatureSound(voice.guid, voice.voice);
   });
   world.events.on("COMBAT_LOG", (line) => {
     const mine = line.casterGuid === world.state.selfGuid;
@@ -534,7 +569,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // been vendored since the sound tables landed and nothing ever read it, so every boar in the
   // world took its damage in silence.
   world.events.on("FLOATING_TEXT", (text) => {
-    if (text.kind === "damage" && text.amount > 0) playCreatureSound(text.guid, "injury");
+    if (text.kind === "damage" && text.amount > 0) {
+      playCreatureSound(text.guid, text.critical ? "injuryCritical" : "injury");
+    }
   });
   world.events.on("AI_REACTION", (reaction) => {
     // 2 is `AI_REACTION_HOSTILE`, the moment a creature decides it has seen you.
@@ -787,6 +824,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       // have one, and the pane is drawn again to show it.
       world.refreshEmoteLines();
       redrawChatLog();
+      flushTextEmoteSounds();
     };
     emoteClient.load();
     // Talent trees, glyphs and skill lines. `SMSG_TALENTS_INFO` carries ids and ranks and nothing
@@ -877,7 +915,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     };
     soundKits.onStatus = soundProblem;
     // A batch landing is the only moment a sound that was asked for too early can still be played.
-    soundKits.onLoaded = () => retryPendingSounds();
+    soundKits.onLoaded = () => {
+      retryPendingSounds();
+      flushTextEmoteSounds();
+    };
     soundKits.loadSpellKits();
     // And the weapon tables, for the same reason and at the same moment: 4,671 bytes fetched once,
     // because the noise of a blow belongs to the blow and a round trip puts it afterwards.
@@ -957,10 +998,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       spellVisuals.onLoaded = undefined;
       game.spellVisuals = undefined;
     }
-    // The listener belongs to this enter attempt even if a retry installed a newer coordinator
-    // before this promise unwound. Remove it unconditionally; the callback itself is also
-    // identity/epoch guarded for the short interval before catch runs.
-    unsubscribeSpellExertion();
     hideLoadingScreen();
     worldPanel.hidden = true;
     document.body.classList.remove("world-active");

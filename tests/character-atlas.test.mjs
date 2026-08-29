@@ -10,8 +10,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  ATLAS_FAILURE_LIMIT, CharacterAtlasClient, IMAGE_RETRY_BACKOFF_MS, layerPaths,
+  ATLAS_FAILURE_LIMIT, CharacterAtlasClient, IMAGE_RETRY_BACKOFF_MS, configureCharacterAtlasTexture,
+  layerPaths,
 } from "../dist/code/browser/CharacterAtlas.js";
+import {
+  isCoordinatedVisualTexturePath, TEXTURE_ROUTE_VERSION, textureUrl,
+  VISUAL_MODEL_ROUTE_VERSION, visualAnimationsUrl, visualModelUrl,
+} from "../dist/code/browser/Wvm.js";
 import { CreatureModelClient } from "../dist/code/browser/CreatureModelClient.js";
 import { StandInLedger } from "../dist/code/browser/StandIn.js";
 import { buildSkinnedTemplateFrom } from "../dist/code/browser/AnimatedModel.js";
@@ -32,7 +37,10 @@ function stubPage(answer) {
     createImageBitmap: globalThis.createImageBitmap,
   };
   globalThis.fetch = async (url) => {
-    const path = decodeURIComponent(String(url).replace(/^.*\?path=/, ""));
+    // `textureUrl` may carry the visual route version before `path`; parse the query rather than
+    // assuming the path is the first/last field. This mirrors the gateway's URL parser and keeps
+    // the test focused on the requested MPQ path.
+    const path = new URL(String(url), "http://gateway").searchParams.get("path") ?? "";
     asked.push(path);
     return answer(path, asked.filter((seen) => seen === path).length);
   };
@@ -60,6 +68,85 @@ function stubPage(answer) {
 const found = { ok: true, status: 200, blob: async () => ({}) };
 const missing = { ok: false, status: 404 };
 const broken = { ok: false, status: 500 };
+
+test("visual texture URLs leave immutable stock entries behind without fragmenting scenery", () => {
+  assert.equal(isCoordinatedVisualTexturePath("Character/Human/Male/Skin.blp"), true);
+  assert.equal(isCoordinatedVisualTexturePath("Creature/Wolf/WolfSkin.blp"), true);
+  assert.equal(isCoordinatedVisualTexturePath("Item\\TextureComponents\\Legs.blp"), true);
+  assert.equal(isCoordinatedVisualTexturePath("World\\Tileset\\Grass.blp"), false);
+  assert.equal(
+    textureUrl("http://gateway", "Character/Human/Male/Skin.blp"),
+    `http://gateway/texture?v=${TEXTURE_ROUTE_VERSION}&path=Character%5CHuman%5CMale%5CSkin.blp`,
+  );
+  assert.equal(
+    textureUrl("http://gateway", "World/Tileset/Grass.blp"),
+    "http://gateway/texture?path=World%5CTileset%5CGrass.blp",
+  );
+  assert.equal(
+    visualModelUrl("http://gateway", "Character/Human/Male/HumanMale.m2"),
+    `http://gateway/visual/model?path=Character%5CHuman%5CMale%5CHumanMale.m2&v=${VISUAL_MODEL_ROUTE_VERSION}`,
+  );
+  assert.equal(
+    visualModelUrl("http://gateway", "World/Stormwind/Stormwind.wmo", 7),
+    `http://gateway/visual/model?path=World%5CStormwind%5CStormwind.wmo&group=7&v=${VISUAL_MODEL_ROUTE_VERSION}`,
+  );
+  assert.equal(
+    visualAnimationsUrl("http://gateway", "Character/Human/Male/HumanMale.m2"),
+    `http://gateway/visual/animations?path=Character%5CHuman%5CMale%5CHumanMale.m2&v=${VISUAL_MODEL_ROUTE_VERSION}`,
+  );
+});
+
+test("a body atlas applies renderer sampling once and keeps its state finite", () => {
+  const texture = new THREE.Texture();
+  assert.equal(configureCharacterAtlasTexture(texture, Number.NaN), true,
+    "an invalid capability falls back to the finite baseline");
+  assert.equal(texture.colorSpace, THREE.SRGBColorSpace);
+  assert.equal(texture.wrapS, THREE.ClampToEdgeWrapping);
+  assert.equal(texture.wrapT, THREE.ClampToEdgeWrapping);
+  assert.equal(texture.flipY, false);
+  assert.equal(texture.anisotropy, 1);
+
+  const version = texture.version;
+  assert.equal(configureCharacterAtlasTexture(texture, 1), false,
+    "the disabled baseline does not queue another upload");
+  assert.equal(texture.version, version);
+
+  assert.equal(configureCharacterAtlasTexture(texture, 8), true,
+    "opt-in applies the renderer maximum");
+  assert.equal(texture.anisotropy, 8);
+  const enabledVersion = texture.version;
+  assert.equal(configureCharacterAtlasTexture(texture, 8), false,
+    "the same renderer handoff does not queue another upload");
+  assert.equal(texture.version, enabledVersion);
+
+  assert.equal(configureCharacterAtlasTexture(texture, 1), true,
+    "disabling rolls back to the baseline");
+  assert.equal(texture.anisotropy, 1);
+  assert.equal(Number.isFinite(texture.anisotropy), true);
+  assert.equal(configureCharacterAtlasTexture(texture, Number.POSITIVE_INFINITY), false);
+});
+
+test("a cached body atlas toggles anisotropy in place", async () => {
+  const page = stubPage(() => found);
+  try {
+    const atlas = new CharacterAtlasClient("http://gateway", () => 0);
+    const body = await atlas.compose("toggle", [{ path: "Character\\Human\\Male\\HumanMaleSkin00_00.blp" }]);
+    assert.ok(body);
+    assert.equal(body.anisotropy, 1, "the atlas baseline is off until the renderer opts in");
+
+    atlas.setAnisotropy(8);
+    assert.equal(body.anisotropy, 8);
+    const enabledVersion = body.version;
+    atlas.setAnisotropy(8);
+    assert.equal(body.version, enabledVersion, "repeating the opt-in is idempotent");
+
+    atlas.setAnisotropy(1);
+    assert.equal(body.anisotropy, 1);
+    assert.equal(atlas.get("toggle"), body, "rollback keeps the same Texture object");
+  } finally {
+    page.restore();
+  }
+});
 
 test("a look that paints nothing is composed once, not once a frame", async () => {
   // The measured fault: `#build` returned undefined on `painted === 0`, `#composing` was cleared in
@@ -241,6 +328,36 @@ test("Т6 a body that painted without its trousers gets them when the retry land
   }
 });
 
+test("a due capsule failure does not defeat the partial-atlas refresh guard", async () => {
+  const missingBody = "Character\\Human\\Male\\missing-body.blp";
+  const lateLegs = "Item\\TextureComponents\\LegUpperTexture\\late-legs.blp";
+  const page = stubPage((path) => path === missingBody || path === lateLegs ? broken : found);
+  const clock = { now: 0, reads: 0 };
+  try {
+    const atlas = new CharacterAtlasClient("http://gateway", () => {
+      clock.reads++;
+      return clock.now;
+    });
+    assert.equal(await atlas.compose("capsule", [{ path: missingBody }]), undefined);
+
+    clock.now = 1_000;
+    assert.ok(await atlas.compose("partial", [
+      { path: "Character\\Human\\Male\\HumanMaleSkin00_00.blp" },
+      { path: lateLegs, section: "legUpper", candidates: [lateLegs] },
+    ]));
+
+    // The capsule retry became due at 2,000, but it has no atlas and is driven by the renderer.
+    // The partial atlas is not due until 3,000, so refresh must stop at its one-number guard.
+    clock.now = 2_500;
+    clock.reads = 0;
+    atlas.refresh();
+    assert.equal(clock.reads, 1,
+      "an abandoned due capsule cannot force a bounded-ledger scan on every frame");
+  } finally {
+    page.restore();
+  }
+});
+
 test("Т6 a layer that never comes back leaves the body it painted alone", async () => {
   // The other end of the same ledger: four requests over forty seconds and then the entry is inert.
   // A body missing a layer for good must not be recomposed once a frame for the rest of the tab —
@@ -291,6 +408,12 @@ test("Т6 the renderer is what drives that repaint, once a frame", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /this\.#atlases\?\.refresh\(\);/,
     "the per-frame unit pass has to call CharacterAtlasClient.refresh, or a body short a layer stays short");
+  assert.match(source, /#characterAtlasAnisotropyEnabled = false;/,
+    "maximum filtering remains opt-in by default");
+  assert.match(source, /setCharacterAtlasAnisotropy\(enabled: boolean\)/,
+    "the renderer exposes a rollbackable opt-in");
+  assert.match(source, /configureCharacterAtlasTexture\(body, this\.#characterAtlasAnisotropyEnabled/,
+    "the body atlas receives the renderer policy at model handoff");
 });
 
 test("the ledger of unpaintable looks is bounded and forgets the oldest first", async () => {
@@ -465,5 +588,26 @@ test("Т6 an appearance that never comes back is asked for four times and then l
     assert.equal(asked, IMAGE_RETRY_BACKOFF_MS.length + 1);
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test("a successful partial creature-model batch records omitted ids as terminal", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return { ok: true, json: async () => [] };
+  };
+  try {
+    const client = new CreatureModelClient("ws://readiness.test/world");
+    client.request(9001);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(client.stats, { pending: 0, success: 1, error: 1, generation: 1 });
+    assert.equal(client.get(9001), undefined);
+    client.request(9001);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1, "a negative result is not re-requested every frame");
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

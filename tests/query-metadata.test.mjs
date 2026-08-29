@@ -89,6 +89,7 @@ test("a creature the dump has never heard of names itself from the wire", async 
     await client.load([45000]);
     assert.deepEqual(world.sent, ["creature:45000"], "one query per entry, and it goes out with the fetch");
     assert.equal(client.get(45000), undefined, "nothing is known until the server answers");
+    assert.equal(client.stats.pending, 1, "an unresolved wire query remains readiness work after HTTP settles");
     assert.equal(repaints, 0);
 
     world.answerCreature({ entry: 45000, name: "Хранитель модуля", subName: "смотритель", creatureType: 7, creatureFamily: 0, classification: 1 });
@@ -96,6 +97,7 @@ test("a creature the dump has never heard of names itself from the wire", async 
     assert.equal(client.get(45000)?.subname, "смотритель");
     assert.equal(client.get(45000)?.type, 7, "an entry with no dumped row is built from the answer whole");
     assert.equal(client.get(45000)?.rank, 1);
+    assert.equal(client.stats.pending, 0, "the wire response settles the pending id");
     assert.equal(repaints, 1, "and the screen is told, or the name arrives where nobody is looking");
 
     // Asked once. The client's own `#requested` stops the second `load` reaching the wire at all,
@@ -201,6 +203,7 @@ test("an item the dump has never heard of names itself, and finds its icon by di
     assert.equal(item.subClass, 7);
     assert.equal(item.soundOverrideSubclass, -1);
     assert.equal(item.material, 1);
+    assert.equal(client.stats.pending, 0);
     assert.equal(repaints, 1);
     assert.match(client.iconUrl(item), /\/item-icon\/70000$/, "no icon id in the answer, so the display id answers");
 
@@ -279,6 +282,97 @@ test("the clear also lets go of the cooldown a failed item fetch armed", async (
     await client.load([60000]);
     assert.deepEqual(world.sent, ["item:60000", "item:60000"]);
   } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("retryable metadata failures stay pending and clear after a successful retry", async () => {
+  const original = globalThis.fetch;
+  let now = 0;
+  try {
+    let creatureAttempts = 0;
+    globalThis.fetch = async () => {
+      creatureAttempts++;
+      if (creatureAttempts === 1) return { ok: false, status: 503 };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [{ entry: 45000, name: "creature", subname: "", type: 7, family: 0, rank: 0 }],
+      };
+    };
+    const creature = new CreatureMetadataClient(GATEWAY, () => now);
+    await assert.rejects(creature.load([45000]));
+    assert.equal(creature.stats.pending, 1);
+    assert.equal(creature.stats.error, 0);
+    now = 2_000;
+    await creature.load([45000]);
+    assert.equal(creature.stats.pending, 0);
+    assert.equal(creature.stats.error, 0);
+    assert.equal(creature.get(45000)?.name, "creature");
+
+    let itemAttempts = 0;
+    globalThis.fetch = async () => {
+      itemAttempts++;
+      if (itemAttempts === 1) return { ok: false, status: 503 };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [{ entry: 60000, name: "item", displayId: 7, quality: 1, inventoryType: 0, stackable: 1, iconId: 0 }],
+      };
+    };
+    const item = new ItemMetadataClient(GATEWAY, () => now);
+    await assert.rejects(item.load([60000]));
+    assert.equal(item.stats.pending, 1);
+    assert.equal(item.stats.error, 0);
+    now = 7_000;
+    await item.load([60000]);
+    assert.equal(item.stats.pending, 0);
+    assert.equal(item.stats.error, 0);
+    assert.equal(item.get(60000)?.name, "item");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("synchronous world-query throws roll back both metadata request ledgers", async () => {
+  const original = globalThis.fetch;
+  const world = session();
+  let throwCreature = true;
+  let throwItem = true;
+  const source = {
+    ...world,
+    creatureTemplate: (entry) => {
+      if (throwCreature) throw new Error("creature query failed synchronously");
+      return world.creatureTemplate(entry);
+    },
+    itemTemplate: (entry) => {
+      if (throwItem) throw new Error("item query failed synchronously");
+      return world.itemTemplate(entry);
+    },
+  };
+  const gateway = dump(new Map());
+  try {
+    const creature = new CreatureMetadataClient(GATEWAY);
+    const item = new ItemMetadataClient(GATEWAY);
+    creature.attach(source, () => undefined);
+    item.attach(source, () => undefined);
+    await assert.rejects(creature.load([45000]), /synchronously/);
+    await assert.rejects(item.load([60000]), /synchronously/);
+    assert.equal(creature.stats.pending, 0);
+    assert.equal(item.stats.pending, 0);
+
+    throwCreature = false;
+    throwItem = false;
+    await creature.load([45000]);
+    await item.load([60000]);
+    assert.equal(creature.stats.pending, 1);
+    assert.equal(item.stats.pending, 1);
+    world.answerCreature({ entry: 45000, name: "answered" });
+    world.answerItem({ entry: 60000, name: "answered" });
+    assert.equal(creature.stats.pending, 0);
+    assert.equal(item.stats.pending, 0);
+  } finally {
+    gateway.restore();
     globalThis.fetch = original;
   }
 });

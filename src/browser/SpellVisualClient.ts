@@ -89,7 +89,11 @@ export class SpellVisualClient {
           this.#inFlight.add(id);
         }
         try {
-          const response = await fetch(`${this.#baseUrl}/dbc/spell-visuals?v=3&ids=${batch.join(",")}`);
+          // v=5 adds DBC model-attach transforms to visual kits, including patched Cone of Cold.
+          // v=6 leaves a formerly cached HD-overlay answer behind when switching to classic.
+          // Keeping the cache marker here prevents an older "no visual" response from turning
+          // Auto Shot back into a generic cast after the gateway has been upgraded.
+          const response = await fetch(`${this.#baseUrl}/dbc/spell-visuals?v=6&ids=${batch.join(",")}`);
           if (!response.ok) throw new Error(`Spell visual gateway returned ${response.status}`);
           const value: unknown = await response.json();
           if (!Array.isArray(value) || !value.every(isSpellVisual)) {
@@ -132,7 +136,7 @@ export class SpellVisualClient {
 
 function hasAnything(visual: SpellVisualMetadata): boolean {
   return Boolean(
-    visual.precast ?? visual.cast ?? visual.impact ?? visual.state ?? visual.stateDone ?? visual.channel
+    visual.autoRepeat ?? visual.precast ?? visual.cast ?? visual.impact ?? visual.state ?? visual.stateDone ?? visual.channel
       ?? visual.casterImpact ?? visual.targetImpact ?? visual.missileTargeting ?? visual.instantArea
       ?? visual.impactArea ?? visual.persistentArea ?? visual.missile
       ?? visual.missileSound ?? visual.animEventSound,
@@ -143,6 +147,7 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
   if (!value || typeof value !== "object") return false;
   const visual = value as Record<string, unknown>;
   if (typeof visual["id"] !== "number" || !Number.isSafeInteger(visual["id"])) return false;
+  if (visual["autoRepeat"] !== undefined && typeof visual["autoRepeat"] !== "boolean") return false;
   for (const phase of [
     "precast", "cast", "impact", "state", "stateDone", "channel", "casterImpact", "targetImpact",
     "missileTargeting", "instantArea", "impactArea", "persistentArea",
@@ -177,9 +182,17 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
 function isEffect(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const effect = value as Record<string, unknown>;
-  return typeof effect["path"] === "string"
-    && typeof effect["attachment"] === "number"
-    && Number.isFinite(effect["attachment"])
-    && typeof effect["scale"] === "number"
-    && Number.isFinite(effect["scale"]);
+  if (typeof effect["path"] !== "string"
+    || typeof effect["attachment"] !== "number"
+    || !Number.isFinite(effect["attachment"])
+    || typeof effect["scale"] !== "number"
+    || !Number.isFinite(effect["scale"])) return false;
+  const transform = effect["transform"];
+  if (transform === undefined) return true;
+  if (!transform || typeof transform !== "object") return false;
+  const shape = transform as Record<string, unknown>;
+  return Array.isArray(shape["offset"]) && shape["offset"].length === 3
+    && shape["offset"].every((value) => typeof value === "number" && Number.isFinite(value))
+    && Array.isArray(shape["rotation"]) && shape["rotation"].length === 3
+    && shape["rotation"].every((value) => typeof value === "number" && Number.isFinite(value));
 }

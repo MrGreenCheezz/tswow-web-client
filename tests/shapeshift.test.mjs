@@ -106,7 +106,7 @@ const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js")
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { mountModel, unitModel } = await import("../dist/code/browser/ui/Frames.js");
 const { CreatureModelClient } = await import("../dist/code/browser/CreatureModelClient.js");
-const { IMAGE_RETRY_BACKOFF_MS } = await import("../dist/code/browser/CharacterAtlas.js");
+const { CREATURE_MODEL_VERSION, IMAGE_RETRY_BACKOFF_MS } = await import("../dist/code/browser/CharacterAtlas.js");
 const { unitObjectScale } = await import("../dist/code/browser/WorldRenderer3D.js");
 const { geosetList, geosetVisible, resolveGeosets, unitGeosets } =
   await import("../dist/code/browser/ModelBuild.js");
@@ -511,14 +511,21 @@ test("П1 the drawn unit is scaled by it, and its name plate moves with it", asy
   // before sending them, and the pill is built from those two.
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const draw = source.indexOf("#drawUnit(");
-  const applied = source.indexOf("const drawn = metadata.scale * unitObjectScale(object);", draw);
-  assert.ok(draw >= 0 && applied > draw, "the wire scale is applied where the model is known");
-  const block = source.slice(applied, source.indexOf("} else {", applied));
+  const drawnText = "const drawn = metadata.scale * currentObjectScale;";
+  const guard = source.lastIndexOf("if (unit.applied === key)", source.indexOf(drawnText, draw));
+  const guardEnd = source.indexOf("    } else {", guard);
+  const guardedModel = source.slice(guard, guardEnd);
+  const scaleRead = guardedModel.indexOf("currentObjectScale = unitObjectScale(object);");
+  const applied = guardedModel.indexOf(drawnText, scaleRead);
+  assert.ok(draw >= 0 && guard > draw && guardEnd > guard && scaleRead >= 0 && applied > scaleRead,
+    "the wire scale is read and applied inside the model guard");
+  assert.match(guardedModel,
+    /currentObjectScale = unitObjectScale\(object\);\s*(?:(?:\/\/[^\r\n]*(?:\r?\n|$))|(?:\/\*[\s\S]*?\*\/\s*))*const drawn = metadata\.scale \* currentObjectScale;/,
+    "the drawn scale immediately uses the freshly read wire scale");
+  const appliedInSource = guard + applied;
+  const block = source.slice(appliedInSource, source.indexOf("} else {", appliedInSource));
   assert.match(block, /unit\.height = \(unit\.height \/ unit\.scale\) \* drawn/);
   assert.match(block, /unit\.node\.scale\.setScalar\(drawn\)/);
-  // It sits inside `if (unit.applied === key)`, so it never runs while the node holds a capsule.
-  const guard = source.lastIndexOf("if (unit.applied === key)", applied);
-  assert.ok(guard > draw && guard < applied);
 });
 
 test("П1 a module window can ask which shape a unit is in", () => {
@@ -639,10 +646,13 @@ test("П2 a record with no seat is refused, which is what the version bump is fo
     const client = new CreatureModelClient("ws://127.0.0.1:8090/world");
     client.request(RIDING_HORSE);
     await settle();
-    // 5 was the last shape without a seat in it, so the marker has to have moved past it — but a
-    // later slice may move it further for a reason of its own and this is not the place to stop it.
+    // 8 was the last shape without the neutral belt in NPC appearances, so 9 published that belt.
+    // 10 publishes the measured worn-boot profile in the same cached creature payload. 11 adds
+    // the baked NPC's authoritative body-item columns; 12 marks coordinated visual policy.
     const version = Number(/[?&]v=(\d+)[&$]/.exec(asked)?.[1]);
-    assert.ok(version >= 6, `the cache-buster has to have moved past 5: v=${version}`);
+    assert.equal(CREATURE_MODEL_VERSION, 12,
+      "12 publishes the coordinated visual profile in creature payloads");
+    assert.equal(version, CREATURE_MODEL_VERSION, `the creature route uses the current cache-buster: v=${version}`);
     assert.equal(client.get(RIDING_HORSE)?.mountHeight, 1.8657);
 
     const { mountHeight, ...withoutSeat } = payload[0];

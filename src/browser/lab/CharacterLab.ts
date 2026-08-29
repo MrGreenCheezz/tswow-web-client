@@ -32,6 +32,7 @@ import { ModelTextureLoader } from "../TextureLoad.js";
 import { raceName } from "../ui/UnitSnapshot.js";
 import {
   TEXTURE_TYPE_BODY, TEXTURE_TYPE_OBJECT_SKIN, decodeWvaAnimations, decodeWvm9, isWvm9, textureUrl,
+  visualAnimationsUrl, visualModelUrl,
   type WvmModel, type WvmSkeletonClip,
 } from "../Wvm.js";
 import {
@@ -141,7 +142,7 @@ function modelOf(path: string): Promise<WvmModel> {
   let pending = modelCache.get(path);
   if (pending) return pending;
   pending = (async () => {
-    const data = await getBuffer(`${baseUrl}/visual/model?path=${encodeURIComponent(path)}`, `модель ${path}`);
+    const data = await getBuffer(visualModelUrl(baseUrl, path), `модель ${path}`);
     // WWM1 is a building and WVM1..3 are the pre-appearance formats; a character is always WVM9,
     // and anything else means the gateway is older than this page.
     if (!isWvm9(data)) throw new Error(`${path}: артефакт не WVM9 — шлюз старше страницы`);
@@ -166,7 +167,7 @@ async function ensureAnimation(path: string, template: SkinnedTemplate, wanted: 
   let pending = animationCache.get(path);
   if (!pending) {
     pending = (async () => decodeWvaAnimations(
-      await getBuffer(`${baseUrl}/visual/animations?path=${encodeURIComponent(path)}`, `анимации ${path}`),
+      await getBuffer(visualAnimationsUrl(baseUrl, path), `анимации ${path}`),
       template.parents.length))();
     animationCache.set(path, pending);
   }
@@ -366,7 +367,7 @@ async function showOne(query: LabQuery): Promise<void> {
   orbit.distance = Math.max(2.2, character.height * 1.9);
   board.visible = true;
 
-  let clock: THREE.Clock | undefined;
+  let timer: THREE.Timer | undefined;
   if (character.template && character.instance) {
     const name = query.animation as AnimationName;
     const wanted = ANIMATION_IDS[name];
@@ -378,7 +379,7 @@ async function showOne(query: LabQuery): Promise<void> {
     const clip = played === undefined ? undefined : character.template.clips.get(played);
     if (clip) {
       character.instance.mixer.clipAction(clip).play();
-      clock = new THREE.Clock();
+      timer = new THREE.Timer();
     } else {
       say(`Поза ${query.animation} не пришла с моделью; персонаж стоит в позе покоя.`);
     }
@@ -387,10 +388,13 @@ async function showOne(query: LabQuery): Promise<void> {
   showPanel(query, character);
   void fillTextureStatus(character);
 
-  const frame = (): void => {
+  const frame = (timestamp?: number): void => {
     requestAnimationFrame(frame);
     resizeStage();
-    if (clock && character.instance) character.instance.mixer.update(clock.getDelta());
+    if (timer && character.instance) {
+      timer.update(timestamp);
+      character.instance.mixer.update(timer.getDelta());
+    }
     placeCamera();
     renderer.render(scene, camera);
   };

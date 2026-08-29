@@ -2,6 +2,7 @@ import type { ItemMetadata } from "../gateway/ItemMetadata.js";
 import type { EventBus, WorldPacketEvents } from "../world/EventBus.js";
 import type { ItemTemplate } from "../world/QueryCacheProtocol.js";
 import { spellIconUrl } from "./ui/IconImage.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { ItemMetadata };
 
@@ -15,15 +16,45 @@ export class ItemMetadataClient {
   readonly #baseUrl: string;
   readonly #cache = new Map<number, ItemMetadata>();
   readonly #requested = new Set<number>();
+  readonly #httpPending = new Set<number>();
+  readonly #wirePending = new Set<number>();
   /** Entries whose last request failed, and the time they may be asked for again. */
-  readonly #retryAfter = new Map<number, number>();
+  readonly #failures = new Map<number, { attempts: number; after: number }>();
   #world: ItemQuerySource | undefined;
   #changed: (() => void) | undefined;
+  #pending = 0;
+  #success = 0;
+  #error = 0;
+  #generation = 0;
+  readonly #now: () => number;
 
-  constructor(gatewayWebSocketUrl: string) {
+  /** Immutable current ownership; unresolved world queries remain pending after HTTP settles. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    const pending = new Set<number>([...this.#httpPending, ...this.#wirePending]);
+    for (const [entry, failure] of this.#failures) {
+      if (failure.after !== Infinity && !this.#httpPending.has(entry)) pending.add(entry);
+    }
+    return Object.freeze({
+      pending: pending.size,
+      success: this.#success,
+      error: [...this.#failures.values()].filter((failure) => failure.after === Infinity).length,
+      generation: this.#generation,
+    });
+  }
+
+  get generation(): number {
+    return this.#generation;
+  }
+
+  get revision(): number {
+    return this.#generation;
+  }
+
+  constructor(gatewayWebSocketUrl: string, now: () => number = Date.now) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#now = now;
   }
 
   /**
@@ -44,10 +75,12 @@ export class ItemMetadataClient {
       // `SMSG_CLIENTCACHE_VERSION` said the realm's data moved: everything may be asked again.
       if (change.kind === "cleared") {
         this.#requested.clear();
-        this.#retryAfter.clear();
+        this.#wirePending.clear();
+        this.#failures.clear();
         return;
       }
       if (change.kind !== "item" || typeof change.id !== "number") return;
+      this.#wirePending.delete(change.id);
       this.#absorb(change.id);
     });
   }
@@ -68,20 +101,46 @@ export class ItemMetadataClient {
   }
 
   async load(entries: readonly number[]): Promise<boolean> {
-    const now = Date.now();
+    const now = this.#now();
     const missing = [...new Set(entries)].filter((entry) =>
-      entry > 0 && !this.#requested.has(entry) && (this.#retryAfter.get(entry) ?? 0) <= now);
+      entry > 0 && !this.#requested.has(entry)
+      && (this.#failures.get(entry)?.after ?? 0) <= now);
     if (missing.length === 0) return false;
     for (const entry of missing) {
       this.#requested.add(entry);
-      this.#retryAfter.delete(entry);
+      this.#httpPending.add(entry);
+      this.#failures.delete(entry);
     }
+    this.#pending++;
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#pending--;
+      for (const entry of missing) this.#httpPending.delete(entry);
+      this.#generation++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     // Before the fetch, and for every entry rather than only for the ones the dump misses: the
     // wire is the newer of the two answers, and an unreachable gateway must not also cost the
     // names the world session could have given. `WorldClient.itemTemplate` remembers what it has
     // asked, so this is one `CMSG_ITEM_QUERY_SINGLE` per entry for the life of the session, even
     // across the five-second re-arm below.
-    for (const entry of missing) this.#world?.itemTemplate(entry);
+    try {
+      for (const entry of missing) {
+        const template = this.#world?.itemTemplate(entry);
+        if (this.#world && !template) this.#wirePending.add(entry);
+        else this.#absorb(entry, false);
+      }
+    } catch (error) {
+      for (const entry of missing) {
+        this.#requested.delete(entry);
+        this.#httpPending.delete(entry);
+      }
+      settle(false);
+      throw error;
+    }
     try {
       // In chunks, because the route refuses more than two hundred entries with a 400 and the
       // whole batch would then be re-armed and asked for again five seconds later, for ever. A
@@ -93,23 +152,32 @@ export class ItemMetadataClient {
         const value: unknown = await response.json();
         if (!Array.isArray(value) || !value.every(isItemMetadata)) throw new Error("Item metadata gateway returned invalid data");
         for (const metadata of value) {
+          const previous = this.#cache.get(metadata.entry);
           this.#cache.set(metadata.entry, metadata);
+          if (!sameItemMetadata(previous, metadata)) this.#generation++;
           // The query went out before this fetch and may already have been answered; the wire is
           // the newer of the two and goes back on top. The caller repaints for the whole batch.
           this.#absorb(metadata.entry, false);
         }
       }
+      settle(true);
       return true;
     } catch (error) {
       // Rearmed so a failure is not permanent, but not before the cooldown: a player's visible
       // equipment is asked for once a frame, and re-arming immediately turned an unreachable
       // gateway into a request per frame — and, now that a unit is rebuilt when its equipment
       // changes, into a rebuilt character per frame as the list flapped between empty and full.
-      const retryAt = Date.now() + RETRY_DELAY_MS;
       for (const entry of missing) {
         this.#requested.delete(entry);
-        this.#retryAfter.set(entry, retryAt);
+        this.#httpPending.delete(entry);
+        const attempts = (this.#failures.get(entry)?.attempts ?? 0) + 1;
+        const wait = ITEM_METADATA_RETRY_MS[attempts - 1];
+        this.#failures.set(entry, {
+          attempts,
+          after: wait === undefined ? Infinity : this.#now() + wait,
+        });
       }
+      settle(false);
       throw error;
     }
   }
@@ -129,7 +197,7 @@ export class ItemMetadataClient {
     const template = this.#world?.itemTemplate(entry);
     if (!template?.found) return;
     const known = this.#cache.get(entry);
-    this.#cache.set(entry, {
+    const next = {
       entry,
       name: template.name,
       displayId: template.displayInfoId,
@@ -141,13 +209,17 @@ export class ItemMetadataClient {
       subClass: template.subClass,
       soundOverrideSubclass: template.soundOverrideSubclass,
       material: template.material,
-    });
+    };
+    if (!sameItemMetadata(known, next)) {
+      this.#cache.set(entry, next);
+      this.#generation++;
+    }
     if (repaint) this.#changed?.();
   }
 }
 
 /** Long enough that a gateway restart is not hammered, short enough to be unnoticed in play. */
-const RETRY_DELAY_MS = 5_000;
+const ITEM_METADATA_RETRY_MS: readonly number[] = [5_000, 15_000, 30_000];
 
 /** What `GET /data/items` accepts in one request. */
 const ENTRIES_PER_REQUEST = 200;
@@ -157,4 +229,12 @@ function isItemMetadata(value: unknown): value is ItemMetadata {
   const item = value as Record<string, unknown>;
   return typeof item.entry === "number" && typeof item.name === "string" && typeof item.displayId === "number"
     && typeof item.quality === "number" && typeof item.inventoryType === "number" && typeof item.stackable === "number" && typeof item.iconId === "number";
+}
+
+function sameItemMetadata(left: ItemMetadata | undefined, right: ItemMetadata): boolean {
+  return left?.entry === right.entry && left.name === right.name && left.displayId === right.displayId
+    && left.quality === right.quality && left.inventoryType === right.inventoryType
+    && left.stackable === right.stackable && left.iconId === right.iconId
+    && left.itemClass === right.itemClass && left.subClass === right.subClass
+    && left.soundOverrideSubclass === right.soundOverrideSubclass && left.material === right.material;
 }

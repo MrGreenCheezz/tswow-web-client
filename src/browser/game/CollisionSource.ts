@@ -1,4 +1,5 @@
 import { CollisionClient } from "../CollisionClient.js";
+import type { BenchmarkAsyncReadinessStats } from "../RenderBenchmarkReadiness.js";
 import { terrainGrid, type EnvironmentObject } from "../Terrain.js";
 import {
   CollisionMesh, CollisionWorld, transformCollisionBounds, transformCollisionMesh,
@@ -104,6 +105,7 @@ export class CollisionSource {
   readonly #built = new Map<number, BuiltInstance>();
   readonly #tiles = new Map<string, readonly EnvironmentObject[] | null>();
   readonly #loading = new Set<string>();
+  readonly #tileErrors = new Set<string>();
   #tileRevision = 0;
   #map: number | undefined;
   #atX = Number.NaN;
@@ -113,6 +115,8 @@ export class CollisionSource {
   #triangles = 0;
   #dropped = 0;
   #revision = 0;
+  #tileSuccess = 0;
+  #tileError = 0;
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -129,6 +133,17 @@ export class CollisionSource {
   /** Bumped after every rebuild/reset so a retained locator cannot silently become stale. */
   get revision(): number {
     return this.#revision;
+  }
+
+  /** Immutable aggregate counters for VMAP tile work and the nested collision model client. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    const models = this.models.stats;
+    return Object.freeze({
+      pending: this.#loading.size + models.pending,
+      success: this.#tileSuccess + models.success,
+      error: this.#tileErrors.size + models.error,
+      generation: this.#revision + this.#tileRevision + models.generation,
+    });
   }
 
   /**
@@ -308,6 +323,15 @@ export class CollisionSource {
   }
 
   async #loadTile(map: number, gridX: number, gridY: number, key: string): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loading.delete(key);
+      this.#tileRevision++;
+      if (success) this.#tileSuccess++;
+      else this.#tileError++;
+    };
     try {
       // The raw vmap route, not the visual one the renderer prefers: these are the spawns the
       // server places its own collision with, named the way its `.vmo` files are named.
@@ -315,18 +339,23 @@ export class CollisionSource {
       if (response.status === 404) {
         // A tile with nothing in it: open ground, and the terrain is the whole of the answer there.
         this.#tiles.set(key, null);
+        this.#tileErrors.delete(key);
+        settle(true);
         return;
       }
       if (!response.ok) throw new Error(`VMAP tile gateway returned ${response.status}`);
       const value: unknown = await response.json();
       if (!Array.isArray(value)) throw new Error("VMAP tile gateway returned invalid objects");
       this.#tiles.set(key, value as EnvironmentObject[]);
-      this.#tileRevision++;
+      this.#tileErrors.delete(key);
+      settle(true);
     } catch (error) {
       this.#tiles.set(key, null);
+      this.#tileErrors.add(key);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {
-      this.#loading.delete(key);
+      settle(false);
     }
   }
 

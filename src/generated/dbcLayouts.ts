@@ -2,7 +2,7 @@
 // under tools/dbd (CC BY-SA 4.0 — see tools/dbd/README.md). Do not edit by hand;
 // run `npm run dbc:generate`. `npm run build` fails if this file has drifted.
 //
-// Build 3.3.5.12340, 69 tables.
+// Build 3.3.5.12340, 71 tables.
 
 /** How a field is stored. Every WDBC slot is a word unless the definition says narrower. */
 export type DbcFieldType = "int" | "float" | "string" | "locstring";
@@ -348,6 +348,18 @@ export const DBC_LAYOUTS = {
     fields: {
       "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "Text_lang": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+    },
+  },
+  EmotesTextSound: {
+    fieldCount: 5,
+    recordSize: 20,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "EmotesTextID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "RaceID": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "SexID": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "SoundID": { index: 4, byteOffset: 16, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
   Faction: {
@@ -1037,6 +1049,23 @@ export const DBC_LAYOUTS = {
       "CharParamTwo": { index: 29, byteOffset: 116, byteSize: 4, arraySize: 4, stride: 1, type: "float", unsigned: false },
       "CharParamThree": { index: 33, byteOffset: 132, byteSize: 4, arraySize: 4, stride: 1, type: "float", unsigned: false },
       "Flags": { index: 37, byteOffset: 148, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  SpellVisualKitModelAttach: {
+    fieldCount: 10,
+    recordSize: 40,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "ParentSpellVisualKitID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "SpellVisualEffectNameID": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "AttachmentID": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "OffsetX": { index: 4, byteOffset: 16, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "OffsetY": { index: 5, byteOffset: 20, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "OffsetZ": { index: 6, byteOffset: 24, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "Yaw": { index: 7, byteOffset: 28, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "Pitch": { index: 8, byteOffset: 32, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "Roll": { index: 9, byteOffset: 36, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
     },
   },
   Talent: {

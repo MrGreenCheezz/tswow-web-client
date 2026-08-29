@@ -1,4 +1,5 @@
 node_modules/
+.runtime/
 dist/
 .env
 .env.*
@@ -51,6 +52,7 @@ data/terrain-layers/
 data/item-icons/
 data/visual-tiles/
 data/visual-models/
+data/visual-dbc/
 data/textures/
 data/liquid/
 data/terrain-splat/
@@ -78,5 +80,6 @@ public/portraits/*.png
 CPPClientExample/
 
 # Scratch.
+/.vite-cache/
 /research/
 New Text Document.txt

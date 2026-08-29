@@ -5,7 +5,8 @@ import * as THREE from "three";
 
 import {
   WORLD_LIGHT_BODY, WORLD_LIGHT_TARGET, applyLightHeadroom, applyWorldLight,
-  createWorldLightUniforms, setWorldLightUniforms, worldLightFactor,
+  cloneMaterialForPortrait, createWorldLightUniforms, setWorldLightImmersiveStrength,
+  setWorldLightUniforms, worldLightFactor,
 } from "../dist/code/browser/WorldLighting.js";
 import { applyTerrainSplat } from "../dist/code/browser/TerrainSplat.js";
 import { toneShoulder } from "../dist/code/browser/LightingQuality.js";
@@ -120,6 +121,21 @@ test("Light.dbc multipliers remain numeric uniforms rather than being sRGB-decod
     "0.5 must not become the linear decode of an sRGB colour");
 });
 
+test("immersive lighting is one reversible bounded uniform in the existing world shader", () => {
+  const uniforms = createWorldLightUniforms();
+  assert.equal(uniforms.wowImmersiveStrength.value, 0);
+  assert.equal(setWorldLightImmersiveStrength(uniforms, 0.65), 0.65);
+  assert.equal(uniforms.wowImmersiveStrength.value, 0.65);
+  assert.equal(setWorldLightImmersiveStrength(uniforms, 20), 1);
+  assert.equal(setWorldLightImmersiveStrength(uniforms, -20), 0);
+  assert.match(WORLD_LIGHT_BODY, /wowImmersiveStrength/);
+  assert.match(WORLD_LIGHT_BODY, /wowCoolFill/);
+  assert.match(WORLD_LIGHT_BODY, /wowWarmKey/);
+  assert.match(WORLD_LIGHT_BODY, /wowRim/);
+  assert.match(WORLD_LIGHT_BODY, /if \( wowImmersiveStrength > 0\.0001 \)/,
+    "quality zero skips the optional rim/fill/key arithmetic instead of only mixing it away");
+});
+
 test("the shared GLSL owns one light and shadow integration with per-surface modes", () => {
   assert.match(WORLD_LIGHT_BODY, /WOW_LIGHT_TERRAIN/);
   assert.match(WORLD_LIGHT_BODY, /WOW_LIGHT_FOLIAGE/);
@@ -149,11 +165,62 @@ test("applyWorldLight preserves an existing hook and key and removes three's BRD
   assert.equal(previousRan, true);
   assert.equal(shader.uniforms.previous.value, 7);
   assert.equal(shader.uniforms.wowAmbient, uniforms.wowAmbient);
+  assert.equal(shader.uniforms.wowImmersiveStrength, uniforms.wowImmersiveStrength);
   assert.equal(shader.fragmentShader.includes(WORLD_LIGHT_TARGET), false);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   assert.equal((shader.fragmentShader.match(/getShadow\(/g) ?? []).length, 1,
     "the stock lookup is removed before the authored lookup is inserted");
-  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v1:surface");
+  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v2:surface");
+});
+
+test("portrait clone removes only the world wrapper and keeps the pre-world hook and key", () => {
+  const map = new THREE.Texture();
+  const material = new THREE.MeshStandardMaterial({ map });
+  let previousRuns = 0;
+  const previousCompile = (shader) => {
+    previousRuns++;
+    shader.fragmentShader += "\n// authored portrait chain";
+  };
+  material.onBeforeCompile = previousCompile;
+  material.customProgramCacheKey = () => "previous-key";
+  applyWorldLight(material, createWorldLightUniforms(), "surface");
+
+  const clone = cloneMaterialForPortrait(material);
+  assert.notEqual(clone, material);
+  assert.equal(clone.map, map, "portrait shares the already-loaded texture");
+  assert.equal(clone.onBeforeCompile, previousCompile, "only the outer world hook is removed");
+  assert.equal(clone.customProgramCacheKey(), "previous-key");
+  const shader = {
+    uniforms: {},
+    vertexShader: THREE.ShaderLib.standard.vertexShader,
+    fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+  };
+  clone.onBeforeCompile(shader, {});
+  assert.equal(previousRuns, 1);
+  assert.match(shader.fragmentShader, /authored portrait chain/);
+  assert.doesNotMatch(shader.fragmentShader, /wowAuthoredLight/);
+  clone.dispose();
+  material.dispose();
+  map.dispose();
+});
+
+test("portrait clone preserves a non-world custom hook and cache key", () => {
+  const material = new THREE.MeshBasicMaterial();
+  let previousRuns = 0;
+  const previousCompile = (shader) => {
+    previousRuns++;
+    shader.fragmentShader += "\n// non-world portrait chain";
+  };
+  material.onBeforeCompile = previousCompile;
+  material.customProgramCacheKey = () => "non-world-key";
+
+  const clone = cloneMaterialForPortrait(material);
+  assert.equal(clone.onBeforeCompile, previousCompile);
+  assert.equal(clone.customProgramCacheKey(), "non-world-key");
+  clone.onBeforeCompile({ uniforms: {}, vertexShader: "", fragmentShader: "" }, {});
+  assert.equal(previousRuns, 1);
+  clone.dispose();
+  material.dispose();
 });
 
 test("terrain and surface programs cannot share a cache key or lighting branch", () => {
@@ -220,7 +287,7 @@ test("the terrain mode survives the splat hook that arrives after the base mater
   assert.match(shader.fragmentShader, /#define WOW_LIGHT_TERRAIN/);
   assert.match(shader.fragmentShader, /uniform sampler2DArray splatLayers/);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
-  assert.equal(material.customProgramCacheKey(), "world-light-r185-v1:terrain|terrain-splat");
+  assert.equal(material.customProgramCacheKey(), "world-light-r185-v2:terrain|terrain-splat");
 });
 
 test("renderer material policy hooks every lit world path and leaves authored flat paths alone", async () => {
@@ -233,7 +300,7 @@ test("renderer material policy hooks every lit world path and leaves authored fl
   assert.doesNotMatch(world, /^\s*#applyGroundBounce\(\): void/m);
   assert.match(world, /#sun = new THREE\.DirectionalLight\(0xffffff, 0\)/);
   assert.match(world, /#horizonMaterial = new THREE\.MeshBasicMaterial/);
-  assert.match(world, /#waterMaterial = new THREE\.MeshBasicMaterial/);
+  assert.match(world, /#fallbackLiquidMaterials = new Map<LiquidClass/);
   assert.match(world, /buildTerrainMaterial[\s\S]*applyWorldLight\(material, worldLight, "terrain"\)/);
   assert.match(world, /this\.#wmoMaterial, this\.#m2Material, this\.#stoneMaterial,[\s\S]*applyWorldLight\(material, this\.#worldLight, "surface"\)/);
   assert.match(world, /value instanceof THREE\.MeshStandardMaterial[\s\S]*applyWorldLight\(value, this\.#worldLight, "surface"\)/);

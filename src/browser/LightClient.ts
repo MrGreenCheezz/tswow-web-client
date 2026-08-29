@@ -9,6 +9,7 @@
 import type {
   LightIndexEntry, LightParamSet, LightSample, LightSlots, ResolvedColour,
 } from "./LightTypes.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { LightSample };
 
@@ -249,6 +250,27 @@ export class LightClient {
   readonly #baseUrl: string;
   readonly #maps = new Map<number, LightIndexEntry | null>();
   readonly #loading = new Set<number>();
+  #success = 0;
+  #error = 0;
+  #generation = 0;
+
+  /** Immutable exact request counters; lifetime map cache membership is deliberately excluded. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    return Object.freeze({
+      pending: this.#loading.size,
+      success: this.#success,
+      error: [...this.#maps.values()].filter((entry) => entry === null).length,
+      generation: this.#generation,
+    });
+  }
+
+  get generation(): number {
+    return this.#generation;
+  }
+
+  get revision(): number {
+    return this.#generation;
+  }
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -283,6 +305,15 @@ export class LightClient {
   }
 
   async #load(map: number): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loading.delete(map);
+      this.#generation++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       // The route caches for an hour, and slice R7 changed the payload's shape by adding the
       // storm set. Without a new query a browser that had already fetched this map would keep the
@@ -297,12 +328,14 @@ export class LightClient {
         throw new Error("Light gateway returned an invalid table");
       }
       this.#maps.set(map, value);
+      settle(true);
       this.onStatus?.(`Свет карты ${map}: ${value.volumes.length} объёмов`, false);
     } catch (error) {
       this.#maps.set(map, null);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {
-      this.#loading.delete(map);
+      settle(false);
     }
   }
 }

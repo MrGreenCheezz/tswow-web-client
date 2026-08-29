@@ -112,6 +112,12 @@ export interface LightingProfile {
    * it, but a profile that sets anything else is asking for the frame to be brighter than authored.
    */
   exposure: number;
+  /**
+   * Strength of the single-pass warm-key/cool-fill grade in the existing world-light shader.
+   * Zero is the exact authored baseline; one is the bounded high-quality look. It adds no pass,
+   * texture, light or render target and therefore remains available when shadow maps are not.
+   */
+  immersiveStrength: number;
   /** Zero means no shadow pass. */
   shadowMapSize: number;
   /** Nearest ranked units only; scenery and spell visuals never enter the pass. */
@@ -129,6 +135,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   // varies; exposure remains explicit because it belongs to the renderer's shared output curve.
   0: {
     exposure: 1,
+    immersiveStrength: 0,
     wantedShadowMapSize: 0,
     shadowCasters: 0,
     shadowExtent: 0,
@@ -137,6 +144,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   },
   1: {
     exposure: 1,
+    immersiveStrength: 0.65,
     wantedShadowMapSize: 512,
     shadowCasters: 12,
     shadowExtent: 32,
@@ -145,6 +153,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   },
   2: {
     exposure: 1,
+    immersiveStrength: 1,
     wantedShadowMapSize: 1024,
     shadowCasters: 24,
     shadowExtent: 46,
@@ -181,6 +190,7 @@ export function lightingProfile(
   return {
     quality,
     exposure: source.exposure,
+    immersiveStrength: source.immersiveStrength,
     shadowMapSize,
     shadowCasters: shadowMapSize > 0 ? shadowSource.shadowCasters : 0,
     shadowExtent: shadowMapSize > 0 ? shadowSource.shadowExtent : 0,
@@ -210,4 +220,60 @@ export function unitCastsEnhancedShadow(rank: number, distance: number, profile:
   return profile.shadowMapSize > 0
     && Number.isInteger(rank) && rank >= 0 && rank < profile.shadowCasters
     && Number.isFinite(distance) && distance >= 0 && distance <= profile.shadowExtent;
+}
+
+export interface DirectionalShadowPoint {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/**
+ * Snap a directional-light centre to its shadow texels without moving it along the light ray.
+ *
+ * Following the player by sub-texel amounts makes an orthographic shadow map shimmer even when
+ * both the caster and receiver are still relative to one another. Quantising only the two axes of
+ * the light plane removes that crawl; depth keeps following the player exactly, so the bounded
+ * shadow camera cannot lag behind them.
+ */
+export function stabiliseDirectionalShadowCenter(
+  center: Readonly<DirectionalShadowPoint>,
+  direction: Readonly<DirectionalShadowPoint>,
+  extent: number,
+  mapSize: number,
+): DirectionalShadowPoint {
+  const copy = { x: center.x, y: center.y, z: center.z };
+  const texel = (2 * extent) / mapSize;
+  const directionLength = Math.hypot(direction.x, direction.y, direction.z);
+  if (!(texel > 0) || !Number.isFinite(texel) || !(directionLength > 0)) return copy;
+
+  const dx = direction.x / directionLength;
+  const dy = direction.y / directionLength;
+  const dz = direction.z / directionLength;
+  // Use world-up unless the sun is almost vertical; the alternate axis keeps the cross product
+  // finite around noon while choosing the same stable light plane.
+  const referenceX = 0;
+  const referenceY = Math.abs(dy) < 0.999 ? 1 : 0;
+  const referenceZ = Math.abs(dy) < 0.999 ? 0 : 1;
+  let rightX = referenceY * dz - referenceZ * dy;
+  let rightY = referenceZ * dx - referenceX * dz;
+  let rightZ = referenceX * dy - referenceY * dx;
+  const rightLength = Math.hypot(rightX, rightY, rightZ);
+  if (!(rightLength > 0)) return copy;
+  rightX /= rightLength;
+  rightY /= rightLength;
+  rightZ /= rightLength;
+  const upX = dy * rightZ - dz * rightY;
+  const upY = dz * rightX - dx * rightZ;
+  const upZ = dx * rightY - dy * rightX;
+
+  const rightPosition = center.x * rightX + center.y * rightY + center.z * rightZ;
+  const upPosition = center.x * upX + center.y * upY + center.z * upZ;
+  const rightDelta = Math.round(rightPosition / texel) * texel - rightPosition;
+  const upDelta = Math.round(upPosition / texel) * texel - upPosition;
+  return {
+    x: center.x + rightX * rightDelta + upX * upDelta,
+    y: center.y + rightY * rightDelta + upY * upDelta,
+    z: center.z + rightZ * rightDelta + upZ * upDelta,
+  };
 }

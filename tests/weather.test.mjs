@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 import {
   WEATHER_BLACK_RAIN, WEATHER_BLACK_SNOW, WEATHER_DRIZZLE, WEATHER_FINE, WEATHER_FOG,
   WEATHER_HEAVY_RAIN, WEATHER_HEAVY_SANDSTORM, WEATHER_HEAVY_SNOW, WEATHER_LIGHT_RAIN,
@@ -7,7 +8,7 @@ import {
   LIGHT_SLOT_CLEAR, LIGHT_SLOT_STORM, weatherIsBlack, weatherKind,
 } from "../dist/code/world/WorldMessageProtocol.js";
 import {
-  WEATHER_CAPACITY, WEATHER_FADE_SECONDS, WEATHER_PRESETS,
+  WEATHER_CAPACITY, WEATHER_FADE_SECONDS, WEATHER_PRESETS, WeatherEffect,
   advanceWeather, buildWeatherGeometry, weatherDensity, weatherDrawCount,
 } from "../dist/code/browser/WeatherEffect.js";
 
@@ -152,4 +153,153 @@ test("a raindrop is a streak and a snowflake is a square, which is what the text
   // Sand is blown sideways faster than it falls; snow is not.
   assert.ok(WEATHER_PRESETS.sand.drift > WEATHER_PRESETS.sand.fall);
   assert.ok(WEATHER_PRESETS.snow.drift < WEATHER_PRESETS.snow.fall);
+});
+
+function trackedTexture() {
+  const texture = new THREE.Texture();
+  let disposals = 0;
+  texture.dispose = () => { disposals++; };
+  return { texture, get disposals() { return disposals; } };
+}
+
+test("weather disposal is idempotent and releases each aliased texture identity once", () => {
+  const shared = trackedTexture();
+  let loads = 0;
+  const effect = new WeatherEffect(() => {
+    loads++;
+    return shared.texture;
+  });
+  let geometryDisposals = 0;
+  let materialDisposals = 0;
+  effect.object.geometry.addEventListener("dispose", () => { geometryDisposals++; });
+  effect.object.material.addEventListener("dispose", () => { materialDisposals++; });
+
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  effect.set({ kind: "snow", density: 1, storm: 1 }, false);
+  assert.equal(loads, 2, "each weather path is loaded once even when the loader aliases identities");
+
+  effect.dispose();
+  effect.dispose();
+  assert.equal(geometryDisposals, 1);
+  assert.equal(materialDisposals, 1);
+  assert.equal(shared.disposals, 1);
+});
+
+test("a failed kind change rolls back and retries instead of drawing with the previous map", () => {
+  const rain = trackedTexture();
+  const snow = trackedTexture();
+  let snowAttempts = 0;
+  const effect = new WeatherEffect((path) => {
+    if (!path.includes("Snowflake")) return rain.texture;
+    snowAttempts++;
+    if (snowAttempts === 1) throw new Error("snow loader exploded");
+    return snow.texture;
+  });
+
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  assert.equal(effect.object.material.uniforms.uMap.value, rain.texture);
+  assert.throws(() => effect.set({ kind: "snow", density: 1, storm: 1 }, false), /snow loader exploded/);
+  assert.equal(effect.object.material.uniforms.uMap.value, rain.texture,
+    "the failed change leaves the previously committed kind intact");
+
+  effect.set({ kind: "snow", density: 1, storm: 1 }, false);
+  assert.equal(snowAttempts, 2, "the next renderer frame retries the uncommitted kind");
+  assert.equal(effect.object.material.uniforms.uMap.value, snow.texture);
+  effect.dispose();
+  assert.equal(rain.disposals, 1);
+  assert.equal(snow.disposals, 1);
+});
+
+test("a reentrant weather change cannot publish the stale returned texture", () => {
+  const rain = trackedTexture();
+  const snow = trackedTexture();
+  let effect;
+  let reentered = false;
+  const loader = (path) => {
+    const returned = path.includes("Snowflake") ? snow.texture : rain.texture;
+    if (!reentered) {
+      reentered = true;
+      effect.set({ kind: "snow", density: 1, storm: 1 }, false);
+    }
+    return returned;
+  };
+  effect = new WeatherEffect(loader);
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+
+  assert.equal(effect.object.material.uniforms.uMap.value, snow.texture,
+    "the inner committed kind keeps control after the outer loader returns");
+  assert.equal(rain.disposals, 0, "the old kind remains a valid cached identity until disposal");
+  assert.equal(snow.disposals, 0);
+  assert.equal(effect.object.visible, true);
+  effect.dispose();
+  assert.equal(rain.disposals, 1);
+  assert.equal(snow.disposals, 1);
+});
+
+test("a reentrant clear rolls back the provisional kind before the next weather frame", () => {
+  const rain = trackedTexture();
+  let effect;
+  let loads = 0;
+  const loader = () => {
+    loads++;
+    if (loads === 1) effect.set({ kind: "fine", density: 0, storm: 0 }, false);
+    return rain.texture;
+  };
+  effect = new WeatherEffect(loader);
+
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  assert.equal(effect.object.visible, false, "the reentrant clear wins the in-flight change");
+  assert.equal(effect.object.material.uniforms.uMap.value, null);
+
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  assert.equal(loads, 1, "the safely cached handle is reused after the provisional kind rolls back");
+  assert.equal(effect.object.material.uniforms.uMap.value, rain.texture);
+  assert.equal(effect.object.visible, true);
+  effect.dispose();
+  assert.equal(rain.disposals, 1);
+});
+
+test("weather disposal clears the material map before synchronous listeners", () => {
+  const loaded = trackedTexture();
+  const effect = new WeatherEffect(() => loaded.texture);
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  let observed = "not-called";
+  effect.object.material.addEventListener("dispose", () => {
+    observed = effect.object.material.uniforms.uMap.value;
+  });
+
+  effect.dispose();
+  assert.equal(observed, null);
+  assert.equal(effect.object.material.uniforms.uMap.value, null);
+  assert.equal(loaded.disposals, 1);
+});
+
+test("post-dispose weather operations are safe and inert", () => {
+  const loaded = trackedTexture();
+  let loads = 0;
+  const effect = new WeatherEffect(() => {
+    loads++;
+    return loaded.texture;
+  });
+  effect.set({ kind: "rain", density: 1, storm: 1 }, false);
+  effect.dispose();
+  const visibleBefore = effect.object.visible;
+  let visits = 0;
+  const visitor = {
+    referenceCpu() {},
+    referenceGpuBuffer() {},
+    referenceGpuTexture() { visits++; },
+    referenceGpuRenderTarget() {},
+    referenceUnsupported() {},
+  };
+
+  effect.set({ kind: "snow", density: 1, storm: 1 }, false);
+  effect.update(undefined, Number.NaN);
+  effect.reset(-1);
+  effect.visitRetainedResources(visitor);
+  assert.equal(loads, 1);
+  assert.equal(effect.object.visible, visibleBefore);
+  assert.equal(effect.object.geometry.drawRange.count, 0);
+  assert.equal(visits, 0);
+  assert.equal(loaded.disposals, 1);
 });

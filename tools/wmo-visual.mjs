@@ -133,18 +133,25 @@ function wmoLights(data) {
   if (!data) return [];
   const lights = [];
   for (let at = 0; at + MOLT_SIZE <= data.length; at += MOLT_SIZE) {
+    const position = [data.readFloatLE(at + 8), data.readFloatLE(at + 12), data.readFloatLE(at + 16)];
     const intensity = data.readFloatLE(at + 20);
     const attenuationStart = data.readFloatLE(at + 40);
     const attenuationEnd = data.readFloatLE(at + 44);
-    if (![intensity, attenuationStart, attenuationEnd].every(Number.isFinite)) continue;
-    lights.push({
+    const finite = [...position, intensity, attenuationStart, attenuationEnd].every(Number.isFinite);
+    // MOLR addresses the source table by ordinal. Preserve a damaged optional record as an inert
+    // light instead of dropping it and shifting every later reference onto the wrong lamp.
+    lights.push(finite && intensity >= 0 && attenuationStart >= 0
+      && attenuationEnd >= attenuationStart ? {
       type: data[at],
       attenuates: data[at + 1] !== 0,
       colour: [data[at + 6], data[at + 5], data[at + 4]],
-      position: [data.readFloatLE(at + 8), data.readFloatLE(at + 12), data.readFloatLE(at + 16)],
+      position,
       intensity,
       attenuationStart,
       attenuationEnd,
+    } : {
+      type: data[at], attenuates: false, colour: [0, 0, 0], position: [0, 0, 0],
+      intensity: 0, attenuationStart: 0, attenuationEnd: 0,
     });
   }
   return lights;
@@ -248,6 +255,7 @@ export function parseWmoVisual(root, groups, rootPath) {
   const indices = [];
   const triangleMaterials = [];
   const triangleLighting = [];
+  const parsedNormals = [];
   // Per group, so a city can be drawn a room at a time rather than as one merged shell. Stormwind
   // is 286 groups, 761,902 vertices and 727,741 triangles; merged and drawn whole it is 22.2 MB of
   // artifact and every interior visible through every wall.
@@ -261,6 +269,8 @@ export function parseWmoVisual(root, groups, rootPath) {
     const groupFlags = mogp.readUInt32LE(MOGP_FLAGS);
     const box = [];
     for (let axis = 0; axis < 6; axis++) box.push(mogp.readFloatLE(MOGP_BOUNDING_BOX + axis * 4));
+    const boundsValid = box.every(Number.isFinite)
+      && box[0] <= box[3] && box[1] <= box[4] && box[2] <= box[5];
     const vertexStart = vertices.length / 3;
     const indexStart = indices.length;
     const chunks = chunkMap(mogp.subarray(68));
@@ -270,11 +280,28 @@ export function parseWmoVisual(root, groups, rootPath) {
     const materialData = chunks.get("MOPY");
     const batchData = chunks.get("MOBA");
     const colourData = chunks.get("MOCV");
+    const normalData = chunks.get("MONR");
     // MOLR: which of the model's lamps light this group. Flag 0x200 says the chunk is there, and
     // it agrees exactly — 111 groups of Stormwind and 2 of the Goldshire Inn, both ways.
     const lightData = chunks.get("MOLR");
     if (!vertexData || !indexData || vertexData.length % 12 !== 0 || indexData.length % 6 !== 0) continue;
     const vertexCount = vertexData.length / 12;
+    // MONR is optional in older WMOs. Treat it as authored only when the chunk is exactly one
+    // finite model-space float3 per MOVT vertex; a partial or non-finite chunk is not a usable
+    // normal stream and must not leak into the renderer as a partially trusted attribute.
+    let groupNormals;
+    if (normalData && normalData.length === vertexCount * 12) {
+      groupNormals = [];
+      for (let offset = 0; offset < normalData.length; offset += 4) {
+        const value = normalData.readFloatLE(offset);
+        if (!Number.isFinite(value)) {
+          groupNormals = undefined;
+          break;
+        }
+        groupNormals.push(value);
+      }
+    }
+    if (groupNormals) parsedNormals.push(...groupNormals);
     const base = vertices.length / 3;
     for (let index = 0; index < vertexCount; index++) {
       const offset = index * 12;
@@ -350,6 +377,7 @@ export function parseWmoVisual(root, groups, rootPath) {
       lightRefs,
       min: box.slice(0, 3),
       max: box.slice(3, 6),
+      ...(boundsValid ? {} : { boundsValid: false }),
       vertexStart,
       vertexCount,
       indexStart,
@@ -363,11 +391,16 @@ export function parseWmoVisual(root, groups, rootPath) {
       // a question only their radii can answer. 1,596 of the 9,346 groups name something other
       // than record 0 in slot 0.
       fogIds: [0, 1, 2, 3].map((slot) => mogp[MOGP_FOG_IDS + slot]),
+      ...(groupNormals ? { normals: groupNormals } : {}),
     });
   }
   if (vertices.length === 0 || indices.length === 0 || vertices.length / 3 > 1_000_000 || indices.length > 6_000_000) throw new Error("WMO visual geometry is empty or too large");
   return {
-    vertices, uvs, indices, texture: dependencies.texture,
+    vertices, uvs, indices,
+    ...(groupRecords.length > 0 && groupRecords.every((group) => group.normals)
+      ? { normals: parsedNormals }
+      : {}),
+    texture: dependencies.texture,
     materialTextures: dependencies.materialTextures, materials: dependencies.materials, triangleMaterials,
     triangleLighting, colours, wmoGroups: groupRecords,
     ambient: wmoAmbient(rootChunks.get("MOHD")),
@@ -453,9 +486,13 @@ export function wmoGroupMeshes(model) {
     }
     groups.push({
       flags: record.flags, indoor: record.indoor, min: record.min, max: record.max,
+      ...(record.boundsValid === false ? { boundsValid: false } : {}),
       portalStart: record.portalStart, portalCount: record.portalCount,
       lightRefs: record.lightRefs ?? [], fogIds: record.fogIds ?? [],
       positions, uvs, colours, indices, runs,
+      ...(record.normals && record.normals.length === vertexCount * 3
+        ? { normals: new Float32Array(record.normals) }
+        : {}),
     });
   }
   return {

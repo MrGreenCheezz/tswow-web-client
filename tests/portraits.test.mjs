@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { readFile } from "node:fs/promises";
-import { PortraitRenderer } from "../dist/code/browser/PortraitRenderer.js";
+import {
+  clonePortraitMaterials,
+  PortraitRenderer,
+} from "../dist/code/browser/PortraitRenderer.js";
+import {
+  applyWorldLight,
+  createWorldLightUniforms,
+} from "../dist/code/browser/WorldLighting.js";
 
 function canvas(width = 4, height = 4) {
   const value = { width, height, dataset: {}, image: undefined };
@@ -105,6 +112,73 @@ function skinnedSource(key = "rigged", liveBones) {
     ...(liveBones ? { liveBones } : {}),
   };
 }
+
+test("portrait material clones keep maps and flags but remove only the world shader wrapper", () => {
+  const map = new THREE.Texture();
+  const world = new THREE.MeshStandardMaterial({ map, transparent: true, side: THREE.DoubleSide });
+  const worldCompile = () => {};
+  const worldCacheKey = () => "world-light";
+  world.onBeforeCompile = worldCompile;
+  world.customProgramCacheKey = worldCacheKey;
+  applyWorldLight(world, createWorldLightUniforms(), "surface");
+  const [portrait] = clonePortraitMaterials([world]);
+  assert.notEqual(portrait, world);
+  assert.equal(portrait.map, map, "portrait must borrow the loaded texture object");
+  assert.equal(portrait.transparent, true);
+  assert.equal(portrait.side, THREE.DoubleSide);
+  assert.equal(portrait.onBeforeCompile, worldCompile, "the pre-world authored hook remains on portrait");
+  assert.equal(portrait.customProgramCacheKey(), "world-light", "the pre-world key remains on portrait");
+  assert.notEqual(portrait.onBeforeCompile, world.onBeforeCompile, "outer world shader hook must not leak into portrait");
+  assert.notEqual(portrait.customProgramCacheKey, world.customProgramCacheKey, "outer world key must not leak into portrait");
+  portrait.dispose();
+  world.dispose();
+  map.dispose();
+});
+
+test("portrait renderer disposes its material clones without disposing borrowed source materials", () => {
+  const { renderer } = fakeRenderer();
+  const world = new THREE.MeshStandardMaterial();
+  let cloneDisposals = 0;
+  let sourceDisposals = 0;
+  const originalDispose = THREE.Material.prototype.dispose;
+  const sourceDispose = world.dispose;
+  world.dispose = () => { sourceDisposals++; sourceDispose.call(world); };
+  THREE.Material.prototype.dispose = function disposePortraitMaterial() {
+    cloneDisposals++;
+    return originalDispose.call(this);
+  };
+  try {
+    const current = source("owned-material");
+    current.built.materials = [world];
+    const view = new PortraitRenderer(renderer, () => current);
+    view.setTargets(new Map([["target", { guid: 23n, canvas: canvas() }]]));
+    assert.equal(view.render(0), 1);
+    view.clear();
+    assert.equal(cloneDisposals, 1, "clear must release the portrait-owned material shell");
+    assert.equal(sourceDisposals, 0, "the shared world material remains owned by the build");
+  } finally {
+    THREE.Material.prototype.dispose = originalDispose;
+    world.dispose = sourceDispose;
+    world.dispose();
+  }
+});
+
+test("portrait surfaces expose their exact retained build until the root is cleared", () => {
+  const { renderer } = fakeRenderer();
+  const current = source("retained");
+  const view = new PortraitRenderer(renderer, () => current);
+  view.setTargets(new Map([["player", { guid: 1n, canvas: canvas() }]]));
+  assert.equal(view.render(0), 1);
+  assert.deepEqual([...view.retainedBuilds()], [current.built]);
+  assert.deepEqual([...view.retainedBuildKeys()], ["shared-build"]);
+  // Target policy may change before the next portrait pass, but the old root still borrows it.
+  view.setTargets(new Map());
+  assert.deepEqual([...view.retainedBuilds()], [current.built]);
+  assert.deepEqual([...view.retainedBuildKeys()], ["shared-build"]);
+  view.clear();
+  assert.deepEqual([...view.retainedBuilds()], []);
+  assert.deepEqual([...view.retainedBuildKeys()], []);
+});
 
 test("portrait renderer reuses per-slot target, paints static portraits once, flips rows, and restores state", () => {
   const { renderer, state } = fakeRenderer();
@@ -228,6 +302,22 @@ test("source-key changes invalidate a static portrait for the same target GUID",
   assert.equal(view.needsPose(21n), true, "a changed source key must request one fresh world pose");
   assert.equal(view.render(100), 1);
   assert.equal(view.needsPose(21n), false);
+});
+
+test("late model texture completion invalidates a frozen portrait", () => {
+  const { renderer, state } = fakeRenderer();
+  const output = canvas();
+  const map = new THREE.Texture();
+  const current = source("texture-late");
+  current.built.materials = [new THREE.MeshBasicMaterial({ map })];
+  const view = new PortraitRenderer(renderer, () => current);
+  view.setTargets(new Map([["target", { guid: 22n, canvas: output }]]));
+  assert.equal(view.render(0), 1);
+  assert.equal(view.needsPose(22n), false);
+  map.needsUpdate = true;
+  assert.equal(view.needsPose(22n), true, "a loader completion must invalidate the static readback");
+  assert.equal(view.render(100), 1);
+  assert.equal(state.reads, 2);
 });
 
 test("changing a target invalidates the previous 3D canvas immediately", () => {

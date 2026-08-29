@@ -1,7 +1,10 @@
-import { WorldClient } from "../../world/WorldClient.js";
+import { MELEE_AUTO_ATTACK_SPELL_ID, WorldClient } from "../../world/WorldClient.js";
 import { POWER, POWER_DISPLAY_SCALE, attackPower, readField } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { spellButtonUsable, type SpellMetadata } from "../SpellMetadata.js";
+import { syncMountSpellIds } from "../MountSpells.js";
+import { spellCastBlockReason } from "../SpellCastGuard.js";
+import { isCurrentSpellMetadataRequest, spellMetadataEpoch } from "./SpellNames.js";
 import {
   spellStatus, spellbookHideRanks, spellbookList, spellbookSearch, spellbookTabs, spellbookWindow,
 } from "./Dom.js";
@@ -451,7 +454,7 @@ function createSpellButton(spellId: number, badge: string): HTMLButtonElement {
   attachTooltip(button, () => spellTooltip(spellId));
   // Until the async DBC row arrives this is only a placeholder. It must not send a cast with an
   // unknown recovery/GCD duration; showSpells() rebuilds it and enables it once metadata lands.
-  button.disabled = !spellButtonUsable(metadata);
+  setSpellButtonState(button, spellId, metadata, 0);
   icon.className = "spell-icon";
   icon.style.background = `hsl(${(metadata?.iconId ?? spellId) * 47 % 360} 45% 38%)`;
   const iconUrl = spellIconUrl(metadata?.iconId ?? 0, game.gatewayOrigin);
@@ -488,9 +491,42 @@ function createSpellButton(spellId: number, badge: string): HTMLButtonElement {
   return button;
 }
 
+/** Applies the book's disabled and accessible-name state, including the active-mount toggle. */
+function setSpellButtonState(
+  button: HTMLButtonElement,
+  spellId: number,
+  metadata: SpellMetadata | undefined,
+  remaining: number,
+): void {
+  const world = game.world;
+  const togglingMount = typeof world?.isActiveMountSpell === "function"
+    && world.isActiveMountSpell(spellId);
+  const usable = spellButtonUsable(metadata);
+  const disabled = !usable || (!togglingMount && remaining > 0);
+  const base = metadata?.name ?? unknownLabel("заклинание", spellId);
+  const label = !usable && metadata?.passive ? `${base} · пассивное`
+    : togglingMount ? `${base} · Снять маунта`
+      : remaining > 0 ? `${base} · Восстанавливается` : base;
+  button.disabled = disabled;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-disabled", String(disabled));
+}
+
 export function castSpell(spellId: number): boolean {
   const world = game.world;
-  if (!world || world.state.selfGuid === undefined || world.cooldownRemaining(spellId, performance.now()) > 0) return false;
+  if (!world || world.state.selfGuid === undefined) return false;
+  // Attack is a client action, not a learned spell. Trinity does not normally include row 6603 in
+  // INITIAL_SPELLS, and it has no metadata preflight: WorldClient maps it to ATTACK_SWING/STOP.
+  if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
+    world.castSpell(spellId);
+    return true;
+  }
+  // Reapplying the active mount is a dismount toggle, not a new spell cast. It must remain
+  // clickable while the old mount's recovery or the global cooldown is still visible locally.
+  const togglingMount = typeof world.isActiveMountSpell === "function"
+    && world.isActiveMountSpell(spellId);
+  if (!togglingMount && world.cooldownRemaining(spellId, performance.now()) > 0) return false;
   const metadata = game.spells.get(spellId);
   if (!world.knownSpells.some((spell) => spell.id === spellId)) return false;
   if (!metadata) {
@@ -507,6 +543,9 @@ export function castSpell(spellId: number): boolean {
     notice(message);
     return false;
   }
+  // The book, tracker, talent window and module actions share the same local preflight. WorldClient
+  // intentionally cannot inspect DBC/UI metadata, so it must only handle the final wire request.
+  if (spellCastBlockReason(world, spellId) !== undefined) return false;
   const cooldown = Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime);
   // The world matches the request and emits SPELL_CAST_ACCEPTED only after the realm accepts it.
   // GCD bookkeeping is bound once when the world is entered; a per-click listener could survive a
@@ -518,9 +557,17 @@ export function castSpell(spellId: number): boolean {
 export async function loadSpellMetadata(world: WorldClient): Promise<void> {
   const client = game.spellMetadataClient;
   if (!client) return;
+  const epoch = spellMetadataEpoch();
+  if (!isCurrentSpellMetadataRequest(world, client, epoch)) return;
   try {
     const known = await client.load(world.knownSpells.map((spell) => spell.id));
+    if (!isCurrentSpellMetadataRequest(world, client, epoch)) {
+      return;
+    }
     for (const [id, metadata] of known) game.spells.set(id, metadata);
+    // Mount classification belongs to the world client: the book, action bar, tracking window and
+    // module actions all eventually call the same `WorldClient.castSpell` entry point.
+    syncMountSpellIds(world);
     // WotLK descriptions legitimately point at a base/rank row that is not in the character's
     // known-spell list (`$21084d` in Seal of Righteousness). Fetch those rows as well so the live
     // context can resolve the marker instead of leaving an otherwise answerable duration visible.
@@ -531,9 +578,20 @@ export async function loadSpellMetadata(world: WorldClient): Promise<void> {
         if (Number.isSafeInteger(id) && id > 0 && !game.spells.has(id)) referenced.add(id);
       }
     }
-    for (const [id, metadata] of await client.load([...referenced])) game.spells.set(id, metadata);
+    const loadedReferences = await client.load([...referenced]);
+    if (!isCurrentSpellMetadataRequest(world, client, epoch)) {
+      return;
+    }
+    for (const [id, metadata] of loadedReferences) game.spells.set(id, metadata);
+    syncMountSpellIds(world);
     if (game.world === world) showSpells();
   } catch (error) {
+    if (!isCurrentSpellMetadataRequest(world, client, epoch)) {
+      return;
+    }
+    // A failed known-spell batch must not discard a classification that another loader already
+    // supplied (for example the action bar or aura strip landing first).
+    syncMountSpellIds(world);
     spellStatus.className = "error";
     spellStatus.textContent = error instanceof Error ? error.message : String(error);
   }
@@ -558,7 +616,7 @@ export function updateSpellCooldowns(now: number): void {
       gcdDuration, ownState,
     );
     for (const elements of copies) {
-      elements.button.disabled = !spellButtonUsable(metadata) || view.remaining > 0;
+      setSpellButtonState(elements.button, spellId, metadata, view.remaining);
       elements.button.classList.toggle("cooling", view.remaining > 0);
       elements.cooldown.hidden = view.remaining <= 0;
       elements.cooldown.style.setProperty("--sweep", `${view.fraction * 360}deg`);

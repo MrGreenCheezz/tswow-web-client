@@ -415,6 +415,7 @@ test("Ж0 a corpse keeps the selection, and only leaving the world loses it", as
   client.selectTarget(0x5678n);
   client.attacking = true;
   said.length = 0; // «Цель выбрана», which the selection itself said.
+  const sentBeforeDeath = connection.sent.length;
 
   boar.fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
   // Any handled packet at all runs `#checkTarget`; this one is chosen for being inert.
@@ -422,6 +423,8 @@ test("Ж0 a corpse keeps the selection, and only leaving the world loses it", as
   await settle();
   assert.equal(client.targetGuid, 0x5678n, "a corpse is a legitimate selection — it is the loot");
   assert.equal(client.attacking, false, "and the swing stops, which is what this check was for");
+  assert.equal(connection.sent.slice(sentBeforeDeath).some(({ opcode }) => opcode === OPCODES.CMSG_ATTACK_STOP), true,
+    "the silent local invariant still cancels the server-side melee swing");
   assert.deepEqual(said, [], "nothing left the player's sight, so nothing is announced");
 
   // Gone from `state.objects` — out of sight, out of phase, a map change — and only then is the

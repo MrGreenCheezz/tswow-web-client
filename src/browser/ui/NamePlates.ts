@@ -17,7 +17,8 @@ import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState
 import { PLATE_RANGE, RANK_NORMAL, plateVisible, type PlateData, type PlateFilter } from "../NamePlate.js";
 import { healthRatio } from "../SimpleScene.js";
 import { game } from "../game/Context.js";
-import { reactionTo } from "../game/Targeting.js";
+import { reactionBetween, reactionTo } from "../game/Targeting.js";
+import type { FactionClient } from "../FactionClient.js";
 import { questMarkFor } from "./QuestLog.js";
 import { settingOn } from "./Settings.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
@@ -115,9 +116,20 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
  * The same three answers the plate gives, in the form three.js wants. Kept next to the plate
  * rather than in the renderer so a hostile ring and a hostile bar can never drift apart.
  */
-export function selectionRingColour(object: WorldObjectState | undefined): number {
+export function selectionRingColourFor(
+  object: WorldObjectState | undefined,
+  self: WorldObjectState | undefined,
+  factions: FactionClient | undefined,
+): number {
   if (!object) return 0xffe36e;
-  const reaction = reactionTo(object);
+  const reaction = reactionBetween(self, object, factions);
   if (reaction === REACTION_FRIENDLY) return 0x4fd06a;
   return reaction === REACTION_NEUTRAL ? 0xe0c341 : 0xdb4b45;
+}
+
+/** The live wrapper retains the current world and faction client. */
+export function selectionRingColour(object: WorldObjectState | undefined): number {
+  const world = game.world;
+  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  return selectionRingColourFor(object, self, game.factions);
 }

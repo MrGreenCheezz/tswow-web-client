@@ -61,6 +61,12 @@
 полный TSWoW asset workflow и работа на регистрозависимой файловой системе пока не подтверждены для
 Linux/macOS.
 
+TSWoW может продолжать работать на своём старом Node: его `start.bat` запускает встроенный
+`bin/node/node.exe`, а не Node из системного `PATH`. Для параллельной установки распакуйте portable
+Node.js 22 x64 в `.runtime/node/` или задайте `WEBCLIENT_NODE_DIR`. `start-gateway.bat` и
+`start-web.bat` сначала ищут этот runtime и меняют `PATH` только внутри своих процессов; каталог
+`.runtime/` игнорируется Git и никогда не должен публиковаться.
+
 ## Быстрый запуск
 
 1. Клонируйте репозиторий и установите зафиксированные зависимости:
@@ -114,6 +120,15 @@ Linux/macOS.
 входа, после настройки доступа к БД можно один раз запустить `build-assets.bat`. Это необязательный
 долгий прогрев; его результаты остаются в игнорируемых локальных кешах.
 
+При переключении между HD- и классическим набором клиента после замены архивов запустите
+`npm run assets:visual-dbc`. Автоматический overlay `data/visual-dbc` используется, только если все
+созданные `.src`-метки соответствуют текущей цепочке архивов `CLIENT_DIR`; устаревший overlay
+игнорируется. DBC-файлы из явно заданного `VISUAL_DBC_DIR` считаются доверенными, поэтому каталог нужно
+синхронизировать вручную; при этом HD-политика геосетов для patch-W/X/Y/Z включается только при наличии
+соответствующих `.src`-меток. Чтобы вернуться с HD на классические модели, удалите `patch-W.MPQ`, `patch-X.MPQ`,
+`patch-Y.MPQ` и `patch-Z.MPQ` из каталога `Data/` клиента, заново создайте visual DBC overlay,
+перезапустите gateway и перезагрузите страницу.
+
 ## Настройка
 
 `.env` автоматически читают gateway и инструменты, но Git его не отслеживает. Vite из этого же
@@ -122,6 +137,7 @@ Linux/macOS.
 | Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
 | `CLIENT_DIR` | переносимый поиск рядом с repo | Каталог WoW, содержащий `Data/` |
+| `VISUAL_DBC_DIR` | автоопределение stamped `data/visual-dbc` | Явный override visual DBC overlay; считается доверенным |
 | `TSWOW_INSTALL` | `../tswow-install` | Инсталляция TSWoW с `modules/` |
 | `TSWOW_DATASET` | из TSWoW install | Прямой путь к dataset |
 | `TRINITYCORE_DIR` | `../tswow/cores/TrinityCore` | Локальная генерация и проверка protocol/client-таблиц |
@@ -157,11 +173,14 @@ Linux/macOS.
 | `npm run check:generated` | Сверить tracked DBC layouts и ignored local generated data |
 | `npm run modules:check` | Проверить module UI и custom message definitions |
 | `npm run build:full` | Полная проверка настроенного workspace и сборка |
+| `npm run assets:visual-dbc` | Заново извлечь visual DBC и привязать `.src`-метки к текущему client pack |
 | `npm run assets:restamp` | Обновить source stamps без перегенерации кешей |
 
 Дополнительные команды `assets:*` и `*:generate` перечислены в [package.json](package.json).
 Data-free facades, генераторы и redistributable DBC layouts отслеживаются Git. Protocol-таблицы,
 client-derived реализации и generated assets остаются локальными и ignored.
+
+Инструкция для ручной проверки formal render benchmark: [FORMAL_BENCHMARK_GUIDE.ru.md](FORMAL_BENCHMARK_GUIDE.ru.md).
 
 ## Безопасность и публикация
 

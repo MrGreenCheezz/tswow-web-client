@@ -114,23 +114,39 @@ test("a doodad's alternatives are sequences, and only the one being played is dr
 });
 
 test("the body of a character is not faded by its own corpse track", withClient, async () => {
-  // The regression this rule exists to prevent. Every playable model's body batch carries an alpha
-  // track whose keys are under Death and Drown and nowhere else — HumanMale's are sequences 7 and
-  // 120 — ramping 1 → 0. Reading a batch's first sub-track instead of the one for the sequence
-  // being played would fade every character in the game out and back on a two-second loop.
+  // The regression this rule exists to prevent. Stock HumanMale carries body alpha keys under
+  // Death/Drown rather than Stand; the active HD replacement instead authors no colour table at
+  // all. Both spell the same contract: a living body has no sequence-0 fade. Reading an arbitrary
+  // first sub-track would fade the stock body, while assuming the stock batch/index shape makes an
+  // HD body crash this test before the shipping path is exercised.
   const loaded = await build("Character\\Human\\Male\\HumanMale.m2");
   if (!loaded) return;
   const { model, built } = loaded;
-  const body = model.colours[model.batches[0].colorIndex];
-  assert.ok(body.alpha.tracks.length > 0, "the body does carry an alpha track");
-  assert.ok(body.alpha.tracks.every((sub) => sub.sequence !== 0),
-    "and none of its keys are under sequence 0, which is what makes this a trap");
-  assert.ok([...body.alpha.tracks[0].values].includes(0), "the track really does reach zero");
+  const bodyBatches = model.batches.flatMap((batch, index) =>
+    model.submeshes[batch.submesh]?.geosetId === 0 ? [{ batch, index }] : []);
+  assert.ok(bodyBatches.length > 0, "the active model has authored base-body batches");
+  const paintedBodies = bodyBatches.flatMap(({ batch }) => {
+    const colour = model.colours[batch.colorIndex];
+    return colour?.alpha.tracks.length ? [colour] : [];
+  });
+  if (paintedBodies.length > 0) {
+    assert.ok(paintedBodies.every((colour) =>
+      colour.alpha.tracks.every((sub) => sub.sequence !== 0)),
+    "a body colour track has no Stand keys, which is what makes arbitrary-track sampling a trap");
+    assert.ok(paintedBodies.some((colour) =>
+      colour.alpha.tracks.some((sub) => [...sub.values].includes(0))),
+    "the authored corpse track really does reach zero");
+  } else {
+    assert.ok(bodyBatches.every(({ batch }) => model.colours[batch.colorIndex] === undefined),
+      "an HD body without colour animation names no phantom colour record");
+  }
 
   for (const time of [0, 700, 1600, 2500, 5000]) {
     updateBatchColours(built.animatedBatches, time);
-    assert.equal(drawn(built).length, built.materials.length, `every batch is drawn at ${time} ms`);
-    assert.equal(built.materials[0].opacity, 1, `and at full opacity at ${time} ms`);
+    for (const { index } of bodyBatches) {
+      assert.equal(built.materials[index].visible, true, `body batch ${index} is drawn at ${time} ms`);
+      assert.equal(built.materials[index].opacity, 1, `body batch ${index} is opaque at ${time} ms`);
+    }
   }
 });
 

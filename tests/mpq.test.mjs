@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { shadowWarning } from "../tools/check-shadowed-tables.mjs";
 import { ARCHIVE_ORDER, archivePriority, openClientArchives } from "../tools/mpq.mjs";
@@ -17,6 +17,32 @@ try {
   clientDirectory = undefined;
 }
 const withClient = { skip: clientDirectory ? false : "no 3.3.5a client on this machine" };
+
+// This is the same candidate the gateway uses for client-visual DBCs. A patch may legitimately
+// shadow the dataset copy, but only if this runtime copy is byte-for-byte the active winner.
+let visualDbcDirectory;
+try {
+  const candidate = resolve(process.env.VISUAL_DBC_DIR ?? join(process.cwd(), "data", "visual-dbc"));
+  if (existsSync(join(candidate, "CreatureModelData.dbc"))) visualDbcDirectory = candidate;
+} catch {
+  visualDbcDirectory = undefined;
+}
+
+async function acceptedVisualShadow(shadow, winner, chain) {
+  if (!visualDbcDirectory) return false;
+  // The extracted directory itself is the allow-list: accepting a hard-coded table name could
+  // silently bless a gameplay DBC added to an HD pack. Only the archive that currently wins the
+  // chain may be accepted, and only when its bytes equal the runtime copy.
+  const file = shadow.path.split(/[\\/]/).pop();
+  if (!file || !/\.dbc$/i.test(file)) return false;
+  const activeWinner = await chain.locate(shadow.path);
+  if (!activeWinner || winner.toLowerCase() !== activeWinner.toLowerCase()) return false;
+  const [runtime, active] = await Promise.all([
+    readFile(join(visualDbcDirectory, file)).catch(() => undefined),
+    chain.read(shadow.path),
+  ]);
+  return runtime !== undefined && active !== undefined && runtime.equals(active);
+}
 
 function order(names) {
   return [...names].sort((left, right) => {
@@ -260,6 +286,14 @@ test("a tswow patch directory wins over the archive it shadows", withClient, asy
  */
 const EXPLAINED_SHADOWS = new Map([
   ["dbfilesclient\\gameobjectdisplayinfo.dbc", ["patch-ruRU-E.MPQ", "patch-ruRU-D.MPQ"]],
+  // The installed HD pack deliberately carries the client-side family rows used by its demon
+  // models. Audited against this dataset: existing icon paths, talent categories, skill lines and
+  // hunter-family fields are unchanged; it localises names differently, restores Doomguard's
+  // client scale to 0.3 and adds the non-hunter Infernal row 108 with no icon or talent category.
+  // The web renderer must not ingest it as gameplay metadata: OBJECT_FIELD_SCALE_X is authoritative
+  // for size and TalentMetadata stays paired with the server dataset. Naming the one archive here
+  // keeps any other CreatureFamily shadow — or the same table from another patch — a hard failure.
+  ["dbfilesclient\\creaturefamily.dbc", ["patch-W.MPQ"]],
   ["interface\\gluexml\\accountlogin.lua", ["patch-ruRU-F.MPQ"]],
   ["interface\\gluexml\\accountlogin.xml", ["patch-ruRU-F.MPQ"]],
   ["interface\\gluexml\\gluebuttons.lua", ["patch-ruRU-F.MPQ"]],
@@ -280,8 +314,9 @@ test("nothing tswow built is shadowed except what is already explained", withCli
       for (const name of shadow.shadowedBy) {
         // Every archive in the queue has to be one of the known ones: a new one appearing anywhere
         // in it changes what the game reads, whether or not it changes what the game reads *first*.
+        const accepted = explained.includes(name) || await acceptedVisualShadow(shadow, name, chain);
         assert.ok(
-          explained.includes(name),
+          accepted,
           `${shadow.path} in ${shadow.overlay} is now shadowed by ${name}, which nothing explains: ` +
           `the game client reads a copy of that file the dataset did not build`);
       }

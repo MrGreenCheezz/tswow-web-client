@@ -17,6 +17,8 @@ export interface WorldLightUniforms {
   wowSunDirection: { value: THREE.Vector3 };
   wowDiffuse: { value: THREE.Color };
   wowAmbient: { value: THREE.Color };
+  /** Reversible ALU-only warm-key/cool-fill grade; zero is the exact authored equation. */
+  wowImmersiveStrength: { value: number };
 }
 
 /**
@@ -93,9 +95,17 @@ export function createWorldLightUniforms(
     wowSunDirection: { value: new THREE.Vector3(0, 1, 0) },
     wowDiffuse: { value: new THREE.Color() },
     wowAmbient: { value: new THREE.Color() },
+    wowImmersiveStrength: { value: 0 },
   };
   setWorldLightUniforms(uniforms, ambient, diffuse);
   return uniforms;
+}
+
+/** Update the shared grade without recompiling any material program. */
+export function setWorldLightImmersiveStrength(uniforms: WorldLightUniforms, strength: number): number {
+  const bounded = Number.isFinite(strength) ? Math.max(0, Math.min(1, strength)) : 0;
+  uniforms.wowImmersiveStrength.value = bounded;
+  return bounded;
 }
 
 /** Update the shared values without replacing the uniform objects already bound to programs. */
@@ -120,6 +130,7 @@ export const WORLD_LIGHT_PARS = /* glsl */ `
 uniform vec3 wowSunDirection;
 uniform vec3 wowDiffuse;
 uniform vec3 wowAmbient;
+uniform float wowImmersiveStrength;
 `;
 
 /** The three includes replaced together, avoiding three's first BRDF and shadow lookup entirely. */
@@ -153,7 +164,31 @@ float wowShadow = 1.0;
     );
   }
 #endif
-vec3 wowLight = max( wowAmbient + wowDiffuse * ( wowNL * wowShadow ), vec3( 0.0 ) );
+vec3 wowAuthoredLight = max( wowAmbient + wowDiffuse * ( wowNL * wowShadow ), vec3( 0.0 ) );
+
+// A single-shader cinematic separation: cool skylight in shade, a restrained warm key on the
+// sunward side and a view-dependent edge which keeps dark silhouettes readable. It deliberately
+// owns no texture, render target, light or extra pass. The uniform branch is coherent for the
+// whole draw and skips the extra rim/fill/key ALU at quality zero instead of merely mixing it away.
+vec3 wowLight = wowAuthoredLight;
+if ( wowImmersiveStrength > 0.0001 ) {
+  float wowWrappedKey = clamp( ( wowDot + 0.20 ) / 1.20, 0.0, 1.0 );
+  float wowViewFacing = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
+  float wowRim = pow( 1.0 - wowViewFacing, 3.0 );
+  vec3 wowCoolFill = wowAmbient * vec3( 0.86, 0.95, 1.12 )
+    * ( 1.0 + 0.16 * ( 1.0 - wowNL ) );
+  vec3 wowWarmKey = wowDiffuse * vec3( 1.10, 1.02, 0.88 ) * ( wowWrappedKey * wowShadow );
+  vec3 wowImmersiveLight = wowCoolFill + wowWarmKey
+    + vec3( 0.07, 0.11, 0.18 ) * wowRim * ( 0.35 + 0.65 * ( 1.0 - wowShadow ) );
+  #if defined( WOW_LIGHT_TERRAIN )
+    float wowImmersiveSurfaceStrength = wowImmersiveStrength * 0.30;
+  #elif defined( WOW_LIGHT_FOLIAGE )
+    float wowImmersiveSurfaceStrength = wowImmersiveStrength * 0.50;
+  #else
+    float wowImmersiveSurfaceStrength = wowImmersiveStrength;
+  #endif
+  wowLight = mix( wowAuthoredLight, min( wowImmersiveLight, vec3( 1.15 ) ), wowImmersiveSurfaceStrength );
+}
 reflectedLight.directDiffuse = diffuseColor.rgb * pow( wowLight, vec3( 2.2 ) );
 reflectedLight.indirectDiffuse = vec3( 0.0 );
 reflectedLight.directSpecular = vec3( 0.0 );
@@ -163,13 +198,36 @@ reflectedLight.indirectSpecular = vec3( 0.0 );
 interface WorldLightBinding {
   readonly uniforms: WorldLightUniforms;
   readonly kind: WorldLightKind;
+  /** Hook and cache key that existed before the outer world-light wrapper was installed. */
+  readonly previousCompile: THREE.Material["onBeforeCompile"];
+  readonly previousKey: string;
 }
 
 const WORLD_LIGHT_BINDINGS = new WeakMap<THREE.Material, WorldLightBinding>();
-const WORLD_LIGHT_KEY = "world-light-r185-v1";
+const WORLD_LIGHT_KEY = "world-light-r185-v2";
 
 export type WorldLightKind = "surface" | "terrain" | "foliage";
 export type WorldLitMaterial = THREE.MeshLambertMaterial | THREE.MeshStandardMaterial;
+
+/**
+ * Clone a material shell for a portrait without importing world-only shader state.
+ *
+ * Three.js Material.clone() deliberately resets `onBeforeCompile` and
+ * `customProgramCacheKey`, which is unsafe for model materials: the build may have an authored
+ * second-layer/fog chain, and `applyWorldLight` adds one outer wrapper around that chain. For a
+ * world-lit source restore the hook/key captured before that wrapper; for every other source carry
+ * the current hook/key through unchanged. Maps and all ordinary material flags remain shared/copied
+ * by Material.clone(), while the returned shell is owned by its caller and has no world binding.
+ */
+export function cloneMaterialForPortrait(material: THREE.Material): THREE.Material {
+  const binding = WORLD_LIGHT_BINDINGS.get(material);
+  const previousCompile = binding?.previousCompile ?? material.onBeforeCompile;
+  const previousKey = binding?.previousKey ?? material.customProgramCacheKey();
+  const clone = material.clone();
+  clone.onBeforeCompile = previousCompile;
+  clone.customProgramCacheKey = () => previousKey;
+  return clone;
+}
 
 /**
  * Add the authored world-light equation after every hook already installed on the material.
@@ -199,6 +257,8 @@ export function applyWorldLight(
   const binding: WorldLightBinding = {
     uniforms,
     kind,
+    previousCompile,
+    previousKey,
   };
   WORLD_LIGHT_BINDINGS.set(material, binding);
 
@@ -207,6 +267,7 @@ export function applyWorldLight(
     shader.uniforms.wowSunDirection = binding.uniforms.wowSunDirection;
     shader.uniforms.wowDiffuse = binding.uniforms.wowDiffuse;
     shader.uniforms.wowAmbient = binding.uniforms.wowAmbient;
+    shader.uniforms.wowImmersiveStrength = binding.uniforms.wowImmersiveStrength;
     const unindentedTarget = WORLD_LIGHT_TARGET.replaceAll("\n\t", "\n");
     const target = shader.fragmentShader.includes(WORLD_LIGHT_TARGET)
       ? WORLD_LIGHT_TARGET

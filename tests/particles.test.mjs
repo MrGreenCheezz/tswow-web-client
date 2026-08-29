@@ -8,12 +8,16 @@ import { readGlobalSequences, readParticleEmitters, readRibbonEmitters } from ".
 import { encodeWvm9 } from "../tools/wvm.mjs";
 import { decodeWvm9 } from "../dist/code/browser/Wvm.js";
 import {
-  EMITTER_SPHERE, PARTICLE_FLAG_PINNED, createParticleSystem, createQuadBuffers, createRibbonSystem,
+  EMITTER_SPHERE, PARTICLE_FLAG_DO_NOT_TRAIL, PARTICLE_FLAG_MODEL_SPACE, PARTICLE_FLAG_PINNED,
+  PARTICLE_FLAG_XY_QUAD,
+  createParticleSystem, createQuadBuffers, createRibbonSystem,
   particleAppearance, primeParticleSystem, sampleRamp, sampleTrack, seededRandom,
   stepParticles, stepParticlesCatchUp, stepRibbon,
   writeParticleQuads, writeRibbonStrip,
 } from "../dist/code/browser/Particles.js";
-import { buildModelEffects, disposeModelEffects, updateModelEffects } from "../dist/code/browser/ParticleRender.js";
+import {
+  buildModelEffects, disposeModelEffects, setModelEffectsFantasyGlow, updateModelEffects,
+} from "../dist/code/browser/ParticleRender.js";
 import { spellEffectPrimeSeconds } from "../dist/code/browser/WorldRenderer3D.js";
 import { applyBillboardBones, buildSkinnedTemplateFrom, instantiateSkinned } from "../dist/code/browser/AnimatedModel.js";
 import { BONE_CYLINDRICAL_BILLBOARD_Z, BONE_SPHERICAL_BILLBOARD } from "../dist/code/browser/Wvm.js";
@@ -435,6 +439,30 @@ test("a particle is drawn as a quad centred on itself, in the cell the ramp name
   assert.ok(Math.abs(Math.max(...vs) - 0.5) < 1e-6);
 });
 
+test("model-space spell particles inherit the attached model scale", () => {
+  // The hand emitter in the real `spells\\shaman_thunder.m2` is MODEL_SPACE (0x80). Its local
+  // particle quad must be transformed by the same bone/effect matrix as its centre; transforming
+  // only the centre leaves a scaled hand spark visibly too small and makes the scale seam look
+  // like a flat card. This is deliberately a writer-level test: no renderer or texture is needed.
+  const local = emitter({
+    flags: PARTICLE_FLAG_MODEL_SPACE,
+    scale: ramp([1, 1], [0], 2),
+  });
+  const system = createParticleSystem(local, new Uint32Array(0), 37);
+  system.particles.push({
+    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bx: 0, by: 0, bz: 0,
+    age: 0, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+  });
+  const buffers = createQuadBuffers(1);
+  const scale = new THREE.Matrix4().makeScale(2, 2, 2);
+  system.matrix.set(scale.elements);
+  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
+  const width = Math.abs(buffers.positions[3] - buffers.positions[0]);
+  const height = Math.abs(buffers.positions[6 + 1] - buffers.positions[0 + 1]);
+  assert.ok(Math.abs(width - 2) < 1e-5, `model scale reaches particle width: ${width}`);
+  assert.ok(Math.abs(height - 2) < 1e-5, `model scale reaches particle height: ${height}`);
+});
+
 test("Э1 a pinned streak is as long as tailLength allows, and its far end is on the particle", () => {
   // `spells\forceshield_andxplosion.m2`, which is the worst case in the client: 27.8 yards/s for
   // 3.0 s is an 83.3-yard flight — the maximum over the 881 pinned emitters under `spells\`,
@@ -489,6 +517,62 @@ test("Э1 an emitter with no tailLength keeps the streak it always had", () => {
   assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
   const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
   assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 12) < 1e-3, "the whole flight");
+});
+
+test("DO_NOT_TRAIL keeps a pinned spell particle as a head instead of a false streak", () => {
+  const head = emitter({
+    flags: PARTICLE_FLAG_PINNED | PARTICLE_FLAG_DO_NOT_TRAIL,
+    tailLength: 1,
+    scale: ramp([1, 1], [0], 2),
+  });
+  const system = createParticleSystem(head, new Uint32Array(0), 7);
+  system.particles.push({
+    x: 0, y: 12, z: 0, vx: 0, vy: 12, vz: 0, bx: 0, by: 0, bz: 0,
+    age: 1, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+  });
+  const buffers = createQuadBuffers(1);
+  assert.equal(writeParticleQuads(system, VIEW, buffers), 1);
+  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
+  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 1) < 1e-5,
+    "the quad keeps its one-yard authored height rather than spanning its twelve-yard flight");
+});
+
+test("XY_QUAD stays in the emitter plane when the camera axes turn", () => {
+  const planar = emitter({ flags: PARTICLE_FLAG_XY_QUAD, scale: ramp([2, 2], [0], 2) });
+  const system = createParticleSystem(planar, new Uint32Array(0), 7);
+  system.particles.push({
+    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bx: 0, by: 0, bz: 0,
+    age: 0, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+  });
+  const buffers = createQuadBuffers(1);
+  const turnedView = { rightX: 0, rightY: 0, rightZ: 1, upX: 0, upY: 1, upZ: 0 };
+  assert.equal(writeParticleQuads(system, turnedView, buffers), 1);
+  const xs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3]);
+  const zs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 2]);
+  assert.ok(Math.abs(Math.max(...xs) - Math.min(...xs) - 2) < 1e-5);
+  assert.ok(zs.every((z) => Math.abs(z) < 1e-6), "camera rotation cannot tip an XY quad out of plane");
+});
+
+test("PINNED deliberately owns the tail shape when an emitter also sets XY_QUAD", () => {
+  const combined = emitter({
+    flags: PARTICLE_FLAG_PINNED | PARTICLE_FLAG_XY_QUAD,
+    tailLength: 0,
+    scale: ramp([1, 1], [0], 2),
+  });
+  const system = createParticleSystem(combined, new Uint32Array(0), 7);
+  system.particles.push({
+    x: 0, y: 2, z: 0, vx: 0, vy: 2, vz: 0, bx: 0, by: 0, bz: 0,
+    age: 1, life: 2, scaleX: 1, scaleY: 1, spin: 0, spinRate: 0, cellOffset: 0,
+  });
+  const buffers = createQuadBuffers(1);
+  const turnedView = { rightX: 0, rightY: 0, rightZ: 1, upX: 1, upY: 0, upZ: 0 };
+  assert.equal(writeParticleQuads(system, turnedView, buffers), 1);
+  const ys = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 1]);
+  const zs = [0, 1, 2, 3].map((corner) => buffers.positions[corner * 3 + 2]);
+  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 2) < 1e-5,
+    "the pinned birth-to-head tail remains two yards long");
+  assert.ok(Math.max(...zs) - Math.min(...zs) > 0.9,
+    "the tail keeps a camera-facing width instead of being flattened into emitter XY");
 });
 
 test("a particle's colour and size come off the ramps at its own age", () => {
@@ -656,6 +740,45 @@ test("Э1 a ribbon's material flags reach its material, not only its blend mode"
   };
   assert.equal(build(0x02).fog, false, "MATERIAL_UNFOGGED means distance may not touch it");
   assert.equal(build(0).fog, true, "and a ribbon that says nothing is fogged like everything else");
+});
+
+test("fantasy glow is local, reversible on active spell particles, and fails closed", () => {
+  const model = {
+    globalSequences: new Uint32Array(0),
+    particleEmitters: [emitter({ blendType: 4 })],
+    ribbonEmitters: [],
+    textures: [{ type: 0, flags: 0, path: "spells\\glow.blp" }],
+  };
+  const build = (fantasyGlow) => buildModelEffects(model, {
+    baseUrl: "http://gateway", loadTexture: () => new THREE.Texture(), fantasyGlow,
+  });
+  const baseline = build(false);
+  const fantasy = build(true);
+  assert.ok(baseline && fantasy);
+  const compile = (effect) => {
+    const shader = {
+      uniforms: {},
+      vertexShader: THREE.ShaderLib.basic.vertexShader,
+      fragmentShader: THREE.ShaderLib.basic.fragmentShader,
+    };
+    effect.emitters[0].material.onBeforeCompile(shader);
+    return shader.fragmentShader;
+  };
+  assert.doesNotMatch(compile(baseline), /particle-fantasy-glow-v1/);
+  assert.match(compile(fantasy), /particle-fantasy-glow-v1/);
+  assert.match(fantasy.emitters[0].material.customProgramCacheKey(), /particle-fantasy-glow-v1/);
+  const baselineKey = baseline.emitters[0].material.customProgramCacheKey();
+  setModelEffectsFantasyGlow(baseline, true);
+  assert.match(compile(baseline), /particle-fantasy-glow-v1/);
+  setModelEffectsFantasyGlow(baseline, false);
+  assert.doesNotMatch(compile(baseline), /particle-fantasy-glow-v1/);
+  assert.equal(baseline.emitters[0].material.customProgramCacheKey(), baselineKey);
+  setModelEffectsFantasyGlow(baseline, true);
+  assert.throws(() => baseline.emitters[0].material.onBeforeCompile({
+    uniforms: {}, vertexShader: "", fragmentShader: "void main() {}",
+  }), /exactly one MeshBasic color marker/);
+  disposeModelEffects(baseline);
+  disposeModelEffects(fantasy);
 });
 
 test("a model with no emitters builds nothing rather than an empty group", withSamples, async () => {

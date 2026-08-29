@@ -49,6 +49,13 @@ const WARM_FETCH_PRIORITY: Readonly<Record<WarmFetchPriority, number>> = {
 type WarmResponse = { ok: boolean; arrayBuffer(): Promise<ArrayBuffer> };
 export type WarmFetch = (url: string, init: { signal: AbortSignal }) => Promise<WarmResponse>;
 
+export interface WarmFetchQueueStats {
+  readonly accepted: number;
+  readonly queued: number;
+  readonly active: number;
+  readonly closed: boolean;
+}
+
 /**
  * A response-only queue: bounded URL ledger, bounded concurrency, no decoded object retention.
  * Exported because its hard limits are important enough to test directly.
@@ -105,6 +112,15 @@ export class BoundedWarmFetchQueue {
 
   get accepted(): number {
     return this.#seen.size;
+  }
+
+  get stats(): WarmFetchQueueStats {
+    return Object.freeze({
+      accepted: this.#seen.size,
+      queued: this.#queue.size,
+      active: this.#active,
+      closed: this.#closed,
+    });
   }
 
   /** Test/diagnostic barrier only; world entry never awaits it. */
@@ -321,6 +337,10 @@ export class SessionAssetWarmup {
     this.#textures = new BoundedWarmFetchQueue(options.fetcher);
   }
 
+  get stats(): WarmFetchQueueStats {
+    return this.#textures.stats;
+  }
+
   tick(frame: AssetWarmupFrame): void {
     if (this.#closed) return;
     const now = this.#now();
@@ -400,7 +420,10 @@ export class SessionAssetWarmup {
       // Wait for the complete outfit: asking with a partial list creates and retains a second,
       // obsolete appearance while the remaining item rows arrive.
       if (!item) return;
-      if (item.displayId > 0) equipment.push({ slot, inventoryType: item.inventoryType, displayId: item.displayId });
+      if (item.displayId > 0) equipment.push({
+        slot, inventoryType: item.inventoryType, displayId: item.displayId,
+        ...(item.subClass === undefined ? {} : { subClass: item.subClass }),
+      });
     }
 
     const bytes = player.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset) ?? 0;

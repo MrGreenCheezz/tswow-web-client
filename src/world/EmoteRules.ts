@@ -41,6 +41,26 @@ export interface EmoteEntry {
 
 export interface EmoteData {
   readonly emotes: readonly EmoteEntry[];
+  /** Client-media rows only; the dataset intentionally does not supply this overlay. */
+  readonly sounds?: readonly EmoteSound[];
+}
+
+/** One strict `EmotesTextSound.dbc` row, keyed by the source's text-emote/race/sex tuple. */
+export interface EmoteSound {
+  /** `EmotesTextSound.ID`, retained to audit an active client-media delta. */
+  readonly id: number;
+  readonly textEmoteId: number;
+  readonly raceId: number;
+  readonly gender: number;
+  readonly soundId: number;
+}
+
+/** Typed lookup for the source-specific client sound, with no fallback to a gameplay table. */
+export function emoteSoundId(data: EmoteData | undefined, textEmoteId: number,
+  raceId: number, gender: number): number | undefined {
+  const row = data?.sounds?.find((sound) =>
+    sound.textEmoteId === textEmoteId && sound.raceId === raceId && sound.gender === gender);
+  return row?.soundId;
 }
 
 /**

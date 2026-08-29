@@ -2,7 +2,7 @@ import { cameraPivotHeight, game } from "./Context.js";
 import { drainWorldState } from "../ui/WorldView.js";
 import { updateSpellCooldowns } from "../ui/Spellbook.js";
 import { updateAuraDurations } from "../ui/Auras.js";
-import { diagnosticsWindow, renderStatus, worldPanel } from "../ui/Dom.js";
+import { diagnosticsWindow, fullFrameStatus, renderStatus, worldPanel } from "../ui/Dom.js";
 import { showStandIns } from "../ui/Diagnostics.js";
 import { OPCODES } from "../../generated/opcodes.js";
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
@@ -13,6 +13,7 @@ import {
 } from "../input/Movement.js";
 import { FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeUnderwater } from "./Physics.js";
 import { eyeUnderCollisionModelLiquid } from "./CollisionLiquid.js";
+import { ENVIRONMENT_RANGE, terrainGridDependencyFootprint } from "../Terrain.js";
 import { updateZoneSound } from "./ZoneSound.js";
 import { updateCombatSounds } from "./CombatSounds.js";
 import {
@@ -35,8 +36,66 @@ import { updatePetBar } from "../ui/PetBar.js";
 import { updateLoadingScreen, worldPhysicsReady } from "../ui/LoadingScreen.js";
 import { updateCustomPackets, updateModuleWindowList } from "../ui/Diagnostics.js";
 import { applyPortraitVisibility, clearPortraitTargets, syncPortraitTargets } from "../ui/Portraits.js";
+import {
+  FullFrameClock, LONG_FRAME_THRESHOLD_MS, makeRenderTelemetrySnapshot,
+  type RenderTelemetrySnapshot,
+} from "../RenderStats.js";
+import type { BenchmarkClientReadinessInput } from "../RenderBenchmarkReadiness.js";
+import { ResourceAccountingLedger } from "../ResourceAccounting.js";
+import { renderBenchmarkRuntime } from "../RenderBenchmarkRuntime.js";
+import { formalRenderBenchmarkExclusiveActive } from "../RenderBenchmarkExclusiveLease.js";
 let lastFrame = performance.now();
 let renderStatusShownAt = 0;
+let fullFrameStatusShownAt = 0;
+/** Full callback work, kept apart from the renderer's update/submit timer. */
+const fullFrameClock = new FullFrameClock();
+
+/** Captures the live renderer-triggered request owners without treating lifetime caches as queues. */
+export function captureBenchmarkClientReadiness(): Readonly<BenchmarkClientReadinessInput> | undefined {
+  const light = game.light;
+  const liquids = game.liquids;
+  const groundCover = game.groundCover;
+  const horizon = game.horizon;
+  const transportPaths = game.transportPaths;
+  const creatureModels = game.creatureModels;
+  const creatureMetadata = game.creatureMetadata;
+  const gameObjectMetadata = game.gameObjectMetadata;
+  const itemMetadata = game.itemMetadata;
+  const collision = game.collision;
+  if (!light || !liquids || !groundCover || !horizon || !transportPaths || !creatureModels
+    || !creatureMetadata || !gameObjectMetadata || !itemMetadata || !collision) return undefined;
+  return Object.freeze({
+    light: light.stats,
+    liquids: liquids.stats,
+    groundCover: groundCover.stats,
+    horizon: horizon.stats,
+    transportPaths: transportPaths.stats,
+    creatureModels: creatureModels.stats,
+    creatureMetadata: creatureMetadata.stats,
+    gameObjectMetadata: gameObjectMetadata.stats,
+    itemMetadata: itemMetadata.stats,
+    collision: collision.stats,
+  });
+}
+
+/** Captures one immutable full-frame/renderer telemetry record for benchmark and diagnostics code. */
+export function captureRenderTelemetry(capturedAt = performance.now()): Readonly<RenderTelemetrySnapshot> {
+  const accounting = new ResourceAccountingLedger();
+  game.terrain?.visitRetainedResources(accounting);
+  game.terrainSplat?.visitRetainedResources(accounting);
+  game.environment?.visitRetainedResources(accounting);
+  game.liquids?.visitRetainedResources(accounting);
+  game.groundCover?.visitRetainedResources(accounting);
+  game.horizon?.visitRetainedResources(accounting);
+  game.renderer?.visitRetainedResources(accounting);
+  return makeRenderTelemetrySnapshot(capturedAt, fullFrameClock.snapshot(), game.renderer?.telemetry, {
+    terrain: game.terrain?.stats,
+    environment: game.environment?.stats,
+    terrainSplat: game.terrainSplat?.stats,
+    assetWarmup: game.assetWarmup?.stats,
+    accounting: accounting.snapshot(),
+  }, captureBenchmarkClientReadiness());
+}
 /** The marks over heads go stale as the player walks, so they are asked for again now and then. */
 let questStatusAskedAt = 0;
 /** Consecutive frames that have thrown, reset by the first one that does not. */
@@ -71,7 +130,26 @@ function advanceCameraView(player: WorldPosition, map: number | undefined, elaps
   }, elapsed);
 }
 
+function updateTerrainActiveTiles(world: typeof game.world): void {
+  const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  if (world?.mapId === undefined || !player?.position) {
+    game.terrain?.setActiveTiles(undefined, []);
+    return;
+  }
+  const grids = terrainGridDependencyFootprint(player.position.x, player.position.y);
+  if (grids.length === 0) {
+    game.terrain?.setActiveTiles(undefined, []);
+    return;
+  }
+  game.terrain?.setActiveTiles(world.mapId, grids);
+}
+
 function frame(now: number): void {
+  const frameInterval = game.renderer?.observeFrame(now);
+  if (frameInterval !== undefined) renderBenchmarkRuntime.recordFrameInterval(frameInterval);
+  // Until this RAF actually reaches draw(), its public admission/submission counters describe an
+  // empty frame. This also covers loading, a hidden world panel, or an exception in earlier UI work.
+  game.renderer?.markFrameNotRendered();
   const elapsed = Math.min((now - lastFrame) / 1000, 0.1);
   lastFrame = now;
   const world = game.world;
@@ -81,6 +159,7 @@ function frame(now: number): void {
   world?.state.updateMotions(now);
   game.spellVisualCoordinator?.tick(now);
   drainWorldState();
+  updateTerrainActiveTiles(game.world);
   if (!world) {
     clearPortraitTargets();
     game.renderer?.clearPortraits();
@@ -110,6 +189,10 @@ function frame(now: number): void {
     game.world.requestQuestGiverStatus();
   }
   const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  if (!player?.position) {
+    game.renderer?.clearTerrain();
+    game.terrainSplat?.setActiveTiles(undefined, []);
+  }
   if (world && player?.position && !worldPanel.hidden) {
     // What is solid around the player, before it is asked what it is standing on. Nearly every
     // frame this returns having done nothing at all.
@@ -141,7 +224,7 @@ function frame(now: number): void {
       sendMovement(OPCODES.MSG_MOVE_HEARTBEAT);
     }
     const heightAt = (x: number, y: number) => game.terrain?.heightAt(world.mapId, x, y);
-    const environment = game.environment?.objectsAround(world.mapId, position.x, position.y) ?? [];
+    const environment = game.environment?.objectsAround(world.mapId, position.x, position.y, ENVIRONMENT_RANGE) ?? [];
     // This observes the same already-requested placement list the renderer receives below. It
     // starts no terrain/environment tile fan-out of its own and never delays the frame or curtain.
     game.assetWarmup?.tick({ player, environment, actionButtons: world.actionButtons });
@@ -216,34 +299,48 @@ function frame(now: number): void {
         : { guid: focusGuid, colour: selectionRingColour(world.state.objects.get(focusGuid)) },
     );
     syncPortraitTargets(game.renderer);
-    game.renderer?.draw(
-      world.state,
-      world.mapId,
-      heightAt,
-      game.terrain,
-      environment,
-      game.environment,
-      (displayId) => game.gameObjectMetadata?.get(displayId),
-      game.camera.yaw,
-      // The granted tilt and the granted distance, never the two the player's hands asked for:
-      // `viewPitch` is `pitch` with the floor's say in it, exactly as `view` is `distance` with
-      // the walls'. Every camera this frame builds has to be built out of the same pair.
-      game.camera.viewPitch,
-      game.camera.view,
-      unitModel,
-      game.terrainSplat,
-      game.liquids,
-      game.transportPaths,
-      game.horizon,
-      game.camera.distance,
-      // Diagnostics only: `unitModel` returns undefined both while the display record is on its way
-      // and while a player's appearance is, and the capsule counter has to tell those two apart.
-      (displayId) => game.creatureModels?.get(displayId) !== undefined,
-      cameraPivotHeight(),
-      mountModel,
-      cameraWmoFloor,
-    );
-    game.renderer?.renderPortraits(now);
+    const renderer = game.renderer;
+    if (renderer) {
+      // One renderer frame includes resize/camera/sun setup, sky, world and every dirty portrait
+      // render/readback. The nested finally closes the GPU query and restores renderer.info even if
+      // either draw path throws; endRenderFrame itself is deliberately non-throwing.
+      renderer.beginRenderFrame();
+      try {
+        renderer.draw(
+          world.state,
+          world.mapId,
+          heightAt,
+          game.terrain,
+          environment,
+          game.environment,
+          (displayId) => game.gameObjectMetadata?.get(displayId),
+          game.camera.yaw,
+          // The granted tilt and the granted distance, never the two the player's hands asked for:
+          // `viewPitch` is `pitch` with the floor's say in it, exactly as `view` is `distance` with
+          // the walls'. Every camera this frame builds has to be built out of the same pair.
+          game.camera.viewPitch,
+          game.camera.view,
+          unitModel,
+          game.terrainSplat,
+          game.liquids,
+          game.transportPaths,
+          game.horizon,
+          game.camera.distance,
+          // Diagnostics only: `unitModel` returns undefined both while the display record is on its way
+          // and while a player's appearance is, and the capsule counter has to tell those two apart.
+          (displayId) => game.creatureModels?.get(displayId) !== undefined,
+          cameraPivotHeight(),
+          mountModel,
+          cameraWmoFloor,
+          undefined,
+          game.gameObjectMetadata?.revision,
+        );
+        renderer.renderPortraits(now);
+      } finally {
+        const rendererElapsed = renderer.endRenderFrame();
+        if (rendererElapsed !== undefined) renderBenchmarkRuntime.recordRendererFrameCpu(rendererElapsed);
+      }
+    }
     applyPortraitVisibility();
     // Writing the status line every frame forces a layout pass for text nobody reads that often.
     if (now - renderStatusShownAt > 500) {
@@ -318,28 +415,69 @@ function frame(now: number): void {
  * counter is what tells a single hiccup apart from a frame that will now throw forever.
  */
 export function animate(now: number): void {
+  let measuring = false;
   try {
-    frame(now);
-    frameFailures = 0;
-  } catch (error) {
-    frameFailures++;
-    const message = error instanceof Error ? error.message : String(error);
-    if (message !== lastFrameError) {
-      lastFrameError = message;
-      console.error(`Frame ${frameFailures}:`, error);
+    // The exclusive gate is checked before clocks, stores, physics, UI, portraits, sound, or any
+    // renderer mutation. Rebase live time so release cannot create a clamped catch-up step from the
+    // benchmark's wall-clock duration; the shared outer finally keeps RAF alive for this early exit.
+    if (formalRenderBenchmarkExclusiveActive()) {
+      lastFrame = now;
+      return;
     }
-    // The status line below lives in the diagnostics window, which the markup marks `hidden` and
-    // which opens on a key nobody is told about — so a frame that throws every time would freeze
-    // the world with the explanation written somewhere nobody is looking. The second failure in a
-    // row is the one worth saying out loud: the first can be a hiccup, and repeats of the same
-    // text collapse into a count rather than a wall.
-    if (frameFailures === 2) notice(`Кадр не рисуется: ${message}`);
-    renderStatus.className = "error";
-    renderStatus.textContent = `Кадр упал (${frameFailures}): ${message}`;
-    // Nothing rewrites the line while frames are failing, so hold it until one succeeds.
-    renderStatusShownAt = now + FRAME_ERROR_HOLD;
+    try {
+      fullFrameClock.begin();
+      measuring = true;
+      try {
+        const environment = game.environment;
+        environment?.beginResourceFrame();
+        try {
+          frame(now);
+        } finally {
+          environment?.endResourceFrame();
+        }
+        frameFailures = 0;
+      } catch (error) {
+        frameFailures++;
+        renderBenchmarkRuntime.recordFrameFailure();
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastFrameError) {
+          lastFrameError = message;
+          console.error(`Frame ${frameFailures}:`, error);
+        }
+        // The status line below lives in the diagnostics window, which the markup marks `hidden` and
+        // which opens on a key nobody is told about — so a frame that throws every time would freeze
+        // the world with the explanation written somewhere nobody is looking. The second failure in a
+        // row is the one worth saying out loud: the first can be a hiccup, and repeats of the same
+        // text collapse into a count rather than a wall.
+        if (frameFailures === 2) notice(`Кадр не рисуется: ${message}`);
+        renderStatus.className = "error";
+        renderStatus.textContent = `Кадр упал (${frameFailures}): ${message}`;
+        // Nothing rewrites the line while frames are failing, so hold it until one succeeds.
+        renderStatusShownAt = now + FRAME_ERROR_HOLD;
+      }
+      if (now - fullFrameStatusShownAt > 500) {
+        fullFrameStatusShownAt = now;
+        const snapshot = fullFrameClock.snapshot();
+        fullFrameStatus.className = frameFailures > 0 ? "error" : "muted";
+        fullFrameStatus.textContent = snapshot.count === 0
+          ? "CPU full-frame: ожидание кадра…"
+          : `CPU full-frame: ${snapshot.average.toFixed(1)} мс (p50 ${snapshot.p50.toFixed(1)}, p95 ${snapshot.p95.toFixed(1)}, p99 ${snapshot.p99.toFixed(1)})`
+            + (snapshot.longFrames > 0 ? ` · >${LONG_FRAME_THRESHOLD_MS} мс: ${snapshot.longFrames}` : "");
+      }
+    } finally {
+      try {
+        if (measuring) renderBenchmarkRuntime.recordFullFrameCpu(fullFrameClock.end());
+      } finally {
+        // Resource flattening and GPU polling are diagnostic overhead, not application frame work,
+        // so this checkpoint is deliberately outside the full-frame CPU envelope.
+        if (renderBenchmarkRuntime.checkpointDue(now)) {
+          renderBenchmarkRuntime.recordResourceCheckpoint(now, captureRenderTelemetry(now));
+        }
+      }
+    }
+  } finally {
+    requestAnimationFrame(animate);
   }
-  requestAnimationFrame(animate);
 }
 
 /** Starts the frame loop. Everything the interface shows is refreshed from inside it. */

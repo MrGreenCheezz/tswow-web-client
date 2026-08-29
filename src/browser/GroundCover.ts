@@ -18,6 +18,8 @@
  */
 
 import { TERRAIN_GRID_SIZE, type TerrainGrid } from "./Terrain.js";
+import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 /** The file's magic, which is also its version: a later layout is `WGC2`. */
 export const GROUND_COVER_MAGIC = "WGC1";
@@ -322,9 +324,14 @@ export class GroundCoverClient {
   readonly #baseUrl: string;
   readonly #tiles = new Map<string, GroundCoverRecipe | null>();
   readonly #loading = new Set<string>();
+  readonly #errors = new Set<string>();
   #table: GroundEffectTable | null | undefined;
   #tableRequested = false;
+  #loadingTable = false;
   #generation = 0;
+  #success = 0;
+  #error = 0;
+  #tableError = false;
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -337,11 +344,26 @@ export class GroundCoverClient {
     return this.#generation;
   }
 
+  get revision(): number {
+    return this.#generation;
+  }
+
+  /** Immutable exact request counters; requested tile keys are not active after settlement. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    return Object.freeze({
+      pending: this.#loading.size + (this.#loadingTable ? 1 : 0),
+      success: this.#success,
+      error: this.#errors.size + (this.#tableError ? 1 : 0),
+      generation: this.#generation,
+    });
+  }
+
   /** The effect table, once it is here; the first call asks for it. */
   table(): GroundEffectTable | undefined {
     if (this.#table) return this.#table;
     if (!this.#tableRequested) {
       this.#tableRequested = true;
+      this.#loadingTable = true;
       void this.#loadTable();
     }
     return undefined;
@@ -359,7 +381,26 @@ export class GroundCoverClient {
     return undefined;
   }
 
+  /** Adds the exact typed arrays retained by successful cover recipes; the effect table is JS data. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const recipe of this.#tiles.values()) {
+      if (!recipe) continue;
+      visitor.referenceCpu(recipe, recipe.effects);
+      visitor.referenceCpu(recipe, recipe.winner);
+      visitor.referenceCpu(recipe, recipe.noDoodad);
+    }
+  }
+
   async #loadTable(): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loadingTable = false;
+      this.#generation++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/dbc/ground-effects`);
       if (!response.ok) throw new Error(`Ground effect gateway returned ${response.status}`);
@@ -368,27 +409,51 @@ export class GroundCoverClient {
         throw new Error("Ground effect gateway returned an invalid table");
       }
       this.#table = value;
-      this.#generation++;
+      this.#tableError = false;
+      settle(true);
       this.onStatus?.(`Ground effects: ${Object.keys(value.effects).length} растущих слоёв, ${value.models.length} моделей`, false);
     } catch (error) {
       // Null, not a retry: with no table there is nothing to grow, and asking again every frame
       // would be a request storm over ground that is simply going to stay bare.
       this.#table = null;
+      this.#tableError = true;
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      settle(false);
     }
   }
 
   async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loading.delete(key);
+      this.#generation++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/terrain-splat/${map}/${grid.x}/${grid.y}/cover.bin`);
+      if (response.status === 404) {
+        // Cover is an optional generated family member; older tiles legitimately have no recipe.
+        this.#tiles.set(key, null);
+        this.#errors.delete(key);
+        settle(true);
+        return;
+      }
       if (!response.ok) throw new Error(`Ground cover gateway returned ${response.status}`);
       this.#tiles.set(key, decodeGroundCover(await response.arrayBuffer()));
-      this.#generation++;
+      this.#errors.delete(key);
+      settle(true);
     } catch (error) {
       this.#tiles.set(key, null);
+      this.#errors.add(key);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {
-      this.#loading.delete(key);
+      settle(false);
     }
   }
 }

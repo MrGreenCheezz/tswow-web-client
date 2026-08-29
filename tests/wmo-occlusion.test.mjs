@@ -90,6 +90,17 @@ test("no containing room or a damaged graph returns the unchanged distance fallb
   assert.deepEqual(invalid, { groups: [0, 1, 2], candidates: 3, visible: 3, culled: 0, used: false });
 });
 
+test("an explicit untrusted bounds bit forces portal fallback even for finite bounds", () => {
+  const { groups, portals } = corridor();
+  groups[0].boundsValid = false;
+  const candidates = [0, 1, 2];
+  const selection = selectWmoPortalGroups(groups, portals, candidates, { x: 0, y: 0, z: 0 }, IDENTITY);
+  assert.deepEqual(selection, {
+    groups: candidates, candidates: 3, visible: 3, culled: 0, used: false,
+  });
+  assert.strictEqual(selection.groups, candidates, "fail-open keeps the exact distance candidate array");
+});
+
 test("a camera outside, in a non-indoor shell or in an exterior-lit indoor group cannot seed culling", () => {
   const { groups, portals } = corridor();
   const candidates = [0, 1, 2];

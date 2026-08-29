@@ -52,6 +52,22 @@ export interface SpellVisualEffect {
   /** An `ATTACH_*` id, or `ATTACH_WORLD` for an effect that stands on its own. */
   attachment: number;
   scale: number;
+  /**
+   * Stable source occurrence for rows that can repeat an otherwise identical effect.
+   *
+   * This is deliberately not an array index: the model-attach DBC row id remains stable when
+   * rows are merged from an override or their physical order changes.
+   */
+  occurrence?: string;
+  /** Optional model-attach transform, in the M2 coordinate system and radians. */
+  transform?: SpellVisualEffectTransform;
+}
+
+export interface SpellVisualEffectTransform {
+  /** Translation relative to the selected M2 attachment point: x, y, z. */
+  offset: readonly [number, number, number];
+  /** Rotation in the DBC's yaw, pitch, roll order. */
+  rotation: readonly [number, number, number];
 }
 
 /**
@@ -121,6 +137,8 @@ export interface SpellVisualMissile {
  */
 export interface SpellVisualMetadata {
   id: number;
+  /** `SPELL_ATTR2_AUTOREPEAT_FLAG`: play a ranged release, not a generic spell cast. */
+  autoRepeat?: boolean;
   precast?: SpellVisualKit;
   cast?: SpellVisualKit;
   impact?: SpellVisualKit;
@@ -205,6 +223,7 @@ function effectPaths(names: Dbc<"SpellVisualEffectName">): Map<number, { path: s
 function readKits(
   kits: Dbc<"SpellVisualKit">,
   paths: ReadonlyMap<number, { path: string; scale: number }>,
+  modelAttaches: ReadonlyMap<number, readonly SpellVisualEffect[]> = new Map(),
 ): Map<number, SpellVisualKit> {
   const result = new Map<number, SpellVisualKit>();
   for (const row of kits.rows()) {
@@ -213,6 +232,7 @@ function readKits(
       const model = paths.get(kits.int(row, field, index));
       if (model) effects.push({ path: model.path, attachment, scale: model.scale });
     }
+    effects.push(...(modelAttaches.get(kits.id(row)) ?? []));
     const startAnimation = kits.int(row, "StartAnimID");
     const animation = kits.int(row, "AnimID");
     const sound = Math.max(0, kits.int(row, "SoundID"));
@@ -224,12 +244,47 @@ function readKits(
   return result;
 }
 
+function readModelAttaches(
+  attaches: Dbc<"SpellVisualKitModelAttach"> | undefined,
+  paths: ReadonlyMap<number, { path: string; scale: number }>,
+): Map<number, SpellVisualEffect[]> {
+  const result = new Map<number, SpellVisualEffect[]>();
+  if (!attaches) return result;
+  for (const row of attaches.rows()) {
+    const model = paths.get(attaches.int(row, "SpellVisualEffectNameID"));
+    if (!model) continue;
+    const offset: [number, number, number] = [
+      attaches.float(row, "OffsetX"), attaches.float(row, "OffsetY"), attaches.float(row, "OffsetZ"),
+    ];
+    const rotation: [number, number, number] = [
+      attaches.float(row, "Yaw"), attaches.float(row, "Pitch"), attaches.float(row, "Roll"),
+    ];
+    // A malformed float must not be turned into an apparently authored zero: omitting the bad
+    // placement leaves the rest of the kit truthful and makes the limitation observable.
+    if (![...offset, ...rotation].every(Number.isFinite)) continue;
+    const parent = attaches.int(row, "ParentSpellVisualKitID");
+    const effects = result.get(parent) ?? [];
+    effects.push({
+      path: model.path,
+      attachment: attachmentOr(attaches.int(row, "AttachmentID"), ATTACH_BASE),
+      scale: model.scale,
+      occurrence: `model-attach:${attaches.id(row)}`,
+      // Keep the authored transform even when only one component is non-zero (as with Cone of
+      // Cold's 90-degree pitch). The renderer applies this in the effect's local frame.
+      transform: { offset, rotation },
+    });
+    result.set(parent, effects);
+  }
+  return result;
+}
+
 export function parseSpellVisuals(
   spellPayload: Uint8Array,
   visualPayload: Uint8Array,
   kitPayload: Uint8Array,
   namePayload: Uint8Array,
   durationPayload?: Uint8Array,
+  modelAttachPayload?: Uint8Array,
 ): Map<number, SpellVisualMetadata> {
   const buffer = (payload: Uint8Array): Buffer =>
     Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -238,6 +293,8 @@ export function parseSpellVisuals(
   const kits = openDbc(buffer(kitPayload), "SpellVisualKit");
   const names = openDbc(buffer(namePayload), "SpellVisualEffectName");
   const durations = durationPayload ? openDbc(buffer(durationPayload), "SpellDuration") : undefined;
+  const modelAttaches = modelAttachPayload
+    ? openDbc(buffer(modelAttachPayload), "SpellVisualKitModelAttach") : undefined;
 
   const durationById = new Map<number, number>();
   if (durations) {
@@ -245,7 +302,7 @@ export function parseSpellVisuals(
   }
 
   const paths = effectPaths(names);
-  const kitsById = readKits(kits, paths);
+  const kitsById = readKits(kits, paths, readModelAttaches(modelAttaches, paths));
 
   // One record per visual, built once and then shared by every spell that names it — 27,133
   // spells reach 9,406 visuals, so building per spell would build each one three times over.
@@ -279,6 +336,13 @@ export function parseSpellVisuals(
   for (const row of spells.rows()) {
     const merged: SpellVisualMetadata = { id: spells.id(row) };
     let found = false;
+    // The auto-repeat rows deliberately have no SpellVisualID. The attribute is nevertheless
+    // authored animation semantics: their repeated SPELL_GO releases a bow/gun/wand attack and
+    // must not fall through to a generic spell cast.
+    if ((spells.int(row, "AttributesExB") & 0x00000020) !== 0) {
+      merged.autoRepeat = true;
+      found = true;
+    }
     // The second slot fills only what the first left empty: a spell that overrides its cast
     // keeps its fallback's impact.
     for (let slot = 0; slot < SPELL_VISUAL_SLOTS; slot++) {
@@ -309,13 +373,24 @@ function attachmentOr(value: number, fallback: number): number {
   return Number.isInteger(value) && value >= 0 && value <= 63 ? value : fallback;
 }
 
-export async function loadSpellVisuals(directory: string): Promise<Map<number, SpellVisualMetadata>> {
-  const [spells, visuals, kits, names, durations] = await Promise.all([
+export async function loadSpellVisuals(directory: string, visualDbcDirectory = directory): Promise<Map<number, SpellVisualMetadata>> {
+  const readVisualOverride = async (table: string): Promise<Buffer | undefined> => {
+    if (visualDbcDirectory === directory) return undefined;
+    try {
+      return await readFile(join(visualDbcDirectory, `${table}.dbc`));
+    } catch {
+      return undefined;
+    }
+  };
+  const [spells, visuals, kits, names, durations, modelAttachesOverride] = await Promise.all([
     readFile(join(directory, "Spell.dbc")),
     readFile(join(directory, "SpellVisual.dbc")),
     readFile(join(directory, "SpellVisualKit.dbc")),
     readFile(join(directory, "SpellVisualEffectName.dbc")),
     readFile(join(directory, "SpellDuration.dbc")).catch(() => undefined),
+    readVisualOverride("SpellVisualKitModelAttach"),
   ]);
-  return parseSpellVisuals(spells, visuals, kits, names, durations);
+  const modelAttaches = modelAttachesOverride
+    ?? await readFile(join(directory, "SpellVisualKitModelAttach.dbc")).catch(() => undefined);
+  return parseSpellVisuals(spells, visuals, kits, names, durations, modelAttaches);
 }

@@ -72,8 +72,20 @@ test("texture warm-up consumes at most two responses concurrently and 24 in tota
   const urls = Array.from({ length: 30 }, (_, index) => `/texture/${index}`);
   assert.equal(queue.add([...urls, urls[0], urls[1]]), ASSET_WARMUP_BUDGET.textures);
   assert.equal(queue.accepted, ASSET_WARMUP_BUDGET.textures);
+  assert.deepEqual(queue.stats, {
+    accepted: ASSET_WARMUP_BUDGET.textures,
+    queued: ASSET_WARMUP_BUDGET.textures,
+    active: 0,
+    closed: false,
+  });
   await turn();
   assert.equal(started.length, ASSET_WARMUP_BUDGET.textureConcurrency);
+  assert.deepEqual(queue.stats, {
+    accepted: ASSET_WARMUP_BUDGET.textures,
+    queued: ASSET_WARMUP_BUDGET.textures - ASSET_WARMUP_BUDGET.textureConcurrency,
+    active: ASSET_WARMUP_BUDGET.textureConcurrency,
+    closed: false,
+  });
 
   const idle = queue.waitForIdle();
   for (let wave = 0; wave < 20; wave++) {
@@ -85,7 +97,19 @@ test("texture warm-up consumes at most two responses concurrently and 24 in tota
   assert.equal(maximum, ASSET_WARMUP_BUDGET.textureConcurrency);
   assert.equal(started.length, ASSET_WARMUP_BUDGET.textures);
   assert.equal(new Set(started).size, started.length);
+  assert.deepEqual(queue.stats, {
+    accepted: ASSET_WARMUP_BUDGET.textures,
+    queued: 0,
+    active: 0,
+    closed: false,
+  });
   queue.close();
+  assert.deepEqual(queue.stats, {
+    accepted: ASSET_WARMUP_BUDGET.textures,
+    queued: 0,
+    active: 0,
+    closed: true,
+  });
   assert.equal(queue.add(["/too-late"]), 0, "a disposed session cannot enqueue stale work");
 });
 
@@ -317,10 +341,12 @@ test("expired and disposed session warm-up ticks are no-ops", () => {
     spellVisuals: { get() { calls++; } },
   }, { now: () => now, fetcher: async () => { calls++; throw new Error("must not fetch"); } });
   const frame = { player: playerState(), environment: [], actionButtons: [] };
+  assert.deepEqual(controller.stats, { accepted: 0, queued: 0, active: 0, closed: false });
   now = ASSET_WARMUP_SOFT_WINDOW_MS + 1;
   controller.tick(frame);
   assert.equal(calls, 0);
   controller.dispose();
+  assert.deepEqual(controller.stats, { accepted: 0, queued: 0, active: 0, closed: true });
   now = 0;
   controller.tick(frame);
   assert.equal(calls, 0);

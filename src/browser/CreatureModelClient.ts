@@ -4,12 +4,15 @@ import {
   CHARACTER_APPEARANCE_VERSION, CREATURE_MODEL_VERSION, IMAGE_RETRY_BACKOFF_MS,
   type CharacterAppearance,
 } from "./CharacterAtlas.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 export type { CreatureModelMetadata, EquippedItem };
 
 /** A display record plus, for a player, the look resolved from its appearance bytes. */
 export interface UnitModel extends CreatureModelMetadata {
   appearance?: CharacterAppearance;
+  /** True while one of the player's visible item rows is still missing from ItemMetadata. */
+  appearancePending?: boolean;
 }
 
 /**
@@ -35,9 +38,40 @@ export class CreatureModelClient {
   readonly #appearanceFailures = new Map<string, { attempts: number; after: number }>();
   /** The same ledger for display ids, on the same ladder; see the `catch` in `#flush`. */
   readonly #failures = new Map<number, { attempts: number; after: number }>();
+  /** A successful batch may legitimately omit an id; retain that negative answer explicitly. */
+  readonly #negative = new Set<number>();
   readonly #now: () => number;
   #pending: number[] = [];
   #flushing = false;
+  #pendingRequests = 0;
+  #success = 0;
+  #error = 0;
+  #generation = 0;
+
+  /** Immutable current async ownership; lifetime attempt totals are not readiness errors. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    const pending = this.#pendingRequests
+      + [...this.#failures.entries()].filter(([id, failure]) =>
+        failure.after !== Infinity && !this.#requested.has(id)).length
+      + [...this.#appearanceFailures.entries()].filter(([key, failure]) =>
+        failure.after !== Infinity && !this.#requestedAppearances.has(key)).length;
+    return Object.freeze({
+      pending,
+      success: this.#success,
+      error: this.#negative.size
+        + [...this.#failures.values()].filter((failure) => failure.after === Infinity).length
+        + [...this.#appearanceFailures.values()].filter((failure) => failure.after === Infinity).length,
+      generation: this.#generation,
+    });
+  }
+
+  get generation(): number {
+    return this.#generation;
+  }
+
+  get revision(): number {
+    return this.#generation;
+  }
 
   /** @param now the clock the backoff is measured against; injected so a test need not wait. */
   constructor(gatewayWebSocketUrl: string, now: () => number = Date.now) {
@@ -63,7 +97,11 @@ export class CreatureModelClient {
     // what hangs off the bones, so it is a different appearance and a different composed atlas.
     // Sorted for a stable identity — the order it paints in is the gateway's decision, not this
     // list's, so sorting here cannot reach the picture.
-    const worn = equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`).sort().join(",");
+    // The subclass is part of the look identity as well as the gateway payload: INVTYPE_RANGEDRIGHT
+    // covers both guns and wands, and reusing the gun appearance after the item query resolves a
+    // wand would leave the attached model right while its shoot pose stays wrong.
+    const worn = equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
+      + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
     const key = `${race}/${sex}/${skin}/${face}/${hairStyle}/${hairColor}/${facialHair}/${worn}`;
     const known = this.#appearances.get(key);
     if (known !== undefined) return known;
@@ -72,6 +110,16 @@ export class CreatureModelClient {
     if (failure && this.#now() < failure.after) return undefined;
     const attempt = (failure?.attempts ?? 0) + 1;
     this.#requestedAppearances.add(key);
+    this.#pendingRequests++;
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#pendingRequests--;
+      this.#generation++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     void (async () => {
       try {
         // The payload's shape is part of the URL; `CHARACTER_APPEARANCE_VERSION` says why, and is
@@ -92,6 +140,7 @@ export class CreatureModelClient {
         if (!isAppearance(value)) throw new Error("malformed appearance");
         this.#appearances.set(key, value);
         this.#appearanceFailures.delete(key);
+        settle(true);
       } catch (error) {
         // Asked for again after a wait, not every frame and not never. The key comes back out of
         // the requested set so the next frame past `after` really re-requests it; three retries
@@ -102,7 +151,10 @@ export class CreatureModelClient {
           attempts: attempt,
           after: wait === undefined ? Infinity : this.#now() + wait,
         });
+        settle(false);
         this.onStatus?.(`внешность персонажа: ${error instanceof Error ? error.message : String(error)}`, true);
+      } finally {
+        settle(false);
       }
     })();
     return undefined;
@@ -111,10 +163,12 @@ export class CreatureModelClient {
   /** Asks for a display id if it has not been seen; the answer arrives on a later frame. */
   request(displayId: number): void {
     if (displayId <= 0 || this.#requested.has(displayId)) return;
+    if (this.#negative.has(displayId)) return;
     const failure = this.#failures.get(displayId);
     if (failure && this.#now() < failure.after) return;
     this.#requested.add(displayId);
     this.#pending.push(displayId);
+    this.#pendingRequests++;
     void this.#flush();
   }
 
@@ -125,6 +179,15 @@ export class CreatureModelClient {
       while (this.#pending.length > 0) {
         // The gateway accepts at most 200 ids per call.
         const batch = this.#pending.splice(0, 200);
+        let settled = false;
+        const settle = (success: boolean): void => {
+          if (settled) return;
+          settled = true;
+          this.#pendingRequests -= batch.length;
+          this.#generation++;
+          if (success) this.#success += batch.length;
+          else this.#error += batch.length;
+        };
         try {
           // `v` is not read by the gateway: it is there to break the browser's own HTTP cache.
           // This route answers `max-age=3600` and an id that has been requested is never requested
@@ -136,10 +199,24 @@ export class CreatureModelClient {
           if (!response.ok) throw new Error(`Creature model gateway returned ${response.status}`);
           const value: unknown = await response.json();
           if (!Array.isArray(value) || !value.every(isMetadata)) throw new Error("Creature model gateway returned invalid data");
+          const returned = new Set<number>();
           for (const metadata of value) {
+            if (!batch.includes(metadata.id)) continue;
+            returned.add(metadata.id);
+            const previous = this.#cache.get(metadata.id);
             this.#cache.set(metadata.id, metadata);
+            if (previous !== metadata) this.#generation++;
             this.#failures.delete(metadata.id);
+            this.#negative.delete(metadata.id);
           }
+          // A short successful response is still a settled answer. Keep omitted ids terminal so
+          // a capsule cannot be certified merely because the HTTP request itself was successful.
+          for (const id of batch) {
+            if (returned.has(id)) continue;
+            this.#negative.add(id);
+            this.#failures.delete(id);
+          }
+          settle(true);
           this.onStatus?.(`моделей существ: ${this.#cache.size}`, false);
         } catch (error) {
           // Asked for again after a wait, not every frame and not never. The ids used to stay in
@@ -150,7 +227,7 @@ export class CreatureModelClient {
           // the page was reloaded. Same ladder as a texture and a look (`IMAGE_RETRY_BACKOFF_MS`):
           // 2 s, 8 s, 30 s, and then the id is left alone.
           for (const id of batch) {
-            this.#requested.delete(id);
+      this.#requested.delete(id);
             const attempt = (this.#failures.get(id)?.attempts ?? 0) + 1;
             const wait = IMAGE_RETRY_BACKOFF_MS[attempt - 1];
             this.#failures.set(id, {
@@ -158,6 +235,7 @@ export class CreatureModelClient {
               after: wait === undefined ? Infinity : this.#now() + wait,
             });
           }
+          settle(false);
           this.onStatus?.(error instanceof Error ? error.message : String(error), true);
         }
       }

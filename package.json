@@ -47,6 +47,7 @@
     "assets:terrain": "node tools/generate-terrain-tile.mjs",
     "assets:minimap": "node tools/generate-minimap-index.mjs --all",
     "assets:minimap-tiles": "node tools/generate-minimap-tiles.mjs",
+    "assets:visual-dbc": "node tools/extract-visual-dbc-overlay.mjs",
     "check:generated": "npm run protocol:check && npm run dbc:check && npm run animations:check && npm run deadopcodes:check && npm run strings:check && npm run classicons:check",
     "check:workspace": "npm run check:generated && npm run modules:check",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -67,6 +68,7 @@
     "@types/node": "^22.20.1",
     "@types/three": "^0.185.1",
     "@types/ws": "8.18.1",
+    "meshoptimizer": "1.1.1",
     "typescript": "5.9.3",
     "vite": "6.4.3"
   },

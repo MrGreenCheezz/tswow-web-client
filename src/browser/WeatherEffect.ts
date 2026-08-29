@@ -19,6 +19,7 @@
  */
 
 import * as THREE from "three";
+import { visitGeometryBuffers, visitMaterialTextures, type RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { WeatherKind } from "../world/WorldMessageProtocol.js";
 
 /**
@@ -262,8 +263,13 @@ export class WeatherEffect {
   readonly #geometry: THREE.BufferGeometry;
   readonly #textures = new Map<string, THREE.Texture>();
   readonly #load: (path: string) => THREE.Texture | undefined;
+  readonly #disposedTextures = new WeakSet<THREE.Texture>();
   #clock = 0;
   #kind: WeatherKind = "fine";
+  #requestedKind: WeatherKind = "fine";
+  /** Invalidates the outer half of a loader call when the loader changes weather reentrantly. */
+  #kindRevision = 0;
+  #disposed = false;
 
   constructor(load: (path: string) => THREE.Texture | undefined) {
     this.#load = load;
@@ -299,8 +305,21 @@ export class WeatherEffect {
     this.object.visible = false;
   }
 
+  /** Visits the retained effect buffers/material and every texture successfully cached by path. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    if (this.#disposed) return;
+    visitGeometryBuffers(visitor, this, this.#geometry);
+    visitMaterialTextures(visitor, this.#material);
+    for (const texture of this.#textures.values()) visitor.referenceGpuTexture(this, texture);
+  }
+
   /** Whatever is falling this frame, and how much of it. */
   set(fade: WeatherFade, tinted: boolean): void {
+    if (this.#disposed) return;
+    if (this.#requestedKind !== fade.kind) {
+      this.#requestedKind = fade.kind;
+      this.#kindRevision++;
+    }
     if (fade.kind === "fine" || fade.density <= 0) {
       this.object.visible = false;
       this.#geometry.setDrawRange(0, 0);
@@ -308,8 +327,31 @@ export class WeatherEffect {
     }
     const preset = WEATHER_PRESETS[fade.kind];
     if (this.#kind !== fade.kind) {
+      const previousKind = this.#kind;
       this.#kind = fade.kind;
-      const texture = this.#texture(preset.texture);
+      const revision = this.#kindRevision;
+      let texture: THREE.Texture | undefined;
+      try {
+        texture = this.#texture(preset.texture);
+      } catch (error) {
+        // The provisional kind was never committed. Roll it back even when a reentrant request for
+        // fine weather changed the revision without installing a different drawn kind.
+        if (!this.#disposed && this.#kind === fade.kind) {
+          this.#kind = previousKind;
+          if (this.#kindRevision === revision) this.#kindRevision++;
+        }
+        throw error;
+      }
+      if (this.#disposed) return;
+      if (this.#kindRevision !== revision || this.#kind !== fade.kind) {
+        if (this.#kind === fade.kind) this.#kind = previousKind;
+        return;
+      }
+      if (!texture) {
+        this.#kind = previousKind;
+        this.#kindRevision++;
+        return;
+      }
       this.#material.uniforms["uMap"]!.value = texture ?? null;
     }
     // No wait for the texture to arrive: `TextureLoader.load` hands back the `Texture` object at
@@ -332,24 +374,75 @@ export class WeatherEffect {
 
   /** One frame: the clock the fall runs on, and where the box has to be. */
   update(cameraPosition: THREE.Vector3, seconds: number): void {
+    if (this.#disposed) return;
     this.#clock += Math.max(0, seconds);
     this.#material.uniforms["uTime"]!.value = this.#clock;
     (this.#material.uniforms["uOrigin"]!.value as THREE.Vector3).copy(cameraPosition);
     this.object.position.copy(cameraPosition);
   }
 
+  /** Rewinds deterministic fall motion without rebuilding or releasing retained resources. */
+  reset(seconds = 0): void {
+    if (this.#disposed) return;
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      throw new RangeError("seconds must be a finite non-negative number");
+    }
+    this.#clock = seconds;
+    this.#material.uniforms["uTime"]!.value = seconds;
+  }
+
   #texture(path: string): THREE.Texture | undefined {
+    if (this.#disposed) return undefined;
     const cached = this.#textures.get(path);
     if (cached) return cached;
     const loaded = this.#load(path);
-    if (loaded) this.#textures.set(path, loaded);
+    if (!loaded) return undefined;
+    if (this.#disposed) {
+      this.#disposeStaleTexture(loaded);
+      return undefined;
+    }
+    // A loader is external code and may have re-entered another kind before returning. Preserve
+    // whichever exact handle that inner call admitted; the outer duplicate belongs to nobody.
+    const admitted = this.#textures.get(path);
+    if (admitted) {
+      if (admitted !== loaded) this.#disposeStaleTexture(loaded);
+      return admitted;
+    }
+    this.#textures.set(path, loaded);
     return loaded;
   }
 
   dispose(): void {
-    this.#geometry.dispose();
-    this.#material.dispose();
-    for (const texture of this.#textures.values()) texture.dispose();
+    if (this.#disposed) return;
+    // Invalidate callbacks before releasing anything. A synchronous/non-standard loader may
+    // re-enter disposal while this method is running, and every late completion must observe the
+    // closed state rather than publish into partially released state.
+    this.#disposed = true;
+    this.#kindRevision++;
+    this.#kind = "fine";
+    this.#requestedKind = "fine";
+    this.object.visible = false;
+    this.#geometry.setDrawRange(0, 0);
+    const textures = new Set(this.#textures.values());
     this.#textures.clear();
+    // ShaderMaterial.dispose dispatches synchronously. Clear its last strong texture reference
+    // before any listener can inspect or independently dispose that identity.
+    this.#material.uniforms["uMap"]!.value = null;
+    try { this.#geometry.dispose(); } catch { /* best-effort release continues through materials */ }
+    try { this.#material.dispose(); } catch { /* best-effort release continues through textures */ }
+    for (const texture of textures) this.#disposeTexture(texture);
+  }
+
+  #disposeStaleTexture(texture: THREE.Texture): void {
+    for (const retained of this.#textures.values()) {
+      if (retained === texture) return;
+    }
+    this.#disposeTexture(texture);
+  }
+
+  #disposeTexture(texture: THREE.Texture): void {
+    if (this.#disposedTextures.has(texture)) return;
+    this.#disposedTextures.add(texture);
+    try { texture.dispose(); } catch { /* best-effort release continues through every identity */ }
   }
 }

@@ -29,6 +29,7 @@ import {
   SoundIndex, WeaponSoundIndex, normaliseSoundPath, type ZoneMusicTracks,
 } from "./SoundMetadata.js";
 import { DatasetFingerprint } from "./DatasetFingerprint.js";
+import { AUDIO_DBC_FILES, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
 import {
   isLoopbackAddress, MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
@@ -44,16 +45,32 @@ const MAX_BRIDGED_SOCKETS = 256;
 const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
 
 /**
- * WME3 changes WMO headers only; keep the much larger M2 cache on its own namespace.
+ * WWM2/MONR changes WMO group streams only; keep the much larger M2 cache on its own namespace.
  *
- * visual-wmo-v15 is WME3, the `MFOG` chunk and the fog indices its groups carry. A v14 artifact parses
- * perfectly and simply has no fog in it, which is indistinguishable from a building the artist
- * left in the zone's own weather — so the cache has to turn over rather than be left to expire.
- * visual-v16 is WVM9 and follows that WMO generation, so the two independently invalidated
+ * visual-wmo-v17 is WWM2, authored MONR normals, and all prior WMO metadata. A v16 artifact parses
+ * perfectly and simply has no authored normals, which is indistinguishable from a group that needs
+ * the computed fallback — so the cache has to turn over rather than be left to expire.
+ * visual-v16 is WVM9 and remains independent of this WMO generation, so the two independently invalidated
  * artifact families keep distinct, monotonic generation numbers.
  */
-export function visualModelCacheNamespace(modelPath: string): "visual-v16" | "visual-wmo-v15" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v15" : "visual-v16";
+export function visualModelCacheNamespace(modelPath: string): "visual-v16" | "visual-wmo-v17" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v17" : "visual-v16";
+}
+
+/**
+ * Appearance textures are replaced together with the visual M2/DBC overlay.
+ *
+ * The path is deliberately classified here, before it is hashed: the legacy texture cache has
+ * no reverse index from its SHA-1 filename back to this path. These prefixes are the four client
+ * subtrees the appearance pipeline reads; scenery and spell textures retain the cheap
+ * "unstamped entries are served while the background pass catches up" policy.
+ */
+export function isCharacterVisualTexture(path: string): boolean {
+  const normalised = path.replaceAll("/", "\\").toLowerCase();
+  return [
+    "character\\", "creature\\", "item\\objectcomponents\\", "item\\texturecomponents\\",
+    "textures\\bakednpctextures\\",
+  ].some((prefix) => normalised.startsWith(prefix));
 }
 
 export interface GatewayTarget {
@@ -70,6 +87,22 @@ export interface GatewayOptions {
   mapsDirectory?: string;
   vmapsDirectory?: string;
   dbcDirectory?: string;
+  /**
+   * Optional client-visual DBC overlay matching an installed model patch. Gameplay tables remain
+   * in `dbcDirectory`; only character geosets/textures and creature display/model indirection are
+   * read here, so the web renderer and the MPQ assets belong to the same visual generation.
+   */
+  visualDbcDirectory?: string;
+  /** Enables only the geoset corrections authored for the coordinated patch-W/X/Y/Z model set. */
+  coordinatedVisuals?: boolean;
+  /**
+   * Optional client-media audio DBC overlay. This is deliberately separate from gameplay DBCs:
+   * only EmotesTextSound is read here, while EmotesText/EmotesTextData stay dataset-owned.
+   * Omitting it retains the legacy visual-directory fallback for direct API callers; `null`
+   * explicitly disables that fallback after startup selection validates the two categories
+   * independently.
+   */
+  audioDbcDirectory?: string | null;
   /**
    * The 3.3.5a client, i.e. the directory holding `Data`. Nothing here opens an archive — the
    * generators do that in their own processes — but the fingerprint watches the archive files and
@@ -460,12 +493,19 @@ class DatasetIndexes {
 
 export async function startGateway(options: GatewayOptions): Promise<RunningGateway> {
   const indexes = new DatasetIndexes();
+  const audioDbcDirectory = options.audioDbcDirectory === null
+    ? undefined : options.audioDbcDirectory ?? options.visualDbcDirectory;
+  const visualDbcFiles = options.visualDbcDirectory === undefined ? []
+    : VISUAL_DBC_FILES.map((file) => join(options.visualDbcDirectory!, file));
+  const audioDbcFiles = audioDbcDirectory === undefined ? []
+    : AUDIO_DBC_FILES.map((file) => join(audioDbcDirectory, file));
   // Nothing on the network asks for a reload; the dataset is watched instead. `DatasetFingerprint`
   // carries the reason a route would be the wrong shape on a port with no authentication.
   const fingerprint = new DatasetFingerprint({
     dbcDirectory: options.dbcDirectory,
-    dbcFiles: [options.creatureMetadataFile, options.itemMetadataFile]
-      .filter((file): file is string => file !== undefined),
+    dbcFiles: [...new Set([options.creatureMetadataFile, options.itemMetadataFile]
+      .filter((file): file is string => file !== undefined)
+      .concat(visualDbcFiles, audioDbcFiles))],
     clientDirectory: options.clientDirectory,
     intervalMs: options.datasetPollMs,
   });
@@ -545,6 +585,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
       const filename = join(options.texturesDirectory, `${id}.png`);
+      const coordinatedVisual = isCharacterVisualTexture(texturePath);
       try {
         // One thunk for both ways a route needs the generator — the file is not there at all, or
         // it is there and the stamp check has something to say about it — on the same lane under
@@ -557,7 +598,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         // startup, off every request path — is what gives it one. This route is where that was
         // measured: sixteen already-correct ground textures rebuilt for their stamps cost
         // 5,749 ms and sixteen child processes against 125 ms and none.
-        if (options.generateTexture) await fingerprint.ensureCurrent(filename);
+        if (options.generateTexture) {
+          await fingerprint.ensureCurrent(filename, {
+            requireStamp: coordinatedVisual,
+          });
+        }
         let data: Buffer;
         try {
           data = await readFile(filename);
@@ -566,14 +611,18 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          // Content is fixed by the path, so this can be cached hard.
-          "cache-control": "public, max-age=604800, immutable",
-          "content-length": data.byteLength,
-          "content-type": "image/png",
-        });
-        response.end(data);
+        if (coordinatedVisual) {
+          respondRevalidated(request, response, data, origin, "image/png");
+        } else {
+          response.writeHead(200, {
+            "access-control-allow-origin": origin,
+            // Broad scenery paths are unchanged until their versioned URL changes.
+            "cache-control": "public, max-age=604800, immutable",
+            "content-length": data.byteLength,
+            "content-type": "image/png",
+          });
+          response.end(data);
+        }
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what
         // left a character without his legs for the life of the tab: the browser takes a 404 as
@@ -628,9 +677,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       // namespace: no M2 byte changed, so invalidating every creature, spell and doodad would buy
       // nothing. Header and `.gNNN` requests use this same hash.
       //
-      // visual-wmo-v15 adds WME3, the `MFOG` chunk and the fog indices MOGP carries. Every one of
-      // the 1,985 root WMOs in the client has that chunk and none of it reached the browser until
-      // now, so the whole WMO half of the cache turns over — and only that half.
+       // visual-wmo-v17 adds the WWM2 envelope and authored MONR normals. The WMO namespace turns
+       // over as one family so whole/header/group requests share the same source identity, while
+       // visual-v16 stays the M2/WVM9 namespace.
       // visual-v16 is WVM9: `M2TextureTransform`, so a batch that names one can move its UVs. It
       // follows WMO generation 15 rather than reusing that number; every M2 is rebuilt once too.
       const group = url.searchParams.get("group");
@@ -644,7 +693,10 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       const filename = join(options.visualModelsDirectory, `${hash}${suffix}.bin`);
       try {
         const rebuild = () => generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash));
-        if (options.generateVisualModel) await fingerprint.ensureCurrent(filename);
+        // A visual-model filename hashes the route generation and MPQ path, not the source bytes.
+        // The background restamper cannot recover that path from the hash, so an unstamped cache
+        // made before a coordinated HD pack was installed must be regenerated on its first request.
+        if (options.generateVisualModel) await fingerprint.ensureCurrent(filename, { requireStamp: true });
         let data: Buffer;
         try {
           data = await readFile(filename);
@@ -653,13 +705,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
-          "content-length": data.byteLength,
-          "content-type": "application/octet-stream",
-        });
-        response.end(data);
+        respondRevalidated(request, response, data, origin, "application/octet-stream");
       } catch (error) {
         // The twin of the split `/texture` was given in Т6, and the one this route was left
         // without. Every way of failing here answered 404 — a generator child that died, a decoder
@@ -687,12 +733,24 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       try {
         const data = await readFile(join(options.visualModelsDirectory, `${visualTexture[1]}.png`));
-        response.writeHead(200, {
+        // The WMO generator rewrites this same hash-keyed PNG when an archive overlay changes.
+        // It has no independent route key, so a one-day freshness window could leave an already
+        // open browser drawing the previous building texture. A content validator keeps the URL
+        // backwards-compatible while max-age=0 makes cached responses revalidate after republish.
+        const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
+        const cacheHeaders = {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
-          "content-length": data.byteLength,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag,
           "content-type": "image/png",
-        });
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, { ...cacheHeaders, "content-length": data.byteLength });
         response.end(data);
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
@@ -1371,14 +1429,14 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         return;
       }
       try {
-        indexes.spellVisuals ??= loadSpellVisuals(options.dbcDirectory);
+        indexes.spellVisuals ??= loadSpellVisuals(options.dbcDirectory, options.visualDbcDirectory);
         const visuals = await indexes.spellVisuals;
         // A spell with no visual answers with its own id and nothing else, so the browser learns
         // that it asked and stops asking.
         const data = JSON.stringify(ids.map((id) => visuals.get(id) ?? { id }));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1448,11 +1506,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         return;
       }
       try {
-        indexes.emoteData ??= loadEmoteData(options.dbcDirectory);
+        indexes.emoteData ??= loadEmoteData(options.dbcDirectory, audioDbcDirectory);
         const data = JSON.stringify(await indexes.emoteData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1708,12 +1766,14 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         return;
       }
       try {
-        indexes.creatureModelMetadata ??= loadCreatureModelMetadata(options.dbcDirectory, characterTextures());
+        indexes.creatureModelMetadata ??= loadCreatureModelMetadata(
+          options.dbcDirectory, characterTextures(), options.visualDbcDirectory,
+          options.coordinatedVisuals ?? false);
         const metadata = await indexes.creatureModelMetadata;
         const data = JSON.stringify(ids.map((id) => metadata.get(id)).filter(Boolean));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1751,11 +1811,13 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         return;
       }
       try {
-        indexes.characterAppearance ??= CharacterAppearanceIndex.load(options.dbcDirectory, characterTextures());
+        indexes.characterAppearance ??= CharacterAppearanceIndex.load(
+          options.dbcDirectory, characterTextures(), options.visualDbcDirectory,
+          options.coordinatedVisuals ?? false);
         const data = JSON.stringify((await indexes.characterAppearance).options(race, sex));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1781,18 +1843,20 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         return;
       }
       try {
-        indexes.characterAppearance ??= CharacterAppearanceIndex.load(options.dbcDirectory, characterTextures());
+        indexes.characterAppearance ??= CharacterAppearanceIndex.load(
+          options.dbcDirectory, characterTextures(), options.visualDbcDirectory,
+          options.coordinatedVisuals ?? false);
         const index = await indexes.characterAppearance;
         // Layers and geoset choices go out as data: the browser already fetches each texture by
         // path, so the pieces stay shared and the composite costs nothing on disk.
-        // `items` is `inventoryType:displayId` pairs for what the character is wearing.
+        // `items` is `slot:inventoryType:displayId[:subClass]` for what the character is wearing.
         const equipment = parseEquipment(url.searchParams.get("items") ?? "");
         const data = JSON.stringify(index.forPlayer(
           appearance[0]!, appearance[1]!, appearance[2]!, appearance[3]!,
           appearance[4]!, appearance[5]!, appearance[6]!, equipment));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2240,6 +2304,30 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
  * 404 and 500 as a cross-origin failure and the real status never reaches the page. A rejected
  * origin is the one exception: echoing it back would defeat the check.
  */
+function respondRevalidated(
+  request: IncomingMessage,
+  response: ServerResponse,
+  data: Buffer,
+  origin: string | undefined,
+  contentType: string,
+): void {
+  const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
+  const headers = {
+    ...(origin ? { "access-control-allow-origin": origin } : {}),
+    "cache-control": "public, max-age=0, must-revalidate",
+    "content-type": contentType,
+    etag,
+  };
+  const ifNoneMatch = request.headers["if-none-match"];
+  if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+    response.writeHead(304, headers);
+    response.end();
+    return;
+  }
+  response.writeHead(200, { ...headers, "content-length": data.byteLength });
+  response.end(data);
+}
+
 function respondError(response: ServerResponse, status: number, origin: string | undefined): void {
   response.writeHead(status, origin ? { "access-control-allow-origin": origin } : {}).end();
 }
@@ -2280,23 +2368,27 @@ async function readRequestBody(request: IncomingMessage, limit: number): Promise
 }
 
 /**
- * `slot:inventoryType:displayId` triples, ignoring anything malformed rather than failing the
- * request.
+ * `slot:inventoryType:displayId[:subClass]` entries, ignoring anything malformed rather than
+ * failing the request. The fourth field is optional for old browser clients.
  *
  * The slot is which of the nineteen PLAYER_VISIBLE_ITEM words the item came from, and it is not
  * redundant with the inventory type: a one-handed weapon is INVTYPE_WEAPON in either hand, so
  * without it there is no telling which hand to put a sword in.
  */
-function parseEquipment(spec: string): { slot: number; inventoryType: number; displayId: number }[] {
-  const items: { slot: number; inventoryType: number; displayId: number }[] = [];
+function parseEquipment(spec: string): { slot: number; inventoryType: number; displayId: number; subClass?: number }[] {
+  const items: { slot: number; inventoryType: number; displayId: number; subClass?: number }[] = [];
   for (const entry of spec.split(",")) {
     const parts = entry.split(":");
-    if (parts.length !== 3) continue;
-    const [slot, inventoryType, displayId] = parts.map((part) => Number.parseInt(part, 10));
+    if (parts.length !== 3 && parts.length !== 4) continue;
+    const [slot, inventoryType, displayId, subClass] = parts.map((part) => Number.parseInt(part, 10));
     if (!Number.isInteger(slot) || slot! < 0 || slot! > 18) continue;
     if (!Number.isInteger(inventoryType) || inventoryType! < 0 || inventoryType! > 30) continue;
     if (!Number.isInteger(displayId) || displayId! <= 0 || displayId! > 1_000_000) continue;
-    items.push({ slot: slot!, inventoryType: inventoryType!, displayId: displayId! });
+    if (parts.length === 4 && (!Number.isInteger(subClass) || subClass! < 0 || subClass! > 255)) continue;
+    items.push({
+      slot: slot!, inventoryType: inventoryType!, displayId: displayId!,
+      ...(parts.length === 4 ? { subClass: subClass! } : {}),
+    });
     // A character has nineteen visible slots; anything past that is not a real request.
     if (items.length >= 20) break;
   }

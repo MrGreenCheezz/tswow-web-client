@@ -17,7 +17,7 @@ export interface LabLook {
   hair: number;
   hairColor: number;
   facialHair: number;
-  /** `slot:inventoryType:displayId`, the spelling `parseEquipment` takes on the gateway. */
+  /** `slot:inventoryType:displayId[:subClass]`, the spelling `parseEquipment` takes on the gateway. */
   items: EquippedItem[];
 }
 
@@ -83,16 +83,25 @@ function byte(params: URLSearchParams, name: string, fallback = 0): number {
   return value;
 }
 
-/** `slot:inventoryType:displayId` triples, as `visibleEquipment` builds them from the wire. */
+/** `slot:inventoryType:displayId[:subClass]`, as `visibleEquipment` builds it from the wire. */
 export function parseLabItems(spec: string): EquippedItem[] {
   const items: EquippedItem[] = [];
   for (const entry of spec.split(",")) {
     if (!entry.trim()) continue;
     const parts = entry.split(":").map((part) => Number.parseInt(part, 10));
-    if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part) || part < 0)) {
-      throw new Error(`items=${entry} — ожидается slot:inventoryType:displayId`);
+    if ((parts.length !== 3 && parts.length !== 4)
+      || parts.some((part) => !Number.isInteger(part) || part < 0)
+      || parts[0]! > 18
+      || parts[1]! > 30
+      || parts[2]! === 0 || parts[2]! > 1_000_000
+      || parts.length === 4 && parts[3]! > 255) {
+      throw new Error(`items=${entry} — ожидается slot:inventoryType:displayId[:subClass]`);
     }
-    items.push({ slot: parts[0]!, inventoryType: parts[1]!, displayId: parts[2]! });
+    if (items.length >= 20) throw new Error("items — не больше 20 предметов");
+    items.push({
+      slot: parts[0]!, inventoryType: parts[1]!, displayId: parts[2]!,
+      ...(parts.length === 4 ? { subClass: parts[3]! } : {}),
+    });
   }
   return items;
 }
@@ -152,7 +161,8 @@ function sheathState(params: URLSearchParams): number {
  * for, and two copies of a cache-buster drift apart the first time one of them is bumped.
  */
 export function appearanceQuery(look: LabLook): string {
-  const worn = look.items.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`).sort().join(",");
+  const worn = look.items.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
+    + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
   return `v=${CHARACTER_APPEARANCE_VERSION}&race=${look.race}&sex=${look.sex}&skin=${look.skin}&face=${look.face}`
     + `&hair=${look.hair}&hairColor=${look.hairColor}&facialHair=${look.facialHair}`
     + (worn ? `&items=${encodeURIComponent(worn)}` : "");

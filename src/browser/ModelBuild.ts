@@ -157,6 +157,89 @@ export function unitGeosets(appearance: CharacterAppearance | undefined, isChara
   return isCharacter ? defaultCharacterGeosets() : EVERY_GEOSET;
 }
 
+/**
+ * The world renderer's character choice, checked against the WVM that actually arrived.
+ *
+ * Patch-W's ordinary boot group is not a portable shape contract: several of its playable models
+ * carry ordinary family-5 variants only to the ankle, while another authored variant in the same
+ * file reaches the foot atlas rectangle. The gateway has a measured patch-W profile table for
+ * known player looks; validate it here after the model is known as well, because this is also the
+ * path for baked NPC appearances and stale/custom gateway callers. The generic resolver still must
+ * not guess a family member. A lower-leg-only model is still drawn; it is an asset boundary, not
+ * permission to invent geometry.
+ */
+const BOOT_FAMILY = 5;
+const FOOT_ATLAS_MIN_V = 0.8755;
+/**
+ * A few authored ankle vertices can cross the foot row without making a foot. Count triangles,
+ * not the largest V, and require a meaningful share of the boot's own surface before accepting
+ * it as a foot-capable mesh. This deliberately leaves hoof models (whose authored foot row is
+ * absent or only a seam) on their original variant.
+ */
+const FOOT_TRIANGLE_SHARE_MIN = 0.10;
+
+function submeshFootCoverage(model: WvmModel, geosetId: number): {
+  triangles: number; footTriangles: number; legLowerTriangles: number;
+} {
+  let triangles = 0;
+  let footTriangles = 0;
+  let legLowerTriangles = 0;
+  for (const submesh of model.submeshes) {
+    if (submesh.geosetId !== geosetId || submesh.indexCount <= 0) continue;
+    for (let i = submesh.indexStart; i < submesh.indexStart + submesh.indexCount; i += 3) {
+      triangles++;
+      const uv = [0, 1, 2].map((corner) => {
+        const vertex = model.indices[i + corner] ?? 0;
+        return [model.uv0[vertex * 2] ?? 0, model.uv0[vertex * 2 + 1] ?? 0] as const;
+      });
+      if (uv.every(([u, v]) => u >= 0.49 && v >= FOOT_ATLAS_MIN_V)) footTriangles++;
+      if (uv.every(([u, v]) => u >= 0.49 && v >= 0.625 && v < FOOT_ATLAS_MIN_V)) {
+        legLowerTriangles++;
+      }
+    }
+  }
+  return { triangles, footTriangles, legLowerTriangles };
+}
+
+export function worldCharacterGeosets(
+  model: WvmModel,
+  appearance: CharacterAppearance | undefined,
+  isCharacter: boolean,
+): GeosetChoice {
+  const choice = unitGeosets(appearance, isCharacter);
+  if (!appearance?.coordinatedVisuals) return choice;
+  const hasFootTexture = appearance?.body.some((layer) => layer.section === "foot")
+    || appearance?.body.length === 1
+      && appearance.body[0]?.section === undefined
+      && /^Textures\\BakedNpcTextures\\/i.test(appearance.body[0]?.path ?? "");
+  if (!hasFootTexture || !choice.explicit) return choice;
+
+  const selected = [...choice.explicit].find((id) => Math.floor(id / 100) === BOOT_FAMILY);
+  if (selected === undefined) return choice;
+  const selectedCoverage = submeshFootCoverage(model, selected);
+  const hasMeaningfulFoot = selectedCoverage.triangles > 0
+    && selectedCoverage.legLowerTriangles > 0
+    && selectedCoverage.footTriangles / selectedCoverage.triangles >= FOOT_TRIANGLE_SHARE_MIN;
+  if (hasMeaningfulFoot) return choice;
+
+  const candidateIds = [...new Set(model.submeshes
+    .filter((submesh) => Math.floor(submesh.geosetId / 100) === BOOT_FAMILY && submesh.indexCount > 0)
+    .map((submesh) => submesh.geosetId))];
+  const candidate = candidateIds
+    .map((id) => ({ id, coverage: submeshFootCoverage(model, id) }))
+    .filter(({ coverage }) => coverage.triangles > 0
+      && coverage.legLowerTriangles > 0
+      && coverage.footTriangles / coverage.triangles >= FOOT_TRIANGLE_SHARE_MIN)
+    .sort((left, right) => {
+      const share = right.coverage.footTriangles / right.coverage.triangles
+        - left.coverage.footTriangles / left.coverage.triangles;
+      return share || left.id - right.id;
+    })[0];
+  if (!candidate) return choice;
+
+  return geosetList([...choice.explicit].filter((id) => Math.floor(id / 100) !== BOOT_FAMILY).concat(candidate.id));
+}
+
 export function chooseGeosets(entries: Iterable<readonly [number, number]>): GeosetChoice {
   return { variants: new Map(entries) };
 }
@@ -368,7 +451,7 @@ export interface AnimatedBatch {
    * The `M2TextureTransform` this batch names, and the texture it writes into.
    *
    * The texture is carried rather than reached through `material.map` because the two are not the
-   * same question: a batch with a transform always has a map of its own (see `ownTexture` below),
+   * same question: a batch with a transform always has a map of its own (see `privateTextureView` below),
    * and a batch without one must not have its matrix written at all.
    */
   transform?: WvmTextureTransform;
@@ -476,12 +559,13 @@ export interface BuiltModel {
   /** MPQ paths of every texture this build wants, so the caller can prefetch them. */
   texturePaths: string[];
   /**
-   * The textures this build loaded for itself, so a caller that discards it can free them.
+   * The textures this build owns, so a caller that discards it can free them.
    *
    * `Material.dispose()` releases the shader program and nothing else — a texture is freed only by
    * its own `dispose()`, and `TextureLoader.load` hands back a new Texture every call rather than
    * caching. Anything supplied from outside, like a composed body atlas shared with other builds,
-   * is deliberately absent: it is not this build's to free.
+   * is deliberately absent: it is not this build's to free. A build that borrows cached bases also
+   * excludes those bases while retaining every private material Texture view here.
    */
   ownedTextures: THREE.Texture[];
   /**
@@ -525,6 +609,13 @@ export function buildModel(
     geosets?: GeosetChoice;
     baseUrl: string;
     loadTexture: (url: string) => THREE.Texture;
+    /** Cached bases are borrowed; per-material Texture views created below remain build-owned. */
+    borrowLoadedTextures?: boolean;
+    /**
+     * Every loaded material map is a private Texture view over the borrowed base's shared Source.
+     * Spell builds use this because wrap/flip/colour/anisotropy are per Texture, not per Source.
+     */
+    privateLoadedTextureViews?: boolean;
     /**
      * Textures supplied directly rather than by path, keyed on M2Texture.type. A player's body is
      * a canvas composed from five pieces, so it has no path of its own.
@@ -553,6 +644,8 @@ export function buildModel(
     anisotropy?: number;
     /** Shared authored outdoor light. Omitted by isolated model viewers and tests. */
     worldLight?: WorldLightUniforms;
+    /** Local lift for additive spell meshes only; scenery and character materials never set it. */
+    fantasyGlow?: boolean;
   },
 ): BuiltModel {
   const geometry = new THREE.BufferGeometry();
@@ -591,6 +684,20 @@ export function buildModel(
   const materialSlots: number[] = [];
   const texturePaths: string[] = [];
   const ownedTextures: THREE.Texture[] = [];
+  const borrowedTextures = new Set<THREE.Texture>();
+  const materialOptions = options.borrowLoadedTextures === true
+    || options.privateLoadedTextureViews === true
+    ? {
+        ...options,
+        loadTexture: (url: string) => {
+          const texture = options.loadTexture(url);
+          borrowedTextures.add(texture);
+          return options.privateLoadedTextureViews === true
+            ? privateTextureView(texture)
+            : texture;
+        },
+      }
+    : options;
   const animatedBatches: AnimatedBatch[] = [];
   for (const { batch } of ordered) {
     const submesh = model.submeshes[batch.submesh]!;
@@ -601,10 +708,11 @@ export function buildModel(
     const supplied = slot ? options.slotTextures?.get(slot.type) : undefined;
     const path = supplied || !slot ? "" : resolveSlot(slot, slots, directory);
     if (path) texturePaths.push(path);
-    const material = buildMaterial(model, batch, slot, path, supplied, options);
-    // Loaded here, so freed here. A supplied texture belongs to whoever handed it over.
+    const material = buildMaterial(model, batch, slot, path, supplied, materialOptions);
+    // Loaded here, so freed here unless the caller explicitly supplies/leases the cached base.
+    // A transform/uv1 clone is a different object and remains owned by this build.
     const map = (material as THREE.Material & { map?: THREE.Texture | null }).map;
-    if (map && map !== supplied) ownedTextures.push(map);
+    if (map && map !== supplied && !borrowedTextures.has(map)) ownedTextures.push(map);
     // The second layer, when there is one, is the material's `alphaMap` slot — see `secondLayer`.
     const layer = (material as THREE.Material & { alphaMap?: THREE.Texture | null }).alphaMap;
     if (layer) ownedTextures.push(layer);
@@ -697,6 +805,59 @@ function alwaysUnlit(blendMode: number): boolean {
   return blendMode === BLEND_NO_ALPHA_ADD || blendMode === BLEND_ADD;
 }
 
+interface SpellFantasyGlowBinding {
+  previousCompile: THREE.Material["onBeforeCompile"];
+  previousKey: string;
+  enabled: boolean;
+}
+
+const SPELL_FANTASY_GLOW_BINDINGS = new WeakMap<THREE.Material, SpellFantasyGlowBinding>();
+
+/** Installs one reversible wrapper around an additive spell material's existing shader chain. */
+function bindSpellFantasyGlow(material: THREE.Material, blendMode: number, enabled: boolean | undefined): void {
+  if (enabled === undefined || !alwaysUnlit(blendMode)) return;
+  const existing = SPELL_FANTASY_GLOW_BINDINGS.get(material);
+  if (existing) {
+    if (existing.enabled !== enabled) {
+      existing.enabled = enabled;
+      material.needsUpdate = true;
+    }
+    return;
+  }
+  const binding: SpellFantasyGlowBinding = {
+    previousCompile: material.onBeforeCompile,
+    previousKey: material.customProgramCacheKey(),
+    enabled,
+  };
+  SPELL_FANTASY_GLOW_BINDINGS.set(material, binding);
+  material.onBeforeCompile = (shader, renderer) => {
+    binding.previousCompile.call(material, shader, renderer);
+    if (!binding.enabled) return;
+    const marker = "#include <color_fragment>";
+    if (shader.fragmentShader.split(marker).length - 1 !== 1) {
+      throw new Error("Spell fantasy glow expected exactly one MeshBasic color marker");
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(marker, `${marker}
+      /* spell-fantasy-glow-v1: texture/vertex alpha controls a restrained additive energy lift. */
+      float spellFantasyEnergy = smoothstep(0.08, 0.92, diffuseColor.a);
+      diffuseColor.rgb *= 1.18 + spellFantasyEnergy * 0.22;`);
+  };
+  material.customProgramCacheKey = () => binding.enabled
+    ? `${binding.previousKey}|spell-fantasy-glow-v1`
+    : binding.previousKey;
+  if (enabled) material.needsUpdate = true;
+}
+
+/** Rebinds only already-built spell materials; geometry, textures and animation state stay intact. */
+export function setBuiltModelFantasyGlow(built: Pick<BuiltModel, "materials">, enabled: boolean): void {
+  for (const material of built.materials) {
+    const binding = SPELL_FANTASY_GLOW_BINDINGS.get(material);
+    if (!binding || binding.enabled === enabled) continue;
+    binding.enabled = enabled;
+    material.needsUpdate = true;
+  }
+}
+
 /**
  * A texture this material may write per-frame state into, without any other material seeing it.
  *
@@ -725,11 +886,12 @@ function alwaysUnlit(blendMode: number): boolean {
  * filter of a 1×1 returns that texel, its mip chain is one level, and four bytes to a row need no
  * padding at either alignment.
  *
- * The path that reaches it is the ordinary world and not the spells the slice was written for: 154
- * batches in 35 `creature\` models name a texture transform and are built by the loader that does
- * **not** cache (`WorldRenderer3D.ts:4022`), so each holds a clone of a texture nothing else loads.
+ * Ordinary transformed maps still reach this after their uncached load. Spell maps now reach it
+ * earlier, before *any* sampler mutation: corpus audit found four spell URLs authored with flags
+ * 0 and 3, fourteen shared by mesh and emitter use, and two in both groups. The cached Texture is
+ * therefore only a canonical request/Source handle; each material owns one private view over it.
  */
-function ownTexture(texture: THREE.Texture): THREE.Texture {
+export function privateTextureView(texture: THREE.Texture): THREE.Texture {
   const owned = texture.clone();
   Object.defineProperty(owned, "isDataTexture", {
     configurable: true,
@@ -783,8 +945,10 @@ function buildMaterial(
   options: {
     baseUrl: string;
     loadTexture: (url: string) => THREE.Texture;
+    privateLoadedTextureViews?: boolean;
     anisotropy?: number;
     worldLight?: WorldLightUniforms;
+    fantasyGlow?: boolean;
   },
 ): THREE.MeshBasicMaterial | THREE.MeshStandardMaterial {
   const unlit = (batch.materialFlags & MATERIAL_UNLIT) !== 0 || alwaysUnlit(batch.blendMode);
@@ -833,7 +997,7 @@ function buildMaterial(
 
   // Two things this batch may want are written into the texture object rather than into the
   // material — where the texture sits, and which UV set reads it — so when it wants either, the
-  // texture has to be this material's own. See `ownTexture` for what "own" costs and why sharing
+  // texture has to be this material's own. See `privateTextureView` for what "own" costs and why sharing
   // is not an option.
   //
   // `matrixAutoUpdate` off because three would otherwise recompute the matrix from
@@ -854,7 +1018,11 @@ function buildMaterial(
   const transform = model.textureTransforms?.[batch.textureTransform];
   const secondUvSet = batch.uvSets[0] === 1 && authoredSecondUvSet(model, batch);
   if (material.map && (transform || secondUvSet)) {
-    material.map = ownTexture(material.map);
+    // An opt-in private loaded view was already cloned before any sampler mutation above. Supplied
+    // maps are not loaded views and still need the historical clone when their UV state moves.
+    if (!(options.privateLoadedTextureViews === true && !supplied && path)) {
+      material.map = privateTextureView(material.map);
+    }
     if (transform) material.map.matrixAutoUpdate = false;
     if (secondUvSet) material.map.channel = 1;
   }
@@ -873,6 +1041,7 @@ function buildMaterial(
   if (material instanceof THREE.MeshStandardMaterial && options.worldLight) {
     applyWorldLight(material, options.worldLight, "surface");
   }
+  bindSpellFantasyGlow(material, batch.blendMode, options.fantasyGlow);
 
   return material;
 }
@@ -987,7 +1156,12 @@ function fogStep(blendMode: number): ShaderStep | undefined {
 function secondLayer(
   model: WvmModel,
   batch: WvmBatch,
-  options: { baseUrl: string; loadTexture: (url: string) => THREE.Texture; anisotropy?: number },
+  options: {
+    baseUrl: string;
+    loadTexture: (url: string) => THREE.Texture;
+    anisotropy?: number;
+    privateLoadedTextureViews?: boolean;
+  },
 ): { texture: THREE.Texture; step: ShaderStep } | undefined {
   const index = batch.textures[1] ?? -1;
   // The set has to be filled in as well as named — `authoredSecondUvSet` for why. It is a much
@@ -1001,7 +1175,10 @@ function secondLayer(
   // cannot resolve, and drawing it flat green would be worse than drawing one layer.
   if (!slot || slot.type !== TEXTURE_TYPE_OWN || !slot.path) return undefined;
 
-  const texture = ownTexture(options.loadTexture(textureUrl(options.baseUrl, slot.path)));
+  const loaded = options.loadTexture(textureUrl(options.baseUrl, slot.path));
+  const texture = options.privateLoadedTextureViews === true
+    ? loaded
+    : privateTextureView(loaded);
   texture.wrapS = (slot.flags & TEXTURE_WRAP_X) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   texture.wrapT = (slot.flags & TEXTURE_WRAP_Y) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   texture.colorSpace = THREE.SRGBColorSpace;

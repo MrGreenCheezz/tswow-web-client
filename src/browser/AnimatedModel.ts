@@ -28,9 +28,14 @@ const {
   JumpStart, Jump, JumpEnd, Fall, Swim, SwimIdle, SwimLeft, SwimRight, SwimBackwards,
   Fly, Hover, Mount, Death, Dead, SitGround, SitGroundDown, SitGroundUp, KneelLoop,
   SitChairLow, SitChairMed, SitChairHigh, Sleep, SleepDown,
-  AttackUnarmed, Attack1H, Attack2H, AttackBow, AttackRifle, AttackThrown, AttackOff,
+  AttackUnarmed, Attack1H, Attack2H, AttackBow, FireBow, AttackRifle, AttackThrown, AttackOff,
   ReadyUnarmed, Ready1H, Ready2H, ReadyBow, ReadyRifle, ReadyThrown,
-  ReadySpellOmni, SpellCastOmni, ChannelCastOmni, Loot,
+  SpellPrecast, SpellCast, SpellCastArea,
+  ReadySpellDirected, ReadySpellOmni, SpellCastDirected, SpellCastOmni,
+  ChannelCastDirected, ChannelCastOmni, Loot,
+  FlySpellPrecast, FlySpellCast, FlySpellCastArea,
+  FlyReadySpellDirected, FlyReadySpellOmni, FlySpellCastDirected, FlySpellCastOmni,
+  FlyChannelCastDirected, FlyChannelCastOmni,
 } = ANIMATION_IDS;
 
 /**
@@ -70,6 +75,10 @@ export interface SkinnedTemplate {
   billboards: number[];
   /** Model height in world units, for placing the name plate. */
   height: number;
+  /** Lower-body bones kept under the locomotion action while a transient upper-body action plays. */
+  locomotionBones?: Uint8Array;
+  /** Per-clip upper-body variants used by locomotion-preserving transient actions. */
+  overlayClips?: Map<number, THREE.AnimationClip>;
 }
 
 export interface SkinnedInstance {
@@ -77,6 +86,24 @@ export interface SkinnedInstance {
   mesh: THREE.SkinnedMesh;
   mixer: THREE.AnimationMixer;
   skeleton: THREE.Skeleton;
+}
+
+/** Instances own their mixer, bone objects and Skeleton, but borrow model geometry and materials. */
+const disposedSkinnedInstances = new WeakSet<SkinnedInstance>();
+
+/** Releases one playable rig exactly once without disposing its shared model build. */
+export function disposeSkinnedInstance(instance: SkinnedInstance | undefined): void {
+  if (!instance || disposedSkinnedInstances.has(instance)) return;
+  disposedSkinnedInstances.add(instance);
+  try {
+    instance.mixer.stopAllAction();
+  } finally {
+    try {
+      instance.mixer.uncacheRoot(instance.root);
+    } finally {
+      instance.skeleton.dispose();
+    }
+  }
 }
 
 /**
@@ -110,10 +137,17 @@ export function buildSkinnedTemplateFrom(
   // refusing it here would drop the model back to a stand-in capsule it never recovers from.
   if (clips.size === 0 && skeleton.animations.length === 0) return undefined;
 
+  const locomotionBones = locomotionBoneMask(skeleton.parents, skeleton.pivots);
+  const overlayClips = new Map<number, THREE.AnimationClip>();
+  for (const [animation, clip] of clips) {
+    overlayClips.set(animation, locomotionOverlayClip(clip, locomotionBones));
+  }
+
   return {
     geometry, clips, animations: new Set(skeleton.animations),
     boneInverses, parents: skeleton.parents, pivots: skeleton.pivots,
     flags: skeleton.flags, billboards: billboardBones(skeleton.flags), height,
+    locomotionBones, overlayClips,
   };
 }
 
@@ -140,6 +174,10 @@ export function addSkinnedClips(template: SkinnedTemplate, clips: readonly WvmSk
     if (!built) continue;
     template.clips.set(clip.animationId, built);
     template.animations.add(clip.animationId);
+    if (template.locomotionBones) {
+      (template.overlayClips ??= new Map()).set(
+        clip.animationId, locomotionOverlayClip(built, template.locomotionBones));
+    }
     added++;
   }
   return added;
@@ -181,7 +219,9 @@ export function buildSkinnedTemplate(model: EnvironmentModel): SkinnedTemplate |
   geometry.setAttribute("skinIndex", new THREE.Uint8BufferAttribute(skeleton.skinIndices, 4));
   geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skeleton.skinWeights, 4));
   geometry.setIndex(model.indices);
-  for (const group of model.groups ?? []) geometry.addGroup(group.start, group.count, group.material);
+  for (const [ordinal, group] of (model.groups ?? []).entries()) {
+    geometry.addGroup(group.start, group.count, ordinal);
+  }
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
 
@@ -198,7 +238,16 @@ export function buildSkinnedTemplate(model: EnvironmentModel): SkinnedTemplate |
     const built = buildClip(clip, skeleton);
     if (built) clips.set(clip.animationId, built);
   }
-  if (clips.size === 0) return undefined;
+  if (clips.size === 0) {
+    geometry.dispose();
+    return undefined;
+  }
+
+  const locomotionBones = locomotionBoneMask(skeleton.parents, skeleton.pivots);
+  const overlayClips = new Map<number, THREE.AnimationClip>();
+  for (const [animation, clip] of clips) {
+    overlayClips.set(animation, locomotionOverlayClip(clip, locomotionBones));
+  }
 
   // In M2 space the model stands on z = 0, so its top is the height that matters.
   const height = geometry.boundingBox ? Math.max(0.4, geometry.boundingBox.max.z) : 2;
@@ -207,8 +256,191 @@ export function buildSkinnedTemplate(model: EnvironmentModel): SkinnedTemplate |
   return {
     geometry, clips, animations: new Set(clips.keys()),
     boneInverses, parents: skeleton.parents, pivots: skeleton.pivots,
-    flags, billboards: [], height,
+    flags, billboards: [], height, locomotionBones, overlayClips,
   };
+}
+
+/**
+ * Finds the lower-body branches that must remain owned by locomotion during an upper-body action.
+ *
+ * M2 does not publish bone names in WVM, but its rest pivots do preserve one useful invariant:
+ * humanoid legs have a pronounced vertical drop and bilateral lateral separation below the hip.
+ * Requiring both signals avoids treating zero-pivot finger/attachment helper bones as legs. The
+ * first bilateral branches are retained, rather than their common pelvis subtree: the latter also
+ * contains the spine and arms on several playable rigs. If a creature has no such branch, the
+ * empty mask deliberately selects the full-body fallback.
+ */
+export function locomotionBoneMask(parents: Int16Array, pivots: Float32Array): Uint8Array {
+  const count = parents.length;
+  const mask = new Uint8Array(count);
+  if (count === 0 || pivots.length < count * 3) return mask;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let bone = 0; bone < count; bone++) {
+    const z = pivots[bone * 3 + 2]!;
+    if (!Number.isFinite(z)) continue;
+    maxZ = Math.max(maxZ, z);
+  }
+  // M2 character feet sit close to z=0; negative pivots are usually weapon/effect helper bones and
+  // should not turn an entire root branch into the lower-body mask. Scale thresholds from the model
+  // top rather than min/max so those helpers cannot distort the classification.
+  if (!Number.isFinite(maxZ) || maxZ <= 0) return mask;
+  const lowCutoff = maxZ * 0.72;
+  // An arm/forearm can drop a little in the bind pose too; the leg chain's first useful segment is
+  // deeper on every playable rig audited here, including the compact Gnome skeleton.
+  const minimumDrop = maxZ * 0.08;
+  const lateralMinimum = maxZ * 0.025;
+  const children: number[][] = Array.from({ length: count }, () => []);
+  for (let bone = 0; bone < count; bone++) {
+    const parent = parents[bone]!;
+    if (parent >= 0 && parent < count) children[parent]!.push(bone);
+  }
+  const zAt = (bone: number): number => pivots[bone * 3 + 2]!;
+  const yAt = (bone: number): number => pivots[bone * 3 + 1]!;
+  const floorCutoff = maxZ * 0.2;
+  const spanCutoff = maxZ * 0.2;
+
+  // First find deep, laterally separated segments. The WVM skeleton has no bone names, but all
+  // playable rigs expose the same two-sided chain in this rest-pivot geometry.
+  const candidateSide = new Int8Array(count);
+  for (let bone = 0; bone < count; bone++) {
+    const parent = parents[bone]!;
+    if (parent < 0 || parent >= count) continue;
+    const z = zAt(bone);
+    const parentZ = zAt(parent);
+    const lateral = Math.abs(yAt(bone));
+    if (z < 0 || z > lowCutoff || parentZ - z < minimumDrop || lateral < lateralMinimum) continue;
+    candidateSide[bone] = Math.sign(yAt(bone));
+  }
+
+  // Propagate candidate sides upward. It lets a root whose own pivot is nearly centred (Night Elf
+  // female is one example) inherit the sign of its actual leg descendants.
+  const subtreeSides = new Uint8Array(count);
+  for (let bone = count - 1; bone >= 0; bone--) {
+    const side = candidateSide[bone]!;
+    if (side < 0) subtreeSides[bone]! |= 1;
+    else if (side > 0) subtreeSides[bone]! |= 2;
+    const parent = parents[bone]!;
+    if (parent >= 0 && parent < count) subtreeSides[parent]! |= subtreeSides[bone]!;
+  }
+
+  const subtreeStats = (root: number): { minZ: number; span: number } => {
+    let minZ = Number.POSITIVE_INFINITY;
+    const stack = [root];
+    while (stack.length > 0) {
+      const bone = stack.pop()!;
+      minZ = Math.min(minZ, zAt(bone));
+      for (const child of children[bone]!) stack.push(child);
+    }
+    return { minZ, span: zAt(root) - minZ };
+  };
+
+  type LegBranch = { root: number; side: -1 | 1; depth: number; z: number; span: number };
+  const branches: LegBranch[] = [];
+  for (let bone = 0; bone < count; bone++) {
+    const side = candidateSide[bone]!;
+    if (side === 0) continue;
+    let root = bone;
+    // Stop at the first ancestor whose sibling subtree carries the opposite leg. This prevents a
+    // pelvis with spine/arms and legs from becoming one giant lower-body branch.
+    while (parents[root]! >= 0 && parents[root]! < count) {
+      const parent = parents[root]!;
+      const opposite = side < 0 ? 2 : 1;
+      if (children[parent]!.some((child) => child !== root
+        && (subtreeSides[child]! & opposite) !== 0)) break;
+      root = parent;
+    }
+    const stats = subtreeStats(root);
+    if (stats.minZ > floorCutoff || stats.span < spanCutoff) continue;
+    let depth = 0;
+    for (let ancestor = parents[root]!; ancestor >= 0 && ancestor < count; ancestor = parents[ancestor]!) depth++;
+    branches.push({ root, side: side < 0 ? -1 : 1, depth, z: zAt(root), span: stats.span });
+  }
+  if (branches.length === 0) return mask;
+
+  const ancestorSet = (bone: number): Set<number> => {
+    const found = new Set<number>();
+    for (let current = bone; current >= 0 && current < count; current = parents[current]!) found.add(current);
+    return found;
+  };
+  const firstChildBelow = (ancestor: number, bone: number): number => {
+    let current = bone;
+    while (parents[current]! >= 0 && parents[current] !== ancestor) current = parents[current]!;
+    return current;
+  };
+  const lowestCommonAncestor = (left: number, right: number): number => {
+    const leftAncestors = ancestorSet(left);
+    for (let current = right; current >= 0 && current < count; current = parents[current]!) {
+      if (leftAncestors.has(current)) return current;
+    }
+    return -1;
+  };
+  const pairCandidates: Array<{
+    left: LegBranch; right: LegBranch; common: number; commonDepth: number;
+    symmetry: number; z: number; span: number;
+  }> = [];
+  for (let left = 0; left < branches.length; left++) {
+    for (let right = left + 1; right < branches.length; right++) {
+      const first = branches[left]!;
+      const second = branches[right]!;
+      if (first.side === second.side || first.root === second.root
+        || Math.abs(first.z - second.z) > maxZ * 0.2) continue;
+      const common = lowestCommonAncestor(first.root, second.root);
+      if (common < 0 || firstChildBelow(common, first.root) === firstChildBelow(common, second.root)) continue;
+      let commonDepth = 0;
+      for (let ancestor = common; ancestor >= 0 && ancestor < count && parents[ancestor]! >= 0;
+        ancestor = parents[ancestor]!) commonDepth++;
+      pairCandidates.push({
+        left: first, right: second, common, commonDepth,
+        // Actual legs start at practically the same rest height and have matching vertical spans.
+        // Stock HumanFemale also exposes a high helper/whole-torso cross-pair; it passed the broad
+        // cutoff above but is visibly asymmetric, while the real thigh roots are not.
+        symmetry: Math.abs(first.z - second.z) + Math.abs(first.span - second.span),
+        z: Math.min(first.z, second.z), span: Math.min(first.span, second.span),
+      });
+    }
+  }
+  if (pairCandidates.length === 0) return mask;
+  // Depth 1 pairs in full character rigs are usually cross-branch equipment helpers. A tiny
+  // synthetic rig has no deeper pelvis node, so only fall back to them when no proper pair exists.
+  const properPairs = pairCandidates.filter((pair) => pair.commonDepth >= 2);
+  const pairs = properPairs.length > 0 ? properPairs : pairCandidates;
+  pairs.sort((left, right) => left.commonDepth - right.commonDepth
+    || left.symmetry - right.symmetry || right.z - left.z || right.span - left.span);
+  const chosen = pairs[0]!;
+  const markDescendants = (root: number): void => {
+    const stack = [root];
+    while (stack.length > 0) {
+      const bone = stack.pop()!;
+      if (mask[bone]) continue;
+      mask[bone] = 1;
+      for (const child of children[bone]!) stack.push(child);
+    }
+  };
+  markDescendants(chosen.left.root);
+  markDescendants(chosen.right.root);
+  // Keep every ancestor of the leg branches on locomotion too. The first shared node is usually
+  // the pelvis, but several playable rigs put a keyed root translation above it (HumanMale's
+  // SpellCastOmni and Run both key bone1). Leaving that ancestor on the upper layer moves the
+  // entire lower body even though the thigh/shin tracks were filtered out.
+  for (const branch of [chosen.left.root, chosen.right.root]) {
+    for (let ancestor = parents[branch]!; ancestor >= 0 && ancestor < count;
+      ancestor = parents[ancestor]!) {
+      mask[ancestor] = 1;
+    }
+  }
+  return mask;
+}
+
+/** Builds a clip whose lower-body tracks are left to the locomotion action. */
+export function locomotionOverlayClip(clip: THREE.AnimationClip, lowerBody: Uint8Array): THREE.AnimationClip {
+  if (lowerBody.length === 0 || clip.tracks.length === 0) return clip;
+  const tracks = clip.tracks.filter((track) => {
+    const match = /^bone(\d+)\./.exec(track.name);
+    return match === null || lowerBody[Number(match[1])] !== 1;
+  });
+  return tracks.length === clip.tracks.length
+    ? clip
+    : new THREE.AnimationClip(`${clip.name}-locomotion-overlay`, clip.duration, tracks);
 }
 
 /** Only the rig's shape matters here, so this takes it rather than a whole skeleton. */
@@ -389,6 +621,11 @@ export function isUnitMoving(movementFlags: number, hasSplineMotion: boolean): b
   return (movementFlags & MOVEMENT_FLAG_TRANSLATING) !== 0 || hasSplineMotion;
 }
 
+/** Whether the authoritative movement word (or an explicitly flying spline) says the unit flies. */
+export function isUnitFlying(movementFlags: number, splineFlying = false): boolean {
+  return (movementFlags & MOVEMENT_FLAGS.flying) !== 0 || splineFlying;
+}
+
 /**
  * Where walking stops and running starts, in yards a second.
  *
@@ -445,6 +682,41 @@ export type AnimationTransition = "crossfade" | "stop" | "none";
 export function animationTransition(previousRunning: boolean, differentAnimation: boolean): AnimationTransition {
   if (!differentAnimation) return "none";
   return previousRunning ? "crossfade" : "stop";
+}
+
+/**
+ * Blend policy for replacing a clip.
+ *
+ * Continuous poses use an ordinary cross-fade with a fixed playback rate.  Three.js's optional
+ * `warp` mode changes each action's time scale for the hand-off; HD models carry deliberately
+ * different authored loop lengths, and that runtime speed change made otherwise valid poses
+ * appear frozen or jumpy in the live renderer.  One-shots likewise keep authored timing and use a
+ * shorter hand-off so the reaction remains readable instead of spending a fifth of a second in
+ * two poses.
+ */
+export const LOOP_ANIMATION_BLEND = 0.18;
+export const ACTION_ANIMATION_BLEND = 0.12;
+
+export interface AnimationBlendProfile {
+  duration: number;
+  warp: boolean;
+}
+
+export function animationBlend(previousLoop: boolean, nextLoop: boolean): AnimationBlendProfile {
+  return previousLoop && nextLoop
+    ? { duration: LOOP_ANIMATION_BLEND, warp: false }
+    : { duration: ACTION_ANIMATION_BLEND, warp: false };
+}
+
+/** Authored one-shot interval and the short blend window used to return to locomotion. */
+export function animationFadeWindow(duration: number, fullDuration = false): {
+  start: number;
+  end: number;
+} {
+  const authored = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+  return fullDuration
+    ? { start: authored, end: authored + ACTION_ANIMATION_BLEND }
+    : { start: Math.max(0, authored - ACTION_ANIMATION_BLEND), end: authored };
 }
 
 /**
@@ -518,7 +790,7 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
     return { wanted: [SwimIdle, Swim, Stand], loop: true };
   }
 
-  const flying = has(MOVEMENT_FLAGS.flying) || pose.flight === true;
+  const flying = isUnitFlying(flags, pose.flight === true);
   if (flying) return { wanted: moving ? [Fly, Swim, Run] : [Hover, Fly, Stand], loop: true };
   if (has(MOVEMENT_FLAGS.hover) || has(MOVEMENT_FLAGS.disableGravity)) {
     return { wanted: moving ? [Fly, Run] : [Hover, Stand], loop: true };
@@ -568,6 +840,16 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
 }
 
 /**
+ * The one-shot sent by `SMSG_MOUNTSPECIAL_ANIM` belongs to the mount model, not its rider.
+ * Ground and flying mounts have separate authored sequences; keep the choice in the generated
+ * AnimationData table instead of baking the protocol's numeric ids into the renderer.
+ */
+export function mountSpecialAnimation(flying: boolean): number | undefined {
+  const animation = flying ? ANIMATION_IDS.FlyMountSpecial : ANIMATION_IDS.MountSpecial;
+  return typeof animation === "number" ? animation : undefined;
+}
+
+/**
  * The one-shot that belongs between two poses, if any.
  *
  * A jump is three animations in the original client and one flag on the wire, so the takeoff and
@@ -600,10 +882,10 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
  * `INVTYPE_*` from the visible-item words is what the server publishes, and it is enough to tell a
  * two-hander from a one-hander from a bow. It is not enough for two distinctions the original
  * client makes: a polearm from a sword (Attack2HL against Attack2H) and a wand from a gun both
- * need the item's subclass, which is not on the wire. Both fall back to the pose above them
- * through the DBC chain, which is what that chain is for.
+ * need the item's subclass. The appearance gateway now carries that optional ItemSubClass; old
+ * three-field payloads retain their inventory-type fallback.
  */
-export type WeaponPose = "unarmed" | "oneHand" | "twoHand" | "bow" | "gun" | "thrown";
+export type WeaponPose = "unarmed" | "oneHand" | "twoHand" | "bow" | "gun" | "thrown" | "wand";
 
 const EQUIPMENT_SLOT_MAINHAND = 15;
 const EQUIPMENT_SLOT_RANGED = 17;
@@ -614,18 +896,46 @@ const INVENTORY_TYPE_WEAPON_MAIN_HAND = 21;
 const INVENTORY_TYPE_THROWN = 25;
 const INVENTORY_TYPE_RANGED_RIGHT = 26;
 
-/** What the unit swings, from the items it is visibly wearing. */
-export function weaponPose(attached: readonly { slot: number; inventoryType: number }[] | undefined): WeaponPose {
+// ItemSubClass values from Item.dbc. Inventory type 26 is shared by guns and wands, so it is only
+// a safe fallback for old appearance payloads that predate the optional subclass field.
+const SUBCLASS_BOW = 2;
+const SUBCLASS_GUN = 3;
+const SUBCLASS_THROWN = 16;
+const SUBCLASS_CROSSBOW = 18;
+const SUBCLASS_WAND = 19;
+
+function rangedWeaponPose(item: { inventoryType: number; subClass?: number }): WeaponPose | undefined {
+  switch (item.subClass) {
+    case SUBCLASS_BOW: return "bow";
+    case SUBCLASS_GUN: return "gun";
+    case SUBCLASS_THROWN: return "thrown";
+    case SUBCLASS_CROSSBOW: return "bow";
+    case SUBCLASS_WAND: return "wand";
+  }
+  // Keep the pre-subclass wire contract working for bow/gun/thrown appearances already cached by
+  // an older gateway. A known subclass always wins, especially subclass 19 (wand).
+  if (item.inventoryType === INVENTORY_TYPE_THROWN) return "thrown";
+  if (item.inventoryType === INVENTORY_TYPE_RANGED) return "bow";
+  if (item.inventoryType === INVENTORY_TYPE_RANGED_RIGHT) return "gun";
+  return undefined;
+}
+
+/** What the unit swings or shoots, from the items it is visibly wearing. */
+export function weaponPose(
+  attached: readonly { slot: number; inventoryType: number; subClass?: number }[] | undefined,
+  purpose: "melee" | "ranged" = "melee",
+): WeaponPose {
   let pose: WeaponPose = "unarmed";
   for (const item of attached ?? []) {
     if (item.slot === EQUIPMENT_SLOT_RANGED) {
-      // A ranged slot only decides the pose when the hands are otherwise empty: a hunter with a
-      // bow on their back and a sword in hand swings the sword.
-      if (item.inventoryType === INVENTORY_TYPE_THROWN) pose = pose === "unarmed" ? "thrown" : pose;
-      else if (item.inventoryType === INVENTORY_TYPE_RANGED) pose = pose === "unarmed" ? "bow" : pose;
-      else if (item.inventoryType === INVENTORY_TYPE_RANGED_RIGHT) pose = pose === "unarmed" ? "gun" : pose;
+      // A shot is always decided by the ranged slot. A melee swing keeps scanning because a
+      // hunter with a bow on their back and a sword in hand still swings the sword.
+      const ranged = rangedWeaponPose(item);
+      if (purpose === "ranged" && ranged) return ranged;
+      if (ranged) pose = pose === "unarmed" ? ranged : pose;
       continue;
     }
+    if (purpose === "ranged") continue;
     if (item.slot !== EQUIPMENT_SLOT_MAINHAND) continue;
     if (item.inventoryType === INVENTORY_TYPE_TWO_HAND) return "twoHand";
     if (item.inventoryType === INVENTORY_TYPE_WEAPON || item.inventoryType === INVENTORY_TYPE_WEAPON_MAIN_HAND) pose = "oneHand";
@@ -634,7 +944,7 @@ export function weaponPose(attached: readonly { slot: number; inventoryType: num
 }
 
 /** Something the packets said the unit did, over whatever pose it is otherwise holding. */
-export type UnitAction = "attack" | "attackOff" | "precast" | "cast" | "channel" | "loot";
+export type UnitAction = "attack" | "attackOff" | "shoot" | "precast" | "cast" | "channel" | "loot";
 
 /** The poses that could serve one action, best first. */
 export function actionAnimation(action: UnitAction, weapon: WeaponPose): number[] {
@@ -650,12 +960,22 @@ export function actionAnimation(action: UnitAction, weapon: WeaponPose): number[
       }
     case "attackOff":
       return [AttackOff, AttackUnarmed];
+    case "shoot":
+      switch (weapon) {
+        case "bow": return [FireBow, AttackBow];
+        case "gun": return [AttackRifle, FireBow, AttackBow];
+        case "thrown": return [AttackThrown];
+        // A wand is a spell-shaped release. It must never fall through to AttackUnarmed: that
+        // turns self-heal/Auto Shot-style events into a visible melee strike.
+        case "wand": return [SpellCastDirected, SpellCastOmni, SpellCast];
+        default: return [];
+      }
     case "precast":
-      return [ReadySpellOmni, Stand];
+      return [ReadySpellOmni, SpellPrecast, Stand];
     case "cast":
-      return [SpellCastOmni, AttackUnarmed];
+      return [SpellCastOmni, SpellCastArea, SpellCast];
     case "channel":
-      return [ChannelCastOmni, ReadySpellOmni, Stand];
+      return [ChannelCastOmni, SpellPrecast, ReadySpellOmni, Stand];
     case "loot":
       return [Loot, Stand];
   }
@@ -669,6 +989,9 @@ export function readyAnimation(weapon: WeaponPose): number[] {
     case "bow": return [ReadyBow, ReadyUnarmed];
     case "gun": return [ReadyRifle, ReadyBow, ReadyUnarmed];
     case "thrown": return [ReadyThrown, ReadyUnarmed];
+    // ReadyUnarmed is only a neutral hold fallback. Wand shoot itself has a separate spell-family
+    // list and resolveActionAnimation never crosses into a melee attack.
+    case "wand": return [ReadySpellDirected, ReadySpellOmni, ReadyUnarmed];
     default: return [ReadyUnarmed];
   }
 }
@@ -688,6 +1011,60 @@ export function resolveAnimation(available: ReadonlySet<number> | Map<number, un
     for (let hop = 0; id !== undefined && hop < 8; hop++) {
       if (has(id)) return id;
       id = ANIMATION_FALLBACK[id];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves a named unit action without allowing spell/ranged requests to cross into a melee pose.
+ * Their semantically valid alternatives are listed explicitly by {@link actionAnimation}; the
+ * general AnimationData fallback remains correct for actual melee, emotes and locomotion.
+ */
+export function resolveActionAnimation(
+  available: ReadonlySet<number> | Map<number, unknown>,
+  action: UnitAction,
+  weapon: WeaponPose,
+): number | undefined {
+  const wanted = actionAnimation(action, weapon);
+  if (action !== "shoot" && action !== "precast" && action !== "cast" && action !== "channel") {
+    return resolveAnimation(available, wanted);
+  }
+  for (const animation of wanted) if (available.has(animation)) return animation;
+  return undefined;
+}
+
+/** Spell-family rows whose DBC fallback is allowed to remain inside spell semantics. */
+const SPELL_ACTION_ANIMATIONS = new Set<number>([
+  SpellPrecast, SpellCast, SpellCastArea,
+  ReadySpellDirected, ReadySpellOmni, SpellCastDirected, SpellCastOmni,
+  ChannelCastDirected, ChannelCastOmni,
+  FlySpellPrecast, FlySpellCast, FlySpellCastArea,
+  FlyReadySpellDirected, FlyReadySpellOmni, FlySpellCastDirected, FlySpellCastOmni,
+  FlyChannelCastDirected, FlyChannelCastOmni,
+]);
+
+/**
+ * Resolves a SpellVisualKit-authored unit animation while stopping at the spell-family boundary.
+ * For example SpellCastOmni may use SpellCastArea/SpellCast, but never AttackUnarmed.
+ */
+export function resolveSpellVisualAnimation(
+  available: ReadonlySet<number> | Map<number, unknown>,
+  wanted: Iterable<number>,
+): number | undefined {
+  for (const start of wanted) {
+    if (!SPELL_ACTION_ANIMATIONS.has(start)) {
+      const resolved = resolveAnimation(available, [start]);
+      if (resolved !== undefined) return resolved;
+      continue;
+    }
+    let animation: number | undefined = start;
+    for (let hop = 0; animation !== undefined && hop < 8; hop++) {
+      if (available.has(animation)) return animation;
+      const fallback: number | undefined = ANIMATION_FALLBACK[animation];
+      animation = fallback !== undefined && SPELL_ACTION_ANIMATIONS.has(fallback)
+        ? fallback
+        : undefined;
     }
   }
   return undefined;
@@ -745,11 +1122,40 @@ export function pendingActionFate(options: {
   hasClip: boolean;
   /** Whether the model's own animation list claims the pose, keyframes or not. */
   promised: boolean;
+  /** Whether this action is waiting for appearance/attached-equipment metadata to resolve. */
+  metadataPending?: boolean;
   now: number;
   /** When the wait runs out. A gesture a second late is worse than one that did not happen. */
   waitUntil: number;
 }): "play" | "wait" | "drop" {
   if (options.hasClip) return "play";
-  if (options.promised && options.now < options.waitUntil) return "wait";
+  if ((options.promised || options.metadataPending) && options.now < options.waitUntil) return "wait";
   return "drop";
 }
+
+/** A one-shot shoot that outlived its metadata window must not start even if its clip arrives late. */
+export function pendingActionExpired(
+  action: UnitAction | undefined,
+  holding: boolean,
+  now: number,
+  waitUntil: number,
+): boolean {
+  return action === "shoot" && !holding && now >= waitUntil;
+}
+
+/**
+ * A completed one-shot can outlive its pending action record by a frame. When translation starts,
+ * the full-body clip must move to the upper layer so the base gait can take over the legs. Held
+ * stances are intentionally excluded: they remain owned by the action queue until cancellation.
+ */
+export function shouldPromoteActionToLocomotionOverlay(
+  moving: boolean,
+  overlayPreservesLocomotion: boolean,
+  action: UnitAction | undefined,
+  loop: number | undefined,
+): boolean {
+  return moving && !overlayPreservesLocomotion && action !== undefined && loop === THREE.LoopOnce;
+}
+
+/** Shoot metadata may arrive after the ordinary 900 ms sidecar-animation window, but never forever. */
+export const SHOOT_METADATA_WAIT = 1_500;

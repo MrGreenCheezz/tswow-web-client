@@ -9,6 +9,7 @@ import {
 import { encodeWwm, encodeWwmGroup, WWM_TRIANGLE_BUDGET } from "../tools/wwm.mjs";
 import { decodeVisualModel } from "../dist/code/browser/Terrain.js";
 import { decodeWwm, decodeWwmGroup } from "../dist/code/browser/WmoModel.js";
+import { VISUAL_MODEL_ROUTE_VERSION } from "../dist/code/browser/Wvm.js";
 
 test("ADT visual placements retain full paths and convert client coordinates", () => {
   const worldMid = 0.5 * 64 * 533.33333333;
@@ -189,6 +190,19 @@ test("WMO visual parser resolves groups, render triangles, UVs and texture", () 
   const decoded = decodeWwm(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength), "http://gateway");
   assert.deepEqual(decoded.groups[0].mesh.runs, only.runs, "blend mode, material flags and light have to survive the artifact");
   assert.deepEqual(decoded.textureUrls, ["http://gateway/wall.png", "http://gateway/roof.png"]);
+
+  const visualTexture = encodeWwm(meshes, [
+    "/visual/texture/0123456789012345678901234567890123456789-0.png",
+    "",
+  ]);
+  const visualDecoded = decodeWwm(
+    visualTexture.buffer.slice(visualTexture.byteOffset, visualTexture.byteOffset + visualTexture.byteLength),
+    "http://gateway",
+  );
+  assert.deepEqual(visualDecoded.textureUrls, [
+    `http://gateway/visual/texture/0123456789012345678901234567890123456789-0.png?v=${VISUAL_MODEL_ROUTE_VERSION}`,
+    "",
+  ], "WMO textures leave the browser cache with the same generation as their rebuilt model");
 
   // A group with no MOBA at all still draws everything the collision hull does not own.
   const unbatched = chunk("MOGP", Buffer.concat([

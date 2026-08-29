@@ -18,6 +18,8 @@ const SPELL_ATTR0_PASSIVE = 0x40;
 const SPELL_ATTR0_HIDDEN_CLIENTSIDE = 0x80;
 /** `SPELL_ATTR0_DISABLED_WHILE_ACTIVE`: the server starts recovery from the later event. */
 const SPELL_ATTR0_DISABLED_WHILE_ACTIVE = 0x02000000;
+/** `SPELL_ATTR2_AUTOREPEAT_FLAG`: the spell occupies the ranged repeat container. */
+const SPELL_ATTR2_AUTOREPEAT_FLAG = 0x00000020;
 /** `SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT` in SpellCategory.dbc. */
 const SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT = 0x04;
 
@@ -31,6 +33,8 @@ export interface SpellMetadata {
   passive: boolean;
   /** Marked invisible by the artist. Never belongs in the spellbook or on the aura bar. */
   hidden: boolean;
+  /** Auto Shot/Shoot: one targeted start request followed by server-timed ranged attacks. */
+  autoRepeat: boolean;
   powerType: number;
   powerCost: number;
   /**
@@ -215,6 +219,7 @@ export function parseSpellMetadata(
       iconPath: iconPaths.get(iconId) ?? "",
       passive: (spells.int(row, "Attributes") & SPELL_ATTR0_PASSIVE) !== 0,
       hidden: (spells.int(row, "Attributes") & SPELL_ATTR0_HIDDEN_CLIENTSIDE) !== 0,
+      autoRepeat: (spells.int(row, "AttributesExB") & SPELL_ATTR2_AUTOREPEAT_FLAG) !== 0,
       powerType: spells.int(row, "PowerType"),
       powerCost: spells.int(row, "ManaCost"),
       powerCostPercent: spells.int(row, "ManaCostPct"),

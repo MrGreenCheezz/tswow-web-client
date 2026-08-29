@@ -32,6 +32,8 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(11).precast.sound, 7);
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
+    assert.equal(new URL(urls[0]).searchParams.get("v"), "6",
+      "non-cacheable visual metadata rolls the old client cache contract");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);
     await tick();

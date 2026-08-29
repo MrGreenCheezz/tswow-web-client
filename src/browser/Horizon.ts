@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { TERRAIN_GRID_SIZE } from "./Terrain.js";
+import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
+import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -189,7 +191,11 @@ export class HorizonClient {
   readonly #baseUrl: string;
   readonly #maps = new Map<number, HorizonMap | null>();
   readonly #requested = new Set<number>();
+  readonly #loading = new Set<number>();
+  readonly #errors = new Set<number>();
   #revision = 0;
+  #success = 0;
+  #error = 0;
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
@@ -202,29 +208,76 @@ export class HorizonClient {
     return this.#revision;
   }
 
+  get generation(): number {
+    return this.#revision;
+  }
+
+  /** Immutable exact request counters; the lifetime requested set is not an active queue. */
+  get stats(): Readonly<BenchmarkAsyncReadinessStats> {
+    return Object.freeze({
+      pending: this.#loading.size,
+      success: this.#success,
+      error: this.#errors.size,
+      generation: this.#revision,
+    });
+  }
+
   get(map: number | undefined): HorizonMap | undefined {
     if (map === undefined) return undefined;
     const known = this.#maps.get(map);
     if (known) return known;
     if (known === null || this.#requested.has(map)) return undefined;
     this.#requested.add(map);
+    this.#loading.add(map);
     void this.#load(map);
     return undefined;
   }
 
+  /** Adds the outer and inner height arrays from every successful cached map. */
+  visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const map of this.#maps.values()) {
+      if (!map) continue;
+      for (const tile of map.tiles.values()) {
+        visitor.referenceCpu(tile, tile.outer);
+        visitor.referenceCpu(tile, tile.inner);
+      }
+    }
+  }
+
   async #load(map: number): Promise<void> {
+    let settled = false;
+    const settle = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      this.#loading.delete(map);
+      this.#revision++;
+      if (success) this.#success++;
+      else this.#error++;
+    };
     try {
       const response = await fetch(`${this.#baseUrl}/horizon/${map}`);
+      if (response.status === 404) {
+        // A map without a WDL is a normal absence (instances/battlegrounds), not a failed load.
+        this.#maps.set(map, null);
+        this.#errors.delete(map);
+        settle(true);
+        return;
+      }
       if (!response.ok) throw new Error(`Horizon gateway returned ${response.status}`);
       const decoded = decodeHorizon(await response.arrayBuffer());
       this.#maps.set(map, decoded);
-      this.#revision++;
+      this.#errors.delete(map);
+      settle(true);
       this.onStatus?.(`Горизонт: ${decoded.tiles.size} тайлов`, false);
     } catch (error) {
       // Null and never again: a map with no `.wdl` — an instance, a battleground — has no horizon
       // to draw, and asking once a frame for a file that is not there is a request storm.
       this.#maps.set(map, null);
+      this.#errors.add(map);
+      settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      settle(false);
     }
   }
 }

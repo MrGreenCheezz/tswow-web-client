@@ -431,7 +431,7 @@ import {
 import {
   buildAreaSpiritHealerRequest, buildCorpseMapPositionQuery, buildCorpseQuery, buildReclaimCorpse, buildRepopRequest, buildResurrectResponse, buildSpiritHealerActivate, parseAreaSpiritHealerTime, parseCorpseMapPosition, parseCorpseQuery, parseCorpseReclaimDelay, parseDeathReleaseLoc, parseResurrectRequest, parseSpiritHealerConfirm, type CorpseLocation, type DeathReleaseLocation, type ResurrectRequest,
 } from "./DeathProtocol.js";
-import { decompressObjectUpdate, isWorldObjectDead, WorldState, type WorldPosition } from "./WorldState.js";
+import { decompressObjectUpdate, isWorldObjectDead, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
 import { buildMovementPacket, parseMovementPacket, type MovementInfo } from "./MovementProtocol.js";
 import {
   mirrorTimerRemaining, parsePauseMirrorTimer, parseStartMirrorTimer, parseStopMirrorTimer,
@@ -471,8 +471,12 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 const QUEST_POI_CHUNK = 25;
 /** A cast with no answer cannot remain a candidate forever, especially across a cast-count wrap. */
 const PENDING_CAST_TTL = 60_000;
+/** `UNIT_FLAG_MOUNT`: the authoritative mounted bit in `UNIT_FIELD_FLAGS`. */
+const UNIT_FLAG_MOUNT = 0x08000000;
+/** Spellbook's client action row: it maps to the melee protocol, never CMSG_CAST_SPELL. */
+export const MELEE_AUTO_ATTACK_SPELL_ID = 6603;
 import {
-  SHEATH_MELEE, SHEATH_UNARMED,
+  SHEATH_MELEE, SHEATH_RANGED, SHEATH_UNARMED,
   buildCombatGuid, buildSetSheathed, parseAttackStart, parseAttackStop, parseAttackerStateUpdate,
   parseEnvironmentalDamage, parseExperienceGain, parseHealthUpdate,
   type AttackerState, type EnvironmentalDamage, type ExperienceGain,
@@ -488,7 +492,7 @@ import {
   parseMovementTimeSkipped, RELAY_STATE_OPCODES,
 } from "./MovementRelayProtocol.js";
 import {
-  buildCastSpell, buildCastSpellOnGameObject,
+  buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject,
   parseCastFailure,
   spellFailureText,
   parseClearCooldown,
@@ -643,6 +647,19 @@ function auraDiff(previous: ReadonlyMap<number, ActiveAura>, current: ReadonlyMa
   return { added, removed, updated };
 }
 
+function isMounted(object: WorldObjectState | undefined): boolean {
+  if (!object) return false;
+  const flags = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset) ?? 0;
+  if ((flags & UNIT_FLAG_MOUNT) !== 0) return true;
+  return (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset) ?? 0) > 0;
+}
+
+function hasAuraSpell(auras: ReadonlyMap<number, ActiveAura> | undefined, spellId: number): boolean {
+  if (!auras) return false;
+  for (const aura of auras.values()) if (aura.spellId === spellId) return true;
+  return false;
+}
+
 export class WorldClient {
   readonly #connection: WorldConnection;
   readonly state = new WorldState();
@@ -748,6 +765,14 @@ export class WorldClient {
   initialSpellsReceived = false;
   onSpellsChanged: ((spells: readonly KnownSpell[]) => void) | undefined;
   onSpellStatus: ((message: string, error: boolean) => void) | undefined;
+  /** Mount spell ids resolved from DBC metadata; kept here so every cast entry point shares the rule. */
+  readonly #mountSpellIds = new Set<number>();
+  /** Ranged repeat spell ids resolved from `SPELL_ATTR2_AUTOREPEAT_FLAG`. */
+  readonly #autoRepeatSpellIds = new Set<number>();
+  /** The locally requested server repeat container, separate from melee `attacking`. */
+  autoRepeatSpellId: number | undefined;
+  /** Last background repeat error already reported; reset by success, stop or a changed result. */
+  #autoRepeatFailure: { spellId: number; result: number } | undefined;
   readonly cooldowns = new Map<number, number>();
   /** The start/duration pair that produced each end time, for stable cooldown rendering. */
   readonly cooldownSnapshots = new Map<number, CooldownSnapshot>();
@@ -1427,6 +1452,7 @@ export class WorldClient {
   selectTarget(guid: bigint | undefined): void {
     if (this.#closed || (guid !== undefined && !this.state.objects.has(guid))) return;
     if (this.attacking) this.stopAttack();
+    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
     this.targetGuid = guid;
     this.#connection.send(OPCODES.CMSG_SET_SELECTION, buildCombatGuid(guid ?? 0n));
     this.onCombatStatus?.(guid === undefined ? "Цель сброшена" : "Цель выбрана", false, false);
@@ -1450,6 +1476,14 @@ export class WorldClient {
 
   startAttack(): void {
     if (this.#closed || this.targetGuid === undefined || this.attacking) return;
+    const target = this.state.objects.get(this.targetGuid);
+    if (!target || isWorldObjectDead(target)) {
+      this.onCombatStatus?.("Для автоатаки нужна живая видимая цель", false, true);
+      return;
+    }
+    // The realm keeps melee and CURRENT_AUTOREPEAT_SPELL independently. The UI exposes them as
+    // alternative combat modes, so switching must cancel the old wire state before drawing steel.
+    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
     this.faceTarget();
     // Draw the weapon first. The server publishes the sheath state in UNIT_FIELD_BYTES_2 and the
     // renderer hangs a weapon off a hand only while it is out, so a character who never says it
@@ -1461,18 +1495,111 @@ export class WorldClient {
   }
 
   stopAttack(): void {
+    this.#cancelMeleeAttack(true);
+  }
+
+  #cancelMeleeAttack(announce: boolean): void {
     if (this.#closed || !this.attacking) return;
     this.#connection.send(OPCODES.CMSG_ATTACK_STOP);
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_UNARMED));
     this.attacking = false;
     this.swingWarning = undefined;
-    this.onCombatStatus?.("Автоатака остановлена", false, false);
+    if (announce) this.onCombatStatus?.("Автоатака остановлена", false, false);
+  }
+
+  /** Replaces the DBC-derived mount classification used by every direct cast entry point. */
+  setMountSpellIds(spellIds: Iterable<number>): void {
+    this.#mountSpellIds.clear();
+    for (const spellId of spellIds) {
+      if (Number.isSafeInteger(spellId) && spellId > 0) this.#mountSpellIds.add(spellId);
+    }
+  }
+
+  /** Replaces the DBC-derived ranged repeat classification used by spellbook and action bar. */
+  setAutoRepeatSpellIds(spellIds: Iterable<number>): void {
+    this.#autoRepeatSpellIds.clear();
+    for (const spellId of spellIds) {
+      if (Number.isSafeInteger(spellId) && spellId > 0) this.#autoRepeatSpellIds.add(spellId);
+    }
+  }
+
+  #startAutoRepeat(spellId: number, cooldownDuration: number, cooldownStartedOnEvent: boolean): void {
+    const targetGuid = this.targetGuid;
+    const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
+    if (targetGuid === undefined || !target || isWorldObjectDead(target)) {
+      this.onSpellStatus?.("Для стрельбы нужна живая видимая цель", true);
+      return;
+    }
+    if (this.attacking) this.stopAttack();
+    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
+    this.faceTarget();
+    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(
+      OPCODES.CMSG_CAST_SPELL,
+      buildAutoRepeatCastSpell(spellId, this.#castCount, targetGuid),
+    );
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+    this.autoRepeatSpellId = spellId;
+    this.#autoRepeatFailure = undefined;
+    this.onSpellStatus?.(`Автострельба ${spellId} запущена`, false);
+  }
+
+  #stopAutoRepeat(sendCancel: boolean, restoreSheath = sendCancel): void {
+    if (this.autoRepeatSpellId === undefined) return;
+    if (!this.#closed) {
+      if (sendCancel) this.#connection.send(OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL);
+      if (restoreSheath) {
+        this.#connection.send(
+          OPCODES.CMSG_SET_SHEATHED,
+          buildSetSheathed(this.attacking ? SHEATH_MELEE : SHEATH_UNARMED),
+        );
+      }
+    }
+    this.autoRepeatSpellId = undefined;
+    this.#autoRepeatFailure = undefined;
+  }
+
+  /** Whether a classified mount spell currently has its own aura on the player. */
+  isActiveMountSpell(spellId: number): boolean {
+    const selfGuid = this.state.selfGuid;
+    return selfGuid !== undefined
+      && isMounted(this.state.objects.get(selfGuid))
+      && this.#mountSpellIds.has(spellId)
+      && hasAuraSpell(this.auras.get(selfGuid), spellId);
+  }
+
+  #cancelMountBeforeCast(spellId?: number): boolean {
+    const selfGuid = this.state.selfGuid;
+    if (selfGuid === undefined || !isMounted(this.state.objects.get(selfGuid))) return false;
+    const activeMount = spellId !== undefined && this.#mountSpellIds.has(spellId)
+      && hasAuraSpell(this.auras.get(selfGuid), spellId);
+    // `CMSG_CANCEL_MOUNT_AURA` has an empty body. Keep it immediately before the cast so the
+    // server processes the dismount first, while fields and auras remain server-authoritative.
+    this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
+    return activeMount;
   }
 
   castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
     if (this.#closed || this.state.selfGuid === undefined) return;
+    // 6603 is a client action, not a spell the realm has to teach through INITIAL_SPELLS. Keep it
+    // ahead of the known-spell gate so a valid action-bar Attack can never fall into CAST_SPELL.
+    if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
+      this.#cancelMountBeforeCast();
+      if (this.attacking) this.stopAttack();
+      else this.startAttack();
+      return;
+    }
     if (!this.knownSpells.some((spell) => spell.id === spellId)) {
       this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      return;
+    }
+
+    if (this.#cancelMountBeforeCast(spellId)) return;
+
+    if (this.#autoRepeatSpellIds.has(spellId)) {
+      if (this.autoRepeatSpellId === spellId) this.#stopAutoRepeat(true);
+      else this.#startAutoRepeat(spellId, cooldownDuration, cooldownStartedOnEvent);
       return;
     }
 
@@ -1751,6 +1878,7 @@ export class WorldClient {
   openLock(guid: bigint, spellId: number): void {
     const object = this.state.objects.get(guid);
     if (this.#closed || !object || object.typeId !== 5 || spellId <= 0) return;
+    this.#cancelMountBeforeCast();
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnGameObject(spellId, this.#castCount, guid));
     this.#trackPendingCast(spellId, this.#castCount);
@@ -3235,6 +3363,7 @@ export class WorldClient {
   close(): void {
     this.#closed = true;
     this.movementReady = false;
+    this.#stopAutoRepeat(false);
     this.#pendingCasts.length = 0;
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
@@ -4090,6 +4219,9 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_TEXT_EMOTE) {
       const emote = parseTextEmote(packet.payload);
+      // Keep text emotes distinct from SMSG_EMOTE: the latter is only the animation edge and must
+      // never cause a second sound lookup. Audio consumers subscribe to this event exclusively.
+      this.events.emit("TEXT_EMOTE", emote);
       this.requestName(emote.guid);
       const message: ChatMessage = {
         type: CHAT_MSG_TEXT_EMOTE, language: 0, senderGuid: emote.guid, senderName: "",
@@ -4190,7 +4322,10 @@ export class WorldClient {
       const cast = parseSpellGo(packet.payload);
       const selfGuid = this.state.selfGuid;
       const ownCast = selfGuid === undefined || cast.casterUnit === selfGuid || cast.casterGuid === selfGuid;
-      if (ownCast) this.#confirmPendingCast(cast.spellId, cast.castId);
+      if (ownCast) {
+        this.#confirmPendingCast(cast.spellId, cast.castId);
+        if (this.autoRepeatSpellId === cast.spellId) this.#autoRepeatFailure = undefined;
+      }
       this.events.emit("SPELL_GO", cast);
       this.onSpellVisual?.(cast.casterUnit, cast.spellId, cast.hits);
       // A successful non-channel GO is the authoritative end of its cast bar. Channels remain in
@@ -4243,7 +4378,17 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_CAST_FAILED) {
       const failure = parseCastFailure(packet.payload);
-      this.#rejectPendingCast(failure.spellId, failure.castCount);
+      const pending = this.#rejectPendingCast(failure.spellId, failure.castCount);
+      const activeRepeat = this.autoRepeatSpellId === failure.spellId;
+      if (activeRepeat) {
+        const duplicate = this.#autoRepeatFailure?.spellId === failure.spellId
+          && this.#autoRepeatFailure.result === failure.result;
+        this.#autoRepeatFailure = { spellId: failure.spellId, result: failure.result };
+        // Auto Shot may stay active while the core emits the same background failure every ranged
+        // timer. Preserve the first edge (including the request's own failure), suppress only its
+        // identical repeats, and leave unmatched manual spell failures untouched.
+        if (!pending && duplicate) return true;
+      }
       // The words are the realm's own, out of its GlobalStrings; `DONT_REPORT` means say nothing.
       const text = spellFailureText(failure.result);
       if (text) this.onSpellStatus?.(text, true);
@@ -4954,6 +5099,7 @@ export class WorldClient {
       if (log.blocked > 0) parts.push(`блок ${log.blocked}`);
       this.events.emit("COMBAT_LOG", {
         casterGuid: log.casterGuid, targetGuid: log.targetGuid, spellId: log.spellId, critical: log.critical,
+        kind: "damage",
         text: `${this.#spellName(log.spellId)}: ${parts.join(", ")}${log.critical ? " (крит)" : ""}`,
       });
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: log.damage, kind: "damage", critical: log.critical });
@@ -4964,6 +5110,7 @@ export class WorldClient {
       const effective = log.amount - log.overheal;
       this.events.emit("COMBAT_LOG", {
         casterGuid: log.casterGuid, targetGuid: log.targetGuid, spellId: log.spellId, critical: log.critical,
+        kind: "heal",
         text: `${this.#spellName(log.spellId)}: лечение ${effective}${log.overheal > 0 ? ` (сверх ${log.overheal})` : ""}`,
       });
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: effective, kind: "heal", critical: log.critical });
@@ -4998,7 +5145,9 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SPELLINSTAKILLLOG) {
       const log = parseInstantKillLog(packet.payload);
-      this.events.emit("COMBAT_LOG", { ...log, critical: false, text: `${this.#spellName(log.spellId)}: цель уничтожена` });
+      this.events.emit("COMBAT_LOG", {
+        ...log, critical: false, kind: "kill", text: `${this.#spellName(log.spellId)}: цель уничтожена`,
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLDISPELLOG || packet.opcode === OPCODES.SMSG_SPELLSTEALLOG) {
@@ -5007,6 +5156,7 @@ export class WorldClient {
       for (const entry of log.dispelled) {
         this.events.emit("COMBAT_LOG", {
           casterGuid: log.casterGuid, targetGuid: log.targetGuid, spellId: entry.spellId, critical: false,
+          kind: "utility",
           text: `${stolen ? "похищено" : "рассеяно"}: ${this.#spellName(entry.spellId)}`,
         });
       }
@@ -5021,7 +5171,10 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_DISPEL_FAILED) {
       // Caster, target, then the spells that would not come off. Only the fact is shown.
       const log = parseExecuteLog(packet.payload);
-      this.events.emit("COMBAT_LOG", { casterGuid: log.casterGuid, targetGuid: 0n, spellId: log.spellId, critical: false, text: "рассеивание не удалось" });
+      this.events.emit("COMBAT_LOG", {
+        casterGuid: log.casterGuid, targetGuid: 0n, spellId: log.spellId, critical: false,
+        kind: "utility", text: "рассеивание не удалось",
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLLOGEXECUTE) {
@@ -5187,7 +5340,11 @@ export class WorldClient {
       // Ranged auto-repeat is a spell container, not the melee swing controlled by `attacking`.
       // Keep that state intact and publish the stop edge for UI/state consumers. The packet's guid
       // is packed (`WorldPackets::Combat::CancelAutoRepeat`).
-      this.events.emit("STOP_AUTOREPEAT_SPELL", { guid: parseCancelAutoRepeat(packet.payload) });
+      const guid = parseCancelAutoRepeat(packet.payload);
+      // The server already cancelled the repeat; acknowledge only in local state and return the
+      // visible weapon pose to neutral (or melee in a defensive inconsistent-state recovery).
+      if (guid === this.state.selfGuid) this.#stopAutoRepeat(false, true);
+      this.events.emit("STOP_AUTOREPEAT_SPELL", { guid });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SET_FLAT_SPELL_MODIFIER || packet.opcode === OPCODES.SMSG_SET_PCT_SPELL_MODIFIER) {
@@ -6465,6 +6622,10 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_HEALTH_UPDATE) {
       const update = parseHealthUpdate(packet.payload);
       this.state.setField(update.guid, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, update.health);
+      // This compact packet can be the only authoritative death edge for the selected target.
+      // Re-run the same target invariant used after object updates so an active Auto Shot is
+      // cancelled immediately instead of leaving Trinity's repeat slot to report BAD_TARGETS.
+      if (update.guid === this.targetGuid) this.#checkTarget();
       return true;
     }
 
@@ -6538,11 +6699,17 @@ export class WorldClient {
     const target = this.state.objects.get(this.targetGuid);
     if (target) {
       // What the method was written for, and the half of it that death still means.
-      if (isWorldObjectDead(target)) this.attacking = false;
+      if (isWorldObjectDead(target)) {
+        if (this.attacking) this.#cancelMeleeAttack(false);
+        // Auto Shot 75 may remain in TrinityCore's repeat slot and keep emitting BAD_TARGETS.
+        // Cancel it explicitly at the authoritative death edge instead of only forgetting it.
+        this.#stopAutoRepeat(true);
+      }
       return;
     }
+    if (this.attacking) this.#cancelMeleeAttack(false);
+    this.#stopAutoRepeat(true);
     this.targetGuid = undefined;
-    this.attacking = false;
     this.onCombatStatus?.("Цель вышла из видимости", false, false);
   }
 }

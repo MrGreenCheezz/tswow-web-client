@@ -81,6 +81,7 @@ export const DBD_TABLES = [
   "SpellVisual",
   "SpellVisualEffectName",
   "SpellVisualKit",
+  "SpellVisualKitModelAttach",
   "Talent",
   "TalentTab",
   "SkillLine",
@@ -101,6 +102,9 @@ export const DBD_TABLES = [
   // EmotesTextData holds the sentences themselves; EmotesText only holds row ids into it. See
   // the local-addition note in tools/dbd/README.md.
   "EmotesTextData",
+  // Client-media overlay only: maps a text-emote variant and source race/sex to a SoundEntries
+  // row. It is deliberately not a gameplay table and is extracted beside visual patch metadata.
+  "EmotesTextSound",
   "LFGDungeons",
 
   // Lifts and trams. The server never moves a GAMEOBJECT_TYPE_TRANSPORT — its relocation code is

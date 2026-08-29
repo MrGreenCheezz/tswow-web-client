@@ -74,9 +74,13 @@ globalThis.HTMLElement = class {};
 
 const { game } = await import("../dist/code/browser/game/Context.js");
 const {
-  selectSpellbookTab, setSpellbookRankFilter, setSpellbookSearch, showSpells, spellTooltip,
+  castSpell, loadSpellMetadata, selectSpellbookTab, setSpellbookRankFilter, setSpellbookSearch, showSpells, spellTooltip,
+  updateSpellCooldowns,
   spellbookSearchKeyDown,
 } = await import("../dist/code/browser/ui/Spellbook.js");
+const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
+const { loadAuraMetadata } = await import("../dist/code/browser/ui/Auras.js");
+const { clearSpellNames, ensureSpellNames } = await import("../dist/code/browser/ui/SpellNames.js");
 const { lowerRankSpells, rankChainKey } = await import("../dist/code/browser/ui/SpellRanks.js");
 const {
   spellbookHideRanks, spellbookList, spellbookSearch, spellbookTabs, spellStatus,
@@ -124,6 +128,306 @@ const ranked = (id, name, rank, spellLevel, extra = {}) => ({
 });
 
 const captions = () => spellbookList.children.map((button) => button.children[1].textContent);
+
+test("the active mount toggle bypasses its local cooldown", () => {
+  const mountSpell = 23214;
+  const calls = [];
+  try {
+    game.spells = new Map([[mountSpell, spell(mountSpell, "Стремительный скакун", "", false, {
+      effectAura: [78, 0, 0], recoveryTime: 10_000, startRecoveryTime: 1_500,
+    })]]);
+    game.world = {
+      knownSpells: [{ id: mountSpell, slot: 0 }],
+      state: { selfGuid: 1n, objects: new Map() },
+      cooldownRemaining: () => 10_000,
+      isActiveMountSpell: (spellId) => spellId === mountSpell,
+      castSpell: (...args) => calls.push(args),
+    };
+
+    assert.equal(castSpell(mountSpell), true);
+    assert.deepEqual(calls, [[mountSpell, 10_000, false]],
+      "the press reaches WorldClient, which turns it into cancel-only");
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("the action-bar Attack client action bypasses learned-spell and metadata gates", () => {
+  const calls = [];
+  try {
+    game.spells = new Map();
+    game.world = {
+      knownSpells: [],
+      actionButtons: [{ slot: 0, action: 6603, type: 0 }],
+      state: { selfGuid: 1n, objects: new Map() },
+      castSpell: (...args) => calls.push(args),
+    };
+
+    useSlot(0, 0);
+
+    assert.deepEqual(calls, [[6603]], "the visible action slot reaches ATTACK_SWING routing");
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("loaded DBC aura 78 classifies mount spells for every WorldClient cast path", async () => {
+  const mountSpell = 23214;
+  const ordinarySpell = 133;
+  let classified = [];
+  try {
+    game.world = undefined;
+    game.spells = new Map();
+    game.spellMetadataClient = {
+      async load(ids) {
+        return new Map(ids.map((id) => [id, id === mountSpell
+          ? spell(id, "Стремительный скакун", "", false, { effectAura: [78, 0, 0] })
+          : spell(id, "Огненный шар", "Уровень 1")]));
+      },
+    };
+    const world = {
+      knownSpells: [{ id: mountSpell, slot: 0 }, { id: ordinarySpell, slot: 1 }],
+      initialSpellsReceived: true,
+      cooldownRemaining: () => 0,
+      cooldownState: () => undefined,
+      isActiveMountSpell: () => false,
+      state: { selfGuid: undefined, objects: new Map() },
+      setMountSpellIds(ids) { classified = [...ids]; },
+    };
+    game.world = world;
+
+    await loadSpellMetadata(world);
+
+    assert.deepEqual(classified, [mountSpell]);
+  } finally {
+    game.spellMetadataClient = undefined;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("an active mount remains clickable while its local recovery is visible", () => {
+  const mountSpell = 23214;
+  try {
+    game.spells = new Map([[mountSpell, spell(mountSpell, "Стремительный скакун", "", false, {
+      effectAura: [78, 0, 0], recoveryTime: 10_000,
+    })]]);
+    game.talentData = undefined;
+    game.world = {
+      knownSpells: [{ id: mountSpell, slot: 0 }],
+      initialSpellsReceived: true,
+      cooldownRemaining: () => 10_000,
+      cooldownState: () => undefined,
+      isActiveMountSpell: (spellId) => spellId === mountSpell,
+      state: { selfGuid: 1n, objects: new Map() },
+    };
+
+    showSpells();
+    updateSpellCooldowns(performance.now());
+    const button = spellbookList.children[0];
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute("aria-disabled"), "false");
+    assert.equal(button.title, "Стремительный скакун · Снять маунта");
+    assert.equal(button.getAttribute("aria-label"), "Стремительный скакун · Снять маунта");
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+    game.talentData = undefined;
+  }
+});
+
+test("a metadata batch from another window also refreshes mount classification", async () => {
+  const mountSpell = 23214;
+  let classified = [];
+  const world = {
+    knownSpells: [{ id: mountSpell, slot: 0 }],
+    auras: new Map([[1n, new Map()]]),
+    targetGuid: undefined,
+    aurasFor: () => [],
+    state: { selfGuid: 1n, objects: new Map() },
+    setMountSpellIds(ids) { classified = [...ids]; },
+  };
+  const previousClient = game.spellMetadataClient;
+  try {
+    game.world = world;
+    game.spells = new Map();
+    game.spellMetadataClient = {
+      async load() { return new Map([[mountSpell, spell(mountSpell, "Стремительный скакун", "", false, { effectAura: [78, 0, 0] })]]); },
+    };
+    await loadAuraMetadata(world);
+    assert.deepEqual(classified, [mountSpell]);
+  } finally {
+    game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("a failed known-spell batch preserves classification already supplied by another loader", async () => {
+  const mountSpell = 23214;
+  let classified = [];
+  const world = {
+    knownSpells: [{ id: mountSpell, slot: 0 }],
+    state: { selfGuid: undefined, objects: new Map() },
+    setMountSpellIds(ids) { classified = [...ids]; },
+  };
+  const previousClient = game.spellMetadataClient;
+  try {
+    game.world = world;
+    game.spells = new Map([[mountSpell, spell(mountSpell, "Стремительный скакун", "", false, { effectAura: [78, 0, 0] })]]);
+    game.spellMetadataClient = { async load() { throw new Error("offline"); } };
+    await loadSpellMetadata(world);
+    assert.deepEqual(classified, [mountSpell]);
+  } finally {
+    game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("a stale spell-name response cannot cross a relog epoch", async () => {
+  const spellId = 23214;
+  let resolveOld;
+  const oldCalls = [];
+  const oldClient = {
+    load(ids) {
+      oldCalls.push([...ids]);
+      return new Promise((resolve) => { resolveOld = resolve; });
+    },
+  };
+  const oldWorld = {
+    knownSpells: [{ id: spellId, slot: 0 }],
+    setMountSpellIds() { throw new Error("stale world must never be classified"); },
+  };
+  let oldListenerCalls = 0;
+  const newCalls = [];
+  const newWorld = {
+    knownSpells: [{ id: spellId, slot: 0 }],
+    setMountSpellIds(ids) { this.mounts = [...ids]; },
+    mounts: [],
+  };
+  const newMetadata = spell(spellId, "Новый маунт", "", false, { effectAura: [78, 0, 0] });
+  const newClient = {
+    load(ids) {
+      newCalls.push([...ids]);
+      return Promise.resolve(new Map([[spellId, newMetadata]]));
+    },
+  };
+  const previousClient = game.spellMetadataClient;
+  try {
+    clearSpellNames();
+    game.spells = new Map();
+    game.world = oldWorld;
+    game.spellMetadataClient = oldClient;
+    ensureSpellNames([spellId], () => { oldListenerCalls += 1; });
+    await Promise.resolve();
+    assert.deepEqual(oldCalls, [[spellId]]);
+
+    // Entering another character invalidates the first request before its deferred response lands.
+    clearSpellNames();
+    game.world = newWorld;
+    game.spellMetadataClient = newClient;
+    resolveOld(new Map([[spellId, spell(spellId, "Старый маунт", "", false, { effectAura: [78, 0, 0] })]]));
+    for (let index = 0; index < 3; index++) await Promise.resolve();
+    assert.equal(game.spells.has(spellId), false, "stale data is not written into the new epoch");
+    assert.equal(oldListenerCalls, 0, "stale listeners are not called");
+    assert.deepEqual(newWorld.mounts, [], "stale response does not classify the old world");
+
+    // The id was made retryable by clearSpellNames: the new epoch asks for it normally.
+    ensureSpellNames([spellId], () => {});
+    for (let index = 0; index < 3; index++) await Promise.resolve();
+    assert.deepEqual(newCalls, [[spellId]]);
+    assert.equal(game.spells.get(spellId)?.name, "Новый маунт");
+    assert.deepEqual(newWorld.mounts, [spellId]);
+  } finally {
+    clearSpellNames();
+    game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("a stale spellbook metadata response has no global or mount side effects", async () => {
+  const spellId = 23214;
+  let resolveOld;
+  const oldClient = {
+    load() { return new Promise((resolve) => { resolveOld = resolve; }); },
+  };
+  const oldWorld = {
+    knownSpells: [{ id: spellId, slot: 0 }],
+    setMountSpellIds() { throw new Error("stale spellbook world must never be classified"); },
+  };
+  const newWorld = {
+    knownSpells: [{ id: spellId, slot: 0 }],
+    mounts: [],
+    setMountSpellIds(ids) { this.mounts = [...ids]; },
+  };
+  const previousClient = game.spellMetadataClient;
+  try {
+    clearSpellNames();
+    game.spells = new Map();
+    game.world = oldWorld;
+    game.spellMetadataClient = oldClient;
+    const pending = loadSpellMetadata(oldWorld);
+    await Promise.resolve();
+
+    clearSpellNames();
+    game.world = newWorld;
+    game.spellMetadataClient = { load: async () => new Map() };
+    resolveOld(new Map([[spellId, spell(spellId, "Старый маунт", "", false, { effectAura: [78, 0, 0] })]]));
+    await pending;
+
+    assert.equal(game.spells.has(spellId), false);
+    assert.deepEqual(newWorld.mounts, [], "stale spellbook data does not classify the current world");
+  } finally {
+    clearSpellNames();
+    game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("a stale aura metadata response has no global or mount side effects", async () => {
+  const spellId = 23214;
+  let resolveOld;
+  const oldClient = {
+    load() { return new Promise((resolve) => { resolveOld = resolve; }); },
+  };
+  const oldWorld = {
+    auras: new Map([[1n, new Map([[0, { spellId }]])]]),
+    setMountSpellIds() { throw new Error("stale aura world must never be classified"); },
+  };
+  const newWorld = {
+    knownSpells: [],
+    mounts: [],
+    setMountSpellIds(ids) { this.mounts = [...ids]; },
+  };
+  const previousClient = game.spellMetadataClient;
+  try {
+    clearSpellNames();
+    game.spells = new Map();
+    game.world = oldWorld;
+    game.spellMetadataClient = oldClient;
+    const pending = loadAuraMetadata(oldWorld);
+    await Promise.resolve();
+
+    clearSpellNames();
+    game.world = newWorld;
+    game.spellMetadataClient = { load: async () => new Map() };
+    resolveOld(new Map([[spellId, spell(spellId, "Старый маунт", "", false, { effectAura: [78, 0, 0] })]]));
+    await pending;
+
+    assert.equal(game.spells.has(spellId), false);
+    assert.deepEqual(newWorld.mounts, [], "stale aura data does not classify the current world");
+  } finally {
+    clearSpellNames();
+    game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
 
 test("Ж0 the spellbook button's caption is the name; the rank stays in its badge", () => {
   try {

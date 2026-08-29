@@ -226,7 +226,42 @@ function parseStamp(value: unknown): CacheStamp | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Partial<CacheStamp>;
   if (typeof record.chain !== "string" || !Array.isArray(record.sources) || !Array.isArray(record.files)) return undefined;
-  return { chain: record.chain, sources: record.sources, files: record.files };
+  const stampedFile = (candidate: unknown): StampedFile | undefined => {
+    if (typeof candidate !== "object" || candidate === null) return undefined;
+    const file = candidate as Partial<StampedFile>;
+    return typeof file.file === "string" && file.file.length > 0
+      && typeof file.size === "number" && Number.isFinite(file.size) && file.size >= 0
+      && typeof file.mtimeMs === "number" && Number.isFinite(file.mtimeMs)
+      ? { file: file.file, size: file.size, mtimeMs: file.mtimeMs }
+      : undefined;
+  };
+  const sources: StampedSource[] = [];
+  for (const candidate of record.sources) {
+    const file = stampedFile(candidate);
+    if (!file || typeof candidate !== "object" || candidate === null) return undefined;
+    const source = candidate as Partial<StampedSource>;
+    if (typeof source.path !== "string" || source.path.length === 0
+      || typeof source.name !== "string" || source.name.length === 0
+      || (source.kind !== "archive" && source.kind !== "directory")
+      || (source.above !== undefined
+        && (!Array.isArray(source.above) || !source.above.every((name) => typeof name === "string")))) {
+      return undefined;
+    }
+    sources.push({
+      ...file,
+      path: source.path,
+      name: source.name,
+      kind: source.kind,
+      above: source.above ?? [],
+    });
+  }
+  const files: StampedFile[] = [];
+  for (const candidate of record.files) {
+    const file = stampedFile(candidate);
+    if (!file) return undefined;
+    files.push(file);
+  }
+  return { chain: record.chain, sources, files };
 }
 
 /**
@@ -269,6 +304,32 @@ export class DatasetFingerprint {
   /** True when there is something to watch at all. */
   get watching(): boolean {
     return this.#dbcDirectory !== undefined || this.#dbcFiles.length > 0 || this.#clientDirectory !== undefined;
+  }
+
+  /**
+   * Whether one stamped file still belongs to the watched dataset/client.
+   *
+   * Unlike `ensureCurrent`, this is read-only. Startup configuration uses it to decide whether an
+   * ignored client-media DBC overlay can be paired with the active archive chain; deleting an
+   * extracted table merely because its source pack is currently disabled would make switching
+   * back needlessly destructive.
+   */
+  async isCurrent(cacheFile: string, options: { requireStamp?: boolean } = {}): Promise<boolean> {
+    if (!this.watching) return !options.requireStamp;
+    // `poll()` deliberately keeps serving through a temporarily unreadable dataset, but startup
+    // overlay selection is a stricter question: without a successful client snapshot there is no
+    // evidence that an extracted HD table belongs to the active archive chain.
+    if (options.requireStamp && this.#clientDirectory !== undefined && this.#chain === undefined) {
+      return false;
+    }
+    let stamp: CacheStamp | undefined;
+    try {
+      stamp = parseStamp(JSON.parse(await readFile(`${cacheFile}${STAMP_SUFFIX}`, "utf8")) as unknown);
+    } catch {
+      return !options.requireStamp;
+    }
+    if (!stamp) return !options.requireStamp;
+    return !await this.#stale(stamp);
   }
 
   /**
@@ -355,7 +416,7 @@ export class DatasetFingerprint {
    * reaches it, which is the price of not stalling the request, and the pass is started once at
    * startup rather than by a request.
    */
-  async ensureCurrent(cacheFile: string): Promise<void> {
+  async ensureCurrent(cacheFile: string, options: { requireStamp?: boolean } = {}): Promise<void> {
     // With neither a dataset nor a client configured there is nothing for a stamp to be measured
     // against and no epoch will ever move, so every answer this could give would be a guess. A
     // gateway handed only a directory of published assets — which is what several of the tests
@@ -366,6 +427,14 @@ export class DatasetFingerprint {
     try {
       stamp = parseStamp(JSON.parse(await readFile(`${cacheFile}${STAMP_SUFFIX}`, "utf8")) as unknown);
     } catch {
+      if (options.requireStamp) {
+        // A coordinated visual M2/BLP pack must not reuse an unstamped legacy PNG from the stock
+        // client. Keep the default unstamped-cache policy for broad scenery/icon caches, but let
+        // the caller that knows the bytes must match the current visual pack force regeneration.
+        await unlink(cacheFile).catch(() => undefined);
+        await unlink(`${cacheFile}${STAMP_SUFFIX}`).catch(() => undefined);
+        return;
+      }
       // No stamp, or an unreadable one: served as it stands, and remembered as such for this
       // epoch. A stamp the restamp pass writes a moment later is therefore not read until the
       // epoch moves — which is exactly when it starts to matter, since nothing was stale until

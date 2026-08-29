@@ -1,0 +1,137 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import { webGlContextCanSubmit } from "../dist/code/browser/WorldRenderer3D.js";
+
+test("context-loss submission guard is fail-closed", () => {
+  assert.equal(webGlContextCanSubmit({ isContextLost: () => false }), true);
+  assert.equal(webGlContextCanSubmit({ isContextLost: () => true }), false);
+  assert.equal(webGlContextCanSubmit({ isContextLost: () => { throw new Error("lost"); } }), false);
+  assert.equal(webGlContextCanSubmit(undefined), false);
+});
+
+test("world draw receipt is created only after both renderer submissions", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const drawStart = source.indexOf("  draw(\n");
+  const drawEnd = source.indexOf("\n  #resetFrameCounters(): void {", drawStart);
+  assert.ok(drawStart >= 0 && drawEnd > drawStart, "draw source boundary must exist");
+  const draw = source.slice(drawStart, drawEnd);
+
+  assert.match(source, /export interface WorldSubmissionReceipt\s*\{[\s\S]*readonly submitted: true;[\s\S]*readonly submissionSerial: number;/);
+  assert.match(draw, /\): WorldSubmissionReceipt \| undefined \{/);
+
+  const guard = draw.indexOf("if (!player?.position) {");
+  const earlyReturn = draw.indexOf("return undefined;", guard);
+  const sky = draw.indexOf("this.#renderer.render(this.#skyScene, this.#camera);");
+  const world = draw.indexOf("this.#renderer.render(this.#scene, this.#camera);");
+  const contextGuard = draw.indexOf("if (!webGlContextCanSubmit(submissionContext)) return undefined;", world);
+  const finallyBlock = draw.indexOf("} finally {", world);
+  const receipt = draw.indexOf("return Object.freeze({ submitted: true as const, submissionSerial });");
+  assert.ok(guard >= 0 && earlyReturn > guard, "missing player exits without a receipt");
+  assert.ok(sky > earlyReturn && world > sky && contextGuard > world && finallyBlock > contextGuard && receipt > finallyBlock,
+    "receipt must follow sky, world, post-render context proof, and renderer cleanup");
+
+  assert.match(draw, /Number\.isSafeInteger\(this\.#submissionSerial\)/);
+  assert.match(draw, /this\.#submissionSerial >= Number\.MAX_SAFE_INTEGER/);
+  assert.match(draw, /Number\.isSafeInteger\(submissionSerial\)/);
+  assert.ok(draw.indexOf("this.#submissionSerial = submissionSerial;") > world);
+
+  const resetStart = source.indexOf("  resetReplayEpoch(rngSeed: number): void {");
+  const resetEnd = source.indexOf("\n  /** Leaves deterministic evolution", resetStart);
+  assert.ok(resetStart >= 0 && resetEnd > resetStart, "reset source boundary must exist");
+  assert.equal(source.slice(resetStart, resetEnd).includes("#submissionSerial"), false,
+    "replay reset must not rewind the lifetime submission serial");
+});
+
+test("world terrain update pins its complete CPU dependency ring and clears invalid centres", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  #updateTerrain(");
+  const end = source.indexOf("\n  /**\n   * The ground beyond the ring", start);
+  assert.ok(start >= 0 && end > start, "terrain update source boundary must exist");
+  const update = source.slice(start, end);
+
+  assert.match(update, /if \(map === undefined \|\| !center\) \{[\s\S]*terrainClient\?\.setActiveTiles\(undefined, \[\]\);[\s\S]*return;/,
+    "an invalid map or centre clears stale pins");
+  assert.match(update, /for \(let offsetX = -2; offsetX <= 2; offsetX\+\+\)/);
+  assert.match(update, /for \(let offsetY = -2; offsetY <= 2; offsetY\+\+\)/);
+  assert.match(update, /terrainClient\?\.setActiveTiles\(map, activeGrids\);/,
+    "the renderer hands the bounded 5x5 CPU dependency ring to TerrainClient every draw");
+  assert.match(update, /for \(let offsetX = -1; offsetX <= 1; offsetX\+\+\)/,
+    "the visible terrain mesh footprint remains 3x3");
+
+  const invalid = update.indexOf("if (map === undefined || !center) {");
+  const invalidClear = update.indexOf("this.clearTerrain();", invalid);
+  const invalidSplat = update.indexOf("splatClient?.setActiveTiles(undefined, []);", invalid);
+  const invalidCpu = update.indexOf("terrainClient?.setActiveTiles(undefined, []);", invalid);
+  assert.ok(invalidClear > invalid && invalidSplat > invalidClear && invalidCpu > invalidSplat,
+    "invalid terrain detaches renderer materials before splat eviction and CPU pin clearing");
+
+  const visible = update.indexOf("const visible = new Set");
+  const removal = update.indexOf("this.#removeTerrain", visible);
+  const splatPins = update.indexOf("splatClient?.setActiveTiles(map, grids);", visible);
+  const build = update.indexOf("for (const grid of grids)", splatPins);
+  assert.ok(visible >= 0 && removal > visible && splatPins > removal && build > splatPins,
+    "old materials are detached before exact visible splat eviction and new tile lookup");
+  assert.match(source, /public clearTerrain\(\): void \{[\s\S]*this\.#removeTerrain/,
+    "public terrain cleanup reuses the normal removal path");
+});
+
+test("missing-player draw and world teardown release renderer users before splat ownership", async () => {
+  const rendererSource = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const drawStart = rendererSource.indexOf("  draw(\n");
+  const drawEnd = rendererSource.indexOf("\n  #resetFrameCounters(): void {", drawStart);
+  const draw = rendererSource.slice(drawStart, drawEnd);
+  const guard = draw.indexOf("if (!player?.position) {");
+  const clear = draw.indexOf("this.clearTerrain();", guard);
+  const splat = draw.indexOf("splatClient?.setActiveTiles(undefined, []);", guard);
+  const cpu = draw.indexOf("terrainClient?.setActiveTiles(undefined, []);", guard);
+  assert.ok(guard >= 0 && clear > guard && splat > clear && cpu > splat,
+    "draw without a player detaches materials before splat eviction");
+
+  const context = await readFile(new URL("../src/browser/game/Context.ts", import.meta.url), "utf8");
+  const contextStart = context.indexOf("export function clearWorldContext(): void {");
+  const contextEnd = context.indexOf("\n}", contextStart);
+  const cleanup = context.slice(contextStart, contextEnd);
+  const contextClear = cleanup.indexOf("game.renderer?.clearTerrain();");
+  const contextDispose = cleanup.indexOf("game.terrainSplat?.dispose();");
+  const dropSplat = cleanup.indexOf("game.terrainSplat = undefined;");
+  assert.ok(contextClear >= 0 && contextDispose > contextClear && dropSplat > contextDispose,
+    "world teardown drops material users, disposes splats, then drops references");
+
+  const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  const player = loop.indexOf("const player = world?.state.selfGuid");
+  const branch = loop.indexOf("if (world && player?.position && !worldPanel.hidden)", player);
+  const noPlayer = loop.slice(player, branch);
+  const liveClear = noPlayer.indexOf("game.renderer?.clearTerrain();");
+  const liveSplat = noPlayer.indexOf("game.terrainSplat?.setActiveTiles(undefined, []);");
+  assert.ok(liveClear >= 0 && liveSplat > liveClear,
+    "the live no-player path releases renderer users before emptying the splat active set");
+});
+
+test("the production loop updates terrain pins after state drain and before loading", async () => {
+  const source = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  const frameStart = source.indexOf("function frame(now: number): void {");
+  const frameEnd = source.indexOf("\n}\n\n/**\n * One frame", frameStart);
+  assert.ok(frameStart >= 0 && frameEnd > frameStart, "frame source boundary must exist");
+  const frame = source.slice(frameStart, frameEnd);
+  const drained = frame.indexOf("drainWorldState();");
+  const pins = frame.indexOf("updateTerrainActiveTiles");
+  const loading = frame.indexOf("updateLoadingScreen(now);");
+  const rendererBranch = frame.indexOf("if (renderer) {");
+  assert.ok(drained >= 0 && pins > drained && loading > pins,
+    "active terrain pins must be refreshed after state drain and before loading readiness");
+  assert.ok(pins < rendererBranch,
+    "the live terrain pin caller must be outside the renderer/WebGL branch");
+
+  const helperStart = source.indexOf("function updateTerrainActiveTiles");
+  const helperEnd = source.indexOf("\n}\n\nfunction frame", helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart, "terrain pin helper boundary must exist");
+  const helper = source.slice(helperStart, helperEnd);
+  assert.match(helper, /if \(world\?\.mapId === undefined \|\| !player\?\.position\) \{[\s\S]*setActiveTiles\(undefined, \[\]\);/,
+    "no world, map, or player clears stale active pins");
+  assert.match(helper, /terrainGridDependencyFootprint\(player\.position\.x, player\.position\.y\)/,
+    "valid player positions use the clipped dependency footprint");
+  assert.match(helper, /if \(grids\.length === 0\) \{[\s\S]*setActiveTiles\(undefined, \[\]\);/,
+    "an out-of-map player centre also clears stale active pins");
+});

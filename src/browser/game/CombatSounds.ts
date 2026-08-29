@@ -5,8 +5,11 @@ import {
   VICTIMSTATE_IMMUNE, VICTIMSTATE_PARRY, type AttackerState,
 } from "../../world/CombatProtocol.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
+import type { WorldPacketEvents } from "../../world/EventBus.js";
 import { game } from "./Context.js";
-import { LOOKUP_WAIT, deferSound, playCreatureSound, playKit } from "./GameSounds.js";
+import {
+  LOOKUP_WAIT, deferSound, playCreatureSound, playKit, type CreatureSound,
+} from "./GameSounds.js";
 import { weaponSoundFor, type Combatant, type SwingOutcome } from "./WeaponSounds.js";
 
 /**
@@ -47,6 +50,20 @@ const TYPE_PLAYER = 4;
 
 /** Whether the player's own body was dead the last time it was looked at. */
 let selfWasDead: boolean | undefined;
+
+/**
+ * Creature voices belonging to a spell log entry.
+ *
+ * The spell visual kit owns authored cast/impact audio and FLOATING_TEXT owns the victim's actual
+ * wound. Only real spell damage may add the caster's exertion; healing, dispels and other utility
+ * events must never manufacture the sound of a weapon hit.
+ */
+export function spellCombatVoices(
+  line: Pick<WorldPacketEvents["COMBAT_LOG"], "kind" | "casterGuid" | "critical">,
+): Array<{ guid: bigint; voice: CreatureSound }> {
+  if (line.kind !== "damage" || line.casterGuid === 0n) return [];
+  return [{ guid: line.casterGuid, voice: line.critical ? "exertionCritical" : "exertion" }];
+}
 
 function visibleItemEntry(object: WorldObjectState, slot: number): number {
   const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;

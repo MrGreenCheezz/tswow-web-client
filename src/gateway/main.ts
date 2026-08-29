@@ -1,5 +1,6 @@
 import { startGateway } from "./Gateway.js";
 import { parseCharacterTextures } from "./CharacterTextures.js";
+import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
@@ -51,6 +52,18 @@ try {
   console.warn(`Not watching the client archives: ${error instanceof Error ? error.message : String(error)}`);
 }
 
+// An installed HD model pack may carry client-only DBC rows that redirect stable display ids to
+// its models and baked textures. Keep them separate from the TSWoW gameplay dataset: only the
+// appearance/model/audio loaders below are allowed to read this directory; gameplay metadata
+// remains in the TSWoW dataset.
+const visualDbcCandidate = resolve(process.env.VISUAL_DBC_DIR ?? resolve(process.cwd(), "data/visual-dbc"));
+const { visualDbcDirectory, audioDbcDirectory, coordinatedVisuals } = await selectClientMediaOverlay({
+  candidate: visualDbcCandidate,
+  explicit: process.env.VISUAL_DBC_DIR !== undefined,
+  ...(clientDirectory === undefined ? {} : { clientDirectory }),
+  report: (message) => console.warn(message),
+});
+
 const gateway = await startGateway({
   host,
   port: port("GATEWAY_PORT", 8090),
@@ -66,6 +79,11 @@ const gateway = await startGateway({
   mapsDirectory: paths.mapsDirectory(),
   vmapsDirectory: paths.vmapsDirectory(),
   dbcDirectory: paths.dbcDirectory(),
+  ...(visualDbcDirectory === undefined ? {} : { visualDbcDirectory }),
+  // `null` disables Gateway's legacy "visual directory also contains audio" fallback when
+  // selection rejected an incomplete or stale EmotesTextSound table.
+  audioDbcDirectory: audioDbcDirectory ?? null,
+  ...(coordinatedVisuals === undefined ? {} : { coordinatedVisuals }),
   ...(clientDirectory === undefined ? {} : { clientDirectory }),
   creatureMetadataFile: process.env.CREATURE_METADATA_FILE ?? resolve(process.cwd(), "data/creatures.json"),
   itemMetadataFile: process.env.ITEM_METADATA_FILE ?? resolve(process.cwd(), "data/items.json"),

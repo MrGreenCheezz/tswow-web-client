@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { EVERY_GEOSET, buildModel } from "../dist/code/browser/ModelBuild.js";
+import { EVERY_GEOSET, buildModel, setBuiltModelFantasyGlow } from "../dist/code/browser/ModelBuild.js";
 import { ModelTextureLoader } from "../dist/code/browser/TextureLoad.js";
 
 const MATERIAL_UNLIT = 0x01;
@@ -36,7 +36,7 @@ function batch(overrides = {}) {
 }
 
 /** One batch, built the way the renderer builds it, and the material it produced. */
-function material(overrides, extras = {}) {
+function material(overrides, extras = {}, buildOptions = {}) {
   const model = {
     positions: new Float32Array(9), normals: new Float32Array(9),
     uv0: new Float32Array(6), uv1: new Float32Array(6),
@@ -55,7 +55,7 @@ function material(overrides, extras = {}) {
   };
   const built = buildModel(model, {
     modelPath: "Spells\\Test.m2", baseUrl: "http://127.0.0.1:8090",
-    loadTexture: () => new THREE.Texture(), geosets: EVERY_GEOSET,
+    loadTexture: () => new THREE.Texture(), geosets: EVERY_GEOSET, ...buildOptions,
   });
   return built.materials[0];
 }
@@ -99,6 +99,29 @@ test("Э1 an alpha-blended batch keeps three's own fog", () => {
   const source = compiled(material({ blendMode: 2, materialFlags: MATERIAL_UNLIT })).fragmentShader;
   assert.ok(source.includes("#include <fog_fragment>"), "the chunk is left alone");
   assert.ok(!source.includes("1.0 - fogFactor"));
+});
+
+test("fantasy glow lifts only explicitly spell-owned additive batches in the existing pass", () => {
+  const baseline = material({ blendMode: 4 }, {}, { fantasyGlow: false });
+  const fantasy = material({ blendMode: 4 }, {}, { fantasyGlow: true });
+  const ordinary = material({ blendMode: 2 }, {}, { fantasyGlow: true });
+  assert.doesNotMatch(compiled(baseline).fragmentShader, /spell-fantasy-glow-v1/);
+  assert.match(compiled(fantasy).fragmentShader, /spell-fantasy-glow-v1/);
+  assert.match(fantasy.customProgramCacheKey(), /spell-fantasy-glow-v1/);
+  assert.doesNotMatch(compiled(ordinary).fragmentShader, /spell-fantasy-glow-v1/,
+    "opaque/alpha surfaces keep their authored colour and lighting");
+  const baselineKey = baseline.customProgramCacheKey();
+  setBuiltModelFantasyGlow({ materials: [baseline] }, true);
+  assert.match(compiled(baseline).fragmentShader, /spell-fantasy-glow-v1/,
+    "an already-built spell material updates in place");
+  assert.match(baseline.customProgramCacheKey(), /spell-fantasy-glow-v1/);
+  setBuiltModelFantasyGlow({ materials: [baseline] }, false);
+  assert.doesNotMatch(compiled(baseline).fragmentShader, /spell-fantasy-glow-v1/);
+  assert.equal(baseline.customProgramCacheKey(), baselineKey, "OFF restores the exact prior program key");
+
+  const malformed = { vertexShader: "", fragmentShader: "void main() {}", uniforms: {}, defines: {} };
+  setBuiltModelFantasyGlow({ materials: [baseline] }, true);
+  assert.throws(() => baseline.onBeforeCompile(malformed, undefined), /exactly one MeshBasic color marker/);
 });
 
 test("Э1 a modulating batch fades towards its own identity rather than towards black", () => {
