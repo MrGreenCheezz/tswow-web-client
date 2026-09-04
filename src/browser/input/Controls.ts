@@ -1,10 +1,13 @@
 import { isLootable } from "../../world/Fields.js";
-import { isWorldObjectDead } from "../../world/WorldState.js";
+import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
+import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { game } from "../game/Context.js";
+import { gameObjectType } from "../SimpleScene.js";
 import { chatInput, worldCanvas } from "../ui/Dom.js";
 import { anyGameWindowOpen, closeGameWindows } from "../ui/Windows.js";
 import { showTarget } from "../ui/Frames.js";
-import { interactWithTarget } from "../ui/Npc.js";
+import { interactWithGuid } from "../ui/Npc.js";
 import { CAMERA_LOOK_SENSITIVITY, CAMERA_PITCH_LIMIT, zoomedDistance } from "../game/CameraRig.js";
 import { cameraMaxDistance } from "../ui/Settings.js";
 import { inSightFromCamera } from "../game/Targeting.js";
@@ -198,7 +201,10 @@ function zoomCamera(step: number): void {
 function pickAt(point: { clientX: number; clientY: number }): bigint | undefined {
   const bounds = worldCanvas.getBoundingClientRect();
   const guid = game.scene?.pick(point.clientX - bounds.left, point.clientY - bounds.top);
-  return guid !== undefined && inSightFromCamera(guid) ? guid : undefined;
+  if (guid === undefined) return undefined;
+  const object = game.world?.state.objects.get(guid);
+  if (object?.typeId === 5 && !interactiveGameObjectType(gameObjectType(object))) return undefined;
+  return inSightFromCamera(guid) ? guid : undefined;
 }
 
 /**
@@ -225,12 +231,25 @@ const LOOT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(LOOT_CURSOR_SV
  * the screen is one pick per drawn frame rather than one per event.
  */
 const HOVER_INTERVAL = 16;
+/** Re-pick a stationary GO while the player/camera moves so range and occlusion cannot go stale. */
+const HOVER_WORLD_REFRESH = 100;
 
 let hoveredAt = 0;
 /** What `worldCanvas.style.cursor` was last written, so an unchanged frame writes nothing. */
 let hoverCursor = "";
 /** The trailing pass, if one is armed. It carries the point it will pick at in its closure. */
 let hoverTailTimer: ReturnType<typeof setTimeout> | undefined;
+let hoverWorldTimer: ReturnType<typeof setTimeout> | undefined;
+/** The original-style name card beside the pointer for an actionable game object. */
+let worldObjectTooltip: HTMLDivElement | undefined;
+/** The concrete GO spawn under the last sampled pointer position. */
+let hoveredGameObject: WorldObjectState | undefined;
+let hoveredPoint: { clientX: number; clientY: number } | undefined;
+let pendingHoveredTemplate: {
+  world: NonNullable<typeof game.world>;
+  object: WorldObjectState;
+  entry: number;
+} | undefined;
 
 /**
  * The cursor over whatever the pointer is on.
@@ -291,9 +310,17 @@ function applyHoverCursor(point: { clientX: number; clientY: number }): void {
   hoveredAt = performance.now();
   const guid = pickAt(point);
   const object = guid === undefined ? undefined : game.world?.state.objects.get(guid);
-  const wanted = !object ? ""
+  hoveredGameObject = object?.typeId === 5 ? object : undefined;
+  hoveredPoint = { clientX: point.clientX, clientY: point.clientY };
+  if (pendingHoveredTemplate?.object !== hoveredGameObject) pendingHoveredTemplate = undefined;
+  const objectName = object?.typeId === 5 ? gameObjectHoverName(object) : undefined;
+  const wanted = !object || (object.typeId === 5 && objectName === undefined) ? ""
     : isWorldObjectDead(object) && isLootable(object) ? LOOT_CURSOR
       : "pointer";
+  if (objectName) showWorldObjectTooltip(objectName, point);
+  else clearWorldObjectTooltip();
+  if (hoveredGameObject) scheduleHoverWorldRefresh();
+  else cancelHoverWorldRefresh();
   if (wanted === hoverCursor) return;
   hoverCursor = wanted;
   worldCanvas.style.cursor = wanted;
@@ -306,6 +333,21 @@ function cancelHoverTail(): void {
   hoverTailTimer = undefined;
 }
 
+function scheduleHoverWorldRefresh(): void {
+  cancelHoverWorldRefresh();
+  if (!hoveredGameObject || !hoveredPoint || drag.left || drag.right) return;
+  hoverWorldTimer = setTimeout(() => {
+    hoverWorldTimer = undefined;
+    if (hoveredPoint) applyHoverCursor(hoveredPoint);
+  }, HOVER_WORLD_REFRESH);
+}
+
+function cancelHoverWorldRefresh(): void {
+  if (hoverWorldTimer === undefined) return;
+  clearTimeout(hoverWorldTimer);
+  hoverWorldTimer = undefined;
+}
+
 /**
  * Back to the stylesheet's own cursor — `crosshair` (`style.css:124`), not the page default.
  * Called when a drag starts, when the pointer leaves the canvas, and when the window loses focus.
@@ -316,9 +358,80 @@ function cancelHoverTail(): void {
  */
 function clearHoverCursor(): void {
   cancelHoverTail();
+  cancelHoverWorldRefresh();
+  hoveredGameObject = undefined;
+  hoveredPoint = undefined;
+  pendingHoveredTemplate = undefined;
+  clearWorldObjectTooltip();
   if (hoverCursor === "") return;
   hoverCursor = "";
   worldCanvas.style.cursor = "";
+}
+
+function gameObjectHoverName(object: import("../../world/WorldState.js").WorldObjectState): string | undefined {
+  const world = game.world;
+  const type = gameObjectType(object);
+  if (!world || !interactiveGameObjectType(type)) return undefined;
+  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
+  if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
+  const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  if (!self?.position || !object.position) return undefined;
+  const distance = Math.hypot(
+    object.position.x - self.position.x,
+    object.position.y - self.position.y,
+    object.position.z - self.position.z,
+  );
+  if (distance > interactionDistance(type)) return undefined;
+  const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+  if (entry <= 0) return undefined;
+  const template = world.gameObjectTemplate(entry, object.guid);
+  if (!template) {
+    waitForHoveredGameObjectTemplate(world, object, entry);
+    return undefined;
+  }
+  if (template.type !== type || template.iconName === "Point") return undefined;
+  return template.name.trim() || "Объект";
+}
+
+function waitForHoveredGameObjectTemplate(
+  world: NonNullable<typeof game.world>,
+  object: WorldObjectState,
+  entry: number,
+): void {
+  const held = pendingHoveredTemplate;
+  if (held?.world === world && held.object === object && held.entry === entry) return;
+  const intent = { world, object, entry };
+  pendingHoveredTemplate = intent;
+  void world.waitForGameObjectTemplate(entry, object.guid).then((template) => {
+    if (pendingHoveredTemplate !== intent) return;
+    pendingHoveredTemplate = undefined;
+    if (game.world !== world || hoveredGameObject !== object || !hoveredPoint) return;
+    const current = world.state.objects.get(object.guid);
+    // A real answer repaints a stationary pointer. A vanished/reused spawn also repicks so a stale
+    // hand cannot survive UPDATE_OUT_OF_RANGE; a mere timeout does not start another ten-second wait.
+    if (template || current !== object) applyHoverCursor(hoveredPoint);
+  });
+}
+
+function showWorldObjectTooltip(name: string, point: { clientX: number; clientY: number }): void {
+  if (!worldObjectTooltip) {
+    worldObjectTooltip = document.createElement("div");
+    worldObjectTooltip.className = "ui-tooltip world-object-tooltip";
+    worldObjectTooltip.setAttribute("role", "tooltip");
+    document.body.append(worldObjectTooltip);
+  }
+  const title = document.createElement("strong");
+  title.textContent = name;
+  worldObjectTooltip.replaceChildren(title);
+  worldObjectTooltip.style.left = `${Math.max(8,
+    Math.min(point.clientX + 16, window.innerWidth - worldObjectTooltip.offsetWidth - 8))}px`;
+  worldObjectTooltip.style.top = `${Math.max(8,
+    Math.min(point.clientY + 18, window.innerHeight - worldObjectTooltip.offsetHeight - 8))}px`;
+}
+
+function clearWorldObjectTooltip(): void {
+  worldObjectTooltip?.remove();
+  worldObjectTooltip = undefined;
 }
 
 /**
@@ -373,9 +486,12 @@ function releaseButtons(event: PointerEvent): void {
   if (releasedRight && clicked(2)) {
     const guid = pickAt(event);
     if (guid === undefined) return;
-    world.selectTarget(guid);
-    showTarget();
-    interactWithTarget();
+    const object = world.state.objects.get(guid);
+    if (object?.typeId !== 5) {
+      world.selectTarget(guid);
+      showTarget();
+    }
+    interactWithGuid(guid);
   }
 }
 
@@ -465,6 +581,7 @@ export function wireControls(): void {
  */
 export function clearHeldKeys(): void {
   heldByCode.clear();
+  clearHoverCursor();
   releaseAllInput();
   resetCharacterMotion();
 }

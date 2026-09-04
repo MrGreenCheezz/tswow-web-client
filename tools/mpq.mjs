@@ -27,9 +27,11 @@ import { FS, MPQ } from "@wowserhq/stormjs";
  * can compute it, which leaves it blind to the ranking itself. Bumping this is what makes every
  * stamp written under the previous order stale, so those entries are rebuilt rather than served out
  * of a chain that no longer resolves the way they were built. `DatasetFingerprint.ts` carries the
- * same constant, and `tests/dataset-fingerprint.test.mjs` pins the two together.
+ * same constant, and `tests/dataset-fingerprint.test.mjs` pins the two together. It also advances
+ * when provenance gains a new winner-changing condition: order-3 records real MPQs searched above
+ * a lower winner, so order-2 sidecars are rebuilt instead of trusted without that guard.
  */
-export const ARCHIVE_ORDER = "order-2";
+export const ARCHIVE_ORDER = "order-3";
 
 /** Rank of an archive by name; higher wins. Ties break on the trailing digit or letter. */
 export function archivePriority(name) {
@@ -88,22 +90,25 @@ export function archivePriority(name) {
 }
 
 function comparePriority(left, right) {
-  const a = archivePriority(left.name);
-  const b = archivePriority(right.name);
+  const a = left.priority ?? archivePriority(left.name);
+  const b = right.priority ?? archivePriority(right.name);
   if (a.tier !== b.tier) return b.tier - a.tier;
   if (a.rank !== b.rank) return b.rank - a.rank;
   return left.name.toLowerCase() < right.name.toLowerCase() ? 1 : -1;
 }
 
-/** A directory named `*.MPQ`. The client reads these as loose overlays and so must we. */
+/** A loose filesystem source: a directory-shaped MPQ or the client's `Interface/AddOns`. */
 class LooseSource {
   #root;
+  #prefix;
   #index;
 
-  constructor(name, root) {
+  constructor(name, root, prefix = "") {
     this.name = name;
     this.kind = "directory";
+    this.file = root;
     this.#root = root;
+    this.#prefix = prefix.replaceAll("/", "\\").replace(/\\+$/, "");
   }
 
   async #load() {
@@ -129,7 +134,11 @@ class LooseSource {
           }
         }
         if (directoryEntry) await walk(absolute);
-        else index.set(key(relative(this.#root, absolute)), absolute);
+        else {
+          const local = relative(this.#root, absolute);
+          const virtual = this.#prefix ? `${this.#prefix}\\${local}` : local;
+          index.set(key(virtual), absolute);
+        }
       }
     };
     await walk(this.#root);
@@ -151,7 +160,10 @@ class LooseSource {
     const index = await this.#load();
     const wanted = key(prefix);
     return [...index.values()]
-      .map((absolute) => relative(this.#root, absolute).replaceAll(sep, "\\"))
+      .map((absolute) => {
+        const local = relative(this.#root, absolute).replaceAll(sep, "\\");
+        return this.#prefix ? `${this.#prefix}\\${local}` : local;
+      })
       .filter((path) => !wanted || key(path).startsWith(wanted));
   }
 
@@ -230,7 +242,8 @@ function key(path) {
 let mountCounter = 0;
 
 /**
- * Opens every archive and patch directory under `<client>/Data`, highest priority first.
+ * Opens every archive and patch directory under `<client>/Data`, plus loose `Interface/AddOns`,
+ * highest priority first.
  *
  * The handle is meant to be held for the life of the process. Opening the full chain measures
  * ~185 ms, which is the entire cost the old helper paid on every single file.
@@ -268,6 +281,24 @@ export async function openClientArchives(clientDirectory) {
     }
   };
   await walk(dataDirectory);
+  const addonsDirectory = join(clientDirectory, "Interface", "AddOns");
+  if (existsSync(addonsDirectory)) {
+    try {
+      if ((await stat(addonsDirectory)).isDirectory()) {
+        // Native add-ons are explicit filesystem content and win over a same-named built-in add-on
+        // in an MPQ. Only the Interface/AddOns virtual subtree is exposed by this source.
+        found.push({
+          name: "Interface/AddOns",
+          absolute: addonsDirectory,
+          isDirectory: true,
+          virtualPrefix: "Interface\\AddOns",
+          priority: { tier: 17, rank: 0 },
+        });
+      }
+    } catch {
+      // A disappearing optional add-on directory contributes nothing to this snapshot.
+    }
+  }
   found.sort(comparePriority);
 
   // StormLib runs under Emscripten and only sees its own virtual filesystem, so Data is mounted
@@ -280,7 +311,7 @@ export async function openClientArchives(clientDirectory) {
   const skipped = [];
   for (const entry of found) {
     if (entry.isDirectory) {
-      sources.push(new LooseSource(entry.name, entry.absolute));
+      sources.push(new LooseSource(entry.name, entry.absolute, entry.virtualPrefix));
       continue;
     }
     const virtualPath = `${mount}/${relative(dataDirectory, entry.absolute).replaceAll(sep, "/")}`;
@@ -398,32 +429,81 @@ export async function openClientArchives(clientDirectory) {
       return shadowed;
     },
     /** The composition of the chain, as a hash. See `digest` above. */
-    chainDigest() {
-      return digest;
+    chainDigest(order = ARCHIVE_ORDER) {
+      return order === ARCHIVE_ORDER
+        ? digest
+        : createHash("sha1").update([order, ...composition].join("\n")).digest("hex");
     },
     /**
      * Everything a generated file has to record about one of its inputs: which source won the
      * path, the file that source is, and that file's size and mtime.
      *
      * `above` is the loose overlays that were searched first and did not have it. A directory can
-     * gain a file without the chain's composition changing, and that file would then win the path
-     * — this is what lets a reader that has never ranked the chain notice it anyway.
+     * gain a file without the chain's composition changing, and that file would then win the path.
+     * `aboveArchives` is the same guard for real MPQs: replacing one in place can make it start
+     * carrying a path that previously fell through to a lower source. Archives StormLib could not
+     * open are included conservatively, because repairing one is exactly such a replacement.
      */
     async sourceOf(path) {
       const above = [];
-      for (const source of sources) {
+      const aboveArchives = [];
+      const opened = new Map(sources.map((source) => [source.file, source]));
+      for (const entry of found) {
+        const source = opened.get(entry.absolute);
+        if (!source) {
+          if (!entry.isDirectory) {
+            try {
+              const stats = await stat(entry.absolute);
+              aboveArchives.push({ file: entry.absolute, size: stats.size, mtimeMs: stats.mtimeMs });
+            } catch {
+              // The chain fingerprint notices an unopened archive disappearing or reappearing.
+            }
+          }
+          continue;
+        }
         const file = await source.fileOf(path);
         if (file === undefined) {
           if (source.kind === "directory") above.push(source.name);
+          else {
+            try {
+              const stats = await stat(source.file);
+              aboveArchives.push({ file: source.file, size: stats.size, mtimeMs: stats.mtimeMs });
+            } catch {
+              // A disappearing archive changes the chain fingerprint before this stamp is used.
+            }
+          }
           continue;
         }
         const stats = await stat(file);
         return {
           path, name: source.name, kind: source.kind, file,
-          size: stats.size, mtimeMs: stats.mtimeMs, above,
+          size: stats.size, mtimeMs: stats.mtimeMs, above, aboveArchives,
         };
       }
       return undefined;
+    },
+    /**
+     * What could make a path that is absent today appear without changing the chain's names.
+     *
+     * A loose overlay can gain the path while keeping the same directory name. A real MPQ can be
+     * replaced in place while keeping the same archive name. Cache stamps record both facts so a
+     * generated fallback does not survive the patch that finally supplies its source asset.
+     */
+    async absenceOf(path) {
+      const loose = sources.filter((source) => source.kind === "directory").map((source) => source.name);
+      const archives = [];
+      // `found`, not only successfully opened sources: repairing a corrupt archive in place is
+      // another way an absent path can appear under an unchanged chain composition.
+      for (const entry of found) {
+        if (entry.isDirectory) continue;
+        try {
+          const stats = await stat(entry.absolute);
+          archives.push({ file: entry.absolute, size: stats.size, mtimeMs: stats.mtimeMs });
+        } catch {
+          // The chain fingerprint will notice an archive that disappears or reappears.
+        }
+      }
+      return { path, loose, archives };
     },
     /** Reads many paths, reporting the misses rather than throwing on the first one. */
     async readAll(paths) {

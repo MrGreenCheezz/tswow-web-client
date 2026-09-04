@@ -1,0 +1,21 @@
+COLUMNS
+int ID
+int<Map::ID> MapID
+int InstanceType
+int GroupsAllowed
+locstring Name_lang
+int MaxGroupSize
+int HolidayWorldState
+int Minlevel
+int Maxlevel
+
+BUILD 3.0.1.8303-3.3.5.12340
+$id$ID<32>
+MapID<32>[8]
+InstanceType<32>
+GroupsAllowed<32>
+Name_lang
+MaxGroupSize<32>
+HolidayWorldState<32>
+Minlevel<32>
+Maxlevel<32>

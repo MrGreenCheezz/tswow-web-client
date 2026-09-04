@@ -1,6 +1,7 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 // Aliased: the parameter every paint takes is also called `player`.
 import { POWER, isLootable, player as playerFields, unit } from "../../world/Fields.js";
+import { NPC_FLAGS_INTERACTION_MASK, NPC_FLAGS_VENDOR_MASK } from "../../world/NpcProtocol.js";
 import { WorldObjectState, isWorldObjectDead } from "../../world/WorldState.js";
 import { SELF, WorldStore } from "../../world/WorldStore.js";
 import { creatureIconSource, creatureTypeName } from "../CreatureMetadata.js";
@@ -10,15 +11,16 @@ import { game } from "../game/Context.js";
 import { Bar } from "./Widgets.js";
 import { showAuras } from "./Auras.js";
 import {
-  attackButton, clearTargetButton, form, interactButton, lootButton, playerHealthBar, playerHealthText, playerIcon,
-  playerHudDetails, playerPowerBar, targetActions, targetAuras, targetDetails, targetHealthBar, targetHealthText,
+  attackButton, characterMicroIcon, clearTargetButton, form, interactButton, lootButton, playerHealthBar,
+  playerHealthText, playerIcon, playerHudDetails, playerPowerBar, targetActions, targetAuras, targetDetails, targetHealthBar, targetHealthText,
   targetIcon, targetName, targetPanel, bankerButton, trainerButton, vendorButton,
 } from "./Dom.js";
 import { skinnable, slot } from "./Slots.js";
 import { gameObjectAction } from "../game/Interaction.js";
 import { targetPower, playerExperience, playerHud } from "./Dom.js";
 import {
-  CLASS_ATLAS_PATH, classPortraitPosition, hasClassIcon, raidMarkGlyph, raidMarksByUnit, threatFraction,
+  CLASS_ATLAS_PATH, CLASS_MICRO_PORTRAIT_HEIGHT, CLASS_MICRO_PORTRAIT_WIDTH,
+  className, classPortraitPosition, hasClassIcon, raidMarkGlyph, raidMarksByUnit, threatFraction,
 } from "./UnitSnapshot.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { reactionTo } from "../game/Targeting.js";
@@ -211,11 +213,36 @@ skinnable("player-frame", playerHud);
  * character inside that moment would otherwise have the first character's cell written over
  * theirs, and nothing would move it back until the class changed again.
  */
-function positionClassPortrait(): void {
-  const carried = Number(playerIcon.dataset["class"]);
+function positionClassPortrait(image: HTMLImageElement): void {
+  const carried = Number(image.dataset["class"]);
   if (!Number.isInteger(carried)) return;
-  const offset = classPortraitPosition(playerIcon, carried);
-  if (offset) playerIcon.style.objectPosition = offset;
+  const offset = image === characterMicroIcon
+    ? classPortraitPosition(image, carried, CLASS_MICRO_PORTRAIT_WIDTH, CLASS_MICRO_PORTRAIT_HEIGHT)
+    : classPortraitPosition(image, carried);
+  if (offset) image.style.objectPosition = offset;
+}
+
+function paintClassIcon(image: HTMLImageElement, classId: number | undefined, wanted: string | undefined): void {
+  if (classId === undefined || !wanted || !hasClassIcon(classId)) {
+    image.hidden = true;
+    delete image.dataset["atlas"];
+    delete image.dataset["class"];
+    return;
+  }
+  image.hidden = false;
+  image.dataset["class"] = String(classId);
+  positionClassPortrait(image);
+  if (image.dataset["atlas"] === wanted) return;
+  image.dataset["atlas"] = wanted;
+  image.onerror = () => {
+    image.onerror = null;
+    image.hidden = true;
+    // A transient gateway/decode failure must remain retryable. Keeping this marker made the next
+    // HUD paint reveal the same broken image and return before asking for the atlas again.
+    if (image.dataset["atlas"] === wanted) delete image.dataset["atlas"];
+  };
+  image.onload = () => positionClassPortrait(image);
+  setIconSource(image, wanted);
 }
 
 /**
@@ -242,29 +269,16 @@ function positionClassPortrait(): void {
  */
 function paintClassPortrait(classId: number | undefined): void {
   const origin = game.gatewayOrigin;
-  if (classId === undefined || !origin || !hasClassIcon(classId)) {
-    playerIcon.hidden = true;
-    delete playerIcon.dataset["atlas"];
-    return;
-  }
-  playerIcon.hidden = false;
-  playerIcon.dataset["class"] = String(classId);
-  positionClassPortrait();
-  const wanted = `${origin}/texture?path=${encodeURIComponent(CLASS_ATLAS_PATH)}`;
-  if (playerIcon.dataset["atlas"] === wanted) return;
-  playerIcon.dataset["atlas"] = wanted;
-  playerIcon.onerror = () => {
-    playerIcon.onerror = null;
-    playerIcon.hidden = true;
-  };
-  playerIcon.onload = positionClassPortrait;
-  setIconSource(playerIcon, wanted);
+  const wanted = origin ? `${origin}/texture?path=${encodeURIComponent(CLASS_ATLAS_PATH)}` : undefined;
+  paintClassIcon(playerIcon, classId, wanted);
+  paintClassIcon(characterMicroIcon, classId, wanted);
 }
 
 export function bindPlayerHud(store: WorldStore): void {
   const paint = (player: WorldObjectState | undefined): void => {
     if (!player) {
       setPlayerPortrait(undefined);
+      paintClassPortrait(undefined);
       playerHudDetails.textContent = "Ожидание параметров…";
       playerHealthBar.style.width = "0%";
       playerHealthText.textContent = "";
@@ -407,7 +421,7 @@ export function showTarget(): void {
   const level = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset);
   const health = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset);
   const maxHealth = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset);
-  targetName.textContent = metadata?.name ?? `Цель: ${unitDisplayName(target)}`;
+  targetName.textContent = metadata?.name ?? unitDisplayName(target);
   targetIcon.hidden = false;
   setIconSource(targetIcon, creatureIconSource(metadata, game.gatewayOrigin));
   targetIcon.onerror = () => {
@@ -426,6 +440,7 @@ export function showTarget(): void {
   targetDetails.textContent = [
     metadata?.subname ?? "",
     metadata ? creatureTypeName(metadata.type) : "",
+    target.typeId === 4 ? className(unit.classId(target)) : "",
     level === undefined ? "" : `ур. ${level}`,
   ].filter(Boolean).join(" · ");
   targetDetails.title = `GUID 0x${target.guid.toString(16).padStart(16, "0")}`;
@@ -443,7 +458,7 @@ export function showTarget(): void {
   const action = target.typeId === 5 && self?.position ? gameObjectAction(world, target, self.position) : undefined;
   interactButton.hidden = target.typeId === 5
     ? action === undefined
-    : target.typeId !== 3 || (npcFlags & 0x03) === 0;
+    : target.typeId !== 3 || (npcFlags & NPC_FLAGS_INTERACTION_MASK) === 0;
   const interactLabel = target.typeId !== 5 ? "Поговорить"
     : action?.kind === "unlock" ? "Открыть" : "Использовать";
   interactButton.title = interactLabel;
@@ -467,8 +482,8 @@ export function showTarget(): void {
   const lootLabel = lootable ? "Обыскать" : "Здесь нечего обыскивать";
   lootButton.title = lootLabel;
   lootButton.setAttribute("aria-label", lootLabel);
-  // UNIT_NPC_FLAG_VENDOR is 0x80; the trainer bits are 0x10, 0x20 and 0x40.
-  vendorButton.hidden = target.typeId !== 3 || (npcFlags & 0x80) === 0;
+  // WotLK vendors may advertise a title-specific bit (ammo/food/poison/reagent) without 0x80.
+  vendorButton.hidden = target.typeId !== 3 || (npcFlags & NPC_FLAGS_VENDOR_MASK) === 0;
   trainerButton.hidden = target.typeId !== 3 || (npcFlags & 0x70) === 0;
   // UNIT_NPC_FLAG_BANKER is 0x20000. The vault itself is already in the player's update fields;
   // this is the only thing that grants permission to move anything in it.

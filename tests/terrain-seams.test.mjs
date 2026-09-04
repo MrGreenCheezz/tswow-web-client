@@ -1,11 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
 import { TERRAIN_GRID_SIZE, TerrainTile } from "../dist/code/browser/Terrain.js";
 import { terrainHeightField, terrainNormals } from "../dist/code/browser/WorldRenderer3D.js";
 
 const SIDE = 129;
 const SKIRT = SIDE + 2;
+
+async function currentTerrainHeightField() {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export function terrainHeightField(");
+  const end = source.indexOf("/** The scene normals", start);
+  assert.ok(start >= 0 && end > start, "terrainHeightField source seam exists");
+  const declaration = ts.transpileModule(source.slice(start, end).replace("export function", "function"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const fillOutside = (heights, outside, edge, inward) => {
+    if (!Number.isNaN(heights[outside])) return;
+    heights[outside] = 2 * heights[edge] - heights[inward];
+  };
+  return Function(
+    "TERRAIN_SUBDIVISIONS", "TERRAIN_GRID_SIZE", "TERRAIN_EDGE_EPSILON", "fillOutside",
+    `${declaration}; return terrainHeightField;`,
+  )(128, TERRAIN_GRID_SIZE, 1e-6, fillOutside);
+}
+
+test("both meshes use the canonical owner at an exact terrain-tile join", async () => {
+  const build = await currentTerrainHeightField();
+  const ownerHeight = (x, y) => {
+    const gridX = Math.floor(32 - x / TERRAIN_GRID_SIZE);
+    const gridY = Math.floor(32 - y / TERRAIN_GRID_SIZE);
+    return gridX * 100 + gridY;
+  };
+  const player = { x: 0, y: 0, z: -999, orientation: 0 };
+  const left = build({ x: 32, y: 32 }, player, ownerHeight);
+  const right = build({ x: 33, y: 32 }, player, ownerHeight);
+  const at = (field, row, column) => field[(row + 1) * SKIRT + (column + 1)];
+
+  assert.equal(at(left, 128, 64), at(right, 0, 64),
+    "the shared edge must not use two separately quantised tile owners");
+  assert.equal(at(left, 128, 128), 3333,
+    "the shared corner belongs to the diagonal tile just like all four touching meshes");
+});
 
 test("the skirt continues the tile's own slope where the world has nothing to answer with", () => {
   // A field that rises by one yard per vertex along x. Extrapolation is exact on a plane, which is
@@ -32,16 +69,30 @@ test("the skirt continues the tile's own slope where the world has nothing to an
   assert.equal(at(SIDE, SIDE), 0);
 });
 
-test("a missing neighbour is asked for four times, not eight", () => {
-  // `surfaceNormal` reads the four neighbours of a vertex, so sampling the skirt's corners would
-  // put four more tiles on the download queue per ring — 25 against 21 — for values nobody reads.
+test("the edge skirt and shared endpoints ask all canonical neighbouring owners", async () => {
+  // `surfaceNormal` reads the four axis neighbours of a vertex. At a mesh endpoint those samples
+  // cross two tile boundaries, so the diagonal owner is also needed for identical corner normals.
   const asked = new Set();
   const heightAt = (x, y) => {
     asked.add(`${Math.floor(32 - x / TERRAIN_GRID_SIZE)}/${Math.floor(32 - y / TERRAIN_GRID_SIZE)}`);
     return 0;
   };
-  terrainHeightField({ x: 32, y: 32 }, { x: 0, y: 0, z: 0, orientation: 0 }, heightAt);
-  assert.deepEqual([...asked].sort(), ["31/32", "32/31", "32/32", "32/33", "33/32"]);
+  const build = await currentTerrainHeightField();
+  build({ x: 32, y: 32 }, { x: 0, y: 0, z: 0, orientation: 0 }, heightAt);
+  assert.deepEqual([...asked].sort(), [
+    "31/32", "31/33", "32/31", "32/32", "32/33", "33/31", "33/32", "33/33",
+  ]);
+});
+
+test("a late canonical neighbour rebuilds positions as well as normals", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const start = source.indexOf("} else if (rendered.revision !== revision) {");
+  const end = source.indexOf("} else if (rendered.liquidGeneration", start);
+  assert.ok(start >= 0 && end > start, "neighbour revision lifecycle seam exists");
+  const branch = source.slice(start, end);
+  assert.match(branch, /#rebuildTerrainGeometry\(/,
+    "the fallback far-edge height lives in the position buffer, not only in its normal");
+  assert.doesNotMatch(branch, /#refreshTerrainNormals\(/);
 });
 
 let mapsDirectory;

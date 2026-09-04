@@ -376,14 +376,23 @@ test("Ж0 entering the world a second time in one tab registers the same window,
   }
 });
 
-test("Ж0 both ways out of a world drop what the realm owned", async () => {
+test("Ж0 every way out of a world drops what the realm owned", async () => {
   // The mechanism above is only worth having if somebody calls it, and for the whole life of
   // `clearWorldContext` nobody did — a grep over `src/`, `tests/`, `tools/` and `index.html` found
-  // the definition and one comment. Both ways out go through `Login.ts`: changing realm
-  // (`connectRealm`) and signing in as somebody else (the login form).
+  // the definition and one comment. Every way out goes through `Login.ts`.
+  //
+  // There were two of them when this pin was written (changing realm, signing in as somebody
+  // else); G6 added three more — a completed logout, a lost connection and a failed enter — and
+  // moved the list into `resetWorldUi`, because five hand-copied halves would have been five
+  // chances to forget the module loader. So the call is counted once, in the one function, and
+  // what is pinned instead is that every exit reaches it.
   const source = await readFile(new URL("../src/browser/app/Login.ts", import.meta.url), "utf8");
-  assert.equal((source.match(/\bclearWorldContext\(\)/g) ?? []).length, 2,
-    "both exits from a world have to drop what the realm owned");
+  assert.equal((source.match(/\bclearWorldContext\(\)/g) ?? []).length, 1,
+    "the drop belongs to one function, so no exit can carry half of it");
+  assert.match(source, /export function resetWorldUi\(\): void \{[\s\S]{0,200}?clearWorldContext\(\);/,
+    "…and that function is resetWorldUi");
+  assert.equal((source.match(/^\s*resetWorldUi\(\);$/gm) ?? []).length, 3,
+    "the login form, connectRealm and leaveWorld — the three roads out of a world");
   // And the list of what that is stays in one place: a hand-copied half of it is what this
   // replaced, and the half that was missing was the module loader.
   for (const half of ["game.creatureMetadata = undefined", "game.spells.clear()"]) {

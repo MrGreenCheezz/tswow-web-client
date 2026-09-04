@@ -3,11 +3,10 @@
  *
  * Three things changed here at once, and they are one change. A tab is a filter over the backlog,
  * so the pane has to be built from `WorldClient.chatLog` rather than from the nodes already on
- * screen — which is also what makes an unread count possible. A line is now built from segments
+ * screen — which is also what makes an unread count possible. A line is built from segments
  * rather than assigned to `textContent`, so an item link can be an anchor with a tooltip on it
- * instead of the raw `|cff…|Hitem:` the player used to read. And the combat log finally has
- * somewhere to keep a history: the overlay over the world still shows eight lines and drops the
- * rest, and now the ninth is somewhere.
+ * instead of the raw `|cff…|Hitem:` the player used to read. Combat is another tab in this same
+ * dock, so it has history without placing a second log over the world.
  *
  * Everything decided here that can be decided without a document lives in `ChatFormat.ts`,
  * `ChatLink.ts` and `CombatLogModel.ts`, which is why those are the files with tests.
@@ -58,19 +57,44 @@ export function resetChatDock(): void {
 }
 
 export function drawChatTabs(): void {
-  chatTabs.replaceChildren(...tabs.map((tab) => {
+  chatTabs.replaceChildren(...tabs.map((tab, index) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.id = `chat-tab-${index}`;
     button.className = tab.id === activeTabId ? "chat-tab is-active" : "chat-tab";
     button.textContent = tab.title;
+    button.dataset["chatTab"] = tab.id;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", String(tab.id === activeTabId));
+    button.setAttribute("aria-controls", "chat-log");
+    button.tabIndex = tab.id === activeTabId ? 0 : -1;
+    if (tab.id === activeTabId) chatLog.setAttribute("aria-labelledby", button.id);
     const count = unread.get(tab.id) ?? 0;
     if (count > 0 && tab.id !== activeTabId) button.dataset["unread"] = String(count);
     button.addEventListener("click", () => { selectChatTab(tab.id); });
     return button;
   }));
 }
+
+/** Standard roving-tab keyboard navigation, including the combat page. */
+chatTabs.addEventListener("keydown", (event) => {
+  if (!(event.target instanceof HTMLButtonElement)) return;
+  const buttons = [...chatTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  const current = buttons.indexOf(event.target);
+  if (current < 0) return;
+  let next: number | undefined;
+  if (event.key === "ArrowLeft") next = (current - 1 + buttons.length) % buttons.length;
+  else if (event.key === "ArrowRight") next = (current + 1) % buttons.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = buttons.length - 1;
+  if (next === undefined) return;
+  const id = buttons[next]?.dataset["chatTab"];
+  if (!id) return;
+  selectChatTab(id);
+  [...chatTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+    .find((button) => button.dataset["chatTab"] === id)?.focus();
+  event.preventDefault();
+});
 
 /** Switches by id or by the title the player can see. False when neither names a tab. */
 export function selectChatTabByName(name: string): boolean {

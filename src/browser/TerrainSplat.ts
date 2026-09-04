@@ -521,14 +521,15 @@ function injectTerrainMicroNormals(shader: TerrainShaderSource): void {
         dFdx(terrainMicroHeight),
         dFdy(terrainMicroHeight)
       );
-      // Layer indices change at chunk borders; fading there prevents an unrelated neighbour from
-      // becoming a false height step. Texture minification already removes sub-pixel detail, and
-      // this explicit distance gate prevents distant shimmer before that point.
-      vec2 terrainChunkUv = fract(vSplatUv * 16.0);
-      vec2 terrainChunkEdge = min(terrainChunkUv, 1.0 - terrainChunkUv);
-      float terrainChunkFade = smoothstep(0.0, 0.04, min(terrainChunkEdge.x, terrainChunkEdge.y));
+      // Layer indices may change abruptly at an authored chunk edge. Suppress only an implausibly
+      // large derivative there. Any UV-edge mask — periodic or once per tile — makes its own
+      // straight zero-normal strip visible even where the blended colour itself is continuous.
+      // Fragment derivatives still have helper invocations at a primitive edge; the texture's
+      // clamp/repeat policy and this outlier gate are the conservative boundary handling.
+      float terrainMicroGradientLength = length(terrainMicroGradient);
+      float terrainMicroOutlierFade = 1.0 - smoothstep(0.16, 0.42, terrainMicroGradientLength);
       float terrainDistanceFade = 1.0 - smoothstep(50.0, 125.0, length(vViewPosition));
-      terrainMicroGradient *= 0.08 * terrainChunkFade * terrainDistanceFade;
+      terrainMicroGradient *= 0.08 * terrainMicroOutlierFade * terrainDistanceFade;
 
       // These vectors and the normal are all view-space. This is the bounded form of Three's own
       // derivative bump basis, fed by the already blended albedo instead of another texture.

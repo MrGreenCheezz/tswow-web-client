@@ -16,6 +16,9 @@
 
 export type SettingKind = "boolean" | "number";
 
+export const SETTING_GROUPS = ["Игра", "Графика", "Эффекты", "Интерфейс", "Звук", "Чат"] as const;
+export type SettingGroup = typeof SETTING_GROUPS[number];
+
 export interface SettingDefinition {
   id: string;
   label: string;
@@ -27,7 +30,7 @@ export interface SettingDefinition {
   max?: number | undefined;
   step?: number | undefined;
   /** Which group the window draws it under. */
-  group: string;
+  group: SettingGroup;
   /**
    * Drawn by the window it belongs to rather than by the settings window.
    *
@@ -38,69 +41,92 @@ export interface SettingDefinition {
   ownWindow?: boolean | undefined;
 }
 
-export const SETTING_GROUPS = ["Мир", "Звук", "Интерфейс", "Чат"] as const;
-
 export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
   {
-    id: "chatBubbles", label: "Пузыри над головами", group: "Мир", kind: "boolean", fallback: true,
+    id: "chatBubbles", label: "Пузыри над головами", group: "Игра", kind: "boolean", fallback: true,
     hint: "Что говорят рядом — над головой говорящего, а не только в чате.",
   },
   {
-    id: "floatingCombatText", label: "Всплывающий урон", group: "Мир", kind: "boolean", fallback: true,
+    id: "floatingCombatText", label: "Всплывающий урон", group: "Игра", kind: "boolean", fallback: true,
     hint: "Числа урона и лечения поднимаются над тем, кто их получил.",
   },
   {
-    id: "combatOverlay", label: "Боевой лог над миром", group: "Мир", kind: "boolean", fallback: true,
-    hint: "Восемь последних строк боя слева. Полная история — во вкладке «Бой».",
-  },
-  {
-    id: "plateEnemies", label: "Таблички над врагами", group: "Мир", kind: "boolean", fallback: true,
+    id: "plateEnemies", label: "Таблички над врагами", group: "Игра", kind: "boolean", fallback: true,
     hint: "Имя, уровень, здоровье и полоса каста над всем, что можно ударить.",
   },
   {
-    id: "plateFriends", label: "Таблички над союзниками", group: "Мир", kind: "boolean", fallback: false,
+    id: "plateFriends", label: "Таблички над союзниками", group: "Игра", kind: "boolean", fallback: false,
     hint: "В городе это табличка над каждым стражником и каждым прохожим, поэтому выключено.",
   },
   {
-    id: "renderScale", label: "Масштаб отрисовки, %", group: "Мир", kind: "number", fallback: 100,
+    id: "renderScale", label: "Масштаб отрисовки, %", group: "Графика", kind: "number", fallback: 100,
     min: 50, max: 100, step: 5,
     hint: "Мир рисуется в этой доле от размера окна и растягивается. Ниже 100 — быстрее и мягче.",
   },
   {
-    id: "lightingQuality", label: "Качество освещения", group: "Мир", kind: "number", fallback: 1,
+    id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 1,
     min: 0, max: 2, step: 1,
     hint: "0 — без теней, 1 — сбалансированные тени, 2 — более чёткие тени.",
   },
   {
-    id: "wmoOcclusion", label: "Скрывать невидимые помещения", group: "Мир", kind: "boolean", fallback: true,
+    id: "wmoOcclusion", label: "Скрывать невидимые помещения", group: "Графика", kind: "boolean", fallback: true,
     hint: "Порталы зданий не рисуют комнаты за стенами. Выключить — оставить только отсечение по дальности.",
   },
   {
-    id: "characterAtlasAnisotropy", label: "Эксперимент: фильтрация атласов персонажей", group: "Мир", kind: "boolean", fallback: false,
+    id: "characterAtlasAnisotropy", label: "Эксперимент: фильтрация атласов персонажей", group: "Графика", kind: "boolean", fallback: false,
     hint: "A/B-кандидат: максимум фильтрации видеокарты делает тело чётче под углом, но может расходовать больше bandwidth. Выключено до телеметрии R1.",
   },
   {
-    id: "experimentalAerialHeightFog", label: "Эксперимент: faithful-plus высотный туман", group: "Мир", kind: "boolean", fallback: false,
+    id: "experimentalAerialHeightFog", label: "Эксперимент: faithful-plus высотный туман", group: "Эффекты", kind: "boolean", fallback: false,
     hint: "Экспериментальный профиль aerial/height fog пока заблокирован и ничего не меняет; оставлено для будущего безопасного среза.",
   },
   {
-    id: "experimentalTerrainMicroNormals", label: "Faithful-plus: микрорельеф земли", group: "Мир", kind: "boolean", fallback: true,
-    hint: "Добавляет небольшой микрорельеф splat-текстурам в авторском свете. Вдали и у границ чанков эффект затухает; выключение возвращает baseline shader.",
+    id: "experimentalTerrainMicroNormals", label: "Faithful-plus: микрорельеф земли", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Добавляет небольшой микрорельеф splat-текстурам в авторском свете. Вдали и на аномально резких переходах эффект затухает без обводки чанков; выключение возвращает baseline shader.",
   },
   {
-    id: "experimentalWaterFresnel", label: "Faithful-plus: Fresnel воды", group: "Мир", kind: "boolean", fallback: true,
+    id: "experimentalWaterFresnel", label: "Faithful-plus: Fresnel воды", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Мягко усиливает отражённый край воды и океана. Включено по умолчанию; выключение возвращает исходный shader.",
   },
   {
-    id: "experimentalWaterMicroWaves", label: "Faithful-plus: микроволны воды", group: "Мир", kind: "boolean", fallback: true,
+    id: "experimentalWaterMicroWaves", label: "Faithful-plus: микроволны воды", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Добавляет мелкую анимацию normal и цвета воды. Включено по умолчанию и не меняет геометрию поверхности.",
   },
   {
-    id: "experimentalWaterSunSparkle", label: "Faithful-plus: солнечные блики воды", group: "Мир", kind: "boolean", fallback: true,
+    id: "experimentalWaterSunSparkle", label: "Faithful-plus: солнечные блики воды", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Добавляет направленные солнечные блики над поверхностью; под водой эффект подавляется. Выключение возвращает baseline.",
   },
   {
-    id: "experimentalFantasyGlow", label: "Faithful-plus: фэнтезийное свечение", group: "Мир", kind: "boolean", fallback: true,
+    id: "experimentalWaterFoam", label: "Faithful-plus: пена у берега", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Добавляет тонкую анимированную пену только на мелководье воды и океана. Лава, слизь и fallback-материалы не меняются.",
+  },
+  {
+    id: "experimentalVegetationWind", label: "Faithful-plus: ветер растительности", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Качает на GPU только однозначно распознанные листья, цветы и траву; стволы и неизвестные материалы остаются неподвижными.",
+  },
+  {
+    // The original client's own underwater view, ported from the reference client's overlay: a
+    // depth tint and the waterline that sweeps across the screen as the eye crosses the surface.
+    // On by default — it is what the client looks like under water, not an addition to it — and
+    // off restores the exact frame that pre-dates it, without an extra draw call.
+    id: "underwaterOverlay", label: "Эффект под водой", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Тонировка по глубине и мениск на линии воды, пока камера под поверхностью. Выключить — прежний кадр без дополнительного прохода.",
+  },
+  {
+    // The original client's own `ffxGlow`, and its strength is authored per zone in
+    // `LightParams.Glow` rather than chosen here: Stormwind 0.30, Elwynn 0.65, Darnassus 1.00,
+    // Ironforge and Dalaran exactly 0. On by default — the owner asked for the WoW look — while
+    // its switch remains independent of the solar-rays leaf. The exact direct pre-P4 path is used
+    // only when both post-process leaves are off.
+    id: "fullscreenGlow", label: "Полноэкранное свечение", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Классический ffxGlow: яркие места кадра размываются и добавляются обратно с авторской силой зоны. Выключить — убрать это свечение; прямой путь без оффскрин-прохода включается, когда солнечные лучи тоже выключены.",
+  },
+  {
+    id: "godRays", label: "Faithful-plus: солнечные лучи", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Добавляет экранные солнечные лучи при качестве освещения 1 или 2. Работает независимо от полноэкранного свечения: его можно отключить.",
+  },
+  {
+    id: "experimentalFantasyGlow", label: "Faithful-plus: фэнтезийное свечение", group: "Эффекты", kind: "boolean", fallback: true,
     hint: "Усиливает только авторские additive-эффекты заклинаний и собственное свечение магмы/слизи. Без bloom, новых источников света и дополнительных проходов.",
   },
   {
@@ -108,12 +134,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // rather than a share of the doodad range, which is what the reference client does and says
     // why — "grass stops between 70 and 140 yards in the original client while doodads run to the
     // horizon" (`wowee/include/rendering/m2_renderer.hpp:566-575`). The default sits below that
-    // range deliberately: 50 yards is 3,525 tufts in the densest window of the Goldshire ring,
-    // 14,100 triangles and 0.33 ms to scatter and compose, and what a field of alpha-tested quads
-    // at knee height costs in overdraw is the one thing no offline measurement produces. Zero
-    // turns the field off outright.
-    id: "grassRadius", label: "Дальность травы", group: "Мир", kind: "number", fallback: 50,
-    min: 0, max: 140, step: 10,
+    // range deliberately. The web camera has less distance fog than the reference, so 80 yards and
+    // the renderer's soft outer band keep the field from visibly appearing in front of the player.
+    // Zero still turns the field off outright.
+    id: "grassRadius", label: "Дальность травы", group: "Графика", kind: "number", fallback: 80,
+    min: 0, max: 180, step: 10,
     hint: "В ярдах. Трава и кустики рисуются только внутри этого круга; 0 — не рисовать вовсе.",
   },
   {
@@ -121,7 +146,7 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // doodads per 4.17-yard detail cell or per 33.3-yard chunk, and the two differ by 64 times.
     // The whole argument is on `ScatterOptions.perCell` in GroundCover.ts; thirty seconds in
     // Elwynn settles it, which is why the other reading is a switch and not a deleted branch.
-    id: "grassDense", label: "Густая трава", group: "Мир", kind: "boolean", fallback: true,
+    id: "grassDense", label: "Густая трава", group: "Графика", kind: "boolean", fallback: true,
     hint: "Плотность из таблицы — на клетку 4,17 ярда. Выключить: та же плотность на чанк, в 64 раза реже.",
   },
   {
@@ -130,9 +155,14 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // reason that lives in the code above: `coerceSetting` rounds every number setting to a whole
     // one, so a factor slider would collapse to 1 or 2 with nothing in between. Yards is also the
     // unit the wheel already speaks, and 55 is where it has always stopped.
-    id: "cameraMaxDistance", label: "Максимальная дистанция камеры", group: "Мир", kind: "number", fallback: 55,
+    id: "cameraMaxDistance", label: "Максимальная дистанция камеры", group: "Игра", kind: "number", fallback: 55,
     min: 15, max: 55, step: 5,
     hint: "В ярдах. Как далеко колесо отпускает камеру: меньше — ближе к персонажу и меньше мира в кадре.",
+  },
+  {
+    id: "uiScale", label: "Масштаб интерфейса, %", group: "Интерфейс", kind: "number", fallback: 100,
+    min: 75, max: 125, step: 5,
+    hint: "Меняет размер HUD и игровых окон, не снижая разрешение мира.",
   },
   {
     id: "actionBarBottomLeft", label: "Нижняя левая панель команд", group: "Интерфейс", kind: "boolean", fallback: false,
@@ -201,6 +231,13 @@ export type SettingValues = Record<string, boolean | number>;
 
 export function settingDefinition(id: string): SettingDefinition | undefined {
   return SETTING_DEFINITIONS.find((definition) => definition.id === id);
+}
+
+/** Search the words players can see, rather than exposing the internal setting id as UI copy. */
+export function settingMatchesQuery(definition: SettingDefinition, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase("ru-RU");
+  if (!needle) return true;
+  return `${definition.label} ${definition.hint ?? ""}`.toLocaleLowerCase("ru-RU").includes(needle);
 }
 
 export function defaultSettings(): SettingValues {

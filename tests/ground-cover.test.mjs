@@ -427,15 +427,15 @@ test("the two settings reach as far as the renderer lets them, and no further", 
   // ceiling — the top of the range the original client draws ground cover in — so that number and
   // the slider's maximum have to be the same number.
   const radius = settingDefinition("grassRadius");
-  assert.equal(radius.group, "Мир");
+  assert.equal(radius.group, "Графика");
   assert.equal(radius.kind, "number");
   assert.equal(radius.max, GROUND_COVER_MAX_RADIUS);
   assert.equal(radius.min, 0, "zero is how the field is turned off");
   assert.equal(coerceSetting(radius, 9999), GROUND_COVER_MAX_RADIUS);
   assert.equal(coerceSetting(radius, -20), 0);
-  assert.equal(defaultSettings().grassRadius, 50);
+  assert.equal(defaultSettings().grassRadius, 80);
   const dense = settingDefinition("grassDense");
-  assert.equal(dense.group, "Мир");
+  assert.equal(dense.group, "Графика");
   assert.equal(dense.kind, "boolean");
   assert.equal(defaultSettings().grassDense, true, "the per-cell reading is the one that reads as grass");
   // The field is generated one rebuild step wider than it is drawn, so that at its stalest — a

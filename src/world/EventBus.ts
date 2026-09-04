@@ -1,9 +1,12 @@
 /** Drops a subscription. Returned by every `on`, so a panel can be closed without leaking it. */
 export type Unsubscribe = () => void;
 
+/** Why an ordinary cast ended; channels retain their separate update/stop semantics. */
+export type SpellCastStopReason = "success" | "interrupted" | "failed";
+
 import type { SpellGo } from "./SpellProtocol.js";
 import type { ActiveAura } from "./AuraProtocol.js";
-import type { TextEmote } from "./ChatProtocol.js";
+import type { ChatMessage, TextEmote } from "./ChatProtocol.js";
 
 type AnyListener = (payload: unknown) => void;
 
@@ -121,14 +124,23 @@ export interface WorldEvents {
  * cares about instead of claiming the single slot for it.
  */
 export interface WorldPacketEvents {
+  SOCKET_GEMS_RESULT: { itemGuid: bigint; enchantments: number[] };
+  INVENTORY_CHANGE_FAILURE: import("./ItemProtocol.js").EquipFailure;
   /** A ranged auto-repeat (Auto Shot or wand Shoot) stopped for this unit. */
   STOP_AUTOREPEAT_SPELL: { guid: bigint };
+  /** A non-addon line entered the chat log; the same object reaches the legacy callback. */
+  CHAT_MESSAGE: ChatMessage;
   /** `SMSG_TEXT_EMOTE`: the source and text-emote tuple, before any client-side sentence lookup. */
   TEXT_EMOTE: TextEmote;
   /** A unit began a cast or a channel. `castTime` is what is left to run, in milliseconds. */
   SPELL_CAST_START: { casterGuid: bigint; spellId: number; castTime: number; channel: boolean };
-  /** The cast ended, whether it landed, was interrupted or was cancelled. */
-  SPELL_CAST_STOP: { casterGuid: bigint; spellId: number; interrupted: boolean };
+  /** The cast ended, with the packet-level reason preserved for castbar consumers. */
+  SPELL_CAST_STOP: {
+    casterGuid: bigint;
+    spellId: number;
+    interrupted: boolean;
+    reason: SpellCastStopReason;
+  };
   /** The server accepted this player's request; START wins for a cast-time spell, GO for instant. */
   SPELL_CAST_ACCEPTED: {
     spellId: number;
@@ -240,7 +252,8 @@ export interface WorldPacketEvents {
   SPELL_LEARNED: { spellId: number };
   REPUTATION_CHANGED: Record<string, never>;
   ACHIEVEMENT_EARNED: { achievementId: number; mine: boolean };
-  TALENTS_CHANGED: Record<string, never>;
+  /** The packet identifies pet talent state separately; player-only UI must ignore pet updates. */
+  TALENTS_CHANGED: { pet: boolean };
   /** Anything the character sheet shows that is not an update field. */
   CHARACTER_SHEET_CHANGED: Record<string, never>;
   /** A bank window opened, or its slots changed. */
@@ -262,6 +275,8 @@ export interface WorldPacketEvents {
   SUMMON_REQUEST: { summoner: bigint; zoneId: number; timeoutMilliseconds: number };
   /** A flight master's map of destinations arrived. */
   TAXI_MENU: { guid: bigint; currentNode: number; knownNodes: number[] };
+  /** A selected flight was accepted or refused; the native window owns the visible outcome. */
+  TAXI_CHANGED: { guid: bigint; reply: number };
   /** The instance difficulty changed, or the list of lockouts did. */
   INSTANCE_CHANGED: { difficulty?: number; lockouts?: number };
   /** A boss frame: engage, disengage, or an objective moving. */
@@ -322,6 +337,8 @@ export interface WorldPacketEvents {
   BATTLEFIELD_QUEUE_CHANGED: { queueSlot: number; status: number; cleared: boolean };
   /** A battlemaster's list of battlegrounds and what a win there is worth. */
   BATTLEFIELD_LIST_CHANGED: { bgTypeId: number };
+  /** A tabard designer opened, or accepted/refused an emblem change. */
+  TABARD_VENDOR_CHANGED: { guid: bigint };
   /** The scoreboard arrived, or the match ended and sent its final one. */
   PVP_SCOREBOARD_CHANGED: { ended: boolean };
   /** Anything PvP said in words: a queue refusal, an arena team error, a battlefield ejection. */
@@ -366,7 +383,7 @@ export interface WorldPacketEvents {
    * well, or the one packet whose entire job is to say "ask again" is heard by this cache and by
    * nothing else.
    */
-  QUERY_CACHE_CHANGED: { kind: "creature" | "item" | "itemSet" | "page" | "itemText" | "cleared"; id: number | bigint };
+  QUERY_CACHE_CHANGED: { kind: "creature" | "gameObject" | "item" | "itemSet" | "page" | "itemText" | "cleared"; id: number | bigint };
   /** The player's ticket, a game master's answer to it, or whether tickets are taken at all. */
   GM_TICKET_CHANGED: Record<string, never>;
   /** A rename, a customise, a faction change, or a haircut paid for. */

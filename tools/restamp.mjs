@@ -1,5 +1,4 @@
-// Gives every published cache entry that carries no stamp one, in a single pass, without
-// rendering anything.
+// Gives every recoverable published cache entry that carries no stamp one, in a single pass.
 //
 // `tools/source-stamp.mjs` says why a stamp exists; this file exists because of when they started
 // being written. Everything under `data/` was published before that, so none of it can say what it
@@ -17,8 +16,9 @@
 // path and that file's size and mtime, and for the families below the entry's own *name* says
 // which paths those are: an item icon is its display id, a horizon is its map, a terrain tile is
 // its map and grid cell. So this walks the tree, works out each unstamped entry's inputs from its
-// name, and writes the sidecar. Nothing is decoded, nothing is re-encoded, and no published file
-// is touched — the pass runs while the gateway is serving that very directory.
+// name, and writes the sidecar. With the exception of path-hashed textures described below,
+// nothing is decoded, nothing is re-encoded, and no published file is touched — the pass runs
+// while the gateway is serving that very directory.
 //
 // What it does not do is *prove* the published bytes are what those inputs decode to today. The
 // icon pass in `generate-spell-icons.mjs --restamp` does, because for a 2 KB picture that is
@@ -27,28 +27,28 @@
 // the case it can be wrong in — bytes replaced under the cache by something other than a
 // generator — is one nothing else in the machine defends against either.
 //
-// Two families have no way back from the name: `data/textures` and `data/visual-models` are keyed
-// on sha1 of a path, and no file on disk holds the path that was hashed. Reversing them would mean
-// enumerating every texture and model reference in the client — several DBCs, every M2's own
-// texture block and every ADT's placement list — to find the ones that hash to the names already
-// published. They are reported as unrecoverable and left alone, and nothing comes back for them:
-// `ensureCurrent` never drops an entry that has no stamp, so the only thing that runs either
-// generator again is the published file going missing (`Gateway.ts`, the ENOENT arm of `/texture`
-// and `/visual/model`). Those 1,506 entries are served as they stand and stay unwatched until
-// somebody deletes them — the price of not re-rendering 112 MB of art to learn what it was made
-// from, and the reason a *new* entry in either family is stamped on the way out of its generator.
+// `data/textures` is also keyed on sha1 of a path, but the archive chain can enumerate every BLP.
+// On the first legacy texture it builds that reverse index once, decodes the current winning BLP,
+// and proves the published PNG before stamping it. A stale PNG is atomically replaced with those
+// same decoded bytes before its stamp lands. An unknown hash or the (theoretical) case where two
+// distinct paths collide is reported as unrecoverable and left untouched. `data/visual-models`
+// still has no equivalent finite source list: recovering one means parsing every model reference
+// and all of its dependent files, so those entries remain unrecoverable.
 
-import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { openDbcFile } from "./dbc.mjs";
-import { LIQUID_CLASSES, liquidTexturePattern } from "./generate-liquid-texture.mjs";
+import { blpToPng } from "./blp-png.mjs";
+import { textureId } from "./generate-texture.mjs";
+import { LIQUID_CLASSES, liquidFrameInputs, liquidTexturePattern } from "./generate-liquid-texture.mjs";
 import { soundId, soundKitFiles } from "./generate-sound.mjs";
 import { MINIMAP_TRS } from "./minimap-index.mjs";
 import { parseAdtPlacements } from "./adt-placements.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory, repositoryRoot } from "./paths.mjs";
 import { sourceStamp, stampSidecar, writeSourceStamp } from "./source-stamp.mjs";
+import { wmoDependencies } from "./wmo-visual.mjs";
 
 /** How many sidecars are derived and written at once. The work is stats and small writes. */
 const CONCURRENCY = 32;
@@ -94,13 +94,14 @@ const FAMILIES = [
   {
     name: "textures",
     directory: cacheDirectory("TEXTURE_DIR", "data/textures"),
-    // sha1(`texture-v1\0<path>`), and nothing on disk holds the path.
-    inputs: () => undefined,
+    recover: recoverTexture,
+    // Unlike the other families this holds decoded pixels and encoded PNGs while a stamp is made.
+    concurrency: 4,
   },
   {
     name: "visual-models",
     directory: cacheDirectory("VISUAL_MODEL_DIR", "data/visual-models"),
-    // sha1(`visual-v16\0<path>`) for M2 or `visual-wmo-v17` for WMO, same as the gateway — and the
+    // sha1(`visual-v21\0<path>`) for M2 or `visual-wmo-v17` for WMO, same as the gateway — and the
     // stamp names every file the model's own publish read: .skin, external .anim or WMO groups.
     inputs: (name) => (/\.bin$/i.test(name) ? undefined : null),
   },
@@ -111,20 +112,24 @@ function cacheDirectory(variable, fallback) {
 }
 
 /**
- * The archive chain, the DBC tables and the ADTs, opened on first use and only if there is work.
+ * The archive chain, the DBC tables and the ADTs, opened on first use.
  *
- * A pass with nothing to do must cost a node start and a walk of the tree: the gateway runs this
- * at every startup, and opening the twenty-two archives is 185 ms that a stamped cache has no
- * reason to pay.
+ * A tree with no sidecars and no recoverable entries never opens it. A stamped tree does open it
+ * once to compare provenance: otherwise a readable order-2 sidecar survives this pass only to be
+ * invalidated and rebuilt on its first request under order-3. The promise matters because stamp
+ * validation and publication both run concurrently; one pass must not open thirty-two chains.
  */
 let chain;
+let openingChain;
+let activeChainDigest;
+let legacyChainDigest;
 const tables = new Map();
 const adts = new Map();
 /** One stamp per distinct input list, keyed on it; `stampFor` says why. */
 const stamps = new Map();
 
 /**
- * The three reverse indexes, each held as the promise of itself rather than as the map.
+ * The reverse indexes, each held as the promise of itself rather than as the map.
  *
  * `inBatches` has thirty-two entries in flight, so a lazy index guarded by "is it empty yet"
  * builds thirty-two times over and thirty-one callers read it while it is still empty. Measured
@@ -134,10 +139,26 @@ const stamps = new Map();
 let itemIcons;
 let soundPaths;
 let layerPaths;
+let texturePaths;
 
 async function archiveChain() {
-  chain ??= await clientArchives(clientDirectory());
-  return chain;
+  openingChain ??= clientArchives(clientDirectory()).then((opened) => {
+    chain = opened;
+    return opened;
+  });
+  return openingChain;
+}
+
+/** The active ranking/composition identity, computed once no matter how many sidecars are read. */
+function currentChainDigest() {
+  activeChainDigest ??= archiveChain().then((archives) => archives.chainDigest());
+  return activeChainDigest;
+}
+
+/** The one old digest that means only the provenance schema changed, not the installed patches. */
+function compatibleLegacyChainDigest() {
+  legacyChainDigest ??= archiveChain().then((archives) => archives.chainDigest("order-2"));
+  return legacyChainDigest;
 }
 
 /** `ItemDisplayInfo.InventoryIcon` by display id. */
@@ -205,6 +226,82 @@ function layerPathIndex() {
   return layerPaths;
 }
 
+/** Every BLP in the chain, by the same stable id `generate-texture.mjs` publishes it under. */
+function texturePathIndex() {
+  texturePaths ??= (async () => {
+    const index = new Map();
+    for (const path of await (await archiveChain()).list()) {
+      if (!path.endsWith(".blp")) continue;
+      const id = textureId(path);
+      if (!index.has(id)) index.set(id, path);
+      else if (index.get(id) !== path) index.set(id, null);
+    }
+    return index;
+  })();
+  return texturePaths;
+}
+
+/**
+ * Proves a legacy `<textureId>.png` against the BLP that wins that path today.
+ *
+ * `list` returns the union in normalised spelling; `read` applies priority to that path. A null
+ * index value is a real SHA-1 collision and deliberately has no recovery answer.
+ */
+async function recoverTexture(file, name) {
+  const match = /^([0-9a-f]{40})\.png$/i.exec(name);
+  if (!match) return undefined;
+  const path = (await texturePathIndex()).get(match[1].toLowerCase());
+  if (typeof path !== "string") return undefined;
+  const blp = await (await archiveChain()).read(path);
+  if (!blp) return undefined;
+  const expected = blpToPng(blp);
+  const published = await readFile(file);
+  return {
+    inputs: { paths: [path] },
+    ...(!published.equals(expected) ? { replacement: expected } : {}),
+  };
+}
+
+/** A sidecar written beside the live file, then made visible in one rename. */
+async function writeAtomicStamp(destination, stamp) {
+  const temporary = `${stampSidecar(destination)}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(temporary, JSON.stringify(stamp));
+    await rename(temporary, stampSidecar(destination));
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Replaces a stale picture without exposing a partial PNG, then publishes its prepared stamp.
+ *
+ * The order is intentional: a crash can leave a complete current picture without a readable
+ * stamp, which the next pass repairs. Publishing the stamp first could bless the old picture.
+ */
+async function replacePublishedEntry(destination, bytes, stamp) {
+  const nonce = `${process.pid}-${randomUUID()}`;
+  const pictureTemporary = `${destination}.${nonce}.tmp`;
+  const stampTemporary = `${stampSidecar(destination)}.${nonce}.tmp`;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await Promise.all([
+      writeFile(pictureTemporary, bytes),
+      writeFile(stampTemporary, JSON.stringify(stamp)),
+    ]);
+    await rename(pictureTemporary, destination);
+    await rename(stampTemporary, stampSidecar(destination));
+  } catch (error) {
+    await Promise.all([
+      rm(pictureTemporary, { force: true }).catch(() => undefined),
+      rm(stampTemporary, { force: true }).catch(() => undefined),
+    ]);
+    throw error;
+  }
+}
+
 async function table(name) {
   let opened = tables.get(name);
   if (!opened) {
@@ -230,12 +327,15 @@ try {
     const entries = await unstampedEntries(family.directory);
     if (entries.length === 0) continue;
     let written = 0;
+    let regenerated = 0;
     let lost = 0;
     let said = 0;
     await inBatches(entries, async ({ file, name }) => {
       let inputs;
+      let replacement;
       try {
-        inputs = await family.inputs(name);
+        if (family.recover) ({ inputs, replacement } = await family.recover(file, name) ?? {});
+        else inputs = await family.inputs(name);
       } catch (error) {
         // A table that will not open or a tile that is no longer in the client: this entry keeps
         // its silence, and the rest of the family is still worth stamping. Said a few times and
@@ -254,12 +354,19 @@ try {
         lost++;
         return;
       }
-      if (!dryRun) await writeSourceStamp(file, await stampFor(inputs));
+      if (!dryRun) {
+        const stamp = await stampFor(inputs);
+        if (replacement) await replacePublishedEntry(file, replacement, stamp);
+        else if (family.recover) await writeAtomicStamp(file, stamp);
+        else await writeSourceStamp(file, stamp);
+      }
       written++;
-    });
+      if (replacement) regenerated++;
+    }, family.concurrency);
     stamped += written;
     unrecoverable += lost;
-    report.push(`${family.name}: ${written} stamped${lost > 0 ? `, ${lost} unrecoverable` : ""}`);
+    report.push(`${family.name}: ${written} stamped${regenerated > 0 ? `, ${regenerated} regenerated` : ""}`
+      + `${lost > 0 ? `, ${lost} unrecoverable` : ""}`);
   }
 } finally {
   chain?.close();
@@ -284,7 +391,7 @@ for (const line of report) process.stderr.write(`  ${line}\n`);
  * takes seconds and one that takes minutes.
  */
 async function stampFor(inputs) {
-  const key = [...(inputs.paths ?? []), "::", ...(inputs.files ?? [])].join("|");
+  const key = [inputs.generation ?? "", ...(inputs.paths ?? []), "::", ...(inputs.files ?? [])].join("|");
   let pending = stamps.get(key);
   if (!pending) {
     pending = sourceStamp(chain ?? await archiveChain(), inputs);
@@ -301,20 +408,26 @@ async function stampFor(inputs) {
  * losing power in the middle of one leaves a sidecar that parses as nothing. `ensureCurrent` reads
  * that as "no stamp" and serves the entry as it stands, which is right, and it used to *also*
  * rebuild the entry, which repaired it. Nothing does now — so a torn sidecar this pass skipped on
- * the strength of its name alone would never be written again. The three checks are `parseStamp`'s
- * own, so "readable" here means exactly what the gateway means by it.
+ * the strength of its name alone would never be written again.
+ *
+ * Only the order-2 digest of the *same current composition* is migration work. Any other readable
+ * digest means the installed patch set really changed; re-signing the old bytes here would hide
+ * that change from `DatasetFingerprint`, so it is left for the normal request generator.
  */
-async function readableStamp(file) {
+async function stampState(file, expectedChain, legacyChain) {
   try {
     const stamp = JSON.parse(await readFile(file, "utf8"));
-    return typeof stamp === "object" && stamp !== null
-      && typeof stamp.chain === "string" && Array.isArray(stamp.sources) && Array.isArray(stamp.files);
+    if (typeof stamp !== "object" || stamp === null || typeof stamp.chain !== "string"
+      || !Array.isArray(stamp.sources) || !Array.isArray(stamp.files)) return "unreadable";
+    if (stamp.chain === expectedChain) return "current";
+    if (stamp.chain === legacyChain) return "legacy";
+    return "foreign";
   } catch {
-    return false;
+    return "unreadable";
   }
 }
 
-/** Every published file under one family with no readable sidecar beside it, sidecars excluded. */
+/** Every published file without a readable sidecar from the active chain, sidecars excluded. */
 async function unstampedEntries(directory) {
   const found = [];
   const stamped = [];
@@ -346,17 +459,24 @@ async function unstampedEntries(directory) {
   // tree holds 22,666 of them, and measured over this machine's published cache the whole pass
   // with nothing to do is 0.99 s reading none of them, 2.05 s reading them thirty-two at a time,
   // and 4.65 s reading them one at a time inside the walk.
-  await inBatches(stamped, async (entry) => {
-    if (!await readableStamp(entry.sidecar)) found.push({ file: entry.file, name: entry.name });
-  });
+  if (stamped.length > 0) {
+    const [expectedChain, legacyChain] = await Promise.all([
+      currentChainDigest(),
+      compatibleLegacyChainDigest(),
+    ]);
+    await inBatches(stamped, async (entry) => {
+      const state = await stampState(entry.sidecar, expectedChain, legacyChain);
+      if (state === "unreadable" || state === "legacy") found.push({ file: entry.file, name: entry.name });
+    });
+  }
   return found;
 }
 
 /** Bounded parallelism: the work is stats and 200-byte writes, and 21,071 of them serially is not. */
-async function inBatches(items, run) {
+async function inBatches(items, run, concurrency = CONCURRENCY) {
   let next = 0;
   const workers = [];
-  for (let worker = 0; worker < Math.min(CONCURRENCY, items.length); worker++) {
+  for (let worker = 0; worker < Math.min(concurrency, items.length); worker++) {
     workers.push((async () => {
       while (next < items.length) await run(items[next++]);
     })());
@@ -397,15 +517,10 @@ async function liquidInputs(name) {
   if (!LIQUID_CLASSES.includes(liquidClass) || liquidClass === name) return undefined;
   const pattern = await liquidTexturePattern(dbcDirectory(), liquidClass);
   const archives = await archiveChain();
-  const paths = [];
-  // The generator stops at the first frame the client does not have, and `sourceStamp` drops a
-  // path that resolves to nothing — so this has to stop in the same place to record the same list.
-  for (let frame = 1; frame <= LIQUID_FRAMES; frame++) {
-    const path = pattern.replace("%d", String(frame));
-    if (!await archives.has(path)) break;
-    paths.push(path);
-  }
-  return paths.length === 0 ? undefined : { paths, files: [join(dbcDirectory(), "LiquidType.dbc")] };
+  const { paths, stampPaths } = await liquidFrameInputs(archives, pattern, LIQUID_FRAMES);
+  return paths.length === 0
+    ? undefined
+    : { paths: stampPaths, files: [join(dbcDirectory(), "LiquidType.dbc")] };
 }
 
 /** `<sha1>.wav` and `<sha1>.mp3`, through the index of every path `SoundEntries` names. */
@@ -444,12 +559,24 @@ async function visualTileInputs(name) {
   const mapName = await internalMapName(Number(cell[1]));
   if (!mapName) return undefined;
   const adtPath = `World\\Maps\\${mapName}\\${mapName}_${Number(cell[3])}_${Number(cell[2])}.adt`;
-  const adt = await (await archiveChain()).read(adtPath);
+  const archives = await archiveChain();
+  const adt = await archives.read(adtPath);
   if (!adt) return undefined;
   const wmoPaths = [...new Set(parseAdtPlacements(adt)
     .filter((object) => object.kind === "wmo")
     .map((object) => object.name))];
-  return { paths: [adtPath, ...wmoPaths] };
+  const paths = new Set([adtPath, ...wmoPaths]);
+  for (const path of wmoPaths) {
+    const root = await archives.read(path);
+    if (!root) continue;
+    try {
+      for (const group of wmoDependencies(root, path).groups) paths.add(group);
+    } catch {
+      // Match generation: a root whose optional group list cannot be parsed keeps a root-only
+      // source stamp and falls back to outdoor doodad lighting.
+    }
+  }
+  return { generation: "visual-tile-v3", paths: [...paths] };
 }
 
 /** Which map, grid X and grid Y the terrain families have already published. */

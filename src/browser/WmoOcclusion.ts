@@ -45,8 +45,10 @@ const GRAPH_VALIDATION = new WeakMap<WmoPortals, WeakMap<object, boolean>>();
  *
  * This is deliberately a refinement of the renderer's distance selection, never a replacement
  * for it. It only becomes authoritative while the camera is confidently inside a WMO group and
- * the whole graph is structurally usable. Exterior shells and groups with no portal references
- * stay selected, because the source data cannot prove that an orphan is hidden.
+ * the whole graph is structurally usable. Once that is true, `viewer` conservatively adds the
+ * character's room as a second seed: a third-person camera can stand in the doorway or even in a
+ * wall while the character is in the adjacent room. Exterior shells and groups with no portal
+ * references stay selected, because the source data cannot prove that an orphan is hidden.
  *
  * `modelToClip` is a column-major 4x4 matrix, matching `THREE.Matrix4.elements`. Keeping that tiny
  * contract here avoids a Three/WebGL dependency and makes every failure mode directly testable.
@@ -57,6 +59,7 @@ export function selectWmoPortalGroups(
   distanceGroups: readonly number[],
   camera: WmoOcclusionPoint,
   modelToClip: readonly number[],
+  viewer?: WmoOcclusionPoint,
 ): WmoOcclusionSelection {
   const fallback = fallbackSelection(distanceGroups);
   if (!portals || groups.length === 0 || !finitePoint(camera) || !validMatrix(modelToClip)) return fallback;
@@ -70,6 +73,16 @@ export function selectWmoPortalGroups(
     if (group.indoor && !group.exterior && contains(group.bounds, camera)) seeds.push(index);
   }
   if (seeds.length === 0) return fallback;
+  // Keep the camera as the authority that enables portal culling, but never let its one containing
+  // room erase the character's room. The second seed is a visibility superset and therefore fails
+  // safely by drawing too much rather than making an interior disappear.
+  if (viewer && finitePoint(viewer)) {
+    for (const [index, group] of groups.entries()) {
+      if (group.indoor && !group.exterior && contains(group.bounds, viewer) && !seeds.includes(index)) {
+        seeds.push(index);
+      }
+    }
+  }
   // Most WMO placements are observed from open air. Do not scan their vertex/reference arrays on
   // every one of those frames; only a confirmed indoor seed makes the graph relevant.
   if (!cachedValidGraph(groups, portals)) return fallback;

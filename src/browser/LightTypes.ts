@@ -24,6 +24,14 @@ export interface LightParamSet {
   waterDeepAlpha: number;
   oceanShallowAlpha: number;
   oceanDeepAlpha: number;
+  /**
+   * `LightParams.Glow`, the strength of the original client's full-screen glow in this zone.
+   *
+   * Optional on purpose: a gateway built before P4 answers a body without it, and the browser has
+   * to read that as no glow rather than as a broken table. The route's `v` query is bumped so a
+   * fresh page asks again, but an old answer may still be in an HTTP cache the client does not own.
+   */
+  glow?: number;
   /** Path from LightSkybox.dbc, when this profile has an authored sky model. */
   skyboxPath?: string;
 }
@@ -76,6 +84,8 @@ export interface LightSample {
   waterDeepAlpha: number;
   oceanShallowAlpha: number;
   oceanDeepAlpha: number;
+  /** Authored full-screen glow strength here, blended across volumes like the alphas beside it. */
+  glow: number;
   /** Dominant authored sky model, if the selected profile names one. */
   skyboxPath?: string;
 }

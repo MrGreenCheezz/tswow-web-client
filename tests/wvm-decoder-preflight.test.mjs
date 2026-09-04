@@ -69,6 +69,55 @@ test("a minimal keyed WVA1 clip remains valid", () => {
   assert.deepEqual([...clip.channels[0].values], [1, 2, 3]);
 });
 
+/** A camera-only body: 72 bytes of header and the 36-byte record, with `flags` byte 13 set. */
+function cameraModel(flags) {
+  const artifact = wvm(72 + 36);
+  artifact.view.setUint8(13, flags);
+  artifact.view.setFloat32(72, 1.5009831, true);
+  artifact.view.setFloat32(76, 0.2222222, true);
+  artifact.view.setFloat32(80, 1777.7778, true);
+  for (const [index, value] of [3.835661, 2.011527, -1.026744].entries()) {
+    artifact.view.setFloat32(84 + index * 4, value, true);
+  }
+  for (const [index, value] of [-1.369156, 0.760831, 0.921579].entries()) {
+    artifact.view.setFloat32(96 + index * 4, value, true);
+  }
+  return artifact;
+}
+
+test("one 36-byte camera slot, and the flag says whose it is", () => {
+  // The numbers are UI_MainMenu's own, read out of this client: fov 1.5009831 rad (86.0000°), near
+  // 0.2222222, far 1777.7778. What is being pinned is not the arithmetic but the routing — the same
+  // bytes have to land in a different field depending on one bit, because `PortraitRenderer` frames
+  // a unit's face with `portraitCamera` and must never be handed a login screen's composition.
+  const portrait = decodeWvm9(cameraModel(0x02).bytes.buffer);
+  assert.ok(portrait.portraitCamera, "flag 2 is a portrait camera");
+  assert.equal(portrait.sceneCamera, undefined, "and only a portrait camera");
+  assert.ok(Math.abs(portrait.portraitCamera.fov - 1.5009831) < 1e-6);
+  assert.deepEqual(portrait.portraitCamera.target.map((value) => Math.round(value * 1e6) / 1e6),
+    [-1.369156, 0.760831, 0.921579]);
+
+  const scene = decodeWvm9(cameraModel(0x04).bytes.buffer);
+  assert.ok(scene.sceneCamera, "flag 4 is a scene camera");
+  assert.equal(scene.portraitCamera, undefined, "and the portrait field stays empty for it");
+  assert.ok(Math.abs(scene.sceneCamera.far - 1777.7778) < 1e-2);
+  assert.deepEqual(scene.sceneCamera.position.map((value) => Math.round(value * 1e6) / 1e6),
+    [3.835661, 2.011527, -1.026744]);
+
+  // Neither flag: the 36 bytes are not a camera, they are bytes that do not belong to the body, and
+  // the preflight's trailing-bytes rule is what catches an encoder that wrote one and forgot to say.
+  assert.throws(() => decodeWvm9(cameraModel(0x00).bytes.buffer), /trailing bytes/);
+
+  // Both flags: one record claiming to be two. Refused rather than resolved by whichever branch of
+  // the decoder happens to run first, because either answer would be a guess about the encoder.
+  assert.throws(() => decodeWvm9(cameraModel(0x06).bytes.buffer), /both a portrait and a scene camera/);
+
+  // And the flag without the bytes behind it.
+  const truncated = wvm();
+  truncated.view.setUint8(13, 0x04);
+  assert.throws(() => decodeWvm9(truncated.bytes.buffer), /camera runs past/);
+});
+
 test("WVM9 rejects truncated and impossible fixed-size tables before allocating them", () => {
   const header = new Uint8Array(4);
   magic(header, "WVM9");

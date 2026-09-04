@@ -68,8 +68,17 @@ import type { BodyLayer, CharacterAppearance, CharacterOptions } from "../gatewa
  * model-aware neutral belt in player and NPC appearances. 12 publishes the measured 505 worn-boot
  * choice for every non-hoof profile that actually paints a FootTexture component. 13 marks the
  * coordinated visual profile explicitly so patch-W-only geoset policy cannot leak into classic.
+ *
+ * 14 is HD-1, and it changes both halves of the answer. The geosets gain the coordinated pack's
+ * family-20 foot on the ten profiles that authored one, and the belt on all twenty — measured over
+ * the naked look of the twenty playable profiles, the emitted list gained 1801 or 1802 on nineteen
+ * of them and a 2001/2002 foot on ten. The body layers change with the re-extracted overlay: eleven
+ * of the twenty name different scalp and facial-hair sheets, and over every (skin, face) pair the
+ * form offers, the layers naming a file the live chain does not hold fall from **1,133 of 19,903 to
+ * 0 of 18,643**. Both are exactly the kind of change the note above is about — same shape, different
+ * values — so an hour of cached pre-HD-1 answers would be an hour of footless characters.
  */
-export const CHARACTER_APPEARANCE_VERSION = 13;
+export const CHARACTER_APPEARANCE_VERSION = 14;
 
 /**
  * And the same for `/dbc/creature-models`, which answers `max-age=3600` too and whose ids are
@@ -91,9 +100,12 @@ export const CHARACTER_APPEARANCE_VERSION = 13;
  * carries the active patch's model-aware neutral belt into NPC responses as well. 10 carries the
  * measured all-profile worn-boot choice into the same cached creature payload. 11 applies the
  * authoritative baked-NPC body item columns, including the waist and feet displays. 12 carries
- * the coordinated-profile marker embedded in the appearance.
+ * the coordinated-profile marker embedded in the appearance. 13 moves with the appearance version
+ * beside it for HD-1: `forNpc` builds its body through `forPlayer`, so every unbaked character
+ * display gains the family-20 foot and the neutral belt, and every one of them reads the
+ * re-extracted `CreatureDisplayInfo`/`CreatureDisplayInfoExtra`/`CreatureModelData` rows.
  */
-export const CREATURE_MODEL_VERSION = 12;
+export const CREATURE_MODEL_VERSION = 13;
 
 /**
  * And for `/dbc/character-options`, which is the third route answering `max-age=3600` off a query
@@ -111,6 +123,14 @@ export const CREATURE_MODEL_VERSION = 12;
  * until the review, and which an hour of cache would otherwise go on offering. 4 switches the
  * offered hair/geoset rows to the installed visual model patch. 5 rolls over the former cached
  * HD answer when visual metadata becomes non-cacheable across pack switches.
+ *
+ * **HD-1 deliberately does not bump this**, and that is a measurement rather than an omission.
+ * `options()` reads `CharSections` flags and `CharacterFacialHairStyles` keys and nothing else, and
+ * although the re-extracted overlay adds 1,102 `CharSections` rows and 50 facial-hair rows, the
+ * offered rectangle does not move: built both ways on 2026-08-30, all twenty playable profiles came
+ * back byte-identical — HumanMale 13 skins / 24 faces / 12 styles / 13 colours / 9 facial, TaurenMale
+ * 22 / 10 / 8 / 3 / 7, and so on for the other eighteen. Bumping would throw away an hour of
+ * correct cached answers to change nothing.
  */
 export const CHARACTER_OPTIONS_VERSION = 5;
 

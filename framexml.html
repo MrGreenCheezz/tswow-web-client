@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Внутриигровой интерфейс (FrameXML) · TSWoW WebClient</title>
+    <!--
+      A fourth page beside index.html, character-lab.html and glue.html, and a *dev entry only*:
+      nothing in the client links here, and this page does not touch the game app.
+
+      Slice F1 opened the FrameXML lane by measuring it, F2 made the corpus load, and F3 made one
+      part of it *work*. Wave 13 keeps that dev entry as the bounded vertical: 41 files, 1,272 KiB,
+      890 widgets and 26 Lua chunks, with the player HUD, cast bar and primary/extra action-bar
+      lanes. What this page shows is both: the inventory panel on the right, and
+      whatever of `Interface\FrameXML` is mounted underneath, in the same 768-unit stage the glue
+      screens use (src/browser/glue/glue.css, which the entry imports; the coordinate system is a
+      fact about this client, not about GlueXML).
+
+      The bounded vertical view is:
+
+          /framexml.html?toc=vertical
+
+      — the measured vertical subset of the TOC (41 files, 1,272 KiB, 890 widgets, 26 Lua chunks),
+      the canned world seam, and the pictures on for this bounded view. It includes the real
+      PlayerFrame seam and a MainMenuBar with gryphon end caps, twelve action buttons, a count and
+      a cooldown sweep.
+
+      ?toc=vertical       the bounded vertical      ?seam=none   F2's neutral world instead
+      ?file=UIParent.lua  one file instead of the TOC ?render=0    measure only
+      ?gateway=host:port  where the gateway is        ?exercise=0  TOC walk only
+      ?textures=0/1       override the pictures (on by default for the bounded vertical, off for
+                          the whole corpus)
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: #ffd100;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      /*
+        The report sits above the stage (whose host is z-index 90) and is the point of the page,
+        so it is a panel rather than the one status line glue.html has: this is a census, not a
+        progress message.
+      */
+      #framexml-report {
+        position: fixed;
+        top: 0;
+        right: 0;
+        z-index: 1000;
+        width: min(46vw, 720px);
+        height: 100%;
+        overflow: auto;
+        margin: 0;
+        padding: 12px 14px;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, .82);
+        border-left: 1px solid #3a3320;
+        color: #e8e0c8;
+        font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="glue-host">
+      <div id="glue-stage"></div>
+    </div>
+    <pre id="framexml-report">Чтение корпуса...</pre>
+    <script type="module" src="/src/browser/framexml/main.ts"></script>
+  </body>
+</html>

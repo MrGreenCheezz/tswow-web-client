@@ -203,15 +203,15 @@ function isFlying(input: CharacterInput): boolean {
 /**
  * The floor at a point, which is very often not the ground.
  *
- * Four things can be the thing under a character's feet and they are checked in this order: a hole
- * has nothing at all; the height field; the server's own collision geometry, which is what a
- * building's floors are; and the surface of water for someone walking on it. The highest of them
- * that is not above a step over the character's head is the floor — which is why standing under a
- * bridge stands on the ground and standing on it stands on the bridge, from the same query.
+ * Four things can be the thing under a character's feet: the height field (unless its ADT chunk is
+ * a hole), the server's own collision geometry, which is what a building's floors are, and the
+ * surface of water for someone walking on it. An ADT hole removes only terrain. WMOs deliberately
+ * sit over such cut-outs, so returning before the VMAP query drops the character through the very
+ * tavern/city floor the hole was authored to expose. The highest usable surface wins — which is
+ * why standing under a bridge stands on the ground and standing on it stands on the bridge.
  */
 function floorAt(probe: TerrainProbe, input: CharacterInput, x: number, y: number, z: number): number | undefined {
-  if (probe.hole(x, y)) return undefined;
-  let floor = probe.ground(x, y);
+  let floor = probe.hole(x, y) ? undefined : probe.ground(x, y);
   const solid = probe.floor?.(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH);
   if (solid !== undefined && (floor === undefined || solid > floor)) floor = solid;
   if (floor === undefined) return undefined;
@@ -235,6 +235,61 @@ export function eyeUnderwater(
     && Number.isFinite(eyeZ)
     && Number.isFinite(liquid.height)
     && eyeZ < liquid.height;
+}
+
+/**
+ * The one liquid surface the screen is looking through, for the frames where there is one.
+ *
+ * `eyeUnderwater` answers a boolean because a light slot is a boolean; the underwater screen
+ * effect needs the surface itself — how high it is and what kind of liquid it belongs to — and it
+ * needs it slightly before the eye passes it, because the near plane cuts the water first.
+ */
+export interface EyeLiquidSurface {
+  /** World Z of the surface over the eye. */
+  readonly height: number;
+  /** `LiquidType.dbc` row, or 0 where only the map file's flag byte is known. */
+  readonly entry: number;
+  /** The map file's liquid flag byte; 0 for a WMO's own `MLIQ` grid, which carries no flags. */
+  readonly flags: number;
+}
+
+/**
+ * Which of the two liquid sources the eye is looking through, and how high its surface is.
+ *
+ * The building wins where it answers at all, and that is not a preference: the WMO candidate is
+ * only ever built from the *authoritative floor group* the collision step already selected for this
+ * camera, so a room that reports liquid is the room the camera is standing in. The map file's lake
+ * over the roof is the outdoor answer and belongs to the frame where the building has none.
+ *
+ * `band` is how far above the surface the answer still counts — the near plane's half-height, the
+ * only slab of world that can be half in the water while the eye is not (wowee
+ * `renderer.cpp:2871-2875`).
+ */
+/**
+ * How far above a liquid surface the eye still counts as looking through it, for the two callers
+ * that sample liquid before the renderer sees the frame.
+ *
+ * Deliberately a round half yard rather than the renderer's exact crossing band: that band is a
+ * property of the camera's near plane and field of view, both of which live in the renderer, and
+ * the renderer re-derives and re-tests it there from its own camera. This one only has to be a
+ * superset — offering a surface the renderer then declines costs one comparison, while missing one
+ * it wanted would cost the effect. Measured against it: the world camera's band is 0.122 yards.
+ */
+export const EYE_LIQUID_SAMPLE_BAND = 0.5;
+
+export function eyeLiquidSurface(
+  eyeZ: number,
+  band: number,
+  wmo: EyeLiquidSurface | undefined,
+  terrain: EyeLiquidSurface | undefined,
+): EyeLiquidSurface | undefined {
+  if (!Number.isFinite(eyeZ)) return undefined;
+  const reach = Number.isFinite(band) && band > 0 ? band : 0;
+  for (const candidate of [wmo, terrain]) {
+    if (!candidate || !Number.isFinite(candidate.height)) continue;
+    if (eyeZ < candidate.height + reach) return candidate;
+  }
+  return undefined;
 }
 
 /**

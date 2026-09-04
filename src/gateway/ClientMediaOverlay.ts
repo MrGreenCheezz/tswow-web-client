@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatasetFingerprint } from "./DatasetFingerprint.js";
 
 export const VISUAL_DBC_FILES = Object.freeze([
@@ -20,7 +21,7 @@ export const AUDIO_DBC_FILES = Object.freeze([
 export interface ClientMediaOverlaySelection {
   visualDbcDirectory?: string;
   audioDbcDirectory?: string;
-  /** True only when the selected visual tables were extracted from patch-W/X/Y/Z. */
+  /** True only when all playable model/skin profiles satisfy the extended-geoset contract. */
   coordinatedVisuals?: true;
 }
 
@@ -30,6 +31,52 @@ export interface ClientMediaOverlayOptions {
   explicit: boolean;
   clientDirectory?: string;
   report?: (message: string) => void;
+}
+
+export const CLIENT_MEDIA_PROFILE_FILE = "client-media-profile.json";
+
+interface ClientMediaProfile {
+  schema: 2;
+  compatibility: "classic" | "coordinated" | "unsupported";
+  coordinatedVisuals: boolean;
+  problems?: string[];
+}
+
+interface ClientMediaProfileModule {
+  inspectClientMediaProfile(clientDirectory: string): Promise<ClientMediaProfile>;
+}
+
+async function activeClientMediaProfile(
+  clientDirectory: string,
+  report: (message: string) => void,
+): Promise<ClientMediaProfile | undefined> {
+  try {
+    const module = await import(pathToFileURL(resolve(
+      process.cwd(), "tools", "extract-visual-dbc-overlay.mjs",
+    )).href) as ClientMediaProfileModule;
+    return await module.inspectClientMediaProfile(clientDirectory);
+  } catch (error) {
+    report(
+      `Could not inspect the active client visual profile: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
+}
+
+function coordinatedOverlayRequired(candidate: string, reason: string): Error {
+  return new Error(
+    "Active client archives use a coordinated extended-geoset visual profile, but "
+    + `${candidate} ${reason}. Refusing to pair patched character models with dataset visual DBCs. `
+    + "Run npm run assets:visual-dbc for the active CLIENT_DIR before starting the gateway",
+  );
+}
+
+function unsupportedClientProfile(profile: ClientMediaProfile): Error {
+  return new Error(
+    "Active client archives mix incompatible classic and extended playable model profiles: "
+    + `${profile.problems?.join("; ") ?? "the structural profile is unsupported"}. `
+    + "Use one complete character model/skin pack before starting the gateway",
+  );
 }
 
 async function present(directory: string, files: readonly string[]): Promise<boolean> {
@@ -50,20 +97,22 @@ async function current(
   return states.every(Boolean);
 }
 
-async function usesCoordinatedVisualPatch(directory: string): Promise<boolean> {
+async function usesCoordinatedVisualProfile(directory: string): Promise<boolean> {
   try {
-    const stamp = JSON.parse(await readFile(join(directory, "CreatureModelData.dbc.src"), "utf8")) as unknown;
-    if (typeof stamp !== "object" || stamp === null || !("sources" in stamp)
-      || !Array.isArray(stamp.sources)) return false;
-    return stamp.sources.some((source) => {
-      if (typeof source !== "object" || source === null || !("name" in source)) return false;
-      return typeof source.name === "string" && /^patch-[w-z]\.mpq$/i.test(source.name);
-    });
+    const profile = JSON.parse(
+      await readFile(join(directory, CLIENT_MEDIA_PROFILE_FILE), "utf8"),
+    ) as unknown;
+    if (typeof profile === "object" && profile !== null
+      && "schema" in profile && profile.schema === 2
+      && "compatibility" in profile && profile.compatibility === "coordinated"
+      && "coordinatedVisuals" in profile
+      && typeof profile.coordinatedVisuals === "boolean") {
+      return profile.coordinatedVisuals;
+    }
   } catch {
-    // A legacy/manual directory may still be explicitly selected, but patch-specific geoset
-    // corrections need positive provenance rather than guessing from the directory being separate.
-    return false;
+    // A missing or malformed profile cannot opt into model-specific geoset corrections.
   }
+  return false;
 }
 
 /**
@@ -77,15 +126,30 @@ export async function selectClientMediaOverlay(
   options: ClientMediaOverlayOptions,
 ): Promise<ClientMediaOverlaySelection> {
   const report = options.report ?? (() => undefined);
+  const activeProfile = !options.explicit && options.clientDirectory !== undefined
+    ? await activeClientMediaProfile(options.clientDirectory, report)
+    : undefined;
+  if (activeProfile?.compatibility === "unsupported") {
+    throw unsupportedClientProfile(activeProfile);
+  }
+  const activeCoordinated = activeProfile?.coordinatedVisuals === true;
   const visualPresent = await present(options.candidate, VISUAL_DBC_FILES);
   const audioPresent = await present(options.candidate, AUDIO_DBC_FILES);
+  const profilePresent = await present(options.candidate, [CLIENT_MEDIA_PROFILE_FILE]);
+  if (activeCoordinated && (!visualPresent || !profilePresent)) {
+    throw coordinatedOverlayRequired(
+      options.candidate,
+      "has no complete visual DBC overlay and structural profile",
+    );
+  }
   if (!visualPresent && !audioPresent) {
     if (options.explicit) report(`Not using VISUAL_DBC_DIR: ${options.candidate} has no complete client-media DBC set`);
     return {};
   }
 
   if (options.explicit) {
-    const coordinatedVisuals = visualPresent && await usesCoordinatedVisualPatch(options.candidate);
+    const coordinatedVisuals = visualPresent && profilePresent
+      && await usesCoordinatedVisualProfile(options.candidate);
     return {
       ...(visualPresent ? { visualDbcDirectory: options.candidate } : {}),
       ...(audioPresent ? { audioDbcDirectory: options.candidate } : {}),
@@ -107,14 +171,17 @@ export async function selectClientMediaOverlay(
     onProblem: report,
   });
   await fingerprint.poll();
-  const [visualCurrent, audioCurrent] = await Promise.all([
+  const [visualDbcsCurrent, audioCurrent, profileCurrent] = await Promise.all([
     visualPresent ? current(fingerprint, options.candidate, VISUAL_DBC_FILES) : false,
     audioPresent ? current(fingerprint, options.candidate, AUDIO_DBC_FILES) : false,
+    profilePresent
+      ? fingerprint.isCurrent(join(options.candidate, CLIENT_MEDIA_PROFILE_FILE), { requireStamp: true })
+      : false,
   ]);
-  const coordinatedVisuals = visualCurrent && await usesCoordinatedVisualPatch(options.candidate);
+  const visualCurrent = visualDbcsCurrent && profileCurrent;
   if (visualPresent && !visualCurrent) {
     report(
-      `Not using stale visual DBCs from ${options.candidate}; run npm run assets:visual-dbc `
+      `Not using stale visual DBCs or media profile from ${options.candidate}; run npm run assets:visual-dbc `
       + "for the active client pack",
     );
   }
@@ -124,6 +191,10 @@ export async function selectClientMediaOverlay(
       + "for the active client pack",
     );
   }
+  if (activeCoordinated && !visualCurrent) {
+    throw coordinatedOverlayRequired(options.candidate, "does not match the active client archive chain");
+  }
+  const coordinatedVisuals = visualCurrent && await usesCoordinatedVisualProfile(options.candidate);
   return {
     ...(visualCurrent ? { visualDbcDirectory: options.candidate } : {}),
     ...(audioCurrent ? { audioDbcDirectory: options.candidate } : {}),

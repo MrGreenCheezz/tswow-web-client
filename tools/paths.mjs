@@ -30,11 +30,26 @@ function firstExisting(label, override, candidates, marker) {
     `Set the environment variable to point at it.`);
 }
 
-/** The retail 3.3.5a client, i.e. the directory holding `Data` with the MPQ archives. */
-export function clientDirectory() {
+/** The installed retail 3.3.5a client used as input when building a local client pack. */
+export function sourceClientDirectory() {
   return firstExisting("CLIENT_DIR", process.env.CLIENT_DIR, [
     join(repositoryRoot, "../Circle"),
   ], "Data");
+}
+
+/**
+ * The autonomous client pack when configured, otherwise the installed source client.
+ *
+ * Every generator resolves through this function, so `CLIENT_PACK_DIR` moves the complete MPQ,
+ * model, texture, sound and interface pipeline together instead of only changing the gateway.
+ */
+export function clientDirectory() {
+  if (!process.env.CLIENT_PACK_DIR) return sourceClientDirectory();
+  const chosen = firstExisting("CLIENT_PACK_DIR", process.env.CLIENT_PACK_DIR, [], "Data");
+  if (!existsSync(join(chosen, "client-pack.json"))) {
+    throw new Error(`CLIENT_PACK_DIR was set to ${chosen}, which has no client-pack.json`);
+  }
+  return chosen;
 }
 
 /** The tswow installation, i.e. the directory holding `modules` and `bin`. */

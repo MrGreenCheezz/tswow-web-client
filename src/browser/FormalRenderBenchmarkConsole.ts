@@ -329,7 +329,16 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   base.experimentalWaterFresnel = false;
   base.experimentalWaterMicroWaves = false;
   base.experimentalWaterSunSparkle = false;
+  base.experimentalWaterFoam = false;
+  base.experimentalVegetationWind = false;
   base.experimentalFantasyGlow = false;
+  // P3's underwater overlay is a default-ON account leaf; a formal variant that left it to the
+  // account would compare a tinted run against an untinted one whenever the fixture dips a camera.
+  base.underwaterOverlay = false;
+  // Either independent post-process leaf can select the shared composited path. Pin both OFF so
+  // the formal variants compare the same direct pipeline while varying only the approved knob.
+  base.fullscreenGlow = false;
+  base.godRays = false;
   const a = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   const b = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   a.characterAtlasAnisotropy = false;

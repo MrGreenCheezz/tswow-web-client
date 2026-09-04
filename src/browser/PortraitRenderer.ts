@@ -4,7 +4,9 @@ import {
   type SkinnedInstance,
   type SkinnedTemplate,
 } from "./AnimatedModel.js";
-import { portraitCameraSpec } from "./PortraitCamera.js";
+import {
+  fullBodyCameraSpec, m2ToScene, portraitCameraSpec, type PortraitBounds,
+} from "./PortraitCamera.js";
 import type { BuiltModel } from "./ModelBuild.js";
 import {
   type RetainedResourceVisitor,
@@ -13,9 +15,169 @@ import {
 } from "./ResourceAccounting.js";
 import type { WvmModel } from "./Wvm.js";
 import { cloneMaterialForPortrait } from "./WorldLighting.js";
+import { game } from "./game/Context.js";
+import { unit as unitFields } from "../world/Fields.js";
 
 export const PORTRAIT_SLOTS = ["player", "target", "focus", "tot", "pet"] as const;
-export type PortraitSlot = (typeof PORTRAIT_SLOTS)[number];
+/** Stable party rows share the same renderer but keep their own surfaces and output canvases. */
+export const PARTY_PORTRAIT_SLOTS = ["party1", "party2", "party3", "party4"] as const;
+/** Full-body paperdoll shares the world's renderer and model provider with ordinary portraits. */
+export const PAPERDOLL_PORTRAIT_SLOT = "paperdoll" as const;
+/** Stock CharacterFramePortrait is a separate bust output, but uses the same player source. */
+export const CHARACTER_PORTRAIT_SLOT = "character" as const;
+export const ALL_PORTRAIT_SLOTS = [
+  ...PORTRAIT_SLOTS, ...PARTY_PORTRAIT_SLOTS, PAPERDOLL_PORTRAIT_SLOT,
+  CHARACTER_PORTRAIT_SLOT,
+] as const;
+export type PortraitSlot = (typeof ALL_PORTRAIT_SLOTS)[number];
+
+/** One fixed-function directional lamp in the stock character-select light set. */
+export interface PortraitDirectionalLightProfile {
+  readonly color: number;
+  /** Three.js intensity after the Lambert BRDF's `1 / PI` conversion. */
+  readonly intensity: number;
+  /** Direction from the model origin towards the lamp, in portrait model coordinates. */
+  readonly direction: readonly [number, number, number];
+}
+
+/**
+ * Target/focus/party HUD portraits keep the established cool hemisphere/warm key, while the
+ * player portrait and stock CharacterFrame use the race-aware character profile.
+ *
+ * CharacterFrame resolves the race-specific `RaceLights` set from `GlueParent.lua` when the self
+ * object has a race byte; neutral is used only
+ * while that byte is unavailable. The client values are converted by PI because ModelBuild uses
+ * MeshStandardMaterial (whose Lambert term divides direct and ambient irradiance by PI).
+ */
+export interface PortraitLightingProfile {
+  readonly mode: "hud" | "character";
+  readonly ambient: {
+    readonly kind: "hemisphere" | "ambient";
+    readonly topColor: number;
+    readonly bottomColor: number;
+    readonly intensity: number;
+  };
+  readonly directional: readonly PortraitDirectionalLightProfile[];
+}
+
+export type PortraitRace = "neutral" | "human" | "nightElf";
+
+const PORTRAIT_BRDF_SCALE = Math.PI;
+/** M2 AnimationData's canonical Stand row; unlike a live unit pose this is stable across frames. */
+const STAND_ANIMATION_ID = 0;
+/** WebGLRenderTarget readback is working-space linear; ImageData expects display-space sRGB. */
+const LINEAR_TO_SRGB_BYTE = Uint8Array.from({ length: 256 }, (_, byte) => {
+  const linear = byte / 255;
+  const srgb = linear <= 0.0031308
+    ? 12.92 * linear
+    : 1.055 * linear ** (1 / 2.4) - 0.055;
+  return Math.round(Math.max(0, Math.min(1, srgb)) * 255);
+});
+
+export const PORTRAIT_LIGHTING_PROFILES: Readonly<{
+  readonly hud: PortraitLightingProfile;
+  readonly neutral: PortraitLightingProfile;
+  readonly human: PortraitLightingProfile;
+  readonly nightElf: PortraitLightingProfile;
+}> = Object.freeze({
+  hud: Object.freeze({
+    mode: "hud",
+    ambient: Object.freeze({
+      kind: "hemisphere", topColor: 0xd8e7ff, bottomColor: 0x30261c, intensity: 1.7,
+    }),
+    directional: Object.freeze([Object.freeze({
+      color: 0xffe2b2, intensity: 2.2, direction: [2, 4, 3] as const,
+    })]),
+  }),
+  neutral: Object.freeze({
+    mode: "character",
+    // A race-neutral fallback used only while the player object has no race byte yet.  Character
+    // frames use a hemisphere here, rather than the old single ambient lamp, so dark armour still
+    // has a readable lower edge while its face receives the neutral key.
+    ambient: Object.freeze({
+      kind: "hemisphere", topColor: 0x77839b, bottomColor: 0x30291f,
+      intensity: 1.05 * PORTRAIT_BRDF_SCALE,
+    }),
+    directional: Object.freeze([
+      Object.freeze({
+        color: 0xb7c5e1, intensity: 1.35 * PORTRAIT_BRDF_SCALE,
+        direction: [0.32, 0.78, 0.52] as const,
+      }),
+      Object.freeze({
+        color: 0x594b39, intensity: 0.55 * PORTRAIT_BRDF_SCALE,
+        direction: [-0.55, 0.28, -0.66] as const,
+      }),
+    ]),
+  }),
+  human: Object.freeze({
+    mode: "character",
+    ambient: Object.freeze({
+      kind: "hemisphere", topColor: 0x72809a, bottomColor: 0x31291f,
+      intensity: 1.0 * PORTRAIT_BRDF_SCALE,
+    }),
+    directional: Object.freeze([
+      // RaceLights.HUMAN: cool key, 1.0 x (0.199, 0.349, 0.436).
+      Object.freeze({
+        color: 0x33596f, intensity: PORTRAIT_BRDF_SCALE,
+        direction: [-0.458, -0.666, 0.589] as const,
+      }),
+      // RaceLights.HUMAN: warm key, 2.0 x (0.522, 0.440, 0.298).
+      Object.freeze({
+        color: 0x85704c, intensity: 2 * PORTRAIT_BRDF_SCALE,
+        direction: [-0.646, -0.501, -0.576] as const,
+      }),
+    ]),
+  }),
+  nightElf: Object.freeze({
+    mode: "character",
+    // The client race-light is blue-violet, but its ambient-only implementation makes a night elf
+    // nearly black under MeshStandardMaterial.  Keep the hue and add the neutral key/fill the
+    // browser renderer needs to show facial planes and the silhouette at small paperdoll sizes.
+    ambient: Object.freeze({
+      kind: "hemisphere", topColor: 0x5d668b, bottomColor: 0x211b24,
+      intensity: 1.0 * PORTRAIT_BRDF_SCALE,
+    }),
+    directional: Object.freeze([
+      Object.freeze({
+        color: 0x9eafd9, intensity: 1.15 * PORTRAIT_BRDF_SCALE,
+        direction: [0.35, 0.75, 0.50] as const,
+      }),
+      Object.freeze({
+        color: 0x6b4f43, intensity: 0.48 * PORTRAIT_BRDF_SCALE,
+        direction: [-0.52, 0.24, -0.70] as const,
+      }),
+    ]),
+  }),
+});
+
+/** Convert authored M2/Z-up lamp directions into the Y-up coordinates used by Three.js. */
+export function portraitLightDirectionToScene(
+  direction: readonly [number, number, number],
+): [number, number, number] {
+  const [x, y, z] = m2ToScene(direction);
+  const length = Math.hypot(x, y, z);
+  if (!(length > 0) || !Number.isFinite(length)) return [0, 1, 0];
+  return [x / length, y / length, z / length];
+}
+
+/** Resolve the renderer-owned light rig for a concrete output slot and known player race. */
+export function portraitLightingProfile(
+  slot: PortraitSlot,
+  race: PortraitRace = "neutral",
+): PortraitLightingProfile {
+  if (slot !== "player" && slot !== PAPERDOLL_PORTRAIT_SLOT && slot !== CHARACTER_PORTRAIT_SLOT) {
+    return PORTRAIT_LIGHTING_PROFILES.hud;
+  }
+  return PORTRAIT_LIGHTING_PROFILES[race];
+}
+
+function portraitRaceForGuid(guid: bigint): PortraitRace {
+  const object = game.world?.state.objects.get(guid);
+  const race = object === undefined ? undefined : unitFields.race(object);
+  if (race === 1) return "human";
+  if (race === 4) return "nightElf";
+  return "neutral";
+}
 
 export interface PortraitTarget {
   guid: bigint | undefined;
@@ -112,6 +274,17 @@ interface PortraitSurface {
   staticPoseCaptured: boolean;
   /** The target GUID matters even when two units share the same appearance/build key. */
   sourceGuid: bigint | undefined;
+  /** Identity of the last successful 2D readback, independent of a borrowed model's lifetime. */
+  paintedGuid: bigint | undefined;
+}
+
+interface PortraitLightState {
+  readonly light: THREE.Light;
+  readonly visible: boolean;
+  readonly intensity: number;
+  readonly color: number;
+  readonly position: readonly [number, number, number];
+  readonly groundColor: number | undefined;
 }
 
 export interface PortraitRendererOptions {
@@ -120,7 +293,8 @@ export interface PortraitRendererOptions {
 }
 
 /**
- * Renders five small model views through the world's existing WebGLRenderer.
+ * Renders the five core and four stable party model views through the world's existing
+ * WebGLRenderer.
  *
  * A WebGL texture cannot be used as an `<img>` or CSS background. The only browser-safe bridge is a
  * readback into a 2D canvas. Render targets therefore live for the lifetime of a slot and are only
@@ -132,6 +306,10 @@ export class PortraitRenderer {
   readonly #camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
   readonly #ambient = new THREE.HemisphereLight(0xd8e7ff, 0x30261c, 1.7);
   readonly #key = new THREE.DirectionalLight(0xffe2b2, 2.2);
+  /** Hidden for HUD slots; these are the two authored human character-select lamps. */
+  readonly #characterAmbient = new THREE.HemisphereLight(0x72809a, 0x31291f, PORTRAIT_BRDF_SCALE);
+  readonly #characterCoolKey = new THREE.DirectionalLight(0x33596f, PORTRAIT_BRDF_SCALE);
+  readonly #characterWarmKey = new THREE.DirectionalLight(0x85704c, 2 * PORTRAIT_BRDF_SCALE);
   readonly #slotGroups = new Map<PortraitSlot, THREE.Group>();
   readonly #surfaces = new Map<PortraitSlot, PortraitSurface>();
   readonly #targets = new Map<PortraitSlot, PortraitTarget>();
@@ -145,10 +323,21 @@ export class PortraitRenderer {
     // Keep accepting the old option while intentionally ignoring it. A static portrait has no
     // animation cadence to throttle: readback happens only after a model/target/size invalidation.
     void options;
-    this.#scene.add(this.#ambient, this.#key);
-    for (const slot of PORTRAIT_SLOTS) {
+    // Keep the `portrait-*` namespace exclusive to isolated model groups. The lightweight renderer
+    // seam (and scene diagnostics) can then count visible portrait roots without mistaking lights
+    // for three additional models in every readback.
+    this.#ambient.name = "hud-portrait-light-ambient";
+    this.#key.name = "hud-portrait-light-key";
+    this.#characterAmbient.name = "character-portrait-light-ambient";
+    this.#characterCoolKey.name = "character-portrait-light-cool-key";
+    this.#characterWarmKey.name = "character-portrait-light-warm-key";
+    this.#scene.add(
+      this.#ambient, this.#key,
+      this.#characterAmbient, this.#characterCoolKey, this.#characterWarmKey,
+    );
+    for (const slot of ALL_PORTRAIT_SLOTS) {
       // The scene and lights are shared, but each slot owns an isolated group. Only the group
-      // being painted is visible during a readback; otherwise all five roots overlap in one pass.
+      // being painted is visible during a readback; otherwise all nine roots overlap in one pass.
       const group = new THREE.Group();
       group.name = `portrait-${slot}`;
       group.visible = false;
@@ -156,6 +345,9 @@ export class PortraitRenderer {
       this.#scene.add(group);
     }
     this.#key.position.set(2, 4, 3);
+    this.#characterCoolKey.position.set(-0.458, -0.666, 0.589);
+    this.#characterWarmKey.position.set(-0.646, -0.501, -0.576);
+    this.#applyLighting("player");
     this.#scene.background = null;
   }
 
@@ -173,7 +365,7 @@ export class PortraitRenderer {
    * clears the answer until a target, model, or backing-store size invalidates it.
    */
   needsPose(guid: bigint): boolean {
-    for (const slot of PORTRAIT_SLOTS) {
+    for (const slot of ALL_PORTRAIT_SLOTS) {
       const target = this.#targets.get(slot);
       if (target?.guid !== guid || !target.canvas) continue;
       const surface = this.#surfaces.get(slot);
@@ -192,7 +384,7 @@ export class PortraitRenderer {
 
   setTargets(targets: ReadonlyMap<PortraitSlot, PortraitTarget>): void {
     this.#targetGuids.clear();
-    for (const slot of PORTRAIT_SLOTS) {
+    for (const slot of ALL_PORTRAIT_SLOTS) {
       const next = targets.get(slot) ?? EMPTY_PORTRAIT_TARGET;
       const previous = this.#targets.get(slot);
       this.#targets.set(slot, next);
@@ -277,7 +469,7 @@ export class PortraitRenderer {
   /** Render invalidated portraits. Returns the number of readbacks performed. */
   render(_now = performance.now()): number {
     let rendered = 0;
-    for (const slot of PORTRAIT_SLOTS) {
+    for (const slot of ALL_PORTRAIT_SLOTS) {
       const target = this.#targets.get(slot);
       if (!target?.canvas || target.guid === undefined) {
         this.#markUnavailable(slot);
@@ -285,7 +477,7 @@ export class PortraitRenderer {
       }
       const source = this.#source(target.guid);
       if (!source) {
-        this.#markUnavailable(slot);
+        this.#markUnavailable(slot, true);
         continue;
       }
       const surface = this.#surface(slot, target.canvas);
@@ -305,7 +497,7 @@ export class PortraitRenderer {
       if (!surface.dirty) continue;
       // Capture the current world pose once. The independent portrait rig is intentionally not
       // advanced by a mixer and must not keep following the animated world unit on later calls.
-      this.#captureStaticPose(surface, source);
+      this.#captureStaticPose(surface, source, slot);
       if (this.#paint(slot, surface, source)) {
         surface.dirty = false;
         surface.textureRevision = textureRevision;
@@ -350,7 +542,7 @@ export class PortraitRenderer {
         sourceKey: undefined, output: canvas,
         pixels: new Uint8Array(width * height * 4),
         flipped: new Uint8ClampedArray(width * height * 4),
-        width, height, dirty: true, staticPoseCaptured: false, sourceGuid: undefined,
+        width, height, dirty: true, staticPoseCaptured: false, sourceGuid: undefined, paintedGuid: undefined,
       };
       this.#surfaces.set(slot, surface);
     } else if (surface.width !== width || surface.height !== height) {
@@ -403,7 +595,7 @@ export class PortraitRenderer {
     surface.staticPoseCaptured = false;
   }
 
-  #captureStaticPose(surface: PortraitSurface, source: PortraitSource): void {
+  #captureStaticPose(surface: PortraitSurface, source: PortraitSource, slot: PortraitSlot): void {
     if (surface.staticPoseCaptured) return;
     const skinned = surface.skinned;
     if (!skinned) {
@@ -413,7 +605,9 @@ export class PortraitRenderer {
     // A source without a live rig is still a valid static portrait: instantiateSkinned's rest
     // pose is the deterministic fallback. Do not retry on every render and accidentally animate
     // when a world unit later changes state.
-    if (source.liveBones) {
+    // The player's bust camera is authored for Stand. Freezing a running, casting or dead world
+    // pose can leave the head outside that camera until the appearance changes again.
+    if (slot !== "player" && slot !== PAPERDOLL_PORTRAIT_SLOT && slot !== CHARACTER_PORTRAIT_SLOT && source.liveBones) {
       const bones = skinned.skeleton.bones;
       for (let index = 0; index < bones.length; index++) {
         const pose = source.liveBones[index];
@@ -423,30 +617,124 @@ export class PortraitRenderer {
         bone.quaternion.copy(pose.quaternion);
         bone.scale.copy(pose.scale);
       }
+    } else if (source.template) {
+      // "Rest" must mean the model's authored Stand sequence, not merely the skeleton's bind
+      // matrices. A bind pose is commonly a T-pose while M2's Stand clip folds the elbows, sets
+      // the head and establishes the silhouette players recognise. Sample it once at frame zero
+      // on this isolated mixer, then pause the action: this is a deterministic neutral snapshot,
+      // never a second continuously animated world rig. If the base model genuinely has no Stand
+      // clip, leave instantiateSkinned's bind pose as the explicit fallback.
+      const stand = source.template.clips.get(STAND_ANIMATION_ID);
+      if (stand) {
+        const action = skinned.mixer.clipAction(stand);
+        action.reset();
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.play();
+        skinned.mixer.setTime(0);
+        action.paused = true;
+        skinned.root.updateMatrixWorld(true);
+      }
     }
     surface.staticPoseCaptured = true;
   }
 
+  #portraitLights(): readonly THREE.Light[] {
+    return [
+      this.#ambient, this.#key,
+      this.#characterAmbient, this.#characterCoolKey, this.#characterWarmKey,
+    ];
+  }
+
+  #captureLighting(): PortraitLightState[] {
+    return this.#portraitLights().map((light) => ({
+      light,
+      visible: light.visible,
+      intensity: light.intensity,
+      color: light.color.getHex(),
+      position: [light.position.x, light.position.y, light.position.z] as const,
+      groundColor: light instanceof THREE.HemisphereLight ? light.groundColor.getHex() : undefined,
+    }));
+  }
+
+  #restoreLighting(states: readonly PortraitLightState[]): void {
+    for (const state of states) {
+      state.light.visible = state.visible;
+      state.light.intensity = state.intensity;
+      state.light.color.setHex(state.color);
+      state.light.position.set(...state.position);
+      if (state.groundColor !== undefined && state.light instanceof THREE.HemisphereLight) {
+        state.light.groundColor.setHex(state.groundColor);
+      }
+    }
+  }
+
+  #applyLighting(slot: PortraitSlot, guid?: bigint): void {
+    const profile = portraitLightingProfile(
+      slot,
+      guid === undefined ? "neutral" : portraitRaceForGuid(guid),
+    );
+    const character = profile.mode === "character";
+    this.#ambient.visible = !character;
+    this.#key.visible = !character;
+    this.#characterAmbient.visible = character;
+    this.#characterCoolKey.visible = character && profile.directional.length > 0;
+    this.#characterWarmKey.visible = character && profile.directional.length > 1;
+
+    if (!character) {
+      this.#ambient.color.setHex(profile.ambient.topColor);
+      this.#ambient.groundColor.setHex(profile.ambient.bottomColor);
+      this.#ambient.intensity = profile.ambient.intensity;
+      const key = profile.directional[0];
+      if (key) {
+        this.#key.color.setHex(key.color);
+        this.#key.intensity = key.intensity;
+        this.#key.position.set(...portraitLightDirectionToScene(key.direction));
+      }
+      return;
+    }
+
+    this.#characterAmbient.color.setHex(profile.ambient.topColor);
+    this.#characterAmbient.groundColor.setHex(profile.ambient.bottomColor);
+    this.#characterAmbient.intensity = profile.ambient.intensity;
+    const [cool, warm] = profile.directional;
+    if (cool) {
+      this.#characterCoolKey.color.setHex(cool.color);
+      this.#characterCoolKey.intensity = cool.intensity;
+      this.#characterCoolKey.position.set(...portraitLightDirectionToScene(cool.direction));
+    }
+    if (warm) {
+      this.#characterWarmKey.color.setHex(warm.color);
+      this.#characterWarmKey.intensity = warm.intensity;
+      this.#characterWarmKey.position.set(...portraitLightDirectionToScene(warm.direction));
+    }
+  }
+
   #paint(slot: PortraitSlot, surface: PortraitSurface, source: PortraitSource): boolean {
     if (!surface.root || !surface.output) return false;
-    const spec = portraitCameraSpec({
-      camera: source.model.portraitCamera,
+    const visibleBounds: PortraitBounds | undefined = source.built.geometry.boundingBox ? {
+      min: [
+        source.built.geometry.boundingBox.min.x,
+        source.built.geometry.boundingBox.min.y,
+        source.built.geometry.boundingBox.min.z,
+      ],
+      max: [
+        source.built.geometry.boundingBox.max.x,
+        source.built.geometry.boundingBox.max.y,
+        source.built.geometry.boundingBox.max.z,
+      ],
+    } : undefined;
+    const cameraInput = {
       bounds: source.model.bounds,
-      visibleBounds: source.built.geometry.boundingBox ? {
-        min: [
-          source.built.geometry.boundingBox.min.x,
-          source.built.geometry.boundingBox.min.y,
-          source.built.geometry.boundingBox.min.z,
-        ],
-        max: [
-          source.built.geometry.boundingBox.max.x,
-          source.built.geometry.boundingBox.max.y,
-          source.built.geometry.boundingBox.max.z,
-        ],
-      } : undefined,
+      visibleBounds,
       attachments: source.model.attachments,
       scale: source.scale,
-    });
+    };
+    // Paperdolls show the complete visible model and must not inherit the creature bust camera.
+    // Both paths remain pure camera resolution; the shared renderer/readback is unchanged.
+    const spec = slot === PAPERDOLL_PORTRAIT_SLOT
+      ? fullBodyCameraSpec(cameraInput)
+      : portraitCameraSpec({ ...cameraInput, camera: source.model.portraitCamera });
     this.#camera.fov = spec.fov;
     this.#camera.near = spec.near;
     this.#camera.far = spec.far;
@@ -476,7 +764,9 @@ export class PortraitRenderer {
     const previousAutoClear = this.#renderer.autoClear;
     const previousVisibility = [...this.#slotGroups.values()]
       .map((group) => [group, group.visible] as const);
+    const previousLighting = this.#captureLighting();
     try {
+      this.#applyLighting(slot, surface.sourceGuid ?? undefined);
       for (const group of this.#slotGroups.values()) group.visible = group === surface.group;
       this.#renderer.setRenderTarget(surface.target);
       this.#renderer.setViewport(0, 0, surface.width, surface.height);
@@ -490,13 +780,23 @@ export class PortraitRenderer {
       const rowBytes = surface.width * 4;
       for (let y = 0; y < surface.height; y++) {
         const from = (surface.height - y - 1) * rowBytes;
-        surface.flipped.set(surface.pixels.subarray(from, from + rowBytes), y * rowBytes);
+        const to = y * rowBytes;
+        for (let column = 0; column < rowBytes; column += 4) {
+          const sourcePixel = from + column;
+          const outputPixel = to + column;
+          surface.flipped[outputPixel] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel]!]!;
+          surface.flipped[outputPixel + 1] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel + 1]!]!;
+          surface.flipped[outputPixel + 2] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel + 2]!]!;
+          // Alpha is already display-space coverage and must survive readback byte-for-byte.
+          surface.flipped[outputPixel + 3] = surface.pixels[sourcePixel + 3]!;
+        }
       }
       const context = surface.output.getContext("2d");
       if (!context) return false;
       const image = context.createImageData(surface.width, surface.height);
       image.data.set(surface.flipped);
       context.putImageData(image, 0, 0);
+      surface.paintedGuid = surface.sourceGuid;
       surface.output.dataset["portraitReady"] = "true";
       surface.output.dataset["portraitSlot"] = slot;
       return true;
@@ -513,21 +813,25 @@ export class PortraitRenderer {
       this.#renderer.setScissor(previousScissor);
       this.#renderer.setViewport(previousViewport);
       for (const [group, visible] of previousVisibility) group.visible = visible;
+      this.#restoreLighting(previousLighting);
     }
   }
 
-  #markUnavailable(slot: PortraitSlot): void {
+  #markUnavailable(slot: PortraitSlot, preserveSnapshot = false): void {
     const target = this.#targets.get(slot);
     const surface = this.#surfaces.get(slot);
-    if (target?.canvas) {
-      target.canvas.dataset["portraitReady"] = "false";
+    // Model/atlas replacement can briefly remove a source. Retain only the previous pixels for
+    // this exact GUID/canvas; setTargets and clear still invalidate character/world transitions.
+    const keepPixels = preserveSnapshot && target?.guid !== undefined && surface?.paintedGuid === target.guid
+      && surface.output === target.canvas && target.canvas?.dataset["portraitReady"] === "true"
+      && surface.width === target.canvas.width && surface.height === target.canvas.height;
+    if (target?.canvas && !keepPixels) {
       this.#clearCanvas(target.canvas);
     }
     if (surface) {
       surface.output = target?.canvas;
       surface.dirty = true;
-      // A temporary model/cache miss must not leave an old portrait instance retained off-screen;
-      // the next successful source will build a fresh independent instance.
+      // Retaining the 2D snapshot does not retain a model, material, atlas or live skeleton.
       this.#disposeModel(surface);
     }
   }

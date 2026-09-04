@@ -1,3 +1,8 @@
+// The one back-edge in `app/`: `Login.ts` imports `enterWorld` from here and this imports the way
+// out from there. It is safe because `leaveWorld` is a hoisted function declaration and is only
+// ever called from a world event, long after both modules have finished evaluating — and it is the
+// right side of the cycle, because the way out ends in `connectRealm`, which lives there.
+import { leaveWorld } from "./Login.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
@@ -5,19 +10,23 @@ import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { clearFocusOn } from "../game/Targeting.js";
 import {
-  characterStatus, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
+  characterModel, characterStatus, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
   modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
 } from "../ui/Dom.js";
 import { clearSpellbook, loadSpellMetadata, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
 import { showTarget } from "../ui/Frames.js";
 import { bossDisengaged, bossEngaged, forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
-import { applyPortraitVisibility, clearPortraitTargets } from "../ui/Portraits.js";
+import { applyPortraitVisibility, clearPortraitTargets, mountNativeCharacterPortrait } from "../ui/Portraits.js";
 import { ENCOUNTER_FRAME_DISENGAGE, ENCOUNTER_FRAME_ENGAGE } from "../../world/InstanceProtocol.js";
 import { queueWorldState, showWorldState } from "../ui/WorldView.js";
 import { ENVIRONMENT_NAMES, logSwing, pushCombatLine, showSwingWarning } from "../ui/CombatLog.js";
 import { loadAuraMetadata, showAuras } from "../ui/Auras.js";
-import { showDeath, showGossip, showLoot, showQuestState, showTrainer, showVendor } from "../ui/Npc.js";
+import {
+  showBattlegroundList, showDeath, showGossip, showLoot, showQuestState, showTabardVendor,
+  showTaxiMenu, showTrainer, showVendor,
+} from "../ui/Npc.js";
 import { itemMetadataChanged, showItemMessage } from "../ui/Bags.js";
+import { ensureSpellNames } from "../ui/SpellNames.js";
 import { showBank } from "../ui/Bank.js";
 import { addMinimapPing, forgetMinimap } from "../ui/Minimap.js";
 import { showWorldMap } from "../ui/WorldMap.js";
@@ -38,11 +47,12 @@ import {
 import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOverlay.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
 import { notice, resetNotices } from "../ui/Notices.js";
-import { systemLine } from "../ui/Chat.js";
+import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
 import { applySettings, drawSettings, settingsStore } from "../ui/Settings.js";
 import { macroStores, resetMacroWindow, showMacros } from "../ui/Macros.js";
 import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { hideLoadingScreen, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js";
+import { resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { watchMinimapRotation } from "../ui/Minimap.js";
 import { chatClass } from "../ui/ChatFormat.js";
 import { EmoteClient } from "../EmoteClient.js";
@@ -58,7 +68,8 @@ import { GroundCoverClient } from "../GroundCover.js";
 import { LightClient } from "../LightClient.js";
 import { LiquidTextureClient } from "../Water.js";
 import { SpellMetadataClient } from "../SpellMetadata.js";
-import { SpellVisualClient } from "../SpellVisualClient.js";
+import { SpellVisualClient, SpellVisualKitClient } from "../SpellVisualClient.js";
+import { spellVisualKitPaths } from "../SpellVisuals.js";
 import { SpellVisualCoordinator } from "../SpellVisualLifecycle.js";
 import { CreatureMetadataClient } from "../CreatureMetadata.js";
 import { GameObjectMetadataClient } from "../GameObjectMetadata.js";
@@ -80,17 +91,27 @@ import {
 import { forgetCombatSounds, playSwingSounds, spellCombatVoices } from "../game/CombatSounds.js";
 import { applySoundVolumes } from "../ui/Settings.js";
 import { TextureBitmapCache } from "../TextureBitmaps.js";
-import { SessionAssetWarmup } from "../AssetWarmup.js";
+import { ASSET_WARMUP_BUDGET, SessionAssetWarmup, loadedVisualWarmPaths } from "../AssetWarmup.js";
 import { showTalents } from "../ui/Talents.js";
-import { showProfessions } from "../ui/Professions.js";
+import { showProfessions, professionCastStatus } from "../ui/Professions.js";
+import { closeSocketing } from "../ui/Socketing.js";
 import { CollisionSource } from "../game/CollisionSource.js";
 import { clearHeldKeys } from "../input/Controls.js";
 import { isAutoRunning, isWalking } from "../input/Movement.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { createModuleLoader } from "../ui/ModuleClient.js";
 import { showActionBar } from "../ui/ActionBar.js";
-import { requestMissingQuestTemplates, requestQuestPoi, showQuestLog, showQuestTracker } from "../ui/QuestLog.js";
-import { showCharacterSheet } from "../ui/CharacterSheet.js";
+import {
+  bindQuestLogStore, clearQuestLog, requestMissingQuestTemplates, requestQuestPoi, showQuestLog,
+  showQuestTracker,
+} from "../ui/QuestLog.js";
+import { showCharacterCollections, showCharacterSheet } from "../ui/CharacterSheet.js";
+import { showCharacterWindow } from "../ui/Windows.js";
+import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
+import { installNativeWowUiSkin } from "../ui/NativeUiSkin.js";
+import { frameXmlMerchantOpen, notifyFrameXmlMerchant } from "../framexml/FrameXmlMerchantController.js";
+import { frameXmlTrainerOpen, notifyFrameXmlTrainer } from "../framexml/FrameXmlTrainerController.js";
+import { createFrameXmlMerchantMetadataCoordinator } from "../framexml/FrameXmlMerchantMetadata.js";
 /**
  * Entering the world: the login handshake for a chosen character, the asset clients that realm
  * needs, and the couple of dozen callbacks that connect the world client to the panels.
@@ -142,9 +163,27 @@ function spellLine(text: string, spellId: number): string {
   return name ? text.replace(`заклинание ${spellId}`, name) : text;
 }
 
+/**
+ * Which enter attempt is the current one.
+ *
+ * The failure branch below now takes the whole world down and hands the player back to whichever
+ * front door opened the session, and that is only correct for the attempt that is still the live
+ * one: a second `enterWorld` started while the first was unwinding would otherwise have its own
+ * terrain, sound and module loader cleared out from under it. Same shape as the generation counters
+ * in `GlueSession` and `GlueApi`, and for the same reason.
+ */
+let enterGeneration = 0;
+
 export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButtonElement): Promise<void> {
   if (!game.world) return;
   const world = game.world;
+  const frameXmlEnabled = frameXmlFlagEnabled(window.location.search);
+  const generation = ++enterGeneration;
+  clearQuestLog();
+  // WorldStore coalesces all changed quest words into one event per frame. The
+  // QuestLog module owns this one binding and replaces its previous one here,
+  // so a character switch cannot leave a stale redraw listener behind.
+  bindQuestLogStore(game.store, world);
   if (onBusy) onBusy.disabled = true;
   characterStatus.textContent = `Вход персонажем ${character.name}…`;
   // A text emote names its target by name rather than by GUID, so the only way to tell «машет
@@ -157,12 +196,17 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   resetMacroWindow();
   resetPetBar();
   resetLoadingScreen();
+  // The realm connection outlives a character, and so does the store subscription that drives the
+  // death layer — so entering the world on a second character has to drop the first one's grey
+  // rather than wait for an update block to contradict it.
+  resetDeathScreenEffect();
   // Up before anything is fetched, because the world panel is about to cover the login screen and
   // there is nothing behind it yet.
   showLoadingScreen(character.name, "Настройки и макросы этого персонажа загружаются с сервера.");
   resetGuildWindow();
   resetGuildBank();
   resetCalendar();
+  closeSocketing();
   resetSocialPanel();
   resetScoreboard();
   resetArenaWindow();
@@ -191,8 +235,17 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // fetch completes rather than waiting for a second cast.
   game.spellVisualCoordinator?.clear();
   const spellVisuals = new SpellVisualClient(gatewayInput.value);
+  /**
+   * The kit route, on the same engine and with its own queue.
+   *
+   * Deliberately a local rather than another field on `game`: nothing outside this closure asks a
+   * question by kit id, its lifetime is exactly the coordinator's, and the coordinator holds the
+   * only reference that matters. The failure path below detaches its callback beside its sibling's.
+   */
+  const spellVisualKits = new SpellVisualKitClient(gatewayInput.value);
   const spellVisualCoordinator = new SpellVisualCoordinator({
     metadata: spellVisuals,
+    kitMetadata: spellVisualKits,
     renderer: () => game.renderer,
     playSound: (soundId, at, guard) => {
       if (!game.sound || !game.soundKits) return false;
@@ -202,7 +255,35 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   });
   game.spellVisuals = spellVisuals;
   game.spellVisualCoordinator = spellVisualCoordinator;
-  spellVisuals.onLoaded = (ids) => spellVisualCoordinator.onLoaded(ids);
+  spellVisuals.onLoaded = (ids) => {
+    spellVisualCoordinator.onLoaded(ids);
+    // The metadata that just landed already names every model these kits are made of, so warming
+    // them costs one walk of an object that is already in memory. This is the cheapest of the
+    // three round trips a cold spell used to pay, and the only one that can be removed before
+    // anything at all has happened. `get` answers from cache for every id in a loaded batch, so
+    // nothing here can start another metadata request.
+    const environment = game.environment;
+    if (!environment) return;
+    for (const path of loadedVisualWarmPaths(ids, (id) => spellVisuals.get(id))) {
+      environment.model(path, "normal");
+    }
+  };
+  spellVisualKits.onLoaded = (ids) => {
+    spellVisualCoordinator.onKitsLoaded(ids);
+    // The same S1 seam, for the packets that have no cast bar to spend: the answer already names
+    // every file the kit is made of, so warming them costs one walk of an object already in memory.
+    const environment = game.environment;
+    if (!environment) return;
+    const warmed = new Set<string>();
+    for (const id of ids) {
+      for (const path of spellVisualKitPaths(spellVisualKits.get(id)?.kit)) {
+        if (warmed.size >= ASSET_WARMUP_BUDGET.metadataWarmModels) return;
+        if (warmed.has(path)) continue;
+        warmed.add(path);
+        environment.model(path, "normal");
+      }
+    }
+  };
   spellVisualCoordinator.bindWorld(world);
   world.onStateChange = queueWorldState;
   world.onWorldError = (error) => {
@@ -210,6 +291,12 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     clearHeldKeys();
     worldStatus.className = "error";
     worldStatus.textContent = error.message;
+    // This callback is not "a packet went wrong" — `#deliver` swallows those and reports them
+    // through `onPacketError`. It fires when `#connection.read()` itself threw, which means the
+    // socket is gone, and a frozen world nobody can leave is worse than a screen that says so.
+    // The login screen rather than the character list: without a connection there is no list.
+    clearQuestLog();
+    leaveWorld("connection-lost", `Соединение с миром потеряно: ${error.message}`);
   };
   // One packet this client cannot model no longer ends the session; it is reported and the
   // rest of the stream carries on.
@@ -347,8 +434,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       casterGuid: 0n, targetGuid: damage.victim, spellId: 0,
     });
     showFloatingText(damage.victim, "taken", damage.damage, false);
-    if (damage.victim !== world.state.selfGuid) return;
-    pushCombatLine(`${label}: ${damage.damage}`, "taken");
   };
   // The tracking menu is built from what the character knows and read back out of the fields, so
   // both a new spell and a changed bit have to repaint it.
@@ -357,7 +442,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.onSpellsChanged = () => {
     showSpells();
     showActionBar();
-    void loadSpellMetadata(world);
+    void loadSpellMetadata(world).then(showCharacterCollections);
   };
   // Slice P4: what the world says to everyone standing in it. The banner an area trigger raises
   // gets its own line rather than a frame of its own — the frame belongs to slice I10, and a line
@@ -392,15 +477,18 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   /**
    * A kit the server asked for by number, with no spell around it.
    *
-   * `SMSG_PLAY_SPELL_VISUAL_KIT` is how a scripted event makes a noise — a door ward, a boss
-   * emote, a trap arming — and it has been parsed into this event since the spell-log slice with
-   * nobody on the other end. The picture half is out of reach: the kit tables live behind
-   * `/dbc/spell-visuals`, which is keyed by *spell*, and no route answers by kit id. The sound
-   * half is not, because `SoundID` is on the kit and the kit id is what the packet carries.
+   * `SMSG_PLAY_SPELL_VISUAL` / `SMSG_PLAY_SPELL_IMPACT` are how a scripted event shows itself — a
+   * door ward, a boss emote, a player sitting down to eat, this server's own Illidan throwing a
+   * glaive — and until slice S3 only the noise came out of them: the kit tables were reachable
+   * only through `/dbc/spell-visuals`, which is keyed by *spell*. `/dbc/spell-visual-kits` answers
+   * by the number the packet actually carries, so the coordinator can now draw the models and play
+   * the pose as well. The sound stays exactly where it was — it never needed the route, because
+   * `SoundID` reaches `SoundEntries` through the sound index rather than through the kit record.
    */
   world.events.on("SPELL_VISUAL", (event) => {
     const at = world.state.objects.get(event.guid)?.position;
     if (at) playKitSound(0, at, event.kitId);
+    spellVisualCoordinator.playVisualKit(event.guid, event.kitId, event.impact);
   });
   world.events.on("SUMMON_REQUEST", (request) => {
     pushCombatLine(`Вас призывают в зону ${request.zoneId}: /accept или /decline`, "reward");
@@ -418,19 +506,40 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     for (const store of macroStores) if (store.accept(change.type)) showMacros();
   });
   // The pet bar and the vehicle bar are the same packet; neither had a reader.
-  world.events.on("PET_BAR_CHANGED", () => showPetBar());
+  world.events.on("PET_BAR_CHANGED", () => {
+    showPetBar();
+    showCharacterCollections();
+  });
   world.events.on("VEHICLE_CHANGED", () => showPetBar());
   world.events.on("LOGOUT_CHANGED", (state) => {
-    if (state.complete) notice("Выход из мира", "info");
-    else if (state.pending) notice("Выход через несколько секунд", "info");
+    if (state.pending) {
+      notice("Выход через несколько секунд", "info");
+      return;
+    }
+    if (!state.complete) return;
+    notice("Выход из мира", "info");
+    // `SMSG_LOGOUT_COMPLETE` is the server letting go of the character, and in the original that is
+    // the character-select screen coming back. Before G6 it was a notice and nothing else: the
+    // player was left looking at a world the server had already stopped updating, with no way out
+    // but reloading the page. The guard is the one every handler here carries — a completion that
+    // belongs to a connection this client has already replaced changes nothing.
+    if (game.world !== world) return;
+    clearQuestLog();
+    leaveWorld("logout");
   });
   // Slice I10: every refusal that had no reader at all. Each of these was written into a field on
   // the world client and left there — the pet's, the arena's, the calendar's, the charter's, the
   // ticket's, the stable's, and the server's own announcements.
   world.events.on("PET_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
   world.events.on("PVP_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
+  world.events.on("TAXI_MENU", () => showTaxiMenu());
+  world.events.on("TAXI_CHANGED", () => showTaxiMenu());
+  world.events.on("BATTLEFIELD_LIST_CHANGED", () => showBattlegroundList());
+  world.events.on("TABARD_VENDOR_CHANGED", () => showTabardVendor());
   world.events.on("STABLE_CHANGED", () => {
     if (world.stableMessage) notice(world.stableMessage.text, world.stableMessage.error ? "error" : "info");
+    showCharacterWindow("collections");
+    showCharacterCollections();
   });
   world.events.on("PETITION_CHANGED", () => {
     if (world.petitionMessage) notice(world.petitionMessage.text, world.petitionMessage.error ? "error" : "info");
@@ -544,18 +653,16 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.events.on("COMBAT_LOG", (line) => {
     const mine = line.casterGuid === world.state.selfGuid;
     const atMe = line.targetGuid === world.state.selfGuid;
-    // The tab keeps everything; the overlay over the world keeps what this player did and had
-    // done to them, because the rest of a crowded fight would bury it.
+    // The combat tab keeps the complete history. Relevance filtering belongs to floating world
+    // text, not to the log, which players expect to remain an auditable record of the encounter.
     recordCombatEntry({
       at: Date.now(), text: spellLine(line.text, line.spellId),
       kind: line.critical ? "crit" : mine ? "dealt" : atMe ? "taken" : "muted",
       casterGuid: line.casterGuid, targetGuid: line.targetGuid, spellId: line.spellId,
     });
-    if (!mine && !atMe) return;
-    pushCombatLine(spellLine(line.text, line.spellId), mine ? "dealt" : "taken");
   });
-  // Over the head it belongs to, for every unit and not only this one: a player watching a fight
-  // needs to see the damage they are dealing, which is exactly what the log line below filters out.
+  // The overlay keeps only the player and their current target. The target can change between the
+  // packet and this callback, so that relevance policy stays beside floater allocation itself.
   world.events.on("FLOATING_TEXT", (text) => {
     const taken = text.guid === world.state.selfGuid && text.kind === "damage";
     showFloatingText(text.guid, taken ? "taken" : text.kind, text.amount, text.critical, text.text);
@@ -591,9 +698,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       at: Date.now(), text: `${world.displayName(kill.killerGuid)} убивает: ${victim}`, kind: "muted",
       casterGuid: kill.killerGuid, targetGuid: kill.victimGuid, spellId: 0,
     });
-    if (kill.killerGuid === world.state.selfGuid) pushCombatLine(`Убит: ${victim}`, "dealt");
   });
   world.onSpellStatus = (message, error) => {
+    professionCastStatus(message, error);
     spellStatus.className = error ? "error" : "success";
     spellStatus.textContent = message;
     // The same, for a cast refusal: it went to a line inside the spellbook and nowhere else.
@@ -641,7 +748,38 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // The master looter's candidate list rides this callback and raises no event of its own.
     showLootRolls();
   };
-  world.onVendorChanged = showVendor;
+  // One callback owns both vendor presentation routes. Before the stock gate publishes, the
+  // native panel remains the fallback; after publication every transition is a FrameXML event.
+  let refreshVendorUi: (reason?: "vendor" | "metadata") => void = () => {};
+  const merchantMetadata = createFrameXmlMerchantMetadataCoordinator({
+    vendor: () => world.vendor,
+    itemMetadata: () => game.itemMetadata,
+    itemTemplate: (entry) => world.itemTemplates.get(entry),
+    onMetadataLoaded: () => {
+      if (game.world === world) refreshVendorUi("metadata");
+    },
+  });
+  refreshVendorUi = (reason: "vendor" | "metadata" = "vendor"): void => {
+    const vendor = world.vendor;
+    if (!vendor) {
+      merchantMetadata.reset();
+      if (!notifyFrameXmlMerchant("closed")) showVendor();
+      return;
+    }
+    const presentation = merchantMetadata.refresh(reason);
+    if (reason === "metadata") {
+      // ItemMetadataClient also reports unrelated item rows. Only repaint the stock root when a
+      // vendor row's name/icon/stack data actually changed; the force bit bypasses raw vendor-shape
+      // dedupe in the seam without making the next tick emit a duplicate UPDATE.
+      if (presentation.changed) {
+        if (!notifyFrameXmlMerchant("update", true)) showVendor();
+      }
+    } else {
+      const event = frameXmlMerchantOpen() ? "update" : "show";
+      if (!notifyFrameXmlMerchant(event)) showVendor();
+    }
+  };
+  world.onVendorChanged = refreshVendorUi;
   world.onItemMessage = showItemMessage;
   world.onGroupChanged = showGroup;
   world.onTradeChanged = showTrade;
@@ -661,9 +799,28 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // label, which is Russian and would change the behaviour the day it is translated.
     if (BUBBLE_TYPES.has(message.type)) showChatBubble(message.senderGuid, message.text, chatClass(message.type));
   };
-  world.onNamesChanged = redrawChatLog;
+  world.onNamesChanged = () => { redrawChatLog(); showMail(); };
   redrawChatLog();
-  world.onTrainerChanged = showTrainer;
+  const refreshTrainerUi = (): void => {
+    const trainer = world.trainer;
+    const supported = trainer !== undefined
+      && (trainer.trainerType === 0 || trainer.trainerType === 1 || trainer.trainerType === 3);
+    if (!supported) {
+      notifyFrameXmlTrainer("closed");
+      showTrainer();
+      return;
+    }
+    const ids = [...new Set(trainer.spells.map((spell) => spell.spellId).filter((id) => id > 0))];
+    ensureSpellNames(ids, () => {
+      // Metadata belongs to the world/list currently on screen, not to the object captured when
+      // the request was coalesced. WorldClient may replace an equivalent TrainerList instance
+      // while the same spell ids are in flight; that current list still needs its repaint.
+      if (game.world === world && world.trainer !== undefined) refreshTrainerUi();
+    });
+    const event = frameXmlTrainerOpen() ? "update" : "show";
+    if (!notifyFrameXmlTrainer(event)) showTrainer();
+  };
+  world.onTrainerChanged = refreshTrainerUi;
   world.onDeathChanged = showDeath;
   world.onLootMoney = (amount, alone) => {
     combatStatus.className = "success";
@@ -671,8 +828,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   };
   showLoot();
   showDeath();
-  showVendor();
-  showTrainer();
+  refreshVendorUi();
+  refreshTrainerUi();
   showItemMessage();
   showGroup();
   showTrade();
@@ -695,6 +852,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   let assetWarmup: SessionAssetWarmup | undefined;
   try {
     const location = await world.loginCharacter(character.guid);
+    // The tabard designer only echoes its own guid. The current emblem is client data obtained
+    // from the guild query, so ask once on entry rather than opening an editor on destructive zeroes.
+    if (character.guildId > 0) world.queryGuild(character.guildId);
     const terrain = new TerrainClient(gatewayInput.value);
     game.terrain = terrain;
     terrain.onStatus = (message, error) => {
@@ -777,14 +937,21 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       // is the loot window — so an item query answered while the corpse was open left «Предмет
       // 4306» on screen until the player closed and reopened it.
       showLoot();
-      showVendor();
+      refreshVendorUi("metadata");
       showLootRolls();
+      showMail();
     });
     // Speculative work belongs to this login only. It has fixed lifetime budgets and never joins
     // the loading-screen barrier; the render loop merely gives it the already-current player,
     // action bar and environment list while its short soft window is open.
     game.assetWarmup?.dispose();
-    assetWarmup = new SessionAssetWarmup({ environment, creatureModels, itemMetadata, spellVisuals });
+    // The spellbook, not just the action bar: the spell nobody put on a bar is exactly the one
+    // whose first cast is cold. Read through a function because `SMSG_INITIAL_SPELLS` is only the
+    // first of the packets that change it.
+    assetWarmup = new SessionAssetWarmup(
+      { environment, creatureModels, itemMetadata, spellVisuals },
+      { knownSpellIds: () => world.knownSpells.map((spell) => spell.id) },
+    );
     game.assetWarmup = assetWarmup;
     // Both lock tables at once, and once: which spell opens a chest has to be decided here,
     // where the spellbook is, and asking per object would be a round trip for every rock.
@@ -844,6 +1011,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       showSpells();
       showTalents();
       showProfessions();
+      showCharacterCollections();
     };
     talentData.load();
     // Zones and their rectangles. The server names an area with a number and nothing else, so the
@@ -866,6 +1034,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // 400, `src=""` on both — so a reordering that broke it would have cost another session of
     // empty windows and nothing would have said why.
     game.gatewayOrigin = new URL(gatewayInput.value.replace(/^ws/, "http")).origin;
+    if (!frameXmlEnabled) {
+      installNativeWowUiSkin(game.gatewayOrigin);
+      mountNativeCharacterPortrait(characterModel);
+    }
     // The 2D overlay draws creature icons on a canvas and cannot read `game` — it is what
     // `game/Context.ts` imports its camera constants from, so the import back would be a cycle.
     if (game.scene) game.scene.gatewayOrigin = game.gatewayOrigin;
@@ -982,6 +1154,25 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       settingsStore.set({ ...settingsStore.value, minimapRotate: rotate });
     });
     showWorldState(world.state);
+    // Every world runs the generated TSWoW modules. The explicit diagnostic flag additionally
+    // selects the stock FrameXML HUD; the ordinary route keeps native windows and their inputs.
+    const finishModuleCommandLoad = beginModuleCommandLoad(world);
+    systemLine("Загрузка аддонов…");
+    void import("../framexml/FrameXmlWorldMount.js")
+        .then(async (module) => {
+          if (generation !== enterGeneration || game.world !== world) return;
+          const result = await module.mountFrameXmlVertical({ addonsOnly: !frameXmlEnabled });
+          if (generation !== enterGeneration || game.world !== world) return;
+          systemLine(result.message);
+          console.info("[framexml]", result.message);
+        })
+        .catch((error: unknown) => {
+          console.error("[framexml] мировой монтаж не удался", error);
+          if (generation === enterGeneration && game.world === world) {
+            systemLine("Не удалось загрузить аддоны. Перезагрузите страницу, чтобы повторить попытку.");
+          }
+        })
+        .finally(finishModuleCommandLoad);
   } catch (error) {
     if (game.assetWarmup === assetWarmup) {
       assetWarmup?.dispose();
@@ -997,12 +1188,25 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     if (game.spellVisuals === spellVisuals) {
       spellVisuals.onLoaded = undefined;
       game.spellVisuals = undefined;
+      // The kit client is this closure's own, so it is retired on the same condition rather than
+      // on one of its own: it exists to serve the coordinator that has just been retired above.
+      spellVisualKits.onLoaded = undefined;
     }
     hideLoadingScreen();
-    worldPanel.hidden = true;
-    document.body.classList.remove("world-active");
+    const message = error instanceof Error ? error.message : String(error);
     characterStatus.className = "error";
-    characterStatus.textContent = error instanceof Error ? error.message : String(error);
+    characterStatus.textContent = message;
     if (onBusy) onBusy.disabled = false;
+    // The way back. It used to be «hide the world panel and leave everything else standing», which
+    // was survivable only because the DOM character panel was still behind it; with the GlueXML
+    // screens as the front door there is nothing behind it at all, and a half-built world left in
+    // `game` is what the next attempt would inherit. `leaveWorld` hides the panel, clears the
+    // context (the dead death layer included) and returns the player to the screen the session came
+    // from. Skipped when a newer attempt has already taken over: that attempt owns the screen now,
+    // and hiding the world panel here would hide *its* world.
+    if (generation === enterGeneration) {
+      clearQuestLog();
+      leaveWorld("enter-failed", message);
+    }
   }
 }

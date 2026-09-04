@@ -12,7 +12,7 @@ import { arenaFrames, bossFrames, focusFrame, partyFrames, petFrame, raidFrames,
 import { showTarget, unitDisplayName } from "./Frames.js";
 import { UnitFrame, UnitFrameList } from "./UnitFrame.js";
 import { raidMarksByUnit, threatFraction, unitSnapshot, type UnitSnapshot } from "./UnitSnapshot.js";
-import { setUnitFramePortrait } from "./Portraits.js";
+import { setPartyPortrait, setUnitFramePortrait } from "./Portraits.js";
 
 /**
  * Every unit frame past the player's own and its target: slice I2.
@@ -35,6 +35,7 @@ import { setUnitFramePortrait } from "./Portraits.js";
 
 const RAID_SUBGROUPS = 8;
 const RAID_PER_SUBGROUP = 5;
+const PARTY_FRAME_COUNT = 4;
 
 const selectTarget = (guid: bigint): void => {
   game.world?.selectTarget(guid);
@@ -44,7 +45,9 @@ const selectTarget = (guid: bigint): void => {
 const targetOfTarget = new UnitFrame({ kind: "tot", size: "compact", onClick: selectTarget, portrait: true });
 const focus = new UnitFrame({ kind: "focus", size: "compact", onClick: selectTarget, portrait: true });
 const pet = new UnitFrame({ kind: "pet", size: "compact", onClick: selectTarget, portrait: true });
-const party = new UnitFrameList({ kind: "party", size: "full", onClick: selectTarget, onContext: openGroupMenu });
+const party = new UnitFrameList({
+  kind: "party", size: "full", onClick: selectTarget, onContext: openGroupMenu, portrait: true,
+});
 const raid = new UnitFrameList({
   kind: "raid", size: "grid", onClick: selectTarget, onContext: openGroupMenu, className: "ui-raid-grid",
 });
@@ -58,6 +61,20 @@ partyFrames.append(party.root);
 raidFrames.append(raid.root);
 bossFrames.append(bosses.root);
 arenaFrames.append(arena.root);
+
+// Stock PartyFrame has exactly four stable rows. Create the browser rows and their canvases once,
+// so an empty party still has all portrait targets ready and a reorder only changes GUIDs.
+for (let index = 0; index < PARTY_FRAME_COUNT; index += 1) party.at(index);
+
+function syncPartyPortraits(): void {
+  for (let index = 0; index < PARTY_FRAME_COUNT; index += 1) {
+    setPartyPortrait(index, party.at(index));
+  }
+}
+
+// Publish the stable canvas targets immediately as well as on every world repaint. This keeps an
+// empty party's four renderer slots alive before the first roster packet arrives.
+syncPartyPortraits();
 
 export { arenaOpponentGuids, bossDisengaged, bossEngaged, engagedBossGuids, inArena } from "../game/Encounters.js";
 
@@ -108,6 +125,7 @@ export function showUnitFrames(): void {
     setUnitFramePortrait("focus", focus);
     setUnitFramePortrait("pet", pet);
     for (const list of [party, raid, bosses, arena]) list.render([]);
+    syncPartyPortraits();
     return;
   }
 
@@ -170,7 +188,7 @@ export function showUnitFrames(): void {
     raid.render(grid.map((entry) => entry ?? { snapshot: emptyGridSlot() }));
   } else {
     raid.render([]);
-    party.render(members.map((member) => {
+    party.render(members.slice(0, PARTY_FRAME_COUNT).map((member) => {
       const snapshot = snapshotOf(member.guid, marks)
         ?? unitSnapshot(member.guid, member.name, { online: member.online, raidMark: marks.get(member.guid) });
       // The group list is the authority on the name and on being connected at all; the stats
@@ -185,6 +203,8 @@ export function showUnitFrames(): void {
       };
     }));
   }
+
+  syncPartyPortraits();
 
   bosses.render(engagedBossGuids()
     .map((guid) => snapshotOf(guid, marks))

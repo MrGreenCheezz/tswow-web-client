@@ -32,6 +32,34 @@ test("world draw receipt is created only after both renderer submissions", async
   assert.ok(sky > earlyReturn && world > sky && contextGuard > world && finallyBlock > contextGuard && receipt > finallyBlock,
     "receipt must follow sky, world, post-render context proof, and renderer cleanup");
 
+  // P3. The underwater overlay is the one pass allowed between the world render and the context
+  // proof, and its position is the whole design: after the world so it tints a finished frame,
+  // inside the same try so it inherits `autoClear = false`, and before the proof so a context lost
+  // while it draws still cannot produce a receipt. Anything else appearing in that gap is a
+  // regression, not a refactor.
+  const overlay = draw.indexOf("this.#drawUnderwaterOverlay(now);", world);
+  assert.ok(overlay > world && overlay < contextGuard,
+    "the underwater overlay is submitted after the world pass and before the context proof");
+  assert.equal(draw.indexOf("this.#renderer.render(", overlay), -1,
+    "no further renderer submission may follow the overlay inside draw()");
+
+  // P4. The glow chain wraps the three submissions above rather than joining them, and every part
+  // of that is load-bearing. `#beginFullscreenGlow` binds the offscreen buffer *before* the sky
+  // pass, or the sky would land on the canvas and the world beside it; the composite runs after the
+  // overlay, so the tint is part of the frame that blooms; and the release sits in `finally`,
+  // because a throw between them would otherwise leave the renderer pointed at a render target and
+  // the next portrait would be drawn inside it. The chain's own four submissions deliberately live
+  // in helpers below `#resetFrameCounters`, which is why the assertion above still holds.
+  const glowBegin = draw.indexOf("const glow = this.#beginFullscreenGlow();");
+  const glowCompose = draw.indexOf("this.#composeFullscreenGlow(glow);", overlay);
+  const glowEnd = draw.indexOf("this.#endFullscreenGlow(glow);", finallyBlock);
+  assert.ok(glowBegin > earlyReturn && glowBegin < sky,
+    "the offscreen target is bound before the sky pass");
+  assert.ok(glowCompose > overlay && glowCompose < contextGuard,
+    "the glow composite runs after the underwater overlay and before the context proof");
+  assert.ok(glowEnd > finallyBlock,
+    "the render target is handed back in the same finally that restores autoClear");
+
   assert.match(draw, /Number\.isSafeInteger\(this\.#submissionSerial\)/);
   assert.match(draw, /this\.#submissionSerial >= Number\.MAX_SAFE_INTEGER/);
   assert.match(draw, /Number\.isSafeInteger\(submissionSerial\)/);

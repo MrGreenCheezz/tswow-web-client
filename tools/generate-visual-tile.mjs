@@ -1,13 +1,14 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as THREE from "three";
 import { parseAdtPlacements } from "./adt-placements.mjs";
-import { parseWmoDoodads } from "./wmo-visual.mjs";
+import { parseWmoDoodadSets, validParsedWmoDoodadSets, wmoDependencies } from "./wmo-visual.mjs";
 import { openDbcFile } from "./dbc.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
-import { stampGenerated } from "./source-stamp.mjs";
+import { stampGenerated, stampIsCurrent } from "./source-stamp.mjs";
 
 const VMAP_TO_THREE = new THREE.Matrix4().set(
   -1, 0, 0, 0,
@@ -25,6 +26,11 @@ if (![mapId, gridX, gridY].every(Number.isInteger) || mapId < 0 || gridX < 0 || 
 }
 
 const destination = resolve(root, process.env.VISUAL_TILE_DIR ?? "data/visual-tiles", String(mapId), `${gridX}-${gridY}.json`);
+const wmoDoodadCacheDirectory = resolve(
+  root,
+  process.env.WMO_DOODAD_CACHE_DIR ?? "data/visual-wmo-doodads",
+);
+const WMO_DOODAD_CACHE_VERSION = 1;
 const mapName = await internalMapName(dbcDirectory(), mapId);
 if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
 
@@ -36,12 +42,26 @@ const objects = parseAdtPlacements(adt);
 const wmoPaths = [...new Set(objects.filter((object) => object.kind === "wmo").map((object) => object.name))];
 let doodadCount = 0;
 let missingWmos = 0;
+const wmoSourcePaths = new Set(wmoPaths);
 if (wmoPaths.length > 0) {
   const roots = new Map();
   for (const path of wmoPaths) {
     const data = await archives.read(path);
-    if (data) roots.set(path.toLowerCase(), data);
-    else missingWmos++;
+    if (!data) {
+      missingWmos++;
+      continue;
+    }
+    let groupPaths = [];
+    try {
+      groupPaths = wmoDependencies(data, path).groups;
+    } catch {
+      // Furniture lighting is optional enrichment. Keep a valid root placement on the ordinary
+      // outdoor path when a custom/malformed WMO cannot enumerate its group files.
+    }
+    for (const groupPath of groupPaths) wmoSourcePaths.add(groupPath);
+    roots.set(path.toLowerCase(), {
+      doodadSets: await cachedWmoDoodadSets(data, path, groupPaths),
+    });
   }
   const expanded = [];
   for (let placementIndex = 0; placementIndex < objects.length; placementIndex++) {
@@ -49,7 +69,8 @@ if (wmoPaths.length > 0) {
     if (placement.kind !== "wmo") continue;
     const wmo = roots.get(placement.name.toLowerCase());
     if (!wmo) continue;
-    const doodads = parseWmoDoodads(wmo, placement.doodadSet ?? 0);
+    const requestedSet = placement.doodadSet ?? 0;
+    const doodads = wmo.doodadSets[requestedSet] ?? wmo.doodadSets[0] ?? [];
     for (let doodadIndex = 0; doodadIndex < doodads.length && objects.length + expanded.length < 10_000; doodadIndex++) {
       expanded.push(worldDoodad(placement, doodads[doodadIndex], doodadIndex));
     }
@@ -61,10 +82,60 @@ await mkdir(dirname(destination), { recursive: true });
 await writeFile(destination, JSON.stringify(objects));
 // The tile and every building whose furniture was read out of it: a module that changes a WMO's
 // doodad set changes this list without touching the ADT.
-await stampGenerated(destination, archives, { paths: [adtPath, ...wmoPaths] });
+await stampGenerated(destination, archives, {
+  generation: "visual-tile-v3",
+  paths: [adtPath, ...wmoSourcePaths],
+});
 const absent = missingWmos > 0 ? `, ${missingWmos} WMO(s) not in the client` : "";
 console.log(`Generated visual tile ${mapId}/${gridX}/${gridY}: ${objects.length} objects (${doodadCount} WMO doodads)${absent}`);
 archives.close();
+
+/**
+ * Parse a root's group ownership once, not once for every ADT that names the same city WMO.
+ *
+ * Stormwind is named by sixteen cells and has 286 group files. The gateway serialises visual-tile
+ * generation, so this source-stamped, normalized-root-path cache turns the other fifteen runs into
+ * one small JSON read while still invalidating when the root, any group, or archive chain changes.
+ */
+async function cachedWmoDoodadSets(rootData, rootPath, groupPaths) {
+  const hash = createHash("sha1")
+    .update(`wmo-doodad-light-v1\0${rootPath.toLowerCase()}`)
+    .digest("hex");
+  const destination = join(wmoDoodadCacheDirectory, `${hash}.json`);
+  const inputs = {
+    generation: "wmo-doodad-light-v1",
+    paths: [rootPath, ...groupPaths],
+  };
+  try {
+    if (await stampIsCurrent(destination, archives, inputs)) {
+      const cached = JSON.parse(await readFile(destination, "utf8"));
+      if (cached?.version === WMO_DOODAD_CACHE_VERSION
+        && validParsedWmoDoodadSets(cached.sets)) return cached.sets;
+    }
+  } catch {
+    // A torn/invalid optimization cache is only a miss. The tile itself still has to be generated.
+  }
+
+  const groups = [];
+  for (const groupPath of groupPaths) {
+    const group = await archives.read(groupPath);
+    if (group) groups.push(group);
+  }
+  const sets = parseWmoDoodadSets(rootData, groups);
+  const temporary = `${destination}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(temporary, JSON.stringify({ version: WMO_DOODAD_CACHE_VERSION, sets }));
+    // A killed process can leave the temporary file, never a half-written payload under a stamp
+    // that still compares current. Rename is the only point at which readers see the new JSON.
+    await rename(temporary, destination);
+    await stampGenerated(destination, archives, inputs);
+  } catch {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    // A read-only/full cache directory costs performance, not a missing visual tile.
+  }
+  return sets;
+}
 
 function worldDoodad(placement, doodad, doodadIndex) {
   const parentRotation = mappedRotation(placement.rotationX, placement.rotationY, placement.rotationZ);
@@ -100,6 +171,9 @@ function worldDoodad(placement, doodad, doodadIndex) {
     rotationY: 0,
     rotationZ: 0,
     scale: placement.scale * doodad.scale,
+    // MODD is baked room illumination, not an albedo tint. Only MODR-owned indoor+MOCV doodads
+    // carry it; outdoor and unreferenced doodads continue to use Light.dbc unchanged.
+    ...(doodad.localLight ? { localLight: doodad.localLight } : {}),
     quaternionX: rotation.x,
     quaternionY: rotation.y,
     quaternionZ: rotation.z,

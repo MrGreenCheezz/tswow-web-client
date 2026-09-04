@@ -54,6 +54,14 @@ export const LIQUID_FRAMES_PER_SECOND = 30;
  * bottom is still visible, which is where the client's shoreline sits.
  */
 const DEEP_AT_YARDS = 3;
+/** Readability floors: even multiplied together, the animated surface stays as solid as fallback. */
+export const WATER_MIN_SHALLOW_ALPHA = 0.88;
+export const WATER_MIN_DEEP_ALPHA = 0.94;
+export const WATER_TEXTURE_ALPHA_FLOOR = 0.9;
+/** Cold-cache water must remain recognisable while its animated strip is in flight. */
+export const WATER_FALLBACK_OPACITY = 0.78;
+/** Micro-waves must remain visible through the surface alpha without reading as a flashing sheet. */
+export const WATER_WAVE_LIGHT_STRENGTH = 0.065;
 
 export interface LiquidStrip {
   texture: THREE.Texture;
@@ -351,15 +359,17 @@ export interface WaterShaderProfile {
   readonly waterFresnel: boolean;
   readonly waterMicroWaves: boolean;
   readonly waterSunSparkle: boolean;
+  readonly waterFoam: boolean;
   readonly fantasyGlow: boolean;
 }
 
-export const WATER_SHADER_PROFILE_VERSION = 2;
+export const WATER_SHADER_PROFILE_VERSION = 3;
 
 export const DEFAULT_WATER_SHADER_PROFILE: Readonly<WaterShaderProfile> = Object.freeze({
   waterFresnel: false,
   waterMicroWaves: false,
   waterSunSparkle: false,
+  waterFoam: false,
   fantasyGlow: false,
 });
 
@@ -396,7 +406,8 @@ const LIQUID_FANTASY_GLOW_BINDINGS = new WeakMap<THREE.MeshBasicMaterial, Liquid
 function waterShaderMask(profile: Readonly<Partial<WaterShaderProfile>> | undefined): number {
   return (profile?.waterFresnel === true ? 1 : 0)
     | (profile?.waterMicroWaves === true ? 2 : 0)
-    | (profile?.waterSunSparkle === true ? 4 : 0);
+    | (profile?.waterSunSparkle === true ? 4 : 0)
+    | (profile?.waterFoam === true ? 8 : 0);
 }
 
 /**
@@ -552,8 +563,11 @@ ${shader.vertexShader}`.replace(beginVertex, `
 `);
   }
 
-  if (shader.fragmentShader.includes("water-profile-v2")) return;
-  const effects: string[] = ["/* water-profile-v2 */", `
+  if (shader.fragmentShader.includes("water-profile-v3")) return;
+  const hasLiquidDepth = shader.vertexShader.includes("vLiquidDepth = liquidDepth;")
+    && shader.fragmentShader.includes("uniform float liquidDeepAt;")
+    && shader.fragmentShader.includes("vLiquidDepth");
+  const effects: string[] = ["/* water-profile-v3 */", `
   vec3 waterBaseNormalRaw = vWaterWorldNormal;
   vec3 waterSurfaceNormal = waterBaseNormalRaw
     * inversesqrt(max(dot(waterBaseNormalRaw, waterBaseNormalRaw), 1e-8));
@@ -563,16 +577,16 @@ ${shader.vertexShader}`.replace(beginVertex, `
   }
   if ((binding.mask & 2) !== 0) {
     effects.push(`
-  float waterWavePhaseA = dot(vWaterWorldPosition.xz, vec2(0.071, 0.113)) + waterTime * 1.7;
-  float waterWavePhaseB = dot(vWaterWorldPosition.xz, vec2(-0.137, 0.053)) - waterTime * 1.1;
-  float waterWave = sin(waterWavePhaseA) + 0.5 * sin(waterWavePhaseB);
-  vec2 waterWaveSlope = cos(waterWavePhaseA) * vec2(0.071, 0.113)
-    + 0.5 * cos(waterWavePhaseB) * vec2(-0.137, 0.053);
+  float waterWavePhaseA = dot(vWaterWorldPosition.xz, vec2(0.028, 0.044)) + waterTime * 0.42;
+  float waterWavePhaseB = dot(vWaterWorldPosition.xz, vec2(-0.055, 0.021)) - waterTime * 0.27;
+  float waterWave = sin(waterWavePhaseA) + 0.35 * sin(waterWavePhaseB);
+  vec2 waterWaveSlope = cos(waterWavePhaseA) * vec2(0.028, 0.044)
+    + 0.35 * cos(waterWavePhaseB) * vec2(-0.055, 0.021);
   vec3 waterWaveNormalRaw = waterSurfaceNormal
-    + vec3(-waterWaveSlope.x * 0.65, 0.0, -waterWaveSlope.y * 0.65);
+    + vec3(-waterWaveSlope.x * 2.2, 0.0, -waterWaveSlope.y * 2.2);
   waterSurfaceNormal = waterWaveNormalRaw
     * inversesqrt(max(dot(waterWaveNormalRaw, waterWaveNormalRaw), 1e-8));
-  outgoingLight *= 1.0 + waterWave * 0.03;
+  outgoingLight *= 1.0 + waterWave * ${WATER_WAVE_LIGHT_STRENGTH};
 `);
   }
   if ((binding.mask & 1) !== 0) {
@@ -612,6 +626,19 @@ ${shader.vertexShader}`.replace(beginVertex, `
   }
 `);
   }
+  // Cold-cache fallback materials do not carry the liquid-depth varying.  Keep foam neutral there
+  // instead of compiling a reference to a value the fallback shader cannot provide.
+  if ((binding.mask & 8) !== 0 && hasLiquidDepth) {
+    effects.push(`
+  float waterFoamDepth = clamp(vLiquidDepth / max(liquidDeepAt, 1e-4), 0.0, 1.0);
+  float waterFoamShore = 1.0 - smoothstep(0.0, 0.42, waterFoamDepth);
+  float waterFoamPhase = dot(vWaterWorldPosition.xz, vec2(0.31, -0.23)) + waterTime * 1.25;
+  float waterFoamPattern = 0.5 + 0.5 * sin(waterFoamPhase);
+  float waterFoamAmount = waterFoamShore * smoothstep(0.48, 0.86, waterFoamPattern)
+    * (1.0 - waterUnderwater) * 0.12;
+  outgoingLight = mix(outgoingLight, outgoingLight + vec3(0.18, 0.24, 0.24), waterFoamAmount);
+`);
+  }
   shader.fragmentShader = `
 uniform float waterTime;
 uniform vec3 waterSunDirection;
@@ -639,7 +666,7 @@ export function buildLiquidMaterial(liquidClass: LiquidClass, strip: LiquidStrip
   const uniforms: LiquidMaterialUniforms = {
     liquidFrame: { value: 0 },
     liquidFrames: { value: strip.frames },
-    liquidShallowAlpha: { value: glowing ? 1 : 0.5 },
+    liquidShallowAlpha: { value: glowing ? 1 : WATER_MIN_SHALLOW_ALPHA },
     liquidDeepAlpha: { value: 1 },
     liquidDeepAt: { value: DEEP_AT_YARDS },
     // Stand-ins until a light sample arrives; magma and slime keep them, being their own colour.
@@ -681,7 +708,7 @@ export function buildLiquidMaterial(liquidClass: LiquidClass, strip: LiquidStrip
       vec3 liquidBody = mix(liquidShallowColour, liquidDeepColour, liquidDepthMix);
       diffuseColor.rgb *= liquidBody + sampledDiffuseColor.rgb;
       diffuseColor.a *= mix(liquidShallowAlpha, liquidDeepAlpha, liquidDepthMix)
-        * mix(0.55, 1.0, sampledDiffuseColor.a);
+        * mix(${WATER_TEXTURE_ALPHA_FLOOR}, 1.0, sampledDiffuseColor.a);
     `);
   };
   material.customProgramCacheKey = () => `liquid-${liquidClass}`;
@@ -695,8 +722,10 @@ export function updateLiquidMaterial(liquid: LiquidMaterial, liquidClass: Liquid
     Math.floor(seconds * LIQUID_FRAMES_PER_SECOND) % liquid.uniforms.liquidFrames.value;
   if (!sample || liquidClass === "magma" || liquidClass === "slime") return;
   const ocean = liquidClass === "ocean";
-  liquid.uniforms.liquidShallowAlpha.value = ocean ? sample.oceanShallowAlpha : sample.waterShallowAlpha;
-  liquid.uniforms.liquidDeepAlpha.value = ocean ? sample.oceanDeepAlpha : sample.waterDeepAlpha;
+  const shallow = ocean ? sample.oceanShallowAlpha : sample.waterShallowAlpha;
+  const deep = ocean ? sample.oceanDeepAlpha : sample.waterDeepAlpha;
+  liquid.uniforms.liquidShallowAlpha.value = Math.min(1, Math.max(WATER_MIN_SHALLOW_ALPHA, shallow));
+  liquid.uniforms.liquidDeepAlpha.value = Math.min(1, Math.max(WATER_MIN_DEEP_ALPHA, deep));
   // The surface texture is black — mean rgb 4,4,4, with every bit of its detail in the alpha — so
   // all of the colour comes from here. The file keeps a close and a far colour for each of ocean
   // and river; the shallows take the close one and the depths the far one, over the same ramp the

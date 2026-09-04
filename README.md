@@ -120,13 +120,51 @@ The gateway generates most visual assets on first request. To reduce first-visit
 you may run `build-assets.bat` after the database-related settings in `.env` are correct. This
 optional warm-up can take time and creates ignored local caches.
 
-When switching between HD and classic client packs, run `npm run assets:visual-dbc` after changing
-the archives. The automatic `data/visual-dbc` overlay is accepted only when all generated `.src`
-stamps match the current `CLIENT_DIR` archive chain; a stale overlay is ignored. An explicitly set
-`VISUAL_DBC_DIR` trusts its DBC files and therefore must be kept in sync manually, but the
-patch-W/X/Y/Z-specific geoset policy still requires the matching `.src` sidecars. To roll back from HD
-to classic, remove `patch-W.MPQ`, `patch-X.MPQ`, `patch-Y.MPQ` and `patch-Z.MPQ` from the client's
-`Data/` directory, regenerate the visual DBC overlay, restart the gateway and reload the page.
+On every normal gateway launch (when `VISUAL_DBC_DIR` is not explicitly set), the nine client-media
+DBCs are automatically extracted as one set from the active `CLIENT_DIR` chain into an immutable,
+content-addressed generation under `data/visual-dbc`; the gateway only selects it after every table,
+stamp, and profile file is complete. Classic, HD, and arbitrary patch letters are therefore handled alike: the winning
+resource matters, not the archive name. The `.src` stamps prevent a model generation from being
+paired with another generation's tables. An explicitly set `VISUAL_DBC_DIR` remains a trusted
+operator override and must be synchronized manually with `npm run assets:visual-dbc`.
+
+Apply a new patch set like the original client does: publish the complete related set, then restart
+the gateway and reload the page. For example, the current `W/X/Y/Z` HD set cannot be enabled or
+disabled one archive at a time—without `W`, creature models from `X/Y` and baked textures from `Z`
+still win and do not form a classic profile.
+
+The in-world addon host follows the same winning chain on ordinary login and keeps complete generated
+`tsaddon-begin-lib` / `tsaddon-begin:<module>` blocks from the active `FrameXML.toc` in their
+authored order, and exposes TSWoW's `_CLIENT_NETWORK` custom-packet ABI to them. A patched standard
+toggle (for example the talent window on `N`) owns that route when its rendered root is valid; the
+native browser panel remains the fallback when the patch is absent or cannot mount. A patch publish
+during a running session also closes `/client/file` until restart so late-loaded UI cannot mix two
+generations. TSWoW widgets appear over the native UI; `?framexml=1` additionally selects the diagnostic stock FrameXML HUD.
+
+Compatibility targets this project's own TSWoW modules. `npm run tswow-addons:check` checks their
+generated Lua, command/menu entrypoints and packet/UI scenarios. Reading a TOC is not proof that
+an addon works. See the [TSWoW addon contract and current gaps](TSWOW_ADDON_COMPATIBILITY.ru.md).
+
+### Autonomous client pack
+
+Each user can build a local snapshot from their own installed client:
+
+```powershell
+npm run client-pack:dry-run
+npm run build:autonomous
+$env:CLIENT_PACK_DIR = (Resolve-Path dist/client-pack)
+npm run client-pack:verify
+npm run gateway
+```
+
+Before copying, `build:autonomous` runs the project's TSWoW addon behavior scenarios;
+failed scenarios or modules without a scenario stop the build with a reason. The pack preserves
+`Data` with its original MPQs and loose `.MPQ` directories, plus `Interface/AddOns` and `Fonts`.
+Its manifest records every path, size and SHA-256. Once selected,
+the gateway and every asset generator read `CLIENT_PACK_DIR`, so the source `CLIENT_DIR` is no
+longer required. Rebuild the complete pack after installing a new patch set. An existing pack is
+replaced only after the new snapshot is complete and the source client remained unchanged while it
+was copied.
 
 ## Configuration
 
@@ -136,6 +174,7 @@ for browser settings whose names begin with `VITE_`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLIENT_DIR` | portable sibling search | WoW directory containing `Data/` |
+| `CLIENT_PACK_DIR` | unset | Autonomous local client snapshot; takes priority over `CLIENT_DIR` |
 | `VISUAL_DBC_DIR` | stamped `data/visual-dbc` auto-detection | Explicit visual DBC overlay override; trusted as-is |
 | `TSWOW_INSTALL` | `../tswow-install` | TSWoW installation containing `modules/` |
 | `TSWOW_DATASET` | derived from install | Direct dataset override |
@@ -171,6 +210,13 @@ See [.env.example](.env.example) for dataset path overrides, cache directories a
 | `npm run client-data:check` | Compare ignored runtime tables with their local configured inputs |
 | `npm run check:generated` | Verify tracked DBC layouts and ignored local generated data |
 | `npm run modules:check` | Validate module UI and custom-message definitions |
+| `npm run patches:check` | Compare the TSWoW dataset, active MPQ chain, generated TSAddons and native updater manifest; exits non-zero on an incomplete patch contract |
+| `npm run client-pack:dry-run` | Measure an autonomous pack without copying client files |
+| `npm run client-pack:build` | Build local `dist/client-pack` from `CLIENT_DIR`, preserving MPQs and loose `.MPQ` directories |
+| `npm run client-pack:verify` | Verify every autonomous-pack file against its SHA-256 manifest |
+| `npm run client-addons:check` | Execute every root-level AddOn, including load-on-demand modules, from the selected client/pack |
+| `npm run tswow-addons:check` | Check the project's generated TSWoW modules from the active FrameXML.toc; `-- --json` returns a report |
+| `npm run build:autonomous` | Build the web bundle, check TSWoW addon scenarios, then build the autonomous client pack |
 | `npm run build:full` | Full configured-workspace verification followed by the build |
 | `npm run assets:visual-dbc` | Re-extract visual DBC files and stamp them against the current client pack |
 | `npm run assets:restamp` | Add/update source stamps without rerendering asset caches |

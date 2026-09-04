@@ -323,10 +323,14 @@ test("an artifact from a previous format is refused by name rather than misread"
   // Each new table sits after the last, and an older file simply ends where the new one would
   // start — there is no reading of it that is not a guess, so the magic changes with the layout and
   // the refusal is loud. What makes that safe rather than a broken cache is the other half of each
-  // slice: the namespace — `visual-v16` since WVM9 — gives every artifact a new name, so a stale
-  // file is never asked for again. Both predecessors are checked, because byte 70 was a reserved
-  // zero in WVM8 and is the transform count in WVM9: a reader that went by length rather than by
-  // name would sail straight past that and decode a model with no transforms.
+  // slice: the namespace — `visual-v21` since global bone channels — gives every artifact a new
+  // name, so a stale file is never asked for again. Both predecessors are checked, because byte 70
+  // was a reserved zero in WVM8 and is the transform count in WVM9: a reader that went by length
+  // rather than by name would sail straight past that and decode a model with no transforms. The
+  // A1 addition is the case where only the name can help: it went into the clip header's own
+  // reserved u16, so a v18 and a v19 artifact are the same magic and the same length. A2's extras
+  // table is visible in the bytes and still needs the name, because a v19 artifact is a valid
+  // decode with no stride speeds in it and the mount over it would go on skating.
   for (const [magic, last] of [["WVM7", 0x37], ["WVM8", 0x38]]) {
     const stale = new Uint8Array(72);
     stale.set([0x57, 0x56, 0x4d, last]);

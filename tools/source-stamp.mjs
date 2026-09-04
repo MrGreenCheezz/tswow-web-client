@@ -84,24 +84,39 @@ export async function stampIsCurrent(destination, archives, inputs) {
  * Separate from writing it because several generators close the chain before they write their
  * output, and the chain is what answers where a path came from.
  */
-export async function sourceStamp(archives, { paths = [], files = [] } = {}) {
+export async function sourceStamp(archives, { paths = [], files = [], generation } = {}) {
   const sources = [];
+  const missingSources = [];
   for (const path of paths) {
     const source = await archives.sourceOf(path);
-    // A path that resolves to nothing contributed nothing, so there is nothing to compare later.
     if (source) sources.push(source);
+    else if (typeof archives.absenceOf === "function") {
+      // A fallback *was* built from the fact that this path did not exist. Remember every loose
+      // overlay that can gain it and every archive that can be replaced in place; otherwise the
+      // first real asset a later TSWoW patch supplies leaves the fallback cached forever.
+      missingSources.push(await archives.absenceOf(path));
+    }
   }
   const plain = [];
+  const missingFiles = [];
   for (const file of files) {
     try {
       const stats = await stat(file);
       plain.push({ file, size: stats.size, mtimeMs: stats.mtimeMs });
     } catch {
-      // A file the generator did not actually need. Recording a missing file would make the entry
-      // permanently stale, which is worse than not knowing about it.
+      // This is an absence condition, not a permanently stale input: the gateway invalidates the
+      // entry only if the file later appears.
+      missingFiles.push(file);
     }
   }
-  return { chain: archives.chainDigest(), sources, files: plain };
+  return {
+    ...(typeof generation === "string" && generation ? { generation } : {}),
+    chain: archives.chainDigest(),
+    sources,
+    files: plain,
+    ...(missingSources.length ? { missingSources } : {}),
+    ...(missingFiles.length ? { missingFiles } : {}),
+  };
 }
 
 /** Writes the stamp beside the file it describes. */

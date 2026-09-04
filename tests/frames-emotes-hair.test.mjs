@@ -87,16 +87,16 @@ test("Ж5.1 the class portrait picks a cell of the client's own atlas", withClas
 });
 
 test("Ж5.2 the top-left corner is a column and not a stack of guessed offsets", async () => {
-  // Six blocks lived at hard `top` values that each assumed how tall the others were. The player
+  // Five blocks lived at hard `top` values that each assumed how tall the others were. The player
   // aura budget is 24 icons, which at 34px and a 4px gap inside 300px is three rows and 110px —
-  // so a fully buffed character's strip ran from 91 to 201, straight through the swing warning at
-  // 138 and the combat log at 168.
+  // so a fully buffed character's strip ran straight through the swing warning. Combat history is
+  // intentionally absent here now: it is the chat's «Бой» tab, not another overlay over the world.
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const css = await readFile(new URL("../src/browser/style.css", import.meta.url), "utf8");
 
   const rail = /<div id="left-rail"[\s\S]*?\n          <\/div>/.exec(html);
   assert.ok(rail, "the left column has to exist");
-  for (const id of ["player-hud", "player-auras", "secondary-frames", "party-frames", "swing-warning", "combat-log"]) {
+  for (const id of ["player-hud", "player-auras", "secondary-frames", "party-frames", "swing-warning"]) {
     assert.ok(rail[0].includes(`id="${id}"`), `${id} belongs in the column`);
   }
   // And the target's auras belong under its button row, which hangs below the frame.
@@ -107,7 +107,7 @@ test("Ж5.2 the top-left corner is a column and not a stack of guessed offsets",
   // Nothing in the corner may pin itself again: a hard `top` inside a flow column is how this
   // started, and one reintroduced rule would put the overlap back without failing anything else.
   const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const selector of [".aura-strip", ".combat-log", ".swing-warning", ".party-frames", ".secondary-frames"]) {
+  for (const selector of [".aura-strip", ".swing-warning", ".party-frames", ".secondary-frames"]) {
     const rule = new RegExp(`(^|})\\s*${selector.replace(".", "\\.")}\\s*\\{([^}]*)\\}`).exec(bare);
     assert.ok(rule, `${selector} should still have a rule`);
     assert.ok(!/(^|;)\s*(top|left):/.test(rule[2]),

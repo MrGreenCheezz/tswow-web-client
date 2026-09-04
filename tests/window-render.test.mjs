@@ -37,6 +37,10 @@ function fakeDocument() {
       className: "",
       hidden: false,
       listeners: new Map(),
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, String(value)); },
+      getAttribute(name) { return this.attributes.get(name) ?? null; },
+      removeAttribute(name) { this.attributes.delete(name); },
       classList: {
         add(...names) { node.className = [...new Set([...node.className.split(" ").filter(Boolean), ...names])].join(" "); },
         toggle(name, on) { on ? this.add(name) : node.className = node.className.split(" ").filter((c) => c !== name).join(" "); },
@@ -105,8 +109,9 @@ const {
   WindowRegistry, closeEscapableWindows, escapableWindowOpen, windowRegistry,
 } = await import("../dist/code/browser/ui/WindowRegistry.js");
 const {
-  PLAYER_FLAGS_RESTING, UNIT_FLAG_IN_COMBAT, buildWindowSnapshot, groupUnitView,
+  PLAYER_FLAGS_RESTING, UNIT_FLAG_IN_COMBAT, buildWindowSnapshot, groupUnitView, liveWindowSnapshot,
 } = await import("../dist/code/browser/ui/WindowBindings.js");
+const { game } = await import("../dist/code/browser/game/Context.js");
 const { unitSnapshot } = await import("../dist/code/browser/ui/UnitSnapshot.js");
 const { windowsView, windowsSignature } = await import("../dist/code/browser/ui/WindowsTab.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
@@ -1120,6 +1125,48 @@ test("bags, quests and auras reach a window in the shape the widgets read", () =
   // in the whole view a reader could still push to.
   assert.throws(() => { view.quest[0].objectives.push({ text: "х", have: 0, need: 1, done: false }); }, TypeError);
   assert.throws(() => { view.bag[0].slot.push({}); }, TypeError);
+});
+
+test("live module quest objectives sum carried stacks and keep the resolved item name", () => {
+  const previousWorld = game.world;
+  const previousItems = game.itemMetadata;
+  const selfGuid = 0x101n;
+  const firstGuid = 0x201n;
+  const secondGuid = 0x202n;
+  const self = { guid: selfGuid, typeId: 4, fields: new Map() };
+  const setGuid = (offset, guid) => {
+    self.fields.set(offset, Number(guid & 0xffff_ffffn));
+    self.fields.set(offset + 1, Number((guid >> 32n) & 0xffff_ffffn));
+  };
+  const questBase = UPDATE_FIELDS.PLAYER_QUEST_LOG_1_1.offset;
+  self.fields.set(questBase, 77);
+  setGuid(UPDATE_FIELDS.PLAYER_FIELD_PACK_SLOT_1.offset, firstGuid);
+  setGuid(UPDATE_FIELDS.PLAYER_FIELD_PACK_SLOT_1.offset + 2, secondGuid);
+  const item = (guid, count) => ({ guid, typeId: 3, fields: new Map([
+    [UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 769],
+    [UPDATE_FIELDS.ITEM_FIELD_STACK_COUNT.offset, count],
+  ]) });
+  game.world = {
+    mapId: 1, state: { selfGuid, objects: new Map([
+      [selfGuid, self], [firstGuid, item(firstGuid, 5)], [secondGuid, item(secondGuid, 4)],
+    ]) },
+    targetGuid: undefined, currentGameTime: () => undefined,
+    questTemplates: new Map([[77, {
+      title: "Волки у ворот", objectives: [], itemObjectives: [{ itemId: 769, count: 8 }],
+    }]]),
+    itemTemplates: new Map(), creatureTemplates: new Map(), gameObjectTemplates: new Map(),
+    raidTargets: new Map(), displayName: () => "", aurasFor: () => [],
+  };
+  game.itemMetadata = { get: (entry) => entry === 769 ? { name: "Кусок мяса вепря" } : undefined };
+  try {
+    const view = liveWindowSnapshot({ roots: new Set(["quest"]) });
+    assert.deepEqual(view.quest[0].objectives[0], {
+      text: "Кусок мяса вепря", have: 9, need: 8, done: true,
+    });
+  } finally {
+    game.world = previousWorld;
+    game.itemMetadata = previousItems;
+  }
 });
 
 test("hasBuff and hasDebuff read a map by name, and the two are kept apart", () => {

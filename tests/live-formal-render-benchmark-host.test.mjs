@@ -70,13 +70,14 @@ function snapshot(frameCount = 3) {
   };
 }
 
-function configuration(anisotropy = false) {
+function configuration(anisotropy = false, godRays = false) {
   return {
     lighting: 1,
     settings: {
       renderScale: 100,
       wmoOcclusion: true,
       characterAtlasAnisotropy: anisotropy,
+      godRays,
       grassRadius: 50,
       grassDense: true,
     },
@@ -170,6 +171,7 @@ class FakeRenderer {
   resetGpuCount = 0;
   drawCalls = [];
   settingsCalls = [];
+  underwaterSurfaces = [];
   groundCoverClients = [];
   unitActionCalls = [];
   portraitTargetsCalls = [];
@@ -185,6 +187,7 @@ class FakeRenderer {
   renderScalePercent = 75;
   wmoOcclusion = false;
   characterAtlasAnisotropy = false;
+  godRays = true;
   grassRadius = 20;
   grassDense = false;
   surface = {
@@ -205,6 +208,7 @@ class FakeRenderer {
       renderScalePercent: this.renderScalePercent,
       wmoOcclusion: this.wmoOcclusion,
       characterAtlasAnisotropy: this.characterAtlasAnisotropy,
+      godRays: this.godRays,
       grassRadius: this.grassRadius,
       grassDense: this.grassDense,
     };
@@ -243,6 +247,7 @@ class FakeRenderer {
     this.characterAtlasAnisotropy = value;
     this.settingsCalls.push(["atlas", value]);
   }
+  setGodRays(value) { this.godRays = value; this.settingsCalls.push(["god-rays", value]); }
   setGroundCover(client, radius, dense) {
     this.groundCoverClients.push(client);
     if (radius !== undefined) this.grassRadius = radius;
@@ -252,6 +257,8 @@ class FakeRenderer {
   setWeather() {}
   setIndoors() {}
   updateLighting() {}
+  // P3: pushed once per replay frame beside updateLighting, like weather and indoors above.
+  setUnderwaterSurface(surface) { this.underwaterSurfaces.push(surface); }
   setSelection() {}
   playSpellVisual() { throw new Error("suppressed spell visual reached renderer"); }
   cancelSpellVisual() { throw new Error("suppressed spell cancellation reached renderer"); }
@@ -289,6 +296,7 @@ function makeHarness(options = {}) {
     renderScalePercent: 75,
     wmoOcclusion: false,
     characterAtlasAnisotropy: false,
+    godRays: true,
     grassRadius: 20,
     grassDense: false,
   };
@@ -431,10 +439,34 @@ test("release restores every graphics knob and resumes RAF even when one setter 
   harness.host.applyVariant(lease, epoch(), "A", configuration());
   await assert.rejects(lease.release(), /restore scale failed/);
   assert.equal(formalRenderBenchmarkExclusiveActive(), false);
-  assert.deepEqual(harness.renderer.settingsCalls.slice(-5), [
-    ["lighting", 2], ["scale", 0.75], ["wmo", false], ["atlas", false], ["grass", 20, false],
+  assert.deepEqual(harness.renderer.settingsCalls.slice(-6), [
+    ["lighting", 2], ["scale", 0.75], ["wmo", false], ["atlas", false],
+    ["god-rays", true], ["grass", 20, false],
   ]);
   await lease.release();
+});
+
+test("god rays apply without fullscreen glow support and restore the captured user value", async () => {
+  const harness = makeHarness();
+  harness.setUserGraphics({
+    lightingQuality: 2,
+    renderScalePercent: 75,
+    wmoOcclusion: false,
+    characterAtlasAnisotropy: false,
+    godRays: false,
+    grassRadius: 20,
+    grassDense: false,
+  });
+  harness.renderer.godRays = false;
+  const lease = await harness.host.acquireExclusiveLease();
+  try {
+    harness.host.applyVariant(lease, epoch(), "A", configuration(false, true));
+    assert.equal(harness.renderer.godRays, true,
+      "the independent ray leaf is enabled even when the classic glow setter is absent");
+  } finally {
+    await lease.release();
+  }
+  assert.equal(harness.renderer.godRays, false, "release restores the captured account value");
 });
 
 test("prewarm traverses every fixed frame without GPU begin, then render wraps the actual receipt and ticket time", async () => {
@@ -472,8 +504,9 @@ test("prewarm traverses every fixed frame without GPU begin, then render wraps t
     harness.host.endReplayEpoch(lease, identity);
     await lease.release();
   }
-  assert.deepEqual(harness.renderer.settingsCalls.slice(-5), [
-    ["lighting", 2], ["scale", 0.75], ["wmo", false], ["atlas", false], ["grass", 20, false],
+  assert.deepEqual(harness.renderer.settingsCalls.slice(-6), [
+    ["lighting", 2], ["scale", 0.75], ["wmo", false], ["atlas", false],
+    ["god-rays", true], ["grass", 20, false],
   ], "release restores the captured user settings without persistence");
 });
 
@@ -645,6 +678,20 @@ test("an external renderer setter during exclusive ownership makes the next barr
   }
 });
 
+test("an external god-rays mutation is reported as graphics drift", async () => {
+  const harness = makeHarness();
+  const { lease, identity } = await readyHost(harness);
+  try {
+    harness.renderer.setGodRays(true);
+    await assert.rejects(
+      harness.host.captureBarrier(lease, identity, "start"),
+      /graphics configuration drifted at godRays: external setGodRays/,
+    );
+  } finally {
+    await lease.release();
+  }
+});
+
 test("setGroundCover(undefined) executes but permanently taints the active formal lease", async () => {
   const harness = makeHarness();
   const { lease, identity } = await readyHost(harness);
@@ -772,6 +819,23 @@ test("actual renderer readback catches a silently clamped formal setting", async
   }
 });
 
+test("god-rays readback fails closed when the renderer rejects the requested state", async () => {
+  const harness = makeHarness();
+  harness.renderer.setGodRays = function(value) {
+    this.godRays = false;
+    this.settingsCalls.push(["god-rays", value]);
+  };
+  const lease = await harness.host.acquireExclusiveLease();
+  try {
+    assert.throws(
+      () => harness.host.applyVariant(lease, epoch(), "A", configuration(false, true)),
+      /graphics configuration drifted at godRays/,
+    );
+  } finally {
+    await lease.release();
+  }
+});
+
 test("every measured submission is bound to one exact surface and WebGL context epoch", async () => {
   const harness = makeHarness();
   const replay = snapshot();
@@ -810,6 +874,7 @@ test("release reapplies the latest user settings changed during the suite", asyn
     renderScalePercent: 60,
     wmoOcclusion: true,
     characterAtlasAnisotropy: true,
+    godRays: false,
     grassRadius: 35,
     grassDense: true,
   };
@@ -818,11 +883,13 @@ test("release reapplies the latest user settings changed during the suite", asyn
   harness.renderer.setRenderScale(latest.renderScalePercent / 100);
   harness.renderer.setWmoOcclusion(latest.wmoOcclusion);
   harness.renderer.setCharacterAtlasAnisotropy(latest.characterAtlasAnisotropy);
+  harness.renderer.setGodRays(latest.godRays);
   harness.renderer.setGroundCover(harness.context.groundCover, latest.grassRadius, latest.grassDense);
   await lease.release();
   assert.deepEqual(harness.renderer.benchmarkGraphicsConfiguration, latest);
-  assert.deepEqual(harness.renderer.settingsCalls.slice(-5), [
-    ["lighting", 3], ["scale", 0.6], ["wmo", true], ["atlas", true], ["grass", 35, true],
+  assert.deepEqual(harness.renderer.settingsCalls.slice(-6), [
+    ["lighting", 3], ["scale", 0.6], ["wmo", true], ["atlas", true],
+    ["god-rays", false], ["grass", 35, true],
   ]);
 });
 

@@ -23,6 +23,18 @@ const SPELL_ATTR2_AUTOREPEAT_FLAG = 0x00000020;
 /** `SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT` in SpellCategory.dbc. */
 const SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT = 0x04;
 
+/**
+ * Server-only linked effects have no client DBC row, but the world database names the visible
+ * spell that owns them.  Keep these aliases at the metadata boundary so every browser surface
+ * gets the owner's real localisation, icon and client-visibility flags instead of inventing an
+ * "unknown buff".  The current realm's `spell_linked_spell` row is `26023 -> 61418` (type 2,
+ * Pursuit of Justice mounted-speed effect); neither Spell.dbc shipped with the dataset nor the
+ * original client archive contains 61418.
+ */
+const SERVER_LINKED_SPELL_ALIASES = new Map<number, number>([
+  [61418, 26023],
+]);
+
 export interface SpellMetadata {
   id: number;
   name: string;
@@ -33,6 +45,18 @@ export interface SpellMetadata {
   passive: boolean;
   /** Marked invisible by the artist. Never belongs in the spellbook or on the aura bar. */
   hidden: boolean;
+  /** SPELL_ATTR0_TRADESPELL: recipes belong in a profession, not the spellbook. */
+  tradeSkill?: boolean;
+  /** Crafting operands come from the same DBC row as the spell description. */
+  effects?: number[];
+  effectItemType?: number[];
+  reagents?: Array<{ itemId: number; count: number }>;
+  tools?: number[];
+  requiredToolCategories?: number[];
+  requiredToolNames?: string[];
+  equippedItemClass?: number;
+  equippedItemSubclass?: number;
+  equippedItemInvTypes?: number;
   /** Auto Shot/Shoot: one targeted start request followed by server-timed ranged attacks. */
   autoRepeat: boolean;
   powerType: number;
@@ -219,6 +243,17 @@ export function parseSpellMetadata(
       iconPath: iconPaths.get(iconId) ?? "",
       passive: (spells.int(row, "Attributes") & SPELL_ATTR0_PASSIVE) !== 0,
       hidden: (spells.int(row, "Attributes") & SPELL_ATTR0_HIDDEN_CLIENTSIDE) !== 0,
+      tradeSkill: (spells.int(row, "Attributes") & 0x20) !== 0,
+      effects: perEffect((effect) => spells.int(row, "Effect", effect)),
+      effectItemType: perEffect((effect) => spells.int(row, "EffectItemType", effect)),
+      reagents: Array.from({ length: 8 }, (_, index) => ({
+        itemId: spells.int(row, "Reagent", index), count: spells.int(row, "ReagentCount", index),
+      })).filter((reagent) => reagent.itemId > 0 && reagent.count > 0),
+      tools: [0, 1].map((index) => spells.int(row, "Totem", index)).filter((id) => id > 0),
+      requiredToolCategories: [0, 1].map((index) => spells.int(row, "RequiredTotemCategoryID", index)).filter((id) => id > 0),
+      equippedItemClass: spells.int(row, "EquippedItemClass"),
+      equippedItemSubclass: spells.int(row, "EquippedItemSubclass"),
+      equippedItemInvTypes: spells.int(row, "EquippedItemInvTypes"),
       autoRepeat: (spells.int(row, "AttributesExB") & SPELL_ATTR2_AUTOREPEAT_FLAG) !== 0,
       powerType: spells.int(row, "PowerType"),
       powerCost: spells.int(row, "ManaCost"),
@@ -272,7 +307,42 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
     readFile(join(directory, "SpellRange.dbc")),
     readFile(join(directory, "SpellCastTimes.dbc")),
   ]);
-  return parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes);
+  const metadata = parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes);
+  const toolNames = await loadTotemCategoryNames(directory);
+  for (const spell of metadata.values()) {
+    spell.requiredToolNames = (spell.requiredToolCategories ?? []).map((id) => toolNames.get(id) ?? "Профессиональный инструмент");
+  }
+  for (const [effectId, ownerId] of SERVER_LINKED_SPELL_ALIASES) {
+    if (metadata.has(effectId)) continue;
+    const owner = metadata.get(ownerId);
+    if (owner) metadata.set(effectId, { ...owner, id: effectId });
+  }
+  return metadata;
+}
+
+/** DBCStructure.h: ID, sixteen localised names, locale mask, category type and mask. */
+async function loadTotemCategoryNames(directory: string): Promise<Map<number, string>> {
+  const payload = await readFile(join(directory, "TotemCategory.dbc")).catch(() => undefined);
+  const result = new Map<number, string>();
+  if (!payload || payload.length < 20 || payload.subarray(0, 4).toString("latin1") !== "WDBC") return result;
+  const rows = payload.readUInt32LE(4);
+  if (payload.readUInt32LE(8) !== 20 || payload.readUInt32LE(12) !== 80) return result;
+  const strings = 20 + rows * 80;
+  if (strings + payload.readUInt32LE(16) !== payload.length) return result;
+  const locales = ["enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU"];
+  const preferred = Math.max(0, locales.indexOf(process.env["CLIENT_LOCALE"] ?? "ruRU"));
+  for (let index = 0; index < rows; index++) {
+    const at = 20 + index * 80;
+    for (const locale of [preferred, 0, ...Array.from({ length: 16 }, (_, slot) => slot)]) {
+      const offset = payload.readUInt32LE(at + 4 + locale * 4);
+      if (offset <= 0 || strings + offset >= payload.length) continue;
+      const end = payload.indexOf(0, strings + offset);
+      if (end <= strings + offset) continue;
+      result.set(payload.readUInt32LE(at), payload.subarray(strings + offset, end).toString("utf8"));
+      break;
+    }
+  }
+  return result;
 }
 
 export type SpellDbc = Dbc<"Spell">;

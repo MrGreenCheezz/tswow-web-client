@@ -648,10 +648,12 @@ test("П2 a record with no seat is refused, which is what the version bump is fo
     await settle();
     // 8 was the last shape without the neutral belt in NPC appearances, so 9 published that belt.
     // 10 publishes the measured worn-boot profile in the same cached creature payload. 11 adds
-    // the baked NPC's authoritative body-item columns; 12 marks coordinated visual policy.
+    // the baked NPC's authoritative body-item columns; 12 marks coordinated visual policy. 13 is
+    // HD-1: `forNpc` builds through `forPlayer`, so every unbaked character display in this payload
+    // gains the coordinated pack's family-20 foot and its re-extracted body layers.
     const version = Number(/[?&]v=(\d+)[&$]/.exec(asked)?.[1]);
-    assert.equal(CREATURE_MODEL_VERSION, 12,
-      "12 publishes the coordinated visual profile in creature payloads");
+    assert.equal(CREATURE_MODEL_VERSION, 13,
+      "13 carries the coordinated pack's foot mesh and re-extracted rows into creature payloads");
     assert.equal(version, CREATURE_MODEL_VERSION, `the creature route uses the current cache-buster: v=${version}`);
     assert.equal(client.get(RIDING_HORSE)?.mountHeight, 1.8657);
 

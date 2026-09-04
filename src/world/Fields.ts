@@ -151,6 +151,11 @@ export const unit = {
   combatReach: (object: WorldObjectState) => readField(object, "UNIT_FIELD_COMBATREACH"),
   // Byte positions from the core's `UnitBytes1Offsets` and `UnitBytes2Offsets`.
   standState: (object: WorldObjectState) => readByte(object, "UNIT_FIELD_BYTES_1", 0),
+  /**
+   * `UNIT_BYTES_1_OFFSET_VIS_FLAG`: byte 2 of `UNIT_FIELD_BYTES_1`, the one byte of the four this
+   * client never read. See {@link UNIT_VIS_FLAG_CREEP}.
+   */
+  visFlags: (object: WorldObjectState) => readByte(object, "UNIT_FIELD_BYTES_1", 2),
   animationTier: (object: WorldObjectState) => readByte(object, "UNIT_FIELD_BYTES_1", 3),
   sheathState: (object: WorldObjectState) => readByte(object, "UNIT_FIELD_BYTES_2", 0),
   pvpFlags: (object: WorldObjectState) => readByte(object, "UNIT_FIELD_BYTES_2", 1),
@@ -206,6 +211,135 @@ export function isLootable(object: WorldObjectState): boolean {
 export function isTappedByOther(object: WorldObjectState): boolean {
   const flags = unit.dynamicFlags(object) ?? 0;
   return (flags & UNIT_DYNFLAG_TAPPED) !== 0 && (flags & UNIT_DYNFLAG_TAPPED_BY_PLAYER) === 0;
+}
+
+/**
+ * `UNIT_VIS_FLAG_CREEP`, byte 2 of `UNIT_FIELD_BYTES_1` — the server's own "draw this one the
+ * stealthed way".
+ *
+ * It is not "this unit is hidden". Undetected stealth never reaches the client at all: the server
+ * decides visibility and simply does not send the object, so a unit that arrives *with* this bit is
+ * a stealthed unit the viewer can see, and the whole of the client's job is to draw it translucent.
+ * The reference client says exactly that where it names the constant
+ * (`wowee/include/game/protocol_constants.hpp:34-36`) and reads it in one place
+ * (`entity.hpp:409 hasCreepVisibility`).
+ *
+ * Set by `Unit::SetStandFlags`/`SetVisFlags` in the core for stealth and for the invisibility that
+ * has a visual; nothing else in this client reads byte 2, which is why the byte accessor above did
+ * not exist until now.
+ */
+export const UNIT_VIS_FLAG_CREEP = 0x02;
+
+/**
+ * `PLAYER_FLAGS_GHOST`, `Player.h:354`. Set from releasing the spirit until the corpse is reclaimed
+ * or a healer resurrects — the one state in which health is full and the character is still not
+ * alive, which is why nothing about the health bar can stand in for it.
+ *
+ * Defined here rather than beside the interface's own flag block because two very different readers
+ * need it: `DeathScreenEffect` greys the world for the player's own ghost, and the renderer draws
+ * *other* players' ghosts translucent. `ui/WindowBindings.ts` re-exports it, so the interface's
+ * import path is unchanged and there is still exactly one definition of the bit.
+ */
+export const PLAYER_FLAGS_GHOST = 0x0000_0010;
+
+/**
+ * How opaque a unit is drawn, and whether it moves like something that is sneaking.
+ *
+ * Two separate answers on purpose. An invisibility potion makes a character see-through and does
+ * not change how they walk; stealth does both.
+ */
+export interface UnitAppearance {
+  /** 1 for a unit drawn exactly as authored. */
+  opacity: number;
+  /** Whether the locomotion ladder should be the crouching one. */
+  stealth: boolean;
+}
+
+/**
+ * Which of the two see-through auras a unit carries, as far as loaded spell metadata can say.
+ *
+ * Declared here, beside the layering that consumes it, because its two readers cannot see each
+ * other: `ui/WindowBindings.ts` fills it from the interface's context object and the renderer takes
+ * it through `setUnitAuraAppearance` without ever importing that module.
+ */
+export interface UnitAuraAppearance {
+  stealth: boolean;
+  invisibility: boolean;
+}
+
+/**
+ * The translucency of a stealthed unit the viewer can see.
+ *
+ * The reference client's measured constant (`entity_spawner.cpp:101-102`,
+ * `kDetectedStealthOpacity = 0.35f`) and not a taste: the same number is what its detected-stealth
+ * presentation has been tuned against, and picking another one here would be inventing a look.
+ */
+export const UNIT_STEALTH_OPACITY = 0.35;
+
+/**
+ * Invisibility, which this client draws exactly as stealth.
+ *
+ * Named separately from {@link UNIT_STEALTH_OPACITY} because they are separate auras with separate
+ * bits, and kept equal because nothing in the client's data authors a second value: `SpellVisual`
+ * has no translucency column, and the reference client has one detected-stealth constant and no
+ * invisibility one at all. If authored data ever turns up, this is the line that changes.
+ */
+export const UNIT_INVISIBILITY_OPACITY = UNIT_STEALTH_OPACITY;
+
+/**
+ * A player who has released their spirit, drawn the way the reference client draws its own ghost
+ * (`animation_callback_handler.cpp:690` and `game_screen.cpp:811`, both `isGhost ? 0.5f : 1.0f`).
+ *
+ * Deliberately less faded than stealth: a ghost is a state the player is meant to see themselves
+ * and each other in for minutes at a time, and 0.35 in a grey world is nearly gone.
+ */
+export const UNIT_GHOST_OPACITY = 0.5;
+
+/**
+ * What the wire says about how a unit should look, layered.
+ *
+ * `creep` is the truth when it arrives, because it is the server's own presentation flag and it
+ * accounts for detection: a rogue the viewer cannot see is not sent at all, so the bit means "show
+ * the translucent one" and nothing else has to be worked out. The aura half is a *fallback* and is
+ * named one: `Unit::SetVisFlags` is not reached on every build and every path — the flag is
+ * routinely late for the viewer's own character, whose stealth aura is known here a whole round
+ * trip before its `UNIT_FIELD_BYTES_1` update lands — so a client that read only the byte would
+ * leave the player themselves opaque while every rogue around them faded. Nothing about this is
+ * measurable without a live server; what is stated is only the layering, and the layering is what
+ * the tests pin.
+ *
+ * Ghost is the weakest of the three: a stealthed ghost is not a state the game has, and if the
+ * server ever sends one, the stealth reading is the one that carries a warning to the viewer.
+ */
+export function unitAppearance(source: {
+  creep?: boolean;
+  stealthAura?: boolean;
+  invisibilityAura?: boolean;
+  ghost?: boolean;
+}): UnitAppearance {
+  if (source.creep === true) return { opacity: UNIT_STEALTH_OPACITY, stealth: true };
+  if (source.stealthAura === true) return { opacity: UNIT_STEALTH_OPACITY, stealth: true };
+  // Invisibility fades without crouching: `SPELL_AURA_MOD_INVISIBILITY` is what a potion and a mage
+  // carry, and neither of them sneaks.
+  if (source.invisibilityAura === true) return { opacity: UNIT_INVISIBILITY_OPACITY, stealth: false };
+  if (source.ghost === true) return { opacity: UNIT_GHOST_OPACITY, stealth: false };
+  return { opacity: 1, stealth: false };
+}
+
+/** Whether the server marked this unit with the stealth presentation flag. */
+export function isUnitCreeping(object: WorldObjectState): boolean {
+  return ((unit.visFlags(object) ?? 0) & UNIT_VIS_FLAG_CREEP) !== 0;
+}
+
+/**
+ * Whether this object is a player who has released their spirit.
+ *
+ * `PLAYER_FLAGS` is a player field, and the slot simply never arrives for a creature — the map has
+ * no entry and `readField` answers undefined — so this is false for everything that is not a
+ * character without needing to ask what `typeId` is.
+ */
+export function isPlayerGhost(object: WorldObjectState): boolean {
+  return ((readField(object, "PLAYER_FLAGS") ?? 0) & PLAYER_FLAGS_GHOST) !== 0;
 }
 
 /**

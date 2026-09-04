@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { parseVMapTile } from "./VMapProtocol.js";
 import { loadSpellMetadata } from "./SpellMetadata.js";
-import { loadSpellVisuals } from "./SpellVisual.js";
+import { loadSpellVisualKits, loadSpellVisuals } from "./SpellVisual.js";
 import { loadCreatureMetadata } from "./CreatureMetadata.js";
 import { encodeVMapModel, parseVMapModel, parseVMapModelGroups, type CollisionGroup } from "./VMapModel.js";
 import { loadGameObjectDisplayMetadata } from "./GameObjectMetadata.js";
@@ -17,19 +17,23 @@ import { loadCreatureModelMetadata } from "./CreatureModelMetadata.js";
 import { CharacterAppearanceIndex } from "./CharacterAppearance.js";
 import { loadCharacterTextures, type CharacterTextureIndex } from "./CharacterTextures.js";
 import { loadCharacterCreation } from "./CharacterCreation.js";
+import { CharStartOutfitIndex } from "./CharStartOutfit.js";
 import { loadLockData } from "./LockMetadata.js";
 import { loadEmoteData } from "./EmoteMetadata.js";
 import { loadFactionData } from "./FactionMetadata.js";
 import { loadTalentData } from "./TalentMetadata.js";
 import { loadAreaData } from "./AreaMetadata.js";
+import { loadBattlegroundMetadata } from "./BattlegroundMetadata.js";
+import { loadTaxiMetadata } from "./TaxiMetadata.js";
 import { COLLISION_TRIANGLE_BUDGET, encodeCollisionModel } from "../world/CollisionFormat.js";
 import { GLOBAL_FALLBACK_MAP, loadLightMetadata } from "./LightMetadata.js";
 import { loadItemMetadata } from "./ItemMetadata.js";
+import { loadItemEnchantments } from "./ItemEnchantments.js";
 import {
   SoundIndex, WeaponSoundIndex, normaliseSoundPath, type ZoneMusicTracks,
 } from "./SoundMetadata.js";
 import { DatasetFingerprint } from "./DatasetFingerprint.js";
-import { AUDIO_DBC_FILES, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
+import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
 import {
   isLoopbackAddress, MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
@@ -50,20 +54,39 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  * visual-wmo-v17 is WWM2, authored MONR normals, and all prior WMO metadata. A v16 artifact parses
  * perfectly and simply has no authored normals, which is indistinguishable from a group that needs
  * the computed fallback — so the cache has to turn over rather than be left to expire.
- * visual-v16 is WVM9 and remains independent of this WMO generation, so the two independently invalidated
- * artifact families keep distinct, monotonic generation numbers.
+ * visual-v21 is WVM9 with the G1 scene camera, A1/A2 clip metadata and the optional WVG1 global
+ * bone-channel block, and remains independent of this WMO generation, so the two invalidated
+ * artifact families keep distinct, monotonic generation numbers. It follows 19 rather than reusing
+ * an earlier number for the same reason 16 followed 15: the numbers are one sequence shared by two
+ * families, so a reader looking at a name can never be in doubt about which generation of the
+ * pipeline wrote it.
+ *
+ * The A1 bump was the clearest case there has been for why the name and not the bytes decides. The
+ * blend time went into a slot the encoder already wrote — a reserved u16 in every clip header —
+ * so a v18 artifact and a v19 one are the same length, the same magic and the same layout, and
+ * differ only in whether those two bytes are a zero or a number. Zero is also a legal answer in
+ * v19 (26 of HumanMale's 241 sequences author one), so nothing in the file can distinguish a
+ * pre-A1 artifact from a post-A1 artifact whose sequences carried no blend time. The namespace is
+ * the only thing that says which generation wrote it, and it is what makes the old cache go away
+ * instead of being read as a client that decided every pose blends on a constant.
+ *
+ * A2 is the opposite case and still needs the same treatment. Its clip extras table ("WVX1", after
+ * the clips) *is* visible in the bytes — a v19 artifact simply ends at its last clip — so a v20
+ * reader can tell them apart. What it cannot do is anything useful with the difference: a v19
+ * artifact decodes perfectly and has no authored stride speeds, which is indistinguishable from a
+ * rig whose sequences all travel at zero, and the mount over it would go on skating for as long as
+ * the old entry stayed fresh. The name is what retires it.
  */
-export function visualModelCacheNamespace(modelPath: string): "visual-v16" | "visual-wmo-v17" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v17" : "visual-v16";
+export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v17" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v17" : "visual-v21";
 }
 
 /**
  * Appearance textures are replaced together with the visual M2/DBC overlay.
  *
- * The path is deliberately classified here, before it is hashed: the legacy texture cache has
- * no reverse index from its SHA-1 filename back to this path. These prefixes are the four client
- * subtrees the appearance pipeline reads; scenery and spell textures retain the cheap
- * "unstamped entries are served while the background pass catches up" policy.
+ * These prefixes are the client subtrees the coordinated appearance pipeline reads. The cache no
+ * longer gives them a weaker or stronger provenance rule — every texture now requires a stamp —
+ * but the classification remains the shared contract used by visual-pack regression tests.
  */
 export function isCharacterVisualTexture(path: string): boolean {
   const normalised = path.replaceAll("/", "\\").toLowerCase();
@@ -71,6 +94,35 @@ export function isCharacterVisualTexture(path: string): boolean {
     "character\\", "creature\\", "item\\objectcomponents\\", "item\\texturecomponents\\",
     "textures\\bakednpctextures\\",
   ].some((prefix) => normalised.startsWith(prefix));
+}
+
+/**
+ * Routes whose answers have to belong to the client-media profile selected at gateway startup.
+ *
+ * A TSWoW publish may replace the archive chain while this process is alive. The generators then
+ * see the new winners, but `visualDbcDirectory` and `coordinatedVisuals` still describe the pack
+ * selected before the port opened. Serving either half after that point can pair an HD model with
+ * classic geosets (or the reverse), so these routes fail closed until the process is restarted.
+ */
+function isClientVisualProfileRoute(method: string | undefined, pathname: string): boolean {
+  return method === "GET" && (
+    // A late LoD/custom TSAddon file must come from the same winning FrameXML.toc generation that
+    // booted the VM.  Otherwise a TSWoW publish can leave the running UI half old and half new.
+    pathname === "/client/file"
+    || pathname === "/client/addons"
+    || pathname === "/texture"
+    || pathname === "/visual/model"
+    || pathname === "/visual/animations"
+    || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
+    || pathname === "/dbc/creature-models"
+    || pathname === "/dbc/character-options"
+    || pathname === "/dbc/character-appearance"
+    // Audio is part of the same extracted client-media generation. The raw file and both DBC
+    // answers must not cross from (for example) an HD pack to the classic chain mid-session.
+    || pathname === "/sound"
+    || pathname === "/dbc/sounds"
+    || pathname === "/dbc/emotes"
+  );
 }
 
 export interface GatewayTarget {
@@ -109,13 +161,20 @@ export interface GatewayOptions {
    * the loose `patch-*.MPQ` overlays a module's assets are written into.
    */
   clientDirectory?: string;
+  /** Root-level Interface/AddOns discovered at startup and offered to the FrameXML boot. */
+  clientAddons?: readonly { readonly name: string; readonly loadOnDemand: boolean }[];
   /**
-   * How often the dataset fingerprint may be recomputed, in milliseconds. Default 2,000: the walk
-   * measures 8.4 ms over the 247 dataset tables and 33.5 ms over the client's archives and patch
-   * directories, and it is paid by the first request after the interval has run out rather than by
-   * a timer. Set to 0 by tests that would otherwise have to sleep through it.
+   * Periodic fallback interval for the dataset fingerprint, in milliseconds. Archive writes also
+   * invalidate this interval through `fs.watch`, so the next request sees a TSWoW publish without
+   * making every texture request pay for the 33.5 ms archive walk. DBC-only edits still use this
+   * fallback. Set to 0 by tests that would otherwise have to sleep through it.
    */
   datasetPollMs?: number;
+  /**
+   * Require every selected client-media DBC to carry a source stamp for this CLIENT_DIR. The
+   * automatic extractor enables this; an explicit VISUAL_DBC_DIR remains an operator override.
+   */
+  requireClientMediaStamps?: boolean;
   creatureMetadataFile?: string;
   itemMetadataFile?: string;
   itemIconsDirectory?: string;
@@ -180,6 +239,9 @@ export interface GatewayOptions {
    */
   minimapDirectory?: string;
   generateMinimapIndex?: (map: number) => Promise<void>;
+  /** Published 128×128 uint32 continent hit masks, keyed only by Map.dbc id. */
+  worldMapZoneMapsDirectory?: string;
+  generateWorldMapZoneMap?: (map: number) => Promise<void>;
   generateLiquidTexture?: (liquidClass: string) => Promise<void>;
   generateTexture?: (path: string) => Promise<void>;
   /**
@@ -201,6 +263,16 @@ export interface GatewayOptions {
    */
   soundDirectory?: string;
   generateSound?: (path: string) => Promise<void>;
+  /**
+   * Where published raw interface files live — Lua, XML, TOC and TTF — keyed on their archive path.
+   *
+   * The one family in this cache that is not a conversion. Everything else here is a client format
+   * turned into something a browser understands; these are handed over as the bytes the game itself
+   * executes, because the GlueXML runtime has to run the owner's login screen and not a rendering of
+   * it. The narrow extension list is the whole of the guard — see `validClientFilePath`.
+   */
+  clientFilesDirectory?: string;
+  generateClientFile?: (path: string) => Promise<void>;
   /**
    * Where module definitions are read from: every tswow module, then the local drafts directory.
    *
@@ -253,6 +325,12 @@ function rawDataToBuffer(data: RawData): Buffer {
 
 function originAllowed(origin: string | undefined, allowed: readonly string[]): origin is string {
   return origin !== undefined && (allowed.includes("*") || allowed.includes(origin));
+}
+
+/** A browser same-origin GET omits Origin; Fetch Metadata still distinguishes it from cross-site. */
+function sameOriginBrowserGet(request: IncomingMessage): boolean {
+  return request.headers.origin === undefined
+    && request.headers["sec-fetch-site"] === "same-origin";
 }
 
 /** How long a failed generation is remembered before the generator is given another chance. */
@@ -442,6 +520,7 @@ function bridge(webSocket: WebSocket, target: GatewayTarget): Socket {
 class DatasetIndexes {
   spellMetadata: ReturnType<typeof loadSpellMetadata> | undefined = undefined;
   spellVisuals: ReturnType<typeof loadSpellVisuals> | undefined = undefined;
+  spellVisualKits: ReturnType<typeof loadSpellVisualKits> | undefined = undefined;
   creatureMetadata: ReturnType<typeof loadCreatureMetadata> | undefined = undefined;
   gameObjectMetadata: ReturnType<typeof loadGameObjectDisplayMetadata> | undefined = undefined;
   transportPaths: ReturnType<typeof loadTransportPaths> | undefined = undefined;
@@ -450,12 +529,16 @@ class DatasetIndexes {
   creatureModelMetadata: ReturnType<typeof loadCreatureModelMetadata> | undefined = undefined;
   characterAppearance: ReturnType<typeof CharacterAppearanceIndex.load> | undefined = undefined;
   characterCreation: ReturnType<typeof loadCharacterCreation> | undefined = undefined;
+  charStartOutfit: ReturnType<typeof CharStartOutfitIndex.load> | undefined = undefined;
   itemMetadata: ReturnType<typeof loadItemMetadata> | undefined = undefined;
+  itemEnchantments: ReturnType<typeof loadItemEnchantments> | undefined = undefined;
   lockData: ReturnType<typeof loadLockData> | undefined = undefined;
   factionData: ReturnType<typeof loadFactionData> | undefined = undefined;
   emoteData: ReturnType<typeof loadEmoteData> | undefined = undefined;
   talentData: ReturnType<typeof loadTalentData> | undefined = undefined;
   areaData: ReturnType<typeof loadAreaData> | undefined = undefined;
+  battlegroundMetadata: ReturnType<typeof loadBattlegroundMetadata> | undefined = undefined;
+  taxiMetadata: ReturnType<typeof loadTaxiMetadata> | undefined = undefined;
   lightIndex: ReturnType<typeof loadLightMetadata> | undefined = undefined;
   soundIndex: ReturnType<typeof SoundIndex.load> | undefined = undefined;
   /**
@@ -497,6 +580,8 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     ? undefined : options.audioDbcDirectory ?? options.visualDbcDirectory;
   const visualDbcFiles = options.visualDbcDirectory === undefined ? []
     : VISUAL_DBC_FILES.map((file) => join(options.visualDbcDirectory!, file));
+  const clientMediaProfileFiles = options.visualDbcDirectory === undefined ? []
+    : [join(options.visualDbcDirectory, CLIENT_MEDIA_PROFILE_FILE)];
   const audioDbcFiles = audioDbcDirectory === undefined ? []
     : AUDIO_DBC_FILES.map((file) => join(audioDbcDirectory, file));
   // Nothing on the network asks for a reload; the dataset is watched instead. `DatasetFingerprint`
@@ -508,7 +593,35 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       .concat(visualDbcFiles, audioDbcFiles))],
     clientDirectory: options.clientDirectory,
     intervalMs: options.datasetPollMs,
+    watchArchives: true,
   });
+  // Establish the archive baseline now, while startup's visual DBC/profile selection is still the
+  // active one. Leaving the first snapshot to the first HTTP request creates a gap in which a
+  // publish can finish after selection but before the watcher has anything to compare against.
+  if (fingerprint.watching) await fingerprint.poll({ force: true });
+  if (options.requireClientMediaStamps) {
+    const current = await Promise.all([...visualDbcFiles, ...audioDbcFiles, ...clientMediaProfileFiles]
+      .map((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+    if (current.some((value) => !value)) {
+      fingerprint.close();
+      throw new Error(
+        "The selected client-media DBCs no longer match the active client patch chain. "
+        + "Restart the gateway so startup can extract one complete generation.",
+      );
+    }
+    // Selection happened before this DatasetFingerprint existed. A second forced snapshot closes
+    // the remaining startup window; unlike request-time polling, paying one extra walk here has no
+    // steady-state cost.
+    const startupChange = await fingerprint.poll({ force: true });
+    if (startupChange.archives) {
+      fingerprint.close();
+      throw new Error(
+        "The client patch chain changed while the gateway was starting. Restart the gateway to "
+        + "extract and select one complete client-media generation.",
+      );
+    }
+  }
+  let clientVisualProfileChanged = false;
   /**
    * The archives' listing, started at most once and shared by the two indexes that want it.
    *
@@ -533,8 +646,14 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   const visualModelLane = generationLane();
   const textureLane = generationLane();
   const soundLane = generationLane();
+  // Its own lane rather than a share of the texture one: a glue screen asks for its `.toc`, then
+  // every `.lua` and `.xml` that names, and those requests are a burst at the very start of a
+  // session — exactly when the terrain and character caches are cold too. On the texture lane the
+  // whole interface would queue behind whichever building is being published.
+  const clientFileLane = generationLane();
   const liquidLane = generationLane();
   const minimapLane = generationLane();
+  const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
   // of it — which is the stall this slice exists to remove.
@@ -553,6 +672,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       const changed = await fingerprint.poll();
       if (changed.dbc) indexes.reset();
       if (changed.archives) {
+        // The startup-selected visual DBC directory and coordinated-model policy cannot be
+        // switched safely under already loaded browser assets. Latch this for the rest of the
+        // process even if the files are changed back: only a restart establishes one new atomic
+        // archive/profile generation.
+        clientVisualProfileChanged = true;
         // Not because these two are read out of the archives — they are the vmap extractor's own
         // files — but because the only thing that rewrites a patch directory is a dataset build,
         // and a dataset build is what rewrites the vmaps beside it. Watching the vmaps themselves
@@ -569,12 +693,38 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
 
+    if (clientVisualProfileChanged && isClientVisualProfileRoute(request.method, pathname)) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)
+        && !(pathname === "/texture" && sameOriginBrowserGet(request))) {
+        response.writeHead(403).end();
+        return;
+      }
+      respondClientVisualProfileChanged(response, origin);
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/client/addons") {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      response.writeHead(200, {
+        "access-control-allow-origin": origin!,
+        "cache-control": "no-store",
+        "content-type": "application/json; charset=utf-8",
+      });
+      response.end(JSON.stringify({ addons: options.clientAddons ?? [] }));
+      return;
+    }
+
     // One client texture, addressed by its path in the archives. Keying on the path rather than
     // on the model that asked for it means a BLP used by fifty models is one file, one URL and
     // one GPU texture; the published cache used to hold 1,092 files for 646 distinct images.
     if (request.method === "GET" && pathname === "/texture" && options.texturesDirectory) {
       const origin = request.headers.origin;
-      if (!originAllowed(origin, options.allowedOrigins)) {
+      if (!originAllowed(origin, options.allowedOrigins) && !sameOriginBrowserGet(request)) {
         response.writeHead(403).end();
         return;
       }
@@ -585,7 +735,6 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
       const filename = join(options.texturesDirectory, `${id}.png`);
-      const coordinatedVisual = isCharacterVisualTexture(texturePath);
       try {
         // One thunk for both ways a route needs the generator — the file is not there at all, or
         // it is there and the stamp check has something to say about it — on the same lane under
@@ -593,15 +742,12 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         const rebuild = () => generateOnce(textureLane, id, () => options.generateTexture!(texturePath));
         // A cache entry keyed on a path is not keyed on what that path held when it was
         // written, so its stamp is checked against the dataset as it is now before it is
-        // served; a stale one is dropped here and the miss below rebuilds that one entry. An
-        // entry with no stamp is served as it stands, and `restampCaches` — started once at
-        // startup, off every request path — is what gives it one. This route is where that was
-        // measured: sixteen already-correct ground textures rebuilt for their stamps cost
-        // 5,749 ms and sixteen child processes against 125 ms and none.
+        // served; a stale one is dropped here and the miss below rebuilds that one entry.
+        // An unstamped legacy entry cannot prove which patch chain produced its bytes. The request
+        // already carries the original archive path, so this route can safely regenerate that one
+        // entry instead of blessing an old PNG with the active chain's stamp.
         if (options.generateTexture) {
-          await fingerprint.ensureCurrent(filename, {
-            requireStamp: coordinatedVisual,
-          });
+          await fingerprint.ensureCurrent(filename, { requireStamp: true });
         }
         let data: Buffer;
         try {
@@ -611,18 +757,10 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        if (coordinatedVisual) {
-          respondRevalidated(request, response, data, origin, "image/png");
-        } else {
-          response.writeHead(200, {
-            "access-control-allow-origin": origin,
-            // Broad scenery paths are unchanged until their versioned URL changes.
-            "cache-control": "public, max-age=604800, immutable",
-            "content-length": data.byteLength,
-            "content-type": "image/png",
-          });
-          response.end(data);
-        }
+        // Every texture URL is path-stable, including scenery: a TSWoW module may replace any BLP
+        // without changing the path. Conditional revalidation keeps unchanged reloads at 304 while
+        // allowing the newly generated bytes to replace the browser's cached response immediately.
+        respondRevalidated(request, response, data, origin, "image/png");
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what
         // left a character without his legs for the life of the tab: the browser takes a 404 as
@@ -679,9 +817,36 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       //
        // visual-wmo-v17 adds the WWM2 envelope and authored MONR normals. The WMO namespace turns
        // over as one family so whole/header/group requests share the same source identity, while
-       // visual-v16 stays the M2/WVM9 namespace.
-      // visual-v16 is WVM9: `M2TextureTransform`, so a batch that names one can move its UVs. It
-      // follows WMO generation 15 rather than reusing that number; every M2 is rebuilt once too.
+      // visual-v21 stays the M2/WVM9 namespace.
+      // visual-v16 was WVM9: `M2TextureTransform`, so a batch that names one can move its UVs.
+      //
+      // visual-v18 was the same WVM9 with the G1 camera flag: `cameras[0]` of a model that carries no
+      // type-0 record travels as a scene camera under flag 0x04, which is what the 13 camera-
+      // bearing glue models under `Interface\Glues\Models\` need and what none of them had. Measured
+      // over the 1,114 distinct `CreatureModelData` models this client holds, not one artifact
+      // changes a byte — 930 have a portrait and keep it, and the other 184 have no camera block to
+      // read. The namespace still turned over, because the flag is a body-layout fact: a v16 artifact
+      // is indistinguishable from a v18 one that simply has no camera, and a cache that cannot say
+      // which generation wrote it is a cache that will one day be read as the wrong one.
+      //
+      // visual-v19 (slice A1) puts `M2Sequence.blendTime` in the reserved u16 of every clip header,
+      // in the model's skeleton block and in the `.anim` sidecar alike, so a pose is entered over
+      // the window its own file authored instead of one of two constants. Same argument as above,
+      // sharper: the bytes were already being written as zero, so nothing but the name separates
+      // the two generations. The sidecar shares this namespace by construction — it is the same
+      // hash with an `.anim` suffix — so the model and the clips held back from it can never be
+      // read out of two different generations.
+      //
+      // visual-v20 (slice A2) appends the optional "WVX1" clip extras table after the clips of both
+      // containers: `M2Sequence.movingSpeed`, so a mount's stride is replayed at the speed the unit
+      // is really travelling instead of the one its author built it for, plus the two variation
+      // indices a fidget chain will need. Unlike A1 the difference is visible in the file — a v19
+      // artifact ends at its last clip — but a v19 artifact is also a perfectly valid decode with
+      // no stride speeds in it, so a stale entry means a mount that goes on skating. Hence the name.
+      //
+      // visual-v21 appends WVG1 after the skeleton clips. It carries bones driven exclusively by
+      // M2 global sequences — notably Holy Light's hand ribbons — so a v20 artifact is valid but
+      // visibly static and must not remain addressable under the new renderer.
       const group = url.searchParams.get("group");
       if (group !== null && (!visualModel || !/^\d{1,3}$/.test(group))) {
         respondError(response, 400, origin);
@@ -776,7 +941,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       const filename = join(options.visualTilesDirectory, String(map), `${gridX}-${gridY}.json`);
       try {
         const rebuild = () => generateOnce(visualTileLane, key, () => options.generateVisualTile!(map, gridX, gridY));
-        if (options.generateVisualTile) await fingerprint.ensureCurrent(filename);
+        if (options.generateVisualTile) {
+          await fingerprint.ensureCurrent(filename, { generation: "visual-tile-v3" });
+        }
         let data: Buffer;
         try {
           data = await readFile(filename);
@@ -827,6 +994,47 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         response.end(data);
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
+      }
+      return;
+    }
+
+    const worldMapZoneMap = pathname.match(/^\/world-map\/(\d{1,4})\/zones\.bin$/);
+    if (request.method === "GET" && worldMapZoneMap && options.worldMapZoneMapsDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const map = Number(worldMapZoneMap[1]);
+      const filename = join(options.worldMapZoneMapsDirectory, `${map}.bin`);
+      try {
+        const rebuild = () => generateOnce(worldMapZoneMapLane, String(map),
+          () => options.generateWorldMapZoneMap!(map));
+        if (options.generateWorldMapZoneMap) {
+          await fingerprint.ensureCurrent(filename, { requireStamp: true });
+        }
+        let data: Buffer;
+        try {
+          data = await readFile(filename);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateWorldMapZoneMap) throw error;
+          await rebuild();
+          data = await readFile(filename);
+        }
+        // Never serve a truncated cache entry as a grid: its offsets would still parse and point
+        // every click after the truncation at area zero, which looks like legitimate ocean. A
+        // generator can repair an interrupted/corrupt existing publish just as it repairs ENOENT;
+        // without this branch the bad file would make every bounded browser retry return 500.
+        if (data.byteLength !== 128 * 128 * 4 && options.generateWorldMapZoneMap) {
+          await rebuild();
+          data = await readFile(filename);
+        }
+        if (data.byteLength !== 128 * 128 * 4) throw new Error(`Invalid world-map zone map ${map}`);
+        respondRevalidated(request, response, data, origin, "application/octet-stream");
+      } catch (error) {
+        const absent = sourceMissing(error)
+          || (!options.generateWorldMapZoneMap && (error as NodeJS.ErrnoException).code === "ENOENT");
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }
@@ -1103,15 +1311,78 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=604800, immutable",
-          "content-length": data.byteLength,
-          "content-type": extension === ".mp3" ? "audio/mpeg" : "audio/wav",
-        });
-        response.end(data);
+        respondRevalidated(request, response, data, origin,
+          extension === ".mp3" ? "audio/mpeg" : "audio/wav");
       } catch {
         respondError(response, 404, origin);
+      }
+      return;
+    }
+
+    /**
+     * One raw interface file out of the archives: Lua, XML, TOC or TTF, as the game reads it.
+     *
+     * The only route here that hands over a client file unconverted, because the GlueXML runtime
+     * (G1..G3 of live-plan-6) has to *execute* what the game executes. What makes it load-bearing
+     * rather than a convenience is which copy it hands over: this server's login screen is a tswow
+     * module, and `patch-ruRU-F.MPQ` is a directory pointed at `LoginScreenModule/assets`. Measured
+     * on this client through the chain `tools/mpq.mjs` ranks — 28 sources, lettered patches above
+     * the locale families — `Interface\GlueXML\GlueXML.toc` and `AccountLogin.{lua,xml}` resolve to
+     * `patch-ruRU-F.MPQ` and `CharacterCreate.{lua,xml}` to tswow's `patch-ruRU-A.MPQ`, while the
+     * 50 GlueXML entries inside `locale-ruRU.MPQ` win nothing at all. A route that read the locale
+     * archive would run Blizzard's login screen against this server's account flow, and there would
+     * be no error anywhere to say why the buttons were the wrong ones.
+     *
+     * The extension gate is the security boundary and it is deliberately four items long: the chain
+     * this reads includes real directories on disk that module authors write into, and `.lua`,
+     * `.xml`, `.toc` and `.ttf` are what an interface is made of. Art has `/texture` and models have
+     * `/visual/model`, so nothing legitimate is left outside the list — and a DBC, a map, a `.wtf`
+     * or anything else somebody dropped beside a module's assets is not reachable through it.
+     *
+     * Served revalidating for the same reason as every other path-stable client asset: the archive
+     * path does not change when the owner edits `AccountLogin.lua`. The ETag is over the bytes, so
+     * an unchanged file still costs one 304 and no body.
+     */
+    if (request.method === "GET" && pathname === "/client/file" && options.clientFilesDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const clientPath = (url.searchParams.get("path") ?? "").replaceAll("/", "\\");
+      if (!validClientFilePath(clientPath)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const lower = clientPath.toLowerCase();
+      const id = createHash("sha1").update(`client-file-v1\0${lower}`).digest("hex");
+      const extension = lower.slice(lower.lastIndexOf("."));
+      const filename = join(options.clientFilesDirectory, `${id}${extension}`);
+      try {
+        const rebuild = () => generateOnce(clientFileLane, id, () => options.generateClientFile!(clientPath));
+        // `requireStamp`, as `/visual/model` does and unlike `/texture`: the filename hashes the
+        // path, nothing on disk holds the path back, and `restamp` therefore cannot give an entry
+        // in this family a stamp after the fact. Every entry here is stamped by its own generator
+        // on the way out, so an unstamped one is a half-written cache rather than a legacy file,
+        // and rebuilding it is right where serving it would be a guess.
+        if (options.generateClientFile) await fingerprint.ensureCurrent(filename, { requireStamp: true });
+        let data: Buffer;
+        try {
+          data = await readFile(filename);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateClientFile) throw error;
+          await rebuild();
+          data = await readFile(filename);
+        }
+        respondRevalidated(request, response, data, origin, clientFileContentType(extension));
+      } catch (error) {
+        // The same split `/texture` and `/visual/model` carry, and it matters more here than in
+        // either: a `.toc` lists files that need not exist, so the loader has to treat a 404 as "not
+        // shipped" and move on. If a dead generator child also answered 404, one bad minute would
+        // silently remove a frame from the login screen for the rest of the session.
+        const absent = sourceMissing(error)
+          || (!options.generateClientFile && (error as NodeJS.ErrnoException).code === "ENOENT");
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }
@@ -1450,6 +1721,56 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    /**
+     * The same kits, by the number the *packet* names.
+     *
+     * `SMSG_PLAY_SPELL_VISUAL` and `SMSG_PLAY_SPELL_IMPACT` carry a `SpellVisualKit` id and no
+     * spell at all — a boss emote, a trainer's flash, a player sitting down to eat. The route
+     * beside this one is keyed by spell, so those packets reached the client, resolved to a sound
+     * and drew nothing, for the plain reason that no route could answer the question they ask.
+     *
+     * Measured on this dataset: 8,217 of the 8,663 kit rows resolve to something with a model, a
+     * pose or a sound, and 1,194 of those are named by no `Spell` row at all — among them 7668,
+     * which this server's own Illidan script sends.
+     */
+    if (request.method === "GET" && pathname === "/dbc/spell-visual-kits" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const ids = [...new Set((url.searchParams.get("ids") ?? "")
+        .split(",")
+        .map(Number)
+        .filter((id) => Number.isInteger(id) && id > 0))];
+      if (ids.length === 0 || ids.length > 200) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.spellVisualKits ??= loadSpellVisualKits(options.dbcDirectory, options.visualDbcDirectory);
+        const kits = await indexes.spellVisualKits;
+        // A kit that resolves to nothing answers with its own id and no `kit`, exactly as a spell
+        // with no visual answers with its own id and nothing else.
+        const data = JSON.stringify(ids.map((id) => {
+          const kit = kits.get(id);
+          return kit ? { id, kit } : { id };
+        }));
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // Dropped on failure for the same reason its neighbour is: a dataset half-written during
+        // a rebuild must not answer 500 for the rest of the process's life.
+        indexes.spellVisualKits = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     // Both tables whole rather than a query per object: 388 locks and 222 spells that open them
     // is a few kilobytes, and the alternative is a round trip for every rock in Elwynn.
     if (request.method === "GET" && pathname === "/dbc/locks" && options.dbcDirectory) {
@@ -1492,6 +1813,57 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         });
         response.end(data);
       } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // Battleground queue labels and limits are client data. The live list only carries a
+    // battlemaster's type id and current instances, so this fixed catalog is cached like the
+    // other DBC routes and invalidated with the dataset fingerprint.
+    if (request.method === "GET" && pathname === "/dbc/battlegrounds" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.battlegroundMetadata ??= loadBattlegroundMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.battlegroundMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // Do not retain a rejection when a dataset rebuild briefly exposes a partial DBC set.
+        indexes.battlegroundMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // A SHOWTAXINODES packet is only a discovery mask. Names, costs and which pairs are real
+    // directed legs live in TaxiNodes/TaxiPath; the client needs all three to avoid presenting a
+    // discovered node as a direct flight that the server will silently reject.
+    if (request.method === "GET" && pathname === "/dbc/taxi" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.taxiMetadata ??= loadTaxiMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.taxiMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.taxiMetadata = undefined;
         respondError(response, 500, origin);
       }
       return;
@@ -1543,13 +1915,8 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=604800, immutable",
-          "content-length": data.byteLength,
-          "content-type": image ? "image/png" : "application/json; charset=utf-8",
-        });
-        response.end(data);
+        respondRevalidated(request, response, data, origin,
+          image ? "image/png" : "application/json; charset=utf-8");
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
       }
@@ -1895,6 +2262,50 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    /**
+     * What a newly created character of this race, class and sex is wearing.
+     *
+     * The creation screen's 3D preview is the only caller, and it needs the answer in the same
+     * spelling `/dbc/character-appearance` takes: `slot:inventoryType:displayId`. `CharStartOutfit`
+     * carries the display id directly, so this walks no `Item.dbc` chain — see
+     * `CharStartOutfit.ts` for the measurement that says the column is the right one.
+     *
+     * `v=` for the same reason `/dbc/character-options` carries one: the route answers
+     * `max-age=3600`, so a shape change without a new query string would be served out of a
+     * browser's own cache for an hour.
+     */
+    if (request.method === "GET" && pathname === "/dbc/char-start-outfit" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const race = Number.parseInt(url.searchParams.get("race") ?? "", 10);
+      const classId = Number.parseInt(url.searchParams.get("class") ?? "", 10);
+      const sex = Number.parseInt(url.searchParams.get("sex") ?? "", 10);
+      const outfit = Number.parseInt(url.searchParams.get("outfit") ?? "0", 10);
+      const byte = (value: number) => Number.isInteger(value) && value >= 0 && value <= 255;
+      if (!byte(race) || race < 1 || !byte(classId) || classId < 1 || (sex !== 0 && sex !== 1)
+        || !byte(outfit)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.charStartOutfit ??= CharStartOutfitIndex.load(options.dbcDirectory);
+        const data = JSON.stringify((await indexes.charStartOutfit).outfit(race, classId, sex, outfit));
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.charStartOutfit = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     // A spell's picture, and the one a hunter pet family shows on its tab. Modelled on
     // `/item-icon` down to the failure memory, and here for the same reason: `SpellIcon` is a
     // table a module writes rows into, and until this route existed the only thing that turned a
@@ -2047,6 +2458,28 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         });
         response.end(data);
       } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/item-enchantments" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.itemEnchantments ??= loadItemEnchantments(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.itemEnchantments);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-cache",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.itemEnchantments = undefined;
         respondError(response, 500, origin);
       }
       return;
@@ -2262,16 +2695,24 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, options.host, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, options.host, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    fingerprint.close();
+    throw error;
+  }
 
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP address");
+  if (!address || typeof address === "string") {
+    fingerprint.close();
+    throw new Error("Gateway did not bind a TCP address");
+  }
 
   // The published cache is stamped here and nowhere else: once, after the port is open, on a lane
   // of its own. Started rather than awaited — the gateway is already answering, and an entry with
@@ -2289,6 +2730,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     host: options.host,
     port: address.port,
     close: async () => {
+      fingerprint.close();
       for (const webSocket of [...authServer.clients, ...worldServer.clients]) webSocket.terminate();
       await Promise.all([
         new Promise<void>((resolve) => authServer.close(() => resolve())),
@@ -2330,6 +2772,20 @@ function respondRevalidated(
 
 function respondError(response: ServerResponse, status: number, origin: string | undefined): void {
   response.writeHead(status, origin ? { "access-control-allow-origin": origin } : {}).end();
+}
+
+function respondClientVisualProfileChanged(response: ServerResponse, origin: string | undefined): void {
+  const data = JSON.stringify({
+    error: "client_patch_chain_changed",
+    message: "The client patch set changed while the gateway was running. Restart the gateway and reload the client to apply it atomically.",
+  });
+  response.writeHead(409, {
+    ...(origin ? { "access-control-allow-origin": origin } : {}),
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(data),
+  });
+  response.end(data);
 }
 
 /**
@@ -2420,4 +2876,43 @@ function validSoundPath(value: string): boolean {
  */
 function validVisualModelPath(path: string): boolean {
   return validAssetPath(path, { extensions: ["m2", "wmo"] });
+}
+
+/**
+ * The four extensions `/client/file` will serve, lower case and without the dot.
+ *
+ * Exported because it is the route's security boundary rather than a detail of it, and a boundary
+ * that is only asserted through a running server is one nobody re-checks. `.lua` and `.xml` are what
+ * an interface *is*; `.toc` is the manifest that names them; `.ttf` is what the owner's login screen
+ * draws its text with (`Fonts\` holds nine of them in this client, and a module ships its own
+ * beside its assets). Everything else in the archives has its own route or has no business leaving
+ * this machine.
+ */
+export const CLIENT_FILE_EXTENSIONS = ["lua", "xml", "toc", "ttf"] as const;
+
+/** A path that could name an interface file inside the archives. */
+export function validClientFilePath(value: string): boolean {
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS });
+}
+
+/**
+ * What `/client/file` calls each of the four, given the extension with its dot.
+ *
+ * **The charset is measured, not assumed.** A 3.3.5a ruRU client is the case where this could have
+ * gone wrong: the game itself renders Lua strings through the locale codepage, so cp1251 was the
+ * expected answer and would have made `charset=utf-8` turn every Russian label into mojibake.
+ * Counted over this machine's client, decoding each file with a strict UTF-8 decoder: 1,101 `.lua`,
+ * `.xml` and `.toc` files inside the six stock ruRU archives (`locale-ruRU`, `patch-ruRU`,
+ * `patch-ruRU-2`, `patch-ruRU-3`, and the two expansion locale archives), 15 of them carrying bytes
+ * above 0x7F, and **not one that is not valid UTF-8** — no BOM on any of them either. The live
+ * chain agrees: all 561 interface text files the chain resolves, 56 with high bytes, every one
+ * valid UTF-8. `GlueStrings.lua` decoded as cp1251 reads `РЎРїРѕСЃРѕР±РЅРѕСЃС‚`, and as UTF-8 reads
+ * `Способност`, which settles it in the only direction it can be settled.
+ *
+ * So the route declares the encoding rather than shipping `application/octet-stream` and leaving
+ * every caller to sniff. That is the whole difference between `response.text()` working and a
+ * runtime needing its own decoder before it can read a single `.toc` line.
+ */
+export function clientFileContentType(extension: string): string {
+  return extension.toLowerCase() === ".ttf" ? "font/ttf" : "text/plain; charset=utf-8";
 }

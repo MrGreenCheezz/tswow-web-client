@@ -6,12 +6,18 @@ import {
   planSpellAuraState,
   planSpellCastStart,
   planSpellVisual,
+  planSpellVisualKitEvent,
+  spellAuraPrewarmPaths,
+  spellCastPrewarmPaths,
+  spellVisualKitPaths,
   type Point,
   type SpellCast,
   type SpellVisualPlan,
   type VisualSound,
 } from "./SpellVisuals.js";
-import type { SpellVisualEffectTransform, SpellVisualMetadata } from "../gateway/SpellVisual.js";
+import type {
+  SpellVisualEffectTransform, SpellVisualKitRecord, SpellVisualMetadata,
+} from "../gateway/SpellVisual.js";
 
 /** The finite effects the renderer owns while an aura is present. */
 export interface StateVisualDescriptor {
@@ -33,10 +39,30 @@ export interface SpellVisualLifecycleRenderer {
   cancelUnitAction?(guid: bigint): void;
   clearSpellVisuals?(): void;
   playUnitAction?(guid: bigint, action: "precast" | "channel" | "cast" | "shoot", hold?: number): void;
+  /**
+   * Asks the renderer to start fetching these models and their textures now.
+   *
+   * The coordinator knows two things the renderer cannot: which spell is being cast, and — from
+   * `SPELL_CAST_START` — how long the bar is. That cast time is the entire head start available
+   * for the three serial round trips a cold spell used to pay after the cast had already happened.
+   * Optional, and deliberately answerless: a prewarm that fails changes nothing.
+   */
+  prewarmSpellModels?(paths: readonly string[]): void;
 }
 
 export interface SpellVisualMetadataSource {
   get(spellId: number): SpellVisualMetadata | undefined;
+}
+
+/**
+ * The other way in: a `SpellVisualKit` by its own id.
+ *
+ * Optional on purpose. A coordinator built without it keeps doing exactly what it did before slice
+ * S3 — the packet still reaches the sound path in `EnterWorld`, and nothing is drawn — so a test
+ * or a caller that has no kit route is not broken by there being one.
+ */
+export interface SpellVisualKitMetadataSource {
+  get(kitId: number): SpellVisualKitRecord | undefined;
 }
 
 /** A sound sink returns false while audio is not ready; the coordinator keeps it queued then. */
@@ -81,6 +107,21 @@ export function usesStockRangedRelease(spellId: number, metadata: SpellVisualMet
 interface PendingVisual {
   kind: "go" | "start" | "aura";
   spellId: number;
+  key: string;
+  receivedAt: number;
+  epoch: number;
+  replay: (now: number) => void;
+}
+
+/**
+ * A kit packet waiting for its own metadata batch.
+ *
+ * Its own queue rather than a fourth `kind` on the one above, because the number it waits on is an
+ * id in another table: a `SpellVisualKit` id and a `Spell` id collide freely, and one queue keyed
+ * by a field called `spellId` would let a loaded spell replay a kit that is still on the wire.
+ */
+interface PendingKit {
+  kitId: number;
   key: string;
   receivedAt: number;
   epoch: number;
@@ -146,15 +187,17 @@ interface ActiveStart {
 
 interface Options {
   metadata: SpellVisualMetadataSource;
+  /** Absent means the kit packets keep their pre-S3 sound-only behaviour. */
+  kitMetadata?: SpellVisualKitMetadataSource;
   renderer: SpellVisualLifecycleRenderer | (() => SpellVisualLifecycleRenderer | undefined);
   playSound?: SpellVisualSoundSink;
   now?: () => number;
   ttlMs?: number;
-  queueCaps?: Partial<{ go: number; start: number; aura: number; sounds: number }>;
+  queueCaps?: Partial<{ go: number; start: number; aura: number; kit: number; sounds: number }>;
 }
 
 const DEFAULT_TTL = 3_500;
-const DEFAULT_CAPS = { go: 128, start: 128, aura: 256, sounds: 128 } as const;
+const DEFAULT_CAPS = { go: 128, start: 128, aura: 256, kit: 128, sounds: 128 } as const;
 
 function copyPoint(point: Point | undefined): Point | undefined {
   return point ? { x: point.x, y: point.y, z: point.z } : undefined;
@@ -176,11 +219,12 @@ function suppressCasterActionAnimations(plan: SpellVisualPlan, casterGuid: bigin
  */
 export class SpellVisualCoordinator {
   readonly #metadataSource: SpellVisualMetadataSource;
+  readonly #kitMetadataSource: SpellVisualKitMetadataSource | undefined;
   readonly #rendererSource: Options["renderer"];
   readonly #playSound: SpellVisualSoundSink | undefined;
   readonly #now: () => number;
   readonly #ttl: number;
-  readonly #caps: { go: number; start: number; aura: number; sounds: number };
+  readonly #caps: { go: number; start: number; aura: number; kit: number; sounds: number };
   #world: SpellVisualLifecycleWorld | undefined;
   #active = false;
   #epoch = 0;
@@ -188,12 +232,15 @@ export class SpellVisualCoordinator {
   #pending: { go: PendingVisual[]; start: PendingVisual[]; aura: PendingVisual[] } = {
     go: [], start: [], aura: [],
   };
+  #pendingKits: PendingKit[] = [];
   #sounds: PendingSound[] = [];
   #deferred: DeferredPlan[] = [];
   #pendingFallbacks: PendingFallback[] = [];
   #seenEvents = new WeakSet<object>();
   #receiptSequence = 0;
   #knownNoVisual = new Set<number>();
+  /** Kit ids the route has answered for and that resolve to nothing at all. */
+  #knownEmptyKits = new Set<number>();
   #starts = new Map<bigint, ActiveStart>();
   #stateShown = new Set<string>();
   #stateOwnership = new Map<string, StateVisualOwnership>();
@@ -202,6 +249,7 @@ export class SpellVisualCoordinator {
 
   constructor(options: Options) {
     this.#metadataSource = options.metadata;
+    this.#kitMetadataSource = options.kitMetadata;
     this.#rendererSource = options.renderer;
     this.#playSound = options.playSound;
     this.#now = options.now ?? (() => performance.now());
@@ -210,6 +258,7 @@ export class SpellVisualCoordinator {
       go: Math.max(1, options.queueCaps?.go ?? DEFAULT_CAPS.go),
       start: Math.max(1, options.queueCaps?.start ?? DEFAULT_CAPS.start),
       aura: Math.max(1, options.queueCaps?.aura ?? DEFAULT_CAPS.aura),
+      kit: Math.max(1, options.queueCaps?.kit ?? DEFAULT_CAPS.kit),
       sounds: Math.max(1, options.queueCaps?.sounds ?? DEFAULT_CAPS.sounds),
     };
   }
@@ -292,6 +341,70 @@ export class SpellVisualCoordinator {
     if (stateMayHaveChanged) this.#reconcileState(this.#world);
   }
 
+  /**
+   * A kit the server named by number, on the unit it named.
+   *
+   * `SMSG_PLAY_SPELL_VISUAL` and `SMSG_PLAY_SPELL_IMPACT` are the two packets that arrive with no
+   * spell attached, and until slice S3 the picture half of them was unreachable — the kit tables
+   * were only keyed by spell. The metadata path is the same one a cast takes: ask, and if the
+   * answer is not in memory yet, queue the packet under the same TTL and replay it when the batch
+   * lands. The caller keeps playing the sound itself; this adds the models and the pose.
+   */
+  playVisualKit(guid: bigint, kitId: number, impact: boolean): void {
+    const world = this.#world;
+    const source = this.#kitMetadataSource;
+    if (!this.#active || !world || !source || guid === 0n || !(kitId > 0)) return;
+    const now = this.#now();
+    const key = `kit:${this.#receiptSequence++}:${guid}:${kitId}:${impact ? 1 : 0}`;
+    // Snapshotted at receipt for the same reason a cast's is: metadata can arrive after the unit
+    // has walked away, and the kit belongs where the packet happened.
+    const capturedPoint = this.#objectPoint(world, guid);
+    const replay = (replayNow: number): void => {
+      const record = source.get(kitId);
+      if (!record?.kit) return;
+      // The S1 seam, reached from the one event that has no cast bar to spend: the metadata that
+      // has just landed already names every file, so warming costs one walk of an object in memory.
+      this.#renderer()?.prewarmSpellModels?.(spellVisualKitPaths(record.kit));
+      const point = capturedPoint ?? this.#objectPoint(world, guid);
+      if (!point) return;
+      this.#dispatchPlan(planSpellVisualKitEvent(record.kit, { guid, point }, now, impact),
+        now, replayNow, world);
+    };
+    if (!source.get(kitId)) {
+      if (!this.#knownEmptyKits.has(kitId)) {
+        this.#enqueueKit({ kitId, key, receivedAt: now, epoch: this.#epoch, replay });
+      }
+      return;
+    }
+    replay(now);
+  }
+
+  /** Called by SpellVisualKitClient after a successful kit batch, mirroring {@link onLoaded}. */
+  onKitsLoaded(ids: readonly number[]): void {
+    if (!this.#active) return;
+    const now = this.#now();
+    const source = this.#kitMetadataSource;
+    for (const id of ids) {
+      // An answered id with no kit behind it is a resolved result, not a pending one: remembering
+      // it here is what stops a scripted emote from re-queuing on every repeat.
+      if (!source?.get(id)) this.#knownEmptyKits.add(id);
+      for (let index = this.#pendingKits.length - 1; index >= 0; index--) {
+        const entry = this.#pendingKits[index]!;
+        if (entry.kitId !== id) continue;
+        this.#pendingKits.splice(index, 1);
+        if (entry.epoch !== this.#epoch || now - entry.receivedAt > this.#ttl) continue;
+        entry.replay(now);
+      }
+    }
+  }
+
+  #enqueueKit(entry: PendingKit): void {
+    if (this.#pendingKits.some((candidate) => candidate.key === entry.key
+      && candidate.epoch === entry.epoch)) return;
+    this.#pendingKits.push(entry);
+    while (this.#pendingKits.length > this.#caps.kit) this.#pendingKits.shift();
+  }
+
   /** Frame-driven expiry and sound scheduling; it never allocates a timer per visual. */
   tick(now = this.#now()): void {
     if (!this.#active) return;
@@ -315,11 +428,12 @@ export class SpellVisualCoordinator {
   }
 
   /** Exposed for pure tests and diagnostics; callers should use metadata onLoaded in production. */
-  pendingCounts(): { go: number; start: number; aura: number; sounds: number } {
+  pendingCounts(): { go: number; start: number; aura: number; kit: number; sounds: number } {
     return {
       go: this.#pending.go.length,
       start: this.#pending.start.length,
       aura: this.#pending.aura.length,
+      kit: this.#pendingKits.length,
       sounds: this.#sounds.length,
     };
   }
@@ -339,6 +453,7 @@ export class SpellVisualCoordinator {
     this.#pending.go.length = 0;
     this.#pending.start.length = 0;
     this.#pending.aura.length = 0;
+    this.#pendingKits.length = 0;
     this.#sounds.length = 0;
     this.#deferred.length = 0;
     this.#pendingFallbacks.length = 0;
@@ -359,6 +474,8 @@ export class SpellVisualCoordinator {
       this.#pending[kind] = this.#pending[kind].filter((entry) =>
         entry.epoch === this.#epoch && now - entry.receivedAt <= this.#ttl);
     }
+    this.#pendingKits = this.#pendingKits.filter((entry) =>
+      entry.epoch === this.#epoch && now - entry.receivedAt <= this.#ttl);
     this.#sounds = this.#sounds.filter((sound) =>
       sound.epoch === this.#epoch && now - sound.at <= this.#ttl);
   }
@@ -584,6 +701,11 @@ export class SpellVisualCoordinator {
     }
     const visual = this.#getVisual(active.spellId);
     if (!visual) return;
+    // Before every other guard below, and before the plan: this is the moment the client first
+    // knows which files this cast will need, and the cast bar is the only head start there is. A
+    // start with no caster position and a start whose renderer refuses the plan still want the
+    // assets — the SPELL_GO that follows will draw them either way.
+    this.#renderer()?.prewarmSpellModels?.(spellCastPrewarmPaths(visual));
     const objectPoint = active.casterPoint ?? this.#objectPoint(world, active.casterGuid);
     if (!objectPoint) return;
     const plan = planSpellCastStart(visual, {
@@ -705,6 +827,9 @@ export class SpellVisualCoordinator {
       const current = this.#auraSnapshot.get(guid)?.get(aura.slot);
       if (!current || current.spellId !== aura.spellId) return;
       const visual = this.#getVisual(aura.spellId);
+      // StateDone is drawn when the aura falls off, which can be a whole minute later and is the
+      // one phase with no packet to warn about it; warm both here, while the aura is being applied.
+      if (visual) this.#renderer()?.prewarmSpellModels?.(spellAuraPrewarmPaths(visual));
       if (!visual?.state) return;
       const point = capturedPoint ?? this.#objectPoint(world, guid);
       if (!point) {

@@ -205,7 +205,10 @@ test("world player equipment survives metadata arrival and rebuilds all playable
         const url = new URL(String(input));
         assert.equal(url.pathname, "/dbc/character-appearance");
         assert.equal(url.searchParams.get("v"), String(CHARACTER_APPEARANCE_VERSION));
-        assert.equal(CHARACTER_APPEARANCE_VERSION, 13);
+        // 14 is HD-1: the coordinated pack's family-20 foot and the re-extracted body layers.
+        // Pinned rather than read off the constant so a bump has to be noticed here too — this
+        // fixture answers the fetch itself and would otherwise go on serving a stale shape.
+        assert.equal(CHARACTER_APPEARANCE_VERSION, 14);
         const items = (url.searchParams.get("items") ?? "").split(",").filter(Boolean).map((entry) => {
           const [slot, inventoryType, displayId] = entry.split(":").map(Number);
           return { slot, inventoryType, displayId };

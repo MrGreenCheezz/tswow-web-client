@@ -26,6 +26,10 @@ export interface TalentTabInfo {
   petCategory: number;
   orderIndex: number;
   iconId: number;
+  /** `SpellIcon.TextureFilename`, resolved to the texture path used by FrameXML. */
+  iconPath: string;
+  /** `TalentTab.BackgroundFile`, the basename consumed by TalentFrameBase. */
+  backgroundFile: string;
 }
 
 export interface TalentInfo {
@@ -55,13 +59,39 @@ export interface SkillLineInfo {
   iconId: number;
 }
 
+/** A `SkillLineCategory.dbc` heading, in the order the stock skills tab draws it. */
+export interface SkillLineCategoryInfo {
+  id: number;
+  name: string;
+  /** The client's explicit `SortIndex`; lower values are drawn first. */
+  orderIndex: number;
+}
+
+/** The client-side visibility/membership row behind one spell-book entry. */
+export interface SpellSkillAbilityInfo {
+  skillLine: number;
+  raceMask: number;
+  classMask: number;
+  excludeRace: number;
+  excludeClass: number;
+  minSkillLineRank: number;
+  supercededBySpell: number;
+  acquireMethod: number;
+  trivialSkillLineRankHigh: number;
+  trivialSkillLineRankLow: number;
+  characterPoints: [number, number];
+}
+
 export interface TalentData {
   tabs: TalentTabInfo[];
   talents: TalentInfo[];
   glyphs: GlyphInfo[];
   skillLines: SkillLineInfo[];
+  skillCategories: SkillLineCategoryInfo[];
   /** Spell id to the skill line it belongs to: the spellbook's tabs, and a profession's spells. */
   spellSkill: Record<number, number>;
+  /** Every SkillLineAbility row, retained so the browser can apply class/race visibility masks. */
+  spellAbilities: Record<number, SpellSkillAbilityInfo[]>;
   /**
    * Creature family to its `PetTalentType`, which is the only link between a hunter pet and the
    * three trees it may use: the family's type is matched against `TalentTab.CategoryEnumID`.
@@ -124,14 +154,21 @@ async function loadGlyphProperties(dbcDirectory: string): Promise<GlyphInfo[]> {
 }
 
 export async function loadTalentData(dbcDirectory: string): Promise<TalentData> {
-  const [talentTable, tabTable, skillTable, abilityTable, familyTable, glyphs] = await Promise.all([
+  const [talentTable, tabTable, skillTable, categoryTable, abilityTable, familyTable, glyphs, spellIconTable] = await Promise.all([
     openDbcFile(dbcDirectory, "Talent"),
     openDbcFile(dbcDirectory, "TalentTab"),
     openDbcFile(dbcDirectory, "SkillLine"),
+    openDbcFile(dbcDirectory, "SkillLineCategory"),
     openDbcFile(dbcDirectory, "SkillLineAbility"),
     openDbcFile(dbcDirectory, "CreatureFamily"),
     loadGlyphProperties(dbcDirectory),
+    openDbcFile(dbcDirectory, "SpellIcon"),
   ]);
+
+  const spellIconPaths = new Map<number, string>();
+  for (const row of spellIconTable.rows()) {
+    spellIconPaths.set(spellIconTable.id(row), spellIconTable.string(row, "TextureFilename"));
+  }
 
   const tabs: TalentTabInfo[] = [];
   for (const row of tabTable.rows()) {
@@ -143,6 +180,8 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
       petCategory: tabTable.int(row, "CategoryEnumID"),
       orderIndex: tabTable.int(row, "OrderIndex"),
       iconId: tabTable.int(row, "SpellIconID"),
+      iconPath: spellIconPaths.get(tabTable.int(row, "SpellIconID")) ?? "",
+      backgroundFile: tabTable.string(row, "BackgroundFile"),
     });
   }
 
@@ -184,13 +223,45 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
     });
   }
 
+  const skillCategories: SkillLineCategoryInfo[] = [];
+  for (const row of categoryTable.rows()) {
+    const id = categoryTable.id(row);
+    const name = categoryTable.locstring(row, "Name_lang");
+    if (id <= 0 || !name) continue;
+    skillCategories.push({
+      id,
+      name,
+      orderIndex: categoryTable.int(row, "SortIndex"),
+    });
+  }
+  skillCategories.sort((left, right) => left.orderIndex - right.orderIndex || left.id - right.id);
+
   // Ten thousand rows, and the useful half of them is one number each: which skill line a spell
   // belongs to. That is what groups the spellbook into tabs and what fills a profession window.
   const spellSkill: Record<number, number> = {};
+  const spellAbilities: Record<number, SpellSkillAbilityInfo[]> = {};
   for (const row of abilityTable.rows()) {
     const spell = abilityTable.int(row, "Spell");
     const line = abilityTable.int(row, "SkillLine");
     if (spell > 0 && line > 0 && spellSkill[spell] === undefined) spellSkill[spell] = line;
+    if (spell <= 0 || line <= 0) continue;
+    const abilities = spellAbilities[spell] ?? (spellAbilities[spell] = []);
+    abilities.push({
+      skillLine: line,
+      raceMask: abilityTable.int(row, "RaceMask"),
+      classMask: abilityTable.int(row, "ClassMask"),
+      excludeRace: abilityTable.int(row, "ExcludeRace"),
+      excludeClass: abilityTable.int(row, "ExcludeClass"),
+      minSkillLineRank: abilityTable.int(row, "MinSkillLineRank"),
+      supercededBySpell: abilityTable.int(row, "SupercededBySpell"),
+      acquireMethod: abilityTable.int(row, "AcquireMethod"),
+      trivialSkillLineRankHigh: abilityTable.int(row, "TrivialSkillLineRankHigh"),
+      trivialSkillLineRankLow: abilityTable.int(row, "TrivialSkillLineRankLow"),
+      characterPoints: [
+        abilityTable.int(row, "CharacterPoints", 0),
+        abilityTable.int(row, "CharacterPoints", 1),
+      ],
+    });
   }
 
   const petFamilies: Record<number, number> = {};
@@ -199,5 +270,5 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
     if (type > 0) petFamilies[familyTable.id(row)] = type;
   }
 
-  return { tabs, talents, glyphs, skillLines, spellSkill, petFamilies };
+  return { tabs, talents, glyphs, skillLines, skillCategories, spellSkill, spellAbilities, petFamilies };
 }

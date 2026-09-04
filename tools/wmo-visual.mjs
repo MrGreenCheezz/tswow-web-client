@@ -501,14 +501,47 @@ export function wmoGroupMeshes(model) {
   };
 }
 
-export function parseWmoDoodads(root, requestedSet = 0) {
+/**
+ * Doodads owned by an indoor group which carries authored vertex lighting.
+ *
+ * `MODR` is the only reliable ownership relation in the 3.3.5 files. `MOLR` is commonly empty
+ * even in lit rooms and the original client does not expose a stable MODD-to-MOLT relation, so this
+ * deliberately classifies the placement without inventing a nearest-light direction.
+ */
+function wmoLocallyLitDoodads(groups) {
+  const locallyLit = new Set();
+  if (!Array.isArray(groups)) return locallyLit;
+  for (const group of groups) {
+    try {
+      const mogp = chunkMap(group).get("MOGP");
+      if (!mogp || mogp.length < 68 || (mogp.readUInt32LE(MOGP_FLAGS) & WMO_GROUP_INDOOR) === 0) continue;
+      const chunks = chunkMap(mogp.subarray(68));
+      // The reference path gates local doodad light on actual vertex-colour data, not only a flag.
+      const references = chunks.get("MODR");
+      if (!chunks.has("MOCV") || !references) continue;
+      for (let at = 0; at + 2 <= references.length; at += 2) locallyLit.add(references.readUInt16LE(at));
+    } catch {
+      // Group lighting is optional enrichment. One malformed group must not discard the root's
+      // otherwise valid doodad set or assign a guessed room to it.
+    }
+  }
+  return locallyLit;
+}
+
+function wmoDoodadTable(root, groups) {
   const chunks = chunkMap(root);
   const sets = chunks.get("MODS");
   const names = chunks.get("MODN");
   const placements = chunks.get("MODD");
-  if (!sets || !names || !placements) return [];
+  if (!sets || !names || !placements) return undefined;
   if (sets.length % 32 !== 0 || placements.length % 40 !== 0) throw new Error("WMO doodad tables are misaligned");
+  return { sets, names, placements, locallyLit: wmoLocallyLitDoodads(groups) };
+}
+
+function parseWmoDoodadSet(table, requestedSet) {
+  const { sets, names, placements, locallyLit } = table;
   const setCount = sets.length / 32;
+  if (setCount === 0) return [];
   const set = Number.isInteger(requestedSet) && requestedSet >= 0 && requestedSet < setCount ? requestedSet : 0;
   const setOffset = set * 32;
   const first = sets.readUInt32LE(setOffset + 20);
@@ -523,14 +556,58 @@ export function parseWmoDoodads(root, requestedSet = 0) {
     const values = [];
     for (let field = 1; field <= 8; field++) values.push(placements.readFloatLE(offset + field * 4));
     if (!values.every(Number.isFinite) || values[7] <= 0) continue;
+    const localLight = [
+      placements[offset + 38], placements[offset + 37], placements[offset + 36], placements[offset + 39],
+    ];
     result.push({
       name,
       x: values[0], y: values[1], z: values[2],
       quaternionX: values[3], quaternionY: values[4], quaternionZ: values[5], quaternionW: values[6],
       scale: values[7],
+      // The final MODD word is BGRA room illumination, reordered to display-order RGBA. It is not
+      // an albedo tint, so expose it only when group ownership proves this is the indoor M2 path.
+      // Its fourth byte is stored colour alpha, never mesh opacity.
+      ...(locallyLit.has(index) ? { localLight } : {}),
     });
   }
   return result;
+}
+
+export function parseWmoDoodads(root, requestedSet = 0, groups = []) {
+  const table = wmoDoodadTable(root, groups);
+  return table ? parseWmoDoodadSet(table, requestedSet) : [];
+}
+
+/** All authored doodad sets, parsing the potentially large group files only once. */
+export function parseWmoDoodadSets(root, groups = []) {
+  const table = wmoDoodadTable(root, groups);
+  if (!table) return [];
+  return Array.from({ length: table.sets.length / 32 }, (_, set) => parseWmoDoodadSet(table, set));
+}
+
+/** Strict validation for the persistent JSON form used by visual-tile generation. */
+export function validParsedWmoDoodadSets(value) {
+  if (!Array.isArray(value)) return false;
+  for (const set of value) {
+    if (!Array.isArray(set)) return false;
+    for (const candidate of set) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+      const doodad = candidate;
+      if (typeof doodad.name !== "string" || doodad.name.length === 0) return false;
+      const transform = [
+        doodad.x, doodad.y, doodad.z,
+        doodad.quaternionX, doodad.quaternionY, doodad.quaternionZ, doodad.quaternionW,
+        doodad.scale,
+      ];
+      if (!transform.every((number) => typeof number === "number" && Number.isFinite(number))) return false;
+      if (doodad.scale <= 0) return false;
+      if (doodad.localLight !== undefined) {
+        if (!Array.isArray(doodad.localLight) || doodad.localLight.length !== 4) return false;
+        if (!doodad.localLight.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return false;
+      }
+    }
+  }
+  return true;
 }
 
 function chunkMap(data) {

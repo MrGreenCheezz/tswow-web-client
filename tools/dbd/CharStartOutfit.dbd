@@ -1,0 +1,19 @@
+COLUMNS
+int ID
+int<ChrRaces::ID> RaceID
+int<ChrClasses::ID> ClassID
+int SexID
+int OutfitID
+int<Item::ID> ItemID
+int<ItemDisplayInfo::ID> DisplayItemID
+int InventoryType
+
+BUILD 3.0.1.8303-3.3.5.12340
+$id$ID<32>
+RaceID<u8>
+ClassID<u8>
+SexID<u8>
+OutfitID<u8>
+ItemID<32>[24]
+DisplayItemID<32>[24]
+InventoryType<32>[24]

@@ -12,6 +12,14 @@ import { PacketWriter } from "../protocol/PacketWriter.js";
 
 export const INVENTORY_SLOT_BAG_0 = 255;
 
+/** ItemHandler::HandleSocketOpcode reads four full GUIDs; zero preserves an existing socket. */
+export function buildSocketGems(itemGuid: bigint, gems: readonly [bigint, bigint, bigint]): Uint8Array {
+  if (itemGuid <= 0n || gems.some((guid) => guid < 0n || guid === itemGuid)) throw new RangeError("Invalid socket item GUID");
+  const selected = gems.filter((guid) => guid !== 0n);
+  if (selected.length === 0 || new Set(selected).size !== selected.length) throw new RangeError("Socket gems must be distinct item instances");
+  return new PacketWriter().u64(itemGuid).u64(gems[0]).u64(gems[1]).u64(gems[2]).toUint8Array();
+}
+
 export interface EquipFailure {
   result: number;
   itemGuid: bigint;

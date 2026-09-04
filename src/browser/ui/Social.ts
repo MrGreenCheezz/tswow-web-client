@@ -3,7 +3,6 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { AuctionEntry, nextBid } from "../../world/AuctionProtocol.js";
 import { player } from "../../world/Fields.js";
 import { LFG_ROLE_DAMAGE, LFG_ROLE_HEALER, LFG_ROLE_TANK, rolesText } from "../../world/LfgProtocol.js";
-import { isMailRead } from "../../world/MailProtocol.js";
 import { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
 import { showUnitFrames } from "./UnitFrames.js";
@@ -14,11 +13,16 @@ import {
   auctionList, auctionMessage, auctionWindow, duelText, duelWindow, groupAccept, groupInviteText,
   groupInviteWindow,
   lfgDamage, lfgHealer, lfgMessage, lfgProposalBox, lfgProposalText, lfgQueue, lfgTank, lfgWindow,
-  mailList, mailMessage, mailWindow, status, tradeMessage, tradeMine, tradeTheirTitle,
+  status, tradeMessage, tradeMine, tradeTheirTitle,
   tradeTheirs, tradeTitle, tradeWindow,
 } from "./Dom.js";
 
 /** Group, mail, trade, auction, dungeon finder and duels. The guild has its own module now. */
+
+// Unlike the event-driven panels below, LFG has a real micro-button owner: the player can open
+// the empty queue window before joining anything.  Keep that intent separate from server state so
+// showLfg() does not immediately close the window on its next world tick.
+let lfgWindowRequested = false;
 
 export function showGroup(): void {
   const world = game.world;
@@ -157,8 +161,14 @@ export function showLfg(): void {
   const world = game.world;
   const proposal = world?.lfgProposal;
   const status = world?.lfgStatus;
-  // The window only earns its place once something LFG related has actually happened.
-  if (!world || (!proposal && !status && !world.lfgQueue && !world.lfgMessage)) {
+  if (!world) {
+    lfgWindowRequested = false;
+    lfgWindow.hidden = true;
+    return;
+  }
+  // An explicit micro-button/open command owns an empty window; otherwise the event-driven panel
+  // only earns its place once something LFG related has actually happened.
+  if (!lfgWindowRequested && (!proposal && !status && !world.lfgQueue && !world.lfgMessage)) {
     lfgWindow.hidden = true;
     return;
   }
@@ -181,105 +191,26 @@ export function showLfg(): void {
   }
 }
 
-export function showMail(): void {
-  const world = game.world;
-  if (!world || world.mailboxGuid === 0n) {
-    mailWindow.hidden = true;
-    return;
-  }
-  mailWindow.hidden = false;
-  const message = world.mailMessage;
-  mailMessage.className = message ? (message.error ? "error" : "success") : "muted";
-  mailMessage.textContent = message?.text ?? "";
-
-  const mails = world.mail?.mails ?? [];
-  if (mails.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "Почтовый ящик пуст";
-    mailList.replaceChildren(empty);
-    return;
-  }
-
-  mailList.replaceChildren(...mails.map((entry) => {
-    const box = document.createElement("div");
-    box.className = isMailRead(entry) ? "mail-entry" : "mail-entry unread";
-
-    const subject = document.createElement("strong");
-    subject.textContent = entry.subject || "(без темы)";
-    box.append(subject);
-
-    const from = entry.senderGuid !== 0n ? world.displayName(entry.senderGuid) : `отправитель ${entry.altSenderId}`;
-    const meta = document.createElement("div");
-    meta.className = "mail-meta";
-    meta.textContent = `От: ${from} · осталось дней: ${Math.max(0, Math.floor(entry.daysLeft))}`;
-    box.append(meta);
-
-    if (entry.body) {
-      const body = document.createElement("div");
-      body.textContent = entry.body;
-      box.append(body);
-    }
-
-    if (entry.money > 0) {
-      const money = document.createElement("button");
-      money.type = "button";
-      money.textContent = `Забрать ${formatMoney(entry.money)}`;
-      money.addEventListener("click", () => world.takeMailMoney(entry.mailId));
-      box.append(money);
-    }
-    for (const attachment of entry.attachments) {
-      const take = document.createElement("button");
-      take.type = "button";
-      const name = world.itemTemplate(attachment.itemId)?.name
-        || game.itemMetadata?.get(attachment.itemId)?.name
-        || unknownLabel("предмет", attachment.itemId);
-      take.textContent = attachment.count > 1 ? `Забрать ${name} ×${attachment.count}` : `Забрать ${name}`;
-      attachTooltip(take, () => itemTooltipFor(attachment.itemId, {
-        count: attachment.count,
-        footer: ["Нажмите, чтобы забрать из письма"],
-      }));
-      take.addEventListener("click", () => world.takeMailItem(entry.mailId, attachment.attachId));
-      box.append(take);
-    }
-    if (entry.cod > 0) {
-      const cod = document.createElement("div");
-      cod.className = "mail-meta";
-      cod.textContent = `Наложенный платёж: ${formatMoney(entry.cod)}`;
-      box.append(cod);
-    }
-
-    if (!isMailRead(entry)) {
-      const read = document.createElement("button");
-      read.type = "button";
-      read.textContent = "Прочитано";
-      read.addEventListener("click", () => world.markMailRead(entry.mailId));
-      box.append(read);
-    }
-    if (entry.senderGuid !== 0n) {
-      const back = document.createElement("button");
-      back.type = "button";
-      back.textContent = "Вернуть";
-      back.addEventListener("click", () => world.returnMail(entry.mailId, entry.senderGuid));
-      box.append(back);
-    }
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "Удалить";
-    remove.className = "danger";
-    remove.addEventListener("click", () => confirmPanel(remove, {
-      title: "Удалить письмо?",
-      lines: entry.money > 0 || entry.attachments.length > 0
-        ? ["Во вложении ещё что-то есть — оно пропадёт вместе с письмом."]
-        : undefined,
-      confirm: "Удалить",
-      danger: true,
-      onConfirm: () => world.deleteMail(entry.mailId),
-    }));
-    box.append(remove);
-    return box;
-  }));
+/** Whether the real native LFG window is currently visible. */
+export function lfgWindowOpen(): boolean {
+  return !lfgWindow.hidden;
 }
+
+/** Close the native LFG owner and clear the explicit-open intent. */
+export function closeLfgWindow(): void {
+  lfgWindowRequested = false;
+  lfgWindow.hidden = true;
+}
+
+/** Toggle the real native LFG window used by the stock LFDMicroButton adapter. */
+export function toggleLfgWindow(): void {
+  if (!game.world) return;
+  lfgWindowRequested = lfgWindow.hidden;
+  if (lfgWindowRequested) showLfg();
+  else lfgWindow.hidden = true;
+}
+
+export { showMail } from "./Mail.js";
 
 export function showTrade(): void {
   const world = game.world;

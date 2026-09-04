@@ -398,7 +398,7 @@ export const CLASS_ATLAS_CELL_SIZE = 64;
 export const CLASS_ATLAS_DEFAULT_SIZE = 256;
 
 /**
- * Where to put the atlas behind a window of `size` pixels so that one cell shows through it.
+ * Where to put the atlas behind a `windowWidth` by `windowHeight` opening so one cell shows through.
  *
  * `object-fit: none` draws the image at its natural size, so the cell is selected by moving the
  * image rather than by scaling it — which keeps the icon pixel-exact at any frame width.
@@ -415,9 +415,10 @@ export const CLASS_ATLAS_DEFAULT_SIZE = 256;
  */
 export function classIconOffset(
   classId: number | undefined,
-  size: number,
+  windowWidth: number,
   atlasWidth: number = CLASS_ATLAS_DEFAULT_SIZE,
   atlasHeight: number = atlasWidth,
+  windowHeight: number = windowWidth,
 ): string | undefined {
   const cell = classIconCell(classId);
   if (!cell) return undefined;
@@ -425,8 +426,9 @@ export function classIconOffset(
   // first cell; the sheet this build knows about is a better guess than a certain collision.
   const width = atlasWidth > 0 ? atlasWidth : CLASS_ATLAS_DEFAULT_SIZE;
   const height = atlasHeight > 0 ? atlasHeight : CLASS_ATLAS_DEFAULT_SIZE;
-  const inset = (size - CLASS_ATLAS_CELL_SIZE) / 2;
-  return `${-Math.round(cell.left * width) + inset}px ${-Math.round(cell.top * height) + inset}px`;
+  const insetX = (windowWidth - CLASS_ATLAS_CELL_SIZE) / 2;
+  const insetY = (windowHeight - CLASS_ATLAS_CELL_SIZE) / 2;
+  return `${-Math.round(cell.left * width) + insetX}px ${-Math.round(cell.top * height) + insetY}px`;
 }
 
 /** The class's own corner of the sheet, by the `Filename` token the coordinates are keyed on. */
@@ -448,19 +450,25 @@ export function hasClassIcon(classId: number | undefined): boolean {
  * element to ask — a hidden one measures zero — and `classPortraitPosition` measures the rest.
  */
 export const CLASS_PORTRAIT_SIZE = 58;
+export const CLASS_MICRO_PORTRAIT_WIDTH = 18;
+export const CLASS_MICRO_PORTRAIT_HEIGHT = 25;
 
 /**
  * The same offset, for the image element that actually carries the sheet.
  *
- * `clientWidth` rather than the constant, because the constant is right on one of the stylesheet's
- * two boxes and wrong on the other: a 64px cell wants an inset of -9 in the 46px ring and -3 in the
- * 58px one, so centring on 58 while the ring is 46 puts the cell six pixels out on both axes, and
- * what shows in the strip that opens up is the neighbouring class's circle.
+ * The measured width and height rather than one constant matter twice: the unit-frame ring narrows
+ * from 58px to 46px, while the stock microbutton opening is rectangular (18px by 25px). Optional
+ * authored fallbacks keep both shapes correct when an ancestor is hidden and the browser reports
+ * zero for both client dimensions.
  */
 export function classPortraitPosition(
-  image: { clientWidth: number; naturalWidth: number; naturalHeight: number },
+  image: { clientWidth: number; clientHeight?: number; naturalWidth: number; naturalHeight: number },
   classId: number | undefined,
+  fallbackWidth: number = CLASS_PORTRAIT_SIZE,
+  fallbackHeight: number = fallbackWidth,
 ): string | undefined {
+  const width = image.clientWidth || fallbackWidth;
+  const height = image.clientHeight || fallbackHeight;
   return classIconOffset(
-    classId, image.clientWidth || CLASS_PORTRAIT_SIZE, image.naturalWidth, image.naturalHeight);
+    classId, width, image.naturalWidth, image.naturalHeight, height);
 }

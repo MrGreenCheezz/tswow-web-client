@@ -35,6 +35,7 @@ export const INPUT_ACTIONS = [
   { action: "toggleBags", group: "Интерфейс", label: "Сумки" },
   { action: "toggleKeyring", group: "Интерфейс", label: "Брелок" },
   { action: "toggleSpellbook", group: "Интерфейс", label: "Книга заклинаний" },
+  { action: "togglePvp", group: "Интерфейс", label: "PvP" },
   { action: "toggleTalents", group: "Интерфейс", label: "Таланты" },
   { action: "toggleProfessions", group: "Интерфейс", label: "Навыки" },
   { action: "toggleQuestLog", group: "Интерфейс", label: "Журнал заданий" },
@@ -158,6 +159,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   // `Shift+B` is what it uses for "open every bag", and the bag key here already does that.
   toggleKeyring: ["Shift+KeyB", ""],
   toggleSpellbook: ["KeyP", ""],
+  // This is the stock TOGGLECHARACTER4 route (H); FrameXML owns the PvP summary when mounted.
+  togglePvp: ["KeyH", ""],
   // `N` is the original client's talent key. Skills have none there at all — they are a tab of
   // the character window — and `K` is already this client's bindings window, so the skills window
   // takes the nearest free key rather than shipping unreachable, which the bindings test forbids.

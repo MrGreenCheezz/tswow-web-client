@@ -1,6 +1,7 @@
 import type { CollisionBounds, CollisionLiquid } from "../../world/CollisionFormat.js";
 import {
   inverseTransformCollisionPoint,
+  transformCollisionMesh,
   type CollisionPlacement,
   type Vector3,
 } from "./Collision.js";
@@ -65,6 +66,14 @@ export interface CollisionLiquidEyeHit extends CollisionLiquidSample {
   groupId: number | undefined;
   /** Eye height in the WMO model's local coordinates. */
   eyeHeight: number;
+  /**
+   * The same surface point in world coordinates, which is what anything outside this file speaks.
+   *
+   * `height` is the MLIQ grid's own number and stays in the model's space; the renderer's overlay
+   * compares the surface against a camera that stands in the world, so the placement transform has
+   * to be applied somewhere and here is where the placement is already in hand.
+   */
+  worldHeight: number;
 }
 
 /**
@@ -74,12 +83,21 @@ export interface CollisionLiquidEyeHit extends CollisionLiquidSample {
  * upper room mark a dry lower room as underwater whenever their x/y footprints overlap. The
  * selected floor group is the provenance we actually have; its model-space bounds are a second
  * fail-closed check against stale or vertically unrelated answers.
+ *
+ * `bandYards` widens the acceptance upwards by that many world yards, for the one caller that has
+ * to know about a surface the eye has not passed yet: the near plane cuts the water before the eye
+ * does, so the screen effect starts a near-plane half-height early. Zero — the default — is the
+ * strict «the eye is under it» test that the light slot has always asked, unchanged. The band is
+ * divided by the placement scale to reach model units, which is exact wherever the placement's z
+ * axis is the world's; a tilted WMO costs a fraction of a yard on a band that is itself an eighth
+ * of one.
  */
 export function collisionModelLiquidAtEye(
   groups: readonly { bounds: CollisionBounds; groupId?: number; liquid?: CollisionLiquid }[],
   authoritativeGroupIndex: number,
   placement: CollisionPlacement,
   worldEye: Vector3,
+  bandYards = 0,
 ): CollisionLiquidEyeHit | undefined {
   if (!Number.isInteger(authoritativeGroupIndex) || authoritativeGroupIndex < 0) return undefined;
   const group = groups[authoritativeGroupIndex];
@@ -94,21 +112,34 @@ export function collisionModelLiquidAtEye(
     || eye.y < bounds.minY - epsilon || eye.y > bounds.maxY + epsilon
     || eye.z < bounds.minZ - epsilon || eye.z > bounds.maxZ + epsilon) return undefined;
   const sample = sampleCollisionLiquid(group.liquid, eye.x, eye.y);
-  if (!sample || !(eye.z < sample.height)) return undefined;
+  if (!sample) return undefined;
+  const scale = placement.scale || 1;
+  const band = Number.isFinite(bandYards) && bandYards > 0 ? bandYards / Math.abs(scale) : 0;
+  if (!(eye.z < sample.height + band)) return undefined;
+  // Through the same transform the collision meshes go through, rather than a second copy of its
+  // matrix: this file has one job with a sign in it and the mesh path is where that sign is proved.
+  const placed = transformCollisionMesh(
+    Float32Array.of(eye.x, eye.y, sample.height),
+    Uint32Array.of(0),
+    placement,
+  );
   return {
     ...sample,
     groupIndex: authoritativeGroupIndex,
     groupId: group.groupId,
     eyeHeight: eye.z,
+    worldHeight: placed[2]!,
   };
 }
 
-/** Whether a world-space eye is below a wet `MLIQ` cell in the authoritative floor group. */
-export function eyeUnderCollisionModelLiquid(
-  groups: readonly { bounds: CollisionBounds; groupId?: number; liquid?: CollisionLiquid }[],
-  authoritativeGroupIndex: number,
-  placement: CollisionPlacement,
-  worldEye: Vector3,
-): boolean {
-  return collisionModelLiquidAtEye(groups, authoritativeGroupIndex, placement, worldEye) !== undefined;
+/**
+ * Whether the eye of a hit is actually below the surface, rather than inside the crossing band.
+ *
+ * The predicate the light slot asks, kept on the hit so that one query answers both questions: a
+ * band-widened lookup still says exactly what a band-free one would have said, and the two cannot
+ * drift apart into two different ideas of «underwater». Model-space on both sides, deliberately —
+ * that is the comparison `Map`'s own liquid test makes and the one the light slot was written on.
+ */
+export function collisionLiquidEyeSubmerged(hit: CollisionLiquidEyeHit | undefined): boolean {
+  return hit !== undefined && hit.eyeHeight < hit.height;
 }

@@ -7,8 +7,21 @@
     <title>TSWoW WebClient</title>
   </head>
   <body>
+    <!--
+      The client's own GlueXML login/realm/character screens, and the front door by default since
+      G6. The runtime is loaded on demand by src/browser/main.ts and mounts into #glue-stage; this
+      is the same markup glue.html carries, so the two pages build an identical stage.
+
+      `?legacy-login=1` (or localStorage["webclient.frontDoor"] = "legacy") leaves this hidden and
+      shows the DOM forms below instead — the parity switch, kept until the GlueXML path has proved
+      itself on every flow. A glue runtime that fails to load falls back to the same forms.
+    -->
+    <div id="glue-host" hidden>
+      <div id="glue-stage"></div>
+      <div id="glue-status"></div>
+    </div>
     <main>
-      <section class="panel">
+      <section id="login-panel" class="panel">
         <p class="eyebrow">TSWoW · 3.3.5a</p>
         <h1>WebClient</h1>
         <p class="muted">WebGL terrain · WMO/M2 · существа · бой и заклинания</p>
@@ -84,15 +97,31 @@
           <canvas id="world-3d-canvas" aria-hidden="true"></canvas>
           <canvas id="world-canvas" aria-label="Упрощённая трёхмерная сцена мира"></canvas>
 
-          <!-- The action bar builds its own slots; this is where they go. -->
-          <div id="action-bar"></div>
+          <!-- One bottom HUD owns every live control. The combat stack stays on the viewport's
+               centre line; bags and character/menu buttons share one right edge and baseline.
+               Dynamic extra and pet rows join #bottom-hud-center instead of inventing offsets. -->
+          <div id="bottom-hud" data-window-reserve-bottom>
+            <div id="bottom-hud-center">
+              <!-- The action bar builds its own slots; this is where they go. -->
+              <div id="action-bar"></div>
+            </div>
+            <div id="hud-utilities">
+              <!-- The bag bar builds its own buttons: backpack, four bags, keyring. -->
+              <div id="bag-bar" class="bag-bar" aria-label="Сумки"></div>
+              <div id="game-buttons">
+                <button id="character-toggle" type="button" title="Персонаж (C)" aria-label="Персонаж" aria-keyshortcuts="C">
+                  <img id="character-micro-icon" alt="" hidden />
+                </button>
+                <button id="inventory-toggle" type="button" title="Инвентарь (B)" aria-label="Инвентарь" aria-keyshortcuts="B"></button>
+                <button id="spellbook-toggle" type="button" title="Книга заклинаний (P)" aria-label="Книга заклинаний" aria-keyshortcuts="P"></button>
+                <button id="talents-toggle" type="button" title="Таланты (N)" aria-label="Таланты" aria-keyshortcuts="N"></button>
+                <button id="game-menu-toggle" type="button" title="Меню игры (Esc)" aria-label="Меню игры" aria-keyshortcuts="Escape" aria-haspopup="dialog" aria-controls="game-menu" aria-expanded="false"><span class="micro-button-glyph" aria-hidden="true">☰</span></button>
+              </div>
+            </div>
+          </div>
 
           <!-- The top-left corner is one column, not five boxes with five guessed `top` values.
-               The player frame, its aura strip, the secondary frames, the party and the combat log
-               all lived at hard offsets and drew over each other the moment any of them had
-               content: twenty-four player auras are three rows and 110px, which reached straight
-               through the swing warning at 138 and the combat log at 168. Same shape as
-               `.right-rail`, and for the same reason. -->
+               Combat history belongs to the chat's «Бой» tab; this rail only holds live unit state. -->
           <div id="left-rail" class="left-rail">
             <div id="player-hud" class="unit-frame player-frame">
               <img id="player-icon" class="class-portrait" alt="" hidden />
@@ -115,7 +144,6 @@
             </div>
             <div id="party-frames" class="party-frames" aria-label="Группа"></div>
             <p id="swing-warning" class="swing-warning" role="status" hidden></p>
-            <div id="combat-log" class="combat-log" role="log" aria-label="Боевой журнал" hidden></div>
           </div>
 
           <!-- The target and its auras are a column of their own. The button row hangs 30px below
@@ -144,40 +172,54 @@
                 <button id="trainer-button" class="frame-action" type="button" hidden aria-label="Обучение">🎓</button>
                 <button id="banker-button" class="frame-action" type="button" hidden aria-label="Банк">🏦</button>
               </div>
-              <button id="clear-target-button" class="frame-close" type="button" disabled aria-label="Сбросить цель">×</button>
+              <button id="clear-target-button" class="frame-close" type="button" disabled aria-label="Сбросить цель"></button>
             </div>
             <div id="target-auras" class="aura-strip target-auras" aria-label="Эффекты цели" hidden></div>
           </div>
 
-          <!-- The bag bar builds its own buttons: backpack, four bags, keyring. -->
-          <div id="bag-bar" class="bag-bar" aria-label="Сумки"></div>
-
-          <div id="game-buttons">
-            <button id="character-toggle" type="button" title="Персонаж (C)">C</button>
-            <button id="inventory-toggle" type="button" title="Инвентарь (B)">B</button>
-            <button id="spellbook-toggle" type="button" title="Книга заклинаний (P)">P</button>
-            <button id="talents-toggle" type="button" title="Таланты (N)">N</button>
-            <button id="professions-toggle" type="button" title="Навыки и профессии (J)">J</button>
-            <button id="diagnostics-toggle" type="button" title="Диагностика">⚙</button>
-          </div>
-
-          <section id="character-window" class="game-window character-window" hidden>
-            <header><strong id="character-window-title">Персонаж</strong><button class="window-close" type="button" data-close="character-window">×</button></header>
-            <div id="character-stats" class="character-stats"></div>
-            <div id="equipment-slots" class="equipment-slots" aria-label="Экипировка персонажа"></div>
-            <!-- The equipment manager builds its own rows; the page only says where. -->
-            <div id="equipment-sets" class="equipment-sets" aria-label="Наборы экипировки"></div>
+          <section id="character-window" class="game-window character-window" data-window-fixed-size="true" hidden>
+            <header><strong id="character-window-title">Персонаж</strong><button class="window-close" type="button" data-close="character-window" aria-label="Закрыть"></button></header>
+            <nav id="character-tabs" class="character-tabs" role="tablist" aria-label="Разделы персонажа">
+              <button id="character-tab-sheet" type="button" role="tab" aria-controls="character-sheet-pane" aria-selected="true" tabindex="0">Персонаж</button>
+              <button id="character-tab-skills" type="button" role="tab" aria-controls="character-skills-pane" aria-selected="false" tabindex="-1">Навыки</button>
+              <button id="character-tab-collections" type="button" role="tab" aria-controls="character-collections-pane" aria-selected="false" tabindex="-1">Коллекции</button>
+            </nav>
+            <div id="character-sheet-pane" class="character-tab-pane" role="tabpanel" aria-labelledby="character-tab-sheet" tabindex="0">
+              <p id="character-identity" class="character-identity">Ожидание персонажа…</p>
+              <div class="character-paperdoll">
+                <div id="character-model" class="character-model" data-portrait-model-placeholder="true" aria-label="Модель персонажа"></div>
+                <div id="equipment-slots" class="equipment-slots" aria-label="Экипировка персонажа"></div>
+              </div>
+              <div id="character-stats" class="character-stats"></div>
+              <!-- The equipment manager builds its own rows; the page only says where. -->
+              <div id="equipment-sets" class="equipment-sets" aria-label="Наборы экипировки"></div>
+            </div>
+            <div id="character-skills-pane" class="character-tab-pane" role="tabpanel" aria-labelledby="character-tab-skills" tabindex="0" hidden></div>
+            <div id="character-collections-pane" class="character-tab-pane" role="tabpanel" aria-labelledby="character-tab-collections" tabindex="0" hidden>
+              <section class="character-collection-section">
+                <h4>Маунты</h4>
+                <div id="character-mounts" class="character-collection-grid" aria-label="Известные маунты"></div>
+              </section>
+              <section class="character-collection-section">
+                <h4>Декоративные питомцы</h4>
+                <div id="character-companions" class="character-collection-grid" aria-label="Известные декоративные питомцы"></div>
+              </section>
+              <section class="character-collection-section">
+                <h4>Боевые питомцы</h4>
+                <div id="character-combat-pets" aria-label="Боевые питомцы"></div>
+              </section>
+            </div>
           </section>
 
           <section id="inventory-window" class="game-window inventory-window" hidden>
-            <header><strong>Инвентарь</strong><button class="window-close" type="button" data-close="inventory-window">×</button></header>
+            <header><strong>Инвентарь</strong><button class="window-close" type="button" data-close="inventory-window" aria-label="Закрыть"></button></header>
             <div id="inventory-money" class="inventory-money"></div>
             <p id="inventory-message" class="muted" role="status" aria-live="polite"></p>
             <div id="inventory-slots" class="inventory-slots" aria-label="Сумки персонажа"></div>
           </section>
 
           <section id="spellbook-window" class="game-window spellbook-window" hidden>
-            <header><strong>Книга заклинаний</strong><button class="window-close" type="button" data-close="spellbook-window">×</button></header>
+            <header><strong>Книга заклинаний</strong><button class="window-close" type="button" data-close="spellbook-window" aria-label="Закрыть"></button></header>
             <p id="spell-status" role="status" aria-live="polite">Ожидание списка заклинаний…</p>
             <!-- The search box and the rank switch stand in the book's own header, where the
                  original client keeps `ShowAllSpellRanksCheckBox` (`SpellBookFrame.xml:376`): the
@@ -192,14 +234,14 @@
           </section>
 
           <section id="gossip-window" class="game-window gossip-window" hidden>
-            <header><strong id="gossip-title">Разговор</strong><button class="window-close" type="button" data-close="gossip-window">×</button></header>
+            <header><strong id="gossip-title">Разговор</strong><button class="window-close" type="button" data-close="gossip-window" aria-label="Закрыть"></button></header>
             <p id="gossip-text" class="gossip-text">Ожидание ответа NPC…</p>
             <div id="gossip-options" class="gossip-options"></div>
             <div id="gossip-quests" class="gossip-quests"></div>
           </section>
 
           <section id="quest-window" class="game-window quest-window" hidden>
-            <header><strong id="quest-title">Задание</strong><button class="window-close" type="button" data-close="quest-window">×</button></header>
+            <header><strong id="quest-title">Задание</strong><button class="window-close" type="button" data-close="quest-window" aria-label="Закрыть"></button></header>
             <div class="quest-scroll">
               <p id="quest-body" class="quest-body"></p>
               <h4>Цели</h4>
@@ -221,7 +263,7 @@
           <div id="raid-frames" class="raid-frames" aria-label="Рейд"></div>
 
           <aside id="auction-window" class="game-window mail-window" hidden>
-            <header><strong>Аукцион</strong><button class="window-close" type="button" data-close="auction-window">×</button></header>
+            <header><strong>Аукцион</strong><button class="window-close" type="button" data-close="auction-window" aria-label="Закрыть"></button></header>
             <p id="auction-message" class="muted" role="status" aria-live="polite"></p>
             <p>
               <input id="auction-search" maxlength="60" placeholder="Поиск по названию" />
@@ -232,7 +274,7 @@
           </aside>
 
           <aside id="lfg-window" class="game-window" hidden>
-            <header><strong>Поиск подземелья</strong><button class="window-close" type="button" data-close="lfg-window">×</button></header>
+            <header><strong>Поиск подземелья</strong><button class="window-close" type="button" data-close="lfg-window" aria-label="Закрыть"></button></header>
             <p id="lfg-message" class="muted" role="status" aria-live="polite"></p>
             <p id="lfg-queue" class="muted"></p>
             <div id="lfg-proposal" hidden>
@@ -256,7 +298,7 @@
           </aside>
 
           <aside id="guild-window" class="game-window mail-window" hidden>
-            <header><strong id="guild-title">Гильдия</strong><button class="window-close" type="button" data-close="guild-window">×</button></header>
+            <header><strong id="guild-title">Гильдия</strong><button class="window-close" type="button" data-close="guild-window" aria-label="Закрыть"></button></header>
             <p id="guild-message" class="muted" role="status" aria-live="polite"></p>
             <p id="guild-motd" class="muted"></p>
             <div id="guild-roster" aria-label="Состав гильдии"></div>
@@ -271,22 +313,27 @@
             </p>
           </aside>
 
-          <aside id="mail-window" class="game-window mail-window" hidden>
-            <header><strong>Почта</strong><button class="window-close" type="button" data-close="mail-window">×</button></header>
+          <aside id="mail-window" class="game-window mail-window mail-client-window" data-window-fixed-size="true" hidden>
+            <header><span class="mail-portrait" aria-hidden="true"></span><strong>Почта</strong><button class="window-close" type="button" data-close="mail-window" aria-label="Закрыть"></button></header>
             <p id="mail-message" class="muted" role="status" aria-live="polite"></p>
-            <div id="mail-list" aria-label="Письма"></div>
-            <details id="mail-compose">
-              <summary>Написать письмо</summary>
-              <p><input id="mail-to" maxlength="12" placeholder="Кому" /></p>
-              <p><input id="mail-subject" maxlength="64" placeholder="Тема" /></p>
-              <p><textarea id="mail-body" maxlength="500" rows="3" placeholder="Текст"></textarea></p>
-              <p><label>Золото <input id="mail-money" type="number" min="0" step="1" value="0" /></label></p>
-              <p><button id="mail-send" type="button">Отправить</button></p>
-            </details>
+            <section id="mail-inbox" role="tabpanel" aria-labelledby="mail-inbox-tab">
+              <div id="mail-list" aria-label="Письма"></div>
+              <div class="mail-pagination"><button id="mail-previous" type="button" aria-label="Предыдущая страница">◀</button><span id="mail-page"></span><button id="mail-next" type="button" aria-label="Следующая страница">▶</button></div>
+            </section>
+            <section id="mail-compose" role="tabpanel" aria-labelledby="mail-compose-tab" hidden>
+              <label class="mail-field"><span>Кому:</span><input id="mail-to" maxlength="12" autocomplete="off" /></label>
+              <label class="mail-field"><span>Тема:</span><input id="mail-subject" maxlength="64" /></label>
+              <textarea id="mail-body" maxlength="8000" rows="8" aria-label="Текст письма"></textarea>
+              <div id="mail-attachments" class="mail-attachments" aria-label="Вложения"></div>
+              <label class="mail-field"><span>Вложить:</span><select id="mail-attachment-picker" aria-label="Предмет из сумок"><option value="">Выберите предмет</option></select></label>
+              <div class="mail-coins"><label><input id="mail-money" type="number" min="0" max="214748" step="1" value="0" aria-label="Золото" /><span class="coin-gold">з.</span></label><label><input id="mail-silver" type="number" min="0" max="99" step="1" value="0" aria-label="Серебро" /><span class="coin-silver">с.</span></label><label><input id="mail-copper" type="number" min="0" max="99" step="1" value="0" aria-label="Медь" /><span class="coin-copper">м.</span></label></div>
+              <div class="mail-compose-footer"><span id="mail-postage"></span><button id="mail-send" type="button">Отправить</button></div>
+            </section>
+            <nav class="mail-tabs" role="tablist" aria-label="Почта"><button id="mail-inbox-tab" role="tab" aria-controls="mail-inbox" aria-selected="true" type="button">Входящие</button><button id="mail-compose-tab" role="tab" aria-controls="mail-compose" aria-selected="false" type="button">Отправить письмо</button></nav>
           </aside>
 
           <aside id="trade-window" class="game-window" hidden>
-            <header><strong id="trade-title">Обмен</strong><button class="window-close" type="button" data-close="trade-window">×</button></header>
+            <header><strong id="trade-title">Обмен</strong><button class="window-close" type="button" data-close="trade-window" aria-label="Закрыть"></button></header>
             <p id="trade-message" class="muted" role="status" aria-live="polite"></p>
             <h4>Вы предлагаете</h4>
             <div id="trade-mine" aria-label="Ваше предложение"></div>
@@ -331,14 +378,14 @@
           </section>
 
           <aside id="loot-window" class="game-window" hidden>
-            <header><strong>Добыча</strong><button class="window-close" type="button" data-close="loot-window">×</button></header>
+            <header><strong>Добыча</strong><button class="window-close" type="button" data-close="loot-window" aria-label="Закрыть"></button></header>
             <p id="loot-error" class="error" hidden></p>
             <button id="loot-money" type="button" hidden></button>
             <div id="loot-items" aria-label="Предметы добычи"></div>
           </aside>
 
           <aside id="vendor-window" class="game-window" hidden>
-            <header><strong>Торговец</strong><button class="window-close" type="button" data-close="vendor-window">×</button></header>
+            <header><strong>Торговец</strong><button class="window-close" type="button" data-close="vendor-window" aria-label="Закрыть"></button></header>
             <p id="merchant-message" class="muted" role="status" aria-live="polite"></p>
             <div id="vendor-items" aria-label="Товары"></div>
             <p class="muted">Чтобы продать, откройте сумки и нажмите на предмет при открытом торговце.</p>
@@ -347,7 +394,7 @@
           </aside>
 
           <aside id="trainer-window" class="game-window" hidden>
-            <header><strong>Обучение</strong><button class="window-close" type="button" data-close="trainer-window">×</button></header>
+            <header><strong>Обучение</strong><button class="window-close" type="button" data-close="trainer-window" aria-label="Закрыть"></button></header>
             <p id="trainer-greeting" class="muted"></p>
             <p id="trainer-message" class="muted" role="status" aria-live="polite"></p>
             <div id="trainer-spells" aria-label="Доступные заклинания"></div>
@@ -369,7 +416,7 @@
           </aside>
 
           <aside id="diagnostics-window" class="game-window diagnostics-window" hidden>
-            <header><strong>Состояние клиента</strong><button class="window-close" type="button" data-close="diagnostics-window">×</button></header>
+            <header><strong>Состояние клиента</strong><button class="window-close" type="button" data-close="diagnostics-window" aria-label="Закрыть"></button></header>
             <div id="diagnostics-tabs"></div>
             <div id="diagnostics-state">
               <p id="world-status" role="status" aria-live="polite"></p>

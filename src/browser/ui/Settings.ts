@@ -15,10 +15,11 @@ import { game } from "../game/Context.js";
 import { setMinimapRotation } from "./Minimap.js";
 import { setSpellbookRankFilter } from "./Spellbook.js";
 import {
-  SETTING_DEFINITIONS, SETTING_GROUPS, coerceSetting, defaultSettings, parseSettings,
-  serialiseSettings, settingBoolean, settingDefinition, settingNumber,
+  SETTING_DEFINITIONS, coerceSetting, defaultSettings, parseSettings,
+  serialiseSettings, settingBoolean, settingDefinition, settingMatchesQuery, settingNumber,
   type SettingDefinition, type SettingValues,
 } from "./SettingsModel.js";
+import { wireSettingsNavigation, type SettingsNavigation } from "./SettingsNavigation.js";
 import { Panel } from "./Widgets.js";
 
 export const settingsStore = new AccountStore<SettingValues>({
@@ -30,6 +31,9 @@ export const settingsStore = new AccountStore<SettingValues>({
 });
 
 let panel: Panel | undefined;
+let settingsList: HTMLElement | undefined;
+let settingsNote: HTMLElement | undefined;
+let settingsNavigation: SettingsNavigation | undefined;
 
 export function settings(): SettingValues {
   return settingsStore.value;
@@ -78,6 +82,11 @@ export function toggleSettingsWindow(): void {
  */
 export function applySettings(): void {
   const values = settingsStore.value;
+  const uiScale = settingNumber(values, "uiScale");
+  // A unitless factor for the HUD and game-window layer. The world canvases intentionally do not
+  // consume it: changing interface size must not lower the scene's render resolution.
+  document.documentElement.style.setProperty("--ui-scale", String(uiScale / 100));
+  document.documentElement.dataset["uiScale"] = String(uiScale);
   document.documentElement.style.setProperty(
     "--chat-log-height", `${settingNumber(values, "chatLogHeight")}px`);
   setMinimapRotation(settingBoolean(values, "minimapRotate"));
@@ -102,8 +111,18 @@ export function applySettings(): void {
     waterFresnel: settingBoolean(values, "experimentalWaterFresnel"),
     waterMicroWaves: settingBoolean(values, "experimentalWaterMicroWaves"),
     waterSunSparkle: settingBoolean(values, "experimentalWaterSunSparkle"),
+    waterFoam: settingBoolean(values, "experimentalWaterFoam"),
+    vegetationWind: settingBoolean(values, "experimentalVegetationWind"),
     fantasyGlow: settingBoolean(values, "experimentalFantasyGlow"),
   });
+  // P3 underwater screen effect. Its own switch rather than a seventh experimental leaf: this one
+  // is the original client's own view from under the water, and OFF is the pre-P3 frame exactly —
+  // the overlay scene is never submitted, so the draw-call count does not move either.
+  game.renderer?.setUnderwaterOverlay?.(settingBoolean(values, "underwaterOverlay"));
+  // The classic glow and solar rays are independent leaves sharing one offscreen scene path. Each
+  // switch controls only its own effect; the direct pre-P4 path is selected only when both are OFF.
+  game.renderer?.setFullscreenGlow?.(settingBoolean(values, "fullscreenGlow"));
+  game.renderer?.setGodRays?.(settingBoolean(values, "godRays"));
   // How far the ground cover reaches, and whether its density is read per detail cell. Pushed for
   // the same reason as the render scale: it is read deep inside a frame, and a copy kept anywhere
   // else is a copy that can be stale. Outside the world `game.groundCover` is undefined, which
@@ -143,14 +162,74 @@ export function applySoundVolumes(): void {
 
 function build(): Panel {
   const created = new Panel({ id: "settings-window", title: "Настройки", className: "settings-window" });
+
+  const settingsTabs = document.createElement("nav");
+  settingsTabs.className = "settings-groups";
+  settingsTabs.setAttribute("role", "tablist");
+  settingsTabs.setAttribute("aria-label", "Разделы настроек");
+
+  const search = document.createElement("label");
+  search.className = "settings-search";
+  const searchLabel = document.createElement("span");
+  searchLabel.textContent = "Поиск";
+  const settingsSearch = document.createElement("input");
+  settingsSearch.type = "search";
+  settingsSearch.autocomplete = "off";
+  settingsSearch.placeholder = "По всем разделам";
+  search.append(searchLabel, settingsSearch);
+  settingsNavigation = wireSettingsNavigation(settingsTabs, settingsSearch, drawSettings);
+
+  settingsList = document.createElement("section");
+  settingsList.id = "settings-options";
+  settingsList.className = "settings-options";
+  settingsList.setAttribute("role", "tabpanel");
+
+  const content = document.createElement("div");
+  content.className = "settings-content";
+  content.append(search, settingsList);
+
+  const shell = document.createElement("div");
+  shell.className = "settings-shell";
+  shell.append(settingsTabs, content);
+
+  settingsNote = document.createElement("p");
+  settingsNote.className = "muted settings-storage-note";
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.textContent = "Сбросить настройки";
+  reset.addEventListener("click", () => {
+    settingsStore.set(defaultSettings());
+    applySettings();
+    drawSettings();
+  });
+  const footer = document.createElement("footer");
+  footer.className = "settings-footer";
+  footer.append(settingsNote, reset);
+  created.body.append(shell, footer);
   return created;
 }
 
-function change(definition: SettingDefinition, value: unknown): void {
-  const next = { ...settingsStore.value, [definition.id]: coerceSetting(definition, value) };
+function change(definition: SettingDefinition, value: unknown, redraw = true): boolean | number {
+  const coerced = coerceSetting(definition, value);
+  const next = { ...settingsStore.value, [definition.id]: coerced };
   settingsStore.set(next);
   applySettings();
-  drawSettings();
+  if (redraw) drawSettings();
+  return coerced;
+}
+
+/**
+ * Changes one declared setting through the same account-store and apply path as the window.
+ *
+ * FrameXML's future options panels use this instead of reaching into `settingsStore`: a typo or
+ * an option this client does not own is rejected, and a valid write cannot create a second state
+ * map that survives only until the next account-data update.
+ */
+export function setSetting(id: string, value: unknown): boolean {
+  const definition = settingDefinition(id);
+  if (!definition) return false;
+  change(definition, value);
+  return true;
 }
 
 /**
@@ -163,41 +242,54 @@ function change(definition: SettingDefinition, value: unknown): void {
 export function toggleSetting(id: string): void {
   const definition = settingDefinition(id);
   if (!definition || definition.kind !== "boolean") return;
-  change(definition, !settingBoolean(settingsStore.value, id));
+  setSetting(id, !settingBoolean(settingsStore.value, id));
 }
 
 export function drawSettings(): void {
-  if (!panel?.visible) return;
+  if (!panel?.visible || !settingsNavigation || !settingsList || !settingsNote) return;
   const values = settingsStore.value;
   const rows: HTMLElement[] = [];
+  const query = settingsNavigation.query;
+  const searched = query.trim().length > 0;
 
-  for (const group of SETTING_GROUPS) {
-    const inGroup = SETTING_DEFINITIONS.filter((definition) => definition.group === group && !definition.ownWindow);
+  if (searched) {
+    settingsList.removeAttribute("aria-labelledby");
+    settingsList.setAttribute("aria-label", "Результаты поиска настроек");
+  } else {
+    settingsList.removeAttribute("aria-label");
+    settingsList.setAttribute("aria-labelledby", settingsNavigation.activeTabId);
+  }
+
+  for (const group of settingsNavigation.groups) {
+    const inGroup = SETTING_DEFINITIONS.filter((definition) =>
+      definition.group === group && !definition.ownWindow && settingMatchesQuery(definition, query));
     if (inGroup.length === 0) continue;
     const heading = document.createElement("h4");
+    heading.className = "settings-group-title";
     heading.textContent = group;
     rows.push(heading);
     for (const definition of inGroup) rows.push(settingRow(definition, values));
   }
 
-  const note = document.createElement("p");
-  note.className = "muted";
+  if (rows.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted settings-empty";
+    empty.textContent = "Ничего не найдено. Попробуйте другое слово.";
+    rows.push(empty);
+  }
+
+  const focusedId = settingsList.contains(document.activeElement)
+    ? (document.activeElement as HTMLElement).dataset["settingId"]
+    : undefined;
+  settingsList.replaceChildren(...rows);
+  if (focusedId) {
+    settingsList.querySelector<HTMLElement>(`[data-setting-id="${focusedId}"]`)?.focus();
+  }
+
   // Said plainly, because "where did my settings go" is the question this answers.
-  note.textContent = game.world
+  settingsNote.textContent = game.world
     ? "Настройки хранятся на сервере, у этого персонажа."
     : "Нет соединения — настройки пока только в этом браузере.";
-  rows.push(note);
-
-  const reset = document.createElement("button");
-  reset.type = "button";
-  reset.textContent = "Сбросить настройки";
-  reset.addEventListener("click", () => {
-    settingsStore.set(defaultSettings());
-    applySettings();
-    drawSettings();
-  });
-  rows.push(reset);
-  panel.body.replaceChildren(...rows);
 }
 
 function settingRow(definition: SettingDefinition, values: SettingValues): HTMLElement {
@@ -211,17 +303,23 @@ function settingRow(definition: SettingDefinition, values: SettingValues): HTMLE
   if (definition.kind === "boolean") {
     const input = document.createElement("input");
     input.type = "checkbox";
+    input.dataset["settingId"] = definition.id;
     input.checked = settingBoolean(values, definition.id);
-    input.addEventListener("change", () => change(definition, input.checked));
+    input.addEventListener("change", () => {
+      input.checked = change(definition, input.checked, false) === true;
+    });
     label.append(input, text);
   } else {
     const input = document.createElement("input");
     input.type = "number";
+    input.dataset["settingId"] = definition.id;
     input.min = String(definition.min ?? 0);
     input.max = String(definition.max ?? 9999);
     input.step = String(definition.step ?? 1);
     input.value = String(settingNumber(values, definition.id));
-    input.addEventListener("change", () => change(definition, Number(input.value)));
+    input.addEventListener("change", () => {
+      input.value = String(change(definition, Number(input.value), false));
+    });
     label.append(text, input);
   }
   row.append(label);

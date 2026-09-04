@@ -1,9 +1,10 @@
-import { WorldClient } from "../../world/WorldClient.js";
-import { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
+import type { WorldClient } from "../../world/WorldClient.js";
+import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { gameObjectType } from "../SimpleScene.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import {
-  GO_FLAG_NOT_SELECTABLE, interactionDistance, lockIdOf, usableByHand,
+  GO_FLAG_NOT_SELECTABLE, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, interactionDistance, interactiveGameObjectType,
+  lockIdOf, usableByHand,
 } from "../../world/GameObjectProtocol.js";
 import { game } from "./Context.js";
 /**
@@ -23,8 +24,9 @@ import { game } from "./Context.js";
  * without either one owning it.
  */
 export function gameObjectAction(world: WorldClient, object: WorldObjectState, player: WorldPosition):
-  { kind: "use" } | { kind: "unlock"; spell: number } | undefined {
+  { kind: "guild-bank" } | { kind: "mail" } | { kind: "use" } | { kind: "unlock"; spell: number } | undefined {
   const type = gameObjectType(object);
+  if (!interactiveGameObjectType(type)) return undefined;
   const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
   if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
   const position = object.position;
@@ -34,7 +36,13 @@ export function gameObjectAction(world: WorldClient, object: WorldObjectState, p
 
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const template = entry > 0 ? world.gameObjectTemplate(entry, object.guid) : undefined;
+  // The query owns the server's `Point` veto and confirms the type. Until it arrives there is no
+  // authoritative basis for a click, so the first hover only starts the query and never guesses.
+  if (!template || template.type !== type) return undefined;
   if (template?.iconName === "Point") return undefined;
+
+  if (type === GO_TYPE_MAILBOX) return { kind: "mail" };
+  if (type === GO_TYPE_GUILD_BANK) return { kind: "guild-bank" };
 
   // A lock decides which of the two paths this is, and a chest has nothing but a lock — it is not
   // in the server's use switch at all, so without a spell it cannot be opened by anyone.

@@ -58,6 +58,10 @@ export class UnitFrame {
     if (options.portrait) {
       this.#portrait = document.createElement("canvas");
       this.#portrait.className = "ui-unit-portrait";
+      // Portraits.ts uses this stable slot marker to borrow the existing canvas into a stock
+      // FrameXML portrait Texture. Party rows are renamed to party1..party4 by UnitFrameList.at;
+      // the single-unit kinds already have their final slot name here.
+      this.#portrait.dataset["portraitSlot"] = options.kind;
       setPortraitCanvasBackingStore(this.#portrait, UNIT_FRAME_PORTRAIT_CSS_PIXELS);
       this.#portrait.dataset["portraitReady"] = "false";
       this.root.append(this.#portrait);
@@ -210,6 +214,9 @@ export class UnitFrameList {
     if (!frame) {
       frame = new UnitFrame(this.#options);
       this.#frames[index] = frame;
+      if (this.#options.kind === "party" && frame.portraitCanvas) {
+        frame.portraitCanvas.dataset["portraitSlot"] = `party${index + 1}`;
+      }
       this.root.append(frame.root);
     }
     return frame;

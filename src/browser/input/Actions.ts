@@ -3,19 +3,26 @@ import { EXTRA_ACTION_BARS, actionPage } from "../../world/ActionBarProtocol.js"
 import { game } from "../game/Context.js";
 import { cycleEnemyTarget, setFocusToTarget } from "../game/Targeting.js";
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
-import { characterWindow, chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
+import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { systemLine } from "../ui/Chat.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
 import { interactWithTarget } from "../ui/Npc.js";
 import { toggleQuestLog } from "../ui/QuestLog.js";
-import { toggleGameWindow } from "../ui/Windows.js";
+import { openCharacterWindow, toggleGameWindow } from "../ui/Windows.js";
 import { toggleAllBags, toggleKeyring } from "../ui/Bags.js";
 import { toggleWorldMap } from "../ui/WorldMap.js";
 import { toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { toggleTalentsWindow } from "../ui/Talents.js";
-import { toggleProfessionsWindow } from "../ui/Professions.js";
 import { toggleSetting } from "../ui/Settings.js";
+import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js";
+import { toggleArenaWindow } from "../ui/ArenaWindow.js";
+import {
+  toggleFrameXmlBags,
+  toggleFrameXmlKeyring,
+} from "../framexml/FrameXmlBagController.js";
+import { toggleFrameXmlQuest } from "../framexml/FrameXmlQuestController.js";
+import { toggleFrameXmlTalent } from "../framexml/FrameXmlTalentController.js";
 import { ACTION_BAR_PAGES, ACTION_BAR_SLOTS, type InputAction, EXTRA_ACTION_BAR_SLOTS } from "./Bindings.js";
 import { isGrounded, toggleAutoRun, toggleWalkRun } from "./Movement.js";
 import { UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_STAND } from "../../world/CharacterProgressProtocol.js";
@@ -115,31 +122,37 @@ export function runAction(action: InputAction): boolean {
       return true;
 
     case "toggleCharacter":
-      toggleGameWindow(characterWindow);
+      openCharacterWindow("sheet");
       return true;
 
     case "toggleBags":
-      toggleAllBags();
+      if (!toggleFrameXmlBags()) toggleAllBags();
       return true;
 
     case "toggleKeyring":
-      toggleKeyring();
+      if (!toggleFrameXmlKeyring()) toggleKeyring();
       return true;
 
     case "toggleSpellbook":
       toggleGameWindow(spellbookWindow);
       return true;
 
+    case "togglePvp":
+      // The stock PVP summary owns the honor and battleground pages; without a successful
+      // FrameXML gate the native arena window remains the explicit fallback.
+      if (!toggleFrameXmlPvp()) toggleArenaWindow();
+      return true;
+
     case "toggleTalents":
-      toggleTalentsWindow();
+      if (!toggleFrameXmlTalent()) toggleTalentsWindow();
       return true;
 
     case "toggleProfessions":
-      toggleProfessionsWindow();
+      openCharacterWindow("skills");
       return true;
 
     case "toggleQuestLog":
-      toggleQuestLog();
+      if (!toggleFrameXmlQuest()) toggleQuestLog();
       return true;
 
     case "toggleWorldMap":

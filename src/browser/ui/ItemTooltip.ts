@@ -1,6 +1,7 @@
 import { ITEM_MOD_NAMES, globalString } from "../../generated/globalStrings.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { ItemMetadata } from "../ItemMetadata.js";
+import { itemEnchantments, itemSocketColors, type ItemEnchantmentInfo, type GemPropertyInfo } from "../ItemEnchantments.js";
 import { hasItemSpell, type ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import { game } from "../game/Context.js";
 import { formatMoney, reputationRankName, unknownLabel } from "./Format.js";
@@ -197,6 +198,12 @@ export interface ItemFacts {
 
 /** What the caller knows and the item does not. */
 export interface ItemTooltipContext {
+  /** Enchantment slots on this exact item instance, never inferred from its template. */
+  enchantments?: readonly number[] | undefined;
+  enchantment?: ((id: number) => ItemEnchantmentInfo | undefined) | undefined;
+  gemProperty?: ((id: number) => GemPropertyInfo | undefined) | undefined;
+  gemMetadataReady?: boolean | undefined;
+  gemName?: ((entry: number) => string | undefined) | undefined;
   /** How many are in hand: a stack, a loot bundle, a vendor's `buyCount`, a mail attachment. */
   count?: number | undefined;
   /** The character's level, which is what decides whether «Требуется уровень» is red. */
@@ -312,10 +319,31 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
     const races = allowedNames(template.allowableRace, PLAYABLE_RACES, raceName);
     if (races) push(fillTemplate(globalString("ITEM_RACES_ALLOWED") ?? "", races), "muted");
 
-    for (const socket of template.sockets) {
-      if (socket.color === 0) continue;
-      const colour = SOCKET_COLORS.find(([bit]) => (socket.color & bit) !== 0);
+    for (const [index, color] of itemSocketColors(template.sockets, context.enchantments).entries()) {
+      if (color === 0) continue;
+      const enchantmentId = context.enchantments?.[index + 2] ?? 0;
+      if (enchantmentId > 0) {
+        const enchantment = context.enchantment?.(enchantmentId);
+        const name = enchantment?.gemItemId ? context.gemName?.(enchantment.gemItemId) : undefined;
+        push([name ?? `Установленный камень ${index + 1}`, enchantment?.name || "Описание загружается…"].join(" — "), "stat");
+        if (enchantment?.conditionId) push("Особый камень: действие зависит от сочетания камней в экипировке", "muted");
+        continue;
+      }
+      const colour = color === 14 ? undefined : SOCKET_COLORS.find(([bit]) => (color & bit) !== 0);
       push(globalString(`EMPTY_SOCKET_${colour?.[1] ?? "NO_COLOR"}`), "muted");
+    }
+    if (template.socketBonus > 0) {
+      const bonus = context.enchantment?.(template.socketBonus);
+      const active = context.enchantments?.[5] === template.socketBonus;
+      push(`Бонус за гнёзда: ${bonus?.name || "Описание загружается…"}${context.enchantments ? active ? " (активен)" : " (неактивен)" : ""}`,
+        active ? "stat" : "muted");
+    }
+    if (template.gemProperties > 0) {
+      const property = context.gemProperty?.(template.gemProperties);
+      const enchantment = property && context.enchantment?.(property.enchantmentId);
+      if (enchantment?.name) push(enchantment.name, "stat");
+      push(property ? property.color === 1 ? "Подходит для особого гнезда" : "Подходит для обычных гнёзд"
+        : context.gemMetadataReady ? "Свойств этого камня нет в активной сборке." : "Сведения о камне загружаются…", "muted");
     }
     if (template.startQuest !== 0) push(globalString("ITEM_STARTS_QUEST"), "gold");
     if (template.description) push(`«${template.description}»`, "flavour");
@@ -364,6 +392,15 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
   // distinct spells. Ordered here, where the ids are: the answer lands after the tooltip is
   // already up, which is what `refreshTooltip` is for.
   ensureSpellNames(namedItemSpells(template), refreshTooltip);
+  const enchants = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
+  const needsEnchants = template && (template.gemProperties > 0 || template.socketBonus > 0
+    || template.sockets.some((socket) => socket.color > 0)) || context.enchantments?.some((id) => id > 0);
+  if (needsEnchants && enchants && !enchants.ready) {
+    void enchants.load().then(refreshTooltip).catch(() => undefined);
+  }
+  const gemEntries = (context.enchantments ?? []).slice(2, 5)
+    .map((id) => enchants?.enchantments.get(id)?.gemItemId ?? 0).filter((id) => id > 0);
+  if (gemEntries.length) void game.itemMetadata?.load(gemEntries).then((changed) => { if (changed) refreshTooltip(); }).catch(() => undefined);
   return itemTooltipContent(
     { entry, metadata: game.itemMetadata?.get(entry), template },
     {
@@ -373,6 +410,10 @@ export function itemTooltipFor(entry: number, context: ItemTooltipContext = {}):
       // builder falls back to anyway.
       spellName,
       skillName: (skillId) => game.talentData?.skillLine(skillId)?.name,
+      enchantment: (id) => enchants?.enchantments.get(id),
+      gemProperty: (id) => enchants?.gems.get(id),
+      gemMetadataReady: enchants?.ready,
+      gemName: (id) => world?.itemTemplate(id)?.name || game.itemMetadata?.get(id)?.name,
       ...context,
     });
 }

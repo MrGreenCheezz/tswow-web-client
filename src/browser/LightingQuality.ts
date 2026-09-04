@@ -56,11 +56,17 @@ export const TONE_SHOULDER_GLSL = `
 vec3 CustomToneMapping( vec3 color ) {
   color *= toneMappingExposure;
   vec3 mapped = color;
-  for ( int i = 0; i < 3; i ++ ) {
-    if ( mapped[ i ] > 0.9 ) {
-      float excess = mapped[ i ] - 0.9;
-      mapped[ i ] = 0.9 + 0.1 * excess / ( excess + 0.1 );
-    }
+  if ( mapped.r > 0.9 ) {
+    float excess = mapped.r - 0.9;
+    mapped.r = 0.9 + 0.1 * excess / ( excess + 0.1 );
+  }
+  if ( mapped.g > 0.9 ) {
+    float excess = mapped.g - 0.9;
+    mapped.g = 0.9 + 0.1 * excess / ( excess + 0.1 );
+  }
+  if ( mapped.b > 0.9 ) {
+    float excess = mapped.b - 0.9;
+    mapped.b = 0.9 + 0.1 * excess / ( excess + 0.1 );
   }
   return mapped;
 }
@@ -118,6 +124,14 @@ export interface LightingProfile {
    * texture, light or render target and therefore remains available when shadow maps are not.
    */
   immersiveStrength: number;
+  /**
+   * Strength ceiling for the optional screen-space sun shafts.
+   *
+   * The effect still has its own account switch. Quality zero keeps the direct baseline even when
+   * that experimental leaf is enabled; balanced and high only choose how strongly its final
+   * display-space contribution may be added.
+   */
+  godRayStrength: number;
   /** Zero means no shadow pass. */
   shadowMapSize: number;
   /** Nearest ranked units only; scenery and spell visuals never enter the pass. */
@@ -136,6 +150,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   0: {
     exposure: 1,
     immersiveStrength: 0,
+    godRayStrength: 0,
     wantedShadowMapSize: 0,
     shadowCasters: 0,
     shadowExtent: 0,
@@ -145,6 +160,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   1: {
     exposure: 1,
     immersiveStrength: 0.65,
+    godRayStrength: 0.12,
     wantedShadowMapSize: 512,
     shadowCasters: 12,
     shadowExtent: 32,
@@ -154,6 +170,7 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality"
   2: {
     exposure: 1,
     immersiveStrength: 1,
+    godRayStrength: 0.2,
     wantedShadowMapSize: 1024,
     shadowCasters: 24,
     shadowExtent: 46,
@@ -191,6 +208,7 @@ export function lightingProfile(
     quality,
     exposure: source.exposure,
     immersiveStrength: source.immersiveStrength,
+    godRayStrength: source.godRayStrength,
     shadowMapSize,
     shadowCasters: shadowMapSize > 0 ? shadowSource.shadowCasters : 0,
     shadowExtent: shadowMapSize > 0 ? shadowSource.shadowExtent : 0,

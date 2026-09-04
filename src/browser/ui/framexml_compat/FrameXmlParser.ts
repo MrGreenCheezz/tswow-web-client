@@ -1,10 +1,83 @@
 import {
+  FRAME_XML_FONT_ELEMENT,
   FRAME_XML_WIDGET_TYPES,
   type FrameXmlElement,
   type FrameXmlParseResult,
   type FrameXmlResolvedTemplate,
   type FrameXmlTemplate,
 } from "./FrameXmlTypes.js";
+
+/**
+ * Read one attribute, tolerating the case the author actually typed.
+ *
+ * Blizzard's own parser folds attribute names, and the corpus relies on it: the
+ * server's `AccountLogin.xml` writes `relativeto=` three times and `Hidden=`
+ * once, and those frames anchor and hide correctly in the real client. An
+ * exact-match-only lookup would silently drop an anchor and leave a button
+ * stacked at the origin, so the exact spelling wins and a case-folded match is
+ * the documented fallback.
+ */
+export function frameXmlAttribute(
+  element: FrameXmlElement,
+  name: string,
+): string | undefined {
+  const exact = element.attributes[name];
+  if (exact !== undefined) return exact;
+  const wanted = name.toLowerCase();
+  for (const key of Object.keys(element.attributes)) {
+    if (key.toLowerCase() === wanted) return element.attributes[key];
+  }
+  return undefined;
+}
+
+/** Numeric attribute with the same case tolerance; non-numeric spellings are dropped. */
+export function frameXmlNumber(
+  element: FrameXmlElement,
+  name: string,
+): number | undefined {
+  const raw = frameXmlAttribute(element, name);
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** `1`/`true`/`yes` in any case, matching the schema's boolean lexical space. */
+export function frameXmlBoolean(
+  element: FrameXmlElement,
+  name: string,
+): boolean | undefined {
+  const raw = frameXmlAttribute(element, name);
+  if (raw === undefined) return undefined;
+  return /^(?:1|true|yes)$/i.test(raw.trim());
+}
+
+/** First direct child with this element name (element names are not case-folded). */
+export function frameXmlChild(
+  element: FrameXmlElement,
+  name: string,
+): FrameXmlElement | undefined {
+  return element.children.find((child) => child.name === name);
+}
+
+/**
+ * Last direct child with this element name — the one an override declared.
+ *
+ * `mergeFrameXmlElements` keeps the base's children and appends the derived
+ * ones, so for a singleton property element the *last* copy is the override.
+ * `GlueFontHighlight inherits="GlueFontNormal"` restating `<Color>` is exactly
+ * this case, and taking the first would paint the highlight font in the base
+ * font's colour.
+ */
+export function frameXmlLastChild(
+  element: FrameXmlElement,
+  name: string,
+): FrameXmlElement | undefined {
+  for (let index = element.children.length - 1; index >= 0; index -= 1) {
+    const child = element.children[index];
+    if (child?.name === name) return child;
+  }
+  return undefined;
+}
 
 const XML_ENTITY = /^&(?:amp|lt|gt|quot|apos|#(?:x[0-9a-f]+|[0-9]+));$/i;
 const KNOWN_ENTITIES: Readonly<Record<string, string>> = {
@@ -299,7 +372,7 @@ export function mergeFrameXmlElements(base: FrameXmlElement, derived: FrameXmlEl
 }
 
 function inheritsOf(element: FrameXmlElement): readonly string[] {
-  return (element.attributes["inherits"] ?? "")
+  return (frameXmlAttribute(element, "inherits") ?? "")
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean);
@@ -317,7 +390,13 @@ export class FrameXmlTemplateRegistry {
 
   registerTemplate(name: string, element: FrameXmlElement, source?: string): boolean {
     const key = name.trim();
-    if (!key || !FRAME_XML_WIDGET_TYPES.has(element.name)) return false;
+    // `<Font>` joins the widget set here on purpose. A font object is declared
+    // and inherited with exactly the same grammar as a widget template
+    // (`GlueFontNormalLeft inherits="GlueFontNormal"`), so it resolves through
+    // the same cascade instead of a parallel half-copy of it.
+    if (!key || (!FRAME_XML_WIDGET_TYPES.has(element.name) && element.name !== FRAME_XML_FONT_ELEMENT)) {
+      return false;
+    }
     this.#templates.set(key, { name: key, element: cloneElement(element), ...(source === undefined ? {} : { source }) });
     return true;
   }
@@ -327,8 +406,11 @@ export class FrameXmlTemplateRegistry {
     if (!parsed.root || !parsed.ok) return { ok: false, templates: [], diagnostics: [...parsed.diagnostics] };
     const templates: FrameXmlTemplate[] = [];
     const walk = (element: FrameXmlElement): void => {
-      const name = element.attributes["name"] ?? "";
-      const virtual = isVirtualAttribute(element.attributes["virtual"]);
+      const name = frameXmlAttribute(element, "name") ?? "";
+      // A named `<Font>` is global whether or not it says virtual; the corpus
+      // marks them virtual, but the object is what other files name later.
+      const virtual = isVirtualAttribute(frameXmlAttribute(element, "virtual"))
+        || element.name === FRAME_XML_FONT_ELEMENT;
       if (virtual && name && this.registerTemplate(name, element, source)) {
         const template = this.#templates.get(name);
         if (template) templates.push(template);
@@ -337,6 +419,11 @@ export class FrameXmlTemplateRegistry {
     };
     walk(parsed.root);
     return { ok: parsed.ok, templates, diagnostics: [...parsed.diagnostics] };
+  }
+
+  /** Template names in registration order; used to report corpus coverage. */
+  get names(): readonly string[] {
+    return [...this.#templates.keys()];
   }
 
   get(name: string): FrameXmlTemplate | undefined {

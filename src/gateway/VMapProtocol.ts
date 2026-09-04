@@ -33,6 +33,10 @@ export interface EnvironmentObject {
   quaternionY?: number;
   quaternionZ?: number;
   quaternionW?: number;
+  /** Optional display-order RGBA albedo multiplier retained for legacy/general placements. */
+  tint?: [red: number, green: number, blue: number, alpha: number];
+  /** Authored indoor WMO doodad illumination; independent of the outdoor world-light sample. */
+  localLight?: [red: number, green: number, blue: number, alpha: number];
   bounds?: EnvironmentBounds;
 }
 

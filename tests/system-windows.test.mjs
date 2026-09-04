@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   NOTICE_MAX, expireNotices, noticeText, pushNotice,
@@ -158,6 +159,23 @@ test("every option has a definition and a default", () => {
     assert.equal(values[definition.id], definition.fallback, definition.id);
     assert.equal(settingDefinition(definition.id)?.id, definition.id);
   }
+});
+
+test("post-process leaves document opt-in rays and the shared direct-path condition", () => {
+  const definition = settingDefinition("godRays");
+  assert.equal(definition?.label, "Faithful-plus: солнечные лучи");
+  assert.equal(definition?.kind, "boolean");
+  assert.equal(definition?.fallback, false);
+  assert.match(definition?.hint ?? "", /качестве освещения 1 или 2/);
+  assert.match(definition?.hint ?? "", /независимо от полноэкранного свечения/);
+  assert.equal(settingBoolean(parseSettings('{"godRays":true}'), "godRays"), true);
+  assert.match(settingDefinition("fullscreenGlow")?.hint ?? "",
+    /прямой путь.*солнечные лучи тоже выключены/);
+});
+
+test("applying settings pushes the god-rays leaf into the renderer", async () => {
+  const source = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
+  assert.match(source, /setGodRays\?\.\(settingBoolean\(values, "godRays"\)\)/);
 });
 
 test("a number is clamped into its range and a boolean stays a boolean", () => {

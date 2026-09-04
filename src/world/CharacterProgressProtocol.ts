@@ -451,12 +451,12 @@ export function parseEnchantTimeUpdate(payload: Uint8Array): { itemGuid: bigint;
   return update;
 }
 
-/** `SMSG_SOCKET_GEMS_RESULT`: the item, then one enchantment id per socket. */
+/** `Item::SendUpdateSockets`: full item GUID, three socket enchantments and the socket bonus. */
 export function parseSocketGems(payload: Uint8Array): { itemGuid: bigint; enchantments: number[] } {
   const reader = new PacketReader(payload);
   const itemGuid = reader.u64();
-  const enchantments: number[] = [];
-  while (reader.remaining >= 4) enchantments.push(reader.u32());
+  const enchantments = [reader.u32(), reader.u32(), reader.u32(), reader.u32()];
+  reader.assertFinished();
   return { itemGuid, enchantments };
 }
 

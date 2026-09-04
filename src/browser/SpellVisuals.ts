@@ -33,6 +33,42 @@ export type { SpellVisualEffectTransform };
 export const CAST_KIT_MS = 900;
 /** How long an impact flash stands on the target. Shorter — it is a hit, not a wind-up. */
 export const IMPACT_KIT_MS = 700;
+/**
+ * How long a kit the server named by number stands on its unit.
+ *
+ * `SMSG_PLAY_SPELL_VISUAL` carries a kit id, a GUID and nothing else — no duration, no spell to
+ * borrow a `SpellDuration` from, no end packet. So the kit gets the same bounded life a cast
+ * flourish gets, and `fitToModel` lets a longer authored model clip finish rather than being cut;
+ * `SMSG_PLAY_SPELL_IMPACT` takes the shorter impact window instead, because it is a hit.
+ */
+export const PACKET_KIT_MS = CAST_KIT_MS;
+/**
+ * How much an authored `AreaEffectSize` may grow the placement's own scale.
+ *
+ * The field is named like a radius in yards and is not one — the reasoning and the counts are on
+ * `SpellVisualEffect.areaSize` in the gateway. What is left is a number that sometimes asks for
+ * something *bigger* than `Scale` and can never be trusted as a multiplier, so it is applied as a
+ * ceiling-capped floor and nothing else.
+ *
+ * Measured with this code against this dataset: of the 687 distinct effect placements a spell can
+ * reach through the three area columns, 34 carry a non-identity value at all and this rule moves
+ * **four** of them, across 13 spells — `thunderclap_cast_base` twice (its 20 held at 2 by this cap
+ * instead of putting a 130-yard ring on the ground), `shadesofdarkness_cast` 2→3 and
+ * `Canon_Impact_Dust` 1.5→2. The other 683 are byte-identical to what was drawn before.
+ */
+export const AREA_EFFECT_SIZE_MAX_GROWTH = 2;
+
+/**
+ * What an area placement is actually drawn at.
+ *
+ * Only ever larger, never smaller: an authored `Scale` is a decision an artist made about that
+ * model, and the one thing measurement supports about `AreaEffectSize` is that where it exceeds
+ * `Scale` it is asking for a wider footprint than the model's own default.
+ */
+export function areaEffectScale(scale: number, areaSize: number | undefined): number {
+  if (!(scale > 0) || areaSize === undefined || !(areaSize > 1) || !(areaSize > scale)) return scale;
+  return Math.min(areaSize, scale * AREA_EFFECT_SIZE_MAX_GROWTH);
+}
 /** Below this a missile is not worth flying: it arrives the frame it leaves. */
 export const MISSILE_MIN_SECONDS = 0.05;
 /** Above this it is not a missile any more, it is scenery. Caps a long shot across a valley. */
@@ -140,6 +176,64 @@ export interface SpellVisualPlanOptions {
   includeCastAnimation?: boolean;
 }
 
+/**
+ * The authored model paths of a set of phases, in the order a cast needs them.
+ *
+ * Prefetch is the one consumer that wants paths without a plan: nothing is placed, nothing is
+ * timed, and the answer is wanted before the cast even happens. Keeping the walk here — beside the
+ * planner that reads the same fields — means the warm-up and the draw can never disagree about
+ * which files a kit is made of.
+ */
+export type SpellVisualPhase =
+  | SpellVisualMetadata["cast"]
+  | SpellVisualMetadata["missile"];
+
+export function spellVisualPhasePaths(phases: readonly SpellVisualPhase[]): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  const add = (path: string): void => {
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    paths.push(path);
+  };
+  for (const phase of phases) {
+    if (!phase) continue;
+    // A missile is one authored file; every other phase is a kit of up to twelve effect columns.
+    if ("path" in phase) add(phase.path);
+    else for (const effect of phase.effects) add(effect.path);
+  }
+  return paths;
+}
+
+/** Every phase a spell can show, in the order a normal cast is most likely to need them. */
+export function spellVisualAllPhases(visual: SpellVisualMetadata): SpellVisualPhase[] {
+  return [
+    visual.precast, visual.cast, visual.channel, visual.missileTargeting,
+    visual.missile, visual.impact, visual.casterImpact, visual.targetImpact,
+    visual.instantArea, visual.impactArea, visual.persistentArea, visual.state, visual.stateDone,
+  ];
+}
+
+/**
+ * What a cast that has just started is about to draw, caster and target side alike.
+ *
+ * `castTime` is the head start this list exists to spend: the flourish is needed when the bar
+ * fills, the bolt and both impacts one packet later. The aura phases are deliberately absent —
+ * they belong to {@link spellAuraPrewarmPaths}, which a different packet drives.
+ */
+export function spellCastPrewarmPaths(visual: SpellVisualMetadata): string[] {
+  return spellVisualPhasePaths([
+    visual.precast, visual.cast, visual.channel, visual.missileTargeting, visual.missile,
+    visual.impact, visual.casterImpact, visual.targetImpact,
+    visual.instantArea, visual.impactArea, visual.persistentArea,
+  ]);
+}
+
+/** What an aura application is about to draw: its persistent state, and the flash when it ends. */
+export function spellAuraPrewarmPaths(visual: SpellVisualMetadata): string[] {
+  return spellVisualPhasePaths([visual.state, visual.stateDone]);
+}
+
 export interface SpellVisualPlan {
   instances: VisualInstance[];
   animations: VisualAnimation[];
@@ -233,7 +327,8 @@ function areaKitInstances(
 ): VisualInstance[] {
   return kit.effects.map((effect) => ({
     path: effect.path,
-    scale: effect.scale,
+    // The one place `AreaEffectSize` is read: these three columns are what the field is about.
+    scale: areaEffectScale(effect.scale, effect.areaSize),
     attachment: effect.attachment,
     position: { ...at },
     startedAt,
@@ -427,6 +522,35 @@ export function planSpellAuraDone(
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
   addKit(plan, visual.stateDone, target.guid, target.point, now, now + IMPACT_KIT_MS, true, "once", true);
   return plan;
+}
+
+/**
+ * Everything one kit shows when the server names it by number and says nothing else.
+ *
+ * The whole packet is a GUID, a kit id and which of the two opcodes it arrived on, so this is the
+ * smallest planner in the file: one kit, on one unit, over one bounded window. It goes through the
+ * same `addKit` as every phase of a cast, which is what makes the kit's attachments, its
+ * `StartAnimID`→`AnimID` pair and its `SoundID` behave here exactly as they do inside a spell.
+ *
+ * `guid` 0 is refused rather than drawn at the world origin: a kit packet always names a unit, and
+ * a unit the client has not got is a unit whose position is unknown.
+ */
+export function planSpellVisualKitEvent(
+  kit: SpellVisualKit,
+  target: { guid: bigint; point: Point },
+  now: number,
+  impact = false,
+): SpellVisualPlan {
+  const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
+  if (target.guid === 0n) return plan;
+  const endsAt = now + (impact ? IMPACT_KIT_MS : PACKET_KIT_MS);
+  addKit(plan, kit, target.guid, target.point, now, endsAt, true, "once", true);
+  return plan;
+}
+
+/** The models one kit is made of — the prewarm seam for a kit that arrived on its own. */
+export function spellVisualKitPaths(kit: SpellVisualKit | undefined): string[] {
+  return spellVisualPhasePaths([kit]);
 }
 
 /** Which of these are over. Kept separate so the renderer's sweep is one call and one rule. */

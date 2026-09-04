@@ -10,6 +10,9 @@ import { insertIntoChat } from "./ChatDock.js";
 import { itemChatLink } from "./ChatLink.js";
 import { formatMoney, unknownLabel } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
+import { itemEnchantmentIds, itemSocketColors } from "../ItemEnchantments.js";
+import { openSocketing } from "./Socketing.js";
+import { extendItemTooltip, hideItemTooltipExtension } from "./ItemTooltipExtensions.js";
 import { attachTooltip, hideTooltip, type TooltipContent, lastPointer,
 } from "./Widgets.js";
 import { setIconSource } from "./IconImage.js";
@@ -72,6 +75,10 @@ function showItemMenu(anchor: HTMLElement, slot: ItemSlotState, name: string): v
   const bankOpen = world.bankerGuid !== undefined;
   const count = stackCount(slot);
   const actions: Array<[string, () => void]> = [];
+  const template = world.itemTemplate(entryOfSlot(slot));
+  if (!banked && slot.item && itemSocketColors(template?.sockets ?? [], itemEnchantmentIds(slot.item)).some(Boolean)) {
+    actions.push(["Вставить камни", () => openSocketing(slot)]);
+  }
   if (world.vendor && !banked) actions.push(["Продать", () => world.sellToVendor(slot.guid)]);
   // Trade slots 0 to 5 are the tradeable ones; the first free slot is offered.
   if (world.tradeOpen && !equipped && !banked) {
@@ -312,13 +319,18 @@ export function itemTooltip(slot: ItemSlotState, label: string): TooltipContent 
   } else {
     footer.push("Нажмите, чтобы выкупить");
   }
-  return itemTooltipFor(entry, {
+  return extendItemTooltip(slot, itemTooltipFor(entry, {
     count,
     // The one line on the whole tooltip that is not in the template: an item's wear is a field of
     // the item object, and only an item the player owns has one.
     durability: slot.item.fields.get(UPDATE_FIELDS.ITEM_FIELD_DURABILITY.offset),
+    enchantments: itemEnchantmentIds(slot.item),
     footer,
-  });
+  }));
+}
+
+function entryOfSlot(slot: ItemSlotState): number {
+  return slot.item?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
 }
 
 export function itemSlot(slot: ItemSlotState, label = ""): HTMLElement {
@@ -339,7 +351,7 @@ export function itemSlot(slot: ItemSlotState, label = ""): HTMLElement {
   element.setAttribute("aria-label", metadata
     ? `${metadata.name}, ${qualityName(metadata.quality)}`
     : entry ? unknownLabel("предмет", entry) : label || "Пустой слот");
-  attachTooltip(element, () => itemTooltip(slot, label));
+  attachTooltip(element, () => itemTooltip(slot, label), { onHide: hideItemTooltipExtension });
   if (slot.item) {
     const icon = document.createElement("span");
     icon.className = "item-icon";

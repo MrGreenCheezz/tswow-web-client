@@ -13,7 +13,7 @@ import {
   hasClassIcon, learnCreationNames, raceName,
 } from "../dist/code/browser/ui/UnitSnapshot.js";
 import {
-  CreationMemo, creationClasses, creationRaces, isCreationData,
+  CreationMemo, creationClasses, creationRaces, isCreationData, raceDisplayId,
 } from "../dist/code/browser/ui/CharacterCreation.js";
 import { loadCharacterCreation } from "../dist/code/gateway/CharacterCreation.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -382,13 +382,22 @@ test("Д3 the portrait's own object-fit is the one that wins, in the box it is r
     // The rogue, whose column starts at 127 of 256 — a cell the four-column table used to miss by
     // a pixel, and one no offset of zero can be mistaken for.
     assert.equal(
-      classPortraitPosition({ clientWidth: box, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE),
+      classPortraitPosition({ clientWidth: box, clientHeight: box, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE),
       `${-127 + inset}px ${inset}px`, `the cell is not centred in the ${box}px ring`);
   }
   // A hidden element measures nothing, and the first offset is written while it is still hidden.
   assert.equal(
     classPortraitPosition({ clientWidth: 0, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE),
     classPortraitPosition({ clientWidth: CLASS_PORTRAIT_SIZE, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE));
+  assert.equal(
+    classPortraitPosition({ clientWidth: 18, clientHeight: 25, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE),
+    "-150px -19.5px",
+    "the 18x25 microbutton opening centres the class cell vertically instead of treating it as 18x18");
+  assert.equal(
+    classPortraitPosition(
+      { clientWidth: 0, clientHeight: 0, naturalWidth: 256, naturalHeight: 256 }, CLASS_ROGUE, 18, 25),
+    "-150px -19.5px",
+    "the authored microbutton dimensions keep a hidden portrait on the same cell");
 });
 
 test("Д3 a class cell comes from the dataset's own coordinates and the sheet's own size", withClassIconData, () => {
@@ -519,6 +528,25 @@ test("Д3 the creation lists are the dataset's, and the compiled ten when there 
   assert.equal(isCreationData({ races: [], classes: [] }), true);
   assert.equal(isCreationData({ races: [] }), false);
   assert.equal(isCreationData("<html>404</html>"), false);
+});
+
+test("G1 a race's display ids arrive when the gateway has them and are absent, not zero, when it does not", () => {
+  const human = { id: 1, name: "Человек", playable: true, classes: [1], maleDisplayId: 49, femaleDisplayId: 50 };
+  assert.equal(raceDisplayId(human, 0), 49);
+  assert.equal(raceDisplayId(human, 1), 50);
+
+  // The two ways there is no answer, and they are one answer here because a caller can do nothing
+  // different with them: an older gateway that never carried the columns, and a dataset row that
+  // names no model. What must not happen is either becoming display id 0 — `CreatureDisplayInfo`
+  // has no row 0, so a preview asking for it would fetch, miss, and show nothing with no reason.
+  const older = { id: 1, name: "Человек", playable: true, classes: [1] };
+  assert.equal(raceDisplayId(older, 0), undefined);
+  assert.equal(raceDisplayId({ ...older, maleDisplayId: 0, femaleDisplayId: 0 }, 0), undefined);
+  assert.equal(raceDisplayId(undefined, 0), undefined, "and no race at all is the same no answer");
+
+  // The whole payload from such a gateway still validates: its races and classes are perfectly
+  // good, and refusing it would drop the form back to the ten compiled names over a preview.
+  assert.equal(isCreationData({ races: [older], classes: [{ id: 1, name: "Воин", playable: true }] }), true);
 });
 
 test("Д3 a second gateway keeps neither the first one's races nor the first one's names", () => {

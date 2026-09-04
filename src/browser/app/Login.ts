@@ -17,6 +17,8 @@ import {
 } from "../ui/CharacterCreation.js";
 import { resetGuildBank } from "../ui/GuildBank.js";
 import { resetCalendar } from "../ui/Calendar.js";
+import { closeProfessions } from "../ui/Professions.js";
+import { closeSocketing } from "../ui/Socketing.js";
 import { resetSocialPanel } from "../ui/SocialPanel.js";
 import { resetScoreboard } from "../ui/Scoreboard.js";
 import { resetArenaWindow } from "../ui/ArenaWindow.js";
@@ -25,15 +27,17 @@ import { resetReadyCheck } from "../ui/ReadyCheck.js";
 import { resetMacroWindow, macroStores } from "../ui/Macros.js";
 import { resetPetBar } from "../ui/PetBar.js";
 import { resetLoadingScreen } from "../ui/LoadingScreen.js";
+import { bindDeathScreenEffect, resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { settingsStore } from "../ui/Settings.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
 import { WorldClient } from "../../world/WorldClient.js";
-import { WorldStore } from "../../world/WorldStore.js";
 import { bindPlayerHud } from "../ui/Frames.js";
 import { AuthSessionResult, loginToRealmList } from "../../auth/login.js";
 import { forgetMovementState } from "../input/Movement.js";
 import { CHARACTER_OPTIONS_VERSION, isCharacterOptions, type CharacterOptions } from "../CharacterAtlas.js";
 import { clientLocale } from "../Environment.js";
+import { frontDoorHost, type WorldExit } from "../glue/FrontDoor.js";
+import { adoptWorldConnection } from "./WorldAdoption.js";
 export function worldGatewayUrl(): string {
   const url = new URL(gatewayInput.value);
   url.pathname = "/world";
@@ -260,17 +264,28 @@ function renderCharacters(list: CharacterSummary[]): void {
   }
 }
 
-export async function connectRealm(realm: RealmInfo): Promise<void> {
-  if (!game.session) return;
-  game.world?.close();
+/**
+ * Everything a world owns, dropped.
+ *
+ * Was the body of `connectRealm`, and is now called by every route out of a world: changing realms,
+ * signing in as somebody else, a completed logout, a lost connection and a failed enter. The
+ * duplicate that used to sit in the login form's submit handler was a hand-copied *half* of it —
+ * no module unload, no sound close, no settings flush, no minimap clear — which is exactly the kind
+ * of divergence a second front door multiplies rather than reveals.
+ *
+ * `clearWorldContext` had no caller anywhere in `src/` before this list existed. The half of it
+ * that hurt was the modules: `enterWorld` builds a fresh loader and overwrites `game.modules`, so
+ * the previous session's windows stayed in the registry and the second login in one tab refused
+ * every one of them as a duplicate — measured, 0 windows and «окно "proverochnyy-ekran" уже
+ * зарегистрировано модулем «test»» — while `/testUI` went on toggling the first session's handle.
+ *
+ * Deliberately does **not** close the socket. Who owns the connection differs by front door: the
+ * DOM flow opens it in `connectRealm` and closes it there, while the GlueXML screens open it and
+ * only *lend* it to the world. Closing here would take a live realm connection away from the glue
+ * session that is about to draw its character list over it.
+ */
+export function resetWorldUi(): void {
   game.store?.detach();
-  // Everything a realm owns, dropped by the one function whose job that is. It had no caller
-  // anywhere in `src/` — measured — and the list here was a hand-copied half of it: no module
-  // unload, no sound close, no minimap or map-art clear, no camera reset. The half that hurt was
-  // the modules: `enterWorld` builds a fresh loader and overwrites `game.modules`, so the previous
-  // session's windows stayed in the registry and the second login in one tab refused every one of
-  // them as a duplicate — measured, 0 windows and «окно "proverochnyy-ekran" уже зарегистрировано
-  // модулем «test»» — while `/testUI` went on toggling the first session's handle.
   clearWorldContext();
   showLoot();
   showDeath();
@@ -283,6 +298,8 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
   showGuild();
   resetGuildBank();
   resetCalendar();
+  closeProfessions();
+  closeSocketing();
   resetSocialPanel();
   resetScoreboard();
   resetArenaWindow();
@@ -291,6 +308,9 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
   resetMacroWindow();
   resetPetBar();
   resetLoadingScreen();
+  // The grey of death belongs to the world being left. Its own listener is already gone with the
+  // store detached above, so nothing would ever take the layer down again on its own.
+  resetDeathScreenEffect();
   // Pending writes go out before the world does, so a setting changed in the last second survives.
   settingsStore.detach();
   for (const store of macroStores) store.detach();
@@ -299,9 +319,80 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
   // The connection is gone, so the keys are dropped rather than released: a stop packet now
   // would be written to a socket that no longer has a session behind it.
   forgetMovementState();
-  characterPanel.hidden = false;
   worldPanel.hidden = true;
   document.body.classList.remove("world-active");
+}
+
+/**
+ * The realm this client is connected to, so a return from the world can rebuild the character list.
+ *
+ * Only the DOM flow needs it: the GlueXML front door keeps the realm inside its own `GlueSession`.
+ */
+let currentRealm: RealmInfo | undefined;
+
+/**
+ * A live connection becomes this client's world.
+ *
+ * Shared with the GlueXML front door, which reaches the same point by a different road: it already
+ * has an authenticated `WorldClient` on the realm the player chose, and adopting it is what makes
+ * the world half of the client work over that connection instead of opening a second one.
+ */
+export function adoptWorld(world: WorldClient): void {
+  adoptWorldConnection(game, world, {
+    bindHud: bindPlayerHud,
+    // Same update path as the HUD, for the same reason: the two read the same character and must
+    // never disagree about whether it is alive.
+    bindDeathScreen: bindDeathScreenEffect,
+    onListenerError: (error) => console.error("Панель интерфейса не пережила обновление", error),
+  });
+}
+
+/**
+ * Every way out of a world, in one place.
+ *
+ * Three callers, all of them in `EnterWorld.ts` because that is where the world's own events are
+ * bound: `SMSG_LOGOUT_COMPLETE`, the read loop dying, and an enter attempt that failed. Where the
+ * player lands depends on which interface opened the session — the glue screens if they are the
+ * front door, the DOM character panel otherwise — and that decision is made once, here.
+ *
+ * Legacy reconnects rather than reusing the connection, and that is not caution: `characters()`
+ * reads the socket through `#waitFor` while `loginCharacter` has left `#readWorld` reading the same
+ * socket, so a character list asked for over a used-world connection is two readers on one stream.
+ * `connectRealm` closes and reopens, which the session key still allows.
+ */
+export function leaveWorld(exit: WorldExit, message?: string): void {
+  // Held before the reset, because `clearWorldContext` is what drops `game.world`: reaching for it
+  // afterwards would find `undefined` and leave the socket open for the life of the tab.
+  const world = game.world;
+  resetWorldUi();
+  const front = frontDoorHost();
+  if (front) {
+    front.returnFromWorld(exit, message);
+    return;
+  }
+  characterPanel.hidden = false;
+  characters.replaceChildren();
+  if (message) {
+    characterStatus.className = "error";
+    characterStatus.textContent = message;
+  }
+  // Whichever exit this is, the connection the client was playing on is finished with: a logout
+  // ended it server-side, a failed enter left it in an unknown read state, and a lost one is
+  // already gone. `connectRealm` would normally be the one to close it, but `resetWorldUi` has
+  // already taken the reference off the context, so it is closed here.
+  world?.close();
+  // A dead socket has nothing useful to reconnect *to* — the server is the thing that went away —
+  // so the realm list above the panel is the honest next step, and the player picks a world again.
+  if (exit === "connection-lost" || exit === "relogin") return;
+  if (currentRealm) void connectRealm(currentRealm);
+}
+
+export async function connectRealm(realm: RealmInfo): Promise<void> {
+  if (!game.session) return;
+  game.world?.close();
+  currentRealm = realm;
+  resetWorldUi();
+  characterPanel.hidden = false;
   characters.replaceChildren();
   characterStatus.className = "";
   characterStatus.textContent = `Подключение к ${realm.name}…`;
@@ -309,17 +400,16 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
   let stream: WebSocketByteStream | undefined;
   try {
     stream = await WebSocketByteStream.connect(worldGatewayUrl());
-    game.world = await WorldClient.connect(stream, {
+    const world = await WorldClient.connect(stream, {
       username: game.session.username,
       sessionKey: game.session.sessionKey,
       realmId: realm.id,
+      realmName: realm.name,
     });
     stream = undefined;
-    // The previous store was already detached with the previous connection, at the top of this
-    // function; this one lives exactly as long as the client it watches.
-    game.store = new WorldStore(game.world.state);
-    game.store.onListenerError = (error) => console.error("Панель интерфейса не пережила обновление", error);
-    bindPlayerHud(game.store);
+    // The previous store was already detached with the previous connection, at the top of
+    // `resetWorldUi`; this one lives exactly as long as the client it watches.
+    adoptWorld(world);
     characterStatus.className = "success";
     characterStatus.textContent = `Worldserver ${realm.name} подключён.`;
     await refreshCharacters();
@@ -359,18 +449,13 @@ export function wireLoginForms(): void {
     event.preventDefault();
     loginSubmit.disabled = true;
     game.world?.close();
-    game.store?.detach();
-    // The other way out of a world, and the same one function: signing in again as somebody else
-    // leaves as much behind as changing realms does.
-    clearWorldContext();
-    showLoot();
-    showDeath();
-    showVendor();
-    showTrainer();
-    forgetMovementState();
+    currentRealm = undefined;
+    // The other way out of a world, and now literally the same function: signing in again as
+    // somebody else leaves as much behind as changing realms does. It used to call a hand-copied
+    // half of the list — four panels out of twenty, no module unload, no settings flush — so the
+    // second account in one tab inherited the first one's windows and macros.
+    resetWorldUi();
     characterPanel.hidden = true;
-    worldPanel.hidden = true;
-    document.body.classList.remove("world-active");
     realms.replaceChildren();
     status.className = "";
     status.textContent = "Подключение к gateway…";

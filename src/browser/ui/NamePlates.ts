@@ -99,6 +99,8 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
       reaction,
       classColour: object.typeId === 4 ? classColor(unit.classId(object)) : undefined,
       health: healthRatio(object),
+      healthCurrent: unit.health(object),
+      healthMax: unit.maxHealth(object),
       raidMark: marks.get(object.guid),
       questMark: questMarkFor(object.guid),
       rank: metadata?.rank ?? RANK_NORMAL,

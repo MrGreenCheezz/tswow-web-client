@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  SPELL_VISUAL_RETRY_BACKOFF_MS, SpellVisualClient,
+  SPELL_VISUAL_RETRY_BACKOFF_MS, SpellVisualClient, SpellVisualKitClient,
 } from "../dist/code/browser/SpellVisualClient.js";
 
 const kit = (sound = 0) => ({ startAnimation: -1, animation: -1, effects: [], sound });
@@ -32,7 +32,7 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(11).precast.sound, 7);
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
-    assert.equal(new URL(urls[0]).searchParams.get("v"), "6",
+    assert.equal(new URL(urls[0]).searchParams.get("v"), "7",
       "non-cacheable visual metadata rolls the old client cache contract");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);
@@ -145,6 +145,77 @@ test("the transient retry ladder stays capped instead of poisoning an id for the
       await tick();
     }
     assert.equal(calls, 5, "later callers retain one retry every thirty seconds");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+/* --- S3: the kit route, on the same engine ---------------------------------------------------- */
+
+test("S3: kit ids batch onto their own route and remember an empty answer", async () => {
+  const original = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return {
+      ok: true,
+      async json() { return [{ id: 406, kit: kit(45) }, { id: 999999 }]; },
+    };
+  };
+  try {
+    const client = new SpellVisualKitClient("ws://localhost:8090/auth");
+    const loaded = [];
+    client.onLoaded = (ids) => loaded.push(...ids);
+    assert.equal(client.get(406), undefined);
+    assert.equal(client.get(999999), undefined);
+    await tick();
+    await tick();
+    assert.equal(urls.length, 1, "two ids in one JavaScript turn are one request");
+    const asked = new URL(urls[0]);
+    assert.equal(asked.pathname, "/dbc/spell-visual-kits", "a kit id is not a spell id");
+    assert.equal(asked.protocol, "http:", "the websocket URL becomes the gateway origin");
+    assert.equal(asked.searchParams.get("v"), "1");
+    assert.deepEqual(asked.searchParams.get("ids"), "406,999999");
+    assert.deepEqual(loaded, [406, 999999]);
+    assert.equal(client.get(406).kit.sound, 45);
+    assert.equal(client.get(999999), undefined, "a kit that resolves to nothing is an answer");
+    client.get(999999);
+    await tick();
+    assert.equal(urls.length, 1, "and it is a permanent one");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("S3: a malformed kit is transient, and the kit queue is not the spell queue", async () => {
+  const original = globalThis.fetch;
+  const urls = [];
+  let now = 0;
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    // `effects` is not an array of effects: the shared validator has to refuse it rather than
+    // caching an entry whose `effects.map` would throw inside the planner.
+    if (urls.length === 1) return { ok: true, async json() { return [{ id: 7668, kit: { startAnimation: -1, animation: 172, effects: [{ path: 1 }], sound: 0 } }]; } };
+    return { ok: true, async json() { return [{ id: 7668, kit: kit(11658) }]; } };
+  };
+  try {
+    const client = new SpellVisualKitClient("http://localhost:8090/ws", () => now);
+    const loaded = [];
+    client.onLoaded = (ids) => loaded.push(...ids);
+    client.onStatus = () => {};
+    client.get(7668);
+    await tick();
+    await tick();
+    assert.deepEqual(loaded, [], "an invalid answer is not a cached no-kit answer");
+    assert.equal(client.get(7668), undefined);
+
+    now = SPELL_VISUAL_RETRY_BACKOFF_MS[0];
+    client.get(7668);
+    await tick();
+    await tick();
+    assert.deepEqual(loaded, [7668]);
+    assert.equal(client.get(7668).kit.sound, 11658);
+    assert.equal(client.pending, 0);
   } finally {
     globalThis.fetch = original;
   }

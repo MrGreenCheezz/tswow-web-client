@@ -51,8 +51,46 @@ let parts: MinimapParts | undefined;
 let settings: MinimapSettings = readSettings();
 let zoneCheckedAt = 0;
 let zoneAreaId = 0;
-/** Pings, as `{x, y, until}` in world units. The packet arrives for anyone in the party. */
-const pings: Array<{ x: number; y: number; until: number }> = [];
+interface MinimapPing {
+  x: number;
+  y: number;
+  until: number;
+  /** Set only on a local marker until the matching immediate server echo arrives. */
+  optimisticUntil: number | undefined;
+}
+
+/** Pings in world units. The packet arrives for anyone in the party. */
+const pings: MinimapPing[] = [];
+const LOCAL_PING_ECHO_WINDOW = 1_000;
+// The wire packet is f32 while the local projection is a double, so exact equality is too strict.
+const PING_MATCH_EPSILON = 0.01;
+
+const ADOPTED_STYLE_NAMES = [
+  "display", "position", "left", "right", "top", "bottom", "width", "height", "transform",
+  "transformOrigin", "zIndex", "opacity", "visibility", "pointerEvents",
+] as const;
+type AdoptedStyleName = typeof ADOPTED_STYLE_NAMES[number];
+
+interface MinimapCanvasAdoption {
+  readonly canvas: HTMLCanvasElement;
+  readonly target: HTMLElement;
+  readonly nativeParent: HTMLElement;
+  readonly nativeNextSibling: Node | null;
+  readonly propagationGuards: ReadonlyArray<{
+    readonly type: "mousedown" | "mouseup" | "click";
+    readonly listener: EventListener;
+  }>;
+  readonly styles: Readonly<Record<AdoptedStyleName, string | undefined>>;
+  readonly className: string;
+  readonly hidden: boolean;
+  readonly dataset: Readonly<Record<string, string>>;
+  readonly width: number;
+  readonly height: number;
+  cleaned: boolean;
+  cleanup: () => void;
+}
+
+let activeMinimapAdoption: MinimapCanvasAdoption | undefined;
 
 function readSettings(): MinimapSettings {
   try {
@@ -87,6 +125,8 @@ function build(): MinimapParts {
   zone.className = "minimap-zone";
   const subzone = document.createElement("div");
   subzone.className = "minimap-subzone";
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Minimap needs a 2D canvas context");
 
   const controls = document.createElement("div");
   controls.className = "minimap-controls";
@@ -116,10 +156,11 @@ function build(): MinimapParts {
   skinnable("minimap", root);
   // The right-hand rail rather than the viewport: the minimap, the quest tracker and the boss and
   // arena frames share one column, instead of four boxes guessing a `top` and overlapping.
-  rightRail.append(root);
+  // The map is the rail's fixed anchor. Tracker/boss/arena surfaces are secondary content and
+  // must not push it down when they acquire rows, so publish it first once and let the rail stack
+  // everything else beneath it.
+  rightRail.insertBefore(root, rightRail.children[0] ?? null);
 
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Minimap needs a 2D canvas context");
   // Ctrl-click puts the world position under the cursor on the party's minimap, which is what the
   // original client binds it to — a plain click would ping the party by accident all day. Reading
   // the position back needs the same projection that drew it.
@@ -127,6 +168,185 @@ function build(): MinimapParts {
     if (event.ctrlKey) onCanvasClick(event, canvas);
   });
   return { root, canvas, context, clock, zone, subzone };
+}
+
+function readStyle(style: CSSStyleDeclaration, name: AdoptedStyleName): string | undefined {
+  const value = (style as unknown as Record<string, string>)[name];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function writeStyle(style: CSSStyleDeclaration, name: AdoptedStyleName, value: string | undefined): void {
+  const mutable = style as unknown as Record<string, string>;
+  mutable[name] = value ?? "";
+}
+
+function numericCssPixels(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = /^\s*(-?\d+(?:\.\d+)?)px\s*$/i.exec(value);
+  if (!match) return undefined;
+  const pixels = Number(match[1]);
+  return Number.isFinite(pixels) && pixels > 0 ? pixels : undefined;
+}
+
+function positiveDimension(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function restoreDataset(canvas: HTMLCanvasElement, dataset: Readonly<Record<string, string>>): void {
+  const mutable = canvas.dataset as unknown as Record<string, string | undefined>;
+  for (const key of Object.keys(mutable)) delete mutable[key];
+  Object.assign(mutable, dataset);
+}
+
+function restoreMinimapCanvasAdoption(record: MinimapCanvasAdoption): void {
+  if (record.cleaned) return;
+  record.cleaned = true;
+  if (activeMinimapAdoption === record) activeMinimapAdoption = undefined;
+
+  for (const guard of record.propagationGuards) record.canvas.removeEventListener(guard.type, guard.listener);
+  for (const name of ADOPTED_STYLE_NAMES) writeStyle(record.canvas.style, name, record.styles[name]);
+  record.canvas.className = record.className;
+  record.canvas.hidden = record.hidden;
+  restoreDataset(record.canvas, record.dataset);
+  record.canvas.width = record.width;
+  record.canvas.height = record.height;
+
+  const sibling = record.nativeNextSibling;
+  if (sibling && sibling.parentNode === record.nativeParent) {
+    record.nativeParent.insertBefore(record.canvas, sibling);
+  } else {
+    record.nativeParent.append(record.canvas);
+  }
+}
+
+function targetDimension(target: HTMLElement, name: "width" | "height"): number | undefined {
+  const authored = numericCssPixels(readStyle(target.style, name));
+  if (authored !== undefined) return authored;
+  const layout = positiveDimension(target[name === "width" ? "offsetWidth" : "offsetHeight"]);
+  if (layout !== undefined) return layout;
+  return positiveDimension(target[name === "width" ? "clientWidth" : "clientHeight"]);
+}
+
+function targetSize(target: HTMLElement): number | undefined {
+  const width = targetDimension(target, "width");
+  const height = targetDimension(target, "height");
+  return width !== undefined && height !== undefined ? Math.min(width, height) : width ?? height;
+}
+
+function syncAdoptedCanvasGeometry(record: MinimapCanvasAdoption): number | undefined {
+  // Keep the CSS box tied to the authored slot when its inline dimensions are changed after the
+  // one-time adoption. A conditional write avoids dirtying style/layout when nothing changed.
+  const width = readStyle(record.target.style, "width") ?? "100%";
+  const height = readStyle(record.target.style, "height") ?? "100%";
+  if (readStyle(record.canvas.style, "width") !== width) writeStyle(record.canvas.style, "width", width);
+  if (readStyle(record.canvas.style, "height") !== height) writeStyle(record.canvas.style, "height", height);
+  return targetSize(record.target);
+}
+
+function adoptedMinimapSize(canvas: HTMLCanvasElement): number | undefined {
+  const adoption = activeMinimapAdoption;
+  return adoption?.canvas === canvas ? syncAdoptedCanvasGeometry(adoption) : undefined;
+}
+
+/**
+ * Borrow the one native minimap canvas for the stock FrameXML `Minimap` frame.
+ *
+ * The canvas already belongs to the TypeScript minimap update loop. This helper only moves that
+ * node into the authored slot and gives it the slot's current geometry; it never creates a canvas,
+ * context, renderer or readback path. It is inserted as the first child so the stock FrameXML
+ * buttons, pings and backdrop remain painted above the map. The canvas remains `pointer-events: auto`
+ * while adopted so its existing Ctrl-click ping path stays live. Small `stopPropagation` guards on
+ * mousedown/mouseup/click keep the same event from reaching the authored Minimap handlers; they do
+ * not use `stopImmediatePropagation`, so the canvas's own click listener still runs. Clearing the
+ * parent restores the FrameXML ancestor's effective visibility without mirroring its changing
+ * hidden bit on every frame.
+ *
+ * A returned cleanup is idempotent and restores the native parent/sibling order, all adopted inline
+ * styles, hidden/dataset/class state and backing dimensions. Missing or detached inputs are safe
+ * no-ops. If the first world update has not run yet, a valid target causes the normal minimap
+ * parts to materialize once so the same canvas can be adopted without a mount race.
+ */
+export function adoptMinimapCanvas(target: HTMLElement | undefined): (() => void) | undefined {
+  if (!target || !target.parentElement || target === parts?.canvas) return undefined;
+  // Real DOM nodes expose `isConnected`; test doubles used by the UI tests intentionally do not.
+  if (target.isConnected === false) return undefined;
+
+  if (activeMinimapAdoption?.target === target) return activeMinimapAdoption.cleanup;
+  activeMinimapAdoption?.cleanup();
+
+  // The FrameXML mount can arrive before the first world tick. Building here still creates only
+  // the one renderer-owned canvas/context used by updateMinimap; failure leaves the page untouched.
+  if (!parts) {
+    try {
+      parts = build();
+    } catch {
+      return undefined;
+    }
+  }
+  const canvas = parts.canvas;
+  const context = parts.context;
+  const nativeParent = canvas.parentElement;
+  if (!context || !nativeParent || canvas.isConnected === false || target === canvas) return undefined;
+
+  const styles = Object.fromEntries(
+    ADOPTED_STYLE_NAMES.map((name) => [name, readStyle(canvas.style, name)]),
+  ) as Record<AdoptedStyleName, string | undefined>;
+  const record = {
+    canvas,
+    target,
+    nativeParent,
+    nativeNextSibling: canvas.nextSibling,
+    propagationGuards: (["mousedown", "mouseup", "click"] as const).map((type) => ({
+      type,
+      listener: (event: Event) => event.stopPropagation(),
+    })),
+    styles,
+    className: canvas.className,
+    hidden: canvas.hidden,
+    dataset: { ...canvas.dataset },
+    width: canvas.width,
+    height: canvas.height,
+    cleaned: false,
+    cleanup: () => {},
+  } as MinimapCanvasAdoption;
+  record.cleanup = () => restoreMinimapCanvasAdoption(record);
+
+  try {
+    const firstChild = target.firstChild ?? target.children[0] ?? null;
+    target.insertBefore(canvas, firstChild);
+
+    // The slot itself supplies the position in MinimapCluster. Inside that slot the canvas fills
+    // the authored box; copying the frame's left/top would position it twice.
+    writeStyle(canvas.style, "display", "block");
+    writeStyle(canvas.style, "position", "absolute");
+    writeStyle(canvas.style, "left", "0px");
+    writeStyle(canvas.style, "right", undefined);
+    writeStyle(canvas.style, "top", "0px");
+    writeStyle(canvas.style, "bottom", undefined);
+    writeStyle(canvas.style, "width", readStyle(target.style, "width") ?? "100%");
+    writeStyle(canvas.style, "height", readStyle(target.style, "height") ?? "100%");
+    writeStyle(canvas.style, "transform", undefined);
+    writeStyle(canvas.style, "transformOrigin", undefined);
+    // FrameXML descendants carry positive draw-layer/frame-level z indices. Keep this underlay at
+    // the bottom of the slot so those controls and the authored border remain visible.
+    writeStyle(canvas.style, "zIndex", "0");
+    writeStyle(canvas.style, "opacity", undefined);
+    writeStyle(canvas.style, "visibility", undefined);
+    // The native canvas owns map clicks while adopted. The guards leave its own click listener
+    // running but stop the same event from bubbling into FrameXML Minimap's OnMouseUp path.
+    writeStyle(canvas.style, "pointerEvents", "auto");
+    // A blank authored texture may be hidden, but the live canvas follows the Minimap ancestor.
+    canvas.hidden = false;
+
+    for (const guard of record.propagationGuards) canvas.addEventListener(guard.type, guard.listener);
+
+    resize(canvas, context, targetSize(target));
+  } catch (error) {
+    record.cleanup();
+    throw error;
+  }
+  activeMinimapAdoption = record;
+  return record.cleanup;
 }
 
 /** The two zoom buttons grey out at the ends of the range, and the rotate button says it is on. */
@@ -155,14 +375,33 @@ function controlButton(label: string, title: string, onClick: () => void): HTMLB
 
 function changeZoom(step: number): void {
   const index = ZOOM_LEVELS.indexOf(settings.zoom as (typeof ZOOM_LEVELS)[number]);
-  const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, (index < 0 ? 3 : index) + step))];
+  setMinimapZoomIndex((index < 0 ? ZOOM_LEVELS.length - 2 : index) + step);
+}
+
+function setMinimapZoomIndex(index: number): void {
+  if (!Number.isFinite(index)) return;
+  const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, Math.trunc(index)))];
   if (next === undefined || next === settings.zoom) return;
   settings = { ...settings, zoom: next };
   writeSettings();
-  if (parts) {
-    const [out, into, rotate] = [...parts.root.querySelectorAll<HTMLButtonElement>(".minimap-button")];
-    if (out && into && rotate) showControlState(out, into, rotate);
-  }
+  refreshMinimapControls();
+}
+
+/**
+ * FrameXML's Minimap:GetZoom() is a distance index, where increasing the value zooms in.  The
+ * native minimap stores the corresponding yards-across values in ascending order, so the bridge
+ * has to reverse the index at this boundary.  Native +/- controls intentionally keep using the
+ * local index above: their callbacks already express the correct visual direction.
+ */
+function frameXmlZoomIndex(): number {
+  const index = ZOOM_LEVELS.indexOf(settings.zoom as (typeof ZOOM_LEVELS)[number]);
+  return index >= 0 ? ZOOM_LEVELS.length - 1 - index : ZOOM_LEVELS.length - 2;
+}
+
+function setFrameXmlZoomIndex(index: number): void {
+  if (!Number.isFinite(index)) return;
+  const clamped = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, Math.trunc(index)));
+  setMinimapZoomIndex(ZOOM_LEVELS.length - 1 - clamped);
 }
 
 /** Called by the bus when someone in the party marks a spot. */
@@ -194,32 +433,92 @@ export function watchMinimapRotation(handler: (rotate: boolean) => void): void {
   onRotateToggled = handler;
 }
 
-export function addMinimapPing(x: number, y: number, now = performance.now()): void {
-  pings.push({ x, y, until: now + 5_000 });
+function pushMinimapPing(x: number, y: number, now: number, optimistic = false): void {
+  pings.push({
+    x,
+    y,
+    until: now + 5_000,
+    optimisticUntil: optimistic ? now + LOCAL_PING_ECHO_WINDOW : undefined,
+  });
   if (pings.length > 8) pings.shift();
 }
 
+/** Add a server ping, absorbing only the matching echo of a recent local marker. */
+export function addMinimapPing(x: number, y: number, now = performance.now()): void {
+  for (let index = pings.length - 1; index >= 0; index--) {
+    const ping = pings[index]!;
+    if (ping.optimisticUntil === undefined || now > ping.optimisticUntil) continue;
+    if (Math.abs(ping.x - x) > PING_MATCH_EPSILON || Math.abs(ping.y - y) > PING_MATCH_EPSILON) continue;
+    // Keep the original marker and stop treating it as pending. A later same-coordinate packet
+    // is a real additional ping rather than another echo of this one.
+    ping.optimisticUntil = undefined;
+    return;
+  }
+  pushMinimapPing(x, y, now);
+}
+
+function addOptimisticMinimapPing(x: number, y: number, now = performance.now()): void {
+  pushMinimapPing(x, y, now, true);
+}
+
 function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
-  const world = game.world;
-  const self = playerOf(world?.state);
-  if (!world || !self?.position) return;
   const box = canvas.getBoundingClientRect();
   const size = Math.min(box.width, box.height);
-  const point = { column: event.clientX - box.left - box.width / 2, row: event.clientY - box.top - box.height / 2 };
-  const { x, y } = minimapWorldAt(
-    self.position,
-    point,
-    settings.zoom / size,
-    settings.rotate ? self.position.orientation : undefined,
+  if (!(size > 0)) return;
+  pingMinimapAt(
+    { column: event.clientX - box.left - box.width / 2, row: event.clientY - box.top - box.height / 2 },
+    size,
   );
-  world.pingMinimap(x, y);
-  addMinimapPing(x, y);
 }
 
 function playerOf(state: WorldState | undefined): WorldObjectState | undefined {
   if (!state || state.selfGuid === undefined) return undefined;
   return state.objects.get(state.selfGuid);
 }
+
+function currentCanvasSize(canvas: HTMLCanvasElement): number {
+  return adoptedMinimapSize(canvas)
+    ?? numericCssPixels(readStyle(canvas.style, "width"))
+    ?? positiveDimension(canvas.clientWidth)
+    ?? 160;
+}
+
+function pingMinimapAt(point: MinimapPixel, size: number): void {
+  const world = game.world;
+  const self = playerOf(world?.state);
+  if (!world || !self?.position || !(size > 0)) return;
+  const { x, y } = minimapWorldAt(
+    self.position,
+    point,
+    settings.zoom / size,
+    settings.rotate ? self.position.orientation : undefined,
+  );
+  // Record before sending so a synchronous test/server echo is absorbed as well as an async one.
+  addOptimisticMinimapPing(x, y);
+  world.pingMinimap(x, y);
+}
+
+/** Structural match for GlueWidgets' optional live Minimap adapter; kept UI-local to avoid coupling. */
+export interface MinimapWidgetAdapter {
+  readonly getZoom: () => number;
+  readonly getZoomLevels: () => number;
+  readonly setZoom: (zoom: number) => void;
+  readonly pingLocation: (x: number, y: number) => void;
+}
+
+/** The stable bridge for stock Minimap.lua's zoom and local-pixel ping calls. */
+export const minimapWidgetAdapter: MinimapWidgetAdapter = {
+  getZoom: frameXmlZoomIndex,
+  getZoomLevels: () => ZOOM_LEVELS.length,
+  setZoom: setFrameXmlZoomIndex,
+  pingLocation: (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const canvas = parts?.canvas;
+    if (!canvas) return;
+    // FrameXML's local Y grows upward; the canvas projection's row grows downward.
+    pingMinimapAt({ column: x, row: -y }, currentCanvasSize(canvas));
+  },
+};
 
 /** Called once a frame. Cheap when nothing has moved; the tiles are drawn from cached bitmaps. */
 export function updateMinimap(now: number): void {
@@ -232,14 +531,14 @@ export function updateMinimap(now: number): void {
   parts ??= build();
   parts.root.hidden = false;
 
-  const size = resize(parts.canvas, parts.context);
+  const size = resize(parts.canvas, parts.context, adoptedMinimapSize(parts.canvas));
   drawMinimap(parts.context, size, world.mapId, self.position, world.state, now);
   updateLabels(parts, world, self.position, now);
 }
 
 /** CSS pixels for drawing, device pixels for the backing store: the same scheme the scene uses. */
-function resize(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): number {
-  const size = canvas.clientWidth || 160;
+function resize(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, authoredSize?: number): number {
+  const size = authoredSize ?? (canvas.clientWidth || numericCssPixels(readStyle(canvas.style, "width")) || 160);
   const ratio = Math.min(2, window.devicePixelRatio || 1);
   const pixels = Math.round(size * ratio);
   if (canvas.width !== pixels || canvas.height !== pixels) {

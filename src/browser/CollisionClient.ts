@@ -3,6 +3,10 @@ import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js
 
 export type { CollisionModel };
 
+/** A failed HTTP/decode answer is not an authored "no collision" answer. Retry without spinning. */
+const COLLISION_RETRY_BASE_MS = 100;
+const COLLISION_RETRY_MAX_MS = 5_000;
+
 /**
  * The server's own collision meshes, by the name the vmap tile calls them.
  *
@@ -21,6 +25,9 @@ export class CollisionClient {
   readonly #models = new Map<string, CollisionModel | null>();
   readonly #requested = new Set<string>();
   readonly #requestedGroups = new Set<string>();
+  readonly #retryAttempts = new Map<string, number>();
+  readonly #retryAfter = new Map<string, number>();
+  readonly #retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #queue: string[] = [];
   readonly #errors = new Set<string>();
   #active = 0;
@@ -55,7 +62,7 @@ export class CollisionClient {
   model(name: string): CollisionModel | undefined {
     const known = this.#models.get(name);
     if (known !== undefined) return known ?? undefined;
-    if (!this.#requested.has(name)) {
+    if (!this.#requested.has(name) && this.#retryDue(name)) {
       this.#requested.add(name);
       this.#queue.push(name);
       this.#drain();
@@ -76,7 +83,10 @@ export class CollisionClient {
    * which is worse.
    */
   requestGroups(name: string, groups: readonly number[]): void {
-    const missing = groups.filter((group) => !this.#requestedGroups.has(`${name}#${group}`));
+    const missing = groups.filter((group) => {
+      const key = `${name}#${group}`;
+      return !this.#requestedGroups.has(key) && this.#retryDue(key);
+    });
     if (missing.length === 0) return;
     for (const group of missing) this.#requestedGroups.add(`${name}#${group}`);
     this.#pending++;
@@ -94,6 +104,38 @@ export class CollisionClient {
         this.#drain();
       });
     }
+  }
+
+  #retryDue(key: string): boolean {
+    return Date.now() >= (this.#retryAfter.get(key) ?? 0);
+  }
+
+  /**
+   * Leave a failed resource unresolved and wake the owning collision source after bounded backoff.
+   * The source's normal rebuild then asks again; the timer never downloads behind its back.
+   */
+  #retryLater(key: string): void {
+    const attempt = (this.#retryAttempts.get(key) ?? 0) + 1;
+    this.#retryAttempts.set(key, attempt);
+    const delay = Math.min(COLLISION_RETRY_MAX_MS, COLLISION_RETRY_BASE_MS * 2 ** Math.min(6, attempt - 1));
+    this.#retryAfter.set(key, Date.now() + delay);
+    const previous = this.#retryTimers.get(key);
+    if (previous !== undefined) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.#retryTimers.delete(key);
+      // The caller keys rebuilds on this revision. Without the wake-up it would see the cooldown
+      // once, go idle, and never call `model`/`requestGroups` after the deadline.
+      this.#revision++;
+    }, delay);
+    this.#retryTimers.set(key, timer);
+  }
+
+  #clearRetry(key: string): void {
+    this.#retryAttempts.delete(key);
+    this.#retryAfter.delete(key);
+    const timer = this.#retryTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    this.#retryTimers.delete(key);
   }
 
   async #load(name: string): Promise<void> {
@@ -114,16 +156,23 @@ export class CollisionClient {
         // not report an expected render-only lookup as a failed resource.
         this.#models.set(name, null);
         this.#errors.delete(name);
+        this.#clearRetry(name);
         settle(true);
         return;
       }
       if (!response.ok) throw new Error(`Collision gateway returned ${response.status}`);
       this.#models.set(name, decodeCollisionModel(await response.arrayBuffer()));
       this.#errors.delete(name);
+      this.#clearRetry(name);
       settle(true);
     } catch (error) {
-      this.#models.set(name, null);
+      // A transport/decode failure is not the extractor saying this model has no collision. Keeping
+      // `null` here made one transient 503/session hiccup turn every copy of a tree or inn into a
+      // permanent walk-through object until reload.
+      this.#models.delete(name);
+      this.#requested.delete(name);
       this.#errors.add(name);
+      this.#retryLater(name);
       settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -145,9 +194,18 @@ export class CollisionClient {
       const response = await fetch(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?groups=${groups.join(",")}&v=3`);
       if (!response.ok || response.status === 204) {
         if (response.status === 204) {
-          for (const group of groups) this.#errors.delete(`${name}#${group}`);
+          for (const group of groups) {
+            const key = `${name}#${group}`;
+            this.#errors.delete(key);
+            this.#clearRetry(key);
+          }
         } else {
-          for (const group of groups) this.#errors.add(`${name}#${group}`);
+          for (const group of groups) {
+            const key = `${name}#${group}`;
+            this.#errors.add(key);
+            this.#requestedGroups.delete(key);
+            this.#retryLater(key);
+          }
         }
         settle(response.status === 204);
         return;
@@ -158,17 +216,31 @@ export class CollisionClient {
         settle(true);
         return;
       }
+      let incomplete = false;
       for (const group of groups) {
+        const key = `${name}#${group}`;
         const source = answer.groups[group];
         const target = model.groups[group];
-        if (!source?.vertices || !source.indices || !target) continue;
+        if (!source?.vertices || !source.indices || !target) {
+          incomplete = true;
+          this.#errors.add(key);
+          this.#requestedGroups.delete(key);
+          this.#retryLater(key);
+          continue;
+        }
         target.vertices = source.vertices;
         target.indices = source.indices;
+        this.#errors.delete(key);
+        this.#clearRetry(key);
       }
-      for (const group of groups) this.#errors.delete(`${name}#${group}`);
-      settle(true);
+      settle(!incomplete);
     } catch (error) {
-      for (const group of groups) this.#errors.add(`${name}#${group}`);
+      for (const group of groups) {
+        const key = `${name}#${group}`;
+        this.#errors.add(key);
+        this.#requestedGroups.delete(key);
+        this.#retryLater(key);
+      }
       settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {

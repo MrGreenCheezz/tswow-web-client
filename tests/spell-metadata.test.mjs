@@ -8,7 +8,7 @@ test("a spell placeholder stays disabled until metadata arrives", () => {
   assert.equal(spellButtonUsable({ passive: false }), true);
 });
 
-/** The v=8 shape: v=8 adds the ranged auto-repeat bit needed by the cast state machine. */
+/** v=10 retains auto-repeat and linked-aura fixes and adds profession recipe metadata. */
 const fireball = {
   id: 133, name: "Огненный шар", rank: "Уровень 1", description: "", iconId: 7, iconPath: "",
   passive: false, powerType: 0, powerCost: 0, powerCostPercent: 8, recoveryTime: 0,
@@ -23,7 +23,8 @@ async function loadOne(payload) {
   const client = new SpellMetadataClient("ws://127.0.0.1:8090/auth");
   const previous = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    assert.match(String(url), /&v=8$/, "the marker that keeps an hour-old response without autoRepeat out");
+    assert.match(String(url), /&v=10$/,
+      "the marker expires cached responses without profession metadata while retaining earlier fixes");
     return { ok: true, json: async () => payload };
   };
   try {

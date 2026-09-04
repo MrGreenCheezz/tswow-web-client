@@ -27,6 +27,18 @@ if (!loginSubmitButton) throw new Error("Missing login submit button");
 // Narrowed here rather than at the use site: a `| null` export carries no narrowing across a
 // module boundary, and every panel that touched it would have to prove it again.
 export const loginSubmit = loginSubmitButton;
+/**
+ * The DOM login card, which since G6 is the *fallback* front door rather than the only one.
+ *
+ * It had no id at all while it was the only thing on the page. It needs one now because something
+ * has to be able to hide it: the client opens on the GlueXML screens unless `?legacy-login=1` (or
+ * the `webclient.frontDoor` storage key) says otherwise.
+ */
+export const loginPanel = element<HTMLElement>("login-panel");
+/** Where the client's own GlueXML screens mount, when they are the front door. See `glue/`. */
+export const glueHost = element<HTMLElement>("glue-host");
+export const glueStage = element<HTMLElement>("glue-stage");
+export const glueStatus = element<HTMLElement>("glue-status");
 export const characterPanel = element<HTMLElement>("character-panel");
 export const characterStatus = element<HTMLParagraphElement>("character-status");
 export const characters = element<HTMLDivElement>("characters");
@@ -82,7 +94,6 @@ export const attackButton = element<HTMLButtonElement>("attack-button");
 export const interactButton = element<HTMLButtonElement>("interact-button");
 export const clearTargetButton = element<HTMLButtonElement>("clear-target-button");
 export const combatStatus = element<HTMLParagraphElement>("combat-status");
-export const combatLog = element<HTMLDivElement>("combat-log");
 export const swingWarning = element<HTMLParagraphElement>("swing-warning");
 export const spellStatus = element<HTMLParagraphElement>("spell-status");
 export const spellbookList = element<HTMLDivElement>("spellbook-list");
@@ -216,12 +227,24 @@ export const resurrectText = element<HTMLElement>("resurrect-text");
 export const resurrectAccept = element<HTMLButtonElement>("resurrect-accept");
 export const resurrectDecline = element<HTMLButtonElement>("resurrect-decline");
 export const characterToggle = element<HTMLButtonElement>("character-toggle");
+export const characterMicroIcon = element<HTMLImageElement>("character-micro-icon");
 export const inventoryToggle = element<HTMLButtonElement>("inventory-toggle");
 export const spellbookToggle = element<HTMLButtonElement>("spellbook-toggle");
 export const talentsToggle = element<HTMLButtonElement>("talents-toggle");
-export const professionsToggle = element<HTMLButtonElement>("professions-toggle");
-export const diagnosticsToggle = element<HTMLButtonElement>("diagnostics-toggle");
+export const gameMenuToggle = element<HTMLButtonElement>("game-menu-toggle");
 export const characterWindowTitle = element<HTMLElement>("character-window-title");
+export const characterTabs = element<HTMLElement>("character-tabs");
+export const characterTabSheet = element<HTMLButtonElement>("character-tab-sheet");
+export const characterTabSkills = element<HTMLButtonElement>("character-tab-skills");
+export const characterTabCollections = element<HTMLButtonElement>("character-tab-collections");
+export const characterSheetPane = element<HTMLDivElement>("character-sheet-pane");
+export const characterSkillsPane = element<HTMLDivElement>("character-skills-pane");
+export const characterCollectionsPane = element<HTMLDivElement>("character-collections-pane");
+export const characterMounts = element<HTMLDivElement>("character-mounts");
+export const characterCompanions = element<HTMLDivElement>("character-companions");
+export const characterCombatPets = element<HTMLDivElement>("character-combat-pets");
+export const characterIdentity = element<HTMLElement>("character-identity");
+export const characterModel = element<HTMLDivElement>("character-model");
 export const characterStats = element<HTMLDivElement>("character-stats");
 export const equipmentSlots = element<HTMLDivElement>("equipment-slots");
 export const equipmentSets = element<HTMLDivElement>("equipment-sets");

@@ -1,7 +1,7 @@
 import { openDbcFile } from "./Dbc.js";
 
 /**
- * The five tables a map is drawn from. None of them is on the wire.
+ * The six tables a map is drawn from. None of them is on the wire.
  *
  * The server names a zone with a number and stops there: `SMSG_INIT_WORLD_STATES` carries a zone
  * and an area id, `SMSG_EXPLORATION_EXPERIENCE` carries an area id, and the exploration mask in
@@ -100,6 +100,21 @@ export interface ContinentInfo {
   offsetX: number;
   offsetY: number;
   scale: number;
+  /** Parent global-map group: zero for Outland, one for Azeroth in the stock 3.3.5 data. */
+  worldMapId: number;
+}
+
+export interface MapTransformInfo {
+  id: number;
+  mapId: number;
+  regionBottom: number;
+  regionRight: number;
+  regionTop: number;
+  regionLeft: number;
+  newMapId: number;
+  offsetX: number;
+  offsetY: number;
+  newDungeonMapId: number;
 }
 
 export interface MapInfo {
@@ -125,6 +140,7 @@ export interface AreaData {
   mapAreas: MapAreaInfo[];
   overlays: MapOverlayInfo[];
   continents: ContinentInfo[];
+  transforms: MapTransformInfo[];
   maps: MapInfo[];
 }
 
@@ -132,11 +148,12 @@ export interface AreaData {
 const OVERLAY_AREAS = 4;
 
 export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
-  const [areaTable, mapAreaTable, overlayTable, continentTable, mapTable] = await Promise.all([
+  const [areaTable, mapAreaTable, overlayTable, continentTable, transformTable, mapTable] = await Promise.all([
     openDbcFile(dbcDirectory, "AreaTable"),
     openDbcFile(dbcDirectory, "WorldMapArea"),
     openDbcFile(dbcDirectory, "WorldMapOverlay"),
     openDbcFile(dbcDirectory, "WorldMapContinent"),
+    openDbcFile(dbcDirectory, "WorldMapTransforms"),
     openDbcFile(dbcDirectory, "Map"),
   ]);
 
@@ -207,6 +224,7 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       offsetX: continentTable.float(row, "ContinentOffset", 0),
       offsetY: continentTable.float(row, "ContinentOffset", 1),
       scale: continentTable.float(row, "Scale"),
+      worldMapId: continentTable.int(row, "WorldMapID"),
     });
   }
 
@@ -220,5 +238,21 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
     });
   }
 
-  return { areas, mapAreas, overlays, continents, maps };
+  const transforms: MapTransformInfo[] = [];
+  for (const row of transformTable.rows()) {
+    transforms.push({
+      id: transformTable.id(row),
+      mapId: transformTable.int(row, "MapID"),
+      regionBottom: transformTable.float(row, "RegionBottom"),
+      regionRight: transformTable.float(row, "RegionRight"),
+      regionTop: transformTable.float(row, "RegionTop"),
+      regionLeft: transformTable.float(row, "RegionLeft"),
+      newMapId: transformTable.int(row, "NewMapID"),
+      offsetX: transformTable.float(row, "RegionOffset", 0),
+      offsetY: transformTable.float(row, "RegionOffset", 1),
+      newDungeonMapId: transformTable.int(row, "NewDungeonMapID"),
+    });
+  }
+
+  return { areas, mapAreas, overlays, continents, transforms, maps };
 }

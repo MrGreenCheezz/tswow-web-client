@@ -1,4 +1,4 @@
-import type { TalentData } from "../gateway/TalentMetadata.js";
+import type { SpellSkillAbilityInfo, TalentData } from "../gateway/TalentMetadata.js";
 
 export type { TalentData };
 
@@ -17,7 +17,12 @@ export class TalentClient {
   #tabsByClass = new Map<number, TalentData["tabs"]>();
   #talentsByTab = new Map<number, TalentData["talents"]>();
   #skillLines = new Map<number, TalentData["skillLines"][number]>();
+  #skillCategories = new Map<number, TalentData["skillCategories"][number]>();
+  #skillCategoryOrder: readonly TalentData["skillCategories"][number][] = Object.freeze([]);
   #glyphs = new Map<number, TalentData["glyphs"][number]>();
+  #spellAbilities = new Map<number, readonly SpellSkillAbilityInfo[]>();
+  #revision = 0;
+  #failed = false;
   onStatus: ((message: string, error: boolean) => void) | undefined;
   onLoaded: (() => void) | undefined;
 
@@ -35,12 +40,14 @@ export class TalentClient {
         const response = await fetch(`${this.#baseUrl}/dbc/talents`);
         if (!response.ok) throw new Error(`Talent gateway returned ${response.status}`);
         const value = await response.json() as TalentData;
-        if (!Array.isArray(value.talents) || !Array.isArray(value.tabs)) throw new Error("malformed talent data");
+        if (!Array.isArray(value.talents) || !Array.isArray(value.tabs)
+          || !Array.isArray(value.skillCategories)) throw new Error("malformed talent data");
         this.#index(value);
         this.onLoaded?.();
       } catch (error) {
         // Left unfetched rather than retried: without it the talent window says so and the
         // spellbook falls back to one undivided list, which is what it was before this slice.
+        this.#failed = true;
         this.onStatus?.(`таланты: ${error instanceof Error ? error.message : String(error)}`, true);
       }
     })();
@@ -67,11 +74,33 @@ export class TalentClient {
       list.sort((left, right) => left.tier - right.tier || left.column - right.column);
     }
     for (const line of value.skillLines) this.#skillLines.set(line.id, line);
+    const categories = value.skillCategories
+      .filter((category) => Number.isInteger(category.id) && category.id > 0 && category.name.length > 0)
+      .map((category) => Object.freeze({ ...category }));
+    categories.sort((left, right) => left.orderIndex - right.orderIndex || left.id - right.id);
+    this.#skillCategoryOrder = Object.freeze(categories);
+    for (const category of this.#skillCategoryOrder) this.#skillCategories.set(category.id, category);
     for (const glyph of value.glyphs) this.#glyphs.set(glyph.id, glyph);
+    for (const [spellId, rows] of Object.entries(value.spellAbilities ?? {})) {
+      const id = Number(spellId);
+      if (!Number.isSafeInteger(id) || id <= 0 || !Array.isArray(rows)) continue;
+      this.#spellAbilities.set(id, Object.freeze(rows.map((row) => Object.freeze({ ...row }))));
+    }
+    this.#revision++;
   }
 
   get ready(): boolean {
     return this.#data !== undefined;
+  }
+
+  /** True after the optional snapshot failed; consumers may use their ungrouped fallback. */
+  get failed(): boolean {
+    return this.#failed;
+  }
+
+  /** Monotonic metadata revision, zero until the complete `/dbc/talents` snapshot lands. */
+  get revision(): number {
+    return this.#revision;
   }
 
   /** The three trees of one class, in the order the original client shows them. */
@@ -92,6 +121,16 @@ export class TalentClient {
     return this.#skillLines.get(id);
   }
 
+  /** The stock category attached to a `SkillLine.CategoryID`, or undefined when it is unknown. */
+  skillCategory(id: number): TalentData["skillCategories"][number] | undefined {
+    return this.#skillCategories.get(id);
+  }
+
+  /** Immutable categories sorted by the client's explicit `SkillLineCategory.SortIndex`. */
+  skillCategories(): readonly TalentData["skillCategories"][number][] {
+    return this.#skillCategoryOrder;
+  }
+
   glyph(id: number): TalentData["glyphs"][number] | undefined {
     return this.#glyphs.get(id);
   }
@@ -99,6 +138,11 @@ export class TalentClient {
   /** Which skill line a spell belongs to, which is what a spellbook tab is. */
   skillOfSpell(spellId: number): number | undefined {
     return this.#data?.spellSkill[spellId];
+  }
+
+  /** All authoritative SkillLineAbility rows for a spell, including class/race masks. */
+  spellAbilitiesOf(spellId: number): readonly SpellSkillAbilityInfo[] | undefined {
+    return this.#spellAbilities.get(spellId);
   }
 
   /** A pet family's `PetTalentType`, or zero for a family with no trees at all. */

@@ -85,11 +85,21 @@ test("the shoulder is the identity below 0.9 and rolls off only above it", () =>
 test("the shoulder GLSL is the reference's own and carries none of ACES", () => {
   assert.match(TONE_SHOULDER_GLSL, /vec3 CustomToneMapping\( vec3 color \)/);
   assert.match(TONE_SHOULDER_GLSL, /color \*= toneMappingExposure;/);
-  assert.match(TONE_SHOULDER_GLSL, /if \( mapped\[ i \] > 0\.9 \)/);
-  assert.match(TONE_SHOULDER_GLSL, /float excess = mapped\[ i \] - 0\.9;/);
-  assert.match(TONE_SHOULDER_GLSL, /mapped\[ i \] = 0\.9 \+ 0\.1 \* excess \/ \( excess \+ 0\.1 \);/);
+  assert.match(TONE_SHOULDER_GLSL, /if \( mapped\.r > 0\.9 \)/);
+  assert.match(TONE_SHOULDER_GLSL, /if \( mapped\.g > 0\.9 \)/);
+  assert.match(TONE_SHOULDER_GLSL, /if \( mapped\.b > 0\.9 \)/);
+  assert.equal((TONE_SHOULDER_GLSL.match(/float excess = mapped\.[rgb] - 0\.9;/g) ?? []).length, 3);
+  assert.equal((TONE_SHOULDER_GLSL.match(/mapped\.[rgb] = 0\.9 \+ 0\.1 \* excess \/ \( excess \+ 0\.1 \);/g) ?? []).length, 3);
   assert.doesNotMatch(TONE_SHOULDER_GLSL, /mat3|ACESInputMat|ACESOutputMat|RRTAndODTFit|0\.59719|1\.60475|0\.6/,
     "no matrix, no channel mixing, no 1/0.6 scale — the reference mixes nothing");
+});
+
+test("generated tone GLSL does not dynamically index a vec3 channel", () => {
+  // ANGLE lowers `mapped[i]` to dyn_index_vec3_int. Its HLSL translator can leave that helper
+  // potentially uninitialized (X4000), even though the GLSL itself is otherwise valid. The
+  // channel-wise curve is equivalent and keeps the generated program warning-free.
+  assert.doesNotMatch(TONE_SHOULDER_GLSL, /\[[ ]*i[ ]*\]/,
+    "the generated shader must not ask ANGLE for a dynamic vec3 index");
 });
 
 test("three's tone chunk takes the shoulder in place of its stub", () => {

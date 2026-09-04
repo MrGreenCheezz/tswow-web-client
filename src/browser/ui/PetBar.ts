@@ -20,6 +20,7 @@ import { game } from "../game/Context.js";
 import { unknownLabel } from "./Format.js";
 import { IconButton, attachTooltip, confirmPanel } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
+import { notifyHudLayout } from "../GameWindows.js";
 
 let container: HTMLElement | undefined;
 const buttons: IconButton[] = [];
@@ -29,11 +30,12 @@ function root(): HTMLElement | undefined {
   if (container?.isConnected) return container;
   const viewport = document.getElementById("world-viewport");
   if (!viewport) return undefined;
+  const mount = document.getElementById("bottom-hud-center") ?? viewport;
   container = document.createElement("div");
   container.id = "pet-bar";
   container.className = "pet-bar";
   container.hidden = true;
-  viewport.append(container);
+  mount.append(container);
   return container;
 }
 
@@ -122,6 +124,8 @@ export function showPetBar(): void {
   if (!box) return;
   if (!world || !spells || spells.closed) {
     box.hidden = true;
+    document.documentElement.style.setProperty("--pet-bar-height", "0px");
+    notifyHudLayout();
     return;
   }
   build();
@@ -146,23 +150,30 @@ export function showPetBar(): void {
 
   // Leaving is the one thing a vehicle bar must always offer: the server sends no button for it,
   // and without it a player in a siege engine has no way out but logging off.
-  if (!exitRow) return;
+  if (!exitRow) {
+    document.documentElement.style.setProperty("--pet-bar-height", "46px");
+    notifyHudLayout();
+    return;
+  }
   exitRow.replaceChildren();
-  if (!vehicle) return;
-  const previous = document.createElement("button");
-  previous.type = "button";
-  previous.textContent = "◀ место";
-  previous.addEventListener("click", () => world.changeVehicleSeat(false));
-  const next = document.createElement("button");
-  next.type = "button";
-  next.textContent = "место ▶";
-  next.addEventListener("click", () => world.changeVehicleSeat(true));
-  const leave = document.createElement("button");
-  leave.type = "button";
-  leave.className = "danger";
-  leave.textContent = "Покинуть";
-  leave.addEventListener("click", () => world.leaveVehicle());
-  exitRow.append(previous, next, leave);
+  if (vehicle) {
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "◀ место";
+    previous.addEventListener("click", () => world.changeVehicleSeat(false));
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "место ▶";
+    next.addEventListener("click", () => world.changeVehicleSeat(true));
+    const leave = document.createElement("button");
+    leave.type = "button";
+    leave.className = "danger";
+    leave.textContent = "Покинуть";
+    leave.addEventListener("click", () => world.leaveVehicle());
+    exitRow.append(previous, next, leave);
+  }
+  document.documentElement.style.setProperty("--pet-bar-height", vehicle ? "72px" : "46px");
+  notifyHudLayout();
 }
 
 /** The cooldown sweeps, once a frame, exactly as the player's own bar does. */

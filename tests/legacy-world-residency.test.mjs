@@ -311,7 +311,9 @@ test("renderer wiring unions WMO and legacy pins once and tears borrowers down b
   );
   assert.match(unitAttach, /const decodedModel = client\?\.model\(metadata\.model, "critical"\)/);
   assert.match(unitAttach, /legacyDecodedModelReplaced\([\s\S]*unit\.decodedModel[\s\S]*unit\.legacyGeometry/);
-  assert.match(unitAttach, /#attachSkinnedModel\(unit, metadata, key, decodedModel\)/);
+  // S1 threaded the environment client into the attach path so a freshly built rig can start its
+  // sidecar fetch immediately; the pin follows the real call shape rather than the pre-S1 one.
+  assert.match(unitAttach, /#attachSkinnedModel\(unit, metadata, key, decodedModel, client\)/);
   assert.match(source, /unit\.decodedModel = model;\s*unit\.legacyGeometry = legacy/);
   assert.match(source,
     /delete unit\.wvm;\s*delete unit\.visual;\s*delete unit\.decodedModel;\s*delete unit\.legacyGeometry/,

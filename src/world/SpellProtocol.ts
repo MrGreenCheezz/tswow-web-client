@@ -225,6 +225,12 @@ export function buildCastSpellOnGameObject(spellId: number, castCount: number, g
     .toUint8Array();
 }
 
+/** Enchanting and other crafting spells target an owned item with the ordinary ITEM mask. */
+export function buildCastSpellOnItem(spellId: number, castCount: number, guid: bigint): Uint8Array {
+  return new PacketWriter().u8(castCount).u32(spellId).u8(0)
+    .u32(TARGET_FLAG_ITEM).packedGuid(guid).toUint8Array();
+}
+
 /** A valid packet has a four-byte target mask; older fixtures may omit the whole block. */
 function parseSpellCastTargets(reader: PacketReader): SpellCastTargets | undefined {
   if (reader.remaining < 4) return undefined;

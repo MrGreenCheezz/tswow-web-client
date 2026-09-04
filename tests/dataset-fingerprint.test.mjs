@@ -109,6 +109,26 @@ test("the archive fingerprint sees a file appear inside a patch directory", asyn
   }
 });
 
+test("the archive fingerprint includes loose Interface/AddOns as a winning client source", async () => {
+  const client = await looseClient({ "DBFilesClient\\Spell.dbc": "one" });
+  try {
+    const before = await fingerprintArchives(client);
+    const addon = join(client, "Interface", "AddOns", "Example");
+    await mkdir(addon, { recursive: true });
+    await writeFile(join(addon, "Example.toc"), "Example.lua\n");
+    const installed = await fingerprintArchives(client);
+    assert.notEqual(installed.chain, before.chain, "installing the loose source changes chain identity");
+    assert.ok(installed.loose.get("interface/addons")?.has("interface\\addons\\example\\example.toc"));
+
+    await writeFile(join(addon, "Example.toc"), "Changed.lua\n");
+    const changed = await fingerprintArchives(client);
+    assert.equal(changed.chain, installed.chain, "editing one file does not change source composition");
+    assert.notEqual(changed.hash, installed.hash, "editing one loose add-on invalidates its cached files");
+  } finally {
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
 test("the gateway computes the same chain digest as the archive chain itself", async () => {
   // Two implementations of one rule — `tools/mpq.mjs` ranks and opens the chain, the gateway only
   // walks it — and a stamp is compared across them. If they drift the stamps never match and every
@@ -121,6 +141,24 @@ test("the gateway computes the same chain digest as the archive chain itself", a
     } finally {
       chain.close();
     }
+  } finally {
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("order-2 sidecars are retired because they lack the upper real-MPQ guard", async () => {
+  const client = await looseClient({ "Tileset\\Test.blp": "BLP2-one" });
+  const cache = join(client, "legacy.png");
+  try {
+    await writeFile(cache, "PNG-legacy");
+    const legacyChain = createHash("sha1")
+      .update(["order-2", "directory:patch-ruru-a.mpq"].join("\n"))
+      .digest("hex");
+    await writeSourceStamp(cache, { chain: legacyChain, sources: [], files: [] });
+    const fingerprint = new DatasetFingerprint({ clientDirectory: client, intervalMs: 0 });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(cache);
+    await assert.rejects(stat(cache), { code: "ENOENT" });
   } finally {
     await rm(client, { recursive: true, force: true });
   }
@@ -344,6 +382,80 @@ test("an entry is dropped when an overlay above its source gains the same path",
   }
 });
 
+test("an entry is dropped when a real MPQ above its source is replaced in place", async () => {
+  // A real MPQ can gain a path without changing its filename or the chain composition. Use an
+  // unopened fixture here: repairing a corrupt upper patch is the strongest version of the same
+  // transition, and `sourceOf` deliberately records it even though StormLib skipped it.
+  const client = await looseClient({ "Tileset\\Test.blp": "BLP2-from-A" });
+  const upper = join(client, "Data", "ruRU", "patch-ruRU-B.MPQ");
+  await writeFile(upper, "not-an-mpq");
+  const cache = await mkdtemp(join(tmpdir(), "webclient-cache-"));
+  const entry = join(cache, "texture.png");
+  const chain = await openClientArchives(client);
+  try {
+    const stamp = await sourceStamp(chain, { paths: ["Tileset\\Test.blp"] });
+    assert.equal(stamp.sources[0].name, "patch-ruRU-A.MPQ");
+    assert.deepEqual(stamp.sources[0].aboveArchives.map((archive) => archive.file), [upper]);
+    await writeFile(entry, "PNG-from-A");
+    await writeSourceStamp(entry, stamp);
+  } finally {
+    chain.close();
+  }
+  try {
+    const fingerprint = new DatasetFingerprint({ clientDirectory: client, intervalMs: 0 });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(entry);
+    assert.equal(await readFile(entry, "utf8"), "PNG-from-A");
+
+    const before = await stat(upper);
+    await writeFile(upper, "a-repaired-or-replaced-upper-archive");
+    await utimes(upper, before.atime, new Date(before.mtimeMs + 1_000));
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(entry);
+    await assert.rejects(readFile(entry),
+      "a cache built from the lower winner cannot survive a changed upper archive");
+  } finally {
+    await rm(cache, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("an entry stays when an unopened MPQ below its winner is replaced in place", async () => {
+  const client = await mkdtemp(join(tmpdir(), "webclient-fingerprint-"));
+  const lower = join(client, "Data", "ruRU", "patch-ruRU-A.MPQ");
+  const winner = join(client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Tileset", "Test.blp");
+  await mkdir(dirname(winner), { recursive: true });
+  await writeFile(lower, "not-an-mpq");
+  await writeFile(winner, "BLP2-from-B");
+  const cache = await mkdtemp(join(tmpdir(), "webclient-cache-"));
+  const entry = join(cache, "texture.png");
+  const chain = await openClientArchives(client);
+  try {
+    const stamp = await sourceStamp(chain, { paths: ["Tileset\\Test.blp"] });
+    assert.equal(stamp.sources[0].name, "patch-ruRU-B.MPQ");
+    assert.deepEqual(stamp.sources[0].aboveArchives, [], "a skipped lower archive cannot take this path");
+    await writeFile(entry, "PNG-from-B");
+    await writeSourceStamp(entry, stamp);
+  } finally {
+    chain.close();
+  }
+  try {
+    const fingerprint = new DatasetFingerprint({ clientDirectory: client, intervalMs: 0 });
+    await fingerprint.poll();
+
+    const before = await stat(lower);
+    await writeFile(lower, "a-repaired-or-replaced-lower-archive");
+    await utimes(lower, before.atime, new Date(before.mtimeMs + 1_000));
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(entry);
+    assert.equal(await readFile(entry, "utf8"), "PNG-from-B",
+      "changing a lower archive cannot invalidate a cache built from the higher winner");
+  } finally {
+    await rm(cache, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
 test("a change that lands while the client cannot be walked is reported by the next poll", async () => {
   // The two halves are recomputed together and committed together. A tswow build rewrites the DBC
   // directory and the patch directory in the same run, so "the DBC hash is already new" and "the
@@ -460,6 +572,60 @@ test("a publisher republishes an entry that cannot say where it came from", asyn
     else process.env.SOUND_DIR = previous;
     await rm(sounds, { recursive: true, force: true });
     await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("a path that was absent is invalidated when a loose TSWoW patch adds it", async () => {
+  const client = await looseClient({ "Interface\\placeholder.txt": "keep the patch directory open" });
+  const cache = join(client, "cache.png");
+  const wanted = "Interface\\NewModule\\Button.blp";
+  const chain = await openClientArchives(client);
+  try {
+    await writeFile(cache, "generated-fallback");
+    const stamp = await sourceStamp(chain, { paths: [wanted] });
+    assert.deepEqual(stamp.sources, []);
+    assert.equal(stamp.missingSources.length, 1, "the absence itself is a cache input");
+    await writeSourceStamp(cache, stamp);
+  } finally {
+    chain.close();
+  }
+
+  const fingerprint = new DatasetFingerprint({ clientDirectory: client, intervalMs: 0 });
+  try {
+    await fingerprint.poll();
+    const added = join(client, "Data", "ruRU", "patch-ruRU-A.MPQ", "Interface", "NewModule", "Button.blp");
+    await mkdir(dirname(added), { recursive: true });
+    await writeFile(added, "BLP2-module");
+    const changed = await fingerprint.poll();
+    assert.equal(changed.archives, true);
+    await fingerprint.ensureCurrent(cache);
+    await assert.rejects(stat(cache), { code: "ENOENT" },
+      "a fallback built while the BLP was absent must not survive the patch that adds it");
+  } finally {
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("a cache entry is invalidated when a plain dataset input is removed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "webclient-missing-dbc-"));
+  const dbc = join(directory, "Custom.dbc");
+  const cache = join(directory, "custom.json");
+  try {
+    await writeFile(dbc, "WDBC-current");
+    await writeFile(cache, "derived");
+    // No archive inputs are needed for this shape; it is the same stamp an id-index generator
+    // writes when its only source is a dataset table.
+    const fakeArchives = { chainDigest: () => "none", sourceOf: async () => undefined };
+    await writeSourceStamp(cache, await sourceStamp(fakeArchives, { files: [dbc] }));
+    const fingerprint = new DatasetFingerprint({ dbcDirectory: directory, intervalMs: 0 });
+    await fingerprint.poll();
+    await rm(dbc);
+    const changed = await fingerprint.poll();
+    assert.equal(changed.dbc, true);
+    await fingerprint.ensureCurrent(cache);
+    await assert.rejects(stat(cache), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

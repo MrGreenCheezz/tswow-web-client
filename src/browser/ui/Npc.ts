@@ -4,9 +4,16 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { isLootSlotTakeable, lootErrorText } from "../../world/LootProtocol.js";
 import { TRAINER_SPELL_AVAILABLE, trainerSpellStateText } from "../../world/TrainerProtocol.js";
 import { WorldClient } from "../../world/WorldClient.js";
-import { isWorldObjectDead } from "../../world/WorldState.js";
+import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
+import { NPC_FLAGS_VENDOR_MASK } from "../../world/NpcProtocol.js";
+import { BATTLEGROUND_AA, type BattlefieldList } from "../../world/PvpProtocol.js";
+import type { TaxiMenu } from "../../world/TaxiProtocol.js";
+import {
+  reachableTaxiRoutes, TaxiMetadataClient, type TaxiCatalog,
+} from "../TaxiMetadata.js";
 import { game } from "../game/Context.js";
 import { gameObjectAction } from "../game/Interaction.js";
+import { BattlegroundClient, type BattlegroundCatalog } from "../BattlegroundMetadata.js";
 import { attachTooltip, confirmPanel } from "./Widgets.js";
 
 import {
@@ -26,6 +33,27 @@ import { unit } from "../../world/Fields.js";
 
 /** Everything an NPC or a corpse opens: gossip, quests, vendors, trainers, loot, death. */
 
+const NPC_FLAG_GOSSIP = 0x01;
+const NPC_FLAG_QUESTGIVER = 0x02;
+const NPC_FLAG_TRAINER = 0x70;
+const NPC_FLAG_FLIGHTMASTER = 0x2000;
+const NPC_FLAG_BANKER = 0x20000;
+const NPC_FLAG_TABARD_DESIGNER = 0x80000;
+const NPC_FLAG_BATTLEMASTER = 0x100000;
+const NPC_FLAG_AUCTIONEER = 0x200000;
+const NPC_FLAG_STABLEMASTER = 0x400000;
+const NPC_FLAG_MAILBOX = 0x04000000;
+
+interface PendingGameObjectInteraction {
+  world: WorldClient;
+  entry: number;
+  /** The concrete spawn generation: a recycled guid must not inherit an older click. */
+  object: WorldObjectState;
+}
+
+/** A quick double-click before one template response still means one server interaction. */
+const pendingGameObjectInteractions = new Map<bigint, PendingGameObjectInteraction>();
+
 export function lootCurrentTarget(): void {
   const world = game.world;
   if (world?.targetGuid !== undefined) world.openLoot(world.targetGuid);
@@ -42,37 +70,417 @@ export function lootCurrentTarget(): void {
 export function interactWithTarget(): void {
   const world = game.world;
   if (!world || world.targetGuid === undefined) return;
-  const target = world.state.objects.get(world.targetGuid);
+  interactWithGuid(world.targetGuid);
+}
+
+/**
+ * Interacts with the object under the pointer, whether or not it can legally be a unit target.
+ * Game objects never go through `CMSG_SET_SELECTION`; the picked guid belongs directly to the
+ * object opcode. Units are selected by the input layer first, so the ordinary target frame still
+ * follows a right click on a creature.
+ */
+export function interactWithGuid(guid: bigint): void {
+  const world = game.world;
+  if (!world) return;
+  const target = world.state.objects.get(guid);
   if (!target) return;
 
   if (target.typeId === 5) {
-    // Nothing comes back either way, so the click is the whole interaction: the door swings, or
-    // it does not because the server refused the packet.
     const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+    const entry = target.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+    const pending = pendingGameObjectInteractions.get(guid);
+    if (pending?.world === world && pending.entry === entry && pending.object === target) return;
+    if (pending) pendingGameObjectInteractions.delete(guid);
+
     const action = self?.position ? gameObjectAction(world, target, self.position) : undefined;
-    if (action?.kind === "unlock") world.openLock(world.targetGuid, action.spell);
-    else if (action) world.useGameObject(world.targetGuid);
+    if (action) {
+      performGameObjectAction(world, guid, action);
+      return;
+    }
+
+    // `gameObjectAction` starts CMSG_GAMEOBJECT_QUERY only after the live object has passed its
+    // type, selectable and range gates. If that query is still unknown, retain this click once and
+    // repeat every gate after the answer; a miss, close, despawn or timeout resolves harmlessly.
+    if (!self?.position || entry <= 0 || world.gameObjectTemplates.has(entry)) return;
+    const intent = { world, entry, object: target };
+    pendingGameObjectInteractions.set(guid, intent);
+    void world.waitForGameObjectTemplate(entry, guid).then((template) => {
+      if (pendingGameObjectInteractions.get(guid) !== intent) return;
+      pendingGameObjectInteractions.delete(guid);
+      if (!template || game.world !== world) return;
+
+      const current = world.state.objects.get(guid);
+      const currentEntry = current?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+      if (current !== intent.object || current.typeId !== 5 || currentEntry !== entry) return;
+      const currentSelf = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+      const deferredAction = currentSelf?.position ? gameObjectAction(world, current, currentSelf.position) : undefined;
+      if (deferredAction) performGameObjectAction(world, guid, deferredAction);
+    });
     return;
   }
 
   // A corpse only. A game object's loot is never requested — the server refuses the packet for
   // anything that is not a creature, and a chest's loot arrives once a spell has opened it.
   if (target.typeId === 3 && isWorldObjectDead(target)) {
-    world.openLoot(world.targetGuid);
+    world.openLoot(guid);
     return;
   }
 
+  if (target.typeId !== 3) return;
+
+  // The shared NPC lane belongs to the newly clicked creature from this point on. Closing its
+  // previous service first also makes a delayed response from that older NPC stale.
+  closeNpcServiceWindow();
+  const npcFlags = target.fields.get(UPDATE_FIELDS.UNIT_NPC_FLAGS.offset) ?? 0;
+  // Gossip remains first: when it exists, the server-authored menu is the authority that decides
+  // which of several services this creature offers. Some neutral service NPCs have no gossip bit,
+  // though, and used to be silent despite advertising their vendor/trainer/banker flag on the wire.
+  if ((npcFlags & NPC_FLAG_GOSSIP) !== 0) {
+    showPendingNpcDialog();
+    world.openGossip(guid);
+  } else if ((npcFlags & NPC_FLAG_QUESTGIVER) !== 0) {
+    showPendingNpcDialog();
+    world.openQuestList(guid);
+  } else if ((npcFlags & NPC_FLAGS_VENDOR_MASK) !== 0) world.openVendor(guid);
+  else if ((npcFlags & NPC_FLAG_TRAINER) !== 0) world.openTrainer(guid);
+  else if ((npcFlags & NPC_FLAG_BANKER) !== 0) world.openBank(guid);
+  else if ((npcFlags & NPC_FLAG_FLIGHTMASTER) !== 0) {
+    showPendingNpcDialog("Распорядитель полётов");
+    world.requestTaxiMenu(guid);
+  }
+  else if ((npcFlags & NPC_FLAG_AUCTIONEER) !== 0) world.openAuctionHouse(guid);
+  else if ((npcFlags & NPC_FLAG_BATTLEMASTER) !== 0) {
+    showPendingNpcDialog("Мастер поля боя");
+    world.battlemasterHello(guid);
+  } else if ((npcFlags & NPC_FLAG_TABARD_DESIGNER) !== 0) {
+    showPendingNpcDialog("Дизайнер гербов");
+    world.openTabardVendor(guid);
+  }
+  else if ((npcFlags & NPC_FLAG_STABLEMASTER) !== 0) world.requestStable(guid);
+  else if ((npcFlags & NPC_FLAG_MAILBOX) !== 0) world.openMailbox(guid);
+}
+
+function performGameObjectAction(
+  world: WorldClient,
+  guid: bigint,
+  action: NonNullable<ReturnType<typeof gameObjectAction>>,
+): void {
+  if (action.kind === "mail") world.openMailbox(guid);
+  else if (action.kind === "guild-bank") world.openGuildBank(guid);
+  else if (action.kind === "unlock") world.openLock(guid, action.spell);
+  else world.useGameObject(guid);
+}
+
+function showPendingNpcDialog(title?: string): void {
   gossipWindow.hidden = false;
-  gossipTitle.textContent = targetName.textContent || "Разговор";
+  gossipTitle.textContent = title || targetName.textContent || "Разговор";
+  gossipText.className = "gossip-text";
   gossipText.textContent = "Ожидание ответа NPC…";
   gossipOptions.replaceChildren();
   gossipQuests.replaceChildren();
-  const npcFlags = target.fields.get(UPDATE_FIELDS.UNIT_NPC_FLAGS.offset) ?? 0;
-  // UNIT_NPC_FLAG_GOSSIP is 0x01 and UNIT_NPC_FLAG_QUESTGIVER is 0x02. A creature with neither
-  // has nothing to say, and asking anyway is a packet the server drops.
-  if ((npcFlags & 0x01) !== 0) world.openGossip(world.targetGuid);
-  else if ((npcFlags & 0x02) !== 0) world.openQuestList(world.targetGuid);
-  else gossipWindow.hidden = true;
+}
+
+function serviceButton(label: string, run: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "gossip-option";
+  button.textContent = label;
+  button.addEventListener("click", run);
+  return button;
+}
+
+function showServiceDialog(title: string, text: string, controls: readonly Node[]): void {
+  gossipTitle.textContent = title;
+  gossipText.className = "gossip-text";
+  gossipText.textContent = text;
+  gossipOptions.replaceChildren(...controls);
+  gossipQuests.replaceChildren();
+  gossipWindow.hidden = false;
+}
+
+let taxiClient: TaxiMetadataClient | undefined;
+let taxiClientOrigin = "";
+let visibleTaxiMenu: TaxiMenu | undefined;
+
+function nativeTaxiClient(): TaxiMetadataClient | undefined {
+  const origin = game.gatewayOrigin;
+  if (!origin) return undefined;
+  if (!taxiClient || taxiClientOrigin !== origin) {
+    taxiClient = new TaxiMetadataClient(origin);
+    taxiClientOrigin = origin;
+  }
+  return taxiClient;
+}
+
+function drawTaxiMenu(world: WorldClient, menu: TaxiMenu, catalog: TaxiCatalog): void {
+  if (game.world !== world || world.taxiMenu !== menu) return;
+  visibleTaxiMenu = menu;
+  const routes = reachableTaxiRoutes(catalog, menu.currentNode, menu.knownNodes);
+  const controls: Node[] = routes.map((route) => serviceButton(
+    `${route.destination.name}${route.cost > 0 ? ` · ${formatMoney(route.cost)}` : ""}`,
+    () => {
+      if (game.world !== world || world.taxiMenu !== menu || visibleTaxiMenu !== menu) return;
+      gossipText.className = "gossip-text";
+      gossipText.textContent = `Запрашиваем полёт: ${route.destination.name}…`;
+      for (const control of gossipOptions.querySelectorAll<HTMLButtonElement>("button")) control.disabled = true;
+      world.takeTaxi(menu.guid, route.nodes);
+    },
+  ));
+  if (controls.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Отсюда пока нет открытых достижимых маршрутов.";
+    controls.push(empty);
+  }
+  showServiceDialog(
+    "Распорядитель полётов",
+    world.taxiMessage?.text ?? "Выберите открытое направление.",
+    controls,
+  );
+  gossipText.className = world.taxiMessage?.error ? "gossip-text error" : "gossip-text";
+}
+
+/** Opens only authored, reachable TaxiPath routes and sends every hop selected by the planner. */
+export function showTaxiMenu(): void {
+  const world = game.world;
+  const menu = world?.taxiMenu;
+  if (!world || !menu) {
+    if (visibleTaxiMenu) gossipWindow.hidden = true;
+    visibleTaxiMenu = undefined;
+    return;
+  }
+  visibleTaxiMenu = menu;
+  const client = nativeTaxiClient();
+  const catalog = client?.catalog;
+  if (catalog) {
+    drawTaxiMenu(world, menu, catalog);
+    return;
+  }
+  showServiceDialog("Распорядитель полётов", "Загружаем карту маршрутов…", []);
+  if (!client) {
+    gossipText.className = "gossip-text error";
+    gossipText.textContent = "Карта маршрутов недоступна.";
+    return;
+  }
+  void client.load().then((loaded) => {
+    if (game.world !== world || world.taxiMenu !== menu || visibleTaxiMenu !== menu) return;
+    if (loaded) drawTaxiMenu(world, menu, loaded);
+    else {
+      gossipText.className = "gossip-text error";
+      gossipText.textContent = "Не удалось загрузить карту маршрутов.";
+      gossipOptions.replaceChildren();
+    }
+  });
+}
+
+/** Called by the shared window close button; late taxi packets may no longer reopen it. */
+export function closeNpcServiceWindow(): void {
+  visibleTaxiMenu = undefined;
+  tabardSelection = undefined;
+  tabardSelectionGuid = 0n;
+  game.world?.closeNpcServices();
+  gossipWindow.hidden = true;
+}
+
+let battlegroundClient: BattlegroundClient | undefined;
+let battlegroundClientOrigin = "";
+
+function nativeBattlegroundClient(): BattlegroundClient | undefined {
+  const origin = game.gatewayOrigin;
+  if (!origin) return undefined;
+  if (!battlegroundClient || battlegroundClientOrigin !== origin) {
+    battlegroundClient = new BattlegroundClient(origin);
+    battlegroundClientOrigin = origin;
+  }
+  return battlegroundClient;
+}
+
+function drawBattlegroundList(
+  world: WorldClient,
+  list: BattlefieldList,
+  catalog: BattlegroundCatalog | undefined,
+): void {
+  if (game.world !== world || world.battlefieldList !== list) return;
+  if (list.bgTypeId === BATTLEGROUND_AA) {
+    const sizes = [2, 3, 5] as const;
+    const controls = sizes.map((size, arenaSlot) => serviceButton(`Арена ${size}×${size}`, () => {
+      if (game.world !== world || world.battlefieldList !== list) return;
+      world.joinArena(list.battlemasterGuid, arenaSlot, false, false);
+      closeNpcServiceWindow();
+      gossipWindow.hidden = true;
+    }));
+    showServiceDialog("Арена", "Выберите размер нерейтингового боя.", controls);
+    return;
+  }
+
+  const metadata = catalog?.find((row) => row.bgTypeId === list.bgTypeId);
+  const name = metadata?.name || `Поле боя ${list.bgTypeId}`;
+  const reward = list.winHonor > 0 || list.lossHonor > 0
+    ? `Победа: ${list.winHonor} чести${list.lossHonor > 0 ? `, поражение: ${list.lossHonor}` : ""}.`
+    : "Сервер подберёт доступный бой вашего уровня.";
+  const controls = [serviceButton("Первое доступное сражение", () => {
+    if (game.world !== world || world.battlefieldList !== list) return;
+    world.joinBattleground(list.battlemasterGuid, list.bgTypeId, 0, false);
+    closeNpcServiceWindow();
+    gossipWindow.hidden = true;
+  })];
+  for (const instance of list.instances) {
+    controls.push(serviceButton(`Сражение ${instance}`, () => {
+      if (game.world !== world || world.battlefieldList !== list) return;
+      world.joinBattleground(list.battlemasterGuid, list.bgTypeId, instance, false);
+      closeNpcServiceWindow();
+      gossipWindow.hidden = true;
+    }));
+  }
+  showServiceDialog(name, reward, controls);
+}
+
+/** Opens a native battlemaster queue even when the optional FrameXML HUD is disabled. */
+export function showBattlegroundList(): void {
+  const world = game.world;
+  const list = world?.battlefieldList;
+  if (!world || !list || list.fromWhere !== 0 || list.battlemasterGuid === 0n) return;
+  const client = nativeBattlegroundClient();
+  drawBattlegroundList(world, list, client?.catalog);
+  if (!client?.ready) void client?.load().then((catalog) => drawBattlegroundList(world, list, catalog));
+}
+
+interface TabardSelection {
+  style: number;
+  color: number;
+  borderStyle: number;
+  borderColor: number;
+  background: number;
+}
+
+const TABARD_RANGES = {
+  style: 169,
+  color: 16,
+  borderStyle: 9,
+  borderColor: 16,
+  background: 50,
+} as const;
+let tabardSelection: TabardSelection | undefined;
+let tabardSelectionGuid = 0n;
+
+function tabardBorderColorMaximum(style: number): number {
+  // The stock archive has 17 colours for border styles 0..5 and four for the later 6..9 set.
+  return style <= 5 ? TABARD_RANGES.borderColor : 3;
+}
+
+function tabardTextureUrl(path: string): string {
+  const origin = game.gatewayOrigin;
+  if (!origin) return "";
+  const url = new URL("/texture", origin);
+  url.searchParams.set("path", path);
+  return url.href;
+}
+
+function tabardPart(path: string, className: string): HTMLImageElement {
+  const image = document.createElement("img");
+  image.alt = "";
+  image.className = className;
+  const source = tabardTextureUrl(path);
+  if (source) image.src = source;
+  else image.hidden = true;
+  image.addEventListener("error", () => { image.hidden = true; }, { once: true });
+  return image;
+}
+
+function tabardPreview(selection: TabardSelection): HTMLDivElement {
+  const preview = document.createElement("div");
+  preview.className = "tabard-preview";
+  const code = (value: number) => String(value).padStart(2, "0");
+  preview.append(
+    tabardPart(`Textures\\GuildEmblems\\Background_${code(selection.background)}_TU_U.blp`, "tabard-background"),
+    tabardPart(`Textures\\GuildEmblems\\Emblem_${code(selection.style)}_${code(selection.color)}_TU_U.blp`, "tabard-emblem"),
+    tabardPart(`Textures\\GuildEmblems\\Border_${code(selection.borderStyle)}_${code(selection.borderColor)}_TU_U.blp`, "tabard-border"),
+  );
+  return preview;
+}
+
+function tabardStepper(
+  label: string,
+  value: number,
+  maximum: number,
+  update: (value: number) => void,
+): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "tabard-stepper";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const controls = document.createElement("span");
+  controls.className = "tabard-stepper-controls";
+  const previous = serviceButton("‹", () => update(value <= 0 ? maximum : value - 1));
+  previous.ariaLabel = `${label}: предыдущий вариант`;
+  const counter = document.createElement("output");
+  counter.textContent = `${value + 1} / ${maximum + 1}`;
+  const next = serviceButton("›", () => update(value >= maximum ? 0 : value + 1));
+  next.ariaLabel = `${label}: следующий вариант`;
+  controls.append(previous, counter, next);
+  row.append(caption, controls);
+  return row;
+}
+
+/** Native layered preview backed by the original GuildEmblems textures. */
+export function showTabardVendor(): void {
+  const world = game.world;
+  if (!world || world.tabardVendorGuid === 0n) return;
+  const guild = world.guildQuery;
+  if (!guild) {
+    tabardSelection = undefined;
+    tabardSelectionGuid = world.tabardVendorGuid;
+    showServiceDialog(
+      "Дизайнер гербов",
+      "Загружаем текущий герб гильдии…",
+      [],
+    );
+    return;
+  }
+  if (!tabardSelection || tabardSelectionGuid !== world.tabardVendorGuid) {
+    tabardSelectionGuid = world.tabardVendorGuid;
+    tabardSelection = {
+      style: Math.min(TABARD_RANGES.style, guild.emblemStyle),
+      color: Math.min(TABARD_RANGES.color, guild.emblemColor),
+      borderStyle: Math.min(TABARD_RANGES.borderStyle, guild.borderStyle),
+      borderColor: Math.min(tabardBorderColorMaximum(guild.borderStyle), guild.borderColor),
+      background: Math.min(TABARD_RANGES.background, guild.backgroundColor),
+    };
+  }
+  const selection = tabardSelection;
+  const editor = document.createElement("div");
+  editor.className = "tabard-editor";
+  const controls = document.createElement("div");
+  controls.className = "tabard-controls";
+  const redraw = (): void => showTabardVendor();
+  controls.append(
+    tabardStepper("Рисунок", selection.style, TABARD_RANGES.style, (value) => { selection.style = value; redraw(); }),
+    tabardStepper("Цвет рисунка", selection.color, TABARD_RANGES.color, (value) => { selection.color = value; redraw(); }),
+    tabardStepper("Кайма", selection.borderStyle, TABARD_RANGES.borderStyle, (value) => {
+      selection.borderStyle = value;
+      selection.borderColor = Math.min(selection.borderColor, tabardBorderColorMaximum(value));
+      redraw();
+    }),
+    tabardStepper("Цвет каймы", selection.borderColor, tabardBorderColorMaximum(selection.borderStyle), (value) => { selection.borderColor = value; redraw(); }),
+    tabardStepper("Цвет фона", selection.background, TABARD_RANGES.background, (value) => { selection.background = value; redraw(); }),
+  );
+  const save = serviceButton("Сохранить герб · 10 золотых", () => {
+    if (game.world !== world || world.tabardVendorGuid !== tabardSelectionGuid || tabardSelection !== selection) return;
+    world.saveGuildEmblem(
+      selection.style, selection.color, selection.borderStyle, selection.borderColor, selection.background,
+    );
+    gossipText.className = "gossip-text";
+    gossipText.textContent = "Сервер проверяет права и выбранные элементы…";
+    save.disabled = true;
+  });
+  controls.append(save);
+  editor.append(tabardPreview(selection), controls);
+  showServiceDialog(
+    "Дизайнер гербов",
+    world.tabardMessage?.text ?? "Настройте герб. Изменение стоит 10 золотых.",
+    [editor],
+  );
+  gossipText.className = world.tabardMessage?.error ? "gossip-text error" : "gossip-text";
 }
 
 /**
@@ -310,19 +718,23 @@ export function showTrainer(): void {
   trainerGreeting.textContent = trainer.greeting;
   showMerchantMessage(trainerMessage);
   trainerSpells.replaceChildren(
-    ...trainer.spells.map((spell) => {
+    ...trainer.spells.filter((spell) => {
+      const metadata = game.spells.get(spell.spellId);
+      return metadata !== undefined && metadata.hidden !== true;
+    }).map((spell) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "trainer-spell";
       const metadata = game.spells.get(spell.spellId);
-      const name = metadata?.name ?? `Заклинание ${spell.spellId}`;
+      const name = metadata?.name;
+      if (!name) return undefined;
       const state = trainerSpellStateText(spell.usable);
       const level = spell.requiredLevel > 0 ? ` · ур. ${spell.requiredLevel}` : "";
       button.textContent = `${name} · ${formatMoney(spell.moneyCost)}${level}${state ? " · " + state : ""}`;
       button.disabled = spell.usable !== TRAINER_SPELL_AVAILABLE;
       button.addEventListener("click", () => world.learnFromTrainer(spell.spellId));
       return button;
-    }),
+    }).filter((button): button is HTMLButtonElement => button !== undefined),
   );
   if (trainer.spells.length === 0) {
     const empty = document.createElement("p");

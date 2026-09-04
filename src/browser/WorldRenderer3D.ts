@@ -23,7 +23,7 @@ import { skyboxAnimationTimeMs } from "./LightClient.js";
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import {
   lightingProfile, shadowMaterialEligible, stabiliseDirectionalShadowCenter,
-  unitCastsEnhancedShadow, withToneShoulder,
+  unitCastsEnhancedShadow, withToneShoulder, toneShoulder,
   type LightingProfile,
 } from "./LightingQuality.js";
 import {
@@ -33,7 +33,7 @@ import {
 import {
   LIQUID_CELL_YARDS, applyFallbackLiquidShaderProfile, applyLiquidShaderProfile,
   buildLiquidMaterial, createWaterShaderSharedUniforms,
-  liquidClassOf, updateLiquidMaterial,
+  liquidClassOf, updateLiquidMaterial, WATER_FALLBACK_OPACITY,
   type LiquidClass, type LiquidMaterial, type LiquidTextureClient, type WaterShaderSharedUniforms,
 } from "./Water.js";
 import { DAY_HALF_MINUTES } from "../world/GameTimeProtocol.js";
@@ -41,23 +41,34 @@ import type { GameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import type { CreatureModelMetadata, UnitModel } from "./CreatureModelClient.js";
 import { ANIMATION_IDS } from "../generated/animations.js";
 import {
-  M2_TO_SCENE, actionAnimation, addSkinnedClips, animatesAsDoodad, applyBillboardBones, buildSkinnedTemplate,
+  M2_TO_SCENE, actionAnimation, addSkinnedClips, animatesAsDoodad, applyBillboardBones,
+  applyGlobalSequenceBones, buildSkinnedTemplate,
   disposeSkinnedInstance,
-  ACTION_ANIMATION_BLEND, animationBlend, animationFadeWindow, pendingActionFate,
-  pendingActionExpired,
+  ACTION_ANIMATION_BLEND, animationBlend, animationFadeWindow, clipBlendTime, pendingActionFate,
+  pendingActionExpired, commitLocomotion,
   buildSkinnedTemplateFrom, chooseAnimation, instantiateSkinned, isUnitFlying, isUnitMoving, poseAnimation,
+  poseAnimationFamily, type AnimationRequestFamily,
   animationTransition, isTerminalUnitPose, needsSidecarAnimations, poseTransition, resolveActionAnimation,
-  resolveAnimation, resolveSpellVisualAnimation,
-  LOOP_ANIMATION_BLEND, SHOOT_METADATA_WAIT, mountSpecialAnimation,
+  resolveAnimation, resolveSpellVisualAnimation, spellVisualAnimationCandidates,
+  ACTION_SIDECAR_WAIT, LOOP_ANIMATION_BLEND, SHOOT_METADATA_WAIT, mountSpecialAnimation,
+  clipMovingSpeed, mountGaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
   shouldPromoteActionToLocomotionOverlay,
   weaponPose,
+  applyStrafeYaw, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
   type SkinnedInstance, type SkinnedTemplate, type UnitAction, type UnitPose,
 } from "./AnimatedModel.js";
 import {
-  EVERY_GEOSET, applyBlendMode, buildModel, characterSlots, setBuiltModelFantasyGlow,
+  EVERY_GEOSET, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded,
+  setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
   type AnimatedBatch, type BuiltModel, type GeosetChoice, type TextureSlots,
 } from "./ModelBuild.js";
+import {
+  MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE,
+  createInstancedModelPlacementLocalLightMaterials, createModelPlacementLocalLightMaterials,
+  createModelPlacementTintMaterials, disposeModelPlacementTintMaterials, modelPlacementTintColour,
+  type ModelPlacementTint,
+} from "./ModelPlacementTint.js";
 import {
   BuiltModelCache, disposeEvictedBuiltModels, knownGeometryBufferBytes,
   type BuiltModelCacheStats, type EvictedBuiltModel,
@@ -65,6 +76,7 @@ import {
 import {
   ModelTextureLoader, type ModelTextureLease, type ModelTextureResidencyStats,
 } from "./TextureLoad.js";
+import { WarmLeasePool } from "./AssetWarmup.js";
 import {
   WORLD_MATERIAL_CACHE_COUNT_LIMIT, WorldMaterialCache,
   type WorldMaterialEntry, type WorldMaterialResidencyStats,
@@ -102,6 +114,7 @@ import {
   visitModelEffectsResources, type ModelEffects,
 } from "./ParticleRender.js";
 import { WeatherEffect, advanceWeather, weatherDensity, type WeatherFade } from "./WeatherEffect.js";
+import { VEGETATION_WIND_CULL_PADDING, VEGETATION_WIND_TIME } from "./VegetationWind.js";
 import {
   FrameCadenceClock, FrameClock, makeRendererTelemetrySnapshot, shouldReselect,
   type RendererTelemetrySnapshot,
@@ -123,7 +136,10 @@ import {
   type SpellVisualPlan, type VisualAnimation, type VisualAnimationMode, type VisualInstance,
 } from "./SpellVisuals.js";
 import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
-import { unit as unitFields } from "../world/Fields.js";
+import {
+  isPlayerGhost, isUnitCreeping, unitAppearance, unit as unitFields,
+  type UnitAuraAppearance,
+} from "../world/Fields.js";
 import { UNIT_FLAG_UNINTERACTIBLE } from "../world/FactionRules.js";
 import { UNIT_STAND_STATE_STAND } from "../world/CharacterProgressProtocol.js";
 import type { CollisionLiquid, CollisionModel } from "../world/CollisionFormat.js";
@@ -173,6 +189,12 @@ export interface WorldRendererGraphicsReadback {
   readonly characterAtlasAnisotropy: boolean;
   readonly grassRadius: number;
   readonly grassDense: boolean;
+  /** Whether the depth tint and waterline pass may run at all this session. */
+  readonly underwaterOverlay: boolean;
+  /** Classic bloom leaf. The frame stays direct only when this and God rays are both inactive. */
+  readonly fullscreenGlow: boolean;
+  /** Account leaf for the depth-aware screen-space sun shafts. */
+  readonly godRays: boolean;
   readonly experimentalShaderProfile: Readonly<ExperimentalShaderProfile>;
 }
 
@@ -183,6 +205,10 @@ export interface ExperimentalShaderProfile {
   readonly waterFresnel: boolean;
   readonly waterMicroWaves: boolean;
   readonly waterSunSparkle: boolean;
+  /** Depth-keyed shoreline foam for terrain water/ocean; fallback and glowing liquids stay neutral. */
+  readonly waterFoam: boolean;
+  /** GPU sway for strictly classified static foliage and ground-cover materials. */
+  readonly vegetationWind: boolean;
   /** Local additive spell energy plus magma/slime self-emission; no post-process or extra pass. */
   readonly fantasyGlow: boolean;
 }
@@ -193,8 +219,123 @@ export const DEFAULT_EXPERIMENTAL_SHADER_PROFILE: Readonly<ExperimentalShaderPro
   waterFresnel: false,
   waterMicroWaves: false,
   waterSunSparkle: false,
+  waterFoam: false,
+  vegetationWind: false,
   fantasyGlow: false,
 });
+
+/**
+ * The liquid surface the camera is looking through, pushed in by whoever owns the collision query.
+ *
+ * The renderer deliberately does not sample liquid itself: the terrain client and the WMO floor
+ * group are both the loop's, and the same pair already decides the light slot. This is that same
+ * answer, kept instead of thrown away.
+ */
+export interface UnderwaterSurface {
+  /** World Z of the surface, which the scene draws as Y. */
+  readonly height: number;
+  /** `LiquidType.dbc` row, or 0 where only the map file's flag byte is known. */
+  readonly entry: number;
+  /** The map file's liquid flag byte; 0 for a WMO's own `MLIQ` grid. */
+  readonly flags: number;
+}
+
+/**
+ * How thick the crossing is, in yards of world.
+ *
+ * The near plane's half-height and nothing else, because that is exactly the slab of world the
+ * near plane spans and therefore the only depth range over which part of it can be above the
+ * surface while the rest is under (wowee `renderer.cpp:2871-2875`). A flat number here would be
+ * wrong the moment the field of view or the near plane moves.
+ */
+export function underwaterCrossingBand(nearPlane: number, fovYDegrees: number): number {
+  if (!Number.isFinite(nearPlane) || !Number.isFinite(fovYDegrees)) return UNDERWATER_MIN_BAND;
+  const half = Math.tan(Math.max(0, Math.min(179, fovYDegrees)) * Math.PI / 360);
+  return Math.max(UNDERWATER_MIN_BAND, Math.max(0, nearPlane) * half);
+}
+
+const UNDERWATER_MIN_BAND = 0.05;
+
+/**
+ * Which of the reference's two tints a liquid takes.
+ *
+ * Canal water is the darker, faster-fogging one, and its three `LiquidType.dbc` rows are named by
+ * the reference itself (`renderer.cpp:2911-2913`: 5, 13, 17). Row 13 is «WMO Water», which is what
+ * the extractor writes into `LIQU` for the models under Stormwind — so the city's canals and its
+ * flooded rooms answer with the same tint from either source.
+ */
+export function underwaterLiquidIsCanal(entry: number): boolean {
+  return entry === 5 || entry === 13 || entry === 17;
+}
+
+/** The reference's two tints, in the display space they are blended in. */
+export const UNDERWATER_CANAL_TINT: readonly [number, number, number] = Object.freeze([0.01, 0.04, 0.10]);
+export const UNDERWATER_LAKE_TINT: readonly [number, number, number] = Object.freeze([0.03, 0.09, 0.18]);
+/** Where the tint starts, matching what the water plane itself was contributing at the surface. */
+export const UNDERWATER_SURFACE_HANDOFF = 0.38;
+/** Where it stops. Past this the view is dark enough that more is a black screen, not deep water. */
+export const UNDERWATER_MAX_FOG = 0.75;
+
+/**
+ * How strongly the tint covers the view at a given depth.
+ *
+ * Not from zero: until the eye passes the surface the view is darkened by looking *through* the
+ * water plane, whose own alpha runs towards 0.9 with depth, and once the eye is under, that plane
+ * is behind the camera and contributes nothing. Starting near zero made submerging brighten the
+ * scene, which is backwards — so it starts where the plane left off and deepens from there.
+ */
+export function underwaterFogStrength(depth: number, canal: boolean): number {
+  const under = Number.isFinite(depth) ? Math.max(0, depth) : 0;
+  const depthFog = 1 - Math.exp(-under * (canal ? 0.25 : 0.12));
+  const strength = UNDERWATER_SURFACE_HANDOFF + depthFog * (UNDERWATER_MAX_FOG - UNDERWATER_SURFACE_HANDOFF);
+  return Math.min(UNDERWATER_MAX_FOG, Math.max(UNDERWATER_SURFACE_HANDOFF, strength));
+}
+
+export interface UnderwaterOverlayFrame {
+  /** Yards below the surface, floored at zero: the band above it is shaded, not un-shaded. */
+  readonly depth: number;
+  readonly canal: boolean;
+  readonly tint: readonly [number, number, number];
+  /** Opacity where the whole view is under. */
+  readonly fogStrength: number;
+  /** Whether a seam is still on screen. False once the near plane is wholly under the surface. */
+  readonly crossing: boolean;
+}
+
+/**
+ * Everything the overlay draws with, or nothing at all — which is the ordinary answer.
+ *
+ * Undefined means the frame is exactly the frame this client drew before the effect existed: no
+ * extra scene, no extra draw call, no uniform written.
+ */
+export function underwaterOverlayFrame(
+  surface: Readonly<UnderwaterSurface> | undefined,
+  eyeZ: number,
+  band: number,
+  liquidClass: LiquidClass,
+): UnderwaterOverlayFrame | undefined {
+  if (!surface || !Number.isFinite(surface.height) || !Number.isFinite(eyeZ)) return undefined;
+  // Water and ocean only, and this is a decision rather than an omission: both of the reference's
+  // tints are water, there is no authored number anywhere for what magma or slime look like from
+  // the inside, and a dark blue screen in a lava lake is a wrong answer where nothing is merely a
+  // missing one. Swimming in either is fatal within seconds in any case.
+  if (liquidClass !== "water" && liquidClass !== "ocean") return undefined;
+  const crossingBand = Number.isFinite(band) && band > 0 ? band : UNDERWATER_MIN_BAND;
+  const eyeDepth = surface.height - eyeZ;
+  // From a near plane's half-height *above* the surface: standing in a lake looking across it, the
+  // water in front of the near-plane cut is not drawn at all, and those pixels are looking through
+  // water. Safe only because the seam below is geometric — a pixel whose ray enters the world above
+  // the surface still comes out untouched, so the band costs nothing where there is no water.
+  if (!(eyeDepth > -crossingBand)) return undefined;
+  const canal = underwaterLiquidIsCanal(surface.entry);
+  return {
+    depth: Math.max(0, eyeDepth),
+    canal,
+    tint: canal ? UNDERWATER_CANAL_TINT : UNDERWATER_LAKE_TINT,
+    fogStrength: underwaterFogStrength(eyeDepth, canal),
+    crossing: eyeDepth < crossingBand,
+  };
+}
 
 export interface FormalRenderSurfaceStamp {
   readonly cssWidth: number;
@@ -314,6 +455,50 @@ export function wmoRunMaterialCacheKey(
   ]);
 }
 
+interface WmoInteriorFogUniforms {
+  readonly colour: { value: THREE.Color };
+  readonly near: { value: number };
+  readonly far: { value: number };
+}
+
+/**
+ * Gives an interior WMO surface the room's MFOG without replacing the scene's outdoor fog.
+ *
+ * Three's stock fog uniforms are scene-wide. Rewriting those while the camera is under a roof also
+ * paints terrain, units and the sky seen through a doorway with a tavern's short peach fog. This
+ * small material-local substitution keeps Light.dbc authoritative outside while retaining the
+ * authored room distances and colour on the interior surfaces that own them.
+ */
+export function applyWmoInteriorFog(
+  material: THREE.MeshBasicMaterial,
+  uniforms: WmoInteriorFogUniforms,
+): void {
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey();
+  const marker = "#include <fog_fragment>";
+  material.onBeforeCompile = (shader, renderer) => {
+    previousCompile.call(material, shader, renderer);
+    const occurrences = shader.fragmentShader.split(marker).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`interior WMO fog expected one fog marker, found ${occurrences}`);
+    }
+    shader.uniforms.wowWmoFogColour = uniforms.colour;
+    shader.uniforms.wowWmoFogNear = uniforms.near;
+    shader.uniforms.wowWmoFogFar = uniforms.far;
+    shader.fragmentShader = `
+      uniform vec3 wowWmoFogColour;
+      uniform float wowWmoFogNear;
+      uniform float wowWmoFogFar;
+      ${shader.fragmentShader}`.replace(marker, `
+      #ifdef USE_FOG
+        float wowWmoFogFactor = smoothstep(wowWmoFogNear, wowWmoFogFar, vFogDepth);
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, wowWmoFogColour, wowWmoFogFactor);
+      #endif`);
+  };
+  material.customProgramCacheKey = () => `${previousKey}|wmo-interior-fog-v1`;
+  material.needsUpdate = true;
+}
+
 export type LegacyGeometryDomain = "static" | "skinned";
 
 /** Exact legacy geometry identity within one decoded parent and renderer world/session. */
@@ -418,7 +603,10 @@ export function configureWmoCanonicalTexture(texture: THREE.Texture, anisotropy:
     texture.anisotropy = anisotropy;
     changed = true;
   }
-  if (changed) texture.needsUpdate = true;
+  // TextureLoader returns an empty base before its image callback runs. Marking that handle for
+  // upload increments its version and makes WebGLTextures warn on the first draw (`image === null`);
+  // the loader marks it after the image arrives. Loaded/data textures still need the immediate mark.
+  if (changed && texture.image !== null && texture.image !== undefined) texture.needsUpdate = true;
 }
 
 export type BuiltModelResourceDomain = "model" | "unit";
@@ -439,14 +627,15 @@ export const ENVIRONMENT_WARM_EXTERIOR_BUDGET = 960;
 const WMO_EXTERIOR_RANGE = 250;
 /**
  * A WMO's own doodads — the tables, kegs and book stacks inside a building — are drawn on a much
- * shorter leash. The original client hides them behind the building's portals; with no portals
- * here, distance is the cheap stand-in, and 60 m is about the point where a doorway stops showing
- * anything of the room behind it.
+ * shorter leash. They arrive as placements without their source-room ordinal, so WMO portal
+ * traversal cannot classify them; distance and the camera frustum remain the conservative filter.
+ * Sixty yards is about the point where a doorway stops showing anything of the room behind it.
  */
 const INTERIOR_RANGE = 60;
-const INTERIOR_BUDGET = 120;
-/** Interior counterpart of {@link ENVIRONMENT_WARM_EXTERIOR_BUDGET}. */
-export const ENVIRONMENT_WARM_INTERIOR_BUDGET = 360;
+/** Goldshire Inn alone authors 338 placements; static repeats collapse into instanced draws later. */
+const INTERIOR_BUDGET = 360;
+/** Interior counterpart of {@link ENVIRONMENT_WARM_EXTERIOR_BUDGET}: three previous view sectors. */
+export const ENVIRONMENT_WARM_INTERIOR_BUDGET = 1_080;
 const ENVIRONMENT_FRUSTUM_MARGIN = 1;
 
 /** MOMT flag 0x04: this material is drawn from both sides. Everything else is back-face culled. */
@@ -680,9 +869,9 @@ export function wmoGroupsInRange(model: WmoModel, boxes: readonly (THREE.Box3 | 
 /**
  * One tile's height field, plus a one-vertex skirt around it for the normals to lean on.
  *
- * The corners of that skirt are never sampled: `surfaceNormal` asks for the four neighbours of a
- * vertex and nothing else, so the corner cells would be four more tile downloads per ring — 25
- * against 21 — read by nobody.
+ * The four corners of the skirt array are never sampled: `surfaceNormal` asks only for the four
+ * axis neighbours of a vertex. A sample beside a far-edge endpoint can still belong to a diagonal
+ * tile, because the shared endpoint has the same canonical owner on every touching mesh.
  */
 export function terrainHeightField(grid: { x: number; y: number }, player: WorldPosition, heightAt: HeightSampler | undefined): Float32Array {
   const side = TERRAIN_SUBDIVISIONS + 1;
@@ -692,21 +881,41 @@ export function terrainHeightField(grid: { x: number; y: number }, player: World
   const heights = new Float32Array(skirt * skirt);
   const at = (row: number, column: number) => (row + 1) * skirt + (column + 1);
   for (let row = -1; row <= side; row++) {
-    // The far edge of a tile belongs to the next one, so a sample exactly on it would read across
-    // the join; pulled a hair inside, it reads this tile's own last row.
-    const u = Math.min(row / TERRAIN_SUBDIVISIONS, inside);
     const outsideRow = row < 0 || row > TERRAIN_SUBDIVISIONS;
+    const u = row === 0 ? TERRAIN_EDGE_EPSILON
+      : row === TERRAIN_SUBDIVISIONS ? 1 + TERRAIN_EDGE_EPSILON
+        : row / TERRAIN_SUBDIVISIONS;
     const sampleX = outsideRow
       ? (32 - grid.x) * TERRAIN_GRID_SIZE - row * step
       : (32 - grid.x - u) * TERRAIN_GRID_SIZE;
     for (let column = -1; column <= side; column++) {
       const outsideColumn = column < 0 || column > TERRAIN_SUBDIVISIONS;
       if (outsideRow && outsideColumn) continue;
-      const v = Math.min(column / TERRAIN_SUBDIVISIONS, inside);
+      const v = column === 0 ? TERRAIN_EDGE_EPSILON
+        : column === TERRAIN_SUBDIVISIONS ? 1 + TERRAIN_EDGE_EPSILON
+          : column / TERRAIN_SUBDIVISIONS;
       const sampleY = outsideColumn
         ? (32 - grid.y) * TERRAIN_GRID_SIZE - column * step
         : (32 - grid.y - v) * TERRAIN_GRID_SIZE;
-      const height = heightAt?.(sampleX, sampleY);
+      let height = heightAt?.(sampleX, sampleY);
+      // A shared edge has one canonical owner: a sample a hair onto the far side of the join.
+      // Sampling a hair inside each mesh made both sides read their separately quantised copies of
+      // the same ADT row (up to 1.5 cm apart in the installed Azeroth maps), leaving a dark crack.
+      // While that owner is still loading, retain the old own-tile edge as the temporary fallback;
+      // tileRevision rebuilds this mesh when the canonical neighbour lands.
+      if (height === undefined && !outsideRow && !outsideColumn
+        && (row === TERRAIN_SUBDIVISIONS || column === TERRAIN_SUBDIVISIONS)) {
+        const ownX = row === TERRAIN_SUBDIVISIONS
+          ? (32 - grid.x - inside) * TERRAIN_GRID_SIZE
+          : sampleX;
+        const ownY = column === TERRAIN_SUBDIVISIONS
+          ? (32 - grid.y - inside) * TERRAIN_GRID_SIZE
+          : sampleY;
+        if (row === TERRAIN_SUBDIVISIONS && column === TERRAIN_SUBDIVISIONS) {
+          height = heightAt?.(sampleX, ownY) ?? heightAt?.(ownX, sampleY);
+        }
+        height ??= heightAt?.(ownX, ownY);
+      }
       // Inside the tile a missing sample means this tile's own data has not landed, and the flat
       // stand-in is what the player sees until it does. Outside it means a neighbour is missing —
       // or does not exist, which is true of 1,746 of the world's 5,744 tiles — and that is answered
@@ -742,6 +951,142 @@ export function terrainNormals(heights: Float32Array): Float32Array {
     }
   }
   return normals;
+}
+
+export interface TerrainGeometryData {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly indices: number[];
+}
+
+/**
+ * The authored ADT diamond mesh for one tile, before it is handed to Three.
+ *
+ * TrinityCore's map payload carries two height lattices: the 129×129 V9 corners and one 128×128
+ * V8 vertex at the centre of every cell. A two-triangle V9 quad discards the latter and can bridge
+ * tens or hundreds of yards above/below the source surface. Apart from visibly deforming terrain,
+ * that moves the ground away from WMO and doodad seams authored against the five-vertex diamond.
+ *
+ * Kept as data rather than hidden in `BufferGeometry` so topology, holes, UVs, and normals share a
+ * single testable construction seam. The V9 border normals retain the canonical neighbour-aware
+ * field answer; interior normals and every V8 normal come from the actual four-triangle fans.
+ */
+export function terrainGeometryData(
+  grid: { x: number; y: number },
+  player: WorldPosition,
+  heightAt: HeightSampler | undefined,
+  isHole?: (x: number, y: number) => boolean,
+): TerrainGeometryData {
+  const side = TERRAIN_SUBDIVISIONS + 1;
+  const cornerCount = side * side;
+  const vertexCount = cornerCount + TERRAIN_SUBDIVISIONS * TERRAIN_SUBDIVISIONS;
+  const worldX = (row: number) =>
+    (32 - grid.x - row / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
+  const worldY = (column: number) =>
+    (32 - grid.y - column / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
+  const heights = terrainHeightField(grid, player, heightAt);
+  const heightOf = (row: number, column: number) =>
+    heights[(row + 1) * (side + 2) + column + 1]!;
+  const positions = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
+  const setVertex = (index: number, x: number, height: number, y: number, u: number, v: number) => {
+    positions[index * 3] = x;
+    positions[index * 3 + 1] = height;
+    positions[index * 3 + 2] = -y;
+    uvs[index * 2] = u;
+    uvs[index * 2 + 1] = v;
+  };
+
+  for (let row = 0; row < side; row++) {
+    for (let column = 0; column < side; column++) {
+      setVertex(
+        row * side + column,
+        worldX(row), heightOf(row, column), worldY(column),
+        column / TERRAIN_SUBDIVISIONS, 1 - row / TERRAIN_SUBDIVISIONS,
+      );
+    }
+  }
+  for (let row = 0; row < TERRAIN_SUBDIVISIONS; row++) {
+    for (let column = 0; column < TERRAIN_SUBDIVISIONS; column++) {
+      const x = worldX(row + 0.5);
+      const y = worldY(column + 0.5);
+      setVertex(
+        cornerCount + row * TERRAIN_SUBDIVISIONS + column,
+        x, heightAt?.(x, y) ?? player.z, y,
+        (column + 0.5) / TERRAIN_SUBDIVISIONS,
+        1 - (row + 0.5) / TERRAIN_SUBDIVISIONS,
+      );
+    }
+  }
+
+  const normals = new Float32Array(vertexCount * 3);
+  const indices: number[] = [];
+  const addTriangleNormal = (a: number, b: number, c: number) => {
+    const ap = a * 3;
+    const bp = b * 3;
+    const cp = c * 3;
+    const abx = positions[bp]! - positions[ap]!;
+    const aby = positions[bp + 1]! - positions[ap + 1]!;
+    const abz = positions[bp + 2]! - positions[ap + 2]!;
+    const acx = positions[cp]! - positions[ap]!;
+    const acy = positions[cp + 1]! - positions[ap + 1]!;
+    const acz = positions[cp + 2]! - positions[ap + 2]!;
+    const x = aby * acz - abz * acy;
+    const y = abz * acx - abx * acz;
+    const z = abx * acy - aby * acx;
+    normals[ap] = normals[ap]! + x;
+    normals[ap + 1] = normals[ap + 1]! + y;
+    normals[ap + 2] = normals[ap + 2]! + z;
+    normals[bp] = normals[bp]! + x;
+    normals[bp + 1] = normals[bp + 1]! + y;
+    normals[bp + 2] = normals[bp + 2]! + z;
+    normals[cp] = normals[cp]! + x;
+    normals[cp + 1] = normals[cp + 1]! + y;
+    normals[cp + 2] = normals[cp + 2]! + z;
+  };
+  for (let row = 0; row < TERRAIN_SUBDIVISIONS; row++) {
+    for (let column = 0; column < TERRAIN_SUBDIVISIONS; column++) {
+      const a = row * side + column;
+      const b = a + 1;
+      const c = a + side;
+      const d = c + 1;
+      const centre = cornerCount + row * TERRAIN_SUBDIVISIONS + column;
+      const x = worldX(row + 0.5);
+      const y = worldY(column + 0.5);
+      if (isHole?.(x, y)) continue;
+      addTriangleNormal(a, c, centre);
+      addTriangleNormal(c, d, centre);
+      addTriangleNormal(d, b, centre);
+      addTriangleNormal(b, a, centre);
+      indices.push(a, c, centre, c, d, centre, d, b, centre, b, a, centre);
+    }
+  }
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    const at = vertex * 3;
+    const length = Math.hypot(normals[at]!, normals[at + 1]!, normals[at + 2]!);
+    if (length > 1e-12) {
+      normals[at] = normals[at]! / length;
+      normals[at + 1] = normals[at + 1]! / length;
+      normals[at + 2] = normals[at + 2]! / length;
+    } else {
+      normals[at] = 0;
+      normals[at + 1] = 1;
+      normals[at + 2] = 0;
+    }
+  }
+  // A tile owns only half of the fan around a border V9 vertex. Keep the existing skirt-derived
+  // normal there: both touching meshes ask the same canonical source samples and therefore agree.
+  const borderNormals = terrainNormals(heights);
+  for (let row = 0; row < side; row++) {
+    for (let column = 0; column < side; column++) {
+      if (row !== 0 && row !== TERRAIN_SUBDIVISIONS
+        && column !== 0 && column !== TERRAIN_SUBDIVISIONS) continue;
+      const vertex = row * side + column;
+      normals.set(borderNormals.subarray(vertex * 3, vertex * 3 + 3), vertex * 3);
+    }
+  }
+  return { positions, normals, uvs, indices };
 }
 
 /**
@@ -1055,8 +1400,17 @@ export function mountInstanceMatches(
  * disagree: `#buildGameObject` has had this guard since «серые коробки больше не рисуются вовсе»
  * and the environment path was still drawing every hull that came back.
  */
+export function legacyVisualHasRenderableMaterial(model: EnvironmentModel): boolean {
+  // `visual` is the decoder contract: every WVM1/2/3 visual artifact sets it, whereas the
+  // `/environment/model` collision fallback never does. Do not use texture presence as the trust
+  // boundary. The legacy generator explicitly permits an unresolved/absent material and renders
+  // that authored group in its flat fallback colour; requiring every URL would hide the whole model.
+  return model.visual === true && model.vertices.length >= 9 && model.indices.length >= 3;
+}
+
 export function drawableModel(model: EnvironmentModel | undefined): model is EnvironmentModel {
-  return model !== undefined && (model.wvm !== undefined || model.wmo !== undefined || model.visual === true);
+  return model !== undefined
+    && (model.wvm !== undefined || model.wmo !== undefined || legacyVisualHasRenderableMaterial(model));
 }
 
 /**
@@ -1113,8 +1467,17 @@ export function instanceCapacity(count: number): number {
  * yards out resolves to 0.153 yards either way whether the far plane is 900 or 4,000.
  */
 export function buildWorldCamera(): THREE.PerspectiveCamera {
-  return new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, 16 / 9, 0.25, HORIZON_FAR_PLANE);
+  return new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, 16 / 9, WORLD_CAMERA_NEAR_PLANE, HORIZON_FAR_PLANE);
 }
+
+/** Named because the underwater crossing is measured in it and not only compiled into a camera. */
+export const WORLD_CAMERA_NEAR_PLANE = 0.25;
+
+/**
+ * The crossing band of the world camera, for the callers that have to sample liquid before the
+ * renderer sees it. The renderer re-derives it from its own camera, so the two cannot drift.
+ */
+export const UNDERWATER_CROSSING_BAND = underwaterCrossingBand(WORLD_CAMERA_NEAR_PLANE, CAMERA_FOV_DEGREES);
 
 /**
  * How many segments a selection ring is drawn with.
@@ -1224,6 +1587,8 @@ interface RenderedEnvironment {
   decodedModel?: EnvironmentModel;
   legacyGeometry?: LegacyGeometryEntry;
   materialEntries?: readonly WorldMaterialEntry[];
+  /** Per-placement material ids carrying immutable albedo or indoor-light state. */
+  tintMaterials?: readonly THREE.Material[];
   /**
    * The mesh inside the node, whose world matrix is the model's own frame.
    *
@@ -1411,7 +1776,7 @@ interface RenderedTerrain {
   mesh: THREE.Mesh;
   /** Revision of this tile and its eight neighbours, which is what terrain/water edges borrow. */
   revision: number;
-  /** Revision of this tile alone: only a change here moves a vertex or reopens a hole. */
+  /** Revision of this tile alone: changes here also reopen holes and replace the interior. */
   ownRevision: number;
   /** Whether the ground textures have arrived and the blending shader is in place. */
   splatted: boolean;
@@ -1447,6 +1812,13 @@ interface PosedModel {
   overlayFadeUntil?: number;
   /** A one-shot playing over the pose — a jump landing, a swing, an emote — and when it ends. */
   overlayUntil: number;
+  /**
+   * When the travelling gait now playing may be replaced by another one. See `commitLocomotion`.
+   *
+   * Zero whenever the model is not in a gait at all, so nothing but a stride ever carries a
+   * deadline. Both a unit and the mount under it have one, because both change gait on their own.
+   */
+  gaitCommittedUntil?: number;
 }
 
 /** Which unit wears a ring and what colour it is, as the interface works it out. */
@@ -1516,6 +1888,69 @@ interface RenderedUnit extends PosedModel {
   visual?: THREE.Object3D;
   /** The second model this one is riding, once it has been built. See `#updateMount`. */
   mount?: RenderedMount;
+  /**
+   * How opaque this unit is drawn right now: 1 for everything the server says nothing about.
+   *
+   * The value that is *applied*, not the one that is wanted — the two are compared to make the
+   * application edge-triggered, which is the reference client's own shape for this
+   * (`entity_spawner.cpp:110-117`: remember the last answer per guid and touch the renderer only
+   * when it changes).
+   */
+  unitOpacity: number;
+  /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
+  opacityBorrows?: MaterialBorrow[];
+  /** Whether the server says this unit is sneaking, for the pose. See `unitAppearance`. */
+  stealthed?: boolean;
+  /**
+   * How far the lower body is currently turned off the facing, in radians. See `strafeYawTarget`.
+   *
+   * Per unit and not per model: two humans strafing in opposite directions share one template and
+   * one set of clips, and the turn is the only part of the pose that is theirs alone.
+   */
+  strafeYaw?: number;
+}
+
+/**
+ * One mesh that has put its shared material array aside and is wearing private faded copies.
+ *
+ * The shared array is kept by identity rather than rebuilt, because giving *exactly* it back is
+ * what makes the restore a restore: the build cache hands the same array to every unit of the same
+ * appearance, and a rebuilt one would quietly leave this unit off the shared clock that
+ * `updateBatchAppearance` runs.
+ */
+export interface MaterialBorrow {
+  mesh: THREE.Mesh;
+  shared: THREE.Material | THREE.Material[];
+  clones: THREE.Material[];
+}
+
+/**
+ * Puts private faded copies on every mesh given and records what each one gave up.
+ *
+ * The single-material case is kept single rather than promoted to a one-element array: a mesh's
+ * `material` shape is what three's group handling reads, and handing an array to geometry with no
+ * groups draws nothing at all.
+ */
+export function borrowFadedMaterials(
+  meshes: Iterable<THREE.Mesh>, factor: number,
+): MaterialBorrow[] {
+  const borrows: MaterialBorrow[] = [];
+  for (const mesh of meshes) {
+    const shared = mesh.material;
+    const clones = (Array.isArray(shared) ? shared : [shared])
+      .map((material) => cloneMaterialFaded(material, factor));
+    mesh.material = Array.isArray(shared) ? clones : clones[0]!;
+    borrows.push({ mesh, shared, clones });
+  }
+  return borrows;
+}
+
+/** Hands every shared array back by identity and disposes the copies that stood in for it. */
+export function returnBorrowedMaterials(borrows: readonly MaterialBorrow[]): void {
+  for (const borrow of borrows) {
+    borrow.mesh.material = borrow.shared;
+    for (const clone of borrow.clones) clone.dispose();
+  }
 }
 
 /**
@@ -1542,6 +1977,12 @@ interface RenderedMount extends PosedModel {
   scale: number;
   /** How high the saddle is above the mount's feet, already at `scale`. `mountSeatOffset`. */
   seat: number;
+  /**
+   * The mount's own pose last frame — the rider's, sanitised by `mountPose` — so a takeoff and a
+   * landing can be told apart down here too. The rider has had one since the jump one-shots were
+   * written; the horse under it never did, which is why it had no JumpStart or JumpEnd at all.
+   */
+  pose?: UnitPose;
 }
 
 /**
@@ -1593,6 +2034,16 @@ interface RenderedVisual {
   effectsPhaseStatus: VisualEffectPhaseStatus;
   /** Exact cached-base borrows, admitted once and retained through mesh/emitter cleanup. */
   textureLeases: Map<string, ModelTextureLease>;
+  /**
+   * The authored offset from the anchor bone's pivot to the attachment point, in the bone's frame.
+   *
+   * Cached with the model it was read out of, and recomputed only when that model changes — a
+   * druid shifting form, a polymorph, a unit rebuilt after a display change. The lookup is a
+   * linear scan of the model's attachment table and this runs for every bone-anchored effect on
+   * every frame; the placement itself must not pay for it.
+   */
+  boneOffset?: THREE.Vector3;
+  boneOffsetSource?: WvmModel;
 }
 
 /** Opaque ownership token returned by {@link WorldRenderer3D.playSpellVisual}. */
@@ -1909,10 +2360,10 @@ export function visualPlaybackWindow(
 
 const TERRAIN_SUBDIVISIONS = 128;
 /**
- * Height samples are nudged this far inside the tile. Exactly on the far edge the world
- * coordinate already belongs to the next grid cell, so an unclamped sample would read a
- * neighbour tile — and return nothing at all until that neighbour has been downloaded, which
- * left a cliff along every tile seam.
+ * Resolves exact-boundary ownership without depending on floating-point `floor`: the near edge is
+ * nudged into this tile, and the far edge into its canonical next tile. If that owner has not
+ * arrived yet, `terrainHeightField` temporarily falls back to this tile's copy and the neighbour
+ * revision rebuilds the position buffer once it does.
  */
 const TERRAIN_EDGE_EPSILON = 1e-6;
 const SKY_COLOR = 0x35506a;
@@ -2133,6 +2584,18 @@ const ANIMATION_BLEND = LOOP_ANIMATION_BLEND;
 const ACTION_CLIP_WAIT = 900;
 /** `SMSG_MOUNTSPECIAL_ANIM` is fire-and-forget; keep it while the mount rig/sidecar catches up. */
 const MOUNT_SPECIAL_WAIT = ACTION_CLIP_WAIT;
+/**
+ * How long a prewarmed spell model keeps being asked for.
+ *
+ * The request is repeated every frame rather than made once, for two reasons the environment
+ * client makes plain: a queued model outside the frame's own footprint is pruned at the end of
+ * that frame (`#pruneModelWork`), and a decoded one outside it is an eviction candidate. Asking
+ * again is what turns a hopeful request into a resident model. It ends: forty-five seconds is
+ * about the longest a player leaves a cast bar and comes back to the same fight.
+ */
+const SPELL_PREWARM_TTL_MS = 45_000;
+/** Distinct model paths held warm at once. One cast is two to four; this is a fight's worth. */
+const SPELL_PREWARM_PATH_LIMIT = 24;
 
 function isMaterial(value: unknown): value is THREE.Material {
   return typeof value === "object" && value !== null
@@ -2284,6 +2747,13 @@ export class WorldRenderer3D {
      * per model were lost every time, always, before anything could ever play.**
      */
     waitUntil: number;
+    /**
+     * The larger deadline, used only while this rig's sidecar is really queued or on the wire.
+     *
+     * Set at the same moment as `waitUntil` rather than derived from it, so an action with its own
+     * metadata window (shoot) keeps that window and does not inherit a second one by arithmetic.
+     */
+    sidecarWaitUntil: number;
     /** Held precasts/channels may be cancelled; ordinary one-shots and future impacts may not. */
     cancelable: boolean;
     source: "external" | "visual";
@@ -2310,6 +2780,8 @@ export class WorldRenderer3D {
   });
   /** One name per appearance, so the digest is computed once per look rather than once a frame. */
   readonly #appearanceKeys = new WeakMap<CharacterAppearance, string>();
+  /** The interface's aura-derived appearance fallback. See `setUnitAuraAppearance`. */
+  #auraAppearance: ReadonlyMap<bigint, UnitAuraAppearance> = new Map();
   /** Where the gateway serves textures from, derived from the terrain client on first use. */
   #baseUrl = "";
   /** Monotonic realm/session identity for built caches and asynchronous renderer completions. */
@@ -2395,8 +2867,24 @@ export class WorldRenderer3D {
   readonly #zoneFogColour = new THREE.Color(SKY_COLOR);
   #zoneFogNear = 180;
   #zoneFogFar = 640;
+  /** Shared by WMO-only materials; reset to the zone each frame, then optionally set to MFOG. */
+  readonly #wmoInteriorFog: WmoInteriorFogUniforms = {
+    colour: { value: new THREE.Color(SKY_COLOR) },
+    near: { value: 180 },
+    far: { value: 640 },
+  };
   /** The Light.dbc slot is selected by the camera eye; land MFOG must not overwrite it underwater. */
   #underwater = false;
+  /**
+   * The liquid surface over the camera this frame, or nothing where the eye is nowhere near one.
+   *
+   * Separate from `#underwater` above, which is a boolean about a light slot and stays one: the
+   * screen effect starts a near plane's half-height *before* the eye crosses, so the two answers
+   * are true over different intervals and neither can be derived from the other.
+   */
+  #underwaterSurface: Readonly<UnderwaterSurface> | undefined;
+  /** The account's leaf switch. Off restores the exact two-render frame that pre-dates the pass. */
+  #underwaterOverlayEnabled = true;
   /** Collision-selected static WMO floor and its one unambiguous visual placement this frame. */
   #wmoFloor: StaticWmoFloor | undefined;
   #wmoFogVisualId: number | undefined;
@@ -2414,6 +2902,85 @@ export class WorldRenderer3D {
       visual.textureLeases.set(url, lease);
     }
     return lease.texture;
+  }
+
+  /** The owner token every prewarmed lease carries, so pressure diagnostics can name the holder. */
+  readonly #spellWarmOwner = Object.freeze({ owner: "spell-prewarm" });
+  /**
+   * Prewarmed spell texture claims.
+   *
+   * These are held by nobody visible: no cast owns them, no phase is waiting on them, and
+   * `#spellTextures.evictUnleased()` runs at the end of every frame. Without a claim the prewarm
+   * would fetch a texture and then let it be thrown away before the cast that wanted it — the trap
+   * this pool exists for. Bounded by cap, TTL and teardown; see `WarmLeasePool`.
+   */
+  readonly #spellWarmTextures = new WarmLeasePool((url) => {
+    try {
+      return this.#spellTextures.acquire(url, this.#spellWarmOwner);
+    } catch {
+      // A lost cache request is not worth failing a frame over; the real cast still loads it.
+      return undefined;
+    }
+  });
+  /** Prewarmed model paths and when each claim expires. Insertion order is the LRU order. */
+  readonly #spellPrewarmPaths = new Map<string, number>();
+
+  /**
+   * Starts fetching what a cast is about to draw, before it draws it.
+   *
+   * A cold spell used to pay three serial round trips *after* the cast: metadata, then the model
+   * (first asked for inside `#updateVisuals`), then its textures, with the whole phase held
+   * invisible until the last one landed. This is the seam that spends the cast bar instead.
+   */
+  prewarmSpellModels(paths: readonly string[]): void {
+    for (const path of paths) this.prewarmSpellModel(path);
+  }
+
+  prewarmSpellModel(path: string): void {
+    if (!path) return;
+    // Zero means "not stamped yet": the deadline is set by the first pump that sees it, on the
+    // frame clock. A packet handler has no access to that clock, and under a formal replay it is
+    // not `performance.now()` at all — a mixed pair of clocks would expire claims at random.
+    // Re-warming moves the path to the back of the LRU and restarts its lifetime.
+    this.#spellPrewarmPaths.delete(path);
+    this.#spellPrewarmPaths.set(path, 0);
+    while (this.#spellPrewarmPaths.size > SPELL_PREWARM_PATH_LIMIT) {
+      const oldest = this.#spellPrewarmPaths.keys().next();
+      if (oldest.done) break;
+      this.#spellPrewarmPaths.delete(oldest.value);
+    }
+  }
+
+  /**
+   * One frame's worth of prewarming, inside the environment client's own resource frame.
+   *
+   * Being inside it is the whole point: a model asked for outside the frame is not part of its
+   * footprint, so the request is pruned when the frame commits and the decoded answer is an
+   * eviction candidate the moment it arrives. Asking again every frame keeps the claim honest,
+   * and the TTL is what makes it stop.
+   */
+  #pumpSpellPrewarm(now: number, client: EnvironmentClient | undefined): void {
+    if (this.#spellPrewarmPaths.size === 0) {
+      this.#spellWarmTextures.expire(now);
+      return;
+    }
+    for (const [path, expiresAt] of [...this.#spellPrewarmPaths]) {
+      if (expiresAt === 0) {
+        this.#spellPrewarmPaths.set(path, now + SPELL_PREWARM_TTL_MS);
+      } else if (now >= expiresAt) {
+        this.#spellPrewarmPaths.delete(path);
+        continue;
+      }
+      // "normal", never "critical": what is on screen now outranks what might be cast in a second.
+      const prewarmed = client?.model(path, "normal");
+      if (!prewarmed?.wvm) continue;
+      // The model is here, so its own texture list is knowable — which collapses the second and
+      // third round trips into one. The claims below are what keep them collapsed.
+      for (const texturePath of modelOwnTexturePaths(prewarmed.wvm)) {
+        this.#spellWarmTextures.warm(textureUrl(this.#baseUrl, texturePath), now);
+      }
+    }
+    this.#spellWarmTextures.expire(now);
   }
 
   /**
@@ -2493,6 +3060,14 @@ export class WorldRenderer3D {
   /** A zero-energy directional light retained solely so three builds and samples its shadow map. */
   readonly #sun = new THREE.DirectionalLight(0xffffff, 0);
   readonly #sunOffset = new THREE.Vector3(0, 400, 0);
+  /** Allocation-free solar projection scratch; unlike #sunOffset, this may go below the horizon. */
+  readonly #godRaySun = new THREE.Vector3();
+  readonly #godRayCameraForward = new THREE.Vector3();
+  readonly #godRayCameraUp = new THREE.Vector3();
+  readonly #godRayProjection = new THREE.Vector3();
+  readonly #godRayScreenSource: GodRayScreenSource = {
+    ndcX: 0, ndcY: 0, visibilityY: 0, facing: 0,
+  };
   #lightingProfile: LightingProfile = lightingProfile(0, { shadowMaps: false, maxTextureSize: 0 });
   readonly #skyUniforms = {
     skyTop: { value: new THREE.Color(0x001f49) },
@@ -2503,6 +3078,47 @@ export class WorldRenderer3D {
     skyFog: { value: new THREE.Color(SKY_COLOR) },
   };
   readonly #sky = buildSky(this.#skyUniforms);
+  /**
+   * The underwater pass, held ready and drawn on the frames that ask for it.
+   *
+   * `time` is written from the frame's own `now`, like the water materials' clock beside it, so a
+   * deterministic replay ripples the same seam twice. Nothing here is per-frame allocated: the
+   * uniform objects are the ones the material compiled against.
+   */
+  readonly #underwaterUniforms = {
+    invViewProj: { value: new THREE.Matrix4() },
+    /** rgb tint, a = opacity when the whole view is under. */
+    tint: { value: new THREE.Vector4(0, 0, 0, 0) },
+    /** World Z of the surface, which this scene compares against its own Y. */
+    waterZ: { value: 0 },
+    /** x = meniscus half-thickness, y = seconds, z = ripple amplitude, w = 1 while a seam is on screen. */
+    params: { value: new THREE.Vector4(UNDERWATER_MENISCUS_YARDS, 0, UNDERWATER_RIPPLE_YARDS, 1) },
+  };
+  readonly #overlayScene = new THREE.Scene();
+  /** Clip space is already what the triangle is written in, so this camera adds nothing to it. */
+  readonly #overlayCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  readonly #underwaterOverlay = buildUnderwaterOverlay(this.#underwaterUniforms);
+  /**
+   * The shared full-screen chain, born as the classic `ffxGlow` and also used by optional sun shafts.
+   *
+   * The materials and the triangle exist for the life of the renderer and cost nothing while the
+   * leaf is off — no program is compiled until something is drawn with them. The render targets are
+   * the expensive half, and they exist only while the leaf is on (`#syncFullscreenGlowTargets`).
+   */
+  readonly #glowPasses = buildFullscreenGlowPasses();
+  /** Default ON: this is how the original client looks. Off is the exact pre-P4 direct path. */
+  #fullscreenGlowEnabled = true;
+  /** Faithful-plus leaf. Default OFF until the player explicitly accepts the extra depth pass. */
+  #godRaysEnabled = false;
+  /**
+   * `LightParams.Glow` where the camera stands, already blended across volumes by `LightClient`.
+   *
+   * Zero is an ordinary authored answer, not an absence: Ironforge (light 16) and Dalaran (light
+   * 1802) both author exactly 0 while Darnassus authors 1. Held here rather than read per frame
+   * because `draw()` may not reach into the loop's clients.
+   */
+  #glowStrength = 0;
+  #glowTargets: GlowChainTargets | undefined;
   readonly #liquidMaterials = new Map<LiquidClass, LiquidMaterial>();
   readonly #waterShaderUniforms: WaterShaderSharedUniforms = createWaterShaderSharedUniforms();
   #liquidTextures: LiquidTextureClient | undefined;
@@ -2561,7 +3177,13 @@ export class WorldRenderer3D {
     mesh: THREE.InstancedMesh;
     capacity: number;
     built: BuiltModel;
+    /** Placement-owned material and attribute state for an indoor-light bucket. */
+    localLight?: {
+      materials: readonly THREE.Material[];
+      attribute: THREE.InstancedBufferAttribute;
+    };
   }>();
+  readonly #instanceTint = new THREE.Color();
   /** Set when a placement is made or dropped: the matrices themselves never change. */
   #instancesDirty = false;
   /**
@@ -2598,6 +3220,7 @@ export class WorldRenderer3D {
   readonly #unitSphere = new THREE.Sphere();
   readonly #wmoModelToClip = new THREE.Matrix4();
   readonly #wmoCameraModel = new THREE.Vector3();
+  readonly #wmoViewerModel = new THREE.Vector3();
   /** Whether the character is under a roof, answered by the collision floor and told to us. */
   #indoors = false;
   /**
@@ -2636,6 +3259,10 @@ export class WorldRenderer3D {
     this.#scene.background = null;
     this.#skyboxGroup.renderOrder = 0;
     this.#skyScene.add(this.#sky, this.#skyboxGroup);
+    // Its own scene, so nothing in the world pass can sort against it and nothing here can be
+    // drawn by accident: this scene is submitted only by `#drawUnderwaterOverlay`, and only on the
+    // frames where the camera is in or entering liquid.
+    this.#overlayScene.add(this.#underwaterOverlay);
     // Stand-ins and legacy merged artifacts do not pass through ModelBuild, but removing the
     // HemisphereLight must not turn them black. Give every shared lit fallback the same authored
     // equation before any of them can compile.
@@ -2667,11 +3294,16 @@ export class WorldRenderer3D {
       this.#lightSample = undefined;
       this.#skyboxPath = undefined;
       this.#lightTime = 0;
+      // No table, no authored glow. The chain still runs while the leaf is on, adding nothing —
+      // which is what a map transition should look like rather than a screen that pulses.
+      this.#glowStrength = 0;
       this.#resetLightingDefaults();
       this.#waterShaderUniforms.underwater.value = underwater ? 1 : 0;
       return;
     }
     this.#lightSample = sample;
+    // Clamped here rather than at the uniform so the readback and the shader can never disagree.
+    this.#glowStrength = glowAddStrength(sample.glow);
     this.#skyboxPath = sample.skyboxPath;
     if (time !== undefined && Number.isFinite(time)) this.#lightTime = time;
     const { colours } = sample;
@@ -2709,6 +3341,68 @@ export class WorldRenderer3D {
     }
   }
 
+  /**
+   * The liquid surface over the camera, pushed once a frame beside `updateLighting`.
+   *
+   * A push rather than a query, for the reason every other world fact on this class is a push:
+   * `draw()` is not allowed to reach into the loop's clients, and the pair that answers this — the
+   * terrain tile and the authoritative WMO floor group — has already been asked this frame for the
+   * light slot. Undefined is the ordinary answer and costs the frame nothing.
+   */
+  setUnderwaterSurface(surface: Readonly<UnderwaterSurface> | undefined): void {
+    this.#underwaterSurface = surface === undefined
+      ? undefined
+      : Object.freeze({ height: surface.height, entry: surface.entry, flags: surface.flags });
+  }
+
+  /**
+   * The account's switch for the underwater screen effect.
+   *
+   * Off is not a weaker effect: `#drawUnderwaterOverlay` returns before it looks at anything, so the
+   * frame is the same two renders it was before this slice, down to the draw-call count.
+   */
+  setUnderwaterOverlay(enabled: boolean): void {
+    this.#underwaterOverlayEnabled = enabled === true;
+  }
+
+  /**
+   * The account's switch for the classic full-screen glow. It owns the capture unless the separate
+   * sun-shaft leaf is active; with both off the frame returns to the direct path.
+   *
+   * Binary on purpose. A zone that authors no glow (Ironforge, Dalaran) still pays the chain while
+   * the leaf is on, because the alternative — dropping to the direct path whenever the strength
+   * rounds to zero — would swap the whole colour pipeline as the player walks through a door, and
+   * would make "off is the pre-P4 frame" an assertion about the light table rather than about the
+   * switch. Off releases the render targets outright when the sun-shaft leaf is also inactive; one
+   * enabled effect keeps their shared capture rather than allocating a second full-frame buffer.
+   */
+  setFullscreenGlow(enabled: boolean): void {
+    const next = enabled === true;
+    if (this.#fullscreenGlowEnabled === next) return;
+    this.#fullscreenGlowEnabled = next;
+    if (!next && !this.#godRaysActive()) this.#disposeFullscreenGlowTargets();
+    else this.#syncFullscreenGlowTargets();
+  }
+
+  /**
+   * Enables the optional depth-aware sun shafts.
+   *
+   * Quality zero is deliberately still the direct/baseline grade. Switching the leaf or crossing
+   * that quality boundary rebuilds the scene target because depth is sampled only while the effect
+   * can actually run; OFF does not leave a full-resolution depth texture or an MSAA depth resolve
+   * behind.
+   */
+  setGodRays(enabled: boolean): void {
+    const next = enabled === true;
+    if (this.#godRaysEnabled === next) return;
+    this.#godRaysEnabled = next;
+    this.#syncFullscreenGlowTargets();
+  }
+
+  #godRaysActive(): boolean {
+    return this.#godRaysEnabled && this.#lightingProfile.godRayStrength > 0;
+  }
+
   /** Restore the same neutral sky/light state used while a map's Light.dbc rows are loading. */
   #resetLightingDefaults(): void {
     this.#skyUniforms.skyTop.value.set(0x001f49);
@@ -2742,12 +3436,15 @@ export class WorldRenderer3D {
     this.#sun.position.copy(this.#sun.target.position).add(this.#sunOffset);
   }
 
-  /** MFOG is a frame override; the outdoor sample remains the fallback waiting underneath it. */
+  /** Restore outdoor fog globally and make it the WMO-material fallback for this frame. */
   #restoreZoneFog(): void {
     const fog = this.#scene.fog as THREE.Fog;
     fog.color.copy(this.#zoneFogColour);
     fog.near = this.#zoneFogNear;
     fog.far = this.#zoneFogFar;
+    this.#wmoInteriorFog.colour.value.copy(this.#zoneFogColour);
+    this.#wmoInteriorFog.near.value = this.#zoneFogNear;
+    this.#wmoInteriorFog.far.value = this.#zoneFogFar;
   }
 
   /** Immutable renderer-only telemetry for diagnostics and benchmark capture. */
@@ -2880,6 +3577,16 @@ export class WorldRenderer3D {
     };
     this.#scene.traverse(visit);
     this.#skyScene.traverse(visit);
+    // The third live scene, held between frames like the other two. It owns no texture at all —
+    // the tint, the ripple and the meniscus are arithmetic — so what this registers is one 36-byte
+    // position buffer and nothing else; the visitor is still the right place for it, because a
+    // resource nobody visits is a resource nobody can be shown to have released.
+    this.#overlayScene.traverse(visit);
+    // The fourth, and the one whose material is swapped between post passes: the traversal sees the
+    // triangle's buffer and whichever pass material happens to be mounted. That is the whole of what
+    // these materials own — the samplers they declare point at the render targets below, which are
+    // registered as render targets and not as loose textures.
+    this.#glowPasses.scene.traverse(visit);
     this.#atlases?.visitRetainedResources(visitor);
 
     for (const built of this.#builtModels.values()) visitBuiltModelResources(visitor, built);
@@ -2915,6 +3622,17 @@ export class WorldRenderer3D {
     const shadow = this.#sun.shadow;
     if (shadow.map) visitor.referenceGpuRenderTarget(this.#sun, shadow.map);
     if (shadow.mapPass) visitor.referenceGpuRenderTarget(this.#sun, shadow.mapPass);
+
+    // Every buffer of the glow chain, by the same precedent as the shadow map above it. The scene
+    // target asks for multisampling, so `referenceGpuRenderTarget` files it under
+    // `unknownTopologyResources` and declines to guess its auxiliary bytes; the two half-resolution
+    // buffers ask for none and are measured exactly.
+    const glow = this.#glowTargets;
+    if (glow) {
+      for (const target of [glow.scene, glow.blurA, glow.blurB]) {
+        visitor.referenceGpuRenderTarget(this, target);
+      }
+    }
   }
 
   /**
@@ -2996,6 +3714,9 @@ export class WorldRenderer3D {
       characterAtlasAnisotropy: this.#characterAtlasAnisotropyEnabled,
       grassRadius: this.#groundCoverRadius,
       grassDense: this.#groundCoverDense,
+      underwaterOverlay: this.#underwaterOverlayEnabled,
+      fullscreenGlow: this.#fullscreenGlowEnabled,
+      godRays: this.#godRaysEnabled,
       experimentalShaderProfile: this.#experimentalShaderProfile,
     });
   }
@@ -3367,6 +4088,23 @@ export class WorldRenderer3D {
    * left exactly where it is rather than restarted, which would make every effect in a raid blink
    * on every aura anybody gained.
    */
+  /**
+   * The see-through auras the interface knows about, by unit.
+   *
+   * Pushed in rather than read, for the same reason `setStateVisuals` is: `game.spells` and
+   * `world.auras` live in the DOM application's context object, and this renderer is imported by
+   * node tests that have no DOM at all. The map is small by construction — only units carrying one
+   * of the two auras are in it — and is replaced whole on every aura change, so a unit that loses
+   * its stealth simply stops being in it.
+   *
+   * It is the *fallback* half of the appearance and not the authority; `UNIT_FIELD_BYTES_1` byte 2
+   * wins wherever it arrives. `unitAppearance` in `world/Fields.ts` carries that layering and the
+   * reason for it.
+   */
+  setUnitAuraAppearance(byUnit: ReadonlyMap<bigint, UnitAuraAppearance>): void {
+    this.#auraAppearance = byUnit;
+  }
+
   setStateVisuals(byUnit: ReadonlyMap<bigint, readonly StateVisual[]>): void {
     const wanted = new Set<string>();
     for (const [guid, effects] of byUnit) {
@@ -3620,6 +4358,8 @@ export class WorldRenderer3D {
     const durationMs = clip && Number.isFinite(clip.duration) ? clip.duration * 1000 : 0;
     this.#skyboxAnimationMs = skyboxAnimationTimeMs(this.#lightTime, durationMs);
     instance.mixer.setTime(this.#skyboxAnimationMs / 1000);
+    if (this.#skyboxModel) applyGlobalSequenceBones(instance, template,
+      this.#skyboxModel.globalSequences, this.#waterShaderUniforms.time.value * 1000);
     applyBillboardBones(instance, template, this.#camera);
     instance.root.updateWorldMatrix(true, true);
   }
@@ -3794,6 +4534,11 @@ export class WorldRenderer3D {
     this.#portraits.setTargets(targets);
   }
 
+  /** True only when the shared world model/build is ready for a non-empty static portrait. */
+  portraitSourceReady(guid: bigint): boolean {
+    return this.#portraitSource(guid) !== undefined;
+  }
+
   /** Reads dirty portrait render targets into their 2D canvases after the world pass. */
   renderPortraits(now = performance.now()): number {
     return this.#portraits.render(now);
@@ -3892,6 +4637,10 @@ export class WorldRenderer3D {
     this.#worldTextureGeneration++;
 
     this.clearSpellVisuals();
+    // Prewarm claims belong to the session that made them. Releasing before the cache is cleared
+    // below leaves no lease pointing at a record that is about to be disposed.
+    this.#spellWarmTextures.clear();
+    this.#spellPrewarmPaths.clear();
     for (const rendered of this.#environment.values()) this.#disposeEnvironment(rendered);
     this.#environment.clear();
     for (const rendered of this.#gameObjects.values()) this.#disposeGameObject(rendered);
@@ -4008,6 +4757,14 @@ export class WorldRenderer3D {
     this.#wmoFogCandidate = undefined;
     this.#indoors = false;
     this.#underwater = false;
+    // The switch itself is the account's and survives a realm change; the surface is one frame's
+    // observation and must not tint the first frame of the next world.
+    this.#underwaterSurface = undefined;
+    // Same rule for the glow: the leaf is the account's, the strength is the zone's. A client
+    // sitting on the character screen holds neither the number nor the buffers behind it — the
+    // targets come back on the first frame of the next world, from `#resize`.
+    this.#glowStrength = 0;
+    this.#disposeFullscreenGlowTargets();
     this.#selection = { target: undefined, focus: undefined };
     this.#weatherPacket = undefined;
     this.#weatherFade = { kind: "fine", density: 0, storm: 0 };
@@ -4016,6 +4773,7 @@ export class WorldRenderer3D {
     this.#realModels = 0;
     this.#experimentalShaderProfile = DEFAULT_EXPERIMENTAL_SHADER_PROFILE;
     this.#waterShaderUniforms.time.value = 0;
+    VEGETATION_WIND_TIME.value = 0;
     this.#resetLightingDefaults();
     this.#frames.reset();
     this.#cadence.reset();
@@ -4034,17 +4792,26 @@ export class WorldRenderer3D {
     this.#canvas.removeEventListener("webglcontextrestored", this.#contextRestoredListener);
     this.#portraits.dispose();
     this.#gpuTimer.dispose();
+    this.#disposeFullscreenGlowTargets();
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
-      this.#sky.geometry,
+      this.#sky.geometry, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
     ]) geometry.dispose();
     for (const material of [
       this.#horizonMaterial, this.#wmoMaterial, this.#m2Material, this.#stoneMaterial,
       this.#woodMaterial, this.#metalMaterial, this.#foliageMaterial,
       ...(Array.isArray(this.#sky.material) ? this.#sky.material : [this.#sky.material]),
+      ...(Array.isArray(this.#underwaterOverlay.material)
+        ? this.#underwaterOverlay.material : [this.#underwaterOverlay.material]),
+      // All four by name, not the one the quad happens to be wearing: the pass materials are
+      // swapped onto it during a frame, so a traversal would find at most one of them.
+      this.#glowPasses.extract, this.#glowPasses.blur, this.#glowPasses.composite,
+      this.#glowPasses.godRays,
     ]) material.dispose();
     this.#scene.clear();
     this.#skyScene.clear();
+    this.#overlayScene.clear();
+    this.#glowPasses.scene.clear();
     this.#renderer.dispose();
   }
 
@@ -4104,6 +4871,9 @@ export class WorldRenderer3D {
   }
 
   #updateVisuals(now: number, elapsed: number, client: EnvironmentClient | undefined): void {
+    // First, and before the early return below: prewarming is for the casts that have *not* started
+    // yet, so it must run on frames where there is nothing to draw.
+    this.#pumpSpellPrewarm(now, client);
     // Keep future impact poses out of the unit action map until their authored arrival. Removing
     // the queue entry before starting it makes the transition exactly-once even when a frame is
     // long or the same unit receives another action later in the cast.
@@ -4240,6 +5010,7 @@ export class WorldRenderer3D {
 
       if (visual.skinned) {
         visual.skinned.mixer.update(elapsed);
+        applyGlobalSequenceBones(visual.skinned, visual.template!, visual.wvm!.globalSequences, now);
         visual.skinned.root.updateMatrixWorld(true);
       }
 
@@ -4283,8 +5054,13 @@ export class WorldRenderer3D {
           // The bone's frame already carries the unit's placement and the quarter turn that maps
           // model space into the scene, so the effect's own model space is the bone's and it
           // needs no rotation of its own — the same reason a sword hung on a hand needs none.
-          bone.matrixWorld.decompose(visual.node.position, visual.node.quaternion, _scratchScale);
-          visual.node.scale.setScalar(instance.scale * _scratchScale.x);
+          // What a sword *does* get and this used to skip is the authored offset from the bone's
+          // pivot to the point itself: an item is parented to the bone and `#attachModel` copies
+          // that offset into its local position, while a spell effect is a top-level node and had
+          // only the decomposed pivot. See `#spellAttachmentOffset` for what that cost.
+          placeOnAttachmentBone(bone.matrixWorld,
+            this.#spellAttachmentOffset(visual, instance.anchor, instance.attachment),
+            instance.scale, visual.node);
           this.#orientVisualFrame(visual, true);
           this.#applySpellVisualTransform(visual, true);
           this.#applySpellBillboards(visual);
@@ -4348,6 +5124,28 @@ export class WorldRenderer3D {
     const unit = this.#units.get(guid);
     if (!unit?.skinned || !unit.wvm) return undefined;
     return boneOf(unit.wvm, unit.skinned, attachment);
+  }
+
+  /**
+   * How far the attachment point sits from the pivot of the bone carrying it.
+   *
+   * Not a formality. Measured over the client's own rigs with `tools/mpq.mjs` — 40 character
+   * models and the first 1,185 creature models that carry attachments — the nine points a spell
+   * kit can ask for occur 7,080 times and **98 of them are not on their bone's pivot**. On playable
+   * models: TaurenMale's head is 0.753 yards away from it, its chest 0.405, GnomeMale's head 0.381,
+   * TrollFemale's chest 0.160; 20 of the 243 character placements are offset, over 14 of the 40
+   * models. The largest anywhere is 2.759 yards, on `ArgentWarhorse2`'s ground point. Until now a
+   * head kit on a tauren was drawn three quarters of a yard inside its skull, and the reason was
+   * that this branch decomposed the bone matrix and stopped there.
+   */
+  #spellAttachmentOffset(visual: RenderedVisual, guid: bigint, attachment: number): THREE.Vector3 | undefined {
+    const unit = this.#units.get(guid);
+    if (!unit?.wvm || !unit.template) return undefined;
+    if (visual.boneOffsetSource !== unit.wvm) {
+      visual.boneOffsetSource = unit.wvm;
+      visual.boneOffset = attachmentOffset(unit.wvm, unit.template.pivots, attachment);
+    }
+    return visual.boneOffset;
   }
 
   draw(
@@ -4457,6 +5255,7 @@ export class WorldRenderer3D {
     // material or per frame.  The clock is wall time so its phase also remains stable for a hidden
     // water surface that returns to the scene later in the same world session.
     this.#waterShaderUniforms.time.value = now / 1000;
+    VEGETATION_WIND_TIME.value = now / 1000;
     this.#waterShaderUniforms.underwater.value = this.#underwater ? 1 : 0;
     this.#waterShaderUniforms.sunDirection.value.copy(this.#worldLight.wowSunDirection.value);
     this.#waterShaderUniforms.sunColour.value.copy(this.#worldLight.wowDiffuse.value);
@@ -4509,15 +5308,37 @@ export class WorldRenderer3D {
       || this.#submissionSerial >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError("world submission serial exhausted");
     }
+    // The one offscreen path this client has: classic glow and the optional sun shafts share the
+    // same captured frame. With both leaves off, undefined is the original direct path down to the
+    // absence of a `setRenderTarget` call, and every consumer below is a no-op on it.
+    const glow = this.#beginFullscreenGlow();
     try {
       this.#renderer.autoClear = true;
       this.#renderer.render(this.#skyScene, this.#camera);
       this.#renderer.autoClear = false;
       this.#renderer.clearDepth();
+      // Three resolves an MSAA target at the end of every render call. The radial pass needs the
+      // world's depth once, not the empty sky depth or the unchanged overlay depth.
+      if (glow?.godRays) glow.scene.resolveDepthBuffer = true;
       this.#renderer.render(this.#scene, this.#camera);
+      // The underwater tint and its waterline, over the finished world and under nothing. Inside
+      // this try because it borrows the same `autoClear = false` the world pass runs on — with
+      // clearing on it would wipe the frame it is meant to tint — and before the context proof so
+      // that a context lost during the overlay is still caught by it. Returns having drawn nothing
+      // at all unless the camera is in or entering liquid.
+      this.#drawUnderwaterOverlay(now);
+      // Keep depth resolving through the optional overlay render: in r185 the false path invalidates
+      // the attached depth texture after a draw rather than merely skipping its blit.
+      if (glow?.godRays) glow.scene.resolveDepthBuffer = false;
+      // Composed with the overlay rather than over it: the tint is part of the frame the glow
+      // blooms, exactly as it is part of the frame the direct path shows.
+      this.#composeFullscreenGlow(glow);
       if (!webGlContextCanSubmit(submissionContext)) return undefined;
     } finally {
       this.#renderer.autoClear = autoClear;
+      // A throw anywhere above would otherwise leave the renderer bound to the scene target, and
+      // the next thing to draw — a portrait, the next frame's sky — would land inside it.
+      this.#endFullscreenGlow(glow);
     }
     const submissionSerial = this.#submissionSerial + 1;
     if (!Number.isSafeInteger(submissionSerial)) {
@@ -4545,11 +5366,349 @@ export class WorldRenderer3D {
   }
 
   /**
+   * The depth tint and the waterline, when the eye is in or entering liquid.
+   *
+   * Everything about this pass is decided before a single GL call: the switch, then whether there
+   * is a surface at all, then whether the eye is within a near plane's half-height of it. Only when
+   * all three say yes does the scene reach the renderer — so on every dry frame, and on every frame
+   * of a client with the option off, this costs one boolean and a comparison.
+   *
+   * Written below `#resetFrameCounters` on purpose: the submission test slices `draw()`'s body
+   * between those two members and asserts that nothing else submits inside it, and a helper sitting
+   * in that gap would have been read as part of the frame it is called from.
+   */
+  #drawUnderwaterOverlay(now: number): void {
+    if (!this.#underwaterOverlayEnabled) return;
+    const surface = this.#underwaterSurface;
+    if (!surface) return;
+    const frame = underwaterOverlayFrame(
+      surface,
+      // The camera's own height, not the one the caller sampled with: the scene draws world Z as Y,
+      // and this is the eye the seam is being solved for.
+      this.#camera.position.y,
+      underwaterCrossingBand(this.#camera.near, this.#camera.fov),
+      liquidClassOf(surface.flags, surface.entry, this.#liquidTextures?.classes),
+    );
+    if (!frame) return;
+    const uniforms = this.#underwaterUniforms;
+    // world -> clip is `projectionMatrix * matrixWorldInverse`, so its inverse is this pair the
+    // other way round. Both are already up to date: the camera was placed and composed at the top
+    // of the frame, and three refreshed the projection on the last resize.
+    uniforms.invViewProj.value
+      .multiplyMatrices(this.#camera.matrixWorld, this.#camera.projectionMatrixInverse);
+    uniforms.tint.value.set(frame.tint[0], frame.tint[1], frame.tint[2], frame.fogStrength);
+    uniforms.waterZ.value = surface.height;
+    // Seconds from the frame's clock — the same one the water materials take, which under a formal
+    // replay is the replay's and never `performance.now()`.
+    uniforms.params.value.set(
+      UNDERWATER_MENISCUS_YARDS, now / 1000, UNDERWATER_RIPPLE_YARDS, frame.crossing ? 1 : 0,
+    );
+    this.#renderer.render(this.#overlayScene, this.#overlayCamera);
+  }
+
+  /**
+   * Points the frame at the offscreen buffer, or leaves the renderer exactly as it was.
+   *
+   * Written below `#resetFrameCounters` for the same reason `#drawUnderwaterOverlay` is: the
+   * submission test reads the source between `draw(` and that member as the frame itself, and a
+   * helper that submits, sitting in the gap, would be read as part of it.
+   */
+  #beginFullscreenGlow(): GlowChainTargets | undefined {
+    if (!this.#fullscreenGlowEnabled && !this.#godRaysActive()) return undefined;
+    const targets = this.#glowTargets;
+    // Allocation happens in `#resize`, which `draw()` has already called. Nothing here retries it:
+    // a frame with no buffers is a frame drawn the direct way, not a frame not drawn.
+    if (!targets) return undefined;
+    if (targets.godRays) targets.scene.resolveDepthBuffer = false;
+    this.#renderer.setRenderTarget(targets.scene);
+    return targets;
+  }
+
+  /**
+   * Optional glow, optional depth-aware radial scattering, and one composite onto the canvas.
+   *
+   * The classic path remains its bright pass and two separable half-resolution blurs. Sun shafts
+   * add one half-resolution draw and reuse blurB only after the vertical bloom has left its result
+   * in blurA. Every pass reads and writes display-referred colour, so the composite only adds.
+   */
+  #composeFullscreenGlow(targets: GlowChainTargets | undefined): void {
+    if (!targets) return;
+    const { uniforms, quad, scene, camera } = this.#glowPasses;
+
+    let glowTexture: THREE.Texture = targets.scene.texture;
+    if (this.#fullscreenGlowEnabled) {
+      uniforms.source.value = targets.scene.texture;
+      quad.material = this.#glowPasses.extract;
+      this.#renderer.setRenderTarget(targets.blurA);
+      this.#renderer.render(scene, camera);
+
+      quad.material = this.#glowPasses.blur;
+      uniforms.source.value = targets.blurA.texture;
+      uniforms.direction.value.set(GLOW_BLUR_SPREAD / targets.halfWidth, 0);
+      this.#renderer.setRenderTarget(targets.blurB);
+      this.#renderer.render(scene, camera);
+
+      uniforms.source.value = targets.blurB.texture;
+      uniforms.direction.value.set(0, GLOW_BLUR_SPREAD / targets.halfHeight);
+      this.#renderer.setRenderTarget(targets.blurA);
+      this.#renderer.render(scene, camera);
+      glowTexture = targets.blurA.texture;
+    }
+
+    let raysTexture: THREE.Texture = targets.scene.texture;
+    const rayStrength = this.#prepareGodRays(targets);
+    if (rayStrength > 0) {
+      quad.material = this.#glowPasses.godRays;
+      this.#renderer.setRenderTarget(targets.blurB);
+      this.#renderer.render(scene, camera);
+      raysTexture = targets.blurB.texture;
+    }
+
+    uniforms.source.value = targets.scene.texture;
+    uniforms.glow.value = glowTexture;
+    uniforms.strength.value = this.#fullscreenGlowEnabled ? this.#glowStrength : 0;
+    uniforms.rays.value = raysTexture;
+    uniforms.rayStrength.value = rayStrength;
+    quad.material = this.#glowPasses.composite;
+    this.#renderer.setRenderTarget(null);
+    this.#renderer.render(scene, camera);
+  }
+
+  /** Project the physical sun and populate the radial pass without allocating per frame. */
+  #prepareGodRays(targets: GlowChainTargets): number {
+    const depth = targets.scene.depthTexture;
+    if (!targets.godRays || !(depth instanceof THREE.DepthTexture)
+      || !this.#godRaysActive() || !this.#lightSample || this.#underwater) return 0;
+
+    const sun = godRaySunDirection(this.#lightTime, this.#godRaySun);
+    const elevation = sun.y;
+    const source = godRayScreenSource(
+      this.#camera,
+      sun,
+      this.#godRayScreenSource,
+      this.#godRayProjection,
+      this.#godRayCameraForward,
+      this.#godRayCameraUp,
+    );
+    const strength = godRayVisibility(
+      source.ndcX,
+      source.visibilityY,
+      elevation,
+      source.facing,
+      this.#lightingProfile.godRayStrength,
+      this.#weatherFade.storm,
+    );
+    if (strength <= 0) return 0;
+
+    const uniforms = this.#glowPasses.uniforms;
+    uniforms.depth.value = depth;
+    uniforms.sunUv.value.set(source.ndcX * 0.5 + 0.5, source.ndcY * 0.5 + 0.5);
+    uniforms.aspect.value = targets.width / targets.height;
+    const diffuse = this.#worldLight.wowDiffuse.value;
+    const peak = Math.max(diffuse.r, diffuse.g, diffuse.b);
+    if (!(peak > 1e-6)) return 0;
+    // Light.dbc's diffuse channels are display-space multipliers. Normalising preserves their hue
+    // while the bounded profile strength decides energy; no colour-space conversion belongs here.
+    uniforms.rayColour.value.setRGB(
+      diffuse.r / peak,
+      diffuse.g / peak,
+      diffuse.b / peak,
+      THREE.LinearSRGBColorSpace,
+    );
+    return strength;
+  }
+
+  /** Hands the canvas back. A no-op on the direct path, including the `setRenderTarget` itself. */
+  #endFullscreenGlow(targets: GlowChainTargets | undefined): void {
+    if (!targets) return;
+    if (targets.godRays) targets.scene.resolveDepthBuffer = false;
+    this.#renderer.setRenderTarget(null);
+    // Nothing outside the frame should keep the buffers bound to a sampler either: a stale
+    // reference here would pin a target that `#disposeFullscreenGlowTargets` has already released.
+    this.#glowPasses.uniforms.source.value = null;
+    this.#glowPasses.uniforms.glow.value = null;
+    this.#glowPasses.uniforms.depth.value = null;
+    this.#glowPasses.uniforms.rays.value = null;
+    this.#glowPasses.uniforms.rayStrength.value = 0;
+  }
+
+  /**
+   * Allocates, resizes and releases the chain's buffers.
+   *
+   * Called from `#resize` (so every frame agrees with the drawing buffer) and from
+   * `setRenderScale` (which changes that buffer outside a frame). Three questions decide it and all
+   * three are cheap: is the leaf on, is the canvas a sane size, and is this the context the buffers
+   * were made for — a lost/restored context bumps `#webGlContextGeneration` and every GL object
+   * behind these targets is gone with it.
+   */
+  #syncFullscreenGlowTargets(): void {
+    const godRays = this.#godRaysActive();
+    if (!this.#fullscreenGlowEnabled && !godRays) {
+      this.#disposeFullscreenGlowTargets();
+      return;
+    }
+    const size = glowChainSize(this.#canvas.width, this.#canvas.height);
+    if (!size) {
+      this.#disposeFullscreenGlowTargets();
+      return;
+    }
+    const current = this.#glowTargets;
+    if (current
+      && current.width === size.width && current.height === size.height
+      && current.godRays === godRays
+      && current.contextGeneration === this.#webGlContextGeneration) return;
+    this.#disposeFullscreenGlowTargets();
+    this.#glowTargets = this.#createFullscreenGlowTargets(size, godRays);
+  }
+
+  /**
+   * The three buffers, at the sample count this context can actually give them.
+   *
+   * **The scene target is display-referred, and that is the whole of P4b.** three decides both the
+   * tone curve and the output colour space of a pass from one flag on the bound target. In three
+   * **0.185.1** (`renderers/webgl/WebGLPrograms.js`, and the same pair again in
+   * `WebGLRenderer.setProgram` and `UniformsUtils.getUnlitUniformColorSpace`) it reads
+   * `material.toneMapped && (currentRenderTarget === null || currentRenderTarget.isXRRenderTarget
+   * === true)` for the curve, and takes `outputColorSpace` from `currentRenderTarget.texture
+   * .colorSpace` in that same case rather than forcing the working space. WebGL render targets are
+   * otherwise treated as intermediates: the world would arrive linear and un-curved.
+   *
+   * Flagging this one target and giving its texture `SRGBColorSpace` therefore makes every world
+   * material finish exactly where it finishes on the canvas — custom shoulder, then sRGB encode —
+   * so transparent and additive batches blend in *display* space, which is what the original
+   * client's un-gamma'd `B8G8R8A8_UNORM` backbuffer did. P4 measured the cost of not doing this:
+   * one additive card read `255,255,255` on the direct path against `208,201,251` through the
+   * chain, over the 370 048 pixels it covered. Spell effects, water sparkle and P3's underwater
+   * tint are exactly the things this plan exists to protect, so the flag is the cheaper price.
+   *
+   * `internalFormat: "RGBA8"` is the other half, and is documented `RenderTarget` option rather
+   * than anything private: an `SRGBColorSpace` byte texture is otherwise allocated `SRGB8_ALPHA8`,
+   * and the hardware would then encode a second time on store and decode on sample — a round trip
+   * that survives in value but not in eight bits, precisely where the glow lives. `RGBA8` keeps the
+   * bytes the shader wrote, which is what the canvas does with them.
+   *
+   * **`isXRRenderTarget` is three's own internal flag, not its public contract.** An upgrade may
+   * rename or re-purpose it, and if it does, this target silently goes back to linear and un-curved
+   * with no composite left to correct it. Three tripwires, in order of loudness: the assignment is
+   * verified to have stuck on the line below; `tests/fullscreen-glow.test.mjs` asserts both
+   * expressions against the real `node_modules/three` source, so a version that moves them fails
+   * the suite; and the journal's tone-parity harness (direct vs chain at strength 0, expected 0
+   * everywhere) is the measurement a three upgrade has to re-run, not just the unit tests.
+   *
+   * **Precision.** Eight bits, with no extension test at all. The buffer holds display-referred
+   * values, so this is the canvas's own precision, not the eight bits of *linear* whose dark
+   * quarter P4 measured collapsing (max Δ 6, 11.3% of channels). Dropping the half-float
+   * preference halves all three buffers: 6.22 MB → 3.11 MB at 960×540, and 24.88 MB → 12.44 MB
+   * at 1920×1080.
+   *
+   * **Multisampling.** `antialias: true` on the canvas is a request about the *default* framebuffer
+   * and buys an offscreen path nothing, so the scene target asks for its own four samples. three
+   * clamps that to the driver's `maxSamples`, and the clamped number is stored rather than the
+   * request, because it is what `ResourceAccounting` will report. A multisampled target's auxiliary
+   * allocations are deliberately unmeasurable — `referenceGpuRenderTarget` files it under
+   * `unknownTopologyResources` rather than inventing bytes for it.
+   * Glow alone still discards multisample depth. The opt-in shaft pass attaches a depth texture and
+   * resolves it because that is the silhouette mask it samples; disabling the leaf rebuilds this
+   * same target without either cost.
+   *
+   * Synchronous construction/setup failure is not fatal: it leaves `#glowTargets` undefined and
+   * the next frame draws the direct way. Three allocates the underlying FBO lazily on first bind,
+   * so later driver/context failure is handled by the frame's normal context-submission proof.
+   */
+  #createFullscreenGlowTargets(size: GlowChainSize, godRays: boolean): GlowChainTargets | undefined {
+    let samples = 0;
+    try {
+      samples = Math.max(0, Math.min(4, this.#renderer.capabilities.maxSamples));
+    } catch {
+      // A restricted or lost context still gets the single-sample chain if it can allocate one at
+      // all, and the direct path if it cannot.
+    }
+    // Collected as they are made, so a synchronous constructor/setup failure does not leave earlier
+    // targets behind with nothing holding them.
+    const made: THREE.WebGLRenderTarget[] = [];
+    try {
+      const depthTexture = godRays
+        ? new THREE.DepthTexture(size.width, size.height, THREE.UnsignedIntType)
+        : null;
+      if (depthTexture) {
+        depthTexture.name = "fullscreen-god-rays-depth";
+        depthTexture.minFilter = THREE.NearestFilter;
+        depthTexture.magFilter = THREE.NearestFilter;
+      }
+      const scene = new THREE.WebGLRenderTarget(size.width, size.height, {
+        type: THREE.UnsignedByteType,
+        colorSpace: THREE.SRGBColorSpace,
+        internalFormat: "RGBA8",
+        depthBuffer: true,
+        depthTexture,
+        stencilBuffer: false,
+        // The baseline glow path still skips the resolve. Sun shafts opt into it because their
+        // radial pass samples the finished world depth after the MSAA scene has been resolved.
+        resolveDepthBuffer: godRays,
+        samples,
+      });
+      made.push(scene);
+      // The flag itself, assigned rather than passed because it is not a constructor option — this
+      // is the one line a three upgrade has to be re-read against.
+      (scene as unknown as { isXRRenderTarget: boolean }).isXRRenderTarget = true;
+      if ((scene as unknown as { isXRRenderTarget?: unknown }).isXRRenderTarget !== true) {
+        // A three that refuses the flag would hand back a linear, un-curved frame that nothing in
+        // this chain corrects any more. No chain at all is the honest answer, not a wrong one.
+        throw new Error("three no longer accepts isXRRenderTarget on a WebGLRenderTarget");
+      }
+      scene.texture.name = "fullscreen-glow-scene";
+      const half = (name: string): THREE.WebGLRenderTarget => {
+        // Left at the default colour space on purpose. These hold the bright pass's display-space
+        // excess, written raw by materials that include no `colorspace_fragment`; making them sRGB
+        // would have the hardware encode on store and decode on sample around a value that is
+        // already display-referred, and cost eight-bit precision for nothing.
+        const target = new THREE.WebGLRenderTarget(size.halfWidth, size.halfHeight, {
+          type: THREE.UnsignedByteType,
+          depthBuffer: false,
+          stencilBuffer: false,
+        });
+        made.push(target);
+        target.texture.name = name;
+        return target;
+      };
+      const blurA = half("fullscreen-glow-blur-a");
+      const blurB = half("fullscreen-glow-blur-b");
+      return Object.freeze({
+        ...size,
+        scene,
+        blurA,
+        blurB,
+        godRays,
+        contextGeneration: this.#webGlContextGeneration,
+        samples,
+      });
+    } catch {
+      for (const target of made) {
+        try { target.dispose(); } catch { /* best effort after a partial synchronous setup failure */ }
+      }
+      return undefined;
+    }
+  }
+
+  #disposeFullscreenGlowTargets(): void {
+    const targets = this.#glowTargets;
+    if (!targets) return;
+    this.#glowTargets = undefined;
+    this.#glowPasses.uniforms.source.value = null;
+    this.#glowPasses.uniforms.glow.value = null;
+    this.#glowPasses.uniforms.depth.value = null;
+    this.#glowPasses.uniforms.rays.value = null;
+    this.#glowPasses.uniforms.rayStrength.value = 0;
+    for (const target of [targets.scene, targets.blurA, targets.blurB]) target.dispose();
+  }
+
+  /**
    * Lighting quality changes a bounded ALU grade, authored immersive-light strength and shadow-map
    * resolution. Quality 0 keeps the authored baseline exact; higher grades add the optional pass
    * without allowing a context that cannot allocate the requested shadow texture to break lighting.
    */
   setLightingQuality(quality: number): void {
+    const oldGodRaysActive = this.#godRaysActive();
     let shadowMaps = false;
     try {
       shadowMaps = !this.#renderer.getContext().isContextLost();
@@ -4600,6 +5759,7 @@ export class WorldRenderer3D {
     for (const terrain of this.#terrains.values()) terrain.mesh.receiveShadow = shadows;
     // No material is mutated. Existing unit trees are reclassified once on their next draw.
     for (const unit of this.#units.values()) unit.shadowCaster = undefined;
+    if (oldGodRaysActive !== this.#godRaysActive()) this.#syncFullscreenGlowTargets();
   }
 
   /** Moving light and target together preserves the authored direction while centring its map. */
@@ -4616,6 +5776,102 @@ export class WorldRenderer3D {
   }
 
   /** Apply object flags only; shared model materials and their alpha/texture state remain intact. */
+  /**
+   * Draws one unit see-through — a stealthed rogue, an invisible mage, another player's ghost —
+   * and puts it back exactly as it was.
+   *
+   * Edge-triggered, which is the reference client's own shape for this
+   * (`entity_spawner.cpp:110-117` remembers the last answer per guid and calls the renderer only on
+   * a change; its sweep also runs one frame in fifteen, which this does not need to because there
+   * is no scan here — the answer arrives with the unit that is already being drawn).
+   *
+   * Private copies rather than a written-through opacity, because a build's materials are shared by
+   * every unit of that appearance: one rogue would otherwise fade every human male on the street.
+   * Restoring is giving the shared array back by identity and disposing the copies, so a unit that
+   * comes out of stealth is byte-for-byte the unit that went in and nothing cloned survives in the
+   * build cache.
+   *
+   * Two things are deliberately *not* faded. A copy is a snapshot, so a batch whose own colour or
+   * opacity track moves is frozen at the value it held when the copy was taken — measured on
+   * HumanMale, exactly 2 of its 61 drawable batches carry a moving track, and one of them (geoset
+   * 0, the body) samples a constant 1 at the rest sequence anyway while the other (geoset 1703, the
+   * death-knight eye glow) is an additive glow that fading dims regardless. And a spell's own
+   * effects on this unit keep their authored strength: they are not children of the unit's node at
+   * all (`#placeVisuals` copies the bone's world matrix into a node under `#visualGroup`), and
+   * their materials are driven every frame from the cast's own phase clock, so anything written
+   * into them here would be overwritten before it was drawn.
+   */
+  #applyUnitOpacity(unit: RenderedUnit, wanted: number): void {
+    if (wanted === unit.unitOpacity && !this.#unitOpacityStale(unit)) return;
+    this.#releaseUnitOpacity(unit);
+    unit.unitOpacity = wanted;
+    // The stand-in pill's material is this unit's own — built per unit in `#drawUnit` — so it is
+    // faded in place. `needsUpdate` because `transparent` and `alphaTest` are program state.
+    if (unit.material.transparent !== (wanted < 1)) {
+      unit.material.transparent = wanted < 1;
+      unit.material.needsUpdate = true;
+      // Same reason as below: the shadow policy is decided from `transparent` and early-returns on
+      // the answer it recorded. A unit wearing only a pill has no borrows to reset it for it.
+      unit.shadowCaster = undefined;
+    }
+    unit.material.opacity = wanted;
+    if (wanted >= 1) return;
+    const borrows = borrowFadedMaterials(this.#unitOpacityMeshes(unit), wanted);
+    if (borrows.length > 0) unit.opacityBorrows = borrows;
+    // The shadow policy is decided from `material.transparent`, and it early-returns while the
+    // recorded answer still stands. Forgetting it here is what makes a unit that fades without
+    // otherwise changing stop casting a solid shadow on the same frame it fades.
+    unit.shadowCaster = undefined;
+  }
+
+  /** Gives every borrowed material array back and disposes the copies. Exactly reverses the above. */
+  #releaseUnitOpacity(unit: RenderedUnit): void {
+    const borrows = unit.opacityBorrows;
+    if (!borrows) return;
+    returnBorrowedMaterials(borrows);
+    delete unit.opacityBorrows;
+    unit.shadowCaster = undefined;
+  }
+
+  /**
+   * Whether what this unit is wearing has changed under a fade that is already applied.
+   *
+   * A weapon drawn, a mount climbed onto or a helm that finished downloading while the unit is
+   * translucent arrives opaque, and none of those changes the wanted opacity — so the comparison
+   * against `unit.unitOpacity` alone would never notice. Asked only of units that are already
+   * faded, over a list that is at most a body, a mount and three attachments.
+   */
+  #unitOpacityStale(unit: RenderedUnit): boolean {
+    if (unit.unitOpacity >= 1) return false;
+    const borrows = unit.opacityBorrows;
+    let count = 0;
+    for (const mesh of this.#unitOpacityMeshes(unit)) {
+      count++;
+      if (!borrows?.some((borrow) => borrow.mesh === mesh)) return true;
+    }
+    return count !== (borrows?.length ?? 0);
+  }
+
+  /**
+   * Every mesh a unit's fade has to reach.
+   *
+   * The body, whichever of the two forms it took; the equipment hanging off its bones, because the
+   * reference client learnt the same lesson and wrote it down (`character_renderer.cpp:3651-3653`:
+   * "keep the whole visual together instead of leaving opaque weapons floating on a translucent
+   * stealthed creature"); and the mount under it, which the reference client does not do because it
+   * has no second model there — a rogue cannot mount in stealth, but a ghost rides a horse to its
+   * corpse and an invisible player keeps whatever they were riding.
+   */
+  * #unitOpacityMeshes(unit: RenderedUnit): Generator<THREE.Mesh> {
+    if (unit.skinned) yield unit.skinned.mesh;
+    else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
+    for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
+    const mount = unit.mount;
+    if (!mount) return;
+    if (mount.skinned) yield mount.skinned.mesh;
+    else for (const node of mount.node.children) if (node instanceof THREE.Mesh) yield node;
+  }
+
   #applyUnitShadow(unit: RenderedUnit, enabled: boolean): void {
     if (unit.shadowCaster === enabled) return;
     unit.node.traverse((node) => {
@@ -4655,7 +5911,7 @@ export class WorldRenderer3D {
   }
 
   /**
-   * Applies the six R5 faithful-plus leaves. Aerial remains a state-only/no-op leaf; terrain and
+   * Applies the faithful-plus leaves. Aerial remains a state-only/no-op leaf; terrain and
    * water changes are pushed into existing materials without changing their owned resources.
    * Missing/undefined input is the exact default-OFF baseline used by teardown and old callers.
    */
@@ -4668,6 +5924,8 @@ export class WorldRenderer3D {
       waterFresnel: profile?.waterFresnel === true,
       waterMicroWaves: profile?.waterMicroWaves === true,
       waterSunSparkle: profile?.waterSunSparkle === true,
+      waterFoam: profile?.waterFoam === true,
+      vegetationWind: profile?.vegetationWind === true,
       fantasyGlow: profile?.fantasyGlow === true,
     });
     const current = this.#experimentalShaderProfile;
@@ -4676,6 +5934,8 @@ export class WorldRenderer3D {
       && current.waterFresnel === next.waterFresnel
       && current.waterMicroWaves === next.waterMicroWaves
       && current.waterSunSparkle === next.waterSunSparkle
+      && current.waterFoam === next.waterFoam
+      && current.vegetationWind === next.vegetationWind
       && current.fantasyGlow === next.fantasyGlow) return;
     this.#experimentalShaderProfile = next;
     for (const terrain of this.#terrains.values()) {
@@ -4687,6 +5947,7 @@ export class WorldRenderer3D {
     for (const [liquidClass, material] of this.#fallbackLiquidMaterials) {
       applyFallbackLiquidShaderProfile(material, liquidClass, this.#waterProfile(), this.#waterShaderUniforms);
     }
+    if (current.vegetationWind !== next.vegetationWind) this.#rebuildVegetationWindModels();
     if (current.fantasyGlow !== next.fantasyGlow) {
       const spellEffectKeys = new Set(this.#visuals.map((visual) => visual.key));
       for (const visual of this.#visuals) {
@@ -4696,6 +5957,18 @@ export class WorldRenderer3D {
         if (spellEffectKeys.has(key)) setModelEffectsFantasyGlow(held.effects, next.fantasyGlow);
       }
     }
+  }
+
+  /** Re-admits only static WVM scenery whose material cache variant changes with GPU wind. */
+  #rebuildVegetationWindModels(): void {
+    for (const [id, rendered] of [...this.#environment]) {
+      if (!rendered.wvm || rendered.skinned) continue;
+      this.#environmentVisibilitySpheres.delete(rendered.source);
+      this.#removeEnvironment(id, rendered);
+    }
+    // Ground cover is all WVM and owns only instance buffers; its static/wind builds remain
+    // separate bounded cache entries and the next frame repopulates the current variant.
+    this.#clearGroundCover();
   }
 
   /**
@@ -4710,10 +5983,16 @@ export class WorldRenderer3D {
     const clamped = Math.max(0.5, Math.min(1, Number.isFinite(scale) ? scale : 1));
     this.#renderScale = clamped;
     const wanted = Math.min(window.devicePixelRatio || 1, 2) * clamped;
-    if (Math.abs(this.#renderer.getPixelRatio() - wanted) < 1e-4) return;
-    this.#renderer.setPixelRatio(wanted);
-    // The size is remembered in CSS pixels, so changing the ratio has to re-derive the buffer.
-    this.#renderer.setSize(Math.max(1, this.#canvas.clientWidth), Math.max(1, this.#canvas.clientHeight), false);
+    if (Math.abs(this.#renderer.getPixelRatio() - wanted) > 1e-4) {
+      this.#renderer.setPixelRatio(wanted);
+      // The size is remembered in CSS pixels, so changing the ratio has to re-derive the buffer.
+      this.#renderer.setSize(Math.max(1, this.#canvas.clientWidth), Math.max(1, this.#canvas.clientHeight), false);
+    }
+    // Outside the branch, and that is a measured decision rather than caution: setting the scale to
+    // the value it already holds returns early, and a settings apply that does exactly that is the
+    // ordinary case. With the sync inside, a renderer that had just been switched back on stayed
+    // without buffers until something else resized it.
+    this.#syncFullscreenGlowTargets();
   }
 
   #resize(): void {
@@ -4728,6 +6007,10 @@ export class WorldRenderer3D {
       this.#camera.aspect = width / height;
       this.#camera.updateProjectionMatrix();
     }
+    // Unconditional and cheap: three number comparisons on the ordinary frame. It has to be outside
+    // the branch above because the canvas is not the only thing that invalidates the buffers — a
+    // lost and restored context leaves every dimension exactly where it was.
+    this.#syncFullscreenGlowTargets();
   }
 
   /**
@@ -5225,15 +6508,15 @@ export class WorldRenderer3D {
         rendered.liquidGeneration = this.#liquidTextures?.generation ?? 0;
         this.#rebuildTerrainGeometry(rendered, map, grid, player, heightAt, terrainClient);
       } else if (rendered.revision !== revision) {
-        // A neighbour landed. Refresh the edge normals and water: water corners deliberately
-        // sample adjacent liquid/ground cells, so leaving its old geometry here would preserve a
-        // seam for the rest of the session. A known-dry tile cannot gain a wet quad from a
-        // neighbour — liquid quads are emitted only for this tile's own cells — so skip its
-        // 128×128 water scan. A tile with a surface still rebuilds because a shared corner may have
-        // changed. This remains a load-time event (not a frame path).
+        // A neighbour landed. Rebuild positions too: until the canonical owner was available, the
+        // shared far edge temporarily used this tile's separately quantised copy. Updating only its
+        // normals leaves that physical crack in the position buffer for the rest of the session.
+        // A known-dry tile cannot gain a wet quad from a neighbour — liquid quads are emitted only
+        // for this tile's own cells — so it can still skip the 128×128 water scan. This remains a
+        // load-time event, not a frame path.
         rendered.revision = revision;
-        this.#refreshTerrainNormals(rendered, grid, player, heightAt);
-        if (shouldRefreshWaterForNeighbour(rendered.water)) this.#replaceWater(rendered, map, grid, heightAt, terrainClient);
+        this.#rebuildTerrainGeometry(rendered, map, grid, player, heightAt, terrainClient,
+          shouldRefreshWaterForNeighbour(rendered.water));
       } else if (rendered.liquidGeneration !== (this.#liquidTextures?.generation ?? 0)) {
         // The tile has not changed, but a liquid's animation strip has landed since its surfaces
         // were built, and they are still drawing with the stand-in sheet.
@@ -5322,21 +6605,10 @@ export class WorldRenderer3D {
     rendered.splatted = true;
   }
 
-  #rebuildTerrainGeometry(rendered: RenderedTerrain, map: number, grid: { x: number; y: number }, player: WorldPosition, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): void {
+  #rebuildTerrainGeometry(rendered: RenderedTerrain, map: number, grid: { x: number; y: number }, player: WorldPosition, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined, rebuildWater = true): void {
     rendered.mesh.geometry.dispose();
     rendered.mesh.geometry = this.#terrainGeometry(map, grid, player, heightAt, terrainClient);
-    this.#replaceWater(rendered, map, grid, heightAt, terrainClient);
-  }
-
-  /** The same normals the geometry was built with, recomputed against a neighbour that has landed. */
-  #refreshTerrainNormals(rendered: RenderedTerrain, grid: { x: number; y: number }, player: WorldPosition, heightAt: HeightSampler | undefined): void {
-    const attribute = rendered.mesh.geometry.getAttribute("normal");
-    if (!attribute) return;
-    const heights = terrainHeightField(grid, player, heightAt);
-    const normals = terrainNormals(heights);
-    if (attribute.array.length !== normals.length) return;
-    (attribute.array as Float32Array).set(normals);
-    attribute.needsUpdate = true;
+    if (rebuildWater) this.#replaceWater(rendered, map, grid, heightAt, terrainClient);
   }
 
   /**
@@ -5393,7 +6665,7 @@ export class WorldRenderer3D {
       color: 0x2d7fa5,
       fog: true,
       transparent: true,
-      opacity: 0.58,
+      opacity: WATER_FALLBACK_OPACITY,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -5406,6 +6678,7 @@ export class WorldRenderer3D {
     waterFresnel: boolean;
     waterMicroWaves: boolean;
     waterSunSparkle: boolean;
+    waterFoam: boolean;
     fantasyGlow: boolean;
   }> {
     return this.#experimentalShaderProfile;
@@ -5525,10 +6798,10 @@ export class WorldRenderer3D {
   }
 
   /**
-   * One tile's ground, with normals taken from the height field rather than from its own faces.
+   * One tile's authored V9/V8 diamond ground, with neighbour-aware normals at its outer edge.
    *
-   * `computeVertexNormals` averages the faces a vertex touches, and a vertex on the tile's edge
-   * only has faces on one side of it, so every tile boundary carried a lit seam: measured along
+   * An unqualified `computeVertexNormals` averages only the faces this mesh owns, and a vertex on
+   * the tile's edge has faces on one side of it, so every tile boundary carried a lit seam: measured along
    * the join between tiles 49-31 and 50-31, a one-sided normal is 6.8 to 14.0 degrees off the
    * field's own on average and 33.6 to 97.9 at worst. A vertex next to a hole lost its faces the
    * same way. Sampling the field a step out in each direction has neither problem — the sampler
@@ -5542,44 +6815,16 @@ export class WorldRenderer3D {
    * at worst — an order of magnitude worse than the seam it replaced. The fallback now continues
    * the tile's own last two rows, which measures 1.1 to 5.3 degrees, and `tileRevision` counts the
    * eight neighbours so the tile is rebuilt properly once the real ground lands.
-   */
+  */
   #terrainGeometry(map: number, grid: { x: number; y: number }, player: WorldPosition, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): THREE.BufferGeometry {
-    const side = TERRAIN_SUBDIVISIONS + 1;
-    const step = TERRAIN_GRID_SIZE / TERRAIN_SUBDIVISIONS;
-    const inside = 1 - TERRAIN_EDGE_EPSILON;
-    const worldX = (row: number) => (32 - grid.x - Math.min(Math.max(row, 0), TERRAIN_SUBDIVISIONS) / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
-    const worldY = (column: number) => (32 - grid.y - Math.min(Math.max(column, 0), TERRAIN_SUBDIVISIONS) / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
-
-    const heights = terrainHeightField(grid, player, heightAt);
-    const heightOf = (row: number, column: number) => heights[(row + 1) * (side + 2) + (column + 1)]!;
-    const normals = terrainNormals(heights);
-
-    const positions: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
-    for (let row = 0; row < side; row++) {
-      const x = worldX(row);
-      for (let column = 0; column < side; column++) {
-        positions.push(x, heightOf(row, column), -worldY(column));
-        uvs.push(column / TERRAIN_SUBDIVISIONS, 1 - row / TERRAIN_SUBDIVISIONS);
-      }
-    }
-    for (let row = 0; row < side - 1; row++) {
-      for (let column = 0; column < side - 1; column++) {
-        const x = (32 - grid.x - (row + 0.5) / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
-        const y = (32 - grid.y - (column + 0.5) / TERRAIN_SUBDIVISIONS) * TERRAIN_GRID_SIZE;
-        if (terrainClient?.isHole(map, x, y)) continue;
-        const a = row * side + column;
-        const b = a + 1;
-        const c = a + side;
-        const d = c + 1;
-        indices.push(a, c, b, b, c, d);
-      }
-    }
+    const { positions, normals, uvs, indices } = terrainGeometryData(
+      grid, player, heightAt,
+      terrainClient ? (x, y) => terrainClient.isHole(map, x, y) : undefined,
+    );
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
     return geometry;
   }
@@ -5693,6 +6938,8 @@ export class WorldRenderer3D {
         if (Array.isArray(materialEntries)) {
           rendered.materialEntries = materialEntries as readonly WorldMaterialEntry[];
         }
+        const tintMaterials = node.userData["modelPlacementTintMaterials"];
+        if (Array.isArray(tintMaterials)) rendered.tintMaterials = tintMaterials as readonly THREE.Material[];
         if (model?.wvm) rendered.wvm = model.wvm;
         if (building) rendered.wmo = building.placed;
         if (rig) {
@@ -5739,11 +6986,16 @@ export class WorldRenderer3D {
         // Which placements can be drawn as copies of one mesh. A building cannot — it is drawn a
         // room at a time — and neither can a model with emitters, whose sparks are placed by
         // reading the matrix of this very mesh.
+        const instanceKey = this.#vegetationBuildKey(object.name);
         const built = instanceable(model)
-          ? this.#builtModels.get(this.#builtCacheKey(this.#builtModels, object.name))
+          ? this.#builtModels.get(this.#builtCacheKey(this.#builtModels, instanceKey))
           : undefined;
-        if (visual instanceof THREE.Object3D && built && instanceableBuild(built.materials)) {
-          rendered.instanceKey = object.name;
+        if (
+          visual instanceof THREE.Object3D
+          && built
+          && instanceableBuild(built.materials)
+        ) {
+          rendered.instanceKey = instanceKey;
           rendered.instanceMatrix = visual.matrixWorld.clone();
         }
         this.#instancesDirty = true;
@@ -5857,7 +7109,11 @@ export class WorldRenderer3D {
     const scaleX = Math.hypot(matrix[0]!, matrix[1]!, matrix[2]!);
     const scaleY = Math.hypot(matrix[4]!, matrix[5]!, matrix[6]!);
     const scaleZ = Math.hypot(matrix[8]!, matrix[9]!, matrix[10]!);
-    const radius = sphere.radius * Math.max(scaleX, scaleY, scaleZ);
+    const scale = Math.max(scaleX, scaleY, scaleZ);
+    // Admission covers simultaneous sway on both local horizontal axes, even though only a strict
+    // subset of this build's alpha-key batches may actually carry wind.
+    const radius = (sphere.radius
+      + (this.#experimentalShaderProfile.vegetationWind ? VEGETATION_WIND_CULL_PADDING : 0)) * scale;
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)
       || !Number.isFinite(radius) || radius < 0) return undefined;
     return { x, y, z, radius };
@@ -5868,6 +7124,8 @@ export class WorldRenderer3D {
     disposeSkinnedInstance(rendered.skinned);
     delete rendered.skinned;
     delete rendered.template;
+    disposeModelPlacementTintMaterials(rendered.tintMaterials);
+    delete rendered.tintMaterials;
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
     this.#environmentGroup.remove(rendered.node);
     this.#dropWmoLiquid(rendered);
@@ -5922,6 +7180,8 @@ export class WorldRenderer3D {
         action.play();
       }
       instance.mixer.update(elapsed);
+      if (rendered.wvm) applyGlobalSequenceBones(instance, template, rendered.wvm.globalSequences,
+        this.#waterShaderUniforms.time.value * 1000);
       applyBillboardBones(instance, template, this.#camera);
     }
   }
@@ -5949,9 +7209,12 @@ export class WorldRenderer3D {
     const byModel = new Map<string, RenderedEnvironment[]>();
     for (const rendered of this.#environment.values()) {
       if (!rendered.admitted || !rendered.instanceKey || !rendered.instanceMatrix) continue;
-      const list = byModel.get(rendered.instanceKey);
+      // A local-light shader has deliberately unwrapped the outdoor world-light hook. It must
+      // never share an InstancedMesh/material array with an outdoor placement of the same model.
+      const bucket = `${rendered.instanceKey}\0${rendered.source.localLight ? "local" : "world"}`;
+      const list = byModel.get(bucket);
       if (list) list.push(rendered);
-      else byModel.set(rendered.instanceKey, [rendered]);
+      else byModel.set(bucket, [rendered]);
     }
 
     for (const [key, list] of byModel) {
@@ -5960,29 +7223,53 @@ export class WorldRenderer3D {
         this.#dropInstance(key);
         continue;
       }
-      const built = this.#builtModels.get(this.#builtCacheKey(this.#builtModels, key));
+      const modelKey = list[0]!.instanceKey!;
+      const built = this.#builtModels.get(this.#builtCacheKey(this.#builtModels, modelKey));
       if (!built) continue;
+      const locallyLit = list[0]!.source.localLight !== undefined;
       let entry = this.#instances.get(key);
       // An `InstancedMesh` fixes its capacity when it is made, so it is grown in powers of two
       // rather than rebuilt every time one more barrel comes into range.
       if (!entry || entry.capacity < list.length) {
         this.#dropInstance(key);
         const capacity = instanceCapacity(list.length);
-        const mesh = new THREE.InstancedMesh(built.geometry, built.materials, capacity);
+        const localLight = locallyLit ? {
+          materials: createInstancedModelPlacementLocalLightMaterials(built.materials),
+          attribute: new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true),
+        } : undefined;
+        if (localLight) built.geometry.setAttribute(MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE, localLight.attribute);
+        const mesh = new THREE.InstancedMesh(
+          built.geometry,
+          localLight?.materials ?? built.materials,
+          capacity,
+        );
         // One sphere over every copy, spread across the whole selection radius, so per-object
         // culling was never going to help here — and would only have been asked a hundred times.
         mesh.frustumCulled = false;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        entry = { mesh, capacity, built };
+        entry = localLight
+          ? { mesh, capacity, built, localLight }
+          : { mesh, capacity, built };
         this.#instances.set(key, entry);
         this.#environmentGroup.add(mesh);
       }
       for (const [index, rendered] of list.entries()) {
         entry.mesh.setMatrixAt(index, rendered.instanceMatrix!);
+        const localLight = rendered.source.localLight;
+        if (entry.localLight && localLight) {
+          entry.localLight.attribute.setXYZ(index, localLight[0], localLight[1], localLight[2]);
+        } else {
+          entry.mesh.setColorAt(
+            index,
+            modelPlacementTintColour(rendered.source.tint, this.#instanceTint),
+          );
+        }
         rendered.node.visible = false;
       }
       entry.mesh.count = list.length;
       entry.mesh.instanceMatrix.needsUpdate = true;
+      if (entry.localLight) entry.localLight.attribute.needsUpdate = true;
+      if (entry.mesh.instanceColor) entry.mesh.instanceColor.needsUpdate = true;
       // `setMatrixAt` does not invalidate it, and three computes it once and keeps it: left alone,
       // the sphere would be the centroid of whichever copies happened to be in range first.
       entry.mesh.computeBoundingSphere();
@@ -6062,7 +7349,11 @@ export class WorldRenderer3D {
     // order — true, and not worth a draw call each for the 13 of 484 models that are blend mode 2:
     // a field of grass sorted back to front would be thousands of draws to stop one tuft showing
     // faintly through another.
-    const built = this.#wvmBuild(this.#builtModels, path, path, model.wvm, undefined, undefined, false);
+    const buildKey = this.#vegetationBuildKey(path);
+    const built = this.#wvmBuild(
+      this.#builtModels, buildKey, path, model.wvm, undefined, undefined, false, undefined,
+      this.#experimentalShaderProfile.vegetationWind,
+    );
     let entry = this.#groundCoverMeshes.get(path);
     if (!entry || entry.capacity < batch.x.length) {
       this.#dropGroundCoverMesh(path);
@@ -6109,8 +7400,15 @@ export class WorldRenderer3D {
     const entry = this.#instances.get(key);
     if (!entry) return;
     this.#environmentGroup.remove(entry.mesh);
-    // The geometry and the materials belong to the model cache and are shared with every other
-    // copy of it; only the per-instance matrix buffer is this mesh's own.
+    if (entry.localLight) {
+      if (entry.built.geometry.getAttribute(MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE)
+        === entry.localLight.attribute) {
+        entry.built.geometry.deleteAttribute(MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE);
+      }
+      disposeModelPlacementTintMaterials(entry.localLight.materials);
+    }
+    // Ordinary geometry/materials belong to the model cache. The matrix buffer and optional local
+    // light attribute/material shells belong only to this mesh.
     entry.mesh.dispose();
     this.#instances.delete(key);
   }
@@ -6129,6 +7427,11 @@ export class WorldRenderer3D {
       cache === this.#builtUnits ? "unit" : "model",
       key,
     );
+  }
+
+  /** Static and wind materials may share geometry bytes, but never a cached material build. */
+  #vegetationBuildKey(path: string): string {
+    return this.#experimentalShaderProfile.vegetationWind ? `vegetation-wind|${path}` : path;
   }
 
   /** Compact exact identity for one decoded legacy parent; cache entries retain only this token. */
@@ -6259,7 +7562,7 @@ export class WorldRenderer3D {
 
   #wvmBuild(cache: BuiltModelCache<BuiltModel>, key: string, modelPath: string, wvm: WvmModel,
     slots: TextureSlots | undefined, geosets: GeosetChoice | undefined, skinned: boolean,
-    slotTextures?: ReadonlyMap<number, THREE.Texture>): BuiltModel {
+    slotTextures?: ReadonlyMap<number, THREE.Texture>, vegetationWind = false): BuiltModel {
     const cacheKey = this.#builtCacheKey(cache, key);
     let built = cache.get(cacheKey);
     if (built) return built;
@@ -6273,6 +7576,7 @@ export class WorldRenderer3D {
       skinned,
       anisotropy: this.#renderer.capabilities.getMaxAnisotropy(),
       worldLight: this.#worldLight,
+      vegetationWind,
     });
     const externalKeys = cache === this.#builtUnits && slotTextures?.has(TEXTURE_TYPE_BODY)
       ? [key]
@@ -6311,19 +7615,35 @@ export class WorldRenderer3D {
     }
     if (!template) return undefined;
     const built = this.#wvmBuild(this.#builtModels, key, object.name, wvm, undefined, undefined, true);
-    const instance = instantiateSkinned(template, built.materials);
+    const placementMaterials = object.localLight
+      ? createModelPlacementLocalLightMaterials(built.materials, object.localLight)
+      : createModelPlacementTintMaterials(built.materials, object.tint);
+    const instance = instantiateSkinned(template, placementMaterials ?? built.materials);
     // The tile's frame and not the unit path's, the same half turn `#wvmNode` applies: an animated
     // signpost and the static one beside it have to agree about which way they face.
     instance.root.quaternion.copy(ADT_MODEL_TO_SCENE);
     const node = placeEnvironmentNode(new THREE.Group(), object);
     node.add(instance.root);
     node.userData["builtModel"] = built;
+    if (placementMaterials) node.userData["modelPlacementTintMaterials"] = placementMaterials;
     return { node, instance, template };
   }
 
-  #wvmNode(name: string, wvm: WvmModel): THREE.Object3D {
-    const built = this.#wvmBuild(this.#builtModels, name, name, wvm, undefined, undefined, false);
-    const mesh = new THREE.Mesh(built.geometry, built.materials);
+  #wvmNode(
+    name: string,
+    wvm: WvmModel,
+    tint?: ModelPlacementTint,
+    localLight?: ModelPlacementTint,
+  ): THREE.Object3D {
+    const buildKey = this.#vegetationBuildKey(name);
+    const built = this.#wvmBuild(
+      this.#builtModels, buildKey, name, wvm, undefined, undefined, false, undefined,
+      this.#experimentalShaderProfile.vegetationWind,
+    );
+    const placementMaterials = localLight
+      ? createModelPlacementLocalLightMaterials(built.materials, localLight)
+      : createModelPlacementTintMaterials(built.materials, tint);
+    const mesh = new THREE.Mesh(built.geometry, placementMaterials ?? built.materials);
     // Not the unit rotation. A doodad is turned by the rotation its tile gives it, and that
     // rotation is already expressed in the frame `VMAP_TO_THREE` converts to — both
     // `mappedVmapRotation` here and `worldDoodad` in the tile generator conjugate by it. A
@@ -6335,6 +7655,7 @@ export class WorldRenderer3D {
     node.add(mesh);
     node.userData["visual"] = mesh;
     node.userData["builtModel"] = built;
+    if (placementMaterials) node.userData["modelPlacementTintMaterials"] = placementMaterials;
     return node;
   }
 
@@ -6398,6 +7719,7 @@ export class WorldRenderer3D {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       if (fogPlacement) this.#considerWmoFog(placed, this.#wmoCameraModel);
       if (staticEnvironment && this.#indoors && this.#wmoOcclusion && placed.model.portals) {
+        this.#wmoViewerModel.set(player.x, player.z, -player.y).applyMatrix4(placed.worldToModel);
         this.#wmoModelToClip
           .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
           .premultiply(this.#camera.projectionMatrix);
@@ -6407,6 +7729,7 @@ export class WorldRenderer3D {
           distanceGroups,
           this.#wmoCameraModel,
           this.#wmoModelToClip.elements,
+          this.#wmoViewerModel,
         );
         if (portalSelection.used) {
           selected = portalSelection.groups;
@@ -6458,15 +7781,19 @@ export class WorldRenderer3D {
     if (!current || key < current.key) this.#wmoFogCandidate = { fog, key };
   }
 
-  /** Apply the one room chosen above; absence deliberately leaves the restored zone fog intact. */
+  /** Apply the one room chosen above only to interior WMO materials; outdoor fog stays intact. */
   #applyWmoFogCandidate(): void {
     const candidate = this.#wmoFogCandidate;
     if (this.#underwater || !candidate) return;
     const { end, scale, colour } = candidate.fog.land;
-    const fog = this.#scene.fog as THREE.Fog;
-    fog.color.setRGB(colour[0] / 255, colour[1] / 255, colour[2] / 255, THREE.SRGBColorSpace);
-    fog.near = end * scale;
-    fog.far = end;
+    this.#wmoInteriorFog.colour.value.setRGB(
+      colour[0] / 255,
+      colour[1] / 255,
+      colour[2] / 255,
+      THREE.SRGBColorSpace,
+    );
+    this.#wmoInteriorFog.near.value = end * scale;
+    this.#wmoInteriorFog.far.value = end;
   }
 
   /** One room's mesh: its geometry converted into the scene, its light computed, its runs split. */
@@ -6589,7 +7916,9 @@ export class WorldRenderer3D {
           ? THREE.DoubleSide
           : THREE.FrontSide;
         applyBlendMode(value, run.blendMode);
-        if (value instanceof THREE.MeshStandardMaterial) {
+        if (value instanceof THREE.MeshBasicMaterial) {
+          applyWmoInteriorFog(value, this.#wmoInteriorFog);
+        } else if (value instanceof THREE.MeshStandardMaterial) {
           applyWorldLight(value, this.#worldLight, "surface");
         }
         return value;
@@ -6601,7 +7930,12 @@ export class WorldRenderer3D {
     // A WVM5 model carries its own materials: blend modes, two-sidedness, wrap flags and the draw
     // order the client uses. Building from those is what turns a doodad from one flat
     // double-sided cut-out into the surfaces the artist authored.
-    if (model.wvm) return placeEnvironmentNode(this.#wvmNode(object.name, model.wvm), object);
+    if (model.wvm) {
+      return placeEnvironmentNode(
+        this.#wvmNode(object.name, model.wvm, object.tint, object.localLight),
+        object,
+      );
+    }
     const entry = this.#legacyStaticGeometry(model);
     const { entries: materialEntries, materials } = this.#legacyMaterials(model);
     const mesh = new THREE.Mesh(entry.geometry, materials);
@@ -7100,6 +8434,9 @@ export class WorldRenderer3D {
     }
     rendered.state = state;
     rendered.skinned.mixer.update(elapsed);
+    if (rendered.wvm) applyGlobalSequenceBones(rendered.skinned, template,
+      rendered.wvm.globalSequences, now);
+    applyBillboardBones(rendered.skinned, template, this.#camera);
   }
 
   /**
@@ -7433,11 +8770,23 @@ export class WorldRenderer3D {
         skinned: undefined, template: undefined, action: undefined,
         animationId: -1, pose: undefined, overlayUntil: 0,
         height: 0, radius: 0, scale: 1, dead: !dead, tint: tint ^ 1, applied: "",
-        attached: new Map(),
+        attached: new Map(), unitOpacity: 1,
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
     }
+
+    // What the server says this unit should look like, before anything is built or posed: the pose
+    // half is read by `#animateUnit` below and the opacity half is applied once the model, the
+    // mount and the attachments have all settled.
+    const auras = this.#auraAppearance.get(object.guid);
+    const appearance = unitAppearance({
+      creep: isUnitCreeping(object),
+      stealthAura: auras?.stealth === true,
+      invisibilityAura: auras?.invisibility === true,
+      ghost: isPlayerGhost(object),
+    });
+    unit.stealthed = appearance.stealth;
 
     const metadata = creatureModel?.(object);
     let currentWvm = false;
@@ -7458,7 +8807,7 @@ export class WorldRenderer3D {
         decodedModel,
       );
       if (key !== unit.applied || replacesLegacy) {
-        standIn = this.#attachSkinnedModel(unit, metadata, key, decodedModel);
+        standIn = this.#attachSkinnedModel(unit, metadata, key, decodedModel, client);
       }
       if (unit.applied === key) {
         this.#updateAttachments(unit, metadata, object, client, decodedModel);
@@ -7533,6 +8882,10 @@ export class WorldRenderer3D {
     } else {
       this.#shapeCapsule(unit, tint, radius, capsuleHeight, dead, moving, now);
     }
+    // After everything that can change what is hanging on this unit — the body, the mount and the
+    // attachments — and before the shadow policy, which reads `material.transparent` and must see
+    // the faded copies rather than the shared originals.
+    this.#applyUnitOpacity(unit, appearance.opacity);
     this.#applyUnitShadow(unit, shadowCaster);
   }
 
@@ -7578,7 +8931,7 @@ export class WorldRenderer3D {
    * reason is carried out rather than inferred from the outside.
    */
   #attachSkinnedModel(unit: RenderedUnit, metadata: UnitModel, key: string,
-    model: EnvironmentModel | undefined): StandInReason | undefined {
+    model: EnvironmentModel | undefined, client?: EnvironmentClient): StandInReason | undefined {
     // The download is keyed on the model path alone now, so every appearance of a race shares one
     // file; only the geometry and materials built below vary with the appearance.
     if (!model) return "artifact";
@@ -7618,7 +8971,8 @@ export class WorldRenderer3D {
       // bespoke creatures use the same ids for real geometry, not appearance choices. The rule
       // lives in `ModelBuild` beside `characterSlots`.
       const geosets = worldCharacterGeosets(model.wvm, appearance, character);
-      const { built, rigged } = this.#buildRigged(key, metadata.model, model.wvm, slots, geosets, supplied);
+      const { built, rigged } = this.#buildRigged(key, metadata.model, model.wvm, slots, geosets,
+        supplied, client);
       if (rigged === undefined) {
         // No rig at all: 9.5% of the client's creature models have none, and a static mesh is
         // far better than the coloured capsule they used to keep forever.
@@ -7668,7 +9022,7 @@ export class WorldRenderer3D {
    * is ready.
    */
   #buildRigged(key: string, path: string, wvm: WvmModel, slots: TextureSlots, geosets: GeosetChoice,
-    supplied?: ReadonlyMap<number, THREE.Texture>):
+    supplied?: ReadonlyMap<number, THREE.Texture>, client?: EnvironmentClient):
   { built: BuiltModel; rigged: SkinnedTemplate | null | undefined } {
     const built = this.#wvmBuild(this.#builtUnits, key, path, wvm, slots, geosets,
       Boolean(wvm.skeleton), supplied);
@@ -7680,7 +9034,34 @@ export class WorldRenderer3D {
       rigged = buildSkinnedTemplateFrom(built.geometry, rig, built.height) ?? null;
       this.#skinnedTemplates.set(cacheKey, rigged);
     }
+    if (rigged) this.#prefetchSidecarAnimations(rigged, path, client);
     return { built, rigged };
+  }
+
+  /**
+   * Asks for the held-back keyframes as soon as a rig exists, rather than when a pose needs one.
+   *
+   * `animations` is every id the model can play and `clips` is the ones that travelled inside it —
+   * so a difference between the two sizes *is* the sidecar. Until now nothing asked for it until a
+   * frame wanted a pose that was inside it, which is how a character stood in the saddle and how
+   * the first cast after a rebuild was dropped: the whole request had to be made, queued, fetched
+   * and decoded inside the window that action waited in. Measured here, HumanMale declares 199
+   * animations and carries 17 clips — the other 182 are this request, 9,833,124 bytes of it.
+   * Every armour change rebuilds this template with `merged: false`, and that is exactly the moment
+   * to ask again — `merged` and the environment client's own in-flight ledger make the repeat free.
+   *
+   * "background" priority on purpose: this must never take a lane from the model of the unit that
+   * is standing in front of the player right now.
+   */
+  #prefetchSidecarAnimations(template: SkinnedTemplate, path: string,
+    client: EnvironmentClient | undefined): void {
+    if (!client || template.merged) return;
+    if (template.animations.size <= template.clips.size) return;
+    const clips = client.animations(path, template.parents.length, "background");
+    if (!clips) return;
+    // Already resident — merge now rather than waiting for a pose to notice.
+    addSkinnedClips(template, clips);
+    template.merged = true;
   }
 
   /**
@@ -7711,13 +9092,14 @@ export class WorldRenderer3D {
       // nothing and the character walks for a frame or two, and on a change of mount it is the
       // previous one, which beats dropping them to the ground and putting them back.
       if (!wvm) return;
-      this.#attachMount(unit, metadata, key, wvm);
+      this.#attachMount(unit, metadata, key, wvm, client);
     }
     this.#seatRider(unit);
   }
 
   /** Builds the mount and hangs it in the unit's node; the rider is seated separately. */
-  #attachMount(unit: RenderedUnit, metadata: UnitModel, key: string, wvm: WvmModel): void {
+  #attachMount(unit: RenderedUnit, metadata: UnitModel, key: string, wvm: WvmModel,
+    client?: EnvironmentClient): void {
     this.#dropMount(unit);
     // The same two decisions `#attachSkinnedModel` makes for a creature with no appearance, and
     // made by the same two functions rather than by a copy of their answers. For the 2,952 mount
@@ -7725,7 +9107,8 @@ export class WorldRenderer3D {
     // its tail and its barding in submeshes, and the bare-character set would take it apart.
     const { built, rigged } = this.#buildRigged(key, metadata.model, wvm,
       characterSlots(metadata.textures, undefined),
-      unitGeosets(undefined, wvm.textures.some((slot) => slot.type === TEXTURE_TYPE_BODY)));
+      unitGeosets(undefined, wvm.textures.some((slot) => slot.type === TEXTURE_TYPE_BODY)),
+      undefined, client);
     const node = new THREE.Group();
     let skinned: SkinnedInstance | undefined;
     if (rigged) {
@@ -7927,12 +9310,21 @@ export class WorldRenderer3D {
    * go of its bones and its mixer or a busy street leaks one of each per costume change.
    */
   #clearUnitNode(unit: RenderedUnit): void {
+    // Before anything is unparented or disposed, while the meshes that borrowed still exist: the
+    // shared arrays go back to builds that are about to be handed to somebody else, and the copies
+    // are disposed here rather than left to the meshes that are being thrown away.
+    this.#releaseUnitOpacity(unit);
+    // And the wanted value is forgotten with the model, so whatever stands here next is faded from
+    // scratch instead of inheriting a "already at 0.35" that no mesh is wearing any more.
+    unit.unitOpacity = 1;
     // First, because the rider's root is a child of one of the mount's bones while it is up there
     // and `unit.node.remove` below would not reach it — the instance would be emptied out of the
     // scene with its mixer and its skeleton still live, hanging off a horse nobody can see.
     this.#dropMount(unit);
     this.#detachAll(unit);
-    this.#clearOverlay(unit);
+    // Hard: the mixer this overlay belongs to is disposed three lines down, so there is nothing
+    // for a fade to run on and nothing that could see it.
+    this.#clearOverlay(unit, true);
     const previous = unit.skinned;
     disposeSkinnedInstance(previous);
     unit.node.remove(...unit.node.children);
@@ -8011,6 +9403,7 @@ export class WorldRenderer3D {
       } : {}),
       sequenceAt: 0,
       waitUntil: now + ACTION_CLIP_WAIT,
+      sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
       cancelable: cancelable || ownsHeldSequence,
       source,
       ...(visualHandle === undefined ? {} : { visualHandle }),
@@ -8025,6 +9418,9 @@ export class WorldRenderer3D {
       // latest action for this guid (the map assignment is the stale-shot guard), and give that
       // action a bounded metadata window longer than the ordinary animation-sidecar wait.
       sequenceAt: 0, waitUntil: now + (action === "shoot" ? SHOOT_METADATA_WAIT : ACTION_CLIP_WAIT),
+      // A shoot never reaches this deadline: `pendingActionExpired` still retires it at its own
+      // metadata window, which is the stale-shot guard and is deliberately left alone.
+      sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
       cancelable: hold > 0,
       source: "external",
     });
@@ -8036,6 +9432,7 @@ export class WorldRenderer3D {
     this.#actions.set(guid, {
       wanted: [animation], hold: hold > 0 ? now + hold : 0, loop: hold > 0,
       action: undefined, sequenceAt: 0, waitUntil: now + ACTION_CLIP_WAIT,
+      sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
       cancelable: hold > 0,
       source: "external",
     });
@@ -8078,11 +9475,21 @@ export class WorldRenderer3D {
       // The built mount rather than the field, so a rider whose horse has not downloaded keeps
       // running instead of gliding along in the seated pose with nothing underneath.
       mounted: unit.mount !== undefined,
+      // Worked out once per frame in `#drawUnit`, because the same answer decides the fade. Only
+      // the stealth half reaches the pose: an invisible mage walks normally.
+      stealth: unit.stealthed === true,
     };
     // The mount is the thing that walks, swims and flies, so it takes the same pose the rider
-    // would have taken on foot — with `mounted` off, or the horse would try to sit on itself.
-    // Chosen here and stepped below with the rider's, for the same off-screen reason.
-    this.#poseMount(unit, object.guid, { ...pose, mounted: false }, now, client);
+    // would have taken on foot — but only the travelling half of it. The sanitising is `mountPose`
+    // and it happens inside `#poseMount`, which is the only place that holds the mount's own clips
+    // and can therefore let an airborne pose fail open. Chosen here and stepped below with the
+    // rider's, for the same off-screen reason.
+    //
+    // The speed is the rider's, because the rider is the unit the server sends rates for; the
+    // horse is a display id with no movement of its own. It is what turns the authored stride into
+    // a gait: without it a hasted mount replays a 6.94 yd/s stride while travelling at 14.
+    this.#poseMount(unit, object.guid, pose, now, client,
+      unitTravelSpeed(pose, object.speeds, object.runSpeed));
 
     // A one-shot is removed from #actions as soon as its clip starts. If movement begins on the
     // following frame there is therefore no pending action left for #poseUnit to reclassify, and a
@@ -8133,11 +9540,18 @@ export class WorldRenderer3D {
     const portraitNeedsPose = this.#portraits.needsPose(object.guid);
     if (!portraitNeedsPose && !this.#frustum.intersectsSphere(this.#unitSphere)) return;
     skinned.mixer.update(elapsed);
+    if (unit.wvm) applyGlobalSequenceBones(skinned, template, unit.wvm.globalSequences, now);
+    // The legs into the direction of travel, over the clip the mixer just wrote. Self and remote
+    // alike: the flags this reads are the ones in the last packet about the unit, and the player's
+    // own are written into that state as they are sent.
+    this.#applyStrafeYaw(unit, template, pose, elapsed);
     // Before the rider's billboards, because the rider hangs off one of these bones: a card turned
     // against a saddle that has not moved yet is a card turned against last frame.
     const mount = unit.mount;
     if (mount?.skinned && mount.template) {
       mount.skinned.mixer.update(elapsed);
+      if (mount.wvm) applyGlobalSequenceBones(mount.skinned, mount.template,
+        mount.wvm.globalSequences, now);
       applyBillboardBones(mount.skinned, mount.template, this.#camera);
     }
     // After the pose and not before it: a billboard bone overwrites what the mixer just wrote to
@@ -8146,16 +9560,57 @@ export class WorldRenderer3D {
   }
 
   /**
-   * The gait of the horse, chosen from the same flags the rider was chosen from.
+   * Turns this unit's lower body toward where it is actually going.
+   *
+   * The owner's report: "the legs should point into the direction of movement; right now the
+   * animation runs forward while the character travels at an angle". The original turns the lower
+   * body procedurally and keeps the torso on the facing; the table, the rate and the reason each
+   * row is what it is live in `strafeYawTarget`, out where a test can drive them.
+   *
+   * The turn is stepped every frame the unit is posed, including the frames its target is zero, so
+   * releasing a strafe key unwinds at the same bounded rate it wound up at. The bones are resolved
+   * once per rig and remembered on the template; a rig that cannot answer gets no turn at all and
+   * still keeps its stored angle at zero.
+   */
+  #applyStrafeYaw(unit: RenderedUnit, template: SkinnedTemplate, pose: UnitPose,
+    elapsed: number): void {
+    const bones = strafeYawBonesFor(template);
+    // The clip that is really playing, because a rig with an authored sidestep needs no turn for a
+    // pure strafe and a rig without one needs the whole quarter.
+    const target = bones === undefined
+      ? 0 : strafeYawTarget(pose, unit.action ? unit.animationId : undefined);
+    const yaw = stepStrafeYaw(unit.strafeYaw ?? 0, target, elapsed);
+    unit.strafeYaw = yaw;
+    if (bones && unit.skinned) applyStrafeYaw(unit.skinned, bones, yaw);
+  }
+
+  /**
+   * The gait of the horse, chosen from the travelling half of the rider's pose and from nothing
+   * else about the rider.
+   *
+   * Three things happen here that did not before, and all three are the same defect seen from
+   * different sides — the rider's whole state was reaching the mount.
+   *
+   * (1) `mountPose` takes off everything that is not travel: the stand state and death. A sitting
+   * rider used to sit the horse down and a dead one used to play its Death.
+   * (2) The mount gets the jump one-shots the rider deliberately does not. `poseTransition`
+   * refuses every mounted pose, which is right for the character in the saddle and left the animal
+   * under it snapping between its gait and its airborne loop with nothing in between.
+   * (3) The gait is replayed at the speed the unit is actually travelling rather than at the one
+   * its author built the stride for. Only the persistent gait is scaled; a one-shot — the special,
+   * a takeoff, a landing — keeps its authored timing, and so does the rider.
    *
    * `SMSG_MOUNTSPECIAL_ANIM` is the one protocol edge that addresses the mount indirectly: its
    * payload is the rider guid, while the one-shot is authored on the mount node. It is handled
    * before the gait and then the normal gait resumes when the clip's authored duration ends.
    */
-  #poseMount(unit: RenderedUnit, guid: bigint, pose: UnitPose, now: number,
-    client: EnvironmentClient | undefined): void {
+  #poseMount(unit: RenderedUnit, guid: bigint, rider: UnitPose, now: number,
+    client: EnvironmentClient | undefined, speed?: number): void {
     const mount = unit.mount;
     if (!mount?.skinned || !mount.template) return;
+    // The mount's own clips decide whether an airborne pose can be answered at all, which is why
+    // the sanitising cannot happen at the call site.
+    const pose = mountPose(rider, mount.template.clips);
 
     const specialUntil = this.#mountSpecials.get(guid);
     if (specialUntil !== undefined) {
@@ -8171,6 +9626,7 @@ export class WorldRenderer3D {
           if (mount.template.clips.has(animation)) {
             this.#playAnimation(mount, animation, false, now, true);
             this.#mountSpecials.delete(guid);
+            mount.pose = pose;
             return;
           }
         }
@@ -8179,13 +9635,68 @@ export class WorldRenderer3D {
 
     // The mount's `action` is normally the persistent gait. A special is a full-body one-shot,
     // and must keep owning the mount until its authored window ends or the gait would restart it
-    // on every frame and make the trick invisible.
+    // on every frame and make the trick invisible. A takeoff and a landing are the same shape and
+    // are held by the same guard.
+    //
+    // The remembered pose is updated even while the one-shot owns the mount, and that is not
+    // bookkeeping: leaving it behind would make the ground -> air change fire again the moment
+    // JumpStart's window closed, and the horse would take off twice on one jump.
     if (mount.action?.loop === THREE.LoopOnce && mount.action.isRunning()
-      && now < mount.overlayUntil) return;
+      && now < mount.overlayUntil) {
+      mount.pose = pose;
+      return;
+    }
 
-    const chosen = chooseAnimation(mount.template.clips, pose);
-    if (chosen) this.#playAnimation(mount, chosen.animation, chosen.loop, now);
+    // The mount's own poseTransition. `resolveAnimation` and not the seat resolver: this is the
+    // animal's locomotion, in the same family as any unit's, and a rig without a takeoff clip
+    // simply gets undefined and keeps its gait — Gryphon carries none of 37/38/39/40.
+    const transition = mountPoseTransition(mount.pose, pose);
+    const takeoff = transition === undefined
+      ? undefined
+      : resolveAnimation(mount.template.clips, [transition]);
+    if (takeoff !== undefined) {
+      this.#playAnimation(mount, takeoff, false, now);
+      mount.pose = pose;
+      return;
+    }
+
+    // The horse changes gait when the rider strafes and the rider does not — the seat pose is
+    // chosen before any movement arm reaches `poseAnimation` — so the mount needs the same commit
+    // window a unit has, and needs it more: a rider circling a target asks the animal for a new
+    // stride twice a second. The window is applied here, between choosing and playing, so that both
+    // the play call and the gait scaling below are told the same thing: what is really playing.
+    const wanted = chooseAnimation(mount.template.clips, pose);
+    const chosen = wanted === undefined
+      ? undefined
+      : { animation: this.#commitGait(mount, wanted.animation, now), loop: wanted.loop };
+    if (chosen) {
+      this.#playAnimation(mount, chosen.animation, chosen.loop, now);
+      // After the play call and never before it: `#playAnimation` puts every action it starts or
+      // restarts back on the authored rate, so a gait scaled first would be flattened again.
+      this.#applyMountGait(mount, chosen.animation, chosen.loop, speed);
+    }
     this.#requestAnimations(mount.template, poseAnimation(pose).wanted, client, mount.metadata);
+    mount.pose = pose;
+  }
+
+  /**
+   * Replays the mount's stride at the speed the unit is really travelling.
+   *
+   * The stride is authored for one speed — RidingHorse's Run for 6.9444 yards a second, its Walk
+   * for 2.5 — and the renderer used to play every one of them at exactly that rate whatever the
+   * unit was doing, which is the skating the owner reports: a mount at +100% covers 14 yards a
+   * second with a stride built for 7.
+   *
+   * The rate is read back off the action rather than remembered, because `#playAnimation` resets
+   * it to 1 whenever it starts or restarts a clip and a cached copy would go stale on exactly
+   * those frames. `mountGaitTimeScale` quantises, so this comparison fails — and the write
+   * happens — only when the speed has really moved a step.
+   */
+  #applyMountGait(mount: RenderedMount, animation: number, loop: boolean, speed: number | undefined): void {
+    const action = mount.action;
+    if (!action || !loop) return;
+    const scale = mountGaitTimeScale(speed, clipMovingSpeed(mount.template?.clips.get(animation)));
+    if (Math.abs(action.getEffectiveTimeScale() - scale) > 1e-6) action.setEffectiveTimeScale(scale);
   }
 
   /** Move an already-started full-body one-shot to the filtered upper layer at its current phase. */
@@ -8258,18 +9769,43 @@ export class WorldRenderer3D {
     }
 
     const chosen = chooseAnimation(unit.template!.clips, pose);
-    if (chosen) this.#playAnimation(unit, chosen.animation, chosen.loop, now);
+    if (chosen) this.#playAnimation(unit, this.#commitGait(unit, chosen.animation, now), chosen.loop, now);
     // What the pose asked for that this model has but has not downloaded yet. Asking is cheap and
-    // the client only lets one request per model through.
-    this.#requestAnimations(unit.template!, poseAnimation(pose).wanted, client, metadata);
+    // the client only lets one request per model through. Deliberately the pose's own list and not
+    // the committed gait: what may be drawn a fraction of a second from now still has to be here.
+    this.#requestAnimations(unit.template!, poseAnimation(pose).wanted, client, metadata,
+      poseAnimationFamily(pose));
+  }
+
+  /**
+   * Holds a travelling gait for the length of its own blend before letting the next one in.
+   *
+   * The whole of the commit window's state is one deadline per model; the policy is
+   * `commitLocomotion`, which is where the measurements and the reason are written. Only a gait
+   * replacing a gait can ever be delayed, and only by 150 ms, so the answer this returns is the one
+   * the pose pass asked for on every frame that is not inside a stride change.
+   *
+   * `chosen.loop` may be passed through unchanged by every caller: `chooseAnimation` returns
+   * `loop: false` for exactly one animation, Death, and Death is not one of the gaits this can
+   * hold, so a held answer is always a loop and the caller's flag is always already true.
+   */
+  #commitGait(unit: PosedModel, animation: number, now: number): number {
+    const commit = commitLocomotion(
+      unit.action ? unit.animationId : undefined, animation, unit.gaitCommittedUntil ?? 0, now,
+    );
+    unit.gaitCommittedUntil = commit.committedUntil;
+    return commit.animation;
   }
 
   /** Selects and updates only the persistent locomotion/stance layer. */
   #poseBase(unit: RenderedUnit, pose: UnitPose, now: number,
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined): void {
     const chosen = chooseAnimation(unit.template!.clips, pose);
-    if (chosen) this.#playAnimation(unit, chosen.animation, chosen.loop, now, false, false);
-    this.#requestAnimations(unit.template!, poseAnimation(pose).wanted, client, metadata);
+    if (chosen) {
+      this.#playAnimation(unit, this.#commitGait(unit, chosen.animation, now), chosen.loop, now, false, false);
+    }
+    this.#requestAnimations(unit.template!, poseAnimation(pose).wanted, client, metadata,
+      poseAnimationFamily(pose));
   }
 
   /** Stop a pending action only when the animation currently playing is the one it requested. */
@@ -8370,15 +9906,25 @@ export class WorldRenderer3D {
     if (animation === undefined) {
       // The request is one fetch per model and it does not come back on this frame, so deleting
       // the record here threw the emote away before its own keyframes could possibly have landed.
-      this.#requestAnimations(unit.template!, wanted, client, metadata);
+      // A spell kit asks for what it might end up playing, promotions included: the pose that
+      // answers a kit naming 31/32/33 on a character is 51/52/53/54, and the request list is what
+      // decides whether those keyframes are ever fetched. `promised` below reads the same table.
+      this.#requestAnimations(unit.template!,
+        pending.action === undefined ? spellVisualAnimationCandidates(wanted) : wanted, client, metadata);
       const fate = pendingActionFate({
         hasClip: false,
         promised: (pending.action === undefined
           ? resolveSpellVisualAnimation(unit.template!.animations, wanted)
           : resolveActionAnimation(unit.template!.animations, pending.action, actionWeapon)) !== undefined,
         metadataPending: shootMetadataPending,
+        // Asked of the client that owns the request, not inferred from the frame: the difference
+        // between keyframes that are missing and keyframes that are being downloaded is the
+        // difference between dropping the first cast and playing it a moment late.
+        sidecarInFlight: metadata !== undefined
+          && client?.animationsInFlight(metadata.model, unit.template!.parents.length) === true,
         now,
         waitUntil: pending.waitUntil,
+        sidecarWaitUntil: pending.sidecarWaitUntil,
       });
       if (fate === "wait") return false;
       this.#actions.delete(guid);
@@ -8461,11 +10007,17 @@ export class WorldRenderer3D {
       next.setEffectiveWeight(1);
       next.play();
       if (previous && previous !== next) {
+        const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
         const transition = animationTransition(previous.isRunning(), true);
         if (transition === "stop") previous.stop();
-        else if (transition === "crossfade") {
-          const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop);
-          next.crossFadeFrom(previous, blend.duration, blend.warp);
+        else if (transition === "crossfade") next.crossFadeFrom(previous, blend.duration, blend.warp);
+        else if (transition === "fade") {
+          // Deliberately not `crossFadeFrom`: it synchronises the two actions' clocks, and this
+          // predecessor is a finished one-shot clamped on its last frame with no clock to
+          // synchronise. Two independent ramps do the same visual job — the clamped pose goes out
+          // over the same window the new one comes in — without the time coupling.
+          previous.fadeOut(blend.duration);
+          next.fadeIn(blend.duration);
         }
       }
       unit.overlayAction = next;
@@ -8494,9 +10046,10 @@ export class WorldRenderer3D {
       unit.action.play();
       if (actionKind === undefined) delete unit.actionKind;
       else unit.actionKind = actionKind;
+      // Restarting the same clip ends the same way it would have if it were a different one, so
+      // it leaves the same blend window free. See the tail comment at the bottom of this method.
       const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
-      unit.overlayUntil = loop ? 0 : now + Math.max(0,
-        clip.duration * 1000 - (fullDuration ? 0 : blendDuration * 1000));
+      unit.overlayUntil = loop ? 0 : now + Math.max(0, clip.duration * 1000 - blendDuration * 1000);
       return;
     }
     const previous = unit.action;
@@ -8508,21 +10061,32 @@ export class WorldRenderer3D {
     next.setEffectiveWeight(1);
     next.play();
     if (previous && previous !== next) {
+      const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop, clipBlendTime(clip));
       const transition = animationTransition(previous.isRunning(), true);
       if (transition === "stop") previous.stop();
-      else if (transition === "crossfade") {
-        const blend = animationBlend(previous.loop === THREE.LoopRepeat, loop);
-        next.crossFadeFrom(previous, blend.duration, blend.warp);
+      else if (transition === "crossfade") next.crossFadeFrom(previous, blend.duration, blend.warp);
+      else if (transition === "fade") {
+        // The same independent pair as the overlay branch above, and the one that matters most:
+        // this is where a finished cast, landing or reaction handed over. `previous.stop()` here
+        // dropped its clamped last frame to nothing on the tick the next pose appeared at weight
+        // 1 — one frame of visible snap, on every completed one-shot in the game.
+        previous.fadeOut(blend.duration);
+        next.fadeIn(blend.duration);
       }
     }
     unit.action = next;
     unit.animationId = animation;
     if (actionKind === undefined) delete unit.actionKind;
     else unit.actionKind = actionKind;
-    // A one-shot holds the unit for its own length, less the blend that takes it away again.
+    // A one-shot holds the unit for its own length, less the blend that takes it away again — and
+    // that subtraction is not optional. `fullDuration` (a spell visual's own animation) used to
+    // subtract nothing, so the pose pass came back for the unit at the exact millisecond the clip
+    // ended, by which time the action had finished and was no longer running: the transition was
+    // the hard `stop()` above and a standing cast always snapped into Stand. The moving cast never
+    // showed it, because its overlay branch runs `animationFadeWindow` and hands over early. Both
+    // paths now leave the same blend window free, and the difference between them is gone.
     const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
-    unit.overlayUntil = loop ? 0 : now + Math.max(0,
-      clip.duration * 1000 - (fullDuration ? 0 : blendDuration * 1000));
+    unit.overlayUntil = loop ? 0 : now + Math.max(0, clip.duration * 1000 - blendDuration * 1000);
   }
 
   /** Begins the short upper-body fade into the already-playing locomotion action. */
@@ -8540,9 +10104,24 @@ export class WorldRenderer3D {
     unit.overlayFadeUntil = now + duration * 1000;
   }
 
-  /** Stops an upper-body overlay and restores exclusive ownership to the base layer. */
-  #clearOverlay(unit: PosedModel): void {
-    unit.overlayAction?.stop();
+  /**
+   * Hands exclusive ownership of the bones back to the base layer.
+   *
+   * Softly by default: the overlay is released rather than cut, so a cancelled cast, a shot that
+   * was called off, or an upper-body action reaching the end of its window fades out over the
+   * action window while `#poseBase` already has the gait at weight 1. `stop()` here removed the
+   * pose from the mixer between two frames, and it also silently undid `#beginOverlayFade` — the
+   * caller in `#poseUnit` starts that fade and then falls straight through to this method, so the
+   * carefully computed fade window was cut on the very tick it opened. A faded-out action is left
+   * alive at weight 0 exactly like the one `crossFadeFrom` leaves behind; the mixer caches one
+   * action per clip and `reset()` revives it, so nothing accumulates.
+   *
+   * `hard` is for the paths where the pose must be gone and not merely fading: the instance is
+   * being torn down and its mixer with it.
+   */
+  #clearOverlay(unit: PosedModel, hard = false): void {
+    if (hard) unit.overlayAction?.stop();
+    else unit.overlayAction?.fadeOut(ACTION_ANIMATION_BLEND);
     delete unit.overlayAction;
     delete unit.overlayAnimationId;
     delete unit.overlayActionKind;
@@ -8559,13 +10138,14 @@ export class WorldRenderer3D {
    * never fights never downloads its attacks.
    */
   #requestAnimations(template: SkinnedTemplate, wanted: readonly number[], client: EnvironmentClient | undefined,
-    metadata: UnitModel | undefined): void {
+    metadata: UnitModel | undefined, family: AnimationRequestFamily = "any"): void {
     if (!client || !metadata) return;
     // Only when the model claims the pose and has not built it: otherwise every stand-in creature
     // would ask for a set it does not have. The rule itself is `needsSidecarAnimations`, out in
     // `AnimatedModel` where a test can drive it without a renderer — the seated pose was never
-    // fetched at all and nothing at this level could show it.
-    if (!needsSidecarAnimations(template, wanted)) return;
+    // fetched at all and nothing at this level could show it. `family` says which boundary the
+    // list belongs to, so the request is decided by the same one that will decide the drawing.
+    if (!needsSidecarAnimations(template, wanted, family)) return;
     const clips = client.animations(metadata.model, template.parents.length, "critical");
     if (!clips) return;
     addSkinnedClips(template, clips);
@@ -8680,6 +10260,117 @@ const SUN_FLOOR = 0.22;
 /** The north-south lean that keeps midnight and noon off the pole. */
 const SUN_TILT = 0.35;
 
+/**
+ * The visible solar source, unlike `sunDirection`, is allowed to set below the horizon.
+ *
+ * The world key light deliberately stays above the ground at night so models retain readable
+ * shaping. Reusing it for a visible source would put bright shafts into a midnight sky. This is the
+ * same east/noon phase and north-south tilt, with the physical elevation restored.
+ */
+export function godRaySunDirection(time: number, target = new THREE.Vector3()): THREE.Vector3 {
+  const safeTime = Number.isFinite(time) ? time : 0;
+  const angle = (safeTime / DAY_HALF_MINUTES) * Math.PI * 2;
+  const elevation = -Math.cos(angle);
+  return target.set(elevation * SUN_TILT, elevation, Math.sin(angle)).normalize();
+}
+
+export interface GodRayScreenSource {
+  ndcX: number;
+  /** Shader source position; a high source is pinned tangent outside the viewport. */
+  ndcY: number;
+  /** Unpinned physical Y used solely to keep the upper-edge strength transition continuous. */
+  visibilityY: number;
+  /** Camera-to-sun alignment in the ground plane; vertical camera limits must not hide daylight. */
+  facing: number;
+}
+
+/**
+ * Projects the physical sun into the radial pass without requiring the orbit camera to point at it.
+ *
+ * A normal ground camera looks down at the character and cannot reach the high daytime sun. Once
+ * that source crosses above the view plane, its azimuth is projected along the horizon and the
+ * synthetic disc is parked tangent to the top edge. The source is still rejected when the camera
+ * turns away horizontally; only the camera's intentionally limited vertical orbit is ignored.
+ */
+export function godRayScreenSource(
+  camera: THREE.PerspectiveCamera,
+  sun: THREE.Vector3,
+  target: GodRayScreenSource = { ndcX: 0, ndcY: 0, visibilityY: 0, facing: 0 },
+  projection = new THREE.Vector3(),
+  cameraForward = new THREE.Vector3(),
+  cameraUp = new THREE.Vector3(),
+): GodRayScreenSource {
+  camera.getWorldDirection(cameraForward);
+  const directFacing = cameraForward.dot(sun);
+  const flatSunLength = Math.hypot(sun.x, sun.z);
+  const flatCameraLength = Math.hypot(cameraForward.x, cameraForward.z);
+  const facing = flatSunLength > 1e-9 && flatCameraLength > 1e-9
+    ? (cameraForward.x * sun.x + cameraForward.z * sun.z) / (flatCameraLength * flatSunLength)
+    : 0;
+  const distance = Math.max(1, camera.far * 0.9);
+  projection.copy(sun).multiplyScalar(distance).add(camera.position).project(camera);
+  const physicalNdcY = projection.y;
+
+  cameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
+  const upperPlane = Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5))
+    * Math.max(directFacing, 0);
+  const aboveUpperPlane = cameraUp.dot(sun) > upperPlane;
+  // A high source may be behind the camera's vertical view plane even while its azimuth is ahead.
+  // The upper-frustum-plane test distinguishes that case from turning away horizontally. Re-project
+  // the azimuth on the horizon only after the physical projection has gone behind; while it remains
+  // in front, its X is already stable and must survive the upper-plane crossing unchanged.
+  if (sun.y > 0 && facing > 0.02 && aboveUpperPlane) {
+    if (directFacing <= 0) {
+      projection.set(sun.x / flatSunLength, 0, sun.z / flatSunLength)
+        .multiplyScalar(distance)
+        .add(camera.position)
+        .project(camera);
+    }
+    projection.y = GOD_RAY_SOURCE_TOP_NDC;
+  }
+
+  target.ndcX = projection.x;
+  target.ndcY = projection.y;
+  target.visibilityY = directFacing > 0 ? physicalNdcY : GOD_RAY_SOURCE_TOP_NDC;
+  target.facing = facing;
+  return target;
+}
+
+function smoothRamp(edge0: number, edge1: number, value: number): number {
+  const t = Math.max(0, Math.min(1, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Final bounded strength after day, view, screen-edge and weather fades.
+ *
+ * NDC is used rather than UV so zero is the screen centre and one is an edge. Invalid inputs fail
+ * closed: this value reaches a display-space additive composite and must never become NaN.
+ */
+export function godRayVisibility(
+  ndcX: number,
+  ndcY: number,
+  elevation: number,
+  facing: number,
+  strength: number,
+  storm: number,
+): number {
+  if (![ndcX, ndcY, elevation, facing, strength, storm].every(Number.isFinite)) return 0;
+  const boundedStrength = Math.max(0, Math.min(1, strength));
+  // Above the frame the physical source settles to a restrained carry rather than vanishing. The
+  // radial material keeps its synthetic disc tangent outside the viewport, so this reveals shafts
+  // without painting a fake sun over the scene.
+  const visibilityY = Math.min(ndcY, GOD_RAY_TOP_FULL_NDC);
+  const edgeDistance = Math.min(1 - Math.abs(ndcX), 1 - Math.abs(visibilityY));
+  const onScreen = smoothRamp(0, 0.18, edgeDistance);
+  const offscreenCarry = 1 - (1 - GOD_RAY_OFFSCREEN_CARRY)
+    * smoothRamp(GOD_RAY_TOP_FULL_NDC, GOD_RAY_TOP_SETTLE_NDC, ndcY);
+  const daylight = smoothRamp(0.01, 0.16, elevation);
+  const inFront = smoothRamp(0.02, 0.18, facing);
+  const weather = 1 - Math.max(0, Math.min(1, storm));
+  return boundedStrength * onScreen * offscreenCarry * daylight * inFront * weather;
+}
+
 /** Triangles a geometry stands for, indexed or not, without touching the GPU to ask. */
 function triangleCount(geometry: THREE.BufferGeometry): number {
   const index = geometry.getIndex();
@@ -8743,6 +10434,442 @@ function buildSky(uniforms: {
   mesh.renderOrder = -1;
   mesh.frustumCulled = false;
   return mesh;
+}
+
+/** How thick the meniscus is, in yards of water — a property of the water, not of the view. */
+export const UNDERWATER_MENISCUS_YARDS = 0.030;
+/** How far the seam's height wanders, so the cut is not a perfectly straight line. */
+export const UNDERWATER_RIPPLE_YARDS = 0.004;
+
+/**
+ * The underwater tint and its waterline: one triangle, no texture, no render target.
+ *
+ * Where the split falls is worked out from the surface itself rather than from a line pushed in
+ * screen space. Each pixel asks where its own ray enters the world — the point it sees on the near
+ * plane, which is the plane the water is actually cutting across — and compares that point's height
+ * against the surface. The seam then lands on the water at any pitch, roll or height, because it is
+ * the same test the water is passing or failing. A screen-space line drifted off the water the
+ * moment the camera pitched, which is why the reference client stopped drawing one
+ * (`wowee/assets/shaders/overlay.frag.glsl`).
+ *
+ * Written straight to `gl_FragColor` with neither tone mapping nor an encode, and that is measured
+ * rather than assumed: the reference presents through `VK_FORMAT_B8G8R8A8_UNORM`
+ * (`wowee/src/rendering/vk_context.cpp:1026`), so its constants are display-space values blended
+ * over display-space pixels — exactly the buffer this pass blends into here.
+ */
+export function buildUnderwaterOverlay(uniforms: {
+  invViewProj: { value: THREE.Matrix4 };
+  tint: { value: THREE.Vector4 };
+  waterZ: { value: number };
+  params: { value: THREE.Vector4 };
+}): THREE.Mesh {
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    // Over everything, tested against nothing, writing nothing. The world pass has already put its
+    // depth down and this must not read it, disturb it, or be sorted against it.
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    fog: false,
+    toneMapped: false,
+    vertexShader: `
+      varying vec2 vUV;
+      void main() {
+        // The position attribute is already in clip space, and the ortho camera is the identity
+        // over it. One triangle rather than two: no seam down the diagonal, one vertex fewer.
+        vUV = position.xy * 0.5 + 0.5;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }`,
+    fragmentShader: `
+      uniform mat4 invViewProj;
+      uniform vec4 tint;
+      uniform float waterZ;
+      uniform vec4 params;
+      varying vec2 vUV;
+      void main() {
+        // z = -1 is the near plane here. The reference writes 0 because Vulkan's clip volume runs
+        // 0..1 in depth; WebGL's runs -1..1, and using its number would have unprojected the middle
+        // of the frustum instead of its front face.
+        vec4 clip = vec4(vUV.x * 2.0 - 1.0, vUV.y * 2.0 - 1.0, -1.0, 1.0);
+        vec4 world = invViewProj * clip;
+        world /= (abs(world.w) > 1e-6) ? world.w : 1e-6;
+
+        // A touch of ripple on the surface height, so the seam is not a perfect straight cut. In
+        // world units, so it does not change with the view. The scene's x and z are the world's
+        // two horizontal axes (its y is the world's up), so the phase is taken from those.
+        float surface = waterZ
+                      + (sin(world.x * 1.7 + params.y * 1.9)
+                       + sin(world.z * 2.3 - params.y * 1.4)) * params.z;
+
+        float below = surface - world.y;      // positive: this pixel's ray starts under water
+        float soft = max(params.x, 1e-4);
+
+        // params.w == 0 means fully submerged with no seam left to draw: tint everything rather
+        // than testing a plane that is behind the camera.
+        float submerged = (params.w < 0.5) ? 1.0 : smoothstep(-soft, soft, below);
+
+        // The meniscus: water climbing the glass at the seam. A slim band centred on the surface,
+        // darker and denser than the water either side of it. Without it the crossing is a cut
+        // between two flat colours, which is what a split screen looks like and not what a lens
+        // half in the water looks like.
+        float meniscus = (params.w < 0.5)
+                       ? 0.0
+                       : (1.0 - smoothstep(0.0, soft * 1.8, abs(below)));
+
+        float alpha = clamp(tint.a * submerged + meniscus * 0.55, 0.0, 1.0);
+        vec3 rgb = tint.rgb * (1.0 - 0.45 * meniscus);
+        gl_FragColor = vec4(rgb, alpha);
+      }`,
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    -1, -1, 0,
+    3, -1, 0,
+    -1, 3, 0,
+  ], 3));
+  const mesh = new THREE.Mesh(geometry, material);
+  // The triangle deliberately reaches outside the ortho box; culling it by its bounds would drop
+  // the only draw this scene has.
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+/**
+ * Where the full-screen glow starts, as a *linear* value.
+ *
+ * Taken from the tone curve rather than chosen: the shoulder is the identity below 0.9 and
+ * compresses above it, so 0.9 is the exact linear value at which this client's own output curve
+ * declares a channel to be a white core rather than a colour. What the shoulder is already bending
+ * is what the glow blooms, and nothing under it moves at all.
+ *
+ * Without a bright pass the effect would be a uniform veil: adding the blurred *whole* frame at
+ * Darnassus's authored 1.0 doubles the picture. The original client haloes lamps, water sparkle and
+ * spell energy, not the ground between them.
+ */
+export const GLOW_BRIGHT_KNEE = 0.9;
+
+/**
+ * three's `sRGBTransferOETF`, one channel at a time.
+ *
+ * Constants transcribed from `colorspace_pars_fragment.glsl.js` — including its `0.41666` rather
+ * than an exact `1 / 2.4` — so this is the encode the world's own materials end with and not a
+ * near-miss of it.
+ */
+function srgbTransferOETF(linear: number): number {
+  return linear <= 0.0031308 ? linear * 12.92 : 1.055 * Math.pow(linear, 0.41666) - 0.055;
+}
+
+/**
+ * The same knee, in the display-referred values the offscreen buffer now holds (P4b).
+ *
+ * The scene target is display-referred: the world's own materials run the shoulder and the sRGB
+ * encode into it exactly as they do into the canvas, so the bright pass reads screen values, not
+ * linear ones. Comparing those against the linear 0.9 would start the bloom at linear 0.787 and
+ * haze pixels the curve is not bending yet — the same constant read in the wrong space, which
+ * `tests/tone-mapping.test.mjs` already names as a live hazard for this client.
+ *
+ * Derived rather than retyped: the linear knee through the curve (the identity there, and every
+ * quality profile leaves `exposure` at 1.0) and then through the encode above. 0.9547 in screen
+ * units, sRGB 243 in bytes.
+ */
+export const GLOW_BRIGHT_KNEE_DISPLAY = srgbTransferOETF(toneShoulder(GLOW_BRIGHT_KNEE));
+
+/**
+ * How much room is left above that knee — the whole range the white core occupies on screen.
+ *
+ * 0.045312, or twelve of 255 levels, and it is small for a reason: the shoulder's asymptote is 1.0,
+ * so *every* linear value from 0.9 to infinity is folded into [0.9, 1.0] and then encoded into
+ * [0.9547, 1]. A bright pass that subtracted the knee and stopped would therefore hand the blur an
+ * excess of at most 0.045 where P4's unbounded linear buffer handed it 0.7 for the same quad, and
+ * the halo measured four bytes tall against P4's 121. Dividing by this restores the effect without
+ * inventing a number: what the blur receives is how far into the white core a pixel is, as a
+ * fraction of the white core itself. Both profiles are in the P4b journal entry.
+ */
+export const GLOW_BRIGHT_HEADROOM = 1 - GLOW_BRIGHT_KNEE_DISPLAY;
+
+/**
+ * The most of the blurred frame the composite is allowed to add back.
+ *
+ * One, and measured rather than picked: across this dataset's 850 `LightParams` rows every authored
+ * `Glow` lies in [0, 1] — 47 rows at exactly 0, 152 at exactly 1, median 0.50, mean 0.5288 — so the
+ * clamp is the range the artists actually used and cannot quietly change a single authored zone.
+ * It exists for a hand-edited or corrupt table, not for the shipped one.
+ */
+export const GLOW_MAX_STRENGTH = 1;
+
+/** Nine-tap Gaussian collapsed onto five bilinear taps; offsets are in texels along one axis. */
+const GLOW_BLUR_OFFSETS: readonly [number, number] = [1.3846153846, 3.2307692308];
+const GLOW_BLUR_WEIGHTS: readonly [number, number, number] = [0.2270270270, 0.3162162162, 0.0702702703];
+
+/**
+ * How many half-resolution texels one unit of the kernel above is worth.
+ *
+ * A nine-tap Gaussian at unit spacing reaches about three texels, which at half resolution is a
+ * six-pixel halo — a rim light, not the wide soft bloom the original client puts around a lamp.
+ * Spreading the same five taps is what buys the width without a third pass, and how far they can be
+ * spread before the kernel stops being a Gaussian and starts being five separate lobes was
+ * measured, not assumed: see the profile in the slice's journal entry.
+ */
+export const GLOW_BLUR_SPREAD = 2;
+
+/** Fixed compile-time loop bound: enough radial detail at half resolution without dynamic indexing. */
+export const GOD_RAY_SAMPLES = 24;
+/** Radius of the synthetic solar source in aspect-corrected screen UVs. */
+const GOD_RAY_SOURCE_RADIUS = 0.12;
+/** Upper edge of the existing 0.18-NDC in-frame fade: below this, behaviour is unchanged. */
+const GOD_RAY_TOP_FULL_NDC = 0.82;
+/** A high source has settled to its bounded carry before reaching the tangent shader position. */
+const GOD_RAY_TOP_SETTLE_NDC = 1.18;
+/** Subtle off-screen daylight without turning the whole clear sky into a veil. */
+const GOD_RAY_OFFSCREEN_CARRY = 1 / 3;
+/** UV 1 + source radius, converted to NDC: the synthetic disc is tangent above the viewport. */
+const GOD_RAY_SOURCE_TOP_NDC = (1 + GOD_RAY_SOURCE_RADIUS) * 2 - 1;
+
+/**
+ * How much of the blurred frame this zone's authored number adds back.
+ *
+ * Absent, non-finite or negative is no glow — the frame the chain composites is then the frame the
+ * direct path would have drawn, which is what makes "leaf ON, strength 0" a testable identity and
+ * not a hedge. Ironforge and Dalaran author exactly that.
+ */
+export function glowAddStrength(glow: number | undefined): number {
+  if (glow === undefined || !Number.isFinite(glow)) return 0;
+  return Math.max(0, Math.min(GLOW_MAX_STRENGTH, glow));
+}
+
+export interface GlowChainSize {
+  readonly width: number;
+  readonly height: number;
+  readonly halfWidth: number;
+  readonly halfHeight: number;
+}
+
+/**
+ * The drawing buffer and the half-resolution buffers the blur runs in.
+ *
+ * Floor rather than round, and floored at one: a 1-pixel-wide canvas halves to zero, and a zero
+ * dimension is a render target the driver refuses to allocate. An odd width halves to the smaller
+ * side, so the blur never samples past the frame it came from.
+ */
+export function glowChainSize(width: number, height: number): GlowChainSize | undefined {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+  const full = { width: Math.floor(width), height: Math.floor(height) };
+  if (full.width < 1 || full.height < 1) return undefined;
+  return Object.freeze({
+    width: full.width,
+    height: full.height,
+    halfWidth: Math.max(1, Math.floor(full.width / 2)),
+    halfHeight: Math.max(1, Math.floor(full.height / 2)),
+  });
+}
+
+/** The three buffers of the chain, and the surface epoch they were allocated against. */
+interface GlowChainTargets extends GlowChainSize {
+  /**
+   * Sky, world and the underwater overlay, at drawing-buffer size, display-referred: the same
+   * bytes the canvas would have received. See `#createFullscreenGlowTargets` for how that is made
+   * to happen and what it rests on.
+   */
+  readonly scene: THREE.WebGLRenderTarget;
+  /** Half resolution: the bright pass lands in A, the horizontal blur in B, the vertical back in A. */
+  readonly blurA: THREE.WebGLRenderTarget;
+  readonly blurB: THREE.WebGLRenderTarget;
+  /** Whether the scene target owns the resolved depth texture the radial pass requires. */
+  readonly godRays: boolean;
+  /** `#webGlContextGeneration` at allocation; a lost/restored context invalidates all three. */
+  readonly contextGeneration: number;
+  /** What the driver actually gave the scene target, after three's own clamp to `maxSamples`. */
+  readonly samples: number;
+}
+
+export interface FullscreenGlowPasses {
+  readonly scene: THREE.Scene;
+  readonly camera: THREE.OrthographicCamera;
+  readonly quad: THREE.Mesh;
+  readonly extract: THREE.ShaderMaterial;
+  readonly blur: THREE.ShaderMaterial;
+  readonly godRays: THREE.ShaderMaterial;
+  readonly composite: THREE.ShaderMaterial;
+  readonly uniforms: {
+    readonly source: { value: THREE.Texture | null };
+    readonly glow: { value: THREE.Texture | null };
+    readonly rays: { value: THREE.Texture | null };
+    readonly depth: { value: THREE.DepthTexture | null };
+    /** One texel along the axis being blurred, in UV. */
+    readonly direction: { value: THREE.Vector2 };
+    readonly strength: { value: number };
+    readonly sunUv: { value: THREE.Vector2 };
+    readonly aspect: { value: number };
+    readonly rayColour: { value: THREE.Color };
+    readonly rayStrength: { value: number };
+  };
+}
+
+/**
+ * The classic glow, depth-aware sun-shaft and composite materials, on one full-screen triangle.
+ *
+ * All four colour passes read and write display-referred pixels, and that is the whole of P4b. The scene target
+ * is flagged so three keeps grading and encoding the world into it (`#createFullscreenGlowTargets`
+ * carries the argument and the tripwires), which means the curve and the sRGB encode have already
+ * run, per material, before any of these passes sees a texel. So the composite is an add and
+ * nothing else: re-applying the shoulder here would bend an already-bent frame, and re-applying
+ * the encode would gamma it twice.
+ *
+ * That is also why the bright pass and the blurs are correct rather than merely cheap. They smear
+ * screen values, which is what `ffxGlow` smeared: the reference's backbuffer is
+ * `VK_FORMAT_B8G8R8A8_UNORM` with no gamma anywhere in its fragment shaders, so its halo is built
+ * from the same numbers a screenshot would show.
+ *
+ * `toneMapped: false` on all four, and no `colorspace_fragment` in any of them: three must not add
+ * a second grade on the composite's way to the canvas.
+ */
+export function buildFullscreenGlowPasses(): FullscreenGlowPasses {
+  const uniforms = {
+    source: { value: null as THREE.Texture | null },
+    glow: { value: null as THREE.Texture | null },
+    rays: { value: null as THREE.Texture | null },
+    depth: { value: null as THREE.DepthTexture | null },
+    direction: { value: new THREE.Vector2(0, 0) },
+    strength: { value: 0 },
+    sunUv: { value: new THREE.Vector2(0.5, 0.5) },
+    aspect: { value: 1 },
+    rayColour: { value: new THREE.Color(1, 1, 1) },
+    rayStrength: { value: 0 },
+  };
+  const vertexShader = `
+      varying vec2 vUV;
+      void main() {
+        // Clip space already, exactly like the underwater overlay: one triangle, no camera.
+        vUV = position.xy * 0.5 + 0.5;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }`;
+  const pass = (fragmentShader: string, own: Record<string, unknown>): THREE.ShaderMaterial =>
+    new THREE.ShaderMaterial({
+      uniforms: own as THREE.ShaderMaterial["uniforms"],
+      vertexShader,
+      fragmentShader,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false,
+      blending: THREE.NoBlending,
+    });
+
+  const extract = pass(`
+      uniform sampler2D source;
+      varying vec2 vUV;
+      void main() {
+        // One bilinear tap, not four: a half-resolution pixel centre lands exactly on the corner
+        // between four full-resolution texels, so the hardware returns their average for free.
+        vec3 colour = texture2D(source, vUV).rgb;
+        // Display-referred, so bounded: see GLOW_BRIGHT_HEADROOM for why the excess is normalised
+        // rather than passed on raw, and what each of the two measures on a hard-edged quad.
+        gl_FragColor = vec4(
+          max(colour - ${GLOW_BRIGHT_KNEE_DISPLAY.toFixed(6)}, 0.0) / ${GLOW_BRIGHT_HEADROOM.toFixed(6)},
+          1.0);
+      }`, { source: uniforms.source });
+
+  const blur = pass(`
+      uniform sampler2D source;
+      uniform vec2 direction;
+      varying vec2 vUV;
+      void main() {
+        vec3 sum = texture2D(source, vUV).rgb * ${GLOW_BLUR_WEIGHTS[0].toFixed(10)};
+        sum += (texture2D(source, vUV + direction * ${GLOW_BLUR_OFFSETS[0].toFixed(10)}).rgb
+              + texture2D(source, vUV - direction * ${GLOW_BLUR_OFFSETS[0].toFixed(10)}).rgb)
+              * ${GLOW_BLUR_WEIGHTS[1].toFixed(10)};
+        sum += (texture2D(source, vUV + direction * ${GLOW_BLUR_OFFSETS[1].toFixed(10)}).rgb
+              + texture2D(source, vUV - direction * ${GLOW_BLUR_OFFSETS[1].toFixed(10)}).rgb)
+              * ${GLOW_BLUR_WEIGHTS[2].toFixed(10)};
+        gl_FragColor = vec4(sum, 1.0);
+      }`, { source: uniforms.source, direction: uniforms.direction });
+
+  const godRays = pass(`
+      uniform sampler2D depth;
+      uniform vec2 sunUv;
+      uniform float aspect;
+      uniform vec3 rayColour;
+      varying vec2 vUV;
+
+      float clearSky(vec2 uv) {
+        // Clear depth is exactly one. Geometry remains below this even near the far fog plane, so
+        // silhouettes, terrain and buildings stop the synthetic source instead of tinting it.
+        return step(1.0, texture2D(depth, uv).r);
+      }
+
+      void main() {
+        vec2 delta = (sunUv - vUV) / float(${GOD_RAY_SAMPLES});
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        vec2 sampleUv = vUV + delta * jitter;
+        float decay = 1.0;
+        float scattered = 0.0;
+        float transmittance = 1.0;
+        for (int i = 0; i < ${GOD_RAY_SAMPLES}; i++) {
+          vec2 fromSun = (sampleUv - sunUv) * vec2(aspect, 1.0);
+          float source = 1.0 - smoothstep(0.0, ${GOD_RAY_SOURCE_RADIUS.toFixed(3)}, length(fromSun));
+          float sky = clearSky(sampleUv);
+          // A single silhouette edge may leak softly over its own antialiased pixel, while several
+          // covered steps compound rapidly and stop a shaft behind a roof or mountain.
+          transmittance *= mix(0.72, 1.0, sky);
+          scattered += sky * source * decay * transmittance;
+          decay *= 0.94;
+          sampleUv += delta;
+        }
+        // The bounded gain exposes the streak without allowing the dense source core to exceed one;
+        // the quality profile applies the final, much smaller display-space strength in composite.
+        float shaft = min(scattered * 0.70, 1.0);
+        gl_FragColor = vec4(rayColour * shaft, 1.0);
+      }`, {
+        depth: uniforms.depth,
+        sunUv: uniforms.sunUv,
+        aspect: uniforms.aspect,
+        rayColour: uniforms.rayColour,
+      });
+
+  const composite = pass(`
+      uniform sampler2D source;
+      uniform sampler2D glow;
+      uniform sampler2D rays;
+      uniform float strength;
+      uniform float rayStrength;
+      varying vec2 vUV;
+      void main() {
+        // Both taps are already the bytes the canvas would have held, so this is the entire
+        // composite: no curve, no encode, nothing to put back. At strength 0 it is a copy, which
+        // is what makes "leaf ON, no authored glow" byte-identical to the direct frame.
+        gl_FragColor = vec4(
+          texture2D(source, vUV).rgb
+          + texture2D(glow, vUV).rgb * strength
+          + texture2D(rays, vUV).rgb * rayStrength,
+          1.0);
+      }`, {
+        source: uniforms.source,
+        glow: uniforms.glow,
+        rays: uniforms.rays,
+        strength: uniforms.strength,
+        rayStrength: uniforms.rayStrength,
+      });
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    -1, -1, 0,
+    3, -1, 0,
+    -1, 3, 0,
+  ], 3));
+  const quad = new THREE.Mesh(geometry, extract);
+  quad.frustumCulled = false;
+  const scene = new THREE.Scene();
+  scene.add(quad);
+  return Object.freeze({
+    scene,
+    camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
+    quad,
+    extract,
+    blur,
+    godRays,
+    composite,
+    uniforms,
+  });
 }
 
 const VMAP_TO_THREE = new THREE.Matrix4().set(
@@ -8830,6 +10957,31 @@ export function composeSpellVisualTransform(
   return attachedToUnit
     ? target.copy(local).multiply(M2_FROM_SCENE)
     : target.copy(M2_TO_SCENE).multiply(local).multiply(M2_FROM_SCENE);
+}
+
+/**
+ * A bone-anchored spell effect's place in the world, offset and all.
+ *
+ * A spell effect is a top-level node whose transform is copied off a bone rather than a child of
+ * that bone, because its lifetime belongs to the cast and not to the unit. The consequence is that
+ * everything a parented item gets from the hierarchy has to be applied here by hand — and one
+ * thing was not: the M2 attachment table stores a *point*, and the bone's frame is the model
+ * translated to the bone's **pivot**, so the point is the pivot plus an authored offset. Sending
+ * that offset through the bone's own world matrix is exactly what parenting would have done to it,
+ * rotation and scale included, and reduces to the previous behaviour when the offset is zero.
+ *
+ * Exported for its own test rather than left inside `#updateVisuals`: it is three lines of matrix
+ * arithmetic whose failure is invisible on nine models out of ten.
+ */
+export function placeOnAttachmentBone(
+  boneMatrixWorld: THREE.Matrix4,
+  offset: THREE.Vector3 | undefined,
+  scale: number,
+  node: THREE.Object3D,
+): void {
+  boneMatrixWorld.decompose(node.position, node.quaternion, _scratchScale);
+  node.scale.setScalar(scale * _scratchScale.x);
+  if (offset && offset.lengthSq() > 0) node.position.copy(offset).applyMatrix4(boneMatrixWorld);
 }
 
 /** Apply the complete authored transform to the resolved effect frame. */

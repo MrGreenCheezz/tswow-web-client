@@ -1,5 +1,5 @@
 export const TERRAIN_GRID_SIZE = 533.3333333333334;
-export const ENVIRONMENT_RANGE = 300;
+export const ENVIRONMENT_RANGE = 400;
 /** Production cap for completed CPU terrain tiles; active renderer pins may exceed it. */
 export const TERRAIN_TILE_CACHE_LIMIT = 64;
 /**
@@ -534,7 +534,7 @@ export class TerrainClient {
     this.#evictTiles();
   }
 
-  /** How many times this tile alone has changed: only that moves a vertex or reopens a hole. */
+  /** How many times this tile alone changed: this replaces its interior and reopens its holes. */
   ownRevision(map: number, grid: TerrainGrid): number {
     return this.#tileRevisions.get(`${map}/${grid.x}/${grid.y}`) ?? 0;
   }
@@ -542,10 +542,10 @@ export class TerrainClient {
   /**
    * How many times this tile — or a tile whose ground/liquid corners it borrows — has changed.
    *
-   * All eight neighbours, not just the four sides. Terrain normals borrow the four cardinal sides,
-   * while water corner smoothing also reads the diagonal cell at a tile corner. Leaving the
-   * diagonals out means a late corner tile can arrive without invalidating the water surface that
-   * sampled it as missing.
+   * All eight neighbours, not just the four sides. Terrain normals borrow the cardinal skirt and a
+   * shared far-edge endpoint is canonically owned by the diagonal tile; water corner smoothing also
+   * reads that diagonal cell. Leaving diagonals out means a late corner tile can arrive without
+   * replacing the edge position/normal or the water surface that sampled it as missing.
    *
    * This is only an invalidation dependency: the renderer still loads the nine visible tiles, and
    * the corner tiles are already in that ring. It does not add downloads.
@@ -1160,6 +1160,20 @@ export class EnvironmentClient {
     if (!this.#enqueueAnimation({ key, name, bones, priority })) return undefined;
     this.#scheduleAnimationDrain();
     return undefined;
+  }
+
+  /**
+   * Whether this exact rig's sidecar is queued or actually being fetched right now.
+   *
+   * The renderer's action queue needs one fact it could not previously get: the difference between
+   * "the keyframes are not here" and "the keyframes are on the wire". Without it an action is
+   * dropped on the same terms whether nothing is coming or its own 9.4 MiB download is in
+   * progress behind two lanes. Two map lookups; safe to call per frame.
+   */
+  animationsInFlight(name: string, bones: number): boolean {
+    if (this.#disposed) return false;
+    const key = animationKey(name, bones);
+    return this.#animationQueue.has(key) || this.#animationInflight.has(key);
   }
 
   async #loadAnimations(job: AnimationLoadJob): Promise<void> {
@@ -2335,6 +2349,14 @@ function isEnvironmentObject(value: unknown): value is EnvironmentObject {
   if ((object.kind !== "m2" && object.kind !== "wmo") || typeof object.name !== "string") return false;
   if (object.interior !== undefined && typeof object.interior !== "boolean") return false;
   if (object.doodadSet !== undefined && (!Number.isInteger(object.doodadSet) || (object.doodadSet as number) < 0)) return false;
+  if (object.tint !== undefined) {
+    if (!Array.isArray(object.tint) || object.tint.length !== 4) return false;
+    if (!object.tint.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) return false;
+  }
+  if (object.localLight !== undefined) {
+    if (!Array.isArray(object.localLight) || object.localLight.length !== 4) return false;
+    if (!object.localLight.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) return false;
+  }
   const quaternion = [object.quaternionX, object.quaternionY, object.quaternionZ, object.quaternionW];
   if (quaternion.some((value) => value !== undefined) && !quaternion.every((value) => typeof value === "number" && Number.isFinite(value))) return false;
   if (object.bounds === undefined) return true;

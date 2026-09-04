@@ -103,8 +103,17 @@ test("Ж2.1 the sound route serves from disk, and answers 404 for what the clien
     const first = await fetch(url(FOOTSTEP), { headers: ORIGIN });
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("content-type"), "audio/wav");
-    assert.equal(first.headers.get("cache-control"), "public, max-age=604800, immutable");
+    assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    const etag = first.headers.get("etag");
+    assert.match(etag ?? "", /^"[0-9a-f]{40}"$/);
     assert.equal((await first.arrayBuffer()).byteLength, 27908);
+    assert.equal(runs, 1);
+
+    const unchanged = await fetch(url(FOOTSTEP), {
+      headers: { ...ORIGIN, "if-none-match": etag },
+    });
+    assert.equal(unchanged.status, 304, "an unchanged sound keeps the stable URL without resending its body");
+    assert.equal((await unchanged.arrayBuffer()).byteLength, 0);
     assert.equal(runs, 1);
 
     // Checked by looking, not by timing: the whole kit is on disk after the one miss.
@@ -618,8 +627,8 @@ test("Н1а every weapon that can be heard is heard, and the ones that cannot ar
   };
 
   const raw = count((item) => (item.soundOverrideSubclass >= 0 ? item.soundOverrideSubclass : item.subClass));
-  assert.equal(raw.weapons, 6652, "Item.dbc holds 6,652 weapons");
-  assert.equal(raw.exact, 5756, "and 5,756 of them hit a subclass|material row exactly");
+  assert.equal(raw.weapons, 6651, "the active TSWoW Item.dbc holds 6,651 weapons");
+  assert.equal(raw.exact, 5755, "and 5,755 of them hit a subclass|material row exactly");
   // The 264 that do not are the four subclasses that ship a single row — Bow, Gun, Exotic,
   // Exotic2 — where the material has nothing to choose between.
   assert.equal(raw.viaSubclass, 264);
@@ -627,7 +636,7 @@ test("Н1а every weapon that can be heard is heard, and the ones that cannot ar
   assert.deepEqual([...raw.noRow].sort((left, right) => left[0] - right[0]), [[16, 135], [18, 158], [19, 339]]);
 
   const asked = count(impactSubclassOf);
-  assert.equal(asked.exact, 6027, "a crossbow asking for the bow row hits it exactly");
+  assert.equal(asked.exact, 6026, "a crossbow asking for the bow row hits it exactly");
   assert.equal(asked.viaSubclass, 286);
   // Only the wand is left silent, because only the wand is meant to be.
   assert.deepEqual([...asked.noRow].sort((left, right) => left[0] - right[0]), [[19, 339]]);

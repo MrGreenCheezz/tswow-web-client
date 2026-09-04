@@ -17,6 +17,7 @@ import { attachDragAndDrop, bagSection, itemSlot } from "./ItemSlots.js";
 import { skinnable, slotElement } from "./Slots.js";
 import { Panel } from "./Widgets.js";
 import { setIconSource } from "./IconImage.js";
+import { BACKPACK_BUTTON_TEXTURE_PATH, nativeUiTextureUrl } from "./NativeUiSkin.js";
 
 /**
  * The bags: the equipment doll, the backpack, the four carried bags, the keyring and the bar that
@@ -96,12 +97,18 @@ function keyring(): Panel {
 
 /** The bar of bag buttons. Each button is also the container's own slot, so a bag can be dropped in. */
 function showBagBar(inventory: PlayerInventoryState): void {
-  const buttons: HTMLElement[] = [
-    barButton("🎒", "Рюкзак", freeSlots(inventory.backpack), inventory.backpack.length, () => {
+  const backpack = barButton(
+    nativeUiTextureUrl(game.gatewayOrigin, BACKPACK_BUTTON_TEXTURE_PATH),
+    "Рюкзак",
+    freeSlots(inventory.backpack),
+    inventory.backpack.length,
+    () => {
       inventoryWindow.hidden = !inventoryWindow.hidden;
       if (game.world) renderInventory(game.world.state);
-    }),
-  ];
+    },
+  );
+  backpack.classList.add("bag-bar-backpack");
+  const buttons: HTMLElement[] = [backpack];
   for (let index = 0; index < 4; index++) {
     const bagSlot = INVENTORY_SLOT_BAG_START + index;
     const held = inventory.bags.find((bag) => bag.bagSlot === bagSlot);
@@ -140,7 +147,7 @@ function barButton(icon: string, title: string, free: number, size: number, onCl
     setIconSource(image, icon);
     image.addEventListener("error", () => image.remove(), { once: true });
     button.append(image);
-  } else {
+  } else if (icon) {
     const glyph = document.createElement("span");
     glyph.textContent = icon;
     button.append(glyph);

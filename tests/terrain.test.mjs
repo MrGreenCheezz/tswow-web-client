@@ -633,8 +633,8 @@ test("terrain invalidation includes a diagonal tile for water corner dependencie
     await new Promise((resolve) => setImmediate(resolve));
     const before = terrain.tileRevision(1, centre);
 
-    // The corner cell at (33, 33) is diagonal to the centre tile. Its arrival must invalidate the
-    // centre tile even though terrain normals only borrow cardinal neighbours.
+    // The corner cell at (33, 33) is diagonal to the centre tile. Its arrival invalidates both the
+    // water corner and the canonical terrain endpoint shared by the four touching meshes.
     terrain.heightAt(1, cell(33), cell(33));
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(terrain.tileRevision(1, centre) > before, "a diagonal arrival changes the rebuild revision");

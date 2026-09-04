@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
 
@@ -8,6 +9,8 @@ import {
   setTerrainSplatMicroNormals,
 } from "../dist/code/browser/TerrainSplat.js";
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
+
+const terrainSplatSource = await readFile(new URL("../src/browser/TerrainSplat.ts", import.meta.url), "utf8");
 
 function splat(painted = false) {
   return {
@@ -67,7 +70,13 @@ test("terrain micro-normal is bounded, versioned, and runs before authored world
   assert.match(onShader.fragmentShader, /dFdx\(terrainMicroHeight\)/);
   assert.match(onShader.fragmentShader, /dFdy\(terrainMicroHeight\)/);
   assert.match(onShader.fragmentShader, /smoothstep\(50\.0, 125\.0, length\(vViewPosition\)\)/);
-  assert.match(onShader.fragmentShader, /fract\(vSplatUv \* 16\.0\)/);
+  assert.doesNotMatch(terrainSplatSource, /fract\(vSplatUv\s*\*\s*16\.0\)/,
+    "the optional detail pass must not draw a periodic line at every authored chunk border");
+  assert.doesNotMatch(terrainSplatSource, /terrainTileEdge(?:Distance|Footprint|Width|Fade)|fwidth\(vSplatUv\)/,
+    "an outer-edge guard still outlines every separately drawn ADT mesh");
+  assert.match(terrainSplatSource,
+    /terrainMicroGradient\s*\*=\s*0\.08\s*\*\s*terrainMicroOutlierFade\s*\*\s*terrainDistanceFade/,
+    "only implausible derivative spikes and distance may attenuate micro normals");
   assert.match(onShader.fragmentShader, /normal = normalize\(/);
   assert.ok(onShader.fragmentShader.indexOf("terrain-micro-normal-v1")
     < onShader.fragmentShader.indexOf("vec3 wowViewSunDirection"));

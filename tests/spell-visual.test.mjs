@@ -6,10 +6,16 @@ import {
   TARGET_FLAG_GAMEOBJECT, TARGET_FLAG_ITEM, TARGET_FLAG_SOURCE_LOCATION, TARGET_FLAG_STRING,
   TARGET_FLAG_TRADE_ITEM, TARGET_FLAG_UNIT, TARGET_FLAG_UNIT_MINIPET,
 } from "../dist/code/world/SpellProtocol.js";
-import { applySpellVisualTransformFrame, composeSpellVisualTransform } from "../dist/code/browser/WorldRenderer3D.js";
-import { loadSpellVisuals, parseSpellVisuals } from "../dist/code/gateway/SpellVisual.js";
 import {
-  CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED, MISSILE_MAX_SECONDS,
+  applySpellVisualTransformFrame, composeSpellVisualTransform, placeOnAttachmentBone,
+} from "../dist/code/browser/WorldRenderer3D.js";
+import { attachmentOffset } from "../dist/code/browser/Attachment.js";
+import {
+  loadSpellVisualKits, loadSpellVisuals, parseSpellVisualKits, parseSpellVisuals,
+} from "../dist/code/gateway/SpellVisual.js";
+import {
+  AREA_EFFECT_SIZE_MAX_GROWTH, CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED,
+  MISSILE_MAX_SECONDS, areaEffectScale,
   expiredInstances, missileDirection, missilePoint, missileSeconds, planSpellAuraDone, planSpellAuraState, planSpellCastStart,
   planSpellVisual, spellVisualTransformEuler, spellVisualTransformOffset,
 } from "../dist/code/browser/SpellVisuals.js";
@@ -636,6 +642,199 @@ test("a world effect stands on the ground rather than inside somebody", () => {
   assert.equal(plan.instances.length, 1);
   assert.equal(plan.instances[0].anchor, undefined);
   assert.deepEqual(plan.instances[0].position, { x: 4, y: 5, z: 6 });
+});
+
+/* --- S3: kits by their own id, the authored attachment offset and AreaEffectSize -------------- */
+
+/** A WDBC file with the header this repository's reader validates, and nothing else. */
+function dbcPayload(fieldCount, recordSize, rows, strings = new Uint8Array(1)) {
+  const payload = new Uint8Array(20 + rows.length * recordSize + strings.length);
+  const view = new DataView(payload.buffer);
+  payload.set([0x57, 0x44, 0x42, 0x43]); // WDBC
+  view.setUint32(4, rows.length, true);
+  view.setUint32(8, fieldCount, true);
+  view.setUint32(12, recordSize, true);
+  view.setUint32(16, strings.length, true);
+  rows.forEach((row, index) => payload.set(row, 20 + index * recordSize));
+  payload.set(strings, 20 + rows.length * recordSize);
+  return payload;
+}
+
+function stringBytes(values) {
+  const offsets = new Map();
+  const parts = [0];
+  let offset = 1;
+  for (const value of values) {
+    const bytes = new TextEncoder().encode(value);
+    offsets.set(value, offset);
+    parts.push(...bytes, 0);
+    offset += bytes.length + 1;
+  }
+  return { bytes: Uint8Array.from(parts), offsets };
+}
+
+/** SpellVisualEffectName: 7 fields of 28 bytes, byte offsets out of src/generated/dbcLayouts.ts. */
+function effectNameRow(id, file, offsets, { scale = 1, areaSize = 1 } = {}) {
+  const row = new Uint8Array(28);
+  const view = new DataView(row.buffer);
+  view.setInt32(0, id, true);
+  view.setUint32(8, offsets.get(file), true);
+  view.setFloat32(12, areaSize, true);
+  view.setFloat32(16, scale, true);
+  view.setFloat32(20, 0.01, true);
+  view.setFloat32(24, 100, true);
+  return row;
+}
+
+/** SpellVisualKit: 38 fields of 152 bytes. */
+function kitRow(id, { startAnim = -1, anim = -1, rightHand = 0, world = 0, sound = 0, shake = 0 } = {}) {
+  const row = new Uint8Array(152);
+  const view = new DataView(row.buffer);
+  view.setInt32(0, id, true);
+  view.setInt32(4, startAnim, true);
+  view.setInt32(8, anim, true);
+  view.setInt32(28, rightHand, true);
+  view.setInt32(56, world, true);
+  view.setInt32(60, sound, true);
+  view.setInt32(64, shake, true);
+  return row;
+}
+
+function syntheticKitTables() {
+  const strings = stringBytes(["Spells\\Hand.mdx", "Spells\\Ring.mdx"]);
+  const names = dbcPayload(7, 28, [
+    effectNameRow(1, "Spells\\Hand.mdx", strings.offsets),
+    // The one row whose AreaEffectSize is not the table's identity, and exceeds its own Scale.
+    effectNameRow(2, "Spells\\Ring.mdx", strings.offsets, { scale: 1.5, areaSize: 4 }),
+  ], strings.bytes);
+  const kits = dbcPayload(38, 152, [
+    kitRow(20, { anim: 53, rightHand: 1, sound: 77 }),
+    kitRow(21, { world: 2 }),
+    // Shake and nothing else: no model, no pose, no sound. Not a kit.
+    kitRow(22, { shake: 9 }),
+  ]);
+  return { names, kits };
+}
+
+test("S3: kits resolve by their own id, and a shake-only row is not one", () => {
+  const { names, kits } = syntheticKitTables();
+  const byId = parseSpellVisualKits(kits, names);
+  assert.deepEqual([...byId.keys()].sort((a, b) => a - b), [20, 21],
+    "the row with only a ShakeID is dropped exactly as it is inside a spell");
+  assert.equal(byId.get(20).animation, 53);
+  assert.equal(byId.get(20).startAnimation, -1);
+  assert.equal(byId.get(20).sound, 77);
+  assert.deepEqual(byId.get(20).effects,
+    [{ path: "Spells\\Hand.m2", attachment: 22, scale: 1 }],
+    "the .mdx the table stores is renamed on the way out, as it is for a spell");
+});
+
+test("S3: a kit answered by id is the same record a spell's phase carries", () => {
+  const { names, kits } = syntheticKitTables();
+  const byId = parseSpellVisualKits(kits, names);
+  // The same three tables reached the long way round: Spell -> SpellVisual -> SpellVisualKit.
+  const visualRow = new Uint8Array(128);
+  new DataView(visualRow.buffer).setInt32(0, 10, true);
+  new DataView(visualRow.buffer).setInt32(8, 20, true); // CastKit
+  const visuals = dbcPayload(32, 128, [visualRow]);
+  const spellRow = new Uint8Array(936);
+  new DataView(spellRow.buffer).setInt32(0, 133, true);
+  new DataView(spellRow.buffer).setInt32(524, 10, true); // SpellVisualID[0]
+  const spells = dbcPayload(234, 936, [spellRow]);
+  const bySpell = parseSpellVisuals(spells, visuals, kits, names);
+  assert.deepEqual(bySpell.get(133).cast, byId.get(20),
+    "one resolution, two routes — the browser holds one vocabulary for both");
+});
+
+test("S3: AreaEffectSize is carried only when it says something Scale does not", () => {
+  const byId = parseSpellVisualKits(syntheticKitTables().kits, syntheticKitTables().names);
+  // Row 1 authors the table's identity 1, which is dropped: 552 of the 588 authored values inside
+  // this dataset's area-column kits are that 1 and no rule can act on it. Measured over the whole
+  // dataset, only 271 of 81,239 effect placements carry the field at all after this filter, and a
+  // 200-spell answer grew by zero bytes.
+  assert.equal(byId.get(20).effects[0].areaSize, undefined);
+  // Row 2 authors 4 against a Scale of 1.5, which is the only shape worth carrying.
+  assert.equal(byId.get(21).effects[0].areaSize, 4);
+  assert.equal(byId.get(21).effects[0].scale, 1.5);
+});
+
+test("S3: AreaEffectSize only ever grows an area placement, and never past the cap", () => {
+  // The rule, spelled out: applied when it exceeds both 1 and the authored Scale, capped at twice
+  // that Scale. Measured over the 687 distinct area-phase placements this dataset's spells reach,
+  // it moves four of them, across 13 spells.
+  assert.equal(areaEffectScale(1, undefined), 1, "no authored value changes nothing");
+  assert.equal(areaEffectScale(1, 1), 1, "the identity changes nothing");
+  assert.equal(areaEffectScale(2, 0.5), 2, "it never shrinks an authored scale");
+  assert.equal(areaEffectScale(2, 2), 2, "and a value equal to Scale is not squared");
+  assert.equal(areaEffectScale(1.5, 4), 3, "growth stops at twice the authored scale");
+  assert.equal(areaEffectScale(2, 3), 3, "and stops at the authored value when that comes first");
+  assert.equal(areaEffectScale(1, 20), AREA_EFFECT_SIZE_MAX_GROWTH,
+    "thunderclap_cast_base's 20 does not put a 130-yard ring on the ground");
+});
+
+test("S3: an area kit is drawn at the size the rule chose, and other phases are untouched", () => {
+  const ring = { path: "Spells\\Ring.m2", attachment: -1, scale: 1.5, areaSize: 4 };
+  const phase = { startAnimation: -1, animation: -1, effects: [ring], sound: 0 };
+  const plan = planSpellVisual({ id: 1, instantArea: phase, cast: phase },
+    { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [] }, 0);
+  assert.deepEqual(plan.instances.map((instance) => instance.scale).sort((a, b) => a - b), [1.5, 3],
+    "the area column reads AreaEffectSize; the cast column keeps the authored Scale");
+});
+
+test("S3: a bone-anchored effect lands on the authored attachment point, not on the pivot", () => {
+  // The defect the slice exists for. An item is parented to the bone and gets the pivot-to-point
+  // offset for free; a spell effect is a top-level node whose transform is copied off the bone,
+  // and the copy stopped at the pivot. Measured on the client's own rigs, 98 of 7,080 spell
+  // placements are offset from their pivot — TaurenMale's head by 0.753 yards.
+  const wvm = { attachments: [{ id: 20, bone: 1, position: [1, 2, 3] }] };
+  const pivots = Float32Array.from([0, 0, 0, 0, 0, 0]);
+  const offset = attachmentOffset(wvm, pivots, 20);
+  assert.deepEqual(offset.toArray(), [1, 2, 3], "bone 1 sits at the origin, so the point is the offset");
+
+  const bone = new THREE.Object3D();
+  bone.updateMatrixWorld(true);
+  const node = new THREE.Object3D();
+  placeOnAttachmentBone(bone.matrixWorld, offset, 1, node);
+  assert.deepEqual(node.position.toArray(), [1, 2, 3], "the node lands on the point");
+  assert.equal(node.scale.x, 1);
+
+  // With no offset the placement is the bone's own pivot, exactly what it was before the slice.
+  const plain = new THREE.Object3D();
+  placeOnAttachmentBone(bone.matrixWorld, new THREE.Vector3(), 2, plain);
+  assert.deepEqual(plain.position.toArray(), [0, 0, 0]);
+  assert.equal(plain.scale.x, 2, "and the instance scale still multiplies the bone's own");
+
+  // The offset is in the bone's frame, so the bone's rotation, translation and scale carry it —
+  // which is exactly what parenting would have done to a hung item.
+  const turned = new THREE.Object3D();
+  turned.position.set(10, 0, 0);
+  turned.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+  turned.scale.setScalar(2);
+  turned.updateMatrixWorld(true);
+  const carried = new THREE.Object3D();
+  placeOnAttachmentBone(turned.matrixWorld, offset, 1, carried);
+  const expected = offset.clone().applyMatrix4(turned.matrixWorld);
+  assert.ok(carried.position.distanceTo(expected) < 1e-6, carried.position.toArray().join(","));
+  assert.equal(carried.scale.x, 2, "and the bone's own scale still reaches the effect");
+});
+
+test("S3: the kit route reaches kits this dataset's spells cannot", withDataset, async () => {
+  const kits = await loadSpellVisualKits(dbcDirectory);
+  // Measured on this dataset: 8,663 SpellVisualKit rows, 8,217 of which resolve to a model, a pose
+  // or a sound. 7,023 of those are named by some Spell row; the other 1,194 are reachable only by
+  // kit id, which is the number the packet carries.
+  assert.ok(kits.size > 8_000, `${kits.size} resolvable kits`);
+  // Kit ids this server's own core sends through SMSG_PLAY_SPELL_VISUAL.
+  const food = kits.get(406);        // SPELL_VISUAL_KIT_FOOD, SharedDefines.h:375
+  const drink = kits.get(438);       // SPELL_VISUAL_KIT_DRINK, SharedDefines.h:376
+  const glaive = kits.get(7668);     // boss_illidan.cpp:212, SPELL_GLAIVE_VISUAL_KIT
+  assert.ok(food?.effects.some((effect) => /food/i.test(effect.path)), "eating shows a model");
+  assert.ok(drink?.effects.some((effect) => /tankard/i.test(effect.path)), "drinking holds a tankard");
+  assert.equal(food.animation, 61, "and both play the same authored pose");
+  assert.equal(drink.animation, 61);
+  assert.ok(glaive?.effects.some((effect) => /shadow_nova_area/i.test(effect.path)),
+    "and Illidan's glaive has a picture, which no spell row could have reached");
+  assert.equal(glaive.sound, 11658);
 });
 
 test("what is over is over, and only that", () => {

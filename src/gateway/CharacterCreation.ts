@@ -8,9 +8,10 @@ import { openDbcFile } from "./Dbc.js";
  * unnamed and, on a frame or a tooltip, printed as its number. `ChrRaces`, `ChrClasses` and
  * `CharBaseInfo` are vendored under `tools/dbd/` and were read by nothing but `ClientPrefix`.
  *
- * Served whole and once, the arrangement `/dbc/talents` and `/dbc/areas` use: measured on this
- * dataset the payload is 4,178 bytes for 21 races, 10 classes and 62 pairs, and the three tables
- * take 2.9 ms to read — smaller and cheaper than the question of whether to page it.
+ * Served whole and once, the arrangement `/dbc/talents` and `/dbc/areas` use: re-measured on this
+ * dataset after G1 added the two display-id columns, the payload is 4,876 bytes for 21 races, 10
+ * classes and 62 pairs — 924 of those bytes are the new columns — and the three tables take 1.74 ms
+ * to read. Smaller and cheaper than the question of whether to page it.
  *
  * Three column facts are worth stating because none of them is what its name suggests:
  *
@@ -33,6 +34,28 @@ export interface CreationRace {
   name: string;
   /** `ClientPrefix`: the two letters a race's own art is named with, e.g. `Hu`, `Ta`. */
   clientPrefix: string;
+  /**
+   * `ClientFileString`: `Human`, `NightElf`, `Scourge` — the token the creation screen keys on.
+   *
+   * Not a synonym for `clientPrefix`. `CharacterCreate.lua` upper-cases what `GetNameForRace()`
+   * returns second and looks up `RACE_ICON_TCOORDS[fileString.."_"..gender]`, `RACE_INFO_<FILE>`
+   * and `ABILITY_INFO_<FILE><n>` with it (`:315`, `:317`, `:319`), and `GlueParent.lua`'s
+   * `SetBackgroundModel` builds `Interface\Glues\Models\UI_<name>\UI_<name>.m2` out of it. `Hu`
+   * would miss every one of those.
+   */
+  clientFileString: string;
+  /**
+   * `HairCustomization` and `FacialHairCustomization[2]`: the words the customisation buttons use.
+   *
+   * `CharacterCreate_UpdateHairCustomization` (`:511-515`) prints
+   * `HAIR_<GetHairCustomization()>_STYLE`, `HAIR_<…>_COLOR` and
+   * `FACIAL_HAIR_<GetFacialHairCustomization()>`, so these are keys into `GlueStrings`, not
+   * decoration. Measured on this dataset: `NORMAL` for every playable race's hair, and the facial
+   * pair runs `NORMAL`/`NORMAL` for humans through `HORNS`/`HORNS` for tauren and
+   * `MARKINGS`/`FEATURES` for the two draenei sexes — the array's two elements are male and female.
+   */
+  hairCustomization: string;
+  facialHairCustomization: [string, string];
   /** `(Flags & CHRRACES_FLAGS_NOT_PLAYABLE) === 0`. */
   playable: boolean;
   /** `Alliance`: 0 Alliance, 1 Horde, 2 neither — a race no one can create. */
@@ -42,6 +65,29 @@ export interface CreationRace {
   baseLanguage: number;
   /** `Required_expansion`: 0 vanilla, 1 Burning Crusade, 2 Wrath. */
   expansion: number;
+  /**
+   * `MaleDisplayID` and `FemaleDisplayID`: which `CreatureDisplayInfo` row a new character of this
+   * race and sex is drawn from.
+   *
+   * The pair the original creation screen builds its 3D preview out of, and the one thing the form
+   * could not do without: everything else here names a race, and these name a *model*. The columns
+   * have been in the vendored `ChrRaces` layout all along (`src/generated/dbcLayouts.ts`, indices 4
+   * and 5) and nothing read them, so the preview had to be told a display id from somewhere else —
+   * which for a race a module adds means being told nothing at all.
+   *
+   * Carried per race rather than resolved here because resolving is `CreatureDisplayInfo`'s job and
+   * that table is already served, whole and by id, on its own routes. Measured on this dataset: all
+   * ten playable races carry a non-zero pair — human 49/50 through draenei 16125/16126 — and not one
+   * of the 21 rows leaves either column at 0, so the fallback below is for a dataset yet to exist.
+   *
+   * Optional in the *type* although this loader always writes both, because this interface is also
+   * the wire contract the browser validates an answer against: the gateway address is a field on
+   * the login screen, so the answer a page holds may have come from a build that predates these two
+   * columns, and a consumer that assumed them would read `undefined` as a display id rather than as
+   * "this gateway does not know". `?` is that distinction, said once, where both ends can see it.
+   */
+  maleDisplayId?: number;
+  femaleDisplayId?: number;
   /**
    * The classes this race may take, out of `CharBaseInfo`.
    *
@@ -126,11 +172,19 @@ export async function loadCharacterCreation(dbcDirectory: string): Promise<Chara
       id,
       name: raceTable.locstring(row, "Name_lang"),
       clientPrefix: raceTable.string(row, "ClientPrefix"),
+      clientFileString: raceTable.string(row, "ClientFileString"),
+      hairCustomization: raceTable.string(row, "HairCustomization"),
+      facialHairCustomization: [
+        raceTable.string(row, "FacialHairCustomization", 0),
+        raceTable.string(row, "FacialHairCustomization", 1),
+      ],
       playable: (raceTable.int(row, "Flags") & RACE_FLAG_NOT_PLAYABLE) === 0,
       side: raceTable.int(row, "Alliance"),
       factionId: raceTable.int(row, "FactionID"),
       baseLanguage: raceTable.int(row, "BaseLanguage"),
       expansion: raceTable.int(row, "Required_expansion"),
+      maleDisplayId: raceTable.int(row, "MaleDisplayID"),
+      femaleDisplayId: raceTable.int(row, "FemaleDisplayID"),
       classes: [...(pairs.get(id) ?? [])].sort((left, right) => left - right),
     });
   }

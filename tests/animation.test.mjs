@@ -2,17 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { animationFileSuffix, m2Animations, parseM2Skeleton } from "../tools/m2.mjs";
-import { encodeWvaAnimations } from "../tools/wvm.mjs";
+import { encodeWvaAnimations, encodeWvm9 } from "../tools/wvm.mjs";
+import { readGlobalSequences, readRibbonEmitters } from "../tools/m2-particles.mjs";
 import { BASE_ANIMATION_NAMES, baseAnimationIds, loadAnimationCatalog } from "../tools/animations.mjs";
-import { decodeWvaAnimations } from "../dist/code/browser/Wvm.js";
+import { decodeWvaAnimations, decodeWvm9 } from "../dist/code/browser/Wvm.js";
 import {
-  actionAnimation, addSkinnedClips, animationBlend, animationFadeWindow, animationTransition, chooseAnimation, pendingActionExpired,
+  createQuadBuffers, createRibbonSystem, stepRibbon, writeRibbonStrip,
+} from "../dist/code/browser/Particles.js";
+import {
+  actionAnimation, addSkinnedClips, animationBlend, animationFadeWindow, animationTransition, chooseAnimation,
+  clipBlendTime, pendingActionExpired,
   pendingActionFate, poseAnimation,
   isTerminalUnitPose, needsSidecarAnimations, poseTransition, readyAnimation, resolveActionAnimation,
   resolveAnimation, resolveSpellVisualAnimation,
-  shouldCrossFadeAnimation, shouldStopPreviousAnimation, SHOOT_METADATA_WAIT, weaponPose,
+  shouldCrossFadeAnimation, shouldFadeOutPreviousAnimation, shouldStopPreviousAnimation, SHOOT_METADATA_WAIT,
+  spellVisualAnimationCandidates, weaponPose,
   locomotionBoneMask, locomotionOverlayClip, mountSpecialAnimation, isUnitFlying,
   shouldPromoteActionToLocomotionOverlay,
+  commitLocomotion, isLocomotionGait, LOCOMOTION_COMMIT_WINDOW,
+  applyGlobalSequenceBones, applyStrafeYaw, buildSkinnedTemplateFrom, instantiateSkinned,
+  resolveStrafeYawBones, stepStrafeYaw, strafeYawBonesFor,
+  strafeYawTarget, STRAFE_YAW_DIAGONAL, STRAFE_YAW_PURE, STRAFE_YAW_RATE,
 } from "../dist/code/browser/AnimatedModel.js";
 import {
   UNIT_STAND_STATE_DEAD, UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_SIT_LOW_CHAIR,
@@ -131,6 +141,80 @@ function standing(overrides = {}) {
 
 test.after(() => archives?.close());
 
+test("global-sequence-only paladin hand effects keep the rig that animates their ribbons", withClient, async () => {
+  const model = await archives.read("Spells\\Holy_Precast_Med_Hand.m2");
+  assert.ok(model, "the Holy Light hand flourish should exist in the stock client");
+
+  const skeleton = parseM2Skeleton(model);
+  assert.ok(skeleton,
+    "a model whose bones run only on global sequences is still rigged; dropping it freezes the hand rings into flat cards");
+  assert.equal(skeleton.bones.length, 16);
+  assert.equal(skeleton.clips.length, 0,
+    "this fixture deliberately has no animation-local channels, which is the old false-static case");
+  assert.equal(skeleton.globalChannels.length, 13);
+  assert.ok(skeleton.globalChannels.some((channel) => channel.bone === 10 && channel.kind === 0));
+  assert.ok(skeleton.globalChannels.some((channel) => channel.bone === 11 && channel.kind === 0));
+  assert.ok(skeleton.globalChannels.some((channel) => channel.bone === 12 && channel.kind === 0),
+    "the three moving parents are what pull the three authored hand ribbons through depth");
+
+  const globalsAt = model.readUInt32LE(0x18);
+  const globalSequences = readGlobalSequences(model, {
+    count: model.readUInt32LE(0x14), offset: globalsAt,
+  });
+  const ribbons = readRibbonEmitters(model, {
+    count: model.readUInt32LE(0x120), offset: model.readUInt32LE(0x124),
+  });
+  assert.equal(ribbons.length, 3);
+  const artifact = encodeWvm9({
+    positions: new Float32Array([0, 0, 0]),
+    normals: new Float32Array([0, 0, 1]),
+    uv0: new Float32Array([0, 0]),
+    uv1: new Float32Array([0, 0]),
+    boneIndices: new Uint8Array(4),
+    boneWeights: new Uint8Array(4),
+    indices: new Uint16Array(0),
+    submeshes: [], batches: [], textures: [],
+    bounds: { min: [0, 0, 0], max: [0, 0, 0], radius: 0 },
+  }, skeleton, [0], { globalSequences, particleEmitters: [], ribbonEmitters: ribbons });
+  const decoded = decodeWvm9(artifact.buffer.slice(
+    artifact.byteOffset, artifact.byteOffset + artifact.byteLength));
+  assert.equal(decoded.skeleton.globalChannels.length, skeleton.globalChannels.length,
+    "WVG1 must carry every global bone channel through the published artifact");
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
+  geometry.setAttribute("skinIndex", new THREE.Uint8BufferAttribute([0, 0, 0, 0], 4));
+  geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute([0, 0, 0, 0], 4));
+  const template = buildSkinnedTemplateFrom(geometry, decoded.skeleton, 1);
+  assert.ok(template);
+  const instance = instantiateSkinned(template, new THREE.MeshBasicMaterial());
+  applyGlobalSequenceBones(instance, template, decoded.globalSequences, 0);
+  const before = instance.skeleton.bones[10].position.clone();
+  applyGlobalSequenceBones(instance, template, decoded.globalSequences, 180);
+  assert.ok(instance.skeleton.bones[10].position.distanceTo(before) > 1e-4,
+    "the global clock must move the ribbon parent instead of leaving the hand card static");
+
+  // Exercise the actual downstream consumer too: each authored ribbon samples its posed bone,
+  // retains the previous positions, and must produce a strip with real area rather than three
+  // copies collapsed onto the additive hand card.
+  const trail = createRibbonSystem(decoded.ribbonEmitters[0], decoded.globalSequences);
+  for (let frame = 1; frame <= 18; frame++) {
+    const worldMs = frame * 20;
+    applyGlobalSequenceBones(instance, template, decoded.globalSequences, worldMs);
+    instance.root.updateMatrixWorld(true);
+    const bone = instance.skeleton.bones[trail.ribbon.bone];
+    assert.ok(bone);
+    stepRibbon(trail, 0.02, { matrix: bone.matrixWorld.elements, animationMs: 0, worldMs });
+  }
+  const strip = createQuadBuffers(64);
+  assert.ok(writeRibbonStrip(trail, strip) > 0, "the real Holy Light ribbon emits a strip");
+  const a = new THREE.Vector3(strip.positions[0], strip.positions[1], strip.positions[2]);
+  const b = new THREE.Vector3(strip.positions[3], strip.positions[4], strip.positions[5]);
+  const c = new THREE.Vector3(strip.positions[6], strip.positions[7], strip.positions[8]);
+  assert.ok(new THREE.Triangle(a, b, c).getArea() > 1e-6,
+    "the first rendered ribbon quad has non-zero area after the global pose moves its bone");
+});
+
 test("the names the client plays are the ones AnimationData.dbc assigns", withClient, () => {
   // The point of the generated table: before it, seven of the eighteen constants in the browser
   // named a different pose than the constant did, and nothing could tell.
@@ -150,11 +234,63 @@ test("the names the client plays are the ones AnimationData.dbc assigns", withCl
 });
 
 test("animation blends cross-fade continuous poses and preserve one-shot timing", () => {
+  // Without an authored number the two constants are still the answer, and that is the case every
+  // clip took before A1: a legacy VMap clip, an artifact from before the clip header carried a
+  // blend time, and the 26 HumanMale sequences whose blend time is a real zero.
   assert.deepEqual(animationBlend(true, true), { duration: 0.18, warp: false },
     "loop cross-fades must not warp clip time; malformed/HD duration ratios otherwise freeze or speed up live poses");
   assert.deepEqual(animationBlend(true, false), { duration: 0.12, warp: false });
   assert.deepEqual(animationBlend(false, true), { duration: 0.12, warp: false });
   assert.deepEqual(animationBlend(false, false), { duration: 0.12, warp: false });
+
+  // With one, the file wins in both directions — these are measured values, not invented ones:
+  // 0.150 is what 210 of HumanMale's 241 sequences carry, 0.300 is NightElfFemale's Stand, 0.050
+  // is one of Wolf's and Horse's. The old code answered all three with 0.18 or 0.12.
+  assert.deepEqual(animationBlend(true, true, 0.15), { duration: 0.15, warp: false });
+  assert.deepEqual(animationBlend(true, true, 0.3), { duration: 0.3, warp: false },
+    "a longer authored blend is honoured, not clamped down to the loop constant");
+  assert.deepEqual(animationBlend(false, false, 0.05), { duration: 0.05, warp: false },
+    "and a shorter one is not padded up to the action constant");
+  assert.equal(animationBlend(true, true, 0).duration, 0.18, "zero is the absence of a number");
+  assert.equal(animationBlend(true, true, undefined).duration, 0.18);
+  assert.equal(animationBlend(true, true, Number.NaN).duration, 0.18, "and so is a broken one");
+  // The file is trusted, not obeyed. 0.005 is below anything this client authors (the shortest is
+  // 10 ms, on one NightElfFemale sequence) and 4 s would hold two poses at once for a whole clip.
+  assert.equal(animationBlend(true, true, 0.005).duration, 0.18, "an implausibly short blend is not a blend");
+  assert.equal(animationBlend(true, true, 4).duration, 0.5, "and a runaway one is capped");
+});
+
+test("a clip carries the blend window its own sequence authored", () => {
+  // The mixer hands out actions, not artifacts, so the number has to travel on the clip itself —
+  // by the time a transition is chosen the WVM block it was decoded from is gone.
+  const times = Float32Array.from([0, 1]);
+  const values = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1]);
+  const channel = (bone) => ({ bone, kind: 1, times, values });
+  const template = {
+    clips: new Map(),
+    animations: new Set(),
+    merged: false,
+    parents: Int16Array.from([-1, 0]),
+    pivots: Float32Array.from([0, 0, 0, 0, 0, -1]),
+    // Bone 1 is the leg branch a moving cast leaves to the gait, so its overlay is a rebuilt clip
+    // rather than the same object — which is the case that can lose the number.
+    locomotionBones: Uint8Array.from([0, 1]),
+    overlayClips: new Map(),
+  };
+  addSkinnedClips(template, [
+    { animationId: ANIMATION_IDS.Stand, duration: 2.667, blendTime: 0.15, channels: [channel(0), channel(1)] },
+    { animationId: ANIMATION_IDS.Run, duration: 0.667, channels: [channel(0), channel(1)] },
+  ]);
+
+  assert.equal(clipBlendTime(template.clips.get(ANIMATION_IDS.Stand)), 0.15);
+  assert.equal(clipBlendTime(template.clips.get(ANIMATION_IDS.Run)), undefined,
+    "a clip whose artifact carried no blend time says so rather than claiming zero");
+  assert.equal(clipBlendTime(undefined), undefined);
+  // The overlay a moving cast actually plays is a rebuilt clip; losing the number there would put
+  // every mid-run cast back on the constant while the standing one used the file's answer.
+  const overlay = template.overlayClips.get(ANIMATION_IDS.Stand);
+  assert.notEqual(overlay, template.clips.get(ANIMATION_IDS.Stand), "the overlay really is a rebuilt clip");
+  assert.equal(clipBlendTime(overlay), 0.15);
 });
 
 test("locomotion overlays filter bilateral lower-body branches instead of freezing the legs", () => {
@@ -454,7 +590,7 @@ test("an external animation is read from its own file, not from the model", with
 
   // And with no file at all the clip is skipped rather than invented.
   const without = parseM2Skeleton(loaded.m2, { wanted, animations: new Map() });
-  assert.equal(without, undefined);
+  assert.equal(without?.clips.length ?? 0, 0);
 });
 
 test("an alias animation borrows the sequence that owns the keyframes", withClient, async () => {
@@ -514,6 +650,107 @@ test("held-back animations survive the round trip and become playable clips", wi
   assert.equal(addSkinnedClips(template, decoded), decoded.length);
   assert.ok(template.clips.has(ANIMATION_IDS.Loot));
   assert.equal(addSkinnedClips(template, decoded), 0, "and they are not built twice");
+});
+
+test("the blend window rides the clip header's reserved slot into the browser", () => {
+  // The whole point of A1's format choice: the field went into two bytes the encoder was already
+  // writing as zero, so this round trip is the only thing that can say it really travels. A
+  // synthetic rig rather than the client's, because the mechanism is the header and not the data.
+  const channels = [{ bone: 0, kind: 1, times: Uint32Array.from([0, 500]), values: Int16Array.from([0, 0, 0, 32767, 0, 0, 0, 32767]) }];
+  const clips = [
+    { animationId: ANIMATION_IDS.Stand, duration: 2667, blendTime: 150, channels },
+    { animationId: ANIMATION_IDS.SpellCastOmni, duration: 1000, blendTime: 300, channels },
+    // Three ways of saying "this sequence has no blend time", all of which have to read back the
+    // same as the artifacts written before the slot meant anything.
+    { animationId: ANIMATION_IDS.Run, duration: 667, blendTime: 0, channels },
+    { animationId: ANIMATION_IDS.Walk, duration: 1000, channels },
+    // And the guard on the slot's width: 16 bits is 65535 ms, and a module could author anything.
+    { animationId: ANIMATION_IDS.Death, duration: 2000, blendTime: 999_999, channels },
+  ];
+  const encoded = encodeWvaAnimations(1, clips);
+  const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+  const decoded = new Map(decodeWvaAnimations(buffer, 1).map((clip) => [clip.animationId, clip]));
+
+  assert.equal(decoded.get(ANIMATION_IDS.Stand).blendTime, 0.15, "milliseconds on the wire, seconds in the browser");
+  assert.equal(decoded.get(ANIMATION_IDS.SpellCastOmni).blendTime, 0.3);
+  assert.equal(decoded.get(ANIMATION_IDS.Run).blendTime, undefined);
+  assert.equal(decoded.get(ANIMATION_IDS.Walk).blendTime, undefined);
+  assert.equal(decoded.get(ANIMATION_IDS.Death).blendTime, 65.535, "clamped to the slot rather than wrapping round it");
+  // Nothing else about the clip moved: the reserved slot was the only thing spent.
+  assert.equal(decoded.get(ANIMATION_IDS.Stand).duration, 2.667);
+  assert.equal(decoded.get(ANIMATION_IDS.Stand).channels.length, 1);
+  assert.equal(encoded.length, 12 + 5 * (12 + 8 + 2 * 4 + 2 * 4 * 2),
+    "and the block is exactly the header plus five clips of one channel each");
+});
+
+test("HumanMale's own blend times reach the decoder unchanged", withClient, async () => {
+  const loaded = await loadAnimations(HUMAN_MALE);
+  assert.ok(loaded);
+  const skeleton = parseM2Skeleton(loaded.m2, {
+    wanted: new Set([ANIMATION_IDS.Stand, ANIMATION_IDS.Run, ANIMATION_IDS.SpellCastOmni]),
+    animations: loaded.files,
+  });
+  const encoded = encodeWvaAnimations(skeleton.bones.length, skeleton.clips);
+  const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+  const decoded = new Map(decodeWvaAnimations(buffer, skeleton.bones.length).map((clip) => [clip.animationId, clip]));
+  // Measured on this client, not chosen: HumanMale authors 150 ms on 210 of its 241 sequences,
+  // and these three are among them. If a rig ever ships a different number the assertion is the
+  // place that finds out.
+  for (const name of ["Stand", "Run", "SpellCastOmni"]) {
+    assert.equal(decoded.get(ANIMATION_IDS[name]).blendTime, 0.15, `${name} enters over its authored window`);
+  }
+});
+
+test("a spell kit naming a pose no playable rig has is promoted rather than dropped", () => {
+  const {
+    SpellPrecast, SpellCast, SpellCastArea, ReadySpellDirected, ReadySpellOmni,
+    SpellCastDirected, SpellCastOmni, ChannelCastDirected, ChannelCastOmni, Stand,
+  } = ANIMATION_IDS;
+  // The measurement this table exists for: HumanMale carries none of 31/32/33 and all of
+  // 51/52/53/54/124/125. AnimationData's own chain runs downhill — 33 to 32, 32 to 31, 31 to
+  // nothing — so every kit naming one of the three used to resolve to nothing on every character
+  // in the game, and the caster stood still while the effect played.
+  const playable = new Set([ReadySpellDirected, ReadySpellOmni, SpellCastDirected, SpellCastOmni,
+    ChannelCastDirected, ChannelCastOmni, Stand]);
+  assert.equal(ANIMATION_FALLBACK[SpellCastArea], SpellCast, "the DBC chain really does go downhill");
+  assert.equal(ANIMATION_FALLBACK[SpellPrecast], undefined, "and it ends at 31");
+
+  assert.equal(resolveSpellVisualAnimation(playable, [SpellCast]), SpellCastOmni);
+  assert.equal(resolveSpellVisualAnimation(playable, [SpellCastArea]), SpellCastOmni);
+  assert.equal(resolveSpellVisualAnimation(playable, [SpellPrecast]), ReadySpellOmni,
+    "a precast becomes the rig's own ready pose, not its cast");
+  // A rig with only the directed half takes it: the promotion is filtered through what the
+  // template carries, exactly like the chain it follows.
+  assert.equal(resolveSpellVisualAnimation(new Set([SpellCastDirected, Stand]), [SpellCast]), SpellCastDirected);
+  assert.equal(resolveSpellVisualAnimation(new Set([ReadySpellDirected, Stand]), [SpellPrecast]), ReadySpellDirected);
+  // And a rig with neither still says no. Promotion is a longer search, not a licence to invent.
+  assert.equal(resolveSpellVisualAnimation(new Set([Stand]), [SpellCast]), undefined);
+  assert.equal(resolveSpellVisualAnimation(new Set([Stand]), [SpellPrecast]), undefined);
+
+  // Nothing that already resolved is moved off its answer: the promotion is consulted only after
+  // the whole DBC walk has failed, so a creature keeps the pose its kit actually names.
+  const creature = new Set([SpellPrecast, SpellCast, Stand]);
+  assert.equal(resolveSpellVisualAnimation(creature, [SpellCast]), SpellCast);
+  assert.equal(resolveSpellVisualAnimation(creature, [SpellCastArea]), SpellCast, "by the DBC chain, not by promotion");
+  assert.equal(resolveSpellVisualAnimation(playable, [ChannelCastOmni]), ChannelCastOmni);
+  assert.equal(resolveSpellVisualAnimation(new Set([ChannelCastOmni, Stand]), [ChannelCastDirected]), ChannelCastOmni);
+
+  // Anim id 0 keeps the path it has always taken: 327 kits name it, it is not a spell-family row,
+  // and it goes through the general resolver to Stand.
+  assert.equal(resolveSpellVisualAnimation(playable, [Stand]), Stand);
+  assert.equal(Stand, 0, "which is the id the kits carry");
+
+  // The other half: a promoted pose that is only in the sidecar has to be *asked* for, or the
+  // resolution would be promised and never fetched. `needsSidecarAnimations` walks the request
+  // list, and the raw kit list cannot reach 52 from 31 — the DBC chain runs the other way.
+  const cold = { clips: new Map([[Stand, {}]]), animations: new Set([Stand, ReadySpellOmni, SpellCastOmni]), merged: false };
+  assert.deepEqual(spellVisualAnimationCandidates([SpellPrecast]), [SpellPrecast, ReadySpellOmni, ReadySpellDirected]);
+  assert.equal(needsSidecarAnimations(cold, [SpellPrecast]), false, "the raw kit list can never reach the pose");
+  assert.equal(needsSidecarAnimations(cold, spellVisualAnimationCandidates([SpellPrecast])), true,
+    "and the promoted list is what makes the fetch happen");
+  // A model that claims none of it still asks for nothing.
+  assert.equal(needsSidecarAnimations({ clips: new Map([[Stand, {}]]), animations: new Set([Stand]), merged: false },
+    spellVisualAnimationCandidates([SpellPrecast])), false);
 });
 
 test("a swimming character swims", () => {
@@ -599,6 +836,230 @@ test("the ground poses follow the direction the unit is going", () => {
   assert.equal(chooseAnimation(clips, standing({ spline: true })).animation, Run);
 });
 
+test("STRAFE the eight directions and the four diagonals each have one stable answer", () => {
+  const { Stand, Walk, Run, Walkbackwards, ShuffleLeft, ShuffleRight } = ANIMATION_IDS;
+  // The clip map a real playable rig has: measured over HumanMale, HumanFemale, OrcMale, OrcFemale,
+  // NightElfFemale, TaurenMale, GnomeFemale and DruidCat in F:/CircleClean, every one carries
+  // ShuffleLeft/ShuffleRight and not one carries RunLeft/RunRight. So the run/walk inversion in the
+  // strafe ladders is a preference no shipped rig can express, and both arms land on the shuffle.
+  const rig = new Map([[Stand, {}], [Walk, {}], [Run, {}], [Walkbackwards, {}],
+    [ShuffleLeft, {}], [ShuffleRight, {}]]);
+  const F = MOVEMENT_FLAGS.forward, B = MOVEMENT_FLAGS.backward;
+  const L = MOVEMENT_FLAGS.strafeLeft, R = MOVEMENT_FLAGS.strafeRight;
+  const at = (flags, extra = {}) => chooseAnimation(rig, standing({ movementFlags: flags, ...extra })).animation;
+
+  // The eight compass points a keyboard can produce, running.
+  assert.equal(at(0), Stand, "no direction key is not a direction");
+  assert.equal(at(F), Run);
+  assert.equal(at(B), Walkbackwards, "there is no run-backwards in this build");
+  assert.equal(at(L), ShuffleLeft);
+  assert.equal(at(R), ShuffleRight);
+  // The four diagonals. Forward wins over a strafe and backward wins over both, which is the
+  // reference client's `anyStrafeLeft = strafeLeft && !strafeRight && !movingBackward` written the
+  // other way round (locomotion_fsm.cpp:185-186).
+  assert.equal(at(F | L), Run, "a forward diagonal is a run forward, as in the original client");
+  assert.equal(at(F | R), Run);
+  assert.equal(at(B | L), Walkbackwards, "backwards outranks a strafe on both sides");
+  assert.equal(at(B | R), Walkbackwards);
+  // Two strafes cancel into the forward answer rather than picking a side — the same as the
+  // reference, and unreachable from this client's own input, where `strafeAxis()` cancels them.
+  assert.equal(at(L | R), Run);
+  assert.equal(at(F | L | R), Run);
+
+  // Walking mode changes the tempo of the answer and never the direction of it.
+  assert.equal(at(F | MOVEMENT_FLAGS.walking), Walk);
+  assert.equal(at(L | MOVEMENT_FLAGS.walking), ShuffleLeft);
+  assert.equal(at(R | MOVEMENT_FLAGS.walking), ShuffleRight);
+  assert.equal(at(F | L | MOVEMENT_FLAGS.walking), Walk);
+
+  // Every one of the twelve answers is stable under repetition: the pick is a pure function of the
+  // flags word, so a diagonal held for a second cannot alternate between two clips.
+  for (const flags of [F, B, L, R, F | L, F | R, B | L, B | R, L | R]) {
+    const first = poseAnimation(standing({ movementFlags: flags })).wanted;
+    for (let repeat = 0; repeat < 4; repeat++) {
+      assert.deepEqual(poseAnimation(standing({ movementFlags: flags })).wanted, first,
+        `flags 0x${flags.toString(16)} must answer the same every frame`);
+    }
+  }
+
+  // Water keeps its own strafe arm, and it is the reference's: there the diagonal *is* a strafe,
+  // because `LocomotionFSM`'s SWIM state is the one place it branches on `anyStrafeLeft`.
+  const swimming = MOVEMENT_FLAGS.swimming;
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | L })).wanted[0], ANIMATION_IDS.SwimLeft);
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | F | L })).wanted[0], ANIMATION_IDS.SwimLeft);
+  assert.equal(poseAnimation(standing({ movementFlags: swimming | B | L })).wanted[0],
+    ANIMATION_IDS.SwimBackwards, "backwards outranks a strafe in the water too");
+});
+
+test("STRAFE a gait owns the mixer for its own blend before another gait may replace it", () => {
+  const { Stand, Run, Walk, ShuffleLeft, ShuffleRight, Walkbackwards, Swim, Jump, Dead, Mount } = ANIMATION_IDS;
+  assert.equal(LOCOMOTION_COMMIT_WINDOW, 150,
+    "the window is the 150 ms blendTime every playable rig authors on Walk/Run/ShuffleLeft/ShuffleRight");
+
+  // What the window covers, and what it must never touch.
+  for (const gait of [Walk, Run, Walkbackwards, ShuffleLeft, ShuffleRight, Swim,
+    ANIMATION_IDS.SwimLeft, ANIMATION_IDS.SwimRight, ANIMATION_IDS.SwimBackwards,
+    ANIMATION_IDS.RunLeft, ANIMATION_IDS.RunRight, ANIMATION_IDS.StealthWalk, ANIMATION_IDS.StealthRun]) {
+    assert.equal(isLocomotionGait(gait), true, `${gait} is a travelling gait`);
+  }
+  for (const held of [Stand, Jump, Dead, Mount, ANIMATION_IDS.SwimIdle, ANIMATION_IDS.Hover,
+    ANIMATION_IDS.SitGround, ANIMATION_IDS.Fall, undefined]) {
+    assert.equal(isLocomotionGait(held), false, `${held} is a stance, not a stride`);
+  }
+
+  // Starting to move is never delayed: the window opens on the frame the stride starts.
+  const start = commitLocomotion(Stand, Run, 0, 800);
+  assert.deepEqual(start, { animation: Run, committedUntil: 800 + LOCOMOTION_COMMIT_WINDOW });
+  // Its own window then covers the stride that has just begun, so W-then-Q inside a sixth of a
+  // second is one blend rather than two overlapping ones.
+  assert.equal(commitLocomotion(Run, ShuffleLeft, start.committedUntil, 900).animation, Run);
+
+  // The tap the owner reports. A character that has been running for a while presses a strafe key
+  // at t=1000 and lets go at t=1075 — inside the cross-fade the strafe started — and the run has to
+  // wait rather than snap the shuffle back to full weight, which is what three.js's fixed-start
+  // `fadeOut` does to a half-blended action.
+  const strafe = commitLocomotion(Run, ShuffleLeft, start.committedUntil, 1000);
+  assert.deepEqual(strafe, { animation: ShuffleLeft, committedUntil: 1150 },
+    "a strafe pressed out of a settled run answers on the same frame; it is never laggy");
+  const tap = commitLocomotion(ShuffleLeft, Run, strafe.committedUntil, 1075);
+  assert.deepEqual(tap, { animation: ShuffleLeft, committedUntil: 1150 },
+    "a second change inside the blend holds the stride it is already blending into");
+  // The deadline is not pushed out by being asked again, so the hold is bounded by one window and
+  // the pose pass — which runs every frame — takes the pending answer the moment it closes.
+  assert.deepEqual(commitLocomotion(ShuffleLeft, Run, tap.committedUntil, 1149).animation, ShuffleLeft);
+  assert.deepEqual(commitLocomotion(ShuffleLeft, Run, tap.committedUntil, 1150),
+    { animation: Run, committedUntil: 1300 }, "the window closes and the pending gait takes over");
+
+  // Asking for what is already playing is not a change and does not move the deadline.
+  assert.deepEqual(commitLocomotion(ShuffleLeft, ShuffleLeft, 1150, 1100),
+    { animation: ShuffleLeft, committedUntil: 1150 });
+
+  // Nothing but gait-to-gait is ever held. Stopping, jumping, dying and mounting answer on the
+  // frame they are asked, and each closes the window so no stale deadline survives.
+  for (const pose of [Stand, Jump, Dead, Mount, ANIMATION_IDS.SitGround]) {
+    assert.deepEqual(commitLocomotion(Run, pose, 1150, 1010), { animation: pose, committedUntil: 0 },
+      `a stride must never delay ${pose}`);
+  }
+  // ...and leaving one of those for a stride is immediate as well, window or no window.
+  assert.deepEqual(commitLocomotion(Jump, ShuffleLeft, 1150, 1010),
+    { animation: ShuffleLeft, committedUntil: 1160 }, "a landing hands straight over to the stride");
+  assert.deepEqual(commitLocomotion(undefined, Run, 0, 500),
+    { animation: Run, committedUntil: 650 }, "a model with nothing playing yet simply starts");
+});
+
+test("STRAFE a strafe tap blends one way and then the other, instead of lurching back", () => {
+  const { Run, ShuffleLeft } = ANIMATION_IDS;
+  // The defect, measured on a real mixer rather than argued. `#playAnimation`'s locomotion change
+  // is reproduced exactly: reset, weight 1, play, `crossFadeFrom(previous, 0.15)`.
+  const drive = (withWindow) => {
+    const root = new THREE.Object3D();
+    const bone = new THREE.Bone();
+    bone.name = "bone0";
+    root.add(bone);
+    const mixer = new THREE.AnimationMixer(root);
+    const clipFor = (name, value) => new THREE.AnimationClip(name, 1, [
+      new THREE.VectorKeyframeTrack("bone0.position", [0, 1], [0, 0, 0, 0, value, 0]),
+    ]);
+    const clips = new Map([[Run, clipFor("Run", 1)], [ShuffleLeft, clipFor("ShuffleLeft", 2)]]);
+    let action;
+    let animationId = -1;
+    let committedUntil = 0;
+    const want = (animation, now) => {
+      const commit = commitLocomotion(action ? animationId : undefined, animation,
+        withWindow ? committedUntil : 0, now);
+      committedUntil = commit.committedUntil;
+      if (commit.animation === animationId && action) return;
+      const previous = action;
+      const next = mixer.clipAction(clips.get(commit.animation));
+      next.reset();
+      next.setEffectiveTimeScale(1);
+      next.setLoop(THREE.LoopRepeat, Infinity);
+      next.setEffectiveWeight(1);
+      next.play();
+      if (previous && previous !== next) next.crossFadeFrom(previous, 0.15, false);
+      action = next;
+      animationId = commit.animation;
+    };
+
+    // A settled run, a strafe held for 75 ms, then the key released and the run asked for on every
+    // frame after it — which is what the per-frame pose pass does.
+    want(Run, 0);
+    mixer.update(0.5);
+    want(ShuffleLeft, 500);
+    const share = [];
+    for (let t = 500; t <= 800; t += 25) {
+      if (t >= 575) want(Run, t);
+      mixer.update(0.025);
+      const shuffle = mixer.clipAction(clips.get(ShuffleLeft)).getEffectiveWeight();
+      const run = mixer.clipAction(clips.get(Run)).getEffectiveWeight();
+      const total = shuffle + run;
+      share.push(total > 0 ? shuffle / total : 0);
+    }
+    return share;
+  };
+
+  // The biggest one-frame move the pose makes. A 150 ms blend sampled every 25 ms moves 1/6 of the
+  // way each frame, and nothing about a hand-off should ever move it faster than that.
+  const fastestStep = (share) => share
+    .slice(1)
+    .reduce((most, value, index) => Math.max(most, Math.abs(value - share[index])), 0);
+
+  const without = drive(false);
+  const with_ = drive(true);
+  const step = 25 / 150;
+  // Measured, and this is the owner's report in numbers. Without the window the sidestep is at
+  // 0.500 and rising on the frame the key is released, and the next 25 ms take it to 0.833: three.js
+  // schedules `fadeOut` from a *fixed* weight of 1 rather than from the 0.5 the action actually has,
+  // so releasing the key drives the pose deeper into the clip it is abandoning, at twice the blend's
+  // own rate, before it turns round. With the window every frame moves exactly one blend step.
+  assert.ok(Math.abs(fastestStep(without) - 2 * step) < 1e-3,
+    `the unguarded release moves the pose ${fastestStep(without).toFixed(3)} in one frame`);
+  assert.ok(Math.abs(fastestStep(with_) - step) < 1e-3,
+    `the guarded one never moves it more than a blend step: ${fastestStep(with_).toFixed(3)}`);
+  // And the strafe is actually reached rather than abandoned half-blended, which is the other half
+  // of what a tap should look like.
+  assert.ok(Math.max(...with_) > 0.99, "the sidestep the key asked for is fully reached");
+  assert.ok(Math.max(...without) < 0.9, "the unguarded tap never gets there");
+  // No sample may rise after the peak has been passed: the same statement the eye makes.
+  const peak = with_.indexOf(Math.max(...with_));
+  for (let index = peak + 1; index < with_.length; index++) {
+    assert.ok(with_[index] <= with_[index - 1] + 1e-6,
+      `the pose must not move back toward the sidestep at sample ${index}`);
+  }
+});
+
+test("STRAFE the strafe clips a player really has, and the window each one is entered over",
+  withClient, async () => {
+    // The measurement the commit window and the strafe ladders are built on, taken from the rig
+    // rather than asserted. `movingSpeed` is 0 on every sidestep in this client, which is why a
+    // strafe is played at its authored rate and never gait-scaled.
+    const rigs = ["Character/Human/Male/HumanMale", "Character/Orc/Male/OrcMale",
+      "Character/Tauren/Male/TaurenMale", "Character/Gnome/Female/GnomeFemale"];
+    let checked = 0;
+    for (const base of rigs) {
+      const m2 = await archives.read(`${base}.m2`);
+      if (!m2) continue;
+      checked++;
+      const byId = new Map(m2Animations(m2).map((entry) => [entry.animationId, entry]));
+      for (const id of [ANIMATION_IDS.ShuffleLeft, ANIMATION_IDS.ShuffleRight]) {
+        const sequence = byId.get(id);
+        assert.ok(sequence, `${base} should carry the authored sidestep ${id}`);
+        assert.equal(sequence.blendTime, LOCOMOTION_COMMIT_WINDOW,
+          `${base} enters ${id} over ${LOCOMOTION_COMMIT_WINDOW} ms`);
+        assert.equal(sequence.movingSpeed, 0, `${base}'s sidestep ${id} authors no stride speed`);
+      }
+      for (const id of [ANIMATION_IDS.RunLeft, ANIMATION_IDS.RunRight]) {
+        assert.equal(byId.has(id), false,
+          `${base} must not carry ${id}: no playable rig in this client does`);
+      }
+      // The far edge of the same window: leaving a strafe is entering Run, and Run authors its own.
+      const run = byId.get(ANIMATION_IDS.Run);
+      assert.ok(run, `${base} should carry Run`);
+      assert.equal(run.blendTime, LOCOMOTION_COMMIT_WINDOW, `${base} enters Run over the same window`);
+    }
+    assert.ok(checked > 0, "at least one playable rig should be readable from the client");
+  });
+
 test("a jump is three animations and one flag, so the takeoff and the landing are transitions", () => {
   const ground = standing();
   const air = standing({ movementFlags: MOVEMENT_FLAGS.falling });
@@ -639,11 +1100,20 @@ test("П2 a rider holds the mount pose whatever the mount is doing, and holds it
   ];
   for (const movementFlags of flags) {
     const pose = standing({ mounted: true, movementFlags });
-    assert.deepEqual(poseAnimation(pose).wanted, [Mount], `flags 0x${movementFlags.toString(16)}`);
+    // Since A2 the list is a ladder rather than a single id, and the flying rung is added when the
+    // movement word says the mount is in the air. Every rung is still a seat, and every one of the
+    // 22 playable rigs still answers with 91: none of them carries 320.
+    const expected = movementFlags === MOVEMENT_FLAGS.flying ? [ANIMATION_IDS.FlyMount, Mount] : [Mount];
+    assert.deepEqual(poseAnimation(pose).wanted, expected, `flags 0x${movementFlags.toString(16)}`);
     assert.equal(poseAnimation(pose).loop, true, "a seat is a stance, and a stance repeats");
   }
-  // A spline is the taxi case, and it carries the flags of neither.
-  assert.deepEqual(poseAnimation(standing({ mounted: true, spline: true, flight: true })).wanted, [Mount]);
+  // A spline is the taxi case, and it carries the flags of neither. Since A2 the flying rung is
+  // asked for first — `[FlyMount, Mount]` — and this is the one honest change to what a rider is
+  // offered: measured over the 22 playable rigs, not one carries 320, so every one of them still
+  // resolves to 91 and draws exactly what it drew before. See the A2 ladder tests for why the rung
+  // is written down anyway.
+  assert.deepEqual(poseAnimation(standing({ mounted: true, spline: true, flight: true })).wanted,
+    [ANIMATION_IDS.FlyMount, Mount]);
 
   // The branch stands *before* the falling one, and this is the assertion that says so: moved
   // after it, a rider going over a rise reads Jump and the character leaps out of the saddle.
@@ -716,16 +1186,29 @@ test("П2 the seated pose is fetched, not resolved away by a Stand written behin
   assert.equal(needsSidecarAnimations({ ...fresh(), merged: true }, wanted), false);
 });
 
-test("a completed one-shot is not used as a stale blend source", () => {
+test("a completed one-shot is faded out rather than cut out of the mixer", () => {
+  // The truth table changed in A1, and only in the middle row. A finished one-shot is still not a
+  // cross-fade *source* — `crossFadeFrom` couples the two actions' clocks and a stopped action has
+  // no clock — but that was never a reason to `stop()` it. Every completed one-shot here is
+  // LoopOnce + clampWhenFinished, so it holds its last authored frame at weight 1, and stopping it
+  // dropped that frame to nothing on the same tick the next pose appeared at weight 1: one frame
+  // of snap after every cast, landing and reaction. "fade" keeps it and ramps it down instead.
   assert.equal(animationTransition(true, true), "crossfade");
-  assert.equal(animationTransition(false, true), "stop");
+  assert.equal(animationTransition(false, true), "fade");
   assert.equal(animationTransition(true, false), "none");
   assert.equal(shouldCrossFadeAnimation(true, true), true, "a live previous pose still blends");
-  assert.equal(shouldCrossFadeAnimation(false, true), false, "a clamped reaction must not snap back");
+  assert.equal(shouldCrossFadeAnimation(false, true), false, "a clamped pose is still not a crossfade source");
   assert.equal(shouldCrossFadeAnimation(true, false), false, "the same clip never needs a blend");
-  assert.equal(shouldStopPreviousAnimation(true, true), false, "a live pose remains the blend source");
-  assert.equal(shouldStopPreviousAnimation(false, true), true, "a clamped pose is removed from the mixer");
-  assert.equal(shouldStopPreviousAnimation(true, false), false, "the same clip is not stopped");
+  assert.equal(shouldFadeOutPreviousAnimation(false, true), true, "it leaves over the blend window instead");
+  assert.equal(shouldFadeOutPreviousAnimation(true, true), false, "a live pose is handed over by cross-fade");
+  assert.equal(shouldFadeOutPreviousAnimation(true, false), false, "the same clip is not faded out from itself");
+  // No transition asks for a hard stop any more. The paths that really want a pose gone without a
+  // trace — an instance being torn down — call stop() directly and never consult the policy.
+  for (const running of [true, false]) {
+    for (const different of [true, false]) {
+      assert.equal(shouldStopPreviousAnimation(running, different), false);
+    }
+  }
 });
 
 test("a missing pose walks the table's own chain of visual equivalents", () => {
@@ -848,4 +1331,265 @@ test("without a measured speed the walking flag still decides", () => {
   // A speed of zero is "not known", not "standing still": standing is decided before this.
   const unknown = poseAnimation({ dead: false, movementFlags: forward | 0x100, spline: false, standState: 0, speed: 0 });
   assert.equal(unknown.wanted[0], ANIMATION_IDS.Walk);
+});
+
+// ── Slice M1: the legs into the direction of travel ─────────────────────────────────────────────
+//
+// The owner's report: «ноги должны направлять в сторону движения; сейчас анимация бежит вперёд, а
+// персонаж движется под углом». The reference client puts the *model* on the travel heading and
+// counter-rotates the SpineLow key bone by `facingYaw - travelYaw` (`renderer.cpp:1613-1653`,
+// `character_renderer.cpp:2332-2336`); here the model keeps the server's orientation, which the name
+// plate and the camera pivot read, and the lower body is turned instead. Same legs, same torso.
+
+/** A compact humanoid: root, pelvis, two legs with a shin each — the mask test's rig. */
+const YAW_RIG = {
+  parents: Int16Array.from([-1, 0, 1, 1, 2, 3]),
+  pivots: Float32Array.from([
+    0, 0, 1.0,
+    0, 0, 0.9,
+    0, -0.2, 0.5,
+    0, 0.2, 0.5,
+    0, -0.2, 0.1,
+    0, 0.2, 0.1,
+  ]),
+};
+
+/** The same rig with the spine hung *under* the pelvis, which no shipped rig does. */
+const YAW_RIG_SPINE_UNDER_PELVIS = {
+  parents: Int16Array.from([-1, 0, 1, 1, 2, 3, 1]),
+  pivots: Float32Array.from([
+    0, 0, 1.0,
+    0, 0, 0.9,
+    0, -0.2, 0.5,
+    0, 0.2, 0.5,
+    0, -0.2, 0.1,
+    0, 0.2, 0.1,
+    0, 0, 1.4,
+  ]),
+};
+
+function yawInstance(rig) {
+  const count = rig.parents.length;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
+  geometry.setAttribute("skinIndex", new THREE.Uint8BufferAttribute(new Uint8Array(count * 4), 4));
+  geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(new Float32Array(count * 4), 4));
+  return instantiateSkinned({
+    geometry,
+    clips: new Map(),
+    animations: new Set(),
+    boneInverses: Array.from({ length: count }, () => new THREE.Matrix4()),
+    parents: rig.parents,
+    pivots: rig.pivots,
+    flags: new Uint16Array(count),
+    billboards: [],
+    height: 1,
+  }, new THREE.MeshBasicMaterial());
+}
+
+/** Where a bone sits in the model's own space, which is what the yaw is defined in. */
+function modelPosition(instance, bone) {
+  instance.root.updateWorldMatrix(true, true);
+  const at = new THREE.Vector3();
+  instance.skeleton.bones[bone].getWorldPosition(at);
+  return instance.root.worldToLocal(at);
+}
+
+test("M1 the strafe yaw target is the reference client's travel heading, row for row", () => {
+  const moving = (flags, animation) => strafeYawTarget(standing({ movementFlags: flags }), animation);
+  const F = MOVEMENT_FLAGS;
+  assert.equal(moving(F.forward), 0, "travel is the facing");
+  assert.equal(moving(0), 0);
+  assert.equal(moving(F.backward), 0);
+  // The diagonal, which is the case the owner is looking at: `travelYaw_` is the atan2 of a forward
+  // plus a lateral unit contribution (`camera_controller.cpp:2555-2562`), so 45 degrees.
+  assert.equal(moving(F.forward | F.strafeLeft), STRAFE_YAW_DIAGONAL);
+  assert.equal(moving(F.forward | F.strafeRight), -STRAFE_YAW_DIAGONAL);
+  // A pure strafe on a rig with no sidestep clip is the whole quarter, which is what the reference
+  // gets for every strafe because it resolves none.
+  assert.equal(moving(F.strafeLeft), STRAFE_YAW_PURE);
+  assert.equal(moving(F.strafeRight), -STRAFE_YAW_PURE);
+  // Both keys cancel, exactly as the movement vector does.
+  assert.equal(moving(F.strafeLeft | F.strafeRight), 0);
+  assert.equal(moving(F.forward | F.strafeLeft | F.strafeRight), 0);
+  // `activeStrafe` is `(left || right) && !movingBackward` (`renderer.cpp:1611-1612`).
+  assert.equal(moving(F.backward | F.strafeLeft), 0);
+  assert.equal(moving(F.backward | F.strafeRight), 0);
+
+  // Ground locomotion only.
+  assert.equal(moving(F.swimming | F.strafeLeft), 0);
+  assert.equal(moving(F.flying | F.strafeLeft), 0);
+  assert.equal(moving(F.hover | F.strafeLeft), 0);
+  assert.equal(moving(F.disableGravity | F.strafeLeft), 0);
+  assert.equal(moving(F.falling | F.strafeLeft), 0);
+  assert.equal(strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, dead: true })), 0);
+  assert.equal(
+    strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, mounted: true })), 0,
+    "a rider's legs belong to the saddle, and the mount keeps the server's own facing");
+});
+
+test("M1 an authored sidestep answers a pure strafe instead of the yaw", withAnimationData, () => {
+  const F = MOVEMENT_FLAGS;
+  const pure = standing({ movementFlags: F.strafeLeft });
+  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.ShuffleLeft), 0,
+    "the shuffle already faces that way; turning the legs again would overshoot by a quarter");
+  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.RunLeft), 0);
+  assert.equal(strafeYawTarget(pure, ANIMATION_IDS.Run), STRAFE_YAW_PURE,
+    "and a rig that fell back to the forward gait needs the whole turn");
+  // The diagonal is unaffected: it is answered by Walk/Run on every rig and the clip cannot help.
+  assert.equal(
+    strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft }), ANIMATION_IDS.Run),
+    STRAFE_YAW_DIAGONAL);
+});
+
+test("M1 the turn is bounded, so a key change never snaps the legs", () => {
+  // A quarter turn inside one commit window, which is the authored blend of every gait.
+  assert.ok(Math.abs(STRAFE_YAW_RATE - STRAFE_YAW_PURE / (LOCOMOTION_COMMIT_WINDOW / 1000)) < 1e-9);
+  const frame = 1 / 60;
+  const perFrame = STRAFE_YAW_RATE * frame;
+  assert.ok(perFrame < STRAFE_YAW_DIAGONAL,
+    "one frame is never the whole diagonal, or the bound would not be a bound");
+
+  let yaw = 0;
+  let frames = 0;
+  while (yaw !== STRAFE_YAW_DIAGONAL && frames < 1000) {
+    const next = stepStrafeYaw(yaw, STRAFE_YAW_DIAGONAL, frame);
+    assert.ok(next - yaw <= perFrame + 1e-9, "and no single step exceeds the rate");
+    yaw = next;
+    frames++;
+  }
+  assert.equal(yaw, STRAFE_YAW_DIAGONAL);
+  // 45 degrees in half a commit window, at 60 Hz.
+  assert.equal(frames, Math.ceil((STRAFE_YAW_DIAGONAL / STRAFE_YAW_RATE) / frame));
+
+  // Releasing the key unwinds at the same rate rather than dropping the legs back.
+  const released = stepStrafeYaw(STRAFE_YAW_DIAGONAL, 0, frame);
+  assert.ok(released > 0 && released < STRAFE_YAW_DIAGONAL);
+  assert.equal(stepStrafeYaw(STRAFE_YAW_DIAGONAL, 0, 10), 0, "a long enough step still lands exactly");
+  // A frame that is not a frame — a tab that was hidden for a minute — turns a quarter second's
+  // worth and no more, so nothing integrates a whole stall in one step.
+  const stalled = stepStrafeYaw(-STRAFE_YAW_PURE, STRAFE_YAW_PURE, 60);
+  assert.ok(Math.abs(stalled - (-STRAFE_YAW_PURE + STRAFE_YAW_RATE * 0.25)) < 1e-9,
+    `a stalled frame is capped, got ${stalled}`);
+  assert.equal(stepStrafeYaw(stalled, STRAFE_YAW_PURE, 60), STRAFE_YAW_PURE,
+    "and the one after it lands");
+  assert.equal(stepStrafeYaw(0, STRAFE_YAW_PURE, 0), 0, "and a zero-length frame turns nothing");
+  assert.equal(stepStrafeYaw(Number.NaN, STRAFE_YAW_DIAGONAL, frame), STRAFE_YAW_DIAGONAL,
+    "a unit with nothing stored yet starts where it belongs");
+});
+
+test("M1 the yaw bones are resolved from the rig, and fail open when it cannot answer", () => {
+  const found = resolveStrafeYawBones(YAW_RIG.parents, YAW_RIG.pivots);
+  assert.deepEqual({ pelvis: found.pelvis, torso: [...found.torso] }, { pelvis: 1, torso: [] },
+    "the bone both legs hang from, and no torso under it — the shape of all twenty playable rigs");
+
+  const underneath = resolveStrafeYawBones(
+    YAW_RIG_SPINE_UNDER_PELVIS.parents, YAW_RIG_SPINE_UNDER_PELVIS.pivots);
+  assert.deepEqual([...underneath.torso], [6],
+    "a rig that does put the spine under the pelvis has it turned back");
+
+  // No bilateral pair at all: a chain, which is most creature rigs.
+  assert.equal(resolveStrafeYawBones(
+    Int16Array.from([-1, 0, 1]), Float32Array.from([0, 0, 1, 0, 0, 0.6, 0, 0, 0.2])), undefined);
+  // The pelvis is the root: turning it is turning the model, which the server's orientation owns.
+  const rootPelvis = {
+    parents: Int16Array.from([-1, 0, 0, 1, 2]),
+    pivots: Float32Array.from([0, 0, 0.9, 0, -0.2, 0.5, 0, 0.2, 0.5, 0, -0.2, 0.1, 0, 0.2, 0.1]),
+  };
+  assert.equal(resolveStrafeYawBones(rootPelvis.parents, rootPelvis.pivots), undefined);
+  // A pelvis off the body's own axis — a quadruped's hind hip is the real case.
+  const offAxisPivots = Float32Array.from(YAW_RIG.pivots);
+  offAxisPivots[3] = 0.5;
+  assert.equal(resolveStrafeYawBones(YAW_RIG.parents, offAxisPivots), undefined);
+  // And a torso branch that is off it, which the counter-rotation could not put back.
+  const offAxisTorso = Float32Array.from(YAW_RIG_SPINE_UNDER_PELVIS.pivots);
+  offAxisTorso[18] = 0.5;
+  assert.equal(
+    resolveStrafeYawBones(YAW_RIG_SPINE_UNDER_PELVIS.parents, offAxisTorso), undefined);
+
+  // Resolved once and remembered, because it is a property of the rig and not of the unit.
+  const template = { parents: YAW_RIG.parents, pivots: YAW_RIG.pivots };
+  assert.equal(strafeYawBonesFor(template).pelvis, 1);
+  assert.equal(strafeYawBonesFor(template), template.strafeYawBones);
+  const none = { parents: Int16Array.from([-1]), pivots: Float32Array.from([0, 0, 0]) };
+  assert.equal(strafeYawBonesFor(none), undefined);
+  assert.equal(none.strafeYawBones, null, "and a rig that cannot answer is asked exactly once");
+});
+
+test("M1 the yaw turns the legs about the body's axis and leaves the torso alone", () => {
+  const bones = resolveStrafeYawBones(
+    YAW_RIG_SPINE_UNDER_PELVIS.parents, YAW_RIG_SPINE_UNDER_PELVIS.pivots);
+  const instance = yawInstance(YAW_RIG_SPINE_UNDER_PELVIS);
+  const footBefore = modelPosition(instance, 4);
+  const spineBefore = modelPosition(instance, 6);
+
+  applyStrafeYaw(instance, bones, Math.PI / 2);
+  const foot = modelPosition(instance, 4);
+  const spine = modelPosition(instance, 6);
+  // M2 space is Z-up and faces +X, so a positive turn takes the foot at −Y round to +X.
+  assert.ok(Math.abs(foot.x - 0.2) < 1e-6 && Math.abs(foot.y) < 1e-6 && Math.abs(foot.z - 0.1) < 1e-6,
+    `the foot swings a quarter about the pelvis axis, got ${foot.toArray().join(",")}`);
+  assert.ok(spine.distanceTo(spineBefore) < 1e-6, "and the torso does not move at all");
+  assert.ok(footBefore.distanceTo(foot) > 0.1);
+
+  // Zero is a no-op, so a unit that is not strafing pays nothing and is not nudged.
+  const still = yawInstance(YAW_RIG_SPINE_UNDER_PELVIS);
+  const rest = modelPosition(still, 4);
+  applyStrafeYaw(still, bones, 0);
+  assert.ok(modelPosition(still, 4).distanceTo(rest) < 1e-9);
+});
+
+test("M1 the yaw is a model-space turn even when the mixer has already posed the parents", () => {
+  // The bone's local quaternion is relative to its parent, and the parent is being animated — so
+  // the axis has to be carried into the parent's frame before it is applied. This is that.
+  const bones = resolveStrafeYawBones(YAW_RIG.parents, YAW_RIG.pivots);
+  const instance = yawInstance(YAW_RIG);
+  const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.4);
+  instance.skeleton.bones[0].quaternion.copy(tilt);
+  const pelvisAt = modelPosition(instance, bones.pelvis);
+  const before = modelPosition(instance, 4).sub(pelvisAt);
+
+  const radians = Math.PI / 3;
+  applyStrafeYaw(instance, bones, radians);
+  const after = modelPosition(instance, 4).sub(modelPosition(instance, bones.pelvis));
+  const expected = before.clone().applyAxisAngle(new THREE.Vector3(0, 0, 1), radians);
+  assert.ok(after.distanceTo(expected) < 1e-6,
+    `expected ${expected.toArray().join(",")}, got ${after.toArray().join(",")}`);
+});
+
+test("M1 the yaw is re-derived each frame, so an unkeyed pelvis cannot spin", () => {
+  // The mixer writes a bone's quaternion only while a clip keys it, and nothing writes one at all
+  // until a model has its first clip. A pass that premultiplied blindly would turn an already
+  // turned bone again on every frame.
+  const bones = resolveStrafeYawBones(
+    YAW_RIG_SPINE_UNDER_PELVIS.parents, YAW_RIG_SPINE_UNDER_PELVIS.pivots);
+  const instance = yawInstance(YAW_RIG_SPINE_UNDER_PELVIS);
+  const rest = modelPosition(instance, 4);
+
+  applyStrafeYaw(instance, bones, Math.PI / 4);
+  const once = modelPosition(instance, 4);
+  for (let frame = 0; frame < 30; frame++) applyStrafeYaw(instance, bones, Math.PI / 4);
+  assert.ok(modelPosition(instance, 4).distanceTo(once) < 1e-9,
+    "thirty frames of the same turn are one turn");
+
+  // A different angle is measured from the clip's pose, not from the last turn.
+  applyStrafeYaw(instance, bones, Math.PI / 2);
+  const quarter = modelPosition(instance, 4);
+  assert.ok(Math.abs(quarter.x - 0.2) < 1e-6 && Math.abs(quarter.y) < 1e-6);
+
+  // And releasing the key puts the clip's own pose back rather than leaving the legs turned.
+  applyStrafeYaw(instance, bones, 0);
+  assert.ok(modelPosition(instance, 4).distanceTo(rest) < 1e-9, "zero is a full release");
+  applyStrafeYaw(instance, bones, 0);
+  assert.ok(modelPosition(instance, 4).distanceTo(rest) < 1e-9);
+
+  // What the mixer does write is honoured: a fresh pose under the same turn moves with it.
+  const posed = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.3);
+  applyStrafeYaw(instance, bones, Math.PI / 4);
+  instance.skeleton.bones[bones.pelvis].quaternion.copy(posed);
+  applyStrafeYaw(instance, bones, Math.PI / 4);
+  const chained = new THREE.Quaternion()
+    .setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 4).multiply(posed);
+  assert.ok(instance.skeleton.bones[bones.pelvis].quaternion.angleTo(chained) < 1e-3,
+    "the turn composes with the clip the mixer just wrote, and not with itself");
 });

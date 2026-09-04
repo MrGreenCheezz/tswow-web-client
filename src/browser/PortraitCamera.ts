@@ -71,3 +71,34 @@ export function portraitCameraSpec(input: PortraitCameraInput): PortraitCameraSp
     target: m2ToScene(rawTarget, scale),
   };
 }
+
+/**
+ * Resolve a camera for a paperdoll/full-body view.
+ *
+ * Character model frames do not use the authored bust camera from a creature WVM.  Keeping this
+ * as a separate entry point makes that contract explicit and lets the full-body slot continue to
+ * use the same bounds/attachment fallback without duplicating camera math.
+ */
+export function fullBodyCameraSpec(
+  input: Omit<PortraitCameraInput, "camera">,
+): PortraitCameraSpec {
+  // Face attachments are a bust-camera hint. A paperdoll should center the visible mesh bounds,
+  // so deliberately leave that hint out while retaining the same deterministic distance math.
+  const base = portraitCameraSpec({ ...input, camera: undefined, attachments: undefined });
+  const { min, max } = input.visibleBounds ?? input.bounds;
+  const scale = Number.isFinite(input.scale) && (input.scale ?? 0) > 0 ? input.scale! : 1;
+  const centre = m2ToScene([
+    (min[0] + max[0]) / 2,
+    (min[1] + max[1]) / 2,
+    (min[2] + max[2]) / 2,
+  ], scale);
+
+  // portraitCameraSpec positions along +X and keeps the target's Y/Z fixed. Moving both
+  // endpoints to the exact bounds centre therefore preserves the computed distance while
+  // making the visible top and bottom enter symmetrically in the full-body frame.
+  return {
+    ...base,
+    position: [base.position[0], centre[1], base.position[2]],
+    target: centre,
+  };
+}

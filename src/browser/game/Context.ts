@@ -34,6 +34,14 @@ import type { ModuleLoader } from "../ui/ModuleLoader.js";
 import type { CameraRig } from "./CameraRig.js";
 import type { SessionAssetWarmup } from "../AssetWarmup.js";
 
+/** A lazily loaded front door can register resources that must die with the world. */
+let worldContextCleanup: (() => void) | undefined;
+
+/** Register the current world's optional UI cleanup without importing that UI into this module. */
+export function registerWorldContextCleanup(cleanup: () => void): void {
+  worldContextCleanup = cleanup;
+}
+
 /**
  * Everything that is current: the connection, the asset clients it feeds, and where the camera is
  * looking.
@@ -206,6 +214,10 @@ export function cameraPivotHeight(): number {
 
 /** Drops everything a realm owns. Called when leaving a world and before entering another. */
 export function clearWorldContext(): void {
+  // Optional world overlays (the lazily loaded FrameXML mount) own a VM, renderer and frame
+  // callback outside this context object. Let them release those resources before the world
+  // identity disappears, while keeping the default front door free of a FrameXML import.
+  worldContextCleanup?.();
   // Invalidate packet, metadata and asynchronous audio callbacks before dropping the world
   // identity. This must precede the ordinary renderer/sound cleanup so no stale replay can race it.
   game.spellVisualCoordinator?.clear();

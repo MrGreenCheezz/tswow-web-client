@@ -42,8 +42,15 @@ function f32Bits(value) {
   return view.getUint32(0, true);
 }
 
+/** The value a DBC float column returns after its deliberate float32 round-trip. */
+function f32(value) {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value, true);
+  return view.getFloat32(0, true);
+}
+
 /**
- * The five tables `/dbc/areas` opens. Column positions are the ones the generated layout declares,
+ * The six tables `/dbc/areas` opens. Column positions are the ones the generated layout declares,
  * so a fixture that drifts from the real table fails to open rather than reading the wrong slot.
  */
 function areaDbcs() {
@@ -109,6 +116,19 @@ function areaDbcs() {
   continent[6] = f32Bits(1.5);
   continent[7] = f32Bits(2.5);
   continent[8] = f32Bits(0.5);
+  continent[13] = 1;
+
+  // WorldMapTransforms: map 530's northern island is presented on map 0 after this translation.
+  const transform = Array(10).fill(0);
+  transform[0] = 2;
+  transform[1] = 530;
+  transform[2] = f32Bits(4800);
+  transform[3] = f32Bits(-10133.333);
+  transform[4] = f32Bits(16000);
+  transform[5] = f32Bits(-2666.666);
+  transform[6] = 0;
+  transform[7] = f32Bits(-2400);
+  transform[8] = f32Bits(2400);
 
   const mapStrings = stringBlock(["Azeroth", "Восточные королевства"]);
   const azeroth = Array(66).fill(0);
@@ -125,6 +145,7 @@ function areaDbcs() {
     WorldMapArea: dbcFixture(11, [elwynn], mapAreaStrings.bytes),
     WorldMapOverlay: dbcFixture(17, [stormwind, blank], overlayStrings.bytes),
     WorldMapContinent: dbcFixture(14, [continent], Uint8Array.of(0)),
+    WorldMapTransforms: dbcFixture(10, [transform], Uint8Array.of(0)),
     Map: dbcFixture(66, [azeroth], mapStrings.bytes),
   };
 }
@@ -150,7 +171,7 @@ async function withAreaGateway(run) {
   }
 }
 
-test("the areas endpoint serves the five tables a map is drawn from", async () => {
+test("the areas endpoint serves the six tables a map is drawn from", async () => {
   await withAreaGateway(async (gateway) => {
     const url = `http://127.0.0.1:${gateway.port}/dbc/areas`;
     // The origin gate applies here as everywhere: a request without one is refused outright.
@@ -191,6 +212,14 @@ test("the areas endpoint serves the five tables a map is drawn from", async () =
     });
 
     assert.equal(data.continents[0].scale, 0.5);
+    assert.equal(data.continents[0].worldMapId, 1,
+      "WorldMapID is the parent edge from a continent to the global World/Cosmic level");
+    assert.deepEqual(data.transforms[0], {
+      id: 2, mapId: 530,
+      regionBottom: 4800, regionRight: f32(-10133.333),
+      regionTop: 16000, regionLeft: f32(-2666.666),
+      newMapId: 0, offsetX: -2400, offsetY: 2400, newDungeonMapId: 0,
+    });
     // `instanceType` is carried because nothing on the wire ever says «you are in an instance», and
     // a module window's `inInstance` condition is exactly that question.
     assert.deepEqual(data.maps[0], {
@@ -219,7 +248,15 @@ test("the area client indexes what a map needs to ask", async () => {
       displayMapId: -1, defaultDungeonFloor: 0, parentWorldMapId: 0,
     }],
     overlays: [{ id: 121, mapAreaId: 30, areaIds: [1519], textureName: "STORMWIND", width: 485, height: 405, offsetX: 12, offsetY: 34 }],
-    continents: [{ id: 1, mapId: 0, left: 10, right: 20, top: 30, bottom: 40, offsetX: 1.5, offsetY: 2.5, scale: 0.5 }],
+    continents: [{
+      id: 1, mapId: 0, left: 10, right: 20, top: 30, bottom: 40,
+      offsetX: 1.5, offsetY: 2.5, scale: 0.5, worldMapId: 1,
+    }],
+    transforms: [{
+      id: 2, mapId: 530,
+      regionBottom: 4800, regionRight: -10133.333, regionTop: 16000, regionLeft: -2666.666,
+      newMapId: 0, offsetX: -2400, offsetY: 2400, newDungeonMapId: 0,
+    }],
     maps: [{ id: 0, directory: "Azeroth", name: "Восточные королевства" }],
   };
   const original = globalThis.fetch;
@@ -258,6 +295,8 @@ test("the area client indexes what a map needs to ask", async () => {
     assert.equal(client.mapAreasOf(0).length, 2);
     assert.equal(client.continentOf(0)?.scale, 0.5);
     assert.equal(client.map(0)?.directory, "Azeroth");
+    assert.equal(client.worldMapHierarchy()?.parent(client.worldMapHierarchy().node("area:14"))?.key,
+      "cosmic");
     // The continent-wide row is the one whose areaId is zero, not the first in the list.
     assert.equal(client.continentMapArea(0)?.name, "Azeroth");
   } finally {

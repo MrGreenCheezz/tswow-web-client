@@ -57,6 +57,20 @@ const SCHOOLS = 7;
 const SPELLS = 5;
 const SOCKETS = 3;
 
+test("owned socketed items show installed gems and the actual socket bonus instead of empty sockets", () => {
+  const template = parseItemQueryResponse(itemPacket({ sockets: [2, 4], socketBonus: 700 }));
+  const content = itemTooltipContent({ entry: template.entry, template }, {
+    enchantments: [0, 0, 501, 0, 0, 0, 0],
+    enchantment: (id) => ({ 501: { id, name: "+12 силы", gemItemId: 2300 },
+      700: { id, name: "+4 выносливости", gemItemId: 0 } })[id],
+    gemName: (id) => id === 2300 ? "Красный самоцвет" : undefined,
+  });
+  const text = content.lines.map((line) => typeof line === "string" ? line : line.text).join("\n");
+  assert.match(text, /Красный самоцвет.*\+12 силы/);
+  assert.doesNotMatch(text, /красное гнездо/i);
+  assert.match(text, /Бонус.*\+4 выносливости.*неактивен/);
+});
+
 /**
  * One item query answer, with every block at its fixed length.
  *

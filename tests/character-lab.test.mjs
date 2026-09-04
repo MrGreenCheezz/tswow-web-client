@@ -255,9 +255,12 @@ test("the lab reads a look out of the query string the way the client spells one
   // 7 selects installed visual DBC rows, 8 publishes the patch's garment geosets, and 9 selects
   // the foot-capable HumanMale/Tauren boot meshes and profile-scoped belt selection. 11 seeds the
   // neutral belt for naked and NPC appearances. 12 publishes the measured all-profile worn-boot
-  // selection. 13 marks that policy as coordinated so classic keeps its original choices.
-  assert.equal(CHARACTER_APPEARANCE_VERSION, 13,
-    "13 separates coordinated visual geosets from the classic appearance payload");
+  // selection. 13 marks that policy as coordinated so classic keeps its original choices. 14 is
+  // HD-1: the coordinated pack's family-20 foot on the ten profiles that authored one, and the
+  // re-extracted overlay's body layers — 1,133 of 19,903 offered layers named a file the live chain
+  // does not hold before it, 0 of 18,643 after.
+  assert.equal(CHARACTER_APPEARANCE_VERSION, 14,
+    "14 publishes the coordinated pack's own foot mesh and its re-extracted body layers");
   assert.equal(
     appearanceQuery(query),
     `${version}&race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=17%3A26%3A8106%3A19%2C6%3A7%3A9892%2C7%3A8%3A10141`);

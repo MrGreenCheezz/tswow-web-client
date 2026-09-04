@@ -15,27 +15,46 @@ import { createCamera, projectPoint } from "../SimpleScene.js";
 import { isWorldObjectDead } from "../../world/WorldState.js";
 import { cameraPivotHeight, game } from "../game/Context.js";
 import { plainChatText } from "./ChatLink.js";
+import { currentQuestLogEntries } from "./QuestLog.js";
+import {
+  questMarkerProgress,
+  questWorldObjectiveMarkers,
+  type QuestObjectiveNameResolver,
+  type QuestWorldObjectiveMarker,
+} from "./QuestObjectiveMarkers.js";
 import { settingOn } from "./Settings.js";
 import {
-  addFloater, expire, floaterOffset, floatingAmountText, putBubble,
-  type Bubble, type Floater, type FloaterKind,
+  addFloater, expire, floaterOffset, floatingAmountText, floatingCombatTextRelevant, putBubble,
+  removeIrrelevantFloaters, type Bubble, type Floater, type FloaterKind,
 } from "./OverlayModel.js";
 
 /**
  * How far above the crown of the head a bubble hangs, clear of the name plate on the canvas.
  *
- * Sixty-six rather than forty-two since slice R6. The plate itself reaches 43 pixels above a
- * target's head with a cast bar on it, and the raid mark and the quest mark are drawn above the
- * plate rather than inside it, which is another twelve.
+ * Clear the target's name, readable health/cast rows and the raid/quest mark above them.
  */
-const BUBBLE_GAP_PX = 66;
+const BUBBLE_GAP_PX = 84;
 const FLOATER_GAP_PX = 12;
+/** Keep the brass objective badge beside, rather than over, the existing nameplate stack. */
+const QUEST_MARKER_X_PX = 86;
+const QUEST_MARKER_GAP_PX = 10;
+/** Quest/object membership changes on packets, not frames; cap the loaded-object scan at 10 Hz. */
+const QUEST_MARKER_INTERVAL_MS = 100;
 
 const bubbles: Bubble[] = [];
 const floaters: Floater[] = [];
 /** The element showing each entry, so a frame is a transform write and not a rebuild. */
 const bubbleNodes = new Map<bigint, HTMLElement>();
 const floaterNodes = new Map<Floater, HTMLElement>();
+const questMarkerNodes = new Map<bigint, {
+  root: HTMLElement;
+  sigil: HTMLElement;
+  progress: HTMLElement;
+}>();
+
+let cachedQuestMarkers: readonly QuestWorldObjectiveMarker[] = [];
+let questMarkersWorld: typeof game.world;
+let questMarkersCheckedAt = Number.NEGATIVE_INFINITY;
 
 let layer: HTMLElement | undefined;
 
@@ -59,6 +78,10 @@ export function resetHeadOverlay(): void {
   floaters.length = 0;
   bubbleNodes.clear();
   floaterNodes.clear();
+  questMarkerNodes.clear();
+  cachedQuestMarkers = [];
+  questMarkersWorld = undefined;
+  questMarkersCheckedAt = Number.NEGATIVE_INFINITY;
   layer?.replaceChildren();
 }
 
@@ -80,7 +103,9 @@ export function showChatBubble(guid: bigint, text: string, kind = "chat-say"): v
 export function showFloatingText(
   guid: bigint, kind: FloaterKind, amount: number, critical: boolean, text?: string | undefined,
 ): void {
-  if (guid === 0n || !settingOn("floatingCombatText")) return;
+  const world = game.world;
+  if (!world || !floatingCombatTextRelevant(guid, world.state.selfGuid, world.targetGuid)
+    || !settingOn("floatingCombatText")) return;
   addFloater(floaters, {
     guid, kind, critical, text: floatingAmountText(kind, amount, text),
   }, performance.now());
@@ -93,16 +118,18 @@ export function showFloatingText(
  * physics step has already replaced the player's position object for this frame.
  */
 export function updateHeadOverlay(now: number): void {
-  expire(bubbles, now);
-  expire(floaters, now);
-  if (bubbles.length === 0 && floaters.length === 0) {
-    if (bubbleNodes.size > 0 || floaterNodes.size > 0) resetHeadOverlay();
-    return;
-  }
-  const root = overlayLayer();
   const world = game.world;
   const state = world?.state;
   const selfGuid = state?.selfGuid;
+  expire(bubbles, now);
+  expire(floaters, now);
+  removeIrrelevantFloaters(floaters, selfGuid, world?.targetGuid);
+  const worldMarkers = liveQuestMarkers(now);
+  if (bubbles.length === 0 && floaters.length === 0 && worldMarkers.length === 0) {
+    if (bubbleNodes.size > 0 || floaterNodes.size > 0 || questMarkerNodes.size > 0) resetHeadOverlay();
+    return;
+  }
+  const root = overlayLayer();
   const player = selfGuid === undefined ? undefined : state?.objects.get(selfGuid)?.position;
   if (!root || !state || !player) return;
 
@@ -115,6 +142,25 @@ export function updateHeadOverlay(now: number): void {
   // place for the same reason.
   const camera = createCamera(player, game.camera.yaw, game.camera.viewPitch, game.camera.view,
     { pivotHeight: cameraPivotHeight() });
+
+  const liveQuestMarkerGuids = new Set<bigint>();
+  for (const marker of worldMarkers) {
+    const anchor = anchorFor(marker.guid, camera, width, height);
+    const parts = questMarkerNodes.get(marker.guid) ?? makeQuestMarker(root, marker.guid);
+    liveQuestMarkerGuids.add(marker.guid);
+    if (!anchor) {
+      parts.root.hidden = true;
+      continue;
+    }
+    updateQuestMarker(parts, marker);
+    parts.root.hidden = false;
+    parts.root.style.transform = `translate(-50%, -100%) translate(${Math.round(anchor.x + QUEST_MARKER_X_PX)}px, ${Math.round(anchor.y - QUEST_MARKER_GAP_PX)}px)`;
+  }
+  for (const [guid, parts] of questMarkerNodes) {
+    if (liveQuestMarkerGuids.has(guid)) continue;
+    parts.root.remove();
+    questMarkerNodes.delete(guid);
+  }
 
   const liveBubbles = new Set<bigint>();
   for (const bubble of bubbles) {
@@ -156,6 +202,73 @@ export function updateHeadOverlay(now: number): void {
     node.remove();
     floaterNodes.delete(floater);
   }
+}
+
+const questTargetName: QuestObjectiveNameResolver = (kind, id) => {
+  const world = game.world;
+  if (kind === "creature") {
+    return game.creatureMetadata?.get(id)?.name ?? world?.creatureTemplates.get(id)?.name;
+  }
+  if (kind === "gameObject") return world?.gameObjectTemplates.get(id)?.name;
+  return game.itemMetadata?.get(id)?.name ?? world?.itemTemplates.get(id)?.name;
+};
+
+function liveQuestMarkers(now: number): readonly QuestWorldObjectiveMarker[] {
+  const world = game.world;
+  if (!world) {
+    cachedQuestMarkers = [];
+    questMarkersWorld = undefined;
+    questMarkersCheckedAt = now;
+    return cachedQuestMarkers;
+  }
+  if (questMarkersWorld !== world || now < questMarkersCheckedAt
+    || now - questMarkersCheckedAt >= QUEST_MARKER_INTERVAL_MS) {
+    questMarkersWorld = world;
+    questMarkersCheckedAt = now;
+    cachedQuestMarkers = questWorldObjectiveMarkers(
+      currentQuestLogEntries(),
+      world.state.objects.values(),
+      questTargetName,
+    );
+  }
+  return cachedQuestMarkers;
+}
+
+function makeQuestMarker(root: HTMLElement, guid: bigint): {
+  root: HTMLElement;
+  sigil: HTMLElement;
+  progress: HTMLElement;
+} {
+  const marker = document.createElement("div");
+  marker.className = "quest-world-marker";
+  marker.setAttribute("aria-hidden", "true");
+  const sigil = document.createElement("span");
+  sigil.className = "quest-world-marker-sigil";
+  const progress = document.createElement("span");
+  progress.className = "quest-world-marker-progress";
+  marker.append(sigil, progress);
+  root.append(marker);
+  const parts = { root: marker, sigil, progress };
+  questMarkerNodes.set(guid, parts);
+  return parts;
+}
+
+function updateQuestMarker(
+  parts: { root: HTMLElement; sigil: HTMLElement; progress: HTMLElement },
+  marker: QuestWorldObjectiveMarker,
+): void {
+  parts.root.dataset["kind"] = marker.kind;
+  parts.root.dataset["label"] = marker.label;
+  parts.root.dataset["objectiveCount"] = String(marker.objectives.length);
+  parts.sigil.dataset["kind"] = marker.kind;
+  const progressRows = marker.objectives.map(questMarkerProgress).filter((row) => row !== undefined);
+  const progress = progressRows.length > 1 ? `${progressRows[0]} · +${progressRows.length - 1}` : progressRows[0] ?? "";
+  parts.progress.textContent = progress;
+  parts.progress.hidden = progress.length === 0;
+  parts.root.title = marker.objectives.map((objective) => {
+    const row = questMarkerProgress(objective);
+    return row ? `${objective.label}: ${row}` : objective.label;
+  }).join(" · ");
 }
 
 /**

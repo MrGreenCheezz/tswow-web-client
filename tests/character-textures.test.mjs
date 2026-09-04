@@ -250,10 +250,10 @@ test("Т6 an extended display whose bake is not in the client still gets a body"
   assert.match(baked.body[0].path, /BakedNpcTextures/);
 });
 
-test("Т7 the listing is built once and read again when the archives move", withDataset, async () => {
-  // Through the whole gateway, because the invalidation is the gateway's: Д0's fingerprint reports
-  // a DBC change and an archive change separately, and until now nothing here was built out of an
-  // archive at all.
+test("Т7 the listing is shared, and an archive move closes the visual profile", withDataset, async () => {
+  // Through the whole gateway, because both properties belong there: the two appearance indexes
+  // share one archive listing, and a later archive generation must not be paired with the visual
+  // DBC/profile selected when the gateway started.
   const client = await mkdtemp(join(tmpdir(), "webclient-chartex-"));
   const patch = join(client, "Data", "ruRU", "patch-ruRU-A.MPQ", "Item", "TextureComponents", "LegUpperTexture");
   await mkdir(patch, { recursive: true });
@@ -302,11 +302,18 @@ test("Т7 the listing is built once and read again when the archives move", with
     assert.equal(listings, 1, "the two indexes pay for one listing between them");
 
     // A module drops a texture into a patch directory and the chain now spells a file differently.
+    // The running session keeps neither old nor new metadata: it fails closed until restart.
     await writeFile(join(patch, "Module_Pant_LU_M.blp"), "BLP2");
-    await ask();
-    assert.equal(listings, 2, "an archive change is read again without a restart");
-    await ask();
-    assert.equal(listings, 2, "and only once for that change");
+    const changed = await fetch(
+      `http://127.0.0.1:${gateway.port}/dbc/character-appearance`
+      + `?v=${CHARACTER_APPEARANCE_VERSION}&race=1&sex=0&skin=2&face=3&hair=4&hairColor=2&facialHair=5`,
+      { headers });
+    assert.equal(changed.status, 409);
+    assert.equal((await changed.json()).error, "client_patch_chain_changed");
+    assert.equal(listings, 1, "no listing from a second archive generation enters this session");
+    assert.equal((await fetch(
+      `http://127.0.0.1:${gateway.port}/dbc/creature-models?ids=49`, { headers })).status, 409,
+    "the creature appearance route is latched to the same refusal");
   } finally {
     await gateway.close();
     await rm(client, { recursive: true, force: true });

@@ -31,8 +31,12 @@ export class SpellMetadataClient {
       // the field on purpose: an absent one reads as `0 & 1`, which is a wrong word rather than a
       // thrown repaint, and refusing the whole record would cost the player their book instead.
       // v=8 carries `SPELL_ATTR2_AUTOREPEAT_FLAG`. Treating an hour-old Auto Shot as an ordinary
-      // cast restarts the server repeat container and floods the player with cast failures.
-      const response = await fetch(`${this.#baseUrl}/dbc/spells?ids=${missing.slice(offset, offset + 200).join(",")}&v=8`);
+      // cast restarts the server repeat container and floods the player with cast failures. v=9
+      // invalidates cached empty responses for server-only linked aura ids now resolved by the
+      // gateway (for example 61418 -> 26023); otherwise the retry loop receives the same stale
+      // empty array for the route's full one-hour cache lifetime.
+      // v=10 separates recipe spells from the book and supplies crafting reagents/outputs.
+      const response = await fetch(`${this.#baseUrl}/dbc/spells?ids=${missing.slice(offset, offset + 200).join(",")}&v=10`);
       if (!response.ok) throw new Error(`Spell metadata gateway returned ${response.status}`);
       const value: unknown = await response.json();
       if (!Array.isArray(value) || !value.every(isSpellMetadata)) throw new Error("Spell metadata gateway returned invalid data");

@@ -1,5 +1,5 @@
 import { MELEE_AUTO_ATTACK_SPELL_ID, WorldClient } from "../../world/WorldClient.js";
-import { POWER, POWER_DISPLAY_SCALE, attackPower, readField } from "../../world/Fields.js";
+import { POWER, POWER_DISPLAY_SCALE, attackPower, readField, unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { spellButtonUsable, type SpellMetadata } from "../SpellMetadata.js";
 import { syncMountSpellIds } from "../MountSpells.js";
@@ -13,14 +13,20 @@ import { skinnable, slotElement, slotSiblings } from "./Slots.js";
 import { actionDragPayload } from "./ActionBar.js";
 import {
   attachTooltip, cooldownDuration, cooldownLabel, cooldownView,
-  type TooltipContent,
+  type TooltipContent, type TooltipLine,
 } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { unknownLabel } from "./Format.js";
 import { formatSpellDescription, type SpellDescriptionContext } from "./SpellText.js";
 import { notice } from "./Notices.js";
+import { readSkills } from "./Skills.js";
+import { professionOpener, professionRecipe, professionSpellSkill } from "./ProfessionRules.js";
+import { openProfession, closeProfessions } from "./Professions.js";
 
 export const spellButtons = new Map<number, Array<{ button: HTMLButtonElement; cooldown: HTMLSpanElement }>>();
+
+/** Trinity's private SkillLine for internal/debug abilities (SkillLine.dbc: SKILL_INTERNAL). */
+export const SKILL_INTERNAL = 769;
 
 /**
  * What the search box holds, and whether the book is showing only the top rank of each chain.
@@ -37,6 +43,8 @@ export const spellButtons = new Map<number, Array<{ button: HTMLButtonElement; c
  */
 let spellbookQuery = "";
 let hideLowerRanks = true;
+/** The last metadata request settled, even when the gateway omitted a requested custom row. */
+let spellMetadataSettledWorld: WorldClient | undefined;
 
 /** Formula operands the server keeps in the player's private update fields. */
 export function spellDescriptionContext(): SpellDescriptionContext {
@@ -140,8 +148,10 @@ export function setSpellbookRankFilter(hide: boolean): void {
 
 /** Forgets the buttons of the character that has just been left. */
 export function clearSpellbook(): void {
+  closeProfessions();
   spellbookTab = undefined;
   spellbookQuery = "";
+  spellMetadataSettledWorld = undefined;
   spellbookSearch.value = "";
   drawSpellbookTabs([]);
   spellbookList.replaceChildren();
@@ -177,13 +187,109 @@ export function clearSpellbook(): void {
  * A spell whose row has not arrived yet is kept: the alternative is a book that empties itself
  * while it loads.
  */
+export interface SpellbookActorContext {
+  classId?: number;
+  raceId?: number;
+}
+
+export interface SpellbookSkillAbility {
+  skillLine: number;
+  raceMask: number;
+  classMask: number;
+  excludeRace?: number;
+  excludeClass?: number;
+  acquireMethod: number;
+  supercededBySpell: number;
+}
+
+/** The 3.3.5 acquire methods are the authoritative learn/visibility states. */
+export function spellAbilityVisible(ability: SpellbookSkillAbility): boolean {
+  return ability.skillLine > 0
+    && ability.skillLine !== SKILL_INTERNAL
+    && Number.isFinite(ability.acquireMethod)
+    && ability.acquireMethod >= 0
+    && ability.acquireMethod <= 2;
+}
+
+function maskAllows(mask: number, id: number | undefined): boolean {
+  if (mask === 0 || mask === -1 || mask === 0xffffffff || id === undefined) return true;
+  if (!Number.isInteger(id) || id <= 0 || id > 31) return false;
+  return (mask & (1 << (id - 1))) !== 0;
+}
+
+function spellbookActor(): SpellbookActorContext {
+  const world = game.world;
+  const selfGuid = world?.state.selfGuid;
+  const self = selfGuid === undefined ? undefined : world?.state.objects.get(selfGuid);
+  if (!self) return {};
+  const classId = unit.classId(self);
+  const raceId = unit.race(self);
+  return {
+    ...(classId === undefined ? {} : { classId }),
+    ...(raceId === undefined ? {} : { raceId }),
+  };
+}
+
+/** Apply the SkillLineAbility class/race masks without using spell names or passive heuristics. */
+export function spellAbilityMatchesActor(
+  ability: SpellbookSkillAbility,
+  actor: SpellbookActorContext,
+): boolean {
+  if (!spellAbilityVisible(ability)) return false;
+  if (!maskAllows(ability.classMask, actor.classId)) return false;
+  if (!maskAllows(ability.raceMask, actor.raceId)) return false;
+  if (ability.classMask !== 0 && ability.classMask !== -1 && actor.classId !== undefined
+    && (ability.classMask & (1 << (actor.classId - 1))) === 0) return false;
+  // Exclusion masks are added by the gateway in future-compatible rows; older test fixtures simply
+  // omit them, which is the same as zero.  Read them structurally rather than inventing a name
+  // list for service spells.
+  if ((ability.excludeClass ?? 0) !== 0 && actor.classId !== undefined
+    && (ability.excludeClass! & (1 << (actor.classId - 1))) !== 0) return false;
+  if ((ability.excludeRace ?? 0) !== 0 && actor.raceId !== undefined
+    && (ability.excludeRace! & (1 << (actor.raceId - 1))) !== 0) return false;
+  return true;
+}
+
+/** Pick the skill line from the row the current character is actually allowed to use. */
+function spellSkillLineForBook(id: number): number | undefined {
+  const talents = game.talentData;
+  const rows = typeof talents?.spellAbilitiesOf === "function"
+    ? talents.spellAbilitiesOf(id)
+    : undefined;
+  if (rows !== undefined) {
+    const actor = spellbookActor();
+    return rows.find((row) => spellAbilityMatchesActor(row, actor))?.skillLine;
+  }
+  return talents?.skillOfSpell(id);
+}
+
 function belongsInSpellbook(id: number): boolean {
   const metadata = game.spells.get(id);
   if (metadata?.hidden) return false;
-  const line = game.talentData?.skillOfSpell(id);
+  const talents = game.talentData;
+  const line = spellSkillLineForBook(id);
+  if (metadata?.tradeSkill && !professionOpener(metadata)) return false;
+  const professionLine = metadata ? professionSpellSkill(metadata, talents) : line;
+  const professionCategory = professionLine === undefined ? undefined : talents?.skillLine(professionLine)?.categoryId;
+  if (professionCategory === 11 || professionOpener(metadata)
+    || (professionCategory === 9 && metadata?.effects?.includes(118) && !metadata.passive)) {
+    const world = game.world;
+    const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+    if (!self || !readSkills(self).some((skill) => skill.skillId === professionLine)) return false;
+    if (professionRecipe(metadata)) return false;
+  }
   // No skill data yet is not the same answer as "no skill line": until the table lands nothing can
   // be judged, and hiding everything would empty the book on the way in.
-  if (game.talentData && (line === undefined || line <= 0)) return false;
+  if (talents?.ready && (line === undefined || line <= 0)) return false;
+  const rows = typeof talents?.spellAbilitiesOf === "function"
+    ? talents.spellAbilitiesOf(id)
+    : undefined;
+  // Older gateway snapshots and pure UI fixtures expose only spellSkill. Keep their behaviour;
+  // the complete endpoint returns an array (including an empty one) and is judged authoritatively.
+  if (rows !== undefined) {
+    const actor = spellbookActor();
+    if (!rows.some((row) => spellAbilityMatchesActor(row, actor))) return false;
+  }
   return true;
 }
 
@@ -199,7 +305,7 @@ const SKILL_LINE_GENERIC = 183;
  */
 function rankedSpell(id: number): RankedSpell | undefined {
   const metadata = game.spells.get(id);
-  const skillLine = game.talentData?.skillOfSpell(id);
+  const skillLine = spellSkillLineForBook(id);
   if (!metadata || skillLine === undefined) return undefined;
   return {
     id, skillLine,
@@ -215,11 +321,29 @@ export function showSpells(): void {
   spellbookList.replaceChildren();
   spellButtons.clear();
   const world = game.world;
+  const talentData = game.talentData;
+  if (world?.initialSpellsReceived && talentData && !talentData.ready
+    && !("failed" in talentData && talentData.failed)) {
+    drawSpellbookTabs([]);
+    spellStatus.className = "muted";
+    spellStatus.textContent = "Проверяем доступность заклинаний…";
+    return;
+  }
   const known = world?.knownSpells.filter((spell) => belongsInSpellbook(spell.id)) ?? [];
+  // Do not paint placeholder/service rows while the initial metadata batch is in flight.  Once a
+  // complete row lands `showSpells` is called again by the loader and the real icon/name appears in
+  // one frame, with no transient internal spells for the player to see.
+  if (world?.initialSpellsReceived && game.spellMetadataClient
+    && spellMetadataSettledWorld !== world && known.some((spell) => !game.spells.has(spell.id))) {
+    drawSpellbookTabs([]);
+    spellStatus.className = "muted";
+    spellStatus.textContent = "Загрузка описаний заклинаний…";
+    return;
+  }
   // A tab the character has no spell in at all cannot stay selected: the strip would not draw it,
   // and the book would sit on «В этой вкладке нет активных заклинаний» with nothing on the screen
   // to press to get out of it.
-  if (spellbookTab !== undefined && !known.some((spell) => game.talentData?.skillOfSpell(spell.id) === spellbookTab)) {
+  if (spellbookTab !== undefined && !known.some((spell) => spellSkillLineForBook(spell.id) === spellbookTab)) {
     spellbookTab = undefined;
   }
   // Tabs come from the unfiltered list, and so does the count on each of them. The strip is sorted
@@ -228,7 +352,7 @@ export function showSpells(): void {
   drawTabs(known.map((spell) => spell.id));
   const inTab = spellbookTab === undefined
     ? known
-    : known.filter((spell) => (game.talentData?.skillOfSpell(spell.id) ?? 0) === spellbookTab);
+    : known.filter((spell) => (spellSkillLineForBook(spell.id) ?? 0) === spellbookTab);
 
   const lower = hideLowerRanks
     ? lowerRankSpells(inTab.map((spell) => rankedSpell(spell.id)).filter((spell) => spell !== undefined))
@@ -266,7 +390,7 @@ export function showSpells(): void {
     ? `Найдено ${activeSpells.length} из ${ranked.length}`
     : lower.size > 0
       ? `${activeSpells.length} заклинаний, младших рангов скрыто ${lower.size}`
-      : `${activeSpells.length} активных заклинаний`;
+      : `${activeSpells.length} заклинаний`;
   for (const spell of activeSpells) {
     // The badge carries the rank rather than the id: a gold `#1234` on every row said nothing.
     spellbookList.append(createSpellButton(spell.id, game.spells.get(spell.id)?.rank ?? ""));
@@ -300,7 +424,7 @@ function drawTabs(spellIds: readonly number[]): void {
   }
   const lines = new Map<number, number>();
   for (const id of spellIds) {
-    const line = talents.skillOfSpell(id);
+    const line = spellSkillLineForBook(id);
     if (line === undefined) continue;
     lines.set(line, (lines.get(line) ?? 0) + 1);
   }
@@ -419,7 +543,7 @@ function basePower(powerType: number): number | undefined {
 export function spellTooltip(spellId: number): TooltipContent {
   const metadata = game.spells.get(spellId);
   if (!metadata) return { title: unknownLabel("заклинание", spellId), footer: ["Описание загружается…"] };
-  const lines: string[] = [];
+  const lines: Array<string | TooltipLine> = [];
   if (metadata.rank) lines.push(metadata.rank);
   const school = SCHOOL_NAMES.filter((_, bit) => (metadata.schoolMask & (1 << bit)) !== 0);
   if (school.length > 0) lines.push(`Школа: ${school.join(", ")}`);
@@ -433,12 +557,16 @@ export function spellTooltip(spellId: number): TooltipContent {
   const cooldown = Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime);
   if (cooldown > 0) lines.push(`Восстановление: ${seconds(cooldown)} с`);
   if (metadata.passive) lines.push("Пассивное");
+  // A description out of `Spell.dbc` is a template, not a sentence: «$s1 ед. урона» is what
+  // 22,599 of them look like, and every one of those markers used to reach the tooltip intact.
+  // It is also the spell's main body copy, not an interaction hint: keeping it in the footer made
+  // long Russian text as small and muted as «Перетащите на панель команд».
+  const description = formatSpellDescription(metadata.description, metadata, spellDescriptionContext());
+  if (description) lines.push({ text: description, tone: "description" });
   return {
     title: metadata.name,
     lines,
-    // A description out of `Spell.dbc` is a template, not a sentence: «$s1 ед. урона» is what
-    // 22,599 of them look like, and every one of those markers used to reach the tooltip intact.
-    footer: [formatSpellDescription(metadata.description, metadata, spellDescriptionContext()), metadata.passive ? "" : "Перетащите на панель команд"].filter(Boolean),
+    footer: metadata.passive ? undefined : ["Перетащите на панель команд"],
   };
 }
 
@@ -516,6 +644,11 @@ function setSpellButtonState(
 export function castSpell(spellId: number): boolean {
   const world = game.world;
   if (!world || world.state.selfGuid === undefined) return false;
+  const profession = game.spells.get(spellId);
+  if (professionOpener(profession) && profession) {
+    const skill = professionSpellSkill(profession, game.talentData);
+    return skill !== undefined && openProfession(skill);
+  }
   // Attack is a client action, not a learned spell. Trinity does not normally include row 6603 in
   // INITIAL_SPELLS, and it has no metadata preflight: WorldClient maps it to ATTACK_SWING/STOP.
   if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
@@ -559,6 +692,7 @@ export async function loadSpellMetadata(world: WorldClient): Promise<void> {
   if (!client) return;
   const epoch = spellMetadataEpoch();
   if (!isCurrentSpellMetadataRequest(world, client, epoch)) return;
+  spellMetadataSettledWorld = undefined;
   try {
     const known = await client.load(world.knownSpells.map((spell) => spell.id));
     if (!isCurrentSpellMetadataRequest(world, client, epoch)) {
@@ -584,6 +718,7 @@ export async function loadSpellMetadata(world: WorldClient): Promise<void> {
     }
     for (const [id, metadata] of loadedReferences) game.spells.set(id, metadata);
     syncMountSpellIds(world);
+    spellMetadataSettledWorld = world;
     if (game.world === world) showSpells();
   } catch (error) {
     if (!isCurrentSpellMetadataRequest(world, client, epoch)) {
@@ -592,6 +727,7 @@ export async function loadSpellMetadata(world: WorldClient): Promise<void> {
     // A failed known-spell batch must not discard a classification that another loader already
     // supplied (for example the action bar or aura strip landing first).
     syncMountSpellIds(world);
+    spellMetadataSettledWorld = world;
     spellStatus.className = "error";
     spellStatus.textContent = error instanceof Error ? error.message : String(error);
   }

@@ -37,6 +37,9 @@ const MAX_INSTANCES = 400;
 const MAX_TRIANGLES = 300_000;
 /** How far either side of the player vmap tiles are held. One tile is 533 yards across. */
 const TILE_SPREAD = 140;
+/** A failed tile transport/decode is unresolved, with the same bounded retry cadence as its models. */
+const TILE_RETRY_BASE_MS = 100;
+const TILE_RETRY_MAX_MS = 5_000;
 
 /** The raw vmap spawn identity and transform needed to match its visual WMO placement. */
 export interface StaticWmoPlacementIdentity extends CollisionPlacement {
@@ -106,6 +109,9 @@ export class CollisionSource {
   readonly #tiles = new Map<string, readonly EnvironmentObject[] | null>();
   readonly #loading = new Set<string>();
   readonly #tileErrors = new Set<string>();
+  readonly #tileRetryAttempts = new Map<string, number>();
+  readonly #tileRetryAfter = new Map<string, number>();
+  readonly #tileRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #tileRevision = 0;
   #map: number | undefined;
   #atX = Number.NaN;
@@ -313,13 +319,41 @@ export class CollisionSource {
         seen.add(key);
         const tile = this.#tiles.get(key);
         if (tile) found.push(...tile);
-        else if (tile === undefined && !this.#loading.has(key)) {
+        else if (tile === undefined && !this.#loading.has(key) && this.#tileRetryDue(key)) {
           this.#loading.add(key);
           void this.#loadTile(map, grid.x, grid.y, key);
         }
       }
     }
     return found;
+  }
+
+  #tileRetryDue(key: string): boolean {
+    return Date.now() >= (this.#tileRetryAfter.get(key) ?? 0);
+  }
+
+  #retryTileLater(key: string): void {
+    const attempt = (this.#tileRetryAttempts.get(key) ?? 0) + 1;
+    this.#tileRetryAttempts.set(key, attempt);
+    const delay = Math.min(TILE_RETRY_MAX_MS, TILE_RETRY_BASE_MS * 2 ** Math.min(6, attempt - 1));
+    this.#tileRetryAfter.set(key, Date.now() + delay);
+    const previous = this.#tileRetryTimers.get(key);
+    if (previous !== undefined) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.#tileRetryTimers.delete(key);
+      // `refresh` is revision-driven. Wake one ordinary rebuild after the cooldown instead of
+      // downloading from the timer or polling the failed route every animation frame.
+      this.#tileRevision++;
+    }, delay);
+    this.#tileRetryTimers.set(key, timer);
+  }
+
+  #clearTileRetry(key: string): void {
+    this.#tileRetryAttempts.delete(key);
+    this.#tileRetryAfter.delete(key);
+    const timer = this.#tileRetryTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    this.#tileRetryTimers.delete(key);
   }
 
   async #loadTile(map: number, gridX: number, gridY: number, key: string): Promise<void> {
@@ -336,10 +370,11 @@ export class CollisionSource {
       // The raw vmap route, not the visual one the renderer prefers: these are the spawns the
       // server places its own collision with, named the way its `.vmo` files are named.
       const response = await fetch(`${this.#baseUrl}/environment/${map}/${gridX}/${gridY}`);
-      if (response.status === 404) {
+      if (response.status === 204 || response.status === 404) {
         // A tile with nothing in it: open ground, and the terrain is the whole of the answer there.
         this.#tiles.set(key, null);
         this.#tileErrors.delete(key);
+        this.#clearTileRetry(key);
         settle(true);
         return;
       }
@@ -348,10 +383,14 @@ export class CollisionSource {
       if (!Array.isArray(value)) throw new Error("VMAP tile gateway returned invalid objects");
       this.#tiles.set(key, value as EnvironmentObject[]);
       this.#tileErrors.delete(key);
+      this.#clearTileRetry(key);
       settle(true);
     } catch (error) {
-      this.#tiles.set(key, null);
+      // A transport or decode failure is not an authored empty tile. Keep readiness closed and let
+      // the normal revision-driven rebuild issue one bounded retry after its cooldown.
+      this.#tiles.delete(key);
       this.#tileErrors.add(key);
+      this.#retryTileLater(key);
       settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {

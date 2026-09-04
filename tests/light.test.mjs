@@ -662,6 +662,27 @@ test("each liquid class resolves to the texture family the client gives it", asy
   await assert.rejects(() => liquidTexturePattern(directory, "custard"));
 });
 
+test("a liquid strip tracks the first missing frame so a later patch can extend it", async () => {
+  const { liquidFrameInputs } = await import("../tools/generate-liquid-texture.mjs");
+  const checked = [];
+  const archives = {
+    async has(path) {
+      checked.push(path);
+      return !path.endsWith(".3.blp");
+    },
+  };
+  const inputs = await liquidFrameInputs(archives, "XTextures\\river\\lake_a.%d.blp", 30);
+  assert.deepEqual(inputs.paths, [
+    "XTextures\\river\\lake_a.1.blp",
+    "XTextures\\river\\lake_a.2.blp",
+  ]);
+  assert.deepEqual(inputs.stampPaths, [
+    ...inputs.paths,
+    "XTextures\\river\\lake_a.3.blp",
+  ]);
+  assert.deepEqual(checked, inputs.stampPaths, "resolution stops at the first absent frame");
+});
+
 test("the water bands are read as the pairs the file keeps them in", async (t) => {
   const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");

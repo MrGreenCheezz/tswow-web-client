@@ -1,6 +1,6 @@
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { UNIT_FLAGS_UNCLICKABLE } from "../world/FactionRules.js";
-import { GO_FLAG_NOT_SELECTABLE } from "../world/GameObjectProtocol.js";
+import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../world/GameObjectProtocol.js";
 import { unit } from "../world/Fields.js";
 import { isWorldObjectDead, type WorldObjectState, type WorldPosition, type WorldState } from "../world/WorldState.js";
 import type { EnvironmentObject } from "./Terrain.js";
@@ -591,7 +591,7 @@ export class SimpleScene {
     // 261 of the 739 objects inside the draw radius on the worst measured circle — could still be
     // picked, become the target, wear a selection ring, and then refuse every interaction.
     const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-    if ((flags & GO_FLAG_NOT_SELECTABLE) === 0) {
+    if (interactiveGameObjectType(type) && (flags & GO_FLAG_NOT_SELECTABLE) === 0) {
       this.#hits.push({ guid: object.guid, x: point.x - size / 2 - 4, y: centerY - size / 2 - 4, width: size + 8, height: size + 8 });
     }
     // The diamond and the label are the painted fallback's way of saying a door is there. With the

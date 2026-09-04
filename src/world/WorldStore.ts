@@ -110,6 +110,22 @@ export class WorldStore implements StateObserver {
     return this.#subscribe(subject, UPDATE_FIELDS[name].offset, listener);
   }
 
+  /**
+   * Calls back when any word in one named array field changes. Scalar `field` subscriptions remain
+   * intentionally cheap; array consumers such as PLAYER_SKILL_INFO_1_1 need the complete range or
+   * an update in a later slot would be invisible to them.
+   */
+  fieldRange(subject: Subject, name: UpdateFieldName, listener: StoreListener): Unsubscribe {
+    const field = UPDATE_FIELDS[name];
+    const unsubscriptions: Unsubscribe[] = [];
+    for (let offset = 0; offset < (field.size ?? 1); offset++) {
+      unsubscriptions.push(this.#subscribe(subject, field.offset + offset, listener));
+    }
+    return () => {
+      for (const unsubscribe of unsubscriptions) unsubscribe();
+    };
+  }
+
   /** Calls back when anything about one object changes, including its arrival and its removal. */
   object(subject: Subject, listener: StoreListener): Unsubscribe {
     return this.#subscribe(subject, ANY_FIELD, listener);

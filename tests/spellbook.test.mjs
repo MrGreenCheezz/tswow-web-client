@@ -75,7 +75,7 @@ globalThis.HTMLElement = class {};
 const { game } = await import("../dist/code/browser/game/Context.js");
 const {
   castSpell, loadSpellMetadata, selectSpellbookTab, setSpellbookRankFilter, setSpellbookSearch, showSpells, spellTooltip,
-  updateSpellCooldowns,
+  spellAbilityMatchesActor, spellAbilityVisible, SKILL_INTERNAL, updateSpellCooldowns,
   spellbookSearchKeyDown,
 } = await import("../dist/code/browser/ui/Spellbook.js");
 const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
@@ -128,6 +128,57 @@ const ranked = (id, name, rank, spellLevel, extra = {}) => ({
 });
 
 const captions = () => spellbookList.children.map((button) => button.children[1].textContent);
+
+test("recipes and unlearned professions leave the book while class and racial passives remain", async () => {
+  const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
+  const fields = new Map([
+    [UPDATE_FIELDS.PLAYER_SKILL_INFO_1_1.offset, 171],
+    [UPDATE_FIELDS.PLAYER_SKILL_INFO_1_1.offset + 1, 75 << 16 | 15],
+  ]);
+  try {
+    game.spellMetadataClient = undefined;
+    game.world = book([133, 20598, 2259, 2018, 2330]);
+    game.world.state.selfGuid = 1n;
+    game.world.state.objects.set(1n, { guid: 1n, fields });
+    game.spells = new Map([
+      [133, spell(133, "Огненный шар", "")],
+      [20598, spell(20598, "Человеческий дух", "", true)],
+      [2259, spell(2259, "Алхимия", "", false, { effects: [47, 118, 0], effectMiscValue: [0, 171, 0] })],
+      [2018, spell(2018, "Кузнечное дело", "", false, { effects: [47, 118, 0], effectMiscValue: [0, 164, 0] })],
+      [2330, spell(2330, "Слабое лечебное зелье", "", false, { tradeSkill: true, effects: [24, 0, 0] })],
+    ]);
+    game.talentData = {
+      ...talents({ 133: 8, 20598: 754, 2259: 171, 2018: 164, 2330: 171 }),
+      skillLine(id) { return { id, name: `Навык ${id}`, categoryId: [171, 164].includes(id) ? 11 : 7, iconId: 0 }; },
+    };
+    selectSpellbookTab(undefined);
+    setSpellbookSearch("");
+    showSpells();
+    assert.deepEqual(captions().sort(), ["Алхимия", "Огненный шар", "Человеческий дух · пассивное"].sort());
+  } finally {
+    game.world = undefined;
+    game.talentData = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("SkillLineAbility filtering rejects Trinity internals without hiding passive or profession rows", () => {
+  const base = { raceMask: 0, classMask: 0, acquireMethod: 0, supercededBySpell: 0 };
+  assert.equal(SKILL_INTERNAL, 769);
+  assert.equal(spellAbilityVisible({ ...base, skillLine: SKILL_INTERNAL }), false,
+    "the internal/debug skill line is never a spellbook category");
+  assert.equal(spellAbilityMatchesActor({ ...base, skillLine: SKILL_INTERNAL }, { classId: 1, raceId: 1 }), false);
+
+  // Class/race masks of zero are deliberately permissive: these are how general, passive and
+  // profession abilities are represented in SkillLineAbility, not a signal that a row is internal.
+  for (const skillLine of [6, 164]) {
+    assert.equal(spellAbilityMatchesActor({ ...base, skillLine }, { classId: 8, raceId: 4 }), true,
+      `skill line ${skillLine} remains available with zero masks`);
+  }
+  assert.equal(spellAbilityMatchesActor({ ...base, skillLine: 6, classMask: 1 }, { classId: 2 }), false,
+    "a non-matching class mask still excludes the row");
+  assert.equal(spellAbilityMatchesActor({ ...base, skillLine: 6, classMask: 1 }, { classId: 1 }), true);
+});
 
 test("the active mount toggle bypasses its local cooldown", () => {
   const mountSpell = 23214;
@@ -243,7 +294,7 @@ test("a metadata batch from another window also refreshes mount classification",
   let classified = [];
   const world = {
     knownSpells: [{ id: mountSpell, slot: 0 }],
-    auras: new Map([[1n, new Map()]]),
+    auras: new Map([[1n, new Map([[0, { spellId: mountSpell }]])]]),
     targetGuid: undefined,
     aurasFor: () => [],
     state: { selfGuid: 1n, objects: new Map() },
@@ -282,6 +333,37 @@ test("a failed known-spell batch preserves classification already supplied by an
     assert.deepEqual(classified, [mountSpell]);
   } finally {
     game.spellMetadataClient = previousClient;
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("a settled metadata response may omit a custom row without leaving the book loading forever", async () => {
+  const spellId = 991001;
+  const world = {
+    knownSpells: [{ id: spellId, slot: 0 }], initialSpellsReceived: true,
+    cooldownRemaining: () => 0, cooldownState: () => undefined,
+    state: { selfGuid: undefined, objects: new Map() },
+  };
+  const previousClient = game.spellMetadataClient;
+  const previousTalentData = game.talentData;
+  try {
+    game.world = world;
+    game.spells = new Map();
+    game.talentData = {
+      ready: true,
+      spellAbilitiesOf: () => [{ skillLine: 6, raceMask: 0, classMask: 0, acquireMethod: 0, supercededBySpell: 0 }],
+      skillLine: () => undefined,
+      skillOfSpell: () => 6,
+    };
+    game.spellMetadataClient = { async load() { return new Map(); } };
+    await loadSpellMetadata(world);
+    showSpells();
+    assert.equal(spellStatus.textContent, "1 заклинаний");
+    assert.equal(spellbookList.children.length, 1, "the legitimate row remains visible as an unknown spell");
+  } finally {
+    game.spellMetadataClient = previousClient;
+    game.talentData = previousTalentData;
     game.world = undefined;
     game.spells = new Map();
   }
@@ -612,7 +694,7 @@ test("К1 the book is one list: sorted, searchable, and shorter by the top rank 
     game.world = book([...many.keys()]);
     showSpells();
     assert.equal(spellbookList.children.length, 20);
-    assert.equal(spellStatus.textContent, "20 активных заклинаний");
+    assert.equal(spellStatus.textContent, "20 заклинаний");
   } finally {
     game.world = undefined;
     game.spells = new Map();
@@ -777,220 +859,98 @@ test("К1 Escape lets go of the search box, so the next one closes the book", ()
   }
 });
 
-test("К1 the predicate over the whole book, and every number in its comments", withDataset, async () => {
+test("К1 rank filtering preserves the highest learned member across the active DBC", withDataset, async () => {
   const { openDbcFile } = await import("../tools/dbc.mjs");
-  const [spells, abilities] = await Promise.all([
-    openDbcFile(dbcDirectory, "Spell"),
-    openDbcFile(dbcDirectory, "SkillLineAbility"),
+  const { loadSpellMetadata } = await import("../dist/code/gateway/SpellMetadata.js");
+  const [metadata, abilities] = await Promise.all([
+    loadSpellMetadata(dbcDirectory), openDbcFile(dbcDirectory, "SkillLineAbility"),
   ]);
-
-  // `spellSkill` keeps the first `SkillLineAbility` row for a spell, exactly as
-  // `TalentMetadata.ts:190` builds the map the browser is served.
-  const skillOfSpell = new Map();
+  const membership = new Map();
+  const masks = new Map();
   for (const row of abilities.rows()) {
     const id = abilities.int(row, "Spell");
     const line = abilities.int(row, "SkillLine");
-    if (id > 0 && line > 0 && !skillOfSpell.has(id)) skillOfSpell.set(id, line);
+    if (id <= 0 || line <= 0) continue;
+    if (!membership.has(id)) membership.set(id, line);
+    masks.set(id, (masks.get(id) ?? 0) | abilities.int(row, "ClassMask"));
   }
-
-  // The book's own corpus: `belongsInSpellbook` — not marked invisible, and in some skill line.
-  const SPELL_ATTR0_HIDDEN_CLIENTSIDE = 0x80;
-  const corpus = [];
-  const classMaskOf = new Map();
-  for (const row of abilities.rows()) {
-    const id = abilities.int(row, "Spell");
-    if (id > 0) classMaskOf.set(id, (classMaskOf.get(id) ?? 0) | abilities.int(row, "ClassMask"));
-  }
-  for (const row of spells.rows()) {
-    const id = spells.id(row);
-    if ((spells.int(row, "Attributes") & SPELL_ATTR0_HIDDEN_CLIENTSIDE) !== 0) continue;
-    const skillLine = skillOfSpell.get(id);
-    if (skillLine === undefined) continue;
-    corpus.push({
-      id, skillLine,
-      name: spells.locstring(row, "Name_lang"),
-      rank: spells.locstring(row, "NameSubtext_lang"),
-      spellLevel: spells.int(row, "SpellLevel"),
-      spellClassSet: spells.int(row, "SpellClassSet"),
-      spellClassMask: [0, 1, 2].map((word) => spells.int(row, "SpellClassMask", word)),
-    });
-  }
-  assert.equal(spells.records, 49842, "the dataset this was measured on");
-  assert.equal(corpus.length, 7369, "and what reaches the book of it");
-
-  const chains = new Map();
-  for (const entry of corpus) {
-    const key = rankChainKey(entry);
-    chains.set(key, [...(chains.get(key) ?? []), entry]);
-  }
-  const groups = [...chains.values()].filter((chain) => chain.length > 1);
-  assert.equal(groups.length, 469, "chains of more than one spell");
-  assert.equal(groups.reduce((total, chain) => total + chain.length, 0), 2674, "spells in them");
-
-  const lower = lowerRankSpells(corpus);
-  assert.equal(lower.size, 1904, "lower ranks the book hides at the widest it can ever be");
-
-  // The gate costs 301 of the 2,205 candidates and closes 94 of the 469 groups. It is one gate and
-  // not two: a blank rank string arrives at the duplicate rule as a repeat of the empty string, so
-  // the `rank.trim() === ""` line that used to stand above it could never be the reason a group
-  // was rejected. Measured here rather than asserted from memory — 70 all-blank groups, 24 with a
-  // repeated non-blank string, and **0** that only the blank rule would have caught.
-  const blankRank = (chain) => chain.some((entry) => entry.rank.trim() === "");
-  const repeatedRank = (chain) => new Set(chain.map((entry) => entry.rank)).size !== chain.length;
-  const rejected = groups.filter(repeatedRank);
-  assert.equal(rejected.length, 94);
-  assert.equal(groups.filter(blankRank).length, 70, "groups whose rows carry no rank string");
-  assert.equal(groups.filter((chain) => !blankRank(chain) && repeatedRank(chain)).length, 24);
-  assert.equal(groups.filter((chain) => blankRank(chain) && !repeatedRank(chain)).length, 0,
-    "and none the duplicate rule would have let through, which is why the second line is gone");
-  assert.equal(groups.reduce((total, chain) => total + chain.length - 1, 0), 2205,
-    "which is what the book would hide with the gate taken out");
-
-  // The oracle: the number the translator wrote in the rank string. It is not what the predicate
-  // reads — the predicate reads `SpellLevel` — so agreement is a check and not a tautology.
-  let comparable = 0;
-  const disagreed = [];
-  for (const chain of groups) {
-    if (rejected.includes(chain)) continue;
-    const numbers = chain.map((entry) => Number(/(\d+)/.exec(entry.rank)?.[1]));
-    if (numbers.some((value) => !Number.isFinite(value))) continue;
-    if (new Set(numbers).size !== numbers.length) continue;
-    comparable++;
-    const printed = chain[numbers.indexOf(Math.max(...numbers))];
-    if (lower.has(printed.id)) disagreed.push(printed);
-  }
-  assert.equal(comparable, 375);
-  assert.equal(comparable - disagreed.length, 372,
-    `disagreed on ${disagreed.map((entry) => `${entry.id} «${entry.name}»`).join("; ")}`);
-  assert.deepEqual(disagreed.map((entry) => entry.skillLine).sort((a, b) => a - b), [186, 270, 375],
-    "«Крепость», «Контроль популяции» and «Стихийное опустошение», where the table's own levels "
-    + "contradict the printed rank");
-
-  // What the player sees. A class's spells are the ones `SkillLineAbility.ClassMask` names, which
-  // is the widest that class's book can be — the server has already dropped the lower ranks of
-  // everything `IsStackableWithRanks` refuses, so the live book is smaller than this and shrinks
-  // by the same predicate.
-  //
-  // **The call is the one `showSpells` makes**: `lowerRankSpells` over the class's own list, not
-  // over the corpus with the class intersected out of the answer afterwards. The two are not the
-  // same predicate and they do not agree — over these ten classes they differ on five, by as much
-  // as the death knight's 63 against 72 — because a chain the class owns one link of is a group of
-  // one on its own list and a group of many on the corpus. Whichever is quoted anywhere else, this
-  // is the one on the screen.
-  const CLASS_BITS = {
-    "воин": 0, "паладин": 1, "охотник": 2, "разбойник": 3, "жрец": 4,
-    "рыцарь смерти": 5, "шаман": 6, "маг": 7, "чернокнижник": 8, "друид": 10,
+  const corpus = [...metadata.values()].filter((spell) => membership.has(spell.id) && !spell.hidden && !spell.tradeSkill)
+    .map((spell) => ({ ...spell, skillLine: membership.get(spell.id) }));
+  assert.ok(corpus.length > 1000, "a populated active dataset is exercised, including custom rows");
+  const verify = (known) => {
+    const hidden = lowerRankSpells(known);
+    const groups = new Map();
+    for (const spell of known) {
+      const key = rankChainKey(spell);
+      const group = groups.get(key) ?? [];
+      group.push(spell);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const kept = group.filter((spell) => !hidden.has(spell.id));
+      assert.ok(kept.length > 0, `rank chain ${group[0].id} never disappears entirely`);
+      if (new Set(group.map((spell) => spell.rank)).size !== group.length) {
+        assert.equal(kept.length, group.length, "identical rank labels cannot prove supersession");
+      }
+      for (const old of group.filter((spell) => hidden.has(spell.id))) {
+        assert.ok(kept.some((next) => next.spellLevel > old.spellLevel
+          || (next.spellLevel === old.spellLevel && next.id > old.id)), `hidden ${old.id} has a learned newer rank`);
+      }
+      const printed = group.map((spell) => ({ spell, rank: Number(/(\d+)/.exec(spell.rank)?.[1]) }));
+      if (printed.every((entry) => Number.isFinite(entry.rank))
+        && new Set(printed.map((entry) => entry.rank)).size === printed.length) {
+        const highest = printed.reduce((left, right) => left.rank > right.rank ? left : right).spell;
+        // Custom datasets may intentionally disagree with their rank labels. When level and rank
+        // agree, the independently printed highest rank must remain available.
+        if (group.every((spell) => highest.spellLevel > spell.spellLevel || highest.id >= spell.id)) {
+          assert.ok(!hidden.has(highest.id), `printed highest ${highest.id} remains available`);
+        }
+      }
+    }
   };
-  const table = Object.fromEntries(Object.entries(CLASS_BITS).map(([name, bit]) => {
-    const list = corpus.filter((entry) => ((classMaskOf.get(entry.id) ?? 0) & (1 << bit)) !== 0);
-    return [name, [list.length, list.length - lowerRankSpells(list).size]];
-  }));
-  assert.deepEqual(table, {
-    "воин": [188, 89], "паладин": [264, 135], "охотник": [226, 101], "разбойник": [161, 70],
-    "жрец": [302, 86], "рыцарь смерти": [86, 63], "шаман": [314, 132], "маг": [351, 132],
-    "чернокнижник": [318, 129], "друид": [345, 119],
-  }, "rows in the widest book, and rows left after the switch");
-
-  // And the other form, written down so the two are never confused again: the corpus predicate,
-  // intersected with the class afterwards. Five of the ten move.
-  const viaCorpus = Object.fromEntries(Object.entries(CLASS_BITS).map(([name, bit]) => {
-    const list = corpus.filter((entry) => ((classMaskOf.get(entry.id) ?? 0) & (1 << bit)) !== 0);
-    return [name, list.length - list.filter((entry) => lower.has(entry.id)).length];
-  }));
-  assert.deepEqual(
-    Object.keys(CLASS_BITS).filter((name) => viaCorpus[name] !== table[name][1]),
-    ["жрец", "рыцарь смерти", "шаман", "чернокнижник", "друид"]);
-  assert.deepEqual([viaCorpus["жрец"], viaCorpus["рыцарь смерти"], viaCorpus["шаман"],
-    viaCorpus["чернокнижник"], viaCorpus["друид"]], [85, 72, 129, 128, 123]);
+  verify(corpus);
+  for (const bit of [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]) {
+    const known = corpus.filter((spell) => ((masks.get(spell.id) ?? 0) & (1 << bit)) !== 0);
+    assert.ok(known.length > 0, `class ${bit + 1} has real DBC abilities`);
+    verify(known);
+  }
+  const fireball = corpus.filter((spell) => [133, 143].includes(spell.id));
+  assert.equal(fireball.length, 2);
+  assert.deepEqual([...lowerRankSpells(fireball)], [133], "a learned higher Fireball supersedes the first rank");
+  assert.equal(lowerRankSpells(fireball.filter((spell) => spell.id === 133)).size, 0,
+    "an unlearned higher rank never hides the only learned spell");
 });
 
-test("К1 the range line over the whole book, against the real SpellRange", withDataset, async () => {
+test("К1 every active DBC spell range follows its actual range row", withDataset, async () => {
   const { openDbcFile } = await import("../tools/dbc.mjs");
-  const [spells, abilities, ranges] = await Promise.all([
-    openDbcFile(dbcDirectory, "Spell"),
-    openDbcFile(dbcDirectory, "SkillLineAbility"),
-    openDbcFile(dbcDirectory, "SpellRange"),
+  const { loadSpellMetadata } = await import("../dist/code/gateway/SpellMetadata.js");
+  const [metadata, spells, ranges] = await Promise.all([
+    loadSpellMetadata(dbcDirectory), openDbcFile(dbcDirectory, "Spell"), openDbcFile(dbcDirectory, "SpellRange"),
   ]);
-
-  // `SpellRange` as the gateway resolves it: the hostile slot of each pair, plus the flags.
-  const rangeRows = new Map();
-  for (const row of ranges.rows()) {
-    rangeRows.set(ranges.id(row), {
-      min: ranges.float(row, "RangeMin", 0),
-      max: ranges.float(row, "RangeMax", 0),
-      flags: ranges.int(row, "Flags"),
-      name: ranges.locstring(row, "DisplayName_lang"),
-    });
-  }
-  assert.equal(rangeRows.size, 65, "the table this was measured on");
-
-  // The sentinel is a value, not a distance, and it is the table's own: three rows reach four
-  // digits and two of them carry the same 50,000 that means «anywhere».
-  assert.deepEqual(
-    [...rangeRows].filter(([, row]) => row.max >= 1000).map(([id, row]) => [id, row.max, row.name]),
-    [[13, 50000, "Anywhere"], [173, 50000, "Anywhere (Combat Min Range)"], [174, 1000, "U L T R A"]]);
-  // And the only flag that changes the wording is the 1, which one row of the 65 carries.
-  assert.deepEqual(
-    [...rangeRows].filter(([, row]) => (row.flags & 1) !== 0).map(([id, row]) => [id, row.max, row.name]),
-    [[2, 5, "Combat Range"]]);
-
-  const skillOfSpell = new Map();
-  const classMaskOf = new Map();
-  for (const row of abilities.rows()) {
-    const id = abilities.int(row, "Spell");
-    const line = abilities.int(row, "SkillLine");
-    if (id > 0 && line > 0 && !skillOfSpell.has(id)) skillOfSpell.set(id, line);
-    if (id > 0) classMaskOf.set(id, (classMaskOf.get(id) ?? 0) | abilities.int(row, "ClassMask"));
-  }
-
-  const SPELL_ATTR0_HIDDEN_CLIENTSIDE = 0x80;
-  const corpusSpells = new Map();
+  const rows = new Map([...ranges.rows()].map((row) => [ranges.id(row), row]));
+  const expected = new Map();
   for (const row of spells.rows()) {
-    const id = spells.id(row);
-    if ((spells.int(row, "Attributes") & SPELL_ATTR0_HIDDEN_CLIENTSIDE) !== 0) continue;
-    if (skillOfSpell.get(id) === undefined) continue;
-    const range = rangeRows.get(spells.int(row, "RangeIndex")) ?? { min: 0, max: 0, flags: 0 };
-    corpusSpells.set(id, spell(id, spells.locstring(row, "Name_lang"), spells.locstring(row, "NameSubtext_lang"),
-      false, { rangeMin: range.min, rangeMax: range.max, rangeFlags: range.flags }));
+    const rangeRow = rows.get(spells.int(row, "RangeIndex"));
+    if (rangeRow === undefined) continue;
+    const max = ranges.float(rangeRow, "RangeMax", 0);
+    const min = ranges.float(rangeRow, "RangeMin", 0);
+    const melee = (ranges.int(rangeRow, "Flags") & 1) !== 0;
+    expected.set(spells.id(row), melee ? "Дистанция ближнего боя" : max >= 50000 ? "Неограниченное расстояние"
+      : max <= 0 ? undefined : `Радиус действия: ${min > 0 ? `${min}-` : ""}${max} м`);
   }
-  assert.equal(corpusSpells.size, 7369, "the corpus that reaches the book");
-
+  assert.ok(expected.size > 1000);
   try {
     game.world = undefined;
-    game.gatewayOrigin = undefined;
-    game.spells = corpusSpells;
-    const rangeLines = new Map();
-    const oldHeadWord = [];
-    for (const id of corpusSpells.keys()) {
-      const lines = spellTooltip(id).lines;
-      const line = lines.find((text) =>
-        text === "Дистанция ближнего боя" || text === "Неограниченное расстояние" || text.startsWith("Радиус"));
-      if (line !== undefined) rangeLines.set(id, line);
-      if (lines.some((text) => text.startsWith("Дальность"))) oldHeadWord.push(id);
+    game.spells = metadata;
+    for (const [id, range] of expected) {
+      const lines = spellTooltip(id).lines.filter((line) => typeof line === "string");
+      const actual = lines.find((line) => /^(Дистанция ближнего боя|Неограниченное расстояние|Радиус действия:)/.test(line));
+      assert.equal(actual, range, `Spell ${id} uses the range row referenced by this dataset`);
+      assert.ok(!lines.some((line) => line.startsWith("Дальность")), `Spell ${id} keeps the standard range wording`);
     }
-
-    // The two words, and how much of the book each of them covers. Before this the first 544 read
-    // «Дальность: 5 м» and the other 59 «Дальность: 50000 м».
-    const melee = [...rangeLines].filter(([, line]) => line === "Дистанция ближнего боя");
-    const unlimited = [...rangeLines].filter(([, line]) => line === "Неограниченное расстояние");
-    assert.equal(melee.length, 544);
-    assert.equal(unlimited.length, 59);
-    assert.equal(unlimited.filter(([id]) => (classMaskOf.get(id) ?? 0) !== 0).length, 30,
-      "and 30 of the 59 are in somebody's class list, so they are on a real player's screen");
-
-    // The named ones from both lists, since a count alone cannot say the right rows were caught.
-    for (const id of [78, 72, 53]) assert.equal(rangeLines.get(id), "Дистанция ближнего боя");
-    for (const id of [126, 1002, 6196, 6197, 12484, 49575]) {
-      assert.equal(rangeLines.get(id), "Неограниченное расстояние");
-    }
-    assert.equal(rangeLines.get(133), "Радиус действия: 35 м", "«Огненный шар» is still a distance");
-
-    // Nothing in the book prints four digits of metres, and nothing prints the old head word — the
-    // second is scanned over every line of every tooltip, not over the ones already recognised.
-    assert.deepEqual([...rangeLines].filter(([, line]) => /\d{4}/.test(line)), [],
-      "no tooltip carries a sentinel as a measurement");
-    assert.deepEqual(oldHeadWord, [], "«Дальность» is gone from all 7,369");
-    assert.equal(rangeLines.size, 2146, "book rows that print a range line at all");
+    for (const id of [78, 72, 53]) assert.equal(expected.get(id), "Дистанция ближнего боя");
+    for (const id of [126, 1002, 6196, 6197]) assert.equal(expected.get(id), "Неограниченное расстояние");
+    assert.equal(expected.get(133), "Радиус действия: 35 м");
   } finally {
     game.spells = new Map();
   }

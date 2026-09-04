@@ -1,0 +1,21 @@
+COLUMNS
+int ID
+int<Map::ID> MapID
+float RegionBottom
+float RegionRight
+float RegionTop
+float RegionLeft
+int<Map::ID> NewMapID
+float RegionOffset
+int NewDungeonMapID
+
+BUILD 3.0.1.8820-3.3.5.12340
+$id$ID<32>
+MapID<32>
+RegionBottom
+RegionRight
+RegionTop
+RegionLeft
+NewMapID<32>
+RegionOffset[2]
+NewDungeonMapID<32>

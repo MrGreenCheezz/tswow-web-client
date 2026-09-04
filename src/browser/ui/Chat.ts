@@ -354,6 +354,16 @@ export interface ModuleCommand {
 }
 
 const moduleCommands = new Map<string, ModuleCommand>();
+const pendingModuleLoads = new WeakMap<WorldClient, symbol>();
+
+/** Marks asynchronous addon startup; an old completion must not clear a newer load. */
+export function beginModuleCommandLoad(world: WorldClient): () => void {
+  const token = Symbol();
+  pendingModuleLoads.set(world, token);
+  return () => {
+    if (pendingModuleLoads.get(world) === token) pendingModuleLoads.delete(world);
+  };
+}
 
 /** Adds one, or says why the name cannot be had. */
 export function addModuleCommand(command: ModuleCommand): string | undefined {
@@ -442,6 +452,10 @@ export function submitChat(raw: string): void {
   if (fromModule) return fromModule.run(rest);
 
   if (runEmote(command, world)) return;
+  if (pendingModuleLoads.has(world)) {
+    systemLine(`Аддоны ещё загружаются. Повторите /${command} через несколько секунд.`);
+    return;
+  }
   if (!world.emotes) {
     systemLine(`Неизвестная команда /${command}. Список эмоций ещё не загружен — /help`);
     return;

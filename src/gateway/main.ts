@@ -1,6 +1,7 @@
 import { startGateway } from "./Gateway.js";
 import { parseCharacterTextures } from "./CharacterTextures.js";
 import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
+import { discoverClientAddons } from "./ClientAddons.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
@@ -20,6 +21,7 @@ function port(name: string, fallback: number): number {
  */
 interface MachinePaths {
   clientDirectory(): string;
+  datasetDirectory(): string;
   dbcDirectory(): string;
   mapsDirectory(): string;
   vmapsDirectory(): string;
@@ -33,6 +35,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "http://127.0.0.1:5173,ht
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+
 if (host !== "127.0.0.1" && host !== "localhost" && allowedOrigins.includes("*")) {
   console.warn(
     `WARNING: the gateway is listening on ${host} and accepts any Origin, so anyone who can reach ` +
@@ -51,18 +54,83 @@ try {
 } catch (error) {
   console.warn(`Not watching the client archives: ${error instanceof Error ? error.message : String(error)}`);
 }
+const clientAddons = clientDirectory === undefined ? [] : await discoverClientAddons(clientDirectory);
+if (clientAddons.length > 0) {
+  console.log(`Client add-ons: ${clientAddons.map((addon) => addon.name).join(", ")}`);
+}
+
+// A patched model served from one TSWoW tree and gameplay DBC metadata read from another is a
+// valid-looking but internally impossible client. Catch that before the port opens. The full
+// publisher/FrameXML audit is `npm run patches:check`; startup deliberately hashes only six anchor
+// tables, so it remains cheap enough for ordinary development restarts.
+if (clientDirectory !== undefined) {
+  interface RuntimePatchAlignment {
+    ok: boolean;
+    expectedPatch?: string;
+    checked: number;
+    winners?: Array<{ source: string }>;
+    errors: string[];
+    warnings: string[];
+  }
+  interface PatchContractModule {
+    inspectRuntimePatchAlignment(options: {
+      clientDirectory: string;
+      datasetDirectory: string;
+      dbcDirectory: string;
+      locale?: string;
+    }): Promise<RuntimePatchAlignment>;
+  }
+  const contract = (await import(pathToFileURL(resolve(process.cwd(), "tools/tswow-patch-contract.mjs")).href)) as PatchContractModule;
+  const alignment = await contract.inspectRuntimePatchAlignment({
+    clientDirectory,
+    datasetDirectory: paths.datasetDirectory(),
+    dbcDirectory: paths.dbcDirectory(),
+    ...(process.env.CLIENT_LOCALE ? { locale: process.env.CLIENT_LOCALE } : {}),
+  });
+  for (const warning of alignment.warnings) console.warn(`TSWoW patch contract: ${warning}`);
+  if (!alignment.ok) {
+    throw new Error(`TSWoW patch contract failed:\n${alignment.errors.map((error) => `- ${error}`).join("\n")}`);
+  }
+  const activeSources = [...new Set((alignment.winners ?? []).map((winner) => winner.source))];
+  console.log(
+    `TSWoW patch contract: ${alignment.checked} dataset anchors match active client source(s) `
+    + `${activeSources.length ? activeSources.join(", ") : alignment.expectedPatch ?? "unknown"}`,
+  );
+}
 
 // An installed HD model pack may carry client-only DBC rows that redirect stable display ids to
 // its models and baked textures. Keep them separate from the TSWoW gameplay dataset: only the
 // appearance/model/audio loaders below are allowed to read this directory; gameplay metadata
 // remains in the TSWoW dataset.
-const visualDbcCandidate = resolve(process.env.VISUAL_DBC_DIR ?? resolve(process.cwd(), "data/visual-dbc"));
+let visualDbcCandidate = resolve(process.env.VISUAL_DBC_DIR ?? resolve(process.cwd(), "data/visual-dbc"));
+if (clientDirectory !== undefined && process.env.VISUAL_DBC_DIR === undefined) {
+  interface ClientMediaExtractorModule {
+    extractClientMediaDbcs(options: {
+      clientDirectory: string;
+      outputDirectory: string;
+    }): Promise<string>;
+  }
+  const extractor = (await import(pathToFileURL(
+    resolve(process.cwd(), "tools/extract-visual-dbc-overlay.mjs"),
+  ).href)) as ClientMediaExtractorModule;
+  visualDbcCandidate = await extractor.extractClientMediaDbcs({
+    clientDirectory,
+    outputDirectory: visualDbcCandidate,
+  });
+  console.log(`Client-media DBCs: synced the active patch chain to ${visualDbcCandidate}`);
+}
 const { visualDbcDirectory, audioDbcDirectory, coordinatedVisuals } = await selectClientMediaOverlay({
   candidate: visualDbcCandidate,
   explicit: process.env.VISUAL_DBC_DIR !== undefined,
   ...(clientDirectory === undefined ? {} : { clientDirectory }),
   report: (message) => console.warn(message),
 });
+if (visualDbcDirectory) {
+  console.log(
+    `Client visual profile: ${coordinatedVisuals ? "coordinated extended geosets" : "classic geosets"}; `
+    + `DBCs ${visualDbcDirectory}`,
+  );
+}
 
 const gateway = await startGateway({
   host,
@@ -80,11 +148,16 @@ const gateway = await startGateway({
   vmapsDirectory: paths.vmapsDirectory(),
   dbcDirectory: paths.dbcDirectory(),
   ...(visualDbcDirectory === undefined ? {} : { visualDbcDirectory }),
+  // The default directory was extracted from CLIENT_DIR in this very startup. Its stamps close
+  // the small extract/select -> gateway-baseline window; an explicit override keeps its documented
+  // ability to serve a deliberately external pack.
+  requireClientMediaStamps: process.env.VISUAL_DBC_DIR === undefined,
   // `null` disables Gateway's legacy "visual directory also contains audio" fallback when
   // selection rejected an incomplete or stale EmotesTextSound table.
   audioDbcDirectory: audioDbcDirectory ?? null,
   ...(coordinatedVisuals === undefined ? {} : { coordinatedVisuals }),
   ...(clientDirectory === undefined ? {} : { clientDirectory }),
+  clientAddons,
   creatureMetadataFile: process.env.CREATURE_METADATA_FILE ?? resolve(process.cwd(), "data/creatures.json"),
   itemMetadataFile: process.env.ITEM_METADATA_FILE ?? resolve(process.cwd(), "data/items.json"),
   itemIconsDirectory: process.env.ITEM_ICON_DIR ?? resolve(process.cwd(), "data/item-icons"),
@@ -147,11 +220,20 @@ const gateway = await startGateway({
   ...(clientDirectory === undefined ? {} : { listCharacterTextures }),
   minimapDirectory: process.env.MINIMAP_DIR ?? resolve(process.cwd(), "data/minimap"),
   generateMinimapIndex: (map) => runAssetGenerator("generate-minimap-index.mjs", [String(map)]),
+  worldMapZoneMapsDirectory: process.env.WORLD_MAP_ZONE_MAP_DIR
+    ?? resolve(process.cwd(), "data/worldmap-zone-maps"),
+  generateWorldMapZoneMap: (map) => runAssetGenerator("generate-worldmap-zone-map.mjs", [String(map)]),
   soundDirectory: process.env.SOUND_DIR ?? resolve(process.cwd(), "data/sound"),
   // One path in, a whole `SoundEntries` row out. The generator does nothing but read and write, so
   // every millisecond of a miss is process start and the twenty-two archives; a footstep kit asked
   // for a file at a time would pay that five times for two milliseconds of reading.
   generateSound: (path) => runAssetGenerator("generate-sound.mjs", [path]),
+  // The interface's own source, unconverted: Lua, XML, TOC and TTF read through the same patch
+  // chain the game reads, so this server's `LoginScreenModule` overrides win over the stock ruRU
+  // archives. One path in, one file out — there is no batch to publish, because a `.toc` names what
+  // comes next and only the runtime that read it knows which of those it will actually want.
+  clientFilesDirectory: process.env.CLIENT_FILE_DIR ?? resolve(process.cwd(), "data/client-files"),
+  generateClientFile: (path) => runAssetGenerator("generate-client-file.mjs", [path]),
   liquidDirectory: process.env.LIQUID_DIR ?? resolve(process.cwd(), "data/liquid"),
   generateLiquidTexture: (liquidClass) => runAssetGenerator("generate-liquid-texture.mjs", [liquidClass]),
   // What the modules on this machine ship for this client: message schemas, window definitions and

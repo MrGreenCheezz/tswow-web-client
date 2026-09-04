@@ -42,10 +42,12 @@ const WORLD_ORIGIN = 32 * TERRAIN_GRID_SIZE;
  * reference client's own arrangement: "grass stops between 70 and 140 yards in the original client
  * while doodads run to the horizon" (`wowee/include/rendering/m2_renderer.hpp:566-575`, and the
  * same sentence at `include/rendering/m2_view_distance.hpp:29-35`, where it is applied as a
- * ceiling and not as a scale). It clamps its own setting to 0..500 yards; this one stops at 140,
- * the top of the range that sentence names.
+ * ceiling and not as a scale). The web camera exposes pop-in more readily than the reference's
+ * fog, so this client allows a wider 180-yard ceiling and fades the outer twenty yards by scale.
  */
-export const GROUND_COVER_MAX_RADIUS = 140;
+export const GROUND_COVER_MAX_RADIUS = 180;
+/** Spatial band in which a tuft shrinks to nothing instead of crossing a binary draw boundary. */
+export const GROUND_COVER_FADE_WIDTH = 20;
 /**
  * How much wider than the drawn radius the field is generated.
  *
@@ -59,12 +61,11 @@ export const GROUND_COVER_MARGIN = 4;
 /**
  * A hard ceiling on one field, so that no arrangement of chunks can spike a frame.
  *
- * Measured over the nine tiles around Goldshire, the densest 40-yard window on the tile holds
- * 3,525 doodads within 50 yards and 6,305 within 70. The cap is above the first and below the
- * second on purpose: at the default radius it is never reached, and it is what stops a radius the
- * player has wound up to 140 from asking for 24,396.
+ * Measured over the nine tiles around Goldshire, the densest field holds 3,525 doodads within 50
+ * yards and about 9,000 within the new 80-yard default. Keep the cap above that default so the
+ * distance fade, not a budget cliff, owns its visible edge; the cap still bounds wider settings.
  */
-export const GROUND_COVER_BUDGET = 6000;
+export const GROUND_COVER_BUDGET = 10_000;
 /** Lifted off the ground by the same hair the reference client uses, so a base does not z-fight. */
 const GROUND_COVER_LIFT = 0.01;
 /** The reference client's own range for a tuft's size (`wowee/terrain_manager.cpp:2031-2033`). */
@@ -268,7 +269,8 @@ export function scatterGroundCover(options: ScatterOptions): GroundCoverField {
       const y = WORLD_ORIGIN - (cell.column + random01(point, 2)) * DETAIL_CELL_SIZE;
       // Clipped per doodad rather than per cell: a cell straddling the edge would otherwise reach
       // most of a cell past it, and drawRadius is what the player is asked to name.
-      if (Math.hypot(x - centre.x, y - centre.y) > drawRadius) continue;
+      const distance = Math.hypot(x - centre.x, y - centre.y);
+      if (distance > drawRadius) continue;
       const height = options.heightAt(x, y);
       if (height === undefined) {
         field.withoutHeight++;
@@ -292,11 +294,19 @@ export function scatterGroundCover(options: ScatterOptions): GroundCoverField {
       batch.y.push(y);
       batch.z.push(height + GROUND_COVER_LIFT);
       batch.yaw.push(random01(point, 4) * Math.PI * 2);
-      batch.scale.push(SCALE_MINIMUM + random01(point, 5) * SCALE_RANGE);
+      batch.scale.push((SCALE_MINIMUM + random01(point, 5) * SCALE_RANGE)
+        * groundCoverDistanceScale(distance, drawRadius));
       field.total++;
     }
   }
   return field;
+}
+
+/** Smooth outer-radius scale; deterministic and independent of rebuild cadence. */
+export function groundCoverDistanceScale(distance: number, drawRadius: number): number {
+  if (!Number.isFinite(distance) || !Number.isFinite(drawRadius) || drawRadius <= 0) return 0;
+  const linear = Math.max(0, Math.min(1, (drawRadius - distance) / GROUND_COVER_FADE_WIDTH));
+  return linear * linear * (3 - 2 * linear);
 }
 
 /** A 32-bit finalising mix, so that neighbouring cells do not produce neighbouring fields. */

@@ -39,6 +39,12 @@ function fakeDocument() {
       append(...nodes) { node.children.push(...nodes); },
       prepend(...nodes) { node.children.unshift(...nodes); },
       appendChild(child) { node.children.push(child); return child; },
+      insertBefore(child, reference) {
+        const index = node.children.indexOf(reference);
+        if (index < 0) node.children.push(child);
+        else node.children.splice(index, 0, child);
+        return child;
+      },
       replaceChildren(...nodes) { node.children = [...nodes]; },
       remove() {}, focus() {}, blur() {},
       addEventListener() {}, removeEventListener() {},
@@ -104,6 +110,7 @@ const { showTarget } = await import("../dist/code/browser/ui/Frames.js");
 const { resetHeadOverlay, showChatBubble, updateHeadOverlay } =
   await import("../dist/code/browser/ui/HeadOverlay.js");
 const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
+const { plateLayout } = await import("../dist/code/browser/NamePlate.js");
 
 /** The default frame: 160 CSS pixels across (`style.css:556`) at the default 266-yard zoom. */
 const MINIMAP_SIZE = 160;
@@ -295,15 +302,90 @@ test("Л1 a creature that speaks as it dies keeps the bubble, brought down onto 
     assert.ok(standing && lying);
 
     const alive = bubbleY();
-    assert.equal(alive, Math.round(standing.y - 66), "a standing unit speaks from the crown of its head");
+    const tallestPlate = plateLayout({ target: true, cast: {} }, standing.x, standing.y);
+    const raidMarkTop = tallestPlate.y - 18 * tallestPlate.scale;
+    assert.ok(alive < raidMarkTop, "the bubble clears the readable name/health/cast rows and raid mark");
 
     speaker.fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
     const dead = bubbleY();
-    assert.equal(dead, Math.round(lying.y - 66));
+    assert.equal(dead - alive, Math.round(lying.y) - Math.round(standing.y),
+      "death moves the bubble by the projected head-to-body displacement, keeping the same clearance");
     assert.ok(dead > alive, `${dead} has to be lower on the screen than ${alive}`);
   } finally {
     resetHeadOverlay();
     game.world = previous;
     game.renderer = previousRenderer;
+  }
+});
+
+test("active quest creature and game-object targets get projected badges, but item targets do not", () => {
+  const previous = {
+    world: game.world,
+    renderer: game.renderer,
+    creatureMetadata: game.creatureMetadata,
+    itemMetadata: game.itemMetadata,
+  };
+  try {
+    const questId = 77;
+    const questBase = UPDATE_FIELDS.PLAYER_QUEST_LOG_1_1.offset;
+    const player = unit(1n, { typeId: 4 });
+    player.fields.set(questBase, questId);
+    player.fields.set(questBase + 2, 3); // 3 / 10 wolves; the GO counter stays zero.
+    const creature = unit(2n, { x: 12, entry: 299 });
+    const gameObject = unit(3n, { typeId: 5, x: 14, entry: 1617 });
+    const world = stubWorld(new Map([[1n, player], [2n, creature], [3n, gameObject]]), undefined);
+    world.questTemplates = new Map([[questId, {
+      questId,
+      title: "Волки у ворот",
+      objectives: [
+        { entry: 299, count: 10, gameObject: false, itemDrop: 0, text: "" },
+        { entry: 1617, count: 1, gameObject: true, itemDrop: 0, text: "" },
+      ],
+      itemObjectives: [{ itemId: 769, count: 8 }],
+    }]]);
+    world.creatureTemplates = new Map();
+    world.gameObjectTemplates = new Map([[1617, { name: "Сундук Братства" }]]);
+    world.itemTemplates = new Map([[769, { name: "Кусок мяса вепря" }]]);
+    const creatureNames = new Map([[299, { name: "Лесной волк" }]]);
+    game.world = world;
+    game.renderer = { unitHeight: () => 2 };
+    game.creatureMetadata = { get: (id) => creatureNames.get(id) };
+    game.itemMetadata = { get: () => undefined };
+
+    const badges = (now) => {
+      resetHeadOverlay();
+      updateHeadOverlay(now);
+      const layer = document.getElementById("world-viewport").children.at(-1);
+      return layer.children.filter((node) => node.className === "quest-world-marker");
+    };
+
+    const active = badges(1_000);
+    assert.equal(active.length, 2, "only the loaded creature and GO are honest 3D anchors");
+    const byKind = new Map(active.map((node) => [node.dataset.kind, node]));
+    assert.equal(byKind.get("creature").dataset.label, "Лесной волк");
+    assert.equal(byKind.get("creature").children[1].textContent, "3 / 10");
+    assert.equal(byKind.get("gameObject").dataset.label, "Сундук Братства");
+    assert.equal(byKind.get("gameObject").children[1].textContent, "0 / 1");
+    assert.match(byKind.get("creature").style.transform, /translate\(-50%, -100%\) translate\(/);
+    assert.equal(active.some((node) => node.dataset.label === "Кусок мяса вепря"), false,
+      "an item id never becomes a guessed creature/dropper marker");
+
+    player.fields.set(questBase + 2, 10);
+    assert.deepEqual(badges(1_200).map((node) => node.dataset.kind), ["gameObject"],
+      "a completed target leaves the live-world overlay immediately on the next refresh");
+
+    player.fields.set(questBase + 2, 3);
+    creatureNames.clear();
+    assert.equal(badges(1_400).find((node) => node.dataset.kind === "creature").dataset.label,
+      "Существо #299", "cache clear degrades to a stable typed id, never an empty badge");
+    creatureNames.set(299, { name: "Седой волк" });
+    assert.equal(badges(1_600).find((node) => node.dataset.kind === "creature").dataset.label,
+      "Седой волк", "a refilled cache is reflected without retaining a stale resolver result");
+  } finally {
+    resetHeadOverlay();
+    game.world = previous.world;
+    game.renderer = previous.renderer;
+    game.creatureMetadata = previous.creatureMetadata;
+    game.itemMetadata = previous.itemMetadata;
   }
 });

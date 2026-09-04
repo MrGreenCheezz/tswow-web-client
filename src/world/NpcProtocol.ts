@@ -1,6 +1,13 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 
+/** Generic, ammo, food, poison and reagent vendor bits in WotLK `NPCFlags`. */
+export const NPC_FLAGS_VENDOR_MASK = 0x00000f80;
+/** NPC flags for every service the native interact dispatcher can currently open. */
+export const NPC_FLAGS_INTERACTION_MASK = 0x00000001 | 0x00000002 | 0x00000070
+  | NPC_FLAGS_VENDOR_MASK | 0x00002000 | 0x00020000 | 0x00080000 | 0x00100000
+  | 0x00200000 | 0x00400000 | 0x04000000;
+
 export interface GossipOption {
   id: number;
   icon: number;

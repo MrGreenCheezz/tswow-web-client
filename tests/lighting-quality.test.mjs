@@ -49,6 +49,10 @@ test("lighting quality enables a bounded single-shader immersive grade without d
   assert.equal(balanced.immersiveStrength, 0.65);
   assert.equal(highWithoutShadows.immersiveStrength, 1,
     "the ALU-only light grade must survive capability fallback independently of the shadow pass");
+  assert.equal(off.godRayStrength, 0, "quality zero keeps the post-process baseline exact");
+  assert.equal(balanced.godRayStrength, 0.12);
+  assert.equal(highWithoutShadows.godRayStrength, 0.2,
+    "the opt-in shaft ceiling is independent of shadow-map capability");
 });
 
 test("directional shadow centre snaps only in the light plane", () => {
@@ -119,7 +123,7 @@ test("lighting quality is an account setting with off, balanced and high values"
 test("character atlas anisotropy is an opt-in account experiment", async () => {
   const definition = settingDefinition("characterAtlasAnisotropy");
   assert.ok(definition);
-  assert.equal(definition.group, "Мир");
+  assert.equal(definition.group, "Графика");
   assert.equal(definition.kind, "boolean");
   assert.equal(definition.fallback, false);
   assert.match(definition.hint ?? "", /A\/B/i);

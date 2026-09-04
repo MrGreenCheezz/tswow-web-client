@@ -331,6 +331,10 @@ test("session model and texture categories keep their independent caps", async (
   controller.dispose();
 });
 
+// The soft window is now the *scenery and player* window. Past it the spell lane keeps running,
+// so what an expired tick costs with nothing to warm — no buttons, no spellbook, no resolved
+// player model — is still exactly nothing. `tests/spell-visual-prewarm.test.mjs` drives the split
+// itself with a session that does have those things.
 test("expired and disposed session warm-up ticks are no-ops", () => {
   let now = 0;
   let calls = 0;

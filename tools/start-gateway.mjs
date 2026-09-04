@@ -1,7 +1,21 @@
 import "./env.mjs";
 
 import { assertBuiltClientDataImplementations } from "./client-data.mjs";
+import { verifyClientPack } from "./client-pack.mjs";
 import { assertGatewayConfiguration } from "./check-config.mjs";
+
+if (process.env.CLIENT_PACK_DIR) {
+  const pack = await verifyClientPack(process.env.CLIENT_PACK_DIR, { hashes: false });
+  if (!pack.ok) {
+    throw new Error(
+      `CLIENT_PACK_DIR is incomplete:\n`
+        + `${pack.missing.map((path) => `- missing: ${path}`).join("\n")}`
+        + `${pack.modified.map((path) => `\n- modified: ${path}`).join("")}`
+        + `${pack.unexpected.map((path) => `\n- unexpected: ${path}`).join("")}`,
+    );
+  }
+  console.log(`Client pack: ${pack.manifest.contentDigest} (${pack.manifest.fileCount} files)`);
+}
 
 assertGatewayConfiguration();
 assertBuiltClientDataImplementations();

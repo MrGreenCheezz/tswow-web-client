@@ -1,4 +1,5 @@
 import { OPCODES } from "../generated/opcodes.js";
+import { playerInventory } from "../browser/Inventory.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 import type { BinaryByteStream } from "../transport/WebSocketByteStream.js";
@@ -41,7 +42,7 @@ import {
   type QuestTemplate,
 } from "./QuestProtocol.js";
 
-import { EventBus, type WorldPacketEvents } from "./EventBus.js";
+import { EventBus, type SpellCastStopReason, type WorldPacketEvents } from "./EventBus.js";
 import {
   parseActionButtons, type ActionButton, buildSetActionButton, ACTION_BUTTON_STATE_CLEAR,
 } from "./ActionBarProtocol.js";
@@ -184,6 +185,7 @@ import {
   parseReceivedMail,
   parseShowMailbox,
   type MailDraft,
+  type MailCommandResult,
   type MailList,
 } from "./MailProtocol.js";
 import {
@@ -393,6 +395,7 @@ import {
   buildAutoEquipItem,
   buildAutoStoreBagItem,
   buildDestroyItem,
+  buildSocketGems,
   buildSplitItem,
   buildSwapInvItem,
   buildSwapItem,
@@ -425,6 +428,7 @@ import {
   parseTrainerBuyFailed,
   parseTrainerBuySucceeded,
   parseTrainerList,
+  TRAINER_SPELL_AVAILABLE,
   trainerBuyFailureText,
   type TrainerList,
 } from "./TrainerProtocol.js";
@@ -471,6 +475,8 @@ import { UPDATE_FIELDS } from "../generated/updateFields.js";
 const QUEST_POI_CHUNK = 25;
 /** A cast with no answer cannot remain a candidate forever, especially across a cast-count wrap. */
 const PENDING_CAST_TTL = 60_000;
+/** A missing GO query response must not retain a click intent for the rest of the realm session. */
+const GAME_OBJECT_TEMPLATE_WAIT_MS = 10_000;
 /** `UNIT_FLAG_MOUNT`: the authoritative mounted bit in `UNIT_FIELD_FLAGS`. */
 const UNIT_FLAG_MOUNT = 0x08000000;
 /** Spellbook's client action row: it maps to the melee protocol, never CMSG_CAST_SPELL. */
@@ -492,7 +498,7 @@ import {
   parseMovementTimeSkipped, RELAY_STATE_OPCODES,
 } from "./MovementRelayProtocol.js";
 import {
-  buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject,
+  buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject, buildCastSpellOnItem,
   parseCastFailure,
   spellFailureText,
   parseClearCooldown,
@@ -533,6 +539,9 @@ const AUTH_OK = 12;
 const AUTH_WAIT_QUEUE = 27;
 const CHAR_CREATE_SUCCESS = 47;
 const CHAR_DELETE_SUCCESS = 71;
+/** TrinityCore/AzerothCore WotLK SpellCastResult values for a true cancel/interruption. */
+const SPELL_FAILED_INTERRUPTED = 40;
+const SPELL_FAILED_INTERRUPTED_COMBAT = 41;
 const MOVEMENT_OPCODES = new Set<number>([
   OPCODES.MSG_MOVE_START_FORWARD,
   OPCODES.MSG_MOVE_START_BACKWARD,
@@ -581,6 +590,8 @@ export interface WorldLogin {
   username: string;
   sessionKey: Uint8Array;
   realmId: number;
+  /** Auth-list name of the selected realm; retained for the stock GetRealmName API. */
+  realmName?: string;
   /**
    * Addons to declare in the authentication packet.
    *
@@ -614,6 +625,15 @@ export interface CooldownSnapshot {
   startedAt: number;
   duration: number;
   endsAt: number;
+}
+
+interface GameObjectTemplateWaiter {
+  entry: number;
+  /** The concrete spawn generation present when the click/hover was armed. */
+  object: WorldObjectState;
+  promise: Promise<GameObjectTemplate | undefined>;
+  resolve: (template: GameObjectTemplate | undefined) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 function auraEqual(before: ActiveAura, after: ActiveAura): boolean {
@@ -733,6 +753,14 @@ export class WorldClient {
   phaseMask = 1;
   /** The last flight map a flight master sent. */
   taxiMenu: TaxiMenu | undefined;
+  /** The last selected flight's server-authored result. */
+  taxiMessage: { text: string; error: boolean } | undefined;
+  /** Only the flight master whose query is still outstanding may open a map. */
+  #pendingTaxiGuid = 0n;
+  /** The exact visible map that owns the next activation reply. */
+  #pendingTaxiActivationMenu: TaxiMenu | undefined;
+  /** A newly discovered node makes the core omit SHOWTAXINODES; retry that query exactly once. */
+  #retriedNewTaxiPath = false;
   /** Whether each flight master in view has a node this character already knows. */
   readonly taxiNodeStatus = new Map<bigint, boolean>();
   /** A summon waiting to be answered, until its timeout runs out. */
@@ -754,6 +782,8 @@ export class WorldClient {
   /** Game object templates by entry; null marks one the server does not know. */
   readonly gameObjectTemplates = new Map<number, GameObjectTemplate | null>();
   readonly #requestedGameObjects = new Set<number>();
+  /** One deferred first-click per live GO guid; template answers fan out by entry. */
+  readonly #gameObjectTemplateWaiters = new Map<bigint, GameObjectTemplateWaiter>();
   onGameObjectsChanged: (() => void) | undefined;
   knownSpells: KnownSpell[] = [];
   /**
@@ -852,6 +882,7 @@ export class WorldClient {
   playedTime: { total: number; atLevel: number } | undefined;
   /** Set while a bank window is open, which needs the banker's guid to move anything. */
   bankerGuid: bigint | undefined;
+  #pendingBankerGuid: bigint | undefined;
   /** What the bank last said: a slot bought, or why one was refused. */
   bankMessage: { text: string; error: boolean } | undefined;
   /** Title mask bits the character has earned. */
@@ -948,6 +979,9 @@ export class WorldClient {
   guildBankerGuid = 0n;
   /** The tabard designer that answered, which is what opens the emblem window. */
   tabardVendorGuid = 0n;
+  tabardMessage: { text: string; error: boolean } | undefined;
+  #pendingTabardVendorGuid = 0n;
+  #pendingTabardSaveGuid = 0n;
   calendar: CalendarSnapshot | undefined;
   calendarEvent: CalendarEventDetail | undefined;
   calendarPending = 0;
@@ -990,6 +1024,7 @@ export class WorldClient {
   stableMessage: { text: string; error: boolean } | undefined;
   /** The stable master being talked to; every stable opcode needs it. */
   stableMasterGuid = 0n;
+  #pendingStableMasterGuid = 0n;
   /** Units the server has told us are vehicles, and which `Vehicle.dbc` row they use. */
   readonly vehicleKits = new Map<bigint, number>();
   /**
@@ -1000,6 +1035,7 @@ export class WorldClient {
   readonly battlefieldQueues = new Map<number, BattlefieldStatus>();
   /** The last battlemaster list, which is what a queue window is built from. */
   battlefieldList: BattlefieldList | undefined;
+  #pendingBattlemasterGuid = 0n;
   /** The scoreboard, whether asked for mid-match or sent unasked when the match ended. */
   pvpScores: PvpLogData | undefined;
   /** Who is in the battleground the player is standing in, as joins and leaves report it. */
@@ -1111,6 +1147,7 @@ export class WorldClient {
   mailboxGuid = 0n;
   mail: MailList | undefined;
   mailMessage: { text: string; error: boolean } | undefined;
+  mailResult: MailCommandResult | undefined;
   onMailChanged: (() => void) | undefined;
   guildRoster: GuildRoster | undefined;
   guildQuery: GuildQueryInfo | undefined;
@@ -1120,6 +1157,7 @@ export class WorldClient {
   onGuildChanged: (() => void) | undefined;
   /** The auctioneer the player is standing at; every auction opcode needs it. */
   auctioneerGuid = 0n;
+  #pendingAuctioneerGuid = 0n;
   auctions: AuctionList | undefined;
   ownAuctions: AuctionList | undefined;
   auctionMessage: { text: string; error: boolean } | undefined;
@@ -1140,6 +1178,12 @@ export class WorldClient {
   #pingSequence = 0;
   #pingTimer: ReturnType<typeof setInterval> | undefined;
   #closed = false;
+  #pendingGossipGuid = 0n;
+  /** A selected gossip option may answer with any NPC service instead of another gossip page. */
+  #pendingGossipServiceGuid = 0n;
+  #pendingQuestGiverGuid = 0n;
+  #pendingVendorGuid = 0n;
+  #pendingTrainerGuid: bigint | undefined;
   /**
    * The tswow custom-packet transport: fragments of opcode 0x102 in, whole module messages out.
    *
@@ -1167,8 +1211,12 @@ export class WorldClient {
   /** False until the login backlog has been drained; see the 0x102 branch in `#dispatch`. */
   #worldEntered = false;
 
-  private constructor(connection: WorldConnection) {
+  /** The exact auth-list name selected for this connection. */
+  readonly realmName: string | undefined;
+
+  private constructor(connection: WorldConnection, realmName?: string) {
     this.#connection = connection;
+    this.realmName = realmName;
   }
 
   static async connect(stream: BinaryByteStream, login: WorldLogin): Promise<WorldClient> {
@@ -1212,7 +1260,7 @@ export class WorldClient {
 
     connection.send(OPCODES.CMSG_AUTH_SESSION, authPayload);
     await connection.enableEncryption(login.sessionKey);
-    const client = new WorldClient(connection);
+    const client = new WorldClient(connection, login.realmName);
     // `SMSG_ADDON_INFO` carries no count of its own: the server writes exactly as many entries as
     // were declared above, and this is the only record of how many that was. Clamped because the
     // server clamps: `ReadAddonsInfo` truncates the declared list to `MaxSecureAddons` and answers
@@ -1289,6 +1337,8 @@ export class WorldClient {
 
     if (packet.opcode === OPCODES.SMSG_NEW_WORLD) {
       const world = parseNewWorld(packet.payload);
+      // A template answer from the old map cannot authorize an interaction in the new one.
+      this.#settleAllGameObjectTemplateWaiters();
       this.mapId = world.mapId;
       // Zone weather and scripted light are scoped to the map. A server that does not send an
       // explicit clear packet on transfer must not leave the previous zone's Dalaran/raid sky in
@@ -1391,7 +1441,14 @@ export class WorldClient {
     if (isForcedSpeed(packet.opcode)) {
       const speed = parseForcedSpeed(packet.opcode, packet.payload);
       this.#connection.send(ackOpcodeForSpeed(speed.name), buildForcedSpeedAck(speed, this.#currentMovement()));
-      if (speed.guid === this.state.selfGuid) this.speeds.set(speed.name, speed.speed);
+      if (speed.guid === this.state.selfGuid) {
+        this.speeds.set(speed.name, speed.speed);
+        // The state object too, and not only the physics map above: every OTHER rider's speed
+        // reaches `state.setSpeed` through the MSG_MOVE_SET_* relay, so the renderer's mount gait
+        // (A2's `unitTravelSpeed`) could pace a stranger's horse and not the owner's — the one
+        // mount that is on screen in every session. Same store, same drop-on-default semantics.
+        this.state.setSpeed(speed.guid, speed.name, speed.speed);
+      }
       return true;
     }
 
@@ -1451,6 +1508,9 @@ export class WorldClient {
 
   selectTarget(guid: bigint | undefined): void {
     if (this.#closed || (guid !== undefined && !this.state.objects.has(guid))) return;
+    // CMSG_SET_SELECTION names units only. Game objects are interacted with by their own guid in
+    // their own opcode and must never occupy the unit target frame or leak onto this wire path.
+    if (guid !== undefined && this.state.objects.get(guid)?.typeId === 5) return;
     if (this.attacking) this.stopAttack();
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
     this.targetGuid = guid;
@@ -1623,6 +1683,27 @@ export class WorldClient {
     );
   }
 
+  /** Crafting item targets are validated again by the realm; never mutate the item locally. */
+  castSpellOnItem(spellId: number, itemGuid: bigint, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
+    if (this.#closed || this.state.selfGuid === undefined || itemGuid === 0n) return;
+    if (!this.knownSpells.some((spell) => spell.id === spellId)) return;
+    const inventory = playerInventory(this.state);
+    if (!inventory || ![...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
+      .some((slot) => slot.guid === itemGuid && slot.item !== undefined)) return;
+    this.#cancelMountBeforeCast();
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnItem(spellId, this.#castCount, itemGuid));
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+  }
+
+  cancelSpellCast(): void {
+    if (this.#closed || this.state.selfGuid === undefined) return;
+    const active = this.casts.get(this.state.selfGuid);
+    if (!active) return;
+    this.#connection.send(OPCODES.CMSG_CANCEL_CAST,
+      new PacketWriter().u8(active.castCount ?? 0).u32(active.spellId).toUint8Array());
+  }
+
   startLocalCooldown(spellId: number, duration: number): void {
     if (duration <= 0) return;
     this.#prunePendingCasts();
@@ -1783,6 +1864,8 @@ export class WorldClient {
 
   openGossip(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
+    this.#pendingGossipGuid = guid;
+    this.#pendingGossipServiceGuid = 0n;
     this.#connection.send(OPCODES.CMSG_GOSSIP_HELLO, buildGossipHello(guid));
   }
 
@@ -1790,11 +1873,26 @@ export class WorldClient {
     const gossip = this.gossip;
     const option = gossip?.options.find((candidate) => candidate.id === optionId);
     if (this.#closed || !gossip || !option) return;
+    this.#pendingGossipGuid = gossip.guid;
+    this.#pendingGossipServiceGuid = gossip.guid;
     this.#connection.send(OPCODES.CMSG_GOSSIP_SELECT_OPTION, buildGossipSelect(gossip.guid, gossip.menuId, optionId, option.coded ? code ?? "" : undefined));
   }
 
   closeGossip(): void {
-    if (!this.gossip) return;
+    const hadGossip = this.gossip !== undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    if (!hadGossip) return;
+    this.gossip = undefined;
+    this.onGossipChanged?.();
+  }
+
+  /** Finishes the gossip page before its selected option opens a different NPC service. */
+  #consumeGossipService(guid: bigint): void {
+    if (guid === 0n || this.#pendingGossipServiceGuid !== guid) return;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingGossipGuid = 0n;
+    if (this.gossip?.guid !== guid) return;
     this.gossip = undefined;
     this.onGossipChanged?.();
   }
@@ -1802,6 +1900,9 @@ export class WorldClient {
   openQuestList(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.questMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingQuestGiverGuid = guid;
     this.#connection.send(OPCODES.CMSG_QUESTGIVER_HELLO, buildQuestGiverHello(guid));
   }
 
@@ -1831,6 +1932,7 @@ export class WorldClient {
 
   closeQuest(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_QUESTGIVER_CANCEL);
+    this.#pendingQuestGiverGuid = 0n;
     this.questList = undefined;
     this.questDialog = undefined;
     this.questMessage = undefined;
@@ -1851,6 +1953,62 @@ export class WorldClient {
     this.#requestedGameObjects.add(entry);
     this.#connection.send(OPCODES.CMSG_GAMEOBJECT_QUERY, buildGameObjectQuery(entry, guid));
     return undefined;
+  }
+
+  /**
+   * Waits for the template query an eligible click has already started.
+   *
+   * The waiter belongs to the world lifecycle instead of `onGameObjectsChanged`: that callback is
+   * a renderer notification with one owner, while several live objects may share one template
+   * entry. A guid is retained only while it still names the same GO entry, and every exit resolves
+   * rather than rejects so a disappearing object cannot create an unhandled UI promise.
+   */
+  waitForGameObjectTemplate(entry: number, guid: bigint): Promise<GameObjectTemplate | undefined> {
+    const known = this.gameObjectTemplates.get(entry);
+    if (known !== undefined || this.gameObjectTemplates.has(entry)) return Promise.resolve(known ?? undefined);
+    if (this.#closed || entry <= 0 || !this.#requestedGameObjects.has(entry)) return Promise.resolve(undefined);
+
+    const object = this.state.objects.get(guid);
+    const currentEntry = object?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+    if (object?.typeId !== 5 || currentEntry !== entry) return Promise.resolve(undefined);
+
+    const existing = this.#gameObjectTemplateWaiters.get(guid);
+    if (existing?.entry === entry && existing.object === object) return existing.promise;
+    if (existing) this.#cancelGameObjectTemplateWaiters(guid);
+
+    let resolve = (_template: GameObjectTemplate | undefined): void => undefined;
+    const promise = new Promise<GameObjectTemplate | undefined>((settle) => { resolve = settle; });
+    const timer = setTimeout(() => this.#cancelGameObjectTemplateWaiters(guid), GAME_OBJECT_TEMPLATE_WAIT_MS);
+    this.#gameObjectTemplateWaiters.set(guid, { entry, object, promise, resolve, timer });
+    return promise;
+  }
+
+  #settleGameObjectTemplateWaiters(entry: number, template: GameObjectTemplate | undefined): void {
+    for (const [guid, waiter] of this.#gameObjectTemplateWaiters) {
+      if (waiter.entry !== entry) continue;
+      this.#gameObjectTemplateWaiters.delete(guid);
+      clearTimeout(waiter.timer);
+      waiter.resolve(this.state.objects.get(guid) === waiter.object ? template : undefined);
+    }
+  }
+
+  #cancelGameObjectTemplateWaiters(guid: bigint): void {
+    const waiter = this.#gameObjectTemplateWaiters.get(guid);
+    if (!waiter) return;
+    this.#gameObjectTemplateWaiters.delete(guid);
+    clearTimeout(waiter.timer);
+    waiter.resolve(undefined);
+  }
+
+  #settleAllGameObjectTemplateWaiters(): void {
+    for (const guid of [...this.#gameObjectTemplateWaiters.keys()]) this.#cancelGameObjectTemplateWaiters(guid);
+  }
+
+  /** `UPDATE_OUT_OF_RANGE` removes objects inside WorldState rather than through a destroy opcode. */
+  #cancelStaleGameObjectTemplateWaiters(): void {
+    for (const [guid, waiter] of this.#gameObjectTemplateWaiters) {
+      if (this.state.objects.get(guid) !== waiter.object) this.#cancelGameObjectTemplateWaiters(guid);
+    }
   }
 
   /**
@@ -1889,8 +2047,11 @@ export class WorldClient {
       const template = parseGameObjectQueryResponse(packet.payload);
       // A miss is stored as null so the entry is never asked for twice.
       const reader = new PacketReader(packet.payload);
-      this.gameObjectTemplates.set(template?.entry ?? (reader.u32() & 0x7fffffff), template ?? null);
+      const entry = template?.entry ?? (reader.u32() & 0x7fffffff);
+      this.gameObjectTemplates.set(entry, template ?? null);
+      this.#settleGameObjectTemplateWaiters(entry, template);
       this.onGameObjectsChanged?.();
+      this.events.emit("QUERY_CACHE_CHANGED", { kind: "gameObject", id: entry });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GAMEOBJECT_CUSTOM_ANIM) {
@@ -1900,7 +2061,9 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_GAMEOBJECT_DESPAWN_ANIM) {
       // The only warning a mined vein gives that it is going; the destroy update comes later.
-      this.state.destroy(parseGameObjectDespawnAnim(packet.payload));
+      const guid = parseGameObjectDespawnAnim(packet.payload);
+      this.#cancelGameObjectTemplateWaiters(guid);
+      this.state.destroy(guid);
       return true;
     }
     return false;
@@ -1971,6 +2134,9 @@ export class WorldClient {
   openVendor(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.merchantMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingVendorGuid = guid;
     this.#connection.send(OPCODES.CMSG_LIST_INVENTORY, buildListInventory(guid));
   }
 
@@ -1995,7 +2161,9 @@ export class WorldClient {
   }
 
   closeVendor(): void {
-    if (!this.vendor) return;
+    const hadVendor = this.vendor !== undefined;
+    this.#pendingVendorGuid = 0n;
+    if (!hadVendor) return;
     this.vendor = undefined;
     this.merchantMessage = undefined;
     this.onVendorChanged?.();
@@ -2004,17 +2172,23 @@ export class WorldClient {
   openTrainer(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.merchantMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingTrainerGuid = guid;
     this.#connection.send(OPCODES.CMSG_TRAINER_LIST, buildTrainerList(guid));
   }
 
   learnFromTrainer(spellId: number): void {
     const trainer = this.trainer;
-    if (this.#closed || !trainer) return;
+    const spell = trainer?.spells.find((candidate) => candidate.spellId === spellId && candidate.usable === TRAINER_SPELL_AVAILABLE);
+    if (this.#closed || !trainer || !spell) return;
     this.#connection.send(OPCODES.CMSG_TRAINER_BUY_SPELL, buildTrainerBuySpell(trainer.guid, spellId));
   }
 
   closeTrainer(): void {
-    if (!this.trainer) return;
+    const hadTrainer = this.trainer !== undefined;
+    this.#pendingTrainerGuid = undefined;
+    if (!hadTrainer) return;
     this.trainer = undefined;
     this.merchantMessage = undefined;
     this.onTrainerChanged?.();
@@ -2037,6 +2211,11 @@ export class WorldClient {
   /** A count of zero destroys the whole stack, which is what the original client sends. */
   destroyItem(bag: number, slot: number, count = 0): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_DESTROYITEM, buildDestroyItem(bag, slot, count));
+  }
+
+  /** Only stages a request; the realm consumes gems and supplies the resulting enchantments. */
+  socketGems(itemGuid: bigint, gems: readonly [bigint, bigint, bigint]): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SOCKET_GEMS, buildSocketGems(itemGuid, gems));
   }
 
   /** Moves an item, choosing the right opcode for whether either end is the player inventory. */
@@ -2263,7 +2442,6 @@ export class WorldClient {
    */
   closeGuildBank(): void {
     this.guildBankerGuid = 0n;
-    this.tabardVendorGuid = 0n;
     this.guildBank = undefined;
   }
 
@@ -2305,11 +2483,19 @@ export class WorldClient {
   }
 
   openTabardVendor(guid: bigint): void {
-    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.MSG_TABARDVENDOR_ACTIVATE, buildTabardVendorActivate(guid));
+    if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.tabardVendorGuid = 0n;
+    this.tabardMessage = undefined;
+    this.#pendingTabardSaveGuid = 0n;
+    this.#pendingTabardVendorGuid = guid;
+    this.#connection.send(OPCODES.MSG_TABARDVENDOR_ACTIVATE, buildTabardVendorActivate(guid));
   }
 
   saveGuildEmblem(style: number, color: number, borderStyle: number, borderColor: number, background: number): void {
     if (this.#closed || this.tabardVendorGuid === 0n) return;
+    this.#pendingTabardSaveGuid = this.tabardVendorGuid;
     this.#connection.send(
       OPCODES.MSG_SAVE_GUILD_EMBLEM,
       buildSaveGuildEmblem(this.tabardVendorGuid, style, color, borderStyle, borderColor, background),
@@ -2594,7 +2780,10 @@ export class WorldClient {
 
   requestStable(npcGuid: bigint): void {
     if (this.#closed || npcGuid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.stableMasterGuid = npcGuid;
+    this.#pendingStableMasterGuid = npcGuid;
     this.#connection.send(OPCODES.MSG_LIST_STABLED_PETS, buildStableListQuery(npcGuid));
   }
 
@@ -2654,7 +2843,34 @@ export class WorldClient {
 
   /** Talking to a battlemaster; the answer is the list of what it runs. */
   battlemasterHello(guid: bigint): void {
-    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.CMSG_BATTLEMASTER_HELLO, buildBattlemasterHello(guid));
+    if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.battlefieldList = undefined;
+    this.#pendingBattlemasterGuid = guid;
+    this.#connection.send(OPCODES.CMSG_BATTLEMASTER_HELLO, buildBattlemasterHello(guid));
+  }
+
+  /** Makes delayed NPC-service replies stale when their shared native window is closed. */
+  closeNpcServices(): void {
+    this.closeGossip();
+    this.closeTaxiMenu();
+    this.#pendingQuestGiverGuid = 0n;
+    this.#pendingVendorGuid = 0n;
+    this.#pendingTrainerGuid = undefined;
+    this.#pendingBankerGuid = undefined;
+    this.#pendingAuctioneerGuid = 0n;
+    this.#pendingStableMasterGuid = 0n;
+    if (this.questList) {
+      this.questList = undefined;
+      this.onQuestChanged?.();
+    }
+    if (this.battlefieldList?.fromWhere === 0) this.battlefieldList = undefined;
+    this.#pendingBattlemasterGuid = 0n;
+    this.tabardVendorGuid = 0n;
+    this.tabardMessage = undefined;
+    this.#pendingTabardVendorGuid = 0n;
+    this.#pendingTabardSaveGuid = 0n;
   }
 
   /** Asking for the instance list from the queue window rather than from a battlemaster. */
@@ -3061,12 +3277,16 @@ export class WorldClient {
 
   openAuctionHouse(guid: bigint): void {
     if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.auctioneerGuid = guid;
+    this.#pendingAuctioneerGuid = guid;
     this.auctionMessage = undefined;
     this.#connection.send(OPCODES.MSG_AUCTION_HELLO, buildAuctionHello(guid));
   }
 
   closeAuctionHouse(): void {
+    this.#pendingAuctioneerGuid = 0n;
     this.auctioneerGuid = 0n;
     this.auctions = undefined;
     this.ownAuctions = undefined;
@@ -3219,8 +3439,11 @@ export class WorldClient {
 
   openMailbox(guid: bigint): void {
     if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.mailboxGuid = guid;
     this.mailMessage = undefined;
+    this.mailResult = undefined;
     this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(guid));
   }
 
@@ -3228,6 +3451,7 @@ export class WorldClient {
     this.mail = undefined;
     this.mailboxGuid = 0n;
     this.mailMessage = undefined;
+    this.mailResult = undefined;
     this.onMailChanged?.();
   }
 
@@ -3275,6 +3499,7 @@ export class WorldClient {
     message.at ??= Date.now();
     this.chatLog.push(message);
     if (this.chatLog.length > 500) this.chatLog.splice(0, this.chatLog.length - 500);
+    this.events.emit("CHAT_MESSAGE", message);
     this.onChatMessage?.(message);
   }
 
@@ -3357,17 +3582,27 @@ export class WorldClient {
     this.chatLog.push(message);
     if (this.chatLog.length > 500) this.chatLog.splice(0, this.chatLog.length - 500);
     if (!message.senderName) this.requestName(message.senderGuid);
+    this.events.emit("CHAT_MESSAGE", message);
     this.onChatMessage?.(message);
   }
 
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
+    this.#settleAllGameObjectTemplateWaiters();
+    const hadTrainer = this.trainer !== undefined;
+    this.#pendingTrainerGuid = undefined;
+    if (hadTrainer) {
+      this.trainer = undefined;
+      this.merchantMessage = undefined;
+    }
     this.movementReady = false;
     this.#stopAutoRepeat(false);
     this.#pendingCasts.length = 0;
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
     this.#connection.close();
+    if (hadTrainer) this.onTrainerChanged?.();
   }
 
   /**
@@ -3415,6 +3650,7 @@ export class WorldClient {
     this.#worldEntered = true;
     while (!this.#closed) {
       const packet = await this.#connection.read();
+      if (this.#closed) break;
       await this.#deliver(packet);
     }
   }
@@ -3467,12 +3703,15 @@ export class WorldClient {
 
       if (packet.opcode === OPCODES.SMSG_UPDATE_OBJECT) {
         this.state.applyUpdate(packet.payload);
+        this.#cancelStaleGameObjectTemplateWaiters();
       } else if (packet.opcode === OPCODES.SMSG_COMPRESSED_UPDATE_OBJECT) {
         this.state.applyUpdate(await decompressObjectUpdate(packet.payload));
+        this.#cancelStaleGameObjectTemplateWaiters();
       } else if (packet.opcode === OPCODES.SMSG_DESTROY_OBJECT) {
         const reader = new PacketReader(packet.payload);
         const guid = reader.u64();
         const previousAuras = new Map(this.auras.get(guid));
+        this.#cancelGameObjectTemplateWaiters(guid);
         this.state.destroy(guid);
         if (this.auras.delete(guid)) {
           const currentAuras = new Map<number, ActiveAura>();
@@ -3633,7 +3872,13 @@ export class WorldClient {
     }
 
     if (packet.opcode === OPCODES.SMSG_SHOWTAXINODES) {
-      this.taxiMenu = parseShowTaxiNodes(packet.payload);
+      const menu = parseShowTaxiNodes(packet.payload);
+      if (menu.guid !== this.#pendingTaxiGuid && menu.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingTaxiGuid = 0n;
+      this.#consumeGossipService(menu.guid);
+      this.#retriedNewTaxiPath = false;
+      this.taxiMessage = undefined;
+      this.taxiMenu = menu;
       this.events.emit("TAXI_MENU", this.taxiMenu);
       return true;
     }
@@ -3645,13 +3890,25 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_ACTIVATETAXIREPLY) {
       const reply = parseActivateTaxiReply(packet.payload);
-      this.onCombatStatus?.(activateTaxiReplyText(reply), this.attacking, reply !== TAXI_REPLY_OK);
+      const menu = this.#pendingTaxiActivationMenu;
+      if (!menu || this.taxiMenu !== menu) return true;
+      this.#pendingTaxiActivationMenu = undefined;
+      const guid = menu.guid;
+      const text = activateTaxiReplyText(reply);
+      this.taxiMessage = { text, error: reply !== TAXI_REPLY_OK };
+      if (reply === TAXI_REPLY_OK) this.taxiMenu = undefined;
+      this.events.emit("TAXI_CHANGED", { guid, reply });
+      this.onCombatStatus?.(text, this.attacking, reply !== TAXI_REPLY_OK);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_NEW_TAXI_PATH) {
       // Empty by design: a node was just discovered, and the status packet that follows says
       // which. Asking for the menu again is what the original client does with it.
       this.events.emit("WORLD_MESSAGE", { text: "Открыт новый маршрут полёта", kind: "system" });
+      if (this.#pendingTaxiGuid !== 0n && !this.#retriedNewTaxiPath) {
+        this.#retriedNewTaxiPath = true;
+        this.#connection.send(OPCODES.CMSG_TAXIQUERYAVAILABLENODES, buildTaxiQuery(this.#pendingTaxiGuid));
+      }
       return true;
     }
 
@@ -3768,7 +4025,23 @@ export class WorldClient {
   /** Asks a flight master for its map of destinations. */
   requestTaxiMenu(guid: bigint): void {
     if (this.#closed) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.taxiMenu = undefined;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiActivationMenu = undefined;
+    this.#pendingTaxiGuid = guid;
+    this.#retriedNewTaxiPath = false;
     this.#connection.send(OPCODES.CMSG_TAXIQUERYAVAILABLENODES, buildTaxiQuery(guid));
+  }
+
+  /** Closes a native flight map and makes any delayed SHOWTAXINODES response stale. */
+  closeTaxiMenu(): void {
+    this.taxiMenu = undefined;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiGuid = 0n;
+    this.#pendingTaxiActivationMenu = undefined;
+    this.#retriedNewTaxiPath = false;
   }
 
   /** Whether this flight master has anything this character has not discovered yet. */
@@ -3782,7 +4055,10 @@ export class WorldClient {
    * express form, which is the only way to fly anywhere the map has no direct path to.
    */
   takeTaxi(guid: bigint, nodes: readonly number[]): void {
-    if (this.#closed || nodes.length < 2) return;
+    const menu = this.taxiMenu;
+    if (this.#closed || nodes.length < 2 || menu?.guid !== guid || this.#pendingTaxiActivationMenu === menu) return;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiActivationMenu = menu;
     if (nodes.length === 2) {
       this.#connection.send(OPCODES.CMSG_ACTIVATETAXI, buildActivateTaxi(guid, nodes[0]!, nodes[1]!));
       return;
@@ -3893,7 +4169,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GOSSIP_MESSAGE) {
-      this.gossip = parseGossipMessage(packet.payload);
+      const gossip = parseGossipMessage(packet.payload);
+      if (this.#pendingGossipGuid === 0n || gossip.guid !== this.#pendingGossipGuid) return true;
+      this.#pendingGossipGuid = 0n;
+      this.#pendingGossipServiceGuid = 0n;
+      this.gossip = gossip;
       this.#connection.send(OPCODES.CMSG_NPC_TEXT_QUERY, buildNpcTextQuery(this.gossip.textId, this.gossip.guid));
       this.onGossipChanged?.();
       return true;
@@ -3901,11 +4181,20 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_NPC_TEXT_UPDATE) {
       const text = parseNpcText(packet.payload);
       this.npcTexts.set(text.id, text);
-      this.onGossipChanged?.();
+      // The query may outlive the gossip page that asked for it. Repainting with no matching page
+      // would hide a taxi, battleground or tabard dialog that has since replaced that page.
+      if (this.gossip?.textId === text.id) this.onGossipChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_LIST) {
-      this.questList = parseQuestList(packet.payload);
+      const questList = parseQuestList(packet.payload);
+      if (questList.guid !== this.#pendingQuestGiverGuid
+        && questList.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingQuestGiverGuid = 0n;
+      this.#consumeGossipService(questList.guid);
+      this.questList = questList;
+      this.#pendingGossipGuid = 0n;
+      this.#pendingGossipServiceGuid = 0n;
       this.questDialog = undefined;
       this.questMessage = undefined;
       this.gossip = undefined;
@@ -3997,6 +4286,10 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.MSG_AUCTION_HELLO) {
       const hello = parseAuctionHello(packet.payload);
+      if (hello.auctioneerGuid !== this.#pendingAuctioneerGuid
+        && hello.auctioneerGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingAuctioneerGuid = 0n;
+      this.#consumeGossipService(hello.auctioneerGuid);
       this.auctioneerGuid = hello.auctioneerGuid;
       this.auctionMessage = hello.enabled ? undefined : { text: "Аукцион закрыт", error: true };
       if (hello.enabled) this.searchAuctions();
@@ -4059,6 +4352,9 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GUILD_QUERY_RESPONSE) {
       this.guildQuery = parseGuildQueryResponse(packet.payload);
       this.onGuildChanged?.();
+      if (this.tabardVendorGuid !== 0n) {
+        this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GUILD_INFO) {
@@ -4095,6 +4391,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SEND_MAIL_RESULT) {
       const result = parseMailCommandResult(packet.payload);
+      this.mailResult = result;
       if (result.error !== MAIL_OK) this.mailMessage = { text: mailErrorText(result.error), error: true };
       else {
         const done = result.command === MAIL_ITEM_TAKEN ? "Предмет забран"
@@ -4236,6 +4533,7 @@ export class WorldClient {
       const failure = parseInventoryChangeFailure(packet.payload);
       this.itemMessage = failure.result === 0 ? undefined : { text: equipErrorText(failure), error: true };
       this.onItemMessage?.();
+      this.events.emit("INVENTORY_CHANGE_FAILURE", failure);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_PUSH_RESULT) {
@@ -4245,7 +4543,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LIST_INVENTORY) {
-      this.vendor = parseListInventory(packet.payload);
+      const vendor = parseListInventory(packet.payload);
+      if (vendor.guid !== this.#pendingVendorGuid && vendor.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingVendorGuid = 0n;
+      this.#consumeGossipService(vendor.guid);
+      this.vendor = vendor;
       this.merchantMessage = this.vendor.error === undefined
         ? undefined
         : { text: "У торговца нечего купить", error: true };
@@ -4254,6 +4556,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BUY_ITEM) {
       const result = parseBuyItem(packet.payload);
+      if (!this.vendor || result.guid !== this.vendor.guid) return true;
       const item = this.vendor?.items.find((candidate) => candidate.slot === result.slot);
       if (item && result.leftInStock >= 0) item.leftInStock = result.leftInStock;
       this.merchantMessage = { text: `Куплено: ${result.count} шт.`, error: false };
@@ -4262,6 +4565,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BUY_FAILED) {
       const failure = parseBuyFailed(packet.payload);
+      if (!this.vendor || failure.guid !== this.vendor.guid) return true;
       this.merchantMessage = { text: buyErrorText(failure.error), error: true };
       this.onVendorChanged?.();
       return true;
@@ -4269,26 +4573,36 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_SELL_ITEM) {
       // The server only ever writes this packet from SendSellError, so it always means failure.
       const failure = parseSellItem(packet.payload);
+      if (!this.vendor || failure.guid !== this.vendor.guid) return true;
       this.merchantMessage = { text: sellErrorText(failure.error), error: true };
       this.onVendorChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_LIST) {
-      this.trainer = parseTrainerList(packet.payload);
+      const trainer = parseTrainerList(packet.payload);
+      if (this.#closed || (this.#pendingTrainerGuid !== trainer.guid
+        && this.#pendingGossipServiceGuid !== trainer.guid)) return true;
+      this.#pendingTrainerGuid = undefined;
+      this.#consumeGossipService(trainer.guid);
+      this.trainer = trainer;
       this.merchantMessage = undefined;
       this.onTrainerChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_BUY_SUCCEEDED) {
       const result = parseTrainerBuySucceeded(packet.payload);
-      this.merchantMessage = { text: `Изучено заклинание ${result.spellId}`, error: false };
+      if (this.#closed || !this.trainer || result.guid !== this.trainer.guid) return true;
       // Refresh the list so the spell flips to "known" and any follow-up rank appears.
       if (this.trainer) this.openTrainer(this.trainer.guid);
+      // openTrainer intentionally clears an old interaction message. Publish this result after
+      // the refresh request so it remains visible until the replacement list arrives.
+      this.merchantMessage = { text: `Изучено заклинание ${result.spellId}`, error: false };
       this.onTrainerChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_BUY_FAILED) {
       const result = parseTrainerBuyFailed(packet.payload);
+      if (this.#closed || !this.trainer || result.guid !== this.trainer.guid) return true;
       this.merchantMessage = { text: trainerBuyFailureText(result.reason), error: true };
       this.onTrainerChanged?.();
       return true;
@@ -4336,7 +4650,7 @@ export class WorldClient {
         if (active?.spellId === cast.spellId
           && !active.channel
           && (active.castCount === undefined || active.castCount === cast.castId)) {
-          this.#endCast(casterGuid, cast.spellId, false);
+          this.#endCast(casterGuid, cast.spellId, "success");
           break;
         }
       }
@@ -4512,7 +4826,7 @@ export class WorldClient {
   #beginCast(casterGuid: bigint, spellId: number, castTime: number, channel: boolean, castCount?: number): void {
     if (castTime <= 0 && !channel) {
       // An instant cast has no bar to draw, but it still ends whatever was running.
-      this.#endCast(casterGuid, spellId, false, castCount);
+      this.#endCast(casterGuid, spellId, "success", castCount);
       return;
     }
     this.casts.set(casterGuid, {
@@ -4525,11 +4839,23 @@ export class WorldClient {
     this.events.emit("SPELL_CAST_START", { casterGuid, spellId, castTime, channel });
   }
 
-  #endCast(casterGuid: bigint, spellId: number, interrupted: boolean, expectedCastCount?: number): void {
+  #endCast(
+    casterGuid: bigint,
+    spellId: number,
+    reason: SpellCastStopReason,
+    expectedCastCount?: number,
+  ): void {
     const cast = this.casts.get(casterGuid);
     if (cast?.castCount !== undefined && expectedCastCount !== undefined && cast.castCount !== expectedCastCount) return;
     this.casts.delete(casterGuid);
-    if (cast || interrupted) this.events.emit("SPELL_CAST_STOP", { casterGuid, spellId: cast?.spellId ?? spellId, interrupted });
+    if (cast || reason !== "success") {
+      this.events.emit("SPELL_CAST_STOP", {
+        casterGuid,
+        spellId: cast?.spellId ?? spellId,
+        interrupted: reason !== "success",
+        reason,
+      });
+    }
   }
 
   #spellName(spellId: number): string {
@@ -4666,11 +4992,16 @@ export class WorldClient {
   openBank(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.bankMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingBankerGuid = guid;
     this.#connection.send(OPCODES.CMSG_BANKER_ACTIVATE, buildBankerActivate(guid));
   }
 
   closeBank(): void {
-    if (this.bankerGuid === undefined) return;
+    const hadBanker = this.bankerGuid !== undefined;
+    this.#pendingBankerGuid = undefined;
+    if (!hadBanker) return;
     this.bankerGuid = undefined;
     this.bankMessage = undefined;
     this.events.emit("BANK_OPENED", { bankerGuid: undefined });
@@ -4772,7 +5103,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SHOW_BANK) {
-      this.bankerGuid = parseGuidOnly(packet.payload);
+      const bankerGuid = parseGuidOnly(packet.payload);
+      if (bankerGuid !== this.#pendingBankerGuid && bankerGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingBankerGuid = undefined;
+      this.#consumeGossipService(bankerGuid);
+      this.bankerGuid = bankerGuid;
       this.bankMessage = undefined;
       this.events.emit("BANK_OPENED", { bankerGuid: this.bankerGuid });
       return true;
@@ -4881,11 +5216,11 @@ export class WorldClient {
       // is the only thing that says which of the two just arrived.
       if (talents.pet) this.petTalents = talents;
       else this.talents = talents;
-      this.events.emit("TALENTS_CHANGED", {});
+      this.events.emit("TALENTS_CHANGED", { pet: talents.pet });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TALENTS_INVOLUNTARILY_RESET || packet.opcode === OPCODES.MSG_TALENT_WIPE_CONFIRM) {
-      this.events.emit("TALENTS_CHANGED", {});
+      this.events.emit("TALENTS_CHANGED", { pet: false });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSPECT_TALENT) {
@@ -4926,7 +5261,13 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SOCKET_GEMS_RESULT) {
-      parseSocketGems(packet.payload);
+      const result = parseSocketGems(packet.payload);
+      // This packet is authoritative too, and can precede the general object update.
+      const item = this.state.objects.get(result.itemGuid);
+      for (const [index, enchantment] of result.enchantments.slice(0, 4).entries()) {
+        item?.fields.set(UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + (index + 2) * 3, enchantment);
+      }
+      this.events.emit("SOCKET_GEMS_RESULT", result);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK || packet.opcode === OPCODES.SMSG_READ_ITEM_FAILED) {
@@ -5059,7 +5400,7 @@ export class WorldClient {
         this.events.emit("SPELL_CHANNEL_UPDATE", {
           casterGuid: update.casterGuid, spellId, remaining: update.remaining,
         });
-        this.#endCast(update.casterGuid, spellId, false);
+        this.#endCast(update.casterGuid, spellId, "success");
       } else if (cast) {
         cast.duration = update.remaining;
         cast.startedAt = performance.now();
@@ -5080,7 +5421,11 @@ export class WorldClient {
       }
       const active = this.casts.get(failure.casterGuid);
       if (!active || active.spellId === failure.spellId) {
-        this.#endCast(failure.casterGuid, failure.spellId, true, failure.castCount);
+        const reason = failure.result === SPELL_FAILED_INTERRUPTED
+          || failure.result === SPELL_FAILED_INTERRUPTED_COMBAT
+          ? "interrupted"
+          : "failed";
+        this.#endCast(failure.casterGuid, failure.spellId, reason, failure.castCount);
       }
       return true;
     }
@@ -5479,8 +5824,13 @@ export class WorldClient {
     }
 
     if (packet.opcode === OPCODES.MSG_LIST_STABLED_PETS) {
-      this.stable = parseStableList(packet.payload);
-      this.stableMasterGuid = this.stable.npcGuid;
+      const stable = parseStableList(packet.payload);
+      if (stable.npcGuid !== this.#pendingStableMasterGuid
+        && stable.npcGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingStableMasterGuid = 0n;
+      this.#consumeGossipService(stable.npcGuid);
+      this.stable = stable;
+      this.stableMasterGuid = stable.npcGuid;
       this.events.emit("STABLE_CHANGED", {});
       return true;
     }
@@ -5533,7 +5883,14 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_LIST) {
-      this.battlefieldList = parseBattlefieldList(packet.payload);
+      const list = parseBattlefieldList(packet.payload);
+      if (list.fromWhere === 0) {
+        if (list.battlemasterGuid !== this.#pendingBattlemasterGuid
+          && list.battlemasterGuid !== this.#pendingGossipServiceGuid) return true;
+        this.#pendingBattlemasterGuid = 0n;
+        this.#consumeGossipService(list.battlemasterGuid);
+      }
+      this.battlefieldList = list;
       this.events.emit("BATTLEFIELD_LIST_CHANGED", { bgTypeId: this.battlefieldList.bgTypeId });
       return true;
     }
@@ -5943,7 +6300,12 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SHOW_MAILBOX) {
-      this.mailboxGuid = parseShowMailbox(packet.payload);
+      const mailboxGuid = parseShowMailbox(packet.payload);
+      if (mailboxGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#consumeGossipService(mailboxGuid);
+      this.mailboxGuid = mailboxGuid;
+      this.mailMessage = undefined;
+      this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(mailboxGuid));
       this.onMailChanged?.();
       return true;
     }
@@ -6203,14 +6565,22 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.MSG_SAVE_GUILD_EMBLEM) {
+      if (this.#pendingTabardSaveGuid === 0n || this.#pendingTabardSaveGuid !== this.tabardVendorGuid) return true;
+      this.#pendingTabardSaveGuid = 0n;
       const error = parseSaveGuildEmblem(packet.payload);
-      this.guildMessage = { text: guildEmblemErrorText(error), error: error !== 0 };
-      this.onGuildChanged?.();
+      this.tabardMessage = { text: guildEmblemErrorText(error), error: error !== 0 };
+      this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
       return true;
     }
     if (packet.opcode === OPCODES.MSG_TABARDVENDOR_ACTIVATE) {
-      this.tabardVendorGuid = parseTabardVendorActivate(packet.payload);
-      this.onGuildChanged?.();
+      const guid = parseTabardVendorActivate(packet.payload);
+      if (guid !== this.#pendingTabardVendorGuid && guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingTabardVendorGuid = 0n;
+      this.#consumeGossipService(guid);
+      this.tabardVendorGuid = guid;
+      this.tabardMessage = undefined;
+      this.#pendingTabardSaveGuid = 0n;
+      this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
       return true;
     }
     return false;

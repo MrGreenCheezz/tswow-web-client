@@ -70,10 +70,31 @@ function fallbackOptions(names: Readonly<Record<number, string>>, unknown: strin
 }
 
 /**
+ * Which `CreatureDisplayInfo` row a race and sex are drawn from, when this gateway says.
+ *
+ * `undefined` rather than a guess for the two ways it can be missing, and they are different facts:
+ * an older gateway does not carry the columns at all, and a dataset can leave a row's id at 0 —
+ * which is not a display, it is an empty column. A caller that wants a model has to have somewhere
+ * else to go in both cases, so neither is dressed up as an answer here.
+ *
+ * `sex` is the protocol's own number: 0 male, 1 female, as `CMSG_CHAR_CREATE` sends it.
+ */
+export function raceDisplayId(race: CreationRace | undefined, sex: number): number | undefined {
+  const id = sex === 1 ? race?.femaleDisplayId : race?.maleDisplayId;
+  return typeof id === "number" && Number.isInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
  * Whether the answer is shaped like the route's, before anything is built out of it.
  *
  * A gateway serving something else on this path — an error page, an older build — should leave the
  * form on its compiled lists rather than filling it with `undefined`.
+ *
+ * Deliberately *not* tightened when the race rows grew their display ids. The address is a field on
+ * the login screen and an older gateway is a supported answer, so a check that required the new
+ * columns would throw away a payload whose race and class lists are perfectly good — the form would
+ * fall back to the ten compiled names because a 3D preview could not be framed, which is trading a
+ * working screen for a missing one. `raceDisplayId` is where their absence is handled instead.
  */
 export function isCreationData(value: unknown): value is CharacterCreationData {
   if (typeof value !== "object" || value === null) return false;
@@ -95,7 +116,11 @@ export function isCreationData(value: unknown): value is CharacterCreationData {
  */
 export async function fetchCharacterCreation(origin: string): Promise<CharacterCreationData | undefined> {
   try {
-    const response = await fetch(`${origin}/dbc/character-creation`);
+    // `v=2` is the race rows gaining `maleDisplayId`/`femaleDisplayId`. The route answers
+    // `max-age=3600`, so without a new URL a browser that asked an hour ago would go on being served
+    // the answer from before those columns existed and the creation preview would have nothing to
+    // draw — the same reason `/dbc/areas` is on `v=4` and `/dbc/spells` on `v=8`.
+    const response = await fetch(`${origin}/dbc/character-creation?v=2`);
     if (!response.ok) throw new Error(`character creation returned ${response.status}`);
     const value = await response.json() as unknown;
     if (!isCreationData(value)) throw new Error("malformed character creation data");

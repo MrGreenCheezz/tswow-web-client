@@ -11,8 +11,11 @@ import { mountModel, unitModel } from "../ui/Frames.js";
 import {
   MOVEMENT_HEARTBEAT_INTERVAL, advancePhysics, isMoving, movementHeartbeat, sendMovement,
 } from "../input/Movement.js";
-import { FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeUnderwater } from "./Physics.js";
-import { eyeUnderCollisionModelLiquid } from "./CollisionLiquid.js";
+import {
+  EYE_LIQUID_SAMPLE_BAND, FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeLiquidSurface, eyeUnderwater,
+  type EyeLiquidSurface,
+} from "./Physics.js";
+import { collisionLiquidEyeSubmerged, collisionModelLiquidAtEye } from "./CollisionLiquid.js";
 import { ENVIRONMENT_RANGE, terrainGridDependencyFootprint } from "../Terrain.js";
 import { updateZoneSound } from "./ZoneSound.js";
 import { updateCombatSounds } from "./CombatSounds.js";
@@ -254,6 +257,7 @@ function frame(now: number): void {
       lightCamera.position.z,
       lightCamera.position.z - FLOOR_SEARCH_DEPTH,
     );
+    let underwaterSurface: EyeLiquidSurface | undefined;
     if (gameTime && world.mapId !== undefined) {
       const half = halfMinuteOfDay(gameTime);
       // The storm weight is the renderer's, because the fade between two skies is a rendering
@@ -264,21 +268,36 @@ function frame(now: number): void {
       const overrideWeight = lightOverride
         ? lightOverrideWeight(now, world.overrideLightReceivedAt, lightOverride.milliseconds)
         : 1;
-      const terrainUnderwater = eyeUnderwater(
-        lightCamera.position.z,
-        game.terrain?.liquidAt(world.mapId, lightCamera.position.x, lightCamera.position.y),
-      );
+      const terrainLiquid = game.terrain?.liquidAt(world.mapId, lightCamera.position.x, lightCamera.position.y);
+      const terrainUnderwater = eyeUnderwater(lightCamera.position.z, terrainLiquid);
       const collisionModel = cameraWmoFloor
         ? game.collision?.models.model(cameraWmoFloor.placement.modelName)
         : undefined;
-      const wmoUnderwater = Boolean(cameraWmoFloor && collisionModel
-        && eyeUnderCollisionModelLiquid(
+      // One query for both questions. The band widens what is *reported* so the screen effect can
+      // start while the near plane is still cutting the surface; the light slot below reads the
+      // strict model-space comparison off the same hit, so its answer is the one it always was.
+      const wmoLiquid = cameraWmoFloor && collisionModel
+        ? collisionModelLiquidAtEye(
           collisionModel.groups,
           cameraWmoFloor.groupIndex,
           cameraWmoFloor.placement,
           lightCamera.position,
-        ));
+          EYE_LIQUID_SAMPLE_BAND,
+        )
+        : undefined;
+      const wmoUnderwater = collisionLiquidEyeSubmerged(wmoLiquid);
       const underwater = terrainUnderwater || wmoUnderwater;
+      // The same pair of answers the light slot just used, kept rather than thrown away: which
+      // surface the screen is looking through, how high it is and which liquid it belongs to.
+      // `LIQU` carries the `LiquidType.dbc` row and no flag byte; the map file carries both.
+      underwaterSurface = eyeLiquidSurface(
+        lightCamera.position.z,
+        EYE_LIQUID_SAMPLE_BAND,
+        wmoLiquid ? { height: wmoLiquid.worldHeight, entry: wmoLiquid.type, flags: 0 } : undefined,
+        terrainLiquid
+          ? { height: terrainLiquid.height, entry: terrainLiquid.entry, flags: terrainLiquid.type }
+          : undefined,
+      );
       const lightSample = game.light?.sample(
         world.mapId, position.x, position.y, half, storm, position.z,
         lightOverride?.overrideLightId, overrideWeight, lightOverride?.areaLightId,
@@ -286,6 +305,9 @@ function frame(now: number): void {
       );
       game.renderer?.updateLighting(lightSample, half, underwater);
     }
+    // Pushed on every frame, including the ones with no game time and no light sample: a surface
+    // left over from the last frame would tint a screen the camera has already climbed out of.
+    game.renderer?.setUnderwaterSurface(underwaterSurface);
     // Who wears a ring on the ground. The focus keeps a dimmer one, and never a second ring under
     // the same feet when the two happen to be the same unit.
     const targetGuid = world.targetGuid;

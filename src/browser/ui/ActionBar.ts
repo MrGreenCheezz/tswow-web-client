@@ -3,7 +3,7 @@ import {
   ACTION_BUTTON_SPELL, EXTRA_ACTION_BARS, actionPage, actionSlot, type ExtraActionBar,
 } from "../../world/ActionBarProtocol.js";
 import { game } from "../game/Context.js";
-import { playerInventory } from "../Inventory.js";
+import { playerInventory, stackCount } from "../Inventory.js";
 import { macroAt, runMacro } from "./Macros.js";
 import { macroLabel, macroLines } from "./MacroModel.js";
 import { actionBar } from "./Dom.js";
@@ -21,6 +21,8 @@ import { worldObject } from "../../world/Fields.js";
 import { MELEE_AUTO_ATTACK_SPELL_ID } from "../../world/WorldClient.js";
 import { ACTION_BAR_SLOTS, bindingsOf, describeChord, EXTRA_ACTION_BAR_SLOTS } from "../input/Bindings.js";
 import { unknownLabel } from "./Format.js";
+import { itemTooltipFor } from "./ItemTooltip.js";
+import { notifyHudLayout } from "../GameWindows.js";
 
 /**
  * The action bar: twelve slots, driven by what the server says the player put there.
@@ -120,6 +122,7 @@ function buildExtraRows(): void {
   bottom.id = "action-bar-extras";
   const side = document.createElement("div");
   side.id = "action-bar-side";
+  side.dataset["windowReserveRight"] = "";
   for (const bar of EXTRA_ACTION_BARS) {
     const vertical = VERTICAL_BARS.has(bar.id);
     const element = document.createElement("div");
@@ -133,7 +136,12 @@ function buildExtraRows(): void {
     extraRows.set(bar.id, { element, buttons });
   }
   actionBar.parentElement?.insertBefore(bottom, actionBar);
-  actionBar.parentElement?.insertBefore(side, actionBar);
+  // The horizontal rows belong to #bottom-hud-center, but the vertical rail must remain a viewport
+  // edge sibling. Appending both through actionBar.parentElement would put the rail into the new
+  // centre stack and make its right/top offsets relative to the bottom HUD.
+  const viewport = actionBar.closest<HTMLElement>("#world-viewport");
+  if (viewport) viewport.append(side);
+  else actionBar.parentElement?.insertBefore(side, actionBar);
 }
 
 /**
@@ -148,6 +156,16 @@ function publishSideWidth(): void {
   const shown = EXTRA_ACTION_BARS.filter((bar) =>
     VERTICAL_BARS.has(bar.id) && settingOn(EXTRA_BAR_SETTINGS[bar.id])).length;
   document.documentElement.style.setProperty("--side-bars", String(shown));
+}
+
+/** Publish enabled horizontal rows for neighbouring HUD surfaces such as chat. */
+function publishBottomBars(): void {
+  const shown = EXTRA_ACTION_BARS.filter((bar) =>
+    !VERTICAL_BARS.has(bar.id) && settingOn(EXTRA_BAR_SETTINGS[bar.id])).length;
+  document.documentElement.style.setProperty("--bottom-bars", String(shown));
+  const stack = document.getElementById("action-bar-extras");
+  if (stack) stack.hidden = shown === 0;
+  notifyHudLayout();
 }
 
 function build(): void {
@@ -326,17 +344,17 @@ function slotTooltip(column: number, barPage = page, bar?: ExtraActionBar): Tool
     };
   }
   if (content.type === ACTION_BUTTON_SPELL) {
-    const spell = spellTooltip(content.action);
+    const spell = game.spells.has(content.action) ? spellTooltip(content.action) : {
+      title: "Данные заклинания загружаются",
+      footer: ["Название, иконка и описание пока недоступны"],
+    };
     return { ...spell, lines: [...(spell.lines ?? []), chord].filter(Boolean) };
   }
   if (content.type === ACTION_BUTTON_ITEM) {
-    const metadata = game.itemMetadata?.get(content.action);
-    return {
-      title: metadata?.name ?? unknownLabel("предмет", content.action),
-      quality: metadata?.quality,
-      lines: [chord].filter(Boolean),
-      footer: ["Использовать предмет из сумки"],
-    };
+    return itemTooltipFor(content.action, {
+      count: carriedItemCount(content.action),
+      footer: [chord, "Использовать предмет из сумки"].filter(Boolean),
+    });
   }
   if (content.type === ACTION_BUTTON_MACRO) {
     const macro = macroAt(content.action);
@@ -372,6 +390,7 @@ export function showActionBar(): void {
     if (!row.element.hidden) drawRow(row.buttons, actionPage(bar.base), bar.id);
   }
   publishSideWidth();
+  publishBottomBars();
 }
 
 /** One row of twelve, whichever bar it belongs to. */
@@ -381,19 +400,23 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
     const content = contentOf(column, barPage);
     const key = slotKey(column, bar);
     if (!content) {
+      button.root.dataset["empty"] = "";
+      delete button.root.dataset["count"];
       button.setContent({ key, title: `Слот ${column + 1} пуст` });
       button.setCooldown(0);
       button.setUsable(true);
       continue;
     }
+    delete button.root.dataset["empty"];
     if (content.type === ACTION_BUTTON_SPELL) {
+      delete button.root.dataset["count"];
       const metadata = game.spells.get(content.action);
       // Titled even while unknown, so a slot that holds something is never mistaken for one that
       // does not — which is what made this defect look like an empty bar rather than a slow one.
       button.setContent({
         icon: spellIcon(content.action),
         key,
-        title: metadata ? undefined : `Заклинание ${content.action} · загружается`,
+        title: metadata ? undefined : "Данные заклинания загружаются",
       });
     } else if (content.type === ACTION_BUTTON_ITEM) {
       // The icon comes from the item row, which is already loaded for the bags: before this a bar
@@ -403,12 +426,17 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
         icon: metadata && game.itemMetadata ? game.itemMetadata.iconUrl(metadata) : undefined,
         key,
       });
+      const count = carriedItemCount(content.action);
+      if (count > 1) button.root.dataset["count"] = String(count);
+      else delete button.root.dataset["count"];
     } else if (content.type === ACTION_BUTTON_MACRO) {
+      delete button.root.dataset["count"];
       // A macro has no icon in this client, so it shows what the original client shows when a
       // macro has none: the first letters of its name. Before this it was indistinguishable from
       // an empty slot.
       button.setContent({ label: macroLabel(macroAt(content.action), content.action), key });
     } else {
+      delete button.root.dataset["count"];
       button.setContent({ key });
     }
     if (content.type !== ACTION_BUTTON_SPELL) {
@@ -416,6 +444,15 @@ function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraAct
       button.setUsable(true);
     }
   }
+}
+
+/** Total stack carried in usable bags; moving a stack must not change the action button. */
+function carriedItemCount(entry: number): number {
+  const inventory = game.world ? playerInventory(game.world.state) : undefined;
+  if (!inventory) return 0;
+  return [...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots), ...inventory.keyring]
+    .filter((slot) => slot.item !== undefined && worldObject.entry(slot.item) === entry)
+    .reduce((total, slot) => total + stackCount(slot), 0);
 }
 
 /** Called once a frame: the cooldown sweeps, and whether a slot can be pressed at all. */

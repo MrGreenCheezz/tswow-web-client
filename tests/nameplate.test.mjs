@@ -17,9 +17,13 @@ import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 /** Records everything a plate asks a 2D context to do, so a drawing can be asserted about. */
 function recordingContext() {
   const calls = [];
-  const state = { fillStyle: "", strokeStyle: "", lineWidth: 0, font: "", textAlign: "", textBaseline: "" };
+  const state = {
+    fillStyle: "", strokeStyle: "", lineWidth: 0, font: "", textAlign: "", textBaseline: "",
+    measureText: (text) => ({ width: [...String(text)].length * 6 }),
+  };
   const record = (name) => (...args) => {
-    calls.push({ name, args, fillStyle: state.fillStyle, strokeStyle: state.strokeStyle, lineWidth: state.lineWidth });
+    calls.push({ name, args, fillStyle: state.fillStyle, strokeStyle: state.strokeStyle, lineWidth: state.lineWidth,
+      textAlign: state.textAlign });
   };
   const context = new Proxy(state, {
     get: (target, property) => property in target ? target[property] : record(property),
@@ -43,6 +47,40 @@ const plate = (overrides = {}) => ({
   lootable: false,
   tappedByOther: false,
   ...overrides,
+});
+
+test("a long name and cast stay inside their plate and leave the level readable", () => {
+  for (const target of [false, true]) {
+    const data = plate({ name: "Очень длинное имя редкого стража Северного королевства", level: 83,
+      rank: RANK_ELITE, target,
+      cast: { name: "Необычайно длинное название применяемого заклинания", progress: 0.4, channel: false } });
+    const box = plateLayout(data, 400, 300);
+    const { context, calls } = recordingContext();
+    drawPlate(context, box, data);
+    const texts = calls.filter((call) => call.name === "fillText");
+    const name = texts[0];
+    const level = texts.find((call) => call.args[0] === "83+");
+    const nameRight = name.args[1] + context.measureText(name.args[0]).width;
+    const levelLeft = level.args[1] - context.measureText(level.args[0]).width;
+    assert.ok(nameRight + 4 <= levelLeft, `name ends at ${nameRight}, level starts at ${levelLeft}`);
+    assert.ok(name.args[0].endsWith("…"), "the visible name signals its truncation");
+    const cast = texts.find((call) => call.args[0].startsWith("Необычайно"));
+    assert.ok(context.measureText(cast.args[0]).width <= box.width - 4, "cast text stays within its bar");
+  }
+});
+
+test("plates report known health, and never invent a percentage for unknown health", () => {
+  const written = (overrides) => {
+    const data = plate(overrides);
+    const { context, calls } = recordingContext();
+    drawPlate(context, plateLayout(data, 400, 300), data);
+    return calls.filter((call) => call.name === "fillText").map((call) => call.args[0]);
+  };
+  assert.ok(written({ health: 0.37 }).includes("37%"));
+  assert.ok(written({ health: 0.37, healthCurrent: 370, healthMax: 1000, target: true })
+    .includes("370 / 1000 · 37%"));
+  assert.ok(!written({ health: undefined }).some((text) => text.includes("%")));
+  assert.ok(!written({ health: 0, lootable: true }).some((text) => text.includes("%")));
 });
 
 test("the two plate switches are read separately, and the target answers to neither", () => {
@@ -590,7 +628,10 @@ test("Л1 the tap pair reaches the plate from the field rather than being guesse
   try {
     game.world = plateWorld();
     const source = plateSource(0);
-    assert.equal(source(plateUnit(2n, { health: 60, dynamicFlags: 0x04 }), 10).tappedByOther, true);
+    const tapped = source(plateUnit(2n, { health: 60, dynamicFlags: 0x04 }), 10);
+    assert.equal(tapped.tappedByOther, true);
+    assert.equal(tapped.healthCurrent, 60, "numeric health comes from the same actual server fields as the bar");
+    assert.equal(tapped.healthMax, 100);
     assert.equal(source(plateUnit(3n, { health: 60, dynamicFlags: 0x0c }), 10).tappedByOther, false,
       "TAPPED_BY_PLAYER is the half that says the kill is the viewer's own");
     assert.equal(source(plateUnit(4n, { health: 60, dynamicFlags: 0 }), 10).tappedByOther, false);

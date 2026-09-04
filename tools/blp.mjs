@@ -82,6 +82,11 @@ function decodePalette(header, data, mip, out) {
   }
   if (alphaDepth === 0) return;
   const alpha = mip.subarray(pixels);
+  if (alphaDepth !== 1 && alphaDepth !== 4 && alphaDepth !== 8) {
+    throw new BlpError(`Unsupported BLP alpha depth ${alphaDepth}`);
+  }
+  const requiredAlphaBytes = Math.ceil(pixels * alphaDepth / 8);
+  if (alpha.length < requiredAlphaBytes) throw new BlpError("BLP palette alpha is truncated");
   if (alphaDepth === 8) {
     for (let index = 0; index < pixels && index < alpha.length; index++) out[index * 4 + 3] = alpha[index];
   } else if (alphaDepth === 4) {

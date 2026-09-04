@@ -1,5 +1,6 @@
 import { MAX_GLYPH_SLOTS } from "../../world/CharacterProgressProtocol.js";
 import type { TalentsInfo } from "../../world/CharacterProgressProtocol.js";
+import type { TalentTabInfo } from "../../gateway/TalentMetadata.js";
 import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { spellCastAllowed } from "../SpellCastGuard.js";
@@ -51,6 +52,11 @@ export function toggleTalentsWindow(): void {
   if (parts.panel.visible) showTalents();
 }
 
+/** Close the native fallback without constructing it solely for a FrameXML takeover. */
+export function hideTalentsWindow(): void {
+  parts?.panel.hide();
+}
+
 /**
  * The window's own parts, built on first open rather than at module load.
  *
@@ -85,11 +91,34 @@ function build(): TalentPanel {
   return { panel, header, treeBar, grid, glyphRow, footer };
 }
 
-function tabButton(label: string, active: boolean, onClick: () => void): HTMLButtonElement {
+function clientTextureUrl(path: string | undefined): string | undefined {
+  if (!path || !game.gatewayOrigin) return undefined;
+  const resolved = path.includes("\\") || path.includes("/")
+    ? path : `Interface\\TalentFrame\\${path}`;
+  const withExtension = /\.(?:blp|png|jpe?g|gif)$/i.test(resolved) ? resolved : `${resolved}.blp`;
+  const url = new URL("/texture", game.gatewayOrigin);
+  url.searchParams.set("path", withExtension);
+  return url.href;
+}
+
+function tabButton(label: string, active: boolean, onClick: () => void, tab?: TalentTabInfo): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = active ? "talents-tab is-active" : "talents-tab";
-  button.textContent = label;
+  const icon = document.createElement("img");
+  icon.className = "talent-tab-icon";
+  icon.alt = "";
+  icon.setAttribute("aria-hidden", "true");
+  const iconUrl = clientTextureUrl(tab?.iconPath)
+    ?? spellIconUrl(tab?.iconId ?? 0, game.gatewayOrigin);
+  if (iconUrl) {
+    icon.addEventListener("error", () => icon.remove(), { once: true });
+    setIconSource(icon, iconUrl);
+    button.append(icon);
+  }
+  const text = document.createElement("span");
+  text.textContent = label;
+  button.append(text);
   button.addEventListener("click", onClick);
   return button;
 }
@@ -142,7 +171,7 @@ export function showTalents(): void {
     treeBar.append(tabButton(`${tab.name} (${spent})`, index === activeTab, () => {
       activeTab = index;
       showTalents();
-    }));
+    }, tab));
   }
 
   const tab = tabs[activeTab];
@@ -232,6 +261,11 @@ function talentButton(cell: TalentCell): HTMLButtonElement {
   button.style.gridColumn = String(cell.talent.column + 1);
   button.classList.toggle("is-learned", cell.rank > 0);
   button.classList.toggle("is-maxed", cell.rank >= cell.maxRank && cell.maxRank > 0);
+  button.classList.toggle("is-available", cell.available && cell.rank < cell.maxRank);
+  button.classList.toggle("is-blocked", !cell.available);
+  button.dataset["state"] = cell.rank >= cell.maxRank && cell.maxRank > 0
+    ? "maxed" : cell.available ? "available" : "blocked";
+  button.setAttribute("aria-label", `Талант ${cell.talent.id}, ранг ${cell.rank} из ${cell.maxRank}`);
   // Marked rather than `disabled`. A disabled button swallows every pointer event, so its tooltip
   // never appears — and the tooltip is exactly what a blocked talent needs to show, since the only
   // interesting thing about it is *why* it is blocked. The click handler already refuses.

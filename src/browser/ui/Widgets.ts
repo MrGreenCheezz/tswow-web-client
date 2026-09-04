@@ -167,7 +167,7 @@ export class Panel {
       const close = document.createElement("button");
       close.type = "button";
       close.className = "window-close";
-      close.textContent = "×";
+      close.setAttribute("aria-label", "Закрыть");
       close.addEventListener("click", () => {
         this.hide();
         options.onClose?.();
@@ -669,6 +669,7 @@ export class Tabs {
 let tooltipElement: HTMLElement | undefined;
 /** How to build the tooltip that is on screen again, so a late answer can redraw it in place. */
 let shownBy: (() => void) | undefined;
+let shownTooltipHide: (() => void) | undefined;
 
 /**
  * What a tooltip line *is*, which is what decides its colour.
@@ -679,11 +680,13 @@ let shownBy: (() => void) | undefined;
  * (`wowee/src/ui/item_tooltip.cpp:339`, `:358`, `:381`, `:598`). The stylesheet reads the class;
  * the builder decides the tone.
  */
-export type TooltipTone = "stat" | "unmet" | "spell" | "flavour" | "gold" | "muted";
+export type TooltipTone = "stat" | "unmet" | "spell" | "flavour" | "gold" | "muted" | "description";
 
 export interface TooltipLine {
   text: string;
   tone?: TooltipTone | undefined;
+  /** Parsed Lua colour runs; text is still rendered through textContent. */
+  runs?: readonly { readonly text: string; readonly color?: string | undefined }[] | undefined;
 }
 
 export interface TooltipContent {
@@ -710,11 +713,17 @@ export interface TooltipContent {
  * touch device. An item's name deserves better than a native tooltip, and a talent that cannot be
  * clicked has to be able to say why.
  */
-export function attachTooltip(target: HTMLElement, content: () => TooltipContent | undefined): void {
+export function attachTooltip(
+  target: HTMLElement,
+  content: () => TooltipContent | undefined,
+  lifecycle: { readonly onHide?: () => void } = {},
+): void {
   const show = (): void => {
+    if (shownBy !== show) hideTooltip();
     const shown = content();
-    if (!shown) return;
+    if (!shown) { hideTooltip(); return; }
     shownBy = show;
+    shownTooltipHide = lifecycle.onHide;
     if (!tooltipElement) {
       tooltipElement = document.createElement("div");
       tooltipElement.className = "ui-tooltip";
@@ -722,20 +731,21 @@ export function attachTooltip(target: HTMLElement, content: () => TooltipContent
       // and a tooltip inside one is clipped by it.
       document.body.append(tooltipElement);
     }
+    if (shown.quality !== undefined) tooltipElement.dataset["quality"] = String(shown.quality);
+    else delete tooltipElement.dataset["quality"];
     const title = document.createElement("strong");
     title.textContent = shown.title;
     if (shown.quality !== undefined) title.dataset["quality"] = String(shown.quality);
     const rows = (shown.lines ?? []).map((line) => typeof line === "string"
       ? row(line, "")
-      : row(line.text, line.tone ? `ui-tooltip-${line.tone}` : ""));
+      : row(line.text, line.tone ? `ui-tooltip-${line.tone}` : "", line.runs));
     const footer = (shown.footer ?? []).map((line) => row(line, "ui-tooltip-footer"));
     tooltipElement.replaceChildren(title, ...rows, ...footer);
     tooltipElement.hidden = false;
     place(tooltipElement, target);
   };
   const hide = (): void => {
-    if (tooltipElement) tooltipElement.hidden = true;
-    shownBy = undefined;
+    if (shownBy === show) hideTooltip();
   };
   target.addEventListener("pointerenter", show);
   target.addEventListener("pointerleave", hide);
@@ -744,23 +754,45 @@ export function attachTooltip(target: HTMLElement, content: () => TooltipContent
   target.addEventListener("blur", hide);
 }
 
-function row(text: string, className: string): HTMLElement {
+function row(text: string, className: string, runs?: TooltipLine["runs"]): HTMLElement {
   const line = document.createElement("div");
   if (className) line.className = className;
-  line.textContent = text;
+  if (runs) {
+    for (const run of runs) {
+      const span = document.createElement("span");
+      span.textContent = run.text;
+      if (run.color && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(run.color)) span.style.color = run.color;
+      line.append(span);
+    }
+  } else line.textContent = text;
   return line;
 }
 
 /** Beside the thing that asked, nudged back inside the window when it would hang off an edge. */
 function place(tooltip: HTMLElement, target: HTMLElement): void {
   const at = target.getBoundingClientRect();
-  const size = tooltip.getBoundingClientRect();
   const margin = 8;
-  const left = Math.max(margin, Math.min(at.left, window.innerWidth - size.width - margin));
+  const viewportWidth = Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1280;
+  const viewportHeight = Number.isFinite(window.innerHeight) && window.innerHeight > 0 ? window.innerHeight : 720;
+  const maxWidth = Math.max(160, viewportWidth - margin * 2);
+  tooltip.style.maxWidth = `${Math.round(maxWidth)}px`;
+  tooltip.style.maxHeight = `${Math.round(Math.max(96, viewportHeight - margin * 2))}px`;
+  tooltip.style.overflowY = "auto";
+  let size = tooltip.getBoundingClientRect();
   const below = at.bottom + 6;
-  const top = below + size.height + margin <= window.innerHeight
+  const belowSpace = Math.max(0, viewportHeight - below - margin);
+  const aboveSpace = Math.max(0, at.top - 6 - margin);
+  const available = Math.max(96, Math.max(belowSpace, aboveSpace));
+  if (size.height > available) {
+    tooltip.style.maxHeight = `${Math.round(available)}px`;
+    size = tooltip.getBoundingClientRect();
+  }
+  const left = Math.max(margin, Math.min(at.left, viewportWidth - size.width - margin));
+  const top = belowSpace >= size.height
     ? below
-    : Math.max(margin, at.top - size.height - 6);
+    : aboveSpace >= size.height
+      ? Math.max(margin, at.top - size.height - 6)
+      : margin;
   tooltip.style.left = `${Math.round(left)}px`;
   tooltip.style.top = `${Math.round(top)}px`;
 }
@@ -769,6 +801,9 @@ function place(tooltip: HTMLElement, target: HTMLElement): void {
 export function hideTooltip(): void {
   if (tooltipElement) tooltipElement.hidden = true;
   shownBy = undefined;
+  const onHide = shownTooltipHide;
+  shownTooltipHide = undefined;
+  onHide?.();
 }
 
 /**

@@ -1,6 +1,5 @@
-import { diagnosticsWindow, gameWindows } from "./Dom.js";
+import { diagnosticsWindow, gameMenuToggle, gameWindows } from "./Dom.js";
 import { Panel } from "./Widgets.js";
-import { toggleGameWindow } from "./Windows.js";
 import { toggleKeyBindingsWindow } from "./KeyBindings.js";
 import { openGuildWindow } from "./Guild.js";
 import { openGuildBank } from "./GuildBank.js";
@@ -12,6 +11,8 @@ import { toggleSettingsWindow } from "./Settings.js";
 import { toggleMacroWindow } from "./Macros.js";
 import { game } from "../game/Context.js";
 import { confirmPanel } from "./Widgets.js";
+import { showUnhandledOpcodes } from "./Diagnostics.js";
+import { playUiSound } from "../game/GameSounds.js";
 
 /**
  * What Escape opens when nothing else is open.
@@ -24,6 +25,26 @@ import { confirmPanel } from "./Widgets.js";
  */
 let menu: Panel | undefined;
 
+interface AddonMenuButton {
+  readonly label: string;
+  run(): void;
+  element?: HTMLButtonElement;
+}
+const addonButtons = new Set<AddonMenuButton>();
+
+function mountAddonButton(panel: Panel, entry: AddonMenuButton): void {
+  entry.element = menuButton(entry.label, () => { panel.hide(); entry.run(); });
+  panel.body.append(entry.element);
+}
+
+/** Expose TSWoW GameMenuFrame actions in the browser menu. */
+export function registerGameMenuAddonButton(label: string, run: () => void): () => void {
+  const entry: AddonMenuButton = { label, run };
+  addonButtons.add(entry);
+  if (menu) mountAddonButton(menu, entry);
+  return () => { entry.element?.remove(); addonButtons.delete(entry); };
+}
+
 function menuButton(label: string, action: () => void): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -34,6 +55,15 @@ function menuButton(label: string, action: () => void): HTMLButtonElement {
 
 function build(): Panel {
   const panel = new Panel({ id: "game-menu", title: "Меню", className: "game-menu" });
+  panel.root.setAttribute("role", "dialog");
+  panel.root.setAttribute("aria-label", "Меню игры");
+  const syncExpandedState = (): void => {
+    gameMenuToggle.setAttribute("aria-expanded", String(panel.visible));
+    // Do not strand keyboard focus in a subtree that has just become hidden through one of its
+    // actions or its close button.
+    if (!panel.visible && panel.root.contains(document.activeElement)) gameMenuToggle.focus();
+  };
+  new MutationObserver(syncExpandedState).observe(panel.root, { attributes: true, attributeFilter: ["hidden"] });
   panel.body.append(
     menuButton("Продолжить", () => panel.hide()),
     menuButton("Управление", () => {
@@ -49,7 +79,9 @@ function build(): Panel {
     menuButton("Арена", () => { panel.hide(); toggleArenaWindow(); }),
     menuButton("Диагностика", () => {
       panel.hide();
-      toggleGameWindow(diagnosticsWindow);
+      diagnosticsWindow.hidden = false;
+      showUnhandledOpcodes();
+      playUiSound("windowOpen");
     }),
     menuButton("Настройки", () => { panel.hide(); toggleSettingsWindow(); }),
     menuButton("Макросы", () => { panel.hide(); toggleMacroWindow(); }),
@@ -58,6 +90,7 @@ function build(): Panel {
     // over it out of combat and refuses outright in it, which is what the answer packet says.
     logoutButton(panel),
   );
+  for (const entry of addonButtons) mountAddonButton(panel, entry);
   return panel;
 }
 
@@ -65,6 +98,8 @@ function build(): Panel {
 export function toggleGameMenu(): void {
   menu ??= build();
   menu.toggle();
+  gameMenuToggle.setAttribute("aria-expanded", String(menu.visible));
+  if (menu.visible) menu.body.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
 }
 
 /** True while the menu is up, so Escape knows whether it is opening or closing something. */
