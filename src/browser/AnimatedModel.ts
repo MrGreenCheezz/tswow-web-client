@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { PivotSkeleton } from "./PivotSkeleton.js";
 import type { EnvironmentModel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";
 import {
   BONE_ANY_BILLBOARD, BONE_CYLINDRICAL_BILLBOARD_X, BONE_CYLINDRICAL_BILLBOARD_Y,
@@ -634,7 +633,7 @@ export function instantiateSkinned(template: SkinnedTemplate, material: THREE.Ma
   root.add(mesh);
   // An identity bind matrix keeps the bone matrices relative to this root, so the unit can be
   // moved and turned freely afterwards.
-  mesh.bind(new PivotSkeleton(bones, template.boneInverses), new THREE.Matrix4());
+  mesh.bind(new THREE.Skeleton(bones, template.boneInverses), new THREE.Matrix4());
   // The root resolves its own bone names, which is the whole of defect M1.1.
   //
   // Every rig in this client names its bones by index — `bone0`, `bone1` — because the clips name
