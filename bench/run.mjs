@@ -144,6 +144,19 @@ async function main() {
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
     browser: { executablePath, args: chromeArgs }, scenarios: [], artifacts: `bench/results/${stamp}`, errors: [] };
   const resultPath = resolve('bench/results', `${stamp}.json`);
+  async function hostLoad() {
+    if (process.platform !== 'win32') return null;
+    const ids = [process.pid];
+    if (browser) {
+      const session = await browser.target().createCDPSession();
+      const { processInfo } = await session.send('SystemInfo.getProcessInfo');
+      await session.detach();
+      ids.push(...processInfo.map(p => p.id));
+    }
+    return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass',
+      '-File', resolve('bench/host-load.ps1'), '-ExcludeProcessIds', ids.join(',')],
+    { encoding: 'utf8', windowsHide: true }));
+  }
   async function open(scenario) {
     browser = await puppeteer.launch({ executablePath, headless: true, args: chromeArgs,
       defaultViewport: { width: config.width, height: config.height, deviceScaleFactor: config.pixelRatio }, protocolTimeout: 300000 });
@@ -195,12 +208,24 @@ async function main() {
         const scenario = scenarios[scenarioIndex];
         console.log(`Starting ${scenario} (${config.durationSeconds}s measured)…`);
         const missesBefore = cacheMisses;
+        const preflightLoad = await hostLoad();
+        if (preflightLoad?.externalCpuCores > 2) {
+          result.host.blockedLoad = preflightLoad;
+          throw new Error(`External CPU load ${preflightLoad.externalCpuCores.toFixed(2)} cores exceeds 2.0; benchmark conditions are not comparable`);
+        }
         const { page, pageErrors, prepared } = await open(scenario);
+        const loadBefore = await hostLoad();
+        if (loadBefore?.externalCpuCores > 2) {
+          result.host.blockedLoad = loadBefore;
+          throw new Error(`External CPU load ${loadBefore.externalCpuCores.toFixed(2)} cores exceeds 2.0; benchmark conditions are not comparable`);
+        }
         const client = await page.createCDPSession();
         if (trace) await page.evaluate(() => {
           window.__benchProgramEvents = [];
           const renderer = window.__benchRenderers.at(-1);
           const seen = new Set(renderer.info.programs.map(p => p.id));
+          window.__benchProgramEvents.push({ atMs: performance.now(), method: 'prepared',
+            programs: renderer.info.programs.map(p => ({ id: p.id, type: p.type, cacheKey: p.cacheKey })) });
           for (const method of ['compile', 'render']) {
             const original = renderer[method].bind(renderer);
             renderer[method] = (...args) => {
@@ -228,6 +253,8 @@ async function main() {
           await writeFile(join(out, `${scenario}.cpuprofile`), JSON.stringify(profile.profile));
           await page.tracing.stop();
         }
+        raw.hostLoad = { before: loadBefore, after: await hostLoad() };
+        if (raw.hostLoad.after?.externalCpuCores > 2) result.errors.push(`${scenario}: external CPU load after measurement exceeds 2.0 cores`);
         const measurementMisses = cacheMisses - missesAtMeasurement;
         // Asset demand can vary at frustum edges between preparation frames. These passes only
         // finish populating the immutable cache; never select or discard runs based on FPS.
