@@ -270,13 +270,24 @@ async function main() {
         }
         const summary = summarize(raw);
         const screenshots = [];
+        // Timed admission depends on which boundary frames RAF reaches. Recreate world crowd
+        // views so their pixels compare fixed preparation, not different streaming histories.
+        let screenshotPage = page;
+        let screenshotErrors = [];
+        if (scenario.startsWith('world-crowd-')) {
+          await browser.close(); browser = undefined;
+          const fresh = await open(scenario);
+          screenshotPage = fresh.page; screenshotErrors = fresh.pageErrors;
+        }
         for (const fraction of movementFractions(scenario)) {
-          const view = await page.evaluate(f => window.__bench.view(f), fraction);
+          const view = await screenshotPage.evaluate(f => window.__bench.view(f), fraction);
           const name = `${scenario}-${fraction}.png`;
           await writeFile(join(out, name), Buffer.from(view.png.split(',')[1], 'base64'));
           screenshots.push(name);
         }
+        pageErrors.push(...screenshotErrors);
         const scenarioResult = { ...raw, summary, prepared, screenshots, pageErrors,
+          screenshotPolicy: scenario.startsWith('world-crowd-') ? 'fresh-prepared-scene-v1' : 'after-measurement-v1',
           cacheMisses: cacheMisses - missesBefore, measurementCacheMisses: measurementMisses };
         result.scenarios.push(scenarioResult);
         await writeFile(resultPath, JSON.stringify({ ...result, incomplete: true }, null, 2));
@@ -296,6 +307,9 @@ async function main() {
       for (const current of result.scenarios) {
         const before = baseline.scenarios.find(s => s.scenario === current.scenario);
         if (!before) throw new Error(`Baseline missing ${current.scenario}`);
+        if ((before.screenshotPolicy ?? 'after-measurement-v1') !== current.screenshotPolicy) {
+          throw new Error(`Screenshot policy changed for ${current.scenario}; capture a matching baseline`);
+        }
         result.comparison.metrics.push({ scenario: current.scenario,
           fpsChangePercent: 100 * (current.summary.averageFps / before.summary.averageFps - 1),
           p99ChangePercent: 100 * (current.summary.p99FrameMs / before.summary.p99FrameMs - 1),

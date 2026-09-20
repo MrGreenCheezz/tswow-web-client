@@ -5123,7 +5123,10 @@ export class WorldRenderer3D {
   #attachmentBone(guid: bigint, attachment: number): THREE.Bone | undefined {
     const unit = this.#units.get(guid);
     if (!unit?.skinned || !unit.wvm) return undefined;
-    return boneOf(unit.wvm, unit.skinned, attachment);
+    const bone = boneOf(unit.wvm, unit.skinned, attachment);
+    // Unit posing defers the full hierarchy until render; spell anchors need this path now.
+    bone?.updateWorldMatrix(true, false);
+    return bone;
   }
 
   /**
@@ -9552,11 +9555,13 @@ export class WorldRenderer3D {
       mount.skinned.mixer.update(elapsed);
       if (mount.wvm) applyGlobalSequenceBones(mount.skinned, mount.template,
         mount.wvm.globalSequences, now);
-      applyBillboardBones(mount.skinned, mount.template, this.#camera);
+      applyBillboardBones(mount.skinned, mount.template, this.#camera, false);
     }
     // After the pose and not before it: a billboard bone overwrites what the mixer just wrote to
     // it, which is the whole point of the flag.
-    applyBillboardBones(skinned, template, this.#camera);
+    // Renderer submission updates the full rig once; spell anchors and emitters refresh
+    // their own world-matrix queries before that submission.
+    applyBillboardBones(skinned, template, this.#camera, false);
   }
 
   /**
