@@ -34,6 +34,10 @@ async function main() {
   const trace = args.includes('--trace');
   if (smoke) { config.durationSeconds = 3; config.warmupSeconds = 1; }
   const scenarios = value('--scenario', config.scenarios.join(',')).split(',');
+  const cpuPolicy = process.platform === 'win32' ? JSON.parse(execFileSync('powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('bench/cpu-policy.ps1')],
+    { encoding: 'utf8', windowsHide: true })) : { policy: 'system-default', selected: null };
+  config.cpuPolicy = { policy: cpuPolicy.policy, selected: cpuPolicy.selected };
   if (scenarios.some(s => !config.scenarios.includes(s))) throw new Error('Unknown scenario');
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
   const out = resolve('bench/results', stamp);
@@ -137,7 +141,7 @@ async function main() {
     smoke, trace, config, configHash, sourceHash, sourceHashes,
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
-      memoryBytes: os.totalmem(), node: process.version },
+      memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
     browser: { executablePath, args: chromeArgs }, scenarios: [], artifacts: `bench/results/${stamp}`, errors: [] };
   const resultPath = resolve('bench/results', `${stamp}.json`);
   async function open(scenario) {
@@ -150,6 +154,15 @@ async function main() {
     page.on('pageerror', error => { pageErrors.push(error.message); console.error(`Page error: ${error.message}`); });
     page.on('console', message => { if (message.type() === 'error') { pageErrors.push(message.text()); console.error(message.text()); } });
     await page.goto(`${origin}/?scenario=${scenario}`, { waitUntil: 'load' });
+    if (process.platform === 'win32') {
+      const session = await browser.target().createCDPSession();
+      const { processInfo } = await session.send('SystemInfo.getProcessInfo');
+      await session.detach();
+      const applied = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', resolve('bench/cpu-policy.ps1'), '-ProcessIds', processInfo.map(p => p.id).join(',')],
+      { encoding: 'utf8', windowsHide: true }));
+      if (applied.mask !== cpuPolicy.mask || applied.applied.length === 0) throw new Error('CPU policy was not applied');
+    }
     await Promise.race([
       page.waitForFunction(() => Boolean(window.__bench)),
       new Promise((_, reject) => page.once('pageerror', reject)),
