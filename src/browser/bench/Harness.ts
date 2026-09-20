@@ -18,6 +18,7 @@ import { addSkinnedClips, buildSkinnedTemplateFrom, instantiateSkinned } from ".
 import { decodeWvm9, decodeWvaAnimations, visualModelUrl, visualAnimationsUrl, TEXTURE_TYPE_BODY } from "../Wvm.js";
 import { acquireRenderBenchmarkFormalGpuObserver } from "../RenderBenchmarkRuntime.js";
 import { createWebGlGpuTimer } from "../GpuTimer.js";
+import { UnitSceneGroup } from "../UnitSceneGroup.js";
 
 interface Config {
   seed: number; width: number; height: number; pixelRatio: number; durationSeconds: number;
@@ -31,11 +32,32 @@ interface BenchWindow extends Window {
 }
 const host = window as BenchWindow;
 const config = await (await fetch('/config.json')).json() as Config;
-const scenario = new URLSearchParams(location.search).get('scenario') ?? 'movement';
+const params = new URLSearchParams(location.search);
+const scenario = params.get('scenario') ?? 'movement';
+const diagnostic = params.has('diagnostic');
 const canvas = document.querySelector('canvas')!;
-const movement = scenario === 'movement';
-const count = movement ? 10 : Number(scenario.split('-')[1]);
+const worldCrowd = scenario.startsWith('world-crowd-');
+const movement = scenario === 'movement' || worldCrowd;
+const count = scenario === 'movement' ? 10 : Number(scenario.split('-').at(-1));
 if (![10, 50, 200].includes(count)) throw new Error('Invalid scenario');
+const counters = { boneUpdates: 0, boneWorldUpdates: 0, hiddenUnitVisits: 0 };
+if (diagnostic) {
+  const update = THREE.Object3D.prototype.updateMatrixWorld;
+  THREE.Object3D.prototype.updateMatrixWorld = function(force) {
+    if ((this as THREE.Bone).isBone) counters.boneUpdates++;
+    update.call(this, force);
+  };
+  const updateWorld = THREE.Object3D.prototype.updateWorldMatrix;
+  THREE.Object3D.prototype.updateWorldMatrix = function(parents, children) {
+    if ((this as THREE.Bone).isBone) counters.boneWorldUpdates++;
+    updateWorld.call(this, parents, children);
+  };
+  const updateUnit = UnitSceneGroup.prototype.updateMatrixWorld;
+  UnitSceneGroup.prototype.updateMatrixWorld = function(force) {
+    if (!this.visible) counters.hiddenUnitVisits++;
+    updateUnit.call(this, force);
+  };
+}
 const nextFrame = () => new Promise<number>(resolve => requestAnimationFrame(resolve));
 let randomState = config.seed;
 Math.random = () => {
@@ -68,6 +90,7 @@ let lastFraction = 0;
 let queryMs = 0;
 let routeHeightMissing = 0;
 let lastFrame = 0;
+let preparingWorldCrowd = worldCrowd;
 
 if (movement) {
   acquireRenderBenchmarkFormalGpuObserver(gpuObserver);
@@ -88,9 +111,9 @@ if (movement) {
   const state = new WorldState();
   const objects: WorldObjectState[] = [];
   for (let i = 0; i < count; i++) {
-    const object: WorldObjectState = { guid: BigInt(i + 1), typeId: 4,
+    const object: WorldObjectState = { guid: BigInt(i + 1), typeId: worldCrowd && i > 0 ? 3 : 4,
       position: { x: config.route.x, y: config.route.y, z: 60, orientation: Math.PI },
-      movementFlags: MOVEMENT_FLAGS.forward, updateFlags: 0, targetGuid: undefined,
+      movementFlags: worldCrowd && i > 0 ? 0 : MOVEMENT_FLAGS.forward, updateFlags: 0, targetGuid: undefined,
       runSpeed: 7, turnRate: undefined, motion: undefined, glide: undefined,
       transport: undefined, speeds: undefined, transportTime: undefined,
       fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset, display.id],
@@ -104,13 +127,17 @@ if (movement) {
   render = (seconds, elapsed, frame) => {
     lastFraction = Math.max(0, Math.min(1, seconds / config.durationSeconds));
     lastFrame = frame;
-    const x = config.route.x + config.route.dx * lastFraction;
-    const y = config.route.y + config.route.dy * Math.sin(lastFraction * Math.PI * 2);
+    const angle = lastFraction * Math.PI * 2;
+    const x = config.route.x + (worldCrowd ? Math.cos(angle) * 22 : config.route.dx * lastFraction);
+    const y = config.route.y + (worldCrowd ? Math.sin(angle) * 22 : config.route.dy * Math.sin(angle));
+    const rows = Math.ceil(Math.sqrt(count - 1));
     const queryAt = performance.now();
     for (let i = 0; i < objects.length; i++) {
       const p = objects[i]!.position!;
-      p.x = x + (i === 0 ? 0 : (i % 3) * 2 - 4);
-      p.y = y + (i === 0 ? 0 : Math.ceil(i / 3) * 3);
+      p.x = worldCrowd && i > 0 ? config.route.x + ((i - 1) % rows - (rows - 1) / 2) * 2.5
+        : x + (i === 0 ? 0 : (i % 3) * 2 - 4);
+      p.y = worldCrowd && i > 0 ? config.route.y + (Math.floor((i - 1) / rows) - (rows - 1) / 2) * 2.5
+        : y + (i === 0 ? 0 : Math.ceil(i / 3) * 3);
       const height = heightAt(p.x, p.y);
       if (height !== undefined) p.z = height + .02;
       else if (recording && i === 0) routeHeightMissing++;
@@ -124,9 +151,11 @@ if (movement) {
       worldRenderer.beginRenderFrame();
       try {
         worldRenderer.draw(state, config.route.map, heightAt, terrain, scenery, environment,
-          undefined, Math.sin(lastFraction * Math.PI * 2) * .4, -.22, 24,
+          undefined, worldCrowd ? angle : Math.sin(lastFraction * Math.PI * 2) * .4, worldCrowd ? -.4 : -.22, worldCrowd ? 42 : 24,
           modelOf, splat, liquids, undefined, horizon, 24, () => true, 1.6,
-          undefined, undefined, { nowMs: seconds * 1000, elapsedSeconds: elapsed, frameIndex: frame });
+          undefined, undefined, { nowMs: (worldCrowd
+            ? preparingWorldCrowd ? 0 : config.warmupSeconds + seconds
+            : seconds) * 1000, elapsedSeconds: elapsed, frameIndex: frame });
       } finally { worldRenderer.endRenderFrame(); }
     } finally { environment.endResourceFrame(); }
   };
@@ -247,7 +276,12 @@ async function settle(fraction: number) {
 host.__bench = {
   async prepare() {
     reset();
+    // Retained NPCs must have been admitted around the whole square before timing.
+    if (worldCrowd) for (let i = 0; i < 8; i++) await settle(i / 8);
     await settle(0);
+    // Admission happens at zero throughout preparation. Timed/views start after spawn fade,
+    // without rewinding admission ages from the later preparation viewpoints into the future.
+    preparingWorldCrowd = false;
     const start = await nextFrame();
     let previous = start, frame = 0;
     while (previous - start < config.warmupSeconds * 1000) {
@@ -261,7 +295,8 @@ host.__bench = {
     reset();
     routeHeightMissing = 0;
     gpuSamplesMs.length = 0;
-    const columns = ['rafAtMs', 'intervalMs', 'cpuMs', ...phaseNames, 'calls', 'triangles', 'programs', 'geometries', 'textures', 'heapBytes'];
+    const columns = ['rafAtMs', 'intervalMs', 'cpuMs', ...phaseNames, 'calls', 'triangles', 'programs', 'geometries', 'textures', 'heapBytes',
+      ...(diagnostic ? ['boneUpdates', 'boneWorldUpdates', 'hiddenUnitVisits'] : [])];
     const capacity = Math.ceil(config.durationSeconds * 2000);
     const samples = new Float64Array(capacity * columns.length);
     let frame = 0;
@@ -276,6 +311,7 @@ host.__bench = {
         const now = await nextFrame();
         const seconds = (now - start) / 1000;
         const at = performance.now();
+        if (diagnostic) { counters.boneUpdates = 0; counters.boneWorldUpdates = 0; counters.hiddenUnitVisits = 0; }
         render(seconds, (now - previous) / 1000, frame++);
         const cpuMs = performance.now() - at;
         const phase = phases(), info = renderer.info;
@@ -283,7 +319,8 @@ host.__bench = {
         if (sampleCount >= capacity) throw new Error('Frame capacity exceeded');
         const row = [now - start, now - previous, cpuMs, ...phaseNames.map(name => phase[name] ?? 0),
           info.render.calls, info.render.triangles, info.programs?.length ?? 0,
-          info.memory.geometries, info.memory.textures, heap];
+          info.memory.geometries, info.memory.textures, heap,
+          ...(diagnostic ? [counters.boneUpdates, counters.boneWorldUpdates, counters.hiddenUnitVisits] : [])];
         samples.set(row, sampleCount++ * columns.length);
         previous = now;
       }

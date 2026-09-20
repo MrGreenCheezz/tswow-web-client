@@ -32,13 +32,16 @@ async function main() {
   const smoke = args.includes('--smoke');
   const prepareOnly = args.includes('--prepare');
   const trace = args.includes('--trace');
+  const diagnostic = args.includes('--diagnostic');
+  if (diagnostic && !trace) throw new Error('--diagnostic requires --trace; diagnostic timings are never comparable');
   if (smoke) { config.durationSeconds = 3; config.warmupSeconds = 1; }
   const scenarios = value('--scenario', config.scenarios.join(',')).split(',');
   const cpuPolicy = process.platform === 'win32' ? JSON.parse(execFileSync('powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('bench/cpu-policy.ps1')],
     { encoding: 'utf8', windowsHide: true })) : { policy: 'system-default', selected: null };
   config.cpuPolicy = { policy: cpuPolicy.policy, selected: cpuPolicy.selected };
-  if (scenarios.some(s => !config.scenarios.includes(s))) throw new Error('Unknown scenario');
+  const supportedScenarios = [...config.scenarios, 'world-crowd-50', 'world-crowd-200'];
+  if (scenarios.some(s => !supportedScenarios.includes(s))) throw new Error('Unknown scenario');
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
   const out = resolve('bench/results', stamp);
   await mkdir(out, { recursive: true });
@@ -138,7 +141,7 @@ async function main() {
     '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'];
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
-    smoke, trace, config, configHash, sourceHash, sourceHashes,
+    smoke, trace, diagnostic, config, configHash, sourceHash, sourceHashes,
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -166,7 +169,7 @@ async function main() {
     const pageErrors = [];
     page.on('pageerror', error => { pageErrors.push(error.message); console.error(`Page error: ${error.message}`); });
     page.on('console', message => { if (message.type() === 'error') { pageErrors.push(message.text()); console.error(message.text()); } });
-    await page.goto(`${origin}/?scenario=${scenario}`, { waitUntil: 'load' });
+    await page.goto(`${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}`, { waitUntil: 'load' });
     if (process.platform === 'win32') {
       const session = await browser.target().createCDPSession();
       const { processInfo } = await session.send('SystemInfo.getProcessInfo');
@@ -209,13 +212,13 @@ async function main() {
         console.log(`Starting ${scenario} (${config.durationSeconds}s measured)…`);
         const missesBefore = cacheMisses;
         const preflightLoad = await hostLoad();
-        if (preflightLoad?.externalCpuCores > 2) {
+        if (preflightLoad?.externalCpuCores > 2 && !diagnostic) {
           result.host.blockedLoad = preflightLoad;
           throw new Error(`External CPU load ${preflightLoad.externalCpuCores.toFixed(2)} cores exceeds 2.0; benchmark conditions are not comparable`);
         }
         const { page, pageErrors, prepared } = await open(scenario);
         const loadBefore = await hostLoad();
-        if (loadBefore?.externalCpuCores > 2) {
+        if (loadBefore?.externalCpuCores > 2 && !diagnostic) {
           result.host.blockedLoad = loadBefore;
           throw new Error(`External CPU load ${loadBefore.externalCpuCores.toFixed(2)} cores exceeds 2.0; benchmark conditions are not comparable`);
         }
@@ -253,7 +256,7 @@ async function main() {
           await writeFile(join(out, `${scenario}.cpuprofile`), JSON.stringify(profile.profile));
           await page.tracing.stop();
         }
-        raw.hostLoad = { before: loadBefore, after: await hostLoad() };
+        raw.hostLoad = { preflight: preflightLoad, before: loadBefore, after: await hostLoad() };
         if (raw.hostLoad.after?.externalCpuCores > 2) result.errors.push(`${scenario}: external CPU load after measurement exceeds 2.0 cores`);
         const measurementMisses = cacheMisses - missesAtMeasurement;
         // Asset demand can vary at frustum edges between preparation frames. These passes only
@@ -327,7 +330,7 @@ async function main() {
     result.assetManifest = Object.fromEntries([...requested.entries()].sort(([a], [b]) => a.localeCompare(b)));
     result.assetHash = sha(JSON.stringify(result.assetManifest));
     result.errors.push(...requestFailures);
-    result.valid = result.errors.length === 0 && !smoke && !prepareOnly;
+    result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic;
     result.comparable = result.valid && !trace;
     await writeFile(resultPath, JSON.stringify(result, null, 2));
     console.log(`Result: ${resultPath}`);
@@ -335,4 +338,6 @@ async function main() {
   }
 }
 
-function movementFractions(scenario) { return scenario === 'movement' ? [0, .5, 1] : [0, 1]; }
+function movementFractions(scenario) {
+  return scenario === 'movement' ? [0, .5, 1] : scenario.startsWith('world-crowd-') ? [0, .5] : [0, 1];
+}
