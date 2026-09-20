@@ -5,6 +5,7 @@ npm run bench
 npm run bench -- --trace --label diagnosis
 npm run bench -- --baseline bench/results/<baseline-timestamp>.json --label candidate
 npm run bench -- --scenario world-crowd-50,world-crowd-200 --trace --diagnostic
+npm run bench -- --additive-probe
 ```
 
 Нужны зависимости из lock-файла, Node ≥22.15 и Google Chrome. На этом рабочем месте
@@ -68,6 +69,21 @@ runner автоматически использует `.runtime/node/node.exe`,
 в измеренных интервалах. Такой профиль локализует расход, но не служит A/B FPS.
 Без явной записи этот инструмент выключен. В `--diagnostic` те же данные находятся
 в `scenarios[].worldSubmissions`; это проверка инструмента, а не запись игрового клиента.
+
+`node bench/analyze-live.mjs <capture.json> <report.json>` сводит живую запись:
+полные RAF/CPU, 1% low, >30 ms, десятисекундные участки и разбиение world submission.
+Сводка явно отличает все кадры от выбранных медленных callbacks и от GPU rolling windows.
+
+`--additive-probe` — отдельная диагностика двойного прохода аддитивных материалов.
+36 instances шести реальных WVM-эффектов, фиксированный seed 12340, 1280×720/DPR=1;
+включены скелеты, частицы, ribbons, текстуры, туман, fade и перекрывающая геометрия.
+Сравниваются те же буферы и позы до/после переключения только forceSinglePass.
+36 ракурсов сравниваются по пикселям; скрытие аддитивных материалов служит отрицательным
+контролем, чтобы совпадение невидимых эффектов не засчитывалось как визуальная проверка.
+Считаются draw calls и обращения к customProgramCacheKey внутри getParameters;
+два режима чередуются по схеме ABBA для диагностического CPU submit. Результат и PNG
+сохраняются в `bench/results/<timestamp>`. Этот профиль всегда comparable=false:
+он не измеряет FPS целого мира и не заменяет обязательные movement/crowd-сценарии.
 
 Средний FPS = 1000 / средний интервал RAF; 1% low = 1000 / среднее худшего 1% интервалов;
 p99 — nearest rank; >30ms — строго больше 30. Первый интервал начинается после прогрева.

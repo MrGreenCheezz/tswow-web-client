@@ -1296,6 +1296,13 @@ export function applyBlendMode(material: THREE.Material & { alphaTest: number },
       material.alphaTest = 0;
       break;
   }
+  // Unlit additive contributions commute: both faces can use one unculled draw.
+  // Keep ordered alpha blends and separate alpha equations on Three's two-pass path.
+  material.forceSinglePass = material instanceof THREE.MeshBasicMaterial && !material.depthWrite
+    && material.blendEquation === THREE.AddEquation
+    && material.blendSrcAlpha === null && material.blendDstAlpha === null
+    && (material.blendEquationAlpha === null || material.blendEquationAlpha === THREE.AddEquation)
+    && (blendMode === BLEND_NO_ALPHA_ADD || blendMode === BLEND_ADD);
 }
 
 /**

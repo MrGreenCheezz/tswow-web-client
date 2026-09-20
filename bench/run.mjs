@@ -23,6 +23,7 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 }
 
 async function main() {
+  if (process.argv.includes('--additive-probe')) { await import('./additive-probe.mjs'); return; }
   const { default: puppeteer } = await import('puppeteer-core');
   const { build } = await import('esbuild');
   const { PNG } = await import('pngjs');
