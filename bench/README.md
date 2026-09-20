@@ -57,6 +57,18 @@ runner автоматически использует `.runtime/node/node.exe`,
   нагрузке и добавляет счётчики обновлений костей/пропусков скрытых NPC. Всегда помечается
   valid=false/comparable=false; ни FPS, ни этот инструментированный код не служат A/B.
 
+Живая запись через окно диагностики `O` → «Записать фризы (60 с)» теперь сохраняет
+`events.checkpoints[].renderer.worldSubmission`. Один world pass раз в 500 ms
+разделяется на `matrices`, `mainSkeletons`, `mainDraws`, `shadowSkeletons`,
+`shadowDraws`, `shadowOther`, `other`. Это непересекающиеся CPU-интервалы:
+их сумма равна `totalMs`; GPU и работа между callbacks сюда не входят.
+`mainDraws`/`shadowDraws` в `calls` — фактические вызовы отрисовки из renderer.info,
+а `ageMs` — возраст образца при checkpoint. `hookSetupRestoreMs` учитывает
+установку/снятие перехватов; дополнительные вызовы таймера внутри прохода остаются
+в измеренных интервалах. Такой профиль локализует расход, но не служит A/B FPS.
+Без явной записи этот инструмент выключен. В `--diagnostic` те же данные находятся
+в `scenarios[].worldSubmissions`; это проверка инструмента, а не запись игрового клиента.
+
 Средний FPS = 1000 / средний интервал RAF; 1% low = 1000 / среднее худшего 1% интервалов;
 p99 — nearest rank; >30ms — строго больше 30. Первый интервал начинается после прогрева.
 Пик JS heap снимается с каждого кадра через `performance.memory` с precise-memory-info.

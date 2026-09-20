@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { WorldSubmissionCapture, type WorldSubmissionSnapshot } from "./WorldSubmissionCapture.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { fieldFloat, isWorldObjectDead, type WorldObjectState, type WorldPosition, type WorldState } from "../world/WorldState.js";
 import {
@@ -2644,6 +2645,14 @@ function disposeBuiltModelResources(
 }
 
 export class WorldRenderer3D {
+  #worldSubmissionCapture: WorldSubmissionCapture | undefined;
+
+  /** Local diagnostic capture only; ordinary frames never install submission hooks. */
+  setWorldSubmissionCapture(enabled: boolean): void {
+    if (enabled) this.#worldSubmissionCapture ??= new WorldSubmissionCapture();
+    else this.#worldSubmissionCapture = undefined;
+  }
+
   readonly #canvas: HTMLCanvasElement;
   readonly #renderer: THREE.WebGLRenderer;
   readonly #gpuTimer: GpuTimer<WebGLQuery>;
@@ -3448,8 +3457,8 @@ export class WorldRenderer3D {
   }
 
   /** Immutable renderer-only telemetry for diagnostics and benchmark capture. */
-  get telemetry(): Readonly<RendererTelemetrySnapshot> {
-    return makeRendererTelemetrySnapshot({
+  get telemetry(): Readonly<RendererTelemetrySnapshot> & { readonly worldSubmission?: WorldSubmissionSnapshot } {
+    const snapshot = makeRendererTelemetrySnapshot({
       cpu: this.#frames.snapshot(),
       gpu: this.#gpuTimer.reading,
       observedFps: this.#cadence.fps,
@@ -3471,6 +3480,8 @@ export class WorldRenderer3D {
       textureCount: this.#renderer.info.memory.textures,
       geometryCount: this.#renderer.info.memory.geometries,
     });
+    const worldSubmission = this.#worldSubmissionCapture?.snapshot();
+    return worldSubmission === undefined ? snapshot : Object.freeze({ ...snapshot, worldSubmission });
   }
 
   /** Exact exposed geometry-array residency for every bounded renderer geometry cache. */
@@ -5320,7 +5331,9 @@ export class WorldRenderer3D {
       // Three resolves an MSAA target at the end of every render call. The radial pass needs the
       // world's depth once, not the empty sky depth or the unchanged overlay depth.
       if (glow?.godRays) glow.scene.resolveDepthBuffer = true;
-      this.#renderer.render(this.#scene, this.#camera);
+      if (this.#worldSubmissionCapture) {
+        this.#worldSubmissionCapture.render(this.#renderer, this.#scene, this.#camera);
+      } else this.#renderer.render(this.#scene, this.#camera);
       // The underwater tint and its waterline, over the finished world and under nothing. Inside
       // this try because it borrows the same `autoClear = false` the world pass runs on — with
       // clearing on it would wipe the frame it is meant to tint — and before the context proof so

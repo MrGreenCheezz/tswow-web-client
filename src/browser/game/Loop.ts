@@ -1,3 +1,4 @@
+import { performanceCaptureActive } from "./PerformanceCapture.js";
 import { cameraPivotHeight, game } from "./Context.js";
 import { drainWorldState } from "../ui/WorldView.js";
 import { updateSpellCooldowns } from "../ui/Spellbook.js";
@@ -148,6 +149,7 @@ function updateTerrainActiveTiles(world: typeof game.world): void {
 }
 
 function frame(now: number): void {
+  game.renderer?.setWorldSubmissionCapture(performanceCaptureActive());
   const frameInterval = game.renderer?.observeFrame(now);
   if (frameInterval !== undefined) renderBenchmarkRuntime.recordFrameInterval(frameInterval);
   // Until this RAF actually reaches draw(), its public admission/submission counters describe an

@@ -95,6 +95,7 @@ let preparingWorldCrowd = worldCrowd;
 if (movement) {
   acquireRenderBenchmarkFormalGpuObserver(gpuObserver);
   world = new WorldRenderer3D(canvas);
+  if (diagnostic) world.setWorldSubmissionCapture(true);
   const worldRenderer = world;
   renderer = host.__benchRenderers!.at(-1)!;
   if (!renderer?.info) throw new Error('Three.js renderer observation failed');
@@ -299,6 +300,8 @@ host.__bench = {
       ...(diagnostic ? ['boneUpdates', 'boneWorldUpdates', 'hiddenUnitVisits'] : [])];
     const capacity = Math.ceil(config.durationSeconds * 2000);
     const samples = new Float64Array(capacity * columns.length);
+    const worldSubmissions: Array<{ rafAtMs: number; sample: unknown }> = [];
+    let nextSubmissionCheckpoint = 0;
     let frame = 0;
     // The seed frame is rendered before timing. Every recorded interval ends after the preceding draw.
     render(0, 0, frame++);
@@ -322,6 +325,10 @@ host.__bench = {
           info.memory.geometries, info.memory.textures, heap,
           ...(diagnostic ? [counters.boneUpdates, counters.boneWorldUpdates, counters.hiddenUnitVisits] : [])];
         samples.set(row, sampleCount++ * columns.length);
+        if (diagnostic && world && now >= nextSubmissionCheckpoint) {
+          nextSubmissionCheckpoint = now + 500;
+          worldSubmissions.push({ rafAtMs: now - start, sample: world.telemetry.worldSubmission });
+        }
         previous = now;
       }
     } finally { recording = false; performance.mark('bench-end'); }
@@ -329,7 +336,7 @@ host.__bench = {
       Array.from(samples.subarray(index * columns.length, (index + 1) * columns.length)));
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
       hardware: hardware(), readiness: readiness(), routeHeightMissing,
-      telemetry: world?.telemetry ?? null };
+      telemetry: world?.telemetry ?? null, ...(diagnostic ? { worldSubmissions } : {}) };
   },
   async view(fraction) {
     await settle(fraction);
