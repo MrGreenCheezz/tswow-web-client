@@ -759,14 +759,12 @@ function globalBoneValue(
  * to and only turns about it.
  *
  * Called after `mixer.update` and before the world matrices are read, because it overwrites
- * exactly what the mixer just wrote. Pass false for updateWorldMatrices only when the caller
- * refreshes queried bones explicitly and lets the renderer update the full hierarchy before draw.
+ * exactly what the mixer just wrote.
  */
 export function applyBillboardBones(
   instance: SkinnedInstance,
   template: SkinnedTemplate,
   camera: THREE.Object3D,
-  updateWorldMatrices = true,
 ): void {
   if (template.billboards.length === 0) return;
   // `updateWorldMatrix(true, …)`, not `updateMatrixWorld`. The latter composes against the parent's
@@ -823,7 +821,7 @@ export function applyBillboardBones(
   }
   // Once, at the end, rather than per bone: updating a bone's world matrix walks everything under
   // it, and a rig with a dozen billboard cards would walk most of itself a dozen times.
-  if (updateWorldMatrices) instance.root.updateWorldMatrix(false, true);
+  instance.root.updateWorldMatrix(false, true);
 }
 
 const _right = new THREE.Vector3();
