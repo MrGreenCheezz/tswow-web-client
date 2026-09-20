@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { RigMatrixBone } from "./RigMatrixBone.js";
 import type { EnvironmentModel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";
 import {
   BONE_ANY_BILLBOARD, BONE_CYLINDRICAL_BILLBOARD_X, BONE_CYLINDRICAL_BILLBOARD_Y,
@@ -612,7 +611,7 @@ export function instantiateSkinned(template: SkinnedTemplate, material: THREE.Ma
 
   const bones: THREE.Bone[] = [];
   for (let index = 0; index < template.parents.length; index++) {
-    const bone = new RigMatrixBone();
+    const bone = new THREE.Bone();
     bone.name = `bone${index}`;
     const parent = template.parents[index]!;
     const pivotX = template.pivots[index * 3]!;
