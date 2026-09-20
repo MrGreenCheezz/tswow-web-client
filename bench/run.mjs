@@ -184,12 +184,32 @@ async function main() {
         const missesBefore = cacheMisses;
         const { page, pageErrors, prepared } = await open(scenario);
         const client = await page.createCDPSession();
+        if (trace) await page.evaluate(() => {
+          window.__benchProgramEvents = [];
+          const renderer = window.__benchRenderers.at(-1);
+          const seen = new Set(renderer.info.programs.map(p => p.id));
+          for (const method of ['compile', 'render']) {
+            const original = renderer[method].bind(renderer);
+            renderer[method] = (...args) => {
+              const target = renderer.getRenderTarget();
+              const result = original(...args);
+              const programs = renderer.info.programs.filter(p => !seen.has(p.id));
+              for (const p of programs) seen.add(p.id);
+              if (programs.length) window.__benchProgramEvents.push({ atMs: performance.now(), method,
+                target: target ? { colorSpace: target.texture.colorSpace, type: target.texture.type } : null,
+                outputColorSpace: renderer.outputColorSpace, toneMapping: renderer.toneMapping,
+                programs: programs.map(p => ({ id: p.id, type: p.type, cacheKey: p.cacheKey })) });
+              return result;
+            };
+          }
+        });
         if (trace) await page.tracing.start({ path: join(out, `${scenario}.trace.json`), screenshots: false,
           categories: ['devtools.timeline', 'v8', 'blink.user_timing', 'gpu', 'disabled-by-default-devtools.timeline',
             'disabled-by-default-v8.gc', 'disabled-by-default-devtools.timeline.frame', 'disabled-by-default-devtools.timeline.stack'] });
         if (trace) { await client.send('Profiler.enable'); await client.send('Profiler.setSamplingInterval', { interval: 1000 }); await client.send('Profiler.start'); }
         const missesAtMeasurement = cacheMisses;
         const raw = await page.evaluate(() => window.__bench.run());
+        if (trace) raw.programEvents = await page.evaluate(() => window.__benchProgramEvents);
         if (trace) {
           const profile = await client.send('Profiler.stop');
           await writeFile(join(out, `${scenario}.cpuprofile`), JSON.stringify(profile.profile));
