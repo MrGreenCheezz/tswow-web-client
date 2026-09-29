@@ -138,10 +138,23 @@ export const CLASS_FILE_NAMES: Readonly<Record<number, string>> = {
   [CLASS_DRUID]: "DRUID",
 };
 
+/**
+ * The stock `ChrRaces.ClientFileString` tokens (`UnitRace`'s second return), ten playable rows
+ * measured out of this dataset's `/dbc/character-creation`. Like `CLASS_FILE_NAMES`, the learned
+ * dataset rows replace these at runtime — the same answer lists twenty-one races, eleven of them
+ * TSWoW/unplayable rows (`FelOrc`, `Naga_`, `Broken`…) that no compiled table would know.
+ */
+export const RACE_FILE_NAMES: Readonly<Record<number, string>> = {
+  1: "Human", 2: "Orc", 3: "Dwarf", 4: "NightElf", 5: "Scourge", 6: "Tauren",
+  7: "Gnome", 8: "Troll", 10: "BloodElf", 11: "Draenei",
+};
+
 /** What the dataset said, once somebody has asked it. Empty until then. */
 const learnedClassNames = new Map<number, string>();
 const learnedRaceNames = new Map<number, string>();
 const learnedClassFiles = new Map<number, string>();
+const learnedRaceFiles = new Map<number, string>();
+const learnedRaceLanguages = new Map<number, number>();
 
 /**
  * Takes the dataset's own names for races and classes, from `/dbc/character-creation`.
@@ -153,16 +166,36 @@ const learnedClassFiles = new Map<number, string>();
  * `Класс 14` instead of showing nothing at all.
  */
 export function learnCreationNames(
-  races: ReadonlyArray<{ id: number; name: string }>,
+  races: ReadonlyArray<{ id: number; name: string; clientFileString?: string; baseLanguage?: number }>,
   classes: ReadonlyArray<{ id: number; name: string; fileName?: string }>,
 ): void {
   for (const race of races) {
     if (race.name) learnedRaceNames.set(race.id, race.name);
+    if (race.clientFileString) learnedRaceFiles.set(race.id, race.clientFileString);
+    // `ChrRaces.BaseLanguage`: 7 (Common) for the ten Alliance-side rows of this dataset and 1
+    // (Orcish) for the Horde ones, and 7 again for all eleven TSWoW rows (12..21) — which the
+    // compiled Alliance-race set in `languageForRace` would have called Orcish.
+    if (Number.isInteger(race.baseLanguage) && race.baseLanguage! > 0) {
+      learnedRaceLanguages.set(race.id, race.baseLanguage!);
+    }
   }
   for (const entry of classes) {
     if (entry.name) learnedClassNames.set(entry.id, entry.name);
     if (entry.fileName) learnedClassFiles.set(entry.id, entry.fileName);
   }
+}
+
+/**
+ * Whether `/dbc/character-creation`'s class list has been learned at all.
+ *
+ * Asked by the in-world FrameXML boot: a player of a TSWoW class (HERO is class 13 on this
+ * dataset) has no compiled `ChrClasses.Filename`, and stock `PaperDollFrame_SetStat` runs
+ * `strupper(select(2, UnitClass("player")))` with no nil guard, so the list has to be there before
+ * the paper doll first updates — a session that entered the world without passing the glue or the
+ * DOM creation screen never asked for it.
+ */
+export function creationClassFilesLearned(): boolean {
+  return learnedClassFiles.size > 0;
 }
 
 /**
@@ -176,6 +209,8 @@ export function forgetCreationNames(): void {
   learnedClassNames.clear();
   learnedRaceNames.clear();
   learnedClassFiles.clear();
+  learnedRaceFiles.clear();
+  learnedRaceLanguages.clear();
 }
 
 export function className(classId: number | undefined): string {
@@ -192,6 +227,17 @@ export function raceName(raceId: number | undefined): string {
 export function classFileName(classId: number | undefined): string | undefined {
   if (classId === undefined) return undefined;
   return learnedClassFiles.get(classId) ?? CLASS_FILE_NAMES[classId];
+}
+
+/** `ChrRaces.ClientFileString` for an id, learned first and compiled second. */
+export function raceFileName(raceId: number | undefined): string | undefined {
+  if (raceId === undefined) return undefined;
+  return learnedRaceFiles.get(raceId) ?? RACE_FILE_NAMES[raceId];
+}
+
+/** `ChrRaces.BaseLanguage` for an id, or undefined until the dataset has been asked. */
+export function raceBaseLanguage(raceId: number | undefined): number | undefined {
+  return raceId === undefined ? undefined : learnedRaceLanguages.get(raceId);
 }
 
 /**

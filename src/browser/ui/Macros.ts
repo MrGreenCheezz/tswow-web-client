@@ -1,11 +1,8 @@
 /**
  * The macro window, and the thing that runs one.
  *
- * Running a macro turned out to need nothing new: `submitChat` already resolves the world itself,
- * already knows twenty-eight slash commands and every emote in the table, and already refuses a
- * line the server would drop. A macro body is a list of lines, and running it is feeding them to
- * that function in order. What the slice had to build was the rest — somewhere to keep fifty-four
- * of them, a window to write them in, and the bar slot that fires one.
+ * A body runs chat commands and at most one /cast or /use per press. The complete body is
+ * validated before any line runs, including macros restored from account data.
  *
  * The two halves are stored in two different account-data slots, shared and per character, which
  * is why there are two stores and one merged list.
@@ -13,12 +10,16 @@
 
 import { AccountStore } from "../AccountStore.js";
 import { GLOBAL_MACROS_CACHE, PER_CHARACTER_MACROS_CACHE } from "../../world/SessionProtocol.js";
+import type { FrameXmlMacroStore } from "../framexml/FrameXmlMacro.js";
+import {
+  closeFrameXmlMacro, frameXmlMacroOpen, openFrameXmlMacro, toggleFrameXmlMacro,
+} from "../framexml/FrameXmlMacroController.js";
 import { submitChat } from "./Chat.js";
 import { notice } from "./Notices.js";
 import {
   MACRO_BODY_LIMIT, MACRO_NAME_LIMIT, MACROS_PER_ROW, findMacro, isAccountMacro, macroIndexes,
-  macroLines, macroProblems, macrosForSet, nextFreeMacro, parseMacros, putMacro, removeMacro,
-  serialiseMacros, trimMacroBody, trimMacroName, type Macro,
+  macroLines, macroProblems, macrosForSet, nativeMacroEdit, nextFreeMacro, parseMacros, putMacro, removeMacro,
+  serialiseMacros, trimMacroName, type Macro,
 } from "./MacroModel.js";
 import { Panel, Tabs, confirmPanel } from "./Widgets.js";
 
@@ -64,10 +65,39 @@ function drop(index: number): void {
 }
 
 /**
+ * Who hears that the macros changed from somewhere other than their own writes: the server's copy
+ * landing, or the other window. The stock MacroFrame's model is one (UPDATE_MACROS).
+ */
+const macroListeners = new Set<() => void>();
+
+function macrosChanged(): void {
+  for (const listener of [...macroListeners]) {
+    try { listener(); } catch (error) { console.error("[macros] listener failed", error); }
+  }
+}
+
+for (const store of macroStores) store.onLoaded = macrosChanged;
+
+/**
+ * The same two stores for the stock macro API (FrameXmlMacro.ts): slots, names, bodies and icons
+ * stay in the blobs this window has always written.
+ */
+export const frameXmlMacroStore: FrameXmlMacroStore = {
+  list: allMacros,
+  put: save,
+  remove: drop,
+  subscribe: (listener) => {
+    macroListeners.add(listener);
+    return () => { macroListeners.delete(listener); };
+  },
+  flush: () => { for (const store of macroStores) store.flush(); },
+};
+
+/**
  * Runs one macro: every line, in order, through the chat box.
  *
- * No conditionals — `macroProblems` says so when the macro is written, rather than letting a
- * `[combat]` line run unconditionally and look like it worked.
+ * `#showtooltip` lines are display-only and skipped. A single `[@unit]` prefix is resolved
+ * by the combat commands; any other condition is refused at write time by `macroProblems`.
  */
 export function runMacro(index: number): void {
   const macro = macroAt(index);
@@ -75,7 +105,12 @@ export function runMacro(index: number): void {
     notice(`Макрос ${index} пуст`);
     return;
   }
-  const lines = macroLines(macro.body);
+  const problems = macroProblems(macro.name, macro.body);
+  if (problems.length > 0) {
+    notice(problems.join(" "));
+    return;
+  }
+  const lines = macroLines(macro.body).filter((line) => !/^#showtooltip\b/i.test(line));
   if (lines.length === 0) {
     notice(`Макрос «${macro.name}» ничего не содержит`);
     return;
@@ -107,20 +142,43 @@ function build(): Parts {
   return { panel, tabs, grid, editor };
 }
 
+/**
+ * The four window entry points ask the stock MacroFrame's route first (FrameXmlMacroController.ts):
+ * once the world mount has published it, the game menu, `/macro` and the chat menu open the stock
+ * window, and this Panel is the fallback before that or after a failed load.
+ */
 export function macroWindowOpen(): boolean {
-  return parts?.panel.visible ?? false;
+  return frameXmlMacroOpen() || (parts?.panel.visible ?? false);
 }
 
 export function closeMacroWindow(): void {
+  closeFrameXmlMacro();
   parts?.panel.hide();
 }
 
 export function resetMacroWindow(): void {
+  closeFrameXmlMacro();
   parts?.panel.hide();
   selected = undefined;
 }
 
 export function toggleMacroWindow(): void {
+  if (toggleFrameXmlMacro()) return;
+  toggleNativeMacroWindow();
+}
+
+/** Open (never close) the macro window; stock ShowMacroFrame's meaning. */
+export function openMacroWindow(): void {
+  if (openFrameXmlMacro()) return;
+  openNativeMacroWindow();
+}
+
+/** The native Panel alone, for a stock load that failed while the player was waiting for it. */
+export function openNativeMacroWindow(): void {
+  if (!parts?.panel.visible) toggleNativeMacroWindow();
+}
+
+function toggleNativeMacroWindow(): void {
   parts ??= build();
   if (parts.panel.visible) {
     parts.panel.hide();
@@ -142,6 +200,9 @@ export function showMacros(): void {
     button.type = "button";
     button.className = index === selected ? "macro-slot is-active" : "macro-slot";
     button.textContent = macro ? macro.name : "";
+    button.setAttribute("aria-label", macro ? `Макрос ${index}: ${macro.name}` : `Пустой слот ${index}`);
+    button.setAttribute("aria-pressed", String(index === selected));
+    button.title = macro ? macro.name : `Создать макрос в слоте ${index}`;
     if (!macro) button.classList.add("macro-empty");
     button.addEventListener("click", () => { selected = index; showMacros(); });
     return button;
@@ -164,11 +225,13 @@ export function showMacros(): void {
   name.type = "text";
   name.maxLength = MACRO_NAME_LIMIT;
   name.placeholder = "Имя";
+  name.setAttribute("aria-label", "Имя макроса");
   name.value = macro?.name ?? "";
   const body = document.createElement("textarea");
   body.rows = 5;
   body.maxLength = MACRO_BODY_LIMIT;
   body.placeholder = "/dance\n/say Привет";
+  body.setAttribute("aria-label", "Команды макроса");
   body.value = macro?.body ?? "";
 
   const problems = document.createElement("p");
@@ -190,11 +253,14 @@ export function showMacros(): void {
   store.textContent = "Сохранить";
   store.addEventListener("click", () => {
     const trimmedName = trimMacroName(name.value);
-    if (!trimmedName) {
-      notice("У макроса должно быть имя");
+    const errors = macroProblems(trimmedName, body.value);
+    if (errors.length > 0) {
+      notice(errors.join(" "));
       return;
     }
-    save({ index: selected as number, name: trimmedName, body: trimMacroBody(body.value) });
+    // The icon is the stock window's to choose; a save here keeps the one it chose.
+    save(nativeMacroEdit(macro, selected as number, trimmedName, body.value));
+    macrosChanged();
     showMacros();
   });
   const run = document.createElement("button");
@@ -211,15 +277,17 @@ export function showMacros(): void {
     title: `Удалить макрос «${macro?.name ?? selected}»?`,
     confirm: "Удалить",
     danger: true,
-    onConfirm: () => { drop(selected as number); selected = undefined; showMacros(); },
+    onConfirm: () => { drop(selected as number); selected = undefined; macrosChanged(); showMacros(); },
   }));
   actions.append(store, run, erase);
 
   const hint = document.createElement("p");
   hint.className = "muted";
   // Said outright, because the answer to "why does my macro not work" is almost always this.
-  hint.textContent = "Каждая строка идёт в чат как есть: /закл и условия в скобках пока не поддержаны, "
-    + "работают команды из /help и эмоции.";
+  hint.textContent = "Команды /help и эмоции; одна /cast или /use за нажатие. "
+    + "/cast использует текущую цель; [@focus], [@self], [@pet] и [@mouseover] доступны для адресных заклинаний. "
+    + "/use выбирает первый предмет с этим ID или именем в экипировке и сумках. Сервер проверяет результат. "
+    + "Условия, задержки и Lua не поддерживаются.";
 
   const slotNote = document.createElement("p");
   slotNote.className = "muted";

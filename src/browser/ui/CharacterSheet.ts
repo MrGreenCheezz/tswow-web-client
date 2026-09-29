@@ -1,7 +1,6 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { readField, unit } from "../../world/Fields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
-import { STABLED_PET_ACTIVE } from "../../world/StableProtocol.js";
 import { game } from "../game/Context.js";
 import {
   characterCollectionsPane, characterCombatPets, characterCompanions, characterIdentity,
@@ -13,7 +12,11 @@ import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { showProfessions } from "./Professions.js";
 import { skinnable, slotElement, slotSiblings } from "./Slots.js";
 import { textLine } from "./Widgets.js";
+import { toggleReputation } from "./Reputation.js";
 import { className, raceName } from "./UnitSnapshot.js";
+import { stablePetRows } from "./StableControls.js";
+import { frameXmlStablePublished } from "../framexml/FrameXmlStableController.js";
+import { requestSpellCast } from "../game/GroundTarget.js";
 
 /**
  * The character sheet: what the character is made of, beyond the health bar.
@@ -75,6 +78,7 @@ export const SKILL_LINE_COMPANIONS = 778;
 
 let selectedTab: CharacterTab = "sheet";
 let tabsWired = false;
+let combatPetInputs: readonly unknown[] | undefined;
 
 export function selectedCharacterTab(): CharacterTab {
   return selectedTab;
@@ -128,6 +132,7 @@ export function showCharacterCollections(): void {
   if (characterCollectionsPane.hidden) return;
   const world = game.world;
   if (!world) {
+    combatPetInputs = undefined;
     characterMounts.replaceChildren(muted("Нет данных о персонаже."));
     characterCompanions.replaceChildren(muted("Нет данных о персонаже."));
     characterCombatPets.replaceChildren(muted("Нет данных о персонаже."));
@@ -149,7 +154,15 @@ export function showCharacterCollections(): void {
   characterCompanions.replaceChildren(...(companions.length > 0 ? companions : [muted(
     game.talentData?.ready ? "Известных декоративных питомцев пока нет." : "Данные о питомцах загружаются…",
   )]));
-  characterCombatPets.replaceChildren(...combatPetRows());
+  // Inventory redraws this page every frame. Keep actionable rows attached while the pointer
+  // moves from down to up; rebuild only when their server state or service permission changes.
+  const pet = world.petSpells;
+  const inputs = [world, pet, pet?.spells.length, pet ? world.displayName(pet.guid) : "",
+    world.stable, world.stableMessage, world.stableMasterGuid, frameXmlStablePublished()];
+  if (!combatPetInputs || inputs.some((input, index) => input !== combatPetInputs![index])) {
+    combatPetInputs = inputs;
+    characterCombatPets.replaceChildren(...combatPetRows());
+  }
 }
 
 function spellSkillLine(spellId: number): number | undefined {
@@ -181,11 +194,11 @@ function collectionSpell(spellId: number, kind: "Маунт" | "Питомец")
   button.addEventListener("click", () => {
     const current = game.world;
     if (!current) return;
-    current.castSpell(spellId, Math.max(
+    requestSpellCast(spellId, () => current.castSpell(spellId, Math.max(
       metadata?.recoveryTime ?? 0,
       metadata?.categoryRecoveryTime ?? 0,
       metadata?.startRecoveryTime ?? 0,
-    ), metadata?.cooldownStartedOnEvent ?? false);
+    ), metadata?.cooldownStartedOnEvent ?? false));
   });
   return button;
 }
@@ -200,10 +213,7 @@ function combatPetRows(): HTMLElement[] {
     rows.push(textLine(world.displayName(active.guid) || "Активный питомец",
       `${spellCount} ${spellCount === 1 ? "умение" : "умений"}`));
   }
-  for (const pet of world.stable?.pets ?? []) {
-    if (active && pet.flags === STABLED_PET_ACTIVE) continue;
-    rows.push(textLine(pet.name || "Безымянный питомец", `уровень ${pet.level}`));
-  }
+  rows.push(...stablePetRows(world, showCharacterCollections));
   if (rows.length === 0) rows.push(muted(
     world.stable ? "Боевых питомцев пока нет." : "Активного боевого питомца нет. Остальные появятся после посещения стойл.",
   ));
@@ -237,6 +247,10 @@ if (typeof MutationObserver !== "undefined") {
 }
 
 export function showCharacterSheet(): void {
+  // Reached on every packet via `renderInventory`: rebuilding dozens of DOM nodes for a closed
+  // window is pure waste. Tab switches refresh explicitly above, and world entry below in
+  // `EnterWorld`, so an opened window never shows stale content.
+  if (characterWindow.hidden) return;
   // Inventory changes already refresh the sheet; let that same update refresh an open collection
   // page so a learned summon or changed active pet appears without closing and reopening it.
   if (!characterCollectionsPane.hidden) showCharacterCollections();
@@ -305,7 +319,11 @@ export function showCharacterSheet(): void {
         game.factions?.name(faction.listId) ?? `Фракция ${faction.listId}`,
         `${reputationRank(faction.standing)} · ${faction.standing}`,
       ));
-    blocks.push(section("Репутация", lines));
+    const all = document.createElement("button");
+    all.type = "button";
+    all.textContent = "Все фракции";
+    all.addEventListener("click", () => toggleReputation());
+    blocks.push(section("Репутация", [...lines, all]));
   }
 
   drawStats(blocks);

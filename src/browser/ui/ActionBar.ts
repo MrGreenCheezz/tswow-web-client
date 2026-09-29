@@ -5,6 +5,7 @@ import {
 import { game } from "../game/Context.js";
 import { playerInventory, stackCount } from "../Inventory.js";
 import { macroAt, runMacro } from "./Macros.js";
+import { wearEquipmentSetByIndex } from "./EquipmentSets.js";
 import { macroLabel, macroLines } from "./MacroModel.js";
 import { actionBar } from "./Dom.js";
 import {
@@ -12,7 +13,9 @@ import {
   type TooltipContent,
 } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
-import { castSpell, spellTooltip } from "./Spellbook.js";
+import { castSpell, highestKnownRank, spellTooltip } from "./Spellbook.js";
+import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";
+import { ITEM_EQUIP_COOLDOWN_MS } from "../../world/ItemProtocol.js";
 import { spellButtonUsable } from "../SpellMetadata.js";
 import { spellPowerAvailable } from "../SpellCastGuard.js";
 import { ensureSpellNames } from "./SpellNames.js";
@@ -23,6 +26,7 @@ import { ACTION_BAR_SLOTS, bindingsOf, describeChord, EXTRA_ACTION_BAR_SLOTS } f
 import { unknownLabel } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { notifyHudLayout } from "../GameWindows.js";
+import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
 
 /**
  * The action bar: twelve slots, driven by what the server says the player put there.
@@ -286,9 +290,17 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = page):
   if (content.type === ACTION_BUTTON_MACRO) {
     return macroAt(content.action) ? "" : `Макроса ${content.action} больше нет`;
   }
-  // The set and the packet to wear it both exist; putting one on a bar does not, and a slot that
-  // looks pressable and does nothing is worse than one that says why.
-  if (content.type === ACTION_BUTTON_EQUIPMENT_SET) return "Наборы экипировки с панели пока не надеваются";
+  if (content.type === ACTION_BUTTON_EQUIPMENT_SET) {
+    return world.equipmentSets.some((set) => set.setId === content.action)
+      ? "" : `Набора ${content.action + 1} больше нет`;
+  }
+  if (content.type === ACTION_BUTTON_ITEM) {
+    const spellId = itemUseSpellId(world.itemTemplate(content.action));
+    if (spellId !== undefined && Math.max(
+      world.itemCooldownRemaining(spellId, now), world.cooldownRemaining(spellId, now),
+    ) > 0) return "Восстанавливается";
+    return "";
+  }
   if (content.type !== ACTION_BUTTON_SPELL) return "";
   // 6603 is a client combat action and is therefore intentionally absent from both learned-spell
   // and Spell.dbc metadata gates. Spellbook.castSpell routes it to the melee swing protocol.
@@ -321,13 +333,37 @@ export function useSlot(column: number, barPage = page): void {
     runMacro(content.action);
     return;
   }
+  if (content.type === ACTION_BUTTON_EQUIPMENT_SET) {
+    wearEquipmentSetByIndex(content.action);
+    return;
+  }
   if (content.type === ACTION_BUTTON_ITEM) {
     // The bar stores what to use, not where it is, so the item has to be found in the bags by its
     // entry — the same item can be in any slot, and moving it does not change the bar.
     const inventory = playerInventory(world.state);
-    const held = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)]
+    const held = [...(inventory?.equipment ?? []), ...(inventory?.backpack ?? []),
+      ...(inventory?.keyring ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)]
       .find((slot) => slot.item !== undefined && worldObject.entry(slot.item) === content.action);
-    if (held) world.useItem(held.bag, held.slot, held.guid);
+    if (held) requestInventoryItemUse(held, () => world.useItem(held.bag, held.slot, held.guid));
+  }
+}
+
+/**
+ * Replaces bar slots holding a lower rank with the highest known one.
+ *
+ * Runs when a spell is learned: the slot keeps pointing at the rank the player dragged there
+ * while the book moved on. Only slots whose chain top is known and different move, and the
+ * server validates the rewrite like any other `CMSG_SET_ACTION_BUTTON`.
+ */
+export function upgradeActionBarRanks(): void {
+  const world = game.world;
+  if (!world) return;
+  for (const button of world.actionButtons) {
+    if (button.type !== ACTION_BUTTON_SPELL) continue;
+    const best = highestKnownRank(button.action);
+    if (best !== button.action && world.knownSpells.some((spell) => spell.id === best)) {
+      world.setActionButton(button.slot, best, button.type);
+    }
   }
 }
 
@@ -459,6 +495,10 @@ function carriedItemCount(entry: number): number {
 export function updateActionBar(now: number): void {
   const world = game.world;
   if (slots.length === 0 || !world) return;
+  // Under the stock MainMenuBar and MultiBars these rows are hidden, and a sweep moving on them —
+  // a `--sweep` write per slot per frame of every global cooldown — is drawn for nobody. The rows
+  // are redrawn from the world's state on the first frame after the stock owner lets them go.
+  if (nativeHudReplaced(NATIVE_LANES_REPLACED)) return;
   updateRow(slots, page, now);
   for (const bar of EXTRA_ACTION_BARS) {
     const row = extraRows.get(bar.id);
@@ -473,8 +513,24 @@ function updateRow(buttons: readonly IconButton[], barPage: number, now: number)
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
     const button = buttons[column]!;
     const content = contentOf(column, barPage);
-    if (!content || content.type !== ACTION_BUTTON_SPELL) {
+    if (!content || (content.type !== ACTION_BUTTON_SPELL && content.type !== ACTION_BUTTON_ITEM)) {
       button.setCooldown(0);
+      if (content && content.type !== ACTION_BUTTON_SPELL) {
+        button.setUsable(slotBlockedBy(column, now, barPage) === "");
+      }
+      continue;
+    }
+    if (content.type === ACTION_BUTTON_ITEM) {
+      const spellId = itemUseSpellId(world.itemTemplate(content.action));
+      const equip = spellId === undefined ? 0 : world.itemCooldownRemaining(spellId, now);
+      const spell = spellId === undefined ? 0 : world.cooldownRemaining(spellId, now);
+      const metadata = spellId === undefined ? undefined : game.spells.get(spellId);
+      const view = spellId === undefined ? { remaining: 0, fraction: 0 } : equip >= spell && equip > 0
+        ? { remaining: equip, fraction: Math.min(1, equip / ITEM_EQUIP_COOLDOWN_MS) }
+        : cooldownView(now, spell, cooldownDuration(metadata?.recoveryTime, metadata?.categoryRecoveryTime),
+          0, 0, world.cooldownState(spellId));
+      button.setCooldown(view.fraction, cooldownLabel(view.remaining));
+      button.setUsable(slotBlockedBy(column, now, barPage) === "");
       continue;
     }
     const metadata = game.spells.get(content.action);
@@ -503,4 +559,9 @@ function updateRow(buttons: readonly IconButton[], barPage: number, now: number)
 export function turnActionPage(next: number): void {
   page = Math.max(0, Math.min(PAGES - 1, next));
   showActionBar();
+}
+
+/** Stock FrameXML uses 1-based pages; keep its displayed page aligned with keyboard actions. */
+export function getActionBarPage(): number {
+  return page + 1;
 }

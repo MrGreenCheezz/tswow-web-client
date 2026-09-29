@@ -3,6 +3,9 @@ import {
 } from "../input/Bindings.js";
 import { showActionBar } from "./ActionBar.js";
 import { Panel } from "./Widgets.js";
+import {
+  closeFrameXmlKeyBindings, frameXmlKeyBindingsOpen, toggleFrameXmlKeyBindings,
+} from "../framexml/FrameXmlBindingController.js";
 
 /**
  * The bindings window: one row per action, two keys each.
@@ -13,11 +16,20 @@ import { Panel } from "./Widgets.js";
  */
 let panel: Panel | undefined;
 /** Which slot is waiting for a key press. Null while the window is only being read. */
-let capturing: { action: string; slot: 0 | 1; button: HTMLButtonElement } | undefined;
+let capturing: { action: string; label: string; slot: 0 | 1; button: HTMLButtonElement } | undefined;
+
+function bindingLabel(action: string, label: string, slot: 0 | 1): string {
+  const slotName = slot === 0 ? "основная" : "дополнительная";
+  const key = describeChord(keysOf(action)[slot]);
+  return `${label}, ${slotName} клавиша: ${key === "—" ? "не назначена" : key}`;
+}
 
 function stopCapture(): void {
   if (!capturing) return;
-  capturing.button.classList.remove("ui-binding-capturing");
+  const { action, label, slot, button } = capturing;
+  button.classList.remove("ui-binding-capturing");
+  button.textContent = describeChord(keysOf(action)[slot]);
+  button.setAttribute("aria-label", bindingLabel(action, label, slot));
   capturing = undefined;
 }
 
@@ -59,11 +71,12 @@ function rebound(): void {
   showActionBar();
 }
 
-function slotButton(action: string, slot: 0 | 1): HTMLButtonElement {
+function slotButton(action: string, label: string, slot: 0 | 1): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ui-binding-key";
   button.textContent = describeChord(keysOf(action)[slot]);
+  button.setAttribute("aria-label", bindingLabel(action, label, slot));
   button.addEventListener("click", () => {
     const already = capturing?.action === action && capturing.slot === slot;
     stopCapture();
@@ -71,9 +84,11 @@ function slotButton(action: string, slot: 0 | 1): HTMLButtonElement {
       draw();
       return;
     }
-    capturing = { action, slot, button };
+    capturing = { action, label, slot, button };
     button.classList.add("ui-binding-capturing");
     button.textContent = "…";
+    const slotName = slot === 0 ? "основная" : "дополнительная";
+    button.setAttribute("aria-label", `${label}, ${slotName} клавиша: нажмите новую клавишу`);
   });
   return button;
 }
@@ -100,7 +115,7 @@ function draw(): void {
     row.className = "ui-binding-row";
     const label = document.createElement("span");
     label.textContent = entry.label;
-    row.append(label, slotButton(entry.action, 0), slotButton(entry.action, 1));
+    row.append(label, slotButton(entry.action, entry.label, 0), slotButton(entry.action, entry.label, 1));
     rows.push(row);
   }
 
@@ -130,7 +145,22 @@ function build(): Panel {
   return created;
 }
 
+/**
+ * The window entry points ask the stock KeyBindingFrame's route first (FrameXmlBindingController.ts):
+ * once the world mount has published it, `K` and the game menu's «Назначение клавиш» open the stock
+ * window over the same table, and this Panel is the fallback before that or after a failed load.
+ */
 export function toggleKeyBindingsWindow(): void {
+  if (toggleFrameXmlKeyBindings()) return;
+  toggleNativeKeyBindingsWindow();
+}
+
+/** The native Panel alone, for a stock load that failed while the player was waiting for it. */
+export function openNativeKeyBindingsWindow(): void {
+  if (!(panel?.visible ?? false)) toggleNativeKeyBindingsWindow();
+}
+
+function toggleNativeKeyBindingsWindow(): void {
   panel ??= build();
   panel.toggle();
   if (panel.visible) draw();
@@ -138,5 +168,12 @@ export function toggleKeyBindingsWindow(): void {
 }
 
 export function keyBindingsOpen(): boolean {
-  return panel?.visible ?? false;
+  return frameXmlKeyBindingsOpen() || (panel?.visible ?? false);
+}
+
+/** Leaving the world also ends a pending key capture from the previous character. */
+export function closeKeyBindingsWindow(): void {
+  closeFrameXmlKeyBindings();
+  stopCapture();
+  panel?.hide();
 }

@@ -3,6 +3,9 @@ import { game } from "../game/Context.js";
 import { playerCast, targetCast } from "./Dom.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
 import { Bar } from "./Widgets.js";
+import {
+  NATIVE_FOCUS_REPLACED, NATIVE_LANES_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED, nativeHudReplaced,
+} from "./NativeHudReplacement.js";
 
 /**
  * The cast bars, for the character and for whatever it is looking at.
@@ -13,6 +16,15 @@ import { Bar } from "./Widgets.js";
  * different guid.
  */
 const bars = new Map<HTMLElement, Bar>();
+/** Cached `#focus-cast` mount: `getElementById` on every frame is a document-wide lookup. */
+let focusMount: HTMLElement | null | undefined;
+
+function resolveFocusMount(): HTMLElement | null {
+  if (focusMount === undefined || (focusMount !== null && !focusMount.isConnected)) {
+    focusMount = typeof document === "undefined" ? null : document.getElementById("focus-cast");
+  }
+  return focusMount;
+}
 
 function barFor(mount: HTMLElement): Bar {
   let bar = bars.get(mount);
@@ -29,7 +41,7 @@ function paint(mount: HTMLElement, world: WorldClient | undefined, guid: bigint 
   const bar = barFor(mount);
   const cast = guid === undefined ? undefined : world?.casts.get(guid);
   if (!world || guid === undefined || !cast) {
-    bar.root.hidden = true;
+    if (!bar.root.hidden) bar.root.hidden = true;
     return;
   }
   const progress = world.castProgress(guid, now) ?? 0;
@@ -37,10 +49,23 @@ function paint(mount: HTMLElement, world: WorldClient | undefined, guid: bigint 
   // spellbook and the aura strip only ever ask for what this character knows or wears.
   ensureSpellNames([cast.spellId]);
   const remaining = Math.max(0, cast.duration - (now - cast.startedAt));
-  bar.root.hidden = false;
-  bar.set(progress, 1, `${spellName(cast.spellId)} · ${(remaining / 1000).toFixed(1)}с`);
-  // A channel empties rather than fills, and reads as its own colour.
-  bar.setVariant(cast.channel ? "channel" : undefined);
+  if (bar.root.hidden) bar.root.hidden = false;
+  const interruptible = (cast as { interruptible?: boolean }).interruptible !== false;
+  const lock = interruptible ? "" : " · не прерывается";
+  bar.set(progress, 1, `${spellName(cast.spellId)} · ${(remaining / 1000).toFixed(1)}с${lock}`);
+  // A channel empties rather than fills, and reads as its own colour. Non-interruptible casts
+  // read as shielded so interrupts are not wasted on immune targets.
+  bar.setVariant(cast.channel ? "channel" : interruptible ? undefined : "shielded");
+}
+
+/**
+ * A bar whose native lane a stock owner has taken over (`NativeHudReplacement`) is hidden, so
+ * nothing is drawn into it; the spell's name is still asked for, as the drawn bar would have asked,
+ * because the stock bar and the next cast of the same spell read the same cache.
+ */
+function askName(world: WorldClient | undefined, guid: bigint | undefined): void {
+  const cast = guid === undefined ? undefined : world?.casts.get(guid);
+  if (cast) ensureSpellNames([cast.spellId]);
 }
 
 /**
@@ -49,6 +74,15 @@ function paint(mount: HTMLElement, world: WorldClient | undefined, guid: bigint 
  */
 export function updateCastBars(now: number): void {
   const world = game.world;
-  paint(playerCast, world, world?.state.selfGuid, now);
-  paint(targetCast, world, world?.targetGuid, now);
+  if (nativeHudReplaced(NATIVE_LANES_REPLACED)) askName(world, world?.state.selfGuid);
+  else paint(playerCast, world, world?.state.selfGuid, now);
+  if (nativeHudReplaced(NATIVE_TARGET_CONTEXT_REPLACED)) askName(world, world?.targetGuid);
+  else paint(targetCast, world, world?.targetGuid, now);
+  if (nativeHudReplaced(NATIVE_FOCUS_REPLACED)) {
+    askName(world, game.focusGuid);
+    return;
+  }
+  const focus = resolveFocusMount();
+  if (focus && game.focusGuid !== undefined) paint(focus, world, game.focusGuid, now);
+  else if (focus && focus.childElementCount > 0) focus.replaceChildren();
 }

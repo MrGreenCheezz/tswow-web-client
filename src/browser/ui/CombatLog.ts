@@ -43,6 +43,8 @@ export function logSwing(world: WorldClient, swing: AttackerState): void {
  * the first time and never again, and nothing at all is sent when the player closes the distance.
  */
 export function showSwingWarning(world: WorldClient): void {
-  swingWarning.textContent = world.swingWarning ?? "";
-  swingWarning.hidden = world.swingWarning === undefined;
+  const text = world.swingWarning ?? "";
+  if (swingWarning.textContent !== text) swingWarning.textContent = text;
+  const hidden = world.swingWarning === undefined;
+  if (swingWarning.hidden !== hidden) swingWarning.hidden = hidden;
 }

@@ -1,5 +1,6 @@
 import {
-  CHARACTER_PORTRAIT_SLOT, PAPERDOLL_PORTRAIT_SLOT, PARTY_PORTRAIT_SLOTS,
+  CHARACTER_PORTRAIT_SLOT, FOCUS_TARGET_PORTRAIT_SLOT, PAPERDOLL_PORTRAIT_SLOT, PARTY_PORTRAIT_SLOTS,
+  QUEST_GIVER_PORTRAIT_SLOT,
   type PortraitSlot, type PortraitTarget,
 } from "../PortraitRenderer.js";
 import {
@@ -7,6 +8,7 @@ import {
 } from "../PortraitCanvas.js";
 import type { WorldRenderer3D } from "../WorldRenderer3D.js";
 import { game } from "../game/Context.js";
+import { unit as unitField } from "../../world/Fields.js";
 import {
   focusFrame, partyFrames, petFrame, playerIcon, targetIcon, targetOfTargetFrame, targetPanel,
 } from "./Dom.js";
@@ -17,6 +19,59 @@ const targetCanvas = ensureCanvas(targetIcon, "target");
 const targets = new Map<PortraitSlot, PortraitTarget>();
 let paperdollCanvas: HTMLCanvasElement | undefined;
 let characterFrameCanvas: HTMLCanvasElement | undefined;
+let questGiverCanvas: HTMLCanvasElement | undefined;
+let focusTargetCanvas: HTMLCanvasElement | undefined;
+
+/**
+ * Whether an adopted canvas is on screen, for the outputs that live in a window that closes: the
+ * paper doll and the CharacterFrame bust (FrameXML's own IsVisible, handed over by
+ * FrameXmlCharacterController) and the native character window's model (its `hidden` attribute).
+ * Sampled once a frame by `syncPortraitTargets` into the target's `visible`, which PortraitRenderer
+ * reads as "neither rebuild nor draw". The HUD rows have no probe: they are always shown.
+ */
+const visibilityProbes = new Map<PortraitSlot, () => boolean>();
+
+function setVisibilityProbe(slot: PortraitSlot, probe: (() => boolean) | undefined): void {
+  if (probe) visibilityProbes.set(slot, probe);
+  else visibilityProbes.delete(slot);
+}
+
+/** A probe that throws is a window this module cannot see into: shown, the old behaviour. */
+function probeShown(probe: () => boolean): boolean {
+  try {
+    return probe() !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** The slots whose canvas is created over a stock Texture rather than borrowed from the native HUD. */
+type CreatedPortraitSlot = typeof CHARACTER_PORTRAIT_SLOT | typeof QUEST_GIVER_PORTRAIT_SLOT
+  | typeof FOCUS_TARGET_PORTRAIT_SLOT;
+
+function createdCanvas(slot: CreatedPortraitSlot): HTMLCanvasElement | undefined {
+  if (slot === CHARACTER_PORTRAIT_SLOT) return characterFrameCanvas;
+  if (slot === QUEST_GIVER_PORTRAIT_SLOT) return questGiverCanvas;
+  return focusTargetCanvas;
+}
+
+function setCreatedCanvas(slot: CreatedPortraitSlot, canvas: HTMLCanvasElement | undefined): void {
+  if (slot === CHARACTER_PORTRAIT_SLOT) characterFrameCanvas = canvas;
+  else if (slot === QUEST_GIVER_PORTRAIT_SLOT) questGiverCanvas = canvas;
+  else focusTargetCanvas = canvas;
+}
+
+/**
+ * The focus's target, from the focus object's `UNIT_FIELD_TARGET` — the same field the HUD's
+ * target-of-target row reads of the target (UnitFrames.ts). Undefined while there is no focus, its
+ * object is out of view, or it targets nothing.
+ */
+function focusTargetGuid(): bigint | undefined {
+  const world = game.world;
+  const focus = world && game.focusGuid !== undefined ? world.state.objects.get(game.focusGuid) : undefined;
+  const guid = focus ? unitField.target(focus) : undefined;
+  return guid === undefined || guid === 0n ? undefined : guid;
+}
 
 /** Stock Interface\FrameXML CharacterModelFrame dimensions, in FrameXML layout units. */
 export const CHARACTER_MODEL_CSS_WIDTH = 233;
@@ -33,6 +88,8 @@ interface CharacterPortraitAdoption {
   readonly height: number;
   readonly parent: HTMLElement | null;
   readonly nextSibling: Node | null;
+  /** This adoption's visibility probe, removed with it (`visibilityProbes`). */
+  readonly visible: (() => boolean) | undefined;
   resizeObserver: ResizeObserver | undefined;
   cleaned: boolean;
   cleanup: () => void;
@@ -64,6 +121,7 @@ interface PortraitCanvasAdoption {
 }
 
 interface CharacterPortraitCanvasAdoption {
+  readonly slot: CreatedPortraitSlot;
   readonly canvas: HTMLCanvasElement;
   readonly target: HTMLElement;
   readonly parent: HTMLElement;
@@ -75,6 +133,8 @@ interface CharacterPortraitCanvasAdoption {
   readonly width: number;
   readonly height: number;
   readonly created: boolean;
+  /** This adoption's visibility probe, removed with it (`visibilityProbes`). */
+  readonly visible: (() => boolean) | undefined;
   cleaned: boolean;
   cleanup: () => void;
 }
@@ -163,6 +223,7 @@ function restoreCharacterPortraitAdoption(record: CharacterPortraitAdoption): vo
   record.resizeObserver = undefined;
   if (activeCharacterPortraitAdoption === record) activeCharacterPortraitAdoption = undefined;
   if (paperdollCanvas === record.canvas) paperdollCanvas = undefined;
+  if (visibilityProbes.get(PAPERDOLL_PORTRAIT_SLOT) === record.visible) visibilityProbes.delete(PAPERDOLL_PORTRAIT_SLOT);
   set("paperdoll", undefined, undefined);
   for (const name of ADOPTED_STYLE_NAMES) writeStyle(record.canvas.style, name, record.styles[name]);
   record.canvas.className = record.className;
@@ -182,11 +243,12 @@ function restoreCharacterPortraitAdoption(record: CharacterPortraitAdoption): vo
 function restoreCharacterFramePortraitAdoption(record: CharacterPortraitCanvasAdoption): void {
   if (record.cleaned) return;
   record.cleaned = true;
-  if (activeCharacterFramePortraitAdoption.get(CHARACTER_PORTRAIT_SLOT)?.canvas === record.canvas) {
-    activeCharacterFramePortraitAdoption.delete(CHARACTER_PORTRAIT_SLOT);
+  if (activeCharacterFramePortraitAdoption.get(record.slot)?.canvas === record.canvas) {
+    activeCharacterFramePortraitAdoption.delete(record.slot);
   }
-  if (characterFrameCanvas === record.canvas) characterFrameCanvas = undefined;
-  set(CHARACTER_PORTRAIT_SLOT, undefined, undefined);
+  if (createdCanvas(record.slot) === record.canvas) setCreatedCanvas(record.slot, undefined);
+  if (visibilityProbes.get(record.slot) === record.visible) visibilityProbes.delete(record.slot);
+  set(record.slot, undefined, undefined);
   if (record.created) {
     record.canvas.remove();
     return;
@@ -205,12 +267,14 @@ function restoreCharacterFramePortraitAdoption(record: CharacterPortraitCanvasAd
  * Adopt a persistent 2D canvas into stock CharacterModelFrame.
  *
  * This is intentionally a DOM operation only. The canvas is registered as the paperdoll target
- * and the existing PortraitRenderer paints it through the world's renderer on dirty changes.
+ * and the existing PortraitRenderer paints it through the world's renderer on dirty changes —
+ * while `visible` answers true, when the caller can say whether its window is open.
  */
 export function adoptCharacterPortraitCanvas(
   target: HTMLElement | undefined,
   cssWidth?: number,
   cssHeight?: number,
+  visible?: () => boolean,
 ): (() => void) | undefined {
   if (!target || (
     target.getAttribute("data-framexml-model-placeholder") !== "true"
@@ -238,6 +302,7 @@ export function adoptCharacterPortraitCanvas(
     height: canvas.height,
     parent,
     nextSibling: canvas.nextSibling,
+    visible,
     resizeObserver: undefined,
     cleaned: false,
     cleanup: () => {},
@@ -293,13 +358,23 @@ export function adoptCharacterPortraitCanvas(
   }
   activeCharacterPortraitAdoption = record;
   paperdollCanvas = canvas;
+  setVisibilityProbe(PAPERDOLL_PORTRAIT_SLOT, visible);
   set(PAPERDOLL_PORTRAIT_SLOT, game.world?.state.selfGuid, canvas);
   return record.cleanup;
 }
 
-/** Register the permanent native Character window as the renderer's full-body output. */
+/**
+ * Register the permanent native Character window as the renderer's full-body output. The window
+ * closes with its `hidden` attribute, so the model is painted only while no ancestor carries one.
+ */
 export function mountNativeCharacterPortrait(target: HTMLElement | undefined): (() => void) | undefined {
-  return adoptCharacterPortraitCanvas(target, 220, 300);
+  return adoptCharacterPortraitCanvas(target, 220, 300, target ? () => attributeShown(target) : undefined);
+}
+
+/** No `hidden` attribute from `element` up, read without styles; an element that cannot say is shown. */
+function attributeShown(element: HTMLElement): boolean {
+  if (element.isConnected === false) return false;
+  return typeof element.closest !== "function" || element.closest("[hidden]") === null;
 }
 
 /**
@@ -311,22 +386,25 @@ export function mountNativeCharacterPortrait(target: HTMLElement | undefined): (
  * bust.  It is a canvas adoption, not a replacement character panel: cleanup restores the exact
  * sibling, style and dataset state and the renderer still owns all model drawing.
  */
-export function adoptCharacterFramePortraitCanvas(
+function adoptFrameHeaderPortraitCanvas(
+  slot: CreatedPortraitSlot,
   target: HTMLElement | undefined,
+  visible?: () => boolean,
 ): (() => void) | undefined {
   if (!target?.parentElement) return undefined;
-  const active = activeCharacterFramePortraitAdoption.get(CHARACTER_PORTRAIT_SLOT);
+  const active = activeCharacterFramePortraitAdoption.get(slot);
   if (active?.target === target) return active.cleanup;
   active?.cleanup();
 
   const parent = target.parentElement;
   const existing = typeof parent.querySelector === "function"
     ? parent.querySelector<HTMLCanvasElement>(
-      `canvas[data-portrait-slot="${CHARACTER_PORTRAIT_SLOT}"]`,
+      `canvas[data-portrait-slot="${slot}"]`,
     )
     : undefined;
   const canvas = existing ?? document.createElement("canvas");
   const record = {
+    slot,
     canvas,
     target,
     parent,
@@ -340,6 +418,7 @@ export function adoptCharacterFramePortraitCanvas(
     width: canvas.width,
     height: canvas.height,
     created: !existing,
+    visible,
     cleaned: false,
     cleanup: () => {},
   } as CharacterPortraitCanvasAdoption;
@@ -347,27 +426,58 @@ export function adoptCharacterFramePortraitCanvas(
 
   try {
     if (!existing) parent.insertBefore(canvas, target.nextSibling);
-    canvas.className = "portrait-canvas portrait-canvas-character";
-    canvas.dataset["portraitSlot"] = CHARACTER_PORTRAIT_SLOT;
+    canvas.className = slot === FOCUS_TARGET_PORTRAIT_SLOT
+      ? "portrait-canvas portrait-canvas-focustot" : "portrait-canvas portrait-canvas-character";
+    canvas.dataset["portraitSlot"] = slot;
     canvas.dataset["portraitReady"] = "false";
     canvas.hidden = false;
     for (const name of ADOPTED_STYLE_NAMES) writeStyle(canvas.style, name, readStyle(target.style, name));
     if (!readStyle(target.style, "position")) writeStyle(canvas.style, "position", "absolute");
     writeStyle(canvas.style, "display", "block");
     writeStyle(canvas.style, "pointerEvents", "none");
-    // CharacterFramePortrait is authored at 60x60.  Use real layout/style pixels where available,
-    // but retain that stock size while a hidden FrameXML root has no browser metrics yet.
-    const width = (numericCssPixels(readStyle(target.style, "width")) ?? target.offsetWidth) || 60;
-    const height = (numericCssPixels(readStyle(target.style, "height")) ?? target.offsetHeight) || 60;
+    // Stock CharacterFramePortrait and QuestFramePortrait are authored at 60x60, the ToT row's
+    // portrait at 35x35 (TargetofTargetFrameTemplate). Use real layout pixels when available, with
+    // the authored size while a hidden root has no metrics.
+    const authored = slot === FOCUS_TARGET_PORTRAIT_SLOT ? 35 : 60;
+    const width = (numericCssPixels(readStyle(target.style, "width")) ?? target.offsetWidth) || authored;
+    const height = (numericCssPixels(readStyle(target.style, "height")) ?? target.offsetHeight) || authored;
     setPortraitCanvasBackingStore(canvas, Math.max(width, height));
   } catch (error) {
     record.cleanup();
     throw error;
   }
-  characterFrameCanvas = canvas;
-  activeCharacterFramePortraitAdoption.set(CHARACTER_PORTRAIT_SLOT, record);
-  set(CHARACTER_PORTRAIT_SLOT, game.world?.state.selfGuid, canvas);
+  setCreatedCanvas(slot, canvas);
+  activeCharacterFramePortraitAdoption.set(slot, record);
+  setVisibilityProbe(slot, visible);
+  set(slot, slot === CHARACTER_PORTRAIT_SLOT ? game.world?.state.selfGuid
+    : slot === FOCUS_TARGET_PORTRAIT_SLOT ? focusTargetGuid() : targets.get(slot)?.guid, canvas);
   return record.cleanup;
+}
+
+/** The CharacterFrame bust; `visible` says whether that window is open (see `visibilityProbes`). */
+export function adoptCharacterFramePortraitCanvas(
+  target: HTMLElement | undefined,
+  visible?: () => boolean,
+): (() => void) | undefined {
+  return adoptFrameHeaderPortraitCanvas(CHARACTER_PORTRAIT_SLOT, target, visible);
+}
+
+/** Paint an active quest giver above stock QuestFramePortrait's authored book fallback. */
+export function adoptQuestGiverPortraitCanvas(
+  target: HTMLElement | undefined,
+): (() => void) | undefined {
+  return adoptFrameHeaderPortraitCanvas(QUEST_GIVER_PORTRAIT_SLOT, target);
+}
+
+/**
+ * Paint the focus's target over stock FocusFrameToTPortrait. The native HUD has no focus-ToT row,
+ * so unlike `tot` there is no canvas to borrow: one is created over the Texture and its unit is
+ * read from the world on every sync (`focusTargetGuid`), the way the ToT row reads its target's.
+ */
+export function adoptFocusTargetPortraitCanvas(
+  target: HTMLElement | undefined,
+): (() => void) | undefined {
+  return adoptFrameHeaderPortraitCanvas(FOCUS_TARGET_PORTRAIT_SLOT, target);
 }
 
 function positiveDimension(value: unknown): number | undefined {
@@ -535,6 +645,8 @@ export function adoptPartyPortraitCanvas(
 }
 
 function set(slot: PortraitSlot, guid: bigint | undefined, canvas: HTMLCanvasElement | undefined): void {
+  const previous = targets.get(slot);
+  if (previous !== undefined && previous.guid === guid && previous.canvas === canvas) return;
   targets.set(slot, { guid, canvas });
   // A target change must expose the normal fallback immediately; the renderer will hide it again
   // only after a successful readback. The player icon's class-painting code may still hide it when
@@ -568,10 +680,15 @@ export function setCharacterFramePortrait(guid: bigint | undefined): void {
   set(CHARACTER_PORTRAIT_SLOT, guid, characterFrameCanvas);
 }
 
+/** Called by the stock SetPortraitTexture host bridge, never by target selection. */
+export function setQuestGiverPortrait(guid: bigint | undefined): void {
+  set(QUEST_GIVER_PORTRAIT_SLOT, guid, questGiverCanvas);
+}
+
 export function clearPortraitTargets(): void {
   for (const slot of [
-    "player", "target", "focus", "tot", "pet", ...PARTY_PORTRAIT_SLOTS,
-    PAPERDOLL_PORTRAIT_SLOT, CHARACTER_PORTRAIT_SLOT,
+    "player", "target", "focus", "tot", "pet", FOCUS_TARGET_PORTRAIT_SLOT, ...PARTY_PORTRAIT_SLOTS,
+    PAPERDOLL_PORTRAIT_SLOT, CHARACTER_PORTRAIT_SLOT, QUEST_GIVER_PORTRAIT_SLOT,
   ] as const) {
     set(slot, undefined, targets.get(slot)?.canvas);
   }
@@ -594,6 +711,26 @@ export function syncPortraitTargets(renderer: WorldRenderer3D | undefined): void
       set(CHARACTER_PORTRAIT_SLOT, guid, characterFrameCanvas);
     }
   }
+  // The focus's target is a field of the focus object, which the world rewrites without any
+  // client-side selection edge; while the stock row is adopted, one map read a frame keeps it.
+  if (focusTargetCanvas) {
+    const target = targets.get(FOCUS_TARGET_PORTRAIT_SLOT);
+    const guid = focusTargetGuid();
+    if (target?.guid !== guid || target?.canvas !== focusTargetCanvas) {
+      set(FOCUS_TARGET_PORTRAIT_SLOT, guid, focusTargetCanvas);
+    }
+  }
+  // The quest giver identity is supplied by SetPortraitTexture and the active quest page. Unlike
+  // the player bust it must not drift to the selected target when targeting changes.
+  // A closed window's output is marked hidden rather than dropped: its surface keeps what it last
+  // painted and PortraitRenderer repaints it once, on the first frame the window is open again.
+  // One probe call per closable output a frame; the target object is replaced only on a change.
+  for (const [slot, probe] of visibilityProbes) {
+    const target = targets.get(slot);
+    if (!target) continue;
+    const visible = probeShown(probe);
+    if ((target.visible !== false) !== visible) targets.set(slot, { guid: target.guid, canvas: target.canvas, visible });
+  }
   renderer?.setPortraitTargets(targets);
 }
 
@@ -601,10 +738,14 @@ export function syncPortraitTargets(renderer: WorldRenderer3D | undefined): void
 export function applyPortraitVisibility(): void {
   const player = targets.get("player");
   const target = targets.get("target");
-  if (playerCanvas.dataset["portraitReady"] === "true") playerIcon.hidden = true;
-  else playerIcon.hidden = player?.guid === undefined || playerIcon.dataset["atlas"] === undefined;
-  if (targetCanvas.dataset["portraitReady"] === "true") targetIcon.hidden = true;
-  else targetIcon.hidden = target?.guid === undefined || targetPanel.hidden;
+  const playerHidden = playerCanvas.dataset["portraitReady"] === "true"
+    ? true
+    : player?.guid === undefined || playerIcon.dataset["atlas"] === undefined;
+  if (playerIcon.hidden !== playerHidden) playerIcon.hidden = playerHidden;
+  const targetHidden = targetCanvas.dataset["portraitReady"] === "true"
+    ? true
+    : target?.guid === undefined || targetPanel.hidden;
+  if (targetIcon.hidden !== targetHidden) targetIcon.hidden = targetHidden;
 }
 
 export function portraitCanvases(): ReadonlyMap<PortraitSlot, HTMLCanvasElement> {
@@ -613,6 +754,8 @@ export function portraitCanvases(): ReadonlyMap<PortraitSlot, HTMLCanvasElement>
   ]);
   if (paperdollCanvas) canvases.set(PAPERDOLL_PORTRAIT_SLOT, paperdollCanvas);
   if (characterFrameCanvas) canvases.set(CHARACTER_PORTRAIT_SLOT, characterFrameCanvas);
+  if (questGiverCanvas) canvases.set(QUEST_GIVER_PORTRAIT_SLOT, questGiverCanvas);
+  if (focusTargetCanvas) canvases.set(FOCUS_TARGET_PORTRAIT_SLOT, focusTargetCanvas);
   for (const slot of PARTY_PORTRAIT_SLOTS) {
     const canvas = targets.get(slot)?.canvas;
     if (canvas) canvases.set(slot, canvas);

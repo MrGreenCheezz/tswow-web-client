@@ -40,9 +40,18 @@ export function learnedProfessions(
     if (category === 11) return true;
     // Secondary skills also contain racials and riding. A visible skill-bearing ability is what
     // distinguishes fishing/first aid/cooking; names and a stock-only id allowlist do not.
-    return category === 9 && spells.some((spell) => !spell.hidden && !spell.passive
-      && professionSpellSkill(spell, data) === skill.skillId
-      && (professionOpener(spell) || spell.effects?.includes(SPELL_EFFECT_SKILL)));
+    //
+    // Custom TSWoW lines live outside the stock categories entirely. Any other line that owns
+    // opener, recipe or skill-effect spells is a profession the craft windows can actually open —
+    // without this its recipes would leave the book for a window that never lists them.
+    if (category === 9 || category === undefined
+      || ![5, 6, 7, 8, 10, 12].includes(category)) {
+      return spells.some((spell) => !spell.hidden && !spell.passive
+        && professionSpellSkill(spell, data) === skill.skillId
+        && (professionOpener(spell) || professionRecipe(spell)
+          || (spell.effects ?? []).includes(SPELL_EFFECT_SKILL)));
+    }
+    return false;
   });
 }
 
@@ -64,7 +73,9 @@ export function recipeRequiresItem(spell: SpellMetadata): boolean {
   return (spell.effects ?? []).some((effect) => ITEM_ENCHANT_EFFECTS.includes(effect));
 }
 
-export function recipeAcceptsItem(spell: SpellMetadata, item: ItemTemplate): boolean {
+export function recipeAcceptsItem(
+  spell: SpellMetadata, item: Pick<ItemTemplate, "itemClass" | "subClass" | "inventoryType">,
+): boolean {
   if (!recipeRequiresItem(spell)) return false;
   if ((spell.equippedItemClass ?? -1) >= 0 && item.itemClass !== spell.equippedItemClass) return false;
   if (spell.equippedItemSubclass && (spell.equippedItemSubclass & (1 << item.subClass)) === 0) return false;
@@ -77,4 +88,46 @@ export function recipeDifficulty(skill: SkillEntry, ability: SpellSkillAbilityIn
   if (skill.value >= ability.trivialSkillLineRankHigh) return "gray";
   if (skill.value >= Math.floor((ability.trivialSkillLineRankHigh + ability.trivialSkillLineRankLow) / 2)) return "green";
   return skill.value >= ability.trivialSkillLineRankLow ? "yellow" : "orange";
+}
+
+export type CraftSort = "name" | "level" | "difficulty";
+
+const CRAFT_DIFFICULTY_ORDER: Record<string, number> = {
+  orange: 0, yellow: 1, green: 2, gray: 3,
+};
+
+export interface CraftRecipeRow {
+  readonly spell: SpellMetadata;
+  readonly difficulty: string;
+}
+
+/** Hardest first; unknown difficulty sinks below gray, never above orange. */
+export function sortCraftRecipes(rows: readonly CraftRecipeRow[], sort: CraftSort): CraftRecipeRow[] {
+  const ranked = (difficulty: string): number => CRAFT_DIFFICULTY_ORDER[difficulty] ?? 4;
+  return [...rows].sort((left, right) => {
+    if (sort === "level") {
+      return left.spell.spellLevel - right.spell.spellLevel || left.spell.name.localeCompare(right.spell.name);
+    }
+    if (sort === "difficulty") {
+      return ranked(left.difficulty) - ranked(right.difficulty) || left.spell.name.localeCompare(right.spell.name);
+    }
+    return left.spell.name.localeCompare(right.spell.name);
+  });
+}
+
+/**
+ * Recipes whose reagents allow at least one craft. Anything without a countable cost (no
+ * reagents entry, or the unlimited kind) always passes: the filter hides what cannot be made,
+ * never what costs nothing to try.
+ */
+export function filterCraftable(
+  rows: readonly CraftRecipeRow[],
+  owned: ReadonlyMap<number, number>,
+  craftableOnly: boolean,
+): CraftRecipeRow[] {
+  if (!craftableOnly) return [...rows];
+  return rows.filter(({ spell }) => {
+    const available = craftableCount(spell, owned);
+    return available === undefined || available === Infinity || available > 0;
+  });
 }

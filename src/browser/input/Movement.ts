@@ -3,10 +3,14 @@ import { OPCODES } from "../../generated/opcodes.js";
 import { game } from "../game/Context.js";
 import { unit } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import type { WorldObjectState } from "../../world/WorldState.js";
+import { serverControlsMovement, type WorldObjectState } from "../../world/WorldState.js";
+import type { CollisionFloorHit, CollisionWorld } from "../game/Collision.js";
+import { collisionModelLiquidAt, positionLiquid, type WmoLiquidFooting } from "../game/CollisionLiquid.js";
+import type { CollisionSource } from "../game/CollisionSource.js";
+import type { TerrainClient } from "../Terrain.js";
 import {
-  DEFAULT_COLLISION_HEIGHT, STEP_HEIGHT, newCharacterMotion, stepCharacter,
-  type CharacterInput, type CharacterMotion, type PhysicsEvent, type TerrainProbe,
+  DEFAULT_COLLISION_HEIGHT, FLOOR_SEARCH_DEPTH, LIQUID_UNKNOWN, STEP_HEIGHT, newCharacterMotion, stepCharacter,
+  type CharacterInput, type CharacterMotion, type LiquidAnswer, type PhysicsEvent, type TerrainProbe,
 } from "../game/Physics.js";
 import type { InputAction } from "./Bindings.js";
 
@@ -59,6 +63,16 @@ let walking = false;
 let sentForward = 0;
 let sentStrafe = 0;
 let sentTurn = 0;
+/** Reconcile held keys when a server root starts or ends between keyboard events. */
+let reportedRooted = false;
+/** Input held through a taxi flight is sent once when the server returns control. */
+let wasServerControlled = false;
+
+function ownMovementServerControlled(): boolean {
+  const state = game.world?.state;
+  const guid = state?.selfGuid;
+  return guid !== undefined && serverControlsMovement(state?.objects.get(guid));
+}
 
 export function isAutoRunning(): boolean {
   return autoRunning;
@@ -96,10 +110,13 @@ export function turnAxis(): number {
  * still in walk mode would otherwise send a heartbeat five times a second forever.
  */
 export function isMoving(): boolean {
+  if (ownMovementServerControlled()) return false;
   // Being in the air or in the water counts. A character that jumped on the spot presses no key
   // at all, and without a packet on the way down the server never follows the arc — everyone else
   // would see it standing still and then appearing where it landed.
-  return motion.mode !== "ground" || forwardAxis() !== 0 || strafeAxis() !== 0 || turnAxis() !== 0;
+  const rooted = game.world?.movementState.rooted === true;
+  return motion.mode !== "ground" || (!rooted && (forwardAxis() !== 0 || strafeAxis() !== 0))
+    || turnAxis() !== 0;
 }
 
 /**
@@ -112,10 +129,13 @@ export function isMoving(): boolean {
  */
 export function movementFlags(): number {
   let flags = 0;
-  const forward = forwardAxis();
+  const state = game.world?.movementState;
+  // Physics already suppresses horizontal input during a server root. Claiming FORWARD or
+  // STRAFE in MovementInfo while staying still would make the core relay a moving character.
+  const forward = state?.rooted ? 0 : forwardAxis();
   if (forward > 0) flags |= MOVEMENT_FLAGS.forward;
   else if (forward < 0) flags |= MOVEMENT_FLAGS.backward;
-  const strafe = strafeAxis();
+  const strafe = state?.rooted ? 0 : strafeAxis();
   if (strafe > 0) flags |= MOVEMENT_FLAGS.strafeLeft;
   else if (strafe < 0) flags |= MOVEMENT_FLAGS.strafeRight;
   const turn = turnAxis();
@@ -123,7 +143,6 @@ export function movementFlags(): number {
   else if (turn < 0) flags |= MOVEMENT_FLAGS.turnRight;
   if (walking) flags |= MOVEMENT_FLAGS.walking;
 
-  const state = game.world?.movementState;
   if (state?.waterWalking) flags |= MOVEMENT_FLAGS.waterWalking;
   if (state?.featherFall) flags |= MOVEMENT_FLAGS.fallingSlow;
   if (state?.hovering) flags |= MOVEMENT_FLAGS.hover;
@@ -171,26 +190,131 @@ export function isGrounded(): boolean {
 }
 
 /**
- * What the world answers about a point, wired to the terrain client.
+ * How far above the feet the server starts looking down for the room they are in: `GroupModel::
+ * IsInsideObject` casts from 0.1 over the point (`WorldModel.cpp:423`).
+ */
+const WMO_LOCATION_RISE = 0.1;
+
+/** The parts of the terrain client the probe reads; `isReady` is optional for the tests' stand-ins. */
+type ProbeTerrain = Pick<TerrainClient, "heightAt" | "liquidAt" | "isHole"> & Partial<Pick<TerrainClient, "isReady">>;
+/** The parts of the collision source the probe reads. */
+type ProbeCollision = Pick<CollisionSource, "world" | "models" | "revision" | "staticWmoFloorState">;
+
+/**
+ * What the world answers about a point, wired to the terrain and collision clients.
  *
  * A tile that has not arrived answers `undefined` rather than zero, and the physics reads that as
  * "wait" rather than "no floor" — otherwise walking into freshly streamed ground is a fall.
+ *
+ * The liquid is the server's answer for a unit standing there, not the map file's alone: the WMO
+ * group of the floor under the feet and its own `MLIQ`, the map's water only where no interior
+ * room is in the way (`positionLiquid`). Gundrak is all rooms — 25 map tiles, flat and dry, and
+ * 3,759 wet `MLIQ` cells — and reading the map file alone there meant falling through every pool
+ * to its bed, 1.3 s for a drop from a yard over the water.
+ *
+ * Exported so a test can run the physics over real collision; the game uses `terrainProbe`.
  */
-function terrainProbe(mapId: number | undefined): TerrainProbe {
-  const terrain = game.terrain;
-  const collision = game.collision?.world;
+export function createTerrainProbe(
+  terrain: ProbeTerrain | undefined,
+  collision: ProbeCollision | undefined,
+  mapId: number | undefined,
+): TerrainProbe {
+  const world = collision?.world;
+  // The last column the floor query walked. The liquid query at the same feet reads the room from
+  // it rather than walking the column again (`CollisionSource.staticWmoFloorState`'s `known`).
+  // Mutated in place, because both run once per physics substep.
+  const column = {
+    valid: false, x: 0, y: 0, fromZ: 0, minZ: 0, revision: -1, hit: undefined as CollisionFloorHit | undefined,
+  };
+  const feet = { x: 0, y: 0, z: 0 };
+  const liquid = (x: number, y: number, z: number): LiquidAnswer => {
+    let footing: WmoLiquidFooting | undefined;
+    if (collision) {
+      const known = column.valid && column.x === x && column.y === y && column.revision === collision.revision
+        ? column : undefined;
+      const floor = collision.staticWmoFloorState(mapId, x, y, z + WMO_LOCATION_RISE, z - FLOOR_SEARCH_DEPTH, known);
+      if (floor === undefined) return LIQUID_UNKNOWN;
+      if (floor !== null) {
+        const groups = collision.models.model(floor.placement.modelName)?.groups;
+        if (!groups) return LIQUID_UNKNOWN;
+        feet.x = x;
+        feet.y = y;
+        feet.z = z;
+        const water = collisionModelLiquidAt(groups, floor.groupIndex, floor.placement, feet);
+        // Outside the floor's own group the server would not have picked that room at all.
+        if (water !== undefined) {
+          footing = {
+            floorZ: floor.floorZ,
+            groupFlags: floor.groupFlags,
+            liquid: water === null ? undefined : { height: water.worldHeight, type: water.type },
+          };
+        }
+      }
+    }
+    const ground = terrain?.heightAt(mapId, x, y);
+    // A map tile still on the wire is not a tile without water. `heightAt` says undefined for both
+    // and for a tile that does not exist; only then is the slower readiness question asked.
+    if (ground === undefined && mapId !== undefined && terrain?.isReady?.(mapId, x, y) === false) return LIQUID_UNKNOWN;
+    return positionLiquid(z, footing, ground, ground === undefined ? undefined : terrain?.liquidAt(mapId, x, y));
+  };
   const probe: TerrainProbe = {
     ground: (x, y) => terrain?.heightAt(mapId, x, y),
-    liquid: (x, y) => terrain?.liquidAt(mapId, x, y),
+    liquid,
     hole: (x, y) => terrain?.isHole(mapId, x, y) ?? false,
   };
   // Only when there is something to ask. An empty world would answer every query by walking an
   // empty map, which is cheap but not free, and the physics reads the absence as "no buildings"
   // rather than "no floors" — which is exactly right before any have been downloaded.
-  if (collision && collision.size > 0) {
-    probe.floor = (x, y, fromZ, minZ) => collision.floorUnder(x, y, fromZ, minZ);
-    probe.pushOut = (x, y, z, radius, bodyHeight) => collision.pushOut(x, y, z, radius, bodyHeight, STEP_HEIGHT);
+  if (collision && world && world.size > 0) {
+    probe.floor = (x, y, fromZ, minZ) => {
+      const hit = world.floorHitUnder(x, y, fromZ, minZ);
+      column.valid = true;
+      column.x = x;
+      column.y = y;
+      column.fromZ = fromZ;
+      column.minZ = minZ;
+      column.revision = collision.revision;
+      column.hit = hit;
+      return hit?.z;
+    };
+    probe.pushOut = (x, y, z, radius, bodyHeight) => world.pushOut(x, y, z, radius, bodyHeight, STEP_HEIGHT);
   }
+  return probe;
+}
+
+/**
+ * The probe for the live world.
+ *
+ * Rebuilt only when the wiring inputs change (world/map swap, or the first collision mesh
+ * landing): the object plus three to five closures per frame was pure garbage for identical
+ * wiring, and the closures themselves read everything else live.
+ */
+let probeTerrain: typeof game.terrain | undefined;
+let probeSource: CollisionSource | undefined;
+let probeCollision: CollisionWorld | undefined;
+let probeCollisionNonEmpty = false;
+let probeMapId: number | undefined;
+let probeCached: TerrainProbe | undefined;
+function terrainProbe(mapId: number | undefined): TerrainProbe {
+  const terrain = game.terrain;
+  const source = game.collision;
+  const collision = source?.world;
+  const nonEmpty = (collision?.size ?? 0) > 0;
+  if (probeCached !== undefined
+    && terrain === probeTerrain
+    && source === probeSource
+    && collision === probeCollision
+    && nonEmpty === probeCollisionNonEmpty
+    && mapId === probeMapId) {
+    return probeCached;
+  }
+  const probe = createTerrainProbe(terrain, source, mapId);
+  probeTerrain = terrain;
+  probeSource = source;
+  probeCollision = collision;
+  probeCollisionNonEmpty = nonEmpty;
+  probeMapId = mapId;
+  probeCached = probe;
   return probe;
 }
 
@@ -230,8 +354,37 @@ export function advancePhysics(elapsed: number): void {
   const world = game.world;
   if (!world || game.worldLoading || world.state.selfGuid === undefined) return;
   const self = world.state.objects.get(world.state.selfGuid);
-  const position = self?.position;
+  let position = self?.position;
   if (!self || !position) return;
+
+  if (serverControlsMovement(self)) {
+    if (!wasServerControlled) {
+      wasServerControlled = true;
+      sentForward = 0;
+      sentStrafe = 0;
+      sentTurn = 0;
+      resetCharacterMotion();
+    }
+    return;
+  }
+  if (wasServerControlled) {
+    // The last spline frame precedes the core's flag/control update. Resume only after both
+    // arrive; otherwise a held key races the taxi completion acknowledgement.
+    if (!world.movementReady) return;
+    wasServerControlled = false;
+    syncMovement();
+    return;
+  }
+
+  // The root packet changes WorldClient.movementState, not keyboard state. Announce STOP on the
+  // first frame under root and START on release if the player is still holding a movement key.
+  if (world.movementState.rooted !== reportedRooted) {
+    syncMovement();
+    // WorldClient.sendMovement snaps the controlled object's position into a new value. Keep
+    // stepping the live value, not the old object captured before the stop/start packet.
+    position = self.position;
+    if (!position) return;
+  }
 
   // Turning is a rate the server also knows, so the character turns at its speed rather than at
   // whatever the frame rate happens to be.
@@ -340,7 +493,7 @@ export function sendMovement(opcode: number): void {
   // collision may still be in flight. Do not send input or predicted position until the same
   // barrier that gates gravity has opened; otherwise the server can advance while this client is
   // deliberately holding its local position still.
-  if (game.worldLoading) return;
+  if (game.worldLoading || ownMovementServerControlled()) return;
   const position = selfPosition();
   if (!position) return;
   game.world?.sendMovement(opcode, movementFlags(), position, movementExtra());
@@ -355,9 +508,11 @@ export function sendMovement(opcode: number): void {
  * wire, which is what they are.
  */
 export function syncMovement(): void {
-  if (!game.world?.movementReady || game.worldLoading) return;
-  const forward = forwardAxis();
-  const strafe = strafeAxis();
+  if (!game.world?.movementReady || game.worldLoading || ownMovementServerControlled()) return;
+  const rooted = game.world.movementState.rooted;
+  reportedRooted = rooted;
+  const forward = rooted ? 0 : forwardAxis();
+  const strafe = rooted ? 0 : strafeAxis();
   const turn = turnAxis();
   if (forward !== sentForward) {
     sendMovement(forward > 0 ? OPCODES.MSG_MOVE_START_FORWARD
@@ -394,6 +549,7 @@ let facingSentAt = 0;
  * than the server needs to hear.
  */
 export function turnCharacterBy(radians: number): void {
+  if (ownMovementServerControlled()) return;
   const position = selfPosition();
   if (!position || radians === 0) return;
   position.orientation = normalizeAngle(position.orientation + radians);
@@ -490,6 +646,8 @@ export function forgetMovementState(): void {
   sentForward = 0;
   sentStrafe = 0;
   sentTurn = 0;
+  reportedRooted = false;
+  wasServerControlled = false;
   sentPitch = 0;
   Object.assign(motion, newCharacterMotion());
 }

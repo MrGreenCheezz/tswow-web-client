@@ -92,6 +92,10 @@ button { color: #09140e; background: #5ee0a0; cursor: pointer; font-weight: 700;
 button:disabled { cursor: default; opacity: .78; }
 button:not(:disabled):hover { filter: brightness(1.18); }
 :focus-visible { outline: 2px solid #ead58c; outline-offset: 2px; }
+/* The stock interface draws no focus ring: a focused FrameXML widget (a Button root the page focuses
+   as a modal's first control, KeyBindingFrame) otherwise kept the gold ring above around a whole
+   window for the rest of the session. */
+#framexml-world-host [data-framexml-name]:focus-visible { outline: none; }
 .danger { color: #250909; background: #ff8d8d; }
 .actions, .form-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .actions button { min-height: 36px; padding: 0 12px; }
@@ -137,6 +141,25 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 #world-canvas { z-index: 2; cursor: crosshair; touch-action: none; }
 #world-canvas.camera-dragging { cursor: grabbing; }
 #world-3d-canvas { pointer-events: none; }
+
+.fps-counter {
+  position: absolute;
+  z-index: 40;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 5px 9px;
+  border: 1px solid #bda76780;
+  border-radius: 4px;
+  background: #090d12d9;
+  color: #f3e8ba;
+  font: 12px/1.4 ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
 
 /* Slice P2: the original client's `ffxDeath`, over the world and under the interface.
    `backdrop-filter` is doing the part a tint cannot — a flat blue quad over a red tabard leaves a
@@ -440,6 +463,14 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .sheet-section { padding: 8px 10px; border-radius: 6px; background: #0e1114aa; }
 .equipment-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; padding: 0 12px 14px; }
 .inventory-money { padding: 10px 12px 0; color: #efcf67; text-align: right; }
+/* Bag search dims whatever does not match rather than hiding it: a hidden slot reads as gone. */
+.bag-search-row { padding: 6px 12px 0; }
+.bag-search-row input { width: 100%; }
+.item-slot.is-dimmed { opacity: .32; }
+/* A sender that answers a click with a whisper draft. Underlined on hover only, so the log
+   keeps its reading texture until the mouse is already there. */
+.chat-sender { cursor: pointer; }
+.chat-sender:hover { text-decoration: underline; }
 .inventory-slots { display: grid; gap: 10px; padding: 12px; }
 .bag-section h4 { margin: 0 0 5px; color: #d9c77f; font-size: .78rem; }
 .bag-grid { display: grid; grid-template-columns: repeat(8, minmax(36px, 1fr)); gap: 5px; }
@@ -466,6 +497,14 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .quality-3 { border-color: #318cec; }
 .quality-4 { border-color: #a64ee8; }
 .quality-5, .quality-6, .quality-7 { border-color: #e9902c; }
+/* Wear sits on the icon's bottom edge, a gem's presence in the top corner and the item level over
+   the wear bar: three at-a-glance facts that used to need a hover one slot at a time. */
+.item-slot .item-wear { position: absolute; left: 3px; right: 3px; bottom: 1px; height: 3px; border-radius: 2px; overflow: hidden; background: #131518cc; }
+.item-slot .item-wear > i { display: block; height: 100%; background: #57c45c; }
+.item-slot .item-wear.broken > i { background: #d23d2f; }
+.item-slot.is-broken { border-color: #a32a20; }
+.item-slot .item-enchant { position: absolute; left: 3px; top: 3px; width: 7px; height: 7px; border-radius: 50%; background: #7ee0ff; box-shadow: 0 0 4px #39b7e8; }
+.item-slot .item-level { position: absolute; left: 3px; bottom: 5px; color: #ffd86b; font-size: .68rem; line-height: 1; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
 
 #spell-status { margin: 10px 12px 0; color: #e6d8ad; font-size: .76rem; text-align: center; }
 .spell-button {
@@ -527,6 +566,7 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .quest-body, .quest-objectives { color: #e9dfc2; white-space: pre-line; }
 .quest-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .quest-item { display: flex; min-height: 46px; align-items: center; gap: 8px; padding: 4px; color: #e6dcc0; border: 2px solid #706b5b; border-radius: 5px; background: #111417; text-align: left; }
+.quest-item.is-selected { border-color: #ebc56d; background: #37301d; box-shadow: inset 0 0 0 1px #ebc56d; }
 .quest-item img { width: 36px; height: 36px; object-fit: cover; border-radius: 3px; }
 .quest-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid #625433; background: #171714f5; }
 .quest-actions button { min-height: 36px; padding: 0 14px; color: #ead58c; border-color: #79663d; background: #26231c; }
@@ -799,9 +839,12 @@ body.native-wow-ui #game-buttons {
   position: static;
   inset: auto;
   display: grid;
-  grid-template-columns: repeat(5, 28px);
-  width: 152px;
-  height: 64px;
+  /* Ten stock buttons in one row: character, bags, spellbook, talents, quest, socials,
+     world map, calendar, dungeon finder, menu. A narrower grid wrapped the row in two.
+     Compact 24x48: the stock 32x64 plates scaled to three quarters, undistorted. */
+  grid-template-columns: repeat(10, 24px);
+  width: 262px;
+  height: 54px;
   box-sizing: border-box;
   padding: 2px;
   gap: 2px;
@@ -811,8 +854,8 @@ body.native-wow-ui #game-buttons {
 }
 body.native-wow-ui #game-buttons button {
   position: relative;
-  width: 28px;
-  height: 58px;
+  width: 24px;
+  height: 48px;
   min-height: 0;
   color: #f2d56f;
   border: 0;
@@ -826,12 +869,16 @@ body.native-wow-ui #game-buttons #character-toggle,
 body.native-wow-ui #game-buttons #inventory-toggle,
 body.native-wow-ui #game-buttons #spellbook-toggle,
 body.native-wow-ui #game-buttons #talents-toggle,
+body.native-wow-ui #game-buttons #quest-toggle,
+body.native-wow-ui #game-buttons #social-toggle,
+body.native-wow-ui #game-buttons #worldmap-toggle,
+body.native-wow-ui #game-buttons #lfg-toggle,
 body.native-wow-ui #game-buttons #game-menu-toggle {
   color: #fff3c4;
   background-color: #0b0b08;
   background-position: center, center;
   background-repeat: no-repeat, no-repeat;
-  background-size: 28px 58px, 100% 100%;
+  background-size: 24px 48px, 100% 100%;
   box-shadow: none;
   font-size: 10px;
   line-height: 1;
@@ -848,15 +895,15 @@ body.native-wow-ui #game-buttons #character-toggle::after {
   z-index: 2;
   inset: 0;
   pointer-events: none;
-  background: var(--wow-micro-character, none) center/28px 58px no-repeat;
+  background: var(--wow-micro-character, none) center/24px 48px no-repeat;
 }
 body.native-wow-ui #character-micro-icon {
   position: absolute;
   z-index: 3;
-  bottom: 5px;
-  left: 5px;
-  width: 18px;
-  height: 25px;
+  bottom: 4px;
+  left: 4px;
+  width: 14px;
+  height: 19px;
   pointer-events: none;
   object-fit: none;
 }
@@ -867,17 +914,28 @@ body.native-wow-ui #game-buttons .micro-button-glyph {
   display: grid;
   place-items: center;
   pointer-events: none;
-  font-size: 15px;
+  font-size: 12px;
   line-height: 1;
 }
 body.native-wow-ui #game-buttons #inventory-toggle {
   background-image: var(--wow-micro-inventory, none), linear-gradient(#3a3020, #0b0b08);
-  background-position: center bottom 4px, center;
-  background-size: 28px 28px, 100% 100%;
+  background-position: center bottom 3px, center;
+  background-size: 24px 24px, 100% 100%;
 }
 body.native-wow-ui #game-buttons #spellbook-toggle { background-image: var(--wow-micro-spellbook, none), linear-gradient(#3a3020, #0b0b08); }
 body.native-wow-ui #game-buttons #talents-toggle { background-image: var(--wow-micro-talents, none), linear-gradient(#3a3020, #0b0b08); }
-body.native-wow-ui #game-buttons #game-menu-toggle { background-image: linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #quest-toggle { background-image: var(--wow-micro-quest, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #social-toggle { background-image: var(--wow-micro-socials, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #worldmap-toggle { background-image: var(--wow-micro-world, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #lfg-toggle { background-image: var(--wow-micro-lfg, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #game-menu-toggle { background-image: var(--wow-micro-mainmenu, none), linear-gradient(#3a3020, #0b0b08); }
+/* The letter fallbacks inside the art buttons stay for screen readers (aria-labels name them)
+   but must not paint over the client art. The calendar button keeps its letter: the stock
+   client ships no micro art for it. */
+body.native-wow-ui #game-buttons #quest-toggle,
+body.native-wow-ui #game-buttons #social-toggle,
+body.native-wow-ui #game-buttons #worldmap-toggle { font-size: 0; }
+body.native-wow-ui #game-buttons #game-menu-toggle .micro-button-glyph { display: none; }
 body.native-wow-ui .bag-bar {
   position: static;
   inset: auto;
@@ -1129,7 +1187,8 @@ body.native-wow-ui .ui-tooltip {
 
 body.native-wow-ui .right-rail {
   top: 8px;
-  right: calc(20px + var(--side-bars-width));
+  /* The corner itself: the side bars start below the minimap, so no side-bars offset here. */
+  right: 20px;
   width: 188px;
 }
 body.native-wow-ui .minimap { position: relative; width: 174px; gap: 1px; }
@@ -1188,6 +1247,8 @@ body.native-wow-ui .minimap-subzone { max-width: 174px; color: #f1e6c5; border-r
 .loot-slot { min-height: 34px; padding: 6px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
 .loot-slot:disabled, .loot-slot[aria-disabled="true"] { color: #8a7f66; background: #1b1813; cursor: default; }
 #loot-money { margin: 0 12px 8px; color: #f0d98a; border-color: #7a6a3f; background: #2a2418; }
+#loot-all { margin: 0 12px 8px; color: #ead58c; border-color: #6f603c; background: #242018; }
+#loot-all:disabled { color: #8a7f66; background: #1b1813; cursor: default; }
 #death-window p { padding: 0 12px 8px; }
 #death-window button { margin-right: 8px; }
 
@@ -1241,7 +1302,7 @@ body.native-wow-ui #action-bar-side {
   filter: drop-shadow(0 2px 3px #000c);
 }
 body.native-wow-ui #action-bar-side {
-  top: 14px;
+  top: 232px;
   right: 14px;
   bottom: calc(var(--hud-safe-bottom) + 8px);
   max-height: calc((100vh - 22px - var(--hud-safe-bottom)) / var(--ui-scale-effective));
@@ -1894,6 +1955,7 @@ body.native-wow-ui .ui-tooltip > .ui-tooltip-footer {
   }
   body.native-wow-ui .right-rail {
     top: 180px;
+    /* Narrow screens keep the old inset: the full-height side columns still own the corner here. */
     right: calc(20px + var(--side-bars-width));
     width: 130px;
     overflow-x: hidden;
@@ -2121,6 +2183,13 @@ body.native-wow-ui .bag-bar-button > img {
 }
 #inventory-window header .window-close, .bag-window header .window-close { flex: 0 0 auto; }
 .bank-window { width: min(420px, calc(100vw - 32px)); left: 18px; top: 90px; }
+body.framexml-item-cursor #framexml-world-stage,
+body.framexml-item-cursor #bank-window { cursor: grabbing; }
+/* An enchant from the stock trade skill window waiting for its item: the client's cast cursor
+   (FrameXmlTradeSkillLive.ts sets the picture; the crosshair stands in until it arrives). */
+body.framexml-cast-cursor #framexml-world-stage,
+body.framexml-cast-cursor #framexml-world-stage *,
+body.framexml-cast-cursor #world-canvas { cursor: var(--framexml-cast-cursor, crosshair); }
 .bank-window .bag-grid { padding: 0; }
 .bank-bags { display: flex; gap: 5px; }
 .bank-bags .item-slot { width: 42px; min-height: 42px; }
@@ -2145,7 +2214,15 @@ body.native-wow-ui .bag-bar-button > img {
   position: absolute; z-index: 20; bottom: var(--chat-bottom); left: 12px;
   display: grid; gap: 4px; width: min(440px, 42vw);
 }
+.reputation-toolbar { padding: 0 12px 8px; }
+.reputation-toolbar input[type="search"] { width: 100%; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.reputation-row { padding: 6px 12px 8px; border-top: 1px solid #3c352a; }
+.reputation-head { display: flex; justify-content: space-between; gap: 8px; }
+.reputation-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.reputation-foot button { margin-left: auto; padding: 2px 8px; font-size: 11px; }
 .chat-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.combat-filters { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 2px 8px 4px; font-size: 11px; color: #a89a7c; }
+.combat-filter { display: inline-flex; align-items: center; gap: 4px; }
 .chat-tab {
   padding: 2px 8px; border: 1px solid #3c352a; border-radius: 3px 3px 0 0; background: #0c0a08cc;
   color: #b6ab8e; font: inherit; font-size: .72rem; cursor: pointer;
@@ -2199,6 +2276,7 @@ body.native-wow-ui .bag-bar-button > img {
 #group-invite button { margin-right: 8px; }
 
 #trade-mine, #trade-theirs { display: grid; gap: 4px; min-height: 26px; padding: 0 12px 8px; }
+#trade-mine.is-drop-target { outline: 2px dashed #ead58c; outline-offset: -6px; }
 #trade-window h4 { margin: 4px 0 4px; padding: 0 12px; color: #ead58c; font-size: 12px; }
 #trade-window p { padding: 0 12px 8px; }
 #trade-window button { margin-right: 8px; }
@@ -2257,7 +2335,8 @@ body.native-wow-ui #mail-window > header {
 .mail-entry-text { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding-bottom: 9px; }
 .mail-entry-text strong, .mail-entry-text > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.1; font-size: 11px; }
 .mail-entry-text strong { font-size: 12px; }
-.mail-entry-status { position: absolute; right: 6px; bottom: 2px; max-width: calc(100% - 49px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9e9278; font-size: 9px; }
+.mail-entry-status { position: absolute; right: 6px; bottom: 2px; max-width: calc(100% - 49px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #20ff20; font-size: 9px; }
+.mail-entry-status.expiring { color: #ff2020; }
 .mail-empty { text-align: center; color: #dcc58d; padding-top: 40px; }
 .mail-pagination { display: flex; justify-content: space-between; align-items: center; flex: 0 0 29px; color: #e9ce84; font-size: 12px; }
 .mail-pagination button { min-height: 23px; padding: 1px 8px; }
@@ -2272,10 +2351,13 @@ body.native-wow-ui #mail-window > header {
 .mail-attachments { display: flex; flex-wrap: wrap; gap: 4px; }
 .mail-attachments button { width: 30px; height: 30px; min-height: 0; padding: 1px; }
 .mail-attachments img { width: 100%; height: 100%; object-fit: cover; }
+.mail-money-mode { display: flex; gap: 12px; font-size: 11px; }
+.mail-money-mode label { display: inline-flex; align-items: center; gap: 4px; }
+#mail-compose .mail-money-mode input[type="radio"] { width: 14px; height: 14px; padding: 0; accent-color: #d8bd79; }
 .mail-coins { display: flex; justify-content: flex-end; gap: 5px; }
 .mail-coins label { display: flex; align-items: center; gap: 2px; font-size: 11px; }
-.mail-coins input { width: 41px; min-height: 23px; padding: 2px; font-size: 11px; }
-.mail-coins input#mail-money { width: 66px; }
+#mail-compose .mail-coins input { width: 41px; min-height: 23px; padding: 2px; font-size: 11px; }
+#mail-compose .mail-coins input#mail-money { width: 66px; }
 .coin-gold { color: #efc94d; } .coin-silver { color: #ccd1d5; } .coin-copper { color: #c68d5e; }
 .mail-compose-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #c9b889; }
 .mail-compose-footer button { min-height: 27px; padding: 3px 14px; }
@@ -2324,10 +2406,105 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
 .auction-entry strong { color: #ead58c; }
 .auction-entry .auction-meta { display: block; color: #a89a7c; }
 .auction-entry button { margin: 4px 6px 0 0; padding: 2px 6px; font-size: 11px; }
+.auction-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; font-size: 11px; border: 1px solid #3c352a; border-radius: 3px; }
+.auction-leading { color: #40ff40; border-color: #2f6b2f; }
+.auction-outbid { color: #ff8f6b; border-color: #6b352f; }
 #auction-window p, #lfg-window p { padding: 0 12px 8px; }
-#auction-search, #lfg-dungeons { width: 190px; margin-right: 6px; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#auction-search, #lfg-dungeons, #lfg-dungeon-search { width: 190px; margin-right: 6px; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
 #lfg-window label { margin-right: 10px; color: #ead58c; font-size: 12px; }
 #lfg-proposal { padding-bottom: 4px; border-bottom: 1px solid #3c352a; }
+/* Classic dungeon-finder: stock role art, heroic badges, banners and reward rings. */
+.lfg-window { width: min(460px, calc(100vw - 32px)); }
+.lfg-roles { display: flex; gap: 10px; padding: 4px 12px 8px; }
+.lfg-role { display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+.lfg-role input { position: absolute; opacity: 0; pointer-events: none; }
+/* Stock LFGRoleButtonTemplate: 48px role art over an 80px background, 24px checkbox bottom-left. */
+.lfg-role-icon { position: relative; display: block; width: 48px; height: 48px; }
+.lfg-role-bg {
+  position: absolute; left: 50%; top: 50%; width: 80px; height: 80px; transform: translate(-50%, -50%);
+  opacity: 0.45; pointer-events: none;
+}
+.lfg-role-fg { position: absolute; inset: 0; pointer-events: none; }
+.lfg-role-check {
+  position: absolute; left: -5px; bottom: -5px; width: 24px; height: 24px;
+  background-repeat: no-repeat; background-size: 100% 100%; pointer-events: none;
+}
+.lfg-role input:checked + .lfg-role-icon .lfg-role-fg { filter: drop-shadow(0 0 6px #ffd100aa); }
+.lfg-role input:checked + .lfg-role-icon .lfg-role-bg { opacity: 0.9; }
+.lfg-role input:checked + .lfg-role-icon .lfg-role-check { background-image: var(--lfg-role-check-on, none); }
+.lfg-role input:focus-visible + .lfg-role-icon { outline: 2px solid #e0c56c; outline-offset: 2px; }
+.lfg-role input:disabled + .lfg-role-icon { filter: grayscale(1); opacity: 0.6; }
+.lfg-type-row { display: flex; gap: 10px; align-items: center; }
+.lfg-type-row select { padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.lfg-random-banner, .lfg-proposal-banner {
+  height: 64px; margin: 0 12px 8px; border: 1px solid #6f603c; border-radius: 4px;
+  background-size: cover; background-position: center; background-repeat: no-repeat; background-color: #16130e;
+}
+.lfg-random-name { color: #ffd100; font-size: 15px; font-weight: 700; }
+.lfg-random-pane, .lfg-specific-pane { padding-bottom: 4px; }
+.lfg-random-list { display: grid; gap: 2px; padding: 0 12px 8px; }
+.lfg-random-row { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.lfg-reward-xp span { color: #7dec83; }
+.lfg-rewards-title { padding: 0 12px 2px; color: #ffd100; font-size: 13px; }
+.lfg-rewards { display: grid; gap: 4px; padding: 0 12px 8px; }
+.lfg-reward {
+  display: flex; gap: 8px; align-items: center; padding: 4px 8px;
+  border: 1px solid #3c352a; border-radius: 4px; background: #16130e; font-size: 12px;
+}
+/* Stock LFDDungeonReadyRewardTemplate: 30px icon with the reward-ring overlay. */
+.lfg-reward-icon { position: relative; display: block; width: 40px; height: 40px; flex: none; }
+.lfg-reward-icon img {
+  position: absolute; left: 50%; top: 50%; width: 30px; height: 30px;
+  transform: translate(calc(-50% - 1.5px), calc(-50% + 1.5px)); display: block;
+}
+.lfg-reward-ring {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: var(--lfg-reward-ring, none); background-size: 147.96% 147.96%;
+  background-position: 0% 0%; background-repeat: no-repeat;
+}
+/* Queue status as role slots: stock atlas icon, own wait and the missing-player count. */
+.lfg-queue { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; }
+.lfg-queue-state { color: #ead58c; }
+.lfg-queue-dungeon { color: #ffd100; }
+.lfg-queue-average { color: #a89a7c; }
+.lfg-queue-role { display: inline-flex; align-items: center; gap: 4px; }
+.lfg-queue-role-icon { flex: none; width: 18px; height: 18px; background-repeat: no-repeat; background-color: #0d0b07; border: 1px solid #3c352a; border-radius: 3px; }
+.lfg-queue-role-label { color: #c8c0ac; font-size: 11px; }
+/* Filter bar: two compact columns, with the selects taking the free half of each cell. */
+#lfg-window .lfg-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; padding: 0 12px 6px; }
+#lfg-window .lfg-filters label { display: flex; gap: 6px; align-items: center; margin-right: 0; font-size: 11px; }
+#lfg-window .lfg-filters select { flex: 1; min-width: 0; padding: 2px 4px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#lfg-window .lfg-filters button { padding: 3px 6px; font-size: 11px; }
+.lfg-filter-check { white-space: nowrap; }
+.lfg-group { margin: 4px 0 0; color: #d9c77f; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.lfg-dungeon-list { display: grid; gap: 2px; max-height: 300px; overflow-y: auto; padding: 0 12px 8px; }
+.lfg-dungeon-row { display: flex; gap: 8px; align-items: center; margin-right: 0; padding: 2px 4px; border-radius: 3px; cursor: pointer; }
+.lfg-dungeon-row:hover { background: #1d1a13; }
+.lfg-dungeon-row.is-selected { background: #2a2417; box-shadow: inset 2px 0 0 #dfbd62; }
+.lfg-dungeon-row input { flex: none; }
+/* Footer: the manual-id fallback on its own line, the actions in one row under it. */
+.lfg-footer { display: grid; gap: 6px; padding: 8px 12px 10px; border-top: 1px solid #3c352a; background: #12100b; }
+#lfg-window .lfg-footer #lfg-dungeons { width: 100%; margin: 0; }
+.lfg-footer-buttons { display: flex; gap: 6px; }
+.lfg-footer-buttons button { flex: 1; }
+#lfg-window .lfg-primary { color: #ffd100; border-color: #dfbd62; }
+#lfg-window button:disabled { opacity: .5; cursor: default; }
+/* Stock lockedIcon: the 12x14 UI-LFG-ICON-LOCK crop beside a locked row. */
+.lfg-lock-icon { flex: none; width: 12px; height: 14px; background-image: var(--lfg-lock-icon, none); background-size: 100% 100%; background-repeat: no-repeat; background-color: #16130e; border-radius: 2px; }
+.lfg-dungeon-level { flex: none; color: #a89a7c; font-size: 11px; }
+.lfg-dungeon-lock { flex: none; }
+/* Stock heroicIcon: 16x20 crop of UI-LFG-ICON-HEROIC at (0-0.5, 0-0.625). */
+.lfg-heroic-icon {
+  flex: none; width: 16px; height: 20px;
+  background-image: var(--lfg-heroic-icon, none); background-size: 200% 160%;
+  background-position: 0% 0%; background-repeat: no-repeat;
+}
+.lfg-dungeon-row .lfg-dungeon-name { flex: 1; }
+.lfg-proposal-roles { display: flex; gap: 6px; padding: 0 12px 8px; }
+.lfg-proposal-role { width: 34px; height: 34px; background-color: #16130e; border: 1px solid #6f603c; border-radius: 4px; }
+.lfg-proposal-role[data-pending] { opacity: 0.55; }
+.lfg-proposal-role[data-declined] { filter: grayscale(1); opacity: 0.5; }
+.lfg-search { display: flex; gap: 8px; align-items: center; }
 
 /* Combat feedback. The swing warning is sticky, because the server says "out of range" once and
    never says it is resolved; only a landed swing clears it. */
@@ -2503,7 +2680,7 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
 .arena-invite { display: grid; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid #6d5a3455; }
 .arena-invite > p { margin: 0; font-size: .8rem; }
 
-.calendar-header { display: flex; gap: 8px; align-items: center; justify-content: center; }
+.calendar-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
 .calendar-header > button { min-height: 0; padding: 2px 8px; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .calendar-weekday { padding: 2px; color: #8fa6bd; font-size: .72rem; text-align: center; }
@@ -2519,6 +2696,14 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
 .calendar-detail > p { margin: 0; font-size: .78rem; }
 .calendar-answers { display: flex; flex-wrap: wrap; gap: 5px; }
 .calendar-answers > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+.calendar-detail > form.calendar-answers { margin: 0; }
+.calendar-editor { display: grid; gap: 8px; margin: 12px 0; }
+.calendar-editor > label { display: grid; gap: 3px; min-width: 0; }
+.calendar-editor input, .calendar-editor textarea, .calendar-editor select { box-sizing: border-box; min-width: 0; width: 100%; }
+.calendar-editor textarea { min-height: 80px; resize: vertical; }
+.stable-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.stable-pet-row { flex-wrap: wrap; }
+.stable-pet-row > button, .stable-actions > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
 .calendar-invites { display: grid; gap: 2px; max-height: 180px; overflow-y: auto; font-size: .76rem; }
 .calendar-invites > div { display: flex; justify-content: space-between; gap: 8px; }
 .calendar-lockouts { margin-top: 8px; }
@@ -2527,22 +2712,52 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
 /* Slice I10. The curtain, the one place errors are shown, the pet and vehicle bar, and the two
    windows the system slice adds. */
 
-/* Over everything inside the world panel, which is itself z-index 100 over the login screen. */
+/* Over everything inside the world panel, which is itself z-index 100 over the login screen.
+   The stock 3.3.5a loading screen (ui/LoadingScreenArt.ts): black, the map's picture stretched over
+   a 4:3 box — or over the whole screen for its `Wide` twin, capped at 16:9 — and the stock bar near
+   the bottom, sized to the picture's height as the client's 1024x768 UI sizes it (512 of 768). */
 .loading-screen {
-  position: absolute; z-index: 60; inset: 0; display: flex; gap: 14px;
-  flex-direction: column; align-items: center; justify-content: center;
-  background: radial-gradient(circle at 50% 40%, #1d2b3a, #0a0f14 70%);
+  position: absolute; z-index: 60; inset: 0; overflow: hidden;
+  background: #000; container-type: size;
 }
-.loading-screen > strong { color: #ead58c; font-size: 1.1rem; letter-spacing: .02em; }
-.loading-screen > p { margin: 0; color: #9d9584; font-size: .84rem; }
-.loading-hint { max-width: 420px; text-align: center; }
-.loading-bar { overflow: hidden; width: min(320px, 60vw); height: 4px; border-radius: 2px; background: #1d2730; }
-.loading-bar > i { display: block; width: 40%; height: 100%; background: linear-gradient(90deg, #6d5a34, #e6ce7b); animation: loading-slide 1.4s ease-in-out infinite; }
-@keyframes loading-slide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
+.loading-stage {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(100cqw, 133.333cqh); height: min(100cqh, 75cqw); container-type: size;
 }
-
+.loading-stage[data-wide="true"] { width: min(100cqw, 177.778cqh); height: 100cqh; }
+.loading-screen img { display: block; opacity: 0; transition: opacity .25s ease-out; user-select: none; }
+.loading-screen img[data-ready="true"] { opacity: 1; }
+.loading-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.loading-copy {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.loading-status {
+  position: absolute; left: 0; right: 0; bottom: 14.5cqh; margin: 0; text-align: center;
+  color: #d8cfb6; font-size: clamp(11px, 1.9cqh, 15px); text-shadow: 0 1px 2px #000, 0 0 4px #000;
+}
+/* Loading-BarBorder is 512x64 with a see-through slot at x 34..478, y 21..42 (measured); the fill
+   stretches inside the slot and Loading-BarGlow's spark (its head at x 465 of 512) rides its end. */
+/* No transform, clip or containment between the glow and the picture: any of them would make a
+   stacking context, and the glow's `screen` blend would then paint its black ground as black. One
+   texel of the 512-wide border is 66.667cqh / 512 = 0.1302cqh of the stage. */
+.loading-bar {
+  --loading-progress: 0;
+  position: absolute; left: calc(50% - 33.333cqh); bottom: 4.5cqh;
+  width: 66.667cqh; height: 8.333cqh;
+}
+.loading-bar-border { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* `overflow-x: clip` cuts the spark's trail at the slot's ends without a stacking context. */
+.loading-bar-slot {
+  position: absolute; left: 6.641%; width: 86.719%; top: 32.813%; height: 32.813%;
+  overflow-x: clip; overflow-y: visible;
+}
+.loading-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--loading-progress) * 100%); }
+.loading-bar-fill-art { width: 100%; height: 100%; object-fit: fill; }
+.loading-bar-glow {
+  position: absolute; right: -6.12cqh; top: calc(50% - 8.333cqh);
+  width: 66.667cqh; height: 16.667cqh; max-width: none; mix-blend-mode: screen; pointer-events: none;
+}
 /* The one surface every refusal reaches. Over the middle of the world, where the original client
    puts it and where a player watching a fight is already looking. */
 .notices {
@@ -2562,6 +2777,7 @@ body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter
 .pet-bar-row { display: flex; gap: 3px; padding: 4px 5px; border: 1px solid #4a5a6d; border-radius: 7px; background: #0b0d0fcc; }
 .pet-bar.is-vehicle .pet-bar-row { border-color: #8a6a34; }
 .pet-bar .ui-icon-button { width: 32px; height: 32px; }
+.pet-bar .ui-icon-button.is-active { outline: 2px solid #ffd24a; outline-offset: -2px; }
 .pet-bar .ui-icon-button > span { font-size: .62rem; color: #b6a878; }
 .pet-bar-exit { display: flex; gap: 4px; }
 .pet-bar-exit > button { min-height: 0; padding: 2px 8px; font-size: .72rem; }
@@ -2577,12 +2793,13 @@ body.native-wow-ui .pet-bar .ui-icon-button {
   min-height: 32px;
 }
 
-.settings-window { top: 90px; left: 400px; width: min(620px, calc(100vw - 32px)); overflow: hidden; }
-.settings-window > .ui-panel-body { min-height: 0; }
+.settings-window { top: 90px; left: 400px; display: flex; flex-direction: column; width: min(620px, calc(100vw - 32px)); height: min(560px, calc(100vh - 120px)); overflow: hidden; }
+.settings-window > header { flex-shrink: 0; }
+.settings-window > .ui-panel-body { flex: 1; min-height: 0; overflow: hidden; }
 .settings-shell {
   display: grid;
-  min-height: min(340px, calc(72vh - 132px));
-  max-height: calc(72vh - 132px);
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   grid-template-columns: 140px minmax(0, 1fr);
   border: 1px solid #514426;
@@ -2635,25 +2852,65 @@ body.native-wow-ui .pet-bar .ui-icon-button {
   font: inherit;
 }
 .settings-search input:focus-visible { outline: 2px solid #f1cf69; outline-offset: 1px; }
-.settings-options { min-height: 0; overflow-y: auto; padding: 7px 10px 12px; scrollbar-width: thin; }
+/* The list is the one thing in the window that scrolls. `flex: 1` pins it to the window's height
+   (itself capped against the viewport), `overscroll-behavior` keeps a wheel at its end from
+   scrolling anything behind it, and the scroll padding keeps a focused row out from under a
+   sticky section title. */
+.settings-options {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 7px 10px 12px;
+  scroll-padding-top: 34px;
+  scrollbar-width: thin;
+}
+.settings-options:focus { outline: none; }
+.settings-options:focus-visible { outline: 2px solid #f1cf69; outline-offset: -2px; }
 .settings-group-title { margin: 6px 0 4px; color: #e3cb72; font-size: .8rem; font-weight: 400; }
 .settings-group-title:first-child { margin-top: 0; }
+/* Subsections of a long group (SettingsSections.ts): a gold rule like the active tab's, kept in
+   view while its rows scroll under it. */
+.settings-section-title {
+  position: sticky;
+  z-index: 1;
+  top: -7px;
+  margin: 10px -10px 0;
+  padding: 5px 10px 4px 12px;
+  color: #d9bd6a;
+  border-top: 1px solid #5a4a26;
+  border-bottom: 1px solid #443a2780;
+  background: linear-gradient(90deg, #2a2213, #11100c 70%);
+  font-size: .76rem;
+  font-weight: 400;
+  letter-spacing: .02em;
+}
+.settings-group-title + .settings-section-title { margin-top: 2px; }
 .setting-row { padding: 4px 0; border-bottom: 1px solid #443a2738; }
 .setting-label { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: .82rem; }
+.setting-label > span { min-width: 0; overflow-wrap: anywhere; }
+.setting-label input { flex-shrink: 0; }
 .setting-label input[type="checkbox"] { order: 2; width: 16px; height: 16px; min-height: 0; }
 .setting-label input[type="number"] { width: 80px; min-height: 0; padding: 3px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .78rem; }
-.setting-hint { margin: 1px 0 0; font-size: .72rem; }
+.setting-hint { margin: 3px 0 0; font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; }
 .settings-empty { margin: auto; padding: 24px 10px; text-align: center; }
-.settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.settings-storage-note { min-width: 0; margin: 0; font-size: .7rem; }
-.settings-footer > button { flex: 0 0 auto; min-height: 28px; padding: 4px 9px; font-size: .74rem; }
+.settings-footer { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.settings-storage-note { flex: 1 1 100%; min-width: 0; margin: 0; font-size: .7rem; }
+.settings-footer > button { flex: 1 1 160px; align-self: stretch; min-width: 0; min-height: 32px; padding: 5px 9px; color: #ead58c; border: 1px solid #79663d; background: linear-gradient(#393020, #1b1710); font-size: .74rem; line-height: 1.35; white-space: normal; }
+.settings-footer > button:hover { color: #fff0bc; border-color: #ba9850; background: linear-gradient(#534329, #292015); }
+.settings-footer > button:focus-visible { outline: 2px solid #f1cf69; outline-offset: 2px; }
+.quest-timer-row, .quest-track-timer { color: #eed99b; font-variant-numeric: tabular-nums; }
+.quest-timer-row[data-urgent="true"], .quest-track-timer[data-urgent="true"] { color: #ff9b88; }
+.quest-track-timer { display: block; min-width: 0; font-size: .75rem; line-height: 1.4; overflow-wrap: anywhere; }
 
 @media (max-width: 560px) {
   .settings-window { left: 8px; width: calc(100vw - 16px); }
   .settings-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .settings-groups { overflow-x: auto; flex-direction: row; border-right: 0; border-bottom: 1px solid #66542b; }
   .settings-group-tab { min-width: max-content; padding-left: 16px; }
-  .settings-footer { align-items: stretch; flex-direction: column; }
+  .settings-footer { align-items: stretch; }
+  .settings-footer > button { flex-basis: 100%; }
 }
 
 .macro-window { top: 80px; left: 360px; width: min(420px, calc(100vw - 32px)); }
@@ -2670,10 +2927,12 @@ body.native-wow-ui .pet-bar .ui-icon-button {
   width: 100%; min-height: 0; padding: 5px 7px; color: #ead58c; border: 1px solid #6f603c;
   background: #16130e; font: inherit; font-size: .8rem; resize: vertical;
 }
-.macro-editor > p { margin: 0; font-size: .74rem; }
+.macro-editor > p { margin: 0; font-size: .74rem; line-height: 1.45; overflow-wrap: anywhere; }
 .macro-problems { color: #e0a06a; }
 .macro-actions { display: flex; gap: 6px; }
-.macro-actions > button { flex: 1 1 auto; min-height: 0; padding: 5px 8px; font-size: .78rem; }
+.macro-actions > button { flex: 1 1 0; min-width: 0; min-height: 32px; padding: 5px 8px; color: #ead58c; border: 1px solid #79663d; background: linear-gradient(#393020, #1b1710); font-size: .78rem; }
+.macro-actions > button.danger { color: #f0b2a5; border-color: #8a5040; background: linear-gradient(#4b2622, #261312); }
+.macro-actions > button:disabled { opacity: .45; cursor: default; }
 
 /* A timestamp in front of a chat line, when the setting asks for one. */
 .chat-time { color: #7f7867; font-variant-numeric: tabular-nums; }
@@ -2793,6 +3052,10 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
   background: linear-gradient(180deg, #17130df5, #080a0cf7);
   box-shadow: 0 0 0 1px #110e08, 0 18px 48px #000d;
 }
+.logout-countdown { top: 50%; left: 50%; width: min(330px, calc(100vw - 32px)); min-height: 0; resize: none; transform: translate(-50%, -50%); z-index: 12; }
+.logout-countdown .ui-panel-body { display: grid; gap: 12px; padding: 14px; text-align: center; }
+.logout-countdown p { margin: 0; }
+.logout-countdown button { min-height: 30px; }
 .game-menu > header { justify-content: center; min-height: 30px; }
 .game-menu > header .window-close { position: absolute; right: 5px; }
 .game-menu .ui-panel-body {
@@ -2902,6 +3165,11 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
 /* A raid member outside the client's grid is alive and unreachable: the frame says so by fading
    rather than by emptying, because an empty bar reads as a corpse. */
 .ui-unit-frame.is-far { opacity: .72; }
+/* Visible yet beyond heal range (~40 yd): dimmer than in-grid but distinct from is-far, and the
+   header names the reason on hover for the mouse that is already there. */
+.ui-unit-frame.is-out-of-range { opacity: .58; }
+.ui-unit-frame.is-out-of-range .ui-unit-header > strong { text-decoration: underline dotted; }
+.ui-unit-frame.is-out-of-range:hover .ui-unit-header > strong { text-decoration-color: #d0a33c; }
 /* Dashed and dimmed, but not past reading: at `.4` the name measured 3.31:1 and the level 2.13:1,
    and the whole point of an offline frame is that it still tells you who is missing. */
 .ui-unit-frame.is-offline { opacity: .62; border-style: dashed; }
@@ -2940,7 +3208,8 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
   position: absolute;
   z-index: 6;
   top: 14px;
-  right: calc(12px + var(--side-bars-width));
+  /* The corner itself: the side bars start below the minimap, so no side-bars offset here. */
+  right: 12px;
   bottom: calc(var(--hud-safe-bottom) + 8px);
   display: flex;
   overflow-x: hidden;
@@ -3013,10 +3282,12 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
 
 .spellbook-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .spellbook-tab {
+  display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 7px; border: 1px solid #24405e; border-radius: 3px; background: #0d1a2b;
   color: #cfe0f2; font: inherit; font-size: .74rem; cursor: pointer;
 }
 .spellbook-tab.is-active { border-color: #ffd479; color: #ffd479; }
+.spellbook-tab-icon { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 2px; object-fit: cover; }
 
 .professions-window { width: 320px; }
 /* Profession windows share the same recipe/reagent layout at every window size. */
@@ -3052,6 +3323,11 @@ body.native-wow-ui .craft-window .craft-recipe.is-selected { border-color: #e4bb
 body.native-wow-ui .craft-window .craft-create { background: linear-gradient(#6b4524, #3f2415); color: #ffe7a5; min-height: 32px; }
 body.native-wow-ui .craft-window button:disabled { opacity: 0.45; }
 .profession-row:has(.profession-open) { position: relative; padding-right: 78px; }
+.craft-filters { display: flex; gap: 10px; align-items: center; flex: 0 0 auto; }
+.craft-filters select { padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.craft-available { display: flex; gap: 6px; align-items: center; color: #ead58c; font-size: 12px; }
+.profession-list-window { width: min(420px, calc(100vw - 32px)); }
+.profession-list-window .profession-row { margin-bottom: 8px; }
 .profession-open { position: absolute; right: 0; top: 0; font-size: 12px; }
 .profession-section { margin-bottom: 10px; }
 .profession-section > h4 { margin: 0 0 4px; font-size: .8rem; color: #8fa6bd; }
@@ -3084,7 +3360,9 @@ body.native-wow-ui .craft-window button:disabled { opacity: 0.45; }
    rail as a whole; it never silently shrinks the art into unreadable miniature buttons. */
 #action-bar-side {
   position: absolute; z-index: 6;
-  top: 14px; right: 14px; bottom: 118px;
+  /* Below the minimap corner: the side bars no longer own the top-right, so the right rail
+     (minimap, boss/arena frames) sits in the corner without a side-bars offset. */
+  top: 270px; right: 14px; bottom: 118px;
   display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 4px;
 }
 .action-bar-side-column {

@@ -1,4 +1,9 @@
-import { isLootable } from "../../world/Fields.js";
+import { isLootable, isPlayerGhost } from "../../world/Fields.js";
+import {
+  QUEST_STATUS_AVAILABLE, QUEST_STATUS_AVAILABLE_REP, QUEST_STATUS_LOW_LEVEL_AVAILABLE,
+  QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP, QUEST_STATUS_LOW_LEVEL_REWARD_REP, QUEST_STATUS_REWARD,
+  QUEST_STATUS_REWARD2, QUEST_STATUS_REWARD_REP,
+} from "../../world/QuestProtocol.js";
 import { isWorldObjectDead, type WorldObjectState, type WorldState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
 import {
@@ -8,7 +13,7 @@ import {
 import { formatGameTime } from "../../world/GameTimeProtocol.js";
 import { rightRail } from "./Dom.js";
 import { skinnable, slot } from "./Slots.js";
-import { toggleTrackingMenu, trackedNearby } from "./Tracking.js";
+import { toggleTrackingMenu, trackingMatcher } from "./Tracking.js";
 import { toggleWorldMap } from "./WorldMap.js";
 
 /**
@@ -48,6 +53,14 @@ interface MinimapParts {
 }
 
 let parts: MinimapParts | undefined;
+/** How often the map repaints on its own when nothing it shows has moved. */
+const MINIMAP_IDLE_REDRAW_MS = 100;
+let lastDrawAt = Number.NEGATIVE_INFINITY;
+let lastDrawKey = "";
+let lastDrawWorld: unknown;
+/** The state revision the blips were last looked at, and what they were on the canvas. */
+let lastDrawRevision = Number.NaN;
+let lastBlipSignature: readonly unknown[] = [];
 let settings: MinimapSettings = readSettings();
 let zoneCheckedAt = 0;
 let zoneAreaId = 0;
@@ -525,14 +538,49 @@ export function updateMinimap(now: number): void {
   const world = game.world;
   const self = playerOf(world?.state);
   if (!world || !self?.position || world.mapId === undefined) {
-    if (parts) parts.root.hidden = true;
+    if (parts && !parts.root.hidden) parts.root.hidden = true;
     return;
   }
   parts ??= build();
-  parts.root.hidden = false;
+  if (parts.root.hidden) parts.root.hidden = false;
 
   const size = resize(parts.canvas, parts.context, adoptedMinimapSize(parts.canvas));
-  drawMinimap(parts.context, size, world.mapId, self.position, world.state, now);
+  // The canvas is a repaint, not a transform: sixty passes a second cost the same when nothing
+  // has changed, and nothing that matters lands between two of them while the player stands still.
+  // The clock keeps the map honest at a much lower rate, and anything that moves — the character,
+  // the wheel, the zone's tiles, the state itself — asks for the frame immediately. A live ping is
+  // the one thing that animates on its own, so it redraws at the frame rate it always did.
+  const animating = pings.length > 0;
+  const key = `${world.mapId}|${Math.round(self.position.x * 8)}|${Math.round(self.position.y * 8)}`
+    + `|${Math.round(self.position.orientation * 256)}|${size}`
+    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`;
+  // The state is what the blips are made of, and it used to be in the key as its revision — which
+  // every packet about anybody moves, so in a crowd the whole circle was repainted every frame for
+  // neighbours far outside it. When the revision has moved, the blips are collected (one walk of
+  // the object table, which the repaint needs anyway) and compared with the ones on the canvas;
+  // only a blip that appeared, went or moved asks for the frame.
+  const stateMoved = world.state.revision !== lastDrawRevision || lastDrawWorld !== world;
+  lastDrawRevision = world.state.revision;
+  let blips = stateMoved ? collectBlips(size / 2, self.position, world.state) : undefined;
+  let signature = blips === undefined ? undefined : blipSignature(blips);
+  const blipsMoved = signature !== undefined && !sameBlipSignature(signature, lastBlipSignature);
+  // A different world is never the same picture, whatever its numbers say; and nothing else the
+  // map draws is allowed to lag by more than the idle interval, so a missed input is a tenth of a
+  // second of staleness rather than a frozen map.
+  const moved = key !== lastDrawKey || lastDrawWorld !== world || blipsMoved;
+  if (!moved && !animating && now - lastDrawAt < MINIMAP_IDLE_REDRAW_MS) {
+    updateLabels(parts, world, self.position, now);
+    return;
+  }
+  lastDrawKey = key;
+  lastDrawWorld = world;
+  lastDrawAt = now;
+  if (blips === undefined || signature === undefined) {
+    blips = collectBlips(size / 2, self.position, world.state);
+    signature = blipSignature(blips);
+  }
+  lastBlipSignature = signature;
+  drawMinimap(parts.context, size, world.mapId, self.position, blips, now);
   updateLabels(parts, world, self.position, now);
 }
 
@@ -554,7 +602,7 @@ function drawMinimap(
   size: number,
   mapId: number,
   position: { x: number; y: number; orientation: number },
-  state: WorldState,
+  blips: MinimapBlips,
   now: number,
 ): void {
   const radius = size / 2;
@@ -569,7 +617,7 @@ function drawMinimap(
   context.translate(radius, radius);
   if (settings.rotate) context.rotate(position.orientation);
   drawTiles(context, size, mapId, position);
-  drawBlips(context, radius, position, state, now);
+  drawBlips(context, radius, position, blips, now);
   context.restore();
 
   drawPlayerArrow(context, radius, position.orientation);
@@ -614,10 +662,42 @@ function drawTiles(
 }
 
 interface Blip {
-  point: MinimapPixel;
+  /** Where it stands in the world; projected onto the circle only when it is painted. */
+  at: WorldPoint;
   colour: string;
   size: number;
   ring?: boolean;
+}
+
+interface QuestMark {
+  at: WorldPoint;
+  mark: string;
+}
+
+/** Everything the state contributes to the circle, in painter order. */
+interface MinimapBlips {
+  readonly blips: readonly Blip[];
+  readonly questMarks: readonly QuestMark[];
+}
+
+/**
+ * The blips as plain values, in painter order: two equal signatures paint the same dots.
+ *
+ * World positions rather than circle pixels, so the character's own small steps stay with the
+ * rounded key that has always decided them, and only something else moving asks from here.
+ */
+function blipSignature(collected: MinimapBlips): unknown[] {
+  const signature: unknown[] = [];
+  for (const blip of collected.blips) signature.push(blip.at.x, blip.at.y, blip.colour, blip.size, blip.ring === true);
+  signature.push(collected.questMarks.length);
+  for (const mark of collected.questMarks) signature.push(mark.at.x, mark.at.y, mark.mark);
+  return signature;
+}
+
+function sameBlipSignature(left: readonly unknown[], right: readonly unknown[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 /**
@@ -631,30 +711,49 @@ interface Blip {
  */
 const BLIP_RIM_INSET = 4;
 
-function drawBlips(
-  context: CanvasRenderingContext2D,
-  radius: number,
-  position: WorldPoint,
-  state: WorldState,
-  now: number,
-): void {
+/**
+ * The `!`/`?` over a quest giver on the minimap.
+ *
+ * The plate twin is `questMarkFor` in QuestLog.ts; kept as a separate pure function so the
+ * minimap never imports the QuestLog's UI ring. Only "something here for you" statuses mark;
+ * the rest draw nothing.
+ */
+export function minimapQuestMark(status: number): "!" | "?" | undefined {
+  if (status === QUEST_STATUS_REWARD || status === QUEST_STATUS_REWARD2
+    || status === QUEST_STATUS_REWARD_REP || status === QUEST_STATUS_LOW_LEVEL_REWARD_REP) return "?";
+  if (status === QUEST_STATUS_AVAILABLE || status === QUEST_STATUS_AVAILABLE_REP
+    || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE || status === QUEST_STATUS_LOW_LEVEL_AVAILABLE_REP) return "!";
+  return undefined;
+}
+
+/** The world position a blip is kept at: a copy, so the signature is what was collected. */
+function blipAt(point: WorldPoint): WorldPoint {
+  return { x: point.x, y: point.y };
+}
+
+/** Every dot and mark the state puts on the circle, gathered in one walk of the object table. */
+function collectBlips(radius: number, position: WorldPoint, state: WorldState): MinimapBlips {
   const world = game.world;
   const yardsPerPixel = settings.zoom / (radius * 2);
   const blips: Blip[] = [];
 
   // The party. The original client shows these and nothing else by default, and they are the one
   // thing a minimap is genuinely needed for.
-  for (const guid of world?.group?.members.map((member) => member.guid) ?? []) {
-    if (guid === state.selfGuid) continue;
-    const member = state.objects.get(guid);
-    if (!member?.position) continue;
-    blips.push({ point: minimapBlip(position, member.position, yardsPerPixel), colour: "#65a9ff", size: 3.5 });
+  const members = world?.group?.members;
+  if (members) {
+    for (let index = 0; index < members.length; index++) {
+      const guid = members[index]!.guid;
+      if (guid === state.selfGuid) continue;
+      const member = state.objects.get(guid);
+      if (!member?.position) continue;
+      blips.push({ at: blipAt(member.position), colour: "#65a9ff", size: 3.5 });
+    }
   }
 
   // The target, so that what the character is fighting is findable when it runs.
   const target = world?.targetGuid === undefined ? undefined : state.objects.get(world.targetGuid);
   if (target?.position && !isWorldObjectDead(target)) {
-    blips.push({ point: minimapBlip(position, target.position, yardsPerPixel), colour: "#ffe36e", size: 4, ring: true });
+    blips.push({ at: blipAt(target.position), colour: "#ffe36e", size: 4, ring: true });
   }
 
   // Bodies that still hold something, strictly by `UNIT_DYNFLAG_LOOTABLE` — no guess from health,
@@ -670,36 +769,87 @@ function drawBlips(
   // all: at the default 160 px frame and 266 yards across, 1.6625 yards to the pixel, every body
   // between 126.35 and 133 yards was drawn on the same circle of radius 76 — 5% of the radius and
   // 9.75% of the area of the map.
+  //
+  // A single pass covers corpses, quest marks and tracking. In a crowded city this otherwise
+  // walked the whole object table twice on every repaint while moving.
   const reach = (radius - BLIP_RIM_INSET) * yardsPerPixel;
+  const reachSquared = reach * reach;
+  const questStatus = world?.questGiverStatus;
+  const tracks = trackingMatcher(state, world?.mapId);
+  // Keep tracked dots after loot dots in painter order, even though both are gathered together.
+  const trackedBlips: Blip[] = [];
+  const questMarks: QuestMark[] = [];
   for (const object of state.objects.values()) {
-    if (object.typeId !== 3 || !object.position) continue;
-    if (!isWorldObjectDead(object) || !isLootable(object)) continue;
-    if (Math.hypot(object.position.x - position.x, object.position.y - position.y) > reach) continue;
-    blips.push({ point: minimapBlip(position, object.position, yardsPerPixel), colour: "#b4e650", size: 3 });
+    const objectPosition = object.position;
+    if (!objectPosition || (object.typeId !== 3 && object.typeId !== 4 && object.typeId !== 5)) continue;
+    const dx = objectPosition.x - position.x;
+    const dy = objectPosition.y - position.y;
+    const distanceSquared = dx * dx + dy * dy;
+    if (object.typeId === 3 && distanceSquared <= reachSquared) {
+      if (isWorldObjectDead(object) && isLootable(object)) {
+        blips.push({ at: blipAt(objectPosition), colour: "#b4e650", size: 3 });
+      }
+    }
+    if ((object.typeId === 3 || object.typeId === 4) && questStatus !== undefined && distanceSquared <= reachSquared) {
+      const status = questStatus.get(object.guid);
+      const mark = status === undefined ? undefined : minimapQuestMark(status);
+      if (mark) questMarks.push({ at: blipAt(objectPosition), mark });
+    }
+    if (tracks?.(object, distanceSquared)) {
+      trackedBlips.push({ at: blipAt(objectPosition), colour: "#f2a63b", size: 3, ring: true });
+    }
   }
 
   // Whatever the character is tracking. Which creatures and which resources those are is a pair of
   // bit fields the server keeps on the player; nothing announces them.
-  for (const object of trackedNearby(state, world?.mapId)) {
-    if (!object.position) continue;
-    blips.push({ point: minimapBlip(position, object.position, yardsPerPixel), colour: "#f2a63b", size: 3, ring: true });
+  for (const blip of trackedBlips) blips.push(blip);
+
+  // The player's own corpse, so a ghost can walk back to it. Clamped to the rim by the
+  // loop below like every other blip, which turns a far corpse into a direction instead of
+  // hiding it. Only on the same map: an instance corpse is reported at its entrance map
+  // (`CorpseLocation.mapId`), and a dot there would point at the wrong place.
+  const self = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+  const corpse = self && isPlayerGhost(self) ? world?.corpse : undefined;
+  if (corpse?.found && corpse.mapId === world?.mapId) {
+    blips.push({
+      at: { x: corpse.x, y: corpse.y },
+      colour: "#ff5a5a", size: 4, ring: true,
+    });
   }
+
+  // Quest givers: the same `!`/`?` the plates carry (`questMarkFor` in QuestLog.ts is the
+  // canonical twin; this reads the status map directly so the minimap does not join the
+  // QuestLog→Npc→Settings import ring). Text, not dots: a dot cannot say which of the two it is.
+  // (Collected in the object pass above.)
 
   // Quest markers, drawn as the centre of the blob rather than its outline: the frame is 160
   // pixels across and a polygon on it is a smudge.
   for (const blobs of world?.questPoi.values() ?? []) {
     for (const blob of blobs) {
       if (blob.map !== world?.mapId || blob.points.length === 0) continue;
-      const centre = blob.points.reduce(
-        (total, point) => ({ x: total.x + point.x / blob.points.length, y: total.y + point.y / blob.points.length }),
-        { x: 0, y: 0 },
-      );
-      blips.push({ point: minimapBlip(position, centre, yardsPerPixel), colour: "#f0c94a", size: 3 });
+      let x = 0;
+      let y = 0;
+      for (let index = 0; index < blob.points.length; index++) {
+        const point = blob.points[index]!;
+        x += point.x / blob.points.length;
+        y += point.y / blob.points.length;
+      }
+      blips.push({ at: { x, y }, colour: "#f0c94a", size: 3 });
     }
   }
+  return { blips, questMarks };
+}
 
-  for (const blip of blips) {
-    const point = clampToCircle(blip.point, radius - BLIP_RIM_INSET);
+function drawBlips(
+  context: CanvasRenderingContext2D,
+  radius: number,
+  position: WorldPoint,
+  collected: MinimapBlips,
+  now: number,
+): void {
+  const yardsPerPixel = settings.zoom / (radius * 2);
+  for (const blip of collected.blips) {
+    const point = clampToCircle(minimapBlip(position, blip.at, yardsPerPixel), radius - BLIP_RIM_INSET);
     context.beginPath();
     context.arc(point.column, point.row, blip.size, 0, Math.PI * 2);
     context.fillStyle = blip.colour;
@@ -709,6 +859,17 @@ function drawBlips(
       context.lineWidth = 1;
       context.stroke();
     }
+  }
+  for (const { at: mapAt, mark } of collected.questMarks) {
+    const at = clampToCircle(minimapBlip(position, mapAt, yardsPerPixel), radius - BLIP_RIM_INSET);
+    context.font = "bold 11px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.lineWidth = 3;
+    context.strokeStyle = "#1b1200";
+    context.fillStyle = mark === "?" ? "#ffd24a" : "#7dd87d";
+    context.strokeText(mark, at.column, at.row);
+    context.fillText(mark, at.column, at.row);
   }
 
   drawPings(context, radius, position, yardsPerPixel, now);
@@ -764,7 +925,9 @@ function updateLabels(
   now: number,
 ): void {
   const time = world.currentGameTime(now);
-  view.clock.textContent = time ? formatGameTime(time) : "";
+  const clockText = time ? formatGameTime(time) : "";
+  // The clock changes once a game minute but used to be formatted and written 60 times a second.
+  if (view.clock.textContent !== clockText) view.clock.textContent = clockText;
 
   // The server never says which sub-area the character is in — `SMSG_INIT_WORLD_STATES` arrives on
   // a zone change and there is no packet at all for a sub-area — so it is counted from the map
@@ -776,8 +939,10 @@ function updateLabels(
   const areas = game.areas;
   const area = areas?.area(zoneAreaId);
   const zone = areas?.zoneOf(zoneAreaId);
-  view.zone.textContent = zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "";
-  view.subzone.textContent = area && zone && area.id !== zone.id ? area.name : "";
+  const zoneText = zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "";
+  if (view.zone.textContent !== zoneText) view.zone.textContent = zoneText;
+  const subzoneText = area && zone && area.id !== zone.id ? area.name : "";
+  if (view.subzone.textContent !== subzoneText) view.subzone.textContent = subzoneText;
 }
 
 /**
@@ -801,6 +966,13 @@ export function forgetMinimap(): void {
   zoneAreaId = 0;
   zoneCheckedAt = 0;
   pings.length = 0;
+  // The canvas keeps its pixels through a world change; the next frame must not be skipped on the
+  // strength of a key that describes the world that just left.
+  lastDrawKey = "";
+  lastDrawWorld = undefined;
+  lastDrawAt = Number.NEGATIVE_INFINITY;
+  lastDrawRevision = Number.NaN;
+  lastBlipSignature = [];
   if (parts) {
     parts.zone.textContent = "";
     parts.subzone.textContent = "";

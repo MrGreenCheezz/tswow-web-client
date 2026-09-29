@@ -12,7 +12,12 @@
 
 import { SOCIAL_FLAG_ALL } from "../../world/ContactProtocol.js";
 import { game } from "../game/Context.js";
+import {
+  openFrameXmlFriends, toggleFrameXmlFriends, type FrameXmlFriendsTab,
+} from "../framexml/FrameXmlFriendsController.js";
+import { toggleChannelRoster } from "./ChannelRoster.js";
 import { systemLine } from "./Chat.js";
+import { openGuildWindow } from "./Guild.js";
 import {
   contactStatusText, friendRows, ignoreRows, whoRequestFromForm, whoRows, whoSummary,
 } from "./ContactsModel.js";
@@ -33,6 +38,7 @@ interface Parts {
 }
 
 let parts: Parts | undefined;
+const contactNameLabels = new Map<bigint, HTMLElement>();
 
 function build(): Parts {
   const panel = new Panel({ id: "social-window", title: "Социальное", className: "social-window" });
@@ -60,10 +66,28 @@ export function closeSocialPanel(): void {
 
 export function resetSocialPanel(): void {
   parts?.panel.hide();
+  contactNameLabels.clear();
 }
 
-/** Opens the panel on a named tab, for the slash commands that name one. */
+/** A name query arrives after the list; update visible labels without replacing a typed form. */
+export function refreshSocialNames(): void {
+  const world = game.world;
+  if (!world || !parts?.panel.visible) return;
+  for (const [guid, label] of contactNameLabels) label.textContent = world.displayName(guid);
+}
+
+/** The stock FriendsFrame tab for one of this panel's tabs. */
+function stockTab(tab: string): FrameXmlFriendsTab {
+  return tab === "ignore" ? "ignore" : tab === "who" ? "who" : "friends";
+}
+
+/**
+ * Opens the panel on a named tab, for the slash commands that name one. The stock FriendsFrame
+ * answers first once the FrameXML mount published it (FrameXmlFriendsController.ts); this panel is
+ * the fallback.
+ */
 export function openSocialPanel(tab: string): void {
+  if (openFrameXmlFriends(stockTab(tab))) return;
   parts ??= build();
   if (!parts.panel.visible) {
     game.world?.requestContacts(SOCIAL_FLAG_ALL);
@@ -73,7 +97,13 @@ export function openSocialPanel(tab: string): void {
   showSocialPanel();
 }
 
+/**
+ * The one social toggle: the Socials micro button, the HUD's social button and the native menu
+ * entry. The stock FriendsFrame answers first once published (stock ToggleFriendsFrame, which keeps
+ * the tab the player last used); this panel is the fallback.
+ */
 export function toggleSocialPanel(): void {
+  if (toggleFrameXmlFriends()) return;
   parts ??= build();
   if (parts.panel.visible) {
     parts.panel.hide();
@@ -83,6 +113,31 @@ export function toggleSocialPanel(): void {
   game.world?.requestContacts(SOCIAL_FLAG_ALL);
   parts.panel.show();
   showSocialPanel();
+}
+
+/**
+ * The stock entry points' route (FrameXmlFriendsOwner.installFrameXmlFriendsRoutes): stock
+ * `ToggleFriendsFrame(tab)`, `ToggleFriendsPanel`, `ToggleIgnorePanel` and `/groster`. The stock
+ * frame while published; otherwise the native owner of that tab — this panel, the guild window or
+ * the channel roster. The Raid tab has no native window, so it does nothing unpublished.
+ */
+export function toggleSocialTab(tab: FrameXmlFriendsTab | undefined): void {
+  if (toggleFrameXmlFriends(tab)) return;
+  if (tab === undefined) toggleSocialPanel();
+  else if (tab === "guild") openGuildWindow();
+  else if (tab === "channel") toggleChannelRoster();
+  else if (tab !== "raid") {
+    if (parts?.panel.visible && parts.tabs.active === tab) parts.panel.hide();
+    else openSocialPanel(tab);
+  }
+}
+
+/** `ShowWhoPanel` and `/groster`'s route: open, never close. */
+export function openSocialTab(tab: FrameXmlFriendsTab): void {
+  if (openFrameXmlFriends(tab)) return;
+  if (tab === "guild") openGuildWindow();
+  else if (tab === "channel") toggleChannelRoster();
+  else if (tab !== "raid") openSocialPanel(tab);
 }
 
 function textInput(placeholder: string, width = "120px"): HTMLInputElement {
@@ -105,9 +160,11 @@ export function showSocialPanel(): void {
   if (!parts?.panel.visible) return;
   const { tabs, form, list, status } = parts;
   if (!world) {
+    contactNameLabels.clear();
     list.replaceChildren(emptyLine("Нет соединения"));
     return;
   }
+  contactNameLabels.clear();
   if (tabs.active === "who") drawWho();
   else if (tabs.active === "ignore") drawIgnore();
   else drawFriends();
@@ -134,6 +191,7 @@ export function showSocialPanel(): void {
       row.className = "social-row";
       const who = document.createElement("strong");
       who.textContent = world!.displayName(contact.guid);
+      contactNameLabels.set(contact.guid, who);
       const meta = document.createElement("span");
       meta.className = "social-meta";
       const parts2 = [contactStatusText(contact.status)];
@@ -186,6 +244,7 @@ export function showSocialPanel(): void {
       row.className = "social-row";
       const who = document.createElement("strong");
       who.textContent = world!.displayName(contact.guid);
+      contactNameLabels.set(contact.guid, who);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.textContent = "Убрать";

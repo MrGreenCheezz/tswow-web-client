@@ -169,6 +169,7 @@ export function showUnitFrames(): void {
       threat?: number | undefined;
       role?: "leader" | "assistant" | "maintank" | "mainassist" | undefined;
       ready?: boolean | undefined;
+      outOfRange?: boolean | undefined;
     } | undefined> = [];
     for (let index = 0; index < RAID_SUBGROUPS * RAID_PER_SUBGROUP; index++) grid.push(undefined);
     const filled = new Map<number, number>();
@@ -183,6 +184,7 @@ export function showUnitFrames(): void {
       snapshot.online = member.online;
       grid[subgroup * RAID_PER_SUBGROUP + used] = {
         snapshot, role: roleOf(member, group), ready: readyAnswer(member.guid),
+        outOfRange: outOfHealRange(member.guid),
       };
     }
     raid.render(grid.map((entry) => entry ?? { snapshot: emptyGridSlot() }));
@@ -200,6 +202,7 @@ export function showUnitFrames(): void {
         threat: threatOn(world.targetGuid, member.guid),
         role: roleOf(member, group),
         ready: readyAnswer(member.guid),
+        outOfRange: outOfHealRange(member.guid),
       };
     }));
   }
@@ -232,6 +235,27 @@ function roleOf(member: GroupMember, group: GroupState): "leader" | "assistant" 
 /** The tick or cross a running ready check puts on a frame. */
 function readyAnswer(guid: bigint): boolean | undefined {
   return game.world?.readyCheck?.answers.get(guid);
+}
+
+/**
+ * Whether a member is beyond typical heal range.
+ *
+ * Both ends need a live position; a member the client holds only as party stats (or a self
+ * it cannot place) answers unknown and the frame stays as it was. True means visible yet
+ * too far to heal — the case `is-far` (no world object at all) does not cover.
+ */
+const HEAL_RANGE_YARDS = 40;
+
+function outOfHealRange(guid: bigint): boolean | undefined {
+  const world = game.world;
+  const self = world?.state.selfGuid === undefined
+    ? undefined
+    : world.state.objects.get(world.state.selfGuid)?.position;
+  const other = world?.state.objects.get(guid)?.position;
+  if (!self || !other) return undefined;
+  const distance = Math.hypot(other.x - self.x, other.y - self.y, other.z - self.z);
+  if (!Number.isFinite(distance)) return undefined;
+  return distance > HEAL_RANGE_YARDS;
 }
 
 /** A slot in the raid grid that nobody is standing in. Drawn empty rather than removed. */

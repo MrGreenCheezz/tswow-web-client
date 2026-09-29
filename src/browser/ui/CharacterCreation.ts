@@ -102,6 +102,23 @@ export function isCreationData(value: unknown): value is CharacterCreationData {
   return Array.isArray(candidate.races) && Array.isArray(candidate.classes);
 }
 
+/** Keeps a late appearance answer from repainting another gateway, race, sex or class. */
+export class LatestAppearanceRequest {
+  #serial = 0;
+  #profile = "";
+
+  begin(gateway: string, race: number, sex: number, classId?: number): { serial: number; changed: boolean } {
+    const profile = JSON.stringify([gateway, race, sex, classId]);
+    const changed = profile !== this.#profile;
+    this.#profile = profile;
+    return { serial: ++this.#serial, changed };
+  }
+
+  isCurrent(serial: number, gateway: string, race: number, sex: number, classId?: number): boolean {
+    return serial === this.#serial && this.#profile === JSON.stringify([gateway, race, sex, classId]);
+  }
+}
+
 /**
  * Asks one gateway, and answers with what it said and nothing else.
  *

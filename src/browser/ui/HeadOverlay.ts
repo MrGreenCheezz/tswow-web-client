@@ -56,6 +56,21 @@ let cachedQuestMarkers: readonly QuestWorldObjectiveMarker[] = [];
 let questMarkersWorld: typeof game.world;
 let questMarkersCheckedAt = Number.NEGATIVE_INFINITY;
 
+/**
+ * Cached overlay size: `getBoundingClientRect` forces a sync layout, so it must not run per frame.
+ * Where the page has a `ResizeObserver` the size is the one the observer last reported (see
+ * `overlaySize`); only without one is it measured, at most once per TTL.
+ */
+let cachedBoundsWidth = 0;
+let cachedBoundsHeight = 0;
+let cachedBoundsAt = Number.NEGATIVE_INFINITY;
+/** How long a measured overlay size stays valid; a resize lands on the next frame after this. */
+const OVERLAY_BOUNDS_TTL_MS = 250;
+/** The layer's content box as the last layout left it, and the observer reporting it. */
+let observedBounds: { width: number; height: number } | undefined;
+let boundsObserver: ResizeObserver | undefined;
+let observedLayer: HTMLElement | undefined;
+
 let layer: HTMLElement | undefined;
 
 /** The class a bubble should carry, remembered until its element is made. */
@@ -82,6 +97,9 @@ export function resetHeadOverlay(): void {
   cachedQuestMarkers = [];
   questMarkersWorld = undefined;
   questMarkersCheckedAt = Number.NEGATIVE_INFINITY;
+  cachedBoundsWidth = 0;
+  cachedBoundsHeight = 0;
+  cachedBoundsAt = Number.NEGATIVE_INFINITY;
   layer?.replaceChildren();
 }
 
@@ -133,9 +151,9 @@ export function updateHeadOverlay(now: number): void {
   const player = selfGuid === undefined ? undefined : state?.objects.get(selfGuid)?.position;
   if (!root || !state || !player) return;
 
-  const bounds = root.getBoundingClientRect();
-  const width = Math.max(1, bounds.width);
-  const height = Math.max(1, bounds.height);
+  measureOverlay(root, now);
+  const width = cachedBoundsWidth;
+  const height = cachedBoundsHeight;
   // `view` and not `distance`, `viewPitch` and not `pitch`: the bubbles have to hang off the
   // camera the world was drawn with, or they float away from the heads they belong to for as long
   // as a wall is holding it in or a floor is holding it up. The pivot height comes from the same
@@ -149,12 +167,13 @@ export function updateHeadOverlay(now: number): void {
     const parts = questMarkerNodes.get(marker.guid) ?? makeQuestMarker(root, marker.guid);
     liveQuestMarkerGuids.add(marker.guid);
     if (!anchor) {
-      parts.root.hidden = true;
+      if (!parts.root.hidden) parts.root.hidden = true;
       continue;
     }
     updateQuestMarker(parts, marker);
-    parts.root.hidden = false;
-    parts.root.style.transform = `translate(-50%, -100%) translate(${Math.round(anchor.x + QUEST_MARKER_X_PX)}px, ${Math.round(anchor.y - QUEST_MARKER_GAP_PX)}px)`;
+    if (parts.root.hidden) parts.root.hidden = false;
+    const markerTransform = `translate(-50%, -100%) translate(${Math.round(anchor.x + QUEST_MARKER_X_PX)}px, ${Math.round(anchor.y - QUEST_MARKER_GAP_PX)}px)`;
+    if (parts.root.style.transform !== markerTransform) parts.root.style.transform = markerTransform;
   }
   for (const [guid, parts] of questMarkerNodes) {
     if (liveQuestMarkerGuids.has(guid)) continue;
@@ -167,13 +186,14 @@ export function updateHeadOverlay(now: number): void {
     const anchor = anchorFor(bubble.guid, camera, width, height);
     const node = bubbleNodes.get(bubble.guid) ?? makeBubble(root, bubble.guid);
     if (!anchor) {
-      node.hidden = true;
+      if (!node.hidden) node.hidden = true;
       liveBubbles.add(bubble.guid);
       continue;
     }
-    node.hidden = false;
+    if (node.hidden) node.hidden = false;
     if (node.textContent !== bubble.text) node.textContent = bubble.text;
-    node.style.transform = `translate(-50%, -100%) translate(${Math.round(anchor.x)}px, ${Math.round(anchor.y - BUBBLE_GAP_PX)}px)`;
+    const bubbleTransform = `translate(-50%, -100%) translate(${Math.round(anchor.x)}px, ${Math.round(anchor.y - BUBBLE_GAP_PX)}px)`;
+    if (node.style.transform !== bubbleTransform) node.style.transform = bubbleTransform;
     liveBubbles.add(bubble.guid);
   }
   for (const [guid, node] of bubbleNodes) {
@@ -189,18 +209,60 @@ export function updateHeadOverlay(now: number): void {
     const node = floaterNodes.get(floater) ?? makeFloater(root, floater);
     liveFloaters.add(floater);
     if (!anchor) {
-      node.hidden = true;
+      if (!node.hidden) node.hidden = true;
       continue;
     }
     const offset = floaterOffset(floater, now);
-    node.hidden = false;
-    node.style.opacity = offset.opacity.toFixed(2);
-    node.style.transform = `translate(-50%, -100%) translate(${Math.round(anchor.x + offset.dx)}px, ${Math.round(anchor.y - FLOATER_GAP_PX + offset.dy)}px)`;
+    if (node.hidden) node.hidden = false;
+    const opacity = offset.opacity.toFixed(2);
+    if (node.style.opacity !== opacity) node.style.opacity = opacity;
+    const floaterTransform = `translate(-50%, -100%) translate(${Math.round(anchor.x + offset.dx)}px, ${Math.round(anchor.y - FLOATER_GAP_PX + offset.dy)}px)`;
+    if (node.style.transform !== floaterTransform) node.style.transform = floaterTransform;
   }
   for (const [floater, node] of floaterNodes) {
     if (liveFloaters.has(floater)) continue;
     node.remove();
     floaterNodes.delete(floater);
+  }
+}
+
+/**
+ * The overlay's size into `cachedBoundsWidth`/`cachedBoundsHeight`, without laying the page out.
+ *
+ * The layer fills the viewport (`.head-overlay { inset: 0 }`, no border, padding or transform) and
+ * changes size only with the window. Reading `getBoundingClientRect` every 250 ms still forced a
+ * layout in the middle of a frame — after the frame had written the unit frames, the minimap and
+ * this layer's own transforms — four times a second while anything hung over a head. A
+ * `ResizeObserver` is told after each layout that changed the box, before that frame is painted, so
+ * a frame reads a number instead: `SimpleScene`'s `#canvasSize` for the world canvas beside it. A
+ * new layer (the old one was taken off the page) is observed afresh; until the first observation,
+ * and where there is no observer at all (the tests), it is measured as before, once per TTL.
+ */
+function measureOverlay(root: HTMLElement, now: number): void {
+  if (observedLayer !== root) {
+    boundsObserver?.disconnect();
+    boundsObserver = undefined;
+    observedBounds = undefined;
+    observedLayer = root;
+    if (typeof ResizeObserver === "function") {
+      boundsObserver = new ResizeObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        if (entry) observedBounds = { width: entry.contentRect.width, height: entry.contentRect.height };
+      });
+      boundsObserver.observe(root);
+    }
+  }
+  const observed = observedBounds;
+  if (observed && observed.width > 0 && observed.height > 0) {
+    cachedBoundsWidth = observed.width;
+    cachedBoundsHeight = observed.height;
+    return;
+  }
+  if (now - cachedBoundsAt >= OVERLAY_BOUNDS_TTL_MS || cachedBoundsWidth <= 0 || cachedBoundsHeight <= 0) {
+    const bounds = root.getBoundingClientRect();
+    cachedBoundsWidth = Math.max(1, bounds.width);
+    cachedBoundsHeight = Math.max(1, bounds.height);
+    cachedBoundsAt = now;
   }
 }
 
@@ -257,18 +319,21 @@ function updateQuestMarker(
   parts: { root: HTMLElement; sigil: HTMLElement; progress: HTMLElement },
   marker: QuestWorldObjectiveMarker,
 ): void {
-  parts.root.dataset["kind"] = marker.kind;
-  parts.root.dataset["label"] = marker.label;
-  parts.root.dataset["objectiveCount"] = String(marker.objectives.length);
-  parts.sigil.dataset["kind"] = marker.kind;
+  if (parts.root.dataset["kind"] !== marker.kind) parts.root.dataset["kind"] = marker.kind;
+  if (parts.root.dataset["label"] !== marker.label) parts.root.dataset["label"] = marker.label;
+  const objectiveCount = String(marker.objectives.length);
+  if (parts.root.dataset["objectiveCount"] !== objectiveCount) parts.root.dataset["objectiveCount"] = objectiveCount;
+  if (parts.sigil.dataset["kind"] !== marker.kind) parts.sigil.dataset["kind"] = marker.kind;
   const progressRows = marker.objectives.map(questMarkerProgress).filter((row) => row !== undefined);
   const progress = progressRows.length > 1 ? `${progressRows[0]} · +${progressRows.length - 1}` : progressRows[0] ?? "";
-  parts.progress.textContent = progress;
-  parts.progress.hidden = progress.length === 0;
-  parts.root.title = marker.objectives.map((objective) => {
+  if (parts.progress.textContent !== progress) parts.progress.textContent = progress;
+  const progressHidden = progress.length === 0;
+  if (parts.progress.hidden !== progressHidden) parts.progress.hidden = progressHidden;
+  const title = marker.objectives.map((objective) => {
     const row = questMarkerProgress(objective);
     return row ? `${objective.label}: ${row}` : objective.label;
   }).join(" · ");
+  if (parts.root.title !== title) parts.root.title = title;
 }
 
 /**

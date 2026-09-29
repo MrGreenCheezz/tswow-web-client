@@ -136,6 +136,33 @@ export function floaterOffset(floater: Floater, now: number): { dx: number; dy: 
   };
 }
 
+/**
+ * The last landed blow per unit, for the plate hit-flash.
+ *
+ * Fed by the same `FLOATING_TEXT` funnel as the numbers and the injury sounds, so a flash and its
+ * number are never about different blows. Bounded — an AoE pull is many guids — with the oldest
+ * dropped first; entries outlive their flash, and the flash arithmetic ignores them past its window.
+ */
+const plateHits = new Map<bigint, number>();
+const PLATE_HIT_TRACKED = 64;
+
+/** Remembers a landed blow; heals, power and misses never whiten a health bar. */
+export function notePlateHit(guid: bigint, kind: FloaterKind, amount: number, now: number): void {
+  if (guid === 0n || amount <= 0 || (kind !== "damage" && kind !== "taken")) return;
+  plateHits.delete(guid);
+  plateHits.set(guid, now);
+  while (plateHits.size > PLATE_HIT_TRACKED) {
+    const oldest = plateHits.keys().next();
+    if (oldest.done) break;
+    plateHits.delete(oldest.value);
+  }
+}
+
+/** When the last blow landed on this unit, if it is still tracked. */
+export function plateHitAt(guid: bigint): number | undefined {
+  return plateHits.get(guid);
+}
+
 /** What a number reads as: damage comes off, a heal goes on, a miss is a word. */
 export function floatingAmountText(
   kind: FloaterKind, amount: number, text?: string | undefined,

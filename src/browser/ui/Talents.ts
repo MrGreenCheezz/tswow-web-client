@@ -1,13 +1,15 @@
 import { MAX_GLYPH_SLOTS } from "../../world/CharacterProgressProtocol.js";
 import type { TalentsInfo } from "../../world/CharacterProgressProtocol.js";
 import type { TalentTabInfo } from "../../gateway/TalentMetadata.js";
-import { unit } from "../../world/Fields.js";
+import { unit, worldObject } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
+import { playerInventory } from "../Inventory.js";
 import { spellCastAllowed } from "../SpellCastGuard.js";
 import { Panel, attachTooltip } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { formatSpellDescription } from "./SpellText.js";
+import { requestSpellCast } from "../game/GroundTarget.js";
 import { spellDescriptionContext } from "./Spellbook.js";
 import {
   TALENT_COLUMNS, learnedInTab, nextRankRequest, pointsInTree, talentArrows, talentTreeState,
@@ -151,12 +153,12 @@ export function showTalents(): void {
   const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
   const classId = self ? unit.classId(self) : undefined;
   const info = showingPet ? world.petTalents : world.talents;
-  const petFamily = petTalentCategory();
+  const petMask = petTalentMask();
   const tabs = showingPet
-    ? talents.petTabs(petFamily)
+    ? talents.petTabs(petMask)
     : classId === undefined ? [] : talents.tabsForClass(classId);
 
-  buildHeader(header, info, petFamily);
+  buildHeader(header, info, petMask);
   if (tabs.length === 0) {
     footer.textContent = showingPet
       ? "У этого питомца нет дерева талантов."
@@ -167,7 +169,7 @@ export function showTalents(): void {
   activeTab = Math.max(0, Math.min(tabs.length - 1, activeTab));
   const learned = learnedOf(info);
   for (const [index, tab] of tabs.entries()) {
-    const spent = pointsInTree(talents.talentsIn(tab.id), learned);
+    const spent = pointsInTree(talents.talentsIn(tab.id), learned, showingPet ? 3 : 5);
     treeBar.append(tabButton(`${tab.name} (${spent})`, index === activeTab, () => {
       activeTab = index;
       showTalents();
@@ -176,12 +178,13 @@ export function showTalents(): void {
 
   const tab = tabs[activeTab];
   if (!tab) return;
-  drawTree(grid, talents.talentsIn(tab.id), learned, info?.unspentPoints ?? 0);
+  drawTree(grid, talents.talentsIn(tab.id), learned, info?.unspentPoints ?? 0,
+    showingPet ? 3 : 5);
   drawGlyphs(glyphRow, info);
   footer.textContent = `Нераспределённых очков: ${info?.unspentPoints ?? 0}`;
 }
 
-function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petFamily: number): void {
+function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petMask: number): void {
   const world = game.world;
   // Dual specialisation: one button per specialisation the packet reports, and the switch is a
   // spell rather than an opcode. A character with one spec gets one button and no way to press it
@@ -193,7 +196,9 @@ function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petFami
     const isActive = index === (info?.activeSpec ?? 0);
     const button = tabButton(`Специализация ${index + 1}`, isActive, () => {
       if (spell !== undefined && known && !isActive && world
-        && (game.world !== world || spellCastAllowed(world, spell))) world.castSpell(spell);
+        && (game.world !== world || spellCastAllowed(world, spell))) {
+        requestSpellCast(spell, () => world.castSpell(spell));
+      }
     });
     // Not `disabled`: "dual specialisation has not been bought" is the whole content of this
     // button for a character who has not bought it, and a disabled button never shows it.
@@ -206,32 +211,52 @@ function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petFami
     header.append(button);
   }
 
-  if (petFamily > 0 || showingPet) {
+  if (petMask !== 0 || showingPet) {
     header.append(tabButton(showingPet ? "Персонаж" : "Питомец", false, () => {
       showingPet = !showingPet;
       activeTab = 0;
       showTalents();
     }));
   }
+
+  // Talent wipe: the server owns the cost and the NPC check. Confirm here, send
+  // `MSG_TALENT_WIPE_CONFIRM` with the gossip/target guid; the realm refuses when illegal.
+  if (!showingPet) {
+    const reset = tabButton("Сбросить", false, () => {
+      const world = game.world;
+      if (!world) return;
+      const guid = world.gossip?.guid ?? world.targetGuid;
+      if (guid === undefined || guid === 0n) {
+        world.onSpellStatus?.("Подойдите к тренеру и откройте диалог сброса талантов", true);
+        return;
+      }
+      world.confirmTalentWipe(guid);
+    });
+    reset.title = "Сбросить таланты (стоимость и проверка — на сервере)";
+    header.append(reset);
+  }
 }
 
-/** The pet's `PetTalentType`, which is the only link between its family and its trees. */
-function petTalentCategory(): number {
+/** The core's pet-family mask, which matches the `TalentTab.PetTalentMask` trees. */
+function petTalentMask(): number {
   const world = game.world;
   const petGuid = world?.petSpells?.guid;
   if (!world || petGuid === undefined || petGuid === 0n) return 0;
   const family = world.petSpells?.creatureFamily ?? 0;
-  return game.talentData?.petTalentType(family) ?? 0;
+  return game.talentData?.petTalentMask(family) ?? 0;
 }
 
-function drawTree(grid: HTMLElement, talents: readonly TalentDefinition[], learned: Map<number, number>, unspent: number): void {
+function drawTree(
+  grid: HTMLElement, talents: readonly TalentDefinition[], learned: Map<number, number>,
+  unspent: number, pointsPerTier: number,
+): void {
   // Nothing was ever asking for these. A talent row carries no name and no icon of its own — both
   // belong to the spell it teaches — and the only spell rows the client fetched were the ones the
   // character already knows, so an unlearned tree was a grid of blank squares reading «Талант
   // 1234». Asked for once per session per spell, and the tree is redrawn when they land.
   ensureSpellNames(talents.map((talent) => talent.ranks[0] ?? 0), showTalents);
   const inTab = learnedInTab(talents, learned);
-  const cells = talentTreeState(talents, inTab, unspent);
+  const cells = talentTreeState(talents, inTab, unspent, pointsPerTier);
   const height = treeHeight(talents);
   grid.style.gridTemplateColumns = `repeat(${TALENT_COLUMNS}, var(--talent-size, 44px))`;
   grid.style.gridTemplateRows = `repeat(${height}, var(--talent-size, 44px))`;
@@ -250,10 +275,10 @@ function drawTree(grid: HTMLElement, talents: readonly TalentDefinition[], learn
     grid.append(line);
   }
 
-  for (const cell of cells) grid.append(talentButton(cell));
+  for (const cell of cells) grid.append(talentButton(cell, pointsPerTier));
 }
 
-function talentButton(cell: TalentCell): HTMLButtonElement {
+function talentButton(cell: TalentCell, pointsPerTier: number): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "talent";
@@ -291,7 +316,7 @@ function talentButton(cell: TalentCell): HTMLButtonElement {
     // from the gateway a moment after the tree does, and a tooltip built with the button would
     // have said «Талант 1234» for the rest of the session.
     const row = game.spells.get(spellId);
-    const why = cell.blockedBy === "tier" ? `Нужно ${tierRequirement(cell.talent.tier)} очков в этой ветке`
+    const why = cell.blockedBy === "tier" ? `Нужно ${tierRequirement(cell.talent.tier, pointsPerTier)} очков в этой ветке`
       : cell.blockedBy === "prerequisite" ? "Требуется предыдущий талант"
         : cell.blockedBy === "points" ? "Нет свободных очков"
           : cell.blockedBy === "maxed" ? "Изучено полностью" : "";
@@ -345,12 +370,38 @@ function drawGlyphs(glyphRow: HTMLElement, info: TalentsInfo | undefined): void 
     attachTooltip(button, () => {
       const row = glyph ? game.spells.get(glyph.spellId) : undefined;
       return id === 0
-        ? { title: "Ячейка символа", footer: ["Пусто"] }
+        ? { title: "Ячейка символа", footer: ["Щелчок вставляет символ из сумок"] }
         : { title: row?.name ?? `Символ ${id}`, footer: ["Щелчок вынимает символ"] };
     });
     button.addEventListener("click", () => {
       if (id !== 0) game.world?.removeGlyph(slot);
+      else insertGlyphFromBags();
     });
     glyphRow.append(button);
   }
+}
+
+/**
+ * Inserts a glyph by using the item: there is no "insert" opcode, only `CMSG_USE_ITEM`.
+ * Uses the first glyph item found in the bags; the server validates slot/type/level.
+ */
+function insertGlyphFromBags(): void {
+  const world = game.world;
+  if (!world) return;
+  const inventory = playerInventory(world.state);
+  const bags = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)];
+  // Glyph items are consumables whose use casts the insert; find any usable glyph the server
+  // has a template for. The exact slot choice stays server-side — this only starts the use.
+  const candidate = bags.find((slot) => {
+    if (slot.item === undefined) return false;
+    const entry = worldObject.entry(slot.item) ?? 0;
+    const template = entry ? world.itemTemplate(entry) : undefined;
+    return (template?.name ?? "").toLowerCase().includes("символ")
+      || (template?.name ?? "").toLowerCase().includes("glyph");
+  });
+  if (!candidate?.item) {
+    world.onSpellStatus?.("В сумках нет символов для вставки", true);
+    return;
+  }
+  world.useItem(candidate.bag, candidate.slot, candidate.guid);
 }

@@ -512,6 +512,26 @@ function layerOf(widget: ParsedWidget): LayerName {
   return widget.type === "Texture" ? widget.layer : "ARTWORK";
 }
 
+function runWidgetActions(
+  actions: readonly WindowAction[],
+  widget: ParsedWidget,
+  context: BuildContext,
+): void {
+  if (actions.length === 0) return;
+  context.presses.asked++;
+  const run = context.host.runActions;
+  if (!run) return;
+  run(actions, {
+    window: context.windowId, module: context.module, widget: widget.id, state: context.state,
+    // The row the widget was drawn from, read *now* rather than at build time: the same instance
+    // is reused as the list under it moves, and the press means the row that is on screen.
+    row: context.row ? rowScope(context.row) : undefined,
+    slot: context.slot,
+    root: context.rootRef?.element,
+  });
+  context.presses.ran++;
+}
+
 function bindAction(
   element: HTMLElement,
   event: string,
@@ -521,18 +541,7 @@ function bindAction(
 ): void {
   if (actions.length === 0) return;
   element.addEventListener(event, () => {
-    context.presses.asked++;
-    const run = context.host.runActions;
-    if (!run) return;
-    run(actions, {
-      window: context.windowId, module: context.module, widget: widget.id, state: context.state,
-      // The row the widget was drawn from, read *now* rather than at build time: the same instance
-      // is reused as the list under it moves, and the press means the row that is on screen.
-      row: context.row ? rowScope(context.row) : undefined,
-      slot: context.slot,
-      root: context.rootRef?.element,
-    });
-    context.presses.ran++;
+    runWidgetActions(actions, widget, context);
   });
 }
 
@@ -835,7 +844,17 @@ function buildBody(widget: ParsedWidget, context: BuildContext, bindings: Bound[
         dirty = true;
         context.state[widget.state] = readInput(input as HTMLInputElement, widget.numeric);
       });
-      bindAction(input, "change", widget.onEnter, widget, context);
+      // `change` also fires when a changed field loses focus. Only an explicit Enter runs onEnter;
+      // a multiline box without onEnter keeps the browser's normal newline behavior.
+      if (widget.onEnter.length > 0) {
+        input.addEventListener("keydown", (event) => {
+          const key = event as KeyboardEvent;
+          if (key.key !== "Enter" || key.isComposing) return;
+          event.preventDefault();
+          if (key.repeat) return;
+          runWidgetActions(widget.onEnter, widget, context);
+        });
+      }
       return element;
     }
 

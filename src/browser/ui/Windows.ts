@@ -1,16 +1,18 @@
 import { game } from "../game/Context.js";
+import { tradeGoldToCopper } from "../../world/TradeProtocol.js";
+import { LFG_ROLE_DAMAGE, LFG_ROLE_HEALER, LFG_ROLE_TANK } from "../../world/LfgProtocol.js";
 import { showWorldState } from "./WorldView.js";
 import {
-  attackButton, auctionFind, auctionMine, auctionSearch, bankerButton, characterToggle,
+  attackButton, auctionBids, auctionFind, auctionMine, auctionSearch, auctionWindow, bankerButton, characterToggle,
   characterWindow, chatForm,
   chatInput, clearTargetButton, deathReclaim, deathRelease, deathSpirit,
   diagnosticsWindow, duelAccept, duelDecline, element, gossipWindow,
-  groupAccept, groupDecline, guildAccept, guildDecline, guildWindow, interactButton, inventoryToggle,
-  inventoryWindow, lfgAccept, lfgDecline, lfgDungeons, lfgJoin, lfgLeave, lfgTeleport, lfgWindow,
-  lootButton, lootMoney, lootWindow, questWindow,
+  groupAccept, groupDecline, guildAccept, guildDecline, interactButton, inventoryToggle,
+  inventoryWindow, lfgAccept, lfgDecline, lfgJoin, lfgLeave, lfgTeleport, lfgToggle, lfgWindow,
+  lootAll, lootButton, lootMoney, lootWindow, questWindow,
   gameMenuToggle, resurrectAccept, resurrectDecline, spellbookHideRanks, spellbookSearch,
   spellbookToggle, spellbookWindow, talentsToggle,
-  tradeAccept, tradeCancel, tradeGold, tradeSetGold, trainerButton, trainerWindow,
+  tradeAccept, tradeCancel, tradeGold, tradeSetGold, tradeWindow, trainerButton, trainerWindow,
   unhandledSave, vendorButton, vendorWindow,
 } from "./Dom.js";
 import { closeNpcServiceWindow } from "./Npc.js";
@@ -20,20 +22,29 @@ import { closeWorldMap, worldMapOpen } from "./WorldMap.js";
 import { closeTrackingMenu, trackingMenuOpen } from "./Tracking.js";
 import { toggleTalentsWindow } from "./Talents.js";
 import { submitChat, systemLine } from "./Chat.js";
-import { closeLfgWindow, selectedLfgRoles } from "./Social.js";
+import { changeAuctionOwnerPage, closeLfgWindow, lfgWindowOpen, selectedLfgDungeons, selectedLfgRoles, setAuctionOwnerPage, setAuctionTab, toggleLfgWindow } from "./Social.js";
 import { closeMail, closeMailRead, mailOpen, mailReadOpen } from "./Mail.js";
 import { interactWithTarget, lootCurrentTarget } from "./Npc.js";
-import { setSpellbookSearch, spellbookSearchKeyDown } from "./Spellbook.js";
+import { setSpellbookSearch, showSpells, spellbookSearchKeyDown } from "./Spellbook.js";
 import { toggleSetting } from "./Settings.js";
 import { saveUnhandledOpcodeReport } from "./Diagnostics.js";
 import { closeFloating } from "./Widgets.js";
 import { closeGuildWindow, guildWindowOpen } from "./Guild.js";
 import { closeGuildBank, guildBankOpen } from "./GuildBank.js";
 import { calendarOpen, closeCalendar } from "./Calendar.js";
+import { closeGmTickets, gmTicketsOpen } from "./GmTickets.js";
+import { closePetition, petitionOpen } from "./Petition.js";
 import { closeSocialPanel, socialPanelOpen } from "./SocialPanel.js";
 import { closeScoreboard, scoreboardOpen } from "./Scoreboard.js";
+import { closeReputation, reputationOpen } from "./Reputation.js";
 import { arenaWindowOpen, closeArenaWindow } from "./ArenaWindow.js";
 import { closeLootRolls, lootRollsOpen } from "./LootRolls.js";
+import { closeQuestLog, questLogOpen, toggleQuestLog } from "./QuestLog.js";
+import { barberOpen, closeBarberShop } from "./BarberShop.js";
+import { channelRosterOpen, closeChannelRoster } from "./ChannelRoster.js";
+import { toggleSocialPanel } from "./SocialPanel.js";
+import { toggleWorldMap } from "./WorldMap.js";
+import { toggleCalendar } from "./Calendar.js";
 import { closeReadyCheck, readyCheckOpen } from "./ReadyCheck.js";
 import { closeSettingsWindow, settingsWindowOpen } from "./Settings.js";
 import { closeMacroWindow, macroWindowOpen } from "./Macros.js";
@@ -42,12 +53,14 @@ import { closeSocketing, socketingOpen } from "./Socketing.js";
 import {
   selectCharacterTab, selectedCharacterTab, type CharacterTab, wireCharacterTabs,
 } from "./CharacterSheet.js";
-import { toggleGameMenu } from "./GameMenu.js";
+import { cancelLogoutCountdown, logoutCountdownOpen, toggleGameMenu } from "./GameMenu.js";
+import { closeFrameXmlPopups, frameXmlPopupsOpen } from "../framexml/FrameXmlPopupsController.js";
 import { closeEscapableWindows, escapableWindowOpen } from "./WindowRegistry.js";
 import { playUiSound } from "../game/GameSounds.js";
 import {
   closeFrameXmlSpellBook,
   frameXmlSpellBookOpen,
+  toggleFrameXmlSpellBook,
 } from "../framexml/FrameXmlSpellBookController.js";
 import {
   closeFrameXmlBags,
@@ -57,10 +70,13 @@ import {
 import {
   closeFrameXmlCharacter,
   frameXmlCharacterOpen,
+  toggleFrameXmlCharacter,
+  toggleFrameXmlCharacterTab,
 } from "../framexml/FrameXmlCharacterController.js";
 import {
   closeFrameXmlQuest,
   frameXmlQuestOpen,
+  toggleFrameXmlQuest,
 } from "../framexml/FrameXmlQuestController.js";
 import {
   closeFrameXmlTalent,
@@ -71,6 +87,12 @@ import {
   closeFrameXmlPvp,
   frameXmlPvpOpen,
 } from "../framexml/FrameXmlPvpController.js";
+import { closeFrameXmlLfd, frameXmlLfdOpen } from "../framexml/FrameXmlLfdController.js";
+import { closeFrameXmlFriends, frameXmlFriendsOpen } from "../framexml/FrameXmlFriendsController.js";
+import { closeFrameXmlLoot, frameXmlLootOpen } from "../framexml/FrameXmlLootController.js";
+import { closeFrameXmlMail, frameXmlMailOpen } from "../framexml/FrameXmlMailController.js";
+import { closeFrameXmlTrade, frameXmlTradeOpen } from "../framexml/FrameXmlTradeController.js";
+import { closeFrameXmlAuction, frameXmlAuctionOpen } from "../framexml/FrameXmlAuctionController.js";
 import {
   closeFrameXmlMerchant,
   frameXmlMerchantOpen,
@@ -79,13 +101,20 @@ import {
   closeFrameXmlTrainer,
   frameXmlTrainerOpen,
 } from "../framexml/FrameXmlTrainerController.js";
+import { closeFrameXmlTradeSkill, frameXmlTradeSkillOpen } from "../framexml/FrameXmlTradeSkillController.js";
 export function toggleGameWindow(window: HTMLElement): void {
+  if (window === spellbookWindow && toggleFrameXmlSpellBook()) return;
   window.hidden = !window.hidden;
   // The one place every markup window is opened and shut, so the one place that has to know a
   // window makes a noise. `igMainMenuOpen` and its closing pair are the client's own.
   playUiSound(window.hidden ? "windowClose" : "windowOpen");
   // Contents of a hidden window are not kept up to date, so they are rebuilt when it opens.
-  if (!window.hidden && game.world) showWorldState(game.world.state);
+  if (!window.hidden && game.world) {
+    showWorldState(game.world.state);
+    // A spell learned while the book was shut must not wait for another event to show up: the open
+    // is the repaint the player asked for. Every route into this window goes through here.
+    if (window === spellbookWindow) showSpells();
+  }
 }
 
 /** Makes a page visible without turning a server response into an accidental close toggle. */
@@ -94,8 +123,18 @@ export function showCharacterWindow(tab: CharacterTab): void {
   if (characterWindow.hidden) toggleGameWindow(characterWindow);
 }
 
-/** Opens a page in the one native character window; repeating the same shortcut closes it. */
+/**
+ * Opens a page in the one native character window; repeating the same shortcut closes it.
+ *
+ * A published stock CharacterFrame owns its own pages through stock ToggleCharacter, with the
+ * stock bindings' open/switch/close behaviour: «sheet» (C) is the paper doll, «skills» (J) is
+ * SkillFrame on tab 4. Without that owner, skills keep the stock spellbook's skill-line tabs and
+ * then the native pane. Stock ReputationFrame (tab 3) is reached through its tab only: no native
+ * binding opens reputation directly.
+ */
 export function openCharacterWindow(tab: CharacterTab): void {
+  if (tab === "sheet" && toggleFrameXmlCharacter()) return;
+  if (tab === "skills" && (toggleFrameXmlCharacterTab("SkillFrame") || toggleFrameXmlSpellBook())) return;
   if (!characterWindow.hidden && selectedCharacterTab() === tab) {
     toggleGameWindow(characterWindow);
     return;
@@ -118,16 +157,28 @@ export interface EscapableWindow {
 }
 
 const ESCAPABLE: EscapableWindow[] = [
+  // The stock CAMP popup cancels the server countdown when dismissed with Escape.
+  { isOpen: logoutCountdownOpen, close: cancelLogoutCountdown },
+  // The published stock StaticPopups: StaticPopup_EscapePressed runs each escapable dialog's own
+  // cancel (DeclineGroup, CancelTrade, CAMP's CancelLogout …); inert while the natives own them.
+  { isOpen: frameXmlPopupsOpen, close: closeFrameXmlPopups },
   // Slice I9's windows, every one of them built at run time and therefore invisible to the old
   // hardcoded list. A roll dialog goes first: Escape should wave the dialogs away before it
   // starts closing windows behind them.
   { isOpen: lootRollsOpen, close: closeLootRolls },
   { isOpen: readyCheckOpen, close: closeReadyCheck },
   { isOpen: guildWindowOpen, close: closeGuildWindow },
+  { isOpen: questLogOpen, close: closeQuestLog },
+  { isOpen: barberOpen, close: closeBarberShop },
+  { isOpen: channelRosterOpen, close: closeChannelRoster },
   { isOpen: guildBankOpen, close: closeGuildBank },
   { isOpen: calendarOpen, close: closeCalendar },
+  { isOpen: gmTicketsOpen, close: closeGmTickets },
+  { isOpen: petitionOpen, close: closePetition },
   { isOpen: socialPanelOpen, close: closeSocialPanel },
+  { isOpen: lfgWindowOpen, close: closeLfgWindow },
   { isOpen: scoreboardOpen, close: closeScoreboard },
+  { isOpen: reputationOpen, close: closeReputation },
   { isOpen: arenaWindowOpen, close: closeArenaWindow },
   { isOpen: settingsWindowOpen, close: closeSettingsWindow },
   { isOpen: macroWindowOpen, close: closeMacroWindow },
@@ -149,6 +200,22 @@ const ESCAPABLE: EscapableWindow[] = [
   // PvP's stock summary is distinct from the native arena invite surface. Keep one stable
   // entry so the first Escape closes PVPParentFrame before the game menu gets a chance to open.
   { isOpen: frameXmlPvpOpen, close: closeFrameXmlPvp },
+  // The stock dungeon finder (LFDParentFrame) once published; inert while the native #lfg-window
+  // (the entry above) owns the route.
+  { isOpen: frameXmlLfdOpen, close: closeFrameXmlLfd },
+  // The stock FriendsFrame (Friends, Who, Guild, Chat, Raid tabs) once published; inert while the
+  // native social and guild windows (entries above) own the routes.
+  { isOpen: frameXmlFriendsOpen, close: closeFrameXmlFriends },
+  // The stock LootFrame once published: its close is LootCloseButton's own HideUIPanel, whose
+  // OnHide releases the corpse. Stock GroupLootFrames are not Escape-closable, as in the client.
+  { isOpen: frameXmlLootOpen, close: closeFrameXmlLoot },
+  // Stock MailFrame/OpenMailFrame and TradeFrame once published: their close is HideUIPanel, whose
+  // OnHide closes the mailbox (CloseMail) or cancels the trade (CloseTrade), as in the client.
+  { isOpen: frameXmlMailOpen, close: closeFrameXmlMail },
+  { isOpen: frameXmlTradeOpen, close: closeFrameXmlTrade },
+  // Stock AuctionFrame once Blizzard_AuctionUI has loaded: HideUIPanel, whose OnHide calls
+  // CloseAuctionHouse. While the add-on loads the native #auction-window (MARKUP_WINDOWS) owns it.
+  { isOpen: frameXmlAuctionOpen, close: closeFrameXmlAuction },
   // MerchantFrame owns the vendor interaction once its structural gate has published. Escape must
   // close it before the game menu, while an absent gate leaves Npc.ts as the native fallback.
   { isOpen: frameXmlMerchantOpen, close: closeFrameXmlMerchant },
@@ -156,6 +223,10 @@ const ESCAPABLE: EscapableWindow[] = [
   // also cancels the pending intent before the native close path runs.
   { isOpen: frameXmlTrainerOpen, close: closeFrameXmlTrainer },
   { isOpen: frameXmlTalentOpen, close: closeFrameXmlTalent },
+  // The stock TradeSkillFrame (Blizzard_TradeSkillUI) once published: a waiting enchant is dropped,
+  // and HideUIPanel's OnHide runs CloseTradeSkill. While it loads, the native craft window's entry
+  // above closes the visible fallback.
+  { isOpen: frameXmlTradeSkillOpen, close: closeFrameXmlTradeSkill },
   // Every module window that asked for `escClose`, as one entry. Only the ones that asked count:
   // a definition that leaves `escClose` off means a HUD overlay, and a HUD that swallowed Escape
   // would take the game menu away from the player for as long as the module was loaded.
@@ -172,6 +243,7 @@ export function registerEscapable(entry: EscapableWindow): () => void {
 
 const MARKUP_WINDOWS = [
   characterWindow, inventoryWindow, spellbookWindow, gossipWindow, questWindow, lootWindow,
+  auctionWindow, tradeWindow,
   vendorWindow, trainerWindow, diagnosticsWindow,
 ];
 
@@ -192,6 +264,8 @@ export function closeGameWindows(): void {
   if (!questWindow.hidden) game.world?.closeQuest();
   if (!lootWindow.hidden) game.world?.closeLoot();
   if (!vendorWindow.hidden) game.world?.closeVendor();
+  if (!auctionWindow.hidden) game.world?.closeAuctionHouse();
+  if (!tradeWindow.hidden) game.world?.cancelTrade();
   // A pending supported trainer is still owned by the stock controller even though its native
   // fallback is visible. Let that owner cancel the request and call CloseTrainer exactly once;
   // only an inert/type-2 owner falls through to the native world close path.
@@ -236,26 +310,87 @@ export function wirePanelButtons(): void {
   talentsToggle.addEventListener("click", () => {
     if (!toggleFrameXmlTalent()) toggleTalentsWindow();
   });
+  lfgToggle.addEventListener("click", () => toggleLfgWindow());
+  // The journal, social panel, world map and calendar had no mouse entry point at all: only
+  // hotkeys and slash commands. The windows were ready; only the buttons were missing.
+  document.getElementById("quest-toggle")?.addEventListener("click", () => {
+    if (!toggleFrameXmlQuest()) toggleQuestLog();
+  });
+  document.getElementById("social-toggle")?.addEventListener("click", () => toggleSocialPanel());
+  document.getElementById("worldmap-toggle")?.addEventListener("click", () => toggleWorldMap());
+  document.getElementById("calendar-toggle")?.addEventListener("click", () => toggleCalendar());
   gameMenuToggle.addEventListener("click", toggleGameMenu);
   unhandledSave.addEventListener("click", saveUnhandledOpcodeReport);
-  auctionFind.addEventListener("click", () => game.world?.searchAuctions({ name: auctionSearch.value.trim() }));
-  auctionMine.addEventListener("click", () => game.world?.listOwnAuctions());
+  // Auction search state lives here so filters, pagination and pending-sales work without
+  // waiting on a Dom.ts regeneration: the inputs are read directly by id.
+  let auctionPage = 0;
+  let auctionTab: "search" | "own" | "bids" = "search";
+  const auctionFilters = (): Record<string, unknown> => {
+    const byId = (id: string): HTMLInputElement | HTMLSelectElement | null =>
+      document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    const levelMin = Math.max(0, Math.floor(Number((byId("auction-level-min") as HTMLInputElement)?.value) || 0));
+    const levelMax = Math.max(0, Math.floor(Number((byId("auction-level-max") as HTMLInputElement)?.value) || 0));
+    const quality = Number((byId("auction-quality") as HTMLSelectElement)?.value ?? "-1");
+    const usableOnly = (byId("auction-usable") as HTMLInputElement)?.checked === true;
+    const pageLabel = document.getElementById("auction-page");
+    if (pageLabel) pageLabel.textContent = `Стр. ${auctionPage}`;
+    return {
+      name: auctionSearch.value.trim(),
+      ...(levelMin > 0 ? { levelMin } : {}),
+      ...(levelMax > 0 ? { levelMax } : {}),
+      ...(Number.isInteger(quality) && quality >= 0 ? { quality } : {}),
+      ...(usableOnly ? { usableOnly: true } : {}),
+    };
+  };
+  auctionFind.addEventListener("click", () => {
+    auctionTab = "search"; setAuctionTab("search"); auctionPage = 0;
+    game.world?.searchAuctions({ ...auctionFilters(), page: 0 } as Parameters<NonNullable<typeof game.world.searchAuctions>>[0]);
+  });
+  auctionMine.addEventListener("click", () => { auctionTab = "own"; setAuctionTab("own"); setAuctionOwnerPage(0); game.world?.listOwnAuctions(); });
+  auctionBids.addEventListener("click", () => { auctionTab = "bids"; setAuctionTab("bids"); refreshBidderList(); });
+  document.getElementById("auction-pending")?.addEventListener("click", () => game.world?.requestPendingSales());
+  // The bids list has no server pages (`BuildListBidderItems` answers whole), so its
+  // arrows refresh rather than turn.
+  const refreshBidderList = (): void => {
+    const pageLabel = document.getElementById("auction-page");
+    if (pageLabel) pageLabel.textContent = "Стр. 0";
+    game.world?.listBidderAuctions();
+  };
+  document.getElementById("auction-prev")?.addEventListener("click", () => {
+    if (auctionTab === "own") changeAuctionOwnerPage(-1);
+    else if (auctionTab === "bids") refreshBidderList();
+    else { auctionPage = Math.max(0, auctionPage - 1); game.world?.searchAuctions({ ...auctionFilters(), page: auctionPage } as Parameters<NonNullable<typeof game.world.searchAuctions>>[0]); }
+  });
+  document.getElementById("auction-next")?.addEventListener("click", () => {
+    if (auctionTab === "own") changeAuctionOwnerPage(1);
+    else if (auctionTab === "bids") refreshBidderList();
+    else { auctionPage += 1; game.world?.searchAuctions({ ...auctionFilters(), page: auctionPage } as Parameters<NonNullable<typeof game.world.searchAuctions>>[0]); }
+  });
   lfgAccept.addEventListener("click", () => game.world?.answerLfgProposal(true));
   lfgDecline.addEventListener("click", () => game.world?.answerLfgProposal(false));
   lfgLeave.addEventListener("click", () => game.world?.leaveLfg());
   lfgTeleport.addEventListener("click", () => game.world?.teleportToDungeon(true));
   lfgJoin.addEventListener("click", () => {
-    const dungeons = lfgDungeons.value.split(",").map((part) => Number(part.trim())).filter((id) => Number.isInteger(id) && id > 0);
-    if (dungeons.length === 0) {
-      systemLine("Укажите хотя бы один id подземелья");
+    const roles = selectedLfgRoles();
+    if ((roles & (LFG_ROLE_TANK | LFG_ROLE_HEALER | LFG_ROLE_DAMAGE)) === 0) {
+      systemLine("Выберите роль: танк, лекарь или урон");
       return;
     }
-    game.world?.joinLfg(selectedLfgRoles(), dungeons);
+    const dungeons = selectedLfgDungeons();
+    if (dungeons.length === 0) {
+      systemLine("Отметьте подземелье в каталоге или укажите хотя бы один ID вручную");
+      return;
+    }
+    game.world?.joinLfg(roles, dungeons);
   });
   guildAccept.addEventListener("click", () => game.world?.answerGuildInvite(true));
   guildDecline.addEventListener("click", () => game.world?.answerGuildInvite(false));
-  tradeSetGold.addEventListener("click", () => game.world?.offerTradeGold(Number(tradeGold.value) || 0));
-  tradeAccept.addEventListener("click", () => game.world?.acceptTrade());
+  tradeSetGold.addEventListener("click", () => game.world?.offerTradeGold(tradeGoldToCopper(Number(tradeGold.value))));
+  tradeAccept.addEventListener("click", () => {
+    const world = game.world;
+    if (world?.tradePending) world.beginTrade();
+    else world?.acceptTrade();
+  });
   tradeCancel.addEventListener("click", () => game.world?.cancelTrade());
   duelAccept.addEventListener("click", () => game.world?.answerDuel(true));
   duelDecline.addEventListener("click", () => game.world?.answerDuel(false));
@@ -282,6 +417,7 @@ export function wirePanelButtons(): void {
     if (world?.targetGuid !== undefined) world.openBank(world.targetGuid);
   });
   lootMoney.addEventListener("click", () => game.world?.takeLootMoney());
+  lootAll.addEventListener("click", () => game.world?.takeAllLoot());
   deathRelease.addEventListener("click", () => game.world?.releaseSpirit());
   deathReclaim.addEventListener("click", () => game.world?.reclaimCorpse());
   deathSpirit.addEventListener("click", () => {
@@ -291,10 +427,8 @@ export function wirePanelButtons(): void {
   resurrectAccept.addEventListener("click", () => game.world?.answerResurrect(true));
   resurrectDecline.addEventListener("click", () => game.world?.answerResurrect(false));
   spellbookSearch.addEventListener("input", () => setSpellbookSearch(spellbookSearch.value));
-  // Escape empties the box and lets go of it, in that order and always — `Controls.onKeyDown`
-  // leaves every key alone while the focus is in an input that is not the chat box, so without the
-  // blur the press after this one has nowhere to go either. The body is next door in `Spellbook.ts`
-  // because that is where the box's other two handlers already are, and where a test can call it.
+  // The spellbook's first Escape clears and blurs its search; the shared Escape handler sees the
+  // blur and leaves this press to the field. A later Escape can close the book.
   spellbookSearch.addEventListener("keydown", spellbookSearchKeyDown);
   // Through the account's blob, not into a local flag: the switch is per character and the server
   // holds it, so `applySettings` is what tells the book — and the checkbox — what it now says.
@@ -307,7 +441,8 @@ export function wirePanelButtons(): void {
         const ownedByTrainer = closeFrameXmlTrainer();
         trainerWindow.hidden = true;
         if (!ownedByTrainer) game.world?.closeTrainer();
-      } else if (!ownedByFrameXml) element<HTMLElement>(close).hidden = true;
+      } else if (close === "guild-window") closeGuildWindow();
+      else if (!ownedByFrameXml) element<HTMLElement>(close).hidden = true;
       playUiSound("windowClose");
       if (button.dataset.close === "gossip-window") {
         closeNpcServiceWindow();
@@ -317,7 +452,6 @@ export function wirePanelButtons(): void {
       if (button.dataset.close === "vendor-window") game.world?.closeVendor();
       if (button.dataset.close === "trade-window") game.world?.cancelTrade();
       if (button.dataset.close === "mail-window") game.world?.closeMailbox();
-      if (button.dataset.close === "guild-window") guildWindow.hidden = true;
       if (button.dataset.close === "auction-window") game.world?.closeAuctionHouse();
       if (button.dataset.close === "lfg-window") closeLfgWindow();
       if (button.dataset.close === "quest-window") game.world?.closeQuest();

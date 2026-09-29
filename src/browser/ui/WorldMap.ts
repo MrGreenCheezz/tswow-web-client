@@ -1,4 +1,8 @@
 import { exploredZones, isAreaExplored } from "../../world/Fields.js";
+import {
+  closeFrameXmlWorldMap, frameXmlWorldMapOpen, frameXmlWorldMapPublished,
+  openFrameXmlWorldMap, toggleFrameXmlWorldMap,
+} from "../framexml/FrameXmlWorldMapPublication.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
 import type { MapAreaInfo } from "../AreaClient.js";
@@ -125,6 +129,10 @@ export function updateWorldMap(): void {
 }
 
 export function toggleWorldMap(): void {
+  if (toggleFrameXmlWorldMap()) {
+    parts?.panel.hide();
+    return;
+  }
   parts ??= build();
   parts.panel.toggle();
   if (parts.panel.visible) {
@@ -138,11 +146,21 @@ export function toggleWorldMap(): void {
   }
 }
 
+export function openWorldMap(): void {
+  if (openFrameXmlWorldMap()) {
+    parts?.panel.hide();
+    return;
+  }
+  if (!parts?.panel.visible) toggleWorldMap();
+}
+
 export function worldMapOpen(): boolean {
+  if (frameXmlWorldMapPublished()) return frameXmlWorldMapOpen();
   return parts?.panel.visible === true;
 }
 
 export function closeWorldMap(): void {
+  closeFrameXmlWorldMap();
   parts?.panel.hide();
 }
 
@@ -152,6 +170,7 @@ function build(): WorldMapParts {
   bar.className = "world-map-bar";
   const picker = document.createElement("select");
   picker.className = "world-map-picker";
+  picker.setAttribute("aria-label", "Область карты");
   picker.addEventListener("change", () => {
     const hierarchy = game.areas?.worldMapHierarchy();
     const selected = hierarchy?.find(picker.value);

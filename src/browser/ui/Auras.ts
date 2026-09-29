@@ -5,10 +5,11 @@ import { game } from "../game/Context.js";
 import { syncMountSpellIds } from "../MountSpells.js";
 import { isCurrentSpellMetadataRequest, spellMetadataEpoch } from "./SpellNames.js";
 import { element, playerAuras, targetAuras } from "./Dom.js";
-import { attachTooltip, type TooltipContent } from "./Widgets.js";
+import { attachTooltip, type TooltipContent, type TooltipLine } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { spellTooltip } from "./Spellbook.js";
 import { unitAuraAppearances } from "./WindowBindings.js";
+import { NATIVE_LANES_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
 
 export const auraTimers: Array<{ aura: HTMLElement; label: HTMLElement; expiresAt: number }> = [];
 
@@ -32,10 +33,8 @@ function scheduleAuraMetadataRetry(world: WorldClient, attempt: number): void {
 }
 
 /** The class is published only after the FrameXML world mount has passed every ownership gate. */
-const FRAMEXML_WORLD_REPLACEMENT_CLASS = "framexml-world-replaces-native";
-
 function frameXmlOwnsPlayerAuras(): boolean {
-  return document.body?.classList.contains(FRAMEXML_WORLD_REPLACEMENT_CLASS) === true;
+  return nativeHudReplaced(NATIVE_LANES_REPLACED);
 }
 
 /**
@@ -81,6 +80,45 @@ export function unresolvedAuraTooltip(aura: Pick<ActiveAura, "flags">): TooltipC
   };
 }
 
+function formatAuraDuration(milliseconds: number): string {
+  const seconds = Math.max(0, milliseconds / 1000);
+  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)} ч`;
+  if (seconds >= 60) return `${Math.ceil(seconds / 60)} мин`;
+  if (seconds >= 10) return `${Math.ceil(seconds)} с`;
+  return seconds > 0 ? `${seconds.toFixed(1).replace(".", ",")} с` : "";
+}
+
+/**
+ * A buff/debuff tooltip: the spell's own lines plus the aura context the book cannot know.
+ *
+ * The spell tooltip stays shared and monochrome for the book; the colour lives here, on the
+ * strip, where buff-against-debuff, stacks and the cancel hint are the informative part. Tones
+ * reuse the item-tooltip vocabulary (`stat` green, `unmet` red, `gold`, `muted`).
+ */
+export function auraTooltip(
+  aura: Pick<ActiveAura, "flags" | "spellId" | "applications" | "casterGuid" | "maxDuration">,
+  metadata: Pick<SpellMetadata, "passive"> | undefined,
+  removable: boolean,
+): TooltipContent {
+  const base = spellTooltip(aura.spellId);
+  const negative = (aura.flags & AURA_FLAGS.negative) !== 0;
+  const positive = (aura.flags & AURA_FLAGS.positive) !== 0;
+  const head: Array<string | TooltipLine> = [];
+  if (negative) head.push({ text: "Отрицательный эффект", tone: "unmet" });
+  else if (positive) head.push({ text: "Положительный эффект", tone: "stat" });
+  if (aura.applications > 1) head.push({ text: `Стаки: ${aura.applications}`, tone: "gold" });
+  if (aura.maxDuration !== undefined && aura.maxDuration > 0) {
+    const duration = formatAuraDuration(aura.maxDuration);
+    if (duration) head.push({ text: `Длительность: ${duration}`, tone: "muted" });
+  }
+  const self = game.world?.state.selfGuid;
+  if (aura.casterGuid !== undefined && self !== undefined && aura.casterGuid === self) {
+    head.push({ text: "Наложено вами", tone: "muted" });
+  }
+  if (removable) head.push({ text: "Правый клик — снять эффект", tone: "muted" });
+  return { title: base.title, lines: [...head, ...(base.lines ?? [])], footer: base.footer };
+}
+
 /** Buff and debuff strips over the player and the target frames. */
 
 export function showAuras(): void {
@@ -94,11 +132,55 @@ export function showAuras(): void {
   // over anything published here; see `unitAppearance` in `world/Fields.ts`.
   game.renderer?.setUnitAuraAppearance(unitAuraAppearances());
   if (!frameXmlOwnsPlayerAuras()) {
-    renderAuraStrip(playerAuras, world?.aurasFor(world.state.selfGuid) ?? [], 24);
+    showAuraStrip(playerAuras, world?.aurasFor(world.state.selfGuid) ?? [], 24);
   }
   const target = world?.targetGuid;
-  renderAuraStrip(targetAuras, world?.aurasFor(target) ?? [], 16);
-  targetAuras.hidden = target === undefined;
+  showAuraStrip(targetAuras, world?.aurasFor(target) ?? [], 16);
+  const targetHidden = target === undefined;
+  if (targetAuras.hidden !== targetHidden) targetAuras.hidden = targetHidden;
+}
+
+/** What a strip was last drawn from, by identity, and what drawing it produced. */
+interface DrawnAuraStrip {
+  readonly origin: string | undefined;
+  /** Each visible aura followed by the metadata row it was drawn with, in strip order. */
+  readonly inputs: readonly unknown[];
+  readonly elements: readonly Element[];
+  readonly timers: typeof auraTimers;
+}
+
+const drawnAuraStrips = new WeakMap<HTMLElement, DrawnAuraStrip>();
+
+/**
+ * `renderAuraStrip`, skipped when it would draw exactly what is already there.
+ *
+ * Every input of a strip is an identity: an aura object is replaced whenever its slot changes
+ * (`applyAuraUpdate`), a metadata row whenever it is fetched, and the gateway origin names the icon
+ * route. When all of them — and the elements on screen — are the ones last drawn, the rebuild would
+ * produce the same icons, so the old ones stay (with their duration timers). A crowd's aura packets
+ * and every metadata batch landing call `showAuras`; only the player's and the target's own changes
+ * now touch these strips.
+ */
+function showAuraStrip(container: HTMLElement, auras: ReturnType<WorldClient["aurasFor"]>, limit: number): void {
+  const inputs = visibleAuraEntries(auras, limit, (spellId) => game.spells.get(spellId))
+    .flatMap((aura) => [aura, game.spells.get(aura.spellId)]);
+  const drawn = drawnAuraStrips.get(container);
+  if (drawn && drawn.origin === game.gatewayOrigin && sameIdentities(drawn.inputs, inputs)
+    && sameIdentities(drawn.elements, [...container.children])) {
+    auraTimers.push(...drawn.timers);
+    return;
+  }
+  const first = auraTimers.length;
+  renderAuraStrip(container, auras, limit);
+  drawnAuraStrips.set(container, {
+    origin: game.gatewayOrigin, inputs, elements: [...container.children], timers: auraTimers.slice(first),
+  });
+}
+
+function sameIdentities(left: readonly unknown[], right: readonly unknown[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 export function renderAuraStrip(container: HTMLElement, auras: ReturnType<WorldClient["aurasFor"]>, limit: number): void {
@@ -109,7 +191,7 @@ export function renderAuraStrip(container: HTMLElement, auras: ReturnType<WorldC
     const removable = container === playerAuras
       && isRemovablePlayerBuff(aura, metadata);
     element.className = `aura-icon ${(aura.flags & 0x80) !== 0 ? "debuff" : "buff"}`;
-    attachTooltip(element, () => metadata ? spellTooltip(aura.spellId) : unresolvedAuraTooltip(aura));
+    attachTooltip(element, () => metadata ? auraTooltip(aura, metadata, removable) : unresolvedAuraTooltip(aura));
     const unresolved = metadata ? undefined : unresolvedAuraTooltip(aura);
     if (unresolved) element.dataset["metadataState"] = "unresolved";
     const label = metadata?.name ?? unresolved?.title ?? "Неизвестный эффект";
@@ -153,13 +235,21 @@ export function renderAuraStrip(container: HTMLElement, auras: ReturnType<WorldC
 }
 
 export function updateAuraDurations(now: number): void {
+  // The strips' countdowns are drawn for nobody while both native strips are behind stock owners:
+  // the player strip under BuffFrame (not even built then), the target strip under TargetFrame's
+  // aura rows. The next frame after either is handed back counts down from the world's clock again.
+  if (frameXmlOwnsPlayerAuras() && nativeHudReplaced(NATIVE_TARGET_CONTEXT_REPLACED)) return;
   for (const timer of auraTimers) {
     const seconds = Math.max(0, (timer.expiresAt - now) / 1000);
-    timer.aura.hidden = seconds <= 0;
-    timer.label.textContent = seconds >= 3600 ? `${Math.ceil(seconds / 3600)}ч`
+    const hidden = seconds <= 0;
+    if (timer.aura.hidden !== hidden) timer.aura.hidden = hidden;
+    // `toFixed(1)` allocates a new string 60 times a second per aura; the visible tenth changes
+    // at most 10 times a second, so only touch the label when its text actually moved.
+    const label = seconds >= 3600 ? `${Math.ceil(seconds / 3600)}ч`
       : seconds >= 60 ? `${Math.ceil(seconds / 60)}м`
         : seconds >= 10 ? `${Math.ceil(seconds)}с`
           : seconds > 0 ? seconds.toFixed(1) : "";
+    if (timer.label.textContent !== label) timer.label.textContent = label;
   }
 }
 
@@ -180,7 +270,11 @@ export async function loadAuraMetadata(world: WorldClient, attempt = 0): Promise
       return;
     }
     for (const [id, metadata] of loaded) game.spells.set(id, metadata);
-    const unresolved = ids.some((id) => !game.spells.has(id));
+    // An id the gateway has answered "no row" for is settled (`SpellMetadataClient.answered`): a
+    // retry would ask nobody and redraw the same strip. A client double without the method (the
+    // tests' `{ load }`) keeps the old rule.
+    const settled = typeof client.answered === "function" ? (id: number) => client.answered(id) : () => false;
+    const unresolved = ids.some((id) => !game.spells.has(id) && !settled(id));
     if (unresolved) scheduleAuraMetadataRetry(world, attempt);
     else clearAuraMetadataRetry(world);
     syncMountSpellIds(world);

@@ -30,19 +30,24 @@ export const INPUT_ACTIONS = [
   { action: "interact", group: "Цель", label: "Взаимодействовать" },
   { action: "toggleNamePlates", group: "Цель", label: "Таблички над врагами" },
   { action: "attackTarget", group: "Цель", label: "Атака" },
+  { action: "petAttack", group: "Цель", label: "Атака питомца" },
 
   { action: "toggleCharacter", group: "Интерфейс", label: "Лист персонажа" },
   { action: "toggleBags", group: "Интерфейс", label: "Сумки" },
   { action: "toggleKeyring", group: "Интерфейс", label: "Брелок" },
   { action: "toggleSpellbook", group: "Интерфейс", label: "Книга заклинаний" },
   { action: "togglePvp", group: "Интерфейс", label: "PvP" },
+  { action: "toggleLfd", group: "Интерфейс", label: "Поиск подземелий" },
   { action: "toggleTalents", group: "Интерфейс", label: "Таланты" },
   { action: "toggleProfessions", group: "Интерфейс", label: "Навыки" },
   { action: "toggleQuestLog", group: "Интерфейс", label: "Журнал заданий" },
   { action: "toggleWorldMap", group: "Интерфейс", label: "Карта мира" },
   { action: "toggleDiagnostics", group: "Интерфейс", label: "Диагностика" },
+  { action: "toggleFps", group: "Интерфейс", label: "Показать / скрыть FPS" },
   { action: "toggleKeyBindings", group: "Интерфейс", label: "Привязки клавиш" },
   { action: "openChat", group: "Интерфейс", label: "Чат" },
+  { action: "openChatSlash", group: "Интерфейс", label: "Чат с командой (/)" },
+  { action: "replyWhisper", group: "Интерфейс", label: "Ответить на шёпот" },
 
   { action: "action1", group: "Панель команд", label: "Слот 1" },
   { action: "action2", group: "Панель команд", label: "Слот 2" },
@@ -141,7 +146,11 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   strafeRight: ["KeyE", ""],
   jump: ["Space", ""],
   toggleAutoRun: ["NumLock", ""],
-  toggleWalkRun: ["Slash", ""],
+  // The 3.3.5 pair: `/` opens the chat with the slash already typed (OPENCHATSLASH) and walking is
+  // on the keypad's `/` (TOGGLERUN). Walking used to sit on `/`, so typing `/dance` without Enter
+  // first toggled walking and then strafed on `d`. A table saved before this change still holds the
+  // old default; `loadBindings` moves it (see `migrateWalkOffSlash`).
+  toggleWalkRun: ["NumpadDivide", ""],
   sitOrStand: ["KeyX", ""],
 
   targetNearestEnemy: ["Tab", ""],
@@ -152,6 +161,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   // `V` is the original client's key for enemy name plates, and it is free here.
   toggleNamePlates: ["KeyV", ""],
   attackTarget: ["KeyT", ""],
+  // The original client's own pair: `T` swings the character, `Shift+T` sends the pet.
+  petAttack: ["Shift+KeyT", ""],
 
   toggleCharacter: ["KeyC", ""],
   toggleBags: ["KeyB", ""],
@@ -161,6 +172,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   toggleSpellbook: ["KeyP", ""],
   // This is the stock TOGGLECHARACTER4 route (H); FrameXML owns the PvP summary when mounted.
   togglePvp: ["KeyH", ""],
+  // TOGGLELFGPARENT is `I` in the 3.3.5 client, and nothing here held it.
+  toggleLfd: ["KeyI", ""],
   // `N` is the original client's talent key. Skills have none there at all — they are a tab of
   // the character window — and `K` is already this client's bindings window, so the skills window
   // takes the nearest free key rather than shipping unreachable, which the bindings test forbids.
@@ -169,8 +182,12 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
   toggleQuestLog: ["KeyL", ""],
   toggleWorldMap: ["KeyM", ""],
   toggleDiagnostics: ["KeyO", ""],
+  toggleFps: ["Ctrl+Shift+KeyF", ""],
   toggleKeyBindings: ["KeyK", ""],
   openChat: ["Enter", "NumpadEnter"],
+  openChatSlash: ["Slash", ""],
+  // REPLY is `R` in the original client; nothing here held it.
+  replyWhisper: ["KeyR", ""],
 
   action1: ["Digit1", ""],
   action2: ["Digit2", ""],
@@ -414,16 +431,30 @@ function reindex(): void {
  * Reads the saved table over the defaults.
  *
  * Merged rather than replaced: a table saved before an action existed would otherwise leave that
- * action unbound for good, which is how a player loses a key by upgrading.
+ * action unbound for good, which is how a player loses a key by upgrading. The other way round is
+ * guarded too: an action the saved table does not mention is newer than the table, and its default
+ * never takes a key the table gives to something else. `persist` writes every action, so a real
+ * saved table mentions all the actions that existed when it was written; without this, `R` bound
+ * to an action-bar slot went to the newer `replyWhisper`, which `reindex` lists first.
  */
 export function loadBindings(): void {
   bindings = { ...DEFAULT_BINDINGS };
   const saved = readStored(STORAGE_KEY);
   if (saved) {
+    const mentioned = new Set<InputAction>();
     for (const { action } of INPUT_ACTIONS) {
       const pair = saved[action];
       if (!Array.isArray(pair)) continue;
       bindings[action] = [typeof pair[0] === "string" ? pair[0] : "", typeof pair[1] === "string" ? pair[1] : ""];
+      mentioned.add(action);
+    }
+    migrateWalkOffSlash(mentioned);
+    const taken = new Set<string>();
+    for (const action of mentioned) for (const chord of bindings[action]) if (chord) taken.add(chord);
+    for (const { action } of INPUT_ACTIONS) {
+      if (mentioned.has(action)) continue;
+      const [first, second] = bindings[action];
+      bindings[action] = [taken.has(first) ? "" : first, taken.has(second) ? "" : second];
     }
   }
   // Kept whole rather than filtered against the modules loaded right now: the key belongs to the
@@ -435,6 +466,26 @@ export function loadBindings(): void {
     moduleBindings[action] = [typeof pair[0] === "string" ? pair[0] : "", typeof pair[1] === "string" ? pair[1] : ""];
   }
   reindex();
+}
+
+/**
+ * The one default that moved: `toggleWalkRun` left `/` for the keypad `/` when `openChatSlash` took
+ * `/`. A table saved before that has no `openChatSlash` row and still holds walking on exactly the
+ * old default `["Slash", ""]`; left alone, `/` kept toggling walking and the chat key was dead. That
+ * table gets the new default, less any key another saved row already holds. A walk key the player
+ * chose themselves, or any table saved after the change (it has an `openChatSlash` row), is kept.
+ * Nothing is written back: the rule is idempotent, and the next save carries the new row anyway.
+ */
+function migrateWalkOffSlash(mentioned: ReadonlySet<InputAction>): void {
+  const [first, second] = bindings.toggleWalkRun;
+  if (mentioned.has("openChatSlash") || !mentioned.has("toggleWalkRun") || first !== "Slash" || second !== "") return;
+  const held = new Set<string>();
+  for (const action of mentioned) {
+    if (action === "toggleWalkRun") continue;
+    for (const chord of bindings[action]) if (chord) held.add(chord);
+  }
+  const [newFirst, newSecond] = DEFAULT_BINDINGS.toggleWalkRun;
+  bindings.toggleWalkRun = [held.has(newFirst) ? "" : newFirst, held.has(newSecond) ? "" : newSecond];
 }
 
 function readStored(key: string): Record<string, unknown> | undefined {
@@ -490,6 +541,14 @@ export function moduleActionFor(chord: string): ModuleAction | undefined {
 /** Every module action on offer, in the order they were added. */
 export function moduleActions(): readonly ModuleAction[] {
   return [...moduleTable.values()];
+}
+
+/**
+ * Every action the module blob keeps keys for, loaded or not: what a caller that takes a change
+ * back whole must remember, since {@link resetBindings} clears the rows of unloaded modules too.
+ */
+export function savedModuleBindingActions(): readonly string[] {
+  return Object.keys(moduleBindings);
 }
 
 /**

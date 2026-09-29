@@ -4,8 +4,10 @@ import { readByte, readField, trackedTypesFromMask, worldObject } from "../../wo
 import type { WorldObjectState, WorldState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
 import { spellCastAllowed } from "../SpellCastGuard.js";
+import { requestSpellCast } from "../game/GroundTarget.js";
 import { IconButton, Panel } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
+import type { SpellMetadata } from "../SpellMetadata.js";
 
 /**
  * Tracking: what the character has asked to see on the minimap, and what that turns out to mean.
@@ -34,6 +36,7 @@ const AURA_TRACK_STEALTHED = 151;
 const TRACK_STEALTHED_FLAG = 0x02;
 /** How far out a tracked thing still counts as nearby, in yards. Beyond it there is no object. */
 const TRACK_RANGE = 250;
+const TRACK_RANGE_SQUARED = TRACK_RANGE * TRACK_RANGE;
 
 export interface TrackingSpell {
   spellId: number;
@@ -44,26 +47,43 @@ export interface TrackingSpell {
   iconId: number;
 }
 
-/** The tracking spells the character knows, in the order the spellbook lists them. */
-export function knownTrackingSpells(): TrackingSpell[] {
-  const world = game.world;
-  if (!world) return [];
+/** The DBC columns a tracking spell is recognised by; a structural subset of `SpellMetadata`. */
+export type TrackingSpellMetadata = Pick<SpellMetadata, "effectAura" | "effectMiscValue" | "name" | "iconId">;
+
+/**
+ * The tracking spells among `knownSpellIds`, in that order, from any spell lookup.
+ *
+ * The world-free form of `knownTrackingSpells`, so the stock minimap's GetTrackingInfo (through the
+ * FrameXML seam, which carries its own world and spell cache) and this panel list the same rows.
+ */
+export function trackingSpellsOf(
+  knownSpellIds: Iterable<number>,
+  spell: (id: number) => TrackingSpellMetadata | undefined,
+): TrackingSpell[] {
   const found: TrackingSpell[] = [];
-  for (const known of world.knownSpells) {
-    const metadata = game.spells.get(known.id);
-    if (!metadata) continue;
+  for (const id of knownSpellIds) {
+    const metadata = spell(id);
+    // A C-API read must never throw: a partial row without effect columns is simply not a tracker.
+    if (!metadata || !Array.isArray(metadata.effectAura)) continue;
     const effect = metadata.effectAura.findIndex((aura) =>
       aura === AURA_TRACK_CREATURES || aura === AURA_TRACK_RESOURCES || aura === AURA_TRACK_STEALTHED);
     if (effect < 0) continue;
     found.push({
-      spellId: known.id,
+      spellId: id,
       aura: metadata.effectAura[effect]!,
-      miscValue: metadata.effectMiscValue[effect] ?? 0,
+      miscValue: metadata.effectMiscValue?.[effect] ?? 0,
       name: metadata.name,
       iconId: metadata.iconId,
     });
   }
   return found;
+}
+
+/** The tracking spells the character knows, in the order the spellbook lists them. */
+export function knownTrackingSpells(): TrackingSpell[] {
+  const world = game.world;
+  if (!world) return [];
+  return trackingSpellsOf(world.knownSpells.map((known) => known.id), (id) => game.spells.get(id));
 }
 
 function self(): WorldObjectState | undefined {
@@ -72,30 +92,44 @@ function self(): WorldObjectState | undefined {
   return world.state.objects.get(world.state.selfGuid);
 }
 
-export function trackedCreatureTypes(): Set<number> {
-  const player = self();
+export function trackedCreatureTypes(player: WorldObjectState | undefined = self()): Set<number> {
   return trackedTypesFromMask(player ? readField(player, "PLAYER_TRACK_CREATURES") : undefined);
 }
 
-export function trackedResourceTypes(): Set<number> {
-  const player = self();
+export function trackedResourceTypes(player: WorldObjectState | undefined = self()): Set<number> {
   return trackedTypesFromMask(player ? readField(player, "PLAYER_TRACK_RESOURCES") : undefined);
 }
 
-export function trackingStealthed(): boolean {
-  const player = self();
+export function trackingStealthed(player: WorldObjectState | undefined = self()): boolean {
   return player !== undefined && ((readByte(player, "PLAYER_FIELD_BYTES", 0) ?? 0) & TRACK_STEALTHED_FLAG) !== 0;
 }
 
-/** Whether one tracking spell's own effect is currently showing in the fields. */
-export function isTracking(spell: TrackingSpell): boolean {
-  if (spell.aura === AURA_TRACK_STEALTHED) return trackingStealthed();
-  const active = spell.aura === AURA_TRACK_CREATURES ? trackedCreatureTypes() : trackedResourceTypes();
+/**
+ * Whether one tracking spell's own effect is currently showing in the fields of `player` (the
+ * session's own player by default). The fields, not the last click, are the answer: the server
+ * allows one tracker at a time and is free to refuse.
+ */
+export function isTracking(spell: TrackingSpell, player: WorldObjectState | undefined = self()): boolean {
+  if (spell.aura === AURA_TRACK_STEALTHED) return trackingStealthed(player);
+  const active = spell.aura === AURA_TRACK_CREATURES ? trackedCreatureTypes(player) : trackedResourceTypes(player);
   return spell.miscValue > 0 && active.has(spell.miscValue);
 }
 
 /**
- * The creatures and objects near the character that the current tracking says to show.
+ * The raw tracking words of `player`, as one comparable string: a change in any of them is a
+ * MINIMAP_UPDATE_TRACKING edge for the stock tracking button. Nothing tracked is `""`, so a
+ * consumer comparing against an empty start publishes only a real tracker.
+ */
+export function trackingFieldsSignature(player: WorldObjectState | undefined): string {
+  if (!player) return "";
+  const creatures = readField(player, "PLAYER_TRACK_CREATURES") ?? 0;
+  const resources = readField(player, "PLAYER_TRACK_RESOURCES") ?? 0;
+  const stealthed = (readByte(player, "PLAYER_FIELD_BYTES", 0) ?? 0) & TRACK_STEALTHED_FLAG;
+  return creatures === 0 && resources === 0 && stealthed === 0 ? "" : `${creatures}:${resources}:${stealthed}`;
+}
+
+/**
+ * The rule for creatures and objects the current tracking says to show.
  *
  * A creature matches on its `CreatureType`, which the creature dump already carries. A resource
  * node matches on its lock: `data0` of a chest is a `Lock.dbc` id, and a lock's skill case names
@@ -103,23 +137,39 @@ export function isTracking(spell: TrackingSpell): boolean {
  * spell carried. `LockClient` already ships every lock's cases for the sake of opening them, so
  * this needs no new data at all.
  */
-export function trackedNearby(state: WorldState, mapId: number | undefined): WorldObjectState[] {
+/** Captures the current tracking fields once for a minimap repaint. */
+export function trackingMatcher(
+  state: WorldState,
+  mapId: number | undefined,
+): ((object: WorldObjectState, distanceSquared: number) => boolean) | undefined {
   const creatures = trackedCreatureTypes();
   const resources = trackedResourceTypes();
-  if (creatures.size === 0 && resources.size === 0) return [];
+  if (creatures.size === 0 && resources.size === 0) return undefined;
   const player = self();
-  if (!player?.position || mapId === undefined) return [];
+  if (!player?.position || mapId === undefined) return undefined;
+
+  return (object, distanceSquared) => {
+    if (object.guid === state.selfGuid || distanceSquared > TRACK_RANGE_SQUARED) return false;
+    if (object.typeId === 3 && creatures.size > 0) {
+      const type = game.creatureMetadata?.get(worldObject.entry(object) ?? 0)?.type ?? 0;
+      return creatures.has(type);
+    }
+    return object.typeId === 5 && resources.size > 0 && matchesTrackedResource(object, resources);
+  };
+}
+
+/** Standalone list form for callers that do not already scan the world object table. */
+export function trackedNearby(state: WorldState, mapId: number | undefined): WorldObjectState[] {
+  const matches = trackingMatcher(state, mapId);
+  if (!matches) return [];
+  const player = self()!.position!;
 
   const found: WorldObjectState[] = [];
   for (const object of state.objects.values()) {
-    if (object.guid === state.selfGuid || !object.position) continue;
-    if (Math.hypot(object.position.x - player.position.x, object.position.y - player.position.y) > TRACK_RANGE) continue;
-    if (object.typeId === 3 && creatures.size > 0) {
-      const type = game.creatureMetadata?.get(worldObject.entry(object) ?? 0)?.type ?? 0;
-      if (creatures.has(type)) found.push(object);
-      continue;
-    }
-    if (object.typeId === 5 && resources.size > 0 && matchesTrackedResource(object, resources)) found.push(object);
+    if (!object.position || (object.typeId !== 3 && object.typeId !== 5)) continue;
+    const dx = object.position.x - player.x;
+    const dy = object.position.y - player.y;
+    if (matches(object, dx * dx + dy * dy)) found.push(object);
   }
   return found;
 }
@@ -183,7 +233,9 @@ export function showTracking(): void {
       // either way: cast to start, cancel the aura to stop, and let the fields say what happened.
       onClick: () => {
         if (active) world.cancelAura(spell.spellId);
-        else if (game.world !== world || spellCastAllowed(world, spell.spellId)) world.castSpell(spell.spellId);
+        else if (game.world !== world || spellCastAllowed(world, spell.spellId)) {
+          requestSpellCast(spell.spellId, () => world.castSpell(spell.spellId));
+        }
       },
     });
     button.setUsable(true);

@@ -16,7 +16,7 @@ import {
   targetIcon, targetName, targetPanel, bankerButton, trainerButton, vendorButton,
 } from "./Dom.js";
 import { skinnable, slot } from "./Slots.js";
-import { gameObjectAction } from "../game/Interaction.js";
+import { gameObjectAction, gameObjectLockHint } from "../game/Interaction.js";
 import { targetPower, playerExperience, playerHud } from "./Dom.js";
 import {
   CLASS_ATLAS_PATH, CLASS_MICRO_PORTRAIT_HEIGHT, CLASS_MICRO_PORTRAIT_WIDTH,
@@ -26,6 +26,7 @@ import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { reactionTo } from "../game/Targeting.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../../world/FactionRules.js";
 import { setPlayerPortrait, setTargetPortrait } from "./Portraits.js";
+import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
 
 export const typeNames = ["object", "item", "container", "unit", "player", "gameobject", "dynamicobject", "corpse"];
 
@@ -46,7 +47,78 @@ export function powerName(powerType: number): string {
 export const barWidth = (value: number | undefined, maximum: number | undefined): string =>
   value === undefined || !maximum ? "0%" : `${Math.max(0, Math.min(100, (value / maximum) * 100))}%`;
 
+/**
+ * Challenges the selected player to a duel.
+ *
+ * Created lazily in code rather than in markup: the target row is built from static buttons
+ * and this one belongs to the same row without needing new element ids. Hidden for anything
+ * that is not another player. Lazy because this module is also loaded in DOM-less tests.
+ */
+let duelChallengeButton: HTMLButtonElement | undefined;
+function duelButton(): HTMLButtonElement | undefined {
+  if (duelChallengeButton || typeof document === "undefined") return duelChallengeButton;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "⚔ Дуэль";
+  button.title = "Вызвать выбранного игрока на дуэль";
+  button.setAttribute("aria-label", "Вызвать на дуэль");
+  button.hidden = true;
+  button.addEventListener("click", () => {
+    const world = game.world;
+    if (!world || world.targetGuid === undefined) return;
+    if (!world.challengeDuelToSelection()) {
+      world.onSpellStatus?.("Нельзя вызвать эту цель на дуэль", true);
+    }
+  });
+  // `targetActions` is the static row the sibling buttons live in; in a DOM without markup
+  // the button simply stays detached and hidden.
+  try {
+    targetActions.append(button);
+  } catch {
+    // A test DOM without the row: paint calls below only flip `hidden`, which is safe.
+  }
+  duelChallengeButton = button;
+  return button;
+}
+
 /** The player and target frames, and the model a unit wears. */
+
+const VISIBLE_ITEM_FIRST = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
+const VISIBLE_ITEM_STRIDE = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - VISIBLE_ITEM_FIRST;
+const VISIBLE_ITEM_COUNT = 19;
+
+interface ResolvedPlayerModel {
+  readonly creatureModels: CreatureModelClient;
+  readonly itemMetadata: ItemMetadataClient | undefined;
+  readonly creatureGeneration: number;
+  readonly itemGeneration: number | undefined;
+  readonly displayId: number;
+  readonly nativeDisplayId: number;
+  readonly bytes: number;
+  readonly look: number;
+  readonly look2: number;
+  readonly visibleItems: Uint32Array;
+  readonly model: UnitModel;
+}
+
+// WorldObjectState keeps its fields Map while packet updates mutate individual words. A WeakMap
+// ties this memo to that exact world object without retaining units after they leave visibility.
+const resolvedPlayerModels = new WeakMap<WorldObjectState, ResolvedPlayerModel>();
+
+function visibleItemsMatch(fields: WorldObjectState["fields"], items: Uint32Array): boolean {
+  for (let slot = 0; slot < VISIBLE_ITEM_COUNT; slot++) {
+    if ((fields.get(VISIBLE_ITEM_FIRST + slot * VISIBLE_ITEM_STRIDE) ?? 0) !== items[slot]) return false;
+  }
+  return true;
+}
+
+function visibleItemsSnapshot(fields: WorldObjectState["fields"]): Uint32Array {
+  const items = new Uint32Array(VISIBLE_ITEM_COUNT);
+  for (let slot = 0; slot < VISIBLE_ITEM_COUNT; slot++) {
+    items[slot] = fields.get(VISIBLE_ITEM_FIRST + slot * VISIBLE_ITEM_STRIDE) ?? 0;
+  }
+  return items;
+}
 
 /**
  * The model a unit wears. Creatures carry their textures in the display record; a player's body
@@ -60,7 +132,7 @@ export function unitModelFor(
 ): UnitModel | undefined {
   const displayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
   const metadata = creatureModels?.get(displayId);
-  if (!metadata || object.typeId !== 4) return metadata;
+  if (!metadata || object.typeId !== 4 || !creatureModels) return metadata;
   // A player who is not currently in their own body: a cat, a bear, a sheep, a ghost wolf. The
   // server writes NATIVEDISPLAYID once, in `Player::InitDisplayIds`, and moves DISPLAYID for every
   // shapeshift — the field is PUBLIC (`generated/updateFields.ts:799-806`), so the difference is
@@ -69,23 +141,45 @@ export function unitModelFor(
   // gateway serves for a `Character\` model already carry a baked appearance
   // (`gateway/CreatureModelMetadata.ts:103-105` → `CharacterAppearance.forModel:941-950`), so the
   // paste also threw away the correct look for any polymorph into another race.
-  if (displayId !== (unit.nativeDisplayId(object) ?? displayId)) return metadata;
+  const nativeDisplayId = unit.nativeDisplayId(object) ?? displayId;
+  if (displayId !== nativeDisplayId) return metadata;
   // UNIT_FIELD_BYTES_0 packs race, class, gender, power type; PLAYER_BYTES packs skin, face,
   // hair style and hair colour; PLAYER_BYTES_2 starts with the facial-hair choice. Face and
   // facial hair were simply never read, which is most of why a player had no face.
   const bytes = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset) ?? 0;
   const look = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES.offset) ?? 0;
   const look2 = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES_2.offset) ?? 0;
+  const cached = resolvedPlayerModels.get(object);
+  if (cached && cached.creatureModels === creatureModels && cached.itemMetadata === itemMetadata
+    && cached.creatureGeneration === creatureModels.generation
+    && cached.itemGeneration === itemMetadata?.generation
+    && cached.displayId === displayId && cached.nativeDisplayId === nativeDisplayId
+    && cached.bytes === bytes && cached.look === look && cached.look2 === look2
+    && visibleItemsMatch(object.fields, cached.visibleItems)) return cached.model;
   const equipment = visibleEquipmentFor(object, itemMetadata);
   const appearance = creatureModels?.playerAppearance(
     bytes & 0xff, (bytes >>> 16) & 0xff,
     look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
     look2 & 0xff, equipment);
-  return appearance === undefined ? undefined : {
+  if (appearance === undefined) return undefined;
+  const appearancePending = visibleEquipmentMetadataPendingFor(object, itemMetadata);
+  const model: UnitModel = {
     ...metadata,
     appearance,
-    appearancePending: visibleEquipmentMetadataPendingFor(object, itemMetadata),
+    appearancePending,
   };
+  // Pending item rows must keep the existing retry path active. Both real clients expose a
+  // generation that changes when their async answers arrive; replay/test clients without one
+  // continue through the ordinary resolver so a mutable mock cannot leave a stale appearance.
+  if (!appearancePending && Number.isFinite(creatureModels.generation)
+    && (itemMetadata === undefined || Number.isFinite(itemMetadata.generation))) {
+    resolvedPlayerModels.set(object, {
+      creatureModels, itemMetadata, creatureGeneration: creatureModels.generation,
+      itemGeneration: itemMetadata?.generation, displayId, nativeDisplayId,
+      bytes, look, look2, visibleItems: visibleItemsSnapshot(object.fields), model,
+    });
+  }
+  return model;
 }
 
 /** The live wrapper retains the UI's current clients; replay callers pass the captured ones. */
@@ -132,13 +226,11 @@ export function visibleEquipmentFor(
   object: WorldObjectState,
   itemMetadata: ItemMetadataClient | undefined,
 ): EquippedItem[] {
-  const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
-  const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
   // Which word an item came from is its EQUIPMENT_SLOT, and that is not the same thing as its
   // inventory type: a one-handed weapon is INVTYPE_WEAPON whichever hand it is in.
   const worn: { slot: number; entry: number }[] = [];
-  for (let slot = 0; slot < 19; slot++) {
-    const entry = object.fields.get(first + slot * stride) ?? 0;
+  for (let slot = 0; slot < VISIBLE_ITEM_COUNT; slot++) {
+    const entry = object.fields.get(VISIBLE_ITEM_FIRST + slot * VISIBLE_ITEM_STRIDE) ?? 0;
     if (entry > 0) worn.push({ slot, entry });
   }
   if (worn.length === 0) return [];
@@ -162,10 +254,8 @@ export function visibleEquipmentMetadataPendingFor(
   object: WorldObjectState,
   itemMetadata: ItemMetadataClient | undefined,
 ): boolean {
-  const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
-  const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
-  for (let slot = 0; slot < 19; slot++) {
-    const entry = object.fields.get(first + slot * stride) ?? 0;
+  for (let slot = 0; slot < VISIBLE_ITEM_COUNT; slot++) {
+    const entry = object.fields.get(VISIBLE_ITEM_FIRST + slot * VISIBLE_ITEM_STRIDE) ?? 0;
     if (entry <= 0) continue;
     const item = itemMetadata?.get(entry);
     if (!item) return true;
@@ -219,18 +309,20 @@ function positionClassPortrait(image: HTMLImageElement): void {
   const offset = image === characterMicroIcon
     ? classPortraitPosition(image, carried, CLASS_MICRO_PORTRAIT_WIDTH, CLASS_MICRO_PORTRAIT_HEIGHT)
     : classPortraitPosition(image, carried);
-  if (offset) image.style.objectPosition = offset;
+  if (offset && image.style.objectPosition !== offset) image.style.objectPosition = offset;
 }
 
+/** Every write change-only: the player frame paints on each step the character takes. */
 function paintClassIcon(image: HTMLImageElement, classId: number | undefined, wanted: string | undefined): void {
   if (classId === undefined || !wanted || !hasClassIcon(classId)) {
-    image.hidden = true;
-    delete image.dataset["atlas"];
-    delete image.dataset["class"];
+    if (!image.hidden) image.hidden = true;
+    if (image.dataset["atlas"] !== undefined) delete image.dataset["atlas"];
+    if (image.dataset["class"] !== undefined) delete image.dataset["class"];
     return;
   }
-  image.hidden = false;
-  image.dataset["class"] = String(classId);
+  if (image.hidden) image.hidden = false;
+  const carried = String(classId);
+  if (image.dataset["class"] !== carried) image.dataset["class"] = carried;
   positionClassPortrait(image);
   if (image.dataset["atlas"] === wanted) return;
   image.dataset["atlas"] = wanted;
@@ -274,18 +366,61 @@ function paintClassPortrait(classId: number | undefined): void {
   paintClassIcon(characterMicroIcon, classId, wanted);
 }
 
+/**
+ * The micro button's class icon alone, and only when what it shows would change.
+ *
+ * It is not in the player frame's lane (`#game-buttons` has a stock owner of its own), so it keeps
+ * its class under the stock PlayerFrame; repositioning it reads the page's layout, which is why an
+ * unchanged class is left as it is. A failed picture drops its atlas marker (`paintClassIcon`), so
+ * it is still asked for again.
+ */
+function paintMicroClassIcon(classId: number | undefined): void {
+  const origin = game.gatewayOrigin;
+  const wanted = origin ? `${origin}/texture?path=${encodeURIComponent(CLASS_ATLAS_PATH)}` : undefined;
+  const shown = classId !== undefined && wanted !== undefined && hasClassIcon(classId);
+  const current = shown
+    ? !characterMicroIcon.hidden && characterMicroIcon.dataset["class"] === String(classId)
+      && characterMicroIcon.dataset["atlas"] === wanted
+    : characterMicroIcon.hidden;
+  if (!current) paintClassIcon(characterMicroIcon, classId, wanted);
+}
+
+function setTextIfChanged(element: HTMLElement, text: string): void {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+/** Widths as written: the style reads a long percentage back rounded, so it cannot be compared. */
+const writtenWidths = new WeakMap<HTMLElement, string>();
+
+function setWidthIfChanged(element: HTMLElement, width: string): void {
+  if (writtenWidths.get(element) === width && element.style.width !== "") return;
+  writtenWidths.set(element, width);
+  element.style.width = width;
+}
+
+/** Paints the native player frame for the store it was last bound to; see `repaintPlayerHud`. */
+let playerHudRepaint: (() => void) | undefined;
+
 export function bindPlayerHud(store: WorldStore): void {
   const paint = (player: WorldObjectState | undefined): void => {
-    if (!player) {
-      setPlayerPortrait(undefined);
-      paintClassPortrait(undefined);
-      playerHudDetails.textContent = "Ожидание параметров…";
-      playerHealthBar.style.width = "0%";
-      playerHealthText.textContent = "";
-      playerPowerBar.style.width = "0%";
+    // The renderer's portrait slot, not the native frame's alone: the stock PlayerFrame draws the
+    // same canvas (`adoptPlayerPortraitCanvas`), so the target follows the character either way.
+    setPlayerPortrait(player?.guid);
+    // Under the stock PlayerFrame `#player-hud` is hidden, and everything below writes into it on
+    // every change of the character — each step it takes included — for nobody. The mount's
+    // teardown repaints it once the lane is handed back (`repaintPlayerHud`).
+    if (nativeHudReplaced(NATIVE_LANES_REPLACED)) {
+      paintMicroClassIcon(player ? unit.classId(player) : undefined);
       return;
     }
-    setPlayerPortrait(player.guid);
+    if (!player) {
+      paintClassPortrait(undefined);
+      setTextIfChanged(playerHudDetails, "Ожидание параметров…");
+      setWidthIfChanged(playerHealthBar, "0%");
+      setTextIfChanged(playerHealthText, "");
+      setWidthIfChanged(playerPowerBar, "0%");
+      return;
+    }
     const level = unit.level(player);
     const health = unit.health(player);
     const maxHealth = unit.maxHealth(player);
@@ -297,27 +432,39 @@ export function bindPlayerHud(store: WorldStore): void {
       ? ""
       : ` · ${powerName(powerType)} ${Math.round(power / scale)}/${Math.round(maxPower / scale)}`;
     // The level and the resource; the health numbers are on the health bar, where the eye is
-    // already looking to see how much of it is left.
-    playerHudDetails.textContent = `ур. ${level ?? "?"}${powerText}`;
-    playerHealthBar.style.width = barWidth(health, maxHealth);
-    playerHealthText.textContent = health === undefined ? "" : `${health} / ${maxHealth ?? "?"}`;
-    playerPowerBar.style.width = barWidth(power, maxPower);
+    // already looking to see how much of it is left. Written only when they read differently: the
+    // same text written on every step replaced the text node and invalidated the frame's style.
+    setTextIfChanged(playerHudDetails, `ур. ${level ?? "?"}${powerText}`);
+    setWidthIfChanged(playerHealthBar, barWidth(health, maxHealth));
+    setTextIfChanged(playerHealthText, health === undefined ? "" : `${health} / ${maxHealth ?? "?"}`);
+    setWidthIfChanged(playerPowerBar, barWidth(power, maxPower));
     // Read by the stylesheet, so rage is not drawn in mana's blue.
-    playerPowerBar.dataset["power"] = String(powerType);
+    const powerKey = String(powerType);
+    if (playerPowerBar.dataset["power"] !== powerKey) playerPowerBar.dataset["power"] = powerKey;
     paintClassPortrait(unit.classId(player));
 
     // Experience towards the next level. The fields have always arrived; nothing showed them.
     const experience = playerFields.experience(player);
     const nextLevel = playerFields.nextLevelExperience(player);
-    if (experience === undefined || !nextLevel) {
-      experienceBar.root.hidden = true;
-    } else {
-      experienceBar.root.hidden = false;
-      experienceBar.set(experience, nextLevel, `${experience} / ${nextLevel}`);
-    }
+    const noExperience = experience === undefined || !nextLevel;
+    if (experienceBar.root.hidden !== noExperience) experienceBar.root.hidden = noExperience;
+    if (!noExperience) experienceBar.set(experience, nextLevel, `${experience} / ${nextLevel}`);
   };
 
+  playerHudRepaint = () => {
+    const self = store.state.selfGuid;
+    paint(self === undefined ? undefined : store.state.objects.get(self));
+  };
   store.object(SELF, paint);
+}
+
+/**
+ * Paint the native player frame from the world as it stands: the stock PlayerFrame has just let
+ * its lane go (the FrameXML mount's teardown), and the frame skipped every change while it was
+ * hidden. A character standing still at full health changes nothing that would repaint it.
+ */
+export function repaintPlayerHud(): void {
+  playerHudRepaint?.();
 }
 
 /**
@@ -365,6 +512,9 @@ export function writeUnitMarkings(
   else frame.dataset["threat"] = threat >= 1 ? "tanking" : threat >= 0.8 ? "high" : threat >= 0.5 ? "some" : "low";
 }
 
+/** Painted target-frame values; when the signature matches, every write below is a no-op. */
+let lastTargetSignature: string | undefined;
+
 export function showTarget(): void {
   const world = game.world;
   const previousTarget = targetAuras.dataset.guid;
@@ -376,6 +526,10 @@ export function showTarget(): void {
   const target = world?.targetGuid === undefined ? undefined : world.state.objects.get(world.targetGuid);
   if (!world || !target) {
     setTargetPortrait(undefined);
+    // The empty frame is painted once: without a target every packet recomputed the same dozen
+    // writes below (hidden flags, cleared labels, a zeroed bar) sixty times a second.
+    if (lastTargetSignature === "") return;
+    lastTargetSignature = "";
     targetPanel.hidden = true;
     targetIcon.hidden = true;
     targetName.textContent = "Цель не выбрана";
@@ -389,6 +543,8 @@ export function showTarget(): void {
     for (const button of [interactButton, lootButton, vendorButton, trainerButton, bankerButton]) {
       button.hidden = true;
     }
+    const duel = duelButton();
+    if (duel) duel.hidden = true;
     clearTargetButton.disabled = true;
     attackButton.textContent = "⚔";
     attackButton.title = "Начать атаку";
@@ -404,10 +560,11 @@ export function showTarget(): void {
   // threat is the fraction of the highest on this creature — the raw number says nothing without
   // the tank's beside it.
   const marks = raidMarksByUnit(world.raidTargets);
-  writeUnitMarkings(targetPanel, marks.get(target.guid), reactionTo(target),
-    threatFraction(world.threat.get(target.guid)?.entries ?? [], world.state.selfGuid ?? 0n));
+  const targetMark = marks.get(target.guid);
+  const targetReaction = reactionTo(target);
+  const targetThreat = threatFraction(world.threat.get(target.guid)?.entries ?? [], world.state.selfGuid ?? 0n);
   const selfGuid = world.state.selfGuid;
-  writeUnitMarkings(playerHud, selfGuid === undefined ? undefined : marks.get(selfGuid), undefined, undefined);
+  const selfMark = selfGuid === undefined ? undefined : marks.get(selfGuid);
 
   const entry = target.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   // Only a creature's entry is a `creature_template` entry. This lookup was unconditional, so a
@@ -421,15 +578,8 @@ export function showTarget(): void {
   const level = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset);
   const health = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset);
   const maxHealth = target.fields.get(UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset);
-  targetName.textContent = metadata?.name ?? unitDisplayName(target);
-  targetIcon.hidden = false;
-  setIconSource(targetIcon, creatureIconSource(metadata, game.gatewayOrigin));
-  targetIcon.onerror = () => {
-    targetIcon.onerror = null;
-    // The question mark, which is a spell icon like any other: a family whose picture is not in
-    // this dataset falls back to the same route rather than to a file beside the page.
-    setIconSource(targetIcon, spellIconUrl(2273, game.gatewayOrigin) ?? "");
-  };
+  const targetNameText = metadata?.name ?? unitDisplayName(target);
+  const targetIconUrl = creatureIconSource(metadata, game.gatewayOrigin);
   // Five things were being folded into one line 213px wide, and the line does not hold five.
   //
   // The GUID alone was 22 characters of it — «GUID 0x» and sixteen hex digits — unconditionally,
@@ -437,35 +587,36 @@ export function showTarget(): void {
   // and not a fact about the creature, so it moves to the title, where hovering still answers it
   // and nothing has to be truncated to make room. The health numbers move onto the bar that was
   // already drawing them as a proportion.
-  targetDetails.textContent = [
+  const targetDetailsText = [
     metadata?.subname ?? "",
     metadata ? creatureTypeName(metadata.type) : "",
     target.typeId === 4 ? className(unit.classId(target)) : "",
     level === undefined ? "" : `ур. ${level}`,
   ].filter(Boolean).join(" · ");
-  targetDetails.title = `GUID 0x${target.guid.toString(16).padStart(16, "0")}`;
-  targetHealthBar.style.width = `${health === undefined || !maxHealth ? 0 : Math.max(0, Math.min(100, health / maxHealth * 100))}%`;
-  targetHealthText.textContent = health === undefined ? "" : `${health} / ${maxHealth ?? "?"}`;
+  const targetDetailsTitle = `GUID 0x${target.guid.toString(16).padStart(16, "0")}`;
+  const healthWidth = `${health === undefined || !maxHealth ? 0 : Math.max(0, Math.min(100, health / maxHealth * 100))}%`;
+  const healthText = health === undefined ? "" : `${health} / ${maxHealth ?? "?"}`;
   // A creature's own resource, read from the slot its power type names rather than from slot one.
   const targetPowerValue = unit.power(target);
   const targetMaxPower = unit.maxPower(target);
-  targetPowerBar.root.hidden = targetPowerValue === undefined || !targetMaxPower;
-  targetPowerBar.set(targetPowerValue, targetMaxPower);
-  targetPowerBar.setVariant(String(unit.powerType(target) ?? POWER.mana));
-  attackButton.disabled = target.typeId !== 3 && target.typeId !== 4;
+  const powerHidden = targetPowerValue === undefined || !targetMaxPower;
+  const attackDisabled = target.typeId !== 3 && target.typeId !== 4;
   const npcFlags = target.fields.get(UPDATE_FIELDS.UNIT_NPC_FLAGS.offset) ?? 0;
   const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
   const action = target.typeId === 5 && self?.position ? gameObjectAction(world, target, self.position) : undefined;
-  interactButton.hidden = target.typeId === 5
-    ? action === undefined
+  // A lock without a known opener keeps its button, marked: the click explains the missing skill
+  // instead of the button vanishing. Marked, never disabled — the loot button's rule.
+  const lockHint = target.typeId === 5 && action === undefined && self?.position
+    ? gameObjectLockHint(world, target, self.position) : undefined;
+  const interactHidden = target.typeId === 5
+    ? action === undefined && lockHint === undefined
     : target.typeId !== 3 || (npcFlags & NPC_FLAGS_INTERACTION_MASK) === 0;
+  const interactDisabled = lockHint !== undefined;
   const interactLabel = target.typeId !== 5 ? "Поговорить"
-    : action?.kind === "unlock" ? "Открыть" : "Использовать";
-  interactButton.title = interactLabel;
-  interactButton.setAttribute("aria-label", interactLabel);
+    : action?.kind === "unlock" ? "Открыть" : lockHint ?? "Использовать";
   // A corpse only. A game object's loot is never requested — the server refuses the packet for
   // anything that is not a creature, and a chest's loot arrives once a spell has opened it.
-  lootButton.hidden = !(target.typeId === 3 && isWorldObjectDead(target));
+  const lootHidden = !(target.typeId === 3 && isWorldObjectDead(target));
   // Marked, never disabled — the same rule the loot slots follow (`Npc.ts:109-117`). The bit is
   // the server's answer to «is there a sparkle on this body for you», and the server's answer to
   // «may I open it» is a stricter predicate the client cannot evaluate: `Player::SendLoot`
@@ -474,25 +625,75 @@ export function showTarget(): void {
   // (`LootHandler.cpp:430` is the only forced resend, and only in one branch). So the mark says
   // what is known and the click still goes out; if the server disagrees it says so in words.
   const lootable = isLootable(target);
-  if (lootable) lootButton.removeAttribute("aria-disabled");
-  else lootButton.setAttribute("aria-disabled", "true");
   // The accessible name is written here as well as the tooltip, for the reason the attack button
   // below already carries: the static `aria-label` in the markup wins over `title`, so a screen
   // reader would go on saying «Обыскать» over a body that has nothing on it.
   const lootLabel = lootable ? "Обыскать" : "Здесь нечего обыскивать";
-  lootButton.title = lootLabel;
-  lootButton.setAttribute("aria-label", lootLabel);
   // WotLK vendors may advertise a title-specific bit (ammo/food/poison/reagent) without 0x80.
-  vendorButton.hidden = target.typeId !== 3 || (npcFlags & NPC_FLAGS_VENDOR_MASK) === 0;
-  trainerButton.hidden = target.typeId !== 3 || (npcFlags & 0x70) === 0;
+  const vendorHidden = target.typeId !== 3 || (npcFlags & NPC_FLAGS_VENDOR_MASK) === 0;
+  const trainerHidden = target.typeId !== 3 || (npcFlags & 0x70) === 0;
   // UNIT_NPC_FLAG_BANKER is 0x20000. The vault itself is already in the player's update fields;
   // this is the only thing that grants permission to move anything in it.
-  bankerButton.hidden = target.typeId !== 3 || (npcFlags & 0x20000) === 0;
-  clearTargetButton.disabled = false;
-  attackButton.textContent = "⚔";
+  const bankerHidden = target.typeId !== 3 || (npcFlags & 0x20000) === 0;
+  // A duel is challenged with the Duel spell at the selected player; the server validates
+  // range, zone and state. Built lazily in code so no Dom.ts ids are needed.
+  const duelHidden = target.typeId !== 4 || target.guid === world.state.selfGuid;
   // The state has to be in the accessible name too: a static `aria-label` in the markup overrides
   // the title, so a screen reader was told "autoattack" whether it was running or not.
   const attackLabel = world.attacking ? "Остановить атаку" : "Начать атаку";
+
+  // One string for the whole painted frame: while the target stands still, every packet used to
+  // recompute the forty writes below with identical values. The power bar below stays outside
+  // the gate — it caches internally and must keep its own counsel.
+  const signature = [
+    target.guid.toString(), targetNameText, targetIconUrl, targetDetailsText, targetDetailsTitle,
+    healthWidth, healthText, powerHidden, attackDisabled, npcFlags,
+    interactHidden, interactDisabled, interactLabel, lootHidden, lootable, lootLabel,
+    vendorHidden, trainerHidden, bankerHidden, duelHidden, attackLabel,
+    targetMark ?? "", targetReaction ?? "", targetThreat ?? "", selfMark ?? "",
+  ].join("");
+  if (signature === lastTargetSignature) {
+    targetPowerBar.set(targetPowerValue, targetMaxPower);
+    targetPowerBar.setVariant(String(unit.powerType(target) ?? POWER.mana));
+    return;
+  }
+  lastTargetSignature = signature;
+  writeUnitMarkings(targetPanel, targetMark, targetReaction, targetThreat);
+  writeUnitMarkings(playerHud, selfMark, undefined, undefined);
+  targetName.textContent = targetNameText;
+  targetIcon.hidden = false;
+  setIconSource(targetIcon, targetIconUrl);
+  targetIcon.onerror = () => {
+    targetIcon.onerror = null;
+    // The question mark, which is a spell icon like any other: a family whose picture is not in
+    // this dataset falls back to the same route rather than to a file beside the page.
+    setIconSource(targetIcon, spellIconUrl(2273, game.gatewayOrigin) ?? "");
+  };
+  targetDetails.textContent = targetDetailsText;
+  targetDetails.title = targetDetailsTitle;
+  targetHealthBar.style.width = healthWidth;
+  targetHealthText.textContent = healthText;
+  targetPowerBar.root.hidden = powerHidden;
+  targetPowerBar.set(targetPowerValue, targetMaxPower);
+  targetPowerBar.setVariant(String(unit.powerType(target) ?? POWER.mana));
+  attackButton.disabled = attackDisabled;
+  interactButton.hidden = interactHidden;
+  if (interactDisabled) interactButton.setAttribute("aria-disabled", "true");
+  else interactButton.removeAttribute("aria-disabled");
+  interactButton.title = interactLabel;
+  interactButton.setAttribute("aria-label", interactLabel);
+  lootButton.hidden = lootHidden;
+  if (lootable) lootButton.removeAttribute("aria-disabled");
+  else lootButton.setAttribute("aria-disabled", "true");
+  lootButton.title = lootLabel;
+  lootButton.setAttribute("aria-label", lootLabel);
+  vendorButton.hidden = vendorHidden;
+  trainerButton.hidden = trainerHidden;
+  bankerButton.hidden = bankerHidden;
+  const duel = duelButton();
+  if (duel) duel.hidden = duelHidden;
+  clearTargetButton.disabled = false;
+  attackButton.textContent = "⚔";
   attackButton.title = attackLabel;
   attackButton.setAttribute("aria-label", attackLabel);
 }

@@ -1,4 +1,6 @@
 import { game } from "../game/Context.js";
+import { gatewayOrigin as defaultGatewayOrigin } from "../Environment.js";
+import { bootPatchGeneration, describePatchState, patchChainChanged, readPatchStatus } from "../PatchChainChanged.js";
 import { STAND_IN_REASON_LABELS, standInSummary } from "../StandIn.js";
 import {
   capsuleReasons, capsuleStatus, customPacketList, customPacketModules, customPacketStatus, customPacketWarnings, diagnosticsPackets,
@@ -8,7 +10,8 @@ import {
   unhandledOpcodeList, unhandledStatus,
 } from "./Dom.js";
 import { Tabs } from "./Widgets.js";
-import { formatCustomValue, packetsChanged, packetsView, type PacketsCounters } from "./PacketsModel.js";
+import { packetsChanged, packetsView, type PacketsCounters } from "./PacketsModel.js";
+import { buildPacketDiagnosticsReport } from "./PacketDiagnosticsReport.js";
 import { drawPacketsTab } from "./PacketsTab.js";
 import { patchRegistry, windowRegistry } from "./WindowRegistry.js";
 import { moduleWindowHost, setModuleStyle } from "./ModuleClient.js";
@@ -51,6 +54,47 @@ export function showStandIns(): void {
   );
 }
 
+/** The «Патчи» line; built on first use, above the capsule counter. */
+let patchLine: HTMLParagraphElement | undefined;
+let patchCheckedAt = Number.NEGATIVE_INFINITY;
+let patchPending = false;
+/**
+ * The full answer runs `tools/patch-status.mjs` in a gateway child (the gateway memoises it for 30 s),
+ * so a window that is refreshed on every packet asks at most this often.
+ */
+const PATCH_STATUS_INTERVAL_MS = 10_000;
+
+/**
+ * Which client patch generation this page booted with, against what the gateway serves now.
+ *
+ * After a TSWoW build the two part ways, and the rest of this window cannot say why a texture is
+ * white or the interface would not mount: the gateway is refusing client-media requests (409)
+ * until it is restarted, or it has been restarted and this page is still the old one. The same
+ * sentence as the banner, plus the gateway's one-line summary of the lettered patches and TSAddons.
+ */
+export function showPatchStatus(): void {
+  if (!patchLine) {
+    patchLine = document.createElement("p");
+    patchLine.id = "patch-status";
+    patchLine.className = "muted";
+    patchLine.textContent = "Патчи: ожидание шлюза…";
+    capsuleStatus.before(patchLine);
+  }
+  if (diagnosticsWindow.hidden || patchPending) return;
+  const now = performance.now();
+  if (now - patchCheckedAt < PATCH_STATUS_INTERVAL_MS) return;
+  patchPending = true;
+  patchCheckedAt = now;
+  const line = patchLine;
+  void readPatchStatus(game.gatewayOrigin ?? defaultGatewayOrigin(window.location)).then((read) => {
+    const description = describePatchState(bootPatchGeneration(), read, { pageLatched: patchChainChanged() });
+    const summary = read.kind === "ok" ? read.status.client?.summaryLine : undefined;
+    line.className = description.tone === "error" || description.tone === "warning" ? "error" : "muted";
+    const sentence = description.text.charAt(0).toLowerCase() + description.text.slice(1);
+    line.textContent = `Патчи: ${sentence}${typeof summary === "string" && summary ? ` · ${summary}` : ""}`;
+  }).finally(() => { patchPending = false; });
+}
+
 // Every opcode the world loop could not route. `webclientUnhandledOpcodes()` in the console
 // dumps the same list with payload samples, which is the seed for the phase 10 replay corpus.
 //
@@ -58,14 +102,23 @@ export function showStandIns(): void {
 // that opens or refreshes the diagnostics window already calls.
 export function showUnhandledOpcodes(): void {
   showStandIns();
+  showPatchStatus();
   const summary = game.world?.unhandledOpcodes.summary() ?? [];
+  const packetErrors = game.world?.packetErrors.summary() ?? [];
+  const packetErrorCount = game.world?.packetErrors.count ?? 0;
   const missing = summary.filter((entry) => entry.count > 0);
-  unhandledStatus.className = missing.length ? "error" : "muted";
-  unhandledStatus.textContent = missing.length
-    ? `Опкоды без обработчика: ${missing.length} (${missing.reduce((total, entry) => total + entry.count, 0)} пакетов)`
-    : "Опкоды: необработанных пакетов пока нет.";
+  unhandledStatus.className = missing.length || packetErrorCount ? "error" : "muted";
+  unhandledStatus.textContent = missing.length || packetErrorCount
+    ? `Опкоды без обработчика: ${missing.length} (${missing.reduce((total, entry) => total + entry.count, 0)} пакетов) · ошибки пакетов: ${packetErrorCount}`
+    : "Опкоды: необработанных пакетов и ошибок пока нет.";
   unhandledOpcodeList.replaceChildren(
-    ...summary.slice(0, 40).map((entry) => {
+    ...packetErrors.slice(0, 20).map((entry) => {
+      const row = document.createElement("p");
+      row.className = "error";
+      row.textContent = `Ошибка ${entry.opcode} ${entry.name} · ${entry.count} раз · ${entry.message}`;
+      return row;
+    }),
+    ...summary.slice(0, 20).map((entry) => {
       const row = document.createElement("p");
       row.className = entry.count ? "" : "muted";
       const dropped = entry.droppedDuringLogin ? ` · при логине ${entry.droppedDuringLogin}` : "";
@@ -286,27 +339,14 @@ export function updateModuleWindowList(): void {
   showModuleWindows();
 }
 
-// Saves the playtest result: which opcodes went unrouted, how often, and enough payload to
-// write a parser against. See PLAYTEST.md for the run through that fills this in.
+// Saves shareable traffic metadata. Raw samples, decoded module values and free-form errors stay
+// in local diagnostics memory because any of them can contain chat, account or session data.
 export function saveUnhandledOpcodeReport(): void {
-  const world = game.world;
-  const report = {
-    recordedAt: new Date().toISOString(),
-    mapId: world?.mapId ?? null,
-    selfGuid: world?.state.selfGuid?.toString() ?? null,
-    handlerCount: world ? world.unhandledOpcodes.missingHandlerCount : 0,
-    opcodes: world?.unhandledOpcodes.summary() ?? [],
-    // The module half of the same report. The decoded value is written as the window prints it
-    // rather than as itself: `u64` and `i64` decode to `bigint` by design, and one of those in the
-    // object makes `JSON.stringify` throw — the report would be lost over a field it was carrying.
-    customPackets: world?.customPackets.summary().map((row) => ({
-      ...row, value: row.value === undefined ? null : formatCustomValue(row.value),
-    })) ?? [],
-  };
+  const report = buildPacketDiagnosticsReport(game.world);
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, undefined, 1)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `unhandled-opcodes-${report.recordedAt.replaceAll(":", "-").slice(0, 19)}.json`;
+  link.download = `packet-diagnostics-${report.recordedAt.replaceAll(":", "-").slice(0, 19)}.json`;
   link.click();
   URL.revokeObjectURL(url);
 }

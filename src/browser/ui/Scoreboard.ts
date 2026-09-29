@@ -34,6 +34,7 @@ function build(): Parts {
     // The button is marked rather than disabled, so it refuses here instead of in the browser.
     if (refresh.getAttribute("aria-disabled") === "true") return;
     game.world?.requestPvpScores();
+    game.world?.requestFlagCarriers();
     showScoreboard();
   });
   attachTooltip(refresh, () => refresh.getAttribute("aria-disabled") === "true"
@@ -65,9 +66,27 @@ export function toggleScoreboard(): void {
   }
   parts.panel.show();
   const world = game.world;
-  if (world && !inArena(world)) world.requestPvpScores();
+  if (world && !inArena(world)) {
+    world.requestPvpScores();
+    world.requestFlagCarriers();
+  }
   showScoreboard();
 }
+
+/** Live refresh while the window is open: re-ask every 10s outside arenas. */
+let lastScoreRequest = 0;
+export function updateScoreboard(now: number): void {
+  if (!scoreboardOpen() || now - lastScoreRequest < 10_000) return;
+  const world = game.world;
+  if (!world || inArena(world)) return;
+  lastScoreRequest = now;
+  world.requestPvpScores();
+  world.requestFlagCarriers();
+}
+
+/** Active sort: column id + direction. Default is damage, as before. */
+let sortColumn = "damageDone";
+let sortDescending = true;
 
 export function showScoreboard(): void {
   const world = game.world;
@@ -92,10 +111,23 @@ export function showScoreboard(): void {
 
   const columns = scoreColumns(log);
   const objectives = objectiveCount(log);
-  const headers = [...columns.map((column) => column.title), ...objectiveHeaders(objectives)];
+  const headers = [...columns.map((column) => column.title), ...objectiveHeaders(objectives, world.mapId)];
 
   const rows: HTMLElement[] = [];
-  for (const group of scoreGroups(log, (guid) => world.displayName(guid))) {
+  // Flag carriers (Warsong Gulch / Twin Peaks): asked with the scores and refreshed on the
+  // answer. Guids with no name yet read as hex until the name query lands.
+  const carriers = world.flagCarriers ?? [];
+  if (!log.arena && carriers.length > 0) {
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.textContent = `С флагами: ${carriers.map((carrier) => world.displayName(carrier.guid)).join(", ")}`;
+    rows.push(line);
+    for (const carrier of carriers) {
+      if (world.displayName(carrier.guid).startsWith("0x")) world.requestName(carrier.guid);
+    }
+  }
+  const sort = { column: sortColumn, descending: sortDescending };
+  for (const group of scoreGroups(log, (guid) => world.displayName(guid), sort)) {
     if (group.title) {
       const heading = document.createElement("div");
       heading.className = "scoreboard-team";
@@ -104,7 +136,18 @@ export function showScoreboard(): void {
     }
     const head = document.createElement("div");
     head.className = "scoreboard-row scoreboard-head";
-    head.append(cell("Игрок"), ...headers.map((title) => cell(title)));
+    head.append(cell("Игрок"));
+    for (const column of columns) {
+      const header = cell(column.title + (sortColumn === column.id ? (sortDescending ? " ▼" : " ▲") : ""));
+      header.className = "scoreboard-sortable";
+      header.addEventListener("click", () => {
+        if (sortColumn === column.id) sortDescending = !sortDescending;
+        else { sortColumn = column.id; sortDescending = true; }
+        showScoreboard();
+      });
+      head.append(header);
+    }
+    for (const title of objectiveHeaders(objectives, world.mapId)) head.append(cell(title));
     rows.push(head);
 
     for (const row of group.rows) {

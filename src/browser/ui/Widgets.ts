@@ -229,6 +229,10 @@ export class Bar {
   readonly root: HTMLElement;
   readonly #fill: HTMLElement;
   readonly #text: HTMLElement | undefined;
+  /** Last values written, so per-frame refreshes compare instead of forcing style/layout. */
+  #lastWidth: string | undefined;
+  #lastText: string | undefined;
+  #lastVariant: string | undefined;
 
   constructor(options: BarOptions = {}) {
     this.root = document.createElement("div");
@@ -247,12 +251,24 @@ export class Bar {
   }
 
   set(value: number | undefined, maximum: number | undefined, text?: string): void {
-    this.#fill.style.width = `${fillFraction(value, maximum) * 100}%`;
-    if (this.#text) this.#text.textContent = text ?? (value === undefined ? "" : `${value}/${maximum ?? "?"}`);
+    const width = `${fillFraction(value, maximum) * 100}%`;
+    if (width !== this.#lastWidth) {
+      this.#lastWidth = width;
+      this.#fill.style.width = width;
+    }
+    if (this.#text) {
+      const label = text ?? (value === undefined ? "" : `${value}/${maximum ?? "?"}`);
+      if (label !== this.#lastText) {
+        this.#lastText = label;
+        this.#text.textContent = label;
+      }
+    }
   }
 
   /** A bar whose colour depends on what it holds — a power type, a reaction, a quality. */
   setVariant(variant: string | undefined): void {
+    if (variant === this.#lastVariant) return;
+    this.#lastVariant = variant;
     if (variant === undefined) delete this.#fill.dataset["variant"];
     else this.#fill.dataset["variant"] = variant;
   }
@@ -347,6 +363,12 @@ export class IconButton {
   readonly root: HTMLButtonElement;
   readonly #sweep: HTMLElement;
   readonly #cooldown: HTMLElement;
+  /** Last values written to the DOM, so a 60 Hz frame is a comparison and not a style recalc. */
+  #lastSweep: string | undefined;
+  #lastCooling: boolean | undefined;
+  #lastLabel: string | undefined;
+  #lastHidden: boolean | undefined;
+  #lastUsable: boolean | undefined;
 
   constructor(options: {
     icon?: string | undefined;
@@ -419,14 +441,36 @@ export class IconButton {
 
   /** Call once a frame while a cooldown runs; `remaining` of 0 clears it. */
   setCooldown(remaining: number, label = ""): void {
-    this.#sweep.style.setProperty("--sweep", `${Math.max(0, Math.min(1, remaining)) * 360}deg`);
-    this.root.classList.toggle("ui-on-cooldown", remaining > 0);
-    this.#cooldown.textContent = label;
-    this.#cooldown.hidden = !label || remaining <= 0;
+    // The sweep is a conic-gradient custom property: writing it every frame forces a style
+    // recalc and repaint of the button even when the visible degree did not move. Quantize to
+    // whole degrees and skip unchanged writes; a 1.5 s GCD still steps every frame while a
+    // 10-minute cooldown writes a handful of times over its whole run.
+    const degrees = `${Math.round(Math.max(0, Math.min(1, remaining)) * 360)}deg`;
+    if (degrees !== this.#lastSweep) {
+      this.#lastSweep = degrees;
+      this.#sweep.style.setProperty("--sweep", degrees);
+    }
+    const cooling = remaining > 0;
+    if (cooling !== this.#lastCooling) {
+      this.#lastCooling = cooling;
+      this.root.classList.toggle("ui-on-cooldown", cooling);
+    }
+    if (label !== this.#lastLabel) {
+      this.#lastLabel = label;
+      this.#cooldown.textContent = label;
+    }
+    const hidden = !label || !cooling;
+    if (hidden !== this.#lastHidden) {
+      this.#lastHidden = hidden;
+      this.#cooldown.hidden = hidden;
+    }
   }
 
   setUsable(usable: boolean, reason?: string): void {
-    this.root.classList.toggle("ui-unusable", !usable);
+    if (usable !== this.#lastUsable) {
+      this.#lastUsable = usable;
+      this.root.classList.toggle("ui-unusable", !usable);
+    }
     if (reason !== undefined) this.root.title = reason;
   }
 }
@@ -687,6 +731,36 @@ export interface TooltipLine {
   tone?: TooltipTone | undefined;
   /** Parsed Lua colour runs; text is still rendered through textContent. */
   runs?: readonly { readonly text: string; readonly color?: string | undefined }[] | undefined;
+  /**
+   * The fields below are read only by the stock FrameXML `GameTooltip` (`setGameTooltipContent`);
+   * the native box above ignores them, so a builder that fills them keeps its native shape.
+   *
+   * `right` is the right half of a double line, the original's `AddDoubleLine` row: slot | armour
+   * type, damage | speed, cost | range, cast time | cooldown.
+   */
+  right?: string | undefined;
+  /** The exact 3.3.5 colour, `#rrggbb`, over the tone's; the stock grey has no tone. */
+  color?: string | undefined;
+  /** The right half's colour, `#rrggbb`; white when absent. */
+  rightColor?: string | undefined;
+  /** `AddLine(text, r, g, b, true)`: the original wraps «Use:» text and descriptions. */
+  wrap?: boolean | undefined;
+  /**
+   * A price. A stock tooltip draws the row with the corpus' own `SetTooltipMoney` — `label`, then
+   * the coins — when it can, and keeps `text`, the same price in words, as the row when it cannot.
+   */
+  money?: { readonly copper: number; readonly label: string } | undefined;
+}
+
+/**
+ * How content built before everything it names arrived asks to be drawn again.
+ *
+ * `watch` calls `redraw` once, with the rebuilt content, when a late answer lands (an item row, a
+ * spell's words, the enchantment table), and returns the cancel. A tooltip that has moved on says
+ * so to its own redraw; a rebuilt content that still waits carries a `refresh` of its own.
+ */
+export interface TooltipRefresh {
+  readonly watch: (redraw: (next: TooltipContent) => void) => () => void;
 }
 
 export interface TooltipContent {
@@ -702,6 +776,10 @@ export interface TooltipContent {
   lines?: readonly (string | TooltipLine)[] | undefined;
   /** Dimmer trailing lines: what the thing is for, what a click will do. */
   footer?: readonly string[] | undefined;
+  /** The title row's right half: a spell's rank, grey in the original (stock tooltip only). */
+  titleRight?: string | undefined;
+  /** Present while the content is missing a late answer; see {@link TooltipRefresh}. */
+  refresh?: TooltipRefresh | undefined;
 }
 
 /**

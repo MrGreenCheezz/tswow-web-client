@@ -6,6 +6,7 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { attachTooltip, Panel, refreshTooltip } from "./Widgets.js";
 import { setIconSource } from "./IconImage.js";
+import { openFrameXmlSocket } from "../framexml/FrameXmlSocketController.js";
 
 interface SocketingSession {
   world: WorldClient;
@@ -58,6 +59,8 @@ function carriedItems(active: SocketingSession): ItemSlotState[] {
 export function openSocketing(slot: ItemSlotState): boolean {
   const world = game.world;
   if (!world || !slot.item || slot.guid === 0n || isBankSlot(slot.bag, slot.slot)) return false;
+  // A published stock ItemSocketingFrame takes the item (FrameXmlSocketController.ts).
+  if (openFrameXmlSocket(slot.bag, slot.slot)) return true;
   closeSocketing();
   panel ??= new Panel({ id: "socketing-window", title: "Инкрустация", className: "socketing-window", onClose: closeSocketing });
   session = { world, bag: slot.bag, slot: slot.slot, guid: slot.guid, selected: [0n, 0n, 0n],
@@ -321,7 +324,7 @@ function renderSocketing(): void {
   const selectedAny = active.selected.some((guid) => guid !== 0n);
   const replacing = active.selected.some((guid, socket) => guid !== 0n && (enchantments[socket + 2] ?? 0) > 0);
   if (selectedAny) body.push(text("p", replacing
-    ? "При установке новые камни расходуются, а заменяемые уничтожаются. Для сохранения камней сначала используйте «Извлечь камни» в /socket."
+    ? "При установке новые камни расходуются, а заменяемые уничтожаются — так работает и обычный клиент 3.3.5. Сохранить камни можно кнопкой «Извлечь камни» в окне /socket модуля gem-abilities, если он загружен."
     : "При установке выбранные камни расходуются и закрепляются в предмете.", "socketing-warning"));
   actions.append(button("Сбросить выбор", () => {
     active.selected = [0n, 0n, 0n]; active.stackChoice = undefined; active.confirming = false; renderSocketing();

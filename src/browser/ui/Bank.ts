@@ -1,12 +1,14 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
+import { formatMoney } from "./Format.js";
 import {
   BANK_BAG_SLOTS, BANK_SLOT_BAG_START, INVENTORY_SLOT_BAG_0, freeSlots, playerInventory,
   type ItemSlotState, type PlayerInventoryState,
 } from "../Inventory.js";
 import { bagSection, itemSlot } from "./ItemSlots.js";
 import { Panel, confirmPanel } from "./Widgets.js";
+import { frameXmlBankPublished } from "../framexml/FrameXmlBankController.js";
 
 /**
  * The bank.
@@ -51,12 +53,11 @@ function build(): BankPanel {
   buy.type = "button";
   buy.className = "bank-buy";
   buy.textContent = "Купить ячейку";
-  // The price is in BankBagSlotPrices.dbc, which this client does not read yet; naming the slot
-  // and asking is still the difference between spending gold deliberately and spending it by
-  // clicking the wrong button once.
+  // The price is `BankBagSlotPrices.dbc` row `bought+1` (`BankHandler.cpp`); the server still
+  // validates funds and answers failure in words. A missing row falls back to asking.
   buy.addEventListener("click", () => confirmPanel(buy, {
     title: buy.textContent || "Купить ячейку банка?",
-    lines: ["Ячейка стоит золото, и чем дальше, тем больше. Сумму назовёт сервер."],
+    lines: [bankSlotPriceLine()],
     confirm: "Купить",
     onConfirm: () => game.world?.buyBankSlot(),
   }));
@@ -70,6 +71,11 @@ function build(): BankPanel {
 
 /** Opens the window the moment `SMSG_SHOW_BANK` grants permission, as the original client does. */
 export function showBank(): void {
+  // Stock BankFrame owns the bank while published: BANKFRAME_OPENED shows it, the panel steps aside.
+  if (frameXmlBankPublished()) {
+    parts?.panel.hide();
+    return;
+  }
   const world = game.world;
   if (!parts && world?.bankerGuid === undefined) return;
   parts ??= build();
@@ -120,7 +126,12 @@ function renderBank(bank: BankPanel, inventory: PlayerInventoryState): void {
     return itemSlot(slot);
   }));
   bank.buy.disabled = bought >= BANK_BAG_SLOTS;
-  bank.buy.textContent = bought >= BANK_BAG_SLOTS ? "Все ячейки куплены" : `Купить ячейку ${bought + 1}`;
+  const nextPrice = game.slotPrices?.bankSlotPrice(bought);
+  bank.buy.textContent = bought >= BANK_BAG_SLOTS
+    ? "Все ячейки куплены"
+    : nextPrice === undefined
+      ? `Купить ячейку ${bought + 1}`
+      : `Купить ячейку ${bought + 1} · ${formatMoney(nextPrice)}`;
 
   bank.bagContents.replaceChildren(...inventory.bankBags.map((bag, index) =>
     bagSection(bagName(bag.bag, index), bag.slots)));
@@ -129,4 +140,14 @@ function renderBank(bank: BankPanel, inventory: PlayerInventoryState): void {
 function bagName(bag: WorldObjectState, index: number): string {
   const entry = bag.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   return game.itemMetadata?.get(entry)?.name ?? `Банковская сумка ${index + 1}`;
+}
+
+/** The next slot's price from the table, or the honest fallback when the row is missing. */
+function bankSlotPriceLine(): string {
+  const inventory = game.world && playerInventory(game.world.state);
+  const bought = inventory?.bankBagSlotsBought ?? 0;
+  const price = game.slotPrices?.bankSlotPrice(bought);
+  return price === undefined
+    ? "Ячейка стоит золото, и чем дальше, тем больше. Сумму назовёт сервер."
+    : `Ячейка ${bought + 1} стоит ${formatMoney(price)}. Сервер всё равно проверит золото.`;
 }

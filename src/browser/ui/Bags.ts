@@ -1,9 +1,10 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { WorldState } from "../../world/WorldState.js";
+import { WorldState, type WorldObjectState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
 import {
   EQUIPMENT_SLOT_NAMES, INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_BAG_START, freeSlots, playerInventory,
-  type BagState, type ItemSlotState, type PlayerInventoryState, entryOf, inventorySignature, stackCount,
+  type BagState, type InventoryWatch, type ItemSlotState, type PlayerInventoryState, entryOf, inventorySignature,
+  inventoryWatch, stackCount,
 } from "../Inventory.js";
 import {
   bagBar, characterWindow, equipmentSlots, inventoryMessage, inventoryMoney, inventorySlots,
@@ -36,6 +37,52 @@ export { closeItemMenu } from "./ItemSlots.js";
 const bagPanels = new Map<number, Panel>();
 let keyringPanel: Panel | undefined;
 
+/**
+ * Bag search, as typed into the inventory window.
+ *
+ * A filter that hides would eat clicks and teach the player the item is gone; dimming keeps
+ * every slot clickable and only says where to look. Empty slots never dim. Matching is a
+ * case-insensitive substring over the template or metadata name, the same text the tooltip
+ * titles with.
+ */
+let bagQuery = "";
+
+export function bagSearchMatches(name: string, query: string): boolean {
+  const wanted = query.trim().toLocaleLowerCase();
+  if (!wanted) return true;
+  return name.toLocaleLowerCase().includes(wanted);
+}
+
+/** Whether this carried slot survives the current search (empty slots always do). */
+export function bagSlotMatches(slot: ItemSlotState): boolean {
+  if (!bagQuery.trim() || !slot.item) return true;
+  const entry = entryOf(slot.item);
+  if (entry <= 0) return true;
+  const world = game.world;
+  const name = world?.itemTemplate(entry)?.name ?? game.itemMetadata?.get(entry)?.name ?? "";
+  return bagSearchMatches(name, bagQuery);
+}
+
+function bagSearchInput(): HTMLInputElement | undefined {
+  if (typeof document === "undefined") return undefined;
+  const element = document.getElementById("bag-search");
+  // Tag name rather than `instanceof HTMLInputElement`: unit tests drive this without a DOM.
+  if (!element || (element.tagName ?? "").toUpperCase() !== "INPUT") return undefined;
+  return element as HTMLInputElement;
+}
+
+export function setBagSearch(text: string): void {
+  bagQuery = text;
+  if (game.world) renderInventory(game.world.state);
+}
+
+/** Drops the query when the world goes away, so a new character is not greeted by dimmed bags. */
+export function clearBagSearch(): void {
+  bagQuery = "";
+  const input = bagSearchInput();
+  if (input) input.value = "";
+}
+
 // The inventory window is markup, so a patch's `class:` can reach it from here (М7).
 skinnable("inventory-window", inventoryWindow);
 
@@ -52,6 +99,28 @@ export function toggleAllBags(): void {
   inventoryWindow.hidden = open;
   for (const bag of inventory?.bags ?? []) bagWindow(bag.bagSlot).root.hidden = open;
   if (!open && game.world) renderInventory(game.world.state);
+}
+
+/** The search box lives in markup; this attaches it once. Cheap enough to attempt every render. */
+let bagSearchWired = false;
+function wireBagSearch(): void {
+  if (bagSearchWired || typeof document === "undefined") return;
+  const input = bagSearchInput();
+  if (!input) return;
+  bagSearchWired = true;
+  input.value = bagQuery;
+  input.addEventListener("input", () => setBagSearch(input.value));
+  // Escape clears first and lets go second, like the spellbook search: while the caret sits
+  // here movement keys type into the box instead of moving, so the way out must be one key.
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (input.value !== "") {
+      input.value = "";
+      setBagSearch("");
+    }
+    input.blur();
+    event.preventDefault();
+  });
 }
 
 export function toggleKeyring(): void {
@@ -175,10 +244,38 @@ export function itemMetadataChanged(): void {
   metadataRevision++;
 }
 
-export function renderInventory(state: WorldState): void {
-  const inventory = playerInventory(state);
+/** What one build of the inventory produced, and the store revision it was built at. */
+interface BuiltInventory {
+  readonly watch: InventoryWatch | undefined;
+  readonly revision: number | undefined;
+  readonly player: WorldObjectState;
+  readonly inventory: PlayerInventoryState;
+  /** Handed to the metadata client every call and never changed by it. */
+  readonly entries: number[];
+  readonly slotsSignature: string;
+}
+
+let builtInventory: BuiltInventory | undefined;
+
+/**
+ * The inventory and everything derived from its slots, built again only when the store says a slot
+ * could have moved (`InventoryWatch`).
+ *
+ * `showWorldState` calls `renderInventory` once a frame for as long as packets arrive, and in a
+ * crowd that is every frame: each one walked every slot, made the entry list and the signature
+ * string, and then found the signature unchanged. A state without the client's store — a test, a
+ * replay — has no watch and is built every time, as before.
+ */
+function currentInventory(state: WorldState): BuiltInventory | undefined {
   const player = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
-  if (!inventory || !player) return;
+  if (!player) return undefined;
+  const store = game.store;
+  const watch = store && store.state === state ? inventoryWatch(store) : undefined;
+  const revision = watch?.revision;
+  const built = builtInventory;
+  if (watch && built && built.watch === watch && built.revision === revision && built.player === player) return built;
+  const inventory = playerInventory(state);
+  if (!inventory) return undefined;
   const allSlots = [
     ...inventory.equipment, ...inventory.backpack, ...inventory.keyring, ...inventory.bank,
     ...inventory.bags.flatMap((bag) => bag.slots), ...inventory.bankBags.flatMap((bag) => bag.slots),
@@ -189,9 +286,38 @@ export function renderInventory(state: WorldState): void {
     ...inventory.bags.map((bag) => entryOf(bag.bag)),
     ...inventory.bankBags.map((bag) => entryOf(bag.bag)),
   ].filter((entry) => entry > 0);
+  builtInventory = {
+    watch, revision, player, inventory, entries, slotsSignature: inventorySignature(allSlots, inventory),
+  };
+  return builtInventory;
+}
+
+/**
+ * The inventory whose entries were last handed to the metadata client, by which client and when.
+ *
+ * `renderInventory` runs once a frame for as long as packets arrive, and each call used to start a
+ * `loadItemMetadata` — two promises and a microtask chain — for a list the client had already
+ * answered. It is asked again when the inventory is built again, when the client is a new one, and
+ * otherwise no more than once a second: the client re-arms a failed entry only when it is asked
+ * after its back-off (5 s, then 15 s, then 30 s), so that cadence keeps the retries.
+ */
+let metadataAsked: { built: BuiltInventory; client: unknown; at: number } | undefined;
+const ITEM_METADATA_REASK_MS = 1_000;
+
+export function renderInventory(state: WorldState): void {
+  const built = currentInventory(state);
+  if (!built) return;
+  const { player, inventory, entries } = built;
+  wireBagSearch();
   // Names and icons are fetched even with the bags closed, because loot, vendor, trade and quest
   // windows read the same cache. Only the slot grids themselves wait until they are on screen.
-  void loadItemMetadata(entries, state);
+  const client = game.itemMetadata;
+  const now = performance.now();
+  if (client && (metadataAsked === undefined || metadataAsked.built !== built || metadataAsked.client !== client
+    || now - metadataAsked.at >= ITEM_METADATA_REASK_MS)) {
+    metadataAsked = { built, client, at: now };
+    void loadItemMetadata(entries, state);
+  }
 
   // Nothing below this line is worth doing when nothing about the inventory has moved.
   //
@@ -205,11 +331,15 @@ export function renderInventory(state: WorldState): void {
   //
   // Money and the character sheet move without any slot moving — coin from a quest, a stat from a
   // buff — so they are refreshed above the guard rather than behind it, and are not in the key.
-  inventoryMoney.textContent = formatMoney(player.fields.get(UPDATE_FIELDS.PLAYER_FIELD_COINAGE.offset) ?? 0);
+  // Written only when it reads differently: the same text written every frame still replaced the
+  // text node and invalidated the window's style for nothing.
+  const money = formatMoney(player.fields.get(UPDATE_FIELDS.PLAYER_FIELD_COINAGE.offset) ?? 0);
+  if (inventoryMoney.textContent !== money) inventoryMoney.textContent = money;
   showCharacterSheet();
 
   // The signature is the slots themselves: what is in them, how many, and which bags are carried.
-  const signature = inventorySignature(allSlots, inventory);
+  // The search query rides along: typing must repaint even though nothing moved.
+  const signature = `${built.slotsSignature}|${bagQuery}`;
   const windowsOpen = `${characterWindow.hidden}/${inventoryWindow.hidden}/${keyringPanel?.visible ?? false}`
     + [...bagPanels].map(([bagSlot, panel]) => `${bagSlot}:${panel.visible}`).join(",");
   if (signature === renderedSignature && windowsOpen === renderedWindows && metadataRevision === renderedMetadata) return;
@@ -237,9 +367,11 @@ export function renderInventory(state: WorldState): void {
 
   if (characterWindow.hidden && inventoryWindow.hidden) return;
   equipmentSlots.replaceChildren(...inventory.equipment.map((slot, index) =>
-    itemSlot(slot, EQUIPMENT_SLOT_NAMES[index] ?? `Слот ${index + 1}`)));
+    itemSlot(slot, EQUIPMENT_SLOT_NAMES[index] ?? `Слот ${index + 1}`, !bagSlotMatches(slot))));
   showEquipmentSets();
-  inventorySlots.replaceChildren(bagSection("Рюкзак", inventory.backpack));
+  // The backpack says how much fits besides what is in it, the same line every bag window carries.
+  inventorySlots.replaceChildren(bagSection(
+    `Рюкзак · ${freeSlots(inventory.backpack)} своб.`, inventory.backpack, (slot) => !bagSlotMatches(slot)));
 
 }
 
@@ -252,7 +384,7 @@ function showBagPanel(panel: Panel, bag: BagState): void {
 function grid(slots: readonly ItemSlotState[]): HTMLElement {
   const element = document.createElement("div");
   element.className = "bag-grid";
-  element.append(...slots.map((slot) => itemSlot(slot)));
+  element.append(...slots.map((slot) => itemSlot(slot, "", !bagSlotMatches(slot))));
   return element;
 }
 

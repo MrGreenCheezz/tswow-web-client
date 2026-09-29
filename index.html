@@ -115,6 +115,11 @@
                 <button id="inventory-toggle" type="button" title="Инвентарь (B)" aria-label="Инвентарь" aria-keyshortcuts="B"></button>
                 <button id="spellbook-toggle" type="button" title="Книга заклинаний (P)" aria-label="Книга заклинаний" aria-keyshortcuts="P"></button>
                 <button id="talents-toggle" type="button" title="Таланты (N)" aria-label="Таланты" aria-keyshortcuts="N"></button>
+                <button id="quest-toggle" type="button" title="Журнал заданий (L)" aria-label="Журнал заданий" aria-keyshortcuts="L">📜</button>
+                <button id="social-toggle" type="button" title="Общение" aria-label="Общение">👥</button>
+                <button id="worldmap-toggle" type="button" title="Карта мира (M)" aria-label="Карта мира" aria-keyshortcuts="M">🗺</button>
+                <button id="calendar-toggle" type="button" title="Календарь" aria-label="Календарь">📅</button>
+                <button id="lfg-toggle" type="button" title="Поиск подземелий" aria-label="Поиск подземелий"></button>
                 <button id="game-menu-toggle" type="button" title="Меню игры (Esc)" aria-label="Меню игры" aria-keyshortcuts="Escape" aria-haspopup="dialog" aria-controls="game-menu" aria-expanded="false"><span class="micro-button-glyph" aria-hidden="true">☰</span></button>
               </div>
             </div>
@@ -215,6 +220,7 @@
             <header><strong>Инвентарь</strong><button class="window-close" type="button" data-close="inventory-window" aria-label="Закрыть"></button></header>
             <div id="inventory-money" class="inventory-money"></div>
             <p id="inventory-message" class="muted" role="status" aria-live="polite"></p>
+            <div class="bag-search-row"><input id="bag-search" type="search" autocomplete="off" placeholder="Поиск по сумкам" aria-label="Поиск по сумкам" /></div>
             <div id="inventory-slots" class="inventory-slots" aria-label="Сумки персонажа"></div>
           </section>
 
@@ -269,32 +275,105 @@
               <input id="auction-search" maxlength="60" placeholder="Поиск по названию" />
               <button id="auction-find" type="button">Искать</button>
               <button id="auction-mine" type="button">Мои лоты</button>
+              <button id="auction-bids" type="button">Мои ставки</button>
+              <button id="auction-pending" type="button" title="Незабранные деньги и предметы">Ожидает</button>
+            </p>
+            <p class="auction-filters">
+              <label>Мин. ур. <input id="auction-level-min" type="number" min="0" max="80" step="1" value="0" /></label>
+              <label>Макс. ур. <input id="auction-level-max" type="number" min="0" max="80" step="1" value="0" /></label>
+              <label>Редкость <select id="auction-quality" aria-label="Редкость">
+                <option value="-1">Любая</option>
+                <option value="0">Обычный</option>
+                <option value="1">Необычный</option>
+                <option value="2">Редкий</option>
+                <option value="3">Эпический</option>
+                <option value="4">Легендарный</option>
+              </select></label>
+              <label><input id="auction-usable" type="checkbox" /> Только usable</label>
+              <label>Порядок <select id="auction-sort" aria-label="Порядок лотов">
+                <option value="price-asc">Сначала дешевле</option>
+                <option value="price-desc">Сначала дороже</option>
+                <option value="time-left">Скоро конец</option>
+                <option value="buyout-asc">Выкуп: дешевле</option>
+              </select></label>
+            </p>
+            <p class="auction-pagination">
+              <button id="auction-prev" type="button">◀ Назад</button>
+              <span id="auction-page" class="muted">Стр. 0</span>
+              <button id="auction-next" type="button">Вперёд ▶</button>
             </p>
             <div id="auction-list" aria-label="Лоты"></div>
           </aside>
 
-          <aside id="lfg-window" class="game-window" hidden>
-            <header><strong>Поиск подземелья</strong><button class="window-close" type="button" data-close="lfg-window" aria-label="Закрыть"></button></header>
+          <aside id="lfg-window" class="game-window lfg-window" hidden>
+            <header><strong>Поиск подземелий</strong><button class="window-close" type="button" data-close="lfg-window" aria-label="Закрыть"></button></header>
             <p id="lfg-message" class="muted" role="status" aria-live="polite"></p>
-            <p id="lfg-queue" class="muted"></p>
+            <p id="lfg-queue" class="muted lfg-queue"></p>
             <div id="lfg-proposal" hidden>
+              <div id="lfg-proposal-banner" class="lfg-proposal-banner" aria-hidden="true" hidden></div>
               <p id="lfg-proposal-text"></p>
               <p>
                 <button id="lfg-accept" type="button">Согласиться</button>
                 <button id="lfg-decline" type="button">Отказаться</button>
               </p>
             </div>
-            <p>
-              <label><input id="lfg-tank" type="checkbox" /> Танк</label>
-              <label><input id="lfg-healer" type="checkbox" /> Лекарь</label>
-              <label><input id="lfg-damage" type="checkbox" checked /> Урон</label>
+            <div class="lfg-roles" role="group" aria-label="Роль в группе">
+              <label class="lfg-role"><input id="lfg-tank" type="checkbox" /><span class="lfg-role-icon" id="lfg-tank-icon" aria-hidden="true"><span class="lfg-role-bg" aria-hidden="true"></span><span class="lfg-role-fg" aria-hidden="true"></span><span class="lfg-role-check" aria-hidden="true"></span></span><span>Танк</span></label>
+              <label class="lfg-role"><input id="lfg-healer" type="checkbox" /><span class="lfg-role-icon" id="lfg-healer-icon" aria-hidden="true"><span class="lfg-role-bg" aria-hidden="true"></span><span class="lfg-role-fg" aria-hidden="true"></span><span class="lfg-role-check" aria-hidden="true"></span></span><span>Лекарь</span></label>
+              <label class="lfg-role"><input id="lfg-damage" type="checkbox" checked /><span class="lfg-role-icon" id="lfg-damage-icon" aria-hidden="true"><span class="lfg-role-bg" aria-hidden="true"></span><span class="lfg-role-fg" aria-hidden="true"></span><span class="lfg-role-check" aria-hidden="true"></span></span><span>Урон</span></label>
+              <label class="lfg-role"><input id="lfg-leader" type="checkbox" /><span class="lfg-role-icon" id="lfg-leader-icon" aria-hidden="true"><span class="lfg-role-bg" aria-hidden="true"></span><span class="lfg-role-fg" aria-hidden="true"></span><span class="lfg-role-check" aria-hidden="true"></span></span><span>Лидер</span></label>
+            </div>
+            <p class="lfg-type-row">
+              <label>Тип: <select id="lfg-type" aria-label="Тип поиска">
+                <option value="specific">Конкретные подземелья</option>
+                <option value="random">Случайное подземелье</option>
+              </select></label>
+              <button id="lfg-refresh" type="button" title="Обновить список и награды">Обновить</button>
             </p>
-            <p>
-              <input id="lfg-dungeons" maxlength="80" placeholder="Id подземелий через запятую" />
-              <button id="lfg-join" type="button">В очередь</button>
-              <button id="lfg-leave" type="button">Выйти</button>
-              <button id="lfg-teleport" type="button">Телепорт</button>
-            </p>
+            <div id="lfg-random-pane" class="lfg-random-pane" hidden>
+              <div id="lfg-random-banner" class="lfg-random-banner" aria-hidden="true" hidden></div>
+              <p id="lfg-random-name" class="lfg-random-name"></p>
+              <p id="lfg-random-description" class="muted"></p>
+              <div id="lfg-random-list" class="lfg-random-list" aria-label="Случайные подземелья"></div>
+              <h4 class="lfg-rewards-title">Награды</h4>
+              <p id="lfg-reward-note" class="muted"></p>
+              <div id="lfg-rewards" class="lfg-rewards" aria-label="Награды"></div>
+            </div>
+            <div id="lfg-specific-pane" class="lfg-specific-pane">
+              <p>
+                <label class="lfg-search"><span class="muted">Подземелье:</span><input id="lfg-dungeon-search" maxlength="64" placeholder="Название или ID" autocomplete="off" /></label>
+              </p>
+              <div class="lfg-filters">
+                <label><span class="muted">Дополнение</span>
+                  <select id="lfg-expansion" aria-label="Дополнение">
+                    <option value="all">Все</option>
+                    <option value="0">Классика</option>
+                    <option value="1">The Burning Crusade</option>
+                    <option value="2">Wrath of the Lich King</option>
+                  </select>
+                </label>
+                <label><span class="muted">Сортировка</span>
+                  <select id="lfg-dungeon-sort" aria-label="Сортировка">
+                    <option value="name">по названию</option>
+                    <option value="level">по уровню</option>
+                  </select>
+                </label>
+                <label class="lfg-filter-check"><input id="lfg-heroic-only" type="checkbox" />Только героические</label>
+                <label class="lfg-filter-check"><input id="lfg-level-only" type="checkbox" />Подходящие по уровню</label>
+                <button id="lfg-select-visible" type="button">Выбрать видимые</button>
+                <button id="lfg-clear-selection" type="button">Сбросить выбор</button>
+              </div>
+              <p id="lfg-catalog-status" class="muted" role="status"></p>
+              <div id="lfg-dungeon-list" class="lfg-dungeon-list" aria-label="Каталог подземелий"></div>
+            </div>
+            <div class="lfg-footer">
+              <input id="lfg-dungeons" maxlength="80" placeholder="ID вручную через запятую" />
+              <div class="lfg-footer-buttons">
+                <button id="lfg-join" type="button" class="lfg-primary">Найти группу</button>
+                <button id="lfg-leave" type="button">Покинуть очередь</button>
+                <button id="lfg-teleport" type="button">Телепорт</button>
+              </div>
+            </div>
           </aside>
 
           <aside id="guild-window" class="game-window mail-window" hidden>
@@ -326,6 +405,7 @@
               <textarea id="mail-body" maxlength="8000" rows="8" aria-label="Текст письма"></textarea>
               <div id="mail-attachments" class="mail-attachments" aria-label="Вложения"></div>
               <label class="mail-field"><span>Вложить:</span><select id="mail-attachment-picker" aria-label="Предмет из сумок"><option value="">Выберите предмет</option></select></label>
+              <div class="mail-money-mode" role="radiogroup" aria-label="Тип перевода"><label><input id="mail-send-money-mode" type="radio" name="mail-money-mode" checked />Отправить деньги</label><label><input id="mail-cod-mode" type="radio" name="mail-money-mode" />Наложенный платёж</label></div>
               <div class="mail-coins"><label><input id="mail-money" type="number" min="0" max="214748" step="1" value="0" aria-label="Золото" /><span class="coin-gold">з.</span></label><label><input id="mail-silver" type="number" min="0" max="99" step="1" value="0" aria-label="Серебро" /><span class="coin-silver">с.</span></label><label><input id="mail-copper" type="number" min="0" max="99" step="1" value="0" aria-label="Медь" /><span class="coin-copper">м.</span></label></div>
               <div class="mail-compose-footer"><span id="mail-postage"></span><button id="mail-send" type="button">Отправить</button></div>
             </section>
@@ -335,14 +415,16 @@
           <aside id="trade-window" class="game-window" hidden>
             <header><strong id="trade-title">Обмен</strong><button class="window-close" type="button" data-close="trade-window" aria-label="Закрыть"></button></header>
             <p id="trade-message" class="muted" role="status" aria-live="polite"></p>
+            <div id="trade-offer-fields">
             <h4>Вы предлагаете</h4>
             <div id="trade-mine" aria-label="Ваше предложение"></div>
             <p>
-              <label>Золото <input id="trade-gold" type="number" min="0" step="1" value="0" /></label>
+              <label>Золото <input id="trade-gold" type="number" min="0" max="214748" step="0.0001" value="0" /></label>
               <button id="trade-set-gold" type="button">Указать</button>
             </p>
             <h4 id="trade-their-title">Вам предлагают</h4>
             <div id="trade-theirs" aria-label="Предложение партнёра"></div>
+            </div>
             <p>
               <button id="trade-accept" type="button">Принять обмен</button>
               <button id="trade-cancel" type="button">Отменить</button>
@@ -381,6 +463,7 @@
             <header><strong>Добыча</strong><button class="window-close" type="button" data-close="loot-window" aria-label="Закрыть"></button></header>
             <p id="loot-error" class="error" hidden></p>
             <button id="loot-money" type="button" hidden></button>
+            <button id="loot-all" type="button" hidden>Забрать всё (Shift+клик)</button>
             <div id="loot-items" aria-label="Предметы добычи"></div>
           </aside>
 
@@ -419,6 +502,11 @@
             <header><strong>Состояние клиента</strong><button class="window-close" type="button" data-close="diagnostics-window" aria-label="Закрыть"></button></header>
             <div id="diagnostics-tabs"></div>
             <div id="diagnostics-state">
+              <p>
+                <button id="performance-capture-toggle" type="button" aria-pressed="false">Записать фризы (60 с)</button>
+                <button id="performance-capture-save" type="button" disabled>Скачать запись</button>
+              </p>
+              <p id="performance-capture-status" class="muted" role="status"></p>
               <p id="world-status" role="status" aria-live="polite"></p>
               <p id="player-position" class="muted"></p>
               <p id="movement-status" class="muted">Movement: ожидание active mover…</p>
@@ -431,12 +519,12 @@
               <p id="combat-status" class="muted">Кликните по существу, чтобы выбрать цель.</p>
               <p id="capsule-status" class="muted">Капсулы: ожидание кадра…</p>
               <div id="capsule-reasons" aria-label="Почему юнит остаётся капсулой"></div>
-              <p id="unhandled-status" class="muted">Опкоды: необработанных пакетов пока нет.</p>
+              <p id="unhandled-status" class="muted">Опкоды: необработанных пакетов и ошибок пока нет.</p>
               <p>
-                <button id="unhandled-save" type="button">Сохранить отчёт по опкодам</button>
+                <button id="unhandled-save" type="button">Сохранить отчёт по пакетам</button>
                 <button id="reset-layout" type="button">Сбросить раскладку окон</button>
               </p>
-              <div id="unhandled-opcodes" aria-label="Необработанные опкоды"></div>
+              <div id="unhandled-opcodes" aria-label="Необработанные опкоды и ошибки пакетов"></div>
               <div id="world-objects" aria-label="Ближайшие объекты мира"></div>
             </div>
             <div id="diagnostics-packets" hidden>

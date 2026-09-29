@@ -1,3 +1,4 @@
+import { queueFrameTask } from "../../transport/PacketPump.js";
 import { player } from "../../world/Fields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import type { WorldStore } from "../../world/WorldStore.js";
@@ -20,6 +21,7 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { spellTooltip } from "./Spellbook.js";
+import { questTimerDisplay } from "./QuestTimer.js";
 
 /**
  * The quest log and the tracker beside the world.
@@ -35,6 +37,64 @@ let stopStoreBinding: (() => void) | undefined;
 let stopObjectiveMetadataBinding: (() => void) | undefined;
 let nativeReplacementActive = false;
 let nativeReplacementState: QuestLogNativeState | undefined;
+let timedQuestWorld: WorldClient | undefined;
+let timedQuestTick: ReturnType<typeof setInterval> | undefined;
+const requestedQuestClocks = new WeakSet<WorldClient>();
+
+function serverQuestTime(world: WorldClient): number | undefined {
+  return world.currentQueryTime() ?? world.currentServerTime();
+}
+
+function stopTimedQuestTick(): void {
+  if (timedQuestTick !== undefined) clearInterval(timedQuestTick);
+  timedQuestTick = undefined;
+  timedQuestWorld = undefined;
+}
+
+/** Update only the countdown labels, preserving search focus, scroll and quest selection. */
+function refreshTimedQuestLabels(): void {
+  const world = game.world;
+  if (!world || world !== timedQuestWorld) {
+    stopTimedQuestTick();
+    return;
+  }
+  if (nativeReplacementActive) return;
+  const now = serverQuestTime(world);
+  if (panel?.visible) {
+    for (const line of panel.body.querySelectorAll<HTMLElement>(".quest-timer-row")) {
+      const expiry = Number(line.dataset["questTimerExpiry"]);
+      const display = questTimerDisplay(expiry, now);
+      const value = line.lastElementChild;
+      if (value) value.textContent = display.text;
+      line.dataset["urgent"] = String(display.urgent);
+    }
+  }
+  if (tracker && !tracker.hidden) {
+    for (const line of tracker.querySelectorAll<HTMLElement>(".quest-track-timer")) {
+      const display = questTimerDisplay(Number(line.dataset["questTimerExpiry"]), now);
+      line.textContent = display.text;
+      line.dataset["urgent"] = String(display.urgent);
+    }
+  }
+}
+
+function watchTimedQuests(world: WorldClient | undefined, list: readonly QuestLogEntryView[]): void {
+  if (!world || !list.some((entry) => entry.timer > 0 && !entry.failed)) {
+    stopTimedQuestTick();
+    return;
+  }
+  if (timedQuestWorld !== world) {
+    stopTimedQuestTick();
+    timedQuestWorld = world;
+  }
+  // The core writes a Unix expiry. Use an already synchronised server clock when present;
+  // otherwise ask for CMSG_QUERY_TIME once for this world rather than trusting Date.now().
+  if (serverQuestTime(world) === undefined && !requestedQuestClocks.has(world)) {
+    requestedQuestClocks.add(world);
+    world.requestServerTime();
+  }
+  timedQuestTick ??= setInterval(refreshTimedQuestLabels, 1_000);
+}
 
 /** The browser quest-log surface state borrowed while the stock QuestLogFrame owns the panel. */
 export interface QuestLogNativeState {
@@ -73,6 +133,7 @@ export function beginQuestLogNativeReplacement(): QuestLogNativeState {
   };
   nativeReplacementState = state;
   nativeReplacementActive = true;
+  stopTimedQuestTick();
   panel?.hide();
   if (tracker) tracker.hidden = true;
   return state;
@@ -113,6 +174,9 @@ export function restoreQuestLogNativeReplacement(state?: QuestLogNativeState): v
   } else if (!previous.trackerExists && tracker) {
     tracker.hidden = true;
   }
+  // A world teardown can restore the old DOM owner for cleanup without restoring either surface.
+  // Its redraw above must not re-arm a countdown that clearQuestLog just stopped.
+  if (!previous.restorePanel && !previous.restoreTracker) stopTimedQuestTick();
 }
 
 /** Which quests the tracker shows. Until the first explicit choice, current quests are all shown. */
@@ -176,9 +240,20 @@ export function bindQuestLogStore(store: WorldStore | undefined, world: WorldCli
   stopStoreBinding?.();
   stopStoreBinding = undefined;
   stopObjectiveMetadataBinding?.();
+  // Answers come a crowd's worth at a time — every visible piece of gear of every player in view is
+  // asked of the server — and each one used to rebuild the tracker. The rows are redrawn once, on
+  // the next frame, from whatever has arrived by then; every listener has absorbed its answer long
+  // before that.
+  const redrawAnsweredObjectives = (): void => {
+    if (game.world === world) redrawQuestObjectives();
+  };
   stopObjectiveMetadataBinding = world.events.on("QUERY_CACHE_CHANGED", ({ kind }) => {
     const cleared = kind === "cleared";
     if (!cleared && kind !== "creature" && kind !== "item" && kind !== "gameObject") return;
+    if (!cleared) {
+      queueFrameTask(redrawAnsweredObjectives);
+      return;
+    }
     // Metadata clients consume the same event. Defer until every listener has absorbed the answer,
     // then replace the numeric fallback in both quest surfaces from the now-current caches. A
     // client-cache reset also clears their asked-sets, so this same deferred boundary may safely
@@ -361,7 +436,6 @@ function questMatches(entry: QuestLogEntryView, query: string): boolean {
 function questStatus(entry: QuestLogEntryView): string {
   if (entry.failed) return "Провалено";
   if (entry.complete) return "Выполнено — доступна награда";
-  if (entry.timer > 0) return `В процессе · таймер ${entry.timer}`;
   return "В процессе";
 }
 
@@ -540,7 +614,20 @@ function buildQuestActions(entry: QuestLogEntryView, world: WorldClient | undefi
       },
     });
   });
-  actions.append(track, refresh, abandon);
+  const share = document.createElement("button");
+  share.type = "button";
+  share.textContent = "Поделиться";
+  // The server refuses a share with nobody to share to, so say so upfront instead of
+  // answering the click with silence. `group` is undefined outside a party/raid
+  // (`SMSG_GROUP_DESTROYED` clears it), and its member list excludes the player
+  // (`GroupProtocol.ts:59`), so one entry already means somebody to share with.
+  const shareable = (world?.group?.members.length ?? 0) > 0;
+  share.disabled = !shareable;
+  share.title = shareable ? "Поделиться заданием с группой" : "Вне группы делиться не с кем";
+  share.addEventListener("click", () => {
+    world?.shareQuest(entry.questId);
+  });
+  actions.append(track, refresh, share, abandon);
   return actions;
 }
 
@@ -555,6 +642,7 @@ export function showQuestLog(): void {
   const world = game.world;
   panel ??= build();
   const list = entries();
+  watchTimedQuests(world, list);
   requestQuestObjectiveMetadata(list);
   panel.title = `Журнал заданий · ${list.length} / 25`;
   panel.body.replaceChildren();
@@ -637,6 +725,14 @@ export function showQuestLog(): void {
     if (selected.complete) title.classList.add("quest-complete");
     if (selected.failed) title.classList.add("quest-failed");
     detailPane.append(title, textLine("Статус", questStatus(selected)));
+    if (selected.timer > 0 && !selected.failed && world) {
+      const display = questTimerDisplay(selected.timer, serverQuestTime(world));
+      const line = textLine("Время", display.text);
+      line.classList.add("quest-timer-row");
+      line.dataset["questTimerExpiry"] = String(selected.timer);
+      line.dataset["urgent"] = String(display.urgent);
+      detailPane.append(line);
+    }
     if (!selected.template) {
       detailPane.append(textLine("Описание", "Загрузка…"));
     } else {
@@ -702,6 +798,7 @@ function renderQuestTracker(): void {
     rightRail.append(tracker);
   }
   const allEntries = entries();
+  watchTimedQuests(game.world, allEntries);
   requestQuestObjectiveMetadata(allEntries);
   // Match the original client's fresh-log behaviour: current quests are watched until the player
   // makes an explicit tracking choice. After that first choice, an empty set truthfully means none.
@@ -721,7 +818,17 @@ function renderQuestTracker(): void {
     const title = document.createElement("strong");
     title.textContent = entry.template ? formatNpcText(entry.template.title) : `Задание ${entry.questId}`;
     if (entry.complete) title.classList.add("quest-complete");
-    block.append(title, ...questObjectiveRows(entry));
+    block.append(title);
+    if (entry.timer > 0 && !entry.failed && game.world) {
+      const display = questTimerDisplay(entry.timer, serverQuestTime(game.world));
+      const time = document.createElement("span");
+      time.className = "quest-track-timer";
+      time.dataset["questTimerExpiry"] = String(entry.timer);
+      time.dataset["urgent"] = String(display.urgent);
+      time.textContent = display.text;
+      block.append(time);
+    }
+    block.append(...questObjectiveRows(entry));
     body.append(block);
   }
 }
@@ -744,6 +851,14 @@ export function toggleQuestLog(): void {
   if (panel.visible) showQuestLog();
 }
 
+export function questLogOpen(): boolean {
+  return !nativeReplacementActive && (panel?.visible ?? false);
+}
+
+export function closeQuestLog(): void {
+  panel?.hide();
+}
+
 /**
  * The mark over a head. The core sends a status per guid; these are the ones that mean "there is
  * something here for you", and the rest draw nothing.
@@ -760,6 +875,7 @@ export function questMarkFor(guid: bigint): string | undefined {
 
 /** Forgets what was tracked, for a character that is no longer the one being played. */
 export function clearQuestLog(): void {
+  stopTimedQuestTick();
   stopStoreBinding?.();
   stopStoreBinding = undefined;
   stopObjectiveMetadataBinding?.();

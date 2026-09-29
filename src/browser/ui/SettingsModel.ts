@@ -64,45 +64,82 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Мир рисуется в этой доле от размера окна и растягивается. Ниже 100 — быстрее и мягче.",
   },
   {
+    id: "autoQuality", label: "Автокачество графики", group: "Графика", kind: "boolean", fallback: true,
+    hint: "При долгой просадке кадров клиент сам опускает масштаб отрисовки не ниже 40% и возвращает его, когда запас держится. Ручной масштаб выше — потолок, а не приказ.",
+  },
+  {
     id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 1,
     min: 0, max: 2, step: 1,
-    hint: "0 — без теней, 1 — сбалансированные тени, 2 — более чёткие тени.",
+    hint: "0 — исходное освещение, 1 — мягкий тёплый свет и фонари, 2 — больше источников света и детальные тени.",
   },
   {
     id: "wmoOcclusion", label: "Скрывать невидимые помещения", group: "Графика", kind: "boolean", fallback: true,
     hint: "Порталы зданий не рисуют комнаты за стенами. Выключить — оставить только отсечение по дальности.",
   },
   {
-    id: "characterAtlasAnisotropy", label: "Эксперимент: фильтрация атласов персонажей", group: "Графика", kind: "boolean", fallback: false,
-    hint: "A/B-кандидат: максимум фильтрации видеокарты делает тело чётче под углом, но может расходовать больше bandwidth. Выключено до телеметрии R1.",
+    id: "characterAtlasAnisotropy", label: "Чёткость текстур персонажей", group: "Графика", kind: "boolean", fallback: false,
+    hint: "Сохраняет детали одежды и кожи при взгляде под углом. Может увеличить нагрузку на видеокарту.",
   },
   {
-    id: "experimentalAerialHeightFog", label: "Эксперимент: faithful-plus высотный туман", group: "Эффекты", kind: "boolean", fallback: false,
-    hint: "Экспериментальный профиль aerial/height fog пока заблокирован и ничего не меняет; оставлено для будущего безопасного среза.",
+    id: "experimentalAerialHeightFog", label: "Атмосферная дымка", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Смягчает дальний пейзаж и подсвечивает дымку со стороны солнца. Сохраняет цвета и погоду текущей зоны.",
   },
   {
-    id: "experimentalTerrainMicroNormals", label: "Faithful-plus: микрорельеф земли", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Добавляет небольшой микрорельеф splat-текстурам в авторском свете. Вдали и на аномально резких переходах эффект затухает без обводки чанков; выключение возвращает baseline shader.",
+    id: "experimentalTerrainMicroNormals", label: "Микрорельеф земли", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Свет подчёркивает мелкие неровности камня, земли и дорог. Вдали эффект плавно ослабевает.",
   },
   {
-    id: "experimentalWaterFresnel", label: "Faithful-plus: Fresnel воды", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Мягко усиливает отражённый край воды и океана. Включено по умолчанию; выключение возвращает исходный shader.",
+    id: "experimentalWaterFresnel", label: "Отражения на воде", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Поверхность сильнее отражает свет при взгляде вдоль воды и остаётся прозрачнее при взгляде сверху.",
   },
   {
-    id: "experimentalWaterMicroWaves", label: "Faithful-plus: микроволны воды", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Добавляет мелкую анимацию normal и цвета воды. Включено по умолчанию и не меняет геометрию поверхности.",
+    id: "experimentalWaterMicroWaves", label: "Рябь на воде", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Мелкие волны оживляют поверхность рек, озёр и моря.",
   },
   {
-    id: "experimentalWaterSunSparkle", label: "Faithful-plus: солнечные блики воды", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Добавляет направленные солнечные блики над поверхностью; под водой эффект подавляется. Выключение возвращает baseline.",
+    id: "experimentalWaterSunSparkle", label: "Солнечные блики на воде", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Добавляет мерцающую дорожку отражённого солнца. Под водой блики затухают.",
   },
   {
-    id: "experimentalWaterFoam", label: "Faithful-plus: пена у берега", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Добавляет тонкую анимированную пену только на мелководье воды и океана. Лава, слизь и fallback-материалы не меняются.",
+    id: "experimentalWaterFoam", label: "Пена у берега", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Тонкая движущаяся полоска пены появляется на мелководье.",
   },
   {
-    id: "experimentalVegetationWind", label: "Faithful-plus: ветер растительности", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Качает на GPU только однозначно распознанные листья, цветы и траву; стволы и неизвестные материалы остаются неподвижными.",
+    id: "experimentalVegetationWind", label: "Ветер в листве и траве", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Листья, цветы и трава слегка колышутся на ветру.",
+  },
+  // Wind, weather and ambient life (AtmosphereEffects.ts). None of these is in the original
+  // client; each is its own switch, the «Улучшенная графика» preset turns them all on and the
+  // comparison profile turns them all off.
+  {
+    id: "experimentalWindGusts", label: "Порывы ветра", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Один ветер на всю округу: порывы волнами проходят по траве, деревья клонятся, в непогоду сильнее. Нужен «Ветер в листве и траве».",
+  },
+  {
+    id: "experimentalRainStreaks", label: "Косой дождь и метель", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Дождь, снег и песок летят по ветру, капли вытягиваются в струи, вдали видна пелена дождя.",
+  },
+  {
+    id: "experimentalRainSplashes", label: "Брызги и круги от капель", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Капли разбиваются о землю рядом с персонажем и расходятся кругами по воде и лужам.",
+  },
+  {
+    id: "experimentalWetSurfaces", label: "Мокрая земля в дождь", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Под дождём земля темнеет, блестит и собирает лужи, а после дождя постепенно высыхает.",
+  },
+  {
+    id: "experimentalLightning", label: "Молнии в грозу", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Во время грозы небо вспыхивает, вдали бьют молнии. Только когда сервер присылает грозу.",
+  },
+  {
+    id: "experimentalAmbientMotes", label: "Пыльца, светлячки и листопад", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Иногда на солнечных полянах проплывает пыльца (ярче всего утром и вечером), ночью над травой мерцают светлячки, под деревьями падают листья.",
+  },
+  {
+    // The client's own weather loops and a thunder clap after each lightning strike
+    // (WeatherSound.ts). Obeys the ambience slider; OFF plays nothing.
+    id: "experimentalWeatherSounds", label: "Звуки грозы и ветра", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Шум дождя, снегопада и песчаной бури, ветер в непогоду и гром после каждой молнии — с задержкой по расстоянию. Громкость — ползунок «Окружение».",
   },
   {
     // The original client's own underwater view, ported from the reference client's overlay: a
@@ -110,7 +147,7 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // On by default — it is what the client looks like under water, not an addition to it — and
     // off restores the exact frame that pre-dates it, without an extra draw call.
     id: "underwaterOverlay", label: "Эффект под водой", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Тонировка по глубине и мениск на линии воды, пока камера под поверхностью. Выключить — прежний кадр без дополнительного прохода.",
+    hint: "Добавляет оттенок глубины и мягкую границу поверхности при погружении камеры.",
   },
   {
     // The original client's own `ffxGlow`, and its strength is authored per zone in
@@ -119,15 +156,76 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     // its switch remains independent of the solar-rays leaf. The exact direct pre-P4 path is used
     // only when both post-process leaves are off.
     id: "fullscreenGlow", label: "Полноэкранное свечение", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Классический ffxGlow: яркие места кадра размываются и добавляются обратно с авторской силой зоны. Выключить — убрать это свечение; прямой путь без оффскрин-прохода включается, когда солнечные лучи тоже выключены.",
+    hint: "Мягкое сияние вокруг ярких участков. Сила свечения зависит от текущей зоны.",
   },
   {
-    id: "godRays", label: "Faithful-plus: солнечные лучи", group: "Эффекты", kind: "boolean", fallback: false,
-    hint: "Добавляет экранные солнечные лучи при качестве освещения 1 или 2. Работает независимо от полноэкранного свечения: его можно отключить.",
+    id: "godRays", label: "Солнечные лучи", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Солнечный свет пробивается сквозь силуэты деревьев и зданий. Требует качества освещения 1 или 2.",
   },
   {
-    id: "experimentalFantasyGlow", label: "Faithful-plus: фэнтезийное свечение", group: "Эффекты", kind: "boolean", fallback: true,
-    hint: "Усиливает только авторские additive-эффекты заклинаний и собственное свечение магмы/слизи. Без bloom, новых источников света и дополнительных проходов.",
+    // The owner's ask: shafts more pronounced than the quality ceiling allows, without touching the
+    // cinematic slider that scales grade, bloom and haze along with them. A multiplier over that
+    // ceiling on both shaft paths (the classic radial pass and CinematicPost's march); 100 is
+    // exactly the look before the slider existed, and the leaf's own switch still decides whether
+    // the effect runs, so this reads nothing while «Солнечные лучи» is off.
+    id: "godRayStrength", label: "Сила солнечных лучей, %", group: "Эффекты", kind: "number", fallback: 100,
+    min: 25, max: 300, step: 25,
+    hint: "Усиливает солнечные лучи поверх потолка качества освещения: 100 — нынешний вид, 300 — самые выраженные. Не действует, пока выключены «Солнечные лучи».",
+  },
+  {
+    id: "experimentalFantasyGlow", label: "Свечение магии и лавы", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Делает ярче светящиеся части заклинаний и раскалённые поверхности.",
+  },
+  {
+    // Cinematic leaves of «Улучшенная графика» (CinematicPost.ts). The four post-process ones share
+    // the glow chain's capture and cost a full-screen pass or more, so they are off until the preset
+    // or the player turns them on; the two material ones are free and follow the water/wind leaves.
+    id: "experimentalCinematicGrade", label: "Кинематографичная цветокоррекция", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Плёночная кривая, тёплые блики и прохладные тени по цветам зоны и времени суток: золотой закат, холодная ночь. Лёгкая виньетка и привыкание глаз при входе в помещение.",
+  },
+  {
+    // One multiplier over the cinematic leaves above and below (CinematicPost `setStrength`): grade,
+    // bloom and sun glare, aerial scattering and the sun shafts together. 100 is the tuned look;
+    // it reads nothing while those leaves are off, and lighting quality 0 turns them all off.
+    id: "cinematicStrength", label: "Сила кинематографичных эффектов, %", group: "Эффекты", kind: "number", fallback: 100,
+    min: 0, max: 150, step: 5,
+    hint: "Одним движением усиливает или ослабляет цветокоррекцию, свечение и солнце, дымку и солнечные лучи. 0 — эффекты нейтральны, 100 — настроенный вид, 150 — максимум.",
+  },
+  {
+    id: "experimentalCinematicBloom", label: "Мягкое свечение и солнце", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Яркие места мягко светятся, в небе появляется солнечный диск с ореолом, который перекрывают деревья и здания.",
+  },
+  {
+    id: "experimentalSunScattering", label: "Рассеяние света в воздухе", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Воздух между вами и далёкими предметами светлеет, а в сторону низкого солнца дымка окрашивается его светом.",
+  },
+  {
+    id: "experimentalAmbientOcclusion", label: "Контактные тени (SSAO)", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Затеняет углы, щели и землю у стен, деревьев и персонажей. Считается в половинном разрешении и отключается, когда автокачество снижает масштаб ниже 70%.",
+  },
+  {
+    id: "experimentalLowSunRimLight", label: "Контровой свет низкого солнца", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "На закате и рассвете края персонажей, листвы и статуй подсвечиваются тёплым светом. Требует качества освещения 1 или 2.",
+  },
+  {
+    id: "experimentalWaterSunGlitter", label: "Солнечная дорожка на воде", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Низкое солнце рассыпается по волнам дорожкой искрящихся бликов.",
+  },
+  {
+    id: "experimentalWaterSkyReflection", label: "Отражение неба в воде", group: "Эффекты", kind: "boolean", fallback: true,
+    hint: "Вода отражает небо текущей зоны и времени суток: на закате золотится, ночью темнеет до синевы. Требует качества освещения 1 или 2.",
+  },
+  {
+    id: "experimentalSceneryShadows", label: "Тени от деревьев и зданий", group: "Эффекты", kind: "boolean", fallback: false,
+    hint: "Деревья, здания городов и крупные предметы отбрасывают солнечные тени до дальнего плана; вдали тени плавно исчезают. Требует качества освещения 1 или 2 и добавляет работы видеокарте.",
+  },
+  {
+    // The original client's «Детализация ландшафта» (`environmentDetail`, 0.5–1.5 in steps of a
+    // quarter, VideoOptionsPanels.lua), in percent: a multiplier on how far M2 scenery is drawn,
+    // each model to a distance scaled by its own size (WorldRenderer3D `environmentSceneryRange`).
+    id: "objectDistance", label: "Дальность прорисовки объектов, %", group: "Графика", kind: "number", fallback: 100,
+    min: 50, max: 150, step: 25,
+    hint: "Как далеко видны деревья, кусты и другие объекты окружения; большие видны дальше мелких. 100 — дерево до 600 ярдов, 150 — до 750. Меньше — быстрее.",
   },
   {
     // The original client's own «Ground Clutter Radius»: ground cover gets a ceiling of its own
@@ -150,6 +248,14 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Плотность из таблицы — на клетку 4,17 ярда. Выключить: та же плотность на чанк, в 64 раза реже.",
   },
   {
+    // Multiplier over the authored per-cell density: 1 is what the table says, 2 doubles every
+    // clump. Positions stay a pure function of cell and index, so moving the slider thickens the
+    // same meadow instead of reshuffling it; the field budget scales with it.
+    id: "grassDensity", label: "Густота травы", group: "Графика", kind: "number", fallback: 2,
+    min: 1, max: 4, step: 1,
+    hint: "Во сколько раз гуще авторской плотности. 1 — как в таблице, 4 — луг стеной (и тяжелее).",
+  },
+  {
     // The original client's `cameraDistanceMaxFactor` (`InterfaceOptionsPanels.lua:1440`), which is
     // a multiplier from 1 to 2 in steps of a tenth. In yards here rather than in multiples, for a
     // reason that lives in the code above: `coerceSetting` rounds every number setting to a whole
@@ -158,6 +264,18 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     id: "cameraMaxDistance", label: "Максимальная дистанция камеры", group: "Игра", kind: "number", fallback: 55,
     min: 15, max: 55, step: 5,
     hint: "В ярдах. Как далеко колесо отпускает камеру: меньше — ближе к персонажу и меньше мира в кадре.",
+  },
+  {
+    id: "originalFrameXml", label: "Оригинальный интерфейс WoW", group: "Интерфейс", kind: "boolean", fallback: false,
+    hint: "Включено — оригинальные окна и панели WoW 3.3.5a. Выключено — интерфейс WebClient. Переключается в игре, выбор сохраняется.",
+  },
+  {
+    id: "tswowAddons", label: "Аддоны TSWoW", group: "Интерфейс", kind: "boolean", fallback: false,
+    hint: "Lua-аддоны и пользовательские окна TSWoW. После изменения заново войдите в мир или обновите страницу.",
+  },
+  {
+    id: "showFps", label: "Показывать FPS", group: "Интерфейс", kind: "boolean", fallback: false,
+    hint: "Счётчик сверху: средний FPS, среднее и максимальное время кадра за последние 120 кадров. Горячую клавишу можно изменить в управлении.",
   },
   {
     id: "uiScale", label: "Масштаб интерфейса, %", group: "Интерфейс", kind: "number", fallback: 100,
@@ -200,6 +318,15 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Книга показывает только старший ранг каждого заклинания. Галочка — в шапке книги.",
   },
   {
+    // The stock «Использовать менеджер экипировки» (InterfaceOptionsPanels.xml's Features panel,
+    // CVar equipmentManager): PaperDollFrame shows GearManagerToggleButton while it is on
+    // (GearManagerDialog_OnEvent VARIABLES_LOADED). Off as the client ships it; drawn by the stock
+    // Interface Options, which is the only thing that reads it, and persisted here so it survives a reload.
+    id: "equipmentManager", label: "Менеджер экипировки", group: "Интерфейс", kind: "boolean",
+    fallback: false, ownWindow: true,
+    hint: "Кнопка наборов экипировки в окне персонажа. Галочка — в настройках оригинального интерфейса.",
+  },
+  {
     id: "volumeMaster", label: "Общая громкость, %", group: "Звук", kind: "number", fallback: 70,
     min: 0, max: 100, step: 5,
     hint: "Ноль — тишина, а не пауза: звуки идут своим чередом, их просто не слышно.",
@@ -215,8 +342,37 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Тема зоны и то, что сервер ставит вместо неё.",
   },
   {
-    id: "volumeInterface", label: "Звуки интерфейса, %", group: "Звук", kind: "number", fallback: 100,
+    // The client's own Sound_AmbienceVolume (AudioOptionsPanels.lua), 0.6 there too. The ambience
+    // channel followed the music slider before this row existed; the stock audio panel has both.
+    id: "volumeAmbience", label: "Звуки окружения, %", group: "Звук", kind: "number", fallback: 60,
     min: 0, max: 100, step: 5,
+    hint: "Фон зоны: ветер, вода, шум города.",
+  },
+  {
+    // The four switches of the stock audio panel (Sound_EnableAllSound, _EnableSFX, _EnableMusic,
+    // _EnableAmbience): off silences the channel and keeps its slider where it was, as the client does.
+    id: "soundEnabled", label: "Включить звук", group: "Звук", kind: "boolean", fallback: true,
+    hint: "Выключено — тишина во всём: мир, музыка, окружение и интерфейс.",
+  },
+  {
+    id: "soundEffectsEnabled", label: "Звуки мира", group: "Звук", kind: "boolean", fallback: true,
+    hint: "Заклинания, шаги, существа. Громкость остаётся на своём ползунке.",
+  },
+  {
+    id: "musicEnabled", label: "Музыка", group: "Звук", kind: "boolean", fallback: true,
+  },
+  {
+    id: "ambienceEnabled", label: "Звуки окружения", group: "Звук", kind: "boolean", fallback: true,
+  },
+  {
+    id: "autoLoot", label: "Автоподбор добычи", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Сразу забирать всё доступное при открытии добычи. Предметы на розыгрыше и закрытые остаются.",
+  },
+  {
+    // The client's lootUnderMouse (LootFrame.lua:168), off by default as InterfaceOptionsFrame.lua:322 has it.
+    id: "lootUnderMouse", label: "Добыча под курсором", group: "Игра", kind: "boolean", fallback: false,
+    // Only stock LootFrame reads it; the native fallback panel (ui/Npc.ts) keeps its own place.
+    hint: "Оригинальное окно добычи открывается там, где стоит указатель мыши, а не у левого края экрана. Запасное окно клиента остаётся на своём месте.",
   },
   {
     id: "chatLogHeight", label: "Высота окна чата", group: "Чат", kind: "number", fallback: 190,
@@ -224,6 +380,24 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
   },
   {
     id: "chatTimestamps", label: "Время у строк чата", group: "Чат", kind: "boolean", fallback: false,
+  },
+  {
+    id: "combatDealt", label: "Бой: нанесённый урон", group: "Чат", kind: "boolean", fallback: true,
+    hint: "Строки урона, который нанесли вы.",
+  },
+  {
+    id: "combatTaken", label: "Бой: полученный урон", group: "Чат", kind: "boolean", fallback: true,
+    hint: "Строки урона, который получили вы.",
+  },
+  {
+    id: "combatCrit", label: "Бой: криты", group: "Чат", kind: "boolean", fallback: true,
+  },
+  {
+    id: "combatAvoided", label: "Бой: промахи и уклонения", group: "Чат", kind: "boolean", fallback: true,
+  },
+  {
+    id: "combatOther", label: "Бой: прочее", group: "Чат", kind: "boolean", fallback: true,
+    hint: "Награды, чужие бои и всё остальное.",
   },
 ];
 

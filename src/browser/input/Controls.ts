@@ -1,5 +1,5 @@
 import { isLootable } from "../../world/Fields.js";
-import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { GO_FLAG_NOT_SELECTABLE, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { game } from "../game/Context.js";
@@ -11,8 +11,20 @@ import { interactWithGuid } from "../ui/Npc.js";
 import { CAMERA_LOOK_SENSITIVITY, CAMERA_PITCH_LIMIT, zoomedDistance } from "../game/CameraRig.js";
 import { cameraMaxDistance } from "../ui/Settings.js";
 import { inSightFromCamera } from "../game/Targeting.js";
-import { gameMenuOpen, toggleGameMenu } from "../ui/GameMenu.js";
+import { setHoveredTarget } from "../game/HoverTarget.js";
+import { cancelLogoutCountdown, gameMenuOpen, logoutCountdownOpen, toggleGameMenu } from "../ui/GameMenu.js";
+import {
+  escapeFrameXmlGameMenu, registerFrameXmlNativeEscape, type FrameXmlNativeEscape,
+} from "../framexml/FrameXmlGameMenuController.js";
+import { frameXmlPopupsDropCursorItem } from "../framexml/FrameXmlPopupsController.js";
+import { stopFrameXmlTradeSkillTargeting } from "../framexml/FrameXmlTradeSkillController.js";
 import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
+import { notice } from "../ui/Notices.js";
+import {
+  cancelGroundTarget, groundPointInRange, groundTargetRange, pendingGroundTarget,
+  pendingGroundTargetItem, resolveGroundTarget,
+} from "../game/GroundTarget.js";
+import { recordGroundTargetPointer } from "../game/GroundTargetPreview.js";
 import { runAction } from "./Actions.js";
 import {
   HELD_ACTIONS, actionFor, chordOf, moduleActionFor, strafeInsteadOfTurn, type InputAction,
@@ -45,6 +57,11 @@ function typingInto(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
 }
 
+/** The `<input>` the FrameXML renderer builds inside an EditBox, marked `data-framexml-input`. */
+function isFrameXmlInput(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement && target.getAttribute("data-framexml-input") === "true";
+}
+
 /**
  * The action a press means.
  *
@@ -61,10 +78,93 @@ function resolve(event: KeyboardEvent): InputAction | undefined {
 }
 
 /**
+ * A cast this far past its own end is not being cast any more: its SPELL_GO or failure was missed,
+ * and Escape must not spend every press cancelling it instead of reaching the menu.
+ */
+const STALE_CAST_GRACE_MS = 1000;
+
+/**
+ * Casts this client already asked the server to cancel, so each is cancelled once. `world.casts`
+ * keeps the entry until SMSG_SPELL_FAILURE or the zero MSG_CHANNEL_UPDATE comes back (WorldClient.ts,
+ * `cancelSpellCast` only sends): without this a second Escape inside one round trip sent a second
+ * CMSG_CANCEL_CAST, which the server drops (SpellHandler.cpp:423, nothing is being cast any more),
+ * and spent the press instead of reaching the reticle. Keyed by the entry object, which
+ * `#beginCast` creates per cast and channel/delay updates only mutate.
+ */
+const cancelledCasts = new WeakSet<object>();
+
+/**
+ * This client's pieces of Escape, for the stock chain once the stock game menu owns it (stock
+ * ToggleGameMenu, FrameXmlGameMenuOwner.ts): each stands where stock puts its counterpart and
+ * answers whether it dismissed anything.
+ */
+const NATIVE_ESCAPE: FrameXmlNativeEscape = {
+  // The countdown stands in for the stock CAMP popup, whose hideOnEscape cancels the logout.
+  popups: () => {
+    if (!logoutCountdownOpen()) return false;
+    cancelLogoutCountdown();
+    return true;
+  },
+  // SpellStopCasting: the client cancels the player's own cast or channel on Escape. The one
+  // CMSG_CANCEL_CAST with the spell's id interrupts either (TrinityCore SpellHandler.cpp:418-425,
+  // Unit::InterruptNonMeleeSpells, Unit.cpp:3444-3456).
+  stopCasting: () => {
+    const world = game.world;
+    const self = world?.state.selfGuid;
+    const cast = self === undefined ? undefined : world?.casts?.get(self);
+    if (!world || !cast || cast.duration <= 0 || cancelledCasts.has(cast)
+      || performance.now() - cast.startedAt > cast.duration + STALE_CAST_GRACE_MS) return false;
+    cancelledCasts.add(cast);
+    world.cancelSpellCast();
+    return true;
+  },
+  // SpellStopTargeting: the ground-target reticle.
+  stopTargeting: () => {
+    if (pendingGroundTarget() === undefined) return false;
+    cancelGroundTarget();
+    clearHoverCursor();
+    return true;
+  },
+  // SpellIsTargeting: the same reticle, asked without dismissing it.
+  isTargeting: () => pendingGroundTarget() !== undefined,
+  // Beside CloseAllWindows, on the same press: the bindings window and every escapable window.
+  windows: () => {
+    const world = game.world;
+    const open = keyBindingsOpen() || (world !== undefined && anyGameWindowOpen());
+    if (keyBindingsOpen()) toggleKeyBindingsWindow();
+    if (world) {
+      if (world.loot) world.closeLoot();
+      closeGameWindows();
+    }
+    return open;
+  },
+  clearTarget: () => {
+    const world = game.world;
+    if (world?.targetGuid === undefined) return false;
+    world.selectTarget(undefined);
+    // The target is gone and this press is spent whatever the native frame's repaint does; a throw
+    // here must not read as "nothing cleared" and let the same press open the menu.
+    try { showTarget(); } catch (error) { console.error("[Escape] target frame repaint failed", error); }
+    return true;
+  },
+};
+
+/**
  * Escape, which is a chain and not a binding: an open window first, then the target, and only
  * when there is nothing left to dismiss does it offer the menu.
+ *
+ * Once the stock game menu is published the chain is stock ToggleGameMenu's, one thing per press,
+ * with {@link NATIVE_ESCAPE} in its stock places; what follows is the native chain before that.
  */
 function backOut(): void {
+  if (escapeFrameXmlGameMenu()) return;
+  // The reticle backs out first: it is the most transient state on the screen, and Escape in the
+  // original client cancels targeting before it touches windows, selection or the menu.
+  if (pendingGroundTarget() !== undefined) {
+    cancelGroundTarget();
+    clearHoverCursor();
+    return;
+  }
   // The bindings window is not one of the panels a world owns, so it backs out first and on its
   // own — and it is the one window that can be open with no world behind it.
   if (keyBindingsOpen()) {
@@ -100,7 +200,32 @@ function onKeyDown(event: KeyboardEvent): void {
       chatInput.value = "";
       chatInput.blur();
       event.preventDefault();
+      return;
     }
+    // A FrameXML edit box's own `keydown` listener sits on the input and has already fired the
+    // widget's `OnEscapePressed` by the time the press bubbles here — `ChatEdit_OnEscapePressed`
+    // for the stock chat, which clears and hides it. That script is the whole meaning of the
+    // press: running the native back-out chain as well closed windows and dropped the target on
+    // the same key that was only meant to leave the chat. A box whose script kept its focus loses
+    // it here, the way a client edit box does, so movement keys work again. In the world only: the
+    // GlueXML login boxes are the same renderer's inputs, and there Escape runs `AccountLogin_Exit`
+    // (a no-op here) and the field has to keep the caret, as it did before this branch existed.
+    if (event.code === "Escape" && game.world && isFrameXmlInput(event.target)) {
+      if (document.activeElement === event.target) (event.target as HTMLElement).blur();
+      event.preventDefault();
+      return;
+    }
+    if (event.code !== "Escape" || event.defaultPrevented) return;
+    // A search field may handle Escape itself (clear its query, then blur). Do not also dismiss
+    // its window on that same press. Other focused fields pass through the usual Escape chain.
+    if (document.activeElement !== event.target) {
+      event.preventDefault();
+      return;
+    }
+    if (!game.world && !keyBindingsOpen()) return;
+    (event.target as HTMLElement).blur();
+    if (!event.repeat) backOut();
+    event.preventDefault();
     return;
   }
   if (event.code === "ShiftLeft" || event.code === "ShiftRight") {
@@ -108,7 +233,9 @@ function onKeyDown(event: KeyboardEvent): void {
     return;
   }
   if (event.code === "Escape") {
-    backOut();
+    // Held down, Escape is one press: the OS autorepeat must not toggle the menu open and shut
+    // thirty times a second, and the client's TOGGLEGAMEMENU binding fires on the press alone.
+    if (!event.repeat) backOut();
     event.preventDefault();
     return;
   }
@@ -208,6 +335,46 @@ function pickAt(point: { clientX: number; clientY: number }): bigint | undefined
 }
 
 /**
+ * Resolves a reticle click into a cast destination and sends it.
+ *
+ * Sky and unloaded ground resolve to nothing and leave the reticle armed rather than sending a
+ * cast at nowhere. Range is checked client-side only to save the round trip; the server still
+ * owns the verdict and may refuse a point this client accepted.
+ */
+function confirmGroundTargetAt(
+  event: PointerEvent, world: NonNullable<typeof game.world>, spellId: number,
+): void {
+  const metadata = game.spells.get(spellId);
+  const bounds = worldCanvas.getBoundingClientRect();
+  const range = metadata ? groundTargetRange(metadata.rangeMax ?? 0) : undefined;
+  const point = resolveGroundTarget(
+    event.clientX - bounds.left, event.clientY - bounds.top,
+    bounds.width, bounds.height, range ?? 100,
+  );
+  if (!point) {
+    notice("Не удалось выбрать точку — кликните по земле, а не по небу", "info");
+    return;
+  }
+  if (range !== undefined) {
+    const self = world.state.selfGuid === undefined
+      ? undefined : world.state.objects.get(world.state.selfGuid);
+    if (self?.position && !groundPointInRange(point, self.position, range)) {
+      notice(pendingGroundTargetItem() ? "Слишком далеко для этого предмета" : "Слишком далеко для выбранного заклинания");
+      return;
+    }
+  }
+  const item = pendingGroundTargetItem();
+  const cooldown = metadata ? Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime) : 0;
+  cancelGroundTarget();
+  clearHoverCursor();
+  if (item) {
+    world.useItemAt(item.bag, item.slot, item.guid, point);
+    return;
+  }
+  world.castSpellAt(spellId, point, cooldown, metadata?.cooldownStartedOnEvent ?? false);
+}
+
+/**
  * The bag the original client puts under the cursor over a lootable body.
  *
  * A data URI rather than a file: it is 24 pixels of one shape, and a `url()` cursor that has to be
@@ -286,6 +453,9 @@ function updateHoverCursor(event: PointerEvent): void {
   cancelHoverTail();
   const wait = HOVER_INTERVAL - (performance.now() - hoveredAt);
   if (wait > 0) {
+    // The trailing pick has not resolved this pointer position yet. Do not cast at the previous
+    // unit if a mouseover macro is pressed in this short interval.
+    setHoveredTarget(undefined, undefined);
     const { clientX, clientY } = event;
     hoverTailTimer = setTimeout(() => {
       hoverTailTimer = undefined;
@@ -307,9 +477,22 @@ function applyHoverCursor(point: { clientX: number; clientY: number }): void {
   // A button may have gone down since a tail pass was armed — `pointerdown` moves nothing and so
   // never reaches `updateHoverCursor`. The drag owns the cursor for as long as it lasts.
   if (drag.left || drag.right) return;
+  // The armed reticle owns the cursor: a single crosshair over everything, with no loot bag or
+  // hand underneath it, and no pick spent on a gesture whose click is already spoken for.
+  if (pendingGroundTarget() !== undefined) {
+    setHoveredTarget(undefined, undefined);
+    hoveredAt = performance.now();
+    clearWorldObjectTooltip();
+    if (hoverCursor !== "crosshair") {
+      hoverCursor = "crosshair";
+      worldCanvas.style.cursor = "crosshair";
+    }
+    return;
+  }
   hoveredAt = performance.now();
   const guid = pickAt(point);
   const object = guid === undefined ? undefined : game.world?.state.objects.get(guid);
+  setHoveredTarget(game.world, object);
   hoveredGameObject = object?.typeId === 5 ? object : undefined;
   hoveredPoint = { clientX: point.clientX, clientY: point.clientY };
   if (pendingHoveredTemplate?.object !== hoveredGameObject) pendingHoveredTemplate = undefined;
@@ -357,6 +540,7 @@ function cancelHoverWorldRefresh(): void {
  * and that pick would write a bag onto a canvas the pointer is no longer over.
  */
 function clearHoverCursor(): void {
+  setHoveredTarget(undefined, undefined);
   cancelHoverTail();
   cancelHoverWorldRefresh();
   hoveredGameObject = undefined;
@@ -372,16 +556,11 @@ function gameObjectHoverName(object: import("../../world/WorldState.js").WorldOb
   const world = game.world;
   const type = gameObjectType(object);
   if (!world || !interactiveGameObjectType(type)) return undefined;
+  // NOT_SELECTABLE is the flag that says "no tooltip": everything else names itself. Distance
+  // is deliberately not asked here — the original client shows the name at any range and lets
+  // the server refuse the click, so a quest giver across the room still introduces itself.
   const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
   if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
-  const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-  if (!self?.position || !object.position) return undefined;
-  const distance = Math.hypot(
-    object.position.x - self.position.x,
-    object.position.y - self.position.y,
-    object.position.z - self.position.z,
-  );
-  if (distance > interactionDistance(type)) return undefined;
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   if (entry <= 0) return undefined;
   const template = world.gameObjectTemplate(entry, object.guid);
@@ -474,11 +653,33 @@ function releaseButtons(event: PointerEvent): void {
   // The camera has stopped; tell the server where the character ended up facing, since a turn on
   // the spot sends nothing else.
   if (releasedRight && drag.moved > DRAG_THRESHOLD) flushFacing();
+  // A right click on the world is SpellStopTargeting, as in the client: a waiting enchant (stock
+  // TradeSkillFrame's DoTradeSkill cursor) is dropped and the click selects and opens nothing.
+  // Asked before the reticle below, in the seam's SpellStopTargeting order; drags stay the camera's.
+  if (releasedRight && clicked(2) && stopFrameXmlTradeSkillTargeting()) return;
   if (!world) return;
+
+  // The reticle owns both clicks while it is armed: left chooses the landing point, right
+  // cancels. Drags still belong to the camera, so only unmoved presses divert here.
+  const pendingSpell = pendingGroundTarget();
+  if (pendingSpell !== undefined) {
+    if (releasedRight && clicked(2)) {
+      cancelGroundTarget();
+      clearHoverCursor();
+      return;
+    }
+    if (releasedLeft && clicked(1)) {
+      confirmGroundTargetAt(event, world, pendingSpell);
+      return;
+    }
+  }
 
   // The left button picks a target or drops it; the right one picks and then interacts, which is
   // the gesture the original client leans on hardest.
   if (releasedLeft && clicked(1)) {
+    // An item on the stock bag cursor dropped on the world asks DELETE_ITEM_CONFIRM, as the client
+    // does for an item let go outside every frame; that click selects nothing.
+    if (frameXmlPopupsDropCursorItem()) return;
     world.selectTarget(pickAt(event));
     showTarget();
     return;
@@ -506,16 +707,35 @@ function abandonGesture(): void {
 }
 
 function wireMouse(): void {
+  // The original client owns the right button: it never opens a browser menu anywhere. The
+  // canvas and a few widgets already swallow `contextmenu` one by one, but every other surface
+  // (panels, bars, dialogs) still popped the browser menu on right click. One document-level
+  // handler covers them all; editable fields keep theirs so chat/input menus (paste, spellcheck)
+  // keep working.
+  document.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable)) {
+      return;
+    }
+    event.preventDefault();
+  });
+
   worldCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
   worldCanvas.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 && event.button !== 2) return;
+    // A tap is a press with no useful move before it; the reticle gets its position from here so
+    // touch shows the rings from the first contact.
+    recordGroundTargetPointer(event.clientX, event.clientY);
     worldCanvas.setPointerCapture(event.pointerId);
     syncButtons(event);
+    setHoveredTarget(undefined, undefined);
     event.preventDefault();
   });
 
   worldCanvas.addEventListener("pointermove", (event) => {
+    recordGroundTargetPointer(event.clientX, event.clientY);
     // A chorded press or release arrives as a move, so the buttons are re-read on every one.
     const wasDragging = drag.left || drag.right;
     releaseButtons(event);
@@ -560,6 +780,7 @@ function wireMouse(): void {
 
 /** Keyboard, mouse and camera. Registered once, at start-up. */
 export function wireControls(): void {
+  registerFrameXmlNativeEscape(NATIVE_ESCAPE);
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", () => {

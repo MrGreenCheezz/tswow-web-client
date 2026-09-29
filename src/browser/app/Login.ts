@@ -6,14 +6,14 @@ import {
 } from "../ui/Dom.js";
 import { clearWorldContext, game } from "../game/Context.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
-import { enterWorld } from "./EnterWorld.js";
-import { RealmInfo } from "../../auth/AuthProtocol.js";
+import { enterWorld, retireEnterWorldSession } from "./EnterWorld.js";
+import { canSelectRealm, REALM_FLAG_OFFLINE, type RealmInfo } from "../../auth/AuthProtocol.js";
 import { showDeath, showLoot, showTrainer, showVendor } from "../ui/Npc.js";
 import { showAuctions, showDuel, showGroup, showLfg, showMail, showTrade } from "../ui/Social.js";
 import { showGuild } from "../ui/Guild.js";
 import { className, raceName } from "../ui/UnitSnapshot.js";
 import {
-  CreationMemo, creationClasses, creationRaces, fetchCharacterCreation, type CreationOption,
+  CreationMemo, LatestAppearanceRequest, creationClasses, creationRaces, fetchCharacterCreation, type CreationOption,
 } from "../ui/CharacterCreation.js";
 import { resetGuildBank } from "../ui/GuildBank.js";
 import { resetCalendar } from "../ui/Calendar.js";
@@ -24,9 +24,21 @@ import { resetScoreboard } from "../ui/Scoreboard.js";
 import { resetArenaWindow } from "../ui/ArenaWindow.js";
 import { resetLootRolls } from "../ui/LootRolls.js";
 import { resetReadyCheck } from "../ui/ReadyCheck.js";
+import { resetBarberShop } from "../ui/BarberShop.js";
+import { resetTotems } from "../ui/Totems.js";
+import { resetChannelRoster } from "../ui/ChannelRoster.js";
+import { resetGmTickets } from "../ui/GmTickets.js";
+import { resetPetition } from "../ui/Petition.js";
+import { clearReputation } from "../ui/Reputation.js";
+import { resetAutoQuality } from "../AutoQuality.js";
+import { clearBagSearch } from "../ui/Bags.js";
 import { resetMacroWindow, macroStores } from "../ui/Macros.js";
 import { resetPetBar } from "../ui/PetBar.js";
 import { resetLoadingScreen } from "../ui/LoadingScreen.js";
+import { closeGameMenu, resetLogoutPending } from "../ui/GameMenu.js";
+import { closeKeyBindingsWindow } from "../ui/KeyBindings.js";
+import { closeGameWindows } from "../ui/Windows.js";
+import { clearQuestLog } from "../ui/QuestLog.js";
 import { bindDeathScreenEffect, resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { settingsStore } from "../ui/Settings.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
@@ -38,6 +50,7 @@ import { CHARACTER_OPTIONS_VERSION, isCharacterOptions, type CharacterOptions } 
 import { clientLocale } from "../Environment.js";
 import { frontDoorHost, type WorldExit } from "../glue/FrontDoor.js";
 import { adoptWorldConnection } from "./WorldAdoption.js";
+import { LatestConnection } from "./LatestConnection.js";
 export function worldGatewayUrl(): string {
   const url = new URL(gatewayInput.value);
   url.pathname = "/world";
@@ -47,8 +60,10 @@ export function worldGatewayUrl(): string {
 }
 
 export async function refreshCharacters(): Promise<void> {
-  if (!game.world) return;
-  showCharacters(await game.world.characters());
+  const world = game.world;
+  if (!world) return;
+  const list = await world.characters();
+  if (game.world === world) showCharacters(list);
 }
 
 /** What `/dbc/character-creation` said, which gateway said it, and when that stops counting. */
@@ -132,6 +147,7 @@ const LOOK_SELECTS = [
 
 /** The last answer, so choosing a skin can refill the faces without asking the gateway again. */
 let lookOptions: CharacterOptions | undefined;
+const latestAppearance = new LatestAppearanceRequest();
 
 /** Every index one axis offers — which for the faces depends on the skin that is chosen. */
 function offeredLooks(key: (typeof LOOK_SELECTS)[number]["key"]): readonly number[] {
@@ -181,19 +197,31 @@ function fillLook(element: HTMLSelectElement, values: readonly number[]): void {
 async function fillAppearance(): Promise<void> {
   const race = Number.parseInt(characterRace.value, 10);
   const sex = Number.parseInt(characterGender.value, 10);
-  if (!Number.isInteger(race) || !Number.isInteger(sex)) return;
-  const url = new URL(gatewayInput.value.replace(/^ws/, "http"));
+  const classId = Number.parseInt(characterClass.value, 10);
+  const gateway = gatewayInput.value;
+  const request = latestAppearance.begin(gateway, race, sex, classId);
+  // The old race's indices may be valid numbers for a different look. Hide them as soon as the
+  // profile changes so a quick create cannot submit appearance bytes from the previous race.
+  if (request.changed) {
+    lookOptions = undefined;
+    for (const { select } of LOOK_SELECTS) fillLook(select(), []);
+  }
+  if (!Number.isInteger(race) || !Number.isInteger(sex) || !Number.isInteger(classId)) return;
   try {
+    const url = new URL(gateway.replace(/^ws/, "http"));
     const response = await fetch(
-      `${url.origin}/dbc/character-options?v=${CHARACTER_OPTIONS_VERSION}&race=${race}&sex=${sex}`);
+      `${url.origin}/dbc/character-options?v=${CHARACTER_OPTIONS_VERSION}&race=${race}&sex=${sex}&class=${classId}`);
     if (!response.ok) throw new Error(`character options returned ${response.status}`);
     const answer: unknown = await response.json();
+    if (!latestAppearance.isCurrent(request.serial, gatewayInput.value,
+      Number.parseInt(characterRace.value, 10), Number.parseInt(characterGender.value, 10),
+      Number.parseInt(characterClass.value, 10))) return;
     // An answer this bundle cannot read is no answer: the five controls are emptied and hidden
     // rather than half-filled from a shape that is not the one they expect.
     lookOptions = isCharacterOptions(answer) ? answer : undefined;
   } catch {
-    // The form still works without this: every select keeps whatever it had, and a character
-    // created from it is no worse off than one created before this existed.
+    // The form still works with the default look if the gateway is down. A profile change already
+    // hid the previous race's selections above; a retry of the same profile keeps its known look.
     return;
   }
   for (const { select, key } of LOOK_SELECTS) fillLook(select(), offeredLooks(key));
@@ -285,8 +313,16 @@ function renderCharacters(list: CharacterSummary[]): void {
  * session that is about to draw its character list over it.
  */
 export function resetWorldUi(): void {
+  retireEnterWorldSession();
   game.store?.detach();
   clearWorldContext();
+  resetLogoutPending();
+  closeGameMenu();
+  closeKeyBindingsWindow();
+  // Close both markup and runtime windows before the viewport is shown for a new character.
+  // The world reference is already gone, so this cannot send service-close packets to the old realm.
+  closeGameWindows();
+  clearQuestLog();
   showLoot();
   showDeath();
   showVendor();
@@ -305,6 +341,14 @@ export function resetWorldUi(): void {
   resetArenaWindow();
   resetLootRolls();
   resetReadyCheck();
+  resetBarberShop();
+  resetTotems();
+  resetChannelRoster();
+  resetGmTickets();
+  resetPetition();
+  clearReputation();
+  resetAutoQuality();
+  clearBagSearch();
   resetMacroWindow();
   resetPetBar();
   resetLoadingScreen();
@@ -329,6 +373,8 @@ export function resetWorldUi(): void {
  * Only the DOM flow needs it: the GlueXML front door keeps the realm inside its own `GlueSession`.
  */
 let currentRealm: RealmInfo | undefined;
+/** A later realm or account choice retires each pending socket and world handshake. */
+const realmConnections = new LatestConnection();
 
 /**
  * A live connection becomes this client's world.
@@ -388,7 +434,10 @@ export function leaveWorld(exit: WorldExit, message?: string): void {
 }
 
 export async function connectRealm(realm: RealmInfo): Promise<void> {
-  if (!game.session) return;
+  if (!canSelectRealm(realm)) return;
+  const session = game.session;
+  if (!session) return;
+  const attempt = realmConnections.begin();
   game.world?.close();
   currentRealm = realm;
   resetWorldUi();
@@ -399,13 +448,19 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
 
   let stream: WebSocketByteStream | undefined;
   try {
-    stream = await WebSocketByteStream.connect(worldGatewayUrl());
-    const world = await WorldClient.connect(stream, {
-      username: game.session.username,
-      sessionKey: game.session.sessionKey,
+    stream = await realmConnections.accept(attempt, WebSocketByteStream.connect(worldGatewayUrl()));
+    if (!stream) return;
+    const world = await realmConnections.accept(attempt, WorldClient.connect(stream, {
+      username: session.username,
+      sessionKey: session.sessionKey,
       realmId: realm.id,
       realmName: realm.name,
-    });
+    }));
+    if (!world) {
+      // The obsolete WorldClient has already closed the socket it owns.
+      stream = undefined;
+      return;
+    }
     stream = undefined;
     // The previous store was already detached with the previous connection, at the top of
     // `resetWorldUi`; this one lives exactly as long as the client it watches.
@@ -414,9 +469,12 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
     characterStatus.textContent = `Worldserver ${realm.name} подключён.`;
     await refreshCharacters();
   } catch (error) {
+    if (realmConnections.isCurrent(attempt)) {
+      characterStatus.className = "error";
+      characterStatus.textContent = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
     stream?.close();
-    characterStatus.className = "error";
-    characterStatus.textContent = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -433,10 +491,11 @@ export function showRealms(session: AuthSessionResult): void {
     const details = document.createElement("span");
     const connect = document.createElement("button");
     title.textContent = realm.name;
-    details.textContent = `${realm.address} · персонажей: ${realm.characters}${realm.locked ? " · закрыт" : ""}`;
+    const availability = realm.locked ? " · закрыт" : (realm.flags & REALM_FLAG_OFFLINE) !== 0 ? " · недоступен" : "";
+    details.textContent = `${realm.address} · персонажей: ${realm.characters}${availability}`;
     connect.type = "button";
     connect.textContent = "Показать персонажей";
-    connect.disabled = realm.locked;
+    connect.disabled = !canSelectRealm(realm);
     connect.addEventListener("click", () => void connectRealm(realm));
     card.append(title, details, connect);
     realms.append(card);
@@ -448,6 +507,7 @@ export function wireLoginForms(): void {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     loginSubmit.disabled = true;
+    realmConnections.invalidate();
     game.world?.close();
     currentRealm = undefined;
     // The other way out of a world, and now literally the same function: signing in again as
@@ -492,6 +552,7 @@ export function wireLoginForms(): void {
     fillRaceAndClass();
     void fillAppearance();
   });
+  characterClass.addEventListener("change", () => void fillAppearance());
   characterGender.addEventListener("change", () => void fillAppearance());
   // And the faces are per skin on top of that — a face row is keyed on the pair — so the one
   // dependent list is refilled from the answer already in hand, with no second request.

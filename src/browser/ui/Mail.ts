@@ -1,4 +1,5 @@
-import { MAIL_AUCTION, MAIL_CALENDAR, MAIL_OK, MAIL_SEND, isMailRead, type MailEntry } from "../../world/MailProtocol.js";
+import { MAIL_AUCTION, MAIL_CALENDAR, MAIL_ERR_EQUIP_ERROR, MAIL_OK, MAIL_SEND, isMailRead, isMailReturnable, type MailEntry } from "../../world/MailProtocol.js";
+import { equipErrorText } from "../../world/ItemProtocol.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
 import { entryOf, playerInventory, stackCount } from "../Inventory.js";
@@ -8,8 +9,25 @@ import { setIconSource } from "./IconImage.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { nativeUiTextureUrl } from "./NativeUiSkin.js";
 import { Panel, attachTooltip, confirmPanel } from "./Widgets.js";
+import { frameXmlMailPublished } from "../framexml/FrameXmlMailController.js";
 
 const PAGE_SIZE = 7;
+// Stock MailFrame.lua: MAX_COD_AMOUNT = 10000 and the check rejects only amounts above that.
+const MAX_COD_COPPER = 10_000 * 10_000;
+/** MailFrame.lua floors whole days; below a day it calls UIParent.SecondsToTime with two units. */
+function formatMailExpiry(daysLeft: number): string {
+  if (daysLeft >= 1) return `${Math.floor(daysLeft)} д.`;
+  let seconds = Math.max(0, Math.floor(daysLeft * 86_400));
+  const units: string[] = [];
+  const hours = Math.floor(seconds / 3_600);
+  if (hours > 0) units.push(`${hours} ч.`);
+  seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes > 0 && units.length < 2) units.push(`${minutes} мин.`);
+  seconds %= 60;
+  if (seconds > 0 && units.length < 2) units.push(`${seconds} с.`);
+  return units.join(" ");
+}
 let owner: WorldClient | undefined;
 let mailbox = 0n;
 let page = 0;
@@ -18,9 +36,16 @@ let composing = false;
 let wired = false;
 let reader: Panel | undefined;
 let attachments: bigint[] = [];
+let codMode = false;
 let sending = false;
 let submittedResult: WorldClient["mailResult"];
 const read = new Set<number>();
+
+/** A copy of the currently owned draft; FrameXML price/item reads share this one draft. */
+export function mailDraftAttachments(): readonly bigint[] {
+  const world = game.world;
+  return world && world === owner && mailbox !== 0n && mailbox === world.mailboxGuid ? [...attachments] : [];
+}
 
 function button(text: string, run: () => void): HTMLButtonElement {
   const node = document.createElement("button");
@@ -45,6 +70,7 @@ function resetDraft(): void {
   mailBody.value = "";
   for (const id of ["mail-money", "mail-silver", "mail-copper"]) element<HTMLInputElement>(id).value = "0";
   attachments = [];
+  codMode = false;
 }
 
 function setTab(compose: boolean): void {
@@ -65,37 +91,68 @@ function wireMail(): void {
     if (picker.value && attachments.length < 12 && !sending) attachments.push(BigInt(picker.value));
     showMail();
   });
+  element<HTMLInputElement>("mail-send-money-mode").addEventListener("click", () => { codMode = false; showMail(); });
+  element<HTMLInputElement>("mail-cod-mode").addEventListener("click", () => {
+    if (sending || attachments.length === 0) return;
+    codMode = true;
+    showMail();
+  });
+  for (const id of ["mail-money", "mail-silver", "mail-copper"])
+    element<HTMLInputElement>(id).addEventListener("input", showMail);
   mailSend.addEventListener("click", sendDraft);
+}
+
+function draftCoins(): { gold: number; silver: number; copper: number; amount: number } {
+  const gold = Number(mailMoney.value);
+  const silver = Number(element<HTMLInputElement>("mail-silver").value);
+  const copper = Number(element<HTMLInputElement>("mail-copper").value);
+  return { gold, silver, copper, amount: gold * 10000 + silver * 100 + copper };
 }
 
 function sendDraft(): void {
   const world = game.world;
   if (!world || world.mailboxGuid === 0n || sending) return;
-  const gold = Number(mailMoney.value);
-  const silver = Number(element<HTMLInputElement>("mail-silver").value);
-  const copper = Number(element<HTMLInputElement>("mail-copper").value);
-  const money = gold * 10000 + silver * 100 + copper;
+  const { gold, silver, copper, amount } = draftCoins();
+  const money = codMode ? 0 : amount;
+  const cod = codMode ? amount : 0;
   if (!mailTo.value.trim() || !mailSubject.value.trim()) {
     mailMessage.className = "error";
     mailMessage.textContent = "Укажите получателя и тему письма.";
     return;
   }
   if (![gold, silver, copper].every((value) => Number.isSafeInteger(value) && value >= 0)
-    || silver > 99 || copper > 99 || money > 2147483647) {
+    || silver > 99 || copper > 99 || amount > 2147483647) {
     mailMessage.className = "error";
     mailMessage.textContent = "Проверьте сумму: серебро и медь — от 0 до 99.";
+    return;
+  }
+  if (cod > MAX_COD_COPPER) {
+    mailMessage.className = "error";
+    mailMessage.textContent = "Наложенный платёж не может превышать 10 000 з.";
+    return;
+  }
+  if (cod > 0 && attachments.length === 0) {
+    mailMessage.className = "error";
+    mailMessage.textContent = "Наложенный платёж требует вложения.";
     return;
   }
   submittedResult = world.mailResult;
   sending = true;
   world.sendMail({ target: mailTo.value.trim(), subject: mailSubject.value.trim(), body: mailBody.value,
-    money, attachments: [...attachments] });
+    money, ...(cod > 0 ? { cod } : {}), attachments: [...attachments] });
   showMail();
 }
 
 /** The mailbox keeps a compact inbox; only the selected letter opens its parchment reader. */
 export function showMail(): void {
   const world = game.world;
+  // Stock MailFrame owns the mailbox once published (FrameXmlMailController): it opens on its own
+  // MAIL_SHOW, so this window only steps aside — without closing the mailbox stock is showing.
+  if (frameXmlMailPublished()) {
+    mailWindow.hidden = true;
+    closeMailRead();
+    return;
+  }
   if (!world || world.mailboxGuid === 0n) {
     mailWindow.hidden = true;
     closeMailRead();
@@ -120,7 +177,10 @@ export function showMail(): void {
   }
   mailWindow.hidden = false;
   mailMessage.className = world.mailMessage?.error ? "error" : "muted";
-  mailMessage.textContent = sending ? "Отправка письма…" : world.mailMessage?.text ?? "";
+  const equipDetail = world.mailMessage?.error && world.mailResult?.error === MAIL_ERR_EQUIP_ERROR
+    && world.mailResult.bagResult !== 0
+    ? equipErrorText({ result: world.mailResult.bagResult }) : undefined;
+  mailMessage.textContent = sending ? "Отправка письма…" : equipDetail ?? world.mailMessage?.text ?? "";
   element("mail-inbox").hidden = composing;
   element("mail-compose").hidden = !composing;
   element("mail-inbox-tab").setAttribute("aria-selected", String(!composing));
@@ -180,8 +240,8 @@ function showInbox(world: WorldClient): void {
     from.textContent = sender(world, entry);
     words.append(title, from);
     const meta = document.createElement("span");
-    meta.className = "mail-entry-status";
-    meta.textContent = `${Math.max(1, Math.ceil(entry.daysLeft))} д.${entry.attachments.length ? " · вложение" : entry.money ? " · деньги" : ""}`;
+    meta.className = `mail-entry-status${entry.daysLeft < 1 ? " expiring" : ""}`;
+    meta.textContent = `${formatMailExpiry(entry.daysLeft)}${entry.attachments.length ? " · вложение" : entry.money ? " · деньги" : ""}`;
     row.title = `${entry.subject}\nОт: ${sender(world, entry)}${entry.cod ? `\nНаложенный платёж: ${formatMoney(entry.cod)}` : ""}`;
     row.append(icon, words, meta);
     return row;
@@ -240,10 +300,18 @@ function showLetter(world: WorldClient, entry: MailEntry): void {
     if (reply.disabled) reply.title = "Ожидание имени отправителя";
     actions.append(reply);
   }
-  if (entry.senderGuid !== 0n) actions.append(button("Вернуть", () => confirmPanel(actions, { title: "Вернуть письмо отправителю?", confirm: "Вернуть", onConfirm: () => world.returnMail(entry.mailId, entry.senderGuid) })));
-  const remove = button("Удалить", () => confirmPanel(actions, { title: "Удалить письмо?", confirm: "Удалить", danger: true, onConfirm: () => world.deleteMail(entry.mailId) }));
-  remove.disabled = entry.money > 0 || entry.attachments.length > 0;
-  if (remove.disabled) remove.title = "Сначала заберите деньги и вложения или верните письмо отправителю";
+  if (isMailReturnable(entry)) actions.append(button("Вернуть", () => confirmPanel(actions, { title: "Вернуть письмо отправителю?", confirm: "Вернуть", onConfirm: () => world.returnMail(entry.mailId, entry.senderGuid) })));
+  const remove = button("Удалить", () => confirmPanel(actions, {
+    title: "Удалить письмо?",
+    lines: entry.money > 0 || entry.attachments.length > 0 ? ["Содержимое письма будет потеряно."] : undefined,
+    confirm: "Удалить", danger: true, onConfirm: () => world.deleteMail(entry.mailId),
+  }));
+  // MailHandler.cpp only rejects deletion of COD mail. Stock MailFrame.lua confirms deletion of
+  // deletable mail even when it holds money or attachments (auction/returned/system letters).
+  remove.disabled = entry.cod > 0 || (isMailReturnable(entry) && (entry.money > 0 || entry.attachments.length > 0));
+  if (remove.disabled) remove.title = entry.cod > 0
+    ? "Письмо с наложенным платежом нельзя удалить"
+    : "Сначала заберите деньги и вложения или верните письмо отправителю";
   actions.append(remove);
   body.append(actions);
   reader.body.replaceChildren(body);
@@ -254,6 +322,17 @@ function showComposer(world: WorldClient): void {
   const inventory = playerInventory(world.state);
   const slots = [...inventory?.backpack ?? [], ...inventory?.bags.flatMap((bag) => bag.slots) ?? []].filter((slot) => slot.guid !== 0n && slot.item);
   attachments = attachments.filter((guid) => slots.some((slot) => slot.guid === guid));
+  if (codMode && attachments.length === 0) codMode = false; // MailFrame.lua selects send-money when the last item is removed.
+  element<HTMLInputElement>("mail-send-money-mode").checked = !codMode;
+  const codRadio = element<HTMLInputElement>("mail-cod-mode");
+  codRadio.checked = codMode;
+  codRadio.disabled = sending || attachments.length === 0;
+  const overCodLimit = codMode && draftCoins().amount > MAX_COD_COPPER;
+  if (!sending && overCodLimit) {
+    mailSend.disabled = true;
+    mailMessage.className = "error";
+    mailMessage.textContent = "Наложенный платёж не может превышать 10 000 з.";
+  }
   const picker = element<HTMLSelectElement>("mail-attachment-picker");
   const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "Выберите предмет из сумок";
   picker.replaceChildren(placeholder);

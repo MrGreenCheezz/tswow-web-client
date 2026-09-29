@@ -10,8 +10,11 @@
  */
 
 import { game } from "../game/Context.js";
+import { playUiSound } from "../game/GameSounds.js";
 import { MEMBER_FLAG_ASSISTANT } from "../../world/GroupProtocol.js";
 import { Panel } from "./Widgets.js";
+import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
+import { frameXmlPopupAnswer, markFrameXmlPopupAnswered } from "../framexml/FrameXmlPopupsAnswered.js";
 
 /** How long the prompt waits before it gives up. The original client uses the same figure. */
 export const READY_CHECK_TIMEOUT_MS = 35_000;
@@ -25,6 +28,7 @@ interface Parts {
 
 let parts: Parts | undefined;
 let shownFor: bigint | undefined;
+let answeredCheck: object | undefined;
 
 function build(): Parts {
   const panel = new Panel({ id: "ready-check-window", title: "Проверка готовности", className: "ready-check" });
@@ -46,6 +50,7 @@ export function readyCheckOpen(): boolean {
 export function closeReadyCheck(): void {
   parts?.panel.hide();
   shownFor = undefined;
+  answeredCheck = undefined;
 }
 
 export function resetReadyCheck(): void {
@@ -71,40 +76,52 @@ export function startReadyCheck(): void {
  * back undefined means the check finished — dismiss, rather than treat it as a new check nobody
  * started.
  */
-export function showReadyCheck(): void {
+export function showReadyCheck(now = performance.now()): void {
   const world = game.world;
   const check = world?.readyCheck;
-  if (!world || !check) {
+  // The stock ReadyCheckFrame asks while the popup owner is published (FrameXmlPopups.ts); an
+  // answer either surface gave is shared (FrameXmlPopupsAnswered.ts), so neither asks twice.
+  if (!world || !check || frameXmlPopupsPublished()) {
     closeReadyCheck();
     return;
   }
   parts ??= build();
   const { panel, status, answers, actions } = parts;
 
-  const elapsed = Date.now() - check.startedAt;
+  // WorldClient timestamps the packet with performance.now(), the same clock as requestAnimationFrame.
+  const elapsed = now - check.startedAt;
   if (elapsed > READY_CHECK_TIMEOUT_MS) {
     closeReadyCheck();
+    return;
+  }
+  const own = world.state.selfGuid;
+  if (answeredCheck === check || frameXmlPopupAnswer(check) !== undefined
+    || (own !== undefined && own !== check.initiatorGuid && check.answers.has(own))) {
+    panel.hide();
     return;
   }
   if (shownFor !== check.initiatorGuid) {
     shownFor = check.initiatorGuid;
     panel.show();
+    if (own !== check.initiatorGuid) playUiSound("readyCheck");
   }
 
   const seconds = Math.max(0, Math.ceil((READY_CHECK_TIMEOUT_MS - elapsed) / 1000));
   panel.title = `Проверка готовности · ${seconds} с`;
   status.textContent = `${world.displayName(check.initiatorGuid)} спрашивает, все ли готовы.`;
 
-  const own = world.state.selfGuid;
   const answered = own !== undefined && check.answers.has(own);
   actions.replaceChildren();
-  if (!answered) {
+  if (!answered && check.initiatorGuid !== own) {
     const ready = document.createElement("button");
     ready.type = "button";
     ready.textContent = "Готов";
     ready.addEventListener("click", () => {
       world.answerReadyCheck(true);
-      showReadyCheck();
+      markFrameXmlPopupAnswered(check, true);
+      answeredCheck = check;
+      panel.hide();
+      shownFor = undefined;
     });
     const notReady = document.createElement("button");
     notReady.type = "button";
@@ -112,7 +129,10 @@ export function showReadyCheck(): void {
     notReady.textContent = "Не готов";
     notReady.addEventListener("click", () => {
       world.answerReadyCheck(false);
-      showReadyCheck();
+      markFrameXmlPopupAnswered(check, false);
+      answeredCheck = check;
+      panel.hide();
+      shownFor = undefined;
     });
     actions.append(ready, notReady);
   }
@@ -128,8 +148,24 @@ export function showReadyCheck(): void {
   }
 
   // Everyone in the group, whether or not they have answered: a check is read by who is missing
-  // from it, and a list of only the answers hides exactly that.
+  // from it, and a list of only the answers hides exactly that. `SMSG_GROUP_LIST` omits the
+  // player, so add them explicitly — otherwise the initiator never sees quorum or their own row.
   const members = [...(world.group?.members ?? [])];
+  const ownGuid = world.state.selfGuid;
+  if (ownGuid !== undefined && !members.some((member) => member.guid === ownGuid)) {
+    const group = world.group;
+    if (group) {
+      members.push({
+        name: world.displayName(ownGuid),
+        guid: ownGuid,
+        online: true,
+        status: 1,
+        subGroup: group.ownSubGroup,
+        flags: group.ownFlags,
+        roles: group.ownRoles,
+      });
+    }
+  }
   const rows = members.map((member) => {
     const row = document.createElement("div");
     row.className = "ready-check-row";
@@ -150,5 +186,5 @@ let lastTick = 0;
 export function updateReadyCheck(now: number): void {
   if (!readyCheckOpen() || now - lastTick < 1000) return;
   lastTick = now;
-  showReadyCheck();
+  showReadyCheck(now);
 }

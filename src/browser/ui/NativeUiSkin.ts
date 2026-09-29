@@ -18,6 +18,18 @@ export function nativeUiTextureUrl(origin: string | undefined, path: string): st
   return origin ? gatewayUrl(origin, "/texture", path) : "";
 }
 
+/**
+ * The same texture as an object URL that a CSS background can use from any origin.
+ *
+ * A background-image request does not carry the gateway's `Origin`, so a cross-origin dev page is
+ * refused and the layer silently stays empty; fetching it as a blob first turns it into a
+ * same-document URL. Answers `undefined` — never throws — when the asset is absent or the
+ * environment has no fetch/blob support, because this art is enhancement only.
+ */
+export async function loadNativeTexture(origin: string, path: string): Promise<string | undefined> {
+  return loadTexture(origin, path);
+}
+
 function cssUrl(url: string): string {
   return `url(${JSON.stringify(url)})`;
 }
@@ -78,6 +90,11 @@ export function installNativeWowUiSkin(origin: string): void {
     "--wow-micro-character": "Interface\\Buttons\\UI-MicroButtonCharacter-Up.blp",
     "--wow-micro-spellbook": "Interface\\Buttons\\UI-MicroButton-Spellbook-Up.blp",
     "--wow-micro-talents": "Interface\\Buttons\\UI-MicroButton-Talents-Up.blp",
+    "--wow-micro-quest": "Interface\\Buttons\\UI-MicroButton-Quest-Up.blp",
+    "--wow-micro-socials": "Interface\\Buttons\\UI-MicroButton-Socials-Up.blp",
+    "--wow-micro-world": "Interface\\Buttons\\UI-MicroButton-World-Up.blp",
+    "--wow-micro-lfg": "Interface\\Buttons\\UI-MicroButton-LFG-Up.blp",
+    "--wow-micro-mainmenu": "Interface\\Buttons\\UI-MicroButton-MainMenu-Up.blp",
     "--wow-micro-inventory": BACKPACK_BUTTON_TEXTURE_PATH,
     "--wow-mail-icon": "Interface\\MailFrame\\Mail-Icon.blp",
     "--wow-mail-top-left": "Interface\\ItemTextFrame\\UI-ItemText-TopLeft.blp",

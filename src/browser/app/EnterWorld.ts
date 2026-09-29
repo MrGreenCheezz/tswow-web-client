@@ -6,6 +6,7 @@ import { leaveWorld } from "./Login.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
+import type { WorldEvents, WorldPacketEvents } from "../../world/EventBus.js";
 import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { clearFocusOn } from "../game/Targeting.js";
@@ -19,6 +20,7 @@ import { bossDisengaged, bossEngaged, forgetUnitFrames, showUnitFrames } from ".
 import { applyPortraitVisibility, clearPortraitTargets, mountNativeCharacterPortrait } from "../ui/Portraits.js";
 import { ENCOUNTER_FRAME_DISENGAGE, ENCOUNTER_FRAME_ENGAGE } from "../../world/InstanceProtocol.js";
 import { queueWorldState, showWorldState } from "../ui/WorldView.js";
+import { queueFrameTask } from "../../transport/PacketPump.js";
 import { ENVIRONMENT_NAMES, logSwing, pushCombatLine, showSwingWarning } from "../ui/CombatLog.js";
 import { loadAuraMetadata, showAuras } from "../ui/Auras.js";
 import {
@@ -36,21 +38,29 @@ import { showAuctions, showDuel, showGroup, showLfg, showMail, showTrade } from 
 import { resetGuildWindow, showGuild } from "../ui/Guild.js";
 import { resetGuildBank, showGuildBank } from "../ui/GuildBank.js";
 import { refreshCalendar, resetCalendar, showCalendar } from "../ui/Calendar.js";
-import { resetSocialPanel, showSocialPanel } from "../ui/SocialPanel.js";
-import { resetScoreboard, showScoreboard } from "../ui/Scoreboard.js";
+import { refreshSocialNames, resetSocialPanel, showSocialPanel } from "../ui/SocialPanel.js";
+import { resetScoreboard, scoreboardOpen, showScoreboard } from "../ui/Scoreboard.js";
+import { resetGmTickets } from "../ui/GmTickets.js";
+import { resetPetition, showPetition } from "../ui/Petition.js";
 import { resetArenaWindow, showArenaWindow } from "../ui/ArenaWindow.js";
 import { noticeLootRoll, resetLootRolls, showLootRolls } from "../ui/LootRolls.js";
 import { resetReadyCheck, showReadyCheck } from "../ui/ReadyCheck.js";
+import { resetInteractionPrompts, showInteractionPrompts } from "../ui/InteractionPrompts.js";
 import {
-  appendChatMessage, recordCombatEntry, redrawChatLog, resetChatDock, syncChannelTabs,
+  appendChatMessage, recordCombatEntry, redrawChatLog, refreshChatNames, resetChatDock, syncChannelTabs,
 } from "../ui/ChatDock.js";
 import { resetHeadOverlay, showChatBubble, showFloatingText } from "../ui/HeadOverlay.js";
+import { notePlateHit } from "../ui/OverlayModel.js";
 import { clearSpellNames } from "../ui/SpellNames.js";
 import { notice, resetNotices } from "../ui/Notices.js";
+import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
-import { applySettings, drawSettings, settingsStore } from "../ui/Settings.js";
+import { applySettings, drawSettings, settingOn, settingsStore, watchSettingsApplied } from "../ui/Settings.js";
 import { macroStores, resetMacroWindow, showMacros } from "../ui/Macros.js";
 import { resetPetBar, showPetBar } from "../ui/PetBar.js";
+import { resetTotems } from "../ui/Totems.js";
+import { resetAutoQuality } from "../AutoQuality.js";
+import { maybeShowWelcomeHints } from "../ui/WelcomeHints.js";
 import { hideLoadingScreen, resetLoadingScreen, showLoadingScreen } from "../ui/LoadingScreen.js";
 import { resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { watchMinimapRotation } from "../ui/Minimap.js";
@@ -80,6 +90,9 @@ import { ItemMetadataClient } from "../ItemMetadata.js";
 import { LockClient } from "../LockClient.js";
 import { FactionClient } from "../FactionClient.js";
 import { TalentClient } from "../TalentClient.js";
+import { BarberClient } from "../BarberClient.js";
+import { SlotPriceClient } from "../SlotPriceClient.js";
+import { VendorCostClient } from "../VendorCostClient.js";
 import { AreaClient } from "../AreaClient.js";
 import { MinimapTileClient } from "../MinimapTiles.js";
 import { SoundClient } from "../SoundClient.js";
@@ -93,6 +106,8 @@ import { applySoundVolumes } from "../ui/Settings.js";
 import { TextureBitmapCache } from "../TextureBitmaps.js";
 import { ASSET_WARMUP_BUDGET, SessionAssetWarmup, loadedVisualWarmPaths } from "../AssetWarmup.js";
 import { showTalents } from "../ui/Talents.js";
+import { resetBarberShop, showBarberShop } from "../ui/BarberShop.js";
+import { channelRosterOpen, resetChannelRoster, showChannelRoster } from "../ui/ChannelRoster.js";
 import { showProfessions, professionCastStatus } from "../ui/Professions.js";
 import { closeSocketing } from "../ui/Socketing.js";
 import { CollisionSource } from "../game/CollisionSource.js";
@@ -101,17 +116,25 @@ import { isAutoRunning, isWalking } from "../input/Movement.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { createModuleLoader } from "../ui/ModuleClient.js";
 import { showActionBar } from "../ui/ActionBar.js";
+import { upgradeActionBarRanks } from "../ui/ActionBar.js";
 import {
   bindQuestLogStore, clearQuestLog, requestMissingQuestTemplates, requestQuestPoi, showQuestLog,
   showQuestTracker,
 } from "../ui/QuestLog.js";
 import { showCharacterCollections, showCharacterSheet } from "../ui/CharacterSheet.js";
+import { clearReputation, showReputation } from "../ui/Reputation.js";
 import { showCharacterWindow } from "../ui/Windows.js";
 import { frameXmlFlagEnabled } from "../framexml/FrameXmlWorldPolicy.js";
+import { FrameXmlModeController } from "../framexml/FrameXmlModeController.js";
 import { installNativeWowUiSkin } from "../ui/NativeUiSkin.js";
 import { frameXmlMerchantOpen, notifyFrameXmlMerchant } from "../framexml/FrameXmlMerchantController.js";
 import { frameXmlTrainerOpen, notifyFrameXmlTrainer } from "../framexml/FrameXmlTrainerController.js";
+import { frameXmlStablePublished } from "../framexml/FrameXmlStableController.js";
+import {
+  notifyFrameXmlQuestGiver, notifyFrameXmlQuestGiverItemUpdate,
+} from "../framexml/FrameXmlQuestGiverController.js";
 import { createFrameXmlMerchantMetadataCoordinator } from "../framexml/FrameXmlMerchantMetadata.js";
+import { WorldEntryLifecycle } from "./WorldEntryLifecycle.js";
 /**
  * Entering the world: the login handshake for a chosen character, the asset clients that realm
  * needs, and the couple of dozen callbacks that connect the world client to the panels.
@@ -142,9 +165,11 @@ const BUBBLE_TYPES: ReadonlySet<number> = new Set([
 /**
  * The archive path a visual placement carries, reduced to the file the collision route serves.
  *
- * Case is left as it stands: the extractor writes `Stormwind.wmo.vmo` and the placement says
- * `STORMWIND.WMO`, and the two meet on a case-insensitive filesystem. Worth knowing before this
- * is asked to run anywhere else.
+ * Case is not this function's business any more. The extractor writes `Stormwind.wmo.vmo` and the
+ * placement says `STORMWIND.WMO`; `CollisionClient.model` folds the second onto the first — the
+ * spelling the `.vmtile` uses, which is the file's own — so the renderer's water probe and the
+ * collision source share one download of the city rather than making two, and the probe no longer
+ * depends on the gateway's disk ignoring case.
  */
 function collisionModelName(name: string): string {
   const cut = Math.max(name.lastIndexOf("\\"), name.lastIndexOf("/"));
@@ -164,21 +189,48 @@ function spellLine(text: string, spellId: number): string {
 }
 
 /**
- * Which enter attempt is the current one.
+ * The current character's packet/store subscriptions. Retired on world exit and before another
+ * character enters, so neither the old event bus nor an in-flight login can repaint a new world.
  *
- * The failure branch below now takes the whole world down and hands the player back to whichever
- * front door opened the session, and that is only correct for the attempt that is still the live
- * one: a second `enterWorld` started while the first was unwinding would otherwise have its own
- * terrain, sound and module loader cleared out from under it. Same shape as the generation counters
- * in `GlueSession` and `GlueApi`, and for the same reason.
+ * The realm connection can outlive a character. An array cleared only at the next entry kept the
+ * previous WorldClient and its closures alive throughout character selection or logout.
  */
-let enterGeneration = 0;
+const entryLifecycle = new WorldEntryLifecycle();
+
+/** Stop the old character's callbacks before resetting its store and panels. */
+export function retireEnterWorldSession(): void {
+  entryLifecycle.retire();
+}
 
 export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButtonElement): Promise<void> {
   if (!game.world) return;
   const world = game.world;
-  const frameXmlEnabled = frameXmlFlagEnabled(window.location.search);
-  const generation = ++enterGeneration;
+  const savedVariablesScope = game.session && world.realmName ? {
+    account: game.session.username,
+    realm: JSON.stringify([new URL(gatewayInput.value.replace(/^ws/, "http")).origin, world.realmName]),
+    character: character.guid.toString(),
+  } : undefined;
+  // Session-scoped: changing this switch takes effect on the next world entry, before either
+  // custom UI loader starts. Both loaders stay idle by default for addon-free comparison runs.
+  const tswowAddonsEnabled = settingOn("tswowAddons");
+  const generation = entryLifecycle.begin();
+  // Session-scoped subscribes: identical to `world.events.on` / `game.store?.events.on`, except
+  // each unsubscribe is recorded for world exit or the next character. Function
+  // declarations, so the seventy call sites below read exactly as before.
+  function onWorldEvent<Name extends keyof WorldPacketEvents>(
+    name: Name, listener: (payload: WorldPacketEvents[Name]) => void,
+  ): void {
+    // Local alias, not a recursive call: the bus method itself, recorded for the next session.
+    const bus = world.events;
+    entryLifecycle.track(bus.on(name, listener));
+  }
+  function onStoreEvent<Name extends keyof WorldEvents>(
+    name: Name, listener: (payload: WorldEvents[Name]) => void,
+  ): void {
+    const bus = game.store?.events;
+    if (!bus) return;
+    entryLifecycle.track(bus.on(name, listener));
+  }
   clearQuestLog();
   // WorldStore coalesces all changed quest words into one event per frame. The
   // QuestLog module owns this one binding and replaces its previous one here,
@@ -202,16 +254,27 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   resetDeathScreenEffect();
   // Up before anything is fetched, because the world panel is about to cover the login screen and
   // there is nothing behind it yet.
-  showLoadingScreen(character.name, "Настройки и макросы этого персонажа загружаются с сервера.");
+  showLoadingScreen(character.name, "Настройки и макросы этого персонажа загружаются с сервера.",
+    { mapId: character.map, gateway: gatewayInput.value });
   resetGuildWindow();
   resetGuildBank();
   resetCalendar();
   closeSocketing();
   resetSocialPanel();
   resetScoreboard();
+  clearReputation();
+  resetGmTickets();
+  resetPetition();
   resetArenaWindow();
   resetLootRolls();
   resetReadyCheck();
+  resetInteractionPrompts();
+  resetBarberShop();
+  resetTotems();
+  resetChannelRoster();
+  resetAutoQuality();
+  // First session in this browser only: three info toasts over the fresh world, never again.
+  maybeShowWelcomeHints();
   playerHudName.textContent = character.name;
   characterWindowTitle.textContent = character.name;
   worldPanel.hidden = false;
@@ -316,7 +379,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // Keep the curtain up until the destination's terrain and VMAP collision have answered. The
     // server has already accepted the worldport ack, but starting local gravity in this gap makes
     // a character fall through an upper floor before its collision groups arrive.
-    showLoadingScreen(world.selfName ?? "персонаж", "Загрузка ландшафта и коллизии вокруг точки прибытия…");
+    showLoadingScreen(world.selfName ?? "персонаж", "Загрузка ландшафта и коллизии вокруг точки прибытия…",
+      { mapId, gateway: gatewayInput.value });
     // Close the movement gate before releasing input. Otherwise `syncMovement` can send one final
     // stop/start packet against the new server position while the destination is still loading.
     clearHeldKeys();
@@ -341,7 +405,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     game.sound?.stopMusic();
     forgetZoneSound();
     worldStatus.className = "success";
-    worldStatus.textContent = `Карта ${mapId}: ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}`;
+    worldStatus.textContent = position
+      ? `Карта ${mapId}: ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}`
+      : `Карта ${mapId}: ждём позицию персонажа…`;
   };
   world.onMovementStatus = (ready, sentPackets) => {
     movementStatus.className = ready ? "success" : "error";
@@ -412,13 +478,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     }
     pendingTextEmoteSounds.splice(0, pendingTextEmoteSounds.length, ...keep);
   };
-  world.events.on("TEXT_EMOTE", (emote) => {
+  onWorldEvent("TEXT_EMOTE", (emote) => {
     if (!tryPlayTextEmoteSound(emote)) {
       const deadline = performance.now() + EMOTE_SOUND_WAIT;
       if (pendingTextEmoteSounds.length < 32) pendingTextEmoteSounds.push({ emote, deadline });
     }
   });
-  world.events.on("MOUNT_SPECIAL", ({ guid }) => {
+  onWorldEvent("MOUNT_SPECIAL", ({ guid }) => {
     // The packet names the rider, but the authored MountSpecial/FlyMountSpecial sequence belongs
     // to the mount node underneath it. The renderer keeps the edge until that node is available.
     game.renderer?.playMountSpecial(guid);
@@ -437,8 +503,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   };
   // The tracking menu is built from what the character knows and read back out of the fields, so
   // both a new spell and a changed bit have to repaint it.
-  game.store?.events.on("PLAYER_TRACK_CREATURES", () => showTracking());
-  game.store?.events.on("PLAYER_TRACK_RESOURCES", () => showTracking());
+  onStoreEvent("PLAYER_TRACK_CREATURES", () => showTracking());
+  onStoreEvent("PLAYER_TRACK_RESOURCES", () => showTracking());
   world.onSpellsChanged = () => {
     showSpells();
     showActionBar();
@@ -447,7 +513,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // Slice P4: what the world says to everyone standing in it. The banner an area trigger raises
   // gets its own line rather than a frame of its own — the frame belongs to slice I10, and a line
   // the player can read now beats a packet counted and dropped.
-  world.events.on("WORLD_MESSAGE", (message) => {
+  onWorldEvent("WORLD_MESSAGE", (message) => {
     // A banner is an announcement and belongs over the world; a system line is a sentence about
     // the player — a friend coming online, a name that did not resolve — and belongs in chat,
     // which is where `#recordSystemLine`'s own comment always said it was going.
@@ -461,7 +527,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
    * this call returns nothing. That is not worth queueing: the second boar's death rattle plays,
    * and a sound held back until it could be looked up would arrive after the boar had gone.
    */
-  world.events.on("PLAY_SOUND", (request) => {
+  onWorldEvent("PLAY_SOUND", (request) => {
     const kit = game.soundKits?.kit(request.soundKitId);
     if (!kit) return;
     if (request.music) {
@@ -485,19 +551,21 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
    * the pose as well. The sound stays exactly where it was — it never needed the route, because
    * `SoundID` reaches `SoundEntries` through the sound index rather than through the kit record.
    */
-  world.events.on("SPELL_VISUAL", (event) => {
+  onWorldEvent("SPELL_VISUAL", (event) => {
     const at = world.state.objects.get(event.guid)?.position;
     if (at) playKitSound(0, at, event.kitId);
     spellVisualCoordinator.playVisualKit(event.guid, event.kitId, event.impact);
   });
-  world.events.on("SUMMON_REQUEST", (request) => {
-    pushCombatLine(`Вас призывают в зону ${request.zoneId}: /accept или /decline`, "reward");
-  });
+  onWorldEvent("SUMMON_REQUEST", () => showInteractionPrompts());
+  onWorldEvent("QUEST_SHARED", () => showInteractionPrompts());
+  onWorldEvent("BATTLEFIELD_QUEUE_CHANGED", () => showInteractionPrompts());
+  onWorldEvent("BATTLEFIELD_CHANGED", () => showInteractionPrompts());
+  onWorldEvent("LFG_INFO_CHANGED", () => showInteractionPrompts());
   // A channel the player was put into needs a tab; nothing subscribed to this before.
-  world.events.on("CHANNEL_CHANGED", () => syncChannelTabs());
+  onWorldEvent("CHANNEL_CHANGED", () => syncChannelTabs());
   // Slice I10: the account's own eight slots, which nothing had ever written to. Settings, macros
   // and the rest stop belonging to a browser profile and start belonging to the player.
-  world.events.on("ACCOUNT_DATA_CHANGED", (change) => {
+  onWorldEvent("ACCOUNT_DATA_CHANGED", (change) => {
     if (change.type === undefined) return;
     if (settingsStore.accept(change.type)) {
       applySettings();
@@ -506,12 +574,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     for (const store of macroStores) if (store.accept(change.type)) showMacros();
   });
   // The pet bar and the vehicle bar are the same packet; neither had a reader.
-  world.events.on("PET_BAR_CHANGED", () => {
+  onWorldEvent("PET_BAR_CHANGED", () => {
     showPetBar();
     showCharacterCollections();
   });
-  world.events.on("VEHICLE_CHANGED", () => showPetBar());
-  world.events.on("LOGOUT_CHANGED", (state) => {
+  onWorldEvent("VEHICLE_CHANGED", () => showPetBar());
+  onWorldEvent("LOGOUT_CHANGED", (state) => {
+    updateLogoutPending(world, state.pending);
     if (state.pending) {
       notice("Выход через несколько секунд", "info");
       return;
@@ -530,127 +599,142 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // Slice I10: every refusal that had no reader at all. Each of these was written into a field on
   // the world client and left there — the pet's, the arena's, the calendar's, the charter's, the
   // ticket's, the stable's, and the server's own announcements.
-  world.events.on("PET_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
-  world.events.on("PVP_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
-  world.events.on("TAXI_MENU", () => showTaxiMenu());
-  world.events.on("TAXI_CHANGED", () => showTaxiMenu());
-  world.events.on("BATTLEFIELD_LIST_CHANGED", () => showBattlegroundList());
-  world.events.on("TABARD_VENDOR_CHANGED", () => showTabardVendor());
-  world.events.on("STABLE_CHANGED", () => {
+  onWorldEvent("PET_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
+  onWorldEvent("PVP_MESSAGE", (message) => notice(message.text, message.error ? "error" : "info"));
+  onWorldEvent("TAXI_MENU", () => showTaxiMenu());
+  onWorldEvent("TAXI_CHANGED", () => showTaxiMenu());
+  onWorldEvent("BATTLEFIELD_LIST_CHANGED", () => showBattlegroundList());
+  onWorldEvent("TABARD_VENDOR_CHANGED", () => showTabardVendor());
+  onWorldEvent("STABLE_CHANGED", () => {
+    // Stock PetStableFrame opens and answers from its own events while published.
+    if (frameXmlStablePublished()) return;
     if (world.stableMessage) notice(world.stableMessage.text, world.stableMessage.error ? "error" : "info");
     showCharacterWindow("collections");
     showCharacterCollections();
   });
-  world.events.on("PETITION_CHANGED", () => {
+  onWorldEvent("PETITION_CHANGED", () => {
     if (world.petitionMessage) notice(world.petitionMessage.text, world.petitionMessage.error ? "error" : "info");
+    showPetition();
   });
-  world.events.on("GM_TICKET_CHANGED", () => {
+  onWorldEvent("GM_TICKET_CHANGED", () => {
     if (world.ticketMessage) notice(world.ticketMessage.text, world.ticketMessage.error ? "error" : "info");
   });
-  world.events.on("CHARACTER_SERVICE", () => {
+  onWorldEvent("CHARACTER_SERVICE", () => {
     if (world.serviceMessage) notice(world.serviceMessage.text, world.serviceMessage.error ? "error" : "info");
+    // A haircut refusal leaves the chair window open with the reason; success stands the
+    // character up, which closes it.
+    showBarberShop();
   });
+  onWorldEvent("CHANNEL_CHANGED", () => { if (channelRosterOpen()) showChannelRoster(); });
+  onWorldEvent("BARBER_SHOP", () => showBarberShop());
   // The message of the day and the server's own notices go to chat, where they stay readable.
-  world.events.on("SESSION_MESSAGE", (message) => systemLine(message.text));
+  onWorldEvent("SESSION_MESSAGE", (message) => systemLine(message.text));
   // Slice I9. Nine of these were declared on the bus, emitted by the handlers and read by nobody
   // at all; `EnterWorld` held every subscription in the client and none of them were here.
-  world.events.on("LOOT_ROLL_CHANGED", (roll) => noticeLootRoll(roll.itemSlot));
-  world.events.on("READY_CHECK", () => showReadyCheck());
-  world.events.on("GUILD_BANK_CHANGED", () => showGuildBank());
+  onWorldEvent("LOOT_ROLL_CHANGED", (roll) => noticeLootRoll(roll.newItemGuid));
+  onWorldEvent("READY_CHECK", () => showReadyCheck());
+  onWorldEvent("GUILD_BANK_CHANGED", () => showGuildBank());
   // The alert stream is parsed and discarded by the handler, so the snapshot is asked for again
   // rather than patched from an event that carries nothing.
-  world.events.on("CALENDAR_CHANGED", () => {
-    refreshCalendar();
+  onWorldEvent("CALENDAR_CHANGED", (change) => {
+    refreshCalendar(change);
     if (world.calendarMessage) {
       notice(world.calendarMessage.text, world.calendarMessage.error ? "error" : "info");
       world.calendarMessage = undefined;
     }
   });
-  world.events.on("INSTANCE_CHANGED", () => showCalendar());
-  world.events.on("CONTACTS_CHANGED", () => showSocialPanel());
-  world.events.on("WHO_RESULTS", () => showSocialPanel());
-  world.events.on("PVP_SCOREBOARD_CHANGED", () => showScoreboard());
-  world.events.on("ARENA_TEAM_CHANGED", () => showArenaWindow());
-  world.events.on("WEATHER_CHANGED", () => queueWorldState(world.state));
-  world.events.on("ACTION_BUTTONS_CHANGED", () => showActionBar());
+  onWorldEvent("INSTANCE_CHANGED", () => showCalendar());
+  onWorldEvent("CONTACTS_CHANGED", () => showSocialPanel());
+  onWorldEvent("WHO_RESULTS", () => showSocialPanel());
+  onWorldEvent("PVP_SCOREBOARD_CHANGED", () => showScoreboard());
+  onWorldEvent("FLAG_CARRIERS_CHANGED", () => showScoreboard());
+  onWorldEvent("ARENA_TEAM_CHANGED", () => showArenaWindow());
+  onWorldEvent("WEATHER_CHANGED", () => queueWorldState(world.state));
+  onWorldEvent("ACTION_BUTTONS_CHANGED", () => showActionBar());
   // Boss frames. The packet carries one engage or disengage at a time and never a list, so the
   // list is kept in the frames module and fed from here.
-  world.events.on("ENCOUNTER_FRAME", (frame) => {
+  onWorldEvent("ENCOUNTER_FRAME", (frame) => {
     if (frame.type === ENCOUNTER_FRAME_ENGAGE) bossEngaged(frame.guid);
     else if (frame.type === ENCOUNTER_FRAME_DISENGAGE) bossDisengaged(frame.guid);
     else return;
     showUnitFrames();
   });
   // A raid mark moved, so somebody's frame gained or lost its star.
-  world.events.on("RAID_TARGET_UPDATE", () => showUnitFrames());
+  onWorldEvent("RAID_TARGET_UPDATE", () => showUnitFrames());
   // The pet bar arriving or coming down is what tells the pet frame there is a pet at all.
-  world.events.on("PET_BAR_CHANGED", () => showUnitFrames());
+  onWorldEvent("PET_BAR_CHANGED", () => showUnitFrames());
 
-  world.events.on("PARTY_MEMBER_STATS", () => showUnitFrames());
-  world.events.on("THREAT_CHANGED", () => showUnitFrames());
+  onWorldEvent("PARTY_MEMBER_STATS", () => showUnitFrames());
+  onWorldEvent("THREAT_CHANGED", () => showUnitFrames());
   // The bank window opens itself the moment the banker grants permission, and closes with it.
   // Someone in the party marked a spot. The packet has been arriving and going nowhere.
-  world.events.on("MINIMAP_PING", (ping) => addMinimapPing(ping.x, ping.y));
+  onWorldEvent("MINIMAP_PING", (ping) => addMinimapPing(ping.x, ping.y));
   // The exploration mask is a field rather than a packet, so it comes off the store's bus, and it
   // is 128 words fanned into one name — this fires once however many of them changed.
-  game.store?.events.on("PLAYER_EXPLORED_ZONES", () => showWorldMap());
-  world.events.on("EXPLORATION", (found) => {
+  onStoreEvent("PLAYER_EXPLORED_ZONES", () => showWorldMap());
+  onWorldEvent("EXPLORATION", (found) => {
     // Not the source of truth — the core only sends this when the area is worth experience — but
     // it is the only thing that says *which* area was just discovered.
     const name = game.areas?.area(found.areaId)?.name;
     if (name) pushCombatLine(`Обнаружено: ${name}`, "dealt");
     showWorldMap();
   });
-  world.events.on("BANK_OPENED", () => showBank());
-  world.events.on("CHARACTER_SHEET_CHANGED", () => {
+  onWorldEvent("BANK_OPENED", () => showBank());
+  onWorldEvent("CHARACTER_SHEET_CHANGED", () => {
     showCharacterSheet();
     // Equipment sets ride the same event: the list arrives once at login and never again, so a
     // set saved during the session is only ever redrawn because this says so.
     showEquipmentSets();
   });
-  world.events.on("REPUTATION_CHANGED", () => showCharacterSheet());
-  world.events.on("TALENTS_CHANGED", () => {
+  onWorldEvent("REPUTATION_CHANGED", () => {
+    showCharacterSheet();
+    showReputation();
+  });
+  onWorldEvent("TALENTS_CHANGED", () => {
     showCharacterSheet();
     showTalents();
   });
-  world.events.on("LEVEL_UP", (info) => {
+  onWorldEvent("LEVEL_UP", (info) => {
     playUiSound("levelUp");
     pushCombatLine(`Уровень ${info.level}: +${info.healthDelta} здоровья`, "dealt");
     showCharacterSheet();
   });
-  world.events.on("SPELL_LEARNED", (learned) => {
+  onWorldEvent("SPELL_LEARNED", (learned) => {
     const name = game.spells.get(learned.spellId)?.name ?? `заклинание ${learned.spellId}`;
     pushCombatLine(`Изучено: ${name}`, "dealt");
+    // A newly learned top rank promotes the bar slots still pointing at its lower ranks.
+    upgradeActionBarRanks();
   });
-  world.events.on("ACHIEVEMENT_EARNED", (earned) => {
+  onWorldEvent("SPELL_MODIFIERS_CHANGED", () => showSpells());
+  onWorldEvent("ACHIEVEMENT_EARNED", (earned) => {
     if (earned.mine) pushCombatLine(`Достижение ${earned.achievementId} получено`, "dealt");
   });
-  world.events.on("QUEST_LOG_CHANGED", () => {
+  onWorldEvent("QUEST_LOG_CHANGED", () => {
     requestMissingQuestTemplates();
     // Where the log's quests want the player to go, asked for only when the set of quests changes.
     requestQuestPoi();
     showQuestLog();
     showQuestTracker();
   });
-  world.events.on("QUEST_POI", () => showWorldMap());
-  world.events.on("QUEST_PROGRESS", (progress) => {
+  onWorldEvent("QUEST_POI", () => showWorldMap());
+  onWorldEvent("QUEST_PROGRESS", (progress) => {
     const title = world.questTemplates.get(progress.questId)?.title ?? `Задание ${progress.questId}`;
     pushCombatLine(`${title}: ${progress.count} / ${progress.required}`, "dealt");
   });
-  world.events.on("QUEST_FINISHED", (finished) => {
+  onWorldEvent("QUEST_FINISHED", (finished) => {
     playUiSound(finished.failed ? "questFailed" : "questCompleted");
     const title = world.questTemplates.get(finished.questId)?.title ?? `Задание ${finished.questId}`;
     pushCombatLine(finished.failed ? `${title}: провалено` : `${title}: выполнено`, finished.failed ? "taken" : "dealt");
   });
-  world.events.on("QUEST_GIVER_STATUS", () => {
+  onWorldEvent("QUEST_GIVER_STATUS", () => {
     // Nothing to redraw: the marks are painted from the map every frame by the scene.
   });
   // Only real spell damage adds a creature effort voice. Authored SpellVisualKit sounds remain
   // untouched; healing and utility rows are deliberately silent here.
-  world.events.on("COMBAT_LOG", (line) => {
+  onWorldEvent("COMBAT_LOG", (line) => {
     for (const voice of spellCombatVoices(line)) playCreatureSound(voice.guid, voice.voice);
   });
-  world.events.on("COMBAT_LOG", (line) => {
+  onWorldEvent("COMBAT_LOG", (line) => {
     const mine = line.casterGuid === world.state.selfGuid;
     const atMe = line.targetGuid === world.state.selfGuid;
     // The combat tab keeps the complete history. Relevance filtering belongs to floating world
@@ -663,11 +747,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   });
   // The overlay keeps only the player and their current target. The target can change between the
   // packet and this callback, so that relevance policy stays beside floater allocation itself.
-  world.events.on("FLOATING_TEXT", (text) => {
+  onWorldEvent("FLOATING_TEXT", (text) => {
     const taken = text.guid === world.state.selfGuid && text.kind === "damage";
     showFloatingText(text.guid, taken ? "taken" : text.kind, text.amount, text.critical, text.text);
   });
-  world.events.on("FLOATING_TEXT", (text) => {
+  onWorldEvent("FLOATING_TEXT", (text) => {
     if (text.guid !== world.state.selfGuid) return;
     if (text.kind === "miss") pushCombatLine(text.text ?? "промах", "taken");
     else if (text.amount > 0) pushCombatLine(`${text.kind === "heal" ? "лечение" : text.kind === "power" ? "восстановлено" : "урон"}: ${text.amount}`, text.kind === "damage" ? "taken" : "dealt");
@@ -675,12 +759,18 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // What the creature itself has to say about being hit and about dying. `CreatureSoundData` has
   // been vendored since the sound tables landed and nothing ever read it, so every boar in the
   // world took its damage in silence.
-  world.events.on("FLOATING_TEXT", (text) => {
+  onWorldEvent("FLOATING_TEXT", (text) => {
     if (text.kind === "damage" && text.amount > 0) {
       playCreatureSound(text.guid, text.critical ? "injuryCritical" : "injury");
     }
   });
-  world.events.on("AI_REACTION", (reaction) => {
+  // The plate's hit-flash rides the same funnel as the numbers and the injury voices, so a flash
+  // and its number are never about different blows. Kind and amount gate inside `notePlateHit`:
+  // heals, power and misses never whiten a health bar.
+  onWorldEvent("FLOATING_TEXT", (text) => {
+    notePlateHit(text.guid, text.kind, text.amount, performance.now());
+  });
+  onWorldEvent("AI_REACTION", (reaction) => {
     // 2 is `AI_REACTION_HOSTILE`, the moment a creature decides it has seen you.
     if (reaction.reaction === 2) playCreatureSound(reaction.guid, "aggro");
   });
@@ -688,8 +778,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   // `SMSG_BREAK_TARGET` lands; the selection is its sibling's business, `SMSG_CLEAR_TARGET`, which
   // the same fear sends three lines later. Without this line half of SPELL_EFFECT_FORCE_DESELECT
   // would land.
-  world.events.on("TARGET_BROKEN", (broken) => clearFocusOn(broken.guid));
-  world.events.on("PARTY_KILL", (kill) => {
+  onWorldEvent("TARGET_BROKEN", (broken) => clearFocusOn(broken.guid));
+  onWorldEvent("PARTY_KILL", (kill) => {
     playCreatureSound(kill.victimGuid, "death");
     // The victim's GUID was in the payload all along and the line said «цель убита» regardless,
     // which in a group is three identical lines and no way to tell what died.
@@ -713,7 +803,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   };
   // One world-bound subscription owns the action-bar GCD. The spellbook only submits casts; a
   // click-local listener could survive a failure and attach itself to a later cast of the same id.
-  world.events.on("SPELL_CAST_ACCEPTED", ({ spellId, startedAt }) => {
+  onWorldEvent("SPELL_CAST_ACCEPTED", ({ spellId, startedAt }) => {
     if (game.world !== world) return;
     const gcd = game.spells.get(spellId)?.startRecoveryTime ?? 0;
     if (gcd > 0) game.globalCooldownUntil = Math.max(game.globalCooldownUntil, startedAt + gcd);
@@ -736,13 +826,21 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // moment the spell is cast, so without the wait the first cast of every spell was silent.
     playKit(id, { channel: "effects", at });
   };
-  world.onAurasChanged = () => {
+  // Aura packets arrive for every unit in view, a crowd's worth in one burst, and the frame after it
+  // shows only the last state: the strips, the renderer's stealth map and the metadata ask run once
+  // there (`queueFrameTask`) instead of once per packet. `showAuras` leaves a strip alone when none
+  // of its auras moved, so a packet about somebody else no longer rebuilds the player's icons.
+  const refreshAuras = (): void => {
+    if (game.world !== world) return;
     showAuras();
     void loadAuraMetadata(world);
   };
+  world.onAurasChanged = () => queueFrameTask(refreshAuras);
 
   world.onGossipChanged = showGossip;
-  world.onQuestChanged = showQuestState;
+  world.onQuestChanged = () => {
+    if (!notifyFrameXmlQuestGiver(world)) showQuestState();
+  };
   world.onLootChanged = () => {
     showLoot();
     // The master looter's candidate list rides this callback and raises no event of its own.
@@ -755,6 +853,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     vendor: () => world.vendor,
     itemMetadata: () => game.itemMetadata,
     itemTemplate: (entry) => world.itemTemplates.get(entry),
+    costFor: (id) => game.vendorCosts?.get(id),
     onMetadataLoaded: () => {
       if (game.world === world) refreshVendorUi("metadata");
     },
@@ -766,6 +865,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       if (!notifyFrameXmlMerchant("closed")) showVendor();
       return;
     }
+    if (reason === "vendor" && !game.vendorCosts?.ready) game.vendorCosts?.load();
     const presentation = merchantMetadata.refresh(reason);
     if (reason === "metadata") {
       // ItemMetadataClient also reports unrelated item rows. Only repaint the stock root when a
@@ -799,10 +899,28 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // label, which is Russian and would change the behaviour the day it is translated.
     if (BUBBLE_TYPES.has(message.type)) showChatBubble(message.senderGuid, message.text, chatClass(message.type));
   };
-  world.onNamesChanged = () => { redrawChatLog(); showMail(); };
+  // The world view asks for the names of the forty nearest players at a time, and every answer used
+  // to redraw the whole chat pane and each window that prints a name. They are repainted once, on
+  // the next frame (`queueFrameTask`), and the pane only when a line on it reads differently now
+  // (`refreshChatNames`).
+  const refreshNames = (): void => {
+    if (game.world !== world) return;
+    refreshChatNames(); showMail(); refreshSocialNames(); if (channelRosterOpen()) showChannelRoster();
+    if (scoreboardOpen()) showScoreboard();
+    if (world.resurrectRequest && !world.resurrectRequest.casterName) showDeath();
+  };
+  world.onNamesChanged = () => queueFrameTask(refreshNames);
   redrawChatLog();
   const refreshTrainerUi = (): void => {
     const trainer = world.trainer;
+    // Both stock and native trainer rows need the same cached names/icons. A tradeskill trainer
+    // stays native, but skipping this request left every packet row filtered out by showTrainer.
+    const ids = [...new Set((trainer?.spells ?? []).map((spell) => spell.spellId).filter((id) => id > 0))];
+    ensureSpellNames(ids, () => {
+      // Metadata belongs to the world/list currently on screen, not to the object captured when
+      // the request was coalesced. WorldClient may replace an equivalent TrainerList instance.
+      if (game.world === world && world.trainer !== undefined) refreshTrainerUi();
+    });
     const supported = trainer !== undefined
       && (trainer.trainerType === 0 || trainer.trainerType === 1 || trainer.trainerType === 3);
     if (!supported) {
@@ -810,13 +928,6 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       showTrainer();
       return;
     }
-    const ids = [...new Set(trainer.spells.map((spell) => spell.spellId).filter((id) => id > 0))];
-    ensureSpellNames(ids, () => {
-      // Metadata belongs to the world/list currently on screen, not to the object captured when
-      // the request was coalesced. WorldClient may replace an equivalent TrainerList instance
-      // while the same spell ids are in flight; that current list still needs its repaint.
-      if (game.world === world && world.trainer !== undefined) refreshTrainerUi();
-    });
     const event = frameXmlTrainerOpen() ? "update" : "show";
     if (!notifyFrameXmlTrainer(event)) showTrainer();
   };
@@ -848,10 +959,14 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     console.warn(`[WebClient] ${where} ${entry.name} (0x${entry.opcode.toString(16).toUpperCase()})`);
   };
   world.onUnhandledOpcodesChanged = showUnhandledOpcodes;
+  world.onPacketErrorsChanged = showUnhandledOpcodes;
   showUnhandledOpcodes();
   let assetWarmup: SessionAssetWarmup | undefined;
   try {
     const location = await world.loginCharacter(character.guid);
+    // A logout or a new realm can retire this attempt while its login reply is in flight. Do not
+    // rebuild asset clients into the context that now belongs to another world.
+    if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
     // The tabard designer only echoes its own guid. The current emblem is client data obtained
     // from the guild query, so ask once on entry rather than opening an editor on destructive zeroes.
     if (character.guildId > 0) world.queryGuild(character.guildId);
@@ -929,9 +1044,15 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // Same for items, plus the one thing a slot needs beyond a repaint: the inventory only redraws
     // when its signature or its metadata revision moves, and a name arriving from the wire moves
     // neither on its own.
-    itemMetadata.attach(world, () => {
+    //
+    // Every visible piece of gear of every player in view is asked of the server, so a crowd answers
+    // with hundreds of these in a burst; the windows below are repainted once, on the next frame
+    // (`queueFrameTask`), from whatever has arrived by then.
+    const refreshItemMetadata = (): void => {
+      if (game.world !== world || game.itemMetadata !== itemMetadata) return;
       itemMetadataChanged();
       queueWorldState(world.state);
+      notifyFrameXmlQuestGiverItemUpdate(world, itemMetadata.revision);
       // Three windows that `showWorldState` does not repaint. It calls `showDeath`,
       // `showUnitFrames`, `showProfessions`, `renderInventory` and `showTarget`, and none of those
       // is the loot window — so an item query answered while the corpse was open left «Предмет
@@ -940,7 +1061,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       refreshVendorUi("metadata");
       showLootRolls();
       showMail();
-    });
+    };
+    itemMetadata.attach(world, () => queueFrameTask(refreshItemMetadata));
     // Speculative work belongs to this login only. It has fixed lifetime budgets and never joins
     // the loading-screen barrier; the render loop merely gives it the already-current player,
     // action bar and environment list while its short soft window is open.
@@ -975,6 +1097,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       combatStatus.textContent = message;
     };
     factions.load();
+    factions.loadReputation();
     // Every text emote and its sentences. `/dance` is a slash command the client has to recognise
     // and a sentence the client has to write; neither is on the wire, and both are in EmotesText.
     const emoteClient = new EmoteClient(gatewayInput.value);
@@ -1014,6 +1137,43 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       showCharacterCollections();
     };
     talentData.load();
+    // BarberShopStyle rows: the only style ids `CMSG_ALTER_APPEARANCE` may carry. Without
+    // them the chair window cannot offer a single click the server would take.
+    const barberStyles = new BarberClient(gatewayInput.value);
+    game.barberStyles = barberStyles;
+    barberStyles.onStatus = (message, error) => {
+      if (game.barberStyles !== barberStyles) return;
+      if (error) notice(message);
+      showBarberShop();
+    };
+    barberStyles.onLoaded = () => {
+      if (game.barberStyles !== barberStyles) return;
+      showBarberShop();
+    };
+    barberStyles.load();
+    // Bank bag and stable slot prices. Without them both windows say the server names the
+    // price, which is what they said before this slice.
+    const slotPrices = new SlotPriceClient(gatewayInput.value);
+    game.slotPrices = slotPrices;
+    slotPrices.onLoaded = () => {
+      if (game.slotPrices !== slotPrices) return;
+      showBank();
+      showCharacterCollections();
+    };
+    slotPrices.load();
+    // The vendor packet carries only an ItemExtendedCost id. Stock MerchantFrame needs the
+    // corresponding DBC row before it can display honor, arena points and turn-in items.
+    const vendorCosts = new VendorCostClient(gatewayInput.value);
+    game.vendorCosts = vendorCosts;
+    vendorCosts.onLoaded = () => {
+      if (game.world === world && game.vendorCosts === vendorCosts && world.vendor) {
+        refreshVendorUi("vendor");
+      }
+    };
+    vendorCosts.onStatus = (message, error) => {
+      if (game.vendorCosts === vendorCosts && error) notice(message);
+    };
+    vendorCosts.load();
     // Zones and their rectangles. The server names an area with a number and nothing else, so the
     // zone under the minimap and every shape on the world map come out of this table.
     const areas = new AreaClient(gatewayInput.value);
@@ -1034,10 +1194,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // 400, `src=""` on both — so a reordering that broke it would have cost another session of
     // empty windows and nothing would have said why.
     game.gatewayOrigin = new URL(gatewayInput.value.replace(/^ws/, "http")).origin;
-    if (!frameXmlEnabled) {
-      installNativeWowUiSkin(game.gatewayOrigin);
-      mountNativeCharacterPortrait(characterModel);
-    }
+    // Keep a complete fallback ready during loading and when switching back in the same world.
+    installNativeWowUiSkin(game.gatewayOrigin);
+    mountNativeCharacterPortrait(characterModel);
     // The 2D overlay draws creature icons on a canvas and cannot read `game` — it is what
     // `game/Context.ts` imports its camera constants from, so the import back would be a cycle.
     if (game.scene) game.scene.gatewayOrigin = game.gatewayOrigin;
@@ -1045,27 +1204,29 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // Loaded here rather than at start-up because a window is only useful once there is a session
     // behind it, and because the packet registry it fills belongs to this world client and goes
     // with it.
-    const modules = createModuleLoader(gatewayInput.value, world.customPackets);
-    game.modules = modules;
-    modules.onStatus = (message, error) => {
-      // Only a problem, and only ever in grey — the same shape as `soundProblem` below, for the
-      // same two reasons. A module file that will not load is worth a status line and nothing
-      // louder: every built-in window works without one, and the whole list is in the diagnostics
-      // window's «Окна» and «Пакеты» tabs with the file that carried each problem. And this line
-      // belongs to `showWorldState`, which repaints its *text* once a frame and never its class —
-      // so a colour left here outlives the sentence that justified it and leaves «Объектов в
-      // памяти: N» red for the rest of the session. Announcing the ordinary answer (today, on this
-      // machine, «модули: файлов для клиента нет») did exactly that on every login, in grey.
-      if (game.modules !== modules || !error) return;
-      notice(message);
-      worldStatus.className = "muted";
-      worldStatus.textContent = message;
-    };
-    modules.onLoaded = () => {
-      if (game.modules !== modules) return;
-      showUnhandledOpcodes();
-    };
-    void modules.load();
+    if (tswowAddonsEnabled) {
+      const modules = createModuleLoader(gatewayInput.value, world.customPackets);
+      game.modules = modules;
+      modules.onStatus = (message, error) => {
+        // Only a problem, and only ever in grey — the same shape as `soundProblem` below, for the
+        // same two reasons. A module file that will not load is worth a status line and nothing
+        // louder: every built-in window works without one, and the whole list is in the diagnostics
+        // window's «Окна» and «Пакеты» tabs with the file that carried each problem. And this line
+        // belongs to `showWorldState`, which repaints its *text* once a frame and never its class —
+        // so a colour left here outlives the sentence that justified it and leaves «Объектов в
+        // памяти: N» red for the rest of the session. Announcing the ordinary answer (today, on this
+        // machine, «модули: файлов для клиента нет») did exactly that on every login, in grey.
+        if (game.modules !== modules || !error) return;
+        notice(message);
+        worldStatus.className = "muted";
+        worldStatus.textContent = message;
+      };
+      modules.onLoaded = () => {
+        if (game.modules !== modules) return;
+        showUnhandledOpcodes();
+      };
+      void modules.load();
+    }
     // Sound. Three opcodes have carried a `SoundEntries` id into an event since the packet slice
     // and nothing has ever listened; seven sound tables are vendored; the archives hold 19,786
     // `.wav` and 1,194 `.mp3` and no `.ogg` at all, so a browser plays every one without a
@@ -1130,6 +1291,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // — while the server's own `.vmtile` carries the bare file, and the route's own pattern accepts
     // no separators at all. Handing it the path asked for a model that cannot exist and got a 404
     // for every building in view, cached as a permanent "no such model".
+    //
+    // Asked for every building in view, however far: its water is visible from the far end of a
+    // city, which the collision range is not. What keeps that from costing the collision world
+    // anything is on the other side — a landing it was not waiting for no longer rebuilds it.
     game.renderer?.setCollisionModels((name) => collision.models.model(collisionModelName(name)));
     characterStatus.className = "success";
     characterStatus.textContent = `World login подтверждён: map ${location.map}, ${location.x.toFixed(2)}, ${location.y.toFixed(2)}, ${location.z.toFixed(2)}.`;
@@ -1154,25 +1319,35 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       settingsStore.set({ ...settingsStore.value, minimapRotate: rotate });
     });
     showWorldState(world.state);
-    // Every world runs the generated TSWoW modules. The explicit diagnostic flag additionally
-    // selects the stock FrameXML HUD; the ordinary route keeps native windows and their inputs.
-    const finishModuleCommandLoad = beginModuleCommandLoad(world);
-    systemLine("Загрузка аддонов…");
-    void import("../framexml/FrameXmlWorldMount.js")
-        .then(async (module) => {
-          if (generation !== enterGeneration || game.world !== world) return;
-          const result = await module.mountFrameXmlVertical({ addonsOnly: !frameXmlEnabled });
-          if (generation !== enterGeneration || game.world !== world) return;
-          systemLine(result.message);
-          console.info("[framexml]", result.message);
-        })
-        .catch((error: unknown) => {
-          console.error("[framexml] мировой монтаж не удался", error);
-          if (generation === enterGeneration && game.world === world) {
-            systemLine("Не удалось загрузить аддоны. Перезагрузите страницу, чтобы повторить попытку.");
-          }
-        })
-        .finally(finishModuleCommandLoad);
+    // Switching UI retires the previous VM and its borrowed canvases, without reconnecting.
+    // The module remains lazy when both original UI and TSWoW addons are disabled.
+    if (!tswowAddonsEnabled) systemLine("Аддоны TSWoW отключены. Включить: Настройки → Интерфейс → Аддоны TSWoW.");
+    const uiMode = new FrameXmlModeController(tswowAddonsEnabled, async () => {
+      const module = await import("../framexml/FrameXmlWorldMount.js");
+      return {
+        unmount: module.unmountFrameXmlVertical,
+        mount: async (frameXmlEnabled: boolean) => {
+          const finishModuleCommandLoad = beginModuleCommandLoad(world);
+          try {
+            return await module.mountFrameXmlVertical({
+              addonsOnly: !frameXmlEnabled,
+              includeActiveTsAddons: tswowAddonsEnabled,
+              ...(savedVariablesScope ? { savedVariablesScope } : {}),
+            });
+          } finally { finishModuleCommandLoad(); }
+        },
+      };
+    }, (message) => {
+      if (entryLifecycle.isCurrent(generation) && game.world === world) systemLine(message);
+    });
+    const syncUiMode = (): void => {
+      if (entryLifecycle.isCurrent(generation) && game.world === world) {
+        void uiMode.select(frameXmlFlagEnabled(window.location.search, settingOn("originalFrameXml")));
+      }
+    };
+    entryLifecycle.track(() => uiMode.dispose());
+    entryLifecycle.track(watchSettingsApplied(syncUiMode));
+    syncUiMode();
   } catch (error) {
     if (game.assetWarmup === assetWarmup) {
       assetWarmup?.dispose();
@@ -1192,6 +1367,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       // on one of its own: it exists to serve the coordinator that has just been retired above.
       spellVisualKits.onLoaded = undefined;
     }
+    // Retiring the world can reject a pending login read. Its old error must not hide the loading
+    // screen or replace the status of the new world that has already taken over.
+    if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
     hideLoadingScreen();
     const message = error instanceof Error ? error.message : String(error);
     characterStatus.className = "error";
@@ -1202,11 +1380,8 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // screens as the front door there is nothing behind it at all, and a half-built world left in
     // `game` is what the next attempt would inherit. `leaveWorld` hides the panel, clears the
     // context (the dead death layer included) and returns the player to the screen the session came
-    // from. Skipped when a newer attempt has already taken over: that attempt owns the screen now,
-    // and hiding the world panel here would hide *its* world.
-    if (generation === enterGeneration) {
-      clearQuestLog();
-      leaveWorld("enter-failed", message);
-    }
+    // from. The generation and world-identity guard above keeps a retired attempt off this path.
+    clearQuestLog();
+    leaveWorld("enter-failed", message);
   }
 }

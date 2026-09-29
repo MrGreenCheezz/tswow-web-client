@@ -1,11 +1,13 @@
 import { unit } from "../../world/Fields.js";
 import { EXTRA_ACTION_BARS, actionPage } from "../../world/ActionBarProtocol.js";
+import { COMMAND_ATTACK, isVehicleActionBar } from "../../world/PetProtocol.js";
 import { game } from "../game/Context.js";
 import { cycleEnemyTarget, setFocusToTarget } from "../game/Targeting.js";
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
 import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { systemLine } from "../ui/Chat.js";
+import { openChatInput, replyToLastWhisper } from "../ui/ChatInputOwner.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
 import { interactWithTarget } from "../ui/Npc.js";
 import { toggleQuestLog } from "../ui/QuestLog.js";
@@ -17,6 +19,7 @@ import { toggleTalentsWindow } from "../ui/Talents.js";
 import { toggleSetting } from "../ui/Settings.js";
 import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js";
 import { toggleArenaWindow } from "../ui/ArenaWindow.js";
+import { toggleLfgWindow } from "../ui/Social.js";
 import {
   toggleFrameXmlBags,
   toggleFrameXmlKeyring,
@@ -121,6 +124,15 @@ export function runAction(action: InputAction): boolean {
       showTarget();
       return true;
 
+    case "petAttack": {
+      // The pet bar is also the vehicle bar: a siege engine has no pet to send, and the server
+      // would refuse the order. `commandPet` defaults to the current target, like the bar button.
+      const bar = world.petSpells;
+      if (!bar || bar.closed || isVehicleActionBar(bar.bar)) return false;
+      world.commandPet(COMMAND_ATTACK);
+      return true;
+    }
+
     case "toggleCharacter":
       openCharacterWindow("sheet");
       return true;
@@ -141,6 +153,12 @@ export function runAction(action: InputAction): boolean {
       // The stock PVP summary owns the honor and battleground pages; without a successful
       // FrameXML gate the native arena window remains the explicit fallback.
       if (!toggleFrameXmlPvp()) toggleArenaWindow();
+      return true;
+
+    case "toggleLfd":
+      // TOGGLELFGPARENT: the stock LFDParentFrame when the mount published it, else #lfg-window
+      // (toggleLfgWindow asks the stock owner first).
+      toggleLfgWindow();
       return true;
 
     case "toggleTalents":
@@ -168,12 +186,26 @@ export function runAction(action: InputAction): boolean {
       toggleSetting("plateEnemies");
       return true;
 
+    case "toggleFps":
+      toggleSetting("showFps");
+      return true;
+
     case "toggleKeyBindings":
       toggleKeyBindingsWindow();
       return true;
 
+    // The three chat keys ask `ChatInputOwner`, which answers with the stock `ChatFrame1EditBox`
+    // while the world mount has published it and with the native input otherwise.
     case "openChat":
-      chatInput.focus();
+      if (!openChatInput()) chatInput.focus();
+      return true;
+
+    case "openChatSlash":
+      if (!openChatInput("/")) chatInput.focus();
+      return true;
+
+    case "replyWhisper":
+      replyToLastWhisper();
       return true;
 
     default:
