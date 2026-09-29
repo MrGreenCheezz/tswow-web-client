@@ -185,6 +185,15 @@ export const ATTACHMENT_SHOULDER_RIGHT = 5;
 export const ATTACHMENT_SHOULDER_LEFT = 6;
 export const ATTACHMENT_HELM = 11;
 export const ATTACHMENT_BACK = 12;
+/**
+ * The hip sheath points, right and left.
+ *
+ * Read off the playable models' own attachment tables (HumanMale carries 9 at z 1.19 on the
+ * right side and 10 mirrored on the left, Orc and Tauren the same pair) and confirmed by the
+ * reference client's sheath mapping, which hangs stowed one-handers there.
+ */
+export const ATTACHMENT_HIP_RIGHT = 9;
+export const ATTACHMENT_HIP_LEFT = 10;
 
 /**
  * One `M2Track`: keyed on the animation timeline, with one sub-track per sequence.
@@ -413,6 +422,20 @@ const CHANNEL_HEADER_SIZE = 8;
  * decodes exactly as it did. `CLIP_EXTRAS_RECORD_SIZE` is the size this build understands; the
  * block carries its own, so a record grown by a later slice is stepped over rather than misread.
  */
+/** Float64 slots per clip in a packed clip table (`decodeWvaAnimationsPacked`). */
+export const WVA_CLIP_STRIDE = 9;
+/** Slot offsets inside one packed clip record; an optional field the object form omits is NaN. */
+export const WVA_CLIP_ANIMATION = 0;
+export const WVA_CLIP_DURATION = 1;
+export const WVA_CLIP_BLEND_TIME = 2;
+export const WVA_CLIP_MOVING_SPEED = 3;
+export const WVA_CLIP_VARIATION_INDEX = 4;
+export const WVA_CLIP_VARIATION_NEXT = 5;
+export const WVA_CLIP_FIRST_CHANNEL = 6;
+export const WVA_CLIP_CHANNELS = 7;
+export const WVA_CLIP_FIRST_KEY = 8;
+/** Uint32 words per packed channel: `bone | kind << 16`, then the key count. */
+export const WVA_CHANNEL_STRIDE = 2;
 const CLIP_EXTRAS_MAGIC = "WVX1";
 const CLIP_EXTRAS_HEADER_SIZE = 8;
 const CLIP_EXTRAS_RECORD_SIZE = 8;
@@ -663,6 +686,35 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
  * that mean something else there, so the counts have to agree before a single key is read.
  */
 export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkeletonClip[] {
+  const { view, clipCount, boneCount } = preflightWvaAnimations(data, bones);
+  return readClips(view, data, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+}
+
+/** Every clip of one WVA block in three flat arrays; the layout is `WvaPackedAnimations`'. */
+export interface WvaPackedClips {
+  readonly clipTable: Float64Array<ArrayBuffer>;
+  readonly channelTable: Uint32Array<ArrayBuffer>;
+  readonly keys: Float32Array<ArrayBuffer>;
+  /** One past the highest bone any channel poses. */
+  readonly span: number;
+}
+
+/**
+ * `decodeWvaAnimations` into three flat arrays, for the decode worker to transfer.
+ *
+ * Same preflight, same per-key arithmetic, the same values in the same order — only the containers
+ * differ: one key backing and two index tables instead of a backing per clip, an object per channel
+ * and two views each (HumanMale: 182 backings, ~38k objects, ~76k views, all built only to be
+ * flattened again). `tests/wva-packed-sidecars.test.mjs` holds the two to the same bits.
+ */
+export function decodeWvaAnimationsPacked(data: ArrayBuffer, bones: number): WvaPackedClips {
+  const { view, clipCount, boneCount } = preflightWvaAnimations(data, bones);
+  return readClipsPacked(view, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+}
+
+function preflightWvaAnimations(data: ArrayBuffer, bones: number): {
+  view: DataView; clipCount: number; boneCount: number;
+} {
   if (data.byteLength < WVA1_HEADER_SIZE || decoder.decode(new Uint8Array(data, 0, 4)) !== "WVA1") {
     throw new Error("Not a WVA1 animation block");
   }
@@ -675,7 +727,7 @@ export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkelet
   const end = preflightClips(view, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
   const extrasEnd = preflightClipExtras(view, end, clipCount, data.byteLength);
   if (extrasEnd !== data.byteLength) throw new Error("WVA1 has trailing bytes after its clips");
-  return readClips(view, data, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+  return { view, clipCount, boneCount };
 }
 
 function decodeSkeleton(data: ArrayBuffer, start: number, limit: number): Omit<WvmSkeleton, "animations"> {
@@ -994,18 +1046,33 @@ function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: 
     const channelCount = view.getUint32(offset + 8, true);
     offset += 12;
     const channels: WvmSkeletonClip["channels"] = [];
+    // A clip is retained as a whole. Store its key data in one exact-sized backing instead of
+    // allocating two ArrayBuffers for every channel (tens of thousands per character sidecar).
+    // The preflight has already checked every channel and byte range before this allocation.
+    let keyFloats = 0;
+    let channelAt = offset;
+    for (let index = 0; index < channelCount; index++) {
+      const rotation = view.getUint8(channelAt + 2) === 1;
+      const keys = view.getUint32(channelAt + 4, true);
+      keyFloats += keys * (rotation ? 5 : 4);
+      channelAt += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
+    }
+    const keyData = new Float32Array(keyFloats);
+    let keyAt = 0;
     for (let index = 0; index < channelCount; index++) {
       const bone = view.getUint16(offset, true);
       const kind = view.getUint8(offset + 2) as 0 | 1 | 2;
       const keys = view.getUint32(offset + 4, true);
       offset += 8;
-      const times = new Float32Array(keys);
+      const times = keyData.subarray(keyAt, keyAt + keys);
+      keyAt += keys;
       for (let key = 0; key < keys; key++) {
         times[key] = view.getUint32(offset + key * 4, true) / 1000;
       }
       offset += keys * 4;
       const components = kind === 1 ? 4 : 3;
-      const values = new Float32Array(keys * components);
+      const values = keyData.subarray(keyAt, keyAt + keys * components);
+      keyAt += keys * components;
       for (let key = 0; key < keys; key++) {
         for (let part = 0; part < components; part++) {
           if (kind === 1) {
@@ -1056,6 +1123,99 @@ function readClipExtras(view: DataView, start: number, limit: number, clips: Wvm
     // stepping over the part we do not understand is the whole point of carrying the width.
     offset += recordSize;
   }
+}
+
+/**
+ * `readClips` and `readClipExtras` into flat tables. Every key goes through the same expression
+ * as there; an optional clip field the object form would omit is NaN here.
+ */
+function readClipsPacked(view: DataView, start: number, clipCount: number, boneCount: number,
+  limit: number): WvaPackedClips {
+  // Sizes first. The preflight has already checked every count and byte range walked here.
+  let offset = start;
+  let channelTotal = 0;
+  let keyFloats = 0;
+  for (let clip = 0; clip < clipCount; clip++) {
+    const channelCount = view.getUint32(offset + 8, true);
+    offset += CLIP_HEADER_SIZE;
+    for (let index = 0; index < channelCount; index++) {
+      const rotation = view.getUint8(offset + 2) === 1;
+      const keys = view.getUint32(offset + 4, true);
+      if (view.getUint16(offset, true) < boneCount) {
+        channelTotal++;
+        keyFloats += keys * (rotation ? 5 : 4);
+      }
+      offset += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
+    }
+  }
+  const clipTable = new Float64Array(clipCount * WVA_CLIP_STRIDE);
+  const channelTable = new Uint32Array(channelTotal * WVA_CHANNEL_STRIDE);
+  const keyData = new Float32Array(keyFloats);
+  let span = 0;
+  let channelAt = 0;
+  let keyAt = 0;
+  offset = start;
+  for (let clip = 0; clip < clipCount; clip++) {
+    const record = clip * WVA_CLIP_STRIDE;
+    const blendTimeMs = view.getUint16(offset + 2, true);
+    const channelCount = view.getUint32(offset + 8, true);
+    clipTable[record + WVA_CLIP_ANIMATION] = view.getUint16(offset, true);
+    clipTable[record + WVA_CLIP_DURATION] = view.getUint32(offset + 4, true) / 1000;
+    clipTable[record + WVA_CLIP_BLEND_TIME] = blendTimeMs > 0 ? blendTimeMs / 1000 : Number.NaN;
+    clipTable[record + WVA_CLIP_MOVING_SPEED] = Number.NaN;
+    clipTable[record + WVA_CLIP_VARIATION_INDEX] = Number.NaN;
+    clipTable[record + WVA_CLIP_VARIATION_NEXT] = Number.NaN;
+    clipTable[record + WVA_CLIP_FIRST_CHANNEL] = channelAt;
+    clipTable[record + WVA_CLIP_FIRST_KEY] = keyAt;
+    const firstChannel = channelAt;
+    offset += CLIP_HEADER_SIZE;
+    for (let index = 0; index < channelCount; index++) {
+      const bone = view.getUint16(offset, true);
+      const kind = view.getUint8(offset + 2);
+      const keys = view.getUint32(offset + 4, true);
+      offset += CHANNEL_HEADER_SIZE;
+      const components = kind === 1 ? 4 : 3;
+      const bytes = keys * 4 + keys * components * (kind === 1 ? 2 : 4);
+      if (bone >= boneCount) {
+        offset += bytes;
+        continue;
+      }
+      channelTable[channelAt * WVA_CHANNEL_STRIDE] = bone | (kind << 16);
+      channelTable[channelAt * WVA_CHANNEL_STRIDE + 1] = keys;
+      channelAt++;
+      if (bone >= span) span = bone + 1;
+      for (let key = 0; key < keys; key++) keyData[keyAt + key] = view.getUint32(offset + key * 4, true) / 1000;
+      keyAt += keys;
+      const values = offset + keys * 4;
+      const count = keys * components;
+      if (kind === 1) {
+        // M2CompQuat: int16 per component, x y z w, mapped back onto [-1, 1].
+        for (let at = 0; at < count; at++) {
+          const raw = view.getInt16(values + at * 2, true);
+          keyData[keyAt + at] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
+        }
+      } else {
+        for (let at = 0; at < count; at++) keyData[keyAt + at] = view.getFloat32(values + at * 4, true);
+      }
+      keyAt += count;
+      offset += bytes;
+    }
+    clipTable[record + WVA_CLIP_CHANNELS] = channelAt - firstChannel;
+  }
+  if (offset > view.byteLength) throw new Error("Animation clips run past the end of the block");
+  if (offset < limit) {
+    const recordSize = view.getUint16(offset + 4, true);
+    let at = offset + CLIP_EXTRAS_HEADER_SIZE;
+    for (let clip = 0; clip < clipCount; clip++, at += recordSize) {
+      const record = clip * WVA_CLIP_STRIDE;
+      const movingSpeed = view.getFloat32(at, true);
+      const variationNext = view.getInt16(at + 4, true);
+      if (Number.isFinite(movingSpeed) && movingSpeed !== 0) clipTable[record + WVA_CLIP_MOVING_SPEED] = movingSpeed;
+      if (variationNext >= 0) clipTable[record + WVA_CLIP_VARIATION_NEXT] = variationNext;
+      clipTable[record + WVA_CLIP_VARIATION_INDEX] = view.getUint16(at + 6, true);
+    }
+  }
+  return { clipTable, channelTable, keys: keyData, span };
 }
 
 /**

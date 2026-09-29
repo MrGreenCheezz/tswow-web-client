@@ -339,6 +339,24 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   // the formal variants compare the same direct pipeline while varying only the approved knob.
   base.fullscreenGlow = false;
   base.godRays = false;
+  // The cinematic leaves select the same composited path and add material variants; pin them OFF.
+  base.experimentalCinematicGrade = false;
+  base.experimentalCinematicBloom = false;
+  base.experimentalSunScattering = false;
+  base.experimentalAmbientOcclusion = false;
+  base.experimentalLowSunRimLight = false;
+  base.experimentalWaterSunGlitter = false;
+  base.experimentalSceneryShadows = false;
+  base.experimentalWaterSkyReflection = false;
+  base.cinematicStrength = 100;
+  // The atmosphere leaves add scene objects and wrap materials (AtmosphereEffects.ts); pin them OFF.
+  base.experimentalWindGusts = false;
+  base.experimentalRainStreaks = false;
+  base.experimentalRainSplashes = false;
+  base.experimentalWetSurfaces = false;
+  base.experimentalLightning = false;
+  base.experimentalAmbientMotes = false;
+  base.experimentalWeatherSounds = false;
   const a = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   const b = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   a.characterAtlasAnisotropy = false;

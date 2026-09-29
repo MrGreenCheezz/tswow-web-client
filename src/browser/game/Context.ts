@@ -17,6 +17,9 @@ import type { CreatureModelClient } from "../CreatureModelClient.js";
 import type { LockClient } from "../LockClient.js";
 import type { FactionClient } from "../FactionClient.js";
 import type { TalentClient } from "../TalentClient.js";
+import type { BarberClient } from "../BarberClient.js";
+import type { SlotPriceClient } from "../SlotPriceClient.js";
+import type { VendorCostClient } from "../VendorCostClient.js";
 import type { AreaClient } from "../AreaClient.js";
 import type { MinimapTileClient } from "../MinimapTiles.js";
 import type { TextureBitmapCache } from "../TextureBitmaps.js";
@@ -81,6 +84,12 @@ export interface GameContext {
   factions: FactionClient | undefined;
   /** Talent trees, glyphs and skill lines. None of it is on the wire; all of it is client data. */
   talentData: TalentClient | undefined;
+  /** BarberShopStyle rows: the only hair/facial/skin ids the realm takes, by race and sex. */
+  barberStyles: BarberClient | undefined;
+  /** Bank bag and stable slot prices, by next-slot row id. */
+  slotPrices: SlotPriceClient | undefined;
+  /** ItemExtendedCost rows for the stock merchant's alternate prices. */
+  vendorCosts: VendorCostClient | undefined;
   /**
    * Zones, their rectangles and their exploration overlays. The server names an area with a number
    * and stops there, so every label and every shape on a map is answered from here.
@@ -125,6 +134,16 @@ export interface GameContext {
    * say what a module declared and the other to say which file said it.
    */
   modules: ModuleLoader | undefined;
+  /** Pending ground-target (reticle) cast: the spell awaiting a landing point, if any. */
+  groundTarget: number | undefined;
+  /**
+   * The item a pending reticle belongs to, when the reticle was armed by using an item.
+   *
+   * Spells resolve by id alone, but an item cast still needs its bag, slot and guid at click
+   * time — the bar stores what to use, not where it is. Always set and cleared together with
+   * `groundTarget`; a set spell with no item here is an ordinary spell reticle.
+   */
+  groundTargetItem: { bag: number; slot: number; guid: bigint } | undefined;
   /** Spell rows already resolved, by spell id. */
   spells: Map<number, SpellMetadata>;
   /**
@@ -172,6 +191,9 @@ export const game: GameContext = {
   locks: undefined,
   factions: undefined,
   talentData: undefined,
+  barberStyles: undefined,
+  slotPrices: undefined,
+  vendorCosts: undefined,
   areas: undefined,
   minimapTiles: undefined,
   mapArt: undefined,
@@ -184,6 +206,8 @@ export const game: GameContext = {
   assetWarmup: undefined,
   modules: undefined,
   spells: new Map(),
+  groundTarget: undefined,
+  groundTargetItem: undefined,
   globalCooldownUntil: 0,
   focusGuid: undefined,
   renderer: undefined,
@@ -222,6 +246,8 @@ export function clearWorldContext(): void {
   // identity. This must precede the ordinary renderer/sound cleanup so no stale replay can race it.
   game.spellVisualCoordinator?.clear();
   game.spellVisualCoordinator = undefined;
+  game.creatureMetadata?.dispose();
+  game.itemMetadata?.dispose();
   game.assetWarmup?.dispose();
   game.assetWarmup = undefined;
   game.renderer?.clearTerrain();
@@ -247,11 +273,15 @@ export function clearWorldContext(): void {
   game.locks = undefined;
   game.factions = undefined;
   game.talentData = undefined;
+  game.barberStyles = undefined;
+  game.slotPrices = undefined;
+  game.vendorCosts = undefined;
   game.areas = undefined;
   game.minimapTiles?.clear();
   game.minimapTiles = undefined;
   game.mapArt?.clear();
   game.mapArt = undefined;
+  game.collision?.dispose();
   game.collision = undefined;
   game.worldLoading = false;
   game.renderer?.setCollisionModels(undefined);
@@ -274,6 +304,8 @@ export function clearWorldContext(): void {
   game.modules?.unload();
   game.modules = undefined;
   game.spells.clear();
+  game.groundTarget = undefined;
+  game.groundTargetItem = undefined;
   game.globalCooldownUntil = 0;
   game.focusGuid = undefined;
   // The wheel's own setting survives a change of world, but how far a wall was letting the camera

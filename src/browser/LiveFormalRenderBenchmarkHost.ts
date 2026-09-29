@@ -44,7 +44,7 @@ import {
   type RenderBenchmarkGpuObserverLease,
 } from "./RenderBenchmarkRuntime.js";
 import type { RenderTelemetrySnapshot } from "./RenderStats.js";
-import { ENVIRONMENT_RANGE, type EnvironmentObject } from "./Terrain.js";
+import { ENVIRONMENT_FAR_RANGE, type EnvironmentObject } from "./Terrain.js";
 import type { UnitModel } from "./CreatureModelClient.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 import { createCamera } from "./SimpleScene.js";
@@ -83,6 +83,7 @@ const RENDERER_MUTATORS = [
   "observeFrame", "resetFrameCadence", "resetRenderEvolutionClock", "resetReplayEpoch", "endReplayEpoch",
   "playSpellVisual", "clearSpellVisuals", "cancelSpellVisual", "retimeSpellVisual", "setStateVisuals",
   "setWeather", "setIndoors", "setCollisionModels", "setGroundCover", "invalidateGroundCover", "setSelection",
+  "setGroundTargetPreview", "setGameObjectPreview",
   "setPortraitTargets", "renderPortraits", "clearPortraits",
   "markFrameNotRendered", "beginRenderFrame", "endRenderFrame", "resetGpuTimingEpoch", "draw",
   "playGameObjectAnimation", "playUnitAction", "playUnitEmote", "cancelUnitAction",
@@ -1233,7 +1234,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       resources.collision.refresh(replay.mapId, position.x, position.y);
       const heightAt = (x: number, y: number): number | undefined => resources.terrain.heightAt(replay.mapId, x, y);
       const environment: readonly EnvironmentObject[] = resources.environment.objectsAround(
-        replay.mapId, position.x, position.y, ENVIRONMENT_RANGE,
+        replay.mapId, position.x, position.y, ENVIRONMENT_FAR_RANGE,
       );
     resources.assetWarmup.tick({ player, environment, actionButtons: [] });
     this.#withRendererMutationAuthorization("setWeather", () => resources.renderer.setWeather(replay.weather));

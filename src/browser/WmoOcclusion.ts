@@ -52,6 +52,10 @@ const GRAPH_VALIDATION = new WeakMap<WmoPortals, WeakMap<object, boolean>>();
  *
  * `modelToClip` is a column-major 4x4 matrix, matching `THREE.Matrix4.elements`. Keeping that tiny
  * contract here avoids a Three/WebGL dependency and makes every failure mode directly testable.
+ *
+ * `screenApertures`, when given (four floats per group), receives the screen rectangle each group
+ * can be seen through when the answer is `used`: minX, maxX, minY, maxY in NDC, the whole screen
+ * for a seed or an orphan, and an empty one (min > max) for a group not selected. Untouched otherwise.
  */
 export function selectWmoPortalGroups(
   groups: readonly WmoOcclusionGroup[],
@@ -60,6 +64,7 @@ export function selectWmoPortalGroups(
   camera: WmoOcclusionPoint,
   modelToClip: readonly number[],
   viewer?: WmoOcclusionPoint,
+  screenApertures?: Float32Array,
 ): WmoOcclusionSelection {
   const fallback = fallbackSelection(distanceGroups);
   if (!portals || groups.length === 0 || !finitePoint(camera) || !validMatrix(modelToClip)) return fallback;
@@ -131,6 +136,21 @@ export function selectWmoPortalGroups(
     // safer than silently dropping one if a different caller ever supplies a damaged index.
     if (!group) return fallback;
     if (apertures.has(index) || group.exterior || !group.indoor || group.portalCount === 0) selected.push(index);
+  }
+  if (screenApertures && screenApertures.length >= groups.length * 4) {
+    for (let index = 0; index < groups.length; index++) {
+      screenApertures[index * 4] = 1;
+      screenApertures[index * 4 + 1] = -1;
+      screenApertures[index * 4 + 2] = 1;
+      screenApertures[index * 4 + 3] = -1;
+    }
+    for (const index of selected) {
+      const aperture = apertures.get(index) ?? FULL_APERTURE;
+      screenApertures[index * 4] = aperture.minX;
+      screenApertures[index * 4 + 1] = aperture.maxX;
+      screenApertures[index * 4 + 2] = aperture.minY;
+      screenApertures[index * 4 + 3] = aperture.maxY;
+    }
   }
   return {
     groups: selected,

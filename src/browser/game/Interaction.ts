@@ -6,6 +6,7 @@ import {
   GO_FLAG_NOT_SELECTABLE, GO_TYPE_GUILD_BANK, GO_TYPE_MAILBOX, interactionDistance, interactiveGameObjectType,
   lockIdOf, usableByHand,
 } from "../../world/GameObjectProtocol.js";
+import { LOCK_KEY_ITEM, LOCK_KEY_SKILL } from "../../world/LockRules.js";
 import { game } from "./Context.js";
 /**
  * Whether the interact button should offer to use this object.
@@ -52,4 +53,49 @@ export function gameObjectAction(world: WorldClient, object: WorldObjectState, p
     if (spell > 0) return { kind: "unlock", spell };
   }
   return usableByHand(type) ? { kind: "use" } : undefined;
+}
+
+/**
+ * Why a lockable object the player is looking at cannot be opened — or nothing, when it can be,
+ * when it is not a lock story at all, or when the template answer is still in flight.
+ *
+ * A vein, a herb and a chest without a known opening spell used to eat the click in silence:
+ * `gameObjectAction` answers `undefined` and every caller treated that as "nothing here". The
+ * server is still the authority that refuses the cast; this only names the missing piece from the
+ * same `Lock.dbc` data the opener matching already reads, so the player learns the profession
+ * instead of the silence.
+ */
+export function gameObjectLockHint(
+  world: WorldClient, object: WorldObjectState, player: WorldPosition,
+): string | undefined {
+  if (object.typeId !== 5) return undefined;
+  const type = gameObjectType(object);
+  if (!interactiveGameObjectType(type)) return undefined;
+  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
+  if ((flags & GO_FLAG_NOT_SELECTABLE) !== 0) return undefined;
+  const position = object.position;
+  if (!position) return undefined;
+  const distance = Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z);
+  if (distance > interactionDistance(type)) return undefined;
+  const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+  if (entry <= 0) return undefined;
+  const template = world.gameObjectTemplate(entry, object.guid);
+  if (!template || template.type !== type || template.iconName === "Point") return undefined;
+  const lockId = lockIdOf(template);
+  if (lockId <= 0) return undefined;
+  const known = world.knownSpells.map((knownSpell) => knownSpell.id);
+  if ((game.locks?.spellFor(lockId, known) ?? 0) > 0) return undefined;
+  if (!game.locks || !game.locks.ready) return "Данные замков загружаются…";
+  const cases = game.locks.casesOf(lockId);
+  if (cases.some((entry) => entry.type === LOCK_KEY_ITEM)) return "Нужен ключ";
+  const skill = cases.find((entry) => entry.type === LOCK_KEY_SKILL);
+  // `LockType` the skill case names: 1 pick, 2 herb, 3 mine (`LockClient.ts` tracking reads the
+  // same index). Anything else is a skill this client has no name for.
+  if (skill) {
+    if (skill.index === 2) return "Нужен навык: Травничество";
+    if (skill.index === 3) return "Нужен навык: Горное дело";
+    if (skill.index === 1) return "Нужен навык: Вскрытие замков";
+    return "Нужен навык";
+  }
+  return cases.length > 0 ? "Нужен ключ или навык" : undefined;
 }

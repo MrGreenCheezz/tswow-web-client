@@ -619,6 +619,7 @@ function cloneLiveObject(source: WorldObjectState): WorldObjectState {
     runSpeed: source.runSpeed,
     turnRate: source.turnRate,
     motion: source.motion === undefined ? undefined : {
+      splineId: source.motion.splineId,
       points: (() => {
         denseArray("world.motion.points", source.motion!.points);
         denseArray("world.motion.lengths", source.motion!.lengths);

@@ -76,6 +76,9 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
 
   get size(): number { return this.#entries.size; }
 
+  /** Whether either soft limit requires a borrower-aware eviction pass. */
+  get needsEviction(): boolean { return !this.#withinLimits(); }
+
   get stats(): Readonly<BuiltModelCacheStats> {
     return Object.freeze({
       count: this.#entries.size,

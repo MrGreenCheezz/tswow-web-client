@@ -7,6 +7,13 @@ export type { CollisionModel };
 const COLLISION_RETRY_BASE_MS = 100;
 const COLLISION_RETRY_MAX_MS = 5_000;
 
+/** A visual archive path and a vmap basename reduce to the same deterministic model name. */
+export function canonicalCollisionModelName(name: string): string {
+  const clean = name.replace(/\0+$/, "");
+  const cut = Math.max(clean.lastIndexOf("\\"), clean.lastIndexOf("/"));
+  return (cut >= 0 ? clean.slice(cut + 1) : clean).toLowerCase();
+}
+
 /**
  * The server's own collision meshes, by the name the vmap tile calls them.
  *
@@ -18,11 +25,28 @@ const COLLISION_RETRY_MAX_MS = 5_000;
  * Big models arrive as a table of their groups' boxes and nothing else — a city is hundreds of
  * thousands of triangles — and the geometry for the handful of groups the player is standing in is
  * asked for afterwards.
+ *
+ * One file, one download, whatever case it is asked for in. The renderer asks for a building's
+ * water by the name its ADT placement carries — `STORMWIND.WMO` — and the collision source by the
+ * name the `.vmtile` carries — `Stormwind.wmo` — and on a case-insensitive disk (Windows) the
+ * gateway serves the same file under both. Kept apart, that was the city's header fetched and
+ * decoded twice, parsed twice on the gateway, and one more landing for the collision world to
+ * rebuild around. A name is therefore folded to the tile's own spelling once a tile has used it
+ * (`preferSpelling`), and a model already here — or on its way — under another spelling of the
+ * same file is shared rather than fetched again. Only an *answer* is shared, never an absence: a
+ * 204 under one spelling does not stop another from asking, because on a case-sensitive gateway
+ * the archive's upper-case spelling finds no file while the tile's does.
  */
 export class CollisionClient {
   onStatus: ((message: string, error: boolean) => void) | undefined;
   readonly #baseUrl: string;
   readonly #models = new Map<string, CollisionModel | null>();
+  /** Canonical name to the spelling a vmap tile used for it: the one the gateway's disk has. */
+  readonly #preferred = new Map<string, string>();
+  /** Canonical name to every spelling a download was started under. Nearly always one. */
+  readonly #spellings = new Map<string, string[]>();
+  /** Spelling to canonical name, so the per-frame asks do not rebuild the string each time. */
+  readonly #canonical = new Map<string, string>();
   readonly #requested = new Set<string>();
   readonly #requestedGroups = new Set<string>();
   readonly #retryAttempts = new Map<string, number>();
@@ -60,11 +84,21 @@ export class CollisionClient {
 
   /** The model, or undefined until it lands. A model the client does not ship resolves to null. */
   model(name: string): CollisionModel | undefined {
-    const known = this.#models.get(name);
-    if (known !== undefined) return known ?? undefined;
-    if (!this.#requested.has(name) && this.#retryDue(name)) {
-      this.#requested.add(name);
-      this.#queue.push(name);
+    const spelling = this.#spelling(name);
+    const known = this.#models.get(spelling);
+    if (known) return known;
+    const shared = this.#shared(spelling);
+    if (shared) {
+      this.#models.set(spelling, shared);
+      return shared;
+    }
+    if (known === null) return undefined;
+    // Another spelling of this file is already on the wire: its answer is shared when it lands,
+    // and asking again now would be the second download this is here to prevent.
+    if (!this.#requested.has(spelling) && this.#retryDue(spelling) && !this.#inFlightElsewhere(spelling)) {
+      this.#requested.add(spelling);
+      this.#noteSpelling(spelling);
+      this.#queue.push(spelling);
       this.#drain();
     }
     return undefined;
@@ -72,7 +106,57 @@ export class CollisionClient {
 
   /** Whether the gateway has answered this model, including a 204/no-collision answer. */
   isResolved(name: string): boolean {
-    return this.#models.has(name);
+    const spelling = this.#spelling(name);
+    return this.#models.has(spelling) || this.#shared(spelling) !== undefined;
+  }
+
+  /**
+   * The spelling a vmap tile uses for a model. Every later ask for the same file, in whatever case
+   * or under whatever archive path, is made under this one. The first tile to name a model wins;
+   * the extractor writes one file per model, so a second spelling would name the same file.
+   */
+  preferSpelling(name: string): void {
+    const canonical = this.#canonicalOf(name);
+    if (!this.#preferred.has(canonical)) this.#preferred.set(canonical, name);
+  }
+
+  #canonicalOf(name: string): string {
+    let canonical = this.#canonical.get(name);
+    if (canonical === undefined) {
+      canonical = canonicalCollisionModelName(name);
+      this.#canonical.set(name, canonical);
+    }
+    return canonical;
+  }
+
+  /** The spelling a request for `name` is made and cached under. */
+  #spelling(name: string): string {
+    return this.#preferred.get(this.#canonicalOf(name)) ?? name;
+  }
+
+  #noteSpelling(spelling: string): void {
+    const canonical = this.#canonicalOf(spelling);
+    const spellings = this.#spellings.get(canonical);
+    if (!spellings) this.#spellings.set(canonical, [spelling]);
+    else if (!spellings.includes(spelling)) spellings.push(spelling);
+  }
+
+  /** A model another spelling of the same file already answered with, if one did. */
+  #shared(spelling: string): CollisionModel | undefined {
+    const spellings = this.#spellings.get(this.#canonicalOf(spelling));
+    if (!spellings) return undefined;
+    for (const other of spellings) {
+      if (other === spelling) continue;
+      const model = this.#models.get(other);
+      if (model) return model;
+    }
+    return undefined;
+  }
+
+  #inFlightElsewhere(spelling: string): boolean {
+    const spellings = this.#spellings.get(this.#canonicalOf(spelling));
+    if (!spellings) return false;
+    return spellings.some((other) => other !== spelling && this.#requested.has(other) && !this.#models.has(other));
   }
 
   /**
@@ -83,14 +167,15 @@ export class CollisionClient {
    * which is worse.
    */
   requestGroups(name: string, groups: readonly number[]): void {
+    const spelling = this.#spelling(name);
     const missing = groups.filter((group) => {
-      const key = `${name}#${group}`;
+      const key = `${spelling}#${group}`;
       return !this.#requestedGroups.has(key) && this.#retryDue(key);
     });
     if (missing.length === 0) return;
-    for (const group of missing) this.#requestedGroups.add(`${name}#${group}`);
+    for (const group of missing) this.#requestedGroups.add(`${spelling}#${group}`);
     this.#pending++;
-    void this.#fetchGroups(name, missing);
+    void this.#fetchGroups(spelling, missing);
   }
 
   #drain(): void {
@@ -248,9 +333,12 @@ export class CollisionClient {
     }
   }
 
-  /** How much has been fetched, for the diagnostics line. */
+  /** How much has been fetched, for the diagnostics line. A model shared by two spellings is one. */
   get counts(): { models: number; missing: number } {
     const values = [...this.#models.values()];
-    return { models: values.filter(Boolean).length, missing: values.filter((model) => model === null).length };
+    return {
+      models: new Set(values.filter(Boolean)).size,
+      missing: values.filter((model) => model === null).length,
+    };
   }
 }

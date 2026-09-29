@@ -15,6 +15,7 @@ import {
 } from "./ResourceAccounting.js";
 import type { WvmModel } from "./Wvm.js";
 import { cloneMaterialForPortrait } from "./WorldLighting.js";
+import { ProgramWarmup, PROGRAM_WARMUP_BATCH } from "./ProgramWarmup.js";
 import { game } from "./game/Context.js";
 import { unit as unitFields } from "../world/Fields.js";
 
@@ -25,11 +26,100 @@ export const PARTY_PORTRAIT_SLOTS = ["party1", "party2", "party3", "party4"] as 
 export const PAPERDOLL_PORTRAIT_SLOT = "paperdoll" as const;
 /** Stock CharacterFramePortrait is a separate bust output, but uses the same player source. */
 export const CHARACTER_PORTRAIT_SLOT = "character" as const;
+/** Stock QuestFramePortrait follows the active giver, independently of target selection. */
+export const QUEST_GIVER_PORTRAIT_SLOT = "questnpc" as const;
+/**
+ * Stock FocusFrameToTPortrait: the focus's target, the one unit-frame row the native HUD has no
+ * canvas for (TargetFrame.xml:678 creates FocusFrameToT for "focus-target"). A HUD-style output
+ * like `tot`, kept out of PORTRAIT_SLOTS because that list is the five native rows.
+ */
+export const FOCUS_TARGET_PORTRAIT_SLOT = "focustot" as const;
 export const ALL_PORTRAIT_SLOTS = [
-  ...PORTRAIT_SLOTS, ...PARTY_PORTRAIT_SLOTS, PAPERDOLL_PORTRAIT_SLOT,
-  CHARACTER_PORTRAIT_SLOT,
+  ...PORTRAIT_SLOTS, FOCUS_TARGET_PORTRAIT_SLOT, ...PARTY_PORTRAIT_SLOTS, PAPERDOLL_PORTRAIT_SLOT,
+  CHARACTER_PORTRAIT_SLOT, QUEST_GIVER_PORTRAIT_SLOT,
 ] as const;
-export type PortraitSlot = (typeof ALL_PORTRAIT_SLOTS)[number];
+/**
+ * One stock FrameXML `SetPortraitTexture` output outside the fixed HUD rows: GossipFramePortrait,
+ * MerchantFramePortrait, TradeFrameRecipientPortrait and the like. These come and go with their
+ * windows, so they are keyed by texture rather than declared here (framexml/FrameXmlPortraits*.ts).
+ */
+export type StockPortraitSlot = `stock:${string}`;
+export type PortraitSlot = (typeof ALL_PORTRAIT_SLOTS)[number] | StockPortraitSlot;
+
+/** Stock portrait slots are not a fixed list; `stock:` is their whole namespace. */
+export function isStockPortraitSlot(slot: PortraitSlot): slot is StockPortraitSlot {
+  return slot.startsWith("stock:");
+}
+
+/**
+ * The client's `SetPortraitTexture` picture rather than a HUD canvas: the unit over an opaque black
+ * ground, cut to the circle of `Interface\CharacterFrame\TempPortraitAlphaMask`. The stock frame
+ * art has a transparent hole where its portrait Texture sits (UI-QuestGreeting-TopLeft,
+ * UI-Merchant-TopLeft…), so a transparent ground would show the world through the window, and a
+ * square one would show its corners outside the ring. The quest giver's and CharacterFrame's
+ * header busts are the same stock call on QuestFramePortrait and CharacterFramePortrait, so they
+ * follow the same rule; a live crop of stock CharacterFrame showed the terrain through that ring
+ * around the player's head while its ground was transparent.
+ */
+export function portraitTextureOutput(slot: PortraitSlot): boolean {
+  return slot === QUEST_GIVER_PORTRAIT_SLOT || slot === CHARACTER_PORTRAIT_SLOT || isStockPortraitSlot(slot);
+}
+
+/**
+ * A stock window's canvas whose unit is named but not painted yet — its model still loading, its
+ * first readback in flight, its backing store just resized — shows the picture's black ground cut
+ * to the circle, not a transparent canvas: underneath is the host's «portrait not available» art,
+ * which the client never shows for a unit it can see. Measured on the rich route before this, model
+ * load included: the first picture took 308 ms on Gossip's first open and 204 ms on Bank's, with the
+ * «?» showing all that time. The quest giver and CharacterFrame keep their transparent blank (the
+ * book icon under the quest giver is that page's own fallback).
+ */
+function pendingStockPicture(slot: PortraitSlot, guid: bigint | undefined): boolean {
+  return guid !== undefined && isStockPortraitSlot(slot);
+}
+
+/**
+ * Host-owned stock portrait targets, read by the world's PortraitRenderer when `setTargets` runs.
+ *
+ * The HUD's fixed slots arrive as one map from ui/Portraits.ts every frame. Stock window portraits
+ * are claimed by FrameXML's `SetPortraitTexture` bridge instead, and must not require that module
+ * (or WorldRenderer3D) to know every window's texture. A write that changes nothing does not bump
+ * the version, so the renderer's per-frame cost for an unchanged set is one integer compare.
+ */
+export class StockPortraitTargets {
+  readonly #targets = new Map<StockPortraitSlot, PortraitTarget>();
+  #version = 0;
+
+  get version(): number {
+    return this.#version;
+  }
+
+  get size(): number {
+    return this.#targets.size;
+  }
+
+  get(slot: StockPortraitSlot): PortraitTarget | undefined {
+    return this.#targets.get(slot);
+  }
+
+  entries(): ReadonlyMap<StockPortraitSlot, PortraitTarget> {
+    return this.#targets;
+  }
+
+  set(slot: StockPortraitSlot, guid: bigint | undefined, canvas: HTMLCanvasElement | undefined): void {
+    const previous = this.#targets.get(slot);
+    if (previous && previous.guid === guid && previous.canvas === canvas) return;
+    this.#targets.set(slot, { guid, canvas });
+    this.#version++;
+  }
+
+  delete(slot: StockPortraitSlot): void {
+    if (this.#targets.delete(slot)) this.#version++;
+  }
+}
+
+/** The live client's single set; tests hand a PortraitRenderer their own instance. */
+export const stockPortraitTargets = new StockPortraitTargets();
 
 /** One fixed-function directional lamp in the stock character-select light set. */
 export interface PortraitDirectionalLightProfile {
@@ -160,6 +250,17 @@ export function portraitLightDirectionToScene(
   return [x / length, y / length, z / length];
 }
 
+/**
+ * The fixed slot whose light rig and pose a stock portrait shares: the player's own bust (race
+ * lights, Stand) when a window names the player — TradeFramePlayerPortrait, PVPFramePortrait —
+ * and the target's (HUD lights, the live world pose) for anybody else.
+ */
+function portraitRole(slot: PortraitSlot, guid: bigint | undefined): Exclude<PortraitSlot, StockPortraitSlot> {
+  if (!isStockPortraitSlot(slot)) return slot;
+  const self = game.world?.state.selfGuid;
+  return guid !== undefined && self !== undefined && guid === self ? "player" : "target";
+}
+
 /** Resolve the renderer-owned light rig for a concrete output slot and known player race. */
 export function portraitLightingProfile(
   slot: PortraitSlot,
@@ -182,9 +283,26 @@ function portraitRaceForGuid(guid: bigint): PortraitRace {
 export interface PortraitTarget {
   guid: bigint | undefined;
   canvas: HTMLCanvasElement | undefined;
+  /**
+   * False while the canvas is off screen — its window closed. Omitted means shown, which is what
+   * the HUD rows always are. A hidden target is neither rebuilt nor drawn and asks the world for
+   * no pose; its surface keeps the source key of its last paint, so the comparison `#renderSlot`
+   * makes is deferred rather than skipped, and the first frame it shows again repaints it once if
+   * the look moved meanwhile. Before this every look change rebuilt the paper doll and the
+   * CharacterFrame bust with the character window closed — a skinned instance, a Stand pose,
+   * material clones, a first draw and a readback each: `render()` on the frame after an equip took
+   * 7.5 ms with all three player outputs shown and takes 2.2 ms with those two hidden (HumanMale,
+   * three over a no-op WebGL2, Node 22; driver and GPU time come on top of both).
+   */
+  visible?: boolean;
 }
 
 const EMPTY_PORTRAIT_TARGET = { guid: undefined, canvas: undefined } as const;
+
+/** A target that is on screen: anything but an explicit `visible: false`. */
+function targetShown(target: PortraitTarget | undefined): boolean {
+  return target?.visible !== false;
+}
 
 /** The already-built model data borrowed by a portrait; no geometry or material is owned here. */
 export interface PortraitSource {
@@ -261,7 +379,7 @@ interface PortraitSurface {
   built: BuiltModel | undefined;
   /** Raw build/atlas key retained by the material maps borrowed through `built`. */
   buildKey: string | undefined;
-  /** Texture-loader revision last painted into the 2D portrait. */
+  /** Texture-loader revision captured by the last submitted portrait readback. */
   textureRevision: string | undefined;
   sourceKey: string | undefined;
   output: HTMLCanvasElement | undefined;
@@ -276,6 +394,20 @@ interface PortraitSurface {
   sourceGuid: bigint | undefined;
   /** Identity of the last successful 2D readback, independent of a borrowed model's lifetime. */
   paintedGuid: bigint | undefined;
+  /** Invalidates an in-flight readback even if a target changes away and back again. */
+  readbackVersion: number;
+}
+
+interface PortraitReadback {
+  readonly surface: PortraitSurface;
+  readonly version: number;
+  readonly guid: bigint;
+  readonly sourceKey: string;
+  readonly textureRevision: string;
+  readonly canvas: HTMLCanvasElement;
+  readonly width: number;
+  readonly height: number;
+  readonly pixels: Uint8Array;
 }
 
 interface PortraitLightState {
@@ -290,11 +422,39 @@ interface PortraitLightState {
 export interface PortraitRendererOptions {
   /** Reserved for source compatibility; portraits are now painted once per invalidation. */
   repaintIntervalMs?: number;
+  /** Stock window portrait targets; the module's `stockPortraitTargets` unless a test isolates it. */
+  stockTargets?: StockPortraitTargets;
 }
 
 /**
- * Renders the five core and four stable party model views through the world's existing
- * WebGLRenderer.
+ * Per-size coverage of the portrait circle, 0..255, with a one-pixel anti-aliased rim. Built once
+ * per backing-store size and shared by every surface of that size; a readback only multiplies.
+ */
+const portraitCircleMasks = new Map<string, Uint8Array>();
+
+export function portraitCircleMask(width: number, height: number): Uint8Array {
+  const key = `${width}x${height}`;
+  let mask = portraitCircleMasks.get(key);
+  if (mask) return mask;
+  mask = new Uint8Array(width * height);
+  const radius = Math.min(width, height) / 2;
+  const centreX = width / 2;
+  const centreY = height / 2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Pixel centres: a 60px portrait has 30px of radius to either side of its middle line.
+      const distance = Math.hypot(x + 0.5 - centreX, y + 0.5 - centreY);
+      const coverage = Math.max(0, Math.min(1, radius - distance + 0.5));
+      mask[y * width + x] = Math.round(coverage * 255);
+    }
+  }
+  portraitCircleMasks.set(key, mask);
+  return mask;
+}
+
+/**
+ * Renders the five core and four stable party model views, the character/quest headers and any
+ * open stock window's `SetPortraitTexture` pictures through the world's existing WebGLRenderer.
  *
  * A WebGL texture cannot be used as an `<img>` or CSS background. The only browser-safe bridge is a
  * readback into a 2D canvas. Render targets therefore live for the lifetime of a slot and are only
@@ -314,15 +474,29 @@ export class PortraitRenderer {
   readonly #surfaces = new Map<PortraitSlot, PortraitSurface>();
   readonly #targets = new Map<PortraitSlot, PortraitTarget>();
   readonly #targetGuids = new Set<bigint>();
+  /** Kept until each fence settles, including across clear/repopulation of the same slot. */
+  readonly #pendingReadbacks = new Map<PortraitSlot, PortraitReadback>();
+  readonly #programWarmup: ProgramWarmup;
   readonly #source: PortraitSourceProvider;
+  readonly #stockTargets: StockPortraitTargets;
+  /** `#stockTargets.version` last applied; -1 forces the next setTargets to re-read the set. */
+  #stockVersion = -1;
+  /** The stock slots currently in `#targets`, as an array so the hot loops allocate nothing. */
+  #stockSlots: StockPortraitSlot[] = [];
+  /** Canvases this renderer cleared and has not painted since; see `#markUnavailable`. */
+  readonly #blankCanvases = new WeakSet<HTMLCanvasElement>();
+  /** The GUID whose picture each canvas holds from this renderer's last readback into it. */
+  readonly #paintedGuids = new WeakMap<HTMLCanvasElement, bigint>();
 
   constructor(renderer: THREE.WebGLRenderer, source: PortraitSourceProvider,
     options: PortraitRendererOptions = {}) {
     this.#renderer = renderer;
+    this.#programWarmup = new ProgramWarmup(renderer, this.#scene);
     this.#source = source;
+    this.#stockTargets = options.stockTargets ?? stockPortraitTargets;
     // Keep accepting the old option while intentionally ignoring it. A static portrait has no
     // animation cadence to throttle: readback happens only after a model/target/size invalidation.
-    void options;
+    void options.repaintIntervalMs;
     // Keep the `portrait-*` namespace exclusive to isolated model groups. The lightweight renderer
     // seam (and scene diagnostics) can then count visible portrait roots without mistaking lights
     // for three additional models in every readback.
@@ -360,44 +534,130 @@ export class PortraitRenderer {
    * Whether a world unit still needs one pose step before its static portrait can be painted.
    *
    * The query itself allocates no temporary collections: the world pose loop asks it for every
-   * drawn unit, so it only walks the fixed five slots and reads existing surface/canvas state
-   * before resolving the current source key for matching clean slots. A successful snapshot
-   * clears the answer until a target, model, or backing-store size invalidates it.
+   * drawn unit, so a unit no slot names leaves on one Set lookup, and a portrait unit walks the
+   * fixed slots and the (usually empty) stock array reading existing surface/canvas state before
+   * resolving the current source key for matching clean slots. A successful snapshot clears the
+   * answer until a target, model, or backing-store size invalidates it.
    */
   needsPose(guid: bigint): boolean {
+    if (!this.#targetGuids.has(guid)) return false;
     for (const slot of ALL_PORTRAIT_SLOTS) {
-      const target = this.#targets.get(slot);
-      if (target?.guid !== guid || !target.canvas) continue;
-      const surface = this.#surfaces.get(slot);
-      if (!surface || surface.dirty || !surface.staticPoseCaptured || surface.sourceGuid !== guid) return true;
-      const width = Math.max(1, target.canvas.width || 96);
-      const height = Math.max(1, target.canvas.height || 96);
-      if (surface.width !== width || surface.height !== height) return true;
-      // Atlas generations are folded into source.key. Resolve the current source only after the
-      // cheap surface checks above, so ordinary non-portrait units still pay no provider call.
-      const source = this.#source(guid);
-      if (!source || surface.sourceKey !== source.key) return true;
-      if (surface.textureRevision !== portraitTextureRevision(source.built)) return true;
+      if (this.#slotNeedsPose(slot, guid)) return true;
+    }
+    const stock = this.#stockSlots;
+    for (let index = 0; index < stock.length; index++) {
+      if (this.#slotNeedsPose(stock[index]!, guid)) return true;
     }
     return false;
   }
 
+  #slotNeedsPose(slot: PortraitSlot, guid: bigint): boolean {
+    const target = this.#targets.get(slot);
+    // A hidden surface paints nothing, so it must not keep the world unit off its flat pose.
+    if (target?.guid !== guid || !target.canvas || !targetShown(target)) return false;
+    const surface = this.#surfaces.get(slot);
+    if (!surface || surface.dirty || !surface.staticPoseCaptured || surface.sourceGuid !== guid) return true;
+    const width = Math.max(1, target.canvas.width || 96);
+    const height = Math.max(1, target.canvas.height || 96);
+    if (surface.width !== width || surface.height !== height) return true;
+    // Atlas generations are folded into source.key. Resolve the current source only after the
+    // cheap surface checks above, so ordinary non-portrait units still pay no provider call.
+    const source = this.#source(guid);
+    if (!source || surface.sourceKey !== source.key) return true;
+    return surface.textureRevision !== portraitTextureRevision(source.built);
+  }
+
   setTargets(targets: ReadonlyMap<PortraitSlot, PortraitTarget>): void {
-    this.#targetGuids.clear();
+    // Pushed every frame by the loop: read first, write only on change, so an unchanged frame
+    // costs comparisons instead of a cleared guid set, map writes and canvas clears.
+    let changed = false;
     for (const slot of ALL_PORTRAIT_SLOTS) {
       const next = targets.get(slot) ?? EMPTY_PORTRAIT_TARGET;
       const previous = this.#targets.get(slot);
-      this.#targets.set(slot, next);
-      if (next.guid !== undefined) this.#targetGuids.add(next.guid);
-      const surface = this.#surfaces.get(slot);
-      if (previous?.guid !== next.guid || previous?.canvas !== next.canvas) {
-        if (surface) surface.dirty = true;
-        // Keep the old class/creature image as fallback while the new model is loading; a stale
-        // 3D readback must not remain visible through a target transition.
-        this.#clearCanvas(previous?.canvas);
-        this.#clearCanvas(next.canvas);
+      if (previous?.guid !== next.guid || previous?.canvas !== next.canvas
+        || targetShown(previous) !== targetShown(next)) {
+        changed = true;
+        break;
       }
     }
+    const stockChanged = this.#stockVersion !== this.#stockTargets.version;
+    if (!changed && !stockChanged) return;
+    if (changed) {
+      for (const slot of ALL_PORTRAIT_SLOTS) this.#applyTarget(slot, targets.get(slot) ?? EMPTY_PORTRAIT_TARGET);
+    }
+    if (stockChanged) this.#applyStockTargets();
+    this.#targetGuids.clear();
+    // Only shown targets pin their unit into the world's admission; a closed window's does not.
+    for (const target of this.#targets.values()) {
+      if (target.guid !== undefined && targetShown(target)) this.#targetGuids.add(target.guid);
+    }
+  }
+
+  #applyTarget(slot: PortraitSlot, next: PortraitTarget): void {
+    const previous = this.#targets.get(slot);
+    this.#targets.set(slot, next);
+    if (previous?.guid === next.guid && previous?.canvas === next.canvas) return;
+    const surface = this.#surfaces.get(slot);
+    if (surface) {
+      surface.dirty = true;
+      surface.readbackVersion++;
+    }
+    // A stock window reopened on the same unit (the vendor closed and talked to again) keeps the
+    // picture its canvas already holds while the fresh surface paints; nothing stale can show,
+    // because that canvas last showed exactly this GUID.
+    if (!previous && isStockPortraitSlot(slot) && next.guid !== undefined && next.canvas
+      && this.#paintedGuids.get(next.canvas) === next.guid) return;
+    // Keep the old class/creature image as fallback while the new model is loading; a stale
+    // 3D readback must not remain visible through a target transition.
+    this.#clearCanvas(previous?.canvas);
+    this.#clearCanvas(next.canvas, pendingStockPicture(slot, next.guid));
+  }
+
+  /**
+   * Follow the stock window set: a slot that left it gives back its whole surface — model, material
+   * shells, render target, group — rather than idling at "no GUID" like a fixed HUD row. A closed
+   * window therefore costs nothing per frame, and the next open paints once from scratch.
+   */
+  #applyStockTargets(): void {
+    this.#stockVersion = this.#stockTargets.version;
+    const entries = this.#stockTargets.entries();
+    for (const slot of this.#stockSlots) {
+      if (!entries.has(slot)) this.#releaseStockSlot(slot);
+    }
+    const slots: StockPortraitSlot[] = [];
+    for (const [slot, target] of entries) {
+      this.#applyTarget(slot, target);
+      slots.push(slot);
+    }
+    this.#stockSlots = slots;
+  }
+
+  #releaseStockSlot(slot: StockPortraitSlot): void {
+    this.#targets.delete(slot);
+    const surface = this.#surfaces.get(slot);
+    if (surface) {
+      this.#disposeModel(surface);
+      surface.target.dispose();
+      this.#surfaces.delete(slot);
+    }
+    const group = this.#slotGroups.get(slot);
+    group?.removeFromParent();
+    this.#slotGroups.delete(slot);
+    // The canvas is not blanked: the host hides a closed window's canvas (or drops it with its
+    // claim), and its 2D pixels — all that is left — let the same unit's next visit show at once
+    // (`#applyTarget`).
+  }
+
+  #slotGroup(slot: PortraitSlot): THREE.Group {
+    let group = this.#slotGroups.get(slot);
+    if (!group) {
+      group = new THREE.Group();
+      group.name = `portrait-${slot}`;
+      group.visible = false;
+      this.#slotGroups.set(slot, group);
+      this.#scene.add(group);
+    }
+    return group;
   }
 
   targetGuids(): ReadonlySet<bigint> {
@@ -444,7 +704,7 @@ export class PortraitRenderer {
     return retained;
   }
 
-  /** Accounts only resources retained by live portrait surfaces and their borrowed scene roots. */
+  /** Accounts resources retained by live surfaces and bounded outstanding readbacks. */
   visitRetainedResources(visitor: RetainedResourceVisitor): void {
     for (const surface of this.#surfaces.values()) {
       visitor.referenceCpu(surface, surface.pixels);
@@ -464,47 +724,62 @@ export class PortraitRenderer {
         if (skeleton.boneTexture) visitor.referenceGpuTexture(skeleton, skeleton.boneTexture);
       }
     }
+    for (const pending of this.#pendingReadbacks.values()) {
+      visitor.referenceCpu(pending, pending.pixels);
+      visitor.referenceCpu(pending, pending.surface.flipped);
+      visitor.referenceUnsupported(pending, pending.canvas);
+      // Three owns the transient pixel-pack buffer/fence; no raw WebGL handle is exposed here.
+      visitor.referenceUnsupported(pending, pending);
+    }
   }
 
-  /** Render invalidated portraits. Returns the number of readbacks performed. */
+  /** Render invalidated portraits. Returns readbacks submitted; canvas updates finish asynchronously. */
   render(_now = performance.now()): number {
     let rendered = 0;
-    for (const slot of ALL_PORTRAIT_SLOTS) {
-      const target = this.#targets.get(slot);
-      if (!target?.canvas || target.guid === undefined) {
-        this.#markUnavailable(slot);
-        continue;
-      }
-      const source = this.#source(target.guid);
-      if (!source) {
-        this.#markUnavailable(slot, true);
-        continue;
-      }
-      const surface = this.#surface(slot, target.canvas);
-      const sourceKey = source.key;
-      const textureRevision = portraitTextureRevision(source.built);
-      if (surface.sourceKey !== sourceKey || surface.sourceGuid !== target.guid) {
-        this.#replaceModel(surface, source);
-        surface.sourceKey = sourceKey;
-        surface.sourceGuid = target.guid;
-        surface.dirty = true;
-      } else if (surface.textureRevision !== textureRevision) {
-        // A late TextureLoader completion changes only the pixels. Keep the captured pose and
-        // repaint the existing root instead of needlessly rebuilding the rig.
-        surface.dirty = true;
-      }
-      surface.output = target.canvas;
-      if (!surface.dirty) continue;
-      // Capture the current world pose once. The independent portrait rig is intentionally not
-      // advanced by a mixer and must not keep following the animated world unit on later calls.
-      this.#captureStaticPose(surface, source, slot);
-      if (this.#paint(slot, surface, source)) {
-        surface.dirty = false;
-        surface.textureRevision = textureRevision;
-        rendered++;
-      }
-    }
+    for (const slot of ALL_PORTRAIT_SLOTS) rendered += this.#renderSlot(slot);
+    const stock = this.#stockSlots;
+    for (let index = 0; index < stock.length; index++) rendered += this.#renderSlot(stock[index]!);
     return rendered;
+  }
+
+  #renderSlot(slot: PortraitSlot): number {
+    const target = this.#targets.get(slot);
+    if (!target?.canvas || target.guid === undefined) {
+      this.#markUnavailable(slot);
+      return 0;
+    }
+    // Off screen: nothing is resolved, rebuilt or drawn, and the canvas keeps its last picture. The
+    // surface's recorded source key is the dirty mark — the checks below run on the first frame the
+    // canvas is shown again, and repaint exactly once if the look or the texture moved meanwhile.
+    if (!targetShown(target)) return 0;
+    const source = this.#source(target.guid);
+    if (!source) {
+      this.#markUnavailable(slot, true);
+      return 0;
+    }
+    const surface = this.#surface(slot, target.canvas);
+    const sourceKey = source.key;
+    const textureRevision = portraitTextureRevision(source.built);
+    if (surface.sourceKey !== sourceKey || surface.sourceGuid !== target.guid) {
+      this.#replaceModel(surface, source);
+      surface.sourceKey = sourceKey;
+      surface.sourceGuid = target.guid;
+      surface.dirty = true;
+    } else if (surface.textureRevision !== textureRevision) {
+      // A late TextureLoader completion changes only the pixels. Keep the captured pose and
+      // repaint the existing root instead of needlessly rebuilding the rig.
+      surface.dirty = true;
+      surface.readbackVersion++;
+    }
+    surface.output = target.canvas;
+    if (!surface.dirty || this.#pendingReadbacks.has(slot)) return 0;
+    // Capture the current world pose once. The independent portrait rig is intentionally not
+    // advanced by a mixer and must not keep following the animated world unit on later calls.
+    this.#captureStaticPose(surface, source, slot);
+    if (!this.#paint(slot, surface, source, textureRevision)) return 0;
+    surface.dirty = false;
+    surface.textureRevision = textureRevision;
+    return 1;
   }
 
   clear(): void {
@@ -516,6 +791,15 @@ export class PortraitRenderer {
     this.#surfaces.clear();
     this.#targets.clear();
     this.#targetGuids.clear();
+    // Stock groups belong to their slot, not to the renderer's lifetime. The set itself is the
+    // host's: the next setTargets reads it again, so a mount that outlives a world clear repaints.
+    for (const slot of this.#stockSlots) {
+      this.#slotGroups.get(slot)?.removeFromParent();
+      this.#slotGroups.delete(slot);
+    }
+    this.#stockSlots = [];
+    this.#stockVersion = -1;
+    this.#programWarmup.reset();
   }
 
   dispose(): void {
@@ -535,7 +819,7 @@ export class PortraitRenderer {
         generateMipmaps: false,
       });
       surface = {
-        group: this.#slotGroups.get(slot)!,
+        group: this.#slotGroup(slot),
         target, root: undefined, skinned: undefined, materials: undefined,
         built: undefined, buildKey: undefined,
         textureRevision: undefined,
@@ -543,6 +827,7 @@ export class PortraitRenderer {
         pixels: new Uint8Array(width * height * 4),
         flipped: new Uint8ClampedArray(width * height * 4),
         width, height, dirty: true, staticPoseCaptured: false, sourceGuid: undefined, paintedGuid: undefined,
+        readbackVersion: 0,
       };
       this.#surfaces.set(slot, surface);
     } else if (surface.width !== width || surface.height !== height) {
@@ -552,6 +837,10 @@ export class PortraitRenderer {
       surface.width = width;
       surface.height = height;
       surface.dirty = true;
+      surface.readbackVersion++;
+      // A new backing store is a transparent bitmap: a stock window's canvas re-measured for a
+      // new stage scale shows the pending picture, not the stand-in, until the repaint lands.
+      if (isStockPortraitSlot(slot)) this.#clearCanvas(canvas, true);
     }
     return surface;
   }
@@ -581,6 +870,8 @@ export class PortraitRenderer {
   }
 
   #disposeModel(surface: PortraitSurface): void {
+    surface.readbackVersion++;
+    if (surface.root) this.#programWarmup.unregisterObject(surface.root);
     disposeSkinnedInstance(surface.skinned);
     disposePortraitMaterials(surface.materials);
     surface.root?.removeFromParent();
@@ -607,7 +898,8 @@ export class PortraitRenderer {
     // when a world unit later changes state.
     // The player's bust camera is authored for Stand. Freezing a running, casting or dead world
     // pose can leave the head outside that camera until the appearance changes again.
-    if (slot !== "player" && slot !== PAPERDOLL_PORTRAIT_SLOT && slot !== CHARACTER_PORTRAIT_SLOT && source.liveBones) {
+    const role = portraitRole(slot, surface.sourceGuid);
+    if (role !== "player" && role !== PAPERDOLL_PORTRAIT_SLOT && role !== CHARACTER_PORTRAIT_SLOT && source.liveBones) {
       const bones = skinned.skeleton.bones;
       for (let index = 0; index < bones.length; index++) {
         const pose = source.liveBones[index];
@@ -671,7 +963,7 @@ export class PortraitRenderer {
 
   #applyLighting(slot: PortraitSlot, guid?: bigint): void {
     const profile = portraitLightingProfile(
-      slot,
+      portraitRole(slot, guid),
       guid === undefined ? "neutral" : portraitRaceForGuid(guid),
     );
     const character = profile.mode === "character";
@@ -710,8 +1002,9 @@ export class PortraitRenderer {
     }
   }
 
-  #paint(slot: PortraitSlot, surface: PortraitSurface, source: PortraitSource): boolean {
-    if (!surface.root || !surface.output) return false;
+  #paint(slot: PortraitSlot, surface: PortraitSurface, source: PortraitSource,
+    textureRevision: string): boolean {
+    if (!surface.root || !surface.output || surface.sourceGuid === undefined) return false;
     const visibleBounds: PortraitBounds | undefined = source.built.geometry.boundingBox ? {
       min: [
         source.built.geometry.boundingBox.min.x,
@@ -772,33 +1065,33 @@ export class PortraitRenderer {
       this.#renderer.setViewport(0, 0, surface.width, surface.height);
       this.#renderer.setScissor(0, 0, surface.width, surface.height);
       this.#renderer.setScissorTest(false);
-      this.#renderer.setClearColor(0x000000, 0);
+      // A stock SetPortraitTexture picture has a black ground (see portraitTextureOutput); the
+      // HUD's own canvases keep their transparent one for the native frames' styled backgrounds.
+      this.#renderer.setClearColor(0x000000, portraitTextureOutput(slot) ? 1 : 0);
       this.#renderer.autoClear = true;
       this.#renderer.clear(true, true, true);
       this.#renderer.render(this.#scene, this.#camera);
-      this.#renderer.readRenderTargetPixels(surface.target, 0, 0, surface.width, surface.height, surface.pixels);
-      const rowBytes = surface.width * 4;
-      for (let y = 0; y < surface.height; y++) {
-        const from = (surface.height - y - 1) * rowBytes;
-        const to = y * rowBytes;
-        for (let column = 0; column < rowBytes; column += 4) {
-          const sourcePixel = from + column;
-          const outputPixel = to + column;
-          surface.flipped[outputPixel] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel]!]!;
-          surface.flipped[outputPixel + 1] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel + 1]!]!;
-          surface.flipped[outputPixel + 2] = LINEAR_TO_SRGB_BYTE[surface.pixels[sourcePixel + 2]!]!;
-          // Alpha is already display-space coverage and must survive readback byte-for-byte.
-          surface.flipped[outputPixel + 3] = surface.pixels[sourcePixel + 3]!;
-        }
-      }
-      const context = surface.output.getContext("2d");
-      if (!context) return false;
-      const image = context.createImageData(surface.width, surface.height);
-      image.data.set(surface.flipped);
-      context.putImageData(image, 0, 0);
-      surface.paintedGuid = surface.sourceGuid;
-      surface.output.dataset["portraitReady"] = "true";
-      surface.output.dataset["portraitSlot"] = slot;
+      // The real draw has already linked the exact portrait variants. Give those programs inert
+      // owners before a target change disposes its material clones. Drain this surface's finite
+      // material list under the same render target/lights; another slot may use a different rig.
+      this.#programWarmup.registerObject(surface.root);
+      const warmupBatches = Math.ceil(this.#programWarmup.queued / PROGRAM_WARMUP_BATCH);
+      for (let batch = 0; batch < warmupBatches; batch++) this.#programWarmup.tick(this.#camera);
+      const pending: PortraitReadback = {
+        surface, version: surface.readbackVersion, guid: surface.sourceGuid,
+        sourceKey: source.key, textureRevision, canvas: surface.output,
+        width: surface.width, height: surface.height, pixels: surface.pixels,
+      };
+      // Three submits a pixel-pack buffer and GPU fence before returning its Promise. The finally
+      // below restores the world's state now; no world frame waits for readback or 2D conversion.
+      const readback = this.#renderer.readRenderTargetPixelsAsync(
+        surface.target, 0, 0, pending.width, pending.height, pending.pixels,
+      );
+      this.#pendingReadbacks.set(slot, pending);
+      void readback.then(
+        () => this.#finishReadback(slot, pending, true),
+        () => this.#finishReadback(slot, pending, false),
+      );
       return true;
     } catch {
       this.#markUnavailable(slot);
@@ -817,6 +1110,66 @@ export class PortraitRenderer {
     }
   }
 
+  #finishReadback(slot: PortraitSlot, pending: PortraitReadback, succeeded: boolean): void {
+    const { surface, canvas, width, height, pixels } = pending;
+    try {
+      if (this.#pendingReadbacks.get(slot) !== pending || this.#surfaces.get(slot) !== surface) return;
+      const target = this.#targets.get(slot);
+      const source = target?.guid === pending.guid ? this.#source(pending.guid) : undefined;
+      if (!succeeded || surface.readbackVersion !== pending.version
+        || target?.canvas !== canvas || surface.output !== canvas
+        || Math.max(1, canvas.width || 96) !== width || Math.max(1, canvas.height || 96) !== height
+        || surface.width !== width || surface.height !== height
+        || source?.key !== pending.sourceKey
+        || portraitTextureRevision(source.built) !== pending.textureRevision) {
+        surface.dirty = true;
+        return;
+      }
+      const context = canvas.getContext("2d");
+      if (!context) {
+        surface.dirty = true;
+        return;
+      }
+      const rowBytes = width * 4;
+      // The stock picture is opaque inside its circle; the rendered alpha there is always 1 over
+      // the black clear, so the mask alone is the output coverage.
+      const circle = portraitTextureOutput(slot) ? portraitCircleMask(width, height) : undefined;
+      for (let y = 0; y < height; y++) {
+        const from = (height - y - 1) * rowBytes;
+        const to = y * rowBytes;
+        for (let column = 0; column < rowBytes; column += 4) {
+          const sourcePixel = from + column;
+          const outputPixel = to + column;
+          surface.flipped[outputPixel] = LINEAR_TO_SRGB_BYTE[pixels[sourcePixel]!]!;
+          surface.flipped[outputPixel + 1] = LINEAR_TO_SRGB_BYTE[pixels[sourcePixel + 1]!]!;
+          surface.flipped[outputPixel + 2] = LINEAR_TO_SRGB_BYTE[pixels[sourcePixel + 2]!]!;
+          // Alpha is display-space coverage and survives readback byte-for-byte.
+          surface.flipped[outputPixel + 3] = circle ? circle[y * width + column / 4]! : pixels[sourcePixel + 3]!;
+        }
+      }
+      const image = context.createImageData(width, height);
+      image.data.set(surface.flipped);
+      context.putImageData(image, 0, 0);
+      this.#blankCanvases.delete(canvas);
+      this.#paintedGuids.set(canvas, pending.guid);
+      surface.paintedGuid = pending.guid;
+      canvas.dataset["portraitReady"] = "true";
+      canvas.dataset["portraitSlot"] = slot;
+    } catch {
+      // Driver/context loss or an unavailable 2D canvas leaves the existing fallback intact.
+      // A later frame can retry after this slot's one pending fence has settled.
+      if (this.#surfaces.get(slot) === surface) surface.dirty = true;
+    } finally {
+      if (this.#pendingReadbacks.get(slot) === pending) this.#pendingReadbacks.delete(slot);
+    }
+  }
+
+  /**
+   * Runs every frame for every slot without a paintable unit, so its steady state is a no-op: a
+   * canvas this renderer already blanked is not cleared again (measured before: one `clearRect`
+   * and a dataset write per frame for a closed quest page's canvas, for as long as the HUD lived),
+   * and a surface whose model is already gone is not disposed again.
+   */
   #markUnavailable(slot: PortraitSlot, preserveSnapshot = false): void {
     const target = this.#targets.get(slot);
     const surface = this.#surfaces.get(slot);
@@ -825,10 +1178,14 @@ export class PortraitRenderer {
     const keepPixels = preserveSnapshot && target?.guid !== undefined && surface?.paintedGuid === target.guid
       && surface.output === target.canvas && target.canvas?.dataset["portraitReady"] === "true"
       && surface.width === target.canvas.width && surface.height === target.canvas.height;
-    if (target?.canvas && !keepPixels) {
-      this.#clearCanvas(target.canvas);
+    // Both halves: an adoption cleanup may restore an older `portraitReady` onto a canvas this
+    // renderer blanked, and the flag must be put right again once.
+    if (target?.canvas && !keepPixels && !(this.#blankCanvases.has(target.canvas)
+      && target.canvas.dataset["portraitReady"] === "false")) {
+      this.#clearCanvas(target.canvas, pendingStockPicture(slot, target.guid));
     }
-    if (surface) {
+    if (surface && (surface.root !== undefined || surface.sourceGuid !== undefined
+      || !surface.dirty || surface.output !== target?.canvas)) {
       surface.output = target?.canvas;
       surface.dirty = true;
       // Retaining the 2D snapshot does not retain a model, material, atlas or live skeleton.
@@ -836,10 +1193,20 @@ export class PortraitRenderer {
     }
   }
 
-  #clearCanvas(canvas: HTMLCanvasElement | undefined): void {
+  /** `pending`: blank to the black disc of `pendingStockPicture` rather than to transparent. */
+  #clearCanvas(canvas: HTMLCanvasElement | undefined, pending = false): void {
     if (!canvas) return;
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
+    if (pending && context && canvas.width > 0 && canvas.height > 0) {
+      // Colour 0 is the picture's black ground; the alpha is the same circle a readback gets.
+      const mask = portraitCircleMask(canvas.width, canvas.height);
+      const image = context.createImageData(canvas.width, canvas.height);
+      for (let index = 0; index < mask.length; index++) image.data[index * 4 + 3] = mask[index]!;
+      context.putImageData(image, 0, 0);
+    }
     canvas.dataset["portraitReady"] = "false";
+    this.#blankCanvases.add(canvas);
+    this.#paintedGuids.delete(canvas);
   }
 }

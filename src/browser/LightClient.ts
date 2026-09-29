@@ -293,7 +293,8 @@ export class LightClient {
    * — so it is that number over time rather than that number, and clear weather is a hard zero.
    *
    * `underwater` is the camera's eye against the liquid surface, and it is not the swim flag:
-   * `Physics.ts:224` measures submersion at the character's feet, which is what decides swimming,
+   * `stepCharacter` in `game/Physics.ts` compares the water over the character's feet with half its
+   * collision height (`SWIM_DEPTH_RATIO`), which is what decides swimming,
    * while the sky changes when the *view* goes under and not a moment before.
    */
   sample(map: number, x: number, y: number, time: number, storm = 0, z?: number,

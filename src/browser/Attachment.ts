@@ -12,7 +12,8 @@ import * as THREE from "three";
 import type { AttachedModel } from "../gateway/CharacterAppearance.js";
 import type { SkinnedInstance } from "./AnimatedModel.js";
 import {
-  ATTACHMENT_HAND_LEFT, ATTACHMENT_HAND_RIGHT, ATTACHMENT_HELM, ATTACHMENT_MOUNT_SEAT,
+  ATTACHMENT_BACK, ATTACHMENT_HAND_LEFT, ATTACHMENT_HAND_RIGHT, ATTACHMENT_HELM,
+  ATTACHMENT_HIP_LEFT, ATTACHMENT_HIP_RIGHT, ATTACHMENT_MOUNT_SEAT,
   ATTACHMENT_SHIELD, ATTACHMENT_SHOULDER_LEFT, ATTACHMENT_SHOULDER_RIGHT, type WvmModel,
 } from "./Wvm.js";
 
@@ -21,12 +22,70 @@ const EQUIPMENT_SLOT_SHOULDERS = 2;
 const EQUIPMENT_SLOT_MAINHAND = 15;
 const EQUIPMENT_SLOT_OFFHAND = 16;
 const EQUIPMENT_SLOT_RANGED = 17;
+/** INVTYPE_WEAPON: one-handers of every school, daggers and fists included. */
+const INVENTORY_TYPE_WEAPON = 13;
 /** INVTYPE_SHIELD. */
 const INVENTORY_TYPE_SHIELD = 14;
+/** INVTYPE_2HWEAPON: every two-hander rides the back when stowed. */
+const INVENTORY_TYPE_2HWEAPON = 17;
+/** INVTYPE_WEAPONMAINHAND / INVTYPE_WEAPONOFFHAND: the hand-locked one-handers. */
+const INVENTORY_TYPE_MAINHAND = 21;
+const INVENTORY_TYPE_OFFHAND = 22;
+/** INVTYPE_RANGED: bows, guns and crossbows — not wands, which are INVTYPE_RANGEDRIGHT. */
+const INVENTORY_TYPE_RANGED = 15;
+/** ItemSubClass of class-2 weapons that ride the back: bows, guns, crossbows. */
+const RANGED_BACK_SUBCLASSES: ReadonlySet<number> = new Set([2, 3, 18]);
 /** UNIT_FIELD_BYTES_2 byte 0: which weapon is drawn, if any. */
 export const SHEATH_UNARMED = 0;
 export const SHEATH_MELEE = 1;
 export const SHEATH_RANGED = 2;
+
+/**
+ * Whether a stowed weapon rides the back.
+ *
+ * Grounded in `Item.dbc` `SheatheType` over this dataset rather than in the slot alone: every
+ * two-hander carries 1, every staff 2, every shield 4, while one-handers and daggers carry 3 and
+ * fist weapons 7. Bows, guns and crossbows carry 0, so those are named by subclass instead — and
+ * a ranged slot whose subclass never arrived stays hidden rather than guessed.
+ */
+export function stowedOnBack(item: AttachedModel): boolean {
+  if (item.inventoryType === INVENTORY_TYPE_2HWEAPON) return true;
+  if (item.slot === EQUIPMENT_SLOT_OFFHAND && item.inventoryType === INVENTORY_TYPE_SHIELD) return true;
+  if (item.slot === EQUIPMENT_SLOT_RANGED && item.inventoryType === INVENTORY_TYPE_RANGED
+    && item.subClass !== undefined) return RANGED_BACK_SUBCLASSES.has(item.subClass);
+  return false;
+}
+
+/**
+ * Whether a stowed weapon rides the hip.
+ *
+ * The one-handers: `INVTYPE_WEAPON` in either hand and the hand-locked `MAINHAND`/`OFFHAND`
+ * types. The dataset agrees — those rows carry `SheatheType` 3 — and the reference client hangs
+ * exactly these at the hip points. A stowed shield deliberately stays out: it rides the back,
+ * where held shields already prove point 0 is the forearm mount rather than a second back.
+ */
+export function stowedOnHip(item: AttachedModel): boolean {
+  if (item.slot !== EQUIPMENT_SLOT_MAINHAND && item.slot !== EQUIPMENT_SLOT_OFFHAND) return false;
+  return item.inventoryType === INVENTORY_TYPE_WEAPON
+    || item.inventoryType === INVENTORY_TYPE_MAINHAND
+    || item.inventoryType === INVENTORY_TYPE_OFFHAND;
+}
+
+/**
+ * The local turn a hung piece needs beyond the bone it hangs from.
+ *
+ * Item models are authored for the grip, blade forward along +X. Hands hold them as authored;
+ * hips do not — the reference client turns the long axis down alongside the leg (a quarter turn
+ * about Y), and the bone frame here is the same M2 frame it turns in, so the same quarter turn
+ * applies with no conjugation.
+ */
+const HIP_SHEATH_ROTATION = new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+
+export function attachmentRotation(point: number): THREE.Quaternion | undefined {
+  if (point !== ATTACHMENT_HIP_RIGHT && point !== ATTACHMENT_HIP_LEFT) return undefined;
+  return HIP_SHEATH_ROTATION.clone();
+}
 
 /**
  * Which point on the character an equipped item hangs from, or undefined when it should not be
@@ -37,9 +96,9 @@ export const SHEATH_RANGED = 2;
  * mirrored — LShoulder_Mail_B_01 and RShoulder_Mail_B_01 are different files.
  *
  * The sheath state names which weapon is out, not whether one is: at state 2 it is the bow that is
- * held and the melee weapons that are stowed. Only the drawn set is hung. Where a stowed weapon
- * goes depends on the item's sheath type, which is not in the data this has, so rather than guess
- * and put a sword across the wrong part of the back it is not drawn.
+ * held and the melee weapons that are stowed. A stowed two-hander, shield or bow rides the back
+ * (`ATTACHMENT_BACK`); a stowed one-hander rides its own hip — right hip for the main hand, left
+ * for the off hand — like the reference client hangs them.
  */
 export function attachmentPoint(item: AttachedModel, sheath: number): number | undefined {
   switch (item.slot) {
@@ -47,14 +106,20 @@ export function attachmentPoint(item: AttachedModel, sheath: number): number | u
     case EQUIPMENT_SLOT_SHOULDERS:
       return item.side === "left" ? ATTACHMENT_SHOULDER_LEFT : ATTACHMENT_SHOULDER_RIGHT;
     case EQUIPMENT_SLOT_MAINHAND:
-      return sheath === SHEATH_MELEE ? ATTACHMENT_HAND_RIGHT : undefined;
+      if (sheath === SHEATH_MELEE) return ATTACHMENT_HAND_RIGHT;
+      if (stowedOnBack(item)) return ATTACHMENT_BACK;
+      return stowedOnHip(item) ? ATTACHMENT_HIP_RIGHT : undefined;
     case EQUIPMENT_SLOT_OFFHAND:
-      if (sheath !== SHEATH_MELEE) return undefined;
-      // A shield rides the forearm rather than being gripped.
-      return item.inventoryType === INVENTORY_TYPE_SHIELD ? ATTACHMENT_SHIELD : ATTACHMENT_HAND_LEFT;
+      if (sheath === SHEATH_MELEE) {
+        // A shield rides the forearm rather than being gripped.
+        return item.inventoryType === INVENTORY_TYPE_SHIELD ? ATTACHMENT_SHIELD : ATTACHMENT_HAND_LEFT;
+      }
+      if (stowedOnBack(item)) return ATTACHMENT_BACK;
+      return stowedOnHip(item) ? ATTACHMENT_HIP_LEFT : undefined;
     case EQUIPMENT_SLOT_RANGED:
       // A bow, gun or crossbow is carried in the forward hand, which is the left one.
-      return sheath === SHEATH_RANGED ? ATTACHMENT_HAND_LEFT : undefined;
+      if (sheath === SHEATH_RANGED) return ATTACHMENT_HAND_LEFT;
+      return stowedOnBack(item) ? ATTACHMENT_BACK : undefined;
     default: return undefined;
   }
 }
@@ -63,7 +128,7 @@ export function attachmentPoint(item: AttachedModel, sheath: number): number | u
 export function attachmentRefusal(item: AttachedModel, sheath: number): string | undefined {
   if (attachmentPoint(item, sheath) !== undefined) return undefined;
   if (item.slot === EQUIPMENT_SLOT_MAINHAND || item.slot === EQUIPMENT_SLOT_OFFHAND) {
-    return "оружие в ножнах — клиент его не рисует";
+    return "оружие без ножен — тип не встаёт ни в руку, ни на бедро, ни на спину";
   }
   if (item.slot === EQUIPMENT_SLOT_RANGED) return "стрелковое убрано — клиент его не рисует";
   // Every other visible slot is armour the geosets and the body atlas carry: it is worn, not hung.

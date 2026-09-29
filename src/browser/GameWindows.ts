@@ -109,11 +109,17 @@ export class GameWindowManager {
     }
     // Windows are shown by clearing `hidden`, so that is where the first placement hooks in.
     const watcher = new MutationObserver(() => {
-      if (!element.hidden) this.#place(element);
+      if (!element.hidden) {
+        this.#place(element);
+        this.#raise(element);
+      }
     });
     watcher.observe(element, { attributes: true, attributeFilter: ["hidden"] });
     this.#watchers.set(element, watcher);
-    if (!element.hidden) this.#place(element);
+    if (!element.hidden) {
+      this.#place(element);
+      this.#raise(element);
+    }
   }
 
   /**
@@ -156,7 +162,7 @@ export class GameWindowManager {
     const placed = cascadePlacement(wanted, taken,
       { width: bounds.width, height: bounds.height },
       {
-        width: this.#viewport.clientWidth - this.#rightInset(),
+        width: this.#viewport.clientWidth - this.#rightInset(element),
         height: this.#viewport.clientHeight - this.#bottomInset(),
       });
     this.#apply(element, placed.left, placed.top);
@@ -185,7 +191,7 @@ export class GameWindowManager {
     for (let pass = 0; pass < 2; pass++) {
       this.#fitHeight(element, top);
       const bounds = element.getBoundingClientRect();
-      const maxLeft = Math.max(EDGE_MARGIN, width - this.#rightInset() - bounds.width);
+      const maxLeft = Math.max(EDGE_MARGIN, width - this.#rightInset(element) - bounds.width);
       const maxTop = Math.max(EDGE_MARGIN, height - this.#bottomInset() - bounds.height);
       left = Math.min(left, maxLeft);
       top = Math.min(top, maxTop);
@@ -207,12 +213,19 @@ export class GameWindowManager {
     return top < viewport.bottom ? viewport.bottom - top + EDGE_MARGIN : EDGE_MARGIN;
   }
 
-  /** Width of visible vertical action rows occupying the viewport's right edge. */
-  #rightInset(): number {
+  /** Width of visible right-edge controls that this window must leave accessible. */
+  #rightInset(element: HTMLElement): number {
     const viewport = this.#viewport.getBoundingClientRect();
     let left = viewport.right;
-    for (const element of this.#viewport.querySelectorAll<HTMLElement>(RIGHT_RESERVE_SELECTOR)) {
-      const bounds = element.getBoundingClientRect();
+    const reservations = [...this.#viewport.querySelectorAll<HTMLElement>(RIGHT_RESERVE_SELECTOR)];
+    // These two compact panels can fit beside the minimap and quest tracker. Measure the rail
+    // itself so their first and remembered positions stay out of it at every UI scale.
+    if (element.id === "inventory-window" || element.id === "character-window") {
+      const rail = this.#viewport.querySelector<HTMLElement>("#right-rail");
+      if (rail) reservations.push(rail);
+    }
+    for (const reservation of reservations) {
+      const bounds = reservation.getBoundingClientRect();
       if (bounds.width <= 0 || bounds.height <= 0) continue;
       left = Math.min(left, Math.max(viewport.left, bounds.left));
     }

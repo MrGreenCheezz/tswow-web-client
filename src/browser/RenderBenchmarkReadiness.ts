@@ -9,6 +9,10 @@ export interface BenchmarkRendererReadinessInput {
   readonly gpuQueriesPending: number;
   readonly modelTexturesPending: number;
   readonly worldTexturesPending: number;
+  /** Decoded rooms awaiting incremental geometry or material admission; absent in older captures. */
+  readonly wmoGroupsPending?: number;
+  /** Visible terrain awaiting a replacement after neighbour heights changed. */
+  readonly terrainRepairsPending?: number;
   readonly groundCoverModelsPending: number;
   /** Model and spell texture terminal failures/current settle revisions. */
   readonly modelTexturesErrors: number;
@@ -85,6 +89,8 @@ export type BenchmarkReadinessBlockingReason =
   | "gpu-queries-pending"
   | "model-textures-pending"
   | "world-textures-pending"
+  | "wmo-groups-pending"
+  | "terrain-repairs-pending"
   | "model-textures-errors"
   | "world-textures-errors"
   | "ground-cover-models-pending"
@@ -157,6 +163,8 @@ function cloneRendererReadiness(input: BenchmarkRendererReadinessInput): Benchma
   }
   return Object.freeze({
     renderFrameActive: input.renderFrameActive,
+    wmoGroupsPending: requireCount("rendererReadiness.wmoGroupsPending", input.wmoGroupsPending ?? 0),
+    terrainRepairsPending: requireCount("rendererReadiness.terrainRepairsPending", input.terrainRepairsPending ?? 0),
     gpuQueriesPending: requireCount("rendererReadiness.gpuQueriesPending", input.gpuQueriesPending),
     modelTexturesPending: requireCount(
       "rendererReadiness.modelTexturesPending",
@@ -349,6 +357,8 @@ function queueBlockers(
     if (renderer.gpuQueriesPending > 0) blockers.push("gpu-queries-pending");
     if (renderer.modelTexturesPending > 0) blockers.push("model-textures-pending");
     if (renderer.worldTexturesPending > 0) blockers.push("world-textures-pending");
+    if ((renderer.wmoGroupsPending ?? 0) > 0) blockers.push("wmo-groups-pending");
+    if ((renderer.terrainRepairsPending ?? 0) > 0) blockers.push("terrain-repairs-pending");
     if (renderer.modelTexturesErrors > 0) blockers.push("model-textures-errors");
     if (renderer.worldTexturesErrors > 0) blockers.push("world-textures-errors");
     if (renderer.groundCoverModelsPending > 0) blockers.push("ground-cover-models-pending");

@@ -2,9 +2,8 @@
 //
 // A unit that never becomes its model is the single most reported render fault in this client, and
 // every report of it so far has named the symptom — "there is a green pill where the innkeeper
-// should be". There are exactly five ways to end up there, and which of the five it was decides
-// whether the next slice is a retry, a fallback or a gateway fix. This is the ledger that says
-// which.
+// should be". The reason decides whether the next step is a retry, a fallback, a gateway fix
+// or waiting for the next frame's construction budget.
 //
 // Three of the five used to be permanent after a single failure, and that is what made the ledger's
 // first reading so useful — it said which. Т6 made all three recoverable: the appearance fetch and
@@ -12,7 +11,7 @@
 // remembered rather than rebuilt sixty times a second. So a count that falls between two frames is
 // now a retry landing, and a count that will not fall is a fact about the client's own files.
 //
-// The five reasons answer "why", and {@link StandInWearing} answers "instead of what": a pill, or
+// The reasons answer "why", and {@link StandInWearing} answers "instead of what": a pill, or
 // the model this unit wore before the display id moved. The second column was added by П1 because
 // the ledger was silent on the one fault it had been built to name — see the type's own comment.
 //
@@ -20,7 +19,7 @@
 // window prints it, and a test drives it directly.
 
 /**
- * The five ways a unit stays a stand-in, in the order they are reached.
+ * Why a unit stays a stand-in, in the order they are reached.
  *
  * * `display` — `UNIT_FIELD_DISPLAYID` has no answer yet from `/dbc/creature-models`, or is zero.
  * * `appearance` — the display answered, but `/dbc/character-appearance` has not, so the look of
@@ -29,17 +28,18 @@
  * * `atlas` — the body texture is still being painted, or painted to nothing; a layer whose picture
  *   failed transiently is asked for again on the same backoff, and a look whose every layer is
  *   settled is remembered as unpaintable rather than rebuilt.
+ * * `queued` — resources are ready; construction waits for a later frame's build slice.
  * * `template` — the rig produced no skinned template, which is cached as `null`. Permanent, and
  *   correctly so: the two ways to get one are a rig with no bones and a rig whose sequences all
  *   fail to build, and neither changes when anything else arrives — a rig whose whole animation set
  *   was merely held back has counted as a rig since `buildSkinnedTemplateFrom` was taught to say so.
  */
-export type StandInReason = "display" | "appearance" | "artifact" | "atlas" | "template";
+export type StandInReason = "display" | "appearance" | "artifact" | "atlas" | "template" | "queued";
 
 /**
  * What the unit is standing in while the reason lasts.
  *
- * `capsule` is the green pill this file is named for. `model` is the same five reasons met by a
+ * `capsule` is the green pill this file is named for. `model` is the same reasons met by a
  * unit that already has a model on: the display id moved, the new record has not come back, and
  * the player is looking at the shape their character was a moment ago. That case never reached
  * this ledger — the renderer only wrote a reason down when the capsule mesh was still there, and
@@ -51,7 +51,7 @@ export type StandInReason = "display" | "appearance" | "artifact" | "atlas" | "t
 export type StandInWearing = "capsule" | "model";
 
 /** In report order, which is the order a unit meets them. */
-export const STAND_IN_REASONS: readonly StandInReason[] = ["display", "appearance", "artifact", "atlas", "template"];
+export const STAND_IN_REASONS: readonly StandInReason[] = ["display", "appearance", "artifact", "atlas", "template", "queued"];
 
 /** What each reason is called in the diagnostics window. */
 export const STAND_IN_REASON_LABELS: Readonly<Record<StandInReason, string>> = {
@@ -60,6 +60,7 @@ export const STAND_IN_REASON_LABELS: Readonly<Record<StandInReason, string>> = {
   artifact: "модель не пришла",
   atlas: "атлас тела не собран",
   template: "скелет не собрался",
+  queued: "ожидает сборки",
 };
 
 export interface StandInSample {
@@ -76,7 +77,7 @@ export interface StandInReport {
   total: number;
   byReason: Record<StandInReason, number>;
   /**
-   * Units wearing a model they should have changed out of, for the same five reasons.
+   * Units wearing a model they should have changed out of, for the same reasons.
    *
    * Not part of `total`: they are not capsules, nothing about them looks broken, and that is
    * exactly why they need a counter. A druid whose bear record never arrived stands there as a

@@ -2,7 +2,7 @@ import "./style.css";
 import { SimpleScene } from "./SimpleScene.js";
 import { WorldRenderer3D } from "./WorldRenderer3D.js";
 import { game } from "./game/Context.js";
-import { captureRenderTelemetry, startRenderLoop } from "./game/Loop.js";
+import { captureRenderTelemetry, recentFrameHitches, startRenderLoop } from "./game/Loop.js";
 import {
   benchmarkBrowserFromUserAgent, captureBenchmarkEnvironment, captureBenchmarkWebGl,
   type BenchmarkJsonObject,
@@ -25,12 +25,20 @@ import {
 } from "./glue/FrontDoor.js";
 import { settings } from "./ui/Settings.js";
 import { settingNumber } from "./ui/SettingsModel.js";
+import { wirePerformanceCapture } from "./ui/PerformanceCapture.js";
+import { installPatchChainWatch } from "./PatchChainChanged.js";
+import { gatewayOrigin as defaultGatewayOrigin } from "./Environment.js";
+import { installNativeAppShell } from "./app/NativeAppShell.js";
 
 /**
  * Assembly. Everything this file used to do itself now lives in a module it can be found in:
  * panels under `ui/`, the connection and the character list under `app/`, keyboard and mouse under
  * `input/`, and whatever the world currently is under `game/`.
  */
+
+// An application, not a page: no selection, no ghost drags, no browser zoom, navigation or
+// shortcuts (app/NativeAppShell.ts) — in a browser tab and in the Electron window alike.
+installNativeAppShell();
 
 // Panels built at runtime join the same layout as the ones in the page markup.
 usePanelHost(gameWindows);
@@ -43,11 +51,22 @@ try {
   console.warn("WebGL renderer unavailable", error);
 }
 game.scene = new SimpleScene(worldCanvas, game.renderer === undefined);
+wirePerformanceCapture();
 
 // Console hook: dumps the opcodes the world loop dropped, with payload samples and the slice of
 // the plan that owes each one a handler.
 (globalThis as unknown as { webclientUnhandledOpcodes: () => unknown }).webclientUnhandledOpcodes = () =>
   game.world?.unhandledOpcodes.summary() ?? [];
+
+// Parser failures and malformed custom traffic have their own counter. A known opcode whose
+// payload failed to parse must not appear as an opcode without a handler.
+(globalThis as unknown as { webclientPacketErrors: () => unknown }).webclientPacketErrors = () =>
+  game.world?.packetErrors.summary() ?? [];
+
+// Hitch ring: the slowest recent frames with their per-section breakdown. After a walk with
+// visible sags, `webclientHitches()` in the console names the section that ate each frame.
+(globalThis as unknown as { webclientHitches: () => unknown }).webclientHitches = () =>
+  recentFrameHitches();
 
 async function installRenderBenchmarkConsoles(): Promise<void> {
   const [
@@ -213,6 +232,9 @@ if (frontDoorGateway) {
   // world entered through the glue screens has to agree with it about where the gateway is.
   gatewayInput.value = gatewaySocketUrl(frontDoorGateway, "/auth");
 }
+// A TSWoW build that rewrites the client patches latches the gateway (409 on every client-media
+// route) until it is restarted: one banner says so, whichever request meets it first.
+installPatchChainWatch(() => game.gatewayOrigin ?? frontDoorGateway ?? defaultGatewayOrigin(window.location));
 
 if (frontDoorMode(frontDoorSearch, storedFrontDoorMode(globalThis.localStorage)) === "glue") {
   const parameters = new URLSearchParams(frontDoorSearch);

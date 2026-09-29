@@ -1,5 +1,15 @@
 export const TERRAIN_GRID_SIZE = 533.3333333333334;
 export const ENVIRONMENT_RANGE = 400;
+/**
+ * LOD-1 leash for big outdoor shells (see WorldRenderer3D): the placement pool, the spatial
+ * query and the per-frame tile footprint must all cover this, or the far tier is dead for any
+ * placement whose tiles do not already overlap the near footprint.
+ */
+export const ENVIRONMENT_FAR_RANGE = 750;
+/** Extra yards retained past each draw leash; small models also prefetch inside this band. */
+export const ENVIRONMENT_RESIDENT_HYSTERESIS = 60;
+/** Tile/index coverage must include the resident band, including the far skyline. */
+export const ENVIRONMENT_STREAM_RANGE = ENVIRONMENT_FAR_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS;
 /** Production cap for completed CPU terrain tiles; active renderer pins may exceed it. */
 export const TERRAIN_TILE_CACHE_LIMIT = 64;
 /**
@@ -14,7 +24,7 @@ export const ENVIRONMENT_ANIMATION_CACHE_LIMIT = 128;
 /** Queued model requests retained between resource-frame commits. */
 export const ENVIRONMENT_MODEL_QUEUE_LIMIT = 256;
 /** Animation sidecar requests allowed on the wire at once. */
-export const ENVIRONMENT_ANIMATION_LOAD_CONCURRENCY = 2;
+export const ENVIRONMENT_ANIMATION_LOAD_CONCURRENCY = WVA_ANIMATION_DECODE_LIMIT;
 /** Queued animation sidecar requests retained between resource-frame commits. */
 export const ENVIRONMENT_ANIMATION_QUEUE_LIMIT = 256;
 /** Queued WMO group requests retained while the four group lanes are active. */
@@ -132,6 +142,11 @@ export interface EnvironmentResidencyBudgetOptions {
  * ask for it.
  */
 export type ModelLoadPriority = "background" | "normal" | "critical";
+
+interface ModelPrefetchInterest {
+  readonly names: readonly string[];
+  readonly keys: ReadonlySet<string>;
+}
 
 interface AnimationLoadJob {
   readonly key: string;
@@ -480,6 +495,17 @@ export class TerrainClient {
   #activeTiles = new Set<string>();
   #activeTilesTracked = false;
   #revision = 0;
+  /**
+   * Single-entry tile cache for the row-major scans (height fields, water, holes): consecutive
+   * samples almost always share a tile, and rebuilding the key plus re-walking the LRU map per
+   * sample is pure overhead. Hits only — misses keep the load-triggering path untouched.
+   * Invalidated wherever the tile map mutates an entry (`#resolve`, `#deleteTile`); LRU
+   * reorders preserve identity and are safe to skip.
+   */
+  #lastTileMap: number | undefined;
+  #lastTileX = -1;
+  #lastTileY = -1;
+  #lastTile: TerrainTile | null | undefined;
 
   constructor(gatewayWebSocketUrl: string, tileLimit: number = TERRAIN_TILE_CACHE_LIMIT) {
     if (!Number.isSafeInteger(tileLimit) || tileLimit <= 0) {
@@ -565,9 +591,9 @@ export class TerrainClient {
     if (map === undefined) return undefined;
     const grid = terrainGrid(x, y);
     if (!grid) return undefined;
-    const key = `${map}/${grid.x}/${grid.y}`;
-    const tile = this.#tile(key);
+    const tile = this.#tileByGrid(map, grid);
     if (tile !== undefined) return tile?.heightAt(x, y);
+    const key = `${map}/${grid.x}/${grid.y}`;
     if (!this.#loading.has(key)) {
       this.#loading.add(key);
       void this.#load(map, grid, key);
@@ -601,7 +627,7 @@ export class TerrainClient {
     if (map === undefined) return false;
     const grid = terrainGrid(x, y);
     if (!grid) return false;
-    return this.#tile(`${map}/${grid.x}/${grid.y}`)?.isHole(x, y) ?? false;
+    return this.#tileByGrid(map, grid)?.isHole(x, y) ?? false;
   }
 
   /**
@@ -615,14 +641,14 @@ export class TerrainClient {
     if (map === undefined) return undefined;
     const grid = terrainGrid(x, y);
     if (!grid) return undefined;
-    return this.#tile(`${map}/${grid.x}/${grid.y}`)?.areaAt(x, y);
+    return this.#tileByGrid(map, grid)?.areaAt(x, y);
   }
 
   liquidAt(map: number | undefined, x: number, y: number): { height: number; type: number; entry: number; cells: boolean } | undefined {
     if (map === undefined) return undefined;
     const grid = terrainGrid(x, y);
     if (!grid) return undefined;
-    return this.#tile(`${map}/${grid.x}/${grid.y}`)?.liquidAt(x, y);
+    return this.#tileByGrid(map, grid)?.liquidAt(x, y);
   }
 
   async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
@@ -649,6 +675,7 @@ export class TerrainClient {
     // renderer has moved its pins, and must not be allowed to displace their completed payloads.
     this.#tiles.delete(key);
     this.#tiles.set(key, tile);
+    this.#invalidateTileCache();
     this.#revision++;
     this.#tileRevisions.set(key, this.#revision);
     this.#evictTiles();
@@ -663,6 +690,28 @@ export class TerrainClient {
     return tile;
   }
 
+  /**
+   * One sample's tile, through the single-entry cache above. Returns the terminal null as-is
+   * (a known 404 must not retrigger a load) and undefined for tiles still on the wire.
+   */
+  #tileByGrid(map: number, grid: TerrainGrid): TerrainTile | null | undefined {
+    if (map === this.#lastTileMap && grid.x === this.#lastTileX && grid.y === this.#lastTileY) {
+      return this.#lastTile;
+    }
+    const tile = this.#tile(`${map}/${grid.x}/${grid.y}`);
+    this.#lastTileMap = map;
+    this.#lastTileX = grid.x;
+    this.#lastTileY = grid.y;
+    this.#lastTile = tile;
+    return tile;
+  }
+
+  /** Drops the single-entry cache: the entry it names no longer exists or has been replaced. */
+  #invalidateTileCache(): void {
+    this.#lastTileMap = undefined;
+    this.#lastTile = undefined;
+  }
+
   #touchTile(key: string): void {
     if (this.#tiles.has(key)) this.#tile(key);
   }
@@ -670,6 +719,7 @@ export class TerrainClient {
   #deleteTile(key: string): void {
     this.#tiles.delete(key);
     this.#tileRevisions.delete(key);
+    this.#invalidateTileCache();
   }
 
   #evictTiles(): void {
@@ -714,7 +764,22 @@ export class EnvironmentClient {
   readonly #failedModelEntries = new Set<string>();
   readonly #animations = new Map<string, WvmSkeletonClip[] | null>();
   readonly #modelCosts = new Map<string, DecodedResidencyCost>();
-  readonly #animationCosts = new Map<string, DecodedResidencyCost>();
+  /**
+   * What each distinct resident clip set is charged, and how many keys hold it. Byte-identical
+   * sidecars decode to one set (`WvaAnimationDecodeClient`), so two rigs sharing it pay once.
+   */
+  readonly #animationCharges = new Map<WvmSkeletonClip[], { readonly cost: DecodedResidencyCost; keys: number }>();
+  readonly #animationEntryCosts = new WeakMap<WvmSkeletonClip[], DecodedResidencyCost>();
+  /**
+   * Evicted sets a skinned template has compiled from, held weakly.
+   *
+   * A template stops asking once its merge completes, so its sidecar used to become evictable
+   * while in use: evicting it freed nothing (the template's compiled tracks view the same keys),
+   * and the next appearance of that model downloaded, decoded and compiled all of it again — the
+   * compiled clips are cached by clip identity. Asking again now returns the very same set with no
+   * request while any template still holds it. A set nothing holds is collected as before.
+   */
+  readonly #evictedAnimations = new Map<string, WeakRef<WvmSkeletonClip[]>>();
   #modelTypedBackingBytes = 0;
   #modelNumericArrayElements = 0;
   #animationTypedBackingBytes = 0;
@@ -725,6 +790,9 @@ export class EnvironmentClient {
   /** Exact WMO group demands made by the currently open frame, keyed by decoded parent identity. */
   #frameGroupDemands = new Map<EnvironmentModel, Set<number>>();
   #activeModelKeys = new Set<string>();
+  /** Position-based speculative interest, renewed each frame independently of the scan cadence. */
+  #modelPrefetchInterest: ModelPrefetchInterest | undefined;
+  #frameModelPrefetchInterest: ModelPrefetchInterest | undefined;
   #activeAnimationKeys = new Set<string>();
   /** Exact WMO group demands committed by the most recent frame. */
   #activeGroupDemands = new Map<EnvironmentModel, Set<number>>();
@@ -732,6 +800,8 @@ export class EnvironmentClient {
   readonly #animationQueue = new Map<string, AnimationLoadJob>();
   readonly #animationInflight = new Map<string, AnimationLoadJob>();
   readonly #animationFailures = new Map<string, AnimationFailure>();
+  readonly #animationDecoder = new WvaAnimationDecodeClient();
+  readonly #tileDecoder = new EnvironmentTileDecodeClient();
   #animationDrainScheduled = false;
   #activeAnimations = 0;
   /** Queued, but not active, models. Map order is FIFO among entries of equal priority. */
@@ -828,6 +898,7 @@ export class EnvironmentClient {
     if (this.#resourceFrameOpen) throw new Error("Environment resource frame is already open");
     this.#resourceFrameOpen = true;
     this.#frameModelKeys = new Set();
+    this.#frameModelPrefetchInterest = undefined;
     this.#frameAnimationKeys = new Set();
     this.#frameGroupDemands = new Map();
   }
@@ -838,6 +909,8 @@ export class EnvironmentClient {
     if (!this.#resourceFrameOpen) return;
     this.#resourceFrameOpen = false;
     this.#activeModelKeys = this.#frameModelKeys;
+    this.#modelPrefetchInterest = this.#frameModelPrefetchInterest;
+    this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys = this.#frameAnimationKeys;
     this.#activeGroupDemands = this.#frameGroupDemands;
     this.#frameModelKeys = new Set();
@@ -855,6 +928,8 @@ export class EnvironmentClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#animationDecoder.dispose();
+    this.#tileDecoder.dispose();
     for (const controller of this.#loadControllers) controller.abort();
     this.#loadControllers.clear();
     if (this.#backgroundReservationTimer !== undefined) clearTimeout(this.#backgroundReservationTimer);
@@ -865,6 +940,8 @@ export class EnvironmentClient {
     this.#frameAnimationKeys.clear();
     this.#frameGroupDemands.clear();
     this.#activeModelKeys.clear();
+    this.#modelPrefetchInterest = undefined;
+    this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys.clear();
     this.#activeGroupDemands.clear();
     this.#activeTiles.clear();
@@ -876,7 +953,8 @@ export class EnvironmentClient {
     this.#failedModelEntries.clear();
     this.#animations.clear();
     this.#modelCosts.clear();
-    this.#animationCosts.clear();
+    this.#animationCharges.clear();
+    this.#evictedAnimations.clear();
     this.#modelTypedBackingBytes = 0;
     this.#modelNumericArrayElements = 0;
     this.#animationTypedBackingBytes = 0;
@@ -986,8 +1064,11 @@ export class EnvironmentClient {
     for (const model of this.#models.values()) {
       if (model !== null) visitArrayBufferViewLeaves(model, model, visitor);
     }
-    for (const animations of this.#animations.values()) {
-      if (animations !== null) visitArrayBufferViewLeaves(animations, animations, visitor);
+    for (const animations of this.#animationCharges.keys()) {
+      // A worker-decoded set is one backing; walking its clips would build every channel list.
+      const backing = wvaClipSetBacking(animations);
+      if (!backing) visitArrayBufferViewLeaves(animations, animations, visitor);
+      else if (backing.byteLength > 0) visitor.referenceCpu(animations, backing);
     }
   }
 
@@ -1002,22 +1083,29 @@ export class EnvironmentClient {
       this.#evictTiles();
       return [];
     }
-    const grids = new Map<string, TerrainGrid>();
-    for (const grid of terrainGridFootprint(x, y, range)) grids.set(`${grid.x}/${grid.y}`, grid);
-    this.#activeTiles = new Set([...grids.keys()].map((grid) => `${map}/${grid}`));
+    // One key string per footprint tile, shared by the active set, the touch order, the cache key
+    // and the tile lookups below (the old code built three string forms per tile every frame).
+    // Tile loads and evictions both bump `#generation`, so a cache-key hit also means the touch
+    // and eviction passes would be no-ops — return before that churn, not after it.
+    const footprint = terrainGridFootprint(x, y, range);
+    const keys = footprint.map((grid) => `${map}/${grid.x}/${grid.y}`);
+    const sortedKeys = [...keys].sort();
+    const cacheKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
+    if (cacheKey === this.#objectsKey) return this.#objectsCache;
+
+    this.#activeTiles = new Set(keys);
 
     // A terminal answer is a real cache entry even when it is null (404 or failed fallback). Move
     // every such entry to the back before admitting any new response so the oldest unpinned tile
     // is the one that leaves first.
-    for (const key of this.#activeTiles) this.#touchTile(key);
+    for (const key of keys) this.#touchTile(key);
     this.#evictTiles();
 
-    const cacheKey = `${map}:${this.#generation}:${[...grids.keys()].sort().join(",")}`;
-    if (cacheKey === this.#objectsKey) return this.#objectsCache;
-
     const objects = new Map<number, EnvironmentObject>();
-    for (const grid of grids.values()) {
-      const key = `${map}/${grid.x}/${grid.y}`;
+    for (let index = 0; index < footprint.length; index++) {
+      const grid = footprint[index];
+      const key = keys[index];
+      if (!grid || key === undefined) continue;
       const tile = this.#tiles.get(key);
       if (tile) for (const object of tile) objects.set(object.id, object);
       else if (tile === undefined && !this.#loading.has(key)) {
@@ -1025,7 +1113,7 @@ export class EnvironmentClient {
         void this.#load(map, grid, key);
       }
     }
-    this.#objectsKey = cacheKey;
+    this.#objectsKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
     this.#objectsCache = [...objects.values()];
     return this.#objectsCache;
   }
@@ -1047,6 +1135,37 @@ export class EnvironmentClient {
     if (this.#disposed) return undefined;
     const key = modelKey(name);
     this.#touchModelDemand(key);
+    return this.#lookupModel(key, priority);
+  }
+
+  /**
+   * Renews the position-based prefetch footprint for this resource frame without loading or
+   * pinning decoded models. Call even on frames where the bounded prefetch scan is skipped.
+   * Reusing the immutable names array avoids rebuilding its normalized set every frame.
+   * An empty/undrawn frame releases this interest just like ordinary renderer demand.
+   */
+  retainModelPrefetch(names: readonly string[]): void {
+    if (this.#disposed) return;
+    const previous = this.#frameModelPrefetchInterest ?? this.#modelPrefetchInterest;
+    const interest = previous?.names === names ? previous : { names, keys: new Set(names.map((name) => modelKey(name))) };
+    if (this.#resourceFrameOpen) this.#frameModelPrefetchInterest = interest;
+    else this.#modelPrefetchInterest = interest;
+  }
+
+  /** Background demand shares the priority queue/backoff, but never bypasses the cache budgets. */
+  prefetchModel(name: string): EnvironmentModel | undefined {
+    if (this.#disposed) return undefined;
+    const key = modelKey(name);
+    if (!this.#isModelPrefetched(key)) return undefined;
+    return this.#lookupModel(key, "background");
+  }
+
+  #isModelPrefetched(key: string): boolean {
+    return (this.#resourceFrameOpen ? this.#frameModelPrefetchInterest : this.#modelPrefetchInterest)
+      ?.keys.has(key) ?? false;
+  }
+
+  #lookupModel(key: string, priority: ModelLoadPriority): EnvironmentModel | undefined {
     const value = this.#models.get(key);
     if (value) {
       this.#touchModel(key);
@@ -1148,6 +1267,8 @@ export class EnvironmentClient {
       this.#touchAnimation(key);
       return undefined;
     }
+    const revived = this.#reviveAnimation(key);
+    if (revived) return revived;
     const queued = this.#animationQueue.get(key);
     if (queued !== undefined) {
       if (MODEL_LOAD_PRIORITY[priority] > MODEL_LOAD_PRIORITY[queued.priority]) queued.priority = priority;
@@ -1202,16 +1323,18 @@ export class EnvironmentClient {
         );
         return;
       }
-      let animations: WvmSkeletonClip[];
+      let decoded: WvaAnimationDecodeResult;
       try {
-        animations = decodeWvaAnimations(data, job.bones);
+        decoded = await this.#animationDecoder.decode(data, job.bones, controller.signal);
       } catch (error) {
-        this.#deferAnimation(job.key, true);
+        if (this.#disposed) return;
+        this.#deferAnimation(job.key, error instanceof WvaAnimationPayloadError);
         this.#statusError(error);
         return;
       }
+      if (this.#disposed) return;
       this.#animationFailures.delete(job.key);
-      this.#storeAnimations(job.key, animations);
+      this.#storeAnimations(job.key, decoded);
     } catch (error) {
       if (this.#disposed) return;
       if (error instanceof DeterministicEnvironmentResourceError) {
@@ -1601,7 +1724,7 @@ export class EnvironmentClient {
     const demandedByCurrentFrame = this.#resourceFrameOpen
       ? this.#frameModelKeys.has(key)
       : this.#activeModelKeys.has(key);
-    if (this.#resourceFrameCommitted && !demandedByCurrentFrame) {
+    if (this.#resourceFrameCommitted && !demandedByCurrentFrame && !this.#isModelPrefetched(key)) {
       // A request that finishes after the renderer has moved on must not leave a retry ledger for
       // an unbounded stream of old scenery. Re-entry will make a fresh demand-driven request.
       this.#modelFailures.delete(key);
@@ -1620,15 +1743,15 @@ export class EnvironmentClient {
     this.#storeModel(key, null, "failed");
   }
 
-  /** Commit-frame cleanup for queued work and retry records that are no longer in the exact view. */
+  /** Drop work outside both the current draw footprint and the renewed position-based prefetch set. */
   #pruneModelWork(): void {
     for (const key of this.#modelQueue.keys()) {
-      if (this.#activeModelKeys.has(key)) continue;
+      if (this.#activeModelKeys.has(key) || this.#isModelPrefetched(key)) continue;
       this.#modelQueue.delete(key);
       this.#requestedModels.delete(key);
     }
     for (const key of this.#modelFailures.keys()) {
-      if (!this.#activeModelKeys.has(key)) this.#modelFailures.delete(key);
+      if (!this.#activeModelKeys.has(key) && !this.#isModelPrefetched(key)) this.#modelFailures.delete(key);
     }
   }
 
@@ -1799,9 +1922,9 @@ export class EnvironmentClient {
     if (!this.#resourceFrameOpen) this.#evictModels();
   }
 
-  #storeAnimations(key: string, value: WvmSkeletonClip[] | null): void {
+  #storeAnimations(key: string, decoded: WvaAnimationDecodeResult | null): void {
     if (this.#disposed) return;
-    const cost = value === null ? undefined : decodedResidencyCost(value);
+    const cost = decoded?.cost;
     if (cost) {
       const error = decodedEntryLimitError(
         "animation",
@@ -1811,13 +1934,37 @@ export class EnvironmentClient {
       if (error) throw error;
     }
     this.#deleteAnimationEntry(key);
-    this.#animations.set(key, value);
-    if (cost) {
-      this.#animationCosts.set(key, cost);
-      this.#animationTypedBackingBytes += cost.typedBackingBytes;
-      this.#animationNumericArrayElements += cost.numericArrayElements;
-    }
+    this.#evictedAnimations.delete(key);
+    if (decoded && cost) this.#setAnimationEntry(key, decoded.clips, cost);
+    else this.#animations.set(key, null);
     if (!this.#resourceFrameOpen) this.#evictAnimations();
+  }
+
+  /** Charges a clip set once however many rig keys hold it. */
+  #setAnimationEntry(key: string, clips: WvmSkeletonClip[], cost: DecodedResidencyCost): void {
+    this.#animations.set(key, clips);
+    this.#animationEntryCosts.set(clips, cost);
+    const charge = this.#animationCharges.get(clips);
+    if (charge) {
+      charge.keys++;
+      return;
+    }
+    this.#animationCharges.set(clips, { cost, keys: 1 });
+    this.#animationTypedBackingBytes += cost.typedBackingBytes;
+    this.#animationNumericArrayElements += cost.numericArrayElements;
+  }
+
+  /** An evicted set that a template still holds comes back as the same objects, with no request. */
+  #reviveAnimation(key: string): WvmSkeletonClip[] | undefined {
+    const handle = this.#evictedAnimations.get(key);
+    if (!handle) return undefined;
+    this.#evictedAnimations.delete(key);
+    const clips = handle.deref();
+    const cost = clips && this.#animationEntryCosts.get(clips);
+    if (!clips || !cost) return undefined;
+    this.#setAnimationEntry(key, clips, cost);
+    if (!this.#resourceFrameOpen) this.#evictAnimations();
+    return clips;
   }
 
   #replaceCurrentModelCost(key: string, model: EnvironmentModel, cost: DecodedResidencyCost): void {
@@ -1847,13 +1994,17 @@ export class EnvironmentClient {
     return model;
   }
 
-  #deleteAnimationEntry(key: string): void {
+  #deleteAnimationEntry(key: string): WvmSkeletonClip[] | null | undefined {
+    const clips = this.#animations.get(key);
     this.#animations.delete(key);
-    const cost = this.#animationCosts.get(key);
-    if (!cost) return;
-    this.#animationCosts.delete(key);
-    this.#animationTypedBackingBytes -= cost.typedBackingBytes;
-    this.#animationNumericArrayElements -= cost.numericArrayElements;
+    if (!clips) return clips;
+    const charge = this.#animationCharges.get(clips);
+    if (charge && --charge.keys === 0) {
+      this.#animationCharges.delete(clips);
+      this.#animationTypedBackingBytes -= charge.cost.typedBackingBytes;
+      this.#animationNumericArrayElements -= charge.cost.numericArrayElements;
+    }
+    return clips;
   }
 
   #evictModels(): void {
@@ -1880,12 +2031,19 @@ export class EnvironmentClient {
       let removed = false;
       for (const key of this.#animations.keys()) {
         if (this.#activeAnimationKeys.has(key)) continue;
-        this.#deleteAnimationEntry(key);
+        const clips = this.#deleteAnimationEntry(key);
+        if (clips && wvaClipSetConsumed(clips)) this.#evictedAnimations.set(key, new WeakRef(clips));
         this.#animationFailures.delete(key);
         removed = true;
         break;
       }
-      if (!removed) return;
+      if (!removed) break;
+    }
+    // Handles of collected sets are dead weight; sweep them once they outnumber the cache itself.
+    if (this.#evictedAnimations.size > this.#animationLimit) {
+      for (const [key, handle] of this.#evictedAnimations) {
+        if (handle.deref() === undefined) this.#evictedAnimations.delete(key);
+      }
     }
   }
 
@@ -1916,11 +2074,8 @@ export class EnvironmentClient {
         return;
       }
       if (!response.ok) throw new Error(`Environment gateway returned ${response.status}`);
-      const value: unknown = await response.json();
+      const value = await this.#tileDecoder.decodeResponse(response, controller.signal);
       if (this.#disposed) return;
-      if (!Array.isArray(value) || value.length > 10_000 || !value.every(isEnvironmentObject)) {
-        throw new Error("Environment gateway returned invalid objects");
-      }
       this.#resolve(key, value, "resident");
       const loaded = [...this.#tiles.values()].filter((tile): tile is EnvironmentObject[] => Array.isArray(tile));
       this.onStatus?.(`VMAP tiles: ${loaded.length} · объектов: ${loaded.reduce((sum, tile) => sum + tile.length, 0)}`, false);
@@ -2052,6 +2207,8 @@ export function decodedResidencyCost(value: unknown): Readonly<DecodedResidencyC
   visit(value);
   return Object.freeze({ typedBackingBytes, numericArrayElements });
 }
+
+export { decodedAnimationResidencyCost } from "./WvaAnimationDecode.js";
 
 class DeterministicEnvironmentResourceError extends Error {}
 
@@ -2341,31 +2498,6 @@ function decodeEnvironmentModel(data: ArrayBuffer): EnvironmentModel {
   return { vertices, indices };
 }
 
-function isEnvironmentObject(value: unknown): value is EnvironmentObject {
-  if (!value || typeof value !== "object") return false;
-  const object = value as Record<string, unknown>;
-  const numbers = ["id", "x", "y", "z", "rotationX", "rotationY", "rotationZ", "scale"];
-  if (!numbers.every((key) => typeof object[key] === "number" && Number.isFinite(object[key]))) return false;
-  if ((object.kind !== "m2" && object.kind !== "wmo") || typeof object.name !== "string") return false;
-  if (object.interior !== undefined && typeof object.interior !== "boolean") return false;
-  if (object.doodadSet !== undefined && (!Number.isInteger(object.doodadSet) || (object.doodadSet as number) < 0)) return false;
-  if (object.tint !== undefined) {
-    if (!Array.isArray(object.tint) || object.tint.length !== 4) return false;
-    if (!object.tint.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) return false;
-  }
-  if (object.localLight !== undefined) {
-    if (!Array.isArray(object.localLight) || object.localLight.length !== 4) return false;
-    if (!object.localLight.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) return false;
-  }
-  const quaternion = [object.quaternionX, object.quaternionY, object.quaternionZ, object.quaternionW];
-  if (quaternion.some((value) => value !== undefined) && !quaternion.every((value) => typeof value === "number" && Number.isFinite(value))) return false;
-  if (object.bounds === undefined) return true;
-  if (!object.bounds || typeof object.bounds !== "object") return false;
-  const bounds = object.bounds as Record<string, unknown>;
-  return ["minX", "minY", "minZ", "maxX", "maxY", "maxZ"]
-    .every((key) => typeof bounds[key] === "number" && Number.isFinite(bounds[key]));
-}
-
 function fourCC(view: DataView, offset: number): string {
   return String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3));
 }
@@ -2399,13 +2531,19 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 import type { EnvironmentBounds, EnvironmentObject } from "../gateway/VMapProtocol.js";
+import { EnvironmentTileDecodeClient } from "./EnvironmentTileDecode.js";
 // The same ladder, from the file that measured it: a model the gateway has to build out of the
 // archives fails in exactly the way a body texture does, and two different waits would be two
 // numbers to keep in step for no reason.
 import { IMAGE_RETRY_BACKOFF_MS } from "./CharacterAtlas.js";
 import {
-  decodeWvaAnimations, decodeWvm9, visualAnimationsUrl, visualModelUrl, type WvmSkeletonClip,
+  decodeWvm9, visualAnimationsUrl, visualModelUrl, type WvmSkeletonClip,
 } from "./Wvm.js";
+import {
+  WvaAnimationDecodeClient, WvaAnimationPayloadError, WVA_ANIMATION_DECODE_LIMIT,
+} from "./WvaAnimationDecodeClient.js";
+import { wvaClipSetBacking, wvaClipSetConsumed } from "./WvaAnimationDecode.js";
+import type { WvaAnimationDecodeResult } from "./WvaAnimationDecodeProtocol.js";
 import { decodeWwm, decodeWwmGroup } from "./WmoModel.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { EnvironmentModel, ModelChannel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";

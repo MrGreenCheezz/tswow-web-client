@@ -1,8 +1,8 @@
-import type { AreaData, AreaInfo, ContinentInfo, MapAreaInfo, MapInfo, MapOverlayInfo } from "../gateway/AreaMetadata.js";
+import type { AreaData, AreaInfo, AreaPoiInfo, ContinentInfo, DungeonMapInfo, MapAreaInfo, MapInfo, MapOverlayInfo } from "../gateway/AreaMetadata.js";
 import { WorldMapHierarchy } from "./ui/WorldMapHierarchy.js";
 import { WorldMapZoneMapClient, type WorldMapZoneHit } from "./WorldMapZoneMap.js";
 
-export type { AreaData, AreaInfo, ContinentInfo, MapAreaInfo, MapInfo, MapOverlayInfo };
+export type { AreaData, AreaInfo, AreaPoiInfo, ContinentInfo, DungeonMapInfo, MapAreaInfo, MapInfo, MapOverlayInfo };
 
 export type WorldMapAreaHit =
   | Exclude<WorldMapZoneHit, { status: "ready" }>
@@ -56,7 +56,10 @@ export class AreaClient {
         // Bumped to 5 for `ContinentInfo.worldMapId` and WorldMapTransforms: without them the
         // hierarchy collapses every continent onto Cosmic and projects virtual-map zones in the
         // wrong coordinate space until the hour-old response expires.
-        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=5`);
+        // Version 6 adds DungeonMap floors, AreaPOIs and WorldMapOverlay map points for stock FrameXML.
+        // Version 7 adds `ContinentInfo.taxiMin/taxiMax`, the square the stock TaxiFrame's TAXIMAP
+        // pictures are drawn for; an older reply leaves the flight map on its WorldMapArea stand-in.
+        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=7`);
         if (!response.ok) throw new Error(`Area gateway returned ${response.status}`);
         const value = await response.json() as AreaData;
         if (!Array.isArray(value.areas) || !Array.isArray(value.mapAreas)) throw new Error("malformed area data");
@@ -72,6 +75,11 @@ export class AreaClient {
 
   get ready(): boolean {
     return this.#data !== undefined;
+  }
+
+  /** Immutable-by-convention DBC snapshot for the stock FrameXML world-map C API. */
+  snapshot(): Readonly<AreaData> | undefined {
+    return this.#data;
   }
 
   #index(value: AreaData): void {

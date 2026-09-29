@@ -47,7 +47,10 @@ export function reactionTo(object: WorldObjectState): number {
  */
 export function enemyCandidates(): TargetCandidate[] {
   const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  // Act through the controlled unit (possess/charm/vehicle), not always the character:
+  // tabbing while possessing must cycle around the possessed body.
+  const caster = world?.controlledGuid ?? world?.state.selfGuid;
+  const self = caster === undefined ? undefined : world?.state.objects.get(caster);
   if (!world || !self?.position) return [];
   return enemiesAround(
     world.state.objects.values(),

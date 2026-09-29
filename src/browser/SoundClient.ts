@@ -127,6 +127,11 @@ export class SoundClient {
     return undefined;
   }
 
+  /** A named lookup has landed, including a definite missing name. */
+  namedAnswered(name: string): boolean {
+    return this.#named.has(name);
+  }
+
   /**
    * The two ambience kits of a `SoundAmbience` row, day and night.
    *

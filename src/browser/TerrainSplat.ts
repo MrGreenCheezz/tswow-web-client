@@ -117,7 +117,7 @@ export class TerrainSplatClient {
     }
   }
 
-  /** Makes the GPU tile cache exactly the renderer's visible footprint. */
+  /** Makes the tile cache exactly the renderer's retained footprint (visible, prepared and recent). */
   setActiveTiles(map: number | undefined, grids: Iterable<TerrainGrid>): void {
     if (this.#disposed) return;
     const active = new Set<string>();
@@ -343,6 +343,37 @@ export class TerrainSplatClient {
   }
 
   #loadTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
+    // An <img> handed to WebGL is decoded again on the main thread inside its first upload,
+    // because WebGL wants the pixels unpremultiplied and unmanaged: 6-9 ms for a 1024x1024 alpha
+    // map, on the frame the tile is prepared. The bitmap path decodes off the main thread.
+    if (typeof createImageBitmap === "function" && typeof ImageBitmap === "function"
+      && typeof fetch === "function") {
+      return this.#loadBitmapTexture(request, url);
+    }
+    return this.#loadImageTexture(request, url);
+  }
+
+  /**
+   * The same pixels WebGL's own image upload produces for these textures: `flipY` (the Texture
+   * default) is applied by the decoder, and the colour is neither premultiplied nor colour-managed,
+   * exactly what `UNPACK_PREMULTIPLY_ALPHA = false` and a `NoColorSpace` texture ask of an <img>.
+   */
+  async #loadBitmapTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to load ${url}`);
+    const bitmap = await createImageBitmap(await response.blob(), {
+      imageOrientation: "flipY", premultiplyAlpha: "none", colorSpaceConversion: "none",
+    });
+    const texture = new THREE.Texture(bitmap);
+    // Already flipped; WebGL ignores the unpack flip for a bitmap in any case.
+    texture.flipY = false;
+    // Kept open for as long as the texture lives, so a restored context can upload it again.
+    texture.addEventListener("dispose", () => bitmap.close());
+    this.#trackTexture(request, texture);
+    return texture;
+  }
+
+  #loadImageTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
     return new Promise((resolve, reject) => {
       let handle: THREE.Texture | undefined;
       let failed = false;

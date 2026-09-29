@@ -1,8 +1,8 @@
-/** One item retained by the bounded admission heap. */
+/** One item retained by the bounded admission heap; the displaced worst entry is reused. */
 interface AdmissionEntry<T> {
-  readonly item: T;
-  readonly score: number;
-  readonly ordinal: number;
+  item: T;
+  score: number;
+  ordinal: number;
 }
 
 function compareAdmissionEntries<T>(left: AdmissionEntry<T>, right: AdmissionEntry<T>): number {
@@ -58,29 +58,63 @@ export function stableBoundedTopK<T>(
   k: number,
   scoreOf: (item: T) => number,
 ): T[] {
+  checkAdmissionK(k);
+  if (k === 0) return [];
+  const heap: AdmissionEntry<T>[] = [];
+  let ordinal = 0;
+  for (const item of items) ordinal = admit(heap, k, item, scoreOf(item), ordinal);
+  return retained(heap);
+}
+
+/**
+ * `stableBoundedTopK` over the items of `items` that `accept` keeps, offered in order. Every
+ * frame's admission passes call it over thousands of candidates: a predicate instead of a generator
+ * spares one iterator result per candidate.
+ */
+export function stableBoundedTopKWhere<T>(
+  items: readonly T[],
+  accept: (item: T) => boolean,
+  k: number,
+  scoreOf: (item: T) => number,
+): T[] {
+  checkAdmissionK(k);
+  if (k === 0) return [];
+  const heap: AdmissionEntry<T>[] = [];
+  let ordinal = 0;
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]!;
+    if (accept(item)) ordinal = admit(heap, k, item, scoreOf(item), ordinal);
+  }
+  return retained(heap);
+}
+
+function checkAdmissionK(k: number): void {
   if (!Number.isSafeInteger(k) || k < 0) {
     throw new RangeError("stableBoundedTopK K must be a non-negative safe integer");
   }
-  if (k === 0) return [];
+}
 
-  const heap: AdmissionEntry<T>[] = [];
-  let ordinal = 0;
-  for (const item of items) {
-    const score = scoreOf(item);
-    if (!Number.isFinite(score)) {
-      throw new RangeError("stableBoundedTopK scores must be finite");
-    }
-    const entry: AdmissionEntry<T> = { item, score, ordinal };
-    ordinal++;
-    if (heap.length < k) {
-      heap.push(entry);
-      siftUp(heap, heap.length - 1);
-    } else if (compareAdmissionEntries(entry, heap[0]!) < 0) {
-      heap[0] = entry;
-      siftDown(heap, 0);
-    }
+/** Offers one scored item to the bounded heap; returns the next ordinal. */
+function admit<T>(heap: AdmissionEntry<T>[], k: number, item: T, score: number, ordinal: number): number {
+  if (!Number.isFinite(score)) {
+    throw new RangeError("stableBoundedTopK scores must be finite");
   }
+  if (heap.length < k) {
+    heap.push({ item, score, ordinal });
+    siftUp(heap, heap.length - 1);
+  } else if (score < heap[0]!.score) {
+    // Every retained entry came earlier, so an equal score never displaces the worst one. Its
+    // object takes the newcomer: no entry is allocated for a candidate that is not kept.
+    const worst = heap[0]!;
+    worst.item = item;
+    worst.score = score;
+    worst.ordinal = ordinal;
+    siftDown(heap, 0);
+  }
+  return ordinal + 1;
+}
 
+function retained<T>(heap: AdmissionEntry<T>[]): T[] {
   heap.sort(compareAdmissionEntries);
   return heap.map(({ item }) => item);
 }
@@ -101,14 +135,9 @@ function selectVisibleAdmission<T>(
   for (const candidate of candidates) {
     if (candidate.pinned || candidate.visible) eligible++;
   }
-  function* visibleCandidates(): Generator<UnitAdmissionCandidate<T>> {
-    for (const candidate of candidates) {
-      if (!candidate.pinned && !candidate.visible) continue;
-      yield candidate;
-    }
-  }
-  const admitted = stableBoundedTopK(
-    visibleCandidates(),
+  const admitted = stableBoundedTopKWhere(
+    candidates,
+    (candidate) => candidate.pinned || candidate.visible,
     budget,
     ({ distance, pinned }) => pinned ? -1 : distance,
   );

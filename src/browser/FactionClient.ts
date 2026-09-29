@@ -1,4 +1,5 @@
 import { REACTION_NEUTRAL, reactionBetween, type FactionData } from "../world/FactionRules.js";
+import type { ReputationCatalog } from "../gateway/ReputationMetadata.js";
 
 export type { FactionData };
 
@@ -13,6 +14,8 @@ export class FactionClient {
   readonly #baseUrl: string;
   #data: FactionData | undefined;
   #pending: Promise<void> | undefined;
+  #reputationCatalog: ReputationCatalog | undefined;
+  #reputationPending: Promise<void> | undefined;
   onStatus: ((message: string, error: boolean) => void) | undefined;
 
   constructor(gatewayWebSocketUrl: string) {
@@ -40,6 +43,28 @@ export class FactionClient {
         this.onStatus?.(`фракции: ${error instanceof Error ? error.message : String(error)}`, true);
       }
     })();
+  }
+
+  /** Fetch the separate Faction.dbc ID → reputation-list slot catalog before stock reward reads. */
+  loadReputation(): void {
+    if (this.#reputationCatalog || this.#reputationPending) return;
+    this.#reputationPending = (async () => {
+      try {
+        const response = await fetch(`${this.#baseUrl}/dbc/reputation?v=1`);
+        if (!response.ok) throw new Error(`Reputation gateway returned ${response.status}`);
+        const value = await response.json() as ReputationCatalog;
+        if (value.version !== 1 || !value.factions || typeof value.factions !== "object") {
+          throw new Error("malformed reputation catalog");
+        }
+        this.#reputationCatalog = value;
+      } catch (error) {
+        this.onStatus?.(`репутация: ${error instanceof Error ? error.message : String(error)}`, true);
+      }
+    })();
+  }
+
+  get reputationCatalog(): ReputationCatalog | undefined {
+    return this.#reputationCatalog;
   }
 
   get ready(): boolean {

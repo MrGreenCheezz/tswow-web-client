@@ -133,7 +133,11 @@ export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.Buffe
   const cellsPerTile = INNER * INNER;
   const vertexCount = tiles.length * (OUTER * OUTER + cellsPerTile);
   const positions = new Float32Array(vertexCount * 3);
-  const indices = new Uint32Array(tiles.length * cellsPerTile * 12);
+  // The production ring is at most 72 tiles (39,240 vertices), so its indices fit in 16 bits.
+  // Retain the wide path for callers that build a larger arbitrary tile collection.
+  const indices = vertexCount <= 0x10000
+    ? new Uint16Array(tiles.length * cellsPerTile * 12)
+    : new Uint32Array(tiles.length * cellsPerTile * 12);
   let vertex = 0;
   let index = 0;
   for (const tile of tiles) {
@@ -169,18 +173,26 @@ export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.Buffe
         const bottomRight = bottomLeft + 1;
         // Wound so the four triangles face up in the scene's frame, which is the winding the near
         // terrain uses: rows run along −x and columns along −z.
-        for (const [a, b] of [[topLeft, topRight], [topRight, bottomRight], [bottomRight, bottomLeft], [bottomLeft, topLeft]]) {
-          indices[index++] = middle;
-          indices[index++] = b!;
-          indices[index++] = a!;
-        }
+        indices[index++] = middle;
+        indices[index++] = topRight;
+        indices[index++] = topLeft;
+        indices[index++] = middle;
+        indices[index++] = bottomRight;
+        indices[index++] = topRight;
+        indices[index++] = middle;
+        indices[index++] = bottomLeft;
+        indices[index++] = bottomRight;
+        indices[index++] = middle;
+        indices[index++] = topLeft;
+        indices[index++] = bottomLeft;
       }
     }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-  geometry.computeVertexNormals();
+  // The horizon uses MeshBasicMaterial: vertex normals have no effect on its lighting or fog.
+  // Computing them on every tile crossing scans all triangles and allocates another full buffer.
   geometry.computeBoundingSphere();
   return geometry;
 }

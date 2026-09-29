@@ -358,17 +358,22 @@ export class SimpleScene {
     // them lootable, but they are the way to a kill's loot: `interactWithTarget` opens loot for a
     // dead creature, and picking is what puts one in the target frame — a body filtered out here
     // could not be right-clicked at all.
-    const objects = [...state.objects.values()]
-      .filter((object) => object.position
-        && !(firstPerson && object.guid === state.selfGuid)
-        && squaredDistance(object.position, player.position!) < 100 * 100)
-      .map((object) => ({
-        object,
-        distance: Math.sqrt(squaredDistance(object.position!, player.position!)),
-        point: projectPoint(object.position!, camera, width, height),
-      }))
-      .filter((item): item is typeof item & { point: ScreenPoint } => item.point !== undefined)
-      .sort((left, right) => right.point.depth - left.point.depth);
+    // One pass over the object table: this used to be spread/filter/map/filter/sort — four
+    // intermediate arrays plus a second squared-distance per object, sixty times a second. The
+    // admitted set and the painter order are exactly what those passes produced.
+    const playerPosition = player.position!;
+    const objects: Array<{ object: WorldObjectState; distance: number; point: ScreenPoint }> = [];
+    for (const object of state.objects.values()) {
+      const objectPosition = object.position;
+      if (!objectPosition) continue;
+      if (firstPerson && object.guid === state.selfGuid) continue;
+      const squared = squaredDistance(objectPosition, playerPosition);
+      if (!(squared < 100 * 100)) continue;
+      const point = projectPoint(objectPosition, camera, width, height);
+      if (point === undefined) continue;
+      objects.push({ object, distance: Math.sqrt(squared), point });
+    }
+    objects.sort((left, right) => right.point.depth - left.point.depth);
 
     const plates: Array<{ box: PlateBox; data: PlateData; depth: number; clickable: boolean }> = [];
     for (const { object, point, distance } of objects) {
@@ -840,8 +845,36 @@ export class SimpleScene {
     context.globalAlpha = 1;
   }
 
-  #resize(): { width: number; height: number } {
+  /** The canvas's CSS size as the last layout left it; see `#canvasSize`. */
+  #observedSize: { width: number; height: number } | undefined;
+  #sizeObserver: ResizeObserver | undefined;
+
+  /**
+   * The canvas's CSS size, without laying the page out to learn it.
+   *
+   * `getBoundingClientRect` once a frame, called after the frame had already written the world
+   * status, the minimap labels and the rest, forced a layout in the middle of every frame for a size
+   * that changes only when the window does. A `ResizeObserver` is told after each layout that
+   * changed it, before that frame is painted, so the next frame reads a number instead. The canvas
+   * fills its viewport with no border, padding or transform (`#world-canvas` in style.css), so its
+   * content box is the rectangle the old read returned. Until the first observation, and where there
+   * is no observer at all (the tests), the rectangle is measured as before.
+   */
+  #canvasSize(): { width: number; height: number } {
+    if (this.#observedSize) return this.#observedSize;
+    if (!this.#sizeObserver && typeof ResizeObserver === "function") {
+      this.#sizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        if (entry) this.#observedSize = { width: entry.contentRect.width, height: entry.contentRect.height };
+      });
+      this.#sizeObserver.observe(this.#canvas);
+    }
     const bounds = this.#canvas.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  }
+
+  #resize(): { width: number; height: number } {
+    const bounds = this.#canvasSize();
     const width = Math.max(1, bounds.width);
     const height = Math.max(1, bounds.height);
     const scale = Math.min(window.devicePixelRatio || 1, 2);

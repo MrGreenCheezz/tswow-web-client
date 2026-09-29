@@ -7,6 +7,12 @@ import {
   type WvmBatch,
   type WvmModel,
 } from "./Wvm.js";
+import {
+  WIND_FIELD_UNIFORM, WIND_FIELD_UNIFORM_NAME, WIND_GUST_UNIFORM, WIND_GUST_UNIFORM_NAME,
+} from "./WindField.js";
+
+/** Marks the shared-field branch inside the vegetation program (see windFieldBody). */
+export const WIND_FIELD_MARKER = "wind-field-v1";
 
 /** The one clock shared by every installed wind material. The renderer updates `.value` once/frame. */
 export const VEGETATION_WIND_TIME: IUniform<number> = { value: 0 };
@@ -86,6 +92,7 @@ export function vegetationWindProfile(
 
 interface SafeWindProfile extends VegetationWindProfile {
   readonly inverseHeight: number;
+  readonly fieldAmplitude: number;
 }
 
 /**
@@ -264,7 +271,10 @@ export function installVegetationWind(
       throw new Error("Vegetation wind requires the three.js <begin_vertex> shader chunk");
     }
     shader.uniforms[VEGETATION_WIND_TIME_UNIFORM] = VEGETATION_WIND_TIME;
+    shader.uniforms[WIND_FIELD_UNIFORM_NAME] = WIND_FIELD_UNIFORM;
+    shader.uniforms[WIND_GUST_UNIFORM_NAME] = WIND_GUST_UNIFORM;
     shader.vertexShader = `uniform float ${VEGETATION_WIND_TIME_UNIFORM};\n`
+      + `uniform vec4 ${WIND_FIELD_UNIFORM_NAME};\nuniform vec4 ${WIND_GUST_UNIFORM_NAME};\n`
       + shader.vertexShader.replace(BEGIN_VERTEX, `${BEGIN_VERTEX}\n${windBody(safe)}`);
   };
   material.customProgramCacheKey = () => `${previousKey}|${profileKey}`;
@@ -291,11 +301,61 @@ function windBody(profile: SafeWindProfile): string {
     `float vegetationWindPhase = dot( vegetationWindWorldOrigin.xz, vec2( 0.071, 0.113 ) ) + ${phase};`,
     `float vegetationWindWave = sin( ${VEGETATION_WIND_TIME_UNIFORM} * ${frequency} + vegetationWindPhase );`,
     `float vegetationWindCross = sin( ${VEGETATION_WIND_TIME_UNIFORM} * ${crossFrequency} + vegetationWindPhase * 1.37 );`,
-    `transformed.x += ${amplitude} * vegetationWindBend * vegetationWindWave;`,
+    ...windFieldBody(profile),
+    // With the field's mix at 0 (experimentalWindGusts OFF) these are exactly the original
+    // standing sway: x gets `amplitude * wave`, y half the amplitude on the cross wave.
     // M2 is z-up before the renderer's model-to-scene rotation, so both horizontal sway axes are
     // local x/y. Moving local z here would visibly stretch the tree or grass vertically.
-    `transformed.y += ${amplitude} * 0.5 * vegetationWindBend * vegetationWindCross;`,
+    `transformed.x += vegetationWindBend * mix( ${amplitude} * vegetationWindWave, vegetationWindFieldOffset.x, vegetationWindFieldMix );`,
+    `transformed.y += vegetationWindBend * mix( ${amplitude} * 0.5 * vegetationWindCross, vegetationWindFieldOffset.y, vegetationWindFieldMix );`,
   ].join("\n");
+}
+
+/**
+ * The shared wind field (WindField.ts): a steady lean downwind, gust waves that roll across a
+ * meadow along the wind, and a per-vertex leaf flutter weighted towards the tips.
+ *
+ * Bounds: the push along the wind is at most 1 and the sway across it at most 0.5, both times the
+ * field amplitude, so the radial reach never exceeds the standing sway's `hypot(1, 0.5)` and
+ * VEGETATION_WIND_CULL_PADDING stays exact. Wind direction arrives in scene space and is turned
+ * into this model's local z-up frame by the transpose of its (possibly instanced) basis.
+ */
+function windFieldBody(profile: SafeWindProfile): string[] {
+  const fieldAmplitude = numberText(profile.fieldAmplitude);
+  const flutterFrequency = numberText(profile.frequency * 4.7);
+  const phase = numberText(profile.phase);
+  const time = VEGETATION_WIND_TIME_UNIFORM;
+  const field = WIND_FIELD_UNIFORM_NAME;
+  const gust = WIND_GUST_UNIFORM_NAME;
+  return [
+    `// ${WIND_FIELD_MARKER}`,
+    `float vegetationWindFieldMix = clamp( ${field}.w, 0.0, 1.0 );`,
+    "vec2 vegetationWindFieldOffset = vec2( 0.0 );",
+    "if ( vegetationWindFieldMix > 0.0 ) {",
+    "  mat3 vegetationWindBasis = mat3( modelMatrix );",
+    "  #ifdef USE_INSTANCING",
+    "  vegetationWindBasis = vegetationWindBasis * mat3( instanceMatrix );",
+    "  #endif",
+    `  vec2 vegetationWindLocal = ( transpose( vegetationWindBasis ) * vec3( ${field}.x, 0.0, ${field}.y ) ).xy;`,
+    "  float vegetationWindLocalLength = length( vegetationWindLocal );",
+    "  vec2 vegetationWindAxis = vegetationWindLocalLength > 1e-6 ? vegetationWindLocal / vegetationWindLocalLength : vec2( 1.0, 0.0 );",
+    "  vec2 vegetationWindSide = vec2( -vegetationWindAxis.y, vegetationWindAxis.x );",
+    `  float vegetationWindAlong = dot( vegetationWindWorldOrigin.xz, ${field}.xy );`,
+    `  float vegetationWindAcross = dot( vegetationWindWorldOrigin.xz, vec2( -${field}.y, ${field}.x ) );`,
+    `  float vegetationWindRoll = 0.6 * sin( vegetationWindAlong * 0.07 - ${gust}.y + 1.7 * sin( vegetationWindAcross * 0.021 ) )`,
+    `    + 0.4 * sin( vegetationWindAlong * 0.13 - ${gust}.y * 1.9 + vegetationWindAcross * 0.047 );`,
+    "  float vegetationWindGust = clamp( 0.5 + 0.5 * vegetationWindRoll, 0.0, 1.0 );",
+    `  vegetationWindGust *= vegetationWindGust * clamp( ${gust}.x, 0.0, 1.0 );`,
+    `  float vegetationWindFlutter = sin( ${time} * ${flutterFrequency} + dot( position, vec3( 1.9, 2.3, 1.1 ) ) + ${phase} );`,
+    `  float vegetationWindStrength = clamp( ${field}.z, 0.0, 1.0 );`,
+    // |push| <= 0.25 + 0.75 = 1 at full strength; the oscillation keeps a calm day visibly alive.
+    "  float vegetationWindPush = 0.25 * vegetationWindWave * ( 0.5 + 0.5 * vegetationWindStrength )",
+    "    + vegetationWindStrength * ( 0.3 + 0.45 * vegetationWindGust );",
+    "  float vegetationWindSway = 0.5 * ( 0.6 + 0.4 * vegetationWindStrength )",
+    "    * ( 0.55 * vegetationWindCross + 0.45 * vegetationWindFlutter * vegetationWindAnchor );",
+    `  vegetationWindFieldOffset = ${fieldAmplitude} * ( vegetationWindAxis * vegetationWindPush + vegetationWindSide * vegetationWindSway );`,
+    "}",
+  ];
 }
 
 function safeProfile(profile: VegetationWindProfile): SafeWindProfile | undefined {
@@ -308,7 +368,18 @@ function safeProfile(profile: VegetationWindProfile): SafeWindProfile | undefine
   if (!Number.isFinite(profile.phase) || Math.abs(profile.phase) > 1_000_000) return undefined;
   if (!Number.isFinite(profile.baseZ) || Math.abs(profile.baseZ) > 100_000) return undefined;
   if (!Number.isFinite(profile.height) || profile.height <= 0 || profile.height > 100_000) return undefined;
-  return { ...profile, inverseHeight: 1 / profile.height };
+  return { ...profile, inverseHeight: 1 / profile.height, fieldAmplitude: windFieldAmplitude(profile) };
+}
+
+/**
+ * The field's amplitude. The standing sway is 2.5% of the height, which is right for a tree and
+ * a centimetre on a grass tuft; a gust has to visibly lay grass over, so small plants get up to
+ * 0.09 yards (about a tenth of their height). Never above the standing sway's own ceiling, which
+ * is what the cull padding was sized for.
+ */
+export function windFieldAmplitude(profile: Pick<VegetationWindProfile, "amplitude" | "height">): number {
+  const ceiling = Math.max(VEGETATION_WIND_MAX_AMPLITUDE, profile.amplitude);
+  return Math.min(ceiling, Math.max(profile.amplitude, Math.min(0.09, profile.height * 0.1)));
 }
 
 function numberText(value: number): string {

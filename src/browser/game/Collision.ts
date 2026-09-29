@@ -212,7 +212,25 @@ export class CollisionMesh {
   readonly runs: readonly CollisionRun[];
   readonly #cellsX: number;
   readonly #cellsY: number;
-  readonly #cells: Int32Array[] | undefined;
+  /**
+   * The grid as two flat arrays: cell `c` holds `#items[#offsets[c]]` up to `#offsets[c + 1]`,
+   * in ascending triangle order — the same lists, in the same order, the grid used to keep as one
+   * `Int32Array` per cell.
+   *
+   * Flat because of what the per-cell arrays cost to make. The Trade District's merged Stormwind
+   * mesh was a grid of some 59,000 cells holding 757,000 references, and building it was that
+   * many empty JS arrays, pushes into them and typed arrays copied out of them: measured, 32-36 ms
+   * of a 36-58 ms rebuild and most of the twenty megabytes of garbage each one left. Two passes
+   * over the triangles — count, then place — make the same grid out of two allocations.
+   */
+  readonly #offsets: Int32Array | undefined;
+  readonly #items: Int32Array | undefined;
+  /**
+   * Single-cell answers handed out by `candidates`, made the first time a cell is asked about.
+   * Views rather than copies, and kept so the query that asks about the cell under the feet every
+   * frame allocates nothing after the first time.
+   */
+  readonly #views = new Map<number, Int32Array>();
 
   constructor(triangles: Float32Array, runs: readonly CollisionRun[] = []) {
     this.triangles = triangles;
@@ -242,38 +260,65 @@ export class CollisionMesh {
     if (count < GRID_THRESHOLD) {
       this.#cellsX = 0;
       this.#cellsY = 0;
-      this.#cells = undefined;
+      this.#offsets = undefined;
+      this.#items = undefined;
       return;
     }
-    this.#cellsX = Math.max(1, Math.min(256, Math.ceil((maxX - minX) / CELL_YARDS)));
-    this.#cellsY = Math.max(1, Math.min(256, Math.ceil((maxY - minY) / CELL_YARDS)));
-    const buckets: number[][] = Array.from({ length: this.#cellsX * this.#cellsY }, () => []);
+    const cellsX = Math.max(1, Math.min(256, Math.ceil((maxX - minX) / CELL_YARDS)));
+    const cellsY = Math.max(1, Math.min(256, Math.ceil((maxY - minY) / CELL_YARDS)));
+    this.#cellsX = cellsX;
+    this.#cellsY = cellsY;
+    const cells = cellsX * cellsY;
+    // Counted into each cell's own slot first; the running sum then turns every slot into where
+    // its cell *ends*, and the second pass walks the triangles backwards, stepping each cell's
+    // slot down as it places one. When it is done every slot holds where its cell starts, and each
+    // cell lists its triangles in ascending order — the order the per-cell arrays had, which the
+    // walks below and the tie-breaks of every query rely on.
+    const offsets = new Int32Array(cells + 1);
     for (let triangle = 0; triangle < count; triangle++) {
       const base = triangle * 9;
-      const lowX = Math.min(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!);
-      const highX = Math.max(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!);
-      const lowY = Math.min(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!);
-      const highY = Math.max(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!);
-      for (let cellY = this.#cellY(lowY); cellY <= this.#cellY(highY); cellY++) {
-        for (let cellX = this.#cellX(lowX); cellX <= this.#cellX(highX); cellX++) {
-          buckets[cellY * this.#cellsX + cellX]!.push(triangle);
-        }
+      const fromX = gridCell(Math.min(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!), minX, cellsX);
+      const toX = gridCell(Math.max(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!), minX, cellsX);
+      const fromY = gridCell(Math.min(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!), minY, cellsY);
+      const toY = gridCell(Math.max(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!), minY, cellsY);
+      for (let cellY = fromY; cellY <= toY; cellY++) {
+        for (let cellX = fromX; cellX <= toX; cellX++) offsets[cellY * cellsX + cellX]!++;
       }
     }
-    this.#cells = buckets.map((bucket) => Int32Array.from(bucket));
+    let placed = 0;
+    for (let cell = 0; cell < cells; cell++) {
+      placed += offsets[cell]!;
+      offsets[cell] = placed;
+    }
+    offsets[cells] = placed;
+    const items = new Int32Array(placed);
+    for (let triangle = count - 1; triangle >= 0; triangle--) {
+      const base = triangle * 9;
+      const fromX = gridCell(Math.min(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!), minX, cellsX);
+      const toX = gridCell(Math.max(triangles[base]!, triangles[base + 3]!, triangles[base + 6]!), minX, cellsX);
+      const fromY = gridCell(Math.min(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!), minY, cellsY);
+      const toY = gridCell(Math.max(triangles[base + 1]!, triangles[base + 4]!, triangles[base + 7]!), minY, cellsY);
+      for (let cellY = fromY; cellY <= toY; cellY++) {
+        for (let cellX = fromX; cellX <= toX; cellX++) items[--offsets[cellY * cellsX + cellX]!] = triangle;
+      }
+    }
+    this.#offsets = offsets;
+    this.#items = items;
   }
 
   #cellX(x: number): number {
-    return Math.max(0, Math.min(this.#cellsX - 1, Math.floor((x - this.bounds.minX) / CELL_YARDS)));
+    return gridCell(x, this.bounds.minX, this.#cellsX);
   }
 
   #cellY(y: number): number {
-    return Math.max(0, Math.min(this.#cellsY - 1, Math.floor((y - this.bounds.minY) / CELL_YARDS)));
+    return gridCell(y, this.bounds.minY, this.#cellsY);
   }
 
   /** Triangle indices whose boxes touch this square of ground, or every one when there is no grid. */
   candidates(minX: number, minY: number, maxX: number, maxY: number): Int32Array | undefined {
-    if (!this.#cells) return undefined;
+    const offsets = this.#offsets;
+    const items = this.#items;
+    if (!offsets || !items) return undefined;
     if (maxX < this.bounds.minX || minX > this.bounds.maxX || maxY < this.bounds.minY || minY > this.bounds.maxY) {
       return EMPTY;
     }
@@ -281,14 +326,32 @@ export class CollisionMesh {
     const toX = this.#cellX(maxX);
     const fromY = this.#cellY(minY);
     const toY = this.#cellY(maxY);
-    if (fromX === toX && fromY === toY) return this.#cells[fromY * this.#cellsX + fromX]!;
+    if (fromX === toX && fromY === toY) {
+      const cell = fromY * this.#cellsX + fromX;
+      let view = this.#views.get(cell);
+      if (!view) {
+        view = items.subarray(offsets[cell]!, offsets[cell + 1]!);
+        this.#views.set(cell, view);
+      }
+      return view;
+    }
     const found = new Set<number>();
     for (let cellY = fromY; cellY <= toY; cellY++) {
       for (let cellX = fromX; cellX <= toX; cellX++) {
-        for (const triangle of this.#cells[cellY * this.#cellsX + cellX]!) found.add(triangle);
+        const cell = cellY * this.#cellsX + cellX;
+        const end = offsets[cell + 1]!;
+        for (let entry = offsets[cell]!; entry < end; entry++) found.add(items[entry]!);
       }
     }
     return Int32Array.from(found);
+  }
+
+  /**
+   * Bytes this mesh holds: its triangles and its grid. What a cache of built meshes is capped by;
+   * the few single-cell views `candidates` has handed out are not counted.
+   */
+  get byteLength(): number {
+    return this.triangles.byteLength + (this.#offsets?.byteLength ?? 0) + (this.#items?.byteLength ?? 0);
   }
 
   /**
@@ -326,7 +389,9 @@ export class CollisionMesh {
     };
 
     // Under the grid threshold there is no grid to walk, and a table is twelve triangles.
-    if (!this.#cells) {
+    const offsets = this.#offsets;
+    const items = this.#items;
+    if (!offsets || !items) {
       const count = this.triangleCount;
       for (let triangle = 0; triangle < count; triangle++) consider(triangle);
       return best === undefined ? undefined : { t: best, triangle: bestTriangle };
@@ -337,7 +402,9 @@ export class CollisionMesh {
     // A segment straight down a column crosses exactly one cell; the walk below divides by the
     // step and would spend its whole budget standing still.
     if (dx === 0 && dy === 0) {
-      for (const triangle of this.#cells[this.#cellY(from.y) * this.#cellsX + this.#cellX(from.x)]!) consider(triangle);
+      const cell = this.#cellY(from.y) * this.#cellsX + this.#cellX(from.x);
+      const end = offsets[cell + 1]!;
+      for (let entry = offsets[cell]!; entry < end; entry++) consider(items[entry]!);
       return best === undefined ? undefined : { t: best, triangle: bestTriangle };
     }
 
@@ -363,7 +430,9 @@ export class CollisionMesh {
 
     for (;;) {
       const entered = Math.min(nextX, nextY);
-      for (const triangle of this.#cells[cellY * this.#cellsX + cellX]!) consider(triangle);
+      const cell = cellY * this.#cellsX + cellX;
+      const end = offsets[cell + 1]!;
+      for (let entry = offsets[cell]!; entry < end; entry++) consider(items[entry]!);
       // Nothing past this boundary can beat what is already in hand, because a triangle filed in a
       // later cell and not in this one cannot be crossed before the line leaves this one.
       if (best !== undefined && best <= entered) break;
@@ -405,6 +474,11 @@ export class CollisionMesh {
 }
 
 const EMPTY = new Int32Array(0);
+
+/** Which cell of a grid starting at `min` a coordinate falls in, clamped to the grid's edge. */
+function gridCell(value: number, min: number, cells: number): number {
+  return Math.max(0, Math.min(cells - 1, Math.floor((value - min) / CELL_YARDS)));
+}
 
 /**
  * Where a segment crosses a triangle, as a fraction of its own length, or nothing.
@@ -599,8 +673,13 @@ export const COLLISION_FLOOR_TIE_EPSILON = 1e-4;
 export interface CollisionFloorHit {
   z: number;
   flags: number | undefined;
-  /** The stable instance key supplied to `CollisionWorld.set`. */
+  /** The stable instance supplied to `CollisionWorld.set` — its key, unless it was given one. */
   instanceId: number;
+  /**
+   * The triangle's index within the mesh that was hit. Since collision is held a group at a time
+   * that is an index within the group, which is the only place it ever meant anything stable: a
+   * merged placement's index moved every time a nearer group joined the mesh.
+   */
   triangle: number;
   /** Present on meshes built from a grouped collision model. */
   groupIndex: number | undefined;
@@ -627,25 +706,59 @@ export function collisionFloorHitPrecedes(
   const quantum = Number.isFinite(epsilon) && epsilon > 0 ? epsilon : COLLISION_FLOOR_TIE_EPSILON;
   const candidateHeight = Math.round(candidate.z / quantum);
   const currentHeight = Math.round(current.z / quantum);
-  if (candidateHeight > currentHeight) return true;
-  if (candidateHeight < currentHeight) return false;
-  const candidateOrder = [
-    candidate.instanceId,
-    candidate.groupId ?? Number.MAX_SAFE_INTEGER,
-    candidate.groupIndex ?? Number.MAX_SAFE_INTEGER,
-    candidate.triangle,
-  ];
-  const currentOrder = [
-    current.instanceId,
-    current.groupId ?? Number.MAX_SAFE_INTEGER,
-    current.groupIndex ?? Number.MAX_SAFE_INTEGER,
-    current.triangle,
-  ];
-  for (let index = 0; index < candidateOrder.length; index++) {
-    if (candidateOrder[index]! < currentOrder[index]!) return true;
-    if (candidateOrder[index]! > currentOrder[index]!) return false;
-  }
+  if (candidateHeight !== currentHeight) return candidateHeight > currentHeight;
+  // Unrolled lexicographic comparison over the same four keys the arrays below used to hold:
+  // this runs per candidate triangle, where two array literals each were pure garbage.
+  if (candidate.instanceId !== current.instanceId) return candidate.instanceId < current.instanceId;
+  const candidateGroupId = candidate.groupId ?? Number.MAX_SAFE_INTEGER;
+  const currentGroupId = current.groupId ?? Number.MAX_SAFE_INTEGER;
+  if (candidateGroupId !== currentGroupId) return candidateGroupId < currentGroupId;
+  const candidateGroupIndex = candidate.groupIndex ?? Number.MAX_SAFE_INTEGER;
+  const currentGroupIndex = current.groupIndex ?? Number.MAX_SAFE_INTEGER;
+  if (candidateGroupIndex !== currentGroupIndex) return candidateGroupIndex < currentGroupIndex;
+  if (candidate.triangle !== current.triangle) return candidate.triangle < current.triangle;
   return false;
+}
+
+/**
+ * The identity half of {@link collisionFloorHitPrecedes}, over fields rather than objects.
+ *
+ * Split out so the floor query can reject tied losers without materialising them: same four
+ * keys, same order, same `MAX_SAFE_INTEGER` normalisation for absent groups.
+ */
+function floorHitTiePrecedes(
+  candidateInstanceId: number,
+  candidateGroupId: number | undefined,
+  candidateGroupIndex: number | undefined,
+  candidateTriangle: number,
+  currentInstanceId: number,
+  currentGroupId: number | undefined,
+  currentGroupIndex: number | undefined,
+  currentTriangle: number,
+): boolean {
+  if (candidateInstanceId !== currentInstanceId) return candidateInstanceId < currentInstanceId;
+  const candidateId = candidateGroupId ?? Number.MAX_SAFE_INTEGER;
+  const currentId = currentGroupId ?? Number.MAX_SAFE_INTEGER;
+  if (candidateId !== currentId) return candidateId < currentId;
+  const candidateIndex = candidateGroupIndex ?? Number.MAX_SAFE_INTEGER;
+  const currentIndex = currentGroupIndex ?? Number.MAX_SAFE_INTEGER;
+  if (candidateIndex !== currentIndex) return candidateIndex < currentIndex;
+  if (candidateTriangle !== currentTriangle) return candidateTriangle < currentTriangle;
+  return false;
+}
+
+/** One stored mesh, the instance its hits report, and that instance's height. */
+interface WorldEntry {
+  readonly mesh: CollisionMesh;
+  readonly instanceId: number;
+  readonly height: InstanceHeight;
+}
+
+/** The heights every mesh of one instance spans together, shared by all of their entries. */
+interface InstanceHeight {
+  minZ: number;
+  maxZ: number;
+  readonly meshes: CollisionMesh[];
 }
 
 /**
@@ -655,20 +768,57 @@ export function collisionFloorHitPrecedes(
  * a city's worth of triangles every few yards would cost more than the queries do. Each one keeps
  * its own grid and its own box, and the box is the whole of the broad phase — a few hundred
  * buildings and doodads is a list short enough to walk.
+ *
+ * A mesh is stored under its own key and answers for an *instance*, which is the same number
+ * unless `set` was told otherwise. The two come apart for a building held a group at a time: each
+ * of Stormwind's rooms is its own mesh with its own key, and every one of them reports the city's
+ * spawn id, so a floor hit still names the placement it stands in and the tie-break between two
+ * co-planar floors is still placement, then authored group, then triangle.
  */
 export class CollisionWorld {
-  readonly #meshes = new Map<number, CollisionMesh>();
+  /** Each mesh with the instance its hits report, kept together so a query never looks one up. */
+  readonly #meshes = new Map<number, WorldEntry>();
+  readonly #heights = new Map<number, InstanceHeight>();
 
   get size(): number {
     return this.#meshes.size;
   }
 
-  set(id: number, mesh: CollisionMesh): void {
-    this.#meshes.set(id, mesh);
+  set(id: number, mesh: CollisionMesh, instanceId: number = id): void {
+    const previous = this.#meshes.get(id);
+    if (previous) this.#leave(previous);
+    let height = this.#heights.get(instanceId);
+    if (!height) {
+      height = { minZ: Infinity, maxZ: -Infinity, meshes: [] };
+      this.#heights.set(instanceId, height);
+    }
+    height.meshes.push(mesh);
+    height.minZ = Math.min(height.minZ, mesh.bounds.minZ);
+    height.maxZ = Math.max(height.maxZ, mesh.bounds.maxZ);
+    this.#meshes.set(id, { mesh, instanceId, height });
   }
 
   delete(id: number): void {
+    const entry = this.#meshes.get(id);
+    if (!entry) return;
     this.#meshes.delete(id);
+    this.#leave(entry);
+  }
+
+  #leave(entry: WorldEntry): void {
+    const height = entry.height;
+    const index = height.meshes.indexOf(entry.mesh);
+    if (index >= 0) height.meshes.splice(index, 1);
+    if (height.meshes.length === 0) {
+      if (this.#heights.get(entry.instanceId) === height) this.#heights.delete(entry.instanceId);
+      return;
+    }
+    height.minZ = Infinity;
+    height.maxZ = -Infinity;
+    for (const mesh of height.meshes) {
+      height.minZ = Math.min(height.minZ, mesh.bounds.minZ);
+      height.maxZ = Math.max(height.maxZ, mesh.bounds.maxZ);
+    }
   }
 
   has(id: number): boolean {
@@ -676,11 +826,17 @@ export class CollisionWorld {
   }
 
   get(id: number): CollisionMesh | undefined {
-    return this.#meshes.get(id);
+    return this.#meshes.get(id)?.mesh;
+  }
+
+  /** The instance a stored mesh's hits report, or undefined when nothing is stored under `id`. */
+  instanceOf(id: number): number | undefined {
+    return this.#meshes.get(id)?.instanceId;
   }
 
   clear(): void {
     this.#meshes.clear();
+    this.#heights.clear();
   }
 
   ids(): Iterable<number> {
@@ -706,7 +862,7 @@ export class CollisionWorld {
   firstHit(from: Vector3, to: Vector3): { t: number; flags: number | undefined } | undefined {
     let best: number | undefined;
     let flags: number | undefined;
-    for (const mesh of this.#meshes.values()) {
+    for (const { mesh } of this.#meshes.values()) {
       // Every mesh is offered the best distance so far, so a building behind a nearer one stops
       // its walk at the first cell rather than searching itself out in full.
       const hit = mesh.firstHit(from, to, best ?? 1);
@@ -743,8 +899,21 @@ export class CollisionWorld {
     minZ: number,
     accept?: (hit: CollisionFloorHit) => boolean,
   ): CollisionFloorHit | undefined {
-    let best: CollisionFloorHit | undefined;
-    for (const [instanceId, mesh] of this.#meshes) {
+    // Best-hit fields as locals: the loop below used to allocate one hit object per passing
+    // triangle (plus two tiebreak arrays in the comparison), and this runs per physics substep,
+    // per camera query and per loop query — thousands of contenders a frame in a city. Only a
+    // contender that can actually win is ever materialised; `accept` therefore sees winners and
+    // tied contenders, never hopeless losers, so it must stay a pure predicate (all callers pass
+    // one — the WMO locator reads fields and nothing else).
+    let hasBest = false;
+    let bestQuantum = 0;
+    let bestInstanceId = 0;
+    let bestGroupId: number | undefined;
+    let bestGroupIndex: number | undefined;
+    let bestTriangle = 0;
+    let bestZ = 0;
+    let bestFlags: number | undefined;
+    for (const { mesh, instanceId } of this.#meshes.values()) {
       const bounds = mesh.bounds;
       if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
       if (bounds.maxZ < minZ || bounds.minZ > fromZ) continue;
@@ -755,7 +924,19 @@ export class CollisionWorld {
         const z = verticalHit(mesh.triangles, triangle, x, y);
         if (z === undefined || !Number.isFinite(z) || z > fromZ || z < minZ) continue;
         if (!isFloorTriangle(mesh.triangles, triangle)) continue;
-        const run = mesh.runAt(triangle);
+        const candidateQuantum = Math.round(z / COLLISION_FLOOR_TIE_EPSILON);
+        let run: CollisionRun | undefined;
+        if (hasBest) {
+          if (candidateQuantum < bestQuantum) continue;
+          if (candidateQuantum === bestQuantum) {
+            run = mesh.runAt(triangle);
+            if (!floorHitTiePrecedes(
+              instanceId, run?.groupId, run?.groupIndex, triangle,
+              bestInstanceId, bestGroupId, bestGroupIndex, bestTriangle,
+            )) continue;
+          }
+        }
+        run ??= mesh.runAt(triangle);
         const hit: CollisionFloorHit = {
           z,
           flags: run?.flags,
@@ -765,10 +946,25 @@ export class CollisionWorld {
           groupId: run?.groupId,
         };
         if (accept && !accept(hit)) continue;
-        if (collisionFloorHitPrecedes(hit, best)) best = hit;
+        hasBest = true;
+        bestQuantum = candidateQuantum;
+        bestInstanceId = instanceId;
+        bestGroupId = run?.groupId;
+        bestGroupIndex = run?.groupIndex;
+        bestTriangle = triangle;
+        bestZ = z;
+        bestFlags = run?.flags;
       }
     }
-    return best;
+    if (!hasBest) return undefined;
+    return {
+      z: bestZ,
+      flags: bestFlags,
+      instanceId: bestInstanceId,
+      triangle: bestTriangle,
+      groupIndex: bestGroupIndex,
+      groupId: bestGroupId,
+    };
   }
 
   /**
@@ -825,11 +1021,16 @@ export class CollisionWorld {
 
     for (let pass = 0; pass < RESOLVE_PASSES; pass++) {
       let moved = false;
-      for (const mesh of this.#meshes.values()) {
+      for (const { mesh, height } of this.#meshes.values()) {
         const bounds = mesh.bounds;
         if (atX + radius < bounds.minX || atX - radius > bounds.maxX) continue;
         if (atY + radius < bounds.minY || atY - radius > bounds.maxY) continue;
-        if (bounds.maxZ < z || bounds.minZ > z + bodyHeight) continue;
+        // By the height of the whole instance, not of this one mesh. The body's top sphere reaches
+        // a little over its height, so this test is not exact, and it only ever was for a whole
+        // placement: a merged building spanned every storey and was never culled here, while one
+        // of its rooms on its own, starting just over the head, would be. Culled by the instance,
+        // a building held a room at a time pushes exactly where it pushed when it was one mesh.
+        if (height.maxZ < z || height.minZ > z + bodyHeight) continue;
         const candidates = mesh.candidates(atX - radius, atY - radius, atX + radius, atY + radius);
         const count = candidates ? candidates.length : mesh.triangleCount;
         for (let entry = 0; entry < count; entry++) {
