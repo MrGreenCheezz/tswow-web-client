@@ -4,7 +4,7 @@ import { connect as connectTcp, type Socket } from "node:net";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { parseVMapTile } from "./VMapProtocol.js";
+import { environmentObjectInGrid, parseVMapGlobalSpawn, parseVMapTile, type EnvironmentObject } from "./VMapProtocol.js";
 import { loadSpellMetadata } from "./SpellMetadata.js";
 import { loadSpellVisualKits, loadSpellVisuals } from "./SpellVisual.js";
 import { loadCreatureMetadata } from "./CreatureMetadata.js";
@@ -12,6 +12,7 @@ import { encodeVMapModel, parseVMapModel, parseVMapModelGroups, type CollisionGr
 import { loadGameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import { loadTransportPaths } from "./TransportPaths.js";
 import { loadLiquidClasses } from "./LiquidMetadata.js";
+import { loadLoadingScreens } from "./LoadingScreenMetadata.js";
 import { loadGroundEffects } from "./GroundEffects.js";
 import { loadCreatureModelMetadata } from "./CreatureModelMetadata.js";
 import { CharacterAppearanceIndex } from "./CharacterAppearance.js";
@@ -22,17 +23,35 @@ import { loadLockData } from "./LockMetadata.js";
 import { loadEmoteData } from "./EmoteMetadata.js";
 import { loadFactionData } from "./FactionMetadata.js";
 import { loadTalentData } from "./TalentMetadata.js";
+import { loadCharacterStatData } from "./CharacterStatMetadata.js";
+import { loadLfgDungeonMetadata } from "./LfgDungeonMetadata.js";
+import { loadVendorCostMetadata } from "./VendorCostMetadata.js";
+import { loadBarberStyles } from "./BarberMetadata.js";
+import { loadBarberCosts } from "./BarberCostMetadata.js";
+import { loadSlotPrices } from "./SlotPrices.js";
+import { loadMacroIcons } from "./MacroIcons.js";
+import { CALENDAR_CATALOG_VERSION, loadCalendarCatalog } from "./CalendarCatalog.js";
+import { GLYPH_CATALOG_VERSION, loadGlyphCatalog } from "./GlyphCatalog.js";
+import { CHAR_TITLES_VERSION, loadCharTitles } from "./CharTitleMetadata.js";
+import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
+import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
+import { loadReputationMetadata } from "./ReputationMetadata.js";
 import { loadAreaData } from "./AreaMetadata.js";
 import { loadBattlegroundMetadata } from "./BattlegroundMetadata.js";
+import { loadWorldStateUiMetadata } from "./WorldStateUiMetadata.js";
 import { loadTaxiMetadata } from "./TaxiMetadata.js";
+import { loadDeclinedWords } from "./DeclinedWords.js";
 import { COLLISION_TRIANGLE_BUDGET, encodeCollisionModel } from "../world/CollisionFormat.js";
 import { GLOBAL_FALLBACK_MAP, loadLightMetadata } from "./LightMetadata.js";
-import { loadItemMetadata } from "./ItemMetadata.js";
+import { loadItemMetadata, loadItemSubclassNames } from "./ItemMetadata.js";
 import { loadItemEnchantments } from "./ItemEnchantments.js";
 import {
   SoundIndex, WeaponSoundIndex, normaliseSoundPath, type ZoneMusicTracks,
 } from "./SoundMetadata.js";
 import { DatasetFingerprint } from "./DatasetFingerprint.js";
+import {
+  PatchStatusTracker, type ClientPatchChange, type PatchStatus, type PatchStatusSummary,
+} from "./PatchStatus.js";
 import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
 import {
@@ -54,6 +73,10 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  * visual-wmo-v17 is WWM2, authored MONR normals, and all prior WMO metadata. A v16 artifact parses
  * perfectly and simply has no authored normals, which is indistinguishable from a group that needs
  * the computed fallback — so the cache has to turn over rather than be left to expire.
+ * visual-wmo-v22 adds the MOHD render-path bits (classic MapObj rooms, whose MOCV already holds the
+ * ambient, 1,823 of 1,985 roots) and the WME4 MODR doodad rooms. A v17 artifact decodes as unified
+ * with no rooms — Gundrak lit twice by its ambient — so the name has to turn over; 22 continues the
+ * shared sequence past visual-v21.
  * visual-v21 is WVM9 with the G1 scene camera, A1/A2 clip metadata and the optional WVG1 global
  * bone-channel block, and remains independent of this WMO generation, so the two invalidated
  * artifact families keep distinct, monotonic generation numbers. It follows 19 rather than reusing
@@ -77,8 +100,8 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  * rig whose sequences all travel at zero, and the mount over it would go on skating for as long as
  * the old entry stayed fresh. The name is what retires it.
  */
-export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v17" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v17" : "visual-v21";
+export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v22" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v22" : "visual-v21";
 }
 
 /**
@@ -164,6 +187,20 @@ export interface GatewayOptions {
   /** Root-level Interface/AddOns discovered at startup and offered to the FrameXML boot. */
   clientAddons?: readonly { readonly name: string; readonly loadOnDemand: boolean }[];
   /**
+   * `tools/patch-status.mjs --json --no-gateway`, run in a child: the lettered patches, the winning
+   * FrameXML.toc's TSAddon blocks, the TSWoW build marker and the native publication. A child
+   * because the TOC is read through the MPQ chain, which this process never opens. Absent, the
+   * detail half of `/client/patch-status` is null.
+   */
+  readPatchDetails?: () => Promise<unknown>;
+  /**
+   * Told each time the archive half of the fingerprint changes — the first time is the 409 latch.
+   * `main.ts` forwards it over IPC to the opt-in supervisor (`GATEWAY_RESTART_ON_PATCH=1`).
+   */
+  onClientPatchChange?: (change: ClientPatchChange) => void;
+  /** Reported by `/client/patch-status`: a supervisor restarts this process after a settled build. */
+  supervised?: boolean;
+  /**
    * Periodic fallback interval for the dataset fingerprint, in milliseconds. Archive writes also
    * invalidate this interval through `fs.watch`, so the next request sees a TSWoW publish without
    * making every texture request pay for the 33.5 ms archive walk. DBC-only edits still use this
@@ -245,6 +282,13 @@ export interface GatewayOptions {
   generateLiquidTexture?: (liquidClass: string) => Promise<void>;
   generateTexture?: (path: string) => Promise<void>;
   /**
+   * Called when the dataset poll finds the client's archives changed — a patch directory gained
+   * or lost a file, an archive was replaced, installed or removed. The generators that keep an
+   * archive chain open between jobs (`AssetWorker.ts`) reopen it on their next job; a one-shot
+   * generator process reads the chain fresh anyway and needs nothing.
+   */
+  onArchivesChanged?: () => void;
+  /**
    * Every path the client archives hold under the character pipeline's texture subtrees.
    *
    * Т7: `ItemDisplayInfo` names a component texture's stem and not its `_M`/`_F`/`_U` spelling, and
@@ -298,6 +342,11 @@ export interface GatewayOptions {
    * this seam the 405 is driven through the real route, and the default is witnessed by the 204
    * beside it, which only happens because the socket really does say 127.0.0.1.
    */
+  /**
+   * Optional proof that this loopback resource helper belongs to the launching native client.
+   * It is intentionally absent for ordinary gateway runs, which retain the token-free health body.
+   */
+  localAssetNonce?: string;
   peerAddress?: (request: IncomingMessage) => string | undefined;
 }
 
@@ -315,6 +364,18 @@ export interface RunningGateway {
   host: string;
   port: number;
   close(): Promise<void>;
+  /** The patch generation this process serves, and whether a TSWoW build has moved past it. */
+  patchSummary(): PatchStatusSummary;
+  /** The summary plus the `readPatchDetails` child's report (memoised per fingerprint epoch). */
+  patchStatus(): Promise<PatchStatus>;
+  /**
+   * One fingerprint poll outside any request, so an idle supervised gateway still latches a
+   * publish. Interval-limited like a request's poll; `patchEventsPending` says when it is worth it.
+   */
+  checkPatchChain(): Promise<PatchStatusSummary>;
+  readonly patchEventsPending: boolean;
+  /** Bridged sockets now. The supervisor restarts the process only when both are zero. */
+  connections(): { auth: number; world: number };
 }
 
 function rawDataToBuffer(data: RawData): Buffer {
@@ -335,6 +396,18 @@ function sameOriginBrowserGet(request: IncomingMessage): boolean {
 
 /** How long a failed generation is remembered before the generator is given another chance. */
 const GENERATION_FAILURE_TTL_MS = 5 * 60_000;
+/**
+ * How long a failure that was *not* "the archives do not hold this" is remembered.
+ *
+ * A missing source stays missing for the five minutes above. A run that died — a crashed child, a
+ * worker recycled under it, a rename a virus scanner held up — is this minute's problem, and the
+ * browser answers it with Т6's retry ladder at 2 s, 8 s and 30 s. With the five-minute memory every
+ * one of those retries was refused with the same 500, so one transient failure left the texture or
+ * the building missing for the rest of the session (measured: the ladder gives up after ~40 s).
+ * Long enough to fold the burst of requests that arrive together into the one refusal, short
+ * enough that the first retry runs the generator again.
+ */
+const GENERATION_RETRY_TTL_MS = 1_500;
 /** Beyond this the expired half of the failure map is swept; it only ever holds broken keys. */
 const GENERATION_FAILURE_LIMIT = 4096;
 
@@ -371,18 +444,78 @@ export function sourceMissing(error: unknown): boolean {
  * One family of generated assets: a serial lane so generators do not fight over the MPQ archives,
  * a per-key in-flight map so concurrent requests share one run, and a short-lived record of
  * failures.
+ *
+ * The lane runs one job at a time, highest priority first and in arrival order within a priority.
+ * It used to be a plain promise chain, strictly first come first served, and the texture lane
+ * carries everything from a unit's skin to the minimap's tiles: measured on the owner's session of
+ * 2026-09-28, 241 baked NPC skins went through it behind 80 minimap tiles, 33 icons and 21 world-map
+ * tiles, and every one of those NPCs stood as a capsule until its skin was published.
  */
 interface GenerationLane {
-  queue: Promise<void>;
+  running: boolean;
+  sequence: number;
+  readonly waiting: { priority: number; sequence: number; start(): void }[];
   readonly jobs: Map<string, Promise<void>>;
-  // Why it failed, and not only until when: the memory outlives the run by five minutes, and a
-  // route that answered 404 for a missing source has to go on answering 404 for the whole of that.
+  // Why it failed, and not only until when: a missing source is remembered for five minutes, and a
+  // route that answered 404 for it has to go on answering 404 for the whole of that.
   // Otherwise the first request tells the browser the truth and the next one tells it to come back.
   readonly failures: Map<string, { until: number; missing: boolean }>;
 }
 
 function generationLane(): GenerationLane {
-  return { queue: Promise.resolve(), jobs: new Map(), failures: new Map() };
+  return { running: false, sequence: 0, waiting: [], jobs: new Map(), failures: new Map() };
+}
+
+/** Starts the lane's best waiting job if nothing is running. */
+function pumpLane(lane: GenerationLane): void {
+  if (lane.running || lane.waiting.length === 0) return;
+  let best = 0;
+  for (let index = 1; index < lane.waiting.length; index++) {
+    const candidate = lane.waiting[index]!;
+    const chosen = lane.waiting[best]!;
+    if (candidate.priority > chosen.priority
+      || (candidate.priority === chosen.priority && candidate.sequence < chosen.sequence)) best = index;
+  }
+  const [next] = lane.waiting.splice(best, 1);
+  lane.running = true;
+  next!.start();
+}
+
+/** Queues `run` on the lane; the promise settles with it. */
+function laneRun(lane: GenerationLane, run: () => Promise<void>, priority: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    lane.waiting.push({
+      priority,
+      sequence: lane.sequence++,
+      start: () => {
+        void Promise.resolve()
+          .then(run)
+          .then(resolve, reject)
+          .finally(() => {
+            lane.running = false;
+            pumpLane(lane);
+          });
+      },
+    });
+    pumpLane(lane);
+  });
+}
+
+/**
+ * How urgently a `/texture` path is wanted, for its lane.
+ *
+ * 2 — what makes a unit appear: character and item component layers, creature skins and the baked
+ *     NPC faces; until they are published the unit is a capsule (`CharacterAtlas` waits for its
+ *     layers).
+ * 0 — interface art that is drawn in a corner or a window: minimap tiles, world-map art, icons.
+ * 1 — everything else, the world's own model textures.
+ */
+export function texturePriority(path: string): number {
+  const lower = path.replaceAll("/", "\\").toLowerCase();
+  if (lower.startsWith("character\\") || lower.startsWith("item\\") || lower.startsWith("creature\\")
+    || lower.startsWith("textures\\bakednpctextures\\")) return 2;
+  if (lower.startsWith("textures\\minimap\\") || lower.startsWith("interface\\")) return 0;
+  return 1;
 }
 
 /**
@@ -393,7 +526,9 @@ function generationLane(): GenerationLane {
  * from every player and starves the assets that would have succeeded. The TTL is there so a
  * generator fixed at runtime, or a dependency that came back, heals without a restart.
  */
-async function generateOnce(lane: GenerationLane, key: string, run: () => Promise<void>): Promise<void> {
+async function generateOnce(
+  lane: GenerationLane, key: string, run: () => Promise<void>, priority = 1,
+): Promise<void> {
   const remembered = lane.failures.get(key);
   if (remembered && remembered.until > Date.now()) {
     // Refused, but refused with the same news the run itself gave. A source the client does not
@@ -406,8 +541,7 @@ async function generateOnce(lane: GenerationLane, key: string, run: () => Promis
   lane.failures.delete(key);
   let job = lane.jobs.get(key);
   if (!job) {
-    const generation = lane.queue.then(run);
-    lane.queue = generation.catch(() => undefined);
+    const generation = laneRun(lane, run, priority);
     job = generation.finally(() => lane.jobs.delete(key));
     lane.jobs.set(key, job);
   }
@@ -418,7 +552,11 @@ async function generateOnce(lane: GenerationLane, key: string, run: () => Promis
       const now = Date.now();
       for (const [failed, failure] of lane.failures) if (failure.until <= now) lane.failures.delete(failed);
     }
-    lane.failures.set(key, { until: Date.now() + GENERATION_FAILURE_TTL_MS, missing: sourceMissing(error) });
+    const missing = sourceMissing(error);
+    lane.failures.set(key, {
+      until: Date.now() + (missing ? GENERATION_FAILURE_TTL_MS : GENERATION_RETRY_TTL_MS),
+      missing,
+    });
     throw error;
   }
 }
@@ -525,20 +663,43 @@ class DatasetIndexes {
   gameObjectMetadata: ReturnType<typeof loadGameObjectDisplayMetadata> | undefined = undefined;
   transportPaths: ReturnType<typeof loadTransportPaths> | undefined = undefined;
   liquidClasses: ReturnType<typeof loadLiquidClasses> | undefined = undefined;
+  loadingScreens: ReturnType<typeof loadLoadingScreens> | undefined = undefined;
   groundEffects: ReturnType<typeof loadGroundEffects> | undefined = undefined;
   creatureModelMetadata: ReturnType<typeof loadCreatureModelMetadata> | undefined = undefined;
   characterAppearance: ReturnType<typeof CharacterAppearanceIndex.load> | undefined = undefined;
   characterCreation: ReturnType<typeof loadCharacterCreation> | undefined = undefined;
   charStartOutfit: ReturnType<typeof CharStartOutfitIndex.load> | undefined = undefined;
   itemMetadata: ReturnType<typeof loadItemMetadata> | undefined = undefined;
+  itemSubclassNames: ReturnType<typeof loadItemSubclassNames> | undefined = undefined;
   itemEnchantments: ReturnType<typeof loadItemEnchantments> | undefined = undefined;
   lockData: ReturnType<typeof loadLockData> | undefined = undefined;
   factionData: ReturnType<typeof loadFactionData> | undefined = undefined;
   emoteData: ReturnType<typeof loadEmoteData> | undefined = undefined;
   talentData: ReturnType<typeof loadTalentData> | undefined = undefined;
+  characterStatData: ReturnType<typeof loadCharacterStatData> | undefined = undefined;
+  lfgDungeonMetadata: ReturnType<typeof loadLfgDungeonMetadata> | undefined = undefined;
+  vendorCostMetadata: ReturnType<typeof loadVendorCostMetadata> | undefined = undefined;
+  barberStyles: ReturnType<typeof loadBarberStyles> | undefined = undefined;
+  barberCosts: ReturnType<typeof loadBarberCosts> | undefined = undefined;
+  slotPrices: ReturnType<typeof loadSlotPrices> | undefined = undefined;
+  macroIcons: ReturnType<typeof loadMacroIcons> | undefined = undefined;
+  /** The stock calendar's holidays, icon picker rows and raid names (CalendarCatalog.ts), serialized once. */
+  calendarCatalog: Promise<string> | undefined = undefined;
+  /** The stock glyph tab's glyph, socket and glyph-item rows (GlyphCatalog.ts), serialized once. */
+  glyphCatalog: Promise<string> | undefined = undefined;
+  /** The stock title picker's CharTitles rows (CharTitleMetadata.ts), serialized once. */
+  charTitles: Promise<string> | undefined = undefined;
+  /** The stock currency tab's CurrencyTypes/CurrencyCategory rows (CurrencyCatalog.ts), serialized once. */
+  currencyCatalog: Promise<string> | undefined = undefined;
+  /** The serialized body and its validator, not the rows: the JSON is built once per dataset, not per request. */
+  achievementCatalog: Promise<{ readonly body: string; readonly etag: string }> | undefined = undefined;
+  reputationMetadata: ReturnType<typeof loadReputationMetadata> | undefined = undefined;
   areaData: ReturnType<typeof loadAreaData> | undefined = undefined;
   battlegroundMetadata: ReturnType<typeof loadBattlegroundMetadata> | undefined = undefined;
+  worldStateUiMetadata: ReturnType<typeof loadWorldStateUiMetadata> | undefined = undefined;
   taxiMetadata: ReturnType<typeof loadTaxiMetadata> | undefined = undefined;
+  /** The two DeclinedWord tables packed and gzipped once (DeclinedWords.ts). */
+  declinedWords: ReturnType<typeof loadDeclinedWords> | undefined = undefined;
   lightIndex: ReturnType<typeof loadLightMetadata> | undefined = undefined;
   soundIndex: ReturnType<typeof SoundIndex.load> | undefined = undefined;
   /**
@@ -574,7 +735,22 @@ class DatasetIndexes {
   }
 }
 
-export async function startGateway(options: GatewayOptions): Promise<RunningGateway> {
+export interface GatewayAssetHandler {
+  handle(request: IncomingMessage, response: ServerResponse): void;
+  close(): void;
+  /** See {@link RunningGateway}. */
+  patchSummary(): PatchStatusSummary;
+  patchStatus(): Promise<PatchStatus>;
+  checkPatchChain(): Promise<PatchStatusSummary>;
+  readonly patchEventsPending: boolean;
+}
+
+/** Shared resource implementation. Creating it opens no listening or gameplay sockets. */
+export async function createGatewayAssetHandler(options: GatewayOptions): Promise<GatewayAssetHandler> {
+  const localAssetNonce = options.localAssetNonce;
+  if (localAssetNonce !== undefined && !/^[0-9a-f]{64}$/.test(localAssetNonce)) {
+    throw new Error("localAssetNonce must be 64 lowercase hexadecimal characters.");
+  }
   const indexes = new DatasetIndexes();
   const audioDbcDirectory = options.audioDbcDirectory === null
     ? undefined : options.audioDbcDirectory ?? options.visualDbcDirectory;
@@ -622,6 +798,16 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     }
   }
   let clientVisualProfileChanged = false;
+  // The generation is taken from the baseline walk above, i.e. the chain the startup profile was
+  // selected against — the same instant the latch below measures "changed" from.
+  const patches = new PatchStatusTracker({
+    archivesHash: fingerprint.archivesHash,
+    chain: fingerprint.chain,
+    addons: options.clientAddons ?? [],
+    supervised: options.supervised ?? false,
+    ...(options.readPatchDetails ? { readDetails: options.readPatchDetails } : {}),
+    ...(options.onClientPatchChange ? { onChange: options.onClientPatchChange } : {}),
+  });
   /**
    * The archives' listing, started at most once and shared by the two indexes that want it.
    *
@@ -658,40 +844,68 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   // any of them would make the first genuinely missing asset of that family queue behind the whole
   // of it — which is the stall this slice exists to remove.
   const restampLane = generationLane();
-  const server: HttpServer = createServer((request, response) => void (async () => {
+  // One poll and what it makes stale. A request runs it first; so does the supervised gateway's
+  // idle timer (`checkPatchChain`), which is how a publish is latched with no page open.
+  const observeDataset = async (): Promise<void> => {
+    const changed = await fingerprint.poll();
+    if (changed.dbc) indexes.reset();
+    if (changed.archives) {
+      // The startup-selected visual DBC directory and coordinated-model policy cannot be
+      // switched safely under already loaded browser assets. Latch this for the rest of the
+      // process even if the files are changed back: only a restart establishes one new atomic
+      // archive/profile generation.
+      clientVisualProfileChanged = true;
+      patches.noteArchivesChanged(changed.epoch);
+      // Not because these two are read out of the archives — they are the vmap extractor's own
+      // files — but because the only thing that rewrites a patch directory is a dataset build,
+      // and a dataset build is what rewrites the vmaps beside it. Watching the vmaps themselves
+      // would cost 469.3 ms a poll for 15,087 files.
+      environmentModels.clear();
+      collisionModels.clear();
+      // And the one index that is read out of the archives, plus the two that fold it in. A
+      // module dropping a component texture into a patch directory changes which spelling of it
+      // exists, and that is the whole of the answer this listing gives.
+      indexes.forgetArchives();
+      // A generator holding the old chain open would go on publishing out of it.
+      options.onArchivesChanged?.();
+    }
+  };
+  const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end('{"status":"ok"}');
+      response.end(localAssetNonce === undefined
+        ? '{"status":"ok"}'
+        : JSON.stringify({ status: "ok", localAssetNonce }));
       return;
     }
 
     // Before anything is answered out of memory: if the dataset has moved since the last request,
     // forget what it made stale. `/health` is answered above this line, so a liveness probe never
     // pays for the walk, and between polls this costs one clock read.
-    if (fingerprint.watching) {
-      const changed = await fingerprint.poll();
-      if (changed.dbc) indexes.reset();
-      if (changed.archives) {
-        // The startup-selected visual DBC directory and coordinated-model policy cannot be
-        // switched safely under already loaded browser assets. Latch this for the rest of the
-        // process even if the files are changed back: only a restart establishes one new atomic
-        // archive/profile generation.
-        clientVisualProfileChanged = true;
-        // Not because these two are read out of the archives — they are the vmap extractor's own
-        // files — but because the only thing that rewrites a patch directory is a dataset build,
-        // and a dataset build is what rewrites the vmaps beside it. Watching the vmaps themselves
-        // would cost 469.3 ms a poll for 15,087 files.
-        environmentModels.clear();
-        collisionModels.clear();
-        // And the one index that is read out of the archives, plus the two that fold it in. A
-        // module dropping a component texture into a patch directory changes which spelling of it
-        // exists, and that is the whole of the answer this listing gives.
-        indexes.forgetArchives();
-      }
-    }
+    if (fingerprint.watching) await observeDataset();
 
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
+
+    // Deliberately outside `isClientVisualProfileRoute`: this is how the latch is reported, so it
+    // keeps answering after it. Read-only (nothing on the network may reload anything) and
+    // origin-checked like `/client/addons`. `?summary=1` skips the child — the banner polls that.
+    if (request.method === "GET" && pathname === "/client/patch-status") {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const body = url.searchParams.get("summary") === "1"
+        ? patches.summary() : await patches.details(fingerprint.epoch);
+      response.writeHead(200, {
+        "access-control-allow-origin": origin,
+        "cache-control": "no-store",
+        "content-type": "application/json; charset=utf-8",
+      });
+      response.end(JSON.stringify(body));
+      return;
+    }
 
     if (clientVisualProfileChanged && isClientVisualProfileRoute(request.method, pathname)) {
       const origin = request.headers.origin;
@@ -739,7 +953,8 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         // One thunk for both ways a route needs the generator — the file is not there at all, or
         // it is there and the stamp check has something to say about it — on the same lane under
         // the same key, so a miss and a rebuild that meet on one file collapse into a single run.
-        const rebuild = () => generateOnce(textureLane, id, () => options.generateTexture!(texturePath));
+        const rebuild = () => generateOnce(
+          textureLane, id, () => options.generateTexture!(texturePath), texturePriority(texturePath));
         // A cache entry keyed on a path is not keyed on what that path held when it was
         // written, so its stamp is checked against the dataset as it is now before it is
         // served; a stale one is dropped here and the miss below rebuilds that one entry.
@@ -942,7 +1157,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       try {
         const rebuild = () => generateOnce(visualTileLane, key, () => options.generateVisualTile!(map, gridX, gridY));
         if (options.generateVisualTile) {
-          await fingerprint.ensureCurrent(filename, { generation: "visual-tile-v3" });
+          await fingerprint.ensureCurrent(filename, { generation: "visual-tile-v4" });
         }
         let data: Buffer;
         try {
@@ -1821,6 +2036,28 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     // Battleground queue labels and limits are client data. The live list only carries a
     // battlemaster's type id and current instances, so this fixed catalog is cached like the
     // other DBC routes and invalidated with the dataset fingerprint.
+    if (request.method === "GET" && pathname === "/dbc/world-state-ui" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.worldStateUiMetadata ??= loadWorldStateUiMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.worldStateUiMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.worldStateUiMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/dbc/battlegrounds" && options.dbcDirectory) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
@@ -1985,6 +2222,424 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    if (request.method === "GET" && pathname === "/dbc/reputation" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.reputationMetadata ??= loadReputationMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.reputationMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.reputationMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/vendor-costs" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.vendorCostMetadata ??= loadVendorCostMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.vendorCostMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // DatasetFingerprint can invalidate this catalog while the gateway stays up. The
+          // catalog is loaded once per world session, and a one-hour browser cache could otherwise
+          // keep an obsolete price after the realm's vendor list has already changed.
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.vendorCostMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/lfg-dungeons" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.lfgDungeonMetadata ??= loadLfgDungeonMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.lfgDungeonMetadata);
+        // Catalog version 2 (LFG_DUNGEON_CATALOG_VERSION) changed the shape under the same path:
+        // an hour-long freshness window would let a browser keep the version-1 body, whose rows
+        // lack the stock list's group headers. A content validator revalidates on every open and
+        // still answers 304 for an unchanged dataset.
+        const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag,
+          "content-type": "application/json; charset=utf-8",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, cacheHeaders);
+        response.end(data);
+      } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The ruRU declension dictionary (DeclinedWords.ts), fetched once per page by the FrameXML host.
+    // Binary, gzipped when the browser accepts it; packed once per dataset (a DatasetIndexes entry,
+    // which the dataset watch drops on a DBC change) and revalidated by content like the LFG catalog,
+    // so a rebuilt dataset is picked up and an unchanged one answers 304.
+    if (request.method === "GET" && pathname === "/dbc/declined-words" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.declinedWords ??= loadDeclinedWords(options.dbcDirectory);
+        const body = await indexes.declinedWords;
+        const gzipped = /\bgzip\b/.test(String(request.headers["accept-encoding"] ?? ""));
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag: body.etag,
+          vary: "Accept-Encoding",
+          "content-type": "application/octet-stream",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === body.etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, gzipped ? { ...cacheHeaders, "content-encoding": "gzip" } : cacheHeaders);
+        response.end(gzipped ? body.gzip : body.raw);
+      } catch {
+        indexes.declinedWords = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/slot-prices" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.slotPrices ??= loadSlotPrices(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.slotPrices);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.slotPrices = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock calendar's client tables (CalendarCatalog.ts), fetched once when the window first opens.
+    if (request.method === "GET" && pathname === "/dbc/calendar" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CALENDAR_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.calendarCatalog ??= loadCalendarCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.calendarCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.calendarCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock currency tab's client tables (CurrencyCatalog.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/currencies" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CURRENCY_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.currencyCatalog ??= loadCurrencyCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.currencyCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.currencyCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock glyph tab's client tables (GlyphCatalog.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/glyphs" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(GLYPH_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.glyphCatalog ??= loadGlyphCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.glyphCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.glyphCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock PaperDoll title picker's CharTitles rows (CharTitleMetadata.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/char-titles" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CHAR_TITLES_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.charTitles ??= loadCharTitles(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.charTitles;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.charTitles = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock macro window's icon lists (MacroIcons.ts), fetched once when it first opens.
+    if (request.method === "GET" && pathname === "/dbc/macro-icons" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.macroIcons ??= loadMacroIcons(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.macroIcons);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // A rebuilt dataset can add icons while the gateway stays up (DatasetFingerprint resets
+          // the index); the list is fetched once per page, so there is nothing to cache for.
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.macroIcons = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock achievement window's catalog (AchievementMetadata.ts), fetched once per page the
+    // first time the window, a toast or an achievement chat line needs a name.
+    if (request.method === "GET" && pathname === "/dbc/achievements" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(ACHIEVEMENT_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.achievementCatalog ??= loadAchievementCatalog(dbcDirectory).then((catalog) => {
+          const body = JSON.stringify(catalog);
+          return { body, etag: `"${createHash("sha1").update(body).digest("hex")}"` };
+        });
+        const { body, etag } = await indexes.achievementCatalog;
+        // A rebuilt dataset changes the body under the same path (DatasetFingerprint resets the
+        // index): revalidate on every page, and answer 304 while the tables are unchanged.
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag,
+          "content-type": "application/json; charset=utf-8",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, cacheHeaders);
+        response.end(body);
+      } catch {
+        indexes.achievementCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/barber-styles" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.barberStyles ??= loadBarberStyles(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.barberStyles);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.barberStyles = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // gtBarberShopCostBase: the base haircut price by level, which the stock BarberShopFrame prices
+    // its selection from with the core's own formula (BarberCostMetadata.ts).
+    if (request.method === "GET" && pathname === "/dbc/barber-cost" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.barberCosts ??= loadBarberCosts(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.barberCosts);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.barberCosts = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/character-stats" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.characterStatData ??= loadCharacterStatData(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.characterStatData);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.characterStatData = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/dbc/talents" && options.dbcDirectory) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
@@ -2093,6 +2748,31 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    // The world-entry curtain's art for every map: `Map.LoadingScreenID` → `LoadingScreens` row,
+    // 100 maps and about 9 KB, so it travels whole and is asked for once a session.
+    if (request.method === "GET" && pathname === "/dbc/loading-screens" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.loadingScreens ??= loadLoadingScreens(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.loadingScreens);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // A rejected load must not be memoised: the next request after a dataset rebuild retries.
+        indexes.loadingScreens = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     // What grows on a patch of ground: the 892 `GroundEffectTexture` rows that carry a doodad, and
     // the 485 models they name. The tile's own `cover.bin` says which effect id each detail cell
     // grows and this says what that id is, so the pair is the whole recipe; asked for once a
@@ -2151,7 +2831,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     }
 
     /**
-     * What a character of this race and sex may look like, so the creation form can offer it.
+     * What a character of this race, sex and class may look like, so the creation form can offer it.
      *
      * The form used to send name, race, class, sex and five zeros, and zero is a legal appearance
      * — so the server accepted it and the character was born with `skin 0, face 0, hair 0`. For a
@@ -2161,9 +2841,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
      *
      * The answer is five lists of indices and a map, not five counts — a count offers every gap
      * inside its range, and the twenty playable profiles had 1,900 such gaps between them. The
-     * shape changed with it, so the request carries `v=` exactly as the appearance does: this
-     * route answers `max-age=3600` too, and without a new query string a browser would serve
-     * itself an hour of counts out of its own cache and read them as lists.
+     * shape changed with it, so the request carries `v=` exactly as the appearance does. The
+     * route now answers `no-store`; the version also separates these lists from older deployments
+     * that cached counts. The optional `class` excludes death-knight-only sections for other classes.
      */
     if (request.method === "GET" && pathname === "/dbc/character-options" && options.dbcDirectory) {
       const origin = request.headers.origin;
@@ -2173,7 +2853,10 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       const race = Number.parseInt(url.searchParams.get("race") ?? "", 10);
       const sex = Number.parseInt(url.searchParams.get("sex") ?? "", 10);
-      if (!Number.isInteger(race) || race < 1 || race > 255 || (sex !== 0 && sex !== 1)) {
+      const classParam = url.searchParams.get("class");
+      const classId = classParam === null ? undefined : Number.parseInt(classParam, 10);
+      if (!Number.isInteger(race) || race < 1 || race > 255 || (sex !== 0 && sex !== 1)
+        || (classId !== undefined && (!Number.isInteger(classId) || classId < 1 || classId > 255))) {
         respondError(response, 400, origin);
         return;
       }
@@ -2181,7 +2864,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         indexes.characterAppearance ??= CharacterAppearanceIndex.load(
           options.dbcDirectory, characterTextures(), options.visualDbcDirectory,
           options.coordinatedVisuals ?? false);
-        const data = JSON.stringify((await indexes.characterAppearance).options(race, sex));
+        const data = JSON.stringify((await indexes.characterAppearance).options(race, sex, classId));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
           "cache-control": "no-store",
@@ -2236,7 +2919,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     // Who may be created, and what they are called. The creation form built its two lists from ten
     // hardcoded names each, so a race or a class a module adds could not be picked — and the names
     // it did have were this client's own translation rather than the dataset's. Deliberately not
-    // part of `/dbc/character-options`: that answer is per race and per sex and is being reshaped
+    // part of `/dbc/character-options`: that answer is per race, sex and selected class and is being reshaped
     // by the appearance work, and two slices rewriting one payload is how a contract gets lost.
     if (request.method === "GET" && pathname === "/dbc/character-creation" && options.dbcDirectory) {
       const origin = request.headers.origin;
@@ -2270,7 +2953,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
      * carries the display id directly, so this walks no `Item.dbc` chain — see
      * `CharStartOutfit.ts` for the measurement that says the column is the right one.
      *
-     * `v=` for the same reason `/dbc/character-options` carries one: the route answers
+     * `v=` marks the payload contract as on `/dbc/character-options`. This route answers
      * `max-age=3600`, so a shape change without a new query string would be served out of a
      * browser's own cache for an hour.
      */
@@ -2485,6 +3168,35 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    /**
+     * `ItemSubClass.dbc` whole — 119 rows, 8 KB — for the words on an item tooltip's slot row: the
+     * «Топор» beside «Двуручное», the «Латы» beside «Грудь». Keyed on class and subclass, which the
+     * item query carries, so the browser asks once per session and joins it itself. `no-cache`
+     * like the enchantments beside it: a rebuilt dataset is then read at the next session, not an
+     * hour later.
+     */
+    if (request.method === "GET" && pathname === "/dbc/item-subclasses" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.itemSubclassNames ??= loadItemSubclassNames(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.itemSubclassNames);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-cache",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.itemSubclassNames = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/data/items" && options.itemMetadataFile) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
@@ -2577,8 +3289,25 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         if (!job) {
           // A WMO's collision sits beside it as `<name>.vmo`; an M2's is the file itself, which is
           // already in this format. That is how the extractor writes them.
+          //
+          // Except when it does not: the extractor also writes `<name>.m2.vmo` for M2 rows (every
+          // tree in Elwynn, for example), and asking for the bare name then answers ENOENT while
+          // the server happily collides with the same tree. Fall back to the suffixed file before
+          // reporting the model missing, so the client and the server collide with one world.
           const filename = name.toLowerCase().endsWith(".wmo") ? `${name}.vmo` : name;
-          job = readFile(join(options.buildingsDirectory, filename))
+          const buildings = options.buildingsDirectory;
+          const readCollisionFile = async (): Promise<Buffer> => {
+            try {
+              return await readFile(join(buildings, filename));
+            } catch (error) {
+              if (!name.toLowerCase().endsWith(".wmo")
+                && (error as NodeJS.ErrnoException).code === "ENOENT") {
+                return await readFile(join(buildings, `${name}.vmo`));
+              }
+              throw error;
+            }
+          };
+          job = readCollisionFile()
             .then((file) => parseVMapModelGroups(file))
             .catch((error) => {
               collisionModels.delete(name);
@@ -2624,7 +3353,20 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
 
       const filename = `${String(map).padStart(3, "0")}_${String(gridY).padStart(2, "0")}_${String(gridX).padStart(2, "0")}.vmtile`;
       try {
-        const objects = parseVMapTile(await readFile(join(options.vmapsDirectory, filename)));
+        let objects: EnvironmentObject[];
+        try {
+          objects = parseVMapTile(await readFile(join(options.vmapsDirectory, filename)));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          // No tile: either nothing stands here, or the map is one WMO with no tiles at all, whose
+          // spawn lives in its tree (`parseVMapGlobalSpawn`). That one answers every cell its box
+          // reaches; the rest of such a map is empty, not missing. A tiled map's absent tile is
+          // still the 404 it was.
+          const tree = await readFile(join(options.vmapsDirectory, `${String(map).padStart(3, "0")}.vmtree`));
+          const global = parseVMapGlobalSpawn(tree);
+          if (!global) throw error;
+          objects = environmentObjectInGrid(global, gridX, gridY) ? [global] : [];
+        }
         const data = JSON.stringify(objects);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
@@ -2648,7 +3390,28 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     console.error(`Unhandled error serving ${request.method} ${request.url}:`, error);
     if (!response.headersSent) respondError(response, 500, undefined);
     else response.destroy();
-  }));
+  });
+  if (options.restampCaches) {
+    void generateOnce(restampLane, RESTAMP_KEY, options.restampCaches).catch((error: unknown) => {
+      console.warn(`Not stamping the published cache: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  return {
+    handle,
+    close: () => fingerprint.close(),
+    patchSummary: () => patches.summary(),
+    patchStatus: () => patches.details(fingerprint.epoch),
+    checkPatchChain: async () => {
+      if (fingerprint.watching) await observeDataset();
+      return patches.summary();
+    },
+    get patchEventsPending() { return fingerprint.archiveEventsPending; },
+  };
+}
+
+export async function startGateway(options: GatewayOptions): Promise<RunningGateway> {
+  const assets = await createGatewayAssetHandler(options);
+  const server: HttpServer = createServer(assets.handle);
   const authServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE, perMessageDeflate: false });
   const worldServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE, perMessageDeflate: false });
 
@@ -2704,33 +3467,21 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       });
     });
   } catch (error) {
-    fingerprint.close();
+    assets.close();
     throw error;
   }
 
   const address = server.address();
   if (!address || typeof address === "string") {
-    fingerprint.close();
+    assets.close();
     throw new Error("Gateway did not bind a TCP address");
-  }
-
-  // The published cache is stamped here and nowhere else: once, after the port is open, on a lane
-  // of its own. Started rather than awaited — the gateway is already answering, and an entry with
-  // no stamp is answered out of the file as it stands whether this has reached it or not. A pass
-  // that fails says so and is tried again the next time the gateway starts; retrying it from a
-  // request would mean respawning it for every unstamped entry that is left, and the ones that are
-  // left after a successful pass are exactly the ones it could not stamp.
-  if (options.restampCaches) {
-    void generateOnce(restampLane, RESTAMP_KEY, options.restampCaches).catch((error: unknown) => {
-      console.warn(`Not stamping the published cache: ${error instanceof Error ? error.message : String(error)}`);
-    });
   }
 
   return {
     host: options.host,
     port: address.port,
     close: async () => {
-      fingerprint.close();
+      assets.close();
       for (const webSocket of [...authServer.clients, ...worldServer.clients]) webSocket.terminate();
       await Promise.all([
         new Promise<void>((resolve) => authServer.close(() => resolve())),
@@ -2738,6 +3489,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
       ]);
     },
+    patchSummary: () => assets.patchSummary(),
+    patchStatus: () => assets.patchStatus(),
+    checkPatchChain: () => assets.checkPatchChain(),
+    get patchEventsPending() { return assets.patchEventsPending; },
+    connections: () => ({ auth: authServer.clients.size, world: worldServer.clients.size }),
   };
 }
 
@@ -2892,7 +3648,7 @@ export const CLIENT_FILE_EXTENSIONS = ["lua", "xml", "toc", "ttf"] as const;
 
 /** A path that could name an interface file inside the archives. */
 export function validClientFilePath(value: string): boolean {
-  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS });
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true });
 }
 
 /**

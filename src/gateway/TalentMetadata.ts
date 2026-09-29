@@ -24,6 +24,8 @@ export interface TalentTabInfo {
    * Zero for a class tree. This is the only link between a pet's family and its talents.
    */
   petCategory: number;
+  /** Core TalentTab.PetTalentMask; intersect with petFamilyMasks[family]. */
+  petTalentMask: number;
   orderIndex: number;
   iconId: number;
   /** `SpellIcon.TextureFilename`, resolved to the texture path used by FrameXML. */
@@ -57,6 +59,8 @@ export interface SkillLineInfo {
   name: string;
   categoryId: number;
   iconId: number;
+  /** `SpellIcon.TextureFilename` of `iconId`, the picture the stock spellbook's tab carries; "" when unknown. */
+  iconPath: string;
 }
 
 /** A `SkillLineCategory.dbc` heading, in the order the stock skills tab draws it. */
@@ -98,6 +102,13 @@ export interface TalentData {
    * Families with no talents at all are left out rather than stored as zero.
    */
   petFamilies: Record<number, number>;
+  /** CreatureFamily signed PetTalentType >= 0 mapped to 2 ** type, including type zero. */
+  petFamilyMasks: Record<number, number>;
+  /**
+   * `CreatureFamily.Name_lang` per family, for the stock stable's and pet frame's family line.
+   * Optional: a payload from a gateway older than the field simply has none.
+   */
+  petFamilyNames?: Record<number, string>;
 }
 
 /** `Talent.SpellRank` is nine wide and zero-padded past the ranks a talent actually has. */
@@ -178,6 +189,7 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
       classMask: tabTable.int(row, "ClassMask"),
       // A pet tree has no class and carries the family's `PetTalentType` here instead.
       petCategory: tabTable.int(row, "CategoryEnumID"),
+      petTalentMask: tabTable.int(row, "CategoryEnumID") >>> 0,
       orderIndex: tabTable.int(row, "OrderIndex"),
       iconId: tabTable.int(row, "SpellIconID"),
       iconPath: spellIconPaths.get(tabTable.int(row, "SpellIconID")) ?? "",
@@ -220,6 +232,7 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
       name: skillTable.locstring(row, "DisplayName_lang"),
       categoryId: skillTable.int(row, "CategoryID"),
       iconId: skillTable.int(row, "SpellIconID"),
+      iconPath: spellIconPaths.get(skillTable.int(row, "SpellIconID")) ?? "",
     });
   }
 
@@ -265,10 +278,18 @@ export async function loadTalentData(dbcDirectory: string): Promise<TalentData> 
   }
 
   const petFamilies: Record<number, number> = {};
+  const petFamilyMasks: Record<number, number> = {};
+  const petFamilyNames: Record<number, string> = {};
   for (const row of familyTable.rows()) {
     const type = familyTable.int(row, "PetTalentType");
     if (type > 0) petFamilies[familyTable.id(row)] = type;
+    if (type >= 0 && type < 32) petFamilyMasks[familyTable.id(row)] = 2 ** type;
+    const name = familyTable.locstring(row, "Name_lang");
+    if (name) petFamilyNames[familyTable.id(row)] = name;
   }
 
-  return { tabs, talents, glyphs, skillLines, skillCategories, spellSkill, spellAbilities, petFamilies };
+  return {
+    tabs, talents, glyphs, skillLines, skillCategories, spellSkill, spellAbilities, petFamilies, petFamilyMasks,
+    petFamilyNames,
+  };
 }

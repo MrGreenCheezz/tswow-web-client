@@ -451,6 +451,31 @@ export class DatasetFingerprint {
     return this.#dbcDirectory !== undefined || this.#dbcFiles.length > 0 || this.#clientDirectory !== undefined;
   }
 
+  /** The archive half of the last complete walk; undefined before one, or without a client. */
+  get archivesHash(): string | undefined {
+    return this.#archivesHash;
+  }
+
+  /** The chain composition digest of the last complete walk, as `tools/mpq.mjs` computes it. */
+  get chain(): string | undefined {
+    return this.#chain;
+  }
+
+  /** Bumped by every walk that saw either half change. */
+  get epoch(): number {
+    return this.#epoch;
+  }
+
+  /**
+   * Whether the archive watch reported a write the walks have not accounted for yet.
+   *
+   * One comparison, so a caller that wants to notice a publish without an HTTP request (the
+   * supervised gateway's idle timer) can ask every second and pay for a walk only when this says so.
+   */
+  get archiveEventsPending(): boolean {
+    return this.#archiveRevision !== this.#cleanArchiveRevision;
+  }
+
   /**
    * Whether one stamped file still belongs to the watched dataset/client.
    *

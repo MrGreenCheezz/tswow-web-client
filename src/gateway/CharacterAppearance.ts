@@ -52,10 +52,12 @@ const SECTION_UNDERWEAR = 4;
  * The core's own name and value (`DBCStructure.h:322-326`), read by `Player::ValidateAppearance`
  * as `create && !entry->HasFlag(SECTION_FLAG_PLAYER) → false` (`Player.cpp:27273-27275`) — a
  * refusal that never looks at the class, so a row without it is refused for everybody, death
- * knights included. Its sibling `SECTION_FLAG_DEATH_KNIGHT` (0x04) is the class-dependent half
- * and is deliberately not applied here; see `options`.
+ * knights included. Its sibling `SECTION_FLAG_DEATH_KNIGHT` (0x04) is applied when `options`
+ * receives the selected class.
  */
 const SECTION_FLAG_PLAYER = 0x01;
+/** Reserved for death knights by `Player::ValidateAppearance` in the selected core. */
+const SECTION_FLAG_DEATH_KNIGHT = 0x04;
 
 /** One texture painted onto the body atlas, or the whole of it when `section` is absent. */
 export interface BodyLayer {
@@ -791,17 +793,14 @@ export class CharacterAppearanceIndex {
    * styles, and all 28 of the tauren male's in those five styles or that one colour — so filtering
    * the two axes separately leaves no ragged remainder, and the test says so.
    *
-   * The other half of that gate is **not** applied here, on purpose: `SECTION_FLAG_DEATH_KNIGHT`
-   * (0x04) is refused only for classes other than the death knight, and this route is answered
-   * without a class. Dropping those rows would take the death-knight skins away from the one class
-   * allowed to wear them — the human male's 12, 13 and 14, and 129 of his 249 face rows. So a
-   * human male is offered 13 skins and 24 faces where an ordinary class may take 10 and 12, and
-   * closing that needs the class, which arrives with the race and class route (Д3).
+   * `SECTION_FLAG_DEATH_KNIGHT` is refused for other classes. Creation screens pass the selected
+   * class so ordinary characters cannot pick the human male's exclusive skins 12, 13 and 14.
+   * Callers without a class keep the complete list for appearance inspection.
    *
    * A module adding a look has to set the flag on its rows, and this is where it will notice if it
    * did not: the control goes empty rather than offering a choice the server will refuse.
    */
-  options(race: number, sex: number): CharacterOptions {
+  options(race: number, sex: number, classId?: number): CharacterOptions {
     // The scan stops well past anything the shipped tables use — the widest is 24 hair colours for
     // a blood elf — and it is a map lookup per candidate. Listing costs more than counting because
     // it walks the second axis as well: measured on this machine, 0.75 ms for a human male and
@@ -809,10 +808,11 @@ export class CharacterAppearanceIndex {
     // counts did. That is paid once per race or sex change, on a route that answers
     // `max-age=3600`, and the answer is 969 bytes for a human male, 703 on average over the twenty.
     const LIMIT = 64;
-    /** A row the creation screen may choose: it exists, and the core will take it from any class. */
+    /** A row the selected class may choose, following `Player::ValidateAppearance`. */
     const has = (base: number, variation: number, colour: number): boolean => {
       const row = this.#section(base, race, sex, variation, colour);
-      return row !== undefined && (row.flags & SECTION_FLAG_PLAYER) !== 0;
+      return row !== undefined && (row.flags & SECTION_FLAG_PLAYER) !== 0
+        && (classId === undefined || classId === 6 || (row.flags & SECTION_FLAG_DEATH_KNIGHT) === 0);
     };
     /** Every index on the first axis that has a row at any of `colours`. */
     const variations = (base: number, colours: readonly number[]): number[] => {
