@@ -53,7 +53,11 @@ test("the vertical subset loads CastingBarFrame and reaches both cast APIs", wit
   const chain = await clientArchives(clientDirectory);
   // Keep this regression scoped to the prefix that existed when CastingBarFrame was added. A
   // future vertical tail (TargetFrame, minimap, auras, ...) must not enter its baseline.
-  const castingBarVertical = verticalPrefixThrough("CastingBarFrame.xml");
+  // GameTime was promoted into the production TOC after this no-seam castbar baseline was
+  // measured. Its clock APIs and pending-invite frame are unrelated to CastingBarFrame, so keep
+  // this isolated regression on the earlier prefix while preserving its eight-error ceiling.
+  const castingBarVertical = verticalPrefixThrough("CastingBarFrame.xml")
+    .filter((entry) => entry !== "GameTime.xml");
   const withoutCastingBar = castingBarVertical.filter((entry) => entry !== "CastingBarFrame.xml");
   let baseline;
   let candidate;

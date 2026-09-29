@@ -50,7 +50,7 @@ function f32(value) {
 }
 
 /**
- * The six tables `/dbc/areas` opens. Column positions are the ones the generated layout declares,
+ * The eight tables `/dbc/areas` opens. Column positions are the ones the generated layout declares,
  * so a fixture that drifts from the real table fails to open rather than reading the wrong slot.
  */
 function areaDbcs() {
@@ -96,6 +96,8 @@ function areaDbcs() {
   stormwind[0] = 121;
   stormwind[1] = 30;
   stormwind[2] = 1519;
+  stormwind[6] = 101;
+  stormwind[7] = 202;
   stormwind[8] = overlayStrings.offsets.get("STORMWIND");
   stormwind[9] = 485;
   stormwind[10] = 405;
@@ -105,6 +107,35 @@ function areaDbcs() {
   const blank = Array(17).fill(0);
   blank[0] = 999;
   blank[1] = 30;
+
+  // DungeonMap: the ground map links a dungeon floor to its WorldMapArea parent.
+  const dungeonMap = Array(8).fill(0);
+  dungeonMap[0] = 42;
+  dungeonMap[1] = 530;
+  dungeonMap[2] = 1;
+  dungeonMap[3] = f32Bits(-50);
+  dungeonMap[4] = f32Bits(50);
+  dungeonMap[5] = f32Bits(-30);
+  dungeonMap[6] = f32Bits(30);
+  dungeonMap[7] = 30;
+
+  const poiStrings = stringBlock(["Застава", "Описание заставы"]);
+  const poi = Array(54).fill(0);
+  poi[0] = 700;
+  poi[1] = 3;
+  poi[2] = 7;
+  poi[10] = 9;
+  poi[11] = 35;
+  poi[12] = f32Bits(100.25);
+  poi[13] = f32Bits(-200.5);
+  poi[14] = f32Bits(5);
+  poi[15] = 0;
+  poi[16] = 2;
+  poi[17] = 12;
+  poi[18] = poiStrings.offsets.get("Застава");
+  poi[35] = poiStrings.offsets.get("Описание заставы");
+  poi[52] = 2473;
+  poi[53] = 30;
 
   const continent = Array(14).fill(0);
   continent[0] = 1;
@@ -144,6 +175,8 @@ function areaDbcs() {
     AreaTable: dbcFixture(36, [forest, river], areaStrings.bytes),
     WorldMapArea: dbcFixture(11, [elwynn], mapAreaStrings.bytes),
     WorldMapOverlay: dbcFixture(17, [stormwind, blank], overlayStrings.bytes),
+    DungeonMap: dbcFixture(8, [dungeonMap], Uint8Array.of(0)),
+    AreaPOI: dbcFixture(54, [poi], poiStrings.bytes),
     WorldMapContinent: dbcFixture(14, [continent], Uint8Array.of(0)),
     WorldMapTransforms: dbcFixture(10, [transform], Uint8Array.of(0)),
     Map: dbcFixture(66, [azeroth], mapStrings.bytes),
@@ -171,7 +204,7 @@ async function withAreaGateway(run) {
   }
 }
 
-test("the areas endpoint serves the six tables a map is drawn from", async () => {
+test("the areas endpoint serves all eight authored map tables", async () => {
   await withAreaGateway(async (gateway) => {
     const url = `http://127.0.0.1:${gateway.port}/dbc/areas`;
     // The origin gate applies here as everywhere: a request without one is refused outright.
@@ -208,8 +241,21 @@ test("the areas endpoint serves the six tables a map is drawn from", async () =>
     assert.equal(data.overlays.length, 1);
     assert.deepEqual(data.overlays[0], {
       id: 121, mapAreaId: 30, areaIds: [1519], textureName: "STORMWIND",
-      width: 485, height: 405, offsetX: 12, offsetY: 34,
+      width: 485, height: 405, offsetX: 12, offsetY: 34, mapPointX: 101, mapPointY: 202,
     });
+
+    assert.deepEqual(Object.keys(data).sort(), [
+      "areaPois", "areas", "continents", "dungeonMaps", "mapAreas", "maps", "overlays", "transforms",
+    ]);
+    assert.deepEqual(data.dungeonMaps, [{
+      id: 42, mapId: 530, floorIndex: 1,
+      minX: -50, maxX: 50, minY: -30, maxY: 30, parentWorldMapId: 30,
+    }]);
+    assert.deepEqual(data.areaPois, [{
+      id: 700, importance: 3, icons: [7, 0, 0, 0, 0, 0, 0, 0, 9], factionId: 35,
+      x: 100.25, y: -200.5, mapId: 0, flags: 2, areaId: 12,
+      name: "Застава", description: "Описание заставы", worldStateId: 2473, worldMapLink: 30,
+    }]);
 
     assert.equal(data.continents[0].scale, 0.5);
     assert.equal(data.continents[0].worldMapId, 1,

@@ -47,18 +47,24 @@ test("production terrain micro-normals do not expose authored tile or chunk outl
 });
 
 test("water uses sparse broad waves instead of several crossing high-frequency bands", () => {
-  const waveSource = methodSource(water, "  float waterWavePhaseA", "\n  outgoingLight *=");
-  const waveBand = /dot\(vWaterWorldPosition\.xz,\s*vec2\(([-0-9.]+),\s*([-0-9.]+)\)\)\s*[+-]\s*waterTime\s*\*\s*([0-9.]+)/g;
-  const bands = [...waveSource.matchAll(waveBand)].map((match) => ({
-    spatial: Math.hypot(Number(match[1]), Number(match[2])),
-    temporal: Number(match[3]),
+  // The broad swell (mask 2) used to be two crossing sines; their sum repeats as a lattice across a
+  // lake. It is now two rotated octaves of value noise (Water.ts waterSwell). Keep the old intent:
+  // at most two octaves, broad cells, slow drift — and no periodic sine band left in the wave.
+  const waveSource = methodSource(water, "  // Broad swell from two rotated octaves", "\n  outgoingLight *=");
+  assert.doesNotMatch(waveSource, /sin\(\s*dot\(vWaterWorldPosition/,
+    "no periodic sine band may come back into the swell");
+  const swell = methodSource(water, "vec3 waterSwell(vec2 p, float time, float footprint) {", "\n}\n");
+  const octave = /waterNoise\(\(.*?\(time \* ([0-9.]+)\)\)\s*\/\s*([0-9.]+)\)/g;
+  const octaves = [...swell.matchAll(octave)].map((match) => ({
+    drift: Number(match[1]),
+    cell: Number(match[2]),
   }));
-  assert.ok(bands.length > 0, "the live shader still contains a visible wave band");
-  assert.ok(bands.length <= 2, `only two wave directions may cross, found ${bands.length}`);
-  assert.ok(bands.every(({ spatial }) => spatial <= 0.12),
-    `broad waves need spatial frequency <= 0.12: ${JSON.stringify(bands)}`);
-  assert.ok(bands.every(({ temporal }) => temporal <= 0.55),
-    `slow waves need temporal frequency <= 0.55: ${JSON.stringify(bands)}`);
+  assert.ok(octaves.length > 0, "the live shader still contains a visible swell");
+  assert.ok(octaves.length <= 2, `only two swell octaves may cross, found ${octaves.length}`);
+  assert.ok(octaves.every(({ cell }) => cell >= 10),
+    `broad waves need cells of at least 10 yd: ${JSON.stringify(octaves)}`);
+  assert.ok(octaves.every(({ drift }) => drift <= 0.55),
+    `slow waves need drift <= 0.55: ${JSON.stringify(octaves)}`);
 });
 
 test("missing environment visuals stay hidden without rejecting authored flat-colour legacy art", () => {

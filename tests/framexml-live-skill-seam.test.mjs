@@ -133,8 +133,10 @@ test("live SkillFrame stays empty until metadata is ready, then emits one poll e
     [FRAMEXML_SEAM_EVENTS.skillLinesChanged],
   ]);
   assert.deepEqual(call("GetNumSkillLines", seam), [2]);
+  // The eighth value, `isAbandonable`, is true for a profession row since AbandonSkill reached
+  // the seam (FrameXmlSkillResolver.ts): the stock SkillFrame draws its unlearn button from it.
   assert.deepEqual(call("GetSkillLineInfo", seam, 2), [
-    "Кузнечное дело", false, true, 412, -5, 10, 450, false,
+    "Кузнечное дело", false, true, 412, -5, 10, 450, true,
     undefined, undefined, 0, 0, "",
   ]);
 

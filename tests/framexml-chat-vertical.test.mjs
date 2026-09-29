@@ -156,8 +156,9 @@ test("MPQ ChatFrame vertical: stock concrete chat frames stay error-free", withC
         lua: candidate.inventory.lua.executed - baseline.inventory.lua.executed,
       },
         // UIMenu.xml is a real ChatMenu dependency. Its concrete menu templates add 260 stock
-        // widgets to the chat delta once the missing owner is present.
-        { files: 7, bytes: 276_064, widgets: 1_158, lua: 5 },
+        // widgets to the chat delta once the missing owner is present. FriendsFrame's Chat tab
+        // (ChannelFrame as tab 4) and UnitPopup's dropdown growth add 10 more, measured 1,158 -> 1,168.
+        { files: 7, bytes: 276_064, widgets: 1_168, lua: 5 },
     );
 
     assert.ok(candidate.boot.bridge.getFrame("ChatFrame1"));

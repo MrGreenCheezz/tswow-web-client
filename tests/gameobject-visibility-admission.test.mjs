@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
@@ -327,8 +327,8 @@ test("game-object effects skip warm-hidden residents before emitter admission", 
   const effectsStart = source.indexOf("  #updateEffects(");
   const effectsEnd = source.indexOf("\n  #markExpiredSpellEffectPhases", effectsStart + 10);
   const effects = source.slice(effectsStart, effectsEnd);
-  const objectStart = effects.indexOf("for (const [guid, rendered] of this.#gameObjects)");
-  const unitStart = effects.indexOf("for (const [guid, unit] of this.#units)", objectStart + 10);
+  const objectStart = effects.indexOf("this.#gameObjects.forEach((rendered, guid) =>");
+  const unitStart = effects.indexOf("this.#units.forEach((unit, guid) =>", objectStart + 10);
   assert.ok(objectStart >= 0 && unitStart > objectStart, "effects has a distinct game-object pass");
   const objects = effects.slice(objectStart, unitStart);
   const hiddenAt = objects.indexOf("!rendered.node.visible");
@@ -338,11 +338,12 @@ test("game-object effects skip warm-hidden residents before emitter admission", 
   assert.ok(hiddenAt >= 0, "game-object effects read the final node visibility");
   assert.ok(hiddenAt < emitterAt && hiddenAt < distanceAt && hiddenAt < pushAt,
     "warm-hidden residents are rejected before emitter, distance, or wanted-list work");
-  const guardEnd = objects.indexOf("continue;", hiddenAt);
+  // The pass is a `forEach` callback, so its guard leaves with `return;`.
+  const guardEnd = objects.indexOf("return;", hiddenAt);
   assert.ok(guardEnd > hiddenAt && guardEnd < pushAt,
     "a warm-hidden game object cannot enter the effect admission list");
-  assert.match(objects.slice(hiddenAt, guardEnd + "continue;".length),
-    /!rendered\.node\.visible[\s\S]*rendered\.wvm\.particleEmitters[\s\S]*continue;/,
+  assert.match(objects.slice(hiddenAt, guardEnd + "return;".length),
+    /!rendered\.node\.visible[\s\S]*rendered\.wvm\.particleEmitters[\s\S]*return;/,
     "the visibility guard covers emitter-bearing game objects before admission");
 });
 
@@ -363,4 +364,26 @@ test("rigged game-object re-entry refreshes matrixWorld before frustum testing a
   const beforeFrustum = update.slice(placeAt, frustumAt);
   assert.match(beforeFrustum, /rendered\.skinned\.mesh\.updateWorldMatrix\(true,\s*false\)/,
     "the current skinned mesh and its parents have fresh matrixWorld before frustum admission");
+});
+
+test("admitted game objects ease in over the spawn window instead of popping", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const updateStart = source.indexOf("  #updateGameObjects(");
+  const updateEnd = source.indexOf("\n  /**", updateStart + 10);
+  const update = source.slice(updateStart, updateEnd);
+  assert.match(update, /rendered\.admittedAt === undefined/,
+    "the spawn stamp is set on first drawable content, not on record creation");
+  assert.match(update, /this\.#applyGameObjectOpacity\(rendered, now\)/,
+    "every admitted frame reconciles the spawn fade");
+  assert.match(source, /const GAMEOBJECT_FADE_STEPS = 6;/,
+    "the fade is quantized so one spawn borrows a bounded handful of material copies");
+  assert.match(source, /#gameObjectFadeMeshes\(rendered: RenderedGameObject\): THREE\.Mesh\[\]/,
+    "only the rigged or single static mesh fades; WMO room sets stay instant");
+  assert.match(source, /if \(rendered\.wmo !== undefined\) return \[\];/,
+    "WMO game objects skip the fade rather than cloning dozens of room materials");
+  const disposeStart = source.indexOf("  #disposeGameObject(rendered: RenderedGameObject)");
+  const disposeEnd = source.indexOf("\n  /**", disposeStart + 10);
+  const dispose = source.slice(disposeStart, disposeEnd);
+  assert.match(dispose, /returnBorrowedMaterials\(rendered\.opacityBorrows\)/,
+    "disposal hands shared material arrays back before the node goes away");
 });

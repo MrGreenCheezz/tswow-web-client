@@ -30,8 +30,10 @@ test("Canned SkillFrame answers exact rows, signed bonuses, selection and collap
   assert.deepEqual(call("GetSkillLineInfo", seam, 1), [
     "Профессии", true, true, 0, 0, 0, 0, false, undefined, undefined, 0, 0, "",
   ]);
+  // `isAbandonable` (the eighth value) is true for a profession since AbandonSkill reached the
+  // seam: the stock SkillFrame shows its unlearn button from this flag, as the client does.
   assert.deepEqual(call("GetSkillLineInfo", seam, 2), [
-    "Кузнечное дело", false, true, 412, -5, 10, 450, false,
+    "Кузнечное дело", false, true, 412, -5, 10, 450, true,
     undefined, undefined, 0, 0, "",
   ]);
   assert.deepEqual(call("GetAdjustedSkillPoints", seam), [0]);

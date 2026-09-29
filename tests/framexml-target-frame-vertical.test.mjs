@@ -90,9 +90,9 @@ test("MPQ TargetFrame vertical loads stock target frames and core children", wit
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
     // The baseline is intentionally red until TargetFrame.xml is added to the vertical TOC.
-    assert.equal(baseline.boot.bridge.getFrame("TargetFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("TargetFrame")?.name, undefined,
       "baseline does not have TargetFrame");
-    assert.equal(baseline.boot.bridge.getFrame("TargetFrameHealthBar"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("TargetFrameHealthBar")?.name, undefined,
       "baseline does not have TargetFrameHealthBar");
 
     for (const entry of TARGET_FRAME_TOC) {

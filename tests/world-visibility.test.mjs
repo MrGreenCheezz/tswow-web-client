@@ -82,7 +82,7 @@ test("V4 future visual animations are not early and are consumed once by the ren
 test("mount-special packets are routed to the mount node and not the rider", async () => {
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const enterWorld = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
-  assert.match(enterWorld, /world\.events\.on\("MOUNT_SPECIAL"[\s\S]*playMountSpecial\(guid\)/,
+  assert.match(enterWorld, /(?:world\.events\.on|onWorldEvent)\("MOUNT_SPECIAL"[\s\S]*playMountSpecial\(guid\)/,
     "the server edge must reach the renderer");
   assert.match(renderer, /isUnitFlying\(object\.movementFlags, object\.motion\?\.flying === true\)/,
     "the rider's authoritative movement flag resolves flying mounts even without a spline");
@@ -305,7 +305,7 @@ test("V5 emitter budget hides the whole spell kit, including non-emitter mesh me
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /const selectedSpellGroups = new Set\(selectedVisuals\.map/,
     "budget admission is recorded per spell phase rather than per emitter node");
-  assert.match(source, /const phaseEmitterGroups = new Set\(this\.#visuals/,
+  assert.match(source, /const phaseEmitterGroups = new Set<string>\(\);/,
     "all WVM members, including out-of-range emitters, associate mesh siblings with the same phase");
   assert.match(source, /const groupSelected = !hasEmitterMember \|\| selectedSpellGroups\.has/,
     "a rejected emitter group also hides its hammer/mesh sibling");
@@ -438,9 +438,11 @@ test("V4 spell unit clips run once for their full duration and lead into held pr
     "loop transitions cross-fade with phase synchronisation");
   assert.match(source, /previous\.fadeOut\(blend\.duration\);\s*\n\s*next\.fadeIn\(blend\.duration\);/,
     "a finished one-shot is faded out beside the new pose instead of being cut out of the mixer");
-  assert.match(source, /if \(pending\.sequenceAt === 0\)/,
+  // The unit-action arbiter (UnitActionArbiter.ts) replaced the single action slot: a lead-in is
+  // armed when its entry first starts, and the entry is held when its follow-up is.
+  assert.match(source, /if \(entry\.started\) return;\s*\n\s*entry\.started = true;/,
     "lead-in timing is armed once and cannot move every frame");
-  assert.match(source, /pending\.sequence\?\.mode === "hold"/,
+  assert.match(source, /const primary = animation\.followUp \?\? animation;/,
     "a precast lead-in retains ownership of the held primary");
   assert.match(source, /if \(unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\) return;/,
     "same-id lead-ins avoid restarting a running action");
@@ -464,8 +466,8 @@ test("V4 spell M2 effects use a local clock and a skinned emitter rig", async ()
     "a successful non-rig WVM does not retain the request grace as its lifetime");
   assert.match(source, /const modelLoop = instance\.modelPlayback === "hold"/,
     "packet-held and aura-owned model clips have explicit looping semantics");
-  assert.match(source, /applyBillboardBones\(visual\.skinned, visual\.template, this\.#camera\)/,
-    "spell skinned rigs update billboard bones after their mixer step");
+  assert.match(source, /applyBillboardBones\(visual\.skinned, visual\.template, this\.#camera, false\)/,
+    "spell skinned rigs update billboard bones after their mixer step and defer full propagation to readers/render");
   assert.match(source, /Math\.max\(now, instance\.startedAt\) \+ MODEL_VFX_LOAD_GRACE_MS/,
     "future visuals receive loading grace from their scheduled start");
   assert.match(source, /visual\.authoredEndsAt = visual\.instance\.endsAt/,
@@ -487,28 +489,31 @@ test("V4 visual cleanup and cancellation are ownership-scoped", async () => {
   assert.match(source, /retimeSpellVisual\(handle: SpellVisualHandle, endsAt: number\)/);
   assert.match(source, /pending\.animation\.hold = Math\.max\(0, endsAt - pending\.animation\.at\)/,
     "retiming a cast also updates pending scheduled animation duration");
-  assert.match(source, /if \(action\.visualHandle !== handle\) continue;/,
+  // Poses now live in per-unit `UnitActionQueue`s whose entries carry their owning handle.
+  assert.match(source, /if \(entry\.owner === handle && entry\.held\) entry\.until = endsAt;/,
     "retiming a cast updates the absolute held-action deadline");
-  assert.match(source, /const hold = loop && animation\.hold > 0 \? at \+ animation\.hold : 0;/,
+  assert.match(source, /const until = held \? \(primary\.hold > 0 \? at \+ primary\.hold : 0\) : now \+ ACTION_SIDECAR_WAIT;/,
     "a late frame cannot shift a visual hold window forward");
   assert.match(source, /if \(visual\.handle !== handle\) continue;/,
     "cancelling one cast cannot remove another cast's nodes");
-  assert.match(source, /if \(action\.visualHandle !== handle\) continue;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.owner === handle\)/,
     "cancelling one cast cannot remove another cast's pending action");
   assert.match(source, /clearSpellVisuals\(\): void/);
-  assert.match(source, /if \(action\.source !== "visual"\) continue;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.payload\.source === "visual"\)/,
     "clearSpellVisuals leaves ordinary locomotion/actions alone");
   assert.match(source, /cancelUnitAction\(guid: bigint\): void/);
-  assert.match(source, /if \(!pending\?\.cancelable\) return;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.layer === "cast" && entry\.held\)/,
     "ordinary one-shots are not interrupted by the held-action cancel seam");
   assert.match(source, /if \(terminalPose && unit\.overlayPreservesLocomotion === true\) this\.#clearOverlay\(unit\);/,
     "terminal/death poses clear a locomotion-preserving upper action immediately");
-  assert.match(source, /if \(unit\.overlayActionKind === "shoot" && unit\.overlayAction\)/,
-    "shoot cancellation stops the active ranged overlay without re-resolving weapon metadata");
-  assert.match(source, /if \(unit\.actionKind === "shoot" && unit\.action\)/,
-    "full-body held shoot cancellation also stops the actual active action");
-  assert.match(source, /#promoteActionToLocomotionOverlay\(unit, now\)/,
-    "movement after an already-started one-shot transfers it to the filtered upper layer");
+  // A cancelled pose is released by identity and faded, not stopped: the shot-specific stop paths
+  // (and their weapon re-resolution) went with the single slot.
+  assert.match(source, /if \(unit\.overlayAction === shown\.action\) this\.#clearOverlay\(unit\);/,
+    "a released upper-body pose fades out over the gait");
+  assert.match(source, /if \(unit\.action === shown\.action\) unit\.overlayUntil = 0;/,
+    "a released whole-body pose stays as the cross-fade source for the base pose");
+  assert.match(source, /if \(unit\.overlayAction\) unit\.overlayAction\.time = phase;/,
+    "movement moves a running pose to the filtered upper layer at its own phase");
 });
 
 test("Ж4.3 nothing is ranked into the scene only to be drawn as a stand-in", () => {
@@ -567,7 +572,11 @@ test("Ж0 a building with no model yet is drawn as nothing — not as a box, not
   // «серые коробки больше не рисуются вовсе»; now one predicate answers for both.
   assert.equal(drawableModel({ vertices: [0, 0, 0], indices: [0, 0, 0] }), false, "a collision hull is not art");
   assert.equal(drawableModel(undefined), false, "and neither is a model that has not come back");
-  assert.equal(drawableModel({ vertices: [], indices: [], visual: true }), true);
+  assert.equal(drawableModel({ vertices: [], indices: [], visual: true }), false,
+    "an empty visual artifact has no authored geometry to draw");
+  assert.equal(drawableModel({
+    vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 2], visual: true,
+  }), true, "authored flat-colour geometry remains drawable without a texture");
   assert.equal(drawableModel({ vertices: [], indices: [], wvm: {} }), true);
   assert.equal(drawableModel({ vertices: [], indices: [], wmo: {} }), true);
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { SpellVisualCoordinator, usesStockRangedRelease } from "../dist/code/browser/SpellVisualLifecycle.js";
-import { IMPACT_KIT_MS, PACKET_KIT_MS } from "../dist/code/browser/SpellVisuals.js";
+import { CAST_END_GRACE_MS, IMPACT_KIT_MS, PACKET_KIT_MS } from "../dist/code/browser/SpellVisuals.js";
 
 class Events {
   #listeners = new Map();
@@ -289,6 +289,57 @@ test("start delay retimes a loaded handle and stop cancels it", () => {
   assert.equal(ref.calls.retimed.length, 1);
   current.events.emit("SPELL_CAST_STOP", { casterGuid: 1n, spellId: 7, interrupted: true });
   assert.ok(ref.calls.cancelled.length > 0);
+});
+
+test("a precast stands until its end packet, bounded by a grace past the bar", () => {
+  // The GO is sent on the first map update after the server's timer and lands after the local
+  // deadline; ending the stance on the deadline dropped the arms before every release.
+  for (const endPacket of ["go", "lost"]) {
+    let now = 1000;
+    const source = metadata(visual());
+    source.put(7);
+    const ref = rendererRef();
+    const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
+    const current = world();
+    coordinator.bindWorld(current);
+    current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 1000, channel: false });
+    const precast = ref.calls.plans[0].animations[0];
+    assert.equal(precast.animation, 11);
+    assert.equal(precast.at + precast.hold, 2000 + CAST_END_GRACE_MS, "the renderer hold carries the grace too");
+    now = 2000;
+    coordinator.tick(now);
+    now = 2000 + CAST_END_GRACE_MS - 1;
+    coordinator.tick(now);
+    assert.equal(ref.calls.cancelled.length, 0, `${endPacket}: the bar running out does not end the stance`);
+    if (endPacket === "go") {
+      current.events.emit("SPELL_GO", go());
+      assert.deepEqual(ref.calls.cancelled, [{ id: 1 }], "the GO ends it");
+      assert.ok(ref.calls.plans[1].animations.some((one) => one.guid === 1n && one.animation === 12),
+        "and hands over to the release");
+    } else {
+      now = 2000 + CAST_END_GRACE_MS;
+      coordinator.tick(now);
+      assert.deepEqual(ref.calls.cancelled, [{ id: 1 }], "a lost end packet is bounded by the grace");
+    }
+  }
+});
+
+test("pushback and channel refreshes retime to the new end plus the same grace", () => {
+  let now = 1000;
+  const source = metadata(visual());
+  source.put(7);
+  const ref = rendererRef();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
+  const current = world();
+  coordinator.bindWorld(current);
+  current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 1000, channel: false });
+  now = 1100;
+  current.events.emit("SPELL_CAST_DELAYED", { casterGuid: 1n, delay: 250 });
+  assert.deepEqual(ref.calls.retimed.at(-1), { handle: { id: 1 }, at: 2250 + CAST_END_GRACE_MS });
+  current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 2000, channel: true });
+  now = 3000;
+  current.events.emit("SPELL_CHANNEL_UPDATE", { casterGuid: 1n, spellId: 7, remaining: 5000 });
+  assert.deepEqual(ref.calls.retimed.at(-1), { handle: { id: 2 }, at: 8000 + CAST_END_GRACE_MS });
 });
 
 test("late authored precast arrives without a speculative pose preceding it", () => {

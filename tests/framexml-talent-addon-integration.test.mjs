@@ -269,7 +269,7 @@ test("production subset executes the active retail-talents hook as the only tale
     assert.equal(boot.isAddonLoaded("retail-talents"), true,
       "the marker and generated Lua block survive the production subset");
     assert.ok(inventory.files.addon > 0);
-    assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,
       "production does not load the competing stock LoD root");
 
     const errorsBeforeOpen = [...boot.vm.errors];
@@ -281,7 +281,7 @@ test("production subset executes the active retail-talents hook as the only tale
     const custom = boot.bridge.getFrame("UniversalTalentFrame");
     assert.ok(custom);
     assert.equal(custom.visible, true);
-    assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined);
+    assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined);
     assert.deepEqual(boot.vm.errors, errorsBeforeOpen,
       "opening the patched owner introduces no Lua failure");
   } finally {
@@ -320,7 +320,7 @@ test("production N owner renders the lazy retail-talents root and keeps native f
     try {
       await boot.load();
       renderer.mount(selectFrameXmlWorldRoots(boot.roots));
-      assert.equal(boot.bridge.getFrame("UniversalTalentFrame"), undefined,
+      assert.equal(boot.bridge.getFrame("UniversalTalentFrame")?.name, undefined,
         "the TSAddon constructs its window lazily on the first N press");
 
       const errorsBeforeOpen = boot.errorCount;
@@ -347,10 +347,16 @@ test("production N owner renders the lazy retail-talents root and keeps native f
       const element = renderer.elementFor(custom);
       assert.ok(element, "the UIParent-owned lazy frame is reconciled into the production renderer");
       assert.equal(element.hidden, false);
-      assert.equal(element.parentElement, renderer.elementFor(boot.bridge.getFrame("UIParent")),
-        "the custom window remains a rendered child of UIParent");
+      // A HIGH window under the MEDIUM UIParent (StoreStyle.lua:93) is drawn in the renderer's strata
+      // layer laid over UIParent's box — above UIParent's MEDIUM frames, as in the client. Compared
+      // as a boolean: a failing `equal` of two stub DOM trees spends minutes building its diff.
+      const drawnIn = element.parentElement;
+      assert.ok(drawnIn === renderer.elementFor(boot.bridge.getFrame("UIParent"))
+        || drawnIn?.getAttribute("data-framexml-strata-layer") === "UniversalTalentFrame",
+        "the custom window remains a rendered child of UIParent (directly or in its strata layer)");
+      assert.equal(custom.parent, boot.bridge.getFrame("UIParent"));
       assert.equal(nativeVisible, false, "native talents stay hidden after the custom gate passes");
-      assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined,
+      assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,
         "the competing stock talent root is never loaded");
       assert.equal(boot.errorCount, errorsBeforeOpen,
         `opening the custom owner adds no Lua errors: ${boot.vm.errors.join(" | ")}`);
@@ -423,11 +429,11 @@ test("real Blizzard_TalentUI loads asynchronously, starts hidden, and reaches th
 
   try {
     await boot.load();
-    assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,
       "the load-on-demand root is absent before the async add-on load");
 
     const pending = boot.loadAddon("Blizzard_TalentUI");
-    assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,
       "Toggle cannot expose a partially loaded add-on");
     const loaded = await pending;
     assert.equal(loaded.ok, true, loaded.message);

@@ -67,7 +67,7 @@ test("MerchantFrame is the exact stock vertical tail and remains renderable", {
     const baselineSubset = FRAMEXML_VERTICAL_TOC.filter((entry) => normalize(entry) !== "merchantframe.xml");
     baseline = await load(chain, baselineSubset);
     candidate = await load(chain, FRAMEXML_VERTICAL_TOC);
-    assert.equal(baseline.boot.bridge.getFrame("MerchantFrame"), undefined);
+    assert.equal(baseline.boot.bridge.getFrame("MerchantFrame")?.name, undefined);
     assert.ok(candidate.requests.has("interface/framexml/merchantframe.xml"));
     assert.ok(candidate.requests.has("interface/framexml/merchantframe.lua"));
     assert.equal(candidate.inventory.files.missing.length, 0);

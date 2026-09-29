@@ -10,7 +10,7 @@ import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { WorldState, fieldFloat, shortestTurn } from "../dist/code/world/WorldState.js";
 import * as THREE from "three";
 import {
-  ADT_MODEL_TO_SCENE, buildTerrainMaterial, locatedWmoFog, mountInstanceMatches,
+  ADT_MODEL_TO_SCENE, ENVIRONMENT_SCENERY_BUDGET, buildTerrainMaterial, locatedWmoFog, mountInstanceMatches,
   placeEnvironmentNode, placementDistance, selectEnvironment, shouldRefreshWaterForNeighbour,
   staticWmoPlacementMatches, stateVisualKey, surfaceNormal, uniqueVisualWmoPlacement,
   waterCornerDepths, waterCornerHeight,
@@ -287,15 +287,16 @@ test("a building's furniture cannot spend the whole environment budget", () => {
 
   const selected = selectEnvironment(objects, player);
   const trees = selected.filter(({ object }) => object.id > 0);
-  assert.equal(trees.length, 320, "every slot the terrain is allowed must go to the terrain");
+  // Loose outdoor M2s now hold the scenery quota, which these 400 trees do not fill.
+  assert.equal(trees.length, Math.min(400, ENVIRONMENT_SCENERY_BUDGET), "every slot the terrain is allowed must go to the terrain");
   assert.ok(trees.at(-1).distance > 180, "the trees drawn have to reach past the near furniture");
 
   const furniture = selected.filter(({ object }) => object.id < 0);
-  assert.equal(furniture.length, 120, "the interior keeps its own allowance and no more");
+  assert.equal(furniture.length, 360, "the interior keeps its own allowance and no more");
 
   // And an object with no flag at all - a tile cached before the flag existed - counts as terrain.
   const untagged = selectEnvironment(objects.map(({ interior, ...rest }) => rest), player);
-  assert.equal(untagged.length, 320);
+  assert.equal(untagged.length, ENVIRONMENT_SCENERY_BUDGET);
 });
 
 test("a doodad built from its own materials is still placed where the tile puts it", () => {

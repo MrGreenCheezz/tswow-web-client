@@ -133,6 +133,7 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
     const cluster = frame(candidate.boot, "MinimapCluster");
     const watch = frame(candidate.boot, "WatchFrame");
     const battlefield = frame(candidate.boot, "BattlefieldFrame");
+    const worldState = frame(candidate.boot, "WorldStateAlwaysUpFrame");
     const minimap = frame(candidate.boot, "Minimap");
     const zoneLabel = frame(candidate.boot, "MinimapZoneText");
     const zoomIn = frame(candidate.boot, "MinimapZoomIn");
@@ -148,15 +149,22 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
       ["MinimapCluster", cluster],
       ["WatchFrame", watch],
       ["BattlefieldFrame", battlefield],
+      ["WorldStateAlwaysUpFrame", worldState],
     ].filter(([, owner]) => owner.registeredEvents.has("ZONE_CHANGED_NEW_AREA"))
       .map(([name]) => name),
-    ["MinimapCluster", "WatchFrame", "BattlefieldFrame"],
-    "ZONE_CHANGED_NEW_AREA has exactly the MinimapCluster, WatchFrame and BattlefieldFrame handlers");
+    ["MinimapCluster", "WatchFrame", "BattlefieldFrame", "WorldStateAlwaysUpFrame"],
+    "ZONE_CHANGED_NEW_AREA reaches the four stock zone owners in the promoted corpus");
     const zoneEventOwners = Object.freeze({
-      ZONE_CHANGED: Object.freeze([["MinimapCluster", cluster], ["BattlefieldFrame", battlefield]]),
-      ZONE_CHANGED_INDOORS: Object.freeze([["MinimapCluster", cluster]]),
+      ZONE_CHANGED: Object.freeze([
+        ["MinimapCluster", cluster], ["BattlefieldFrame", battlefield],
+        ["WorldStateAlwaysUpFrame", worldState],
+      ]),
+      ZONE_CHANGED_INDOORS: Object.freeze([
+        ["MinimapCluster", cluster], ["WorldStateAlwaysUpFrame", worldState],
+      ]),
       ZONE_CHANGED_NEW_AREA: Object.freeze([
         ["MinimapCluster", cluster], ["WatchFrame", watch], ["BattlefieldFrame", battlefield],
+        ["WorldStateAlwaysUpFrame", worldState],
       ]),
     });
     for (const [event, expectedOwners] of Object.entries(zoneEventOwners)) {
@@ -248,15 +256,10 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
     assert.equal(zoneLabel.text, "stale zone");
     const expectedZoneCensus = inventoryCensus(candidate.inventory);
     for (const [event, expectedOwners] of Object.entries(zoneEventOwners)) {
-      // WatchFrame owns the registration, but its NEW_AREA branch requires the intentionally
-      // omitted WorldMapFrame. FrameXmlBoot skips only that dependent handler and still delivers
-      // the event to MinimapCluster/BattlefieldFrame.
-      const dispatchedOwners = event === "ZONE_CHANGED_NEW_AREA"
-        && !candidate.boot.bridge.getFrame("WorldMapFrame")
-        ? expectedOwners.filter(([name]) => name !== "WatchFrame")
-        : expectedOwners;
-      const expectedHandlers = dispatchedOwners.length;
-      const expectedMinimapRefreshes = dispatchedOwners.filter(([name, owner]) =>
+      // The promoted WorldMapFrame satisfies WatchFrame's dependency, and the stock world-state
+      // owner receives the same zone events. Every registered handler must run exactly once.
+      const expectedHandlers = expectedOwners.length;
+      const expectedMinimapRefreshes = expectedOwners.filter(([name, owner]) =>
         name === "MinimapCluster" && owner.registeredEvents.has(event),
       ).length;
       const beforeZone = liveCensus(candidate.boot);

@@ -20,6 +20,7 @@ const collisionUrl = new URL("../dist/code/browser/game/Collision.js", import.me
 const physics = await sourceModule("../src/browser/game/Physics.ts");
 const wind = await sourceModule("../src/browser/VegetationWind.ts", [
   ['"./Wvm.js"', JSON.stringify(wvmUrl)],
+  ['"./WindField.js"', JSON.stringify(new URL("../dist/code/browser/WindField.js", import.meta.url).href)],
 ]);
 const collisionClient = await sourceModule("../src/browser/CollisionClient.ts", [
   ['"../world/CollisionFormat.js"', JSON.stringify(collisionFormatUrl)],

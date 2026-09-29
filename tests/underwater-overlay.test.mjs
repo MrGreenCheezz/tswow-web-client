@@ -242,7 +242,7 @@ test("P3-8b the overlay mesh is one textureless triangle that neither reads nor 
 
 test("P3-9 the switch is a leaf setting, a renderer mutator and a readback field", async () => {
   const model = await readFile(new URL("../src/browser/ui/SettingsModel.ts", import.meta.url), "utf8");
-  assert.match(model, /id: "underwaterOverlay", label: "Эффект под водой", group: "Мир", kind: "boolean", fallback: true,/);
+  assert.match(model, /id: "underwaterOverlay", label: "Эффект под водой", group: "Эффекты", kind: "boolean", fallback: true,/);
   const settings = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
   assert.match(settings, /setUnderwaterOverlay\?\.\(settingBoolean\(values, "underwaterOverlay"\)\)/,
     "applySettings pushes it like every other renderer-owned option");

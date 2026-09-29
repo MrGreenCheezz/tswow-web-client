@@ -164,9 +164,12 @@ const {
   adoptFocusPortraitCanvas, adoptPartyPortraitCanvas, adoptPetPortraitCanvas,
   adoptPlayerPortraitCanvas, adoptTargetOfTargetPortraitCanvas, adoptTargetPortraitCanvas,
   adoptCharacterPortraitCanvas, characterPortraitCanvas,
+  adoptQuestGiverPortraitCanvas, setQuestGiverPortrait, adoptFocusTargetPortraitCanvas,
   clearPortraitTargets, portraitCanvases, setPartyPortrait, syncPortraitTargets,
 } =
   await import("../dist/code/browser/ui/Portraits.js");
+const { game } = await import("../dist/code/browser/game/Context.js");
+const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 
 function styleSnapshot(canvas) {
   return Object.fromEntries(["display", "position", "left", "right", "top", "bottom", "width",
@@ -301,6 +304,44 @@ test("character model adoption creates one persistent paperdoll canvas and resto
   cleanup();
   assert.equal(characterPortraitCanvas(), undefined);
   assert.deepEqual(model.children, [], "a newly created canvas is removed on teardown");
+});
+
+test("QuestFrame portrait uses its own 60px canvas and the active giver GUID", () => {
+  const frame = fakeNode("div", document);
+  const texture = fakeNode("img", document);
+  texture.style.position = "absolute";
+  texture.style.left = "7px";
+  texture.style.top = "6px";
+  texture.style.width = "60px";
+  texture.style.height = "60px";
+  frame.append(texture);
+  const guid = 0x712n;
+  setQuestGiverPortrait(guid);
+  const cleanup = adoptQuestGiverPortraitCanvas(texture);
+  try {
+    assert.equal(typeof cleanup, "function");
+    const canvas = portraitCanvases().get("questnpc");
+    assert.ok(canvas);
+    assert.equal(canvas.parentElement, frame);
+    assert.equal(frame.children.indexOf(canvas), frame.children.indexOf(texture) + 1,
+      "rendered model paints over the stock book fallback");
+    assert.equal(canvas.width, 120);
+    assert.equal(canvas.height, 120);
+    const snapshots = [];
+    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    assert.deepEqual(snapshots.at(-1).get("questnpc"), { guid, canvas });
+    assert.notEqual(canvas, portraitCanvases().get("target"),
+      "changing selection cannot move the quest giver portrait");
+    setQuestGiverPortrait(undefined);
+    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    assert.equal(snapshots.at(-1).get("questnpc").guid, undefined);
+    assert.equal(adoptQuestGiverPortraitCanvas(texture), cleanup);
+  } finally {
+    cleanup?.();
+    setQuestGiverPortrait(undefined);
+  }
+  assert.deepEqual(frame.children, [texture]);
+  assert.equal(portraitCanvases().has("questnpc"), false);
 });
 
 test("pet adoption reuses the UnitFrame canvas and restores the native slot exactly", () => {
@@ -537,4 +578,62 @@ test("focus and target-of-target adoption reuse independent unit canvases", () =
   assert.equal(nativeTotCanvas.parentElement, nativeTotHost);
   focusCleanup();
   totCleanup();
+});
+
+test("FocusFrameToT adoption creates its own canvas and follows the focus's target every sync", () => {
+  const frame = fakeNode("div", document);
+  const texture = fakeNode("img", document);
+  texture.style.position = "absolute";
+  texture.style.left = "5px";
+  texture.style.top = "5px";
+  texture.style.width = "35px";
+  texture.style.height = "35px";
+  frame.append(texture);
+  const selfGuid = 0x10n;
+  const focusGuid = 0x40n;
+  const focusTargetGuid = 0x77n;
+  const focus = { guid: focusGuid, typeId: 3, fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, focusTargetGuid]]) };
+  const previousWorld = game.world;
+  const previousFocus = game.focusGuid;
+  game.world = { state: { selfGuid, objects: new Map([[focusGuid, focus]]) } };
+  game.focusGuid = focusGuid;
+  const snapshots = [];
+  const sync = () => {
+    syncPortraitTargets({ setPortraitTargets(targets) { snapshots.push(new Map(targets)); } });
+    return snapshots.at(-1).get("focustot");
+  };
+  let cleanup;
+  try {
+    cleanup = adoptFocusTargetPortraitCanvas(texture);
+    assert.equal(typeof cleanup, "function");
+    const canvas = portraitCanvases().get("focustot");
+    assert.ok(canvas, "a canvas of its own: the native HUD has no focus-ToT row to borrow from");
+    assert.equal(canvas.parentElement, frame);
+    assert.equal(frame.children.indexOf(canvas), frame.children.indexOf(texture) + 1, "directly over the stock Texture");
+    assert.equal(canvas.className, "portrait-canvas portrait-canvas-focustot");
+    assert.deepEqual([canvas.style.left, canvas.style.top, canvas.style.width, canvas.style.height],
+      ["5px", "5px", "35px", "35px"], "the ToT template's 35px box");
+    assert.deepEqual([canvas.width, canvas.height], [70, 70], "DPR-safe backing store");
+    assert.deepEqual(sync(), { guid: focusTargetGuid, canvas }, "the focus's UNIT_FIELD_TARGET is the unit");
+    assert.equal(adoptFocusTargetPortraitCanvas(texture), cleanup, "repeat adoption is idempotent");
+
+    // The focus turns to somebody else: the world rewrites its target field, nothing else fires.
+    focus.fields.set(UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, 0x78n);
+    assert.deepEqual(sync(), { guid: 0x78n, canvas });
+    focus.fields.set(UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, 0n);
+    assert.deepEqual(sync(), { guid: undefined, canvas }, "a zero target is no unit");
+    focus.fields.set(UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, focusTargetGuid);
+    game.focusGuid = undefined;
+    assert.deepEqual(sync(), { guid: undefined, canvas }, "no focus, no focus target");
+    game.focusGuid = focusGuid;
+    assert.deepEqual(sync(), { guid: focusTargetGuid, canvas });
+    assert.equal(portraitCanvases().get("tot"), undefined, "the target's ToT slot is untouched");
+  } finally {
+    cleanup?.();
+    game.world = previousWorld;
+    game.focusGuid = previousFocus;
+  }
+  assert.deepEqual(frame.children, [texture], "cleanup removes the created canvas");
+  assert.equal(portraitCanvases().has("focustot"), false);
+  assert.equal(sync()?.guid, undefined, "and the slot is released");
 });

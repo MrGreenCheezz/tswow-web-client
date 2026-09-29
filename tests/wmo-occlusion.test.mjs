@@ -163,8 +163,9 @@ test("renderer integration is static-WMO-only and exposes portal savings", async
   const calls = [...world.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, player, rendered\.node, client(, true)?\)/g)];
   assert.deepEqual(calls.map((match) => match[1] ?? ""), [", true", ""],
     "only the static environment call opts in; moving game objects keep distance selection");
-  assert.match(world, /staticEnvironment && this\.#indoors && this\.#wmoOcclusion/,
-    "the collision-backed indoor state gates portal selection before any static WMO can be hidden");
+  assert.match(world, /staticEnvironment && \(this\.#indoors \|\| entered\) && this\.#wmoOcclusion/,
+    "the collision-backed indoor state, or standing in a building of rooms alone (whose rooms have "
+    + "no shell to fall back on), gates portal selection before any static WMO can be hidden");
   assert.match(world, /WMO portals .*скрыто/);
   assert.match(world, /#wmoPortalCulled \+= portalSelection\.culled/);
 });

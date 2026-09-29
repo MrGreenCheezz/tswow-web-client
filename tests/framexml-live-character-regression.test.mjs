@@ -9,6 +9,7 @@ const { WorldClient } = await import("../dist/code/world/WorldClient.js");
 const { WorldStore } = await import("../dist/code/world/WorldStore.js");
 const { WorldState } = await import("../dist/code/world/WorldState.js");
 const { plainFrameXmlText } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlText.js");
+const { parseCharacterStatTable } = await import("../dist/code/world/CharacterStatData.js");
 const { clientDirectory } = await import("../tools/paths.mjs");
 const { openClientArchives } = await import("../tools/mpq.mjs");
 
@@ -30,6 +31,7 @@ function worldFixture() {
     [UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset, 1000],
     [UPDATE_FIELDS.PLAYER_XP.offset, 100],
     [UPDATE_FIELDS.PLAYER_NEXT_LEVEL_XP.offset, 1000],
+    [UPDATE_FIELDS.UNIT_FIELD_STAT0.offset + 3, 200],
   ]);
   const object = {
     guid,
@@ -52,6 +54,12 @@ function worldFixture() {
   world.mapId = 0;
   world.selfName = "Флик";
   world.knownSpells = [{ id: 1, slot: 0 }];
+  // This logged-in character fixture has received the realm clock. Stock GameTime.lua reads its
+  // hour during load; a live WorldClient with no SMSG_LOGIN_SET_TIME_SPEED would still be unknown.
+  const realmTime = { minuteOfDay: 9 * 60 + 30, minutesPerSecond: 1 / 60,
+    weekday: 4, date: { year: 2024, month: 2, day: 29 } };
+  world.currentGameTime = () => realmTime;
+  world.calendarPending = 0;
   return { world, store };
 }
 
@@ -68,9 +76,19 @@ test("real MPQ + LiveWorldSeam vertical CharacterFrame is error-free and has a r
   const chain = await openClientArchives(clientDir);
   const decoder = new TextDecoder("utf-8");
   const { world, store } = worldFixture();
+  const [critBase, critRatio] = await Promise.all([
+    chain.read("DBFilesClient\\gtChanceToSpellCritBase.dbc"),
+    chain.read("DBFilesClient\\gtChanceToSpellCrit.dbc"),
+  ]);
+  assert.ok(critBase && critRatio, "original client supplies class/level intellect coefficients");
+  const characterStats = {
+    spellCritBase: parseCharacterStatTable(critBase),
+    spellCritPerIntellect: parseCharacterStatTable(critRatio),
+  };
   const seam = new LiveWorldSeam({
     world: () => world,
     store: () => store,
+    characterStats: () => characterStats,
     spell: (id) => ({
       id,
       name: "Проверочное заклинание",
@@ -100,8 +118,8 @@ test("real MPQ + LiveWorldSeam vertical CharacterFrame is error-free and has a r
     assert.ok(inventory.widgets.total > 0);
     assert.ok(inventory.widgets.roots > 0);
 
-    // ZONE_CHANGED_NEW_AREA has three stock owners in this corpus. WatchFrame's branch needs the
-    // omitted WorldMapFrame, but MinimapCluster and BattlefieldFrame still receive the event.
+    // The promoted WorldMapFrame satisfies WatchFrame's dependency; the promoted world-state
+    // frame also owns this zone event. Every registered stock handler should receive it.
     const zoneOwners = boot.bridge.frames
       .filter((frame) => frame.registeredEvents.has("ZONE_CHANGED_NEW_AREA"))
       .map((frame) => frame.name);
@@ -109,11 +127,10 @@ test("real MPQ + LiveWorldSeam vertical CharacterFrame is error-free and has a r
     assert.ok(zoneOwners.includes("MinimapCluster"));
     assert.ok(zoneOwners.includes("BattlefieldFrame"));
     const zoneDelivered = boot.pump.fire("ZONE_CHANGED_NEW_AREA");
-    assert.equal(zoneDelivered, zoneOwners.filter((name) => name !== "WatchFrame").length);
-    assert.equal(boot.errorCount, 0, "owner gate prevents WatchFrame.lua:269 without dropping peers");
+    assert.equal(zoneDelivered, zoneOwners.length);
+    assert.equal(boot.errorCount, 0, "all stock zone owners run without a Lua failure");
 
-    // WORLD_MAP_UPDATE remains deliverable to its registered owner; its guarded local-POI branch
-    // does not require an absent WorldMapFrame. This proves the zone gate is not a global event mute.
+    // WORLD_MAP_UPDATE remains deliverable to its registered stock owners.
     const mapOwners = boot.bridge.frames
       .filter((frame) => frame.registeredEvents.has("WORLD_MAP_UPDATE"))
       .map((frame) => frame.name);
@@ -134,6 +151,16 @@ test("real MPQ + LiveWorldSeam vertical CharacterFrame is error-free and has a r
     assert.equal(plainFrameXmlText(level), "Человек, Паладин 69-го уровня");
     assert.equal(microButton.buttonState, "PUSHED", "CharacterMicroButton follows CharacterFrame visibility");
     assert.equal(boot.errorCount, 0, "opening CharacterFrame adds no Lua failures");
+    const tooltipProbe = boot.vm.execute(`
+      __intellectTooltip = PlayerStatFrameLeft4.tooltip2
+      __spellCritFromIntellect = GetSpellCritChanceFromIntellect("player")
+    `, "@live-character:intellect-tooltip");
+    assert.equal(tooltipProbe.ok, true, tooltipProbe.error);
+    const expectedCrit = (characterStats.spellCritBase[1] + 200 * characterStats.spellCritPerIntellect[168]) * 100;
+    assert.ok(Math.abs(boot.vm.getGlobal("__spellCritFromIntellect") - expectedCrit) < 0.000001,
+      "live API uses actual Paladin69 DBC coefficients and server intellect");
+    assert.match(boot.vm.getGlobal("__intellectTooltip"), new RegExp(expectedCrit.toFixed(2).replace(".", "\\.")),
+      "original mana-class intellect tooltip formats the resolved percentage");
   } finally {
     boot.close();
     await chain.close();

@@ -95,6 +95,45 @@ test("paper-doll slot lookup exposes all nineteen equipment and four bag IDs", (
   assert.deepEqual(call("GetInventorySlotInfo", seam, "unknown"), []);
 });
 
+test("stock paper-doll item actions accept the one-argument inventory slot signature", () => {
+  const actions = [];
+  const seam = {
+    useInventoryItem: (...args) => actions.push(["use", ...args]),
+    pickupInventoryItem: (...args) => actions.push(["pickup", ...args]),
+  };
+  assert.deepEqual(call("UseInventoryItem", seam, 13), []);
+  assert.deepEqual(call("PickupInventoryItem", seam, 16), []);
+  assert.deepEqual(actions, [["use", "player", 13], ["pickup", "player", 16]],
+    "PaperDollFrame.lua passes self:GetID(), without a unit argument");
+});
+
+test("stock UseInventoryItem resolves the current equipped GUID through the live use bridge", () => {
+  const selfGuid = 0x101n;
+  const itemGuid = 0x202n;
+  const fields = new Map([
+    [UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset, Number(itemGuid)],
+    [UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 1, 0],
+  ]);
+  const used = [];
+  const world = {
+    state: { selfGuid, objects: new Map([
+      [selfGuid, { guid: selfGuid, typeId: 4, fields }],
+      [itemGuid, { guid: itemGuid, fields: new Map() }],
+    ]) },
+    useItem: (...args) => used.push(args),
+  };
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, spell: () => undefined,
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
+  });
+  call("UseInventoryItem", seam, 1);
+  assert.deepEqual(used, [[255, 0, itemGuid]]);
+  for (const slot of [0, 2, 24, undefined]) call("UseInventoryItem", seam, slot);
+  fields.set(UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset, 0);
+  call("UseInventoryItem", seam, 1);
+  assert.equal(used.length, 1, "empty, invalid and removed equipment cannot send a use packet");
+});
+
 test("canned equipment texture/count and PaperDoll tuples are explicit and deduplicated", () => {
   const seam = new CannedWorldSeam();
   const fired = [];
@@ -179,11 +218,11 @@ test("live paper-doll reads use owner fields and the cached item texture", () =>
     "Interface\\Icons\\INV_Potion_54",
   ]);
   assert.deepEqual(call("GetInventoryItemCount", seam, "player", 1), [3]);
-  assert.deepEqual(call("UnitStat", seam, "player", 1), [123, 130, 10, -3]);
+  assert.deepEqual(call("UnitStat", seam, "player", 1), [123, 123, 10, -3]);
   assert.deepEqual(call("UnitStat", seam, "player", 5), [0, 0, 0, 0]);
   assert.deepEqual(call("UnitStat", seam, "player", 0), [0, 0, 0, 0]);
   assert.deepEqual(call("UnitStat", seam, "player", 6), [0, 0, 0, 0]);
-  assert.deepEqual(call("UnitArmor", seam, "player"), [500, 520, 500, 25, -5]);
+  assert.deepEqual(call("UnitArmor", seam, "player"), [480, 500, 480, 25, -5]);
   assert.deepEqual(call("UnitAttackPower", seam, "player"), [900, 15, -4]);
   assert.deepEqual(call("UnitAttackSpeed", seam, "player"), [2, undefined]);
   assert.deepEqual(call("GetCVarBool", seam, "framexml_unknown_cvar"), []);
@@ -199,5 +238,76 @@ test("live paper-doll reads use owner fields and the cached item texture", () =>
   assert.deepEqual(fired.filter(([event]) => event === FRAMEXML_SEAM_EVENTS.stats), [
     [FRAMEXML_SEAM_EVENTS.stats, "player"],
   ], "sub-60ms poll does not duplicate stats events");
+  seam.detach();
+});
+
+test("live PaperDoll exposes replicated combat, spell and defense fields and refreshes their changes", () => {
+  const selfGuid = 1n;
+  const fields = new Map();
+  const set = (name, value, index = 0) => fields.set(UPDATE_FIELDS[name].offset + index,
+    UPDATE_FIELDS[name].type === "FLOAT" ? floatBits(value) : value >>> 0);
+  set("UNIT_FIELD_LEVEL", 80);
+  set("UNIT_FIELD_BYTES_0", 1 | (2 << 8));
+  set("PLAYER_FIELD_COMBAT_RATING_1", 125, 1);
+  set("PLAYER_FIELD_COMBAT_RATING_1", 125, 5);
+  set("PLAYER_CRIT_PERCENTAGE", 12.5);
+  set("PLAYER_RANGED_CRIT_PERCENTAGE", 13.25);
+  set("PLAYER_EXPERTISE", 26);
+  set("PLAYER_OFFHAND_EXPERTISE", 20);
+  set("PLAYER_DODGE_PERCENTAGE", 18.5);
+  set("PLAYER_PARRY_PERCENTAGE", 16.25);
+  set("PLAYER_BLOCK_PERCENTAGE", 22.5);
+  set("PLAYER_SHIELD_BLOCK", 750);
+  set("PLAYER_SPELL_CRIT_PERCENTAGE1", 15.5, 1);
+  set("PLAYER_FIELD_MOD_DAMAGE_DONE_POS", 450, 1);
+  set("PLAYER_FIELD_MOD_DAMAGE_DONE_NEG", -20, 1);
+  set("PLAYER_FIELD_MOD_HEALING_DONE_POS", 600);
+  set("PLAYER_FIELD_MOD_TARGET_RESISTANCE", -55);
+  set("UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER", 80.5);
+  set("UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER", 40.25);
+  set("PLAYER_SKILL_INFO_1_1", 95);
+  set("PLAYER_SKILL_INFO_1_1", 400 | (400 << 16), 1);
+  set("PLAYER_SKILL_INFO_1_1", 15 | (5 << 16), 2);
+  const world = {
+    state: { selfGuid, objects: new Map([[selfGuid, { guid: selfGuid, typeId: 4, fields }]]) },
+    actionButtons: [], casts: new Map(), channels: new Map(), events: { on: () => () => {} },
+    itemTemplates: new Map(), cooldownRemaining: () => 0,
+  };
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, spell: () => undefined,
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
+    characterStats: () => ({ spellCritBase: [], spellCritPerIntellect: [],
+      combatRatingPerLevel: Array(2500).fill(5), combatRatingScalar: { 34: 1.5, 38: 2 } }),
+  });
+  assert.deepEqual(call("GetCombatRating", seam, 6), [125]);
+  assert.deepEqual(call("GetCombatRatingBonus", seam, 6), [50]);
+  assert.deepEqual(call("GetCombatRatingBonus", seam, 2), [37.5]);
+  for (const index of [0, 26, NaN]) assert.deepEqual(call("GetCombatRating", seam, index), [0]);
+  assert.deepEqual(call("GetCritChance", seam), [12.5]);
+  assert.deepEqual(call("GetRangedCritChance", seam), [13.25]);
+  assert.deepEqual(call("GetExpertise", seam), [26, 20]);
+  assert.deepEqual(call("GetExpertisePercent", seam), [6.5, 5]);
+  assert.deepEqual(call("GetSpellCritChance", seam, 2), [15.5]);
+  assert.deepEqual(call("GetSpellBonusDamage", seam, 2), [430]);
+  assert.deepEqual(call("GetSpellBonusDamage", seam, 0), [0]);
+  assert.deepEqual(call("GetSpellBonusHealing", seam), [600]);
+  assert.deepEqual(call("GetSpellPenetration", seam), [55]);
+  assert.deepEqual(call("GetManaRegen", seam), [80.5, 40.25]);
+  assert.deepEqual(call("GetDodgeChance", seam), [18.5]);
+  assert.deepEqual(call("GetParryChance", seam), [16.25]);
+  assert.deepEqual(call("GetBlockChance", seam), [22.5]);
+  assert.deepEqual(call("GetShieldBlock", seam), [750]);
+  assert.deepEqual(call("UnitDefense", seam, "player"), [400, 57], "core truncates fractional defense rating bonus");
+  assert.deepEqual(call("GetDodgeBlockParryChanceFromDefense", seam), [2.2800000000000002]);
+
+  const fired = [];
+  seam.attach({ fire: (event, ...args) => { fired.push([event, ...args]); return 1; }, now: () => 0 });
+  fired.length = 0;
+  set("PLAYER_CRIT_PERCENTAGE", 14);
+  seam.tick(0.1);
+  assert.deepEqual(fired.filter(([event]) => event === "UNIT_STATS"), [["UNIT_STATS", "player"]]);
+  assert.deepEqual(call("GetCritChance", seam), [14]);
+  seam.tick(0.2);
+  assert.equal(fired.filter(([event]) => event === "UNIT_STATS").length, 1);
   seam.detach();
 });

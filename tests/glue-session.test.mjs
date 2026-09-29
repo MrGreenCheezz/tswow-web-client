@@ -81,6 +81,30 @@ test("the realm flags map onto the load sentinels the corpus tests for", () => {
   assert.equal(realmLoad(realm(0, -0.25)), -0.25, "no flag: the population as sent");
 });
 
+test("offline and locked realms stay on the realm list without opening a world connection", async () => {
+  const canned = fakeGlueSession("charselect");
+  for (const blockedRealm of [
+    { ...canned.realm, flags: canned.realm.flags | 0x02 },
+    { ...canned.realm, locked: true },
+  ]) {
+    let connections = 0;
+    const { session, screens } = recordingSession({
+      connect: async () => {
+        connections++;
+        return canned.connect();
+      },
+    });
+    session.beginSession({ ...canned.auth, realms: [blockedRealm] });
+    session.changeRealm(1, 1);
+    assert.deepEqual(screens, [], "unavailable realm cannot advance to character selection");
+    assert.equal(session.selectedRealm, undefined);
+    await session.connect(blockedRealm);
+    assert.equal(connections, 0, "direct connection requests must also reject the realm");
+    assert.equal(session.connected, false);
+    session.close();
+  }
+});
+
 test("character rows answer CharacterSelect.lua's ten values, with words where it prints words", async () => {
   const canned = fakeGlueSession("charselect");
   const { session, events } = recordingSession({ connect: () => canned.connect() });
@@ -199,19 +223,43 @@ test("deleting maps result 71 to success and anything else to a dialog", async (
   refused.session.close();
 });
 
-test("choosing a realm connects and moves the screen on", async () => {
+test("choosing a realm shows character select only after the world is connected", async () => {
   const canned = fakeGlueSession("charselect");
-  const { session, events, screens } = recordingSession({ connect: () => canned.connect() });
+  const world = await canned.connect();
+  let finishConnection;
+  let characterQueries = 0;
+  const { session, events, screens } = recordingSession({
+    connect: () => new Promise((resolve) => {
+      finishConnection = () => resolve({
+        ...world,
+        characters: async () => {
+          characterQueries++;
+          return world.characters();
+        },
+      });
+    }),
+    setGlueScreen: (name) => {
+      // Stock CharacterSelect_OnShow reads IsConnectedToServer() once to write the
+      // realm label. It does not rewrite that label on CHARACTER_LIST_UPDATE.
+      assert.equal(session.connected, true, "the realm label must see a connected world");
+      screens.push(name);
+      void session.refreshCharacters(); // stock GetCharacterListUpdate() on screen show
+    },
+  });
   session.beginSession(canned.auth);
 
   session.requestRealmList();
   assert.deepEqual(events, [["OPEN_REALM_LIST"]]);
 
   session.changeRealm(1, 1);
-  assert.deepEqual(screens, ["charselect"], "the screen changes before the characters arrive");
+  assert.deepEqual(screens, [], "the screen waits for the world handshake");
+  assert.equal(session.connecting, true);
+  finishConnection();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(screens, ["charselect"]);
   assert.equal(session.connected, true);
   assert.equal(session.characters.length, 3);
+  assert.equal(characterQueries, 1, "screen show and session connect share one character request");
   assert.deepEqual(session.serverName(), { name: "Круг Теней", pvp: true, rp: false, down: false });
 
   // Leaving the screen drops the socket and everything that came over it, but keeps the account.

@@ -35,12 +35,6 @@ test("MPQ ReputationFrame occupies Character tab 3 and runs stock rows through C
     const chain = await clientArchives(clientDirectory);
     const decoder = new TextDecoder("utf-8");
     const requests = new Set();
-    // ReputationFrame.lua indexes FACTION_BAR_COLORS even for a category header.  The seam
-    // contract's header standing is otherwise immaterial, so make this canned row a valid Neutral
-    // standing for the stock renderer while retaining the exact header/child shape.
-    const reputationRows = CANNED_REPUTATION.map((row, index) => index === 0
-      ? { ...row, standingId: 4 }
-      : row);
     const subset = [...FRAMEXML_VERTICAL_TOC];
     const boot = new FrameXmlBoot({
       provider: {
@@ -52,7 +46,7 @@ test("MPQ ReputationFrame occupies Character tab 3 and runs stock rows through C
       },
       locale: "ruRU",
       subset,
-      seam: new CannedWorldSeam(undefined, undefined, undefined, undefined, undefined, reputationRows),
+      seam: new CannedWorldSeam(),
       exercise: false,
       screen: () => ({ width: 1024, height: 768 }),
     });
@@ -100,12 +94,13 @@ test("MPQ ReputationFrame occupies Character tab 3 and runs stock rows through C
         "second stock row renders the CannedWorldSeam child");
       assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.min, 0,
         "stock row normalizes the reputation bar minimum");
-      assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.max, 3000,
+      assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.max, 6000,
         "stock row normalizes the reputation bar maximum");
       assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.value, 1500,
         "stock row normalizes the reputation bar value");
       assert.equal(boot.vm.errors.length, beforeShowErrors,
         "opening and selecting the stock reputation tab adds no Lua errors");
+      assert.equal(boot.errorCount, 0, "default canned rows produce no handled Lua errors either");
 
       const expand = frame(boot, "ReputationBar1ExpandOrCollapseButton");
       assert.equal(boot.bridge.Click(expand, "LeftButton", false), true,

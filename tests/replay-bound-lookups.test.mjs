@@ -106,6 +106,71 @@ test("replay-bound frame lookups use captured clients instead of game", async ()
   }
 });
 
+test("settled player looks reuse the resolved model until visible fields or metadata change", () => {
+  let creatureGeneration = 1;
+  let itemGeneration = 1;
+  let appearanceCalls = 0;
+  let loadCalls = 0;
+  let item = { entry: 100, displayId: 55, inventoryType: 13 };
+  const creatureModels = {
+    get(id) { return id === 7 ? metadata : id === 9 ? { ...metadata, id: 9 } : undefined; },
+    get generation() { return creatureGeneration; },
+    playerAppearance() { return { version: ++appearanceCalls }; },
+  };
+  const itemMetadata = {
+    get(entry) { return entry === item.entry ? item : undefined; },
+    get generation() { return itemGeneration; },
+    load() { loadCalls++; return Promise.resolve(true); },
+  };
+  const player = unit([[displayId, 7], [nativeDisplayId, 7], [itemSlot, 100]]);
+  const first = unitModelFor(player, creatureModels, itemMetadata);
+  for (let frame = 0; frame < 20; frame++) {
+    assert.strictEqual(unitModelFor(player, creatureModels, itemMetadata), first);
+  }
+  assert.equal(appearanceCalls, 1);
+  assert.equal(loadCalls, 1);
+
+  player.fields.set(UPDATE_FIELDS.PLAYER_BYTES.offset, 1);
+  assert.notStrictEqual(unitModelFor(player, creatureModels, itemMetadata), first);
+  assert.equal(appearanceCalls, 2);
+  item = { ...item, displayId: 56 };
+  itemGeneration++;
+  unitModelFor(player, creatureModels, itemMetadata);
+  assert.equal(appearanceCalls, 3, "new item metadata invalidates an unchanged equipment word");
+  creatureGeneration++;
+  unitModelFor(player, creatureModels, itemMetadata);
+  assert.equal(appearanceCalls, 4, "new appearance metadata invalidates a settled look");
+  player.fields.set(displayId, 9);
+  assert.equal(unitModelFor(player, creatureModels, itemMetadata).id, 9,
+    "shapeshift still returns the server display rather than the cached player body");
+});
+
+test("an incomplete equipment look is retried until the missing item row arrives", () => {
+  let itemGeneration = 1;
+  let item;
+  let appearanceCalls = 0;
+  const creatureModels = {
+    generation: 1,
+    get: () => metadata,
+    playerAppearance: () => ({ version: ++appearanceCalls }),
+  };
+  const itemMetadata = {
+    get: () => item,
+    get generation() { return itemGeneration; },
+    load: () => Promise.resolve(true),
+  };
+  const player = unit([[displayId, 7], [nativeDisplayId, 7], [itemSlot, 100]]);
+  const partial = unitModelFor(player, creatureModels, itemMetadata);
+  assert.equal(partial.appearancePending, true);
+  assert.notStrictEqual(unitModelFor(player, creatureModels, itemMetadata), partial);
+  item = { entry: 100, displayId: 55, inventoryType: 13, subClass: 1 };
+  itemGeneration++;
+  const complete = unitModelFor(player, creatureModels, itemMetadata);
+  assert.equal(complete.appearancePending, false);
+  assert.strictEqual(unitModelFor(player, creatureModels, itemMetadata), complete);
+  assert.equal(appearanceCalls, 3);
+});
+
 test("existing frame wrappers still use the live clients", () => {
   const models = { get(id) { return id === 7 ? metadata : undefined; }, playerAppearance() { return undefined; } };
   const items = { load() { return Promise.resolve(false); }, get() { return undefined; } };

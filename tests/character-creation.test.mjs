@@ -13,7 +13,7 @@ import {
   hasClassIcon, learnCreationNames, raceName,
 } from "../dist/code/browser/ui/UnitSnapshot.js";
 import {
-  CreationMemo, creationClasses, creationRaces, isCreationData, raceDisplayId,
+  CreationMemo, LatestAppearanceRequest, creationClasses, creationRaces, isCreationData, raceDisplayId,
 } from "../dist/code/browser/ui/CharacterCreation.js";
 import { loadCharacterCreation } from "../dist/code/gateway/CharacterCreation.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
@@ -63,6 +63,36 @@ const withClassIconData = {
 };
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+
+test("late character-look answers cannot replace a newer race, sex or gateway", () => {
+  const requests = new LatestAppearanceRequest();
+  const human = requests.begin("ws://realm-a", 1, 0);
+  assert.equal(human.changed, true);
+  const humanRetry = requests.begin("ws://realm-a", 1, 0);
+  assert.equal(humanRetry.changed, false, "a retry may keep the currently displayed look");
+  assert.equal(requests.isCurrent(human.serial, "ws://realm-a", 1, 0), false);
+  assert.equal(requests.isCurrent(humanRetry.serial, "ws://realm-a", 1, 0), true);
+
+  const orc = requests.begin("ws://realm-a", 2, 0);
+  assert.equal(orc.changed, true, "changing race must clear the prior indices immediately");
+  assert.equal(requests.isCurrent(humanRetry.serial, "ws://realm-a", 1, 0), false);
+  assert.equal(requests.isCurrent(orc.serial, "ws://realm-a", 2, 1), false,
+    "a changed sex invalidates the answer even before another request starts");
+  const otherRealm = requests.begin("ws://realm-b", 2, 0);
+  assert.equal(otherRealm.changed, true);
+  assert.equal(requests.isCurrent(orc.serial, "ws://realm-a", 2, 0), false);
+  assert.equal(requests.isCurrent(otherRealm.serial, "ws://realm-b", 2, 0), true);
+});
+
+test("a late look answer for a different class cannot replace the selected class", () => {
+  const requests = new LatestAppearanceRequest();
+  const warrior = requests.begin("ws://realm-a", 1, 0, 1);
+  const deathKnight = requests.begin("ws://realm-a", 1, 0, 6);
+  assert.equal(deathKnight.changed, true);
+  assert.equal(requests.isCurrent(warrior.serial, "ws://realm-a", 1, 0, 1), false);
+  assert.equal(requests.isCurrent(deathKnight.serial, "ws://realm-a", 1, 0, 6), true);
+  assert.equal(requests.isCurrent(deathKnight.serial, "ws://realm-a", 1, 0, 1), false);
+});
 
 test("visible ranged equipment carries its subclass and reports late item metadata", async () => {
   const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
@@ -598,42 +628,48 @@ test("Д3 a second gateway keeps neither the first one's races nor the first one
 
 test("Д3 the three tables read the way the creation form needs them", withDataset, async () => {
   const data = await loadCharacterCreation(dbcDirectory);
-  assert.equal(data.races.length, 21, "ChrRaces on this dataset");
-  assert.equal(data.classes.length, 10, "ChrClasses on this dataset: ids 1-9 and 11");
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const [races, classes, pairs] = await Promise.all([
+    openDbcFile(dbcDirectory, "ChrRaces"), openDbcFile(dbcDirectory, "ChrClasses"),
+    openDbcFile(dbcDirectory, "CharBaseInfo"),
+  ]);
+  assert.deepEqual(data.races.map((race) => race.id).sort((a, b) => a - b),
+    [...races.rows()].map((row) => races.id(row)).sort((a, b) => a - b));
+  assert.deepEqual(data.classes.map((entry) => entry.id).sort((a, b) => a - b),
+    [...classes.rows()].map((row) => classes.id(row)).sort((a, b) => a - b));
 
   // `Flags` bit 0 is CHRRACES_FLAGS_NOT_PLAYABLE, so playability is the bit being *clear*. Reading
   // it the other way round offers the goblin, the naga and the fel orc and hides all ten races
   // anybody can create — which is exactly the ten this client used to have hardcoded.
-  const playable = data.races.filter((race) => race.playable).map((race) => race.id);
-  assert.deepEqual(playable, [1, 2, 3, 4, 5, 6, 7, 8, 10, 11]);
-  // `Alliance` says the same thing a second way: 2 is CHRRACES_ALLIANCE_TYPE_NOT_PLAYABLE.
-  for (const race of data.races) assert.equal(race.playable, race.side !== 2, `race ${race.id}`);
+  for (const race of data.races) {
+    const row = races.rowOf(race.id);
+    assert.equal(race.playable, (races.int(row, "Flags") & 1) === 0, `race ${race.id}`);
+    const expectedClasses = [...new Set([...pairs.rows()]
+      .filter((pair) => (pairs.int(pair, "RaceID") & 0xff) === race.id)
+      .map((pair) => pairs.int(pair, "ClassID") & 0xff)
+      .filter((id) => data.classes.some((entry) => entry.id === id)))].sort((a, b) => a - b);
+    assert.deepEqual(race.classes, expectedClasses, `CharBaseInfo for race ${race.id}`);
+  }
 
-  const human = data.races.find((race) => race.id === 1);
-  assert.equal(human.name, "Человек");
-  assert.equal(human.clientPrefix, "Hu");
-  assert.equal(human.side, 0);
-  assert.equal(human.baseLanguage, 7, "7 is Common, 1 is Orcish");
-  assert.deepEqual(human.classes, [1, 2, 4, 5, 6, 8, 9]);
-  const nightElf = data.races.find((race) => race.id === 4);
-  assert.equal(nightElf.classes.includes(7), false, "a night elf is never a shaman");
-  const bloodElf = data.races.find((race) => race.id === 10);
-  assert.equal(bloodElf.classes.includes(11), false, "a blood elf is never a druid");
-  assert.equal(data.races.find((race) => race.id === 9).classes.length, 0,
-    "the goblin has no CharBaseInfo pairs at all");
+  for (const race of data.races) {
+    const row = races.rowOf(race.id);
+    assert.equal(race.name, races.locstring(row, "Name_lang"));
+    assert.equal(race.clientPrefix, races.string(row, "ClientPrefix"));
+    assert.equal(race.side, races.int(row, "Alliance"));
+    assert.equal(race.baseLanguage, races.int(row, "BaseLanguage"));
+  }
+  // Race/class restrictions belong to the active dataset; synthetic custom-pair cases in
+  // gateway.test.mjs pin the fixed reader contract without forbidding module changes here.
 
-  const warrior = data.classes.find((entry) => entry.id === 1);
-  assert.equal(warrior.fileName, "WARRIOR");
-  assert.equal(warrior.classMask, 1, "3.3.5 has no ClassMask column; it is 1 << (id - 1)");
-  assert.equal(warrior.powerType, 1, "rage");
-  const deathKnight = data.classes.find((entry) => entry.id === 6);
-  assert.equal(deathKnight.fileName, "DEATHKNIGHT", "the key CLASS_ICON_TCOORDS uses");
-  assert.equal(deathKnight.classMask, 1 << 5);
-  assert.equal(deathKnight.powerType, 6, "runic power");
-  assert.equal(deathKnight.expansion, 2);
-  const druid = data.classes.find((entry) => entry.id === 11);
-  assert.equal(druid.classMask, 1 << 10, "1024, which is what TalentTab.ClassMask carries");
-  for (const entry of data.classes) assert.equal(entry.playable, true, `class ${entry.id}`);
+  for (const entry of data.classes) {
+    const row = classes.rowOf(entry.id);
+    assert.equal(entry.name, classes.locstring(row, "Name_lang"));
+    assert.equal(entry.fileName, classes.string(row, "Filename"));
+    assert.equal(entry.powerType, classes.int(row, "DisplayPower"));
+    assert.equal(entry.expansion, classes.int(row, "Required_expansion"));
+    assert.equal(entry.classMask, entry.id >= 1 && entry.id <= 32 ? 1 << (entry.id - 1) : 0);
+    assert.equal(entry.playable, data.races.some((race) => race.classes.includes(entry.id)), `class ${entry.id}`);
+  }
 
   // Every token the atlas table knows is a class the dataset knows, and the other way round: this
   // is the join that turns a class id on the wire into a cell of a picture.

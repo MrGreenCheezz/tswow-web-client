@@ -87,8 +87,16 @@ test("MPQ SpellBook owns Show/Hide and SpellButton OnClick through the seam", wi
     assert.equal(boot.bridge.Enter(actionButton), true, "stock ActionButton_OnEnter runs");
     assert.equal(tooltip.visible, true, "GameTooltip:SetOwner/SetAction show the action tooltip");
     assert.equal(title.text, "Удар героя", "SetAction resolves the 1-based action slot, not a spell slot");
+    // UberTooltips is on by default, as in the client: the stock button hands its tooltip to
+    // GameTooltip_SetDefaultAnchor (the bottom-right corner) rather than covering the bar.
+    const uiParent = boot.bridge.getFrame("UIParent");
+    assert.ok(tooltip.points.some((point) => point.relativeTo === uiParent && point.point === "BOTTOMRIGHT"),
+      "the action tooltip takes the default bottom-right anchor");
+    assert.equal(boot.bridge.Leave(actionButton), true);
+    assert.equal(boot.vm.execute('SetCVar("UberTooltips", "0")', "@spellbook-uber-off").ok, true);
+    assert.equal(boot.bridge.Enter(actionButton), true);
     assert.ok(tooltip.points.some((point) => point.relativeTo === actionButton),
-      "SetOwner re-anchors the root to the hovered action button");
+      "with UberTooltips off, SetOwner re-anchors the root to the hovered action button");
     const actionTooltipSize = boot.bridge.measure(tooltip);
     assert.ok(Number(tooltip.attributes.width) > 0 && Number(tooltip.attributes.height) > 0,
       "action tooltip keeps declared width and height");

@@ -100,7 +100,7 @@ test("MPQ BuffFrame vertical loads stock aura templates and widgets", withClient
     baseline = await loadFromMpq(chain, baselineSubset);
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
-    assert.equal(baseline.boot.bridge.getFrame("BuffFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("BuffFrame")?.name, undefined,
       "current vertical baseline does not have BuffFrame");
     assert.equal(baseline.boot.bridge.registry.get("AuraButtonTemplate"), undefined,
       "current vertical baseline does not have aura templates");
@@ -136,8 +136,8 @@ test("MPQ BuffFrame vertical loads stock aura templates and widgets", withClient
       assert.ok(candidate.boot.bridge.registry.get(name), `${name} template exists`);
     }
 
-    // BuffFrame's dynamic aura calls are behind UNIT_AURA and the click handler, so this census
-    // keeps their exact static call sites separate from the one load-time weapon-enchant probe.
+    // The current boot also dispatches the initial aura refresh. Track its probes separately
+    // from CancelUnitBuff, which must remain behind an explicit user action.
     const candidatePlan = frameXmlStubPlan((await candidate.boot.corpus.scan()).chunks);
     assert.equal(candidatePlan.apiCallSites.get("UnitAura"), 1,
       "BuffFrame contributes exactly one UnitAura call site");
@@ -147,8 +147,9 @@ test("MPQ BuffFrame vertical loads stock aura templates and widgets", withClient
       candidate.inventory.api
         .filter((entry) => ["UnitAura", "CancelUnitBuff", "GetWeaponEnchantInfo"].includes(entry.name))
         .map(({ name, calls, sites, neutral }) => ({ name, calls, sites, neutral })),
-      [{ name: "GetWeaponEnchantInfo", calls: 1, sites: 1, neutral: "" }],
-      "only the neutral weapon-enchant probe is actually called during the load exercise",
+      [{ name: "UnitAura", calls: 48, sites: 1, neutral: "nil" },
+        { name: "GetWeaponEnchantInfo", calls: 1, sites: 1, neutral: "" }],
+      "initial aura refresh probes buffs but never cancels one during load",
     );
 
     const before = metrics(baseline.inventory);

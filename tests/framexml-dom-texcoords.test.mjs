@@ -112,3 +112,49 @@ test("normal TexCoords keep their crop and clearing reversal removes mirrors", (
   assert.equal((element.style.transform.match(/scaleY\(-1\)/g) ?? []).length, 1);
   renderer.destroy();
 });
+
+test("tinted file textures stay invisible until their picture arrives, while colour-only textures paint", () => {
+  globalThis.document = fakeDocument();
+  const bridge = new FrameXmlUiBridge();
+  const loaded = bridge.loadAddon(`<Ui><Frame name="Root">
+    <Texture name="PendingIcon" width="32" height="32" file="Interface\\Icons\\INV_Potion_54"/>
+    <Texture name="ColourOnly" width="32" height="32"/>
+    <Texture name="VertexOnly" width="32" height="32"/>
+  </Frame></Ui>`);
+  const icon = bridge.getFrame("PendingIcon");
+  const colour = bridge.getFrame("ColourOnly");
+  const vertexOnly = bridge.getFrame("VertexOnly");
+  assert.ok(icon && colour && vertexOnly);
+  bridge.update(icon, (frame) => { frame.vertexColor = { r: 1, g: 1, b: 1, a: 1 }; });
+  // A colour texture is made by SetTexture(r,g,b) or an XML <Color> (colorFill); SetVertexColor alone
+  // on a file-less texture draws nothing, as stock TargetFrame.lua's portrait tint relies on.
+  bridge.update(colour, (frame) => { frame.vertexColor = { r: 0.2, g: 0.4, b: 0.6, a: 1 }; frame.colorFill = true; });
+  bridge.update(vertexOnly, (frame) => { frame.vertexColor = { r: 1, g: 1, b: 1, a: 1 }; });
+
+  let picture;
+  const textures = {
+    acquire() { return picture; },
+    peek() { return picture; },
+    release() {},
+    acquireEdge() { return undefined; },
+    peekEdge() { return undefined; },
+    releaseEdge() {},
+  };
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge, textures });
+  renderer.mount(loaded.roots);
+  const iconElement = renderer.elementFor(icon);
+  const colourElement = renderer.elementFor(colour);
+  assert.ok(iconElement && colourElement);
+  assert.equal(iconElement.getAttribute("src"), null);
+  assert.equal(iconElement.getAttribute("data-framexml-blank"), "true");
+  assert.equal(colourElement.getAttribute("data-framexml-blank"), null);
+  assert.match(colourElement.style.backgroundColor, /^rgba\(/);
+  const vertexOnlyElement = renderer.elementFor(vertexOnly);
+  assert.equal(vertexOnlyElement?.getAttribute("data-framexml-blank"), "true");
+
+  picture = "blob:loaded-item-icon";
+  bridge.touch();
+  assert.equal(iconElement.getAttribute("src"), picture);
+  assert.equal(iconElement.getAttribute("data-framexml-blank"), null);
+  renderer.destroy();
+});

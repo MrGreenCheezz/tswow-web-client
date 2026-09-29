@@ -14,7 +14,7 @@ import {
   wmoRunIsInterior, wmoVertexLight,
 } from "../dist/code/browser/WmoModel.js";
 import {
-  placeEnvironmentNode, wmoGroupBoxes, wmoGroupsInRange,
+  placeEnvironmentNode, wmoGroupBoxes, wmoGroupsInRange, wmoShellRange,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { selectWmoPortalGroups } from "../dist/code/browser/WmoOcclusion.js";
 
@@ -771,21 +771,21 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
 
   // Measured, not chosen: exterior- or transition-lit runs inside an indoor group use the city's
   // 250 yd leash too, while groups remain bounded by their own AABB. Before the boundary marker,
-  // only the outdoor shell used that leash and the rooms below were the smaller 60 yd set. The
-  // wider outer leash stays below half of this city's triangles in every measured district. The
-  // transition seam is intentionally broader than the old 40% room-only candidate set, but it is
-  // still bounded by each group's own AABB and never approaches the full 286-group city.
+  // only the outdoor shell used that leash and the rooms below were the smaller 60 yd set. Shell
+  // groups wide enough to read as skyline (120 yd diagonal) hold a second 750 yd leash on top,
+  // so the districts below also carry the far roofs — still below two thirds of this city's
+  // triangles in every measured district, and never approaching the full 286-group city.
   for (const [name, x, y, groups, wanted] of [
-    ["Trade District", -8831, 619, 108, 300_594],
-    ["Old Town", -8721, 386, 68, 203_371],
-    ["Mage Quarter", -8995, 864, 64, 256_224],
-    ["Cathedral Square", -8603, 789, 98, 304_158],
-    ["Dwarven District", -8427, 599, 68, 257_173],
+    ["Trade District", -8831, 619, 116, 349_391],
+    ["Old Town", -8721, 386, 86, 317_675],
+    ["Mage Quarter", -8995, 864, 79, 343_146],
+    ["Cathedral Square", -8603, 789, 106, 339_936],
+    ["Dwarven District", -8427, 599, 82, 344_721],
   ]) {
     const chosen = wmoGroupsInRange(model, boxes, { x, y, z: 100, orientation: 0 });
     assert.equal(chosen.length, groups, `${name}: rooms drawn`);
     assert.equal(triangles(chosen), wanted, `${name}: triangles`);
-    assert.ok(triangles(chosen) / whole < 0.50, `${name}: the group-AABB budget is bounded`);
+    assert.ok(triangles(chosen) / whole < 0.65, `${name}: the group-AABB budget is bounded`);
     const cameraModel = new THREE.Vector3(x, 100, -y).applyMatrix4(worldToModel);
     const portal = selectWmoPortalGroups(
       model.groups, model.portals, chosen, cameraModel, new THREE.Matrix4().identity().elements);
@@ -794,10 +794,26 @@ test("standing in a district of Stormwind, the rule asks for the rooms around th
   }
 
   // And from outside it is the shell and nothing else: the skyline without any of its rooms.
+  // The far leash puts 25 wide outdoor shells on the ridge instead of one — that is the LOD
+  // working, measured at 248,547 triangles against the 20,639 of the single 250 yd shell.
   const ridge = wmoGroupsInRange(model, boxes, { x: -9250, y: 200, z: 100, orientation: 0 });
-  assert.equal(ridge.length, 1);
-  assert.equal(triangles(ridge), 20_639);
-  assert.ok(model.groups[ridge[0]].indoor === false, "and what is left is the outside of the city");
+  assert.equal(ridge.length, 25);
+  assert.equal(triangles(ridge), 248_547);
+  assert.ok(ridge.every((index) => model.groups[index].exterior || !model.groups[index].indoor),
+    "and what is left is the outside of the city");
+});
+
+test("outdoor shell leash follows group width, rooms stay short", () => {
+  const box = (size) => new THREE.Box3(
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(size, size, size));
+  // Diagonal 103.9 yd: below the skyline width, the near leash.
+  assert.equal(wmoShellRange(box(60)), 250);
+  // Diagonal 207.8 yd: skyline, the far leash.
+  assert.equal(wmoShellRange(box(120)), 750);
+  const malformed = new THREE.Box3(new THREE.Vector3(5, 0, 0), new THREE.Vector3(0, 1, 1));
+  assert.equal(wmoShellRange(malformed), 250, "an inverted box fails closed to the near leash");
+  const nan = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(Number.NaN, 1, 1));
+  assert.equal(wmoShellRange(nan), 250, "a NaN box fails closed to the near leash");
 });
 
 test("Stormwind high MOGP flags survive WWM1 metadata", withClient, async () => {

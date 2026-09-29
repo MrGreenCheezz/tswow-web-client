@@ -176,8 +176,13 @@ test("the production HUD owns a WotLK-shaped native skin and paperdoll", async (
   assert.doesNotMatch(skin, /UI-Tooltip-Border\.blp/,
     "an eight-piece edge atlas must not be passed raw to CSS border-image");
   assert.match(skin, /Button-Backpack-Up\.blp/, "inventory keeps the client backpack microbutton art");
-  assert.doesNotMatch(skin, /--wow-micro-professions|UI-MicroButton-Quest-Up\.blp/,
+  assert.doesNotMatch(skin, /--wow-micro-professions/,
     "professions must not masquerade as the quest-log microbutton");
+  for (const art of ["UI-MicroButton-Quest-Up", "UI-MicroButton-Socials-Up",
+    "UI-MicroButton-World-Up", "UI-MicroButton-MainMenu-Up"]) {
+    assert.match(skin, new RegExp(`${art}\\.blp`),
+      `${art} dresses its microbutton with client art`);
+  }
   assert.doesNotMatch(skin, /--wow-(?:quest-details|skill-bar(?:-border|-highlight)?)/,
     "full framed and neutral status textures must not be stretched over unrelated native surfaces");
   assert.match(css, /body\.native-wow-ui #game-buttons #inventory-toggle[\s\S]*var\(--wow-micro-inventory/,
@@ -194,7 +199,7 @@ test("the production HUD owns a WotLK-shaped native skin and paperdoll", async (
       `${id} keeps its shortcut in accessibility metadata instead of painting it over the icon`);
   }
   assert.match(html, /id="game-menu-toggle"[\s\S]*micro-button-glyph[^>]*aria-hidden="true"[^>]*>☰</,
-    "the fifth control is a menu symbol, not another shortcut letter");
+    "the sixth control is a menu symbol, not another shortcut letter");
   assert.match(frames, /characterMicroIcon[\s\S]*CLASS_ATLAS_PATH/,
     "the character microbutton portrait follows the player's class art");
   assert.match(frames, /image\.onerror\s*=\s*\(\)\s*=>\s*\{[\s\S]*delete image\.dataset\["atlas"\]/,
@@ -205,8 +210,8 @@ test("the production HUD owns a WotLK-shaped native skin and paperdoll", async (
   assert.ok(firstNumber(declaration(characterPortrait, "z-index"))
     > firstNumber(declaration(characterFrame, "z-index")),
   "the portrait OVERLAY must be painted above the opaque character-button BLP");
-  assert.equal(declaration(characterPortrait, "bottom"), "5px",
-    "the portrait follows the stock microbutton anchor instead of drifting a pixel down");
+  assert.equal(declaration(characterPortrait, "bottom"), "4px",
+    "the portrait follows the compact microbutton anchor instead of drifting a pixel down");
   assert.match(unitSnapshot, /clientHeight[\s\S]*classIconOffset/,
     "a rectangular micro portrait must centre the atlas cell on both axes");
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*#bottom-hud[\s\S]*#action-bar/,
@@ -232,17 +237,21 @@ test("the production HUD owns a WotLK-shaped native skin and paperdoll", async (
   const micro = css.match(/body\.native-wow-ui #game-buttons\s*\{([^}]*)\}/s)?.[1] ?? "";
   const microButton = css.match(/body\.native-wow-ui #game-buttons button\s*\{([^}]*)\}/s)?.[1] ?? "";
   assert.match(micro, /display:\s*grid/);
-  assert.match(micro, /grid-template-columns:\s*repeat\(5,\s*28px\)/);
-  assert.match(micro, /width:\s*152px/);
-  assert.match(micro, /height:\s*64px/);
+  assert.match(micro, /grid-template-columns:\s*repeat\(10,\s*24px\)/,
+    "character, bags, spellbook, talents, quest, socials, map, calendar, dungeon finder and menu share one row");
+  assert.match(micro, /width:\s*262px/);
+  assert.match(micro, /height:\s*54px/);
   assert.match(micro, /box-sizing:\s*border-box/);
   assert.match(micro, /padding:\s*2px/);
   assert.match(micro, /position:\s*static/,
     "the micro strip must follow the shared HUD flow instead of a separate viewport offset");
-  assert.match(microButton, /width:\s*28px/);
-  assert.match(microButton, /height:\s*58px/);
-  assert.ok(5 * 28 + 4 * 2 + 2 * 2 <= 152,
-    "five native 28px micro buttons, gaps, and padding fit their border-box container");
+  assert.match(microButton, /width:\s*24px/);
+  assert.match(microButton, /height:\s*48px/);
+  // The stock 32x64 plates scaled to three quarters, undistorted: 10 buttons, 9 gaps,
+  // and the padding make the strip width exactly.
+  assert.equal(10 * 24 + 9 * 2 + 2 * 2, 262);
+  assert.match(css, /#game-buttons #character-toggle,[\s\S]*?background-size:\s*24px 48px/,
+    "button art scales with the buttons instead of cropping");
   assert.match(portraits, /mountNativeCharacterPortrait/, "the native paperdoll target is registered explicitly");
 });
 
@@ -593,7 +602,7 @@ test("native BLP composites stay on their authored owner instead of tiling arbit
   const questSection = finalRule(desktop, "body.native-wow-ui .quest-detail-section");
   const questMarker = finalRule(desktop, "body.native-wow-ui .quest-log-list-entry::before");
   const objectiveMarker = finalRule(
-    desktop, "body.native-wow-ui .quest-detail-objectives .ui-line::before");
+    desktop, "body.native-wow-ui .quest-detail-objectives > .ui-line::before");
   const tooltip = finalRule(desktop, "body.native-wow-ui .ui-tooltip");
 
   const questBackground = declaration(quest, "background-image");
@@ -617,6 +626,8 @@ test("native BLP composites stay on their authored owner instead of tiling arbit
     "the decorative book must not consume the title's first grid cell and displace its state");
   assert.equal(declaration(objectiveMarker, "position"), "absolute",
     "the quest bullet must not become a third flex item and space itself away from the objective");
+  assert.equal(finalRule(desktop, "body.native-wow-ui .quest-detail-objectives .ui-line::before"), "",
+    "nested objective rows already own an icon and must not receive a second decorative bullet");
   assert.doesNotMatch(skin, /--wow-tooltip-border|--wow-quest-details|--wow-skill-bar/,
     "known composite/neutral BLPs are not published for structurally invalid consumers");
 });

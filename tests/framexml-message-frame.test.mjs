@@ -116,6 +116,37 @@ function runtime() {
   return { vm, bridge, loaded };
 }
 
+test("original chat hyperlink markup renders text and dispatches Lua link events", () => {
+  const { vm, bridge, loaded } = runtime();
+  const host = document.createElement("section");
+  const renderer = new FrameXmlDomRenderer(host, { bridge });
+  try {
+    assert.equal(vm.execute(String.raw`
+      ChatFrame:SetScript("OnHyperlinkClick", function(self, link, text, button)
+        ClickLink, ClickText, ClickButton = link, text, button
+      end)
+      ChatFrame:SetScript("OnHyperlinkEnter", function(self, link) HoverLink = link end)
+      ChatFrame:AddMessage("От |Hplayer:Игрок:1:SAY|h|cff00ff00[Игрок]|r|h: привет")
+    `, "@chat-links").ok, true);
+    renderer.mount(loaded.roots);
+    const layer = find(host, "ChatFrame").children.find(child => child.getAttribute("data-framexml-message-layer") === "true");
+    const spans = layer.children[0].children;
+    assert.equal(spans.map(span => span.textContent).join(""), "От [Игрок]: привет");
+    const link = spans.find(span => span.getAttribute("role") === "link");
+    assert.equal(link.style.color, "#00ff00ff");
+    assert.equal(link.style.pointerEvents, "auto", "links must escape their transparent message layer");
+    link.dispatchEvent({ type: "mouseenter" });
+    assert.equal(vm.getGlobal("HoverLink"), "player:Игрок:1:SAY");
+    link.dispatchEvent({ type: "click" });
+    assert.equal(vm.getGlobal("ClickLink"), "player:Игрок:1:SAY");
+    assert.equal(vm.getGlobal("ClickButton"), "LeftButton");
+    link.dispatchEvent({ type: "contextmenu" });
+    assert.equal(vm.getGlobal("ClickButton"), "RightButton");
+    link.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.equal(vm.getGlobal("ClickButton"), "LeftButton");
+  } finally { renderer.destroy(); vm.close(); }
+});
+
 test("bounded ScrollingMessageFrame owns lines, scroll state, attrs and color", () => {
   const { vm, bridge, loaded } = runtime();
   const result = vm.execute(String.raw`
@@ -240,6 +271,8 @@ test("message scroll maps top, intermediate and bottom offsets to pixel range", 
   assert.ok(element);
   const layer = element.children.find((child) => child.getAttribute("data-framexml-message-layer") === "true");
   assert.ok(layer);
+  assert.equal(layer.style.overflowX, "hidden", "chat clips long lines without a browser scrollbar");
+  assert.equal(layer.style.overflowY, "hidden", "stock chat owns scrolling; the browser adds no scrollbar");
   layer.scrollHeight = 120;
   layer.clientHeight = 20;
   assert.equal(chat.scroll.verticalScrollRange, 2);
@@ -287,6 +320,36 @@ test("EditBox preserves caret/history and dispatches stock chat keys", () => {
   assert.equal(vm.getGlobal("SpaceCount"), 1);
   renderer.destroy();
   vm.close();
+});
+
+test("EditBox preserves browser selection across unrelated syncs and honors explicit caret requests", () => {
+  const { vm, bridge, loaded } = runtime();
+  const edit = bridge.getFrame("ChatEdit");
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge });
+  try {
+    renderer.mount(loaded.roots);
+    const input = renderer.elementFor(edit).children.find(child => child.getAttribute("data-framexml-input") === "true");
+    input.focus();
+    input.dispatchEvent({ type: "focus" });
+    bridge.SetText(edit, "Тест");
+    input.setSelectionRange(0, 4); // Ctrl+A changes selection without an input event.
+    bridge.SetText(bridge.getFrame("Authored"), "animation tick");
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [0, 4]);
+    bridge.SetCursorPosition(edit, 4);
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [4, 4]);
+    input.setSelectionRange(1, 3);
+    input.dispatchEvent({ type: "select" });
+    bridge.SetText(bridge.getFrame("Authored"), "another tick");
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [1, 3]);
+    vm.execute("ChatEdit:HighlightText(0, 4)", "@highlight");
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [0, 4]);
+    input.value = "Новое";
+    input.setSelectionRange(5, 5);
+    input.dispatchEvent({ type: "input" });
+    assert.equal(edit.text, "Новое");
+    bridge.SetText(bridge.getFrame("Authored"), "final tick");
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [5, 5]);
+  } finally { renderer.destroy(); vm.close(); }
 });
 
 test("stock chat geometry methods and lowercase widget names stay bounded", () => {

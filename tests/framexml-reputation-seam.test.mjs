@@ -15,6 +15,23 @@ const { LiveWorldSeam } =
 
 const call = (name, seam, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
 
+test("reputation rows expose only stock color-table standing IDs 1 through 8", () => {
+  const rows = [0, 9, 4.5, NaN, 1, 8].map((standingId, listId) => ({
+    ...CANNED_REPUTATION[1], standingId, listId,
+  }));
+  const canned = new CannedWorldSeam(undefined, undefined, undefined, undefined, undefined, rows);
+  const live = new LiveWorldSeam({
+    world: () => ({}), store: () => undefined, spell: () => undefined,
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {},
+    reputation: () => rows,
+  });
+  for (const seam of [canned, live]) {
+    assert.deepEqual(call("GetNumFactions", seam), [2]);
+    assert.equal(call("GetFactionInfo", seam, 1)[2], 1);
+    assert.equal(call("GetFactionInfo", seam, 2)[2], 8);
+  }
+});
+
 class FakeEvents {
   #listeners = new Map();
 
@@ -55,11 +72,11 @@ test("reputation bindings preserve the exact 3.3.5 tuples and local state", () =
 
   assert.deepEqual(call("GetNumFactions", seam), [2]);
   assert.deepEqual(call("GetFactionInfo", seam, 1), [
-    "Alliance", "Alliance factions", 0, 0, 0, 0,
+    "Alliance", "Alliance factions", 4, 0, 3000, 0,
     false, false, true, false, true, false, false,
   ]);
   assert.deepEqual(call("GetFactionInfo", seam, 2), [
-    "Stormwind", "Stormwind reputation", 5, 3000, 6000, 4500,
+    "Stormwind", "Stormwind reputation", 5, 3000, 9000, 4500,
     false, true, false, false, true, false, true,
   ]);
   assert.deepEqual(call("GetFactionInfo", seam, 3), []);
@@ -76,7 +93,7 @@ test("reputation bindings preserve the exact 3.3.5 tuples and local state", () =
   assert.deepEqual(fired, [], "reselecting the listId 0 header is quiet");
   call("SetWatchedFactionIndex", seam, 1);
   assert.deepEqual(call("GetWatchedFactionInfo", seam), [
-    "Alliance", 0, 0, 0, 0,
+    "Alliance", 4, 0, 3000, 0,
   ]);
   assert.deepEqual(fired, [["UPDATE_FACTION"]], "watching valid listId 0 emits one update");
   fired.length = 0;
@@ -89,11 +106,11 @@ test("reputation bindings preserve the exact 3.3.5 tuples and local state", () =
   call("SetFactionInactive", seam, 2);
   assert.deepEqual(call("GetSelectedFaction", seam), [2]);
   assert.deepEqual(call("GetFactionInfo", seam, 2), [
-    "Stormwind", "Stormwind reputation", 5, 3000, 6000, 4500,
+    "Stormwind", "Stormwind reputation", 5, 3000, 9000, 4500,
     true, true, false, false, true, true, true,
   ]);
   assert.deepEqual(call("GetWatchedFactionInfo", seam), [
-    "Stormwind", 5, 3000, 6000, 4500,
+    "Stormwind", 5, 3000, 9000, 4500,
   ]);
   assert.deepEqual(call("IsFactionInactive", seam, 2), [true]);
   const updatesAfterMutation = fired.filter(([event]) => event === "UPDATE_FACTION").length;
@@ -108,24 +125,24 @@ test("reputation bindings preserve the exact 3.3.5 tuples and local state", () =
   call("CollapseFactionHeader", seam, 1);
   assert.deepEqual(call("GetNumFactions", seam), [1]);
   assert.deepEqual(call("GetFactionInfo", seam, 1), [
-    "Alliance", "Alliance factions", 0, 0, 0, 0,
+    "Alliance", "Alliance factions", 4, 0, 3000, 0,
     false, false, true, true, true, false, false,
   ]);
   assert.deepEqual(call("GetSelectedFaction", seam), [0]);
   assert.deepEqual(call("GetWatchedFactionInfo", seam), [
-    "Stormwind", 5, 3000, 6000, 4500,
+    "Stormwind", 5, 3000, 9000, 4500,
   ], "watch bar remains resolved while its child row is collapsed");
   call("ExpandFactionHeader", seam, 1);
   assert.deepEqual(call("GetNumFactions", seam), [2]);
   assert.deepEqual(call("GetSelectedFaction", seam), [2]);
   assert.deepEqual(call("GetWatchedFactionInfo", seam), [
-    "Stormwind", 5, 3000, 6000, 4500,
+    "Stormwind", 5, 3000, 9000, 4500,
   ]);
   call("SetFactionActive", seam, 2);
   call("FactionToggleAtWar", seam, 2);
   assert.deepEqual(call("IsFactionInactive", seam, 2), [false]);
   assert.deepEqual(call("GetFactionInfo", seam, 2), [
-    "Stormwind", "Stormwind reputation", 5, 3000, 6000, 4500,
+    "Stormwind", "Stormwind reputation", 5, 3000, 9000, 4500,
     false, true, false, false, true, true, true,
   ]);
   fired.length = 0;
@@ -185,7 +202,7 @@ test("live reputation edges subscribe to REPUTATION_CHANGED and deduplicate by s
   events.emit("REPUTATION_CHANGED");
   assert.deepEqual(fired, [], "repeated packet edges deduplicate by tuple shape");
   assert.deepEqual(call("GetFactionInfo", seam, 2), [
-    "Stormwind", "Stormwind reputation", 5, 3000, 6000, 5000,
+    "Stormwind", "Stormwind reputation", 5, 3000, 9000, 5000,
     false, true, false, false, true, false, true,
   ]);
   seam.detach();
@@ -252,12 +269,12 @@ test("live faction fixture maps server at-war/inactive flags without changing th
   });
   seam.attach({ now: () => 1, fire: (...args) => { fired.push(args); return 1; } });
   assert.deepEqual(call("GetFactionInfo", seam, 1), [
-    "Stormwind", "Stormwind reputation", 5, 3000, 6000, 4500,
+    "Stormwind", "Stormwind reputation", 5, 3000, 9000, 4500,
     true, true, false, false, true, false, true,
   ], "initial AT_WAR is exposed in the exact tuple");
   assert.deepEqual(call("IsFactionInactive", seam, 1), [true]);
   assert.deepEqual(call("GetFactionInfo", seam, 2), [
-    "Darnassus", "Stormwind reputation", 5, 3000, 6000, 4500,
+    "Darnassus", "Stormwind reputation", 5, 3000, 9000, 4500,
     false, true, false, false, true, false, true,
   ], "initially clear AT_WAR remains clear");
   assert.deepEqual(call("IsFactionInactive", seam, 2), [false]);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  GLUE_LOGICAL_HEIGHT, glueViewportMetrics, glueStageMapping, gluePinnedSize,
+  GLUE_LOGICAL_HEIGHT, GLUE_MIN_LOGICAL_WIDTH, glueViewportMetrics,
+  glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize,
 } from "../dist/code/browser/glue/GlueRuntime.js";
 
 // What the glue screens believe the screen is, before there is a document to measure.
@@ -65,7 +66,7 @@ test("height is the fixed axis and width follows the viewport's aspect", () => {
   assert.equal(glueViewportMetrics(0, 0).virtualWidth, 1024);
 });
 
-test("the glue's display mode is capped at 16:9 and the panel does the stretching", () => {
+test("the glue mode scrolls below 1024 units and is capped at 16:9", () => {
   // `GlueParent_OnLoad` refuses to lay itself out wider than 16:9 — it pillarboxes instead — so a
   // mode wider than that is not something the corpus has a layout for. The stage stops there and
   // the two scales part company, which is exactly what a monitor does with a narrower mode: the
@@ -74,13 +75,15 @@ test("the glue's display mode is capped at 16:9 and the panel does the stretchin
   //  viewport      virtual width  scaleX     scaleY
   const matrix = [
     [1024, 768, 1024, 1, 1],                          // 4:3 — the design mode, untouched
-    [1280, 1024, 960, 1.3333333, 1.3333333],          // 5:4 — narrower than the design, still uniform
+    [1280, 1024, 1024, 1.3333333, 1.3333333],         // 5:4 — a short horizontal scroll, full-size controls
     [1680, 1050, 1228.8, 1.3671875, 1.3671875],       // 16:10 — uniform
     [1920, 1080, 1365.3333, 1.40625, 1.40625],        // 16:9 — the cap, still exactly uniform
     [2560, 1440, 1365.3333, 1.875, 1.875],            // 16:9 again
     [1920, 969, 1365.3333, 1.40625, 1.2617188],       // a maximised browser window: 11.5 % stretch
     [3440, 1440, 1365.3333, 2.5195313, 1.875],        // 21:9: 34.4 %
     [1722, 563, 1365.3333, 1.2612305, 0.7330729],     // the owner's short-wide window
+    [600, 698, 1024, 0.9088542, 0.9088542],           // B6: login initially opens on a narrow canvas
+    [390, 844, 1024, 1.0989583, 1.0989583],           // B7: creation panels retain the 4:3 layout
   ];
   for (const [width, height, virtualWidth, scaleX, scaleY] of matrix) {
     const mapping = glueStageMapping(width, height);
@@ -89,20 +92,50 @@ test("the glue's display mode is capped at 16:9 and the panel does the stretchin
     assert.ok(Math.abs(mapping.scaleX - scaleX) < 1e-6, `scaleX at ${at}: ${mapping.scaleX}`);
     assert.ok(Math.abs(mapping.scaleY - scaleY) < 1e-6, `scaleY at ${at}: ${mapping.scaleY}`);
     assert.equal(mapping.virtualHeight, GLUE_LOGICAL_HEIGHT);
-    // Whatever the shape, the stage covers the viewport exactly: no bars of ours and none left for
-    // the corpus to draw, because it is never told about an aspect it would pillarbox.
-    assert.ok(Math.abs(mapping.virtualWidth * mapping.scaleX - width) < 1e-9, `covers width at ${at}`);
+    // The minimum canvas extends to the right instead of forcing both panels into an overlapping
+    // phone-width layout. Other modes still fill the viewport exactly.
+    const scrollable = glueViewportMetrics(width, height).virtualWidth < GLUE_MIN_LOGICAL_WIDTH;
+    if (scrollable) {
+      assert.ok(mapping.virtualWidth * mapping.scaleX > width, `scrolls horizontally at ${at}`);
+    } else {
+      assert.ok(Math.abs(mapping.virtualWidth * mapping.scaleX - width) < 1e-9, `covers width at ${at}`);
+    }
     assert.ok(Math.abs(GLUE_LOGICAL_HEIGHT * mapping.scaleY - height) < 1e-9, `covers height at ${at}`);
     assert.ok(mapping.virtualWidth / GLUE_LOGICAL_HEIGHT <= 16 / 9 + 1e-9, `mode is never wider than 16:9 at ${at}`);
-    // At or below 16:9 the stretch is the identity: the mapping shipped before this one, unchanged.
+    // At or below 16:9 the fit is uniform even when the canvas must scroll.
     if (width / height <= 16 / 9) {
       assert.equal(mapping.scaleX, mapping.scaleY, `uniform at ${at}`);
-      assert.ok(Math.abs(mapping.virtualWidth - glueViewportMetrics(width, height).virtualWidth) < 1e-9,
-        `same virtual width as the uniform fit at ${at}`);
+      assert.ok(Math.abs(mapping.virtualWidth - Math.max(GLUE_MIN_LOGICAL_WIDTH,
+        glueViewportMetrics(width, height).virtualWidth)) < 1e-9, `minimum virtual width at ${at}`);
     }
   }
   // A window with no size at all falls back rather than dividing by zero.
   assert.equal(glueStageMapping(0, 0).virtualWidth, 1024);
+});
+
+test("a 390x844 viewport keeps creation controls at a usable size and exposes the rest by scrolling", () => {
+  const mapping = glueStageMapping(390, 844);
+  assert.equal(mapping.virtualWidth, 1024);
+  assert.ok(mapping.scaleX > 1);
+  assert.ok(38 * mapping.scaleX > 40, "a 38-unit button stays at least 40 physical pixels high");
+  assert.ok(mapping.virtualWidth * mapping.scaleX - 390 > 700, "the right side remains reachable by horizontal scroll");
+});
+
+test("only narrow modes enable the horizontal scrollbar, and it reserves vertical space", () => {
+  assert.equal(glueNeedsHorizontalScroll(390, 844), true);
+  assert.equal(glueNeedsHorizontalScroll(600, 698), true);
+  assert.equal(glueNeedsHorizontalScroll(1280, 1024), true);
+  assert.equal(glueNeedsHorizontalScroll(1024, 768), false);
+  assert.equal(glueNeedsHorizontalScroll(1366, 768), false);
+  assert.equal(glueNeedsHorizontalScroll(1920, 969), false);
+  assert.equal(glueNeedsHorizontalScroll(0, 0), false);
+
+  // With a native horizontal scrollbar, Bootstrap uses the remaining clientHeight for the stage.
+  // The lower action buttons therefore fit above it rather than becoming vertically clipped.
+  const usableHeight = 844 - 17;
+  const mapping = glueStageMapping(390, usableHeight);
+  assert.equal(mapping.virtualHeight * mapping.scaleY, usableHeight);
+  assert.ok(mapping.virtualWidth * mapping.scaleX > 390);
 });
 
 test("GlueParent measures its own pillarbox, not the stage", () => {
@@ -217,7 +250,7 @@ function fakeDocument() {
 }
 globalThis.document = fakeDocument();
 
-test("the real login scene comes out 16:9 at every aspect at or past 16:9", withClient, async () => {
+test("the real login scene uses the chosen mode and reflows its authored background after resize", withClient, async () => {
   const { GlueRuntime } = await import("../dist/code/browser/glue/GlueRuntime.js");
   const { clientArchives } = await import("../tools/mpq.mjs");
   const chain = await clientArchives(clientDirectory);
@@ -228,8 +261,8 @@ test("the real login scene comes out 16:9 at every aspect at or past 16:9", with
     },
   };
 
-  // 16:9 exactly, a maximised 1080p browser window (the chrome makes it 1.98:1), and 21:9.
-  for (const [width, height, expected] of [[1280, 720, 1365], [1920, 969, 1365], [3440, 1440, 1365]]) {
+  // 600x698 reproduces B6's initial width; the other cases preserve the wide modes.
+  for (const [width, height, expected] of [[600, 698, 1024], [1280, 720, 1365], [1920, 969, 1365], [3440, 1440, 1365]]) {
     const stage = {
       width: Math.round(glueStageMapping(width, height).virtualWidth),
       height: GLUE_LOGICAL_HEIGHT,
@@ -266,6 +299,30 @@ test("the real login scene comes out 16:9 at every aspect at or past 16:9", with
       const box = runtime.bridge.measure(model);
       assert.equal(Math.round(box.width), expected, `model widget width at ${width}x${height}`);
       assert.equal(Math.round(box.height), GLUE_LOGICAL_HEIGHT);
+    }
+    if (width === 600) {
+      const loginScene = runtime.vm.getGlobal("LoginScene");
+      const background = runtime.vm.getGlobal("LoginScreenBackground");
+      assert.equal(loginScene?.parent, runtime.bridge.getFrame("AccountLogin"));
+      assert.equal(gluePinnedSize(background, stage).width, expected + 1);
+      const framesBefore = runtime.bridge.frames.length;
+      const modelsBefore = [...scene];
+      const wider = Math.round(glueStageMapping(1366, 768).virtualWidth);
+      stage.width = wider;
+      assert.equal(runtime.resizeLoginScene(wider), true);
+      assert.equal(Number(loginScene.attributes.width), wider, "authored LoginScene grows without reload");
+      assert.equal(gluePinnedSize(background, stage).width, wider + 1,
+        "the background's authored anchors now span the wider scene");
+      assert.equal(runtime.bridge.frames.length, framesBefore, "reflow does not replay OnLoad");
+      assert.deepEqual([...runtime.bridge.modelFrames].filter((f) => !f.named && f.type === "Model"), modelsBefore);
+      for (const model of scene) assert.equal(Math.round(Number(model.attributes.width)), wider);
+      assert.equal(runtime.resizeLoginScene(wider), false, "same width needs no redundant mutation");
+      stage.width = expected;
+      assert.equal(runtime.resizeLoginScene(expected), true);
+      assert.equal(Number(loginScene.attributes.width), expected);
+      assert.equal(gluePinnedSize(background, stage).width, expected + 1);
+      for (const model of scene) assert.equal(Math.round(Number(model.attributes.width)), expected);
+      assert.deepEqual(luaErrors, [], "resize leaves Lua state intact");
     }
     runtime.close();
   }

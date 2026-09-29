@@ -9,6 +9,20 @@ const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js")
 
 const call = (name, seam, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
 
+test("quest green range follows the Wrath player-level bands rather than a fixed threshold", () => {
+  const seam = new CannedWorldSeam();
+  let playerLevel;
+  seam.unitLevel = (unit) => unit === "player" ? playerLevel : undefined;
+  for (const [level, range] of [
+    [undefined, 0], [0, 0], [1, 4], [9, 4], [10, 5], [19, 5],
+    [20, 6], [29, 6], [30, 7], [39, 7], [40, 8], [44, 8],
+    [45, 9], [49, 9], [50, 10], [54, 10], [55, 11], [59, 11], [60, 12], [80, 12],
+  ]) {
+    playerLevel = level;
+    assert.deepEqual(call("GetQuestGreenRange", seam), [range], `player level ${level}`);
+  }
+});
+
 test("canned QuestLog returns stock tuples, selection and deduplicated objective edges", () => {
   const seam = new CannedWorldSeam();
   const fired = [];

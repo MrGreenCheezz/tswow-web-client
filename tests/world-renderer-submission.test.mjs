@@ -81,12 +81,10 @@ test("world terrain update pins its complete CPU dependency ring and clears inva
 
   assert.match(update, /if \(map === undefined \|\| !center\) \{[\s\S]*terrainClient\?\.setActiveTiles\(undefined, \[\]\);[\s\S]*return;/,
     "an invalid map or centre clears stale pins");
-  assert.match(update, /for \(let offsetX = -2; offsetX <= 2; offsetX\+\+\)/);
-  assert.match(update, /for \(let offsetY = -2; offsetY <= 2; offsetY\+\+\)/);
-  assert.match(update, /terrainClient\?\.setActiveTiles\(map, activeGrids\);/,
-    "the renderer hands the bounded 5x5 CPU dependency ring to TerrainClient every draw");
-  assert.match(update, /for \(let offsetX = -1; offsetX <= 1; offsetX\+\+\)/,
-    "the visible terrain mesh footprint remains 3x3");
+  assert.match(update, /terrainClient\?\.setActiveTiles\(map, plan\.dependencies\);/,
+    "the renderer pins every dependency selected by the bounded streaming plan");
+  assert.match(update, /const grids = plan\.visible;/,
+    "only the plan's visible 3x3 enters foreground builds");
 
   const invalid = update.indexOf("if (map === undefined || !center) {");
   const invalidClear = update.indexOf("this.clearTerrain();", invalid);
@@ -95,14 +93,46 @@ test("world terrain update pins its complete CPU dependency ring and clears inva
   assert.ok(invalidClear > invalid && invalidSplat > invalidClear && invalidCpu > invalidSplat,
     "invalid terrain detaches renderer materials before splat eviction and CPU pin clearing");
 
-  const visible = update.indexOf("const visible = new Set");
+  const visible = update.indexOf("if (plan !== this.#terrainPlan)");
   const removal = update.indexOf("this.#removeTerrain", visible);
-  const splatPins = update.indexOf("splatClient?.setActiveTiles(map, grids);", visible);
+  const splatPins = update.indexOf("splatClient?.setActiveTiles(map, plan.retained);", visible);
   const build = update.indexOf("for (const grid of grids)", splatPins);
   assert.ok(visible >= 0 && removal > visible && splatPins > removal && build > splatPins,
-    "old materials are detached before exact visible splat eviction and new tile lookup");
+    "old materials are detached before retained splat eviction and new tile lookup");
   assert.match(source, /public clearTerrain\(\): void \{[\s\S]*this\.#removeTerrain/,
     "public terrain cleanup reuses the normal removal path");
+});
+
+test("terrain tile builds are staggered so a tile crossing cannot hitch one frame", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(source, /const TERRAIN_BUILD_BUDGET = 1;/,
+    "the stagger budget is a named constant beside the other build budgets");
+  assert.match(source, /const TERRAIN_REPAIR_STEPS = 128;/);
+  const start = source.indexOf("  #updateTerrain(");
+  const end = source.indexOf("\n  /**\n   * The ground beyond the ring", start);
+  assert.ok(start >= 0 && end > start, "terrain update source boundary must exist");
+  const update = source.slice(start, end);
+  assert.match(update, /let terrainBuilds = 0;/, "the build count resets every frame");
+  assert.match(update, /this\.#terrainRepairsPending = 0;/, "visible repair demand resets every frame");
+  assert.match(update, /if \(!isCenterTile && terrainBuilds >= TERRAIN_BUILD_BUDGET\) continue;/,
+    "a skipped tile keeps its stale state and is rebuilt on a later frame rather than dropped");
+  assert.match(update, /terrainBuilds\+\+;/, "only completed builds spend the budget");
+  assert.match(update, /step < TERRAIN_REPAIR_STEPS && performance\.now\(\) < deadline/,
+    "repair work is bounded by both the time allowance and the step cap");
+  assert.match(update, /const settled = this\.#terrains\.get\(key\);/,
+    "a budgeted-out tile has no entry until its build runs");
+});
+
+test("terrain pins reuse a stable streaming plan between centre and approach changes", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  #updateTerrain(");
+  const end = source.indexOf("\n  /**\n   * The ground beyond the ring", start);
+  assert.ok(start >= 0 && end > start, "terrain update source boundary must exist");
+  const update = source.slice(start, end);
+  assert.match(update, /if \(plan !== this\.#terrainPlan\) \{/,
+    "pin ring and removals are skipped while the streaming plan is unchanged");
+  assert.match(update, /const grids = plan\.visible;/,
+    "the revision loop reuses the cached footprint instead of rebuilding it");
 });
 
 test("missing-player draw and world teardown release renderer users before splat ownership", async () => {

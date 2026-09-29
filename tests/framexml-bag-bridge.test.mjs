@@ -194,7 +194,28 @@ test("MPQ stock bags bridge through the seam, controller, and owner lifecycle", 
     const diagnosticsBefore = boot.bridge.diagnostics.length;
     const vmErrorsBefore = boot.vm.errors.length;
 
-    // This is the real stock button handler through the gate-owned alias wrapper; the only
+    assert.equal(boot.bridge.Click(backpack, "LeftButton", false), true,
+      "the renderer's direct stock backpack click dispatches");
+    assert.deepEqual(boot.vm.errors.slice(vmErrorsBefore), [],
+      "a mouse click has the same optional-panel guards as a keyboard/controller click");
+    assert.equal(backpackFrame.visible, true, "the renderer's click opens the backpack");
+    const closeButton = boot.bridge.getFrame("ContainerFrame1CloseButton");
+    assert.ok(closeButton);
+    assert.equal(boot.bridge.Click(closeButton, "LeftButton", false), true,
+      "the stock close button dispatches without a controller wrapper");
+    assert.equal(backpackFrame.visible, false);
+    assert.equal(backpack.checked, false);
+    for (let index = 0; index < 4; index += 1) {
+      const bagButton = boot.bridge.getFrame(`CharacterBag${index}Slot`);
+      assert.ok(bagButton);
+      assert.equal(boot.bridge.Click(bagButton, "LeftButton", false), true);
+      assert.deepEqual(containers.filter((frame) => frame.visible).map((frame) => frame.id), [index + 1],
+        `renderer click opens carried bag ${index + 1}`);
+      assert.equal(boot.bridge.Click(bagButton, "LeftButton", false), true);
+      assert.ok(containers.every((frame) => !frame.visible), "second mouse click closes the bag");
+    }
+
+    // This is the real stock button handler with the gate-owned compatibility globals; the only
     // browser-side shortcut is the bridge Click scalar dispatch, as explained by rendererFor.
     owner.toggleBackpack();
     assert.equal(frameXmlBagsOpen(), true, "the stock backpack owner opens");

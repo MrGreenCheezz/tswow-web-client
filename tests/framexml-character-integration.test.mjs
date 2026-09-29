@@ -310,6 +310,8 @@ test("MPQ stock CharacterFrame/PaperDollFrame mounts, shows and paints through C
       assert.ok(requests.has("interface/framexml/paperdollframe.lua"));
       assert.equal(inventory.xml.failed.length, 0, "stock Character/PaperDoll XML parses");
       assert.equal(inventory.lua.failed, 0, "stock Character/PaperDoll Lua executes");
+      assert.ok(boot.bridge.dispatchEvent("VARIABLES_LOADED") > 0,
+        "stock startup initializes character preferences before its first show");
 
       const character = frame(boot, "CharacterFrame");
       const paperDoll = frame(boot, "PaperDollFrame");
@@ -368,14 +370,9 @@ test("MPQ stock CharacterFrame/PaperDollFrame mounts, shows and paints through C
         hide: () => { assert.equal(boot.bridge.Hide(character), true); },
         dispose: () => { gate.portraitCleanup(); },
       };
-      const statMode = boot.vm.execute(
-        'SetCVar("playerStatLeftDropdown", "PLAYERSTAT_BASE_STATS"); '
-          + 'SetCVar("playerStatRightDropdown", "PLAYERSTAT_MELEE_COMBAT")',
-        "@character-integration:stat-cvars",
-      );
-      assert.equal(statMode.ok, true, statMode.error ?? "paper doll stat CVar setup failed");
       const cvarComposition = boot.vm.execute(`
         __characterLeftCVar = GetCVar("playerStatLeftDropdown")
+        __characterRightCVar = GetCVar("playerStatRightDropdown")
         __characterLeftCVarBool = GetCVarBool("playerStatLeftDropdown")
         __characterUnknownCVarBool = GetCVarBool("framexml_unknown_character_cvar")
         SetCVar("showAllSpellRanks", "1")
@@ -383,7 +380,9 @@ test("MPQ stock CharacterFrame/PaperDollFrame mounts, shows and paints through C
       `, "@character-integration:cvar-composition");
       assert.equal(cvarComposition.ok, true, cvarComposition.error ?? "CVar composition failed");
       assert.equal(boot.vm.getGlobal("__characterLeftCVar"), "PLAYERSTAT_BASE_STATS",
-        "stock string CVar survives the seam host notification");
+        "stock VARIABLES_LOADED initializes base stats from the empty registered preference");
+      assert.equal(boot.vm.getGlobal("__characterRightCVar"), "PLAYERSTAT_MELEE_COMBAT",
+        "stock VARIABLES_LOADED selects the warrior melee category without host seeding");
       assert.equal(boot.vm.getGlobal("__characterLeftCVarBool"), true,
         "unknown host CVar falls back to the neutral string CVar view");
       assert.equal(boot.vm.getGlobal("__characterUnknownCVarBool"), undefined,

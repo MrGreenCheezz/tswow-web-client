@@ -313,8 +313,10 @@ test("BuffFrame gate owns only player auras after a successful mount", async () 
   assert.equal(nativePlayerAuras.children.length, 1, "native player aura strip reflects current state");
   assert.notEqual(nativePlayerAuras.children[0], stalePlayerAura,
     "unmount removes stale native player aura contents");
-  assert.equal(targetAuraRebuilds, targetRebuildsBeforeUnmount + 1,
-    "unmount refreshes target aura timers together with the native player strip");
+  // The target strip's auras did not change across the mount, so its icons stay; the refresh the
+  // unmount makes is its timers, which `showAuras` registers again with the player strip's.
+  assert.equal(targetAuraRebuilds, targetRebuildsBeforeUnmount,
+    "an unchanged target strip keeps its icons through the unmount refresh");
   updateAuraDurations(2000);
   assert.equal(targetAuras.children[0]?.children.at(-1)?.textContent, "3.0",
     "target timed aura remains registered after the unmount rebuild");

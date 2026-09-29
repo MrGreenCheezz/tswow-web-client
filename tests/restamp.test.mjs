@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 import { promisify } from "node:util";
 import { DatasetFingerprint } from "../dist/code/gateway/DatasetFingerprint.js";
 import { blpToPng } from "../tools/blp-png.mjs";
@@ -253,20 +254,28 @@ test("a readable order-2 texture stamp is migrated before its first request with
   }
 });
 
-test("a readable stamp from a different patch composition is not re-signed over stale bytes", async () => {
+test("a stamp from a different patch composition whose source moved is regenerated from the new source, not blessed", async () => {
+  // A later patch directory that carries the same path takes it over: the published picture was
+  // decoded from the copy that lost, so it is stale. The pass proves each such entry against the
+  // source that wins today, and a picture that does not match is replaced with that decode —
+  // signing the old one would hide the change, and leaving it for the request path costs a
+  // generator process per icon.
   const box = await machine();
   try {
     await publishIcon(box, 70000);
     const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
     const stampFile = stampSidecar(picture);
-    const changed = JSON.parse(await readFile(stampFile, "utf8"));
-    changed.chain = "another-real-patch-composition";
-    const staleStamp = JSON.stringify(changed);
-    await writeFile(stampFile, staleStamp);
+    const staleStamp = await readFile(stampFile, "utf8");
+    const later = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Custom_Fire.blp");
+    await mkdir(join(later, ".."), { recursive: true });
+    await writeFile(later, blp([90, 90, 90, 255]));
 
-    assert.match((await restamp(box)).stderr, /Stamped 0 published entries/);
-    assert.equal(await readFile(stampFile, "utf8"), staleStamp,
-      "background migration must not bless bytes from another patch chain");
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /Stamped 1 published entry/);
+    assert.match(stderr, /item-icons: 0 of 1 from an earlier chain re-signed, 1 regenerated/);
+    assert.deepEqual(await readFile(picture), Buffer.from(blpToPng(blp([90, 90, 90, 255]))),
+      "the picture is what the winning source decodes to");
+    assert.notEqual(await readFile(stampFile, "utf8"), staleStamp, "and it carries the stamp of that source");
 
     const fingerprint = new DatasetFingerprint({
       dbcDirectory: box.dbc,
@@ -275,7 +284,79 @@ test("a readable stamp from a different patch composition is not re-signed over 
     });
     await fingerprint.poll();
     await fingerprint.ensureCurrent(picture);
-    await assert.rejects(access(picture), "the ordinary request path still sees and removes the stale entry");
+    await access(picture);
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("an entry whose source file was copied — same picture, another mtime and encoder — is proven against it and kept", async () => {
+  // Measured 2026-09-28: 499 of a sample of 500 item-icon stamps named the same archive at the same
+  // size and differed only in its mtime (the client the gateway reads had been copied from another
+  // folder), and the published pictures held exactly the pixels of a fresh decode in a different PNG
+  // encoding (5,223 B against 5,488 B). Size and time cannot say that; decoding the source can, and
+  // nothing has to be rewritten — 20,942 correct files were one byte-compare away from it.
+  const box = await machine();
+  try {
+    await publishIcon(box, 70000);
+    const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
+    const otherEncoding = PNG.sync.write(PNG.sync.read(await readFile(picture)), { deflateLevel: 1, filterType: 0 });
+    assert.notDeepEqual(otherEncoding, await readFile(picture), "the fixture really is another encoding");
+    await writeFile(picture, otherEncoding);
+    const moved = new Date(Date.now() + 3_600_000);
+    await utimes(box.icon, moved, moved);
+    const unrelated = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Other.blp");
+    await mkdir(join(unrelated, ".."), { recursive: true });
+    await writeFile(unrelated, blp([5, 5, 5, 255]));
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /item-icons: 1 of 1 from an earlier chain re-signed \(1 proven against the source\)/);
+    assert.deepEqual(await readFile(picture), otherEncoding, "the picture on disk is left alone");
+    const stamp = JSON.parse(await readFile(stampSidecar(picture), "utf8"));
+    assert.equal(stamp.sources[0].mtimeMs, (await stat(box.icon)).mtimeMs, "and stamped with the source as it is now");
+
+    const fingerprint = new DatasetFingerprint({
+      dbcDirectory: box.dbc,
+      clientDirectory: box.client,
+      intervalMs: 0,
+    });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(picture);
+    await access(picture);
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a stamp from a different patch composition is re-signed when nothing it names changed", async () => {
+  // The chain digest is over the sources' *names*, so any new patch directory makes every stamp
+  // foreign. Measured 2026-09-28: 4,528 textures and 9,421 model files were foreign after the
+  // tswow-store link, and 149 of 150 regenerated textures came out byte-identical — the player paid
+  // a generator run per entry to be handed the same bytes. An unrelated directory must not cost that.
+  const box = await machine();
+  try {
+    await publishIcon(box, 70000);
+    const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
+    const stampFile = stampSidecar(picture);
+    const before = JSON.parse(await readFile(stampFile, "utf8"));
+    const unrelated = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Other.blp");
+    await mkdir(join(unrelated, ".."), { recursive: true });
+    await writeFile(unrelated, blp([5, 5, 5, 255]));
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /item-icons: 1 of 1 from an earlier chain re-signed/);
+    const after = JSON.parse(await readFile(stampFile, "utf8"));
+    assert.notEqual(after.chain, before.chain, "signed under the chain as it is now");
+    assert.equal(after.sources[0].file, before.sources[0].file, "and still naming the copy it was built from");
+
+    const fingerprint = new DatasetFingerprint({
+      dbcDirectory: box.dbc,
+      clientDirectory: box.client,
+      intervalMs: 0,
+    });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(picture);
+    await access(picture);
   } finally {
     await removeMachine(box);
   }

@@ -365,6 +365,15 @@ test("MPQ stock QuestLog/WatchFrame mounts, lists, details and cleans up through
         .map((node) => node.textContent).join(" ");
       assert.match(watchText, /2\/5\s+Проверить цель/,
         "stock WatchFrame reverses the objective into its authored progress-first format");
+      const difficulty = boot.vm.execute(`
+        assert(GetQuestDifficultyColor(48) == QuestDifficultyColors.standard)
+        assert(GetQuestDifficultyColor(47) == QuestDifficultyColors.trivial)
+      `, "@quest-green-range");
+      assert.equal(difficulty.ok, true, difficulty.error);
+      seam.setQuestTemplate(CANNED_QUESTS[0].questId, { level: 48 });
+      assert.equal(boot.bridge.Click(firstButton, "LeftButton", false), true,
+        "a low-level quest remains selectable after the stock colour update");
+      assert.equal(boot.vm.errors.length, errorsBeforeShow);
       assert.equal(seam.removeQuestWatch(1), undefined);
       assert.equal(seam.questNumWatches(), 0, "seam supports removing the canned watch");
       assert.equal(seam.addQuestWatch(1), undefined);

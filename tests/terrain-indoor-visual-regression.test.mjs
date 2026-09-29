@@ -96,9 +96,9 @@ test("Goldshire inn furniture cannot be evicted by the interior draw quota while
 });
 
 test("legacy visual tiles are invalidated once so indoor MODR lighting reaches every map", () => {
-  assert.match(visualTileGenerator, /generation:\s*["']visual-tile-v3["']/,
+  assert.match(visualTileGenerator, /generation:\s*["']visual-tile-v4["']/,
     "new visual-tile stamps need an explicit generator generation");
-  assert.match(gateway, /ensureCurrent\(filename,\s*\{\s*generation:\s*["']visual-tile-v3["']\s*\}\)/,
+  assert.match(gateway, /ensureCurrent\(filename,\s*\{\s*generation:\s*["']visual-tile-v4["']\s*\}\)/,
     "the route must reject tiles built before WMO group ownership was available");
   assert.match(fingerprint, /options\.generation[\s\S]{0,180}?stamp\?*\.generation/,
     "cache validation must compare the route's requested generation with its stamp");

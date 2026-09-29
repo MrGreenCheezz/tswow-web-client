@@ -116,8 +116,11 @@ test("the measured minimap C APIs keep exact text and PVP tuple shapes", () => {
     "the fixed fixture adds no zone noise to the deterministic timeline");
   assert.equal(canned.minimapZoneText(), CANNED_MINIMAP_ZONE.minimapZoneText);
   canned.detach();
-  // These are not base Minimap.lua C-API calls and must not be invented as seam bindings.
-  assert.equal(FRAMEXML_SEAM_BINDINGS.GetPlayerMapPosition, undefined);
+  // WorldMapFrame now owns this stock C API; without selected map metadata the player has no
+  // known position on that map, which the client's off-map tuple represents as zeroes.
+  assert.equal(typeof FRAMEXML_SEAM_BINDINGS.GetPlayerMapPosition, "function");
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetPlayerMapPosition(canned, ["player"]), [0, 0]);
+  // These two are still outside the adopted minimap contract.
   assert.equal(FRAMEXML_SEAM_BINDINGS.GetMinimapZoom, undefined);
   assert.equal(FRAMEXML_SEAM_BINDINGS.GetMinimapRotation, undefined);
 });

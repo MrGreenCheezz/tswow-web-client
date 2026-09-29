@@ -79,7 +79,7 @@ test("production vertical includes the stock row while native fallback remains a
   assert.match(source, /<div id="game-buttons">/, "native micro-button fallback remains present");
   for (const id of [
     "character-toggle", "inventory-toggle", "spellbook-toggle", "talents-toggle",
-    "game-menu-toggle",
+    "lfg-toggle", "game-menu-toggle",
   ]) assert.match(source, new RegExp(`id="${id}"`), `${id} remains available in fallback`);
   assert.doesNotMatch(source, /id="game-buttons"[^>]*hidden/i,
     "native fallback is not statically hidden");
@@ -155,5 +155,84 @@ test("microbutton contract closes UnitLevel/GetNetStats while the unsupported op
 
   } finally {
     candidate?.boot.close();
+  }
+});
+
+test("the stock Help micro button opens the native GM ticket window instead of printing /help", async () => {
+  // The owner's screenshot showed the native /help list («/chanlist …», «/duel …», «Эмоции (252)…»)
+  // in the stock chat after the red «?» was clicked: the adapter printed helpLines() line by line.
+  const source = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
+  const adapters = source.slice(source.indexOf("installFrameXmlMicroButtonAdapters(loadedBoot, {"));
+  const actionMap = adapters.slice(0, adapters.indexOf("}) !== undefined;"));
+  assert.match(actionMap, /\n\s*help: toggleGmTickets,\n/, "HelpMicroButton reaches the GM ticket window");
+  assert.doesNotMatch(source, /\bhelpLines\b/, "the mount no longer dumps the native command list");
+  assert.match(source, /import \{ toggleGmTickets \} from "\.\.\/ui\/GmTickets\.js";/);
+});
+
+test("MainMenuMicroButton and LFDMicroButton open the stock GameMenuFrame and LFDParentFrame through their owners", withClient, async () => {
+  // The world mount module reads the page at import; a minimal document is enough for these gates.
+  const fakeNode = () => ({
+    children: [], style: {}, dataset: {}, hidden: false,
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    append() {}, replaceChildren() {}, remove() {}, setAttribute() {}, getAttribute() { return null; },
+    removeAttribute() {}, addEventListener() {}, removeEventListener() {}, querySelectorAll() { return []; },
+    getContext() { return {}; }, querySelector(selector) { return selector === 'button[type="submit"]' ? fakeNode() : null; },
+  });
+  globalThis.document ??= { head: fakeNode(), body: fakeNode(), createElement: fakeNode, getElementById: fakeNode,
+    querySelectorAll() { return []; } };
+  globalThis.window ??= { innerWidth: 1024, innerHeight: 768, location: { protocol: "http:", hostname: "localhost" },
+    addEventListener() {}, removeEventListener() {}, requestAnimationFrame() { return 1; }, cancelAnimationFrame() {} };
+  globalThis.location ??= globalThis.window.location;
+  globalThis.localStorage ??= { getItem() { return null; }, setItem() {} };
+  const { installFrameXmlMicroButtonAdapters } = await import("../dist/code/browser/framexml/FrameXmlWorldMount.js");
+  const menuOwner = await import("../dist/code/browser/framexml/FrameXmlGameMenuOwner.js");
+  const menuController = await import("../dist/code/browser/framexml/FrameXmlGameMenuController.js");
+  const lfdOwner = await import("../dist/code/browser/framexml/FrameXmlLfdOwner.js");
+  const lfdController = await import("../dist/code/browser/framexml/FrameXmlLfdController.js");
+  const seam = new CannedWorldSeam();
+  const { boot } = await loadFromMpq(archiveChain, candidateToc(), seam, true);
+  const cleanups = [];
+  try {
+    const elements = new Map();
+    const elementFor = (frame) => {
+      if (!frame) return null;
+      if (!elements.has(frame)) {
+        const attributes = new Map([["data-framexml-name", frame.name], ["data-framexml-type", frame.type]]);
+        elements.set(frame, { dataset: {}, get parentElement() { return elementFor(frame.parent); },
+          getAttribute: (name) => attributes.get(name) ?? null });
+      }
+      return elements.get(frame);
+    };
+    const noop = () => {};
+    menuOwner.installFrameXmlGameMenuButtons(boot, { video: noop, sound: noop, interface: noop, keybindings: noop,
+      macros: noop, diagnostics: noop, resetLayout: noop, toggle: noop });
+    const menu = menuOwner.frameXmlGameMenuGate(boot, { elementFor });
+    const lfd = lfdOwner.frameXmlLfdGate(seam, boot, { elementFor });
+    assert.ok(menu && lfd, "both stock owners pass their gates");
+    cleanups.push(menuController.publishFrameXmlGameMenu(menuOwner.createFrameXmlGameMenuOwner(boot, menu.frame, () => false)));
+    cleanups.push(lfdController.publishFrameXmlLfd(lfdOwner.createFrameXmlLfdOwner(boot, lfd.frame)));
+    const buttons = installFrameXmlMicroButtonAdapters(boot, {
+      character: noop, spellbook: noop, talent: noop, quest: noop, socials: noop, pvp: noop,
+      lfd: lfdController.toggleFrameXmlLfd, gameMenu: menuController.toggleFrameXmlGameMenu, help: noop,
+    });
+    assert.ok(buttons);
+    const errors = boot.errorCount;
+    const mainMenu = boot.bridge.getFrame("MainMenuMicroButton");
+    boot.bridge.fireScript(mainMenu, "OnMouseDown", "LeftButton");
+    boot.bridge.fireScript(mainMenu, "OnMouseUp", "LeftButton");
+    assert.equal(boot.bridge.isVisible(menu.frame), true, "the main-menu micro button opens stock GameMenuFrame");
+    assert.equal(mainMenu.buttonState, "PUSHED", "UpdateMicroButtons shows the menu's button pressed");
+    boot.bridge.fireScript(mainMenu, "OnMouseDown", "LeftButton");
+    boot.bridge.fireScript(mainMenu, "OnMouseUp", "LeftButton");
+    assert.equal(boot.bridge.isVisible(menu.frame), false);
+    boot.bridge.Click(boot.bridge.getFrame("LFDMicroButton"));
+    assert.equal(boot.bridge.isVisible(lfd.frame), true, "the LFD micro button opens stock LFDParentFrame (level 60 ≥ SHOW_LFD_LEVEL)");
+    assert.equal(boot.bridge.getFrame("LFDMicroButton").buttonState, "PUSHED");
+    boot.bridge.Click(boot.bridge.getFrame("LFDMicroButton"));
+    assert.equal(boot.bridge.isVisible(lfd.frame), false);
+    assert.equal(boot.errorCount, errors);
+  } finally {
+    for (const cleanup of cleanups) cleanup();
+    boot.close();
   }
 });

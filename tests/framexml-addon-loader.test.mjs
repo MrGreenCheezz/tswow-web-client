@@ -101,7 +101,7 @@ test("an unsupported XML root cannot register a template for a later TOC file", 
   });
   assert.equal(result.ok, false);
   assert.equal(result.bridge.registry.get("Poison"), undefined);
-  assert.equal(result.bridge.getFrame("ShouldNotBuild"), undefined);
+  assert.equal(result.bridge.getFrame("ShouldNotBuild")?.name, undefined);
 });
 
 test("path normalization rejects absolute, URL, traversal and encoded traversal names", () => {

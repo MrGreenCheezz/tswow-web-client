@@ -79,7 +79,7 @@ test("hyphenated TSWoW marker names are reported as already-loaded modules", asy
 test("load-on-demand add-on shares the boot VM and registry, and is idempotent", async () => {
   const boot = await bootWith(files());
   try {
-    assert.equal(boot.bridge.getFrame("TalentFrame"), undefined);
+    assert.equal(boot.bridge.getFrame("TalentFrame")?.name, undefined);
     assert.equal(boot.isAddonLoaded("Blizzard_TalentUI"), false);
 
     const first = await boot.loadAddon("blizzard_talentui");
@@ -132,7 +132,7 @@ test("a close during lazy add-on IO does not publish a partial module", async ()
   assert.equal(boot.isAddonLoaded("Blizzard_TalentUI"), false);
   releaseXml();
   await pending;
-  assert.equal(boot.bridge.getFrame("TalentFrame"), undefined,
+  assert.equal(boot.bridge.getFrame("TalentFrame")?.name, undefined,
     "late completion cannot publish a frame after VM teardown");
 });
 
@@ -185,7 +185,7 @@ test("MPQ Blizzard_TalentUI loads its exact LoD files into the boot registry", w
   });
   try {
     const inventory = await boot.load();
-    assert.equal(boot.bridge.getFrame("PlayerTalentFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined,
       "the base FrameXML TOC does not eagerly materialize the LoD talent window");
     const before = requests.length;
     const result = await boot.loadAddon("Blizzard_TalentUI");
@@ -249,7 +249,7 @@ test("construction does not read the LoD TOC, and missing/unsupported loads stay
     assert.equal(result.ok, false);
     assert.equal(result.status, "failed");
     assert.equal(bad.isAddonLoaded("Blizzard_TalentUI"), false);
-    assert.equal(bad.bridge.getFrame("Poison"), undefined);
+    assert.equal(bad.bridge.getFrame("Poison")?.name, undefined);
     const loadStatus = bad.vm.globalFunction("LoadAddOn");
     assert.deepEqual(bad.vm.call(loadStatus, ["Blizzard_TalentUI"], 2), [false, "FAILED"]);
     bad.vm.release(loadStatus);

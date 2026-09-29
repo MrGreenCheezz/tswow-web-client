@@ -14,10 +14,10 @@ import {
   loadSpellVisualKits, loadSpellVisuals, parseSpellVisualKits, parseSpellVisuals,
 } from "../dist/code/gateway/SpellVisual.js";
 import {
-  AREA_EFFECT_SIZE_MAX_GROWTH, CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED,
+  AREA_EFFECT_SIZE_MAX_GROWTH, CAST_END_GRACE_MS, CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED,
   MISSILE_MAX_SECONDS, areaEffectScale,
   expiredInstances, missileDirection, missilePoint, missileSeconds, planSpellAuraDone, planSpellAuraState, planSpellCastStart,
-  planSpellVisual, spellVisualTransformEuler, spellVisualTransformOffset,
+  planSpellVisual, planSpellVisualKitEvent, spellVisualTransformEuler, spellVisualTransformOffset,
 } from "../dist/code/browser/SpellVisuals.js";
 
 let dbcDirectory;
@@ -437,7 +437,9 @@ test("a cast plays now and its flash plays when the bolt gets there", () => {
   assert.equal(impact.startedAt, bolt.endsAt, "when the bolt arrives, not when it left");
   assert.equal(impact.endsAt, bolt.endsAt + IMPACT_KIT_MS);
 
-  assert.deepEqual(plan.animations, [{ guid: 1n, animation: 53, at: 1000, hold: 0, mode: "once" }]);
+  // The release belongs to the cast layer: it outranks a flinch and melee, and yields to an aura
+  // state (`UnitActionArbiter.ts`).
+  assert.deepEqual(plan.animations, [{ guid: 1n, animation: 53, at: 1000, hold: 0, mode: "once", layer: "cast" }]);
   assert.deepEqual(plan.sounds, []);
 });
 
@@ -464,11 +466,13 @@ test("precast and channel plans are real timed kits, and all impact phases coexi
     targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
     destination: { x: 12, y: 3, z: 0 },
   };
+  // A precast or channel stands until its end packet, bounded by CAST_END_GRACE_MS past the bar:
+  // the GO is sent on the first map update after the timer and lands after the local deadline.
   const start = planSpellCastStart(visual, { ...cast, castTime: 1500, channel: false }, 100);
   assert.equal(start.instances[0].startedAt, 100);
-  assert.equal(start.instances[0].endsAt, 1600);
+  assert.equal(start.instances[0].endsAt, 1600 + CAST_END_GRACE_MS);
   const channel = planSpellCastStart(visual, { ...cast, castTime: 2000, channel: true }, 100);
-  assert.equal(channel.instances[0].endsAt, 2100);
+  assert.equal(channel.instances[0].endsAt, 2100 + CAST_END_GRACE_MS);
   const plan = planSpellVisual(visual, cast, 1000);
   assert.equal(plan.instances.filter((one) => one.flight).length, 1, "zero speed still flies");
   const directImpacts = plan.instances.filter((one) =>
@@ -501,12 +505,12 @@ test("unit spell playback separates one-shots from held poses and preserves star
   const go = planSpellVisual(visual, cast, 1_000);
   assert.deepEqual(go.animations, [{
     guid: 1n, animation: 11, at: 1_000, hold: 0, mode: "once",
-    followUp: { animation: 22, mode: "once", hold: 0 },
+    followUp: { animation: 22, mode: "once", hold: 0 }, layer: "cast",
   }]);
   const start = planSpellCastStart(visual, { ...cast, castTime: 1_500 }, 2_000);
   assert.deepEqual(start.animations, [{
     guid: 1n, animation: 31, at: 2_000, hold: 0, mode: "once",
-    followUp: { animation: 32, mode: "hold", hold: 1_500 },
+    followUp: { animation: 32, mode: "hold", hold: 1_500 + CAST_END_GRACE_MS }, layer: "cast",
   }]);
   assert.equal(start.instances[0].fitToModel, undefined,
     "packet-owned precast lifetime is not extended by a model clip");
@@ -546,7 +550,85 @@ test("future impact animations carry their absolute arrival time", () => {
     caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
     targets: [{ guid: 2n, point: { x: 24, y: 0, z: 0 } }],
   }, 500);
-  assert.deepEqual(plan.animations, [{ guid: 2n, animation: 53, at: 1500, hold: 0, mode: "once" }]);
+  // An impact pose is a reaction: it never interrupts the target's own cast or aura state.
+  assert.deepEqual(plan.animations, [{ guid: 2n, animation: 53, at: 1500, hold: 0, mode: "once", layer: "reaction" }]);
+});
+
+/** A kit shaped like a real row: its two animation columns and one effect. */
+const posedKit = (startAnimation, animation, path = "Spells\\Fx.m2") => ({
+  startAnimation, animation, effects: [{ path, attachment: 34, scale: 1 }], sound: 0,
+});
+
+test("a kit animation column of 0 names no pose: DK impacts no longer stand their targets in Stand", () => {
+  const at = (x) => ({ x, y: 0, z: 0 });
+  const onTarget = { caster: 1n, casterPoint: at(0), targets: [{ guid: 2n, point: at(5) }] };
+  const onSelf = { caster: 1n, casterPoint: at(0), targets: [{ guid: 1n, point: at(0) }] };
+  const poses = (plan) => plan.animations.map((one) => `${one.guid}:${one.animation}:${one.layer}`);
+  // The shapes of the live rows (dataset DBC, 2026-09-28): Icy Touch 49909 casts 53 and its
+  // ImpactKit 10292 carries StartAnimID 0 / AnimID −1; Blood Presence 48266 has that impact kit
+  // alone; Corpse Explosion's damage row 50444 flinches its targets (9) and carries StartAnimID 0 in
+  // its ImpactAreaKit. Each 0 used to become a 2.67 s full-body Stand one-shot.
+  const icyTouch = { id: 49909, cast: posedKit(-1, 53), impact: posedKit(0, -1) };
+  assert.deepEqual(poses(planSpellVisual(icyTouch, onTarget, 0)), ["1:53:cast"]);
+  const bloodPresence = { id: 48266, impact: posedKit(0, -1) };
+  assert.deepEqual(poses(planSpellVisual(bloodPresence, onSelf, 0)), []);
+  const corpseExplosion = { id: 50444, impact: posedKit(-1, 9), impactArea: posedKit(0, -1) };
+  assert.deepEqual(poses(planSpellVisual(corpseExplosion, onTarget, 0)), ["2:9:reaction"]);
+  // Icebound Fortitude 48792: StateKit 10299 carries StartAnimID 0 alone.
+  const icebound = { id: 48792, state: posedKit(0, -1) };
+  assert.deepEqual(poses(planSpellAuraState(icebound, { guid: 1n, point: at(0) }, 0, 12_000)), []);
+  // A 0 lead-in in front of a real pose is dropped, not played first for its own 2.67 s.
+  const leadIn = { id: 1, cast: posedKit(0, 53) };
+  assert.deepEqual(planSpellVisual(leadIn, onTarget, 0).animations,
+    [{ guid: 1n, animation: 53, at: 0, hold: 0, mode: "once", layer: "cast" }]);
+  // Held Stand in a StateKit or ChannelKit is no pose either: the unit's own pose already is one.
+  assert.deepEqual(poses(planSpellAuraState({ id: 2, state: posedKit(-1, 0) }, { guid: 1n, point: at(0) }, 0)), []);
+  assert.deepEqual(poses(planSpellCastStart({ id: 3, channel: posedKit(-1, 0) },
+    { ...onSelf, castTime: 2_000, channel: true }, 0)), []);
+});
+
+test("area kits place their models but pose nobody", () => {
+  const visual = {
+    id: 5,
+    cast: posedKit(-1, 54, "Spells\\Cast.m2"),
+    instantArea: posedKit(-1, 55, "Spells\\InstantArea.m2"),
+    impactArea: posedKit(-1, 9, "Spells\\ImpactArea.m2"),
+    persistentArea: posedKit(-1, 16, "Spells\\PersistentArea.m2"),
+    durationMs: 4_000,
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [], destination: { x: 9, y: 0, z: 0 },
+  }, 0);
+  for (const path of ["InstantArea", "ImpactArea", "PersistentArea"]) {
+    assert.ok(plan.instances.some((one) => one.path.includes(path)), `${path} is still drawn`);
+  }
+  assert.deepEqual(plan.animations.map((one) => one.animation), [54],
+    "only the cast kit poses the caster; the area columns name no unit");
+});
+
+test("a channel whose ChannelKit names no pose holds its CastKit's pose for the channel", () => {
+  const cast = { caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [], castTime: 6_000, channel: true };
+  // Eagle Eye 6197 / Far Sight 6196: ChannelCastOmni on the cast kit, no ChannelKit pose.
+  const eagleEye = {
+    id: 6197, cast: posedKit(-1, 125, "Spells\\Cast.m2"), channel: posedKit(-1, -1, "Spells\\Channel.m2"),
+  };
+  const plan = planSpellCastStart(eagleEye, cast, 100);
+  assert.deepEqual(plan.animations, [{
+    guid: 1n, animation: 125, at: 100, hold: 6_000 + CAST_END_GRACE_MS, mode: "hold", layer: "cast",
+  }]);
+  assert.deepEqual(plan.instances.map((one) => one.path), ["Spells\\Channel.m2"],
+    "the cast kit's own models already played with SPELL_GO and are not drawn again");
+  // A channel kit with its own pose wins, and a precast never borrows the cast pose.
+  const drainLife = { id: 47857, cast: posedKit(-1, 124), channel: posedKit(-1, 124) };
+  assert.deepEqual(planSpellCastStart(drainLife, cast, 100).animations.map((one) => one.animation), [124]);
+  assert.deepEqual(planSpellCastStart({ id: 9, cast: posedKit(-1, 54) }, { ...cast, channel: false }, 100).animations,
+    []);
+});
+
+test("a scripted kit is a gesture and an impact kit a reaction", () => {
+  const target = { guid: 2n, point: { x: 0, y: 0, z: 0 } };
+  assert.equal(planSpellVisualKitEvent(posedKit(-1, 61), target, 0).animations[0].layer, "emote");
+  assert.equal(planSpellVisualKitEvent(posedKit(-1, 9), target, 0, true).animations[0].layer, "reaction");
 });
 
 test("a synthetic static target keeps effects but never asks unit 0 to animate", () => {

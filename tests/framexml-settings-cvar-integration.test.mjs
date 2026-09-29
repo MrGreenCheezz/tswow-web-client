@@ -114,7 +114,7 @@ test("ordinary MPQ FrameXML CVars share the Settings model", withClient, async (
     const showAllSetResult = callLua(boot, "__frameXmlProbeSetCVar",
       ["SHOWALLSPELLRANKS", "1"], 2);
     const unsupportedSetResult = callLua(boot, "__frameXmlProbeSetCVar",
-      ["Sound_AmbienceVolume", "0.25"], 2);
+      ["groundEffectDensity", "0.25"], 2);
     expectedCVar.set("Sound_SFXVolume", "0.75");
     expectedCVar.set("SHOWALLSPELLRANKS", "1");
 
@@ -130,7 +130,7 @@ test("ordinary MPQ FrameXML CVars share the Settings model", withClient, async (
         unsupported: unsupportedSetResult,
       },
       writes: host.writes,
-      unsupported: callLua(boot, "GetCVar", ["Sound_AmbienceVolume"])[0],
+      unsupported: callLua(boot, "GetCVar", ["groundEffectDensity"])[0],
     };
     const expected = {
       initial: expectedInitial,
@@ -147,7 +147,7 @@ test("ordinary MPQ FrameXML CVars share the Settings model", withClient, async (
       unsupported: "0.25",
     };
 
-    assert.equal(settingsCVar.set("Sound_AmbienceVolume", "0.25"), false,
+    assert.equal(settingsCVar.set("groundEffectDensity", "0.25"), false,
       "unsupported CVars must not create a Settings entry");
     assert.deepEqual(actual, expected,
       "stock GetCVar/GetCVarDefault/GetCVarBool/SetCVar are not wired to FrameXmlSettingsCVar");

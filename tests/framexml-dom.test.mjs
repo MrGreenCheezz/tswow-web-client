@@ -1047,6 +1047,55 @@ test("frame strata order the screen, and a button's state texture fills the butt
   renderer.destroy();
 });
 
+test("Lua-created microbutton state textures fill the button and preserve later authored geometry", async () => {
+  // MainMenuBarMicroButtons.lua creates these pictures via setters instead of XML declarations.
+  // Without default anchors a 32x64 image uses its intrinsic size and its button's CSS static
+  // position, placing most of the service icon below the action bar and the viewport.
+  const boot = new FrameXmlBoot({ exercise: false, provider: createFixtureProvider({
+    "interface/framexml/framexml.toc": "Micro.xml",
+    "interface/framexml/micro.xml": `<Ui><Frame name="Root" width="1024" height="768">
+      <Button name="Micro" width="28" height="58"><Anchors><Anchor point="BOTTOMLEFT"/></Anchors>
+        <Scripts><OnLoad>
+          self:SetNormalTexture("Interface\\\\Buttons\\\\UI-MicroButton-Spellbook-Up")
+          self:SetPushedTexture("Interface\\\\Buttons\\\\UI-MicroButton-Spellbook-Down")
+          self:SetDisabledTexture("Interface\\\\Buttons\\\\UI-MicroButton-Spellbook-Disabled")
+          self:SetHighlightTexture("Interface\\\\Buttons\\\\UI-MicroButton-Hilight")
+        </OnLoad></Scripts>
+      </Button>
+    </Frame></Ui>`,
+  }) });
+  let renderer;
+  try {
+    await boot.load();
+    const host = document.createElement("section");
+    renderer = new FrameXmlDomRenderer(host, { bridge: boot.bridge });
+    renderer.mount(boot.roots);
+    const button = boot.bridge.getFrame("Micro");
+    for (const state of ["NORMAL", "PUSHED", "DISABLED", "HIGHLIGHT"]) {
+      const texture = button.stateTextures.get(state);
+      assert.ok(texture, `${state} texture was created by the original Lua setter`);
+      const image = renderer.elementFor(texture);
+      assert.equal(image.style.left, "0%", `${state} begins at the button's left edge`);
+      assert.equal(image.style.top, "0%", `${state} begins at the button's top edge`);
+      assert.equal(image.style.width, "calc(100% - (0%) - (0%))", `${state} uses the button width`);
+      assert.equal(image.style.height, "calc(100% - (0%) - (0%))", `${state} uses the button height`);
+    }
+    const normal = button.stateTextures.get("NORMAL");
+    assert.equal(normal.texture, "Interface\\Buttons\\UI-MicroButton-Spellbook-Up");
+    assert.equal(boot.vm.execute(`
+      local texture = Micro:GetNormalTexture()
+      texture:ClearAllPoints()
+      texture:SetSize(18, 25)
+      texture:SetPoint("TOP", Micro, "TOP", 0, -28)
+      Micro:SetNormalTexture("replacement")
+    `, "@custom-state-layout").ok, true);
+    assert.strictEqual(button.stateTextures.get("NORMAL"), normal, "a path update retains the state texture");
+    assert.equal(renderer.elementFor(normal).style.width, "18px");
+    assert.equal(renderer.elementFor(normal).style.height, "25px");
+    assert.equal(renderer.elementFor(normal).style.top, "28px", "a later path update keeps authored anchors");
+  } finally { renderer?.destroy(); boot.close(); }
+});
+
 test("a button draws the one picture its state calls for, not all six at once", () => {
   const bridge = new FrameXmlUiBridge();
   const host = document.createElement("section");
@@ -1208,6 +1257,53 @@ test("Lua RegisterForClicks AnyUp and AnyDown dispatch real mouse events once pe
     assert.equal(boot.vm.getGlobal("ClickLog"), "", "disabled actions stay disabled");
     assert.deepEqual(boot.errors, []);
   } finally { renderer?.destroy(); boot.close(); }
+});
+
+test("registered buttons accept keyboard activation without duplicating mouse phases", () => {
+  const bridge = new FrameXmlUiBridge();
+  const loaded = bridge.loadAddon('<Ui><Button name="Activate"/></Ui>');
+  const frame = bridge.getFrame("Activate");
+  const calls = [];
+  bridge.SetScript(frame, "OnClick", (_self, button, down) => calls.push([button, down]));
+  bridge.update(frame, mutable => {
+    mutable.clickRegistrations.add("LEFTBUTTONDOWN");
+    mutable.clickRegistrations.add("ANYUP");
+  });
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge });
+  try {
+    renderer.mount(loaded.roots);
+    const button = renderer.elementFor(frame);
+    // Enter/Space and assistive activation emit a zero-detail click, without mouse events.
+    button.dispatchEvent({ type: "click", detail: 0, button: 0 });
+    assert.deepEqual(calls, [["LeftButton", true], ["LeftButton", false]]);
+    calls.length = 0;
+    button.dispatchEvent({ type: "mousedown", button: 0 });
+    button.dispatchEvent({ type: "mouseup", button: 0 });
+    button.dispatchEvent({ type: "click", detail: 1, button: 0 });
+    assert.deepEqual(calls, [["LeftButton", true], ["LeftButton", false]]);
+    bridge.update(frame, mutable => { mutable.enabled = false; });
+    calls.length = 0;
+    button.dispatchEvent({ type: "click", detail: 0, button: 0 });
+    assert.deepEqual(calls, [], "disabled keyboard actions remain disabled");
+  } finally { renderer.destroy(); }
+});
+
+test("noninteractive frames do not intercept controls in a standalone host", () => {
+  const bridge = new FrameXmlUiBridge();
+  const loaded = bridge.loadAddon(`<Ui><Frame name="Root"><Frames>
+    <MessageFrame name="Errors" frameStrata="HIGH"/>
+    <Button name="Close"/><EditBox name="Name"/>
+  </Frames></Frame></Ui>`);
+  const renderer = new FrameXmlDomRenderer(document.createElement("section"), { bridge });
+  try {
+    renderer.mount(loaded.roots);
+    assert.equal(renderer.elementFor(bridge.getFrame("Root")).style.pointerEvents, "none");
+    assert.equal(renderer.elementFor(bridge.getFrame("Errors")).style.pointerEvents, "none");
+    assert.equal(renderer.elementFor(bridge.getFrame("Close")).style.pointerEvents, "auto");
+    assert.equal(renderer.elementFor(bridge.getFrame("Name")).style.pointerEvents, "auto");
+    bridge.update(bridge.getFrame("Close"), frame => frame.setAttribute("enableMouse", "false"));
+    assert.equal(renderer.elementFor(bridge.getFrame("Close")).style.pointerEvents, "none");
+  } finally { renderer.destroy(); }
 });
 
 test("an EditBox is a box with a text field inside it, so its own regions can draw", () => {
@@ -1555,10 +1651,17 @@ test("addon tooltip descriptions wrap inside the frame and following lines grow 
     const second = renderer.elementFor(description);
     const third = renderer.elementFor(requirement);
     assert.equal(root.style.height, "auto", "a wrapped paragraph must expand the actual tooltip background");
-    assert.ok(parseFloat(root.style.width) <= 360, "a description uses the readable tooltip width");
+    // The box is the browser's own max-content width of its rows; a wrapped row contributes at
+    // most the readable wrap width (360 minus the 10-unit inset on each side) and fills the rest.
+    assert.equal(root.style.width, "max-content", "the tooltip is as wide as its rows, not an estimate");
+    assert.equal(second.style.maxWidth, "340px", "a description uses the readable tooltip width");
+    assert.equal(second.style.minWidth, "100%", "a description fills a box its unwrapped rows made wider");
     assert.equal(second.style.position, "relative", "following rows must flow below wrapped lines, not fixed 14px anchors");
     assert.equal(second.style.whiteSpace, "pre-wrap");
-    assert.equal(second.style.overflowWrap, "anywhere", "long unbroken names cannot escape the tooltip either");
+    assert.equal(second.style.overflowWrap, "break-word",
+      "words wrap at their boundaries, and a long unbroken name still cannot escape the tooltip");
+    assert.equal(renderer.elementFor(boot.bridge.getFrame("GameTooltipTextLeft1")).style.whiteSpace, "pre",
+      "an unwrapped title never wraps");
     assert.equal(third.style.gridRow, "3");
     boot.vm.execute('GameTooltip:SetText("Короткая подсказка")', "@short-tooltip");
     assert.equal(renderer.elementFor(description).hidden, true, "shorter tooltip content releases the old paragraph");

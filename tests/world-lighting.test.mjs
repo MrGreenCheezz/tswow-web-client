@@ -129,7 +129,7 @@ test("immersive lighting is one reversible bounded uniform in the existing world
   assert.equal(setWorldLightImmersiveStrength(uniforms, 20), 1);
   assert.equal(setWorldLightImmersiveStrength(uniforms, -20), 0);
   assert.match(WORLD_LIGHT_BODY, /wowImmersiveStrength/);
-  assert.match(WORLD_LIGHT_BODY, /wowCoolFill/);
+  assert.match(WORLD_LIGHT_BODY, /wowSoftFill/);
   assert.match(WORLD_LIGHT_BODY, /wowWarmKey/);
   assert.match(WORLD_LIGHT_BODY, /wowRim/);
   assert.match(WORLD_LIGHT_BODY, /if \( wowImmersiveStrength > 0\.0001 \)/,
@@ -170,7 +170,7 @@ test("applyWorldLight preserves an existing hook and key and removes three's BRD
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   assert.equal((shader.fragmentShader.match(/getShadow\(/g) ?? []).length, 1,
     "the stock lookup is removed before the authored lookup is inserted");
-  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v2:surface");
+  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v5:surface");
 });
 
 test("portrait clone removes only the world wrapper and keeps the pre-world hook and key", () => {
@@ -287,7 +287,7 @@ test("the terrain mode survives the splat hook that arrives after the base mater
   assert.match(shader.fragmentShader, /#define WOW_LIGHT_TERRAIN/);
   assert.match(shader.fragmentShader, /uniform sampler2DArray splatLayers/);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
-  assert.equal(material.customProgramCacheKey(), "world-light-r185-v2:terrain|terrain-splat");
+  assert.equal(material.customProgramCacheKey(), "world-light-r185-v5:terrain|terrain-splat");
 });
 
 test("renderer material policy hooks every lit world path and leaves authored flat paths alone", async () => {

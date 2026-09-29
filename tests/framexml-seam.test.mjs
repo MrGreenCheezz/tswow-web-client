@@ -265,12 +265,17 @@ test("the action bar vertical runs on the client's own corpus", withClient, asyn
   const inventory = await boot.load();
 
   // ---- what the subset costs, against the whole corpus' 335 files and 25,308 widgets ----
-  assert.ok(inventory.files.total <= 60, `files: ${inventory.files.total}`);
+  // The closure includes MoneyInputFrame, MirrorTimer, TutorialFrame and promoted GameTime
+  // with its stock relative Lua. Those last two files raise the old 67-file ceiling to 69.
+  // StackSplitFrame.xml/.lua (stock TOC line 49, loaded for the bag gate) sits inside this
+  // MultiActionBars prefix too: 2 more files, measured 71.
+  assert.ok(inventory.files.total <= 71, `files: ${inventory.files.total}`);
   assert.ok(inventory.files.total >= 30, `files: ${inventory.files.total}`);
   assert.equal(inventory.files.missing.length, 0);
   assert.equal(inventory.lua.failed, 0, "no file fails to load on the subset either");
   assert.ok(inventory.widgets.total >= 700, `widgets: ${inventory.widgets.total}`);
-  assert.ok(inventory.widgets.total <= 1600, `widgets: ${inventory.widgets.total}`);
+  // Includes the authored tutorial alert regions; the bound still rejects runaway trees.
+  assert.ok(inventory.widgets.total <= 1850, `widgets: ${inventory.widgets.total}`);
   // The ceiling that says the subset is a *clean* cut and not merely a short one.
   assert.ok(inventory.lua.errorsRaised <= 5, `errors raised: ${inventory.lua.errorsRaised}`);
 
@@ -356,10 +361,9 @@ test("the action bar vertical runs on the client's own corpus", withClient, asyn
 /**
  * The whole corpus with a world in it — the slice's own «not worse than F2» claim, pinned.
  *
- * `tests/framexml-corpus.test.mjs` measures the boot with **no** seam, which is F2's neutral world
- * plus F3's attributes and comes to 128 raises / 58 distinct — two and one more than F2, because
- * more of the interface now runs far enough to reach the host. This is the same corpus with the
- * canned seam attached, which is what `framexml.html` does by default, and it comes to 124 / 54.
+ * `tests/framexml-corpus.test.mjs` measures the boot with **no** seam. This is the same corpus
+ * with the canned world attached, as in `framexml.html`. The tighter ceiling protects the APIs
+ * now resolved by the live seam instead of retaining F2's historical 126 / 57 allowance.
  */
 test("the whole corpus with a world seam is better than F2 left it", withClient, async () => {
   const provider = await corpusProvider();
@@ -369,10 +373,12 @@ test("the whole corpus with a world seam is better than F2 left it", withClient,
   });
   const inventory = await boot.load();
   assert.equal(inventory.lua.failed, 0);
-  assert.ok(inventory.lua.errorsRaised <= 126,
-    `errors raised with a seam: ${inventory.lua.errorsRaised} (F2: 126)`);
-  assert.ok(inventory.errors.length <= 57,
-    `distinct failures with a seam: ${inventory.errors.length} (F2: 57)`);
+  assert.ok(inventory.lua.errorsRaised <= 30,
+    `errors raised with a seam: ${inventory.lua.errorsRaised} (current ceiling: 30)`);
+  assert.ok(inventory.errors.length <= 24,
+    `distinct failures with a seam: ${inventory.errors.length} (current ceiling: 24)`);
+  assert.equal(inventory.errors.filter((entry) => /unitpopup/.test(entry.file)).length, 0,
+    "stock unit menus resolve authoritative loot settings without nil arithmetic");
   // The two raises F2 named as F3's: `UnitLevel("player")` at MainMenuBarMicroButtons.lua:39.
   assert.equal(
     inventory.errors.filter((entry) => /mainmenubarmicrobuttons/.test(entry.file)).length, 0,

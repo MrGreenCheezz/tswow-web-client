@@ -199,6 +199,7 @@ const FIXTURE = {
   "Interface/GlueXML/GlueStrings.lua": `
     GlueScreenInfo = {};
     SEEN = {};
+    AUTH_UNKNOWN_ACCOUNT = "Неизвестная учетная запись";
     function SetGlueScreen(name) SEEN[#SEEN + 1] = "screen:" .. name; end
   `,
   "Interface/GlueXML/GlueParent.xml": `<Ui>
@@ -223,6 +224,32 @@ const evaluate = (runtime, expression) => {
   assert.equal(outcome.ok, true, `${expression}: ${outcome.error ?? ""}`);
   return runtime.vm.getGlobal("__result");
 };
+
+test("auth challenge code 4 uses the selected locale's stock Glue string and records the code", async () => {
+  const diagnostics = [];
+  let closed = false;
+  const runtime = await runtimeWith({
+    authUrl: "ws://fixture.invalid/auth",
+    connect: async () => ({
+      send() {},
+      async readExactly(length) {
+        assert.equal(length, 3);
+        return Uint8Array.of(0, 0, 4);
+      },
+      close() { closed = true; },
+    }),
+    onAuthDiagnostic: (code) => diagnostics.push(code),
+  });
+  try {
+    await runtime.api.login("NONEXISTENT", "irrelevant");
+    assert.equal(evaluate(runtime, "return SEEN[#SEEN]"),
+      "OPEN_STATUS_DIALOG/Неизвестная учетная запись");
+    assert.deepEqual(diagnostics, [4]);
+    assert.equal(closed, true);
+  } finally {
+    runtime.close();
+  }
+});
 
 test("EnterWorld hands the selected character to the host and nothing else", async () => {
   const canned = fakeGlueSession("charselect");
@@ -379,9 +406,9 @@ test("every path that used to leave the world half-way now routes through leaveW
   assert.match(source, /world\.onWorldError = \(error\) => \{[\s\S]{0,800}?leaveWorld\("connection-lost"/);
   // The failed enter, guarded so a newer attempt is not torn down by an older one's unwinding.
   assert.match(source,
-    /if \(generation === enterGeneration\) \{[\s\S]{0,160}?clearQuestLog\(\);[\s\S]{0,160}?leaveWorld\("enter-failed", message\);\s*\}/,
+    /if \(!entryLifecycle\.isCurrent\(generation\) \|\| game\.world !== world\) return;\s*hideLoadingScreen\(\);[\s\S]*?clearQuestLog\(\);\s*leaveWorld\("enter-failed", message\);/,
     "enter failure must clear quest state and leave only for the current generation");
-  assert.match(source, /const generation = \+\+enterGeneration;/);
+  assert.match(source, /const generation = entryLifecycle\.begin\(\);/);
   assert.equal((source.match(/leaveWorld\(/g) ?? []).length, 3,
     "exactly three ways out of a world, and no fourth hand-rolled one");
   // The old hand-rolled tail must be gone from the failure branch.

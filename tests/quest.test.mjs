@@ -10,6 +10,7 @@ import {
 } from "../dist/code/world/QuestProtocol.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
+import { questMapObjectiveMarkers, questMarkerProgress } from "../dist/code/browser/ui/QuestObjectiveMarkers.js";
 
 const GIVER = 0xf130000000000303n;
 
@@ -63,12 +64,45 @@ test("a quest description decodes, including the bit that means gameobject", () 
   assert.equal(quest.rewardMoney, 1200);
   assert.deepEqual(quest.rewardItems, [{ itemId: 117, count: 5 }]);
   assert.deepEqual(quest.rewardChoiceItems, [{ itemId: 2504, count: 1 }]);
-  assert.deepEqual(quest.itemObjectives, [{ itemId: 769, count: 8 }]);
+  assert.deepEqual(quest.itemObjectives, [{ slot: 0, itemId: 769, count: 8 }]);
   assert.equal(quest.objectives.length, 2);
-  assert.deepEqual(quest.objectives[0], { entry: 299, count: 10, gameObject: false, itemDrop: 0, text: "Лесной волк убит" });
+  assert.deepEqual(quest.objectives[0], { slot: 0, entry: 299, count: 10, gameObject: false, itemDrop: 0, text: "Лесной волк убит" });
   assert.equal(quest.objectives[1].entry, 1617, "the id is what is left after the flag comes off");
   assert.equal(quest.objectives[1].gameObject, true);
   assert.ok(Math.abs(quest.poi.x - -9450.5) < 0.01);
+});
+
+test("sparse quest objectives retain server slot identities for counters and POI markers", () => {
+  // QuestPackets.cpp writes all four NPC/GO and six item slots, including holes. The player
+  // update fields and quest_poi.ObjectiveIndex address those original slots.
+  const quest = parseQuestQueryResponse(writeQuest({
+    objectives: [
+      { entry: 0, count: 0, text: "Текст пустого нулевого слота" },
+      undefined,
+      { entry: 299, count: 10, text: "Третий слот" },
+    ],
+    items: [undefined, undefined, undefined, { itemId: 769, count: 8 }],
+  }));
+  assert.deepEqual(quest.objectives.map(({ slot, entry }) => [slot, entry]), [[2, 299]]);
+  assert.equal(quest.objectives[0].text, "Третий слот",
+    "objective text is indexed before the four wire slots are compacted");
+  assert.deepEqual(quest.itemObjectives.map(({ slot, itemId }) => [slot, itemId]), [[3, 769]]);
+
+  const [entry] = buildQuestLogView(
+    [{ slot: 0, questId: 62, state: 0, counters: [0, 0, 7, 0], timer: 0 }],
+    new Map([[62, quest]]), new Map([[769, 5]]),
+  );
+  assert.deepEqual(entry.objectives.map(({ poiIndex, have, need }) => [poiIndex, have, need]), [
+    [2, 7, 10],
+    [7, 5, 8],
+  ]);
+  const blobs = [2, 7].map((objectiveIndex) => ({
+    index: objectiveIndex, objectiveIndex, map: 0, worldMapAreaId: 1, floor: 0,
+    points: [{ x: 10, y: 20 }],
+  }));
+  const markers = questMapObjectiveMarkers([entry], new Map([[62, blobs]]));
+  assert.deepEqual(markers.map(({ kind, id }) => [kind, id]), [["creature", 299], ["item", 769]]);
+  assert.deepEqual(markers.map(questMarkerProgress), ["7 / 10", "5 / 8"]);
 });
 
 test("quest query keeps distinct display/cast spells and signed reward-or-required money", () => {

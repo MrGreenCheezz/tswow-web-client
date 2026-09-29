@@ -4,6 +4,15 @@ import test from "node:test";
 const { parseFrameXmlText, plainFrameXmlText, hasFrameXmlEscapes } =
   await import("../dist/code/browser/ui/framexml_compat/FrameXmlText.js");
 
+test("message links preserve payload and nested colours without exposing escape codes", () => {
+  assert.deepEqual(parseFrameXmlText("От |Hplayer:Игрок:1:SAY|h|cff00ff00[Игрок]|r|h: привет", true), [
+    { text: "От " },
+    { text: "[Игрок]", color: "#00ff00ff", hyperlink: "player:Игрок:1:SAY" },
+    { text: ": привет" },
+  ]);
+  assert.deepEqual(parseFrameXmlText("|Hitem:1|h[Предмет]|h", false), [{ text: "[Предмет]" }]);
+});
+
 // Every string in this file is one the client itself ships. They were read out of the live glue
 // screen, where they were being drawn as their own escape codes.
 
@@ -55,10 +64,11 @@ test("|n is a line break", () => {
 
 test("Russian |3-N grammar markers keep the supplied form without leaking syntax", () => {
   const header = "Человек, |3-6(Паладин) 69-го уровня";
+  // Case 6 comes only from the client's DeclinedWord dictionary; without one the word stays.
   assert.deepEqual(parseFrameXmlText(header), [{ text: "Человек, Паладин 69-го уровня" }]);
   assert.equal(plainFrameXmlText(header), "Человек, Паладин 69-го уровня");
-  // A truncated marker is not silently eaten; it remains visible for diagnosis.
-  assert.deepEqual(parseFrameXmlText("|3-6(Паладин"), [{ text: "|3-6(Паладин" }]);
+  // The client's `|3` pass (Wow.exe 0x481E90) takes the word to the end of an unterminated string.
+  assert.deepEqual(parseFrameXmlText("|3-6(Паладин"), [{ text: "Паладин" }]);
 });
 
 test("a hyperlink renders its text and drops its payload", () => {
@@ -85,6 +95,23 @@ test("an escape this build does not know keeps its own characters", () => {
   assert.deepEqual(parseFrameXmlText("|cff00ff00до конца"), [
     { text: "до конца", color: "#00ff00ff" },
   ]);
+});
+
+test("a |4 plural agrees with the number written before it", () => {
+  // GlobalStrings.lua:7319 SPELL_TIME_REMAINING_MIN, formatted with each Russian form's numbers.
+  const minutes = (count) => plainFrameXmlText(`Осталось: ${count} |4минута:минуты:минут;`);
+  assert.deepEqual([1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111].map(minutes), [
+    "Осталось: 1 минута", "Осталось: 2 минуты", "Осталось: 4 минуты", "Осталось: 5 минут",
+    "Осталось: 11 минут", "Осталось: 12 минут", "Осталось: 14 минут", "Осталось: 21 минута",
+    "Осталось: 22 минуты", "Осталось: 25 минут", "Осталось: 101 минута", "Осталось: 111 минут",
+  ]);
+  // Two forms are the English rule; the number may sit in an earlier colour run.
+  assert.equal(plainFrameXmlText("|cffffffff1|r |4hour:hours;"), "1 hour");
+  assert.equal(plainFrameXmlText("3 |4hour:hours;"), "3 hours");
+  // A combat line: the amount is the last number before the escape.
+  assert.equal(plainFrameXmlText("Игрок получает 150 |4единицу:единицы:единиц; урона."), "Игрок получает 150 единиц урона.");
+  // Unterminated, it is shown as written.
+  assert.equal(plainFrameXmlText("5 |4минута:минуты"), "5 |4минута:минуты");
 });
 
 test("plainFrameXmlText is every run joined", () => {

@@ -126,7 +126,7 @@ test("character atlas anisotropy is an opt-in account experiment", async () => {
   assert.equal(definition.group, "Графика");
   assert.equal(definition.kind, "boolean");
   assert.equal(definition.fallback, false);
-  assert.match(definition.hint ?? "", /A\/B/i);
+  assert.match(definition.hint ?? "", /нагрузку на видеокарту/i);
   assert.equal(defaultSettings().characterAtlasAnisotropy, false);
   assert.equal(parseSettings('{"characterAtlasAnisotropy":false}')?.characterAtlasAnisotropy, false);
   assert.equal(parseSettings('{"characterAtlasAnisotropy":true}')?.characterAtlasAnisotropy, true);
@@ -152,7 +152,7 @@ test("world integration confines shadow flags to ranked units and terrain receiv
   const admittedLoop = updateUnits.indexOf(admittedLoopText, admissionCall);
   const shadowCallText = "unitCastsEnhancedShadow(rank, distance, this.#lightingProfile)";
   const shadowCall = updateUnits.indexOf(shadowCallText, admittedLoop);
-  const distanceText = "const distance = Math.hypot(object.position.x - player.x, object.position.y - player.y);";
+  const distanceText = "const distance = hypot2(object.position.x - player.x, object.position.y - player.y);";
   const distanceRead = updateUnits.indexOf(distanceText);
   assert.ok(distanceRead >= 0 && candidatePush > distanceRead && admissionCall > candidatePush
     && admittedLoop > admissionCall && shadowCall > admittedLoop,
@@ -161,7 +161,7 @@ test("world integration confines shadow flags to ranked units and terrain receiv
   assert.equal(updateUnits.slice(admittedLoop, admittedLoop + admittedLoopText.length), admittedLoopText);
   assert.equal(updateUnits.slice(shadowCall, shadowCall + shadowCallText.length), shadowCallText);
   assert.match(updateUnits.slice(distanceRead, admissionCall),
-    /const distance = Math\.hypot\(object\.position\.x - player\.x, object\.position\.y - player\.y\);[\s\S]*candidates\.push\(\{[\s\S]*distance: Number\.isFinite\(distance\) \? distance : Number\.MAX_VALUE,/,
+    /const distance = hypot2\(object\.position\.x - player\.x, object\.position\.y - player\.y\);[\s\S]*candidates\.push\(\{[\s\S]*distance: Number\.isFinite\(distance\) \? distance : Number\.MAX_VALUE,/,
     "the candidate retains the finite distance derived from the unit/player positions");
   assert.match(world, /unit\.node\.traverse/);
   assert.match(world, /terrain\.mesh\.receiveShadow = shadows/);

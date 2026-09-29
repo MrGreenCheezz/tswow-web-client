@@ -437,9 +437,9 @@ test("П1 the scale paragraph names the aura the core names, and the count that 
   assert.match(comment, /seven hunter families carry exactly 1,0 there/);
 });
 
-test("П1 those numbers come back out of the DBCs they were taken from", withDataset, async () => {
-  // The paragraph above is prose; this is the measurement behind it, re-run. `EffectAura` is read
-  // over all three effect slots because a spell may carry the aura in any of them.
+test("П1 local scale aura columns match the wire layout independently of dataset size", withDataset, async (t) => {
+  // The paragraph above records a historical stock census. Modules can add spells; compare
+  // the named reader to the raw 3.3.5 layout instead of requiring that historical population.
   const { openDbcFile } = await import("../tools/dbc.mjs");
   const spell = await openDbcFile(dbcDirectory, "Spell");
   const slots = (wanted) => {
@@ -454,13 +454,25 @@ test("П1 those numbers come back out of the DBCs they were taken from", withDat
     }
     return { rows, effects };
   };
-  assert.equal(spell.records, 49842);
-  assert.deepEqual(slots(61), { rows: 517, effects: 517 }, "SPELL_AURA_MOD_SCALE");
-  assert.deepEqual(slots(239), { rows: 10, effects: 10 }, "SPELL_AURA_MOD_SCALE_2");
-  // Disjoint, so the union is the sum — which is what makes 527 the right number to write down.
-  assert.equal(517 + 10, 527);
-  assert.deepEqual(slots(231), { rows: 24, effects: 24 },
-    "SPELL_AURA_PROC_TRIGGER_SPELL_WITH_VALUE, the aura the old comment had mistaken for a scale");
+  const raw = await readFile(`${dbcDirectory}/Spell.dbc`);
+  assert.equal(raw.readUInt32LE(8), 234);
+  assert.equal(raw.readUInt32LE(12), 936);
+  for (const aura of [61, 239, 231]) {
+    let rows = 0;
+    let effects = 0;
+    for (let row = 0; row < raw.readUInt32LE(4); row++) {
+      let found = false;
+      for (let slot = 0; slot < 3; slot++) {
+        if (raw.readUInt32LE(20 + row * 936 + (95 + slot) * 4) === aura) {
+          effects++; found = true;
+        }
+      }
+      if (found) rows++;
+    }
+    assert.deepEqual(slots(aura), { rows, effects }, `EffectAura ${aura} raw-column census`);
+    assert.ok(rows > 0, `the local corpus exercises aura ${aura}`);
+    t.diagnostic(`aura ${aura}: ${rows} rows / ${effects} effects in ${spell.records} spells`);
+  }
 
   const family = await openDbcFile(dbcDirectory, "CreatureFamily");
   const round = (value) => Math.round(value * 100) / 100;

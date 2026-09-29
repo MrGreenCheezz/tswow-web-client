@@ -171,7 +171,9 @@ test("live PetFrame publishes pet identity, fields, aura and cast edges only whi
   fired.length = 0;
 
   events.emit("PET_BAR_CHANGED", { guid: petGuid });
-  assert.deepEqual(fired, [["UNIT_PET", "player"]]);
+  // PET_BAR_UPDATE is the bar packet's own edge (FrameXmlPetActionBarLive.ts), for PetActionBarFrame,
+  // PetPaperDollFrame and the pet spellbook; UNIT_PET is the pet unit's.
+  assert.deepEqual(fired, [["PET_BAR_UPDATE"], ["UNIT_PET", "player"]]);
 
   fired.length = 0;
   state.setField(petGuid, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 600);

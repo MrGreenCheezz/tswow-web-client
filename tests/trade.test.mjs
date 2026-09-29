@@ -12,6 +12,7 @@ import {
   buildSetTradeItem,
   parseTradeStatus,
   parseTradeStatusExtended,
+  tradeGoldToCopper,
   tradeStatusText,
 } from "../dist/code/world/TradeProtocol.js";
 import {
@@ -114,6 +115,9 @@ test("client trade packets match their handlers", () => {
   assert.deepEqual([...buildSetTradeItem(2, 255, 24)], [2, 255, 24]);
   assert.deepEqual([...buildClearTradeItem(2)], [2]);
   assert.deepEqual([...buildSetTradeGold(500)], [...u32(500)]);
+  assert.equal(tradeGoldToCopper(1), 10_000, "one gold in the UI is not one copper on the wire");
+  assert.equal(tradeGoldToCopper(0.0001), 1);
+  assert.equal(tradeGoldToCopper(1e9), 0x7fffffff, "the core caps money at signed 32-bit maximum");
 });
 
 test("duel packets decode", () => {

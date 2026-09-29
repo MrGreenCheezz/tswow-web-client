@@ -121,7 +121,7 @@ function fixture({ buttonOnLoad = true } = {}) {
   const seam = {
     merchantNumItems() { return 0; }, merchantItemInfo() {}, merchantItemLink() {},
     merchantItemMaxStack() { return 0; }, merchantItemCostInfo() { return [0, 0, 0]; },
-    merchantItemCostItem() {}, buybackNumItems() { return 0; }, buybackItemInfo() {},
+    merchantItemCostItem() {}, itemInfo() {}, buybackNumItems() { return 0; }, buybackItemInfo() {},
     buybackItemLink() {}, buyMerchantItem() {}, buybackItem() {}, closeMerchant() {},
     canMerchantRepair() { return false; }, repairAllCost() { return [0, false]; },
     canGuildBankRepair() { return false; }, inRepairMode() { return false; },

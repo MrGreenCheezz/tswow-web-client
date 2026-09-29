@@ -645,8 +645,10 @@ test("R4.1 remains offline and does not wire runtime ranges or the generator", a
     assert.doesNotMatch(source, /simplifySkinnedM2|m2-skinned-lod/i,
       "R4.1 low geometry must not be runtime/generator-wired yet");
   }
-  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*300/);
-  assert.match(renderer, /for \(let offsetX = -1; offsetX <= 1; offsetX\+\+\)/,
-    "near terrain ring remains 3x3");
+  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*400/);
+  const { TerrainStreamingWindow } = await import("../dist/code/browser/TerrainStreaming.js");
+  const window = new TerrainStreamingWindow();
+  assert.equal(window.update(0, 0, 0).visible.length, 9, "near terrain ring remains 3x3");
+  assert.equal(window.update(0, 0, 0, false).visible.length, 9, "formal capture keeps the same ring");
   assert.equal(createHash("sha1").update(MODEL_PATH).digest().length, 20);
 });

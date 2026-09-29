@@ -77,7 +77,9 @@ test("sibling-centred textures use their declared size while intrinsic pixels ar
     // applyGeometry temporarily removes the inline size. A real <img> then reports its intrinsic
     // (possibly texcoord-cropped) size until the authored 24px is restored.
     Object.assign(paintedIcon, { offsetLeft: 0, offsetTop: 0, offsetWidth: 56, offsetHeight: 56, offsetParent: element("Root") });
-    assert.equal(boot.vm.execute('Icon:SetSize(24, 24)', '@intrinsic-image-layout').ok, true);
+    // The mocked metrics changed without a widget change; a browser reports that through the
+    // bridge's touch() (a picture or font arrived). Repeating a value already set is not a change.
+    boot.bridge.touch();
     assert.equal(paintedIcon.style.left, "48px");
     assert.equal(paintedIcon.style.top, "18px");
   } finally { close(); }
@@ -90,7 +92,9 @@ test("GetEffectiveScale and sibling anchor measurements include nested ancestor 
     Object.assign(element("Root"), { offsetLeft: 0, offsetTop: 0, offsetWidth: 1000, offsetHeight: 800, offsetParent: renderer.container });
     Object.assign(element("Center"), { offsetLeft: 500, offsetTop: 400, offsetWidth: 200, offsetHeight: 100, offsetParent: element("Root") });
     Object.assign(element("Sibling"), { offsetLeft: 0, offsetTop: 0, offsetWidth: 10, offsetHeight: 10, offsetParent: element("Root") });
-    assert.equal(boot.vm.execute('Center:SetScale(0.5)', '@layout-measured').ok, true);
+    // The mocked metrics changed without a widget change; a browser reports that through the
+    // bridge's touch() (a picture or font arrived). Repeating a value already set is not a change.
+    boot.bridge.touch();
     assert.equal(element("Sibling").style.left, "555px");
     assert.equal(element("Sibling").style.top, "432px");
     Object.assign(element("Panel"), { offsetLeft: 100, offsetTop: 50, offsetWidth: 400, offsetHeight: 300, offsetParent: element("Root") });

@@ -175,12 +175,12 @@ const HUMAN_MALE_OPTIONS = {
 function creation(overrides = {}) {
   const calls = { created: [], dialogs: [], screens: [] };
   const model = new GlueCreation({
-    tables: () => ({ races: RACES, classes: CLASSES }),
+    tables: () => overrides.tables ?? ({ races: RACES, classes: CLASSES }),
     source: {
-      options: async (race, sex) => (race === 1 && sex === 0 ? HUMAN_MALE_OPTIONS : {
+      options: overrides.options ?? (async (race, sex) => (race === 1 && sex === 0 ? HUMAN_MALE_OPTIONS : {
         skins: [0, 1], faces: [0], hairStyles: [0], hairColors: [0], facialHairs: [],
         facesBySkin: { 0: [0], 1: [0] },
-      }),
+      })),
       startOutfit: async (race, classId, sex) => (race === 1 && classId === 1 && sex === 0
         ? [{ displayId: 2380, inventoryType: 17, slot: 15 }]
         : []),
@@ -198,6 +198,36 @@ function creation(overrides = {}) {
   });
   return { model, calls };
 }
+
+test("changing class reloads legal creation looks and removes a knight-only skin from a warrior", async () => {
+  const requested = [];
+  const knight = { id: 6, name: "Рыцарь смерти", fileName: "DEATHKNIGHT", classMask: 32,
+    powerType: 6, expansion: 2, playable: true };
+  const options = async (race, sex, classId) => {
+    requested.push([race, sex, classId]);
+    return classId === 6 ? HUMAN_MALE_OPTIONS : {
+      ...HUMAN_MALE_OPTIONS, skins: [0, 1], faces: [0, 1, 2],
+      facesBySkin: { 0: [0, 1, 2], 1: [0, 1, 2] },
+    };
+  };
+  const { model } = creation({
+    tables: { races: [{ ...RACES[0], classes: [1, 6] }], classes: [CLASSES[0], knight] },
+    options,
+  });
+  await model.refreshProfile(true);
+  assert.deepEqual([...model.offered(1)], [0, 1]);
+  model.selectClass(2);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([...model.offered(1)], [0, 1, 4]);
+  model.cycle(1, -1);
+  assert.equal(model.look.skin, 4);
+  model.selectClass(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([...model.offered(1)], [0, 1]);
+  assert.equal(model.look.skin, 0);
+  assert.deepEqual(requested, [[1, 0, 1], [1, 0, 6]],
+    "the warrior answer is cached while the death-knight class gets a separate lookup");
+});
 
 test("the enumerated lists are what CharacterCreate.lua unpacks in threes", () => {
   const { model } = creation();

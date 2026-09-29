@@ -9,7 +9,7 @@ test("unresolved auras explain their state without exposing a raw spell id", asy
 
   assert.match(auras, /function unresolvedAuraTooltip\(/,
     "the aura strip needs an explicit metadata-missing presentation");
-  assert.match(auras, /metadata \? spellTooltip\(aura\.spellId\) : unresolvedAuraTooltip\(aura\)/,
+  assert.match(auras, /metadata \? auraTooltip\(aura, metadata, removable\) : unresolvedAuraTooltip\(aura\)/,
     "the unresolved branch must not enter the generic spell tooltip that prints the id");
   assert.doesNotMatch(auras, /unknownLabel\(["']заклинание["'],\s*aura\.spellId\)/,
     "the visible aura label must not be Заклинание <id>");

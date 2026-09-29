@@ -116,10 +116,10 @@ const book = (ids) => ({
 });
 
 /** Stands in for `TalentClient`: one skill line per spell, which is what a book tab is. */
-const talents = (lines) => ({
+const talents = (lines, categoryId = 0) => ({
   ready: true,
   skillOfSpell: (id) => lines[id],
-  skillLine: (id) => ({ id, name: `Линия ${id}`, categoryId: 0, iconId: 0 }),
+  skillLine: (id) => ({ id, name: `Линия ${id}`, categoryId, iconId: 0 }),
 });
 
 /** What `lowerRankSpells` takes: metadata plus the skill line, which comes from `/dbc/talents`. */
@@ -129,7 +129,7 @@ const ranked = (id, name, rank, spellLevel, extra = {}) => ({
 
 const captions = () => spellbookList.children.map((button) => button.children[1].textContent);
 
-test("recipes and unlearned professions leave the book while class and racial passives remain", async () => {
+test("profession openers join General while recipes stay in the craft window", async () => {
   const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
   const fields = new Map([
     [UPDATE_FIELDS.PLAYER_SKILL_INFO_1_1.offset, 171],
@@ -137,7 +137,7 @@ test("recipes and unlearned professions leave the book while class and racial pa
   ]);
   try {
     game.spellMetadataClient = undefined;
-    game.world = book([133, 20598, 2259, 2018, 2330]);
+    game.world = book([133, 20598, 2259, 2018, 2330, 5504]);
     game.world.state.selfGuid = 1n;
     game.world.state.objects.set(1n, { guid: 1n, fields });
     game.spells = new Map([
@@ -146,15 +146,28 @@ test("recipes and unlearned professions leave the book while class and racial pa
       [2259, spell(2259, "Алхимия", "", false, { effects: [47, 118, 0], effectMiscValue: [0, 171, 0] })],
       [2018, spell(2018, "Кузнечное дело", "", false, { effects: [47, 118, 0], effectMiscValue: [0, 164, 0] })],
       [2330, spell(2330, "Слабое лечебное зелье", "", false, { tradeSkill: true, effects: [24, 0, 0] })],
+      // An item-creating class spell without TRADESPELL: the original keeps it in its class tab.
+      [5504, spell(5504, "Наколдовать воду", "", false, { tradeSkill: false, effects: [24, 0, 0] })],
     ]);
     game.talentData = {
-      ...talents({ 133: 8, 20598: 754, 2259: 171, 2018: 164, 2330: 171 }),
+      ...talents({ 133: 8, 20598: 754, 2259: 171, 2018: 164, 2330: 171, 5504: 8 }),
       skillLine(id) { return { id, name: `Навык ${id}`, categoryId: [171, 164].includes(id) ? 11 : 7, iconId: 0 }; },
     };
     selectSpellbookTab(undefined);
     setSpellbookSearch("");
     showSpells();
-    assert.deepEqual(captions().sort(), ["Алхимия", "Огненный шар", "Человеческий дух · пассивное"].sort());
+    // Openers sit in General and a click opens their craft window; recipes stay out, because they
+    // only cast from that window and their reagents live there. Neither gets a profession tab.
+    assert.deepEqual(captions().sort(), ["Алхимия", "Кузнечное дело"].sort());
+    const tabLabels = spellbookTabs.children[0].children.map((button) =>
+      button.children.map((child) => child.textContent).join(""));
+    assert.deepEqual(tabLabels, ["Общие (2)", "Навык 754 (1)", "Навык 8 (2)"],
+      "the profession category 11 line is not a tab of its own");
+    selectSpellbookTab(754);
+    assert.deepEqual(captions(), ["Человеческий дух · пассивное"], "the racial line keeps its own tab");
+    selectSpellbookTab(8);
+    assert.deepEqual(captions().sort(), ["Наколдовать воду", "Огненный шар"].sort(),
+      "Conjure Water creates an item and is not a recipe: the TRADESPELL attribute is the client's rule");
   } finally {
     game.world = undefined;
     game.talentData = undefined;
@@ -366,6 +379,39 @@ test("a settled metadata response may omit a custom row without leaving the book
     game.talentData = previousTalentData;
     game.world = undefined;
     game.spells = new Map();
+  }
+});
+
+test("a learned spell with no SkillLineAbility row lands in General instead of vanishing", () => {
+  const spellId = 991001;
+  const previousTalent = game.talentData;
+  try {
+    game.gatewayOrigin = undefined;
+    game.spells = new Map();
+    game.talentData = {
+      ready: true,
+      skillOfSpell: () => undefined,
+      spellAbilitiesOf: () => [],
+      skillLine: () => undefined,
+    };
+    game.world = {
+      knownSpells: [{ id: spellId, slot: 0 }], initialSpellsReceived: true,
+      cooldownRemaining: () => 0, cooldownState: () => undefined,
+      state: { selfGuid: undefined, objects: new Map() },
+    };
+    selectSpellbookTab(8);
+    showSpells();
+    assert.equal(spellbookList.children.length, 1, "the learned row is shown, not dropped for having no tab");
+    assert.equal(spellStatus.textContent, "1 заклинаний");
+    const tabLabels = spellbookTabs.children[0].children.map((button) =>
+      button.children.map((child) => child.textContent).join(""));
+    assert.deepEqual(tabLabels, ["Общие (1)"], "an empty class tab is not drawn and General takes the row");
+    assert.equal(spellbookTabs.children[0].children[0].className.split(" ").includes("is-active"), true);
+  } finally {
+    game.talentData = previousTalent;
+    game.world = undefined;
+    game.spells = new Map();
+    selectSpellbookTab(undefined);
   }
 });
 
@@ -651,7 +697,9 @@ test("К1 the book is one list: sorted, searchable, and shorter by the top rank 
       [168, spell(168, "Морозный доспех", "Уровень 1", false, { spellLevel: 1, spellClassMask: [34078720, 0, 0] })],
       [1459, spell(1459, "Магический интеллект", "Уровень 1", false, { spellLevel: 1, spellClassMask: [256, 0, 0] })],
     ]);
-    game.talentData = talents({ 133: 8, 143: 8, 42833: 8, 168: 6, 1459: 6 });
+    // A non-class category puts every line in General, which is the tab this test reads: the list
+    // behaviour under the rank switch, not the tab split.
+    game.talentData = talents({ 133: 8, 143: 8, 42833: 8, 168: 6, 1459: 6 }, 11);
     game.world = book([42833, 133, 1459, 143, 168]);
     setSpellbookRankFilter(true);
     showSpells();
@@ -690,7 +738,7 @@ test("К1 the book is one list: sorted, searchable, and shorter by the top rank 
       many.set(700 + index, spell(700 + index, `Заклинание ${index}`, "", false, { spellLevel: index }));
     }
     game.spells = many;
-    game.talentData = talents(Object.fromEntries([...many.keys()].map((id) => [id, 6])));
+    game.talentData = talents(Object.fromEntries([...many.keys()].map((id) => [id, 6])), 11);
     game.world = book([...many.keys()]);
     showSpells();
     assert.equal(spellbookList.children.length, 20);
@@ -720,9 +768,11 @@ test("К1 the tab strip is counted before the filter, and a tab that empties is 
     setSpellbookRankFilter(true);
     showSpells();
 
-    // `slotSiblings` puts the built-in strip in its own child of the container.
-    const tabs = () => spellbookTabs.children[0].children.map((button) => button.textContent);
-    assert.deepEqual(tabs(), ["Все (4)", "Линия 8 (3)", "Линия 6 (1)"],
+    // `slotSiblings` puts the built-in strip in its own child of the container. General is always
+    // tab one, even empty; the class lines follow in name order.
+    const tabs = () => spellbookTabs.children[0].children.map((button) =>
+      button.children.map((child) => child.textContent).join(""));
+    assert.deepEqual(tabs(), ["Общие (0)", "Линия 6 (1)", "Линия 8 (3)"],
       "the counts are of the unfiltered list, so the strip does not reshuffle under the switch");
 
     // A tab the character no longer has any spell in cannot stay selected: the book would show
@@ -731,8 +781,13 @@ test("К1 the tab strip is counted before the filter, and a tab that empties is 
     assert.deepEqual(captions(), ["Огненный шар"]);
     game.world = book([168]);
     showSpells();
-    assert.deepEqual(tabs(), ["Все (1)", "Линия 6 (1)"]);
-    assert.deepEqual(captions(), ["Морозный доспех"], "the book fell back to «Все» rather than to an empty tab");
+    assert.deepEqual(tabs(), ["Общие (0)", "Линия 6 (1)"]);
+    assert.deepEqual(captions(), ["Морозный доспех"], "the book fell back to a tab it actually has");
+    selectSpellbookTab(undefined);
+    const active = spellbookTabs.children[0].children
+      .filter((button) => button.className.split(" ").includes("is-active"));
+    assert.equal(active.length, 1, "exactly one tab is selected");
+    assert.deepEqual(captions(), ["Морозный доспех"], "an unset tab falls back to one that has spells");
   } finally {
     selectSpellbookTab(undefined);
     game.world = undefined;
@@ -811,6 +866,43 @@ test("К1 the range line: metres where the client writes metres, words where it 
       assert.equal(spellTooltip(id).lines.some((line) => / м$/.test(line)), false,
         `${id} prints words, not metres`);
     }
+  } finally {
+    game.spells = new Map();
+  }
+});
+
+test("the tooltip names duration, ground size, reagents and the reticle contract", () => {
+  const textOf = (lines) => lines.map((line) => typeof line === "string" ? { text: line } : line);
+  try {
+    game.world = undefined;
+    game.gatewayOrigin = undefined;
+    game.spells = new Map([
+      [133, spell(133, "Огненный шар", "Уровень 1", false, {
+        duration: 12000, effectRadius: [0, 0, 0], procChance: 0,
+      })],
+      [589, spell(589, "Слово Тьмы: Боль", "Уровень 1", false, {
+        duration: 180000, procChance: 0,
+      })],
+      [122, spell(122, "Ледяная стрела", "Уровень 1", false, {
+        effectRadius: [10, 0, 0], requiredTargetMode: 3,
+      })],
+      [11444, spell(11444, "Чародейский порошок", "", false, {
+        reagents: [{ itemId: 17031, count: 2 }], requiredToolNames: ["Нож"],
+      })],
+      [28730, spell(28730, "Чародейское сосредоточение", "", false, { procChance: 10 })],
+    ]);
+    const lines133 = textOf(spellTooltip(133).lines);
+    assert.ok(lines133.some((line) => line.text === "Длительность: 12 с" && line.tone === "muted"));
+    const lines589 = textOf(spellTooltip(589).lines);
+    assert.ok(lines589.some((line) => line.text === "Длительность: 3 мин" && line.tone === "muted"));
+    const lines122 = textOf(spellTooltip(122).lines);
+    assert.ok(lines122.some((line) => line.text === "Радиус поражения: 10 м" && line.tone === "muted"));
+    assert.ok(lines122.some((line) => line.text === "Цель: точка на земле" && line.tone === "spell"));
+    const lines11444 = textOf(spellTooltip(11444).lines);
+    assert.ok(lines11444.some((line) => line.text.startsWith("Реагенты: ") && line.tone === "gold"));
+    assert.ok(lines11444.some((line) => line.text === "Инструмент: Нож" && line.tone === "muted"));
+    const lines28730 = textOf(spellTooltip(28730).lines);
+    assert.ok(lines28730.some((line) => line.text === "Шанс срабатывания: 10%" && line.tone === "muted"));
   } finally {
     game.spells = new Map();
   }

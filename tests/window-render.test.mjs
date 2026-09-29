@@ -765,6 +765,70 @@ test("an input publishes what the player typed under the window's state", () => 
   }
 });
 
+test("EditBox onEnter runs on Enter with current state, never on blur", () => {
+  const window = parse(definition([
+    { id: "message", type: "EditBox", width: 160, height: 22,
+      onEnter: [{ type: "chat", text: { ru: "сообщение", en: "" } }],
+      anchor: anchor("TOPLEFT", "parent", "TOPLEFT", 0, 0) },
+  ]));
+  const seen = [];
+  const live = renderWindow(window, { runActions: (actions, context) => seen.push({ actions, context }) });
+  try {
+    const input = byWidget(live.element, "message").children[0];
+    input.value = "новый текст";
+    input.listeners.get("input")();
+    input.listeners.get("change")?.();
+    assert.equal(seen.length, 0, "leaving a changed field must not send a chat or command action");
+    let prevented = false;
+    const keydown = input.listeners.get("keydown");
+    keydown({ key: "Tab", preventDefault() { prevented = true; } });
+    assert.equal(seen.length, 0);
+    keydown({ key: "Enter", preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].context.state.message, "новый текст");
+    assert.equal(seen[0].context.widget, "message");
+    assert.equal(live.actionPresses.ran, 1);
+  } finally {
+    live.destroy();
+  }
+});
+
+test("multiline EditBox with onEnter also submits on Enter", () => {
+  const window = parse(definition([
+    { id: "message", type: "EditBox", multiline: true, width: 160, height: 55,
+      onEnter: [{ type: "chat", text: { ru: "сообщение", en: "" } }],
+      anchor: anchor("TOPLEFT", "parent", "TOPLEFT", 0, 0) },
+  ]));
+  let runs = 0;
+  const live = renderWindow(window, { runActions: () => { runs++; } });
+  try {
+    const keydown = byWidget(live.element, "message").children[0].listeners.get("keydown");
+    let prevented = false;
+    keydown({ key: "Enter", preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(runs, 1);
+    keydown({ key: "Enter", repeat: true, preventDefault() {} });
+    assert.equal(runs, 1, "holding Enter must not repeat the action");
+  } finally {
+    live.destroy();
+  }
+});
+
+test("multiline EditBox without onEnter leaves Enter to the browser", () => {
+  const window = parse(definition([
+    { id: "notes", type: "EditBox", multiline: true, width: 160, height: 55,
+      anchor: anchor("TOPLEFT", "parent", "TOPLEFT", 0, 0) },
+  ]));
+  const live = renderWindow(window);
+  try {
+    const input = byWidget(live.element, "notes").children[0];
+    assert.equal(input.listeners.has("keydown"), false);
+  } finally {
+    live.destroy();
+  }
+});
+
 test("a tick box publishes its own state before anyone has touched it", () => {
   const window = parse(definition([
     { id: "flag", type: "CheckButton", width: 120, height: 20, state: "flag", checked: true,

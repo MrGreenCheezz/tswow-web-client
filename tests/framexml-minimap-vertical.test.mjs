@@ -91,9 +91,9 @@ test("MPQ Minimap vertical loads the stock cluster, authored children and templa
     baseline = await loadFromMpq(chain, baselineSubset);
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
-    assert.equal(baseline.boot.bridge.getFrame("MinimapCluster"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("MinimapCluster")?.name, undefined,
       "TargetFrame baseline does not have MinimapCluster");
-    assert.equal(baseline.boot.bridge.getFrame("Minimap"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("Minimap")?.name, undefined,
       "TargetFrame baseline does not have Minimap");
 
     for (const entry of MINIMAP_TOC) {

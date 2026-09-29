@@ -103,9 +103,11 @@ test("a body is the lines that will run, and blank ones are not lines", () => {
 
 test("a conditional is refused out loud rather than half-run", () => {
   // The real client evaluates `[combat]` in a restricted environment this one has no equivalent
-  // of, so running the line anyway would fire the wrong half of the macro.
+  // of, so running the line anyway would fire the wrong half of the macro. A single `[@unit]`
+  // is the one bracket form that runs.
   const problems = macroProblems("Бой", "/cast [combat] Удар");
-  assert.ok(problems.some((line) => line.includes("скобках")));
+  assert.ok(problems.some((line) => line.includes("условия")));
+  assert.deepEqual(macroProblems("Бой", "/cast [@target] Удар"), []);
   assert.deepEqual(macroProblems("Танец", "/dance"), []);
   assert.ok(macroProblems("", "/dance").some((line) => line.includes("имя")));
   assert.ok(macroProblems("Пусто", "   ").some((line) => line.includes("пустое")));
@@ -161,16 +163,15 @@ test("every option has a definition and a default", () => {
   }
 });
 
-test("post-process leaves document opt-in rays and the shared direct-path condition", () => {
+test("post-process settings describe their visual effect and quality requirement", () => {
   const definition = settingDefinition("godRays");
-  assert.equal(definition?.label, "Faithful-plus: солнечные лучи");
+  assert.equal(definition?.label, "Солнечные лучи");
   assert.equal(definition?.kind, "boolean");
   assert.equal(definition?.fallback, false);
-  assert.match(definition?.hint ?? "", /качестве освещения 1 или 2/);
-  assert.match(definition?.hint ?? "", /независимо от полноэкранного свечения/);
+  assert.match(definition?.hint ?? "", /качества освещения 1 или 2/);
   assert.equal(settingBoolean(parseSettings('{"godRays":true}'), "godRays"), true);
   assert.match(settingDefinition("fullscreenGlow")?.hint ?? "",
-    /прямой путь.*солнечные лучи тоже выключены/);
+    /Мягкое сияние.*текущей зоны/);
 });
 
 test("applying settings pushes the god-rays leaf into the renderer", async () => {

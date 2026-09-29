@@ -170,14 +170,17 @@ test("MPQ ChatFrame routes canned chat and the real edit box through stock Lua",
     // SAY line ID is represented by stock ChatHistory as accessID/extraData; SYSTEM has no line ID.
     assert.deepEqual(messageFrame.messages, [
       {
-        text: "|Hplayer:Игрок:1:SAY|h[Игрок]|h говорит: [Common] Привет из canned seam",
+        // The canned player is Human: GetDefaultLanguage is its racial «всеобщий», so stock
+        // ChatFrame.lua:2901 prints no language bracket on its own SAY line.
+        text: "|Hplayer:Игрок:1:SAY|h[Игрок]|h говорит: Привет из canned seam",
         color: { r: 1, g: 1, b: 1, a: 1 },
         accessID: 1,
         extraData: 1,
       },
       {
+        // SYSTEM in the chat cache's default yellow, raised by the seam's UPDATE_CHAT_COLOR pass.
         text: "Canned chat seam ready",
-        color: { r: 1, g: 1, b: 1, a: 1 },
+        color: { r: 1, g: 1, b: 0, a: 1 },
       },
     ]);
 
@@ -196,7 +199,9 @@ test("MPQ ChatFrame routes canned chat and the real edit box through stock Lua",
     candidate.boot.bridge.Show(editBox);
     assert.equal(candidate.boot.bridge.fireScript(editBox, "OnEnterPressed"), true,
       "stock OnEnterPressed handles the edit box");
-    assert.deepEqual(sent, [["hello from edit box", FRAMEXML_CHAT_OUTBOUND_TYPES.SAY, undefined, ""]],
+    // ChatEdit_OnLoad keeps GetDefaultLanguage() in editBox.language (a name); the seam resolves
+    // it back to the Languages.dbc id, 7 («всеобщий») for the canned Human.
+    assert.deepEqual(sent, [["hello from edit box", FRAMEXML_CHAT_OUTBOUND_TYPES.SAY, 7, ""]],
       "the real ChatEdit_SendText path emits one SAY");
     assert.equal(editBox.text, "", "Enter clears the edit box");
     assert.equal(editBox.visible, false, "Enter hides the edit box");
@@ -205,7 +210,7 @@ test("MPQ ChatFrame routes canned chat and the real edit box through stock Lua",
     candidate.boot.bridge.Show(editBox);
     assert.equal(candidate.boot.bridge.fireScript(editBox, "OnEscapePressed"), true,
       "stock Escape handler runs");
-    assert.deepEqual(sent, [["hello from edit box", FRAMEXML_CHAT_OUTBOUND_TYPES.SAY, undefined, ""]],
+    assert.deepEqual(sent, [["hello from edit box", FRAMEXML_CHAT_OUTBOUND_TYPES.SAY, 7, ""]],
       "Escape does not send a second message");
     assert.equal(editBox.text, "", "Escape clears pending text");
     assert.equal(editBox.visible, false, "Escape hides the edit box");
@@ -248,10 +253,10 @@ test("MPQ ChatFrame routes canned chat and the real edit box through stock Lua",
       dispatch(chatMessage(CHAT_MSG_CHANNEL, "channel line", "Общий"), 4);
       assert.equal(liveMessages.messages.length, 4);
       assert.deepEqual(liveMessages.messages.map(({ text }) => text), [
-        "|Hchannel:GUILD|h[Гильдия]|h |Hplayer:Alice:1:GUILD|h[Alice]|h: [Common] guild line",
-        "|Hchannel:PARTY|h[Группа]|h |Hplayer:Alice:2:PARTY|h[Alice]|h: [Common] party line",
-        "|Hplayer:Alice:3:WHISPER:ALICE|h[Alice]|h шепчет: [Common] whisper line",
-        "|Hchannel:channel:1|h[1. Общий]|h |Hplayer:Alice:4:CHANNEL:1|h[Alice]|h: [Common] channel line",
+        "|Hchannel:GUILD|h[Гильдия]|h |Hplayer:Alice:1:GUILD|h[Alice]|h: [всеобщий] guild line",
+        "|Hchannel:PARTY|h[Группа]|h |Hplayer:Alice:2:PARTY|h[Alice]|h: [всеобщий] party line",
+        "|Hplayer:Alice:3:WHISPER:ALICE|h[Alice]|h шепчет: [всеобщий] whisper line",
+        "|Hchannel:channel:1|h[1. Общий]|h |Hplayer:Alice:4:CHANNEL:1|h[Alice]|h: [всеобщий] channel line",
       ]);
       for (let index = 2; index <= 10; index += 1) {
         assert.deepEqual(frame(liveCandidate.boot, `ChatFrame${index}`).messageFrame.messages, [],

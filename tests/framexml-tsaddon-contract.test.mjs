@@ -3,8 +3,9 @@ import test from "node:test";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { FrameXmlBoot } from "../dist/code/browser/framexml/FrameXmlBoot.js";
 import { discoverFrameXmlAddonEntrypoints } from "../dist/code/browser/framexml/FrameXmlAddonEntrypoints.js";
+import { defaultSettings, parseSettings } from "../dist/code/browser/ui/SettingsModel.js";
 
-function bootFor(files, library = []) {
+function bootFor(files, library = [], includeActiveTsAddons = true) {
   return new FrameXmlBoot({
     provider: createFixtureProvider({
       "interface/framexml/framexml.toc": [
@@ -22,12 +23,42 @@ function bootFor(files, library = []) {
       ...files,
     }),
     subset: ["GlobalStrings.lua"],
-    includeActiveTsAddons: true,
+    includeActiveTsAddons,
     exercise: false,
   });
 }
 
 const root = "interface/framexml/tsaddons/author-new-module/addon/";
+
+test("disabled TSWoW addons execute neither the shared library nor module scripts and can be enabled again", async () => {
+  assert.equal(defaultSettings().tswowAddons, false);
+  assert.equal(parseSettings('{"showFps":true}').tswowAddons, false,
+    "a pre-existing settings blob starts with addons disabled");
+  const files = {
+    "interface/framexml/tsaddons/lib/probe.lua": "AddonLibraryStarted = true",
+    [root + "addon.xml"]: '<Ui><Script file="addon.lua"/></Ui>',
+    [root + "addon.lua"]: `
+      AddonModuleStarted = true
+      CreateFrame("Frame", "AddonProbeFrame")
+      SLASH_ADDONPROBE1 = "/addonprobe"
+      SlashCmdList.ADDONPROBE = function() end
+    `,
+  };
+  for (const enabled of [false, true]) {
+    const boot = bootFor(files, ["TSAddons/lib/probe.lua"], enabled);
+    let entrypoints;
+    try {
+      await boot.load();
+      assert.equal(boot.vm.getGlobal("AddonLibraryStarted") === true, enabled);
+      assert.equal(boot.vm.getGlobal("AddonModuleStarted") === true, enabled);
+      assert.equal(boot.bridge.getFrame("AddonProbeFrame") !== undefined, enabled);
+      assert.equal(boot.isAddonLoaded("author-new-module"), enabled);
+      entrypoints = discoverFrameXmlAddonEntrypoints(boot);
+      assert.equal(entrypoints.commands.some(command => command.name === "addonprobe"), enabled);
+      assert.deepEqual(boot.errors, []);
+    } finally { entrypoints?.close(); boot.close(); }
+  }
+});
 
 test("a slash command publishes one completed UI mutation instead of repainting every setter", async () => {
   const boot = bootFor({

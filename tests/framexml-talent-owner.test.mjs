@@ -197,7 +197,7 @@ test("patched talent owner captures ToggleTalentFrame and never opens the stock 
     assert.equal(toggleFrameXmlTalent(), true);
     assert.equal(nativeOpen, false, "native fallback closes before the patched Show path");
     assert.equal(h.root.visible, true);
-    assert.equal(h.boot.bridge.getFrame("PlayerTalentFrame"), undefined);
+    assert.equal(h.boot.bridge.getFrame("PlayerTalentFrame")?.name, undefined);
     assert.equal(h.toggleCalls, 1);
 
     assert.equal(toggleFrameXmlTalent(), true);

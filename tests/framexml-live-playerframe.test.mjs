@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// World cast events have two subscribers per attach: the player cast bar and the arena opponents' cast
+// bars (FrameXmlArena.ts). The checks below are about duplicates on re-attach and a clean detach.
+const CAST_SUBSCRIBERS = 2;
+
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const {
   FRAMEXML_POWER_EVENTS,
@@ -143,15 +147,32 @@ test("LiveWorldSeam mirrors level notifications and detaches every subscription"
   fired.length = 0;
 
   store.emit("UNIT_FIELD_LEVEL", object, 0x10n);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.unitLevel, "player"]],
+    "a bare level field (login, a GM command) is UNIT_LEVEL only: ChatFrame.lua:2567 formats PLAYER_LEVEL_UP's level");
+
+  // SMSG_LEVELUP_INFO precedes its level (Player::GiveLevel); the event waits for the level field
+  // and measures the talent points InitTalentForLevel wrote beside it.
+  const { fields } = object;
+  fields.set(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset, 10);
+  fields.set(UPDATE_FIELDS.PLAYER_CHARACTER_POINTS1.offset, 0);
+  fired.length = 0;
+  world.events.emit("LEVEL_UP", { level: 11, healthDelta: 22, powerDelta: [30, 0, 0, 0, 0, 0, 0], statDelta: [1, 1, 2, 1, 1] });
+  assert.deepEqual(fired, [], "the packet precedes the level it announces");
+  fields.set(UPDATE_FIELDS.UNIT_FIELD_LEVEL.offset, 11);
+  fields.set(UPDATE_FIELDS.PLAYER_CHARACTER_POINTS1.offset, 1);
+  store.emit("UNIT_FIELD_LEVEL", object, 0x10n);
   assert.deepEqual(fired, [
-    [FRAMEXML_SEAM_EVENTS.levelUp],
     [FRAMEXML_SEAM_EVENTS.unitLevel, "player"],
-  ]);
+    [FRAMEXML_SEAM_EVENTS.levelUp, 11, 22, 30, 1, 1, 1, 2, 1, 1],
+  ], "level, health, mana, talent points, then strength, agility, stamina, intellect, spirit");
+  fired.length = 0;
+  store.emit("UNIT_FIELD_LEVEL", object, 0x10n);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.unitLevel, "player"]], "announced once");
   for (const field of ["UNIT_FIELD_HEALTH", "UNIT_FIELD_MAXHEALTH", "UNIT_FIELD_LEVEL", "PLAYER_XP"]) {
     assert.ok(store.listeners.has(field), `${field} keeps a live player-field subscription`);
   }
   assert.ok(store.listeners.size >= 4, "newer player-frame fields may add subscriptions");
-  assert.equal(world.events.listenerCount("SPELL_CAST_START"), 1);
+  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
 
   seam.detach();
   fired.length = 0;
@@ -165,7 +186,7 @@ test("LiveWorldSeam mirrors level notifications and detaches every subscription"
     assert.ok(store.listeners.has(field), `${field} is restored on reattach`);
   }
   assert.ok(store.listeners.size >= 4, "reattach restores all current player-field subscriptions");
-  assert.equal(world.events.listenerCount("SPELL_CAST_START"), 1,
+  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS,
     "reattach does not leak packet listeners");
   seam.detach();
 });

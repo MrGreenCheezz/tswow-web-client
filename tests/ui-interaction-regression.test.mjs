@@ -80,6 +80,6 @@ test("active unresolved auras are retried and repainted when metadata later beco
     "the server-only Pursuit of Justice aura must inherit its client-visible owner's metadata");
   assert.match(metadata, /metadata\.set\(effectId,\s*\{\s*\.\.\.owner,\s*id:\s*effectId\s*\}\)/,
     "a linked effect must be returned under the aura id requested by the browser");
-  assert.match(client, /\/dbc\/spells\?ids=\$\{[^}]+\}&v=10/,
-    "the current recipe metadata version also invalidates cached empty v=8 linked-aura responses");
+  assert.match(client, /\/dbc\/spells\?ids=\$\{[^}]+\}&v=13/,
+    "the current targeting-contract metadata version also invalidates cached empty v=8 linked-aura responses");
 });

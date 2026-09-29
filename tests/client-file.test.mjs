@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { CLIENT_FILE_EXTENSIONS, clientFileContentType, validClientFilePath } from "../dist/code/gateway/Gateway.js";
+import { validClientFilePath as generatorValidClientFilePath } from "../tools/generate-client-file.mjs";
 import { MAX_ASSET_PATH } from "../dist/code/gateway/AssetPath.js";
+import { tswowInstall } from "../tools/paths.mjs";
 
 let archives;
 try {
@@ -28,6 +33,14 @@ test("/client/file serves an interface and nothing else", () => {
   // A module author names files in their own language, and it is their own patch directory this
   // reads out of — the same reason `AssetPath` is Unicode rather than ASCII.
   assert.equal(validClientFilePath("Interface\\Модуль\\Окно.xml"), true);
+  // WoW add-on folders and files can begin with `!`; the selected client actually ships both.
+  assert.equal(validClientFilePath("Interface\\AddOns\\!WCollectionsLoader\\!WCollectionsLoader.toc"), true);
+  assert.equal(validClientFilePath("Interface\\AddOns\\WCollections\\Core\\!Util.lua"), true);
+  for (const path of [
+    "Interface\\AddOns\\!WCollectionsLoader\\!WCollectionsLoader.toc",
+    "Interface\\AddOns\\WCollections\\Core\\!Util.lua",
+    "Interface\\..\\!secret.lua",
+  ]) assert.equal(generatorValidClientFilePath(path), validClientFilePath(path), path);
 
   // Everything else in the archives. These are not hypotheticals: the chain this route reads
   // includes real directories on disk that a tswow build writes into, so a DBC, a map and the
@@ -58,6 +71,7 @@ test("/client/file serves an interface and nothing else", () => {
   assert.equal(validClientFilePath("\\\\server\\share\\AccountLogin.lua"), false);
   assert.equal(validClientFilePath("/etc/passwd.lua"), false);
   assert.equal(validClientFilePath("Interface\\GlueXML\\Account\u0000Login.lua"), false);
+  assert.equal(validClientFilePath("Interface\\..\\!secret.lua"), false);
   assert.equal(validClientFilePath(""), false);
   assert.equal(validClientFilePath(`${"a".repeat(MAX_ASSET_PATH - 4)}.lua`), true);
   assert.equal(validClientFilePath(`${"a".repeat(MAX_ASSET_PATH - 3)}.lua`), false);
@@ -76,14 +90,24 @@ test("the two content types are the ones the bytes actually are", () => {
   assert.deepEqual([...CLIENT_FILE_EXTENSIONS], ["lua", "xml", "toc", "ttf"]);
 });
 
-test("GlueXML comes out of the patch chain the game reads, not the locale archive", withClient, async () => {
+test("GlueXML comes out of the patch chain the game reads, not the locale archive", withClient, async (t) => {
   // The whole reason this route resolves through `tools/mpq.mjs` instead of opening an archive.
   // This server's login screen is a tswow module whose assets are a *directory* named
-  // `patch-ruRU-F.MPQ`, and the lettered patches outrank every locale archive — so the file the
-  // route hands over has to be the module's, not Blizzard's. Reading the stock archive instead
-  // would run the wrong login screen against the right account flow, with nothing to say why.
-  assert.equal(await archives.locate("Interface\\GlueXML\\GlueXML.toc"), "patch-ruRU-F.MPQ");
-  assert.equal(await archives.locate("Interface\\GlueXML\\AccountLogin.lua"), "patch-ruRU-F.MPQ");
+  // `patch-ruRU-<letter>.MPQ`; the installer may assign a different letter when modules change.
+  // Check the resolved file's actual junction target, so an unrelated later patch cannot pass.
+  const moduleAssets = join(tswowInstall(), "modules", "LoginScreenModule", "assets");
+  if (!existsSync(moduleAssets)) {
+    t.skip("LoginScreenModule is not installed with this client");
+    return;
+  }
+  for (const path of ["Interface\\GlueXML\\GlueXML.toc", "Interface\\GlueXML\\AccountLogin.lua"]) {
+    const source = await archives.sourceOf(path);
+    assert.match(source?.name ?? "", /^patch-(?:[a-z]{4}-)?[a-z]\.mpq$/i, `${path} must come from a lettered patch`);
+    assert.equal(source.kind, "directory", `${path} must come from the module's loose overlay`);
+    const expected = join(moduleAssets, ...path.split("\\"));
+    assert.equal((await realpath(source.file)).toLowerCase(), (await realpath(expected)).toLowerCase(),
+      `${path} must resolve to LoginScreenModule's installed asset`);
+  }
   // And the other half of the ranking: what the module does not override falls to tswow's own
   // build directory, above the locale archives that also carry it. `locale-ruRU.MPQ` holds 50
   // GlueXML entries and wins none of them.

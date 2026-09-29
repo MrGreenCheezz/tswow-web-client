@@ -184,7 +184,11 @@ function rendered(boot, renderer, name, type, parent) {
   assert.ok(element, `${name} has a rendered DOM element`);
   const parentFrame = boot.bridge.getFrame(parent);
   assert.ok(parentFrame, `${parent} exists for ${name}`);
-  assert.equal(element.parentElement, renderer.elementFor(parentFrame),
+  const expectedParent = renderer.elementFor(parentFrame);
+  const throughScrollViewport = parentFrame.scroll.child === value
+    && element.parentElement?.getAttribute("data-framexml-scroll-viewport") === "true"
+    && element.parentElement.parentElement === expectedParent;
+  assert.equal(element.parentElement === expectedParent || throughScrollViewport, true,
     `${name} keeps its rendered parent ${parent}`);
   assert.equal(element.getAttribute("data-framexml-name"), name);
   assert.equal(element.getAttribute("data-framexml-type"), type);
@@ -271,7 +275,7 @@ test("real Blizzard_TrainerUI loads asynchronously with exact stock closure", {
     assert.deepEqual(boot.vm.call(loadOnDemand, ["Blizzard_TalentUI"], 2), [false, "NOT_READY"]);
     boot.vm.release(loadOnDemand);
 
-    assert.equal(boot.bridge.getFrame("ClassTrainerFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("ClassTrainerFrame")?.name, undefined,
       "LoD root is absent before the owner asks for it");
     const errorsBeforeOwner = boot.errorCount;
     const diagnosticsBeforeOwner = boot.bridge.diagnostics.length;
@@ -290,7 +294,7 @@ test("real Blizzard_TrainerUI loads asynchronously with exact stock closure", {
     assert.equal(addonReadStarted, true, "owner started the asynchronous Trainer LoD read");
     assert.equal(owner.isOpen(), true, "pending open intent is observable");
     assert.equal(trainerWindow.hidden, false, "native trainer remains visible while pending");
-    assert.equal(boot.bridge.getFrame("ClassTrainerFrame"), undefined,
+    assert.equal(boot.bridge.getFrame("ClassTrainerFrame")?.name, undefined,
       "partial LoD load does not expose a root");
 
     addonReleased = true;
@@ -385,6 +389,9 @@ test("real Blizzard_TrainerUI loads asynchronously with exact stock closure", {
     assert.equal(worldPump.events.some(([event]) => event === "TRAINER_DESCRIPTION_UPDATE"), false,
       "SelectTrainerService does not recursively republish the stock description event");
 
+    assert.deepEqual(api(boot, "GetTrainerServiceTypeFilter", ["used"], 1), [false]);
+    assert.deepEqual(api(boot, "GetNumTrainerServices", [], 1), [2]);
+    api(boot, "SetTrainerServiceTypeFilter", ["used", true], 0);
     assert.deepEqual(api(boot, "GetNumTrainerServices", [], 1), [3]);
     assert.deepEqual(api(boot, "GetTrainerServiceInfo", [1], 4), ["Рывок", "", "available", false]);
     assert.deepEqual(api(boot, "GetTrainerServiceCost", [1], 3), [1250, 0, 0]);

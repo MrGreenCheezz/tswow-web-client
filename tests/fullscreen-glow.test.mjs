@@ -242,11 +242,11 @@ test("the post-process leaves decide the path, and OFF/OFF releases the buffers"
   const beginAt = rendererSource.indexOf("#beginFullscreenGlow(): GlowChainTargets | undefined {");
   assert.ok(beginAt > 0, "the chain's entry point must exist");
   const begin = rendererSource.slice(beginAt, rendererSource.indexOf("#composeFullscreenGlow(", beginAt));
-  assert.match(begin, /if \(!this\.#fullscreenGlowEnabled && !this\.#godRaysActive\(\)\) return undefined;/,
-    "both leaves are read before any target is bound, so OFF/OFF is the direct path");
+  assert.match(begin, /if \(!this\.#fullscreenGlowEnabled && !this\.#godRaysActive\(\) && !this\.#cinematic\.active\) return undefined;/,
+    "every post leaf is read before any target is bound, so all OFF is the direct path");
   assert.equal(begin.includes("#glowStrength"), false,
     "the authored strength must not decide which pipeline the frame takes");
-  const guard = begin.indexOf("if (!this.#fullscreenGlowEnabled && !this.#godRaysActive()) return undefined;");
+  const guard = begin.indexOf("if (!this.#fullscreenGlowEnabled && !this.#godRaysActive() && !this.#cinematic.active) return undefined;");
   const bind = begin.indexOf("this.#renderer.setRenderTarget(targets.scene);");
   assert.ok(guard >= 0 && bind > guard,
     "no render target is bound at all on the direct path");
@@ -254,7 +254,7 @@ test("the post-process leaves decide the path, and OFF/OFF releases the buffers"
   const setter = rendererSource.slice(
     rendererSource.indexOf("  setFullscreenGlow(enabled: boolean): void {"),
     rendererSource.indexOf("/** Restore the same neutral sky/light state"));
-  assert.match(setter, /if \(!next && !this\.#godRaysActive\(\)\) this\.#disposeFullscreenGlowTargets\(\);/,
+  assert.match(setter, /if \(!next && !this\.#godRaysActive\(\) && !this\.#cinematic\.active\) this\.#disposeFullscreenGlowTargets\(\);/,
     "turning glow off gives the video memory back unless the shafts still own the shared capture");
 
   // Glow retains its three submissions in the one order that works. The optional radial pass then
@@ -272,7 +272,8 @@ test("the post-process leaves decide the path, and OFF/OFF releases the buffers"
     "uniforms.direction.value.set(GLOW_BLUR_SPREAD / targets.halfWidth, 0);",
     "this.#renderer.setRenderTarget(targets.blurB);",
     "uniforms.direction.value.set(0, GLOW_BLUR_SPREAD / targets.halfHeight);",
-    "const rayStrength = this.#prepareGodRays(targets);",
+    // Under the cinematic chain the classic radial pass is skipped (CinematicPost draws the shafts).
+    "const rayStrength = this.#cinematic.active ? 0 : this.#prepareGodRays(targets);",
     "quad.material = this.#glowPasses.godRays;",
     "this.#renderer.setRenderTarget(targets.blurB);",
     "uniforms.strength.value = this.#fullscreenGlowEnabled ? this.#glowStrength : 0;",
@@ -453,7 +454,7 @@ test("the reversibility checklist is wired end to end", async () => {
     read("LiveFormalRenderBenchmarkHost.ts"), read("FormalRenderBenchmarkConsole.ts"), read("main.ts"),
   ]);
 
-  assert.match(model, /id: "fullscreenGlow", label: "Полноэкранное свечение", group: "Мир", kind: "boolean", fallback: true,/,
+  assert.match(model, /id: "fullscreenGlow", label: "Полноэкранное свечение", group: "Эффекты", kind: "boolean", fallback: true,/,
     "the leaf exists and is ON by default — the owner asked for the WoW look");
   assert.match(settings, /setFullscreenGlow\?\.\(settingBoolean\(values, "fullscreenGlow"\)\)/,
     "the account's value is pushed into the renderer like every other graphics leaf");

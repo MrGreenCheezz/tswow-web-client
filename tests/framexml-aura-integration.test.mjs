@@ -133,10 +133,14 @@ test("MPQ BuffFrame drives filtered aura buttons, duration, updates, removal and
     assert.equal(buffFrame.visible, true, "BuffFrame is live");
     assert.equal(buffFrame.parent?.name, "UIParent", "player auras remain owned by the screen root");
     assert.notEqual(buffFrame.parent?.name, "TargetFrame", "player auras never follow the target frame");
+    // The canned seam carries the stock TemporaryEnchantFrame's one main-hand imbue
+    // (FrameXmlHudMechanicsCanned.ts). With an enchant up, TemporaryEnchantFrame_Hide — the only
+    // path that re-anchors BuffFrame to ConsolidatedBuffs (BuffFrame.lua:390) — never runs, so
+    // BuffFrame keeps its XML anchor; measured over the canned seam.
     assert.equal(point(buffFrame).point, "TOPRIGHT");
-    assert.equal(point(buffFrame).relativeTo?.name, "ConsolidatedBuffs");
-    assert.equal(point(buffFrame).x, 0);
-    assert.equal(point(buffFrame).y, 0);
+    assert.equal(point(buffFrame).relativeTo?.name, "UIParent");
+    assert.equal(point(buffFrame).x, -205);
+    assert.equal(point(buffFrame).y, -13);
     assert.equal(consolidated.parent?.name, "UIParent", "the anchor sentinel stays in the upper-right root");
     assert.equal(buff.visible, true, "HELPFUL index 1 creates BuffButton1");
     assert.equal(debuff.visible, true, "HARMFUL index 1 creates DebuffButton1");
@@ -147,9 +151,10 @@ test("MPQ BuffFrame drives filtered aura buttons, duration, updates, removal and
     assert.equal(debuffCount.visible, false,
       "a single harmful application is hidden by AuraButton_Update");
     assert.equal(buff.points.length, 1, "stock anchor pass leaves one effective helpful anchor");
+    // The first helpful aura sits left of the imbue button (BuffFrame.lua:311-312, numEnchants > 0).
     assert.equal(point(buff).point, "TOPRIGHT");
-    assert.equal(point(buff).relativeTo?.name, "BuffFrame");
-    assert.equal(point(buff).x, 0);
+    assert.equal(point(buff).relativeTo?.name, "TemporaryEnchantFrame");
+    assert.equal(point(buff).x, -5);
     assert.equal(point(buff).y, 0);
     assert.equal(point(debuff).point, "TOPRIGHT",
       "the first harmful aura uses the stock debuff anchor branch");

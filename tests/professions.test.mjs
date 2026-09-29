@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  craftableCount, learnedProfessions, professionRecipes, professionSpellSkill, recipeAcceptsItem,
+  craftableCount, filterCraftable, learnedProfessions, professionRecipes, professionSpellSkill,
+  recipeAcceptsItem, sortCraftRecipes,
 } from "../dist/code/browser/ui/ProfessionRules.js";
 import { buildCastSpellOnItem, TARGET_FLAG_ITEM } from "../dist/code/world/SpellProtocol.js";
 import { PacketReader } from "../dist/code/protocol/PacketReader.js";
@@ -20,6 +21,18 @@ test("profession windows are owned skills, including secondary fishing and custo
   assert.deepEqual(learnedProfessions([skill(171), skill(356), skill(754), skill(792)], [alchemy, fishing], data)
     .map((entry) => entry.skillId), [171, 356, 792]);
   assert.equal(professionSpellSkill(alchemy, data), 171);
+  // A custom TSWoW line outside the stock categories counts when it owns opener/recipe spells,
+  // so its recipes do not leave the book for a window that never lists them.
+  const customData = {
+    skillLine: (id) => id === 900 ? { id, categoryId: 42 } : data.skillLine(id),
+    skillOfSpell: (id) => id === 9001 ? 900 : data.skillOfSpell(id),
+  };
+  const customRecipe = { id: 9001, effects: [24, 0, 0], effectMiscValue: [] };
+  assert.deepEqual(
+    learnedProfessions([skill(900), skill(754)], [customRecipe], customData).map((entry) => entry.skillId),
+    [900], "a custom line with recipes is a profession; a class line without any is not");
+  assert.deepEqual(learnedProfessions([skill(900)], [], customData), [],
+    "without spells even a custom line stays out");
 });
 
 test("recipe list is learned recipe intersection, never a profession starter or hidden service", () => {
@@ -27,12 +40,120 @@ test("recipe list is learned recipe intersection, never a profession starter or 
   assert.deepEqual(professionRecipes(171, known, data).map((spell) => spell.id), [2330]);
   assert.deepEqual(professionRecipes(164, [alchemy, recipe], data), []);
 });
-
 test("reagents count complete crafts, preserve loading state, and never include bank-only stock", () => {
   assert.equal(craftableCount(recipe, new Map([[2447, 7], [765, 9]])), 3);
   assert.equal(craftableCount(recipe, new Map([[2447, 7]])), 0);
   assert.equal(craftableCount({ ...recipe, reagents: undefined }, new Map()), undefined);
   assert.equal(craftableCount({ ...recipe, reagents: [] }, new Map()), Infinity);
+});
+
+test("craft sorting orders by name, level and difficulty with name as the stable tiebreak", () => {
+  const rows = [
+    { spell: { id: 2, name: "Б", spellLevel: 10 }, difficulty: "gray" },
+    { spell: { id: 1, name: "А", spellLevel: 20 }, difficulty: "orange" },
+    { spell: { id: 3, name: "В", spellLevel: 10 }, difficulty: "green" },
+  ];
+  assert.deepEqual(sortCraftRecipes(rows, "name").map((row) => row.spell.id), [1, 2, 3]);
+  assert.deepEqual(sortCraftRecipes(rows, "level").map((row) => row.spell.id), [2, 3, 1]);
+  assert.deepEqual(sortCraftRecipes(rows, "difficulty").map((row) => row.spell.id), [1, 3, 2],
+    "hardest first, gray last");
+  assert.deepEqual(
+    sortCraftRecipes([{ spell: { id: 4, name: "Г", spellLevel: 1 }, difficulty: "" }], "difficulty")
+      .map((row) => row.spell.id), [4]);
+});
+
+test("the craftable filter hides only what the bags cannot complete", () => {
+  const costly = { spell: { id: 1, name: "А", reagents: [{ itemId: 10, count: 2 }] }, difficulty: "" };
+  const free = { spell: { id: 2, name: "Б" }, difficulty: "" };
+  const owned = new Map([[10, 3]]);
+  assert.deepEqual(filterCraftable([costly, free], owned, false).map((row) => row.spell.id), [1, 2]);
+  assert.deepEqual(filterCraftable([costly, free], owned, true).map((row) => row.spell.id), [1, 2]);
+  assert.deepEqual(filterCraftable([costly, free], new Map(), true).map((row) => row.spell.id), [2],
+    "a recipe without reagents is always attemptable");
+});
+
+test("the professions window lists owned professions with an opener each", async () => {
+  const listeners = new Map();
+  const node = (tag = "div") => ({
+    tagName: tag.toUpperCase(), children: [], hidden: false, disabled: false, value: "", textContent: "",
+    dataset: {}, id: "", className: "", title: "", style: { setProperty() {} },
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    setAttribute() {}, getAttribute() { return null; }, removeAttribute() {}, remove() {}, focus() {},
+    addEventListener(type, run) { listeners.set(`${tag}:${type}`, run); },
+    removeEventListener() {},
+    click() { listeners.get(`${tag}:click`)?.({ preventDefault() {}, stopPropagation() {} }); },
+    querySelector() { return node(); }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+  });
+  globalThis.document = {
+    createElement: node, body: node("body"), documentElement: node("html"),
+    createTextNode: (text) => ({ textContent: text }),
+    getElementById: () => node(), querySelectorAll: () => [],
+  };
+  globalThis.window = { addEventListener() {}, removeEventListener() {}, innerWidth: 1440, innerHeight: 900,
+    setTimeout: (...args) => setTimeout(...args), clearTimeout: (...args) => clearTimeout(...args) };
+  globalThis.location = { origin: "http://localhost:5173", protocol: "http:", hostname: "localhost" };
+  const { game } = await import("../dist/code/browser/game/Context.js");
+  const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
+  usePanelHost({ viewport: document.body, attach() {} });
+  const { toggleProfessionList, professionListOpen, openProfession, showProfessions } = await import("../dist/code/browser/ui/Professions.js");
+  const { characterSkillsPane } = await import("../dist/code/browser/ui/Dom.js");
+  const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
+  const base = UPDATE_FIELDS.PLAYER_SKILL_INFO_1_1.offset;
+  const fields = new Map([[base, 171], [base + 1, 75 | (150 << 16)]]);
+  game.world = { state: { selfGuid: 1n, objects: new Map([[1n, { guid: 1n, fields }]]) }, knownSpells: [],
+    itemTemplates: new Map(), casts: new Map(), cooldownRemaining: () => 0,
+    events: { on: () => () => {} } };
+  game.spells = new Map();
+  game.talentData = {
+    revision: 1,
+    skillLine: (id) => ({ id, name: "Алхимия", categoryId: 11, iconId: 0 }),
+    skillCategory: () => undefined,
+  };
+  try {
+    toggleProfessionList();
+    assert.equal(professionListOpen(), true);
+    const rows = [];
+    const walk = (entry) => {
+      if (entry.tagName === "DIV" && entry.children.some((child) => child.tagName === "BUTTON")) rows.push(entry);
+      for (const child of entry.children) walk(child);
+    };
+    walk(document.body);
+    assert.equal(rows.length, 1);
+    const opener = rows[0].children.find((child) => child.tagName === "BUTTON");
+    assert.equal(opener.textContent, "Открыть");
+
+    // The skills pane is repainted on every drained world frame; the «Открыть» button has to be
+    // the same node across those repaints, or a click between pointer-down and pointer-up is lost.
+    showProfessions();
+    const firstSection = characterSkillsPane.children[0];
+    showProfessions();
+    assert.equal(characterSkillsPane.children[0], firstSection, "an unchanged skills pane is not rebuilt");
+
+    // And the list rows: closing and reopening the list keeps the node a click is landing on.
+    const openedRow = rows[0];
+    toggleProfessionList();
+    assert.equal(professionListOpen(), false);
+    toggleProfessionList();
+    assert.equal(professionListOpen(), true);
+    const rewalked = [];
+    const collect = (entry) => {
+      if (entry.tagName === "DIV" && entry.children.some((child) => child.tagName === "BUTTON")) rewalked.push(entry);
+      for (const child of entry.children) collect(child);
+    };
+    collect(document.body);
+    assert.equal(rewalked[0], openedRow, "the list row survives a reopen and stays clickable");
+
+    assert.equal(openProfession(171), true, "the list entry opens its craft window");
+    toggleProfessionList();
+    assert.equal(professionListOpen(), false);
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+    game.talentData = undefined;
+  }
 });
 
 test("enchant target selection follows DBC equipment class, subclass and inventory masks", () => {

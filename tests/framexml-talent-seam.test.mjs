@@ -75,3 +75,28 @@ test("LearnTalent keeps Lua indices and only forwards a valid active-player cell
     [1, 1, true, 2],
   ], "the binding passes rejected requests to one fail-closed seam boundary");
 });
+
+test("stock talent getters route pet=true to the pet snapshot without copying player ranks", () => {
+  const pet = {
+    ...CANNED_TALENT_SNAPSHOT,
+    classId: 0,
+    activeTalentGroup: 1,
+    activeSpec: 0,
+    numTalentGroups: 1,
+    unspentPoints: 2,
+    groups: [{ ...CANNED_TALENT_SNAPSHOT.groups[0], unspentPoints: 2,
+      tabs: [{ ...CANNED_TALENT_SNAPSHOT.groups[0].tabs[0], id: 200, name: "Ferocity",
+        pointsSpent: 3, talents: [{ ...CANNED_TALENT_SNAPSHOT.groups[0].tabs[0].talents[0],
+          id: 30, rank: 3, maxRank: 3 }] }] }],
+  };
+  const seam = { talentSnapshot: (isPet) => isPet ? pet : CANNED_TALENT_SNAPSHOT };
+  assert.deepEqual(call("GetActiveTalentGroup", seam, [false, true]), [1]);
+  assert.deepEqual(call("GetNumTalentGroups", seam, [false, true]), [1]);
+  assert.deepEqual(call("GetNumTalentTabs", seam, [false, true]), [1]);
+  assert.equal(call("GetTalentTabInfo", seam, [1, false, true], 5)[2], 3);
+  assert.deepEqual(call("GetNumTalents", seam, [1, false, true]), [1]);
+  assert.equal(call("GetTalentInfo", seam, [1, 1, false, true], 10)[4], 3);
+  assert.deepEqual(call("GetUnspentTalentPoints", seam, [false, true]), [2]);
+  assert.deepEqual(call("GetNumTalentGroups", seam, [true, true]), [0],
+    "inspect remains unavailable without an inspect talent packet");
+});

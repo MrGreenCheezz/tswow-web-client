@@ -4,8 +4,9 @@ import test from "node:test";
 const {
   createFrameXmlSettingsCVar,
   FRAME_XML_SETTINGS_CVARS,
+  FRAME_XML_WEBCLIENT_CVARS,
 } = await import("../dist/code/browser/framexml/FrameXmlSettingsCVar.js");
-const { defaultSettings } = await import("../dist/code/browser/ui/SettingsModel.js");
+const { defaultSettings, SETTING_DEFINITIONS } = await import("../dist/code/browser/ui/SettingsModel.js");
 
 function fakeSettings() {
   let values = defaultSettings();
@@ -35,11 +36,90 @@ test("the supported table is only the settings the browser currently consumes", 
       ["nameplateShowEnemies", "plateEnemies"],
       ["nameplateShowFriends", "plateFriends"],
       ["ffxGlow", "fullscreenGlow"],
+      ["autoLootDefault", "autoLoot"],
+      ["lootUnderMouse", "lootUnderMouse"],
+      // The stock Features panel's equipment-manager switch, persisted so GearManagerToggleButton
+      // survives a reload (FrameXmlEquipmentSets.ts); an ownWindow setting, drawn by that panel alone.
+      ["equipmentManager", "equipmentManager"],
       ["Sound_MasterVolume", "volumeMaster"],
       ["Sound_SFXVolume", "volumeEffects"],
       ["Sound_MusicVolume", "volumeMusic"],
+      ["Sound_AmbienceVolume", "volumeAmbience"],
+      ["Sound_EnableAllSound", "soundEnabled"],
+      ["Sound_EnableSFX", "soundEffectsEnabled"],
+      ["Sound_EnableMusic", "musicEnabled"],
+      ["Sound_EnableAmbience", "ambienceEnabled"],
+      ["groundEffectDist", "grassRadius"],
+      ["environmentDetail", "objectDistance"],
+      ["uiscale", "uiScale"],
     ],
   );
+});
+
+test("environmentDetail is the object distance as the stock 0.5-1.5 multiplier", () => {
+  const { adapter, values } = fakeSettings();
+  assert.equal(adapter.get("environmentDetail"), "1");
+  assert.equal(adapter.getDefault("environmentDetail"), "1");
+  assert.deepEqual(adapter.range("environmentDetail"), [0.5, 1.5], "exactly the stock slider's range");
+  assert.equal(adapter.set("environmentDetail", "1.5"), true);
+  assert.equal(values().objectDistance, 150);
+  assert.equal(adapter.set("environmentDetail", "0.25"), true);
+  assert.equal(values().objectDistance, 50, "clamped to the slider's floor");
+});
+
+test("every other browser setting is a webclient_ CVar, once, and the spellbook's own switch is not", () => {
+  const stock = new Set(FRAME_XML_SETTINGS_CVARS.map((row) => row.setting));
+  const expected = SETTING_DEFINITIONS.filter((definition) => !definition.ownWindow && !stock.has(definition.id));
+  assert.deepEqual(FRAME_XML_WEBCLIENT_CVARS.map((row) => [row.cvar, row.setting]),
+    expected.map((definition) => [`webclient_${definition.id}`, definition.id]));
+  assert.equal(FRAME_XML_WEBCLIENT_CVARS.some((row) => row.setting === "spellbookHideLowerRanks"), false);
+  const { adapter, writes, values } = fakeSettings();
+  assert.equal(adapter.get("WEBCLIENT_RENDERSCALE"), "100", "case-insensitive, the model's own unit");
+  assert.equal(adapter.set("webclient_renderScale", "70"), true);
+  assert.equal(values().renderScale, 70);
+  assert.deepEqual(adapter.range("webclient_renderScale"), [50, 100]);
+  assert.equal(adapter.range("webclient_showFps"), undefined, "a switch has no range");
+  assert.equal(adapter.set("webclient_showFps", "1"), true);
+  assert.equal(values().showFps, true);
+  assert.deepEqual(writes, [{ id: "renderScale", value: 70 }, { id: "showFps", value: true }]);
+});
+
+test("the two mode switches have no default, and switching the interface off waits for the calling Lua", async () => {
+  const { adapter, writes, values } = fakeSettings();
+  assert.equal(adapter.getDefault("webclient_originalFrameXml"), undefined, "«По умолчанию» leaves the interface alone");
+  assert.equal(adapter.getDefault("webclient_tswowAddons"), undefined);
+  assert.equal(adapter.get("webclient_originalFrameXml"), "0");
+  assert.equal(adapter.set("webclient_originalFrameXml", "1"), true);
+  assert.deepEqual(writes, [], "the write that unmounts this VM is not made inside its Okay handler");
+  await Promise.resolve();
+  assert.deepEqual(writes, [{ id: "originalFrameXml", value: true }]);
+  assert.equal(values().originalFrameXml, true);
+  assert.equal(adapter.getDefault("webclient_showFps"), "0", "an ordinary switch keeps its default");
+});
+
+test("the audio switches and ambience are their own settings; grass radius is yards, interface size a fraction", () => {
+  const { adapter, writes, values } = fakeSettings();
+  assert.equal(adapter.get("Sound_EnableAllSound"), "1");
+  assert.equal(adapter.set("Sound_EnableMusic", "0"), true);
+  assert.equal(values().musicEnabled, false);
+  assert.equal(adapter.getDefault("Sound_AmbienceVolume"), "0.6");
+  assert.equal(adapter.set("Sound_AmbienceVolume", "0.35"), true);
+  assert.equal(values().volumeAmbience, 35);
+  assert.equal(values().volumeMusic, 60, "ambience no longer moves music");
+  assert.deepEqual(adapter.range("Sound_AmbienceVolume"), [0, 1]);
+  assert.equal(adapter.get("groundEffectDist"), "80");
+  assert.deepEqual(adapter.range("groundEffectDist"), [0, 180], "the browser's radius, not the client's 70-140");
+  assert.equal(adapter.set("groundEffectDist", 120), true);
+  assert.equal(values().grassRadius, 120);
+  assert.equal(adapter.get("uiscale"), "1");
+  assert.deepEqual(adapter.range("uiscale"), [0.75, 1.25]);
+  assert.equal(adapter.set("uiScale", "0.9"), true);
+  assert.equal(values().uiScale, 90);
+  assert.equal(adapter.get("UISCALE"), "0.9");
+  assert.equal(adapter.range("rotateMinimap"), undefined);
+  assert.deepEqual(writes.map(({ id, value }) => [id, value]), [
+    ["musicEnabled", false], ["volumeAmbience", 35], ["grassRadius", 120], ["uiScale", 90],
+  ]);
 });
 
 test("boolean CVars use 0/1, are case-insensitive by name, and invert spell-rank visibility", () => {
@@ -112,12 +192,30 @@ test("unsupported CVars never create state or call the host", () => {
   const { adapter, writes } = fakeSettings();
 
   for (const name of [
-    "Sound_AmbienceVolume", "Sound_InterfaceVolume", "showTimestamps", "cameraDistanceMaxFactor",
-    "gxResolution", "EnableVoiceChat", "",
+    "Sound_InterfaceVolume", "showTimestamps", "cameraDistanceMaxFactor", "groundEffectDensity",
+    "useUiScale", "gxResolution", "EnableVoiceChat", "webclient_", "webclient_spellbookHideLowerRanks", "",
   ]) {
     assert.equal(adapter.get(name), undefined, name);
     assert.equal(adapter.getDefault(name), undefined, name);
     assert.equal(adapter.set(name, "1"), false, name);
+    assert.equal(adapter.range(name), undefined, name);
   }
   assert.deepEqual(writes, []);
+});
+
+test("the loot CVars are the native loot switches: autoLootDefault is «Автоподбор добычи», lootUnderMouse its own row", () => {
+  const { adapter, writes, values } = fakeSettings();
+
+  // InterfaceOptionsFrame.lua:322-323: both default to "0".
+  assert.equal(adapter.getDefault("autoLootDefault"), "0");
+  assert.equal(adapter.getDefault("lootUnderMouse"), "0");
+  assert.equal(adapter.get("lootundermouse"), "0");
+  // LootFrame.lua:168 compares GetCVar("lootUnderMouse") with "1".
+  assert.equal(adapter.set("lootUnderMouse", "1"), true);
+  assert.equal(values().lootUnderMouse, true);
+  assert.equal(adapter.get("lootUnderMouse"), "1");
+  assert.equal(adapter.set("AUTOLOOTDEFAULT", 1), true);
+  assert.equal(values().autoLoot, true, "the switch FrameXmlLootHost reads");
+  assert.equal(adapter.get("autoLootDefault"), "1");
+  assert.deepEqual(writes, [{ id: "lootUnderMouse", value: true }, { id: "autoLoot", value: true }]);
 });

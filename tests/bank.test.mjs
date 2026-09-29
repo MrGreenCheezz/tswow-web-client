@@ -65,14 +65,16 @@ test("the inventory resolves the bank, its bags, the keyring and the buyback she
   const sold = object(42n, 1);
   const bankBag = object(50n, 2);
   const inBankBag = object(51n, 1);
+  const carriedBag = object(52n, 2);
   state.selfGuid = player.guid;
-  for (const value of [player, banked, keyed, sold, bankBag, inBankBag]) state.objects.set(value.guid, value);
+  for (const value of [player, banked, keyed, sold, bankBag, inBankBag, carriedBag]) state.objects.set(value.guid, value);
 
   guid(player.fields, UPDATE_FIELDS.PLAYER_FIELD_BANK_SLOT_1.offset, banked.guid);
   guid(player.fields, UPDATE_FIELDS.PLAYER_FIELD_KEYRING_SLOT_1.offset + 2, keyed.guid);
   guid(player.fields, UPDATE_FIELDS.PLAYER_FIELD_VENDORBUYBACK_SLOT_1.offset, sold.guid);
   player.fields.set(UPDATE_FIELDS.PLAYER_FIELD_BUYBACK_PRICE_1.offset, 4_500);
   guid(player.fields, UPDATE_FIELDS.PLAYER_FIELD_BANKBAG_SLOT_1.offset, bankBag.guid);
+  guid(player.fields, UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 19 * 2, carriedBag.guid);
   bankBag.fields.set(UPDATE_FIELDS.CONTAINER_FIELD_NUM_SLOTS.offset, 3);
   guid(bankBag.fields, UPDATE_FIELDS.CONTAINER_FIELD_SLOT_1.offset, inBankBag.guid);
   // PLAYER_BYTES_2 byte 2 is the bought bank bag slot count, and nothing else says it.
@@ -98,6 +100,15 @@ test("the inventory resolves the bank, its bags, the keyring and the buyback she
   assert.equal(inventory.buyback[0].item, sold);
 
   assert.equal(slotAt(inventory, INVENTORY_SLOT_BAG_0, BANK_SLOT_ITEM_START).item, banked);
+  // The bank bag itself is draggable from slot 67. ItemSlots.dropOnSlot resolves every drag
+  // source through slotAt before it sends CMSG_SWAP_INV_ITEM, so omitting this slot makes a
+  // bank bag silently impossible to move even while the banker window is open.
+  assert.equal(slotAt(inventory, INVENTORY_SLOT_BAG_0, BANK_SLOT_BAG_START)?.item, bankBag);
+  assert.equal(slotAt(inventory, INVENTORY_SLOT_BAG_0, BANK_SLOT_BAG_START + 1)?.item, undefined);
+  assert.equal(slotAt(inventory, INVENTORY_SLOT_BAG_0, 19)?.item, carriedBag,
+    "a carried bag is also a drag source on the bag bar");
+  assert.equal(slotAt(inventory, INVENTORY_SLOT_BAG_0, 20)?.guid, 0n,
+    "an empty carried-bag slot is still a valid drop target");
   assert.equal(slotAt(inventory, BANK_SLOT_BAG_START, 0).item, inBankBag);
   assert.equal(locateItem(inventory, inBankBag.guid).bag, BANK_SLOT_BAG_START);
   assert.equal(locateItem(inventory, keyed.guid).slot, KEYRING_SLOT_START + 1);

@@ -231,6 +231,17 @@ test("the talent tables this window needs are the shape the code reads them as",
   assert.equal(sample.iconPath, iconPaths.get(tabs.int(sampleRow, "SpellIconID")));
 });
 
+test("pet talents open a tier after three points and never offer a fourth rank", () => {
+  const petTree = [ROOT, TIER1];
+  assert.equal(tierRequirement(1, 3), 3);
+  assert.equal(talentTreeState(petTree, new Map([[ROOT.id, 2]]), 1, 3)[1].blockedBy, "tier");
+  const open = talentTreeState(petTree, new Map([[ROOT.id, 3]]), 1, 3);
+  assert.equal(open[1].available, true);
+  assert.equal(open[0].maxRank, 3, "MAX_PET_TALENT_RANK is three even if DBC lists more");
+  assert.equal(open[0].blockedBy, "maxed");
+  assert.equal(pointsInTree(petTree, new Map([[ROOT.id, 5]]), 3), 3);
+});
+
 test("native talent visuals use generated panel art while keeping real tab icon paths", async () => {
   const ui = await readFile(new URL("../src/browser/ui/Talents.ts", import.meta.url), "utf8");
   assert.doesNotMatch(ui, /talentTabBackgroundPaths|talent-tree-backdrop|drawTalentTreeBackdrop/,

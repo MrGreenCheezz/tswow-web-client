@@ -38,6 +38,7 @@ test("Canned SpellBook answers stock tuples from its resolved player spell list"
   assert.deepEqual(api(seam, "GetSpellName", 99, "spell"), []);
   assert.deepEqual(api(seam, "GetSpellTexture", 99, "spell"), []);
   assert.deepEqual(api(seam, "GetSpellCooldown", 99, "spell"), [0, 0, 0]);
+  assert.deepEqual(api(seam, "GetSpellCooldown", 1, "spell"), [0, 0, 1], "a ready spell is enabled, not dimmed");
   assert.deepEqual(api(seam, "GetSpellAutocast", 1, "spell"), [false, false]);
   assert.deepEqual(api(seam, "IsPassiveSpell", 1, "spell"), [false]);
   assert.deepEqual(api(seam, "GetKnownSlotFromHighestRankSlot", 1, "spell"), [1]);
@@ -137,6 +138,9 @@ test("Live SpellBook reads WorldClient state, converts cooldown clocks, and emit
   fired.length = 0;
   seam.tick(0.01);
   assert.equal(fired.some(([event]) => event === FRAMEXML_SEAM_EVENTS.spellsChanged), false);
+  // A ready spell is enabled: SpellButton_UpdateButton dims the icon to 0.4 whenever `enable ~= 1`.
+  assert.deepEqual(api(seam, "GetSpellCooldown", 1, "spell"), [0, 0, 1]);
+  assert.deepEqual(api(seam, "GetSpellCooldown", 2, "spell"), [0, 0, 0], "an empty book slot has nothing to enable");
 
   world.cooldownSnapshots.set(133, { startedAt: 900, duration: 1500, endsAt: 2400 });
   monotonic = 1000;

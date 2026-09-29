@@ -29,6 +29,11 @@ test("Canned Trainer projects packet rows and routes one available purchase", ()
   worldPump.events.length = 0;
   assert.equal(seam.openTrainer(), 1);
   assert.deepEqual(worldPump.events, [[FRAMEXML_SEAM_EVENTS.trainerUpdate]]);
+  assert.deepEqual(api(seam, "GetTrainerServiceTypeFilter", "used"), [false],
+    "the original Blizzard_TrainerUI starts with TRAINER_FILTER_USED = 0");
+  assert.deepEqual(api(seam, "GetNumTrainerServices"), [2]);
+  assert.deepEqual(api(seam, "GetTrainerServiceInfo", 2), ["Кровопускание", "", "unavailable", false]);
+  api(seam, "SetTrainerServiceTypeFilter", "used", true);
   assert.deepEqual(api(seam, "GetNumTrainerServices"), [3]);
   assert.deepEqual(api(seam, "GetTrainerServiceInfo", 1), ["Рывок", "", "available", false]);
   assert.deepEqual(api(seam, "GetTrainerServiceInfo", 2), ["Удар героя", "", "used", false]);

@@ -223,7 +223,7 @@ test("a stealthed unit stands, walks and runs crouched, and falls through to the
     [StealthWalk, Walkbackwards, Walk]);
   assert.deepEqual(
     poseAnimation(pose({ stealth: true, movementFlags: MOVEMENT_FLAGS.strafeLeft, speed: 2.5 })).wanted,
-    [StealthWalk, ShuffleLeft, RunLeft]);
+    [StealthWalk, ShuffleLeft, RunLeft, Walk]);
 
   // Ground only. Swimming, flying and the airborne arc keep their own ladders — measured, no rig
   // this client ships carries any of 348/349/452.

@@ -106,7 +106,7 @@ test("MPQ SpellBookFrame vertical reaches the stock window and templates", withC
     baseline = await loadFromMpq(chain, baselineSubset);
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
-    assert.equal(baseline.boot.bridge.getFrame("SpellBookFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("SpellBookFrame")?.name, undefined,
       "current vertical baseline does not have SpellBookFrame");
     assert.ok(candidate.requests.has(SPELLBOOK_XML), "SpellBookFrame.xml was read from MPQ");
     assert.ok(candidate.requests.has(SPELLBOOK_LUA),
@@ -165,7 +165,9 @@ test("MPQ SpellBookFrame vertical reaches the stock window and templates", withC
       GetNumSpellTabs: 1,
       GetSpellAutocast: 1,
       GetSpellCooldown: 1,
-      GetSpellLink: 1,
+      // Two since PetPaperDollFrame.xml joined the vertical: the book's chat link and the pet
+      // page's CompanionButton_OnModifiedClick (PetPaperDollFrame.lua) both call GetSpellLink.
+      GetSpellLink: 2,
       GetSpellTexture: 1,
       IsSelectedSpell: 1,
     });

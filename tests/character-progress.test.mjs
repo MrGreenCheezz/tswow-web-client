@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PacketWriter } from "../dist/code/protocol/index.js";
+import { OPCODES } from "../dist/code/generated/opcodes.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 import {
   parseAchievementData, parseAchievementEarned, parseBindPoint, parseCriteriaUpdate,
   parseEquipmentSetList, parseFactionStanding, parseForcedReactions, parseInitialFactions,
@@ -86,6 +88,54 @@ test("talents come per specialisation, with ranks one below what is shown", () =
   assert.deepEqual(talents.specs[0].talents, [{ talentId: 1234, rank: 1 }, { talentId: 5678, rank: 5 }]);
   assert.deepEqual(talents.specs[0].glyphs, [100, 0]);
   assert.equal(talents.specs[1].glyphs.length, 6);
+});
+
+test("pet talents use the pet-only count and rank layout from BuildPetTalentsInfoData", () => {
+  // The pet form has no spec count, active spec, or glyphs: after points comes one talent count.
+  const payload = new PacketWriter().u8(1).u32(2).u8(2)
+    .u32(2110).u8(0)
+    .u32(2111).u8(2)
+    .toUint8Array();
+  assert.deepEqual(parseTalentsInfo(payload), {
+    pet: true,
+    unspentPoints: 2,
+    activeSpec: 0,
+    specs: [{ talents: [{ talentId: 2110, rank: 1 }, { talentId: 2111, rank: 3 }], glyphs: [] }],
+  });
+  assert.deepEqual(parseTalentsInfo(new PacketWriter().u8(1).u32(0).u8(0).toUint8Array()), {
+    pet: true,
+    unspentPoints: 0,
+    activeSpec: 0,
+    specs: [{ talents: [], glyphs: [] }],
+  }, "an untrained pet still has a valid empty tree snapshot");
+});
+
+test("an incoming pet talent packet is stored separately and reaches the talent window edge", async () => {
+  const petPacket = new PacketWriter().u8(1).u32(1).u8(1).u32(2110).u8(1).toUint8Array();
+  const connection = {
+    sent: [],
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: new PacketWriter().u32(0).f32(0).f32(0).f32(0).f32(0).toUint8Array() },
+      { opcode: OPCODES.SMSG_TALENTS_INFO, payload: petPacket },
+    ],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const world = new WorldClient(connection);
+  const changes = [];
+  const errors = [];
+  world.events.on("TALENTS_CHANGED", (change) => changes.push(change));
+  world.onPacketError = (opcode, error) => errors.push([opcode, error.message]);
+  await world.loginCharacter(0x1234n);
+  for (let tick = 0; tick < 3; tick++) await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(world.petTalents?.specs[0]?.talents, [{ talentId: 2110, rank: 2 }]);
+  assert.equal(world.petTalents?.unspentPoints, 1);
+  assert.equal(world.talents, undefined, "a pet packet cannot overwrite the player's talent tree");
+  assert.deepEqual(changes, [{ pet: true }]);
+  assert.deepEqual(errors, []);
+  world.close();
 });
 
 test("bind point, played time, titles and equipment sets", () => {

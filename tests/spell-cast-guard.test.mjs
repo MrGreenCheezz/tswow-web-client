@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { spellCastBlockReason } = await import("../dist/code/browser/SpellCastGuard.js");
+const { spellCastBlockReason, spellPowerCost } = await import("../dist/code/browser/SpellCastGuard.js");
 const { WINDOW_COMMAND_TABLE } = await import("../dist/code/browser/ui/WindowActions.js");
 const { WorldClient } = await import("../dist/code/world/WorldClient.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
@@ -32,7 +32,7 @@ function metadata(id, extra = {}) {
     powerType: 0, powerCost: 0, powerCostPercent: 0, recoveryTime: 0, categoryRecoveryTime: 0,
     startRecoveryTime: 0, cooldownStartedOnEvent: false, effectAura: [], effectMiscValue: [],
     effectBasePoints: [], effectDieSides: [], effectPeriod: [], duration: 0, procChance: 0,
-    spellLevel: 0, spellClassSet: 3, spellClassMask: [1, 0, 0], ...extra,
+    spellLevel: 0, spellClassSet: 3, spellClassMask: [1, 0, 0], schoolMask: 2, ...extra,
   };
 }
 
@@ -110,6 +110,62 @@ test("power preflight uses the spell's resource and percent base before auto-dis
     game.world = undefined;
     game.spells = new Map();
   }
+});
+
+test("power cost adds flat and percent components as the selected core does", () => {
+  // SpellInfo::CalcPowerCost starts from ManaCost, then adds ManaCostPct of the matching base.
+  // Spell 62522 in the selected Spell.dbc uses energy: 20 flat plus 18 percent.
+  const spellId = 62522;
+  const row = metadata(spellId, { powerType: 3, powerCost: 20, powerCostPercent: 18 });
+  const { world, player } = harness(spellId, row);
+  try {
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + 3, 100);
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset + 3, 30);
+    assert.equal(spellPowerCost(row, player), 38);
+    assert.equal(spellCastBlockReason(world, spellId), "power");
+    player.fields.delete(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + 3);
+    assert.equal(spellPowerCost(row, player), undefined,
+      "an unknown percentage base cannot be replaced with the flat component");
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + 6, 1000);
+    assert.equal(spellPowerCost(metadata(1, { powerType: 6, powerCost: 20, powerCostPercent: 18 }), player), 20,
+      "the selected core does not implement percentage cost for runic power");
+  } finally { world.close(); game.world = undefined; game.spells = new Map(); }
+});
+
+test("power preflight applies the selected core's visible school cost reductions", () => {
+  const spellId = 133;
+  const row = metadata(spellId, { schoolMask: 0b1010, powerCost: 100 });
+  const { world, player } = harness(spellId, row);
+  const floatBits = new DataView(new ArrayBuffer(4));
+  try {
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset, 70);
+    assert.equal(spellCastBlockReason(world, spellId), "power");
+    // SpellInfo::CalcPowerCost selects the first school in the mask, here Holy (index 1).
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + 3, -40 >>> 0);
+    assert.equal(spellCastBlockReason(world, spellId), "power", "Nature's reduction does not affect Holy");
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + 1, -40 >>> 0);
+    assert.equal(spellPowerCost(row, player), 60);
+    assert.equal(spellCastBlockReason(world, spellId), undefined);
+    player.fields.delete(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + 1);
+    floatBits.setFloat32(0, -0.5, true);
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MULTIPLIER.offset + 1, floatBits.getUint32(0, true));
+    assert.equal(spellPowerCost(row, player), 50);
+    assert.equal(spellCastBlockReason(world, spellId), undefined);
+  } finally { world.close(); game.world = undefined; game.spells = new Map(); }
+});
+
+test("potential SPELLMOD_COST reductions defer insufficient-resource preflight to the realm", () => {
+  const spellId = 133;
+  const row = metadata(spellId, { powerCost: 100 });
+  const { world, player } = harness(spellId, row);
+  try {
+    player.fields.set(UPDATE_FIELDS.UNIT_FIELD_POWER1.offset, 70);
+    assert.equal(spellCastBlockReason(world, spellId), "power");
+    // Player::AddSpellMod publishes aggregate per-bit SPELLMOD_COST values, but the packet omits
+    // aura family, charges and conditional applicability. The server must decide the final cost.
+    world.spellModifiers.set("0:14:pct", { effectIndex: 0, op: 14, value: -50, pct: true });
+    assert.equal(spellCastBlockReason(world, spellId), undefined);
+  } finally { world.close(); game.world = undefined; game.spells = new Map(); }
 });
 
 test("active mount toggle bypasses power preflight and remains cancel-only", () => {

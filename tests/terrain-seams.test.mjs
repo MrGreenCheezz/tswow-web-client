@@ -1,33 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import ts from "typescript";
 import { TERRAIN_GRID_SIZE, TerrainTile } from "../dist/code/browser/Terrain.js";
 import { terrainHeightField, terrainNormals } from "../dist/code/browser/WorldRenderer3D.js";
+import { terrainGeometryData } from "../dist/code/browser/TerrainGeometry.js";
+import { rendererMethods } from "./terrain-streaming-harness.mjs";
 
 const SIDE = 129;
 const SKIRT = SIDE + 2;
 
-async function currentTerrainHeightField() {
-  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const start = source.indexOf("export function terrainHeightField(");
-  const end = source.indexOf("/** The scene normals", start);
-  assert.ok(start >= 0 && end > start, "terrainHeightField source seam exists");
-  const declaration = ts.transpileModule(source.slice(start, end).replace("export function", "function"), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText;
-  const fillOutside = (heights, outside, edge, inward) => {
-    if (!Number.isNaN(heights[outside])) return;
-    heights[outside] = 2 * heights[edge] - heights[inward];
-  };
-  return Function(
-    "TERRAIN_SUBDIVISIONS", "TERRAIN_GRID_SIZE", "TERRAIN_EDGE_EPSILON", "fillOutside",
-    `${declaration}; return terrainHeightField;`,
-  )(128, TERRAIN_GRID_SIZE, 1e-6, fillOutside);
-}
-
 test("both meshes use the canonical owner at an exact terrain-tile join", async () => {
-  const build = await currentTerrainHeightField();
+  const build = terrainHeightField;
   const ownerHeight = (x, y) => {
     const gridX = Math.floor(32 - x / TERRAIN_GRID_SIZE);
     const gridY = Math.floor(32 - y / TERRAIN_GRID_SIZE);
@@ -77,7 +60,7 @@ test("the edge skirt and shared endpoints ask all canonical neighbouring owners"
     asked.add(`${Math.floor(32 - x / TERRAIN_GRID_SIZE)}/${Math.floor(32 - y / TERRAIN_GRID_SIZE)}`);
     return 0;
   };
-  const build = await currentTerrainHeightField();
+  const build = terrainHeightField;
   build({ x: 32, y: 32 }, { x: 0, y: 0, z: 0, orientation: 0 }, heightAt);
   assert.deepEqual([...asked].sort(), [
     "31/32", "31/33", "32/31", "32/32", "32/33", "33/31", "33/32", "33/33",
@@ -86,13 +69,19 @@ test("the edge skirt and shared endpoints ask all canonical neighbouring owners"
 
 test("a late canonical neighbour rebuilds positions as well as normals", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const start = source.indexOf("} else if (rendered.revision !== revision) {");
-  const end = source.indexOf("} else if (rendered.liquidGeneration", start);
-  assert.ok(start >= 0 && end > start, "neighbour revision lifecycle seam exists");
-  const branch = source.slice(start, end);
-  assert.match(branch, /#rebuildTerrainGeometry\(/,
+  const Harness = rendererMethods(source, ["#repairTerrainSteps", "#terrainBoundingSphereSteps"]);
+  const grid = { x: 32, y: 32 }, player = { x: 0, y: 0, z: 1, orientation: 0 };
+  const ownOnly = (x) => Math.floor(32 - x / TERRAIN_GRID_SIZE) === 32 ? 1 : undefined;
+  const withNeighbour = (x) => Math.floor(32 - x / TERRAIN_GRID_SIZE) === 33 ? 2 : 1;
+  const before = terrainGeometryData(grid, player, ownOnly);
+  const expected = terrainGeometryData(grid, player, withNeighbour);
+  const repair = new Harness().repairTerrainSteps(0, grid, player, withNeighbour, undefined, true, false);
+  let result;
+  do { result = repair.next(); } while (!result.done);
+  assert.notDeepEqual(result.value.data.positions, before.positions,
     "the fallback far-edge height lives in the position buffer, not only in its normal");
-  assert.doesNotMatch(branch, /#refreshTerrainNormals\(/);
+  assert.notDeepEqual(result.value.data.normals, before.normals);
+  assert.deepEqual(result.value.data, expected, "cooperative repair preserves the complete canonical mesh");
 });
 
 let mapsDirectory;

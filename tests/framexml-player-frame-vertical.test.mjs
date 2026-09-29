@@ -105,9 +105,9 @@ test("MPQ PlayerFrame vertical loads the stock frame and its core children", wit
 
     // The baseline is the intentionally red half of this regression: without the two MPQ-owned
     // entries there is no player-frame root or health bar to mount.
-    assert.equal(baseline.boot.bridge.getFrame("PlayerFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("PlayerFrame")?.name, undefined,
       "baseline does not have PlayerFrame");
-    assert.equal(baseline.boot.bridge.getFrame("PlayerFrameHealthBar"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("PlayerFrameHealthBar")?.name, undefined,
       "baseline does not have PlayerFrameHealthBar");
 
     for (const entry of PLAYER_FRAME_TOC) {

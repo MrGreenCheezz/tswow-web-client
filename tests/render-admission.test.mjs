@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stableBoundedTopK } from "../dist/code/browser/RenderAdmission.js";
-import { ENVIRONMENT_RANGE, placementDistance, selectEnvironment } from "../dist/code/browser/WorldRenderer3D.js";
+import { stableBoundedTopK, stableBoundedTopKWhere } from "../dist/code/browser/RenderAdmission.js";
+import {
+  ENVIRONMENT_RANGE, ENVIRONMENT_SCENERY_BUDGET, placementDistance, selectEnvironment,
+} from "../dist/code/browser/WorldRenderer3D.js";
 
 function referenceTopK(items, k, scoreOf) {
   return items
@@ -60,10 +62,34 @@ test("stableBoundedTopK preserves input ordinal through adversarial ties and han
 test("stableBoundedTopK validates K and rejects non-finite scores", () => {
   for (const k of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => stableBoundedTopK([1, 2], k, (item) => item), RangeError);
+    assert.throws(() => stableBoundedTopKWhere([1, 2], () => true, k, (item) => item), RangeError);
   }
   for (const score of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
     assert.throws(() => stableBoundedTopK(["item"], 1, () => score), RangeError);
+    // Every accepted item is scored and checked, admitted or not; a rejected one is not scored.
+    assert.throws(() => stableBoundedTopKWhere([0, 1, "item"], () => true, 1, (item) => item === "item" ? score : item), RangeError);
+    assert.deepEqual(stableBoundedTopKWhere([0, "item"], (item) => item !== "item", 1, (item) => item === "item" ? score : item), [0]);
   }
+});
+
+test("stableBoundedTopKWhere is stableBoundedTopK over the accepted items, in their order", () => {
+  const random = lcg(0x0ddba11);
+  for (let run = 0; run < 300; run++) {
+    const length = Math.floor(random() * 90);
+    const items = Array.from({ length }, (_, ordinal) => ({
+      id: `run-${run}-${ordinal}`,
+      // Few distinct scores, -0 among them: ties and zero signs decide most places.
+      score: [-2, -0, 0, 1, 1.5, 3][Math.floor(random() * 6)],
+      keep: random() < 0.6,
+    }));
+    const k = Math.floor(random() * (length + 4));
+    const accepted = [];
+    const expected = stableBoundedTopK(items.filter((item) => item.keep), k, (item) => item.score);
+    const actual = stableBoundedTopKWhere(items, (item) => { accepted.push(item.id); return item.keep; }, k, (item) => item.score);
+    assert.deepEqual(actual, expected, `run ${run}, N=${length}, K=${k}`);
+    if (k > 0) assert.deepEqual(accepted, items.map((item) => item.id), "every item is offered once, in order");
+  }
+  assert.deepEqual(stableBoundedTopKWhere([1, 2], () => { throw new Error("not called"); }, 0, () => 0), []);
 });
 
 function environment(id, x, interior = false) {
@@ -75,8 +101,11 @@ function environment(id, x, interior = false) {
 }
 
 test("selectEnvironment keeps exterior and interior quotas independent with strict ranges", () => {
-  const exterior = Array.from({ length: 400 }, (_, index) => environment(`exterior-${index}`, 100 + index % 7));
-  const interior = Array.from({ length: 200 }, (_, index) => environment(`interior-${index}`, 10 + index % 5, true));
+  // Loose outdoor M2s share the scenery quota; unsized ones keep the legacy 400-yard leash, and at
+  // one leash their share-of-leash rank is plain nearest-first.
+  const exteriorQuota = ENVIRONMENT_SCENERY_BUDGET;
+  const exterior = Array.from({ length: exteriorQuota + 80 }, (_, index) => environment(`exterior-${index}`, 100 + index % 7));
+  const interior = Array.from({ length: 400 }, (_, index) => environment(`interior-${index}`, 10 + index % 5, true));
   const objects = [
     ...exterior,
     ...interior,
@@ -90,12 +119,12 @@ test("selectEnvironment keeps exterior and interior quotas independent with stri
   const expected = [
     ...referenceTopK(
       objects.filter((object) => object.interior !== true && placementDistance(object, player) < ENVIRONMENT_RANGE),
-      320,
+      exteriorQuota,
       (object) => placementDistance(object, player),
     ),
     ...referenceTopK(
       objects.filter((object) => object.interior === true && placementDistance(object, player) < 60),
-      120,
+      360,
       (object) => placementDistance(object, player),
     ),
   ];
@@ -103,9 +132,9 @@ test("selectEnvironment keeps exterior and interior quotas independent with stri
     selected.map(({ object, distance }) => [object.id, distance]),
     expected.map((object) => [object.id, placementDistance(object, player)]),
   );
-  assert.equal(selected.length, 440);
-  assert.equal(selected.slice(0, 320).every(({ object }) => object.interior !== true), true);
-  assert.equal(selected.slice(320).every(({ object }) => object.interior === true), true);
+  assert.equal(selected.length, exteriorQuota + 360);
+  assert.equal(selected.slice(0, exteriorQuota).every(({ object }) => object.interior !== true), true);
+  assert.equal(selected.slice(exteriorQuota).every(({ object }) => object.interior === true), true);
   assert.equal(selected.some(({ object }) => object.id === "exterior-boundary"), false);
   assert.equal(selected.some(({ object }) => object.id === "interior-boundary"), false);
   assert.equal(selected.some(({ object }) => object.id === "exterior-inside"), true);

@@ -350,8 +350,8 @@ test("the real FrameXML corpus loads through the glue engine", withClient, async
   assert.ok(boot.bridge.getFrame("GameTooltip"), "GameTooltip exists — the F1 grammar addition");
   assert.ok(boot.bridge.getFrame("ActionButton1"), "the action bar's buttons exist");
   assert.ok(boot.bridge.getFrame("MainMenuBar"), "the main bar exists");
-  // The dedicated Minimap, UIDropDownMenu and model-widget method tables bring the census to 18.
-  assert.equal(boot.wrappedWidgetTypes, 18,
+  // Includes the animation widget types added to the Minimap, dropdown and model tables.
+  assert.equal(boot.wrappedWidgetTypes, 21,
     "every widget type the layer knows has a method fallback, including Minimap and model frames");
 
   // ---- the VM verdict, which is what item (3) of the slice was for -------

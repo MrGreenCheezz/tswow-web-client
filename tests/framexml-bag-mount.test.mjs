@@ -112,9 +112,17 @@ function fixture({
     },
   };
   const behavior = { diagnoseOnClick, luaErrorOnClick, luaErrorOnHide, requireBankAliasOnHide };
+  const created = [];
   const bridge = {
     diagnostics: [],
+    created,
     getFrame(name) { return frames.get(name); },
+    // Bridge CreateFrame answers a shown, unnamed top-level frame, as the real one does.
+    CreateFrame(type) {
+      const made = { name: undefined, type, visible: true };
+      created.push(made);
+      return made;
+    },
     hasScript() { return true; },
     Click(target) {
       if (behavior.diagnoseOnClick) bridge.diagnostics.push("bag click failed");
@@ -183,32 +191,47 @@ test("a stock Lua hide error keeps the native bags as the fallback", () => {
   assert.equal(setup.frames.get("ContainerFrame1").visible, false);
 });
 
-test("the probe keeps a temporary BankFrame alias through ContainerFrame_OnHide", () => {
+test("the owner keeps the BankFrame alias through stock hide callbacks until disposal", () => {
   const setup = fixture({ requireBankAliasOnHide: true });
   const owner = frameXmlBagGate(setup.boot, setup.renderer);
   assert.ok(owner, "ContainerFrame_OnHide must see the VM-local BankFrame proxy");
-  assert.equal(setup.boot.vm.getGlobal("BankFrame"), undefined,
-    "the proxy is cleaned after the transactional probe");
+  const proxy = setup.boot.bridge.created[0];
+  assert.ok(proxy && proxy.visible === false, "the proxy is one dedicated hidden bridge frame");
+  assert.equal(setup.boot.vm.getGlobal("BankFrame"), proxy,
+    "the proxy remains available to renderer and Lua dispatch after the probe");
   owner.close();
+  assert.equal(setup.boot.vm.getGlobal("BankFrame"), proxy,
+    "closing bags does not dispose their mouse handlers");
+  owner.dispose();
   assert.equal(setup.boot.vm.getGlobal("BankFrame"), undefined,
-    "owner close also cleans the alias");
+    "owner disposal cleans the alias");
 });
 
-test("the bounded gate aliases only a missing options frame to the hidden game menu", () => {
+test("missing optional frames alias one dedicated hidden proxy, never the shown game menu", () => {
   const setup = fixture({ includeGameMenu: true });
+  // The stock GameMenuFrame is the game menu now: it may be open while the bag gate runs.
+  setup.frames.get("GameMenuFrame").visible = true;
   const owner = frameXmlBagGate(setup.boot, setup.renderer);
-  assert.ok(owner);
-  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), undefined);
-  assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), setup.frames.get("GameMenuFrame"),
-    "missing MerchantFrame is proxied by the hidden stock game menu for item clicks");
-  assert.equal(setup.boot.vm.getGlobal("StackSplitFrame"), setup.frames.get("GameMenuFrame"),
-    "missing StackSplitFrame is proxied by the hidden stock game menu for item clicks");
+  assert.ok(owner, "a shown game menu no longer blocks the bag owner");
+  assert.equal(setup.boot.bridge.created.length, 1, "exactly one stand-in is created");
+  const proxy = setup.boot.bridge.created[0];
+  assert.equal(proxy.type, "Frame");
+  assert.equal(proxy.visible, false, "the stand-in is hidden, so IsOptionFrameOpen() stays false");
+  assert.notEqual(proxy, setup.frames.get("GameMenuFrame"));
+  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), proxy);
+  assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), proxy,
+    "missing MerchantFrame is answered by the hidden stand-in for item clicks");
+  assert.equal(setup.boot.vm.getGlobal("StackSplitFrame"), proxy,
+    "missing StackSplitFrame is answered by the hidden stand-in for item clicks");
   owner.toggleBackpack();
-  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), undefined);
+  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), proxy);
+  assert.equal(setup.frames.get("GameMenuFrame").visible, true, "bag clicks leave the open menu alone");
   owner.close();
-  assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), setup.frames.get("GameMenuFrame"),
+  assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), proxy,
     "compatibility globals stay alive for the whole owner lifetime");
   owner.dispose?.();
+  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), undefined,
+    "owner disposal removes the options proxy");
   assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), undefined,
     "owner disposal removes the MerchantFrame proxy");
   assert.equal(setup.boot.vm.getGlobal("StackSplitFrame"), undefined,
@@ -227,6 +250,8 @@ test("a post-publish stock error demotes the owner and releases its VM aliases",
   assert.equal(failures, 1, "mount failure callback runs once");
   assert.equal(setup.boot.vm.getGlobal("MerchantFrame"), undefined);
   assert.equal(setup.boot.vm.getGlobal("StackSplitFrame"), undefined);
+  assert.equal(setup.boot.vm.getGlobal("InterfaceOptionsFrame"), undefined);
+  assert.equal(setup.boot.vm.getGlobal("BankFrame"), undefined);
   release();
   assert.equal(failures, 1, "stale cleanup does not demote a second time");
 });
@@ -270,8 +295,15 @@ test("the real MPQ stock backpack click opens and closes through the gated owner
     };
     const vmErrors = boot.vm.errors.length;
     const diagnostics = boot.bridge.diagnostics.length;
+    const stackSplit = boot.bridge.getFrame("StackSplitFrame");
+    assert.equal(stackSplit?.type, "Frame", "StackSplitFrame.xml is in the vertical: a real frame");
     const owner = frameXmlBagGate(boot, renderer);
     assert.ok(owner, "all stock bag dependencies and the real bridge click must pass");
+    const options = boot.vm.getGlobal("InterfaceOptionsFrame");
+    assert.ok(options && options !== boot.bridge.getFrame("GameMenuFrame"),
+      "the missing options frame is a dedicated stand-in, not the game menu");
+    assert.equal(options.visible, false);
+    assert.equal(boot.vm.getGlobal("StackSplitFrame"), stackSplit, "the real StackSplitFrame is not aliased");
     assert.equal(owner.isOpen(), false, "the probe is transactional");
     assert.equal(boot.vm.errors.length, vmErrors);
     assert.equal(boot.bridge.diagnostics.length, diagnostics);

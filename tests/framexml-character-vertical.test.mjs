@@ -45,14 +45,27 @@ const EQUIPMENT_BUTTONS = Object.freeze([
   "CharacterSecondaryHandSlot",
   "CharacterRangedSlot",
 ]);
+// TokenFrame is the one placeholder left: Blizzard_TokenUI is load-on-demand. PetPaperDollFrame.xml
+// joined the vertical on 2026-09-28 (the «Питомцы» tab with its Companions/Mounts pages), so it is a
+// concrete stock frame in both arms below. Never hand a bridge frame to `assert.equal`: on a
+// mismatch the assertion message inspects the whole widget graph (~20,000 linked frames), which is
+// what drove this file's process past 100 GB on 2026-09-28. Compare primitives.
 const OPTIONAL_SUBFRAMES = Object.freeze([
-  "PetPaperDollFrame",
   "TokenFrame",
 ]);
 const EXPECTED_DELTA = Object.freeze({
   files: 5,
   bytes: 176_173,
-  widgets: 727,
+  // 18 of these are not the character windows', measured: LFRFrame.xml (in both arms) declares
+  // LFRParentFrameTab1/Tab2 on CharacterFrameTabButtonTemplate, which only this closure's
+  // CharacterFrameTemplates.xml defines (LFRParentFrame: 494 -> 512 widgets).
+  // With UnitPopup.xml and FriendsFrame.xml in both arms, the closure's stat dropdowns run stock
+  // UIDropDownMenu_CreateFrames after UnitPopup's long menus have grown UIDROPDOWNMENU_MAXBUTTONS,
+  // so every dropdown level creates more buttons; files and bytes are unchanged, measured 745 -> 1,475.
+  // Since PetPaperDollFrame.xml joined the vertical (2026-09-28) the page's own widgets exist only
+  // in the arm that has its parent CharacterFrame, measured 1,475 -> 1,526 (+51: the pet page, its
+  // companion buttons and sub-tabs); files/bytes stay, both arms read the same two files.
+  widgets: 1526,
   lua: 2,
   luaFailed: 0,
   templates: 9,
@@ -136,9 +149,9 @@ test("MPQ Character/PaperDoll vertical reaches stock roots and equipment slots",
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
     // The baseline is intentionally red until this vertical promotes the three stock XML files.
-    assert.equal(baseline.boot.bridge.getFrame("CharacterFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("CharacterFrame")?.name, undefined,
       "baseline does not have CharacterFrame");
-    assert.equal(baseline.boot.bridge.getFrame("PaperDollFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("PaperDollFrame")?.name, undefined,
       "baseline does not have PaperDollFrame");
 
     for (const entry of CHARACTER_ENTRIES) {
@@ -198,21 +211,35 @@ test("MPQ Character/PaperDoll vertical reaches stock roots and equipment slots",
     // Optional panes outside this bounded closure are represented by plain hidden Lua objects.
     // ReputationFrame and SkillFrame are now concrete Character tabs rather than compatibility
     // placeholders.
-      for (const name of OPTIONAL_SUBFRAMES) {
-      assert.equal(candidate.boot.bridge.getFrame(name), undefined,
+    for (const name of OPTIONAL_SUBFRAMES) {
+      assert.equal(candidate.boot.bridge.getFrame(name)?.name, undefined,
         `${name} is not a synthetic bridge widget`);
       const global = candidate.boot.vm.getGlobal(name);
       assert.equal(global?.type, "table", `${name} placeholder is a Lua table`);
       if (global) candidate.boot.vm.release(global);
     }
     const placeholderProbe = candidate.boot.vm.execute(`
-      for _, name in ipairs({ "PetPaperDollFrame", "TokenFrame" }) do
+      for _, name in ipairs({ "TokenFrame" }) do
         assert(_G[name].hidden == true)
         _G[name]:Show()
         assert(_G[name].hidden == true and _G[name]:IsShown() == false)
       end
     `, "@framexml-character-vertical:test");
     assert.equal(placeholderProbe.ok, true, placeholderProbe.error);
+    // The pet page is stock now: a Frame under CharacterFrame whose own UpdateIsAvailable hides
+    // tab 2 for a character with no pet, mount or companion (this boot has no seam: HasPetUI and
+    // GetNumCompanions answer their neutral values).
+    const petPage = candidate.boot.bridge.getFrame("PetPaperDollFrame");
+    assert.equal(petPage?.type, "Frame", "PetPaperDollFrame is the stock frame");
+    assert.equal(petPage?.parent?.name, "CharacterFrame");
+    assert.equal(candidate.boot.bridge.getFrame("PetPaperDollFrameCompanionFrame")?.type, "Frame");
+    const petProbe = candidate.boot.vm.execute(`
+      PetPaperDollFrame_UpdateIsAvailable()
+      assert(PetPaperDollFrame.hidden == true, "no pet, no companions: the page marks itself hidden")
+      assert(PetPaperDollFrame:IsShown() == false)
+      assert(CharacterFrameTab2:IsShown() == false, "tab 2 follows the page")
+    `, "@framexml-character-vertical:pet");
+    assert.equal(petProbe.ok, true, petProbe.error);
     assert.equal(candidate.boot.bridge.getFrame("ReputationFrame")?.id, 3,
       "ReputationFrame occupies the concrete Character tab 3 slot");
     for (const index of [2, 5]) {

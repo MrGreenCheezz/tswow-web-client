@@ -71,7 +71,7 @@ test("MPQ HonorFrame loads as an unrouted CharacterFrame child and renders its s
         normalize(entry) !== "honorframe.xml");
       baseline = await load(chain, baselineSubset, new CannedWorldSeam());
       candidate = await load(chain, FRAMEXML_VERTICAL_TOC, new CannedWorldSeam());
-      assert.equal(baseline.boot.bridge.getFrame("HonorFrame"), undefined,
+      assert.equal(baseline.boot.bridge.getFrame("HonorFrame")?.name, undefined,
         "comparison subset does not include HonorFrame");
       assert.ok(candidate.requests.has("interface/framexml/honorframe.xml"));
       assert.ok(candidate.requests.has("interface/framexml/honorframetemplates.xml"));

@@ -18,6 +18,7 @@ import {
   buildLfgJoin,
   buildLfgProposalResult,
   buildLfgSetRoles,
+  buildLfgTeleport,
   lfgJoinResultText,
   parseLfgJoinResult,
   parseLfgProposalUpdate,
@@ -171,4 +172,9 @@ test("LFG client packets match their reads", () => {
   );
   assert.deepEqual([...buildLfgSetRoles(LFG_ROLE_TANK)], [LFG_ROLE_TANK]);
   assert.deepEqual([...buildLfgProposalResult(77, true)], [...bytes(u32(77), u8(1))]);
+});
+
+test("LFG teleport uses the core's out flag: zero enters, one exits", () => {
+  assert.deepEqual([...buildLfgTeleport(true)], [0]);
+  assert.deepEqual([...buildLfgTeleport(false)], [1]);
 });

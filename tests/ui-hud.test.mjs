@@ -4,6 +4,7 @@ import test from "node:test";
 
 const actionBarSource = new URL("../src/browser/ui/ActionBar.ts", import.meta.url);
 const aurasSource = new URL("../src/browser/ui/Auras.ts", import.meta.url);
+const controlsSource = new URL("../src/browser/input/Controls.ts", import.meta.url);
 const styleSource = new URL("../src/browser/style.css", import.meta.url);
 const indexSource = new URL("../index.html", import.meta.url);
 
@@ -82,6 +83,16 @@ test("the obsolete controls legend is not left behind the movable panels", async
     "there should be no obsolete legend layer behind panels");
 });
 
+test("the browser menu never covers right-click play, while editable fields keep theirs", async () => {
+  const source = await readFile(controlsSource, "utf8");
+  assert.match(source, /document\.addEventListener\("contextmenu"/,
+    "one document-level handler must cover every surface, not one listener per widget");
+  assert.match(source, /HTMLTextAreaElement/,
+    "chat and form fields keep paste/spellcheck menus");
+  assert.match(source, /isContentEditable/,
+    "editable regions keep their menu");
+});
+
 test("a positive, non-passive aura on the player is eligible for CMSG_CANCEL_AURA", async () => {
   globalThis.document = fakeDocument();
   globalThis.location = { origin: "http://127.0.0.1:5173", protocol: "http:", hostname: "127.0.0.1" };
@@ -130,6 +141,47 @@ test("a removable player buff is a keyboard-focusable cancel control, while a de
   assert.equal(debuff.listeners.has("contextmenu"), false);
   game.world = undefined;
   game.spells = new Map();
+});
+
+test("aura tooltips colour their context while the spell body stays shared", async () => {
+  globalThis.document = fakeDocument();
+  globalThis.location = { origin: "http://127.0.0.1:5173", protocol: "http:", hostname: "127.0.0.1" };
+  globalThis.window = { innerWidth: 1280, innerHeight: 720, addEventListener() {}, removeEventListener() {} };
+  const { auraTooltip } = await import("../dist/code/browser/ui/Auras.js");
+  const { game } = await import("../dist/code/browser/game/Context.js");
+  const self = 0x1234n;
+  game.world = { state: { selfGuid: self, objects: new Map() } };
+  game.spells = new Map([[101, {
+    id: 101, name: "Щит", rank: "", description: "", iconId: 1, iconPath: "",
+    passive: false, hidden: false, autoRepeat: false, schoolMask: 2,
+    rangeFlags: 0, rangeMax: 30, rangeMin: 0, castTime: 0,
+    powerType: 0, powerCost: 100, powerCostPercent: 0,
+    recoveryTime: 0, categoryRecoveryTime: 0, startRecoveryTime: 0,
+    cooldownStartedOnEvent: false, effectAura: [], effectMiscValue: [],
+    effectBasePoints: [], effectDieSides: [], effectPeriod: [],
+    duration: 0, procChance: 0, spellLevel: 1, spellClassSet: 0,
+    spellClassMask: [],
+  }]]);
+  try {
+    const buff = auraTooltip(
+      { spellId: 101, flags: 0x10, applications: 3, casterGuid: self, maxDuration: 90_000 },
+      { passive: false }, true);
+    assert.equal(buff.title, "Щит");
+    assert.deepEqual(buff.lines[0], { text: "Положительный эффект", tone: "stat" });
+    assert.deepEqual(buff.lines[1], { text: "Стаки: 3", tone: "gold" });
+    assert.deepEqual(buff.lines[2], { text: "Длительность: 2 мин", tone: "muted" });
+    assert.deepEqual(buff.lines[3], { text: "Наложено вами", tone: "muted" });
+    assert.deepEqual(buff.lines[4], { text: "Правый клик — снять эффект", tone: "muted" });
+    const debuff = auraTooltip(
+      { spellId: 101, flags: 0x80, applications: 1, casterGuid: 0x9999n },
+      { passive: false }, false);
+    assert.deepEqual(debuff.lines[0], { text: "Отрицательный эффект", tone: "unmet" });
+    // One header plus the four shared spell lines (school, range, instant, cost).
+    assert.equal(debuff.lines.length, 5);
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+  }
 });
 
 test("aura display filtering removes known hidden entries before applying the limit", async () => {
@@ -208,11 +260,15 @@ test("native action keys use the final unobtrusive high-specificity rule", async
     "keys must remain readable as compact corner labels");
 });
 
-test("the native right action rail keeps full-size slots and scrolls beside the inset minimap", async () => {
+test("the native right action rail starts below the corner minimap", async () => {
   const css = await readFile(styleSource, "utf8");
   const rail = [...css.matchAll(/body\.native-wow-ui #action-bar-side\s*\{([^}]*)\}/gs)]
     .find(([, body]) => body.includes("top:"))?.[1] ?? "";
-  assert.match(rail, /top:\s*14px/, "the rail may use the full right edge because the minimap reads its width reserve");
+  assert.match(rail, /top:\s*232px/, "the rail must clear the corner minimap instead of owning the top-right");
   assert.match(rail, /bottom:/, "the rail remains bounded by the viewport on short screens");
   assert.match(rail, /overflow-y:\s*auto/, "short screens scroll instead of shrinking twelve action icons");
+  const rightRail = [...css.matchAll(/body\.native-wow-ui \.right-rail\s*\{([^}]*)\}/gs)]
+    .find(([, body]) => body.includes("top: 8px"))?.[1] ?? "";
+  assert.match(rightRail, /right:\s*20px/, "the minimap sits in the freed corner without a side-bars offset");
+  assert.doesNotMatch(rightRail, /side-bars-width/, "no width reserve is needed once the bars start below");
 });

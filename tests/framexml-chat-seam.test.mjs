@@ -130,7 +130,7 @@ test("live chat maps a numeric message to the canonical 12-argument FrameXML eve
 
   assert.deepEqual(fired, [[
     "CHAT_MSG_SAY",
-    "Привет", "Alice", "Common", "", "", "", 0, 0, "", 0, 1,
+    "Привет", "Alice", "всеобщий", "", "", "", 0, 0, "", 0, 1,
     "0x0000000000001234",
   ]]);
   assert.equal(typeof fired[0][12], "string");
@@ -169,7 +169,7 @@ test("live channel tuple uses normalized short name, full display string, and 1-
   }));
   assert.deepEqual(fired, [[
     "CHAT_MSG_CHANNEL",
-    "channel", "Alice", "Common", "1. Общий - Элвиннский лес", "", "", 0, 1,
+    "channel", "Alice", "всеобщий", "1. Общий - Элвиннский лес", "", "", 0, 1,
     "Общий", 0, 1, "0x0000000000001234",
   ]]);
   seam.detach();
@@ -193,8 +193,8 @@ test("whisper inform uses the receiver slot and unknown non-addon chat falls bac
   assert.deepEqual(fired.slice(1).map(([event, text, sender, language, channel, target, flags, zone, number, name, unknown, lineId, guid]) => [
     event, text, sender, language, channel, target, flags, zone, number, name, unknown, lineId, guid,
   ]), [
-    ["CHAT_MSG_SYSTEM", "unknown-7f", "", "Universal", "", "", "", 0, 0, "", 0, 2, ""],
-    ["CHAT_MSG_SYSTEM", "unknown-bnet", "", "Universal", "", "", "", 0, 0, "", 0, 3, ""],
+    ["CHAT_MSG_SYSTEM", "unknown-7f", "", "", "", "", "", 0, 0, "", 0, 2, ""],
+    ["CHAT_MSG_SYSTEM", "unknown-bnet", "", "", "", "", "", 0, 0, "", 0, 3, ""],
   ]);
   seam.detach();
 });
@@ -329,7 +329,13 @@ test("chat window bindings configure only the truthful general frame and keep hi
   assert.deepEqual(call("GetChatWindowInfo", 1), [
     "Общий", 14, 1, 1, 1, 0, true, true, true, false,
   ]);
+  // Window 2 is the docked combat tab (slot 2, not shown: the dock shows it when selected) the
+  // native combat mirror fills; it registers no stock group or channel of its own, so nothing
+  // reaches it twice.
   assert.deepEqual(call("GetChatWindowInfo", 2), [
+    "Журнал боя", 14, 1, 1, 1, 0, false, true, 2, false,
+  ]);
+  assert.deepEqual(call("GetChatWindowInfo", 3), [
     "", 0, 1, 1, 1, 0, false, true, false, false,
   ]);
   assert.deepEqual(call("GetChatWindowInfo", 11), []);
@@ -343,6 +349,12 @@ test("legacy live world doubles without chatLog still attach, while channel chan
   assert.doesNotThrow(() => seam.attach(pump));
   assert.equal(events.listenerCount("CHANNEL_CHANGED"), 1);
   fired.length = 0;
+  world.channels.set("Общий", { flags: 0x18, count: 1, members: [] });
+  events.emit("CHANNEL_CHANGED", { channel: "Общий" });
+  assert.deepEqual(fired, [["UPDATE_CHAT_WINDOWS"]]);
+  // A count or roster change leaves GetChatWindowChannels as it was: no second update, which
+  // would re-show «Общий» over a selected «Журнал боя».
+  world.channels.get("Общий").count = 2;
   events.emit("CHANNEL_CHANGED", { channel: "Общий" });
   assert.deepEqual(fired, [["UPDATE_CHAT_WINDOWS"]]);
 

@@ -7,6 +7,9 @@ import {
 import {
   SETTINGS_NARROW_MEDIA, wireSettingsNavigation,
 } from "../dist/code/browser/ui/SettingsNavigation.js";
+import {
+  OTHER_SETTINGS_SECTION, SETTING_SECTIONS, sectionSettings,
+} from "../dist/code/browser/ui/SettingsSections.js";
 
 const settingsSource = new URL("../src/browser/ui/Settings.ts", import.meta.url);
 const styleSource = new URL("../src/browser/style.css", import.meta.url);
@@ -77,6 +80,8 @@ function navigationFixture() {
 
 test("client settings are distributed across small, named groups", () => {
   assert.deepEqual(SETTING_GROUPS, ["Игра", "Графика", "Эффекты", "Интерфейс", "Звук", "Чат"]);
+  assert.equal(new Set(SETTING_DEFINITIONS.map((definition) => definition.id)).size, SETTING_DEFINITIONS.length,
+    "each option has one control and one source of default values");
   const visible = SETTING_DEFINITIONS.filter((definition) => !definition.ownWindow);
   for (const group of SETTING_GROUPS) {
     assert.ok(visible.some((definition) => definition.group === group), `${group} must not be empty`);
@@ -93,7 +98,7 @@ test("settings search uses player-facing labels and hints", () => {
   const glow = SETTING_DEFINITIONS.find((definition) => definition.id === "fullscreenGlow");
   assert.ok(volume && glow);
   assert.equal(settingMatchesQuery(volume, "  ГРОМКОСТЬ "), true, "search is trimmed and case-insensitive");
-  assert.equal(settingMatchesQuery(glow, "прямой путь"), true, "hints are searchable too");
+  assert.equal(settingMatchesQuery(glow, "ярких участков"), true, "hints are searchable too");
   assert.equal(settingMatchesQuery(volume, "volumeMaster"), false,
     "internal ids are not taught to players by the search UI");
 });
@@ -179,4 +184,61 @@ test("the category rail follows the existing WoW window palette and remains usab
   assert.match(css, /\.settings-group-tab\.is-active\s*\{[^}]*#ffe59a/s);
   assert.match(css, /\.settings-group-tab:focus-visible\s*\{[^}]*outline:/s);
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.settings-groups\s*\{[^}]*flex-direction:\s*row/s);
+});
+
+test("«Эффекты» is split into named subsections that cover every one of its settings exactly once", () => {
+  const sections = SETTING_SECTIONS["Эффекты"];
+  assert.deepEqual(sections.map((section) => section.title),
+    ["Свет и атмосфера", "Вода", "Тени и рельеф", "Погода и ветер"]);
+  const listed = sections.flatMap((section) => section.ids);
+  assert.equal(new Set(listed).size, listed.length, "no setting is listed under two subsections");
+  for (const id of listed) {
+    assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === id)?.group, "Эффекты",
+      `${id} is an existing «Эффекты» setting`);
+  }
+  const effects = SETTING_DEFINITIONS.filter((definition) => definition.group === "Эффекты" && !definition.ownWindow);
+  const blocks = sectionSettings("Эффекты", effects, (definition) => definition.id);
+  assert.equal(blocks.some((block) => block.title === OTHER_SETTINGS_SECTION), false,
+    `every «Эффекты» setting is placed; add a new one to a section in SettingsSections.ts: ${
+      blocks.find((block) => block.title === OTHER_SETTINGS_SECTION)?.items.map((definition) => definition.id).join(", ")}`);
+  assert.equal(blocks.flatMap((block) => block.items).length, effects.length, "sectioning neither drops nor repeats a row");
+  assert.equal(sections.find((section) => section.title === "Вода").ids.includes("experimentalWaterSkyReflection"), true);
+  assert.equal(sections.find((section) => section.title === "Погода и ветер").ids.includes("experimentalWeatherSounds"), true);
+  const light = sections.find((section) => section.title === "Свет и атмосфера").ids;
+  assert.equal(light[light.indexOf("godRays") + 1], "godRayStrength", "the shaft slider sits right under its leaf");
+});
+
+test("sectioning keeps a group without sections as one list and never hides an unlisted setting", () => {
+  const graphics = SETTING_DEFINITIONS.filter((definition) => definition.group === "Графика");
+  assert.deepEqual(sectionSettings("Графика", graphics, (definition) => definition.id),
+    [{ title: undefined, items: graphics }], "an unsectioned group is drawn exactly as before");
+  assert.deepEqual(sectionSettings("Графика", [], (definition) => definition.id), []);
+  const items = [{ id: "experimentalNewThing" }, { id: "experimentalWaterFoam" }, { id: "godRays" }];
+  assert.deepEqual(sectionSettings("Эффекты", items, (item) => item.id), [
+    { title: "Свет и атмосфера", items: [items[2]] },
+    { title: "Вода", items: [items[1]] },
+    { title: OTHER_SETTINGS_SECTION, items: [items[0]] },
+  ], "section order, empty sections dropped, the unlisted one last rather than lost");
+  // A search that matches one row of a section still shows that row under its title.
+  const glow = SETTING_DEFINITIONS.filter((definition) => definition.group === "Эффекты" && settingMatchesQuery(definition, "ярких участков"));
+  assert.deepEqual(sectionSettings("Эффекты", glow, (definition) => definition.id).map((block) => block.title), ["Свет и атмосфера"]);
+});
+
+test("the settings list is the window's one scroller: per-tab position, wheel contained, keyboard owned", async () => {
+  const source = await readFile(settingsSource, "utf8");
+  assert.match(source, /sectionSettings\(group, inGroup, \(definition\) => definition\.id\)/,
+    "the window draws the shared subsections");
+  assert.match(source, /settingsList\.tabIndex = 0/, "a click on a hint gives the list the keyboard");
+  assert.match(source, /scrollByView\.set\(shownView, list\.scrollTop\)/, "the scroll position is remembered per view");
+  assert.match(source, /settingsList\.scrollTop = scrollByView\.get\(view\) \?\? 0/, "…and put back on redraw");
+  assert.match(source, /focus\(\{ preventScroll: true \}\)/, "refocusing a control after a redraw does not jump the list");
+  const css = await readFile(styleSource, "utf8");
+  const list = css.match(/\.settings-options\s*\{([^}]*)\}/s)?.[1] ?? "";
+  assert.match(list, /overflow-y:\s*auto/);
+  assert.match(list, /min-height:\s*0/, "the list shrinks to the window rather than pushing it past the viewport");
+  assert.match(list, /overscroll-behavior:\s*contain/, "a wheel at the list's end scrolls nothing behind it");
+  assert.match(css, /\.settings-window\s*\{[^}]*height:\s*min\(560px, calc\(100vh - 120px\)\)/s);
+  assert.match(css, /\.settings-section-title\s*\{[^}]*position:\s*sticky/s);
+  assert.match(css, /\.setting-label > span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    "a long Russian label wraps instead of pushing its control out of the row");
 });

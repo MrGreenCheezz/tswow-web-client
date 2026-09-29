@@ -8,9 +8,10 @@ import {
 } from "../dist/code/browser/Wvm.js";
 import { applyBlendMode } from "../dist/code/browser/ModelBuild.js";
 import {
-  GLUE_AUTHORED_ASPECT, GLUE_LIGHT_INTENSITY_SCALE, GLUE_MAX_DIRECTIONAL_LIGHTS,
+  GLUE_AUTHORED_ASPECT, GLUE_FIGURE_COMPENSATION_MAX_ASPECT, GLUE_LIGHT_INTENSITY_SCALE,
+  GLUE_MAX_DIRECTIONAL_LIGHTS,
   GLUE_QUALITY_STEPS, GLUE_QUALITY_TARGET_MS, GLUE_SUBJECT_COVERAGE, GlueQualityController,
-  glueDropAdditiveCoverage, glueFlipMaterialSides, glueIsAdditive, glueModelLight, glueModelPath,
+  glueDropAdditiveCoverage, glueFigureScaleCompensation, glueFlipMaterialSides, glueIsAdditive, glueModelLight, glueModelPath,
   glueScaleMirrors, glueSceneLighting, glueSceneVerticalFov, glueTextureName, glueViewCoverage,
   glueViewIsSubject, glueViewResolution, glueViewSignature, glueViewTickDivisor,
 } from "../dist/code/browser/glue/GlueModelStage.js";
@@ -385,6 +386,28 @@ test("a nonsense aspect falls back to the authored frame rather than to NaN", ()
   assert.equal(glueSceneVerticalFov(80, Number.NaN), authored);
   assert.ok(Number.isFinite(glueSceneVerticalFov(0, 1.5)));
   assert.ok(Number.isFinite(glueSceneVerticalFov(200, 1.5)));
+});
+
+test("the standing figure keeps its authored size past 4:3 instead of growing with the zoom", () => {
+  // 4:3 and narrower are the identity: the cover rule does not narrow there either.
+  assert.equal(glueFigureScaleCompensation(80, GLUE_AUTHORED_ASPECT), 1);
+  assert.equal(glueFigureScaleCompensation(80, 1), 1);
+  // 16:9. A human on its authored mark fills ~60% of the frame at 4:3 and ~78% in the covered
+  // 16:9 shot; the current-to-authored vertical ratio is the shrink that holds the angular size.
+  const wide = glueFigureScaleCompensation(80, 16 / 9);
+  const expected = glueSceneVerticalFov(80, 16 / 9) / glueSceneVerticalFov(80, GLUE_AUTHORED_ASPECT);
+  assert.ok(Math.abs(wide - expected) < 1e-12);
+  assert.ok(wide > 0.7 && wide < 0.85, `16:9 compensation is ${wide}, not a guess`);
+  // Past 16:9 the 16:9 value holds: ultrawide staging stretches anyway, and shrinking further
+  // would detach the feet from a medallion nobody can see at that width.
+  assert.equal(glueFigureScaleCompensation(80, 32 / 9), wide);
+  assert.equal(glueFigureScaleCompensation(80, 100), wide);
+  // Garbage in, identity out — a sizeless host must not shrink the figure to nothing.
+  assert.equal(glueFigureScaleCompensation(80, 0), 1);
+  assert.equal(glueFigureScaleCompensation(80, -1), 1);
+  assert.equal(glueFigureScaleCompensation(80, Number.NaN), 1);
+  assert.equal(glueFigureScaleCompensation(Number.NaN, 16 / 9), 1);
+  assert.equal(GLUE_FIGURE_COMPENSATION_MAX_ASPECT, 16 / 9);
 });
 
 // The render budget. Two classes, because one number for all of them is what the owner was looking

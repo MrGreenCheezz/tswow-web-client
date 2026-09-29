@@ -85,8 +85,11 @@ test("a service-only stable master uses the existing visible stable interface", 
 
   assert.match(npc, /NPC_FLAG_STABLEMASTER[\s\S]{0,1200}?requestStable\(guid\)/,
     "a stable master without GOSSIP still needs to open the stable roster");
-  assert.doesNotMatch(npc, /NPC_FLAG_PETITIONER[\s\S]{0,1200}?requestPetitionVendor\(guid\)/,
-    "do not advertise a silent petition route before petitionVendor has a visible window");
+  assert.match(npc, /NPC_FLAG_PETITIONER[\s\S]{0,1200}?requestPetitionVendor\(guid\)/,
+    "a petitioner without GOSSIP asks for its offer list like every other service NPC");
+  const petition = await read("src/browser/ui/Petition.ts");
+  assert.match(petition, /buyPetition\(vendorGuid, name, offer\.index\)/,
+    "the petition route is not silent: the vendor offers render with a buy button each");
   assert.doesNotMatch(npc, /NPC_FLAG_GUILD_BANKER[\s\S]{0,1200}?openGuildBank\(guid\)/,
     "this core accepts CMSG_GUILD_BANKER_ACTIVATE only for GO type 34, never a creature guid");
   assert.match(windows, /export function showCharacterWindow\(tab:\s*CharacterTab\)/,
@@ -105,9 +108,9 @@ test("flight, battlemaster and tabard service responses open visible native cont
 
   assert.match(npc, /reachableTaxiRoutes\(catalog,\s*menu\.currentNode,\s*menu\.knownNodes\)[\s\S]{0,1500}?takeTaxi\(menu\.guid,\s*route\.nodes\)/,
     "a taxi response needs visible named controls that submit the complete authored route");
-  assert.match(enterWorld, /events\.on\(["']TAXI_MENU["'][\s\S]{0,120}?showTaxiMenu\(\)/,
+  assert.match(enterWorld, /(?:events\.on|onWorldEvent)\(["']TAXI_MENU["'][\s\S]{0,120}?showTaxiMenu\(\)/,
     "the native HUD must consume the taxi response instead of only retaining it in WorldClient");
-  assert.match(enterWorld, /events\.on\(["']TAXI_CHANGED["'][\s\S]{0,120}?showTaxiMenu\(\)/,
+  assert.match(enterWorld, /(?:events\.on|onWorldEvent)\(["']TAXI_CHANGED["'][\s\S]{0,120}?showTaxiMenu\(\)/,
     "the flight window must stay until the server accepts or refuses the selected route");
   assert.match(world, /SMSG_NEW_TAXI_PATH[\s\S]{0,700}?CMSG_TAXIQUERYAVAILABLENODES/,
     "discovering a node must retry the omitted taxi map exactly once");
@@ -116,7 +119,7 @@ test("flight, battlemaster and tabard service responses open visible native cont
     "a battlemaster response needs a native queue control");
   assert.match(npc, /export function showBattlegroundList\(\)[\s\S]{0,600}?drawBattlegroundList\(/,
     "the exported battlemaster response handler must render the native queue controls");
-  assert.match(enterWorld, /events\.on\(["']BATTLEFIELD_LIST_CHANGED["'][\s\S]{0,160}?showBattlegroundList\(\)/,
+  assert.match(enterWorld, /(?:events\.on|onWorldEvent)\(["']BATTLEFIELD_LIST_CHANGED["'][\s\S]{0,160}?showBattlegroundList\(\)/,
     "the battlemaster packet must open its controls without optional FrameXML");
   assert.match(npc, /BattlegroundClient[^]*list\.fromWhere\s*!==\s*0/,
     "the native NPC window must use the shared metadata client and ignore queue-window lists");
@@ -126,7 +129,7 @@ test("flight, battlemaster and tabard service responses open visible native cont
     "the tabard activation packet needs a dedicated UI edge rather than an unrelated guild repaint");
   assert.match(npc, /export function showTabardVendor\(\)[\s\S]{0,3200}?saveGuildEmblem\(/,
     "the tabard response needs visible, functional emblem controls");
-  assert.match(enterWorld, /events\.on\(["']TABARD_VENDOR_CHANGED["'][\s\S]{0,160}?showTabardVendor\(\)/);
+  assert.match(enterWorld, /(?:events\.on|onWorldEvent)\(["']TABARD_VENDOR_CHANGED["'][\s\S]{0,160}?showTabardVendor\(\)/);
   assert.match(npc, /guild\.emblemStyle/,
     "the editor must start from the current emblem instead of destructive zeroes");
   assert.match(npc, /Textures\\\\GuildEmblems/,
@@ -139,9 +142,10 @@ test("flight, battlemaster and tabard service responses open visible native cont
 });
 
 test("an eligible game object exposes its server name in a cursor-following hover tooltip", async () => {
-  const [controls, protocol] = await Promise.all([
+  const [controls, protocol, interaction] = await Promise.all([
     read("src/browser/input/Controls.ts"),
     read("src/world/GameObjectProtocol.ts"),
+    read("src/browser/game/Interaction.ts"),
   ]);
 
   assert.match(protocol, /export function interactiveGameObjectType\(/,
@@ -160,14 +164,16 @@ test("an eligible game object exposes its server name in a cursor-following hove
   }
   assert.match(controls, /gameObjectTemplate\(entry,\s*object\.guid\)/,
     "hover asks the server-owned gameobject template for the actual localized name");
-  assert.match(controls, /interactionDistance\(type\)/,
-    "the hand and tooltip must not promise an interaction from farther away than the server accepts");
+  assert.doesNotMatch(controls, /interactionDistance\(type\)/,
+    "the original client names a selectable object at a distance, even when a click is out of range");
+  assert.match(interaction, /distance > interactionDistance\(type\)\) return undefined/,
+    "a distant click still must not dispatch a game-object action");
   assert.match(controls, /GAMEOBJECT_FLAGS[\s\S]{0,200}?GO_FLAG_NOT_SELECTABLE/,
     "server-authored non-selectable objects must remain scenery under the cursor");
   assert.match(controls, /waitForGameObjectTemplate\(entry,\s*object\.guid\)[\s\S]{0,800}?applyHoverCursor\(/,
     "a localized query answer must repaint a stationary hover without waiting for pointermove");
   assert.match(controls, /function scheduleHoverWorldRefresh\([\s\S]{0,500}?setTimeout[\s\S]{0,300}?applyHoverCursor\(/,
-    "walking away from a stationary cursor must re-evaluate the server interaction range");
+    "a stationary hover must refresh when world state changes");
   assert.match(controls, /export function clearHeldKeys\(\)[\s\S]{0,250}?clearHoverCursor\(\)/,
     "a world replacement must not leave the previous world's tooltip or inline cursor behind");
   assert.doesNotMatch(controls, /return\s+template\?\.name\s*\|\|\s*gameObjectLabel\(object\)/,
@@ -306,4 +312,24 @@ test("a selected gossip option may open any server-authored NPC service for that
     "late text from the replaced gossip page must not hide the shared service that followed it");
   assert.match(world, /SMSG_SHOW_MAILBOX[\s\S]{0,520}?CMSG_GET_MAIL_LIST[\s\S]{0,100}?buildGetMailList\(mailboxGuid\)/,
     "a mailbox opened by a gossip option must fetch its letters just like a directly clicked mailbox");
+});
+
+test("a character switch or exit retires the previous session's world subscriptions", async () => {
+  const enterWorld = await read("src/browser/app/EnterWorld.ts");
+  const login = await read("src/browser/app/Login.ts");
+  // The realm connection outlives a character while every subscription below is per character:
+  // a direct `world.events.on(` here would stack one more handler per switch and deliver every
+  // packet to every past session's panels. All of them must flow through the session helpers,
+  // which record the unsubscribe for the next entry or logout.
+  assert.equal((enterWorld.match(/world\.events\.on\(/g) ?? []).length, 0,
+    "enterWorld must subscribe through the session helper so re-entry retires the old session");
+  assert.equal((enterWorld.match(/game\.store\?\.events\.on\(/g) ?? []).length, 0,
+    "store bindings ride the same session for the same reason");
+  assert.match(enterWorld, /const generation = entryLifecycle\.begin\(\);/,
+    "the next entry must retire the previous session before subscribing its own");
+  assert.match(enterWorld, /entryLifecycle\.track\(bus\.on\(name, listener\)\)/,
+    "the session helpers must record their unsubscribes");
+  assert.match(enterWorld, /export function retireEnterWorldSession\(\): void \{\s*entryLifecycle\.retire\(\);/);
+  assert.match(login, /export function resetWorldUi\(\): void \{\s*retireEnterWorldSession\(\);\s*game\.store\?\.detach\(\);/,
+    "logout must retire the old event bus before dropping the store");
 });

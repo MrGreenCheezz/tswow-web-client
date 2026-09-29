@@ -18,8 +18,11 @@ import {
   shouldCrossFadeAnimation, shouldFadeOutPreviousAnimation, shouldStopPreviousAnimation, SHOOT_METADATA_WAIT,
   spellVisualAnimationCandidates, weaponPose,
   locomotionBoneMask, locomotionOverlayClip, mountSpecialAnimation, isUnitFlying,
-  shouldPromoteActionToLocomotionOverlay,
   commitLocomotion, isLocomotionGait, LOCOMOTION_COMMIT_WINDOW,
+  locomotionAuthoredSpeed, unitGaitTimeScale, UNIT_GAIT_MIN_TIME_SCALE, UNIT_GAIT_MAX_TIME_SCALE,
+  measuredTravelSpeed, STRIDE_SNAP_YARDS,
+  spawnFadeFactor, SPAWN_FADE_WINDOW_MS,
+  stealthGroundAnimations,
   applyGlobalSequenceBones, applyStrafeYaw, buildSkinnedTemplateFrom, instantiateSkinned,
   resolveStrafeYawBones, stepStrafeYaw, strafeYawBonesFor,
   strafeYawTarget, STRAFE_YAW_DIAGONAL, STRAFE_YAW_PURE, STRAFE_YAW_RATE,
@@ -433,18 +436,6 @@ test("a real character keeps every moving gait under a cast overlay", withClient
   }
 });
 
-test("an idle-to-move transition promotes a still-running one-shot to the upper layer", () => {
-  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, "cast", THREE.LoopOnce), true);
-  assert.equal(shouldPromoteActionToLocomotionOverlay(false, false, "cast", THREE.LoopOnce), false,
-    "an idle cast still owns the body until movement actually starts");
-  assert.equal(shouldPromoteActionToLocomotionOverlay(true, true, "cast", THREE.LoopOnce), false,
-    "an existing locomotion overlay must not be promoted twice");
-  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, "cast", THREE.LoopRepeat), false,
-    "held actions are not converted while their action record remains authoritative");
-  assert.equal(shouldPromoteActionToLocomotionOverlay(true, false, undefined, THREE.LoopOnce), false,
-    "pose-only clips have no semantic one-shot owner to transfer");
-});
-
 test("mount special resolves to the generated ground/flying mount sequences", () => {
   assert.equal(mountSpecialAnimation(false), ANIMATION_IDS.MountSpecial);
   assert.equal(mountSpecialAnimation(true), ANIMATION_IDS.FlyMountSpecial);
@@ -793,6 +784,89 @@ test("a flying spline selects flight poses even when MovementInfo has no flying 
   assert.equal(chooseAnimation(clips, standing({ spline: true, movementFlags: MOVEMENT_FLAGS.canFly })).animation, Run);
 });
 
+/**
+ * HumanMale's base clips as the live chain ships them (patch-W, measured 2026-09-28): every base
+ * id but Dead, RunLeft/RunRight and Fly. 19 of the 20 playable models have no Fly; OrcMale has.
+ */
+function humanMaleBaseClips() {
+  const {
+    Stand, Death, Walk, Run, ShuffleLeft, ShuffleRight, Walkbackwards, JumpStart, Jump, JumpEnd, Fall,
+    SwimIdle, Swim, SwimLeft, SwimRight, SwimBackwards, Hover,
+  } = ANIMATION_IDS;
+  return new Map([
+    Stand, Death, Walk, Run, ShuffleLeft, ShuffleRight, Walkbackwards, JumpStart, Jump, JumpEnd, Fall,
+    SwimIdle, Swim, SwimLeft, SwimRight, SwimBackwards, Hover,
+  ].map((id) => [id, {}]));
+}
+
+/** Levitate's word (spell 1706: auras 105 feather fall, 106 hover, 104 water walk). */
+const LEVITATE_FLAGS = MOVEMENT_FLAGS.hover | MOVEMENT_FLAGS.fallingSlow | MOVEMENT_FLAGS.waterWalking;
+
+test("a levitating player walks and runs on its ground clips instead of swimming", withAnimationData, () => {
+  // Gundrak, 2026-09-28: a priest bot's Levitate put HOVER on the owner's word for 91 s and the
+  // character swam wherever it went. The flying-tier ladder asks for Fly first, and AnimationData
+  // walks Fly (135) to Swim (42) before the next rung is ever tried — the trap is still in the
+  // table, which is why the unit's tier, not its hover bit, decides.
+  const { Fly, Swim, Run, Walk, Walkbackwards, ShuffleLeft, ShuffleRight, Stand } = ANIMATION_IDS;
+  const clips = humanMaleBaseClips();
+  assert.equal(ANIMATION_FALLBACK[Fly], Swim);
+  assert.equal(resolveAnimation(clips, [Fly, Run]), Swim, "what the flying ladder draws on this rig");
+
+  const F = MOVEMENT_FLAGS;
+  // A player stays on the ground tier through a levitation (`Unit::SetHover` never moves it), and a
+  // unit whose tier nobody read is taken the same way.
+  for (const animationTier of [undefined, 0]) {
+    const on = (flags) => chooseAnimation(clips, standing({ movementFlags: LEVITATE_FLAGS | flags, animationTier })).animation;
+    assert.equal(on(F.forward), Run, `tier ${animationTier}: running in the air is running`);
+    assert.equal(on(F.forward | F.walking), Walk);
+    assert.equal(on(F.backward), Walkbackwards);
+    assert.equal(on(F.strafeLeft), ShuffleLeft);
+    assert.equal(on(F.strafeRight), ShuffleRight);
+    assert.equal(on(0), Stand, "and standing in the air is standing");
+  }
+  // Gravity switched off without flight is the same case.
+  assert.equal(chooseAnimation(clips, standing({ movementFlags: F.disableGravity | F.forward })).animation, Run);
+});
+
+test("the hover and fly tiers keep the flying ladder, and the flying bit keeps its own", withAnimationData, () => {
+  const { Fly, Hover, Swim, Run, Walk, Stand } = ANIMATION_IDS;
+  const F = MOVEMENT_FLAGS;
+  // A creature the core put on the hover (2) or fly (3) tier — `Creature::SetHover` and
+  // `SetDisableGravity` do — "plays flying tier animations" in the core's own words.
+  for (const animationTier of [2, 3]) {
+    assert.deepEqual(poseAnimation(standing({ movementFlags: F.hover | F.forward, animationTier })).wanted, [Fly, Run]);
+    assert.deepEqual(poseAnimation(standing({ movementFlags: F.hover, animationTier })).wanted, [Hover, Stand]);
+    assert.deepEqual(poseAnimation(standing({ movementFlags: F.disableGravity | F.forward, animationTier })).wanted,
+      [Fly, Run]);
+  }
+  const flier = new Map([[Fly, {}], [Hover, {}], [Run, {}], [Stand, {}]]);
+  assert.equal(chooseAnimation(flier, standing({ movementFlags: F.hover | F.forward, animationTier: 3 })).animation, Fly);
+  // The tier only speaks for a unit that hovers: with nothing hovering it is ground locomotion.
+  assert.deepEqual(poseAnimation(standing({ movementFlags: F.forward, animationTier: 3 })).wanted, [Run, Walk]);
+  // Flight is not a tier question. The flying bit keeps its ladder whatever the tier says, Swim
+  // included: the table's own Fly→Swim fallback is the look of a body flying without a mount.
+  for (const animationTier of [undefined, 0, 3]) {
+    assert.deepEqual(poseAnimation(standing({ movementFlags: F.flying | F.forward, animationTier })).wanted, [Fly, Swim, Run]);
+    assert.deepEqual(poseAnimation(standing({ movementFlags: F.flying, animationTier })).wanted, [Hover, Fly, Stand]);
+  }
+  assert.equal(chooseAnimation(humanMaleBaseClips(), standing({ movementFlags: F.flying | F.forward })).animation, Swim);
+});
+
+test("the client's HumanMale has no Fly clip, and levitating on its real clips runs", {
+  skip: !archives ? "no 3.3.5a client on this machine"
+    : !ANIMATION_DATA_AVAILABLE ? "no locally generated animation data" : false,
+}, async () => {
+  const m2 = await archives.read(`${HUMAN_MALE}.m2`);
+  assert.ok(m2, "HumanMale.m2 should exist in the client");
+  const ids = new Set(m2Animations(m2).map((animation) => animation.animationId));
+  assert.equal(ids.has(ANIMATION_IDS.Fly), false, "the rung the flying ladder asks for first");
+  assert.equal(ids.has(ANIMATION_IDS.Swim), true, "and the one Fly falls back to");
+  // What a freshly built template carries: the base ids this model has, the rest is sidecar.
+  const clips = new Map(BASE_ANIMATIONS.filter((id) => ids.has(id)).map((id) => [id, {}]));
+  assert.equal(chooseAnimation(clips, standing({ movementFlags: LEVITATE_FLAGS | MOVEMENT_FLAGS.forward })).animation,
+    ANIMATION_IDS.Run);
+});
+
 test("death and corpse poses are terminal, while respawn can choose a live pose", () => {
   const { Death, Dead, Stand } = ANIMATION_IDS;
   const corpse = standing({ dead: true });
@@ -889,6 +963,88 @@ test("STRAFE the eight directions and the four diagonals each have one stable an
   assert.equal(poseAnimation(standing({ movementFlags: swimming | F | L })).wanted[0], ANIMATION_IDS.SwimLeft);
   assert.equal(poseAnimation(standing({ movementFlags: swimming | B | L })).wanted[0],
     ANIMATION_IDS.SwimBackwards, "backwards outranks a strafe in the water too");
+});
+
+test("a sidestep a rig does not carry falls back to walking, never to standing still", () => {
+  const { Run, Walk, Stand, ShuffleLeft, ShuffleRight, RunLeft, RunRight } = ANIMATION_IDS;
+  // Neither shuffle nor run-sideways has a Fallback row in AnimationData, so the wanted list
+  // itself must carry the ordinary gait: a rig without the sidestep steps instead of gliding.
+  assert.deepEqual(
+    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeLeft })).wanted,
+    [RunLeft, ShuffleLeft, Run, Walk]);
+  assert.deepEqual(
+    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeRight })).wanted,
+    [RunRight, ShuffleRight, Run, Walk]);
+  assert.deepEqual(
+    poseAnimation(standing({ movementFlags: MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.walking })).wanted,
+    [ShuffleLeft, RunLeft, Walk]);
+  // The resolver proves the point end to end: with only Walk available the strafe still moves.
+  assert.equal(resolveAnimation(new Set([Walk, Stand]), [ShuffleLeft, RunLeft, Run, Walk]), Walk);
+  assert.equal(resolveAnimation(new Set([Stand]), [ShuffleLeft, RunLeft, Run, Walk]), undefined,
+    "no gait in the list means no gait answered; the Stand last resort belongs to chooseAnimation");
+  // Concealed strafes keep their crouch first and inherit the same walking tail.
+  const creep = stealthGroundAnimations({ walking: true, backward: false, left: true, right: false, forward: false });
+  assert.equal(creep[0], ANIMATION_IDS.StealthWalk);
+  assert.ok(creep.includes(Walk), "a sneaking rig without the sidestep creeps forward, not sideways still");
+});
+
+test("a unit stride replays at measured travel speed, borrowing Walk/Run when the gait names none", () => {  const { Walk, Run, ShuffleLeft } = ANIMATION_IDS;
+  const clip = (movingSpeed) => ({ userData: { movingSpeed } });
+  const clips = new Map([
+    [Run, clip(7)],
+    [Walk, clip(2.5)],
+    [ShuffleLeft, clip(0)],
+  ]);
+  // The shuffle is authored standstill: at a run it borrows the run tempo, at a walk the walk's.
+  assert.equal(locomotionAuthoredSpeed(clips, ShuffleLeft, 7), 7);
+  assert.equal(locomotionAuthoredSpeed(clips, ShuffleLeft, 2), 2.5);
+  assert.equal(locomotionAuthoredSpeed(clips, Run, 7), 7, "a gait with its own number keeps it");
+  assert.equal(locomotionAuthoredSpeed(new Map(), ShuffleLeft, 7), undefined,
+    "neither the gait nor the fallback names a speed: play the authored rate");
+  // Wider than the mount window: walk 2.5 against run 7 in both directions.
+  assert.equal(unitGaitTimeScale(7, 7), 1);
+  assert.equal(unitGaitTimeScale(14, 7), UNIT_GAIT_MAX_TIME_SCALE);
+  assert.equal(unitGaitTimeScale(2.5, 7), UNIT_GAIT_MIN_TIME_SCALE,
+    "a walk speed against a run stride saturates the lower bound");
+  assert.equal(unitGaitTimeScale(undefined, 7), 1);
+  assert.equal(unitGaitTimeScale(7, undefined), 1);
+  assert.equal(unitGaitTimeScale(7, 0), 1);
+  assert.equal(unitGaitTimeScale(0, 7), 1);
+});
+
+test("a fresh unit eases in instead of popping, and only on its first appearance", () => {  assert.equal(SPAWN_FADE_WINDOW_MS, 400);
+  assert.equal(spawnFadeFactor(undefined, 1000), 1, "no stamp (or no layout clock) reads full opacity");
+  assert.equal(spawnFadeFactor(1000, 1000), 0, "the first frame starts from nothing");
+  assert.equal(spawnFadeFactor(1000, 1200), 0.5);
+  assert.equal(spawnFadeFactor(1000, 1400), 1);
+  assert.equal(spawnFadeFactor(1000, 99999), 1, "settled units never re-fade");
+  assert.equal(spawnFadeFactor(1000, 999), 0, "a clock running backwards cannot unpaint");
+});
+
+test("stride tempo divides yards by mixer seconds, never milliseconds", () => {
+  // The regression: `elapsed` arrives in the seconds `mixer.update` runs on, and dividing it once
+  // more read a 7 yd/s run as 437 yd/s — every gait saturated its upper bound and sprinted.
+  assert.equal(measuredTravelSpeed(7 * 0.016, 0.016), 7);
+  assert.equal(measuredTravelSpeed(0, 0.016), 0);
+  assert.equal(measuredTravelSpeed(7, 0), undefined, "a stalled clock measures nothing");
+  assert.equal(measuredTravelSpeed(-1, 0.016), undefined);
+  assert.equal(measuredTravelSpeed(Number.NaN, 0.016), undefined);
+  assert.equal(measuredTravelSpeed(STRIDE_SNAP_YARDS + 1, 1), undefined, "teleports are not strides");
+  assert.equal(measuredTravelSpeed(STRIDE_SNAP_YARDS, 1), STRIDE_SNAP_YARDS);
+});
+
+test("the renderer measures stride tempo and replays looping gaits at it", async () => {  const { readFile } = await import("node:fs/promises");
+  const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(renderer, /unit\.strideSpeed = this\.#strideSpeed\(unit, unit\.node\.position, elapsed\)/,
+    "every posed frame measures the drawn node's travel before anything poses");
+  assert.match(renderer, /this\.#applyUnitGait\(unit, gait, chosen\.loop\)/,
+    "both base-pose paths replay the committed gait at the measured tempo");
+  assert.match(renderer, /isLocomotionGait\(animation\)/,
+    "one-shots keep authored timing: only travelling gaits are retimed");
+  assert.match(renderer, /unit\.admittedAt === undefined\) unit\.admittedAt = now/,
+    "the spawn fade starts at first visibility, not at record creation");
+  assert.match(renderer, /appearance\.opacity \* spawnFadeFactor\(unit\.admittedAt, now\)/,
+    "ghosts and spirits keep their own translucency under the fade");
 });
 
 test("STRAFE a gait owns the mixer for its own blend before another gait may replace it", () => {
@@ -1107,6 +1263,10 @@ test("П2 a rider holds the mount pose whatever the mount is doing, and holds it
     assert.deepEqual(poseAnimation(pose).wanted, expected, `flags 0x${movementFlags.toString(16)}`);
     assert.equal(poseAnimation(pose).loop, true, "a seat is a stance, and a stance repeats");
   }
+  // Hover asks the unit's tier since the Gundrak swim of 2026-09-28; a rider does not get that far,
+  // because the seat is decided first — a hovering rider on the fly tier still sits.
+  assert.deepEqual(
+    poseAnimation(standing({ mounted: true, movementFlags: MOVEMENT_FLAGS.hover, animationTier: 3 })).wanted, [Mount]);
   // A spline is the taxi case, and it carries the flags of neither. Since A2 the flying rung is
   // asked for first — `[FlyMount, Mount]` — and this is the one honest change to what a rider is
   // offered: measured over the 22 playable rigs, not one carries 320, so every one of them still
@@ -1419,8 +1579,15 @@ test("M1 the strafe yaw target is the reference client's travel heading, row for
   // Ground locomotion only.
   assert.equal(moving(F.swimming | F.strafeLeft), 0);
   assert.equal(moving(F.flying | F.strafeLeft), 0);
-  assert.equal(moving(F.hover | F.strafeLeft), 0);
-  assert.equal(moving(F.disableGravity | F.strafeLeft), 0);
+  // Hover and gravity-off are ground locomotion unless the core put the unit on its hover or fly
+  // tier (`hoversOnFlightTier`): a levitating player strafes on its ground clips, so its legs turn
+  // like anyone's. They used to be excluded wholesale, which was the Gundrak swim of 2026-09-28.
+  assert.equal(moving(F.hover | F.strafeLeft), STRAFE_YAW_PURE);
+  assert.equal(moving(F.disableGravity | F.strafeLeft), STRAFE_YAW_PURE);
+  for (const animationTier of [2, 3]) {
+    assert.equal(strafeYawTarget(standing({ movementFlags: F.hover | F.strafeLeft, animationTier })), 0);
+    assert.equal(strafeYawTarget(standing({ movementFlags: F.disableGravity | F.strafeLeft, animationTier })), 0);
+  }
   assert.equal(moving(F.falling | F.strafeLeft), 0);
   assert.equal(strafeYawTarget(standing({ movementFlags: F.forward | F.strafeLeft, dead: true })), 0);
   assert.equal(

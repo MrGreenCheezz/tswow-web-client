@@ -8,14 +8,21 @@ import {
   GOD_RAY_SAMPLES, buildFullscreenGlowPasses, buildWorldCamera, godRaySunDirection,
   godRayScreenSource, godRayVisibility,
 } from "../dist/code/browser/WorldRenderer3D.js";
-import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
+import {
+  GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile,
+} from "../dist/code/browser/LightingQuality.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT, createCamera,
 } from "../dist/code/browser/SimpleScene.js";
 import {
   CAMERA_FEET_CLEARANCE, CAMERA_PITCH_LIMIT, cameraFloorPitch,
 } from "../dist/code/browser/game/CameraRig.js";
-import { defaultSettings, settingDefinition } from "../dist/code/browser/ui/SettingsModel.js";
+import {
+  coerceSetting, defaultSettings, parseSettings, settingDefinition, settingNumber,
+} from "../dist/code/browser/ui/SettingsModel.js";
+import { SETTING_SECTIONS } from "../dist/code/browser/ui/SettingsSections.js";
+import { COMPARISON_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/ComparisonProfile.js";
+import { enhancedGraphicsSettings } from "../dist/code/browser/ui/EnhancedGraphics.js";
 
 const hour = (value) => value * 120;
 const worldCameraAtPitch = (pitch, yaw = 0) => {
@@ -74,6 +81,94 @@ test("lighting quality bounds the optional contribution and keeps quality zero e
   assert.equal(lightingProfile(0).godRayStrength, 0);
   assert.equal(lightingProfile(1).godRayStrength, 0.12);
   assert.equal(lightingProfile(2).godRayStrength, 0.2);
+});
+
+test("the account's shaft multiplier scales the visibility exactly and stays bounded", () => {
+  const fixtures = [
+    [0, 0, 1, 1, 0.2, 0],
+    [0.9, 0, 1, 1, 0.2, 0],
+    [0, 1.0, 0.5, 1, 0.12, 0.3],
+    [0.3, -0.2, 0.2, 0.5, 0.2, 0.1],
+  ];
+  for (const fixture of fixtures) {
+    const today = godRayVisibility(...fixture);
+    assert.ok(today > 0, `fixture ${fixture} is visible`);
+    assert.equal(godRayVisibility(...fixture, 1), today, "100 % is today's number bit for bit");
+    assert.equal(godRayVisibility(...fixture, 3), today * 3, "300 % triples it");
+    assert.equal(godRayVisibility(...fixture, 10), today * GOD_RAY_STRENGTH_SCALE_MAX,
+      "a settings file cannot push past the bound");
+    assert.equal(godRayVisibility(...fixture, 0), 0, "0 disables");
+    assert.equal(godRayVisibility(...fixture, -1), 0, "a negative multiplier is 0, not a subtraction");
+    assert.equal(godRayVisibility(...fixture, Number.NaN), 0, "NaN fails closed");
+  }
+  // The profile ceiling keeps its own clamp: the multiplier is over it, not folded into it.
+  assert.equal(godRayVisibility(0, 0, 1, 1, 5, 0, 3), godRayVisibility(0, 0, 1, 1, 1, 0, 3));
+  assert.equal(godRayVisibility(0, 0, 1, 1, 0, 0, 3), 0, "quality 0 stays exact at any multiplier");
+  assert.equal(godRayVisibility(0, 0, 1, 1, 0.2, 1, 3), 0, "a full storm is still exact zero");
+  assert.ok(godRayVisibility(0, 0, 1, 1, lightingProfile(2).godRayStrength, 0, 3) <= 1,
+    "the high quality's ceiling at 300 % still fits an additive eight-bit composite");
+  assert.ok(GOD_RAY_STRENGTH_SCALE_MAX >= 3, "the slider's 300 % fits under the bound");
+  assert.equal(godRayStrengthScale(1), 1);
+  assert.equal(godRayStrengthScale(3), 3);
+  assert.equal(godRayStrengthScale("2.5"), 2.5);
+  assert.equal(godRayStrengthScale(10), GOD_RAY_STRENGTH_SCALE_MAX);
+  assert.equal(godRayStrengthScale(-2), 0);
+  assert.equal(godRayStrengthScale(Number.NaN), 1, "garbage is the default, not off");
+});
+
+test("«Сила солнечных лучей» is a percentage under its leaf, pinned neutral by the comparison profile", async () => {
+  const definition = settingDefinition("godRayStrength");
+  assert.ok(definition);
+  assert.equal(definition.kind, "number");
+  assert.equal(definition.group, "Эффекты");
+  assert.match(definition.label, /^Сила солнечных лучей/);
+  assert.deepEqual([definition.min, definition.max, definition.step, definition.fallback], [25, 300, 25, 100]);
+  assert.match(definition.hint ?? "", /100/);
+  assert.match(definition.hint ?? "", /300/);
+  assert.match(definition.hint ?? "", /«Солнечные лучи»/, "the hint says the leaf's own switch still decides");
+  assert.equal(defaultSettings().godRayStrength, 100, "the default is today's look");
+  assert.equal(coerceSetting(definition, 999), 300);
+  assert.equal(coerceSetting(definition, 0), 25, "the slider cannot switch the leaf off by itself");
+  assert.equal(coerceSetting(definition, "garbage"), 100);
+  assert.equal(coerceSetting(definition, 137.4), 137, "an old blob keeps an off-step value; the step is the control's");
+  assert.equal(settingNumber(parseSettings('{"godRayStrength":300}'), "godRayStrength"), 300);
+
+  const light = SETTING_SECTIONS["Эффекты"].find((section) => section.title === "Свет и атмосфера").ids;
+  assert.equal(light[light.indexOf("godRays") + 1], "godRayStrength", "the slider sits right under its leaf");
+
+  assert.equal(COMPARISON_GRAPHICS_OVERRIDES.godRays, false);
+  assert.equal(COMPARISON_GRAPHICS_OVERRIDES.godRayStrength, 100, "neutral: pinned with its leaf off");
+  assert.equal(enhancedGraphicsSettings(defaultSettings()).godRayStrength, 100,
+    "the enhanced preset's look is unchanged by the slider's arrival");
+
+  // Both appliers push the multiplier right after the leaf: the page and the bench draw the same.
+  const page = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
+  const helper = await readFile(new URL("../src/browser/RendererGraphicsSettings.ts", import.meta.url), "utf8");
+  for (const [source, receiver] of [[page, "game\\.renderer\\?"], [helper, "renderer"]]) {
+    const leaf = source.search(new RegExp(`${receiver}\\.setGodRays\\?\\.\\(settingBoolean\\(values, "godRays"\\)\\)`));
+    const slider = source.search(
+      new RegExp(`${receiver}\\.setGodRayStrength\\?\\.\\(settingNumber\\(values, "godRayStrength"\\) / 100\\)`));
+    assert.ok(leaf >= 0 && slider > leaf, "the multiplier follows its leaf");
+  }
+});
+
+test("the multiplier enters both shaft paths without touching what enables them", () => {
+  assert.match(rendererSource, /#godRayStrengthScale = 1;/);
+  assert.match(rendererSource, /return this\.#godRaysEnabled && this\.#lightingProfile\.godRayStrength > 0;/,
+    "the switch and the quality alone decide; the slider never enables the depth pass");
+  const setter = rendererSource.slice(
+    rendererSource.indexOf("  setGodRayStrength(scale: number): void {"),
+    rendererSource.indexOf("  #godRaysActive(): boolean {"));
+  assert.match(setter, /this\.#godRayStrengthScale = godRayStrengthScale\(scale\);/);
+  assert.equal(setter.includes("#syncFullscreenGlowTargets"), false, "no target rebuild: a stored number only");
+  assert.equal(setter.includes("#disposeFullscreenGlowTargets"), false);
+  // Classic: the last factor of the visibility product, after the storm fade.
+  const prepareAt = rendererSource.indexOf("#prepareGodRays(targets: GlowChainTargets): number {");
+  const prepare = rendererSource.slice(prepareAt, rendererSource.indexOf("#endFullscreenGlow(", prepareAt));
+  assert.match(prepare, /this\.#weatherFade\.storm,\s+this\.#godRayStrengthScale,\s+\);/);
+  // Cinematic: the quality's share of the ceiling times the same multiplier, bounded in CinematicPost.
+  assert.match(rendererSource,
+    /Math\.min\(1, this\.#lightingProfile\.godRayStrength \/ GOD_RAY_FULL_STRENGTH\) \* this\.#godRayStrengthScale : 0;/);
 });
 
 test("enabling the sole god-rays switch is visible with default graphics settings", () => {
@@ -266,15 +361,15 @@ test("the opt-in leaf shares capture with glow and pays depth only while active"
   assert.equal(definition.kind, "boolean");
   assert.equal(definition.fallback, false);
   assert.equal(defaultSettings().godRays, false);
-  assert.match(model, /id: "godRays", label: "Faithful-plus: солнечные лучи"/);
+  assert.match(model, /id: "godRays", label: "Солнечные лучи"/);
   assert.match(settings, /setGodRays\?\.\(settingBoolean\(values, "godRays"\)\)/);
 
   assert.match(rendererSource, /#godRaysEnabled = false;/);
   assert.match(rendererSource,
     /return this\.#godRaysEnabled && this\.#lightingProfile\.godRayStrength > 0;/);
   assert.match(rendererSource,
-    /if \(!this\.#fullscreenGlowEnabled && !this\.#godRaysActive\(\)\) return undefined;/,
-  "OFF/OFF retains the original direct sky-plus-world path");
+    /if \(!this\.#fullscreenGlowEnabled && !this\.#godRaysActive\(\) && !this\.#cinematic\.active\) return undefined;/,
+  "OFF/OFF (and no cinematic post leaf) retains the original direct sky-plus-world path");
 
   const sync = rendererSource.slice(
     rendererSource.indexOf("#syncFullscreenGlowTargets(): void {"),

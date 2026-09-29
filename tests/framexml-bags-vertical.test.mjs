@@ -66,6 +66,8 @@ const EXPECTED_VERTICAL_TOC = Object.freeze([
   "ActionBarFrame.xml",
   "MultiActionBars.xml",
   "BuffFrame.xml",
+  // Stock TOC line 64: the hit indicator's Lua and LowHealthFrame (framexml-hud-mechanics-vertical.test.mjs).
+  "CombatFeedback.xml",
   "CastingBarFrame.xml",
   "UnitFrame.xml",
   "HistoryKeeper.lua",
@@ -76,6 +78,8 @@ const EXPECTED_VERTICAL_TOC = Object.freeze([
   "PlayerFrame.xml",
   "PartyFrame.xml",
   "TargetFrame.xml",
+  // Stock TOC line 78: the totem bar PetFrame.lua's TotemFrame_Update call needs (same test).
+  "TotemFrame.xml",
   "PetFrame.xml",
   "SpellBookFrame.xml",
   "CharacterFrame.xml",
@@ -91,23 +95,43 @@ const EXPECTED_VERTICAL_TOC = Object.freeze([
 const EXPECTED_DELTA = Object.freeze({
   files: 9,
   bytes: 95_923,
-  widgets: 5_713,
+  // BankFrame.xml is now in both arms. Its ItemButtonTemplate inheritance resolves only with
+  // the bag closure: BankFrame grows from 13 to 361 widgets, adding 348 to the old 5,713 delta.
+  // LFDFrame.xml (both arms) adds 18 more the same way, measured: its one random-reward button,
+  // LFDQueueFrameRandomScrollFrameChildFrameItem1, inherits LargeItemButtonTemplate through
+  // LFDRandomDungeonLootTemplate, and that template lives in the bag closure's
+  // ItemButtonTemplate.xml (LFDQueueFrameRandomScrollFrameChildFrame: 10 -> 28 widgets).
+  // The window lanes then added loot, gossip, bank, taxi, friends, unit-popup, mail and trade
+  // frames to both arms; their item buttons resolve through the same bag-closure templates and
+  // stock UIDropDownMenu_CreateFrames grows UIDROPDOWNMENU_MAXBUTTONS for UnitPopup's long menus,
+  // measured 6,079 -> 6,516. The charter windows (TabardFrame, GuildRegistrarFrame, PetitionFrame,
+  // ArenaRegistrarFrame) joined both arms next; with them removed from both arms the old numbers
+  // return exactly, measured 6,516 -> 6,569. PetStable.xml followed: its pet slots inherit the
+  // same item-button templates (without it in both arms the delta is 6,569 again), 6,569 -> 6,595.
+  widgets: 6_595,
   lua: 4,
   luaFailed: 0,
+  // Seven previously absent API names remain unique to bags in the promoted full vertical.
+  // The measured additions are GetCursorMoney, GetPlayerTradeMoney,
+  // GetContainerNumFreeSlots, IsMacClient and TriggerTutorial, plus GetSendMailPrice and
+  // GetTargetTradeMoney, which stock MoneyFrame reaches once MailFrame/TradeFrame declare
+  // SEND_MAIL and TARGET_TRADE money frames. The charter windows reach one of the seven in both
+  // arms, and resolve one more baseline error, leaving six and -8.
   api: 6,
-  // GameMenuFrame now closes VoiceChat's real GameMenuButtonSoundOptions dependency in addition
-  // to the two PaperDoll button errors the bag closure already removed.
-  errors: -3,
-  distinctErrors: -3,
+  // The bag closure also resolves five baseline errors, including four occurrences of the
+  // missing CONTAINER_OFFSET_X constant while UIParent lays out the incomplete baseline.
+  errors: -8,
+  distinctErrors: -5,
 });
 const EXPECTED_BAG_API_SITES = Object.freeze({
+  // BankFrame.lua now defines UpdateBagButtonHighlight in both arms, so its two
+  // call sites are corpus-owned and no longer counted as host API dependencies.
   PlaySound: 14,
   IsModifiedClick: 11,
   GetContainerItemInfo: 9,
   OpenCoinPickupFrame: 6,
   ResetCursor: 6,
   GetContainerNumSlots: 4,
-  UpdateMicroButtons: 4,
   DropCursorMoney: 3,
   GetBindingKey: 3,
   PickupContainerItem: 3,
@@ -125,7 +149,6 @@ const EXPECTED_BAG_API_SITES = Object.freeze({
   TriggerTutorial: 2,
   UnitFactionGroup: 2,
   UnitIsDead: 2,
-  UpdateBagButtonHighlight: 2,
   UseContainerItem: 2,
   AddSendMailCOD: 1,
   AddSendMailMoney: 1,
@@ -133,7 +156,7 @@ const EXPECTED_BAG_API_SITES = Object.freeze({
   BackpackTokenFrame_Update: 1,
   ContainerIDToInventoryID: 1,
   CursorHasItem: 1,
-  DressUpItemLink: 1,
+  // DressUpItemLink left the census: DressUpFrame.lua now defines it in both arms.
   GetBagName: 1,
   GetCoinText: 1,
   GetContainerItemCooldown: 1,
@@ -153,7 +176,8 @@ const EXPECTED_BAG_API_SITES = Object.freeze({
   IsMacClient: 1,
   KeyRingButtonIDToInvSlotID: 1,
   Logout: 1,
-  OpenStackSplitFrame: 1,
+  // OpenStackSplitFrame left this census when StackSplitFrame.xml joined the vertical: its
+  // StackSplitFrame.lua defines the function in both arms, so the call site is corpus-owned.
   PickupBagFromSlot: 1,
   PickupGuildBankMoney: 1,
   PickupPlayerMoney: 1,
@@ -226,6 +250,11 @@ function errorKey(error) {
   return `${error.file}:${error.line}:${error.message}`;
 }
 
+function subtreeSize(frame) {
+  if (!frame) return 0;
+  return 1 + frame.children.reduce((count, child) => count + subtreeSize(child), 0);
+}
+
 function assertOrderedSubset(actual, expected, message) {
   let cursor = -1;
   for (const entry of expected) {
@@ -280,7 +309,7 @@ test("MPQ bags vertical loads stock item templates and concrete container roots"
     ));
     candidate = await loadFromMpq(chain, FRAMEXML_VERTICAL_TOC);
 
-    assert.equal(baseline.boot.bridge.getFrame("ContainerFrame1"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("ContainerFrame1")?.name, undefined,
       "the current vertical baseline has no container root");
     assert.equal(baseline.boot.bridge.registry.get("ItemButtonTemplate"), undefined,
       "the current vertical baseline has no item-button template");
@@ -349,6 +378,9 @@ test("MPQ bags vertical loads stock item templates and concrete container roots"
     const delta = Object.fromEntries(Object.keys(before).map((key) => [key, after[key] - before[key]]));
     assert.deepEqual(delta, EXPECTED_DELTA,
       `exact bags dependency-closure delta versus the current vertical: ${JSON.stringify(delta)}`);
+    assert.equal(subtreeSize(candidate.boot.bridge.getFrame("BankFrame"))
+      - subtreeSize(baseline.boot.bridge.getFrame("BankFrame")), 348,
+    "the extra bag widgets are BankFrame's item slots inheriting the newly available template");
 
     // The static plan is the host API census for this stock bag closure. Compare it to the
     // no-bags baseline so inherited action-bar calls do not get mistaken for bag dependencies.
@@ -374,6 +406,21 @@ test("MPQ bags vertical loads stock item templates and concrete container roots"
     );
 
     const baselineErrors = new Set(baseline.inventory.errors.map(errorKey));
+    const candidateErrors = new Set(candidate.inventory.errors.map(errorKey));
+    const clearedErrors = baseline.inventory.errors
+      .filter((error) => !candidateErrors.has(errorKey(error)))
+      .map((error) => [error.file, error.line, error.count])
+      .sort((left, right) => left[0].localeCompare(right[0]) || left[1] - right[1]);
+    assert.deepEqual(clearedErrors, [
+      ["interface/framexml/mainmenubarmicrobuttons.lua", 39, 2],
+      ["interface/framexml/paperdollframe.lua", 2161, 1],
+      ["interface/framexml/paperdollframe.lua", 2335, 1],
+      ["interface/framexml/uiparent.lua", 1937, 4],
+      ["interface/framexml/voicechat.lua", 236, 1],
+      // MailFrame.xml's lock overlay anchors to SendMailAttachment1, an ItemButtonTemplate
+      // button whose template lives in this closure's ItemButtonTemplate.xml.
+      ["SendMailFrameLockSendMail:OnLoad", 2, 1],
+    ], "the bag closure clears the exact six missing-dependency errors");
     const candidateSpecificErrors = candidate.inventory.errors.filter(
       (error) => !baselineErrors.has(errorKey(error)),
     );
@@ -423,6 +470,20 @@ test("stock backpack click opens, refreshes, and closes the ContainerFrame seam"
     assert.equal(icon?.texture, "Interface\\Icons\\INV_Potion_54",
       "the CannedWorldSeam item reaches the reversed stock slot");
     assert.equal(count?.text, "5", "the stock item count reaches the item widget");
+
+    // The live bank route begins at this exact MPQ OnClick, not at the native tooltip layer.
+    // Keep the cursor operation observable without changing the fixture's item fields.
+    const pickups = [];
+    seam.pickupContainerItem = (bag, slot) => pickups.push([bag, slot]);
+    const itemButton = candidate.boot.bridge.getFrame("ContainerFrame1Item16");
+    assert.ok(itemButton);
+    const stackSplit = candidate.boot.bridge.getFrame("StackSplitFrame");
+    if (!stackSplit) candidate.boot.vm.setGlobal("StackSplitFrame", candidate.boot.bridge.getFrame("GameMenuFrame"));
+    assert.equal(candidate.boot.bridge.Click(itemButton, "LeftButton", false), true,
+      "stock item left click dispatches through ContainerFrameItemButton_OnClick");
+    assert.deepEqual(pickups, [[0, 1]], "stock Lua calls PickupContainerItem with a one-based slot");
+    assert.equal(candidate.boot.vm.errors.length, errorsBefore,
+      "stock pickup has no unhandled Lua error");
 
     seam.setContainerItem(0, 1, {
       entry: 13446,

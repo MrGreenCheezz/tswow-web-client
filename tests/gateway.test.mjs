@@ -451,6 +451,10 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   await writeFile(join(dbcDirectory, "items.json"), JSON.stringify([[25, "Потрёпанный меч", 220, 1, 13, 1, 7]]));
   await writeFile(join(buildingsDirectory, "Triangle.wmo.vmo"), vmapModel());
   await writeFile(join(buildingsDirectory, "Hut.wmo.vmo"), collisionVmo());
+  // The extractor writes M2 collision beside the tile as `<name>.m2.vmo`, while the tile itself
+  // names the bare `<name>.m2`. Every tree in Elwynn arrives in the suffixed spelling, so without
+  // the fallback the whole forest has no collision on the client while the server collides.
+  await writeFile(join(buildingsDirectory, "Tree.m2.vmo"), collisionVmo());
   await mkdir(join(visualTilesDirectory, "0"), { recursive: true });
   await writeFile(join(visualTilesDirectory, "0", "32-32.json"), JSON.stringify([{ id: 7, kind: "m2", name: "World\\Tree.m2", x: 1, y: 2, z: 3, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 }]));
   const visualPath = "World\\Tree.m2";
@@ -636,6 +640,12 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/collision/model/Missing.wmo`, {
       headers: { origin: "http://127.0.0.1:5173" },
     })).status, 204);
+    const tree = await fetch(`http://127.0.0.1:${gateway.port}/collision/model/Tree.m2`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.equal(tree.status, 200);
+    assert.equal(decodeCollisionModel(await tree.arrayBuffer()).groups.length, 2,
+      "an M2 named bare falls back to its extractor-spelled .m2.vmo file");
 
     const model = await fetch(`http://127.0.0.1:${gateway.port}/environment/model/Triangle.wmo`, {
       headers: { origin: "http://127.0.0.1:5173" },
@@ -773,10 +783,27 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     name: "Огненный шар",
     rank: "Ранг 1",
     description: "Бросает огненный шар.",
+    // v=13: the buff bar's text and the two cast-row bits. This synthetic row sets none of them.
+    auraDescription: "",
+    onNextSwing: false,
+    channeled: false,
     iconId: 7,
     iconPath: "Interface\\Icons\\Spell_Fire_FlameBolt",
     passive: false,
     autoRepeat: false,
+    displayInStanceBar: false,
+    stanceBarOrder: 0,
+    // v11: the explicit target-selection contract the Unity catalog reads. This synthetic row
+    // names no unit, item or ground target, so every mask reads zero and nothing is supported.
+    targetingContractVersion: 1,
+    requiredTargetMask: 0,
+    requiredTargetMode: 0,
+    unitTargetContractVersion: 1,
+    supportsExplicitUnitTarget: false,
+    explicitTargetContractVersion: 2,
+    explicitTargetMask: 0,
+    clientSelectionMask: 0,
+    supportsExplicitTarget: false,
     // The bit that actually means "keep me out of the spellbook", carried beside the passive one
     // because they are different questions: a passive spell is listed and greyed, a hidden one is
     // not listed at all.
@@ -808,8 +835,17 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // anything, and the browser has nothing else to tell that row from a five-yard spell.
     rangeFlags: 2,
     castTime: 1500,
+    effects: [0, 0, 0],
     effectAura: [0, 0, 0],
+    effectItemType: [0, 0, 0],
     effectMiscValue: [0, 0, 0],
+    tradeSkill: false,
+    reagents: [],
+    tools: [],
+    requiredToolCategories: [],
+    equippedItemClass: 0,
+    equippedItemSubclass: 0,
+    equippedItemInvTypes: 0,
     // Everything a `$`-marker is made of. Served raw for the effect columns and resolved for the
     // two that are indexes: a browser holding an index into a table it does not have holds nothing.
     effectBasePoints: [13, 0, 0],
@@ -1025,7 +1061,7 @@ test("the two artifact namespaces move independently and never collide", () => {
   // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
   assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v21");
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v17");
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v22");
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {

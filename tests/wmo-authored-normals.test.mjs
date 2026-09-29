@@ -7,6 +7,7 @@ import {
   wmoGroupMeshes,
 } from "../tools/wmo-visual.mjs";
 import { encodeWwm, encodeWwmGroup } from "../tools/wwm.mjs";
+import { buildWmoGroupGeometry } from "../dist/code/browser/WmoGeometry.js";
 import {
   decodeWwm,
   decodeWwmGroup,
@@ -293,7 +294,7 @@ test("WMO model-to-scene mapping, gateway namespaces, Terrain compatibility, and
   assert.ok(mapped.distanceTo(new THREE.Vector3(-1, 3, 2)) < 1e-6,
     "WMO model coordinates map as (-x,z,y)");
 
-  assert.equal(visualModelCacheNamespace("World\\Wmo\\HardEdge.wmo"), "visual-wmo-v17");
+  assert.equal(visualModelCacheNamespace("World\\Wmo\\HardEdge.wmo"), "visual-wmo-v22");
   assert.equal(visualModelCacheNamespace("World\\Creature\\Wolf.m2"), "visual-v21");
 
   const modern = encodeModel(wmoGroupMeshes(parseFixture()));
@@ -305,20 +306,28 @@ test("WMO model-to-scene mapping, gateway namespaces, Terrain compatibility, and
   assert.deepEqual([...modernTerrain.wmo.groups[0].mesh.normals], AUTHORED_NORMALS);
   assert.equal(legacyTerrain.wmo.groups[0].mesh?.normals, undefined);
 
-  // #wmoGroupMesh is private and creates a WebGL geometry, so its authored-normal/fallback
-  // choice cannot be driven without a renderer. Pin only that seam; ranges and shaders remain
-  // outside this R5.1 slice.
+  // Geometry construction now has a real seam: verify authored and legacy normals on the
+  // decoded wire payload, then pin the renderer's call into the incremental geometry scheduler.
+  const authoredGeometry = buildWmoGroupGeometry(modernTerrain.wmo, 0);
+  const fallbackGeometry = buildWmoGroupGeometry(legacyTerrain.wmo, 0);
+  assert.ok(authoredGeometry && fallbackGeometry);
+  const authoredSceneNormals = authoredGeometry.getAttribute("normal").array;
+  for (let at = 0; at < AUTHORED_NORMALS.length; at += 3) {
+    assert.equal(authoredSceneNormals[at], -AUTHORED_NORMALS[at]);
+    assert.equal(authoredSceneNormals[at + 1], AUTHORED_NORMALS[at + 2]);
+    assert.equal(authoredSceneNormals[at + 2], AUTHORED_NORMALS[at + 1]);
+  }
+  const recomputed = fallbackGeometry.clone();
+  recomputed.deleteAttribute("normal");
+  recomputed.computeVertexNormals();
+  assert.deepEqual(fallbackGeometry.getAttribute("normal").array, recomputed.getAttribute("normal").array);
+  authoredGeometry.dispose();
+  fallbackGeometry.dispose();
+  recomputed.dispose();
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const start = renderer.indexOf("  #wmoGroupMesh(");
   const end = renderer.indexOf("\n  /**", start + 1);
   assert.ok(start >= 0 && end > start);
   const body = renderer.slice(start, end);
-  assert.match(body, /source\.normals/);
-  assert.match(body, /sceneNormals\[at\]\s*=\s*-source\.normals\[at\]/,
-    "authored X normal maps to scene -X");
-  assert.match(body, /sceneNormals\[at \+ 1\]\s*=\s*source\.normals\[at \+ 2\]/,
-    "authored Z normal maps to scene Y");
-  assert.match(body, /sceneNormals\[at \+ 2\]\s*=\s*source\.normals\[at \+ 1\]/,
-    "authored Y normal maps to scene Z");
-  assert.match(body, /computeVertexNormals/);
+  assert.match(body, /#wmoGeometryBuild\.request\(cacheKey, model, index, this\.#submissionSerial\)/);
 });

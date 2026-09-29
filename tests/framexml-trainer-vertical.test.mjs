@@ -98,7 +98,9 @@ test("Trainer dependencies preserve stock TOC order and exact vertical delta", {
     }, {
       files: 3,
       bytes: 106773,
-      widgets: 220,
+      // StaticPopup's four concrete MoneyInputFrameTemplate children now inherit their full
+      // stock edit-box/texture tree, adding 76 widgets to the measured dependency delta.
+      widgets: 296,
       chunks: 21,
       lua: 1,
       luaFailed: 0,
@@ -114,7 +116,7 @@ test("Trainer dependencies preserve stock TOC order and exact vertical delta", {
     assert.ok(candidate.requests.includes("interface/framexml/staticpopup.lua"));
     assert.ok(candidate.requests.includes("interface/framexml/classtrainerframetemplates.xml"));
 
-    assert.equal(candidate.boot.bridge.getFrame("ClassTrainerFrame"), undefined,
+    assert.equal(candidate.boot.bridge.getFrame("ClassTrainerFrame")?.name, undefined,
       "vertical inventory does not load the LoD root before Blizzard_TrainerUI is requested");
   } finally {
     candidate?.boot.close();

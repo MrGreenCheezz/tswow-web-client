@@ -421,16 +421,22 @@ test("FrameXML flag defaults off and accepts only the explicit diagnostic opt-in
   assert.equal(frameXmlFlagEnabled("?framexml=0"), false);
 });
 
-test("ordinary EnterWorld runs TSWoW addons over native UI and framexml=1 selects the full diagnostic HUD", async () => {
+test("EnterWorld watches the saved UI preference and scopes runtime switching to its session", async () => {
   const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
-  assert.match(source, /const frameXmlEnabled = frameXmlFlagEnabled\(window\.location\.search\);/,
-    "the real world-entry route must consult the native-default policy");
-  assert.match(source, /if \(!frameXmlEnabled\) \{\s*installNativeWowUiSkin/,
-    "ordinary entry retains the native HUD");
-  assert.match(source, /void import\("\.\.\/framexml\/FrameXmlWorldMount\.js"\)/,
-    "ordinary entry loads the addon runtime");
-  assert.match(source, /mountFrameXmlVertical\(\{ addonsOnly: !frameXmlEnabled \}\)/,
+  assert.match(source, /uiMode\.select\(frameXmlFlagEnabled\(window\.location\.search, settingOn\("originalFrameXml"\)\)\)/);
+  assert.match(source, /installNativeWowUiSkin\(game\.gatewayOrigin\);\s*mountNativeCharacterPortrait/,
+    "both modes retain a complete custom fallback");
+  assert.match(source, /const tswowAddonsEnabled = settingOn\("tswowAddons"\);/,
+    "both loaders use the preference captured for this world entry");
+  assert.match(source, /if \(tswowAddonsEnabled\) \{\s*const modules = createModuleLoader/,
+    "disabled modules cannot start their requests and reload polling");
+  assert.match(source, /new FrameXmlModeController\(tswowAddonsEnabled, async \(\) => \{\s*const module = await import/);
+  assert.match(source, /entryLifecycle\.track\(\(\) => uiMode\.dispose\(\)\)/);
+  assert.match(source, /entryLifecycle\.track\(watchSettingsApplied\(syncUiMode\)\)/);
+  assert.match(source, /mountFrameXmlVertical\(\{\s*addonsOnly: !frameXmlEnabled\s*[,}]/,
     "the same policy selects an addon overlay for ordinary entry and the full HUD only for diagnostics");
+  assert.match(source, /includeActiveTsAddons: tswowAddonsEnabled/,
+    "opting into stock FrameXML does not implicitly opt back into TSWoW addons");
   assert.doesNotMatch(source, /new URLSearchParams\(window\.location\.search\)\.get\("framexml"\) === "1"/,
     "the old query opt-in must not remain on the ordinary route");
 });
@@ -1162,26 +1168,29 @@ test("world reset closes the old mount, reattaches the next world, and cancels a
   assert.ok(worldStyle, "world style must scope the native replacement to exact lane IDs");
   assert.match(worldStyle.textContent, /display:\s*none\s*!important/,
     "native replacement must be CSS-owned rather than an inline DOM mutation");
-  for (const selector of [
-    "body.framexml-world-replaces-native #right-rail > #minimap > #minimap-canvas",
-    "body.framexml-world-replaces-native #right-rail > #minimap > .minimap-zone",
-    "body.framexml-world-replaces-native #right-rail > #minimap > .minimap-subzone",
-    'body.framexml-world-replaces-native #right-rail > #minimap > .minimap-controls > .minimap-button[aria-label="Отдалить"]',
-    'body.framexml-world-replaces-native #right-rail > #minimap > .minimap-controls > .minimap-button[aria-label="Приблизить"]',
-    'body.framexml-world-replaces-native #right-rail > #minimap > .minimap-controls > .minimap-button[aria-label="Вращать карту по направлению взгляда"]',
-  ]) {
-    assert.ok(worldStyle.textContent.includes(selector), `native minimap replacement owns ${selector}`);
-  }
-  assert.match(worldStyle.textContent, /#right-rail > #minimap \{ margin-top: calc\(25vh \+ 10px\); \}/,
-    "native fallback must be laid out below the stock 192-unit cluster");
+  // The page's reduced-motion rule gives every element a 0.001 ms transition of every property; in
+  // the HUD each Lua alpha/colour write then started a CSS transition, and style recalcs slowed with
+  // every one until the next major GC. The HUD opts out of CSS transitions altogether.
+  assert.match(worldStyle.textContent,
+    /#framexml-world-host, #framexml-world-host \* \{ transition-property: none !important; \}/,
+    "the stock HUD takes no CSS transitions");
+  // The stock MinimapCluster owns the whole corner (tracking, world-map button, stock clock): the
+  // native root is retired as one element, never piecemeal, and nothing below it stays in the rail
+  // as scroll overflow (measured 389 > 260 with the old hybrid at 1920x919).
+  assert.match(worldStyle.textContent,
+    /body\.framexml-world-replaces-native #right-rail > #minimap \{ display: none !important; \}/,
+    "the stock cluster retires the whole native #minimap root");
+  assert.doesNotMatch(worldStyle.textContent, /#right-rail > #minimap > /,
+    "no piecemeal native minimap child rules remain");
+  assert.doesNotMatch(worldStyle.textContent, /margin-top: calc\(25vh/,
+    "the native fallback is no longer laid out below the cluster");
+  assert.match(worldStyle.textContent,
+    /body\.framexml-world-replaces-native #right-rail \{\s*top: calc\(25vh \* var\(--ui-scale, 1\) \+ 10px\);/,
+    "the remaining native rail (boss/arena frames) starts below the 192-unit stock cluster");
   for (const name of ["MiniMapTracking", "MiniMapWorldMapButton"]) {
-    assert.ok(worldStyle.textContent.includes(`#framexml-world-host [data-framexml-name="${name}"]`),
-      `dead FrameXML ${name} must be hidden while native fallback remains available`);
+    assert.ok(!worldStyle.textContent.includes(`[data-framexml-name="${name}"]`),
+      `stock ${name} is a live control and must not be hidden`);
   }
-  assert.doesNotMatch(worldStyle.textContent, /#right-rail\s*>\s*#minimap\s*\{[^}]*display:\s*none/i,
-    "native minimap fallback root must remain visible");
-  assert.doesNotMatch(worldStyle.textContent, /#right-rail\s*>\s*#minimap[^}]*minimap-clock[^}]*display:\s*none/i,
-    "native minimap clock must remain visible");
   for (const selector of [
     "body.framexml-world-replaces-native #target-icon",
     "body.framexml-world-replaces-native #target-name",
@@ -1906,5 +1915,184 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
     unmountFrameXmlVertical();
     if (previousObserver === undefined) delete globalThis.MutationObserver;
     else globalThis.MutationObserver = previousObserver;
+  }
+});
+
+/** Run the newest scheduled HUD frame callback once (the fake rAF only records them). */
+function runNewestFrame() {
+  const newest = [...raf.scheduled].reduce((best, entry) => (!best || entry.id > best.id ? entry : best), undefined);
+  assert.ok(newest, "a HUD frame is scheduled");
+  raf.scheduled.delete(newest);
+  newest.callback(0);
+  return newest.id;
+}
+
+/** Capture the boot of the next mount without changing the harness' stubbed load. */
+async function mountCapturingBoot(options) {
+  const previousLoad = FrameXmlBoot.prototype.load;
+  let boot;
+  FrameXmlBoot.prototype.load = function captureBoot(...args) {
+    boot = this;
+    return previousLoad.apply(this, args);
+  };
+  try {
+    const result = await mountFrameXmlVertical(options);
+    return { result, boot };
+  } finally {
+    FrameXmlBoot.prototype.load = previousLoad;
+  }
+}
+
+test("one thrown HUD frame is reported once and the next frame is still scheduled", async () => {
+  const throwing = seam("step-throws");
+  let ticks = 0;
+  throwing.tick = () => {
+    ticks += 1;
+    if (ticks <= 2) throw new Error("seam tick failed");
+  };
+  const reported = [];
+  const previousError = console.error;
+  console.error = (...args) => { reported.push(String(args[0])); };
+  try {
+    const { result } = await mountCapturingBoot({ viewport, seam: throwing });
+    assert.equal(result.ok, true, result.message);
+    const first = runNewestFrame();
+    assert.equal(ticks, 1, "the first frame ran and threw");
+    const second = runNewestFrame();
+    assert.ok(second > first, "a thrown frame still re-armed requestAnimationFrame");
+    assert.equal(ticks, 2);
+    runNewestFrame();
+    assert.equal(ticks, 3, "the HUD keeps ticking after the failures");
+    assert.equal(reported.filter((line) => line.includes("seam tick failed")).length, 1,
+      "the same failure is reported once, not every frame");
+  } finally {
+    console.error = previousError;
+    unmountFrameXmlVertical();
+  }
+  const before = raf.next;
+  assert.equal([...raf.scheduled].some((entry) => entry.id >= before), false,
+    "no frame is scheduled after unmount");
+});
+
+test("ReloadUI remounts the HUD after the Lua caller unwinds; DisableAllAddOns is session-only", async () => {
+  const {
+    frameXmlClientAddonEnabled,
+    frameXmlSessionDisabledClientAddons,
+    installFrameXmlReloadUi,
+  } = await import("../dist/code/browser/framexml/FrameXmlWorldMount.js");
+  const chat = await import("../dist/code/browser/ui/Chat.js");
+  const reloading = seam("reload");
+  const { result, boot } = await mountCapturingBoot({ viewport, seam: reloading });
+  const previousWorld = game.world;
+  const messages = [];
+  let duringReload;
+  try {
+    assert.equal(result.ok, true, result.message);
+    const attachesBefore = seamEvents.filter((event) => event === "reload:attach").length;
+    // A TSWoW module command typed while the fresh VM loads: the unmount has dropped it, and EnterWorld
+    // brackets its own mounts with beginModuleCommandLoad so chat says «still loading», not «unknown».
+    game.world = { emotes: { emotes: [] }, pushLocalMessage: (message) => messages.push(message.text), sendChat() {} };
+    const attach = reloading.attach;
+    reloading.attach = function (...args) {
+      chat.submitChat("/reloadprobe");
+      duringReload = messages.at(-1);
+      return attach.apply(this, args);
+    };
+    // The stock TOO_MANY_LUA_ERRORS accept button: `DisableAllAddOns(); ReloadUI();`
+    const ran = boot.vm.execute("DisableAllAddOns(); ReloadUI(); ReloadUI()", "@lifecycle:reload");
+    assert.equal(ran.ok, true, ran.error);
+    assert.equal(seams.find((entry) => entry.seam === reloading && entry.closed), undefined,
+      "the VM running the popup handler is not closed under it");
+    const hostPublished = () => viewport.children.some((child) => child.id === "framexml-world-host"
+      && child.style.visibility === "visible");
+    assert.equal(hostPublished(), true, "the first mount is still published while Lua unwinds");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Wait for the complete remount (attach happens inside load; publication comes after it).
+    for (let attempt = 0; attempt < 100
+      && !(seamEvents.filter((event) => event === "reload:attach").length > attachesBefore && hostPublished());
+      attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(seamEvents.includes("reload:detach"), "the old mount was torn down");
+    assert.equal(seamEvents.filter((event) => event === "reload:attach").length, attachesBefore + 1,
+      "exactly one fresh mount attached, although ReloadUI ran twice");
+    assert.equal(seams.filter((entry) => entry.seam === reloading).length, 2, "a second boot was created");
+    assert.equal(seams.find((entry) => entry.seam === reloading)?.closed, true, "the first boot closed");
+    assert.equal(body.classList.contains("framexml-world-replaces-native"), true,
+      "the remounted HUD owns the native lanes again");
+    assert.equal(viewport.children.filter((child) => child.id === "framexml-world-host").length, 1,
+      "one host after the reload");
+    assert.match(duringReload ?? "", /Аддоны ещё загружаются/,
+      "a module command typed during the remount is reported as still loading");
+    for (let attempt = 0; attempt < 100 && !messages.includes("Интерфейс перезагружен."); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(messages.includes("Интерфейс перезагружен."), messages.join(" | "));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    chat.submitChat("/reloadprobe");
+    assert.match(messages.at(-1), /Неизвестная команда \/reloadprobe/, "the finished remount retires the bracket");
+  } finally {
+    game.world = previousWorld;
+    unmountFrameXmlVertical();
+  }
+  // DisableAllAddOns covers the client add-on list of the mount that installed it.
+  const vm = new (await import("../dist/code/browser/glue/GlueLua.js")).GlueLuaVm();
+  let reloads = 0;
+  try {
+    installFrameXmlReloadUi(vm, ["AnyIDTooltip", "MikScrollingBattleText", "MSBTOptions"], () => { reloads += 1; });
+    assert.equal(frameXmlClientAddonEnabled("MikScrollingBattleText"), true);
+    assert.equal(vm.execute("DisableAllAddOns()", "@t").ok, true);
+    assert.deepEqual([...frameXmlSessionDisabledClientAddons()].sort(),
+      ["anyidtooltip", "mikscrollingbattletext", "msbtoptions"]);
+    assert.equal(frameXmlClientAddonEnabled("mikScrollingBattleText"), false, "case-insensitive");
+    assert.equal(frameXmlClientAddonEnabled("Blizzard_TimeManager"), true, "Blizzard add-ons are untouched");
+    assert.equal(vm.execute("ReloadUI()", "@t").ok, true);
+    assert.equal(reloads, 1);
+  } finally {
+    vm.close();
+  }
+});
+
+test("a hovered world unit drives the stock GameTooltip through the engine calls", async () => {
+  const { setHoveredTarget } = await import("../dist/code/browser/game/HoverTarget.js");
+  const { result, boot } = await mountCapturingBoot({ viewport, seam: seam("mouseover") });
+  const unitObject = { guid: 42n, typeId: 3 };
+  const world = { state: { objects: new Map([[42n, unitObject]]) } };
+  try {
+    assert.equal(result.ok, true, result.message);
+    assert.ok(boot, `the mount booted a VM: ${result.message}`);
+    const setup = boot.vm.execute(`
+      __calls = {}
+      local function note(text) __calls[#__calls + 1] = text end
+      UIParent = UIParent or { name = "UIParent" }
+      GameTooltip = { shown = false }
+      function GameTooltip:IsShown() return self.shown end
+      function GameTooltip:IsOwned(frame) return self.owner == frame end
+      function GameTooltip:SetUnit(unit) note("SetUnit:" .. unit); self.shown = true end
+      function GameTooltip:FadeOut() note("FadeOut"); self.shown = false; self.owner = nil end
+      function GameTooltip_SetDefaultAnchor(tooltip, parent) note("SetDefaultAnchor"); tooltip.owner = parent end
+      function UnitExists(unit) if unit == "mouseover" then return 1 end end
+    `, "@lifecycle:mouseover");
+    assert.equal(setup.ok, true, setup.error);
+    const calls = () => {
+      boot.vm.execute("__joined = table.concat(__calls, ',')", "@t");
+      return boot.vm.getGlobal("__joined");
+    };
+    game.world = world;
+    setHoveredTarget(world, unitObject);
+    runNewestFrame();
+    assert.equal(calls(), "SetDefaultAnchor,SetUnit:mouseover", "hover-in anchors and fills the stock tooltip");
+    runNewestFrame();
+    assert.equal(calls(), "SetDefaultAnchor,SetUnit:mouseover", "a steady hover does not repeat SetUnit");
+    setHoveredTarget(undefined, undefined);
+    runNewestFrame();
+    assert.equal(calls(), "SetDefaultAnchor,SetUnit:mouseover", "a throttle-length clear does not fade");
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    runNewestFrame();
+    assert.equal(calls(), "SetDefaultAnchor,SetUnit:mouseover,FadeOut", "a settled leave fades the world tooltip");
+  } finally {
+    setHoveredTarget(undefined, undefined);
+    game.world = undefined;
+    unmountFrameXmlVertical();
   }
 });

@@ -18,7 +18,7 @@ function emptyIdentitySection(bytesName) {
   };
 }
 
-test("render-target attachment identity is the Texture object, never its shared Source", () => {
+test("render-target attachment identity is the Texture object, never its shared Source", async () => {
   const first = new THREE.WebGLRenderTarget(4, 2);
   const second = new THREE.WebGLRenderTarget(4, 2);
   second.texture.source = first.texture.source;
@@ -50,7 +50,7 @@ test("render-target attachment identity is the Texture object, never its shared 
   });
 });
 
-test("manual target.texture replacement is one conservative unknown allocation in either visit order", () => {
+test("manual target.texture replacement is one conservative unknown allocation in either visit order", async () => {
   for (const order of ["target-first", "texture-first"]) {
     const target = new THREE.WebGLRenderTarget(4, 2);
     const replacement = new THREE.DataTexture(new Uint8Array(4 * 2 * 4), 4, 2);
@@ -77,7 +77,7 @@ test("manual target.texture replacement is one conservative unknown allocation i
   }
 });
 
-test("non-MSAA 2D targets account generated/manual mips and every MRT attachment", () => {
+test("non-MSAA 2D targets account generated/manual mips and every MRT attachment", async () => {
   const generated = new THREE.WebGLRenderTarget(4, 2, {
     depthBuffer: false,
     generateMipmaps: true,
@@ -99,7 +99,7 @@ test("non-MSAA 2D targets account generated/manual mips and every MRT attachment
     emptyIdentitySection("estimatedLogicalRenderbufferBytes"));
 });
 
-test("depth texture replaces the depth renderbuffer; depth-off and stencil layouts stay exact", () => {
+test("depth texture replaces the depth renderbuffer; depth-off and stencil layouts stay exact", async () => {
   const withDepthTexture = new THREE.WebGLRenderTarget(4, 2, {
     depthTexture: new THREE.DepthTexture(4, 2),
   });
@@ -130,7 +130,7 @@ test("depth texture replaces the depth renderbuffer; depth-off and stencil layou
   assert.equal(snapshot.gpuRenderbuffers.uniqueResources, 1);
 });
 
-test("cube and array target subclasses derive layout from the explicit target", () => {
+test("cube and array target subclasses derive layout from the explicit target", async () => {
   const cube = new THREE.WebGLCubeRenderTarget(2);
   const array = new THREE.WebGLArrayRenderTarget(2, 2, 3, { depthBuffer: false });
   assert.equal(cube.texture.renderTarget, null,
@@ -150,7 +150,7 @@ test("cube and array target subclasses derive layout from the explicit target", 
     "Three allocates a separate stable depth renderbuffer for each cube face");
 });
 
-test("WebGL3D and array targets keep generated/manual color depth formulas honest", () => {
+test("WebGL3D and array targets keep generated/manual color depth formulas honest", async () => {
   const generated3d = new THREE.WebGL3DRenderTarget(4, 2, 3, {
     depthBuffer: false,
     generateMipmaps: true,
@@ -185,7 +185,7 @@ test("WebGL3D and array targets keep generated/manual color depth formulas hones
   assert.equal(depthLedger.snapshot().gpuRenderbuffers.estimatedLogicalRenderbufferBytes, 2 * 4 * 2 * 3);
 });
 
-test("MSAA keeps safe base attachments known and marks only auxiliary topology unknown", () => {
+test("MSAA keeps safe base attachments known and marks only auxiliary topology unknown", async () => {
   const target = new THREE.WebGLRenderTarget(4, 2, {
     samples: 4,
     depthTexture: new THREE.DepthTexture(4, 2),
@@ -207,7 +207,7 @@ test("MSAA keeps safe base attachments known and marks only auxiliary topology u
   assert.equal(snapshot.coverage.gaps.some((gap) => /^render targets/i.test(gap)), false);
 });
 
-test("MSAA topology uncertainty has its own immutable section, not a synthetic renderbuffer", () => {
+test("MSAA topology uncertainty has its own immutable section, not a synthetic renderbuffer", async () => {
   const target = new THREE.WebGLRenderTarget(4, 2, { samples: 4, depthBuffer: false });
   const ledger = new ResourceAccountingLedger();
   ledger.referenceGpuRenderTarget("msaa", target);
@@ -226,7 +226,7 @@ test("MSAA topology uncertainty has its own immutable section, not a synthetic r
   assert.equal(JSON.parse(JSON.stringify(snapshot.gpuRenderTargetTopology)).unknownTopologyResources, 1);
 });
 
-test("unsafe cube/manual and MRT/manual combinations are explicit unknowns", () => {
+test("unsafe cube/manual and MRT/manual combinations are explicit unknowns", async () => {
   const cube = new THREE.WebGLCubeRenderTarget(2);
   cube.texture.mipmaps = [{}];
   const mrt = new THREE.WebGLRenderTarget(2, 2, { count: 2, depthBuffer: false });
@@ -245,7 +245,7 @@ test("unsafe cube/manual and MRT/manual combinations are explicit unknowns", () 
   assert.ok(snapshot.coverage.gaps.some((gap) => /mixed render-target/i.test(gap)));
 });
 
-test("renderbuffer snapshots are immutable and benchmark flattening remains conditional", () => {
+test("renderbuffer snapshots are immutable and benchmark flattening remains conditional", async () => {
   const ledger = new ResourceAccountingLedger();
   ledger.referenceGpuRenderTarget("target", new THREE.WebGLRenderTarget(4, 2));
   const accounting = ledger.snapshot();
@@ -316,7 +316,7 @@ function portraitRenderer() {
     getClearAlpha: () => state.alpha,
     clear() {},
     render() {},
-    readRenderTargetPixels(_target, _x, _y, _width, _height, pixels) { pixels.fill(0); },
+    async readRenderTargetPixelsAsync(_target, _x, _y, _width, _height, pixels) { pixels.fill(0); },
     get autoClear() { return state.autoClear; },
     set autoClear(value) { state.autoClear = value; },
   };
@@ -347,11 +347,12 @@ function portraitSource() {
   };
 }
 
-test("portrait accounting follows public render, resize, and clear behavior", () => {
+test("portrait accounting follows public render, resize, and clear behavior", async () => {
   const output = portraitCanvas(4, 2);
   const portraits = new PortraitRenderer(portraitRenderer(), () => portraitSource());
   portraits.setTargets(new Map([["player", { guid: 1n, canvas: output }]]));
   assert.equal(portraits.render(0), 1);
+  await Promise.resolve();
 
   let ledger = new ResourceAccountingLedger();
   portraits.visitRetainedResources(ledger);
@@ -367,6 +368,7 @@ test("portrait accounting follows public render, resize, and clear behavior", ()
   output.width = 8;
   output.height = 3;
   assert.equal(portraits.render(1), 1);
+  await Promise.resolve();
   ledger = new ResourceAccountingLedger();
   portraits.visitRetainedResources(ledger);
   snapshot = ledger.snapshot();

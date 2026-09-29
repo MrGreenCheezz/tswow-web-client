@@ -58,6 +58,25 @@ test("Canned quest reward seam exposes exact item/spell/money contracts", () => 
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetQuestLogRequiredMoney(seam, []), [125]);
 });
 
+test("Live quest leaderboard reads sparse progress from the original server slot", () => {
+  const selfGuid = 0x10n;
+  const base = UPDATE_FIELDS.PLAYER_QUEST_LOG_1_1.offset;
+  const self = { guid: selfGuid, typeId: 4, fields: new Map([
+    [base, 9901],
+    [base + 3, 7], // objectives 2 and 3; the third slot has seven kills
+  ]) };
+  const world = {
+    state: { selfGuid, objects: new Map([[selfGuid, self]]) },
+    questTemplates: new Map([[9901, {
+      questId: 9901,
+      objectives: [{ slot: 2, entry: 299, count: 10, gameObject: false, itemDrop: 0, text: "Третий слот" }],
+      itemObjectives: [],
+    }]]),
+  };
+  const seam = new LiveWorldSeam({ world: () => world, store: () => undefined });
+  assert.deepEqual(seam.questLogLeaderBoard(1, 1), ["Третий слот: 7/10", "monster", false]);
+});
+
 class FakeEvents {
   #listeners = new Map();
   on(name, listener) {

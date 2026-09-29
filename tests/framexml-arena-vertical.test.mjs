@@ -86,7 +86,8 @@ test("ArenaFrame is an exact stock TOC delta with a complete gated tree", {
     const registrar = realPaths.indexOf("interface/framexml/arenaregistrarframe.xml");
     assert.ok(pvp >= 0 && battleground > pvp && arena > battleground && registrar > arena,
       "the stock TOC orders ArenaFrame after PVPBattlegroundFrame and before ArenaRegistrarFrame");
-    assert.deepEqual(FRAMEXML_VERTICAL_TOC.slice(-3), [
+    assert.deepEqual(FRAMEXML_VERTICAL_TOC.slice(FRAMEXML_VERTICAL_TOC.indexOf("PVPFrame.xml"),
+      FRAMEXML_VERTICAL_TOC.indexOf("ArenaFrame.xml") + 1), [
       "PVPFrame.xml", "PVPBattlegroundFrame.xml", "ArenaFrame.xml",
     ]);
 

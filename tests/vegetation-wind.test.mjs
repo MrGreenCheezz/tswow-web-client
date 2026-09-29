@@ -26,7 +26,9 @@ import { readFile } from "node:fs/promises";
 async function currentVegetationWind() {
   const source = await readFile(new URL("../src/browser/VegetationWind.ts", import.meta.url), "utf8");
   const wvmUrl = new URL("../dist/code/browser/Wvm.js", import.meta.url).href;
-  const linked = source.replace('"./Wvm.js"', JSON.stringify(wvmUrl));
+  const windFieldUrl = new URL("../dist/code/browser/WindField.js", import.meta.url).href;
+  const linked = source.replace('"./Wvm.js"', JSON.stringify(wvmUrl))
+    .replace('"./WindField.js"', JSON.stringify(windFieldUrl));
   const javascript = ts.transpileModule(linked, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
   }).outputText;

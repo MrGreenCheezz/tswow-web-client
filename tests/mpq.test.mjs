@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { shadowWarning } from "../tools/check-shadowed-tables.mjs";
 import { ARCHIVE_ORDER, archivePriority, openClientArchives } from "../tools/mpq.mjs";
+import { tswowInstall } from "../tools/paths.mjs";
 
 // Ordering is pure and always testable. Reading needs the client, which not every machine has.
 let clientDirectory;
@@ -328,12 +329,12 @@ test("a tswow patch directory wins over the archive it shadows", withClient, asy
  *
  * `patch-ruRU-E.MPQ` and `patch-ruRU-D.MPQ` are two archives of one file each, both a copy of
  * `GameObjectDisplayInfo.dbc`, and both letters are later than the build's, so they beat the whole
- * built dataset for that one table. `patch-ruRU-F.MPQ` is the installed LoginScreenModule asset
- * junction; its five overlapping GlueXML files are the module's deliberate login-screen override.
+ * built dataset for that one table. The installed LoginScreenModule asset junction carries the
+ * deliberate login-screen override; its patch letter can change as modules are installed.
  * Nothing in this repository can fix or choose those client overlays — they are files in the
  * owner's client, not lines of code — so the test's job is to keep every exception explained: a
- * shadow not in this list is a file a module built and the game will not read, and the build stops
- * until somebody knows why.
+ * shadow neither listed nor verified against the installed login module is a file a module built
+ * and the game will not read, and the build stops until somebody knows why.
  *
  * Deliberately a *subset* check and not an equality one, and the subset is over the whole queue and
  * not over its head. Taking these archives out of `Data` is the fix this diagnostic exists to
@@ -351,12 +352,28 @@ const EXPLAINED_SHADOWS = new Map([
   // for size and TalentMetadata stays paired with the server dataset. Naming the one archive here
   // keeps any other CreatureFamily shadow — or the same table from another patch — a hard failure.
   ["dbfilesclient\\creaturefamily.dbc", ["patch-W.MPQ"]],
-  ["interface\\gluexml\\accountlogin.lua", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\accountlogin.xml", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluebuttons.lua", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluebuttons.xml", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluexml.toc", ["patch-ruRU-F.MPQ"]],
 ]);
+
+const LOGIN_SCREEN_SHADOWS = new Set([
+  "interface\\gluexml\\accountlogin.lua",
+  "interface\\gluexml\\accountlogin.xml",
+  "interface\\gluexml\\gluebuttons.lua",
+  "interface\\gluexml\\gluebuttons.xml",
+  "interface\\gluexml\\gluexml.toc",
+]);
+
+async function acceptedLoginScreenShadow(shadow, name, chain) {
+  if (!LOGIN_SCREEN_SHADOWS.has(shadow.path.toLowerCase()) || name !== shadow.shadowedBy[0]) return false;
+  if (!/^patch-(?:[a-z]{4}-)?[a-z]\.mpq$/i.test(name)) return false;
+  const source = await chain.sourceOf(shadow.path);
+  if (source?.name !== name || source.kind !== "directory") return false;
+  try {
+    const expected = join(tswowInstall(), "modules", "LoginScreenModule", "assets", ...shadow.path.split("\\"));
+    return (await realpath(source.file)).toLowerCase() === (await realpath(expected)).toLowerCase();
+  } catch {
+    return false;
+  }
+}
 
 test("nothing tswow built is shadowed except what is already explained", withClient, async (t) => {
   if (!existsSync(join(clientDirectory, "Data", "ruRU", "patch-ruRU-A.MPQ"))) return;
@@ -371,7 +388,9 @@ test("nothing tswow built is shadowed except what is already explained", withCli
       for (const name of shadow.shadowedBy) {
         // Every archive in the queue has to be one of the known ones: a new one appearing anywhere
         // in it changes what the game reads, whether or not it changes what the game reads *first*.
-        const accepted = explained.includes(name) || await acceptedVisualShadow(shadow, name, chain);
+        const accepted = explained.includes(name)
+          || await acceptedVisualShadow(shadow, name, chain)
+          || await acceptedLoginScreenShadow(shadow, name, chain);
         assert.ok(
           accepted,
           `${shadow.path} in ${shadow.overlay} is now shadowed by ${name}, which nothing explains: ` +

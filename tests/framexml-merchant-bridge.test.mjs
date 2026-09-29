@@ -14,6 +14,7 @@ const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/Fr
 const { CannedWorldSeam, CANNED_ACTION_BAR, CANNED_MERCHANT } = await import(
   "../dist/code/browser/framexml/CannedWorldSeam.js",
 );
+const { itemChatLink } = await import("../dist/code/browser/ui/ChatLink.js");
 const decoder = new TextDecoder("utf-8");
 
 test("MPQ MerchantFrame uses stock show, rows, right-click purchase, buyback tab, and close", {
@@ -50,6 +51,10 @@ test("MPQ MerchantFrame uses stock show, rows, right-click purchase, buyback tab
     assert.equal(frame("MerchantNameText").text, CANNED_MERCHANT.name);
     assert.equal(frame("MerchantItem1").visible, true);
     assert.equal(frame("MerchantItem1Name").text, CANNED_MERCHANT.items[0].name);
+    assert.equal(frame("MerchantItem1MoneyFrame").visible, true,
+      "ordinary copper purchase keeps its money price");
+    assert.equal(frame("MerchantItem1AltCurrencyFrame").visible, false,
+      "ordinary copper purchase has no alternate-cost bar");
     assert.equal(frame("MerchantItem2Name").text, CANNED_MERCHANT.items[1].name);
     assert.equal(frame("MerchantItem3ItemButton").visible, false,
       "unsupported/absent merchant rows hide their item buttons");
@@ -85,6 +90,61 @@ test("MPQ MerchantFrame uses stock show, rows, right-click purchase, buyback tab
     assert.equal(seam.merchantBuyRequests.length, 1);
     assert.equal(seam.merchantBuybackRequests.length, 1);
     assert.deepEqual(boot.vm.errors, [], "merchant interactions add no Lua errors");
+  } finally {
+    boot.close();
+    chain.close();
+  }
+});
+
+test("stock MerchantFrame renders extended-cost rows with honor, arena and required items", {
+  skip: clientDirectory ? false : "no 3.3.5a client on this machine",
+}, async () => {
+  const { openClientArchives } = await import("../tools/mpq.mjs");
+  const chain = await openClientArchives(clientDirectory);
+  const merchant = {
+    guid: 0x600n,
+    name: "Торговец за эмблемы",
+    items: [{
+      slot: 9, itemId: 90001, name: "Эмблемный предмет",
+      texture: "Interface\\Icons\\INV_Misc_Coin_01", price: 0, quantity: 1,
+      numAvailable: 1, isUsable: true, extendedCost: 7,
+      link: itemChatLink(90001, 4, "Эмблемный предмет"),
+      cost: { honor: 125, arena: 20, items: [{
+        texture: "Interface\\Icons\\INV_Misc_Rune_01", count: 2,
+        link: itemChatLink(6948, 1, "Камень возвращения"),
+      }] },
+    }],
+    buyback: [],
+  };
+  const seam = new CannedWorldSeam(CANNED_ACTION_BAR, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, merchant);
+  const boot = new FrameXmlBoot({
+    provider: {
+      async read(path) {
+        const data = await chain.read(path);
+        return data ? decoder.decode(data) : undefined;
+      },
+    },
+    locale: "ruRU",
+    subset: FRAMEXML_VERTICAL_TOC,
+    seam,
+    screen: () => ({ width: 1024, height: 768 }),
+    exercise: false,
+  });
+  try {
+    await boot.load();
+    const frame = (name) => boot.bridge.getFrame(name);
+    seam.openMerchant();
+    assert.equal(frame("MerchantItem1Name").text, "Эмблемный предмет");
+    const costInfo = boot.vm.globalFunction("GetMerchantItemCostInfo");
+    assert.ok(costInfo);
+    try { assert.deepEqual(boot.vm.call(costInfo, [1], 3), [125, 20, 1]); }
+    finally { boot.vm.release(costInfo); }
+    assert.equal(frame("MerchantItem1AltCurrencyFrame").visible, true);
+    assert.equal(frame("MerchantItem1MoneyFrame").visible, false,
+      "zero-copper extended cost uses the alternate-price branch");
+    assert.equal(frame("MerchantItem1AltCurrencyFrameItem1").visible, true);
+    assert.deepEqual(boot.vm.errors, [], "rendering the extended price raises no Lua errors");
   } finally {
     boot.close();
     chain.close();

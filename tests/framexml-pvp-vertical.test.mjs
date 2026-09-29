@@ -83,8 +83,8 @@ test("PVP battleground vertical closure is exact and adds no candidate errors", 
     });
     baseline = await load(chain, baselineSubset);
     candidate = await load(chain, FRAMEXML_VERTICAL_TOC);
-    assert.equal(baseline.boot.bridge.getFrame("BattlefieldFrame"), undefined);
-    assert.equal(baseline.boot.bridge.getFrame("PVPBattlegroundFrame"), undefined);
+    assert.equal(baseline.boot.bridge.getFrame("BattlefieldFrame")?.name, undefined);
+    assert.equal(baseline.boot.bridge.getFrame("PVPBattlegroundFrame")?.name, undefined);
     assert.ok(baseline.boot.bridge.getFrame("PVPParentFrame"));
     assert.ok(candidate.requests.has("interface/framexml/battlefieldframe.xml"));
     assert.ok(candidate.requests.has("interface/framexml/pvpframe.xml"));

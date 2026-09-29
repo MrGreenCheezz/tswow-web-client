@@ -74,7 +74,7 @@ test("MPQ SkillFrame vertical reaches Tab4 and renders the Canned skill rows", w
       FRAMEXML_VERTICAL_TOC.filter((entry) => normalize(entry) !== "skillframe.xml"),
       new CannedWorldSeam());
     candidate = await load(chain, FRAMEXML_VERTICAL_TOC, new CannedWorldSeam());
-    assert.equal(baseline.boot.bridge.getFrame("SkillFrame"), undefined,
+    assert.equal(baseline.boot.bridge.getFrame("SkillFrame")?.name, undefined,
       "the comparison subset does not include SkillFrame");
     assert.ok(candidate.requests.has(skillPath), "SkillFrame.xml was read from MPQ");
     assert.ok(candidate.requests.has(skillLua), "SkillFrame.lua was reached through XML Script");

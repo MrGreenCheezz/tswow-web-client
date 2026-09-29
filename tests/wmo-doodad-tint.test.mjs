@@ -106,8 +106,8 @@ test("MODD final BGRA room light survives the visual-tile wire contract as RGBA 
   assert.match(protocol, /localLight\?:\s*(?:readonly\s*)?\[[^\]]*alpha:\s*number\]/,
     "the fourth MODD byte must remain the stored alpha component at the wire boundary");
 
-  const terrain = readFileSync("src/browser/Terrain.ts", "utf8");
-  assert.match(terrain, /object\.localLight[\s\S]{0,320}Number\.isInteger[\s\S]{0,160}value\s*>=\s*0[\s\S]{0,120}value\s*<=\s*255/,
+  const decoder = readFileSync("src/browser/EnvironmentTileDecode.ts", "utf8");
+  assert.match(decoder, /object\.localLight[\s\S]{0,320}Number\.isInteger[\s\S]{0,160}item\s*>=\s*0[\s\S]{0,120}item\s*<=\s*255/,
     "untrusted visual-tile JSON must accept only four finite colour bytes");
 });
 

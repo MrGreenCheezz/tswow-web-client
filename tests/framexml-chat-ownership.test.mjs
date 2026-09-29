@@ -92,6 +92,8 @@ function matches(node, selector) {
   if (selector === 'button[type="submit"]') return node.tagName === "BUTTON" && node.getAttribute("type") === "submit";
   const data = selector.match(/^\[([^=]+)="([^"]+)"\]$/);
   if (data) return node.getAttribute(data[1]) === data[2];
+  const taggedData = selector.match(/^([a-z]+)\[([^=]+)="([^"]+)"\]$/);
+  if (taggedData) return node.tagName === taggedData[1].toUpperCase() && node.getAttribute(taggedData[2]) === taggedData[3];
   const canvas = selector.match(/^canvas\[data-portrait-slot="([^"]+)"\]$/);
   if (canvas) return node.tagName === "CANVAS" && node.dataset.portraitSlot === canvas[1];
   return selector.startsWith(".") && node.classList.contains(selector.slice(1));
@@ -175,8 +177,12 @@ const inventory = {
 };
 let includeChat = true;
 let registerChatEvents = true;
+/** The stock edit box and the ChatFrame.lua functions its keyboard owner calls, recorded in Lua. */
+let includeStockEditBox = false;
 const seams = [];
+const boots = [];
 FrameXmlBoot.prototype.load = async function loadStub() {
+  boots.push(this);
   this.bridge.CreateFrame("Frame", "BuffFrame");
   const target = this.bridge.CreateFrame("Button", "TargetFrame");
   this.bridge.createChild(target, "Texture", "TargetFramePortrait");
@@ -187,6 +193,25 @@ FrameXmlBoot.prototype.load = async function loadStub() {
     if (registerChatEvents) {
       for (const event of fullChatEvents) this.bridge.RegisterEvent(chat, event);
     }
+  }
+  if (includeStockEditBox) {
+    const box = this.bridge.CreateFrame("EditBox", "ChatFrame1EditBox");
+    this.bridge.Hide(box);
+    const loaded = this.vm.execute(`
+      __opened = {}
+      SlashCmdList, hash_SlashCmdList = {}, {}
+      function ChatFrame_OpenChat(text)
+        __opened[#__opened + 1] = text
+        ChatFrame1EditBox:Show()
+        ChatFrame1EditBox:SetFocus()
+        return ChatFrame1EditBox
+      end
+      function ChatEdit_GetActiveWindow() return ChatFrame1EditBox:IsShown() and ChatFrame1EditBox or nil end
+      function ChatEdit_InsertLink(text) return false end
+      function ChatFrame_ReplyTell() end
+      function ChatEdit_ParseText() end
+    `, "@test/chatframe");
+    assert.equal(loaded.ok, true, loaded.error);
   }
   const seam = this.seam;
   seams.push(seam);
@@ -218,6 +243,10 @@ rendered.set("Minimap", minimapRendered);
 const chatRendered = renderedFrame("ChatFrame1", "ScrollingMessageFrame");
 const messageLayer = fakeNode("div"); messageLayer.setAttribute("data-framexml-message-layer", "true");
 chatRendered.append(messageLayer); rendered.set("ChatFrame1", chatRendered);
+const editBoxRendered = renderedFrame("ChatFrame1EditBox", "EditBox");
+const stockInput = fakeNode("input"); stockInput.ownerDocument = document;
+stockInput.setAttribute("data-framexml-input", "true");
+editBoxRendered.append(stockInput); rendered.set("ChatFrame1EditBox", editBoxRendered);
 
 FrameXmlDomRenderer.prototype.mount = function mountStub() {};
 FrameXmlDomRenderer.prototype.elementFor = function elementForStub(frame) {
@@ -247,6 +276,19 @@ test("chat display ownership is gated, scoped, and restores the native log", asy
   assert.match(style.textContent, /#chat-tabs[\s\S]*#chat-log/);
   assert.doesNotMatch(style.textContent, /framexml-world-replaces-chat #chat-window/);
   assert.doesNotMatch(style.textContent, /framexml-world-replaces-chat #chat-input/);
+  // The form is hidden only under the second class, which only a stock input owner adds; this
+  // fixture has no ChatFrame1EditBox, so the native form stays the chat input.
+  assert.match(style.textContent,
+    /body\.framexml-world-replaces-chat\.framexml-world-owns-chat-input #chat-window/);
+  assert.equal(document.body.classList.contains("framexml-world-owns-chat-input"), false);
+  // The page-wide `input` rules of style.css must not reach an EditBox's field: it fills the box and
+  // draws nothing (measured in the browser: 188x22 pill before, 527x38 = the box after).
+  const reset = /#framexml-world-stage \[data-framexml-type="EditBox"\] input\[data-framexml-input="true"\] \{([^}]*)\}/
+    .exec(style.textContent)?.[1] ?? "";
+  for (const rule of ["position: absolute;", "inset: 0;", "min-height: 0;", "padding: 0;", "border: 0;",
+    "border-radius: 0;", "background: none;", "outline: none;"]) {
+    assert.ok(reset.includes(rule), `the EditBox input reset sets ${rule}`);
+  }
 
   chatLog.scrollTop = 40;
   chatInput.value = "changed while mounted";
@@ -257,6 +299,39 @@ test("chat display ownership is gated, scoped, and restores the native log", asy
   assert.equal(document.activeElement, chatInput, "native focus is not stolen");
   unmountFrameXmlVertical();
   assert.equal(document.body.classList.contains("framexml-world-replaces-chat"), false);
+});
+
+test("the stock edit box owns the chat keys and the whole native chat window only while mounted", async () => {
+  includeChat = true;
+  includeStockEditBox = true;
+  try {
+    const result = await mountFrameXmlVertical({ viewport, seam: seam("stock-input") });
+    assert.equal(result.ok, true);
+    const boot = boots.at(-1);
+    assert.equal(document.body.classList.contains("framexml-world-replaces-chat"), true);
+    assert.equal(document.body.classList.contains("framexml-world-owns-chat-input"), true,
+      "the stock owner installed, so #chat-window (form and input) is hidden");
+
+    document.activeElement = null;
+    assert.equal(runAction("openChat"), true);
+    assert.equal(runAction("openChatSlash"), true);
+    const opened = boot.vm.getGlobal("__opened");
+    assert.deepEqual([boot.vm.call(boot.vm.compileFunction("return __opened[1], __opened[2]", "t", []), [], 2)],
+      [["", "/"]], "Enter and `/` ran ChatFrame_OpenChat with the stock OPENCHAT/OPENCHATSLASH text");
+    boot.vm.release(opened);
+    assert.equal(document.activeElement, stockInput, "the rendered stock input has the keyboard");
+    assert.notEqual(document.activeElement, chatInput);
+
+    unmountFrameXmlVertical();
+    assert.equal(document.body.classList.contains("framexml-world-owns-chat-input"), false);
+    assert.equal(document.body.classList.contains("framexml-world-replaces-chat"), false);
+    document.activeElement = null;
+    assert.equal(runAction("openChat"), true);
+    assert.equal(document.activeElement, chatInput, "after unmount Enter reaches the native input again");
+  } finally {
+    includeStockEditBox = false;
+    unmountFrameXmlVertical();
+  }
 });
 
 test("chat gate failure keeps native display and fallback action", async () => {

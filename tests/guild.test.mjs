@@ -49,7 +49,7 @@ const cstr = (value) => bytes(encoder.encode(value), u8(0));
 
 function rank() {
   const parts = [u32(0xff), u32(1000)];
-  for (let tab = 0; tab < GUILD_BANK_MAX_TABS; tab++) parts.push(u32(0), u32(0));
+  for (let tab = 0; tab < GUILD_BANK_MAX_TABS; tab++) parts.push(u32(tab === 0 ? 3 : 0), u32(tab === 0 ? 7 : 0));
   return bytes(...parts);
 }
 
@@ -61,7 +61,7 @@ function member({ guid = 0x11n, status = 1, name = "Тралл", rankId = 0, lev
   return bytes(...head);
 }
 
-test("guild roster decodes ranks and skips the six bank tab pairs", () => {
+test("guild roster decodes ranks and all six bank tab pairs", () => {
   const payload = bytes(
     u32(2), cstr("Добро пожаловать"), cstr("Инфо"), u32(1), rank(),
     member({ guid: 0x11n, status: 1, name: "Тралл", rankId: 0, classId: 7 }),
@@ -72,6 +72,9 @@ test("guild roster decodes ranks and skips the six bank tab pairs", () => {
   assert.equal(roster.infoText, "Инфо");
   assert.equal(roster.ranks.length, 1);
   assert.equal(roster.ranks[0].withdrawGoldLimit, 1000);
+  assert.deepEqual(roster.ranks[0].tabs[0], { rights: 3, slots: 7 },
+    "the roster carries the bank permissions needed to rename a rank without revoking them");
+  assert.equal(roster.ranks[0].tabs.length, GUILD_BANK_MAX_TABS);
   assert.equal(roster.members.length, 2);
   assert.equal(roster.members[0].online, true);
   assert.equal(roster.members[0].lastSaveDays, 0, "online members carry no timestamp");

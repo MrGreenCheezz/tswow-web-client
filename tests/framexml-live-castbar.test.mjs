@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// World cast events have two subscribers per attach: the player cast bar and the arena opponents' cast
+// bars (FrameXmlArena.ts). The checks below are about duplicates on re-attach and a clean detach.
+const CAST_SUBSCRIBERS = 2;
+
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const { WorldClient } = await import("../dist/code/world/WorldClient.js");
 const { OPCODES } = await import("../dist/code/generated/opcodes.js");
@@ -161,7 +165,7 @@ test("attach seeds an active ordinary cast before its world stop edge", () => {
     spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 32,
   });
   seam.attach(pump);
-  assert.equal(events.listenerCount("SPELL_CAST_START"), 1);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
   fired.length = 0;
   world.casts.delete(selfGuid);
   events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: true });
@@ -280,10 +284,10 @@ test("non-self casts are ignored and detach removes every cast subscription", ()
   events.emit("SPELL_CAST_START", { casterGuid: 0x99n, spellId: 42, castTime: 2500, channel: false });
   events.emit("SPELL_CAST_STOP", { casterGuid: 0x99n, spellId: 42, interrupted: false });
   assert.deepEqual(fired, []);
-  assert.equal(events.listenerCount("SPELL_CAST_START"), 1);
-  assert.equal(events.listenerCount("SPELL_CAST_STOP"), 1);
-  assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), 1);
-  assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), 1);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CAST_STOP"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), CAST_SUBSCRIBERS);
 
   seam.detach();
   assert.equal(events.listenerCount("SPELL_CAST_START"), 0);

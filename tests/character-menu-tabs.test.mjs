@@ -39,12 +39,13 @@ test("character owns skills and collections as accessible fixed-size tabs", asyn
   assert.match(windows, /windowFixedSize[\s\S]*?style\.resize\s*=\s*"none"/);
 });
 
-test("native character/spellbook and one patched-or-native talent owner own production routes", async () => {
-  const [bindings, actions, windows, mount] = await Promise.all([
+test("character/spellbook routes share gated original owners and keep native fallbacks", async () => {
+  const [bindings, actions, windows, mount, entry] = await Promise.all([
     source("src/browser/input/Bindings.ts"),
     source("src/browser/input/Actions.ts"),
     source("src/browser/ui/Windows.ts"),
     source("src/browser/framexml/FrameXmlWorldMount.ts"),
+    source("src/browser/app/EnterWorld.ts"),
   ]);
 
   assert.match(bindings, /toggleCharacter:\s*\["KeyC",\s*""\]/);
@@ -54,13 +55,13 @@ test("native character/spellbook and one patched-or-native talent owner own prod
   assert.match(actions, /case "toggleSpellbook":\s*toggleGameWindow\(spellbookWindow\);/);
   assert.match(actions, /case "toggleTalents":\s*if \(!toggleFrameXmlTalent\(\)\) toggleTalentsWindow\(\);/);
   assert.doesNotMatch(actions, /toggleFrameXml(?:Character|SpellBook)\s*\(/,
-    "C/P remain native production owners");
+    "C/P route through the same window entry points as mouse input");
 
   assert.match(windows, /characterToggle\.addEventListener\("click",\s*\(\) => \{\s*openCharacterWindow\("sheet"\);\s*\}\);/);
   assert.match(windows, /spellbookToggle\.addEventListener\("click",\s*\(\) => \{\s*toggleGameWindow\(spellbookWindow\);\s*\}\);/);
   assert.match(windows, /talentsToggle\.addEventListener\("click",\s*\(\) => \{\s*if \(!toggleFrameXmlTalent\(\)\) toggleTalentsWindow\(\);\s*\}\);/);
-  assert.doesNotMatch(windows, /toggleFrameXml(?:Character|SpellBook)\s*\(/,
-    "HUD C/P buttons must resolve to the same native owners as their keyboard shortcuts");
+  assert.match(windows, /window === spellbookWindow && toggleFrameXmlSpellBook\(\)/);
+  assert.match(windows, /tab === "sheet" && toggleFrameXmlCharacter\(\)/);
 
   const mountStart = mount.indexOf("export async function mountFrameXmlVertical");
   const mountEnd = mount.indexOf("export function unmountFrameXmlVertical", mountStart);
@@ -68,19 +69,20 @@ test("native character/spellbook and one patched-or-native talent owner own prod
   assert.notEqual(mountEnd, -1, "production mount teardown must remain discoverable");
   const productionMount = mount.slice(mountStart, mountEnd);
 
-  assert.doesNotMatch(productionMount, /spellBookGate\s*\(/);
-  assert.doesNotMatch(productionMount, /createLazyFrameXmlTalentOwner\s*\(/);
-  assert.doesNotMatch(productionMount, /frameXmlCharacterModelGate\s*\(/);
-  assert.doesNotMatch(productionMount, /resources\.(?:spellbookFrame|characterOwner)\s*=/);
-  assert.doesNotMatch(productionMount, /publishFrameXml(?:SpellBook|Character)\s*\(/);
-  assert.match(productionMount, /includeActiveTsAddons:\s*true/,
-    "production must preserve generated blocks from the winning FrameXML TOC");
-  assert.match(productionMount, /const patchedTalentOwner\s*=\s*createPatchedFrameXmlTalentOwner\s*\([\s\S]*?if \(patchedTalentOwner\) resources\.talentOwner\s*=\s*patchedTalentOwner/);
+  assert.match(productionMount, /spellBookGate\s*\(/);
+  assert.match(productionMount, /createLazyFrameXmlTalentOwner\s*\(/);
+  assert.match(productionMount, /frameXmlCharacterModelGate\s*\(/);
+  assert.match(productionMount, /publishFrameXmlSpellBook\s*\(/);
+  assert.match(productionMount, /publishFrameXmlCharacter\s*\(/);
+  assert.match(productionMount, /includeActiveTsAddons:\s*options\.includeActiveTsAddons\s*\?\?\s*true/,
+    "direct mounts retain generated blocks from the winning FrameXML TOC by default");
+  assert.match(entry, /new FrameXmlModeController\(tswowAddonsEnabled[\s\S]*?mountFrameXmlVertical\(\{[\s\S]*?includeActiveTsAddons:\s*tswowAddonsEnabled/,
+    "world entry passes the addon preference, including the stock-only FrameXML diagnostic");
+  assert.match(productionMount, /resources\.talentOwner\s*=\s*patchedTalentOwner\s*\?\?\s*createLazyFrameXmlTalentOwner/);
   assert.match(productionMount, /hideTalentsWindow\(\);\s*resources\.talentOwnerCleanup\s*=\s*publishFrameXmlTalent\(resources\.talentOwner\)/,
     "patched acquisition closes native before publishing the one N owner");
-  assert.doesNotMatch(productionMount, /(?:spellbookWindow|characterWindow)\.hidden\s*=\s*true/,
-    "mounting the world must not hide native C/P windows");
-  assert.doesNotMatch(productionMount, /setNativeCharacterReplacementActive\s*\(\s*true\s*\)/);
+  assert.match(productionMount, /if \(resources\.characterOwner\)[\s\S]*?characterWindow\.hidden\s*=\s*true/);
+  assert.match(productionMount, /if \(resources\.spellbookFrame\)[\s\S]*?spellbookWindow\.hidden\s*=\s*true/);
   assert.match(productionMount, /publishFrameXmlBags\s*\(/,
     "unrelated stock FrameXML capabilities must remain mounted");
   assert.match(productionMount, /publishFrameXmlQuest\s*\(/,

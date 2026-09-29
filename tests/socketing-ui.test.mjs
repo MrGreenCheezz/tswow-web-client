@@ -272,8 +272,8 @@ test("the gateway serves localized socket properties and custom enchantments fro
   try {
     const response = await fetch(`http://127.0.0.1:${gateway.port}/dbc/item-enchantments`, { headers: { origin: "http://localhost:5173" } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { enchantments: [{ id: 100001, name: "Сила", gemItemId: 700001, conditionId: 0 }],
-      gems: [{ id: 10001, enchantmentId: 100001, color: 14 }] });
+    assert.deepEqual(await response.json(), { enchantments: [{ id: 100001, name: "Сила", gemItemId: 700001, conditionId: 0, visual: 0 }],
+      gems: [{ id: 10001, enchantmentId: 100001, color: 14 }], visuals: {} });
     // The route must discard the memoized index after a build replaces gameplay DBC rows.
     await writeFile(join(directory, "GemProperties.dbc"), dbc(5, [[10002, 100001, 0, 0, 2], [10003, 100001, 0, 0, 8]]));
     const changed = await fetch(`http://127.0.0.1:${gateway.port}/dbc/item-enchantments`, { headers: { origin: "http://localhost:5173" } }).then((reply) => reply.json());

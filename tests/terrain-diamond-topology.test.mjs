@@ -92,7 +92,7 @@ test("the rendered terrain keeps authored V8 centres instead of bridging across 
     const b = a + 1;
     const c = a + CORNERS;
     const d = c + 1;
-    assert.deepEqual(geometry.indices.slice(cell * 12, cell * 12 + 12), [
+    assert.deepEqual([...geometry.indices.slice(cell * 12, cell * 12 + 12)], [
       a, c, centre, c, d, centre, d, b, centre, b, a, centre,
     ], `cell ${row}/${column}: four authored triangles meet at V8`);
     const normal = [...geometry.normals.slice(centre * 3, centre * 3 + 3)];

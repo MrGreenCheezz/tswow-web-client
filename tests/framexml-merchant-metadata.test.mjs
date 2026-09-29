@@ -22,8 +22,9 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test("merchant metadata prefetch repaints once, coalesces wire/http, and ignores unsupported rows", async () => {
+test("merchant metadata prefetch includes extended rows and turn-ins, coalescing wire/http", async () => {
   let currentVendor = vendor();
+  let costsLoaded = false;
   const cache = new Map();
   const loads = [];
   const pending = [];
@@ -42,6 +43,10 @@ test("merchant metadata prefetch repaints once, coalesces wire/http, and ignores
     vendor: () => currentVendor,
     itemMetadata: () => metadata,
     itemTemplate: () => undefined,
+    costFor: (id) => id === 7 && costsLoaded ? {
+      honor: 125, arena: 20, arenaBracket: 0, rating: 0,
+      items: [{ entry: 300, count: 2 }],
+    } : undefined,
     onMetadataLoaded() {
       const result = coordinator.refresh("metadata");
       if (result.changed) updates.push(result.signature);
@@ -50,8 +55,9 @@ test("merchant metadata prefetch repaints once, coalesces wire/http, and ignores
 
   const initial = coordinator.refresh("vendor");
   assert.equal(initial.changed, true);
-  assert.deepEqual(loads, [[100]], "only the supported money row is prefetched");
+  assert.deepEqual(loads, [[100, 200]], "both visible vendor rows are prefetched");
   cache.set(100, { entry: 100, name: "Зелье", displayId: 11, quality: 1, inventoryType: 0, stackable: 20, iconId: 22 });
+  cache.set(200, { entry: 200, name: "Эмблемный предмет", displayId: 12, quality: 1, inventoryType: 0, stackable: 1, iconId: 23 });
   pending.shift().resolve(true);
   await Promise.resolve();
   await Promise.resolve();
@@ -60,30 +66,37 @@ test("merchant metadata prefetch repaints once, coalesces wire/http, and ignores
   // The wire callback may arrive after the HTTP promise. The signature is already current.
   const wire = coordinator.refresh("metadata");
   assert.equal(wire.changed, false, "wire+HTTP completion does not duplicate UPDATE");
-  cache.set(200, { entry: 200, name: "Неподдерживаемый предмет", displayId: 12, quality: 1, inventoryType: 0, stackable: 1, iconId: 23 });
-  assert.equal(coordinator.refresh("metadata").changed, false,
-    "metadata for an unsupported extended-cost row is invisible to this slice");
   cache.set(999, { entry: 999, name: "Чужой предмет", displayId: 13, quality: 1, inventoryType: 0, stackable: 1, iconId: 24 });
   assert.equal(coordinator.refresh("metadata").changed, false,
     "unrelated metadata does not repaint the merchant");
 
+  costsLoaded = true;
+  assert.equal(coordinator.refresh("vendor").changed, true,
+    "the DBC cost arrival changes the visible price");
+  assert.deepEqual(loads, [[100, 200], [300]], "the turn-in item is prefetched after its DBC row arrives");
+  cache.set(300, { entry: 300, name: "Эмблема", displayId: 13, quality: 1, inventoryType: 0, stackable: 20, iconId: 24 });
+  pending.shift().resolve(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(updates.length, 2, "turn-in icon/name arrival repaints once");
+
   currentVendor = {
     ...currentVendor,
     items: [...currentVendor.items, {
-      slot: 8, itemId: 300, displayId: 3, leftInStock: 1, price: 30, maxDurability: 0, buyCount: 1, extendedCost: 0,
+      slot: 8, itemId: 400, displayId: 3, leftInStock: 1, price: 30, maxDurability: 0, buyCount: 1, extendedCost: 0,
     }],
   };
   coordinator.refresh("vendor");
-  assert.deepEqual(loads, [[100], [300]], "a new supported row starts one new prefetch");
+  assert.deepEqual(loads, [[100, 200], [300], [400]], "a new row starts one new prefetch");
   pending.shift().reject(new Error("gateway down"));
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(updates.length, 1, "failed prefetch does not recurse into merchant updates");
+  assert.equal(updates.length, 2, "failed prefetch does not recurse into merchant updates");
 
   // Once the failure backoff expires in the real cache, a later vendor refresh may retry; the
   // coordinator must not permanently latch the failed request key.
   coordinator.refresh("vendor");
-  assert.deepEqual(loads, [[100], [300], [300]], "failed request is released for a later retry");
+  assert.deepEqual(loads, [[100, 200], [300], [400], [400]], "failed request is released for a later retry");
   pending.shift().reject(new Error("gateway still down"));
 });
 

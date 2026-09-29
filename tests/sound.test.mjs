@@ -1740,3 +1740,57 @@ test("Н1б the player's own death is an edge on their own health, because no pa
     world.restore();
   }
 });
+
+test("the decoded buffer cache is bounded but never forgets a failure", async () => {
+  const { SoundPlayer } = await import("../dist/code/browser/Sound.js");
+  class FakeContext {
+    state = "running";
+    destination = {};
+    createGain() { return { gain: { value: 0 }, connect: (to) => to, disconnect() {} }; }
+    createBufferSource() {
+      return { connect: (to) => to, disconnect() {}, start() {}, addEventListener() {} };
+    }
+    createPanner() { return { connect: (to) => to, disconnect() {} }; }
+    async decodeAudioData() { return {}; }
+    async resume() {}
+    async close() {}
+  }
+  const originalContext = globalThis.AudioContext;
+  const originalFetch = globalThis.fetch;
+  const fetched = new Map();
+  globalThis.AudioContext = FakeContext;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).searchParams.get("path");
+    fetched.set(path, (fetched.get(path) ?? 0) + 1);
+    if (path === "missing.wav") return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+    return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) };
+  };
+  const settle = async () => {
+    for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const kit = (id, file) => ({
+    id, type: 50, name: `kit${id}`, files: [file], volume: 0.8, minDistance: 8, maxDistance: 45, flags: 0,
+  });
+  try {
+    const player = new SoundPlayer("ws://127.0.0.1:8090/auth");
+    player.onStatus = () => {};
+    for (let index = 0; index < 110; index++) player.play(kit(index, `s${index}.wav`));
+    await settle();
+    assert.equal(fetched.get("s0.wav"), 1);
+    player.play(kit(0, "s0.wav"));
+    await settle();
+    assert.equal(fetched.get("s0.wav"), 2, "the oldest success is refetched past the bound");
+    assert.equal(fetched.get("s109.wav"), 1, "while a recent success is still cached");
+    player.play(kit(1000, "missing.wav"));
+    await settle();
+    assert.equal(fetched.get("missing.wav"), 1);
+    for (let index = 200; index < 320; index++) player.play(kit(index, `t${index}.wav`));
+    await settle();
+    player.play(kit(1000, "missing.wav"));
+    await settle();
+    assert.equal(fetched.get("missing.wav"), 1, "a failure is pinned, not re-asked after eviction");
+  } finally {
+    globalThis.AudioContext = originalContext;
+    globalThis.fetch = originalFetch;
+  }
+});

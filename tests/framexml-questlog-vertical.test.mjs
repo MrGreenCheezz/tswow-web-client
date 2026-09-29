@@ -103,7 +103,12 @@ const QUESTLOG_WIDGETS = Object.freeze([
 const EXPECTED_DELTA = Object.freeze({
   files: 11,
   bytes: 217_315,
-  widgets: 891,
+  // BankFrame.xml now seeds the shared coin-button textures in both arms. Without BankFrame,
+  // the QuestLog arm alone used to add 93 such textures: 13 containers × 3, 14 merchant money
+  // frames × 3, and four static popups × 3. The Quest/Watch-owned widgets were 798; the charter
+  // windows (TabardFrame, GuildRegistrarFrame, PetitionFrame, ArenaRegistrarFrame) in both arms
+  // add 32 that resolve only with the QuestLog closure — without them the delta is 798 again.
+  widgets: 830,
   roots: 8,
   templates: 18,
   lua: 5,
