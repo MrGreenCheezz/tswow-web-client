@@ -1,4 +1,4 @@
-param([string]$ProcessIds = '')
+param([string]$ProcessIds = '', [ValidateSet('fastest', 'slowest')][string]$Class = 'fastest')
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -31,8 +31,10 @@ try {
 } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
 # The highest EfficiencyClass is the fastest class, per the Win32 CPU Set contract.
 # https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-system_cpu_set_information
-$fastest = ($topology | Measure-Object -Property efficiency -Maximum).Maximum
-$selected = @($topology | Where-Object { $_.efficiency -eq $fastest })
+# 'slowest' exists only to measure how much a hybrid CPU's efficiency cores cost this workload.
+$wanted = if ($Class -eq 'slowest') { ($topology | Measure-Object -Property efficiency -Minimum).Minimum }
+  else { ($topology | Measure-Object -Property efficiency -Maximum).Maximum }
+$selected = @($topology | Where-Object { $_.efficiency -eq $wanted })
 if (!$selected.Count -or @($topology | Where-Object { $_.group -ne 0 -or $_.logical -ge 63 }).Count) {
   throw 'This affinity policy requires one processor group with fewer than 64 logical CPUs'
 }
@@ -50,4 +52,4 @@ if ($ProcessIds) {
     $applied += $process.Id
   }
 }
-[pscustomobject]@{ policy = 'performance-cores'; mask = $mask.ToString(); selected = @($selected.logical); topology = $topology; applied = $applied } | ConvertTo-Json -Depth 4 -Compress
+[pscustomobject]@{ policy = $(if ($Class -eq 'slowest') { 'efficiency-cores' } else { 'performance-cores' }); mask = $mask.ToString(); selected = @($selected.logical); topology = $topology; applied = $applied } | ConvertTo-Json -Depth 4 -Compress

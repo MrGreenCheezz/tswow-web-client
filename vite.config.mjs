@@ -1,5 +1,5 @@
-import { rm, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 import { removeStampsUnder } from "./tools/source-stamp.mjs";
@@ -85,6 +85,42 @@ function keepBuildLocalOnly() {
 }
 
 /**
+ * Keeps the production build's source maps beside it, in `dist/sourcemaps/`, instead of in it.
+ *
+ * The freeze recording (`O` → «Записать фризы») samples JS stacks as positions in the minified
+ * bundle; `bench/analyze-live-profile.mjs` turns them back into source files and lines with these
+ * maps. `dist/web` is what the Electron version packs and the players' server hands out, so the
+ * maps leave it; `hidden` maps carry no `sourceMappingURL` comment pointing at a missing file.
+ */
+function keepSourceMapsBesideBuild() {
+  let outDirectory;
+  let mapDirectory;
+  return {
+    name: "webclient:source-maps-beside-build",
+    apply: "build",
+    configResolved(config) {
+      outDirectory = resolve(config.root, config.build.outDir);
+      mapDirectory = resolve(outDirectory, "..", "sourcemaps");
+    },
+    async buildStart() {
+      await rm(mapDirectory, { recursive: true, force: true });
+    },
+    async closeBundle() {
+      let moved = 0;
+      for (const entry of await readdir(outDirectory, { recursive: true })) {
+        const name = String(entry);
+        if (!name.endsWith(".map")) continue;
+        const target = resolve(mapDirectory, name);
+        await mkdir(dirname(target), { recursive: true });
+        await rename(resolve(outDirectory, name), target);
+        moved++;
+      }
+      if (moved > 0) console.log(`moved ${moved} source map(s) to ${mapDirectory}`);
+    },
+  };
+}
+
+/**
  * Whether a development-server URL could resolve to a local `.src` provenance sidecar.
  *
  * URL.pathname deliberately keeps percent escapes. Decode it once before checking the filename,
@@ -101,6 +137,29 @@ export function isLocalProvenanceRequest(requestUrl) {
   }
 }
 
+/**
+ * Cross-origin isolation, so the page may create a SharedArrayBuffer (the crowd pose worker's
+ * palettes, `PoseEngine.ts`). `credentialless` rather than `require-corp`: every cross-origin load
+ * the page makes is either CORS — `fetch`, Three's loaders with `crossOrigin = "anonymous"`, fonts —
+ * which the gateway already answers with `access-control-allow-origin`, or a no-cors image/audio,
+ * which `credentialless` admits without a `Cross-Origin-Resource-Policy` header (and without
+ * cookies, which the gateway does not use). WebSockets are outside COEP. `WEB_CROSS_ORIGIN_ISOLATION=0`
+ * turns it off; the page then keeps posing crowds on the main thread.
+ */
+export const CROSS_ORIGIN_ISOLATION_HEADERS = Object.freeze({
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "credentialless",
+});
+
+/**
+ * Lets the freeze recording (`O` → «Записать фризы», `src/browser/game/PerformanceCapture.ts`) run
+ * the JS Self-Profiling API, which Chromium only allows on a page served with this policy. The
+ * profiler samples only while a recording runs. `WEB_JS_PROFILING=0` leaves the header out.
+ */
+export const JS_PROFILING_HEADERS = Object.freeze({
+  "Document-Policy": "js-profiling",
+});
+
 function port(value, fallback) {
   const parsed = Number.parseInt(value || String(fallback), 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid web port: ${value}`);
@@ -114,6 +173,11 @@ export default defineConfig(({ mode }) => {
     .split(",")
     .map((host) => host.trim())
     .filter(Boolean);
+  // Dev server and `vite preview` (which would otherwise inherit only `server.headers`) alike.
+  const isolation = {
+    ...(env.WEB_CROSS_ORIGIN_ISOLATION === "0" ? {} : CROSS_ORIGIN_ISOLATION_HEADERS),
+    ...(env.WEB_JS_PROFILING === "0" ? {} : JS_PROFILING_HEADERS),
+  };
   return {
     cacheDir: viteCacheDirectory(webPort),
     optimizeDeps: {
@@ -138,11 +202,23 @@ export default defineConfig(({ mode }) => {
         ignored: [...DEV_SERVER_WATCH_IGNORES],
       },
       ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
+      headers: isolation,
     },
-    plugins: [keepBuildLocalOnly()],
+    // `vite preview` (web/start-built.bat) serves dist/web on the dev server's origin, the one
+    // the gateway's ALLOWED_ORIGINS admits, rather than Vite's own default port 4173.
+    preview: {
+      host: env.WEB_HOST || "127.0.0.1",
+      port: webPort,
+      strictPort: true,
+      ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
+      headers: isolation,
+    },
+    plugins: [keepBuildLocalOnly(), keepSourceMapsBesideBuild()],
     build: {
       outDir: "dist/web",
       emptyOutDir: true,
+      // Moved out of dist/web by keepSourceMapsBesideBuild; they exist to read freeze recordings.
+      sourcemap: "hidden",
       rollupOptions: {
         // Four pages, not one. `character-lab.html` draws a character out of the same modules the
         // client draws one with, without a login or a world server; `glue.html` runs the client's

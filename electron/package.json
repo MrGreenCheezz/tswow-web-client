@@ -1,0 +1,15 @@
+{
+  "name": "tswow-webclient-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Electron version of the TSWoW WebClient: P-core affinity, process priority and Chromium flags around the same page.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "start:built-web": "electron . --web-dir=../dist/web",
+    "pack": "node build.mjs"
+  },
+  "devDependencies": {
+    "electron": "40.9.3"
+  }
+}

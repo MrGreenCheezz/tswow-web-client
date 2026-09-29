@@ -32,7 +32,15 @@ const timing = rows => {
 const checkpoints = events.checkpoints;
 const submissions = checkpoints.map(checkpoint => checkpoint.renderer.worldSubmission).filter(Boolean);
 const parts = ['matrices', 'mainSkeletons', 'mainDraws', 'shadowSkeletons', 'shadowDraws', 'shadowOther', 'other'];
-const counters = ['mainDraws', 'shadowDraws', 'mainSkinnedDraws', 'shadowSkinnedDraws', 'skeletonUpdates', 'bonesUpdated'];
+const drawKinds = ['mainSkinned', 'mainNonSkinned', 'shadowSkinned', 'shadowNonSkinned'];
+const counters = ['mainDraws', 'shadowDraws', 'mainSkinnedDraws', 'shadowSkinnedDraws', 'skeletonUpdates', 'bonesUpdated',
+  'mainMaterialSwitches', 'mainProgramSwitches'];
+const rendererCounts = ['drawCalls', 'triangles', 'unitsDrawn', 'unitsDropped', 'gameObjectsDrawn',
+  'effectsDrawn', 'groundCoverDrawn', 'textureCount', 'geometryCount'];
+const animationLodCounts = ['near', 'medium', 'far', 'critical', 'full', 'flat', 'skipped'];
+const windows = Array.from({ length: Math.ceil(capture.durationMs / 10000) }, (_, i) =>
+  ({ fromMs: i * 10000, toMs: Math.min((i + 1) * 10000, capture.durationMs) }));
+const inWindow = (atMs, window) => atMs >= window.fromMs && atMs < window.toMs;
 const sections = events.cpuSections;
 const sectionNames = ['render', 'render.submit.world', 'render.units.pose', 'render.env', 'render.visuals',
   'render.units.appearance', 'render.warm', 'render.submit.sky', 'render.submit.postprocess', 'portraits', 'ui', 'state', 'scene'];
@@ -51,17 +59,43 @@ const report = {
     'A skinned draw may belong to a unit, a world model or a spell; the capture does not identify its owner.',
   ],
   allFrames: timing(frames),
-  timeline: Array.from({ length: Math.ceil(capture.durationMs / 10000) }, (_, i) => {
-    const fromMs = i * 10000, toMs = Math.min((i + 1) * 10000, capture.durationMs);
-    return { fromMs, toMs, ...timing(frames.filter(row => row[at] >= fromMs && row[at] < toMs)) };
-  }).filter(slice => slice.frameCount > 0),
-  checkpointCounts: Object.fromEntries(['drawCalls', 'triangles', 'unitsDrawn', 'unitsDropped', 'gameObjectsDrawn',
-    'effectsDrawn', 'groundCoverDrawn', 'textureCount', 'geometryCount']
+  timeline: windows.map(window => ({ ...window,
+    ...timing(frames.filter(row => inWindow(row[at], window))) })).filter(slice => slice.frameCount > 0),
+  // Match the frame windows, but keep sampled world submission separate from all-frame CPU.
+  // This makes a moving-camera slowdown distinguishable from a growing resource population.
+  checkpointTimeline: windows.map(window => {
+    const samples = checkpoints.filter(checkpoint => inWindow(checkpoint.atMs, window));
+    const world = samples.map(checkpoint => checkpoint.renderer.worldSubmission).filter(Boolean);
+    return { ...window, samples: samples.length,
+      renderer: Object.fromEntries(rendererCounts.map(key =>
+        [key, distribution(samples.map(checkpoint => checkpoint.renderer[key]))])),
+      animationLod: Object.fromEntries(animationLodCounts.map(key =>
+        [key, distribution(samples.map(checkpoint => checkpoint.renderer.animationLod?.[key]))])),
+      worldSubmission: { samples: world.length,
+        totalMs: distribution(world.map(sample => sample.totalMs)),
+        partsMs: Object.fromEntries(parts.map(key =>
+          [key, distribution(world.map(sample => sample.partsMs[key]))])),
+        drawKindsMs: Object.fromEntries(drawKinds.map(key =>
+          [key, distribution(world.map(sample => sample.drawKindsMs?.[key]))])),
+        calls: Object.fromEntries(counters.map(key =>
+          [key, distribution(world.map(sample => sample.calls[key]))])) },
+      gpuRollingMedianMs: distribution(samples.map(checkpoint => checkpoint.renderer.gpu.p50)),
+      terrainResident: distribution(samples.map(checkpoint => checkpoint.terrain?.resident)),
+      warmupQueued: distribution(samples.map(checkpoint => checkpoint.warmup?.queued)),
+      resourcesCompleted: events.resources.filter(resource => inWindow(resource.completedAtMs, window)).length,
+      newShaderEvents: events.shaderPrograms.filter(event => event.phase !== 'existing' && inWindow(event.atMs, window)).length,
+    };
+  }).filter(slice => slice.samples > 0),
+  checkpointCounts: Object.fromEntries(rendererCounts
     .map(key => [key, distribution(checkpoints.map(checkpoint => checkpoint.renderer[key]))])),
+  checkpointAnimationLod: Object.fromEntries(animationLodCounts
+    .map(key => [key, distribution(checkpoints.map(checkpoint => checkpoint.renderer.animationLod?.[key]))])),
   gpuRollingMedianMs: distribution(checkpoints.map(checkpoint => checkpoint.renderer.gpu.p50)),
   worldSubmission: {
     samples: submissions.length, totalMs: distribution(submissions.map(sample => sample.totalMs)),
     partsMs: Object.fromEntries(parts.map(key => [key, distribution(submissions.map(sample => sample.partsMs[key]))])),
+    drawKindsMs: Object.fromEntries(drawKinds.map(key =>
+      [key, distribution(submissions.map(sample => sample.drawKindsMs?.[key]))])),
     calls: Object.fromEntries(counters.map(key => [key, distribution(submissions.map(sample => sample.calls[key]))])),
     hookSetupRestoreMs: distribution(submissions.map(sample => sample.hookSetupRestoreMs)),
     failed: submissions.filter(sample => sample.failed).length,
@@ -82,4 +116,19 @@ console.log(JSON.stringify({ output, fps: report.allFrames.fps, onePercentLowFps
   p99Ms: report.allFrames.intervalMs.p99, framesOver30Ms: report.allFrames.framesOver30Ms,
   worldMs: report.worldSubmission.totalMs.mean,
   partsMs: Object.fromEntries(Object.entries(report.worldSubmission.partsMs).map(([key, value]) => [key, value.mean])),
-  timeline: report.timeline.map(({ fromMs, fps, cpuMs }) => ({ fromMs, fps, cpuMs: cpuMs.mean })) }, null, 2));
+  drawKindsMs: Object.fromEntries(Object.entries(report.worldSubmission.drawKindsMs).map(([key, value]) => [key, value.mean])),
+  timeline: report.timeline.map(({ fromMs, fps, cpuMs }) => ({ fromMs, fps, cpuMs: cpuMs.mean })),
+  checkpointTimeline: report.checkpointTimeline.map(({ fromMs, renderer, animationLod, worldSubmission, gpuRollingMedianMs,
+    terrainResident, resourcesCompleted, newShaderEvents }) => ({
+    fromMs, units: renderer.unitsDrawn.mean, droppedUnits: renderer.unitsDropped.mean,
+    animationLod: Object.fromEntries(animationLodCounts.map(key => [key, animationLod[key].mean])),
+    effects: renderer.effectsDrawn.mean, draws: renderer.drawCalls.mean,
+    textures: renderer.textureCount.mean, geometries: renderer.geometryCount.mean,
+    worldMs: worldSubmission.totalMs.mean, matricesMs: worldSubmission.partsMs.matrices.mean,
+    mainDrawsMs: worldSubmission.partsMs.mainDraws.mean,
+    drawKindsMs: Object.fromEntries(drawKinds.map(key => [key, worldSubmission.drawKindsMs[key].mean])),
+    skeletonUpdates: worldSubmission.calls.skeletonUpdates.mean,
+    bonesUpdated: worldSubmission.calls.bonesUpdated.mean,
+    gpuRollingMedianMs: gpuRollingMedianMs.mean, terrainResident: terrainResident.mean,
+    resourcesCompleted, newShaderEvents,
+  })) }, null, 2));
