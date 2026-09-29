@@ -67,12 +67,19 @@ export const DBD_TABLES = [
   "LightFloatBand",
   "LightSkybox",
   "LiquidType",
+  // The world-entry curtain: `Map.LoadingScreenID` names a row here, and the row names the art
+  // and whether a `…Wide.blp` twin ships. Written in this repository from the 3.3.5a file's own
+  // header (4 fields, 16-byte records).
+  "LoadingScreens",
   // What grows on the ground. An ADT texture layer carries a `GroundEffectTexture` id; the row
   // names up to four `GroundEffectDoodad` models with their weights, how many of them a detail
   // cell gets, and the `TerrainType` a footstep on it plays. Both definitions were written in this
   // repository — see tools/dbd/README.md.
   "GroundEffectTexture",
   "GroundEffectDoodad",
+  // Floor-indexed, bounded map sheets used by the original WorldMapFrame APIs. The local
+  // TSWoW DungeonMap row type and this build's DBC header both describe eight 32-bit fields.
+  "DungeonMap",
   "WorldMapArea",
   "WorldMapContinent",
   "WorldMapOverlay",

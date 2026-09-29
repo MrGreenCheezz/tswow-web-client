@@ -9,8 +9,9 @@
 // its precedence put `patch.MPQ` above `patch-2`/`patch-3` and every locale archive below
 // `common.MPQ`, so stale revisions and unlocalised art won.
 //
-// The real client loads archives in ascending priority and lets later ones win. This module keeps
-// the same ranking and searches from the top down, first hit wins.
+// WebClient keeps a TSWoW-oriented ranking and searches from the top down, first hit wins.
+// Static analysis of the local 3.3.5a executable found a different startup order for some
+// root/locale patches; keep that comparison in an explicit diagnostic, not this runtime chain.
 
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -55,10 +56,8 @@ export function archivePriority(name) {
   // `UI-Classes-Circles.blp`, the class sheets a module that adds a class has to replace, which is
   // what makes this ranking load-bearing for art and not only for tables.
   //
-  // That the real client ranks them this way is an inference, not a reading of Wow.exe: tswow on an
-  // enUS client with UseLocale off works, and enUS `DBFilesClient` lives in `locale-enUS.MPQ`, so
-  // `patch-A.MPQ` must beat it. The archive-name string table proves only that both forms are
-  // enumerated (`patch-%s-?` beside `patch-?`), not the order they are loaded in.
+  // This is the WebClient/TSWoW rule. The original executable's startup path sorts full paths:
+  // locale lettered patches outrank root lettered patches even when the root letter is later.
   let match = /^patch-(?:([a-z]{4})-)?([a-z])$/.exec(lower);
   if (match) return { tier: 16, rank: (match[2].charCodeAt(0) - 96) * 2 + (match[1] ? 1 : 0) };
 
@@ -103,10 +102,11 @@ class LooseSource {
   #prefix;
   #index;
 
-  constructor(name, root, prefix = "") {
+  constructor(name, root, prefix = "", relativeDataPath = null) {
     this.name = name;
     this.kind = "directory";
     this.file = root;
+    this.relativeDataPath = relativeDataPath;
     this.#root = root;
     this.#prefix = prefix.replaceAll("/", "\\").replace(/\\+$/, "");
   }
@@ -182,12 +182,13 @@ class LooseSource {
 class ArchiveSource {
   #handle;
 
-  constructor(name, file, handle) {
+  constructor(name, file, handle, relativeDataPath) {
     this.name = name;
     this.kind = "archive";
     // The archive file itself: a stamp cannot name a file inside an MPQ, but the archive's own
     // size and mtime answer the same question — the contents cannot change without it changing.
     this.file = file;
+    this.relativeDataPath = relativeDataPath;
     this.#handle = handle;
   }
 
@@ -310,13 +311,17 @@ export async function openClientArchives(clientDirectory) {
   const sources = [];
   const skipped = [];
   for (const entry of found) {
+    const relativeDataPath = entry.virtualPrefix
+      ? null
+      : relative(dataDirectory, entry.absolute).replaceAll(sep, "\\");
     if (entry.isDirectory) {
-      sources.push(new LooseSource(entry.name, entry.absolute, entry.virtualPrefix));
+      sources.push(new LooseSource(entry.name, entry.absolute, entry.virtualPrefix, relativeDataPath));
       continue;
     }
     const virtualPath = `${mount}/${relative(dataDirectory, entry.absolute).replaceAll(sep, "/")}`;
     try {
-      sources.push(new ArchiveSource(entry.name, entry.absolute, await MPQ.open(virtualPath, "r")));
+      sources.push(new ArchiveSource(
+        entry.name, entry.absolute, await MPQ.open(virtualPath, "r"), relativeDataPath));
     } catch (error) {
       skipped.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -380,6 +385,19 @@ export async function openClientArchives(clientDirectory) {
     async locate(path) {
       for (const source of sources) if (await source.has(path)) return source.name;
       return undefined;
+    },
+    /** Every holder of one known path, in WebClient search order. Used only by diagnostics. */
+    async copies(path) {
+      const holders = [];
+      for (const source of sources) {
+        if (await source.has(path)) {
+          holders.push({
+            name: source.name, kind: source.kind,
+            relativeDataPath: source.relativeDataPath,
+          });
+        }
+      }
+      return holders;
     },
     /**
      * Files a patch **directory** holds that the chain answers from somewhere else, and everything

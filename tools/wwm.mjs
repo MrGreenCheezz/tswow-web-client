@@ -25,7 +25,8 @@
 //  10  u8    ambient red
 //  11  u8    ambient green
 //  12  u8    ambient blue
-//  13  u8    flags: 1 every group's geometry travels here
+//  13  u8    flags: 1 every group's geometry travels here, 2 classic MapObj path (MOHD 0x2 clear:
+//              MOCV holds the ambient), 4 MOHD 0x8 (MOCV alpha never fixed up)
 //  14  u16   lightCount
 //  16  u32   total length, so a truncated response is caught before it is decoded
 //  20  u32   offset of optional metadata, or zero for a legacy artifact
@@ -65,6 +66,14 @@
 //             24  f32 end distance in air, 28 f32 the fraction of it it starts at, 32 u8[3] RGB
 //             36  the same three for a camera in water, 44 u8[3] RGB
 //       Both tables are multiples of four bytes, so the section needs no padding of its own.
+//
+//   ..  WME4, straight after WME3 (found by WME3's length) and only on a building of rooms alone:
+//       the MODR rooms of each doodad the tiles place, per doodad set in the tiles' own numbering:
+//         0  char[4] "WME4"
+//         4  u32 setCount
+//         8  u32 the length of this section
+//        12  setCount × { u32 doodadCount, u32 ownerCount }
+//        ..  per set: u32[doodadCount + 1] offsets into its u16[ownerCount] groups, padded to four
 //
 // A block is self-contained, and it is the same bytes whether it arrives inside the header's file
 // or on its own as `<hash>.g<NNN>.bin`:
@@ -108,6 +117,18 @@ export const WWM1_RUN_SIZE = 16;
 export const WWM1_LIGHT_SIZE = 28;
 /** Bit 0 of the header's flags byte: nothing was held back. */
 export const WWM1_COMPLETE = 0x01;
+/**
+ * Bit 1: the source's MOHD flags were read and 0x2 is clear — the classic `MapObj` path, whose
+ * MOCV already carries `MOHD.ambColor` (see `wmoRenderFlags` in `wmo-visual.mjs`). Clear means
+ * unified *or unknown*, which keeps an artifact without the word on the light it always had.
+ */
+export const WWM_CLASSIC_VERTEX_LIGHT = 0x02;
+/** Bit 2: MOHD 0x8 — `FixColorVertexAlpha` never ran, so MOCV alpha is not a brightness boost. */
+export const WWM_VERTEX_ALPHA_UNFIXED = 0x04;
+/** After WME3: which groups own each doodad the tiles place (MODR), per doodad set. */
+export const WWM_DOODAD_ROOMS_MAGIC = "WME4";
+export const WWM_DOODAD_ROOMS_HEADER_SIZE = 12;
+export const WWM_DOODAD_ROOMS_SET_SIZE = 8;
 /** Header word 20 continues to point at the legacy envelope old WWM1 readers understand. */
 export const WWM1_METADATA_MAGIC = "WME1";
 export const WWM1_METADATA_HEADER_SIZE = 8;
@@ -250,13 +271,22 @@ export function encodeWwm(model, textureUrls, include) {
   );
   const fogs = safeFogs(model.fogs);
   const fogLength = WWM1_FOG_HEADER_SIZE + groups.length * WWM1_FOG_GROUP_SIZE + fogs.length * WWM1_FOG_SIZE;
-  const metadataLength = legacyMetadataLength + extensionLength + fogLength;
+  // Only a building of rooms alone reads WME4 (the browser's `wmoInteriorOnly`); anything with a
+  // street keeps the 60-yard doodad leash, so its header is not made to carry the table — Stormwind's
+  // 6,157 doodads would add 37 KB to the 58 KB a browser takes before choosing a room.
+  const doodadRooms = interiorOnlyModel(groups) ? safeDoodadRooms(model.doodadRooms, groups.length) : undefined;
+  const doodadRoomsLength = doodadRooms === undefined ? 0 : WWM_DOODAD_ROOMS_HEADER_SIZE + doodadRooms.reduce(
+    (total, set) => total + WWM_DOODAD_ROOMS_SET_SIZE + set.offsets.length * 4 + align4(set.groups.length * 2), 0);
+  const metadataLength = legacyMetadataLength + extensionLength + fogLength + doodadRoomsLength;
   const data = Buffer.alloc(WWM1_HEADER_SIZE + tableLength + textureLength + lightLength + bodyLength + metadataLength);
   data.write(wwm2 ? WWM2_MAGIC : WWM1_MAGIC, 0, "ascii");
   data.writeUInt32LE(groups.length, 4);
   data.writeUInt16LE(textures.length, 8);
   for (let channel = 0; channel < 3; channel++) data.writeUInt8(clampByte(model.ambient?.[channel] ?? 0), 10 + channel);
-  data.writeUInt8(include ? 0 : WWM1_COMPLETE, 13);
+  const renderFlags = Number.isInteger(model.renderFlags) ? model.renderFlags : undefined;
+  data.writeUInt8((include ? 0 : WWM1_COMPLETE)
+    | (renderFlags !== undefined && (renderFlags & 0x2) === 0 ? WWM_CLASSIC_VERTEX_LIGHT : 0)
+    | (renderFlags !== undefined && (renderFlags & 0x8) !== 0 ? WWM_VERTEX_ALPHA_UNFIXED : 0), 13);
   data.writeUInt16LE(lights.length, 14);
   data.writeUInt32LE(data.length, 16);
 
@@ -367,7 +397,61 @@ export function encodeWwm(model, textureUrls, include) {
     }
     offset += WWM1_FOG_SIZE;
   }
+
+  // WME4 follows WME3 by WME3's own length, the way WME3 follows WME2: a reader that stops earlier
+  // never sees it. Per set: doodad and owner counts, then CSR offsets and u16 group indices.
+  if (doodadRooms === undefined) return data;
+  const roomsOffset = fogOffset + fogLength;
+  data.write(WWM_DOODAD_ROOMS_MAGIC, roomsOffset, "ascii");
+  data.writeUInt32LE(doodadRooms.length, roomsOffset + 4);
+  data.writeUInt32LE(doodadRoomsLength, roomsOffset + 8);
+  offset = roomsOffset + WWM_DOODAD_ROOMS_HEADER_SIZE;
+  for (const set of doodadRooms) {
+    data.writeUInt32LE(set.offsets.length - 1, offset);
+    data.writeUInt32LE(set.groups.length, offset + 4);
+    offset += WWM_DOODAD_ROOMS_SET_SIZE;
+  }
+  for (const set of doodadRooms) {
+    for (const value of set.offsets) data.writeUInt32LE(value, offset), offset += 4;
+    for (const group of set.groups) data.writeUInt16LE(group, offset), offset += 2;
+    offset = align4(offset);
+  }
   return data;
+}
+
+/**
+ * Rooms and nothing else: every drawn group indoor, none outdoor (MOGP 0x8) and none holding an
+ * exterior or transition run — the encoder's twin of the browser's `wmoInteriorOnly`.
+ */
+function interiorOnlyModel(groups) {
+  let drawn = false;
+  for (const group of groups) {
+    if (!(group.indices?.length > 0)) continue;
+    drawn = true;
+    const exterior = group.exterior === true
+      || (group.runs?.some((run) => run.lighting === 0 || run.lighting === 2) ?? false);
+    if (group.indoor !== true || exterior || ((group.flags ?? 0) & 0x8) !== 0) return false;
+  }
+  return drawn;
+}
+
+/**
+ * Doodad room tables that are internally consistent, or none: they only widen which furniture is
+ * drawn, so a damaged one falls back to the distance leash rather than failing a drawable model.
+ */
+function safeDoodadRooms(sets, groupCount) {
+  if (!Array.isArray(sets) || sets.length > 65_535) return [];
+  for (const set of sets) {
+    const offsets = set?.offsets;
+    const groups = set?.groups;
+    if (!Array.isArray(offsets) || !Array.isArray(groups) || offsets.length === 0
+      || offsets.length > 100_001 || offsets[0] !== 0 || offsets.at(-1) !== groups.length) return [];
+    for (let index = 1; index < offsets.length; index++) {
+      if (!Number.isInteger(offsets[index]) || offsets[index] < offsets[index - 1]) return [];
+    }
+    if (!groups.every((group) => Number.isInteger(group) && group >= 0 && group < groupCount)) return [];
+  }
+  return sets;
 }
 
 /** Preserve MOLT ordinals while making malformed optional lights inert for every CPU consumer. */

@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as THREE from "three";
-import { parseAdtPlacements } from "./adt-placements.mjs";
+import { globalMapObjects, parseAdtPlacements, placementReachesCell } from "./adt-placements.mjs";
+import { staticM2AdmissionRadius } from "./m2.mjs";
 import { parseWmoDoodadSets, validParsedWmoDoodadSets, wmoDependencies } from "./wmo-visual.mjs";
 import { openDbcFile } from "./dbc.mjs";
 import { clientArchives } from "./mpq.mjs";
@@ -37,8 +38,24 @@ if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
 const archives = await clientArchives(clientDirectory());
 const adtPath = `World\\Maps\\${mapName}\\${mapName}_${gridY}_${gridX}.adt`;
 const adt = await archives.read(adtPath);
-if (!adt) throw new Error(`${adtPath} is not in the client`);
-const objects = parseAdtPlacements(adt);
+// What the tile was read out of, for the stamp: the ADT, or for a map that is one WMO its WDT.
+const tileSources = [adtPath];
+let objects;
+if (adt) objects = parseAdtPlacements(adt);
+else {
+  // Thirty-nine maps of this client have no ADT at all: the WDT says "one global map object"
+  // (MPHD flag 0x1) and names it in its own MWMO/MODF — Wailing Caverns, Blackrock Depths, Molten
+  // Core, the Nexus. The records are the ADT's `SMMapObjDef`, so the ADT parser reads them as they
+  // are. Each cell the building's box reaches answers the same placement (its furniture is keyed
+  // on the placement, so `objectsAround` keeps one copy); the cells it does not reach are empty,
+  // not missing. Before this every cell of such a map failed, and the dungeon drew nothing.
+  const wdtPath = `World\\Maps\\${mapName}\\${mapName}.wdt`;
+  const wdt = await archives.read(wdtPath);
+  const global = wdt ? globalMapObjects(wdt) : undefined;
+  if (!global) throw new Error(`${adtPath} is not in the client`);
+  tileSources.push(wdtPath);
+  objects = global.filter((placement) => placementReachesCell(placement, gridX, gridY));
+}
 const wmoPaths = [...new Set(objects.filter((object) => object.kind === "wmo").map((object) => object.name))];
 let doodadCount = 0;
 let missingWmos = 0;
@@ -78,13 +95,35 @@ if (wmoPaths.length > 0) {
   doodadCount = expanded.length;
   for (const object of expanded) objects.push(object);
 }
+
+// Admission runs before a model is requested or built. An unbounded M2 otherwise consumes one
+// of the 320 exterior slots even when it is behind the camera. Read each distinct outdoor model
+// from the same source chain as the tile and publish a conservative origin-centred radius only
+// for static geometry. Rigged and emitter models deliberately retain the old fail-open path.
+const outdoorM2Paths = new Map();
+for (const object of objects) {
+  if (object.kind === "m2" && object.interior !== true) {
+    outdoorM2Paths.set(object.name.toLowerCase(), object.name);
+  }
+}
+const outdoorM2Radii = new Map();
+for (const [key, path] of outdoorM2Paths) {
+  const model = await archives.read(path);
+  const radius = model ? staticM2AdmissionRadius(model) : undefined;
+  if (radius !== undefined) outdoorM2Radii.set(key, radius);
+}
+for (const object of objects) {
+  if (object.kind !== "m2" || object.interior === true) continue;
+  const radius = outdoorM2Radii.get(object.name.toLowerCase());
+  if (radius !== undefined) object.admissionRadius = radius;
+}
 await mkdir(dirname(destination), { recursive: true });
 await writeFile(destination, JSON.stringify(objects));
 // The tile and every building whose furniture was read out of it: a module that changes a WMO's
 // doodad set changes this list without touching the ADT.
 await stampGenerated(destination, archives, {
-  generation: "visual-tile-v3",
-  paths: [adtPath, ...wmoSourcePaths],
+  generation: "visual-tile-v4",
+  paths: [...tileSources, ...wmoSourcePaths, ...outdoorM2Paths.values()],
 });
 const absent = missingWmos > 0 ? `, ${missingWmos} WMO(s) not in the client` : "";
 console.log(`Generated visual tile ${mapId}/${gridX}/${gridY}: ${objects.length} objects (${doodadCount} WMO doodads)${absent}`);

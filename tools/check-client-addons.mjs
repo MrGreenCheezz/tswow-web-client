@@ -8,7 +8,8 @@ import { CannedWorldSeam } from "../dist/code/browser/framexml/CannedWorldSeam.j
 import { discoverClientAddons } from "../dist/code/gateway/ClientAddons.js";
 
 const root = clientDirectory();
-const addons = await discoverClientAddons(root);
+const addons = await discoverClientAddons(root,
+  process.env.CLIENT_ADDONS_FILE ? { addonsFile: process.env.CLIENT_ADDONS_FILE } : {});
 if (addons.length === 0) {
   console.log(`No root-level client AddOns found under ${root}.`);
   process.exit(0);

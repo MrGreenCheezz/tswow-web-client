@@ -39,6 +39,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { openDbcFile } from "./dbc.mjs";
+import { PNG } from "pngjs";
 import { blpToPng } from "./blp-png.mjs";
 import { textureId } from "./generate-texture.mjs";
 import { LIQUID_CLASSES, liquidFrameInputs, liquidTexturePattern } from "./generate-liquid-texture.mjs";
@@ -75,6 +76,10 @@ const FAMILIES = [
     name: "item-icons",
     directory: cacheDirectory("ITEM_ICON_DIR", "data/item-icons"),
     inputs: itemIconInputs,
+    // Entries from an earlier chain whose source moved are proven against it instead: see `proveItemIcon`.
+    prove: proveItemIcon,
+    // A decoded 2 KB picture at a time, but thirty-two of them in flight is more than it needs.
+    concurrency: 8,
   },
   { name: "minimap", directory: cacheDirectory("MINIMAP_DIR", "data/minimap"), inputs: minimapInputs },
   { name: "horizon", directory: cacheDirectory("HORIZON_DIR", "data/horizon"), inputs: horizonInputs },
@@ -95,13 +100,15 @@ const FAMILIES = [
     name: "textures",
     directory: cacheDirectory("TEXTURE_DIR", "data/textures"),
     recover: recoverTexture,
+    // Entries from an earlier chain whose source moved are proven the same way.
+    prove: recoverTexture,
     // Unlike the other families this holds decoded pixels and encoded PNGs while a stamp is made.
     concurrency: 4,
   },
   {
     name: "visual-models",
     directory: cacheDirectory("VISUAL_MODEL_DIR", "data/visual-models"),
-    // sha1(`visual-v21\0<path>`) for M2 or `visual-wmo-v17` for WMO, same as the gateway — and the
+    // sha1(`visual-v21\0<path>`) for M2 or `visual-wmo-v22` for WMO, same as the gateway — and the
     // stamp names every file the model's own publish read: .skin, external .anim or WMO groups.
     inputs: (name) => (/\.bin$/i.test(name) ? undefined : null),
   },
@@ -242,6 +249,26 @@ function texturePathIndex() {
 }
 
 /**
+ * Whether two PNGs show the same picture: the same bytes, or the same decoded pixels.
+ *
+ * The bytes alone are too strict a proof. Measured 2026-09-28 over a sample of 24 published item
+ * icons: none was byte-identical to a fresh decode of the BLP it came from and all 14 that exist
+ * held exactly its pixels — the older encoder's compression differs (5,223 B against 5,488 B), the
+ * picture does not. Regenerating on that evidence would have rewritten 20,942 correct files.
+ */
+function samePicture(published, expected) {
+  if (published.equals(expected)) return true;
+  try {
+    const left = PNG.sync.read(published);
+    const right = PNG.sync.read(Buffer.from(expected));
+    return left.width === right.width && left.height === right.height && left.data.equals(right.data);
+  } catch {
+    // A published file that will not decode is not a picture to keep.
+    return false;
+  }
+}
+
+/**
  * Proves a legacy `<textureId>.png` against the BLP that wins that path today.
  *
  * `list` returns the union in normalised spelling; `read` applies priority to that path. A null
@@ -258,8 +285,32 @@ async function recoverTexture(file, name) {
   const published = await readFile(file);
   return {
     inputs: { paths: [path] },
-    ...(!published.equals(expected) ? { replacement: expected } : {}),
+    ...(!samePicture(published, expected) ? { replacement: expected } : {}),
   };
+}
+
+/**
+ * Proves an item icon against the BLP its display id names today, for an entry whose stamp is
+ * from an earlier chain and whose source no longer matches it exactly.
+ *
+ * The picture is the BLP decoded and nothing else — `ItemDisplayInfo` only says which BLP — so
+ * decoding it again and comparing the pixels is a proof, and a cheap one for a 2 KB picture: what
+ * a size-and-time comparison cannot say is whether a client directory that was copied, restored or
+ * synced (same size, another mtime, another folder) holds the same file. Measured 2026-09-28: of a
+ * sample of 500 icon stamps, 499 named the same archive at the same size and differed only in its
+ * mtime — from `F:CircleClean`, which stamped them, to `F:Circle`, which the gateway reads — and
+ * every one of the 21,001 left would otherwise have been a generator process on the request path,
+ * 0.35 s each, one at a time, with the icon a question mark until it ran. The same picture gets the
+ * new stamp; a different one is replaced with the decode, exactly as `recoverTexture` does.
+ */
+async function proveItemIcon(file, name) {
+  const inputs = await itemIconInputs(name);
+  if (!inputs) return undefined;
+  const blp = await (await archiveChain()).read(inputs.paths[0]);
+  if (!blp) return undefined;
+  const expected = blpToPng(blp);
+  const published = await readFile(file);
+  return { inputs, ...(!samePicture(published, expected) ? { replacement: expected } : {}) };
 }
 
 /** A sidecar written beside the live file, then made visible in one rename. */
@@ -324,7 +375,45 @@ let stamped = 0;
 let unrecoverable = 0;
 try {
   for (const family of FAMILIES) {
-    const entries = await unstampedEntries(family.directory);
+    const { found: entries, foreign } = await unstampedEntries(family.directory);
+    if (foreign.length > 0) {
+      let resigned = 0;
+      let proven = 0;
+      let replaced = 0;
+      let changed = 0;
+      await inBatches(foreign, async (entry) => {
+        try {
+          if (await resignForeign(entry) === "resigned") {
+            resigned++;
+            return;
+          }
+          // The provenance did not hold: a source's size or time is not what it was. For the
+          // families whose picture is cheap to make again, ask the source itself.
+          const outcome = family.prove ? await family.prove(entry.file, entry.name) : undefined;
+          if (!outcome?.inputs) {
+            changed++;
+            return;
+          }
+          if (!dryRun) {
+            const stamp = await stampFor(outcome.inputs);
+            if (outcome.replacement) await replacePublishedEntry(entry.file, outcome.replacement, stamp);
+            else await writeAtomicStamp(entry.file, stamp);
+          }
+          if (outcome.replacement) replaced++;
+          else proven++;
+        } catch (error) {
+          changed++;
+          if (changed <= REPORTED_FAILURES) {
+            console.warn(`  ${family.name}/${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }, family.concurrency);
+      stamped += resigned + proven + replaced;
+      report.push(`${family.name}: ${resigned + proven} of ${foreign.length} from an earlier chain re-signed`
+        + `${proven > 0 ? ` (${proven} proven against the source)` : ""}`
+        + `${replaced > 0 ? `, ${replaced} regenerated` : ""}`
+        + `${changed > 0 ? `, ${changed} left to rebuild (a source moved)` : ""}`);
+    }
     if (entries.length === 0) continue;
     let written = 0;
     let regenerated = 0;
@@ -411,8 +500,9 @@ async function stampFor(inputs) {
  * the strength of its name alone would never be written again.
  *
  * Only the order-2 digest of the *same current composition* is migration work. Any other readable
- * digest means the installed patch set really changed; re-signing the old bytes here would hide
- * that change from `DatasetFingerprint`, so it is left for the normal request generator.
+ * digest is "foreign": the installed patch set changed since the entry was written, and
+ * `DatasetFingerprint` would drop it on its first request. `resignForeign` below keeps the ones
+ * that change did not touch.
  */
 async function stampState(file, expectedChain, legacyChain) {
   try {
@@ -427,9 +517,13 @@ async function stampState(file, expectedChain, legacyChain) {
   }
 }
 
-/** Every published file without a readable sidecar from the active chain, sidecars excluded. */
+/**
+ * Every published file without a readable sidecar from the active chain, sidecars excluded — and,
+ * apart, the ones whose sidecar is readable but names another composition of the chain.
+ */
 async function unstampedEntries(directory) {
   const found = [];
+  const foreign = [];
   const stamped = [];
   const walk = async (current, prefix) => {
     let listing;
@@ -467,9 +561,81 @@ async function unstampedEntries(directory) {
     await inBatches(stamped, async (entry) => {
       const state = await stampState(entry.sidecar, expectedChain, legacyChain);
       if (state === "unreadable" || state === "legacy") found.push({ file: entry.file, name: entry.name });
+      else if (state === "foreign") foreign.push(entry);
     });
   }
-  return found;
+  return { found, foreign };
+}
+
+/**
+ * Keeps an entry stamped under another composition of the chain when nothing it was built from
+ * changed.
+ *
+ * A stamp's `chain` is a digest of the *names* of every archive and patch directory, so adding one
+ * archive, linking one module directory or toggling `Interface/AddOns` makes every stamp in `data/`
+ * foreign at once, and `DatasetFingerprint` then deletes each entry on its first request and puts
+ * it on its family's generator lane. Measured on this machine on 2026-09-28: 4,528 of 10,243
+ * textures and 9,421 of 13,852 model files were foreign, left by the tswow-store link of
+ * 2026-09-06 and the W/X/Y/Z installs before it — and of 150 of those textures regenerated at
+ * random, 149 came out byte-identical, as did 30 of 30 models. The player paid ~0.4 s per entry on
+ * the request path to be given the same bytes back.
+ *
+ * The composition check is a shortcut for "a path may now resolve elsewhere"; this asks the
+ * question itself. Every path the old stamp names is resolved again under the chain as it is now:
+ * each must be answered by the same source — same kind, same name, same file, same size and mtime —
+ * each recorded absence must still be absent, and each plain file must be unchanged. Then the
+ * generator would read exactly the bytes it read before, and the entry is re-signed with the stamp
+ * it would write today (the new composition, and the sources now ranked above each winner). Any
+ * difference leaves the old stamp alone, and the request path rebuilds that entry as before.
+ *
+ * What it cannot see is a path the generator probed, found absent and did not record — the model
+ * generator records the external `.anim` files it found, not the ones it looked for. An archive
+ * that newly supplies one of those for an unchanged `.m2` would not invalidate the entry; the same
+ * gap exists for a stamp written today, and a patch that adds animations to a model replaces the
+ * model with them.
+ */
+async function resignForeign(entry) {
+  let old;
+  try {
+    old = JSON.parse(await readFile(entry.sidecar, "utf8"));
+  } catch {
+    return "changed";
+  }
+  const oldMissingSources = Array.isArray(old.missingSources) ? old.missingSources : [];
+  const oldMissingFiles = Array.isArray(old.missingFiles) ? old.missingFiles : [];
+  const inputs = {
+    paths: [...old.sources.map((source) => source.path), ...oldMissingSources.map((missing) => missing.path)],
+    files: [...old.files.map((file) => file.file), ...oldMissingFiles],
+    ...(typeof old.generation === "string" && old.generation ? { generation: old.generation } : {}),
+  };
+  if (inputs.paths.some((path) => typeof path !== "string") || inputs.files.some((file) => typeof file !== "string")) {
+    return "changed";
+  }
+  const fresh = await stampFor(inputs);
+  if (!sameProvenance(old, fresh, oldMissingSources, oldMissingFiles)) return "changed";
+  if (!dryRun) await writeAtomicStamp(entry.file, fresh);
+  return "resigned";
+}
+
+/** Whether every input of `old` resolves today to what it resolved to then (see `resignForeign`). */
+function sameProvenance(old, fresh, oldMissingSources, oldMissingFiles) {
+  const normal = (value) => String(value).replaceAll("/", "\\").toLowerCase();
+  const now = new Map(fresh.sources.map((source) => [normal(source.path), source]));
+  for (const source of old.sources) {
+    const current = now.get(normal(source.path));
+    if (!current || current.kind !== source.kind || normal(current.name) !== normal(source.name)
+      || normal(current.file) !== normal(source.file)
+      || current.size !== source.size || current.mtimeMs !== source.mtimeMs) return false;
+  }
+  const stillMissing = new Set((fresh.missingSources ?? []).map((missing) => normal(missing.path)));
+  for (const missing of oldMissingSources) if (!stillMissing.has(normal(missing.path))) return false;
+  const files = new Map(fresh.files.map((file) => [normal(file.file), file]));
+  for (const file of old.files) {
+    const current = files.get(normal(file.file));
+    if (!current || current.size !== file.size || current.mtimeMs !== file.mtimeMs) return false;
+  }
+  for (const file of oldMissingFiles) if (files.has(normal(file))) return false;
+  return true;
 }
 
 /** Bounded parallelism: the work is stats and 200-byte writes, and 21,071 of them serially is not. */

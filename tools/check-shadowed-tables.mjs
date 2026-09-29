@@ -53,7 +53,7 @@ export function shadowWarning(shadow) {
   const [winner, ...queued] = shadow.shadowedBy;
   return (
     `WARNING: ${shadow.path} is built into ${shadow.overlay}, but ${winner} outranks it in the ` +
-    `client's archive chain, so the game client reads that copy and not the one the dataset built. ` +
+    `WebClient archive chain, so this project's resource reads use that copy instead of the dataset build. ` +
     // Naming only the winner is what makes an operator's first repair the wrong one: taking the top
     // archive out promotes the next one carrying the path, which on this machine is an older copy
     // of the same table. Every one of them has to go, and the message says so up front.

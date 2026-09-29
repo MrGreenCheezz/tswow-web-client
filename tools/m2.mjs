@@ -568,6 +568,49 @@ function readBounds(model) {
 }
 
 /**
+ * Origin-centred radius for a scenery M2 that the current visual publisher draws without a rig
+ * or emitters. The MD20 header's bounding radius is centred on its own box, not on the placement
+ * origin (ElwynnTreeMid01 reaches z=11.7 while its header radius is 6.3). Scan every source vertex
+ * instead: the SKIN can only select a subset, and model-to-scene/ADT placement rotations preserve
+ * distance from the origin. Unknown, animated or malformed models must remain unculled.
+ */
+export function staticM2AdmissionRadius(model) {
+  const headerEnd = HEADER.particleEmitters + 8;
+  if (!Buffer.isBuffer(model) || model.length < headerEnd
+    || model.subarray(0, 4).toString() !== "MD20" || model.readUInt32LE(4) !== 264) return undefined;
+  if (array(model, HEADER.ribbonEmitters).count > 0
+    || array(model, HEADER.particleEmitters).count > 0) return undefined;
+
+  const bones = array(model, HEADER.bones);
+  const sequences = array(model, HEADER.sequences);
+  const vertices = array(model, HEADER.vertices);
+  if (bones.count > 1024 || (bones.count > 0 && (bones.offset < headerEnd || !fits(model, bones, BONE_SIZE)))
+    || sequences.count > 4096 || (sequences.count > 0 && (sequences.offset < headerEnd || !fits(model, sequences, SEQUENCE_SIZE)))
+    || vertices.count === 0 || vertices.count > 1_000_000
+    || vertices.offset < headerEnd || !fits(model, vertices, VERTEX_SIZE)) {
+    return undefined;
+  }
+  try {
+    // An external .anim can move bones even when its keyframes are absent from this M2 buffer.
+    if (m2Animations(model).some((animation) => animation.external !== undefined)
+      || parseM2Skeleton(model) !== undefined) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  let radius = 0;
+  for (let index = 0; index < vertices.count; index++) {
+    const at = vertices.offset + index * VERTEX_SIZE;
+    const x = model.readFloatLE(at);
+    const y = model.readFloatLE(at + 4);
+    const z = model.readFloatLE(at + 8);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
+    radius = Math.max(radius, Math.hypot(x, y, z));
+  }
+  return Number.isFinite(radius) ? radius : undefined;
+}
+
+/**
  * The points a model hangs other models from: a helm on the head, a sword in the right hand.
  *
  * Read here rather than in parseM2 because an attachment is nothing but a bone and a place on it,

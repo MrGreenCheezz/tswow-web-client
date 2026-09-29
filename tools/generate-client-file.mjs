@@ -67,7 +67,7 @@ export function clientFileDirectory() {
 
 /** True for a path that could name an interface file inside the archives. */
 export function validClientFilePath(value) {
-  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS });
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true });
 }
 
 /**
