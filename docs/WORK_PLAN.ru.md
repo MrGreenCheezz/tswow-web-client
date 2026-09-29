@@ -76,11 +76,23 @@
 ## Этап 0. Подготовка и решения владельца
 
 - [x] **0.1** ☐ — **Перезапуск gateway владельцем** (`restart-gateway.bat`). Сейчас работает сборка от 11:23, `gateway-build-stale` → stale, `/dbc/char-titles` → 404. После перезапуска заработают титулы и глобальные WMO подземелий (работа параллельной сессии). Проверка: GET `/dbc/char-titles` → 200. **Сделано владельцем 29.09 в 00:30** (`start-dev`: `gateway:dev`, `gateway`, `dev`; `dist/code` и `dist/web` пересобраны). Проверено 29.09: `GET /dbc/char-titles?v=1` → 200 (15 659 Б, есть женские формы; без `v` маршрут отвечает 400), `/environment/43/31/30` → 200 (глобальный WMO Пещер Стенаний).
-- [ ] **0.2** ☐ — **Зафиксировать работу в git (по просьбе владельца).**
+- [x] **0.2** ☐ — **Зафиксировать работу в git (по просьбе владельца).**
   - `docs/` целиком не отслеживается; последний коммит `3b09070` от 20.09; изменено 400 файлов, неотслеживаемых 741.
   - Удалённый `NOTICE.md`: либо восстановить, либо поправить ссылки из `package.json:5` («SEE LICENSE IN NOTICE.md»), `LICENSE:4`, `vite.config.mjs:79`.
   - Удалённый `tools/dbd/README.md` содержит атрибуцию CC BY-SA для `.dbd`, которые остались в git. На него ссылаются `src/generated/dbcLayouts.ts:2`, `tools/generate-dbc-layouts.mjs:28`, `tools/dbd-tables.mjs`, `tests/dbc.test.mjs:112`, `src/gateway/SoundMetadata.ts:142` — это лицензионный риск.
-- [ ] **0.3** ☐ — **Закрепить правила тестов** (с согласия владельца). В `package.json` для `test` и `test:source`: `--test-concurrency=4`, `--test-timeout=240000`, `NODE_OPTIONS=--max-old-space-size=4096`; короткое правило в `AGENTS.md`. Сейчас `npm test` идёт с ≈19 воркерами без лимита кучи; это повторение условий инцидента 28.09 (101/131 ГБ).
+  - **Сделано 29.09 по просьбе владельца.** Точка отката — девять коммитов по областям `b302a4b…b067541` (docs, world, gateway, framexml, ui, render, tools, tests, build; 1387 путей). По отдельности промежуточные коммиты не собираются; дерево после последнего — рабочее дерево на 29.09. Отдельный коммит `c54cbab` возвращает `NOTICE.md` и `tools/dbd/README.md` из `3b09070`; если удаление было намеренным — `git revert c54cbab` и поправить ссылки. На удалённый репозиторий ничего не отправлялось.
+- [x] **0.3** ☐ — **Закрепить правила тестов** (с согласия владельца). В `package.json` для `test` и `test:source`: `--test-concurrency=4`, `--test-timeout=240000`, `NODE_OPTIONS=--max-old-space-size=4096`; короткое правило в `AGENTS.md`. Сейчас `npm test` идёт с ≈19 воркерами без лимита кучи; это повторение условий инцидента 28.09 (101/131 ГБ).
+  - **Сделано 29.09** (владелец разрешил правку `package.json`).
+    - `tools/run-tests.mjs` — единая точка запуска:
+      - явный список `tests/*.test.mjs`: штатный поиск `node --test` подхватывал ещё 20+ тестов отклонённых опытов из `.runtime/`;
+      - параллелизм 1 для перечисленных файлов и 4 для всего набора, `--test-timeout=240000`, куча 4 ГБ у каждого тестового процесса;
+      - общий таймаут 40 мин, по истечении останавливается только собственное дерево процессов;
+      - Node 22 из `.runtime/node`, если системный Node старше;
+      - в конце печатает пик памяти.
+    - `tools/test-memory-guard.mjs` — предзагрузка в каждый тестовый процесс. Отдельный поток следит за памятью *своего* процесса и завершает его выше 6 ГБ; срабатывает и внутри синхронного цикла. Чужие процессы не опрашиваются: WMI-опрос из прежнего замысла открывал бы и процессы Parsec.
+    - `package.json`: `test` → `npm run build && node tools/run-tests.mjs --dist`; `test:source` → `node tools/run-tests.mjs --source`; новый `test:file` (`npm run test:file -- tests/<файл>.test.mjs`).
+    - Тест `run-tests-wrapper`: 9/9, четыре мутации ловятся.
+    - `AGENTS.md` (с согласия владельца): пример узкой проверки — `npm run test:file`, правило «тесты только через обёртку».
 - [ ] **0.4** ☐ — **Решения владельца** (от них зависят пункты в скобках):
   - a) штатный FrameXML HUD по умолчанию для всех игроков: сейчас по умолчанию native, `originalFrameXml=false`, `ui/SettingsModel.ts:269` (3.24, 4.x);
   - b) Lua-аддоны TSWoW включены по умолчанию, как в клиенте TSWoW: сейчас `false`, `SettingsModel.ts:273` (9.02);
@@ -108,7 +120,9 @@
   - публикация патчей: `patches:check` — 5 ошибок: не опубликован 441 файл, включая patch-W…Z; 47 файлов отличаются; 428 устарели; 2 файла payload отсутствуют; `realmlist.wtf` и `d3d9.dll` не совпадают с манифестом; 1277 URL по HTTP — доставка Lua/DLL без проверки подлинности;
   - сборка и публикация `minimap-hub` (решение 25.09 об общей кнопке);
   - установка правки `bot_ai.cpp` (`UNIT_STREAMING_FIXES.ru.md:69-75`);
-  - доказать, что `worldserver.exe` собран из текущих исходников.
+  - доказать, что `worldserver.exe` собран из текущих исходников;
+  - **retail-talents: диалоги сброса не открываются нигде, в том числе в настоящем клиенте** (ревью 9.01, 29.09). `talent-ui.ts:281,287` вызывает `(_G as any).StaticPopup_Show(...)`; TSTL превращает это в `_G:StaticPopup_Show(…)` (раздаваемый `talent-ui.lua`, строки 440 и 465). Первым аргументом уходит `_G`, и `StaticPopupDialogs[_G]` = nil (`StaticPopup.lua:2944-2947`). Починка в модуле: объявить `StaticPopup_Show(this: void, …)`, как предупреждает `survival-ui.ts:7-8`, и пересобрать аддон.
+    - **Позиция владельца (29.09):** нужна полная совместимость. Модули, написанные для TSWoW, должны работать в WebClient без подгонки под него. Здесь подгонки нет: в Wow.exe вызов тоже не срабатывает, WebClient повторяет оригинал. Правка нужна самому модулю, для обоих клиентов; делать ли её — решает владелец. Со стороны WebClient — 9.09: подсказка автору модуля, поведение при этом не меняется.
 - [x] **0.6** — **Согласование с параллельной сессией** (подземелья, освещение, анимации, производительность). Пункты ⚑ начинать после её коммита или передачи. Её текущая работа:
   - глобальные WMO подземелий: `VMapProtocol.ts`, `CollisionSource.ts`, `Gateway.ts`;
   - окклюзия и порталы WMO: `WmoOcclusion.ts`, `WmoModel.ts`;
@@ -127,15 +141,24 @@
 - **D**, glue, gateway, crypto, Electron: 1.02, 1.03, 1.19, 1.29;
 - **E**, рендер ⚑: 1.22–1.24.
 
-- [ ] **1.02** · S0 · S — **Вход в мир по http из браузера.** `world/WorldCrypt.ts:40-49`: HMAC-SHA1 без `crypto.subtle` на основе `auth/Sha1.ts`, как уже сделано для SRP6 (`auth/Srp6.ts:35-40`). Тест: векторы RFC 2202 и `WorldCrypt.create` без `subtle`.
-- [ ] **1.03** · Безоп. · S — **Gateway падает от одного запроса.** `gateway/Gateway.ts:3436-3455` (`on("upgrade")`): `new URL` обернуть в try; на ветках 403/404/503 повесить `socket.on("error")`; добавить защиту уровня процесса. Тест: модель обработчика с RST и `GET //[::1`.
-- [ ] **1.04** · S0 · S — **Клавиши 1–= и бонус-панель.** `input/Actions.ts:53-56` → `ui/ActionBar.ts:321` `useSlot(column, page)` не учитывает `GetBonusBarOffset` (`LiveWorldSeam.bonusBarOffset`). Нужно для стоек, форм и незаметности, в native и при штатном HUD. Клик мышью в стоке уже верен (`FrameXmlWorldMount.ts:3286`). Тест: стойка воина → слот 73+.
-- [ ] **1.05** · S0 · S — **`HasFullControl`.** Сейчас не привязан, nil. Отвечать по флагам потери контроля (страх, контроль, оглушение, подчинение). Снимает серость «Обмен» и «Дуэль» в меню портрета (`UnitPopup.lua:1048, 1092`).
+- [x] **1.02** · S0 · S — **Вход в мир по http из браузера.** `world/WorldCrypt.ts:40-49`: HMAC-SHA1 без `crypto.subtle` на основе `auth/Sha1.ts`, как уже сделано для SRP6 (`auth/Srp6.ts:35-40`). Тест: векторы RFC 2202 и `WorldCrypt.create` без `subtle`.
+  - **Сделано 29.09.** `hmacSha1` (RFC 2104) в `auth/Sha1.ts`; `WorldCrypt` всегда считает его сам, без `crypto.subtle`. Тесты: `sha1-fallback` 5/5 (RFC 2202 №1–7, сверка с `node:crypto` на 131 × 11 длинах, `WorldCrypt` с одним `getRandomValues` против эталона HMAC + RC4), `world` 48/48; мутации 6/6; два ревью. Живая проверка в обычном Chrome по не-loopback адресу (14.01, предложенный 14.27) не проводилась.
+- [x] **1.03** · Безоп. · S — **Gateway падает от одного запроса.** `gateway/Gateway.ts:3436-3455` (`on("upgrade")`): `new URL` обернуть в try; на ветках 403/404/503 повесить `socket.on("error")`; добавить защиту уровня процесса. Тест: модель обработчика с RST и `GET //[::1`.
+  - **Сделано 29.09.**
+    - Новые модули: `gateway/UpgradeGuard.ts` (разбор и отказ апгрейда, общая проверка Origin) и `gateway/ProcessGuard.ts` (шум сокетов с порогом всплеска; ошибки программиста и `accept` завершают процесс штатно, код 1).
+    - `Gateway.ts`: блок `upgrade`; слушатель ошибок сервера.
+    - `main.ts`: `createShutdown`.
+    - Тесты: `gateway-upgrade-hardening` 13/13 (настоящий `startGateway` в дочернем процессе; серии сбросов, полуоткрытые сокеты, EMFILE, `accept`), `gateway-process-guard` 18/18, `gateway` 29/29, `gateway-supervisor` 10/10; мутации 12/12; два ревью.
+    - **Gateway перезапущен 29.09 в 13:41** (с разрешения владельца): `/auth` и `/world` — 101; чужой Origin — 403 с `Connection: close`; `/health` — 200.
+- [x] **1.04** · S0 · S — **Клавиши 1–= и бонус-панель.** `input/Actions.ts:53-56` → `ui/ActionBar.ts:321` `useSlot(column, page)` не учитывает `GetBonusBarOffset` (`LiveWorldSeam.bonusBarOffset`). Нужно для стоек, форм и незаметности, в native и при штатном HUD. Клик мышью в стоке уже верен (`FrameXmlWorldMount.ts:3286`). Тест: стойка воина → слот 73+.
+  - **Сделано 29.09.** `bonusActionPage` (`ActionBarProtocol.ts`) и новый `game/BonusBar.ts` (перенос `bonusBarOffset` из шва, кеш, поколоночный `keyBarOverride` для техники A9). Клавиши и главная строка native берут бонус-страницу только на странице 1, как `ActionButton_CalculateAction`; при смене формы перерисовывается одна главная строка. Тесты: `action-bar-bonus-page` 7/7, `framexml-live-actionbar` 7/7, `audit-gameplay-actions` 30/30; мутации 23/23; два ревью. Живая проверка — 14.23.
+- [x] **1.05** · S0 · S — **`HasFullControl`.** Сейчас не привязан, nil. Отвечать по флагам потери контроля (страх, контроль, оглушение, подчинение). Снимает серость «Обмен» и «Дуэль» в меню портрета (`UnitPopup.lua:1048, 1092`).
+  - **Сделано 29.09.** `HasFullControl` (1/nil) по потере контроля своего персонажа (страх, подчинение, оглушение, такси, управление чужим юнитом); `PLAYER_CONTROL_LOST/GAINED` — только по отказу для собственного guid (выход из техники ложной пары не даёт). Для обработчика стока — скрытый заместитель `InterfaceOptionsFrame` на уровне загрузки. Тесты: `framexml-control-seam` 9/9, `framexml-unitpopup-vertical`; мутации пойманы; два ревью. Живая — 14.15 (Обмен/Дуэль серые под страхом и оглушением).
 - [ ] **1.06** · S0 · S — **`LeaveBattlefield`** → `WorldClient.leaveBattleground` (`:3510`). Кнопки в меню значка (`BattlefieldFrame.lua:688`) и в таблице (`WorldStateFrame.xml:1480`).
 - [ ] **1.07** · S0 · S — **`SetActiveTalentGroup`** → касты 63645/63644, как в native (`ui/Talents.ts:45`), плюс `ACTIVE_TALENT_GROUP_CHANGED` (`Blizzard_TalentUI.lua:527`).
 - [ ] **1.08** · S0 · S — **Сложность подземелья и рейда.** `Get/SetDungeonDifficulty` и `Get/SetRaidDifficulty` → `WorldClient.setDifficulty` (`:5004`). `IsInInstance` отвечать из `GetInstanceInfo`: сейчас вне арены `false, "none"` (`FrameXmlArenaApi.ts:30`).
 - [ ] **1.09** · S0 · S — **PvP-флаг.** `TogglePVP`/`SetPVP` → `WorldClient.togglePvp` (`:3552`); `IsPVPTimerRunning` — таймер флага.
-- [ ] **1.10** · S0 · S — **Команды меню портрета и SecureTemplates, для которых пакеты уже есть:**
+- [~] **1.10** · S0 · S — **Команды меню портрета и SecureTemplates, для которых пакеты уже есть:** *(29.09 сделано: `PromoteToAssistant`/`DemoteAssistant`, `Set/Clear/GetPartyAssignment` (снятие — только у владельца роли), «Сообщить AFK» (`ReportPlayerIsPVPAFK`), `FocusUnit`/`ClearFocus`, `AssistUnit`, `Dismount`, `CancelShapeshiftForm` (только настоящие формы); тесты `framexml-group-commands-seam` 7/7, `framexml-targeting-api-seam` 6/6. Осталось: `TargetNearest*`/`TargetLast*`; `SpellTargetUnit`, `DropItemOnUnit` — после М3)*
   - `FocusUnit`/`ClearFocus`, `AssistUnit`;
   - `PromoteToAssistant`/`DemoteAssistant` → `:2795`; `Set/ClearPartyAssignment` → `:2825`;
   - «Сообщить AFK»;
@@ -149,32 +172,41 @@
   - `IsActionInRange` по дальности заклинания (сейчас nil, `:5865`).
 - [ ] **1.15** · S2 · S — **`UnitHasRelicSlot("player")` по классу:** паладин, шаман, друид, DK; сейчас вместо реликвии AmmoSlot (`PaperDollFrame.lua:1094-1098`). **`SetBagPortraitTexture`:** портреты сумок и банка (`ContainerFrame.lua:493, 507`).
 - [ ] **1.17** · S1 · S — **Ближний телепорт** (та же карта: Скачок, Шаг сквозь тень, Демонический круг) не через `onWorldChanged` (`EnterWorld.ts:374-411`; `WorldClient ~1545`). Без экрана загрузки, `collision.reset()`, сброса зажатых клавиш и автобега, остановки музыки и `forgetEncounters`.
-- [ ] **1.18** · S2 · S — **Тексты промахов `MISS_REASONS`** (`WorldClient.ts:638-641`) по `SharedDefines.h:1545-1556`: 8 IMMUNE2 → иммунитет, 9 DEFLECT → отклонено, 10 ABSORB → поглощено, 11 REFLECT → отражено; кода 12 нет.
-- [ ] **1.19** · S2 · S — **Glue: коды отказов.**
+- [x] **1.18** · S2 · S — **Тексты промахов `MISS_REASONS`** (`WorldClient.ts:638-641`) по `SharedDefines.h:1545-1556`: 8 IMMUNE2 → иммунитет, 9 DEFLECT → отклонено, 10 ABSORB → поглощено, 11 REFLECT → отражено; кода 12 нет.
+  - **Сделано 29.09.** Таблица — `world/MissReasons.ts` по `SharedDefines.h`. Слово над целью и событие попадания теперь идут для каждого промаха из списка `SMSG_SPELL_GO` (отражение, поглощение, иммунитет, отклонение), а не только из `SPELLLOGMISS`. Тест `miss-reasons` 3/3; два ревью.
+- [~] **1.19** · S2 · S — **Glue: коды отказов.** *(29.09: коды и тексты сделаны; проверка имени на клиенте по правилам клиента — в работе, найдено ревью 2.07)*
   - Отказы по имени `CHAR_NAME_*` 87–103 и `CHAR_CREATE_*` 62–69 (`glue/GlueCreation.ts:60-76`; сейчас 42–44, игрок видит «Неизвестная ошибка»).
   - `WOW_FAIL_UNLOCKABLE_LOCK` (0x19).
   - Проверка имени на клиенте по правилам ядра, а не только «длина < 2» (`:539`).
-- [ ] **1.20** · S2 · S — **`CMSG_MOVE_NOT_ACTIVE_MOVER` с packed guid** (`WorldClient.ts:1610`; ядро читает packed — `MovementHandler.cpp:586-588`).
-- [ ] **1.21** · S2 · S — **Аукцион: «выиграно» или «перебили».** Сравнивать с guid персонажа, а не с `controlledGuid` (`WorldClient.ts:7511`).
+  - **Сделано 29.09.** Коды из ядра генератором (`responseCodes.ts`, `authResults.ts`), тексты — `glue/GlueMessages.ts`. Таблица авторизации — по собственному переключателю клиента (`Wow.exe.clean`, FUN_008cb160): неверный пароль (0x04) → `LOGIN_UNKNOWN_ACCOUNT`; неизвестные коды → `LOGIN_FAILED` в `CONNECTION_HELP`. Контексты переименования, смены внешности и фракции — по обработчикам клиента. HTML-тексты показываются плоским текстом до 3.35; диалоги пересчитывают высоту. Пустые имя и пароль → `LOGIN_ENTER_NAME`/`LOGIN_ENTER_PASSWORD`; неверный M2 → `LOGIN_BAD_SERVER_PROOF`. Тесты: `glue-messages` 23/23, `glue-creation` 17/17, `glue-auth-dialog-layout` 4/4, `protocol-generator` 6/6; мутации 20/20; два ревью. Живая — отрицательные ветки 14.01.
+- [x] **1.20** · S2 · S — **`CMSG_MOVE_NOT_ACTIVE_MOVER` с packed guid** (`WorldClient.ts:1610`; ядро читает packed — `MovementHandler.cpp:586-588`).
+  - **Сделано 29.09.** `buildNotActiveMover` — packed guid. Ядро снимает движителя раньше ответа, поэтому строка «unset active mover FAILED» в журнале остаётся, но в ней теперь верный guid (14.18). Тест `world-travel` 19/19; два ревью.
+- [x] **1.21** · S2 · S — **Аукцион: «выиграно» или «перебили».** Сравнивать с guid персонажа, а не с `controlledGuid` (`WorldClient.ts:7511`).
+  - **Сделано 29.09.** «Моё» — `selfGuid ?? controlledGuid`; тексты `ERR_AUCTION_WON_S`/`OUTBID_S`/`SOLD_S` с именем предмета; уведомление владельцу со ставкой 0 — истечение (`ERR_AUCTION_EXPIRED_S`). Тест `auction-notification` (выигрыш в технике и под страхом, перекупка, запасной guid); два ревью.
 - [ ] **1.22** · S2 · S ⚑ — **Убранные ружья и арбалеты** (inventoryType 26) не рисуются (`Attachment.ts:54` ждёт 15). Исправить и тест `attachment-sheath.test.mjs:35-36`, который закрепляет неверный тип.
 - [ ] **1.23** · S2 · S ⚑ — **Регулярное выражение стенд-ина деревьев** `/tree|oak|pine|willow|bush|shrub/` (`WorldRenderer3D ~1382`) ловит `streetlamp` (×200+) и `spine` (×336): фонари «вырастают», на их месте зелёная крона. Сверить со списком из кеша тайлов.
 - [ ] **1.24** · S2 · S ⚑ — **Повторы запросов после сбоя** с нарастающей паузой, как у террейна: сплат (`TerrainSplat.ts:141, 312`), `LightClient` (`:310, :344`: иначе до конца сессии «полдень»), горизонт (`Horizon.ts:285-290`).
-- [ ] **1.25** · Долг · S — **`WorldClient`:**
+- [x] **1.25** · Долг · S — **`WorldClient`:**
   - `#waitFor` → `#handleUtilityPacket` в try/catch (`:4486-4489`; ошибка парсера на экране персонажей обрывает вход);
   - `ITEM_ENCHANT_TIME_UPDATE` и `SOCKET_GEMS_RESULT` через `WorldStore` (`:6376, 6385`), чтобы подписчики получали изменения.
-- [ ] **1.26** · S2 · S — **Кулдаун «на удержании»** из `INITIAL_SPELLS` (1/0x80000000) не превращать в ≈24,8 суток; `COOLDOWN_EVENT` снимает удержание (`WorldClient.ts:5700-5779`). Пример: заклинание после входа в Незаметности.
-- [ ] **1.27** · S2 · S — **`CAST_FAILED`:** читать хвост (custom error, totems, area) и показывать конкретный текст (`world/SpellProtocol.ts:289-292`).
-- [ ] **1.28** · S1 · S — **Native: таланты и символы.**
+  - **Сделано 29.09.** `#waitFor` в try/catch; `WorldState.patchField` не заводит объект для неизвестного guid и уведомляет подписчиков. Тесты `world-handshake-recovery` 2/2, `item-field-updates` 3/3; два ревью.
+- [x] **1.26** · S2 · S — **Кулдаун «на удержании»** из `INITIAL_SPELLS` (1/0x80000000) не превращать в ≈24,8 суток; `COOLDOWN_EVENT` снимает удержание (`WorldClient.ts:5700-5779`). Пример: заклинание после входа в Незаметности.
+  - **Сделано 29.09.** Пара `(1, 0x80000000)` → удержание (`cooldownHolds`, `isSpellOnHold` с категорией), снимается `COOLDOWN_EVENT`/`CLEAR_COOLDOWN`. Кнопка серая без отсчёта: native-проверка каста, панель, книга; стоковые `GetSpellCooldown`/`GetActionCooldown` — 0,0,0; `IsUsableAction` — false. Остаток — в A1 §1.14. Удержание, начатое посреди сессии, пакета не имеет. Тест `spell-cooldown-hold` 9/9; два ревью.
+- [x] **1.27** · S2 · S — **`CAST_FAILED`:** читать хвост (custom error, totems, area) и показывать конкретный текст (`world/SpellProtocol.ts:289-292`).
+  - **Сделано 29.09.** Хвост `CAST_FAILED`/`PET_CAST_FAILED` по коду результата; тексты по стоковым шаблонам (`GlobalStringFormat.ts`, `WorldNames.ts`). Имена зон и классов предметов подключены в `EnterWorld.ts`; для навыков, объектов, тотемов и механик — нейтральные слова до 1.27б. Тест `cast-failure` 6/6; два ревью.
+- [~] **1.28** · S1 · S — **Native: таланты и символы.** *(29.09: кнопка «Сбросить» сделана вместе с 2.04 — только по предложению тренера, с ценой; символы — нет)*
   - Кнопка «Сбросить» — через подтверждение с ценой (`ui/Talents.ts:222-236`, связано с 2.04).
   - Символы: подтверждение снятия; вставка через `useGlyphItem(…, glyphIndex)` в выбранную ячейку, а не первого предмета со словом «символ» (`:376-406`).
 - [ ] **1.29** · S2 · S — **Electron:** `render-process-gone` → экран ошибки с перезагрузкой вместо пустого окна; `JSON.parse(stdout)` в try (`electron/main.cjs:155`).
-- [ ] **1.30** · S2 · S — **`GetNetStats`:** счётчики байт сокета в `WorldConnection` → трафик вместо 0/0 (`FrameXmlWorldSeam.ts:2149-2152`).
-- [ ] **1.31** · S2 · S — **Мелкие ошибки native:** подписи качества в фильтре аукциона сдвинуты на одну (`index.html:286`); лимит золота ранга 4294967295 → «без ограничений» (`ui/Guild.ts:228`).
+- [x] **1.30** · S2 · S — **`GetNetStats`:** счётчики байт сокета в `WorldConnection` → трафик вместо 0/0 (`FrameXmlWorldSeam.ts:2149-2152`).
+  - **Сделано 29.09.** Счётчики проводных байт в `WorldConnection`; `WorldClient.netBandwidth()` в КБ/с (окно ≥ 500 мс); `GetNetStats` → `[in, out, latency]`. Тесты `world-net-stats` 3/3, `world-ping-latency`; два ревью.
+- [x] **1.31** · S2 · S — **Мелкие ошибки native:** подписи качества в фильтре аукциона сдвинуты на одну (`index.html:286`); лимит золота ранга 4294967295 → «без ограничений» (`ui/Guild.ts:228`).
+  - **Сделано 29.09.** Фильтр — как стоковый `BrowseDropDown_Initialize`: «Все» и качества 0–4, подпись «Качество». Лимит — по правилам ядра, `withdrawGoldLimitText(rankId, rights, limit)`: ранг 0 — «без ограничений»; нет прав на золото и ремонт или лимит ≤ 0 как int32 — «запрещено». Тест `auction-quality-filter` 2/2 и случаи гильдии; два ревью.
 - [ ] **1.32** · S2 · S — **Сырые ID в сообщениях → имена из кэшей и DBC:** «Задание N» и «отклонено, код N» (`WorldClient.ts:5155-5158`), «Зона N атакована» (`:4732`), «Подземелье N», «предмет N», «Изучено заклинание N», «Гильдия · событие N», «заклинание N» в журнале боя (`:5889-5891`).
 
 ## Этап 2. Недостающие механизмы
 
-- [ ] **2.01** · S0 · L — **Area triggers.**
+- [~] **2.01** · S0 · L — **Area triggers.** *(29.09: реализовано вместе с A3-0 — маршрут `/dbc/area-triggers`, `CatalogClient`, `game/AreaTriggers.ts` по модели клиента; тесты 24/24, 10/10, 6/6. Осталось: мутации последнего захода, перезапуск gateway, живые 14.22 и 14.05 — [передача 29.09](parity/handoff-2026-09-29.ru.md) §3)*
   - Маршрут gateway для `AreaTrigger.dbc` (сферы и коробки с поворотом).
   - Проверка входа в объём на каждом шаге движения и после телепорта, с учётом карты; `CMSG_AREATRIGGER` один раз на вход.
   - Реакции: телепорт в подземелье (`NEW_WORLD`), отдых (флаг resting), исследование, сдача флага WSG/EotS, призрак к телу в подземелье, скрипты модулей.
@@ -185,21 +217,24 @@
   - `CanMerchantRepair` по `UNIT_NPC_FLAG_REPAIR`; `GetRepairAllCost` по прочности с `DurabilityCosts.dbc` и `DurabilityQuality.dbc`.
   - `ShowRepairCursor`/`HideRepairCursor`/`InRepairMode`/`RepairAllItems`/`CanGuildBankRepair`; кнопки MerchantFrame; ремонт в native-окне торговца.
   - Сейчас `LiveWorldSeam.ts:3104-3107` отвечает false. DurabilityFrame — 3.06.
-- [ ] **2.03** · S0 · S — **Трактирщик.**
+- [x] **2.03** · S0 · S — **Трактирщик.**
   - `SMSG_BINDER_CONFIRM` (сейчас выбрасывается, `WorldClient.ts:6196`) → событие `CONFIRM_BINDER` и диалог в native → `ConfirmBinder` → `CMSG_BINDER_ACTIVATE` (TC `NPCHandler.cpp:287-306`).
   - `SMSG_PLAYER_BOUND` → сообщение и `bindPoint`; `GetBindLocation`.
-- [ ] **2.04** · S0 · M — **Сброс талантов у тренера.** `MSG_TALENT_WIPE_CONFIRM(guid, cost)` (сейчас → только `TALENTS_CHANGED`, `WorldClient.ts:6328`) → `CONFIRM_TALENT_WIPE` с ценой → `ConfirmTalentWipe` → ответ серверу; отказ без запроса. Native — в 1.28.
+  - **Сделано 29.09.** Механизм М1 (`world/ConfirmationProtocol.ts`): `SMSG_BINDER_CONFIRM` → стоковый `CONFIRM_BINDER` или строка native → `CMSG_BINDER_ACTIVATE`; `SMSG_PLAYER_BOUND` → «Ваш новый дом – …» и `GetBindLocation`. Место — подзона, затем зона; дистанция по правилу ядра (`dist < 4 + 2·npcReach + playerReach`); у мёртвого ответ не уходит. После `/reload` уже заданный вопрос не повторяется (ответить можно). Тесты: `framexml-server-confirmations` 23/23, `framexml-popups-vertical` 22/22 (MPQ); мутации 26 + 21; два ревью. Живая — 14.23.
+- [x] **2.04** · S0 · M — **Сброс талантов у тренера.** `MSG_TALENT_WIPE_CONFIRM(guid, cost)` (сейчас → только `TALENTS_CHANGED`, `WorldClient.ts:6328`) → `CONFIRM_TALENT_WIPE` с ценой → `ConfirmTalentWipe` → ответ серверу; отказ без запроса. Native — в 1.28.
+  - **Сделано 29.09.** `MSG_TALENT_WIPE_CONFIRM(guid, cost)` → `CONFIRM_TALENT_WIPE` с ценой (штатное окно — когда UI талантов загружен, иначе native) → ответ один раз; guid 0 → «Очки талантов не расходовались.»; без денег не отправляется. Кнопка «Сбросить» в native-окне талантов больше не шлёт согласие вслепую (часть 1.28). Тест `native-talent-wipe` 2/2; два ревью.
 - [ ] **2.05** · S0 · L — **Предмет как цель.**
   - Режим курсора `SpellIsTargeting` для заклинаний и предметов с целью-предметом; `TARGET_FLAG_ITEM`/`TRADE_ITEM` в `CMSG_USE_ITEM` и `CMSG_CAST_SPELL` (`world/ItemProtocol.ts:141-165` сейчас шлёт без цели).
   - `SpellTargetItem`, `SpellCanTargetItem`; клик по слоту сумки, экипировки и обмена — в стоке и native.
   - Покрывает: яды, точила, масла, приманки, распыление, просеивание, измельчение, взлом сейфов, кормление питомца, чары через слот обмена 7, подарочную упаковку (`CMSG_WRAP_ITEM`).
   - Тесты на реальных строках Spell.dbc.
-- [ ] **2.06** · S0 · S — **Снятие шкур и сбор с существ.** ПКМ по трупу с `UNIT_FLAG_SKINNABLE` (а также травы и руда по флагам существ) после добычи → каст навыка сбора (сейчас только `CMSG_LOOT`, `ui/Npc.ts:150`); курсор сбора.
-- [ ] **2.07** · S0 · M — **Переименование.**
+- [~] **2.06** · S0 · S — **Снятие шкур и сбор с существ.** ПКМ по трупу с `UNIT_FLAG_SKINNABLE` (а также травы и руда по флагам существ) после добычи → каст навыка сбора (сейчас только `CMSG_LOOT`, `ui/Npc.ts:150`); курсор сбора. *(29.09: `game/CreatureGather.ts`, ветка трупа в `Npc.ts`, курсор; тесты 17/17, мутации 16/16. Ревью прерваны остановкой — повторить; живая 14.23)*
+- [~] **2.07** · S0 · M — **Переименование.** *(29.09: первый заход вместе с 10.05 и 10.06, тесты зелёные; правки по двум ревью не сделаны — 7 пунктов в [передаче 29.09](parity/handoff-2026-09-29.ru.md) §3)*
   - Флаг `CHARACTER_FLAG_RENAME` (`AT_LOGIN_RENAME`) → диалог `FORCE_RENAME_CHARACTER` → `RenameCharacter` → `CMSG_CHAR_RENAME` → ответ.
   - Не входить без диалога: сейчас ядро кикает, цикл «разрыв → выбор» (`glue/GlueApi.ts:195`, `GlueCharacterApi.ts:160-181`; TC `CharacterHandler.cpp:753-756`).
 - [ ] **2.08** · S1 · M — **Смена внешности, фракции и расы.** `CustomizeExistingCharacter` и `PaidChange_*` → `CMSG_CHAR_CUSTOMIZE`/`FACTION_CHANGE`/`RACE_CHANGE`; экраны glue (`GlueApi.ts:199-200`). TC сам ставит `AT_LOGIN_CUSTOMIZE` при недопустимой внешности (`Player.cpp:1502-1516`).
-- [ ] **2.09** · S1 · S — **Привязка к подземелью.** `SMSG_INSTANCE_LOCK_WARNING_QUERY` → попап `INSTANCE_LOCK_*` → `RespondInstanceLock` → `CMSG_INSTANCE_LOCK_RESPONSE` (TC `MiscHandler.cpp:1558-1562`).
+- [x] **2.09** · S1 · S — **Привязка к подземелью.** `SMSG_INSTANCE_LOCK_WARNING_QUERY` → попап `INSTANCE_LOCK_*` → `RespondInstanceLock` → `CMSG_INSTANCE_LOCK_RESPONSE` (TC `MiscHandler.cpp:1558-1562`).
+  - **Сделано 29.09.** `SMSG_INSTANCE_LOCK_WARNING_QUERY` → вопрос с остатком времени → `CMSG_INSTANCE_LOCK_RESPONSE` один раз; по сроку и при смене карты вопрос тихо снимается (поздний «0» снаружи вернул бы к кладбищу). Пока нет таблицы `DungeonEncounter` (маршрут на основе A3-0), живой вопрос задаёт native-строка («Убито боссов: N»): стоковая строка «%d/%d» без неё вводила бы в заблуждение. Два ревью.
 - [ ] **2.10** · S2 · M — **Возврат покупок.** `CMSG_ITEM_REFUND_INFO`/`CMSG_ITEM_REFUND`, `SMSG_ITEM_REFUND_*` (сейчас пустые), попап `END_REFUND`, строка подсказки со сроком.
 
 ## Этап 3. Штатный интерфейс (FrameXML)
@@ -210,20 +245,21 @@
   - Фильтры журнала боя.
   - Проверка: вертикаль CombatLog и `MSBTParser.lua` на фикстуре — MSBT оживает.
 - [ ] **3.02** · S1 · M — **`UNIT_SPELLCAST_SENT/SUCCEEDED/FAILED_QUIET/(NOT_)INTERRUPTIBLE`.** `/castsequence` переходит к следующему шагу (`ChatFrame.lua:723-801`); `MSBTCooldowns.lua:242`.
-- [ ] **3.03** · S1 · M — **Рыцарь смерти.**
+- [~] **3.03** · S1 · M — **Рыцарь смерти.** *(29.09: `RuneFrame` в TOC, `FrameXmlRunes.ts` — одни часы, готовность только по данным ядра; тесты 19/19 и 3/3. Осталось скрыть `RuneFrame` в режиме addonsOnly)*
   - `RuneFrame` в TOC, `GetRuneCooldown`/`GetRuneType` из `world.runes` (`WorldClient.ts:6702-6720`), `RUNE_POWER_UPDATE`/`RUNE_TYPE_UPDATE`.
   - Убрать nil-вызов `RuneFrame:SetScale` (`UnitFrame.lua:67-75`): он прерывает `PlayerFrame_ToPlayerArt`, и PetFrame, Buff и сброс раскладки не выполняются.
-- [ ] **3.05** · S2 · S — **`ZoneText` и `FadingFrame`:** название зоны и подзоны, PvP-статус территории, «следование за».
+- [~] **3.05** · S2 · S — **`ZoneText` и `FadingFrame`:** название зоны и подзоны, PvP-статус территории, «следование за». *(29.09: стоковые файлы в TOC. Осталось: `GetZoneText`/`GetSubZoneText` → `""`, `ZONE_CHANGED_NEW_AREA` по смене зоны и после экрана загрузки, `GetZonePVPInfo` — нужны `AreaTable.Flags` и `FactionGroupMask` в `/dbc/areas` v=8)*
 - [ ] **3.06** · S2 · S — **`DurabilityFrame`** плюс `UPDATE_INVENTORY_DURABILITY` и `UPDATE_INVENTORY_ALERTS` (вместе с 2.02).
 - [ ] **3.07** · S2 · M — **Панель «Зов стихий»** (`MultiCastActionBar`): `HasMultiCastActionBar`, заклинания тотемов по слотам.
-- [ ] **3.09** · S2 · S — **Мелкие стоковые файлы.**
+- [~] **3.09** · S2 · S — **Мелкие стоковые файлы.** *(29.09: `EasyMenu.lua` в TOC; остальное не начато)*
   - `CoinPickupFrame` с `OpenCoinPickupFrame`/`DropCursorMoney`/`PickupPlayerMoney`.
   - `EasyMenu.lua`.
   - `Localization`/`LocalizationPost` для ruRU: `SetEuropeanNumbers(true)`, PlayerHitIndicator, окно склонений имени питомца.
-- [ ] **3.10** · S1 · M — **Макросы.**
+- [x] **3.10** · S1 · M — **Макросы.**
   - `SecureCmdOptionParse` — все клаузы и условия (`mod`, `combat`, `harm`, `help`, `dead`, `target`/`@`, `stance`, `form`, `nomod`…); сейчас только первая клауза и `[@unit]`.
   - `RunMacro`, `RunMacroText`, `StopMacro`, `/click` (`GetClickFrame`); условия state-драйверов.
   - Native `runMacro` перевести на общий парсер (`ui/Macros.ts:99-112`).
+  - **Сделано 29.09.** Общий вычислитель условий (`browser/macro/MacroOptions.ts`, `MacroContext.ts`, `MacroRunner.ts`) для штатного `SecureCmdOptionParse` и native; `RunMacro`, `RunMacroText`, `StopMacro`, `GetClickFrame`, `/click`. Семантика сверена с `Wow.exe.clean`: `[btn]` без кнопки — LeftButton; голые `[bonusbar]`/`[actionbar]`/`[spec]` ложны; `[stance]` по `GetShapeshiftForm(true)`; неизвестное слово истинно; `[mod:X]` через `IsModifiedClick`; строки на «#» и «-» пропускаются; строки без «/» — в `/say`. `/cast`, `/use` с ID и названиями работают и в штатном HUD; кнопка мыши от `UseAction` доходит до макроса; `IsObjectType` учитывает иерархию виджетов. Нет данных (ложь): `flyable`, `indoors`, `vehicleui`, `cursor`, native `actionbar`. Тесты: `macro-options` 17/17, `framexml-macro-live-seam` 10/10, `macro-native` 6 (+1 todo — 5.30), MPQ-вертикали; мутации 27 + 5 + 30; два ревью.
 - [ ] **3.11** · S1 · M — **Клавиши.**
   - Действия: `SHAPESHIFTBUTTON1-10`, `BONUSACTIONBUTTON1-10` (панель питомца), окна O/U/Y, `TOGGLEBAG1-4`, `TOGGLESHEATH`, `SCREENSHOT`, `TOGGLEUI` (Alt+Z), `TARGETPARTYMEMBER1-4`/`TARGETPET`/`TARGETSELF`, `ASSISTTARGET`, клавиши камеры.
   - API: `SetBindingSpell/Item/Macro`, `SetOverrideBinding*`.
@@ -256,7 +292,8 @@
   - Сохранять все зарегистрированные CVar, как `Config.wtf`; сейчас только 29 (`FrameXmlSettingsCVar.ts:72-102`).
   - `SetCVar` с аргументом event → `CVAR_UPDATE`: «статус-текст» и «полоса заклинаний цели» применяются сразу (`TextStatusBar.lua:13-27`, `TargetFrame.lua:222, 861`).
   - `SetModifiedClick` сохраняется.
-- [ ] **3.20** · S2 · M — **`issecure()` всегда false** (`glue/GlueLua.ts:323`), поэтому пункты «Выбрать целью», RAID_MAINTANK и MAINASSIST скрыты (`UnitPopup.lua:593, 752, 758`). Определить семантику защищённого вызова для кнопок меню, не отдавая глобально true.
+- [x] **3.20** · S2 · M — **`issecure()` всегда false** (`glue/GlueLua.ts:323`), поэтому пункты «Выбрать целью», RAID_MAINTANK и MAINASSIST скрыты (`UnitPopup.lua:593, 752, 758`). Определить семантику защищённого вызова для кнопок меню, не отдавая глобально true.
+  - **Сделано 29.09.** `issecure()` отвечает 1 только внутри вызова меню портрета и защищённого кода (`FrameXmlSecureCalls.ts`; счётчик на корутину, флаг восстанавливается после ошибок), а не глобально. В меню видны «Цель», «Главный танк», «Главный помощник». Тесты: `framexml-secure-calls` 6/6, `framexml-friends-vertical` 12/12; два ревью.
 - [ ] **3.21** · S2 · S — **Заглушки методов виджетов** (найдены переписью):
   - `ColorSelect:SetColorRGB/GetColorRGB` (ColorPickerFrame);
   - `ScrollingMessageFrame:UpdateColorByID` (700 вызовов; смена цвета канала не перекрашивает строки);
@@ -284,7 +321,8 @@
   - `strsplit` — набор разделителей (`:210`);
   - монотонный `GetTime` (`FrameXmlBoot.ts:1389`);
   - `setfenv`/`newproxy` — по потребности аддонов.
-- [ ] **3.28** · Долг · S — **Гейт сумок.** Прокси `InterfaceOptionsFrame` не должен обнулять настоящий фрейм при снятии владельца (`FrameXmlWorldMount.ts:878-957`).
+- [x] **3.28** · Долг · S — **Гейт сумок.** Прокси `InterfaceOptionsFrame` не должен обнулять настоящий фрейм при снятии владельца (`FrameXmlWorldMount.ts:878-957`).
+  - **Сделано 29.09.** `releaseOwnedGlobals` и `installOwnedGlobals` (`FrameXmlBagCompat.ts`): гейт снимает глобал, только пока в нём его собственный заместитель, и ставит заместителя только в пустой глобал. Тесты: `framexml-bag-lifetime-globals` 10/10, `framexml-bag-mount` 13/13 (настоящая цепочка MPQ: после снятия сумок `InterfaceOptionsFrame` на месте); мутации пойманы; два ревью.
 - [ ] **3.29** · S2 · M — **Тренер.** Заголовки групп и `Collapse/ExpandTrainerSkillLine` (сейчас только перерисовка) — нужен источник: наблюдение оригинала (`parity-blockers.ru.md` §Trainer). Вернуть тест штатного тренера с живым `WorldClient` по новой схеме (прежний зависал и был удалён).
 - [ ] **3.30** · S0 (латентно) · S — **`UnitCharacterPoints` отвечает cp2 = 0** (`LiveWorldSeam.ts:7263`). Нужно число свободных слотов профессий (`PLAYER_CHARACTER_POINTS2`) до перевода тренеров профессий на сток: там 1-й ранг основной профессии стоит `PointCost[1] = 1` (`Trainer.cpp:100`).
 - [ ] **3.31** · S2 · S — **Оставшиеся неотвеченные имена переписи.**
@@ -294,6 +332,8 @@
   - `ArenaEnemyBackground_SetOpacity`, `BNToastFrame_OnUpdate`.
 - [ ] **3.32** · S2 · S — **`CMSG_SET_ACTIONBAR_TOGGLES`:** видимость дополнительных панелей хранится на сервере, как в оригинале.
 - [ ] **3.33** · S2 · M — **Предпросмотр талантов** (`CMSG_LEARN_PREVIEW_TALENTS`, опция помечена неподдерживаемой, `FrameXmlOptions.ts`).
+- [ ] **3.35** · S2 · S — **`FrameXmlDomRenderer` не рисует текст `SimpleHTML`.** Поэтому HTML-диалоги glue (`OKAY_HTML`: `LOGIN_BANNED`, `LOGIN_EXPIRED` и другие `LOGIN_*` из 1.19) были бы пустыми; Lua-сторона работает. Сейчас это ядро таких кодов не шлёт (0x11, 0x14, 0x16–0x18, 0x20). Решение — как у существующего обхода для ItemText. Найдено при 1.19 (29.09).
+- [ ] **3.34** · S2 · S — **`MessageFrame` не гасит строки:** мост игнорирует `displayDuration`/`fadeDuration`, поэтому строки `UIErrorsFrame` и других `MessageFrame` не исчезают — и в штатном интерфейсе, и в режиме «WebClient + аддоны TSWoW». Найдено при 9.01 (29.09).
 
 ## Этап 4. Native-интерфейс
 
@@ -314,6 +354,11 @@
 - [ ] **4.13** · S2 · S — **Счётчик 20-секундного выхода** в native-панели (`ui/GameMenu.ts:93-101`).
 - [ ] **4.14** · S2 · S — **LFG:** предложение спрашивается дважды (`Social.ts:1068` и `InteractionPrompts.ts:262-268`); ожидание всегда «0 мин» (`Social.ts:833`); сырые ID подземелий и полей боя в подсказках (`InteractionPrompts.ts:158, 265`).
 - [ ] **4.15** · S2 · S — **Ожидание NPC и дальность GO.** «Ожидание ответа NPC…» без тайм-аута (`Npc.ts:204-218`); клик по GO вне дальности без отклика (`game/Interaction.ts:36`).
+- [~] **4.16** · S1 · M — **Дополнительные панели стоят на страницах стоек.** Найдено при 1.04 (29.09), уточнено ревью.
+  - Native-панели и клавиши `MULTIACTIONBARnBUTTONm` берут слоты 72/84/96/108 (`ActionBarProtocol.ts:76-82`), то есть бонус-страницы 7–10 стока (стойки, формы, незаметность).
+  - Стоковые MultiActionBars стоят на страницах 6/5/3/4 (`MultiActionBars.xml:41,159,277,395`): нижняя левая — 60–71, нижняя правая — 48–59, правая — 24–35, левая — 36–47.
+  - **а) Штатный HUD (без решения владельца).** Назначенная клавиша кнопки дополнительной панели идёт через `FrameXmlBinding.ts:106-109` → `Actions.ts:61-66` и нажимает слот 72+. Стоковая кнопка с тем же именем (`Bindings.xml:875-877`, `MultiBarBottomLeft`) показывает слот 60+, поэтому клавиша кастует не то, что нарисовано на кнопке. **Сделано 29.09:** при штатном HUD (`NATIVE_LANES_REPLACED`) клавиши жмут стоковые слоты 60/48/24/36 (`EXTRA_ACTION_BARS[].stockBase`, `input/Actions.ts`); тест `multi-action-bar-stock-keys` 3/3.
+  - **б) Native HUD.** С 1.04 главная строка в боевой стойке показывает слоты 72–83 — те же, что нижняя левая панель. Нужна раскладка по стоку и перенос кнопок, которые игроки уже расставили: сервер хранит все 144 слота. **Решение владельца (29.09): переносить.** Нынешние номера закрепляет `tests/bindings.test.mjs:164`; старые комментарии `ActionBarProtocol.ts:67-75`, `ActionBar.ts:69-76` противоречат новому описанию.
 
 ## Этап 5. Движение, протокол, состояние мира
 
@@ -383,6 +428,9 @@
   - `tutorialFlags`;
   - вход и выход игроков поля боя.
   Остальное — по пунктам 2.03, 3.03, 3.13, 3.14, 3.22, 5.16, 5.24.
+- [x] **5.31** · S1 · S [гип.] — **Управление после смены карты.** `WorldClient` не возвращает себе управление после `SMSG_NEW_WORLD`. Если ядро заблокировало движение (конец поля боя), движение и `HasFullControl` после выхода, вероятно, остаются «потерянными». Проверить вживую (14.19) и сверить с `SMSG_CLIENT_CONTROL_UPDATE` ядра. Найдено при 1.05 (29.09); линии A4/A9.
+  - **Сделано 29.09.** Подтверждено по коду и пробой: после `CLIENT_CONTROL_UPDATE(self, 0)` в конце поля боя и `SMSG_NEW_WORLD` клиент не отправлял движение вообще. Теперь `SMSG_NEW_WORLD` сбрасывает `movementReady`, `controlledGuid`, `controlRefusedGuid` и объявление управления; заявка движителя уходит после `MSG_MOVE_WORLDPORT_ACK`. Тест в `framexml-control-seam`. Живая — 14.19 (выход с поля боя и арены).
+- [ ] **5.30** · S2 · S — **Локальный GCD с момента отправки каста.** Сейчас он стартует, только когда сервер принял каст (`SPELL_CAST_ACCEPTED`, `EnterWorld.ts:806`). Поэтому два безусловных `/cast` одного макроса уходят оба, и второй отклоняет сервер; оригинал блокирует второй сам. Нужен предсказанный GCD в `SpellCastGuard.ts` с откатом при отказе. Найдено при 3.10 (29.09).
 - [ ] **5.29** · S2 · S — **Учёт намеренно игнорируемых опкодов.** Документы и `OpcodeBacklog.ts` утверждают, что «514 обработаны», хотя ≈56 опкодов без эффекта. Завести счётчик намеренно игнорируемых с причиной, как требует `CLIENT_PARITY_PLAN.ru.md` §5.
 
 ## Этап 6. Модели, анимации, эффекты ⚑
@@ -469,7 +517,8 @@
 
 ## Этап 9. TSWoW и аддоны
 
-- [ ] **9.01** · S0 · M — **Режим «интерфейс WebClient + аддоны TSWoW»:** StaticPopup и UIErrorsFrame должны рисоваться. Сейчас фильтр `FrameXmlTsAddonPresentation.ts:45-64`, а ветка `addonsOnly` (`FrameXmlWorldMount.ts:3757-3830`) выходит раньше `installFrameXmlPopupsAdapters` (`:3933`). Из-за этого нельзя подтвердить покупку в магазине, сброс талантов retail-talents, не видно предупреждений survival.
+- [x] **9.01** · S0 · M — **Режим «интерфейс WebClient + аддоны TSWoW»:** StaticPopup и UIErrorsFrame должны рисоваться. Сейчас фильтр `FrameXmlTsAddonPresentation.ts:45-64`, а ветка `addonsOnly` (`FrameXmlWorldMount.ts:3757-3830`) выходит раньше `installFrameXmlPopupsAdapters` (`:3933`). Из-за этого нельзя подтвердить покупку в магазине, сброс талантов retail-talents, не видно предупреждений survival.
+  - **Сделано 29.09.** Новый `FrameXmlAddonsOnlyMessages.ts`: в режиме «WebClient + аддоны TSWoW» рисуются `StaticPopup1..4` и `UIErrorsFrame`. Мировые ошибки в стоковый кадр не идут и не возвращаются через `RegisterEvent`; серверные вопросы остаются native (`popupsOwned` = false); Escape закрывает только диалог. **Попутно для обоих режимов (ревью):** диалоги в мире немодальные, как в оригинале — мир, панели и окна не замирают, фокус не запирается (экран входа модальный по-прежнему); открытый диалог поднимается над native-окнами; Escape в полном HUD закрывает только диалог; Tab не уводит фокус из поля диалога. Тесты: `framexml-addons-only-messages` 6/6, `framexml-world-mount-lifecycle` 20/20, `framexml-renderer-rr` 12/12, `framexml-dom` 40/40, `framexml-tsaddon-contract` 8/8; мутации пойманы; три ревью. Сброс retail-talents не откроется, пока не исправлен модуль (0.5). Живая — 14.20.
 - [ ] **9.02** · S1 · S ☐ — **Аддоны TSWoW по умолчанию** (0.4b; `SettingsModel.ts:273`, `EnterWorld.ts:213-215`).
 - [ ] **9.03** · S1 · M — **Сообщения модулей при входе.** Буферизовать 0x102 до `#worldEntered` и доставлять после регистрации схем (`WorldClient.ts:4570-4582`, `EnterWorld.ts:1207-1228`); повтор для поздно заявленных опкодов.
 - [ ] **9.05** · Долг · S — **Класс 13+.**
@@ -479,6 +528,7 @@
 - [ ] **9.06** · Долг · S — **SavedVariables.** Ключ без origin gateway или с миграцией (`EnterWorld.ts:207-212`); сохранение по `PLAYER_LOGOUT`/beforeunload (`FrameXmlBoot.ts:1303-1322`); переменные с метатаблицей, как умолчания AceDB (`FrameXmlSavedVariables.ts:49-52`).
 - [ ] **9.07** · S2 · S — **Проверить загрузку WCollections** (`!WCollectionsLoader`, `WCollections`, `WCollectionsDressUp`): `patches:check` видит 6 корневых каталогов, `client-addons:check` — 3 пути. Добавить сценарий `minimap-hub` в `tools/check-tswow-addons.mjs`, когда модуль соберут (0.5).
 - [ ] **9.08** · Долг · S — **Окна content-studio:** защита от дубля JSON-окна и Lua студии на один опкод (`ui/ModuleLoader.ts`).
+- [ ] **9.09** · S2 · S — **Подсказка авторам модулей о вызове, который не работает и в оригинале.** При загрузке аддона TSWoW находить вызов вида `_G:Имя(…)` — след TSTL от `(_G as any).Имя(…)`: глобальная функция получает `_G` первым аргументом. Писать предупреждение в журнал ошибок аддонов с файлом и строкой. Поведение не менять: Wow.exe такой вызов тоже не выполняет (0.5, retail-talents). Так WebClient остаётся совместимым с оригиналом и помогает найти ошибку модуля до выпуска (позиция владельца 29.09).
 
 ## Этап 10. Вход, gateway, раздача, безопасность
 
@@ -486,8 +536,8 @@
 - [ ] **10.02** · Безоп. · M ☐ — **TLS или обратный прокси** для публичной раздачи (0.4f). Выводить предупреждение при публичном запуске: `Gateway.ts:326, 1685` ссылаются на несуществующее в `main.ts`. Согласовать с `dist/web/LOCAL_ONLY-NOT-FOR-REDISTRIBUTION.txt` (`vite.config.mjs:74-80`).
 - [ ] **10.03** · Безоп. · S — **`?gateway=`** — список разрешённых адресов (`FrontDoor.ts:69-81`).
 - [ ] **10.04** · Безоп. · S — **`ALLOWED_ORIGINS=*` вместе с `MODULE_UI_WRITE=1`** — запрет или явное предупреждение (`Gateway.ts:383-385, 1736`).
-- [ ] **10.05** · S1 · S — **Статус подключения к миру и очередь** `AUTH_WAIT_QUEUE`: позиция и отмена (`GlueSession.ts:303-332`, `WorldClient.ts:1404-1409`).
-- [ ] **10.06** · S2 · S — **Локализованные ошибки мира, транспорта и удаления** (`AUTH_*`, `CHAR_DELETE_FAILED_*`, `LOGIN_SERVER_DOWN`) вместо сырого текста (`WorldClient.ts:1408`, `GlueSession.ts:415`, `EnterWorld.ts:362`).
+- [~] **10.05** · S1 · S — **Статус подключения к миру и очередь** `AUTH_WAIT_QUEUE`: позиция и отмена (`GlueSession.ts:303-332`, `WorldClient.ts:1404-1409`). *(29.09: первый заход вместе с 10.06 и 2.07; правки по ревью — [передача 29.09](parity/handoff-2026-09-29.ru.md) §3)*
+- [~] **10.06** · S2 · S — **Локализованные ошибки мира, транспорта и удаления** (`AUTH_*`, `CHAR_DELETE_FAILED_*`, `LOGIN_SERVER_DOWN`) вместо сырого текста (`WorldClient.ts:1408`, `GlueSession.ts:415`, `EnterWorld.ts:362`). *(29.09: первый заход — `generated/responseCodes.ts`, `authResults.ts`, `glue/GlueMessages.ts`, типизированные ошибки `WebSocketByteStream`; правки по ревью, включая сырой текст «вход не удался», — [передача 29.09](parity/handoff-2026-09-29.ru.md) §3)*
 - [ ] **10.07** · S2 · M — **Glue CVar.** Сохранять `accountName`, `realmName`, `lastCharacterIndex` — **без пароля**; автоподключение к прошлому миру (`GlueApi.ts:256, 437-466`).
 - [ ] **10.08** · S2 · S — **Список миров:** обновлять население и статус; категории из `Cfg_Categories.dbc` вместо чисел (`GlueApi.ts:615`, `GlueSession.ts:252, 284`).
 - [ ] **10.09** · S2 · S — **Выбор персонажа.** Женские названия классов (`CharacterCreation.ts:140, 173`); список модификаций из `/client/addons` (`GlueApi.ts:219-221`); «Выход» закрывает окно Electron; склонения (`DeclineCharacter` — при `DeclinedNames = 1`).
@@ -539,16 +589,17 @@
 
 Подробности, оценки и критерии отказа — в [каталоге оптимизаций](OPTIMIZATION_CATALOG.ru.md): 142 пункта с префиксами RND, UNT, ENV, UI, NET, MEM и ARC, порядок в §3.4. Пункты этого этапа — вехи; внутренние шаги берутся по ID каталога. Сделанное и отклонённое ранее — в `PERF_STATUS.md`, заново не предлагать. Главное условие измерений: сначала MEM-1 (12.03), иначе стенд и игра выполняют код разной формы (каталог §2). **Детальные срезы волн P1 и P2** (12.01–12.07, 12.14, 12.16, 12.18) — [implementation/line-P.ru.md](implementation/line-P.ru.md): обзор, цель кадра (по записи 27.09 в 2 периода развёртки укладываются 9 % кадров; цель «95 %» к концу P2 недостижима), расписание, решения владельца; спецификации — [P1](implementation/line-P-P1.ru.md), [P2](implementation/line-P-P2.ru.md). Поправки к оценкам каталога — его §8.
 
-- [ ] **12.01** — **Новый живой baseline.**
+- [~] **12.01** — **Новый живой baseline.** *(29.09: снимок «до» P1-00a и `bench/live-periods.mjs` P1-00c сделаны; база стенда P1-00b и запись №1 — нет, запись ждёт ответа владельца, [передача 29.09](parity/handoff-2026-09-29.ru.md) §4, §7)*
+  - **Решено владельцем 29.09:** записи идут на 144 Гц; экран на эту частоту переключает сам владелец. На время записи Vite на 5173 останавливается. Учётные данные владелец сообщает в чате в день записи, в файлах они не хранятся. Запускается по отдельной команде владельца.
   - P0-сцены, 3 × 60 с, 1920×1080, видимое окно; живая запись v2 и DevTools Performance.
   - Свести цели кадра в одну. Сейчас в документах пять разных: 16,7 мс, 8,33 мс, p95/p99 при 1920×1080, «≥60 FPS при 200 персонажах», 13,9 мс при 144 Гц.
   - Последний живой замер (27.09 17:23) FPS-gate не проходит: p95 41,7 мс, p99 55,6 мс, максимум 125 мс.
 - [ ] **12.02** — **Живое подтверждение шагов 20–21:** ProgramWarmup «юниты первыми», воркер поз против `?poseworker=0`, портреты, стриминг, отложенная раскладка FrameXML, кастеры теней lookdev (+0,1–0,3 мс на каскад на стенде).
-- [ ] **12.03** · M — **Пакет быстрых правок каталога §3.1**, 13 пунктов, картинка не меняется.
+- [~] **12.03** · M — **Пакет быстрых правок каталога §3.1**, 13 пунктов, картинка не меняется. *(29.09: MEM-1 в коде — `build.target`, закреплённый `cssTarget`, `tools/check-dist-target.mjs`, `bench --target`; A/B-замер MEM-1 не сделан, остальные пункты не начаты)*
   - Первым MEM-1: `build.target: "es2022"` в `vite.config.mjs`.
-  - Затем UNT-5; UI-5, UI-6, UI-7, UI-11, UI-12; UI-4; NET-1 и UI-24; UNT-3; RND-5; RND-4a; MEM-2, ENV-2, ENV-7, ENV-21; ENV-11; NET-6, NET-7, NET-9; NET-22.
+  - Затем UNT-5; UI-5, UI-6, UI-7, UI-11, UI-12; UI-4; NET-1 (UI-24 снят — [line-P](implementation/line-P.ru.md), срез P1-20); UNT-3; RND-5; RND-4a; MEM-2, ENV-2, ENV-7, ENV-21; ENV-11; NET-6, NET-7, NET-9; NET-22.
   - После пакета — живая запись v2.
-- [ ] **12.04** · M — **Теневой проход** (RND-1, RND-6, RND-7): 3,7 → 1,8–2,2 мс живьём. Качество освещения 2 не снижать (правило владельца).
+- [ ] **12.04** · M — **Теневой проход** (RND-1, RND-6, RND-7): 3,7 → 1,8–2,2 мс живьём по JS-профилю. Инструмент записи `worldSubmission` показывает те же тени как 5,2 мс; цель среза P2-01 в его шкале — 5,2 → ≤ 3,1 мс ([line-P](implementation/line-P.ru.md) §6.2, §11 п. 6). Качество освещения 2 не снижать (правило владельца).
 - [ ] **12.05** · M — **Управление окружением** (ENV-1 … ENV-5, ENV-10): рывки прибытия тайла, `render.env` и `render.evict`, пересборки каждые 4 ярда (ранжирование до 31 мс). Трава по секторам — ENV-6, по решению 0.4i (сейчас до 55 мс).
 - [ ] **12.06** · M — **Один планировщик кадра** (ARC-5): независимые бюджеты сейчас складываются до 15–17 мс, FrameXML идёт мимо часов кадра. Сюда же удержание программ до 30 кадров, после которого линковка возвращается в кадр (`WorldRenderer3D.ts:710-725`; RND-18).
 - [ ] **12.07** · M — **Вызовы тел юнитов** (UNT-1, UNT-12, UNT-8): −1,2–1,8 мс на кадр толпы.
@@ -624,7 +675,7 @@
 - [ ] **14.15** P1-07 Группа и обмен (два игрока, броски, ReadyCheck, меню портрета — 1.05, 1.10)
 - [ ] **14.16** P1-08 Социальное: друзья, добавление и снятие игнора, /who (без чата — вне плана)
 - [ ] **14.17** P1-09 Гильдия
-- [ ] **14.18** P1-10 Питомец, транспорт, ездовые
+- [ ] **14.18** P1-10 Питомец, транспорт, ездовые (после 1.20: строка «unset active mover FAILED» в `Server.log` остаётся — ядро снимает движителя раньше ответа клиента; проверять, что в ней настоящий guid подчинённого юнита и нет ошибок пакетов)
 - [ ] **14.19** P1-11 LFG и PvP (поле боя 3.14, арена 3.15)
 - [ ] **14.20** P1-12 Ошибки и повторное открытие окон
 

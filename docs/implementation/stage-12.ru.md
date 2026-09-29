@@ -32,14 +32,14 @@
 - **Подход.** 13 пунктов каталога, картинка не меняется. Порядок:
   1. MEM-1 — `build.target: "es2022"` в `vite.config.mjs`.
   2. NET-22 — крючки записи ставятся один раз; `import.meta.env` в бандле стенда.
-  3. UNT-5, UI-5, UI-6, UI-7, UI-11, UI-12, UI-4, NET-1 + UI-24, UNT-3, RND-5, RND-4a.
+  3. UNT-5, UI-5, UI-6, UI-7, UI-11, UI-12, UI-4, NET-1 (UI-24 снят, срез P1-20 [line-P](line-P.ru.md)), UNT-3, RND-5, RND-4a.
   4. MEM-2, ENV-2, ENV-7, ENV-21, ENV-11.
   5. NET-6, NET-7, NET-9.
   - MEM-4 (флаги V8) — отдельно, решение 0.4i.
 - **Приёмка.** Для каждого — A/B стенда из каталога. Пакет целиком — живая запись v2 после (сравнение с 12.01).
 - **Зависимости.**
   - UI-5…UI-12 касаются `FrameXmlRuntime.ts`, `LiveWorldSeam.ts`, `GlueWidgets.ts` — горячих файлов линий A1/A2. Проводить в волне, где их владелец — перф-линия, или передать мини-срезами.
-  - NET-1/UI-24 пересекаются с 3.01 (журнал боя при штатном чате).
+  - NET-1 пересекается с 3.01 (журнал боя при штатном чате).
 - **Размер и файлы.** M (13 малых срезов); `vite.config.mjs`, `bench/build.mjs`, `AnimatedModel.ts`, `FrameXmlRuntime.ts`, `LiveWorldSeam.ts`, `FrameXmlCurrency.ts`, `GlueWidgets.ts`, `GlueLua.ts`, `WorldView.ts`, `EnterWorld.ts`, `PoseEngine.ts`, `FloatUniformSetters.ts`, `VegetationWind.ts`, `Terrain.ts`, `WorldMaterialCache.ts`, `WorldRenderer3D.ts` ⚑, `SessionProtocol.ts`, `WorldConnection.ts`, `PacketReader.ts`, `WorldSubmissionCapture.ts`.
 
 ### 12.04 — Теневой проход
