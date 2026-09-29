@@ -1,0 +1,207 @@
+stock rows: 275; mapped: 99; missing: 176
+
+[MOVEMENT] 5
+  MOVEANDSTEER (runOnUp) @3: if ( keystate == "down" ) then MoveAndSteerStart(); else MoveAndSteerStop(); end
+  TOGGLESHEATH @66: ToggleSheath();
+  PITCHUP (runOnUp) @72: if ( keystate == "down" ) then PitchUpStart(); else PitchUpStop(); end
+  PITCHDOWN (runOnUp) @79: if ( keystate == "down" ) then PitchDownStart(); else PitchDownStop(); end
+  FOLLOWTARGET @89: FollowUnit("target");
+
+[CHAT] 7
+  CHATPAGEUP @99: ChatFrame_ChatPageUp();
+  CHATPAGEDOWN @102: ChatFrame_ChatPageDown();
+  CHATBOTTOM @105: ChatFrame_ScrollToBottom();
+  REPLY2 @111: ChatFrame_ReplyTell2();
+  COMBATLOGPAGEUP @114: ChatFrame2:PageUp();
+  COMBATLOGPAGEDOWN @117: ChatFrame2:PageDown();
+  COMBATLOGBOTTOM @120: ChatFrame2:ScrollToBottom();
+
+[ACTIONBAR] 24
+  SHAPESHIFTBUTTON1 @209: ShapeshiftBar_ChangeForm(1)
+  SHAPESHIFTBUTTON2 @212: ShapeshiftBar_ChangeForm(2)
+  SHAPESHIFTBUTTON3 @215: ShapeshiftBar_ChangeForm(3)
+  SHAPESHIFTBUTTON4 @218: ShapeshiftBar_ChangeForm(4)
+  SHAPESHIFTBUTTON5 @221: ShapeshiftBar_ChangeForm(5)
+  SHAPESHIFTBUTTON6 @224: ShapeshiftBar_ChangeForm(6)
+  SHAPESHIFTBUTTON7 @227: ShapeshiftBar_ChangeForm(7)
+  SHAPESHIFTBUTTON8 @230: ShapeshiftBar_ChangeForm(8)
+  SHAPESHIFTBUTTON9 @233: ShapeshiftBar_ChangeForm(9)
+  SHAPESHIFTBUTTON10 @236: ShapeshiftBar_ChangeForm(10)
+  BONUSACTIONBUTTON1 (runOnUp) @240: if ( keystate == "down" ) then BonusActionButtonDown(1); else BonusActionButtonUp(1); end
+  BONUSACTIONBUTTON2 (runOnUp) @247: if ( keystate == "down" ) then BonusActionButtonDown(2); else BonusActionButtonUp(2); end
+  BONUSACTIONBUTTON3 (runOnUp) @254: if ( keystate == "down" ) then BonusActionButtonDown(3); else BonusActionButtonUp(3); end
+  BONUSACTIONBUTTON4 (runOnUp) @261: if ( keystate == "down" ) then BonusActionButtonDown(4); else BonusActionButtonUp(4); end
+  BONUSACTIONBUTTON5 (runOnUp) @268: if ( keystate == "down" ) then BonusActionButtonDown(5); else BonusActionButtonUp(5); end
+  BONUSACTIONBUTTON6 (runOnUp) @275: if ( keystate == "down" ) then BonusActionButtonDown(6); else BonusActionButtonUp(6); end
+  BONUSACTIONBUTTON7 (runOnUp) @282: if ( keystate == "down" ) then BonusActionButtonDown(7); else BonusActionButtonUp(7); end
+  BONUSACTIONBUTTON8 (runOnUp) @289: if ( keystate == "down" ) then BonusActionButtonDown(8); else BonusActionButtonUp(8); end
+  BONUSACTIONBUTTON9 (runOnUp) @296: if ( keystate == "down" ) then BonusActionButtonDown(9); else BonusActionButtonUp(9); end
+  BONUSACTIONBUTTON10 (runOnUp) @303: if ( keystate == "down" ) then BonusActionButtonDown(10); else BonusActionButtonUp(10); end
+  PREVIOUSACTIONPAGE @329: ActionBar_PageDown();
+  NEXTACTIONPAGE @332: ActionBar_PageUp();
+  TOGGLEACTIONBARLOCK @335: if ( LOCK_ACTIONBAR == "1" ) then LOCK_ACTIONBAR = "0"; else LOCK_ACTIONBAR = "1"; end
+  TOGGLEAUTOSELFCAST @342: if ( GetCVar("autoSelfCast") == "1" ) then SetCVar("autoSelfCast", "0"); else SetCVar("autoSelfCast", "1"); en
+
+[MULTICASTFUNCTIONS] 5
+  MULTICASTSUMMONBUTTON1 (runOnUp) @350: if ( keystate == "up" ) then MultiCastSummonSpellButtonUp(1); end
+  MULTICASTACTIONBUTTON1 (runOnUp) @355: if ( keystate == "down" ) then MultiCastActionButtonDown(1); else MultiCastActionButtonUp(1); end
+  MULTICASTACTIONBUTTON2 (runOnUp) @362: if ( keystate == "down" ) then MultiCastActionButtonDown(2); else MultiCastActionButtonUp(2); end
+  MULTICASTACTIONBUTTON3 (runOnUp) @369: if ( keystate == "down" ) then MultiCastActionButtonDown(3); else MultiCastActionButtonUp(3); end
+  MULTICASTACTIONBUTTON4 (runOnUp) @376: if ( keystate == "down" ) then MultiCastActionButtonDown(4); else MultiCastActionButtonUp(4); end
+
+[BLANK] 5
+  MULTICASTSUMMONBUTTON2 (runOnUp) @383: if ( keystate == "up" ) then MultiCastSummonSpellButtonUp(2); end
+  MULTICASTACTIONBUTTON5 (runOnUp) @388: if ( keystate == "down" ) then MultiCastActionButtonDown(5); else MultiCastActionButtonUp(5); end
+  MULTICASTACTIONBUTTON6 (runOnUp) @395: if ( keystate == "down" ) then MultiCastActionButtonDown(6); else MultiCastActionButtonUp(6); end
+  MULTICASTACTIONBUTTON7 (runOnUp) @402: if ( keystate == "down" ) then MultiCastActionButtonDown(7); else MultiCastActionButtonUp(7); end
+  MULTICASTACTIONBUTTON8 (runOnUp) @409: if ( keystate == "down" ) then MultiCastActionButtonDown(8); else MultiCastActionButtonUp(8); end
+
+[BLANK2] 5
+  MULTICASTSUMMONBUTTON3 (runOnUp) @416: if ( keystate == "up" ) then MultiCastSummonSpellButtonUp(3); end
+  MULTICASTACTIONBUTTON9 (runOnUp) @421: if ( keystate == "down" ) then MultiCastActionButtonDown(9); else MultiCastActionButtonUp(9); end
+  MULTICASTACTIONBUTTON10 (runOnUp) @428: if ( keystate == "down" ) then MultiCastActionButtonDown(10); else MultiCastActionButtonUp(10); end
+  MULTICASTACTIONBUTTON11 (runOnUp) @435: if ( keystate == "down" ) then MultiCastActionButtonDown(11); else MultiCastActionButtonUp(11); end
+  MULTICASTACTIONBUTTON12 (runOnUp) @442: if ( keystate == "down" ) then MultiCastActionButtonDown(12); else MultiCastActionButtonUp(12); end
+
+[BLANK3] 1
+  MULTICASTRECALLBUTTON1 (runOnUp) @449: if ( keystate == "up" ) then MultiCastRecallSpellButtonUp(1); end
+
+[TARGETING] 27
+  TARGETNEARESTFRIEND @462: TargetNearestFriend();
+  TARGETPREVIOUSFRIEND @465: TargetNearestFriend(1);	-- 1 (or "true") means reverse!
+  TARGETNEARESTENEMYPLAYER @468: TargetNearestEnemyPlayer();
+  TARGETPREVIOUSENEMYPLAYER @471: TargetNearestEnemyPlayer(1);	-- 1 (or "true") means reverse!
+  TARGETNEARESTFRIENDPLAYER @474: TargetNearestFriendPlayer();
+  TARGETPREVIOUSFRIENDPLAYER @477: TargetNearestFriendPlayer(1);	-- 1 (or "true") means reverse!
+  TARGETNEAREST @481: TargetNearest();
+  TARGETPREVIOUS @484: TargetNearest(1);
+  TARGETPARTYMEMBER1 @495: if ( UnitIsUnit("party1", "target") or UnitHasVehicleUI("party1") ) then TargetUnit("partypet1"); else TargetU
+  TARGETPARTYMEMBER2 @502: if ( UnitIsUnit("party2", "target") or UnitHasVehicleUI("party2") ) then TargetUnit("partypet2"); else TargetU
+  TARGETPARTYMEMBER3 @509: if ( UnitIsUnit("party3", "target") or UnitHasVehicleUI("party3") ) then TargetUnit("partypet3"); else TargetU
+  TARGETPARTYMEMBER4 @516: if ( UnitIsUnit("party4", "target") or UnitHasVehicleUI("party4") ) then TargetUnit("partypet4"); else TargetU
+  TARGETPET @523: TargetUnit("pet");
+  TARGETPARTYPET1 @526: TargetUnit("partypet1");
+  TARGETPARTYPET2 @529: TargetUnit("partypet2");
+  TARGETPARTYPET3 @532: TargetUnit("partypet3");
+  TARGETPARTYPET4 @535: TargetUnit("partypet4");
+  TARGETLASTHOSTILE @538: TargetLastEnemy();
+  TARGETLASTTARGET @541: TargetLastTarget();
+  FRIENDNAMEPLATES @554: local SHOW_ENEMIES = GetCVarBool("nameplateShowEnemies"); local SHOW_FRIENDS = GetCVarBool("nameplateShowFrien
+  ALLNAMEPLATES @564: local SHOW_ENEMIES = GetCVarBool("nameplateShowEnemies"); local SHOW_FRIENDS = GetCVarBool("nameplateShowFrien
+  INTERACTMOUSEOVER @575: if ( not InteractUnit("mouseover") ) then InteractUnit("target"); end
+  ASSISTTARGET @583: AssistUnit("target");
+  STARTATTACK @589: StartAttack();
+  TARGETFOCUS @598: TargetUnit("focus");
+  TARGETMOUSEOVER @601: TargetUnit("mouseover");
+  TARGETTALKER @604: if ( #VOICECHAT_TALKERS > 0 ) then VoiceChatTalkers.buttons[#VOICECHAT_TALKERS].button:Click(); end
+
+[INTERFACE] 25
+  TOGGLEBACKPACK @614: ToggleBackpack();
+  TOGGLEBAG1 @617: ToggleBag(4);
+  TOGGLEBAG2 @620: ToggleBag(3);
+  TOGGLEBAG3 @623: ToggleBag(2);
+  TOGGLEBAG4 @626: ToggleBag(1);
+  TOGGLEPETBOOK @638: ToggleSpellBook(BOOKTYPE_PET);
+  TOGGLEINSCRIPTION @641: ToggleGlyphFrame();
+  TOGGLECHARACTER3 @650: ToggleCharacter("PetPaperDollFrame");
+  TOGGLECHARACTER2 @653: ToggleCharacter("ReputationFrame");
+  TOGGLEMINIMAP @665: ToggleMinimap();
+  TOGGLEWORLDMAPSIZE @671: if ( WorldMapFrame:IsShown() ) then WorldMapFrame_ToggleWindowSize(); end
+  TOGGLESOCIAL @676: ToggleFriendsFrame();
+  TOGGLEFRIENDSTAB @679: ToggleFriendsFrame(1);
+  TOGGLEWHOTAB @682: ToggleFriendsFrame(2);
+  TOGGLEGUILDTAB @685: ToggleFriendsFrame(3);
+  TOGGLECHATTAB @688: ToggleFriendsFrame(4);
+  TOGGLERAIDTAB @691: ToggleFriendsFrame(5);
+  TOGGLELFRPARENT @697: ToggleLFRParentFrame();
+  TOGGLEWORLDSTATESCORES @700: ToggleWorldStateScoreFrame();
+  TOGGLEBATTLEFIELDMINIMAP @703: ToggleBattlefieldMinimap();
+  TOGGLEMINIMAPROTATION @706: ToggleMiniMapRotation();
+  TOGGLECHANNELPULLOUT @709: ChannelPullout_ToggleDisplay();
+  TOGGLEACHIEVEMENT @712: ToggleAchievementFrame();
+  TOGGLESTATISTICS @715: ToggleAchievementFrame(1);
+  TOGGLECURRENCY @718: ToggleCharacter("TokenFrame");
+
+[MISC] 23
+  STOPCASTING @723: SpellStopCasting();
+  STOPATTACK @726: StopAttack();
+  DISMOUNT @729: Dismount();
+  MINIMAPZOOMIN @732: Minimap_ZoomIn();
+  MINIMAPZOOMOUT @735: Minimap_ZoomOut();
+  TOGGLEMUSIC @738: Sound_ToggleMusic();
+  TOGGLESOUND @741: Sound_ToggleSound();
+  MASTERVOLUMEUP @744: Sound_MasterVolumeUp();
+  MASTERVOLUMEDOWN @747: Sound_MasterVolumeDown();
+  TOGGLESELFMUTE @750: if ( GetCVar("VoiceChatSelfMute") == "0" ) then SetCVar("VoiceChatSelfMute", 1); else SetCVar("VoiceChatSelfMu
+  TOGGLEUI @757: if ( UIParent:IsShown() ) then securecall("CloseMenus"); securecall("CloseAllWindows"); UIParent:Hide(); SetUI
+  SCREENSHOT @772: TakeScreenshot();
+  TOGGLESTATS (hidden) (debug) @777: ToggleStats();
+  TOGGLETRIS (hidden) (debug) @780: ToggleTris();
+  TOGGLEPORTALS (hidden) (debug) @783: TogglePortals();
+  TOGGLECOLLISION (hidden) (debug) @786: ToggleCollision();
+  TOGGLECOLLISIONDISPLAY (hidden) (debug) @789: ToggleCollisionDisplay();
+  TOGGLEPLAYERBOUNDS (hidden) (debug) @792: TogglePlayerBounds();
+  TOGGLEPERFORMANCEDISPLAY (hidden) (debug) @795: TogglePerformanceDisplay();
+  TOGGLEPERFORMANCEPAUSE (hidden) (debug) @798: TogglePerformancePause();
+  TOGGLEPERFORMANCEVALUES (hidden) (debug) @801: TogglePerformanceValues();
+  RESETPERFORMANCEVALUES (hidden) (debug) @804: ResetPerformanceValues();
+  TOGGLECOMMENTATOR (hidden) (debug) @808: ToggleCommentatorMode();
+
+[CAMERA] 20
+  NEXTVIEW @813: NextView();
+  PREVVIEW @816: PrevView();
+  CAMERAZOOMIN @819: CameraZoomIn(1.0);
+  CAMERAZOOMOUT @822: CameraZoomOut(1.0);
+  SETVIEW1 @825: SetView(1);
+  SETVIEW2 @828: SetView(2);
+  SETVIEW3 @831: SetView(3);
+  SETVIEW4 @834: SetView(4);
+  SETVIEW5 @837: SetView(5);
+  SAVEVIEW1 @840: SaveView(1);
+  SAVEVIEW2 @843: SaveView(2);
+  SAVEVIEW3 @846: SaveView(3);
+  SAVEVIEW4 @849: SaveView(4);
+  SAVEVIEW5 @852: SaveView(5);
+  RESETVIEW1 @855: ResetView(1);
+  RESETVIEW2 @858: ResetView(2);
+  RESETVIEW3 @861: ResetView(3);
+  RESETVIEW4 @864: ResetView(4);
+  RESETVIEW5 @867: ResetView(5);
+  FLIPCAMERAYAW @870: FlipCameraYaw(180);
+
+[RAID_TARGET] 9
+  RAIDTARGET1 @1211: SetRaidTargetIcon("target", 1);
+  RAIDTARGET2 @1214: SetRaidTargetIcon("target", 2);
+  RAIDTARGET3 @1217: SetRaidTargetIcon("target", 3);
+  RAIDTARGET4 @1220: SetRaidTargetIcon("target", 4);
+  RAIDTARGET5 @1223: SetRaidTargetIcon("target", 5);
+  RAIDTARGET6 @1226: SetRaidTargetIcon("target", 6);
+  RAIDTARGET7 @1229: SetRaidTargetIcon("target", 7);
+  RAIDTARGET8 @1232: SetRaidTargetIcon("target", 8);
+  RAIDTARGETNONE @1235: SetRaidTarget("target", 0);
+
+[VEHICLE] 11
+  VEHICLEEXIT @1239: VehicleExit();
+  VEHICLEPREVSEAT @1242: VehiclePrevSeat();
+  VEHICLENEXTSEAT @1245: VehicleNextSeat();
+  VEHICLEAIMUP (runOnUp) @1248: if ( keystate == "down" ) then VehicleAimUpStart(); else VehicleAimUpStop(); end
+  VEHICLEAIMDOWN (runOnUp) @1255: if ( keystate == "down" ) then VehicleAimDownStart(); else VehicleAimDownStop(); end
+  VEHICLEAIMINCREMENT @1262: VehicleAimIncrement(0.1);
+  VEHICLEAIMDECREMENT @1265: VehicleAimDecrement(0.1);
+  VEHICLECAMERAZOOMIN @1268: VehicleCameraZoomIn(1.0);
+  VEHICLECAMERAZOOMOUT @1271: VehicleCameraZoomOut(1.0);
+  TURNORACTION (runOnUp) (hidden) @1276: if ( keystate == "down" ) then TurnOrActionStart(); else TurnOrActionStop(); end
+  CAMERAORSELECTORMOVE (runOnUp) (hidden) @1283: if ( keystate == "down" ) then CameraOrSelectOrMoveStart(); else CameraOrSelectOrMoveStop(IsModifiedClick("STI
+
+[ITUNES_REMOTE] 5
+  ITUNES_PLAYPAUSE (mac) @1292: MusicPlayer_PlayPause();
+  ITUNES_NEXTTRACK (mac) @1295: MusicPlayer_NextTrack();
+  ITUNES_BACKTRACK (mac) @1298: MusicPlayer_BackTrack();
+  ITUNES_VOLUMEUP (mac) @1301: MusicPlayer_VolumeUp();
+  ITUNES_VOLUMEDOWN (mac) @1304: MusicPlayer_VolumeDown();
+
+[MOVIE_RECORDING_SECTION] 4
+  MOVIE_RECORDING_STARTSTOP (mac) @1309: MovieRecording_Toggle();
+  MOVIE_RECORDING_CANCEL (mac) @1312: if(MovieRecording_IsRecording() or MovieRecording_IsCompressing()) then MacOptionsCancelFrame:Show(); end
+  MOVIE_RECORDING_COMPRESS (mac) @1317: MovieRecording_SearchUncompressedMovie(true);
+  MOVIE_RECORDING_GUI (mac) @1320: MovieRecording_ToggleGUI();

@@ -1,0 +1,130 @@
+Initialized StormLib in debug mode
+Heap resize call from 16777216 to 20185088 took 0.15549999475479126 msecs. Success: true
+Heap resize call from 20185088 to 24248320 took 0.1518000066280365 msecs. Success: true
+Heap resize call from 24248320 to 29097984 took 0.21130001544952393 msecs. Success: true
+Heap resize call from 29097984 to 34930688 took 0.24100002646446228 msecs. Success: true
+Heap resize call from 34930688 to 41943040 took 0.5262999832630157 msecs. Success: true
+Heap resize call from 41943040 to 50331648 took 1.3587999939918518 msecs. Success: true
+Heap resize call from 50331648 to 60424192 took 0.4537000060081482 msecs. Success: true
+Heap resize call from 60424192 to 72548352 took 0.67289999127388 msecs. Success: true
+Interface\Cursor\ entries: 66
+  interface\cursor\attack.blp
+  interface\cursor\buy.blp
+  interface\cursor\cast.blp
+  interface\cursor\cursoriconsnew.blp
+  interface\cursor\directions.blp
+  interface\cursor\driver.blp
+  interface\cursor\engineerskin.blp
+  interface\cursor\fishing.blp
+  interface\cursor\fishingcursor.blp
+  interface\cursor\gatherherbs.blp
+  interface\cursor\gunner.blp
+  interface\cursor\innkeeper.blp
+  interface\cursor\inspect.blp
+  interface\cursor\interact.blp
+  interface\cursor\item.blp
+  interface\cursor\lootall.blp
+  interface\cursor\mail.blp
+  interface\cursor\mine.blp
+  interface\cursor\picklock.blp
+  interface\cursor\pickup.blp
+  interface\cursor\point.blp
+  interface\cursor\pvp.blp
+  interface\cursor\quest.blp
+  interface\cursor\questrepeatable.blp
+  interface\cursor\questturnin.blp
+  interface\cursor\repair.blp
+  interface\cursor\repairnpc.blp
+  interface\cursor\skin.blp
+  interface\cursor\skinalliance.blp
+  interface\cursor\skinhorde.blp
+  interface\cursor\speak.blp
+  interface\cursor\taxi.blp
+  interface\cursor\trainer.blp
+  interface\cursor\unableattack.blp
+  interface\cursor\unablebuy.blp
+  interface\cursor\unablecast.blp
+  interface\cursor\unabledirections.blp
+  interface\cursor\unabledriver.blp
+  interface\cursor\unableengineerskin.blp
+  interface\cursor\unablefishing.blp
+  interface\cursor\unablegatherherbs.blp
+  interface\cursor\unablegunner.blp
+  interface\cursor\unableinnkeeper.blp
+  interface\cursor\unableinspect.blp
+  interface\cursor\unableinteract.blp
+  interface\cursor\unableitem.blp
+  interface\cursor\unablelootall.blp
+  interface\cursor\unablemail.blp
+  interface\cursor\unablemine.blp
+  interface\cursor\unablepicklock.blp
+  interface\cursor\unablepickup.blp
+  interface\cursor\unablepoint.blp
+  interface\cursor\unablepvp.blp
+  interface\cursor\unablequest.blp
+  interface\cursor\unablequestrepeatable.blp
+  interface\cursor\unablequestturnin.blp
+  interface\cursor\unablerepair.blp
+  interface\cursor\unablerepairnpc.blp
+  interface\cursor\unableskin.blp
+  interface\cursor\unableskinalliance.blp
+  interface\cursor\unableskinhorde.blp
+  interface\cursor\unablespeak.blp
+  interface\cursor\unabletaxi.blp
+  interface\cursor\unabletrainer.blp
+  interface\cursor\unablevehichlecursor.blp
+  interface\cursor\vehichlecursor.blp
+Interface\Vehicles\ entries: 47
+  interface\vehicles\arrow.blp
+  interface\vehicles\reticle.blp
+  interface\vehicles\reticle2.blp
+  interface\vehicles\seatindicator\vehicle-bomber-seat-1.blp
+  interface\vehicles\seatindicator\vehicle-bomber-seat-2.blp
+  interface\vehicles\seatindicator\vehicle-bomber.blp
+  interface\vehicles\seatindicator\vehicle-demolisher-seat-1.blp
+  interface\vehicles\seatindicator\vehicle-demolisher-seat-2.blp
+  interface\vehicles\seatindicator\vehicle-demolisher-seat-3.blp
+  interface\vehicles\seatindicator\vehicle-demolisher-seat-4.blp
+  interface\vehicles\seatindicator\vehicle-demolisher.blp
+  interface\vehicles\seatindicator\vehicle-mammoth.blp
+  interface\vehicles\seatindicator\vehicle-motorcycle.blp
+  interface\vehicles\seatindicator\vehicle-rocket.blp
+  interface\vehicles\seatindicator\vehicle-siegeengine-seat-1.blp
+  interface\vehicles\seatindicator\vehicle-siegeengine-seat-2.blp
+  interface\vehicles\seatindicator\vehicle-siegeengine-seat-3.blp
+  interface\vehicles\seatindicator\vehicle-siegeengine-seat-4.blp
+  interface\vehicles\seatindicator\vehicle-siegeengine.blp
+  interface\vehicles\ui-vehicle-frame-alliance.blp
+  interface\vehicles\ui-vehicle-frame-border-organic.blp
+  interface\vehicles\ui-vehicle-frame-border.blp
+  interface\vehicles\ui-vehicle-frame-organic.blp
+  interface\vehicles\ui-vehicle-frame.blp
+  interface\vehicles\ui-vehicles-button-exit-down.blp
+  interface\vehicles\ui-vehicles-button-exit-up.blp
+  interface\vehicles\ui-vehicles-button-highlight.blp
+  interface\vehicles\ui-vehicles-button-pitch-down.blp
+  interface\vehicles\ui-vehicles-button-pitch-up.blp
+  interface\vehicles\ui-vehicles-button-pitchdown-down.blp
+  interface\vehicles\ui-vehicles-button-pitchdown-up.blp
+  interface\vehicles\ui-vehicles-elements-organic.blp
+  interface\vehicles\ui-vehicles-endcap-alliance.blp
+  interface\vehicles\ui-vehicles-endcap-organic-bottle.blp
+  interface\vehicles\ui-vehicles-endcap-organic.blp
+  interface\vehicles\ui-vehicles-endcap.blp
+  interface\vehicles\ui-vehicles-fueltank.blp
+  interface\vehicles\ui-vehicles-partyframe-organic.blp
+  interface\vehicles\ui-vehicles-partyframe.blp
+  interface\vehicles\ui-vehicles-raid-icon.blp
+TransportAnimation: records=5262 fields=7 recordSize=28
+TransportRotation: records=227 fields=7 recordSize=28
+TaxiPathNode: records=22586 fields=11 recordSize=44
+TaxiPath: records=915 fields=4 recordSize=16
+Vehicle: records=412 fields=40 recordSize=160
+VehicleSeat: records=720 fields=58 recordSize=232
+VehicleUIIndicator: records=9 fields=2 recordSize=8
+VehicleUIIndSeat: records=19 fields=5 recordSize=20
+TransportAnimation distinct TransportID: 82
+  ids: 2074(5) 2093(5) 2565(5) 4170(13) 4171(15) 4172(13) 4173(15) 11898(14) 11899(13) 20649(6) 20650(6) 20651(6) 20652(6) 20653(6) 20654(5) 20655(7) 20656(6) 20657(6) 47296(15) 47297(13) 80022(15) 80023(15) 85556(11) 128970(5) 149045(44) 149046(29) 152614(5) 176080(53) 176081(55) 176082(55) 176083(55) 176084(53) 176085(55) 183169(42) 183177(85) 183202(27) 183203(27) 183407(544) 183490(88) 183788(64) 184330(347) 186219(13) 186452(15) 186758(9) 186759(19) 186760(13) 186761(96) 186762(104) 188136(15) 188360(163) 188428(15) 188514(121) 188515(23) 188516(23) 188517(23) 188521(83) 189991(12) 190118(173) 190119(173) 190587(1580) 191276(11) 191277(11) 191278(13) 191329(13) 192588(12) 192717(13) 193182(76) 193183(76) 193184(76) 193185(76) 194301(14) 194303(14) 194582(9) 194583(8) 194584(8) 194585(8) 194586(9) 194587(8) 194675(211) 196840(23) 202220(14) 202234(32)
+TaxiPathNode rows=22586 distinct paths=911
+  paths crossing continents: 27 -> 241[1,0] 285[0,1] 292[0,1] 295[0,1] 302[1,0] 312[30,0] 314[0,30] 503[530,1] 710[571,1] 712[571,1] 737[571,0] 756[0,1] 757[0,1] 766[0,530] 767[530,0] 771[0,530] 772[530,0] 775[0,530] 776[530,0] 796[0,530]
+  path id range: 6..1978

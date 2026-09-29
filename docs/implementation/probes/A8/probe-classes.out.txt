@@ -1,0 +1,33 @@
+ChrClasses: records=12 fields=60 recordSize=240
+{"id":1,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Воин","femaleEn":"","femaleRu":"","maleEn":"","maleRu":"Воин","filename":"WARRIOR","spellClassSet":4,"flags":50,"cinematic":0,"expansion":0}
+{"id":2,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Паладин","femaleEn":"","femaleRu":"","maleEn":"","maleRu":"Паладин","filename":"PALADIN","spellClassSet":10,"flags":58,"cinematic":0,"expansion":0}
+{"id":3,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Охотник","femaleEn":"","femaleRu":"Охотница","maleEn":"","maleRu":"Охотник","filename":"HUNTER","spellClassSet":9,"flags":22,"cinematic":0,"expansion":0}
+{"id":4,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Разбойник","femaleEn":"","femaleRu":"Разбойница","maleEn":"","maleRu":"Разбойник","filename":"ROGUE","spellClassSet":8,"flags":2,"cinematic":0,"expansion":0}
+{"id":5,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Жрец","femaleEn":"","femaleRu":"Жрица","maleEn":"","maleRu":"Жрец","filename":"PRIEST","spellClassSet":6,"flags":2,"cinematic":0,"expansion":0}
+{"id":6,"displayPower":6,"petNameToken":"PET","nameEn":"","nameRu":"Рыцарь смерти","femaleEn":"","femaleRu":"","maleEn":"","maleRu":"Рыцарь смерти","filename":"DEATHKNIGHT","spellClassSet":15,"flags":122,"cinematic":165,"expansion":2}
+{"id":7,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Шаман","femaleEn":"","femaleRu":"Шаманка","maleEn":"","maleRu":"Шаман","filename":"SHAMAN","spellClassSet":11,"flags":26,"cinematic":0,"expansion":0}
+{"id":8,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Маг","femaleEn":"","femaleRu":"","maleEn":"","maleRu":"Маг","filename":"MAGE","spellClassSet":3,"flags":2,"cinematic":0,"expansion":0}
+{"id":9,"displayPower":0,"petNameToken":"DEMON","nameEn":"","nameRu":"Чернокнижник","femaleEn":"","femaleRu":"Чернокнижница","maleEn":"","maleRu":"Чернокнижник","filename":"WARLOCK","spellClassSet":5,"flags":6,"cinematic":0,"expansion":0}
+{"id":11,"displayPower":0,"petNameToken":"PET","nameEn":"","nameRu":"Друид","femaleEn":"","femaleRu":"","maleEn":"","maleRu":"Друид","filename":"DRUID","spellClassSet":7,"flags":10,"cinematic":0,"expansion":0}
+{"id":12,"displayPower":0,"petNameToken":"PET","nameEn":"Archaeologist","nameRu":"Археолог","femaleEn":"Archaeologist","femaleRu":"Археолог","maleEn":"Archaeologist","maleRu":"Археолог","filename":"ARCHAEOLOGIST","spellClassSet":9,"flags":22,"cinematic":0,"expansion":0}
+{"id":13,"displayPower":0,"petNameToken":"PET","nameEn":"Hero","nameRu":"Герой","femaleEn":"Hero","femaleRu":"Герой","maleEn":"Hero","maleRu":"Герой","filename":"HERO","spellClassSet":10,"flags":58,"cinematic":0,"expansion":0}
+node:internal/buffer:88
+  throw new ERR_OUT_OF_RANGE(type || 'offset',
+        ^
+
+RangeError [ERR_OUT_OF_RANGE]: The value of "offset" is out of range. It must be >= 0 and <= 175. Received 176
+    at boundsError (node:internal/buffer:88:9)
+    at Buffer.readInt32LE (node:internal/buffer:392:5)
+    at Object.int (file:///C:/Users/ADMINI%7E1/AppData/Local/Temp/claude/F--tswowRoot-WebClient/8691de39-2c7d-46b9-bb55-f8d1b969e99a/scratchpad/impl/A8/probe-classes.mjs:14:34)
+    at file:///C:/Users/ADMINI%7E1/AppData/Local/Temp/claude/F--tswowRoot-WebClient/8691de39-2c7d-46b9-bb55-f8d1b969e99a/scratchpad/impl/A8/probe-classes.mjs:44:18
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5) {
+  code: 'ERR_OUT_OF_RANGE'
+}
+
+Node.js v22.23.2
+{"id":13,"displayPower":0,"petNameToken":"PET","nameEn":"Hero","nameRu":"Герой","femaleEn":"Hero","femaleRu":"Герой","maleEn":"Hero","maleRu":"Герой","filename":"HERO","spellClassSet":10,"flags":58,"cinematic":0,"expansion":0}
+CharBaseInfo records 79 recordSize 2 races per class [[1,9],[2,4],[3,7],[4,8],[5,7],[6,10],[7,4],[8,6],[9,5],[11,2],[12,7],[13,10]]
+TalentTab: records=33 fields=24 recordSize=96
+TalentTab ClassMask histogram [[0,3],[1,3],[2,3],[4,3],[8,3],[16,3],[32,3],[64,3],[128,3],[256,3],[1024,3]]

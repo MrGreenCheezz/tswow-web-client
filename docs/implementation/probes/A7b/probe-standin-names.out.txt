@@ -1,0 +1,17 @@
+distinct outdoor names matched as trees: 490
+suspicious (substring) matches: 26
+  blastedlandsspine01.m2 x196
+  db_dragonspine02blue.m2 x88
+  kalidarstreetlamp02.m2 x56
+  darkstreetlamp.m2 x45
+  tirisfallstreetlamp01.m2 x34
+  terokkartreemediumpinecones.m2 x33
+  darnassusstreetlamp02.m2 x32
+  db_dragonspine01_white.m2 x31
+  terokkartreelargepinecones.m2 x26
+  kalidarstreetlamp01.m2 x24
+  stormwindstreetlamp01.m2 x19
+  db_dragonspine01_blue.m2 x18
+  db_dragonspine04.m2 x12
+  orcbrazierstreetlamp.m2 x10
+  db_dragonspine01_gray.m2 x9

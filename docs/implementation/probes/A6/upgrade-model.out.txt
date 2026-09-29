@@ -1,0 +1,16 @@
+{"attack":"bad-url","mode":"plain","outcome":{"code":1,"signal":null},"health":"n/a","stderr":["node:internal/url:818\r","      href = bindingUrl.parse(input, base, true);\r"]}
+{"attack":"bad-url","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-403","mode":"plain","outcome":{"code":1,"signal":null},"health":"n/a","stderr":["node:events:497\r","      throw er; // Unhandled 'error' event\r"]}
+{"attack":"rst-403","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-404","mode":"plain","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-404","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-503","mode":"plain","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-503","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-loop","mode":"plain","outcome":{"code":1,"signal":null},"health":"n/a","stderr":["node:events:497\r","      throw er; // Unhandled 'error' event\r"]}
+{"attack":"rst-loop","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-valid","mode":"plain","outcome":"alive","health":200,"stderr":[]}
+{"attack":"rst-valid","mode":"guarded","outcome":"alive","health":200,"stderr":[]}
+{"attack":"linger-403","mode":"plain","outcome":"alive","health":200,"openAfterRefusals":200,"stderr":[]}
+{"attack":"linger-403","mode":"guarded","outcome":"alive","health":200,"openAfterRefusals":0,"stderr":[]}
+{"attack":"server-error","mode":"plain","outcome":"alive","health":200,"emitted":"threw EMFILE","stderr":[]}
+{"attack":"server-error","mode":"guarded","outcome":"alive","health":200,"emitted":"survived","stderr":["server error (kept alive): EMFILE"]}

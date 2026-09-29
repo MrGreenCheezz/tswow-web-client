@@ -1,0 +1,32 @@
+Wow.exe.clean 7704216 bytes
+005ea5f4  .\CSimpleAnim.cpp
+005ec324  .\CSimpleAnimScript.cpp
+006096e4  .\SpellBookFrame.cpp
+006293dc  OnSpellCast
+006317cc  SPELLVISUALKITIDNOTFOUND|%d
+00640867  >.\SpellVisuals.cpp
+00641f78  .\Spell_C.cpp
+00643aba   A.\M2Cache.cpp
+00643c04  .\M2Scene.cpp
+00643d4e  I@.\M2Model.cpp
+00643e22   A.\M2Light.cpp
+006440c8  .\M2Shared.cpp
+00657f10  DBFilesClient\AnimationData.dbc
+006596ec  DBFilesClient\SpellVisualKit.dbc
+00659710  DBFilesClient\SpellVisualKitAreaModel.dbc
+0065973c  DBFilesClient\SpellVisualKitModelAttach.dbc
+0065a88c  FlyChannelCastOmni
+0065a8a0  FlyChannelCastDirected
+0065ad00  FlySpellCastOmni
+0065ae4c  FlySpellCast
+0065b478  ChannelCastOmni
+0065b488  ChannelCastDirected
+0065b818  SpellCastOmni
+0065b904  SpellCast
+006a8018  .\SpellCast.cpp
+006d8b70  .?AUDelayedSpellVisualKit@@
+006f3118  .PAV?$TSGrowableArray@PBVSpellVisualKitModelAttachRec@@@@
+006f315c  .PBVSpellVisualKitModelAttachRec@@
+006f335c  .?AUPendingSpellCast@@
+
+29 distinct strings

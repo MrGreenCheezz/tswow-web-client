@@ -1,0 +1,45 @@
+1119: // backwards-compatible while max-age=0 makes cached respons  <- route@1107: const visualTexture = pathname.match(/^\/visual\/texture\/([0-9a-f]{40}(?:-\d{1,3})?)\.png$/);
+1123: "cache-control": "public, max-age=0, must-revalidate",  <- route@1107: const visualTexture = pathname.match(/^\/visual\/texture\/([0-9a-f]{40}(?:-\d{1,3})?)\.png$/);
+1172: "cache-control": "public, max-age=3600",  <- route@1141: const visualEnvironment = pathname.match(/^\/visual\/environment\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/);
+1205: "cache-control": "public, max-age=86400",  <- route@1183: const itemIcon = pathname.match(/^\/item-icon\/(\d{1,8})$/);
+1279: "cache-control": "public, max-age=3600",  <- route@1257: const minimapIndex = pathname.match(/^\/minimap\/(\d{1,4})\/index\.json$/);
+1313: "cache-control": "public, max-age=86400",  <- route@1302: const terrainLayer = pathname.match(/^\/terrain-layer\/([0-9a-f]{40})\.png$/);
+1350: "cache-control": "public, max-age=86400",  <- route@1328: const horizon = pathname.match(/^\/horizon\/(\d{1,4})$/);
+1401: "cache-control": "public, max-age=86400",  <- route@1370: const terrainSplat = pathname.match(/^\/terrain-splat\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})(?:\/(alpha\.png|index\.
+1443: "cache-control": "public, max-age=86400",  <- route@1414: const terrainTexture = pathname.match(/^\/terrain-texture\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/);
+1474: "cache-control": "public, max-age=3600",  <- route@1454: const terrain = pathname.match(/^\/terrain\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/);
+1631: "cache-control": "public, max-age=3600",  <- route@1620: if (request.method === "GET" && pathname === "/dbc/spell-kit-sounds" && options.dbcDirectory) {
+1856: "cache-control": "public, max-age=3600",  <- route@1788: if (request.method === "GET" && pathname === "/dbc/sounds" && options.dbcDirectory) {
+1886: "cache-control": "public, max-age=3600",  <- route@1866: if (request.method === "GET" && pathname === "/dbc/spells" && options.dbcDirectory) {
+2002: "cache-control": "public, max-age=3600",  <- route@1991: if (request.method === "GET" && pathname === "/dbc/locks" && options.dbcDirectory) {
+2026: "cache-control": "public, max-age=3600",  <- route@2015: if (request.method === "GET" && pathname === "/dbc/factions" && options.dbcDirectory) {
+2050: "cache-control": "public, max-age=3600",  <- route@2039: if (request.method === "GET" && pathname === "/dbc/world-state-ui" && options.dbcDirectory) {
+2072: "cache-control": "public, max-age=3600",  <- route@2061: if (request.method === "GET" && pathname === "/dbc/battlegrounds" && options.dbcDirectory) {
+2098: "cache-control": "public, max-age=3600",  <- route@2087: if (request.method === "GET" && pathname === "/dbc/taxi" && options.dbcDirectory) {
+2188: "cache-control": "public, max-age=3600",  <- route@2166: const mapLight = pathname.match(/^\/dbc\/light\/(\d{1,4})$/);
+2212: "cache-control": "public, max-age=3600",  <- route@2201: if (request.method === "GET" && pathname === "/dbc/areas" && options.dbcDirectory) {
+2240: "cache-control": "public, max-age=3600",  <- route@2225: if (request.method === "GET" && pathname === "/dbc/reputation" && options.dbcDirectory) {
+2296: "cache-control": "public, max-age=0, must-revalidate",  <- route@2280: if (request.method === "GET" && pathname === "/dbc/lfg-dungeons" && options.dbcDirectory) {
+2334: "cache-control": "public, max-age=0, must-revalidate",  <- route@2318: if (request.method === "GET" && pathname === "/dbc/declined-words" && options.dbcDirectory) {
+2369: "cache-control": "public, max-age=3600",  <- route@2354: if (request.method === "GET" && pathname === "/dbc/slot-prices" && options.dbcDirectory) {
+2548: "cache-control": "public, max-age=0, must-revalidate",  <- route@2527: if (request.method === "GET" && pathname === "/dbc/achievements" && options.dbcDirectory) {
+2582: "cache-control": "public, max-age=3600",  <- route@2567: if (request.method === "GET" && pathname === "/dbc/barber-styles" && options.dbcDirectory) {
+2610: "cache-control": "public, max-age=3600",  <- route@2595: if (request.method === "GET" && pathname === "/dbc/barber-cost" && options.dbcDirectory) {
+2632: "cache-control": "public, max-age=3600",  <- route@2621: if (request.method === "GET" && pathname === "/dbc/character-stats" && options.dbcDirectory) {
+2654: "cache-control": "public, max-age=3600",  <- route@2643: if (request.method === "GET" && pathname === "/dbc/talents" && options.dbcDirectory) {
+2684: "cache-control": "public, max-age=3600",  <- route@2664: if (request.method === "GET" && pathname === "/dbc/gameobjects" && options.dbcDirectory) {
+2718: "cache-control": "public, max-age=3600",  <- route@2696: if (request.method === "GET" && pathname === "/dbc/transport-paths" && options.dbcDirectory) {
+2741: "cache-control": "public, max-age=3600",  <- route@2730: if (request.method === "GET" && pathname === "/dbc/liquid-types" && options.dbcDirectory) {
+2764: "cache-control": "public, max-age=3600",  <- route@2753: if (request.method === "GET" && pathname === "/dbc/loading-screens" && options.dbcDirectory) {
+2791: "cache-control": "public, max-age=3600",  <- route@2780: if (request.method === "GET" && pathname === "/dbc/ground-effects" && options.dbcDirectory) {
+2935: "cache-control": "public, max-age=3600",  <- route@2924: if (request.method === "GET" && pathname === "/dbc/character-creation" && options.dbcDirectory) {
+2957: * `max-age=3600`, so a shape change without a new query stri  <- route@2924: if (request.method === "GET" && pathname === "/dbc/character-creation" && options.dbcDirectory) {
+2981: "cache-control": "public, max-age=3600",  <- route@2960: if (request.method === "GET" && pathname === "/dbc/char-start-outfit" && options.dbcDirectory) {
+3059: "cache-control": "public, max-age=86400",  <- route@2999: const creatureIcon = pathname.match(/^\/creature-icon\/(\d{1,8})$/);
+3106: "cache-control": "public, max-age=3600",  <- route@3084: if (request.method === "GET" && pathname === "/dbc/weapon-sounds" && options.dbcDirectory) {
+3139: "cache-control": "public, max-age=300",  <- route@3119: if (request.method === "GET" && pathname === "/data/creatures" && options.creatureMetadataFile) {
+3220: "cache-control": "public, max-age=300",  <- route@3200: if (request.method === "GET" && pathname === "/data/items" && options.itemMetadataFile) {
+3253: "cache-control": "public, max-age=86400",  <- route@3230: const environmentModel = pathname.match(/^\/environment\/model\/([A-Za-z0-9_.-]{1,200})$/);
+3325: "cache-control": "public, max-age=86400",  <- route@3270: const collisionModel = pathname.match(/^\/collision\/model\/([A-Za-z0-9_.-]{1,200})$/);
+3373: "cache-control": "public, max-age=3600",  <- route@3339: const environment = pathname.match(/^\/environment\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/);
+3515: "cache-control": "public, max-age=0, must-revalidate",  <- route@3448: const selected = pathname === "/auth" ? authServer : pathname === "/world" ? worldServer : undefined;

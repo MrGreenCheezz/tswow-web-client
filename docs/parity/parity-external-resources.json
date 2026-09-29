@@ -1,0 +1,518 @@
+{
+  "schemaVersion": 1,
+  "scope": "read-only native client and selected TSWoW dataset; no credentials or configuration contents",
+  "paths": {
+    "sourceClientRoot": "F:\\Circle",
+    "effectiveClientRoot": "F:\\Circle",
+    "datasetRoot": "F:\\tswowRoot\\tswow-install\\modules\\default\\datasets\\dataset",
+    "dbcRoot": "F:\\tswowRoot\\tswow-install\\modules\\default\\datasets\\dataset\\dbc",
+    "mapsRoot": "F:\\tswowRoot\\tswow-install\\modules\\default\\datasets\\dataset\\maps",
+    "vmapsRoot": "F:\\tswowRoot\\tswow-install\\modules\\default\\datasets\\dataset\\vmaps",
+    "interfaceRoot": "F:\\tswowRoot\\tswow-install\\modules\\default\\datasets\\dataset\\luaxml\\Interface"
+  },
+  "gatewayMetadata": {
+    "dbcSha1": "32a5622b09bc0ed01e283e2e0472f233e47bb40e",
+    "dbcFiles": 247,
+    "archiveSha1": "097f53b9211a541a878fa78f37a2e705dbc63559",
+    "archiveWatchedFiles": 1299,
+    "archiveChainSha1": "1fe4b547dab0e7af09bf2fec4569692214097433"
+  },
+  "content": {
+    "wowExe": {
+      "bytes": 7703552,
+      "sha256": "203b4b111ddc2d71612054d7aaf627fa6a7c929ed4f57e81b3c58df8284854a4"
+    },
+    "dbc": {
+      "files": 247,
+      "bytes": 124305679,
+      "sha256": "8114d3ed0c08f62db4830f012ab2574509425a11fe4c8d437e50e10d25ca011f",
+      "targets": {
+        "areatable.dbc": {
+          "bytes": 400934,
+          "sha256": "8ad9f2e673b63bf443a985cd3c5ea2f447a2a61ebcedcd68ea1db11cffa73a50"
+        },
+        "charsections.dbc": {
+          "bytes": 845271,
+          "sha256": "18fc8d23f6e66598ab1681a74f90239ebdf84b76f300db0865cdad7d042b833f"
+        },
+        "chrraces.dbc": {
+          "bytes": 6540,
+          "sha256": "4a5bcb6268e754e5198fa54ab0ffb88b4536b4f12fbe9505762a2fb68e343c4d"
+        },
+        "gameobjectdisplayinfo.dbc": {
+          "bytes": 5892387,
+          "sha256": "d62fe56c83ee6002288682aa62fcca705fa86f7c064aae07c4548550ddd70e1d"
+        },
+        "item.dbc": {
+          "bytes": 1606005,
+          "sha256": "ebff1abed5139cf4c9b88f24a0815b8459096cb37d7117ea77c0725865fcb3ed"
+        },
+        "map.dbc": {
+          "bytes": 47494,
+          "sha256": "8f777d412c6c4db071f2f6521ecf96fca1875f89e6160bfe3e6687138e5ef9bb"
+        },
+        "spell.dbc": {
+          "bytes": 74910229,
+          "sha256": "776fe674b3d00fa4229ddb6de61606e3e19df3514694816a885682ac0d013cc7"
+        }
+      }
+    },
+    "looseSources": [
+      {
+        "name": "Interface/AddOns",
+        "path": "Interface/AddOns",
+        "realPath": "F:\\Circle\\Interface\\AddOns",
+        "files": 469,
+        "bytes": 56491471,
+        "sha256": "4250be5559c71a8bdaa06a66105d1b362c42a55dc8a58a95546b88d190a78a4a",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-H.MPQ",
+        "path": "Data/ruRU/patch-ruRU-H.MPQ",
+        "realPath": "F:\\tswowRoot\\tswow-install\\modules\\tswow-store\\assets",
+        "files": 15,
+        "bytes": 4810508,
+        "sha256": "facf60a4b8c814982b38e6900f4c9e3130c524f4f48a0539a9479cd183942642",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-G.MPQ",
+        "path": "Data/ruRU/patch-ruRU-G.MPQ",
+        "realPath": "F:\\tswowRoot\\tswow-install\\modules\\LoginScreenModule\\assets",
+        "files": 402,
+        "bytes": 120922385,
+        "sha256": "ac4a433364e7d873e7b998728099a0d1326ab642a53410c451a21679ca153bbd",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-F.MPQ",
+        "path": "Data/ruRU/patch-ruRU-F.MPQ",
+        "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-modern-models\\assets",
+        "files": 4,
+        "bytes": 3584381,
+        "sha256": "90fb27189ce7fdec245f3ab0ce0bf73a21fced21094c9b979b40511d60dd3ef4",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-C.MPQ",
+        "path": "Data/ruRU/patch-ruRU-C.MPQ",
+        "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-hd-patch-2025\\assets",
+        "files": 2,
+        "bytes": 177160,
+        "sha256": "d0bc4d2bbe927e53b8f16eb50e77d49c117f72c4c6004ee716ec53af27e77f02",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-B.MPQ",
+        "path": "Data/ruRU/patch-ruRU-B.MPQ",
+        "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-echoes\\assets",
+        "files": 41,
+        "bytes": 219372,
+        "sha256": "dce03b5210a15df21ffdf8202e69db15dcab7098785500baa2aa56ebf212f11e",
+        "targets": {}
+      },
+      {
+        "name": "patch-ruRU-A.MPQ",
+        "path": "Data/ruRU/patch-ruRU-A.MPQ",
+        "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-A.MPQ",
+        "files": 805,
+        "bytes": 139746269,
+        "sha256": "a2a1e8ebd2ab6ba20696c2fac86388e2e39bad772a37eb97d6f503cd01aa025d",
+        "targets": {}
+      }
+    ],
+    "virtualTargets": [
+      {
+        "path": "DBFilesClient\\AreaTable.dbc",
+        "winner": "patch-ruRU-A.MPQ",
+        "bytes": 400934,
+        "sha256": "8ad9f2e673b63bf443a985cd3c5ea2f447a2a61ebcedcd68ea1db11cffa73a50"
+      },
+      {
+        "path": "DBFilesClient\\GameObjectDisplayInfo.dbc",
+        "winner": "patch-ruRU-E.MPQ",
+        "bytes": 5892387,
+        "sha256": "d62fe56c83ee6002288682aa62fcca705fa86f7c064aae07c4548550ddd70e1d"
+      },
+      {
+        "path": "DBFilesClient\\Map.dbc",
+        "winner": "patch-ruRU-A.MPQ",
+        "bytes": 47494,
+        "sha256": "8f777d412c6c4db071f2f6521ecf96fca1875f89e6160bfe3e6687138e5ef9bb"
+      },
+      {
+        "path": "DBFilesClient\\Spell.dbc",
+        "winner": "patch-ruRU-A.MPQ",
+        "bytes": 74910229,
+        "sha256": "776fe674b3d00fa4229ddb6de61606e3e19df3514694816a885682ac0d013cc7"
+      },
+      {
+        "path": "Interface\\FrameXML\\Constants.lua",
+        "winner": "patch-ruRU-A.MPQ",
+        "bytes": 13428,
+        "sha256": "6eb2bb4cd6bbe972238eff498852f1924b2c1fb52d19b5af773e8c45be5158cf"
+      },
+      {
+        "path": "Interface\\GlueXML\\AccountLogin.lua",
+        "winner": "patch-ruRU-G.MPQ",
+        "bytes": 36017,
+        "sha256": "f638a4290590d6da0cc4fee200d6f2e5855b0b700600a4380d55967c86f52ad9"
+      },
+      {
+        "path": "Interface\\GlueXML\\GlueXML.toc",
+        "winner": "patch-ruRU-G.MPQ",
+        "bytes": 762,
+        "sha256": "c3491130faa566ca73009525d7202cf6af1ef3666553cacd355b7c98a573a6c5"
+      }
+    ],
+    "dbcClientComparison": [
+      {
+        "path": "DBFilesClient\\AreaTable.dbc",
+        "clientWinner": "patch-ruRU-A.MPQ",
+        "matchesDataset": true
+      },
+      {
+        "path": "DBFilesClient\\GameObjectDisplayInfo.dbc",
+        "clientWinner": "patch-ruRU-E.MPQ",
+        "matchesDataset": true
+      },
+      {
+        "path": "DBFilesClient\\Map.dbc",
+        "clientWinner": "patch-ruRU-A.MPQ",
+        "matchesDataset": true
+      },
+      {
+        "path": "DBFilesClient\\Spell.dbc",
+        "clientWinner": "patch-ruRU-A.MPQ",
+        "matchesDataset": true
+      }
+    ]
+  },
+  "archiveChain": [
+    {
+      "priority": 0,
+      "name": "Interface/AddOns",
+      "kind": "directory",
+      "path": "Interface/AddOns",
+      "realPath": "F:\\Circle\\Interface\\AddOns",
+      "size": null,
+      "mtimeMs": null
+    },
+    {
+      "priority": 1,
+      "name": "patch-Z.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-Z.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-Z.MPQ",
+      "size": 2118877245,
+      "mtimeMs": 1787950012463.1384,
+      "sha256": null
+    },
+    {
+      "priority": 2,
+      "name": "patch-Y.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-Y.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-Y.MPQ",
+      "size": 1058443163,
+      "mtimeMs": 1787949892506.5137,
+      "sha256": null
+    },
+    {
+      "priority": 3,
+      "name": "patch-X.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-X.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-X.MPQ",
+      "size": 1122910572,
+      "mtimeMs": 1787949827792.7346,
+      "sha256": null
+    },
+    {
+      "priority": 4,
+      "name": "patch-W.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-W.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-W.MPQ",
+      "size": 639976325,
+      "mtimeMs": 1787949755122.7405,
+      "sha256": null
+    },
+    {
+      "priority": 5,
+      "name": "patch-ruRU-H.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-H.MPQ",
+      "realPath": "F:\\tswowRoot\\tswow-install\\modules\\tswow-store\\assets",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 6,
+      "name": "patch-ruRU-G.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-G.MPQ",
+      "realPath": "F:\\tswowRoot\\tswow-install\\modules\\LoginScreenModule\\assets",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 7,
+      "name": "patch-ruRU-F.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-F.MPQ",
+      "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-modern-models\\assets",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 8,
+      "name": "patch-ruRU-E.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/patch-ruRU-E.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-E.MPQ",
+      "size": 722349,
+      "mtimeMs": 1783421985312.4663,
+      "sha256": "953e3e5c1bd3cca4f593fae3336449be3337148ab6e1caede1171283965ee1b0"
+    },
+    {
+      "priority": 9,
+      "name": "patch-ruRU-D.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/patch-ruRU-D.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-D.MPQ",
+      "size": 1807838,
+      "mtimeMs": 1776712644002.4946,
+      "sha256": "44d9f008d45b830e81709fb7dbcac2e52138ceb93d3929014c6a04bf287c21d1"
+    },
+    {
+      "priority": 10,
+      "name": "patch-ruRU-C.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-C.MPQ",
+      "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-hd-patch-2025\\assets",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 11,
+      "name": "patch-ruRU-B.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-B.MPQ",
+      "realPath": "F:\\tswowRoot\\tswow-install\\modules\\baja-echoes\\assets",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 12,
+      "name": "patch-ruRU-A.MPQ",
+      "kind": "directory",
+      "path": "Data/ruRU/patch-ruRU-A.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-A.MPQ",
+      "size": null,
+      "mtimeMs": null,
+      "sha256": null
+    },
+    {
+      "priority": 13,
+      "name": "patch-ruRU-3.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/patch-ruRU-3.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-3.MPQ",
+      "size": 109883630,
+      "mtimeMs": 1776712661249.0498,
+      "sha256": null
+    },
+    {
+      "priority": 14,
+      "name": "patch-ruRU-2.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/patch-ruRU-2.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU-2.MPQ",
+      "size": 270846439,
+      "mtimeMs": 1776712671846.1233,
+      "sha256": null
+    },
+    {
+      "priority": 15,
+      "name": "patch-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/patch-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\patch-ruRU.MPQ",
+      "size": 614385571,
+      "mtimeMs": 1776712671574.1252,
+      "sha256": null
+    },
+    {
+      "priority": 16,
+      "name": "lichking-locale-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/lichking-locale-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\lichking-locale-ruRU.MPQ",
+      "size": 12354378,
+      "mtimeMs": 1776712631063.96,
+      "sha256": "89b1eba015927e321683a3867be1b8a76e593c438527eb42f4934d03484f1b04"
+    },
+    {
+      "priority": 17,
+      "name": "expansion-locale-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/expansion-locale-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\expansion-locale-ruRU.MPQ",
+      "size": 16919739,
+      "mtimeMs": 1776712643838.4941,
+      "sha256": "4a565f808c1c4b413dcc1bbfa9980ca700500f220506704ecbb4734883d6ee8d"
+    },
+    {
+      "priority": 18,
+      "name": "locale-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/locale-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\locale-ruRU.MPQ",
+      "size": 190129109,
+      "mtimeMs": 1776712661068.05,
+      "sha256": null
+    },
+    {
+      "priority": 19,
+      "name": "speech-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/speech-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\speech-ruRU.MPQ",
+      "size": 445791052,
+      "mtimeMs": 1776712673015.1262,
+      "sha256": null
+    },
+    {
+      "priority": 20,
+      "name": "lichking-speech-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/lichking-speech-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\lichking-speech-ruRU.MPQ",
+      "size": 6772364,
+      "mtimeMs": 1776712629810.095,
+      "sha256": "99afb35d5f092a19b760815bb0a21b8eb4b74d7e9361498dc13d4a65cc951b59"
+    },
+    {
+      "priority": 21,
+      "name": "expansion-speech-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/expansion-speech-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\expansion-speech-ruRU.MPQ",
+      "size": 269445963,
+      "mtimeMs": 1776712670419.1616,
+      "sha256": null
+    },
+    {
+      "priority": 22,
+      "name": "base-ruRU.MPQ",
+      "kind": "archive",
+      "path": "Data/ruRU/base-ruRU.MPQ",
+      "realPath": "F:\\Circle\\Data\\ruRU\\base-ruRU.MPQ",
+      "size": 22975054,
+      "mtimeMs": 1776712626772.2922,
+      "sha256": "63992bbab36d95d7c3f20788cd4c7772eb7ae4c39d5a63823d517d6ee747ca10"
+    },
+    {
+      "priority": 23,
+      "name": "patch-3.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-3.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-3.MPQ",
+      "size": 605089137,
+      "mtimeMs": 1776712670044.1633,
+      "sha256": null
+    },
+    {
+      "priority": 24,
+      "name": "patch-2.MPQ",
+      "kind": "archive",
+      "path": "Data/patch-2.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch-2.MPQ",
+      "size": 1403129115,
+      "mtimeMs": 1776712671825.1267,
+      "sha256": null
+    },
+    {
+      "priority": 25,
+      "name": "patch.MPQ",
+      "kind": "archive",
+      "path": "Data/patch.MPQ",
+      "realPath": "F:\\Circle\\Data\\patch.MPQ",
+      "size": 4005207470,
+      "mtimeMs": 1776712521152.3276,
+      "sha256": null
+    },
+    {
+      "priority": 26,
+      "name": "lichking.MPQ",
+      "kind": "archive",
+      "path": "Data/lichking.MPQ",
+      "realPath": "F:\\Circle\\Data\\lichking.MPQ",
+      "size": 2553955175,
+      "mtimeMs": 1776712673230.1257,
+      "sha256": null
+    },
+    {
+      "priority": 27,
+      "name": "expansion.MPQ",
+      "kind": "archive",
+      "path": "Data/expansion.MPQ",
+      "realPath": "F:\\Circle\\Data\\expansion.MPQ",
+      "size": 1899508519,
+      "mtimeMs": 1776712608424.9685,
+      "sha256": null
+    },
+    {
+      "priority": 28,
+      "name": "common-2.MPQ",
+      "kind": "archive",
+      "path": "Data/common-2.MPQ",
+      "realPath": "F:\\Circle\\Data\\common-2.MPQ",
+      "size": 1756781838,
+      "mtimeMs": 1776712605231.1438,
+      "sha256": null
+    },
+    {
+      "priority": 29,
+      "name": "common.MPQ",
+      "kind": "archive",
+      "path": "Data/common.MPQ",
+      "realPath": "F:\\Circle\\Data\\common.MPQ",
+      "size": 2856083241,
+      "mtimeMs": 1776712504109.357,
+      "sha256": null
+    }
+  ],
+  "unopenedSources": [],
+  "stormLibSkipped": [],
+  "datasetInventory": {
+    "maps": {
+      "files": 5744,
+      "bytes": 291014951,
+      "identity": "file count and byte total only; no content hash"
+    },
+    "vmaps": {
+      "files": 14120,
+      "bytes": 1477169568,
+      "identity": "file count and byte total only; no content hash"
+    },
+    "interface": {
+      "files": 559,
+      "bytes": 13880263,
+      "identity": "file count and byte total only; no content hash"
+    }
+  },
+  "limitations": [
+    "MPQs above 32 MiB are not hashed end-to-end; metadata and selected winner bytes identify the observed chain, not every byte of each large MPQ.",
+    "Maps, vmaps and extracted Interface are counted but not content-hashed.",
+    "The selected source paths do not prove which realm or native process was running.",
+    "The snapshot does not establish visual or gameplay parity without paired live captures."
+  ]
+}

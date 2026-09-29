@@ -1,0 +1,37 @@
+Spell rows: 72028
+Targets & ITEM(0x10): 768; & TRADE_ITEM(0x1000): 0; both: 0; & GAMEOBJECT_ITEM(0x4000): 203; ImplicitTargetA==26 (GAMEOBJECT_ITEM_TARGET): 19
+effects among ITEM rows: ENCHANT_ITEM=601, ENCHANT_ITEM_TEMP=154, 3=26, ENCHANT_ITEM_PRISMATIC=5, FEED_PET=2, DISENCHANT=2, PROSPECTING=2, MILLING=2, 64=1, 16=1, APPLY_AURA=1
+effects among TRADE_ITEM rows: 
+item-directed effects with neither flag: 
+  sample ITEM rows, first effect ENCHANT_ITEM: 2605:Заточка клинка | 2831:Броня +8 | 2832:Броня +16
+  sample ITEM rows, first effect ENCHANT_ITEM_TEMP: 2823:Смертельный яд | 2824:Смертельный яд II | 2828:Заточка клинка
+  sample ITEM rows, first effect FEED_PET: 6991:Кормление питомца | 23354:Кормление питомца (тест задания)
+  sample ITEM rows, first effect 0: 8017:Оружие камнедробителя | 8018:Оружие камнедробителя | 8019:Оружие камнедробителя
+  sample ITEM rows, first effect DISENCHANT: 10694:Распыление (PT) | 13262:Распыление
+  sample ITEM rows, first effect PROSPECTING: 31032:ТестПросеивание | 31252:Просеивание
+  sample ITEM rows, first effect ENCHANT_ITEM_PRISMATIC: 50270:Test Add Sockets Enchant | 55523:Test Socket Spell | 55628:Гнездо в наручах
+  sample ITEM rows, first effect MILLING: 51005:Измельчение
+  sample ITEM rows, first effect APPLY_AURA: 58510:Подчинение магии
+OPEN_LOCK with TargetA=26: 19
+   {"id":491,"name":"Отмычка Кадгара","targets":"0","misc":1,"range":12}
+   {"id":857,"name":"Отмычка Кадгара","targets":"0","misc":1,"range":12}
+   {"id":1804,"name":"Взлом замка","targets":"0","misc":1,"range":12}
+   {"id":4056,"name":"Малый сефориевый заряд","targets":"0","misc":1,"range":12}
+   {"id":4075,"name":"Большой сефориевый заряд","targets":"0","misc":1,"range":12}
+   {"id":8917,"name":"Открывание","targets":"0","misc":1,"range":12}
+   {"id":10165,"name":"Отмычка Кадгара","targets":"0","misc":1,"range":12}
+   {"id":10166,"name":"Отмычка Кадгара","targets":"0","misc":1,"range":12}
+   {"id":19646,"name":"Серебряная отмычка","targets":"0","misc":1,"range":12}
+   {"id":19649,"name":"Золотая отмычка","targets":"0","misc":1,"range":12}
+   {"id":19651,"name":"Отмычка из истинного серебра","targets":"0","misc":1,"range":12}
+   {"id":19657,"name":"Арканитовая отмычка","targets":"0","misc":1,"range":12}
+SPELL_EFFECT_SKINNING (95) rows: 9
+   {"id":8613,"name":"Снятие шкур","rank":"Ученик","targets":"402","misc":0,"attr0":"10"}
+   {"id":8617,"name":"Снятие шкур","rank":"Подмастерье","targets":"402","misc":0,"attr0":"10"}
+   {"id":8618,"name":"Снятие шкур","rank":"Умелец","targets":"402","misc":0,"attr0":"10"}
+   {"id":10768,"name":"Снятие шкур","rank":"Искусник","targets":"402","misc":0,"attr0":"10"}
+   {"id":32605,"name":"Сбор трав","rank":"","targets":"402","misc":1,"attr0":"90"}
+   {"id":32606,"name":"Горное дело","rank":"","targets":"402","misc":2,"attr0":"10090"}
+   {"id":32678,"name":"Снятие шкур","rank":"Мастер","targets":"402","misc":0,"attr0":"10"}
+   {"id":49383,"name":"Инженерное дело","rank":"","targets":"402","misc":3,"attr0":"10090"}
+   {"id":50305,"name":"Снятие шкур","rank":"Великий мастер","targets":"402","misc":0,"attr0":"10"}

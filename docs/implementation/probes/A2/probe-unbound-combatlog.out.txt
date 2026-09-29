@@ -1,0 +1,6 @@
+== Blizzard_CombatLog.lua
+  ABSENT from src (8): CombatLogAddFilterx6 CombatLogAdvanceEntryx2 CombatLogGetCurrentEntryx2 CombatLogGetNumEntriesx1 CombatLogResetFilterx2 CombatLogSetCurrentEntryx1 Pillagerx2 refilteringx1
+  mentioned in src (12): GetCVarx1 GetItemInfox1 GetNumPartyMembersx1 GetNumRaidMembersx1 GetSpellLinkx3 IsModifiedClickx4 PlaySoundx1 UnitGUIDx2 actionx1 getfenvx1 hx1 onex1
+== Blizzard_CombatText.lua
+  ABSENT from src (2): CombatTextSetActiveUnitx3 GetRuneTypex1
+  mentioned in src (8): GetComboPointsx1 UnitHasVehicleUIx1 UnitHealthx1 UnitHealthMaxx1 UnitNamex4 UnitPowerx1 UnitPowerMaxx1 UnitPowerTypex1

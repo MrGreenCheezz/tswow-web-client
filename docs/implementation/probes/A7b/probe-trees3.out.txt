@@ -1,0 +1,31 @@
+old&new 92617; old-only (dropped) 3936 (133 names); new-only (added) 0 (0 names)
+-- dropped (old yes, candidate no): by why
+  veto:root: 27 names, 1277 obj, e.g. stranglethornroot01, stranglethornroot02
+  veto:stump: 24 names, 602 obj, e.g. tirisfalltreestump02, tirisfalltreestump01
+  veto:branch: 4 names, 374 obj, e.g. winterspringfallenbranch01, sholazar_branch_medium01
+  veto:log: 13 names, 260 obj, e.g. elwynnlog02, elwynnlog01
+  dir:bones: 1 names, 196 obj, e.g. blastedlandsspine01
+  dir:lamps: 7 names, 174 obj, e.g. tirisfallstreetlamp01, stormwindstreetlamp01
+  veto:dragonspine: 7 names, 163 obj, e.g. db_dragonspine01_gray, db_dragonspine01_blue
+  veto:trunk: 7 names, 160 obj, e.g. sholazarpalm_trunk01, sholazarcanopy_trunk01
+  dir:smoke: 1 names, 151 obj, e.g. ashtreesmoke01
+  dir:stumps: 2 names, 93 obj, e.g. elwynntreestump02, elwynntreestump01
+  dir:treehuts: 3 names, 85 obj, e.g. losttreehuts03, losttreehuts02
+  dir:treelogs: 4 names, 82 obj, e.g. swamptreelog04, swamptreelog02
+  dir:kalidartreelogs: 2 names, 58 obj, e.g. kalidartreelog01, kalidartreelog02
+  dir:skillactivated: 2 names, 57 obj, e.g. bush_spineleaf, bush_mountainsilversage
+  dir:treestumps: 4 names, 51 obj, e.g. silverpinetreestump02, silverpinetreestump01
+  dir:lamp: 1 names, 45 obj, e.g. darkstreetlamp
+  dir:kalidartreestumps: 2 names, 26 obj, e.g. kalidartreestump01, kalidartreestump02
+  dir:firefx: 6 names, 19 obj, e.g. burntstonetreesmoke_vfx, burntstonetreefireflies_vfx
+  dir:ashenvaletreelogs: 2 names, 17 obj, e.g. ashenvaletreelog02, ashenvaletreelog01
+  dir:rocktrees: 4 names, 11 obj, e.g. deadwindpassrocktree04, deadwindpassrocktree05
+  veto:street: 3 names, 11 obj, e.g. bonewastestreetrunk02, bonewastestreetrunk05
+  dir:lampposts: 1 names, 10 obj, e.g. orcbrazierstreetlamp
+  dir:deadtreelogs: 3 names, 8 obj, e.g. deadtreelog02, deadtreelog01
+  dir:skeleton: 1 names, 4 obj, e.g. battlegladespinehumandark
+  veto:spine: 2 names, 2 obj, e.g. snakespinegiant02, snakespinegiant03
+-- added (candidate yes, old no):
+-- still accepted but suspicious (contains stem inside a longer word):
+terokkartreemediumpinecones.m2 x33, terokkartreelargepinecones.m2 x26
+candidate accepts 92617 of 193722 outdoor m2 objects (47.8%); old rule accepted 96553

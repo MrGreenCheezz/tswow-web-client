@@ -1,0 +1,12 @@
+roots scanned 1985
+icecrownraid\icecrownraid_arthas_precipice.wmo: MOSB "ENVIRONMENTS\STARS\ICECROWNRAIDSKY01.MDX" groups 3, flag 0x40000 on 1 [1], outdoor(0x8) on 2, MOHD.wmoID 5642
+icecrownraid\icecrownraid_frostmourne.wmo: MOSB "ENVIRONMENTS\STARS\ICECROWNRAIDSKY01.MDX" groups 1, flag 0x40000 on 1 [0], outdoor(0x8) on 0, MOHD.wmoID 5856
+cavernsoftime\cavernsoftime.wmo: MOSB "ENVIRONMENTS\STARS\CAVERNSOFTIMESKY.MDX" groups 37, flag 0x40000 on 33 [1,4,5,6,7,9,10,11], outdoor(0x8) on 1, MOHD.wmoID 2473
+ld_stratholme\stratholme_b.wmo: MOSB "ENVIRONMENTS\STARS\STRATHOLMESKYBOX.MDX" groups 83, flag 0x40000 on 61 [0,1,2,3,4,5,6,7], outdoor(0x8) on 1, MOHD.wmoID 3454
+cavernsoftime\cot_arm1.wmo: MOSB "ENVIRONMENTS\STARS\CAVERNSOFTIMESKY.MDX" groups 10, flag 0x40000 on 9 [1,2,3,4,5,6,7,8], outdoor(0x8) on 1, MOHD.wmoID 2553
+cavernsoftime\cot_arm2.wmo: MOSB "ENVIRONMENTS\STARS\CAVERNSOFTIMESKY.MDX" groups 8, flag 0x40000 on 6 [1,2,3,4,5,6], outdoor(0x8) on 1, MOHD.wmoID 2554
+ol_auchindoun\shadow_council_wing.wmo: MOSB "ENVIRONMENTS\STARS\BONEWASTESSKYBOX.MDX" groups 21, flag 0x40000 on 0 [], outdoor(0x8) on 4, MOHD.wmoID 4597
+ld_stratholme\stratholme_a.wmo: MOSB "ENVIRONMENTS\STARS\STRATHOLMESKYBOX.MDX" groups 5, flag 0x40000 on 0 [], outdoor(0x8) on 1, MOHD.wmoID 3453
+kl_diremaul\kl_diremaul_instance.wmo: MOSB "ENVIRONMENTS\STARS\DIREMAULSKYBOX.MDX" groups 100, flag 0x40000 on 0 [], outdoor(0x8) on 1, MOHD.wmoID 3634
+cavernsoftime\cot_arm3.wmo: MOSB "ENVIRONMENTS\STARS\CAVERNSOFTIMESKY.MDX" groups 16, flag 0x40000 on 7 [0,1,2,3,4,6,7], outdoor(0x8) on 1, MOHD.wmoID 2555
+flag bit histogram over groups of those roots: 0x1:284 0x4:245 0x8:13 0x40:29 0x200:8 0x800:248 0x1000:4 0x2000:271 0x8000:20 0x10000:3 0x40000:118 0x200000:1 0x1000000:3 0x2000000:3 0x-80000000:3

@@ -1,0 +1,20 @@
+2823 {"name":"Смертельный яд","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+2828 {"name":"Заточка клинка","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+13262 {"name":"Распыление","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+31252 {"name":"Просеивание","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+51005 {"name":"Измельчение","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+6991 {"name":"Кормление питомца","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+55628 {"name":"Гнездо в наручах","mode":2,"mask":2,"explicit":2,"client":2,"supports":true,"ver":2}
+58510 {"name":"Подчинение магии","mode":2,"mask":2,"explicit":3,"client":2,"supports":true,"ver":2}
+1804 {"name":"Взлом замка","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+19646 {"name":"Серебряная отмычка","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+491 {"name":"Отмычка Кадгара","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+8917 {"name":"Открывание","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+8613 {"name":"Снятие шкур","mode":1,"mask":1,"explicit":1,"client":0,"supports":true,"ver":2}
+32605 {"name":"Сбор трав","mode":1,"mask":1,"explicit":1,"client":0,"supports":true,"ver":2}
+3365 {"name":"Открывание","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+21651 {"name":"Открывание","mode":0,"mask":0,"explicit":0,"client":0,"supports":false,"ver":2}
+5763 missing
+Targets&ITEM rows=768; supportsExplicitTarget=768; clientSelectionMask has Item=768; requiredTargetMode==Item=768
+unsupported sample: 
+clientSelectionMask has Item overall=768; of them without raw 0x10 (derived from effects)=768

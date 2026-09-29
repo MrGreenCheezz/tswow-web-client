@@ -1,0 +1,40 @@
+{
+  magic: 'WDBC',
+  count: 1220,
+  fields: 10,
+  size: 40,
+  strs: 1,
+  bytes: 48821
+}
+records=1220 sphere(radius>0)=687 box(radius<=0)=533 boxAllZeroDims=3
+sphere radius: min=1.00 p50=11.69 p90=40.00 max=150.00
+box length:    min=0.00 p50=16.63 p90=100.00 max=700.00
+box width:     min=0.00 p50=20.64 p90=100.00 max=2420.00
+box height:    min=0.00 p50=20.00 p90=60.00 max=409.80
+box yaw!=0:    327 of 533; yaw range min=0.00 p50=0.66 p90=5.62 max=90.00
+sphere with nonzero box fields: 131
+box with nonzero radius (=0): 0; boxes with radius < 0: 0
+NaN/inf rows: 0
+distinct maps=97
+top maps: 1:138s/44b 571:70s/108b 0:144s/31b 530:88s/66b 631:13s/20b 603:5s/21b 658:8s/18b 533:18s/6b 609:3s/13b 451:7s/8b 566:15s/0b 572:2s/13b 33:4s/9b 309:12s/1b 230:12s/0b 489:9s/3b 229:9s/2b 429:4s/7b 562:2s/9b 564:9s/2b
+unique ids=1220 minId=45 maxId=5872
+triggers with horizontal extent > 50: 123; max extent 1213.0
+triggers with extent < 3 (small, tunnelling risk at 14 y/s): 59
+box height < 2: 16
+{"id":2166,"map":369,"x":76.0270004272461,"y":10.504300117492676,"z":-4.2965898513793945,"radius":0,"length":9.416999816894531,"width":19,"height":20.639999389648438,"yaw":0}
+{"id":2171,"map":369,"x":80.16329956054688,"y":2490.8798828125,"z":-1.8569300174713135,"radius":10,"length":0,"width":0,"height":0,"yaw":0}
+{"id":2173,"map":0,"x":-8346.4599609375,"y":514.031005859375,"z":96.5988998413086,"radius":10,"length":0,"width":0,"height":0,"yaw":0}
+{"id":2175,"map":0,"x":-4840.259765625,"y":-1330.4599609375,"z":508.1719970703125,"radius":10,"length":0,"width":0,"height":0,"yaw":0}
+{"id":78,"map":0,"x":-11208.5,"y":1685.3399658203125,"z":25.761199951171875,"radius":7,"length":0,"width":0,"height":0,"yaw":0}
+{"id":45,"map":0,"x":2924.3798828125,"y":-798.4290161132812,"z":161.61099243164062,"radius":8,"length":0,"width":0,"height":0,"yaw":0}
+{"id":2214,"map":0,"x":3237.4599609375,"y":-4060.60009765625,"z":112.01000213623047,"radius":0,"length":10,"width":10,"height":10,"yaw":0}
+{"id":2216,"map":0,"x":3392.4599609375,"y":-3396.77001953125,"z":143.072998046875,"radius":0,"length":22.829999923706055,"width":8.083000183105469,"height":34.689998626708984,"yaw":0}
+{"id":3187,"map":1,"x":-3741.9599609375,"y":1249.1800537109375,"z":160.2169952392578,"radius":0,"length":7.861000061035156,"width":10.329999923706055,"height":18.690000534057617,"yaw":0}
+{"id":3646,"map":489,"x":1539.8900146484375,"y":1481.3599853515625,"z":352.65899658203125,"radius":5,"length":0.33329999446868896,"width":0.33329999446868896,"height":0.33329999446868896,"yaw":0}
+{"id":4871,"map":571,"x":2782.77001953125,"y":6575.0400390625,"z":48.98109817504883,"radius":0,"length":109.19999694824219,"width":48.459999084472656,"height":5,"yaw":0.6942999958992004}
+{"id":5030,"map":571,"x":6721.1201171875,"y":5113.89013671875,"z":-15.046199798583984,"radius":15.652999877929688,"length":0,"width":0,"height":0,"yaw":0}
+#5073 missing
+#5077 missing
+{"id":4406,"map":530,"x":-3362.35009765625,"y":4650.31005859375,"z":-101.0479965209961,"radius":0,"length":25.219999313354492,"width":9.611000061035156,"height":23.809999465942383,"yaw":0}
+on continents: 689; on other maps: 531
+spheres per map class: cont=440 other=247; boxes: cont=249 other=284

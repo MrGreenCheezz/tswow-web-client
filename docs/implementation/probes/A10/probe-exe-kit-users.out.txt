@@ -1,0 +1,355 @@
+34 code sites reference va 0xad4a5c
+
+=== site va 0x6e1916: record in eax; reads of +4/+8: mov edx, dword ptr [eax+0x4]
+ 006e1916  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 006e191c  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 006e191f  85 c0                  test eax, eax
+ 006e1921  74 d4                  je 0x6e18f7
+ 006e1923  6a 00                  push 0x0
+ 006e1925  50                     push eax
+ 006e1926  6a 00                  push 0x0
+ 006e1928  8d 4d b4               lea ecx, [ebp-0x4c]
+ 006e192b  e8 10 d9 fe ff         call 0x6cf240
+ 006e1930  50                     push eax
+ 006e1931  8b ce                  mov ecx, esi
+ 006e1933  e8 f8 38 06 00         call 0x745230
+ 006e1938  5e                     pop esi
+ 006e1939  5b                     pop ebx
+ 006e193a  8b e5                  mov esp, ebp
+ 006e193c  5d                     pop ebp
+ 006e193d  c2 04 00               ret 4
+ 006e1940  8b 16                  mov edx, dword ptr [esi]
+ 006e1942  8b 52 2c               mov edx, dword ptr [edx+0x2c]
+ 006e1945  57                     push edi
+ 006e1946  8d 45 ec               lea eax, [ebp-0x14]
+ 006e1949  50                     push eax
+ 006e194a  ff d2                  call edx
+ 006e194c  e8 3f 1e df ff         call 0x4d3790
+ 006e1951  68 a0 00 00 00         push 0xa0
+ 006e1956  68 d0 21 a3 00         push 0xa321d0
+ 006e195b  6a 10                  push 0x10
+ 006e195d  52                     push edx
+ 006e195e  50                     push eax
+ 006e195f  e8 4c 34 df ff         call 0x4d4db0
+ 006e1964  8b f8                  mov edi, eax
+ 006e1966  83 c4 14               add esp, 0x14
+ 006e1969  85 ff                  test edi, edi
+ 006e196b  74 63                  je 0x6e19d0
+ 006e196d  8b 46 08               mov eax, dword ptr [esi+0x8]
+ 006e1970  8b 08                  mov ecx, dword ptr [eax]
+ 006e1972  89 4d f8               mov dword ptr [ebp-0x8], ecx
+>006e1975  8b 50 04               mov edx, dword ptr [eax+0x4]
+ 006e1978  8d 45 f8               lea eax, [ebp-0x8]
+ 006e197b  50                     push eax
+ 006e197c  89 55 fc               mov dword ptr [ebp-0x4], edx
+ 006e197f  e8 fc ac e4 ff         call 0x52c680
+
+=== site va 0x722570: record in eax; reads of +4/+8: mov ecx, dword ptr [eax+0x4] | mov ecx, dword ptr [eax+0x8]
+ 00722570  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 00722576  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 00722579  85 c0                  test eax, eax
+ 0072257b  74 4a                  je 0x7225c7
+ 0072257d  84 db                  test bl, bl
+ 0072257f  74 13                  je 0x722594
+ 00722581  f7 86 38 0a 00 00 00 00 01 00 test dword ptr [esi+0xa38], 0x10000
+ 0072258b  74 07                  je 0x722594
+>0072258d  8b 48 04               mov ecx, dword ptr [eax+0x4]
+ 00722590  85 c9                  test ecx, ecx
+ 00722592  7f 07                  jg 0x72259b
+>00722594  8b 48 08               mov ecx, dword ptr [eax+0x8]
+ 00722597  85 c9                  test ecx, ecx
+ 00722599  7e 2c                  jle 0x7225c7
+ 0072259b  8b 55 0c               mov edx, dword ptr [ebp+0xc]
+ 0072259e  85 d2                  test edx, edx
+ 007225a0  74 08                  je 0x7225aa
+ 007225a2  8b 80 94 00 00 00      mov eax, dword ptr [eax+0x94]
+ 007225a8  89 02                  mov dword ptr [edx], eax
+ 007225aa  8b 55 08               mov edx, dword ptr [ebp+0x8]
+ 007225ad  89 0a                  mov dword ptr [edx], ecx
+ 007225af  8d 8d 58 fd ff ff      lea ecx, [ebp-0x2a8]
+ 007225b5  e8 b6 c5 ec ff         call 0x5eeb70
+ 007225ba  5b                     pop ebx
+ 007225bb  b8 01 00 00 00         mov eax, 0x1
+ 007225c0  5e                     pop esi
+ 007225c1  8b e5                  mov esp, ebp
+ 007225c3  5d                     pop ebp
+ 007225c4  c2 08 00               ret 8
+ 007225c7  8d 8d 58 fd ff ff      lea ecx, [ebp-0x2a8]
+ 007225cd  e8 9e c5 ec ff         call 0x5eeb70
+ 007225d2  5b                     pop ebx
+ 007225d3  33 c0                  xor eax, eax
+ 007225d5  5e                     pop esi
+ 007225d6  8b e5                  mov esp, ebp
+ 007225d8  5d                     pop ebp
+ 007225d9  c2 08 00               ret 8
+ 007225dc  cc                     int3
+ 007225dd  cc                     int3
+ 007225de  cc                     int3
+ 007225df  cc                     int3
+ 007225e0  55                     push ebp
+
+=== site va 0x722920: record in eax; reads of +4/+8: mov esi, dword ptr [eax+0x4]
+ 00722920  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 00722926  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 00722929  85 c0                  test eax, eax
+ 0072292b  74 b6                  je 0x7228e3
+>0072292d  8b 70 04               mov esi, dword ptr [eax+0x4]
+ 00722930  8d 8d 58 fd ff ff      lea ecx, [ebp-0x2a8]
+ 00722936  e8 35 c2 ec ff         call 0x5eeb70
+ 0072293b  8b c6                  mov eax, esi
+ 0072293d  5e                     pop esi
+ 0072293e  8b e5                  mov esp, ebp
+ 00722940  5d                     pop ebp
+ 00722941  c3                     ret
+ 00722942  cc                     int3
+ 00722943  cc                     int3
+ 00722944  cc                     int3
+ 00722945  cc                     int3
+ 00722946  cc                     int3
+ 00722947  cc                     int3
+ 00722948  cc                     int3
+ 00722949  cc                     int3
+ 0072294a  cc                     int3
+ 0072294b  cc                     int3
+ 0072294c  cc                     int3
+ 0072294d  cc                     int3
+ 0072294e  cc                     int3
+ 0072294f  cc                     int3
+ 00722950  55                     push ebp
+ 00722951  8b ec                  mov ebp, esp
+ 00722953  83 ec 50               sub esp, 0x50
+ 00722956  53                     push ebx
+ 00722957  8b d9                  mov ebx, ecx
+ 00722959  8b 8b a8 0f 00 00      mov ecx, dword ptr [ebx+0xfa8]
+ 0072295f  85 c9                  test ecx, ecx
+ 00722961  56                     push esi
+ 00722962  74 27                  je 0x72298b
+ 00722964  83 79 48 00            cmp dword ptr [ecx+0x48], 0x0
+ 00722968  74 05                  je 0x72296f
+ 0072296a  e8 81 4b 10 00         call 0x8274f0
+ 0072296f  8b 8b a8 0f 00 00      mov ecx, dword ptr [ebx+0xfa8]
+ 00722975  e8 56 25 10 00         call 0x824ed0
+ 0072297a  c7 83 a8 0f 00 00 00 00 00 00 mov dword ptr [ebx+0xfa8], 0x0
+ 00722984  c6 83 ac 0f 00 00 00   mov byte ptr [ebx+0xfac], 0x0
+
+=== site va 0x724ab2: record in eax; reads of +4/+8: mov eax, dword ptr [eax+0x8] | mov edi, dword ptr [eax+0x4]
+ 00724ab2  8b 15 5c 4a ad 00      mov edx, dword ptr [0xad4a5c]
+ 00724ab8  2b c1                  sub eax, ecx
+ 00724aba  8b 04 82               mov eax, dword ptr [edx+eax*4]
+ 00724abd  eb 02                  jmp 0x724ac1
+ 00724abf  33 c0                  xor eax, eax
+ 00724ac1  85 c0                  test eax, eax
+ 00724ac3  74 10                  je 0x724ad5
+>00724ac5  8b 40 08               mov eax, dword ptr [eax+0x8]
+ 00724ac8  85 c0                  test eax, eax
+ 00724aca  7c 09                  jl 0x724ad5
+ 00724acc  8b 4d fc               mov ecx, dword ptr [ebp-0x4]
+ 00724acf  89 81 7c 0b 00 00      mov dword ptr [ecx+0xb7c], eax
+ 00724ad5  83 c6 04               add esi, 0x4
+ 00724ad8  83 eb 01               sub ebx, 0x1
+ 00724adb  0f 85 57 ff ff ff      jne 0x724a38
+ 00724ae1  e8 aa ec da ff         call 0x4d3790
+ 00724ae6  68 a0 00 00 00         push 0xa0
+ 00724aeb  68 d0 21 a3 00         push 0xa321d0
+ 00724af0  6a 10                  push 0x10
+ 00724af2  52                     push edx
+ 00724af3  50                     push eax
+ 00724af4  e8 b7 02 db ff         call 0x4d4db0
+ 00724af9  8b 5d fc               mov ebx, dword ptr [ebp-0x4]
+ 00724afc  83 c4 14               add esp, 0x14
+ 00724aff  8b cb                  mov ecx, ebx
+ 00724b01  8b f0                  mov esi, eax
+ 00724b03  e8 68 40 ff ff         call 0x718b70
+ 00724b08  3b c6                  cmp eax, esi
+ 00724b0a  74 18                  je 0x724b24
+ 00724b0c  8b 43 08               mov eax, dword ptr [ebx+0x8]
+ 00724b0f  8b 30                  mov esi, dword ptr [eax]
+>00724b11  8b 78 04               mov edi, dword ptr [eax+0x4]
+ 00724b14  e8 77 ec da ff         call 0x4d3790
+ 00724b19  3b f0                  cmp esi, eax
+ 00724b1b  75 55                  jne 0x724b72
+ 00724b1d  3b fa                  cmp edi, edx
+ 00724b1f  75 51                  jne 0x724b72
+ 00724b21  8b 7d 0c               mov edi, dword ptr [ebp+0xc]
+ 00724b24  8d b7 88 01 00 00      lea esi, [edi+0x188]
+ 00724b2a  bf 03 00 00 00         mov edi, 0x3
+ 00724b2f  90                     nop
+ 00724b30  83 7e f4 30            cmp dword ptr [esi-0xc], 0x30
+
+=== site va 0x73b239: record in edi; reads of +4/+8: cmp dword ptr [edi+0x8], 0x0 | cmp dword ptr [edi+0x8], eax
+ 0073b239  8b 15 5c 4a ad 00      mov edx, dword ptr [0xad4a5c]
+ 0073b23f  2b c1                  sub eax, ecx
+ 0073b241  8b 3c 82               mov edi, dword ptr [edx+eax*4]
+ 0073b244  eb 02                  jmp 0x73b248
+ 0073b246  33 ff                  xor edi, edi
+ 0073b248  85 ff                  test edi, edi
+ 0073b24a  74 19                  je 0x73b265
+>0073b24c  83 7f 08 00            cmp dword ptr [edi+0x8], 0x0
+ 0073b250  7e 13                  jle 0x73b265
+ 0073b252  8b ce                  mov ecx, esi
+ 0073b254  e8 07 c0 fd ff         call 0x717260
+>0073b259  39 47 08               cmp dword ptr [edi+0x8], eax
+ 0073b25c  75 07                  jne 0x73b265
+ 0073b25e  bf 01 00 00 00         mov edi, 0x1
+ 0073b263  eb 02                  jmp 0x73b267
+ 0073b265  33 ff                  xor edi, edi
+ 0073b267  8b 4d 08               mov ecx, dword ptr [ebp+0x8]
+ 0073b26a  8b 06                  mov eax, dword ptr [esi]
+ 0073b26c  8b 90 48 01 00 00      mov edx, dword ptr [eax+0x148]
+ 0073b272  51                     push ecx
+ 0073b273  8b ce                  mov ecx, esi
+ 0073b275  ff d2                  call edx
+ 0073b277  33 c9                  xor ecx, ecx
+ 0073b279  85 c0                  test eax, eax
+ 0073b27b  0f 9e c1               setle cl
+ 0073b27e  8b c1                  mov eax, ecx
+ 0073b280  33 c9                  xor ecx, ecx
+ 0073b282  3b d9                  cmp ebx, ecx
+ 0073b284  74 0f                  je 0x73b295
+ 0073b286  3b c1                  cmp eax, ecx
+ 0073b288  75 0b                  jne 0x73b295
+ 0073b28a  3b f9                  cmp edi, ecx
+ 0073b28c  c7 45 f8 01 00 00 00   mov dword ptr [ebp-0x8], 0x1
+ 0073b293  75 03                  jne 0x73b298
+ 0073b295  89 4d f8               mov dword ptr [ebp-0x8], ecx
+ 0073b298  f7 45 30 00 10 00 00   test dword ptr [ebp+0x30], 0x1000
+ 0073b29f  74 0b                  je 0x73b2ac
+ 0073b2a1  3b f9                  cmp edi, ecx
+ 0073b2a3  c7 45 f4 01 00 00 00   mov dword ptr [ebp-0xc], 0x1
+ 0073b2aa  75 03                  jne 0x73b2af
+ 0073b2ac  89 4d f4               mov dword ptr [ebp-0xc], ecx
+ 0073b2af  83 7d 10 02            cmp dword ptr [ebp+0x10], 0x2
+
+=== site va 0x7fa397: record in edi; reads of +4/+8: cmp dword ptr [edi+0x4], 0x0 | cmp dword ptr [edi+0x8], 0x0 | or eax, dword ptr [edi+0x4]
+ 007fa397  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 007fa39d  8b 3c 81               mov edi, dword ptr [ecx+eax*4]
+ 007fa3a0  85 ff                  test edi, edi
+ 007fa3a2  74 2f                  je 0x7fa3d3
+>007fa3a4  83 7f 04 00            cmp dword ptr [edi+0x4], 0x0
+ 007fa3a8  7f 06                  jg 0x7fa3b0
+>007fa3aa  83 7f 08 00            cmp dword ptr [edi+0x8], 0x0
+ 007fa3ae  7e 09                  jle 0x7fa3b9
+ 007fa3b0  6a 01                  push 0x1
+ 007fa3b2  8b ce                  mov ecx, esi
+ 007fa3b4  e8 37 b7 f1 ff         call 0x715af0
+ 007fa3b9  8b 55 10               mov edx, dword ptr [ebp+0x10]
+ 007fa3bc  6a 04                  push 0x4
+ 007fa3be  57                     push edi
+ 007fa3bf  52                     push edx
+ 007fa3c0  8d 8d 48 ff ff ff      lea ecx, [ebp-0xb8]
+ 007fa3c6  e8 75 4e ed ff         call 0x6cf240
+ 007fa3cb  50                     push eax
+ 007fa3cc  8b ce                  mov ecx, esi
+ 007fa3ce  e8 5d ae f4 ff         call 0x745230
+ 007fa3d3  8b 7d 10               mov edi, dword ptr [ebp+0x10]
+ 007fa3d6  8b ce                  mov ecx, esi
+ 007fa3d8  e8 73 4a cd ff         call 0x4cee50
+ 007fa3dd  84 c0                  test al, al
+ 007fa3df  74 3c                  je 0x7fa41d
+ 007fa3e1  f7 47 10 00 00 40 00   test dword ptr [edi+0x10], 0x400000
+ 007fa3e8  74 33                  je 0x7fa41d
+ 007fa3ea  8b 7d 0c               mov edi, dword ptr [ebp+0xc]
+ 007fa3ed  f6 47 20 02            test byte ptr [edi+0x20], 0x2
+ 007fa3f1  74 2a                  je 0x7fa41d
+ 007fa3f3  8b 47 28               mov eax, dword ptr [edi+0x28]
+ 007fa3f6  83 c7 28               add edi, 0x28
+>007fa3f9  0b 47 04               or eax, dword ptr [edi+0x4]
+ 007fa3fc  74 1f                  je 0x7fa41d
+ 007fa3fe  8b 4d 10               mov ecx, dword ptr [ebp+0x10]
+ 007fa401  f6 41 4c 01            test byte ptr [ecx+0x4c], 0x1
+ 007fa405  74 0c                  je 0x7fa413
+ 007fa407  57                     push edi
+ 007fa408  8b ce                  mov ecx, esi
+ 007fa40a  e8 d1 18 f2 ff         call 0x71bce0
+ 007fa40f  85 c0                  test eax, eax
+ 007fa411  74 0a                  je 0x7fa41d
+
+=== site va 0x7fec59: record in eax; reads of +4/+8: cmp dword ptr [eax+0x4], 0x0 | cmp dword ptr [eax+0x8], 0x0
+ 007fec59  8b 15 5c 4a ad 00      mov edx, dword ptr [0xad4a5c]
+ 007fec5f  2b c1                  sub eax, ecx
+ 007fec61  8b 04 82               mov eax, dword ptr [edx+eax*4]
+ 007fec64  85 c0                  test eax, eax
+ 007fec66  74 17                  je 0x7fec7f
+>007fec68  83 78 04 00            cmp dword ptr [eax+0x4], 0x0
+ 007fec6c  75 06                  jne 0x7fec74
+>007fec6e  83 78 08 00            cmp dword ptr [eax+0x8], 0x0
+ 007fec72  74 0b                  je 0x7fec7f
+ 007fec74  6a ff                  push -0x1
+ 007fec76  6a 00                  push 0x0
+ 007fec78  8b ce                  mov ecx, esi
+ 007fec7a  e8 b1 bf f3 ff         call 0x73ac30
+ 007fec7f  8b 86 cc 09 00 00      mov eax, dword ptr [esi+0x9cc]
+ 007fec85  3b 47 20               cmp eax, dword ptr [edi+0x20]
+ 007fec88  75 26                  jne 0x7fecb0
+ 007fec8a  8b 8e d0 00 00 00      mov ecx, dword ptr [esi+0xd0]
+ 007fec90  8b 81 fc 00 00 00      mov eax, dword ptr [ecx+0xfc]
+ 007fec96  39 86 c0 09 00 00      cmp dword ptr [esi+0x9c0], eax
+ 007fec9c  74 08                  je 0x7feca6
+ 007fec9e  50                     push eax
+ 007fec9f  8b ce                  mov ecx, esi
+ 007feca1  e8 aa 17 f4 ff         call 0x740450
+ 007feca6  c7 86 cc 09 00 00 00 00 00 00 mov dword ptr [esi+0x9cc], 0x0
+ 007fecb0  8b 57 20               mov edx, dword ptr [edi+0x20]
+ 007fecb3  52                     push edx
+ 007fecb4  8b ce                  mov ecx, esi
+ 007fecb6  e8 c5 d1 ef ff         call 0x6fbe80
+ 007fecbb  5d                     pop ebp
+ 007fecbc  c3                     ret
+ 007fecbd  cc                     int3
+ 007fecbe  cc                     int3
+ 007fecbf  cc                     int3
+ 007fecc0  55                     push ebp
+ 007fecc1  8b ec                  mov ebp, esp
+ 007fecc3  83 ec 0c               sub esp, 0xc
+ 007fecc6  56                     push esi
+ 007fecc7  8b f1                  mov esi, ecx
+ 007fecc9  85 f6                  test esi, esi
+ 007feccb  57                     push edi
+ 007feccc  8b f8                  mov edi, eax
+ 007fecce  0f 84 30 02 00 00      je 0x7fef04
+
+=== site va 0x80a02e: record in eax; reads of +4/+8: cmp dword ptr [eax+0x8], 0x0
+ 0080a02e  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 0080a034  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 0080a037  89 45 f8               mov dword ptr [ebp-0x8], eax
+ 0080a03a  eb 0a                  jmp 0x80a046
+ 0080a03c  c7 45 f8 00 00 00 00   mov dword ptr [ebp-0x8], 0x0
+ 0080a043  8b 45 f8               mov eax, dword ptr [ebp-0x8]
+ 0080a046  83 bf 60 0a 00 00 00   cmp dword ptr [edi+0xa60], 0x0
+ 0080a04d  8b 75 0c               mov esi, dword ptr [ebp+0xc]
+ 0080a050  75 6c                  jne 0x80a0be
+ 0080a052  80 be 39 01 00 00 00   cmp byte ptr [esi+0x139], 0x0
+ 0080a059  75 63                  jne 0x80a0be
+ 0080a05b  83 7d fc 00            cmp dword ptr [ebp-0x4], 0x0
+ 0080a05f  74 5d                  je 0x80a0be
+ 0080a061  85 db                  test ebx, ebx
+ 0080a063  74 59                  je 0x80a0be
+ 0080a065  83 7b 1c 00            cmp dword ptr [ebx+0x1c], 0x0
+ 0080a069  74 53                  je 0x80a0be
+ 0080a06b  85 c0                  test eax, eax
+ 0080a06d  b9 01 00 00 00         mov ecx, 0x1
+ 0080a072  89 4d fc               mov dword ptr [ebp-0x4], ecx
+ 0080a075  74 0c                  je 0x80a083
+>0080a077  83 78 08 00            cmp dword ptr [eax+0x8], 0x0
+ 0080a07b  7e 06                  jle 0x80a083
+ 0080a07d  f6 43 34 04            test byte ptr [ebx+0x34], 0x4
+ 0080a081  74 0b                  je 0x80a08e
+ 0080a083  33 c9                  xor ecx, ecx
+ 0080a085  39 4d fc               cmp dword ptr [ebp-0x4], ecx
+ 0080a088  0f 84 09 01 00 00      je 0x80a197
+ 0080a08e  81 8e 1c 01 00 00 00 00 02 00 or dword ptr [esi+0x11c], 0x20000
+ 0080a098  85 c9                  test ecx, ecx
+ 0080a09a  c6 86 39 01 00 00 01   mov byte ptr [esi+0x139], 0x1
+ 0080a0a1  0f 84 f0 00 00 00      je 0x80a197
+ 0080a0a7  83 3d e8 f4 d3 00 00   cmp dword ptr [0xd3f4e8], 0x0
+ 0080a0ae  74 17                  je 0x80a0c7
+ 0080a0b0  8b 55 10               mov edx, dword ptr [ebp+0x10]
+ 0080a0b3  6a 00                  push 0x0
+ 0080a0b5  6a ff                  push -0x1
+ 0080a0b7  6a ff                  push -0x1
+ 0080a0b9  6a 69                  push 0x69
+ 0080a0bb  52                     push edx
+ 0080a0bc  eb 28                  jmp 0x80a0e6
+ 0080a0be  c7 45 fc 00 00 00 00   mov dword ptr [ebp-0x4], 0x0
+
+8 sites read StartAnimID/AnimID

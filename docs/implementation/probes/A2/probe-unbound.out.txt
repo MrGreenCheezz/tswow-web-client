@@ -1,0 +1,27 @@
+== RuneFrame.lua
+  ABSENT from src (2): GetRuneCooldownx1 GetRuneTypex1
+  mentioned in src (3): CooldownFrame_SetTimerx1 UnitClassx1 UnitRacex1
+== ZoneText.lua
+  ABSENT from src (0): 
+  mentioned in src (3): GetSubZoneTextx2 GetZonePVPInfox1 GetZoneTextx1
+== FadingFrame.lua
+  ABSENT from src (0): 
+  mentioned in src (0): 
+== DurabilityFrame.lua
+  ABSENT from src (1): OffhandHasWeaponx1
+  mentioned in src (1): GetInventoryAlertStatusx1
+== MultiCastActionBarFrame.lua
+  ABSENT from src (5): CastSpellByIDx2 GetMultiCastTotemSpellsx2 IsCurrentSpellx1 IsSpellKnownx2 SetMultiCastSpellx1
+  mentioned in src (7): CooldownFrame_SetTimerx1 GetCVarBoolx3 GetSpellCooldownx1 GetSpellInfox4 GetTotemInfox1 IsModifiedClickx5 UnitHasVehicleUIx2
+== CoinPickupFrame.lua
+  ABSENT from src (0): 
+  mentioned in src (5): GetBindingActionx6 GetCursorMoneyx1 PlaySoundx5 RunBindingx3 happenx1
+== EasyMenu.lua
+  ABSENT from src (0): 
+  mentioned in src (0): 
+== Localization.lua
+  ABSENT from src (1): SetEuropeanNumbersx1
+  mentioned in src (2): GetLocalex1 localex1
+== LocalizationPost.lua
+  ABSENT from src (0): 
+  mentioned in src (5): DeclineNamex1 GetNumDeclensionSetsx1 PetRenamex1 UnitSexx1 getglobalx6

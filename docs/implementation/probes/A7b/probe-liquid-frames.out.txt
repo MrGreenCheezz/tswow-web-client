@@ -1,0 +1,14 @@
+XTextures\river\lake_a.%d.blp: frames 30 256x256 rows 1,5,13,17,41,61,81
+proceduralRiverDepthTex: frames 0  rows 1,5,9,41,61,81,181
+XTextures\ocean\ocean_h.%d.blp: frames 30 256x256 rows 2,6,10,14,100
+proceduralOceanDepthTex: frames 0  rows 2,6,10,14,100
+XTextures\lava\lava.%d.blp: frames 30 256x256 rows 3,7,11,19,121,141
+XTextures\slime\slime.%d.blp: frames 30 256x256 rows 4,8,12,20,21
+XTextures\river\fast_a.%d.blp: frames 16 256x256 rows 9
+proceduralWmoWaterTex: frames 0  rows 13,17
+XTextures\LavaGreen\lavagreen.%d.blp: frames 30 256x256 rows 15
+XTextures\procWater\basicReflectionMap.blp: frames 0  rows 100,100
+XTextures\procWater\basicWaterHeightTex_%d.blp: frames 0  rows 100,100
+XTEXTURES\LavaOrange\LavaOrange.%d.blp: frames 30 256x256 rows 181
+Light 6: map 0 params 21,22,454,22,4
+Light 7: map 0 params 23,24,456,24,4

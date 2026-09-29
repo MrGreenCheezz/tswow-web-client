@@ -1,0 +1,105 @@
+outdoor m2 objects 193722, distinct paths 3591; regex: 96553 objects, 592 paths
+-- matched paths by leaf directory name (objects, distinct names, dirs)
+  trees: 49389 obj, 351 names, 36 dirs
+  bushes: 22535 obj, 92 names, 20 dirs
+  bush: 7492 obj, 24 names, 5 dirs
+  dragonblight: 4156 obj, 21 names, 1 dirs
+  kalidarbushes: 3300 obj, 4 names, 1 dirs
+  winterspringbushes: 1751 obj, 1 names, 1 dirs
+  detail: 1429 obj, 1 names, 1 dirs
+  kalidartrees: 1368 obj, 10 names, 1 dirs
+  stranglethorntree01: 806 obj, 1 names, 1 dirs
+  stranglethorntree02: 751 obj, 1 names, 1 dirs
+  howlingfjord: 676 obj, 3 names, 1 dirs
+  spooklesstrees: 632 obj, 2 names, 1 dirs
+  stranglethorntree04: 289 obj, 1 names, 1 dirs
+  tree: 288 obj, 13 names, 2 dirs
+  bones: 196 obj, 1 names, 1 dirs
+  lamps: 174 obj, 7 names, 2 dirs
+  coraltree02_07: 155 obj, 1 names, 1 dirs
+  smoke: 151 obj, 1 names, 1 dirs
+  elwynntree01: 117 obj, 2 names, 1 dirs
+  winterspringfallentrees: 103 obj, 3 names, 1 dirs
+  stumps: 93 obj, 2 names, 1 dirs
+  coraltree01_06: 87 obj, 1 names, 1 dirs
+  treehuts: 85 obj, 3 names, 1 dirs
+  treelogs: 82 obj, 4 names, 1 dirs
+  strangledeadtrees: 68 obj, 1 names, 1 dirs
+  kalidartreelogs: 58 obj, 2 names, 1 dirs
+  tradeskillnodes: 57 obj, 2 names, 1 dirs
+  treestumps: 51 obj, 4 names, 2 dirs
+  lamp: 45 obj, 1 names, 1 dirs
+  coral: 28 obj, 2 names, 1 dirs
+  kalidartreestumps: 26 obj, 2 names, 1 dirs
+  firefx: 19 obj, 6 names, 1 dirs
+  ashenvaletreelogs: 17 obj, 2 names, 1 dirs
+  winterspringtrees: 15 obj, 1 names, 1 dirs
+  darkshoretrees: 13 obj, 1 names, 1 dirs
+  rocktrees: 11 obj, 4 names, 1 dirs
+  ashenvaletrees: 11 obj, 2 names, 1 dirs
+  lampposts: 10 obj, 1 names, 1 dirs
+  deadtreelogs: 8 obj, 3 names, 1 dirs
+  skeleton: 4 obj, 1 names, 1 dirs
+  giantsnakespines: 2 obj, 2 names, 1 dirs
+  rubble: 2 obj, 2 names, 1 dirs
+  floatingdebris: 1 obj, 1 names, 1 dirs
+  oracletree: 1 obj, 1 names, 1 dirs
+  teleporttree: 1 obj, 1 names, 1 dirs
+-- regex & dirRule 81760; regex only 14793 (105 names); dirRule only 5586 (37 names)
+-- regex only, top 40 by objects
+  1751	world\kalimdor\winterspring\passivedoodads\winterspringbushes\winterspringbush01.m2
+  1429	world\azeroth\westfall\passivedoodads\detail\westfallbush01.m2
+  1383	world\kalimdor\kalidar\passivedoodads\kalidarbushes\kalidarbush02.m2
+  1344	world\expansion02\doodads\dragonblight\dragonblight_bush03.m2
+  1306	world\kalimdor\kalidar\passivedoodads\kalidarbushes\kalidarbush04.m2
+  935	world\expansion02\doodads\dragonblight\dragonblight_tree03.m2
+  666	world\expansion02\doodads\howlingfjord\hfjord_bush_03.m2
+  550	world\kalimdor\kalidar\passivedoodads\kalidarbushes\kalidarbush03.m2
+  518	world\expansion02\doodads\dragonblight\dragonblight_tree01.m2
+  510	world\expansion02\doodads\dragonblight\dragonblight_tree04.m2
+  508	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree01.m2
+  354	world\azeroth\duskwood\passivedoodads\spooklesstrees\duskwoodtreespookless02.m2
+  282	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree04.m2
+  278	world\azeroth\duskwood\passivedoodads\spooklesstrees\duskwoodtreespookless01.m2
+  196	world\azeroth\theblastedlands\passivedoodads\bones\blastedlandsspine01.m2
+  155	world\kalimdor\azshara\seaplants\coraltree02_07\coraltree02_07.m2
+  151	world\azeroth\burningsteppes\passivedoodads\smoke\ashtreesmoke01.m2
+  145	world\expansion02\doodads\dragonblight\dragonblight_tree05.m2
+  144	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree03.m2
+  129	world\expansion02\doodads\dragonblight\dragonblight_bush02.m2
+  110	world\expansion02\doodads\dragonblight\dragonblight_treeinfected01.m2
+  107	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree02.m2
+  100	world\expansion02\doodads\dragonblight\dragonblight_tree02.m2
+  99	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree07.m2
+  88	world\expansion02\doodads\dragonblight\db_dragonspine02blue.m2
+  87	world\kalimdor\azshara\seaplants\coraltree01_06\coraltree01_06.m2
+  85	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree09.m2
+  83	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree08.m2
+  68	world\azeroth\stranglethorn\passivedoodads\strangledeadtrees\strangledeadtree01.m2
+  66	world\azeroth\swamposorrow\passivedoodads\treehuts\losttreehuts03.m2
+  61	world\kalimdor\kalidar\passivedoodads\kalidarbushes\kalidarbush01.m2
+  58	world\expansion02\doodads\dragonblight\dragonblight_treeinfected03.m2
+  56	world\generic\nightelf\passive doodads\lamps\kalidarstreetlamp02.m2
+  56	world\skillactivated\tradeskillnodes\bush_mountainsilversage.m2
+  54	world\expansion02\doodads\dragonblight\dragonblight_tree07.m2
+  53	world\kalimdor\winterspring\passivedoodads\winterspringfallentrees\winterspringfallenbranch01.m2
+  45	world\kalimdor\darkshore\passivedoodads\lamp\darkstreetlamp.m2
+  45	world\expansion02\doodads\dragonblight\dragonblight_tree06.m2
+  35	world\azeroth\swamposorrow\passivedoodads\treelogs\swamptreelog02.m2
+  35	world\kalimdor\kalidar\passivedoodads\kalidartrees\kalidartree05.m2
+-- dirRule only, top 15
+  2655	world\azeroth\swamposorrow\passivedoodads\plants\swampplant04.m2
+  558	world\azeroth\swamposorrow\passivedoodads\plants\swampplant05.m2
+  515	world\azeroth\swamposorrow\passivedoodads\plants\swampsorrowplant02.m2
+  277	world\azeroth\swamposorrow\passivedoodads\plants\swampofsorrowlilypad02.m2
+  229	world\azeroth\swamposorrow\passivedoodads\plants\swampsorrowplant01.m2
+  209	world\azeroth\swamposorrow\passivedoodads\plants\swampofsorrowlilypad01.m2
+  175	world\generic\underwater\passivedoodads\plants\seaweed01.m2
+  142	world\azeroth\swamposorrow\passivedoodads\plants\swampsorrowroot01.m2
+  137	world\dreaming\passivedoodads\flowers\dnrdreambellflower02.m2
+  123	world\expansion01\doodads\silvermoon\flowers\silvermoonflower02.m2
+  109	world\azeroth\swamposorrow\passivedoodads\plants\swampsorrowroot03.m2
+  105	world\generic\underwater\passivedoodads\plants\seaweed02.m2
+  60	world\expansion01\doodads\silvermoon\flowers\silvermoonflower05.m2
+  49	world\expansion01\doodads\silvermoon\flowers\silvermoonflower04.m2
+  47	world\expansion01\doodads\silvermoon\flowers\silvermoonflower01.m2

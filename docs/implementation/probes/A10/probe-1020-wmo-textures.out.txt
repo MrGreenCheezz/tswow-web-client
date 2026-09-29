@@ -1,0 +1,9 @@
+root WMO files: 1985
+WMO roots with textures: 1981; texture references (distinct per file): 24202; distinct texture paths: 4853; average reuse 4.99x
+paths used by more than one WMO: 3229 (66.5 %), covering 22578 of the 24202 references
+most reused: 64.blp×100 mm_minerail_01.blp×85 wr_column_flat_middle.blp×69 mm_strmwnd_wall_04.blp×66 mm_westfall_wall_03.blp×65
+Gundrak: 7 root WMOs, 170 texture references
+Stormwind: 18 root WMOs, 460 texture references
+Dalaran: 4 root WMOs, 192 texture references
+Ironforge: 4 root WMOs, 134 texture references
+published now: 7565 per-WMO PNGs in data/visual-models (601.7 MB); 10305 shared PNGs in data/textures (513.7 MB for the first 5000)

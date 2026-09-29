@@ -1,0 +1,1 @@
+{"results":[{"localAddress":"127.0.0.1","outcome":"connected"},{"localAddress":"127.0.0.2","outcome":"connected"},{"localAddress":"127.23.45.67","outcome":"connected"},{"localAddress":"127.255.255.254","outcome":"connected"}],"serverSaw":["127.0.0.1","127.0.0.2","127.23.45.67","127.255.255.254"]}

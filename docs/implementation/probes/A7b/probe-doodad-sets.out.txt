@@ -1,0 +1,14 @@
+unique WMO placements: 1784; with doodadSet>0: 178
+set-0 doodads omitted across those placements: 1475; requested-set doodads drawn: 10548
+  0 DUSKWOODABANDONED_HUMAN_FARM.WMO set=1 (16 drawn, set0=3 omitted)
+  0 DUSKWOODABANDONED_HUMAN_FARM.WMO set=2 (17 drawn, set0=3 omitted)
+  0 DUSKWOOD_HUMAN_FARM.WMO set=5 (49 drawn, set0=5 omitted)
+  0 DUSKWOOD_INN.WMO set=2 (335 drawn, set0=80 omitted)
+  0 DUSKWOOD_TOWNHALL_NOWALL.WMO set=1 (117 drawn, set0=6 omitted)
+  0 DUSKWOODABANDONED_HUMANTWOSTORY.WMO set=1 (47 drawn, set0=11 omitted)
+  0 DUSKWOODABANDONED_HUMANTWOSTORY.WMO set=2 (47 drawn, set0=11 omitted)
+  0 DUSKWOODABANDONED_HUMAN_FARM.WMO set=1 (16 drawn, set0=3 omitted)
+  0 DUSKWOODABANDONED_HUMAN_FARM.WMO set=2 (17 drawn, set0=3 omitted)
+  0 DUSKWOODABANDONED_HUMAN_FARM.WMO set=1 (16 drawn, set0=3 omitted)
+  0 DUSKWOOD_HUMAN_FARM.WMO set=2 (14 drawn, set0=5 omitted)
+  0 DUSKWOOD_HUMANTWOSTORY.WMO set=1 (100 drawn, set0=4 omitted)

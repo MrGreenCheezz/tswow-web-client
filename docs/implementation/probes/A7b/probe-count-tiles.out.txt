@@ -1,0 +1,15 @@
+tiles: 424
+{"key":"530/14-45","total":8347,"wmo":3,"interior":7462,"m2":882,"withRadius":0}
+{"key":"0/49-32","total":7995,"wmo":8,"interior":6661,"m2":1326,"withRadius":1264}
+{"key":"0/49-31","total":7940,"wmo":9,"interior":6638,"m2":1293,"withRadius":1260}
+{"key":"530/14-46","total":7909,"wmo":8,"interior":7511,"m2":390,"withRadius":0}
+{"key":"530/13-46","total":7577,"wmo":2,"interior":7462,"m2":113,"withRadius":0}
+{"key":"530/13-45","total":7473,"wmo":1,"interior":7462,"m2":10,"withRadius":0}
+{"key":"0/48-32","total":7220,"wmo":8,"interior":6427,"m2":785,"withRadius":772}
+{"key":"0/49-30","total":7005,"wmo":3,"interior":6777,"m2":225,"withRadius":216}
+{"key":"0/47-29","total":6902,"wmo":18,"interior":6382,"m2":502,"withRadius":493}
+{"key":"0/48-29","total":6551,"wmo":4,"interior":6374,"m2":173,"withRadius":171}
+{"key":"0/47-32","total":6427,"wmo":3,"interior":6249,"m2":175,"withRadius":146}
+{"key":"0/48-31","total":6426,"wmo":5,"interior":6188,"m2":233,"withRadius":233}
+at cap (>=10000): none
+outdoor m2 placements: 193722, with admissionRadius: 108627 (56.1%)

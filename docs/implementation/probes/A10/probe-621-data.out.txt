@@ -1,0 +1,361 @@
+== A. AnimationData: 506 rows
+Bodyflags values: 0x0×193 0x100×94 0x108×68 0x128×44 0x41×18 0x8×17 0x1×16 0x120×12 0x101×10 0x300×9 0x141×8 0x900×5 0x6×4 0x500×2 0x180×2 0x901×2 0x40×2
+Weaponflags values: 0x0×318 0x10×102 0x4×42 0x20×42 0x14×2
+Flags values: 0x3×186 0x2×84 0x0×77 0x43×38 0x1×17 0x7×13 0x4×12 0x10×10 0xa×9 0x6×9 0x2b×5 0x42×5 0x20×5 0x23×5 0x41×4 0xb×4 0x8×3 0x52×3 0x22×3 0x16×2 0x62×2 0x46×2 0x13×2 0x12×2 0x11×1 0x63×1 0x61×1 0x2a×1
+rows with 0x8: 129; without: 377
+names WITH 0x8: 8:StandWound 9:CombatWound 10:CombatCritical 16:AttackUnarmed 17:Attack1H 18:Attack2H 19:Attack2HL 20:ParryUnarmed 21:Parry1H 22:Parry2H 23:Parry2HL 24:ShieldBlock 30:Dodge 31:SpellPrecast 33:SpellCastArea 36:Block 46:AttackBow 49:AttackRifle 52:ReadySpellOmni 53:SpellCastDirected 54:SpellCastOmni 55:BattleRoar 59:ShieldBash 60:EmoteTalk 61:EmoteEat 63:EmoteUseStanding 64:EmoteTalkExclamation 65:EmoteTalkQuestion 67:EmoteWave 70:EmoteLaugh 73:EmoteRude 78:EmoteChicken 80:EmoteApplaud 81:EmoteShout 84:EmotePoint 85:Attack1HPierce 86:Attack2HLoosePierce 87:AttackOff 88:AttackOffPierce 105:LoadBow 106:LoadRifle 107:AttackThrown 109:HoldBow 110:HoldRifle 111:HoldThrown 112:LoadThrown 113:EmoteSalute 117:AttackUnarmedOff 122:EatingLoop 138:EmoteUseStandingNoSheathe 199:EmoteEatNoSheathe 208:EmoteTalkNoSheathe 209:EmotePointNoSheathe 210:EmoteSaluteNoSheathe 212:Mutilate 213:CustomSpell01 225:Cower 237:FlyStandWound 238:FlyCombatWound 239:FlyCombatCritical 245:FlyAttackUnarmed 246:FlyAttack1H 247:FlyAttack2H 248:FlyAttack2HL 249:FlyParryUnarmed 250:FlyParry1H 251:FlyParry2H 252:FlyParry2HL 253:FlyShieldBlock 254:FlyReadyUnarmed 259:FlyDodge 260:FlySpellPrecast 262:FlySpellCastArea 265:FlyBlock 275:FlyAttackBow 278:FlyAttackRifle 280:FlyReadySpellDirected 281:FlyReadySpellOmni 282:FlySpellCastDirected 283:FlySpellCastOmni 284:FlyBattleRoar 288:FlyShieldBash 289:FlyEmoteTalk 290:FlyEmoteEat 292:FlyEmoteUseStanding 293:FlyEmoteTalkExclamation 294:FlyEmoteTalkQuestion 296:FlyEmoteWave 299:FlyEmoteLaugh 302:FlyEmoteRude 307:FlyEmoteChicken 309:FlyEmoteApplaud 310:FlyEmoteShout 313:FlyEmotePoint 314:FlyAttack1HPierce 315:FlyAttack2HLoosePierce 316:FlyAttackOff 317:FlyAttackOffPierce 334:FlyLoadBow 335:FlyLoadRifle 336:FlyAttackThrown 338:FlyHoldBow 339:FlyHoldRifle 340:FlyHoldThrown 341:FlyLoadThrown 342:FlyEmoteSalute 346:FlyAttackUnarmedOff 351:FlyEatingLoop 367:FlyEmoteUseStandingNoSheathe 428:FlyEmoteEatNoSheathe 437:FlyEmoteTalkNoSheathe 438:FlyEmotePointNoSheathe 439:FlyEmoteSaluteNoSheathe 441:FlyMutilate 454:FlyCower 474:Strangulate 475:FlyStrangulate 477:LoadJoust 478:HoldJoust 480:FlyLoadJoust 481:FlyHoldJoust 482:AttackJoust 483:FlyAttackJoust 484:ReclinedMount 485:FlyReclinedMount 500:ReclinedMountPassenger 501:FlyReclinedMountPassenger 502:Carry2H 504:FlyCarry2H
+names WITHOUT 0x8 (named, Bodyflags!=0): 0:Stand(0x1) 1:Death(0x300) 2:Spell(0x100) 3:Stop(0x1) 4:Walk(0x41) 5:Run(0x41) 6:Dead(0x900) 7:Rise(0x100) 11:ShuffleLeft(0x1) 12:ShuffleRight(0x1) 13:Walkbackwards(0x41) 14:Stun(0x100) 25:ReadyUnarmed(0x100) 26:Ready1H(0x100) 27:Ready2H(0x100) 32:SpellCast(0x100) 37:JumpStart(0x101) 38:Jump(0x101) 39:JumpEnd(0x101) 40:Fall(0x101) 41:SwimIdle(0x1) 42:Swim(0x141) 43:SwimLeft(0x141) 44:SwimRight(0x141) 45:SwimBackwards(0x141) 47:FireBow(0x100) 50:Loot(0x100) 51:ReadySpellDirected(0x100) 56:ReadyAbility(0x100) 57:Special1H(0x120) 58:Special2H(0x120) 62:EmoteWork(0x100) 66:EmoteBow(0x100) 68:EmoteCheer(0x100) 69:EmoteDance(0x100) 71:EmoteSleep(0x100) 72:EmoteSitGround(0x100) 74:EmoteRoar(0x100) 75:EmoteKneel(0x100) 76:EmoteKiss(0x100) 77:EmoteCry(0x100) 79:EmoteBeg(0x100) 82:EmoteFlex(0x100) 83:EmoteShy(0x100) 89:Sheath(0x6) 90:HipSheath(0x6) 91:Mount(0x100) 92:RunRight(0x1) 93:RunLeft(0x1) 94:MountSpecial(0x101) 95:Kick(0x120) 96:SitGroundDown(0x100) 97:SitGround(0x100) 98:SitGroundUp(0x100) 99:SleepDown(0x300) 100:Sleep(0x900) 101:SleepUp(0x500) 108:ReadyThrown(0x100) 114:KneelStart(0x100) 116:KneelEnd(0x100) 118:SpecialUnarmed(0x120) 119:StealthWalk(0x41) 120:StealthStand(0x1) 121:Knockdown(0x180) 123:UseStandingLoop(0x100) 124:ChannelCastDirected(0x100) 125:ChannelCastOmni(0x100) 126:Whirlwind(0x120) 127:Birth(0x100) 128:UseStandingStart(0x100) 129:UseStandingEnd(0x100) 130:CreatureSpecial(0x120) 131:Drown(0x100) 132:Drowned(0x100) 133:FishingCast(0x100) 134:FishingLoop(0x100) 135:Fly(0x901) 143:Sprint(0x40) 211:EmoteDanceSpecial(0x100) 223:StealthRun(0x41) 229:FlyStand(0x1) 230:FlyDeath(0x300) 231:FlySpell(0x100) 232:FlyStop(0x1) 233:FlyWalk(0x41) 234:FlyRun(0x41) 235:FlyDead(0x900) 236:FlyRise(0x100) 240:FlyShuffleLeft(0x1) 241:FlyShuffleRight(0x1) 242:FlyWalkbackwards(0x41) 243:FlyStun(0x100) 255:FlyReady1H(0x100) 256:FlyReady2H(0x100) 261:FlySpellCast(0x100) 266:FlyJumpStart(0x101) 267:FlyJump(0x101) 268:FlyJumpEnd(0x101) 269:FlyFall(0x101) 270:FlySwimIdle(0x1) 271:FlySwim(0x141) 272:FlySwimLeft(0x141) 273:FlySwimRight(0x141) 274:FlySwimBackwards(0x141) 276:FlyFireBow(0x100) 279:FlyLoot(0x100) 285:FlyReadyAbility(0x100) 286:FlySpecial1H(0x120) 287:FlySpecial2H(0x120) 291:FlyEmoteWork(0x100) 295:FlyEmoteBow(0x100) 297:FlyEmoteCheer(0x100) 298:FlyEmoteDance(0x100) 300:FlyEmoteSleep(0x100) 301:FlyEmoteSitGround(0x100) 303:FlyEmoteRoar(0x100) 304:FlyEmoteKneel(0x100) 305:FlyEmoteKiss(0x100) 306:FlyEmoteCry(0x100) 308:FlyEmoteBeg(0x100) 311:FlyEmoteFlex(0x100) 312:FlyEmoteShy(0x100) 318:FlySheath(0x6) 319:FlyHipSheath(0x6) 320:FlyMount(0x100) 321:FlyRunRight(0x1) 322:FlyRunLeft(0x1) 323:FlyMountSpecial(0x101) 324:FlyKick(0x120) 325:FlySitGroundDown(0x100) 326:FlySitGround(0x100) 327:FlySitGroundUp(0x100) 328:FlySleepDown(0x300) 329:FlySleep(0x900) 330:FlySleepUp(0x500) 337:FlyReadyThrown(0x100) 343:FlyKneelStart(0x100) 345:FlyKneelEnd(0x100) 347:FlySpecialUnarmed(0x120) 348:FlyStealthWalk(0x41) 349:FlyStealthStand(0x1) 350:FlyKnockdown(0x180) 352:FlyUseStandingLoop(0x100) 353:FlyChannelCastDirected(0x100) 354:FlyChannelCastOmni(0x100) 355:FlyWhirlwind(0x120) 356:FlyBirth(0x100) 357:FlyUseStandingStart(0x100) 358:FlyUseStandingEnd(0x100) 359:FlyCreatureSpecial(0x120) 360:FlyDrown(0x100) 361:FlyDrowned(0x100) 362:FlyFishingCast(0x100) 363:FlyFishingLoop(0x100) 364:FlyFly(0x901) 372:FlySprint(0x40) 440:FlyEmoteDanceSpecial(0x100) 452:FlyStealthRun(0x41) 458:ToFly(0x41) 459:ToHover(0x41) 460:ToGround(0x41) 461:FlyToFly(0x41) 462:FlyToHover(0x41) 463:FlyToGround(0x41) 464:Settle(0x41) 465:FlySettle(0x41) 466:DeathStart(0x300) 467:DeathLoop(0x300) 468:DeathEnd(0x300) 469:FlyDeathStart(0x100) 470:FlyDeathLoop(0x100) 471:FlyDeathEnd(0x300) 472:DeathEndHold(0x900) 473:FlyDeathEndHold(0x300) 486:ToAltered(0x100) 487:FromAltered(0x100) 488:FlyToAltered(0x100) 489:FlyFromAltered(0x100) 490:InStocks(0x100) 491:FlyInStocks(0x100) 496:ToAlteredPostSwap(0x100) 497:FromAlteredPostSwap(0x100) 498:FlyToAlteredPostSwap(0x100) 499:FlyFromAlteredPostSwap(0x100)
+names with Bodyflags==0: 15:HandsClosed 28:Ready2HL 29:ReadyBow 34:NPCWelcome 35:NPCGoodbye 48:ReadyRifle 102:SitChairLow 103:SitChairMed 104:SitChairHigh 115:KneelLoop 136:EmoteWorkNoSheathe 137:EmoteStunNoSheathe 139:SpellSleepDown 140:SpellKneelStart 141:SpellKneelLoop 142:SpellKneelEnd 144:InFlight 145:Spawn 146:Close 147:Closed 148:Open 149:Opened 150:Destroy 151:Destroyed 152:Rebuild 153:Custom0 154:Custom1 155:Custom2 156:Custom3 157:Despawn 158:Hold 159:Decay 160:BowPull 161:BowRelease 162:ShipStart 163:ShipMoving 164:ShipStop 165:GroupArrow 166:Arrow 167:CorpseArrow 168:GuideArrow 169:Sway 170:DruidCatPounce 171:DruidCatRip 172:DruidCatRake 173:DruidCatRavage 174:DruidCatClaw 175:DruidCatCower 176:DruidBearSwipe 177:DruidBearBite 178:DruidBearMaul 179:DruidBearBash 180:DragonTail 181:DragonStomp 182:DragonSpit 183:DragonSpitHover 184:DragonSpitFly 185:EmoteYes 186:EmoteNo 187:JumpLandRun 188:LootHold 189:LootUp 190:StandHigh 191:Impact 192:LiftOff 193:Hover 194:SuccubusEntice 195:EmoteTrain 196:EmoteDead 197:EmoteDanceOnce 198:Deflect 200:Land 201:Submerge 202:Submerged 203:Cannibalize 204:ArrowBirth 205:GroupArrowBirth 206:CorpseArrowBirth 207:GuideArrowBirth 214:CustomSpell02 215:CustomSpell03 216:CustomSpell04 217:CustomSpell05 218:CustomSpell06 219:CustomSpell07 220:CustomSpell08 221:CustomSpell09 222:CustomSpell10 224:Emerge 226:Grab 227:GrabClosed 228:GrabThrown 244:FlyHandsClosed 257:FlyReady2HL 258:FlyReadyBow 263:FlyNPCWelcome 264:FlyNPCGoodbye 277:FlyReadyRifle 331:FlySitChairLow 3
+
+== B. SpellVisualKit: 8664 kits
+  start -1 / anim -1: 4779
+  start -1 / anim >0: 3387
+  start -1 / anim 0: 317
+  start 0 / anim -1: 56
+  start >0 / anim >0: 47
+  start >0 / anim -1: 40
+  start 0 / anim >0: 28
+  start 0 / anim 0: 10
+kits naming 0 in either column: 411; of them with an effect model: 323, sound only: 27, nothing else: 61
+SpellVisual rows using a kit that names 0, by column: ImpactKit=89 CastKit=61 StateKit=178 PrecastKit=5 ChannelKit=44 TargetImpactKit=7 MissileTargetingKit=2 CasterImpactKit=4
+SpellVisual rows using a kit that names a positive pose, by column: PrecastKit=2668 CastKit=4175 ImpactKit=1024 StateKit=657 ChannelKit=753 TargetImpactKit=58 CasterImpactKit=11 MissileTargetingKit=1
+spells with a SpellVisualID: 52128; reaching a kit that names 0: 647
+SpellVisual rows with a ChannelKit: 994; its kit names no pose: 241; ... and CastKit names a pose: 45; that pose is SpellCast/Directed/Omni: 24; ChannelKit naming 0: 44
+
+== C. channels
+channel spells (AttributesEx CHANNELED_1|2 or ChannelInterruptFlags != 0, with a visual): 2026
+  channel spells whose ChannelKit names no pose: 745; with a CastKit pose: 308
+  distinct SpellVisual rows behind them: no channel pose 499; cast pose 184; cast pose is SpellCast/Directed/Omni 88
+  CastKit poses of those rows: SpellCastDirected×43 SpellCastOmni×41 AttackThrown×15 ChannelCastDirected×10 Whirlwind×10 SpecialUnarmed×7 Special1H×5 ChannelCastOmni×4 SpellCast×4 EmoteRoar×4 AttackUnarmed×4 CustomSpell02×4 BattleRoar×3 Attack1H×3 ReadySpellOmni×2 Special2H×2 DragonSpitHover×2 EmotePoint×2 EmoteEat×2 EmoteWave×2 SpellKneelEnd×1 UseStandingEnd×1 EmoteLaugh×1 Attack2H×1 AttackOff×1 ShieldBlock×1 ShieldBash×1 Kick×1 Knockdown×1 UseStandingLoop×1 Attack1HPierce×1 CreatureSpecial×1 DragonStomp×1 LoadRifle×1 CustomSpell01×1
+
+== A2. structural check over 35 player models
+usable rigs (a leg pair found): 33
+per animation (over the rigs that carry it):
+  0 Stand                      body=0x1    rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+  1 Death                      body=0x300  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+  3 Stop                       body=0x1    rigs=32 legs-keyed=28 legs-MOVING= 0 arms/torso-moving= 1
+  4 Walk                       body=0x41   rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+  5 Run                        body=0x41   rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+  8 StandWound                 body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+  9 CombatWound                body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 10 CombatCritical             body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 11 ShuffleLeft                body=0x1    rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=27
+ 12 ShuffleRight               body=0x1    rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=27
+ 13 Walkbackwards              body=0x41   rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 14 Stun                       body=0x100  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 15 HandsClosed                body=0x0    rigs=33 legs-keyed=28 legs-MOVING= 2 arms/torso-moving= 2
+ 16 AttackUnarmed              body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 17 Attack1H                   body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 18 Attack2H                   body=0x128  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 19 Attack2HL                  body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 20 ParryUnarmed               body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 21 Parry1H                    body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 22 Parry2H                    body=0x128  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 23 Parry2HL                   body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 24 ShieldBlock                body=0x128  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 25 ReadyUnarmed               body=0x100  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 26 Ready1H                    body=0x100  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 27 Ready2H                    body=0x100  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 28 Ready2HL                   body=0x0    rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 29 ReadyBow                   body=0x0    rigs=32 legs-keyed=32 legs-MOVING=30 arms/torso-moving=32
+ 30 Dodge                      body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 37 JumpStart                  body=0x101  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 38 Jump                       body=0x101  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 39 JumpEnd                    body=0x101  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 40 Fall                       body=0x101  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 41 SwimIdle                   body=0x1    rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 42 Swim                       body=0x141  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 43 SwimLeft                   body=0x141  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 44 SwimRight                  body=0x141  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 45 SwimBackwards              body=0x141  rigs=29 legs-keyed=29 legs-MOVING=29 arms/torso-moving=29
+ 46 AttackBow                  body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 48 ReadyRifle                 body=0x0    rigs=32 legs-keyed=32 legs-MOVING=31 arms/torso-moving=32
+ 49 AttackRifle                body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 50 Loot                       body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 51 ReadySpellDirected         body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 52 ReadySpellOmni             body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 53 SpellCastDirected          body=0x108  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 54 SpellCastOmni              body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 55 BattleRoar                 body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 56 ReadyAbility               body=0x100  rigs=16 legs-keyed=16 legs-MOVING=15 arms/torso-moving=16
+ 57 Special1H                  body=0x120  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 58 Special2H                  body=0x120  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 59 ShieldBash                 body=0x128  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 60 EmoteTalk                  body=0x108  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 61 EmoteEat                   body=0x108  rigs=30 legs-keyed=30 legs-MOVING=26 arms/torso-moving=30
+ 62 EmoteWork                  body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 63 EmoteUseStanding           body=0x108  rigs=27 legs-keyed=27 legs-MOVING=23 arms/torso-moving=27
+ 64 EmoteTalkExclamation       body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 65 EmoteTalkQuestion          body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 66 EmoteBow                   body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 67 EmoteWave                  body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 68 EmoteCheer                 body=0x100  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 69 EmoteDance                 body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 70 EmoteLaugh                 body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 73 EmoteRude                  body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 74 EmoteRoar                  body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 75 EmoteKneel                 body=0x100  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 76 EmoteKiss                  body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 77 EmoteCry                   body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 78 EmoteChicken               body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 79 EmoteBeg                   body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 80 EmoteApplaud               body=0x108  rigs=30 legs-keyed=30 legs-MOVING=26 arms/torso-moving=30
+ 81 EmoteShout                 body=0x108  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 82 EmoteFlex                  body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 83 EmoteShy                   body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+ 84 EmotePoint                 body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 85 Attack1HPierce             body=0x128  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 86 Attack2HLoosePierce        body=0x128  rigs= 4 legs-keyed= 4 legs-MOVING= 4 arms/torso-moving= 4
+ 87 AttackOff                  body=0x128  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+ 88 AttackOffPierce            body=0x128  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+ 89 Sheath                     body=0x6    rigs=30 legs-keyed=30 legs-MOVING= 1 arms/torso-moving=30
+ 90 HipSheath                  body=0x6    rigs=30 legs-keyed=30 legs-MOVING= 2 arms/torso-moving=29
+ 91 Mount                      body=0x100  rigs=32 legs-keyed=32 legs-MOVING= 7 arms/torso-moving=30
+ 95 Kick                       body=0x120  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 96 SitGroundDown              body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 97 SitGround                  body=0x100  rigs=32 legs-keyed=32 legs-MOVING=12 arms/torso-moving=32
+ 98 SitGroundUp                body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+ 99 SleepDown                  body=0x300  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+100 Sleep                      body=0x900  rigs=32 legs-keyed=32 legs-MOVING=16 arms/torso-moving=32
+101 SleepUp                    body=0x500  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+102 SitChairLow                body=0x0    rigs=30 legs-keyed=30 legs-MOVING=10 arms/torso-moving=29
+103 SitChairMed                body=0x0    rigs=30 legs-keyed=30 legs-MOVING=10 arms/torso-moving=29
+104 SitChairHigh               body=0x0    rigs=31 legs-keyed=31 legs-MOVING=11 arms/torso-moving=30
+105 LoadBow                    body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+106 LoadRifle                  body=0x108  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+107 AttackThrown               body=0x108  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+108 ReadyThrown                body=0x100  rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+109 HoldBow                    body=0x8    rigs=32 legs-keyed=32 legs-MOVING=30 arms/torso-moving=32
+110 HoldRifle                  body=0x8    rigs=32 legs-keyed=32 legs-MOVING=30 arms/torso-moving=32
+111 HoldThrown                 body=0x8    rigs=33 legs-keyed=33 legs-MOVING=33 arms/torso-moving=33
+112 LoadThrown                 body=0x108  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+113 EmoteSalute                body=0x108  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+114 KneelStart                 body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+115 KneelLoop                  body=0x0    rigs=31 legs-keyed=31 legs-MOVING=12 arms/torso-moving=31
+116 KneelEnd                   body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+118 SpecialUnarmed             body=0x120  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+119 StealthWalk                body=0x41   rigs=29 legs-keyed=29 legs-MOVING=29 arms/torso-moving=29
+120 StealthStand               body=0x1    rigs=29 legs-keyed=29 legs-MOVING=29 arms/torso-moving=29
+121 Knockdown                  body=0x180  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+122 EatingLoop                 body=0x108  rigs= 4 legs-keyed= 4 legs-MOVING= 3 arms/torso-moving= 4
+123 UseStandingLoop            body=0x100  rigs=32 legs-keyed=32 legs-MOVING=28 arms/torso-moving=32
+124 ChannelCastDirected        body=0x100  rigs=32 legs-keyed=32 legs-MOVING=30 arms/torso-moving=32
+125 ChannelCastOmni            body=0x100  rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+126 Whirlwind                  body=0x120  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=18
+127 Birth                      body=0x100  rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+128 UseStandingStart           body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+129 UseStandingEnd             body=0x100  rigs=32 legs-keyed=32 legs-MOVING=31 arms/torso-moving=32
+131 Drown                      body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+132 Drowned                    body=0x100  rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+133 FishingCast                body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+134 FishingLoop                body=0x100  rigs=30 legs-keyed=30 legs-MOVING=30 arms/torso-moving=30
+135 Fly                        body=0x901  rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+136 EmoteWorkNoSheathe         body=0x0    rigs=28 legs-keyed=28 legs-MOVING=28 arms/torso-moving=28
+137 EmoteStunNoSheathe         body=0x0    rigs=19 legs-keyed=19 legs-MOVING=19 arms/torso-moving=19
+138 EmoteUseStandingNoSheathe  body=0x8    rigs=26 legs-keyed=26 legs-MOVING=22 arms/torso-moving=26
+139 SpellSleepDown             body=0x0    rigs=12 legs-keyed=12 legs-MOVING=12 arms/torso-moving=12
+140 SpellKneelStart            body=0x0    rigs=18 legs-keyed=18 legs-MOVING=18 arms/torso-moving=18
+141 SpellKneelLoop             body=0x0    rigs=17 legs-keyed=17 legs-MOVING=11 arms/torso-moving=17
+142 SpellKneelEnd              body=0x0    rigs=26 legs-keyed=26 legs-MOVING=26 arms/torso-moving=26
+143 Sprint                     body=0x40   rigs=29 legs-keyed=29 legs-MOVING=29 arms/torso-moving=29
+181 DragonStomp                body=0x0    rigs=32 legs-keyed=32 legs-MOVING=32 arms/torso-moving=32
+185 EmoteYes                   body=0x0    rigs=29 legs-keyed=29 legs-MOVING=26 arms/torso-moving=29
+186 EmoteNo                    body=0x0    rigs=30 legs-keyed=30 legs-MOVING=27 arms/torso-moving=30
+187 JumpLandRun                body=0x0    rigs=31 legs-keyed=31 legs-MOVING=31 arms/torso-moving=31
+193 Hover                      body=0x0    rigs=28 legs-keyed=28 legs-MOVING=28 arms/torso-moving=28
+195 EmoteTrain                 body=0x0    rigs=29 legs-keyed=29 legs-MOVING=29 arms/torso-moving=29
+199 EmoteEatNoSheathe          body=0x108  rigs=23 legs-keyed=23 legs-MOVING=19 arms/torso-moving=23
+201 Submerge                   body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+202 Submerged                  body=0x0    rigs= 3 legs-keyed= 3 legs-MOVING= 0 arms/torso-moving= 1
+203 Cannibalize                body=0x0    rigs= 4 legs-keyed= 4 legs-MOVING= 4 arms/torso-moving= 4
+208 EmoteTalkNoSheathe         body=0x108  rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+209 EmotePointNoSheathe        body=0x108  rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+210 EmoteSaluteNoSheathe       body=0x108  rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+211 EmoteDanceSpecial          body=0x100  rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+212 Mutilate                   body=0x128  rigs=27 legs-keyed=27 legs-MOVING=27 arms/torso-moving=27
+213 CustomSpell01              body=0x8    rigs= 4 legs-keyed= 4 legs-MOVING= 2 arms/torso-moving= 3
+214 CustomSpell02              body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+215 CustomSpell03              body=0x0    rigs= 5 legs-keyed= 5 legs-MOVING= 5 arms/torso-moving= 5
+216 CustomSpell04              body=0x0    rigs= 4 legs-keyed= 4 legs-MOVING= 2 arms/torso-moving= 4
+217 CustomSpell05              body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 0 arms/torso-moving= 2
+218 CustomSpell06              body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+219 CustomSpell07              body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+220 CustomSpell08              body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+223 StealthRun                 body=0x41   rigs=27 legs-keyed=27 legs-MOVING=27 arms/torso-moving=27
+224 Emerge                     body=0x0    rigs= 3 legs-keyed= 3 legs-MOVING= 3 arms/torso-moving= 3
+225 Cower                      body=0x108  rigs=24 legs-keyed=24 legs-MOVING=24 arms/torso-moving=24
+320 FlyMount                   body=0x100  rigs= 1 legs-keyed= 1 legs-MOVING= 0 arms/torso-moving= 1
+474 Strangulate                body=0x108  rigs=24 legs-keyed=24 legs-MOVING=24 arms/torso-moving=24
+476 ReadyJoust                 body=0x0    rigs=24 legs-keyed=24 legs-MOVING= 6 arms/torso-moving=24
+477 LoadJoust                  body=0x108  rigs=24 legs-keyed=24 legs-MOVING= 8 arms/torso-moving=24
+478 HoldJoust                  body=0x8    rigs=24 legs-keyed=24 legs-MOVING= 6 arms/torso-moving=24
+482 AttackJoust                body=0x128  rigs=24 legs-keyed=24 legs-MOVING= 6 arms/torso-moving=24
+484 ReclinedMount              body=0x8    rigs=24 legs-keyed=24 legs-MOVING= 4 arms/torso-moving=24
+486 ToAltered                  body=0x100  rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+500 ReclinedMountPassenger     body=0x8    rigs=24 legs-keyed=24 legs-MOVING= 5 arms/torso-moving=24
+502 Carry2H                    body=0x8    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+503 Carried2H                  body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+508 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+510 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+512 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+514 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+516 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+518 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+520 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=21 arms/torso-moving=23
+522 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+524 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+526 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+584 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 0 arms/torso-moving= 2
+588 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+618 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 0 arms/torso-moving= 0
+646 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+650 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+654 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+656 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+660 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=22
+662 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+664 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+666 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=20
+668 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+670 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+672 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+674 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+676 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+678 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+680 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+682 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+684 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+686 ?                          body=0x0    rigs=22 legs-keyed=22 legs-MOVING=22 arms/torso-moving=22
+688 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+690 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+692 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+696 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+698 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+702 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+704 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+706 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+716 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+718 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+720 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+722 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+724 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+726 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+728 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+730 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+732 ?                          body=0x0    rigs=23 legs-keyed=23 legs-MOVING=23 arms/torso-moving=23
+734 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+736 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING=21 arms/torso-moving=21
+774 ?                          body=0x0    rigs=20 legs-keyed=20 legs-MOVING=20 arms/torso-moving=20
+804 ?                          body=0x0    rigs=19 legs-keyed=19 legs-MOVING=19 arms/torso-moving=19
+806 ?                          body=0x0    rigs=21 legs-keyed=21 legs-MOVING= 4 arms/torso-moving=21
+808 ?                          body=0x0    rigs= 6 legs-keyed= 1 legs-MOVING= 0 arms/torso-moving= 0
+810 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+812 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+814 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+816 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+818 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+820 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+822 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+824 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+826 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+828 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+830 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+836 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+838 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+840 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+842 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+852 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+854 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+858 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+860 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+862 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+874 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+876 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+878 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+880 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+882 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+888 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+890 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+896 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+898 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+900 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+904 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+918 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+920 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+922 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+926 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+940 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+942 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+944 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+962 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+964 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+966 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+968 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+970 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+972 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+978 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+982 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+984 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+988 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+990 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+992 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+994 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+996 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+998 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1000 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1002 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1004 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1006 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1008 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1010 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1012 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1014 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1018 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1022 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1024 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1026 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1028 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1030 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1032 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1034 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1038 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1040 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1042 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1044 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1050 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1054 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1056 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1058 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1060 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1062 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1064 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1068 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1074 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1076 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1078 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1080 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1102 ?                          body=0x0    rigs= 2 legs-keyed= 2 legs-MOVING= 2 arms/torso-moving= 2
+1104 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1106 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1108 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1110 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1112 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1114 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1116 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1118 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1120 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1122 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1128 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1130 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1132 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1134 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1136 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1138 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1140 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1142 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1144 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1146 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+1148 ?                          body=0x0    rigs= 1 legs-keyed= 1 legs-MOVING= 1 arms/torso-moving= 1
+
+clips with 0x8   : 1646 rig-clips, legs keyed in 100.0 %, legs MOVING in 92.8 %
+clips without 0x8: 3904 rig-clips, legs keyed in 99.6 %, legs MOVING in 91.3 %

@@ -1,0 +1,95 @@
+image base 0x400000; sections: .text@0x401000+0x5dd3b3 .rdata@0x9df000+0xd6679 .data@0xab6000+0x31a508 .zdata@0xdd1000+0x1000 .tls@0xdd2000+0x19 .rsrc@0xdd3000+0x29ad0
+"SPELLVISUALKITIDNOTFOUND|%d": 1 string copies at 0x6317cc(va 0xa32fcc)
+  va 0xa32fcc: 1 4-byte references
+  -- reference at file 0x303fc0 va 0x704bc0 in .text
+     function start guess va 0x704b30; showing instructions 9..99 of the sweep
+ 00704b44  8b 48 0c               mov ecx, dword ptr [eax+0xc]
+ 00704b47  51                     push ecx
+ 00704b48  68 18 28 a3 00         push 0xa32818
+ 00704b4d  6a 02                  push 0x2
+ 00704b4f  6a 01                  push 0x1
+ 00704b51  e8 ea 04 db ff         call 0x4b5040
+ 00704b56  83 c4 10               add esp, 0x10
+ 00704b59  5f                     pop edi
+ 00704b5a  33 c0                  xor eax, eax
+ 00704b5c  5e                     pop esi
+ 00704b5d  5d                     pop ebp
+ 00704b5e  c2 04 00               ret 4
+ 00704b61  56                     push esi
+ 00704b62  e8 29 57 0f 00         call 0x7fa290
+ 00704b67  83 c4 04               add esp, 0x4
+ 00704b6a  85 c0                  test eax, eax
+ 00704b6c  75 2a                  jne 0x704b98
+ 00704b6e  8b 97 d0 00 00 00      mov edx, dword ptr [edi+0xd0]
+ 00704b74  8b 42 0c               mov eax, dword ptr [edx+0xc]
+ 00704b77  8b 8e 0c 02 00 00      mov ecx, dword ptr [esi+0x20c]
+ 00704b7d  50                     push eax
+ 00704b7e  51                     push ecx
+ 00704b7f  68 e8 2f a3 00         push 0xa32fe8
+ 00704b84  6a 02                  push 0x2
+ 00704b86  6a 01                  push 0x1
+ 00704b88  e8 b3 04 db ff         call 0x4b5040
+ 00704b8d  83 c4 14               add esp, 0x14
+ 00704b90  5f                     pop edi
+ 00704b91  33 c0                  xor eax, eax
+ 00704b93  5e                     pop esi
+ 00704b94  5d                     pop ebp
+ 00704b95  c2 04 00               ret 4
+ 00704b98  8b 40 64               mov eax, dword ptr [eax+0x64]
+ 00704b9b  8b 0d 4c 4a ad 00      mov ecx, dword ptr [0xad4a4c]
+ 00704ba1  3b c1                  cmp eax, ecx
+ 00704ba3  7c 19                  jl 0x704bbe
+ 00704ba5  3b 05 48 4a ad 00      cmp eax, dword ptr [0xad4a48]
+ 00704bab  7f 11                  jg 0x704bbe
+ 00704bad  8b d0                  mov edx, eax
+ 00704baf  2b d1                  sub edx, ecx
+ 00704bb1  8b 0d 5c 4a ad 00      mov ecx, dword ptr [0xad4a5c]
+ 00704bb7  8b 0c 91               mov ecx, dword ptr [ecx+edx*4]
+ 00704bba  85 c9                  test ecx, ecx
+ 00704bbc  75 1a                  jne 0x704bd8
+ 00704bbe  50                     push eax
+>00704bbf  68 cc 2f a3 00         push 0xa32fcc
+ 00704bc4  6a 02                  push 0x2
+ 00704bc6  6a 01                  push 0x1
+ 00704bc8  e8 73 04 db ff         call 0x4b5040
+ 00704bcd  83 c4 10               add esp, 0x10
+ 00704bd0  5f                     pop edi
+ 00704bd1  33 c0                  xor eax, eax
+ 00704bd3  5e                     pop esi
+ 00704bd4  5d                     pop ebp
+ 00704bd5  c2 04 00               ret 4
+ 00704bd8  8b 79 38               mov edi, dword ptr [ecx+0x38]
+ 00704bdb  a1 28 4a ad 00         mov eax, [0xad4a28]
+ 00704be0  3b f8                  cmp edi, eax
+ 00704be2  7c 18                  jl 0x704bfc
+ 00704be4  3b 3d 24 4a ad 00      cmp edi, dword ptr [0xad4a24]
+ 00704bea  7f 10                  jg 0x704bfc
+ 00704bec  8b d7                  mov edx, edi
+ 00704bee  2b d0                  sub edx, eax
+ 00704bf0  a1 38 4a ad 00         mov eax, [0xad4a38]
+ 00704bf5  8b 34 90               mov esi, dword ptr [eax+edx*4]
+ 00704bf8  85 f6                  test esi, esi
+ 00704bfa  75 26                  jne 0x704c22
+ 00704bfc  8b 49 14               mov ecx, dword ptr [ecx+0x14]
+ 00704bff  51                     push ecx
+ 00704c00  b9 30 4a ad 00         mov ecx, 0xad4a30
+ 00704c05  e8 86 76 f5 ff         call 0x65c290
+ 00704c0a  8b f0                  mov esi, eax
+ 00704c0c  85 f6                  test esi, esi
+ 00704c0e  75 12                  jne 0x704c22
+ 00704c10  57                     push edi
+ 00704c11  68 b0 2f a3 00         push 0xa32fb0
+ 00704c16  6a 02                  push 0x2
+ 00704c18  6a 01                  push 0x1
+ 00704c1a  e8 21 04 db ff         call 0x4b5040
+ 00704c1f  83 c4 10               add esp, 0x10
+ 00704c22  5f                     pop edi
+ 00704c23  8b c6                  mov eax, esi
+ 00704c25  5e                     pop esi
+ 00704c26  5d                     pop ebp
+ 00704c27  c2 04 00               ret 4
+ 00704c2a  cc                     int3
+ 00704c2b  cc                     int3
+ 00704c2c  cc                     int3
+ 00704c2d  cc                     int3
+ 00704c2e  cc                     int3

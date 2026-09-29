@@ -1,0 +1,125 @@
+Shaders\ entries: 597
+shaders\effects\mapobj.wfx
+shaders\effects\mapobju.wfx
+shaders\effects\model2.wfx
+shaders\effects\particle.wfx
+shaders\effects\shadowmap.wfx
+shaders\pixel\arbfp1
+shaders\pixel\nvfp2
+shaders\pixel\nvrc
+shaders\pixel\nvts
+shaders\pixel\ps_1_1
+shaders\pixel\ps_1_4
+shaders\pixel\ps_2_0
+shaders\pixel\ps_3_0
+shaders\vertex\arbvp1
+shaders\vertex\arbvp1_cg12
+shaders\vertex\nvvp3
+shaders\vertex\vs_1_1
+shaders\vertex\vs_2_0
+shaders\vertex\vs_3_0
+WFX shaders\effects\mapobj.wfx
+WFX shaders\effects\mapobju.wfx
+WFX shaders\effects\model2.wfx
+WFX shaders\effects\particle.wfx
+WFX shaders\effects\shadowmap.wfx
+MATCH shaders\pixel\arbfp1\psliquidmagma.bls
+MATCH shaders\pixel\arbfp1\psliquidprocwater.bls
+MATCH shaders\pixel\arbfp1\psliquidprocwater_editor.bls
+MATCH shaders\pixel\arbfp1\psliquidwater.bls
+MATCH shaders\pixel\arbfp1\psliquidwaternospec.bls
+MATCH shaders\pixel\arbfp1\terrain0.bls
+MATCH shaders\pixel\arbfp1\terrain0_env.bls
+MATCH shaders\pixel\arbfp1\terrain1.bls
+MATCH shaders\pixel\arbfp1\terrain2.bls
+MATCH shaders\pixel\arbfp1\terrain2_pcf.bls
+MATCH shaders\pixel\arbfp1\terrain3.bls
+MATCH shaders\pixel\arbfp1\terrain3_pcf.bls
+MATCH shaders\pixel\arbfp1\terrainsm.bls
+MATCH shaders\pixel\arbfp1\waterripples.bls
+MATCH shaders\pixel\nvfp2\psliquidmagma.bls
+MATCH shaders\pixel\nvfp2\psliquidprocwater.bls
+MATCH shaders\pixel\nvfp2\psliquidprocwater_editor.bls
+MATCH shaders\pixel\nvfp2\psliquidwater.bls
+MATCH shaders\pixel\nvfp2\psliquidwaternospec.bls
+MATCH shaders\pixel\nvfp2\terrain0.bls
+MATCH shaders\pixel\nvfp2\terrain0_env.bls
+MATCH shaders\pixel\nvfp2\terrain1.bls
+MATCH shaders\pixel\nvfp2\terrain2.bls
+MATCH shaders\pixel\nvfp2\terrain2_pcf.bls
+MATCH shaders\pixel\nvfp2\terrain3.bls
+MATCH shaders\pixel\nvfp2\terrain3_pcf.bls
+MATCH shaders\pixel\nvfp2\terrainsm.bls
+MATCH shaders\pixel\nvfp2\waterripples.bls
+MATCH shaders\pixel\nvts\psliquidmagma.bls
+MATCH shaders\pixel\nvts\psliquidwater.bls
+MATCH shaders\pixel\nvts\psliquidwaternospec.bls
+MATCH shaders\pixel\nvts\terrain0.bls
+MATCH shaders\pixel\nvts\terrain0_env.bls
+MATCH shaders\pixel\nvts\terrain1.bls
+MATCH shaders\pixel\nvts\terrain1w.bls
+MATCH shaders\pixel\nvts\waterripples.bls
+MATCH shaders\pixel\ps_1_1\psliquidmagma.bls
+MATCH shaders\pixel\ps_1_1\psliquidwater.bls
+MATCH shaders\pixel\ps_1_1\psliquidwaternospec.bls
+MATCH shaders\pixel\ps_1_1\terrain0.bls
+MATCH shaders\pixel\ps_1_1\terrain0_env.bls
+MATCH shaders\pixel\ps_1_1\terrain1.bls
+MATCH shaders\pixel\ps_1_1\terrain1w.bls
+MATCH shaders\pixel\ps_1_1\waterripples.bls
+MATCH shaders\pixel\ps_1_4\psliquidmagma.bls
+MATCH shaders\pixel\ps_1_4\psliquidwater.bls
+MATCH shaders\pixel\ps_1_4\psliquidwaternospec.bls
+MATCH shaders\pixel\ps_1_4\terrain1.bls
+MATCH shaders\pixel\ps_1_4\terrain1w_1.bls
+MATCH shaders\pixel\ps_1_4\terrain1w_2.bls
+MATCH shaders\pixel\ps_1_4\terrain1w_3.bls
+MATCH shaders\pixel\ps_1_4\terrain1w_4.bls
+MATCH shaders\pixel\ps_2_0\psliquidmagma.bls
+MATCH shaders\pixel\ps_2_0\psliquidprocwater.bls
+MATCH shaders\pixel\ps_2_0\psliquidprocwater_editor.bls
+MATCH shaders\pixel\ps_2_0\psliquidwater.bls
+MATCH shaders\pixel\ps_2_0\psliquidwaternospec.bls
+MATCH shaders\pixel\ps_2_0\terrain0.bls
+MATCH shaders\pixel\ps_2_0\terrain0_env.bls
+MATCH shaders\pixel\ps_2_0\terrain1.bls
+MATCH shaders\pixel\ps_2_0\terrain2.bls
+MATCH shaders\pixel\ps_2_0\terrain2_pcf.bls
+MATCH shaders\pixel\ps_2_0\terrainsm.bls
+MATCH shaders\pixel\ps_2_0\waterripples.bls
+MATCH shaders\pixel\ps_3_0\psliquidmagma.bls
+MATCH shaders\pixel\ps_3_0\psliquidprocwater.bls
+MATCH shaders\pixel\ps_3_0\psliquidprocwater_editor.bls
+MATCH shaders\pixel\ps_3_0\psliquidwater.bls
+MATCH shaders\pixel\ps_3_0\psliquidwaternospec.bls
+MATCH shaders\pixel\ps_3_0\terrain0.bls
+MATCH shaders\pixel\ps_3_0\terrain0_env.bls
+MATCH shaders\pixel\ps_3_0\terrain1.bls
+MATCH shaders\pixel\ps_3_0\terrain2.bls
+MATCH shaders\pixel\ps_3_0\terrain2_pcf.bls
+MATCH shaders\pixel\ps_3_0\terrain3.bls
+MATCH shaders\pixel\ps_3_0\terrain3_pcf.bls
+MATCH shaders\pixel\ps_3_0\terrainsm.bls
+MATCH shaders\pixel\ps_3_0\waterripples.bls
+MATCH shaders\vertex\arbvp1\terrain.bls
+MATCH shaders\vertex\arbvp1\vsliquidmagma.bls
+MATCH shaders\vertex\arbvp1\vsliquidprocwater.bls
+MATCH shaders\vertex\arbvp1\vsliquidprocwater_editor.bls
+MATCH shaders\vertex\arbvp1\vsliquidwater.bls
+MATCH shaders\vertex\arbvp1\vsliquidwaternospec.bls
+MATCH shaders\vertex\arbvp1\waterripples.bls
+MATCH shaders\vertex\arbvp1_cg12\terrain.bls
+MATCH shaders\vertex\arbvp1_cg12\vsliquidmagma.bls
+MATCH shaders\vertex\arbvp1_cg12\vsliquidprocwater.bls
+MATCH shaders\vertex\arbvp1_cg12\vsliquidprocwater_editor.bls
+MATCH shaders\vertex\arbvp1_cg12\vsliquidwater.bls
+MATCH shaders\vertex\arbvp1_cg12\vsliquidwaternospec.bls
+MATCH shaders\vertex\arbvp1_cg12\waterripples.bls
+MATCH shaders\vertex\nvvp3\terrain.bls
+MATCH shaders\vertex\nvvp3\vsliquidmagma.bls
+MATCH shaders\vertex\nvvp3\vsliquidprocwater.bls
+MATCH shaders\vertex\nvvp3\vsliquidprocwater_editor.bls
+MATCH shaders\vertex\nvvp3\vsliquidwater.bls
+MATCH shaders\vertex\nvvp3\vsliquidwaternospec.bls
+MATCH shaders\vertex\nvvp3\waterripples.bls
+MATCH shaders\vertex\vs_1_1\te

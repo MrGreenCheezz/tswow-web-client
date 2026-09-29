@@ -1,0 +1,29 @@
+DurabilityCosts { records: 300, fields: 30, recordSize: 120, strings: 1, bytes: 36021 }
+DurabilityQuality { records: 16, fields: 2, recordSize: 8, strings: 1, bytes: 149 }
+costs ids: min=1 max=300 distinct=300
+quality id=1 data=1
+quality id=2 data=0.6000000238418579
+quality id=3 data=1
+quality id=4 data=0.800000011920929
+quality id=5 data=1
+quality id=6 data=1
+quality id=7 data=1.2000000476837158
+quality id=8 data=1.25
+quality id=9 data=1.440000057220459
+quality id=10 data=2.5
+quality id=11 data=1.7280000448226929
+quality id=12 data=3
+quality id=13 data=0
+quality id=14 data=0
+quality id=15 data=1.2000000476837158
+quality id=16 data=1.25
+ilvl 1: {"weapon":[1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1],"armor":[0,1,1,1,1,0,1,0]}
+ilvl 60: {"weapon":[59,88,59,59,59,88,88,59,88,0,88,59,88,59,59,44,6,88,88,44,15],"armor":[0,55,55,55,55,0,63,0]}
+ilvl 100: {"weapon":[139,208,139,139,139,208,208,139,208,0,208,139,208,139,139,104,14,208,208,104,26],"armor":[0,135,135,135,135,0,143,0]}
+ilvl 200: {"weapon":[339,508,339,339,339,508,508,339,508,0,508,339,508,339,339,304,34,508,508,304,76],"armor":[0,335,335,335,335,0,343,0]}
+ilvl 264: {"weapon":[467,700,467,467,467,700,700,467,700,0,700,467,700,467,467,432,47,700,700,432,108],"armor":[0,463,463,463,463,0,471,0]}
+ilvl 284: {"weapon":[507,760,507,507,507,760,760,507,760,0,760,507,760,507,507,472,51,760,760,472,118],"armor":[0,503,503,503,503,0,511,0]}
+example plate epic ilvl 200 lost 100: {"mult":335,"data":2.5,"cost":83750}
+example 1H sword rare ilvl 60 lost 50: {"mult":59,"data":1.25,"cost":3688}
+example cloth common ilvl 1 lost 1: {"mult":1,"data":0.800000011920929,"cost":1}
+discount honored 0.9 on the epic plate example: {"mult":335,"data":2.5,"cost":75375}
