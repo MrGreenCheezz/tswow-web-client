@@ -35,6 +35,8 @@ export const QUEST_STATE_COMPLETE = 0x0001;
 export const QUEST_STATE_FAIL = 0x0002;
 
 export interface QuestObjective {
+  /** Position in the core's fixed four-slot objective array and the player's counter fields. */
+  slot: number;
   /** Creature entry, or a gameobject entry with the top bit set — the core sends `id | 0x80000000`. */
   entry: number;
   count: number;
@@ -45,6 +47,8 @@ export interface QuestObjective {
 }
 
 export interface QuestItemObjective {
+  /** Position in the core's fixed six-slot required-item array. */
+  slot: number;
   itemId: number;
   count: number;
 }
@@ -186,13 +190,13 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
     const itemDrop = reader.u32();
     reader.u32();
     // The client is told a gameobject by having the top bit set on the entry.
-    objectives.push({ entry: raw & 0x7fff_ffff, gameObject: (raw & 0x8000_0000) !== 0, count, itemDrop, text: "" });
+    objectives.push({ slot: index, entry: raw & 0x7fff_ffff, gameObject: (raw & 0x8000_0000) !== 0, count, itemDrop, text: "" });
   }
   const itemObjectives: QuestItemObjective[] = [];
   for (let index = 0; index < QUEST_ITEM_OBJECTIVES; index++) {
     const itemId = reader.u32();
     const count = reader.u32();
-    if (itemId > 0) itemObjectives.push({ itemId, count });
+    if (itemId > 0) itemObjectives.push({ slot: index, itemId, count });
   }
   for (let index = 0; index < QUEST_OBJECTIVES; index++) {
     const text = reader.cString();
@@ -233,6 +237,18 @@ export function parseQuestGiverStatusMultiple(payload: Uint8Array): QuestGiverSt
   for (let index = 0; index < count; index++) statuses.push({ guid: reader.u64(), status: reader.u8() });
   reader.assertFinished();
   return statuses;
+}
+
+/**
+ * `Player::SendQuestFailed` writes the quest ID first and then an `InventoryResult` reason.
+ * `SMSG_QUESTGIVER_QUEST_INVALID` has a different one-word layout.
+ */
+export function parseQuestGiverFailed(payload: Uint8Array): { questId: number; reason: number } {
+  const reader = new PacketReader(payload);
+  const questId = reader.u32();
+  const reason = reader.u32();
+  reader.assertFinished();
+  return { questId, reason };
 }
 
 export interface QuestKillUpdate {
@@ -382,6 +398,11 @@ export function buildCompletedQuestsQuery(): Uint8Array {
   return new PacketWriter().toUint8Array();
 }
 
+/** `CMSG_PUSH_QUEST_TO_PARTY`: shares a quest from the log with the party. */
+export function buildPushQuestToParty(questId: number): Uint8Array {
+  return new PacketWriter().u32(questId).toUint8Array();
+}
+
 /** `CMSG_QUEST_CONFIRM_ACCEPT`: yes to a quest a party member shared. */
 export function buildQuestConfirmAccept(questId: number): Uint8Array {
   return new PacketWriter().u32(questId).toUint8Array();
@@ -392,9 +413,12 @@ export function buildAbandonQuest(slot: number): Uint8Array {
   return new PacketWriter().u8(slot).toUint8Array();
 }
 
-/** `MSG_QUEST_PUSH_RESULT` going the other way: this client's answer to a shared quest. */
-export function buildQuestPushResult(guid: bigint, result: number): Uint8Array {
-  return new PacketWriter().u64(guid).u8(result).toUint8Array();
+/** `QuestShareMessages` in the active core's QuestDef.h. */
+export const QUEST_PARTY_MSG_DECLINE_QUEST = 3;
+
+/** The client reply includes questId; the server notification on this same MSG opcode does not. */
+export function buildQuestPushResult(guid: bigint, questId: number, result: number): Uint8Array {
+  return new PacketWriter().u64(guid).u32(questId).u8(result).toUint8Array();
 }
 
 /**
@@ -466,11 +490,12 @@ export function buildQuestLogView(
     const template = templates.get(entry.questId);
     const objectives: QuestLogEntryView["objectives"] = [];
     template?.objectives.forEach((objective, index) => {
-      const have = entry.counters[index] ?? 0;
+      const slot = objective.slot ?? index;
+      const have = entry.counters[slot] ?? 0;
       objectives.push({
         kind: objective.gameObject ? "gameObject" : "creature",
         id: objective.entry,
-        poiIndex: index,
+        poiIndex: slot,
         text: objective.text,
         have, need: objective.count, done: have >= objective.count,
       });
@@ -484,7 +509,7 @@ export function buildQuestLogView(
         kind: "item",
         id: item.itemId,
         // The wire reserves four NPC/GO positions even when fewer are populated.
-        poiIndex: QUEST_OBJECTIVES + index,
+        poiIndex: QUEST_OBJECTIVES + (item.slot ?? index),
         text: "",
         have: carriedItemCounts ? have ?? 0 : Number.NaN,
         need: item.count,

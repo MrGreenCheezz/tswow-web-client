@@ -1,16 +1,29 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import { TARGET_FLAG_DEST_LOCATION } from "./SpellProtocol.js";
 
 // Layouts follow the active TrinityCore source: ItemHandler.cpp (`HandleSwapInvItemOpcode`,
 // `HandleSwapItem`, `HandleAutoEquipItemOpcode`, `HandleAutoStoreBagItemOpcode`,
-// `HandleSplitItemOpcode`, `HandleDestroyItemOpcode`), SpellHandler.cpp `HandleUseItemOpcode`,
-// and Player.cpp `SendEquipError` / `SendNewItem`.
+// `HandleSplitItemOpcode`, `HandleDestroyItemOpcode`, `HandleSetAmmoOpcode`), SpellHandler.cpp
+// `HandleUseItemOpcode`, and Player.cpp `SendEquipError` / `SendNewItem`.
 //
 // Slots are addressed the way the handlers expect: bag 255 is the player's own inventory, where
 // equipment occupies 0..18 and the backpack 23..38; a bag container is addressed by its own
 // inventory slot, 19..22, and its contents are numbered from zero.
 
 export const INVENTORY_SLOT_BAG_0 = 255;
+
+/** Player::ApplyEquipCooldown adds exactly 30 seconds before SMSG_ITEM_COOLDOWN. */
+export const ITEM_EQUIP_COOLDOWN_MS = 30_000;
+
+/** `ItemTemplate.h`: an entry containing loot or an instance holding a wrapped gift. */
+export const ITEM_FLAG_HAS_LOOT = 0x0000_0004;
+export const ITEM_FIELD_FLAG_WRAPPED = 0x0000_0008;
+
+export function itemOpensForLoot(instanceFlags: number | undefined, templateFlags: number | undefined): boolean {
+  return ((instanceFlags ?? 0) & ITEM_FIELD_FLAG_WRAPPED) !== 0
+    || ((templateFlags ?? 0) & ITEM_FLAG_HAS_LOOT) !== 0;
+}
 
 /** ItemHandler::HandleSocketOpcode reads four full GUIDs; zero preserves an existing socket. */
 export function buildSocketGems(itemGuid: bigint, gems: readonly [bigint, bigint, bigint]): Uint8Array {
@@ -109,20 +122,53 @@ export function buildDestroyItem(bag: number, slot: number, count = 0): Uint8Arr
   return new PacketWriter().u8(bag).u8(slot).u8(count).u8(0).u8(0).u8(0).toUint8Array();
 }
 
+/** `SpellHandler.cpp::HandleOpenItemOpcode` reads only bagIndex and slot. */
+export function buildOpenItem(bag: number, slot: number): Uint8Array {
+  return new PacketWriter().u8(bag).u8(slot).toUint8Array();
+}
+
+/**
+ * `CMSG_SET_AMMO`: `HandleSetAmmoOpcode` (ItemHandler.cpp:814-839) reads one uint32 item entry — an
+ * entry, not a position, because the ammo slot names what the ranged weapon fires and the stacks
+ * stay where they are. Zero is `RemoveAmmo`; any other entry must be carried (`GetItemCount`, else
+ * EQUIP_ERR_ITEM_NOT_FOUND) and pass `Player::CanUseAmmo` — INVTYPE_AMMO only, else
+ * EQUIP_ERR_ONLY_AMMO_CAN_GO_HERE — before `Player::SetAmmo` writes PLAYER_AMMO_ID.
+ */
+export function buildSetAmmo(entry: number): Uint8Array {
+  return new PacketWriter().u32(entry).toUint8Array();
+}
+
 /**
  * `CMSG_USE_ITEM`. The trailing spell cast targets are written as a bare "no target" mask, which
  * covers self-cast consumables; anything needing a real target is separate work.
+ *
+ * With a `destination` the mask names `TARGET_FLAG_DEST_LOCATION` and carries the packed
+ * transport guid (zero: world coordinates) plus the three floats — the same tail
+ * `buildCastSpell` writes, because the core reads both with `SpellCastTargets::Read`. That is
+ * what an item whose own spell needs a ground point (bombs, traps, quest targeting items)
+ * sends; without it the realm resolves the point at the caster's feet or refuses the use.
+ *
+ * `glyphIndex` is the u32 after the item guid: the zero-based socket a glyph item is inscribed
+ * into (SpellHandler.cpp HandleUseItemOpcode → `Spell::m_glyphIndex` → EffectApplyGlyph). Every
+ * other item sends zero there, as before.
  */
-export function buildUseItem(bag: number, slot: number, castCount: number, spellId: number, itemGuid: bigint): Uint8Array {
-  return new PacketWriter()
+export function buildUseItem(bag: number, slot: number, castCount: number, spellId: number, itemGuid: bigint,
+  destination?: { x: number; y: number; z: number }, glyphIndex = 0): Uint8Array {
+  const writer = new PacketWriter()
     .u8(bag)
     .u8(slot)
     .u8(castCount)
     .u32(spellId)
     .u64(itemGuid)
-    .u32(0)
-    .u8(0)
-    .u32(0)
+    .u32(glyphIndex >>> 0)
+    .u8(0);
+  if (destination === undefined) return writer.u32(0).toUint8Array();
+  return writer
+    .u32(TARGET_FLAG_DEST_LOCATION)
+    .packedGuid(0n)
+    .f32(destination.x)
+    .f32(destination.y)
+    .f32(destination.z)
     .toUint8Array();
 }
 
@@ -173,7 +219,7 @@ const EQUIP_ERRORS: Record<number, string> = {
   88: "Нужен талант",
 };
 
-export function equipErrorText(failure: EquipFailure): string {
+export function equipErrorText(failure: Pick<EquipFailure, "result" | "detail">): string {
   const base = EQUIP_ERRORS[failure.result] ?? `Действие отклонено (код ${failure.result})`;
   if ((failure.result === 1 || failure.result === 87) && failure.detail !== undefined) {
     return `${base}: нужен ${failure.detail}`;

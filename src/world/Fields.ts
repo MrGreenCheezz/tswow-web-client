@@ -243,6 +243,17 @@ export const UNIT_VIS_FLAG_CREEP = 0x02;
 export const PLAYER_FLAGS_GHOST = 0x0000_0010;
 
 /**
+ * The neighbours of the ghost bit in the same enum: `PLAYER_FLAGS_AFK` (`Player.h:355`) and
+ * `PLAYER_FLAGS_DND` (`:356`) — 0x1 before them is `PLAYER_FLAGS_GROUP_LEADER`, which is why AFK is
+ * not the low bit — and `PLAYER_FLAGS_RESTING` (`:359`), the bit `Player::SetRestFlag` sets in an
+ * inn or a capital. The stock interface reads all three of the player's own object (`IsResting`,
+ * `UnitIsAFK`, `UnitIsDND`) and of any player in view.
+ */
+export const PLAYER_FLAGS_AFK = 0x0000_0002;
+export const PLAYER_FLAGS_DND = 0x0000_0004;
+export const PLAYER_FLAGS_RESTING = 0x0000_0020;
+
+/**
  * How opaque a unit is drawn, and whether it moves like something that is sneaking.
  *
  * Two separate answers on purpose. An invisibility potion makes a character see-through and does
@@ -416,6 +427,13 @@ export const player = {
   experience: (object: WorldObjectState) => readField(object, "PLAYER_XP"),
   nextLevelExperience: (object: WorldObjectState) => readField(object, "PLAYER_NEXT_LEVEL_XP"),
   money: (object: WorldObjectState) => readField(object, "PLAYER_FIELD_COINAGE"),
+  /** `PLAYER_FLAGS`; undefined for a creature, whose block never carries the slot. */
+  flags: (object: WorldObjectState) => readField(object, "PLAYER_FLAGS"),
+  /**
+   * `PLAYER_REST_STATE_EXPERIENCE`: the rested bonus still to be earned, in experience points —
+   * `GetXPExhaustion`'s number, and the whole of `GetRestState`'s «Rested» answer.
+   */
+  restedExperience: (object: WorldObjectState) => readField(object, "PLAYER_REST_STATE_EXPERIENCE"),
 
   /** One quest log slot, or undefined when the slot is empty. */
   questLog(object: WorldObjectState, slot: number): QuestLogEntry | undefined {

@@ -174,15 +174,25 @@ export function buildCastSpell(
   spellId: number,
   castCount: number,
   destination?: { x: number; y: number; z: number },
+  options?: { unitTarget?: bigint; transportGuid?: bigint },
 ): Uint8Array {
+  const unitTarget = options?.unitTarget;
+  // A nonzero transport GUID changes the meaning of destination's floats to transport-local
+  // offsets in SpellCastTargets::Read. Callers holding a world point must leave this zero.
+  const transportGuid = options?.transportGuid ?? 0n;
+  const mask = (destination === undefined ? TARGET_FLAG_NONE : TARGET_FLAG_DEST_LOCATION)
+    | (unitTarget === undefined || unitTarget === 0n ? TARGET_FLAG_NONE : TARGET_FLAG_UNIT);
   const writer = new PacketWriter()
     .u8(castCount)
     .u32(spellId)
     .u8(0)
-    .u32(destination === undefined ? TARGET_FLAG_NONE : TARGET_FLAG_DEST_LOCATION);
+    .u32(mask);
+  if (mask === TARGET_FLAG_NONE) return writer.toUint8Array();
+  // Wire order in `SpellCastTargets::Read`: object guid first, then source/dest locations.
+  if (unitTarget !== undefined && unitTarget !== 0n) writer.packedGuid(unitTarget);
   if (destination === undefined) return writer.toUint8Array();
   return writer
-    .packedGuid(0n)
+    .packedGuid(transportGuid)
     .f32(destination.x)
     .f32(destination.y)
     .f32(destination.z)
@@ -229,6 +239,12 @@ export function buildCastSpellOnGameObject(spellId: number, castCount: number, g
 export function buildCastSpellOnItem(spellId: number, castCount: number, guid: bigint): Uint8Array {
   return new PacketWriter().u8(castCount).u32(spellId).u8(0)
     .u32(TARGET_FLAG_ITEM).packedGuid(guid).toUint8Array();
+}
+
+/** Direct unit cast (heals, duel challenge, etc.): names the unit, no destination. */
+export function buildCastSpellOnUnit(spellId: number, castCount: number, guid: bigint): Uint8Array {
+  return new PacketWriter().u8(castCount).u32(spellId).u8(0)
+    .u32(TARGET_FLAG_UNIT).packedGuid(guid).toUint8Array();
 }
 
 /** A valid packet has a four-byte target mask; older fixtures may omit the whole block. */

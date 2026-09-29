@@ -2,7 +2,7 @@
 // under tools/dbd (CC BY-SA 4.0 — see tools/dbd/README.md). Do not edit by hand;
 // run `npm run dbc:generate`. `npm run build` fails if this file has drifted.
 //
-// Build 3.3.5.12340, 77 tables.
+// Build 3.3.5.12340, 79 tables.
 
 /** How a field is stored. Every WDBC slot is a word unless the definition says narrower. */
 export type DbcFieldType = "int" | "float" | "string" | "locstring";
@@ -347,6 +347,21 @@ export const DBC_LAYOUTS = {
       "CreatureSoundDataIDPet": { index: 37, byteOffset: 148, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
+  DungeonMap: {
+    fieldCount: 8,
+    recordSize: 32,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MapID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "FloorIndex": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MinX": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MaxX": { index: 4, byteOffset: 16, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MinY": { index: 5, byteOffset: 20, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MaxY": { index: 6, byteOffset: 24, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "ParentWorldMapID": { index: 7, byteOffset: 28, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
   Emotes: {
     fieldCount: 7,
     recordSize: 28,
@@ -688,6 +703,17 @@ export const DBC_LAYOUTS = {
       "Color": { index: 21, byteOffset: 84, byteSize: 4, arraySize: 2, stride: 1, type: "int", unsigned: false },
       "Float": { index: 23, byteOffset: 92, byteSize: 4, arraySize: 18, stride: 1, type: "float", unsigned: false },
       "Int": { index: 41, byteOffset: 164, byteSize: 4, arraySize: 4, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  LoadingScreens: {
+    fieldCount: 4,
+    recordSize: 16,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Name": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
+      "FileName": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
+      "HasWideScreen": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
   Lock: {

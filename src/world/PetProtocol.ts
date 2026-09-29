@@ -172,6 +172,26 @@ export function isVehicleActionBar(bar: readonly PetActionButton[]): boolean {
   return bar.some((button) => button.packed !== 0 && button.type >= 8 && button.type <= 15);
 }
 
+/**
+ * Whose bar an open `SMSG_PET_SPELLS` is. `vehicle` by its slot-index states (above); `possess`
+ * when `SMSG_CLIENT_CONTROL_UPDATE` handed the player the very unit the bar names and it is not
+ * their own character (`Player::PossessSpellInitialize`); `pet` otherwise — a pet or a charmed
+ * creature, whose bar keeps the command and reaction states. Undefined when there is no bar.
+ */
+export type PetBarKind = "pet" | "vehicle" | "possess";
+
+export function petBarKind(
+  spells: Pick<PetSpells, "guid" | "closed" | "bar"> | undefined,
+  controlledGuid: bigint | undefined,
+  selfGuid: bigint | undefined,
+): PetBarKind | undefined {
+  if (!spells || spells.closed || spells.guid === 0n) return undefined;
+  if (Array.isArray(spells.bar) && isVehicleActionBar(spells.bar)) return "vehicle";
+  if (controlledGuid !== undefined && controlledGuid !== 0n && selfGuid !== undefined
+    && controlledGuid !== selfGuid && controlledGuid === spells.guid) return "possess";
+  return "pet";
+}
+
 /** The spell the pet just learned. No guid: it belongs to whichever pet is out. */
 export function parsePetLearnedSpell(payload: Uint8Array): number {
   const reader = new PacketReader(payload);

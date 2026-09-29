@@ -324,6 +324,15 @@ export function buildSetRaidTarget(icon: number, guid: bigint): Uint8Array {
   return new PacketWriter().u8(icon).u64(guid).toUint8Array();
 }
 
+/**
+ * `CMSG_OPT_OUT_OF_LOOT`: one word, 1 to pass on every group roll and 0 to take part again
+ * (`HandleOptOutOfLootOpcode`, GroupHandler.cpp:1093). The server keeps the flag on the player and
+ * answers nothing.
+ */
+export function buildOptOutOfLoot(passOnLoot: boolean): Uint8Array {
+  return new PacketWriter().u32(passOnLoot ? 1 : 0).toUint8Array();
+}
+
 /** The client sends the two coordinates; the server prepends the pinger's guid before relaying. */
 export function buildMinimapPing(x: number, y: number): Uint8Array {
   return new PacketWriter().f32(x).f32(y).toUint8Array();

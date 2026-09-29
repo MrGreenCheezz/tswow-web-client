@@ -20,6 +20,10 @@ export interface SplinePoint {
 export interface MonsterMove {
   guid: bigint;
   transportGuid: bigint | undefined;
+  /** Signed seat index in SMSG_MONSTER_MOVE_TRANSPORT, alongside the transport GUID. */
+  transportSeat: number | undefined;
+  /** The server's spline id, echoed by CMSG_MOVE_SPLINE_DONE on arrival. */
+  splineId: number;
   points: SplinePoint[];
   duration: number;
   cyclic: boolean;
@@ -32,13 +36,14 @@ export function parseMonsterMove(payload: Uint8Array, transported = false): Mons
   const reader = new PacketReader(payload);
   const guid = reader.packedGuid();
   let transportGuid: bigint | undefined;
+  let transportSeat: number | undefined;
   if (transported) {
     transportGuid = reader.packedGuid();
-    reader.u8();
+    transportSeat = reader.i8();
   }
   reader.u8();
   const start = point(reader);
-  reader.u32();
+  const splineId = reader.u32();
   const moveType = reader.u8();
   let finalOrientation: number | undefined;
   if (moveType === MOVE_FACING_TARGET) reader.u64();
@@ -46,7 +51,7 @@ export function parseMonsterMove(payload: Uint8Array, transported = false): Mons
   else if (moveType === MOVE_FACING_SPOT) point(reader);
   if (moveType === MOVE_STOP) {
     reader.assertFinished();
-    return { guid, transportGuid, points: [start], duration: 0, cyclic: false, finalOrientation };
+    return { guid, transportGuid, transportSeat, splineId, points: [start], duration: 0, cyclic: false, finalOrientation };
   }
 
   const flags = reader.u32();
@@ -82,7 +87,7 @@ export function parseMonsterMove(payload: Uint8Array, transported = false): Mons
   }
   reader.assertFinished();
   return {
-    guid, transportGuid, points, duration, cyclic: (flags & FLAG_CYCLIC) !== 0,
+    guid, transportGuid, transportSeat, splineId, points, duration, cyclic: (flags & FLAG_CYCLIC) !== 0,
     ...(flags & FLAG_FLYING ? { flying: true } : {}), finalOrientation,
   };
 }

@@ -149,6 +149,19 @@ export function parseTitleEarned(payload: Uint8Array): { maskId: number; earned:
   return title;
 }
 
+/**
+ * `CMSG_SET_TITLE`: the title's mask index as a signed word. -1 takes the title off; the core
+ * clears the field on that and on any mask the character has not earned (HandleSetTitleOpcode).
+ */
+export function buildSetTitle(index: number): Uint8Array {
+  return new PacketWriter().i32(index).toUint8Array();
+}
+
+/** `CMSG_UNLEARN_SKILL`: the SkillLine id; the core refuses anything but an unlearnable profession. */
+export function buildUnlearnSkill(skillId: number): Uint8Array {
+  return new PacketWriter().u32(skillId).toUint8Array();
+}
+
 /** `SMSG_EXPLORATION_EXPERIENCE`: a new area found, and what it was worth. */
 export function parseExplorationExperience(payload: Uint8Array): { areaId: number; experience: number } {
   const reader = new PacketReader(payload);
@@ -206,6 +219,17 @@ export function parseFactionVisible(payload: Uint8Array): number {
   return listId;
 }
 
+/**
+ * Declares war on a reputation list id, or makes peace (`CMSG_SET_FACTION_ATWAR`).
+ *
+ * The body is the handler's (`CharacterHandler.cpp:1055-1067`): a list id word and a flag byte.
+ * The server owns the verdict — peace-forced factions refuse — and answers with the faction's
+ * new state, so this sends and waits rather than flipping anything locally.
+ */
+export function buildSetFactionAtWar(listId: number, atWar: boolean): Uint8Array {
+  return new PacketWriter().u32(listId).u8(atWar ? 1 : 0).toUint8Array();
+}
+
 /** `SMSG_SET_FORCED_REACTIONS`: factions whose attitude is fixed regardless of standing. */
 export function parseForcedReactions(payload: Uint8Array): Array<{ factionId: number; rank: number }> {
   const reader = new PacketReader(payload);
@@ -234,24 +258,33 @@ export interface CriteriaUpdate {
   criteriaId: number;
   counter: bigint;
   playerGuid: bigint;
+  /** 0, or for a timed criterion 1 when it completed in time («keep the counter at 0 in client»). */
+  flags: number;
+  /** Packed server time (WowTime) of the progress. */
   date: number;
+  /** Seconds a timed criterion has run. */
   timeElapsed: number;
 }
 
 /**
- * Mirrors `AchievementMgr::SendCriteriaUpdate`. The counter is written with the packed-guid
- * encoding even though it is a number, which is the same reader either way.
+ * Mirrors `AchievementMgr::SendCriteriaUpdate`: id, the counter written with the packed-guid
+ * encoding even though it is a number (the same reader either way), the player, then four words —
+ * the timer flags, the date, the seconds elapsed and an unused zero.
  */
 export function parseCriteriaUpdate(payload: Uint8Array): CriteriaUpdate {
   const reader = new PacketReader(payload);
   const criteriaId = reader.u32();
   const counter = reader.packedGuid();
   const playerGuid = reader.packedGuid();
-  reader.u32();
-  reader.u32();
+  const flags = reader.u32();
   const date = reader.u32();
   const timeElapsed = reader.u32();
-  return { criteriaId, counter, playerGuid, date, timeElapsed };
+  return { criteriaId, counter, playerGuid, flags, date, timeElapsed };
+}
+
+/** `CMSG_QUERY_INSPECT_ACHIEVEMENTS` (WorldSession::HandleQueryInspectAchievements): a packed guid. */
+export function buildQueryInspectAchievements(guid: bigint): Uint8Array {
+  return new PacketWriter().packedGuid(guid).toUint8Array();
 }
 
 export interface AchievementData {
@@ -297,7 +330,7 @@ export function parseServerFirstAchievement(payload: Uint8Array): { name: string
 
 export interface TalentRank {
   talentId: number;
-  /** How far the talent is trained, 0 to 4. */
+  /** How far the talent is trained, one-based for UI; the packet sends 0 to 4. */
   rank: number;
 }
 
@@ -313,11 +346,22 @@ export interface TalentsInfo {
   specs: TalentSpec[];
 }
 
-/** Mirrors `Player::BuildPlayerTalentsInfoData`. Ranks are sent zero-based, one below what is shown. */
+/** Mirrors `Player::BuildPlayerTalentsInfoData` and the shorter `BuildPetTalentsInfoData`. */
 export function parseTalentsInfo(payload: Uint8Array): TalentsInfo {
   const reader = new PacketReader(payload);
   const pet = reader.u8() !== 0;
   const unspentPoints = reader.u32();
+  if (pet) {
+    // The pet packet has a single talent count directly after the points. It carries no
+    // specialisation index/count and no glyphs; treat its one tree as the active spec for the UI.
+    const talentCount = reader.u8();
+    const talents: TalentRank[] = [];
+    for (let talent = 0; talent < talentCount; talent++) {
+      talents.push({ talentId: reader.u32(), rank: reader.u8() + 1 });
+    }
+    reader.assertFinished();
+    return { pet, unspentPoints, activeSpec: 0, specs: [{ talents, glyphs: [] }] };
+  }
   const specCount = reader.u8();
   const activeSpec = reader.u8();
   if (specCount > 4) throw new RangeError(`Talents name ${specCount} specialisations`);

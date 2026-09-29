@@ -29,6 +29,16 @@ export const AUCTION_DURATION_LONG = 2880;
 /** Filter value meaning "any" for the uint32 fields of the search. */
 export const AUCTION_FILTER_ANY = 0xffffffff;
 
+/** `BuildListAuctionItems` returns at most 50 entries and interprets `listfrom` as an item offset. */
+const AUCTION_PAGE_SIZE = 50;
+
+/** Owner results arrive whole; clamp a local page after sales or cancellations shrink that list. */
+export function clampAuctionPage(entryCount: number, requestedPage: number): number {
+  const lastPage = Math.max(0, Math.ceil(entryCount / AUCTION_PAGE_SIZE) - 1);
+  const page = Number.isFinite(requestedPage) ? Math.max(0, Math.floor(requestedPage)) : 0;
+  return Math.min(page, lastPage);
+}
+
 export interface AuctionHello {
   auctioneerGuid: bigint;
   houseId: number;
@@ -92,6 +102,41 @@ export interface AuctionList {
   totalCount: number;
   /** Search cooldown the server asks the client to honour, in milliseconds. */
   searchDelay: number;
+}
+
+/** Client-side orderings of one result page. The server always answers in its own order. */
+export const AUCTION_SORT_PRICE_ASC = "price-asc";
+export const AUCTION_SORT_PRICE_DESC = "price-desc";
+export const AUCTION_SORT_TIME_LEFT = "time-left";
+export const AUCTION_SORT_BUYOUT_ASC = "buyout-asc";
+export type AuctionSort =
+  | typeof AUCTION_SORT_PRICE_ASC | typeof AUCTION_SORT_PRICE_DESC
+  | typeof AUCTION_SORT_TIME_LEFT | typeof AUCTION_SORT_BUYOUT_ASC;
+
+/** What a lot costs right now: the leading bid, or the opening price before the first one. */
+export function auctionPrice(entry: AuctionEntry): number {
+  return entry.bid > 0 ? entry.bid : entry.startBid;
+}
+
+/**
+ * Orders a copy of the result for display. Stable: equal lots keep the server's order, so
+ * re-sorting unchanged rows never shuffles them under the cursor. Search results are already
+ * server-paged; only the complete owner result supplies `page` for a local 50-lot slice.
+ */
+export function sortAuctionEntries(entries: readonly AuctionEntry[], sort: string, page?: number): AuctionEntry[] {
+  const ranked = entries.map((entry, index) => ({ entry, index }));
+  const keyOf = (entry: AuctionEntry): number => {
+    if (sort === AUCTION_SORT_TIME_LEFT) return entry.timeLeft;
+    if (sort === AUCTION_SORT_BUYOUT_ASC) return entry.buyout > 0 ? entry.buyout : Number.MAX_SAFE_INTEGER;
+    return auctionPrice(entry);
+  };
+  const direction = sort === AUCTION_SORT_PRICE_DESC ? -1 : 1;
+  ranked.sort((left, right) =>
+    (keyOf(left.entry) - keyOf(right.entry)) * direction || left.index - right.index);
+  const sorted = ranked.map(({ entry }) => entry);
+  if (page === undefined) return sorted;
+  const first = clampAuctionPage(sorted.length, page) * AUCTION_PAGE_SIZE;
+  return sorted.slice(first, first + AUCTION_PAGE_SIZE);
 }
 
 /**
@@ -187,7 +232,7 @@ export interface AuctionSearch {
 export function buildAuctionListItems(auctioneerGuid: bigint, search: AuctionSearch = {}): Uint8Array {
   return new PacketWriter()
     .u64(auctioneerGuid)
-    .u32(search.page ?? 0)
+    .u32((search.page ?? 0) * AUCTION_PAGE_SIZE)
     .cString(search.name ?? "")
     .u8(search.levelMin ?? 0)
     .u8(search.levelMax ?? 0)
@@ -201,8 +246,40 @@ export function buildAuctionListItems(auctioneerGuid: bigint, search: AuctionSea
     .toUint8Array();
 }
 
-export function buildAuctionListOwnerItems(auctioneerGuid: bigint, page = 0): Uint8Array {
-  return new PacketWriter().u64(auctioneerGuid).u32(page).toUint8Array();
+/** The core reads and ignores `listfrom`; it returns every owned lot in one response. */
+export function buildAuctionListOwnerItems(auctioneerGuid: bigint): Uint8Array {
+  return new PacketWriter().u64(auctioneerGuid).u32(0).toUint8Array();
+}
+
+/**
+ * Lists the auctions the player has bid on (`CMSG_AUCTION_LIST_BIDDER_ITEMS`).
+ *
+ * The layout is the handler's, not the obvious one (`AuctionHouseHandler.cpp:657-711`): the
+ * page word is read and ignored, then comes a count of auction ids the client believes it has
+ * been outbid on, then the ids themselves. The server re-sends fresh info for those and appends
+ * every auction with the player in its bidders set (`BuildListBidderItems`), so an empty id list
+ * still answers with the full bid list. The answer is `SMSG_AUCTION_BIDDER_LIST_RESULT`, which
+ * parses exactly like every other list result.
+ */
+export function buildAuctionListBidderItems(
+  auctioneerGuid: bigint, outbiddedAuctionIds: readonly number[] = [],
+): Uint8Array {
+  const writer = new PacketWriter().u64(auctioneerGuid).u32(0).u32(outbiddedAuctionIds.length);
+  for (const auctionId of outbiddedAuctionIds) writer.u32(auctionId);
+  return writer.toUint8Array();
+}
+
+/**
+ * Whether this bid row is still leading.
+ *
+ * `bidder` rides the wire as the current highest bidder's counter widened to 64 bits
+ * (`AuctionEntry::BuildAuctionInfo`, `AuctionHouseMgr.cpp:868`) — the same widening `owner`
+ * gets, whose comment already says only the low 32 bits mean anything. A player's own counter
+ * is the low 32 bits of their guid, so the comparison is made there and nowhere else.
+ */
+export function isLeadingBid(entry: Pick<AuctionEntry, "bid" | "bidderLow">, selfGuid: bigint): boolean {
+  if (entry.bid <= 0) return false;
+  return (entry.bidderLow & 0xffff_ffffn) === (selfGuid & 0xffff_ffffn);
 }
 
 export function buildAuctionPlaceBid(auctioneerGuid: bigint, auctionId: number, price: number): Uint8Array {

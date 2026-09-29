@@ -17,7 +17,7 @@ export interface ThreatEntry {
 export interface ThreatUpdate {
   /** The creature whose list this is. */
   guid: bigint;
-  /** Set only by `SMSG_HIGHEST_THREAT_UPDATE`: who just took the top of the list. */
+  /** Set only by `SMSG_HIGHEST_THREAT_UPDATE`: the creature's new victim, which need not have the largest raw threat. */
   highestGuid: bigint | undefined;
   entries: ThreatEntry[];
 }
@@ -66,11 +66,14 @@ export class ThreatTables {
 
   apply(update: ThreatUpdate): void {
     const existing = this.#tables.get(update.guid);
-    // A highest-threat packet carries the same list, so the newer one simply replaces it; keeping
-    // the previous highest when the new packet does not name one would show a stale tank.
+    // ThreatManager::UpdateVictim chooses SMSG_HIGHEST_THREAT_UPDATE only when its current victim
+    // changes. An ordinary list update can add or remove references without changing that victim,
+    // so the list count cannot be used to decide whether to forget it.
+    const previousVictim = existing?.highestGuid;
     this.#tables.set(update.guid, {
       ...update,
-      highestGuid: update.highestGuid ?? (update.entries.length === existing?.entries.length ? existing?.highestGuid : undefined),
+      highestGuid: update.highestGuid ?? (update.entries.some((entry) => entry.guid === previousVictim)
+        ? previousVictim : undefined),
     });
   }
 
@@ -91,6 +94,11 @@ export class ThreatTables {
 
   get(guid: bigint): ThreatUpdate | undefined {
     return this.#tables.get(guid);
+  }
+
+  /** Every creature's list, for the one-argument `UnitThreatSituation(unit)`: the unit's worst standing anywhere. */
+  tables(): IterableIterator<ThreatUpdate> {
+    return this.#tables.values();
   }
 
   /** What share of the creature's top threat one unit holds, 0 to 1, or undefined if unknown. */

@@ -97,6 +97,11 @@ export interface LfgUpdate {
   queued: boolean;
   dungeons: number[];
   comment: string;
+  /**
+   * `SMSG_LFG_UPDATE_PARTY` rather than `_PLAYER`: stock `GetLFGInfoServer` answers this as its
+   * first value (`inParty`). Optional so snapshots built before the field existed stay valid.
+   */
+  party?: boolean;
 }
 
 /**
@@ -109,7 +114,7 @@ export function parseLfgUpdate(payload: Uint8Array, party: boolean): LfgUpdate {
   const reader = new PacketReader(payload);
   const updateType = reader.u8();
   const joined = reader.u8() !== 0;
-  if (!joined || reader.remaining === 0) return { updateType, joined, queued: false, dungeons: [], comment: "" };
+  if (!joined || reader.remaining === 0) return { updateType, joined, queued: false, dungeons: [], comment: "", ...(party ? { party } : {}) };
   if (party) reader.u8(); // join
   const queued = reader.u8() !== 0;
   reader.u8(); // no partial clear
@@ -119,7 +124,7 @@ export function parseLfgUpdate(payload: Uint8Array, party: boolean): LfgUpdate {
   const dungeons: number[] = [];
   for (let index = 0; index < count; index++) dungeons.push(reader.u32());
   const comment = reader.remaining > 0 ? reader.cString() : "";
-  return { updateType, joined, queued, dungeons, comment };
+  return { updateType, joined, queued, dungeons, comment, ...(party ? { party } : {}) };
 }
 
 export interface LfgRoleChosen {
@@ -212,7 +217,8 @@ export function buildLfgProposalResult(proposalId: number, accept: boolean): Uin
 }
 
 export function buildLfgTeleport(toDungeon: boolean): Uint8Array {
-  return new PacketWriter().u8(toDungeon ? 1 : 0).toUint8Array();
+  // HandleLfgTeleportOpcode reads this bool as `out`: false enters, true exits.
+  return new PacketWriter().u8(toDungeon ? 0 : 1).toUint8Array();
 }
 
 // `LfgJoinResult` in LFGMgr.h. The list is sparse: 3 produces no client reaction at all.

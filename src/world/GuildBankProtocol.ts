@@ -379,6 +379,69 @@ export function buildGuildBankDepositItem(
     .toUint8Array();
 }
 
+/**
+ * Bank to one named bag slot, the stock cursor's drop (PickupContainerItem with a vault item held):
+ * the deposit's shape with `ToSlot` — the handler's `toChar` — set, so `SwapItemsWithInventory`
+ * moves towards the character and swaps with whatever that bag slot holds. A zero count moves the
+ * whole stack; any other splits that many off.
+ */
+export function buildGuildBankWithdrawItemTo(
+  bankerGuid: bigint, tabId: number, slotId: number, itemId: number,
+  bag: number, bagSlot: number, splitCount = 0,
+): Uint8Array {
+  return new PacketWriter()
+    .u64(bankerGuid)
+    .u8(0)
+    .u8(tabId).u8(slotId).u32(itemId)
+    .u8(0) // AutoStore off: the bag position below is the destination.
+    .u8(bag).u8(bagSlot)
+    .u8(1) // toChar = 1, i.e. out of the bank.
+    .i32(splitCount)
+    .toUint8Array();
+}
+
+/**
+ * `CMSG_GUILD_BANK_SWAP_ITEMS` with `BankOnly` set: one vault slot onto another, in the same tab or
+ * across tabs. `GuildBankSwapItems::Read` takes the destination first (BankTab, BankSlot, ItemID),
+ * then the source (BankTab1, BankSlot1, ItemID1), AutoStore and BankItemCount; the handler hands
+ * both positions and the count to `Guild::SwapItems`, which moves (or swaps) the whole stack for a
+ * zero count and splits otherwise. AutoStore is read and ignored on this branch.
+ */
+export function buildGuildBankMoveItem(
+  bankerGuid: bigint, fromTab: number, fromSlot: number, fromItemId: number,
+  toTab: number, toSlot: number, toItemId: number, splitCount = 0,
+): Uint8Array {
+  return new PacketWriter()
+    .u64(bankerGuid)
+    .u8(1) // BankOnly.
+    .u8(toTab).u8(toSlot).u32(toItemId)
+    .u8(fromTab).u8(fromSlot).u32(fromItemId)
+    .u8(0)
+    .i32(splitCount)
+    .toUint8Array();
+}
+
+/**
+ * `CMSG_SET_GUILD_BANK_TEXT`: a tab and its info text (at most 500 characters, no links —
+ * `GuildBankSetTabText`'s String<500, NoHyperlinks>). TrinityCore checks no rank right and answers
+ * by broadcasting MSG_QUERY_GUILD_BANK_TEXT to the guild.
+ */
+export function buildSetGuildBankText(tabId: number, text: string): Uint8Array {
+  return new PacketWriter().u8(tabId).cString(text).toUint8Array();
+}
+
+/**
+ * The bank's `GuildEvents` (Guild.h) inside SMSG_GUILD_EVENT. TrinityCore sends 15-18: a tab bought,
+ * a tab renamed (tab, name, icon), the new bank total as sixteen hex digits after any deposit or
+ * withdrawal, and the daily reset; 14 and 19 are declared but never sent by this core.
+ */
+export const GE_GUILDBANKBAGSLOTS_CHANGED = 14;
+export const GE_BANK_TAB_PURCHASED = 15;
+export const GE_BANK_TAB_UPDATED = 16;
+export const GE_BANK_MONEY_SET = 17;
+export const GE_BANK_TAB_AND_MONEY_UPDATED = 18;
+export const GE_BANK_TEXT_CHANGED = 19;
+
 export function buildTabardVendorActivate(guid: bigint): Uint8Array {
   return new PacketWriter().u64(guid).toUint8Array();
 }

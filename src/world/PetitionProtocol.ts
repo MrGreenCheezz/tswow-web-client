@@ -195,6 +195,24 @@ export function buildPetitionQuery(petitionGuid: bigint): Uint8Array {
     .toUint8Array();
 }
 
+/**
+ * Buys a charter from a petitioner (`CMSG_PETITION_BUY`).
+ *
+ * The body is the handler's read order (`PetitionsHandler.cpp:HandlePetitionBuyOpcode`): the
+ * vendor, three ignored words, the charter name, then a long run of ignored words and strings,
+ * and only at the end the offer index the `SMSG_PETITION_SHOWLIST` row carried (1 for a guild
+ * charter or 2v2, 2 for 3v3, 3 for 5v5). Every ignored word goes out as zero; the name is the
+ * one thing the server validates, against existing and reserved names.
+ */
+export function buildPetitionBuy(vendorGuid: bigint, name: string, clientIndex: number): Uint8Array {
+  const writer = new PacketWriter().u64(vendorGuid).u32(0).u64(0n).cString(name).cString("");
+  for (let index = 0; index < 7; index++) writer.u32(0);
+  writer.u16(0);
+  for (let index = 0; index < 3; index++) writer.u32(0);
+  for (let index = 0; index < 10; index++) writer.cString("");
+  return writer.u32(clientIndex).u32(0).toUint8Array();
+}
+
 export function buildPetitionShowList(vendorGuid: bigint): Uint8Array {
   return new PacketWriter().u64(vendorGuid).toUint8Array();
 }
@@ -206,6 +224,15 @@ export function buildPetitionShowSignatures(petitionGuid: bigint): Uint8Array {
 /** The trailing byte is read and never used. */
 export function buildPetitionSign(petitionGuid: bigint): Uint8Array {
   return new PacketWriter().u64(petitionGuid).u8(0).toUint8Array();
+}
+
+/**
+ * `CMSG_OFFER_PETITION` (HandleOfferPetitionOpcode, PetitionsHandler.cpp:515-523): a word the core
+ * reads and discards («this is not petition type!»), written as zero, then the charter and the
+ * player asked to sign it.
+ */
+export function buildOfferPetition(petitionGuid: bigint, playerGuid: bigint): Uint8Array {
+  return new PacketWriter().u32(0).u64(petitionGuid).u64(playerGuid).toUint8Array();
 }
 
 export function buildPetitionDecline(petitionGuid: bigint): Uint8Array {

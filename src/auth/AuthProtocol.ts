@@ -10,6 +10,7 @@ export const REALM_LIST = 0x10;
 export const AUTH_SECURITY_PIN = 0x01;
 export const AUTH_SECURITY_MATRIX = 0x02;
 export const AUTH_SECURITY_TOKEN = 0x04;
+export const REALM_FLAG_OFFLINE = 0x02;
 export const REALM_FLAG_SPECIFY_BUILD = 0x04;
 
 export class AuthProtocolError extends Error {
@@ -38,6 +39,11 @@ export interface RealmInfo {
   timezone: number;
   id: number;
   build: number | undefined;
+}
+
+/** The authserver marks stopped realms and incompatible builds as offline. */
+export function canSelectRealm(realm: Pick<RealmInfo, "locked" | "flags">): boolean {
+  return !realm.locked && (realm.flags & REALM_FLAG_OFFLINE) === 0;
 }
 
 function reversedAscii(value: string, includeNull: boolean): Uint8Array {
@@ -174,4 +180,3 @@ export function parseRealmList(packet: Uint8Array): RealmInfo[] {
   reader.assertFinished();
   return realms;
 }
-

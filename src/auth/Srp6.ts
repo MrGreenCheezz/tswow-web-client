@@ -1,3 +1,5 @@
+import { sha1 } from "./Sha1.js";
+
 const encoder = new TextEncoder();
 const WOW_N = 0x894b645e89e1535bbdad5b8b290650530801b18ebfbf5e8fab3c82872a3e9bb7n;
 const WOW_G = 7n;
@@ -31,8 +33,9 @@ export function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
 }
 
 export async function sha1Bytes(...parts: readonly Uint8Array[]): Promise<Uint8Array> {
-  if (!globalThis.crypto?.subtle) throw new Error("Web Crypto is unavailable");
   const bytes = concatBytes(...parts);
+  // No Web Crypto outside a secure context, e.g. a page opened as http://<public address>/.
+  if (!globalThis.crypto?.subtle) return sha1(bytes);
   return new Uint8Array(await globalThis.crypto.subtle.digest("SHA-1", bytes.buffer as ArrayBuffer));
 }
 

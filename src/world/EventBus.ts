@@ -4,9 +4,117 @@ export type Unsubscribe = () => void;
 /** Why an ordinary cast ended; channels retain their separate update/stop semantics. */
 export type SpellCastStopReason = "success" | "interrupted" | "failed";
 
+/** Which dungeon-finder packet (or local answer) moved `WorldClient`'s `lfg*` state. */
+export type LfgStateChangeKind =
+  | "joinResult" | "queue" | "update" | "proposal" | "roleChosen" | "roleCheck" | "boot"
+  | "playerInfo" | "partyInfo" | "reward" | "offerContinue" | "teleportDenied" | "search"
+  | "disabled";
+
+export interface LfgStateChange {
+  readonly kind: LfgStateChangeKind;
+  /** `joinResult`: the `LfgJoinResult` code (0 is success). */
+  readonly result?: number;
+  /** `roleChosen`: who picked, and the `LFG_ROLE_*` mask they picked. */
+  readonly guid?: bigint;
+  readonly roles?: number;
+  /** `joinResult`/`teleportDenied`: the text the native window shows for it. */
+  readonly message?: string;
+  /** `offerContinue`: the wire entry, `id + (type << 24)`; `lfgOfferContinue` keeps only the id. */
+  readonly entry?: number;
+}
+
+/**
+ * Which mailbox edge moved `WorldClient`'s `mail*` state: the window's mailbox was set (`open`) or
+ * cleared (`closed`), a `SMSG_MAIL_LIST_RESULT` landed (`list`), a `SMSG_SEND_MAIL_RESULT` landed
+ * (`result`, read `mailResult` after it), or `SMSG_RECEIVED_MAIL` announced a letter (`received`).
+ */
+export interface MailStateChange {
+  readonly kind: "open" | "list" | "result" | "received" | "closed";
+}
+
+/**
+ * Which trade edge moved `WorldClient`'s `trade*` state: one `SMSG_TRADE_STATUS` (`status`, with its
+ * `TradeStatus` word), one `SMSG_TRADE_STATUS_EXTENDED` (`offer`, `trader` for the partner's side),
+ * or a local offer change this client sent and the core never echoes back to it (`local`).
+ */
+export interface TradeStateChange {
+  readonly kind: "status" | "offer" | "local";
+  readonly status?: number;
+  readonly trader?: boolean;
+}
+
+/**
+ * Which auction-house edge moved `WorldClient`'s `auction*` state: MSG_AUCTION_HELLO answered
+ * (`hello`, `enabled` false for a disabled house), a browse, owner or bidder list landed (`list`,
+ * `owner`, `bidder`), one SMSG_AUCTION_COMMAND_RESULT (`result`: `auctionId`, `command`, `error`,
+ * `bagResult`), SMSG_AUCTION_BIDDER_NOTIFICATION (`bidderNotification`: `won` when the new high
+ * bidder is the player), SMSG_AUCTION_OWNER_NOTIFICATION (`ownerNotification`: `bid` 0 is an
+ * expiry), or the auctioneer was let go (`closed`).
+ */
+export interface AuctionStateChange {
+  readonly kind: "hello" | "list" | "owner" | "bidder" | "result" | "bidderNotification" | "ownerNotification" | "closed";
+  readonly enabled?: boolean;
+  /** `hello`: the AuctionHouse.dbc id, whose DepositRate prices a lot. */
+  readonly houseId?: number;
+  /** `hello`: the world sent its own opening CMSG_AUCTION_LIST_ITEMS (the native window's). */
+  readonly searched?: boolean;
+  /** `result`: the lists the world re-requested after a success, in the order it sent them. */
+  readonly refreshed?: readonly ("list" | "owner" | "bidder")[];
+  readonly auctionId?: number;
+  readonly command?: number;
+  readonly error?: number;
+  readonly bagResult?: number;
+  readonly itemId?: number;
+  readonly won?: boolean;
+  readonly bid?: number;
+}
+
 import type { SpellGo } from "./SpellProtocol.js";
+import type { UnitCombatEvent } from "./UnitCombat.js";
 import type { ActiveAura } from "./AuraProtocol.js";
 import type { ChatMessage, TextEmote } from "./ChatProtocol.js";
+import type { GuildBankContent } from "./GuildBankProtocol.js";
+
+/**
+ * What moved `WorldClient`'s `guildBank*` state, for the stock GuildBankFrame (FrameXmlGuildBank.ts):
+ * one SMSG_GUILD_BANK_LIST as it arrived (`list` — a partial list names only the slots that moved,
+ * and the world folds it into the one tab it holds), a tab's MSG_QUERY_GUILD_BANK_TEXT (`textTab`),
+ * or one of the bank's SMSG_GUILD_EVENTs (`guildEvent`, GuildEvents 14-19). The log, permissions
+ * and withdraw-allowance packets emit it empty.
+ */
+export interface GuildBankChange {
+  readonly list?: GuildBankContent;
+  readonly textTab?: number;
+  readonly guildEvent?: { readonly type: number; readonly params: readonly string[] };
+}
+
+import type {
+  CalendarCommandResult, CalendarEventDetail, CalendarEventRemovedAlert, CalendarEventStatus,
+  CalendarEventStatusAlert, CalendarEventUpdatedAlert, CalendarInitialInvite, CalendarInviteAdded,
+  CalendarInviteAlert, CalendarInviteRemoved, CalendarModeratorStatus, CalendarSnapshot, RaidLockoutChange,
+} from "./CalendarProtocol.js";
+
+/**
+ * One calendar packet as it arrived, beside the native window's CALENDAR_CHANGED (which drops the
+ * alert bodies). The stock Blizzard_Calendar model (FrameXmlCalendarLive.ts) folds these in the
+ * client's own way — an alert updates the one row it names instead of asking for a new snapshot.
+ */
+export type CalendarPacket =
+  | { readonly kind: "snapshot"; readonly snapshot: CalendarSnapshot }
+  | { readonly kind: "event"; readonly detail: CalendarEventDetail }
+  | { readonly kind: "pending"; readonly count: number }
+  | { readonly kind: "result"; readonly result: CalendarCommandResult }
+  | { readonly kind: "candidates"; readonly source: "guild" | "arena"; readonly invites: readonly CalendarInitialInvite[] }
+  | { readonly kind: "inviteAdded"; readonly invite: CalendarInviteAdded }
+  | { readonly kind: "inviteAlert"; readonly alert: CalendarInviteAlert }
+  | { readonly kind: "inviteRemoved"; readonly removed: CalendarInviteRemoved }
+  | { readonly kind: "inviteRemovedAlert"; readonly alert: CalendarEventStatusAlert }
+  | { readonly kind: "status"; readonly status: CalendarEventStatus }
+  | { readonly kind: "moderator"; readonly status: CalendarModeratorStatus }
+  | { readonly kind: "updatedAlert"; readonly alert: CalendarEventUpdatedAlert }
+  | { readonly kind: "removedAlert"; readonly alert: CalendarEventRemovedAlert }
+  | { readonly kind: "clearPending" }
+  | { readonly kind: "lockout"; readonly change: RaidLockoutChange; readonly removed: boolean };
 
 type AnyListener = (payload: unknown) => void;
 
@@ -252,10 +360,22 @@ export interface WorldPacketEvents {
   SPELL_LEARNED: { spellId: number };
   REPUTATION_CHANGED: Record<string, never>;
   ACHIEVEMENT_EARNED: { achievementId: number; mine: boolean };
+  /**
+   * The other achievement packets: the whole list at login (`list`), one criterion's progress
+   * (`criteria`, with the seconds a timed one has run), a deletion (`deleted`), or another player's
+   * list answering CMSG_QUERY_INSPECT_ACHIEVEMENTS (`inspect`, read `inspectAchievements`).
+   */
+  ACHIEVEMENT_STATE_CHANGED:
+    | { kind: "list" }
+    | { kind: "criteria"; criteriaId: number; timeElapsed: number }
+    | { kind: "deleted" }
+    | { kind: "inspect"; guid: bigint };
   /** The packet identifies pet talent state separately; player-only UI must ignore pet updates. */
   TALENTS_CHANGED: { pet: boolean };
   /** Anything the character sheet shows that is not an update field. */
   CHARACTER_SHEET_CHANGED: Record<string, never>;
+  /** `SMSG_EQUIPMENT_SET_USE_RESULT`: 0 for a set worn, 4 for «inventory full» — the only failure the core sends. */
+  EQUIPMENT_SET_USE_RESULT: { result: number };
   /** A bank window opened, or its slots changed. */
   BANK_OPENED: { bankerGuid: bigint | undefined };
   /** A new area walked into, and the experience it was worth. */
@@ -294,11 +414,17 @@ export interface WorldPacketEvents {
   /** Quest markers arrived, or a gossip menu named a place. */
   QUEST_POI: Record<string, never>;
   /** A need-or-greed roll opened, moved or finished. An undefined slot means the set was replaced. */
-  LOOT_ROLL_CHANGED: { itemSlot: number | undefined };
+  LOOT_ROLL_CHANGED: { itemSlot: number | undefined; newItemGuid?: bigint };
   /** The guild bank, its logs, its permissions or a tab's text changed. */
-  GUILD_BANK_CHANGED: Record<string, never>;
+  GUILD_BANK_CHANGED: GuildBankChange;
   /** The calendar, one event of it, or the pending-invite count changed. */
-  CALENDAR_CHANGED: { eventId: bigint | undefined };
+  CALENDAR_CHANGED: {
+    eventId: bigint | undefined;
+    /** Responses redraw; only an alert requires another snapshot. */
+    reason?: "snapshot" | "event" | "pending" | "error" | "alert" | "complete" | "invite";
+  };
+  /** One calendar packet's parsed body, emitted right after its CALENDAR_CHANGED/INSTANCE_CHANGED. */
+  CALENDAR_PACKET: CalendarPacket;
   /** A chat channel's roster or state moved. */
   CHANNEL_CHANGED: { channel: string };
   /** The friends or ignore list changed, or a friend came online. */
@@ -309,17 +435,54 @@ export interface WorldPacketEvents {
   PETITION_CHANGED: Record<string, never>;
   /** Anything in the dungeon finder past the queue itself: locks, role check, boot vote, reward. */
   LFG_INFO_CHANGED: Record<string, never>;
+  /**
+   * One dungeon-finder packet landed, named by what it changed. Emitted beside the single-slot
+   * `onLfgChanged` (still the native window's) so a second owner — the stock LFD frames — can
+   * subscribe without taking that slot. `kind` maps one-to-one onto the handlers in WorldClient;
+   * the state itself stays on the client's `lfg*` fields, read after the event.
+   */
+  LFG_STATE_CHANGED: LfgStateChange;
   /** How long until the next letter is delivered, and who it is from. */
   MAIL_TIME_CHANGED: Record<string, never>;
+  /**
+   * One mailbox packet or edge, beside the single-slot `onMailChanged` (still the native window's),
+   * so the stock MailFrame model can subscribe without taking that slot (FrameXmlMail.ts).
+   */
+  MAIL_STATE_CHANGED: MailStateChange;
+  /** One trade packet or local offer change, beside the native `onTradeChanged` (FrameXmlTrade.ts). */
+  TRADE_STATE_CHANGED: TradeStateChange;
+  /** One auction-house packet or edge, beside the native `onAuctionChanged` (FrameXmlAuction.ts). */
+  AUCTION_STATE_CHANGED: AuctionStateChange;
   /** The pet bar arrived, changed, or was taken down. A zero guid means there is no pet now. */
   PET_BAR_CHANGED: { guid: bigint };
   /** The pet's cooldown set was replaced, or one of them was cleared. */
   PET_COOLDOWNS_CHANGED: Record<string, never>;
+  /** The pet started swinging (`SMSG_ATTACK_START`) at `victim`, or stopped: undefined. */
+  PET_ATTACK_CHANGED: { victim: bigint | undefined };
   /**
    * A pet cooldown began. The duration is not on the wire — it is the spell's own DBC recovery
    * time — so this announces the start and leaves the length to whoever has the tables.
    */
   PET_COOLDOWN_STARTED: { spellId: number };
+  /** An item use cooldown began (marker; exact length comes from DBC/cooldown packets). */
+  ITEM_COOLDOWN_STARTED: { spellId: number; itemGuid: bigint };
+  /** Spell cost/duration/damage modifiers changed (procs, talents, set bonuses). */
+  SPELL_MODIFIERS_CHANGED: Record<string, never>;
+  /** A totem was created in one of the four slots. */
+  TOTEM_CREATED: { slot: number; guid: bigint; duration: number; spellId: number };
+  /**
+   * A blow, heal, energize or miss as its packet states it (UnitCombat.ts) — the facts behind the
+   * stock hit indicator, where FLOATING_TEXT is the already-worded number over a head.
+   */
+  UNIT_COMBAT: UnitCombatEvent;
+  /**
+   * `SMSG_ITEM_ENCHANT_TIME_UPDATE`: how many seconds an item's enchantment slot has left,
+   * `receivedAt` in `performance.now()` terms. Sent on login and whenever a timed enchantment is
+   * applied (Player::AddEnchantmentDuration); the item field alone carries no start time.
+   */
+  ITEM_ENCHANT_TIME_UPDATE: { itemGuid: bigint; slot: number; duration: number; playerGuid: bigint; receivedAt: number };
+  /** A missile position update arrived for a caster. */
+  PROJECTILE_MOVED: { casterGuid: bigint; castCount: number; x: number; y: number; z: number };
   /** Something the pet said back: a refusal, a taming failure, a rejected name. */
   PET_MESSAGE: { text: string; error: boolean };
   /** A pet name query answered, so a name that was a number is now a name. */
@@ -358,6 +521,8 @@ export interface WorldPacketEvents {
   ARENA_TEAM_CHANGED: { teamId: number | undefined };
   /** Somebody's honor or arena teams came back from an inspection. */
   PVP_INSPECTION: { guid: bigint };
+  /** Somebody's talents and equipped enchantments came back from `CMSG_INSPECT` (`WorldClient.inspections`). */
+  INSPECT_TALENT_READY: { guid: bigint };
   /** The outdoor battlefield — Wintergrasp — invited, admitted or ejected the player. */
   BATTLEFIELD_CHANGED: { battleId: number };
   /**
@@ -384,8 +549,13 @@ export interface WorldPacketEvents {
    * nothing else.
    */
   QUERY_CACHE_CHANGED: { kind: "creature" | "gameObject" | "item" | "itemSet" | "page" | "itemText" | "cleared"; id: number | bigint };
+  /**
+   * A reader opened: `SMSG_READ_ITEM_OK` for a readable item (`item`), `SMSG_GAMEOBJECT_PAGETEXT` for
+   * a goober with a page (`object`). What it shows is in the named object's template and its pages.
+   */
+  ITEM_TEXT_OPENED: { kind: "item" | "object"; guid: bigint };
   /** The player's ticket, a game master's answer to it, or whether tickets are taken at all. */
-  GM_TICKET_CHANGED: Record<string, never>;
+  GM_TICKET_CHANGED: { kind?: "snapshot" | "result" | "system" | "response" | "resolved" };
   /** A rename, a customise, a faction change, or a haircut paid for. */
   CHARACTER_SERVICE: { kind: "rename" | "customize" | "factionChange" | "barber"; result: number };
   /** A barber's chair opened or closed its window. */

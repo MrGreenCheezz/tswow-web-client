@@ -24,7 +24,12 @@ declare module "fengari" {
   export const FENGARI_VERSION: string;
 
   export namespace lua {
-    class lua_Debug { source: LuaString; }
+    function lua_getmetatable(L: LuaState, index: number): boolean;
+    function lua_topointer(L: LuaState, index: number): unknown;
+    function lua_next(L: LuaState, index: number): boolean;
+    function lua_pushglobaltable(L: LuaState): void;
+    function lua_checkstack(L: LuaState, slots: number): boolean;
+    class lua_Debug { source: LuaString; currentline: number; }
     function lua_getinfo(L: LuaState, what: LuaString, info: lua_Debug): number;
     function lua_getstack(L: LuaState, level: number, info: lua_Debug): number;
     const LUA_REGISTRYINDEX: number;

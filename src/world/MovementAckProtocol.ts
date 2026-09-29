@@ -16,7 +16,7 @@
 import { OPCODES } from "../generated/opcodes.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
-import { readMovementInfo, writeMovementInfoBody, type MovementInfo } from "./MovementProtocol.js";
+import { MOVEMENT_FLAGS, readMovementInfo, writeMovementInfoBody, type MovementInfo } from "./MovementProtocol.js";
 
 /** The nine rates the server can force, and the opcode pair that carries each. */
 export const FORCED_SPEEDS = [
@@ -39,21 +39,39 @@ const FORCED_SPEED_BY_OPCODE: ReadonlyMap<number, (typeof FORCED_SPEEDS)[number]
 /**
  * Movement states the server toggles and expects an ack for.
  *
- * All nine share one body — packed guid, a counter, then the mover's MovementInfo — and the two
- * with a trailing value append it. HandleMoveRootAck, HandleMoveHoverAck and
- * HandleMoveSetCollisionHgtAck in the core all read exactly that.
+ * The server's half is one shape for all of them: packed guid and a counter, the collision height
+ * alone adding its float (Player.cpp:27202-27278, Unit.cpp:8732-8735, :12247-12278). The ack's tail
+ * is not. After the packed guid, the counter and the mover's MovementInfo the core reads
+ * - nothing more for root, unroot and the gravity pair (MovementHandler.cpp:712-775, :823-863);
+ * - the height again, as a float, for the collision height (:865-887);
+ * - one more word for water walk, feather fall, hover and can-fly, set or unset alike (:666-710,
+ *   :733-754, :777-798). The server sent no such word, so it is not an echo but the client's own:
+ *   `apply`, 1 for the flag going on and 0 for it going off. This core skips it
+ *   (`read_skip<uint32>`), yet an ack without it is four bytes short and never parses — on
+ *   2026-09-28 Levitate's three acks each died in the handler with a ByteBufferException, and a
+ *   can-fly ack the same way.
+ *
+ * `flag` is the MovementFlags bit the four families switch, which their ack echoes already changed.
  */
 export const MOVEMENT_TOGGLES = [
   { server: OPCODES.SMSG_FORCE_MOVE_ROOT, ack: OPCODES.CMSG_FORCE_MOVE_ROOT_ACK, name: "root" },
   { server: OPCODES.SMSG_FORCE_MOVE_UNROOT, ack: OPCODES.CMSG_FORCE_MOVE_UNROOT_ACK, name: "unroot" },
-  { server: OPCODES.SMSG_MOVE_WATER_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "waterWalk" },
-  { server: OPCODES.SMSG_MOVE_LAND_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "landWalk" },
-  { server: OPCODES.SMSG_MOVE_FEATHER_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "featherFall" },
-  { server: OPCODES.SMSG_MOVE_NORMAL_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "normalFall" },
-  { server: OPCODES.SMSG_MOVE_SET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "hover", trailing: "u32" },
-  { server: OPCODES.SMSG_MOVE_UNSET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "unsetHover", trailing: "u32" },
-  { server: OPCODES.SMSG_MOVE_SET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "canFly", trailing: "u32" },
-  { server: OPCODES.SMSG_MOVE_UNSET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "cannotFly", trailing: "u32" },
+  { server: OPCODES.SMSG_MOVE_WATER_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "waterWalk",
+    flag: MOVEMENT_FLAGS.waterWalking, apply: 1 },
+  { server: OPCODES.SMSG_MOVE_LAND_WALK, ack: OPCODES.CMSG_MOVE_WATER_WALK_ACK, name: "landWalk",
+    flag: MOVEMENT_FLAGS.waterWalking, apply: 0 },
+  { server: OPCODES.SMSG_MOVE_FEATHER_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "featherFall",
+    flag: MOVEMENT_FLAGS.fallingSlow, apply: 1 },
+  { server: OPCODES.SMSG_MOVE_NORMAL_FALL, ack: OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, name: "normalFall",
+    flag: MOVEMENT_FLAGS.fallingSlow, apply: 0 },
+  { server: OPCODES.SMSG_MOVE_SET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "hover",
+    flag: MOVEMENT_FLAGS.hover, apply: 1 },
+  { server: OPCODES.SMSG_MOVE_UNSET_HOVER, ack: OPCODES.CMSG_MOVE_HOVER_ACK, name: "unsetHover",
+    flag: MOVEMENT_FLAGS.hover, apply: 0 },
+  { server: OPCODES.SMSG_MOVE_SET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "canFly",
+    flag: MOVEMENT_FLAGS.canFly, apply: 1 },
+  { server: OPCODES.SMSG_MOVE_UNSET_CAN_FLY, ack: OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, name: "cannotFly",
+    flag: MOVEMENT_FLAGS.canFly, apply: 0 },
   { server: OPCODES.SMSG_MOVE_GRAVITY_DISABLE, ack: OPCODES.CMSG_MOVE_GRAVITY_DISABLE_ACK, name: "gravityOff" },
   { server: OPCODES.SMSG_MOVE_GRAVITY_ENABLE, ack: OPCODES.CMSG_MOVE_GRAVITY_ENABLE_ACK, name: "gravityOn" },
   { server: OPCODES.SMSG_MOVE_SET_COLLISION_HGT, ack: OPCODES.CMSG_MOVE_SET_COLLISION_HGT_ACK, name: "collisionHeight", trailing: "f32" },
@@ -61,6 +79,9 @@ export const MOVEMENT_TOGGLES = [
 
 const TOGGLE_BY_OPCODE: ReadonlyMap<number, (typeof MOVEMENT_TOGGLES)[number]> =
   new Map(MOVEMENT_TOGGLES.map((entry) => [entry.server as number, entry]));
+/** The ack's tail is decided by the toggle's name, so the `SMSG_MULTIPLE_MOVES` blocks get it too. */
+const TOGGLE_BY_NAME: ReadonlyMap<string, (typeof MOVEMENT_TOGGLES)[number]> =
+  new Map(MOVEMENT_TOGGLES.map((entry) => [entry.name, entry]));
 
 export interface ForcedSpeed {
   guid: bigint;
@@ -73,7 +94,7 @@ export interface MovementToggle {
   guid: bigint;
   counter: number;
   name: string;
-  /** The value the server sent along with a hover, can-fly or collision-height change. */
+  /** The height a collision-height change carries; no other toggle sends a value. */
   value: number | undefined;
   ackOpcode: number;
 }
@@ -126,7 +147,7 @@ export function ackOpcodeForSpeed(name: ForcedSpeedName): number {
   return entry.ack;
 }
 
-/** `packedGuid, u32 counter, [value]`. */
+/** `packedGuid, u32 counter`, and the collision height's float: all the server sends. */
 export function parseMovementToggle(opcode: number, payload: Uint8Array): MovementToggle {
   const entry = TOGGLE_BY_OPCODE.get(opcode);
   if (!entry) throw new Error(`Opcode 0x${opcode.toString(16)} is not a movement toggle`);
@@ -135,23 +156,28 @@ export function parseMovementToggle(opcode: number, payload: Uint8Array): Moveme
   // Root sends a timestamp rather than a counter, but it occupies the same word and the server
   // only checks that the ack echoes it.
   const counter = reader.remaining >= 4 ? reader.u32() : 0;
-  let value: number | undefined;
-  const trailing = "trailing" in entry ? entry.trailing : undefined;
-  if (trailing === "u32" && reader.remaining >= 4) value = reader.u32();
-  else if (trailing === "f32" && reader.remaining >= 4) value = reader.f32();
+  const value = "trailing" in entry && reader.remaining >= 4 ? reader.f32() : undefined;
   return { guid, counter, name: entry.name, value, ackOpcode: entry.ack };
 }
 
-/** `packedGuid, u32 counter, MovementInfo, [value]`. */
+/**
+ * `packedGuid, u32 counter, MovementInfo`, then the tail the core's handler reads: the apply word
+ * for the four flag families, the height for the collision height, nothing for the rest.
+ *
+ * The echoed MovementInfo already has the family's bit set or cleared, so the ack agrees with every
+ * movement packet after it (`movementFlags` in Movement.ts folds the same bits in from
+ * `movementState`). This core reads that block and discards it (MovementHandler.cpp:680-686).
+ */
 export function buildMovementToggleAck(toggle: MovementToggle, movement: MovementInfo): Uint8Array {
+  const entry = TOGGLE_BY_NAME.get(toggle.name);
+  const switched = entry !== undefined && "apply" in entry ? entry : undefined;
+  const flags = switched === undefined ? movement.flags
+    : (switched.apply ? movement.flags | switched.flag : movement.flags & ~switched.flag) >>> 0;
   const writer = new PacketWriter().packedGuid(toggle.guid).u32(toggle.counter);
-  writeMovementInfoBody(writer, movement);
-  if (toggle.value !== undefined) {
-    // Hover and can-fly echo a word, collision height a float. Both occupy four bytes and the
-    // server reads whichever its handler expects, so echoing the raw value is right either way.
-    if (toggle.name === "collisionHeight") writer.f32(toggle.value);
-    else writer.u32(toggle.value);
-  }
+  writeMovementInfoBody(writer, { ...movement, flags });
+  if (switched !== undefined) writer.u32(switched.apply);
+  // `recvData >> newValue` reads the height unconditionally, so it is always written.
+  else if (entry !== undefined && "trailing" in entry) writer.f32(toggle.value ?? 0);
   return writer.toUint8Array();
 }
 
@@ -166,9 +192,22 @@ export function parseNewWorld(payload: Uint8Array): NewWorld {
   return { mapId, x, y, z, orientation };
 }
 
-/** SMSG_TRANSFER_PENDING: `u32 map`, then optional transport fields this client ignores. */
-export function parseTransferPending(payload: Uint8Array): number {
-  return new PacketReader(payload).u32();
+/** SMSG_TRANSFER_PENDING: destination map; on a transport, entry and source map follow. */
+export interface TransferPending {
+  mapId: number;
+  transportEntry?: number;
+  sourceMapId?: number;
+}
+
+export function parseTransferPending(payload: Uint8Array): TransferPending {
+  const reader = new PacketReader(payload);
+  const mapId = reader.u32();
+  if (reader.remaining === 0) return { mapId };
+  if (reader.remaining !== 8) throw new RangeError("Invalid SMSG_TRANSFER_PENDING transport fields");
+  const transportEntry = reader.u32();
+  const sourceMapId = reader.u32();
+  reader.assertFinished();
+  return { mapId, transportEntry, sourceMapId };
 }
 
 /**
@@ -190,6 +229,15 @@ export function buildTeleportAck(guid: bigint, counter: number, time: number): U
 /** MSG_MOVE_WORLDPORT_ACK carries no body; the core's handler ignores what it is given. */
 export function buildWorldportAck(): Uint8Array {
   return new Uint8Array(0);
+}
+
+/**
+ * `CMSG_MOVE_SPLINE_DONE`: packed mover, its MovementInfo at arrival, then the spline id.
+ * TaxiHandler.cpp reads this at each flight segment's end; without it a cross-map taxi cannot
+ * switch maps and the last segment cannot complete its client/server handshake.
+ */
+export function buildSplineDone(guid: bigint, movement: MovementInfo, splineId: number): Uint8Array {
+  return writeMovementInfoBody(new PacketWriter().packedGuid(guid), movement).u32(splineId).toUint8Array();
 }
 
 // Slice P4's additions to the same conversation: a knock back to acknowledge, the batch of state

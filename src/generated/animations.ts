@@ -39,3 +39,11 @@ export const ANIMATION_FALLBACK: Readonly<Record<number, number>> = implementati
 export const BASE_ANIMATIONS: readonly number[] = implementation.BASE_ANIMATIONS;
 export const EMOTE_ANIMATIONS: Readonly<Record<number, { animation: number; state: boolean }>> =
   implementation.EMOTE_ANIMATIONS;
+/**
+ * AnimationData.Bodyflags by id, non-zero rows only. Read through a widened view because the
+ * neutral stub and implementations generated before the column was published do not carry it;
+ * an empty table means "no pose is known to be upper-body capable", never a crash.
+ */
+export const ANIMATION_BODY_FLAGS: Readonly<Record<number, number>> =
+  (implementation as { readonly ANIMATION_BODY_FLAGS?: Readonly<Record<number, number>> })
+    .ANIMATION_BODY_FLAGS ?? {};

@@ -54,3 +54,23 @@ export function parseDuelWinner(payload: Uint8Array): DuelWinner {
 export function buildDuelResponse(flagGuid: bigint): Uint8Array {
   return new PacketWriter().u64(flagGuid).toUint8Array();
 }
+
+/**
+ * How far from the planted flag a duelist may walk, in yards.
+ *
+ * `Player::CheckDuelDistance` (`Player.cpp:7366-7398`): past 50 the server starts the 10-second
+ * out-of-bounds clock (`SMSG_DUEL_OUTOFBOUNDS`), and stepping back inside 40 cancels it
+ * (`SMSG_DUEL_INBOUNDS`). The ring is drawn at the outer number — the one that starts the clock.
+ */
+export const DUEL_OUT_OF_BOUNDS_YARDS = 50;
+/** The hysteresis the server grants on the way back in; the ring never uses this number. */
+export const DUEL_BACK_IN_BOUNDS_YARDS = 40;
+
+/**
+ * `CMSG_DUEL_REQUESTED` is not a thing: a challenge is `CMSG_CAST_SPELL` of 7266
+ * (`Duel` spell) or the `CMSG_DUEL_PROPOSED`-less `CMSG_DUEL_REQUEST`? In 3.3.5 the client
+ * challenges via `CMSG_DUEL_PROPOSED`? No — TrinityCore `DuelHandler.cpp` handles
+ * `CMSG_DUEL_ACCEPTED/CANCELLED` only; the challenge itself is the `DUEL` spell cast
+ * (spell 7266) targeted at the unit. Keep an explicit helper so UI does not hardcode the id.
+ */
+export const DUEL_SPELL_ID = 7266;
