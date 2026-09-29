@@ -38,6 +38,7 @@ export const GO_TYPE_FLAGSTAND = 24;
 export const GO_TYPE_FISHINGHOLE = 25;
 export const GO_TYPE_FLAGDROP = 26;
 export const GO_TYPE_BARBER_CHAIR = 32;
+export const GO_TYPE_GUILD_BANK = 34;
 
 /** The types the server's own `GameObject::Use` switch accepts. Everything else it ignores. */
 const USABLE_TYPES = new Set([
@@ -49,6 +50,19 @@ const USABLE_TYPES = new Set([
 
 export function usableByHand(type: number): boolean {
   return USABLE_TYPES.has(type);
+}
+
+/**
+ * Whether this client has a protocol path for a selectable object type.
+ *
+ * This deliberately is not "every game object". Static collision helpers, transports and area
+ * triggers share type id 5 on the update wire with real interactive objects, but neither has a
+ * player verb. Mailboxes are the one special route (`CMSG_GET_MAIL_LIST`); locked objects are
+ * offered because their template can name an opening spell instead of `CMSG_GAMEOBJ_USE`.
+ */
+export function interactiveGameObjectType(type: number): boolean {
+  return type === GO_TYPE_MAILBOX || type === GO_TYPE_GUILD_BANK || USABLE_TYPES.has(type)
+    || (type !== GO_TYPE_AREADAMAGE && LOCKED_TYPES.has(type));
 }
 
 /**
@@ -66,7 +80,7 @@ export function interactionDistance(type: number): number {
     case GO_TYPE_CHAIR: case GO_TYPE_BARBER_CHAIR: return 3;
     case GO_TYPE_FISHINGNODE: return 100;
     case GO_TYPE_FISHINGHOLE: return 20 + CONTACT_DISTANCE;
-    case GO_TYPE_MAILBOX: return 10;
+    case GO_TYPE_MAILBOX: case GO_TYPE_GUILD_BANK: return 10;
     default: return INTERACTION_DISTANCE;
   }
 }

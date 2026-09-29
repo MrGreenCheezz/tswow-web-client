@@ -14,12 +14,32 @@ export type SoundChannel = "effects" | "music" | "ambience" | "interface";
  */
 const AMBIENCE_FADE_SECONDS = 2;
 
+/**
+ * How many decoded variants the buffer cache holds. Generous on purpose: eviction only
+ * refetches and redecodes, so the cost of guessing low is paid in gateway traffic, while the
+ * cost of no bound at all is decoded PCM accumulating for the life of a long session.
+ */
+const BUFFER_CACHE_LIMIT = 96;
+
 export interface SoundListener {
   x: number;
   y: number;
   z: number;
   /** The direction the camera is facing, so a sound to the left arrives on the left. */
   orientation: number;
+}
+
+/** One named weather loop (`SoundPlayer.setAmbientLayer`): its nodes and where it is heading. */
+interface AmbientLayer {
+  readonly kitId: number;
+  readonly volume: number;
+  readonly gain: GainNode;
+  readonly filter: BiquadFilterNode;
+  /** Undefined while the file is still being fetched and decoded. */
+  source?: AudioBufferSourceNode;
+  level: number;
+  lowpass: number;
+  readonly ramp: number;
 }
 
 /**
@@ -42,12 +62,20 @@ export class SoundPlayer {
   #master: GainNode | undefined;
   readonly #channels = new Map<SoundChannel, GainNode>();
   readonly #buffers = new Map<string, Promise<AudioBuffer | undefined>>();
+  /**
+   * Paths whose fetch or decode failed, pinned against eviction below: 124 of the paths the
+   * tables name are not in the archives at all, and re-asking for a missing footstep every
+   * time it falls out of the cache would be a request per step for the length of the session.
+   */
+  readonly #failedBufferPaths = new Set<string>();
   /** What is playing on the music channel, so a new track can replace it rather than join it. */
   #music: { source: AudioBufferSourceNode; kitId: number } | undefined;
   /** The music kit that is playing or still being fetched and decoded. */
   #musicWanted: number | undefined;
   /** Invalidates an older asynchronous music decode when a newer request or stop wins. */
   #musicGeneration = 0;
+  /** Bumped by `close()`: an in-flight buffer fetch from the old world resolves quietly. */
+  #bufferGeneration = 0;
   /** The loop on the ambience channel and the gain it is faded in and out through. */
   #ambience: { source: AudioBufferSourceNode; gain: GainNode; kitId: number } | undefined;
   /**
@@ -58,6 +86,8 @@ export class SoundPlayer {
    * a forest asks for the forest three times before the first request lands.
    */
   #ambienceWanted: number | undefined;
+  /** Keyed weather loops beside the zone loop (`setAmbientLayer`), on the ambience channel. */
+  readonly #layers = new Map<string, AmbientLayer>();
   #volumes: Record<SoundChannel, number> = { effects: 1, music: 0.6, ambience: 0.7, interface: 1 };
   #masterVolume = 1;
   onStatus: ((message: string, error: boolean) => void) | undefined;
@@ -147,6 +177,10 @@ export class SoundPlayer {
    * `fetch` rather than `new Audio(url)`, and this is not a preference: the gateway refuses a
    * request with no `Origin` header and a browser sends none for a media element's own load, so
    * an `<audio src>` at this route is a silent 403. The same trap `TextureBitmaps` documents.
+   *
+   * The cache is bounded (`BUFFER_CACHE_LIMIT`): a long session walks through dozens of zones
+   * and hundreds of kits, and decoded PCM is megabytes per minute of music. Only successes are
+   * evicted, oldest first — failures stay pinned (see `#failedBufferPaths`).
    */
   #buffer(path: string): Promise<AudioBuffer | undefined> {
     const held = this.#buffers.get(path);
@@ -154,20 +188,45 @@ export class SoundPlayer {
     const pending = (async (): Promise<AudioBuffer | undefined> => {
       const context = this.#audio();
       if (!context) return undefined;
+      const generation = this.#bufferGeneration;
+      // The player is per world and `close()` clears both the cache and the failure pins: a
+      // fetch that outlives its world must resolve quietly instead of pinning a fresh failure
+      // into the next session, reporting status to a dead player, or decoding into a closing
+      // context (which only throws).
+      const retired = (): boolean => generation !== this.#bufferGeneration || this.#context !== context;
       try {
         const response = await fetch(`${this.#baseUrl}/sound?path=${encodeURIComponent(path)}`);
         if (!response.ok) throw new Error(`sound gateway returned ${response.status}`);
-        return await context.decodeAudioData(await response.arrayBuffer());
+        const bytes = await response.arrayBuffer();
+        if (retired() || context.state === "closed") return undefined;
+        return await context.decodeAudioData(bytes);
       } catch (error) {
+        if (retired()) return undefined;
         // Remembered as a failure rather than retried. 124 of the paths `SoundEntries` names are
         // not in the archives at all, and a footstep that asks again every step would be a request
         // per step for the length of the session.
+        this.#failedBufferPaths.add(path);
         this.onStatus?.(`звук ${path}: ${error instanceof Error ? error.message : String(error)}`, true);
         return undefined;
       }
     })();
     this.#buffers.set(path, pending);
+    this.#evictBuffers();
     return pending;
+  }
+
+  /** Drops the oldest decoded successes past the cache bound; failures stay pinned. */
+  #evictBuffers(): void {
+    while (this.#buffers.size > BUFFER_CACHE_LIMIT) {
+      let evicted = false;
+      for (const key of this.#buffers.keys()) {
+        if (this.#failedBufferPaths.has(key)) continue;
+        this.#buffers.delete(key);
+        evicted = true;
+        break;
+      }
+      if (!evicted) return;
+    }
   }
 
   /**
@@ -225,6 +284,8 @@ export class SoundPlayer {
       const source = this.#context.createBufferSource();
       source.buffer = buffer;
       source.loop = options.loop ?? false;
+      // Nodes this request owns, released below when a one-shot ends.
+      const ownNodes: AudioNode[] = [];
 
       // The row's own volume, which runs from 0.01 to 1.0 across the table and is the difference
       // between a footstep and a thunderclap.
@@ -248,8 +309,26 @@ export class SoundPlayer {
             .setPosition(options.at.x, options.at.y, options.at.z);
         }
         source.connect(gain).connect(panner).connect(destination);
+        ownNodes.push(panner);
       } else {
         source.connect(gain).connect(destination);
+      }
+      ownNodes.push(source, gain);
+
+      // One-shot effects own their nodes only for their duration: without an explicit
+      // disconnect the graph holds source, gain and panner until GC notices the ended
+      // source (or longer in some browsers), which is pure GC pressure in a fight with
+      // dozens of swings. Music and loops manage their own lifecycle (stop/replace).
+      if (channel !== "music" && !source.loop) {
+        source.addEventListener("ended", () => {
+          for (const node of ownNodes) {
+            try {
+              node.disconnect();
+            } catch {
+              // Already disconnected or torn down with the context.
+            }
+          }
+        }, { once: true });
       }
 
       if (channel === "music") {
@@ -358,6 +437,142 @@ export class SoundPlayer {
     playing.source.stop(now + fadeSeconds);
   }
 
+  /**
+   * A named loop on the ambience channel beside the zone's own (rain, wind), held at `level` 0..1
+   * of the kit's volume and eased there over `rampSeconds`. A different kit in the same slot
+   * crossfades; level 0 fades the slot out and stops it. `lowpassHz` muffles it (indoors).
+   *
+   * Called a few times a second by WeatherSound.ts, so it only ever retargets: the loop is
+   * fetched once, starts at a random point of its file (two storms never begin on the same
+   * raindrop) and keeps running until its slot is emptied.
+   */
+  setAmbientLayer(slot: string, kit: SoundKit | undefined, level: number,
+    options: { rampSeconds?: number; lowpassHz?: number } = {}): void {
+    const target = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
+    const ramp = Math.max(0.05, options.rampSeconds ?? 1);
+    const lowpass = Math.max(200, Math.min(20000, options.lowpassHz ?? 20000));
+    const existing = this.#layers.get(slot);
+    if (existing && kit && existing.kitId === kit.id) {
+      if (target <= 0) {
+        this.#retireLayer(slot, existing, ramp);
+        return;
+      }
+      existing.level = target;
+      existing.lowpass = lowpass;
+      if (existing.source && this.#context) {
+        const now = this.#context.currentTime;
+        existing.gain.gain.setTargetAtTime(kit.volume * target, now, ramp / 3);
+        existing.filter.frequency.setTargetAtTime(lowpass, now, ramp / 3);
+      }
+      return;
+    }
+    if (existing) this.#retireLayer(slot, existing, ramp);
+    if (!kit || target <= 0 || kit.files.length === 0) return;
+    const context = this.#audio();
+    const destination = this.#channels.get("ambience");
+    if (!context || !destination) return;
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    const filter = context.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = lowpass;
+    filter.connect(gain).connect(destination);
+    const layer: AmbientLayer = { kitId: kit.id, volume: kit.volume, gain, filter, level: target, lowpass, ramp };
+    this.#layers.set(slot, layer);
+    const file = kit.files[Math.floor(Math.random() * kit.files.length)]!;
+    void this.#buffer(file).then((buffer) => {
+      if (this.#layers.get(slot) !== layer || !buffer || !this.#context || this.#context !== context) {
+        if (this.#layers.get(slot) === layer) this.#layers.delete(slot);
+        for (const node of [filter, gain]) {
+          try { node.disconnect(); } catch { /* already gone with the context */ }
+        }
+        return;
+      }
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.connect(filter);
+      const now = context.currentTime;
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.setTargetAtTime(layer.volume * layer.level, now, layer.ramp / 3);
+      filter.frequency.setValueAtTime(layer.lowpass, now);
+      source.start(now, Math.random() * Math.max(0, buffer.duration - 0.05));
+      layer.source = source;
+    });
+  }
+
+  /** Which kit a named layer is on or heading to (diagnostics and tests). */
+  ambientLayer(slot: string): { kitId: number; level: number; playing: boolean } | undefined {
+    const layer = this.#layers.get(slot);
+    return layer ? { kitId: layer.kitId, level: layer.level, playing: layer.source !== undefined } : undefined;
+  }
+
+  /** Fades every named layer out (leaving a world, or the setting switched off). */
+  stopAmbientLayers(fadeSeconds = 1): void {
+    for (const [slot, layer] of [...this.#layers]) this.#retireLayer(slot, layer, fadeSeconds);
+  }
+
+  #retireLayer(slot: string, layer: AmbientLayer, fadeSeconds: number): void {
+    if (this.#layers.get(slot) === layer) this.#layers.delete(slot);
+    layer.level = 0;
+    const context = this.#context;
+    if (!layer.source || !context) return;
+    const now = context.currentTime;
+    layer.gain.gain.cancelScheduledValues(now);
+    layer.gain.gain.setValueAtTime(layer.gain.gain.value, now);
+    layer.gain.gain.linearRampToValueAtTime(0, now + fadeSeconds);
+    const source = layer.source;
+    source.addEventListener("ended", () => {
+      for (const node of [source, layer.filter, layer.gain]) {
+        try { node.disconnect(); } catch { /* already gone with the context */ }
+      }
+    }, { once: true });
+    source.stop(now + fadeSeconds);
+  }
+
+  /**
+   * One sound on the ambience channel that is not at a place in the world — a thunderclap from a
+   * bolt five hundred yards off — heard `delaySeconds` after this call (counted from the call, so a
+   * first decode eats into the delay rather than adding to it), at `level` of the kit's volume,
+   * muffled above `lowpassHz` and panned -1 (left) … 1 (right).
+   */
+  playAmbientShot(kit: SoundKit, options: {
+    delaySeconds?: number; level?: number; lowpassHz?: number; pan?: number; file?: string;
+  } = {}): void {
+    const context = this.#audio();
+    const destination = this.#channels.get("ambience");
+    if (!context || !destination || kit.files.length === 0) return;
+    const file = options.file ?? kit.files[Math.floor(Math.random() * kit.files.length)]!;
+    const at = context.currentTime + Math.max(0, options.delaySeconds ?? 0);
+    const level = Math.max(0, Math.min(1, options.level ?? 1));
+    if (level <= 0) return;
+    void this.#buffer(file).then((buffer) => {
+      if (!buffer || this.#context !== context || context.state === "closed") return;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = Math.max(200, Math.min(20000, options.lowpassHz ?? 20000));
+      const gain = context.createGain();
+      gain.gain.value = kit.volume * level;
+      const nodes: AudioNode[] = [source, filter, gain];
+      let tail: AudioNode = source.connect(filter).connect(gain);
+      if (typeof context.createStereoPanner === "function") {
+        const panner = context.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, options.pan ?? 0));
+        tail = tail.connect(panner);
+        nodes.push(panner);
+      }
+      tail.connect(destination);
+      source.addEventListener("ended", () => {
+        for (const node of nodes) {
+          try { node.disconnect(); } catch { /* already gone with the context */ }
+        }
+      }, { once: true });
+      source.start(Math.max(context.currentTime, at));
+    });
+  }
+
   /** Leaving a world: the buffers belong to a context that is about to be thrown away. */
   close(): void {
     this.stopMusic();
@@ -365,7 +580,10 @@ export class SoundPlayer {
     // is a promise to a listener who has already left.
     this.#ambience = undefined;
     this.#ambienceWanted = undefined;
+    this.#layers.clear();
+    this.#bufferGeneration++;
     this.#buffers.clear();
+    this.#failedBufferPaths.clear();
     this.#channels.clear();
     this.#master = undefined;
     void this.#context?.close();

@@ -59,6 +59,8 @@ export interface AssetPathRules {
    * here would be a capability nothing has asked for and nothing has tested.
    */
   bareName?: boolean;
+  /** WoW AddOns may start with `!` and contain `!` Lua files; only /client/file opts in. */
+  allowBang?: boolean;
 }
 
 /**
@@ -88,7 +90,9 @@ export function validAssetPath(value: string, rules: AssetPathRules = {}): boole
   // An absolute path, or a UNC host. `:` is not in the class, so a drive letter is already gone.
   if (value.startsWith("\\") || value.startsWith("/")) return false;
   if (rules.bareName && /[\\/]/.test(value)) return false;
-  if (!ASSET_PATH.test(value)) return false;
+  // Validate the original length, traversal and root before substituting this one opt-in filename
+  // character for the common alphabet. Other routes retain their established path boundary.
+  if (!ASSET_PATH.test(rules.allowBang ? value.replaceAll("!", "_") : value)) return false;
   const extensions = rules.extensions ?? [];
   if (extensions.length === 0) return true;
   const lower = value.toLowerCase();

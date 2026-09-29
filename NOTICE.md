@@ -19,8 +19,9 @@ into the Git-ignored directory `src/generated/client-data/`:
 - class-icon coordinates from `Interface/FrameXML/Constants.lua`;
 - localized UI text from `Interface/FrameXML/GlobalStrings.lua`.
 
-The tracked modules `src/generated/opcodes.ts`, `src/generated/updateFields.ts` and
-`src/generated/opcodeCoverage.ts` are also data-free facades. `tools/generate-protocol.mjs` creates
+The tracked modules `src/generated/opcodes.ts`, `src/generated/updateFields.ts`,
+`src/generated/opcodeCoverage.ts`, `src/generated/responseCodes.ts` and
+`src/generated/authResults.ts` are also data-free facades. `tools/generate-protocol.mjs` creates
 their implementations from the user's matching TSWoW/TrinityCore checkout in the Git-ignored
 directory `src/generated/protocol-data/`.
 

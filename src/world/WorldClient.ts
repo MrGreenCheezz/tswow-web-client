@@ -1,47 +1,58 @@
 import { OPCODES } from "../generated/opcodes.js";
+import { playerInventory, slotAt, stackCount } from "../browser/Inventory.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 import type { BinaryByteStream } from "../transport/WebSocketByteStream.js";
+import { PacketSlice } from "../transport/PacketPump.js";
 import { sha1Bytes } from "../auth/Srp6.js";
 import {
   buildCharacterGuid,
   buildCreateCharacter,
+  buildRenameCharacter,
   parseCharacterList,
   parseCharacterResult,
   parseLoginVerifyWorld,
+  parseRenameResult,
+  WorldAuthError,
   type CharacterSummary,
   type CreateCharacterRequest,
   type LoginLocation,
+  type RenameResult,
 } from "./CharacterProtocol.js";
 import { WorldConnection, type WorldPacket } from "./WorldConnection.js";
 import { UnhandledOpcodeLog } from "./UnhandledOpcodes.js";
+import { PacketErrorLog, type PacketErrorCategory } from "./PacketErrors.js";
 import { buildCustomPacket, CustomPacketReassembler } from "./CustomPacket.js";
 import { CustomPacketRegistry } from "./CustomPacketRegistry.js";
+import { captureProbe, captureProbeActive } from "./CaptureProbe.js";
 import {
   buildBuyBankSlot, buildEquipmentSetDelete, buildEquipmentSetSave, buildEquipmentSetUse,
   buildInspect, buildLearnPetTalents, buildLearnTalent, buildPlayedTimeQuery,
-  buildRemoveGlyph, buildStandStateChange, MAX_EQUIPMENT_SETS, MAX_GLYPH_SLOTS,
+  buildRemoveGlyph, buildSetTitle, buildStandStateChange, buildUnlearnSkill, MAX_EQUIPMENT_SETS, MAX_GLYPH_SLOTS,
   parseAchievementData, parseAchievementEarned, parseBindPoint, parseCriteriaUpdate,
   parseEnchantTimeUpdate, parseEquipmentSetList, parseEquipmentSetSaved, parseEquipmentSetUseResult,
   parseExplorationExperience,
+  buildSetFactionAtWar, buildQueryInspectAchievements,
   parseFactionStanding, parseFactionVisible, parseForcedReactions, parseGuidOnly, parseInebriation,
   parseInitialFactions, parseItemTimeUpdate, parseLearnedSpell, parseLevelUpInfo, parsePlayedTime,
   parsePlayerBound, parseProficiency, parseReferAFriendFailure, parseRemovedSpell,
   parseServerFirstAchievement, parseSocketGems, parseStandState, parseSupercededSpell,
   parseTalentsInfo, parseTitleEarned, parseUnlearnSpells,
+  buildBinderActivate, parseTalentWipeConfirm,
   type BindPoint, type EquipmentSet, type FactionState, type TalentsInfo,
 } from "./CharacterProgressProtocol.js";
+import { parseInspectTalent, type InspectResult } from "./InspectProtocol.js";
 
 import {
-  buildAbandonQuest, buildCompletedQuestsQuery, buildQuestConfirmAccept, buildQuestInfoQuery,
+  buildAbandonQuest, buildCompletedQuestsQuery, buildPushQuestToParty, buildQuestConfirmAccept, buildQuestInfoQuery,
   buildQuestPoiQuery, buildQuestPushResult, parseCompletedQuests, parseGossipPoi, parseQuestConfirmAccept,
-  parseQuestGiverStatus, parseQuestGiverStatusMultiple, parseQuestIdUpdate, parseQuestKillUpdate,
-  parseQuestPoi, parseQuestPushResult, parseQuestQueryResponse,
+  parseQuestGiverFailed, parseQuestGiverStatus, parseQuestGiverStatusMultiple, parseQuestIdUpdate, parseQuestKillUpdate,
+  parseQuestPoi, parseQuestPushResult, parseQuestQueryResponse, QUEST_PARTY_MSG_DECLINE_QUEST,
   type PointOfInterest, type QuestConfirmAccept, type QuestPoiBlob,
   type QuestTemplate,
 } from "./QuestProtocol.js";
 
-import { EventBus, type WorldPacketEvents } from "./EventBus.js";
+import { EventBus, type SpellCastStopReason, type WorldPacketEvents } from "./EventBus.js";
 import {
   parseActionButtons, type ActionButton, buildSetActionButton, ACTION_BUTTON_STATE_CLEAR,
 } from "./ActionBarProtocol.js";
@@ -73,6 +84,8 @@ import {
   type LootWindow,
 } from "./LootProtocol.js";
 import {
+  CHAT_MSG_AFK,
+  CHAT_MSG_DND,
   CHAT_MSG_SYSTEM,
   CHAT_MSG_TEXT_EMOTE,
   buildChatMessage,
@@ -89,8 +102,12 @@ import {
 import { emoteById, emoteSentence, type EmoteData, type EmoteName } from "./EmoteRules.js";
 import { NameCache, buildNameQuery, parseNameQueryResponse } from "./NameQueryProtocol.js";
 import {
+  AUCTION_CANCEL,
+  AUCTION_PLACE_BID,
+  AUCTION_SELL_ITEM,
   auctionErrorText,
   buildAuctionHello,
+  buildAuctionListBidderItems,
   buildAuctionListItems,
   buildAuctionListOwnerItems,
   buildAuctionPlaceBid,
@@ -113,6 +130,7 @@ import {
   buildLfgSetRoles,
   buildLfgTeleport,
   lfgJoinResultText,
+  LFG_ROLECHECK_INITIALITING,
   parseLfgJoinResult,
   parseLfgProposalUpdate,
   parseLfgQueueStatus,
@@ -138,6 +156,7 @@ import {
   type LfgProposal,
   type LfgQueueStatus,
   type LfgRoleCheck,
+  type LfgRoleChosen,
   type LfgUpdate,
 } from "./LfgProtocol.js";
 import {
@@ -168,27 +187,32 @@ import {
 import {
   MAIL_DELETED,
   MAIL_ITEM_TAKEN,
+  MAIL_MADE_PERMANENT,
   MAIL_MONEY_TAKEN,
   MAIL_OK,
   MAIL_RETURNED_TO_SENDER,
   buildGetMailList,
+  buildMailCreateTextItem,
   buildMailDelete,
   buildMailMarkAsRead,
   buildMailReturnToSender,
   buildMailTakeItem,
   buildMailTakeMoney,
   buildSendMail,
+  isMailReturnable,
   mailErrorText,
   parseMailCommandResult,
   parseMailListResult,
   parseReceivedMail,
   parseShowMailbox,
   type MailDraft,
+  type MailCommandResult,
   type MailList,
 } from "./MailProtocol.js";
 import {
   TRADE_STATUS_BEGIN_TRADE,
   TRADE_STATUS_CLOSE_WINDOW,
+  TRADE_STATUS_NOT_ON_TAPLIST,
   TRADE_STATUS_OPEN_WINDOW,
   TRADE_STATUS_TRADE_ACCEPT,
   TRADE_STATUS_TRADE_CANCELED,
@@ -203,7 +227,7 @@ import {
   type TradeOffer,
 } from "./TradeProtocol.js";
 import {
-  buildDuelResponse,
+  buildDuelResponse, DUEL_SPELL_ID,
   parseDuelComplete,
   parseDuelCountdown,
   parseDuelRequested,
@@ -230,7 +254,7 @@ import {
   type GroupState,
 } from "./GroupProtocol.js";
 import {
-  buildMinimapPing, buildPartyAssignment, buildRandomRoll, buildRaidTargetQuery,
+  buildMinimapPing, buildOptOutOfLoot, buildPartyAssignment, buildRandomRoll, buildRaidTargetQuery,
   buildReadyCheckAnswer, buildReadyCheckFinished, buildReadyCheckRequest, buildSetRaidTarget,
   mergePartyMemberStats, parseGroupSetLeader, parseMinimapPing, parsePartyMemberStats,
   parseRaidTargetUpdate, parseRandomRoll, parseReadyCheckAnswer, parseReadyCheckStart,
@@ -251,6 +275,8 @@ import {
   buildGuildBankTextQuery, buildGuildBankerActivate, buildGuildEventLogQuery,
   buildGuildBankUpdateTab,
   buildGuildBankWithdrawItem,
+  buildGuildBankMoveItem, buildGuildBankWithdrawItemTo, buildSetGuildBankText,
+  GE_GUILDBANKBAGSLOTS_CHANGED, GE_BANK_TEXT_CHANGED,
   buildGuildPermissionsQuery, buildSaveGuildEmblem, buildTabardVendorActivate,
   guildEmblemErrorText, parseGuildBankList, parseGuildBankLog, parseGuildBankMoneyWithdrawn,
   parseGuildBankTabText, parseGuildEventLog, parseGuildPermissions, parseSaveGuildEmblem,
@@ -279,26 +305,29 @@ import {
   parseCalendarModeratorStatus, parseCalendarPendingCount, parseCalendarSnapshot,
   parseRaidLockoutAdded, parseRaidLockoutRemoved, parseRaidLockoutUpdated,
   type CalendarEventDetail, type CalendarSnapshot, type RaidLockoutChange,
-  type CalendarEventFields,
+  type CalendarEventFields, type CalendarInitialInvite,
   type CalendarNewInvite,
 } from "./CalendarProtocol.js";
 import {
+  buildChannelAnnounce, buildChannelBan, buildChannelInvite, buildChannelKick, buildChannelList,
+  buildChannelMute, buildChannelPassword, buildChannelSetModerator, buildChannelSetOwner,
+  buildChannelUnban, buildChannelUnmoderator, buildChannelUnmute,
   channelNotifyText, chatRestrictedText, parseChannelList, parseChannelMemberCount,
   parseChannelNotify, parseChatPlayerName, parseChatRestricted, parseComplainResult,
   parseUserlistChange,
-  CHAT_YOU_LEFT_NOTICE, CHAT_MODE_CHANGE_NOTICE, CHAT_JOINED_NOTICE, CHAT_LEFT_NOTICE,
-  type ChannelMember,
+  CHAT_YOU_JOINED_NOTICE, CHAT_YOU_LEFT_NOTICE, CHAT_MODE_CHANGE_NOTICE, CHAT_JOINED_NOTICE, CHAT_LEFT_NOTICE,
+  type ChannelMember, type ChannelNotify,
 } from "./ChannelProtocol.js";
 import {
   buildAddFriend, buildAddIgnore, buildContactListQuery, buildDeleteFriend, buildDeleteIgnore,
   buildNextMailTimeQuery, buildWhoIs, buildWhoQuery, friendResultText, parseContactList,
   parseFriendStatus, parseNextMailTime, parseWho, parseWhois,
-  FRIEND_IGNORE_ADDED, FRIEND_IGNORE_REMOVED, FRIEND_REMOVED, SOCIAL_FLAG_FRIEND,
-  SOCIAL_FLAG_IGNORED,
+  FRIEND_ADDED_OFFLINE, FRIEND_ADDED_ONLINE, FRIEND_IGNORE_ADDED, FRIEND_IGNORE_REMOVED,
+  FRIEND_OFFLINE, FRIEND_ONLINE, FRIEND_REMOVED, SOCIAL_FLAG_FRIEND, SOCIAL_FLAG_IGNORED,
   type Contact, type ContactList, type NextMailTime, type WhoResult, type WhoRequest,
 } from "./ContactProtocol.js";
 import {
-  buildPetitionDecline, buildPetitionQuery, buildPetitionRename, buildPetitionShowList,
+  buildOfferPetition, buildPetitionBuy, buildPetitionDecline, buildPetitionQuery, buildPetitionRename, buildPetitionShowList,
   buildPetitionShowSignatures, buildPetitionSign, buildTurnInPetition, parsePetitionDecline,
   parsePetitionQueryResponse, parsePetitionRenamed, parsePetitionShowList,
   parsePetitionSignResult, parsePetitionSignatures, parseTurnInPetitionResult, petitionSignText,
@@ -312,7 +341,8 @@ import {
   parsePetCastFailed, parsePetComboPoints, parsePetLearnedSpell, parsePetNameInvalid,
   parsePetNameQueryResponse, parsePetSpells, parsePetTameFailure, parsePetUnlearnedSpell,
   petCooldownRemaining, petFeedbackText, petNameErrorText, petTameFailureText,
-  ACT_COMMAND, ACT_REACTION,
+  ACT_COMMAND, ACT_DISABLED, ACT_ENABLED, ACT_REACTION, COMMAND_FOLLOW, COMMAND_STAY,
+  petActionOf, petActionTypeOf,
   type PetName, type PetSpells,
 } from "./PetProtocol.js";
 import {
@@ -332,7 +362,7 @@ import {
   buildReportPvpAfk, buildTogglePvp, isBattlegroundJoinFailure, parseArenaUnitDestroyed,
   parseBattlefieldList, parseBattlefieldStatus, parseBattlegroundPlayer,
   parseBattlegroundPlayerPositions, parseGroupJoinedBattleground, parsePvpCredit, parsePvpLogData,
-  STATUS_IN_PROGRESS,
+  STATUS_IN_PROGRESS, STATUS_WAIT_JOIN, STATUS_WAIT_QUEUE,
   type BattlefieldList, type BattlefieldStatus, type FlagCarrier, type PvpCredit, type PvpLogData,
 } from "./PvpProtocol.js";
 import {
@@ -393,13 +423,18 @@ import {
   buildAutoEquipItem,
   buildAutoStoreBagItem,
   buildDestroyItem,
+  buildOpenItem,
+  buildSetAmmo,
+  buildSocketGems,
   buildSplitItem,
   buildSwapInvItem,
   buildSwapItem,
   buildUseItem,
+  itemOpensForLoot,
   equipErrorText,
   parseInventoryChangeFailure,
   parseItemPushResult,
+  ITEM_EQUIP_COOLDOWN_MS,
   INVENTORY_SLOT_BAG_0,
 } from "./ItemProtocol.js";
 import {
@@ -425,13 +460,15 @@ import {
   parseTrainerBuyFailed,
   parseTrainerBuySucceeded,
   parseTrainerList,
+  TRAINER_SPELL_AVAILABLE,
   trainerBuyFailureText,
   type TrainerList,
 } from "./TrainerProtocol.js";
 import {
   buildAreaSpiritHealerRequest, buildCorpseMapPositionQuery, buildCorpseQuery, buildReclaimCorpse, buildRepopRequest, buildResurrectResponse, buildSpiritHealerActivate, parseAreaSpiritHealerTime, parseCorpseMapPosition, parseCorpseQuery, parseCorpseReclaimDelay, parseDeathReleaseLoc, parseResurrectRequest, parseSpiritHealerConfirm, type CorpseLocation, type DeathReleaseLocation, type ResurrectRequest,
 } from "./DeathProtocol.js";
-import { decompressObjectUpdate, isWorldObjectDead, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
+import { decompressObjectUpdate, isWorldObjectDead, serverControlsMovement, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
+import { isPlayerGhost } from "./Fields.js";
 import { buildMovementPacket, parseMovementPacket, type MovementInfo } from "./MovementProtocol.js";
 import {
   mirrorTimerRemaining, parsePauseMirrorTimer, parseStartMirrorTimer, parseStopMirrorTimer,
@@ -441,11 +478,12 @@ import {
 /** The part of a MovementInfo that is not the flags, the time or the position. */
 export type MovementExtra = Omit<MovementInfo, "flags" | "flags2" | "time" | "position">;
 import {
-  ackOpcodeForSpeed, buildForcedSpeedAck, buildKnockBackAck, buildMovementToggleAck, buildTeleportAck,
+  ackOpcodeForSpeed, buildForcedSpeedAck, buildKnockBackAck, buildMovementToggleAck, buildNotActiveMover,
+  buildSplineDone, buildTeleportAck,
   buildWorldportAck, isForcedSpeed, isMovementToggle, movementToggleFor, parseClientControlUpdate,
   parseForcedSpeed, parseKnockBack, parseMovementToggle, parseMultipleMoves, parseNewWorld,
   parseTeleportRequest, parseTransferAborted, parseTransferPending,
-  type ForcedSpeedName, type KnockBack,
+  type ForcedSpeedName, type KnockBack, type TransferPending,
 } from "./MovementAckProtocol.js";
 import {
   isSplineMoveState, isSplineSpeed, parseFlightSplineSync, parseSplineMoveState, parseSplineSpeed,
@@ -464,13 +502,25 @@ import {
   buildSetDifficulty, parseDungeonDifficulty, parseEncounterFrame, parseInstanceDifficulty,
   parseInstanceLockWarning, parseInstanceMapId, parseInstanceResetFailed, parseRaidGroupOnly,
   parseRaidInstanceInfo, parseRaidInstanceMessage, RAID_INSTANCE_WELCOME, type InstanceLockout,
+  buildInstanceLockResponse, buildAreaTrigger,
 } from "./InstanceProtocol.js";
+import {
+  canAfford, playerAlive, withinInteractionDistance,
+  type BinderConfirmRequest, type InstanceLockRequest, type TalentWipeAnswer, type TalentWipeRequest,
+} from "./ConfirmationProtocol.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
+import { UNIT_FLAG_IN_COMBAT } from "./FactionRules.js";
 
 /** `MAX_QUEST_LOG_SIZE`: the most quest ids one POI query may name before the server drops it. */
 const QUEST_POI_CHUNK = 25;
 /** A cast with no answer cannot remain a candidate forever, especially across a cast-count wrap. */
 const PENDING_CAST_TTL = 60_000;
+/** A missing GO query response must not retain a click intent for the rest of the realm session. */
+const GAME_OBJECT_TEMPLATE_WAIT_MS = 10_000;
+/** The flag-carrier poll: once a second is plenty for a map icon, however often the UI asks. */
+const FLAG_CARRIER_POLL_MS = 1_000;
+/** The shortest window `netBandwidth` turns into a rate; asking more often repeats the last one. */
+const NET_RATE_WINDOW_MS = 500;
 /** `UNIT_FLAG_MOUNT`: the authoritative mounted bit in `UNIT_FIELD_FLAGS`. */
 const UNIT_FLAG_MOUNT = 0x08000000;
 /** Spellbook's client action row: it maps to the melee protocol, never CMSG_CAST_SPELL. */
@@ -492,17 +542,22 @@ import {
   parseMovementTimeSkipped, RELAY_STATE_OPCODES,
 } from "./MovementRelayProtocol.js";
 import {
-  buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject,
+  buildAutoRepeatCastSpell, buildCastSpell, buildCastSpellOnGameObject, buildCastSpellOnItem,
+  buildCastSpellOnUnit,
   parseCastFailure,
   spellFailureText,
   parseClearCooldown,
   parseCooldownEvent,
   parseInitialSpells,
+  isCooldownOnHold,
   parseSpellCastHeader, parseSpellGo,
   parseSpellCooldown,
   type KnownSpell,
 } from "./SpellProtocol.js";
 import { applyAuraUpdate, parseAuraUpdate, type ActiveAura } from "./AuraProtocol.js";
+import { missReasonText } from "./MissReasons.js";
+import { formatGlobalStringByName } from "./GlobalStringFormat.js";
+import { nameOr, WORLD_NAME_FALLBACKS, type WorldNameKind, type WorldNameSources } from "./WorldNames.js";
 import {
   buildGossipHello,
   buildGossipSelect,
@@ -533,6 +588,9 @@ const AUTH_OK = 12;
 const AUTH_WAIT_QUEUE = 27;
 const CHAR_CREATE_SUCCESS = 47;
 const CHAR_DELETE_SUCCESS = 71;
+/** TrinityCore/AzerothCore WotLK SpellCastResult values for a true cancel/interruption. */
+const SPELL_FAILED_INTERRUPTED = 40;
+const SPELL_FAILED_INTERRUPTED_COMBAT = 41;
 const MOVEMENT_OPCODES = new Set<number>([
   OPCODES.MSG_MOVE_START_FORWARD,
   OPCODES.MSG_MOVE_START_BACKWARD,
@@ -581,6 +639,8 @@ export interface WorldLogin {
   username: string;
   sessionKey: Uint8Array;
   realmId: number;
+  /** Auth-list name of the selected realm; retained for the stock GetRealmName API. */
+  realmName?: string;
   /**
    * Addons to declare in the authentication packet.
    *
@@ -590,12 +650,6 @@ export interface WorldLogin {
    */
   addons?: readonly DeclaredAddon[];
 }
-
-/** `SpellMissInfo`, in the core's own order, worded for the text that floats over a head. */
-const MISS_REASONS: Readonly<Record<number, string>> = {
-  1: "промах", 2: "сопротивление", 3: "уклонение", 4: "парирование", 5: "блок", 6: "уклонение",
-  7: "иммунитет", 8: "отражено", 9: "поглощено", 10: "отражено", 11: "не в цель", 12: "нет цели",
-};
 
 interface PendingSpellCast {
   spellId: number;
@@ -614,6 +668,15 @@ export interface CooldownSnapshot {
   startedAt: number;
   duration: number;
   endsAt: number;
+}
+
+interface GameObjectTemplateWaiter {
+  entry: number;
+  /** The concrete spawn generation present when the click/hover was armed. */
+  object: WorldObjectState;
+  promise: Promise<GameObjectTemplate | undefined>;
+  resolve: (template: GameObjectTemplate | undefined) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 function auraEqual(before: ActiveAura, after: ActiveAura): boolean {
@@ -668,7 +731,8 @@ export class WorldClient {
   /** One packet this client could not model. The session carries on; only that packet is lost. */
   onPacketError: ((opcode: number, error: Error) => void) | undefined;
   /** A teleport has completed and the world has changed under the player. */
-  onWorldChanged: ((mapId: number, position: WorldPosition) => void) | undefined;
+  /** Position is pending when NEW_WORLD carries a transport-local offset. */
+  onWorldChanged: ((mapId: number, position: WorldPosition | undefined) => void) | undefined;
   onMovementStatus: ((ready: boolean, sentPackets: number) => void) | undefined;
   movementReady = false;
   movementPacketsSent = 0;
@@ -694,6 +758,10 @@ export class WorldClient {
   };
   /** The last fall clock, jump block and pitch sent, so an acknowledgement echoes the same state. */
   #movementExtra: MovementExtra = {};
+  /** TRANSFER_PENDING is the only indication that NEW_WORLD XYZ is transport-local. */
+  #pendingTransfer: TransferPending | undefined;
+  /** The destination self CREATE supplies world XYZ after a transport worldport ACK. */
+  #awaitingTransportArrivalMapId: number | undefined;
   /** The mirror timers the server is running: breath, fatigue and fire, by type. */
   readonly mirrorTimers = new Map<number, { timer: MirrorTimer; receivedAt: number }>();
   onMirrorTimersChanged: (() => void) | undefined;
@@ -717,6 +785,8 @@ export class WorldClient {
   onEmote: ((guid: bigint, emoteId: number) => void) | undefined;
   /** The unit this client is allowed to move: its own character, or whatever it is possessing. */
   controlledGuid: bigint | undefined;
+  /** The unit the last `SMSG_CLIENT_CONTROL_UPDATE` refused (allowed = 0) — the character under a fear, or a vehicle left. */
+  controlRefusedGuid: bigint | undefined;
   /** Whether `SMSG_CLIENT_CONTROL_UPDATE` has spoken; until it does, the client claims its own. */
   #controlAnnounced = false;
   /** `SMSG_MOVE_KNOCK_BACK`: the character has been thrown, and the physics has to follow. */
@@ -733,10 +803,28 @@ export class WorldClient {
   phaseMask = 1;
   /** The last flight map a flight master sent. */
   taxiMenu: TaxiMenu | undefined;
+  /** The last selected flight's server-authored result. */
+  taxiMessage: { text: string; error: boolean } | undefined;
+  /** Only the flight master whose query is still outstanding may open a map. */
+  #pendingTaxiGuid = 0n;
+  /** The exact visible map that owns the next activation reply. */
+  #pendingTaxiActivationMenu: TaxiMenu | undefined;
+  /** A newly discovered node makes the core omit SHOWTAXINODES; retry that query exactly once. */
+  #retriedNewTaxiPath = false;
   /** Whether each flight master in view has a node this character already knows. */
   readonly taxiNodeStatus = new Map<bigint, boolean>();
   /** A summon waiting to be answered, until its timeout runs out. */
   summonRequest: SummonRequest | undefined;
+  /** Monotonic deadlines are recorded when packets arrive, before any UI is opened. */
+  summonExpiresAt = 0;
+  /**
+   * М1 (ConfirmationProtocol.ts): the innkeeper's «make this place home?», the trainer's talent-reset
+   * quote and the instance lock, each until answered once, out of the NPC's reach or past the
+   * server's deadline (`expireInteractionRequests`), or the map changes.
+   */
+  binderConfirm: BinderConfirmRequest | undefined;
+  talentWipeConfirm: TalentWipeRequest | undefined;
+  instanceLock: InstanceLockRequest | undefined;
   dungeonDifficulty = 0;
   raidDifficulty = 0;
   /** The difficulty of the map the character is standing on. */
@@ -754,6 +842,8 @@ export class WorldClient {
   /** Game object templates by entry; null marks one the server does not know. */
   readonly gameObjectTemplates = new Map<number, GameObjectTemplate | null>();
   readonly #requestedGameObjects = new Set<number>();
+  /** One deferred first-click per live GO guid; template answers fan out by entry. */
+  readonly #gameObjectTemplateWaiters = new Map<bigint, GameObjectTemplateWaiter>();
   onGameObjectsChanged: (() => void) | undefined;
   knownSpells: KnownSpell[] = [];
   /**
@@ -776,6 +866,12 @@ export class WorldClient {
   readonly cooldowns = new Map<number, number>();
   /** The start/duration pair that produced each end time, for stable cooldown rendering. */
   readonly cooldownSnapshots = new Map<number, CooldownSnapshot>();
+  /**
+   * Cooldowns on hold — spell id to its category — from `SMSG_INITIAL_SPELLS`' special pair
+   * (`isCooldownOnHold`): the aura that holds them is up and the timer has not started. Not a timer
+   * and not in `cooldowns`; `SMSG_COOLDOWN_EVENT` or `SMSG_CLEAR_COOLDOWN` lets go of one.
+   */
+  readonly cooldownHolds = new Map<number, number>();
   onCooldownsChanged: (() => void) | undefined;
   onCooldownEvent: ((spellId: number) => void) | undefined;
   /** A spell went off: who cast it, which one, and everything the server says it landed on. */
@@ -836,6 +932,12 @@ export class WorldClient {
   /** Achievements completed, and how far each tracked criterion has come. */
   readonly achievements = new Map<number, number>();
   readonly criteria = new Map<number, bigint>();
+  /** The last SMSG_RESPOND_INSPECT_ACHIEVEMENTS: another player's list, for the stock comparison. */
+  inspectAchievements: {
+    readonly guid: bigint;
+    readonly completed: ReadonlyMap<number, number>;
+    readonly criteria: ReadonlyMap<number, bigint>;
+  } | undefined;
   /** Talents, glyphs and how many points are left to spend. */
   talents: TalentsInfo | undefined;
   /** The pet's own tree, which arrives on the same opcode with its first byte set. */
@@ -852,14 +954,17 @@ export class WorldClient {
   playedTime: { total: number; atLevel: number } | undefined;
   /** Set while a bank window is open, which needs the banker's guid to move anything. */
   bankerGuid: bigint | undefined;
+  #pendingBankerGuid: bigint | undefined;
   /** What the bank last said: a slot bought, or why one was refused. */
   bankMessage: { text: string; error: boolean } | undefined;
   /** Title mask bits the character has earned. */
   readonly titles = new Set<number>();
   readonly unhandledOpcodes = new UnhandledOpcodeLog();
+  readonly packetErrors = new PacketErrorLog();
   /** Packets that landed while the login handshake owned the socket, waiting for the world loop. */
   readonly #deferred: WorldPacket[] = [];
   onUnhandledOpcodesChanged: (() => void) | undefined;
+  onPacketErrorsChanged: (() => void) | undefined;
   /** As the server last reported it; `currentGameTime` runs it forward. */
   gameTime: GameTime | undefined;
   #gameTimeReceived = 0;
@@ -901,6 +1006,12 @@ export class WorldClient {
   readonly chatLog: ChatMessage[] = [];
   onChatMessage: ((message: ChatMessage) => void) | undefined;
   readonly names = new NameCache();
+  /**
+   * М-A4-4: the browser's lookups for the ids this client prints — spells, zones, maps, items. Filled
+   * when the world is entered; until then, and on any miss, a text says a neutral word and never the
+   * number. Not `names`: that is the player-name cache above.
+   */
+  worldNames: WorldNameSources = {};
   onNamesChanged: (() => void) | undefined;
   group: GroupState | undefined;
   /**
@@ -922,15 +1033,21 @@ export class WorldClient {
   readyCheck: { initiatorGuid: bigint; startedAt: number; answers: Map<bigint, boolean> } | undefined;
   /** Raid marker to the unit wearing it. Icons run 0 to 7. */
   readonly raidTargets = new Map<number, bigint>();
-  /** Open need-or-greed rolls, by the loot slot they belong to. */
   /**
-   * Rolls in flight, keyed by loot slot.
+   * Whether this character passes on group loot rolls (`GetOptOutOfLoot`). The server holds the
+   * flag and never reports it back, so the last `setOptOutOfLoot` is the state; a new session
+   * starts at the server's own default, which is off.
+   */
+  optOutOfLoot = false;
+  /**
+   * Rolls in flight, keyed by the synthetic item GUID minted for each roll. Different corpses can
+   * have a roll in the same loot slot at once; the slot alone does not identify a player choice.
    *
    * `startedAt` is the client's own clock: the packet says how long the window stays open and
    * never says when it closes, and no packet is sent when it does. Without a local start time a
    * roll that nobody answered would sit on screen for the rest of the session.
    */
-  readonly lootRolls = new Map<number, {
+  readonly lootRolls = new Map<bigint, {
     start: LootRollStart; startedAt: number; votes: LootRollVote[]; won?: LootRollWon; passed?: boolean;
   }>();
   /** Who the master looter may hand the current corpse's loot to. */
@@ -948,14 +1065,25 @@ export class WorldClient {
   guildBankerGuid = 0n;
   /** The tabard designer that answered, which is what opens the emblem window. */
   tabardVendorGuid = 0n;
+  tabardMessage: { text: string; error: boolean } | undefined;
+  #pendingTabardVendorGuid = 0n;
+  #pendingTabardSaveGuid = 0n;
   calendar: CalendarSnapshot | undefined;
   calendarEvent: CalendarEventDetail | undefined;
   calendarPending = 0;
+  /** Mass-invite candidates for the open event, from the guild filter or an arena roster. */
+  calendarCandidates: { source: "guild" | "arena"; eventId: bigint | undefined; invites: CalendarInitialInvite[] } | undefined;
+  #pendingCandidatesEvent: bigint | undefined;
   /** Raid saves as the calendar reports them, by map and difficulty. */
   readonly calendarLockouts = new Map<string, RaidLockoutChange>();
   calendarMessage: { text: string; error: boolean } | undefined;
-  /** Channels the player is in, by the name the server localised for this session. */
-  readonly channels = new Map<string, { flags: number; count: number; members: ChannelMember[] }>();
+  /**
+   * Channels the player is in, by the name the server localised for this session. Insertion order
+   * is the channel's number (`/1`, «1. Общий»). `channelId` is the ChatChannels id a "you joined"
+   * gave a built-in channel; custom channels, and one seen only through a roster or a count, have
+   * none.
+   */
+  readonly channels = new Map<string, { flags: number; count: number; members: ChannelMember[]; channelId?: number }>();
   contacts: ContactList | undefined;
   whoResult: WhoResult | undefined;
   whois: string | undefined;
@@ -966,8 +1094,15 @@ export class WorldClient {
   lfgPlayerInfo: LfgPlayerInfo | undefined;
   lfgPartyInfo: LfgPlayerLocks[] | undefined;
   lfgRoleCheck: LfgRoleCheck | undefined;
+  /** Who picked which roles in the running role check, by guid (`SMSG_LFG_ROLE_CHOSEN`). */
+  readonly lfgRolesChosen = new Map<bigint, LfgRoleChosen>();
+  /** Whether the finder currently has this character searching (`SMSG_LFG_UPDATE_SEARCH`). */
+  lfgSearching = false;
   lfgBoot: LfgBootProposal | undefined;
+  lfgBootExpiresAt = 0;
   lfgReward: LfgPlayerReward | undefined;
+  /** Dungeon entry offered for a follow-up run (`SMSG_LFG_OFFER_CONTINUE`), if any. */
+  lfgOfferContinue: number | undefined;
   /** Set when the dungeon finder is switched off on this realm. */
   lfgDisabled = false;
   nextMailTime: NextMailTime | undefined;
@@ -981,6 +1116,25 @@ export class WorldClient {
    * player's own map because both arrive on the same three opcodes, told apart only by the guid.
    */
   readonly petCooldowns = new Map<number, number>();
+  /**
+   * Whom the pet is swinging at: `SMSG_ATTACK_START` naming the pet as the attacker, until its
+   * `SMSG_ATTACK_STOP` or a new bar. `Unit::SendMeleeAttackStart` sends it to everyone in range,
+   * the owner included, and it is the only wire sign of the pet's attack — the attack command
+   * itself is answered by nothing (PetHandler.cpp `HandlePetActionHelper`).
+   */
+  petAttackVictim: bigint | undefined;
+  /** Category shared cooldowns: categoryId -> endsAt. Spells in one category share the timer. */
+  readonly categoryCooldowns = new Map<number, number>();
+  /** Which category each spell belongs to (from `SMSG_INITIAL_SPELLS`), for shared timers. */
+  readonly spellCategories = new Map<number, number>();
+  /** Item equip cooldowns by spellId; Player::ApplyEquipCooldown sends this fixed 30-second edge. */
+  readonly itemCooldowns = new Map<number, number>();
+  /** Active spell modifiers by `${effectIndex}:${op}:${flat|pct}`, from SET_FLAT/PCT_MODIFIER. */
+  readonly spellModifiers = new Map<string, { effectIndex: number; op: number; value: number; pct: boolean }>();
+  /** Active totems by slot (0-3), from `SMSG_TOTEM_CREATED`. */
+  readonly totems = new Map<number, { guid: bigint; duration: number; spellId: number; startedAt: number }>();
+  /** Last known projectile positions by caster guid, from `SMSG_SET_PROJECTILE_POSITION`. */
+  readonly projectiles = new Map<bigint, { castCount: number; x: number; y: number; z: number }>();
   /** Names answered by pet number, which is the only correlator those packets carry. */
   readonly petNames = new Map<number, PetName>();
   /** Combo points the pet is holding, for a rogue-like charm. */
@@ -990,6 +1144,7 @@ export class WorldClient {
   stableMessage: { text: string; error: boolean } | undefined;
   /** The stable master being talked to; every stable opcode needs it. */
   stableMasterGuid = 0n;
+  #pendingStableMasterGuid = 0n;
   /** Units the server has told us are vehicles, and which `Vehicle.dbc` row they use. */
   readonly vehicleKits = new Map<bigint, number>();
   /**
@@ -998,14 +1153,18 @@ export class WorldClient {
    * are the same thing here, and the packet that clears a slot carries no battleground to remember.
    */
   readonly battlefieldQueues = new Map<number, BattlefieldStatus>();
+  readonly battlefieldInviteDeadlines = new Map<number, number>();
   /** The last battlemaster list, which is what a queue window is built from. */
   battlefieldList: BattlefieldList | undefined;
+  #pendingBattlemasterGuid = 0n;
   /** The scoreboard, whether asked for mid-match or sent unasked when the match ended. */
   pvpScores: PvpLogData | undefined;
   /** Who is in the battleground the player is standing in, as joins and leaves report it. */
   readonly battlegroundPlayers = new Set<bigint>();
   /** Where the flags are. Only ever as fresh as the last request: nothing pushes this. */
   flagCarriers: FlagCarrier[] = [];
+  /** When `requestFlagCarriers` last put a request on the wire; a new or ended match resets it. */
+  #flagCarriersRequestedAt = Number.NEGATIVE_INFINITY;
   /** The last kill that paid honor, for the floating credit line. */
   lastHonorKill: PvpCredit | undefined;
   /** Honor earned this session, which the wire never states: it only ever sends deltas. */
@@ -1031,9 +1190,12 @@ export class WorldClient {
   /** What somebody's inspection came back with, by their guid. */
   readonly inspectedArenaTeams = new Map<bigint, InspectedArenaTeam[]>();
   readonly inspectedHonor = new Map<bigint, HonorStats>();
+  /** `SMSG_INSPECT_TALENT` by the inspected guid: talents and the equipped items' enchantments. */
+  readonly inspections = new Map<bigint, InspectResult>();
   /** Wintergrasp: an offer to queue, an offer to fight, and whether the player is in the battle. */
   battlefieldQueueInvite: BattlefieldQueueInvite | undefined;
   battlefieldWarInvite: BattlefieldWarInvite | undefined;
+  battlefieldQueuedId = 0;
   battlefieldBattleId = 0;
   /** When each of the eight saved blobs last changed, as the server last reported. */
   accountDataTimes: AccountDataTimes | undefined;
@@ -1098,19 +1260,36 @@ export class WorldClient {
   openPageObject: bigint | undefined;
   /** Set while a trade window is open; the two offers arrive as separate packets. */
   tradeOpen = false;
+  /** An incoming request waits for the player's `CMSG_BEGIN_TRADE` answer. */
+  tradePending = false;
+  tradeBeginRequested = false;
   tradePartnerGuid = 0n;
   tradePartnerAccepted = false;
   myOffer: TradeOffer | undefined;
   theirOffer: TradeOffer | undefined;
+  /** Own item/gold changes are echoed to the partner, not to us, by this TrinityCore. */
+  #localTradeSlots = new Map<number, { itemId: number; count: number; guid: bigint; bag: number; sourceSlot: number } | null>();
+  #localTradeGold: number | undefined;
   tradeMessage: string | undefined;
   onTradeChanged: (() => void) | undefined;
   duelRequest: DuelRequest | undefined;
   duelCountdown = 0;
-  onDuelChanged: (() => void) | undefined;
-  /** The mailbox the player is standing at; every mail opcode needs it. */
+  /**
+   * The planted duel flag's guid, from `SMSG_DUEL_REQUESTED` — which the core sends to both the
+   * challenger and the challenged (`SpellEffects.cpp:4021-4025`), so either side can find it.
+   * Survives the answer (unlike `duelRequest`) and dies with the duel, so the ring has an anchor
+   * for the whole fight rather than only for the prompt.
+   */
+  duelFlag: bigint | undefined;
+  /** Whether the duelist is inside the bounds; undefined when no duel is running. */
+  duelInBounds: boolean | undefined;
+  /** One queued chat line about leaving/returning to the duel bounds, consumed by `showDuel`. */
+  duelBoundsMessage: string | undefined;
+  onDuelChanged: (() => void) | undefined;  /** The mailbox the player is standing at; every mail opcode needs it. */
   mailboxGuid = 0n;
   mail: MailList | undefined;
   mailMessage: { text: string; error: boolean } | undefined;
+  mailResult: MailCommandResult | undefined;
   onMailChanged: (() => void) | undefined;
   guildRoster: GuildRoster | undefined;
   guildQuery: GuildQueryInfo | undefined;
@@ -1120,16 +1299,28 @@ export class WorldClient {
   onGuildChanged: (() => void) | undefined;
   /** The auctioneer the player is standing at; every auction opcode needs it. */
   auctioneerGuid = 0n;
+  #pendingAuctioneerGuid = 0n;
+  #auctionSearch: AuctionSearch = {};
   auctions: AuctionList | undefined;
   ownAuctions: AuctionList | undefined;
+  /** The lots the player has bid on. A list of its own: sharing `ownAuctions` made the two tabs fight. */
+  bidAuctions: AuctionList | undefined;
   auctionMessage: { text: string; error: boolean } | undefined;
   onAuctionChanged: (() => void) | undefined;
+  /**
+   * Whether MSG_AUCTION_HELLO sends the native window's unfiltered opening search. The stock
+   * AuctionFrame (FrameXmlAuction.ts) answers false while it owns the house: the 3.3.5 client sends
+   * no search on open, and stock waits for its Search button.
+   */
+  auctionHelloSearch: (() => boolean) | undefined;
   lfgStatus: LfgUpdate | undefined;
   lfgQueue: LfgQueueStatus | undefined;
   lfgProposal: LfgProposal | undefined;
   lfgMessage: string | undefined;
   onLfgChanged: (() => void) | undefined;
   #useCount = 0;
+  /** An uncached item needs its template before we can choose USE_ITEM or OPEN_ITEM. */
+  readonly #pendingItemUses = new Map<bigint, { bag: number; slot: number; entry: number }>();
   #castCount = 0;
   /** Requests waiting for the server's outcome. A request is not a cooldown. */
   readonly #pendingCasts: PendingSpellCast[] = [];
@@ -1139,7 +1330,25 @@ export class WorldClient {
   #handlingServerCooldownEvent = false;
   #pingSequence = 0;
   #pingTimer: ReturnType<typeof setInterval> | undefined;
+  /** When the ping with this sequence left, in `performance.now()` terms; its SMSG_PONG closes it. */
+  #pingSentAt: { sequence: number; at: number } | undefined;
+  /**
+   * The last measured round trip to the realm in milliseconds — CMSG_PING to its SMSG_PONG, the
+   * client's own measure — or undefined before the first answer. The next ping carries it, as the
+   * original client's does: `WorldSocket::HandlePing` reads it into `WorldSession::SetLatency`.
+   */
+  latencyMs: number | undefined;
+  /** The open `netBandwidth` window: when it opened and the socket's counters at that moment. */
+  #netWindow: { at: number; bytesIn: number; bytesOut: number } | undefined;
+  /** The rates the last closed window measured, in KB/s. */
+  #netRates = { inKBps: 0, outKBps: 0 };
   #closed = false;
+  #pendingGossipGuid = 0n;
+  /** A selected gossip option may answer with any NPC service instead of another gossip page. */
+  #pendingGossipServiceGuid = 0n;
+  #pendingQuestGiverGuid = 0n;
+  #pendingVendorGuid = 0n;
+  #pendingTrainerGuid: bigint | undefined;
   /**
    * The tswow custom-packet transport: fragments of opcode 0x102 in, whole module messages out.
    *
@@ -1162,16 +1371,37 @@ export class WorldClient {
     // Custom traffic rides `CMSG_EMOTE`'s number, and that is the opcode the diagnostics line
     // names — a module author matching this against the unhandled-opcode list needs the two to
     // agree. The inner opcode is already in the text.
-    onProblem: (problem) => { this.onPacketError?.(OPCODES.CMSG_EMOTE, new Error(problem.text)); },
+    onProblem: (problem) => {
+      this.#recordPacketError(OPCODES.CMSG_EMOTE, new Error(problem.text), undefined, `custom-${problem.kind}`);
+    },
   });
   /** False until the login backlog has been drained; see the 0x102 branch in `#dispatch`. */
   #worldEntered = false;
 
-  private constructor(connection: WorldConnection) {
+  /** The exact auth-list name selected for this connection. */
+  readonly realmName: string | undefined;
+
+  private constructor(connection: WorldConnection, realmName?: string) {
     this.#connection = connection;
+    this.realmName = realmName;
+    this.state.onSplineFinished = (guid, splineId) => {
+      if (this.#closed || guid !== this.state.selfGuid) return;
+      // TaxiHandler.cpp reads this entire echo before completing the flight segment or changing
+      // maps. A stopped or teleported spline never reaches this callback.
+      this.#connection.send(OPCODES.CMSG_MOVE_SPLINE_DONE,
+        buildSplineDone(guid, this.#currentMovement(), splineId));
+    };
   }
 
-  static async connect(stream: BinaryByteStream, login: WorldLogin): Promise<WorldClient> {
+  /**
+   * `hooks.onQueue` hears the session's place in the realm's login queue each time it moves, for a
+   * screen that shows it; the connection only resolves once the realm lets the session in.
+   */
+  static async connect(
+    stream: BinaryByteStream,
+    login: WorldLogin,
+    hooks: { readonly onQueue?: (position: number) => void } = {},
+  ): Promise<WorldClient> {
     const connection = new WorldConnection(stream);
     const challengePacket = await connection.read();
     if (challengePacket.opcode !== OPCODES.SMSG_AUTH_CHALLENGE) throw new Error("Worldserver did not send SMSG_AUTH_CHALLENGE");
@@ -1212,7 +1442,7 @@ export class WorldClient {
 
     connection.send(OPCODES.CMSG_AUTH_SESSION, authPayload);
     await connection.enableEncryption(login.sessionKey);
-    const client = new WorldClient(connection);
+    const client = new WorldClient(connection, login.realmName);
     // `SMSG_ADDON_INFO` carries no count of its own: the server writes exactly as many entries as
     // were declared above, and this is the only record of how many that was. Clamped because the
     // server clamps: `ReadAddonsInfo` truncates the declared list to `MaxSecureAddons` and answers
@@ -1222,11 +1452,19 @@ export class WorldClient {
 
     while (true) {
       const response = await client.#waitFor(OPCODES.SMSG_AUTH_RESPONSE);
-      const code = response.payload[0];
+      const payload = response.payload;
+      const code = payload[0];
       if (code === AUTH_OK) break;
-      if (code !== AUTH_WAIT_QUEUE) throw new Error(`World authentication failed with code ${code ?? "missing"}`);
+      if (code !== AUTH_WAIT_QUEUE) throw new WorldAuthError(code);
+      // Two layouts. World::AddQueuedPlayer answers with SendAuthResponse's long form: code, billing
+      // time, billing flags, rested time, expansion, then the position (AuthHandler.cpp:22-38). Every
+      // later move of the queue is SendAuthWaitQueue: code, position, a zero (WorldSession.cpp:770-786).
+      const at = payload.byteLength >= 15 ? 11 : 1;
+      if (payload.byteLength >= at + 4) {
+        hooks.onQueue?.(new DataView(payload.buffer, payload.byteOffset + at, 4).getUint32(0, true));
+      }
     }
-    client.#startPing();
+    client.startPing();
     return client;
   }
 
@@ -1243,6 +1481,11 @@ export class WorldClient {
   async deleteCharacter(guid: bigint): Promise<number> {
     this.#connection.send(OPCODES.CMSG_CHAR_DELETE, buildCharacterGuid(guid));
     return parseCharacterResult((await this.#waitFor(OPCODES.SMSG_CHAR_DELETE)).payload);
+  }
+
+  async renameCharacter(guid: bigint, name: string): Promise<RenameResult> {
+    this.#connection.send(OPCODES.CMSG_CHAR_RENAME, buildRenameCharacter(guid, name));
+    return parseRenameResult((await this.#waitFor(OPCODES.SMSG_CHAR_RENAME)).payload);
   }
 
   async loginCharacter(guid: bigint): Promise<LoginLocation> {
@@ -1273,6 +1516,16 @@ export class WorldClient {
     };
   }
 
+  /** Complete a transport worldport only when the destination self update names world XYZ. */
+  #finishTransportArrival(): void {
+    const mapId = this.#awaitingTransportArrivalMapId;
+    if (mapId === undefined || this.mapId !== mapId || this.state.selfGuid === undefined) return;
+    const position = this.state.objects.get(this.state.selfGuid)?.position;
+    if (!position) return;
+    this.#awaitingTransportArrivalMapId = undefined;
+    this.onWorldChanged?.(mapId, { ...position });
+  }
+
   /**
    * The changes the server pushes and waits to have acknowledged.
    *
@@ -1282,13 +1535,46 @@ export class WorldClient {
    */
   async #handleMovementControl(packet: WorldPacket): Promise<boolean> {
     if (packet.opcode === OPCODES.SMSG_TRANSFER_PENDING) {
-      // Only a heads-up that a map change is coming; SMSG_NEW_WORLD carries the destination.
-      this.onCombatStatus?.(`переход на карту ${parseTransferPending(packet.payload)}`, this.attacking, false);
+      this.#pendingTransfer = parseTransferPending(packet.payload);
+      this.onCombatStatus?.(`переход на карту ${this.#pendingTransfer.mapId}`, this.attacking, false);
       return true;
     }
 
     if (packet.opcode === OPCODES.SMSG_NEW_WORLD) {
       const world = parseNewWorld(packet.payload);
+      const transportTransfer = this.#pendingTransfer?.mapId === world.mapId
+        && this.#pendingTransfer.transportEntry !== undefined;
+      this.#pendingTransfer = undefined;
+      this.#awaitingTransportArrivalMapId = transportTransfer ? world.mapId : undefined;
+      // A template answer from the old map cannot authorize an interaction in the new one.
+      this.#settleAllGameObjectTemplateWaiters();
+      // Nor can a question asked there: the innkeeper and the trainer stayed behind, and the core
+      // binds a player to the instance left only while still inside it (Player::Update).
+      this.binderConfirm = undefined;
+      this.talentWipeConfirm = undefined;
+      this.#endInstanceLock();
+      // TrinityCore removes the player from the old map, sends NEW_WORLD, then recreates self,
+      // transport and visibility after WORLDPORT_ACK (Player.cpp:1887-1907; Map.cpp:3045-3080).
+      // It therefore has no old-map OUT_OF_RANGE packet to retire these client objects. Keep the
+      // controlled player through that small gap so the mover and its live auras remain valid,
+      // but retire every neighbour, pet, transport and game object before the next animation frame.
+      const selfGuid = this.state.selfGuid;
+      const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+      const ghostWorldport = self !== undefined && isPlayerGhost(self);
+      if (ghostWorldport) {
+        // MSG_CORPSE_QUERY projects an instance corpse onto its entrance map while the ghost is
+        // outside. After WORLDPORT_ACK the core has placed the character on the new map (and may
+        // auto-resurrect it in the corpse's dungeon), so that old projection is now stale.
+        this.corpse = undefined;
+        this.onDeathChanged?.();
+      }
+      const retired = new Set(this.state.clearExcept(selfGuid));
+      // Packet-owned data can arrive without an object CREATE. No old-map visibility update
+      // will retire those GUIDs after transfer, so include them even when no scene object exists.
+      for (const cache of [this.auras, this.casts, this.taxiNodeStatus, this.spiritHealerTimers, this.questGiverStatus]) {
+        for (const guid of cache.keys()) if (guid !== selfGuid) retired.add(guid);
+      }
+      for (const guid of retired) this.#retireWorldObject(guid);
       this.mapId = world.mapId;
       // Zone weather and scripted light are scoped to the map. A server that does not send an
       // explicit clear packet on transfer must not leave the previous zone's Dalaran/raid sky in
@@ -1297,10 +1583,31 @@ export class WorldClient {
       this.overrideLight = undefined;
       this.overrideLightFromId = undefined;
       this.overrideLightReceivedAt = 0;
-      const position = { x: world.x, y: world.y, z: world.z, orientation: world.orientation };
-      if (this.state.selfGuid !== undefined) this.state.move(this.state.selfGuid, { flags: 0, position });
+      // With a transport, NEW_WORLD writes transport.pos (deck-local), not the player's world
+      // location. The core relocates the player after WORLDPORT_ACK and sends absolute XYZ in the
+      // destination self CREATE. Until then the renderer/terrain must have no false position.
+      const position = transportTransfer
+        ? undefined : { x: world.x, y: world.y, z: world.z, orientation: world.orientation };
+      if (selfGuid !== undefined) {
+        if (position) this.state.move(selfGuid, { flags: 0, position });
+        else this.state.invalidatePosition(selfGuid);
+      }
+      // An old selected unit is gone after a map transfer. This also stops local melee/repeat
+      // state without sending a speculative selection packet while WORLDPORT_ACK is in flight.
+      this.#checkTarget();
+      // A battleground's end refuses the character's mover and leaves it to the client to drop that
+      // at the teleport (Battleground.cpp BlockMovement: «no need to send with uint8(1)»); the core
+      // allows the mover again on arrival without a packet (Player::SendInitialPacketsBeforeAddToMap).
+      // Start over as at login: `#activateMover` claims the character after this packet, behind the ACK.
+      this.movementReady = false;
+      this.controlledGuid = undefined;
+      this.controlRefusedGuid = undefined;
+      this.#controlAnnounced = false;
       // Nothing the player does counts until this is sent.
       this.#connection.send(OPCODES.MSG_MOVE_WORLDPORT_ACK, buildWorldportAck());
+      // The handler for ACK changes the player's map synchronously. Query only afterwards, so
+      // QueryHandler resolves either the actual destination-map corpse or its removal on revive.
+      if (ghostWorldport) this.queryCorpse();
       this.onWorldChanged?.(world.mapId, position);
       this.onStateChange?.(this.state);
       return true;
@@ -1369,12 +1676,12 @@ export class WorldClient {
       const control = parseClientControlUpdate(packet.payload);
       // Who the client may move. The server drops every movement packet from a client that has
       // not named its mover, and says nothing about it — so this reply is what keeps the character
-      // moving at all. It spells the guid the other way round, full rather than packed.
-      this.#connection.send(
-        control.allowed ? OPCODES.CMSG_SET_ACTIVE_MOVER : OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER,
-        buildCharacterGuid(control.guid));
+      // moving at all. The claim spells the guid in full; the release is read packed by the core.
+      if (control.allowed) this.#connection.send(OPCODES.CMSG_SET_ACTIVE_MOVER, buildCharacterGuid(control.guid));
+      else this.#connection.send(OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER, buildNotActiveMover(control.guid));
       this.movementReady = control.allowed;
       this.controlledGuid = control.allowed ? control.guid : undefined;
+      this.controlRefusedGuid = control.allowed ? undefined : control.guid;
       // From here on the server decides who moves what. Without this the claim made at login
       // would be re-made on the very next packet and take back control the server just revoked.
       this.#controlAnnounced = true;
@@ -1383,6 +1690,7 @@ export class WorldClient {
     }
 
     if (packet.opcode === OPCODES.SMSG_TRANSFER_ABORTED) {
+      this.#pendingTransfer = undefined;
       const aborted = parseTransferAborted(packet.payload);
       this.onCombatStatus?.(`${aborted.text} (карта ${aborted.mapId})`, this.attacking, true);
       return true;
@@ -1391,7 +1699,14 @@ export class WorldClient {
     if (isForcedSpeed(packet.opcode)) {
       const speed = parseForcedSpeed(packet.opcode, packet.payload);
       this.#connection.send(ackOpcodeForSpeed(speed.name), buildForcedSpeedAck(speed, this.#currentMovement()));
-      if (speed.guid === this.state.selfGuid) this.speeds.set(speed.name, speed.speed);
+      if (speed.guid === this.state.selfGuid) {
+        this.speeds.set(speed.name, speed.speed);
+        // The state object too, and not only the physics map above: every OTHER rider's speed
+        // reaches `state.setSpeed` through the MSG_MOVE_SET_* relay, so the renderer's mount gait
+        // (A2's `unitTravelSpeed`) could pace a stranger's horse and not the owner's — the one
+        // mount that is on screen in every session. Same store, same drop-on-default semantics.
+        this.state.setSpeed(speed.guid, speed.name, speed.speed);
+      }
       return true;
     }
 
@@ -1437,6 +1752,7 @@ export class WorldClient {
 
   sendMovement(opcode: number, flags: number, position: WorldPosition, extra: MovementExtra = {}): void {
     if (this.#closed || !this.movementReady || this.state.selfGuid === undefined) return;
+    if (serverControlsMovement(this.state.objects.get(this.state.selfGuid))) return;
     const movement = { flags, position };
     this.#movementExtra = extra;
     this.#connection.send(
@@ -1451,6 +1767,9 @@ export class WorldClient {
 
   selectTarget(guid: bigint | undefined): void {
     if (this.#closed || (guid !== undefined && !this.state.objects.has(guid))) return;
+    // CMSG_SET_SELECTION names units only. Game objects are interacted with by their own guid in
+    // their own opcode and must never occupy the unit target frame or leak onto this wire path.
+    if (guid !== undefined && this.state.objects.get(guid)?.typeId === 5) return;
     if (this.attacking) this.stopAttack();
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
     this.targetGuid = guid;
@@ -1466,9 +1785,9 @@ export class WorldClient {
    * character towards anything, so clicking something behind you meant attacking forever, seeing
    * one line of Russian, and never landing a blow.
    */
-  faceTarget(): void {
+  faceTarget(targetGuid = this.targetGuid): void {
     const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
-    const target = this.targetGuid === undefined ? undefined : this.state.objects.get(this.targetGuid);
+    const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
     if (!self?.position || !target?.position) return;
     const orientation = Math.atan2(target.position.y - self.position.y, target.position.x - self.position.x);
     this.sendMovement(OPCODES.MSG_MOVE_SET_FACING, self.movementFlags, { ...self.position, orientation });
@@ -1523,8 +1842,9 @@ export class WorldClient {
     }
   }
 
-  #startAutoRepeat(spellId: number, cooldownDuration: number, cooldownStartedOnEvent: boolean): void {
-    const targetGuid = this.targetGuid;
+  #startAutoRepeat(spellId: number, cooldownDuration: number, cooldownStartedOnEvent: boolean,
+    explicitUnitTarget?: bigint): void {
+    const targetGuid = explicitUnitTarget ?? this.targetGuid;
     const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
     if (targetGuid === undefined || !target || isWorldObjectDead(target)) {
       this.onSpellStatus?.("Для стрельбы нужна живая видимая цель", true);
@@ -1532,7 +1852,7 @@ export class WorldClient {
     }
     if (this.attacking) this.stopAttack();
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
-    this.faceTarget();
+    this.faceTarget(targetGuid);
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(
@@ -1580,10 +1900,79 @@ export class WorldClient {
     return activeMount;
   }
 
-  castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
+  /** `Dismount()` (/dismount): the same empty CMSG_CANCEL_MOUNT_AURA, only while mounted. */
+  dismount(): void {
+    const selfGuid = this.state.selfGuid;
+    if (this.#closed || selfGuid === undefined || !isMounted(this.state.objects.get(selfGuid))) return;
+    this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
+  }
+
+  castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false,
+    explicitUnitTarget?: bigint): void {
     if (this.#closed || this.state.selfGuid === undefined) return;
+    const explicitUnit = explicitUnitTarget === undefined ? undefined : this.state.objects.get(explicitUnitTarget);
+    if (explicitUnitTarget !== undefined && (explicitUnitTarget === 0n
+      || (explicitUnit?.typeId !== 3 && explicitUnit?.typeId !== 4))) {
+      this.onSpellStatus?.("Адресная цель больше не видна", true);
+      return;
+    }
     // 6603 is a client action, not a spell the realm has to teach through INITIAL_SPELLS. Keep it
     // ahead of the known-spell gate so a valid action-bar Attack can never fall into CAST_SPELL.
+    if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
+      this.#cancelMountBeforeCast();
+      if (this.attacking) this.stopAttack();
+      else this.startAttack();
+      return;
+    }
+    if (!this.knownSpells.some((spell) => spell.id === spellId)) {
+      this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      return;
+    }
+
+    if (this.#cancelMountBeforeCast(spellId)) return;
+
+    if (this.#autoRepeatSpellIds.has(spellId)) {
+      if (this.autoRepeatSpellId === spellId) this.#stopAutoRepeat(true);
+      else this.#startAutoRepeat(spellId, cooldownDuration, cooldownStartedOnEvent, explicitUnitTarget);
+      return;
+    }
+
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    // Ordinary casts name no unit: Trinity checks the server selection and falls back to the
+    // caster when that selection is not valid for the spell. A macro's [@unit] instead names its
+    // own unit in this same target block, leaving both the selection and autoattack untouched.
+    // The destination follows that unit when known; the core discards it for spells that do not
+    // need a point. All positions here are world coordinates, so the transport GUID stays zero.
+    const selected = this.targetGuid === undefined ? undefined : this.state.objects.get(this.targetGuid);
+    const casterGuid = this.controlledGuid ?? this.state.selfGuid;
+    const caster = casterGuid === undefined ? undefined : this.state.objects.get(casterGuid);
+    const destination = explicitUnit?.position ?? selected?.position ?? caster?.position;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
+      explicitUnitTarget === undefined ? undefined : { unitTarget: explicitUnitTarget }));
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+    // With no explicit unit, the selection is only a likely target; SMSG_SPELL_GO is the answer.
+    this.onSpellStatus?.(
+      `Заклинание ${spellId} отправлено на ${explicitUnitTarget !== undefined ? "указанную цель"
+        : this.targetGuid === undefined ? "себя" : "выбранную цель"}`,
+      false,
+    );
+  }
+
+  /**
+   * Casts at an explicit ground point chosen outside the selection (the reticle flow).
+   *
+   * Same gates as `castSpell` — known spell, dismount, auto-repeat — with the destination the
+   * browser resolved instead of the selection's position. The server still validates range,
+   * line of sight and the landing surface; a point it rejects fails there, not here.
+   */
+  castSpellAt(
+    spellId: number,
+    destination: { x: number; y: number; z: number },
+    cooldownDuration = 0,
+    cooldownStartedOnEvent = false,
+    unitTarget?: bigint,
+  ): void {
+    if (this.#closed || this.state.selfGuid === undefined) return;
     if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
       this.#cancelMountBeforeCast();
       if (this.attacking) this.stopAttack();
@@ -1603,24 +1992,52 @@ export class WorldClient {
       return;
     }
 
+    if (!Number.isFinite(destination.x) || !Number.isFinite(destination.y) || !Number.isFinite(destination.z)) {
+      return;
+    }
     this.#castCount = (this.#castCount + 1) & 0xff;
-    // No unit in the target block: the server resolves the cast against the selection this client
-    // keeps it in step with through `CMSG_SET_SELECTION`, and falls back to the caster when the
-    // selection is not a legal target for the spell. See `buildCastSpell`, which names what that
-    // costs. The point *is* sent, and it is the selection's own — the server derives a ground
-    // spell's landing point from the incoming block and would otherwise put every area spell at
-    // the caster's feet. It is where this client last saw the target stand, which is what the
-    // original client sends too: the position it has, not the server's.
-    const selected = this.targetGuid === undefined ? undefined : this.state.objects.get(this.targetGuid);
-    const destination = selected?.position ?? this.state.objects.get(this.state.selfGuid)?.position;
-    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination));
+    // The reticle resolves a world point, even when the caster is riding a transport. A nonzero
+    // transport GUID would tell TrinityCore these floats are transport-relative offsets. Name a
+    // unit when the caller has one, so Unit+Ground spells no longer collapse to Unknown.
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
+      unitTarget !== undefined && unitTarget !== 0n ? { unitTarget } : undefined));
     this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
-    // Where the cast is *likely* to land: with no unit named the answer is the server's, and it
-    // arrives in `SMSG_SPELL_GO`. The selection is still what it will try first.
-    this.onSpellStatus?.(
-      `Заклинание ${spellId} отправлено на ${this.targetGuid === undefined ? "себя" : "выбранную цель"}`,
-      false,
-    );
+    this.onSpellStatus?.(`Заклинание ${spellId} отправлено в выбранную точку`, false);
+  }
+
+  /** Crafting item targets are validated again by the realm; never mutate the item locally. */
+  castSpellOnItem(spellId: number, itemGuid: bigint, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
+    if (this.#closed || this.state.selfGuid === undefined || itemGuid === 0n) return;
+    if (!this.knownSpells.some((spell) => spell.id === spellId)) return;
+    const inventory = playerInventory(this.state);
+    if (!inventory || ![...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
+      .some((slot) => slot.guid === itemGuid && slot.item !== undefined)) return;
+    this.#cancelMountBeforeCast();
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnItem(spellId, this.#castCount, itemGuid));
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+  }
+
+  /** Direct unit cast: names the unit explicitly (heals, duel challenge, etc.). */
+  castSpellOnUnit(spellId: number, targetGuid: bigint, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
+    if (this.#closed || this.state.selfGuid === undefined || targetGuid === 0n) return;
+    if (!this.knownSpells.some((spell) => spell.id === spellId) && spellId !== DUEL_SPELL_ID) {
+      this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      return;
+    }
+    if (this.#cancelMountBeforeCast(spellId)) return;
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnUnit(spellId, this.#castCount, targetGuid));
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+    this.onSpellStatus?.(`Заклинание ${spellId} отправлено на выбранную цель`, false);
+  }
+
+  cancelSpellCast(): void {
+    if (this.#closed || this.state.selfGuid === undefined) return;
+    const active = this.casts.get(this.state.selfGuid);
+    if (!active) return;
+    this.#connection.send(OPCODES.CMSG_CANCEL_CAST,
+      new PacketWriter().u8(active.castCount ?? 0).u32(active.spellId).toUint8Array());
   }
 
   startLocalCooldown(spellId: number, duration: number): void {
@@ -1771,10 +2188,37 @@ export class WorldClient {
     this.cooldowns.delete(spellId);
     this.cooldownSnapshots.delete(spellId);
     this.#locallyStartedCooldowns.delete(spellId);
+    this.itemCooldowns.delete(spellId);
+  }
+
+  /**
+   * Whether the spell is held: its cooldown starts when its aura ends, and until then the core
+   * refuses it (SPELL_FAILED_NOT_READY) with nothing to count down — stock `GetSpellCooldown`
+   * answers `enable = 0`. A hold holds its category too: `SpellHistory::AddCooldown` files the entry
+   * under it (SpellHistory.cpp:405-406) and `HasCooldown` refuses every spell of a category with an
+   * entry (:473-487). A spell's category is known here only from `SMSG_INITIAL_SPELLS`.
+   *
+   * A hold that starts mid-session sends no packet (`SpellAuras.cpp:571-577` starts it in silence),
+   * so only the holds a login reports are known.
+   */
+  isSpellOnHold(spellId: number): boolean {
+    if (this.cooldownHolds.has(spellId)) return true;
+    const categoryId = this.spellCategories.get(spellId);
+    if (categoryId === undefined || categoryId === 0) return false;
+    for (const held of this.cooldownHolds.values()) if (held === categoryId) return true;
+    return false;
   }
 
   cooldownRemaining(spellId: number, now = performance.now()): number {
-    return Math.max(0, (this.cooldowns.get(spellId) ?? 0) - now);
+    const direct = (this.cooldowns.get(spellId) ?? 0) - now;
+    const categoryId = this.spellCategories.get(spellId);
+    const shared = categoryId === undefined ? 0 : (this.categoryCooldowns.get(categoryId) ?? 0) - now;
+    return Math.max(0, direct, shared);
+  }
+
+  /** Item use cooldown remaining, by the spell the item casts. */
+  itemCooldownRemaining(spellId: number, now = performance.now()): number {
+    return Math.max(0, (this.itemCooldowns.get(spellId) ?? 0) - now);
   }
 
   aurasFor(guid: bigint | undefined): readonly ActiveAura[] {
@@ -1783,6 +2227,8 @@ export class WorldClient {
 
   openGossip(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
+    this.#pendingGossipGuid = guid;
+    this.#pendingGossipServiceGuid = 0n;
     this.#connection.send(OPCODES.CMSG_GOSSIP_HELLO, buildGossipHello(guid));
   }
 
@@ -1790,11 +2236,26 @@ export class WorldClient {
     const gossip = this.gossip;
     const option = gossip?.options.find((candidate) => candidate.id === optionId);
     if (this.#closed || !gossip || !option) return;
+    this.#pendingGossipGuid = gossip.guid;
+    this.#pendingGossipServiceGuid = gossip.guid;
     this.#connection.send(OPCODES.CMSG_GOSSIP_SELECT_OPTION, buildGossipSelect(gossip.guid, gossip.menuId, optionId, option.coded ? code ?? "" : undefined));
   }
 
   closeGossip(): void {
-    if (!this.gossip) return;
+    const hadGossip = this.gossip !== undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    if (!hadGossip) return;
+    this.gossip = undefined;
+    this.onGossipChanged?.();
+  }
+
+  /** Finishes the gossip page before its selected option opens a different NPC service. */
+  #consumeGossipService(guid: bigint): void {
+    if (guid === 0n || this.#pendingGossipServiceGuid !== guid) return;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingGossipGuid = 0n;
+    if (this.gossip?.guid !== guid) return;
     this.gossip = undefined;
     this.onGossipChanged?.();
   }
@@ -1802,6 +2263,9 @@ export class WorldClient {
   openQuestList(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.questMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingQuestGiverGuid = guid;
     this.#connection.send(OPCODES.CMSG_QUESTGIVER_HELLO, buildQuestGiverHello(guid));
   }
 
@@ -1831,6 +2295,7 @@ export class WorldClient {
 
   closeQuest(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_QUESTGIVER_CANCEL);
+    this.#pendingQuestGiverGuid = 0n;
     this.questList = undefined;
     this.questDialog = undefined;
     this.questMessage = undefined;
@@ -1851,6 +2316,86 @@ export class WorldClient {
     this.#requestedGameObjects.add(entry);
     this.#connection.send(OPCODES.CMSG_GAMEOBJECT_QUERY, buildGameObjectQuery(entry, guid));
     return undefined;
+  }
+
+  /**
+   * Waits for the template query an eligible click has already started.
+   *
+   * The waiter belongs to the world lifecycle instead of `onGameObjectsChanged`: that callback is
+   * a renderer notification with one owner, while several live objects may share one template
+   * entry. A guid is retained only while it still names the same GO entry, and every exit resolves
+   * rather than rejects so a disappearing object cannot create an unhandled UI promise.
+   */
+  waitForGameObjectTemplate(entry: number, guid: bigint): Promise<GameObjectTemplate | undefined> {
+    const known = this.gameObjectTemplates.get(entry);
+    if (known !== undefined || this.gameObjectTemplates.has(entry)) return Promise.resolve(known ?? undefined);
+    if (this.#closed || entry <= 0 || !this.#requestedGameObjects.has(entry)) return Promise.resolve(undefined);
+
+    const object = this.state.objects.get(guid);
+    const currentEntry = object?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+    if (object?.typeId !== 5 || currentEntry !== entry) return Promise.resolve(undefined);
+
+    const existing = this.#gameObjectTemplateWaiters.get(guid);
+    if (existing?.entry === entry && existing.object === object) return existing.promise;
+    if (existing) this.#cancelGameObjectTemplateWaiters(guid);
+
+    let resolve = (_template: GameObjectTemplate | undefined): void => undefined;
+    const promise = new Promise<GameObjectTemplate | undefined>((settle) => { resolve = settle; });
+    const timer = setTimeout(() => this.#cancelGameObjectTemplateWaiters(guid), GAME_OBJECT_TEMPLATE_WAIT_MS);
+    this.#gameObjectTemplateWaiters.set(guid, { entry, object, promise, resolve, timer });
+    return promise;
+  }
+
+  #settleGameObjectTemplateWaiters(entry: number, template: GameObjectTemplate | undefined): void {
+    for (const [guid, waiter] of this.#gameObjectTemplateWaiters) {
+      if (waiter.entry !== entry) continue;
+      this.#gameObjectTemplateWaiters.delete(guid);
+      clearTimeout(waiter.timer);
+      waiter.resolve(this.state.objects.get(guid) === waiter.object ? template : undefined);
+    }
+  }
+
+  #cancelGameObjectTemplateWaiters(guid: bigint): void {
+    const waiter = this.#gameObjectTemplateWaiters.get(guid);
+    if (!waiter) return;
+    this.#gameObjectTemplateWaiters.delete(guid);
+    clearTimeout(waiter.timer);
+    waiter.resolve(undefined);
+  }
+
+  #settleAllGameObjectTemplateWaiters(): void {
+    for (const guid of [...this.#gameObjectTemplateWaiters.keys()]) this.#cancelGameObjectTemplateWaiters(guid);
+  }
+
+  /** `UPDATE_OUT_OF_RANGE` removes objects inside WorldState rather than through a destroy opcode. */
+  #cancelStaleGameObjectTemplateWaiters(): void {
+    for (const [guid, waiter] of this.#gameObjectTemplateWaiters) {
+      if (this.state.objects.get(guid) !== waiter.object) this.#cancelGameObjectTemplateWaiters(guid);
+    }
+  }
+
+  /** Retires aura/cast and transient NPC state belonging to the previous object incarnation. */
+  #retireWorldObject(guid: bigint): void {
+    this.#cancelGameObjectTemplateWaiters(guid);
+    const previousAuras = this.auras.get(guid);
+    if (previousAuras !== undefined && this.auras.delete(guid)) {
+      const currentAuras = new Map<number, ActiveAura>();
+      const previous = new Map(previousAuras);
+      const diff = auraDiff(previous, currentAuras);
+      this.events.emit("AURA_CHANGED", {
+        guid, previous, current: currentAuras, ...diff,
+      });
+      this.onAurasChanged?.();
+    }
+    const cast = this.casts.get(guid);
+    if (cast) this.#endCast(guid, cast.spellId, "interrupted", cast.castCount);
+    this.taxiNodeStatus.delete(guid);
+    this.spiritHealerTimers.delete(guid);
+    this.questGiverStatus.delete(guid);
+  }
+
+  #retireWorldObjects(guids: readonly bigint[]): void {
+    for (const guid of guids) this.#retireWorldObject(guid);
   }
 
   /**
@@ -1889,8 +2434,11 @@ export class WorldClient {
       const template = parseGameObjectQueryResponse(packet.payload);
       // A miss is stored as null so the entry is never asked for twice.
       const reader = new PacketReader(packet.payload);
-      this.gameObjectTemplates.set(template?.entry ?? (reader.u32() & 0x7fffffff), template ?? null);
+      const entry = template?.entry ?? (reader.u32() & 0x7fffffff);
+      this.gameObjectTemplates.set(entry, template ?? null);
+      this.#settleGameObjectTemplateWaiters(entry, template);
       this.onGameObjectsChanged?.();
+      this.events.emit("QUERY_CACHE_CHANGED", { kind: "gameObject", id: entry });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GAMEOBJECT_CUSTOM_ANIM) {
@@ -1900,7 +2448,9 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_GAMEOBJECT_DESPAWN_ANIM) {
       // The only warning a mined vein gives that it is going; the destroy update comes later.
-      this.state.destroy(parseGameObjectDespawnAnim(packet.payload));
+      const guid = parseGameObjectDespawnAnim(packet.payload);
+      this.state.destroy(guid);
+      this.#retireWorldObject(guid);
       return true;
     }
     return false;
@@ -1926,6 +2476,18 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_LOOT_MONEY, buildLootMoney());
   }
 
+  /**
+   * Takes everything the server allows from the current loot window: money first, then every
+   * freely takeable slot in wire order. Slots that need a roll, are locked or already taken are
+   * left alone — the guards in `takeLootSlot` decide, so this stays a thin loop rather than a
+   * second copy of `isLootSlotTakeable`.
+   */
+  takeAllLoot(): void {
+    if (this.#closed || !this.loot || this.loot.error !== undefined) return;
+    this.takeLootMoney();
+    for (const slot of this.loot.slots) this.takeLootSlot(slot.index);
+  }
+
   closeLoot(): void {
     const guid = this.loot?.guid;
     this.loot = undefined;
@@ -1936,6 +2498,11 @@ export class WorldClient {
   /** Releases the spirit after death, which turns the character into a ghost at the graveyard. */
   releaseSpirit(): void {
     if (this.#closed) return;
+    // A query from the previous death must not be painted during the transition to this ghost.
+    // The new location and reclaim delay come from the server's responses after the release.
+    this.corpse = undefined;
+    this.corpseReclaimDelay = 0;
+    this.onDeathChanged?.();
     this.#connection.send(OPCODES.CMSG_REPOP_REQUEST, buildRepopRequest());
     this.queryCorpse();
   }
@@ -1947,6 +2514,15 @@ export class WorldClient {
   /** Runs back to the body and revives. The server resolves the corpse itself and ignores the GUID. */
   reclaimCorpse(corpseGuid = 0n): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_RECLAIM_CORPSE, buildReclaimCorpse(corpseGuid));
+  }
+
+  /**
+   * Uses the self-resurrection the corpse holds (a soulstone, Reincarnation, an ankh): the spell in
+   * PLAYER_SELF_RES_SPELL. `CMSG_SELF_RES` has an empty body; `HandleSelfResOpcode`
+   * (SpellHandler.cpp:575-587) casts that spell and clears the field itself.
+   */
+  useSelfResurrection(): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SELF_RES);
   }
 
   answerResurrect(accept: boolean): void {
@@ -1971,6 +2547,9 @@ export class WorldClient {
   openVendor(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.merchantMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingVendorGuid = guid;
     this.#connection.send(OPCODES.CMSG_LIST_INVENTORY, buildListInventory(guid));
   }
 
@@ -1995,7 +2574,9 @@ export class WorldClient {
   }
 
   closeVendor(): void {
-    if (!this.vendor) return;
+    const hadVendor = this.vendor !== undefined;
+    this.#pendingVendorGuid = 0n;
+    if (!hadVendor) return;
     this.vendor = undefined;
     this.merchantMessage = undefined;
     this.onVendorChanged?.();
@@ -2004,17 +2585,23 @@ export class WorldClient {
   openTrainer(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.merchantMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingTrainerGuid = guid;
     this.#connection.send(OPCODES.CMSG_TRAINER_LIST, buildTrainerList(guid));
   }
 
   learnFromTrainer(spellId: number): void {
     const trainer = this.trainer;
-    if (this.#closed || !trainer) return;
+    const spell = trainer?.spells.find((candidate) => candidate.spellId === spellId && candidate.usable === TRAINER_SPELL_AVAILABLE);
+    if (this.#closed || !trainer || !spell) return;
     this.#connection.send(OPCODES.CMSG_TRAINER_BUY_SPELL, buildTrainerBuySpell(trainer.guid, spellId));
   }
 
   closeTrainer(): void {
-    if (!this.trainer) return;
+    const hadTrainer = this.trainer !== undefined;
+    this.#pendingTrainerGuid = undefined;
+    if (!hadTrainer) return;
     this.trainer = undefined;
     this.merchantMessage = undefined;
     this.onTrainerChanged?.();
@@ -2026,17 +2613,79 @@ export class WorldClient {
   }
 
   /**
-   * Uses the item. The server picks the spell from the item template and only logs the id we
-   * send, so zero is fine; targets are written as "no target", which covers consumables.
+   * Names the ammo the ranged weapon fires (CMSG_SET_AMMO): a carried item entry, or zero to clear it.
+   * No stack moves; the realm answers with PLAYER_AMMO_ID or an SMSG_INVENTORY_CHANGE_FAILURE
+   * (`HandleSetAmmoOpcode`, ItemHandler.cpp:814). Anything but a uint32 is not sent.
    */
+  setAmmo(entry: number): void {
+    if (this.#closed || !Number.isInteger(entry) || entry < 0 || entry > 0xffff_ffff) return;
+    this.#connection.send(OPCODES.CMSG_SET_AMMO, buildSetAmmo(entry));
+  }
+
+  /** Chooses the server's open-item path for loot containers and wrapped gifts. */
   useItem(bag: number, slot: number, itemGuid: bigint): void {
     if (this.#closed) return;
+    const inventory = playerInventory(this.state);
+    const candidate = inventory ? slotAt(inventory, bag, slot) : undefined;
+    const item = candidate?.guid === itemGuid ? candidate.item : undefined;
+    if (item) {
+      const entry = item.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+      const instanceFlags = item.fields.get(UPDATE_FIELDS.ITEM_FIELD_FLAGS.offset);
+      const template = this.itemTemplates.get(entry);
+      if (itemOpensForLoot(instanceFlags, template?.flags)) {
+        this.#pendingItemUses.delete(itemGuid);
+        this.#connection.send(OPCODES.CMSG_OPEN_ITEM, buildOpenItem(bag, slot));
+        return;
+      }
+      if (entry !== 0 && template === undefined) {
+        // The same right click can mean a consumable or a container. Ask the realm instead of
+        // guessing; the reply resumes only if the very same item still occupies this slot.
+        this.#pendingItemUses.set(itemGuid, { bag, slot, entry });
+        this.itemTemplate(entry);
+        return;
+      }
+    }
+    this.#pendingItemUses.delete(itemGuid);
+    // The realm chooses the item's spell; zero is the logged spell id, with a no-target cast.
     this.#connection.send(OPCODES.CMSG_USE_ITEM, buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid));
+  }
+
+  /**
+   * Uses the item at an explicit ground point chosen outside the selection (the reticle flow).
+   *
+   * Same wire shape as `useItem`, with the destination the browser resolved instead of a bare
+   * "no target" mask. The server still validates range, line of sight and the landing surface;
+   * a point it rejects fails there, not here.
+   */
+  useItemAt(bag: number, slot: number, itemGuid: bigint,
+    destination: { x: number; y: number; z: number }): void {
+    if (this.#closed) return;
+    if (!Number.isFinite(destination.x) || !Number.isFinite(destination.y) || !Number.isFinite(destination.z)) {
+      return;
+    }
+    this.#connection.send(OPCODES.CMSG_USE_ITEM,
+      buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid, destination));
+  }
+
+  /**
+   * Inscribes a glyph item into one socket: `CMSG_USE_ITEM` with the zero-based socket in its glyph
+   * field (the stock `PlaceGlyphInSocket`). The realm checks the level lock and the major/minor match
+   * (`Spell::EffectApplyGlyph`) and answers with the update fields and a fresh `SMSG_TALENTS_INFO`.
+   */
+  useGlyphItem(bag: number, slot: number, itemGuid: bigint, glyphIndex: number): void {
+    if (this.#closed || !Number.isInteger(glyphIndex) || glyphIndex < 0 || glyphIndex >= MAX_GLYPH_SLOTS) return;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM,
+      buildUseItem(bag, slot, ++this.#useCount & 0xff, 0, itemGuid, undefined, glyphIndex));
   }
 
   /** A count of zero destroys the whole stack, which is what the original client sends. */
   destroyItem(bag: number, slot: number, count = 0): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_DESTROYITEM, buildDestroyItem(bag, slot, count));
+  }
+
+  /** Only stages a request; the realm consumes gems and supplies the resulting enchantments. */
+  socketGems(itemGuid: bigint, gems: readonly [bigint, bigint, bigint]): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SOCKET_GEMS, buildSocketGems(itemGuid, gems));
   }
 
   /** Moves an item, choosing the right opcode for whether either end is the player inventory. */
@@ -2066,9 +2715,25 @@ export class WorldClient {
     return languageForRace(bytes & 0xff);
   }
 
-  sendChat(type: number, text: string, target = ""): void {
-    if (this.#closed || !text) return;
-    this.#connection.send(OPCODES.CMSG_MESSAGECHAT, buildChatMessage(type, this.chatLanguage, text, target));
+  /**
+   * `CMSG_MESSAGECHAT`.
+   *
+   * Empty text goes out only for AFK (0x17) and DND (0x18): TrinityCore reads it for those two and
+   * gives it its own meaning — toggle the flag off, or set the default auto-reply
+   * (ChatHandler.cpp:235-236, 528-564) — so stock `/afk` and `/dnd` typed bare are real requests,
+   * and every other empty line is dropped here as the server would.
+   *
+   * `language` is the one the stock chat's language menu chose (the FrameXML seam resolves stock's
+   * language *name* to its id). Only a positive id is taken: 0 (Universal) is refused by the server
+   * for ordinary chat as a hacking attempt (ChatHandler.cpp:75-81), and an absent one is the racial
+   * default, `chatLanguage`. A language the character does not know is the server's to refuse
+   * (`LANG_NOT_LEARNED_LANGUAGE`, ChatHandler.cpp:95-112), exactly as for the real client.
+   */
+  sendChat(type: number, text: string, target = "", language?: number): void {
+    if (this.#closed || (!text && type !== CHAT_MSG_AFK && type !== CHAT_MSG_DND)) return;
+    const lang = language !== undefined && Number.isInteger(language) && language > 0 && language < 0xffff_ffff
+      ? language : this.chatLanguage;
+    this.#connection.send(OPCODES.CMSG_MESSAGECHAT, buildChatMessage(type, lang, text, target));
   }
 
   /**
@@ -2089,6 +2754,54 @@ export class WorldClient {
 
   leaveChannel(name: string): void {
     if (!this.#closed && name) this.#connection.send(OPCODES.CMSG_LEAVE_CHANNEL, buildLeaveChannel(0, name));
+  }
+
+  kickChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_KICK, buildChannelKick(channel, name));
+  }
+
+  banChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_BAN, buildChannelBan(channel, name));
+  }
+
+  unbanChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_UNBAN, buildChannelUnban(channel, name));
+  }
+
+  inviteChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_INVITE, buildChannelInvite(channel, name));
+  }
+
+  setChannelOwner(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_SET_OWNER, buildChannelSetOwner(channel, name));
+  }
+
+  setChannelPassword(channel: string, password: string): void {
+    if (!this.#closed && channel) this.#connection.send(OPCODES.CMSG_CHANNEL_PASSWORD, buildChannelPassword(channel, password));
+  }
+
+  setChannelModerator(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_MODERATOR, buildChannelSetModerator(channel, name));
+  }
+
+  unsetChannelModerator(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_UNMODERATOR, buildChannelUnmoderator(channel, name));
+  }
+
+  muteChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_MUTE, buildChannelMute(channel, name));
+  }
+
+  unmuteChannelMember(channel: string, name: string): void {
+    if (!this.#closed && channel && name) this.#connection.send(OPCODES.CMSG_CHANNEL_UNMUTE, buildChannelUnmute(channel, name));
+  }
+
+  toggleChannelAnnounce(channel: string): void {
+    if (!this.#closed && channel) this.#connection.send(OPCODES.CMSG_CHANNEL_ANNOUNCEMENTS, buildChannelAnnounce(channel));
+  }
+
+  requestChannelList(channel: string): void {
+    if (!this.#closed && channel) this.#connection.send(OPCODES.CMSG_CHANNEL_LIST, buildChannelList(channel));
   }
 
   /** Asks the server for a player name, at most once per GUID. */
@@ -2134,6 +2847,24 @@ export class WorldClient {
   /** Leaving and disbanding are the same opcode; the server decides by who sent it. */
   leaveGroup(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_GROUP_DISBAND);
+  }
+
+  /**
+   * `CMSG_RESET_INSTANCES` reads nothing: a group leader resets the group's saves, a player with no
+   * group their own, anyone else nothing (MiscHandler.cpp:1294-1305). A map that resets answers
+   * `SMSG_INSTANCE_RESET`; in a group, one that cannot answers `SMSG_INSTANCE_RESET_FAILED`.
+   */
+  resetInstances(): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_RESET_INSTANCES);
+  }
+
+  /**
+   * `CMSG_AREATRIGGER` (2.01): the character walked into this AreaTrigger.dbc volume. Everything the
+   * trigger does — a portal, a tavern, an objective, a flag — is the server's; the caller
+   * (browser/game/AreaTriggers.ts) sends the heartbeat that puts the character inside it first.
+   */
+  enterAreaTrigger(id: number): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_AREATRIGGER, buildAreaTrigger(id));
   }
 
   // --- Slice P5: the raid, the rolls, the guild bank, the calendar, contacts and charters. ---
@@ -2209,6 +2940,13 @@ export class WorldClient {
     this.#connection.send(OPCODES.MSG_RAID_TARGET_UPDATE, buildSetRaidTarget(icon, guid));
   }
 
+  /** `SetOptOutOfLoot`: pass on every group roll, or take part again. Unchanged is not resent. */
+  setOptOutOfLoot(passOnLoot: boolean): void {
+    if (this.#closed || this.optOutOfLoot === passOnLoot) return;
+    this.optOutOfLoot = passOnLoot;
+    this.#connection.send(OPCODES.CMSG_OPT_OUT_OF_LOOT, buildOptOutOfLoot(passOnLoot));
+  }
+
   pingMinimap(x: number, y: number): void {
     if (!this.#closed && this.group) this.#connection.send(OPCODES.MSG_MINIMAP_PING, buildMinimapPing(x, y));
   }
@@ -2220,10 +2958,10 @@ export class WorldClient {
   }
 
   /** The item guid is the synthetic one the roll was announced with. */
-  rollForLoot(itemSlot: number, rollType: number): void {
-    const roll = this.lootRolls.get(itemSlot);
+  rollForLoot(itemGuid: bigint, rollType: number): void {
+    const roll = this.lootRolls.get(itemGuid);
     if (this.#closed || !roll) return;
-    this.#connection.send(OPCODES.CMSG_LOOT_ROLL, buildLootRoll(roll.start.itemGuid, itemSlot, rollType));
+    this.#connection.send(OPCODES.CMSG_LOOT_ROLL, buildLootRoll(itemGuid, roll.start.itemSlot, rollType));
   }
 
   giveMasterLoot(slot: number, targetGuid: bigint): void {
@@ -2263,7 +3001,6 @@ export class WorldClient {
    */
   closeGuildBank(): void {
     this.guildBankerGuid = 0n;
-    this.tabardVendorGuid = 0n;
     this.guildBank = undefined;
   }
 
@@ -2304,12 +3041,58 @@ export class WorldClient {
       buildGuildBankDepositItem(this.guildBankerGuid, tabId, slotId, itemId, bag, bagSlot, split));
   }
 
+  // The stock GuildBankFrame's commands (FrameXmlGuildBank.ts); the native window uses the ones above.
+
+  /** A vault item into one named bag slot (stock PickupContainerItem with a vault item held). */
+  withdrawGuildBankItemTo(tabId: number, slotId: number, itemId: number, bag: number, bagSlot: number, split = 0): void {
+    if (this.#closed || this.guildBankerGuid === 0n) return;
+    this.#connection.send(
+      OPCODES.CMSG_GUILD_BANK_SWAP_ITEMS,
+      buildGuildBankWithdrawItemTo(this.guildBankerGuid, tabId, slotId, itemId, bag, bagSlot, split));
+  }
+
+  /** One vault slot onto another (a tab's own slots or another tab's); `split` 0 moves the stack. */
+  moveGuildBankItem(
+    fromTab: number, fromSlot: number, fromItemId: number, toTab: number, toSlot: number, toItemId: number, split = 0,
+  ): void {
+    if (this.#closed || this.guildBankerGuid === 0n) return;
+    this.#connection.send(
+      OPCODES.CMSG_GUILD_BANK_SWAP_ITEMS,
+      buildGuildBankMoveItem(this.guildBankerGuid, fromTab, fromSlot, fromItemId, toTab, toSlot, toItemId, split));
+  }
+
+  /** CMSG_GUILD_BANK_QUERY_TAB alone: stock asks for a tab's text separately (QueryGuildBankText). */
+  queryGuildBankTab(tabId: number): void {
+    if (this.#closed || this.guildBankerGuid === 0n) return;
+    this.#connection.send(OPCODES.CMSG_GUILD_BANK_QUERY_TAB, buildGuildBankQueryTab(this.guildBankerGuid, tabId, true));
+  }
+
+  requestGuildBankText(tabId: number): void {
+    if (!this.#closed) this.#connection.send(OPCODES.MSG_QUERY_GUILD_BANK_TEXT, buildGuildBankTextQuery(tabId));
+  }
+
+  setGuildBankText(tabId: number, text: string): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SET_GUILD_BANK_TEXT, buildSetGuildBankText(tabId, text));
+  }
+
+  requestGuildBankMoneyWithdrawn(): void {
+    if (!this.#closed) this.#connection.send(OPCODES.MSG_GUILD_BANK_MONEY_WITHDRAWN, buildGuildBankMoneyWithdrawnQuery());
+  }
+
   openTabardVendor(guid: bigint): void {
-    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.MSG_TABARDVENDOR_ACTIVATE, buildTabardVendorActivate(guid));
+    if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.tabardVendorGuid = 0n;
+    this.tabardMessage = undefined;
+    this.#pendingTabardSaveGuid = 0n;
+    this.#pendingTabardVendorGuid = guid;
+    this.#connection.send(OPCODES.MSG_TABARDVENDOR_ACTIVATE, buildTabardVendorActivate(guid));
   }
 
   saveGuildEmblem(style: number, color: number, borderStyle: number, borderColor: number, background: number): void {
     if (this.#closed || this.tabardVendorGuid === 0n) return;
+    this.#pendingTabardSaveGuid = this.tabardVendorGuid;
     this.#connection.send(
       OPCODES.MSG_SAVE_GUILD_EMBLEM,
       buildSaveGuildEmblem(this.tabardVendorGuid, style, color, borderStyle, borderColor, background),
@@ -2384,14 +3167,16 @@ export class WorldClient {
   }
 
   /** Which guild members a new event's invite list is drawn from. */
-  requestCalendarGuildFilter(minLevel: number, maxLevel: number, maxRankOrder: number): void {
+  requestCalendarGuildFilter(minLevel: number, maxLevel: number, maxRankOrder: number, forEvent?: bigint): void {
     if (this.#closed) return;
+    this.#pendingCandidatesEvent = forEvent;
     this.#connection.send(
       OPCODES.CMSG_CALENDAR_GUILD_FILTER, buildCalendarGuildFilter(minLevel, maxLevel, maxRankOrder));
   }
 
-  requestCalendarArenaTeam(arenaTeamId: number): void {
+  requestCalendarArenaTeam(arenaTeamId: number, forEvent?: bigint): void {
     if (this.#closed) return;
+    this.#pendingCandidatesEvent = forEvent;
     this.#connection.send(OPCODES.CMSG_CALENDAR_ARENA_TEAM, buildCalendarArenaTeam(arenaTeamId));
   }
 
@@ -2421,6 +3206,33 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_DEL_IGNORE, buildDeleteIgnore(guid));
   }
 
+  /**
+   * CMSG_SET_CONTACT_NOTES: `guid, note` (TrinityCore `HandleSetContactNotesOpcode`, which keeps 48
+   * characters and answers nothing). The held contact's note changes here, as the client's own
+   * list does; the stock FriendsFrame repaints it from FRIENDLIST_UPDATE.
+   */
+  setFriendNote(guid: bigint, note: string): void {
+    if (this.#closed || guid === 0n) return;
+    this.#connection.send(OPCODES.CMSG_SET_CONTACT_NOTES, new PacketWriter().u64(guid).cString(note).toUint8Array());
+    const held = this.contacts?.contacts.find((contact) => contact.guid === guid);
+    if (held) held.note = note;
+  }
+
+  /** CMSG_REQUEST_RAID_INFO has no body; `HandleRequestRaidInfoOpcode` answers SMSG_RAID_INSTANCE_INFO. */
+  requestRaidInfo(): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_REQUEST_RAID_INFO);
+  }
+
+  /**
+   * CMSG_SET_SAVED_INSTANCE_EXTEND: `int32 map, uint32 difficulty, bool extend` (CalendarPackets.cpp
+   * `SetSavedInstanceExtend::Read`). The server rebinds silently; the lockout list is asked again.
+   */
+  setSavedInstanceExtend(mapId: number, difficulty: number, extend: boolean): void {
+    if (this.#closed) return;
+    this.#connection.send(OPCODES.CMSG_SET_SAVED_INSTANCE_EXTEND,
+      new PacketWriter().i32(mapId).u32(difficulty).u8(extend ? 1 : 0).toUint8Array());
+  }
+
   /** `/who`. The server caps the rows it returns but still reports how many matched. */
   requestWho(request: WhoRequest = {}): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_WHO, buildWhoQuery(request));
@@ -2440,8 +3252,29 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_PETITION_SHOW_SIGNATURES, buildPetitionShowSignatures(petitionGuid));
   }
 
+  /** The petition query alone, for a charter whose signatures were shown without it (an offer). */
+  queryPetition(petitionGuid: bigint): void {
+    if (!this.#closed && petitionGuid !== 0n) this.#connection.send(OPCODES.CMSG_PETITION_QUERY, buildPetitionQuery(petitionGuid));
+  }
+
+  /** Asks `playerGuid` to sign; the server shows them the signatures (HandleOfferPetitionOpcode). */
+  offerPetition(petitionGuid: bigint, playerGuid: bigint): void {
+    if (!this.#closed && petitionGuid !== 0n && playerGuid !== 0n) {
+      this.#connection.send(OPCODES.CMSG_OFFER_PETITION, buildOfferPetition(petitionGuid, playerGuid));
+    }
+  }
+
   requestPetitionVendor(vendorGuid: bigint): void {
     if (!this.#closed && vendorGuid !== 0n) this.#connection.send(OPCODES.CMSG_PETITION_SHOWLIST, buildPetitionShowList(vendorGuid));
+  }
+
+  /**
+   * Buys the named charter offer. The offer index comes from the vendor's own
+   * `SMSG_PETITION_SHOWLIST` row; the server revalidates level, team slot, money and name.
+   */
+  buyPetition(vendorGuid: bigint, name: string, clientIndex: number): void {
+    if (this.#closed || vendorGuid === 0n || !name || !Number.isInteger(clientIndex)) return;
+    this.#connection.send(OPCODES.CMSG_PETITION_BUY, buildPetitionBuy(vendorGuid, name, clientIndex));
   }
 
   signPetition(petitionGuid: bigint): void {
@@ -2474,8 +3307,12 @@ export class WorldClient {
   }
 
   voteToRemove(agree: boolean): void {
-    if (this.#closed || !this.lfgBoot) return;
+    this.expireInteractionRequests();
+    if (this.#closed || !this.lfgBoot?.inProgress || this.lfgBoot.voted) return;
     this.#connection.send(OPCODES.CMSG_LFG_SET_BOOT_VOTE, buildLfgBootVote(agree));
+    this.lfgBoot.voted = true;
+    this.lfgBoot.votedYes = agree;
+    this.events.emit("LFG_INFO_CHANGED", {});
   }
 
   // --- Slice P6: the pet bar, the stable and riding something. ---
@@ -2491,25 +3328,58 @@ export class WorldClient {
     if (this.#closed || !this.petSpells || !button) return;
     const target = targetGuid ?? this.targetGuid ?? 0n;
     this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, button.packed, target));
+    this.#notePetOrder(button.packed);
+  }
+
+  /**
+   * A spell from the pet's book, on its bar or not: CMSG_PET_ACTION with the spell's word, exactly
+   * a bar press — `HandlePetActionHelper` casts any spell the pet has (`pet->HasSpell`) and refuses
+   * a passive one, whatever slot it sits in.
+   */
+  castPetSpell(spellId: number, state: number, targetGuid?: bigint): void {
+    if (this.#closed || !this.petSpells || !Number.isSafeInteger(spellId) || spellId <= 0) return;
+    const target = targetGuid ?? this.targetGuid ?? 0n;
+    this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, packPetAction(spellId, state), target));
   }
 
   /** Stay, follow, attack or dismiss. */
   commandPet(command: number, targetGuid?: bigint): void {
     if (this.#closed || !this.petSpells) return;
     const target = targetGuid ?? this.targetGuid ?? 0n;
-    this.#connection.send(
-      OPCODES.CMSG_PET_ACTION,
-      buildPetAction(this.petSpells.guid, packPetAction(command, ACT_COMMAND), target),
-    );
+    const packed = packPetAction(command, ACT_COMMAND);
+    this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, packed, target));
+    this.#notePetOrder(packed);
   }
 
   /** Passive, defensive or aggressive. */
   setPetReaction(react: number): void {
     if (this.#closed || !this.petSpells) return;
-    this.#connection.send(
-      OPCODES.CMSG_PET_ACTION,
-      buildPetAction(this.petSpells.guid, packPetAction(react, ACT_REACTION), 0n),
-    );
+    const packed = packPetAction(react, ACT_REACTION);
+    this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, packed, 0n));
+    this.#notePetOrder(packed);
+  }
+
+  /**
+   * Nothing answers a pet order: `HandlePetActionHelper` sets the CharmInfo command state for stay
+   * and follow and the creature's react state for a reaction, and sends no packet. The held bar
+   * takes the same two values so its checked buttons follow the press, as the realm's next
+   * SMSG_PET_SPELLS would say; attack and dismiss set no state there and none here.
+   */
+  #notePetOrder(packed: number): void {
+    const spells = this.petSpells;
+    if (!spells) return;
+    const type = petActionTypeOf(packed);
+    const action = petActionOf(packed);
+    if (type === ACT_COMMAND && (action === COMMAND_STAY || action === COMMAND_FOLLOW)) {
+      if (spells.commandState === action) return;
+      spells.commandState = action;
+    } else if (type === ACT_REACTION) {
+      if (spells.reactState === action) return;
+      spells.reactState = action;
+    } else {
+      return;
+    }
+    this.events.emit("PET_BAR_CHANGED", { guid: spells.guid });
   }
 
   /**
@@ -2552,9 +3422,23 @@ export class WorldClient {
     button.type = (packed >>> 24) & 0xff;
   }
 
+  /**
+   * `HandlePetSpellAutocastOpcode` answers nothing either: it flips the pet's own spell and then
+   * `CharmInfo::SetSpellAutocast` the first bar slot holding it. The held bar and book do the same,
+   * or the shine and the right-click toggle would disagree with the realm until the next full bar.
+   */
   togglePetAutocast(spellId: number, enabled: boolean): void {
-    if (this.#closed || !this.petSpells) return;
-    this.#connection.send(OPCODES.CMSG_PET_SPELL_AUTOCAST, buildPetSpellAutocast(this.petSpells.guid, spellId, enabled));
+    const spells = this.petSpells;
+    if (this.#closed || !spells) return;
+    this.#connection.send(OPCODES.CMSG_PET_SPELL_AUTOCAST, buildPetSpellAutocast(spells.guid, spellId, enabled));
+    const state = enabled ? ACT_ENABLED : ACT_DISABLED;
+    const slot = spells.bar.find((button) => button.action === spellId
+      && (button.type === ACT_ENABLED || button.type === ACT_DISABLED));
+    if (slot) this.#placePetButton(slot.slot, packPetAction(spellId, state));
+    for (const entry of spells.spells) {
+      if (entry.spellId === spellId && (entry.active === ACT_ENABLED || entry.active === ACT_DISABLED)) entry.active = state;
+    }
+    this.events.emit("PET_BAR_CHANGED", { guid: spells.guid });
   }
 
   cancelPetAura(spellId: number): void {
@@ -2594,7 +3478,10 @@ export class WorldClient {
 
   requestStable(npcGuid: bigint): void {
     if (this.#closed || npcGuid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.stableMasterGuid = npcGuid;
+    this.#pendingStableMasterGuid = npcGuid;
     this.#connection.send(OPCODES.MSG_LIST_STABLED_PETS, buildStableListQuery(npcGuid));
   }
 
@@ -2654,7 +3541,35 @@ export class WorldClient {
 
   /** Talking to a battlemaster; the answer is the list of what it runs. */
   battlemasterHello(guid: bigint): void {
-    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.CMSG_BATTLEMASTER_HELLO, buildBattlemasterHello(guid));
+    if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.battlefieldList = undefined;
+    this.#pendingBattlemasterGuid = guid;
+    this.#connection.send(OPCODES.CMSG_BATTLEMASTER_HELLO, buildBattlemasterHello(guid));
+  }
+
+  /** Makes delayed NPC-service replies stale when their shared native window is closed. */
+  closeNpcServices(): void {
+    this.closeGossip();
+    this.closeTaxiMenu();
+    this.#pendingQuestGiverGuid = 0n;
+    this.#pendingVendorGuid = 0n;
+    this.#pendingTrainerGuid = undefined;
+    this.#pendingBankerGuid = undefined;
+    this.#pendingAuctioneerGuid = 0n;
+    this.#pendingStableMasterGuid = 0n;
+    this.stableMasterGuid = 0n;
+    if (this.questList) {
+      this.questList = undefined;
+      this.onQuestChanged?.();
+    }
+    if (this.battlefieldList?.fromWhere === 0) this.battlefieldList = undefined;
+    this.#pendingBattlemasterGuid = 0n;
+    this.tabardVendorGuid = 0n;
+    this.tabardMessage = undefined;
+    this.#pendingTabardVendorGuid = 0n;
+    this.#pendingTabardSaveGuid = 0n;
   }
 
   /** Asking for the instance list from the queue window rather than from a battlemaster. */
@@ -2690,6 +3605,9 @@ export class WorldClient {
   portToBattleground(queueSlot: number, enter: boolean): void {
     const queued = this.battlefieldQueues.get(queueSlot);
     if (this.#closed || !queued) return;
+    if (enter && (queued.status !== STATUS_WAIT_JOIN
+      || (this.battlefieldInviteDeadlines.get(queueSlot) ?? 0) <= performance.now())) return;
+    if (!enter && queued.status !== STATUS_WAIT_JOIN && queued.status !== STATUS_WAIT_QUEUE) return;
     this.#connection.send(OPCODES.CMSG_BATTLEFIELD_PORT, buildBattlefieldPort(queued.arenaType, queued.bgTypeId, enter));
   }
 
@@ -2697,7 +3615,7 @@ export class WorldClient {
   leaveBattleground(): void {
     if (this.#closed) return;
     const playing = [...this.battlefieldQueues.values()].find((queued) => queued.status === STATUS_IN_PROGRESS);
-    this.#connection.send(OPCODES.CMSG_LEAVE_BATTLEFIELD, buildLeaveBattlefield(playing?.arenaType ?? 0, playing?.bgTypeId ?? 0));
+    if (playing) this.#connection.send(OPCODES.CMSG_LEAVE_BATTLEFIELD, buildLeaveBattlefield(playing.arenaType, playing.bgTypeId));
   }
 
   /** The scoreboard. Refused inside an arena until the match ends and the server sends it unasked. */
@@ -2705,9 +3623,29 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.MSG_PVP_LOG_DATA, buildPvpLogDataQuery());
   }
 
-  /** Where the flags are. Nothing pushes this, so a flag map has to poll it. */
-  requestFlagCarriers(): void {
-    if (!this.#closed) this.#connection.send(OPCODES.MSG_BATTLEGROUND_PLAYER_POSITIONS, buildBattlegroundPlayerPositionsQuery());
+  /**
+   * Where the flags are. Nothing pushes this, so a flag map has to poll it — inside a battleground
+   * only, and at most once a second.
+   *
+   * Stock UIParent's OnUpdate calls `RequestBattlefieldPositions(elapsed)` on every rendered frame
+   * (UIParent.xml:25), and WorldMapFrame_OnUpdate once more while the map is open. Sent as asked,
+   * that was a packet a frame from the moment the stock HUD mounted: 99,217 in 33 minutes on
+   * 2026-09-28, 143 in the busiest second, over the core's AntiDOS limit of 100 an opcode a second
+   * (WorldSession.cpp:1751-1755), which kicks under the default `PacketSpoof.Policy`. The core
+   * answers only a player standing in a battleground (BattleGroundHandler.cpp:267-269) and an arena
+   * has no flags, so anything else is dropped here. WoWee polls the same way (social_handler.cpp).
+   */
+  requestFlagCarriers(now = performance.now()): void {
+    if (this.#closed || now - this.#flagCarriersRequestedAt < FLAG_CARRIER_POLL_MS) return;
+    let inMatch = false;
+    for (const queued of this.battlefieldQueues.values()) {
+      if (queued.status !== STATUS_IN_PROGRESS || queued.isArena) continue;
+      inMatch = true;
+      break;
+    }
+    if (!inMatch) return;
+    this.#flagCarriersRequestedAt = now;
+    this.#connection.send(OPCODES.MSG_BATTLEGROUND_PLAYER_POSITIONS, buildBattlegroundPlayerPositionsQuery());
   }
 
   /** Reporting somebody as away. There is no answer: the server just counts the reports. */
@@ -2783,11 +3721,21 @@ export class WorldClient {
     if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.MSG_INSPECT_HONOR_STATS, buildInspectHonorStats(guid));
   }
 
+  /**
+   * Another player's achievements for the stock comparison. The core answers only within inspect
+   * range and for a player who is not a valid attack target (HandleQueryInspectAchievements);
+   * otherwise nothing comes back.
+   */
+  queryInspectAchievements(guid: bigint): void {
+    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.CMSG_QUERY_INSPECT_ACHIEVEMENTS, buildQueryInspectAchievements(guid));
+  }
+
   /** Wintergrasp: answering the offer to queue for the battle. */
   answerBattlefieldQueueInvite(battleId: number, accept: boolean): void {
-    if (this.#closed) return;
+    if (this.#closed || this.battlefieldQueueInvite?.battleId !== battleId) return;
     this.battlefieldQueueInvite = undefined;
     this.#connection.send(OPCODES.CMSG_BATTLEFIELD_MGR_QUEUE_INVITE_RESPONSE, buildBattlefieldQueueInviteResponse(battleId, accept));
+    this.events.emit("BATTLEFIELD_CHANGED", { battleId });
   }
 
   /**
@@ -2797,9 +3745,12 @@ export class WorldClient {
    * out of the zone, and there is nothing the client can do to soften that.
    */
   answerBattlefieldWarInvite(battleId: number, accept: boolean): void {
-    if (this.#closed) return;
+    this.expireInteractionRequests();
+    if (this.#closed || this.battlefieldWarInvite?.battleId !== battleId) return;
+    if (accept && this.currentServerTime() === undefined) return;
     this.battlefieldWarInvite = undefined;
     this.#connection.send(OPCODES.CMSG_BATTLEFIELD_MGR_ENTRY_INVITE_RESPONSE, buildBattlefieldEntryInviteResponse(battleId, accept));
+    this.events.emit("BATTLEFIELD_CHANGED", { battleId });
   }
 
   /**
@@ -2808,7 +3759,18 @@ export class WorldClient {
    * one; it can only answer an invitation the server sends first.
    */
   leaveBattlefieldQueue(battleId: number): void {
-    if (!this.#closed) this.#connection.send(OPCODES.CMSG_BATTLEFIELD_MGR_EXIT_REQUEST, buildBattlefieldExitRequest(battleId));
+    if (this.#closed || this.battlefieldQueuedId !== battleId) return;
+    this.#connection.send(OPCODES.CMSG_BATTLEFIELD_MGR_EXIT_REQUEST, buildBattlefieldExitRequest(battleId));
+    // Battlefield::AskToLeaveQueue erases the membership and sends no acknowledgement.
+    this.battlefieldQueuedId = 0;
+    this.events.emit("BATTLEFIELD_CHANGED", { battleId });
+  }
+
+  /** HandleHearthAndResurrect calls Battlefield::PlayerAskToLeave for the player's current zone. */
+  leaveBattlefield(): void {
+    if (!this.#closed && this.battlefieldBattleId !== 0) {
+      this.#connection.send(OPCODES.CMSG_HEARTH_AND_RESURRECT, new Uint8Array());
+    }
   }
 
   /**
@@ -2836,6 +3798,33 @@ export class WorldClient {
     this.#itemsAsked.add(entry);
     this.#connection.send(OPCODES.CMSG_ITEM_QUERY_SINGLE, buildItemQuery(entry));
     return undefined;
+  }
+
+  /**
+   * A name for an id a text is about to print (М-A4-4): the browser's lookup first, then — for an
+   * item — this client's own query cache, which asks the realm on a miss so that a later text has
+   * it; otherwise the neutral word for the thing. Never the number.
+   */
+  #nameOf(kind: WorldNameKind, id: number): string {
+    if (kind === "item") return nameOr((entry) => this.#itemName(entry), id, WORLD_NAME_FALLBACKS.item);
+    return nameOr((entry) => this.worldNames[kind]?.(entry), id, WORLD_NAME_FALLBACKS[kind]);
+  }
+
+  /** An item's name: the browser's lookup, else the query cache — which asks the realm once on a miss. */
+  #itemName(entry: number): string | undefined {
+    const named = this.worldNames.item?.(entry);
+    if (named !== undefined && named.trim() !== "") return named;
+    const template = this.itemTemplate(entry);
+    return template?.found ? template.name : undefined;
+  }
+
+  /** The names a cast refusal's tail may need; `spellFailureText` supplies the words for a miss. */
+  #castFailureNames(): WorldNameSources {
+    return {
+      area: (id) => this.worldNames.area?.(id),
+      item: (entry) => this.#itemName(entry),
+      itemSubclass: (itemClass, mask) => this.worldNames.itemSubclass?.(itemClass, mask),
+    };
   }
 
   /**
@@ -2871,6 +3860,15 @@ export class WorldClient {
   /** The text written inside one particular item — a letter, a scroll. Keyed by guid, not entry. */
   requestItemText(itemGuid: bigint): void {
     if (!this.#closed && itemGuid !== 0n) this.#connection.send(OPCODES.CMSG_ITEM_TEXT_QUERY, buildItemTextQuery(itemGuid));
+  }
+
+  /**
+   * Reads a readable item (`CMSG_READ_ITEM`: `u8 bag, u8 slot`, ItemHandler.cpp:351-382). The answer
+   * is `SMSG_READ_ITEM_OK(guid)` when the character may use it, else FAILED plus an equip error.
+   */
+  readItem(bag: number, slot: number): void {
+    if (this.#closed) return;
+    this.#connection.send(OPCODES.CMSG_READ_ITEM, new PacketWriter().u8(bag).u8(slot).toUint8Array());
   }
 
   /** Asking for one of the eight saved blobs: macros, bindings, the interface layout. */
@@ -2959,10 +3957,20 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_PLAYER_LOGOUT, buildPlayerLogout());
   }
 
+  /**
+   * Declares war on a reputation faction, or makes peace. The server answers with the faction's
+   * new state (`SMSG_SET_FACTION_STANDING`); nothing flips locally first.
+   */
+  setFactionAtWar(listId: number, atWar: boolean): void {
+    if (this.#closed || !Number.isInteger(listId) || listId < 0) return;
+    this.#connection.send(OPCODES.CMSG_SET_FACTION_ATWAR, buildSetFactionAtWar(listId, atWar));
+  }
+
   /** Opening a ticket. The chat log is optional and only read when timestamps travel with it. */
   async createTicket(request: TicketRequest): Promise<void> {
     if (this.#closed) return;
-    this.#connection.send(OPCODES.CMSG_GMTICKET_CREATE, await buildTicketCreate(request));
+    const payload = await buildTicketCreate(request);
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_GMTICKET_CREATE, payload);
   }
 
   /** Rewriting the open ticket. The message is replaced whole; there is no append. */
@@ -3025,20 +4033,94 @@ export class WorldClient {
 
 
   startTrade(guid: bigint): void {
-    if (!this.#closed && guid !== 0n) this.#connection.send(OPCODES.CMSG_INITIATE_TRADE, buildInitiateTrade(guid));
+    if (!this.#closed && guid !== 0n) {
+      this.tradePartnerGuid = guid;
+      this.#connection.send(OPCODES.CMSG_INITIATE_TRADE, buildInitiateTrade(guid));
+    }
   }
 
-  /** `tradeSlot` is 0 to 5; slot 6 is the "will not be traded" one. */
-  offerTradeItem(tradeSlot: number, bag: number, slot: number): void {
-    if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_SET_TRADE_ITEM, buildSetTradeItem(tradeSlot, bag, slot));
+  /** Answers the incoming request; the server opens the offer window for both players. */
+  beginTrade(): void {
+    if (this.#closed || !this.tradePending || this.tradeBeginRequested) return;
+    this.tradeBeginRequested = true;
+    this.#connection.send(OPCODES.CMSG_BEGIN_TRADE);
+    this.onTradeChanged?.();
+  }
+
+  /**
+   * `tradeSlot` is 0 to 5; slot 6 is the "will not be traded" one. Answers whether
+   * CMSG_SET_TRADE_ITEM went out (the stock trade model records an offer only then).
+   */
+  offerTradeItem(tradeSlot: number, bag: number, slot: number): boolean {
+    if (this.#closed || !this.tradeOpen) return false;
+    const held = playerInventory(this.state);
+    const item = held ? slotAt(held, bag, slot) : undefined;
+    const guid = item?.guid ?? 0n;
+    // TradeHandler::HandleSetTradeItemOpcode cancels the trade when HasItem finds the same GUID
+    // in any slot, including the slot being set again. Use the known GUID or the source address.
+    if ([...this.#localTradeSlots.values()].some((offered) => offered !== null && (
+      offered.guid !== 0n && guid !== 0n
+        ? offered.guid === guid
+        : offered.bag === bag && offered.sourceSlot === slot
+    ))) {
+      this.tradeMessage = "Этот предмет уже предложен в обмен";
+      this.onTradeChanged?.();
+      return false;
+    }
+    this.#connection.send(OPCODES.CMSG_SET_TRADE_ITEM, buildSetTradeItem(tradeSlot, bag, slot));
+    this.#localTradeSlots.set(tradeSlot, {
+      itemId: item?.item?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0,
+      count: item ? stackCount(item) : 0,
+      guid,
+      bag,
+      sourceSlot: slot,
+    });
+    this.tradeMessage = undefined;
+    this.tradePartnerAccepted = false;
+    this.onTradeChanged?.();
+    this.events.emit("TRADE_STATE_CHANGED", { kind: "local" });
+    return true;
   }
 
   clearTradeItem(tradeSlot: number): void {
-    if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_CLEAR_TRADE_ITEM, buildClearTradeItem(tradeSlot));
+    if (this.#closed || !this.tradeOpen) return;
+    this.#connection.send(OPCODES.CMSG_CLEAR_TRADE_ITEM, buildClearTradeItem(tradeSlot));
+    this.#localTradeSlots.set(tradeSlot, null);
+    this.tradePartnerAccepted = false;
+    this.onTradeChanged?.();
+    this.events.emit("TRADE_STATE_CHANGED", { kind: "local" });
   }
 
   offerTradeGold(copper: number): void {
-    if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_SET_TRADE_GOLD, buildSetTradeGold(Math.max(0, Math.floor(copper))));
+    if (this.#closed || !this.tradeOpen) return;
+    const amount = Number.isFinite(copper) ? Math.min(0x7fffffff, Math.max(0, Math.floor(copper))) : 0;
+    this.#connection.send(OPCODES.CMSG_SET_TRADE_GOLD, buildSetTradeGold(amount));
+    this.#localTradeGold = amount;
+    this.tradePartnerAccepted = false;
+    this.onTradeChanged?.();
+    this.events.emit("TRADE_STATE_CHANGED", { kind: "local" });
+  }
+
+  /**
+   * `CancelTradeAccept`: CMSG_UNACCEPT_TRADE has no body; HandleUnacceptTradeOpcode clears this
+   * side's accept and answers the partner with TRADE_STATUS_BACK_TO_TRADE (TradeHandler.cpp:580).
+   */
+  unacceptTrade(): void {
+    if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_UNACCEPT_TRADE);
+  }
+
+  /** Own view plus locally sent changes; the core sends those changes only to the partner. */
+  ownTradeOffer(): { money: number; spellId: number; items: Array<{ slot: number; itemId: number; count: number }> } {
+    const items = new Map((this.myOffer?.items ?? []).map(({ slot, itemId, count }) => [slot, { slot, itemId, count }]));
+    for (const [slot, item] of this.#localTradeSlots) {
+      if (item === null) items.delete(slot);
+      else items.set(slot, { slot, itemId: item.itemId, count: item.count });
+    }
+    return {
+      money: this.#localTradeGold ?? this.myOffer?.money ?? 0,
+      spellId: this.myOffer?.spellId ?? 0,
+      items: [...items.values()].sort((left, right) => left.slot - right.slot),
+    };
   }
 
   acceptTrade(): void {
@@ -3046,43 +4128,64 @@ export class WorldClient {
   }
 
   cancelTrade(): void {
-    if (!this.#closed && this.tradeOpen) this.#connection.send(OPCODES.CMSG_CANCEL_TRADE);
+    if (!this.#closed && (this.tradeOpen || this.tradePending)) this.#connection.send(OPCODES.CMSG_CANCEL_TRADE);
     this.#closeTrade();
   }
 
   #closeTrade(): void {
     this.tradeOpen = false;
+    this.tradePending = false;
+    this.tradeBeginRequested = false;
     this.tradePartnerGuid = 0n;
     this.tradePartnerAccepted = false;
     this.myOffer = undefined;
     this.theirOffer = undefined;
+    this.#localTradeSlots.clear();
+    this.#localTradeGold = undefined;
     this.onTradeChanged?.();
+    this.events.emit("TRADE_STATE_CHANGED", { kind: "local" });
   }
 
   openAuctionHouse(guid: bigint): void {
     if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.auctioneerGuid = guid;
+    this.#pendingAuctioneerGuid = guid;
+    this.#auctionSearch = {};
     this.auctionMessage = undefined;
     this.#connection.send(OPCODES.MSG_AUCTION_HELLO, buildAuctionHello(guid));
   }
 
   closeAuctionHouse(): void {
+    this.#pendingAuctioneerGuid = 0n;
     this.auctioneerGuid = 0n;
+    this.#auctionSearch = {};
     this.auctions = undefined;
     this.ownAuctions = undefined;
+    this.bidAuctions = undefined;
     this.auctionMessage = undefined;
     this.onAuctionChanged?.();
+    this.events.emit("AUCTION_STATE_CHANGED", { kind: "closed" });
   }
 
   searchAuctions(search: AuctionSearch = {}): void {
     if (!this.#closed && this.auctioneerGuid !== 0n) {
+      this.#auctionSearch = { ...search };
       this.#connection.send(OPCODES.CMSG_AUCTION_LIST_ITEMS, buildAuctionListItems(this.auctioneerGuid, search));
     }
   }
 
-  listOwnAuctions(page = 0): void {
+  listOwnAuctions(): void {
     if (!this.#closed && this.auctioneerGuid !== 0n) {
-      this.#connection.send(OPCODES.CMSG_AUCTION_LIST_OWNER_ITEMS, buildAuctionListOwnerItems(this.auctioneerGuid, page));
+      this.#connection.send(OPCODES.CMSG_AUCTION_LIST_OWNER_ITEMS, buildAuctionListOwnerItems(this.auctioneerGuid));
+    }
+  }
+
+  /** Lists the lots the player has bid on; the server appends them itself, no id list needed. */
+  listBidderAuctions(): void {
+    if (!this.#closed && this.auctioneerGuid !== 0n) {
+      this.#connection.send(OPCODES.CMSG_AUCTION_LIST_BIDDER_ITEMS, buildAuctionListBidderItems(this.auctioneerGuid));
     }
   }
 
@@ -3107,12 +4210,30 @@ export class WorldClient {
     );
   }
 
+  /**
+   * One lot gathered from several stacks of the same item (HandleAuctionSellItem takes up to 160
+   * guid/count pairs and clones them into one item). The stock multisell posts each stack this way.
+   */
+  createAuctionFromStacks(
+    items: readonly { readonly guid: bigint; readonly count: number }[],
+    startBid: number, buyout: number, durationMinutes: number,
+  ): void {
+    if (this.#closed || this.auctioneerGuid === 0n || items.length === 0) return;
+    this.#connection.send(
+      OPCODES.CMSG_AUCTION_SELL_ITEM,
+      buildAuctionSellItem(this.auctioneerGuid, items.map(({ guid, count }) => ({ guid, count })), startBid, buyout, durationMinutes),
+    );
+  }
+
   joinLfg(roles: number, dungeons: number[], comment = ""): void {
     if (!this.#closed && dungeons.length > 0) this.#connection.send(OPCODES.CMSG_LFG_JOIN, buildLfgJoin(roles, dungeons, comment));
+    this.lfgRolesChosen.clear();
   }
 
   leaveLfg(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_LFG_LEAVE, buildLfgLeave());
+    this.lfgRolesChosen.clear();
+    this.lfgSearching = false;
   }
 
   setLfgRoles(roles: number): void {
@@ -3124,6 +4245,34 @@ export class WorldClient {
     if (this.#closed || !proposal) return;
     this.lfgProposal = undefined;
     this.#connection.send(OPCODES.CMSG_LFG_PROPOSAL_RESULT, buildLfgProposalResult(proposal.proposalId, accept));
+    this.onLfgChanged?.();
+  }
+
+  /** Dismisses the LFG reward popup after reading it. The reward itself is server-granted. */
+  dismissLfgReward(): void {
+    if (this.lfgReward === undefined) return;
+    this.lfgReward = undefined;
+    this.events.emit("LFG_INFO_CHANGED", {});
+    this.onLfgChanged?.();
+  }
+
+  /**
+   * Answers the "continue with this group?" offer by re-queueing (accept) or leaving (decline).
+   * The offer itself carries no response opcode; accept re-joins with the same dungeons when
+   * known, decline leaves the finder. The server validates everything.
+   */
+  answerLfgContinue(accept: boolean, dungeons: number[] = [], roles = 0): void {
+    if (this.#closed || this.lfgOfferContinue === undefined) return;
+    this.lfgOfferContinue = undefined;
+    if (accept && dungeons.length > 0) this.joinLfg(roles, dungeons);
+    else if (!accept) this.leaveLfg();
+    this.onLfgChanged?.();
+  }
+
+  /** Dismisses the continue offer while staying in the group. */
+  dismissLfgContinue(): void {
+    if (this.lfgOfferContinue === undefined) return;
+    this.lfgOfferContinue = undefined;
     this.onLfgChanged?.();
   }
 
@@ -3182,7 +4331,7 @@ export class WorldClient {
    */
   setGuildRank(
     rankId: number, flags: number, name: string, withdrawGoldLimit: number,
-    tabs: ReadonlyArray<{ rights: number; slots: number }> = [],
+    tabs: ReadonlyArray<{ rights: number; slots: number }>,
   ): void {
     if (this.#closed || !name) return;
     this.#connection.send(OPCODES.CMSG_GUILD_RANK, buildGuildRank(rankId, flags, name, withdrawGoldLimit, tabs));
@@ -3219,16 +4368,32 @@ export class WorldClient {
 
   openMailbox(guid: bigint): void {
     if (this.#closed || guid === 0n) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
     this.mailboxGuid = guid;
     this.mailMessage = undefined;
+    this.mailResult = undefined;
     this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(guid));
+    this.events.emit("MAIL_STATE_CHANGED", { kind: "open" });
   }
 
   closeMailbox(): void {
     this.mail = undefined;
     this.mailboxGuid = 0n;
     this.mailMessage = undefined;
+    this.mailResult = undefined;
     this.onMailChanged?.();
+    this.events.emit("MAIL_STATE_CHANGED", { kind: "closed" });
+  }
+
+  /** `CheckInbox`: ask the open mailbox for its list again (the server caps one list at 50 letters). */
+  requestMailList(): void {
+    if (!this.#closed && this.mailboxGuid !== 0n) this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(this.mailboxGuid));
+  }
+
+  /** `TakeInboxTextItem`: copy the letter into a readable item (HandleMailCreateTextItem). */
+  copyMailText(mailId: number): void {
+    if (!this.#closed && this.mailboxGuid !== 0n) this.#connection.send(OPCODES.CMSG_MAIL_CREATE_TEXT_ITEM, buildMailCreateTextItem(this.mailboxGuid, mailId));
   }
 
   sendMail(draft: MailDraft): void {
@@ -3253,15 +4418,47 @@ export class WorldClient {
   }
 
   returnMail(mailId: number, senderGuid: bigint): void {
-    if (!this.#closed && this.mailboxGuid !== 0n) this.#connection.send(OPCODES.CMSG_MAIL_RETURN_TO_SENDER, buildMailReturnToSender(this.mailboxGuid, mailId, senderGuid));
+    if (this.#closed || this.mailboxGuid === 0n) return;
+    const entry = this.mail?.mails.find((candidate) => candidate.mailId === mailId);
+    if (!entry || !isMailReturnable(entry) || entry.senderGuid !== senderGuid) return;
+    this.#connection.send(OPCODES.CMSG_MAIL_RETURN_TO_SENDER, buildMailReturnToSender(this.mailboxGuid, mailId, senderGuid));
   }
 
   answerDuel(accept: boolean): void {
     const request = this.duelRequest;
     if (this.#closed || !request) return;
     this.duelRequest = undefined;
+    // Accept keeps the flag: the ring is anchored on it for the whole fight. Decline drops it —
+    // the flag despawns and there is no duel to bound.
+    if (!accept) this.duelFlag = undefined;
     this.#connection.send(accept ? OPCODES.CMSG_DUEL_ACCEPTED : OPCODES.CMSG_DUEL_CANCELLED, buildDuelResponse(request.flagGuid));
     this.onDuelChanged?.();
+  }
+
+  /**
+   * Challenges the current selection to a duel.
+   *
+   * In 3.3.5 the challenge itself is the `Duel` spell (7266) cast at the unit; the
+   * accept/cancel opcodes only answer an incoming `SMSG_DUEL_REQUESTED`. Server validates
+   * range, zone and state; this only routes the spell through the shared cast guard chain.
+   */
+  challengeDuelToSelection(): boolean {
+    if (this.#closed || this.state.selfGuid === undefined || this.targetGuid === undefined) return false;
+    if (this.targetGuid === this.state.selfGuid) return false;
+    this.castSpellOnUnit(DUEL_SPELL_ID, this.targetGuid);
+    return true;
+  }
+
+  /**
+   * Takes the queued duel-bounds chat line, if any.
+   *
+   * Said once in chat by whoever shows the duel state, so a transition says so exactly once
+   * rather than never. Taking it here keeps the "say once" rule testable without a document.
+   */
+  takeDuelBoundsMessage(): string | undefined {
+    const message = this.duelBoundsMessage;
+    this.duelBoundsMessage = undefined;
+    return message;
   }
 
   /**
@@ -3270,11 +4467,18 @@ export class WorldClient {
    * It goes into the same backlog as anything the server said, because the chat window is redrawn
    * from that backlog whenever a name reply lands: a line that only ever reached the DOM survived
    * until the first `SMSG_NAME_QUERY_RESPONSE` and then vanished.
+   *
+   * `markup: true` is for text whose author wrote WoW markup for the chat frame on purpose, which
+   * is an add-on's Lua `print`: the real client passes it to DEFAULT_CHAT_FRAME:AddMessage
+   * unchanged, so its `|n` must still break the line. Such a line is not marked `local`.
    */
-  pushLocalMessage(message: ChatMessage): void {
+  pushLocalMessage(message: ChatMessage, options?: { readonly markup?: boolean }): void {
     message.at ??= Date.now();
+    // Marks the text as the client's own prose; see `ChatMessage.local`.
+    if (!options?.markup) message.local = true;
     this.chatLog.push(message);
     if (this.chatLog.length > 500) this.chatLog.splice(0, this.chatLog.length - 500);
+    this.events.emit("CHAT_MESSAGE", message);
     this.onChatMessage?.(message);
   }
 
@@ -3357,17 +4561,41 @@ export class WorldClient {
     this.chatLog.push(message);
     if (this.chatLog.length > 500) this.chatLog.splice(0, this.chatLog.length - 500);
     if (!message.senderName) this.requestName(message.senderGuid);
+    this.events.emit("CHAT_MESSAGE", message);
     this.onChatMessage?.(message);
   }
 
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
+    this.#pendingItemUses.clear();
+    this.summonRequest = undefined;
+    this.binderConfirm = undefined;
+    this.talentWipeConfirm = undefined;
+    this.instanceLock = undefined;
+    this.sharedQuest = undefined;
+    this.battlefieldQueues.clear();
+    this.battlefieldInviteDeadlines.clear();
+    this.battlefieldQueueInvite = undefined;
+    this.battlefieldWarInvite = undefined;
+    this.battlefieldQueuedId = 0;
+    this.battlefieldBattleId = 0;
+    this.lfgRoleCheck = undefined;
+    this.lfgBoot = undefined;
+    this.#settleAllGameObjectTemplateWaiters();
+    const hadTrainer = this.trainer !== undefined;
+    this.#pendingTrainerGuid = undefined;
+    if (hadTrainer) {
+      this.trainer = undefined;
+      this.merchantMessage = undefined;
+    }
     this.movementReady = false;
     this.#stopAutoRepeat(false);
     this.#pendingCasts.length = 0;
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
     this.#connection.close();
+    if (hadTrainer) this.onTrainerChanged?.();
   }
 
   /**
@@ -3393,34 +4621,103 @@ export class WorldClient {
   async #waitFor(opcode: number): Promise<WorldPacket> {
     for (let ignored = 0; ignored < 2000; ignored++) {
       const packet = await this.#connection.read();
-      if (this.#handleUtilityPacket(packet)) continue;
+      // The world loop's guarantee (`#deliver`), here too: a utility packet this client cannot
+      // parse is recorded and dropped, and does not reject the character list or the login that is
+      // waiting. The handlers are synchronous, so arrival order is untouched, and the awaited
+      // opcode is never one of theirs, so it cannot be lost to this.
+      try {
+        if (this.#handleUtilityPacket(packet)) continue;
+      } catch (error) {
+        this.#recordPacketError(packet.opcode, error instanceof Error ? error : new Error(String(error)), packet.payload.byteLength);
+        continue;
+      }
       if (packet.opcode === opcode) return packet;
       this.#deferred.push(packet);
     }
     throw new Error(`Worldserver did not send opcode 0x${opcode.toString(16)}`);
   }
 
-  #startPing(): void {
-    this.#pingTimer = setInterval(() => {
-      const payload = new PacketWriter().u32(++this.#pingSequence).u32(0).toUint8Array();
-      this.#connection.send(OPCODES.CMSG_PING, payload);
-    }, 30_000);
+  /**
+   * The keepalive `connect` starts once the realm accepted the session: every 30 seconds, never
+   * faster — `WorldSocket::HandlePing` counts a ping under 27 s apart as over-speed and may drop
+   * the session for it (CONFIG_MAX_OVERSPEED_PINGS). A second call keeps the one timer.
+   */
+  startPing(): void {
+    if (this.#pingTimer || this.#closed) return;
+    this.#pingTimer = setInterval(() => this.#sendPing(), 30_000);
+  }
+
+  #sendPing(): void {
+    const sequence = ++this.#pingSequence >>> 0;
+    const payload = new PacketWriter().u32(sequence).u32(this.latencyMs ?? 0).toUint8Array();
+    this.#pingSentAt = { sequence, at: performance.now() };
+    this.#connection.send(OPCODES.CMSG_PING, payload);
+  }
+
+  /** SMSG_PONG echoes the ping's sequence (`WorldSocket::HandlePing`); an older one measures nothing. */
+  #receivePong(payload: Uint8Array): void {
+    const sent = this.#pingSentAt;
+    if (!sent || payload.length < 4) return;
+    const sequence = new PacketReader(payload).u32();
+    if (sequence !== sent.sequence) return;
+    this.#pingSentAt = undefined;
+    this.latencyMs = Math.max(0, Math.round(performance.now() - sent.at));
+  }
+
+  /**
+   * `GetNetStats()`' two rates: KB/s in and out, over the socket's wire bytes, headers included.
+   *
+   * Lazy, with no timer: a call that finds the open window at least `NET_RATE_WINDOW_MS` old turns
+   * the bytes since into rates and opens the next one; a call inside it answers the last rates. The
+   * first call only opens a window, so it answers zeros — as the stock client does before it has
+   * measured anything.
+   */
+  netBandwidth(): { inKBps: number; outKBps: number } {
+    const now = performance.now();
+    const bytesIn = this.#connection.bytesReceived ?? 0;
+    const bytesOut = this.#connection.bytesSent ?? 0;
+    const opened = this.#netWindow;
+    if (opened === undefined) this.#netWindow = { at: now, bytesIn, bytesOut };
+    else if (now - opened.at >= NET_RATE_WINDOW_MS) {
+      const seconds = (now - opened.at) / 1000;
+      this.#netRates = {
+        inKBps: Math.max(0, bytesIn - opened.bytesIn) / seconds / 1024,
+        outKBps: Math.max(0, bytesOut - opened.bytesOut) / seconds / 1024,
+      };
+      this.#netWindow = { at: now, bytesIn, bytesOut };
+    }
+    return { ...this.#netRates };
   }
 
   async #readWorld(): Promise<void> {
+    // A burst is handled in slices of a few milliseconds with a macrotask between them, so a frame
+    // can be drawn in the middle of it (`transport/PacketPump.ts` says why the reads alone never
+    // yielded). The pause falls between two packets and never inside one, and it only delays the
+    // next read: the order of the packets, and every rule of `#deliver` below, stay what they were.
+    const slice = new PacketSlice();
     // Everything that arrived while the login handshake held the socket, in the order it arrived,
     // before anything new is read.
     const held = this.#deferred.splice(0, this.#deferred.length);
-    for (const packet of held) await this.#deliver(packet);
+    for (const packet of held) {
+      await this.#deliver(packet);
+      if (slice.exhausted) await slice.pause();
+    }
     this.#worldEntered = true;
     while (!this.#closed) {
+      slice.readStarted();
       const packet = await this.#connection.read();
+      slice.readFinished();
+      if (this.#closed) break;
       await this.#deliver(packet);
+      if (slice.exhausted) await slice.pause();
     }
   }
 
   /** One packet through the world loop, and the guarantee that it cannot end the session. */
   async #deliver(packet: WorldPacket): Promise<void> {
+    // Diagnostic only: without a local freeze recording this is one check per packet. The time
+    // includes any await inside the handler (decompression, movement acks), so it is an upper bound.
+    const probeAt = captureProbeActive() ? performance.now() : undefined;
     try {
       await this.#dispatch(packet);
     } catch (error) {
@@ -3428,8 +4725,12 @@ export class WorldClient {
       // throws RangeError on a layout it has not seen — a custom opcode, an unmodelled chat
       // type, a movement flag combination — and without this the read loop exited and the
       // player was disconnected mid-play with no way back.
-      this.#recordUnhandled(packet);
-      this.onPacketError?.(packet.opcode, error instanceof Error ? error : new Error(String(error)));
+      this.#recordPacketError(packet.opcode, error instanceof Error ? error : new Error(String(error)), packet.payload.byteLength);
+    }
+    if (probeAt !== undefined) {
+      captureProbe("packets", probeAt, {
+        opcode: packet.opcode, bytes: packet.payload.byteLength, ms: performance.now() - probeAt,
+      });
     }
   }
 
@@ -3450,7 +4751,8 @@ export class WorldClient {
         }
         const receipt = this.customPacketBuffer.receive(packet.payload);
         if (receipt.kind === "error") {
-          this.onPacketError?.(packet.opcode, new Error(`custom packet ${receipt.error} (${receipt.code})`));
+          this.#recordPacketError(packet.opcode, new Error(`custom packet ${receipt.error} (${receipt.code})`),
+            packet.payload.byteLength, "custom-transport");
         } else if (receipt.kind === "message") {
           // The registry counts every message, decodes the ones with a schema, keeps the bytes of
           // the ones without, and wraps each subscriber on its own — one module's failure is not
@@ -3466,22 +4768,18 @@ export class WorldClient {
       if (await this.#handleMovementControl(packet)) return;
 
       if (packet.opcode === OPCODES.SMSG_UPDATE_OBJECT) {
-        this.state.applyUpdate(packet.payload);
+        this.#retireWorldObjects(this.state.applyUpdate(packet.payload));
+        this.#cancelStaleGameObjectTemplateWaiters();
+        this.#finishTransportArrival();
       } else if (packet.opcode === OPCODES.SMSG_COMPRESSED_UPDATE_OBJECT) {
-        this.state.applyUpdate(await decompressObjectUpdate(packet.payload));
+        this.#retireWorldObjects(this.state.applyUpdate(decompressObjectUpdate(packet.payload)));
+        this.#cancelStaleGameObjectTemplateWaiters();
+        this.#finishTransportArrival();
       } else if (packet.opcode === OPCODES.SMSG_DESTROY_OBJECT) {
         const reader = new PacketReader(packet.payload);
         const guid = reader.u64();
-        const previousAuras = new Map(this.auras.get(guid));
         this.state.destroy(guid);
-        if (this.auras.delete(guid)) {
-          const currentAuras = new Map<number, ActiveAura>();
-          const diff = auraDiff(previousAuras, currentAuras);
-          this.events.emit("AURA_CHANGED", {
-            guid, previous: previousAuras, current: currentAuras, ...diff,
-          });
-          this.onAurasChanged?.();
-        }
+        this.#retireWorldObject(guid);
         reader.u8();
         reader.assertFinished();
       } else if (MOVEMENT_OPCODES.has(packet.opcode)) {
@@ -3628,12 +4926,20 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SUMMON_REQUEST) {
       this.summonRequest = parseSummonRequest(packet.payload);
+      this.summonExpiresAt = performance.now() + this.summonRequest.timeoutMilliseconds;
+      this.requestName(this.summonRequest.summoner);
       this.events.emit("SUMMON_REQUEST", this.summonRequest);
       return true;
     }
 
     if (packet.opcode === OPCODES.SMSG_SHOWTAXINODES) {
-      this.taxiMenu = parseShowTaxiNodes(packet.payload);
+      const menu = parseShowTaxiNodes(packet.payload);
+      if (menu.guid !== this.#pendingTaxiGuid && menu.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingTaxiGuid = 0n;
+      this.#consumeGossipService(menu.guid);
+      this.#retriedNewTaxiPath = false;
+      this.taxiMessage = undefined;
+      this.taxiMenu = menu;
       this.events.emit("TAXI_MENU", this.taxiMenu);
       return true;
     }
@@ -3645,13 +4951,25 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_ACTIVATETAXIREPLY) {
       const reply = parseActivateTaxiReply(packet.payload);
-      this.onCombatStatus?.(activateTaxiReplyText(reply), this.attacking, reply !== TAXI_REPLY_OK);
+      const menu = this.#pendingTaxiActivationMenu;
+      if (!menu || this.taxiMenu !== menu) return true;
+      this.#pendingTaxiActivationMenu = undefined;
+      const guid = menu.guid;
+      const text = activateTaxiReplyText(reply);
+      this.taxiMessage = { text, error: reply !== TAXI_REPLY_OK };
+      if (reply === TAXI_REPLY_OK) this.taxiMenu = undefined;
+      this.events.emit("TAXI_CHANGED", { guid, reply });
+      this.onCombatStatus?.(text, this.attacking, reply !== TAXI_REPLY_OK);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_NEW_TAXI_PATH) {
       // Empty by design: a node was just discovered, and the status packet that follows says
       // which. Asking for the menu again is what the original client does with it.
       this.events.emit("WORLD_MESSAGE", { text: "Открыт новый маршрут полёта", kind: "system" });
+      if (this.#pendingTaxiGuid !== 0n && !this.#retriedNewTaxiPath) {
+        this.#retriedNewTaxiPath = true;
+        this.#connection.send(OPCODES.CMSG_TAXIQUERYAVAILABLENODES, buildTaxiQuery(this.#pendingTaxiGuid));
+      }
       return true;
     }
 
@@ -3702,11 +5020,15 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY) {
+      // The question the stock INSTANCE_LOCK dialog and the native prompt ask; SMSG_NEW_WORLD and
+      // SMSG_INSTANCE_DIFFICULTY came first (the core sends this from InstanceMap::AddPlayerToMap).
       const warning = parseInstanceLockWarning(packet.payload);
-      this.events.emit("WORLD_MESSAGE", {
-        text: `Вход свяжет с подземельем: ответ через ${Math.round(warning.milliseconds / 1000)} с`,
-        kind: "system",
-      });
+      const receivedAt = performance.now();
+      this.instanceLock = {
+        expiresAt: receivedAt + warning.milliseconds, encounterMask: warning.encounterMask,
+        previouslySaved: warning.previouslySaved, mapId: this.mapId ?? 0, difficulty: this.instanceDifficulty, receivedAt,
+      };
+      this.events.emit("INSTANCE_LOCK_START", warning);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_RAID_GROUP_ONLY) {
@@ -3768,7 +5090,23 @@ export class WorldClient {
   /** Asks a flight master for its map of destinations. */
   requestTaxiMenu(guid: bigint): void {
     if (this.#closed) return;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.taxiMenu = undefined;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiActivationMenu = undefined;
+    this.#pendingTaxiGuid = guid;
+    this.#retriedNewTaxiPath = false;
     this.#connection.send(OPCODES.CMSG_TAXIQUERYAVAILABLENODES, buildTaxiQuery(guid));
+  }
+
+  /** Closes a native flight map and makes any delayed SHOWTAXINODES response stale. */
+  closeTaxiMenu(): void {
+    this.taxiMenu = undefined;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiGuid = 0n;
+    this.#pendingTaxiActivationMenu = undefined;
+    this.#retriedNewTaxiPath = false;
   }
 
   /** Whether this flight master has anything this character has not discovered yet. */
@@ -3782,7 +5120,10 @@ export class WorldClient {
    * express form, which is the only way to fly anywhere the map has no direct path to.
    */
   takeTaxi(guid: bigint, nodes: readonly number[]): void {
-    if (this.#closed || nodes.length < 2) return;
+    const menu = this.taxiMenu;
+    if (this.#closed || nodes.length < 2 || menu?.guid !== guid || this.#pendingTaxiActivationMenu === menu) return;
+    this.taxiMessage = undefined;
+    this.#pendingTaxiActivationMenu = menu;
     if (nodes.length === 2) {
       this.#connection.send(OPCODES.CMSG_ACTIVATETAXI, buildActivateTaxi(guid, nodes[0]!, nodes[1]!));
       return;
@@ -3792,10 +5133,86 @@ export class WorldClient {
 
   /** Answers a summon. The guid has to go back byte for byte or the server drops the reply. */
   answerSummon(accept: boolean): void {
+    this.expireInteractionRequests();
     const request = this.summonRequest;
     if (this.#closed || !request) return;
+    if (accept && this.summonBlockReason() !== undefined) return;
     this.summonRequest = undefined;
     this.#connection.send(OPCODES.CMSG_SUMMON_RESPONSE, buildSummonResponse(request.summoner, accept));
+  }
+
+  /** MovementHandler ignores replies while dead or in combat; retain the offer for a later retry. */
+  summonBlockReason(): "dead" | "combat" | undefined {
+    const self = this.state.objects.get(this.state.selfGuid ?? 0n);
+    if (!self) return undefined;
+    if (isWorldObjectDead(self)) return "dead";
+    if (((self.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset) ?? 0) & UNIT_FLAG_IN_COMBAT) !== 0) return "combat";
+    return undefined;
+  }
+
+  /** UI ticks and actions share this check, so a last-millisecond click cannot accept stale state. */
+  expireInteractionRequests(now = performance.now()): void {
+    if (this.summonRequest && this.summonExpiresAt <= now) this.summonRequest = undefined;
+    if (this.lfgBoot && this.lfgBootExpiresAt <= now) this.lfgBoot = undefined;
+    const serverTime = this.currentServerTime(now);
+    if (this.battlefieldWarInvite && serverTime !== undefined && this.battlefieldWarInvite.expiresAt <= serverTime) {
+      this.battlefieldWarInvite = undefined;
+    }
+    // The innkeeper's and the trainer's questions last while the NPC can take the answer; the
+    // instance lock until the server's minute is up — then the core binds by itself, unasked.
+    if (this.binderConfirm && !withinInteractionDistance(this.state, this.binderConfirm.guid)) this.binderConfirm = undefined;
+    if (this.talentWipeConfirm && !withinInteractionDistance(this.state, this.talentWipeConfirm.guid)) {
+      this.talentWipeConfirm = undefined;
+    }
+    if (this.instanceLock && this.instanceLock.expiresAt <= now) this.#endInstanceLock();
+  }
+
+  /**
+   * «Сделать это место своим домом»: CMSG_BINDER_ACTIVATE once — the question goes, then the packet.
+   * Not while dead or a ghost: the core ignores that answer (NPCHandler.cpp:292), so it waits.
+   */
+  confirmBinder(): boolean {
+    this.expireInteractionRequests();
+    const request = this.binderConfirm;
+    if (this.#closed || !request || !playerAlive(this.state)) return false;
+    this.binderConfirm = undefined;
+    this.#connection.send(OPCODES.CMSG_BINDER_ACTIVATE, buildBinderActivate(request.guid));
+    return true;
+  }
+
+  /** Cancel: nothing is sent, and the home stays where it was. */
+  declineBinder(): void {
+    this.binderConfirm = undefined;
+  }
+
+  /**
+   * The answer to a trainer's talent-reset quote: the question goes first, then — on accept, and
+   * only with the money for it — `confirmTalentWipe`'s 8 bytes. The caller says «not enough money».
+   */
+  answerTalentWipe(accept: boolean): TalentWipeAnswer {
+    this.expireInteractionRequests();
+    const request = this.talentWipeConfirm;
+    if (this.#closed || !request) return "none";
+    this.talentWipeConfirm = undefined;
+    if (!accept) return "declined";
+    if (!canAfford(this.state, request.cost)) return "unaffordable";
+    this.confirmTalentWipe(request.guid);
+    return "sent";
+  }
+
+  /** The instance lock's answer, once: 1 binds now, 0 leaves the instance (to the graveyard). */
+  respondInstanceLock(accept: boolean): boolean {
+    this.expireInteractionRequests();
+    if (this.#closed || !this.instanceLock) return false;
+    this.#endInstanceLock();
+    this.#connection.send(OPCODES.CMSG_INSTANCE_LOCK_RESPONSE, buildInstanceLockResponse(accept));
+    return true;
+  }
+
+  #endInstanceLock(): void {
+    if (!this.instanceLock) return;
+    this.instanceLock = undefined;
+    this.events.emit("INSTANCE_LOCK_STOP", {});
   }
 
   /** Asks a battleground spirit healer when the next resurrection sweep is, and to be in it. */
@@ -3852,13 +5269,22 @@ export class WorldClient {
     if (this.unhandledOpcodes.entries.size !== before) this.onUnhandledOpcodesChanged?.();
   }
 
+  #recordPacketError(opcode: number, error: Error, payloadBytes?: number, category: PacketErrorCategory = "dispatch"): void {
+    this.packetErrors.record(opcode, error, payloadBytes, category);
+    this.onPacketErrorsChanged?.();
+    this.onPacketError?.(opcode, error);
+  }
+
   /** The world clock now, run forward from the one packet that reports it. */
   currentGameTime(now = performance.now()): GameTime | undefined {
     return this.gameTime && advanceGameTime(this.gameTime, (now - this.#gameTimeReceived) / 1000);
   }
 
   #handleUtilityPacket(packet: WorldPacket): boolean {
-    if (packet.opcode === OPCODES.SMSG_PONG) return true;
+    if (packet.opcode === OPCODES.SMSG_PONG) {
+      this.#receivePong(packet.payload);
+      return true;
+    }
 
     // The three bars the world runs against the character: breath under water, fatigue in the deep
     // ocean, and fire. All three are the server's own reading of the liquid it thinks the character
@@ -3893,7 +5319,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GOSSIP_MESSAGE) {
-      this.gossip = parseGossipMessage(packet.payload);
+      const gossip = parseGossipMessage(packet.payload);
+      if (this.#pendingGossipGuid === 0n || gossip.guid !== this.#pendingGossipGuid) return true;
+      this.#pendingGossipGuid = 0n;
+      this.#pendingGossipServiceGuid = 0n;
+      this.gossip = gossip;
       this.#connection.send(OPCODES.CMSG_NPC_TEXT_QUERY, buildNpcTextQuery(this.gossip.textId, this.gossip.guid));
       this.onGossipChanged?.();
       return true;
@@ -3901,11 +5331,20 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_NPC_TEXT_UPDATE) {
       const text = parseNpcText(packet.payload);
       this.npcTexts.set(text.id, text);
-      this.onGossipChanged?.();
+      // The query may outlive the gossip page that asked for it. Repainting with no matching page
+      // would hide a taxi, battleground or tabard dialog that has since replaced that page.
+      if (this.gossip?.textId === text.id) this.onGossipChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_LIST) {
-      this.questList = parseQuestList(packet.payload);
+      const questList = parseQuestList(packet.payload);
+      if (questList.guid !== this.#pendingQuestGiverGuid
+        && questList.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingQuestGiverGuid = 0n;
+      this.#consumeGossipService(questList.guid);
+      this.questList = questList;
+      this.#pendingGossipGuid = 0n;
+      this.#pendingGossipServiceGuid = 0n;
       this.questDialog = undefined;
       this.questMessage = undefined;
       this.gossip = undefined;
@@ -3934,7 +5373,14 @@ export class WorldClient {
       this.onQuestChanged?.();
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_INVALID || packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_FAILED || packet.opcode === OPCODES.SMSG_QUESTLOG_FULL) {
+    if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_FAILED) {
+      const { questId, reason } = parseQuestGiverFailed(packet.payload);
+      const detail = reason === 0 ? "Задание не выполнено" : equipErrorText({ result: reason });
+      this.questMessage = { text: `Задание ${questId}: ${detail}`, error: true };
+      this.onQuestChanged?.();
+      return true;
+    }
+    if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_INVALID || packet.opcode === OPCODES.SMSG_QUESTLOG_FULL) {
       const reader = new PacketReader(packet.payload);
       const reason = reader.remaining >= 4 ? reader.u32() : 0;
       this.questMessage = { text: packet.opcode === OPCODES.SMSG_QUESTLOG_FULL ? "Журнал заданий заполнен" : `Задание отклонено сервером, код ${reason}`, error: true };
@@ -3945,7 +5391,8 @@ export class WorldClient {
       const reader = new PacketReader(packet.payload);
       const questId = reader.u32();
       const xp = reader.u32();
-      const money = reader.u32();
+      // Player::SendQuestReward serializes signed RewOrReqMoney through a uint32 word.
+      const money = reader.i32();
       reader.u32();
       reader.u32();
       reader.u32();
@@ -3953,7 +5400,8 @@ export class WorldClient {
       this.questList = undefined;
       this.questDialog = undefined;
       this.gossip = undefined;
-      this.questMessage = { text: `Задание ${questId} выполнено · опыт ${xp} · деньги ${money}`, error: false };
+      const moneyText = money < 0 ? `списано ${-money} медных` : `деньги ${money}`;
+      this.questMessage = { text: `Задание ${questId} выполнено · опыт ${xp} · ${moneyText}`, error: false };
       this.onGossipChanged?.();
       this.onQuestChanged?.();
       return true;
@@ -3997,20 +5445,34 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.MSG_AUCTION_HELLO) {
       const hello = parseAuctionHello(packet.payload);
+      if (hello.auctioneerGuid !== this.#pendingAuctioneerGuid
+        && hello.auctioneerGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingAuctioneerGuid = 0n;
+      this.#consumeGossipService(hello.auctioneerGuid);
       this.auctioneerGuid = hello.auctioneerGuid;
       this.auctionMessage = hello.enabled ? undefined : { text: "Аукцион закрыт", error: true };
-      if (hello.enabled) this.searchAuctions();
+      const searched = hello.enabled && this.auctionHelloSearch?.() !== false;
+      if (searched) this.searchAuctions();
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", { kind: "hello", enabled: hello.enabled, houseId: hello.houseId, searched });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_LIST_RESULT) {
       this.auctions = parseAuctionListResult(packet.payload);
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", { kind: "list" });
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_AUCTION_OWNER_LIST_RESULT || packet.opcode === OPCODES.SMSG_AUCTION_BIDDER_LIST_RESULT) {
+    if (packet.opcode === OPCODES.SMSG_AUCTION_OWNER_LIST_RESULT) {
       this.ownAuctions = parseAuctionListResult(packet.payload);
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", { kind: "owner" });
+      return true;
+    }
+    if (packet.opcode === OPCODES.SMSG_AUCTION_BIDDER_LIST_RESULT) {
+      this.bidAuctions = parseAuctionListResult(packet.payload);
+      this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", { kind: "bidder" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_COMMAND_RESULT) {
@@ -4018,34 +5480,57 @@ export class WorldClient {
       this.auctionMessage = result.error === 0
         ? { text: "Готово", error: false }
         : { text: auctionErrorText(result.error), error: true };
-      if (result.error === 0 && this.auctioneerGuid !== 0n) this.searchAuctions();
+      // The lists re-requested below, in send order: the stock model tells their answers from its own.
+      const refreshed: ("list" | "owner" | "bidder")[] = [];
+      if (result.error === 0 && this.auctioneerGuid !== 0n) {
+        this.searchAuctions(this.#auctionSearch);
+        if (result.command === AUCTION_SELL_ITEM || result.command === AUCTION_CANCEL)
+          this.listOwnAuctions();
+        else if (result.command === AUCTION_PLACE_BID) this.listBidderAuctions();
+        refreshed.push("list", ...(result.command === AUCTION_SELL_ITEM || result.command === AUCTION_CANCEL ? ["owner" as const]
+          : result.command === AUCTION_PLACE_BID ? ["bidder" as const] : []));
+      }
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", {
+        kind: "result", auctionId: result.auctionId, command: result.command, error: result.error, bagResult: result.bagResult,
+        refreshed,
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_JOIN_RESULT) {
       const result = parseLfgJoinResult(packet.payload);
       this.lfgMessage = lfgJoinResultText(result.result);
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "joinResult", result: result.result, message: this.lfgMessage });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_QUEUE_STATUS) {
       this.lfgQueue = parseLfgQueueStatus(packet.payload);
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "queue" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_UPDATE_PLAYER || packet.opcode === OPCODES.SMSG_LFG_UPDATE_PARTY) {
       this.lfgStatus = parseLfgUpdate(packet.payload, packet.opcode === OPCODES.SMSG_LFG_UPDATE_PARTY);
       if (!this.lfgStatus.joined) this.lfgQueue = undefined;
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "update" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_PROPOSAL_UPDATE) {
       this.lfgProposal = parseLfgProposalUpdate(packet.payload);
+      this.lfgRolesChosen.clear();
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "proposal" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_ROLE_CHOSEN) {
-      parseLfgRoleChosen(packet.payload);
+      const chosen = parseLfgRoleChosen(packet.payload);
+      this.lfgRolesChosen.set(chosen.guid, chosen);
+      this.requestName(chosen.guid);
+      this.events.emit("LFG_INFO_CHANGED", {});
+      this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "roleChosen", guid: chosen.guid, roles: chosen.roles });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GUILD_ROSTER) {
@@ -4059,6 +5544,9 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GUILD_QUERY_RESPONSE) {
       this.guildQuery = parseGuildQueryResponse(packet.payload);
       this.onGuildChanged?.();
+      if (this.tabardVendorGuid !== 0n) {
+        this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GUILD_INFO) {
@@ -4085,53 +5573,78 @@ export class WorldClient {
       this.guildMessage = { text: event.type === GE_MOTD ? `Гильдия: ${who}` : `Гильдия · событие ${event.type}${who ? ": " + who : ""}`, error: false };
       this.requestGuildRoster();
       this.onGuildChanged?.();
+      // The bank's own events (a tab bought or renamed, the new total, the daily reset) reach the vault.
+      if (event.type >= GE_GUILDBANKBAGSLOTS_CHANGED && event.type <= GE_BANK_TEXT_CHANGED) {
+        this.events.emit("GUILD_BANK_CHANGED", { guildEvent: { type: event.type, params: event.params } });
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_MAIL_LIST_RESULT) {
       this.mail = parseMailListResult(packet.payload);
       for (const entry of this.mail.mails) if (entry.senderGuid !== 0n) this.requestName(entry.senderGuid);
       this.onMailChanged?.();
+      this.events.emit("MAIL_STATE_CHANGED", { kind: "list" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SEND_MAIL_RESULT) {
       const result = parseMailCommandResult(packet.payload);
+      this.mailResult = result;
       if (result.error !== MAIL_OK) this.mailMessage = { text: mailErrorText(result.error), error: true };
       else {
         const done = result.command === MAIL_ITEM_TAKEN ? "Предмет забран"
           : result.command === MAIL_MONEY_TAKEN ? "Деньги забраны"
           : result.command === MAIL_DELETED ? "Письмо удалено"
-          : result.command === MAIL_RETURNED_TO_SENDER ? "Письмо возвращено" : "Письмо отправлено";
+          : result.command === MAIL_RETURNED_TO_SENDER ? "Письмо возвращено"
+          : result.command === MAIL_MADE_PERMANENT ? "Письмо скопировано" : "Письмо отправлено";
         this.mailMessage = { text: done, error: false };
         // Every one of these changes the list, so refresh it rather than patch it locally.
         if (this.mailboxGuid !== 0n) this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(this.mailboxGuid));
       }
       this.onMailChanged?.();
+      this.events.emit("MAIL_STATE_CHANGED", { kind: "result" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_RECEIVED_MAIL) {
       parseReceivedMail(packet.payload);
       this.mailMessage = { text: "Вам пришло письмо", error: false };
       this.onMailChanged?.();
+      this.events.emit("MAIL_STATE_CHANGED", { kind: "received" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRADE_STATUS) {
       const info = parseTradeStatus(packet.payload);
       if (info.status === TRADE_STATUS_BEGIN_TRADE) {
-        this.tradeOpen = true;
+        this.tradeOpen = false;
+        this.tradePending = true;
+        this.tradeBeginRequested = false;
+        this.#localTradeSlots.clear();
+        this.#localTradeGold = undefined;
+        this.myOffer = undefined;
+        this.theirOffer = undefined;
         this.tradePartnerGuid = info.traderGuid;
         this.tradePartnerAccepted = false;
         this.requestName(info.traderGuid);
       } else if (info.status === TRADE_STATUS_OPEN_WINDOW) {
         this.tradeOpen = true;
+        this.tradePending = false;
+        this.tradeBeginRequested = false;
+      } else if (info.status === TRADE_STATUS_NOT_ON_TAPLIST) {
+        // NOT_ON_TAPLIST: the core rejected one offered slot without closing the trade.
+        this.#localTradeSlots.delete(info.slot);
       } else if (info.status === TRADE_STATUS_TRADE_ACCEPT) {
         this.tradePartnerAccepted = true;
       } else if (info.status === TRADE_STATUS_TRADE_CANCELED || info.status === TRADE_STATUS_TRADE_COMPLETE || info.status === TRADE_STATUS_CLOSE_WINDOW) {
         this.#closeTrade();
+        if (info.status === TRADE_STATUS_CLOSE_WINDOW && info.result !== 0) {
+          const owner = info.targetResult ? "У партнёра: " : "";
+          this.#systemChat(`Обмен не завершён: ${owner}${equipErrorText({ result: info.result })}`);
+        }
       } else {
         this.tradePartnerAccepted = false;
       }
       this.tradeMessage = tradeStatusText(info.status) || undefined;
       this.onTradeChanged?.();
+      this.events.emit("TRADE_STATE_CHANGED", { kind: "status", status: info.status });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRADE_STATUS_EXTENDED) {
@@ -4139,10 +5652,12 @@ export class WorldClient {
       if (offer.traderData) this.theirOffer = offer;
       else this.myOffer = offer;
       this.onTradeChanged?.();
+      this.events.emit("TRADE_STATE_CHANGED", { kind: "offer", trader: offer.traderData });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_DUEL_REQUESTED) {
       this.duelRequest = parseDuelRequested(packet.payload);
+      this.duelFlag = this.duelRequest.flagGuid;
       this.requestName(this.duelRequest.challengerGuid);
       this.onDuelChanged?.();
       return true;
@@ -4156,10 +5671,13 @@ export class WorldClient {
       parseDuelComplete(packet.payload);
       this.duelRequest = undefined;
       this.duelCountdown = 0;
+      this.duelInBounds = undefined;
+      this.duelFlag = undefined;
       this.onDuelChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_DUEL_WINNER) {
+      this.duelFlag = undefined;
       const winner = parseDuelWinner(packet.payload);
       this.groupMessage = {
         text: winner.fled ? `${winner.loser} сбежал, победил ${winner.winner}` : `${winner.winner} побеждает ${winner.loser}`,
@@ -4169,10 +5687,30 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_DUEL_INBOUNDS || packet.opcode === OPCODES.SMSG_DUEL_OUTOFBOUNDS) {
+      const inBounds = packet.opcode === OPCODES.SMSG_DUEL_INBOUNDS;
+      if (this.duelInBounds !== inBounds) {
+        this.duelInBounds = inBounds;
+        // A running duel has no prompt to hang this on: queue one chat line, consumed by
+        // `showDuel`, so crossing the flag says so exactly once instead of never.
+        this.duelBoundsMessage = inBounds ? undefined
+          : "Вы вышли за границы дуэли — вернитесь, иначе засчитают поражение.";
+        this.onDuelChanged?.();
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GROUP_LIST) {
-      this.group = parseGroupList(packet.payload);
+      const list = parseGroupList(packet.payload);
+      // This is also how the core tells a player they are out: `Group::RemoveMember` and
+      // `Group::Disband` send the leaver a list with no members and a zero leader (Group.cpp:821-824,
+      // :1101-1104), and a plain leave sends no SMSG_GROUP_DESTROYED with it. Kept as a group, it
+      // left `UnitInParty("player")` true and a later solo dungeon-finder queue «unempowered», its
+      // «Leave queue» disabled. A group of one still names its leader, so it stays a group.
+      if (list.members.length === 0 && list.leaderGuid === 0n) {
+        this.group = undefined;
+        this.onGroupChanged?.();
+        return true;
+      }
+      this.group = list;
       for (const member of this.group.members) this.names.accept({ guid: member.guid, known: true, name: member.name, realm: "", race: 0, gender: 0, classId: 0, declined: [] });
       this.onGroupChanged?.();
       return true;
@@ -4236,16 +5774,24 @@ export class WorldClient {
       const failure = parseInventoryChangeFailure(packet.payload);
       this.itemMessage = failure.result === 0 ? undefined : { text: equipErrorText(failure), error: true };
       this.onItemMessage?.();
+      this.events.emit("INVENTORY_CHANGE_FAILURE", failure);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_PUSH_RESULT) {
       const push = parseItemPushResult(packet.payload);
+      // Group loot calls Player::SendNewItem with broadcast=true. Every group member receives
+      // the packet, but its player GUID identifies whose inventory the realm actually changed.
+      if (push.playerGuid !== this.state.selfGuid) return true;
       this.itemMessage = { text: `Получено: предмет ${push.itemId} ×${push.count}`, error: false };
       this.onItemMessage?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LIST_INVENTORY) {
-      this.vendor = parseListInventory(packet.payload);
+      const vendor = parseListInventory(packet.payload);
+      if (vendor.guid !== this.#pendingVendorGuid && vendor.guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingVendorGuid = 0n;
+      this.#consumeGossipService(vendor.guid);
+      this.vendor = vendor;
       this.merchantMessage = this.vendor.error === undefined
         ? undefined
         : { text: "У торговца нечего купить", error: true };
@@ -4254,6 +5800,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BUY_ITEM) {
       const result = parseBuyItem(packet.payload);
+      if (!this.vendor || result.guid !== this.vendor.guid) return true;
       const item = this.vendor?.items.find((candidate) => candidate.slot === result.slot);
       if (item && result.leftInStock >= 0) item.leftInStock = result.leftInStock;
       this.merchantMessage = { text: `Куплено: ${result.count} шт.`, error: false };
@@ -4262,6 +5809,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BUY_FAILED) {
       const failure = parseBuyFailed(packet.payload);
+      if (!this.vendor || failure.guid !== this.vendor.guid) return true;
       this.merchantMessage = { text: buyErrorText(failure.error), error: true };
       this.onVendorChanged?.();
       return true;
@@ -4269,26 +5817,36 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_SELL_ITEM) {
       // The server only ever writes this packet from SendSellError, so it always means failure.
       const failure = parseSellItem(packet.payload);
+      if (!this.vendor || failure.guid !== this.vendor.guid) return true;
       this.merchantMessage = { text: sellErrorText(failure.error), error: true };
       this.onVendorChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_LIST) {
-      this.trainer = parseTrainerList(packet.payload);
+      const trainer = parseTrainerList(packet.payload);
+      if (this.#closed || (this.#pendingTrainerGuid !== trainer.guid
+        && this.#pendingGossipServiceGuid !== trainer.guid)) return true;
+      this.#pendingTrainerGuid = undefined;
+      this.#consumeGossipService(trainer.guid);
+      this.trainer = trainer;
       this.merchantMessage = undefined;
       this.onTrainerChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_BUY_SUCCEEDED) {
       const result = parseTrainerBuySucceeded(packet.payload);
-      this.merchantMessage = { text: `Изучено заклинание ${result.spellId}`, error: false };
+      if (this.#closed || !this.trainer || result.guid !== this.trainer.guid) return true;
       // Refresh the list so the spell flips to "known" and any follow-up rank appears.
       if (this.trainer) this.openTrainer(this.trainer.guid);
+      // openTrainer intentionally clears an old interaction message. Publish this result after
+      // the refresh request so it remains visible until the replacement list arrives.
+      this.merchantMessage = { text: `Изучено заклинание ${result.spellId}`, error: false };
       this.onTrainerChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRAINER_BUY_FAILED) {
       const result = parseTrainerBuyFailed(packet.payload);
+      if (this.#closed || !this.trainer || result.guid !== this.trainer.guid) return true;
       this.merchantMessage = { text: trainerBuyFailureText(result.reason), error: true };
       this.onTrainerChanged?.();
       return true;
@@ -4311,6 +5869,8 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_RESURRECT_REQUEST) {
       this.resurrectRequest = parseResurrectRequest(packet.payload);
+      // Player spells carry an empty name; the core expects the client to resolve the caster GUID.
+      if (!this.resurrectRequest.casterName) this.requestName(this.resurrectRequest.casterGuid);
       this.onDeathChanged?.();
       return true;
     }
@@ -4328,6 +5888,10 @@ export class WorldClient {
       }
       this.events.emit("SPELL_GO", cast);
       this.onSpellVisual?.(cast.casterUnit, cast.spellId, cast.hits);
+      // Resist, dodge, parry, deflect, absorb, reflect and immunity are rolled when the spell goes
+      // off and written only here (Spell::UpdateSpellCastDataTargets, Spell.cpp:4677-4708); the miss
+      // log below carries only what is decided on landing (:2467-2471). Told the same way.
+      for (const miss of cast.misses) this.#reportSpellMiss(cast.casterUnit, miss.guid, cast.spellId, miss.reason);
       // A successful non-channel GO is the authoritative end of its cast bar. Channels remain in
       // `casts` until MSG_CHANNEL_UPDATE says zero, because their GO can arrive while the channel
       // is still ticking.
@@ -4336,7 +5900,7 @@ export class WorldClient {
         if (active?.spellId === cast.spellId
           && !active.channel
           && (active.castCount === undefined || active.castCount === cast.castId)) {
-          this.#endCast(casterGuid, cast.spellId, false);
+          this.#endCast(casterGuid, cast.spellId, "success");
           break;
         }
       }
@@ -4363,13 +5927,30 @@ export class WorldClient {
       const now = performance.now();
       this.cooldowns.clear();
       this.cooldownSnapshots.clear();
+      this.cooldownHolds.clear();
       this.#pendingCasts.length = 0;
       this.#locallyStartedCooldowns.clear();
       for (const cooldown of initial.cooldowns) {
+        if (cooldown.categoryId !== 0) this.spellCategories.set(cooldown.spellId, cooldown.categoryId);
+        // On hold until its aura ends, not a 24.8-day timer: no end, no snapshot, no category
+        // lockout. Its SMSG_COOLDOWN_EVENT starts the real one.
+        if (isCooldownOnHold(cooldown)) {
+          this.cooldownHolds.set(cooldown.spellId, cooldown.categoryId);
+          continue;
+        }
         const duration = Math.max(cooldown.cooldown, cooldown.categoryCooldown);
         if (duration > 0) {
           this.cooldowns.set(cooldown.spellId, now + duration);
           this.cooldownSnapshots.set(cooldown.spellId, { startedAt: now, duration, endsAt: now + duration });
+          // Share the category timer across spells: a category cooldown blocks every spell in it,
+          // not only the one that triggered it. Keep the longest end so a shorter spell does not
+          // shorten a longer sibling's shared lockout.
+          if (cooldown.categoryId !== 0 && cooldown.categoryCooldown > 0) {
+            const end = now + cooldown.categoryCooldown;
+            if ((this.categoryCooldowns.get(cooldown.categoryId) ?? 0) < end) {
+              this.categoryCooldowns.set(cooldown.categoryId, end);
+            }
+          }
         }
       }
       this.onSpellsChanged?.(this.knownSpells);
@@ -4389,8 +5970,9 @@ export class WorldClient {
         // identical repeats, and leave unmatched manual spell failures untouched.
         if (!pending && duplicate) return true;
       }
-      // The words are the realm's own, out of its GlobalStrings; `DONT_REPORT` means say nothing.
-      const text = spellFailureText(failure.result);
+      // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
+      // `DONT_REPORT` means say nothing.
+      const text = spellFailureText(failure, this.#castFailureNames());
       if (text) this.onSpellStatus?.(text, true);
       return true;
     }
@@ -4428,11 +6010,18 @@ export class WorldClient {
       if (this.#isPetCooldown(event.guid)) {
         this.events.emit("PET_COOLDOWN_STARTED", { spellId: event.spellId });
       } else if (this.state.selfGuid === undefined || event.guid === this.state.selfGuid) {
+        // The aura that held this cooldown is gone and the server is starting the real timer
+        // (SpellHistory::SendCooldownEvent). Let go of the hold first: it is not a running timer,
+        // so the duplicate check below must not see it. The buttons hear of it once: from the
+        // timer below when one starts (`#applyCooldown`), otherwise from here.
+        const released = this.cooldownHolds.delete(event.spellId);
+        const endBefore = this.cooldowns.get(event.spellId);
         // A duplicate event can arrive after GO (or while the pending request is still waiting
         // for GO). Once an authoritative timer is live, do not move its end forward by packet
         // latency; CLEAR_COOLDOWN/SPELL_COOLDOWN are the explicit ways to replace that state.
-        if ((this.cooldowns.get(event.spellId) ?? 0) > performance.now()) {
+        if ((endBefore ?? 0) > performance.now()) {
           this.#locallyStartedCooldowns.delete(event.spellId);
+          if (released) this.onCooldownsChanged?.();
           return true;
         }
         const pending = this.#latestPendingCast(event.spellId);
@@ -4455,6 +6044,7 @@ export class WorldClient {
             this.#handlingServerCooldownEvent = false;
           }
         }
+        if (released && this.cooldowns.get(event.spellId) === endBefore) this.onCooldownsChanged?.();
       }
       return true;
     }
@@ -4464,6 +6054,7 @@ export class WorldClient {
         this.petCooldowns.delete(cleared.spellId);
         this.events.emit("PET_COOLDOWNS_CHANGED", {});
       } else if (this.state.selfGuid === undefined || cleared.guid === this.state.selfGuid) {
+        this.cooldownHolds.delete(cleared.spellId);
         this.#clearCooldown(cleared.spellId);
         this.onCooldownsChanged?.();
       }
@@ -4512,7 +6103,7 @@ export class WorldClient {
   #beginCast(casterGuid: bigint, spellId: number, castTime: number, channel: boolean, castCount?: number): void {
     if (castTime <= 0 && !channel) {
       // An instant cast has no bar to draw, but it still ends whatever was running.
-      this.#endCast(casterGuid, spellId, false, castCount);
+      this.#endCast(casterGuid, spellId, "success", castCount);
       return;
     }
     this.casts.set(casterGuid, {
@@ -4525,11 +6116,23 @@ export class WorldClient {
     this.events.emit("SPELL_CAST_START", { casterGuid, spellId, castTime, channel });
   }
 
-  #endCast(casterGuid: bigint, spellId: number, interrupted: boolean, expectedCastCount?: number): void {
+  #endCast(
+    casterGuid: bigint,
+    spellId: number,
+    reason: SpellCastStopReason,
+    expectedCastCount?: number,
+  ): void {
     const cast = this.casts.get(casterGuid);
     if (cast?.castCount !== undefined && expectedCastCount !== undefined && cast.castCount !== expectedCastCount) return;
     this.casts.delete(casterGuid);
-    if (cast || interrupted) this.events.emit("SPELL_CAST_STOP", { casterGuid, spellId: cast?.spellId ?? spellId, interrupted });
+    if (cast || reason !== "success") {
+      this.events.emit("SPELL_CAST_STOP", {
+        casterGuid,
+        spellId: cast?.spellId ?? spellId,
+        interrupted: reason !== "success",
+        reason,
+      });
+    }
   }
 
   #spellName(spellId: number): string {
@@ -4567,6 +6170,30 @@ export class WorldClient {
   }
 
   /**
+   * Takes down one of the player's totems by its slot as `SMSG_TOTEM_CREATED` numbered it: 0 to 3,
+   * fire, earth, water, air. The handler adds `SUMMON_SLOT_TOTEM_FIRE` back and unsummons whatever
+   * stands in that slot, ignoring a slot that is empty or out of range (SpellHandler.cpp
+   * HandleTotemDestroyed). One byte, nothing else.
+   */
+  destroyTotem(slot: number): void {
+    if (!this.#closed && Number.isInteger(slot) && slot >= 0 && slot <= 3) {
+      this.#connection.send(OPCODES.CMSG_TOTEM_DESTROYED, new PacketWriter().u8(slot).toUint8Array());
+    }
+  }
+
+  /**
+   * Removes the temporary enchantment (sharpening stone, poison, shaman imbue) from a worn item.
+   * The body is the equipment slot as `INVENTORY_SLOT_BAG_0` numbers it — 15 main hand, 16 off
+   * hand — and the handler refuses anything that is not an equipment slot or carries no
+   * `TEMP_ENCHANTMENT_SLOT` id (ItemHandler.cpp HandleCancelTempEnchantmentOpcode).
+   */
+  cancelTempEnchantment(equipmentSlot: number): void {
+    if (!this.#closed && Number.isInteger(equipmentSlot) && equipmentSlot >= 0 && equipmentSlot <= 18) {
+      this.#connection.send(OPCODES.CMSG_CANCEL_TEMP_ENCHANTMENT, new PacketWriter().u32(equipmentSlot).toUint8Array());
+    }
+  }
+
+  /**
    * Asks where the quests in the log want the player to go.
    *
    * Sent in chunks the size of the log itself: the handler reads a count and then
@@ -4594,12 +6221,18 @@ export class WorldClient {
   /** Answers a quest a party member shared. */
   answerSharedQuest(accept: boolean): void {
     const shared = this.sharedQuest;
-    if (!shared) return;
+    if (this.#closed || !shared) return;
     this.sharedQuest = undefined;
     if (accept) this.#connection.send(OPCODES.CMSG_QUEST_CONFIRM_ACCEPT, buildQuestConfirmAccept(shared.questId));
-    // 8 is "declined" in the core's own list of push results.
-    else this.#connection.send(OPCODES.MSG_QUEST_PUSH_RESULT, buildQuestPushResult(shared.initiatorGuid, 8));
+    else this.#connection.send(OPCODES.MSG_QUEST_PUSH_RESULT,
+      buildQuestPushResult(shared.initiatorGuid, shared.questId, QUEST_PARTY_MSG_DECLINE_QUEST));
     this.events.emit("QUEST_SHARED", { quest: undefined });
+  }
+
+  /** Shares a quest from the log with the party (`CMSG_PUSHQUESTTOPARTY`). */
+  shareQuest(questId: number): void {
+    if (this.#closed || !Number.isInteger(questId) || questId <= 0) return;
+    this.#connection.send(OPCODES.CMSG_PUSHQUESTTOPARTY, buildPushQuestToParty(questId));
   }
 
   /**
@@ -4647,6 +6280,17 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_LEARN_TALENT, buildLearnTalent(talentId, rank));
   }
 
+  /**
+   * Confirms a talent wipe at an NPC (`MSG_TALENT_WIPE_CONFIRM` + guid).
+   *
+   * The server validates the NPC, the cost and the state; the client only routes the
+   * confirmation. Pass the gossip/trainer guid when it is known, otherwise the target.
+   */
+  confirmTalentWipe(guid: bigint): void {
+    if (this.#closed || guid === 0n) return;
+    this.#connection.send(OPCODES.MSG_TALENT_WIPE_CONFIRM, new PacketWriter().u64(guid).toUint8Array());
+  }
+
   /** Asks to see another character's talents and gear. */
   inspect(guid: bigint): void {
     this.#connection.send(OPCODES.CMSG_INSPECT, buildInspect(guid));
@@ -4666,11 +6310,16 @@ export class WorldClient {
   openBank(guid: bigint): void {
     if (this.#closed || !this.state.objects.has(guid)) return;
     this.bankMessage = undefined;
+    this.#pendingGossipGuid = 0n;
+    this.#pendingGossipServiceGuid = 0n;
+    this.#pendingBankerGuid = guid;
     this.#connection.send(OPCODES.CMSG_BANKER_ACTIVATE, buildBankerActivate(guid));
   }
 
   closeBank(): void {
-    if (this.bankerGuid === undefined) return;
+    const hadBanker = this.bankerGuid !== undefined;
+    this.#pendingBankerGuid = undefined;
+    if (!hadBanker) return;
     this.bankerGuid = undefined;
     this.bankMessage = undefined;
     this.events.emit("BANK_OPENED", { bankerGuid: undefined });
@@ -4723,6 +6372,24 @@ export class WorldClient {
   }
 
   /**
+   * Wears a title by its CharTitles mask index, or -1 for none. The core answers with the
+   * `PLAYER_CHOSEN_TITLE` field alone, cleared for -1 and for any mask the character has not earned.
+   */
+  setTitle(index: number): void {
+    if (this.#closed || !Number.isInteger(index) || index < -1) return;
+    this.#connection.send(OPCODES.CMSG_SET_TITLE, buildSetTitle(index));
+  }
+
+  /**
+   * Unlearns a profession by its SkillLine id. The core answers through the skill fields alone
+   * (`Player::SetSkill(id, 0, 0, 0)`), and only for a skill SkillRaceClassInfo flags unlearnable.
+   */
+  unlearnSkill(skillId: number): void {
+    if (this.#closed || !Number.isInteger(skillId) || skillId <= 0) return;
+    this.#connection.send(OPCODES.CMSG_UNLEARN_SKILL, buildUnlearnSkill(skillId));
+  }
+
+  /**
    * What the character has become. None of this is in the update fields: reputation, achievements,
    * talents and the bind point each have their own packet, which is why a character sheet built
    * only out of object state can show health and very little else.
@@ -4750,7 +6417,15 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SUPERCEDED_SPELL) {
       const change = parseSupercededSpell(packet.payload);
-      this.knownSpells = this.knownSpells.map((known) => (known.id === change.oldSpell ? { ...known, id: change.newSpell } : known));
+      // The core deliberately sends no `SMSG_LEARNED_SPELL` for a new rank: this packet replaces
+      // the old one. When the old rank was never in the list — a learned-then-replaced chain, a
+      // missed initial batch — renaming nothing would silently drop the spell the server believes
+      // is known, so it is appended instead.
+      if (this.knownSpells.some((known) => known.id === change.oldSpell)) {
+        this.knownSpells = this.knownSpells.map((known) => (known.id === change.oldSpell ? { ...known, id: change.newSpell } : known));
+      } else if (!this.knownSpells.some((known) => known.id === change.newSpell)) {
+        this.knownSpells = [...this.knownSpells, { id: change.newSpell, slot: this.knownSpells.length }];
+      }
       this.onSpellsChanged?.(this.knownSpells);
       this.events.emit("SPELL_LEARNED", { spellId: change.newSpell });
       return true;
@@ -4764,15 +6439,33 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PLAYER_BOUND) {
-      parsePlayerBound(packet.payload);
+      // Spell::EffectBind's own packet — only a bind sends it, while SMSG_BIND_POINT_UPDATE comes
+      // with every login and port — so the line is said once per new home, in the client's words.
+      const bound = parsePlayerBound(packet.payload);
+      this.binderConfirm = undefined;
+      this.events.emit("WORLD_MESSAGE", {
+        text: formatGlobalStringByName("ERR_DEATHBIND_SUCCESS_S", [this.#nameOf("area", bound.areaId)], "Ваш новый дом – %s."),
+        kind: "system",
+      });
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_BINDER_CONFIRM || packet.opcode === OPCODES.SMSG_INVALIDATE_PLAYER) {
+    if (packet.opcode === OPCODES.SMSG_BINDER_CONFIRM) {
+      // Player::SetBindPoint, from the innkeeper's gossip option: nothing moves until the answer.
+      const guid = parseGuidOnly(packet.payload);
+      this.binderConfirm = { guid, receivedAt: performance.now() };
+      this.events.emit("BINDER_CONFIRM", { guid });
+      return true;
+    }
+    if (packet.opcode === OPCODES.SMSG_INVALIDATE_PLAYER) {
       parseGuidOnly(packet.payload);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SHOW_BANK) {
-      this.bankerGuid = parseGuidOnly(packet.payload);
+      const bankerGuid = parseGuidOnly(packet.payload);
+      if (bankerGuid !== this.#pendingBankerGuid && bankerGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingBankerGuid = undefined;
+      this.#consumeGossipService(bankerGuid);
+      this.bankerGuid = bankerGuid;
       this.bankMessage = undefined;
       this.events.emit("BANK_OPENED", { bankerGuid: this.bankerGuid });
       return true;
@@ -4846,16 +6539,19 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_CRITERIA_UPDATE) {
       const update = parseCriteriaUpdate(packet.payload);
       this.criteria.set(update.criteriaId, update.counter);
+      this.events.emit("ACHIEVEMENT_STATE_CHANGED", { kind: "criteria", criteriaId: update.criteriaId, timeElapsed: update.timeElapsed });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ACHIEVEMENT_DELETED) {
       const reader = new PacketReader(packet.payload);
       this.achievements.delete(reader.u32());
+      this.events.emit("ACHIEVEMENT_STATE_CHANGED", { kind: "deleted" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CRITERIA_DELETED) {
       const reader = new PacketReader(packet.payload);
       this.criteria.delete(reader.u32());
+      this.events.emit("ACHIEVEMENT_STATE_CHANGED", { kind: "deleted" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ALL_ACHIEVEMENT_DATA || packet.opcode === OPCODES.SMSG_RESPOND_INSPECT_ACHIEVEMENTS) {
@@ -4867,6 +6563,14 @@ export class WorldClient {
         for (const entry of data.completed) this.achievements.set(entry.achievementId, entry.date);
         for (const entry of data.criteria) this.criteria.set(entry.criteriaId, entry.counter);
         this.events.emit("CHARACTER_SHEET_CHANGED", {});
+        this.events.emit("ACHIEVEMENT_STATE_CHANGED", { kind: "list" });
+      } else if (data.playerGuid !== undefined) {
+        this.inspectAchievements = {
+          guid: data.playerGuid,
+          completed: new Map(data.completed.map((entry) => [entry.achievementId, entry.date])),
+          criteria: new Map(data.criteria.map((entry) => [entry.criteriaId, entry.counter])),
+        };
+        this.events.emit("ACHIEVEMENT_STATE_CHANGED", { kind: "inspect", guid: data.playerGuid });
       }
       return true;
     }
@@ -4881,15 +6585,28 @@ export class WorldClient {
       // is the only thing that says which of the two just arrived.
       if (talents.pet) this.petTalents = talents;
       else this.talents = talents;
-      this.events.emit("TALENTS_CHANGED", {});
+      this.events.emit("TALENTS_CHANGED", { pet: talents.pet });
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_TALENTS_INVOLUNTARILY_RESET || packet.opcode === OPCODES.MSG_TALENT_WIPE_CONFIRM) {
-      this.events.emit("TALENTS_CHANGED", {});
+    if (packet.opcode === OPCODES.SMSG_TALENTS_INVOLUNTARILY_RESET) {
+      this.events.emit("TALENTS_CHANGED", { pet: false });
+      return true;
+    }
+    if (packet.opcode === OPCODES.MSG_TALENT_WIPE_CONFIRM) {
+      // A quote, not a change: the talents move only after the answer, with SMSG_TALENTS_INFO. A
+      // zero guid is the core's answer to one: ResetTalents found no talent spent
+      // (SkillHandler.cpp:83-87, Player.cpp:4002-4006) — said, and nothing is asked.
+      const quote = parseTalentWipeConfirm(packet.payload);
+      this.talentWipeConfirm = quote.guid === 0n ? undefined : { ...quote, receivedAt: performance.now() };
+      if (quote.guid !== 0n) this.events.emit("TALENT_WIPE_CONFIRM", { guid: quote.guid, cost: quote.cost });
+      else this.onSpellStatus?.(formatGlobalStringByName("ERR_TALENT_WIPE_ERROR", [], "Очки талантов не расходовались."), true);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSPECT_TALENT) {
-      parseTalentsInfo(packet.payload.slice(0));
+      // The packed guid comes first, so this is not `SMSG_TALENTS_INFO`'s shape (InspectProtocol.ts).
+      const inspection = parseInspectTalent(packet.payload);
+      this.inspections.set(inspection.guid, inspection);
+      this.events.emit("INSPECT_TALENT_READY", { guid: inspection.guid });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_EQUIPMENT_SET_LIST) {
@@ -4911,6 +6628,8 @@ export class WorldClient {
       // The core writes a zero here whatever happened, and only documents 4 as "inventory full".
       // It is an inventory failure rather than a character one, so it goes where the bags show it.
       const result = parseEquipmentSetUseResult(packet.payload);
+      // The stock equipment manager's EQUIPMENT_SWAP_FINISHED (FrameXmlEquipmentSetsLive.ts) waits on this.
+      this.events.emit("EQUIPMENT_SET_USE_RESULT", { result });
       if (result !== 0) {
         this.itemMessage = { text: "Не удалось надеть набор: инвентарь заполнен", error: true };
         this.onItemMessage?.();
@@ -4922,15 +6641,30 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_ENCHANT_TIME_UPDATE) {
-      parseEnchantTimeUpdate(packet.payload);
+      const update = parseEnchantTimeUpdate(packet.payload);
+      // The item's duration field is milliseconds as of the update block that carried it; the
+      // packet restates what is left in whole seconds (Player::AddEnchantmentDuration divides by
+      // 1000). Writing it back keeps the field the one place a countdown reads from — through the
+      // state, so the store hears it, and only for an item this client has seen.
+      this.state.patchField(update.itemGuid,
+        UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + update.slot * 3 + 1, update.duration * 1000);
+      this.events.emit("ITEM_ENCHANT_TIME_UPDATE", { ...update, receivedAt: performance.now() });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SOCKET_GEMS_RESULT) {
-      parseSocketGems(packet.payload);
+      const result = parseSocketGems(packet.payload);
+      // This packet is authoritative too, and can precede the general object update. Slots 2-5
+      // (SOCK_ENCHANTMENT_SLOT … BONUS_ENCHANTMENT_SLOT), the id word of each.
+      for (const [index, enchantment] of result.enchantments.slice(0, 4).entries()) {
+        this.state.patchField(result.itemGuid, UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + (index + 2) * 3, enchantment);
+      }
+      this.events.emit("SOCKET_GEMS_RESULT", result);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK || packet.opcode === OPCODES.SMSG_READ_ITEM_FAILED) {
-      parseGuidOnly(packet.payload);
+      const readGuid = parseGuidOnly(packet.payload);
+      // The refusal carries its own SMSG_INVENTORY_CHANGE_FAILURE; only OK opens the reader.
+      if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK) this.events.emit("ITEM_TEXT_OPENED", { kind: "item", guid: readGuid });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_REFUND_INFO_RESPONSE || packet.opcode === OPCODES.SMSG_ITEM_REFUND_RESULT) {
@@ -5004,6 +6738,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_QUEST_CONFIRM_ACCEPT) {
       this.sharedQuest = parseQuestConfirmAccept(packet.payload);
+      this.requestName(this.sharedQuest.initiatorGuid);
       this.events.emit("QUEST_SHARED", { quest: this.sharedQuest });
       return true;
     }
@@ -5034,6 +6769,16 @@ export class WorldClient {
     return false;
   }
 
+  /**
+   * One spell that did not land on one target, from SMSG_SPELL_GO's miss list or SMSG_SPELLLOGMISS:
+   * the word over the head and the stock hit indicator's event, for every caster alike — the
+   * overlay and the portraits decide whom they show.
+   */
+  #reportSpellMiss(casterGuid: bigint, targetGuid: bigint, spellId: number, missInfo: number): void {
+    this.events.emit("FLOATING_TEXT", { guid: targetGuid, amount: 0, kind: "miss", critical: false, text: missReasonText(missInfo) });
+    this.events.emit("UNIT_COMBAT", { source: "miss", casterGuid, targetGuid, spellId, missInfo });
+  }
+
   #handleSpellLog(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_SPELL_START) {
       const start = parseSpellCastHeader(packet.payload);
@@ -5059,7 +6804,7 @@ export class WorldClient {
         this.events.emit("SPELL_CHANNEL_UPDATE", {
           casterGuid: update.casterGuid, spellId, remaining: update.remaining,
         });
-        this.#endCast(update.casterGuid, spellId, false);
+        this.#endCast(update.casterGuid, spellId, "success");
       } else if (cast) {
         cast.duration = update.remaining;
         cast.startedAt = performance.now();
@@ -5080,7 +6825,11 @@ export class WorldClient {
       }
       const active = this.casts.get(failure.casterGuid);
       if (!active || active.spellId === failure.spellId) {
-        this.#endCast(failure.casterGuid, failure.spellId, true, failure.castCount);
+        const reason = failure.result === SPELL_FAILED_INTERRUPTED
+          || failure.result === SPELL_FAILED_INTERRUPTED_COMBAT
+          ? "interrupted"
+          : "failed";
+        this.#endCast(failure.casterGuid, failure.spellId, reason, failure.castCount);
       }
       return true;
     }
@@ -5103,6 +6852,7 @@ export class WorldClient {
         text: `${this.#spellName(log.spellId)}: ${parts.join(", ")}${log.critical ? " (крит)" : ""}`,
       });
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: log.damage, kind: "damage", critical: log.critical });
+      this.events.emit("UNIT_COMBAT", { source: "spellDamage", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLHEALLOG) {
@@ -5114,11 +6864,13 @@ export class WorldClient {
         text: `${this.#spellName(log.spellId)}: лечение ${effective}${log.overheal > 0 ? ` (сверх ${log.overheal})` : ""}`,
       });
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: effective, kind: "heal", critical: log.critical });
+      this.events.emit("UNIT_COMBAT", { source: "heal", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLENERGIZELOG) {
       const log = parseSpellEnergizeLog(packet.payload);
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: log.amount, kind: "power", critical: false });
+      this.events.emit("UNIT_COMBAT", { source: "energize", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PERIODICAURALOG) {
@@ -5129,18 +6881,20 @@ export class WorldClient {
         guid: log.targetGuid, amount: log.amount, critical: log.critical,
         kind: healing ? "heal" : power ? "power" : "damage",
       });
+      this.events.emit("UNIT_COMBAT", { source: "periodic", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLLOGMISS) {
+      // Only what is decided on landing — a hit-time evade or immunity (Spell.cpp:2467-2471) — and
+      // damage shields and splits (Unit.cpp:1731, :2164, :2210); cast-time misses are SPELL_GO's.
       const log = parseSpellMissLog(packet.payload);
-      for (const target of log.targets) {
-        this.events.emit("FLOATING_TEXT", { guid: target.guid, amount: 0, kind: "miss", critical: false, text: MISS_REASONS[target.missInfo] ?? "промах" });
-      }
+      for (const target of log.targets) this.#reportSpellMiss(log.casterGuid, target.guid, log.spellId, target.missInfo);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLDAMAGESHIELD) {
       const log = parseDamageShieldLog(packet.payload);
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: log.damage, kind: "damage", critical: false });
+      this.events.emit("UNIT_COMBAT", { source: "damageShield", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLINSTAKILLLOG) {
@@ -5166,6 +6920,7 @@ export class WorldClient {
       const log = parseSpellLogPair(packet.payload);
       const immune = packet.opcode === OPCODES.SMSG_SPELLORDAMAGE_IMMUNE;
       this.events.emit("FLOATING_TEXT", { guid: log.targetGuid, amount: 0, kind: "miss", critical: false, text: immune ? "иммунитет" : "сопротивление" });
+      this.events.emit("UNIT_COMBAT", { source: immune ? "immune" : "resist", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_DISPEL_FAILED) {
@@ -5266,7 +7021,16 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_COOLDOWN) {
-      parseItemCooldown(packet.payload);
+      const cooldown = parseItemCooldown(packet.payload);
+      // Player::ApplyEquipCooldown is the sole sender in this core. It adds a fixed 30-second
+      // cooldown before sending the guid+spell packet; the packet itself has no duration field.
+      const now = performance.now();
+      const marker = now + ITEM_EQUIP_COOLDOWN_MS;
+      if ((this.itemCooldowns.get(cooldown.spellId) ?? 0) < marker) {
+        this.itemCooldowns.set(cooldown.spellId, marker);
+        this.events.emit("ITEM_COOLDOWN_STARTED", { spellId: cooldown.spellId, itemGuid: cooldown.itemGuid });
+        this.onCooldownsChanged?.();
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CLEAR_TARGET) {
@@ -5326,7 +7090,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SET_PROJECTILE_POSITION) {
-      parseProjectilePosition(packet.payload);
+      const position = parseProjectilePosition(packet.payload);
+      this.projectiles.set(position.casterGuid, {
+        castCount: position.castCount, x: position.x, y: position.y, z: position.z,
+      });
+      this.events.emit("PROJECTILE_MOVED", position);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_POWER_UPDATE) {
@@ -5348,11 +7116,19 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SET_FLAT_SPELL_MODIFIER || packet.opcode === OPCODES.SMSG_SET_PCT_SPELL_MODIFIER) {
-      parseSpellModifier(packet.payload);
+      const modifier = parseSpellModifier(packet.payload);
+      const pct = packet.opcode === OPCODES.SMSG_SET_PCT_SPELL_MODIFIER;
+      const key = `${modifier.effectIndex}:${modifier.op}:${pct ? "pct" : "flat"}`;
+      if (modifier.value === 0) this.spellModifiers.delete(key);
+      else this.spellModifiers.set(key, { ...modifier, pct });
+      this.events.emit("SPELL_MODIFIERS_CHANGED", {});
+      this.onCooldownsChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TOTEM_CREATED) {
-      parseTotemCreated(packet.payload);
+      const totem = parseTotemCreated(packet.payload);
+      this.totems.set(totem.slot, { guid: totem.guid, duration: totem.duration, spellId: totem.spellId, startedAt: performance.now() });
+      this.events.emit("TOTEM_CREATED", totem);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_MOUNT_RESULT) {
@@ -5400,6 +7176,11 @@ export class WorldClient {
   #handlePets(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_PET_SPELLS) {
       const spells = parsePetSpells(packet.payload);
+      // A swing belongs to the unit that started it; a new or closed bar is another unit's, or none.
+      if (this.petAttackVictim !== undefined && (spells.closed || spells.guid !== this.petSpells?.guid)) {
+        this.petAttackVictim = undefined;
+        this.events.emit("PET_ATTACK_CHANGED", { victim: undefined });
+      }
       if (spells.closed) {
         // A bare zero guid is how the server says the pet is gone; there is no other signal.
         this.petSpells = undefined;
@@ -5452,8 +7233,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_CAST_FAILED) {
-      const failure = parsePetCastFailed(packet.payload);
-      this.#recordPetMessage(`Питомец не смог применить заклинание ${failure.spellId} (код ${failure.result})`, true);
+      // Written by the player's own `WriteCastResultInfo` (Spell.cpp:4385-4386), tail and all, so it
+      // is read and worded the same way; `DONT_REPORT` says nothing here either.
+      const text = spellFailureText(parsePetCastFailed(packet.payload), this.#castFailureNames());
+      if (text) this.#recordPetMessage(`Питомец: ${text}`, true);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_TAME_FAILURE) {
@@ -5479,8 +7262,13 @@ export class WorldClient {
     }
 
     if (packet.opcode === OPCODES.MSG_LIST_STABLED_PETS) {
-      this.stable = parseStableList(packet.payload);
-      this.stableMasterGuid = this.stable.npcGuid;
+      const stable = parseStableList(packet.payload);
+      if (stable.npcGuid !== this.#pendingStableMasterGuid
+        && stable.npcGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingStableMasterGuid = 0n;
+      this.#consumeGossipService(stable.npcGuid);
+      this.stable = stable;
+      this.stableMasterGuid = stable.npcGuid;
       this.events.emit("STABLE_CHANGED", {});
       return true;
     }
@@ -5525,15 +7313,47 @@ export class WorldClient {
   #handlePvp(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_STATUS) {
       const status = parseBattlefieldStatus(packet.payload);
+      const previous = this.battlefieldQueues.get(status.queueSlot);
+      const enteredMatch = !status.cleared && status.status === STATUS_IN_PROGRESS
+        && (previous?.status !== STATUS_IN_PROGRESS || previous.bgTypeId !== status.bgTypeId
+          || previous.arenaType !== status.arenaType || previous.clientInstanceId !== status.clientInstanceId
+          || previous.mapId !== status.mapId);
+      if (!status.cleared && status.status === STATUS_WAIT_JOIN) {
+        this.battlefieldInviteDeadlines.set(status.queueSlot, performance.now() + status.removeTime);
+      } else this.battlefieldInviteDeadlines.delete(status.queueSlot);
       if (status.cleared) this.battlefieldQueues.delete(status.queueSlot);
       else this.battlefieldQueues.set(status.queueSlot, status);
+      const leftMatch = previous?.status === STATUS_IN_PROGRESS
+        && (status.cleared || status.status !== STATUS_IN_PROGRESS)
+        && ![...this.battlefieldQueues.values()].some((queued) => queued.status === STATUS_IN_PROGRESS);
+      if (enteredMatch || leftMatch) {
+        // The score and carrier packets name no match. Once the authoritative status moves to a
+        // different match or clears the last active slot, showing either old snapshot is wrong;
+        // arena score queries are refused until the match ends, so a refresh cannot repair it.
+        const hadScores = this.pvpScores !== undefined;
+        const hadCarriers = this.flagCarriers.length > 0;
+        this.pvpScores = undefined;
+        this.flagCarriers = [];
+        // A new match asks for its carriers on the next poll rather than up to a second later.
+        this.#flagCarriersRequestedAt = Number.NEGATIVE_INFINITY;
+        this.battlegroundPlayers.clear();
+        if (hadScores) this.events.emit("PVP_SCOREBOARD_CHANGED", { ended: false });
+        if (hadCarriers) this.events.emit("FLAG_CARRIERS_CHANGED", {});
+      }
       this.events.emit("BATTLEFIELD_QUEUE_CHANGED", {
         queueSlot: status.queueSlot, status: status.status, cleared: status.cleared,
       });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_LIST) {
-      this.battlefieldList = parseBattlefieldList(packet.payload);
+      const list = parseBattlefieldList(packet.payload);
+      if (list.fromWhere === 0) {
+        if (list.battlemasterGuid !== this.#pendingBattlemasterGuid
+          && list.battlemasterGuid !== this.#pendingGossipServiceGuid) return true;
+        this.#pendingBattlemasterGuid = 0n;
+        this.#consumeGossipService(list.battlemasterGuid);
+      }
+      this.battlefieldList = list;
       this.events.emit("BATTLEFIELD_LIST_CHANGED", { bgTypeId: this.battlefieldList.bgTypeId });
       return true;
     }
@@ -5598,6 +7418,7 @@ export class WorldClient {
       this.worldStateTime = parseWorldStateUiTimer(packet.payload);
       this.#worldStateTimeReceived = performance.now();
       this.events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
+      if (this.battlefieldWarInvite) this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldWarInvite.battleId });
       return true;
     }
 
@@ -5668,6 +7489,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_QUEUE_REQUEST_RESPONSE) {
       const response = parseBattlefieldQueueResponse(packet.payload);
+      this.battlefieldQueuedId = response.queued ? response.battleId : 0;
       if (response.queued) this.battlefieldQueueInvite = undefined;
       this.#recordPvpMessage(
         response.queued ? "Вы в очереди на битву" : response.hasRoom ? "В очередь встать не удалось" : "Битва заполнена",
@@ -5678,12 +7500,14 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_ENTRY_INVITE) {
       this.battlefieldWarInvite = parseBattlefieldEntryInvite(packet.payload);
+      this.requestWorldStateTime();
       this.events.emit("BATTLEFIELD_CHANGED", { battleId: this.battlefieldWarInvite.battleId });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_ENTERED) {
       const entered = parseBattlefieldEntered(packet.payload);
       this.battlefieldBattleId = entered.battleId;
+      this.battlefieldQueuedId = 0;
       this.battlefieldWarInvite = undefined;
       this.battlefieldQueueInvite = undefined;
       this.events.emit("BATTLEFIELD_CHANGED", { battleId: entered.battleId });
@@ -5692,6 +7516,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_BATTLEFIELD_MGR_EJECTED) {
       const ejected = parseBattlefieldEjected(packet.payload);
       this.battlefieldBattleId = 0;
+      this.battlefieldQueuedId = 0;
       this.battlefieldWarInvite = undefined;
       this.battlefieldQueueInvite = undefined;
       this.#recordPvpMessage(battlefieldLeaveReasonText(ejected.reason), true);
@@ -5833,6 +7658,14 @@ export class WorldClient {
       const template = parseItemQueryResponse(packet.payload);
       this.itemTemplates.set(template.entry, template);
       this.events.emit("QUERY_CACHE_CHANGED", { kind: "item", id: template.entry });
+      for (const [guid, pending] of this.#pendingItemUses) {
+        if (pending.entry !== template.entry) continue;
+        this.#pendingItemUses.delete(guid);
+        const inventory = playerInventory(this.state);
+        if (inventory && slotAt(inventory, pending.bag, pending.slot)?.guid === guid) {
+          this.useItem(pending.bag, pending.slot, guid);
+        }
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_NAME_QUERY_RESPONSE) {
@@ -5863,13 +7696,14 @@ export class WorldClient {
       // sign is three round trips deep: this, then the template, then the page text itself.
       const entry = this.state.objects.get(guid)?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
       if (entry !== 0) this.gameObjectTemplate(entry, guid);
+      this.events.emit("ITEM_TEXT_OPENED", { kind: "object", guid });
       return true;
     }
 
     if (packet.opcode === OPCODES.SMSG_GMTICKET_GETTICKET) {
       const ticket = parseGmTicket(packet.payload);
       this.gmTicket = ticket.status === GMTICKET_STATUS_HASTEXT ? ticket : undefined;
-      this.events.emit("GM_TICKET_CHANGED", {});
+      this.events.emit("GM_TICKET_CHANGED", { kind: "snapshot" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMTICKET_CREATE
@@ -5877,24 +7711,24 @@ export class WorldClient {
       || packet.opcode === OPCODES.SMSG_GMTICKET_DELETETICKET) {
       const response = parseTicketResponse(packet.payload);
       this.ticketMessage = { text: ticketResponseText(response), error: !isTicketSuccess(response) };
-      if (packet.opcode === OPCODES.SMSG_GMTICKET_DELETETICKET) this.gmTicket = undefined;
-      this.events.emit("GM_TICKET_CHANGED", {});
+      if (packet.opcode === OPCODES.SMSG_GMTICKET_DELETETICKET && isTicketSuccess(response)) this.gmTicket = undefined;
+      this.events.emit("GM_TICKET_CHANGED", { kind: "result" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMTICKET_SYSTEMSTATUS) {
       this.ticketsEnabled = parseTicketSystemStatus(packet.payload) === GMTICKET_QUEUE_STATUS_ENABLED;
-      this.events.emit("GM_TICKET_CHANGED", {});
+      this.events.emit("GM_TICKET_CHANGED", { kind: "system" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMRESPONSE_RECEIVED) {
       this.gmResponse = parseGmResponse(packet.payload);
-      this.events.emit("GM_TICKET_CHANGED", {});
+      this.events.emit("GM_TICKET_CHANGED", { kind: "response" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GMRESPONSE_STATUS_UPDATE) {
       this.ticketSurveyPending = parseGmResponseStatusUpdate(packet.payload);
       this.gmResponse = undefined;
-      this.events.emit("GM_TICKET_CHANGED", {});
+      this.events.emit("GM_TICKET_CHANGED", { kind: "resolved" });
       return true;
     }
 
@@ -5943,26 +7777,55 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SHOW_MAILBOX) {
-      this.mailboxGuid = parseShowMailbox(packet.payload);
+      const mailboxGuid = parseShowMailbox(packet.payload);
+      if (mailboxGuid !== this.#pendingGossipServiceGuid) return true;
+      this.#consumeGossipService(mailboxGuid);
+      this.mailboxGuid = mailboxGuid;
+      this.mailMessage = undefined;
+      this.#connection.send(OPCODES.CMSG_GET_MAIL_LIST, buildGetMailList(mailboxGuid));
       this.onMailChanged?.();
+      this.events.emit("MAIL_STATE_CHANGED", { kind: "open" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_BIDDER_NOTIFICATION) {
       const notification = parseAuctionBidderNotification(packet.payload);
-      // One packet for "you won" and "you were outbid": the only difference is whether the bidder
-      // is the player, so the wording has to be decided here rather than in the parser.
-      const mine = this.controlledGuid !== undefined && notification.bidderGuid === this.controlledGuid;
+      // One packet for "you won" and "you were outbid": the winner hears its own guid with bid and
+      // difference zero (AuctionHouseMgr.cpp:173), the outbid player the NEW bidder's guid (:277).
+      // So "mine" is the character's guid — not the unit it steers, which is a vehicle's in a
+      // vehicle and nobody's under fear or a charm, and turned a won lot into an outbid one. The
+      // controlled unit stands in only before the self CREATE has named the character.
+      const character = this.state.selfGuid ?? this.controlledGuid;
+      const mine = character !== undefined && notification.bidderGuid === character;
+      // The stock lines (the words FrameXmlAuction's notice prints too); the packet has no price
+      // for a win, so none is printed.
+      const item = this.#nameOf("item", notification.itemId);
       this.auctionMessage = {
-        text: mine ? `Лот ${notification.auctionId} выигран за ${notification.bidSum}` : `Вашу ставку на лот ${notification.auctionId} перебили`,
+        text: mine
+          ? formatGlobalStringByName("ERR_AUCTION_WON_S", [item], "Вы выиграли торги. Куплен предмет: %s.")
+          : formatGlobalStringByName("ERR_AUCTION_OUTBID_S", [item], "%s: предмет перекуплен."),
         error: !mine,
       };
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", {
+        kind: "bidderNotification", auctionId: notification.auctionId, itemId: notification.itemId, won: mine, bid: notification.bidSum,
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_OWNER_NOTIFICATION) {
       const sold = parseAuctionOwnerNotification(packet.payload);
-      this.auctionMessage = { text: `Ваш лот ${sold.auctionId} продан за ${sold.bid}`, error: false };
+      // A sale and an expiry send this same packet (AuctionHouseMgr.cpp:226, :250); an expiry has
+      // no bid. Stock words either way, as FrameXmlAuction's notice chooses them.
+      const item = this.#nameOf("item", sold.itemEntry);
+      this.auctionMessage = {
+        text: sold.bid > 0
+          ? formatGlobalStringByName("ERR_AUCTION_SOLD_S", [item], "На ваш товар \"%s\" нашелся покупатель.")
+          : formatGlobalStringByName("ERR_AUCTION_EXPIRED_S", [item], "Ваш товар (%s) снят с аукциона."),
+        error: false,
+      };
       this.onAuctionChanged?.();
+      this.events.emit("AUCTION_STATE_CHANGED", {
+        kind: "ownerNotification", auctionId: sold.auctionId, itemId: sold.itemEntry, bid: sold.bid,
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_LIST_PENDING_SALES) {
@@ -5974,6 +7837,7 @@ export class WorldClient {
   }
 
   #clearQueryCache(): void {
+    this.#pendingItemUses.clear();
     this.creatureTemplates.clear();
     this.itemTemplates.clear();
     this.itemSetNames.clear();
@@ -6017,6 +7881,11 @@ export class WorldClient {
    * that only lets the player's guid through drops every pet cooldown there is.
    */
   #isPetCooldown(guid: bigint): boolean {
+    return this.#isOwnPet(guid);
+  }
+
+  /** The unit the pet bar belongs to: its guid is the only thing that names it. */
+  #isOwnPet(guid: bigint): boolean {
     return guid !== 0n && this.petSpells !== undefined && guid === this.petSpells.guid;
   }
 
@@ -6095,16 +7964,37 @@ export class WorldClient {
     return false;
   }
 
+  /**
+   * Some result packets use a zero item GUID. Match those only when the remaining item fields
+   * identify exactly one live roll; a slot shared by two corpses must never close the wrong one.
+   */
+  #matchingLootRoll(identity: {
+    itemGuid: bigint; itemSlot: number; itemId: number;
+    randomSuffix: number; randomPropertyId: number;
+  }) {
+    if (identity.itemGuid !== 0n) {
+      const roll = this.lootRolls.get(identity.itemGuid);
+      return roll?.start.itemSlot === identity.itemSlot ? roll : undefined;
+    }
+    const candidates = [...this.lootRolls.values()].filter((roll) =>
+      !roll.won && !roll.passed
+      && roll.start.itemSlot === identity.itemSlot
+      && roll.start.itemId === identity.itemId
+      && roll.start.randomSuffix === identity.randomSuffix
+      && roll.start.randomPropertyId === identity.randomPropertyId);
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
   #handleLootRolls(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_LOOT_START_ROLL) {
       const start = parseLootStartRoll(packet.payload);
-      this.lootRolls.set(start.itemSlot, { start, startedAt: Date.now(), votes: [] });
-      this.events.emit("LOOT_ROLL_CHANGED", { itemSlot: start.itemSlot });
+      this.lootRolls.set(start.itemGuid, { start, startedAt: Date.now(), votes: [] });
+      this.events.emit("LOOT_ROLL_CHANGED", { itemSlot: start.itemSlot, newItemGuid: start.itemGuid });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LOOT_ROLL) {
       const vote = parseLootRoll(packet.payload);
-      const roll = this.lootRolls.get(vote.itemSlot);
+      const roll = this.#matchingLootRoll(vote);
       if (roll) roll.votes.push(vote);
       const name = this.names.get(vote.playerGuid);
       if (!name) this.requestName(vote.playerGuid);
@@ -6114,7 +8004,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_LOOT_ROLL_WON) {
       const won = parseLootRollWon(packet.payload);
-      const roll = this.lootRolls.get(won.itemSlot);
+      const roll = this.#matchingLootRoll(won);
       if (roll) roll.won = won;
       const name = this.names.get(won.winnerGuid);
       if (!name) this.requestName(won.winnerGuid);
@@ -6124,7 +8014,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_LOOT_ALL_PASSED) {
       const passed = parseLootAllPassed(packet.payload);
-      const roll = this.lootRolls.get(passed.itemSlot);
+      const roll = this.#matchingLootRoll(passed);
       if (roll) roll.passed = true;
       this.#systemChat(`Все пропустили предмет ${passed.itemId}`);
       this.events.emit("LOOT_ROLL_CHANGED", { itemSlot: passed.itemSlot });
@@ -6167,7 +8057,7 @@ export class WorldClient {
           }
         }
       }
-      this.events.emit("GUILD_BANK_CHANGED", {});
+      this.events.emit("GUILD_BANK_CHANGED", { list });
       return true;
     }
     if (packet.opcode === OPCODES.MSG_GUILD_BANK_LOG_QUERY) {
@@ -6199,18 +8089,26 @@ export class WorldClient {
       // Also arrives unasked: setting a tab's text broadcasts this to the whole guild.
       const text = parseGuildBankTabText(packet.payload);
       this.guildBankTabText.set(text.tabId, text.text);
-      this.events.emit("GUILD_BANK_CHANGED", {});
+      this.events.emit("GUILD_BANK_CHANGED", { textTab: text.tabId });
       return true;
     }
     if (packet.opcode === OPCODES.MSG_SAVE_GUILD_EMBLEM) {
+      if (this.#pendingTabardSaveGuid === 0n || this.#pendingTabardSaveGuid !== this.tabardVendorGuid) return true;
+      this.#pendingTabardSaveGuid = 0n;
       const error = parseSaveGuildEmblem(packet.payload);
-      this.guildMessage = { text: guildEmblemErrorText(error), error: error !== 0 };
-      this.onGuildChanged?.();
+      this.tabardMessage = { text: guildEmblemErrorText(error), error: error !== 0 };
+      this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
       return true;
     }
     if (packet.opcode === OPCODES.MSG_TABARDVENDOR_ACTIVATE) {
-      this.tabardVendorGuid = parseTabardVendorActivate(packet.payload);
-      this.onGuildChanged?.();
+      const guid = parseTabardVendorActivate(packet.payload);
+      if (guid !== this.#pendingTabardVendorGuid && guid !== this.#pendingGossipServiceGuid) return true;
+      this.#pendingTabardVendorGuid = 0n;
+      this.#consumeGossipService(guid);
+      this.tabardVendorGuid = guid;
+      this.tabardMessage = undefined;
+      this.#pendingTabardSaveGuid = 0n;
+      this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
       return true;
     }
     return false;
@@ -6221,19 +8119,22 @@ export class WorldClient {
       this.calendar = parseCalendarSnapshot(packet.payload);
       for (const invite of this.calendar.invites) this.requestName(invite.inviterGuid);
       for (const event of this.calendar.events) this.requestName(event.ownerGuid);
-      this.events.emit("CALENDAR_CHANGED", { eventId: undefined });
+      this.events.emit("CALENDAR_CHANGED", { eventId: undefined, reason: "snapshot" });
+      this.events.emit("CALENDAR_PACKET", { kind: "snapshot", snapshot: this.calendar });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_SEND_EVENT) {
       this.calendarEvent = parseCalendarEvent(packet.payload);
       this.requestName(this.calendarEvent.ownerGuid);
       for (const invite of this.calendarEvent.invites) this.requestName(invite.guid);
-      this.events.emit("CALENDAR_CHANGED", { eventId: this.calendarEvent.eventId });
+      this.events.emit("CALENDAR_CHANGED", { eventId: this.calendarEvent.eventId, reason: "event" });
+      this.events.emit("CALENDAR_PACKET", { kind: "event", detail: this.calendarEvent });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_SEND_NUM_PENDING) {
       this.calendarPending = parseCalendarPendingCount(packet.payload);
-      this.events.emit("CALENDAR_CHANGED", { eventId: undefined });
+      this.events.emit("CALENDAR_CHANGED", { eventId: undefined, reason: "pending" });
+      this.events.emit("CALENDAR_PACKET", { kind: "pending", count: this.calendarPending });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_COMMAND_RESULT) {
@@ -6241,19 +8142,29 @@ export class WorldClient {
       this.calendarMessage = result.result === 0
         ? undefined
         : { text: calendarErrorText(result.result) + (result.name ? `: ${result.name}` : ""), error: true };
-      this.events.emit("CALENDAR_CHANGED", { eventId: undefined });
+      this.events.emit("CALENDAR_CHANGED", { eventId: undefined, reason: result.result === 0 ? "complete" : "error" });
+      this.events.emit("CALENDAR_PACKET", { kind: "result", result });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_ARENA_TEAM || packet.opcode === OPCODES.SMSG_CALENDAR_FILTER_GUILD) {
       // The same class with the opcode chosen by a flag: who could be mass-invited to an event.
-      for (const invite of parseCalendarInitialInvites(packet.payload)) this.requestName(invite.guid);
-      this.events.emit("CALENDAR_CHANGED", { eventId: undefined });
+      const invites = parseCalendarInitialInvites(packet.payload);
+      for (const invite of invites) this.requestName(invite.guid);
+      this.calendarCandidates = {
+        source: packet.opcode === OPCODES.SMSG_CALENDAR_ARENA_TEAM ? "arena" : "guild",
+        eventId: this.#pendingCandidatesEvent,
+        invites,
+      };
+      this.#pendingCandidatesEvent = undefined;
+      this.events.emit("CALENDAR_CHANGED", { eventId: undefined, reason: "snapshot" });
+      this.events.emit("CALENDAR_PACKET", { kind: "candidates", source: this.calendarCandidates.source, invites });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE) {
       const invite = parseCalendarInviteAdded(packet.payload);
       this.requestName(invite.inviteeGuid);
-      this.events.emit("CALENDAR_CHANGED", { eventId: invite.eventId });
+      this.events.emit("CALENDAR_CHANGED", { eventId: invite.eventId, reason: "invite" });
+      this.events.emit("CALENDAR_PACKET", { kind: "inviteAdded", invite });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_ALERT) {
@@ -6261,43 +8172,51 @@ export class WorldClient {
       this.requestName(alert.invitedByGuid);
       this.calendarPending += 1;
       this.events.emit("CALENDAR_CHANGED", { eventId: alert.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "inviteAlert", alert });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_REMOVED) {
       const removed = parseCalendarInviteRemoved(packet.payload);
       this.events.emit("CALENDAR_CHANGED", { eventId: removed.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "inviteRemoved", removed });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_REMOVED_ALERT) {
       const alert = parseCalendarEventStatusAlert(packet.payload);
       this.events.emit("CALENDAR_CHANGED", { eventId: alert.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "inviteRemovedAlert", alert });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_STATUS) {
       const status = parseCalendarEventStatus(packet.payload);
       this.events.emit("CALENDAR_CHANGED", { eventId: status.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "status", status });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_MODERATOR_STATUS_ALERT) {
       const status = parseCalendarModeratorStatus(packet.payload);
       this.events.emit("CALENDAR_CHANGED", { eventId: status.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "moderator", status });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_UPDATED_ALERT) {
       const alert = parseCalendarEventUpdatedAlert(packet.payload);
       this.events.emit("CALENDAR_CHANGED", { eventId: alert.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "updatedAlert", alert });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_REMOVED_ALERT) {
       const alert = parseCalendarEventRemovedAlert(packet.payload);
       if (this.calendarEvent?.eventId === alert.eventId) this.calendarEvent = undefined;
       this.events.emit("CALENDAR_CHANGED", { eventId: alert.eventId });
+      this.events.emit("CALENDAR_PACKET", { kind: "removedAlert", alert });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_CLEAR_PENDING_ACTION) {
       // No body at all: drop whatever the calendar was waiting on.
       this.calendarPending = 0;
-      this.events.emit("CALENDAR_CHANGED", { eventId: undefined });
+      this.events.emit("CALENDAR_CHANGED", { eventId: undefined, reason: "complete" });
+      this.events.emit("CALENDAR_PACKET", { kind: "clearPending" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_RAID_LOCKOUT_ADDED
@@ -6314,6 +8233,9 @@ export class WorldClient {
       if (packet.opcode === OPCODES.SMSG_CALENDAR_RAID_LOCKOUT_REMOVED) this.calendarLockouts.delete(key);
       else this.calendarLockouts.set(key, lockout);
       this.events.emit("INSTANCE_CHANGED", { lockouts: this.calendarLockouts.size });
+      this.events.emit("CALENDAR_PACKET", {
+        kind: "lockout", change: lockout, removed: packet.opcode === OPCODES.SMSG_CALENDAR_RAID_LOCKOUT_REMOVED,
+      });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_NOTES) {
@@ -6338,7 +8260,11 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_CHANNEL_NOTIFY) {
       const notify = parseChannelNotify(packet.payload);
       if (notify.guid !== 0n) this.requestName(notify.guid);
-      if (notify.code === CHAT_YOU_LEFT_NOTICE) this.channels.delete(notify.channel);
+      if (notify.actorGuid !== 0n) this.requestName(notify.actorGuid);
+      // Joining is membership: until now only a roster, a member count or a userlist packet put a
+      // channel here, and a freshly `/join`-ed custom channel gets none of those, so every line said
+      // in it was dropped by the stock chat's channel filter (it matches lines against this map).
+      if (notify.code === CHAT_YOU_JOINED_NOTICE) this.#joinChannel(notify);
       const held = this.channels.get(notify.channel);
       if (held && notify.code === CHAT_MODE_CHANGE_NOTICE) {
         const member = held.members.find((candidate) => candidate.guid === notify.guid);
@@ -6350,13 +8276,27 @@ export class WorldClient {
       if (held && notify.code === CHAT_JOINED_NOTICE && !held.members.some((c) => c.guid === notify.guid)) {
         held.members.push({ guid: notify.guid, flags: 0 });
       }
-      this.#recordSystemLine(channelNotifyText(notify));
+      // The line carries the notify itself (`ChatMessage.channelNotice`), so the FrameXML seam can
+      // raise the stock `CHAT_MSG_CHANNEL_NOTICE` family instead of a system line. It is written
+      // while a left channel is still in the map — the stock notice needs the channel's number,
+      // and stock ChatFrame drops the channel from its own list on exactly that notice.
+      this.pushLocalMessage({
+        type: CHAT_MSG_SYSTEM, language: 0, senderGuid: 0n, senderName: "", receiverGuid: 0n,
+        receiverName: "", channel: "", text: channelNotifyText(notify), tag: 0, achievementId: 0,
+        channelNotice: notify,
+      });
+      if (notify.code === CHAT_YOU_LEFT_NOTICE) this.channels.delete(notify.channel);
       this.events.emit("CHANNEL_CHANGED", { channel: notify.channel });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CHANNEL_LIST) {
       const list = parseChannelList(packet.payload);
-      this.channels.set(list.channel, { flags: list.channelFlags, count: list.members.length, members: list.members });
+      // A roster says nothing of the ChatChannels id; keep the one the join gave.
+      const channelId = this.channels.get(list.channel)?.channelId;
+      this.channels.set(list.channel, {
+        flags: list.channelFlags, count: list.members.length, members: list.members,
+        ...(channelId === undefined ? {} : { channelId }),
+      });
       for (const member of list.members) this.requestName(member.guid);
       this.events.emit("CHANNEL_CHANGED", { channel: list.channel });
       return true;
@@ -6414,6 +8354,49 @@ export class WorldClient {
     return false;
   }
 
+  /**
+   * Put the channel a "you joined" names into `channels`.
+   *
+   * A zone channel is replaced, not left. Crossing into another zone the core joins that zone's
+   * General (LocalDefense, …) under the same ChatChannels id and sends no "you left" for the old
+   * one: `Player::UpdateLocalChannels` sets `sendRemove = false`, «it already replaced at client»
+   * (Player.cpp:5271-5276). So a join whose id is already held under another name takes that
+   * channel's place — same slot, so the channel keeps its number and `/1` is still General — and
+   * the notify names what it replaced (`ChannelNotify.replacedChannel`). Appending instead left
+   * every zone crossed behind: measured, two crossings held four channels and `/1` went to the
+   * first zone's General, which the server had already taken the player out of.
+   */
+  #joinChannel(notify: ChannelNotify): void {
+    const channelId = notify.channelId > 0 ? notify.channelId : undefined;
+    const joined = {
+      flags: notify.channelFlags, count: 0, members: [] as ChannelMember[],
+      ...(channelId === undefined ? {} : { channelId }),
+    };
+    let replaced: string | undefined;
+    if (channelId !== undefined) {
+      for (const [name, held] of this.channels) {
+        if (name !== notify.channel && held.channelId === channelId) {
+          replaced = name;
+          break;
+        }
+      }
+    }
+    if (replaced === undefined) {
+      const held = this.channels.get(notify.channel);
+      if (!held) this.channels.set(notify.channel, joined);
+      else if (channelId !== undefined) held.channelId = channelId;
+      return;
+    }
+    // Rebuild in order: a Map cannot rename a key where it stands.
+    const entries = [...this.channels];
+    this.channels.clear();
+    for (const [name, held] of entries) {
+      if (name === replaced) this.channels.set(notify.channel, joined);
+      else if (name !== notify.channel) this.channels.set(name, held);
+    }
+    notify.replacedChannel = replaced;
+  }
+
   #handleContacts(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_CONTACT_LIST) {
       this.contacts = parseContactList(packet.payload);
@@ -6457,20 +8440,39 @@ export class WorldClient {
     if (!this.contacts || status.guid === 0n) return;
     const held = this.contacts.contacts.find((candidate) => candidate.guid === status.guid);
     if (status.result === FRIEND_REMOVED || status.result === FRIEND_IGNORE_REMOVED) {
-      this.contacts.contacts = this.contacts.contacts.filter((candidate) => candidate.guid !== status.guid);
+      if (!held) return;
+      held.flags &= status.result === FRIEND_REMOVED ? ~SOCIAL_FLAG_FRIEND : ~SOCIAL_FLAG_IGNORED;
+      if (status.result === FRIEND_REMOVED) {
+        held.status = 0;
+        held.areaId = 0;
+        held.level = 0;
+        held.classId = 0;
+      }
+      if (held.flags === 0) this.contacts.contacts = this.contacts.contacts.filter((candidate) => candidate !== held);
       return;
     }
+    if (status.result === FRIEND_IGNORE_ADDED) {
+      if (held) held.flags |= SOCIAL_FLAG_IGNORED;
+      else this.contacts.contacts.push({
+        guid: status.guid, flags: SOCIAL_FLAG_IGNORED, note: "", status: 0,
+        areaId: 0, level: 0, classId: 0,
+      });
+      return;
+    }
+    const friendAdded = status.result === FRIEND_ADDED_ONLINE || status.result === FRIEND_ADDED_OFFLINE;
+    if (!friendAdded && status.result !== FRIEND_ONLINE && status.result !== FRIEND_OFFLINE) return;
     if (held) {
+      held.flags |= SOCIAL_FLAG_FRIEND;
       held.status = status.status;
       held.areaId = status.areaId;
       held.level = status.level;
       held.classId = status.classId;
-      if (status.note) held.note = status.note;
+      if (friendAdded) held.note = status.note;
       return;
     }
     const contact: Contact = {
       guid: status.guid,
-      flags: status.result === FRIEND_IGNORE_ADDED ? SOCIAL_FLAG_IGNORED : SOCIAL_FLAG_FRIEND,
+      flags: SOCIAL_FLAG_FRIEND,
       note: status.note,
       status: status.status,
       areaId: status.areaId,
@@ -6541,47 +8543,66 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_LFG_PLAYER_INFO) {
       this.lfgPlayerInfo = parseLfgPlayerInfo(packet.payload);
       this.events.emit("LFG_INFO_CHANGED", {});
+      this.events.emit("LFG_STATE_CHANGED", { kind: "playerInfo" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_PARTY_INFO) {
       this.lfgPartyInfo = parseLfgPartyInfo(packet.payload);
       for (const member of this.lfgPartyInfo) this.requestName(member.guid);
       this.events.emit("LFG_INFO_CHANGED", {});
+      this.events.emit("LFG_STATE_CHANGED", { kind: "partyInfo" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_ROLE_CHECK_UPDATE) {
       this.lfgRoleCheck = parseLfgRoleCheckUpdate(packet.payload);
       for (const member of this.lfgRoleCheck.members) this.requestName(member.guid);
+      // Terminal states drop the per-member progress with the check itself; a re-issued
+      // initializing update keeps it, because chosen answers arrive between those updates.
+      if (this.lfgRoleCheck.state !== LFG_ROLECHECK_INITIALITING) this.lfgRolesChosen.clear();
       this.lfgMessage = roleCheckStateText(this.lfgRoleCheck.state);
       this.onLfgChanged?.();
       this.events.emit("LFG_INFO_CHANGED", {});
+      this.events.emit("LFG_STATE_CHANGED", { kind: "roleCheck" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_BOOT_PROPOSAL_UPDATE) {
+      this.expireInteractionRequests();
       const boot = parseLfgBootProposal(packet.payload);
+      if (boot.inProgress && (!this.lfgBoot || this.lfgBoot.victimGuid !== boot.victimGuid)) {
+        this.lfgBootExpiresAt = performance.now() + (boot.secondsLeft > 0 ? boot.secondsLeft * 1000 : 120_000);
+      }
       this.lfgBoot = boot.inProgress ? boot : undefined;
       this.requestName(boot.victimGuid);
       this.events.emit("LFG_INFO_CHANGED", {});
+      this.events.emit("LFG_STATE_CHANGED", { kind: "boot" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_PLAYER_REWARD) {
       this.lfgReward = parseLfgPlayerReward(packet.payload);
       this.events.emit("LFG_INFO_CHANGED", {});
+      this.events.emit("LFG_STATE_CHANGED", { kind: "reward" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_OFFER_CONTINUE) {
       const entry = parseLfgOfferContinue(packet.payload);
-      this.lfgMessage = `Можно вернуться в подземелье ${entry & 0x00ffffff}`;
+      this.lfgOfferContinue = entry & 0x00ffffff;
+      this.lfgMessage = `Можно вернуться в подземелье ${this.lfgOfferContinue}`;
       this.onLfgChanged?.();
+      // The entry keeps its queue type in the top byte; the stored field keeps only the id.
+      this.events.emit("LFG_STATE_CHANGED", { kind: "offerContinue", entry });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_TELEPORT_DENIED) {
       this.lfgMessage = lfgTeleportDeniedText(parseLfgTeleportDenied(packet.payload));
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "teleportDenied", message: this.lfgMessage });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_UPDATE_SEARCH) {
-      parseLfgUpdateSearch(packet.payload);
+      this.lfgSearching = parseLfgUpdateSearch(packet.payload);
+      this.events.emit("LFG_INFO_CHANGED", {});
+      this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "search" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LFG_DISABLED) {
@@ -6590,6 +8611,7 @@ export class WorldClient {
       this.lfgDisabled = true;
       this.lfgMessage = "Поиск подземелий отключён";
       this.onLfgChanged?.();
+      this.events.emit("LFG_STATE_CHANGED", { kind: "disabled" });
       return true;
     }
     return false;
@@ -6607,6 +8629,9 @@ export class WorldClient {
         this.targetGuid = attack.victim;
         this.attacking = true;
         this.onCombatStatus?.("Автоатака началась", true, false);
+      } else if (this.#isOwnPet(attack.attacker) && this.petAttackVictim !== attack.victim) {
+        this.petAttackVictim = attack.victim;
+        this.events.emit("PET_ATTACK_CHANGED", { victim: attack.victim });
       }
       return true;
     }
@@ -6616,6 +8641,9 @@ export class WorldClient {
         this.attacking = false;
         if (attack.victimDied) this.state.setField(attack.victim, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
         this.onCombatStatus?.(attack.victimDied ? "Цель погибла" : "Автоатака остановлена сервером", false, false);
+      } else if (this.#isOwnPet(attack.attacker) && this.petAttackVictim !== undefined) {
+        this.petAttackVictim = undefined;
+        this.events.emit("PET_ATTACK_CHANGED", { victim: undefined });
       }
       return true;
     }
@@ -6639,6 +8667,7 @@ export class WorldClient {
         this.onCombatStatus?.("Автоатака идёт", this.attacking, false);
       }
       this.onSwing?.(swing);
+      this.events.emit("UNIT_COMBAT", { source: "melee", swing });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LOG_XPGAIN) {

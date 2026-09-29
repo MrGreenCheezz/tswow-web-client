@@ -28,7 +28,8 @@ function legacyModel(vertexCount = 1) {
   return data;
 }
 
-function oneKeyAnimation() {
+/** `animationId` makes otherwise equal blocks distinct: identical sidecars share one decoded set. */
+function oneKeyAnimation(animationId = 0) {
   const data = new ArrayBuffer(48);
   const bytes = new Uint8Array(data);
   const view = new DataView(data);
@@ -36,6 +37,7 @@ function oneKeyAnimation() {
   view.setUint32(4, data.byteLength, true);
   view.setUint16(8, 1, true);
   view.setUint16(10, 1, true);
+  view.setUint16(12, animationId, true);
   view.setUint32(16, 1_000, true);
   view.setUint32(20, 1, true);
   view.setUint32(28, 1, true);
@@ -190,7 +192,7 @@ test("active model pins publish exact overflow and converge below budget after f
 test("model and animation aggregate budgets evict independently", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => String(url).includes("/visual/animations")
-    ? responseWithArrayBuffer(oneKeyAnimation())
+    ? responseWithArrayBuffer(oneKeyAnimation(pathOf(url) === "A.m2" ? 1 : 2))
     : responseWithArrayBuffer(legacyModel());
   try {
     const client = new EnvironmentClient("ws://example.test/world", Date.now, 64, 10, 10, {

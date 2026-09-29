@@ -1,0 +1,11 @@
+tiles 424; placements without a doodad cache entry: 14
+{"key":"530/14-45","total":8347,"added":0,"projected":8347,"placementsWithSet":0}
+{"key":"0/49-32","total":7995,"added":188,"projected":8183,"placementsWithSet":4}
+{"key":"0/49-31","total":7940,"added":113,"projected":8053,"placementsWithSet":6}
+{"key":"530/14-46","total":7909,"added":0,"projected":7909,"placementsWithSet":0}
+{"key":"530/13-46","total":7577,"added":0,"projected":7577,"placementsWithSet":0}
+{"key":"530/13-45","total":7473,"added":0,"projected":7473,"placementsWithSet":0}
+{"key":"0/48-32","total":7220,"added":91,"projected":7311,"placementsWithSet":1}
+{"key":"0/49-30","total":7005,"added":7,"projected":7012,"placementsWithSet":2}
+tiles that would reach >= 10000: none
+tiles gaining >= 200 objects: 0; total objects added over all tiles: 2098

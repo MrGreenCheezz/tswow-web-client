@@ -312,6 +312,8 @@ export function parseM2(model, skin) {
     textureWeights: readTextureWeights(model),
     textureTransforms: readTextureTransforms(model),
     portraitCamera: readPortraitCamera(model),
+    // Mutually exclusive with the one above by construction — see `readSceneCamera`.
+    sceneCamera: readSceneCamera(model),
     // Counted, not parsed: what a model asks for that this pipeline still cannot draw.
     unsupported: {
       globalLoops: array(model, HEADER.globalLoops).count,
@@ -449,19 +451,67 @@ export function readPortraitCamera(model) {
   for (let index = 0; index < block.count; index++) {
     const at = block.offset + index * CAMERA_SIZE;
     if (model.readInt32LE(at) !== CAMERA_TYPE_PORTRAIT) continue;
-    const fov = model.readFloatLE(at + 4);
-    const far = model.readFloatLE(at + 8);
-    const near = model.readFloatLE(at + 12);
+    const camera = decodeCamera(model, at);
     // A record that fails the score is a record from another layout, and a camera pointing
     // nowhere frames a portrait of nothing. Refusing is what leaves the fallback chain to run.
-    if (!(fov >= 0.05 && fov <= 3.2 && near >= 0 && far > near)) continue;
-    const vector = (offset) => [0, 1, 2].map((axis) => model.readFloatLE(at + offset + axis * 4));
-    const position = vector(CAMERA_POSITION_BASE);
-    const target = vector(CAMERA_TARGET_BASE);
-    if ([...position, ...target].some((value) => !Number.isFinite(value))) continue;
-    return { fov, near, far, position, target };
+    if (camera) return camera;
   }
   return undefined;
+}
+
+/**
+ * The camera a model that is a *scene* rather than a unit is meant to be looked at through.
+ *
+ * `readPortraitCamera` keeps only type 0, and that is right for a unit: the type says which of a
+ * creature's several cameras frames its face. A glue model has no face to frame — it is a set, and
+ * the one camera it carries is the shot the artist composed. Measured over the 19 models under
+ * `Interface\Glues\Models\` in this client: **13 carry exactly one camera and every one of the 13
+ * is type −1**; the six `UI_RS_*` recruit-a-friend sets carry none at all. Not one type-0 record in
+ * the whole directory, so the portrait reader returns `undefined` for all 19 and the login screen
+ * would have had to invent a framing for a shot that is already authored. The C++ reference client
+ * takes `cameras[0]` and never looks at the type (`character_preview.cpp:1268-1275`).
+ *
+ * Index 0 and not "the first non-portrait one": a model's camera order is the author's order, and
+ * the first record is the one the reference reads. A model that *does* carry a portrait is left to
+ * `readPortraitCamera` — this returns `undefined` for it — so exactly one of the two can be set on
+ * any model and a unit's published artifact is byte-identical to what it was before this existed.
+ *
+ * The cost to everything that already worked is measured rather than argued: over the 1,114 distinct
+ * `CreatureModelData` models this client actually holds, 930 carry a portrait and are untouched,
+ * and of the other 184 **not one gains a scene camera** — a creature with no type-0 record has no
+ * camera block at all. So the whole reach of this function on this client is the 13 glue sets it
+ * was written for.
+ */
+export function readSceneCamera(model) {
+  const block = array(model, HEADER.cameras);
+  if (block.count === 0 || block.count > 64 || !fits(model, block, CAMERA_SIZE)) return undefined;
+  // A model with a portrait is a unit, and the portrait is the answer for it. Checking the whole
+  // block rather than record 0 alone is what keeps the two mutually exclusive: a creature whose
+  // first camera is a cinematic and whose second is its portrait must not gain both.
+  for (let index = 0; index < block.count; index++) {
+    if (model.readInt32LE(block.offset + index * CAMERA_SIZE) === CAMERA_TYPE_PORTRAIT) return undefined;
+  }
+  return decodeCamera(model, block.offset);
+}
+
+/**
+ * One `M2Camera` record's still frame, or `undefined` when it does not score as one.
+ *
+ * The score is the stride's own — FOV inside the range a lens can have, a near plane at or in front
+ * of the eye, a far plane beyond it, finite base vectors — and it is what tells a record apart from
+ * bytes belonging to another layout. The animated position and target tracks are deliberately not
+ * read: a still frame is what both callers want, and the tracks are the cinematics.
+ */
+function decodeCamera(model, at) {
+  const fov = model.readFloatLE(at + 4);
+  const far = model.readFloatLE(at + 8);
+  const near = model.readFloatLE(at + 12);
+  if (!(fov >= 0.05 && fov <= 3.2 && near >= 0 && far > near)) return undefined;
+  const vector = (offset) => [0, 1, 2].map((axis) => model.readFloatLE(at + offset + axis * 4));
+  const position = vector(CAMERA_POSITION_BASE);
+  const target = vector(CAMERA_TARGET_BASE);
+  if ([...position, ...target].some((value) => !Number.isFinite(value))) return undefined;
+  return { fov, near, far, position, target };
 }
 
 /** A combo-table entry, with the file's 0xFFFF sentinel turned into a plain -1. */
@@ -518,6 +568,49 @@ function readBounds(model) {
 }
 
 /**
+ * Origin-centred radius for a scenery M2 that the current visual publisher draws without a rig
+ * or emitters. The MD20 header's bounding radius is centred on its own box, not on the placement
+ * origin (ElwynnTreeMid01 reaches z=11.7 while its header radius is 6.3). Scan every source vertex
+ * instead: the SKIN can only select a subset, and model-to-scene/ADT placement rotations preserve
+ * distance from the origin. Unknown, animated or malformed models must remain unculled.
+ */
+export function staticM2AdmissionRadius(model) {
+  const headerEnd = HEADER.particleEmitters + 8;
+  if (!Buffer.isBuffer(model) || model.length < headerEnd
+    || model.subarray(0, 4).toString() !== "MD20" || model.readUInt32LE(4) !== 264) return undefined;
+  if (array(model, HEADER.ribbonEmitters).count > 0
+    || array(model, HEADER.particleEmitters).count > 0) return undefined;
+
+  const bones = array(model, HEADER.bones);
+  const sequences = array(model, HEADER.sequences);
+  const vertices = array(model, HEADER.vertices);
+  if (bones.count > 1024 || (bones.count > 0 && (bones.offset < headerEnd || !fits(model, bones, BONE_SIZE)))
+    || sequences.count > 4096 || (sequences.count > 0 && (sequences.offset < headerEnd || !fits(model, sequences, SEQUENCE_SIZE)))
+    || vertices.count === 0 || vertices.count > 1_000_000
+    || vertices.offset < headerEnd || !fits(model, vertices, VERTEX_SIZE)) {
+    return undefined;
+  }
+  try {
+    // An external .anim can move bones even when its keyframes are absent from this M2 buffer.
+    if (m2Animations(model).some((animation) => animation.external !== undefined)
+      || parseM2Skeleton(model) !== undefined) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  let radius = 0;
+  for (let index = 0; index < vertices.count; index++) {
+    const at = vertices.offset + index * VERTEX_SIZE;
+    const x = model.readFloatLE(at);
+    const y = model.readFloatLE(at + 4);
+    const z = model.readFloatLE(at + 8);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
+    radius = Math.max(radius, Math.hypot(x, y, z));
+  }
+  return Number.isFinite(radius) ? radius : undefined;
+}
+
+/**
  * The points a model hangs other models from: a helm on the head, a sword in the right hand.
  *
  * Read here rather than in parseM2 because an attachment is nothing but a bone and a place on it,
@@ -554,6 +647,29 @@ function readAttachments(model, boneCount) {
  *   EmoteUseStandingNoSheathe, which points at UseStandingLoop).
  * * **Variation** — the file may hold several takes of one animation; the client picks among them
  *   at random for idles. Only variation 0 is published, so one animation is one clip.
+ *
+ * Three fields beside the ones that pick the data describe how a pose is *entered and travelled*,
+ * and all three were read past until now (the 64-byte `M2SequenceDisk` layout is spelled out in
+ * CPPClientExample/wowee/src/pipeline/m2_loader.cpp:229-248):
+ *
+ * * **blendTime (0x1C)** — how long the original client takes to blend into this sequence, in
+ *   milliseconds. It is authored per clip and it is not one number: HumanMale carries 150 ms on
+ *   210 of its 241 sequences and 250 ms on five, NightElfFemale stands up over 300 ms, Murloc
+ *   reaches 350, Wolf and Horse each carry a 50. The browser used to answer all of that with two
+ *   constants.
+ * * **movingSpeed (0x08)** — the ground speed the stride was authored for, so a gait can be
+ *   time-scaled to the speed the unit is actually travelling instead of skating. Measured on
+ *   RidingHorse: Walk 2.5, Run 6.9444, Walkbackwards −2.5 (it is signed — a backwards stride
+ *   travels backwards), and 0 on all 40 of its other sequences.
+ * * **variationNext (0x3C)** — the sequence to play after this one, which is how a multi-part idle
+ *   or a mount's fidget chain is authored (HumanMale's Stand names 25, Mount names 137). It is an
+ *   index into the *sequence table*, not an animation id, which is why `variationIndex` below has
+ *   to travel with it: without the clip's own slot number a reader holding only animation ids
+ *   cannot tell which clip a `variationNext` points at.
+ *
+ * Slice A2 gives all three a wire format. `blendTime` still rides the reserved u16 the clip header
+ * already had; `movingSpeed`, `variationNext` and `variationIndex` ride the optional extras table
+ * appended after the clips (`tools/wvm.mjs`, "WVX1").
  */
 export function m2Animations(model) {
   const sequences = array(model, HEADER.sequences);
@@ -566,7 +682,10 @@ export function m2Animations(model) {
       animationId: model.readUInt16LE(at),
       variation: model.readUInt16LE(at + 2),
       duration: model.readUInt32LE(at + 4),
+      movingSpeed: model.readFloatLE(at + 8),
       flags: model.readUInt32LE(at + 12),
+      blendTime: model.readUInt32LE(at + 0x1c),
+      variationNext: model.readInt16LE(at + 0x3c),
       aliasNext: model.readUInt16LE(at + 0x3e),
     });
   }
@@ -589,6 +708,23 @@ export function m2Animations(model) {
       /** The slot the tracks are indexed by, which is the alias target's when there is one. */
       sequenceIndex: data.index,
       duration: data.duration,
+      // Taken from the record the caller asked for rather than from the alias target, because it
+      // describes entering *this* animation and not the one that happens to store its keys. The
+      // distinction is invisible on this client: all 17 of HumanMale's alias records carry a
+      // blendTime equal to their target's, to the millisecond.
+      blendTime: record.blendTime,
+      /** Authored ground speed of the stride; 0 for everything that does not travel. */
+      movingSpeed: record.movingSpeed,
+      /** The sequence the file says follows this one, or -1. A sequence-table index, not an id. */
+      variationNext: record.variationNext,
+      /**
+       * This animation's own slot in the sequence table — what a `variationNext` names.
+       *
+       * The record's index and not the alias target's (`sequenceIndex` above is the target,
+       * because that is where the keyframes are). A chain is authored between records, so the
+       * identity a follower points at is the record that was asked for.
+       */
+      variationIndex: record.index,
       /** Undefined when the keyframes are inside the .m2. */
       external: (data.flags & SEQUENCE_DATA_INSIDE_M2) !== 0
         ? undefined
@@ -625,10 +761,18 @@ export function parseM2Skeleton(model, options = {}) {
   if (model.subarray(0, 4).toString() !== "MD20") throw new Error("Not an MD20 model");
   const bones = array(model, HEADER.bones);
   const sequences = array(model, HEADER.sequences);
-  if (bones.count === 0 || bones.count > 1024 || sequences.count === 0 || sequences.count > 4096) return undefined;
-  if (!fits(model, bones, BONE_SIZE) || !fits(model, sequences, SEQUENCE_SIZE)) return undefined;
+  if (bones.count === 0 || bones.count > 1024 || sequences.count > 4096) return undefined;
+  if (!fits(model, bones, BONE_SIZE)
+    || (sequences.count > 0 && !fits(model, sequences, SEQUENCE_SIZE))) return undefined;
+
+  const globalLoopBlock = array(model, HEADER.globalLoops);
+  const globalDurations = globalLoopBlock.count <= 65_535 && fits(model, globalLoopBlock, 4)
+    ? Array.from({ length: globalLoopBlock.count }, (_, index) =>
+      model.readUInt32LE(globalLoopBlock.offset + index * 4))
+    : [];
 
   const skeleton = [];
+  const globalChannels = [];
   for (let index = 0; index < bones.count; index++) {
     const at = bones.offset + index * BONE_SIZE;
     const parent = model.readInt16LE(at + 8);
@@ -640,6 +784,14 @@ export function parseM2Skeleton(model, options = {}) {
       flags: model.readUInt32LE(at + 4),
       pivot: [model.readFloatLE(at + 0x4c), model.readFloatLE(at + 0x50), model.readFloatLE(at + 0x54)],
     });
+    for (const [offset, kind, components] of [
+      [0x10, TRACK_KINDS.translation, 3],
+      [0x24, TRACK_KINDS.rotation, 4],
+      [0x38, TRACK_KINDS.scale, 3],
+    ]) {
+      const channel = readGlobalChannel(model, at + offset, kind, components, globalDurations);
+      if (channel) globalChannels.push({ bone: index, kind, ...channel });
+    }
   }
 
   const wanted = options.wanted;
@@ -668,13 +820,25 @@ export function parseM2Skeleton(model, options = {}) {
       }
     }
     if (channels.length === 0) continue;
-    clips.push({ animationId: animation.animationId, duration: animation.duration, channels });
+    // The sequence's own transition metadata travels with its keyframes, so the encoder never has
+    // to consult the sequence table a second time — and a clip that ends up in the sidecar carries
+    // exactly what the same clip would have carried inside the model.
+    clips.push({
+      animationId: animation.animationId,
+      duration: animation.duration,
+      blendTime: animation.blendTime,
+      movingSpeed: animation.movingSpeed,
+      variationNext: animation.variationNext,
+      variationIndex: animation.variationIndex,
+      channels,
+    });
   }
-  if (clips.length === 0) return undefined;
+  if (clips.length === 0 && globalChannels.length === 0) return undefined;
   clips.sort((left, right) => left.animationId - right.animationId);
   return {
     bones: skeleton,
     clips,
+    globalChannels,
     /** Animations whose `.anim` the caller did not hand over. Zero on a complete client. */
     missingAnimations: missing,
     attachments: readAttachments(model, bones.count),
@@ -718,4 +882,53 @@ function readChannel(model, source, at, sequenceIndex, kind, components, duratio
     }
   }
   return { interpolation: model.readUInt16LE(at), times: keyTimes, values: keyValues };
+}
+
+/**
+ * One bone channel bound to an M2 global sequence rather than to an animation clip.
+ *
+ * These channels are the whole animation of several spell models. Holy Light's two hand models
+ * have fourteen/sixteen bones and three ribbons, but not one animation-local bone key: dropping
+ * global channels therefore turns their moving trails into a static pair of flat glow cards.
+ */
+function readGlobalChannel(model, at, kind, components, globalDurations) {
+  const globalSequence = model.readUInt16LE(at + 2);
+  if (globalSequence === 0xffff || globalSequence >= globalDurations.length) return undefined;
+  const timestamps = array(model, at + 4);
+  const values = array(model, at + 12);
+  // A global track has one nested key array. Accept the first when a malformed/custom model writes
+  // more, but never read a header that is not wholly inside the model.
+  if (timestamps.count === 0 || values.count === 0
+    || !fits(model, timestamps, 8) || !fits(model, values, 8)) return undefined;
+  const times = array(model, timestamps.offset);
+  const data = array(model, values.offset);
+  if (times.count === 0 || times.count !== data.count || times.count > 20_000) return undefined;
+  const stride = kind === TRACK_KINDS.rotation ? 8 : components * 4;
+  if (!fits(model, times, 4) || !fits(model, data, stride)) return undefined;
+
+  const duration = globalDurations[globalSequence] ?? 0;
+  const keyTimes = new Uint32Array(times.count);
+  for (let key = 0; key < times.count; key++) {
+    const time = model.readUInt32LE(times.offset + key * 4);
+    keyTimes[key] = duration > 0 ? Math.min(duration, time) : time;
+  }
+  const keyValues = kind === TRACK_KINDS.rotation
+    ? new Int16Array(times.count * 4)
+    : new Float32Array(times.count * components);
+  for (let key = 0; key < times.count; key++) {
+    const entry = data.offset + key * stride;
+    if (kind === TRACK_KINDS.rotation) {
+      for (let part = 0; part < 4; part++) keyValues[key * 4 + part] = model.readInt16LE(entry + part * 2);
+    } else {
+      for (let part = 0; part < components; part++) {
+        keyValues[key * components + part] = model.readFloatLE(entry + part * 4);
+      }
+    }
+  }
+  return {
+    globalSequence,
+    interpolation: model.readUInt16LE(at),
+    times: keyTimes,
+    values: keyValues,
+  };
 }

@@ -1,5 +1,6 @@
 node_modules/
 .runtime/
+.codex-chrome-profile/
 dist/
 .env
 .env.*
@@ -37,6 +38,11 @@ Thumbs.db
 FrameXML/
 DBFilesClient/
 
+# …but `FrameXML/` above is about *extracted client data*, and on this case-insensitive filesystem
+# it also swallowed the FrameXML lane's own TypeScript. Re-include exactly that one directory —
+# the data rule above is unchanged everywhere else.
+!src/browser/framexml/
+
 # Generated locally from the user's own WoW/TSWoW installation. Public source files under
 # src/generated/ are data-free facades; these implementations must never be redistributed.
 src/generated/client-data/
@@ -51,6 +57,9 @@ data/terrain-textures/
 data/terrain-layers/
 data/item-icons/
 data/visual-tiles/
+# Source-stamped per-root MODR/MOCV parse cache. It self-validates on each tile generation and is
+# intentionally not part of the published-cache restamp pass.
+data/visual-wmo-doodads/
 data/visual-models/
 data/visual-dbc/
 data/textures/
@@ -60,10 +69,14 @@ data/horizon/
 # 6,136 MB of .wav and .mp3 sit in the archives. The cache holds only what was asked for,
 # and it must never hold anything git is looking at.
 data/sound/
+# The interface's own Lua, XML, TOC and TTF, copied out of the archives verbatim by
+# tools/generate-client-file.mjs. Blizzard's source and the server operator's, neither ours.
+data/client-files/
 
 # Minimap tile indexes, extracted from md5translate.trs by
 # tools/generate-minimap-index.mjs.
 data/minimap/
+data/worldmap-zone-maps/
 
 # Dumped from the tswow world database by tools/generate-*-metadata.mjs.
 data/creatures.json

@@ -22,6 +22,9 @@ import {
 import { playerInventory } from "../Inventory.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { Panel, SlotGrid, Tabs, confirmPanel, showMenu, type MenuItem } from "./Widgets.js";
+import {
+  closeFrameXmlGuildBank, frameXmlGuildBankOpen, frameXmlGuildBankOwnsWindow,
+} from "../framexml/FrameXmlGuildBankController.js";
 
 /** Tab six is the money log rather than a real tab; the strip shows it as one. */
 const MONEY_LOG_TAB = 6;
@@ -74,13 +77,20 @@ function build(): Parts {
   return { panel, tabs, status, grid, log, money, actions };
 }
 
+// The stock GuildBankFrame (FrameXmlGuildBankController.ts) is asked first; this window is the fallback.
 export function guildBankOpen(): boolean {
-  return parts?.panel.visible ?? false;
+  return frameXmlGuildBankOpen() || (parts?.panel.visible ?? false);
 }
 
 export function closeGuildBank(): void {
   parts?.panel.hide();
+  if (closeFrameXmlGuildBank()) return;
   game.world?.closeGuildBank();
+}
+
+/** The stock GuildBankFrame took the visit: hide this window and leave the bank open. */
+export function stepAsideGuildBank(): void {
+  parts?.panel.hide();
 }
 
 export function resetGuildBank(): void {
@@ -120,18 +130,20 @@ function openSlotMenu(anchor: HTMLElement, slot: number): void {
       run: () => world.withdrawGuildBankItem(shownTab, slot, item.itemId),
     });
   }
-  // Depositing needs a bag slot to take from, so the menu offers whatever is in the backpack.
+  // Depositing needs a bag slot to take from, so the menu offers whatever is carried.
+  // Capped at thirty rows so the menu stays usable; the rest remain reachable via drag from bags.
   if (mayDeposit(world.guildPermissions, shownTab)) {
     const inventory = playerInventory(world.state);
     const carried = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)]
       .filter((entry) => entry.item !== undefined);
-    for (const entry of carried.slice(0, 12)) {
+    for (const entry of carried.slice(0, 30)) {
       const entryId = entry.item?.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
       items.push({
         label: `Положить: ${itemName(entryId)}`,
         run: () => world.depositGuildBankItem(shownTab, slot, entryId, entry.bag, entry.slot),
       });
     }
+    if (carried.length > 30) items.push({ label: `…и ещё ${carried.length - 30} в сумках`, enabled: false });
   }
   if (items.length === 0) items.push({ label: "Пусто", enabled: false });
   showMenu(anchor, `Ячейка ${slot + 1}`, items);
@@ -139,7 +151,7 @@ function openSlotMenu(anchor: HTMLElement, slot: number): void {
 
 export function showGuildBank(): void {
   const world = game.world;
-  if (!world || world.guildBankerGuid === 0n) {
+  if (!world || world.guildBankerGuid === 0n || frameXmlGuildBankOwnsWindow()) {
     parts?.panel.hide();
     return;
   }
@@ -224,5 +236,18 @@ export function showGuildBank(): void {
     confirm: "Купить",
     onConfirm: () => world.buyGuildBankTab(permissions?.purchasedTabs ?? 0),
   }));
-  actions.append(deposit, withdraw, buy);
+  // Renaming keeps the tab's icon: the stock icon picker has no equivalent here, and sending
+  // an empty icon would wipe the one the guild chose. The server checks the rights.
+  const rename = document.createElement("button");
+  rename.type = "button";
+  rename.textContent = "Переименовать вкладку";
+  rename.addEventListener("click", () => {
+    const tabs = bankTabs(world.guildBank, world.guildPermissions);
+    const current = tabs.find((tab) => tab.tabId === shownTab && tab.visible);
+    if (!current) return;
+    const name = window.prompt(`Новое имя вкладки «${current.name}»:`, current.name);
+    if (name === null || !name.trim()) return;
+    world.renameGuildBankTab(shownTab, name.trim(), current.icon);
+  });
+  actions.append(deposit, withdraw, buy, rename);
 }

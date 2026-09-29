@@ -118,3 +118,11 @@ function wearSet(set: EquipmentSet): void {
   });
   world.useEquipmentSet(pieces);
 }
+
+/** Wears the set with this action-bar index, if it exists. Returns false when there is none. */
+export function wearEquipmentSetByIndex(index: number): boolean {
+  const set = game.world?.equipmentSets.find((entry) => entry.setId === index);
+  if (!set) return false;
+  wearSet(set);
+  return true;
+}

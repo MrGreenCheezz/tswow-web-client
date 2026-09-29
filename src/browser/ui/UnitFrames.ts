@@ -12,7 +12,7 @@ import { arenaFrames, bossFrames, focusFrame, partyFrames, petFrame, raidFrames,
 import { showTarget, unitDisplayName } from "./Frames.js";
 import { UnitFrame, UnitFrameList } from "./UnitFrame.js";
 import { raidMarksByUnit, threatFraction, unitSnapshot, type UnitSnapshot } from "./UnitSnapshot.js";
-import { setUnitFramePortrait } from "./Portraits.js";
+import { setPartyPortrait, setUnitFramePortrait } from "./Portraits.js";
 
 /**
  * Every unit frame past the player's own and its target: slice I2.
@@ -35,6 +35,7 @@ import { setUnitFramePortrait } from "./Portraits.js";
 
 const RAID_SUBGROUPS = 8;
 const RAID_PER_SUBGROUP = 5;
+const PARTY_FRAME_COUNT = 4;
 
 const selectTarget = (guid: bigint): void => {
   game.world?.selectTarget(guid);
@@ -44,7 +45,9 @@ const selectTarget = (guid: bigint): void => {
 const targetOfTarget = new UnitFrame({ kind: "tot", size: "compact", onClick: selectTarget, portrait: true });
 const focus = new UnitFrame({ kind: "focus", size: "compact", onClick: selectTarget, portrait: true });
 const pet = new UnitFrame({ kind: "pet", size: "compact", onClick: selectTarget, portrait: true });
-const party = new UnitFrameList({ kind: "party", size: "full", onClick: selectTarget, onContext: openGroupMenu });
+const party = new UnitFrameList({
+  kind: "party", size: "full", onClick: selectTarget, onContext: openGroupMenu, portrait: true,
+});
 const raid = new UnitFrameList({
   kind: "raid", size: "grid", onClick: selectTarget, onContext: openGroupMenu, className: "ui-raid-grid",
 });
@@ -58,6 +61,20 @@ partyFrames.append(party.root);
 raidFrames.append(raid.root);
 bossFrames.append(bosses.root);
 arenaFrames.append(arena.root);
+
+// Stock PartyFrame has exactly four stable rows. Create the browser rows and their canvases once,
+// so an empty party still has all portrait targets ready and a reorder only changes GUIDs.
+for (let index = 0; index < PARTY_FRAME_COUNT; index += 1) party.at(index);
+
+function syncPartyPortraits(): void {
+  for (let index = 0; index < PARTY_FRAME_COUNT; index += 1) {
+    setPartyPortrait(index, party.at(index));
+  }
+}
+
+// Publish the stable canvas targets immediately as well as on every world repaint. This keeps an
+// empty party's four renderer slots alive before the first roster packet arrives.
+syncPartyPortraits();
 
 export { arenaOpponentGuids, bossDisengaged, bossEngaged, engagedBossGuids, inArena } from "../game/Encounters.js";
 
@@ -108,6 +125,7 @@ export function showUnitFrames(): void {
     setUnitFramePortrait("focus", focus);
     setUnitFramePortrait("pet", pet);
     for (const list of [party, raid, bosses, arena]) list.render([]);
+    syncPartyPortraits();
     return;
   }
 
@@ -151,6 +169,7 @@ export function showUnitFrames(): void {
       threat?: number | undefined;
       role?: "leader" | "assistant" | "maintank" | "mainassist" | undefined;
       ready?: boolean | undefined;
+      outOfRange?: boolean | undefined;
     } | undefined> = [];
     for (let index = 0; index < RAID_SUBGROUPS * RAID_PER_SUBGROUP; index++) grid.push(undefined);
     const filled = new Map<number, number>();
@@ -165,12 +184,13 @@ export function showUnitFrames(): void {
       snapshot.online = member.online;
       grid[subgroup * RAID_PER_SUBGROUP + used] = {
         snapshot, role: roleOf(member, group), ready: readyAnswer(member.guid),
+        outOfRange: outOfHealRange(member.guid),
       };
     }
     raid.render(grid.map((entry) => entry ?? { snapshot: emptyGridSlot() }));
   } else {
     raid.render([]);
-    party.render(members.map((member) => {
+    party.render(members.slice(0, PARTY_FRAME_COUNT).map((member) => {
       const snapshot = snapshotOf(member.guid, marks)
         ?? unitSnapshot(member.guid, member.name, { online: member.online, raidMark: marks.get(member.guid) });
       // The group list is the authority on the name and on being connected at all; the stats
@@ -182,9 +202,12 @@ export function showUnitFrames(): void {
         threat: threatOn(world.targetGuid, member.guid),
         role: roleOf(member, group),
         ready: readyAnswer(member.guid),
+        outOfRange: outOfHealRange(member.guid),
       };
     }));
   }
+
+  syncPartyPortraits();
 
   bosses.render(engagedBossGuids()
     .map((guid) => snapshotOf(guid, marks))
@@ -212,6 +235,27 @@ function roleOf(member: GroupMember, group: GroupState): "leader" | "assistant" 
 /** The tick or cross a running ready check puts on a frame. */
 function readyAnswer(guid: bigint): boolean | undefined {
   return game.world?.readyCheck?.answers.get(guid);
+}
+
+/**
+ * Whether a member is beyond typical heal range.
+ *
+ * Both ends need a live position; a member the client holds only as party stats (or a self
+ * it cannot place) answers unknown and the frame stays as it was. True means visible yet
+ * too far to heal — the case `is-far` (no world object at all) does not cover.
+ */
+const HEAL_RANGE_YARDS = 40;
+
+function outOfHealRange(guid: bigint): boolean | undefined {
+  const world = game.world;
+  const self = world?.state.selfGuid === undefined
+    ? undefined
+    : world.state.objects.get(world.state.selfGuid)?.position;
+  const other = world?.state.objects.get(guid)?.position;
+  if (!self || !other) return undefined;
+  const distance = Math.hypot(other.x - self.x, other.y - self.y, other.z - self.z);
+  if (!Number.isFinite(distance)) return undefined;
+  return distance > HEAL_RANGE_YARDS;
 }
 
 /** A slot in the raid grid that nobody is standing in. Drawn empty rather than removed. */

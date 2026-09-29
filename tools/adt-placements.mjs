@@ -21,6 +21,57 @@ export function parseAdtPlacements(data) {
   return objects;
 }
 
+/**
+ * The placements of a WDT that carries a global map object (MPHD flag 0x1), or undefined.
+ *
+ * A WDT's MWMO/MODF are the ADT's own chunks (no MWID — the name list is read in order, which is
+ * what `parseAdtPlacements` does without one), so the placements come out in the same shape.
+ */
+export function globalMapObjects(wdt) {
+  for (let offset = 0; offset + 8 <= wdt.length;) {
+    const tag = [...wdt.subarray(offset, offset + 4)].reverse().map((value) => String.fromCharCode(value)).join("");
+    const size = wdt.readUInt32LE(offset + 4);
+    if (tag === "MPHD") {
+      if (size < 4 || (wdt.readUInt32LE(offset + 8) & 0x1) === 0) return undefined;
+      const placements = parseAdtPlacements(wdt).filter((object) => object.kind === "wmo").map(centreGlobalObject);
+      return placements.length > 0 ? placements : undefined;
+    }
+    offset += 8 + size;
+  }
+  return undefined;
+}
+
+/**
+ * A global object's MODF names its position with x = z = 0, which in an ADT's convention would put
+ * it in the map's far corner. The vmap extractor TrinityCore's collision is built from reads that
+ * pair as the middle of the map (`vmap4_extractor/wmo.cpp` `MapObject::Extract`: "if (x == 0 && z ==
+ * 0) position.x = position.z = 533.33333f * 32"), and every one of the 39 such maps here sits at
+ * world (0, 0) in its `.vmtree`. The same shift is applied to the record's box, which the extractor
+ * leaves in the same space as the position. A global object placed anywhere else is left as read.
+ */
+function centreGlobalObject(object) {
+  if (object.x !== WORLD_MID || object.y !== WORLD_MID) return object;
+  const bounds = object.bounds && {
+    minX: object.bounds.minX - WORLD_MID, maxX: object.bounds.maxX - WORLD_MID,
+    minY: object.bounds.minY - WORLD_MID, maxY: object.bounds.maxY - WORLD_MID,
+    minZ: object.bounds.minZ, maxZ: object.bounds.maxZ,
+  };
+  return { ...object, x: 0, y: 0, ...(bounds ? { bounds } : {}) };
+}
+
+/** The edge of one ADT cell in yards. */
+const CELL = 533.33333333;
+
+/**
+ * Whether a placement's box reaches cell (gridX, gridY), the cell the browser's `terrainGrid`
+ * puts a world point in: gridX = ⌊32 − x/533⅓⌋, gridY = ⌊32 − y/533⅓⌋.
+ */
+export function placementReachesCell(placement, gridX, gridY) {
+  const box = placement.bounds ?? { minX: placement.x, maxX: placement.x, minY: placement.y, maxY: placement.y };
+  return box.maxX >= (32 - gridX - 1) * CELL && box.minX <= (32 - gridX) * CELL
+    && box.maxY >= (32 - gridY - 1) * CELL && box.minY <= (32 - gridY) * CELL;
+}
+
 function names(strings, indices) {
   if (!strings) return [];
   const offsets = [];

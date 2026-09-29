@@ -1,4 +1,5 @@
 import { PacketReader } from "../protocol/PacketReader.js";
+import { PacketWriter } from "../protocol/PacketWriter.js";
 
 // Layouts follow the active TrinityCore source: Channel.cpp (`List`, `JoinNotify`, `LeaveNotify`),
 // ChannelAppenders.h for every notify body, ChannelHandler.cpp (`HandleGetChannelMemberCount`, the
@@ -54,6 +55,8 @@ export const CHAT_PLAYER_INVITE_BANNED_NOTICE = 0x1e;
 export const CHAT_THROTTLED_NOTICE = 0x1f;
 export const CHAT_NOT_IN_AREA_NOTICE = 0x20;
 export const CHAT_NOT_IN_LFG_NOTICE = 0x21;
+export const CHAT_VOICE_ON_NOTICE = 0x22;
+export const CHAT_VOICE_OFF_NOTICE = 0x23;
 
 /**
  * What each notify code appends after the shared code-and-name header. There is no length, no
@@ -82,6 +85,9 @@ const NOTIFY_SHAPES = new Map<number, NotifyShape>([
   [CHAT_INVITE_NOTICE, "guid"],
   [CHAT_PLAYER_INVITED_NOTICE, "name"],
   [CHAT_PLAYER_INVITE_BANNED_NOTICE, "name"],
+  // `VoiceOnAppend`/`VoiceOffAppend` (ChannelAppenders.h:450-469): whoever switched it.
+  [CHAT_VOICE_ON_NOTICE, "guid"],
+  [CHAT_VOICE_OFF_NOTICE, "guid"],
 ]);
 
 export interface ChannelNotify {
@@ -100,6 +106,13 @@ export interface ChannelNotify {
   constantChannel: boolean;
   oldMemberFlags: number;
   newMemberFlags: number;
+  /**
+   * Not on the wire. `WorldClient` sets it on a "you joined" that replaced the held channel of the
+   * same `channelId` — a zone channel changing with the zone, which the core sends with no "you
+   * left" for the old one (Player.cpp:5271-5276). Names that old channel; the client calls this
+   * «Смена канала» (`CHAT_YOU_CHANGED_NOTICE`), not a second join.
+   */
+  replacedChannel?: string;
 }
 
 /**
@@ -305,4 +318,59 @@ export function channelNotifyText(notify: ChannelNotify): string {
     case CHAT_ANNOUNCEMENTS_OFF_NOTICE: return `[${notify.channel}] объявления выключены`;
     default: return `[${notify.channel}] сообщение канала (код ${notify.code})`;
   }
+}
+
+/**
+ * Client-to-server channel moderation.
+ *
+ * Layouts follow `ChannelHandler.cpp` in the active TrinityCore: every moderation packet
+ * names the channel as a c-string first, then the subject name. Password/owner/mode carry
+ * one extra field after the two strings.
+ */
+export function buildChannelKick(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelBan(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelUnban(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelInvite(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelSetOwner(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelPassword(channel: string, password: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(password).toUint8Array();
+}
+
+export function buildChannelSetModerator(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelUnmoderator(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelMute(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelUnmute(channel: string, name: string): Uint8Array {
+  return new PacketWriter().cString(channel).cString(name).toUint8Array();
+}
+
+export function buildChannelAnnounce(channel: string): Uint8Array {
+  return new PacketWriter().cString(channel).toUint8Array();
+}
+
+export function buildChannelList(channel: string): Uint8Array {
+  return new PacketWriter().cString(channel).toUint8Array();
 }

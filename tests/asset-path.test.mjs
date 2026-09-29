@@ -24,6 +24,9 @@ test("one validator accepts what the client ships, in any script", () => {
   assert.equal(validAssetPath("模组\\图标\\火球.blp", { extensions: ["blp"] }), true);
   // A combining mark is part of the letter in front of it, not a character of its own.
   assert.equal(validAssetPath("Module\\Ic\u0301ons\\Fire.blp", { extensions: ["blp"] }), true);
+  assert.equal(validAssetPath("Interface\\AddOns\\!Loader\\!Loader.toc", { extensions: ["toc"] }), false,
+    "the shared asset gate does not admit ! by default");
+  assert.equal(validAssetPath("Interface\\AddOns\\!Loader\\!Loader.toc", { extensions: ["toc"], allowBang: true }), true);
 });
 
 test("one validator still refuses everything the six refused", () => {
@@ -48,6 +51,8 @@ test("one validator still refuses everything the six refused", () => {
   assert.equal(validAssetPath(`${"a".repeat(MAX_ASSET_PATH - 4)}.blp`, { extensions: ["blp"] }), true);
   assert.equal(validAssetPath(`${"a".repeat(MAX_ASSET_PATH - 3)}.blp`, { extensions: ["blp"] }), false);
   assert.equal(validAssetPath("", { extensions: ["blp"] }), false);
+  assert.equal(validAssetPath("Interface\\..\\!secret.toc", { extensions: ["toc"], allowBang: true }), false);
+  assert.equal(validAssetPath("C:\\!secret.toc", { extensions: ["toc"], allowBang: true }), false);
 });
 
 test("the extension is what one caller wants and another does not", () => {

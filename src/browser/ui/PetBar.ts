@@ -13,27 +13,49 @@
 
 import {
   ACT_COMMAND, ACT_DISABLED, ACT_ENABLED, ACT_PASSIVE, ACT_REACTION, COMMAND_ABANDON,
-  PET_ACTION_BAR_SIZE, isVehicleActionBar, petActionOf, petActionTypeOf, petCommandText,
+  PET_ACTION_BAR_SIZE, isVehicleActionBar, petActionOf, petActionTypeOf, petBarKind, petCommandText,
   petReactText, type PetActionButton,
 } from "../../world/PetProtocol.js";
+import { vehiclePassengers } from "../../world/VehicleProtocol.js";
 import { game } from "../game/Context.js";
 import { unknownLabel } from "./Format.js";
 import { IconButton, attachTooltip, confirmPanel } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
+import { notifyHudLayout } from "../GameWindows.js";
 
 let container: HTMLElement | undefined;
 const buttons: IconButton[] = [];
+let actionRow: HTMLElement | undefined;
 let exitRow: HTMLElement | undefined;
+let observedWorld: typeof game.world;
+let observedRevision = -1;
+let observedVehicleKey = "";
+let observedKind: string | undefined;
+
+/**
+ * `data-kind` names whose bar this is (PetProtocol.ts `petBarKind`): the stock HUD's pet bar takes
+ * over a `pet` bar and hides this one by that attribute, leaving vehicles and possession here. A
+ * control update can change the kind with no bar packet, so it is compared every frame — a few
+ * field reads, and a DOM write only on change.
+ */
+function syncKind(box: HTMLElement): void {
+  const world = game.world;
+  const kind = world ? petBarKind(world.petSpells, world.controlledGuid, world.state?.selfGuid) ?? "" : "";
+  if (kind === observedKind) return;
+  observedKind = kind;
+  box.dataset.kind = kind;
+}
 
 function root(): HTMLElement | undefined {
   if (container?.isConnected) return container;
   const viewport = document.getElementById("world-viewport");
   if (!viewport) return undefined;
+  const mount = document.getElementById("bottom-hud-center") ?? viewport;
   container = document.createElement("div");
   container.id = "pet-bar";
   container.className = "pet-bar";
   container.hidden = true;
-  viewport.append(container);
+  mount.append(container);
   return container;
 }
 
@@ -42,8 +64,34 @@ function build(): void {
   if (!box || buttons.length > 0) return;
   const row = document.createElement("div");
   row.className = "pet-bar-row";
+  actionRow = row;
   for (let slot = 0; slot < PET_ACTION_BAR_SIZE; slot++) {
     const button = new IconButton({ onClick: () => pressSlot(slot) });
+    const index = slot;
+    // Right-click toggles autocast on a pet spell, as in the original client. Commands and
+    // reactions keep their left-click behaviour; passive spells have no autocast to toggle.
+    button.root.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const world = game.world;
+      const content = world?.petSpells?.bar[index];
+      if (!world || !content) return;
+      const type = petActionTypeOf(content.packed);
+      if (type !== ACT_ENABLED && type !== ACT_DISABLED) return;
+      world.togglePetAutocast(petActionOf(content.packed), type === ACT_DISABLED);
+    });
+    // Drag to reorder, as on the player's own bar. The server cross-checks both slots, so the
+    // local bar moves itself optimistically in `swapPetActionSlots`.
+    button.root.draggable = true;
+    button.root.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData("text/pet-slot", String(index));
+    });
+    button.root.addEventListener("dragover", (event) => event.preventDefault());
+    button.root.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const from = Number(event.dataTransfer?.getData("text/pet-slot"));
+      if (!Number.isInteger(from) || from === index) return;
+      game.world?.swapPetActionSlots(from, index);
+    });
     buttons.push(button);
     row.append(button.root);
   }
@@ -55,13 +103,26 @@ function build(): void {
 export function resetPetBar(): void {
   container?.replaceChildren();
   buttons.length = 0;
+  actionRow = undefined;
   exitRow = undefined;
+  observedWorld = undefined;
+  observedRevision = -1;
+  observedVehicleKey = "";
+  observedKind = undefined;
 }
 
-/** Whether the bar on screen is a vehicle's rather than a pet's. */
-function drivingVehicle(): boolean {
-  const bar = game.world?.petSpells?.bar;
-  return bar !== undefined && isVehicleActionBar(bar);
+/** Only state packet changes can alter a seat roster; ordinary rendered frames cannot. */
+function vehicleControlKey(): string {
+  const world = game.world;
+  const selfGuid = world?.state.selfGuid;
+  if (!world || selfGuid === undefined) return "";
+  const seatGuid = world.state.objects.get(selfGuid)?.transport?.guid;
+  const base = seatGuid === undefined ? undefined : world.state.objects.get(seatGuid);
+  const riding = base?.typeId === 3 || base?.typeId === 4 ? seatGuid : undefined;
+  const passengers = world.vehicleKits.has(selfGuid)
+    ? vehiclePassengers(world.state, selfGuid).filter((guid) => guid !== selfGuid).map(String).sort()
+    : [];
+  return `${riding ?? ""}|${passengers.join(",")}`;
 }
 
 function pressSlot(slot: number): void {
@@ -118,27 +179,51 @@ function slotTooltip(button: PetActionButton) {
 export function showPetBar(): void {
   const box = root();
   const world = game.world;
-  const spells = world?.petSpells;
   if (!box) return;
-  if (!world || !spells || spells.closed) {
+  syncKind(box);
+  const spells = world?.petSpells?.closed ? undefined : world?.petSpells;
+  const selfGuid = world?.state?.selfGuid;
+  const self = selfGuid === undefined ? undefined : world?.state?.objects.get(selfGuid);
+  const seatBase = self?.transport === undefined ? undefined : world?.state?.objects.get(self.transport.guid);
+  const ridingVehicle = seatBase?.typeId === 3 || seatBase?.typeId === 4;
+  const vehicleBar = spells !== undefined && isVehicleActionBar(spells.bar);
+  const ownedPassengers = world && selfGuid !== undefined && world.vehicleKits.has(selfGuid)
+    ? vehiclePassengers(world.state, selfGuid).filter((guid) => guid !== selfGuid)
+    : [];
+  if (!world || (!spells && !ridingVehicle && ownedPassengers.length === 0)) {
     box.hidden = true;
+    exitRow?.replaceChildren();
+    document.documentElement.style.setProperty("--pet-bar-height", "0px");
+    notifyHudLayout();
     return;
   }
   build();
   box.hidden = false;
-  const vehicle = drivingVehicle();
+  const vehicle = vehicleBar || ridingVehicle || ownedPassengers.length > 0;
   box.classList.toggle("is-vehicle", vehicle);
+  if (actionRow) actionRow.hidden = spells === undefined;
 
   for (let slot = 0; slot < PET_ACTION_BAR_SIZE; slot++) {
     const button = buttons[slot];
-    const content = spells.bar[slot];
+    const content = spells?.bar[slot];
     if (!button) continue;
-    if (!content || content.packed === 0) {
+    // An empty slot is action 0 with a spell state, not a zero word: `CharmInfo::InitPetActionBar`
+    // writes (0, ACT_PASSIVE) into the four spell slots and `VehicleSpellInitialize` (0, i + 8) into
+    // a vehicle's unused ones. Only stay (command 0) and passive (reaction 0) are real zeros.
+    if (!spells || !content || (petActionOf(content.packed) === 0
+      && petActionTypeOf(content.packed) !== ACT_COMMAND && petActionTypeOf(content.packed) !== ACT_REACTION)) {
       button.root.hidden = true;
       continue;
     }
     button.root.hidden = false;
     button.setContent(slotLabel(content));
+    // The active stance and command read off the packet's own states: a pet whose stance the
+    // player cannot see is a pet whose behaviour surprises them.
+    const type = petActionTypeOf(content.packed);
+    const action = petActionOf(content.packed);
+    const active = type === ACT_REACTION ? action === spells.reactState
+      : type === ACT_COMMAND ? action === spells.commandState : false;
+    button.root.classList.toggle("is-active", active);
     // Attached once per redraw: `setContent` keeps the element, so the listener would otherwise
     // pile up. The tooltip content is a thunk, so it reads whatever the slot holds now.
     attachTooltip(button.root, () => slotTooltip(spells.bar[slot] ?? content));
@@ -146,28 +231,64 @@ export function showPetBar(): void {
 
   // Leaving is the one thing a vehicle bar must always offer: the server sends no button for it,
   // and without it a player in a siege engine has no way out but logging off.
-  if (!exitRow) return;
+  if (!exitRow) {
+    document.documentElement.style.setProperty("--pet-bar-height", "46px");
+    notifyHudLayout();
+    return;
+  }
   exitRow.replaceChildren();
-  if (!vehicle) return;
-  const previous = document.createElement("button");
-  previous.type = "button";
-  previous.textContent = "◀ место";
-  previous.addEventListener("click", () => world.changeVehicleSeat(false));
-  const next = document.createElement("button");
-  next.type = "button";
-  next.textContent = "место ▶";
-  next.addEventListener("click", () => world.changeVehicleSeat(true));
-  const leave = document.createElement("button");
-  leave.type = "button";
-  leave.className = "danger";
-  leave.textContent = "Покинуть";
-  leave.addEventListener("click", () => world.leaveVehicle());
-  exitRow.append(previous, next, leave);
+  if (vehicleBar || ridingVehicle) {
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "◀ место";
+    previous.addEventListener("click", () => world.changeVehicleSeat(false));
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "место ▶";
+    next.addEventListener("click", () => world.changeVehicleSeat(true));
+    const leave = document.createElement("button");
+    leave.type = "button";
+    leave.className = "danger";
+    leave.textContent = "Покинуть";
+    leave.addEventListener("click", () => world.leaveVehicle());
+    exitRow.append(previous, next, leave);
+  }
+  // The core's eject handler accepts only a player who owns the vehicle kit. A controller seated
+  // in a creature vehicle has a vehicle spell bar, but does not have that authority.
+  for (const passenger of ownedPassengers) {
+    const eject = document.createElement("button");
+    eject.type = "button";
+    eject.className = "danger";
+    eject.textContent = `Высадить: ${world.displayName(passenger)}`;
+    eject.setAttribute("aria-label", `Высадить пассажира ${world.displayName(passenger)}`);
+    eject.addEventListener("click", () => {
+      confirmPanel(eject, {
+        title: `Высадить ${world.displayName(passenger)}?`,
+        confirm: "Высадить",
+        danger: true,
+        onConfirm: () => world.ejectPassenger(passenger),
+      });
+    });
+    exitRow.append(eject);
+  }
+  document.documentElement.style.setProperty("--pet-bar-height", spells ? vehicle ? "72px" : "46px" : "30px");
+  notifyHudLayout();
 }
 
 /** The cooldown sweeps, once a frame, exactly as the player's own bar does. */
 export function updatePetBar(now: number): void {
   const world = game.world;
+  const revision = world?.state.revision ?? -1;
+  if (world !== observedWorld || revision !== observedRevision) {
+    observedWorld = world;
+    observedRevision = revision;
+    const key = vehicleControlKey();
+    if (key !== observedVehicleKey) {
+      observedVehicleKey = key;
+      showPetBar();
+    }
+  }
+  if (container?.isConnected) syncKind(container);
   const spells = world?.petSpells;
   if (!world || !spells || spells.closed || buttons.length === 0) return;
   for (let slot = 0; slot < PET_ACTION_BAR_SIZE; slot++) {

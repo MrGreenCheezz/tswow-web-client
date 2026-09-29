@@ -30,12 +30,41 @@ const FOG_MAGIC = "WME3";
 const FOG_HEADER_SIZE = 16;
 const FOG_GROUP_SIZE = 4;
 const FOG_SIZE = 48;
+/** Header flag bits written by `tools/wwm.mjs` from the source's MOHD flags. */
+const CLASSIC_VERTEX_LIGHT = 0x02;
+const VERTEX_ALPHA_UNFIXED = 0x04;
+const ROOMS_MAGIC = "WME4";
+const ROOMS_HEADER_SIZE = 12;
+const ROOMS_SET_SIZE = 8;
 
 /** Bit 0 of an MFOG record's flags: it has no radius and holds wherever its groups are. */
 export const WMO_FOG_UNBOUNDED = 0x01;
 
 /** MOGP bit 13: this group is a room and not a porch or a roof. */
 export const WMO_GROUP_INDOOR = 0x2000;
+/** MOGP bit 3: the group is outdoors (the server's `Map::IsOutdoors` reads this same bit). */
+export const WMO_GROUP_OUTDOOR = 0x8;
+/** MOGP bit 2: the group carries MOCV; without it the encoder writes white placeholders. */
+export const WMO_GROUP_HAS_COLOURS = 0x4;
+
+/**
+ * Which of the client's two WMO pipelines lights a model's rooms, from MOHD bit 0x2.
+ *
+ * `classic` is `MapObj.wfx`: MOCV already holds `MOHD.ambColor` (the load step subtracts it and the
+ * shader adds it back), so the room's light is MOCV itself, brightened by its alpha as
+ * `FixColorVertexAlpha` does. `unified` is `MapObjU.wfx`: the ambient is added to MOCV at run time.
+ * Artifacts that predate the flag read as `unified`, which is the light they were always given.
+ */
+export type WmoVertexLightPath = "classic" | "unified";
+
+/**
+ * One doodad set's MODR rooms: doodad ordinal k (the tiles' numbering) belongs to
+ * `groups[offsets[k]]` up to `groups[offsets[k + 1]]`.
+ */
+export interface WmoDoodadRooms {
+  offsets: Uint32Array;
+  groups: Uint16Array;
+}
 
 /**
  * Which light a run of triangles is drawn in, as the WMO's own batch order states it.
@@ -66,6 +95,110 @@ export const WMO_LIGHT_TRANSITION = 2;
  */
 export function wmoRunIsInterior(group: Pick<WmoGroup, "indoor">, run: Pick<WmoRun, "lighting">): boolean {
   return run.lighting !== WMO_LIGHT_EXTERIOR && group.indoor;
+}
+
+const INTERIOR_ONLY = new WeakMap<WmoModel, boolean>();
+
+/**
+ * Whether a model is rooms and nothing else: every drawn group indoor, none outdoor (MOGP 0x8) and
+ * none holding an exterior or transition run.
+ *
+ * Gundrak's 24 groups all are. Stormwind, Dalaran, the Deadmines (one outdoor group), the Undercity
+ * (two) and the Goldshire Inn (two) are not. Such a model has no street to keep on a short leash
+ * and no sky of its own: its rooms are chosen through its portals at the full environment range,
+ * and a unit standing in it is lit by the room rather than by a sun the room has no window to.
+ */
+export function wmoInteriorOnly(model: Pick<WmoModel, "groups">): boolean {
+  const key = model as WmoModel;
+  let known = INTERIOR_ONLY.get(key);
+  if (known === undefined) {
+    known = model.groups.some((group) => group.triangleCount > 0)
+      && model.groups.every((group) => group.triangleCount === 0
+        || (group.indoor && !group.exterior && (group.flags & WMO_GROUP_OUTDOOR) === 0));
+    INTERIOR_ONLY.set(key, known);
+  }
+  return known;
+}
+
+/** The first room (indoor, no exterior run) whose model-space box strictly holds a point, or -1. */
+export function wmoInteriorGroupAt(model: Pick<WmoModel, "groups">, x: number, y: number, z: number): number {
+  for (const [index, group] of model.groups.entries()) {
+    if (!group.indoor || group.exterior || group.boundsValid === false) continue;
+    const b = group.bounds;
+    if (x > b.minX && x < b.maxX && y > b.minY && y < b.maxY && z > b.minZ && z < b.maxZ) return index;
+  }
+  return -1;
+}
+
+/**
+ * Whether any MODR room of the doodad at `ordinal` is in `visible` (one byte per group).
+ *
+ * Undefined when the table cannot answer — no WME4, an ordinal past it, or a record no room names —
+ * so the caller keeps the distance leash instead of hiding furniture on a guess.
+ */
+export function wmoDoodadRoomVisible(
+  rooms: WmoDoodadRooms | undefined,
+  ordinal: number,
+  visible: Uint8Array,
+): boolean | undefined {
+  if (!rooms || !Number.isInteger(ordinal) || ordinal < 0 || ordinal + 1 >= rooms.offsets.length) return undefined;
+  const start = rooms.offsets[ordinal]!;
+  const end = rooms.offsets[ordinal + 1]!;
+  if (end <= start) return undefined;
+  for (let at = start; at < end; at++) if (visible[rooms.groups[at]!] === 1) return true;
+  return false;
+}
+
+/**
+ * Whether the doodad at `ordinal`, a sphere in the space `clip` projects from, can be seen through
+ * the screen rectangle of one of its shown MODR rooms (`apertures`: minX, maxX, minY, maxY in NDC
+ * per group, as `selectWmoPortalGroups` writes them), widened by `margin`. A room seen whole, a
+ * sphere reaching the eye plane or anything non-finite answers true: the frustum test decides.
+ */
+export function wmoDoodadInAperture(
+  rooms: WmoDoodadRooms,
+  ordinal: number,
+  visible: Uint8Array,
+  apertures: Float32Array,
+  clip: ArrayLike<number>,
+  sphere: { readonly x: number; readonly y: number; readonly z: number; readonly radius: number },
+  margin: number,
+): boolean {
+  if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal + 1 >= rooms.offsets.length) return true;
+  const start = rooms.offsets[ordinal]!;
+  const end = rooms.offsets[ordinal + 1]!;
+  for (let at = start; at < end; at++) {
+    const group = rooms.groups[at]!;
+    if (visible[group] === 1 && apertures[group * 4]! <= -1 && apertures[group * 4 + 1]! >= 1
+      && apertures[group * 4 + 2]! <= -1 && apertures[group * 4 + 3]! >= 1) return true;
+  }
+  // The corners of the sphere's box, projected; the box holds the sphere and the projection of a
+  // box wholly in front of the eye is the hull of its corners.
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let corner = 0; corner < 8; corner++) {
+    const x = sphere.x + ((corner & 1) !== 0 ? sphere.radius : -sphere.radius);
+    const y = sphere.y + ((corner & 2) !== 0 ? sphere.radius : -sphere.radius);
+    const z = sphere.z + ((corner & 4) !== 0 ? sphere.radius : -sphere.radius);
+    const w = clip[3]! * x + clip[7]! * y + clip[11]! * z + clip[15]!;
+    if (!(w > 1e-4)) return true;
+    const ndcX = (clip[0]! * x + clip[4]! * y + clip[8]! * z + clip[12]!) / w;
+    const ndcY = (clip[1]! * x + clip[5]! * y + clip[9]! * z + clip[13]!) / w;
+    if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY)) return true;
+    minX = Math.min(minX, ndcX);
+    maxX = Math.max(maxX, ndcX);
+    minY = Math.min(minY, ndcY);
+    maxY = Math.max(maxY, ndcY);
+  }
+  for (let at = start; at < end; at++) {
+    const group = rooms.groups[at]!;
+    if (visible[group] !== 1) continue;
+    if (minX <= apertures[group * 4 + 1]! + margin && maxX >= apertures[group * 4]! - margin
+      && minY <= apertures[group * 4 + 3]! + margin && maxY >= apertures[group * 4 + 2]! - margin) return true;
+  }
+  return false;
 }
 
 export interface WmoBounds {
@@ -211,6 +344,12 @@ export interface WmoModel {
   fogs: WmoFog[];
   /** Nothing was held back, so no group will ever have to be asked for. */
   complete: boolean;
+  /** See {@link WmoVertexLightPath}; absent reads as `unified`. */
+  vertexLight?: WmoVertexLightPath;
+  /** MOHD 0x8 clear: MOCV alpha went through `FixColorVertexAlpha` and brightens by 1 + a/64. */
+  vertexAlphaFixed?: boolean;
+  /** WME4, per doodad set; empty on artifacts without it. */
+  doodadRooms?: readonly WmoDoodadRooms[];
 }
 
 function validWmoBounds(bounds: WmoBounds): boolean {
@@ -267,6 +406,8 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
   const textureCount = view.getUint16(8, true);
   const ambient: [number, number, number] = [bytes[10]!, bytes[11]!, bytes[12]!];
   const complete = (bytes[13]! & COMPLETE) !== 0;
+  const vertexLight: WmoVertexLightPath = (bytes[13]! & CLASSIC_VERTEX_LIGHT) !== 0 ? "classic" : "unified";
+  const vertexAlphaFixed = (bytes[13]! & VERTEX_ALPHA_UNFIXED) === 0;
   const lightCount = view.getUint16(14, true);
   const length = view.getUint32(16, true);
   if (groupCount === 0 || groupCount > 65_535 || textureCount > 65_535) throw new Error("WMO model has invalid counts");
@@ -349,8 +490,11 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
     offset += size;
   }
   const metadataOffset = view.getUint32(20, true);
-  const { portals, fogs } = decodeMetadata(bytes, view, metadataOffset, offset, groups);
-  const model: WmoModel = { ambient, textureUrls, lights, groups, fogs, complete };
+  const { portals, fogs, doodadRooms } = decodeMetadata(bytes, view, metadataOffset, offset, groups);
+  const model: WmoModel = {
+    ambient, textureUrls, lights, groups, fogs, complete, vertexLight, vertexAlphaFixed,
+    doodadRooms: doodadRooms ?? [],
+  };
   if (portals) model.portals = portals;
   return model;
 }
@@ -425,7 +569,7 @@ function decodeMetadata(
   metadataOffset: number,
   bodyEnd: number,
   groups: WmoGroup[],
-): { portals?: WmoPortals; fogs: WmoFog[] } {
+): { portals?: WmoPortals; fogs: WmoFog[]; doodadRooms?: WmoDoodadRooms[] } {
   if (metadataOffset === 0 || metadataOffset < bodyEnd || metadataOffset + 8 > bytes.byteLength) return { fogs: [] };
   const decoder = new TextDecoder();
   const magic = decoder.decode(bytes.subarray(metadataOffset, metadataOffset + 4));
@@ -442,6 +586,7 @@ function decodeMetadata(
     return {
       ...withPortals(decodePortalExtension(bytes, view, extensionOffset, groups, false)),
       fogs: decodeFogExtension(bytes, view, extensionOffset, groups),
+      doodadRooms: decodeDoodadRooms(bytes, view, extensionOffset, groups.length),
     };
   }
   // Accept the short-lived direct-WME2 artifact too. Published artifacts put WME1 first so an old
@@ -450,8 +595,56 @@ function decodeMetadata(
     ? {
       ...withPortals(decodePortalExtension(bytes, view, metadataOffset, groups, true)),
       fogs: decodeFogExtension(bytes, view, metadataOffset, groups),
+      doodadRooms: decodeDoodadRooms(bytes, view, metadataOffset, groups.length),
     }
     : { fogs: [] };
+}
+
+/**
+ * WME4, found through WME3's own length word the way WME3 is found through WME2's.
+ *
+ * Optional like the rest of the metadata: anything inconsistent answers no rooms, and the
+ * building's doodads then keep the plain distance leash they always had.
+ */
+function decodeDoodadRooms(
+  bytes: Uint8Array,
+  view: DataView,
+  extensionOffset: number,
+  groupCount: number,
+): WmoDoodadRooms[] {
+  const text = new TextDecoder();
+  if (extensionOffset + METADATA_HEADER_SIZE > bytes.byteLength
+    || text.decode(bytes.subarray(extensionOffset, extensionOffset + 4)) !== METADATA_MAGIC) return [];
+  const fogOffset = extensionOffset + view.getUint32(extensionOffset + 20, true);
+  if (fogOffset <= extensionOffset || fogOffset + FOG_HEADER_SIZE > bytes.byteLength
+    || text.decode(bytes.subarray(fogOffset, fogOffset + 4)) !== FOG_MAGIC) return [];
+  const offset = fogOffset + view.getUint32(fogOffset + 12, true);
+  if (offset <= fogOffset || offset + ROOMS_HEADER_SIZE > bytes.byteLength
+    || text.decode(bytes.subarray(offset, offset + 4)) !== ROOMS_MAGIC) return [];
+  const setCount = view.getUint32(offset + 4, true);
+  const end = offset + view.getUint32(offset + 8, true);
+  if (setCount > 65_535 || end > bytes.byteLength
+    || offset + ROOMS_HEADER_SIZE + setCount * ROOMS_SET_SIZE > end) return [];
+  let at = offset + ROOMS_HEADER_SIZE + setCount * ROOMS_SET_SIZE;
+  const rooms: WmoDoodadRooms[] = [];
+  for (let set = 0; set < setCount; set++) {
+    const counts = offset + ROOMS_HEADER_SIZE + set * ROOMS_SET_SIZE;
+    const doodads = view.getUint32(counts, true);
+    const owners = view.getUint32(counts + 4, true);
+    if (doodads > 100_000 || owners > 6_553_500
+      || at + (doodads + 1) * 4 + ((owners * 2 + 3) & ~3) > end) return [];
+    const offsets = new Uint32Array(doodads + 1);
+    for (let index = 0; index <= doodads; index++) offsets[index] = view.getUint32(at + index * 4, true);
+    at += (doodads + 1) * 4;
+    const groups = new Uint16Array(owners);
+    for (let index = 0; index < owners; index++) groups[index] = view.getUint16(at + index * 2, true);
+    at += (owners * 2 + 3) & ~3;
+    if (offsets[0] !== 0 || offsets[doodads] !== owners) return [];
+    for (let index = 1; index <= doodads; index++) if (offsets[index]! < offsets[index - 1]!) return [];
+    for (const group of groups) if (group >= groupCount) return [];
+    rooms.push({ offsets, groups });
+  }
+  return at === end ? rooms : [];
 }
 
 function withPortals(portals: WmoPortals | undefined): { portals?: WmoPortals } {
@@ -618,53 +811,345 @@ function decodePortalExtension(
  * space, and encodes the product back to sRGB on the way out. So converting here is what makes the
  * product come out as the artist's colour times the artist's texture, the way an uncorrected
  * client multiplies them.
+ *
+ * That sum is the unified path (MOHD 0x2, `MapObjU.wfx`) — Stormwind and Dalaran, whose MOCV is
+ * dark and excludes the ambient. The classic path is 1,823 of the client's 1,985 root WMOs and
+ * takes the other branch: see {@link WmoVertexLightPath}.
  */
 export function wmoVertexLight(
   mesh: WmoGroupMesh,
   normals: Float32Array,
   ambient: readonly [number, number, number],
   lights: readonly WmoLight[],
+  path: WmoVertexLightPath = "unified",
+  bakedColours = true,
+  alphaFixed = true,
 ): Float32Array {
+  const steps = wmoVertexLightSteps(mesh, normals, ambient, lights, path, bakedColours, alphaFixed);
+  let result = steps.next();
+  while (!result.done) result = steps.next();
+  return result.value;
+}
+
+/** Maximum vertices, triangles or light references handled by one streaming geometry step. */
+export const WMO_GEOMETRY_STEP_VERTICES = 1024;
+
+/** Same lighting and Float32 accumulation order, with bounded work between frame-budget checks. */
+export function* wmoVertexLightSteps(
+  mesh: WmoGroupMesh,
+  normals: Float32Array,
+  ambient: readonly [number, number, number],
+  lights: readonly WmoLight[],
+  path: WmoVertexLightPath = "unified",
+  bakedColours = true,
+  alphaFixed = true,
+): Generator<void, Float32Array, void> {
   const vertexCount = mesh.positions.length / 3;
   const light = new Float32Array(vertexCount * 3);
-  for (let vertex = 0; vertex < vertexCount; vertex++) {
-    for (let channel = 0; channel < 3; channel++) {
-      light[vertex * 3 + channel] = mesh.colours[vertex * 4 + channel]! + ambient[channel]!;
+  if (path === "classic") {
+    // The classic tool baked the ambient and the lamps into MOCV; adding either again doubles it.
+    // On Gundrak that lifted the darkest tenth of the dungeon from 54 to 108 of 255 and halved its
+    // p90/p10 contrast (4.72 to 2.36), which is the flat, unlit look. A group without MOCV keeps
+    // the white it always had: the encoder's placeholder is not light and gets no alpha boost.
+    const lookup = classicWmoLightLookup(ambient);
+    for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
+      const end = Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount);
+      for (let vertex = start; vertex < end; vertex++) {
+        const alpha = alphaFixed ? mesh.colours[vertex * 4 + 3]! : 0;
+        for (let channel = 0; channel < 3; channel++) {
+          light[vertex * 3 + channel] = !bakedColours ? 1
+            : alpha === 0 ? lookup[channel * 256 + mesh.colours[vertex * 4 + channel]!]!
+              : classicWmoLight(mesh.colours[vertex * 4 + channel]!, alpha, ambient[channel]!);
+        }
+      }
+      yield;
     }
+    return light;
   }
+  const lamps: WmoLight[] = [];
+  let references = 0;
   for (const reference of mesh.lightRefs) {
     const lamp = lights[reference];
     // Optional light data is not allowed to turn one malformed MOLT record into NaN vertex light.
-    // The decoder preserves ordinals with inert placeholders, while this guard protects direct
-    // callers that supply a decoded-like object themselves.
-    if (!lamp || !validWmoLight(lamp) || lamp.intensity <= 0) continue;
-    const reach = lamp.attenuates ? Math.max(lamp.attenuationEnd, lamp.attenuationStart) : Infinity;
-    for (let vertex = 0; vertex < vertexCount; vertex++) {
-      const dx = lamp.position[0] - mesh.positions[vertex * 3]!;
-      const dy = lamp.position[1] - mesh.positions[vertex * 3 + 1]!;
-      const dz = lamp.position[2] - mesh.positions[vertex * 3 + 2]!;
-      const distance = Math.hypot(dx, dy, dz);
-      if (distance >= reach) continue;
-      // The file states where the falloff starts and where it ends, so neither is invented.
-      const span = lamp.attenuationEnd - lamp.attenuationStart;
-      const attenuation = !lamp.attenuates || distance <= lamp.attenuationStart ? 1
-        : span > 0 ? (lamp.attenuationEnd - distance) / span : 0;
-      // Wrapped rather than clamped: a lamp in a room lights the wall behind it too, and a hard
-      // terminator on baked geometry reads as a seam. The reference client wraps the same way.
-      const scale = distance > 0 ? 1 / distance : 0;
-      const facing = (normals[vertex * 3]! * dx + normals[vertex * 3 + 1]! * dy + normals[vertex * 3 + 2]! * dz) * scale;
-      const diffuse = 0.22 + 0.78 * Math.max(facing, 0);
-      const strength = lamp.intensity * attenuation * diffuse;
-      for (let channel = 0; channel < 3; channel++) light[vertex * 3 + channel]! += lamp.colour[channel]! * strength;
+    // Keep reference order and duplicates: each valid reference adds one contribution.
+    if (lamp && validWmoLight(lamp) && lamp.intensity > 0) lamps.push(lamp);
+    if (++references % WMO_GEOMETRY_STEP_VERTICES === 0) yield;
+  }
+  if (lamps.length === 0) {
+    const lookup = bakedWmoLightLookup(ambient);
+    for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
+      const end = Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount);
+      for (let vertex = start; vertex < end; vertex++) {
+        light[vertex * 3] = lookup[mesh.colours[vertex * 4]!]!;
+        light[vertex * 3 + 1] = lookup[256 + mesh.colours[vertex * 4 + 1]!]!;
+        light[vertex * 3 + 2] = lookup[512 + mesh.colours[vertex * 4 + 2]!]!;
+      }
+      yield;
+    }
+    return light;
+  }
+  for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
+    const end = Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount);
+    for (let vertex = start; vertex < end; vertex++) {
+      for (let channel = 0; channel < 3; channel++) {
+        light[vertex * 3 + channel] = mesh.colours[vertex * 4 + channel]! + ambient[channel]!;
+      }
+    }
+    yield;
+  }
+  for (const lamp of lamps) {
+    for (let start = 0; start < vertexCount; start += WMO_GEOMETRY_STEP_VERTICES) {
+      applyWmoLamp(light, mesh, normals, lamp, start, Math.min(start + WMO_GEOMETRY_STEP_VERTICES, vertexCount));
+      // Even a lamp that misses every vertex must yield, as must many lamps in one small room.
+      yield;
     }
   }
-  for (let index = 0; index < light.length; index++) light[index] = srgbToLinear(Math.min(1, light[index]! / 255));
+  const chunk = WMO_GEOMETRY_STEP_VERTICES * 3;
+  for (let start = 0; start < light.length; start += chunk) {
+    const end = Math.min(start + chunk, light.length);
+    for (let index = start; index < end; index++) light[index] = srgbToLinear(Math.min(1, light[index]! / 255));
+    yield;
+  }
   return light;
+}
+
+/** A plain bounded kernel keeps the hot vertex/lamp loop out of the generator's resume state. */
+function applyWmoLamp(
+  light: Float32Array, mesh: WmoGroupMesh, normals: Float32Array,
+  lamp: WmoLight, start: number, end: number,
+): void {
+  const reach = lamp.attenuates ? Math.max(lamp.attenuationEnd, lamp.attenuationStart) : Infinity;
+  const span = lamp.attenuationEnd - lamp.attenuationStart;
+  for (let vertex = start; vertex < end; vertex++) {
+    const dx = lamp.position[0] - mesh.positions[vertex * 3]!;
+    const dy = lamp.position[1] - mesh.positions[vertex * 3 + 1]!;
+    const dz = lamp.position[2] - mesh.positions[vertex * 3 + 2]!;
+    // Most city vertex/lamp pairs miss even the lamp's cube. Keep hypot for the remaining pairs
+    // so falloff, reach boundaries and Float32 accumulation remain exactly the authored formula.
+    if (Math.abs(dx) >= reach || Math.abs(dy) >= reach || Math.abs(dz) >= reach) continue;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance >= reach) continue;
+    const attenuation = !lamp.attenuates || distance <= lamp.attenuationStart ? 1
+      : span > 0 ? (lamp.attenuationEnd - distance) / span : 0;
+    // Wrapped diffuse lights the rear wall too; clamping would add a seam to baked room lighting.
+    const scale = distance > 0 ? 1 / distance : 0;
+    const facing = (normals[vertex * 3]! * dx + normals[vertex * 3 + 1]! * dy + normals[vertex * 3 + 2]! * dz) * scale;
+    const diffuse = 0.22 + 0.78 * Math.max(facing, 0);
+    const strength = lamp.intensity * attenuation * diffuse;
+    for (let channel = 0; channel < 3; channel++) light[vertex * 3 + channel]! += lamp.colour[channel]! * strength;
+  }
+}
+
+interface BakedWmoLightLookup {
+  readonly red: number;
+  readonly green: number;
+  readonly blue: number;
+  readonly values: Float32Array;
+}
+
+/** One small transfer table per live WMO ambient, shared by its unlit groups. */
+const bakedWmoLightLookups = new WeakMap<readonly [number, number, number], BakedWmoLightLookup>();
+
+function bakedWmoLightLookup(ambient: readonly [number, number, number]): Float32Array {
+  const current = bakedWmoLightLookups.get(ambient);
+  if (current?.red === ambient[0] && current.green === ambient[1] && current.blue === ambient[2]) {
+    return current.values;
+  }
+  const values = new Float32Array(256 * 3);
+  for (let channel = 0; channel < 3; channel++) {
+    for (let colour = 0; colour < 256; colour++) {
+      // The original accumulation goes through a Float32Array before the transfer function.
+      // Retain that rounding even for direct callers with a fractional ambient value.
+      values[channel * 256 + colour] = srgbToLinear(Math.min(1, Math.fround(colour + ambient[channel]!) / 255));
+    }
+  }
+  bakedWmoLightLookups.set(ambient, { red: ambient[0], green: ambient[1], blue: ambient[2], values });
+  return values;
+}
+
+/**
+ * One channel of a classic room's light, linear, from its MOCV byte, alpha and the model ambient.
+ *
+ * `FixColorVertexAlpha` stores (c·(1 + a/64) − ambient) / 2 clamped to a byte, `MapObjDiffuse_T1`
+ * adds the ambient's half back and clamps to one, and `MapObjDiffuse` doubles it (Mod2x). Composed,
+ * the multiplier on the texel is c·(1 + a/64) held between the ambient and 510/255: the ambient is
+ * a floor rather than an addend, and a large alpha may brighten up to twice the texture.
+ */
+export function classicWmoLight(colour: number, alpha: number, ambient: number): number {
+  const boosted = colour * (1 + alpha / 64);
+  return srgbToLinear(Math.min(510, Math.max(ambient, boosted)) / 255);
+}
+
+/** Alpha-zero classic transfer table per live WMO ambient — 94.6% of Gundrak's vertices. */
+const classicWmoLightLookups = new WeakMap<readonly [number, number, number], BakedWmoLightLookup>();
+
+function classicWmoLightLookup(ambient: readonly [number, number, number]): Float32Array {
+  const current = classicWmoLightLookups.get(ambient);
+  if (current?.red === ambient[0] && current.green === ambient[1] && current.blue === ambient[2]) {
+    return current.values;
+  }
+  const values = new Float32Array(256 * 3);
+  for (let channel = 0; channel < 3; channel++) {
+    for (let colour = 0; colour < 256; colour++) values[channel * 256 + colour] = classicWmoLight(colour, 0, ambient[channel]!);
+  }
+  classicWmoLightLookups.set(ambient, { red: ambient[0], green: ambient[1], blue: ambient[2], values });
+  return values;
 }
 
 /** The sRGB transfer function, which is what a byte of authored colour is expressed in. */
 function srgbToLinear(value: number): number {
   return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+/** A group's floor-facing triangles bucketed on a coarse XY grid, built once per decoded mesh. */
+interface WmoFloorGrid {
+  minX: number;
+  minY: number;
+  cell: number;
+  columns: number;
+  rows: number;
+  /** Triangles of cell c are `triangles[starts[c]]` up to `triangles[starts[c + 1]]`. */
+  starts: Uint32Array;
+  triangles: Uint32Array;
+}
+
+const WMO_FLOOR_GRIDS = new WeakMap<WmoGroupMesh, WmoFloorGrid | null>();
+/** A face whose normal is at least this far from horizontal is something to stand on, or a ceiling. */
+const WMO_FLOOR_NORMAL_Z = 0.5;
+
+function wmoFloorGrid(mesh: WmoGroupMesh): WmoFloorGrid | null {
+  const known = WMO_FLOOR_GRIDS.get(mesh);
+  if (known !== undefined) return known;
+  const positions = mesh.positions;
+  const indices = mesh.indices;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let at = 0; at < positions.length; at += 3) {
+    minX = Math.min(minX, positions[at]!);
+    maxX = Math.max(maxX, positions[at]!);
+    minY = Math.min(minY, positions[at + 1]!);
+    maxY = Math.max(maxY, positions[at + 1]!);
+  }
+  if (!(maxX >= minX) || !(maxY >= minY)) {
+    WMO_FLOOR_GRIDS.set(mesh, null);
+    return null;
+  }
+  // Four-yard cells, coarser only past 256 a side; a room's floor triangle spans a few cells.
+  const cell = Math.max(4, Math.max(maxX - minX, maxY - minY) / 256);
+  const columns = Math.floor((maxX - minX) / cell) + 1;
+  const rows = Math.floor((maxY - minY) / cell) + 1;
+  const floors: number[] = [];
+  const counts = new Uint32Array(columns * rows + 1);
+  const cellsOf = (triangle: number, visit: (cellIndex: number) => void): void => {
+    let lowX = Infinity, lowY = Infinity, highX = -Infinity, highY = -Infinity;
+    for (let corner = 0; corner < 3; corner++) {
+      const vertex = indices[triangle * 3 + corner]! * 3;
+      lowX = Math.min(lowX, positions[vertex]!);
+      highX = Math.max(highX, positions[vertex]!);
+      lowY = Math.min(lowY, positions[vertex + 1]!);
+      highY = Math.max(highY, positions[vertex + 1]!);
+    }
+    const firstColumn = Math.floor((lowX - minX) / cell);
+    const lastColumn = Math.floor((highX - minX) / cell);
+    const firstRow = Math.floor((lowY - minY) / cell);
+    const lastRow = Math.floor((highY - minY) / cell);
+    for (let row = firstRow; row <= lastRow; row++) {
+      for (let column = firstColumn; column <= lastColumn; column++) visit(row * columns + column);
+    }
+  };
+  for (let triangle = 0; triangle < indices.length / 3; triangle++) {
+    const a = indices[triangle * 3]! * 3;
+    const b = indices[triangle * 3 + 1]! * 3;
+    const c = indices[triangle * 3 + 2]! * 3;
+    const abx = positions[b]! - positions[a]!, aby = positions[b + 1]! - positions[a + 1]!, abz = positions[b + 2]! - positions[a + 2]!;
+    const acx = positions[c]! - positions[a]!, acy = positions[c + 1]! - positions[a + 1]!, acz = positions[c + 2]! - positions[a + 2]!;
+    const nx = aby * acz - abz * acy;
+    const ny = abz * acx - abx * acz;
+    const nz = abx * acy - aby * acx;
+    const length = Math.hypot(nx, ny, nz);
+    if (!(length > 0) || Math.abs(nz) < WMO_FLOOR_NORMAL_Z * length) continue;
+    floors.push(triangle);
+    cellsOf(triangle, (cellIndex) => { counts[cellIndex + 1]!++; });
+  }
+  for (let cellIndex = 1; cellIndex < counts.length; cellIndex++) counts[cellIndex]! += counts[cellIndex - 1]!;
+  const triangles = new Uint32Array(counts[counts.length - 1]!);
+  const cursor = counts.slice(0, columns * rows);
+  for (const triangle of floors) cellsOf(triangle, (cellIndex) => { triangles[cursor[cellIndex]!++] = triangle; });
+  const grid: WmoFloorGrid = { minX, minY, cell, columns, rows, starts: counts, triangles };
+  WMO_FLOOR_GRIDS.set(mesh, grid);
+  return grid;
+}
+
+/** One vertex's room light in display space, 0..1 per channel: the geometry's formula, no lamps. */
+function wmoDisplayLight(
+  model: Pick<WmoModel, "ambient" | "vertexLight" | "vertexAlphaFixed">,
+  mesh: WmoGroupMesh,
+  bakedColours: boolean,
+  vertex: number,
+  channel: number,
+): number {
+  if (!bakedColours) return 1;
+  const colour = mesh.colours[vertex * 4 + channel]!;
+  const ambient = model.ambient[channel]!;
+  if (model.vertexLight !== "classic") return Math.min(1, (colour + ambient) / 255);
+  const alpha = model.vertexAlphaFixed === false ? 0 : mesh.colours[vertex * 4 + 3]!;
+  return Math.min(1, Math.max(ambient, colour * (1 + alpha / 64)) / 255);
+}
+
+/**
+ * The baked light of the room floor under a model-space point, display space 0..1 per channel.
+ *
+ * The same light the room's own vertices are drawn with, interpolated over the highest floor face
+ * within `depth` yards below the point in any room holding it. Undefined when no decoded room has
+ * one — the caller keeps whatever light it had. The grid query touches only the triangles of one
+ * cell, so asking every frame costs a few dozen barycentric tests.
+ */
+export function wmoFloorLight(
+  model: Pick<WmoModel, "groups" | "ambient" | "vertexLight" | "vertexAlphaFixed">,
+  x: number,
+  y: number,
+  z: number,
+  depth = 8,
+): [number, number, number] | undefined {
+  if (![x, y, z].every(Number.isFinite)) return undefined;
+  let bestZ = -Infinity;
+  let best: [number, number, number] | undefined;
+  for (const group of model.groups) {
+    const mesh = group.mesh;
+    if (!mesh || !group.indoor || group.exterior || group.boundsValid === false) continue;
+    const b = group.bounds;
+    if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY || z < b.minZ - 0.5 || z - depth > b.maxZ) continue;
+    const grid = wmoFloorGrid(mesh);
+    if (!grid) continue;
+    const column = Math.floor((x - grid.minX) / grid.cell);
+    const row = Math.floor((y - grid.minY) / grid.cell);
+    if (column < 0 || row < 0 || column >= grid.columns || row >= grid.rows) continue;
+    const cellIndex = row * grid.columns + column;
+    const baked = (group.flags & WMO_GROUP_HAS_COLOURS) !== 0;
+    for (let at = grid.starts[cellIndex]!; at < grid.starts[cellIndex + 1]!; at++) {
+      const triangle = grid.triangles[at]!;
+      const a = mesh.indices[triangle * 3]!, b2 = mesh.indices[triangle * 3 + 1]!, c = mesh.indices[triangle * 3 + 2]!;
+      const ax = mesh.positions[a * 3]!, ay = mesh.positions[a * 3 + 1]!, az = mesh.positions[a * 3 + 2]!;
+      const bx = mesh.positions[b2 * 3]!, by = mesh.positions[b2 * 3 + 1]!, bz = mesh.positions[b2 * 3 + 2]!;
+      const cx = mesh.positions[c * 3]!, cy = mesh.positions[c * 3 + 1]!, cz = mesh.positions[c * 3 + 2]!;
+      const determinant = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+      if (Math.abs(determinant) < 1e-9) continue;
+      const u = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / determinant;
+      const v = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / determinant;
+      const w = 1 - u - v;
+      if (u < -1e-4 || v < -1e-4 || w < -1e-4) continue;
+      const height = u * az + v * bz + w * cz;
+      if (height > z + 0.5 || height < z - depth || height <= bestZ) continue;
+      bestZ = height;
+      best = [0, 1, 2].map((channel) => Math.min(1, Math.max(0,
+        u * wmoDisplayLight(model, mesh, baked, a, channel)
+        + v * wmoDisplayLight(model, mesh, baked, b2, channel)
+        + w * wmoDisplayLight(model, mesh, baked, c, channel)))) as [number, number, number];
+    }
+  }
+  return best;
 }
 
 /**

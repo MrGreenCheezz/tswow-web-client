@@ -19,6 +19,7 @@ test("the world clock comes out of the packed calendar the core sends", () => {
   assert.equal(time.minuteOfDay, 13 * 60 + 37);
   assert.equal(formatGameTime(time), "13:37");
   assert.equal(time.weekday, 3);
+  assert.deepEqual(time.date, { year: 2026, month: 8, day: 15 });
   assert.ok(Math.abs(time.minutesPerSecond - 1 / 60) < 1e-6);
 
   // The light bands are keyed in half-minutes of a 2880-unit day, not in minutes.
@@ -37,6 +38,34 @@ test("the world clock runs on after the one packet that reports it, and wraps at
   assert.ok(Math.abs(later.minuteOfDay - 1) < 1e-6, `expected 00:01, got ${formatGameTime(later)}`);
   assert.equal(formatGameTime(advanceGameTime(time, 61)), "01:00");
   assert.equal(advanceGameTime(time, 0).minuteOfDay, time.minuteOfDay);
+});
+
+test("the packed realm date crosses leap day and year boundaries with the clock", () => {
+  // WowTime fields use zero-based month/day and a 2000-based, five-bit year.
+  const leapEve = parseLoginSetTimeSpeed(timeSpeedPacket({
+    year: 24, month: 1, day: 27, weekday: 3, hour: 23, minute: 59, speed: 1,
+  }));
+  assert.deepEqual(advanceGameTime(leapEve, 2).date,
+    { year: 2024, month: 2, day: 29 });
+  assert.equal(advanceGameTime(leapEve, 2).weekday, 4);
+  assert.deepEqual(advanceGameTime(leapEve, 2882).date,
+    { year: 2024, month: 3, day: 2 });
+
+  const yearEnd = parseLoginSetTimeSpeed(timeSpeedPacket({
+    year: 26, month: 11, day: 30, weekday: 4, hour: 23, minute: 59, speed: 1,
+  }));
+  assert.deepEqual(advanceGameTime(yearEnd, 2).date,
+    { year: 2027, month: 1, day: 1 });
+
+  const unknown = parseLoginSetTimeSpeed(timeSpeedPacket({
+    year: 31, month: 15, day: 63, weekday: 0, hour: 23, minute: 59, speed: 1,
+  }));
+  assert.equal(unknown.date, undefined, "WowTime sentinel fields are not a date");
+  assert.equal(advanceGameTime(unknown, 2).weekday, 1);
+  const invalid = parseLoginSetTimeSpeed(timeSpeedPacket({
+    year: 25, month: 1, day: 30, hour: 12, minute: 0,
+  }));
+  assert.equal(invalid.date, undefined, "February 31 must not leak into stock calendar Lua");
 });
 
 // A tiny stand-in for one map: a default set and one volume with a different one.
@@ -660,6 +689,27 @@ test("each liquid class resolves to the texture family the client gives it", asy
     assert.equal(await liquidTexturePattern(directory, liquidClass), expected[liquidClass]);
   }
   await assert.rejects(() => liquidTexturePattern(directory, "custard"));
+});
+
+test("a liquid strip tracks the first missing frame so a later patch can extend it", async () => {
+  const { liquidFrameInputs } = await import("../tools/generate-liquid-texture.mjs");
+  const checked = [];
+  const archives = {
+    async has(path) {
+      checked.push(path);
+      return !path.endsWith(".3.blp");
+    },
+  };
+  const inputs = await liquidFrameInputs(archives, "XTextures\\river\\lake_a.%d.blp", 30);
+  assert.deepEqual(inputs.paths, [
+    "XTextures\\river\\lake_a.1.blp",
+    "XTextures\\river\\lake_a.2.blp",
+  ]);
+  assert.deepEqual(inputs.stampPaths, [
+    ...inputs.paths,
+    "XTextures\\river\\lake_a.3.blp",
+  ]);
+  assert.deepEqual(checked, inputs.stampPaths, "resolution stops at the first absent frame");
 });
 
 test("the water bands are read as the pairs the file keeps them in", async (t) => {

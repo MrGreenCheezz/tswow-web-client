@@ -1,0 +1,62 @@
+{
+  "sourceCapture": "webclient-performance-2026-09-19T23-17-15.json",
+  "sha256": "ff577839c1a27d3d7dac80d7a30ef5934f6e38ca681680bc67f722d473bc96c1",
+  "historical": true,
+  "comparableToCurrentCode": false,
+  "caveats": [
+    "Recorded before the current optimization commits; no attribution of before/after gains.",
+    "CPU sections cover selected slow callbacks, not all-frame averages.",
+    "GPU checkpoint medians are delayed rolling windows, not paired per-frame GPU costs."
+  ],
+  "viewport": {
+    "width": 2560,
+    "height": 1279,
+    "dpr": 1
+  },
+  "graphics": {
+    "lightingQuality": 2,
+    "renderScale": 100,
+    "grassRadius": 80,
+    "grassDensity": 3,
+    "godRays": true,
+    "fullscreenGlow": true
+  },
+  "durationMs": 60007.5,
+  "frames": 1143,
+  "fps": 19.042187950730423,
+  "cpu": {
+    "count": 1143,
+    "average": 49.39230096241099,
+    "worst": 279,
+    "longFrames": 299,
+    "p50": 47.19999998807907,
+    "p95": 59.09999996423721,
+    "p99": 116.69999998807907
+  },
+  "intervals": {
+    "count": 1142,
+    "average": 52.514973730297726,
+    "worst": 291.70000000001164,
+    "longFrames": 425,
+    "p50": 48.60000000000582,
+    "p95": 62.80000000001746,
+    "p99": 125
+  },
+  "selectedSlowFrames": {
+    "count": 240,
+    "averageMs": {
+      "render.submit.world": 31.355833332737287,
+      "render.units.pose": 10.782083330800136,
+      "render.units.appearance": 0.797500001390775,
+      "ui": 2.490416666865349,
+      "state": 1.3533333338797093,
+      "scene": 0.5237500024338563,
+      "overlay": 0.12958333417773246
+    }
+  },
+  "medianCheckpoint": {
+    "unitsDrawn": 64,
+    "drawCalls": 1160,
+    "gpuP50Ms": 15.050528
+  }
+}

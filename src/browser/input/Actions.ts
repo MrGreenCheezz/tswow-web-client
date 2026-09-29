@@ -1,21 +1,32 @@
 import { unit } from "../../world/Fields.js";
 import { EXTRA_ACTION_BARS, actionPage } from "../../world/ActionBarProtocol.js";
+import { COMMAND_ATTACK, isVehicleActionBar } from "../../world/PetProtocol.js";
 import { game } from "../game/Context.js";
 import { cycleEnemyTarget, setFocusToTarget } from "../game/Targeting.js";
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
-import { characterWindow, chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
+import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "../ui/NativeHudReplacement.js";
+import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { systemLine } from "../ui/Chat.js";
+import { openChatInput, replyToLastWhisper } from "../ui/ChatInputOwner.js";
 import { showTarget, unitDisplayName } from "../ui/Frames.js";
 import { interactWithTarget } from "../ui/Npc.js";
 import { toggleQuestLog } from "../ui/QuestLog.js";
-import { toggleGameWindow } from "../ui/Windows.js";
+import { openCharacterWindow, toggleGameWindow } from "../ui/Windows.js";
 import { toggleAllBags, toggleKeyring } from "../ui/Bags.js";
 import { toggleWorldMap } from "../ui/WorldMap.js";
 import { toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { toggleTalentsWindow } from "../ui/Talents.js";
-import { toggleProfessionsWindow } from "../ui/Professions.js";
 import { toggleSetting } from "../ui/Settings.js";
+import { toggleFrameXmlPvp } from "../framexml/FrameXmlPvpController.js";
+import { toggleArenaWindow } from "../ui/ArenaWindow.js";
+import { toggleLfgWindow } from "../ui/Social.js";
+import {
+  toggleFrameXmlBags,
+  toggleFrameXmlKeyring,
+} from "../framexml/FrameXmlBagController.js";
+import { toggleFrameXmlQuest } from "../framexml/FrameXmlQuestController.js";
+import { toggleFrameXmlTalent } from "../framexml/FrameXmlTalentController.js";
 import { ACTION_BAR_PAGES, ACTION_BAR_SLOTS, type InputAction, EXTRA_ACTION_BAR_SLOTS } from "./Bindings.js";
 import { isGrounded, toggleAutoRun, toggleWalkRun } from "./Movement.js";
 import { UNIT_STAND_STATE_SIT, UNIT_STAND_STATE_STAND } from "../../world/CharacterProgressProtocol.js";
@@ -42,15 +53,18 @@ export function runAction(action: InputAction): boolean {
 
   const slot = ACTION_BAR_SLOTS.indexOf(action);
   if (slot >= 0) {
+    // No page given: the main row as shown, which under a stance, a form or stealth is its bonus page.
     useSlot(slot);
     return true;
   }
   // The four extra bars address as fixed pages of the same 144 slots, so their keys press the same
   // function the main bar's do — with the row's own page instead of the one the paging keys move.
+  // Under the stock HUD that is the page the stock multi-bar answering to the same key shows
+  // (`stockBase`, WORK_PLAN 4.16a); the native rows keep theirs until 4.16b moves them.
   for (const bar of EXTRA_ACTION_BARS) {
     const column = EXTRA_ACTION_BAR_SLOTS[bar.id]?.indexOf(action) ?? -1;
     if (column >= 0) {
-      useSlot(column, actionPage(bar.base));
+      useSlot(column, actionPage(nativeHudReplaced(NATIVE_LANES_REPLACED) ? bar.stockBase : bar.base));
       return true;
     }
   }
@@ -114,32 +128,53 @@ export function runAction(action: InputAction): boolean {
       showTarget();
       return true;
 
+    case "petAttack": {
+      // The pet bar is also the vehicle bar: a siege engine has no pet to send, and the server
+      // would refuse the order. `commandPet` defaults to the current target, like the bar button.
+      const bar = world.petSpells;
+      if (!bar || bar.closed || isVehicleActionBar(bar.bar)) return false;
+      world.commandPet(COMMAND_ATTACK);
+      return true;
+    }
+
     case "toggleCharacter":
-      toggleGameWindow(characterWindow);
+      openCharacterWindow("sheet");
       return true;
 
     case "toggleBags":
-      toggleAllBags();
+      if (!toggleFrameXmlBags()) toggleAllBags();
       return true;
 
     case "toggleKeyring":
-      toggleKeyring();
+      if (!toggleFrameXmlKeyring()) toggleKeyring();
       return true;
 
     case "toggleSpellbook":
       toggleGameWindow(spellbookWindow);
       return true;
 
+    case "togglePvp":
+      // The stock PVP summary owns the honor and battleground pages; without a successful
+      // FrameXML gate the native arena window remains the explicit fallback.
+      if (!toggleFrameXmlPvp()) toggleArenaWindow();
+      return true;
+
+    case "toggleLfd":
+      // TOGGLELFGPARENT: the stock LFDParentFrame when the mount published it, else #lfg-window
+      // (toggleLfgWindow asks the stock owner first).
+      toggleLfgWindow();
+      return true;
+
     case "toggleTalents":
-      toggleTalentsWindow();
+      if (!toggleFrameXmlTalent()) toggleTalentsWindow();
       return true;
 
     case "toggleProfessions":
-      toggleProfessionsWindow();
+      openCharacterWindow("skills");
       return true;
 
     case "toggleQuestLog":
-      toggleQuestLog();
+      if (!toggleFrameXmlQuest()) toggleQuestLog();
       return true;
 
     case "toggleWorldMap":
@@ -155,12 +190,26 @@ export function runAction(action: InputAction): boolean {
       toggleSetting("plateEnemies");
       return true;
 
+    case "toggleFps":
+      toggleSetting("showFps");
+      return true;
+
     case "toggleKeyBindings":
       toggleKeyBindingsWindow();
       return true;
 
+    // The three chat keys ask `ChatInputOwner`, which answers with the stock `ChatFrame1EditBox`
+    // while the world mount has published it and with the native input otherwise.
     case "openChat":
-      chatInput.focus();
+      if (!openChatInput()) chatInput.focus();
+      return true;
+
+    case "openChatSlash":
+      if (!openChatInput("/")) chatInput.focus();
+      return true;
+
+    case "replyWhisper":
+      replyToLastWhisper();
       return true;
 
     default:

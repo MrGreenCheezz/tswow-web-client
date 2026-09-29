@@ -16,7 +16,7 @@ test("the capsule ledger counts this frame's stand-ins by reason", () => {
 
   const report = ledger.report();
   assert.equal(report.total, 5);
-  assert.deepEqual(report.byReason, { display: 1, appearance: 1, artifact: 2, atlas: 1, template: 0 });
+  assert.deepEqual(report.byReason, { display: 1, appearance: 1, artifact: 2, atlas: 1, template: 0, queued: 0 });
   // Every reason is named whether or not it happened, so a caller can print the whole set.
   assert.deepEqual(Object.keys(report.byReason).sort(), [...STAND_IN_REASONS].sort());
 });
@@ -54,7 +54,7 @@ test("the capsule ledger holds a fixed number of samples and forgets the frame b
   const next = ledger.report();
   assert.equal(next.total, 1);
   assert.equal(next.samples.length, 1);
-  assert.deepEqual(next.byReason, { display: 0, appearance: 0, artifact: 0, atlas: 1, template: 0 });
+  assert.deepEqual(next.byReason, { display: 0, appearance: 0, artifact: 0, atlas: 1, template: 0, queued: 0 });
 });
 
 test("a frame that never reached the units is not a frame with no capsules", () => {
@@ -103,7 +103,7 @@ test("П1 a unit standing in the look it has already left is counted, and counte
   const report = ledger.report();
   assert.equal(report.total, 1, "one pill, and the two druids are not pills");
   assert.equal(report.stale, 2);
-  assert.deepEqual(report.byReason, { display: 0, appearance: 0, artifact: 1, atlas: 0, template: 0 },
+  assert.deepEqual(report.byReason, { display: 0, appearance: 0, artifact: 1, atlas: 0, template: 0, queued: 0 },
     "the reason breakdown stays a breakdown of the capsules, so «капсул: N» keeps meaning N pills");
   // Two samples, not one: the same display failing the same way is one fact per thing worn.
   assert.deepEqual(report.samples.map((sample) => [sample.displayId, sample.wearing]),

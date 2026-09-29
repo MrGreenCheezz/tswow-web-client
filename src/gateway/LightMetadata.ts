@@ -105,6 +105,16 @@ export interface LightParamSet {
   waterDeepAlpha: number;
   oceanShallowAlpha: number;
   oceanDeepAlpha: number;
+  /**
+   * `LightParams.Glow`: how strongly the original client's full-screen glow (`ffxGlow`) adds the
+   * blurred frame back over itself here.
+   *
+   * Not a band either — one number per parameter set, varying by zone rather than by hour, exactly
+   * like the four water alphas above it. Measured over this dataset's 850 rows: every value is in
+   * [0, 1] with none outside, the median is 0.50 (214 rows) and the mean 0.5288; 152 rows sit at
+   * exactly 1 and 47 at exactly 0. Read since the first extractor and thrown away until P4.
+   */
+  glow: number;
   /** `LightSkybox.Name` for this profile, when one is authored. */
   skyboxPath?: string;
 }
@@ -268,6 +278,11 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
       waterDeepAlpha: params.float(params.rowOf(id)!, "WaterDeepAlpha"),
       oceanShallowAlpha: params.float(params.rowOf(id)!, "OceanShallowAlpha"),
       oceanDeepAlpha: params.float(params.rowOf(id)!, "OceanDeepAlpha"),
+      // Sent as authored; a NaN in a hand-edited table becomes no glow rather than a NaN uniform.
+      // The clamp lives in the browser, next to the pass it feeds, because that is where a number
+      // outside the measured [0, 1] range has to stop being a number and start being a decision.
+      glow: Number.isFinite(params.float(params.rowOf(id)!, "Glow"))
+        ? params.float(params.rowOf(id)!, "Glow") : 0,
       ...(skyboxPaths.has(params.int(params.rowOf(id)!, "LightSkyboxID"))
         ? { skyboxPath: skyboxPaths.get(params.int(params.rowOf(id)!, "LightSkyboxID"))! }
         : {}),

@@ -158,7 +158,7 @@ test("renderer WMO integration detaches final-demand borrowers and evicts resour
     source.indexOf("  #evictWmoResources(): void {"),
     source.indexOf("\n\n  /**\n   * Soft-caps both built caches"),
   );
-  assert.ok(wmoEviction.includes("this.#wmoGeometries.evictUnpinned(wmo.geometryPins)"));
+  assert.ok(wmoEviction.includes("this.#wmoGeometries.evictUnpinned(geometryPins)"));
   assert.ok(wmoEviction.includes("built.geometry.dispose()"));
   assert.ok(wmoEviction.includes("this.#worldMaterials.commitPins(materialPins)"));
   assert.ok(!wmoEviction.includes("wmoRunMaterials"));

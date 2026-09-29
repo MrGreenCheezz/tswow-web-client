@@ -4,33 +4,59 @@ import { connect as connectTcp, type Socket } from "node:net";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { parseVMapTile } from "./VMapProtocol.js";
+import { environmentObjectInGrid, parseVMapGlobalSpawn, parseVMapTile, type EnvironmentObject } from "./VMapProtocol.js";
 import { loadSpellMetadata } from "./SpellMetadata.js";
-import { loadSpellVisuals } from "./SpellVisual.js";
+import { loadSpellVisualKits, loadSpellVisuals } from "./SpellVisual.js";
 import { loadCreatureMetadata } from "./CreatureMetadata.js";
 import { encodeVMapModel, parseVMapModel, parseVMapModelGroups, type CollisionGroup } from "./VMapModel.js";
 import { loadGameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import { loadTransportPaths } from "./TransportPaths.js";
 import { loadLiquidClasses } from "./LiquidMetadata.js";
+import { loadLoadingScreens } from "./LoadingScreenMetadata.js";
 import { loadGroundEffects } from "./GroundEffects.js";
 import { loadCreatureModelMetadata } from "./CreatureModelMetadata.js";
 import { CharacterAppearanceIndex } from "./CharacterAppearance.js";
 import { loadCharacterTextures, type CharacterTextureIndex } from "./CharacterTextures.js";
 import { loadCharacterCreation } from "./CharacterCreation.js";
+import { CharStartOutfitIndex } from "./CharStartOutfit.js";
 import { loadLockData } from "./LockMetadata.js";
 import { loadEmoteData } from "./EmoteMetadata.js";
 import { loadFactionData } from "./FactionMetadata.js";
 import { loadTalentData } from "./TalentMetadata.js";
+import { loadCharacterStatData } from "./CharacterStatMetadata.js";
+import { loadLfgDungeonMetadata } from "./LfgDungeonMetadata.js";
+import { loadVendorCostMetadata } from "./VendorCostMetadata.js";
+import { loadBarberStyles } from "./BarberMetadata.js";
+import { loadBarberCosts } from "./BarberCostMetadata.js";
+import { loadSlotPrices } from "./SlotPrices.js";
+import { loadMacroIcons } from "./MacroIcons.js";
+import { CALENDAR_CATALOG_VERSION, loadCalendarCatalog } from "./CalendarCatalog.js";
+import { GLYPH_CATALOG_VERSION, loadGlyphCatalog } from "./GlyphCatalog.js";
+import { CHAR_TITLES_VERSION, loadCharTitles } from "./CharTitleMetadata.js";
+import { serveCatalogRoute, type CatalogCache } from "./CatalogRoutes.js";
+import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
+import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
+import { loadReputationMetadata } from "./ReputationMetadata.js";
 import { loadAreaData } from "./AreaMetadata.js";
+import { loadBattlegroundMetadata } from "./BattlegroundMetadata.js";
+import { loadWorldStateUiMetadata } from "./WorldStateUiMetadata.js";
+import { loadTaxiMetadata } from "./TaxiMetadata.js";
+import { loadDeclinedWords } from "./DeclinedWords.js";
 import { COLLISION_TRIANGLE_BUDGET, encodeCollisionModel } from "../world/CollisionFormat.js";
 import { GLOBAL_FALLBACK_MAP, loadLightMetadata } from "./LightMetadata.js";
-import { loadItemMetadata } from "./ItemMetadata.js";
+import { loadItemMetadata, loadItemSubclassNames } from "./ItemMetadata.js";
+import { loadItemEnchantments } from "./ItemEnchantments.js";
 import {
   SoundIndex, WeaponSoundIndex, normaliseSoundPath, type ZoneMusicTracks,
 } from "./SoundMetadata.js";
 import { DatasetFingerprint } from "./DatasetFingerprint.js";
-import { AUDIO_DBC_FILES, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
+import {
+  PatchStatusTracker, type ClientPatchChange, type PatchStatus, type PatchStatusSummary,
+} from "./PatchStatus.js";
+import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
+import { listeningServerError } from "./ProcessGuard.js";
+import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import {
   isLoopbackAddress, MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
   validModuleFileName, validModuleName, writeModuleFile, type ModuleRoot,
@@ -50,20 +76,43 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  * visual-wmo-v17 is WWM2, authored MONR normals, and all prior WMO metadata. A v16 artifact parses
  * perfectly and simply has no authored normals, which is indistinguishable from a group that needs
  * the computed fallback — so the cache has to turn over rather than be left to expire.
- * visual-v16 is WVM9 and remains independent of this WMO generation, so the two independently invalidated
- * artifact families keep distinct, monotonic generation numbers.
+ * visual-wmo-v22 adds the MOHD render-path bits (classic MapObj rooms, whose MOCV already holds the
+ * ambient, 1,823 of 1,985 roots) and the WME4 MODR doodad rooms. A v17 artifact decodes as unified
+ * with no rooms — Gundrak lit twice by its ambient — so the name has to turn over; 22 continues the
+ * shared sequence past visual-v21.
+ * visual-v21 is WVM9 with the G1 scene camera, A1/A2 clip metadata and the optional WVG1 global
+ * bone-channel block, and remains independent of this WMO generation, so the two invalidated
+ * artifact families keep distinct, monotonic generation numbers. It follows 19 rather than reusing
+ * an earlier number for the same reason 16 followed 15: the numbers are one sequence shared by two
+ * families, so a reader looking at a name can never be in doubt about which generation of the
+ * pipeline wrote it.
+ *
+ * The A1 bump was the clearest case there has been for why the name and not the bytes decides. The
+ * blend time went into a slot the encoder already wrote — a reserved u16 in every clip header —
+ * so a v18 artifact and a v19 one are the same length, the same magic and the same layout, and
+ * differ only in whether those two bytes are a zero or a number. Zero is also a legal answer in
+ * v19 (26 of HumanMale's 241 sequences author one), so nothing in the file can distinguish a
+ * pre-A1 artifact from a post-A1 artifact whose sequences carried no blend time. The namespace is
+ * the only thing that says which generation wrote it, and it is what makes the old cache go away
+ * instead of being read as a client that decided every pose blends on a constant.
+ *
+ * A2 is the opposite case and still needs the same treatment. Its clip extras table ("WVX1", after
+ * the clips) *is* visible in the bytes — a v19 artifact simply ends at its last clip — so a v20
+ * reader can tell them apart. What it cannot do is anything useful with the difference: a v19
+ * artifact decodes perfectly and has no authored stride speeds, which is indistinguishable from a
+ * rig whose sequences all travel at zero, and the mount over it would go on skating for as long as
+ * the old entry stayed fresh. The name is what retires it.
  */
-export function visualModelCacheNamespace(modelPath: string): "visual-v16" | "visual-wmo-v17" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v17" : "visual-v16";
+export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v22" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v22" : "visual-v21";
 }
 
 /**
  * Appearance textures are replaced together with the visual M2/DBC overlay.
  *
- * The path is deliberately classified here, before it is hashed: the legacy texture cache has
- * no reverse index from its SHA-1 filename back to this path. These prefixes are the four client
- * subtrees the appearance pipeline reads; scenery and spell textures retain the cheap
- * "unstamped entries are served while the background pass catches up" policy.
+ * These prefixes are the client subtrees the coordinated appearance pipeline reads. The cache no
+ * longer gives them a weaker or stronger provenance rule — every texture now requires a stamp —
+ * but the classification remains the shared contract used by visual-pack regression tests.
  */
 export function isCharacterVisualTexture(path: string): boolean {
   const normalised = path.replaceAll("/", "\\").toLowerCase();
@@ -71,6 +120,35 @@ export function isCharacterVisualTexture(path: string): boolean {
     "character\\", "creature\\", "item\\objectcomponents\\", "item\\texturecomponents\\",
     "textures\\bakednpctextures\\",
   ].some((prefix) => normalised.startsWith(prefix));
+}
+
+/**
+ * Routes whose answers have to belong to the client-media profile selected at gateway startup.
+ *
+ * A TSWoW publish may replace the archive chain while this process is alive. The generators then
+ * see the new winners, but `visualDbcDirectory` and `coordinatedVisuals` still describe the pack
+ * selected before the port opened. Serving either half after that point can pair an HD model with
+ * classic geosets (or the reverse), so these routes fail closed until the process is restarted.
+ */
+function isClientVisualProfileRoute(method: string | undefined, pathname: string): boolean {
+  return method === "GET" && (
+    // A late LoD/custom TSAddon file must come from the same winning FrameXML.toc generation that
+    // booted the VM.  Otherwise a TSWoW publish can leave the running UI half old and half new.
+    pathname === "/client/file"
+    || pathname === "/client/addons"
+    || pathname === "/texture"
+    || pathname === "/visual/model"
+    || pathname === "/visual/animations"
+    || /^\/visual\/texture\/[0-9a-f]{40}(?:-\d{1,3})?\.png$/.test(pathname)
+    || pathname === "/dbc/creature-models"
+    || pathname === "/dbc/character-options"
+    || pathname === "/dbc/character-appearance"
+    // Audio is part of the same extracted client-media generation. The raw file and both DBC
+    // answers must not cross from (for example) an HD pack to the classic chain mid-session.
+    || pathname === "/sound"
+    || pathname === "/dbc/sounds"
+    || pathname === "/dbc/emotes"
+  );
 }
 
 export interface GatewayTarget {
@@ -109,13 +187,34 @@ export interface GatewayOptions {
    * the loose `patch-*.MPQ` overlays a module's assets are written into.
    */
   clientDirectory?: string;
+  /** Root-level Interface/AddOns discovered at startup and offered to the FrameXML boot. */
+  clientAddons?: readonly { readonly name: string; readonly loadOnDemand: boolean }[];
   /**
-   * How often the dataset fingerprint may be recomputed, in milliseconds. Default 2,000: the walk
-   * measures 8.4 ms over the 247 dataset tables and 33.5 ms over the client's archives and patch
-   * directories, and it is paid by the first request after the interval has run out rather than by
-   * a timer. Set to 0 by tests that would otherwise have to sleep through it.
+   * `tools/patch-status.mjs --json --no-gateway`, run in a child: the lettered patches, the winning
+   * FrameXML.toc's TSAddon blocks, the TSWoW build marker and the native publication. A child
+   * because the TOC is read through the MPQ chain, which this process never opens. Absent, the
+   * detail half of `/client/patch-status` is null.
+   */
+  readPatchDetails?: () => Promise<unknown>;
+  /**
+   * Told each time the archive half of the fingerprint changes — the first time is the 409 latch.
+   * `main.ts` forwards it over IPC to the opt-in supervisor (`GATEWAY_RESTART_ON_PATCH=1`).
+   */
+  onClientPatchChange?: (change: ClientPatchChange) => void;
+  /** Reported by `/client/patch-status`: a supervisor restarts this process after a settled build. */
+  supervised?: boolean;
+  /**
+   * Periodic fallback interval for the dataset fingerprint, in milliseconds. Archive writes also
+   * invalidate this interval through `fs.watch`, so the next request sees a TSWoW publish without
+   * making every texture request pay for the 33.5 ms archive walk. DBC-only edits still use this
+   * fallback. Set to 0 by tests that would otherwise have to sleep through it.
    */
   datasetPollMs?: number;
+  /**
+   * Require every selected client-media DBC to carry a source stamp for this CLIENT_DIR. The
+   * automatic extractor enables this; an explicit VISUAL_DBC_DIR remains an operator override.
+   */
+  requireClientMediaStamps?: boolean;
   creatureMetadataFile?: string;
   itemMetadataFile?: string;
   itemIconsDirectory?: string;
@@ -180,8 +279,18 @@ export interface GatewayOptions {
    */
   minimapDirectory?: string;
   generateMinimapIndex?: (map: number) => Promise<void>;
+  /** Published 128×128 uint32 continent hit masks, keyed only by Map.dbc id. */
+  worldMapZoneMapsDirectory?: string;
+  generateWorldMapZoneMap?: (map: number) => Promise<void>;
   generateLiquidTexture?: (liquidClass: string) => Promise<void>;
   generateTexture?: (path: string) => Promise<void>;
+  /**
+   * Called when the dataset poll finds the client's archives changed — a patch directory gained
+   * or lost a file, an archive was replaced, installed or removed. The generators that keep an
+   * archive chain open between jobs (`AssetWorker.ts`) reopen it on their next job; a one-shot
+   * generator process reads the chain fresh anyway and needs nothing.
+   */
+  onArchivesChanged?: () => void;
   /**
    * Every path the client archives hold under the character pipeline's texture subtrees.
    *
@@ -202,6 +311,16 @@ export interface GatewayOptions {
   soundDirectory?: string;
   generateSound?: (path: string) => Promise<void>;
   /**
+   * Where published raw interface files live — Lua, XML, TOC and TTF — keyed on their archive path.
+   *
+   * The one family in this cache that is not a conversion. Everything else here is a client format
+   * turned into something a browser understands; these are handed over as the bytes the game itself
+   * executes, because the GlueXML runtime has to run the owner's login screen and not a rendering of
+   * it. The narrow extension list is the whole of the guard — see `validClientFilePath`.
+   */
+  clientFilesDirectory?: string;
+  generateClientFile?: (path: string) => Promise<void>;
+  /**
    * Where module definitions are read from: every tswow module, then the local drafts directory.
    *
    * Resolved by `tools/paths.mjs`'s `moduleDirectories()`. Absent means the two `/modules` routes
@@ -211,8 +330,9 @@ export interface GatewayOptions {
   /**
    * Whether `PUT /modules/<kind>/<mod>/<file>` may write, and even then only from this machine.
    *
-   * Off unless `MODULE_UI_WRITE=1`. The gateway is an unauthenticated pipe by design and says so at
-   * start-up, so the one route that touches the disk is the one route that has to be asked for.
+   * Off unless `MODULE_UI_WRITE=1`. The gateway is an unauthenticated pipe by design (the start-up
+   * warning in `GatewayConfiguration.ts` says so when it listens beyond loopback and accepts any
+   * Origin), so the one route that touches the disk is the one route that has to be asked for.
    */
   moduleWrite?: boolean;
   /**
@@ -226,6 +346,11 @@ export interface GatewayOptions {
    * this seam the 405 is driven through the real route, and the default is witnessed by the 204
    * beside it, which only happens because the socket really does say 127.0.0.1.
    */
+  /**
+   * Optional proof that this loopback resource helper belongs to the launching native client.
+   * It is intentionally absent for ordinary gateway runs, which retain the token-free health body.
+   */
+  localAssetNonce?: string;
   peerAddress?: (request: IncomingMessage) => string | undefined;
 }
 
@@ -243,6 +368,18 @@ export interface RunningGateway {
   host: string;
   port: number;
   close(): Promise<void>;
+  /** The patch generation this process serves, and whether a TSWoW build has moved past it. */
+  patchSummary(): PatchStatusSummary;
+  /** The summary plus the `readPatchDetails` child's report (memoised per fingerprint epoch). */
+  patchStatus(): Promise<PatchStatus>;
+  /**
+   * One fingerprint poll outside any request, so an idle supervised gateway still latches a
+   * publish. Interval-limited like a request's poll; `patchEventsPending` says when it is worth it.
+   */
+  checkPatchChain(): Promise<PatchStatusSummary>;
+  readonly patchEventsPending: boolean;
+  /** Bridged sockets now. The supervisor restarts the process only when both are zero. */
+  connections(): { auth: number; world: number };
 }
 
 function rawDataToBuffer(data: RawData): Buffer {
@@ -251,12 +388,26 @@ function rawDataToBuffer(data: RawData): Buffer {
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
-function originAllowed(origin: string | undefined, allowed: readonly string[]): origin is string {
-  return origin !== undefined && (allowed.includes("*") || allowed.includes(origin));
+/** A browser same-origin GET omits Origin; Fetch Metadata still distinguishes it from cross-site. */
+function sameOriginBrowserGet(request: IncomingMessage): boolean {
+  return request.headers.origin === undefined
+    && request.headers["sec-fetch-site"] === "same-origin";
 }
 
 /** How long a failed generation is remembered before the generator is given another chance. */
 const GENERATION_FAILURE_TTL_MS = 5 * 60_000;
+/**
+ * How long a failure that was *not* "the archives do not hold this" is remembered.
+ *
+ * A missing source stays missing for the five minutes above. A run that died — a crashed child, a
+ * worker recycled under it, a rename a virus scanner held up — is this minute's problem, and the
+ * browser answers it with Т6's retry ladder at 2 s, 8 s and 30 s. With the five-minute memory every
+ * one of those retries was refused with the same 500, so one transient failure left the texture or
+ * the building missing for the rest of the session (measured: the ladder gives up after ~40 s).
+ * Long enough to fold the burst of requests that arrive together into the one refusal, short
+ * enough that the first retry runs the generator again.
+ */
+const GENERATION_RETRY_TTL_MS = 1_500;
 /** Beyond this the expired half of the failure map is swept; it only ever holds broken keys. */
 const GENERATION_FAILURE_LIMIT = 4096;
 
@@ -293,18 +444,78 @@ export function sourceMissing(error: unknown): boolean {
  * One family of generated assets: a serial lane so generators do not fight over the MPQ archives,
  * a per-key in-flight map so concurrent requests share one run, and a short-lived record of
  * failures.
+ *
+ * The lane runs one job at a time, highest priority first and in arrival order within a priority.
+ * It used to be a plain promise chain, strictly first come first served, and the texture lane
+ * carries everything from a unit's skin to the minimap's tiles: measured on the owner's session of
+ * 2026-09-28, 241 baked NPC skins went through it behind 80 minimap tiles, 33 icons and 21 world-map
+ * tiles, and every one of those NPCs stood as a capsule until its skin was published.
  */
 interface GenerationLane {
-  queue: Promise<void>;
+  running: boolean;
+  sequence: number;
+  readonly waiting: { priority: number; sequence: number; start(): void }[];
   readonly jobs: Map<string, Promise<void>>;
-  // Why it failed, and not only until when: the memory outlives the run by five minutes, and a
-  // route that answered 404 for a missing source has to go on answering 404 for the whole of that.
+  // Why it failed, and not only until when: a missing source is remembered for five minutes, and a
+  // route that answered 404 for it has to go on answering 404 for the whole of that.
   // Otherwise the first request tells the browser the truth and the next one tells it to come back.
   readonly failures: Map<string, { until: number; missing: boolean }>;
 }
 
 function generationLane(): GenerationLane {
-  return { queue: Promise.resolve(), jobs: new Map(), failures: new Map() };
+  return { running: false, sequence: 0, waiting: [], jobs: new Map(), failures: new Map() };
+}
+
+/** Starts the lane's best waiting job if nothing is running. */
+function pumpLane(lane: GenerationLane): void {
+  if (lane.running || lane.waiting.length === 0) return;
+  let best = 0;
+  for (let index = 1; index < lane.waiting.length; index++) {
+    const candidate = lane.waiting[index]!;
+    const chosen = lane.waiting[best]!;
+    if (candidate.priority > chosen.priority
+      || (candidate.priority === chosen.priority && candidate.sequence < chosen.sequence)) best = index;
+  }
+  const [next] = lane.waiting.splice(best, 1);
+  lane.running = true;
+  next!.start();
+}
+
+/** Queues `run` on the lane; the promise settles with it. */
+function laneRun(lane: GenerationLane, run: () => Promise<void>, priority: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    lane.waiting.push({
+      priority,
+      sequence: lane.sequence++,
+      start: () => {
+        void Promise.resolve()
+          .then(run)
+          .then(resolve, reject)
+          .finally(() => {
+            lane.running = false;
+            pumpLane(lane);
+          });
+      },
+    });
+    pumpLane(lane);
+  });
+}
+
+/**
+ * How urgently a `/texture` path is wanted, for its lane.
+ *
+ * 2 — what makes a unit appear: character and item component layers, creature skins and the baked
+ *     NPC faces; until they are published the unit is a capsule (`CharacterAtlas` waits for its
+ *     layers).
+ * 0 — interface art that is drawn in a corner or a window: minimap tiles, world-map art, icons.
+ * 1 — everything else, the world's own model textures.
+ */
+export function texturePriority(path: string): number {
+  const lower = path.replaceAll("/", "\\").toLowerCase();
+  if (lower.startsWith("character\\") || lower.startsWith("item\\") || lower.startsWith("creature\\")
+    || lower.startsWith("textures\\bakednpctextures\\")) return 2;
+  if (lower.startsWith("textures\\minimap\\") || lower.startsWith("interface\\")) return 0;
+  return 1;
 }
 
 /**
@@ -315,7 +526,9 @@ function generationLane(): GenerationLane {
  * from every player and starves the assets that would have succeeded. The TTL is there so a
  * generator fixed at runtime, or a dependency that came back, heals without a restart.
  */
-async function generateOnce(lane: GenerationLane, key: string, run: () => Promise<void>): Promise<void> {
+async function generateOnce(
+  lane: GenerationLane, key: string, run: () => Promise<void>, priority = 1,
+): Promise<void> {
   const remembered = lane.failures.get(key);
   if (remembered && remembered.until > Date.now()) {
     // Refused, but refused with the same news the run itself gave. A source the client does not
@@ -328,8 +541,7 @@ async function generateOnce(lane: GenerationLane, key: string, run: () => Promis
   lane.failures.delete(key);
   let job = lane.jobs.get(key);
   if (!job) {
-    const generation = lane.queue.then(run);
-    lane.queue = generation.catch(() => undefined);
+    const generation = laneRun(lane, run, priority);
     job = generation.finally(() => lane.jobs.delete(key));
     lane.jobs.set(key, job);
   }
@@ -340,7 +552,11 @@ async function generateOnce(lane: GenerationLane, key: string, run: () => Promis
       const now = Date.now();
       for (const [failed, failure] of lane.failures) if (failure.until <= now) lane.failures.delete(failed);
     }
-    lane.failures.set(key, { until: Date.now() + GENERATION_FAILURE_TTL_MS, missing: sourceMissing(error) });
+    const missing = sourceMissing(error);
+    lane.failures.set(key, {
+      until: Date.now() + (missing ? GENERATION_FAILURE_TTL_MS : GENERATION_RETRY_TTL_MS),
+      missing,
+    });
     throw error;
   }
 }
@@ -442,20 +658,50 @@ function bridge(webSocket: WebSocket, target: GatewayTarget): Socket {
 class DatasetIndexes {
   spellMetadata: ReturnType<typeof loadSpellMetadata> | undefined = undefined;
   spellVisuals: ReturnType<typeof loadSpellVisuals> | undefined = undefined;
+  spellVisualKits: ReturnType<typeof loadSpellVisualKits> | undefined = undefined;
   creatureMetadata: ReturnType<typeof loadCreatureMetadata> | undefined = undefined;
   gameObjectMetadata: ReturnType<typeof loadGameObjectDisplayMetadata> | undefined = undefined;
   transportPaths: ReturnType<typeof loadTransportPaths> | undefined = undefined;
   liquidClasses: ReturnType<typeof loadLiquidClasses> | undefined = undefined;
+  loadingScreens: ReturnType<typeof loadLoadingScreens> | undefined = undefined;
   groundEffects: ReturnType<typeof loadGroundEffects> | undefined = undefined;
   creatureModelMetadata: ReturnType<typeof loadCreatureModelMetadata> | undefined = undefined;
   characterAppearance: ReturnType<typeof CharacterAppearanceIndex.load> | undefined = undefined;
   characterCreation: ReturnType<typeof loadCharacterCreation> | undefined = undefined;
+  charStartOutfit: ReturnType<typeof CharStartOutfitIndex.load> | undefined = undefined;
   itemMetadata: ReturnType<typeof loadItemMetadata> | undefined = undefined;
+  itemSubclassNames: ReturnType<typeof loadItemSubclassNames> | undefined = undefined;
+  itemEnchantments: ReturnType<typeof loadItemEnchantments> | undefined = undefined;
   lockData: ReturnType<typeof loadLockData> | undefined = undefined;
   factionData: ReturnType<typeof loadFactionData> | undefined = undefined;
   emoteData: ReturnType<typeof loadEmoteData> | undefined = undefined;
   talentData: ReturnType<typeof loadTalentData> | undefined = undefined;
+  characterStatData: ReturnType<typeof loadCharacterStatData> | undefined = undefined;
+  lfgDungeonMetadata: ReturnType<typeof loadLfgDungeonMetadata> | undefined = undefined;
+  vendorCostMetadata: ReturnType<typeof loadVendorCostMetadata> | undefined = undefined;
+  barberStyles: ReturnType<typeof loadBarberStyles> | undefined = undefined;
+  barberCosts: ReturnType<typeof loadBarberCosts> | undefined = undefined;
+  slotPrices: ReturnType<typeof loadSlotPrices> | undefined = undefined;
+  macroIcons: ReturnType<typeof loadMacroIcons> | undefined = undefined;
+  /** The stock calendar's holidays, icon picker rows and raid names (CalendarCatalog.ts), serialized once. */
+  calendarCatalog: Promise<string> | undefined = undefined;
+  /** The stock glyph tab's glyph, socket and glyph-item rows (GlyphCatalog.ts), serialized once. */
+  glyphCatalog: Promise<string> | undefined = undefined;
+  /** The stock title picker's CharTitles rows (CharTitleMetadata.ts), serialized once. */
+  charTitles: Promise<string> | undefined = undefined;
+  /** The stock currency tab's CurrencyTypes/CurrencyCategory rows (CurrencyCatalog.ts), serialized once. */
+  currencyCatalog: Promise<string> | undefined = undefined;
+  /** Every CatalogRoutes.ts answer, serialized once and keyed by pathname; `reset()` forgets the map. */
+  catalogs: CatalogCache | undefined = undefined;
+  /** The serialized body and its validator, not the rows: the JSON is built once per dataset, not per request. */
+  achievementCatalog: Promise<{ readonly body: string; readonly etag: string }> | undefined = undefined;
+  reputationMetadata: ReturnType<typeof loadReputationMetadata> | undefined = undefined;
   areaData: ReturnType<typeof loadAreaData> | undefined = undefined;
+  battlegroundMetadata: ReturnType<typeof loadBattlegroundMetadata> | undefined = undefined;
+  worldStateUiMetadata: ReturnType<typeof loadWorldStateUiMetadata> | undefined = undefined;
+  taxiMetadata: ReturnType<typeof loadTaxiMetadata> | undefined = undefined;
+  /** The two DeclinedWord tables packed and gzipped once (DeclinedWords.ts). */
+  declinedWords: ReturnType<typeof loadDeclinedWords> | undefined = undefined;
   lightIndex: ReturnType<typeof loadLightMetadata> | undefined = undefined;
   soundIndex: ReturnType<typeof SoundIndex.load> | undefined = undefined;
   /**
@@ -491,12 +737,29 @@ class DatasetIndexes {
   }
 }
 
-export async function startGateway(options: GatewayOptions): Promise<RunningGateway> {
+export interface GatewayAssetHandler {
+  handle(request: IncomingMessage, response: ServerResponse): void;
+  close(): void;
+  /** See {@link RunningGateway}. */
+  patchSummary(): PatchStatusSummary;
+  patchStatus(): Promise<PatchStatus>;
+  checkPatchChain(): Promise<PatchStatusSummary>;
+  readonly patchEventsPending: boolean;
+}
+
+/** Shared resource implementation. Creating it opens no listening or gameplay sockets. */
+export async function createGatewayAssetHandler(options: GatewayOptions): Promise<GatewayAssetHandler> {
+  const localAssetNonce = options.localAssetNonce;
+  if (localAssetNonce !== undefined && !/^[0-9a-f]{64}$/.test(localAssetNonce)) {
+    throw new Error("localAssetNonce must be 64 lowercase hexadecimal characters.");
+  }
   const indexes = new DatasetIndexes();
   const audioDbcDirectory = options.audioDbcDirectory === null
     ? undefined : options.audioDbcDirectory ?? options.visualDbcDirectory;
   const visualDbcFiles = options.visualDbcDirectory === undefined ? []
     : VISUAL_DBC_FILES.map((file) => join(options.visualDbcDirectory!, file));
+  const clientMediaProfileFiles = options.visualDbcDirectory === undefined ? []
+    : [join(options.visualDbcDirectory, CLIENT_MEDIA_PROFILE_FILE)];
   const audioDbcFiles = audioDbcDirectory === undefined ? []
     : AUDIO_DBC_FILES.map((file) => join(audioDbcDirectory, file));
   // Nothing on the network asks for a reload; the dataset is watched instead. `DatasetFingerprint`
@@ -508,6 +771,44 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       .concat(visualDbcFiles, audioDbcFiles))],
     clientDirectory: options.clientDirectory,
     intervalMs: options.datasetPollMs,
+    watchArchives: true,
+  });
+  // Establish the archive baseline now, while startup's visual DBC/profile selection is still the
+  // active one. Leaving the first snapshot to the first HTTP request creates a gap in which a
+  // publish can finish after selection but before the watcher has anything to compare against.
+  if (fingerprint.watching) await fingerprint.poll({ force: true });
+  if (options.requireClientMediaStamps) {
+    const current = await Promise.all([...visualDbcFiles, ...audioDbcFiles, ...clientMediaProfileFiles]
+      .map((file) => fingerprint.isCurrent(file, { requireStamp: true })));
+    if (current.some((value) => !value)) {
+      fingerprint.close();
+      throw new Error(
+        "The selected client-media DBCs no longer match the active client patch chain. "
+        + "Restart the gateway so startup can extract one complete generation.",
+      );
+    }
+    // Selection happened before this DatasetFingerprint existed. A second forced snapshot closes
+    // the remaining startup window; unlike request-time polling, paying one extra walk here has no
+    // steady-state cost.
+    const startupChange = await fingerprint.poll({ force: true });
+    if (startupChange.archives) {
+      fingerprint.close();
+      throw new Error(
+        "The client patch chain changed while the gateway was starting. Restart the gateway to "
+        + "extract and select one complete client-media generation.",
+      );
+    }
+  }
+  let clientVisualProfileChanged = false;
+  // The generation is taken from the baseline walk above, i.e. the chain the startup profile was
+  // selected against — the same instant the latch below measures "changed" from.
+  const patches = new PatchStatusTracker({
+    archivesHash: fingerprint.archivesHash,
+    chain: fingerprint.chain,
+    addons: options.clientAddons ?? [],
+    supervised: options.supervised ?? false,
+    ...(options.readPatchDetails ? { readDetails: options.readPatchDetails } : {}),
+    ...(options.onClientPatchChange ? { onChange: options.onClientPatchChange } : {}),
   });
   /**
    * The archives' listing, started at most once and shared by the two indexes that want it.
@@ -533,48 +834,113 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   const visualModelLane = generationLane();
   const textureLane = generationLane();
   const soundLane = generationLane();
+  // Its own lane rather than a share of the texture one: a glue screen asks for its `.toc`, then
+  // every `.lua` and `.xml` that names, and those requests are a burst at the very start of a
+  // session — exactly when the terrain and character caches are cold too. On the texture lane the
+  // whole interface would queue behind whichever building is being published.
+  const clientFileLane = generationLane();
   const liquidLane = generationLane();
   const minimapLane = generationLane();
+  const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
   // of it — which is the stall this slice exists to remove.
   const restampLane = generationLane();
-  const server: HttpServer = createServer((request, response) => void (async () => {
+  // One poll and what it makes stale. A request runs it first; so does the supervised gateway's
+  // idle timer (`checkPatchChain`), which is how a publish is latched with no page open.
+  const observeDataset = async (): Promise<void> => {
+    const changed = await fingerprint.poll();
+    if (changed.dbc) indexes.reset();
+    if (changed.archives) {
+      // The startup-selected visual DBC directory and coordinated-model policy cannot be
+      // switched safely under already loaded browser assets. Latch this for the rest of the
+      // process even if the files are changed back: only a restart establishes one new atomic
+      // archive/profile generation.
+      clientVisualProfileChanged = true;
+      patches.noteArchivesChanged(changed.epoch);
+      // Not because these two are read out of the archives — they are the vmap extractor's own
+      // files — but because the only thing that rewrites a patch directory is a dataset build,
+      // and a dataset build is what rewrites the vmaps beside it. Watching the vmaps themselves
+      // would cost 469.3 ms a poll for 15,087 files.
+      environmentModels.clear();
+      collisionModels.clear();
+      // And the one index that is read out of the archives, plus the two that fold it in. A
+      // module dropping a component texture into a patch directory changes which spelling of it
+      // exists, and that is the whole of the answer this listing gives.
+      indexes.forgetArchives();
+      // A generator holding the old chain open would go on publishing out of it.
+      options.onArchivesChanged?.();
+    }
+  };
+  const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end('{"status":"ok"}');
+      response.end(localAssetNonce === undefined
+        ? '{"status":"ok"}'
+        : JSON.stringify({ status: "ok", localAssetNonce }));
       return;
     }
 
     // Before anything is answered out of memory: if the dataset has moved since the last request,
     // forget what it made stale. `/health` is answered above this line, so a liveness probe never
     // pays for the walk, and between polls this costs one clock read.
-    if (fingerprint.watching) {
-      const changed = await fingerprint.poll();
-      if (changed.dbc) indexes.reset();
-      if (changed.archives) {
-        // Not because these two are read out of the archives — they are the vmap extractor's own
-        // files — but because the only thing that rewrites a patch directory is a dataset build,
-        // and a dataset build is what rewrites the vmaps beside it. Watching the vmaps themselves
-        // would cost 469.3 ms a poll for 15,087 files.
-        environmentModels.clear();
-        collisionModels.clear();
-        // And the one index that is read out of the archives, plus the two that fold it in. A
-        // module dropping a component texture into a patch directory changes which spelling of it
-        // exists, and that is the whole of the answer this listing gives.
-        indexes.forgetArchives();
-      }
-    }
+    if (fingerprint.watching) await observeDataset();
 
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
+
+    // Deliberately outside `isClientVisualProfileRoute`: this is how the latch is reported, so it
+    // keeps answering after it. Read-only (nothing on the network may reload anything) and
+    // origin-checked like `/client/addons`. `?summary=1` skips the child — the banner polls that.
+    if (request.method === "GET" && pathname === "/client/patch-status") {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const body = url.searchParams.get("summary") === "1"
+        ? patches.summary() : await patches.details(fingerprint.epoch);
+      response.writeHead(200, {
+        "access-control-allow-origin": origin,
+        "cache-control": "no-store",
+        "content-type": "application/json; charset=utf-8",
+      });
+      response.end(JSON.stringify(body));
+      return;
+    }
+
+    if (clientVisualProfileChanged && isClientVisualProfileRoute(request.method, pathname)) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)
+        && !(pathname === "/texture" && sameOriginBrowserGet(request))) {
+        response.writeHead(403).end();
+        return;
+      }
+      respondClientVisualProfileChanged(response, origin);
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/client/addons") {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      response.writeHead(200, {
+        "access-control-allow-origin": origin!,
+        "cache-control": "no-store",
+        "content-type": "application/json; charset=utf-8",
+      });
+      response.end(JSON.stringify({ addons: options.clientAddons ?? [] }));
+      return;
+    }
 
     // One client texture, addressed by its path in the archives. Keying on the path rather than
     // on the model that asked for it means a BLP used by fifty models is one file, one URL and
     // one GPU texture; the published cache used to hold 1,092 files for 646 distinct images.
     if (request.method === "GET" && pathname === "/texture" && options.texturesDirectory) {
       const origin = request.headers.origin;
-      if (!originAllowed(origin, options.allowedOrigins)) {
+      if (!originAllowed(origin, options.allowedOrigins) && !sameOriginBrowserGet(request)) {
         response.writeHead(403).end();
         return;
       }
@@ -585,23 +951,20 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
       const filename = join(options.texturesDirectory, `${id}.png`);
-      const coordinatedVisual = isCharacterVisualTexture(texturePath);
       try {
         // One thunk for both ways a route needs the generator — the file is not there at all, or
         // it is there and the stamp check has something to say about it — on the same lane under
         // the same key, so a miss and a rebuild that meet on one file collapse into a single run.
-        const rebuild = () => generateOnce(textureLane, id, () => options.generateTexture!(texturePath));
+        const rebuild = () => generateOnce(
+          textureLane, id, () => options.generateTexture!(texturePath), texturePriority(texturePath));
         // A cache entry keyed on a path is not keyed on what that path held when it was
         // written, so its stamp is checked against the dataset as it is now before it is
-        // served; a stale one is dropped here and the miss below rebuilds that one entry. An
-        // entry with no stamp is served as it stands, and `restampCaches` — started once at
-        // startup, off every request path — is what gives it one. This route is where that was
-        // measured: sixteen already-correct ground textures rebuilt for their stamps cost
-        // 5,749 ms and sixteen child processes against 125 ms and none.
+        // served; a stale one is dropped here and the miss below rebuilds that one entry.
+        // An unstamped legacy entry cannot prove which patch chain produced its bytes. The request
+        // already carries the original archive path, so this route can safely regenerate that one
+        // entry instead of blessing an old PNG with the active chain's stamp.
         if (options.generateTexture) {
-          await fingerprint.ensureCurrent(filename, {
-            requireStamp: coordinatedVisual,
-          });
+          await fingerprint.ensureCurrent(filename, { requireStamp: true });
         }
         let data: Buffer;
         try {
@@ -611,18 +974,10 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        if (coordinatedVisual) {
-          respondRevalidated(request, response, data, origin, "image/png");
-        } else {
-          response.writeHead(200, {
-            "access-control-allow-origin": origin,
-            // Broad scenery paths are unchanged until their versioned URL changes.
-            "cache-control": "public, max-age=604800, immutable",
-            "content-length": data.byteLength,
-            "content-type": "image/png",
-          });
-          response.end(data);
-        }
+        // Every texture URL is path-stable, including scenery: a TSWoW module may replace any BLP
+        // without changing the path. Conditional revalidation keeps unchanged reloads at 304 while
+        // allowing the newly generated bytes to replace the browser's cached response immediately.
+        respondRevalidated(request, response, data, origin, "image/png");
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what
         // left a character without his legs for the life of the tab: the browser takes a 404 as
@@ -679,9 +1034,36 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       //
        // visual-wmo-v17 adds the WWM2 envelope and authored MONR normals. The WMO namespace turns
        // over as one family so whole/header/group requests share the same source identity, while
-       // visual-v16 stays the M2/WVM9 namespace.
-      // visual-v16 is WVM9: `M2TextureTransform`, so a batch that names one can move its UVs. It
-      // follows WMO generation 15 rather than reusing that number; every M2 is rebuilt once too.
+      // visual-v21 stays the M2/WVM9 namespace.
+      // visual-v16 was WVM9: `M2TextureTransform`, so a batch that names one can move its UVs.
+      //
+      // visual-v18 was the same WVM9 with the G1 camera flag: `cameras[0]` of a model that carries no
+      // type-0 record travels as a scene camera under flag 0x04, which is what the 13 camera-
+      // bearing glue models under `Interface\Glues\Models\` need and what none of them had. Measured
+      // over the 1,114 distinct `CreatureModelData` models this client holds, not one artifact
+      // changes a byte — 930 have a portrait and keep it, and the other 184 have no camera block to
+      // read. The namespace still turned over, because the flag is a body-layout fact: a v16 artifact
+      // is indistinguishable from a v18 one that simply has no camera, and a cache that cannot say
+      // which generation wrote it is a cache that will one day be read as the wrong one.
+      //
+      // visual-v19 (slice A1) puts `M2Sequence.blendTime` in the reserved u16 of every clip header,
+      // in the model's skeleton block and in the `.anim` sidecar alike, so a pose is entered over
+      // the window its own file authored instead of one of two constants. Same argument as above,
+      // sharper: the bytes were already being written as zero, so nothing but the name separates
+      // the two generations. The sidecar shares this namespace by construction — it is the same
+      // hash with an `.anim` suffix — so the model and the clips held back from it can never be
+      // read out of two different generations.
+      //
+      // visual-v20 (slice A2) appends the optional "WVX1" clip extras table after the clips of both
+      // containers: `M2Sequence.movingSpeed`, so a mount's stride is replayed at the speed the unit
+      // is really travelling instead of the one its author built it for, plus the two variation
+      // indices a fidget chain will need. Unlike A1 the difference is visible in the file — a v19
+      // artifact ends at its last clip — but a v19 artifact is also a perfectly valid decode with
+      // no stride speeds in it, so a stale entry means a mount that goes on skating. Hence the name.
+      //
+      // visual-v21 appends WVG1 after the skeleton clips. It carries bones driven exclusively by
+      // M2 global sequences — notably Holy Light's hand ribbons — so a v20 artifact is valid but
+      // visibly static and must not remain addressable under the new renderer.
       const group = url.searchParams.get("group");
       if (group !== null && (!visualModel || !/^\d{1,3}$/.test(group))) {
         respondError(response, 400, origin);
@@ -776,7 +1158,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       const filename = join(options.visualTilesDirectory, String(map), `${gridX}-${gridY}.json`);
       try {
         const rebuild = () => generateOnce(visualTileLane, key, () => options.generateVisualTile!(map, gridX, gridY));
-        if (options.generateVisualTile) await fingerprint.ensureCurrent(filename);
+        if (options.generateVisualTile) {
+          await fingerprint.ensureCurrent(filename, { generation: "visual-tile-v4" });
+        }
         let data: Buffer;
         try {
           data = await readFile(filename);
@@ -827,6 +1211,47 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         response.end(data);
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
+      }
+      return;
+    }
+
+    const worldMapZoneMap = pathname.match(/^\/world-map\/(\d{1,4})\/zones\.bin$/);
+    if (request.method === "GET" && worldMapZoneMap && options.worldMapZoneMapsDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const map = Number(worldMapZoneMap[1]);
+      const filename = join(options.worldMapZoneMapsDirectory, `${map}.bin`);
+      try {
+        const rebuild = () => generateOnce(worldMapZoneMapLane, String(map),
+          () => options.generateWorldMapZoneMap!(map));
+        if (options.generateWorldMapZoneMap) {
+          await fingerprint.ensureCurrent(filename, { requireStamp: true });
+        }
+        let data: Buffer;
+        try {
+          data = await readFile(filename);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateWorldMapZoneMap) throw error;
+          await rebuild();
+          data = await readFile(filename);
+        }
+        // Never serve a truncated cache entry as a grid: its offsets would still parse and point
+        // every click after the truncation at area zero, which looks like legitimate ocean. A
+        // generator can repair an interrupted/corrupt existing publish just as it repairs ENOENT;
+        // without this branch the bad file would make every bounded browser retry return 500.
+        if (data.byteLength !== 128 * 128 * 4 && options.generateWorldMapZoneMap) {
+          await rebuild();
+          data = await readFile(filename);
+        }
+        if (data.byteLength !== 128 * 128 * 4) throw new Error(`Invalid world-map zone map ${map}`);
+        respondRevalidated(request, response, data, origin, "application/octet-stream");
+      } catch (error) {
+        const absent = sourceMissing(error)
+          || (!options.generateWorldMapZoneMap && (error as NodeJS.ErrnoException).code === "ENOENT");
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }
@@ -1103,15 +1528,78 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=604800, immutable",
-          "content-length": data.byteLength,
-          "content-type": extension === ".mp3" ? "audio/mpeg" : "audio/wav",
-        });
-        response.end(data);
+        respondRevalidated(request, response, data, origin,
+          extension === ".mp3" ? "audio/mpeg" : "audio/wav");
       } catch {
         respondError(response, 404, origin);
+      }
+      return;
+    }
+
+    /**
+     * One raw interface file out of the archives: Lua, XML, TOC or TTF, as the game reads it.
+     *
+     * The only route here that hands over a client file unconverted, because the GlueXML runtime
+     * (G1..G3 of live-plan-6) has to *execute* what the game executes. What makes it load-bearing
+     * rather than a convenience is which copy it hands over: this server's login screen is a tswow
+     * module, and `patch-ruRU-F.MPQ` is a directory pointed at `LoginScreenModule/assets`. Measured
+     * on this client through the chain `tools/mpq.mjs` ranks — 28 sources, lettered patches above
+     * the locale families — `Interface\GlueXML\GlueXML.toc` and `AccountLogin.{lua,xml}` resolve to
+     * `patch-ruRU-F.MPQ` and `CharacterCreate.{lua,xml}` to tswow's `patch-ruRU-A.MPQ`, while the
+     * 50 GlueXML entries inside `locale-ruRU.MPQ` win nothing at all. A route that read the locale
+     * archive would run Blizzard's login screen against this server's account flow, and there would
+     * be no error anywhere to say why the buttons were the wrong ones.
+     *
+     * The extension gate is the security boundary and it is deliberately four items long: the chain
+     * this reads includes real directories on disk that module authors write into, and `.lua`,
+     * `.xml`, `.toc` and `.ttf` are what an interface is made of. Art has `/texture` and models have
+     * `/visual/model`, so nothing legitimate is left outside the list — and a DBC, a map, a `.wtf`
+     * or anything else somebody dropped beside a module's assets is not reachable through it.
+     *
+     * Served revalidating for the same reason as every other path-stable client asset: the archive
+     * path does not change when the owner edits `AccountLogin.lua`. The ETag is over the bytes, so
+     * an unchanged file still costs one 304 and no body.
+     */
+    if (request.method === "GET" && pathname === "/client/file" && options.clientFilesDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const clientPath = (url.searchParams.get("path") ?? "").replaceAll("/", "\\");
+      if (!validClientFilePath(clientPath)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      const lower = clientPath.toLowerCase();
+      const id = createHash("sha1").update(`client-file-v1\0${lower}`).digest("hex");
+      const extension = lower.slice(lower.lastIndexOf("."));
+      const filename = join(options.clientFilesDirectory, `${id}${extension}`);
+      try {
+        const rebuild = () => generateOnce(clientFileLane, id, () => options.generateClientFile!(clientPath));
+        // `requireStamp`, as `/visual/model` does and unlike `/texture`: the filename hashes the
+        // path, nothing on disk holds the path back, and `restamp` therefore cannot give an entry
+        // in this family a stamp after the fact. Every entry here is stamped by its own generator
+        // on the way out, so an unstamped one is a half-written cache rather than a legacy file,
+        // and rebuilding it is right where serving it would be a guess.
+        if (options.generateClientFile) await fingerprint.ensureCurrent(filename, { requireStamp: true });
+        let data: Buffer;
+        try {
+          data = await readFile(filename);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateClientFile) throw error;
+          await rebuild();
+          data = await readFile(filename);
+        }
+        respondRevalidated(request, response, data, origin, clientFileContentType(extension));
+      } catch (error) {
+        // The same split `/texture` and `/visual/model` carry, and it matters more here than in
+        // either: a `.toc` lists files that need not exist, so the loader has to treat a 404 as "not
+        // shipped" and move on. If a dead generator child also answered 404, one bad minute would
+        // silently remove a frame from the login screen for the rest of the session.
+        const absent = sourceMissing(error)
+          || (!options.generateClientFile && (error as NodeJS.ErrnoException).code === "ENOENT");
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }
@@ -1199,8 +1687,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
      * by hand. A module and a filename never hold one, so the shape `[A-Za-z0-9_-]` already rules
      * out `..`, both separators and every absolute path — there is nothing left to check by hand.
      *
-     * `PUT` is answered by the same block, and refused by default. The gateway warns at start-up
-     * that it is an unauthenticated pipe (`main.ts:34-39`), so a route that writes files has to be
+     * `PUT` is answered by the same block, and refused by default. The gateway is an unauthenticated
+     * pipe (`createGatewayConfiguration` warns so at start-up when it listens beyond loopback and
+     * accepts any Origin), so a route that writes files has to be
      * switched on deliberately (`MODULE_UI_WRITE=1`) *and* has to be talking to this machine: the
      * check is on the socket's own address rather than on any header, because a header is written
      * by whoever is asking. М8's builder overlay is what turns it on.
@@ -1450,6 +1939,56 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    /**
+     * The same kits, by the number the *packet* names.
+     *
+     * `SMSG_PLAY_SPELL_VISUAL` and `SMSG_PLAY_SPELL_IMPACT` carry a `SpellVisualKit` id and no
+     * spell at all — a boss emote, a trainer's flash, a player sitting down to eat. The route
+     * beside this one is keyed by spell, so those packets reached the client, resolved to a sound
+     * and drew nothing, for the plain reason that no route could answer the question they ask.
+     *
+     * Measured on this dataset: 8,217 of the 8,663 kit rows resolve to something with a model, a
+     * pose or a sound, and 1,194 of those are named by no `Spell` row at all — among them 7668,
+     * which this server's own Illidan script sends.
+     */
+    if (request.method === "GET" && pathname === "/dbc/spell-visual-kits" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const ids = [...new Set((url.searchParams.get("ids") ?? "")
+        .split(",")
+        .map(Number)
+        .filter((id) => Number.isInteger(id) && id > 0))];
+      if (ids.length === 0 || ids.length > 200) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.spellVisualKits ??= loadSpellVisualKits(options.dbcDirectory, options.visualDbcDirectory);
+        const kits = await indexes.spellVisualKits;
+        // A kit that resolves to nothing answers with its own id and no `kit`, exactly as a spell
+        // with no visual answers with its own id and nothing else.
+        const data = JSON.stringify(ids.map((id) => {
+          const kit = kits.get(id);
+          return kit ? { id, kit } : { id };
+        }));
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // Dropped on failure for the same reason its neighbour is: a dataset half-written during
+        // a rebuild must not answer 500 for the rest of the process's life.
+        indexes.spellVisualKits = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     // Both tables whole rather than a query per object: 388 locks and 222 spells that open them
     // is a few kilobytes, and the alternative is a round trip for every rock in Elwynn.
     if (request.method === "GET" && pathname === "/dbc/locks" && options.dbcDirectory) {
@@ -1492,6 +2031,79 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         });
         response.end(data);
       } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // Battleground queue labels and limits are client data. The live list only carries a
+    // battlemaster's type id and current instances, so this fixed catalog is cached like the
+    // other DBC routes and invalidated with the dataset fingerprint.
+    if (request.method === "GET" && pathname === "/dbc/world-state-ui" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.worldStateUiMetadata ??= loadWorldStateUiMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.worldStateUiMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.worldStateUiMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/battlegrounds" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.battlegroundMetadata ??= loadBattlegroundMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.battlegroundMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // Do not retain a rejection when a dataset rebuild briefly exposes a partial DBC set.
+        indexes.battlegroundMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // A SHOWTAXINODES packet is only a discovery mask. Names, costs and which pairs are real
+    // directed legs live in TaxiNodes/TaxiPath; the client needs all three to avoid presenting a
+    // discovered node as a direct flight that the server will silently reject.
+    if (request.method === "GET" && pathname === "/dbc/taxi" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.taxiMetadata ??= loadTaxiMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.taxiMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.taxiMetadata = undefined;
         respondError(response, 500, origin);
       }
       return;
@@ -1543,13 +2155,8 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
           await rebuild();
           data = await readFile(filename);
         }
-        response.writeHead(200, {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=604800, immutable",
-          "content-length": data.byteLength,
-          "content-type": image ? "image/png" : "application/json; charset=utf-8",
-        });
-        response.end(data);
+        respondRevalidated(request, response, data, origin,
+          image ? "image/png" : "application/json; charset=utf-8");
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
       }
@@ -1613,6 +2220,427 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         // The rejected promise is not kept: a DBC that failed to open once — a half-written
         // dataset during a rebuild — would otherwise answer 500 until the gateway is restarted.
         indexes.areaData = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/reputation" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.reputationMetadata ??= loadReputationMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.reputationMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.reputationMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/vendor-costs" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.vendorCostMetadata ??= loadVendorCostMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.vendorCostMetadata);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // DatasetFingerprint can invalidate this catalog while the gateway stays up. The
+          // catalog is loaded once per world session, and a one-hour browser cache could otherwise
+          // keep an obsolete price after the realm's vendor list has already changed.
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.vendorCostMetadata = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/lfg-dungeons" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.lfgDungeonMetadata ??= loadLfgDungeonMetadata(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.lfgDungeonMetadata);
+        // Catalog version 2 (LFG_DUNGEON_CATALOG_VERSION) changed the shape under the same path:
+        // an hour-long freshness window would let a browser keep the version-1 body, whose rows
+        // lack the stock list's group headers. A content validator revalidates on every open and
+        // still answers 304 for an unchanged dataset.
+        const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag,
+          "content-type": "application/json; charset=utf-8",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, cacheHeaders);
+        response.end(data);
+      } catch {
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The ruRU declension dictionary (DeclinedWords.ts), fetched once per page by the FrameXML host.
+    // Binary, gzipped when the browser accepts it; packed once per dataset (a DatasetIndexes entry,
+    // which the dataset watch drops on a DBC change) and revalidated by content like the LFG catalog,
+    // so a rebuilt dataset is picked up and an unchanged one answers 304.
+    if (request.method === "GET" && pathname === "/dbc/declined-words" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.declinedWords ??= loadDeclinedWords(options.dbcDirectory);
+        const body = await indexes.declinedWords;
+        const gzipped = /\bgzip\b/.test(String(request.headers["accept-encoding"] ?? ""));
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag: body.etag,
+          vary: "Accept-Encoding",
+          "content-type": "application/octet-stream",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === body.etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, gzipped ? { ...cacheHeaders, "content-encoding": "gzip" } : cacheHeaders);
+        response.end(gzipped ? body.gzip : body.raw);
+      } catch {
+        indexes.declinedWords = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/slot-prices" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.slotPrices ??= loadSlotPrices(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.slotPrices);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.slotPrices = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock calendar's client tables (CalendarCatalog.ts), fetched once when the window first opens.
+    if (request.method === "GET" && pathname === "/dbc/calendar" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CALENDAR_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.calendarCatalog ??= loadCalendarCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.calendarCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.calendarCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock currency tab's client tables (CurrencyCatalog.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/currencies" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CURRENCY_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.currencyCatalog ??= loadCurrencyCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.currencyCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.currencyCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock glyph tab's client tables (GlyphCatalog.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/glyphs" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(GLYPH_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.glyphCatalog ??= loadGlyphCatalog(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.glyphCatalog;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.glyphCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // Every catalog route added since char-titles (CatalogRoutes.ts): one table, one memo per dataset.
+    if (await serveCatalogRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+
+    // The stock PaperDoll title picker's CharTitles rows (CharTitleMetadata.ts), fetched once per world mount.
+    if (request.method === "GET" && pathname === "/dbc/char-titles" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(CHAR_TITLES_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.charTitles ??= loadCharTitles(dbcDirectory).then((catalog) => JSON.stringify(catalog));
+        const data = await indexes.charTitles;
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // Fetched once per page; a rebuilt dataset resets the index (DatasetFingerprint).
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.charTitles = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock macro window's icon lists (MacroIcons.ts), fetched once when it first opens.
+    if (request.method === "GET" && pathname === "/dbc/macro-icons" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.macroIcons ??= loadMacroIcons(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.macroIcons);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          // A rebuilt dataset can add icons while the gateway stays up (DatasetFingerprint resets
+          // the index); the list is fetched once per page, so there is nothing to cache for.
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.macroIcons = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // The stock achievement window's catalog (AchievementMetadata.ts), fetched once per page the
+    // first time the window, a toast or an achievement chat line needs a name.
+    if (request.method === "GET" && pathname === "/dbc/achievements" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== String(ACHIEVEMENT_CATALOG_VERSION)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        const dbcDirectory = options.dbcDirectory;
+        indexes.achievementCatalog ??= loadAchievementCatalog(dbcDirectory).then((catalog) => {
+          const body = JSON.stringify(catalog);
+          return { body, etag: `"${createHash("sha1").update(body).digest("hex")}"` };
+        });
+        const { body, etag } = await indexes.achievementCatalog;
+        // A rebuilt dataset changes the body under the same path (DatasetFingerprint resets the
+        // index): revalidate on every page, and answer 304 while the tables are unchanged.
+        const cacheHeaders = {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=0, must-revalidate",
+          etag,
+          "content-type": "application/json; charset=utf-8",
+        };
+        const ifNoneMatch = request.headers["if-none-match"];
+        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
+          response.writeHead(304, cacheHeaders);
+          response.end();
+          return;
+        }
+        response.writeHead(200, cacheHeaders);
+        response.end(body);
+      } catch {
+        indexes.achievementCatalog = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/barber-styles" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.barberStyles ??= loadBarberStyles(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.barberStyles);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.barberStyles = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    // gtBarberShopCostBase: the base haircut price by level, which the stock BarberShopFrame prices
+    // its selection from with the core's own formula (BarberCostMetadata.ts).
+    if (request.method === "GET" && pathname === "/dbc/barber-cost" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (url.searchParams.get("v") !== "1") {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.barberCosts ??= loadBarberCosts(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.barberCosts);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.barberCosts = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/dbc/character-stats" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.characterStatData ??= loadCharacterStatData(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.characterStatData);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.characterStatData = undefined;
         respondError(response, 500, origin);
       }
       return;
@@ -1726,6 +2754,31 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    // The world-entry curtain's art for every map: `Map.LoadingScreenID` → `LoadingScreens` row,
+    // 100 maps and about 9 KB, so it travels whole and is asked for once a session.
+    if (request.method === "GET" && pathname === "/dbc/loading-screens" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.loadingScreens ??= loadLoadingScreens(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.loadingScreens);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        // A rejected load must not be memoised: the next request after a dataset rebuild retries.
+        indexes.loadingScreens = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     // What grows on a patch of ground: the 892 `GroundEffectTexture` rows that carry a doodad, and
     // the 485 models they name. The tile's own `cover.bin` says which effect id each detail cell
     // grows and this says what that id is, so the pair is the whole recipe; asked for once a
@@ -1784,7 +2837,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     }
 
     /**
-     * What a character of this race and sex may look like, so the creation form can offer it.
+     * What a character of this race, sex and class may look like, so the creation form can offer it.
      *
      * The form used to send name, race, class, sex and five zeros, and zero is a legal appearance
      * — so the server accepted it and the character was born with `skin 0, face 0, hair 0`. For a
@@ -1794,9 +2847,9 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
      *
      * The answer is five lists of indices and a map, not five counts — a count offers every gap
      * inside its range, and the twenty playable profiles had 1,900 such gaps between them. The
-     * shape changed with it, so the request carries `v=` exactly as the appearance does: this
-     * route answers `max-age=3600` too, and without a new query string a browser would serve
-     * itself an hour of counts out of its own cache and read them as lists.
+     * shape changed with it, so the request carries `v=` exactly as the appearance does. The
+     * route now answers `no-store`; the version also separates these lists from older deployments
+     * that cached counts. The optional `class` excludes death-knight-only sections for other classes.
      */
     if (request.method === "GET" && pathname === "/dbc/character-options" && options.dbcDirectory) {
       const origin = request.headers.origin;
@@ -1806,7 +2859,10 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       }
       const race = Number.parseInt(url.searchParams.get("race") ?? "", 10);
       const sex = Number.parseInt(url.searchParams.get("sex") ?? "", 10);
-      if (!Number.isInteger(race) || race < 1 || race > 255 || (sex !== 0 && sex !== 1)) {
+      const classParam = url.searchParams.get("class");
+      const classId = classParam === null ? undefined : Number.parseInt(classParam, 10);
+      if (!Number.isInteger(race) || race < 1 || race > 255 || (sex !== 0 && sex !== 1)
+        || (classId !== undefined && (!Number.isInteger(classId) || classId < 1 || classId > 255))) {
         respondError(response, 400, origin);
         return;
       }
@@ -1814,7 +2870,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         indexes.characterAppearance ??= CharacterAppearanceIndex.load(
           options.dbcDirectory, characterTextures(), options.visualDbcDirectory,
           options.coordinatedVisuals ?? false);
-        const data = JSON.stringify((await indexes.characterAppearance).options(race, sex));
+        const data = JSON.stringify((await indexes.characterAppearance).options(race, sex, classId));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
           "cache-control": "no-store",
@@ -1869,7 +2925,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     // Who may be created, and what they are called. The creation form built its two lists from ten
     // hardcoded names each, so a race or a class a module adds could not be picked — and the names
     // it did have were this client's own translation rather than the dataset's. Deliberately not
-    // part of `/dbc/character-options`: that answer is per race and per sex and is being reshaped
+    // part of `/dbc/character-options`: that answer is per race, sex and selected class and is being reshaped
     // by the appearance work, and two slices rewriting one payload is how a contract gets lost.
     if (request.method === "GET" && pathname === "/dbc/character-creation" && options.dbcDirectory) {
       const origin = request.headers.origin;
@@ -1890,6 +2946,50 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         // Dropped rather than kept, as `/dbc/areas` does: a table half-written by a dataset build
         // in progress would otherwise answer 500 until somebody restarted the gateway.
         indexes.characterCreation = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    /**
+     * What a newly created character of this race, class and sex is wearing.
+     *
+     * The creation screen's 3D preview is the only caller, and it needs the answer in the same
+     * spelling `/dbc/character-appearance` takes: `slot:inventoryType:displayId`. `CharStartOutfit`
+     * carries the display id directly, so this walks no `Item.dbc` chain — see
+     * `CharStartOutfit.ts` for the measurement that says the column is the right one.
+     *
+     * `v=` marks the payload contract as on `/dbc/character-options`. This route answers
+     * `max-age=3600`, so a shape change without a new query string would be served out of a
+     * browser's own cache for an hour.
+     */
+    if (request.method === "GET" && pathname === "/dbc/char-start-outfit" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const race = Number.parseInt(url.searchParams.get("race") ?? "", 10);
+      const classId = Number.parseInt(url.searchParams.get("class") ?? "", 10);
+      const sex = Number.parseInt(url.searchParams.get("sex") ?? "", 10);
+      const outfit = Number.parseInt(url.searchParams.get("outfit") ?? "0", 10);
+      const byte = (value: number) => Number.isInteger(value) && value >= 0 && value <= 255;
+      if (!byte(race) || race < 1 || !byte(classId) || classId < 1 || (sex !== 0 && sex !== 1)
+        || !byte(outfit)) {
+        respondError(response, 400, origin);
+        return;
+      }
+      try {
+        indexes.charStartOutfit ??= CharStartOutfitIndex.load(options.dbcDirectory);
+        const data = JSON.stringify((await indexes.charStartOutfit).outfit(race, classId, sex, outfit));
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "public, max-age=3600",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.charStartOutfit = undefined;
         respondError(response, 500, origin);
       }
       return;
@@ -2052,6 +3152,57 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       return;
     }
 
+    if (request.method === "GET" && pathname === "/dbc/item-enchantments" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.itemEnchantments ??= loadItemEnchantments(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.itemEnchantments);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-cache",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.itemEnchantments = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
+    /**
+     * `ItemSubClass.dbc` whole — 119 rows, 8 KB — for the words on an item tooltip's slot row: the
+     * «Топор» beside «Двуручное», the «Латы» beside «Грудь». Keyed on class and subclass, which the
+     * item query carries, so the browser asks once per session and joins it itself. `no-cache`
+     * like the enchantments beside it: a rebuilt dataset is then read at the next session, not an
+     * hour later.
+     */
+    if (request.method === "GET" && pathname === "/dbc/item-subclasses" && options.dbcDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        indexes.itemSubclassNames ??= loadItemSubclassNames(options.dbcDirectory);
+        const data = JSON.stringify(await indexes.itemSubclassNames);
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": "no-cache",
+          "content-type": "application/json; charset=utf-8",
+        });
+        response.end(data);
+      } catch {
+        indexes.itemSubclassNames = undefined;
+        respondError(response, 500, origin);
+      }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/data/items" && options.itemMetadataFile) {
       const origin = request.headers.origin;
       if (!originAllowed(origin, options.allowedOrigins)) {
@@ -2144,8 +3295,25 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         if (!job) {
           // A WMO's collision sits beside it as `<name>.vmo`; an M2's is the file itself, which is
           // already in this format. That is how the extractor writes them.
+          //
+          // Except when it does not: the extractor also writes `<name>.m2.vmo` for M2 rows (every
+          // tree in Elwynn, for example), and asking for the bare name then answers ENOENT while
+          // the server happily collides with the same tree. Fall back to the suffixed file before
+          // reporting the model missing, so the client and the server collide with one world.
           const filename = name.toLowerCase().endsWith(".wmo") ? `${name}.vmo` : name;
-          job = readFile(join(options.buildingsDirectory, filename))
+          const buildings = options.buildingsDirectory;
+          const readCollisionFile = async (): Promise<Buffer> => {
+            try {
+              return await readFile(join(buildings, filename));
+            } catch (error) {
+              if (!name.toLowerCase().endsWith(".wmo")
+                && (error as NodeJS.ErrnoException).code === "ENOENT") {
+                return await readFile(join(buildings, `${name}.vmo`));
+              }
+              throw error;
+            }
+          };
+          job = readCollisionFile()
             .then((file) => parseVMapModelGroups(file))
             .catch((error) => {
               collisionModels.delete(name);
@@ -2191,7 +3359,20 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
 
       const filename = `${String(map).padStart(3, "0")}_${String(gridY).padStart(2, "0")}_${String(gridX).padStart(2, "0")}.vmtile`;
       try {
-        const objects = parseVMapTile(await readFile(join(options.vmapsDirectory, filename)));
+        let objects: EnvironmentObject[];
+        try {
+          objects = parseVMapTile(await readFile(join(options.vmapsDirectory, filename)));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          // No tile: either nothing stands here, or the map is one WMO with no tiles at all, whose
+          // spawn lives in its tree (`parseVMapGlobalSpawn`). That one answers every cell its box
+          // reaches; the rest of such a map is empty, not missing. A tiled map's absent tile is
+          // still the 404 it was.
+          const tree = await readFile(join(options.vmapsDirectory, `${String(map).padStart(3, "0")}.vmtree`));
+          const global = parseVMapGlobalSpawn(tree);
+          if (!global) throw error;
+          objects = environmentObjectInGrid(global, gridX, gridY) ? [global] : [];
+        }
         const data = JSON.stringify(objects);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
@@ -2215,7 +3396,28 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
     console.error(`Unhandled error serving ${request.method} ${request.url}:`, error);
     if (!response.headersSent) respondError(response, 500, undefined);
     else response.destroy();
-  }));
+  });
+  if (options.restampCaches) {
+    void generateOnce(restampLane, RESTAMP_KEY, options.restampCaches).catch((error: unknown) => {
+      console.warn(`Not stamping the published cache: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  return {
+    handle,
+    close: () => fingerprint.close(),
+    patchSummary: () => patches.summary(),
+    patchStatus: () => patches.details(fingerprint.epoch),
+    checkPatchChain: async () => {
+      if (fingerprint.watching) await observeDataset();
+      return patches.summary();
+    },
+    get patchEventsPending() { return fingerprint.archiveEventsPending; },
+  };
+}
+
+export async function startGateway(options: GatewayOptions): Promise<RunningGateway> {
+  const assets = await createGatewayAssetHandler(options);
+  const server: HttpServer = createServer(assets.handle);
   const authServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE, perMessageDeflate: false });
   const worldServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE, perMessageDeflate: false });
 
@@ -2241,54 +3443,59 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   authServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.auth));
   worldServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.world));
 
+  // Nothing in here may throw or leave an `error` unheard: Node has already taken its own handling
+  // off the socket, so either one would end the process (see UpgradeGuard.ts). Refusals go only
+  // through `refuseUpgrade`, which answers and then destroys.
   server.on("upgrade", (request, socket, head) => {
-    const origin = request.headers.origin;
-    if (!originAllowed(origin, options.allowedOrigins)) {
-      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-      return;
+    socket.on("error", () => socket.destroy());
+    try {
+      const route = routeUpgrade(request, { allowedOrigins: options.allowedOrigins });
+      if (route.kind === "refuse") {
+        refuseUpgrade(socket, route.status);
+        return;
+      }
+      const address = peerAddress(request);
+      if (bridged >= MAX_BRIDGED_SOCKETS || (bridgedPerAddress.get(address) ?? 0) >= MAX_BRIDGED_SOCKETS_PER_ADDRESS) {
+        refuseUpgrade(socket, 503);
+        return;
+      }
+      const selected = route.kind === "auth" ? authServer : worldServer;
+      selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));
+    } catch (error) {
+      console.error("Gateway: the upgrade handler failed; answered 500:", error);
+      refuseUpgrade(socket, 500);
     }
-
-    const pathname = new URL(request.url ?? "/", "http://gateway.local").pathname;
-    const selected = pathname === "/auth" ? authServer : pathname === "/world" ? worldServer : undefined;
-    if (!selected) {
-      socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
-      return;
-    }
-    const address = peerAddress(request);
-    if (bridged >= MAX_BRIDGED_SOCKETS || (bridgedPerAddress.get(address) ?? 0) >= MAX_BRIDGED_SOCKETS_PER_ADDRESS) {
-      socket.end("HTTP/1.1 503 Service Unavailable\r\n\r\n");
-      return;
-    }
-    selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, options.host, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, options.host, () => {
+        server.off("error", reject);
+        // From here an `error` is the running server's, not a failed start. A failed accept is thrown
+        // on with a line that says so: on Windows the server never accepts again after one, and the
+        // process guard closes the gateway in order rather than leave it deaf. Anything else is only
+        // logged (`listeningServerError`, ProcessGuard.ts).
+        server.on("error", (error) => listeningServerError(error));
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    assets.close();
+    throw error;
+  }
 
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP address");
-
-  // The published cache is stamped here and nowhere else: once, after the port is open, on a lane
-  // of its own. Started rather than awaited — the gateway is already answering, and an entry with
-  // no stamp is answered out of the file as it stands whether this has reached it or not. A pass
-  // that fails says so and is tried again the next time the gateway starts; retrying it from a
-  // request would mean respawning it for every unstamped entry that is left, and the ones that are
-  // left after a successful pass are exactly the ones it could not stamp.
-  if (options.restampCaches) {
-    void generateOnce(restampLane, RESTAMP_KEY, options.restampCaches).catch((error: unknown) => {
-      console.warn(`Not stamping the published cache: ${error instanceof Error ? error.message : String(error)}`);
-    });
+  if (!address || typeof address === "string") {
+    assets.close();
+    throw new Error("Gateway did not bind a TCP address");
   }
 
   return {
     host: options.host,
     port: address.port,
     close: async () => {
+      assets.close();
       for (const webSocket of [...authServer.clients, ...worldServer.clients]) webSocket.terminate();
       await Promise.all([
         new Promise<void>((resolve) => authServer.close(() => resolve())),
@@ -2296,6 +3503,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
         new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
       ]);
     },
+    patchSummary: () => assets.patchSummary(),
+    patchStatus: () => assets.patchStatus(),
+    checkPatchChain: () => assets.checkPatchChain(),
+    get patchEventsPending() { return assets.patchEventsPending; },
+    connections: () => ({ auth: authServer.clients.size, world: worldServer.clients.size }),
   };
 }
 
@@ -2330,6 +3542,20 @@ function respondRevalidated(
 
 function respondError(response: ServerResponse, status: number, origin: string | undefined): void {
   response.writeHead(status, origin ? { "access-control-allow-origin": origin } : {}).end();
+}
+
+function respondClientVisualProfileChanged(response: ServerResponse, origin: string | undefined): void {
+  const data = JSON.stringify({
+    error: "client_patch_chain_changed",
+    message: "The client patch set changed while the gateway was running. Restart the gateway and reload the client to apply it atomically.",
+  });
+  response.writeHead(409, {
+    ...(origin ? { "access-control-allow-origin": origin } : {}),
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(data),
+  });
+  response.end(data);
 }
 
 /**
@@ -2420,4 +3646,43 @@ function validSoundPath(value: string): boolean {
  */
 function validVisualModelPath(path: string): boolean {
   return validAssetPath(path, { extensions: ["m2", "wmo"] });
+}
+
+/**
+ * The four extensions `/client/file` will serve, lower case and without the dot.
+ *
+ * Exported because it is the route's security boundary rather than a detail of it, and a boundary
+ * that is only asserted through a running server is one nobody re-checks. `.lua` and `.xml` are what
+ * an interface *is*; `.toc` is the manifest that names them; `.ttf` is what the owner's login screen
+ * draws its text with (`Fonts\` holds nine of them in this client, and a module ships its own
+ * beside its assets). Everything else in the archives has its own route or has no business leaving
+ * this machine.
+ */
+export const CLIENT_FILE_EXTENSIONS = ["lua", "xml", "toc", "ttf"] as const;
+
+/** A path that could name an interface file inside the archives. */
+export function validClientFilePath(value: string): boolean {
+  return validAssetPath(value, { extensions: CLIENT_FILE_EXTENSIONS, allowBang: true });
+}
+
+/**
+ * What `/client/file` calls each of the four, given the extension with its dot.
+ *
+ * **The charset is measured, not assumed.** A 3.3.5a ruRU client is the case where this could have
+ * gone wrong: the game itself renders Lua strings through the locale codepage, so cp1251 was the
+ * expected answer and would have made `charset=utf-8` turn every Russian label into mojibake.
+ * Counted over this machine's client, decoding each file with a strict UTF-8 decoder: 1,101 `.lua`,
+ * `.xml` and `.toc` files inside the six stock ruRU archives (`locale-ruRU`, `patch-ruRU`,
+ * `patch-ruRU-2`, `patch-ruRU-3`, and the two expansion locale archives), 15 of them carrying bytes
+ * above 0x7F, and **not one that is not valid UTF-8** — no BOM on any of them either. The live
+ * chain agrees: all 561 interface text files the chain resolves, 56 with high bytes, every one
+ * valid UTF-8. `GlueStrings.lua` decoded as cp1251 reads `РЎРїРѕСЃРѕР±РЅРѕСЃС‚`, and as UTF-8 reads
+ * `Способност`, which settles it in the only direction it can be settled.
+ *
+ * So the route declares the encoding rather than shipping `application/octet-stream` and leaving
+ * every caller to sniff. That is the whole difference between `response.text()` working and a
+ * runtime needing its own decoder before it can read a single `.toc` line.
+ */
+export function clientFileContentType(extension: string): string {
+  return extension.toLowerCase() === ".ttf" ? "font/ttf" : "text/plain; charset=utf-8";
 }

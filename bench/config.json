@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "seed": 12340,
+  "width": 1280,
+  "height": 720,
+  "pixelRatio": 1,
+  "durationSeconds": 20,
+  "warmupSeconds": 5,
+  "timeoutSeconds": 180,
+  "scenarios": ["movement", "crowd-10", "crowd-50", "crowd-200"],
+  "route": { "map": 0, "x": -9460, "y": -120, "dx": -320, "dy": 40 },
+  "halfMinute": 1440,
+  "graphics": { "lightingQuality": 1, "grassRadius": 100, "grassDense": true, "grassDensity": 2, "fullscreenGlow": true }
+}

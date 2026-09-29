@@ -110,6 +110,22 @@ export class WorldStore implements StateObserver {
     return this.#subscribe(subject, UPDATE_FIELDS[name].offset, listener);
   }
 
+  /**
+   * Calls back when any word in one named array field changes. Scalar `field` subscriptions remain
+   * intentionally cheap; array consumers such as PLAYER_SKILL_INFO_1_1 need the complete range or
+   * an update in a later slot would be invisible to them.
+   */
+  fieldRange(subject: Subject, name: UpdateFieldName, listener: StoreListener): Unsubscribe {
+    const field = UPDATE_FIELDS[name];
+    const unsubscriptions: Unsubscribe[] = [];
+    for (let offset = 0; offset < (field.size ?? 1); offset++) {
+      unsubscriptions.push(this.#subscribe(subject, field.offset + offset, listener));
+    }
+    return () => {
+      for (const unsubscribe of unsubscriptions) unsubscribe();
+    };
+  }
+
   /** Calls back when anything about one object changes, including its arrival and its removal. */
   object(subject: Subject, listener: StoreListener): Unsubscribe {
     return this.#subscribe(subject, ANY_FIELD, listener);
@@ -199,7 +215,15 @@ export class WorldStore implements StateObserver {
     // A new character means every SELF subscription is now watching a different object.
     if (selfChanged) this.#notifySelf();
 
-    for (const listener of [...this.#anyListeners]) this.#run(listener);
+    for (const listener of [...this.#anyListeners]) {
+      // Inlined rather than wrapped: a closure per listener per flush was pure garbage, and the
+      // error contract (report, never throw out of the loop) is exactly what the wrapper did.
+      try {
+        listener();
+      } catch (error) {
+        this.onListenerError?.(error);
+      }
+    }
   }
 
   #subscribe(subject: Subject, index: number, listener: StoreListener): Unsubscribe {
@@ -215,18 +239,42 @@ export class WorldStore implements StateObserver {
     }
     listeners.add(listener);
     return () => {
-      const current = this.#subjects.get(subject)?.get(index);
+      const fields = this.#subjects.get(subject);
+      const current = fields?.get(index);
       current?.delete(listener);
-      if (current?.size === 0) this.#subjects.get(subject)?.delete(index);
+      // An empty field set is unobservable, and so is an empty subject: drop both so a raid
+      // night of add waves does not leave one empty Map per guid behind after unsubscribing.
+      if (current?.size === 0) fields?.delete(index);
+      if (fields?.size === 0) this.#subjects.delete(subject);
     };
   }
 
   /** Everyone watching this guid for this field, plus everyone watching the character for it. */
   #notify(guid: bigint, index: number): void {
+    const own = this.#listeners(guid, index);
+    // Nobody watching is the common case — every changed word of every object in view comes
+    // through here — and it returns before the object lookup and without an array to walk.
+    if (own === undefined && (guid !== this.state.selfGuid || !this.#subjects.get(SELF)?.has(index))) return;
     const object = this.state.objects.get(guid);
-    for (const listener of this.#listeners(guid, index)) this.#run(() => listener(object, guid));
+    if (own) {
+      for (const listener of own) {
+        try {
+          listener(object, guid);
+        } catch (error) {
+          this.onListenerError?.(error);
+        }
+      }
+    }
     if (guid !== this.state.selfGuid) return;
-    for (const listener of this.#listeners(SELF, index)) this.#run(() => listener(object, guid));
+    const self = this.#listeners(SELF, index);
+    if (!self) return;
+    for (const listener of self) {
+      try {
+        listener(object, guid);
+      } catch (error) {
+        this.onListenerError?.(error);
+      }
+    }
   }
 
   #notifySelf(): void {
@@ -235,25 +283,27 @@ export class WorldStore implements StateObserver {
     const fields = this.#subjects.get(SELF);
     if (!fields) return;
     for (const listeners of [...fields.values()]) {
-      for (const listener of [...listeners]) this.#run(() => listener(object, guid));
+      for (const listener of [...listeners]) {
+        try {
+          listener(object, guid);
+        } catch (error) {
+          this.onListenerError?.(error);
+        }
+      }
     }
   }
 
-  #listeners(subject: Subject, index: number): StoreListener[] {
+  /**
+   * A copy, because a listener may unsubscribe itself while the loop runs; `undefined` when nobody
+   * watches, rather than an empty array per (guid, field) of every flush.
+   */
+  #listeners(subject: Subject, index: number): StoreListener[] | undefined {
     const listeners = this.#subjects.get(subject)?.get(index);
-    return listeners ? [...listeners] : [];
+    return listeners ? [...listeners] : undefined;
   }
 
   #emit<Name extends keyof WorldEvents>(name: Name, payload: WorldEvents[Name]): void {
     this.events.emit(name, payload);
-  }
-
-  #run(action: () => void): void {
-    try {
-      action();
-    } catch (error) {
-      this.onListenerError?.(error);
-    }
   }
 
   #discard(): void {

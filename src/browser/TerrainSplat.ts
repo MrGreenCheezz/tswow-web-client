@@ -117,7 +117,7 @@ export class TerrainSplatClient {
     }
   }
 
-  /** Makes the GPU tile cache exactly the renderer's visible footprint. */
+  /** Makes the tile cache exactly the renderer's retained footprint (visible, prepared and recent). */
   setActiveTiles(map: number | undefined, grids: Iterable<TerrainGrid>): void {
     if (this.#disposed) return;
     const active = new Set<string>();
@@ -343,6 +343,37 @@ export class TerrainSplatClient {
   }
 
   #loadTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
+    // An <img> handed to WebGL is decoded again on the main thread inside its first upload,
+    // because WebGL wants the pixels unpremultiplied and unmanaged: 6-9 ms for a 1024x1024 alpha
+    // map, on the frame the tile is prepared. The bitmap path decodes off the main thread.
+    if (typeof createImageBitmap === "function" && typeof ImageBitmap === "function"
+      && typeof fetch === "function") {
+      return this.#loadBitmapTexture(request, url);
+    }
+    return this.#loadImageTexture(request, url);
+  }
+
+  /**
+   * The same pixels WebGL's own image upload produces for these textures: `flipY` (the Texture
+   * default) is applied by the decoder, and the colour is neither premultiplied nor colour-managed,
+   * exactly what `UNPACK_PREMULTIPLY_ALPHA = false` and a `NoColorSpace` texture ask of an <img>.
+   */
+  async #loadBitmapTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to load ${url}`);
+    const bitmap = await createImageBitmap(await response.blob(), {
+      imageOrientation: "flipY", premultiplyAlpha: "none", colorSpaceConversion: "none",
+    });
+    const texture = new THREE.Texture(bitmap);
+    // Already flipped; WebGL ignores the unpack flip for a bitmap in any case.
+    texture.flipY = false;
+    // Kept open for as long as the texture lives, so a restored context can upload it again.
+    texture.addEventListener("dispose", () => bitmap.close());
+    this.#trackTexture(request, texture);
+    return texture;
+  }
+
+  #loadImageTexture(request: TerrainSplatRequest, url: string): Promise<THREE.Texture> {
     return new Promise((resolve, reject) => {
       let handle: THREE.Texture | undefined;
       let failed = false;
@@ -521,14 +552,15 @@ function injectTerrainMicroNormals(shader: TerrainShaderSource): void {
         dFdx(terrainMicroHeight),
         dFdy(terrainMicroHeight)
       );
-      // Layer indices change at chunk borders; fading there prevents an unrelated neighbour from
-      // becoming a false height step. Texture minification already removes sub-pixel detail, and
-      // this explicit distance gate prevents distant shimmer before that point.
-      vec2 terrainChunkUv = fract(vSplatUv * 16.0);
-      vec2 terrainChunkEdge = min(terrainChunkUv, 1.0 - terrainChunkUv);
-      float terrainChunkFade = smoothstep(0.0, 0.04, min(terrainChunkEdge.x, terrainChunkEdge.y));
+      // Layer indices may change abruptly at an authored chunk edge. Suppress only an implausibly
+      // large derivative there. Any UV-edge mask — periodic or once per tile — makes its own
+      // straight zero-normal strip visible even where the blended colour itself is continuous.
+      // Fragment derivatives still have helper invocations at a primitive edge; the texture's
+      // clamp/repeat policy and this outlier gate are the conservative boundary handling.
+      float terrainMicroGradientLength = length(terrainMicroGradient);
+      float terrainMicroOutlierFade = 1.0 - smoothstep(0.16, 0.42, terrainMicroGradientLength);
       float terrainDistanceFade = 1.0 - smoothstep(50.0, 125.0, length(vViewPosition));
-      terrainMicroGradient *= 0.08 * terrainChunkFade * terrainDistanceFade;
+      terrainMicroGradient *= 0.08 * terrainMicroOutlierFade * terrainDistanceFade;
 
       // These vectors and the normal are all view-space. This is the bounded form of Three's own
       // derivative bump basis, fed by the already blended albedo instead of another texture.

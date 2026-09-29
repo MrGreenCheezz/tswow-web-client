@@ -5,7 +5,7 @@ import * as THREE from "three";
 import {
   FRAME_WINDOW, FrameCadenceClock, FrameClock, FullFrameClock, LONG_FRAME_THRESHOLD_MS,
   makeRenderTelemetrySnapshot, makeRendererTelemetrySnapshot,
-  RESELECT_DISTANCE, shouldReselect,
+  RESELECT_DISTANCE, shouldReselect, summarizeFrameHitch, topSectionAverages,
 } from "../dist/code/browser/RenderStats.js";
 import {
   instanceCapacity, instanceable, instanceableBuild, placeEnvironmentNode, ADT_MODEL_TO_SCENE,
@@ -376,6 +376,46 @@ test("a frame time that is not a number is dropped rather than poisoning the mea
   assert.equal(FRAME_WINDOW, 120, "two seconds at sixty");
 });
 
+test("slow frames summarize their hottest sections first", () => {
+  assert.equal(
+    summarizeFrameHitch({ at: 1, total: 230.4, sections: { render: 210.2, physics: 12.3, ui: 0.4 } }),
+    "фриз 230мс: render 210мс, physics 12мс",
+  );
+  assert.equal(
+    summarizeFrameHitch({ at: 1, total: 61, sections: { render: 40, physics: 12, ui: 0.4 } }, 3),
+    "фриз 61мс: render 40мс, physics 12мс, ui 0.4мс",
+  );
+  // Sections a frame never reached stay out of the line rather than printing as NaN.
+  assert.equal(
+    summarizeFrameHitch({ at: 1, total: 80, sections: { state: 5, render: Number.NaN } }),
+    "фриз 80мс: state 5.0мс",
+  );
+  assert.equal(
+    summarizeFrameHitch({ at: 1, total: 55, sections: {} }),
+    "фриз 55мс",
+  );
+  assert.equal(
+    summarizeFrameHitch({
+      at: 1,
+      total: 80,
+      sections: { render: 70 },
+      detail: "сабмит: шейдеры +2, текстуры +14, геометрия +9",
+    }),
+    "фриз 80мс: render 70мс [сабмит: шейдеры +2, текстуры +14, геометрия +9]",
+  );
+});
+
+test("ordinary frames summarize their hottest average sections first", () => {
+  assert.equal(
+    topSectionAverages({ render: 990, "render.env": 310, ui: 40, panels: 60 }, 100),
+    "render 9.9, render.env 3.1, panels 0.6, ui 0.4",
+  );
+  assert.equal(topSectionAverages({}, 100), "");
+  assert.equal(topSectionAverages({ render: 10 }, 0), "");
+  // Sections under a twentieth of a millisecond are noise, not signal.
+  assert.equal(topSectionAverages({ render: 990, overlay: 1 }, 100), "render 9.9");
+});
+
 test("the environment ranking is not redone for four yards of walking", () => {
   // It costs 1.26 ms a frame in Stormwind at the former 230-yard leash — 42,797 placements ranked
   // from scratch, standing still included. The live leash is 300 yards, but the placement budget
@@ -498,6 +538,19 @@ test("a frozen placement keeps its matrix, and a room hung on it afterwards stil
   assert.ok(Math.abs(room.matrixWorld.elements[12] - expected.x) < 1e-6, "the late room is placed");
   assert.ok(Math.abs(room.matrixWorld.elements[13] - expected.y) < 1e-6);
   assert.ok(Math.abs(room.matrixWorld.elements[14] - expected.z) < 1e-6);
+});
+
+test("new emitter sets build a bounded few per frame so bursts cannot hitch one", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  assert.match(source, /const EFFECT_BUILD_BUDGET = 6;/,
+    "the stagger budget is a named constant beside the effect budgets");
+  const effectsStart = source.indexOf("  #updateEffects(");
+  const effectsEnd = source.indexOf("\n  #", effectsStart + 10);
+  const update = source.slice(effectsStart, effectsEnd);
+  assert.match(update, /let effectBuilds = 0;/, "the build count resets every frame");
+  assert.match(update, /if \(effectBuilds >= EFFECT_BUILD_BUDGET\) continue;/,
+    "a skipped entry is rebuilt on a later frame rather than dropped");
+  assert.match(update, /effectBuilds\+\+;/, "only completed builds spend the budget");
 });
 
 test("a built model carries a bounding sphere that encloses it, computed once", () => {

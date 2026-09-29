@@ -68,6 +68,20 @@ test("palette alpha is read at 1, 4 and 8 bits per pixel", () => {
   assert.deepEqual([0, 1, 2].map((index) => pixel(eightBit, index)[3]), [7, 128, 255]);
 });
 
+test("truncated palette alpha is rejected at every supported depth", () => {
+  for (const [alphaDepth, width] of [[1, 8], [4, 2], [8, 1]]) {
+    assert.throws(() => decodeBlp(blp({
+      encoding: 1,
+      alphaDepth,
+      width,
+      height: 1,
+      // The palette indexes are complete and every required alpha byte is absent. Previously the
+      // decoder stopped at `undefined` and silently left those pixels opaque.
+      mip: Buffer.alloc(width),
+    })), /palette alpha is truncated/, `${alphaDepth}-bit alpha`);
+  }
+});
+
 test("raw pixels are stored blue, green, red, alpha", () => {
   const opaque = decodeBlp(blp({ encoding: 3, width: 1, height: 1, mip: Buffer.from([1, 2, 3, 9]) }));
   assert.deepEqual(pixel(opaque, 0), [3, 2, 1, 255]);

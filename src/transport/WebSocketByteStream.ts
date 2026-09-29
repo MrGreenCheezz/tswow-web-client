@@ -12,6 +12,37 @@ interface Waiter {
   reject(error: Error): void;
 }
 
+/**
+ * The socket closed under a read: the code and reason the other end closed it with. The gateway
+ * says why it gave up in both (`bridge()` in Gateway.ts: 1011 with «Backend unavailable», «Backend
+ * connection failed», «Client stopped responding»…), which is what a screen needs to tell a realm
+ * that is down from a network that dropped; 1006 with no reason is a connection that simply died.
+ */
+export class TransportClosedError extends Error {
+  readonly code: number;
+  readonly reason: string;
+  readonly wasClean: boolean;
+
+  constructor(code: number, reason: string, wasClean: boolean) {
+    super(`WebSocket transport closed (${code}${reason ? `, ${reason}` : ""})`);
+    this.name = "TransportClosedError";
+    this.code = code;
+    this.reason = reason;
+    this.wasClean = wasClean;
+  }
+}
+
+/** The socket never opened: nothing answered at `url`, or the gateway refused the upgrade. */
+export class TransportConnectError extends Error {
+  readonly url: string;
+
+  constructor(url: string) {
+    super(`Cannot connect to ${url}`);
+    this.name = "TransportConnectError";
+    this.url = url;
+  }
+}
+
 export class WebSocketByteStream implements BinaryByteStream {
   readonly #socket: WebSocket;
   readonly #queue = new ByteQueue();
@@ -29,8 +60,11 @@ export class WebSocketByteStream implements BinaryByteStream {
       this.#queue.push(new Uint8Array(event.data));
       this.#drain();
     });
-    socket.addEventListener("error", () => this.#fail(new Error("WebSocket transport failed")));
-    socket.addEventListener("close", () => this.#fail(new Error("WebSocket transport closed")));
+    // A browser follows every `error` with a `close` (the WebSocket spec's "fail the connection"),
+    // and only the close carries the code and the reason — so it is the close that fails the reads.
+    socket.addEventListener("close", (event) => {
+      this.#fail(new TransportClosedError(event.code, event.reason, event.wasClean));
+    });
   }
 
   static connect(url: string): Promise<WebSocketByteStream> {
@@ -38,8 +72,8 @@ export class WebSocketByteStream implements BinaryByteStream {
     const stream = new WebSocketByteStream(socket);
     return new Promise((resolve, reject) => {
       socket.addEventListener("open", () => resolve(stream), { once: true });
-      socket.addEventListener("error", () => reject(new Error(`Cannot connect to ${url}`)), { once: true });
-      socket.addEventListener("close", () => reject(new Error(`Connection to ${url} closed before opening`)), { once: true });
+      socket.addEventListener("error", () => reject(new TransportConnectError(url)), { once: true });
+      socket.addEventListener("close", () => reject(new TransportConnectError(url)), { once: true });
     });
   }
 

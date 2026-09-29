@@ -8,7 +8,9 @@ import {
   ENVIRONMENT_SPATIAL_MAX_CELLS_PER_OBJECT,
   EnvironmentSpatialIndex,
 } from "../dist/code/browser/EnvironmentSpatialIndex.js";
-import { selectEnvironment } from "../dist/code/browser/WorldRenderer3D.js";
+import { ENVIRONMENT_RANGE, ENVIRONMENT_SCENERY_BUDGET, selectEnvironment, environmentCandidatesInRange,
+  environmentResidentsInRange, selectEnvironmentAdmission } from "../dist/code/browser/WorldRenderer3D.js";
+import { ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE } from "../dist/code/browser/Terrain.js";
 
 const CELL_SIZE = 128;
 
@@ -90,24 +92,26 @@ test("an AABB spanning cells is conservatively admitted and never duplicated", (
 
 test("spatial query is output-equivalent to legacy selection across mixed quota scenes", () => {
   const player = { x: 0, y: 0, z: 0, orientation: 0 };
-  const exterior = Array.from({ length: 330 }, (_, index) =>
+  // Loose outdoor M2s: the scenery quota, saturated by ten past it.
+  const exteriorNear = ENVIRONMENT_SCENERY_BUDGET - 10;
+  const exterior = Array.from({ length: ENVIRONMENT_SCENERY_BUDGET + 10 }, (_, index) =>
     placement(
       `exterior-${index}`,
       index % 2 === 0
-        ? -(index < 310 ? 96 : 299.9999)
-        : (index < 310 ? 96 : 299.9999),
+        ? -(index < exteriorNear ? 96 : ENVIRONMENT_RANGE - 0.0001)
+        : (index < exteriorNear ? 96 : ENVIRONMENT_RANGE - 0.0001),
       0,
     ),
   );
   const exteriorBoxes = Array.from({ length: 4 }, (_, index) =>
     placement(`exterior-box-${index}`, 1_000 + index, 1_000, bounds(-2, -2, 2, 2)),
   );
-  const interior = Array.from({ length: 125 }, (_, index) =>
+  const interior = Array.from({ length: 365 }, (_, index) =>
     placement(
       `interior-${index}`,
       index % 2 === 0
-        ? -(index < 115 ? 32 : 59.9999)
-        : (index < 115 ? 32 : 59.9999),
+        ? -(index < 355 ? 32 : 59.9999)
+        : (index < 355 ? 32 : 59.9999),
       0,
     ),
   ).map((object) => ({ ...object, interior: true }));
@@ -117,8 +121,8 @@ test("spatial query is output-equivalent to legacy selection across mixed quota 
   const all = frozenObjects([
     ...exterior,
     ...exteriorBoxes,
-    placement("exterior-inside-boundary", 299.999, 0),
-    placement("exterior-strict-boundary", 300, 0),
+    placement("exterior-inside-boundary", ENVIRONMENT_RANGE - 0.001, 0),
+    placement("exterior-strict-boundary", ENVIRONMENT_RANGE, 0),
     ...interior,
     ...interiorBoxes,
     { ...placement("interior-inside-boundary", 59.999, 0), interior: true },
@@ -126,10 +130,10 @@ test("spatial query is output-equivalent to legacy selection across mixed quota 
   ]);
 
   const legacy = selectEnvironment(all, player);
-  const spatialObjects = new EnvironmentSpatialIndex(all).query(player.x, player.y, 300).objects;
+  const spatialObjects = new EnvironmentSpatialIndex(all).query(player.x, player.y, ENVIRONMENT_RANGE).objects;
   const spatial = selectEnvironment(spatialObjects, player);
 
-  assert.equal(legacy.length, 440, "both quotas are saturated in the mixed scene");
+  assert.equal(legacy.length, ENVIRONMENT_SCENERY_BUDGET + 360, "both quotas are saturated in the mixed scene");
   assert.equal(spatial.length, legacy.length);
   for (let index = 0; index < legacy.length; index++) {
     assert.equal(spatial[index].object, legacy[index].object, `object identity at rank ${index}`);
@@ -305,9 +309,70 @@ test("WorldRenderer builds the spatial index on identity changes and queries it 
   assert.match(identityBlock, /new\s+EnvironmentSpatialIndex\s*\(/,
     "the index is constructed only in the objects-identity branch");
 
-  const queryAt = update.indexOf(".query(");
+  const queryAt = update.indexOf(".queryCached(");
   assert.ok(queryAt > identityAt && queryAt < candidatesAt,
     "the spatial query feeds exact range filtering before environmentCandidatesInRange runs");
   assert.match(update.slice(candidatesAt, admissionAt), /#environmentCandidatesAt\s*=\s*\{/,
     "only distance candidates share the four-yard cache; frustum admission stays outside it");
+});
+
+test("cached queries reuse one exact cell rectangle and expose immutable pools without changing legacy query ownership", () => {
+  const first = placement("first", 0, 0), second = placement("second", 128, 0);
+  const index = new EnvironmentSpatialIndex(frozenObjects([first, second]));
+  const cached = index.queryCached(4, 4, 1);
+  assert.equal(index.queryCached(5, 5, 1), cached);
+  assert.equal(index.queryCached(5, 5, 2), cached, "range changes are safe only when all cell edges remain identical");
+  assert.equal(Object.isFrozen(cached), true);
+  assert.equal(Object.isFrozen(cached.objects), true);
+  assert.throws(() => cached.objects.push(second), TypeError);
+  const legacy = index.query(4, 4, 1);
+  legacy.objects.length = 0;
+  assert.deepEqual(ids(index.queryCached(4, 4, 1)), ["first"]);
+  assert.notEqual(index.query(4, 4, 1), legacy, "legacy queries remain fresh");
+  const crossed = index.queryCached(128, 4, 1);
+  assert.notEqual(crossed, cached);
+  assert.deepEqual(crossed, index.query(128, 4, 1));
+  assert.notEqual(index.queryCached(4, 4, 1), cached, "returning replaces the single entry instead of retaining old rectangles");
+  const replacement = new EnvironmentSpatialIndex(frozenObjects([placement("replacement", 0, 0)]));
+  assert.deepEqual(ids(replacement.queryCached(4, 4, 1)), ["replacement"]);
+});
+
+test("a cached raw pool still yields fresh strict-distance residents and draw admission while walking within a cell", () => {
+  const source = frozenObjects([
+    placement("new-candidate", ENVIRONMENT_RANGE + 3, 0),
+    placement("new-resident", ENVIRONMENT_RANGE + ENVIRONMENT_RESIDENT_HYSTERESIS + 3, 0),
+    placement("always", 0, 0),
+  ]);
+  const index = new EnvironmentSpatialIndex(source);
+  const before = { x: 0, y: 0 }, after = { x: 4, y: 0 };
+  const raw = index.queryCached(before.x, before.y, ENVIRONMENT_STREAM_RANGE);
+  assert.equal(index.queryCached(after.x, after.y, ENVIRONMENT_STREAM_RANGE), raw);
+  for (const player of [before, after]) {
+    const candidates = environmentCandidatesInRange(raw.objects, player);
+    const residents = environmentResidentsInRange(raw.objects, player);
+    assert.deepEqual(candidates, environmentCandidatesInRange(source, player));
+    assert.deepEqual(residents, environmentResidentsInRange(source, player));
+    assert.deepEqual(selectEnvironmentAdmission(candidates, []), selectEnvironment(source, player));
+  }
+  assert.equal(environmentCandidatesInRange(raw.objects, before).some(v => v.object.id === "new-candidate"), false);
+  assert.equal(environmentCandidatesInRange(raw.objects, after).some(v => v.object.id === "new-candidate"), true);
+  assert.equal(environmentResidentsInRange(raw.objects, before).some(v => v.object.id === "new-resident"), false);
+  assert.equal(environmentResidentsInRange(raw.objects, after).some(v => v.object.id === "new-resident"), true);
+});
+
+test("cached query parity covers custom cells, negative boundaries, spanning boxes, ordered fallbacks and invalid inputs", () => {
+  const source = frozenObjects([
+    placement("far", 10_000, 10_000), placement("bad", NaN, 0),
+    placement("span", 250, 0, bounds(-128, -1, 129, 1)), placement("near", 0, 0),
+  ]);
+  for (const cellSize of [64, 128, NaN]) {
+    const index = new EnvironmentSpatialIndex(source, cellSize);
+    for (const args of [[0,0,0], [-128,0,1], [-127,0,1], [128,0,1], [128,1,2],
+      [NaN,0,1], [0,Infinity,1], [0,0,-1], [0,0,Infinity], [Number.MAX_VALUE,0,Number.MAX_VALUE],
+      [0,0,1_000_000], [0,0,0]]) {
+      const cached = index.queryCached(...args);
+      assert.deepEqual(cached, index.query(...args));
+      assert.equal(Object.isFrozen(cached.objects), true);
+    }
+  }
 });

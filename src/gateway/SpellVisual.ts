@@ -61,6 +61,25 @@ export interface SpellVisualEffect {
   occurrence?: string;
   /** Optional model-attach transform, in the M2 coordinate system and radians. */
   transform?: SpellVisualEffectTransform;
+  /**
+   * `SpellVisualEffectName.AreaEffectSize`, and only when it says something `Scale` does not.
+   *
+   * The name promises a radius in yards and the data refuses to be one. Measured on this dataset:
+   * 2,928 of the 3,965 rows carry a non-zero value and 2,789 of those are exactly 1; across every
+   * kit any of the three area columns names, 552 of the 588 authored values are 1. Of the 139 rows
+   * that are neither 0 nor 1, all but ten repeat the row's own `Scale` verbatim. And the two spells the field would
+   * be judged on disagree with the promise outright: Blizzard (spell 10) and Consecration (20116,
+   * 26573) both resolve through `EffectRadiusIndex` to a `SpellRadius.Radius` of **8 yards**,
+   * while their area models — `Blizzard_Spawn` and `consecration_impact_base` — carry
+   * `AreaEffectSize` 1 and are already authored ~11 yards wide in their own header box.
+   *
+   * So it is carried as the raw table value and 1 is dropped: 1 is the identity, the only rule
+   * that reads this cannot act on it (`areaEffectScale` in `SpellVisuals.ts`), and carrying it
+   * would put `"areaSize":1` on 552 of 588 area placements for nothing. With the identity dropped
+   * only 271 of the 81,239 effect placements across all 32,392 answered spells carry the key, and
+   * the first 200-spell answer measured on this dataset grew by **zero** bytes.
+   */
+  areaSize?: number;
 }
 
 export interface SpellVisualEffectTransform {
@@ -89,6 +108,19 @@ export interface SpellVisualKit {
    * still dropped below, but the sound of a kit that *also* shows something now travels with it.
    */
   sound: number;
+}
+
+/**
+ * One `SpellVisualKit` answered by its own id, for the packets that name a kit and no spell.
+ *
+ * `kit` is absent when the row resolves to nothing — the same shape the per-spell route uses for
+ * "this spell shows nothing", and for the same reason: an answer with no content is still an
+ * answer and the browser must be able to stop asking. The kit itself is the *identical* record one
+ * phase of a per-spell answer carries, so both routes share one browser-side validator.
+ */
+export interface SpellVisualKitRecord {
+  id: number;
+  kit?: SpellVisualKit;
 }
 
 /** A missile: one model, flying from a point on the caster to a point on the target. */
@@ -202,8 +234,16 @@ const SPELL_VISUAL_SLOTS = 2;
  * A row whose file is not a `.mdx` names something the archives do not contain, so it is dropped
  * here rather than turned into a request that will 404 on every cast.
  */
-function effectPaths(names: Dbc<"SpellVisualEffectName">): Map<number, { path: string; scale: number }> {
-  const paths = new Map<number, { path: string; scale: number }>();
+/** One row of `SpellVisualEffectName`, reduced to the three things a kit needs from it. */
+interface EffectModel {
+  path: string;
+  scale: number;
+  /** Zero when the table authored nothing usable, or authored its own identity. */
+  areaSize: number;
+}
+
+function effectPaths(names: Dbc<"SpellVisualEffectName">): Map<number, EffectModel> {
+  const paths = new Map<number, EffectModel>();
   for (const row of names.rows()) {
     const file = names.string(row, "FileName");
     const lower = file.toLowerCase();
@@ -211,18 +251,26 @@ function effectPaths(names: Dbc<"SpellVisualEffectName">): Map<number, { path: s
     // was not `.mdx` cost seventeen spells their missile, `Missile_Wave_Ice` among them.
     if (!lower.endsWith(".mdx") && !lower.endsWith(".m2")) continue;
     const scale = names.float(row, "Scale");
+    const areaSize = names.float(row, "AreaEffectSize");
     paths.set(names.id(row), {
       path: lower.endsWith(".m2") ? file : `${file.slice(0, -4)}.m2`,
       // A scale of zero would draw nothing; the table's own floor is 0.01.
       scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
+      // 1 is the table's identity and is dropped here rather than downstream; see `areaSize`.
+      areaSize: Number.isFinite(areaSize) && areaSize > 0 && areaSize !== 1 ? areaSize : 0,
     });
   }
   return paths;
 }
 
+/** The optional half of one effect placement, kept in one place so both readers agree. */
+function effectExtras(model: EffectModel): { areaSize?: number } {
+  return model.areaSize > 0 ? { areaSize: model.areaSize } : {};
+}
+
 function readKits(
   kits: Dbc<"SpellVisualKit">,
-  paths: ReadonlyMap<number, { path: string; scale: number }>,
+  paths: ReadonlyMap<number, EffectModel>,
   modelAttaches: ReadonlyMap<number, readonly SpellVisualEffect[]> = new Map(),
 ): Map<number, SpellVisualKit> {
   const result = new Map<number, SpellVisualKit>();
@@ -230,7 +278,7 @@ function readKits(
     const effects: SpellVisualEffect[] = [];
     for (const [field, index, attachment] of KIT_EFFECTS) {
       const model = paths.get(kits.int(row, field, index));
-      if (model) effects.push({ path: model.path, attachment, scale: model.scale });
+      if (model) effects.push({ path: model.path, attachment, scale: model.scale, ...effectExtras(model) });
     }
     effects.push(...(modelAttaches.get(kits.id(row)) ?? []));
     const startAnimation = kits.int(row, "StartAnimID");
@@ -246,7 +294,7 @@ function readKits(
 
 function readModelAttaches(
   attaches: Dbc<"SpellVisualKitModelAttach"> | undefined,
-  paths: ReadonlyMap<number, { path: string; scale: number }>,
+  paths: ReadonlyMap<number, EffectModel>,
 ): Map<number, SpellVisualEffect[]> {
   const result = new Map<number, SpellVisualEffect[]>();
   if (!attaches) return result;
@@ -268,6 +316,7 @@ function readModelAttaches(
       path: model.path,
       attachment: attachmentOr(attaches.int(row, "AttachmentID"), ATTACH_BASE),
       scale: model.scale,
+      ...effectExtras(model),
       occurrence: `model-attach:${attaches.id(row)}`,
       // Keep the authored transform even when only one component is non-zero (as with Cone of
       // Cold's 90-degree pitch). The renderer applies this in the effect's local frame.
@@ -278,6 +327,41 @@ function readModelAttaches(
   return result;
 }
 
+function buffer(payload: Uint8Array): Buffer {
+  return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+}
+
+/**
+ * The three tables that decide what a kit *is*, resolved once.
+ *
+ * Both routes go through here rather than each doing its own walk: `/dbc/spell-visuals` needs the
+ * model paths for the missile column as well, and `/dbc/spell-visual-kits` needs the kits alone,
+ * but a kit answered by id and the same kit answered inside a spell have to be the same record —
+ * otherwise the browser would hold two vocabularies for one thing and only one of them would be
+ * tested.
+ */
+function resolveKitTables(
+  kitPayload: Uint8Array,
+  namePayload: Uint8Array,
+  modelAttachPayload: Uint8Array | undefined,
+): { paths: ReadonlyMap<number, EffectModel>; kitsById: Map<number, SpellVisualKit> } {
+  const kits = openDbc(buffer(kitPayload), "SpellVisualKit");
+  const names = openDbc(buffer(namePayload), "SpellVisualEffectName");
+  const modelAttaches = modelAttachPayload
+    ? openDbc(buffer(modelAttachPayload), "SpellVisualKitModelAttach") : undefined;
+  const paths = effectPaths(names);
+  return { paths, kitsById: readKits(kits, paths, readModelAttaches(modelAttaches, paths)) };
+}
+
+/** Every resolvable kit, by `SpellVisualKit` id — the answer `/dbc/spell-visual-kits` indexes. */
+export function parseSpellVisualKits(
+  kitPayload: Uint8Array,
+  namePayload: Uint8Array,
+  modelAttachPayload?: Uint8Array,
+): Map<number, SpellVisualKit> {
+  return resolveKitTables(kitPayload, namePayload, modelAttachPayload).kitsById;
+}
+
 export function parseSpellVisuals(
   spellPayload: Uint8Array,
   visualPayload: Uint8Array,
@@ -286,23 +370,16 @@ export function parseSpellVisuals(
   durationPayload?: Uint8Array,
   modelAttachPayload?: Uint8Array,
 ): Map<number, SpellVisualMetadata> {
-  const buffer = (payload: Uint8Array): Buffer =>
-    Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
   const spells = openDbc(buffer(spellPayload), "Spell");
   const visuals = openDbc(buffer(visualPayload), "SpellVisual");
-  const kits = openDbc(buffer(kitPayload), "SpellVisualKit");
-  const names = openDbc(buffer(namePayload), "SpellVisualEffectName");
   const durations = durationPayload ? openDbc(buffer(durationPayload), "SpellDuration") : undefined;
-  const modelAttaches = modelAttachPayload
-    ? openDbc(buffer(modelAttachPayload), "SpellVisualKitModelAttach") : undefined;
 
   const durationById = new Map<number, number>();
   if (durations) {
     for (const row of durations.rows()) durationById.set(durations.id(row), durations.int(row, "Duration"));
   }
 
-  const paths = effectPaths(names);
-  const kitsById = readKits(kits, paths, readModelAttaches(modelAttaches, paths));
+  const { paths, kitsById } = resolveKitTables(kitPayload, namePayload, modelAttachPayload);
 
   // One record per visual, built once and then shared by every spell that names it — 27,133
   // spells reach 9,406 visuals, so building per spell would build each one three times over.
@@ -373,24 +450,49 @@ function attachmentOr(value: number, fallback: number): number {
   return Number.isInteger(value) && value >= 0 && value <= 63 ? value : fallback;
 }
 
+/**
+ * `SpellVisualKitModelAttach`, from the visual override directory when one is configured.
+ *
+ * One reader for both loaders: a kit answered by id must carry the same authored transforms the
+ * same kit carries inside a spell, and that is decided entirely by which copy of this table won.
+ */
+async function readModelAttachTable(
+  directory: string,
+  visualDbcDirectory: string,
+): Promise<Buffer | undefined> {
+  if (visualDbcDirectory !== directory) {
+    const override = await readFile(join(visualDbcDirectory, "SpellVisualKitModelAttach.dbc"))
+      .catch(() => undefined);
+    if (override) return override;
+  }
+  return readFile(join(directory, "SpellVisualKitModelAttach.dbc")).catch(() => undefined);
+}
+
 export async function loadSpellVisuals(directory: string, visualDbcDirectory = directory): Promise<Map<number, SpellVisualMetadata>> {
-  const readVisualOverride = async (table: string): Promise<Buffer | undefined> => {
-    if (visualDbcDirectory === directory) return undefined;
-    try {
-      return await readFile(join(visualDbcDirectory, `${table}.dbc`));
-    } catch {
-      return undefined;
-    }
-  };
-  const [spells, visuals, kits, names, durations, modelAttachesOverride] = await Promise.all([
+  const [spells, visuals, kits, names, durations, modelAttaches] = await Promise.all([
     readFile(join(directory, "Spell.dbc")),
     readFile(join(directory, "SpellVisual.dbc")),
     readFile(join(directory, "SpellVisualKit.dbc")),
     readFile(join(directory, "SpellVisualEffectName.dbc")),
     readFile(join(directory, "SpellDuration.dbc")).catch(() => undefined),
-    readVisualOverride("SpellVisualKitModelAttach"),
+    readModelAttachTable(directory, visualDbcDirectory),
   ]);
-  const modelAttaches = modelAttachesOverride
-    ?? await readFile(join(directory, "SpellVisualKitModelAttach.dbc")).catch(() => undefined);
   return parseSpellVisuals(spells, visuals, kits, names, durations, modelAttaches);
+}
+
+/**
+ * Every kit the dataset can resolve, keyed by `SpellVisualKit` id.
+ *
+ * Three files instead of six: neither `Spell` nor `SpellVisual` says anything about a kit that is
+ * named by number. Measured on this dataset: 8,663 kit rows, 8,217 of which resolve to something
+ * with a model, a pose or a sound in it, and 7,023 of those are reachable from some `Spell` row —
+ * so 1,194 resolvable kits were reachable through no route this client had at all.
+ */
+export async function loadSpellVisualKits(directory: string, visualDbcDirectory = directory): Promise<Map<number, SpellVisualKit>> {
+  const [kits, names, modelAttaches] = await Promise.all([
+    readFile(join(directory, "SpellVisualKit.dbc")),
+    readFile(join(directory, "SpellVisualEffectName.dbc")),
+    readModelAttachTable(directory, visualDbcDirectory),
+  ]);
+  return parseSpellVisualKits(kits, names, modelAttaches);
 }

@@ -11,6 +11,7 @@
 // as if it were solid.
 
 import * as THREE from "three";
+import { installGroundCoverFade, type GroundCoverFadeUniforms } from "./GroundCoverFade.js";
 import {
   BLEND_ADD, BLEND_ALPHA, BLEND_ALPHA_KEY, BLEND_BLEND_ADD, BLEND_MOD, BLEND_MOD2X,
   BLEND_NO_ALPHA_ADD, BLEND_OPAQUE,
@@ -22,6 +23,12 @@ import {
 import { sampleTrack } from "./Particles.js";
 import type { CharacterAppearance } from "../gateway/CharacterAppearance.js";
 import { applyWorldLight, type WorldLightUniforms } from "./WorldLighting.js";
+import {
+  installVegetationWind, isVegetationWindBatch, vegetationWindProfile as modelVegetationWindProfile,
+  type VegetationWindProfile,
+} from "./VegetationWind.js";
+import { syncModelPlacementTintMaterials } from "./ModelPlacementTint.js";
+import { registerPendingTextureView } from "./TextureLoad.js";
 
 /**
  * Which geoset of each family to draw.
@@ -489,6 +496,7 @@ export function updateBatchAppearance(
     // material that is not visible, and three checks that per geometry group.
     entry.material.visible = opacity > BATCH_INVISIBLE;
     if (entry.transform && entry.map) writeTextureMatrix(entry.transform, entry.map.matrix, at);
+    syncModelPlacementTintMaterials(entry.material);
   }
 }
 
@@ -551,6 +559,99 @@ function batchOrder(left: { batch: WvmBatch; index: number }, right: { batch: Wv
   return left.index - right.index;
 }
 
+interface ModelDrawBatch {
+  batch: WvmBatch;
+  index: number;
+  indexStart: number;
+  indexCount: number;
+}
+
+function sameBatchMaterial(left: WvmBatch, right: WvmBatch): boolean {
+  // Two-sided transparent rendering has a back/front pass per draw; joining those draws could
+  // change compositing order during spawn fades. UV1 selection can also depend on each submesh.
+  // Keep both on the authored path, along with explicitly blended/depth-independent batches.
+  if ((left.blendMode !== BLEND_OPAQUE && left.blendMode !== BLEND_ALPHA_KEY)
+    || (left.materialFlags & (MATERIAL_TWO_SIDED | MATERIAL_NO_DEPTH_WRITE | MATERIAL_NO_DEPTH_TEST)) !== 0
+    || left.uvSets.some((uv) => uv !== 0)) return false;
+  return left.blendMode === right.blendMode && left.materialFlags === right.materialFlags
+    && left.priorityPlane === right.priorityPlane && left.materialLayer === right.materialLayer
+    && left.shaderId === right.shaderId && left.colorIndex === right.colorIndex
+    && left.textureWeight === right.textureWeight && left.textureTransform === right.textureTransform
+    && left.textures.length === right.textures.length
+    && left.textures.every((texture, index) => texture === right.textures[index])
+    && left.uvSets.length === right.uvSets.length
+    && left.uvSets.every((uv, index) => uv === right.uvSets[index]);
+}
+
+/**
+ * Puts every joinable pass beside the first pass of its own state, so `modelDrawBatches` can join
+ * them into one draw.
+ *
+ * A character's authored order alternates its states — body atlas, hair, skin extra, atlas again —
+ * and joining only *adjacent* equals left DwarfMale at 11 draws for 3 states and HumanMalGuard at
+ * 8 for 5 (the step-18 census). Every draw is a group in the main pass and again in each shadow
+ * cascade: a city crowd of 64 spent 452 main and 294 shadow draws on its units. Only passes
+ * `sameBatchMaterial` admits move — opaque or alpha-keyed, single-sided, depth-tested and
+ * depth-written, on the first UV set — and among those the depth test makes the order between
+ * different states immaterial except at exactly coplanar seams. Each joined state keeps the place
+ * of its first pass, so a blended, two-sided or depth-independent pass never changes its position
+ * relative to the states around it, and the triangles inside a state stay in authored order.
+ */
+function gatherEqualBatches(ordered: Array<{ batch: WvmBatch; index: number }>): Array<{ batch: WvmBatch; index: number }> {
+  const groups: Array<Array<{ batch: WvmBatch; index: number }>> = [];
+  for (const entry of ordered) {
+    let joined = false;
+    if (sameBatchMaterial(entry.batch, entry.batch)) {
+      for (const group of groups) {
+        if (sameBatchMaterial(group[0]!.batch, entry.batch)) {
+          group.push(entry);
+          joined = true;
+          break;
+        }
+      }
+    }
+    if (!joined) groups.push([entry]);
+  }
+  return groups.flat();
+}
+
+/** Combine adjacent equal passes without changing the ordered triangle stream or vertex data. */
+function modelDrawBatches(model: WvmModel, ordered: Array<{ batch: WvmBatch; index: number }>,
+  coalesce: boolean): { batches: ModelDrawBatch[]; indices: WvmModel["indices"] } {
+  const batches: ModelDrawBatch[] = [];
+  let merged = false;
+  let totalIndices = 0;
+  for (const entry of ordered) {
+    const submesh = model.submeshes[entry.batch.submesh]!;
+    const previous = batches[batches.length - 1];
+    if (coalesce && previous && sameBatchMaterial(previous.batch, entry.batch)) {
+      previous.indexCount += submesh.indexCount;
+      merged = true;
+    } else {
+      batches.push({ ...entry, indexStart: submesh.indexStart, indexCount: submesh.indexCount });
+    }
+    totalIndices += submesh.indexCount;
+  }
+  if (!merged) return { batches, indices: model.indices };
+
+  // Selected geosets are often disjoint slices. Concatenate exactly their existing draw order:
+  // duplicate/layered passes remain duplicate indices, and hidden alternatives stay absent.
+  const indices = model.indices instanceof Uint32Array
+    ? new Uint32Array(totalIndices) : new Uint16Array(totalIndices);
+  let offset = 0;
+  for (const { batch } of ordered) {
+    const submesh = model.submeshes[batch.submesh]!;
+    indices.set(model.indices.subarray(submesh.indexStart, submesh.indexStart + submesh.indexCount), offset);
+    offset += submesh.indexCount;
+  }
+  offset = 0;
+  for (const batch of batches) {
+    batch.indexStart = offset;
+    offset += batch.indexCount;
+  }
+  return { batches, indices };
+}
+
 export interface BuiltModel {
   geometry: THREE.BufferGeometry;
   materials: THREE.Material[];
@@ -597,9 +698,16 @@ export interface BuiltModel {
   animatedBatches: AnimatedBatch[];
 }
 
+/** One restrained model-relative wind profile; z is the authored M2 up axis. */
+export function vegetationWindProfile(
+  bounds: Pick<WvmModel, "bounds">["bounds"], modelPath = "",
+): VegetationWindProfile | undefined {
+  return modelVegetationWindProfile(bounds, modelPath);
+}
+
 /**
- * Builds one drawable model. Each visible batch becomes a geometry group and a material, in the
- * order the client would draw them.
+ * Builds one drawable model in authored draw order. An opted-in unit build can combine adjacent
+ * identical passes into one geometry group and material.
  */
 export function buildModel(
   model: WvmModel,
@@ -611,6 +719,8 @@ export function buildModel(
     loadTexture: (url: string) => THREE.Texture;
     /** Cached bases are borrowed; per-material Texture views created below remain build-owned. */
     borrowLoadedTextures?: boolean;
+    /** Load each URL once within this build; materials keep private views of its shared pixels. */
+    deduplicateLoadedTextures?: boolean;
     /**
      * Every loaded material map is a private Texture view over the borrowed base's shared Source.
      * Spell builds use this because wrap/flip/colour/anisotropy are per Texture, not per Source.
@@ -622,6 +732,8 @@ export function buildModel(
      */
     slotTextures?: ReadonlyMap<number, THREE.Texture>;
     skinned?: boolean;
+    /** Join adjacent identical unit passes while preserving all triangles and their draw order. */
+    coalesceAdjacentBatches?: boolean;
     /**
      * `renderer.capabilities.getMaxAnisotropy()`, when the caller has a renderer to ask.
      *
@@ -646,6 +758,10 @@ export function buildModel(
     worldLight?: WorldLightUniforms;
     /** Local lift for additive spell meshes only; scenery and character materials never set it. */
     fantasyGlow?: boolean;
+    /** GPU wind for strictly classified static foliage/ground-cover batches. */
+    vegetationWind?: boolean;
+    /** Only the separately cached ground-cover build uses the player's live distance fade. */
+    groundCoverFade?: GroundCoverFadeUniforms;
   },
 ): BuiltModel {
   const geometry = new THREE.BufferGeometry();
@@ -680,28 +796,43 @@ export function buildModel(
     })
     .sort(batchOrder);
 
+  const vegetationWind = options.vegetationWind === true
+    ? vegetationWindProfile(model.bounds, options.modelPath)
+    : undefined;
+  // Wind classification depends on the original batch ordinal. Leave such builds untouched.
+  const coalesce = options.coalesceAdjacentBatches === true && !vegetationWind;
+  const draw = modelDrawBatches(model, coalesce ? gatherEqualBatches(ordered) : ordered, coalesce);
+  if (draw.indices !== model.indices) geometry.setIndex(new THREE.BufferAttribute(draw.indices, 1));
+
   const materials: THREE.Material[] = [];
   const materialSlots: number[] = [];
   const texturePaths: string[] = [];
   const ownedTextures: THREE.Texture[] = [];
   const borrowedTextures = new Set<THREE.Texture>();
-  const materialOptions = options.borrowLoadedTextures === true
-    || options.privateLoadedTextureViews === true
+  const loadedTextures = options.deduplicateLoadedTextures === true ? new Map<string, THREE.Texture>() : undefined;
+  const privateViews = options.privateLoadedTextureViews === true || loadedTextures !== undefined;
+  const ownsLoadedTextures = options.borrowLoadedTextures !== true && options.privateLoadedTextureViews !== true;
+  const materialOptions = options.borrowLoadedTextures === true || privateViews
     ? {
         ...options,
+        privateLoadedTextureViews: privateViews,
         loadTexture: (url: string) => {
-          const texture = options.loadTexture(url);
+          let texture = loadedTextures?.get(url);
+          if (!texture) {
+            texture = options.loadTexture(url);
+            loadedTextures?.set(url, texture);
+            // The map only lives during this build. Keep its uncached sources in the existing
+            // disposal list, including sources whose maps have a transform or a second UV set.
+            if (loadedTextures && ownsLoadedTextures) ownedTextures.push(texture);
+          }
           borrowedTextures.add(texture);
-          return options.privateLoadedTextureViews === true
-            ? privateTextureView(texture)
-            : texture;
+          return privateViews ? privateTextureView(texture) : texture;
         },
       }
     : options;
   const animatedBatches: AnimatedBatch[] = [];
-  for (const { batch } of ordered) {
-    const submesh = model.submeshes[batch.submesh]!;
-    geometry.addGroup(submesh.indexStart, submesh.indexCount, materials.length);
+  for (const { batch, index: batchIndex, indexStart, indexCount } of draw.batches) {
+    geometry.addGroup(indexStart, indexCount, materials.length);
 
     const slotIndex = batch.textures[0] ?? -1;
     const slot = slotIndex >= 0 ? model.textures[slotIndex] : undefined;
@@ -709,6 +840,12 @@ export function buildModel(
     const path = supplied || !slot ? "" : resolveSlot(slot, slots, directory);
     if (path) texturePaths.push(path);
     const material = buildMaterial(model, batch, slot, path, supplied, materialOptions);
+    if (vegetationWind && isVegetationWindBatch(model, batchIndex, path, options.modelPath)) {
+      // Installed after buildMaterial so its second-layer/fog/world-light chain is preserved.
+      // The caller gives this build a wind-specific cache key; no static material is mutated.
+      installVegetationWind(material, vegetationWind);
+    }
+    if (options.groundCoverFade) installGroundCoverFade(material, options.groundCoverFade);
     // Loaded here, so freed here unless the caller explicitly supplies/leases the cached base.
     // A transform/uv1 clone is a different object and remains owned by this build.
     const map = (material as THREE.Material & { map?: THREE.Texture | null }).map;
@@ -897,6 +1034,11 @@ export function privateTextureView(texture: THREE.Texture): THREE.Texture {
     configurable: true,
     get: () => sourceHoldsPixels(owned.source.data),
   });
+  // `clone()` marks the view for upload, but a still-pending canonical has no pixels yet: that
+  // mark is exactly what three warns about on the first draw. Park it until `#applyCompletion`
+  // publishes the shared source (ready image or missing pixel); an already-resolved canonical
+  // keeps the clone's own mark and uploads at once.
+  registerPendingTextureView(texture, owned);
   return owned;
 }
 
@@ -1272,4 +1414,100 @@ export function applyBlendMode(material: THREE.Material & { alphaTest: number },
       material.alphaTest = 0;
       break;
   }
+  // Unlit additive contributions commute: both faces can use one unculled draw.
+  // Keep ordered alpha blends and separate alpha equations on Three's two-pass path.
+  material.forceSinglePass = material instanceof THREE.MeshBasicMaterial && !material.depthWrite
+    && material.blendEquation === THREE.AddEquation
+    && material.blendSrcAlpha === null && material.blendDstAlpha === null
+    && (material.blendEquationAlpha === null || material.blendEquationAlpha === THREE.AddEquation)
+    && (blendMode === BLEND_NO_ALPHA_ADD || blendMode === BLEND_ADD);
+}
+
+/**
+ * A private copy of one built material, faded by `factor`, for a unit the server says is stealthed,
+ * invisible or a ghost.
+ *
+ * A copy and not a mutation, because the materials of a build are *shared*: every human male
+ * wearing the same look draws from one array (`#unitKey`), so writing an opacity into it would fade
+ * a whole street for one rogue. Restoring is therefore giving the shared array back and disposing
+ * these, which is what makes the round trip exact.
+ *
+ * Three.js resets `onBeforeCompile` and `customProgramCacheKey` on `clone()` (they are not in
+ * `Material.copy`'s list), and an M2 material may carry a chain of three: the second texture layer,
+ * the blend-mode fog and the world light. Unlike `cloneMaterialForPortrait` — which deliberately
+ * unwinds the world-light wrapper because a portrait is lit differently — this copy stays in the
+ * world and wants the chain exactly as it stands, so the hook is carried over as-is. The hooks
+ * close over the *source* material and only ever write into the shader object handed to them, so
+ * sharing them is safe; the cache key is evaluated once here rather than delegated, so the copy
+ * cannot ask a disposed source for it.
+ */
+export function cloneMaterialFaded(material: THREE.Material, factor: number): THREE.Material {
+  const clone = material.clone();
+  clone.onBeforeCompile = material.onBeforeCompile;
+  const key = material.customProgramCacheKey();
+  clone.customProgramCacheKey = () => key;
+  fadeMaterial(clone, factor);
+  return clone;
+}
+
+/**
+ * The smallest factor a faded cut-out threshold is scaled by.
+ *
+ * Scaling 224/255 by a factor of exactly zero made the threshold zero, and `alphaTest` crossing
+ * zero is a different three.js program (the `ALPHATEST` define): the spawn fade's first frame
+ * (factor 0) linked one variant and its second frame another, inside the draw — measured on
+ * city-arrival as 105 and 145 ms first draws. With the floor the threshold stays positive for
+ * the whole fade. The first frame shows the same colours: its opacity is zero, so every fragment's
+ * alpha is zero, and the positive threshold discards the fragments that would have blended to
+ * nothing — which also keeps a body nobody can see yet out of the depth buffer.
+ */
+export const FADE_ALPHA_TEST_FLOOR = 1 / 1024;
+
+/**
+ * Fades one material by `factor`, honouring what its blend mode actually does with alpha.
+ *
+ * The blend state is read back rather than remembered, because `applyBlendMode` above is the only
+ * thing that ever wrote it and each of its eight cases leaves a distinguishable signature. Four
+ * outcomes, and each is the algebra of that mode's blend equation rather than a preference:
+ *
+ * * **`blendSrc = One`** — `noAlphaAdd` (One/One) and `blendAdd` (One/OneMinusSrcAlpha). The source
+ *   colour is *not* multiplied by alpha, so lowering opacity alone fades nothing at all in the
+ *   first and makes the second lighten instead of fade. The colour carries the fade, and the
+ *   opacity goes down with it so `blendAdd`'s destination term opens as the source closes.
+ * * **`blendSrc = DstColor`** — `mod` and `mod2x` multiply what is already in the frame. There is
+ *   no per-material number that fades that towards its identity: the multiplier is the *texture*,
+ *   and `material.color` only tints it. Left exactly as authored, and said so rather than faked.
+ *   Measured, this is a no-op on the units this exists for: HumanMale carries none, and the whole
+ *   of `spells\` carries 1 mod and 11 mod2x batches.
+ * * **an alpha test** — the hair, fringe and cloth cut-outs, whose threshold is 224/255. Fading
+ *   multiplies the fragment's alpha by `factor`, so a threshold left where it was would discard
+ *   *every* fragment at 0.35 and the character would lose its hair rather than fade it. The
+ *   threshold is scaled by the same factor, which reproduces the identical cut-out: `a > t` and
+ *   `a·f > t·f` are the same test. The factor it is scaled by never goes below
+ *   `FADE_ALPHA_TEST_FLOOR`: see there.
+ * * **everything else** — opaque, alpha and the ordinary additive (SrcAlpha/One), all of which
+ *   scale their contribution by alpha exactly. `transparent` is turned on because an opaque
+ *   material ignores the number otherwise; `depthWrite` is left as authored, so a body that wrote
+ *   depth still does and its own far side does not blend through it.
+ *
+ * Nothing program-relevant moves after the first call: `transparent` is the same at every factor
+ * below one, and a threshold that is above zero stays above zero, so a fade draws one shader
+ * variant from its first frame to its last.
+ */
+export function fadeMaterial(material: THREE.Material, factor: number, source = material): void {
+  const clamped = Math.max(0, Math.min(1, factor));
+  const tinted = material as THREE.Material & { color?: THREE.Color };
+  const original = source as THREE.Material & { color?: THREE.Color };
+  // A retained private copy is always scaled from its shared source, including after factor=0.
+  // Multiplying its previous faded values would compound opacity and permanently blacken additive
+  // batches. Only the final alphaTest is assigned: crossing zero changes a Three shader variant.
+  const custom = source.blending === THREE.CustomBlending;
+  const modulated = custom && source.blendSrc === THREE.DstColorFactor;
+  const colourFade = custom && source.blendSrc === THREE.OneFactor;
+  if (original.color && tinted.color) tinted.color.copy(original.color);
+  tinted.opacity = original.opacity * (modulated ? 1 : clamped);
+  tinted.alphaTest = original.alphaTest
+    * (modulated || colourFade ? 1 : Math.max(clamped, FADE_ALPHA_TEST_FLOOR));
+  if (colourFade) tinted.color?.multiplyScalar(clamped);
+  material.transparent = modulated || colourFade ? source.transparent : true;
 }

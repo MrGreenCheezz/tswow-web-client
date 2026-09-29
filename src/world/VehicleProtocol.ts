@@ -1,5 +1,6 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import type { WorldState } from "./WorldState.js";
 
 // Layouts follow the active TrinityCore source: Unit.cpp (`Mount`, `Dismount`),
 // SpellAuraEffects.cpp `HandleAuraSetVehicle`, Player.cpp
@@ -78,4 +79,21 @@ export function buildPlayerVehicleEnter(targetGuid: bigint): Uint8Array {
  */
 export function buildEjectPassenger(passengerGuid: bigint): Uint8Array {
   return new PacketWriter().u64(passengerGuid).toUint8Array();
+}
+
+/**
+ * Who is riding this vehicle right now.
+ *
+ * VehicleJoinEvent sets `Passenger->m_movementInfo.transport.guid` for every seat. CHARMEDBY
+ * identifies the controller on the vehicle base, and is absent for ordinary passengers. Use the
+ * seat relationship that `HandleEjectPassenger` checks through `Unit::IsOnVehicle`.
+ */
+export function vehiclePassengers(state: WorldState, vehicleGuid: bigint): bigint[] {
+  if (vehicleGuid === 0n) return [];
+  const seated: bigint[] = [];
+  for (const object of state.objects.values()) {
+    if (object.typeId !== 3 && object.typeId !== 4) continue;
+    if (object.transport?.guid === vehicleGuid) seated.push(object.guid);
+  }
+  return seated;
 }

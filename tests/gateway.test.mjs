@@ -13,6 +13,7 @@ import {
   SOURCE_MISSING_EXIT, isCharacterVisualTexture, socketPeerAddress, startGateway, visualModelCacheNamespace,
 } from "../dist/code/gateway/Gateway.js";
 import { SOURCE_MISSING_EXIT as generatorMissingExit } from "../tools/generate-texture.mjs";
+import { SOURCE_MISSING_EXIT as clientFileMissingExit } from "../tools/generate-client-file.mjs";
 import { isLoopbackAddress } from "../dist/code/gateway/ModuleIndex.js";
 import { parseVMapTile } from "../dist/code/gateway/VMapProtocol.js";
 import { parseSpellMetadata } from "../dist/code/gateway/SpellMetadata.js";
@@ -170,11 +171,13 @@ function characterCreationDbcs() {
   const at = (value) => strings.offsets.get(value);
   // Field indexes out of src/generated/dbcLayouts.ts: 69 fields, Name_lang at 14 and ruRU is the
   // ninth of its seventeen slots.
-  const race = ({ id, flags, alliance, prefix, language, name, localName }) => {
+  const race = ({ id, flags, alliance, prefix, language, name, localName, maleDisplay = 0, femaleDisplay = 0 }) => {
     const row = new Array(69).fill(0);
     row[0] = id;
     row[1] = flags;
     row[2] = 1;                 // FactionID
+    row[4] = maleDisplay;       // MaleDisplayID
+    row[5] = femaleDisplay;     // FemaleDisplayID
     row[6] = at(prefix);        // ClientPrefix
     row[7] = language;          // BaseLanguage
     row[13] = alliance;         // Alliance
@@ -211,11 +214,14 @@ function characterCreationDbcs() {
 
   return {
     races: dbcFixture(69, [
-      race({ id: 1, flags: 0x0c, alliance: 0, prefix: "Hu", language: 7, name: "Human", localName: "Человек" }),
+      // 49 and 50 are the real human pair in this client; the rest are this fixture's own, and the
+      // goblin deliberately keeps 0/0 — a row that names no model, which is the shape a browser has
+      // to tell apart from a gateway too old to carry the columns at all.
+      race({ id: 1, flags: 0x0c, alliance: 0, prefix: "Hu", language: 7, name: "Human", localName: "Человек", maleDisplay: 49, femaleDisplay: 50 }),
       race({ id: 9, flags: 0x01, alliance: 2, prefix: "Go", language: 7, name: "Goblin", localName: "Гоблин" }),
-      race({ id: 22, flags: 0x0e, alliance: 1, prefix: "Wo", language: 1, name: "Worgen", localName: "Ворген" }),
+      race({ id: 22, flags: 0x0e, alliance: 1, prefix: "Wo", language: 1, name: "Worgen", localName: "Ворген", maleDisplay: 30666, femaleDisplay: 30667 }),
       // Past 127, which is where `CharBaseInfo`'s signed byte columns start reading negative.
-      race({ id: 200, flags: 0x0e, alliance: 1, prefix: "Vr", language: 1, name: "Vrykul", localName: "Врайкул" }),
+      race({ id: 200, flags: 0x0e, alliance: 1, prefix: "Vr", language: 1, name: "Vrykul", localName: "Врайкул", maleDisplay: 41000, femaleDisplay: 41001 }),
     ], strings.bytes),
     classes: dbcFixture(60, [
       characterClass({ id: 1, power: 1, file: "WARRIOR", name: "Warrior", localName: "Воин" }),
@@ -445,6 +451,10 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   await writeFile(join(dbcDirectory, "items.json"), JSON.stringify([[25, "Потрёпанный меч", 220, 1, 13, 1, 7]]));
   await writeFile(join(buildingsDirectory, "Triangle.wmo.vmo"), vmapModel());
   await writeFile(join(buildingsDirectory, "Hut.wmo.vmo"), collisionVmo());
+  // The extractor writes M2 collision beside the tile as `<name>.m2.vmo`, while the tile itself
+  // names the bare `<name>.m2`. Every tree in Elwynn arrives in the suffixed spelling, so without
+  // the fallback the whole forest has no collision on the client while the server collides.
+  await writeFile(join(buildingsDirectory, "Tree.m2.vmo"), collisionVmo());
   await mkdir(join(visualTilesDirectory, "0"), { recursive: true });
   await writeFile(join(visualTilesDirectory, "0", "32-32.json"), JSON.stringify([{ id: 7, kind: "m2", name: "World\\Tree.m2", x: 1, y: 2, z: 3, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 }]));
   const visualPath = "World\\Tree.m2";
@@ -454,13 +464,13 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   // v12 is where a WMO became its groups: a model over the triangle budget writes one file per
   // group beside the header, and `group` asks for one of them. v13 is where the artifact gained
   // the colour and texture-weight tables and the portrait camera, and v15 the texture transforms.
-  const visualHash = createHash("sha1").update(`visual-v16\0${visualPath.toLowerCase()}`).digest("hex");
+  const visualHash = createHash("sha1").update(`visual-v21\0${visualPath.toLowerCase()}`).digest("hex");
   await writeFile(join(visualModelsDirectory, `${visualHash}.bin`), Buffer.from("WVM2-test"));
   // LightSkybox metadata is normalized to this archive spelling before it reaches the browser.
   // Keep an artifact under the real Dalaran path so the regression covers the final model route,
   // not only the DBC parser's string value.
   const skyboxPath = "ENVIRONMENTS\\Stars\\DalaranSkyBox.m2";
-  const skyboxHash = createHash("sha1").update(`visual-v16\0${skyboxPath.toLowerCase()}`).digest("hex");
+  const skyboxHash = createHash("sha1").update(`visual-v21\0${skyboxPath.toLowerCase()}`).digest("hex");
   await writeFile(join(visualModelsDirectory, `${skyboxHash}.bin`), Buffer.from("WVM2-dalaran-sky"));
   // The poses the model did not ship with live beside it under the same key.
   await writeFile(join(visualModelsDirectory, `${visualHash}.anim.bin`), Buffer.from("WVA1-test"));
@@ -547,6 +557,29 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.deepEqual(unknown, { id: 999999 });
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visuals?ids=133`)).status, 403);
 
+    // S3: the same kits, by the number `SMSG_PLAY_SPELL_VISUAL` actually carries. Kit 20 is the
+    // one the fixture's single SpellVisual row points all twelve of its columns at, so the two
+    // routes must answer with the identical record.
+    const visualKits = await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visual-kits?v=1&ids=20,999999`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.equal(visualKits.status, 200);
+    assert.equal(visualKits.headers.get("cache-control"), "no-store");
+    const [byKitId, unknownKit] = await visualKits.json();
+    assert.equal(byKitId.id, 20);
+    assert.deepEqual(byKitId.kit, fireball.cast,
+      "one resolution serves both routes: the browser holds one vocabulary for a kit");
+    // A kit that resolves to nothing answers with its own id, exactly as a spell with no visual does.
+    assert.deepEqual(unknownKit, { id: 999999 });
+    assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visual-kits?ids=20`)).status, 403);
+    assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visual-kits`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    })).status, 400, "an empty id list is a bad request, not an empty answer");
+    assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/spell-visual-kits?ids=${
+      Array.from({ length: 201 }, (_, index) => index + 1).join(",")}`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    })).status, 400, "and so is a batch above the two-hundred cap");
+
     const gameobjects = await fetch(`http://127.0.0.1:${gateway.port}/dbc/gameobjects?ids=1`, {
       headers: { origin: "http://127.0.0.1:5173" },
     });
@@ -607,6 +640,12 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/collision/model/Missing.wmo`, {
       headers: { origin: "http://127.0.0.1:5173" },
     })).status, 204);
+    const tree = await fetch(`http://127.0.0.1:${gateway.port}/collision/model/Tree.m2`, {
+      headers: { origin: "http://127.0.0.1:5173" },
+    });
+    assert.equal(tree.status, 200);
+    assert.equal(decodeCollisionModel(await tree.arrayBuffer()).groups.length, 2,
+      "an M2 named bare falls back to its extractor-spelled .m2.vmo file");
 
     const model = await fetch(`http://127.0.0.1:${gateway.port}/environment/model/Triangle.wmo`, {
       headers: { origin: "http://127.0.0.1:5173" },
@@ -744,10 +783,27 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     name: "Огненный шар",
     rank: "Ранг 1",
     description: "Бросает огненный шар.",
+    // v=13: the buff bar's text and the two cast-row bits. This synthetic row sets none of them.
+    auraDescription: "",
+    onNextSwing: false,
+    channeled: false,
     iconId: 7,
     iconPath: "Interface\\Icons\\Spell_Fire_FlameBolt",
     passive: false,
     autoRepeat: false,
+    displayInStanceBar: false,
+    stanceBarOrder: 0,
+    // v11: the explicit target-selection contract the Unity catalog reads. This synthetic row
+    // names no unit, item or ground target, so every mask reads zero and nothing is supported.
+    targetingContractVersion: 1,
+    requiredTargetMask: 0,
+    requiredTargetMode: 0,
+    unitTargetContractVersion: 1,
+    supportsExplicitUnitTarget: false,
+    explicitTargetContractVersion: 2,
+    explicitTargetMask: 0,
+    clientSelectionMask: 0,
+    supportsExplicitTarget: false,
     // The bit that actually means "keep me out of the spellbook", carried beside the passive one
     // because they are different questions: a passive spell is listed and greyed, a hidden one is
     // not listed at all.
@@ -779,8 +835,17 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // anything, and the browser has nothing else to tell that row from a five-yard spell.
     rangeFlags: 2,
     castTime: 1500,
+    effects: [0, 0, 0],
     effectAura: [0, 0, 0],
+    effectItemType: [0, 0, 0],
     effectMiscValue: [0, 0, 0],
+    tradeSkill: false,
+    reagents: [],
+    tools: [],
+    requiredToolCategories: [],
+    equippedItemClass: 0,
+    equippedItemSubclass: 0,
+    equippedItemInvTypes: 0,
     // Everything a `$`-marker is made of. Served raw for the effect columns and resolved for the
     // two that are indexes: a browser holding an index into a table it does not have holds nothing.
     effectBasePoints: [13, 0, 0],
@@ -947,7 +1012,7 @@ test("Ж0 a model the client does not hold is a 404, and a generator that died i
 });
 
 test("a format bump rebuilds one artifact at a time and deletes nothing", async () => {
-  // What the owner pays for `visual-v16`, and what nobody has to do by hand. The key is part of the
+  // What the owner pays for `visual-v21`, and what nobody has to do by hand. The key is part of the
   // file's name, so an artifact published under the old one is simply never asked for again: the
   // route misses, the generator runs, and the stale file stays on the disk until somebody clears
   // it. The fingerprint pass never drops an entry that has no stamp and cannot recover the path a
@@ -957,7 +1022,7 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
   const dbcDirectory = await mkdtemp(join(tmpdir(), "webclient-bump-dbc-"));
   const path = "World\\Tree.m2";
   const stale = createHash("sha1").update(`visual-v13\0${path.toLowerCase()}`).digest("hex");
-  const current = createHash("sha1").update(`visual-v16\0${path.toLowerCase()}`).digest("hex");
+  const current = createHash("sha1").update(`visual-v21\0${path.toLowerCase()}`).digest("hex");
   await writeFile(join(visualModelsDirectory, `${stale}.bin`), Buffer.from("WVM8-artifact"));
   let generated = 0;
   const gateway = await startGateway({
@@ -995,8 +1060,8 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
 test("the two artifact namespaces move independently and never collide", () => {
   // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
-  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v16");
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v17");
+  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v21");
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v22");
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {
@@ -1092,10 +1157,10 @@ test("emote route keeps dataset text and active client-media sound rows separate
   }
 });
 
-test("a texture replaced in a patch directory is republished for the same path", async () => {
-  // The other half: the answer is not in memory but on disk, keyed on the path alone. A module
-  // that overrides a stock texture keeps the path, so `data/textures` served the old picture for
-  // as long as the file sat there — and it sits there until somebody deletes 71 MB by hand.
+test("a texture replacement latches the running client-media profile closed", async () => {
+  // A publisher may replace this file while the process is alive, but the visual DBC/profile was
+  // selected at startup. Rebuilding this one cache entry against the new winner would mix two
+  // generations, so the current session has to stop serving visual assets until it is restarted.
   const client = await mkdtemp(join(tmpdir(), "webclient-patchdir-"));
   const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-textures-"));
   const texturePath = "Tileset\\Test.blp";
@@ -1128,7 +1193,9 @@ test("a texture replaced in a patch directory is republished for the same path",
     clientDirectory: client,
     texturesDirectory,
     generateTexture,
-    datasetPollMs: 0,
+    // Deliberately much longer than this test: a patch write must invalidate the interval through
+    // the filesystem watch, or the very next asset request can still receive old-profile bytes.
+    datasetPollMs: 60_000,
   });
   const headers = { origin: "http://127.0.0.1:5173" };
   const url = `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(texturePath)}`;
@@ -1141,12 +1208,16 @@ test("a texture replaced in a patch directory is republished for the same path",
     // different, because a rewrite inside the same millisecond leaves the mtime alone.
     await writeFile(loose, "BLP-two-and-longer");
     const second = await fetch(url, { headers });
-    assert.equal(second.status, 200);
-    assert.equal(await second.text(), "BLP-two-and-longer");
+    assert.equal(second.status, 409);
+    assert.equal(second.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await second.json(), {
+      error: "client_patch_chain_changed",
+      message: "The client patch set changed while the gateway was running. Restart the gateway and reload the client to apply it atomically.",
+    });
 
-    // And the file that was not touched is not rebuilt: the point is one entry, not the cache.
-    const rebuilt = await fetch(url, { headers });
-    assert.equal(await rebuilt.text(), "BLP-two-and-longer");
+    // The refusal is latched: changing the bytes back cannot establish a new atomic session.
+    await writeFile(loose, "BLP-one");
+    assert.equal((await fetch(url, { headers })).status, 409);
   } finally {
     await gateway.close();
     await rm(client, { recursive: true, force: true });
@@ -1154,14 +1225,124 @@ test("a texture replaced in a patch directory is republished for the same path",
   }
 });
 
-test("a cache entry from before stamps existed is served as it stands, and the pass is what stamps it", async () => {
-  // The other half of the rule above, and the one that decides what walking into a zone costs.
-  // `data/` on this machine holds 23,025 files published before stamps existed, and asking for
-  // each of them to be rebuilt the first time it is served is one generator process apiece on a
-  // serial lane: measured over sixteen already-published, already-correct ground textures, 5,749
-  // ms and 345 to 373 ms each, against 125 ms and no process at all for the same sixteen served
-  // as they stand. So nothing is rebuilt on the request path, and the pass the gateway starts at
-  // startup is what gives the entry a stamp.
+test("startup refuses an auto-extracted client-media overlay from the previous patch generation", async () => {
+  // The automatic extractor runs before startGateway. If a publish lands after extraction but
+  // before the gateway's first archive baseline, an ordinary first poll calls the new chain the
+  // baseline and cannot report a change. The extractor's source stamp is the evidence that closes
+  // that startup-only gap.
+  const client = await mkdtemp(join(tmpdir(), "webclient-client-media-client-"));
+  const overlay = await mkdtemp(join(tmpdir(), "webclient-client-media-startup-"));
+  const patch = join(client, "Data", "ruRU", "patch-ruRU-A.MPQ");
+  const visualDbcs = [
+    "CharSections.dbc", "CharHairGeosets.dbc", "CharacterFacialHairStyles.dbc",
+    "CreatureDisplayInfoExtra.dbc", "CreatureDisplayInfo.dbc", "CreatureModelData.dbc",
+    "HelmetGeosetVisData.dbc", "SpellVisualKitModelAttach.dbc",
+  ];
+  await mkdir(join(patch, "DBFilesClient"), { recursive: true });
+  for (const file of visualDbcs) await writeFile(join(patch, "DBFilesClient", file), `WDBC-${file}`);
+  const modelPath = "Character\\Human\\Male\\HumanMale.m2";
+  const skinPath = "Character\\Human\\Male\\HumanMale00.skin";
+  const model = join(patch, ...modelPath.split("\\"));
+  await mkdir(join(model, ".."), { recursive: true });
+  await writeFile(model, "MD20-generation-one");
+  await writeFile(join(patch, ...skinPath.split("\\")), "SKIN-generation-one");
+  const chain = await openClientArchives(client);
+  try {
+    for (const file of visualDbcs) {
+      const output = join(overlay, file);
+      await writeFile(output, `WDBC-${file}`);
+      await writeSourceStamp(output, await sourceStamp(chain, { paths: [`DBFilesClient\\${file}`] }));
+    }
+    const profile = join(overlay, "client-media-profile.json");
+    await writeFile(profile, JSON.stringify({ schema: 1, coordinatedVisuals: true, modelPath, skinPath }));
+    await writeSourceStamp(profile, await sourceStamp(chain, { paths: [modelPath, skinPath] }));
+  } finally {
+    chain.close();
+  }
+
+  try {
+    // No DBC and no archive name changed — only the geometry which the extracted profile
+    // interprets. Checking DBC stamps alone would accept this exact mismatched startup.
+    await writeFile(model, "MD20-generation-two-and-longer");
+    await assert.rejects(startGateway({
+      host: "127.0.0.1", port: 0,
+      auth: { host: "127.0.0.1", port: 1 }, world: { host: "127.0.0.1", port: 1 },
+      allowedOrigins: ["http://127.0.0.1:5173"],
+      clientDirectory: client,
+      visualDbcDirectory: overlay,
+      audioDbcDirectory: null,
+      requireClientMediaStamps: true,
+      datasetPollMs: 60_000,
+    }), /client-media DBCs no longer match the active client patch chain/i);
+  } finally {
+    await rm(client, { recursive: true, force: true });
+    await rm(overlay, { recursive: true, force: true });
+  }
+});
+
+test("same-origin browser texture GETs work and interface art is revalidated", async () => {
+  const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-interface-textures-"));
+  const texturePath = "Interface\\Buttons\\UI-Quickslot2.blp";
+  const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
+  await writeFile(join(texturesDirectory, `${id}.png`), "PNG-interface");
+  const sceneryPath = "Tileset\\Test.blp";
+  const sceneryId = createHash("sha1").update(`texture-v1\0${sceneryPath.toLowerCase()}`).digest("hex");
+  await writeFile(join(texturesDirectory, `${sceneryId}.png`), "PNG-scenery");
+  const gateway = await startGateway({
+    host: "127.0.0.1",
+    port: 0,
+    auth: { host: "127.0.0.1", port: 1 },
+    world: { host: "127.0.0.1", port: 1 },
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    texturesDirectory,
+    datasetPollMs: 0,
+  });
+  const url = `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(texturePath)}`;
+  try {
+    // A same-origin fetch normally has no Origin header. Fetch Metadata is browser-controlled and
+    // proves this request did not come from a cross-site page without opening the route to one.
+    const sameOrigin = await fetch(url, { headers: { "sec-fetch-site": "same-origin" } });
+    assert.equal(sameOrigin.status, 200);
+    assert.equal(await sameOrigin.text(), "PNG-interface");
+    assert.equal(sameOrigin.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    const etag = sameOrigin.headers.get("etag");
+    assert.ok(etag, "path-stable interface art needs a validator when a module replaces its BLP");
+
+    const unchanged = await fetch(url, {
+      headers: { "sec-fetch-site": "same-origin", "if-none-match": etag },
+    });
+    assert.equal(unchanged.status, 304);
+    assert.equal((await unchanged.arrayBuffer()).byteLength, 0);
+
+    const scenery = await fetch(
+      `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(sceneryPath)}`,
+      { headers: { "sec-fetch-site": "same-origin" } },
+    );
+    assert.equal(scenery.status, 200, "the exception applies to the texture route, not one cache branch");
+    assert.equal(scenery.headers.get("access-control-allow-origin"), null,
+      "a same-origin response does not need a CORS grant");
+    assert.equal(scenery.headers.get("cache-control"), "public, max-age=0, must-revalidate",
+      "a module may replace scenery under the same path too");
+    const sceneryTag = scenery.headers.get("etag");
+    assert.match(sceneryTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.equal(await scenery.text(), "PNG-scenery");
+    const unchangedScenery = await fetch(
+      `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(sceneryPath)}`,
+      { headers: { "sec-fetch-site": "same-origin", "if-none-match": sceneryTag } },
+    );
+    assert.equal(unchangedScenery.status, 304);
+    assert.equal((await unchangedScenery.arrayBuffer()).byteLength, 0);
+
+    assert.equal((await fetch(url)).status, 403, "an origin-less non-browser request stays refused");
+    assert.equal((await fetch(url, { headers: { "sec-fetch-site": "cross-site" } })).status, 403,
+      "cross-site image/fetch requests cannot borrow the same-origin exception");
+  } finally {
+    await gateway.close();
+    await rm(texturesDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an unstamped legacy texture is regenerated against the active patch before it is served", async () => {
   const client = await mkdtemp(join(tmpdir(), "webclient-patchdir-"));
   const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-textures-"));
   const texturePath = "Tileset\\Test.blp";
@@ -1170,7 +1351,7 @@ test("a cache entry from before stamps existed is served as it stands, and the p
   await writeFile(loose, "BLP-from-the-module");
 
   // Published by a gateway that had never heard of stamps: the right name, no sidecar, and bytes
-  // that no longer have anything to do with what the path holds.
+  // that no longer have anything to do with what the active module supplies under that path.
   const id = createHash("sha1").update(`texture-v1\0${texturePath.toLowerCase()}`).digest("hex");
   const legacy = join(texturesDirectory, `${id}.png`);
   await writeFile(legacy, "PNG-FROM-BEFORE-STAMPS");
@@ -1190,24 +1371,6 @@ test("a cache entry from before stamps existed is served as it stands, and the p
     }
   };
 
-  // Held until the test lets it go, because the whole claim is that the request does not wait for
-  // it: with the pass free to finish first, "served as it stands" and "served the rebuilt file"
-  // are the same bytes and the assertion proves nothing.
-  let started = 0;
-  let release;
-  let finished;
-  const held = new Promise((go) => { release = go; });
-  const passed = new Promise((done) => { finished = done; });
-  const restampCaches = async () => {
-    started++;
-    await held;
-    try {
-      await generateTexture(texturePath);
-    } finally {
-      finished();
-    }
-  };
-
   const gateway = await startGateway({
     host: "127.0.0.1",
     port: 0,
@@ -1217,31 +1380,23 @@ test("a cache entry from before stamps existed is served as it stands, and the p
     clientDirectory: client,
     texturesDirectory,
     generateTexture,
-    restampCaches,
     datasetPollMs: 0,
   });
   const headers = { origin: "http://127.0.0.1:5173" };
   const url = `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(texturePath)}`;
   try {
-    assert.equal(started, 1, "the pass is started when the gateway comes up, not by a request");
     const first = await fetch(url, { headers });
     assert.equal(first.status, 200);
-    assert.equal(await first.text(), "PNG-FROM-BEFORE-STAMPS", "an entry with no stamp is served as it stands");
-    assert.equal(generated, 0, "and nothing is generated to say so");
-    await assert.rejects(readFile(stampSidecar(legacy)), "it is the pass that gives it a stamp, not the request");
-
-    // A second request does not start a second pass either — one per startup, and the entries the
-    // pass cannot recover would otherwise start one apiece for the life of the process.
-    assert.equal((await (await fetch(url, { headers })).text()), "PNG-FROM-BEFORE-STAMPS");
-    assert.equal(started, 1);
-
-    release();
-    // The pass is what stamps it, and afterwards the ordinary rule above applies again.
-    await passed;
+    assert.equal(await first.text(), "BLP-from-the-module",
+      "bytes with no provenance must not win over the active TSWoW patch");
     assert.equal(generated, 1);
-    await assert.doesNotReject(readFile(stampSidecar(legacy)), "and it can say what it came from now");
+    await assert.doesNotReject(readFile(stampSidecar(legacy)));
+
+    const etag = first.headers.get("etag");
+    const unchanged = await fetch(url, { headers: { ...headers, "if-none-match": etag } });
+    assert.equal(unchanged.status, 304);
+    assert.equal(generated, 1, "the stamped current entry is not regenerated on revalidation");
   } finally {
-    release();
     await gateway.close();
     await rm(client, { recursive: true, force: true });
     await rm(texturesDirectory, { recursive: true, force: true });
@@ -1343,7 +1498,7 @@ test("an unstamped visual model is regenerated against the active HD pack", asyn
   }
 });
 
-test("cached HD character assets revalidate to classic bytes after the pack is removed", async () => {
+test("an HD-to-classic patch switch blocks every paired visual/profile route until restart", async () => {
   const client = await mkdtemp(join(tmpdir(), "webclient-hd-classic-client-"));
   const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-hd-classic-textures-"));
   const visualModelsDirectory = await mkdtemp(join(tmpdir(), "webclient-hd-classic-models-"));
@@ -1416,20 +1571,35 @@ test("cached HD character assets revalidate to classic bytes after the pack is r
 
     await rm(join(client, "Data", "patch-W.MPQ"), { recursive: true, force: true });
     await writePack("patch-3.MPQ", "CLASSIC");
-    const classicTexture = await fetch(textureUrl, {
-      headers: { ...headers, "if-none-match": textureTag },
-    });
-    const classicModel = await fetch(modelUrl, {
-      headers: { ...headers, "if-none-match": modelTag },
-    });
-    assert.equal(classicTexture.status, 200, "changed texture bytes invalidate the HD validator");
-    assert.equal(classicModel.status, 200, "changed model bytes invalidate the HD validator");
-    assert.equal(await classicTexture.text(), "PNG-FROM-CLASSIC");
-    assert.equal(await classicModel.text(), "WVM-FROM-CLASSIC");
-    assert.notEqual(classicTexture.headers.get("etag"), textureTag);
-    assert.notEqual(classicModel.headers.get("etag"), modelTag);
-    assert.equal(textureBuilds, 2, "the same texture key is rebuilt once per active pack");
-    assert.equal(modelBuilds, 2, "the same model key is rebuilt once per active pack");
+    const guarded = [
+      `http://127.0.0.1:${gateway.port}/client/file?path=${encodeURIComponent("Interface\\FrameXML\\FrameXML.toc")}`,
+      textureUrl,
+      modelUrl,
+      `http://127.0.0.1:${gateway.port}/visual/animations?path=${encodeURIComponent(modelPath)}&v=2`,
+      `http://127.0.0.1:${gateway.port}/visual/texture/${modelHash}.png`,
+      `http://127.0.0.1:${gateway.port}/dbc/creature-models?ids=49`,
+      `http://127.0.0.1:${gateway.port}/dbc/character-options?race=1&sex=0`,
+      `http://127.0.0.1:${gateway.port}/dbc/character-appearance?race=1&sex=0`,
+      `http://127.0.0.1:${gateway.port}/sound?path=${encodeURIComponent("Sound\\Character\\Test.wav")}`,
+      `http://127.0.0.1:${gateway.port}/dbc/sounds?ids=1`,
+      `http://127.0.0.1:${gateway.port}/dbc/emotes?v=2`,
+    ];
+    for (const url of guarded) {
+      const response = await fetch(url, { headers });
+      assert.equal(response.status, 409, `${new URL(url).pathname} must not cross the startup profile`);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const body = await response.json();
+      assert.equal(body.error, "client_patch_chain_changed");
+      assert.match(body.message, /restart the gateway and reload the client/i);
+    }
+    assert.equal(textureBuilds, 1, "classic texture bytes are not published into the HD session");
+    assert.equal(modelBuilds, 1, "classic model bytes are not published into the HD session");
+
+    // Even putting the original pack back cannot prove that already loaded browser assets all
+    // belong to it. Only a fresh gateway/client session clears the refusal.
+    await rm(join(client, "Data", "patch-3.MPQ"), { recursive: true, force: true });
+    await writePack("patch-W.MPQ", "HD");
+    assert.equal((await fetch(modelUrl, { headers })).status, 409);
   } finally {
     await gateway.close();
     await rm(client, { recursive: true, force: true });
@@ -1447,6 +1617,11 @@ test("a texture the client does not hold is a 404, and a generator that died is 
   // spelling the gateway offers is now one its own listing found in the archives.
   assert.equal(SOURCE_MISSING_EXIT, generatorMissingExit,
     "the gateway and the generator have to mean the same number by it, or every crash reads as 404");
+  // `/client/file` makes the same agreement and needs it more, not less: a `.toc` lists files that
+  // need not exist, so its loader has to move past a 404 — and would move past a dead child too if
+  // the two failures could not be told apart.
+  assert.equal(SOURCE_MISSING_EXIT, clientFileMissingExit,
+    "and so does the client-file generator, whose 404 a .toc loader is meant to walk past");
 
   const client = await mkdtemp(join(tmpdir(), "webclient-patchdir-"));
   const texturesDirectory = await mkdtemp(join(tmpdir(), "webclient-textures-"));
@@ -2021,6 +2196,11 @@ test("the creation route serves a race and a class this client was never compile
     assert.deepEqual(data.races.map((race) => race.side), [0, 2, 1, 1]);
     assert.deepEqual(data.races.map((race) => race.clientPrefix), ["Hu", "Go", "Wo", "Vr"]);
     assert.equal(data.races[0].baseLanguage, 7);
+    // G1. The two columns the creation preview is drawn from. They have been in the vendored
+    // `ChrRaces` layout all along and nothing read them, so a race a module adds had no model the
+    // form could name — which is the same gap `RACE_NAMES` had before Д3 filled it for names.
+    assert.deepEqual(data.races.map((race) => [race.maleDisplayId, race.femaleDisplayId]),
+      [[49, 50], [0, 0], [30666, 30667], [41000, 41001]]);
 
     // CharBaseInfo grouped by race: a human may be a warrior or the custom class, and the custom
     // race may only be the custom class. This is the pair table the class list is filtered by.

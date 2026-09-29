@@ -90,6 +90,9 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
     colours, fogEnd, fogStart: fogEnd * fogScale,
     waterShallowAlpha: set.waterShallowAlpha, waterDeepAlpha: set.waterDeepAlpha,
     oceanShallowAlpha: set.oceanShallowAlpha, oceanDeepAlpha: set.oceanDeepAlpha,
+    // A gateway that predates P4 sends no glow at all, and that reads as none — the same tolerance
+    // the browser gives every other field a payload version has added.
+    glow: set.glow ?? 0,
     ...(set.skyboxPath ? { skyboxPath: set.skyboxPath } : {}),
   };
 }
@@ -117,6 +120,10 @@ function blendSamples(base: LightSample, other: LightSample, weight: number): Li
     waterDeepAlpha: between(base.waterDeepAlpha, other.waterDeepAlpha),
     oceanShallowAlpha: between(base.oceanShallowAlpha, other.oceanShallowAlpha),
     oceanDeepAlpha: between(base.oceanDeepAlpha, other.oceanDeepAlpha),
+    // Blended like the scalars around it rather than switched at the volume edge: the strength is
+    // read into a uniform every frame, and a step there would pop the whole screen as the player
+    // walks out of Stormwind's 0.30 into Elwynn's 0.65.
+    glow: between(base.glow, other.glow),
     // A model cannot be blended in the same shader as the procedural sky. Keep only the profile
     // that owns the greater weight; the absence of a path is meaningful and must clear an authored
     // dome when the procedural profile wins. Falling back to the other side here made a Dalaran
@@ -286,7 +293,8 @@ export class LightClient {
    * — so it is that number over time rather than that number, and clear weather is a hard zero.
    *
    * `underwater` is the camera's eye against the liquid surface, and it is not the swim flag:
-   * `Physics.ts:224` measures submersion at the character's feet, which is what decides swimming,
+   * `stepCharacter` in `game/Physics.ts` compares the water over the character's feet with half its
+   * collision height (`SWIM_DEPTH_RATIO`), which is what decides swimming,
    * while the sky changes when the *view* goes under and not a moment before.
    */
   sample(map: number, x: number, y: number, time: number, storm = 0, z?: number,
@@ -321,7 +329,10 @@ export class LightClient {
       // weather legitimately changes nothing. v3 is the underwater pair, slots 1 and 3, and the
       // same argument holds twice over: a stale body would look exactly like a client that had
       // never learned to dive.
-      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=3`);
+      // v4 is `LightParams.Glow`, the strength of the full-screen glow. Same argument as v3: the
+      // route caches for an hour, and a stale body would look exactly like a client whose zones all
+      // happen to author no glow — which 47 of the 850 parameter sets genuinely do.
+      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=4`);
       if (!response.ok) throw new Error(`Light gateway returned ${response.status}`);
       const value = await response.json() as LightIndexEntry;
       if (!value || typeof value !== "object" || !Array.isArray(value.volumes) || !value.params) {

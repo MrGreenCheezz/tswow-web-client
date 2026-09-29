@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PacketWriter } from "../dist/code/protocol/index.js";
+import { PacketReader, PacketWriter } from "../dist/code/protocol/index.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import {
   SPLINE_MOVE_STATES, isSplineMoveState, isSplineSpeed, parseFlightSplineSync,
@@ -23,10 +23,122 @@ import {
 } from "../dist/code/world/WorldMessageProtocol.js";
 import { parseAreaSpiritHealerTime, parseCorpseMapPosition } from "../dist/code/world/DeathProtocol.js";
 import { composePassengerPosition, passengerOffset } from "../dist/code/world/TransportMath.js";
-import { MOVEMENT_FLAGS } from "../dist/code/world/MovementProtocol.js";
+import { MOVEMENT_FLAGS, readMovementInfo, writeMovementInfoBody } from "../dist/code/world/MovementProtocol.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 
 const CREATURE = 0xf130_0058_0000_1234n;
+
+function taxiSpline(guid, splineId, duration = 100) {
+  // MovementPacketBuilder.cpp: packed mover, zero, starting XYZ, spline id, normal move,
+  // flying flag, duration, point count and the final XYZ.
+  return new PacketWriter().packedGuid(guid).u8(0)
+    .f32(10).f32(20).f32(30).u32(splineId).u8(0)
+    .u32(0x2000).u32(duration).u32(1).f32(40).f32(50).f32(60).toUint8Array();
+}
+
+async function travelClient(packets, guid) {
+  const login = new PacketWriter().u32(0).f32(10).f32(20).f32(30).f32(0).toUint8Array();
+  const connection = {
+    packets: [{ opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login }, ...packets],
+    sent: [],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  client.state.selfGuid = guid;
+  client.state.move(guid, { flags: 0, position: { x: 10, y: 20, z: 30, orientation: 0 } });
+  await client.loginCharacter(guid);
+  await new Promise(resolve => setImmediate(resolve));
+  return { client, connection };
+}
+
+test("own taxi spline completion sends exactly one CMSG_MOVE_SPLINE_DONE with its wire id", async () => {
+  const guid = 0x1234n;
+  const id = 0x89abcdef;
+  const { client, connection } = await travelClient([
+    { opcode: OPCODES.SMSG_MONSTER_MOVE, payload: taxiSpline(guid, id) },
+  ], guid);
+  assert.ok(client.state.objects.get(guid)?.motion, "the received flight must be active");
+  client.movementReady = true;
+  client.sendMovement(OPCODES.MSG_MOVE_START_FORWARD, MOVEMENT_FLAGS.forward,
+    { x: 11, y: 20, z: 30, orientation: 0 });
+  assert.ok(client.state.objects.get(guid)?.motion, "a local key must not cancel a server taxi spline");
+  assert.equal(connection.sent.filter(packet => packet.opcode === OPCODES.MSG_MOVE_START_FORWARD).length, 0);
+  client.state.updateMotions(performance.now() + 1_000);
+  const done = connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_MOVE_SPLINE_DONE);
+  assert.equal(done.length, 1, "without this reply TrinityCore cannot complete or switch the taxi flight");
+  const reader = new PacketReader(done[0].payload);
+  assert.equal(reader.packedGuid(), guid);
+  const position = readMovementInfo(reader).position;
+  assert.deepEqual([position.x, position.y, position.z], [40, 50, 60]);
+  assert.ok(Math.abs(position.orientation - Math.PI / 4) < 1e-6);
+  assert.equal(reader.u32(), id);
+  reader.assertFinished();
+  client.state.updateMotions(performance.now() + 2_000);
+  assert.equal(connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_MOVE_SPLINE_DONE).length, 1);
+  client.close();
+});
+
+test("a taxi spline retired by a far transfer never acknowledges its old id", async () => {
+  const guid = 0x1234n;
+  const { client, connection } = await travelClient([
+    { opcode: OPCODES.SMSG_MONSTER_MOVE, payload: taxiSpline(guid, 77) },
+    { opcode: OPCODES.SMSG_NEW_WORLD,
+      payload: new PacketWriter().u32(571).f32(4).f32(5).f32(6).f32(0).toUint8Array() },
+  ], guid);
+  client.state.updateMotions(performance.now() + 1_000);
+  assert.equal(connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_MOVE_SPLINE_DONE).length, 0);
+  client.close();
+});
+
+test("far transfer on a transport waits for the authoritative self CREATE world position", async () => {
+  const guid = 0x1234n;
+  const transportGuid = 0xf120_0000_0000_0066n;
+  const destination = { x: 1134, y: 2456, z: 78, orientation: 0.5 };
+  const pending = new PacketWriter().u32(571).u32(176310).u32(0).toUint8Array();
+  // Player.cpp writes the transport-local offset into NEW_WORLD, not destination XYZ.
+  const newWorld = new PacketWriter().u32(571).f32(4).f32(5).f32(6).f32(0).toUint8Array();
+  const selfCreate = new PacketWriter().u32(1).u8(2).packedGuid(guid).u8(4).u16(0x21);
+  writeMovementInfoBody(selfCreate, {
+    flags: MOVEMENT_FLAGS.onTransport, flags2: 0, time: 100, position: destination,
+    transport: { guid: transportGuid, x: 4, y: 5, z: 6, orientation: 0, time: 100, seat: 0 },
+    fallTime: 0,
+  });
+  for (let index = 0; index < 9; index++) selfCreate.f32(7);
+  selfCreate.u8(0);
+  const login = new PacketWriter().u32(0).f32(100).f32(200).f32(30).f32(0).toUint8Array();
+  const connection = {
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_TRANSFER_PENDING, payload: pending },
+      { opcode: OPCODES.SMSG_NEW_WORLD, payload: newWorld },
+      { opcode: OPCODES.SMSG_UPDATE_OBJECT, payload: selfCreate.toUint8Array() },
+    ],
+    sent: [],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  client.state.selfGuid = guid;
+  client.state.move(guid, { flags: 0, position: { x: 100, y: 200, z: 30, orientation: 0 } });
+  const arrivals = [];
+  client.onWorldChanged = (mapId, position) => arrivals.push({
+    mapId, position, self: client.state.objects.get(guid)?.position,
+  });
+  await client.loginCharacter(guid);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(connection.sent.filter(packet => packet.opcode === OPCODES.MSG_MOVE_WORLDPORT_ACK).length, 1);
+  assert.deepEqual(arrivals, [
+    { mapId: 571, position: undefined, self: undefined },
+    { mapId: 571, position: destination, self: destination },
+  ]);
+  assert.deepEqual(client.state.objects.get(guid)?.transport,
+    { guid: transportGuid, x: 4, y: 5, z: 6, orientation: 0, seat: 0 });
+  client.close();
+});
 
 test("every spline state packet is one packed guid, and the opcode is the change", () => {
   // `Creature.cpp:3266` and its neighbours: `data << GetPackGUID()` and nothing after it. The
@@ -127,6 +239,37 @@ test("who the client may move arrives packed and is answered full", () => {
   assert.equal(control.guid, CREATURE);
   assert.equal(control.allowed, true);
   assert.equal(parseClientControlUpdate(new PacketWriter().packedGuid(CREATURE).u8(0).toUint8Array()).allowed, false);
+});
+
+test("losing control names the old mover packed; gaining it names the new one in full", async () => {
+  // Two readers of one guid (MovementHandler.cpp): HandleSetActiveMoverOpcode reads a whole
+  // uint64 (:558-580), HandleMoveNotActiveMover reads `old_mover_guid.ReadAsPacked()` and drops
+  // the MovementInfo after it (:582-601). Eight raw bytes read as packed are a stranger's guid.
+  // The release itself does not depend on it — SetClientControl has already cleared the active
+  // mover (Player.cpp:24606, GameClient.cpp:37-46), so the handler logs "unset active mover FAILED"
+  // either way (:593) — but only the packed form puts the right guid in that line.
+  const guid = 0x1234n;
+  const control = (allowed) => ({
+    opcode: OPCODES.SMSG_CLIENT_CONTROL_UPDATE,
+    // Player::SetClientControl (Player.cpp:24590-24593): packed guid, u8 allowMove.
+    payload: new PacketWriter().packedGuid(guid).u8(allowed).toUint8Array(),
+  });
+  const { client, connection } = await travelClient([control(0), control(1)], guid);
+  const released = connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER);
+  assert.equal(released.length, 1);
+  assert.deepEqual([...released[0].payload], [0x03, 0x34, 0x12], "mask 0b11, then the two non-zero bytes");
+  const packed = new PacketReader(released[0].payload);
+  assert.equal(packed.packedGuid(), guid);
+  packed.assertFinished();
+
+  const claimed = connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_SET_ACTIVE_MOVER);
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].payload.length, 8, "the claim stays eight bytes");
+  const full = new PacketReader(claimed[0].payload);
+  assert.equal(full.u64(), guid);
+  full.assertFinished();
+  assert.equal(client.controlledGuid, guid);
+  client.close();
 });
 
 test("the flight map is a full guid and a mask of one-based node ids", () => {
@@ -273,4 +416,3 @@ test("a spline state changes what a unit is doing, which is what the renderer re
   assert.equal(state.objects.get(CREATURE).runSpeed, 8.5);
   assert.equal(state.objects.get(CREATURE).speeds.get("run"), 8.5);
 });
-

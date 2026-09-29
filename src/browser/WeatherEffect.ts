@@ -313,6 +313,32 @@ export class WeatherEffect {
     for (const texture of this.#textures.values()) visitor.referenceGpuTexture(this, texture);
   }
 
+  /**
+   * The faithful material's uniforms, for an enhanced material that reads the same values by
+   * reference (WeatherEnhanced.ts). Nothing here changes what the faithful material draws.
+   */
+  get uniforms(): Record<string, THREE.IUniform> {
+    return this.#material.uniforms;
+  }
+
+  /** The kind currently drawn (lags the requested one across a change) and its texture. */
+  get drawnKind(): WeatherKind {
+    return this.object.visible ? this.#kind : "fine";
+  }
+
+  get texture(): THREE.Texture | null {
+    return (this.#material.uniforms["uMap"]!.value as THREE.Texture | null) ?? null;
+  }
+
+  /**
+   * Draws the same cloud with another material (the owner's, and the owner disposes it), or with
+   * the faithful one again when `undefined`.
+   */
+  setMaterialOverride(material: THREE.Material | undefined): void {
+    if (this.#disposed) return;
+    this.object.material = material ?? this.#material;
+  }
+
   /** Whatever is falling this frame, and how much of it. */
   set(fade: WeatherFade, tinted: boolean): void {
     if (this.#disposed) return;
@@ -418,6 +444,7 @@ export class WeatherEffect {
     // re-enter disposal while this method is running, and every late completion must observe the
     // closed state rather than publish into partially released state.
     this.#disposed = true;
+    this.object.material = this.#material;
     this.#kindRevision++;
     this.#kind = "fine";
     this.#requestedKind = "fine";

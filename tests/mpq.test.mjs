@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { shadowWarning } from "../tools/check-shadowed-tables.mjs";
 import { ARCHIVE_ORDER, archivePriority, openClientArchives } from "../tools/mpq.mjs";
+import { tswowInstall } from "../tools/paths.mjs";
 
 // Ordering is pure and always testable. Reading needs the client, which not every machine has.
 let clientDirectory;
@@ -28,6 +29,22 @@ try {
   visualDbcDirectory = undefined;
 }
 
+/**
+ * Whether one shadowed DBC is the coordinated client-media overlay doing its job.
+ *
+ * **The owner's ruling of 2026-08-30, which is why this is a legitimate shadow at all:**
+ * `patch-W.MPQ` is legitimate and must never be suggested for removal — «каждый следующий патч
+ * заменяет предыдущие», a later patch replaces the earlier ones, and that is the design. So the
+ * nine client-media tables it carries beating the tswow build is not a fault to report; it is the
+ * pack being installed.
+ *
+ * It stays a byte-equality gate rather than becoming a list of table names in `EXPLAINED_SHADOWS`,
+ * and the difference is the whole of HD-1. A name list would accept the shadow whatever
+ * `data/visual-dbc` held — including nothing, which is the state this machine was actually in: the
+ * directory was empty, the gateway fell back to the dataset's classic appearance rows, and HD models
+ * were dressed from classic tables. The gate below says «patch-W wins this path **and** the copy
+ * the gateway will read is that same copy», so the day those two disagree the build says so.
+ */
 async function acceptedVisualShadow(shadow, winner, chain) {
   if (!visualDbcDirectory) return false;
   // The extracted directory itself is the allow-list: accepting a hard-coded table name could
@@ -109,6 +126,19 @@ test("a lettered patch beats the whole locale chain, in either directory it can 
     ["patch-A.MPQ", "default.dataset.A.MPQ", "patch-ruRU-3.MPQ", "locale-ruRU.MPQ", "patch-3.MPQ"]);
 });
 
+test("all configured patch letters A through Z keep locale tie precedence", () => {
+  const letters = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
+  const names = letters.flatMap((letter) => [
+    `patch-${letter}.MPQ`,
+    `patch-ruRU-${letter}.MPQ`,
+  ]);
+  const expected = [...letters].reverse().flatMap((letter) => [
+    `patch-ruRU-${letter}.MPQ`,
+    `patch-${letter}.MPQ`,
+  ]);
+  assert.deepEqual(order(names), expected);
+});
+
 test("a directory named *.MPQ is read as a loose overlay above the archive it outranks", async () => {
   const client = await mkdtemp(join(tmpdir(), "webclient-loose-"));
   try {
@@ -133,6 +163,34 @@ test("a directory named *.MPQ is read as a loose overlay above the archive it ou
       const { files, missing } = await chain.readAll(["DBFilesClient\\Custom.dbc", "Nope.blp"]);
       assert.equal(files.size, 1);
       assert.deepEqual(missing, ["Nope.blp"]);
+    } finally {
+      chain.close();
+    }
+  } finally {
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+test("root Interface/AddOns wins over a same-named add-on inside the MPQ chain", async () => {
+  const client = await mkdtemp(join(tmpdir(), "webclient-addons-"));
+  try {
+    const patched = join(client, "Data", "patch-A.MPQ", "Interface", "AddOns", "Example");
+    const loose = join(client, "Interface", "AddOns", "Example");
+    await mkdir(patched, { recursive: true });
+    await mkdir(loose, { recursive: true });
+    await writeFile(join(patched, "Example.lua"), "Source = 'patch'");
+    await writeFile(join(loose, "Example.lua"), "Source = 'loose'");
+
+    const chain = await openClientArchives(client);
+    try {
+      const path = "Interface\\AddOns\\Example\\Example.lua";
+      assert.equal(await chain.locate(path), "Interface/AddOns");
+      assert.equal((await chain.read(path)).toString(), "Source = 'loose'");
+      assert.deepEqual(chain.sources, [
+        { name: "Interface/AddOns", kind: "directory" },
+        { name: "patch-A.MPQ", kind: "directory" },
+      ]);
+      assert.equal((await chain.sourceOf(path)).file, join(loose, "Example.lua"));
     } finally {
       chain.close();
     }
@@ -271,12 +329,12 @@ test("a tswow patch directory wins over the archive it shadows", withClient, asy
  *
  * `patch-ruRU-E.MPQ` and `patch-ruRU-D.MPQ` are two archives of one file each, both a copy of
  * `GameObjectDisplayInfo.dbc`, and both letters are later than the build's, so they beat the whole
- * built dataset for that one table. `patch-ruRU-F.MPQ` is the installed LoginScreenModule asset
- * junction; its five overlapping GlueXML files are the module's deliberate login-screen override.
+ * built dataset for that one table. The installed LoginScreenModule asset junction carries the
+ * deliberate login-screen override; its patch letter can change as modules are installed.
  * Nothing in this repository can fix or choose those client overlays — they are files in the
  * owner's client, not lines of code — so the test's job is to keep every exception explained: a
- * shadow not in this list is a file a module built and the game will not read, and the build stops
- * until somebody knows why.
+ * shadow neither listed nor verified against the installed login module is a file a module built
+ * and the game will not read, and the build stops until somebody knows why.
  *
  * Deliberately a *subset* check and not an equality one, and the subset is over the whole queue and
  * not over its head. Taking these archives out of `Data` is the fix this diagnostic exists to
@@ -294,12 +352,28 @@ const EXPLAINED_SHADOWS = new Map([
   // for size and TalentMetadata stays paired with the server dataset. Naming the one archive here
   // keeps any other CreatureFamily shadow — or the same table from another patch — a hard failure.
   ["dbfilesclient\\creaturefamily.dbc", ["patch-W.MPQ"]],
-  ["interface\\gluexml\\accountlogin.lua", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\accountlogin.xml", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluebuttons.lua", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluebuttons.xml", ["patch-ruRU-F.MPQ"]],
-  ["interface\\gluexml\\gluexml.toc", ["patch-ruRU-F.MPQ"]],
 ]);
+
+const LOGIN_SCREEN_SHADOWS = new Set([
+  "interface\\gluexml\\accountlogin.lua",
+  "interface\\gluexml\\accountlogin.xml",
+  "interface\\gluexml\\gluebuttons.lua",
+  "interface\\gluexml\\gluebuttons.xml",
+  "interface\\gluexml\\gluexml.toc",
+]);
+
+async function acceptedLoginScreenShadow(shadow, name, chain) {
+  if (!LOGIN_SCREEN_SHADOWS.has(shadow.path.toLowerCase()) || name !== shadow.shadowedBy[0]) return false;
+  if (!/^patch-(?:[a-z]{4}-)?[a-z]\.mpq$/i.test(name)) return false;
+  const source = await chain.sourceOf(shadow.path);
+  if (source?.name !== name || source.kind !== "directory") return false;
+  try {
+    const expected = join(tswowInstall(), "modules", "LoginScreenModule", "assets", ...shadow.path.split("\\"));
+    return (await realpath(source.file)).toLowerCase() === (await realpath(expected)).toLowerCase();
+  } catch {
+    return false;
+  }
+}
 
 test("nothing tswow built is shadowed except what is already explained", withClient, async (t) => {
   if (!existsSync(join(clientDirectory, "Data", "ruRU", "patch-ruRU-A.MPQ"))) return;
@@ -314,11 +388,17 @@ test("nothing tswow built is shadowed except what is already explained", withCli
       for (const name of shadow.shadowedBy) {
         // Every archive in the queue has to be one of the known ones: a new one appearing anywhere
         // in it changes what the game reads, whether or not it changes what the game reads *first*.
-        const accepted = explained.includes(name) || await acceptedVisualShadow(shadow, name, chain);
+        const accepted = explained.includes(name)
+          || await acceptedVisualShadow(shadow, name, chain)
+          || await acceptedLoginScreenShadow(shadow, name, chain);
         assert.ok(
           accepted,
           `${shadow.path} in ${shadow.overlay} is now shadowed by ${name}, which nothing explains: ` +
-          `the game client reads a copy of that file the dataset did not build`);
+          `the game client reads a copy of that file the dataset did not build` +
+          // The common case on this machine, and it has a one-line repair: a client-media table
+          // that patch-W wins while `data/visual-dbc` is empty or was extracted from another chain.
+          `${/^patch-[w-z]\.mpq$/i.test(name) ? " — if this is one of the coordinated client-media"
+            + " tables, run npm run assets:visual-dbc so the gateway reads the same copy" : ""}`);
       }
     }
     // Measured on this machine when it was written: 798 files in `patch-ruRU-A.MPQ`, 797 of them
@@ -331,6 +411,48 @@ test("nothing tswow built is shadowed except what is already explained", withCli
       if (found.has(path)) continue;
       t.diagnostic(`${path} is not shadowed any more — ${names.join(" and ")} are out of Data, and this row can go too`);
     }
+  } finally {
+    chain.close();
+  }
+});
+
+test("the coordinated pack's client-media tables are the ones the gateway reads", withClient, async (t) => {
+  // HD-1's watchdog, and the state it exists to catch is the one this machine was in on 2026-08-30:
+  // `patch-W.MPQ` won all nine client-media tables in the chain while `data/visual-dbc` held nothing
+  // at all, so `selectClientMediaOverlay` fell back to the dataset and the appearance logic dressed
+  // HD models out of classic rows — 1,133 of 19,903 body-layer paths naming files the live chain
+  // does not hold, no belt on any of the twenty naked profiles and no foot on ten of them.
+  //
+  // The owner's ruling of 2026-08-30 is what makes the shadow legitimate rather than a fault:
+  // patch-W is legitimate, must never be suggested for removal, and «каждый следующий патч заменяет
+  // предыдущие». This test is the other half of that ruling — the pack wins, *and* the gateway is
+  // reading the same copy it wins with.
+  if (!visualDbcDirectory) {
+    t.skip("no extracted client-media overlay on this machine; run npm run assets:visual-dbc");
+    return;
+  }
+  const { CLIENT_MEDIA_DBC_TABLES } = await import("../tools/extract-visual-dbc-overlay.mjs");
+  const chain = await openClientArchives(clientDirectory);
+  try {
+    let coordinated = 0;
+    for (const table of CLIENT_MEDIA_DBC_TABLES) {
+      const internal = `DBFilesClient\\${table}.dbc`;
+      const winner = await chain.locate(internal);
+      assert.ok(winner, `${internal} has to resolve somewhere in the chain`);
+      const [active, runtime] = await Promise.all([
+        chain.read(internal),
+        readFile(join(visualDbcDirectory, `${table}.dbc`)).catch(() => undefined),
+      ]);
+      assert.ok(runtime, `${table}.dbc is missing from ${visualDbcDirectory}`);
+      assert.ok(runtime.equals(active),
+        `${table}.dbc differs from the copy ${winner} wins with — run npm run assets:visual-dbc`);
+      if (/^patch-[w-z]\.mpq$/i.test(winner)) coordinated++;
+      t.diagnostic(`${table}.dbc: ${winner} wins, ${runtime.length} bytes, and that is what the gateway reads`);
+    }
+    // Not an equality against nine: a machine with no HD pack installed is a legitimate
+    // configuration and must not fail here. What is pinned is that where a coordinated patch does
+    // win, the extracted copy came from it — which is the pairing HD-1 restored.
+    t.diagnostic(`${coordinated} of ${CLIENT_MEDIA_DBC_TABLES.length} client-media tables come from a coordinated patch`);
   } finally {
     chain.close();
   }

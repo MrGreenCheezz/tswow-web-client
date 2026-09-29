@@ -44,12 +44,14 @@ import {
   type RenderBenchmarkGpuObserverLease,
 } from "./RenderBenchmarkRuntime.js";
 import type { RenderTelemetrySnapshot } from "./RenderStats.js";
-import { ENVIRONMENT_RANGE, type EnvironmentObject } from "./Terrain.js";
+import { ENVIRONMENT_FAR_RANGE, type EnvironmentObject } from "./Terrain.js";
 import type { UnitModel } from "./CreatureModelClient.js";
 import type { WorldObjectState } from "../world/WorldState.js";
 import { createCamera } from "./SimpleScene.js";
-import { eyeUnderCollisionModelLiquid } from "./game/CollisionLiquid.js";
-import { FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeUnderwater } from "./game/Physics.js";
+import { collisionLiquidEyeSubmerged, collisionModelLiquidAtEye } from "./game/CollisionLiquid.js";
+import {
+  EYE_LIQUID_SAMPLE_BAND, FLOOR_SEARCH_DEPTH, STEP_HEIGHT, eyeLiquidSurface, eyeUnderwater,
+} from "./game/Physics.js";
 import { game, type GameContext } from "./game/Context.js";
 import type {
   ExperimentalShaderProfile,
@@ -77,14 +79,16 @@ const ACTIVE_RESOURCE_KEYS = [
 
 const RENDERER_MUTATORS = [
   "beginFormalBenchmarkIsolation", "endFormalBenchmarkIsolation",
-  "updateLighting",
+  "updateLighting", "setUnderwaterSurface",
   "observeFrame", "resetFrameCadence", "resetRenderEvolutionClock", "resetReplayEpoch", "endReplayEpoch",
   "playSpellVisual", "clearSpellVisuals", "cancelSpellVisual", "retimeSpellVisual", "setStateVisuals",
   "setWeather", "setIndoors", "setCollisionModels", "setGroundCover", "invalidateGroundCover", "setSelection",
+  "setGroundTargetPreview", "setGameObjectPreview",
   "setPortraitTargets", "renderPortraits", "clearPortraits",
   "markFrameNotRendered", "beginRenderFrame", "endRenderFrame", "resetGpuTimingEpoch", "draw",
   "playGameObjectAnimation", "playUnitAction", "playUnitEmote", "cancelUnitAction",
   "setLightingQuality", "setWmoOcclusion", "setCharacterAtlasAnisotropy", "setExperimentalShaderProfile", "setRenderScale",
+  "setUnderwaterOverlay", "setFullscreenGlow", "setGodRays",
 ] as const;
 
 type RendererMutatorName = typeof RENDERER_MUTATORS[number];
@@ -151,7 +155,15 @@ interface UserGraphicsSettings {
   readonly experimentalWaterFresnel: boolean;
   readonly experimentalWaterMicroWaves: boolean;
   readonly experimentalWaterSunSparkle: boolean;
+  readonly experimentalWaterFoam: boolean;
+  readonly experimentalVegetationWind: boolean;
   readonly experimentalFantasyGlow: boolean;
+  /** The underwater depth tint and waterline. Default-ON for the account, default-OFF for a run. */
+  readonly underwaterOverlay: boolean;
+  /** Classic ffxGlow; independent of solar rays, but sharing their offscreen scene path. */
+  readonly fullscreenGlow: boolean;
+  /** Optional screen-space solar rays; either post-process leaf may require the shared path. */
+  readonly godRays: boolean;
   readonly grassRadius: number;
   readonly grassDense: boolean;
 }
@@ -348,6 +360,8 @@ function profileFromConfiguration(
     waterFresnel: optionalBooleanSetting(configuration, "experimentalWaterFresnel"),
     waterMicroWaves: optionalBooleanSetting(configuration, "experimentalWaterMicroWaves"),
     waterSunSparkle: optionalBooleanSetting(configuration, "experimentalWaterSunSparkle"),
+    waterFoam: optionalBooleanSetting(configuration, "experimentalWaterFoam"),
+    vegetationWind: optionalBooleanSetting(configuration, "experimentalVegetationWind"),
     fantasyGlow: optionalBooleanSetting(configuration, "experimentalFantasyGlow"),
   });
 }
@@ -361,6 +375,8 @@ function profileFromUserGraphics(
     waterFresnel: graphics.experimentalWaterFresnel === true,
     waterMicroWaves: graphics.experimentalWaterMicroWaves === true,
     waterSunSparkle: graphics.experimentalWaterSunSparkle === true,
+    waterFoam: graphics.experimentalWaterFoam === true,
+    vegetationWind: graphics.experimentalVegetationWind === true,
     fantasyGlow: graphics.experimentalFantasyGlow === true,
   });
 }
@@ -379,7 +395,12 @@ function normalizeUserGraphics(
     experimentalWaterFresnel: profile.waterFresnel,
     experimentalWaterMicroWaves: profile.waterMicroWaves,
     experimentalWaterSunSparkle: profile.waterSunSparkle,
+    experimentalWaterFoam: profile.waterFoam,
+    experimentalVegetationWind: profile.vegetationWind,
     experimentalFantasyGlow: profile.fantasyGlow,
+    underwaterOverlay: graphics.underwaterOverlay === true,
+    fullscreenGlow: graphics.fullscreenGlow === true,
+    godRays: graphics.godRays === true,
     grassRadius: graphics.grassRadius,
     grassDense: graphics.grassDense,
   });
@@ -389,7 +410,8 @@ function profileFromRendererReadback(value: unknown): Readonly<ExperimentalShade
   if (value === undefined) {
     return Object.freeze({
       aerialHeightFog: false, terrainMicroNormals: false,
-      waterFresnel: false, waterMicroWaves: false, waterSunSparkle: false,
+      waterFresnel: false, waterMicroWaves: false, waterSunSparkle: false, waterFoam: false,
+      vegetationWind: false,
       fantasyGlow: false,
     });
   }
@@ -410,6 +432,8 @@ function profileFromRendererReadback(value: unknown): Readonly<ExperimentalShade
     waterFresnel: read("waterFresnel"),
     waterMicroWaves: read("waterMicroWaves"),
     waterSunSparkle: read("waterSunSparkle"),
+    waterFoam: read("waterFoam"),
+    vegetationWind: read("vegetationWind"),
     fantasyGlow: read("fantasyGlow"),
   });
 }
@@ -699,6 +723,13 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     const grassRadius = numberSetting(configuration, "grassRadius");
     const grassDense = booleanSetting(configuration, "grassDense");
     const experimentalShaderProfile = profileFromConfiguration(configuration);
+    // Optional and default-OFF, exactly like the experimental leaves beside it: a run measures the
+    // pass only where its own variant asks for it, and the account's ON is restored on release.
+    const underwaterOverlay = optionalBooleanSetting(configuration, "underwaterOverlay");
+    // These independent post-process leaves share the offscreen scene path. Missing keys mean OFF
+    // per leaf, so an old variant never inherits either composited effect from the account.
+    const fullscreenGlow = optionalBooleanSetting(configuration, "fullscreenGlow");
+    const godRays = optionalBooleanSetting(configuration, "godRays");
     if (configuration.lighting !== 1) throw new Error("formal renderer lighting must equal 1");
     if (renderScale !== 100) throw new Error("formal renderer renderScale must equal 100");
 
@@ -708,6 +739,24 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     const experimentalEnabled = Object.values(experimentalShaderProfile).some((enabled) => enabled);
     if (typeof setExperimentalShaderProfile !== "function") {
       if (experimentalEnabled) throw new Error("formal renderer experimental shader profile setter is unavailable");
+    }
+    const setUnderwaterOverlay = (resources.renderer as unknown as {
+      setUnderwaterOverlay?: (enabled: boolean) => void;
+    }).setUnderwaterOverlay;
+    if (typeof setUnderwaterOverlay !== "function" && underwaterOverlay) {
+      throw new Error("formal renderer underwater overlay setter is unavailable");
+    }
+    const setFullscreenGlow = (resources.renderer as unknown as {
+      setFullscreenGlow?: (enabled: boolean) => void;
+    }).setFullscreenGlow;
+    if (typeof setFullscreenGlow !== "function" && fullscreenGlow) {
+      throw new Error("formal renderer fullscreen glow setter is unavailable");
+    }
+    const setGodRays = (resources.renderer as unknown as {
+      setGodRays?: (enabled: boolean) => void;
+    }).setGodRays;
+    if (typeof setGodRays !== "function" && godRays) {
+      throw new Error("formal renderer god rays setter is unavailable");
     }
     // Commit only after all pure configuration checks above have passed. Once committed, any
     // renderer setter/readback failure must leave no stale epoch or replay state behind, while the
@@ -730,6 +779,21 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       if (typeof setExperimentalShaderProfile === "function") {
         this.#withRendererMutationAuthorization("setExperimentalShaderProfile", () => {
           setExperimentalShaderProfile.call(resources.renderer, experimentalShaderProfile);
+        });
+      }
+      if (typeof setUnderwaterOverlay === "function") {
+        this.#withRendererMutationAuthorization("setUnderwaterOverlay", () => {
+          setUnderwaterOverlay.call(resources.renderer, underwaterOverlay);
+        });
+      }
+      if (typeof setFullscreenGlow === "function") {
+        this.#withRendererMutationAuthorization("setFullscreenGlow", () => {
+          setFullscreenGlow.call(resources.renderer, fullscreenGlow);
+        });
+      }
+      if (typeof setGodRays === "function") {
+        this.#withRendererMutationAuthorization("setGodRays", () => {
+          setGodRays.call(resources.renderer, godRays);
         });
       }
       this.#withRendererMutationAuthorization("setGroundCover", () => {
@@ -1111,7 +1175,12 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         experimentalWaterFresnel: settingsModel!.settingBoolean(values, "experimentalWaterFresnel"),
         experimentalWaterMicroWaves: settingsModel!.settingBoolean(values, "experimentalWaterMicroWaves"),
         experimentalWaterSunSparkle: settingsModel!.settingBoolean(values, "experimentalWaterSunSparkle"),
+        experimentalWaterFoam: settingsModel!.settingBoolean(values, "experimentalWaterFoam"),
+        experimentalVegetationWind: settingsModel!.settingBoolean(values, "experimentalVegetationWind"),
         experimentalFantasyGlow: settingsModel!.settingBoolean(values, "experimentalFantasyGlow"),
+        underwaterOverlay: settingsModel!.settingBoolean(values, "underwaterOverlay"),
+        fullscreenGlow: settingsModel!.settingBoolean(values, "fullscreenGlow"),
+        godRays: settingsModel!.settingBoolean(values, "godRays"),
         grassRadius: settingsModel!.settingNumber(values, "grassRadius"),
         grassDense: settingsModel!.settingBoolean(values, "grassDense"),
       });
@@ -1165,7 +1234,7 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       resources.collision.refresh(replay.mapId, position.x, position.y);
       const heightAt = (x: number, y: number): number | undefined => resources.terrain.heightAt(replay.mapId, x, y);
       const environment: readonly EnvironmentObject[] = resources.environment.objectsAround(
-        replay.mapId, position.x, position.y, ENVIRONMENT_RANGE,
+        replay.mapId, position.x, position.y, ENVIRONMENT_FAR_RANGE,
       );
     resources.assetWarmup.tick({ player, environment, actionButtons: [] });
     this.#withRendererMutationAuthorization("setWeather", () => resources.renderer.setWeather(replay.weather));
@@ -1183,21 +1252,37 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       lightCamera.position.z,
       lightCamera.position.z - FLOOR_SEARCH_DEPTH,
     );
-    const terrainUnderwater = eyeUnderwater(
-      lightCamera.position.z,
-      resources.terrain.liquidAt(replay.mapId, lightCamera.position.x, lightCamera.position.y),
+    const terrainLiquid = resources.terrain.liquidAt(
+      replay.mapId, lightCamera.position.x, lightCamera.position.y,
     );
+    const terrainUnderwater = eyeUnderwater(lightCamera.position.z, terrainLiquid);
     const collisionModel = cameraWmoFloor
       ? resources.collision.models.model(cameraWmoFloor.placement.modelName)
       : undefined;
-    const wmoUnderwater = Boolean(cameraWmoFloor && collisionModel
-      && eyeUnderCollisionModelLiquid(
+    // The live loop's query, verbatim: one band-widened lookup, the strict comparison read back off
+    // the hit for the light slot, and the surface itself kept for the screen effect.
+    const wmoLiquid = cameraWmoFloor && collisionModel
+      ? collisionModelLiquidAtEye(
         collisionModel.groups,
         cameraWmoFloor.groupIndex,
         cameraWmoFloor.placement,
         lightCamera.position,
-      ));
+        EYE_LIQUID_SAMPLE_BAND,
+      )
+      : undefined;
+    const wmoUnderwater = collisionLiquidEyeSubmerged(wmoLiquid);
     const underwater = terrainUnderwater || wmoUnderwater;
+    const underwaterSurface = eyeLiquidSurface(
+      lightCamera.position.z,
+      EYE_LIQUID_SAMPLE_BAND,
+      wmoLiquid ? { height: wmoLiquid.worldHeight, entry: wmoLiquid.type, flags: 0 } : undefined,
+      terrainLiquid
+        ? { height: terrainLiquid.height, entry: terrainLiquid.entry, flags: terrainLiquid.type }
+        : undefined,
+    );
+    this.#withRendererMutationAuthorization("setUnderwaterSurface", () => {
+      resources.renderer.setUnderwaterSurface(underwaterSurface);
+    });
     const light = resources.light.sample(
       replay.mapId,
       position.x,
@@ -1477,6 +1562,30 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         ),
       ));
     }
+    const setUnderwaterOverlay = (renderer as unknown as {
+      setUnderwaterOverlay?: (enabled: boolean) => void;
+    }).setUnderwaterOverlay;
+    if (typeof setUnderwaterOverlay === "function") {
+      attempt(() => this.#withRendererMutationAuthorization(
+        "setUnderwaterOverlay", () => setUnderwaterOverlay.call(renderer, user.underwaterOverlay),
+      ));
+    }
+    const setFullscreenGlow = (renderer as unknown as {
+      setFullscreenGlow?: (enabled: boolean) => void;
+    }).setFullscreenGlow;
+    if (typeof setFullscreenGlow === "function") {
+      attempt(() => this.#withRendererMutationAuthorization(
+        "setFullscreenGlow", () => setFullscreenGlow.call(renderer, user.fullscreenGlow),
+      ));
+    }
+    const setGodRays = (renderer as unknown as {
+      setGodRays?: (enabled: boolean) => void;
+    }).setGodRays;
+    if (typeof setGodRays === "function") {
+      attempt(() => this.#withRendererMutationAuthorization(
+        "setGodRays", () => setGodRays.call(renderer, user.godRays),
+      ));
+    }
     // A disconnect clears or replaces realm-owned clients while the lease cleanup is pending. Use
     // the current context identity so releasing the benchmark can never resurrect its captured
     // ground-cover client after clearWorldContext().
@@ -1631,8 +1740,16 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         experimentalWaterFresnel: profile?.waterFresnel === true,
         experimentalWaterMicroWaves: profile?.waterMicroWaves === true,
         experimentalWaterSunSparkle: profile?.waterSunSparkle === true,
+        experimentalWaterFoam: profile?.waterFoam === true,
+        experimentalVegetationWind: profile?.vegetationWind === true,
         experimentalFantasyGlow: profile?.fantasyGlow === true,
       };
+    } else if (name === "setUnderwaterOverlay") {
+      change = { underwaterOverlay: args[0] === true };
+    } else if (name === "setFullscreenGlow") {
+      change = { fullscreenGlow: args[0] === true };
+    } else if (name === "setGodRays") {
+      change = { godRays: args[0] === true };
     } else if (name === "setGroundCover" && args[1] !== undefined && args[2] !== undefined) {
       change = { grassRadius: args[1] as number, grassDense: args[2] as boolean };
     }
@@ -1656,8 +1773,16 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         experimentalWaterFresnel: profile?.waterFresnel === true,
         experimentalWaterMicroWaves: profile?.waterMicroWaves === true,
         experimentalWaterSunSparkle: profile?.waterSunSparkle === true,
+        experimentalWaterFoam: profile?.waterFoam === true,
+        experimentalVegetationWind: profile?.vegetationWind === true,
         experimentalFantasyGlow: profile?.fantasyGlow === true,
       };
+    } else if (name === "setUnderwaterOverlay") {
+      change = { underwaterOverlay: args[0] === true };
+    } else if (name === "setFullscreenGlow") {
+      change = { fullscreenGlow: args[0] === true };
+    } else if (name === "setGodRays") {
+      change = { godRays: args[0] === true };
     } else if (name === "setGroundCover" && args[1] !== undefined && args[2] !== undefined) {
       change = { grassRadius: args[1] as number, grassDense: args[2] as boolean };
     }
@@ -1673,6 +1798,9 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
         setWmoOcclusion: "wmoOcclusion",
         setCharacterAtlasAnisotropy: "characterAtlasAnisotropy",
         setExperimentalShaderProfile: "experimentalShaderProfile",
+        setUnderwaterOverlay: "underwaterOverlay",
+        setFullscreenGlow: "fullscreenGlow",
+        setGodRays: "godRays",
         setGroundCover: "groundCover",
       };
       const key = graphicsKey[mutation];
@@ -1754,7 +1882,12 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       experimentalWaterFresnel: expectedProfile.waterFresnel,
       experimentalWaterMicroWaves: expectedProfile.waterMicroWaves,
       experimentalWaterSunSparkle: expectedProfile.waterSunSparkle,
+      experimentalWaterFoam: expectedProfile.waterFoam,
+      experimentalVegetationWind: expectedProfile.vegetationWind,
       experimentalFantasyGlow: expectedProfile.fantasyGlow,
+      underwaterOverlay: optionalBooleanSetting(configuration, "underwaterOverlay"),
+      fullscreenGlow: optionalBooleanSetting(configuration, "fullscreenGlow"),
+      godRays: optionalBooleanSetting(configuration, "godRays"),
       grassRadius: numberSetting(configuration, "grassRadius"),
       grassDense: booleanSetting(configuration, "grassDense"),
     };
@@ -1768,7 +1901,14 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
       experimentalWaterFresnel: actualProfile.waterFresnel,
       experimentalWaterMicroWaves: actualProfile.waterMicroWaves,
       experimentalWaterSunSparkle: actualProfile.waterSunSparkle,
+      experimentalWaterFoam: actualProfile.waterFoam,
+      experimentalVegetationWind: actualProfile.vegetationWind,
       experimentalFantasyGlow: actualProfile.fantasyGlow,
+      // Absent readback reads as OFF, the same tolerance `profileFromRendererReadback` gives the
+      // experimental leaves: a renderer seam that does not carry the pass cannot be running it.
+      underwaterOverlay: (actual as unknown as Record<string, unknown>).underwaterOverlay === true,
+      fullscreenGlow: (actual as unknown as Record<string, unknown>).fullscreenGlow === true,
+      godRays: (actual as unknown as Record<string, unknown>).godRays === true,
       grassRadius: actual.grassRadius,
       grassDense: actual.grassDense,
     };

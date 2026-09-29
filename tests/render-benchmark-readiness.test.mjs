@@ -120,7 +120,7 @@ test("a residency change starts a new stable epoch", () => {
 
 test("every renderer-owned pending class blocks readiness", () => {
   for (const field of [
-    "gpuQueriesPending", "modelTexturesPending", "worldTexturesPending",
+    "gpuQueriesPending", "modelTexturesPending", "worldTexturesPending", "wmoGroupsPending", "terrainRepairsPending",
     "groundCoverModelsPending", "transientVisuals", "persistentStateVisuals",
     "pendingVisualAnimations", "pendingUnitActions",
   ]) {
@@ -131,6 +131,23 @@ test("every renderer-owned pending class blocks readiness", () => {
   const activeFrame = new RenderBenchmarkReadinessTracker({ stableResidencyMs: 0, minimumStableSamples: 2 });
   assert.equal(activeFrame.observe(telemetry(0), { ...rendererReady, renderFrameActive: true }).ready, false);
 });
+
+for (const [field, reason] of [
+  ["wmoGroupsPending", "wmo-groups-pending"],
+  ["terrainRepairsPending", "terrain-repairs-pending"],
+]) {
+  test(`${field} prevents a settled benchmark until geometry is published`, () => {
+    const tracker = new RenderBenchmarkReadinessTracker({ stableResidencyMs: 0, minimumStableSamples: 2 });
+    for (let frame = 0; frame < 4; frame++) {
+      const result = tracker.observe(telemetry(frame), { ...rendererReady, [field]: 1 });
+      assert.equal(result.ready, false);
+      assert.ok(result.blockingReasons.includes(reason));
+    }
+    assert.equal(tracker.observe(telemetry(4), { ...rendererReady, [field]: 0 }).ready, false);
+    assert.equal(tracker.observe(telemetry(5), { ...rendererReady, [field]: 0 }).ready, true);
+    assert.throws(() => tracker.observe(telemetry(6), { ...rendererReady, [field]: -1 }), new RegExp(field));
+  });
+}
 
 test("persistent state visuals have their own terminal blocker", () => {
   const tracker = new RenderBenchmarkReadinessTracker({ stableResidencyMs: 0, minimumStableSamples: 2 });

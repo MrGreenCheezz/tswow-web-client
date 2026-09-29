@@ -1,0 +1,3 @@
+dirs Azeroth,Kalimdor,Northrend,Expansion01; ADTs 3636; chunks with liquid 448564; multi-layer chunks 91
+types [[2,"Ocean","mat1",432903],[5,"Slow Water","mat1",14870],[81,"Lake Wintergrasp - Water","mat1",638],[7,"Slow Magma","mat2",127],[1,"Water","mat1",68],[181,"Orange Slime","mat1",49]]
+type:lvf [["2:lvf2",432903],["5:lvf0",14870],["81:lvf0",638],["7:lvf1",127],["1:lvf0",68],["181:lvf0",49]]

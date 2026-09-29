@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { m2ToScene, portraitCameraSpec } from "../dist/code/browser/PortraitCamera.js";
+import { fullBodyCameraSpec, m2ToScene, portraitCameraSpec } from "../dist/code/browser/PortraitCamera.js";
 import {
   effectiveDevicePixelRatio, portraitCanvasBackingPixels,
 } from "../dist/code/browser/PortraitCanvas.js";
@@ -52,6 +52,33 @@ test("fallback camera prefers visible mesh bounds over an oversized WVM header",
     bounds: { ...meshBounds, radius: 1 },
   });
   assert.deepEqual(fromVisibleMesh, fromMeshAsLastResort);
+});
+
+test("full-body camera ignores an authored bust camera and frames visible bounds", () => {
+  const bounds = { min: [-1, -0.5, -2], max: [1, 0.5, 6], radius: 1.2 };
+  const bust = portraitCameraSpec({
+    bounds,
+    camera: { fov: Math.PI / 4, near: 0.1, far: 20, position: [0, 0, 0.4], target: [0, 0, 0.4] },
+  });
+  const body = fullBodyCameraSpec({
+    bounds,
+    visibleBounds: bounds,
+    attachments: [
+      { id: 5, bone: 0, position: [0, 0, 1.9] },
+      { id: 11, bone: 0, position: [0, 0, 2.0] },
+    ],
+  });
+  assert.equal(body.fov, 35);
+  assert.notDeepEqual(body.position, bust.position);
+  assert.deepEqual(body.target, m2ToScene([0, 0, 2]));
+  assert.equal(body.position[1], body.target[1], "the optical axis is centered on visible top/bottom");
+  const distance = (camera) => Math.hypot(
+    camera.position[0] - camera.target[0],
+    camera.position[1] - camera.target[1],
+    camera.position[2] - camera.target[2],
+  );
+  const uncenteredFallback = portraitCameraSpec({ bounds, visibleBounds: bounds });
+  assert.equal(distance(body), distance(uncenteredFallback), "full-body centering preserves camera distance");
 });
 
 test("portrait backing pixels use DPR without consulting hidden layout", () => {

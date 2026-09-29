@@ -1,5 +1,6 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import { parseCastFailure, type CastFailure } from "./SpellProtocol.js";
 
 // Layouts follow the active TrinityCore source: Player.cpp (`PetSpellInitialize`,
 // `PossessSpellInitialize`, `VehicleSpellInitialize`, `CharmSpellInitialize`, `RemovePet`,
@@ -172,6 +173,26 @@ export function isVehicleActionBar(bar: readonly PetActionButton[]): boolean {
   return bar.some((button) => button.packed !== 0 && button.type >= 8 && button.type <= 15);
 }
 
+/**
+ * Whose bar an open `SMSG_PET_SPELLS` is. `vehicle` by its slot-index states (above); `possess`
+ * when `SMSG_CLIENT_CONTROL_UPDATE` handed the player the very unit the bar names and it is not
+ * their own character (`Player::PossessSpellInitialize`); `pet` otherwise — a pet or a charmed
+ * creature, whose bar keeps the command and reaction states. Undefined when there is no bar.
+ */
+export type PetBarKind = "pet" | "vehicle" | "possess";
+
+export function petBarKind(
+  spells: Pick<PetSpells, "guid" | "closed" | "bar"> | undefined,
+  controlledGuid: bigint | undefined,
+  selfGuid: bigint | undefined,
+): PetBarKind | undefined {
+  if (!spells || spells.closed || spells.guid === 0n) return undefined;
+  if (Array.isArray(spells.bar) && isVehicleActionBar(spells.bar)) return "vehicle";
+  if (controlledGuid !== undefined && controlledGuid !== 0n && selfGuid !== undefined
+    && controlledGuid !== selfGuid && controlledGuid === spells.guid) return "possess";
+  return "pet";
+}
+
 /** The spell the pet just learned. No guid: it belongs to whichever pet is out. */
 export function parsePetLearnedSpell(payload: Uint8Array): number {
   const reader = new PacketReader(payload);
@@ -234,27 +255,22 @@ export function parsePetActionSound(payload: Uint8Array): PetTalk {
   return { guid, talk };
 }
 
-export interface PetCastFailure {
-  /**
-   * Zero whenever the failure came from the pet bar rather than from a cast the client counted:
-   * that path never assigns the counter. Treat zero as "not correlated".
-   */
-  castCount: number;
-  spellId: number;
-  result: number;
-}
+/**
+ * A pet's refusal: the player's `CastFailure`, tail and all. Its `castCount` is zero whenever the
+ * failure came from the pet bar rather than from a cast the client counted — that path never
+ * assigns the counter — so zero means "not correlated".
+ */
+export type PetCastFailure = CastFailure;
 
 /**
- * The same three-field header the player's own `SMSG_CAST_FAILED` carries — the core builds both
- * through one helper — followed by a per-reason tail whose length depends on the reason and, for
- * three of them, on data that is not counted. The tail is left unread, exactly as the player's
- * cast failure is.
+ * `SMSG_PET_CAST_FAILED`: written by the player's own `Spell::WriteCastResultInfo`
+ * (`Spell.cpp:4385-4386`) — `u8 castCount, u32 spell, u8 result` and the result's tail — so it is
+ * read by the player's own `parseCastFailure`, under the pet opcode's name.
  *
  * Not sent while possessing or riding: those answer on `SMSG_CAST_FAILED` instead.
  */
 export function parsePetCastFailed(payload: Uint8Array): PetCastFailure {
-  const reader = new PacketReader(payload);
-  return { castCount: reader.u8(), spellId: reader.u32(), result: reader.u8() };
+  return parseCastFailure(payload);
 }
 
 /** `PetTameFailure` in SharedDefines.h. The enum starts at one; there is no zero. */

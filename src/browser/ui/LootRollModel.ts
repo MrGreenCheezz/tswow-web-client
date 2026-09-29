@@ -53,6 +53,7 @@ export function rollDeadline(entry: LootRollEntry): number {
 }
 
 export interface ActiveRoll extends LootRollEntry {
+  itemGuid: bigint;
   itemSlot: number;
   remainingMs: number;
 }
@@ -64,16 +65,17 @@ export interface ActiveRoll extends LootRollEntry {
  * the map is the protocol layer's record of what happened and the chat log quotes it afterwards.
  */
 export function activeRolls(
-  rolls: ReadonlyMap<number, LootRollEntry>, now: number,
+  rolls: ReadonlyMap<bigint, LootRollEntry>, now: number,
 ): ActiveRoll[] {
   const active: ActiveRoll[] = [];
-  for (const [itemSlot, entry] of rolls) {
+  for (const [itemGuid, entry] of rolls) {
     if (entry.won || entry.passed) continue;
     const remainingMs = rollDeadline(entry) - now;
     if (remainingMs <= 0) continue;
-    active.push({ ...entry, itemSlot, remainingMs });
+    active.push({ ...entry, itemGuid, itemSlot: entry.start.itemSlot, remainingMs });
   }
-  return active.sort((left, right) => left.itemSlot - right.itemSlot);
+  return active.sort((left, right) => left.startedAt - right.startedAt
+    || (left.itemGuid < right.itemGuid ? -1 : left.itemGuid > right.itemGuid ? 1 : 0));
 }
 
 /** Seconds left, rounded up so a dialog never shows a zero it is still accepting clicks on. */

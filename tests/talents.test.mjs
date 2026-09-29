@@ -178,6 +178,7 @@ test("the hand-written GlyphProperties layout still matches the real table", wit
 
 test("the talent tables this window needs are the shape the code reads them as", withDataset, async () => {
   const { openDbcFile } = await import("../tools/dbc.mjs");
+  const { loadTalentData } = await import("../dist/code/gateway/TalentMetadata.js");
   const [talents, tabs, skills] = await Promise.all([
     openDbcFile(dbcDirectory, "Talent"),
     openDbcFile(dbcDirectory, "TalentTab"),
@@ -212,4 +213,41 @@ test("the talent tables this window needs are the shape the code reads them as",
   let professions = 0;
   for (const row of skills.rows()) if (skills.int(row, "CategoryID") === SKILL_CATEGORY_PROFESSION) professions++;
   assert.ok(professions >= 10, `only ${professions} professions found in SkillLine.dbc`);
+
+  // TalentFrameBase does not accept the numeric SpellIconID or a missing background: it builds
+  // textures from SpellIcon.TextureFilename and TalentTab.BackgroundFile. The gateway projection
+  // resolves both while the DBC handles are open, so the stock FrameXML tab never gets a blank
+  // icon or a nil concatenation on its first redraw.
+  const projected = await loadTalentData(dbcDirectory);
+  const iconRows = await openDbcFile(dbcDirectory, "SpellIcon");
+  const iconPaths = new Map();
+  for (const row of iconRows.rows()) iconPaths.set(iconRows.id(row), iconRows.string(row, "TextureFilename"));
+  const sampleRow = [...tabs.rows()].find((row) => tabs.int(row, "ClassMask") !== 0
+    && tabs.int(row, "SpellIconID") > 0 && tabs.string(row, "BackgroundFile").length > 0);
+  assert.notEqual(sampleRow, undefined, "a class talent tab carries both stock visual references");
+  const sample = projected.tabs.find((tab) => tab.id === tabs.id(sampleRow));
+  assert.ok(sample);
+  assert.equal(sample.backgroundFile, tabs.string(sampleRow, "BackgroundFile"));
+  assert.equal(sample.iconPath, iconPaths.get(tabs.int(sampleRow, "SpellIconID")));
+});
+
+test("pet talents open a tier after three points and never offer a fourth rank", () => {
+  const petTree = [ROOT, TIER1];
+  assert.equal(tierRequirement(1, 3), 3);
+  assert.equal(talentTreeState(petTree, new Map([[ROOT.id, 2]]), 1, 3)[1].blockedBy, "tier");
+  const open = talentTreeState(petTree, new Map([[ROOT.id, 3]]), 1, 3);
+  assert.equal(open[1].available, true);
+  assert.equal(open[0].maxRank, 3, "MAX_PET_TALENT_RANK is three even if DBC lists more");
+  assert.equal(open[0].blockedBy, "maxed");
+  assert.equal(pointsInTree(petTree, new Map([[ROOT.id, 5]]), 3), 3);
+});
+
+test("native talent visuals use generated panel art while keeping real tab icon paths", async () => {
+  const ui = await readFile(new URL("../src/browser/ui/Talents.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(ui, /talentTabBackgroundPaths|talent-tree-backdrop|drawTalentTreeBackdrop/,
+    "low-resolution TalentFrame quadrants must not be stretched as live panel art");
+  assert.match(ui, /const withExtension = .*resolved.*`\$\{resolved\}\.blp`/,
+    "extensionless SpellIcon.TextureFilename values get the required .blp suffix");
+  assert.match(ui, /clientTextureUrl\(tab\?\.iconPath\)/,
+    "branch tabs keep their authored icon without importing the old background quadrants");
 });

@@ -13,6 +13,7 @@
 import { game } from "../game/Context.js";
 import { arenaTeamRows, bracketName, memberLine, sortRoster, statsLine } from "./ArenaModel.js";
 import { Panel, confirmPanel, showMenu, type MenuItem } from "./Widgets.js";
+import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
 
 interface Parts {
   panel: Panel;
@@ -65,7 +66,8 @@ export function showArenaWindow(): void {
   if (!parts?.panel.visible) return;
   const { invite, list } = parts;
 
-  const pending = world?.arenaTeamInvite;
+  // The stock ARENA_TEAM_INVITE dialog asks while the popup owner is published (FrameXmlPopups.ts).
+  const pending = frameXmlPopupsPublished() ? undefined : world?.arenaTeamInvite;
   invite.hidden = pending === undefined;
   if (pending) {
     invite.replaceChildren();

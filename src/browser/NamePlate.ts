@@ -26,10 +26,10 @@ import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../world/FactionRules.js";
 export const PLATE_RANGE = 41;
 
 /** Plates keep one size on screen, the way the original client's do. */
-export const PLATE_WIDTH = 104;
-export const PLATE_NAME_HEIGHT = 13;
-export const PLATE_BAR_HEIGHT = 8;
-export const PLATE_CAST_HEIGHT = 6;
+export const PLATE_WIDTH = 144;
+export const PLATE_NAME_HEIGHT = 15;
+export const PLATE_BAR_HEIGHT = 13;
+export const PLATE_CAST_HEIGHT = 12;
 /** The gap between the crown of the head and the bottom of the plate. */
 export const PLATE_GAP = 10;
 /** The target's plate is drawn slightly larger, which is how the original client marks it. */
@@ -45,8 +45,8 @@ export const RANK_RARE = 4;
 /**
  * What one plate says. Everything is already resolved: this file never asks the world anything.
  *
- * `health` is a fraction rather than a pair of numbers because a plate has no room for numbers,
- * and because a unit seen only through `SMSG_PARTY_MEMBER_STATS` has no maximum worth printing.
+ * Health stays optional: a missing server value must not become an invented full or empty bar.
+ * The selected unit also shows its current/max health when those fields are available.
  */
 export interface PlateData {
   guid: bigint;
@@ -58,6 +58,8 @@ export interface PlateData {
   classColour: string | undefined;
   /** 0 to 1, or undefined for a unit whose health the server has not sent. */
   health: number | undefined;
+  healthCurrent?: number | undefined;
+  healthMax?: number | undefined;
   /** 0 to 7 when the unit wears a raid mark. */
   raidMark: number | undefined;
   /** `!` or `?`, from the quest giver status. */
@@ -75,6 +77,13 @@ export interface PlateData {
   cast: { name: string; progress: number; channel: boolean } | undefined;
   /** The player's own current target, which is drawn larger and framed. */
   target: boolean;
+  /**
+   * White fraction whitening the health bar this frame, from `plateHitFlash`.
+   *
+   * Carried resolved rather than as a timestamp: the plate is described once per frame and the
+   * painter must not own a clock.
+   */
+  hitFlash?: number | undefined;
   /**
    * A body the server still shows loot on: `UNIT_DYNFLAG_LOOTABLE`, and nothing inferred.
    *
@@ -196,6 +205,23 @@ export function plateLayout(
   return { x: x - width / 2, y: headY - PLATE_GAP * scale - height, width, height, scale };
 }
 
+/**
+ * How long a landed blow whitens the plate's health bar.
+ *
+ * Shorter than the number rising over the head (1.4 s): the flash is the impact, the number is
+ * the reading. Long enough to survive a slow frame, short enough that a second blow re-fires it
+ * instead of blending into it.
+ */
+export const PLATE_HIT_FLASH_MS = 350;
+
+/** White fraction for a blow that landed at `hitAt`, seen at `now`; 0 when there is none to show. */
+export function plateHitFlash(now: number, hitAt: number | undefined): number {
+  if (hitAt === undefined) return 0;
+  const age = now - hitAt;
+  if (!(age >= 0) || age >= PLATE_HIT_FLASH_MS) return 0;
+  return 1 - age / PLATE_HIT_FLASH_MS;
+}
+
 export interface StackedPlate {
   box: PlateBox;
   /** Distance from the camera. The nearer plate keeps its place and the further one moves. */
@@ -216,20 +242,25 @@ export function stackPlates(plates: readonly StackedPlate[]): readonly StackedPl
   const placed: PlateBox[] = [];
   for (const plate of [...plates].sort((left, right) => left.depth - right.depth)) {
     const box = plate.box;
-    let moved = true;
-    // One shove can push a plate back into another it had already cleared, so this repeats until
-    // a pass changes nothing. It is bounded: every pass either stops, or lifts the plate above one
-    // more of the plates already placed.
-    for (let pass = 0; moved && pass <= placed.length; pass++) {
-      moved = false;
-      for (const other of placed) {
-        if (box.x + box.width <= other.x || other.x + other.width <= box.x) continue;
-        if (box.y >= other.y + other.height || box.y + box.height <= other.y) continue;
-        box.y = other.y - box.height - 2;
-        moved = true;
-      }
+    // Visit lower plates before higher ones. A shove above a higher plate cannot re-enter a
+    // lower one, so each placed box is tested at most once. In depth order a vertical chain
+    // needed one full rescan per shove, giving cubic work in a crowded view.
+    for (const other of placed) {
+      if (box.x + box.width <= other.x || other.x + other.width <= box.x) continue;
+      if (box.y >= other.y + other.height || box.y + box.height <= other.y) continue;
+      box.y = other.y - box.height - 2;
     }
-    placed.push(box);
+
+    // Keep the settled boxes in descending screen-y order without sorting the growing list
+    // again. Near-first admission above still decides whose original anchor takes precedence.
+    let low = 0;
+    let high = placed.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (placed[middle]!.y > box.y) low = middle + 1;
+      else high = middle;
+    }
+    placed.splice(low, 0, box);
   }
   return plates;
 }
@@ -354,6 +385,26 @@ export function drawLootBag(context: CanvasRenderingContext2D, x: number, y: num
   context.restore();
 }
 
+/** Keep text legible at its chosen font size while reserving the neighbour's column. */
+function fitPlateText(context: CanvasRenderingContext2D, text: string, width: number): string {
+  if (context.measureText(text).width <= width) return text;
+  const characters = [...text];
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (context.measureText(`${characters.slice(0, middle).join("")}…`).width <= width) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("")}…`;
+}
+
+function compactHealth(value: number): string {
+  if (value < 10_000) return String(Math.round(value));
+  const divisor = value >= 1_000_000 ? 1_000_000 : 1_000;
+  return `${Math.round(value / divisor * 10) / 10}${divisor === 1_000 ? "к" : "м"}`;
+}
+
 /**
  * One plate, painted.
  *
@@ -374,7 +425,9 @@ export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data
   context.font = `${Math.round(11 * scale)}px system-ui, sans-serif`;
   context.textAlign = "left";
   context.textBaseline = "alphabetic";
-  const label = rankMark ? `${rankMark} ${data.name}` : data.name;
+  const levelWidth = data.lootable ? nameHeight : levelText ? context.measureText(levelText).width : 0;
+  const label = fitPlateText(context, rankMark ? `${rankMark} ${data.name}` : data.name,
+    box.width - (levelWidth > 0 ? levelWidth + 6 * scale : 0));
   const nameBaseline = barY - 3 * scale;
   // The name is outlined rather than boxed. A plate sits over a body, and a filled strip behind
   // every name in a crowd hides more of the world than the names are worth.
@@ -401,11 +454,35 @@ export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data
     context.fillRect(box.x, barY, box.width, barHeight);
     if (data.health !== undefined) {
       context.fillStyle = plateColour(data);
-      context.fillRect(box.x + 1, barY + 1, (box.width - 2) * data.health, barHeight - 2);
+      context.fillRect(box.x + 1, barY + 1, (box.width - 2) * Math.max(0, Math.min(1, data.health)), barHeight - 2);
+    }
+    // The impact: a white sheet over the bar, fading with the blow's age. Alpha, never a second
+    // bar geometry, so a flash over an unknown-health unit is still just light, not information.
+    const flash = data.hitFlash ?? 0;
+    if (flash > 0) {
+      context.save();
+      context.globalAlpha = Math.max(0, Math.min(1, flash)) * 0.55;
+      context.fillStyle = "#ffffff";
+      context.fillRect(box.x + 1, barY + 1, box.width - 2, barHeight - 2);
+      context.restore();
     }
     context.strokeStyle = data.target ? "#ffe36e" : "#0b0f13aa";
     context.lineWidth = data.target ? 2 : 1;
     context.strokeRect(box.x, barY, box.width, barHeight);
+    if (data.health !== undefined && Number.isFinite(data.health)) {
+      const percent = `${Math.round(Math.max(0, Math.min(1, data.health)) * 100)}%`;
+      const text = data.target && data.healthCurrent !== undefined && (data.healthMax ?? 0) > 0
+        ? `${compactHealth(data.healthCurrent)} / ${compactHealth(data.healthMax!)} · ${percent}` : percent;
+      context.font = `${Math.round(10 * scale)}px system-ui, sans-serif`;
+      context.textAlign = "center";
+      context.lineWidth = 3 * scale;
+      context.strokeStyle = "#080b0fe6";
+      context.fillStyle = "#ffffff";
+      const healthLabel = fitPlateText(context, text, box.width - 4 * scale);
+      context.strokeText(healthLabel, box.x + box.width / 2, barY + barHeight - 3 * scale);
+      context.fillText(healthLabel, box.x + box.width / 2, barY + barHeight - 3 * scale);
+      context.textAlign = "left";
+    }
   }
 
   if (!data.lootable && data.cast) {
@@ -432,9 +509,10 @@ export function drawPlate(context: CanvasRenderingContext2D, box: PlateBox, data
     // 7.0:1 and 5.8:1 off those fills. Whatever is behind the bar, the letters keep their edge.
     context.lineWidth = 3 * scale;
     context.strokeStyle = "#0a0d12cc";
-    context.strokeText(data.cast.name, box.x + box.width / 2, castY + castHeight - scale);
+    const castLabel = fitPlateText(context, data.cast.name, box.width - 4 * scale);
+    context.strokeText(castLabel, box.x + box.width / 2, castY + castHeight - 2 * scale);
     context.fillStyle = "#f2f5f8";
-    context.fillText(data.cast.name, box.x + box.width / 2, castY + castHeight - scale);
+    context.fillText(castLabel, box.x + box.width / 2, castY + castHeight - 2 * scale);
     context.textAlign = "left";
   }
 

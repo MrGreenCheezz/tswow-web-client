@@ -1,0 +1,226 @@
+/*
+  The frame of reference the client's own GlueXML widgets are laid out in.
+
+  These rules used to live inside `glue.html`. They moved here in G6, when `index.html` became the
+  glue screens' real home: two pages now mount the same stage, and a stylesheet the bootstrap
+  imports is the only way both get exactly the same one. `glue.html` keeps only what is about being
+  a whole page (its own `html`/`body`), because `index.html` already has a body of its own and the
+  glue host is an overlay inside it.
+
+  Nothing here styles a widget's appearance — every box, colour and picture on these screens comes
+  out of the client's XML. What is below is the coordinate system and the four browser facts the
+  renderer needs (absolute positioning, texcoord cropping, an EditBox that can draw children, and a
+  model box that does not eat clicks).
+*/
+
+#glue-host {
+  /*
+    Fixed rather than in flow, because on `index.html` this is an overlay over the page's own
+    `<main>`, and on `glue.html` it is the only thing there — one rule covers both. Below
+    `#world-panel`'s z-index of 100: the world is what takes the screen away from these screens.
+  */
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  overflow: hidden;
+  background: #000;
+  color: #ffd100;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+/* Reserve the scrollbar's own height before fitting the stage, leaving the bottom controls visible. */
+#glue-host[data-glue-scroll] {
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
+/*
+  Scoped, not global. `index.html` sets no `box-sizing` of its own, and the one place it is
+  load-bearing here is the EditBox field, which carries the widget's `<TextInsets>` as padding on
+  top of a `width: 100%`.
+*/
+#glue-host, #glue-host * { box-sizing: border-box; }
+
+/*
+  The 768-unit-tall logical screen. Its width is the display mode the corpus would have picked —
+  the viewport's aspect, bounded below by the proven 1024-unit creation layout and above by the
+  16:9 `GlueParent_OnLoad` cap. `Bootstrap.ts` stretches it onto the viewport; a narrow one scrolls.
+  See `glueStageMapping`. A fixed 1024x768 box would distort every glue texture at 16:9, which the
+  real client does not.
+*/
+#glue-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Every widget the renderer creates is absolutely positioned inside its parent. */
+#glue-stage [data-framexml-type] {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  white-space: pre;
+}
+
+#glue-stage [data-framexml-type="Texture"] {
+  display: block;
+  image-rendering: auto;
+  pointer-events: none;
+}
+
+/*
+  TexCoords name a sub-rectangle of an atlas that is then stretched over the widget. The renderer
+  publishes that rectangle once, as an inset, and the browser decides which property gets it:
+  `object-view-box` performs the whole operation (crop *and* stretch, because an <img>'s default
+  object-fit is `fill`), while `clip-path` can only hide the rest of the picture and leaves what is
+  left at its original size. So the modern rule wins where it exists and the old one stays as the
+  floor.
+*/
+#glue-stage [data-framexml-texcoords] {
+  clip-path: inset(var(--framexml-texcoord-inset, 0));
+}
+@supports (object-view-box: inset(0)) {
+  #glue-stage [data-framexml-texcoords] {
+    clip-path: none;
+    object-view-box: inset(var(--framexml-texcoord-inset, 0));
+    object-fit: fill;
+  }
+}
+
+#glue-stage [data-framexml-type="FontString"] {
+  display: block;
+  pointer-events: none;
+}
+
+#glue-stage [data-framexml-type="Button"],
+#glue-stage [data-framexml-type="CheckButton"] {
+  cursor: pointer;
+  appearance: none;
+  min-height: 0;
+  border-radius: 0;
+  filter: none;
+}
+#glue-stage [data-framexml-type="Button"][disabled],
+#glue-stage [data-framexml-type="CheckButton"][disabled] {
+  cursor: default;
+}
+
+/*
+  A button's highlight picture rides on top only under the pointer.
+
+  The other five state pictures are decided in TypeScript, where the button's state is
+  (`FrameXmlDomRenderer.applyStateTexture`); the highlight is decided here because a pointer
+  entering a button whose OnEnter script does nothing raises no state change at all, and a rule that
+  needs a re-render to fire would then never fire. Measured on the owner's own chain: the three
+  highlight plates these screens use — `Glue-Panel-Button-Highlight`, `UI-Character-Tab-Highlight`
+  and `Glue-CharacterSelect-Highlight` — are **fully opaque** (α 255 over 100 % of the crop),
+  because they are authored to be added rather than laid over. Painted unconditionally they covered
+  every realm-list button and every character row with a flat plate.
+
+  `LockHighlight` writes `visibility: visible` inline, which outranks this rule; a disabled button
+  does not light up.
+*/
+#glue-stage [data-framexml-state-texture="HIGHLIGHT"] { visibility: hidden; }
+#glue-stage [data-framexml-type="Button"]:not([disabled]):hover > [data-framexml-state-texture="HIGHLIGHT"],
+#glue-stage [data-framexml-type="CheckButton"]:not([disabled]):hover > [data-framexml-state-texture="HIGHLIGHT"] {
+  visibility: visible;
+}
+
+/*
+  An EditBox is a box with a text field inside it, not a bare <input>: the corpus declares children
+  inside every one of them — the `$parentFill` placeholder, the font-carrying FontString, the cap
+  textures — and an <input> is a void element that cannot draw a child. The field fills its widget
+  and stays transparent so the widget's own backdrop shows through.
+*/
+#glue-stage [data-framexml-type="EditBox"] {
+  outline: none;
+}
+#glue-stage input[data-framexml-input] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  outline: none;
+  /* Above the widget's own BACKGROUND/ARTWORK regions, which top out just under 1000. */
+  z-index: 900;
+}
+
+/*
+  A Model/ModelFFX widget is a box with a transparent canvas inside it (GlueModelStage). The canvas
+  is a plain 2D surface that one shared WebGL context blits into, so the 3D obeys the widget's own
+  place in the DOM — a model behind the logo stays behind it, one in front stays in front — without
+  the 3D layer knowing anything about frame strata.
+*/
+#glue-stage [data-framexml-model-placeholder] {
+  pointer-events: none;
+  overflow: hidden;
+}
+/*
+  …but only the model box itself. `pointer-events` inherits, and `CharacterSelect` is a full-screen
+  ModelFFX with the entire character-select interface declared *inside* it — the name list, the
+  delete button, the enter-world button. Left inherited, every one of them was click-through:
+  measured, `elementFromPoint` over a character's row answered `GlueParent`. The canvas keeps its
+  own `none` (set inline by GlueModelStage), so the 3D never eats a click.
+*/
+#glue-stage [data-framexml-model-placeholder] > *:not(canvas) {
+  pointer-events: auto;
+}
+#glue-stage canvas[data-framexml-model-canvas] {
+  display: block;
+}
+
+/*
+  A hidden widget is taken out of the page, and that is knowingly not the whole of FrameXML's rule.
+
+  In the original an anchor may name any frame, shown or not, and the corpus leans on it: measured
+  on the owner's live login corpus (3,298 widgets), **59** of its 853 cross-frame anchors point at a
+  frame that is hidden. `display: none` takes an element out of layout entirely — `offsetWidth`,
+  `offsetParent` and every offset go to zero — so each of those anchors has nothing to measure and
+  falls back to its parent's own edge. One is visible on the login screen: `NewsButton` hangs off
+  the hidden `AccountLoginManageAccountButton` and lands centred on the bottom edge instead of in
+  the left-hand column above Website.
+
+  `visibility: hidden` keeps the box and is the faithful mapping — it was tried, and it *does* put
+  `NewsButton` where the original puts it (measured: [21, 638] against [565, 764]). It also hung the
+  character-select screen: with the hidden frames back in layout the renderer's re-anchor pass —
+  853 write-then-read cycles per sync — stopped converging and the renderer never painted again.
+  Reverted rather than shipped half-understood; the cure belongs with a batched read/write layout
+  pass, not with this one line. See the G7 journal entry.
+*/
+#glue-stage [aria-hidden="true"] { display: none; }
+
+/*
+  A Texture with no picture and no colour keeps its rectangle and paints nothing — the renderer
+  publishes `data-framexml-blank` for exactly that case. Without this, the browser's own
+  broken-image placeholder stood in for `<Texture file=""/>`.
+*/
+#glue-stage [data-framexml-blank] { visibility: hidden; }
+
+#glue-status {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 10000;
+  font-size: 14px;
+  text-shadow: 0 1px 2px #000;
+  pointer-events: none;
+}
+
+/*
+  While the glue screens are the front door on `index.html`, the page behind them must not scroll:
+  `<main>` is still there, 100vh tall and empty, and a stray wheel event over the login screen would
+  move it under the overlay. `body.world-active` already does this for the world panel.
+*/
+body.glue-front-door { overflow: hidden; }

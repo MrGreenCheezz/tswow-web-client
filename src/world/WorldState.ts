@@ -1,3 +1,4 @@
+import { unzlibSync } from "three/examples/jsm/libs/fflate.module.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { MOVEMENT_FLAGS, MOVEMENT_MASK_MOVING, readMovementInfo, type MovementInfo } from "./MovementProtocol.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
@@ -29,6 +30,9 @@ const FLAG_ROTATION = 0x0200;
 const MOVE_SPLINE_ENABLED = 0x08000000;
 
 const TYPEID_UNIT = 3;
+const NO_RETIRED_OBJECTS: readonly bigint[] = [];
+/** `UNIT_FLAG_ON_TAXI`, set by FlightPathMovementGenerator while the server owns the rider. */
+const UNIT_FLAG_ON_TAXI = 0x00100000;
 
 /**
  * What the server takes off a creature when its spline ends, and never says that it has.
@@ -105,6 +109,12 @@ export interface WorldObjectState {
   fields: Map<number, number>;
 }
 
+/** Local input must not replace a server spline or move the rider before taxi control returns. */
+export function serverControlsMovement(object: WorldObjectState | undefined): boolean {
+  return object !== undefined && (object.motion !== undefined
+    || ((object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset) ?? 0) & UNIT_FLAG_ON_TAXI) !== 0);
+}
+
 interface Glide {
   fromX: number;
   fromY: number;
@@ -119,6 +129,7 @@ interface Glide {
 }
 
 interface SplineMotion {
+  splineId: number;
   points: SplinePoint[];
   lengths: number[];
   totalLength: number;
@@ -132,6 +143,7 @@ interface SplineMotion {
 
 interface MovementUpdate {
   position: WorldPosition | undefined;
+  transport: TransportSeat | undefined;
   movementFlags: number;
   updateFlags: number;
   targetGuid: bigint | undefined;
@@ -158,6 +170,9 @@ export class WorldState {
   readonly objects = new Map<bigint, WorldObjectState>();
   revision = 0;
 
+  /** Fires only for natural completion of a noncyclic spline, not for a stop or teleport. */
+  onSplineFinished: ((guid: bigint, splineId: number) => void) | undefined;
+
   /** Set by `WorldStore`. Unset by default, so nothing is recorded for a state nobody watches. */
   observer: StateObserver | undefined;
 
@@ -174,10 +189,20 @@ export class WorldState {
     this.observer?.selfChanged(guid);
   }
 
-  applyUpdate(payload: Uint8Array): void {
+  /**
+   * Applies an update packet and returns GUIDs whose previous incarnation was retired.
+   *
+   * `UPDATE_OUT_OF_RANGE` is the core's ordinary visibility-destruction path.  The
+   * state observer reports actual object changes to field consumers, while the packet owner
+   * needs this list to retire packet-owned data such as auras and casts. A later create block
+   * preserves the new object, but initial auras arrive in a separate packet after object updates
+   * (TrinityCore VisibleNotifier::SendToSelf), so the previous aura/cast state still expires.
+   */
+  applyUpdate(payload: Uint8Array): readonly bigint[] {
     const reader = new PacketReader(payload);
     const blockCount = reader.u32();
     if (blockCount > payload.byteLength) throw new RangeError(`Invalid object update block count ${blockCount}`);
+    let retired: bigint[] | undefined;
 
     for (let block = 0; block < blockCount; block++) {
       const updateType = reader.u8();
@@ -220,7 +245,11 @@ export class WorldState {
       } else if (updateType === UPDATE_OUT_OF_RANGE) {
         const count = reader.u32();
         if (count > reader.remaining) throw new RangeError(`Invalid out-of-range object count ${count}`);
-        for (let index = 0; index < count; index++) this.#remove(reader.packedGuid());
+        for (let index = 0; index < count; index++) {
+          const guid = reader.packedGuid();
+          this.#remove(guid);
+          (retired ??= []).push(guid);
+        }
       } else if (updateType === UPDATE_NEAR) {
         const count = reader.u32();
         if (count > reader.remaining) throw new RangeError(`Invalid near-object count ${count}`);
@@ -232,11 +261,41 @@ export class WorldState {
 
     reader.assertFinished();
     this.revision++;
+    return retired ?? NO_RETIRED_OBJECTS;
   }
 
   destroy(guid: bigint): void {
     this.#remove(guid);
     this.revision++;
+  }
+
+  /**
+   * Retires map-scoped objects while retaining the controlled player through a far transfer.
+   * TrinityCore recreates the player, transport and visible neighbours after WORLDPORT_ACK, but
+   * retaining the player here keeps the mover identity and its live aura snapshot valid until
+   * those packets arrive.
+   */
+  clearExcept(guid: bigint | undefined): readonly bigint[] {
+    let retired: bigint[] | undefined;
+    for (const objectGuid of this.objects.keys()) {
+      if (objectGuid !== guid && this.#remove(objectGuid)) (retired ??= []).push(objectGuid);
+    }
+    if (!retired) return NO_RETIRED_OBJECTS;
+    this.revision++;
+    return retired;
+  }
+
+  /** A transport worldport has no absolute position until the destination self CREATE arrives. */
+  invalidatePosition(guid: bigint): void {
+    const object = this.objects.get(guid);
+    if (!object) return;
+    object.position = undefined;
+    object.motion = undefined;
+    object.glide = undefined;
+    object.transport = undefined;
+    object.movementFlags = 0;
+    this.revision++;
+    this.observer?.objectMoved(guid);
   }
 
   move(guid: bigint, movement: Pick<MovementInfo, "flags" | "position" | "transport">, now = performance.now()): void {
@@ -312,8 +371,35 @@ export class WorldState {
     this.observer?.fieldsChanged(guid, [index]);
   }
 
+  /**
+   * A packet's correction to one field of an object this state already holds — an enchantment's
+   * remaining time, a socketed gem. Reported like any field change, so the store hears it; unlike
+   * `setField`, never the moment an object starts existing: a correction for a guid no update
+   * block introduced is dropped, and false says so.
+   */
+  patchField(guid: bigint, index: number, value: number): boolean {
+    const object = this.objects.get(guid);
+    if (!object) return false;
+    object.fields.set(index, value);
+    this.revision++;
+    this.observer?.fieldsChanged(guid, [index]);
+    return true;
+  }
+
   startSpline(move: MonsterMove, now: number): void {
     const object = this.#get(move.guid);
+    const finalPoint = move.points.at(-1);
+    if (!finalPoint) return;
+    // VehicleJoinEvent does not send a fresh create block for a passenger already in view. Its
+    // MONSTER_MOVE_TRANSPORT packet is the update that gives bystanders the new transport and seat.
+    // Conversely Vehicle::_ExitVehicle launches a plain MONSTER_MOVE after clearing ONTRANSPORT.
+    const previousSeat = object.transport;
+    object.transport = move.transportGuid === undefined ? undefined : {
+      guid: move.transportGuid,
+      x: finalPoint.x, y: finalPoint.y, z: finalPoint.z,
+      orientation: move.finalOrientation ?? (previousSeat?.guid === move.transportGuid ? previousSeat.orientation : 0),
+      seat: move.transportSeat ?? 0,
+    };
     const transport = move.transportGuid === undefined ? undefined : this.objects.get(move.transportGuid)?.position;
     if (move.transportGuid !== undefined && !transport) {
       // It has boarded something not in view, so whatever path it was on is over whether or not
@@ -322,9 +408,9 @@ export class WorldState {
       if (object.motion) {
         object.motion = undefined;
         this.#scrubSplineFlags(object);
-        this.revision++;
-        this.observer?.objectMoved(move.guid);
       }
+      this.revision++;
+      this.observer?.objectMoved(move.guid);
       return;
     }
     // A spline launched on a transport is in the transport's own frame, and the packet says so
@@ -362,7 +448,7 @@ export class WorldState {
       lengths.push(totalLength);
     }
     object.motion = {
-      points, lengths, totalLength, startedAt: now, duration: move.duration, cyclic: move.cyclic,
+      splineId: move.splineId, points, lengths, totalLength, startedAt: now, duration: move.duration, cyclic: move.cyclic,
       flying: move.flying === true, finalOrientation: move.finalOrientation,
     };
     this.revision++;
@@ -398,6 +484,7 @@ export class WorldState {
         // `DisableSpline` and writes nothing. Without this the creature stops in place and its
         // flags go on saying FORWARD, so the pose jumps from Walk to Run at the moment it halts.
         this.#scrubSplineFlags(object);
+        this.onSplineFinished?.(object.guid, motion.splineId);
       }
     }
   }
@@ -534,6 +621,7 @@ export class WorldState {
   #applyMovement(object: WorldObjectState, movement: MovementUpdate): void {
     if (movement.position) object.glide = undefined;
     object.position = movement.position ?? object.position;
+    object.transport = movement.transport;
     object.movementFlags = movement.movementFlags;
     // The spline a create block carries is read past unused (`skipSpline`), so a creature caught
     // walking is drawn standing where the block put it — and its flags have to agree, or it runs
@@ -548,10 +636,11 @@ export class WorldState {
     if (movement.updateFlags & FLAG_SELF) this.selfGuid = object.guid;
   }
 
-  #remove(guid: bigint): void {
-    if (!this.objects.delete(guid)) return;
+  #remove(guid: bigint): boolean {
+    if (!this.objects.delete(guid)) return false;
     if (this.selfGuid === guid) this.selfGuid = undefined;
     this.observer?.objectDestroyed(guid);
+    return true;
   }
 }
 
@@ -597,13 +686,40 @@ export function isWorldObjectDead(object: WorldObjectState): boolean {
   return (dynamicFlags & (UNIT_DYNFLAG_DEAD | UNIT_DYNFLAG_LOOTABLE)) !== 0;
 }
 
-export async function decompressObjectUpdate(payload: Uint8Array): Promise<Uint8Array> {
+/**
+ * Whether a unit should be drawn lying dead — for poses only.
+ *
+ * A feigned death is alive: TrinityCore's `HandleFeignDeath` keeps the health and raises
+ * `UNIT_DYNFLAG_DEAD` (with `UNIT_FLAG2_FEIGN_DEATH`), so {@link isWorldObjectDead}, which trusts a
+ * present health slot over the flags, rightly keeps targeting, loot and the frames treating it as
+ * alive — and the body stood upright: a hunter's Feign Death, and every quest corpse wearing a
+ * Permanent Feign Death aura (29266/31261/58806 on 141 creature templates and 267 spawns here).
+ */
+export function appearsDead(object: WorldObjectState): boolean {
+  if (isWorldObjectDead(object)) return true;
+  if (object.typeId !== 3 && object.typeId !== 4) return false;
+  return ((object.fields.get(UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset) ?? 0) & UNIT_DYNFLAG_DEAD) !== 0;
+}
+
+/**
+ * The zlib body of `SMSG_COMPRESSED_UPDATE_OBJECT`, inflated in place.
+ *
+ * Synchronous on purpose. `DecompressionStream` settles only after several task turns, and the
+ * world read loop takes packets strictly in order: behind 30–40 ms crowd frames one compressed
+ * update held every later packet (movement, spawns, auras) for 100–560 ms. The live recording of
+ * 27.09 had 69 of them waiting 5.3 s in one minute for 99 ms of actual main-thread work. Inflating
+ * a few kilobytes here takes microseconds. The compressed bytes are read through a view, not copied.
+ */
+export function decompressObjectUpdate(payload: Uint8Array): Uint8Array {
   if (payload.byteLength < 4) throw new RangeError("Compressed object update has no size");
   const expectedSize = new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true);
   if (expectedSize > MAX_UPDATE_PAYLOAD) throw new RangeError(`Compressed object update is too large: ${expectedSize}`);
-
-  const stream = new Blob([payload.slice(4)]).stream().pipeThrough(new DecompressionStream("deflate"));
-  const result = new Uint8Array(await new Response(stream).arrayBuffer());
+  let result: Uint8Array;
+  try {
+    result = unzlibSync(payload.subarray(4));
+  } catch (error) {
+    throw new RangeError(`Compressed object update does not inflate: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (result.byteLength !== expectedSize) {
     throw new RangeError(`Object update expanded to ${result.byteLength} bytes, expected ${expectedSize}`);
   }
@@ -631,6 +747,7 @@ function readMovement(reader: PacketReader): MovementUpdate {
   const updateFlags = reader.u16();
   let movementFlags = 0;
   let position: WorldPosition | undefined;
+  let transport: TransportSeat | undefined;
   let runSpeed: number | undefined;
   let turnRate: number | undefined;
 
@@ -638,6 +755,13 @@ function readMovement(reader: PacketReader): MovementUpdate {
     const movement = readMovementInfo(reader);
     movementFlags = movement.flags;
     position = movement.position;
+    if (movement.transport && movement.transport.guid !== 0n) {
+      transport = {
+        guid: movement.transport.guid,
+        x: movement.transport.x, y: movement.transport.y, z: movement.transport.z,
+        orientation: movement.transport.orientation, seat: movement.transport.seat,
+      };
+    }
     reader.f32();
     runSpeed = reader.f32();
     skipFloats(reader, 5);
@@ -666,7 +790,7 @@ function readMovement(reader: PacketReader): MovementUpdate {
   }
   if (updateFlags & FLAG_ROTATION) reader.u64();
 
-  return { position, movementFlags, updateFlags, targetGuid, runSpeed, turnRate, transportTime };
+  return { position, transport, movementFlags, updateFlags, targetGuid, runSpeed, turnRate, transportTime };
 }
 
 function readPosition(reader: PacketReader): WorldPosition {

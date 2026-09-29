@@ -49,6 +49,10 @@ test("lighting quality enables a bounded single-shader immersive grade without d
   assert.equal(balanced.immersiveStrength, 0.65);
   assert.equal(highWithoutShadows.immersiveStrength, 1,
     "the ALU-only light grade must survive capability fallback independently of the shadow pass");
+  assert.equal(off.godRayStrength, 0, "quality zero keeps the post-process baseline exact");
+  assert.equal(balanced.godRayStrength, 0.12);
+  assert.equal(highWithoutShadows.godRayStrength, 0.2,
+    "the opt-in shaft ceiling is independent of shadow-map capability");
 });
 
 test("directional shadow centre snaps only in the light plane", () => {
@@ -119,10 +123,10 @@ test("lighting quality is an account setting with off, balanced and high values"
 test("character atlas anisotropy is an opt-in account experiment", async () => {
   const definition = settingDefinition("characterAtlasAnisotropy");
   assert.ok(definition);
-  assert.equal(definition.group, "Мир");
+  assert.equal(definition.group, "Графика");
   assert.equal(definition.kind, "boolean");
   assert.equal(definition.fallback, false);
-  assert.match(definition.hint ?? "", /A\/B/i);
+  assert.match(definition.hint ?? "", /нагрузку на видеокарту/i);
   assert.equal(defaultSettings().characterAtlasAnisotropy, false);
   assert.equal(parseSettings('{"characterAtlasAnisotropy":false}')?.characterAtlasAnisotropy, false);
   assert.equal(parseSettings('{"characterAtlasAnisotropy":true}')?.characterAtlasAnisotropy, true);
@@ -148,7 +152,7 @@ test("world integration confines shadow flags to ranked units and terrain receiv
   const admittedLoop = updateUnits.indexOf(admittedLoopText, admissionCall);
   const shadowCallText = "unitCastsEnhancedShadow(rank, distance, this.#lightingProfile)";
   const shadowCall = updateUnits.indexOf(shadowCallText, admittedLoop);
-  const distanceText = "const distance = Math.hypot(object.position.x - player.x, object.position.y - player.y);";
+  const distanceText = "const distance = hypot2(object.position.x - player.x, object.position.y - player.y);";
   const distanceRead = updateUnits.indexOf(distanceText);
   assert.ok(distanceRead >= 0 && candidatePush > distanceRead && admissionCall > candidatePush
     && admittedLoop > admissionCall && shadowCall > admittedLoop,
@@ -157,7 +161,7 @@ test("world integration confines shadow flags to ranked units and terrain receiv
   assert.equal(updateUnits.slice(admittedLoop, admittedLoop + admittedLoopText.length), admittedLoopText);
   assert.equal(updateUnits.slice(shadowCall, shadowCall + shadowCallText.length), shadowCallText);
   assert.match(updateUnits.slice(distanceRead, admissionCall),
-    /const distance = Math\.hypot\(object\.position\.x - player\.x, object\.position\.y - player\.y\);[\s\S]*candidates\.push\(\{[\s\S]*distance: Number\.isFinite\(distance\) \? distance : Number\.MAX_VALUE,/,
+    /const distance = hypot2\(object\.position\.x - player\.x, object\.position\.y - player\.y\);[\s\S]*candidates\.push\(\{[\s\S]*distance: Number\.isFinite\(distance\) \? distance : Number\.MAX_VALUE,/,
     "the candidate retains the finite distance derived from the unit/player positions");
   assert.match(world, /unit\.node\.traverse/);
   assert.match(world, /terrain\.mesh\.receiveShadow = shadows/);

@@ -7,13 +7,13 @@
 // terrain layers already did.
 
 import { createHash } from "node:crypto";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blpToPng } from "./blp-png.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
-import { stampGenerated, stampSidecar } from "./source-stamp.mjs";
+import { stampGenerated, stampSidecar, writeFileAtomic } from "./source-stamp.mjs";
 // The route's own validator, out of the build rather than copied into a ninth regex. Д6 merged six
 // of these and its review found an eighth; this file held the one nobody counted, and the two
 // classes had drifted far enough to matter — see `validTexturePath` below.
@@ -92,7 +92,9 @@ export async function publishTexture(mpqPath, archives) {
   if (!blp) throw new SourceMissing(`${mpqPath} is not in the client`);
   const png = blpToPng(blp);
   await mkdir(dirname(destination), { recursive: true });
-  await writeFile(destination, png);
+  // Renamed into place: the texture worker and the model worker can publish the same picture at
+  // once while the route is reading it (see `writeFileAtomic`).
+  await writeFileAtomic(destination, png);
   // Which copy of the BLP this came from, so a module that replaces it is not served this one for
   // the rest of the machine's life: the key is the path, and the path did not change.
   await stampGenerated(destination, archives, { paths: [mpqPath] });

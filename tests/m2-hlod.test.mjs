@@ -457,19 +457,22 @@ test("source/resource access is not part of pure simplification", async () => {
   assert.ok(result);
 });
 
-test("R4.0b keeps generator and runtime terrain/world wiring unchanged", async () => {
+test("R4.0b stays offline while terrain streaming keeps its visible and dependency rings", async () => {
   const generator = await readFile(new URL("../tools/generate-visual-model.mjs", import.meta.url), "utf8");
   const terrain = await readFile(new URL("../src/browser/Terrain.ts", import.meta.url), "utf8");
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(generator, /00\.skin/, "existing generator keeps the high/full profile");
   assert.doesNotMatch(generator, /01\.skin|02\.skin|simplifyStaticM2|m2-lod/i,
     "R4.0b must not wire generated HLOD into the model generator yet");
-  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*300/);
-  assert.match(renderer, /for \(let offsetX = -2; offsetX <= 2; offsetX\+\+\)/,
-    "existing 5x5 CPU terrain dependency ring remains unchanged");
-  assert.match(renderer, /for \(let offsetX = -1; offsetX <= 1; offsetX\+\+\)/,
-    "existing visible terrain ring remains 3x3");
-  assert.match(renderer, /splatClient\?\.setActiveTiles\(map, grids\)/);
+  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*400/);
+  const { TerrainStreamingWindow } = await import("../dist/code/browser/TerrainStreaming.js");
+  const plan = new TerrainStreamingWindow().update(0, 0, 0, false);
+  assert.equal(plan.visible.length, 9, "foreground terrain remains 3x3");
+  assert.equal(plan.dependencies.length, 25, "CPU sampling retains a 5x5 dependency ring");
+  assert.match(renderer, /terrainClient\?\.setActiveTiles\(map, plan\.dependencies\);/,
+    "renderer pins the planned CPU dependencies");
+  assert.match(renderer, /const grids = plan\.visible;/,
+    "renderer draws only the visible ring");
   assert.doesNotMatch(renderer, /simplifyStaticM2|M2Hlod|m2-lod/i,
     "R4.0b must not wire runtime low-skin/HLOD selection");
 });

@@ -1,0 +1,162 @@
+VERT shaders\vertex\arbvp1\terrain.bls
+VERT shaders\vertex\arbvp1\vsliquidmagma.bls
+VERT shaders\vertex\arbvp1\vsliquidprocwater.bls
+VERT shaders\vertex\arbvp1\vsliquidprocwater_editor.bls
+VERT shaders\vertex\arbvp1\vsliquidwater.bls
+VERT shaders\vertex\arbvp1\vsliquidwaternospec.bls
+VERT shaders\vertex\arbvp1\waterripples.bls
+
+=== Shaders\Pixel\arbfp1\terrain2.bls: 48712 bytes
+magic HSXG
+HSXG
+ 
+!!ARBfp1.0
+OPTION ARB_fog_linear;
+PARAM c[13] = { program.local[0..10],
+		{ 1, -3.4482758, 3.4137931, 0.5 },
+		{ 0.2, 0.30000001, 0.69999999, 2 } };
+TEMP R0;
+TEMP R1;
+TEMP R2;
+MAD R0.zw, fragment.texcoord[4].xyxy, c[11].w, c[11].w;
+ADD R0.xy, R0.zwzw, c[9];
+ADD R1.xy, R0.zwzw, c[7];
+TEX R0.x, R0, texture[5], 2D;
+TEX R1.x, R1, texture[5], 2D;
+ADD R1.zw, R0, c[5].xyxy;
+MOV R2.w, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+ADD R1.zw, R0, c[3].xyxy;
+TEX R2.x, R0.zwzw, texture[5], 2D;
+MOV R2.z, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+MOV R2.y, R1.x;
+SGE R1, R2, fragment.texcoord[4].z;
+SGE R0.y, R0.x, fragment.texcoord[4].z;
+DP4 R0.x, R1, c[11].x;
+ADD R0.z, R0.x, R0.y;
+ABS R0.xy, fragment.texcoord[4];
+MAX R0.x, R0, R0.y;
+MUL R0.z, R0, c[12].x;
+ADD R0.y, R0.z, -c[11].x;
+MAD_SAT R0.x, R0, c[11].y, c[11].z;
+MAD R0.x, R0, R0.y, c[11];
+TEX R0.w, fragment.texcoord[1], texture[1], 2D;
+MIN R1.w, R0, R0.x;
+TEX R0, fragment.texcoord[0], texture[0], 2D;
+MAD R2.x, R1.w, c[12].y, c[12].z;
+MUL R1.xyz, R0.w, fragment.color.secondary;
+MUL R0.xyz, R0, R2.x;
+MUL R1.xyz, R1.w, R1;
+MUL R0.xyz, fragment.color.primary, R0;
+MAD result.color.xyz, R0, c[12].w, R1;
+MOV result.color.w, c[11].x;
+END
+!!ARBfp1.0
+OPTION ARB_fog_linear;
+PARAM c[13] = { program.local[0..10],
+		{ 1, -3.4482758, 3.4137931, 0.5 },
+		{ 0.2, 0.30000001, 0.69999999, 2 } };
+TEMP R0;
+TEMP R1;
+TEMP R2;
+MAD R0.zw, fragment.texcoord[4].xyxy, c[11].w, c[11].w;
+ADD R0.xy, R0.zwzw, c[9];
+ADD R1.xy, R0.zwzw, c[7];
+TEX R0.x, R0, texture[5], 2D;
+TEX R1.x, R1, texture[5], 2D;
+ADD R1.zw, R0, c[5].xyxy;
+MOV R2.w, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+ADD R1.zw, R0, c[3].xyxy;
+TEX R2.x, R0.zwzw, texture[5], 2D;
+MOV R2.z, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+MOV R2.y, R1.x;
+SGE R1, R2, fragment.texcoord[4].z;
+SGE R0.y, R0.x, fragment.texcoord[4].z;
+DP4 R0.x, R1, c[11].x;
+ADD R0.z, R0.x, R0.y;
+ABS R0.xy, fragment.texcoord[4];
+MAX R0.x, R0, R0.y;
+MUL R0.z, R0, c[12].x;
+ADD R0.y, R0.z, -c[11].x;
+MAD_SAT R0.x, R0, c[11].y, c[11].z;
+MAD R0.x, R0, R0.y, c[11];
+TEX R0.w, fragment.texcoord[1], texture[1], 2D;
+MIN R1.w, R0, R0.x;
+TEX R0, fragment.texcoord[0], texture[0], CUBE;
+MAD R2.x, R1.w, c[12].y, c[12].z;
+MUL R1.xyz, R0.w, fragment.color.secondary;
+MUL R0.xyz, R0, R2.x;
+MUL R1.xyz, R1.w, R1;
+MUL R0.xyz, fragment.color.primary, R0;
+MAD result.color.xyz, R0, c[12].w, R1;
+MOV result.color.w, c[11].x;
+END
+!!ARBfp1.0
+OPTION ARB_fog_linear;
+PARAM c[13] = { program.local[0..10],
+		{ 1, -3.4482758, 3.4137931, 0.5 },
+		{ 0.2, 0.30000001, 0.69999999, 2 } };
+TEMP R0;
+TEMP R1;
+TEMP R2;
+TEMP R3;
+TEMP R4;
+MAD R0.zw, fragment.texcoord[4].xyxy, c[11].w, c[11].w;
+ADD R0.xy, R0.zwzw, c[9];
+TEX R0.x, R0, texture[5], 2D;
+TEX R1, fragment.texcoord[1], texture[1], 2D;
+TEX R2, fragment.texcoord[0], texture[0], 2D;
+ADD R3, R1, -R2;
+ADD R1.xy, R0.zwzw, c[7];
+TEX R1.x, R1, texture[5], 2D;
+ADD R1.zw, R0, c[5].xyxy;
+MOV R4.w, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+ADD R1.zw, R0, c[3].xyxy;
+MOV R4.z, R1.x;
+TEX R1.x, R1.zwzw, texture[5], 2D;
+TEX R4.x, R0.zwzw, texture[5], 2D;
+MOV R4.y, R1.x;
+SGE R0.y, R0.x, fragment.texcoord[4].z;
+SGE R1, R4, fragment.texcoord[4].z;
+DP4 R0.x, R1, c[11].x;
+ADD R0.z, R0.x, R0.y;
+ABS R0.xy, fragment.texcoord
+
+=== Shaders\Pixel\arbfp1\psliquidwater.bls: 404 bytes
+magic HSXG
+HSXG
+w
+!!ARBfp1.0
+OPTION ARB_fog_linear;
+PARAM c[1] = { { 0, 0.25 } };
+TEMP R0;
+TEMP R1;
+TEMP R2;
+TEX R1, fragment.texcoord[1], texture[1], 2D;
+MOV R2.xyz, R1;
+MOV R2.w, c[0].x;
+TEX R0, fragment.texcoord[0], texture[0], 2D;
+MAD R0, fragment.color.primary, R0, R2;
+ADD R1.xyz, fragment.color.secondary, c[0].y;
+MOV R2.w, c[0].x;
+MUL R2.xyz, R1.w, R1;
+ADD result.color, R0, R2;
+END
+
+
+=== Shaders\Pixel\arbfp1\psliquidmagma.bls: 232 bytes
+magic HSXG
+HSXG
+!!ARBfp1.0
+OPTION ARB_fog_linear;
+PARAM c[1] = { { 1 } };
+TEMP R0;
+TEX R0.xyz, fragment.texcoord[0], texture[0], 2D;
+MUL result.color.xyz, fragment.color.primary, R0;
+MOV result.color.w, c[0].x;
+END
+

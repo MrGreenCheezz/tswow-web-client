@@ -101,14 +101,31 @@ const MOPR_SIZE = 8;
 /**
  * The ambient light the model carries for its own interiors, as `MOHD.ambColor`.
  *
- * Stored BGRA. It is not decoration: a group's baked colours are the light on top of this, and
- * without it an interior renders at the luminance the file stores, which on Stormwind has a median
- * of 20 out of 255.
+ * Stored BGRA. Whether it is light *on top of* the baked colours or light already *inside* them
+ * depends on the model's render path — see {@link wmoRenderFlags}.
  */
 function wmoAmbient(mohd) {
   if (!mohd || mohd.length < 32) return [0, 0, 0];
   const packed = mohd.readUInt32LE(28);
   return [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+}
+
+/**
+ * `MOHD.flags`, the u16 at 60: which of the client's two WMO pipelines draws this model.
+ *
+ * Bit 0x2 picks `Shaders\Effects\MapObjU.wfx` (unified) over `MapObj.wfx` (classic), and the two
+ * disagree about MOCV: the classic vertex shader `MapObjDiffuse_T1` multiplies it into the light,
+ * the unified `MapObjUDiffuse_T1` adds it, and the classic load step
+ * (`CMapObjGroup::FixColorVertexAlpha`) takes `ambColor` back out of MOCV because the classic
+ * tool baked it in. Bit 0x8 skips that load step. Measured over the stock client's 1,985 root
+ * WMOs: 1,823 classic (0x0 ×1,066, 0x5 ×440, 0x1 ×317) and 162 unified (0xF ×124 — Stormwind,
+ * Dalaran, Icecrown — 0x7 ×19, 0x3 ×19). The bake shows in the data: Gundrak's 171,138 vertices
+ * sit at or above its ambient (64, 50, 61) in every channel on 98.5% and exactly on it on 35.4%,
+ * Stormwind's are above its (33, 33, 33) on 19.5% and on it on none. Undefined on a short header.
+ */
+function wmoRenderFlags(mohd) {
+  if (!mohd || mohd.length < 62) return undefined;
+  return mohd.readUInt16LE(60);
 }
 
 /**
@@ -262,6 +279,8 @@ export function parseWmoVisual(root, groups, rootPath) {
   const groupRecords = [];
   const colours = [];
   const rootChunks = chunkMap(root);
+  /** MODD record → the artifact groups whose MODR names it, in group order. */
+  const doodadOwners = new Map();
   for (const group of groups) {
     const top = chunkMap(group);
     const mogp = top.get("MOGP");
@@ -285,6 +304,14 @@ export function parseWmoVisual(root, groups, rootPath) {
     // it agrees exactly — 111 groups of Stormwind and 2 of the Goldshire Inn, both ways.
     const lightData = chunks.get("MOLR");
     if (!vertexData || !indexData || vertexData.length % 12 !== 0 || indexData.length % 6 !== 0) continue;
+    // MODR: the doodads this room owns, by MODD record, numbered like the artifact's own groups.
+    const doodadData = chunks.get("MODR");
+    for (let at = 0; doodadData && at + 2 <= doodadData.length; at += 2) {
+      const record = doodadData.readUInt16LE(at);
+      const rooms = doodadOwners.get(record);
+      if (!rooms) doodadOwners.set(record, [groupRecords.length]);
+      else if (rooms.at(-1) !== groupRecords.length) rooms.push(groupRecords.length);
+    }
     const vertexCount = vertexData.length / 12;
     // MONR is optional in older WMOs. Treat it as authored only when the chunk is exactly one
     // finite model-space float3 per MOVT vertex; a partial or non-finite chunk is not a usable
@@ -404,9 +431,11 @@ export function parseWmoVisual(root, groups, rootPath) {
     materialTextures: dependencies.materialTextures, materials: dependencies.materials, triangleMaterials,
     triangleLighting, colours, wmoGroups: groupRecords,
     ambient: wmoAmbient(rootChunks.get("MOHD")),
+    renderFlags: wmoRenderFlags(rootChunks.get("MOHD")),
     lights: wmoLights(rootChunks.get("MOLT")),
     fogs: wmoFogs(rootChunks.get("MFOG")),
     portals: wmoPortals(rootChunks),
+    doodadRooms: wmoDoodadRooms(rootChunks, doodadOwners),
   };
 }
 
@@ -498,17 +527,52 @@ export function wmoGroupMeshes(model) {
   return {
     textures, ambient: model.ambient ?? [0, 0, 0], lights: model.lights ?? [], groups,
     fogs: model.fogs ?? [], portals: model.portals,
+    ...(Number.isInteger(model.renderFlags) ? { renderFlags: model.renderFlags } : {}),
+    doodadRooms: model.doodadRooms ?? [],
   };
 }
 
-export function parseWmoDoodads(root, requestedSet = 0) {
+/**
+ * Doodads owned by an indoor group which carries authored vertex lighting.
+ *
+ * `MODR` is the only reliable ownership relation in the 3.3.5 files. `MOLR` is commonly empty
+ * even in lit rooms and the original client does not expose a stable MODD-to-MOLT relation, so this
+ * deliberately classifies the placement without inventing a nearest-light direction.
+ */
+function wmoLocallyLitDoodads(groups) {
+  const locallyLit = new Set();
+  if (!Array.isArray(groups)) return locallyLit;
+  for (const group of groups) {
+    try {
+      const mogp = chunkMap(group).get("MOGP");
+      if (!mogp || mogp.length < 68 || (mogp.readUInt32LE(MOGP_FLAGS) & WMO_GROUP_INDOOR) === 0) continue;
+      const chunks = chunkMap(mogp.subarray(68));
+      // The reference path gates local doodad light on actual vertex-colour data, not only a flag.
+      const references = chunks.get("MODR");
+      if (!chunks.has("MOCV") || !references) continue;
+      for (let at = 0; at + 2 <= references.length; at += 2) locallyLit.add(references.readUInt16LE(at));
+    } catch {
+      // Group lighting is optional enrichment. One malformed group must not discard the root's
+      // otherwise valid doodad set or assign a guessed room to it.
+    }
+  }
+  return locallyLit;
+}
+
+function wmoDoodadTable(root, groups) {
   const chunks = chunkMap(root);
   const sets = chunks.get("MODS");
   const names = chunks.get("MODN");
   const placements = chunks.get("MODD");
-  if (!sets || !names || !placements) return [];
+  if (!sets || !names || !placements) return undefined;
   if (sets.length % 32 !== 0 || placements.length % 40 !== 0) throw new Error("WMO doodad tables are misaligned");
+  return { sets, names, placements, locallyLit: wmoLocallyLitDoodads(groups) };
+}
+
+function parseWmoDoodadSet(table, requestedSet) {
+  const { sets, names, placements, locallyLit } = table;
   const setCount = sets.length / 32;
+  if (setCount === 0) return [];
   const set = Number.isInteger(requestedSet) && requestedSet >= 0 && requestedSet < setCount ? requestedSet : 0;
   const setOffset = set * 32;
   const first = sets.readUInt32LE(setOffset + 20);
@@ -517,20 +581,111 @@ export function parseWmoDoodads(root, requestedSet = 0) {
   const result = [];
   for (let index = first; index < first + count; index++) {
     const offset = index * 40;
-    const nameOffset = placements.readUInt32LE(offset) & 0x00ffffff;
-    const name = stringAt(names, nameOffset).replace(/\.(mdx|mdl)$/i, ".m2");
-    if (!name) continue;
-    const values = [];
-    for (let field = 1; field <= 8; field++) values.push(placements.readFloatLE(offset + field * 4));
-    if (!values.every(Number.isFinite) || values[7] <= 0) continue;
+    const record = keptDoodadRecord(names, placements, index);
+    if (!record) continue;
+    const { name, values } = record;
+    const localLight = [
+      placements[offset + 38], placements[offset + 37], placements[offset + 36], placements[offset + 39],
+    ];
     result.push({
       name,
       x: values[0], y: values[1], z: values[2],
       quaternionX: values[3], quaternionY: values[4], quaternionZ: values[5], quaternionW: values[6],
       scale: values[7],
+      // The final MODD word is BGRA room illumination, reordered to display-order RGBA. It is not
+      // an albedo tint, so expose it only when group ownership proves this is the indoor M2 path.
+      // Its fourth byte is stored colour alpha, never mesh opacity.
+      ...(locallyLit.has(index) ? { localLight } : {}),
     });
   }
   return result;
+}
+
+/**
+ * One MODD record as the tiles place it, or undefined for one they skip.
+ *
+ * The single filter both the tile generator's doodad list and {@link wmoDoodadRooms} walk: the
+ * tiles number a building's doodads by their position in that list (ids -(placement * 1e6 +
+ * ordinal + 1) in `generate-visual-tile.mjs`), so the room table has to skip exactly the records
+ * the list skips or every ordinal after the first gap would name the wrong room.
+ */
+function keptDoodadRecord(names, placements, index) {
+  const offset = index * 40;
+  const nameOffset = placements.readUInt32LE(offset) & 0x00ffffff;
+  const name = stringAt(names, nameOffset).replace(/\.(mdx|mdl)$/i, ".m2");
+  if (!name) return undefined;
+  const values = [];
+  for (let field = 1; field <= 8; field++) values.push(placements.readFloatLE(offset + field * 4));
+  if (!values.every(Number.isFinite) || values[7] <= 0) return undefined;
+  return { name, values };
+}
+
+/**
+ * Which rooms own each doodad a tile places, per doodad set, in the tile's own numbering.
+ *
+ * MODR is the only ownership the files state. Over Gundrak, Stormwind, the Goldshire Inn, the
+ * Deadmines and the Undercity all 10,910 MODD records are named by at least one group and 168 by
+ * more than one (Gundrak's #113 by four rooms), so a doodad keeps every room that names it and is
+ * drawn while any of them is. Per set: `offsets[k]..offsets[k + 1]` indexes `groups` for ordinal k.
+ * An unusable table answers no sets rather than a guessed room.
+ */
+function wmoDoodadRooms(rootChunks, owners) {
+  const sets = rootChunks.get("MODS");
+  const names = rootChunks.get("MODN");
+  const placements = rootChunks.get("MODD");
+  if (!sets || !names || !placements || sets.length % 32 !== 0 || placements.length % 40 !== 0) return [];
+  const result = [];
+  for (let set = 0; set < sets.length / 32; set++) {
+    const first = sets.readUInt32LE(set * 32 + 20);
+    const count = sets.readUInt32LE(set * 32 + 24);
+    if (count > 100_000 || first + count > placements.length / 40) return [];
+    const offsets = [0];
+    const groups = [];
+    for (let index = first; index < first + count; index++) {
+      if (!keptDoodadRecord(names, placements, index)) continue;
+      for (const group of owners.get(index) ?? []) groups.push(group);
+      offsets.push(groups.length);
+    }
+    result.push({ offsets, groups });
+  }
+  return result;
+}
+
+export function parseWmoDoodads(root, requestedSet = 0, groups = []) {
+  const table = wmoDoodadTable(root, groups);
+  return table ? parseWmoDoodadSet(table, requestedSet) : [];
+}
+
+/** All authored doodad sets, parsing the potentially large group files only once. */
+export function parseWmoDoodadSets(root, groups = []) {
+  const table = wmoDoodadTable(root, groups);
+  if (!table) return [];
+  return Array.from({ length: table.sets.length / 32 }, (_, set) => parseWmoDoodadSet(table, set));
+}
+
+/** Strict validation for the persistent JSON form used by visual-tile generation. */
+export function validParsedWmoDoodadSets(value) {
+  if (!Array.isArray(value)) return false;
+  for (const set of value) {
+    if (!Array.isArray(set)) return false;
+    for (const candidate of set) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+      const doodad = candidate;
+      if (typeof doodad.name !== "string" || doodad.name.length === 0) return false;
+      const transform = [
+        doodad.x, doodad.y, doodad.z,
+        doodad.quaternionX, doodad.quaternionY, doodad.quaternionZ, doodad.quaternionW,
+        doodad.scale,
+      ];
+      if (!transform.every((number) => typeof number === "number" && Number.isFinite(number))) return false;
+      if (doodad.scale <= 0) return false;
+      if (doodad.localLight !== undefined) {
+        if (!Array.isArray(doodad.localLight) || doodad.localLight.length !== 4) return false;
+        if (!doodad.localLight.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return false;
+      }
+    }
+  }
+  return true;
 }
 
 function chunkMap(data) {

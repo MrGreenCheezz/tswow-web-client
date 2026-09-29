@@ -1,0 +1,13 @@
+COLUMNS
+int ID
+locstring Name_lang
+int Order_index
+int<LFGDungeonGroup::ID> Parent_group_ID
+int TypeID
+
+BUILD 3.3.0.10958-3.3.5.12340
+$id$ID<32>
+Name_lang
+Order_index<32>
+Parent_group_ID<32>
+TypeID<32>

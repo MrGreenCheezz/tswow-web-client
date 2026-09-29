@@ -45,6 +45,22 @@ export const FLOATER_LANE_PX = 26;
 /** How much of a number's life passes before it starts to fade. */
 export const FLOATER_FADE_FROM = 0.66;
 
+/** Only combat state the player is actively responsible for belongs over the 3D world. */
+export function floatingCombatTextRelevant(
+  guid: bigint, selfGuid: bigint | undefined, targetGuid: bigint | undefined,
+): boolean {
+  return guid !== 0n && selfGuid !== undefined && (guid === selfGuid || guid === targetGuid);
+}
+
+/** Drops numbers whose unit stopped being the player or current target while they were rising. */
+export function removeIrrelevantFloaters(
+  list: Floater[], selfGuid: bigint | undefined, targetGuid: bigint | undefined,
+): void {
+  for (let index = list.length - 1; index >= 0; index--) {
+    if (!floatingCombatTextRelevant(list[index]!.guid, selfGuid, targetGuid)) list.splice(index, 1);
+  }
+}
+
 export function bubbleLifetime(text: string): number {
   return Math.min(BUBBLE_MAX_MS, Math.max(BUBBLE_MIN_MS, text.length * BUBBLE_MS_PER_CHAR));
 }
@@ -118,6 +134,33 @@ export function floaterOffset(floater: Floater, now: number): { dx: number; dy: 
     dy: -FLOATER_RISE_PX * progress,
     opacity: progress <= FLOATER_FADE_FROM ? 1 : Math.max(0, 1 - fade),
   };
+}
+
+/**
+ * The last landed blow per unit, for the plate hit-flash.
+ *
+ * Fed by the same `FLOATING_TEXT` funnel as the numbers and the injury sounds, so a flash and its
+ * number are never about different blows. Bounded — an AoE pull is many guids — with the oldest
+ * dropped first; entries outlive their flash, and the flash arithmetic ignores them past its window.
+ */
+const plateHits = new Map<bigint, number>();
+const PLATE_HIT_TRACKED = 64;
+
+/** Remembers a landed blow; heals, power and misses never whiten a health bar. */
+export function notePlateHit(guid: bigint, kind: FloaterKind, amount: number, now: number): void {
+  if (guid === 0n || amount <= 0 || (kind !== "damage" && kind !== "taken")) return;
+  plateHits.delete(guid);
+  plateHits.set(guid, now);
+  while (plateHits.size > PLATE_HIT_TRACKED) {
+    const oldest = plateHits.keys().next();
+    if (oldest.done) break;
+    plateHits.delete(oldest.value);
+  }
+}
+
+/** When the last blow landed on this unit, if it is still tracked. */
+export function plateHitAt(guid: bigint): number | undefined {
+  return plateHits.get(guid);
 }
 
 /** What a number reads as: damage comes off, a heal goes on, a miss is a word. */

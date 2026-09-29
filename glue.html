@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Экран входа (GlueXML) · TSWoW WebClient</title>
+    <!--
+      A third page beside index.html and character-lab.html, and since G6 the *standalone* one: the
+      same GlueXML screens are the front door of index.html itself, and both pages call the same
+      `startGlue` in src/browser/glue/Bootstrap.ts.
+
+      The stage's own styles moved with it, into src/browser/glue/glue.css, which the bootstrap
+      imports — so index.html gets an identical stage without this file being copied into it. What
+      is left here is what only a whole page has: the document's own background and scroll rules.
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: #ffd100;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="glue-host">
+      <div id="glue-stage"></div>
+      <div id="glue-status">Загрузка интерфейса...</div>
+    </div>
+    <script type="module" src="/src/browser/glue/main.ts"></script>
+  </body>
+</html>

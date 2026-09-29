@@ -769,6 +769,39 @@ test("R2.4 a pending canonical base publishes completion through every private S
   });
 });
 
+test("R2.4 a pending private view uploads nothing until its canonical resolves", () => {
+  const requests = [];
+  withTextureLoader(function (_url, onLoad, _progress, onError) {
+    const texture = new THREE.Texture();
+    requests.push({ texture, onLoad, onError });
+    return texture;
+  }, () => {
+    const loader = new ModelTextureLoader({ cache: true });
+    const lease = loader.acquire("pending-view-version.blp", {});
+    const built = buildModel({
+      ...privateCloneModel(), batches: [batch()], textureTransforms: [],
+    }, {
+      modelPath: "Spells\\PendingVersion.m2",
+      baseUrl: "http://cache.test",
+      loadTexture: () => lease.texture,
+      borrowLoadedTextures: true,
+      privateLoadedTextureViews: true,
+      geosets: EVERY_GEOSET,
+    });
+    const view = built.materials[0].map;
+    assert.equal(view.version, 0,
+      "an imageless view must not be marked for upload: three warns once per view per draw");
+    lease.texture.image = { data: new Uint8Array([5, 6, 7, 8]), width: 1, height: 1 };
+    requests[0].onLoad?.(lease.texture);
+    assert.ok(view.version > 0,
+      "completion publishes the parked view together with its canonical");
+    assert.strictEqual(view.image, lease.texture.image);
+    view.dispose();
+    lease.release();
+    loader.clear();
+  });
+});
+
 function effectEmitter() {
   const blankTrack = { interpolation: 0, globalSequence: -1, components: 1, tracks: [] };
   const blankRamp = (components) => ({
@@ -878,4 +911,103 @@ test("R2.4 ordinary build ownership remains historical while spell production us
   const clear = source.slice(source.indexOf("  clearWorldResources(): void {"), source.indexOf("\n  dispose(): void {"));
   assert.ok(clear.indexOf("this.clearSpellVisuals();") < clear.indexOf("this.#spellTextures.clear();"));
   assert.match(source, /#spellTextures\.visitRetainedResources\(visitor\)/);
+});
+
+test("world model URL deduplication shares pixels and preserves private wrap, UV and transform state", () => {
+  const loads = [];
+  const model = {
+    ...privateCloneModel(),
+    textures: [
+      { type: 0, flags: 0, path: "Creature\\Same.blp" },
+      { type: 0, flags: 3, path: "Creature\\Same.blp" },
+    ],
+    batches: [
+      batch({ textures: [0, 1], uvSets: [0, 1], textureTransform: 0 }),
+      batch({ textures: [1] }), batch({ textures: [0] }),
+    ],
+  };
+  const built = buildModel(model, {
+    modelPath: "Creature\\Shared.m2", baseUrl: "http://cache.test", geosets: EVERY_GEOSET,
+    deduplicateLoadedTextures: true,
+    loadTexture: (url) => { const texture = new THREE.Texture(); loads.push({ url, texture }); return texture; },
+  });
+  const [first, repeated, last] = built.materials;
+  assert.equal(loads.length, 1, "primary maps and the second layer share one request per build");
+  const views = [first.map, first.alphaMap, repeated.map, last.map];
+  assert.equal(new Set(views).size, 4, "each map keeps its own Texture properties");
+  for (const view of views) assert.strictEqual(view.source, loads[0].texture.source);
+  assert.deepEqual(views.map(t => t.wrapS), [THREE.ClampToEdgeWrapping, THREE.RepeatWrapping,
+    THREE.RepeatWrapping, THREE.ClampToEdgeWrapping]);
+  assert.deepEqual(views.map(t => t.channel), [0, 1, 0, 0]);
+  first.map.offset.x = 0.25;
+  for (const view of views.slice(1)) assert.equal(view.offset.x, 0);
+  assert.deepEqual(new Set(built.ownedTextures), new Set([loads[0].texture, ...views]),
+    "both the uncached source and every material view have a disposal owner");
+  const disposed = new Map(built.ownedTextures.map(t => [t, 0]));
+  for (const texture of disposed.keys()) texture.addEventListener("dispose", () => disposed.set(texture, disposed.get(texture) + 1));
+  built.geometry.dispose();
+  for (const material of built.materials) material.dispose();
+  for (const texture of new Set(built.ownedTextures)) texture.dispose();
+  assert.ok([...disposed.values()].every(n => n === 1));
+});
+
+for (const outcome of ["ready", "failed"]) {
+  test(`world deduplicated texture views receive asynchronous ${outcome} completion together`, () => {
+    const requests = [];
+    withTextureLoader(function (_url, onLoad, _progress, onError) {
+      const texture = new THREE.Texture();
+      requests.push({ texture, onLoad, onError });
+      return texture;
+    }, () => {
+      const loader = new ModelTextureLoader();
+      const built = buildModel({ ...privateCloneModel(), batches: [batch(), batch(), batch()], textureTransforms: [] }, {
+        modelPath: "Creature\\Pending.m2", baseUrl: "http://cache.test", geosets: EVERY_GEOSET,
+        loadTexture: url => loader.load(url), deduplicateLoadedTextures: true,
+      });
+      assert.equal(requests.length, 1);
+      const views = built.materials.map(m => m.map);
+      assert.ok(views.every(t => t.version === 0));
+      const { texture, onLoad, onError } = requests[0];
+      if (outcome === "ready") {
+        texture.image = { data: new Uint8Array([1, 2, 3, 255]), width: 1, height: 1 };
+        onLoad(texture);
+      } else onError(new Error("texture unavailable"));
+      assert.equal(loader.status(texture), outcome);
+      for (const view of views) {
+        assert.strictEqual(view.image, texture.image);
+        assert.equal(view.isDataTexture, true);
+        assert.ok(view.version > 0);
+      }
+      built.geometry.dispose();
+      built.materials.forEach(m => m.dispose());
+      new Set(built.ownedTextures).forEach(t => t.dispose());
+    });
+  });
+}
+
+test("model URL deduplication stays local and does not own directly supplied or borrowed textures", () => {
+  const supplied = new THREE.Texture(), loaded = [];
+  const model = { ...privateCloneModel(), textures: [
+    { type: 0, flags: 0, path: "Creature\\Shared.blp" }, { type: 1, flags: 0, path: "" },
+  ], batches: [batch(), batch(), batch({ textures: [1] })], textureTransforms: [] };
+  const options = { modelPath: "Creature\\Shared.m2", baseUrl: "http://cache.test", geosets: EVERY_GEOSET,
+    deduplicateLoadedTextures: true, slotTextures: new Map([[1, supplied]]),
+    loadTexture: () => { const texture = new THREE.Texture(); loaded.push(texture); return texture; } };
+  const a = buildModel(model, options), b = buildModel(model, options);
+  assert.equal(loaded.length, 2, "there is no unbounded global URL cache");
+  assert.notStrictEqual(a.materials[0].map.source, b.materials[0].map.source);
+  for (const built of [a, b]) {
+    assert.ok(!built.ownedTextures.includes(supplied));
+    assert.strictEqual(built.materials[2].map, supplied);
+  }
+  const cached = new THREE.Texture();
+  const borrowed = buildModel(model, { ...options, borrowLoadedTextures: true, loadTexture: () => cached });
+  assert.ok(!borrowed.ownedTextures.includes(cached));
+  assert.ok(!borrowed.ownedTextures.includes(supplied));
+  assert.equal(borrowed.ownedTextures.length, 2);
+  for (const built of [a, b, borrowed]) {
+    built.geometry.dispose(); built.materials.forEach(m => m.dispose());
+    new Set(built.ownedTextures).forEach(t => t.dispose());
+  }
+  cached.dispose(); supplied.dispose();
 });

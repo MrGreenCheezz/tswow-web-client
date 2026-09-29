@@ -1,0 +1,82 @@
+== Emotes.dbc: 175 rows, cross-tab of EmoteFlags/EmoteSpecProc against AnimationData bit 0x8
+EmoteFlags 0x0 proc 0 | anim body 0x8: false  (34): ONESHOT_NONE:Stand(0x1) ONESHOT_KISS:EmoteKiss(0x100) ONESHOT_CRY:EmoteCry(0x100) ONESHOT_FLEX:EmoteFlex(0x100) ONESHOT_READYRIFLE:ReadyRifle(0x0) ONESHOT_LIFTOFF:LiftOff(0x0) ONESHOT_YES(DNR):EmoteYes(0x0) ONESHOT_NO(DNR):EmoteNo(0x0) ONESHOT_TRAIN(DNR):EmoteTrain(0x0) ONESHOT_LAND:Land(0x0) ONESHOT_SUBMERGE:Submerge(0x0) ONESHOT_DROWN:Drown(0x100) ONESHOT_JUMPLANDRUN:JumpLandRun(0x0) ONESHOT_JUMPEND:JumpEnd(0x101) ONESHOT_DANCESPECIAL:EmoteDanceSpecial(0x100) ONESHOT_CUSTOMSPELL02:CustomSpell02(0x0) ONESHOT_CUSTOMSPELL03:CustomSpell03(0x0) ONESHOT_CUSTOMSPELL04:CustomSpell04(0x0) ONESHOT_CUSTOMSPELL05:CustomSpell05(0x0) ONESHOT_CUSTOMSPELL06:CustomSpell06(0x0) ONESHOT_CUSTOMSPELL07:CustomSpell07(0x0) ONESHOT_CUSTOMSPELL08:CustomSpell08(0x0) ONESHOT_CUSTOMSPELL09:CustomSpell09(0x0) ONESHOT_CUSTOMSPELL10:CustomSpell10(0x0) ONESHOT_FLYDEATH:FlyDeath(0x300) ONESHOT_FLY_SIT_GROUND_DOWN:FlyS
+EmoteFlags 0x0 proc 0 | anim body 0x8: true  (12): ONESHOT_CHICKEN:EmoteChicken(0x108) ONESHOT_APPLAUD:EmoteApplaud(0x108) ONESHOT_POINT(DNR):EmotePoint(0x108) ONESHOT_POINT_NOSHEATHE:EmotePointNoSheathe(0x108) ONESHOT_CUSTOMSPELL01:CustomSpell01(0x8) ONESHOT_COWER(DNR):Cower(0x108) ONESHOT_USESTANDING:EmoteUseStanding(0x108) ONESHOT_OMNICAST_GHOUL (W/SOUND:SpellCastOmni(0x108) ONESHOT_ATTACKBOW:AttackBow(0x108) ONESHOT_ATTACKRIFLE:AttackRifle(0x108) ONESHOT_FLYATTACK1H:FlyAttack1H(0x128) ONESHOT_SPELLCAST_OMNI:SpellCastOmni(0x108)
+EmoteFlags 0x0 proc 1 | anim body 0x8: false  (3): STATE_AT_EASE:Stand(0x1) STAND_STATE_SUBMERGED:Submerged(0x0) STATE_READYJOUST:ReadyJoust(0x0)
+EmoteFlags 0x0 proc 2 | anim body 0x8: false  (23): STATE_SPELLKNEELSTART:SpellKneelStart(0x0) STATE_WHIRLWIND:Whirlwind(0x120) STATE_ROAR:EmoteRoar(0x100) STATE_DANCESPECIAL:EmoteDanceSpecial(0x100) STATE_SIT_CHAIR_MED:SitChairMed(0x0) STATE_CUSTOM_SPELL_02:CustomSpell02(0x0) STATE_CUSTOM_SPELL_04:CustomSpell04(0x0) STATE_CUSTOM_SPELL_03:CustomSpell03(0x0) STATE_CUSTOM_SPELL_05:CustomSpell05(0x0) STATE_SPELLEFFECT_HOLD:Hold(0x0) STATE_READY2HL:Ready2HL(0x0) STATE_SIT_CHAIR_HIGH:SitChairHigh(0x0) STATE_FALL:Fall(0x101) STATE_SWIM_IDLE:SwimIdle(0x1) STATE_FLYFALL:FlyFall(0x101) STATE_SPECIALUNARMED:SpecialUnarmed(0x120) STATE_FLYGRABCLOSED:FlyGrabClosed(0x0) STATE_FLY_SIT_GROUND:FlySitGround(0x100) STATE_WALKBACKWARDS:Walkbackwards(0x41) STATE_CUSTOMSPELL08:CustomSpell08(0x0) STATE_SIT_CHAIR_LOW:SitChairLow(0x0) STATE_SPELL_CHANNEL_OMNI:ChannelCastOmni(0x100) STATE_SPELL_CHANNEL_DIRECTED:ChannelCastDirected(0x100)
+EmoteFlags 0x0 proc 2 | anim body 0x8: true  (9): STATE_HOLD_BOW:HoldBow(0x8) STATE_LAUGH:EmoteLaugh(0x108) STATE_CUSTOM_SPELL_01:CustomSpell01(0x8) STATE_EAT:EmoteEat(0x108) STATE_COWER:Cower(0x108) STATE_ATTACK_UNARMED:AttackUnarmed(0x128) STATE_STRANGULATE:Strangulate(0x108) STATE_READYSPELLOMNI:ReadySpellOmni(0x108) STATE_HOLD_JOUST:HoldJoust(0x8)
+EmoteFlags 0x1 proc 0 | anim body 0x8: true  (1): ONESHOT_RUDE(DNR):EmoteRude(0x108)
+EmoteFlags 0x1000 proc 2 | anim body 0x8: false  (2): STATE_LOOT:LootHold(0x0) STATE_READYTHROWN:ReadyThrown(0x100)
+EmoteFlags 0x1008 proc 2 | anim body 0x8: true  (1): STATE_EXCLAIM:EmoteTalkExclamation(0x108)
+EmoteFlags 0x200 proc 2 | anim body 0x8: false  (1): STATE_FLY_FALL:FlyFall(0x101)
+EmoteFlags 0x2000 proc 0 | anim body 0x8: false  (2): ONESHOT_WORK_CHOPWOOD:EmoteWork(0x100) ONESHOT_WORK_MINING:EmoteWork(0x100)
+EmoteFlags 0x2000 proc 2 | anim body 0x8: false  (4): STATE_READYRIFLE:ReadyRifle(0x0) STATE_WORK_MINING:EmoteWorkNoSheathe(0x0) STATE_WORK_CHOPWOOD:EmoteWorkNoSheathe(0x0) STATE_READYBOW:ReadyBow(0x0)
+EmoteFlags 0x2000 proc 2 | anim body 0x8: true  (1): STATE_USESTANDING_NOSHEATHE:EmoteUseStandingNoSheathe(0x8)
+EmoteFlags 0x202 proc 1 | anim body 0x8: false  (1): STAND_STATE_NONE:Stand(0x1)
+EmoteFlags 0x2100 proc 0 | anim body 0x8: false  (1): ONESHOT_SPELLCAST (W/SOUND):SpellCast(0x100)
+EmoteFlags 0x38 proc 1 | anim body 0x8: false  (1): STATE_MOUNT:Mount(0x100)
+EmoteFlags 0x4 proc 0 | anim body 0x8: false  (2): ONESHOT_ROAR(DNR):EmoteRoar(0x100) ONESHOT_CHEER_NOSHEATHE:EmoteCheer(0x100)
+EmoteFlags 0x4 proc 0 | anim body 0x8: true  (4): ONESHOT_WAVE_NOSHEATHE:EmoteWave(0x108) ONESHOT_EAT_NOSHEATHE:EmoteEatNoSheathe(0x108) ONESHOT_SALUTE_NOSHEATH:EmoteSaluteNoSheathe(0x108) ONESHOT_LAUGH_NOSHEATHE:EmoteLaugh(0x108)
+EmoteFlags 0x400 proc 0 | anim body 0x8: false  (5): ONESHOT_READYUNARMED:ReadyUnarmed(0x100) ONESHOT_READY1H:Ready1H(0x100) ONESHOT_READYBOW:ReadyBow(0x0) ONESHOT_CREATURE_SPECIAL:CreatureSpecial(0x120) ONESHOT_JUMPSTART:JumpStart(0x101)
+EmoteFlags 0x400 proc 0 | anim body 0x8: true  (3): ONESHOT_WOUND:CombatWound(0x128) ONESHOT_WOUNDCRITICAL:CombatCritical(0x128) ONESHOT_BATTLEROAR:BattleRoar(0x108)
+EmoteFlags 0x4000 proc 0 | anim body 0x8: false  (5): ONESHOT_KNEEL:EmoteKneel(0x100) ONESHOT_BEG:EmoteBeg(0x100) ONESHOT_SHY(DNR):EmoteShy(0x100) ONESHOT_DANCE:EmoteDance(0x100) ONESHOT_STOMP:DragonStomp(0x0)
+EmoteFlags 0x4000 proc 2 | anim body 0x8: false  (5): STATE_NONE:Stand(0x1) STATE_DROWNED:Drowned(0x100) STATE_CANNIBALIZE:Cannibalize(0x0) STATE_SUBMERGED:Submerged(0x0) STATE_STEALTH_STAND:StealthStand(0x1)
+EmoteFlags 0x4000 proc 2 | anim body 0x8: true  (4): STATE_POINT(DNR):EmotePoint(0x108) STATE_SPELLPRECAST:SpellPrecast(0x108) STATE_HOLD_RIFLE:HoldRifle(0x8) STATE_HOLD_THROWN:HoldThrown(0x8)
+EmoteFlags 0x4004 proc 2 | anim body 0x8: false  (1): STATE_STUN_NOSHEATHE:EmoteStunNoSheathe(0x0)
+EmoteFlags 0x4400 proc 0 | anim body 0x8: false  (2): ONESHOT_SPELLCAST:SpellCast(0x100) ONESHOT_KICK:Kick(0x120)
+EmoteFlags 0x4400 proc 0 | anim body 0x8: true  (4): ONESHOT_SPELLPRECAST:SpellPrecast(0x108) ONESHOT_ATTACKTHROWN:AttackThrown(0x108) ONESHOT_ATTACKOFF:AttackOff(0x128) ONESHOT_ATTACKOFFPIERCE:AttackOffPierce(0x128)
+EmoteFlags 0x4404 proc 0 | anim body 0x8: false  (3): ONESHOT_SPECIALATTACK1H:Special1H(0x120) ONESHOT_LOOT:Loot(0x100) ONESHOT_PARRY2HL:Ready2HL(0x0)
+EmoteFlags 0x4404 proc 0 | anim body 0x8: true  (9): ONESHOT_ATTACKUNARMED:AttackUnarmed(0x128) ONESHOT_ATTACK1H:Attack1H(0x128) ONESHOT_ATTACK2HTIGHT:Attack2H(0x128) ONESHOT_ATTACK2HLOOSE:Attack2HL(0x128) ONESHOT_PARRYUNARMED:ParryUnarmed(0x128) ONESHOT_PARRYSHIELD:ShieldBlock(0x128) ONESHOT_DODGE:Dodge(0x128) ONESHOT_PARRY1H:Parry1H(0x128) ONESHOT_PARRY2H:Parry2H(0x128)
+EmoteFlags 0x4801 proc 0 | anim body 0x8: false  (1): ONESHOT_BOW:EmoteBow(0x100)
+EmoteFlags 0x4c00 proc 2 | anim body 0x8: false  (1): STATE_STUN:Stun(0x100)
+EmoteFlags 0x5004 proc 0 | anim body 0x8: false  (1): ONESHOT_FISHING:FishingCast(0x100)
+EmoteFlags 0x5204 proc 2 | anim body 0x8: true  (1): STATE_EAT_NO_SHEATHE:EmoteEatNoSheathe(0x108)
+EmoteFlags 0x6000 proc 2 | anim body 0x8: false  (3): STATE_WORK_SHEATHED:EmoteWork(0x100) STATE_READY1H:Ready1H(0x100) STATE_READY2H:Ready2H(0x100)
+EmoteFlags 0x6000 proc 2 | anim body 0x8: true  (2): STATE_APPLAUD:EmoteApplaud(0x108) STATE_TALK:EmoteTalk(0x108)
+EmoteFlags 0x6001 proc 2 | anim body 0x8: false  (1): STATE_FISHING:FishingLoop(0x100)
+EmoteFlags 0x6004 proc 2 | anim body 0x8: false  (1): STATE_WORK:EmoteWorkNoSheathe(0x0)
+EmoteFlags 0x6202 proc 1 | anim body 0x8: false  (4): STATE_SLEEP:Stand(0x1) STATE_SIT:Stand(0x1) STATE_STAND:Stand(0x1) STATE_KNEEL:Stand(0x1)
+EmoteFlags 0x6602 proc 1 | anim body 0x8: false  (1): STATE_DEAD:Stand(0x1)
+EmoteFlags 0x6800 proc 2 | anim body 0x8: false  (1): STATE_READYUNARMED:ReadyUnarmed(0x100)
+EmoteFlags 0x6800 proc 2 | anim body 0x8: true  (1): STATE_USESTANDING:EmoteUseStanding(0x108)
+EmoteFlags 0x7081 proc 2 | anim body 0x8: false  (2): STATE_DANCE:EmoteDance(0x100) STATE_DANCE_CUSTOM:Stand(0x1)
+EmoteFlags 0x8 proc 0 | anim body 0x8: true  (1): ONESHOT_FLYTALK:FlyEmoteTalk(0x108)
+EmoteFlags 0x800 proc 0 | anim body 0x8: false  (1): ONESHOT_CHEER(DNR):EmoteCheer(0x100)
+EmoteFlags 0x800 proc 0 | anim body 0x8: true  (3): ONESHOT_WAVE(DNR):EmoteWave(0x108) ONESHOT_EAT:EmoteEat(0x108) ONESHOT_SALUTE:EmoteSalute(0x108)
+EmoteFlags 0x88 proc 0 | anim body 0x8: true  (1): ONESHOT_TALK_NOSHEATHE:EmoteTalkNoSheathe(0x108)
+EmoteFlags 0x8c proc 0 | anim body 0x8: true  (1): ONESHOT_TALK(DNR):EmoteTalk(0x108)
+EmoteFlags 0x8c0 proc 0 | anim body 0x8: true  (1): ONESHOT_SHOUT(DNR):EmoteShout(0x108)
+EmoteFlags 0x94 proc 0 | anim body 0x8: true  (1): ONESHOT_QUESTION:EmoteTalkQuestion(0x108)
+EmoteFlags 0x980 proc 0 | anim body 0x8: true  (1): ONESHOT_LAUGH:EmoteLaugh(0x108)
+EmoteFlags 0xa4 proc 0 | anim body 0x8: true  (1): ONESHOT_EXCLAMATION(DNR):EmoteTalkExclamation(0x108)
+EmoteFlags 0xc001 proc 0 | anim body 0x8: false  (1): ONESHOT_MOUNTSPECIAL:MountSpecial(0x101)
+
+== SpellVisualKit.Flags by pose class
+names 0 | Flags 0x0: 408
+names 0 | Flags 0x2: 2
+names 0 | Flags 0x20: 1
+names a pose | Flags 0x0: 3370
+names a pose | Flags 0x1: 9
+names a pose | Flags 0x10: 1
+names a pose | Flags 0x100: 30
+names a pose | Flags 0x140: 1
+names a pose | Flags 0x2: 22
+names a pose | Flags 0x20: 11
+names a pose | Flags 0x3: 2
+names a pose | Flags 0x4: 11
+names a pose | Flags 0x40: 12
+names a pose | Flags 0x5c: 1
+names a pose | Flags 0x8: 2
+names a pose | Flags 0xc: 2
+no pose | Flags 0x0: 4694
+no pose | Flags 0x1: 8
+no pose | Flags 0x100: 3
+no pose | Flags 0x2: 14
+no pose | Flags 0x20: 46
+no pose | Flags 0x23: 2
+no pose | Flags 0x3: 6
+no pose | Flags 0x4: 1
+no pose | Flags 0x40: 2
+no pose | Flags 0x600: 1
+no pose | Flags 0x80: 2
+
+spells whose StateKit names 0 and nothing else as a pose: 217; first 40: 952:Ледник | 3714:Льдистый путь | 7448:Vile Like Fire!: Fire | 24203:Отлучение Сердца Хаккара | 26869:Влюбленный | 27568:Эффект скатерти для пикника | 27569:Цветочный дождь | 27571:Каскад роз | 27731:The Admiral Revealed: Mal'Ganis's Portal | 27741:Любовная лихорадка | 29042:Сияние (реклама iCoke) | 29519:Силитист | 30271:Невозможность поля | 31954:Частицы духа, огромные | 32260:Невозможность поля (само) | 32261:Каражан - Шахматы: создание маркера передвижения | 32859:Шаткая поступь | 33918:Канал кристалла | 34156:Канал кристалла | 34173:Благословение солнечного охотника | 34187:Благословение солнечного охотника | 34200:Канал кристалла | 34221:Канал кристалла | 34367:Опустошение кровавого камня | 34424:Теневая броня | 34634:Аура Солнечного охотника | 35190:Канал кристалла | 35841:Дух дренея - визуальный эффект | 36193:Пила | 36440:Пьяная невидимость (розовая) | 36575:Тчали - состояние заморозки головы | 36725:Частицы духа (красные) | 36852:Поддержание | 36854:Поддержание | 36856:Поддержание | 36857:Поддержание | 36858:Поддержание | 38495:Око Гриллока | 38690:Магический всасыватель, появление манекена | 38719:Магический всасыватель, подпорка, появление

@@ -7,6 +7,20 @@ import { PacketWriter } from "../protocol/PacketWriter.js";
 /** `TRADE_SLOT_COUNT` in TradeData.h. The last slot is the "will not be traded" one. */
 export const TRADE_SLOT_COUNT = 7;
 
+/**
+ * First offer slot that is not in `used`.
+ *
+ * Slots 0 to 5 are the tradeable ones; the menu and the drag-and-drop window share this so an
+ * item always lands in the same first free slot whichever gesture offered it.
+ */
+export function firstFreeTradeSlot(used: Iterable<number>): number | undefined {
+  const taken = new Set(used);
+  for (let slot = 0; slot < TRADE_SLOT_COUNT - 1; slot += 1) {
+    if (!taken.has(slot)) return slot;
+  }
+  return undefined;
+}
+
 /** `TradeStatus` in SharedDefines.h. */
 export const TRADE_STATUS_BUSY = 0;
 export const TRADE_STATUS_BEGIN_TRADE = 1;
@@ -16,6 +30,7 @@ export const TRADE_STATUS_TRADE_ACCEPT = 4;
 export const TRADE_STATUS_BACK_TO_TRADE = 7;
 export const TRADE_STATUS_TRADE_COMPLETE = 8;
 export const TRADE_STATUS_CLOSE_WINDOW = 12;
+export const TRADE_STATUS_NOT_ON_TAPLIST = 23;
 
 export interface TradeStatus {
   status: number;
@@ -126,6 +141,12 @@ export function buildClearTradeItem(tradeSlot: number): Uint8Array {
 
 export function buildSetTradeGold(copper: number): Uint8Array {
   return new PacketWriter().u32(copper).toUint8Array();
+}
+
+/** Player.cpp `MAX_MONEY_AMOUNT`; the native trade field is labelled in gold. */
+export function tradeGoldToCopper(gold: number): number {
+  if (!Number.isFinite(gold) || gold <= 0) return 0;
+  return Math.min(0x7fffffff, Math.round(gold * 10_000));
 }
 
 const TRADE_MESSAGES: Record<number, string> = {

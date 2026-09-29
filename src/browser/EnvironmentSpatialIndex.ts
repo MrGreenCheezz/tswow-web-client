@@ -17,6 +17,12 @@ export interface EnvironmentSpatialQuery {
   readonly visitedEntries: number;
 }
 
+export interface CachedEnvironmentSpatialQuery {
+  readonly objects: readonly EnvironmentObject[];
+  readonly visitedCells: number;
+  readonly visitedEntries: number;
+}
+
 interface IndexedEntry {
   readonly object: EnvironmentObject;
   readonly ordinal: number;
@@ -46,6 +52,8 @@ export class EnvironmentSpatialIndex {
   readonly #cells: ReadonlyMap<string, readonly IndexedEntry[]>;
   readonly #fallback: readonly IndexedEntry[];
   readonly #cellSize: number;
+  /** One raw pool per immutable index, replaced as soon as the query's cell rectangle changes. */
+  #lastQuery: { cells: CellCoverage; result: CachedEnvironmentSpatialQuery } | undefined;
 
   constructor(
     objects: readonly EnvironmentObject[],
@@ -104,21 +112,48 @@ export class EnvironmentSpatialIndex {
    * being silently lost because they have no safe cell.
    */
   query(x: number, y: number, range: number): EnvironmentSpatialQuery {
+    const cells = this.#queryCells(x, y, range);
+    return cells ? this.#queryWithinCells(cells) : this.#failOpenQuery();
+  }
+
+  /**
+   * Reuse the raw pool while its exact cell rectangle is unchanged. Distances and visibility
+   * remain the caller's current-frame decisions. Unlike query(), this opt-in result is immutable.
+   */
+  queryCached(x: number, y: number, range: number): CachedEnvironmentSpatialQuery {
+    const cells = this.#queryCells(x, y, range);
+    if (!cells) {
+      this.#lastQuery = undefined;
+      const result = this.#failOpenQuery();
+      return Object.freeze({ ...result, objects: Object.freeze(result.objects) });
+    }
+    const previous = this.#lastQuery;
+    if (previous && cells.minX === previous.cells.minX && cells.maxX === previous.cells.maxX
+      && cells.minY === previous.cells.minY && cells.maxY === previous.cells.maxY) {
+      return previous.result;
+    }
+    const query = this.#queryWithinCells(cells);
+    const result = Object.freeze({ ...query, objects: Object.freeze(query.objects) });
+    this.#lastQuery = { cells, result };
+    return result;
+  }
+
+  #queryCells(x: number, y: number, range: number): CellCoverage | undefined {
     if (!validQuery(x, y, range) || !Number.isFinite(this.#cellSize)) {
-      return this.#failOpenQuery();
+      return undefined;
     }
     const minX = x - range;
     const maxX = x + range;
     const minY = y - range;
     const maxY = y + range;
-    if (![minX, maxX, minY, maxY].every(Number.isFinite)) return this.#failOpenQuery();
+    if (![minX, maxX, minY, maxY].every(Number.isFinite)) return undefined;
 
     const minCellX = cellIndex(minX, this.#cellSize);
     const maxCellX = cellIndex(maxX, this.#cellSize);
     const minCellY = cellIndex(minY, this.#cellSize);
     const maxCellY = cellIndex(maxY, this.#cellSize);
     if (![minCellX, maxCellX, minCellY, maxCellY].every(Number.isSafeInteger)) {
-      return this.#failOpenQuery();
+      return undefined;
     }
     const xCount = maxCellX - minCellX + 1;
     const yCount = maxCellY - minCellY + 1;
@@ -127,23 +162,26 @@ export class EnvironmentSpatialIndex {
       || xCount > ENVIRONMENT_SPATIAL_MAX_QUERY_CELLS
       || yCount > ENVIRONMENT_SPATIAL_MAX_QUERY_CELLS
       || xCount > ENVIRONMENT_SPATIAL_MAX_QUERY_CELLS / yCount) {
-      return this.#failOpenQuery();
+      return undefined;
     }
+    return { minX: minCellX, maxX: maxCellX, minY: minCellY, maxY: maxCellY, count: xCount * yCount };
+  }
 
+  #queryWithinCells({ minX, maxX, minY, maxY }: CellCoverage): EnvironmentSpatialQuery {
     const selected = new Set<IndexedEntry>();
     let visitedCells = 0;
     let visitedEntries = this.#fallback.length;
-    for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
-      for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+    for (let cellX = minX; cellX <= maxX; cellX++) {
+      for (let cellY = minY; cellY <= maxY; cellY++) {
         visitedCells++;
         const entriesInCell = this.#cells.get(cellKey(cellX, cellY));
         if (entriesInCell) {
           visitedEntries += entriesInCell.length;
           for (const entry of entriesInCell) selected.add(entry);
         }
-        if (cellY === maxCellY) break;
+        if (cellY === maxY) break;
       }
-      if (cellX === maxCellX) break;
+      if (cellX === maxX) break;
     }
     for (const entry of this.#fallback) selected.add(entry);
 

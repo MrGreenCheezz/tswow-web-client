@@ -159,7 +159,8 @@ test("the six local sound definitions read the columns they claim to", withDatas
   const items = await openDbcFile(dbcDirectory, "Item");
   assert.equal(items.fields, 8);
   assert.equal(items.recordSize, 32);
-  assert.equal(items.records, 46098);
+  assert.equal(new Set([...items.rows()].map((row) => items.id(row))).size, items.records,
+    "every local item, including module additions, has a distinct readable ID");
   const sword = items.rowOf(25);
   assert.equal(items.int(sword, "ClassID"), 2);
   assert.equal(items.int(sword, "SubclassID"), 7, "a one-handed sword");

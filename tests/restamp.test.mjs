@@ -5,8 +5,10 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 import { promisify } from "node:util";
 import { DatasetFingerprint } from "../dist/code/gateway/DatasetFingerprint.js";
+import { blpToPng } from "../tools/blp-png.mjs";
 import { repositoryRoot } from "../tools/paths.mjs";
 import { stampSidecar } from "../tools/source-stamp.mjs";
 
@@ -181,11 +183,188 @@ test("a derived stamp is a stamp: the entry goes when the module replaces the pi
   }
 });
 
-test("an entry whose name cannot name its inputs is counted and left alone", async () => {
-  // `data/textures` and `data/visual-models` are keyed on sha1 of a path, and nothing on disk
-  // holds the path that was hashed: 836 and 670 of them here. Guessing at a stamp for one would
-  // be worse than leaving it unwatched — the gateway drops an entry whose stamp disagrees, and a
-  // wrong stamp is a picture deleted for no reason.
+test("a legacy texture equal to the current winning BLP gains only a stamp", async () => {
+  const box = await machine();
+  try {
+    const path = "Interface\\Icons\\Custom_Fire.blp";
+    const id = createHash("sha1").update(`texture-v1\0${path.toLowerCase()}`).digest("hex");
+    const texture = join(box.directory("TEXTURE_DIR"), `${id}.png`);
+    const expected = blpToPng(await readFile(box.icon));
+    await writeFile(texture, expected);
+    const before = await stat(texture);
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /textures: 1 stamped/);
+    assert.doesNotMatch(stderr, /regenerated/);
+    assert.deepEqual(await readFile(texture), expected);
+    assert.equal((await stat(texture)).mtimeMs, before.mtimeMs, "a proven picture is not republished");
+    const stamp = JSON.parse(await readFile(stampSidecar(texture), "utf8"));
+    assert.equal(stamp.sources[0].path, path.toLowerCase());
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a legacy texture stale against the current winning BLP is regenerated and stamped", async () => {
+  const box = await machine();
+  try {
+    const path = "Interface\\Icons\\Custom_Fire.blp";
+    const id = createHash("sha1").update(`texture-v1\0${path.toLowerCase()}`).digest("hex");
+    const texture = join(box.directory("TEXTURE_DIR"), `${id}.png`);
+    const stale = blpToPng(blp([90, 80, 70, 255]));
+    const expected = blpToPng(await readFile(box.icon));
+    await writeFile(texture, stale);
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /textures: 1 stamped, 1 regenerated/);
+    assert.deepEqual(await readFile(texture), expected, "the generator's current PNG bytes replace the stale entry");
+    await assert.doesNotReject(access(stampSidecar(texture)));
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a readable order-2 texture stamp is migrated before its first request without republishing the PNG", async () => {
+  const box = await machine();
+  try {
+    const path = "Interface\\Icons\\Custom_Fire.blp";
+    const id = createHash("sha1").update(`texture-v1\0${path.toLowerCase()}`).digest("hex");
+    const texture = join(box.directory("TEXTURE_DIR"), `${id}.png`);
+    const expected = blpToPng(await readFile(box.icon));
+    await writeFile(texture, expected);
+    await restamp(box);
+
+    const current = await readFile(stampSidecar(texture), "utf8");
+    const legacy = JSON.parse(current);
+    legacy.chain = createHash("sha1")
+      .update("order-2\ndirectory:patch-ruru-a.mpq")
+      .digest("hex");
+    assert.notEqual(legacy.chain, JSON.parse(current).chain);
+    await writeFile(stampSidecar(texture), JSON.stringify(legacy));
+    const before = await stat(texture);
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /textures: 1 stamped/);
+    assert.doesNotMatch(stderr, /regenerated/);
+    assert.equal(await readFile(stampSidecar(texture), "utf8"), current, "order-3 provenance replaces order-2");
+    assert.deepEqual(await readFile(texture), expected);
+    assert.equal((await stat(texture)).mtimeMs, before.mtimeMs, "migration verifies but does not republish current art");
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a stamp from a different patch composition whose source moved is regenerated from the new source, not blessed", async () => {
+  // A later patch directory that carries the same path takes it over: the published picture was
+  // decoded from the copy that lost, so it is stale. The pass proves each such entry against the
+  // source that wins today, and a picture that does not match is replaced with that decode —
+  // signing the old one would hide the change, and leaving it for the request path costs a
+  // generator process per icon.
+  const box = await machine();
+  try {
+    await publishIcon(box, 70000);
+    const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
+    const stampFile = stampSidecar(picture);
+    const staleStamp = await readFile(stampFile, "utf8");
+    const later = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Custom_Fire.blp");
+    await mkdir(join(later, ".."), { recursive: true });
+    await writeFile(later, blp([90, 90, 90, 255]));
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /Stamped 1 published entry/);
+    assert.match(stderr, /item-icons: 0 of 1 from an earlier chain re-signed, 1 regenerated/);
+    assert.deepEqual(await readFile(picture), Buffer.from(blpToPng(blp([90, 90, 90, 255]))),
+      "the picture is what the winning source decodes to");
+    assert.notEqual(await readFile(stampFile, "utf8"), staleStamp, "and it carries the stamp of that source");
+
+    const fingerprint = new DatasetFingerprint({
+      dbcDirectory: box.dbc,
+      clientDirectory: box.client,
+      intervalMs: 0,
+    });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(picture);
+    await access(picture);
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("an entry whose source file was copied — same picture, another mtime and encoder — is proven against it and kept", async () => {
+  // Measured 2026-09-28: 499 of a sample of 500 item-icon stamps named the same archive at the same
+  // size and differed only in its mtime (the client the gateway reads had been copied from another
+  // folder), and the published pictures held exactly the pixels of a fresh decode in a different PNG
+  // encoding (5,223 B against 5,488 B). Size and time cannot say that; decoding the source can, and
+  // nothing has to be rewritten — 20,942 correct files were one byte-compare away from it.
+  const box = await machine();
+  try {
+    await publishIcon(box, 70000);
+    const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
+    const otherEncoding = PNG.sync.write(PNG.sync.read(await readFile(picture)), { deflateLevel: 1, filterType: 0 });
+    assert.notDeepEqual(otherEncoding, await readFile(picture), "the fixture really is another encoding");
+    await writeFile(picture, otherEncoding);
+    const moved = new Date(Date.now() + 3_600_000);
+    await utimes(box.icon, moved, moved);
+    const unrelated = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Other.blp");
+    await mkdir(join(unrelated, ".."), { recursive: true });
+    await writeFile(unrelated, blp([5, 5, 5, 255]));
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /item-icons: 1 of 1 from an earlier chain re-signed \(1 proven against the source\)/);
+    assert.deepEqual(await readFile(picture), otherEncoding, "the picture on disk is left alone");
+    const stamp = JSON.parse(await readFile(stampSidecar(picture), "utf8"));
+    assert.equal(stamp.sources[0].mtimeMs, (await stat(box.icon)).mtimeMs, "and stamped with the source as it is now");
+
+    const fingerprint = new DatasetFingerprint({
+      dbcDirectory: box.dbc,
+      clientDirectory: box.client,
+      intervalMs: 0,
+    });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(picture);
+    await access(picture);
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a stamp from a different patch composition is re-signed when nothing it names changed", async () => {
+  // The chain digest is over the sources' *names*, so any new patch directory makes every stamp
+  // foreign. Measured 2026-09-28: 4,528 textures and 9,421 model files were foreign after the
+  // tswow-store link, and 149 of 150 regenerated textures came out byte-identical — the player paid
+  // a generator run per entry to be handed the same bytes. An unrelated directory must not cost that.
+  const box = await machine();
+  try {
+    await publishIcon(box, 70000);
+    const picture = join(box.directory("ITEM_ICON_DIR"), "70000.png");
+    const stampFile = stampSidecar(picture);
+    const before = JSON.parse(await readFile(stampFile, "utf8"));
+    const unrelated = join(box.client, "Data", "ruRU", "patch-ruRU-B.MPQ", "Interface", "Icons", "Other.blp");
+    await mkdir(join(unrelated, ".."), { recursive: true });
+    await writeFile(unrelated, blp([5, 5, 5, 255]));
+
+    const { stderr } = await restamp(box);
+    assert.match(stderr, /item-icons: 1 of 1 from an earlier chain re-signed/);
+    const after = JSON.parse(await readFile(stampFile, "utf8"));
+    assert.notEqual(after.chain, before.chain, "signed under the chain as it is now");
+    assert.equal(after.sources[0].file, before.sources[0].file, "and still naming the copy it was built from");
+
+    const fingerprint = new DatasetFingerprint({
+      dbcDirectory: box.dbc,
+      clientDirectory: box.client,
+      intervalMs: 0,
+    });
+    await fingerprint.poll();
+    await fingerprint.ensureCurrent(picture);
+    await access(picture);
+  } finally {
+    await removeMachine(box);
+  }
+});
+
+test("a texture hash absent from the archive reverse index is counted and left alone", async () => {
+  // A hash that does not map to any enumerated BLP cannot be given a truthful source stamp.
+  // Guessing is worse than leaving it unwatched: the gateway drops an entry whose stamp disagrees.
   const box = await machine();
   try {
     const id = createHash("sha1").update("texture-v1\0tileset\\test.blp").digest("hex");

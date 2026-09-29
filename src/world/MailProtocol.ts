@@ -18,10 +18,14 @@ export const MAIL_MONEY_TAKEN = 1;
 export const MAIL_ITEM_TAKEN = 2;
 export const MAIL_RETURNED_TO_SENDER = 3;
 export const MAIL_DELETED = 4;
+/** `MAIL_MADE_PERMANENT`: HandleMailCreateTextItem's result command (MailHandler.cpp:576, :613). */
+export const MAIL_MADE_PERMANENT = 5;
 
 export const MAIL_OK = 0;
 export const MAIL_ERR_EQUIP_ERROR = 1;
 export const MAIL_ERR_ITEM_HAS_EXPIRED = 21;
+/** `MAIL_CHECK_MASK_RETURNED` in Mail.h: a returned letter cannot be returned again. */
+export const MAIL_CHECK_MASK_RETURNED = 0x02;
 
 /** `MAX_INSPECTED_ENCHANTMENT_SLOT` in ItemDefines.h. */
 const ENCHANTMENT_SLOTS = 7;
@@ -188,6 +192,15 @@ export function buildMailTakeMoney(mailboxGuid: bigint, mailId: number): Uint8Ar
   return new PacketWriter().u64(mailboxGuid).u32(mailId).toUint8Array();
 }
 
+/**
+ * `CMSG_MAIL_CREATE_TEXT_ITEM` (0x24A): `MailCreateTextItem::Read` is the mailbox GUID and the mail
+ * id (MailPackets.cpp:170-174). The core copies the letter into a readable item and answers with
+ * `SendMailResult(mailId, MAIL_MADE_PERMANENT, …)`.
+ */
+export function buildMailCreateTextItem(mailboxGuid: bigint, mailId: number): Uint8Array {
+  return new PacketWriter().u64(mailboxGuid).u32(mailId).toUint8Array();
+}
+
 export function buildMailMarkAsRead(mailboxGuid: bigint, mailId: number): Uint8Array {
   return new PacketWriter().u64(mailboxGuid).u32(mailId).toUint8Array();
 }
@@ -224,6 +237,11 @@ export function mailErrorText(error: number): string {
 /** `mail->checked` bit 1: the letter has already been opened. */
 export function isMailRead(entry: MailEntry): boolean {
   return (entry.flags & 0x01) !== 0;
+}
+
+export function isMailReturnable(entry: MailEntry): boolean {
+  return entry.senderType === MAIL_NORMAL && entry.senderGuid !== 0n
+    && (entry.flags & MAIL_CHECK_MASK_RETURNED) === 0;
 }
 
 /**

@@ -10,6 +10,7 @@ export const REALM_LIST = 0x10;
 export const AUTH_SECURITY_PIN = 0x01;
 export const AUTH_SECURITY_MATRIX = 0x02;
 export const AUTH_SECURITY_TOKEN = 0x04;
+export const REALM_FLAG_OFFLINE = 0x02;
 export const REALM_FLAG_SPECIFY_BUILD = 0x04;
 
 export class AuthProtocolError extends Error {
@@ -19,6 +20,17 @@ export class AuthProtocolError extends Error {
     super(message);
     this.name = "AuthProtocolError";
     this.code = code;
+  }
+}
+
+/**
+ * The authserver's session proof (M2) did not match the one computed here: whoever answered does
+ * not hold the verifier it accepted the password against. The client's LOGIN_BAD_SERVER_PROOF.
+ */
+export class AuthServerProofError extends AuthProtocolError {
+  constructor() {
+    super("Authserver returned an invalid SRP6 session proof");
+    this.name = "AuthServerProofError";
   }
 }
 
@@ -38,6 +50,11 @@ export interface RealmInfo {
   timezone: number;
   id: number;
   build: number | undefined;
+}
+
+/** The authserver marks stopped realms and incompatible builds as offline. */
+export function canSelectRealm(realm: Pick<RealmInfo, "locked" | "flags">): boolean {
+  return !realm.locked && (realm.flags & REALM_FLAG_OFFLINE) === 0;
 }
 
 function reversedAscii(value: string, includeNull: boolean): Uint8Array {
@@ -133,7 +150,7 @@ export function parseLogonProof(packet: Uint8Array, expectedM2: Uint8Array): voi
   reader.u32();
   reader.u16();
   reader.assertFinished();
-  if (!equalBytes(M2, expectedM2)) throw new AuthProtocolError("Authserver returned an invalid SRP6 session proof");
+  if (!equalBytes(M2, expectedM2)) throw new AuthServerProofError();
 }
 
 export function buildRealmListRequest(): Uint8Array {
@@ -174,4 +191,3 @@ export function parseRealmList(packet: Uint8Array): RealmInfo[] {
   reader.assertFinished();
   return realms;
 }
-

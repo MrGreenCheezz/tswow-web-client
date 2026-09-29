@@ -5,6 +5,8 @@ import {
   buildAutoEquipItem,
   buildAutoStoreBagItem,
   buildDestroyItem,
+  buildOpenItem,
+  buildSetAmmo,
   buildSplitItem,
   buildSwapInvItem,
   buildSwapItem,
@@ -13,6 +15,8 @@ import {
   parseInventoryChangeFailure,
   parseItemPushResult,
 } from "../dist/code/world/ItemProtocol.js";
+import { OPCODES } from "../dist/code/generated/opcodes.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 
 test("the swap opcodes write the destination before the source", () => {
   // HandleSwapInvItemOpcode reads dstslot then srcslot, the reverse of the opcode name.
@@ -31,6 +35,29 @@ test("the remaining item opcodes match their handlers", () => {
   const split = buildSplitItem(255, 23, 19, 0, 7);
   assert.equal(split.length, 4 + 4);
   assert.equal(new DataView(split.buffer, split.byteOffset).getUint32(4, true), 7);
+});
+
+test("open item writes the bag and slot that HandleOpenItemOpcode reads", () => {
+  assert.deepEqual([...buildOpenItem(255, 24)], [255, 24]);
+  assert.deepEqual([...buildOpenItem(19, 3)], [19, 3]);
+});
+
+test("set ammo writes the one uint32 entry HandleSetAmmoOpcode reads, and WorldClient sends it as CMSG_SET_AMMO", () => {
+  // ItemHandler.cpp:814-839: `recvData >> item` (uint32); zero is RemoveAmmo.
+  assert.deepEqual([...buildSetAmmo(2512)], [0xd0, 0x09, 0x00, 0x00], "Rough Arrow, little-endian");
+  assert.deepEqual([...buildSetAmmo(0)], [0, 0, 0, 0]);
+  assert.deepEqual([...buildSetAmmo(0xffff_ffff)], [0xff, 0xff, 0xff, 0xff]);
+  assert.equal(OPCODES.CMSG_SET_AMMO, 0x268, "Opcodes.cpp:747");
+
+  const sent = [];
+  const client = new WorldClient({ send: (opcode, payload) => sent.push([opcode, [...payload]]), close() {} });
+  client.setAmmo(2512);
+  client.setAmmo(0);
+  for (const invalid of [-1, 1.5, 2 ** 32, Number.NaN]) client.setAmmo(invalid);
+  assert.deepEqual(sent, [[0x268, [0xd0, 0x09, 0, 0]], [0x268, [0, 0, 0, 0]]], "anything but a uint32 is not sent");
+  client.close();
+  client.setAmmo(2512);
+  assert.equal(sent.filter(([opcode]) => opcode === OPCODES.CMSG_SET_AMMO).length, 2, "a closed session sends nothing");
 });
 
 test("use item writes the handler's field order and a no-target cast", () => {

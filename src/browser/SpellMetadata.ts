@@ -10,35 +10,137 @@ export function spellButtonUsable(metadata: Pick<SpellMetadata, "passive"> | und
   return metadata !== undefined && !metadata.passive;
 }
 
+/** What `/dbc/spells` accepts in one request; the route answers 400 past it. */
+const IDS_PER_REQUEST = 200;
+
 export class SpellMetadataClient {
   readonly #baseUrl: string;
   readonly #cache = new Map<number, SpellMetadata>();
+  /**
+   * Ids the gateway answered without a row, asked for once per session.
+   *
+   * `/dbc/spells` filters its answer through a table it loads once per process (server-side
+   * aliases included), so an id it has no row for today has none for as long as that gateway runs.
+   * Asking again only ever cost a request — and the aura strip used to ask again for every
+   * unresolved aura of every unit in view on every aura packet, each time under a new URL the
+   * browser cache could not answer. A failed request records nothing here: only an answer is final.
+   */
+  readonly #missing = new Set<number>();
+  /**
+   * The request already asking for an id. A caller that needs the same row waits for that answer
+   * instead of sending a second request for it; in a crowd, two hundred aura packets used to send
+   * two hundred overlapping requests before the first had come back.
+   */
+  readonly #inFlight = new Map<number, Promise<void>>();
+  /**
+   * Whether this gateway has been seen to answer the v=13 key in the v=12 shape (no
+   * `auraDescription` on any row) even when asked past the browser cache: an older gateway process,
+   * still running. Until then, a batch in the old shape is asked once more with `cache: "reload"`.
+   */
+  #olderGateway = false;
+  readonly #fetch: typeof fetch;
 
-  constructor(gatewayWebSocketUrl: string) {
+  constructor(gatewayWebSocketUrl: string, fetcher: typeof fetch = (input, init) => fetch(input, init)) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#fetch = fetcher;
+  }
+
+  /** Whether the gateway has answered for this id: a row, or the final word that there is none. */
+  answered(id: number): boolean {
+    return this.#cache.has(id) || this.#missing.has(id);
   }
 
   async load(ids: readonly number[]): Promise<Map<number, SpellMetadata>> {
-    const missing = [...new Set(ids)].filter((id) => !this.#cache.has(id));
-    for (let offset = 0; offset < missing.length; offset += 200) {
-      // v=6 invalidated cached responses from before the spellbook learned what a rank is: the
-      // family key, `SpellLevel`, the mana percentage, the range, the cast time and the school. v=7
-      // puts `SpellRange.Flags` beside that range, and without it 544 of the book's 7,369 spells
-      // print «Радиус действия: 5 м» for a melee swing — an hour of `cache-control` would be an
-      // hour of the defect after the gateway had stopped serving it. The guard below does not list
-      // the field on purpose: an absent one reads as `0 & 1`, which is a wrong word rather than a
-      // thrown repaint, and refusing the whole record would cost the player their book instead.
-      // v=8 carries `SPELL_ATTR2_AUTOREPEAT_FLAG`. Treating an hour-old Auto Shot as an ordinary
-      // cast restarts the server repeat container and floods the player with cast failures.
-      const response = await fetch(`${this.#baseUrl}/dbc/spells?ids=${missing.slice(offset, offset + 200).join(",")}&v=8`);
-      if (!response.ok) throw new Error(`Spell metadata gateway returned ${response.status}`);
-      const value: unknown = await response.json();
-      if (!Array.isArray(value) || !value.every(isSpellMetadata)) throw new Error("Spell metadata gateway returned invalid data");
-      for (const metadata of value) this.#cache.set(metadata.id, metadata);
+    const wanted = [...new Set(ids)];
+    const missing: number[] = [];
+    const shared = new Set<Promise<void>>();
+    for (const id of wanted) {
+      if (this.#cache.has(id) || this.#missing.has(id)) continue;
+      const pending = this.#inFlight.get(id);
+      if (pending) shared.add(pending);
+      else missing.push(id);
+    }
+    // This call's own request starts at once; the rows another call is already asking for are
+    // waited for rather than asked twice. Only this call's own failure is its failure, as before.
+    await Promise.all([this.#request(missing), Promise.allSettled(shared)]);
+    if (shared.size > 0) {
+      // A request this call was waiting on failed: its ids are asked for again here, which is the
+      // request this call would have made on its own before requests were shared.
+      const unanswered = wanted.filter((id) => !this.#cache.has(id) && !this.#missing.has(id));
+      const again = unanswered.filter((id) => !this.#inFlight.has(id));
+      const still = new Set(unanswered.flatMap((id) => {
+        const pending = this.#inFlight.get(id);
+        return pending ? [pending] : [];
+      }));
+      await Promise.all([this.#request(again), Promise.allSettled(still)]);
     }
     return new Map(ids.map((id) => [id, this.#cache.get(id)]).filter((entry): entry is [number, SpellMetadata] => entry[1] !== undefined));
+  }
+
+  /**
+   * Asks for `ids` in route-sized chunks, one after another, and publishes each chunk's promise as
+   * the in-flight answer for its ids. A failed chunk fails the rest unasked, exactly as the loop
+   * that stopped at the first thrown batch did.
+   */
+  #request(ids: readonly number[]): Promise<void> {
+    let previous: Promise<void> = Promise.resolve();
+    for (let offset = 0; offset < ids.length; offset += IDS_PER_REQUEST) {
+      const chunk = ids.slice(offset, offset + IDS_PER_REQUEST);
+      // The first chunk is asked for synchronously, as the loop it replaces did.
+      const batch = offset === 0 ? this.#fetchChunk(chunk) : previous.then(() => this.#fetchChunk(chunk));
+      for (const id of chunk) this.#inFlight.set(id, batch);
+      const release = (): void => {
+        for (const id of chunk) if (this.#inFlight.get(id) === batch) this.#inFlight.delete(id);
+      };
+      batch.then(release, release);
+      previous = batch;
+    }
+    return previous;
+  }
+
+  async #fetchChunk(chunk: readonly number[]): Promise<void> {
+    // v=6 invalidated cached responses from before the spellbook learned what a rank is: the
+    // family key, `SpellLevel`, the mana percentage, the range, the cast time and the school. v=7
+    // puts `SpellRange.Flags` beside that range, and without it 544 of the book's 7,369 spells
+    // print «Радиус действия: 5 м» for a melee swing — an hour of `cache-control` would be an
+    // hour of the defect after the gateway had stopped serving it. The guard below does not list
+    // the field on purpose: an absent one reads as `0 & 1`, which is a wrong word rather than a
+    // thrown repaint, and refusing the whole record would cost the player their book instead.
+    // v=8 carries `SPELL_ATTR2_AUTOREPEAT_FLAG`. Treating an hour-old Auto Shot as an ordinary
+    // cast restarts the server repeat container and floods the player with cast failures. v=9
+    // invalidates cached empty responses for server-only linked aura ids now resolved by the
+    // gateway (for example 61418 -> 26023); otherwise the retry loop receives the same stale
+    // empty array for the route's full one-hour cache lifetime.
+    // v=10 separates recipe spells from the book and supplies crafting reagents/outputs.
+    // v=11 adds an explicit, bounded target-selection contract for the Unity client.
+    // v=12 supplies the original stance bar flag, ordering and form action-page offset.
+    // v=13 adds what the stock tooltip rows need: `auraDescription` (the buff bar's text),
+    // `onNextSwing` («Следующая атака») and `channeled` («Потоковое»). All three are optional
+    // below: a gateway process started before them answers v=13 in the v=12 shape, and that
+    // must still draw today's rows rather than refuse the book.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=13`;
+    let value = await this.#batch(url);
+    // The key alone cannot tell a restarted gateway from the hour-long browser cache: a v=13
+    // answer the old process gave before the restart is still on disk. A batch whose every row
+    // lacks the new description is asked once more past that cache; if the gateway itself
+    // still answers the old shape, this session stops asking twice.
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.auraDescription === undefined)) {
+      value = await this.#batch(url, { cache: "reload" });
+      if (value.every((row) => row.auraDescription === undefined)) this.#olderGateway = true;
+    }
+    for (const metadata of value) this.#cache.set(metadata.id, metadata);
+    // Answered, and without a row: final for this gateway process (see `#missing`).
+    for (const id of chunk) if (!this.#cache.has(id)) this.#missing.add(id);
+  }
+
+  async #batch(url: string, init?: RequestInit): Promise<SpellMetadata[]> {
+    const response = await this.#fetch(url, init);
+    if (!response.ok) throw new Error(`Spell metadata gateway returned ${response.status}`);
+    const value: unknown = await response.json();
+    if (!Array.isArray(value) || !value.every(isSpellMetadata)) throw new Error("Spell metadata gateway returned invalid data");
+    return value;
   }
 }
 
@@ -53,6 +155,14 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && typeof spell.iconPath === "string"
     && typeof spell.passive === "boolean"
     && typeof spell.autoRepeat === "boolean"
+    && typeof spell.displayInStanceBar === "boolean"
+    && typeof spell.stanceBarOrder === "number"
+    && Number.isInteger(spell.stanceBarOrder)
+    && spell.stanceBarOrder >= 0
+    && (spell.bonusActionBarOffset === undefined
+      || (typeof spell.bonusActionBarOffset === "number"
+        && Number.isInteger(spell.bonusActionBarOffset)
+        && spell.bonusActionBarOffset >= 0))
     && typeof spell.powerType === "number"
     && typeof spell.powerCost === "number"
     && typeof spell.recoveryTime === "number"
@@ -78,5 +188,20 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     && typeof spell.spellClassSet === "number"
     && Array.isArray(spell.spellClassMask)
     && typeof spell.powerCostPercent === "number"
-    && (spell.descriptionVariables === undefined || typeof spell.descriptionVariables === "string");
+    && (spell.targetingContractVersion === undefined
+      ? spell.requiredTargetMask === undefined && spell.requiredTargetMode === undefined
+      : spell.targetingContractVersion === 1
+        && typeof spell.requiredTargetMask === "number"
+        && Number.isInteger(spell.requiredTargetMask)
+        && spell.requiredTargetMask >= 0
+        && spell.requiredTargetMask <= 7
+        && typeof spell.requiredTargetMode === "number"
+        && Number.isInteger(spell.requiredTargetMode)
+        && spell.requiredTargetMode >= 0
+        && spell.requiredTargetMode <= 3)
+    && (spell.descriptionVariables === undefined || typeof spell.descriptionVariables === "string")
+    // v=13's three are optional (see `load`), but a present one must be what it says.
+    && (spell.auraDescription === undefined || typeof spell.auraDescription === "string")
+    && (spell.onNextSwing === undefined || typeof spell.onNextSwing === "boolean")
+    && (spell.channeled === undefined || typeof spell.channeled === "boolean");
 }

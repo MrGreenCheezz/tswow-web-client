@@ -1,0 +1,30 @@
+116 Ледяная стрела [Frostbolt r1 (cast, hold)] cast cast 1500 ms, SpellVisual 13: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact ->CombatWound(9,0x8) | state ->- | casterImpact . | targetImpact .
+133 Огненный шар [Fireball r1] cast cast 1500 ms, SpellVisual 67: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact ->CombatWound(9,0x8) | state . | casterImpact . | targetImpact .
+2136 Огненный взрыв [Fire Blast r1 (instant)] cast cast 0 ms, SpellVisual 143: precast . | cast ->SpellCastDirected(53,0x8) | channel . | impact ->CombatWound(9,0x8) | state . | casterImpact . | targetImpact .
+5143 Чародейские стрелы [Arcane Missiles r1 (channel)] channel cast 0 ms, SpellVisual 262: precast . | cast . | channel ->ChannelCastDirected(124,full) | impact . | state . | casterImpact . | targetImpact .
+10 Снежная буря [Blizzard r1 (channel, area)] channel cast 0 ms, SpellVisual 9490: precast ->ReadySpellOmni(52,0x8) | cast ->ChannelCastOmni(125,full) | channel ->ChannelCastOmni(125,full) | impact . | state . | casterImpact . | targetImpact .
+689 Похищение жизни [Drain Life r1 (channel)] channel cast 0 ms, SpellVisual 12655: precast . | cast ->ChannelCastDirected(124,full) | channel ->ChannelCastDirected(124,full) | impact . | state ->- | casterImpact . | targetImpact .
+15407 Пытка разума [Mind Flay r1 (channel)] channel cast 0 ms, SpellVisual 12637: precast . | cast ->ChannelCastDirected(124,full) | channel ->ChannelCastDirected(124,full) | impact . | state ->- | casterImpact . | targetImpact .
+17 Слово силы: Щит [Power Word: Shield r1 (instant)] cast cast 0 ms, SpellVisual 784: precast ->ReadySpellOmni(52,0x8) | cast ->SpellCastOmni(54,0x8) | channel . | impact . | state ->- | casterImpact . | targetImpact .
+139 Обновление [Renew r1 (instant)] cast cast 0 ms, SpellVisual 280: precast ->ReadySpellOmni(52,0x8) | cast ->SpellCastOmni(54,0x8) | channel . | impact ->- | state ->- | casterImpact . | targetImpact .
+172 Порча [Corruption r1 (instant)] cast cast 0 ms, SpellVisual 8629: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+1680 Вихрь [Whirlwind (warrior)] cast cast 0 ms, SpellVisual 223: precast . | cast ->Whirlwind(126,full) | channel . | impact ->CombatWound(9,0x8) | state . | casterImpact . | targetImpact .
+46924 Вихрь клинков [Bladestorm] cast cast 0 ms, SpellVisual 10704: precast . | cast ->- | channel . | impact . | state ->Whirlwind(126,full) | casterImpact . | targetImpact .
+45477 Ледяное прикосновение [Icy Touch (DK, kit 0)] cast cast 0 ms, SpellVisual 11152: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact 0>- | state . | casterImpact . | targetImpact .
+47541 Лик смерти [Death Coil (DK)] cast cast 0 ms, SpellVisual 10755: precast ->- | cast ->Attack1H(17,0x8) | channel . | impact 0>- | state . | casterImpact . | targetImpact .
+6197 Орлиный глаз [Eagle Eye (channel without a ChannelKit pose)] channel cast 0 ms, SpellVisual 3404: precast ->ReadySpellOmni(52,0x8) | cast ->ChannelCastOmni(125,full) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+8690 Камень возвращения [Hearthstone (10 s cast)] cast cast 10000 ms, SpellVisual 220: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+7620 Рыбная ловля [Fishing (channel)] channel cast 0 ms, SpellVisual 759: precast . | cast ->FishingCast(133,full) | channel ->FishingLoop(134,full) | impact . | state . | casterImpact . | targetImpact .
+2098 Потрошение [Eviscerate r1] cast cast 0 ms, SpellVisual 671: precast . | cast ->Special1H(57,full) | channel . | impact . | state . | casterImpact . | targetImpact ->-
+1329 Расправа [Mutilate r1] cast cast 0 ms, SpellVisual 7913: precast . | cast ->Mutilate(212,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+5185 Целительное прикосновение [Healing Touch r1] cast cast 1500 ms, SpellVisual 58: precast ->ReadySpellOmni(52,0x8) | cast ->SpellCastOmni(54,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+635 Свет небес [Holy Light r1] cast cast 2500 ms, SpellVisual 2936: precast ->ReadySpellOmni(52,0x8) | cast ->SpellCastOmni(54,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+585 Кара [Smite r1] cast cast 1500 ms, SpellVisual 128: precast ->ReadySpellDirected(51,full) | cast ->SpellCastDirected(53,0x8) | channel . | impact ->- | state . | casterImpact . | targetImpact .
+348 Жертвенный огонь [Immolate r1] cast cast 2000 ms, SpellVisual 46: precast ->ReadySpellOmni(52,0x8) | cast ->SpellCastOmni(54,0x8) | channel . | impact ->- | state ->- | casterImpact . | targetImpact .
+1120 Похищение души [Drain Soul r1] channel cast 0 ms, SpellVisual 12656: precast . | cast ->ChannelCastDirected(124,full) | channel ->ChannelCastDirected(124,full) | impact . | state ->- | casterImpact . | targetImpact .
+19434 Прицельный выстрел [Aimed Shot r1] cast cast -1000000 ms, SpellVisual 7955: precast . | cast . | channel . | impact ->- | state . | casterImpact . | targetImpact .
+49576 Хватка смерти [Death Grip] cast cast 0 ms, SpellVisual 10906: precast . | cast ->SpellCastDirected(53,0x8) | channel . | impact ->- | state ->- | casterImpact . | targetImpact .
+48263 Власть льда [Frost Presence] cast cast 0 ms, SpellVisual 11115: precast . | cast . | channel . | impact 0>- | state . | casterImpact . | targetImpact .
+48266 Власть крови [Blood Presence] cast cast 0 ms, SpellVisual 11114: precast . | cast . | channel . | impact 0>- | state . | casterImpact . | targetImpact .
+48265 Власть нечестивости [Unholy Presence] cast cast 0 ms, SpellVisual 11116: precast . | cast . | channel . | impact 0>- | state . | casterImpact . | targetImpact .
+33891 Древо Жизни [Tree of Life] cast cast 0 ms, SpellVisual 8598: precast ->ReadySpellOmni(52,0x8) | cast . | channel . | impact ->- | state . | casterImpact . | targetImpact .

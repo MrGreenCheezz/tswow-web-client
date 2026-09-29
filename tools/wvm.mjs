@@ -41,11 +41,20 @@
 // and becomes the record count; the block sits after the texture weights and before the portrait
 // camera, and each record is the file's own three tracks — translation, rotation, scaling.
 //
+// The camera slot took a second meaning in G1 (live-plan-6), and the flags byte is where it is
+// said. Flag 2 has always meant «the 36 bytes at the end are the model's type-0 `M2Camera`», which
+// is a *unit's portrait* and nothing else. A glue model has no portrait: measured over the 19
+// models under `Interface\Glues\Models\`, 13 carry exactly one camera and all 13 are type −1, so
+// the login screen's own sets shipped with no camera at all and their authored shot was thrown
+// away. Flag 4 says the same 36 bytes hold that shot instead — the same fields, read the same way,
+// pointed at a different job. Exactly one of the two may be set, which is what keeps a unit's
+// artifact byte-identical: `tools/m2.mjs` returns a scene camera only for a model with no portrait.
+//
 //   0  char[4] "WVM9"
 //   4  u32   vertexCount
 //   8  u32   indexCount
 //  12  u8    bytes per index (2 or 4)
-//  13  u8    flags: 1 skinned, 2 carries a portrait camera
+//  13  u8    flags: 1 skinned, 2 carries a portrait camera, 4 carries a scene camera
 //  14  u16   submeshCount
 //  16  u16   batchCount
 //  18  u16   textureCount
@@ -65,7 +74,7 @@
 // The body is positions, normals, uv0, uv1, then bone indices and weights when skinned, then the
 // index list, submeshes, batches, the texture table, the attachment table, the animation list, the
 // global sequence durations, the particle emitters, the ribbon emitters, the colours, the texture
-// weights, the texture transforms and — last, when the flag says so — the portrait camera.
+// weights, the texture transforms and — last, when either camera flag says so — the camera.
 //
 // Every emitter record leads with its own byte length, so a reader that does not understand a
 // later addition can step over one instead of losing the rest of the file. That is the thing the
@@ -73,6 +82,25 @@
 // flags byte, and there was nowhere to grow. The tracks below need no such length word: a track
 // says how many sub-tracks it has and each says how many keys, so the reader that walks it knows
 // where it ends without being told.
+//
+// Slice A1 (live-plan-6) fills the last reserved slot inside the *clip* header, and that one did
+// not need a new magic. Bytes 2 and 3 of a 12-byte clip header have been a zero written by the
+// encoder and skipped by the decoder since WVM6; they are now `M2Sequence.blendTime` in whole
+// milliseconds, the file's own answer to how long the client takes to blend into that pose — 150
+// on most of HumanMale, 300 on NightElfFemale's stand, 350 on a Murloc, 50 on a wolf. Zero is not
+// a blend time, it is the absence of one: an artifact written before this reads back unchanged and
+// the browser falls back to the two constants it used for everything. That is exactly why the
+// cache namespace turns over anyway — see `visualModelCacheNamespace` — because a v18 artifact
+// with no blend times is byte-indistinguishable from a v19 one whose sequences authored none.
+//
+// Slice A2 (live-plan-6) needed room the clip header no longer had — a float and two more indices
+// per clip — so it added the first *optional* block either container has ever carried: the clip
+// extras table, "WVX1", written immediately after the clips and nowhere else. Both containers end
+// at the end of their buffer, so "is there anything after the last clip" is the whole of the
+// presence test, and a reader that finds nothing there is reading a pre-A2 artifact and behaves
+// exactly as it did. See `encodeClipExtras` for the layout and for why it is dense rather than
+// sparse. It is versioned twice over: a new magic for a new meaning, and a record-size word so a
+// reader can step over fields a later slice appends without understanding them.
 
 const encoder = new TextEncoder();
 
@@ -81,6 +109,13 @@ export const WVM9_HEADER_SIZE = 72;
 export const WVM9_SKINNED = 0x01;
 /** The model carries a type-0 `M2Camera`, written as 36 bytes at the very end of the body. */
 export const WVM9_PORTRAIT_CAMERA = 0x02;
+/**
+ * The same 36 bytes, holding the model's `cameras[0]` of some other type — a scene, not a face.
+ *
+ * Never set together with the flag above: a model that carries a portrait is a unit and its
+ * portrait is the answer, so `readSceneCamera` in tools/m2.mjs declines for it.
+ */
+export const WVM9_SCENE_CAMERA = 0x04;
 /** f32 fov (radians), f32 near, f32 far, f32 position[3], f32 target[3]. */
 export const WVM9_CAMERA_SIZE = 36;
 /** A submesh entry: geoset id, then where its triangles live in the shared index list. */
@@ -98,10 +133,35 @@ export const WVM9_BATCH_SIZE = 20;
 export const WVM9_ATTACHMENT_SIZE = 16;
 
 const TRACK_ROTATION = 1;
-/** A clip header: which animation, reserved flags, how long, how many channels. */
+/**
+ * A clip header: which animation, its blend window, how long, how many channels.
+ *
+ * Bytes 2 and 3 were a reserved zero from WVM6 until slice A1 and are now `M2Sequence.blendTime`
+ * in milliseconds — how long the original client takes to blend *into* this pose. It fits without
+ * a format change and without a version bump because the field was written as zero and read by
+ * nobody, and zero keeps meaning "this artifact does not say": a clip out of an older cache reads
+ * back with no blend time and the browser falls back to the constants it always used.
+ *
+ * There is nothing reserved left in it. Everything A2 needed went into the extras table after the
+ * clips instead — see `encodeClipExtras`.
+ */
 const CLIP_HEADER_SIZE = 12;
+/** Milliseconds, and the header has 16 bits for them. Nothing in this client exceeds 350. */
+const MAX_CLIP_BLEND_TIME = 0xffff;
 export const WVA1_MAGIC = "WVA1";
 export const WVA1_HEADER_SIZE = 12;
+
+/** The optional per-clip extras table that may follow the clips in either container. */
+export const CLIP_EXTRAS_MAGIC = "WVX1";
+export const CLIP_EXTRAS_HEADER_SIZE = 8;
+/** f32 movingSpeed, i16 variationNext, u16 variationIndex. */
+export const CLIP_EXTRAS_RECORD_SIZE = 8;
+
+/** Optional global-sequence bone channels appended after the skeleton's ordinary clips. */
+export const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
+export const GLOBAL_BONE_CHANNELS_HEADER_SIZE = 8;
+/** u16 bone, u8 kind, u8 interpolation, u16 global sequence, u16 reserved, u32 key count. */
+export const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
 
 /**
  * @param model result of parseM2
@@ -157,7 +217,14 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
     .flatMap((transform) => [
       encodeTrack(transform.translation, 3), encodeTrack(transform.rotation, 4), encodeTrack(transform.scaling, 3),
     ]);
-  const camera = model.portraitCamera;
+  // One slot, two meanings, and the encoder is where the «exactly one» is enforced rather than
+  // assumed: a caller that hands over both has built a model no reader can describe, and finding
+  // that out here costs a throw where finding it out in the browser costs a silently wrong frame.
+  if (model.portraitCamera && model.sceneCamera) {
+    throw new Error("WVM9 carries either a portrait camera or a scene camera, never both");
+  }
+  const camera = model.portraitCamera ?? model.sceneCamera;
+  const cameraFlag = model.portraitCamera ? WVM9_PORTRAIT_CAMERA : model.sceneCamera ? WVM9_SCENE_CAMERA : 0;
 
   const bodySize =
     vertexCount * (12 + 12 + 8 + 8)
@@ -183,7 +250,7 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
   data.writeUInt32LE(vertexCount, 4);
   data.writeUInt32LE(model.indices.length, 8);
   data.writeUInt8(indexBytes, 12);
-  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | (camera ? WVM9_PORTRAIT_CAMERA : 0), 13);
+  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag, 13);
   data.writeUInt16LE(model.submeshes.length, 14);
   data.writeUInt16LE(model.batches.length, 16);
   data.writeUInt16LE(model.textures.length, 18);
@@ -466,7 +533,8 @@ export function encodeRibbonEmitter(ribbon) {
 function encodeSkeleton(skeleton) {
   if (skeleton.bones.length === 0 || skeleton.bones.length > 1024) throw new Error("WVM9 skeleton is out of range");
   const clips = encodeClips(skeleton.clips);
-  const block = Buffer.alloc(4 + skeleton.bones.length * 16 + clips.length);
+  const globalChannels = encodeGlobalBoneChannels(skeleton.globalChannels ?? [], skeleton.bones.length);
+  const block = Buffer.alloc(4 + skeleton.bones.length * 16 + clips.length + globalChannels.length);
   block.writeUInt16LE(skeleton.bones.length, 0);
   block.writeUInt16LE(skeleton.clips.length, 2);
   let offset = 4;
@@ -477,6 +545,62 @@ function encodeSkeleton(skeleton) {
     offset += 16;
   }
   block.set(clips, offset);
+  offset += clips.length;
+  block.set(globalChannels, offset);
+  return block;
+}
+
+/**
+ * Bone tracks whose clock is one of the model's global loops.
+ *
+ * Kept outside `encodeClips`: a single model may combine 367, 433, 500 and 1233 ms loops, so
+ * baking them into one synthetic AnimationClip either drifts or explodes to their least-common
+ * multiple. The browser samples each channel against its own duration instead.
+ */
+function encodeGlobalBoneChannels(channels, boneCount) {
+  if (channels.length === 0) return Buffer.alloc(0);
+  if (channels.length > 65_535) throw new Error("WVM9 global bone channel count is out of range");
+  let size = GLOBAL_BONE_CHANNELS_HEADER_SIZE;
+  for (const channel of channels) {
+    if (!Number.isInteger(channel.bone) || channel.bone < 0 || channel.bone >= boneCount) {
+      throw new Error("WVM9 global bone channel bone is out of range");
+    }
+    if (![0, 1, 2].includes(channel.kind)) throw new Error("WVM9 global bone channel kind is invalid");
+    if (!Number.isInteger(channel.globalSequence) || channel.globalSequence < 0 || channel.globalSequence > 65_535) {
+      throw new Error("WVM9 global bone sequence is out of range");
+    }
+    const components = channel.kind === TRACK_ROTATION ? 4 : 3;
+    if (channel.times.length * components !== channel.values.length) {
+      throw new Error("WVM9 global bone channel keys disagree");
+    }
+    size += GLOBAL_BONE_CHANNEL_HEADER_SIZE
+      + channel.times.length * 4
+      + channel.values.length * (channel.kind === TRACK_ROTATION ? 2 : 4);
+  }
+
+  const block = Buffer.alloc(size);
+  block.write(GLOBAL_BONE_CHANNELS_MAGIC, 0, "ascii");
+  block.writeUInt16LE(channels.length, 4);
+  block.writeUInt16LE(0, 6);
+  let offset = GLOBAL_BONE_CHANNELS_HEADER_SIZE;
+  for (const channel of channels) {
+    block.writeUInt16LE(channel.bone, offset);
+    block.writeUInt8(channel.kind, offset + 2);
+    block.writeUInt8(Math.min(255, channel.interpolation), offset + 3);
+    block.writeUInt16LE(channel.globalSequence, offset + 4);
+    block.writeUInt16LE(0, offset + 6);
+    block.writeUInt32LE(channel.times.length, offset + 8);
+    offset += GLOBAL_BONE_CHANNEL_HEADER_SIZE;
+    for (const time of channel.times) {
+      block.writeUInt32LE(time, offset);
+      offset += 4;
+    }
+    for (const value of channel.values) {
+      if (channel.kind === TRACK_ROTATION) block.writeInt16LE(value, offset), offset += 2;
+      else block.writeFloatLE(value, offset), offset += 4;
+    }
+  }
+  if (offset !== size) throw new Error("WVM9 global bone block size mismatch");
   return block;
 }
 
@@ -492,6 +616,15 @@ function encodeSkeleton(skeleton) {
  *   8  u16   boneCount of the rig these clips belong to
  *  10  u16   clipCount
  *  12  clips
+ *
+ * A clip is a 12-byte header — u16 animation id, u16 `M2Sequence.blendTime` in milliseconds (0 =
+ * the artifact does not carry one), u32 duration in milliseconds, u32 channel count — and then
+ * that many channels. This is the sidecar's whole difference from the model's skeleton block, and
+ * the sidecar is where a character's casts and emotes live, so the blend time has to be here too
+ * or every pose that matters would still be entered on a constant.
+ *
+ * After the last clip, optionally, the "WVX1" extras table (`encodeClipExtras`). The header's
+ * `total length` covers it; a block written before A2 simply ends at its last clip.
  */
 export function encodeWvaAnimations(boneCount, clips) {
   if (boneCount === 0 || boneCount > 1024) throw new Error("WVA1 bone count is out of range");
@@ -505,9 +638,71 @@ export function encodeWvaAnimations(boneCount, clips) {
   return data;
 }
 
+/** The u16 the header has room for: whole milliseconds, in range, and 0 when the clip has none. */
+function clipBlendTime(blendTime) {
+  if (typeof blendTime !== "number" || !Number.isFinite(blendTime) || blendTime <= 0) return 0;
+  return Math.min(MAX_CLIP_BLEND_TIME, Math.round(blendTime));
+}
+
+/** Whether a parsed clip carries any of the three fields the extras table exists for. */
+function hasClipExtras(clip) {
+  return Number.isFinite(clip.movingSpeed) || Number.isFinite(clip.variationNext)
+    || Number.isFinite(clip.variationIndex);
+}
+
+/**
+ * The per-clip extras table, written after the clips when at least one clip has something to say.
+ *
+ *   0  char[4] "WVX1"
+ *   4  u16   record size in bytes (8 today; a later slice may grow it, and a reader steps by it)
+ *   6  u16   record count, which is always the clip count — see below
+ *   8  records
+ *
+ * A record is f32 `movingSpeed`, i16 `variationNext`, u16 `variationIndex`, and its ordinal *is*
+ * the clip's ordinal. Dense rather than sparse on purpose: a sparse table would need an index word
+ * per record and would be the larger of the two for any model where most sequences say something,
+ * while a dense one is self-checking — a decoder that reads a count differing from the clip count
+ * knows the file is wrong rather than silently pairing keyframes with another clip's stride. The
+ * price is measured, not estimated: eight bytes per clip is 1,456 on HumanMale's 182-clip sidecar
+ * against 9,833,124 bytes of keyframes, and 136 on the 17 clips inside the model.
+ *
+ * Absent entirely when no clip carries a field — which is what a synthetic clip list, and every
+ * artifact written before A2, look like. That is the "old artifacts decode unchanged" half of the
+ * design: nothing is appended, so nothing is different.
+ */
+function encodeClipExtras(clips) {
+  if (!clips.some(hasClipExtras)) return Buffer.alloc(0);
+  const block = Buffer.alloc(CLIP_EXTRAS_HEADER_SIZE + clips.length * CLIP_EXTRAS_RECORD_SIZE);
+  block.write(CLIP_EXTRAS_MAGIC, 0, "ascii");
+  block.writeUInt16LE(CLIP_EXTRAS_RECORD_SIZE, 4);
+  block.writeUInt16LE(clips.length, 6);
+  let offset = CLIP_EXTRAS_HEADER_SIZE;
+  for (const clip of clips) {
+    // Signed and written as it stands: RidingHorse authors −2.5 on Walkbackwards, and a stride
+    // that travels backwards is exactly what that means. The browser takes the magnitude.
+    block.writeFloatLE(Number.isFinite(clip.movingSpeed) ? clip.movingSpeed : 0, offset);
+    // −1 is the file's own "no follower", and it is why this is signed.
+    block.writeInt16LE(clampInt16(clip.variationNext, -1), offset + 4);
+    block.writeUInt16LE(clampUint16(clip.variationIndex, 0), offset + 6);
+    offset += CLIP_EXTRAS_RECORD_SIZE;
+  }
+  return block;
+}
+
+function clampInt16(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(-32_768, Math.min(32_767, Math.trunc(value)));
+}
+
+function clampUint16(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(65_535, Math.trunc(value)));
+}
+
 function encodeClips(clips) {
   if (clips.length > 1024) throw new Error("WVM9 clip count is out of range");
-  let size = 0;
+  const extras = encodeClipExtras(clips);
+  let size = extras.length;
   for (const clip of clips) {
     size += CLIP_HEADER_SIZE;
     for (const channel of clip.channels) {
@@ -519,7 +714,11 @@ function encodeClips(clips) {
   let offset = 0;
   for (const clip of clips) {
     block.writeUInt16LE(clip.animationId, offset);
-    block.writeUInt16LE(0, offset + 2);
+    // Both callers land here — the skeleton block inside the model and the WVA1 sidecar beside it
+    // — so one write puts the blend time in both. A clip whose parser did not supply one (or whose
+    // sequence authored a genuine zero, which is 26 of HumanMale's 241) writes the old zero and is
+    // read back as "not carried", which is exactly what it was before.
+    block.writeUInt16LE(clipBlendTime(clip.blendTime), offset + 2);
     block.writeUInt32LE(clip.duration, offset + 4);
     block.writeUInt32LE(clip.channels.length, offset + 8);
     offset += CLIP_HEADER_SIZE;
@@ -539,6 +738,10 @@ function encodeClips(clips) {
       }
     }
   }
+  // Last, so that "everything after the final clip" is the table and the presence test needs no
+  // flag anywhere else in either container.
+  block.set(extras, offset);
+  offset += extras.length;
   if (offset !== size) throw new Error("WVM9 clip block size mismatch");
   return block;
 }

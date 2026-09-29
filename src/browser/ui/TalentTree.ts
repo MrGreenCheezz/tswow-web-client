@@ -7,6 +7,7 @@
  * * **A tier needs five points per tier below it.** `TierID > 0 && GetTalentPointsInTree(tab) <
  *   TierID * MAX_TALENT_RANK`, and `MAX_TALENT_RANK` is five — so tier 1 opens at five points in
  *   *that tree*, tier 2 at ten, and the count is per tree rather than per character.
+ *   Pet trees use `MAX_PET_TALENT_RANK = 3` and open a tier every three points.
  * * **Only the first prerequisite is enforced.** `Talent.dbc` has room for three and the core reads
  *   `talentInfo->PrereqTalent` as a scalar, so the second and third are never checked. Measured
  *   against this dataset: 139 talents have exactly one prerequisite and none has two, so the extra
@@ -43,14 +44,16 @@ export interface TalentCell {
 }
 
 /** Points spent in one tree, which is what gates its tiers. */
-export function pointsInTree(talents: readonly TalentDefinition[], learned: ReadonlyMap<number, number>): number {
+export function pointsInTree(
+  talents: readonly TalentDefinition[], learned: ReadonlyMap<number, number>, rankLimit = MAX_TALENT_RANK,
+): number {
   let total = 0;
-  for (const talent of talents) total += Math.min(learned.get(talent.id) ?? 0, talent.ranks.length);
+  for (const talent of talents) total += Math.min(learned.get(talent.id) ?? 0, talent.ranks.length, rankLimit);
   return total;
 }
 
 /** How many points a tier needs below it before it opens. Tier 0 is free. */
-export const tierRequirement = (tier: number): number => tier * MAX_TALENT_RANK;
+export const tierRequirement = (tier: number, pointsPerTier = MAX_TALENT_RANK): number => tier * pointsPerTier;
 
 /**
  * Every talent in one tree with its rank and whether it can take another point.
@@ -63,14 +66,15 @@ export function talentTreeState(
   talents: readonly TalentDefinition[],
   learned: ReadonlyMap<number, number>,
   unspentPoints: number,
+  pointsPerTier = MAX_TALENT_RANK,
 ): TalentCell[] {
-  const spent = pointsInTree(talents, learned);
+  const spent = pointsInTree(talents, learned, pointsPerTier);
   return talents.map((talent) => {
-    const maxRank = talent.ranks.length;
+    const maxRank = Math.min(talent.ranks.length, pointsPerTier);
     const rank = Math.min(learned.get(talent.id) ?? 0, maxRank);
     let blockedBy: TalentCell["blockedBy"];
     if (rank >= maxRank) blockedBy = "maxed";
-    else if (spent < tierRequirement(talent.tier)) blockedBy = "tier";
+    else if (spent < tierRequirement(talent.tier, pointsPerTier)) blockedBy = "tier";
     else if (!prerequisitesMet(talent, learned)) blockedBy = "prerequisite";
     else if (unspentPoints <= 0) blockedBy = "points";
     return { talent, rank, maxRank, available: blockedBy === undefined, blockedBy };

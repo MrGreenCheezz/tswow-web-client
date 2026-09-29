@@ -57,6 +57,20 @@ const SCHOOLS = 7;
 const SPELLS = 5;
 const SOCKETS = 3;
 
+test("owned socketed items show installed gems and the actual socket bonus instead of empty sockets", () => {
+  const template = parseItemQueryResponse(itemPacket({ sockets: [2, 4], socketBonus: 700 }));
+  const content = itemTooltipContent({ entry: template.entry, template }, {
+    enchantments: [0, 0, 501, 0, 0, 0, 0],
+    enchantment: (id) => ({ 501: { id, name: "+12 силы", gemItemId: 2300 },
+      700: { id, name: "+4 выносливости", gemItemId: 0 } })[id],
+    gemName: (id) => id === 2300 ? "Красный самоцвет" : undefined,
+  });
+  const text = content.lines.map((line) => typeof line === "string" ? line : line.text).join("\n");
+  assert.match(text, /Красный самоцвет.*\+12 силы/);
+  assert.doesNotMatch(text, /красное гнездо/i);
+  assert.match(text, /Бонус.*\+4 выносливости.*неактивен/);
+});
+
 /**
  * One item query answer, with every block at its fixed length.
  *
@@ -216,9 +230,12 @@ test("an empty spell slot is not a spell, and a trigger with no word is not a li
     { spellName: () => "Возвращение" });
   assert.equal(texts(unnamed).some((line) => line.includes("Возвращение")), false);
 
-  // A spell whose name has not arrived still says which spell it is rather than nothing at all.
+  // A spell whose row has not arrived gives no line. «Если на персонаже: Заклинание 8690» stood
+  // here until the recipe report (`item-tooltip-recipe.test.mjs`): a placeholder drawn as if it
+  // were the spell, and the tooltip is rebuilt when the row lands (`refreshTooltip`,
+  // `lateRefresh`), which is when the line is written.
   const nameless = itemTooltipContent({ entry: 6948, template: template({ spells: [[8690, 1, 0, 0]] }) });
-  assert.ok(texts(nameless).includes("Если на персонаже: Заклинание 8690"));
+  assert.equal(texts(nameless).some((line) => line.startsWith("Если на персонаже")), false, texts(nameless).join(" | "));
 });
 
 test("a level the character has not reached is red, and one it has is not", withGlobalStrings, () => {
@@ -336,13 +353,16 @@ test("Л2 an item's spell is asked for, because nothing else in the client asks 
   game.world = { state: { selfGuid: undefined, objects: new Map() }, itemTemplate: () => hearthstone };
   game.spellMetadataClient = {
     load: async (ids) => {
+      // With a description: a row with nothing to say gets no line, in either layout.
       asked.push([...ids]);
-      return new Map(ids.map((id) => [id, { name: "Возвращение", rank: "" }]));
+      return new Map(ids.map((id) => [id, { name: "Возвращение", rank: "", description: "Возвращает вас в таверну." }]));
     },
   };
   try {
     const first = texts(itemTooltipFor(6948));
-    assert.ok(first.includes("Использование: Заклинание 8690"), "the placeholder is what it was");
+    // No line before the row lands: the «Использование: Заклинание 8690» that stood here was a
+    // placeholder drawn as if it were the spell (the recipe report's «Использование: Заклинание 483»).
+    assert.equal(first.some((line) => line.startsWith("Использование:")), false, first.join(" | "));
 
     // One microtask to close the batch, one turn of the loop for the request to answer.
     await new Promise((resolve) => { setTimeout(resolve, 0); });
@@ -362,7 +382,7 @@ test("Л2 an item's spell is asked for, because nothing else in the client asks 
 test("Л2 an item's spell keeps its rank, the way a cast bar does", withGlobalStrings, async () => {
   clearSpellNames();
   game.spells.clear();
-  game.spells.set(43_185, { name: "Рунное лечебное зелье", rank: "Ранг 1" });
+  game.spells.set(43_185, { name: "Рунное лечебное зелье", rank: "Ранг 1", description: "Восполняет 2700 ед. здоровья." });
   game.world = {
     state: { selfGuid: undefined, objects: new Map() },
     itemTemplate: () => template({ entry: 33_447, spells: [[43_185, 0, 0, 60_000]] }),

@@ -1,6 +1,7 @@
 import { MIRROR_TIMER_NAMES, mirrorTimerRemaining } from "../../world/MirrorTimerProtocol.js";
 import { game } from "../game/Context.js";
 import { Bar } from "./Widgets.js";
+import { NATIVE_MIRROR_TIMERS_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
 
 /**
  * Breath, fatigue and fire: the three bars the world runs against the character.
@@ -39,12 +40,16 @@ function barFor(timer: number): { root: HTMLElement; bar: Bar } {
 
 /** Called once a frame: a timer the server started runs down here, not there. */
 export function updateMirrorTimers(now: number): void {
+  // Stock MirrorTimer1-3 run the same timers under the FrameXML HUD and `#mirror-timers` is hidden;
+  // the strip is brought up to date on the first frame after they let it go.
+  if (nativeHudReplaced(NATIVE_MIRROR_TIMERS_REPLACED)) return;
   const timers = game.world?.mirrorTimers;
   if (!timers || timers.size === 0) {
-    if (strip) strip.hidden = true;
+    if (strip && !strip.hidden) strip.hidden = true;
     return;
   }
-  container().hidden = false;
+  const root = container();
+  if (root.hidden) root.hidden = false;
   for (const [type, held] of bars) {
     if (!timers.has(type)) {
       held.root.remove();

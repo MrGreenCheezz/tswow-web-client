@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   NOTICE_MAX, expireNotices, noticeText, pushNotice,
@@ -100,11 +101,12 @@ test("a body is the lines that will run, and blank ones are not lines", () => {
   assert.deepEqual(macroLines("/dance\n\n  /say Привет  \n"), ["/dance", "/say Привет"]);
 });
 
-test("a conditional is refused out loud rather than half-run", () => {
-  // The real client evaluates `[combat]` in a restricted environment this one has no equivalent
-  // of, so running the line anyway would fire the wrong half of the macro.
-  const problems = macroProblems("Бой", "/cast [combat] Удар");
-  assert.ok(problems.some((line) => line.includes("скобках")));
+test("a conditional is evaluated when it runs; only options that cannot be read are refused", () => {
+  // Conditions are the client's own macro options, evaluated as the line runs (macro/MacroOptions.ts),
+  // so `[combat]` is written like any other line; a bracket never closed cannot be read at all.
+  assert.deepEqual(macroProblems("Бой", "/cast [combat] Удар; Рывок"), []);
+  assert.ok(macroProblems("Бой", "/cast [combat Удар").some((line) => line.includes("не закрыта скобка")));
+  assert.deepEqual(macroProblems("Бой", "/cast [@target] Удар"), []);
   assert.deepEqual(macroProblems("Танец", "/dance"), []);
   assert.ok(macroProblems("", "/dance").some((line) => line.includes("имя")));
   assert.ok(macroProblems("Пусто", "   ").some((line) => line.includes("пустое")));
@@ -158,6 +160,22 @@ test("every option has a definition and a default", () => {
     assert.equal(values[definition.id], definition.fallback, definition.id);
     assert.equal(settingDefinition(definition.id)?.id, definition.id);
   }
+});
+
+test("post-process settings describe their visual effect and quality requirement", () => {
+  const definition = settingDefinition("godRays");
+  assert.equal(definition?.label, "Солнечные лучи");
+  assert.equal(definition?.kind, "boolean");
+  assert.equal(definition?.fallback, false);
+  assert.match(definition?.hint ?? "", /качества освещения 1 или 2/);
+  assert.equal(settingBoolean(parseSettings('{"godRays":true}'), "godRays"), true);
+  assert.match(settingDefinition("fullscreenGlow")?.hint ?? "",
+    /Мягкое сияние.*текущей зоны/);
+});
+
+test("applying settings pushes the god-rays leaf into the renderer", async () => {
+  const source = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
+  assert.match(source, /setGodRays\?\.\(settingBoolean\(values, "godRays"\)\)/);
 });
 
 test("a number is clamped into its range and a boolean stays a boolean", () => {

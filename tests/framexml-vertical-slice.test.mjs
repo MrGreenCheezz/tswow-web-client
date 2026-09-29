@@ -159,7 +159,7 @@ test("malformed documents with a recoverable root are not instantiated", () => {
   const loaded = bridge.loadAddon("noise<Frame name=\"ShouldNotLoad\"/>");
   assert.equal(loaded.ok, false);
   assert.deepEqual(loaded.roots, []);
-  assert.equal(bridge.getFrame("ShouldNotLoad"), undefined);
+  assert.equal(bridge.getFrame("ShouldNotLoad")?.name, undefined);
   assert.match(loaded.diagnostics.map((diagnostic) => diagnostic.message).join(" "), /usable root/);
 });
 

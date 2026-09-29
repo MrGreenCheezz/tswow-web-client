@@ -1,5 +1,5 @@
 import type { CreatureMetadata } from "../gateway/CreatureMetadata.js";
-import type { EventBus, WorldPacketEvents } from "../world/EventBus.js";
+import type { EventBus, Unsubscribe, WorldPacketEvents } from "../world/EventBus.js";
 import type { CreatureTemplate } from "../world/QueryCacheProtocol.js";
 import { creatureFamilyIconUrl, spellIconUrl } from "./ui/IconImage.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
@@ -72,6 +72,9 @@ export class CreatureMetadataClient {
   readonly #failures = new Map<number, { attempts: number; after: number }>();
   #world: CreatureQuerySource | undefined;
   #changed: (() => void) | undefined;
+  #attachedUnsubscribe: Unsubscribe | undefined;
+  readonly #abort = new AbortController();
+  #disposed = false;
   #pendingRequests = 0;
   #success = 0;
   #error = 0;
@@ -128,9 +131,12 @@ export class CreatureMetadataClient {
    * is; `EnterWorld` gives it the same `queueWorldState` that `loadCreatureMetadata` already uses.
    */
   attach(world: CreatureQuerySource, onChanged: () => void): void {
+    if (this.#disposed) return;
     this.#world = world;
     this.#changed = onChanged;
-    world.events.on("QUERY_CACHE_CHANGED", (change) => {
+    // Reattaching this instance replaces its subscription; dispose retires a whole character.
+    this.#attachedUnsubscribe?.();
+    this.#attachedUnsubscribe = world.events.on("QUERY_CACHE_CHANGED", (change) => {
       // `cleared` is `SMSG_CLIENTCACHE_VERSION`: the realm's data moved under the session, so
       // everything asked so far may be asked again. The answers already held are kept until the
       // new ones arrive — a name that is one build old reads better than no name at all.
@@ -150,7 +156,26 @@ export class CreatureMetadataClient {
     return this.#cache.get(entry);
   }
 
+  /** A character owns this cache, but the query bus may survive its logout. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#attachedUnsubscribe?.();
+    this.#attachedUnsubscribe = undefined;
+    this.#world = undefined;
+    this.#changed = undefined;
+    this.#abort.abort();
+    this.#cache.clear();
+    this.#requested.clear();
+    this.#httpPending.clear();
+    this.#wirePending.clear();
+    this.#failures.clear();
+    this.#pendingRequests = 0;
+    this.#generation++;
+  }
+
   async load(entries: readonly number[]): Promise<boolean> {
+    if (this.#disposed) return false;
     const now = this.#now();
     const missing = [...new Set(entries)].filter((entry) => entry > 0 && !this.#requested.has(entry)
       && (this.#failures.get(entry)?.after ?? 0) <= now);
@@ -163,7 +188,7 @@ export class CreatureMetadataClient {
     this.#pendingRequests += missing.length;
     let settled = false;
     const settle = (success: boolean): void => {
-      if (settled) return;
+      if (settled || this.#disposed) return;
       settled = true;
       this.#pendingRequests -= missing.length;
       for (const entry of missing) this.#httpPending.delete(entry);
@@ -191,9 +216,12 @@ export class CreatureMetadataClient {
       throw error;
     }
     try {
-      const response = await fetch(`${this.#baseUrl}/data/creatures?entries=${missing.join(",")}`);
+      const response = await fetch(`${this.#baseUrl}/data/creatures?entries=${missing.join(",")}`,
+        { signal: this.#abort.signal });
+      if (this.#disposed) return false;
       if (!response.ok) throw new Error(`Creature metadata gateway returned ${response.status}`);
       const value: unknown = await response.json();
+      if (this.#disposed) return false;
       if (!Array.isArray(value) || !value.every(isCreatureMetadata)) throw new Error("Creature metadata gateway returned invalid data");
       for (const metadata of value) {
         const previous = this.#cache.get(metadata.entry);
@@ -207,6 +235,8 @@ export class CreatureMetadataClient {
       settle(true);
       return true;
     } catch (error) {
+      // Cancellation belongs to the retired character. Live request errors still surface below.
+      if (this.#disposed) return false;
       for (const entry of missing) this.#requested.delete(entry);
       for (const entry of missing) this.#httpPending.delete(entry);
       for (const entry of missing) {

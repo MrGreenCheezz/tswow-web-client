@@ -13,8 +13,10 @@
 // Deleting `data/` wholesale is not an alternative: 109 MB of models would go with one replaced
 // texture.
 
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 /** What a stamp is called beside the file it describes. `DatasetFingerprint.ts` reads the same. */
 export const STAMP_SUFFIX = ".src";
@@ -84,30 +86,77 @@ export async function stampIsCurrent(destination, archives, inputs) {
  * Separate from writing it because several generators close the chain before they write their
  * output, and the chain is what answers where a path came from.
  */
-export async function sourceStamp(archives, { paths = [], files = [] } = {}) {
+export async function sourceStamp(archives, { paths = [], files = [], generation } = {}) {
   const sources = [];
+  const missingSources = [];
   for (const path of paths) {
     const source = await archives.sourceOf(path);
-    // A path that resolves to nothing contributed nothing, so there is nothing to compare later.
     if (source) sources.push(source);
+    else if (typeof archives.absenceOf === "function") {
+      // A fallback *was* built from the fact that this path did not exist. Remember every loose
+      // overlay that can gain it and every archive that can be replaced in place; otherwise the
+      // first real asset a later TSWoW patch supplies leaves the fallback cached forever.
+      missingSources.push(await archives.absenceOf(path));
+    }
   }
   const plain = [];
+  const missingFiles = [];
   for (const file of files) {
     try {
       const stats = await stat(file);
       plain.push({ file, size: stats.size, mtimeMs: stats.mtimeMs });
     } catch {
-      // A file the generator did not actually need. Recording a missing file would make the entry
-      // permanently stale, which is worse than not knowing about it.
+      // This is an absence condition, not a permanently stale input: the gateway invalidates the
+      // entry only if the file later appears.
+      missingFiles.push(file);
     }
   }
-  return { chain: archives.chainDigest(), sources, files: plain };
+  return {
+    ...(typeof generation === "string" && generation ? { generation } : {}),
+    chain: archives.chainDigest(),
+    sources,
+    files: plain,
+    ...(missingSources.length ? { missingSources } : {}),
+    ...(missingFiles.length ? { missingFiles } : {}),
+  };
 }
 
-/** Writes the stamp beside the file it describes. */
+/**
+ * Writes a file beside its final name and then renames it into place, so a reader sees the old
+ * bytes or the new ones and never half of either.
+ *
+ * Two publishers can now meet on one file: `tools/asset-worker.mjs` runs the texture and the model
+ * generators in separate long-lived processes, and a model publishes its own textures through the
+ * same `publishTexture` the texture route uses — so the same PNG can be written by both at once
+ * while the gateway is reading it. A plain `writeFile` truncates first and fills after, which is a
+ * window in which the route serves a torn picture. Windows refuses a rename onto a file another
+ * process holds open without delete sharing (a virus scanner, typically) with EPERM/EACCES/EBUSY
+ * for a few milliseconds; those are retried briefly before the failure is reported.
+ */
+export async function writeFileAtomic(destination, data) {
+  const temporary = `${destination}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, data);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(temporary, destination);
+        return;
+      } catch (error) {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+        if (attempt >= 5 || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw error;
+        await delay(15 * (attempt + 1));
+      }
+    }
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Writes the stamp beside the file it describes, atomically (see `writeFileAtomic`). */
 export async function writeSourceStamp(destination, stamp) {
   await mkdir(dirname(destination), { recursive: true });
-  await writeFile(stampSidecar(destination), JSON.stringify(stamp));
+  await writeFileAtomic(stampSidecar(destination), JSON.stringify(stamp));
 }
 
 /** Both halves, for the common case of a generator that still holds the chain open. */

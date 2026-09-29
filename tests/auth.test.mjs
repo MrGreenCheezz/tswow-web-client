@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   buildLogonChallenge,
+  canSelectRealm,
   parseRealmList,
 } from "../dist/code/auth/AuthProtocol.js";
 import { computeSrpProof } from "../dist/code/auth/Srp6.js";
@@ -10,6 +11,14 @@ import { PacketReader, PacketWriter } from "../dist/code/protocol/index.js";
 
 const N = 0x894b645e89e1535bbdad5b8b290650530801b18ebfbf5e8fab3c82872a3e9bb7n;
 const G = 7n;
+
+test("realm availability follows the authserver's lock byte and offline flag", () => {
+  assert.equal(canSelectRealm({ locked: false, flags: 0 }), true);
+  assert.equal(canSelectRealm({ locked: false, flags: 0x20 }), true, "recommended is still selectable");
+  assert.equal(canSelectRealm({ locked: true, flags: 0 }), false);
+  assert.equal(canSelectRealm({ locked: false, flags: 0x02 }), false);
+  assert.equal(canSelectRealm({ locked: false, flags: 0x06 }), false, "incompatible build is marked offline + specify build");
+});
 
 function sha1(...parts) {
   const hash = createHash("sha1");
@@ -146,4 +155,3 @@ test("realm list parser decodes build-aware realm entries", () => {
     },
   ]);
 });
-

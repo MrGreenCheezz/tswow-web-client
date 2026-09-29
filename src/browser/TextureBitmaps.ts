@@ -55,7 +55,10 @@ export class TextureBitmapCache {
 
   async #load(path: string): Promise<void> {
     try {
-      const response = await fetch(`${this.#baseUrl}/texture?path=${encodeURIComponent(path)}`);
+      // Low, as `<img>` would have been: the gateway is one HTTP/1.1 origin with six sockets, and a
+      // minimap or world-map tile asked for at `fetch`'s default high priority took a socket ahead of
+      // the unit skins an arriving crowd is waiting on (they stand as capsules until theirs land).
+      const response = await fetch(`${this.#baseUrl}/texture?path=${encodeURIComponent(path)}`, { priority: "low" });
       if (!response.ok) throw new Error(`${path} returned ${response.status}`);
       const bitmap = await createImageBitmap(await response.blob());
       this.#evict();

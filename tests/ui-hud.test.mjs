@@ -4,6 +4,7 @@ import test from "node:test";
 
 const actionBarSource = new URL("../src/browser/ui/ActionBar.ts", import.meta.url);
 const aurasSource = new URL("../src/browser/ui/Auras.ts", import.meta.url);
+const controlsSource = new URL("../src/browser/input/Controls.ts", import.meta.url);
 const styleSource = new URL("../src/browser/style.css", import.meta.url);
 const indexSource = new URL("../index.html", import.meta.url);
 
@@ -50,15 +51,24 @@ test("action keys use the readable overlay even before icon metadata arrives", a
     "unknown spell/item content does not downgrade its key into a caption");
   assert.doesNotMatch(source, /key: metadata \? key : undefined/,
     "known spell/item content keeps the same overlay branch as unknown content");
+  assert.doesNotMatch(source, /`Заклинание \$\{content\.action\}/,
+    "an unresolved action must not leak its internal spell id to the player");
+  assert.match(source, /title:\s*"Данные заклинания загружаются"/,
+    "an occupied unresolved action remains distinguishable from an empty slot without an id");
 });
 
-test("the action key plaque has a high-contrast, keyboard-safe fantasy HUD treatment", async () => {
+test("the action key label stays readable without covering the spell icon", async () => {
   const css = await readFile(styleSource, "utf8");
-  const keyRule = /(?:#action-bar|action-bar-extra|action-bar-side-column)[^{}]*\.ui-icon-key[^{}]*\{([^}]*)\}/s.exec(css)?.[1] ?? "";
+  const keyRules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gs)]
+    .filter(([, selector]) => selector.includes(".ui-action-button") && selector.includes(".ui-icon-key"));
+  const keyRule = keyRules.at(-1)?.[2] ?? "";
+  assert.match(keyRules.at(-1)?.[1] ?? "", /body\.native-wow-ui/,
+    "the native key label must be the final high-specificity rule");
   assert.ok(keyRule, "action bars need a dedicated key overlay rule");
-  assert.match(keyRule, /background:/, "a dark plaque must separate keys from bright icon art");
-  assert.match(keyRule, /border:/, "the key plaque needs a crisp gold edge");
-  assert.match(keyRule, /font-size:\s*\.6[4-9]rem|font-size:\s*\.7rem/, "keys must not be tiny");
+  assert.match(keyRule, /background:\s*transparent/, "the label must leave the icon visible");
+  assert.match(keyRule, /border:\s*0/, "a border must not grow into a plaque over the icon");
+  assert.match(keyRule, /font-size:\s*1[01]px/, "the compact corner label must remain readable");
+  assert.match(keyRule, /text-shadow:/, "text shadow keeps the label legible over bright icon art");
   assert.match(css, /\.ui-icon-button:focus-visible[^{}]*\{[^}]*outline:/s,
     "keyboard focus must remain visible on the action bar");
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/,
@@ -71,6 +81,16 @@ test("the obsolete controls legend is not left behind the movable panels", async
     "the static legend competes with windows and keybindings");
   assert.doesNotMatch(css, /\.controls\s*\{/,
     "there should be no obsolete legend layer behind panels");
+});
+
+test("the browser menu never covers right-click play, while editable fields keep theirs", async () => {
+  const source = await readFile(controlsSource, "utf8");
+  assert.match(source, /document\.addEventListener\("contextmenu"/,
+    "one document-level handler must cover every surface, not one listener per widget");
+  assert.match(source, /HTMLTextAreaElement/,
+    "chat and form fields keep paste/spellcheck menus");
+  assert.match(source, /isContentEditable/,
+    "editable regions keep their menu");
 });
 
 test("a positive, non-passive aura on the player is eligible for CMSG_CANCEL_AURA", async () => {
@@ -121,4 +141,134 @@ test("a removable player buff is a keyboard-focusable cancel control, while a de
   assert.equal(debuff.listeners.has("contextmenu"), false);
   game.world = undefined;
   game.spells = new Map();
+});
+
+test("aura tooltips colour their context while the spell body stays shared", async () => {
+  globalThis.document = fakeDocument();
+  globalThis.location = { origin: "http://127.0.0.1:5173", protocol: "http:", hostname: "127.0.0.1" };
+  globalThis.window = { innerWidth: 1280, innerHeight: 720, addEventListener() {}, removeEventListener() {} };
+  const { auraTooltip } = await import("../dist/code/browser/ui/Auras.js");
+  const { game } = await import("../dist/code/browser/game/Context.js");
+  const self = 0x1234n;
+  game.world = { state: { selfGuid: self, objects: new Map() } };
+  game.spells = new Map([[101, {
+    id: 101, name: "Щит", rank: "", description: "", iconId: 1, iconPath: "",
+    passive: false, hidden: false, autoRepeat: false, schoolMask: 2,
+    rangeFlags: 0, rangeMax: 30, rangeMin: 0, castTime: 0,
+    powerType: 0, powerCost: 100, powerCostPercent: 0,
+    recoveryTime: 0, categoryRecoveryTime: 0, startRecoveryTime: 0,
+    cooldownStartedOnEvent: false, effectAura: [], effectMiscValue: [],
+    effectBasePoints: [], effectDieSides: [], effectPeriod: [],
+    duration: 0, procChance: 0, spellLevel: 1, spellClassSet: 0,
+    spellClassMask: [],
+  }]]);
+  try {
+    const buff = auraTooltip(
+      { spellId: 101, flags: 0x10, applications: 3, casterGuid: self, maxDuration: 90_000 },
+      { passive: false }, true);
+    assert.equal(buff.title, "Щит");
+    assert.deepEqual(buff.lines[0], { text: "Положительный эффект", tone: "stat" });
+    assert.deepEqual(buff.lines[1], { text: "Стаки: 3", tone: "gold" });
+    assert.deepEqual(buff.lines[2], { text: "Длительность: 2 мин", tone: "muted" });
+    assert.deepEqual(buff.lines[3], { text: "Наложено вами", tone: "muted" });
+    assert.deepEqual(buff.lines[4], { text: "Правый клик — снять эффект", tone: "muted" });
+    const debuff = auraTooltip(
+      { spellId: 101, flags: 0x80, applications: 1, casterGuid: 0x9999n },
+      { passive: false }, false);
+    assert.deepEqual(debuff.lines[0], { text: "Отрицательный эффект", tone: "unmet" });
+    // One header plus the four shared spell lines (school, range, instant, cost).
+    assert.equal(debuff.lines.length, 5);
+  } finally {
+    game.world = undefined;
+    game.spells = new Map();
+  }
+});
+
+test("aura display filtering removes known hidden entries before applying the limit", async () => {
+  const { visibleAuraEntries } = await import("../dist/code/browser/ui/Auras.js");
+  const hidden = { slot: 0, spellId: 100, flags: 0, applications: 1 };
+  const passive = { slot: 1, spellId: 101, flags: 0, applications: 1 };
+  const unknown = { slot: 2, spellId: 102, flags: 0, applications: 1 };
+  const hiddenAfter = { slot: 3, spellId: 103, flags: 0, applications: 1 };
+  const visible = { slot: 4, spellId: 104, flags: 0, applications: 1 };
+  const metadata = new Map([
+    [100, { hidden: true, passive: false }],
+    [101, { hidden: false, passive: true }],
+    [103, { hidden: true, passive: false }],
+    [104, { hidden: false, passive: false }],
+  ]);
+
+  assert.deepEqual(
+    visibleAuraEntries([hidden, passive, unknown, hiddenAfter, visible], 3, (id) => metadata.get(id)),
+    [passive, unknown, visible],
+    "known client-hidden auras cannot consume the visible limit, while passive and unresolved rows stay visible",
+  );
+});
+
+test("native aura icons reserve readable space for duration and stacks", async () => {
+  const css = await readFile(styleSource, "utf8");
+  const rule = css.match(/body\.native-wow-ui \.aura-icon\s*\{([^}]*)\}/s)?.[1] ?? "";
+  assert.match(rule, /width:\s*(?:38|39|40)px/);
+  assert.match(rule, /height:\s*(?:38|39|40)px/);
+});
+
+test("the bottom HUD owns one ordered layout without gryphon art", async () => {
+  const [html, action, css] = await Promise.all([
+    readFile(indexSource, "utf8"),
+    readFile(actionBarSource, "utf8"),
+    readFile(styleSource, "utf8"),
+  ]);
+  assert.match(action, /--bottom-bars/, "ActionBar must publish the number of enabled bottom rows");
+  assert.doesNotMatch(html, /\bid=["']main-menu-art["']/,
+    "the obsolete main-menu plate and gryphons must not exist");
+  assert.doesNotMatch(css, /#main-menu-art\b/,
+    "no hidden or breakpoint-specific gryphon deck may survive");
+  assert.match(html,
+    /id="bottom-hud"[^>]+data-window-reserve-bottom[\s\S]*id="bottom-hud-center"[\s\S]*id="action-bar"[\s\S]*id="hud-utilities"[\s\S]*id="bag-bar"[\s\S]*id="game-buttons"/,
+    "combat, bag, and character/menu controls must belong to one ordered HUD");
+  for (const id of ["action-bar", "bag-bar", "game-buttons"]) {
+    const tag = html.match(new RegExp(`<div\\b(?=[^>]*\\bid=["']${id}["'])[^>]*>`, "i"))?.[0] ?? "";
+    assert.ok(tag, `${id} must exist`);
+    assert.doesNotMatch(tag, /\bdata-window-reserve-bottom\b/,
+      `${id} must not reserve the viewport independently of #bottom-hud`);
+  }
+  assert.doesNotMatch(action, /bottom\.dataset\["windowReserveBottom"\]/,
+    "dynamic bottom rows are measured through #bottom-hud");
+});
+
+test("empty action slots are visually quieter without hiding their shortcut", async () => {
+  const [action, css] = await Promise.all([
+    readFile(actionBarSource, "utf8"),
+    readFile(styleSource, "utf8"),
+  ]);
+  assert.match(action, /dataset\["empty"\]/,
+    "ActionBar must identify genuinely empty slots without guessing from missing icon metadata");
+  assert.match(css, /\.ui-action-button\[data-empty\]/,
+    "native empty slots need a dedicated low-emphasis treatment");
+});
+
+test("native action keys use the final unobtrusive high-specificity rule", async () => {
+  const css = await readFile(styleSource, "utf8");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gs)]
+    .filter(([, selector]) => selector.includes(".ui-action-button") && selector.includes(".ui-icon-key"));
+  const final = rules.at(-1);
+  assert.ok(final, "action bars need a final key overlay rule");
+  assert.match(final[1], /body\.native-wow-ui/, "the authored rule must beat the generic key rule");
+  assert.match(final[2], /background:\s*transparent/, "keys must not cover the icon art");
+  assert.match(final[2], /border:\s*0/, "keys must not grow an overlapping plaque");
+  assert.match(final[2], /font-size:\s*1[01]px/,
+    "keys must remain readable as compact corner labels");
+});
+
+test("the native right action rail starts below the corner minimap", async () => {
+  const css = await readFile(styleSource, "utf8");
+  const rail = [...css.matchAll(/body\.native-wow-ui #action-bar-side\s*\{([^}]*)\}/gs)]
+    .find(([, body]) => body.includes("top:"))?.[1] ?? "";
+  assert.match(rail, /top:\s*232px/, "the rail must clear the corner minimap instead of owning the top-right");
+  assert.match(rail, /bottom:/, "the rail remains bounded by the viewport on short screens");
+  assert.match(rail, /overflow-y:\s*auto/, "short screens scroll instead of shrinking twelve action icons");
+  const rightRail = [...css.matchAll(/body\.native-wow-ui \.right-rail\s*\{([^}]*)\}/gs)]
+    .find(([, body]) => body.includes("top: 8px"))?.[1] ?? "";
+  assert.match(rightRail, /right:\s*20px/, "the minimap sits in the freed corner without a side-bars offset");
+  assert.doesNotMatch(rightRail, /side-bars-width/, "no width reserve is needed once the bars start below");
 });

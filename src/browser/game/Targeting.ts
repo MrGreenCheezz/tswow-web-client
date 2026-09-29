@@ -47,7 +47,10 @@ export function reactionTo(object: WorldObjectState): number {
  */
 export function enemyCandidates(): TargetCandidate[] {
   const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  // Act through the controlled unit (possess/charm/vehicle), not always the character:
+  // tabbing while possessing must cycle around the possessed body.
+  const caster = world?.controlledGuid ?? world?.state.selfGuid;
+  const self = caster === undefined ? undefined : world?.state.objects.get(caster);
   if (!world || !self?.position) return [];
   return enemiesAround(
     world.state.objects.values(),
@@ -75,6 +78,11 @@ export function cycleEnemyTarget(step: 1 | -1 = 1): void {
 /** The focus target: a second unit the player keeps an eye on, kept here until a frame shows it. */
 export function setFocusToTarget(): void {
   game.focusGuid = game.world?.targetGuid;
+}
+
+/** The stock UI's `FocusUnit`/`ClearFocus` (FrameXmlTargetingApi.ts): the same focus, by guid. */
+export function setFocusGuid(guid: bigint | undefined): void {
+  game.focusGuid = guid;
 }
 
 export function focusUnit(): WorldObjectState | undefined {

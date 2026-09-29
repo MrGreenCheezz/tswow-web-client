@@ -329,7 +329,34 @@ function buildVariantConfigurations(settings: BenchmarkJsonObject): Readonly<{ A
   base.experimentalWaterFresnel = false;
   base.experimentalWaterMicroWaves = false;
   base.experimentalWaterSunSparkle = false;
+  base.experimentalWaterFoam = false;
+  base.experimentalVegetationWind = false;
   base.experimentalFantasyGlow = false;
+  // P3's underwater overlay is a default-ON account leaf; a formal variant that left it to the
+  // account would compare a tinted run against an untinted one whenever the fixture dips a camera.
+  base.underwaterOverlay = false;
+  // Either independent post-process leaf can select the shared composited path. Pin both OFF so
+  // the formal variants compare the same direct pipeline while varying only the approved knob.
+  base.fullscreenGlow = false;
+  base.godRays = false;
+  // The cinematic leaves select the same composited path and add material variants; pin them OFF.
+  base.experimentalCinematicGrade = false;
+  base.experimentalCinematicBloom = false;
+  base.experimentalSunScattering = false;
+  base.experimentalAmbientOcclusion = false;
+  base.experimentalLowSunRimLight = false;
+  base.experimentalWaterSunGlitter = false;
+  base.experimentalSceneryShadows = false;
+  base.experimentalWaterSkyReflection = false;
+  base.cinematicStrength = 100;
+  // The atmosphere leaves add scene objects and wrap materials (AtmosphereEffects.ts); pin them OFF.
+  base.experimentalWindGusts = false;
+  base.experimentalRainStreaks = false;
+  base.experimentalRainSplashes = false;
+  base.experimentalWetSurfaces = false;
+  base.experimentalLightning = false;
+  base.experimentalAmbientMotes = false;
+  base.experimentalWeatherSounds = false;
   const a = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   const b = cloneJson(base as BenchmarkJsonObject) as Record<string, BenchmarkJsonValue>;
   a.characterAtlasAnisotropy = false;

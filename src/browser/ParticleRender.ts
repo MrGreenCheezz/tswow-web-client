@@ -19,7 +19,7 @@ import {
   primeParticleSystem, stepParticles, stepParticlesCatchUp,
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
   writeParticleQuads, writeRibbonStrip,
-  type BillboardView, type ParticleSystem, type QuadBuffers, type RibbonSystem,
+  type BillboardView, type EmitterFrame, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import type { ResourceOwnerId, RetainedResourceVisitor } from "./ResourceAccounting.js";
@@ -278,6 +278,15 @@ function buildDrawn(
   // the fog colour in".
   material.fog = (materialFlags & MATERIAL_UNFOGGED) === 0;
   applyFogMode(material, blendMode);
+  // One pass whatever the blend. three draws a transparent two-sided material twice — back faces,
+  // then front — so that a closed shape composites in order, and on every draw of every frame it
+  // marks the material changed for each pass (`setProgram` re-derives the program parameters and
+  // walks the program cache twice: ~4 KB of garbage and tens of microseconds per quad batch). A
+  // quad cloud has no inside: every billboard faces the eye, so the back-face pass draws nothing,
+  // and a ribbon's segments face where the strip happens to fly. Their order is the spawn order
+  // in one pass exactly as it was in two. `applyBlendMode` had already allowed this for additive
+  // blends; the ordering argument for keeping alpha blends on two passes is about closed meshes.
+  material.forceSinglePass = true;
   if (fantasyGlow !== undefined && (blendMode === 3 || blendMode === 4)) {
     const previousCompile = material.onBeforeCompile;
     const previousKey = material.customProgramCacheKey();
@@ -309,6 +318,10 @@ function buildDrawn(
   return { mesh, geometry, material };
 }
 
+const EMITTER_FRAME: EmitterFrame = {
+  matrix: [], animationMs: 0, worldMs: 0, animationStartMs: undefined, worldStartMs: undefined,
+};
+
 /**
  * Steps every emitter of one model and refills its buffers.
  *
@@ -325,12 +338,14 @@ export function updateModelEffects(
   options: EffectUpdateOptions = {},
 ): void {
   for (const drawn of effects.emitters) {
-    const matrix = frame.matrixFor(drawn.bone);
-    const emitterFrame = {
-      matrix, animationMs: frame.animationMs, worldMs: frame.worldMs,
-      ...(frame.animationStartMs === undefined ? {} : { animationStartMs: frame.animationStartMs }),
-      ...(frame.worldStartMs === undefined ? {} : { worldStartMs: frame.worldStartMs }),
-    };
+    // One object refilled per emitter: the steps below only read it (a fresh object with the
+    // optional clocks spread in was two or three allocations per emitter per frame).
+    const emitterFrame = EMITTER_FRAME;
+    emitterFrame.matrix = frame.matrixFor(drawn.bone);
+    emitterFrame.animationMs = frame.animationMs;
+    emitterFrame.worldMs = frame.worldMs;
+    emitterFrame.animationStartMs = frame.animationStartMs;
+    emitterFrame.worldStartMs = frame.worldStartMs;
     let quads = 0;
     if (drawn.particles) {
       if (options.firstBurst) {

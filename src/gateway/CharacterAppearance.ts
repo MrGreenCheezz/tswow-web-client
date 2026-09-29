@@ -52,10 +52,12 @@ const SECTION_UNDERWEAR = 4;
  * The core's own name and value (`DBCStructure.h:322-326`), read by `Player::ValidateAppearance`
  * as `create && !entry->HasFlag(SECTION_FLAG_PLAYER) → false` (`Player.cpp:27273-27275`) — a
  * refusal that never looks at the class, so a row without it is refused for everybody, death
- * knights included. Its sibling `SECTION_FLAG_DEATH_KNIGHT` (0x04) is the class-dependent half
- * and is deliberately not applied here; see `options`.
+ * knights included. Its sibling `SECTION_FLAG_DEATH_KNIGHT` (0x04) is applied when `options`
+ * receives the selected class.
  */
 const SECTION_FLAG_PLAYER = 0x01;
+/** Reserved for death knights by `Player::ValidateAppearance` in the selected core. */
+const SECTION_FLAG_DEATH_KNIGHT = 0x04;
 
 /** One texture painted onto the body atlas, or the whole of it when `section` is absent. */
 export interface BodyLayer {
@@ -168,6 +170,15 @@ export interface CharacterOptions {
  * the knee, 10 the lower torso (a shirt hem), 11 the upper leg (trousers), 12 a narrow strip down
  * the torso (a tabard), 13 both leg sections (1302 is a full-length skirt), 15 the shoulders (a
  * cloak), 18 the waist (a belt). Families 6, 14 and 16 do not exist in any playable model.
+ *
+ * **Family 20 is the coordinated HD pack's own, and it is the whole of HD-1's missing legs.** Ten
+ * of the twenty active patch-W profiles have taken the foot out of geoset 0 and authored it as a
+ * family-20 mesh: measured on 2026-08-30 against F:/Circle, HumanMale's geoset 0 spans z 0.71..2.02
+ * where the classic one spans -0.00..1.96, and the 630 triangles between z 0.00 and 0.13 are geoset
+ * 2001, whose UV box is 258..510 x 448..511 — exactly the `foot` rectangle. Counting triangles in
+ * that rectangle over the twenty profiles, those ten have **no** geoset-0 triangle in it at all,
+ * so with nothing emitting family 20 an HD human, orc, dwarf, gnome male or blood elf stood on
+ * bare stumps. See `FOOT_GEOSET_PROFILES`.
  */
 const FAMILY_HAIR = 0;
 const FAMILY_FACIAL_1 = 1;
@@ -185,6 +196,7 @@ const FAMILY_LEGS = 13;
 const FAMILY_CLOAK = 15;
 const FAMILY_EYE_GLOW = 17;
 const FAMILY_BELT = 18;
+const FAMILY_FEET = 20;
 
 /**
  * The installed HD non-hoof profiles' fifth boot variant carries the foot section, while Tauren's
@@ -205,9 +217,47 @@ const FOOT_TEXTURE_PROFILES = new Set([
 ]);
 
 /**
- * Active patch-W adds the second belt mesh to these profiles, while their ordinary family-18
- * variant is absent. This is intentionally a profile table, not a resolver fallback: the gateway
- * must not turn a stock model's missing 1801 into an arbitrary 1802.
+ * The foot mesh each coordinated HD profile authored outside geoset 0, by `race/sex`.
+ *
+ * A profile table and not a family fallback, for two reasons that are both measured rather than
+ * argued. First, the variant is not constant: nine of the ten name 2001 and **DwarfMale names
+ * 2002**, its only family-20 member. Second, family 20 is not only the foot — NightElfFemale's
+ * 2002 is 396 triangles at z 2.04..2.17 over UV 36..507 x 12..506 (the crown) and GnomeMale's is
+ * 486 triangles at z 0.75..0.79 — so `resolveGeosetId`'s "lowest member of the family" rule would
+ * put a scalp piece on a dwarf's ankle. Each entry below is the one id whose triangles fall inside
+ * the `foot` rectangle of the body atlas, with its triangle count and z range measured on
+ * 2026-08-30 against F:/Circle:
+ *
+ *   1/0 HumanMale 2001 (630t, 0.00..0.13)      1/1 HumanFemale 2001 (330t, -0.01..0.10)
+ *   2/0 OrcMale 2001 (532t, -0.01..0.23)       2/1 OrcFemale 2001 (512t, -0.00..0.14)
+ *   3/0 DwarfMale 2002 (244t, -0.00..0.16)     3/1 DwarfFemale 2001 (264t, -0.00..0.13)
+ *   4/1 NightElfFemale 2001 (392t, -0.00..0.14)   7/0 GnomeMale 2001 (440t, -0.00..0.08)
+ *   10/0 BloodElfMale 2001 (282t, 0.00..0.14)  10/1 BloodElfFemale 2001 (276t, -0.00..0.12)
+ *
+ * The other ten profiles are deliberately absent: NightElfMale, both Scourge, both Tauren,
+ * GnomeFemale, both Troll and both Draenei keep the foot inside geoset 0 in the active pack exactly
+ * as classic does — 386, 324, 249, 420, 400, 448, 408, 512, 256 and 116 geoset-0 triangles in the
+ * `foot` rectangle respectively — and none of them carries a family 20 at all.
+ */
+const FOOT_GEOSET_PROFILES: ReadonlyMap<string, number> = new Map([
+  ["1/0", 1], ["1/1", 1],
+  ["2/0", 1], ["2/1", 1],
+  ["3/0", 2], ["3/1", 1],
+  ["4/1", 1],
+  ["7/0", 1],
+  ["10/0", 1], ["10/1", 1],
+]);
+
+/**
+ * Active patch-W carries only the equipped-belt variant for these profiles. The table is used
+ * solely when an item actually selects family 18: a naked look still requests semantic variant 1,
+ * and the browser drops it when the model has no 1801 instead of inventing a worn 1802.
+ *
+ * Re-measured on 2026-08-30 against the active F:/Circle chain and unchanged: these eight are
+ * exactly the profiles whose family 18 is `[1802]`, eleven others carry `[1801, 1802]`, and
+ * GnomeMale (7/0) carries no family 18 at all. Measured topology is decisive here: every one of
+ * those eight 1802 meshes closes zero body/leg boundary edges and samples BODY over the clothing
+ * atlas, while the authored 1801 meshes close the actual waist seam.
  */
 const BELT_1802_PROFILES = new Set([
   "1/1", // HumanFemale
@@ -239,10 +289,11 @@ const SCALP_GEOSET = 1;
  * What a character with nothing equipped shows, by family.
  *
  * Families this omits — sleeves, kneepads, the shirt hem, trousers and the tabard — have no
- * neutral variant in any model, so bare skin is genuinely "draw nothing" for them. The belt is
- * seeded separately below because the active model generation has a profile-specific neutral
- * variant (1801 or 1802). The ones listed do have a bare variant, and leaving them out is what
- * left a character with no hands and no feet.
+ * neutral variant in any model, so bare skin is genuinely "draw nothing" for them. The waist is
+ * seeded separately below as semantic variant 1: models that author 1801 use it as their body/leg
+ * bridge, while a model that carries only the worn 1802 draws no naked belt. The families listed
+ * here do have a bare variant, and leaving them out is what left a character with no hands and no
+ * feet.
  *
  * The ears default to variant 2, not 1. Measured on every race: 701 is a 2 to 10 triangle plug and
  * 702 is the real ear — HumanMale 6 vs 14 triangles, TaurenMale 4 vs 20 — and NightElf and Troll
@@ -742,17 +793,14 @@ export class CharacterAppearanceIndex {
    * styles, and all 28 of the tauren male's in those five styles or that one colour — so filtering
    * the two axes separately leaves no ragged remainder, and the test says so.
    *
-   * The other half of that gate is **not** applied here, on purpose: `SECTION_FLAG_DEATH_KNIGHT`
-   * (0x04) is refused only for classes other than the death knight, and this route is answered
-   * without a class. Dropping those rows would take the death-knight skins away from the one class
-   * allowed to wear them — the human male's 12, 13 and 14, and 129 of his 249 face rows. So a
-   * human male is offered 13 skins and 24 faces where an ordinary class may take 10 and 12, and
-   * closing that needs the class, which arrives with the race and class route (Д3).
+   * `SECTION_FLAG_DEATH_KNIGHT` is refused for other classes. Creation screens pass the selected
+   * class so ordinary characters cannot pick the human male's exclusive skins 12, 13 and 14.
+   * Callers without a class keep the complete list for appearance inspection.
    *
    * A module adding a look has to set the flag on its rows, and this is where it will notice if it
    * did not: the control goes empty rather than offering a choice the server will refuse.
    */
-  options(race: number, sex: number): CharacterOptions {
+  options(race: number, sex: number, classId?: number): CharacterOptions {
     // The scan stops well past anything the shipped tables use — the widest is 24 hair colours for
     // a blood elf — and it is a map lookup per candidate. Listing costs more than counting because
     // it walks the second axis as well: measured on this machine, 0.75 ms for a human male and
@@ -760,10 +808,11 @@ export class CharacterAppearanceIndex {
     // counts did. That is paid once per race or sex change, on a route that answers
     // `max-age=3600`, and the answer is 969 bytes for a human male, 703 on average over the twenty.
     const LIMIT = 64;
-    /** A row the creation screen may choose: it exists, and the core will take it from any class. */
+    /** A row the selected class may choose, following `Player::ValidateAppearance`. */
     const has = (base: number, variation: number, colour: number): boolean => {
       const row = this.#section(base, race, sex, variation, colour);
-      return row !== undefined && (row.flags & SECTION_FLAG_PLAYER) !== 0;
+      return row !== undefined && (row.flags & SECTION_FLAG_PLAYER) !== 0
+        && (classId === undefined || classId === 6 || (row.flags & SECTION_FLAG_DEATH_KNIGHT) === 0);
     };
     /** Every index on the first axis that has a row at any of `colours`. */
     const variations = (base: number, colours: readonly number[]): number[] => {
@@ -1054,12 +1103,12 @@ export class CharacterAppearanceIndex {
   */
   #geosetFamilies(race: number, sex: number, worn: readonly EquippedItem[]): Map<number, number> {
     const families = new Map<number, number>(NAKED_VARIANTS);
-    // The neutral waist is authored in active patch-W, but its variant differs by profile. Keep
-    // this model-aware seed in the gateway rather than teaching the browser to invent a belt.
-    // It is not a stock default: several classic models really carry 1802, so relying on the
-    // browser to drop the id would leak the HD waist into an otherwise classic naked appearance.
+    // Variant 1 is the semantic neutral waist. Some coordinated models author it as the bridge
+    // between body and legs; others carry only 1802, which is an equipped belt laid over a body
+    // that is already closed. Always ask for 1801 and let the model resolver drop an absent
+    // variant-1 id. Equipped items below may still select/remap to 1802 deliberately.
     if (this.#coordinatedVisuals) {
-      families.set(FAMILY_BELT, BELT_1802_PROFILES.has(`${race}/${sex}`) ? 2 : 1);
+      families.set(FAMILY_BELT, 1);
     }
     for (const item of worn) {
       const display = this.#itemDisplays.get(item.displayId);
@@ -1090,6 +1139,23 @@ export class CharacterAppearanceIndex {
         else families.set(family, variant);
       }
     }
+
+    // And the foot, last, because the answer depends on which boot the loop above settled on.
+    //
+    // On the ten coordinated profiles of `FOOT_GEOSET_PROFILES` the foot is a mesh of its own and
+    // has to be asked for by name or the character ends at the ankle. The exception is the fifth
+    // boot variant, and it is measured rather than assumed: 505 is the only family-5 member that
+    // reaches the sole on all ten — HumanMale -0.01, HumanFemale -0.01, OrcMale -0.03, OrcFemale
+    // -0.01, DwarfMale -0.01, DwarfFemale -0.01, NightElfFemale -0.01, GnomeMale -0.01,
+    // BloodElfMale -0.02, BloodElfFemale -0.01 — while variants 1 to 4 all start between z 0.05 and
+    // 0.20, above the foot entirely. So 505 already carries the foot and the bare one underneath it
+    // would only be a second surface in the same place; 501..504 need it.
+    if (this.#coordinatedVisuals) {
+      const foot = FOOT_GEOSET_PROFILES.get(`${race}/${sex}`);
+      if (foot !== undefined && families.get(FAMILY_BOOTS) !== FOOT_TEXTURE_BOOT_VARIANT) {
+        families.set(FAMILY_FEET, foot);
+      }
+    }
     return families;
   }
 
@@ -1101,6 +1167,12 @@ export class CharacterAppearanceIndex {
    * confined to the head, none of them reaching below z 1.34, so those are the hairstyles and
    * there are up to 25 of them. Geoset 0 is always drawn, and the one hairstyle CharHairGeosets
    * picks is drawn over it.
+   *
+   * **Geoset 0 is not always the whole body any more.** In the active patch-W pack HumanMale's is
+   * 4,410 triangles spanning z 0.71..2.02 — the classic one is 624 spanning -0.00..1.96 — because
+   * ten of the twenty profiles moved the foot out into family 20 (`FOOT_GEOSET_PROFILES`) and the
+   * legs into families 5 and 13. Nothing here treats geoset 0 as a floor-to-crown body; it is one
+   * id among the list, and the list has to name every part the file expects to be asked for.
    *
    * Families 1 to 3 are the three facial-hair pieces and their variants come from the DBC
    * unchanged, with no +1. Everything else is one variant per family, from bare skin or from what

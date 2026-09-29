@@ -35,6 +35,8 @@ export const QUEST_STATE_COMPLETE = 0x0001;
 export const QUEST_STATE_FAIL = 0x0002;
 
 export interface QuestObjective {
+  /** Position in the core's fixed four-slot objective array and the player's counter fields. */
+  slot: number;
   /** Creature entry, or a gameobject entry with the top bit set — the core sends `id | 0x80000000`. */
   entry: number;
   count: number;
@@ -45,8 +47,49 @@ export interface QuestObjective {
 }
 
 export interface QuestItemObjective {
+  /** Position in the core's fixed six-slot required-item array. */
+  slot: number;
   itemId: number;
   count: number;
+}
+
+/**
+ * The query packet's `RewOrReqMoney` is one signed field: a positive value is a reward, while a
+ * negative value is the money the quest requires. Keep the wire value intact and expose the two
+ * display meanings without making each caller repeat (or accidentally reverse) the sign logic.
+ */
+export interface QuestMoney {
+  /** The exact signed `RewOrReqMoney` value from the packet. */
+  raw: number;
+  /** Non-negative reward amount, or zero when this quest requires money. */
+  reward: number;
+  /** Non-negative required amount, or zero when this quest pays money. */
+  required: number;
+}
+
+export function splitQuestMoney(rewOrReqMoney: number): QuestMoney {
+  if (!Number.isInteger(rewOrReqMoney)) throw new TypeError("Quest money must be an integer");
+  return rewOrReqMoney >= 0
+    ? { raw: rewOrReqMoney, reward: rewOrReqMoney, required: 0 }
+    : { raw: rewOrReqMoney, reward: 0, required: -rewOrReqMoney };
+}
+
+/** One authoritative carried stack, independent of the browser inventory model. */
+export interface QuestCarriedItemStack {
+  itemId: number;
+  count: number;
+}
+
+/** Sums split stacks the way the server's carried-item count does. */
+export function buildCarriedItemCounts(
+  stacks: ReadonlyArray<QuestCarriedItemStack>,
+): ReadonlyMap<number, number> {
+  const counts = new Map<number, number>();
+  for (const stack of stacks) {
+    if (stack.itemId <= 0 || stack.count <= 0) continue;
+    counts.set(stack.itemId, (counts.get(stack.itemId) ?? 0) + stack.count);
+  }
+  return counts;
 }
 
 export interface QuestTemplate {
@@ -57,8 +100,16 @@ export interface QuestTemplate {
   type: number;
   suggestedPlayers: number;
   nextQuest: number;
+  /** Signed `RewOrReqMoney`: positive reward, negative required quest cost. */
   rewardMoney: number;
+  /** Derived non-negative cost for a negative `rewardMoney` wire value. */
+  requiredMoney: number;
   rewardBonusMoney: number;
+  /** `RewSpell`: spell shown as the reward (typically the icon). */
+  rewardDisplaySpell: number;
+  /** `RewSpellCast`: spell cast when the quest reward is claimed. */
+  rewardSpellCast: number;
+  /** @deprecated Use `rewardSpellCast`; kept as a compatibility alias for existing callers. */
   rewardSpell: number;
   rewardHonor: number;
   startItem: number;
@@ -96,9 +147,10 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
   const nextQuest = reader.u32();
   reader.u32();
   const rewardMoney = reader.i32();
+  const requiredMoney = splitQuestMoney(rewardMoney).required;
   const rewardBonusMoney = reader.u32();
-  reader.u32();
-  const rewardSpell = reader.i32();
+  const rewardDisplaySpell = reader.u32();
+  const rewardSpellCast = reader.i32();
   const rewardHonor = reader.u32();
   reader.f32();
   const startItem = reader.u32();
@@ -138,13 +190,13 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
     const itemDrop = reader.u32();
     reader.u32();
     // The client is told a gameobject by having the top bit set on the entry.
-    objectives.push({ entry: raw & 0x7fff_ffff, gameObject: (raw & 0x8000_0000) !== 0, count, itemDrop, text: "" });
+    objectives.push({ slot: index, entry: raw & 0x7fff_ffff, gameObject: (raw & 0x8000_0000) !== 0, count, itemDrop, text: "" });
   }
   const itemObjectives: QuestItemObjective[] = [];
   for (let index = 0; index < QUEST_ITEM_OBJECTIVES; index++) {
     const itemId = reader.u32();
     const count = reader.u32();
-    if (itemId > 0) itemObjectives.push({ itemId, count });
+    if (itemId > 0) itemObjectives.push({ slot: index, itemId, count });
   }
   for (let index = 0; index < QUEST_OBJECTIVES; index++) {
     const text = reader.cString();
@@ -153,8 +205,9 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
   }
 
   return {
-    questId, level, minLevel, sortId, type, suggestedPlayers, nextQuest, rewardMoney,
-    rewardBonusMoney, rewardSpell, rewardHonor, startItem, flags, rewardTitleId,
+    questId, level, minLevel, sortId, type, suggestedPlayers, nextQuest, rewardMoney, requiredMoney,
+    rewardBonusMoney, rewardDisplaySpell, rewardSpellCast, rewardSpell: rewardSpellCast,
+    rewardHonor, startItem, flags, rewardTitleId,
     requiredPlayerKills, rewardTalents, rewardItems, rewardChoiceItems, poi, title,
     objectivesText, details, areaDescription, completedText,
     objectives: objectives.filter((objective) => objective.entry > 0 && objective.count > 0),
@@ -184,6 +237,18 @@ export function parseQuestGiverStatusMultiple(payload: Uint8Array): QuestGiverSt
   for (let index = 0; index < count; index++) statuses.push({ guid: reader.u64(), status: reader.u8() });
   reader.assertFinished();
   return statuses;
+}
+
+/**
+ * `Player::SendQuestFailed` writes the quest ID first and then an `InventoryResult` reason.
+ * `SMSG_QUESTGIVER_QUEST_INVALID` has a different one-word layout.
+ */
+export function parseQuestGiverFailed(payload: Uint8Array): { questId: number; reason: number } {
+  const reader = new PacketReader(payload);
+  const questId = reader.u32();
+  const reason = reader.u32();
+  reader.assertFinished();
+  return { questId, reason };
 }
 
 export interface QuestKillUpdate {
@@ -333,6 +398,11 @@ export function buildCompletedQuestsQuery(): Uint8Array {
   return new PacketWriter().toUint8Array();
 }
 
+/** `CMSG_PUSH_QUEST_TO_PARTY`: shares a quest from the log with the party. */
+export function buildPushQuestToParty(questId: number): Uint8Array {
+  return new PacketWriter().u32(questId).toUint8Array();
+}
+
 /** `CMSG_QUEST_CONFIRM_ACCEPT`: yes to a quest a party member shared. */
 export function buildQuestConfirmAccept(questId: number): Uint8Array {
   return new PacketWriter().u32(questId).toUint8Array();
@@ -343,9 +413,12 @@ export function buildAbandonQuest(slot: number): Uint8Array {
   return new PacketWriter().u8(slot).toUint8Array();
 }
 
-/** `MSG_QUEST_PUSH_RESULT` going the other way: this client's answer to a shared quest. */
-export function buildQuestPushResult(guid: bigint, result: number): Uint8Array {
-  return new PacketWriter().u64(guid).u8(result).toUint8Array();
+/** `QuestShareMessages` in the active core's QuestDef.h. */
+export const QUEST_PARTY_MSG_DECLINE_QUEST = 3;
+
+/** The client reply includes questId; the server notification on this same MSG opcode does not. */
+export function buildQuestPushResult(guid: bigint, questId: number, result: number): Uint8Array {
+  return new PacketWriter().u64(guid).u32(questId).u8(result).toUint8Array();
 }
 
 /**
@@ -364,7 +437,38 @@ export interface QuestLogEntryView {
   failed: boolean;
   /** Absolute expiry in the server's seconds, or 0 when the quest is not timed. */
   timer: number;
-  objectives: Array<{ text: string; have: number; need: number; done: boolean }>;
+  /** `NaN` means the carried-item snapshot was not authoritative yet. */
+  objectives: QuestLogObjectiveView[];
+}
+
+/** The cache family that can turn an objective's numeric wire id into an in-game name. */
+export type QuestLogObjectiveKind = "creature" | "gameObject" | "item";
+
+/** One objective with its target identity preserved for the browser metadata caches. */
+export interface QuestLogObjectiveView {
+  kind: QuestLogObjectiveKind;
+  id: number;
+  /** `quest_poi.ObjectiveIndex`: 0..3 are NPC/GO slots, 4..9 are required-item slots. */
+  poiIndex: number;
+  /** Authored quest text. Empty means the target metadata should supply the label. */
+  text: string;
+  have: number;
+  need: number;
+  done: boolean;
+}
+
+/**
+ * Keep authored wording when the quest supplies it; otherwise prefer the resolved game name and
+ * leave an explicit, stable id only as the final missing-metadata fallback.
+ */
+export function questObjectiveLabel(objective: QuestLogObjectiveView, resolvedName?: string): string {
+  const authored = objective.text.trim();
+  if (authored) return authored;
+  const name = resolvedName?.trim();
+  if (name) return name;
+  if (objective.kind === "item") return `Предмет #${objective.id}`;
+  if (objective.kind === "gameObject") return `Объект #${objective.id}`;
+  return `Существо #${objective.id}`;
 }
 
 /**
@@ -375,22 +479,42 @@ export interface QuestLogEntryView {
 export function buildQuestLogView(
   slots: ReadonlyArray<{ slot: number; questId: number; state: number; counters: readonly number[]; timer: number }>,
   templates: ReadonlyMap<number, QuestTemplate>,
+  /**
+   * A complete carried-inventory snapshot. A missing item id is zero only when
+   * this map is supplied; without it the count is `NaN` (unknown) rather than
+   * guessed.
+   */
+  carriedItemCounts?: ReadonlyMap<number, number>,
 ): QuestLogEntryView[] {
   return slots.map((entry) => {
     const template = templates.get(entry.questId);
     const objectives: QuestLogEntryView["objectives"] = [];
     template?.objectives.forEach((objective, index) => {
-      const have = entry.counters[index] ?? 0;
+      const slot = objective.slot ?? index;
+      const have = entry.counters[slot] ?? 0;
       objectives.push({
-        text: objective.text || (objective.gameObject ? `Объект ${objective.entry}` : `Существо ${objective.entry}`),
+        kind: objective.gameObject ? "gameObject" : "creature",
+        id: objective.entry,
+        poiIndex: slot,
+        text: objective.text,
         have, need: objective.count, done: have >= objective.count,
       });
     });
-    // Item objectives share the same four counters in the original client, counting from the end
-    // of the creature ones; what is actually carried is the count in the bags, so the log shows
-    // the requirement and lets the bags answer for the tally.
-    for (const item of template?.itemObjectives ?? []) {
-      objectives.push({ text: `Предмет ${item.itemId}`, have: 0, need: item.count, done: false });
+    // Item objectives are not represented by the four creature counters. They
+    // use the carried snapshot supplied by the UI; while that snapshot is not
+    // authoritative, leave the count unknown instead of manufacturing zero.
+    for (const [index, item] of (template?.itemObjectives ?? []).entries()) {
+      const have = carriedItemCounts?.get(item.itemId);
+      objectives.push({
+        kind: "item",
+        id: item.itemId,
+        // The wire reserves four NPC/GO positions even when fewer are populated.
+        poiIndex: QUEST_OBJECTIVES + (item.slot ?? index),
+        text: "",
+        have: carriedItemCounts ? have ?? 0 : Number.NaN,
+        need: item.count,
+        done: have !== undefined && have >= item.count,
+      });
     }
     return {
       slot: entry.slot,

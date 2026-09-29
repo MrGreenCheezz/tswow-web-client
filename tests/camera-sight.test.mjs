@@ -939,7 +939,7 @@ test("К2 the wheel stops where the player's own ceiling says, not where the con
   const definition = settingDefinition("cameraMaxDistance");
   assert.ok(definition, "«Максимальная дистанция камеры» has to exist to be applied");
   assert.equal(definition.kind, "number");
-  assert.equal(definition.group, "Мир");
+  assert.equal(definition.group, "Игра");
   assert.equal(definition.fallback, CAMERA_MAX_DISTANCE, "by default the wheel goes where it always went");
   assert.equal(definition.max, CAMERA_MAX_DISTANCE);
   assert.ok(definition.min > CAMERA_MIN_DISTANCE, "and the tightest ceiling is still an orbit");

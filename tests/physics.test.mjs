@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  DEFAULT_COLLISION_HEIGHT, GRAVITY, JUMP_VELOCITY, MAX_WALKABLE_SLOPE_DEGREES, STEP_HEIGHT,
-  TERMINAL_VELOCITY, newCharacterMotion, stepCharacter,
+  DEFAULT_COLLISION_HEIGHT, GRAVITY, JUMP_VELOCITY, LIQUID_RECALL_YARDS, LIQUID_UNKNOWN, MAX_WALKABLE_SLOPE_DEGREES,
+  STEP_HEIGHT, TERMINAL_VELOCITY, newCharacterMotion, stepCharacter,
 } from "../dist/code/browser/game/Physics.js";
 
 /** A world made of a few functions, which is all the simulation is allowed to ask about. */
@@ -224,6 +224,98 @@ test("hovering holds the character its own height off the ground", () => {
   const motion = newCharacterMotion();
   simulate(position, motion, input({ hovering: true, hoverHeight: 2.5 }), world(), 1);
   assert.equal(position.z, 2.5);
+});
+
+test("the liquid is asked at the character's own feet, not of the whole column", () => {
+  // The server answers it for the floor under the feet (`Map::GetFullTerrainStatusForPosition`),
+  // so a dry gallery can stand over a flooded cistern. A probe never told the height could only
+  // answer for the column — which is how a dungeon's pools went unseen, or a cellar under a lake
+  // was swum in.
+  const asked = [];
+  const cistern = world({
+    ground: () => -10,
+    floor: (_x, _y, fromZ, minZ) => (fromZ >= 0 && minZ <= 0 ? 0 : undefined),
+    liquid: (_x, _y, z) => {
+      asked.push(z);
+      return z < 0 ? { height: -2, type: 13 } : undefined;
+    },
+  });
+  const position = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  const events = simulate(position, motion, input({ forward: 1 }), cistern, 0.5);
+  assert.deepEqual(events, []);
+  assert.equal(motion.mode, "ground");
+  assert.ok(asked.length > 0 && asked.every((z) => z === 0), `asked at ${asked.slice(0, 4)}`);
+});
+
+test("an unknown liquid answer keeps a swimmer swimming at the surface it last knew", () => {
+  // Streaming collision answers "not yet", not "dry". Read as dry, the swimmer would drop to the
+  // bed for those frames and start swimming again after: a stop/start pair per tile that streams.
+  let known = true;
+  const lake = world({ ground: () => -10, liquid: () => (known ? { height: 0, type: 1 } : LIQUID_UNKNOWN) });
+  const position = at(0, 0, -5);
+  const motion = newCharacterMotion();
+  stepCharacter(position, motion, input(), lake, 1 / 60);
+  assert.equal(motion.mode, "swim");
+  known = false;
+  const events = simulate(position, motion, input({ ascend: true }), lake, 2);
+  assert.equal(motion.mode, "swim");
+  assert.ok(!events.includes("stopSwim") && !events.includes("startFall"), events.join());
+  assert.equal(position.z, 0, "and the remembered surface is still the ceiling");
+});
+
+test("an unknown liquid answer never starts a swim on its own", () => {
+  const unknown = world({ ground: () => -10, liquid: () => LIQUID_UNKNOWN });
+  const position = at(0, 0, -10);
+  const motion = newCharacterMotion();
+  const events = simulate(position, motion, input({ forward: 1 }), unknown, 1);
+  assert.deepEqual(events, []);
+  assert.equal(motion.mode, "ground");
+});
+
+test("an unknown liquid answer is the last one only near where that one was given", () => {
+  // One liquid cell on, the remembered surface would be somebody else's water: a swimmer going on
+  // through a gap that never closes comes out of the water rather than swimming on through the air.
+  let known = true;
+  const lake = world({ ground: () => -20, liquid: () => (known ? { height: 0, type: 1 } : LIQUID_UNKNOWN) });
+  const position = at(0, 0, -2);
+  const motion = newCharacterMotion();
+  stepCharacter(position, motion, input(), lake, 1 / 60);
+  assert.equal(motion.mode, "swim");
+  known = false;
+  let leftAt;
+  for (let elapsed = 0; elapsed < 3 && leftAt === undefined; elapsed += 1 / 60) {
+    if (stepCharacter(position, motion, input({ forward: 1 }), lake, 1 / 60).includes("stopSwim")) leftAt = position.x;
+  }
+  assert.ok(leftAt !== undefined, "it came out of the water");
+  assert.ok(leftAt > LIQUID_RECALL_YARDS && leftAt < LIQUID_RECALL_YARDS + 0.1, `left at ${leftAt}`);
+});
+
+test("a water walker stays on the water through an unknown liquid answer", () => {
+  let known = true;
+  const lake = world({ ground: () => -10, liquid: () => (known ? { height: 0, type: 1 } : LIQUID_UNKNOWN) });
+  const position = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  simulate(position, motion, input({ waterWalking: true }), lake, 0.1);
+  known = false;
+  const events = simulate(position, motion, input({ waterWalking: true }), lake, 1);
+  assert.deepEqual(events, [], "no fall onto the lake bed and no landing back on the water");
+  assert.equal(position.z, 0);
+
+  // And walks off it onto the bank: the slope probes ahead stand on the same remembered water, or
+  // the half-yard bank would look like a ten-yard wall rising out of the lake bed.
+  const shore = world({
+    ground: (x) => (x > 0.5 ? 0.5 : -10),
+    liquid: () => (known ? { height: 0, type: 1 } : LIQUID_UNKNOWN),
+  });
+  known = true;
+  const walker = at(0, 0, 0);
+  const walkerMotion = newCharacterMotion();
+  simulate(walker, walkerMotion, input({ waterWalking: true }), shore, 0.1);
+  known = false;
+  assert.deepEqual(simulate(walker, walkerMotion, input({ forward: 1, waterWalking: true }), shore, 0.5), []);
+  assert.ok(walker.x > 2, `stopped at ${walker.x}`);
+  assert.equal(walker.z, 0.5);
 });
 
 test("a character the server has let fly does not fall", () => {

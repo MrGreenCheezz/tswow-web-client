@@ -16,6 +16,7 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { activeRolls, masterLootRows, remainingSeconds, rollOptions, type ActiveRoll } from "./LootRollModel.js";
 import { LOOT_SLOT_MASTER } from "../../world/LootProtocol.js";
 import { attachTooltip } from "./Widgets.js";
+import { frameXmlLootPublished } from "../framexml/FrameXmlLootController.js";
 
 let container: HTMLElement | undefined;
 let ticking = false;
@@ -33,6 +34,7 @@ function root(): HTMLElement | undefined {
 
 export function resetLootRolls(): void {
   container?.replaceChildren();
+  dismissed.clear();
 }
 
 /** True while a dialog is up, so Escape closes it rather than opening the game menu. */
@@ -47,7 +49,7 @@ export function closeLootRolls(): void {
 }
 
 /** Slots the player has waved away this session. A new roll in the same slot clears the mark. */
-let dismissed = new Set<number>();
+let dismissed = new Set<bigint>();
 
 /** The wire's name first: a roll never ordered anything, so the dump was all it ever had. */
 function itemName(itemId: number): string {
@@ -81,10 +83,10 @@ function rollCard(roll: ActiveRoll): HTMLElement {
     button.type = "button";
     button.textContent = option.label;
     button.addEventListener("click", () => {
-      world?.rollForLoot(roll.itemSlot, option.rollType);
+      world?.rollForLoot(roll.itemGuid, option.rollType);
       // The server does not echo the player's own vote back as a dialog change, so the card is
       // taken down here rather than waiting for a packet that only tells everyone else.
-      dismissed.add(roll.itemSlot);
+      dismissed.add(roll.itemGuid);
       showLootRolls();
     });
     buttons.append(button);
@@ -166,11 +168,26 @@ export function showLootRolls(): void {
   const box = root();
   const world = game.world;
   if (!box) return;
+  // A published stock loot owner shows the rolls as GroupLootFrame1-4 and the master looter's
+  // list as GroupLootDropDown (FrameXmlLootController); these cards step aside meanwhile, so Escape
+  // no longer finds them open either (`lootRollsOpen`).
+  if (frameXmlLootPublished()) {
+    box.replaceChildren();
+    box.hidden = true;
+    ticking = false;
+    return;
+  }
   if (!world) {
     box.replaceChildren();
     return;
   }
-  const rolls = activeRolls(world.lootRolls, Date.now()).filter((roll) => !dismissed.has(roll.itemSlot));
+  // A roll whose own vote came back (SMSG_LOOT_ROLL reaches the voter too, Group.cpp SendLootRoll)
+  // is answered, wherever it was answered: here the click also dismisses it, but a vote cast on a
+  // stock GroupLootFrame reaches this list only when the stock owner hands rolls back (teardown,
+  // ReloadUI), and a second answer would be ignored by the server (Group.cpp:1687).
+  const self = world.state?.selfGuid;
+  const rolls = activeRolls(world.lootRolls, Date.now()).filter((roll) => !dismissed.has(roll.itemGuid)
+    && (self === undefined || !roll.votes.some((vote) => vote.playerGuid === self)));
   const master = masterCard();
   box.replaceChildren(...rolls.map(rollCard), ...(master ? [master] : []));
   box.hidden = box.childElementCount === 0;
@@ -186,7 +203,7 @@ export function updateLootRolls(now: number): void {
 }
 
 /** A fresh roll in a slot the player dismissed earlier is a different roll. */
-export function noticeLootRoll(itemSlot: number | undefined): void {
-  if (itemSlot !== undefined) dismissed.delete(itemSlot);
+export function noticeLootRoll(newItemGuid: bigint | undefined): void {
+  if (newItemGuid !== undefined) dismissed.delete(newItemGuid);
   showLootRolls();
 }

@@ -180,7 +180,7 @@ test("the lab summary counts the flat triangles and the geosets that are not in 
   assert.match(summary, /пустых слотов на видимых батчах: 1/);
 });
 
-test("the lab says where every worn piece hangs, and why one of them hangs nowhere", () => {
+test("the lab says where every worn piece hangs, drawn or stowed", () => {
   // Measured from the gateway on this machine: itemDisplay 28135 in the head slot answers with
   // this model and hides the face and ear geosets to make room for it. Drawn nowhere, the page
   // showed a bare earless head and called the build clean.
@@ -201,11 +201,11 @@ test("the lab says where every worn piece hangs, and why one of them hangs nowhe
   assert.equal(drawn[2].point, 6);
   assert.equal(drawn[3].point, 5);
 
-  // Nothing drawn: where a stowed weapon goes needs the item's sheath type, which the browser is
-  // never told, so the client hangs nothing rather than putting a sword across the wrong shoulder.
+  // A stowed one-hander rides its own hip: main hand 9, off hand 10, measured off the
+  // playable models' attachment tables. The helmet is worn whatever the weapons are doing.
   const stowed = labAttachmentLines([helm, sword], 0);
-  assert.equal(stowed[1].point, undefined);
-  assert.match(stowed[1].refusal, /ножн/);
+  assert.equal(stowed[1].point, 9);
+  assert.equal(stowed[1].refusal, undefined);
   assert.equal(stowed[0].point, 11, "a helmet is worn whatever the weapons are doing");
   assert.equal(labAttachmentLines([], 1).length, 0);
 });
@@ -255,9 +255,12 @@ test("the lab reads a look out of the query string the way the client spells one
   // 7 selects installed visual DBC rows, 8 publishes the patch's garment geosets, and 9 selects
   // the foot-capable HumanMale/Tauren boot meshes and profile-scoped belt selection. 11 seeds the
   // neutral belt for naked and NPC appearances. 12 publishes the measured all-profile worn-boot
-  // selection. 13 marks that policy as coordinated so classic keeps its original choices.
-  assert.equal(CHARACTER_APPEARANCE_VERSION, 13,
-    "13 separates coordinated visual geosets from the classic appearance payload");
+  // selection. 13 marks that policy as coordinated so classic keeps its original choices. 14 is
+  // HD-1: the coordinated pack's family-20 foot on the ten profiles that authored one, and the
+  // re-extracted overlay's body layers — 1,133 of 19,903 offered layers named a file the live chain
+  // does not hold before it, 0 of 18,643 after.
+  assert.equal(CHARACTER_APPEARANCE_VERSION, 14,
+    "14 publishes the coordinated pack's own foot mesh and its re-extracted body layers");
   assert.equal(
     appearanceQuery(query),
     `${version}&race=6&sex=1&skin=2&face=3&hair=4&hairColor=5&facialHair=6&items=17%3A26%3A8106%3A19%2C6%3A7%3A9892%2C7%3A8%3A10141`);
@@ -355,7 +358,8 @@ test("Т3 a gateway older than the bundle hides the appearance controls instead 
   // straight into `fillLook`, where `values.entries()` on a number throws inside a `void`ed
   // promise — the loop over the five selects aborts on the first, all five are left empty, and the
   // form submits five zeros, which is the bald character the whole slice is about.
-  assert.equal(CHARACTER_OPTIONS_VERSION, 5, "5 rolls over the formerly cached visual DBC generation");
+  assert.equal(CHARACTER_OPTIONS_VERSION, 6,
+    "6 identifies the class-aware creation options, while the lab may still request the full inventory");
   assert.equal(isCharacterOptions({ skins: 15, faces: 24, hairStyles: 17, hairColors: 13, facialHairs: 9 }), false,
     "the counts an older gateway answers are not the lists this bundle reads");
   assert.equal(isCharacterOptions({

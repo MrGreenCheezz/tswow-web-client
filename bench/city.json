@@ -1,0 +1,14 @@
+{
+  "map": 0,
+  "x": -8840,
+  "y": 626,
+  "z": 93.95,
+  "population": 128,
+  "spacing": 2.4,
+  "walkers": 16,
+  "viewport": { "width": 1920, "height": 919 },
+  "orbit": 18,
+  "pitch": -0.35,
+  "displays": [3167, 5446, 3134, 3138, 3140, 3010, 3011, 3014, 3003, 3133, 3007, 3036, 3040, 3001, 3131, 3640, 3202],
+  "graphics": { "lightingQuality": 2, "grassRadius": 80, "grassDense": true, "grassDensity": 3, "fullscreenGlow": true, "godRays": true }
+}

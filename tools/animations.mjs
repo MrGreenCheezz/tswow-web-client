@@ -50,12 +50,16 @@ export const BASE_ANIMATION_NAMES = [
  * SwimIdle, Dead to Death. A model that lacks a sequence is meant to be walked down that chain
  * rather than left standing, which is what the original client does and what makes one animation
  * set cover a wolf, a murloc and a night elf.
+ *
+ * `bodyFlags` is `Bodyflags`, kept for the rows that set any bit: the renderer reads bit 0x8 to
+ * decide whether a pose may play on the upper body over a moving, mounted or swimming base.
  */
 export async function loadAnimationCatalog(directory = dbcDirectory()) {
   const dbc = await openDbcFile(directory, "AnimationData");
   const idByName = new Map();
   const nameById = new Map();
   const fallback = new Map();
+  const bodyFlags = new Map();
   for (const row of dbc.rows()) {
     const id = dbc.id(row);
     const name = dbc.string(row, "Name");
@@ -64,8 +68,10 @@ export async function loadAnimationCatalog(directory = dbcDirectory()) {
     const next = dbc.int(row, "Fallback");
     // Zero is Stand and is also how the table spells "no fallback"; a self-reference would loop.
     if (next !== 0 && next !== id) fallback.set(id, next);
+    const flags = dbc.int(row, "Bodyflags") >>> 0;
+    if (flags !== 0) bodyFlags.set(id, flags);
   }
-  return { idByName, nameById, fallback };
+  return { idByName, nameById, fallback, bodyFlags };
 }
 
 /** The ids of {@link BASE_ANIMATION_NAMES}, dropping any name this build's table does not carry. */

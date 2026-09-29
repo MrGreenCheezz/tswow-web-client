@@ -82,7 +82,7 @@ test("V4 future visual animations are not early and are consumed once by the ren
 test("mount-special packets are routed to the mount node and not the rider", async () => {
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const enterWorld = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
-  assert.match(enterWorld, /world\.events\.on\("MOUNT_SPECIAL"[\s\S]*playMountSpecial\(guid\)/,
+  assert.match(enterWorld, /(?:world\.events\.on|onWorldEvent)\("MOUNT_SPECIAL"[\s\S]*playMountSpecial\(guid\)/,
     "the server edge must reach the renderer");
   assert.match(renderer, /isUnitFlying\(object\.movementFlags, object\.motion\?\.flying === true\)/,
     "the rider's authoritative movement flag resolves flying mounts even without a spline");
@@ -90,6 +90,44 @@ test("mount-special packets are routed to the mount node and not the rider", asy
     "the rider guid is used to resolve the mount's ground/flying sequence");
   assert.match(renderer, /this\.#playAnimation\(mount, animation, false, now, true\)/,
     "the one-shot is played on the mount PosedModel, not the rider");
+});
+
+test("A2 the mount is posed from the rider's travel alone, with its own jumps and its own gait", async () => {
+  const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const body = /\n  #poseMount\(unit: RenderedUnit[\s\S]*?\n  \}\n/.exec(renderer)?.[0];
+  assert.ok(body, "#poseMount must still be findable as one method body");
+
+  // (1) Sanitising happens inside the method, because only here are the mount's own clips known —
+  // which is what lets an airborne pose fail open on a rig with no jump clips.
+  assert.match(body, /const pose = mountPose\(rider, mount\.template\.clips\)/,
+    "the rider's stand state and death must not reach the horse");
+  assert.doesNotMatch(renderer, /#poseMount\(unit, object\.guid, \{ \.\.\.pose, mounted: false \}/,
+    "the call site no longer hand-rolls half a sanitised pose");
+
+  // (2) The mount's own transition, held by the same one-shot guard the special uses, and its
+  // remembered pose advanced on every path — including the held one, or a takeoff fires twice.
+  assert.match(body, /mountPoseTransition\(mount\.pose, pose\)/,
+    "the horse gets JumpStart/JumpEnd of its own");
+  assert.match(body, /resolveAnimation\(mount\.template\.clips, \[transition\]\)/,
+    "and it is resolved against what the rig actually carries, so a rig without one keeps its gait");
+  assert.equal((body.match(/mount\.pose = pose/g) ?? []).length, 4,
+    "every exit from the method leaves the remembered pose current");
+
+  // (3) The gait, scaled after the play call because #playAnimation resets the rate to 1.
+  assert.match(body, /this\.#playAnimation\(mount, chosen\.animation, chosen\.loop, now\);\s*\n(\s*\/\/[^\n]*\n)*\s*this\.#applyMountGait\(/,
+    "the stride is scaled only after the action has been started");
+  const gait = /\n  #applyMountGait\(mount: RenderedMount[\s\S]*?\n  \}\n/.exec(renderer)?.[0];
+  assert.ok(gait, "#applyMountGait must be findable");
+  assert.match(gait, /if \(!action \|\| !loop\) return;/,
+    "a one-shot — the special, a takeoff, a landing — keeps its authored timing");
+  assert.match(gait, /mountGaitTimeScale\(speed, clipMovingSpeed\(mount\.template\?\.clips\.get\(animation\)\)\)/,
+    "the authored stride speed comes off the clip the artifact carried it on");
+  assert.match(gait, /action\.getEffectiveTimeScale\(\)/,
+    "the current rate is read back rather than cached, because #playAnimation resets it");
+
+  // And the rider is untouched by any of it: nothing in the file scales a unit's own action.
+  assert.doesNotMatch(renderer, /unit\.action\.setEffectiveTimeScale\(mountGaitTimeScale/,
+    "riders keep authored timing");
 });
 
 test("V5 spell effect budget never alternates between halves of one composite kit", () => {
@@ -253,9 +291,13 @@ test("V5 failed phases purge every owned member before late model fetch", async 
     ["cast", "missile"], "all members of the failed phase are removed together");
 
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  const sweep = source.indexOf("this.#purgeFailedSpellEffectPhases();");
-  const modelFetch = source.indexOf("const model = client?.model");
-  assert.ok(sweep >= 0 && modelFetch > sweep,
+  // Anchored inside `#updateVisuals`: the guard is about the order of two statements in that one
+  // method, and S1's prewarm pump added an earlier `client?.model` call elsewhere in the file that
+  // is deliberately not this one. Searching the whole file would have read that as a regression.
+  const pass = source.indexOf("#updateVisuals(now: number");
+  const sweep = source.indexOf("this.#purgeFailedSpellEffectPhases();", pass);
+  const modelFetch = source.indexOf("const model = client?.model", pass);
+  assert.ok(pass >= 0 && sweep >= 0 && modelFetch > sweep,
     "failed-phase purge runs before the model loader can consume a late response");
 });
 
@@ -263,7 +305,7 @@ test("V5 emitter budget hides the whole spell kit, including non-emitter mesh me
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /const selectedSpellGroups = new Set\(selectedVisuals\.map/,
     "budget admission is recorded per spell phase rather than per emitter node");
-  assert.match(source, /const phaseEmitterGroups = new Set\(this\.#visuals/,
+  assert.match(source, /const phaseEmitterGroups = new Set<string>\(\);/,
     "all WVM members, including out-of-range emitters, associate mesh siblings with the same phase");
   assert.match(source, /const groupSelected = !hasEmitterMember \|\| selectedSpellGroups\.has/,
     "a rejected emitter group also hides its hammer/mesh sibling");
@@ -383,15 +425,24 @@ test("V4 spell unit clips run once for their full duration and lead into held pr
   assert.match(source, /next\.setLoop\(wantedLoop, Infinity\)/);
   assert.match(source, /const blendDuration = loop \? ANIMATION_BLEND : ACTION_ANIMATION_BLEND/,
     "one-shots use the shorter hand-off while continuous poses keep the default blend");
-  assert.match(source, /fullDuration \? 0 : blendDuration \* 1000/,
-    "visual one-shots are not shortened by the crossfade blend");
-  assert.match(source, /const blend = animationBlend\(previous\.loop === THREE\.LoopRepeat, loop\)/,
-    "continuous transitions choose their blend policy from both loop modes");
+  // A1 removed the `fullDuration ? 0 :` this used to pin. Subtracting nothing meant the pose pass
+  // came back for a spell one-shot at the exact millisecond its clip ended, when the action was no
+  // longer running — so the hand-off back to Stand was a hard stop and a standing cast snapped.
+  assert.doesNotMatch(source, /fullDuration \? 0 : blendDuration \* 1000/,
+    "a spell one-shot leaves the same blend window free as every other one-shot");
+  assert.match(source, /clip\.duration \* 1000 - blendDuration \* 1000/,
+    "both one-shot tails hand back a blend window early");
+  assert.match(source, /const blend = animationBlend\(previous\.loop === THREE\.LoopRepeat, loop, clipBlendTime\(clip\)\)/,
+    "transitions take the incoming clip's authored M2Sequence.blendTime when the artifact carries one");
   assert.match(source, /next\.crossFadeFrom\(previous, blend\.duration, blend\.warp\)/,
     "loop transitions cross-fade with phase synchronisation");
-  assert.match(source, /if \(pending\.sequenceAt === 0\)/,
+  assert.match(source, /previous\.fadeOut\(blend\.duration\);\s*\n\s*next\.fadeIn\(blend\.duration\);/,
+    "a finished one-shot is faded out beside the new pose instead of being cut out of the mixer");
+  // The unit-action arbiter (UnitActionArbiter.ts) replaced the single action slot: a lead-in is
+  // armed when its entry first starts, and the entry is held when its follow-up is.
+  assert.match(source, /if \(entry\.started\) return;\s*\n\s*entry\.started = true;/,
     "lead-in timing is armed once and cannot move every frame");
-  assert.match(source, /pending\.sequence\?\.mode === "hold"/,
+  assert.match(source, /const primary = animation\.followUp \?\? animation;/,
     "a precast lead-in retains ownership of the held primary");
   assert.match(source, /if \(unit\.action\.loop === wantedLoop && unit\.action\.isRunning\(\)\) return;/,
     "same-id lead-ins avoid restarting a running action");
@@ -415,8 +466,8 @@ test("V4 spell M2 effects use a local clock and a skinned emitter rig", async ()
     "a successful non-rig WVM does not retain the request grace as its lifetime");
   assert.match(source, /const modelLoop = instance\.modelPlayback === "hold"/,
     "packet-held and aura-owned model clips have explicit looping semantics");
-  assert.match(source, /applyBillboardBones\(visual\.skinned, visual\.template, this\.#camera\)/,
-    "spell skinned rigs update billboard bones after their mixer step");
+  assert.match(source, /applyBillboardBones\(visual\.skinned, visual\.template, this\.#camera, false\)/,
+    "spell skinned rigs update billboard bones after their mixer step and defer full propagation to readers/render");
   assert.match(source, /Math\.max\(now, instance\.startedAt\) \+ MODEL_VFX_LOAD_GRACE_MS/,
     "future visuals receive loading grace from their scheduled start");
   assert.match(source, /visual\.authoredEndsAt = visual\.instance\.endsAt/,
@@ -438,28 +489,31 @@ test("V4 visual cleanup and cancellation are ownership-scoped", async () => {
   assert.match(source, /retimeSpellVisual\(handle: SpellVisualHandle, endsAt: number\)/);
   assert.match(source, /pending\.animation\.hold = Math\.max\(0, endsAt - pending\.animation\.at\)/,
     "retiming a cast also updates pending scheduled animation duration");
-  assert.match(source, /if \(action\.visualHandle !== handle\) continue;/,
+  // Poses now live in per-unit `UnitActionQueue`s whose entries carry their owning handle.
+  assert.match(source, /if \(entry\.owner === handle && entry\.held\) entry\.until = endsAt;/,
     "retiming a cast updates the absolute held-action deadline");
-  assert.match(source, /const hold = loop && animation\.hold > 0 \? at \+ animation\.hold : 0;/,
+  assert.match(source, /const until = held \? \(primary\.hold > 0 \? at \+ primary\.hold : 0\) : now \+ ACTION_SIDECAR_WAIT;/,
     "a late frame cannot shift a visual hold window forward");
   assert.match(source, /if \(visual\.handle !== handle\) continue;/,
     "cancelling one cast cannot remove another cast's nodes");
-  assert.match(source, /if \(action\.visualHandle !== handle\) continue;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.owner === handle\)/,
     "cancelling one cast cannot remove another cast's pending action");
   assert.match(source, /clearSpellVisuals\(\): void/);
-  assert.match(source, /if \(action\.source !== "visual"\) continue;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.payload\.source === "visual"\)/,
     "clearSpellVisuals leaves ordinary locomotion/actions alone");
   assert.match(source, /cancelUnitAction\(guid: bigint\): void/);
-  assert.match(source, /if \(!pending\?\.cancelable\) return;/,
+  assert.match(source, /queue\.removeWhere\(\(entry\) => entry\.layer === "cast" && entry\.held\)/,
     "ordinary one-shots are not interrupted by the held-action cancel seam");
   assert.match(source, /if \(terminalPose && unit\.overlayPreservesLocomotion === true\) this\.#clearOverlay\(unit\);/,
     "terminal/death poses clear a locomotion-preserving upper action immediately");
-  assert.match(source, /if \(unit\.overlayActionKind === "shoot" && unit\.overlayAction\)/,
-    "shoot cancellation stops the active ranged overlay without re-resolving weapon metadata");
-  assert.match(source, /if \(unit\.actionKind === "shoot" && unit\.action\)/,
-    "full-body held shoot cancellation also stops the actual active action");
-  assert.match(source, /#promoteActionToLocomotionOverlay\(unit, now\)/,
-    "movement after an already-started one-shot transfers it to the filtered upper layer");
+  // A cancelled pose is released by identity and faded, not stopped: the shot-specific stop paths
+  // (and their weapon re-resolution) went with the single slot.
+  assert.match(source, /if \(unit\.overlayAction === shown\.action\) this\.#clearOverlay\(unit\);/,
+    "a released upper-body pose fades out over the gait");
+  assert.match(source, /if \(unit\.action === shown\.action\) unit\.overlayUntil = 0;/,
+    "a released whole-body pose stays as the cross-fade source for the base pose");
+  assert.match(source, /if \(unit\.overlayAction\) unit\.overlayAction\.time = phase;/,
+    "movement moves a running pose to the filtered upper layer at its own phase");
 });
 
 test("Ж4.3 nothing is ranked into the scene only to be drawn as a stand-in", () => {
@@ -518,7 +572,11 @@ test("Ж0 a building with no model yet is drawn as nothing — not as a box, not
   // «серые коробки больше не рисуются вовсе»; now one predicate answers for both.
   assert.equal(drawableModel({ vertices: [0, 0, 0], indices: [0, 0, 0] }), false, "a collision hull is not art");
   assert.equal(drawableModel(undefined), false, "and neither is a model that has not come back");
-  assert.equal(drawableModel({ vertices: [], indices: [], visual: true }), true);
+  assert.equal(drawableModel({ vertices: [], indices: [], visual: true }), false,
+    "an empty visual artifact has no authored geometry to draw");
+  assert.equal(drawableModel({
+    vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 2], visual: true,
+  }), true, "authored flat-colour geometry remains drawable without a texture");
   assert.equal(drawableModel({ vertices: [], indices: [], wvm: {} }), true);
   assert.equal(drawableModel({ vertices: [], indices: [], wmo: {} }), true);
 

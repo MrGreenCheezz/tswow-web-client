@@ -82,16 +82,21 @@ test("LRU eviction obeys count and byte soft caps and cache hits touch", () => {
   const b = built(8);
   const c = built(8);
   byCount.set("a", a).set("b", b);
+  assert.equal(byCount.needsEviction, false);
   assert.equal(byCount.get("a"), a);
   byCount.set("c", c);
+  assert.equal(byCount.needsEviction, true);
   assert.deepEqual(byCount.evictUnpinned(new Set()).map(({ key }) => key), ["b"]);
+  assert.equal(byCount.needsEviction, false);
   assert.equal(byCount.get("a"), a);
   assert.equal(byCount.get("c"), c);
 
   const byBytes = new BuiltModelCache({ count: 8, knownBufferBytes: 24 });
   byBytes.set("small", built(16)).set("large", built(24));
+  assert.equal(byBytes.needsEviction, true, "byte overflow requires a pin pass even below the count cap");
   assert.equal(byBytes.stats.overflowKnownBufferBytes, 16);
   assert.deepEqual(byBytes.evictUnpinned(new Set()).map(({ key }) => key), ["small"]);
+  assert.equal(byBytes.needsEviction, false);
   assert.equal(byBytes.stats.knownBufferBytes, 24);
 });
 
@@ -104,6 +109,7 @@ test("active pins may overflow, then settle after leave and rebuild cleanly on r
   cache.set("first", first).set("look", leaving);
 
   assert.deepEqual(cache.evictUnpinned(new Set([first, leaving])), []);
+  assert.equal(cache.needsEviction, true, "pinned overflow must be retried after a borrower leaves");
   assert.deepEqual(cache.stats, {
     count: 2, knownBufferBytes: 32, overflowCount: 1, overflowKnownBufferBytes: 16,
   });
@@ -113,6 +119,7 @@ test("active pins may overflow, then settle after leave and rebuild cleanly on r
   disposeEvictedBuiltModels(evicted, cache.values());
   assert.equal(leavingGeometryDisposals, 1);
   assert.equal(cache.stats.overflowCount, 0);
+  assert.equal(cache.needsEviction, false);
 
   const rebuilt = built(16);
   cache.set("look", rebuilt);
@@ -184,6 +191,7 @@ test("clear resets the exact ledger idempotently", () => {
   assert.equal(cache.stats.overflowKnownBufferBytes, 31);
   cache.clear();
   cache.clear();
+  assert.equal(cache.needsEviction, false);
   assert.deepEqual(cache.stats, {
     count: 0, knownBufferBytes: 0, overflowCount: 0, overflowKnownBufferBytes: 0,
   });

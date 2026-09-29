@@ -916,13 +916,25 @@ test("Т3 the form offers only what the core will let a character be created wit
   assert.equal(colours, 2, `2 hair colours carry no player flag at any style, not ${colours}`);
   assert.equal(ragged, 0, `${ragged} unflagged pairs are in a style and a colour that are both alive`);
 
-  // The half that is left: `SECTION_FLAG_DEATH_KNIGHT` is refused for every class but the death
-  // knight, and this route has no class. Dropping those rows would take the death-knight skins from
-  // the one class entitled to them, so they stay on offer and the gate stays half shut until the
-  // class arrives with Д3. Measured on the human male: three of his thirteen skins and 129 of his
-  // 249 face rows.
+  // The unfiltered inventory includes death-knight sections for appearance inspection. The
+  // creation screen passes a class, so ordinary classes must lose them while class 6 keeps them.
+  // Measured on the human male: three of his thirteen skins and 129 of his 249 face rows.
   const knightSkins = human.skins.filter((skin) => (table.flags(0, 1, 0, 0, skin) & 0x04) !== 0);
-  assert.deepEqual(knightSkins, [12, 13, 14], "the death-knight skins are still offered to everyone");
+  assert.deepEqual(knightSkins, [12, 13, 14], "the unfiltered inventory retains knight skins");
+
+  const warrior = appearanceIndex.options(1, 0, 1);
+  const deathKnight = appearanceIndex.options(1, 0, 6);
+  assert.deepEqual(warrior.skins, human.skins.filter((skin) => !knightSkins.includes(skin)),
+    "the core refuses death-knight-only skins for a warrior at character creation");
+  assert.deepEqual(deathKnight.skins, human.skins,
+    "the death knight keeps its exclusive skins and the ordinary ones");
+  for (const skin of warrior.skins) {
+    assert.equal(table.flags(0, 1, 0, 0, skin) & 0x04, 0);
+    for (const face of warrior.facesBySkin[skin]) {
+      assert.equal(table.flags(1, 1, 0, face, skin) & 0x04, 0,
+        `warrior face ${face} skin ${skin} must pass ValidateAppearance`);
+    }
+  }
 });
 
 test("Т3 a hairstyle with no row of its own is not drawn, and a mane with a blank row still is",

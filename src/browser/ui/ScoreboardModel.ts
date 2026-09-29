@@ -49,19 +49,38 @@ export interface ScoreRow {
   teamId: number;
 }
 
-/** Rows with names attached, sorted by the thing a player looks at first. */
-export function scoreRows(log: PvpLogData, nameOf: (guid: bigint) => string): ScoreRow[] {
+/** Rows with names attached, sorted by the chosen column (default damage). */
+export function scoreRows(
+  log: PvpLogData,
+  nameOf: (guid: bigint) => string,
+  sort: { column: string; descending: boolean } = { column: "damageDone", descending: true },
+): ScoreRow[] {
+  const valueOf = (row: ScoreRow): number => {
+    switch (sort.column) {
+      case "killingBlows": return row.score.killingBlows;
+      case "honorableKills": return row.score.honorableKills;
+      case "deaths": return row.score.deaths;
+      case "bonusHonor": return row.score.bonusHonor;
+      case "healingDone": return row.score.healingDone;
+      case "damageDone":
+      default: return row.score.damageDone;
+    }
+  };
   return log.scores
     .map((score) => ({ score, name: nameOf(score.guid), teamId: score.teamId }))
     .sort((left, right) =>
       left.teamId - right.teamId
-      || right.score.damageDone - left.score.damageDone
+      || (sort.descending ? valueOf(right) - valueOf(left) : valueOf(left) - valueOf(right))
       || left.name.localeCompare(right.name, "ru"));
 }
 
 /** In an arena, rows split by team; in a battleground, one flat list. */
-export function scoreGroups(log: PvpLogData, nameOf: (guid: bigint) => string): Array<{ title: string; rows: ScoreRow[] }> {
-  const rows = scoreRows(log, nameOf);
+export function scoreGroups(
+  log: PvpLogData,
+  nameOf: (guid: bigint) => string,
+  sort?: { column: string; descending: boolean },
+): Array<{ title: string; rows: ScoreRow[] }> {
+  const rows = scoreRows(log, nameOf, sort);
   if (!log.arena) return [{ title: "", rows }];
   return [PVP_TEAM_HORDE, PVP_TEAM_ALLIANCE].map((teamId) => ({
     title: arenaTeamHeader(log, teamId),
@@ -92,11 +111,30 @@ export function winnerText(log: PvpLogData): string {
 /**
  * Column headers for the objective block.
  *
- * What the numbers count belongs to the battleground — bases in Alterac Valley, flags in Warsong
- * Gulch — and nothing in this client maps a battleground id to those names. Numbered placeholders
- * are the honest answer; inventing labels from the field name would put "flags" over a tower count.
+ * Order and meaning are authoritative from TrinityCore (`BattlegroundScore.h` `ScoreType` and
+ * each zone's `BuildObjectivesBlock`/`GetAttrN`):
+ * - Warsong Gulch (489): captures, returns (2).
+ * - Eye of the Storm (566): captures (1).
+ * - Arathi Basin (529) / Isle of Conquest (628): assaulted, defended (2).
+ * - Alterac Valley (30): GY assaulted/defended, towers assaulted/defended, mines (5).
+ * - Strand of the Ancients (607): demolishers, gates (2).
+ * The packet carries only numbers, so the map id (when known) picks the labels; unknown maps
+ * fall back to numbered placeholders rather than invented names.
  */
-export function objectiveHeaders(count: number): string[] {
+export function objectiveHeaders(count: number, mapId?: number): string[] {
+  if (count <= 0) return [];
+  if (count === 5) return ["Кладб. штурм", "Кладб. оборона", "Башни штурм", "Башни оборона", "Рудники"];
+  if (count === 1) return ["Захваты флага"];
+  if (count === 2) {
+    switch (mapId) {
+      case 489: return ["Захваты флага", "Возвраты флага"];
+      case 529:
+      case 628: return ["Штурмы баз", "Оборона баз"];
+      case 607: return ["Разрушители", "Врата"];
+      case 566: return ["Захваты флага", "Очки"];
+      default: return ["Очки 1", "Очки 2"];
+    }
+  }
   return Array.from({ length: count }, (_, index) => `Цель ${index + 1}`);
 }
 

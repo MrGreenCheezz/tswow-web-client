@@ -3,13 +3,23 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as THREE from "three";
 import {
+  ENVIRONMENT_FAR_RANGE,
+  ENVIRONMENT_RANGE,
+  ENVIRONMENT_SCENERY_BUDGET,
+  ENVIRONMENT_VEGETATION_RANGE,
   ENVIRONMENT_WARM_EXTERIOR_BUDGET,
   ENVIRONMENT_WARM_INTERIOR_BUDGET,
+  cameraAngleDelta,
+  environmentBoundsDiagonal,
   environmentCandidatesInRange,
+  environmentFarEligible,
   environmentObjectVisibleInFrustum,
+  environmentResidentsInRange,
+  environmentVegetation,
   placementDistance,
   selectEnvironment,
   selectEnvironmentAdmission,
+  vegetationGrowthScale,
 } from "../dist/code/browser/WorldRenderer3D.js";
 
 const WORLD_SOURCE = new URL("../src/browser/WorldRenderer3D.ts", import.meta.url);
@@ -84,16 +94,16 @@ function updateEnvironmentSource(source) {
 
 test("environment admission exports bounded hidden budgets and preserves strict leashes", () => {
   assert.equal(ENVIRONMENT_WARM_EXTERIOR_BUDGET, 960);
-  assert.equal(ENVIRONMENT_WARM_INTERIOR_BUDGET, 360);
+  assert.equal(ENVIRONMENT_WARM_INTERIOR_BUDGET, 1080);
 
   const player = { x: 0, y: 0 };
   const objects = [
-    placement("exterior-inside", 299.999, 0),
-    placement("exterior-boundary", 300, 0),
+    placement("exterior-inside", ENVIRONMENT_RANGE - 0.001, 0),
+    placement("exterior-boundary", ENVIRONMENT_RANGE, 0),
     placement("interior-inside", 59.999, 0, { interior: true }),
     placement("interior-boundary", 60, 0, { interior: true }),
-    placement("negative-inside", -299.999, 0),
-    placement("negative-boundary", -300, 0),
+    placement("negative-inside", -ENVIRONMENT_RANGE + 0.001, 0),
+    placement("negative-boundary", -ENVIRONMENT_RANGE, 0),
   ];
 
   const candidates = environmentCandidatesInRange(objects, player);
@@ -166,6 +176,127 @@ test("static frustum admission uses wire AABB, scene mapping, and fail-open cate
   assert.equal("composite" in retained, false);
 });
 
+test("large outdoor WMO shells hold a far leash on their own quota", () => {
+  const player = { x: 0, y: 0 };
+  // Wire box 90×90×30: diagonal ~131 yards, earning the far leash.
+  const castle = placement("castle", 500, 0, {
+    kind: "wmo",
+    bounds: bounds(455, -45, 0, 545, 45, 30),
+  });
+  assert.equal(environmentBoundsDiagonal(castle.bounds), Math.hypot(90, 90, 30));
+  assert.equal(environmentFarEligible(castle), true);
+  assert.equal(ENVIRONMENT_FAR_RANGE, 750);
+
+  // Same box on an M2, an interior, a small WMO and a malformed box: all stay near.
+  const m2 = placement("m2-big-box", 500, 0, { bounds: bounds(460, -40, 0, 540, 40, 30) });
+  const interior = placement("hall-inside", 500, 0, {
+    kind: "wmo", interior: true, bounds: bounds(460, -40, 0, 540, 40, 30),
+  });
+  const hut = placement("hut", 500, 0, { kind: "wmo", bounds: bounds(495, -5, 0, 505, 5, 4) });
+  const broken = placement("broken", 500, 0, {
+    kind: "wmo", bounds: { minX: 10, minY: 0, minZ: 0, maxX: 0, maxY: 1, maxZ: 1 },
+  });
+  for (const object of [m2, interior, hut, broken]) {
+    assert.equal(environmentFarEligible(object), false, `${object.id} stays on the near leash`);
+  }
+  assert.equal(environmentBoundsDiagonal(undefined), undefined);
+  assert.equal(environmentBoundsDiagonal(broken.bounds), undefined);
+
+  // The near budget is fully spent on clutter, yet the castle is still admitted — and the
+  // far-range rock, which earns no leash, is not even a candidate.
+  const clutter = Array.from({ length: 320 }, (_, index) => placement(`clutter-${index}`, 10, 0));
+  const rock = placement("rock", 500, 0);
+  const candidates = environmentCandidatesInRange([...clutter, castle, rock], player);
+  assert.ok(candidates.some((entry) => entry.object.id === "castle"));
+  assert.ok(!candidates.some((entry) => entry.object.id === "rock"));
+  const admitted = entriesOf(selectEnvironmentAdmission(candidates, []));
+  assert.equal(admitted.filter((entry) => objectOf(entry).id.startsWith("clutter-")).length, 320);
+  assert.ok(ids(admitted).includes("castle"), "the far castle wins its own quota, not the near one");
+
+  // A far castle beyond even the far leash stays out.
+  const tooFar = placement("too-far", 800, 0, {
+    kind: "wmo",
+    bounds: bounds(760, -40, 0, 840, 40, 30),
+  });
+  assert.ok(!environmentCandidatesInRange([tooFar], player).length);
+});
+
+test("vegetation holds a longer leash and grows in instead of popping", () => {
+  const player = { x: 0, y: 0 };
+  assert.equal(ENVIRONMENT_VEGETATION_RANGE, 600);
+  const pine = (id, x, extra = {}) => placement(id, x, 0, {
+    name: "World\\Trees\\Pine01.m2", ...extra,
+  });
+  assert.equal(environmentVegetation(pine("a", 10)), true);
+  assert.equal(environmentVegetation(placement("house", 10)), false);
+  assert.equal(environmentVegetation(pine("b", 10, { interior: true })), false,
+    "indoor vegetation is a room prop, not a tree on a hill");
+
+  // Candidates: a pine at 500 yards is in, a rock at 500 is out, a pine at 650 is out.
+  const candidates = environmentCandidatesInRange(
+    [pine("pine-far", 500), placement("rock", 500, 0), pine("pine-too-far", 650)], player);
+  assert.deepEqual(ids(candidates), ["pine-far"]);
+
+  // The near budget is fully spent on clutter, yet the far pine is still admitted on the far
+  // quota — the same quota the castles use, nearest-first among themselves.
+  const clutter = Array.from({ length: 320 }, (_, index) => placement(`vclutter-${index}`, 10, 0));
+  const admitted = entriesOf(selectEnvironmentAdmission(
+    environmentCandidatesInRange([...clutter, pine("pine-far", 500)], player), []));
+  assert.equal(admitted.filter((entry) => objectOf(entry).id.startsWith("vclutter-")).length, 320);
+  assert.ok(ids(admitted).includes("pine-far"));
+
+  // Grow-in math: from a quarter, ease-out cubic, settled and clamped.
+  assert.equal(vegetationGrowthScale(100, 100), 0.25);
+  assert.equal(vegetationGrowthScale(100, 130), 1);
+  assert.equal(vegetationGrowthScale(100, 200), 1, "a hidden tree settles while dormant");
+  assert.equal(vegetationGrowthScale(100, 115), 0.25 + 0.75 * (1 - 0.5 ** 3));
+  // Explicit spans: far first sights grow slow and subtle, near ones only soften the edge.
+  assert.equal(vegetationGrowthScale(0, 45, 45), 1);
+  assert.ok(vegetationGrowthScale(0, 22, 45) < vegetationGrowthScale(0, 22, 12),
+    "the far curve lags the near one mid-growth");
+  assert.equal(vegetationGrowthScale(0, 12, 12), 1);
+  assert.equal(vegetationGrowthScale(0, 5, 0), vegetationGrowthScale(0, 5),
+    "a bogus span falls back to the default window");
+  let previous = 0;
+  for (let serial = 100; serial <= 130; serial++) {
+    const scale = vegetationGrowthScale(100, serial);
+    assert.ok(scale >= previous, "growth never shrinks");
+    previous = scale;
+  }
+});
+
+test("the renderer grows admitted vegetation and freezes it settled", async () => {
+  const source = await worldSource();
+  const update = updateEnvironmentSource(source);
+  assert.match(update, /const growing = environmentVegetation\(object\) && rendered\.skinned === undefined/,
+    "only unrigged vegetation grows; sails keep their live matrices");
+  assert.match(update, /&& rendered\.actual && rendered\.visual !== undefined && !everVisible && !suppressGrowth;/,
+    "loading cones appear as they always have; only real first sights ease in, never mid-sweep");
+  assert.match(update, /rendered\.growthStartedAt = this\.#submissionSerial;/,
+    "growth is clocked in submitted frames, so hitches do not fast-forward it");
+  assert.match(update, /node\.scale\.setScalar\(object\.scale \* VEGETATION_GROWTH_FROM\)/,
+    "growth multiplies the placement scale rather than replacing it");
+  assert.match(update, /node\.matrixAutoUpdate = !growing;/,
+    "a growing subtree stays live: freezing it would pin the first scale until the settle pop");
+  assert.match(update, /if \(!growing\) this\.#assignEnvironmentInstance\(/,
+    "a mid-growth matrix never becomes instance state");
+  assert.match(update, /this\.#updateVegetationGrowth\(client\);/,
+    "the growth pass runs inside the environment update");
+  const growthStart = source.indexOf("  #updateVegetationGrowth(");
+  const growthEnd = source.indexOf("\n  #", growthStart + 10);
+  const growth = source.slice(growthStart, growthEnd);
+  assert.match(growth, /node\.scale\.setScalar\(baseScale\);/,
+    "a settled tree is restored to exactly its authored scale");
+  assert.match(growth, /part\.matrixWorldAutoUpdate = false;/,
+    "settling re-freezes the subtree like any other placement");
+  assert.match(growth, /delete rendered\.growthStartedAt;/,
+    "a settled tree costs no per-frame work afterwards");
+  assert.match(growth, /node\.updateMatrix\(\);/,
+    "same-frame readers see the stepped scale, not last render's");
+  assert.match(source, /everVisible\?: boolean;/,
+    "a seen placement is remembered so frustum re-entry reads whole at once");
+});
+
 test("frustum visibility is applied before independent quotas and all-visible ties match legacy selection", () => {
   const player = { x: 0, y: 0 };
   const hiddenNear = placement("hidden-near", 1, 0, {
@@ -184,13 +315,13 @@ test("frustum visibility is applied before independent quotas and all-visible ti
   assert.deepEqual(ids(admission), ["visible-far"], "a hidden nearest placement cannot spend a quota slot");
 
   // Equal-distance point placements force the selector to prove stable source-ordinal tie order,
-  // independently for the exterior 320 and interior 120 quotas.
-  const exterior = Array.from({ length: 325 }, (_, index) => placement(
+  // independently for the exterior scenery and interior 360 quotas.
+  const exterior = Array.from({ length: ENVIRONMENT_SCENERY_BUDGET + 5 }, (_, index) => placement(
     `exterior-${index}`,
     index % 2 === 0 ? 12 : -12,
     0,
   ));
-  const interior = Array.from({ length: 125 }, (_, index) => placement(
+  const interior = Array.from({ length: 365 }, (_, index) => placement(
     `interior-${index}`,
     index % 2 === 0 ? 12 : -12,
     0,
@@ -208,8 +339,9 @@ test("frustum visibility is applied before independent quotas and all-visible ti
     assert.equal(objectOf(actual[index]), expected[index].object, `identity at stable ordinal ${index}`);
     assert.equal(distanceOf(actual[index], player), expected[index].distance, `distance at ${index}`);
   }
-  assert.deepEqual(ids(actual.slice(0, 320)), exterior.slice(0, 320).map(({ id }) => id));
-  assert.deepEqual(ids(actual.slice(320)), interior.slice(0, 120).map(({ id }) => id));
+  assert.deepEqual(ids(actual.slice(0, ENVIRONMENT_SCENERY_BUDGET)),
+    exterior.slice(0, ENVIRONMENT_SCENERY_BUDGET).map(({ id }) => id));
+  assert.deepEqual(ids(actual.slice(ENVIRONMENT_SCENERY_BUDGET)), interior.slice(0, 360).map(({ id }) => id));
 });
 
 test("environment update admits candidates before resource lookup and keeps warm residents separate from disposal", async () => {
@@ -265,11 +397,39 @@ test("environment update admits candidates before resource lookup and keeps warm
     "changing draw admission must not dispose, drop effects, or delete the resident");
 });
 
+test("warm-cap enforcement is cadenced instead of scanning every frame", async () => {
+  const source = await worldSource();
+  assert.match(source, /const WARM_PRUNE_INTERVAL_FRAMES = 30;/,
+    "the enforcement cadence is a named constant beside the warm budgets");
+  const update = updateEnvironmentSource(source);
+  assert.match(update, /#warmPruneAtSerial/,
+    "the last enforcement frame is tracked on the renderer");
+  assert.match(update, /#submissionSerial - this\.#warmPruneAtSerial >= WARM_PRUNE_INTERVAL_FRAMES/,
+    "enforcement runs at most every thirty submitted frames");
+});
+
+test("draw admission and prefetch are cadenced while growth skips without growers", async () => {
+  const source = await worldSource();
+  const update = updateEnvironmentSource(source);
+  assert.match(update, /#cameraTurnRate > CAMERA_FAST_TURN_RATE/,
+    "a fast sweep keeps every-frame admission while calm frames reuse the set");
+  assert.match(update, /#lastAdmitted/, "the admitted set is retained across skipped frames");
+  const prefetch = update.slice(update.indexOf("  #prefetchEnvironmentModels(client:"),
+    update.indexOf("  #updateVegetationGrowth(client:"));
+  const renewAt = prefetch.indexOf("client.retainModelPrefetch(");
+  const gateAt = prefetch.indexOf("if ((this.#submissionSerial & 3) !== 0) return;");
+  const scanAt = prefetch.indexOf("selectPrefetchModels(");
+  assert.ok(renewAt >= 0 && gateAt > renewAt && scanAt > gateAt,
+    "renew pending work each frame while scanning only every fourth frame");
+  assert.match(update, /if \(this\.#growingVegetation <= 0\) return;/,
+    "the growth scan is skipped until a grow-in starts");
+});
+
 test("hidden warm caps and admitted-only draw paths are explicit in the renderer", async () => {
   const source = await worldSource();
   const update = updateEnvironmentSource(source);
   assert.match(source, /export\s+const\s+ENVIRONMENT_WARM_EXTERIOR_BUDGET\s*=\s*960/);
-  assert.match(source, /export\s+const\s+ENVIRONMENT_WARM_INTERIOR_BUDGET\s*=\s*360/);
+  assert.match(source, /export\s+const\s+ENVIRONMENT_WARM_INTERIOR_BUDGET\s*=\s*1_080/);
   assert.match(update, /ENVIRONMENT_WARM_EXTERIOR_BUDGET/);
   assert.match(update, /ENVIRONMENT_WARM_INTERIOR_BUDGET/);
   assert.match(source, /warm[\s\S]{0,180}(?:LRU|budget)|(?:LRU|budget)[\s\S]{0,180}warm/i,
@@ -315,3 +475,55 @@ test("hidden warm caps and admitted-only draw paths are explicit in the renderer
 function admissionAt(update) {
   return update.indexOf("selectEnvironmentAdmission(");
 }
+
+test("camera snap detection wraps around PI and ignores non-finite input", () => {
+  assert.equal(cameraAngleDelta(0, 0), 0);
+  assert.equal(cameraAngleDelta(0, Math.PI), Math.PI);
+  assert.ok(Math.abs(cameraAngleDelta(Math.PI - 0.1, -Math.PI + 0.1) - 0.2) < 1e-9,
+    "crossing the branch cut measures the short way around");
+  assert.ok(Math.abs(cameraAngleDelta(0, 3 * Math.PI) - Math.PI) < 1e-9,
+    "a full turn and a half reads as half a turn");
+  assert.equal(cameraAngleDelta(Number.NaN, 1), 0);
+  assert.equal(cameraAngleDelta(1, Number.POSITIVE_INFINITY), 0);
+});
+
+test("a camera snap suppresses grow-ins while sustained sweeps keep them", async () => {
+  const source = await worldSource();
+  assert.match(source, /const CAMERA_FLICK_RADIANS = 0\.3;/,
+    "a single-frame snap past seventeen degrees masks an instant appearance");
+  assert.match(source, /const CAMERA_FAST_TURN_RATE = 3\.0;/,
+    "a sustained sweep keeps suppression alive without another snap");
+  const drawStart = source.indexOf("  draw(");
+  const drawEnd = source.indexOf("\n  #", drawStart + 10);
+  const draw = source.slice(drawStart, drawEnd);
+  assert.match(draw, /cameraAngleDelta\(this\.#lastCameraYaw, cameraYaw\)/,
+    "snap detection compares against the previous drawn frame");
+  assert.match(draw, /this\.#turnSuppressUntilSerial = this\.#submissionSerial \+ CAMERA_FLICK_SUPPRESS_FRAMES;/,
+    "suppression is clocked in submission serials, like the growth it gates");
+  const update = updateEnvironmentSource(source);
+  assert.match(update, /const suppressGrowth = this\.#submissionSerial < this\.#turnSuppressUntilSerial;/,
+    "first sights admitted mid-sweep read whole at once");
+  assert.match(update, /else if \(rendered\.actual && rendered\.visual !== undefined\) \{/,
+    "a suppressed first sight is stamped seen so a later calm frame cannot shrink it");
+});
+
+test("turn-frame intake is capped for nodes and WMO rooms, shells first", async () => {
+  const source = await worldSource();
+  assert.match(source, /const ENVIRONMENT_BUILD_BUDGET = 16;/,
+    "a 180-degree snap ramps admitted nodes over frames instead of landing in one");
+  assert.match(source, /const WMO_GROUP_BUILD_BUDGET = 6;/,
+    "a newly admitted castle ramps its rooms instead of hitching one frame");
+  const update = updateEnvironmentSource(source);
+  assert.match(update, /let environmentBuilds = 0;/, "the node budget resets every frame");
+  assert.match(update, /if \(environmentBuilds >= ENVIRONMENT_BUILD_BUDGET\) continue;/,
+    "a skipped admission is retried while it is still admitted");
+  const wmoStart = source.indexOf("  #updateWmoGroups(");
+  const wmoEnd = source.indexOf("\n  #", wmoStart + 10);
+  const wmo = source.slice(wmoStart, wmoEnd);
+  assert.match(wmo, /if \(this\.#wmoGroupBuildSerial !== this\.#submissionSerial\) \{/,
+    "the room budget is shared across buildings and resets per submitted frame");
+  assert.match(wmo, /if \(buildable\.length > 1\) buildable\.sort\(shellFirst\);/,
+    "the skyline attaches first even when a small room set exceeds the elapsed slice");
+  assert.match(wmo, /if \(this\.#wmoGroupBuilds >= WMO_GROUP_BUILD_BUDGET\) break;/,
+    "detaches stay uncapped while builds wait their turn");
+});

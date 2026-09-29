@@ -1,10 +1,48 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   BUBBLE_MAX_CHARS, BUBBLE_MAX_MS, BUBBLE_MIN_MS, FLOATER_LIFE_MS,
   addFloater, bubbleLifetime, expire, floaterOffset, floatingAmountText, putBubble,
 } from "../dist/code/browser/ui/OverlayModel.js";
 import { createCamera, projectPoint } from "../dist/code/browser/SimpleScene.js";
+
+const currentOverlay = await import(`../src/browser/ui/OverlayModel.ts?relevance=${Date.now()}`);
+
+test("floating combat text is limited to the player and the player's current target", () => {
+  const relevant = currentOverlay.floatingCombatTextRelevant;
+  assert.equal(typeof relevant, "function");
+  assert.equal(relevant(10n, 10n, 20n), true, "the player's own status is visible");
+  assert.equal(relevant(20n, 10n, 20n), true, "the current target's status is visible");
+  assert.equal(relevant(30n, 10n, 20n), false, "an unrelated NPC/player is hidden");
+  assert.equal(relevant(0n, 10n, 20n), false, "an absent unit is hidden");
+  assert.equal(relevant(20n, 10n, undefined), false, "an old target stops being relevant immediately");
+});
+
+test("changing target removes already-visible numbers from the old target", () => {
+  const list = [];
+  for (const guid of [10n, 20n, 30n]) {
+    currentOverlay.addFloater(list, { guid, text: "-1", kind: "damage", critical: false }, 0);
+  }
+  currentOverlay.removeIrrelevantFloaters(list, 10n, 20n);
+  assert.deepEqual(list.map((entry) => entry.guid), [10n, 20n]);
+  currentOverlay.removeIrrelevantFloaters(list, 10n, undefined);
+  assert.deepEqual(list.map((entry) => entry.guid), [10n], "the old target disappears immediately");
+});
+
+test("the DOM overlay applies the combat relevance policy before allocating a floater", async () => {
+  const source = await readFile(new URL("../src/browser/ui/HeadOverlay.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export function showFloatingText(");
+  const end = source.indexOf("/**", start + 1);
+  const handler = source.slice(start, end);
+  assert.match(handler, /floatingCombatTextRelevant\(guid, world\.state\.selfGuid, world\.targetGuid\)/);
+  assert.ok(handler.indexOf("floatingCombatTextRelevant") < handler.indexOf("addFloater"));
+  const updateStart = source.indexOf("export function updateHeadOverlay(");
+  const updateEnd = source.indexOf("const bounds =", updateStart);
+  const update = source.slice(updateStart, updateEnd);
+  assert.match(update, /removeIrrelevantFloaters\(floaters, selfGuid, world\?\.targetGuid\)/);
+  assert.ok(update.indexOf("removeIrrelevantFloaters") < update.indexOf("floaters.length === 0"));
+});
 
 test("a second line from the same unit replaces the first bubble", () => {
   // Stacking them would put a column of speech over one head and hide the unit under its own

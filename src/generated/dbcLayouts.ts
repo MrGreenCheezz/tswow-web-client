@@ -2,7 +2,7 @@
 // under tools/dbd (CC BY-SA 4.0 — see tools/dbd/README.md). Do not edit by hand;
 // run `npm run dbc:generate`. `npm run build` fails if this file has drifted.
 //
-// Build 3.3.5.12340, 71 tables.
+// Build 3.3.5.12340, 79 tables.
 
 /** How a field is stored. Every WDBC slot is a word unless the definition says narrower. */
 export type DbcFieldType = "int" | "float" | "string" | "locstring";
@@ -92,6 +92,22 @@ export const DBC_LAYOUTS = {
       "LightID": { index: 35, byteOffset: 140, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
+  BattlemasterList: {
+    fieldCount: 32,
+    recordSize: 128,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MapID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 8, stride: 1, type: "int", unsigned: false },
+      "InstanceType": { index: 9, byteOffset: 36, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "GroupsAllowed": { index: 10, byteOffset: 40, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Name_lang": { index: 11, byteOffset: 44, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "MaxGroupSize": { index: 28, byteOffset: 112, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "HolidayWorldState": { index: 29, byteOffset: 116, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Minlevel": { index: 30, byteOffset: 120, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Maxlevel": { index: 31, byteOffset: 124, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
   CharBaseInfo: {
     fieldCount: 2,
     recordSize: 2,
@@ -127,6 +143,21 @@ export const DBC_LAYOUTS = {
       "Flags": { index: 7, byteOffset: 28, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "VariationIndex": { index: 8, byteOffset: 32, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "ColorIndex": { index: 9, byteOffset: 36, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  CharStartOutfit: {
+    fieldCount: 77,
+    recordSize: 296,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "RaceID": { index: 1, byteOffset: 4, byteSize: 1, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "ClassID": { index: 2, byteOffset: 5, byteSize: 1, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "SexID": { index: 3, byteOffset: 6, byteSize: 1, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "OutfitID": { index: 4, byteOffset: 7, byteSize: 1, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "ItemID": { index: 5, byteOffset: 8, byteSize: 4, arraySize: 24, stride: 1, type: "int", unsigned: false },
+      "DisplayItemID": { index: 29, byteOffset: 104, byteSize: 4, arraySize: 24, stride: 1, type: "int", unsigned: false },
+      "InventoryType": { index: 53, byteOffset: 200, byteSize: 4, arraySize: 24, stride: 1, type: "int", unsigned: false },
     },
   },
   CharacterFacialHairStyles: {
@@ -314,6 +345,21 @@ export const DBC_LAYOUTS = {
       "SubmergeSoundID": { index: 35, byteOffset: 140, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "SubmergedSoundID": { index: 36, byteOffset: 144, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "CreatureSoundDataIDPet": { index: 37, byteOffset: 148, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  DungeonMap: {
+    fieldCount: 8,
+    recordSize: 32,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MapID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "FloorIndex": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MinX": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MaxX": { index: 4, byteOffset: 16, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MinY": { index: 5, byteOffset: 20, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "MaxY": { index: 6, byteOffset: 24, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "ParentWorldMapID": { index: 7, byteOffset: 28, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
   Emotes: {
@@ -659,6 +705,17 @@ export const DBC_LAYOUTS = {
       "Int": { index: 41, byteOffset: 164, byteSize: 4, arraySize: 4, stride: 1, type: "int", unsigned: false },
     },
   },
+  LoadingScreens: {
+    fieldCount: 4,
+    recordSize: 16,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Name": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
+      "FileName": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
+      "HasWideScreen": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
   Lock: {
     fieldCount: 33,
     recordSize: 132,
@@ -728,6 +785,16 @@ export const DBC_LAYOUTS = {
       "TrivialSkillLineRankHigh": { index: 10, byteOffset: 40, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "TrivialSkillLineRankLow": { index: 11, byteOffset: 44, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "CharacterPoints": { index: 12, byteOffset: 48, byteSize: 4, arraySize: 2, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  SkillLineCategory: {
+    fieldCount: 19,
+    recordSize: 76,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Name_lang": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "SortIndex": { index: 18, byteOffset: 72, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
   SoundAmbience: {
@@ -1100,6 +1167,29 @@ export const DBC_LAYOUTS = {
       "BackgroundFile": { index: 23, byteOffset: 92, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
     },
   },
+  TaxiNodes: {
+    fieldCount: 24,
+    recordSize: 96,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "ContinentID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "Pos": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 3, stride: 1, type: "float", unsigned: false },
+      "Name_lang": { index: 5, byteOffset: 20, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "MountCreatureID": { index: 22, byteOffset: 88, byteSize: 4, arraySize: 2, stride: 1, type: "int", unsigned: true },
+    },
+  },
+  TaxiPath: {
+    fieldCount: 4,
+    recordSize: 16,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "FromTaxiNode": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "ToTaxiNode": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+      "Cost": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: true },
+    },
+  },
   TerrainType: {
     fieldCount: 6,
     recordSize: 24,
@@ -1224,6 +1314,22 @@ export const DBC_LAYOUTS = {
       "HitRectLeft": { index: 14, byteOffset: 56, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "HitRectBottom": { index: 15, byteOffset: 60, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
       "HitRectRight": { index: 16, byteOffset: 64, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  WorldMapTransforms: {
+    fieldCount: 10,
+    recordSize: 40,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "MapID": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "RegionBottom": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "RegionRight": { index: 3, byteOffset: 12, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "RegionTop": { index: 4, byteOffset: 16, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "RegionLeft": { index: 5, byteOffset: 20, byteSize: 4, arraySize: 1, stride: 1, type: "float", unsigned: false },
+      "NewMapID": { index: 6, byteOffset: 24, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "RegionOffset": { index: 7, byteOffset: 28, byteSize: 4, arraySize: 2, stride: 1, type: "float", unsigned: false },
+      "NewDungeonMapID": { index: 9, byteOffset: 36, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
   ZoneIntroMusicTable: {

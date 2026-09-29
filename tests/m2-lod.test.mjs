@@ -361,16 +361,18 @@ test("offline audit names canonical authored profiles while generator remains 00
   assert.doesNotMatch(generator, /02\.skin/, "R4.0a must not wire low skins into the generator yet");
 });
 
-test("R4.0a leaves terrain near-ring and WorldRenderer ranges untouched", async () => {
+test("R4.0a stays offline while terrain streaming retains its visible and dependency rings", async () => {
   const terrain = await readFile(new URL("../src/browser/Terrain.ts", import.meta.url), "utf8");
   const renderer = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*300/);
-  assert.match(renderer, /for \(let offsetX = -2; offsetX <= 2; offsetX\+\+\)/,
-    "the existing 5x5 CPU dependency ring remains unchanged");
-  assert.match(renderer, /for \(let offsetX = -1; offsetX <= 1; offsetX\+\+\)/,
-    "the existing visible terrain ring remains 3x3");
-  assert.match(renderer, /splatClient\?\.setActiveTiles\(map, grids\)/,
-    "splat remains pinned to the 3x3 visible set");
+  assert.match(terrain, /ENVIRONMENT_RANGE\s*=\s*400/);
+  const { TerrainStreamingWindow } = await import("../dist/code/browser/TerrainStreaming.js");
+  const plan = new TerrainStreamingWindow().update(0, 0, 0, false);
+  assert.equal(plan.visible.length, 9, "foreground terrain remains 3x3");
+  assert.equal(plan.dependencies.length, 25, "CPU sampling retains a 5x5 dependency ring");
+  assert.match(renderer, /terrainClient\?\.setActiveTiles\(map, plan\.dependencies\);/,
+    "renderer pins the planned CPU dependencies");
+  assert.match(renderer, /const grids = plan\.visible;/,
+    "renderer draws only the visible ring");
   assert.doesNotMatch(renderer, /selectM2LodProfile|createM2LodDescriptor|m2-lod/i,
     "R4.0a must not wire low-skin policy into runtime terrain/world streaming");
 });

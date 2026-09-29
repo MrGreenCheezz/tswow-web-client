@@ -358,3 +358,63 @@ test("dispose is idempotent and late splat completions are inert", async () => {
     disposal.restore();
   }
 });
+
+
+test("streaming window reuses prepared and return splats, caps history and releases every owner", async () => {
+  const { TerrainStreamingWindow } = await import("../dist/code/browser/TerrainStreaming.js");
+  const { TERRAIN_GRID_SIZE } = await import("../dist/code/browser/Terrain.js");
+  const originalFetch = globalThis.fetch;
+  const originalLoad = THREE.TextureLoader.prototype.load;
+  const restoreImages = installDecodedImageMocks();
+  const disposal = countTextureDisposals();
+  const created = [];
+  const requests = new Map();
+  globalThis.fetch = async url => {
+    const pathname = new URL(String(url)).pathname;
+    requests.set(pathname, (requests.get(pathname) ?? 0) + 1);
+    if (pathname.startsWith("/terrain-splat/")) return new Response(JSON.stringify({layers:[layerId("d")]}));
+    return new Response(new Blob([new Uint8Array([1])]));
+  };
+  THREE.TextureLoader.prototype.load = automaticTextureLoader(created);
+  const client = new TerrainSplatClient("ws://example.test/world");
+  try {
+    const window = new TerrainStreamingWindow();
+    const move = async (gx, fraction = 0.5) => {
+      const plan = window.update(0, (32-gx-fraction)*TERRAIN_GRID_SIZE, -0.5*TERRAIN_GRID_SIZE);
+      client.setActiveTiles(0, plan.retained);
+      for (const grid of [...plan.visible,...plan.prepare]) client.get(0, grid);
+      await settle();
+      return plan;
+    };
+    const initial = await move(32, 0.9);
+    const grid = {x:34,y:32};
+    assert.ok(initial.prepare.some(tile => tile.x === grid.x && tile.y === grid.y));
+    const prepared = client.get(0, grid);
+    assert.ok(prepared);
+    await move(33, 0.02);
+    assert.equal(client.get(0, grid), prepared, "same texture allocation becomes visible");
+    await move(32, 0.9);
+    assert.equal(client.get(0, grid), prepared, "return does not decode or allocate another splat");
+    assert.equal(requests.get("/terrain-splat/0/34/32"), 1);
+    assert.equal(disposal.counts.get(prepared.layers), undefined);
+    for (let gx=34;gx<43;gx++) {
+      await move(gx,0.9);
+      assert.ok(client.stats.resident <= 25);
+    }
+    assert.equal(disposal.counts.get(prepared.layers), 1, "old history eventually leaves");
+    assert.equal(client.stats.decodedLayerBytes, LAYER_BYTES, "neighbours share one decoded layer lease");
+    client.setActiveTiles(undefined, []);
+    const ledger = new ResourceAccountingLedger();
+    client.visitRetainedResources(ledger);
+    assert.equal(ledger.snapshot().cpu.uniqueResources, 0);
+    assert.equal(ledger.snapshot().gpuTextures.uniqueResources, 0);
+    assert.equal(client.stats.decodedLayerBytes, 0);
+    assert.ok([...disposal.counts.values()].every(count => count === 1));
+  } finally {
+    client.dispose();
+    globalThis.fetch = originalFetch;
+    THREE.TextureLoader.prototype.load = originalLoad;
+    restoreImages();
+    disposal.restore();
+  }
+});

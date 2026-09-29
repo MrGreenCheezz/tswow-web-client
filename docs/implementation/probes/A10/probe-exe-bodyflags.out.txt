@@ -1,0 +1,93 @@
+27 hits of "bit 3 of dword at record+0xc"
+2 of them right after a fetch-by-id; all hits:
+  va 0x40c9c2 (test dword) in function va 0x40c975
+  va 0x41010f (load+test) in function va 0x4100b1
+  va 0x410154 (test dword) in function va 0x4100b1
+  va 0x4115b8 (test dword) in function va 0x411573
+  va 0x4115ee (test dword) in function va 0x4115ce
+  va 0x41a42c (test dword) in function va 0x419f8a
+  va 0x45c2a0 (test byte) in function va 0x45bfe0
+  va 0x4f7566 (load+test) in function va 0x4f7530
+  va 0x57b7d2 (load+test) in function va 0x57b7c0
+  va 0x6cf7a1 (test byte) in function va 0x6cf740
+  [BY-ID] va 0x6da1cf (test byte) in function va 0x6da130
+  [BY-ID] va 0x6ddbea (test byte) in function va 0x6ddbb0
+  va 0x7115a4 (test byte) in function va 0x711470
+  va 0x711932 (test byte) in function va 0x7116c0
+  va 0x716604 (load+test) in function va 0x716510
+  va 0x729678 (test byte) in function va 0x729620
+  va 0x7b42f0 (test byte) in function va 0x7b4270
+  va 0x7b6398 (test byte) in function va 0x7b6110
+  va 0x83ca76 (load+test) in function va 0x83c6e0
+  va 0x88c349 (test dword) in function va 0x88c2f2
+  va 0x88cad3 (load+test) in function va 0x88c96f
+  va 0x88cbf6 (test dword) in function va 0x88cb75
+  va 0x88cc1a (test dword) in function va 0x88cb75
+  va 0x8909cc (load+test) in function va 0x8908bd
+  va 0x890f0f (load+test) in function va 0x8908bd
+  va 0x8d6886 (load+test) in function va 0x8d67d0
+  va 0x8d6899 (load+test) in function va 0x8d67d0
+
+=== [BY-ID] va 0x6da1cf (test byte) in function va 0x6da130
+ 006da19f  84 c0                  test al, al
+ 006da1a1  0f 84 ed 00 00 00      je 0x6da294
+ 006da1a7  8b ce                  mov ecx, esi
+ 006da1a9  e8 c2 0d 04 00         call 0x71af70
+ 006da1ae  8b 0d 04 4a ad 00      mov ecx, dword ptr [0xad4a04]
+ 006da1b4  3b c1                  cmp eax, ecx
+ 006da1b6  7c 2c                  jl 0x6da1e4
+ 006da1b8  3b 05 00 4a ad 00      cmp eax, dword ptr [0xad4a00]
+ 006da1be  7f 24                  jg 0x6da1e4
+ 006da1c0  2b c1                  sub eax, ecx
+ 006da1c2  8b 0d 14 4a ad 00      mov ecx, dword ptr [0xad4a14]
+ 006da1c8  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 006da1cb  85 c0                  test eax, eax
+ 006da1cd  74 15                  je 0x6da1e4
+>006da1cf  f6 40 0c 08            test byte ptr [eax+0xc], 0x8
+ 006da1d3  75 0f                  jne 0x6da1e4
+ 006da1d5  6a 00                  push 0x0
+ 006da1d7  68 a8 07 bd 00         push 0xbd07a8
+ 006da1dc  e8 6f eb e3 ff         call 0x518d50
+ 006da1e1  83 c4 08               add esp, 0x8
+ 006da1e4  83 3d 68 ba be 00 00   cmp dword ptr [0xbeba68], 0x0
+ 006da1eb  0f 85 93 01 00 00      jne 0x6da384
+ 006da1f1  83 3d 64 ba be 00 00   cmp dword ptr [0xbeba64], 0x0
+ 006da1f8  0f 85 86 01 00 00      jne 0x6da384
+ 006da1fe  57                     push edi
+ 006da1ff  8b ce                  mov ecx, esi
+ 006da201  e8 6a 0d 04 00         call 0x71af70
+ 006da206  8d 8d 64 fc ff ff      lea ecx, [ebp-0x39c]
+ 006da20c  8b f8                  mov edi, eax
+ 006da20e  e8 8d db 1d 00         call 0x8b7da0
+
+=== [BY-ID] va 0x6ddbea (test byte) in function va 0x6ddbb0
+ 006ddbbe  84 c0                  test al, al
+ 006ddbc0  74 44                  je 0x6ddc06
+ 006ddbc2  8b cf                  mov ecx, edi
+ 006ddbc4  e8 a7 d3 03 00         call 0x71af70
+ 006ddbc9  8b 0d 04 4a ad 00      mov ecx, dword ptr [0xad4a04]
+ 006ddbcf  3b c1                  cmp eax, ecx
+ 006ddbd1  7c 1d                  jl 0x6ddbf0
+ 006ddbd3  3b 05 00 4a ad 00      cmp eax, dword ptr [0xad4a00]
+ 006ddbd9  7f 15                  jg 0x6ddbf0
+ 006ddbdb  2b c1                  sub eax, ecx
+ 006ddbdd  8b 0d 14 4a ad 00      mov ecx, dword ptr [0xad4a14]
+ 006ddbe3  8b 04 81               mov eax, dword ptr [ecx+eax*4]
+ 006ddbe6  85 c0                  test eax, eax
+ 006ddbe8  74 06                  je 0x6ddbf0
+>006ddbea  f6 40 0c 08            test byte ptr [eax+0xc], 0x8
+ 006ddbee  75 16                  jne 0x6ddc06
+ 006ddbf0  8b cf                  mov ecx, edi
+ 006ddbf2  e8 39 d5 03 00         call 0x71b130
+ 006ddbf7  84 c0                  test al, al
+ 006ddbf9  0f 84 d0 00 00 00      je 0x6ddccf
+ 006ddbff  8b cf                  mov ecx, edi
+ 006ddc01  e8 da 90 04 00         call 0x726ce0
+ 006ddc06  53                     push ebx
+ 006ddc07  56                     push esi
+ 006ddc08  8b 75 08               mov esi, dword ptr [ebp+0x8]
+ 006ddc0b  8b 16                  mov edx, dword ptr [esi]
+ 006ddc0d  8b 52 2c               mov edx, dword ptr [edx+0x2c]
+ 006ddc10  8d 45 f4               lea eax, [ebp-0xc]
+ 006ddc13  50                     push eax
+ 006ddc14  8b ce                  mov ecx, esi

@@ -14,26 +14,38 @@
   background: #090b0d;
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
+  --ui-scale: 1;
+  --ui-scale-effective: var(--ui-scale);
 
   /* The bottom edge, published once. Three things live there — the action bar, the chat dock and
      the raid grid — and each used to carry its own guess at how tall the others were, so the chat
      covered two action slots at 1280px and five at 1024px, and the raid grid's last two rows sat
      under the chat. Each now starts where the one below it ends. */
-  --action-bar-height: 54px;
+  --action-slot-size: clamp(40px, 2.1vw, 48px);
+  --action-bar-height: calc(var(--action-slot-size) + 8px);
+  --bottom-bars: 0;
+  --pet-bar-height: 0px;
+  --hud-utility-height: 64px;
   --chat-log-height: 190px;
-  --chat-height: calc(var(--chat-log-height) + 62px);
-  --chat-bottom: calc(var(--action-bar-height) + 18px);
+  --chat-height: calc((var(--chat-log-height) + 62px) * var(--ui-scale-effective));
+  --hud-safe-bottom: calc(
+    12px + (
+      var(--action-bar-height)
+      + max(var(--hud-utility-height), calc(var(--bottom-bars) * 52px + var(--pet-bar-height)))
+    ) * var(--ui-scale-effective)
+  );
+  --chat-bottom: calc(var(--hud-safe-bottom) + 8px);
 
   /* And the right edge, for the same reason. `--side-bars` is how many of the two vertical action
      bars are switched on — written by `ActionBar.ts`, read by everything standing on that edge, so
      the minimap, the bag bar and the game buttons do not each carry their own guess about whether
      a twelve-button column is in front of them. */
   --side-bars: 0;
-  --side-bar-slot: 34px;
+  --side-bar-slot: var(--action-slot-size);
   /* A column is the slot plus its own 6px padding and 1px border on each side; the 4px is the gap
      to the next one and the room left over its right offset. Written out rather than rounded,
      because two pixels of arithmetic here is two pixels of the minimap under an action bar. */
-  --side-bars-width: calc(var(--side-bars) * (var(--side-bar-slot) + 18px));
+  --side-bars-width: calc(var(--side-bars) * (var(--side-bar-slot) + 18px) * var(--ui-scale-effective));
 }
 
 * { box-sizing: border-box; }
@@ -67,6 +79,7 @@ h3 { margin: 0; }
 .error { color: #ff8d8d; }
 
 form { display: grid; gap: 16px; margin: 28px 0 20px; }
+#chat-form { gap: 0; margin: 0; }
 label { display: grid; gap: 6px; }
 /* A 44px touch target, for the login and character forms this rule was written for. */
 input, select, button { min-height: 44px; border: 1px solid #435565; border-radius: 8px; font: inherit; }
@@ -79,6 +92,10 @@ button { color: #09140e; background: #5ee0a0; cursor: pointer; font-weight: 700;
 button:disabled { cursor: default; opacity: .78; }
 button:not(:disabled):hover { filter: brightness(1.18); }
 :focus-visible { outline: 2px solid #ead58c; outline-offset: 2px; }
+/* The stock interface draws no focus ring: a focused FrameXML widget (a Button root the page focuses
+   as a modal's first control, KeyBindingFrame) otherwise kept the gold ring above around a whole
+   window for the rest of the session. */
+#framexml-world-host [data-framexml-name]:focus-visible { outline: none; }
 .danger { color: #250909; background: #ff8d8d; }
 .actions, .form-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .actions button { min-height: 36px; padding: 0 12px; }
@@ -125,6 +142,53 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 #world-canvas.camera-dragging { cursor: grabbing; }
 #world-3d-canvas { pointer-events: none; }
 
+.fps-counter {
+  position: absolute;
+  z-index: 40;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 5px 9px;
+  border: 1px solid #bda76780;
+  border-radius: 4px;
+  background: #090d12d9;
+  color: #f3e8ba;
+  font: 12px/1.4 ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Slice P2: the original client's `ffxDeath`, over the world and under the interface.
+   `backdrop-filter` is doing the part a tint cannot — a flat blue quad over a red tabard leaves a
+   dark red tabard, and what dying actually does is drain the colour out. The tint and the vignette
+   on top of it are the cold cast and the closing-in the original has; both are ordinary painted
+   backgrounds, so they land over the filtered copy of the canvases rather than being filtered
+   themselves. z-index 2 is deliberate: `DeathScreenEffect` inserts the element between
+   `#world-canvas` and `.head-overlay`, which share that index, so the world is desaturated and the
+   speech bubbles and damage numbers over it are not. `visibility` is transitioned with a delay so
+   the fade-out is allowed to finish before the layer stops being painted. */
+.death-screen {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  /* Prefixed first for WebKit, which still ships only the prefixed property. A browser with
+     neither degrades to the tint and the vignette alone — dimmer and colder, not desaturated,
+     which is a worse effect rather than a broken screen. */
+  -webkit-backdrop-filter: grayscale(.85) brightness(.8);
+  backdrop-filter: grayscale(.85) brightness(.8);
+  background:
+    radial-gradient(ellipse 80% 76% at 50% 46%, #05090e00 34%, #04070bc4 100%),
+    linear-gradient(180deg, #4d5a6b4d, #37455659);
+  transition: opacity .65s ease, visibility 0s linear .65s;
+}
+.death-screen.is-active { opacity: 1; visibility: visible; transition: opacity .65s ease, visibility 0s; }
+
 .unit-frame {
   position: relative;
   display: flex;
@@ -159,12 +223,17 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   align-items: start;
   gap: 8px;
 }
-/* Bounded at the bottom, the way `.right-rail` is: a column that grows without a limit is a
-   column that runs off a 720px screen the moment a fully buffed character joins a party. What
-   gives is the combat log, which is the one member of the column that has no fixed size and the
-   one whose oldest lines are the least worth keeping on screen. */
-.left-rail { left: 18px; bottom: 92px; overflow: hidden; }
-.left-rail > .combat-log { min-height: 0; overflow: hidden; }
+/* Bounded at the bottom, the way `.right-rail` is: a column that grows without a limit runs off a
+   720px screen when a fully buffed character joins a party. The rail itself scrolls; combat
+   history is a selectable chat tab and no longer consumes a second overlay here. */
+.left-rail {
+  left: 18px;
+  bottom: calc(var(--chat-bottom) + var(--chat-height) + 8px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.left-rail > * { flex-shrink: 0; }
 .target-rail { left: min(340px, 38vw); }
 /* The button row hangs 30px below the frame on `bottom: -30px`, outside the box the column
    measures — so the column is told about it here rather than letting the auras land on it. */
@@ -304,7 +373,7 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   min-width: 240px;
   max-width: calc(100vw - 16px);
   min-height: 90px;
-  max-height: 72vh;
+  max-height: min(72vh, var(--game-window-max-height, 72vh));
   overflow: auto;
   border: 2px solid #8b7445;
   border-radius: 10px;
@@ -394,6 +463,14 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .sheet-section { padding: 8px 10px; border-radius: 6px; background: #0e1114aa; }
 .equipment-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; padding: 0 12px 14px; }
 .inventory-money { padding: 10px 12px 0; color: #efcf67; text-align: right; }
+/* Bag search dims whatever does not match rather than hiding it: a hidden slot reads as gone. */
+.bag-search-row { padding: 6px 12px 0; }
+.bag-search-row input { width: 100%; }
+.item-slot.is-dimmed { opacity: .32; }
+/* A sender that answers a click with a whisper draft. Underlined on hover only, so the log
+   keeps its reading texture until the mouse is already there. */
+.chat-sender { cursor: pointer; }
+.chat-sender:hover { text-decoration: underline; }
 .inventory-slots { display: grid; gap: 10px; padding: 12px; }
 .bag-section h4 { margin: 0 0 5px; color: #d9c77f; font-size: .78rem; }
 .bag-grid { display: grid; grid-template-columns: repeat(8, minmax(36px, 1fr)); gap: 5px; }
@@ -420,6 +497,14 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .quality-3 { border-color: #318cec; }
 .quality-4 { border-color: #a64ee8; }
 .quality-5, .quality-6, .quality-7 { border-color: #e9902c; }
+/* Wear sits on the icon's bottom edge, a gem's presence in the top corner and the item level over
+   the wear bar: three at-a-glance facts that used to need a hover one slot at a time. */
+.item-slot .item-wear { position: absolute; left: 3px; right: 3px; bottom: 1px; height: 3px; border-radius: 2px; overflow: hidden; background: #131518cc; }
+.item-slot .item-wear > i { display: block; height: 100%; background: #57c45c; }
+.item-slot .item-wear.broken > i { background: #d23d2f; }
+.item-slot.is-broken { border-color: #a32a20; }
+.item-slot .item-enchant { position: absolute; left: 3px; top: 3px; width: 7px; height: 7px; border-radius: 50%; background: #7ee0ff; box-shadow: 0 0 4px #39b7e8; }
+.item-slot .item-level { position: absolute; left: 3px; bottom: 5px; color: #ffd86b; font-size: .68rem; line-height: 1; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
 
 #spell-status { margin: 10px 12px 0; color: #e6d8ad; font-size: .76rem; text-align: center; }
 .spell-button {
@@ -461,21 +546,34 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .spellbook-list .spell-label { display: block; grid-column: 2; overflow: hidden; padding: 0 7px; color: #eee4c9; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
 
 .gossip-text { min-height: 62px; margin: 0; padding: 14px; color: #efe2b9; white-space: pre-line; }
-.gossip-options, .gossip-quests { display: grid; gap: 6px; padding: 0 12px 12px; }
+.gossip-options, .gossip-quests { display: grid; gap: 6px; max-height: min(60vh, 520px); overflow: auto; padding: 0 12px 12px; }
 .gossip-option, .gossip-quest { min-height: 38px; padding: 7px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
 .gossip-quest { color: #ffd85b; border-color: #78662d; }
+.tabard-editor { display: grid; grid-template-columns: 156px minmax(220px, 1fr); gap: 14px; align-items: start; }
+.tabard-preview { position: relative; width: 156px; aspect-ratio: 1; overflow: hidden; border: 2px solid #806b35; border-radius: 6px; background: radial-gradient(circle at 50% 40%, #3a3325, #0b0c0d 72%); box-shadow: inset 0 0 18px #000c; }
+.tabard-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.tabard-controls { display: grid; gap: 7px; }
+.tabard-stepper { display: grid; grid-template-columns: minmax(100px, 1fr) auto; gap: 8px; align-items: center; min-height: 34px; color: #e9dfc2; }
+.tabard-stepper-controls { display: grid; grid-template-columns: 30px 64px 30px; gap: 4px; align-items: center; }
+.tabard-stepper-controls output { color: #ffd966; font-variant-numeric: tabular-nums; text-align: center; }
+.tabard-stepper .gossip-option { min-height: 30px; padding: 0; font-size: 1.05rem; text-align: center; }
+@media (max-width: 520px) {
+  .tabard-editor { grid-template-columns: 1fr; }
+  .tabard-preview { margin-inline: auto; }
+}
 .quest-scroll { max-height: calc(100vh - 230px); overflow: auto; padding: 4px 14px 14px; }
 .quest-scroll h4 { margin: 12px 0 6px; color: #d9c77f; }
 .quest-body, .quest-objectives { color: #e9dfc2; white-space: pre-line; }
 .quest-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .quest-item { display: flex; min-height: 46px; align-items: center; gap: 8px; padding: 4px; color: #e6dcc0; border: 2px solid #706b5b; border-radius: 5px; background: #111417; text-align: left; }
+.quest-item.is-selected { border-color: #ebc56d; background: #37301d; box-shadow: inset 0 0 0 1px #ebc56d; }
 .quest-item img { width: 36px; height: 36px; object-fit: cover; border-radius: 3px; }
 .quest-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid #625433; background: #171714f5; }
 .quest-actions button { min-height: 36px; padding: 0 14px; color: #ead58c; border-color: #79663d; background: #26231c; }
 
 .creature-icon { width: 38px; height: 38px; border: 1px solid #6f8291; border-radius: 50%; object-fit: cover; }
 
-@media (max-width: 760px) {
+@media (max-width: 800px) {
   .left-rail, .target-rail { width: 46vw; }
   .target-rail { left: auto; right: 12px; }
   .left-rail { left: 12px; }
@@ -484,8 +582,7 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   .bag-bar { right: 8px; }
   /* Below the target frame, which takes the top-right corner once the screen narrows. */
   .right-rail { right: calc(8px + var(--side-bars-width)); width: 130px; }
-  /* Two twelve-button columns and a 130px rail do not both fit across a 760px screen. */
-  :root { --side-bar-slot: 26px; }
+  /* Optional side bars keep the main action-slot size; their rail scrolls when height is scarce. */
   .minimap { width: 124px; }
   #minimap-canvas { width: 116px; height: 116px; }
   .boss-frames, .arena-frames { width: 124px; }
@@ -501,10 +598,657 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   }
 }
 
+/*
+ * Native WotLK presentation.
+ *
+ * This layer changes no ownership and no click path. It gives the production DOM interface the
+ * scale, anchors and dense brass/obsidian surfaces of the 3.3.5 UI, and uses the shipped client
+ * art/fonts published by NativeUiSkin when those assets are available. Every declaration has a
+ * complete colour fallback so a missing optional BLP cannot turn a control transparent.
+ */
+body.native-wow-ui #world-viewport {
+  --wow-brass-dark: #4d3b18;
+  --wow-brass: #9a7c38;
+  --wow-brass-light: #e0c56c;
+  --wow-ink: #080806;
+  --wow-panel: #17150f;
+  color: #f1e6c5;
+  font-family: "WoW Friz", "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+body.native-wow-ui .left-rail,
+body.native-wow-ui .target-rail {
+  top: 20px;
+  width: 258px;
+}
+body.native-wow-ui .left-rail { left: 20px; }
+body.native-wow-ui .target-rail {
+  /* Keep the same 32px reading gap after the painted (scaled) player column. */
+  left: calc(52px + 258px * var(--ui-scale-effective));
+}
+
+body.native-wow-ui .unit-frame {
+  width: 258px;
+  min-height: 76px;
+  gap: 6px;
+  padding: 5px 8px 5px 5px;
+  border: 1px solid var(--wow-brass);
+  border-radius: 3px;
+  background:
+    linear-gradient(90deg, #070806f5, #1c1a12ed 55%, #080907f5),
+    var(--wow-dialog-bg, none);
+  background-size: auto, 128px 128px;
+  box-shadow:
+    inset 0 0 0 1px #dfca7866,
+    inset 0 -3px 8px #000,
+    0 2px 7px #000d;
+}
+body.native-wow-ui .target-frame { flex-direction: row-reverse; }
+body.native-wow-ui .target-rail > .target-frame { margin-bottom: 26px; }
+body.native-wow-ui .unit-frame > img,
+body.native-wow-ui .unit-frame > canvas.portrait-canvas {
+  width: 64px;
+  height: 64px;
+  border: 3px ridge #aa8d48;
+  border-radius: 50%;
+  background: #050706;
+  box-shadow: inset 0 0 0 1px #0b0b08, 0 0 4px #000;
+}
+body.native-wow-ui .unit-frame-body { gap: 2px; }
+body.native-wow-ui .unit-frame-body strong {
+  color: #f5db64;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: center;
+}
+body.native-wow-ui .unit-frame-body > span {
+  color: #f2e9d3;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  text-align: center;
+}
+body.native-wow-ui .health-track,
+body.native-wow-ui .power-track,
+body.native-wow-ui .ui-bar {
+  border-color: #050505;
+  border-radius: 1px;
+  box-shadow: inset 0 0 3px #000, 0 0 0 1px #6f603466;
+}
+body.native-wow-ui .health-track { height: 15px; }
+body.native-wow-ui .power-track { height: 10px; }
+
+/* Player buffs belong to the same reading column as the player frame. Keeping them in flow makes
+   their order stable at every scale instead of letting a separately anchored strip drift over UI. */
+body.native-wow-ui .player-auras {
+  position: static;
+  width: 100%;
+  max-width: 100%;
+  justify-content: flex-start;
+  pointer-events: auto;
+}
+body.native-wow-ui .aura-icon {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-width: 1px;
+  border-radius: 2px;
+  background: var(--wow-quickslot, #14110b);
+  box-shadow: 0 1px 3px #000, inset 0 0 0 1px #cab15d66;
+}
+body.native-wow-ui .aura-icon[data-metadata-state="unresolved"] {
+  display: grid;
+  place-items: center;
+  color: #d7c493;
+  background:
+    radial-gradient(circle at 50% 42%, #497a8366 0 22%, transparent 24%),
+    linear-gradient(145deg, #18343a, #0b0f12 68%);
+}
+body.native-wow-ui .aura-icon[data-metadata-state="unresolved"]::before {
+  content: "?";
+  font: 700 18px/1 "WoW Friz", Georgia, serif;
+  text-shadow: 0 1px 2px #000;
+}
+body.native-wow-ui .aura-icon.debuff[data-metadata-state="unresolved"] {
+  color: #e2b5a5;
+  background:
+    radial-gradient(circle at 50% 42%, #713d3d77 0 22%, transparent 24%),
+    linear-gradient(145deg, #3b2222, #0b0f12 68%);
+}
+
+/* One compact HUD replaces the decorative full-width MainMenuBar plate. Equal side tracks keep
+   combat actions on the viewport centre line while bags and micro controls share a right edge. */
+body.native-wow-ui #bottom-hud {
+  position: absolute;
+  z-index: 8;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  display: grid;
+  width: min(1060px, calc((100vw - 24px) / var(--ui-scale-effective)));
+  margin: 0 auto;
+  grid-template-columns: minmax(190px, 1fr) auto minmax(190px, 1fr);
+  align-items: end;
+  column-gap: 8px;
+  pointer-events: none;
+}
+body.native-wow-ui #bottom-hud-center {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  grid-column: 2;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+body.native-wow-ui #hud-utilities {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  grid-column: 3;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+body.native-wow-ui #bottom-hud-center > *,
+body.native-wow-ui #hud-utilities > * { pointer-events: auto; }
+
+body.native-wow-ui #action-bar,
+body.native-wow-ui #action-bar-extras {
+  position: static;
+  inset: auto;
+  transform: none;
+}
+body.native-wow-ui #action-bar {
+  position: static;
+  inset: auto;
+  order: 2;
+  transform: none;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #6d5a34;
+  border-radius: 3px;
+  background: #090a08e8;
+  box-shadow: 0 2px 5px #000c;
+}
+body.native-wow-ui #action-bar-extras {
+  position: static;
+  inset: auto;
+  order: 1;
+  transform: none;
+  align-items: center;
+  gap: 4px;
+}
+body.native-wow-ui .action-bar-extra {
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #6d5a34;
+  border-radius: 3px;
+  background: #090a08e8;
+  box-shadow: 0 2px 5px #000c;
+}
+body.native-wow-ui .ui-icon-button {
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 2px solid #57451f;
+  border-radius: 2px;
+  background-color: #0b0b08;
+  background-image: var(--wow-quickslot, linear-gradient(135deg, #423823, #0b0b08));
+  background-size: cover;
+  box-shadow: inset 0 0 0 1px #d6bd6b66, 0 1px 2px #000;
+}
+body.native-wow-ui .ui-icon-button > img {
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  margin: 2px;
+  border-radius: 0;
+}
+body.native-wow-ui .ui-action-button[data-count]::after {
+  content: attr(data-count);
+  position: absolute;
+  z-index: 4;
+  right: 2px;
+  bottom: 0;
+  color: #fff;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 12px;
+  text-shadow: 1px 1px 2px #000, -1px 0 2px #000;
+}
+body.native-wow-ui .ui-action-button[data-empty] {
+  border-color: #574b2d;
+  background-color: #080906;
+  background-image: var(--wow-action-slot, var(--wow-quickslot, linear-gradient(135deg, #28251b, #080906)));
+  box-shadow: inset 0 0 0 1px #8f7b4633;
+}
+body.native-wow-ui #action-bar .ui-action-button > .ui-icon-key,
+body.native-wow-ui .action-bar-extra .ui-action-button > .ui-icon-key,
+body.native-wow-ui .action-bar-side-column .ui-action-button > .ui-icon-key {
+  top: 0;
+  left: 1px;
+  padding: 1px 2px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 10px;
+  text-shadow: 1px 1px 2px #000, -1px 0 2px #000;
+}
+
+body.native-wow-ui #game-buttons {
+  position: static;
+  inset: auto;
+  display: grid;
+  /* Ten stock buttons in one row: character, bags, spellbook, talents, quest, socials,
+     world map, calendar, dungeon finder, menu. A narrower grid wrapped the row in two.
+     Compact 24x48: the stock 32x64 plates scaled to three quarters, undistorted. */
+  grid-template-columns: repeat(10, 24px);
+  width: 262px;
+  height: 54px;
+  box-sizing: border-box;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid #856e36;
+  background: #090a08e8;
+  box-shadow: 0 2px 4px #000c;
+}
+body.native-wow-ui #game-buttons button {
+  position: relative;
+  width: 24px;
+  height: 48px;
+  min-height: 0;
+  color: #f2d56f;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(#3a3020, #0b0b08);
+  box-shadow: inset 0 0 0 1px #856e36, 0 1px 2px #000;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 11px;
+}
+body.native-wow-ui #game-buttons #character-toggle,
+body.native-wow-ui #game-buttons #inventory-toggle,
+body.native-wow-ui #game-buttons #spellbook-toggle,
+body.native-wow-ui #game-buttons #talents-toggle,
+body.native-wow-ui #game-buttons #quest-toggle,
+body.native-wow-ui #game-buttons #social-toggle,
+body.native-wow-ui #game-buttons #worldmap-toggle,
+body.native-wow-ui #game-buttons #lfg-toggle,
+body.native-wow-ui #game-buttons #game-menu-toggle {
+  color: #fff3c4;
+  background-color: #0b0b08;
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
+  background-size: 24px 48px, 100% 100%;
+  box-shadow: none;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 1px 2px #000, 0 0 2px #000;
+}
+body.native-wow-ui #game-buttons #character-toggle {
+  isolation: isolate;
+  background-image: linear-gradient(#3a3020, #0b0b08);
+}
+body.native-wow-ui #game-buttons #character-toggle::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+  background: var(--wow-micro-character, none) center/24px 48px no-repeat;
+}
+body.native-wow-ui #character-micro-icon {
+  position: absolute;
+  z-index: 3;
+  bottom: 4px;
+  left: 4px;
+  width: 14px;
+  height: 19px;
+  pointer-events: none;
+  object-fit: none;
+}
+body.native-wow-ui #game-buttons .micro-button-glyph {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  font-size: 12px;
+  line-height: 1;
+}
+body.native-wow-ui #game-buttons #inventory-toggle {
+  background-image: var(--wow-micro-inventory, none), linear-gradient(#3a3020, #0b0b08);
+  background-position: center bottom 3px, center;
+  background-size: 24px 24px, 100% 100%;
+}
+body.native-wow-ui #game-buttons #spellbook-toggle { background-image: var(--wow-micro-spellbook, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #talents-toggle { background-image: var(--wow-micro-talents, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #quest-toggle { background-image: var(--wow-micro-quest, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #social-toggle { background-image: var(--wow-micro-socials, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #worldmap-toggle { background-image: var(--wow-micro-world, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #lfg-toggle { background-image: var(--wow-micro-lfg, none), linear-gradient(#3a3020, #0b0b08); }
+body.native-wow-ui #game-buttons #game-menu-toggle { background-image: var(--wow-micro-mainmenu, none), linear-gradient(#3a3020, #0b0b08); }
+/* The letter fallbacks inside the art buttons stay for screen readers (aria-labels name them)
+   but must not paint over the client art. The calendar button keeps its letter: the stock
+   client ships no micro art for it. */
+body.native-wow-ui #game-buttons #quest-toggle,
+body.native-wow-ui #game-buttons #social-toggle,
+body.native-wow-ui #game-buttons #worldmap-toggle { font-size: 0; }
+body.native-wow-ui #game-buttons #game-menu-toggle .micro-button-glyph { display: none; }
+body.native-wow-ui .bag-bar {
+  position: static;
+  inset: auto;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #6d5a34;
+  border-radius: 3px;
+  background: #090a08e8;
+  box-shadow: 0 2px 4px #000c;
+}
+body.native-wow-ui .bag-bar-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 2px;
+  background: var(--wow-quickslot, #14110b) center/cover;
+}
+
+body.native-wow-ui .game-window {
+  border: 2px ridge #8e7437;
+  border-radius: 2px;
+  background:
+    linear-gradient(#17150fe8, #080806f2),
+    var(--wow-dialog-bg, none);
+  background-size: auto, 128px 128px;
+  box-shadow: inset 0 0 0 1px #d8c36b55, 0 7px 24px #000e;
+  font-family: "WoW Friz", "Trebuchet MS", sans-serif;
+}
+body.native-wow-ui .game-window header {
+  min-height: 30px;
+  padding: 5px 9px;
+  color: #f5df88;
+  border-bottom: 1px solid #796334;
+  background: linear-gradient(#282316f5, #0c0b08f5);
+  font-weight: 400;
+  text-align: center;
+}
+body.native-wow-ui .window-close,
+body.native-wow-ui .frame-close {
+  color: #ffd866;
+  border: 1px solid #8d6e25;
+  border-radius: 50%;
+  background: radial-gradient(circle, #9c260f, #2b0805 70%);
+}
+
+body.native-wow-ui .character-window {
+  top: 68px;
+  left: 18px;
+  width: min(430px, calc(100vw - 24px));
+  max-height: calc(100vh - 120px);
+}
+body.native-wow-ui .character-identity {
+  margin: 5px 10px 0;
+  color: #ffd93e;
+  font-size: 12px;
+  text-align: center;
+  text-shadow: 1px 1px #000;
+}
+body.native-wow-ui .character-paperdoll {
+  position: relative;
+  height: 360px;
+  margin: 3px 8px 0;
+  overflow: hidden;
+  border: 1px solid #342e20;
+  background: radial-gradient(ellipse at 50% 42%, #22303b99, #070806 66%);
+  box-shadow: inset 0 0 18px #000;
+}
+body.native-wow-ui .character-model {
+  position: absolute;
+  z-index: 0;
+  top: 5px;
+  right: 58px;
+  bottom: 45px;
+  left: 58px;
+  overflow: hidden;
+  pointer-events: none;
+}
+body.native-wow-ui .character-model .portrait-canvas-paperdoll { background: transparent; }
+body.native-wow-ui .character-paperdoll .equipment-slots {
+  position: absolute;
+  z-index: 1;
+  inset: 7px;
+  display: grid;
+  grid-template-columns: 42px 1fr 42px;
+  grid-template-rows: repeat(8, 40px);
+  gap: 3px;
+  padding: 0;
+  pointer-events: none;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots .item-slot {
+  width: 40px;
+  min-height: 40px;
+  padding: 1px;
+  pointer-events: auto;
+  border-radius: 2px;
+  background: var(--wow-quickslot, #090a08) center/cover;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots .item-icon { width: 36px; height: 36px; }
+body.native-wow-ui .character-paperdoll .equipment-slots .slot-label { display: none; }
+body.native-wow-ui .character-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 12px;
+}
+body.native-wow-ui .sheet-section {
+  padding: 5px 7px;
+  border: 1px solid #4e4329;
+  background: #090a08b8;
+}
+
+body.native-wow-ui .spellbook-window {
+  top: 82px;
+  left: 18px;
+  width: min(384px, calc(100vw - 24px));
+  height: min(512px, calc(100vh - 106px));
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  min-height: 360px;
+  max-height: calc(100vh - 106px);
+  transform: none;
+  border: 0;
+  background-color: #16130c;
+  background-image:
+    var(--wow-spellbook-tl, linear-gradient(#332b19, #15120c)),
+    var(--wow-spellbook-tr, linear-gradient(#332b19, #15120c)),
+    var(--wow-spellbook-bl, linear-gradient(#15120c, #080806)),
+    var(--wow-spellbook-br, linear-gradient(#15120c, #080806));
+  background-position: top left, top right, bottom left, bottom right;
+  background-repeat: no-repeat;
+  background-size: 256px 256px, 128px 256px, 256px 256px, 128px 256px;
+  box-shadow: 0 8px 24px #000d;
+  resize: none;
+}
+body.native-wow-ui .spellbook-window header {
+  position: relative;
+  z-index: 2;
+  min-height: 40px;
+  padding: 8px 31px 2px;
+  color: #271b0e;
+  border: 0;
+  background: transparent;
+  text-shadow: 0 1px #d5b86f;
+}
+body.native-wow-ui .spellbook-window .window-close {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+}
+body.native-wow-ui .spellbook-window #spell-status {
+  position: relative;
+  z-index: 1;
+  margin: 1px 42px 0;
+  color: #4e3415;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  text-shadow: 0 1px #cdb270;
+}
+body.native-wow-ui .spellbook-controls {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  padding: 6px 37px 0 42px;
+  color: #30200f;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  text-shadow: 0 1px #cdb270;
+}
+body.native-wow-ui .spellbook-controls input[type="search"] {
+  min-height: 24px;
+  height: 24px;
+  color: #e8d9aa;
+  border-color: #655027;
+  border-radius: 2px;
+  background: #15120dd9;
+}
+body.native-wow-ui .spellbook-tabs {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  order: 4;
+  gap: 3px;
+  margin: 0;
+  padding: 4px 38px 22px 42px;
+}
+body.native-wow-ui .spellbook-tab,
+body.native-wow-ui .talents-tab {
+  color: #d8c694;
+  border-color: #64532d;
+  border-radius: 2px;
+  background: linear-gradient(#292316, #0c0b08);
+}
+body.native-wow-ui .spellbook-tab.is-active,
+body.native-wow-ui .talents-tab.is-active {
+  color: #ffdc55;
+  border-color: #c29d3b;
+  box-shadow: inset 0 0 5px #c79d273d;
+}
+body.native-wow-ui .spellbook-list {
+  position: relative;
+  z-index: 1;
+  order: 3;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 3px 34px 0 38px;
+  padding: 4px;
+  scrollbar-color: #775d27 #1c160d;
+}
+body.native-wow-ui .spellbook-list .spell-button {
+  height: 46px;
+  min-height: 46px;
+  grid-template-columns: 38px minmax(0, 1fr);
+  border-color: #6a5325;
+  border-radius: 2px;
+  background: #15120dcc;
+}
+body.native-wow-ui .spellbook-list .spell-icon,
+body.native-wow-ui .spellbook-list .spell-cooldown {
+  width: 36px;
+}
+body.native-wow-ui .spellbook-list .spell-label {
+  padding: 0 4px;
+  color: #3b2814;
+  font-family: "WoW Arial Narrow", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  text-shadow: 0 1px #d8bd78;
+  white-space: normal;
+}
+
+body.native-wow-ui .ui-tooltip {
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 2px ridge #8d753c;
+  border-radius: 2px;
+  background-color: #080909f5;
+  background-image:
+    linear-gradient(#050606d9, #050606d9),
+    var(--wow-tooltip-bg, linear-gradient(#101213f5, #050606f8));
+  background-size: auto, 128px 128px;
+  box-shadow: inset 0 0 0 1px #d7c27533, 0 5px 18px #000e;
+  font-family: "WoW Friz", "Trebuchet MS", sans-serif;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+body.native-wow-ui .right-rail {
+  top: 8px;
+  /* The corner itself: the side bars start below the minimap, so no side-bars offset here. */
+  right: 20px;
+  width: 188px;
+}
+body.native-wow-ui .minimap { position: relative; width: 174px; gap: 1px; }
+body.native-wow-ui .minimap-zone {
+  order: -3;
+  width: 174px;
+  max-width: 174px;
+  color: #ffd52b;
+  border: 1px solid #6a582d;
+  border-radius: 2px;
+  background: #070806e8;
+  font-size: 12px;
+}
+body.native-wow-ui #minimap-canvas {
+  order: -2;
+  width: 160px;
+  height: 160px;
+  border: 5px ridge #8c7336;
+  box-shadow: 0 2px 7px #000, inset 0 0 0 1px #d9c06a;
+}
+body.native-wow-ui .minimap-clock {
+  position: absolute;
+  z-index: 2;
+  top: 145px;
+  right: 58px;
+  padding: 1px 4px;
+  border: 1px solid #5d4a24;
+  border-radius: 2px;
+  background: #080806e8;
+}
+body.native-wow-ui .minimap-controls { position: absolute; z-index: 3; inset: 24px 0 auto; display: block; }
+body.native-wow-ui .minimap-button { position: absolute; width: 23px; height: 23px; border-width: 2px; }
+body.native-wow-ui .minimap-button:nth-child(1) { top: 94px; right: -2px; }
+body.native-wow-ui .minimap-button:nth-child(2) { top: 59px; right: -2px; }
+body.native-wow-ui .minimap-button:nth-child(3) { top: 3px; left: 3px; }
+body.native-wow-ui .minimap-button:nth-child(4) { top: 40px; left: -2px; }
+body.native-wow-ui .minimap-button:nth-child(5) { top: 76px; left: -2px; }
+body.native-wow-ui .minimap-subzone { max-width: 174px; color: #f1e6c5; border-radius: 2px; background: #080806c7; }
+
+@media (max-width: 1024px) {
+  /* On a compact viewport buffs rejoin the player column instead of covering the target/minimap. */
+  body.native-wow-ui .player-auras {
+    position: static;
+    width: 100%;
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+  body.native-wow-ui .left-rail {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+}
+
 #loot-items { display: grid; gap: 6px; padding: 0 12px 12px; }
 .loot-slot { min-height: 34px; padding: 6px 10px; color: #ead58c; border-color: #6f603c; background: #242018; text-align: left; }
 .loot-slot:disabled, .loot-slot[aria-disabled="true"] { color: #8a7f66; background: #1b1813; cursor: default; }
 #loot-money { margin: 0 12px 8px; color: #f0d98a; border-color: #7a6a3f; background: #2a2418; }
+#loot-all { margin: 0 12px 8px; color: #ead58c; border-color: #6f603c; background: #242018; }
+#loot-all:disabled { color: #8a7f66; background: #1b1813; cursor: default; }
 #death-window p { padding: 0 12px 8px; }
 #death-window button { margin-right: 8px; }
 
@@ -550,6 +1294,739 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .item-prompt-cancel { color: #c6bda4; }
 #inventory-message { padding: 0 12px 8px; }
 .item-slot[draggable="true"] { cursor: grab; }
+
+/* Native cockpit refinement: every functional group gets trim, never a full-width empty plate. */
+body.native-wow-ui #action-bar-side { z-index: 8; }
+body.native-wow-ui #bottom-hud-center,
+body.native-wow-ui #action-bar-side {
+  filter: drop-shadow(0 2px 3px #000c);
+}
+body.native-wow-ui #action-bar-side {
+  top: 232px;
+  right: 14px;
+  bottom: calc(var(--hud-safe-bottom) + 8px);
+  max-height: calc((100vh - 22px - var(--hud-safe-bottom)) / var(--ui-scale-effective));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+body.native-wow-ui .ui-icon-button {
+  width: var(--action-slot-size);
+  height: var(--action-slot-size);
+  min-height: var(--action-slot-size);
+  border: 1px solid #9b7e3c;
+  background-image: var(--wow-slot-background, var(--wow-quickslot, linear-gradient(135deg, #423823, #0b0b08)));
+  background-size: 100% 100%;
+  box-shadow: 0 1px 2px #000;
+}
+/* Action sockets deliberately override the later generic item/equipment slot.  Otherwise the
+   dedicated QuickSlot BLP is present in the stylesheet but loses the cascade on every button. */
+body.native-wow-ui .ui-action-button {
+  background-image: var(--wow-action-slot, var(--wow-quickslot, linear-gradient(135deg, #423823, #0b0b08)));
+  background-position: center;
+  background-size: 100% 100%;
+}
+body.native-wow-ui .ui-icon-button:hover:not(:disabled) {
+  border-color: var(--wow-brass-light, #e0c56c);
+  filter: brightness(1.16);
+}
+body.native-wow-ui .ui-action-button::before {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: 2px;
+  opacity: 0;
+  box-shadow: inset 0 0 0 2px #fff2a6d9, inset 0 0 5px #ffd45a99;
+}
+body.native-wow-ui .ui-action-button:hover:not(:disabled)::before,
+body.native-wow-ui .ui-action-button:focus-visible::before { opacity: 1; }
+body.native-wow-ui .ui-icon-button:focus-visible,
+body.native-wow-ui .bag-bar-button:focus-visible,
+body.native-wow-ui #game-buttons button:focus-visible {
+  outline: 2px solid #e0c56c;
+  outline-offset: 2px;
+  filter: brightness(1.18);
+}
+body.native-wow-ui .bag-bar-button {
+  background-image: var(--wow-slot-background, var(--wow-quickslot, #14110b));
+  border-color: #9b7e3c;
+}
+body.native-wow-ui .ui-icon-button > img {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+body.native-wow-ui #game-buttons button:hover:not(:disabled) {
+  color: #fff0a0;
+  box-shadow: inset 0 0 0 1px #e0c56c, 0 1px 3px #000;
+}
+
+/* One fixed, compact character folio owns paperdoll, skills and collections. Switching tabs never
+   resizes the frame; only the active page scrolls when the viewport is short. */
+body.native-wow-ui .character-window {
+  display: flex;
+  width: min(420px, calc(100vw - 24px));
+  flex-direction: column;
+  overflow: hidden;
+  height: min(620px, var(--game-window-max-height, calc(100vh - 110px)));
+  min-height: min(460px, var(--game-window-max-height, 460px));
+  max-height: min(calc(100vh - 110px), var(--game-window-max-height, calc(100vh - 110px)));
+  resize: none;
+}
+body.native-wow-ui .character-tabs {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid #4e4329;
+  background: #090d10d9;
+}
+body.native-wow-ui .character-tabs > button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 3px 6px;
+  overflow: hidden;
+  color: #bfb18b;
+  border: 1px solid #65542d;
+  border-radius: 2px;
+  background: #111820;
+  font: 12px/1.2 "WoW Arial Narrow", Arial, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.native-wow-ui .character-tabs > button[aria-selected="true"] {
+  color: #fff0bd;
+  border-color: #dfbd62;
+  background: #18343a;
+  box-shadow: inset 0 0 0 1px #dfbd6238;
+}
+body.native-wow-ui .character-tab-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+  scrollbar-color: #856a30 #0b0a08;
+}
+body.native-wow-ui #character-sheet-pane { padding: 0 0 8px; }
+body.native-wow-ui .character-paperdoll {
+  height: clamp(292px, 38vh, 310px);
+  min-height: 292px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 42%, #293c4b99, #070806 68%);
+}
+body.native-wow-ui .character-model {
+  display: grid;
+  place-items: center;
+}
+body.native-wow-ui .character-model > canvas.portrait-canvas-paperdoll {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+  object-position: center;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots {
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  gap: 3px;
+  overflow: visible;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots .item-slot {
+  width: min(32px, 100%);
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 1;
+  align-self: center;
+  justify-self: center;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots .item-slot .item-icon {
+  width: 100%;
+  height: 100%;
+}
+body.native-wow-ui .character-paperdoll .equipment-slots .item-slot:focus-visible {
+  outline: 2px solid #e0c56c;
+  outline-offset: 1px;
+}
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="1"] { grid-area: 1 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="2"] { grid-area: 2 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="3"] { grid-area: 3 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="15"] { grid-area: 4 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="5"] { grid-area: 5 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="4"] { grid-area: 6 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="19"] { grid-area: 7 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="9"] { grid-area: 8 / 1; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="10"] { grid-area: 1 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="6"] { grid-area: 2 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="7"] { grid-area: 3 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="8"] { grid-area: 4 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="11"] { grid-area: 5 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="12"] { grid-area: 6 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="13"] { grid-area: 7 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="14"] { grid-area: 8 / 3; }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="16"],
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="17"],
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="18"] {
+  position: absolute;
+  bottom: 0;
+}
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="16"] { left: calc(50% - 52px); }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="17"] { left: calc(50% - 16px); }
+body.native-wow-ui .equipment-slots .item-slot[data-equipment-slot="18"] { left: calc(50% + 20px); }
+body.native-wow-ui .character-stats {
+  grid-template-columns: 1fr;
+  gap: 5px;
+  margin: 6px 8px;
+  font-size: 11px;
+}
+body.native-wow-ui .character-collection-section {
+  margin-bottom: 12px;
+  padding: 8px;
+  border: 1px solid #4e4329;
+  background: #090d10b8;
+}
+body.native-wow-ui .character-collection-section > h4 {
+  margin: 0 0 7px;
+  color: #dfbd62;
+  font: 13px/1.2 "WoW Friz", Georgia, serif;
+}
+body.native-wow-ui .character-collection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 5px;
+}
+body.native-wow-ui .character-collection-card {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 3px;
+  color: #e7dcc0;
+  border: 1px solid #65542d;
+  border-radius: 3px;
+  background: #111820;
+  font: 11px/1.2 "WoW Arial Narrow", Arial, sans-serif;
+  text-align: left;
+}
+body.native-wow-ui .character-collection-card > img {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #80652f;
+  border-radius: 2px;
+  object-fit: cover;
+}
+body.native-wow-ui .character-collection-card > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.native-wow-ui #character-combat-pets .ui-line {
+  padding: 4px 2px;
+  border-bottom: 1px solid #342e20;
+  font: 12px/1.25 "WoW Arial Narrow", Arial, sans-serif;
+}
+
+/* Book order is intentional: status/header, search/rank controls, tabs, then the scrollable list. */
+body.native-wow-ui .spellbook-window .spellbook-controls { order: 1; }
+body.native-wow-ui .spellbook-window .spellbook-tabs { order: 2; max-height: 72px; overflow-y: auto; }
+body.native-wow-ui .spellbook-window .spellbook-list { order: 3; min-height: 0; flex: 1 1 auto; }
+body.native-wow-ui .spellbook-window .spellbook-tab,
+body.native-wow-ui .spellbook-window .spellbook-controls input[type="search"] {
+  min-height: 28px;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-button {
+  min-height: 50px;
+  height: auto;
+  line-height: 1.25;
+}
+
+/* Folio quest log and tracker.  The map itself remains the first child of the rail (Minimap.ts). */
+body.native-wow-ui #quest-tracker {
+  display: flex;
+  width: 188px;
+  max-height: min(38vh, 320px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid #7f6730;
+  border-radius: 2px;
+  background: #0b0907e8;
+  pointer-events: auto;
+}
+body.native-wow-ui .right-rail > .minimap {
+  position: relative;
+  z-index: 4;
+  flex: 0 0 auto;
+  order: -10;
+}
+body.native-wow-ui .quest-tracker-toggle {
+  min-height: 28px;
+  padding: 3px 8px;
+  color: #e0c56c;
+  border: 0;
+  border-bottom: 1px solid #5c4821;
+  border-radius: 0;
+  background: #211a0e;
+  font: 12px "WoW Friz", serif;
+  text-align: left;
+}
+body.native-wow-ui .quest-tracker-body {
+  display: grid;
+  min-height: 0;
+  overflow-y: auto;
+  gap: 9px;
+  padding: 7px 8px 9px;
+  pointer-events: auto;
+}
+body.native-wow-ui .quest-track { gap: 3px; }
+body.native-wow-ui .quest-track .ui-line { font-family: "WoW Arial Narrow", Arial, sans-serif; }
+body.native-wow-ui .quest-log {
+  width: min(700px, calc(100vw - 24px));
+  max-height: min(calc(100vh - 90px), var(--game-window-max-height, calc(100vh - 90px)));
+  overflow: hidden;
+  background-color: #17150f;
+  background-image:
+    var(--wow-quest-folio-left, linear-gradient(135deg, #2d2414, #17150f)),
+    var(--wow-quest-folio-right, linear-gradient(135deg, #2d2414, #17150f));
+  background-position: left top, right top;
+  background-repeat: no-repeat;
+  background-size: calc(200% / 3) auto, calc(100% / 3) auto;
+}
+body.native-wow-ui .quest-log > .ui-panel-body { min-height: 0; overflow: hidden; }
+body.native-wow-ui .quest-log-shell { display: flex; min-height: 0; flex-direction: column; gap: 8px; }
+body.native-wow-ui .quest-log-toolbar { display: flex; align-items: center; gap: 8px; }
+body.native-wow-ui .quest-log-toolbar input { min-width: 0; flex: 1; min-height: 30px; }
+body.native-wow-ui .quest-log-panes {
+  display: grid;
+  min-height: 300px;
+  max-height: calc(100vh - 190px);
+  grid-template-columns: minmax(170px, .72fr) minmax(0, 1.5fr);
+  gap: 8px;
+}
+body.native-wow-ui .quest-log-list,
+body.native-wow-ui .quest-log-details {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #62502b;
+  background-color: #0d0c09b8;
+}
+body.native-wow-ui .quest-log-list {
+  background-image: linear-gradient(#0d0c09e8, #080806e8);
+}
+body.native-wow-ui .quest-log-details {
+  background-image: linear-gradient(#151109e8, #080806eb);
+}
+body.native-wow-ui .quest-log-list h4,
+body.native-wow-ui .quest-detail-section h4 {
+  margin: 0 0 5px;
+  color: #d6b65d;
+  font: 13px "WoW Friz", serif;
+}
+body.native-wow-ui .quest-log-list-entry {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 34px;
+  grid-template-columns: 1fr auto;
+  gap: 5px;
+  padding: 5px 6px;
+  color: #ddceaa;
+  border: 1px solid transparent;
+  border-radius: 1px;
+  background: transparent;
+  font: 12px "WoW Arial Narrow", Arial, sans-serif;
+  text-align: left;
+}
+body.native-wow-ui .quest-log-list-entry small { color: #978b6e; font-size: 10px; }
+body.native-wow-ui .quest-log-list-entry.is-selected,
+body.native-wow-ui .quest-log-list-entry:hover { color: #fff0a3; border-color: #947432; background: #322510; }
+body.native-wow-ui .quest-log-list-entry::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  width: 12px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: var(--wow-quest-book-icon, #80652f) center/contain no-repeat;
+  opacity: .72;
+  pointer-events: none;
+}
+body.native-wow-ui .quest-log-list-entry { padding-left: 23px; }
+body.native-wow-ui .quest-log-details { color: #eadfbe; font: 13px/1.45 "WoW Arial Narrow", Arial, sans-serif; }
+body.native-wow-ui .quest-log-details > h3 { margin: 0 0 8px; color: #e0c56c; font: 18px "WoW Friz", serif; }
+body.native-wow-ui .quest-detail-text { margin: 7px 0; white-space: pre-line; }
+body.native-wow-ui .quest-detail-section {
+  margin-top: 10px;
+  padding-top: 20px;
+  border-top: 0;
+  background-image: var(--wow-quest-break, linear-gradient(90deg, transparent, #64512a, transparent));
+  background-position: top center;
+  background-repeat: no-repeat;
+  background-size: min(100%, 256px) 32px;
+}
+body.native-wow-ui .quest-detail-section .ui-line { padding: 2px 0; }
+body.native-wow-ui .quest-detail-objectives > .ui-line {
+  position: relative;
+  padding-left: 15px;
+}
+body.native-wow-ui .quest-detail-objectives > .ui-line::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  transform: translateY(-50%);
+  background: var(--wow-quest-bullet, #9a7c38) center/contain no-repeat;
+}
+body.native-wow-ui .quest-objective-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+body.native-wow-ui .quest-objective-row > .ui-line { min-width: 0; padding: 0; }
+body.native-wow-ui .quest-objective-icon,
+body.native-wow-ui .quest-objective-marker,
+body.native-wow-ui .ui-slot.quest-objective-item {
+  width: 32px;
+  height: 32px;
+  box-sizing: border-box;
+}
+body.native-wow-ui .quest-objective-icon {
+  border: 1px solid #80652f;
+  border-radius: 50%;
+  background: #0b0f12;
+  object-fit: cover;
+  box-shadow: inset 0 0 0 1px #dfbd6238, 0 1px 3px #000b;
+}
+body.native-wow-ui .quest-objective-marker {
+  border: 1px solid #80652f;
+  border-radius: 3px;
+  background: #0b0f12 var(--wow-quest-bullet, linear-gradient(135deg, transparent 36%, #9a7c38 37% 63%, transparent 64%)) center/14px 14px no-repeat;
+  box-shadow: inset 0 0 0 1px #dfbd6238, 0 1px 3px #000b;
+}
+body.native-wow-ui .ui-slot.quest-objective-item { --ui-slot-size: 32px; border-color: #80652f; border-radius: 3px; }
+body.native-wow-ui .ui-slot.quest-objective-item[data-metadata-state="unresolved"] {
+  display: grid;
+  place-items: center;
+  border-style: dashed;
+}
+body.native-wow-ui .ui-slot.quest-objective-item[data-metadata-state="unresolved"]::before {
+  content: "…";
+  color: #b9ac8a;
+  font: 700 16px/1 "WoW Friz", Georgia, serif;
+}
+body.native-wow-ui .ui-slot.quest-objective-item:focus-visible { outline: 2px solid #dfbd62; outline-offset: 2px; }
+body.native-wow-ui .quest-track .quest-objective-row { grid-template-columns: 26px minmax(0, 1fr); gap: 6px; }
+body.native-wow-ui .quest-track .quest-objective-icon,
+body.native-wow-ui .quest-track .quest-objective-marker,
+body.native-wow-ui .quest-track .ui-slot.quest-objective-item {
+  --ui-slot-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+body.native-wow-ui .quest-objective-done { color: var(--wow-status-emerald, #7fd48a); }
+body.native-wow-ui .quest-completed-text { color: #e0c56c; font-style: italic; }
+body.native-wow-ui .quest-reward-group {
+  display: grid;
+  grid-template-columns: minmax(116px, .42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+}
+body.native-wow-ui .quest-reward-label {
+  color: #cbbd98;
+  font: 12px/1.3 "WoW Arial Narrow", Arial, sans-serif;
+}
+body.native-wow-ui .ui-slots.quest-reward-slots {
+  --ui-slot-size: 44px;
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+body.native-wow-ui .ui-slot.quest-reward-item,
+body.native-wow-ui .ui-slot.quest-reward-spell {
+  flex: 0 0 var(--ui-slot-size);
+  border-color: #80652f;
+  border-radius: 3px;
+  background: #0b0f12;
+  box-shadow: inset 0 0 0 1px #dfbd6238, 0 1px 3px #000b;
+}
+body.native-wow-ui .ui-slot.quest-reward-item[data-metadata-state="unresolved"],
+body.native-wow-ui .ui-slot.quest-reward-spell[data-metadata-state="unresolved"] {
+  display: grid;
+  place-items: center;
+  color: #b9ac8a;
+  border-style: dashed;
+}
+body.native-wow-ui .ui-slot.quest-reward-item[data-metadata-state="unresolved"]::before,
+body.native-wow-ui .ui-slot.quest-reward-spell[data-metadata-state="unresolved"]::before {
+  content: "…";
+  font: 700 18px/1 "WoW Friz", Georgia, serif;
+}
+body.native-wow-ui .ui-slot.quest-reward-item:focus-visible,
+body.native-wow-ui .ui-slot.quest-reward-spell:focus-visible {
+  outline: 2px solid #dfbd62;
+  outline-offset: 2px;
+}
+body.native-wow-ui .quest-log-entry-actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 12px; padding: 8px 0 0; }
+body.native-wow-ui .quest-log-entry-actions button { min-height: 30px; padding: 0 9px; }
+
+/* The talent tree gets one high-resolution authored surface.  The live cells, arrows and labels
+   remain HTML so the decorative texture never decides their sharpness or reading order. */
+body.native-wow-ui .talents-window {
+  width: min(640px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(calc(100vh - 96px), var(--game-window-max-height, calc(100vh - 96px)));
+  overflow: hidden;
+  resize: none;
+  border: 1px solid #9b7a36;
+  background-color: #090d10;
+  background-image:
+    linear-gradient(180deg, #090d10b8 0%, #102d34a8 42%, #090d10e8 100%),
+    url("/ui/talents-background-v2.png");
+  background-position: center, center;
+  background-repeat: no-repeat;
+  background-size: cover, cover;
+  box-shadow: inset 0 0 0 1px #dfbd6244, 0 14px 34px #000d;
+}
+body.native-wow-ui .talents-window > .ui-panel-body {
+  --talent-size: clamp(28px, 4.4vh, 44px);
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 14px 12px;
+}
+body.native-wow-ui .talents-tabs { overflow-x: visible; flex-wrap: wrap; padding-bottom: 3px; }
+body.native-wow-ui .talents-tab { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 3px 7px; }
+body.native-wow-ui .talents-tab > img { width: 24px; height: 24px; vertical-align: middle; object-fit: cover; }
+body.native-wow-ui .talents-tab > .talent-tab-icon { width: 22px; height: 22px; border: 1px solid #80652f; border-radius: 2px; }
+body.native-wow-ui .talents-grid { isolation: isolate; max-width: 100%; }
+body.native-wow-ui .talents-grid > .talent,
+body.native-wow-ui .talents-grid > .talent-arrow { position: relative; z-index: 1; }
+body.native-wow-ui .talent { overflow: hidden; border-color: #63512b; background: #151109; }
+body.native-wow-ui .talent.is-available { border-color: #e0c56c; box-shadow: 0 0 5px #e0c56c66; }
+body.native-wow-ui .talent.is-blocked { border-color: #584a31; opacity: .72; }
+body.native-wow-ui .talent.is-maxed { border-color: #f3dc7f; box-shadow: inset 0 0 0 1px #f3dc7f66; }
+body.native-wow-ui .talent-arrow { background: #5b4a2b; }
+body.native-wow-ui .talent-arrow.is-open { background: #7fd48a; }
+body.native-wow-ui .professions-window { width: min(390px, calc(100vw - 24px)); max-height: min(calc(100vh - 96px), var(--game-window-max-height, calc(100vh - 96px))); overflow: hidden; }
+body.native-wow-ui .professions-window > .ui-panel-body { min-height: 0; overflow: auto; }
+body.native-wow-ui .profession-section { padding: 7px 8px; border-top: 1px solid #5e4a25; }
+body.native-wow-ui .profession-section > summary { cursor: pointer; list-style: none; }
+body.native-wow-ui .profession-section > summary::-webkit-details-marker { display: none; }
+body.native-wow-ui .profession-section > summary::before { content: "▾"; display: inline-block; width: 14px; color: #9a7c38; }
+body.native-wow-ui .profession-section:not([open]) > summary::before { content: "▸"; }
+body.native-wow-ui .profession-section > summary h4 { display: inline; color: #e0c56c; font: 14px "WoW Friz", serif; }
+body.native-wow-ui .profession-row { margin-bottom: 9px; }
+body.native-wow-ui .profession-row .ui-line { font: 13px "WoW Arial Narrow", Arial, sans-serif; }
+body.native-wow-ui .profession-row .ui-line { display: flex; align-items: center; gap: 6px; }
+body.native-wow-ui .profession-icon { width: 22px; height: 22px; flex: 0 0 auto; border: 1px solid #80652f; border-radius: 2px; object-fit: cover; }
+body.native-wow-ui .profession-row .ui-line > span:not(.ui-line-label):last-child { margin-left: auto; }
+body.native-wow-ui .ui-bar-skill { height: 9px; background: #0b0a08; }
+body.native-wow-ui .ui-bar-skill {
+  border-color: #9b7e3c;
+  background-image: linear-gradient(#2d2413, #0b0a08);
+}
+body.native-wow-ui .ui-bar-skill > span {
+  background-image: linear-gradient(#f0d06c, #8e6f2a);
+}
+body.native-wow-ui .ui-bar-skill:hover,
+body.native-wow-ui .ui-bar-skill:focus-within {
+  outline: 1px solid #e0c56c;
+  outline-offset: 1px;
+}
+
+/* Tooltips are rich text surfaces, not single-line labels. */
+body.native-wow-ui .ui-tooltip {
+  min-width: 210px;
+  width: min(420px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  gap: 6px;
+  padding: 10px 12px;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.42;
+  overflow-wrap: break-word;
+  word-break: normal;
+  white-space: pre-line;
+}
+/* A hovered world object has only its name. Keep it a cursor label, not a 420px item card. */
+body.native-wow-ui .ui-tooltip.world-object-tooltip {
+  min-width: 0;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: none;
+  overflow: visible;
+  gap: 0;
+  padding: 6px 9px;
+  white-space: normal;
+}
+body.native-wow-ui .ui-tooltip strong { display: block; margin-bottom: 2px; font: 16px/1.2 "WoW Friz", serif; }
+body.native-wow-ui .ui-tooltip.world-object-tooltip strong { margin: 0; font-size: 14px; }
+body.native-wow-ui .ui-tooltip > div { margin-top: 1px; }
+body.native-wow-ui .ui-tooltip > .ui-tooltip-description {
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px solid #5b4824;
+  color: #f2ead8;
+  font-size: 14px;
+  line-height: 1.5;
+}
+body.native-wow-ui .ui-tooltip > .ui-tooltip-footer {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #5b4824;
+  color: #a9a08c;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --hud-utility-height: 70px;
+    --hud-safe-bottom: calc(
+      8px + (
+        var(--action-bar-height) + var(--bottom-bars) * 52px
+        + var(--pet-bar-height) + var(--hud-utility-height)
+      ) * var(--ui-scale-effective)
+    );
+  }
+  body.native-wow-ui #bottom-hud {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: calc((100vw - 16px) / var(--ui-scale-effective));
+    grid-template-columns: 1fr;
+    justify-items: center;
+    row-gap: 6px;
+  }
+  body.native-wow-ui #bottom-hud-center {
+    width: min(100%, 510px);
+    grid-column: 1;
+    grid-row: 2;
+  }
+  body.native-wow-ui #hud-utilities {
+    width: min(100%, 460px);
+    flex-direction: row;
+    grid-column: 1;
+    grid-row: 1;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 8px;
+  }
+}
+@media (max-width: 800px) {
+  body.native-wow-ui .character-window { left: 12px; width: min(420px, calc(100vw - 24px)); }
+  body.native-wow-ui .spellbook-window { left: 12px; width: min(384px, calc(100vw - 24px)); }
+  body.native-wow-ui .spellbook-window .spellbook-list { grid-template-columns: 1fr; }
+  body.native-wow-ui .quest-log-panes { grid-template-columns: 1fr; max-height: none; }
+  body.native-wow-ui .quest-log-list { max-height: 30vh; }
+  body.native-wow-ui .left-rail,
+  body.native-wow-ui .target-rail { width: min(258px, calc(50vw - 16px)); }
+  body.native-wow-ui .left-rail { left: 8px; }
+  body.native-wow-ui .target-rail { right: calc(20px + var(--side-bars-width)); left: auto; }
+  body.world-active .target-rail { transform-origin: top right; }
+  body.native-wow-ui .unit-frame { width: 100%; }
+  body.native-wow-ui .unit-frame > img,
+  body.native-wow-ui .unit-frame > canvas.portrait-canvas { width: 46px; height: 46px; }
+  body.native-wow-ui .aura-strip {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
+  body.native-wow-ui .right-rail {
+    top: 180px;
+    /* Narrow screens keep the old inset: the full-height side columns still own the corner here. */
+    right: calc(20px + var(--side-bars-width));
+    width: 130px;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  body.native-wow-ui .right-rail > * { width: 100%; max-width: 100%; }
+  body.native-wow-ui .minimap { width: 124px; max-width: 100%; }
+  body.native-wow-ui .minimap-zone,
+  body.native-wow-ui .minimap-subzone { width: 124px; max-width: 100%; }
+  body.native-wow-ui #minimap-canvas { width: 116px; height: 116px; border-width: 4px; }
+  body.native-wow-ui .minimap-clock { top: 103px; right: 38px; }
+  body.native-wow-ui #quest-tracker,
+  body.native-wow-ui .boss-frames,
+  body.native-wow-ui .arena-frames { width: 100%; max-width: 100%; }
+  body.native-wow-ui .chat-window { left: 12px; width: min(440px, calc(100vw - 24px)); }
+}
+@media (max-width: 700px) {
+  :root { --ui-scale-effective: min(var(--ui-scale), 1); }
+}
+@media (max-width: 620px) {
+  :root {
+    --side-bars: 0 !important;
+    --ui-scale-effective: min(var(--ui-scale), 1);
+    --action-bar-height: calc((100vw - 46px) / 12 + 8px);
+    --hud-safe-bottom: calc(
+      8px + (
+        var(--action-bar-height) + var(--pet-bar-height) + var(--hud-utility-height)
+      ) * var(--ui-scale-effective)
+    );
+  }
+  /* Main controls stay available; optional rows/bags give up their space before the main twelve. */
+  body.native-wow-ui #action-bar-extras,
+  body.native-wow-ui #action-bar-side,
+  body.native-wow-ui .bag-bar { display: none !important; }
+  body.native-wow-ui #bottom-hud-center { width: 100%; }
+  body.native-wow-ui #action-bar {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    width: 100%;
+    gap: 2px;
+  }
+  body.native-wow-ui #action-bar .ui-icon-button {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    aspect-ratio: 1;
+  }
+  body.native-wow-ui #hud-utilities { width: 100%; }
+  body.native-wow-ui .ui-tooltip { min-width: 0; }
+}
+@media (max-width: 480px) {
+  :root {
+    --action-bar-height: 106px;
+    --chat-log-height: 100px;
+  }
+  body.native-wow-ui #action-bar {
+    width: min(100%, 306px);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  body.native-wow-ui #action-bar .ui-icon-button {
+    max-width: 48px;
+    justify-self: center;
+  }
+  body.native-wow-ui .right-rail {
+    bottom: calc(var(--chat-bottom) + var(--chat-height) + 8px);
+    overflow-y: auto;
+  }
+}
+@media (max-height: 720px) {
+  body.native-wow-ui #action-bar-side { top: 8px; }
+}
 .item-slot[role="button"] { cursor: pointer; }
 .item-slot:focus-visible { outline: 2px solid #ead58c; outline-offset: 1px; }
 
@@ -581,27 +2058,138 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .tracking-row { display: flex; align-items: center; gap: 8px; padding: 3px; border: 1px solid transparent; border-radius: 5px; color: #d7cfb4; font-size: .78rem; }
 .tracking-row.is-active { border-color: #e6ce7b; background: #2a2418; color: #ead58c; }
 .tracking-row .ui-icon-button { width: 28px; height: 28px; flex: 0 0 auto; }
+body.native-wow-ui .tracking-row .ui-icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
 .tracking-off { padding: 5px 8px; color: #ead58c; border-color: #6f603c; background: #242018; font-size: .76rem; }
 .tracking-list p.muted { margin: 0; }
 
-.world-map { top: 60px; left: 50%; width: min(1040px, calc(100vw - 32px)); max-height: 84vh; transform: translateX(-50%); }
+.world-map { top: 60px; left: 50%; width: min(1320px, calc(100vw - 32px)); max-height: min(88vh, var(--game-window-max-height, 88vh)); transform: translateX(-50%); }
 .world-map-bar { display: flex; gap: 6px; padding: 10px 12px 6px; }
 .world-map-picker { flex: 1 1 auto; min-width: 0; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .78rem; }
 .world-map-bar button { padding: 4px 9px; color: #ead58c; border-color: #6f603c; background: #242018; font-size: .76rem; }
-.world-map-canvas { display: block; width: calc(100% - 24px); margin: 0 12px; border: 1px solid #6f603c; border-radius: 4px; background: #120f0a; }
+.world-map-breadcrumb { display: flex; min-width: 0; align-items: center; gap: 5px; padding: 0 12px 7px; color: #c9b878; font-size: .75rem; }
+.world-map-breadcrumb button { min-height: 26px; padding: 2px 6px; color: #c9b878; border-color: #4d432a; border-radius: 3px; background: #16130e; }
+.world-map-breadcrumb strong { overflow: hidden; color: #f3d86e; text-overflow: ellipsis; white-space: nowrap; }
+.world-map-breadcrumb-separator { color: #6f603c; }
+.world-map-layout { display: flex; min-height: 0; align-items: flex-start; justify-content: center; gap: 10px; padding: 0 12px; }
+.world-map-stage {
+  position: relative; width: min(100%, 1002px, max(320px, calc(132vh - 248px))); min-width: 0;
+  flex: 0 1 auto; overflow: hidden; align-self: start; aspect-ratio: 1002 / 668;
+  border: 1px solid #6f603c; border-radius: 4px; background: #120f0a; box-shadow: inset 0 0 20px #000a;
+}
+.world-map-canvas { display: block; width: 100%; height: 100%; border: 0; background: #120f0a; }
+.world-map-marker-layer { position: absolute; inset: 0; pointer-events: none; }
+.world-map-quest-pin {
+  position: absolute; z-index: 2; display: grid; width: 30px; min-width: 30px; height: 30px; min-height: 0;
+  transform: translate(-50%, -50%) translate(var(--quest-pin-x, 0), var(--quest-pin-y, 0)); place-items: center; padding: 0; color: #171006;
+  border: 2px solid #f8dfa0; border-radius: 50%; background: #f0c94a;
+  box-shadow: 0 0 0 2px #5f4313, 0 2px 7px #000d; font: 700 12px/1 "WoW Friz", Georgia, serif;
+  pointer-events: auto;
+}
+.world-map-quest-pin[data-precision="area"] { width: 34px; min-width: 34px; height: 34px; border-style: dashed; background: #d4ad3c; }
+.world-map-quest-pin[data-state="complete"], .world-map-quest-pin[data-state="ready"] { color: #07140c; border-color: #c6f5d1; background: #62e7a3; box-shadow: 0 0 0 2px #245b3d, 0 2px 7px #000d; }
+.world-map-quest-pin[data-state="failed"] { color: #220807; border-color: #ffd1cc; background: #d96a63; box-shadow: 0 0 0 2px #6d2824, 0 2px 7px #000d; }
+.world-map-quest-pin:focus-visible { outline: 3px solid #fff1a9; outline-offset: 3px; filter: brightness(1.15); }
+.world-map-objectives { width: 284px; min-width: 220px; max-height: max(180px, min(668px, calc(88vh - 165px))); flex: 1 1 220px; overflow: auto; padding: 9px; border: 1px solid #6f603c; border-radius: 4px; background: linear-gradient(#17130de8, #0c0b08ed); scrollbar-color: #806b35 #12100b; }
+.world-map-objectives h3 { margin: 0 0 8px; color: #e0c56c; font: 14px/1.2 "WoW Friz", Georgia, serif; }
+.world-map-objective-list { display: grid; gap: 5px; }
+.world-map-objective-row { display: grid; min-width: 0; grid-template-columns: 24px 24px minmax(0, 1fr); align-items: center; gap: 6px; padding: 6px; border: 1px solid #433921; border-radius: 3px; background: #0d0c09c7; }
+.world-map-objective-row[data-state="complete"], .world-map-objective-row[data-state="ready"] { border-color: #356c4c; }
+.world-map-objective-row[data-state="failed"] { border-color: #713b35; }
+.world-map-objective-number { display: grid; width: 22px; height: 22px; place-items: center; color: #171006; border-radius: 50%; background: #f0c94a; font: 700 10px/1 "WoW Friz", Georgia, serif; }
+.world-map-objective-row[data-state="complete"] .world-map-objective-number,
+.world-map-objective-row[data-state="ready"] .world-map-objective-number { background: #62e7a3; }
+.world-map-objective-row[data-state="failed"] .world-map-objective-number { background: #d96a63; }
+.world-map-objective-glyph { display: block; width: 22px; height: 22px; border: 1px solid #80652f; border-radius: 50%; background: radial-gradient(circle, #d5b95e 0 18%, #18130a 21% 58%, #80652f 61% 68%, #090806 71%); }
+.world-map-objective-glyph[data-kind="gameObject"] { border-radius: 3px; transform: rotate(45deg) scale(.8); }
+.world-map-objective-glyph[data-kind="item"] { border-radius: 3px; background: linear-gradient(135deg, #6d5227, #17130b 60%); box-shadow: inset 0 0 0 2px #b9984c55; }
+.world-map-objective-glyph[data-kind="quest"] { border-radius: 2px; background: #17130b var(--wow-quest-bullet, linear-gradient(135deg, transparent 36%, #d2ac46 37% 63%, transparent 64%)) center/12px 12px no-repeat; }
+.world-map-objective-copy { display: grid; min-width: 0; gap: 2px; }
+.world-map-objective-copy strong { overflow: hidden; color: #e9dfc2; font-size: .75rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.world-map-objective-copy small { overflow: hidden; color: #9f9479; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+.world-map-objective-empty { margin: 0; font-size: .72rem; line-height: 1.4; }
 .world-map-status { margin: 6px 12px 12px; font-size: .76rem; }
+@media (max-width: 980px) {
+  .world-map-layout { flex-direction: column; align-items: stretch; }
+  .world-map-stage { align-self: center; }
+  .world-map-objectives { width: 100%; min-width: 0; max-width: none; max-height: min(180px, 24vh); flex-basis: auto; }
+}
+@media (max-width: 620px) {
+  .world-map-bar { flex-wrap: wrap; }
+  .world-map-picker { flex-basis: 100%; }
+  .world-map-breadcrumb { overflow-x: auto; }
+}
 
 /* Slice I6: the bag bar, the bags' own windows, the keyring and the bank. */
 .bag-bar { position: absolute; z-index: 4; right: calc(22px + var(--side-bars-width)); bottom: 72px; display: flex; gap: 5px; }
 .bag-bar-button { position: relative; width: 38px; height: 38px; padding: 0; color: #e6ce7b; border: 2px solid #756037; border-radius: 6px; background: #14110bd9; font-size: 1rem; }
 .bag-bar-button > img { width: 100%; height: 100%; border-radius: 4px; object-fit: cover; }
+body.native-wow-ui .bag-bar-button {
+  box-sizing: border-box;
+  min-height: 36px;
+  overflow: hidden;
+  background-origin: border-box;
+}
+body.native-wow-ui .bag-bar-button > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border-radius: 2px;
+}
 .bag-bar-free { position: absolute; right: 2px; bottom: 0; color: #fff; font-size: .64rem; font-style: normal; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
 .bag-window { top: auto; right: 18px; bottom: 120px; width: min(372px, calc(100vw - 32px)); }
 /* No padding of its own: `.ui-panel-body` already pads, and doubling it left the eighth
    column outside a 320px window and every bag opening with a horizontal scrollbar. */
 .bag-window .bag-grid, .keyring-window .bag-grid { padding: 0; }
 .keyring-window { width: min(372px, calc(100vw - 32px)); }
+/* A carried bag has a stable four-column grid. Icons follow the slot's content box, so a
+   viewport/UI-scale change cannot leave a 38px picture inside a narrower square. */
+#inventory-window, .bag-window {
+  width: min(244px, calc(100vw - 24px));
+  min-width: min(224px, calc(100vw - 24px));
+  resize: none;
+  overflow-x: hidden;
+}
+#inventory-window .bag-grid, .bag-window .bag-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 5px;
+}
+#inventory-window .item-slot, .bag-window .item-slot {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+#inventory-window .item-slot .item-icon, .bag-window .item-slot .item-icon {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+  aspect-ratio: 1;
+}
+#inventory-window header strong, .bag-window header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#inventory-window header .window-close, .bag-window header .window-close { flex: 0 0 auto; }
 .bank-window { width: min(420px, calc(100vw - 32px)); left: 18px; top: 90px; }
+body.framexml-item-cursor #framexml-world-stage,
+body.framexml-item-cursor #bank-window { cursor: grabbing; }
+/* An enchant from the stock trade skill window waiting for its item: the client's cast cursor
+   (FrameXmlTradeSkillLive.ts sets the picture; the crosshair stands in until it arrives). */
+body.framexml-cast-cursor #framexml-world-stage,
+body.framexml-cast-cursor #framexml-world-stage *,
+body.framexml-cast-cursor #world-canvas { cursor: var(--framexml-cast-cursor, crosshair); }
 .bank-window .bag-grid { padding: 0; }
 .bank-bags { display: flex; gap: 5px; }
 .bank-bags .item-slot { width: 42px; min-height: 42px; }
@@ -626,7 +2214,15 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   position: absolute; z-index: 20; bottom: var(--chat-bottom); left: 12px;
   display: grid; gap: 4px; width: min(440px, 42vw);
 }
+.reputation-toolbar { padding: 0 12px 8px; }
+.reputation-toolbar input[type="search"] { width: 100%; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.reputation-row { padding: 6px 12px 8px; border-top: 1px solid #3c352a; }
+.reputation-head { display: flex; justify-content: space-between; gap: 8px; }
+.reputation-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.reputation-foot button { margin-left: auto; padding: 2px 8px; font-size: 11px; }
 .chat-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.combat-filters { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 2px 8px 4px; font-size: 11px; color: #a89a7c; }
+.combat-filter { display: inline-flex; align-items: center; gap: 4px; }
 .chat-tab {
   padding: 2px 8px; border: 1px solid #3c352a; border-radius: 3px 3px 0 0; background: #0c0a08cc;
   color: #b6ab8e; font: inherit; font-size: .72rem; cursor: pointer;
@@ -680,6 +2276,7 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 #group-invite button { margin-right: 8px; }
 
 #trade-mine, #trade-theirs { display: grid; gap: 4px; min-height: 26px; padding: 0 12px 8px; }
+#trade-mine.is-drop-target { outline: 2px dashed #ead58c; outline-offset: -6px; }
 #trade-window h4 { margin: 4px 0 4px; padding: 0 12px; color: #ead58c; font-size: 12px; }
 #trade-window p { padding: 0 12px 8px; }
 #trade-window button { margin-right: 8px; }
@@ -689,13 +2286,105 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 #duel-window p { padding: 0 12px 8px; }
 #duel-window button { margin-right: 8px; }
 
-.mail-window { max-height: 70vh; overflow-y: auto; }
+.mail-window { max-height: min(70vh, var(--game-window-max-height, 70vh)); overflow-y: auto; }
 #mail-list { display: grid; gap: 6px; padding: 0 12px 8px; }
 .mail-entry { padding: 6px 8px; border: 1px solid #3c352a; background: #16130e; font-size: 12px; }
 .mail-entry.unread { border-color: #8a7742; }
 .mail-entry strong { display: block; color: #ead58c; }
 .mail-entry .mail-meta { color: #a89a7c; }
 .mail-entry button { margin: 4px 6px 0 0; padding: 2px 6px; font-size: 11px; }
+/* Stock mail frame: seven-letter inbox, a separate parchment reader and a send tab. */
+body.native-wow-ui #mail-window, #mail-window.mail-client-window {
+  width: min(384px, calc(100vw - 24px));
+  min-width: min(320px, calc(100vw - 24px));
+  height: 512px;
+  max-height: min(512px, var(--game-window-max-height, 90vh));
+  padding: 54px 32px 42px 24px;
+  resize: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background-color: #16120c;
+  background-image: var(--wow-mail-top-left, none), var(--wow-mail-top-right, none), var(--wow-mail-bottom-left, none), var(--wow-mail-bottom-right, none);
+  background-position: left top, right top, left bottom, right bottom;
+  background-size: 66.667% 50%, 33.334% 50%, 66.667% 50%, 33.334% 50%;
+  background-repeat: no-repeat;
+  display: flex;
+  flex-direction: column;
+}
+#mail-window[hidden] { display: none; }
+body.native-wow-ui #mail-window > header {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 48px;
+  padding: 5px 14px 5px 60px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+#mail-window header strong { flex: 1; text-align: center; font-size: 15px; }
+.mail-portrait { position: absolute; left: 9px; top: 6px; width: 42px; height: 42px; border: 2px solid #8e7437; border-radius: 50%; background: var(--wow-mail-icon, none) center/cover, #19130b; }
+#mail-message { flex: 0 0 auto; min-height: 19px; max-height: 32px; overflow: auto; margin: 0 0 4px; font-size: 11px; line-height: 1.25; }
+#mail-inbox { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+#mail-inbox[hidden], #mail-compose[hidden] { display: none; }
+#mail-list { display: grid; grid-auto-rows: 43px; gap: 4px; min-height: 0; overflow-y: auto; flex: 1; align-content: start; }
+#mail-list .mail-entry { position: relative; display: grid; grid-template-columns: 33px minmax(0, 1fr); grid-template-rows: 1fr; gap: 7px; width: 100%; min-height: 43px; padding: 3px 5px; margin: 0; border: 1px solid #5b492e; border-radius: 2px; background: #17130dd9; color: #b2a183; text-align: left; box-shadow: inset 0 0 0 1px #0009; }
+#mail-list .mail-entry:hover, #mail-list .mail-entry:focus-visible { background: #3d2c17; border-color: #d3b765; }
+#mail-list .mail-entry.unread { border-color: #a58a49; background: #332610e8; }
+#mail-list .mail-entry > img { width: 32px; height: 32px; align-self: center; object-fit: contain; }
+.mail-entry-text { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding-bottom: 9px; }
+.mail-entry-text strong, .mail-entry-text > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.1; font-size: 11px; }
+.mail-entry-text strong { font-size: 12px; }
+.mail-entry-status { position: absolute; right: 6px; bottom: 2px; max-width: calc(100% - 49px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #20ff20; font-size: 9px; }
+.mail-entry-status.expiring { color: #ff2020; }
+.mail-empty { text-align: center; color: #dcc58d; padding-top: 40px; }
+.mail-pagination { display: flex; justify-content: space-between; align-items: center; flex: 0 0 29px; color: #e9ce84; font-size: 12px; }
+.mail-pagination button { min-height: 23px; padding: 1px 8px; }
+.mail-tabs { position: absolute; display: flex; gap: 4px; bottom: 8px; left: 24px; right: 32px; }
+.mail-tabs button { flex: 1; min-width: 0; min-height: 26px; padding: 2px 6px; font-size: 11px; border-radius: 0 0 5px 5px; }
+.mail-tabs [aria-selected="true"] { color: #24190c; background: linear-gradient(#e3c78c, #a68a50); text-shadow: none; }
+#mail-compose { display: flex; flex-direction: column; gap: 7px; flex: 1; min-height: 0; overflow-y: auto; }
+.mail-field { display: flex; align-items: center; gap: 6px; color: #dec791; font-size: 12px; }
+.mail-field > span { width: 52px; flex: 0 0 auto; }
+.mail-field input, .mail-field select { width: 100%; min-width: 0; min-height: 25px; padding: 3px 5px; font-size: 12px; }
+#mail-body { flex: 1 1 120px; width: 100%; min-height: 70px; resize: none; padding: 9px; color: #352513; background: #d4bd8a; border: 1px solid #7d6234; font: 14px/1.4 Georgia, serif; }
+.mail-attachments { display: flex; flex-wrap: wrap; gap: 4px; }
+.mail-attachments button { width: 30px; height: 30px; min-height: 0; padding: 1px; }
+.mail-attachments img { width: 100%; height: 100%; object-fit: cover; }
+.mail-money-mode { display: flex; gap: 12px; font-size: 11px; }
+.mail-money-mode label { display: inline-flex; align-items: center; gap: 4px; }
+#mail-compose .mail-money-mode input[type="radio"] { width: 14px; height: 14px; padding: 0; accent-color: #d8bd79; }
+.mail-coins { display: flex; justify-content: flex-end; gap: 5px; }
+.mail-coins label { display: flex; align-items: center; gap: 2px; font-size: 11px; }
+#mail-compose .mail-coins input { width: 41px; min-height: 23px; padding: 2px; font-size: 11px; }
+#mail-compose .mail-coins input#mail-money { width: 66px; }
+.coin-gold { color: #efc94d; } .coin-silver { color: #ccd1d5; } .coin-copper { color: #c68d5e; }
+.mail-compose-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #c9b889; }
+.mail-compose-footer button { min-height: 27px; padding: 3px 14px; }
+.mail-read-window { left: 850px; top: 92px; width: min(360px, calc(100vw - 24px)); height: 484px; resize: none; }
+.mail-read-window .ui-panel-body { padding: 0; }
+.mail-letter { min-height: 395px; padding: 15px; background: #d7bd86; color: #382710; font: 14px/1.4 Georgia, serif; }
+.mail-letter h3 { margin: 0 0 8px; color: #31200e; font-size: 17px; overflow-wrap: anywhere; }
+.mail-letter-sender { font-style: italic; margin: 0 0 15px; }
+.mail-letter-text { min-height: 150px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mail-letter-items { display: grid; gap: 5px; margin-top: 12px; }
+.mail-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; padding: 3px 5px; font-size: 12px; }
+.mail-attachment img { width: 32px; height: 32px; flex: 0 0 auto; object-fit: cover; }
+.mail-attachment span { overflow-wrap: anywhere; min-width: 0; }
+body.native-wow-ui .mail-attachment { color: #edd598; border-color: #705a30; background: #2b2316; }
+.mail-letter-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 15px; }
+.mail-letter-actions button { font-size: 12px; min-height: 26px; padding: 3px 7px; }
+body.native-wow-ui #mail-window .mail-tabs button,
+body.native-wow-ui #mail-window .mail-pagination button,
+body.native-wow-ui #mail-send,
+body.native-wow-ui .mail-letter-actions button {
+  color: #f1d589;
+  border: 1px solid #947140;
+  background: linear-gradient(#6c1f17, #3d0908);
+  box-shadow: inset 0 0 0 1px #1b0807;
+}
+body.native-wow-ui #mail-window .mail-tabs [aria-selected="true"] { color: #24190c; background: linear-gradient(#e3c78c, #a68a50); box-shadow: none; }
+body.native-wow-ui #mail-window button:disabled, body.native-wow-ui .mail-letter-actions button:disabled { filter: grayscale(1); opacity: .55; }
 #mail-compose { padding: 0 12px 10px; }
 #mail-compose summary { color: #ead58c; cursor: pointer; font-size: 12px; }
 #mail-compose input, #mail-compose textarea { width: 100%; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
@@ -717,10 +2406,105 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .auction-entry strong { color: #ead58c; }
 .auction-entry .auction-meta { display: block; color: #a89a7c; }
 .auction-entry button { margin: 4px 6px 0 0; padding: 2px 6px; font-size: 11px; }
+.auction-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; font-size: 11px; border: 1px solid #3c352a; border-radius: 3px; }
+.auction-leading { color: #40ff40; border-color: #2f6b2f; }
+.auction-outbid { color: #ff8f6b; border-color: #6b352f; }
 #auction-window p, #lfg-window p { padding: 0 12px 8px; }
-#auction-search, #lfg-dungeons { width: 190px; margin-right: 6px; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#auction-search, #lfg-dungeons, #lfg-dungeon-search { width: 190px; margin-right: 6px; padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
 #lfg-window label { margin-right: 10px; color: #ead58c; font-size: 12px; }
 #lfg-proposal { padding-bottom: 4px; border-bottom: 1px solid #3c352a; }
+/* Classic dungeon-finder: stock role art, heroic badges, banners and reward rings. */
+.lfg-window { width: min(460px, calc(100vw - 32px)); }
+.lfg-roles { display: flex; gap: 10px; padding: 4px 12px 8px; }
+.lfg-role { display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+.lfg-role input { position: absolute; opacity: 0; pointer-events: none; }
+/* Stock LFGRoleButtonTemplate: 48px role art over an 80px background, 24px checkbox bottom-left. */
+.lfg-role-icon { position: relative; display: block; width: 48px; height: 48px; }
+.lfg-role-bg {
+  position: absolute; left: 50%; top: 50%; width: 80px; height: 80px; transform: translate(-50%, -50%);
+  opacity: 0.45; pointer-events: none;
+}
+.lfg-role-fg { position: absolute; inset: 0; pointer-events: none; }
+.lfg-role-check {
+  position: absolute; left: -5px; bottom: -5px; width: 24px; height: 24px;
+  background-repeat: no-repeat; background-size: 100% 100%; pointer-events: none;
+}
+.lfg-role input:checked + .lfg-role-icon .lfg-role-fg { filter: drop-shadow(0 0 6px #ffd100aa); }
+.lfg-role input:checked + .lfg-role-icon .lfg-role-bg { opacity: 0.9; }
+.lfg-role input:checked + .lfg-role-icon .lfg-role-check { background-image: var(--lfg-role-check-on, none); }
+.lfg-role input:focus-visible + .lfg-role-icon { outline: 2px solid #e0c56c; outline-offset: 2px; }
+.lfg-role input:disabled + .lfg-role-icon { filter: grayscale(1); opacity: 0.6; }
+.lfg-type-row { display: flex; gap: 10px; align-items: center; }
+.lfg-type-row select { padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.lfg-random-banner, .lfg-proposal-banner {
+  height: 64px; margin: 0 12px 8px; border: 1px solid #6f603c; border-radius: 4px;
+  background-size: cover; background-position: center; background-repeat: no-repeat; background-color: #16130e;
+}
+.lfg-random-name { color: #ffd100; font-size: 15px; font-weight: 700; }
+.lfg-random-pane, .lfg-specific-pane { padding-bottom: 4px; }
+.lfg-random-list { display: grid; gap: 2px; padding: 0 12px 8px; }
+.lfg-random-row { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.lfg-reward-xp span { color: #7dec83; }
+.lfg-rewards-title { padding: 0 12px 2px; color: #ffd100; font-size: 13px; }
+.lfg-rewards { display: grid; gap: 4px; padding: 0 12px 8px; }
+.lfg-reward {
+  display: flex; gap: 8px; align-items: center; padding: 4px 8px;
+  border: 1px solid #3c352a; border-radius: 4px; background: #16130e; font-size: 12px;
+}
+/* Stock LFDDungeonReadyRewardTemplate: 30px icon with the reward-ring overlay. */
+.lfg-reward-icon { position: relative; display: block; width: 40px; height: 40px; flex: none; }
+.lfg-reward-icon img {
+  position: absolute; left: 50%; top: 50%; width: 30px; height: 30px;
+  transform: translate(calc(-50% - 1.5px), calc(-50% + 1.5px)); display: block;
+}
+.lfg-reward-ring {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: var(--lfg-reward-ring, none); background-size: 147.96% 147.96%;
+  background-position: 0% 0%; background-repeat: no-repeat;
+}
+/* Queue status as role slots: stock atlas icon, own wait and the missing-player count. */
+.lfg-queue { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; }
+.lfg-queue-state { color: #ead58c; }
+.lfg-queue-dungeon { color: #ffd100; }
+.lfg-queue-average { color: #a89a7c; }
+.lfg-queue-role { display: inline-flex; align-items: center; gap: 4px; }
+.lfg-queue-role-icon { flex: none; width: 18px; height: 18px; background-repeat: no-repeat; background-color: #0d0b07; border: 1px solid #3c352a; border-radius: 3px; }
+.lfg-queue-role-label { color: #c8c0ac; font-size: 11px; }
+/* Filter bar: two compact columns, with the selects taking the free half of each cell. */
+#lfg-window .lfg-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; padding: 0 12px 6px; }
+#lfg-window .lfg-filters label { display: flex; gap: 6px; align-items: center; margin-right: 0; font-size: 11px; }
+#lfg-window .lfg-filters select { flex: 1; min-width: 0; padding: 2px 4px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+#lfg-window .lfg-filters button { padding: 3px 6px; font-size: 11px; }
+.lfg-filter-check { white-space: nowrap; }
+.lfg-group { margin: 4px 0 0; color: #d9c77f; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.lfg-dungeon-list { display: grid; gap: 2px; max-height: 300px; overflow-y: auto; padding: 0 12px 8px; }
+.lfg-dungeon-row { display: flex; gap: 8px; align-items: center; margin-right: 0; padding: 2px 4px; border-radius: 3px; cursor: pointer; }
+.lfg-dungeon-row:hover { background: #1d1a13; }
+.lfg-dungeon-row.is-selected { background: #2a2417; box-shadow: inset 2px 0 0 #dfbd62; }
+.lfg-dungeon-row input { flex: none; }
+/* Footer: the manual-id fallback on its own line, the actions in one row under it. */
+.lfg-footer { display: grid; gap: 6px; padding: 8px 12px 10px; border-top: 1px solid #3c352a; background: #12100b; }
+#lfg-window .lfg-footer #lfg-dungeons { width: 100%; margin: 0; }
+.lfg-footer-buttons { display: flex; gap: 6px; }
+.lfg-footer-buttons button { flex: 1; }
+#lfg-window .lfg-primary { color: #ffd100; border-color: #dfbd62; }
+#lfg-window button:disabled { opacity: .5; cursor: default; }
+/* Stock lockedIcon: the 12x14 UI-LFG-ICON-LOCK crop beside a locked row. */
+.lfg-lock-icon { flex: none; width: 12px; height: 14px; background-image: var(--lfg-lock-icon, none); background-size: 100% 100%; background-repeat: no-repeat; background-color: #16130e; border-radius: 2px; }
+.lfg-dungeon-level { flex: none; color: #a89a7c; font-size: 11px; }
+.lfg-dungeon-lock { flex: none; }
+/* Stock heroicIcon: 16x20 crop of UI-LFG-ICON-HEROIC at (0-0.5, 0-0.625). */
+.lfg-heroic-icon {
+  flex: none; width: 16px; height: 20px;
+  background-image: var(--lfg-heroic-icon, none); background-size: 200% 160%;
+  background-position: 0% 0%; background-repeat: no-repeat;
+}
+.lfg-dungeon-row .lfg-dungeon-name { flex: 1; }
+.lfg-proposal-roles { display: flex; gap: 6px; padding: 0 12px 8px; }
+.lfg-proposal-role { width: 34px; height: 34px; background-color: #16130e; border: 1px solid #6f603c; border-radius: 4px; }
+.lfg-proposal-role[data-pending] { opacity: 0.55; }
+.lfg-proposal-role[data-declined] { filter: grayscale(1); opacity: 0.5; }
+.lfg-search { display: flex; gap: 8px; align-items: center; }
 
 /* Combat feedback. The swing warning is sticky, because the server says "out of range" once and
    never says it is resolved; only a landed swing clears it. */
@@ -734,28 +2518,6 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   color: #f0b869;
   font-size: 12px;
 }
-.combat-log {
-  display: grid;
-  width: min(300px, 34vw);
-  gap: 1px;
-  pointer-events: none;
-}
-.combat-log span {
-  padding: 1px 7px;
-  background: #0c0a07a8;
-  color: #d8cba6;
-  font-size: 12px;
-  text-shadow: 1px 1px 2px #000;
-}
-.combat-log .dealt { color: #d8cba6; }
-.combat-log .taken { color: #e08a7a; }
-.combat-log .crit { color: #ffd76a; font-weight: 700; }
-.combat-log .avoided { color: #9fb0c4; }
-.combat-log .reward { color: #9ad17a; }
-/* Announcements — a level, a discovery, a quest handed in — read as a banner rather than as one
-   more hit. Without a rule of their own they were the same grey as «Кабан: 47». */
-.combat-log .muted { color: #b3a98d; font-style: italic; }
-
 /* Slice I8: the layer over the world that holds speech bubbles and rising damage numbers.
    `pointer-events: none` throughout, because #world-canvas below it owns click-to-target and the
    camera drag, and z-index 2 with a later position in the markup puts it over both canvases and
@@ -779,6 +2541,32 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .combat-float[data-kind="heal"] { color: #7fe08a; }
 .combat-float[data-kind="power"] { color: #6fd0f2; }
 .combat-float[data-kind="miss"] { color: #b9c6d4; font-size: 13px; font-weight: 500; }
+.quest-world-marker {
+  display: grid; justify-items: center; gap: 2px;
+  color: #ffe8a0; filter: drop-shadow(0 2px 3px #000c);
+}
+/* A small brass sight, offset beside the plate so target identity stays readable in a crowd. */
+.quest-world-marker-sigil {
+  position: relative; display: block; width: 25px; height: 25px; box-sizing: border-box;
+  border: 2px solid #f0c94a; background: radial-gradient(circle, #ffe894 0 12%, #211807e8 14% 52%, #806420 54% 58%, #100c06e8 60%);
+  box-shadow: inset 0 0 0 1px #fff1a94d, 0 0 8px #f0c94a80;
+}
+.quest-world-marker-sigil[data-kind="creature"] { border-radius: 50%; }
+.quest-world-marker-sigil[data-kind="creature"]::before,
+.quest-world-marker-sigil[data-kind="creature"]::after {
+  content: ""; position: absolute; background: #f0c94a;
+}
+.quest-world-marker-sigil[data-kind="creature"]::before { top: 9px; left: -5px; width: 31px; height: 2px; }
+.quest-world-marker-sigil[data-kind="creature"]::after { top: -5px; left: 9px; width: 2px; height: 31px; }
+.quest-world-marker-sigil[data-kind="gameObject"] {
+  width: 20px; height: 20px; margin: 3px; transform: rotate(45deg); border-radius: 2px;
+  background: radial-gradient(circle, #ffe894 0 16%, #2a1d08e8 19% 55%, #806420 58% 64%, #100c06e8 67%);
+}
+.quest-world-marker-progress {
+  min-width: 26px; padding: 1px 4px; border: 1px solid #8f7330; border-radius: 4px;
+  background: #120e08e8; color: #ffe8a0; font: 700 10px/1.2 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; text-align: center; text-shadow: 0 1px 2px #000;
+}
 
 /* Slice I9's shared pieces: the floating menu, the confirmation and the tab strip. All three
    were hand-rolled two or three times before four more windows wanted them. The menu and the
@@ -892,7 +2680,7 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .arena-invite { display: grid; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid #6d5a3455; }
 .arena-invite > p { margin: 0; font-size: .8rem; }
 
-.calendar-header { display: flex; gap: 8px; align-items: center; justify-content: center; }
+.calendar-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
 .calendar-header > button { min-height: 0; padding: 2px 8px; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .calendar-weekday { padding: 2px; color: #8fa6bd; font-size: .72rem; text-align: center; }
@@ -908,6 +2696,14 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .calendar-detail > p { margin: 0; font-size: .78rem; }
 .calendar-answers { display: flex; flex-wrap: wrap; gap: 5px; }
 .calendar-answers > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
+.calendar-detail > form.calendar-answers { margin: 0; }
+.calendar-editor { display: grid; gap: 8px; margin: 12px 0; }
+.calendar-editor > label { display: grid; gap: 3px; min-width: 0; }
+.calendar-editor input, .calendar-editor textarea, .calendar-editor select { box-sizing: border-box; min-width: 0; width: 100%; }
+.calendar-editor textarea { min-height: 80px; resize: vertical; }
+.stable-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.stable-pet-row { flex-wrap: wrap; }
+.stable-pet-row > button, .stable-actions > button { min-height: 0; padding: 4px 8px; font-size: .76rem; }
 .calendar-invites { display: grid; gap: 2px; max-height: 180px; overflow-y: auto; font-size: .76rem; }
 .calendar-invites > div { display: flex; justify-content: space-between; gap: 8px; }
 .calendar-lockouts { margin-top: 8px; }
@@ -916,22 +2712,52 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 /* Slice I10. The curtain, the one place errors are shown, the pet and vehicle bar, and the two
    windows the system slice adds. */
 
-/* Over everything inside the world panel, which is itself z-index 100 over the login screen. */
+/* Over everything inside the world panel, which is itself z-index 100 over the login screen.
+   The stock 3.3.5a loading screen (ui/LoadingScreenArt.ts): black, the map's picture stretched over
+   a 4:3 box — or over the whole screen for its `Wide` twin, capped at 16:9 — and the stock bar near
+   the bottom, sized to the picture's height as the client's 1024x768 UI sizes it (512 of 768). */
 .loading-screen {
-  position: absolute; z-index: 60; inset: 0; display: flex; gap: 14px;
-  flex-direction: column; align-items: center; justify-content: center;
-  background: radial-gradient(circle at 50% 40%, #1d2b3a, #0a0f14 70%);
+  position: absolute; z-index: 60; inset: 0; overflow: hidden;
+  background: #000; container-type: size;
 }
-.loading-screen > strong { color: #ead58c; font-size: 1.1rem; letter-spacing: .02em; }
-.loading-screen > p { margin: 0; color: #9d9584; font-size: .84rem; }
-.loading-hint { max-width: 420px; text-align: center; }
-.loading-bar { overflow: hidden; width: min(320px, 60vw); height: 4px; border-radius: 2px; background: #1d2730; }
-.loading-bar > i { display: block; width: 40%; height: 100%; background: linear-gradient(90deg, #6d5a34, #e6ce7b); animation: loading-slide 1.4s ease-in-out infinite; }
-@keyframes loading-slide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
+.loading-stage {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(100cqw, 133.333cqh); height: min(100cqh, 75cqw); container-type: size;
 }
-
+.loading-stage[data-wide="true"] { width: min(100cqw, 177.778cqh); height: 100cqh; }
+.loading-screen img { display: block; opacity: 0; transition: opacity .25s ease-out; user-select: none; }
+.loading-screen img[data-ready="true"] { opacity: 1; }
+.loading-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.loading-copy {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.loading-status {
+  position: absolute; left: 0; right: 0; bottom: 14.5cqh; margin: 0; text-align: center;
+  color: #d8cfb6; font-size: clamp(11px, 1.9cqh, 15px); text-shadow: 0 1px 2px #000, 0 0 4px #000;
+}
+/* Loading-BarBorder is 512x64 with a see-through slot at x 34..478, y 21..42 (measured); the fill
+   stretches inside the slot and Loading-BarGlow's spark (its head at x 465 of 512) rides its end. */
+/* No transform, clip or containment between the glow and the picture: any of them would make a
+   stacking context, and the glow's `screen` blend would then paint its black ground as black. One
+   texel of the 512-wide border is 66.667cqh / 512 = 0.1302cqh of the stage. */
+.loading-bar {
+  --loading-progress: 0;
+  position: absolute; left: calc(50% - 33.333cqh); bottom: 4.5cqh;
+  width: 66.667cqh; height: 8.333cqh;
+}
+.loading-bar-border { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* `overflow-x: clip` cuts the spark's trail at the slot's ends without a stacking context. */
+.loading-bar-slot {
+  position: absolute; left: 6.641%; width: 86.719%; top: 32.813%; height: 32.813%;
+  overflow-x: clip; overflow-y: visible;
+}
+.loading-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--loading-progress) * 100%); }
+.loading-bar-fill-art { width: 100%; height: 100%; object-fit: fill; }
+.loading-bar-glow {
+  position: absolute; right: -6.12cqh; top: calc(50% - 8.333cqh);
+  width: 66.667cqh; height: 16.667cqh; max-width: none; mix-blend-mode: screen; pointer-events: none;
+}
 /* The one surface every refusal reaches. Over the middle of the world, where the original client
    puts it and where a player watching a fight is already looking. */
 .notices {
@@ -951,18 +2777,141 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .pet-bar-row { display: flex; gap: 3px; padding: 4px 5px; border: 1px solid #4a5a6d; border-radius: 7px; background: #0b0d0fcc; }
 .pet-bar.is-vehicle .pet-bar-row { border-color: #8a6a34; }
 .pet-bar .ui-icon-button { width: 32px; height: 32px; }
+.pet-bar .ui-icon-button.is-active { outline: 2px solid #ffd24a; outline-offset: -2px; }
 .pet-bar .ui-icon-button > span { font-size: .62rem; color: #b6a878; }
 .pet-bar-exit { display: flex; gap: 4px; }
 .pet-bar-exit > button { min-height: 0; padding: 2px 8px; font-size: .72rem; }
+body.native-wow-ui .pet-bar {
+  position: static;
+  inset: auto;
+  order: 0;
+  transform: none;
+}
+body.native-wow-ui .pet-bar .ui-icon-button {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
 
-.settings-window { top: 90px; left: 400px; width: min(400px, calc(100vw - 32px)); }
-.settings-window h4 { margin: 10px 0 2px; color: #d9c77f; font-size: .78rem; }
-.settings-window h4:first-child { margin-top: 0; }
-.setting-row { padding: 3px 0; }
+.settings-window { top: 90px; left: 400px; display: flex; flex-direction: column; width: min(620px, calc(100vw - 32px)); height: min(560px, calc(100vh - 120px)); overflow: hidden; }
+.settings-window > header { flex-shrink: 0; }
+.settings-window > .ui-panel-body { flex: 1; min-height: 0; overflow: hidden; }
+.settings-shell {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-columns: 140px minmax(0, 1fr);
+  border: 1px solid #514426;
+  background: #0b0c09e8;
+  box-shadow: inset 0 0 18px #0009;
+}
+.settings-groups {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border-right: 1px solid #66542b;
+  background: linear-gradient(90deg, #241e13f5, #100f0bf2);
+}
+.settings-group-tab {
+  position: relative;
+  min-height: 31px;
+  padding: 5px 8px 5px 16px;
+  text-align: left;
+  color: #b9aa7e;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  font: inherit;
+  font-size: .78rem;
+  cursor: pointer;
+}
+.settings-group-tab::before { position: absolute; left: 6px; content: "›"; color: #796536; }
+.settings-group-tab:hover { color: #eadca8; background: #4b3d1b55; }
+.settings-group-tab.is-active {
+  color: #ffe59a;
+  border-color: #745d29;
+  background: linear-gradient(90deg, #72552280, #2a21118c);
+  text-shadow: 0 1px 2px #000;
+}
+.settings-group-tab.is-active::before { color: #ffd66c; }
+.settings-group-tab:focus-visible { outline: 2px solid #f1cf69; outline-offset: 1px; }
+.settings-content { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.settings-search { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #4d4229; color: #c7b98b; font-size: .75rem; }
+.settings-search input {
+  min-width: 0;
+  min-height: 28px;
+  flex: 1;
+  padding: 3px 7px;
+  color: #eadcae;
+  border: 1px solid #6f603c;
+  border-radius: 2px;
+  background: #13120e;
+  font: inherit;
+}
+.settings-search input:focus-visible { outline: 2px solid #f1cf69; outline-offset: 1px; }
+/* The list is the one thing in the window that scrolls. `flex: 1` pins it to the window's height
+   (itself capped against the viewport), `overscroll-behavior` keeps a wheel at its end from
+   scrolling anything behind it, and the scroll padding keeps a focused row out from under a
+   sticky section title. */
+.settings-options {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 7px 10px 12px;
+  scroll-padding-top: 34px;
+  scrollbar-width: thin;
+}
+.settings-options:focus { outline: none; }
+.settings-options:focus-visible { outline: 2px solid #f1cf69; outline-offset: -2px; }
+.settings-group-title { margin: 6px 0 4px; color: #e3cb72; font-size: .8rem; font-weight: 400; }
+.settings-group-title:first-child { margin-top: 0; }
+/* Subsections of a long group (SettingsSections.ts): a gold rule like the active tab's, kept in
+   view while its rows scroll under it. */
+.settings-section-title {
+  position: sticky;
+  z-index: 1;
+  top: -7px;
+  margin: 10px -10px 0;
+  padding: 5px 10px 4px 12px;
+  color: #d9bd6a;
+  border-top: 1px solid #5a4a26;
+  border-bottom: 1px solid #443a2780;
+  background: linear-gradient(90deg, #2a2213, #11100c 70%);
+  font-size: .76rem;
+  font-weight: 400;
+  letter-spacing: .02em;
+}
+.settings-group-title + .settings-section-title { margin-top: 2px; }
+.setting-row { padding: 4px 0; border-bottom: 1px solid #443a2738; }
 .setting-label { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: .82rem; }
+.setting-label > span { min-width: 0; overflow-wrap: anywhere; }
+.setting-label input { flex-shrink: 0; }
 .setting-label input[type="checkbox"] { order: 2; width: 16px; height: 16px; min-height: 0; }
 .setting-label input[type="number"] { width: 80px; min-height: 0; padding: 3px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; font-size: .78rem; }
-.setting-hint { margin: 1px 0 0; font-size: .72rem; }
+.setting-hint { margin: 3px 0 0; font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; }
+.settings-empty { margin: auto; padding: 24px 10px; text-align: center; }
+.settings-footer { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.settings-storage-note { flex: 1 1 100%; min-width: 0; margin: 0; font-size: .7rem; }
+.settings-footer > button { flex: 1 1 160px; align-self: stretch; min-width: 0; min-height: 32px; padding: 5px 9px; color: #ead58c; border: 1px solid #79663d; background: linear-gradient(#393020, #1b1710); font-size: .74rem; line-height: 1.35; white-space: normal; }
+.settings-footer > button:hover { color: #fff0bc; border-color: #ba9850; background: linear-gradient(#534329, #292015); }
+.settings-footer > button:focus-visible { outline: 2px solid #f1cf69; outline-offset: 2px; }
+.quest-timer-row, .quest-track-timer { color: #eed99b; font-variant-numeric: tabular-nums; }
+.quest-timer-row[data-urgent="true"], .quest-track-timer[data-urgent="true"] { color: #ff9b88; }
+.quest-track-timer { display: block; min-width: 0; font-size: .75rem; line-height: 1.4; overflow-wrap: anywhere; }
+
+@media (max-width: 560px) {
+  .settings-window { left: 8px; width: calc(100vw - 16px); }
+  .settings-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .settings-groups { overflow-x: auto; flex-direction: row; border-right: 0; border-bottom: 1px solid #66542b; }
+  .settings-group-tab { min-width: max-content; padding-left: 16px; }
+  .settings-footer { align-items: stretch; }
+  .settings-footer > button { flex-basis: 100%; }
+}
 
 .macro-window { top: 80px; left: 360px; width: min(420px, calc(100vw - 32px)); }
 .macro-grid { display: grid; gap: 3px; margin-bottom: 8px; }
@@ -978,10 +2927,12 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   width: 100%; min-height: 0; padding: 5px 7px; color: #ead58c; border: 1px solid #6f603c;
   background: #16130e; font: inherit; font-size: .8rem; resize: vertical;
 }
-.macro-editor > p { margin: 0; font-size: .74rem; }
+.macro-editor > p { margin: 0; font-size: .74rem; line-height: 1.45; overflow-wrap: anywhere; }
 .macro-problems { color: #e0a06a; }
 .macro-actions { display: flex; gap: 6px; }
-.macro-actions > button { flex: 1 1 auto; min-height: 0; padding: 5px 8px; font-size: .78rem; }
+.macro-actions > button { flex: 1 1 0; min-width: 0; min-height: 32px; padding: 5px 8px; color: #ead58c; border: 1px solid #79663d; background: linear-gradient(#393020, #1b1710); font-size: .78rem; }
+.macro-actions > button.danger { color: #f0b2a5; border-color: #8a5040; background: linear-gradient(#4b2622, #261312); }
+.macro-actions > button:disabled { opacity: .45; cursor: default; }
 
 /* A timestamp in front of a chat line, when the setting asks for one. */
 .chat-time { color: #7f7867; font-variant-numeric: tabular-nums; }
@@ -1050,6 +3001,33 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .ui-tooltip strong[data-quality="4"] { color: #c07bff; }
 .ui-tooltip strong[data-quality="5"] { color: #ff8000; }
 .ui-tooltip strong[data-quality="6"], .ui-tooltip strong[data-quality="7"] { color: #e6cc80; }
+body.native-wow-ui .ui-tooltip[data-quality="0"] { border-color: #9d9d9d; }
+body.native-wow-ui .ui-tooltip[data-quality="1"] { border-color: #ffffff; }
+body.native-wow-ui .ui-tooltip[data-quality="2"] { border-color: #1eff00; }
+body.native-wow-ui .ui-tooltip[data-quality="3"] { border-color: #3d9fff; }
+body.native-wow-ui .ui-tooltip[data-quality="4"] { border-color: #c07bff; }
+body.native-wow-ui .ui-tooltip[data-quality="5"] { border-color: #ff8000; }
+body.native-wow-ui .ui-tooltip[data-quality="6"] { border-color: #e6cc80; }
+body.native-wow-ui .ui-tooltip[data-quality="7"] { border-color: #e6cc80; }
+
+/* The bundled client font maps the multiplication glyph to a Cyrillic-looking `Ч`. Draw the
+   close mark so it remains stable regardless of the active UI font. */
+body.native-wow-ui :is(.window-close, .frame-close) {
+  display: grid;
+  place-items: center;
+  font-size: 0;
+}
+body.native-wow-ui :is(.window-close, .frame-close)::before,
+body.native-wow-ui :is(.window-close, .frame-close)::after {
+  content: "";
+  grid-area: 1 / 1;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: currentColor;
+}
+body.native-wow-ui :is(.window-close, .frame-close)::before { transform: rotate(45deg); }
+body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-45deg); }
 /* An item tooltip is not a list of equal sentences. The five tones are the reference client's own
    (`wowee/src/ui/item_tooltip.cpp:339` green stats, `:358` a requirement in `kPaleRed`, `:381`
    `kCyan` spells, `:598` gold flavour), and «Требуется уровень» in red is the one line here whose
@@ -1061,8 +3039,48 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .ui-tooltip-gold { color: #ffd100; }
 .ui-tooltip-muted { color: #a9a08c; }
 
-.game-menu { width: min(240px, calc(100vw - 32px)); }
-.game-menu .ui-panel-body > button { width: 100%; }
+.game-menu {
+  top: 50%;
+  left: 50%;
+  width: min(260px, calc(100vw - 32px));
+  min-height: 0;
+  max-height: min(620px, calc(100vh - var(--hud-safe-bottom) - 24px));
+  overflow: hidden;
+  resize: none;
+  transform: translate(-50%, -50%);
+  border-color: #8f7334;
+  background: linear-gradient(180deg, #17130df5, #080a0cf7);
+  box-shadow: 0 0 0 1px #110e08, 0 18px 48px #000d;
+}
+.logout-countdown { top: 50%; left: 50%; width: min(330px, calc(100vw - 32px)); min-height: 0; resize: none; transform: translate(-50%, -50%); z-index: 12; }
+.logout-countdown .ui-panel-body { display: grid; gap: 12px; padding: 14px; text-align: center; }
+.logout-countdown p { margin: 0; }
+.logout-countdown button { min-height: 30px; }
+.game-menu > header { justify-content: center; min-height: 30px; }
+.game-menu > header .window-close { position: absolute; right: 5px; }
+.game-menu .ui-panel-body {
+  display: grid;
+  gap: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  scrollbar-width: thin;
+}
+.game-menu .ui-panel-body > button {
+  width: 100%;
+  min-height: 30px;
+  margin: 0;
+  border-color: #796333;
+  background: linear-gradient(#272219, #0d0d0b);
+  color: #ead9a2;
+  text-shadow: 0 1px 1px #000;
+}
+.game-menu .ui-panel-body > button:hover,
+.game-menu .ui-panel-body > button:focus-visible {
+  border-color: #d3ad50;
+  background: linear-gradient(#3d3421, #17130d);
+  color: #fff1b6;
+}
 
 /* The action bar and the cast bars, both built by the widget kit at runtime. */
 #action-bar { position: absolute; bottom: 14px; left: 50%; z-index: 6; display: flex; gap: 4px; transform: translateX(-50%); padding: 5px 6px; border: 1px solid #6d5a34; border-radius: 8px; background: #0b0d0fcc; }
@@ -1097,6 +3115,13 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .quest-complete { color: #7fd48a; }
 .quest-failed { color: #e07d6a; }
 .quest-objective-done { color: #7fd48a; }
+.quest-objective-row { display: grid; min-width: 0; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 6px; }
+.quest-objective-row > .ui-line { min-width: 0; }
+.quest-objective-icon, .quest-objective-marker, .ui-slot.quest-objective-item { width: 30px; height: 30px; box-sizing: border-box; }
+.quest-objective-icon { border: 1px solid #6d5a34; border-radius: 50%; background: #16130d; object-fit: cover; }
+.quest-objective-marker { border: 1px solid #6d5a34; border-radius: 4px; background: #16130d var(--wow-quest-bullet, linear-gradient(135deg, transparent 36%, #9a7c38 37% 63%, transparent 64%)) center/10px 10px no-repeat; }
+.ui-slot.quest-objective-item { --ui-slot-size: 30px; }
+#quest-tracker .quest-objective-item { pointer-events: auto; }
 /* Written on the world for the same reason the minimap's labels are, and with the same answer.
    Measured over the four sky bands the tracker's own colour reached 1.26:1. */
 #quest-tracker { display: flex; overflow-y: auto; max-height: 40vh; flex-direction: column; gap: 9px; width: 100%; padding: 4px 8px; border-radius: 4px; background: #0c0a08cc; pointer-events: none; font-size: .78rem; text-shadow: 0 1px 3px #000; }
@@ -1140,6 +3165,11 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 /* A raid member outside the client's grid is alive and unreachable: the frame says so by fading
    rather than by emptying, because an empty bar reads as a corpse. */
 .ui-unit-frame.is-far { opacity: .72; }
+/* Visible yet beyond heal range (~40 yd): dimmer than in-grid but distinct from is-far, and the
+   header names the reason on hover for the mouse that is already there. */
+.ui-unit-frame.is-out-of-range { opacity: .58; }
+.ui-unit-frame.is-out-of-range .ui-unit-header > strong { text-decoration: underline dotted; }
+.ui-unit-frame.is-out-of-range:hover .ui-unit-header > strong { text-decoration-color: #d0a33c; }
 /* Dashed and dimmed, but not past reading: at `.4` the name measured 3.31:1 and the level 2.13:1,
    and the whole point of an offline frame is that it still tells you who is missing. */
 .ui-unit-frame.is-offline { opacity: .62; border-style: dashed; }
@@ -1178,10 +3208,13 @@ button:not(:disabled):hover { filter: brightness(1.18); }
   position: absolute;
   z-index: 6;
   top: 14px;
-  right: calc(12px + var(--side-bars-width));
-  bottom: 92px;
+  /* The corner itself: the side bars start below the minimap, so no side-bars offset here. */
+  right: 12px;
+  bottom: calc(var(--hud-safe-bottom) + 8px);
   display: flex;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
@@ -1249,12 +3282,53 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 
 .spellbook-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .spellbook-tab {
+  display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 7px; border: 1px solid #24405e; border-radius: 3px; background: #0d1a2b;
   color: #cfe0f2; font: inherit; font-size: .74rem; cursor: pointer;
 }
 .spellbook-tab.is-active { border-color: #ffd479; color: #ffd479; }
+.spellbook-tab-icon { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 2px; object-fit: cover; }
 
 .professions-window { width: 320px; }
+/* Profession windows share the same recipe/reagent layout at every window size. */
+.craft-window { width: min(680px, calc(100vw - 32px)); height: min(560px, calc(100vh - 80px)); min-width: 360px; min-height: 320px; }
+.craft-window:not([hidden]) { display: flex; flex-direction: column; overflow: hidden; }
+.craft-window > header { flex-shrink: 0; }
+.craft-window > .ui-panel-body { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; overflow: hidden; }
+.craft-window .ui-bar { flex: 0 0 18px; }
+.craft-window input[type="search"] { width: 100%; min-height: 30px; flex: 0 0 auto; }
+.craft-columns { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 12px; min-height: 0; flex: 1; }
+.craft-recipes, .craft-detail { min-width: 0; overflow: auto; }
+.craft-recipes { display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.craft-recipe { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 44px; flex-shrink: 0; text-align: left; padding: 5px; }
+.craft-recipe > span { overflow-wrap: anywhere; }
+.craft-recipe.is-selected { border-color: #e4bb62; background: #49351e; }
+.craft-recipe[data-difficulty="orange"] > span { color: #ffab55; }
+.craft-recipe[data-difficulty="yellow"] > span { color: #ffe36c; }
+.craft-recipe[data-difficulty="green"] > span { color: #7dec83; }
+.craft-recipe[data-difficulty="gray"] > span { color: #aaa; }
+.craft-icon { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+.craft-recipe-header { display: flex; align-items: center; gap: 9px; }
+.craft-recipe-header h3 { margin: 0; color: #f2d590; font-size: 16px; overflow-wrap: anywhere; }
+.craft-detail h4 { margin: 15px 0 8px; color: #e9d9b3; }
+.craft-detail p { line-height: 1.45; }
+.craft-reagent { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 7px 0; min-height: 34px; }
+.craft-reagent > span { overflow-wrap: anywhere; }
+.craft-reagent.is-missing { color: #ff8b83; }
+.craft-detail label { display: grid; gap: 6px; margin: 14px 0; }
+.craft-detail select { width: 100%; min-width: 0; }
+.craft-create { margin-top: 14px; min-height: 32px; min-width: 100px; }
+body.native-wow-ui .craft-window button:not(.window-close) { background: linear-gradient(#3b3022, #211a13); color: #efddad; border: 1px solid #806b3f; border-radius: 3px; }
+body.native-wow-ui .craft-window .craft-recipe.is-selected { border-color: #e4bb62; background: #49351e; }
+body.native-wow-ui .craft-window .craft-create { background: linear-gradient(#6b4524, #3f2415); color: #ffe7a5; min-height: 32px; }
+body.native-wow-ui .craft-window button:disabled { opacity: 0.45; }
+.profession-row:has(.profession-open) { position: relative; padding-right: 78px; }
+.craft-filters { display: flex; gap: 10px; align-items: center; flex: 0 0 auto; }
+.craft-filters select { padding: 4px 6px; color: #ead58c; border: 1px solid #6f603c; background: #16130e; }
+.craft-available { display: flex; gap: 6px; align-items: center; color: #ead58c; font-size: 12px; }
+.profession-list-window { width: min(420px, calc(100vw - 32px)); }
+.profession-list-window .profession-row { margin-bottom: 8px; }
+.profession-open { position: absolute; right: 0; top: 0; font-size: 12px; }
 .profession-section { margin-bottom: 10px; }
 .profession-section > h4 { margin: 0 0 4px; font-size: .8rem; color: #8fa6bd; }
 .profession-row { margin-bottom: 5px; }
@@ -1282,45 +3356,41 @@ button:not(:disabled):hover { filter: brightness(1.18); }
 .action-bar-extra[hidden] { display: none; }
 .action-bar-extra .ui-icon-button > span:not(.ui-icon-cooldown) { font-size: .74rem; color: #b6a878; }
 
-/* The two vertical bars, on end at the right edge, which is where the original client puts them.
-   `right2` is inboard of `right`, again as it is there.
-
-   Twelve buttons at the ordinary 40px is 500px of column, and on a 720px screen with the frames
-   above and the bags below that does not fit. So the column is bounded by the viewport and the
-   buttons are a grid of twelve equal rows inside it: they take whatever height there is and stay
-   square. `--side-bar-slot` is only what the *neighbours* are told to expect — the buttons
-   themselves never read it. */
+/* The two vertical bars use the exact same square as the main row. A short viewport scrolls the
+   rail as a whole; it never silently shrinks the art into unreadable miniature buttons. */
 #action-bar-side {
   position: absolute; z-index: 6;
-  top: 14px; right: 14px; bottom: 118px;
+  /* Below the minimap corner: the side bars no longer own the top-right, so the right rail
+     (minimap, boss/arena frames) sits in the corner without a side-bars offset. */
+  top: 270px; right: 14px; bottom: 118px;
   display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 4px;
 }
 .action-bar-side-column {
   display: grid; gap: 4px; padding: 5px 6px;
-  /* Twelve equal rows inside whatever height there is. The column asks for exactly the height
-     twelve ordinary buttons want and is clamped to the box above, so on a tall screen the buttons
-     are their usual size and on a short one they shrink together rather than the twelfth falling
-     off the bottom. */
-  grid-template-rows: repeat(12, 1fr);
+  grid-template-rows: repeat(12, var(--side-bar-slot));
   height: calc(12 * var(--side-bar-slot) + 11 * 4px + 12px);
-  max-height: 100%;
   border: 1px solid #6d5a34; border-radius: 8px; background: #0b0d0fcc;
 }
 .action-bar-side-column[hidden] { display: none; }
 .action-bar-side-column .ui-icon-button {
-  width: auto; height: auto; max-width: var(--side-bar-slot); aspect-ratio: 1; min-height: 0;
+  width: var(--side-bar-slot); height: var(--side-bar-slot); min-height: var(--side-bar-slot);
   justify-self: center;
+}
+body.native-wow-ui .action-bar-side-column .ui-icon-button {
+  width: var(--side-bar-slot);
+  height: var(--side-bar-slot);
+  min-height: var(--side-bar-slot);
 }
 .action-bar-side-column .ui-icon-button > span:not(.ui-icon-cooldown) { font-size: .66rem; color: #b6a878; }
 
 /* Assigned action keys sit over the icon, like WoW's corner labels. Keep this after the generic
    row typography above so the key remains the compact, high-contrast overlay in every bar. */
-#action-bar .ui-action-button > .ui-icon-key,
-.action-bar-extra .ui-action-button > .ui-icon-key,
-.action-bar-side-column .ui-action-button > .ui-icon-key {
+body.native-wow-ui #action-bar .ui-action-button > .ui-icon-key,
+body.native-wow-ui .action-bar-extra .ui-action-button > .ui-icon-key,
+body.native-wow-ui .action-bar-side-column .ui-action-button > .ui-icon-key {
   position: absolute; z-index: 3; top: 1px; left: 2px; box-sizing: border-box; max-width: calc(100% - 4px);
-  overflow: hidden; padding: 2px 4px; color: #fff3c4; border: 1px solid #5b4720; border-radius: 3px;
-  background: #090a0de6; box-shadow: 0 1px 2px #0009; font-size: .68rem; font-weight: 700; line-height: 1;
+  overflow: hidden; padding: 1px 0; color: #fff3c4; border: 0; border-radius: 0;
+  background: transparent; box-shadow: none; font-size: 11px; font-weight: 700; line-height: 1;
   letter-spacing: .02em;
   white-space: nowrap; text-overflow: ellipsis; pointer-events: none;
   text-shadow: 0 1px 2px #000, 0 0 1px #000;
@@ -1432,3 +3502,374 @@ button:not(:disabled):hover { filter: brightness(1.18); }
    ring around it would move every neighbour by a pixel and the whole point of this editor is that
    what is on screen is what ships. */
 .builder-selected { outline: 1px dashed #f0d98a; outline-offset: -1px; }
+
+/* A purpose-built high-resolution grimoire surface replaces the 384px client quadrant atlas.  The
+   texture is deliberately quiet; controls and spell data stay live, selectable HTML above it. */
+body.native-wow-ui .spellbook-window {
+  width: min(560px, calc(100vw - var(--side-bars-width) - 32px));
+  height: min(660px, var(--game-window-max-height, calc(100vh - 96px)));
+  min-width: 0;
+  min-height: min(360px, var(--game-window-max-height, 360px));
+  max-width: calc(100vw - 32px);
+  max-height: var(--game-window-max-height, calc(100vh - 96px));
+  overflow: hidden;
+  resize: none;
+  border: 1px solid #9b7a36;
+  background-color: #0b0f12;
+  background-image:
+    linear-gradient(180deg, #0b0f12b8 0%, #18343aa6 45%, #0b0f12ec 100%),
+    url("/ui/spellbook-background-v2.png");
+  background-position: center, center;
+  background-repeat: no-repeat;
+  background-size: cover, cover;
+  box-shadow: inset 0 0 0 1px #dfbd6244, 0 14px 34px #000d;
+}
+body.native-wow-ui .spellbook-window header {
+  z-index: 1;
+  flex: 0 0 auto;
+  min-height: 46px;
+  padding: 8px 42px 4px;
+  color: #e8d390;
+  border: 0;
+  background: transparent;
+  font: 400 18px/1.2 "WoW Friz", Georgia, serif;
+  text-shadow: 0 1px 2px #000;
+}
+body.native-wow-ui .spellbook-window #spell-status {
+  z-index: 1;
+  flex: 0 0 auto;
+  margin: 0 42px;
+  color: #c9ba94;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.25;
+  text-align: left;
+  text-shadow: 0 1px 1px #000;
+}
+body.native-wow-ui .spellbook-window .spellbook-controls {
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  order: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 42px 0;
+  color: #d7c493;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.25;
+  text-shadow: 0 1px 1px #000;
+}
+body.native-wow-ui .spellbook-window .spellbook-controls label {
+  flex: 0 0 auto;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+}
+body.native-wow-ui .spellbook-window .spellbook-controls input[type="search"] {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 10px;
+  color: #f3e6c0;
+  border: 1px solid #9b7a36;
+  border-radius: 2px;
+  background: #090d10e8;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+body.native-wow-ui .spellbook-window .spellbook-tabs {
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  order: 2;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: calc(100% - 48px);
+  max-height: none;
+  overflow: visible;
+  overflow-y: visible;
+  margin: 0;
+  padding: 8px 42px;
+  color: #d7c493;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+body.native-wow-ui .spellbook-window .spellbook-tab {
+  flex: 0 0 auto;
+  min-width: 72px;
+  min-height: 32px;
+  max-width: 180px;
+  padding: 4px 10px;
+  overflow: hidden;
+  color: #d7c493;
+  border: 1px solid #735f34;
+  border-radius: 2px;
+  background: #111a1f;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.native-wow-ui .spellbook-window .spellbook-tab.is-active {
+  color: #fff0bd;
+  border-color: #dfbd62;
+  background: #18343a;
+  box-shadow: inset 0 0 0 1px #dfbd6244, 0 0 8px #497a8344;
+}
+body.native-wow-ui .spellbook-window .spellbook-list {
+  z-index: 1;
+  display: grid;
+  flex: 1 1 auto;
+  order: 3;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
+  row-gap: 8px;
+  margin: 0 34px 12px;
+  padding: 8px 10px;
+  align-content: start;
+  scrollbar-color: #9b7a36 #090d10;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 64px;
+  height: 64px;
+  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 4px;
+  overflow: hidden;
+  color: #f3e6c0;
+  border: 1px solid #705c31;
+  border-radius: 2px;
+  background: #111820ee;
+  box-shadow: inset 0 0 0 1px #dfbd6222, 0 1px 3px #000b;
+  line-height: 1.25;
+  text-align: left;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-icon,
+body.native-wow-ui .spellbook-window .spellbook-list .spell-cooldown {
+  position: absolute;
+  inset: 8px auto auto 8px;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-icon {
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid #9b7a36;
+  border-radius: 2px;
+  background: #090d10;
+  box-shadow: inset 0 0 0 1px #dfbd6266;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-label {
+  display: block;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  overflow: hidden;
+  padding: 0 10px;
+  color: #f3e6c0;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-shadow: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-button small {
+  position: static;
+  z-index: 1;
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: start;
+  align-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 10px;
+  color: #bfb18b;
+  font-family: "WoW Arial Narrow", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.15;
+  text-shadow: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-cooldown {
+  inset: 8px auto auto 8px;
+  width: 48px;
+  height: 48px;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: 2px;
+}
+body.native-wow-ui .spellbook-window .spellbook-list .spell-button:focus-visible,
+body.native-wow-ui .spellbook-window .spellbook-tab:focus-visible,
+body.native-wow-ui .spellbook-window .spellbook-controls input[type="search"]:focus-visible {
+  outline: 2px solid #f3d77d;
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  body.native-wow-ui .spellbook-window {
+    width: min(560px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+  }
+  body.native-wow-ui .spellbook-window .spellbook-list {
+    grid-template-columns: 1fr;
+    column-gap: 0;
+    row-gap: 8px;
+    margin: 0 20px 10px;
+    padding: 8px 10px;
+  }
+}
+@media (max-width: 520px) {
+  body.native-wow-ui .spellbook-window {
+    width: calc(100vw - 16px);
+    height: min(660px, var(--game-window-max-height, calc(100vh - 96px)));
+    max-width: calc(100vw - 16px);
+  }
+  body.native-wow-ui .spellbook-window .spellbook-controls {
+    flex-wrap: wrap;
+    padding: 8px 20px 0;
+  }
+  body.native-wow-ui .spellbook-window .spellbook-controls input[type="search"] { flex-basis: 100%; }
+  body.native-wow-ui .spellbook-window .spellbook-controls label {
+    width: 100%;
+    white-space: normal;
+  }
+  body.native-wow-ui .spellbook-window .spellbook-tabs { padding: 8px 20px; }
+  body.native-wow-ui .spellbook-window .spellbook-list {
+    margin: 0 12px 8px;
+    padding: 6px;
+  }
+  body.native-wow-ui .spellbook-window .spellbook-list .spell-button {
+    min-height: 60px;
+    height: 60px;
+    grid-template-columns: 50px minmax(0, 1fr);
+  }
+  body.native-wow-ui .spellbook-window .spellbook-list .spell-icon,
+  body.native-wow-ui .spellbook-window .spellbook-list .spell-cooldown {
+    width: 44px;
+    height: 44px;
+  }
+  body.native-wow-ui .spellbook-window .spellbook-list .spell-label {
+    padding-right: 8px;
+    padding-left: 8px;
+    font-size: 13px;
+    line-height: 1.25;
+  }
+  body.native-wow-ui .spellbook-window .spellbook-list .spell-button small {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+}
+
+/* The interface scale is a paint transform, not a camera/render-scale substitute. Individual
+   origins keep every dock attached to its edge; window bounds are measured after scaling by the
+   layout manager, which publishes their available height in pre-scale CSS pixels. */
+body.world-active #bottom-hud,
+body.world-active #action-bar-side,
+body.world-active .left-rail,
+body.world-active .target-rail,
+body.world-active .right-rail,
+body.world-active .raid-frames,
+body.world-active .chat-window,
+body.world-active .game-window {
+  scale: var(--ui-scale-effective);
+}
+body.world-active #bottom-hud { transform-origin: bottom center; }
+body.world-active #action-bar-side,
+body.world-active .right-rail { transform-origin: top right; }
+body.world-active .left-rail,
+body.world-active .target-rail,
+body.world-active .game-window { transform-origin: top left; }
+body.world-active .raid-frames,
+body.world-active .chat-window { transform-origin: bottom left; }
+
+body.world-active .game-window {
+  max-width: calc((100vw - 16px) / var(--ui-scale-effective));
+}
+body.world-active .left-rail {
+  bottom: auto;
+  max-height: calc(
+    (100vh - 26px - var(--chat-bottom) - var(--chat-height)) / var(--ui-scale-effective)
+  );
+}
+body.world-active .right-rail {
+  bottom: auto;
+  max-height: calc(
+    (100vh - 22px - var(--hud-safe-bottom)) / var(--ui-scale-effective)
+  );
+}
+body.world-active .raid-frames {
+  max-height: calc(
+    (100vh - var(--chat-bottom) - var(--chat-height) - 120px) / var(--ui-scale-effective)
+  );
+}
+body.world-active .chat-window {
+  max-width: calc((100vw - 24px) / var(--ui-scale-effective));
+}
+
+/* SOCKETING: fixed icon cells, selectable socket cards and explicit application of carried gems. */
+body.native-wow-ui .socketing-window {
+  width: 510px;
+  min-width: 330px;
+  max-width: calc(100vw - 24px);
+  min-height: 350px;
+}
+.socketing-window .ui-panel-body { padding: 14px; }
+body.native-wow-ui .socketing-window button:not(.window-close) {
+  color: #f0dfb1;
+  font-family: inherit;
+  font-size: 12px;
+  border: 1px solid #81704a;
+  border-radius: 3px;
+}
+body.native-wow-ui .socketing-window button:disabled { color: #aaa38f; opacity: .65; cursor: default; }
+.socketing-item { display: flex; align-items: center; gap: 12px; color: #f5d98a; }
+.socketing-item strong { min-width: 0; overflow-wrap: anywhere; font-size: 17px; }
+.socketing-icon { width: 38px; height: 38px; flex: 0 0 38px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid #827249; border-radius: 3px; color: #d9ca9d; background: #14120f; }
+.socketing-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.socketing-guidance, .socketing-empty { color: #c4bca7; font-size: 12px; line-height: 1.45; }
+.socketing-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 12px 0; }
+body.native-wow-ui .socketing-window .socketing-socket { height: auto; min-width: 0; min-height: 137px; padding: 9px 6px; display: flex; flex-direction: column; align-items: center; gap: 5px; background: #191710; border: 1px solid #6e6450; white-space: normal; line-height: 1.3; }
+body.native-wow-ui .socketing-window .socketing-socket.selected { border-color: #eac770; box-shadow: inset 0 0 0 1px #eac770; background: #2b2517; }
+.socketing-socket[data-color="2"] .socketing-icon { border-color: #cf6262; }
+.socketing-socket[data-color="4"] .socketing-icon { border-color: #d3bf61; }
+.socketing-socket[data-color="8"] .socketing-icon { border-color: #659edc; }
+.socketing-socket[data-color="14"] .socketing-icon { border-color: #c4a6eb; }
+.socketing-socket strong { width: 100%; overflow-wrap: anywhere; font-size: 12px; }
+.socketing-socket small { font-size: 11px; color: #beb69e; }
+.socketing-socket.staged small { color: #89da8a; }
+.socketing-color { color: #d8bf7e; font-size: 10px; }
+.socketing-bonus { color: #aaa38f; font-size: 12px; }
+.socketing-bonus.active { color: #78d278; }
+.socketing-gems { display: grid; gap: 5px; max-height: 210px; overflow-y: auto; }
+body.native-wow-ui .socketing-window .socketing-gem { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 2px 9px; padding: 5px; min-height: 50px; height: auto; text-align: left; white-space: normal; background: #181710; }
+.socketing-gem .socketing-icon { grid-row: 1 / 3; }
+.socketing-gem > span:not(.socketing-icon), .socketing-gem small { min-width: 0; overflow-wrap: anywhere; }
+.socketing-gem small { color: #88c982; font-size: 11px; }
+.socketing-warning { margin: 12px 0; padding: 9px; border-left: 2px solid #c88b45; color: #e1c193; background: #302419; font-size: 12px; line-height: 1.4; }
+.socketing-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+body.native-wow-ui .socketing-actions button { height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; background: linear-gradient(#63372c, #392019); }
+.socketing-status { color: #efcf82; line-height: 1.4; font-size: 12px; }

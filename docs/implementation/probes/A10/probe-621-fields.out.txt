@@ -1,0 +1,16 @@
+dbc dir: F:\tswowRoot\tswow-install\modules\default\datasets\dataset\dbc
+
+== AnimationData: 506 rows, 8 fields, recordSize 32
+ID, Name, Weaponflags, Bodyflags, Flags, Fallback, BehaviorID, BehaviorTier
+
+== SpellVisual: 9576 rows, 32 fields, recordSize 128
+ID, PrecastKit, CastKit, ImpactKit, StateKit, StateDoneKit, ChannelKit, HasMissile, MissileModel, MissilePathType, MissileDestinationAttachment, MissileSound, AnimEventSoundID, Flags, CasterImpactKit, TargetImpactKit, MissileAttachment, MissileFollowGroundHeight, MissileFollowGroundDropSpeed, MissileFollowGroundApproach, MissileFollowGroundFlags, MissileMotion, MissileTargetingKit, InstantAreaKit, ImpactAreaKit, PersistentAreaKit, MissileCastOffset, MissileImpactOffset
+
+== SpellVisualKit: 8664 rows, 38 fields, recordSize 152
+ID, StartAnimID, AnimID, HeadEffect, ChestEffect, BaseEffect, LeftHandEffect, RightHandEffect, BreathEffect, LeftWeaponEffect, RightWeaponEffect, SpecialEffect, WorldEffect, SoundID, ShakeID, CharProc, CharParamZero, CharParamOne, CharParamTwo, CharParamThree, Flags
+
+== Spell: 72028 rows, 234 fields, recordSize 936
+ID, Category, Attributes, AttributesEx, AttributesExB, AttributesExC, AttributesExD, AttributesExE, AttributesExF, AttributesExG, CastingTimeIndex, CategoryRecoveryTime, ChannelInterruptFlags, DurationIndex, Effect, SpellVisualID, Name_lang, StartRecoveryCategory, RequiredTotemCategoryID
+
+== Emotes: 175 rows, 7 fields, recordSize 28
+ID, EmoteSlashCommand, AnimID, EmoteFlags, EmoteSpecProc, EmoteSpecProcParam, EventSoundID

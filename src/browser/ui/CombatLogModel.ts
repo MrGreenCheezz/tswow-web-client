@@ -1,10 +1,8 @@
 /**
  * The combat log as a history rather than as eight lines over the world.
  *
- * The overlay in `CombatLog.ts` shows the last eight lines and drops the rest, and it shows only
- * swings the player dealt or took — in a crowded place the alternative buries the two that matter.
- * A tab wants the opposite: everything, kept, scrollable. Both want the same sentence, so the
- * sentence is written here and both read it.
+ * The chat tab keeps everything and stays scrollable. The sentence is written here rather than in
+ * the DOM renderer so packet classification remains independently testable.
  *
  * Free of the DOM: this is the part that decides what a hit is called, and it is worth testing.
  */
@@ -45,6 +43,38 @@ export interface CombatLogEntry {
 /** Long enough to scroll back through a fight, capped the same way the chat backlog is. */
 export const COMBAT_LOG_HISTORY = 500;
 
+/**
+ * What the combat tab can hide, by the `kind` the entry already carries.
+ *
+ * `reward` (quest/boss lines) and `muted` (strangers' swings) share «Прочее»: the tab is for
+ * reading one's own fight, and everything else is one switch. Unknown future kinds land there
+ * too rather than vanishing from a tab whose filter has never heard of them.
+ */
+export type CombatLogCategory = "dealt" | "taken" | "crit" | "avoided" | "other";
+
+export const COMBAT_LOG_CATEGORIES: readonly { id: CombatLogCategory; label: string }[] = [
+  { id: "dealt", label: "Нанесённый урон" },
+  { id: "taken", label: "Полученный урон" },
+  { id: "crit", label: "Криты" },
+  { id: "avoided", label: "Промахи и уклонения" },
+  { id: "other", label: "Прочее" },
+];
+
+export function combatLogCategory(entry: Pick<CombatLogEntry, "kind">): CombatLogCategory {
+  if (entry.kind === "dealt") return "dealt";
+  if (entry.kind === "taken") return "taken";
+  if (entry.kind === "crit") return "crit";
+  if (entry.kind === "avoided") return "avoided";
+  return "other";
+}
+
+/** Whether this line survives the tab's own filters. History keeps everything regardless. */
+export function combatLogVisible(
+  entry: Pick<CombatLogEntry, "kind">, hidden: ReadonlySet<CombatLogCategory>,
+): boolean {
+  return !hidden.has(combatLogCategory(entry));
+}
+
 export function pushCombatEntry(list: CombatLogEntry[], entry: CombatLogEntry): void {
   list.push(entry);
   if (list.length > COMBAT_LOG_HISTORY) list.splice(0, list.length - COMBAT_LOG_HISTORY);
@@ -62,8 +92,8 @@ export interface SwingText {
 /**
  * One melee swing, in words.
  *
- * Deliberately has no self-filter: the overlay applies one, the tab does not. A swing between two
- * strangers reads «Кабан → Волк: 47», which is noise on screen and history in a log.
+ * Deliberately has no self-filter: a swing between two strangers is history in a log even though
+ * it is not eligible for player-facing floating text.
  */
 export function swingText(
   swing: AttackerState, selfGuid: bigint, displayName: (guid: bigint) => string,

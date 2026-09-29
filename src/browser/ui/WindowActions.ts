@@ -37,9 +37,11 @@
 import { encodeCustom, type CustomMessage } from "../../world/CustomCodec.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
-import { playerInventory } from "../Inventory.js";
+import type { WorldObjectState } from "../../world/WorldState.js";
+import { playerInventory, slotAt } from "../Inventory.js";
 import { game } from "../game/Context.js";
 import { spellCastAllowed } from "../SpellCastGuard.js";
+import { requestInventoryItemUse, requestSpellCast } from "../game/GroundTarget.js";
 import { macroLines } from "./MacroModel.js";
 import {
   evaluate, formatExpressionValue, type ExprNode, type ExpressionHelpers, type ExpressionScope,
@@ -130,7 +132,8 @@ function spellIdNamed(name: string, host: WindowActionHost, world: WorldClient):
 }
 
 /** The first square of the player's own bags holding an item of that name. */
-function itemSlotNamed(name: string, host: WindowActionHost, world: WorldClient): { bag: number; slot: number; guid: bigint } | undefined {
+function itemSlotNamed(name: string, host: WindowActionHost, world: WorldClient):
+  { bag: number; slot: number; guid: bigint; item: WorldObjectState | undefined } | undefined {
   const wanted = name.trim().toLowerCase();
   if (!wanted) return undefined;
   const inventory = playerInventory(world.state);
@@ -139,7 +142,7 @@ function itemSlotNamed(name: string, host: WindowActionHost, world: WorldClient)
     const entry = square.item?.fields.get(ITEM_ENTRY_OFFSET) ?? 0;
     if (!entry) continue;
     if ((host.helpers?.itemName?.(entry) ?? "").toLowerCase() !== wanted) continue;
-    return { bag: square.bag, slot: square.slot, guid: square.guid };
+    return { bag: square.bag, slot: square.slot, guid: square.guid, item: square.item };
   }
   return undefined;
 }
@@ -164,7 +167,9 @@ export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandS
     world: "castSpell", usage: "castSpell(<номер заклинания>)",
     run: (args, _host, world) => {
       const spellId = args.number(0);
-      if (game.world !== world || spellCastAllowed(world, spellId)) world.castSpell(spellId);
+      if (game.world !== world || spellCastAllowed(world, spellId)) {
+        requestSpellCast(spellId, () => world.castSpell(spellId));
+      }
     },
   },
   castSpellByName: {
@@ -177,7 +182,9 @@ export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandS
         host.onProblem?.(`castSpell: у персонажа нет заклинания «${args.text(0)}»`);
         return;
       }
-      if (game.world !== world || spellCastAllowed(world, id)) world.castSpell(id);
+      if (game.world !== world || spellCastAllowed(world, id)) {
+        requestSpellCast(id, () => world.castSpell(id));
+      }
     },
   },
   cancelAura: {
@@ -222,7 +229,17 @@ export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandS
   },
   useItem: {
     world: "useItem", usage: "useItem(<сумка>, <ячейка>, <guid предмета>)",
-    run: (args, _host, world) => world.useItem(args.number(0), args.number(1), args.guid(2) ?? 0n),
+    run: (args, _host, world) => {
+      const bag = args.number(0), slot = args.number(1), guid = args.guid(2) ?? 0n;
+      // A bare coordinate triple names no entry; resolve it when the session state is in hand.
+      // Without a state the use goes out exactly as before and the server decides.
+      const inventory = world.state === undefined ? undefined : playerInventory(world.state);
+      const square = inventory === undefined ? undefined : slotAt(inventory, bag, slot);
+      requestInventoryItemUse(
+        { bag, slot, guid, item: square?.item },
+        () => world.useItem(bag, slot, guid),
+      );
+    },
   },
   useItemByName: {
     world: "useItem", usage: "useItemByName(\"название\")",
@@ -232,7 +249,10 @@ export const WINDOW_COMMAND_TABLE: Readonly<Record<WindowCommand, WindowCommandS
         host.onProblem?.(`useItem: в сумках нет предмета «${args.text(0)}»`);
         return;
       }
-      world.useItem(found.bag, found.slot, found.guid);
+      requestInventoryItemUse(
+        { bag: found.bag, slot: found.slot, guid: found.guid, item: found.item },
+        () => world.useItem(found.bag, found.slot, found.guid),
+      );
     },
   },
   equipItem: {

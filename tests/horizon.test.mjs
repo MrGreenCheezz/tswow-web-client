@@ -92,6 +92,10 @@ test("the horizon draws around the ring, never under it", withHorizon, () => {
   const positions = geometry.getAttribute("position");
   assert.equal(positions.count, tiles.length * (17 * 17 + 16 * 16));
   assert.equal(geometry.getIndex().count, tiles.length * 16 * 16 * 12, "four triangles a cell");
+  assert.ok(geometry.getIndex().array instanceof Uint16Array,
+    "the production horizon ring uses half-width GPU indices");
+  assert.equal(geometry.getAttribute("normal"), undefined,
+    "the unlit horizon does not rebuild unused normals at every tile crossing");
 
   // A vertex of the first tile lands where that tile stands in the world, in scene coordinates.
   const first = tiles[0];
@@ -99,6 +103,14 @@ test("the horizon draws around the ring, never under it", withHorizon, () => {
   const z = positions.getZ(0);
   assert.ok(Math.abs(x - (32 - first.gridX) * TERRAIN_GRID_SIZE) < 1e-3);
   assert.ok(Math.abs(z + (32 - first.gridY) * TERRAIN_GRID_SIZE) < 1e-3);
+});
+
+test("an unusually large horizon still uses indices wide enough for every vertex", () => {
+  const tile = { gridX: 32, gridY: 32, outer: new Int16Array(17 * 17), inner: new Int16Array(16 * 16) };
+  const geometry = buildHorizonGeometry(Array(121).fill(tile));
+  assert.ok(geometry.getIndex().array instanceof Uint32Array);
+  assert.ok(geometry.getIndex().array.at(-1) >= 120 * (17 * 17 + 16 * 16));
+  geometry.dispose();
 });
 
 test("a horizon file with an empty table is a map with no horizon, not an error", () => {

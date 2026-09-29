@@ -1,7 +1,7 @@
 import { openDbcFile } from "./Dbc.js";
 
 /**
- * The five tables a map is drawn from. None of them is on the wire.
+ * The six tables a map is drawn from. None of them is on the wire.
  *
  * The server names a zone with a number and stops there: `SMSG_INIT_WORLD_STATES` carries a zone
  * and an area id, `SMSG_EXPLORATION_EXPERIENCE` carries an area id, and the exploration mask in
@@ -72,6 +72,7 @@ export interface MapAreaInfo {
   bottom: number;
   /** −1 on a ground row. It is a map id only where it is not −1, so truthiness is the wrong test. */
   displayMapId: number;
+  /** `DungeonMap::ID` for the default floor; zero means none, -1 requests the terrain sheet. */
   defaultDungeonFloor: number;
   parentWorldMapId: number;
 }
@@ -88,6 +89,37 @@ export interface MapOverlayInfo {
   height: number;
   offsetX: number;
   offsetY: number;
+  mapPointX: number;
+  mapPointY: number;
+}
+
+/** One authored `DungeonMap.dbc` floor, including the physical bounds used to locate a player. */
+export interface DungeonMapInfo {
+  id: number;
+  mapId: number;
+  floorIndex: number;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  parentWorldMapId: number;
+}
+
+/** Static map marker from `AreaPOI.dbc`; world-state/faction conditions stay explicit. */
+export interface AreaPoiInfo {
+  id: number;
+  importance: number;
+  icons: number[];
+  factionId: number;
+  x: number;
+  y: number;
+  mapId: number;
+  flags: number;
+  areaId: number;
+  name: string;
+  description: string;
+  worldStateId: number;
+  worldMapLink: number;
 }
 
 export interface ContinentInfo {
@@ -100,6 +132,28 @@ export interface ContinentInfo {
   offsetX: number;
   offsetY: number;
   scale: number;
+  /** Parent global-map group: zero for Outland, one for Azeroth in the stock 3.3.5 data. */
+  worldMapId: number;
+  /**
+   * `TaxiMin`/`TaxiMax`: world `[x, y]` corners of the square the continent's flight map
+   * `Interface\TaxiFrame\TAXIMAP<mapId>` is drawn for (a 1:1 rectangle for all four stock
+   * continents, unlike the 1.5:1 WorldMapArea). Optional: a gateway older than this field omits it.
+   */
+  taxiMin?: [number, number];
+  taxiMax?: [number, number];
+}
+
+export interface MapTransformInfo {
+  id: number;
+  mapId: number;
+  regionBottom: number;
+  regionRight: number;
+  regionTop: number;
+  regionLeft: number;
+  newMapId: number;
+  offsetX: number;
+  offsetY: number;
+  newDungeonMapId: number;
 }
 
 export interface MapInfo {
@@ -124,7 +178,10 @@ export interface AreaData {
   areas: AreaInfo[];
   mapAreas: MapAreaInfo[];
   overlays: MapOverlayInfo[];
+  dungeonMaps: DungeonMapInfo[];
+  areaPois: AreaPoiInfo[];
   continents: ContinentInfo[];
+  transforms: MapTransformInfo[];
   maps: MapInfo[];
 }
 
@@ -132,11 +189,14 @@ export interface AreaData {
 const OVERLAY_AREAS = 4;
 
 export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
-  const [areaTable, mapAreaTable, overlayTable, continentTable, mapTable] = await Promise.all([
+  const [areaTable, mapAreaTable, overlayTable, dungeonMapTable, areaPoiTable, continentTable, transformTable, mapTable] = await Promise.all([
     openDbcFile(dbcDirectory, "AreaTable"),
     openDbcFile(dbcDirectory, "WorldMapArea"),
     openDbcFile(dbcDirectory, "WorldMapOverlay"),
+    openDbcFile(dbcDirectory, "DungeonMap"),
+    openDbcFile(dbcDirectory, "AreaPOI"),
     openDbcFile(dbcDirectory, "WorldMapContinent"),
+    openDbcFile(dbcDirectory, "WorldMapTransforms"),
     openDbcFile(dbcDirectory, "Map"),
   ]);
 
@@ -192,6 +252,41 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       height: overlayTable.int(row, "TextureHeight"),
       offsetX: overlayTable.int(row, "OffsetX"),
       offsetY: overlayTable.int(row, "OffsetY"),
+      mapPointX: overlayTable.int(row, "MapPointX"),
+      mapPointY: overlayTable.int(row, "MapPointY"),
+    });
+  }
+
+  const dungeonMaps: DungeonMapInfo[] = [];
+  for (const row of dungeonMapTable.rows()) {
+    dungeonMaps.push({
+      id: dungeonMapTable.id(row),
+      mapId: dungeonMapTable.int(row, "MapID"),
+      floorIndex: dungeonMapTable.int(row, "FloorIndex"),
+      minX: dungeonMapTable.float(row, "MinX"),
+      maxX: dungeonMapTable.float(row, "MaxX"),
+      minY: dungeonMapTable.float(row, "MinY"),
+      maxY: dungeonMapTable.float(row, "MaxY"),
+      parentWorldMapId: dungeonMapTable.int(row, "ParentWorldMapID"),
+    });
+  }
+
+  const areaPois: AreaPoiInfo[] = [];
+  for (const row of areaPoiTable.rows()) {
+    areaPois.push({
+      id: areaPoiTable.id(row),
+      importance: areaPoiTable.int(row, "Importance"),
+      icons: Array.from({ length: 9 }, (_, index) => areaPoiTable.int(row, "Icon", index)),
+      factionId: areaPoiTable.int(row, "FactionID"),
+      x: areaPoiTable.float(row, "Pos", 0),
+      y: areaPoiTable.float(row, "Pos", 1),
+      mapId: areaPoiTable.int(row, "ContinentID"),
+      flags: areaPoiTable.int(row, "Flags"),
+      areaId: areaPoiTable.int(row, "AreaID"),
+      name: areaPoiTable.locstring(row, "Name_lang"),
+      description: areaPoiTable.locstring(row, "Description_lang"),
+      worldStateId: areaPoiTable.int(row, "WorldStateID"),
+      worldMapLink: areaPoiTable.int(row, "WorldMapLink"),
     });
   }
 
@@ -207,6 +302,9 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       offsetX: continentTable.float(row, "ContinentOffset", 0),
       offsetY: continentTable.float(row, "ContinentOffset", 1),
       scale: continentTable.float(row, "Scale"),
+      worldMapId: continentTable.int(row, "WorldMapID"),
+      taxiMin: [continentTable.float(row, "TaxiMin", 0), continentTable.float(row, "TaxiMin", 1)],
+      taxiMax: [continentTable.float(row, "TaxiMax", 0), continentTable.float(row, "TaxiMax", 1)],
     });
   }
 
@@ -220,5 +318,21 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
     });
   }
 
-  return { areas, mapAreas, overlays, continents, maps };
+  const transforms: MapTransformInfo[] = [];
+  for (const row of transformTable.rows()) {
+    transforms.push({
+      id: transformTable.id(row),
+      mapId: transformTable.int(row, "MapID"),
+      regionBottom: transformTable.float(row, "RegionBottom"),
+      regionRight: transformTable.float(row, "RegionRight"),
+      regionTop: transformTable.float(row, "RegionTop"),
+      regionLeft: transformTable.float(row, "RegionLeft"),
+      newMapId: transformTable.int(row, "NewMapID"),
+      offsetX: transformTable.float(row, "RegionOffset", 0),
+      offsetY: transformTable.float(row, "RegionOffset", 1),
+      newDungeonMapId: transformTable.int(row, "NewDungeonMapID"),
+    });
+  }
+
+  return { areas, mapAreas, overlays, dungeonMaps, areaPois, continents, transforms, maps };
 }

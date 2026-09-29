@@ -19,6 +19,8 @@ const PROFILE_IDS = [
   "experimentalWaterFresnel",
   "experimentalWaterMicroWaves",
   "experimentalWaterSunSparkle",
+  "experimentalWaterFoam",
+  "experimentalVegetationWind",
   "experimentalFantasyGlow",
 ];
 
@@ -29,6 +31,8 @@ function profile(enabled = false) {
     waterFresnel: enabled,
     waterMicroWaves: enabled,
     waterSunSparkle: enabled,
+    waterFoam: enabled,
+    vegetationWind: enabled,
     fantasyGlow: enabled,
   };
 }
@@ -47,6 +51,8 @@ function configuration(enabled = false) {
       experimentalWaterFresnel: enabled,
       experimentalWaterMicroWaves: enabled,
       experimentalWaterSunSparkle: enabled,
+      experimentalWaterFoam: enabled,
+      experimentalVegetationWind: enabled,
       experimentalFantasyGlow: enabled,
     },
   };
@@ -130,6 +136,8 @@ function makeHarness(options = {}) {
     experimentalWaterFresnel: false,
     experimentalWaterMicroWaves: false,
     experimentalWaterSunSparkle: false,
+    experimentalWaterFoam: false,
+    experimentalVegetationWind: false,
     experimentalFantasyGlow: false,
     grassRadius: 50,
     grassDense: true,
@@ -184,9 +192,28 @@ test("renderer profile is frozen default-OFF state with terrain/water delegation
   assert.doesNotMatch(setter, /onBeforeCompile|ShaderChunk|customProgramCacheKey/);
   assert.match(setter, /applyLiquidShaderProfile|setLiquidWaterShaderProfile/);
   assert.match(setter, /setTerrainSplatMicroNormals/);
+  assert.match(source, /this\.#waterShaderUniforms\.time\.value = now \/ 1000;/);
+  assert.match(source, /VEGETATION_WIND_TIME\.value = now \/ 1000;/);
 });
 
-test("formal host applies and observes all six leaves, then rolls them back", async () => {
+test("vegetation setting reaches the WVM cache variant and invalidates it on toggle", async () => {
+  const rendererSource = await readFile("src/browser/WorldRenderer3D.ts", "utf8");
+  const settingsSource = await readFile("src/browser/ui/Settings.ts", "utf8");
+  const enterWorldSource = await readFile("src/browser/app/EnterWorld.ts", "utf8");
+  assert.match(settingsSource, /vegetationWind: settingBoolean\(values, "experimentalVegetationWind"\)/);
+  const attached = enterWorldSource.indexOf("settingsStore.attach(world)");
+  const initialApply = enterWorldSource.indexOf("applySettings()", attached);
+  assert.ok(attached >= 0 && initialApply > attached, "initial settings apply follows world attach");
+  assert.match(rendererSource,
+    /#vegetationBuildKey\(path: string\): string \{\s*return this\.\#experimentalShaderProfile\.vegetationWind\s*\? `vegetation-wind\|\$\{path\}` : path;/,
+  );
+  assert.match(rendererSource,
+    /if \(current\.vegetationWind !== next\.vegetationWind\) this\.\#rebuildVegetationWindModels\(\);/,
+  );
+  assert.match(rendererSource, /this\.\#experimentalShaderProfile\.vegetationWind/);
+});
+
+test("formal host applies and observes every shader-profile leaf, then rolls them back", async () => {
   const { host, renderer, calls } = makeHarness();
   const lease = await host.acquireExclusiveLease();
   try {

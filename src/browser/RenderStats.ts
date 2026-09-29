@@ -282,6 +282,11 @@ export class FrameCadenceClock {
     return interval > 0 ? 1000 / interval : 0;
   }
 
+  /** Interval statistics for low-frequency HUD updates, not synchronous render/GPU cost. */
+  snapshot(): Readonly<FrameSnapshot> {
+    return this.#intervals.snapshot();
+  }
+
   reset(): void {
     this.#previousAt = undefined;
     this.#intervals.reset();
@@ -339,6 +344,66 @@ export class FullFrameClock {
   reset(): void {
     this.#frames.reset();
   }
+}
+
+/**
+ * One slow frame broken down by loop section, recorded by the render loop for hitch diagnosis.
+ *
+ * A hitch while walking is almost never "the renderer is slow": it is one section — a tile
+ * landing that rebuilds terrain, a reselect over tens of thousands of placements, a collision
+ * rebuild, or a burst of model builds — eating a whole frame. The ring this feeds is what
+ * `webclientHitches()` prints, so the sections have to be cheap numbers, never objects.
+ */
+export interface FrameHitch {
+  readonly at: number;
+  readonly total: number;
+  readonly sections: Readonly<Record<string, number>>;
+  /** Non-timing note, e.g. what the submit allocated; appended to the summary when present. */
+  readonly detail?: string;
+}
+
+/**
+ * The hottest sections of a hitch, hottest first, for the status line and the console.
+ *
+ * Pure over the record so a diagnostics test can pin the wording without a frame: non-finite
+ * entries (sections a frame never reached, like the world pass on a loading screen) are
+ * skipped rather than printed as NaN.
+ */
+export function summarizeFrameHitch(hitch: Readonly<FrameHitch>, top = 2): string {
+  const entries = Object.entries(hitch.sections)
+    .filter((entry): entry is [string, number] =>
+      typeof entry[1] === "number" && Number.isFinite(entry[1]))
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, Math.max(0, top));
+  const sections = entries
+    .map(([name, ms]) => `${name} ${ms.toFixed(ms < 10 ? 1 : 0)}мс`)
+    .join(", ");
+  return `фриз ${hitch.total.toFixed(0)}мс${sections ? `: ${sections}` : ""}`
+    + (hitch.detail ? ` [${hitch.detail}]` : "");
+}
+
+/**
+ * The hottest average sections of ordinary frames, hottest first.
+ *
+ * The hitch ring covers frames over 50 ms; this covers the baseline — where the usual
+ * 13 ms go when nothing dramatic happens. Pure over caller-kept sums so the wording is
+ * testable without a frame; entries with no samples are skipped.
+ */
+export function topSectionAverages(
+  sums: Readonly<Record<string, number>>,
+  count: number,
+  top = 5,
+): string {
+  if (!(count > 0)) return "";
+  return Object.entries(sums)
+    .filter((entry): entry is [string, number] =>
+      typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0)
+    .map(([name, sum]): [string, number] => [name, sum / count])
+    .filter((entry): entry is [string, number] => entry[1] > 0.05)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, Math.max(0, top))
+    .map(([name, average]) => `${name} ${average.toFixed(1)}`)
+    .join(", ");
 }
 
 /**

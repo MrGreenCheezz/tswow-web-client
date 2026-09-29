@@ -14,7 +14,10 @@
 import { REACTION_FRIENDLY, REACTION_NEUTRAL, UNIT_FLAGS_UNTARGETABLE } from "../../world/FactionRules.js";
 import { isLootable, isTappedByOther, unit, worldObject } from "../../world/Fields.js";
 import { isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
-import { PLATE_RANGE, RANK_NORMAL, plateVisible, type PlateData, type PlateFilter } from "../NamePlate.js";
+import {
+  PLATE_RANGE, RANK_NORMAL, plateHitFlash, plateVisible, type PlateData, type PlateFilter,
+} from "../NamePlate.js";
+import { plateHitAt } from "./OverlayModel.js";
 import { healthRatio } from "../SimpleScene.js";
 import { game } from "../game/Context.js";
 import { reactionBetween, reactionTo } from "../game/Targeting.js";
@@ -63,8 +66,11 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
   const selfGuid = world.state.selfGuid;
   const targetGuid = world.targetGuid;
   // One request per frame for whatever is being cast nearby, so the bar has a word on it by the
-  // time the cast is half done rather than a spell id for its whole length.
-  ensureSpellNames([...world.casts.values()].map((cast) => cast.spellId));
+  // time the cast is half done rather than a spell id for its whole length. Skipped while
+  // nothing is casting: the spread and map below allocate on every frame otherwise.
+  if (world.casts.size > 0) {
+    ensureSpellNames([...world.casts.values()].map((cast) => cast.spellId));
+  }
 
   return (object, distance) => {
     if (object.typeId !== 3 && object.typeId !== 4) return undefined;
@@ -99,6 +105,8 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
       reaction,
       classColour: object.typeId === 4 ? classColor(unit.classId(object)) : undefined,
       health: healthRatio(object),
+      healthCurrent: unit.health(object),
+      healthMax: unit.maxHealth(object),
       raidMark: marks.get(object.guid),
       questMark: questMarkFor(object.guid),
       rank: metadata?.rank ?? RANK_NORMAL,
@@ -106,6 +114,7 @@ export function plateSource(now: number): (object: WorldObjectState, distance: n
       target,
       lootable,
       tappedByOther: isTappedByOther(object),
+      hitFlash: plateHitFlash(now, plateHitAt(object.guid)),
     };
   };
 }

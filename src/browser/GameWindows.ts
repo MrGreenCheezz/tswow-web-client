@@ -1,7 +1,16 @@
 const STORAGE_KEY = "webclient.window-layout";
 const EDGE_MARGIN = 8;
+const HUD_LAYOUT_EVENT = "webclient:hud-layout";
+const BOTTOM_RESERVE_SELECTOR = "[data-window-reserve-bottom]";
+const RIGHT_RESERVE_SELECTOR = "[data-window-reserve-right]";
 /** Above the chat log (z 20) so a focused window is never hidden behind it. */
 const BASE_Z_INDEX = 30;
+
+/** Refit open windows after a HUD row appears, disappears, or changes height. */
+export function notifyHudLayout(): void {
+  if (typeof window === "undefined" || typeof Event === "undefined") return;
+  window.dispatchEvent(new Event(HUD_LAYOUT_EVENT));
+}
 
 export interface Placement {
   left: number;
@@ -78,13 +87,19 @@ export class GameWindowManager {
   constructor(viewport: HTMLElement) {
     this.#viewport = viewport;
     for (const [id, placement] of Object.entries(readStoredLayout())) this.#placements.set(id, placement);
-    window.addEventListener("resize", () => {
-      for (const element of this.#windows) if (!element.hidden) this.#clamp(element);
-    });
+    window.addEventListener("resize", this.#refitOpenWindows);
+    window.addEventListener(HUD_LAYOUT_EVENT, this.#refitOpenWindows);
   }
+
+  readonly #refitOpenWindows = (): void => {
+    for (const element of this.#windows) if (!element.hidden) this.#clamp(element);
+  };
 
   attach(element: HTMLElement): void {
     if (!element.id) throw new Error("A game window needs an id to remember its position");
+    // Compound windows opt out of browser resizing. Their inner tab panes own overflow, so
+    // changing pages cannot make the outer frame jump or leave a persisted accidental size.
+    if (element.dataset["windowFixedSize"] === "true") element.style.resize = "none";
     this.#windows.push(element);
     element.addEventListener("pointerdown", () => this.#raise(element));
     const header = element.querySelector("header");
@@ -94,11 +109,17 @@ export class GameWindowManager {
     }
     // Windows are shown by clearing `hidden`, so that is where the first placement hooks in.
     const watcher = new MutationObserver(() => {
-      if (!element.hidden) this.#place(element);
+      if (!element.hidden) {
+        this.#place(element);
+        this.#raise(element);
+      }
     });
     watcher.observe(element, { attributes: true, attributeFilter: ["hidden"] });
     this.#watchers.set(element, watcher);
-    if (!element.hidden) this.#place(element);
+    if (!element.hidden) {
+      this.#place(element);
+      this.#raise(element);
+    }
   }
 
   /**
@@ -140,7 +161,10 @@ export class GameWindowManager {
     }
     const placed = cascadePlacement(wanted, taken,
       { width: bounds.width, height: bounds.height },
-      { width: this.#viewport.clientWidth, height: this.#viewport.clientHeight });
+      {
+        width: this.#viewport.clientWidth - this.#rightInset(element),
+        height: this.#viewport.clientHeight - this.#bottomInset(),
+      });
     this.#apply(element, placed.left, placed.top);
   }
 
@@ -157,14 +181,86 @@ export class GameWindowManager {
   #clamp(element: HTMLElement): void {
     const width = this.#viewport.clientWidth;
     const height = this.#viewport.clientHeight;
-    const bounds = element.getBoundingClientRect();
-    const maxLeft = Math.max(EDGE_MARGIN, width - bounds.width - EDGE_MARGIN);
-    const maxTop = Math.max(EDGE_MARGIN, height - bounds.height - EDGE_MARGIN);
-    const left = Math.min(Math.max(EDGE_MARGIN, Number.parseFloat(element.style.left) || 0), maxLeft);
-    const top = Math.min(Math.max(EDGE_MARGIN, Number.parseFloat(element.style.top) || 0), maxTop);
-    element.style.left = `${Math.round(left)}px`;
-    element.style.top = `${Math.round(top)}px`;
+    let left = Math.max(EDGE_MARGIN, Number.parseFloat(element.style.left) || 0);
+    let top = Math.max(EDGE_MARGIN, Number.parseFloat(element.style.top) || 0);
+    const minimumHeight = this.#preferredMinimumHeight(element) * this.#uiScale();
+    top = Math.min(top, Math.max(EDGE_MARGIN, height - this.#bottomInset() - minimumHeight));
+    // Height and top depend on one another: fitting the window may remove its scrollbar and change
+    // its width, while clamping it upward may give it more usable height. Two passes converge for
+    // both cases without carrying a second CSS copy of the bottom-deck arithmetic.
+    for (let pass = 0; pass < 2; pass++) {
+      this.#fitHeight(element, top);
+      const bounds = element.getBoundingClientRect();
+      const maxLeft = Math.max(EDGE_MARGIN, width - this.#rightInset(element) - bounds.width);
+      const maxTop = Math.max(EDGE_MARGIN, height - this.#bottomInset() - bounds.height);
+      left = Math.min(left, maxLeft);
+      top = Math.min(top, maxTop);
+      element.style.left = `${Math.round(left)}px`;
+      element.style.top = `${Math.round(top)}px`;
+    }
+    this.#fitHeight(element, top);
   }
+
+  /** Height of the visible controls occupying the viewport's bottom edge, plus breathing room. */
+  #bottomInset(): number {
+    const viewport = this.#viewport.getBoundingClientRect();
+    let top = viewport.bottom;
+    for (const element of this.#viewport.querySelectorAll<HTMLElement>(BOTTOM_RESERVE_SELECTOR)) {
+      const bounds = element.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) continue;
+      top = Math.min(top, Math.max(viewport.top, bounds.top));
+    }
+    return top < viewport.bottom ? viewport.bottom - top + EDGE_MARGIN : EDGE_MARGIN;
+  }
+
+  /** Width of visible right-edge controls that this window must leave accessible. */
+  #rightInset(element: HTMLElement): number {
+    const viewport = this.#viewport.getBoundingClientRect();
+    let left = viewport.right;
+    const reservations = [...this.#viewport.querySelectorAll<HTMLElement>(RIGHT_RESERVE_SELECTOR)];
+    // These two compact panels can fit beside the minimap and quest tracker. Measure the rail
+    // itself so their first and remembered positions stay out of it at every UI scale.
+    if (element.id === "inventory-window" || element.id === "character-window") {
+      const rail = this.#viewport.querySelector<HTMLElement>("#right-rail");
+      if (rail) reservations.push(rail);
+    }
+    for (const reservation of reservations) {
+      const bounds = reservation.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) continue;
+      left = Math.min(left, Math.max(viewport.left, bounds.left));
+    }
+    return left < viewport.right ? viewport.right - left + EDGE_MARGIN : EDGE_MARGIN;
+  }
+
+  /** Read the author's useful floor without a previous fit making that floor look smaller. */
+  #preferredMinimumHeight(element: HTMLElement): number {
+    const property = "--game-window-max-height";
+    const previous = element.style.getPropertyValue(property);
+    const priority = element.style.getPropertyPriority(property);
+    element.style.removeProperty(property);
+    const parsed = Number.parseFloat(getComputedStyle(element).minHeight);
+    if (previous) element.style.setProperty(property, previous, priority);
+    return Math.max(90, Number.isFinite(parsed) ? parsed : 0);
+  }
+
+  /** Publish the exact free height so each window can keep its own preferred maximum below it. */
+  #fitHeight(element: HTMLElement, top: number): void {
+    const available = Math.max(90,
+      this.#viewport.clientHeight - Math.max(EDGE_MARGIN, top) - this.#bottomInset());
+    element.style.setProperty("--game-window-max-height", `${Math.floor(available / this.#uiScale())}px`);
+  }
+
+  /** Painted UI scale. Phone layouts cap enlargement at 100% so fixed windows never leave screen. */
+  #uiScale(): number {
+    const configured = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--ui-scale"),
+    );
+    const safe = Number.isFinite(configured) && configured > 0 ? configured : 1;
+    return this.#viewport.clientWidth <= 620 ? Math.min(safe, 1) : safe;
+  }
+
+  /** Let a hosted addon surface participate in the same focus order without changing its layout. */
+  raiseLayer(element: HTMLElement): void { this.#raise(element); }
 
   #raise(element: HTMLElement): void {
     if (Number.parseInt(element.style.zIndex, 10) === this.#topZIndex) return;

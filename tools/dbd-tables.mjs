@@ -7,6 +7,7 @@
 export const DBD_TABLES = [
   // Already read by the gateway and the generators.
   "AnimationData",
+  "BattlemasterList",
   "CharSections",
   "CreatureDisplayInfo",
   "CreatureDisplayInfoExtra",
@@ -23,6 +24,11 @@ export const DBD_TABLES = [
   // the client, so there is no table to read them from.
   "CharBaseInfo",
   "CharHairGeosets",
+  // What a freshly created character is wearing. Keyed on (race, class, sex) and carrying 24
+  // parallel slots of item, *display* item and inventory type — the display column is what the
+  // creation screen's 3D preview needs, so no `Item.dbc` chain is walked. Written in this
+  // repository — see tools/dbd/README.md.
+  "CharStartOutfit",
   "CharacterFacialHairStyles",
   "ChrClasses",
   "ChrRaces",
@@ -61,15 +67,23 @@ export const DBD_TABLES = [
   "LightFloatBand",
   "LightSkybox",
   "LiquidType",
+  // The world-entry curtain: `Map.LoadingScreenID` names a row here, and the row names the art
+  // and whether a `…Wide.blp` twin ships. Written in this repository from the 3.3.5a file's own
+  // header (4 fields, 16-byte records).
+  "LoadingScreens",
   // What grows on the ground. An ADT texture layer carries a `GroundEffectTexture` id; the row
   // names up to four `GroundEffectDoodad` models with their weights, how many of them a detail
   // cell gets, and the `TerrainType` a footstep on it plays. Both definitions were written in this
   // repository — see tools/dbd/README.md.
   "GroundEffectTexture",
   "GroundEffectDoodad",
+  // Floor-indexed, bounded map sheets used by the original WorldMapFrame APIs. The local
+  // TSWoW DungeonMap row type and this build's DBC header both describe eight 32-bit fields.
+  "DungeonMap",
   "WorldMapArea",
   "WorldMapContinent",
   "WorldMapOverlay",
+  "WorldMapTransforms",
 
   // Spells and talents.
   "SpellCastTimes",
@@ -86,6 +100,14 @@ export const DBD_TABLES = [
   "TalentTab",
   "SkillLine",
   "SkillLineAbility",
+  // The eight headings of the skills window. SkillLine.CategoryID points here; the localized
+  // name and SortIndex are client data, not a web-client ordering convention.
+  "SkillLineCategory",
+
+  // Flight-master labels and the directed graph used to build CMSG_ACTIVATETAXIEXPRESS routes.
+  // A discovered TaxiNodes bit is not evidence that a direct TaxiPath edge exists.
+  "TaxiNodes",
+  "TaxiPath",
 
   // What it takes to open a chest, an ore vein, a herb or a locked door. The server computes the
   // spell itself and accepts it even from a player who does not know it, but only if the client

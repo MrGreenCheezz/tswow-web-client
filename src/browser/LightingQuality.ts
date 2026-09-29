@@ -56,11 +56,17 @@ export const TONE_SHOULDER_GLSL = `
 vec3 CustomToneMapping( vec3 color ) {
   color *= toneMappingExposure;
   vec3 mapped = color;
-  for ( int i = 0; i < 3; i ++ ) {
-    if ( mapped[ i ] > 0.9 ) {
-      float excess = mapped[ i ] - 0.9;
-      mapped[ i ] = 0.9 + 0.1 * excess / ( excess + 0.1 );
-    }
+  if ( mapped.r > 0.9 ) {
+    float excess = mapped.r - 0.9;
+    mapped.r = 0.9 + 0.1 * excess / ( excess + 0.1 );
+  }
+  if ( mapped.g > 0.9 ) {
+    float excess = mapped.g - 0.9;
+    mapped.g = 0.9 + 0.1 * excess / ( excess + 0.1 );
+  }
+  if ( mapped.b > 0.9 ) {
+    float excess = mapped.b - 0.9;
+    mapped.b = 0.9 + 0.1 * excess / ( excess + 0.1 );
   }
   return mapped;
 }
@@ -113,52 +119,115 @@ export interface LightingProfile {
    */
   exposure: number;
   /**
-   * Strength of the single-pass warm-key/cool-fill grade in the existing world-light shader.
+   * Strength of the soft warm grade in the existing world-light shader.
    * Zero is the exact authored baseline; one is the bounded high-quality look. It adds no pass,
-   * texture, light or render target and therefore remains available when shadow maps are not.
+   * texture or render target and therefore remains available when shadow maps are not.
    */
   immersiveStrength: number;
-  /** Zero means no shadow pass. */
+  /** Nearby outdoor flame/glow fixtures contributing light in the existing material shader. */
+  localLights: number;
+  /**
+   * Strength ceiling for the optional screen-space sun shafts.
+   *
+   * The effect still has its own account switch. Quality zero keeps the direct baseline even when
+   * that experimental leaf is enabled; balanced and high only choose how strongly its final
+   * display-space contribution may be added.
+   */
+  godRayStrength: number;
+  /** Zero means no shadow pass. Resolution of every view-fitted cascade. */
   shadowMapSize: number;
-  /** Nearest ranked units only; scenery and spell visuals never enter the pass. */
+  /** Nearest ranked units only; spell visuals never enter the pass. */
   shadowCasters: number;
-  /** Half-width, in world yards, of the directional shadow camera. */
+  /**
+   * Radius around the player, in yards, inside which a ranked unit casts. Unit shadows only enter
+   * the cascades rendered every frame, so this stays inside the last view-fitted split.
+   */
   shadowExtent: number;
   shadowIntensity: number;
   shadowRadius: number;
+  /** Directional shadow cascades, nearest first; zero exactly when there is no shadow pass. */
+  shadowCascades: number;
+  /**
+   * View depth, in yards from the camera, at which each view-fitted cascade ends. The outermost
+   * cascade is not fitted to the view: it is a camera-centred disc reaching `shadowDistance`,
+   * cached, and re-rendered only when the camera leaves its margin, the sun turns, its casters
+   * change or `shadowFarRefreshFrames` have passed.
+   */
+  shadowCascadeSplits: readonly number[];
+  /** Distance from the camera at which sun shadows have faded out completely. */
+  shadowDistance: number;
+  /** Distance from the camera at which that fade begins: the last ~22% of the reach. */
+  shadowFadeStart: number;
+  /** Resolution of the outermost, cached cascade. */
+  shadowFarMapSize: number;
+  /** Frames after which the cached cascade is re-rendered even though nothing asked for it. */
+  shadowFarRefreshFrames: number;
 }
 
-const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile, "quality" | "shadowMapSize"> & {
+/** Fraction of the shadow reach, measured from the camera, over which shadows fade to nothing. */
+export const SHADOW_FADE_FRACTION = 0.22;
+
+const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
+  "quality" | "shadowMapSize" | "shadowFarMapSize" | "shadowFadeStart"> & {
   wantedShadowMapSize: number;
+  wantedShadowFarMapSize: number;
 }>> = {
-  // Authored ambient/diffuse balance is no longer a quality setting. Only bounded shadow work
-  // varies; exposure remains explicit because it belongs to the renderer's shared output curve.
+  // Light.dbc inputs and exposure stay intact. Higher quality enables the bounded soft grade,
+  // nearby fixture pools and optional shadow work in addition to those authored inputs.
   0: {
     exposure: 1,
     immersiveStrength: 0,
+    localLights: 0,
+    godRayStrength: 0,
     wantedShadowMapSize: 0,
+    wantedShadowFarMapSize: 0,
     shadowCasters: 0,
     shadowExtent: 0,
     shadowIntensity: 0,
     shadowRadius: 0,
+    shadowCascades: 0,
+    shadowCascadeSplits: [],
+    shadowDistance: 0,
+    shadowFarRefreshFrames: 0,
   },
+  // Balanced: one view-fitted cascade to 45 yards (about 30 past the character at the default
+  // camera distance) and the cached camera-centred disc to 120.
   1: {
     exposure: 1,
     immersiveStrength: 0.65,
+    localLights: 4,
+    godRayStrength: 0.12,
     wantedShadowMapSize: 512,
+    wantedShadowFarMapSize: 1024,
     shadowCasters: 12,
     shadowExtent: 32,
-    shadowIntensity: 0.55,
+    shadowIntensity: 0.72,
     shadowRadius: 1.25,
+    shadowCascades: 2,
+    shadowCascadeSplits: [45],
+    shadowDistance: 120,
+    shadowFarRefreshFrames: 45,
   },
+  // High: a sharp near cascade, a mid one to 90 yards, and the cached disc to 200.
   2: {
     exposure: 1,
     immersiveStrength: 1,
+    localLights: 8,
+    godRayStrength: 0.2,
     wantedShadowMapSize: 1024,
+    wantedShadowFarMapSize: 2048,
     shadowCasters: 24,
-    shadowExtent: 46,
-    shadowIntensity: 0.65,
+    shadowExtent: 60,
+    // How much of the sun a shadow takes away. 0.65 left a third of the key light in every shadow,
+    // and with the enhanced fill on top a street in the shade of its own houses read as flat and
+    // merely dimmer; the reference stills (WoW Forever, Orgrimmar and Ashenvale) have the shade
+    // almost all ambient. The remaining 15% is the sky light a shadow map cannot bounce.
+    shadowIntensity: 0.85,
     shadowRadius: 1.75,
+    shadowCascades: 3,
+    shadowCascadeSplits: [28, 90],
+    shadowDistance: 200,
+    shadowFarRefreshFrames: 30,
   },
 };
 
@@ -167,6 +236,23 @@ export function normaliseLightingQuality(value: unknown): LightingQuality {
   const number = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(number)) return 1;
   return Math.max(0, Math.min(2, Math.round(number))) as LightingQuality;
+}
+
+/**
+ * Upper bound of «Сила солнечных лучей» as a multiplier: the account's percentage over the
+ * profile's `godRayStrength` ceiling, on both shaft paths (the classic radial pass and the
+ * cinematic march). The slider itself stops at 3; the bound above it is for a hand-edited settings
+ * file (`bench/run.mjs --settings`), so no unbounded value reaches a display-space additive
+ * composite. Zero is allowed and reads as "no shafts"; the leaf's own switch still decides whether
+ * the effect runs at all.
+ */
+export const GOD_RAY_STRENGTH_SCALE_MAX = 4;
+
+/** The account's percentage / 100 as the multiplier the two shaft paths use; garbage is the default. */
+export function godRayStrengthScale(value: unknown): number {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(GOD_RAY_STRENGTH_SCALE_MAX, number));
 }
 
 /** Resolve the requested look while degrading only the optional shadow pass. */
@@ -187,15 +273,28 @@ export function lightingProfile(
   // A context capped at 512 is also likely to be fill/draw constrained. Keep high's tonal profile
   // but fall back to balanced's caster count and camera footprint for its optional pass.
   const shadowSource = quality === 2 && shadowMapSize < 1024 ? PROFILES[1] : source;
+  const shadows = shadowMapSize > 0;
+  const shadowFarMapSize = shadows
+    ? Math.min(shadowSource.wantedShadowFarMapSize, limit >= 2048 ? 2048 : limit >= 1024 ? 1024 : 512)
+    : 0;
+  const shadowDistance = shadows ? shadowSource.shadowDistance : 0;
   return {
     quality,
     exposure: source.exposure,
     immersiveStrength: source.immersiveStrength,
+    localLights: source.localLights,
+    godRayStrength: source.godRayStrength,
     shadowMapSize,
-    shadowCasters: shadowMapSize > 0 ? shadowSource.shadowCasters : 0,
-    shadowExtent: shadowMapSize > 0 ? shadowSource.shadowExtent : 0,
-    shadowIntensity: shadowMapSize > 0 ? shadowSource.shadowIntensity : 0,
-    shadowRadius: shadowMapSize > 0 ? shadowSource.shadowRadius : 0,
+    shadowCasters: shadows ? shadowSource.shadowCasters : 0,
+    shadowExtent: shadows ? shadowSource.shadowExtent : 0,
+    shadowIntensity: shadows ? shadowSource.shadowIntensity : 0,
+    shadowRadius: shadows ? shadowSource.shadowRadius : 0,
+    shadowCascades: shadows ? shadowSource.shadowCascades : 0,
+    shadowCascadeSplits: shadows ? [...shadowSource.shadowCascadeSplits] : [],
+    shadowDistance,
+    shadowFadeStart: shadowDistance * (1 - SHADOW_FADE_FRACTION),
+    shadowFarMapSize,
+    shadowFarRefreshFrames: shadows ? shadowSource.shadowFarRefreshFrames : 0,
   };
 }
 
@@ -244,14 +343,41 @@ export function stabiliseDirectionalShadowCenter(
 ): DirectionalShadowPoint {
   const copy = { x: center.x, y: center.y, z: center.z };
   const texel = (2 * extent) / mapSize;
-  const directionLength = Math.hypot(direction.x, direction.y, direction.z);
-  if (!(texel > 0) || !Number.isFinite(texel) || !(directionLength > 0)) return copy;
+  const basis = directionalShadowBasis(direction);
+  if (!(texel > 0) || !Number.isFinite(texel) || !basis) return copy;
+  const { right, up } = basis;
 
+  const rightPosition = center.x * right.x + center.y * right.y + center.z * right.z;
+  const upPosition = center.x * up.x + center.y * up.y + center.z * up.z;
+  const rightDelta = Math.round(rightPosition / texel) * texel - rightPosition;
+  const upDelta = Math.round(upPosition / texel) * texel - upPosition;
+  return {
+    x: center.x + right.x * rightDelta + up.x * upDelta,
+    y: center.y + right.y * rightDelta + up.y * upDelta,
+    z: center.z + right.z * rightDelta + up.z * upDelta,
+  };
+}
+
+/** The two axes of a directional light's shadow plane, both unit length and normal to the ray. */
+export interface DirectionalShadowBasis {
+  readonly right: DirectionalShadowPoint;
+  readonly up: DirectionalShadowPoint;
+}
+
+/**
+ * The light plane every directional shadow camera is snapped in.
+ *
+ * World-up is the reference unless the sun is almost vertical; the alternate axis keeps the cross
+ * product finite around noon while choosing the same stable plane. `up` is also what the shadow
+ * camera's own `up` has to be: three's `lookAt` then builds exactly `right` as the camera's x axis,
+ * so a centre snapped here moves the map by whole texels and nothing else.
+ */
+export function directionalShadowBasis(direction: Readonly<DirectionalShadowPoint>): DirectionalShadowBasis | undefined {
+  const directionLength = Math.hypot(direction.x, direction.y, direction.z);
+  if (!(directionLength > 0) || !Number.isFinite(directionLength)) return undefined;
   const dx = direction.x / directionLength;
   const dy = direction.y / directionLength;
   const dz = direction.z / directionLength;
-  // Use world-up unless the sun is almost vertical; the alternate axis keeps the cross product
-  // finite around noon while choosing the same stable light plane.
   const referenceX = 0;
   const referenceY = Math.abs(dy) < 0.999 ? 1 : 0;
   const referenceZ = Math.abs(dy) < 0.999 ? 0 : 1;
@@ -259,21 +385,46 @@ export function stabiliseDirectionalShadowCenter(
   let rightY = referenceZ * dx - referenceX * dz;
   let rightZ = referenceX * dy - referenceY * dx;
   const rightLength = Math.hypot(rightX, rightY, rightZ);
-  if (!(rightLength > 0)) return copy;
+  if (!(rightLength > 0)) return undefined;
   rightX /= rightLength;
   rightY /= rightLength;
   rightZ /= rightLength;
-  const upX = dy * rightZ - dz * rightY;
-  const upY = dz * rightX - dx * rightZ;
-  const upZ = dx * rightY - dy * rightX;
-
-  const rightPosition = center.x * rightX + center.y * rightY + center.z * rightZ;
-  const upPosition = center.x * upX + center.y * upY + center.z * upZ;
-  const rightDelta = Math.round(rightPosition / texel) * texel - rightPosition;
-  const upDelta = Math.round(upPosition / texel) * texel - upPosition;
   return {
-    x: center.x + rightX * rightDelta + upX * upDelta,
-    y: center.y + rightY * rightDelta + upY * upDelta,
-    z: center.z + rightZ * rightDelta + upZ * upDelta,
+    right: { x: rightX, y: rightY, z: rightZ },
+    up: {
+      x: dy * rightZ - dz * rightY,
+      y: dz * rightX - dx * rightZ,
+      z: dx * rightY - dy * rightX,
+    },
   };
+}
+
+/** A view-frustum slice's enclosing sphere, as a distance along the view axis and a radius. */
+export interface FrustumSliceSphere {
+  /** Distance from the camera, along its forward axis, of the sphere's centre. */
+  readonly depth: number;
+  readonly radius: number;
+}
+
+/**
+ * The smallest sphere around the slice of a symmetric perspective frustum between two depths.
+ *
+ * It depends on the slice, the field of view and the aspect ratio only — not on where the camera
+ * points — so a shadow map sized to it keeps one texel size however the camera turns. That, with
+ * the centre snapped to whole texels, is what keeps a cascade from shimmering while the camera
+ * moves or rotates. `tanHalfVertical` is `tan(fov / 2)`.
+ */
+export function frustumSliceSphere(
+  near: number,
+  far: number,
+  tanHalfVertical: number,
+  aspect: number,
+): FrustumSliceSphere {
+  const tanHalfHorizontal = tanHalfVertical * aspect;
+  const spread = tanHalfVertical * tanHalfVertical + tanHalfHorizontal * tanHalfHorizontal;
+  // Equidistant from the near and far corner rings, unless the far ring alone already encloses
+  // the near one (a wide or deep slice), in which case the far ring's own centre is the answer.
+  const depth = Math.min(far, 0.5 * (far + near) * (1 + spread));
+  const radius = Math.sqrt(far * far * spread + (far - depth) * (far - depth));
+  return { depth, radius };
 }

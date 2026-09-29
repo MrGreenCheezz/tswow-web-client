@@ -45,11 +45,17 @@ const GRAPH_VALIDATION = new WeakMap<WmoPortals, WeakMap<object, boolean>>();
  *
  * This is deliberately a refinement of the renderer's distance selection, never a replacement
  * for it. It only becomes authoritative while the camera is confidently inside a WMO group and
- * the whole graph is structurally usable. Exterior shells and groups with no portal references
- * stay selected, because the source data cannot prove that an orphan is hidden.
+ * the whole graph is structurally usable. Once that is true, `viewer` conservatively adds the
+ * character's room as a second seed: a third-person camera can stand in the doorway or even in a
+ * wall while the character is in the adjacent room. Exterior shells and groups with no portal
+ * references stay selected, because the source data cannot prove that an orphan is hidden.
  *
  * `modelToClip` is a column-major 4x4 matrix, matching `THREE.Matrix4.elements`. Keeping that tiny
  * contract here avoids a Three/WebGL dependency and makes every failure mode directly testable.
+ *
+ * `screenApertures`, when given (four floats per group), receives the screen rectangle each group
+ * can be seen through when the answer is `used`: minX, maxX, minY, maxY in NDC, the whole screen
+ * for a seed or an orphan, and an empty one (min > max) for a group not selected. Untouched otherwise.
  */
 export function selectWmoPortalGroups(
   groups: readonly WmoOcclusionGroup[],
@@ -57,6 +63,8 @@ export function selectWmoPortalGroups(
   distanceGroups: readonly number[],
   camera: WmoOcclusionPoint,
   modelToClip: readonly number[],
+  viewer?: WmoOcclusionPoint,
+  screenApertures?: Float32Array,
 ): WmoOcclusionSelection {
   const fallback = fallbackSelection(distanceGroups);
   if (!portals || groups.length === 0 || !finitePoint(camera) || !validMatrix(modelToClip)) return fallback;
@@ -70,6 +78,16 @@ export function selectWmoPortalGroups(
     if (group.indoor && !group.exterior && contains(group.bounds, camera)) seeds.push(index);
   }
   if (seeds.length === 0) return fallback;
+  // Keep the camera as the authority that enables portal culling, but never let its one containing
+  // room erase the character's room. The second seed is a visibility superset and therefore fails
+  // safely by drawing too much rather than making an interior disappear.
+  if (viewer && finitePoint(viewer)) {
+    for (const [index, group] of groups.entries()) {
+      if (group.indoor && !group.exterior && contains(group.bounds, viewer) && !seeds.includes(index)) {
+        seeds.push(index);
+      }
+    }
+  }
   // Most WMO placements are observed from open air. Do not scan their vertex/reference arrays on
   // every one of those frames; only a confirmed indoor seed makes the graph relevant.
   if (!cachedValidGraph(groups, portals)) return fallback;
@@ -118,6 +136,21 @@ export function selectWmoPortalGroups(
     // safer than silently dropping one if a different caller ever supplies a damaged index.
     if (!group) return fallback;
     if (apertures.has(index) || group.exterior || !group.indoor || group.portalCount === 0) selected.push(index);
+  }
+  if (screenApertures && screenApertures.length >= groups.length * 4) {
+    for (let index = 0; index < groups.length; index++) {
+      screenApertures[index * 4] = 1;
+      screenApertures[index * 4 + 1] = -1;
+      screenApertures[index * 4 + 2] = 1;
+      screenApertures[index * 4 + 3] = -1;
+    }
+    for (const index of selected) {
+      const aperture = apertures.get(index) ?? FULL_APERTURE;
+      screenApertures[index * 4] = aperture.minX;
+      screenApertures[index * 4 + 1] = aperture.maxX;
+      screenApertures[index * 4 + 2] = aperture.minY;
+      screenApertures[index * 4 + 3] = aperture.maxY;
+    }
   }
   return {
     groups: selected,

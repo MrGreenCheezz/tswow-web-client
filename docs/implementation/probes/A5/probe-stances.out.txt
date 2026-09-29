@@ -1,0 +1,40 @@
+Initialized StormLib in debug mode
+Heap resize call from 16777216 to 20185088 took 0.1437000036239624 msecs. Success: true
+Heap resize call from 20185088 to 24248320 took 0.1477999985218048 msecs. Success: true
+Heap resize call from 24248320 to 29097984 took 0.2044999897480011 msecs. Success: true
+Heap resize call from 29097984 to 34930688 took 0.2759000062942505 msecs. Success: true
+Heap resize call from 34930688 to 41943040 took 0.34939998388290405 msecs. Success: true
+Heap resize call from 41943040 to 50331648 took 0.7750000059604645 msecs. Success: true
+Heap resize call from 50331648 to 60424192 took 0.5176999866962433 msecs. Success: true
+form  1 CAT                  BonusActionBar=1
+form  2 TREE                 BonusActionBar=2
+form  3 TRAVEL               BonusActionBar=0
+form  4 AQUA                 BonusActionBar=0
+form  5 BEAR                 BonusActionBar=3
+form  6 AMBIENT              BonusActionBar=0
+form  7 GHOUL                BonusActionBar=0
+form  8 DIREBEAR             BonusActionBar=3
+form  9                      BonusActionBar=0
+form 10                      BonusActionBar=0
+form 11                      BonusActionBar=0
+form 12                      BonusActionBar=0
+form 13                      BonusActionBar=2
+form 14 CREATUREBEAR         BonusActionBar=0
+form 15 CREATURECAT          BonusActionBar=0
+form 16 GHOSTWOLF            BonusActionBar=0
+form 17 BATTLESTANCE         BonusActionBar=1
+form 18 DEFENSIVESTANCE      BonusActionBar=2
+form 19 BERSERKERSTANCE      BonusActionBar=3
+form 20 ZOMBIE               BonusActionBar=0
+form 21                      BonusActionBar=0
+form 22 FLIGHT?              BonusActionBar=0
+form 23 STEALTH?             BonusActionBar=0
+form 24 MOONKIN?             BonusActionBar=0
+form 25 SPIRITOFREDEMPTION?  BonusActionBar=0
+form 26                      BonusActionBar=0
+form 27 FLIGHT_EPIC          BonusActionBar=0
+form 28 SHADOW               BonusActionBar=1
+form 29 FLIGHT               BonusActionBar=0
+form 30 STEALTH              BonusActionBar=1
+form 31 MOONKIN              BonusActionBar=4
+form 32 SPIRITOFREDEMPTION   BonusActionBar=0

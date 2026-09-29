@@ -157,3 +157,55 @@ Two names are worth stating because neither is what it looks like:
 * `ItemSubClass` has no `$id$` at all. Its key is the pair `ClassID, SubClassID` — tswow's class
   marks both as key cells — so `Dbc.id()` and `Dbc.rowOf()` do not work on it and nothing calls
   them; it is read by walking the rows.
+
+## Local addition: CharStartOutfit
+
+`CharStartOutfit.dbd` was written here for the same reason as the tables above: fetching it needs
+the network, and the character-creation slice needs it offline. It says what a newly created
+character of a given race, class and sex is wearing, which is what the creation screen's 3D preview
+puts on the figure.
+
+The header settles the layout and admits no other reading. Measured on this dataset — and on
+`F:/CircleClean`, where the table resolves out of tswow's own `patch-ruRU-A.MPQ` to the same 37,317
+bytes — it is **126 records, 77 fields, 296 bytes a record**. `int ID` plus four `u8` keys plus
+three `int[24]` arrays is `4 + 4 + 96 + 96 + 96 = 296` bytes and `1 + 4 + 72 = 77` fields; nothing
+else fits both numbers. The values agree with known reality: the dwarf rogue (row 288) reads Worn
+Dagger `2092`/display `6442` at INVTYPE_WEAPON, a second at INVTYPE_WEAPONOFFHAND, shirt, trousers
+and boots at 4/7/8, throwing axes at INVTYPE_THROWN and a Hearthstone at inventory type 0, which is
+the stock 3.3.5 kit slot for slot.
+
+**The keys are `u8` and not `<8>`.** Upstream spells `CharBaseInfo`'s pair as signed bytes and this
+repository already has to mask them (`CharacterCreation.ts` does `& 0xff`), because tswow allocates
+race ids upwards from 22 and a dataset can reach past 127. Read unsigned here, such a row is
+addressable without a mask anywhere.
+
+`node tools/fetch-dbd.mjs` will replace this with the upstream version, which names the same
+columns; `tests/dbc.test.mjs` checks either against the real header.
+
+## Local addition: SkillLineCategory
+
+`SkillLineCategory.dbd` is a fixed-build definition written here because this table is not among
+the vendored WoWDBDefs files. It is the source for the stock skills-window headings: `SkillLine`
+stores a `CategoryID`, while this table supplies the localized `Name_lang` and the explicit
+`SortIndex` used by the 3.3.5 client. The active WDBC header is 8 records of 19 fields and 76-byte
+records, which is exactly `int ID`, one 17-slot localized string, and `int SortIndex`; the sort
+field is read from the DBC rather than inferred from category ids or a web-client order.
+
+The shipped Russian rows are ids 5–12 (`Характеристики`, `Оружейные навыки`, `Классовые навыки`,
+`Доспехи`, `Вспомогательные навыки`, `Языки`, `Профессии`, `Не отображается`) with sort indices
+1–8. `Not Displayed` is intentionally delivered as metadata too: the stock UI decides whether to
+hide it, while consumers must not silently reinterpret it as a visible category. The gateway
+publishes these rows alongside `skillLines`, and `TalentClient` exposes a monotonic revision so a
+window can repaint when the initially unavailable snapshot arrives.
+
+## Local additions: TaxiNodes and TaxiPath
+
+These two fixed WotLK definitions let the native flight-master window use the same authored graph
+as the client and server. `SMSG_SHOWTAXINODES` only carries the current node plus a discovered-node
+bitmask: it does not say that every discovered destination is one direct flight away. `TaxiPath`
+provides those directed edges and their costs, while `TaxiNodes` supplies localized names.
+
+The active WDBC headers are decisive: `TaxiNodes` is 24 fields/96 bytes (`ID`, `ContinentID`, three
+position floats, one 17-slot localized name and two mount-creature ids); `TaxiPath` is four
+32-bit fields/16 bytes (`ID`, from, to and cost). `tests/dbc.test.mjs` checks both layouts against
+the live 3.3.5 dataset.

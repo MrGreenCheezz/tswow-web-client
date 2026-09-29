@@ -1,0 +1,193 @@
+{
+  "source": "bench/results/2026-09-20T14-32-18-371Z.json",
+  "diagnostic": true,
+  "comparable": false,
+  "fullWorldFpsGain": null,
+  "reason": "Isolated effects and instrumentation; timings are not full-world FPS or an optimization acceptance test.",
+  "adapter": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "viewport": {
+    "width": 1280,
+    "height": 720,
+    "dpr": 1
+  },
+  "sourceHash": "744b871551dd9441956352dab955aaa9cd1921af66a193201c8452b21224210a",
+  "shippingPolicyMatchesPrototype": true,
+  "metadata": [
+    {
+      "path": "Spells\\AmplifyMagic_Impact_Base.m2",
+      "bones": 11,
+      "groups": 13,
+      "eligibleGroups": 13,
+      "particleEmitters": 3,
+      "ribbonEmitters": 0
+    },
+    {
+      "path": "Spells\\DarkRitual_PreCast_Base.m2",
+      "bones": 11,
+      "groups": 13,
+      "eligibleGroups": 6,
+      "particleEmitters": 2,
+      "ribbonEmitters": 0
+    },
+    {
+      "path": "SPELLS\\INSTANCEPORTAL_GREEN_25MAN_HEROIC.m2",
+      "bones": 25,
+      "groups": 15,
+      "eligibleGroups": 6,
+      "particleEmitters": 14,
+      "ribbonEmitters": 0
+    },
+    {
+      "path": "spells\\holy_hammer_missile.m2",
+      "bones": 19,
+      "groups": 12,
+      "eligibleGroups": 7,
+      "particleEmitters": 0,
+      "ribbonEmitters": 4
+    },
+    {
+      "path": "Spells\\Shadow_Form_Precast.m2",
+      "bones": 2,
+      "groups": 2,
+      "eligibleGroups": 1,
+      "particleEmitters": 1,
+      "ribbonEmitters": 0
+    },
+    {
+      "path": "spells\\hunter_rapidfire.m2",
+      "bones": 10,
+      "groups": 2,
+      "eligibleGroups": 1,
+      "particleEmitters": 6,
+      "ribbonEmitters": 0
+    }
+  ],
+  "visualSummary": {
+    "cases": 36,
+    "exact": 36,
+    "maxChannelDelta": 0,
+    "maxChangedPixels": 0,
+    "minVisibleAdditivePixels": 11697,
+    "maxMeanChannelDelta": 0
+  },
+  "counterSummary": {
+    "calls": {
+      "before": {
+        "mean": 644,
+        "p50": 644,
+        "p95": 644
+      },
+      "after": {
+        "mean": 368,
+        "p50": 368,
+        "p95": 368
+      }
+    },
+    "triangles": {
+      "before": {
+        "mean": 93480.22222222222,
+        "p50": 93604,
+        "p95": 93796
+      },
+      "after": {
+        "mean": 53197.11111111111,
+        "p50": 53256,
+        "p95": 53352
+      }
+    },
+    "programParameterBuilds": {
+      "before": {
+        "mean": 600,
+        "p50": 600,
+        "p95": 600
+      },
+      "after": {
+        "mean": 48,
+        "p50": 48,
+        "p95": 48
+      }
+    }
+  },
+  "cpuSummary": {
+    "before": {
+      "mean": 10.128333337605,
+      "p50": 9.900000095367432,
+      "p95": 12.100000023841858
+    },
+    "after": {
+      "mean": 3.877499997119109,
+      "p50": 3.799999952316284,
+      "p95": 5.100000023841858
+    },
+    "samplesPerMode": 240
+  },
+  "hostLoad": {
+    "before": {
+      "elapsedSeconds": 2.2412293,
+      "externalCpuCores": 9.429854368879605,
+      "busiest": [
+        {
+          "name": "Diablo IV",
+          "id": 31420,
+          "cpuCores": 6.59829077875667,
+          "intervalSeconds": 2.1217616
+        },
+        {
+          "name": "chrome",
+          "id": 40532,
+          "cpuCores": 0.9468114915836269,
+          "intervalSeconds": 2.1123529000000003
+        },
+        {
+          "name": "System",
+          "id": 4,
+          "cpuCores": 0.9425545074558891,
+          "intervalSeconds": 2.1218931999999997
+        },
+        {
+          "name": "worldserver",
+          "id": 35452,
+          "cpuCores": 0.9421975910834188,
+          "intervalSeconds": 2.122697
+        }
+      ]
+    },
+    "after": {
+      "elapsedSeconds": 2.2310437999999997,
+      "externalCpuCores": 8.032776246008897,
+      "busiest": [
+        {
+          "name": "Diablo IV",
+          "id": 31420,
+          "cpuCores": 5.669529101669257,
+          "intervalSeconds": 2.1165779
+        },
+        {
+          "name": "worldserver",
+          "id": 35452,
+          "cpuCores": 0.9446338750241827,
+          "intervalSeconds": 2.1172223999999997
+        },
+        {
+          "name": "chrome",
+          "id": 8380,
+          "cpuCores": 0.47393185239108093,
+          "intervalSeconds": 2.110008
+        },
+        {
+          "name": "chrome",
+          "id": 40532,
+          "cpuCores": 0.47235111634518134,
+          "intervalSeconds": 2.1170692
+        },
+        {
+          "name": "System",
+          "id": 4,
+          "cpuCores": 0.472330300579195,
+          "intervalSeconds": 2.1171625
+        }
+      ]
+    }
+  },
+  "errors": []
+}

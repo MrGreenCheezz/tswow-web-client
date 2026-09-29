@@ -138,10 +138,23 @@ export const CLASS_FILE_NAMES: Readonly<Record<number, string>> = {
   [CLASS_DRUID]: "DRUID",
 };
 
+/**
+ * The stock `ChrRaces.ClientFileString` tokens (`UnitRace`'s second return), ten playable rows
+ * measured out of this dataset's `/dbc/character-creation`. Like `CLASS_FILE_NAMES`, the learned
+ * dataset rows replace these at runtime — the same answer lists twenty-one races, eleven of them
+ * TSWoW/unplayable rows (`FelOrc`, `Naga_`, `Broken`…) that no compiled table would know.
+ */
+export const RACE_FILE_NAMES: Readonly<Record<number, string>> = {
+  1: "Human", 2: "Orc", 3: "Dwarf", 4: "NightElf", 5: "Scourge", 6: "Tauren",
+  7: "Gnome", 8: "Troll", 10: "BloodElf", 11: "Draenei",
+};
+
 /** What the dataset said, once somebody has asked it. Empty until then. */
 const learnedClassNames = new Map<number, string>();
 const learnedRaceNames = new Map<number, string>();
 const learnedClassFiles = new Map<number, string>();
+const learnedRaceFiles = new Map<number, string>();
+const learnedRaceLanguages = new Map<number, number>();
 
 /**
  * Takes the dataset's own names for races and classes, from `/dbc/character-creation`.
@@ -153,16 +166,36 @@ const learnedClassFiles = new Map<number, string>();
  * `Класс 14` instead of showing nothing at all.
  */
 export function learnCreationNames(
-  races: ReadonlyArray<{ id: number; name: string }>,
+  races: ReadonlyArray<{ id: number; name: string; clientFileString?: string; baseLanguage?: number }>,
   classes: ReadonlyArray<{ id: number; name: string; fileName?: string }>,
 ): void {
   for (const race of races) {
     if (race.name) learnedRaceNames.set(race.id, race.name);
+    if (race.clientFileString) learnedRaceFiles.set(race.id, race.clientFileString);
+    // `ChrRaces.BaseLanguage`: 7 (Common) for the ten Alliance-side rows of this dataset and 1
+    // (Orcish) for the Horde ones, and 7 again for all eleven TSWoW rows (12..21) — which the
+    // compiled Alliance-race set in `languageForRace` would have called Orcish.
+    if (Number.isInteger(race.baseLanguage) && race.baseLanguage! > 0) {
+      learnedRaceLanguages.set(race.id, race.baseLanguage!);
+    }
   }
   for (const entry of classes) {
     if (entry.name) learnedClassNames.set(entry.id, entry.name);
     if (entry.fileName) learnedClassFiles.set(entry.id, entry.fileName);
   }
+}
+
+/**
+ * Whether `/dbc/character-creation`'s class list has been learned at all.
+ *
+ * Asked by the in-world FrameXML boot: a player of a TSWoW class (HERO is class 13 on this
+ * dataset) has no compiled `ChrClasses.Filename`, and stock `PaperDollFrame_SetStat` runs
+ * `strupper(select(2, UnitClass("player")))` with no nil guard, so the list has to be there before
+ * the paper doll first updates — a session that entered the world without passing the glue or the
+ * DOM creation screen never asked for it.
+ */
+export function creationClassFilesLearned(): boolean {
+  return learnedClassFiles.size > 0;
 }
 
 /**
@@ -176,6 +209,8 @@ export function forgetCreationNames(): void {
   learnedClassNames.clear();
   learnedRaceNames.clear();
   learnedClassFiles.clear();
+  learnedRaceFiles.clear();
+  learnedRaceLanguages.clear();
 }
 
 export function className(classId: number | undefined): string {
@@ -192,6 +227,17 @@ export function raceName(raceId: number | undefined): string {
 export function classFileName(classId: number | undefined): string | undefined {
   if (classId === undefined) return undefined;
   return learnedClassFiles.get(classId) ?? CLASS_FILE_NAMES[classId];
+}
+
+/** `ChrRaces.ClientFileString` for an id, learned first and compiled second. */
+export function raceFileName(raceId: number | undefined): string | undefined {
+  if (raceId === undefined) return undefined;
+  return learnedRaceFiles.get(raceId) ?? RACE_FILE_NAMES[raceId];
+}
+
+/** `ChrRaces.BaseLanguage` for an id, or undefined until the dataset has been asked. */
+export function raceBaseLanguage(raceId: number | undefined): number | undefined {
+  return raceId === undefined ? undefined : learnedRaceLanguages.get(raceId);
 }
 
 /**
@@ -398,7 +444,7 @@ export const CLASS_ATLAS_CELL_SIZE = 64;
 export const CLASS_ATLAS_DEFAULT_SIZE = 256;
 
 /**
- * Where to put the atlas behind a window of `size` pixels so that one cell shows through it.
+ * Where to put the atlas behind a `windowWidth` by `windowHeight` opening so one cell shows through.
  *
  * `object-fit: none` draws the image at its natural size, so the cell is selected by moving the
  * image rather than by scaling it — which keeps the icon pixel-exact at any frame width.
@@ -415,9 +461,10 @@ export const CLASS_ATLAS_DEFAULT_SIZE = 256;
  */
 export function classIconOffset(
   classId: number | undefined,
-  size: number,
+  windowWidth: number,
   atlasWidth: number = CLASS_ATLAS_DEFAULT_SIZE,
   atlasHeight: number = atlasWidth,
+  windowHeight: number = windowWidth,
 ): string | undefined {
   const cell = classIconCell(classId);
   if (!cell) return undefined;
@@ -425,8 +472,9 @@ export function classIconOffset(
   // first cell; the sheet this build knows about is a better guess than a certain collision.
   const width = atlasWidth > 0 ? atlasWidth : CLASS_ATLAS_DEFAULT_SIZE;
   const height = atlasHeight > 0 ? atlasHeight : CLASS_ATLAS_DEFAULT_SIZE;
-  const inset = (size - CLASS_ATLAS_CELL_SIZE) / 2;
-  return `${-Math.round(cell.left * width) + inset}px ${-Math.round(cell.top * height) + inset}px`;
+  const insetX = (windowWidth - CLASS_ATLAS_CELL_SIZE) / 2;
+  const insetY = (windowHeight - CLASS_ATLAS_CELL_SIZE) / 2;
+  return `${-Math.round(cell.left * width) + insetX}px ${-Math.round(cell.top * height) + insetY}px`;
 }
 
 /** The class's own corner of the sheet, by the `Filename` token the coordinates are keyed on. */
@@ -448,19 +496,25 @@ export function hasClassIcon(classId: number | undefined): boolean {
  * element to ask — a hidden one measures zero — and `classPortraitPosition` measures the rest.
  */
 export const CLASS_PORTRAIT_SIZE = 58;
+export const CLASS_MICRO_PORTRAIT_WIDTH = 18;
+export const CLASS_MICRO_PORTRAIT_HEIGHT = 25;
 
 /**
  * The same offset, for the image element that actually carries the sheet.
  *
- * `clientWidth` rather than the constant, because the constant is right on one of the stylesheet's
- * two boxes and wrong on the other: a 64px cell wants an inset of -9 in the 46px ring and -3 in the
- * 58px one, so centring on 58 while the ring is 46 puts the cell six pixels out on both axes, and
- * what shows in the strip that opens up is the neighbouring class's circle.
+ * The measured width and height rather than one constant matter twice: the unit-frame ring narrows
+ * from 58px to 46px, while the stock microbutton opening is rectangular (18px by 25px). Optional
+ * authored fallbacks keep both shapes correct when an ancestor is hidden and the browser reports
+ * zero for both client dimensions.
  */
 export function classPortraitPosition(
-  image: { clientWidth: number; naturalWidth: number; naturalHeight: number },
+  image: { clientWidth: number; clientHeight?: number; naturalWidth: number; naturalHeight: number },
   classId: number | undefined,
+  fallbackWidth: number = CLASS_PORTRAIT_SIZE,
+  fallbackHeight: number = fallbackWidth,
 ): string | undefined {
+  const width = image.clientWidth || fallbackWidth;
+  const height = image.clientHeight || fallbackHeight;
   return classIconOffset(
-    classId, image.clientWidth || CLASS_PORTRAIT_SIZE, image.naturalWidth, image.naturalHeight);
+    classId, width, image.naturalWidth, image.naturalHeight, height);
 }

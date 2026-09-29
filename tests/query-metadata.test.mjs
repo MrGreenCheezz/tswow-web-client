@@ -9,6 +9,83 @@ import { WorldClient } from "../dist/code/world/WorldClient.js";
 
 const GATEWAY = "ws://127.0.0.1:8090/auth";
 
+test("leaving repeated characters releases metadata subscriptions on a reused realm connection", async () => {
+  const { game, clearWorldContext } = await import("../dist/code/browser/game/Context.js");
+  const world = session();
+  let retiredRepaints = 0;
+  for (let i = 0; i < 20; i++) {
+    game.creatureMetadata = new CreatureMetadataClient(GATEWAY);
+    game.itemMetadata = new ItemMetadataClient(GATEWAY);
+    game.creatureMetadata.attach(world, () => retiredRepaints++);
+    game.itemMetadata.attach(world, () => retiredRepaints++);
+    clearWorldContext();
+  }
+  assert.equal(world.events.listenerCount("QUERY_CACHE_CHANGED"), 0,
+    "the connection must not retain 40 metadata clients after 20 character exits");
+  world.answerCreature({ entry: 45000, name: "Late creature" });
+  world.answerItem({ entry: 60000, name: "Late item" });
+  assert.equal(retiredRepaints, 0, "retired characters must not repaint the current HUD");
+
+  let currentRepaints = 0;
+  game.creatureMetadata = new CreatureMetadataClient(GATEWAY);
+  game.itemMetadata = new ItemMetadataClient(GATEWAY);
+  game.creatureMetadata.attach(world, () => currentRepaints++);
+  game.itemMetadata.attach(world, () => currentRepaints++);
+  world.answerCreature({ entry: 45000, name: "Current creature" });
+  world.answerItem({ entry: 60000, name: "Current item" });
+  assert.equal(currentRepaints, 2, "the replacement clients still receive their wire corrections");
+  clearWorldContext();
+  clearWorldContext();
+  assert.equal(world.events.listenerCount("QUERY_CACHE_CHANGED"), 0);
+});
+
+for (const Client of [CreatureMetadataClient, ItemMetadataClient]) {
+  test(`${Client.name} disposal cancels in-flight metadata and does not start another chunk`, async () => {
+    const original = globalThis.fetch;
+    const requests = [];
+    let complete;
+    globalThis.fetch = (_url, options) => {
+      requests.push(options);
+      return new Promise(resolve => { complete = resolve; });
+    };
+    try {
+      const client = new Client(GATEWAY);
+      const pending = client.load(Array.from({ length: 401 }, (_, i) => i + 1));
+      client.dispose();
+      assert.equal(requests[0].signal.aborted, true);
+      let bodyReads = 0;
+      complete({ ok: true, json: async () => { bodyReads++; return []; } });
+      assert.equal(await pending, false);
+      assert.equal(bodyReads, 0, "an obsolete response must not be decoded");
+      assert.equal(requests.length, 1, "remaining item chunks belong to the retired character");
+      assert.equal(client.stats.pending, 0);
+      assert.equal(await client.load([999]), false);
+      assert.equal(requests.length, 1);
+    } finally { globalThis.fetch = original; }
+  });
+  test(`${Client.name} ignores a response body that completes after disposal`, async () => {
+    const original = globalThis.fetch;
+    let finishBody;
+    let bodyStarted;
+    const reading = new Promise(resolve => { bodyStarted = resolve; });
+    globalThis.fetch = async () => ({ ok: true, json: () => {
+      bodyStarted();
+      return new Promise(resolve => { finishBody = resolve; });
+    } });
+    try {
+      const client = new Client(GATEWAY);
+      const pending = client.load([299]);
+      await reading;
+      client.dispose();
+      finishBody([{ entry: 299, name: "Retired", subname: "", type: 1, family: 0, rank: 0,
+        displayId: 1, quality: 1, inventoryType: 0, stackable: 1, iconId: 0 }]);
+      assert.equal(await pending, false);
+      assert.equal(client.get(299), undefined, "a retired cache must not be repopulated");
+      assert.equal(client.stats.pending, 0);
+    } finally { globalThis.fetch = original; }
+  });
+}
+
 /**
  * A world session that answers queries, modelled on `WorldClient` where it matters.
  *

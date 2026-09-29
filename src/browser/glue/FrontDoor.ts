@@ -1,0 +1,157 @@
+/**
+ * Which interface `index.html` opens with, and where the world sends the player back to.
+ *
+ * Deliberately the only module both halves of the client import: `app/Login.ts` needs to know
+ * where a player who just left the world belongs, and it must not drag the Lua VM into
+ * `index.html`'s main chunk to find out. So everything here is either a pure function or a
+ * one-slot registry, and nothing in this file imports anything at all — which is also what makes
+ * the whole truth table runnable in a node test with no DOM.
+ */
+
+export type FrontDoorMode = "glue" | "legacy";
+
+/**
+ * The console escape hatch, for a player who has to reach the old forms on a page they cannot
+ * put a query parameter on.
+ *
+ * `localStorage.setItem("webclient.frontDoor", "legacy")` and reload; `"glue"` or
+ * `localStorage.removeItem(...)` puts the GlueXML screens back. The query flag wins over it in
+ * both directions, so a link can always override whatever this browser remembers.
+ */
+export const FRONT_DOOR_STORAGE_KEY = "webclient.frontDoor";
+
+/** `?legacy-login=…`: the parity switch the plan promises («старый DOM-глю остаётся за флагом»). */
+export const LEGACY_LOGIN_PARAMETER = "legacy-login";
+
+/** Values a query flag may spell "yes" with. A bare `?legacy-login` is `""` and also means yes. */
+const TRUTHY = new Set(["", "1", "true", "yes", "on"]);
+const FALSY = new Set(["0", "false", "no", "off"]);
+
+/**
+ * Query flag first, then this browser's remembered choice, then the GlueXML screens.
+ *
+ * The flag is read in both directions on purpose: `?legacy-login=0` has to be able to undo a
+ * `localStorage` value set months ago from the console, or the escape hatch becomes a trap.
+ */
+export function frontDoorMode(search: string, stored?: string | null): FrontDoorMode {
+  const flag = new URLSearchParams(search).get(LEGACY_LOGIN_PARAMETER);
+  if (flag !== null) {
+    const value = flag.trim().toLowerCase();
+    if (TRUTHY.has(value)) return "legacy";
+    if (FALSY.has(value)) return "glue";
+  }
+  return stored?.trim().toLowerCase() === "legacy" ? "legacy" : "glue";
+}
+
+/** Reads the remembered choice without letting a locked-down browser take the page down with it. */
+export function storedFrontDoorMode(storage?: Pick<Storage, "getItem"> | null): string | null {
+  try {
+    return storage?.getItem(FRONT_DOOR_STORAGE_KEY) ?? null;
+  } catch {
+    // A browser with site data blocked throws on the *getter*, not on the read. The page still has
+    // a front door: the default one.
+    return null;
+  }
+}
+
+/**
+ * `?gateway=…` — the glue screens' answer to the DOM form's gateway field.
+ *
+ * The old login screen carried an editable address, and the GlueXML one has no such field: the
+ * corpus' `AccountLogin` knows about an account and a password and nothing else. So the override
+ * moves to the URL, where it is the same class of thing the text field was — something the person
+ * sitting at this browser types to point their own client somewhere else.
+ *
+ * Accepts what a player is likely to paste: a bare `host:port`, an `http(s)://` origin, or the
+ * `ws(s)://…/auth` URL the old field was pre-filled with. Anything else is refused rather than
+ * half-understood, and the page falls back to the compiled default.
+ */
+export function frontDoorGatewayOrigin(search: string): string | undefined {
+  const raw = new URLSearchParams(search).get("gateway")?.trim();
+  if (!raw) return undefined;
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
+    if (url.protocol === "ws:") url.protocol = "http:";
+    else if (url.protocol === "wss:") url.protocol = "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The WebSocket URL of one gateway route, from an http(s) origin. */
+export function gatewaySocketUrl(origin: string, route: string): string {
+  const url = new URL(route, origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
+}
+
+/** Why the client is leaving the world. Each one is a real path through `app/`. */
+export type WorldExit =
+  /** `SMSG_LOGOUT_COMPLETE`: the server sat the character down and let go of it. */
+  | "logout"
+  /** The world read loop threw — the socket is gone. */
+  | "connection-lost"
+  /** `enterWorld` failed before the world became usable. */
+  | "enter-failed"
+  /** The player asked for the login screen: a different account. */
+  | "relogin";
+
+export interface FrontDoorReturn {
+  readonly screen: "login" | "charselect";
+  /**
+   * Open the world connection again before listing characters.
+   *
+   * Not an optimisation to skip: `WorldClient.characters()` reads the socket directly through
+   * `#waitFor`, and once `loginCharacter` has started `#readWorld` there are two readers on one
+   * connection. Every return to the character list therefore gets a fresh connection, which is
+   * cheap (the session key is still valid, so it is a reconnect and not a re-login) and is the one
+   * rule that cannot be wrong regardless of how far into the world the client got.
+   */
+  readonly reconnect: boolean;
+  /** Drop the world connection object; the socket behind it is dead or is being replaced. */
+  readonly closeWorld: boolean;
+}
+
+/**
+ * Where each exit lands, given whether the glue session still has a realm to go back to.
+ *
+ * `realmSelected` is the session's own `selectedRealm`: without one there is nothing to reconnect
+ * to and nothing for `charselect` to draw, so the screen is the login one — which is also what the
+ * original does when a session dies under it.
+ */
+export function frontDoorReturn(exit: WorldExit, realmSelected: boolean): FrontDoorReturn {
+  if (exit === "relogin" || exit === "connection-lost") {
+    return { screen: "login", reconnect: false, closeWorld: true };
+  }
+  if (!realmSelected) return { screen: "login", reconnect: false, closeWorld: true };
+  // `connect()` closes the previous connection itself, so asking for both would close it twice.
+  return { screen: "charselect", reconnect: true, closeWorld: false };
+}
+
+/**
+ * What the world half of the client can ask of the glue half.
+ *
+ * Registered by `main.ts` after the glue runtime is up, so `app/Login.ts` can route a player out
+ * of the world without importing the runtime — and so that in legacy mode nothing is registered
+ * and every path keeps its old DOM behaviour by construction.
+ */
+export interface FrontDoorHost {
+  /** The world is about to cover the screen: stop the music, the 3D and the clock. */
+  enteringWorld(): void;
+  /** The world is over. Bring the right glue screen back. */
+  returnFromWorld(exit: WorldExit, message?: string): void;
+}
+
+let host: FrontDoorHost | undefined;
+
+/** Called once by the page that owns a glue runtime; `undefined` puts the DOM flow back in charge. */
+export function useFrontDoor(next: FrontDoorHost | undefined): void {
+  host = next;
+}
+
+/** The registered host, or `undefined` in legacy mode. */
+export function frontDoorHost(): FrontDoorHost | undefined {
+  return host;
+}

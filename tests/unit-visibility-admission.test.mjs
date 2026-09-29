@@ -5,7 +5,9 @@ import * as THREE from "three";
 
 import { selectUnitAdmission } from "../dist/code/browser/RenderAdmission.js";
 import {
+  compositeUnitVisibilityRadius,
   conservativeUnitVisibilityRadius,
+  UNIT_GEAR_SILHOUETTE_ALLOWANCE,
   unitSphereVisibleInFrustum,
   unitWireHasCompositeSilhouette,
 } from "../dist/code/browser/WorldRenderer3D.js";
@@ -154,10 +156,19 @@ test("renderer admission is lookup-free, current-only, and keeps culled resident
   assert.match(radius, /unitWireHasCompositeSilhouette\(object\)/,
     "live mount/equipment wire state is checked before retained model measurements");
   assert.match(radius, /unit\.body/);
-  assert.match(radius, /unit\.decodedModel \|\| unit\.legacyGeometry \|\| unit\.mount \|\| unit\.attached\.size > 0/,
-    "stand-ins, legacy bodies, mounts, and attached silhouettes all fail open");
-  assert.match(radius, /unit\.admissionHasAuthoredAttachments !== false/,
-    "authored attachments fail open even while their separate models are pending");
+  assert.match(radius, /unit\.decodedModel \|\| unit\.legacyGeometry\n/,
+    "stand-ins and legacy bodies fail open");
+  assert.doesNotMatch(radius, /\|\| unit\.mount \|\|/,
+    "a built mount is measured, not a reason to fail open");
+  assert.match(radius, /if \(mountDisplayId !== 0 \|\| unit\.mount\) \{\s*\/\/[^\n]*\n\s*if \(!unit\.mount\) return undefined;/,
+    "a mount on the wire fails open only until its model is built");
+  assert.match(radius, /mount = \{ radius, seat: unit\.mount\.seat \}/,
+    "the built mount's own sphere and saddle height widen the rider's sphere");
+  assert.match(radius, /unit\.admissionHasAuthoredAttachments === undefined/,
+    "an unsettled appearance fails open");
+  assert.match(radius, /const gear = unitWireHasCompositeSilhouette\(object\) \|\| unit\.attached\.size > 0\s*\|\| unit\.admissionHasAuthoredAttachments;/,
+    "wire gear, attached models and authored attachments widen the sphere by the gear allowance");
+  assert.match(radius, /return compositeUnitVisibilityRadius\(body, unit\.scale, gear, mount\);/);
   assert.match(radius, /unit\.wvm\.particleEmitters\.length > 0 \|\| unit\.wvm\.ribbonEmitters\.length > 0/,
     "separately rendered WVM emitters cannot be enclosed by the body bounds");
   assert.match(radius, /unit\.admissionDisplayId !== displayId \|\| unit\.admissionObjectScale !== objectScale/,
@@ -184,4 +195,23 @@ test("unit visibility hot helpers contain no transient array or callback iterati
   }
   assert.doesNotMatch(sphere, /\bfor\s*\([^)]*\bof\b/u,
     "sphere helper must use indexed plane passes without invoking an iterator");
+});
+
+test("gear and a built mount widen the body's sphere instead of failing open", () => {
+  assert.equal(compositeUnitVisibilityRadius(3, 1, false, undefined), 3, "a bare body keeps its own sphere");
+  assert.equal(compositeUnitVisibilityRadius(3, 1, true, undefined), 3 + UNIT_GEAR_SILHOUETTE_ALLOWANCE,
+    "held gear reaches a fixed distance past the body");
+  assert.equal(compositeUnitVisibilityRadius(3, 1.5, true, undefined), 3 + UNIT_GEAR_SILHOUETTE_ALLOWANCE * 1.5,
+    "a bigger unit holds bigger gear");
+  assert.equal(compositeUnitVisibilityRadius(3, 0.5, true, undefined), 3 + UNIT_GEAR_SILHOUETTE_ALLOWANCE,
+    "a smaller unit's gear is not assumed smaller");
+  assert.equal(compositeUnitVisibilityRadius(3, 1, false, { radius: 2, seat: 1.5 }), 4.5,
+    "a rider on a small mount is enclosed from the mount's feet, lifted by the saddle");
+  assert.equal(compositeUnitVisibilityRadius(3, 1, false, { radius: 9, seat: 1.5 }), 9,
+    "a big mount encloses its rider");
+  assert.equal(compositeUnitVisibilityRadius(3, 1, true, { radius: 9, seat: 1.5 }), 9 + UNIT_GEAR_SILHOUETTE_ALLOWANCE);
+  for (const bad of [
+    [Number.NaN, 1, false, undefined], [3, 0, false, undefined], [3, 1, false, { radius: Number.NaN, seat: 1 }],
+    [3, 1, false, { radius: 2, seat: -1 }], [-1, 1, false, undefined],
+  ]) assert.equal(compositeUnitVisibilityRadius(...bad), undefined, `fails open for ${JSON.stringify(bad)}`);
 });

@@ -29,6 +29,22 @@ const MAX_SIDE = 512;
 export const LIQUID_CLASSES = ["water", "ocean", "magma", "slime"];
 const SOUND_BANK = { water: 0, ocean: 1, magma: 2, slime: 3 };
 
+/**
+ * Resolves one animated family and also remembers the first frame that is not there yet.
+ *
+ * The missing path is an input just as much as the frames that exist: if a later patch adds it,
+ * the generated strip must grow instead of remaining a permanently cached shorter animation.
+ */
+export async function liquidFrameInputs(archives, pattern, limit = FRAMES) {
+  const paths = [];
+  for (let frame = 1; frame <= limit; frame++) {
+    const path = pattern.replace("%d", String(frame));
+    if (!await archives.has(path)) return { paths, stampPaths: [...paths, path] };
+    paths.push(path);
+  }
+  return { paths, stampPaths: paths };
+}
+
 /** The texture family for one class, taken from the lowest-numbered row that names one. */
 export async function liquidTexturePattern(directory, liquidClass) {
   const bank = SOUND_BANK[liquidClass];
@@ -56,20 +72,19 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const pattern = await liquidTexturePattern(dbcDirectory(), liquidClass);
   const archives = await clientArchives(clientDirectory());
   const frames = [];
-  const framePaths = [];
-  for (let frame = 1; frame <= FRAMES; frame++) {
-    const blp = await archives.read(pattern.replace("%d", String(frame)));
-    if (!blp) break;
-    framePaths.push(pattern.replace("%d", String(frame)));
+  const { paths: framePaths, stampPaths } = await liquidFrameInputs(archives, pattern);
+  for (const path of framePaths) {
+    const blp = await archives.read(path);
+    if (!blp) throw new Error(`${path} disappeared while the liquid strip was being generated`);
     const decoded = decodeBlp(blp);
-    if (decoded.width > MAX_SIDE || decoded.height > MAX_SIDE) throw new Error(`${pattern} frame ${frame} is ${decoded.width}x${decoded.height}`);
+    if (decoded.width > MAX_SIDE || decoded.height > MAX_SIDE) throw new Error(`${path} is ${decoded.width}x${decoded.height}`);
     if (frames.length > 0 && (decoded.width !== frames[0].width || decoded.height !== frames[0].height)) {
-      throw new Error(`${pattern} frame ${frame} is a different size from frame 1`);
+      throw new Error(`${path} is a different size from frame 1`);
     }
     frames.push(decoded);
   }
-  // All thirty frames, because a module that replaces any one of them changes the strip.
-  const stamp = await sourceStamp(archives, { paths: framePaths, files: [join(dbcDirectory(), "LiquidType.dbc")] });
+  // Every present frame plus the first absence: changing either changes the strip.
+  const stamp = await sourceStamp(archives, { paths: stampPaths, files: [join(dbcDirectory(), "LiquidType.dbc")] });
   archives.close();
   if (frames.length === 0) throw new Error(`${pattern} has no frames in the client`);
 

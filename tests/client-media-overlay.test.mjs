@@ -1,147 +1,212 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
-  AUDIO_DBC_FILES, VISUAL_DBC_FILES, selectClientMediaOverlay,
+  AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES, selectClientMediaOverlay,
 } from "../dist/code/gateway/ClientMediaOverlay.js";
-import { openClientArchives } from "../tools/mpq.mjs";
-import { sourceStamp, writeSourceStamp } from "../tools/source-stamp.mjs";
+import {
+  CLIENT_MEDIA_DBC_TABLES, PLAYABLE_CHARACTER_PROFILES, extractClientMediaDbcs,
+} from "../tools/extract-visual-dbc-overlay.mjs";
 
-const ALL_DBC_FILES = [...VISUAL_DBC_FILES, ...AUDIO_DBC_FILES];
-
-async function writePack(client, name, generation) {
-  const directory = join(client, "Data", name, "DBFilesClient");
-  await mkdir(directory, { recursive: true });
-  for (const file of ALL_DBC_FILES) await writeFile(join(directory, file), `${generation}:${file}`);
+function modelBytes(marker = "") {
+  const model = Buffer.alloc(0x140);
+  model.write("MD20", 0, "ascii");
+  model.writeUInt32LE(264, 4);
+  model.write(marker.slice(0, 16), 0x130, "ascii");
+  return model;
 }
 
-async function extractStamped(client, destination) {
-  await mkdir(destination, { recursive: true });
-  const chain = await openClientArchives(client);
-  try {
-    for (const file of ALL_DBC_FILES) {
-      const path = `DBFilesClient\\${file}`;
-      const payload = await chain.read(path);
-      assert.ok(payload, `${path} exists in the synthetic visual pack`);
-      const output = join(destination, file);
-      await writeFile(output, payload);
-      await writeSourceStamp(output, await sourceStamp(chain, { paths: [path] }));
-    }
-  } finally {
-    chain.close();
+function skinBytes(geosets) {
+  const skin = Buffer.alloc(48 + geosets.length * 48);
+  skin.write("SKIN", 0, "ascii");
+  skin.writeUInt32LE(geosets.length, 0x1c);
+  skin.writeUInt32LE(48, 0x20);
+  for (const [index, geoset] of geosets.entries()) {
+    const at = 48 + index * 48;
+    skin.writeUInt16LE(geoset, at);
+    skin.writeUInt16LE(3, at + 10);
+  }
+  return skin;
+}
+
+async function writePack(client, name, generation, profile = () => "classic") {
+  const patch = join(client, "Data", name);
+  const dbcDirectory = join(patch, "DBFilesClient");
+  await mkdir(dbcDirectory, { recursive: true });
+  for (const table of CLIENT_MEDIA_DBC_TABLES) {
+    await writeFile(join(dbcDirectory, `${table}.dbc`), `${generation}:${table}`);
+  }
+  for (const definition of PLAYABLE_CHARACTER_PROFILES) {
+    await mkdir(dirname(join(patch, definition.modelPath)), { recursive: true });
+    await writeFile(join(patch, definition.modelPath), modelBytes(generation));
+    await writeFile(join(patch, definition.skinPath), skinBytes(
+      profile(definition) === "coordinated" ? [0, ...definition.requiredGeosets] : [0],
+    ));
   }
 }
 
-test("automatic client-media DBCs fail closed after an HD to classic switch", async () => {
-  const client = await mkdtemp(join(tmpdir(), "webclient-media-client-"));
-  const overlay = await mkdtemp(join(tmpdir(), "webclient-media-overlay-"));
+test("automatic media generations follow coordinated and classic client switches", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-media-overlay-switch-"));
+  const client = join(root, "client");
+  const output = join(root, "visual-dbc");
   try {
-    await writePack(client, "patch-W.MPQ", "HD");
-    await extractStamped(client, overlay);
-
+    await writePack(client, "patch-ruRU-G.MPQ", "HD", () => "coordinated");
+    const hdGeneration = await extractClientMediaDbcs({ clientDirectory: client, outputDirectory: output });
     const selected = await selectClientMediaOverlay({
-      candidate: overlay,
+      candidate: hdGeneration,
       explicit: false,
       clientDirectory: client,
     });
-    assert.equal(selected.visualDbcDirectory, overlay);
-    assert.equal(selected.audioDbcDirectory, overlay);
+    assert.equal(selected.visualDbcDirectory, hdGeneration);
+    assert.equal(selected.audioDbcDirectory, hdGeneration);
     assert.equal(selected.coordinatedVisuals, true,
-      "patch-W provenance opts into the matching model-specific geoset policy");
+      "structural profile enables the policy under a localized arbitrary letter");
 
-    // The operator removes the HD pack but deliberately leaves the ignored extracted directory.
-    // Classic tables now win the same paths from the ordinary numeric patch chain.
-    await rm(join(client, "Data", "patch-W.MPQ"), { recursive: true, force: true });
+    await rm(join(client, "Data", "patch-ruRU-G.MPQ"), { recursive: true, force: true });
     await writePack(client, "patch-3.MPQ", "CLASSIC");
     const reports = [];
-    const fallback = await selectClientMediaOverlay({
-      candidate: overlay,
+    assert.deepEqual(await selectClientMediaOverlay({
+      candidate: hdGeneration,
       explicit: false,
       clientDirectory: client,
       report: (message) => reports.push(message),
-    });
-    assert.deepEqual(fallback, {}, "stale HD rows must not be paired with classic model archives");
-    assert.ok(reports.some((message) => /stale visual DBCs/i.test(message)));
-    assert.equal(await readFile(join(overlay, "CreatureModelData.dbc"), "utf8"),
-      "HD:CreatureModelData.dbc", "selection is fail-closed and does not destroy the extracted pack");
+    }), {});
+    assert.ok(reports.some((message) => /stale visual DBCs or media profile/i.test(message)));
+    assert.equal(await readFile(join(hdGeneration, "CreatureModelData.dbc"), "utf8"),
+      "HD:CreatureModelData", "selection leaves the old immutable generation intact");
 
-    // Explicit configuration remains available for a pre-extracted deployment without CLIENT_DIR.
-    const explicit = await selectClientMediaOverlay({ candidate: overlay, explicit: true });
-    assert.equal(explicit.visualDbcDirectory, overlay);
-    assert.equal(explicit.audioDbcDirectory, overlay);
+    const explicit = await selectClientMediaOverlay({ candidate: hdGeneration, explicit: true });
     assert.equal(explicit.coordinatedVisuals, true,
-      "the explicit stale HD override retains its positively stamped profile");
+      "an explicit pre-extracted deployment trusts its schema-2 structural profile");
 
-    await extractStamped(client, overlay);
+    const classicGeneration = await extractClientMediaDbcs({ clientDirectory: client, outputDirectory: output });
     const classic = await selectClientMediaOverlay({
-      candidate: overlay,
+      candidate: classicGeneration,
       explicit: false,
       clientDirectory: client,
     });
-    assert.equal(classic.visualDbcDirectory, overlay);
-    assert.equal(classic.audioDbcDirectory, overlay);
-    assert.equal(classic.coordinatedVisuals, undefined,
-      "a freshly extracted classic overlay remains free of patch-W-only geoset policy");
-  } finally {
-    await rm(client, { recursive: true, force: true });
-    await rm(overlay, { recursive: true, force: true });
-  }
-});
-
-test("automatic client-media DBCs fail closed when the client archive chain cannot be read", async () => {
-  const root = await mkdtemp(join(tmpdir(), "webclient-overlay-unreadable-"));
-  const overlay = join(root, "visual-dbc");
-  const missingClient = join(root, "missing-client");
-  await mkdir(overlay, { recursive: true });
-  for (const file of [...VISUAL_DBC_FILES, ...AUDIO_DBC_FILES]) {
-    await writeFile(join(overlay, file), file);
-    await writeFile(`${join(overlay, file)}.src`, JSON.stringify({
-      chain: "unverifiable",
-      sources: [],
-      files: [],
-    }));
-  }
-
-  const warnings = [];
-  try {
-    assert.deepEqual(await selectClientMediaOverlay({
-      candidate: overlay,
-      explicit: false,
-      clientDirectory: missingClient,
-      report: (message) => warnings.push(message),
-    }), {});
-    assert.ok(warnings.some((message) => message.includes("nothing is being watched")));
-    assert.ok(warnings.some((message) => message.includes("Not using stale visual DBCs")));
+    assert.equal(classic.visualDbcDirectory, classicGeneration);
+    assert.equal(classic.audioDbcDirectory, classicGeneration);
+    assert.equal(classic.coordinatedVisuals, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("automatic client-media DBCs fail closed on malformed provenance records", async () => {
-  const root = await mkdtemp(join(tmpdir(), "webclient-overlay-malformed-"));
+test("classic generation is rejected after a coordinated pack becomes active", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-media-classic-to-hd-"));
   const client = join(root, "client");
-  const overlay = join(root, "visual-dbc");
-  await writePack(client, "patch-W.MPQ", "HD");
-  await mkdir(overlay, { recursive: true });
-  for (const file of ALL_DBC_FILES) {
-    await writeFile(join(overlay, file), file);
-    await writeFile(`${join(overlay, file)}.src`, JSON.stringify({
-      chain: "syntactically-present",
-      sources: [null],
-      files: [],
-    }));
-  }
-
+  const output = join(root, "visual-dbc");
   try {
-    await assert.doesNotReject(async () => {
-      assert.deepEqual(await selectClientMediaOverlay({
-        candidate: overlay,
+    await writePack(client, "patch-3.MPQ", "CLASSIC");
+    const classicGeneration = await extractClientMediaDbcs({ clientDirectory: client, outputDirectory: output });
+    await writePack(client, "patch-F.MPQ", "HD", () => "coordinated");
+    await assert.rejects(
+      selectClientMediaOverlay({
+        candidate: classicGeneration,
         explicit: false,
         clientDirectory: client,
-      }), {});
+      }),
+      /coordinated extended-geoset visual profile.*does not match/is,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("coordinated pack without an extracted generation fails closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-media-missing-"));
+  const client = join(root, "client");
+  try {
+    await writePack(client, "patch-A.MPQ", "HD", () => "coordinated");
+    await assert.rejects(
+      selectClientMediaOverlay({
+        candidate: join(root, "missing-overlay"),
+        explicit: false,
+        clientDirectory: client,
+      }),
+      /coordinated extended-geoset visual profile.*structural profile/is,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("mixed playable model profiles are rejected before overlay selection", async () => {
+  for (const [name, profile] of [
+    ["one", (definition) => definition.name === "HumanMale" ? "coordinated" : "classic"],
+    ["two", (definition) => ["HumanMale", "HumanFemale"].includes(definition.name)
+      ? "coordinated" : "classic"],
+    ["classic-inside-hd", (definition) => definition.name === "NightElfMale"
+      ? "classic" : "coordinated"],
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), `webclient-media-mixed-${name}-`));
+    try {
+      const client = join(root, "client");
+      await writePack(client, "patch-Z.MPQ", name, profile);
+      await assert.rejects(
+        selectClientMediaOverlay({
+          candidate: join(root, "missing-overlay"),
+          explicit: false,
+          clientDirectory: client,
+        }),
+        /mix incompatible classic and extended playable model profiles/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("model-only publish makes the profile stale even when all nine DBCs are unchanged", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-media-profile-stale-"));
+  const client = join(root, "client");
+  const output = join(root, "visual-dbc");
+  try {
+    await writePack(client, "patch-D.MPQ", "CLASSIC");
+    const generation = await extractClientMediaDbcs({ clientDirectory: client, outputDirectory: output });
+    const human = PLAYABLE_CHARACTER_PROFILES[0];
+    await writeFile(join(client, "Data", "patch-D.MPQ", human.modelPath), modelBytes("NEW-MODEL"));
+    const reports = [];
+    const selected = await selectClientMediaOverlay({
+      candidate: generation,
+      explicit: false,
+      clientDirectory: client,
+      report: (message) => reports.push(message),
     });
+    assert.equal(selected.visualDbcDirectory, undefined);
+    assert.equal(selected.audioDbcDirectory, generation,
+      "a model-only change does not stale the independently stamped audio lookup");
+    assert.ok(reports.some((message) => /media profile/i.test(message)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic selection fails closed on malformed DBC and profile provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "webclient-media-malformed-"));
+  const client = join(root, "client");
+  const overlay = join(root, "overlay");
+  try {
+    await writePack(client, "patch-3.MPQ", "CLASSIC");
+    await mkdir(overlay, { recursive: true });
+    for (const file of [...VISUAL_DBC_FILES, ...AUDIO_DBC_FILES]) {
+      await writeFile(join(overlay, file), file);
+      await writeFile(`${join(overlay, file)}.src`, JSON.stringify({
+        chain: "malformed", sources: [null], files: [],
+      }));
+    }
+    await writeFile(join(overlay, CLIENT_MEDIA_PROFILE_FILE), JSON.stringify({
+      schema: 2, compatibility: "classic", coordinatedVisuals: false,
+    }));
+    await writeFile(`${join(overlay, CLIENT_MEDIA_PROFILE_FILE)}.src`, "not-json");
+    assert.deepEqual(await selectClientMediaOverlay({
+      candidate: overlay,
+      explicit: false,
+      clientDirectory: client,
+    }), {});
   } finally {
     await rm(root, { recursive: true, force: true });
   }

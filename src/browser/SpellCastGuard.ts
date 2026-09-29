@@ -11,27 +11,55 @@ export type SpellCastBlockReason =
   | "unknown"
   | "passive"
   | "cooldown"
+  /** Held until its aura ends (`WorldClient.isSpellOnHold`): the realm answers NOT_READY, and there is no sweep. */
+  | "hold"
   | "global-cooldown"
-  | "power";
+  | "power"
+  | "dead";
 
 /** `POWER_HEALTH` in TrinityCore's spell power enum. */
 const POWER_HEALTH = -2;
+const costFieldBits = new DataView(new ArrayBuffer(4));
 
 /**
- * The unmodified resource cost represented by a DBC row, in the same raw units as update fields.
- * Flat cost and percentage cost are alternatives in WotLK data, never a sum. `undefined` means
- * the client lacks enough information to preflight safely and must let the server decide.
- * This is intentionally an unmodified estimate: aura, talent and class-specific cost modifiers
- * are not reconstructed from the update stream and therefore must not be invented here.
+ * The resource cost represented by a DBC row and the visible school aura update fields, in the
+ * same raw units as the power update fields. SpellInfo::CalcPowerCost starts with ManaCost, adds
+ * ManaCostPct of the caster's base power, applies the flat school modifier, then the school
+ * multiplier. Spell-family modifiers are handled by spellPowerAvailable below.
+ * `undefined` means the client lacks enough information to preflight safely and lets the server decide.
  */
 export function spellPowerCost(
-  metadata: Pick<SpellMetadata, "powerType" | "powerCost" | "powerCostPercent">,
+  metadata: Pick<SpellMetadata, "powerType" | "powerCost" | "powerCostPercent" | "schoolMask">,
   self: WorldObjectState,
 ): number | undefined {
-  if (metadata.powerCost > 0) return metadata.powerCost;
-  if (metadata.powerCostPercent <= 0 || !Number.isFinite(metadata.powerCostPercent)) return 0;
-  const base = spellPowerBase(metadata.powerType, self);
-  return base === undefined ? undefined : Math.floor(base * metadata.powerCostPercent / 100);
+  if (!Number.isFinite(metadata.powerCost) || !Number.isFinite(metadata.powerCostPercent)) return undefined;
+  const flat = metadata.powerCost;
+  let cost = flat;
+  if (metadata.powerCostPercent !== 0 && metadata.powerType !== POWER.rune && metadata.powerType !== POWER.runicPower) {
+    const base = spellPowerBase(metadata.powerType, self);
+    if (base === undefined) return undefined;
+    cost += Math.trunc(base * metadata.powerCostPercent / 100);
+  }
+  // The selected core logs this percentage path as unimplemented for both rune power types;
+  // it uses ManaCost alone rather than a speculative max-power field.
+  const school = firstSpellSchool(metadata.schoolMask);
+  if (school === undefined) return undefined;
+  const flatSchool = self.fields.get(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MODIFIER.offset + school);
+  const multiplierBits = self.fields.get(UPDATE_FIELDS.UNIT_FIELD_POWER_COST_MULTIPLIER.offset + school);
+  costFieldBits.setUint32(0, multiplierBits ?? 0, true);
+  const multiplier = costFieldBits.getFloat32(0, true);
+  if (!Number.isFinite(multiplier)) return undefined;
+  // The update stream stores the signed flat modifier as an unsigned 32-bit slot. Match the
+  // core's float32 multiplication before truncating to int32 so boundary values stay aligned.
+  cost = Math.trunc(Math.fround(Math.fround(cost + ((flatSchool ?? 0) | 0)) * Math.fround(1 + multiplier)));
+  return Math.max(0, cost);
+}
+
+function firstSpellSchool(mask: number): number | undefined {
+  if (!Number.isInteger(mask)) return undefined;
+  for (let school = 0; school < 7; school++) if ((mask & (1 << school)) !== 0) return school;
+  // GetFirstSchoolInMask falls back to SPELL_SCHOOL_NORMAL for an empty/unknown mask.
+  return 0;
 }
 
 /** The current pool for the spell's declared power type, not the unit's active display type. */
@@ -47,7 +75,7 @@ export function spellPowerPool(
 /** Whether this spell's known flat/percent cost fits its matching current resource pool. */
 export function spellPowerAvailable(
   world: WorldClient,
-  metadata: Pick<SpellMetadata, "powerType" | "powerCost" | "powerCostPercent">,
+  metadata: Pick<SpellMetadata, "powerType" | "powerCost" | "powerCostPercent" | "schoolMask">,
 ): boolean {
   const selfGuid = world.state.selfGuid;
   const self = selfGuid === undefined ? undefined : world.state.objects.get(selfGuid);
@@ -55,15 +83,19 @@ export function spellPowerAvailable(
   const cost = spellPowerCost(metadata, self);
   const pool = spellPowerPool(metadata, self);
   // Unknown fields/power types are deliberately allowed: the realm has the authoritative values.
-  return cost === undefined || pool === undefined || cost <= pool;
+  if (cost === undefined || pool === undefined || cost <= pool) return true;
+  // SMSG_SET_*_SPELL_MODIFIER has a SPELLMOD_COST aggregate but omits its source aura, family,
+  // charges and conditional applicability. A local denial would be a guess while any cost mod
+  // is active; send the cast and let SpellInfo::CalcPowerCost make the authoritative decision.
+  for (const modifier of world.spellModifiers.values()) if (modifier.op === 14) return true;
+  return false;
 }
 
 function spellPowerBase(powerType: number, self: WorldObjectState): number | undefined {
   if (powerType === POWER.mana) return readField(self, "UNIT_FIELD_BASE_MANA");
   if (powerType === POWER_HEALTH) return readField(self, "UNIT_FIELD_BASE_HEALTH");
-  // Rune power has no reliable max-power base in the client update stream; leave percentage
-  // costs unknown so the realm remains authoritative rather than guessing from a stale slot.
-  if (!Number.isInteger(powerType) || powerType < POWER.mana || powerType > POWER.runicPower || powerType === POWER.rune) return undefined;
+  if (!Number.isInteger(powerType) || powerType < POWER.mana || powerType > POWER.runicPower
+    || powerType === POWER.rune || powerType === POWER.runicPower) return undefined;
   return self.fields.get(UPDATE_FIELDS.UNIT_FIELD_MAXPOWER1.offset + powerType);
 }
 
@@ -89,7 +121,14 @@ export function spellCastBlockReason(
   // Reapplying the currently active mount is a cancel-only operation. Its old spell recovery,
   // global cooldown and power cost must not make the toggle unavailable.
   if (typeof world.isActiveMountSpell === "function" && world.isActiveMountSpell(spellId)) return undefined;
+  // Dead characters cast nothing: the server would refuse, but a local notice beats silence.
+  // Silence/stun/disarm/school-lock prechecks stay server-authoritative: the update stream
+  // carries no mechanic table, and inventing flag bits would block legal casts.
+  const selfGuid = world.controlledGuid ?? world.state.selfGuid;
+  const self = selfGuid === undefined ? undefined : world.state.objects.get(selfGuid);
+  if (self && (self.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset) ?? 1) <= 0) return "dead";
   if (world.cooldownRemaining(spellId, now) > 0) return "cooldown";
+  if (world.isSpellOnHold?.(spellId)) return "hold";
   if (metadata.startRecoveryTime > 0 && game.globalCooldownUntil > now) return "global-cooldown";
 
   if (!spellPowerAvailable(world, metadata)) return "power";

@@ -86,19 +86,32 @@ test("distinct WMO parents share one canonical URL request but keep exact materi
   }
 });
 
-test("canonical WMO bases receive the shared sampling policy immediately", () => {
-  const texture = new THREE.Texture();
-  const before = texture.version;
-  configureWmoCanonicalTexture(texture, 16);
-  const configured = texture.version;
-  assert.equal(texture.colorSpace, THREE.SRGBColorSpace);
-  assert.equal(texture.wrapS, THREE.RepeatWrapping);
-  assert.equal(texture.wrapT, THREE.RepeatWrapping);
-  assert.equal(texture.flipY, false);
-  assert.equal(texture.anisotropy, 16);
-  assert.ok(configured > before, "the configured canonical base is marked for upload");
-  configureWmoCanonicalTexture(texture, 16);
-  assert.equal(texture.version, configured,
+test("canonical WMO bases defer empty-texture uploads but configure loaded textures", () => {
+  const pending = new THREE.Texture();
+  const pendingBefore = pending.version;
+  configureWmoCanonicalTexture(pending, 16);
+  assert.equal(pending.image, null);
+  assert.equal(pending.version, pendingBefore,
+    "an empty base must not be marked for upload before its image arrives");
+  assert.equal(pending.colorSpace, THREE.SRGBColorSpace);
+  assert.equal(pending.wrapS, THREE.RepeatWrapping);
+  assert.equal(pending.wrapT, THREE.RepeatWrapping);
+  assert.equal(pending.flipY, false);
+  assert.equal(pending.anisotropy, 16);
+
+  const loaded = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const loadedBefore = loaded.version;
+  configureWmoCanonicalTexture(loaded, 16);
+  const configured = loaded.version;
+  assert.notEqual(loaded.image, null);
+  assert.equal(loaded.colorSpace, THREE.SRGBColorSpace);
+  assert.equal(loaded.wrapS, THREE.RepeatWrapping);
+  assert.equal(loaded.wrapT, THREE.RepeatWrapping);
+  assert.equal(loaded.flipY, false);
+  assert.equal(loaded.anisotropy, 16);
+  assert.ok(configured > loadedBefore, "a loaded canonical base is marked for upload");
+  configureWmoCanonicalTexture(loaded, 16);
+  assert.equal(loaded.version, configured,
     "repeating the same canonical policy does not provoke another upload");
 });
 

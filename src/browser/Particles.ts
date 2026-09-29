@@ -134,17 +134,26 @@ export function sampleTrack(
   sequence?: number,
 ): number {
   if (!track || track.tracks.length === 0) return fallback;
-  const sub = sequence === undefined || track.globalSequence >= 0
-    ? track.tracks[0]
-    : track.tracks.find((candidate) => candidate.sequence === sequence);
+  // Runs for every emitter and every particle of a frame: no closures and no `find` callback here,
+  // which were a third of a crowded city's per-frame garbage between them (bench heap profile).
+  let sub = track.tracks[0];
+  if (sequence !== undefined && track.globalSequence < 0) {
+    sub = undefined;
+    for (let index = 0; index < track.tracks.length; index++) {
+      if (track.tracks[index]!.sequence === sequence) {
+        sub = track.tracks[index];
+        break;
+      }
+    }
+  }
   // No keys for the sequence being played is not "invisible": it is "this track says nothing while
   // that plays", and what it says instead is the caller's own default.
   if (!sub) return fallback;
   const keys = sub.times.length;
   if (keys === 0) return fallback;
   const components = Math.max(1, track.components);
-  const value = (index: number): number => sub.values[index * components + component] ?? fallback;
-  if (keys === 1) return value(0);
+  const values = sub.values;
+  if (keys === 1) return values[component] ?? fallback;
 
   const span = sub.times[keys - 1]! - sub.times[0]!;
   let time: number;
@@ -155,17 +164,19 @@ export function sampleTrack(
     time = span > 0 ? sub.times[0]! + (animationMs % span) : animationMs;
   }
 
-  if (time <= sub.times[0]!) return value(0);
-  if (time >= sub.times[keys - 1]!) return value(keys - 1);
+  if (time <= sub.times[0]!) return values[component] ?? fallback;
+  if (time >= sub.times[keys - 1]!) return values[(keys - 1) * components + component] ?? fallback;
   let index = 0;
   while (index + 1 < keys && sub.times[index + 1]! <= time) index++;
   const from = sub.times[index]!;
   const to = sub.times[index + 1]!;
+  const start = values[index * components + component] ?? fallback;
   // Interpolation 0 is a step; 1 is linear, and 2 and 3 are Hermite and Bezier, whose tangents the
   // artifact does not carry. Linear is what is left, and it is what the reference clients do too.
-  if (track.interpolation === 0 || to <= from) return value(index);
+  if (track.interpolation === 0 || to <= from) return start;
   const fraction = (time - from) / (to - from);
-  return value(index) + (value(index + 1) - value(index)) * fraction;
+  const end = values[(index + 1) * components + component] ?? fallback;
+  return start + (end - start) * fraction;
 }
 
 /**
@@ -186,14 +197,16 @@ export function sampleRamp(ramp: WvmRamp | undefined, life: number, out: number[
   for (let part = 0; part < out.length; part++) out[part] = fallback;
   if (!ramp || keys === 0) return out;
 
-  const read = (key: number, part: number): number => ramp.values[key * components + part] ?? fallback;
+  // Four ramps per particle per frame: the key reads are inlined rather than a closure per call.
+  const values = ramp.values;
   const clamped = life < 0 ? 0 : life > 1 ? 1 : life;
   if (keys === 1 || clamped <= ramp.times[0]!) {
-    for (let part = 0; part < out.length; part++) out[part] = read(0, Math.min(part, components - 1));
+    for (let part = 0; part < out.length; part++) out[part] = values[Math.min(part, components - 1)] ?? fallback;
     return out;
   }
   if (clamped >= ramp.times[keys - 1]!) {
-    for (let part = 0; part < out.length; part++) out[part] = read(keys - 1, Math.min(part, components - 1));
+    const last = (keys - 1) * components;
+    for (let part = 0; part < out.length; part++) out[part] = values[last + Math.min(part, components - 1)] ?? fallback;
     return out;
   }
   let index = 0;
@@ -201,9 +214,12 @@ export function sampleRamp(ramp: WvmRamp | undefined, life: number, out: number[
   const from = ramp.times[index]!;
   const to = ramp.times[index + 1]!;
   const fraction = to > from ? (clamped - from) / (to - from) : 0;
+  const first = index * components;
+  const second = (index + 1) * components;
   for (let part = 0; part < out.length; part++) {
     const at = Math.min(part, components - 1);
-    out[part] = read(index, at) + (read(index + 1, at) - read(index, at)) * fraction;
+    const start = values[first + at] ?? fallback;
+    out[part] = start + ((values[second + at] ?? fallback) - start) * fraction;
   }
   return out;
 }
@@ -235,8 +251,8 @@ export interface EmitterFrame {
   /** Milliseconds on the world's clock, for tracks that are. */
   worldMs: number;
   /** Optional start clocks used only by an explicit async catch-up. */
-  animationStartMs?: number;
-  worldStartMs?: number;
+  animationStartMs?: number | undefined;
+  worldStartMs?: number | undefined;
 }
 
 export interface ParticleSystem {
@@ -1029,8 +1045,11 @@ export function writeParticleQuads(
     // other way: cell 0 is the top-left tile, not the bottom-left one.
     const v0 = 1 - (row + 1) / rows;
     const v1 = 1 - row / rows;
+    // Element by element: `set` would take a fresh eight-number array for every particle, every frame.
     const uvAt = quads * 8;
-    buffers.uvs.set([u0, v0, u1, v0, u1, v1, u0, v1], uvAt);
+    const uvs = buffers.uvs;
+    uvs[uvAt] = u0; uvs[uvAt + 1] = v0; uvs[uvAt + 2] = u1; uvs[uvAt + 3] = v0;
+    uvs[uvAt + 4] = u1; uvs[uvAt + 5] = v1; uvs[uvAt + 6] = u0; uvs[uvAt + 7] = v1;
 
     const colorAt = quads * 16;
     for (let corner = 0; corner < 4; corner++) {
@@ -1207,7 +1226,10 @@ export function writeRibbonStrip(system: RibbonSystem, buffers: QuadBuffers): nu
 
     const uNear = Math.min(1, Math.max(0, 1 - near.age / lifetime));
     const uFar = Math.min(1, Math.max(0, 1 - far.age / lifetime));
-    buffers.uvs.set([uNear, 0, uFar, 0, uFar, 1, uNear, 1], quads * 8);
+    const uvAt = quads * 8;
+    const uvs = buffers.uvs;
+    uvs[uvAt] = uNear; uvs[uvAt + 1] = 0; uvs[uvAt + 2] = uFar; uvs[uvAt + 3] = 0;
+    uvs[uvAt + 4] = uFar; uvs[uvAt + 5] = 1; uvs[uvAt + 6] = uNear; uvs[uvAt + 7] = 1;
 
     // An edge fades out over its own life, so the trail thins towards its tail rather than ending
     // at a hard edge the moment it is retired.

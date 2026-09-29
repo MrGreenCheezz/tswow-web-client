@@ -14,15 +14,19 @@
  */
 
 import { game } from "../game/Context.js";
+import { frameXmlFriendsPublished, openFrameXmlFriends } from "../framexml/FrameXmlFriendsController.js";
 import { systemLine } from "./Chat.js";
 import {
   guildInviteText, guildInviteWindow, guildMessage, guildMotd, guildRoster, guildTitle, guildWindow,
 } from "./Dom.js";
 import {
-  GUILD_RIGHT_LABELS, eventLogLines, hasGuildRight, lastSeenText, rankLabel, rankRows, sortRoster,
+  GR_RIGHT_WITHDRAW_GOLD, GR_RIGHT_WITHDRAW_REPAIR, GUILD_RIGHT_LABELS, eventLogLines, hasGuildRight,
+  lastSeenText, rankLabel, rankRows, sortRoster,
 } from "./GuildModel.js";
 import { Tabs, confirmPanel, showMenu, type MenuItem } from "./Widgets.js";
 import { className } from "./UnitSnapshot.js";
+import { formatMoney } from "./Format.js";
+import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
 
 const TABS = [
   { id: "roster", title: "Состав" },
@@ -33,6 +37,25 @@ const TABS = [
 let tabs: Tabs | undefined;
 let closedByPlayer = false;
 let logRequested = false;
+
+/** `GR_GUILDMASTER` (TrinityCore Guild.h): the one rank whose allowance is unlimited. */
+const GUILD_MASTER_RANK = 0;
+
+/**
+ * A rank's daily gold allowance (`BankMoneyPerDay`, copper) in words, the way the core applies it
+ * (`Guild::_GetMemberRemainingMoney`, Guild.cpp:2606-2618): the master is unlimited whatever is stored
+ * (`SetBankMoneyPerDay` forces it, :333-336); any other rank takes gold only with the withdraw-gold or
+ * the withdraw-for-repair right, up to its limit read as int32 (Guild.h:485), so 0 and anything from
+ * 2^31 up leave nothing to take. The old line printed the raw word: «лимит золота: 4294967295».
+ */
+export function withdrawGoldLimitText(rankId: number, rights: number, limit: number): string {
+  if (rankId === GUILD_MASTER_RANK) return "снятие золота без ограничений";
+  const perDay = limit | 0;
+  if ((rights & (GR_RIGHT_WITHDRAW_REPAIR | GR_RIGHT_WITHDRAW_GOLD)) === 0 || perDay <= 0) {
+    return "снятие золота запрещено";
+  }
+  return `лимит золота: ${formatMoney(perDay)}`;
+}
 
 function ensureTabs(): Tabs {
   if (tabs) return tabs;
@@ -59,8 +82,13 @@ export function closeGuildWindow(): void {
   guildWindow.hidden = true;
 }
 
-/** Opening it deliberately clears the flag and asks for what the window shows. */
+/**
+ * Opening it deliberately clears the flag and asks for what the window shows. The stock
+ * FriendsFrame's Guild tab answers first once published (it asks for the roster itself, and opens
+ * only in a guild, as stock does); this window is the fallback.
+ */
 export function openGuildWindow(): void {
+  if (openFrameXmlFriends("guild")) return;
   const world = game.world;
   if (!world) return;
   closedByPlayer = false;
@@ -77,9 +105,21 @@ export function resetGuildWindow(): void {
 export function showGuild(): void {
   const world = game.world;
   const invite = world?.guildInvite;
-  guildInviteWindow.hidden = !invite;
+  // The stock GUILD_INVITE dialog asks while the popup owner is published (FrameXmlPopups.ts).
+  guildInviteWindow.hidden = !invite || frameXmlPopupsPublished();
   if (invite) guildInviteText.textContent = `${invite.inviterName} приглашает вас в гильдию «${invite.guildName}».`;
 
+  // While the stock FriendsFrame owns the guild tab, every guild packet still arrives here through
+  // `onGuildChanged`; this window must not open beside the stock one. A refused command is said in
+  // chat, where the client prints ERR_GUILD_*; the invitation above is not this window's.
+  if (frameXmlFriendsPublished()) {
+    if (world?.guildMessage) {
+      if (world.guildMessage.error) systemLine(world.guildMessage.text);
+      world.guildMessage = undefined;
+    }
+    guildWindow.hidden = true;
+    return;
+  }
   // The result of a command goes into the window that caused it rather than into chat, where it
   // used to be shouted at a player who might not have the guild open at all.
   if (world?.guildMessage) {
@@ -186,32 +226,89 @@ function drawRanks(): void {
   const world = game.world;
   if (!world) return;
   const rows = rankRows(world.guildRoster, world.guildQuery);
+  const boxes: HTMLElement[] = [];
   if (rows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
     empty.textContent = "Ранги ещё не пришли";
-    guildRoster.replaceChildren(empty);
-    return;
+    boxes.push(empty);
+  } else {
+    for (const row of rows) {
+      const box = document.createElement("div");
+      box.className = "guild-rank";
+      const name = document.createElement("strong");
+      name.textContent = `${row.rankId}. ${row.name}`;
+      const rights = document.createElement("span");
+      rights.className = "guild-meta";
+      const granted = GUILD_RIGHT_LABELS
+        .filter(([flag]) => hasGuildRight(row.rank.flags, flag))
+        .map(([, label]) => label);
+      rights.textContent = granted.length > 0 ? granted.join(", ") : "нет прав";
+      const gold = document.createElement("span");
+      gold.className = "guild-meta";
+      gold.textContent = withdrawGoldLimitText(row.rankId, row.rank.flags, row.rank.withdrawGoldLimit);
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.textContent = "Переименовать";
+      rename.addEventListener("click", () => {
+        const next = window.prompt(`Новое имя ранга «${row.name}»:`, row.name);
+        if (next !== null && next.trim()) {
+          world.setGuildRank(row.rankId, row.rank.flags, next.trim(), row.rank.withdrawGoldLimit, row.rank.tabs);
+        }
+      });
+      box.append(name, rights, gold, rename);
+      boxes.push(box);
+    }
   }
-  guildRoster.replaceChildren(...rows.map((row) => {
-    const box = document.createElement("div");
-    box.className = "guild-rank";
-    const name = document.createElement("strong");
-    name.textContent = `${row.rankId}. ${row.name}`;
-    const rights = document.createElement("span");
-    rights.className = "guild-meta";
-    const granted = GUILD_RIGHT_LABELS
-      .filter(([flag]) => hasGuildRight(row.rank.flags, flag))
-      .map(([, label]) => label);
-    rights.textContent = granted.length > 0 ? granted.join(", ") : "нет прав";
-    const gold = document.createElement("span");
-    gold.className = "guild-meta";
-    gold.textContent = row.rank.withdrawGoldLimit < 0
-      ? "снятие золота без ограничений"
-      : `лимит золота: ${row.rank.withdrawGoldLimit}`;
-    box.append(name, rights, gold);
-    return box;
+  // Rank + MOTD/info/disband management: senders exist in WorldClient, the server validates
+  // leader rights and refuses the rest. Keep them as plain prompts/confirms, not inline editors.
+  const actions = document.createElement("div");
+  actions.className = "guild-rank-actions";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "Добавить ранг";
+  add.addEventListener("click", () => {
+    const name = window.prompt("Имя нового ранга:");
+    if (name !== null && name.trim()) world.addGuildRank(name.trim());
+  });
+  const removeLowest = document.createElement("button");
+  removeLowest.type = "button";
+  removeLowest.textContent = "Удалить низший ранг";
+  removeLowest.className = "danger";
+  removeLowest.addEventListener("click", () => confirmPanel(removeLowest, {
+    title: "Удалить низший ранг?",
+    confirm: "Удалить",
+    danger: true,
+    onConfirm: () => world.removeLowestGuildRank(),
   }));
+  const motd = document.createElement("button");
+  motd.type = "button";
+  motd.textContent = "Объявление";
+  motd.addEventListener("click", () => {
+    const text = window.prompt("Объявление гильдии (MOTD):");
+    if (text !== null) world.setGuildMotd(text);
+  });
+  const info = document.createElement("button");
+  info.type = "button";
+  info.textContent = "Инфо гильдии";
+  info.addEventListener("click", () => {
+    const text = window.prompt("Информация о гильдии:");
+    if (text !== null) world.setGuildInfoText(text);
+  });
+  const disband = document.createElement("button");
+  disband.type = "button";
+  disband.textContent = "Распустить";
+  disband.className = "danger";
+  disband.addEventListener("click", () => confirmPanel(disband, {
+    title: "Распустить гильдию?",
+    lines: ["Это необратимо."],
+    confirm: "Распустить",
+    danger: true,
+    onConfirm: () => world.disbandGuild(),
+  }));
+  actions.append(add, removeLowest, motd, info, disband);
+  boxes.push(actions);
+  guildRoster.replaceChildren(...boxes);
 }
 
 function drawLog(): void {

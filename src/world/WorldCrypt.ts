@@ -1,3 +1,5 @@
+import { hmacSha1 } from "../auth/Sha1.js";
+
 const SERVER_ENCRYPTION_KEY = Uint8Array.of(
   0xcc, 0x98, 0xae, 0x04, 0xe8, 0x97, 0xea, 0xca, 0x12, 0xdd, 0xc0, 0x93, 0x42, 0x91, 0x53, 0x57,
 );
@@ -37,17 +39,6 @@ class Rc4 {
   }
 }
 
-async function hmacSha1(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const key = await globalThis.crypto.subtle.importKey(
-    "raw",
-    keyBytes.buffer as ArrayBuffer,
-    { name: "HMAC", hash: "SHA-1" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(await globalThis.crypto.subtle.sign("HMAC", key, data.buffer as ArrayBuffer));
-}
-
 export class WorldCrypt {
   readonly #incoming: Rc4;
   readonly #outgoing: Rc4;
@@ -57,13 +48,16 @@ export class WorldCrypt {
     this.#outgoing = new Rc4(outgoingKey);
   }
 
+  /**
+   * Keys both directions from the session key, as TrinityCore's WorldSocket does.
+   *
+   * Plain {@link hmacSha1} and not `crypto.subtle`: a page on `http://<public address>/` has no
+   * `subtle`, and this was the one step of the login that still needed it (1.02). Two HMACs of 40
+   * bytes cost microseconds. Still async, as its callers expect.
+   */
   static async create(sessionKey: Uint8Array): Promise<WorldCrypt> {
     if (sessionKey.byteLength !== 40) throw new RangeError("World session key must be 40 bytes");
-    const [incomingKey, outgoingKey] = await Promise.all([
-      hmacSha1(SERVER_ENCRYPTION_KEY, sessionKey),
-      hmacSha1(SERVER_DECRYPTION_KEY, sessionKey),
-    ]);
-    return new WorldCrypt(incomingKey, outgoingKey);
+    return new WorldCrypt(hmacSha1(SERVER_ENCRYPTION_KEY, sessionKey), hmacSha1(SERVER_DECRYPTION_KEY, sessionKey));
   }
 
   decryptServerHeader(header: Uint8Array): Uint8Array {

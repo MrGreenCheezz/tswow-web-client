@@ -103,8 +103,17 @@ test("Ж2.1 the sound route serves from disk, and answers 404 for what the clien
     const first = await fetch(url(FOOTSTEP), { headers: ORIGIN });
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("content-type"), "audio/wav");
-    assert.equal(first.headers.get("cache-control"), "public, max-age=604800, immutable");
+    assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    const etag = first.headers.get("etag");
+    assert.match(etag ?? "", /^"[0-9a-f]{40}"$/);
     assert.equal((await first.arrayBuffer()).byteLength, 27908);
+    assert.equal(runs, 1);
+
+    const unchanged = await fetch(url(FOOTSTEP), {
+      headers: { ...ORIGIN, "if-none-match": etag },
+    });
+    assert.equal(unchanged.status, 304, "an unchanged sound keeps the stable URL without resending its body");
+    assert.equal((await unchanged.arrayBuffer()).byteLength, 0);
     assert.equal(runs, 1);
 
     // Checked by looking, not by timing: the whole kit is on disk after the one miss.
@@ -618,8 +627,8 @@ test("Н1а every weapon that can be heard is heard, and the ones that cannot ar
   };
 
   const raw = count((item) => (item.soundOverrideSubclass >= 0 ? item.soundOverrideSubclass : item.subClass));
-  assert.equal(raw.weapons, 6652, "Item.dbc holds 6,652 weapons");
-  assert.equal(raw.exact, 5756, "and 5,756 of them hit a subclass|material row exactly");
+  assert.equal(raw.weapons, 6651, "the active TSWoW Item.dbc holds 6,651 weapons");
+  assert.equal(raw.exact, 5755, "and 5,755 of them hit a subclass|material row exactly");
   // The 264 that do not are the four subclasses that ship a single row — Bow, Gun, Exotic,
   // Exotic2 — where the material has nothing to choose between.
   assert.equal(raw.viaSubclass, 264);
@@ -627,7 +636,7 @@ test("Н1а every weapon that can be heard is heard, and the ones that cannot ar
   assert.deepEqual([...raw.noRow].sort((left, right) => left[0] - right[0]), [[16, 135], [18, 158], [19, 339]]);
 
   const asked = count(impactSubclassOf);
-  assert.equal(asked.exact, 6027, "a crossbow asking for the bow row hits it exactly");
+  assert.equal(asked.exact, 6026, "a crossbow asking for the bow row hits it exactly");
   assert.equal(asked.viaSubclass, 286);
   // Only the wand is left silent, because only the wand is meant to be.
   assert.deepEqual([...asked.noRow].sort((left, right) => left[0] - right[0]), [[19, 339]]);
@@ -1729,5 +1738,59 @@ test("Н1б the player's own death is an edge on their own health, because no pa
     assert.deepEqual(world.played, [], "an object that was not there is not one that just died");
   } finally {
     world.restore();
+  }
+});
+
+test("the decoded buffer cache is bounded but never forgets a failure", async () => {
+  const { SoundPlayer } = await import("../dist/code/browser/Sound.js");
+  class FakeContext {
+    state = "running";
+    destination = {};
+    createGain() { return { gain: { value: 0 }, connect: (to) => to, disconnect() {} }; }
+    createBufferSource() {
+      return { connect: (to) => to, disconnect() {}, start() {}, addEventListener() {} };
+    }
+    createPanner() { return { connect: (to) => to, disconnect() {} }; }
+    async decodeAudioData() { return {}; }
+    async resume() {}
+    async close() {}
+  }
+  const originalContext = globalThis.AudioContext;
+  const originalFetch = globalThis.fetch;
+  const fetched = new Map();
+  globalThis.AudioContext = FakeContext;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).searchParams.get("path");
+    fetched.set(path, (fetched.get(path) ?? 0) + 1);
+    if (path === "missing.wav") return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+    return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) };
+  };
+  const settle = async () => {
+    for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const kit = (id, file) => ({
+    id, type: 50, name: `kit${id}`, files: [file], volume: 0.8, minDistance: 8, maxDistance: 45, flags: 0,
+  });
+  try {
+    const player = new SoundPlayer("ws://127.0.0.1:8090/auth");
+    player.onStatus = () => {};
+    for (let index = 0; index < 110; index++) player.play(kit(index, `s${index}.wav`));
+    await settle();
+    assert.equal(fetched.get("s0.wav"), 1);
+    player.play(kit(0, "s0.wav"));
+    await settle();
+    assert.equal(fetched.get("s0.wav"), 2, "the oldest success is refetched past the bound");
+    assert.equal(fetched.get("s109.wav"), 1, "while a recent success is still cached");
+    player.play(kit(1000, "missing.wav"));
+    await settle();
+    assert.equal(fetched.get("missing.wav"), 1);
+    for (let index = 200; index < 320; index++) player.play(kit(index, `t${index}.wav`));
+    await settle();
+    player.play(kit(1000, "missing.wav"));
+    await settle();
+    assert.equal(fetched.get("missing.wav"), 1, "a failure is pinned, not re-asked after eviction");
+  } finally {
+    globalThis.AudioContext = originalContext;
+    globalThis.fetch = originalFetch;
   }
 });

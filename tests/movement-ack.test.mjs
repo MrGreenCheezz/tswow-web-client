@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { PacketReader, PacketWriter } from "../dist/code/protocol/index.js";
-import { readMovementInfo, writeMovementInfo, writeMovementInfoBody } from "../dist/code/world/MovementProtocol.js";
+import { MOVEMENT_FLAGS, readMovementInfo, writeMovementInfo, writeMovementInfoBody } from "../dist/code/world/MovementProtocol.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 import {
   ackOpcodeForSpeed, buildForcedSpeedAck, buildMovementToggleAck, buildTeleportAck,
   isForcedSpeed, isMovementToggle, parseForcedSpeed, parseMovementToggle, parseNewWorld,
@@ -102,12 +103,150 @@ test("movement toggles ack with the counter and, where there is one, the value",
   assert.equal(reader.remaining, 0);
 });
 
+// What each toggle ack's handler reads after the packed guid, the counter and the MovementInfo
+// (MovementHandler.cpp): HandleMoveHoverAck :686, HandleMoveWaterWalkAck :709, HandleFeatherFallAck
+// :753 and HandleMoveSetCanFlyAckOpcode :797 one more u32; the root pair (:712-775) and the gravity
+// pair (:823-863) nothing; HandleMoveSetCollisionHgtAck the height, as a float (:886).
+const CORE_TAIL = new Map([
+  [OPCODES.CMSG_MOVE_HOVER_ACK, "u32"],
+  [OPCODES.CMSG_MOVE_WATER_WALK_ACK, "u32"],
+  [OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, "u32"],
+  [OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, "u32"],
+  [OPCODES.CMSG_FORCE_MOVE_ROOT_ACK, undefined],
+  [OPCODES.CMSG_FORCE_MOVE_UNROOT_ACK, undefined],
+  [OPCODES.CMSG_MOVE_GRAVITY_DISABLE_ACK, undefined],
+  [OPCODES.CMSG_MOVE_GRAVITY_ENABLE_ACK, undefined],
+  [OPCODES.CMSG_MOVE_SET_COLLISION_HGT_ACK, "f32"],
+]);
+
+/** An ack read the way its core handler reads it: a short one throws here as it does there. */
+function readLikeTheCore(opcode, ack) {
+  assert.ok(CORE_TAIL.has(opcode), `0x${opcode.toString(16)} is a toggle ack`);
+  const reader = new PacketReader(ack);
+  const guid = reader.packedGuid();
+  const counter = reader.u32();
+  const { flags } = readMovementInfo(reader);
+  const tail = CORE_TAIL.get(opcode);
+  const value = tail === "u32" ? reader.u32() : tail === "f32" ? reader.f32() : undefined;
+  assert.equal(reader.remaining, 0, "the handler reads the ack to its last byte");
+  return { guid, counter, flags, value };
+}
+
+const WALKING = MOVEMENT_FLAGS.walking;
+
+test("the four flag families' acks end in their apply word and echo the flag already switched", () => {
+  // Every one of these is the packed guid and a zero counter, nothing more (Player.cpp:27214-27285).
+  // On 2026-09-28 Levitate's (feather fall, hover, water walk) and a can-fly ack were four bytes
+  // short, and each died in its handler with a ByteBufferException.
+  const cases = [
+    [OPCODES.SMSG_MOVE_WATER_WALK, OPCODES.CMSG_MOVE_WATER_WALK_ACK, 1, MOVEMENT_FLAGS.waterWalking],
+    [OPCODES.SMSG_MOVE_LAND_WALK, OPCODES.CMSG_MOVE_WATER_WALK_ACK, 0, MOVEMENT_FLAGS.waterWalking],
+    [OPCODES.SMSG_MOVE_FEATHER_FALL, OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, 1, MOVEMENT_FLAGS.fallingSlow],
+    [OPCODES.SMSG_MOVE_NORMAL_FALL, OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, 0, MOVEMENT_FLAGS.fallingSlow],
+    [OPCODES.SMSG_MOVE_SET_HOVER, OPCODES.CMSG_MOVE_HOVER_ACK, 1, MOVEMENT_FLAGS.hover],
+    [OPCODES.SMSG_MOVE_UNSET_HOVER, OPCODES.CMSG_MOVE_HOVER_ACK, 0, MOVEMENT_FLAGS.hover],
+    [OPCODES.SMSG_MOVE_SET_CAN_FLY, OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, 1, MOVEMENT_FLAGS.canFly],
+    [OPCODES.SMSG_MOVE_UNSET_CAN_FLY, OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, 0, MOVEMENT_FLAGS.canFly],
+  ];
+  for (const [server, ackOpcode, apply, flag] of cases) {
+    const toggle = parseMovementToggle(server, new PacketWriter().packedGuid(GUID).u32(0).toUint8Array());
+    assert.equal(toggle.ackOpcode, ackOpcode);
+    assert.equal(toggle.value, undefined, "the server sends no value with these");
+    // Start from the other state, so the echo has something to switch; walking must survive it.
+    const before = apply ? WALKING : WALKING | flag;
+    const ack = buildMovementToggleAck(toggle, movement({ flags: before }));
+    assert.deepEqual(readLikeTheCore(ackOpcode, ack),
+      { guid: GUID, counter: 0, flags: (apply ? WALKING | flag : WALKING) >>> 0, value: apply },
+      `0x${server.toString(16)}`);
+  }
+});
+
+test("root, unroot and the gravity pair end at the MovementInfo; the collision height ends in its float", () => {
+  for (const [server, ackOpcode] of [
+    [OPCODES.SMSG_FORCE_MOVE_ROOT, OPCODES.CMSG_FORCE_MOVE_ROOT_ACK],
+    [OPCODES.SMSG_FORCE_MOVE_UNROOT, OPCODES.CMSG_FORCE_MOVE_UNROOT_ACK],
+    [OPCODES.SMSG_MOVE_GRAVITY_DISABLE, OPCODES.CMSG_MOVE_GRAVITY_DISABLE_ACK],
+    [OPCODES.SMSG_MOVE_GRAVITY_ENABLE, OPCODES.CMSG_MOVE_GRAVITY_ENABLE_ACK],
+  ]) {
+    const toggle = parseMovementToggle(server, new PacketWriter().packedGuid(GUID).u32(7).toUint8Array());
+    assert.deepEqual(readLikeTheCore(ackOpcode, buildMovementToggleAck(toggle, movement({ flags: WALKING }))),
+      { guid: GUID, counter: 7, flags: WALKING, value: undefined }, `0x${server.toString(16)}`);
+  }
+  // Unit.cpp:8732-8735: the counter is the game time, then the height the ack sends back.
+  const height = parseMovementToggle(OPCODES.SMSG_MOVE_SET_COLLISION_HGT,
+    new PacketWriter().packedGuid(GUID).u32(1_790_608_000).f32(2.5).toUint8Array());
+  assert.deepEqual(readLikeTheCore(OPCODES.CMSG_MOVE_SET_COLLISION_HGT_ACK, buildMovementToggleAck(height, movement())),
+    { guid: GUID, counter: 1_790_608_000, flags: 0, value: 2.5 });
+});
+
+function recordingConnection() {
+  const packets = [];
+  const sent = [];
+  let wake;
+  return {
+    sent,
+    push(opcode, payload) {
+      const packet = { opcode, payload };
+      if (wake) { const resolve = wake; wake = undefined; resolve(packet); }
+      else packets.push(packet);
+    },
+    read() { return packets.length ? Promise.resolve(packets.shift()) : new Promise((resolve) => { wake = resolve; }); },
+    send(opcode, payload = new Uint8Array()) { sent.push({ opcode, payload }); },
+    close() {},
+  };
+}
+
+async function settle() { for (let index = 0; index < 6; index++) await new Promise(setImmediate); }
+
+/** `SMSG_MULTIPLE_MOVES` as Player.cpp:23301-23341 writes it: a byte count, then sized blocks. */
+function multipleMoves(guid, opcodes) {
+  const blocks = new PacketWriter();
+  for (const opcode of opcodes) {
+    const block = new PacketWriter().u16(opcode).packedGuid(guid).u32(0).toUint8Array();
+    blocks.u8(block.length).bytes(block);
+  }
+  const body = blocks.toUint8Array();
+  return new PacketWriter().u32(body.length).bytes(body).toUint8Array();
+}
+
+test("the client's acks for Levitate, a can-fly change and a login's SMSG_MULTIPLE_MOVES parse in the core", async () => {
+  const transport = recordingConnection();
+  transport.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD, new PacketWriter().u32(604).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const world = new WorldClient(transport);
+  await world.loginCharacter(GUID);
+  await settle();
+  try {
+    const body = () => new PacketWriter().packedGuid(GUID).u32(0).toUint8Array();
+    // Levitate (Spell.dbc 1706: auras 105, 106, 104) in its effects' order, then a can-fly change.
+    for (const opcode of [OPCODES.SMSG_MOVE_FEATHER_FALL, OPCODES.SMSG_MOVE_SET_HOVER, OPCODES.SMSG_MOVE_WATER_WALK,
+      OPCODES.SMSG_MOVE_SET_CAN_FLY]) transport.push(opcode, body());
+    // What a character already holding feather fall, water walking and hover logs in with.
+    transport.push(OPCODES.SMSG_MULTIPLE_MOVES, multipleMoves(GUID,
+      [OPCODES.SMSG_MOVE_FEATHER_FALL, OPCODES.SMSG_MOVE_WATER_WALK, OPCODES.SMSG_MOVE_SET_HOVER]));
+    // And Levitate going: the same three families switched off.
+    for (const opcode of [OPCODES.SMSG_MOVE_NORMAL_FALL, OPCODES.SMSG_MOVE_UNSET_HOVER, OPCODES.SMSG_MOVE_LAND_WALK]) {
+      transport.push(opcode, body());
+    }
+    await settle();
+    const acks = transport.sent.filter(({ opcode }) => CORE_TAIL.has(opcode))
+      .map(({ opcode, payload }) => [opcode, readLikeTheCore(opcode, payload).value]);
+    assert.deepEqual(acks, [
+      [OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, 1], [OPCODES.CMSG_MOVE_HOVER_ACK, 1], [OPCODES.CMSG_MOVE_WATER_WALK_ACK, 1],
+      [OPCODES.CMSG_MOVE_SET_CAN_FLY_ACK, 1],
+      [OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, 1], [OPCODES.CMSG_MOVE_WATER_WALK_ACK, 1], [OPCODES.CMSG_MOVE_HOVER_ACK, 1],
+      [OPCODES.CMSG_MOVE_FEATHER_FALL_ACK, 0], [OPCODES.CMSG_MOVE_HOVER_ACK, 0], [OPCODES.CMSG_MOVE_WATER_WALK_ACK, 0],
+    ]);
+  } finally { world.close(); }
+});
+
 test("a teleport is parsed and acknowledged", () => {
   // SMSG_NEW_WORLD: the map and where on it the player lands.
   const world = parseNewWorld(new PacketWriter().u32(571).f32(5807.5).f32(587.2).f32(660.9).f32(1.5).toUint8Array());
   assert.equal(world.mapId, 571);
   assert.equal(world.z, Math.fround(660.9));
-  assert.equal(parseTransferPending(new PacketWriter().u32(571).toUint8Array()), 571);
+  assert.deepEqual(parseTransferPending(new PacketWriter().u32(571).toUint8Array()), { mapId: 571 });
+  assert.deepEqual(parseTransferPending(new PacketWriter().u32(571).u32(176310).u32(0).toUint8Array()),
+    { mapId: 571, transportEntry: 176310, sourceMapId: 0 });
 
   // MSG_MOVE_TELEPORT_ACK arrives with the mover's new state and is answered with three fields.
   const request = new PacketWriter().packedGuid(GUID).u32(42);

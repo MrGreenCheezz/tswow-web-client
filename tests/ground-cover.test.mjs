@@ -9,7 +9,7 @@ import * as THREE from "three";
 import { startGateway } from "../dist/code/gateway/Gateway.js";
 import {
   DETAIL_CELL_SIZE, GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS,
-  GROUND_COVER_SIZE, GroundCoverClient, decodeGroundCover, scatterGroundCover,
+  GROUND_COVER_SIZE, GroundCoverClient, createGroundCoverCellCache, decodeGroundCover, scatterGroundCover,
 } from "../dist/code/browser/GroundCover.js";
 import { coerceSetting, defaultSettings, settingDefinition } from "../dist/code/browser/ui/SettingsModel.js";
 import { RESELECT_DISTANCE } from "../dist/code/browser/RenderStats.js";
@@ -257,24 +257,25 @@ test("the same ground grows the same field, from any window and in any order", (
     chunk({ row: 1, column: 0, effects: [7] }),
     chunk({ row: 1, column: 1, effects: [7] }),
   ]);
-  const scatter = (centre) => scatterGroundCover({
-    recipe: () => recipe, table: oneEffect(4), centre, radius: 20, perCell: true, heightAt: (x, y) => x + y,
+  const scatter = (centre, radius = 20) => scatterGroundCover({
+    recipe: () => recipe, table: oneEffect(4), centre, radius, perCell: true, heightAt: (x, y) => x + y,
   });
   const first = scatter({ x: -20, y: -20 });
   const again = scatter({ x: -20, y: -20 });
   const moved = scatter({ x: -28, y: -24 });
-  const key = (batch, index) => [batch.x[index], batch.y[index], batch.z[index], batch.yaw[index], batch.scale[index]].join(",");
+  const key = (batch, index) => [batch.x[index], batch.y[index], batch.z[index], batch.yaw[index]].join(",");
   const listOf = (field) => {
     const entries = [];
     for (const [path, batch] of field.models) for (let index = 0; index < batch.x.length; index++) entries.push(`${path}|${key(batch, index)}`);
     return entries;
   };
-  assert.deepEqual(listOf(first), listOf(again), "two identical calls are identical");
+  assert.deepEqual(first, again, "two identical calls preserve every placement, including scale");
   const overlap = new Set(listOf(first));
   let shared = 0;
   for (const entry of listOf(moved)) if (overlap.has(entry)) shared++;
   // The two windows overlap over most of their area, and every doodad in that overlap has to be
-  // the same doodad — same model, same spot, same turn, same size.
+  // the same doodad — same model, same spot and same turn. Its natural size is stable too;
+  // only the documented twenty-yard distance fade changes the drawn scale with the window.
   assert.ok(shared > 200, `only ${shared} doodads survived the move`);
   const movedNear = listOf(moved).filter((entry) => {
     const [, x, y] = /\|(-?[\d.]+),(-?[\d.]+)/.exec(entry).map(Number);
@@ -282,6 +283,28 @@ test("the same ground grows the same field, from any window and in any order", (
   });
   assert.equal(movedNear.filter((entry) => overlap.has(entry)).length, movedNear.length,
     "every doodad of the moved window that is also inside the first one is the same doodad");
+  const naturalScales = new Map();
+  const unfaded = scatter({ x: -20, y: -20 }, 80);
+  for (const [path, batch] of unfaded.models) {
+    for (let index = 0; index < batch.x.length; index++) {
+      if (Math.hypot(batch.x[index] + 20, batch.y[index] + 20) <= 60) {
+        naturalScales.set(`${path}|${key(batch, index)}`, batch.scale[index]);
+      }
+    }
+  }
+  for (const [field, centre] of [[first, { x: -20, y: -20 }], [moved, { x: -28, y: -24 }]]) {
+    for (const [path, batch] of field.models) {
+      for (let index = 0; index < batch.x.length; index++) {
+        const natural = naturalScales.get(`${path}|${key(batch, index)}`);
+        assert.ok(natural !== undefined, "every tuft also exists in the wider, unfaded field");
+        const distance = Math.hypot(batch.x[index] - centre.x, batch.y[index] - centre.y);
+        const linear = Math.max(0, Math.min(1, (20 - distance) / 20));
+        const expectedScale = natural * linear * linear * (3 - 2 * linear);
+        assert.ok(Math.abs(batch.scale[index] - expectedScale) < 1e-12,
+          "moving the window changes only the known distance fade, never the tuft's natural size");
+      }
+    }
+  }
 });
 
 test("the budget takes the far edge of the field and never a hole out of the middle", () => {
@@ -390,6 +413,83 @@ test("the per-chunk reading of Density is the same field, sixty-four times thinn
   assert.equal(again.total, sparse.total, "and the thinner field is reproducible too");
 });
 
+test("the density scale thickens the same field instead of reshuffling it", () => {
+  const recipe = recipeOf(Array.from({ length: 256 }, (_, index) =>
+    chunk({ row: index >> 4, column: index & 15, effects: [7] })));
+  const centre = { x: -266, y: -266 };
+  const scatter = (densityScale) => scatterGroundCover({
+    recipe: () => recipe, table: oneEffect(6), centre, radius: 60,
+    perCell: true, cap: 1e9, heightAt: flat, densityScale,
+  });
+  const base = scatter(undefined);
+  const same = scatter(1);
+  assert.equal(same.total, base.total, "the default scale is the artists' own count");
+  const doubled = scatter(2);
+  assert.ok(Math.abs(doubled.total / base.total - 2) < 0.05,
+    `x2 scale doubles the field: ${base.total} -> ${doubled.total}`);
+  // First N placements identical: extra tufts take higher indexes in the same cells.
+  const key = (batch, index) => [batch.x[index], batch.y[index], batch.z[index]].join(",");
+  const baseKeys = new Set();
+  for (const [, batch] of base.models) for (let index = 0; index < batch.x.length; index++) {
+    baseKeys.add(key(batch, index));
+  }
+  let shared = 0;
+  for (const [, batch] of doubled.models) for (let index = 0; index < batch.x.length; index++) {
+    if (baseKeys.has(key(batch, index))) shared++;
+  }
+  assert.equal(shared, base.total, "every base tuft stands exactly where it stood");
+  const chunked = scatterGroundCover({
+    recipe: () => recipe, table: oneEffect(64), centre, radius: 60,
+    perCell: false, cap: 1e9, heightAt: flat, densityScale: 2,
+  });
+  const chunkedBase = scatterGroundCover({
+    recipe: () => recipe, table: oneEffect(64), centre, radius: 60,
+    perCell: false, cap: 1e9, heightAt: flat,
+  });
+  assert.ok(Math.abs(chunked.total / chunkedBase.total - 2) < 0.15,
+    "the per-chunk reading scales too");
+});
+
+test("a walk that reuses grown cells scatters exactly the fields a fresh scatter would", () => {
+  const recipe = recipeOf(Array.from({ length: 256 }, (_, index) =>
+    chunk({ row: index >> 4, column: index & 15, effects: [7], winner: (r, c) => (r + c) & 1,
+      masked: (r, c) => r === 3 && c === 5 })));
+  const table = {
+    models: ["World\\NoDXT\\Detail\\ElwGra01.m2", "World\\NoDXT\\Detail\\ElwGra02.m2", undefined],
+    effects: { 7: { density: 5, terrain: 2, doodads: [[0, 3], [1, 1], [2, 1]] } },
+  };
+  // Heights for x > -250 only land from the fifth step on, as a neighbouring tile would.
+  let landed = false;
+  const heightAt = (x, y) => (x > -250 && !landed ? undefined : Math.sin(x * 0.3) + y * 0.02);
+  for (const options of [
+    { perCell: true, cap: 1e9, deferDistanceFade: true, densityScale: 2 },
+    { perCell: true, cap: 700, deferDistanceFade: false },
+    { perCell: false, cap: 1e9, deferDistanceFade: true, densityScale: 64 },
+  ]) {
+    const cells = createGroundCoverCellCache();
+    let reused = 0;
+    landed = false;
+    for (let step = 0; step < 12; step++) {
+      if (step === 5) landed = true;
+      const centre = { x: -270 + step * 4.3, y: -262 + Math.sin(step) * 3 };
+      const request = { recipe: () => recipe, table, centre, radius: 44, drawRadius: 40, heightAt, ...options };
+      const before = cells.cells.size;
+      const cached = scatterGroundCover({ ...request, cells });
+      const fresh = scatterGroundCover(request);
+      assert.deepEqual(cached, fresh, `step ${step} of ${JSON.stringify(options)}`);
+      assert.deepEqual([...cached.models.keys()], [...fresh.models.keys()], "model order is part of the field");
+      if (step > 0 && before > 0) reused++;
+    }
+    assert.equal(reused, 11, "every later step had grown cells to reuse");
+  }
+  // A new reading of the density needs a new cache: the owner changes it with the settings.
+  const cells = createGroundCoverCellCache();
+  const base = { recipe: () => recipe, table, centre: { x: -266, y: -266 }, radius: 30, perCell: true, heightAt: flat };
+  scatterGroundCover({ ...base, cells });
+  assert.ok(cells.cells.size > 0, "the cache holds the cells it visited");
+  assert.ok([...cells.cells.values()].some((cell) => cell === null), "and remembers cells that grow nothing");
+});
+
 test("an instance matrix puts a tuft where the scatter put it, turned about the world's vertical", () => {
   // The scatter works in world coordinates — the frame the recipe, the height field and the player
   // are all in — and the scene's is (x, z, -y). The turn is applied after the model-to-scene
@@ -427,22 +527,28 @@ test("the two settings reach as far as the renderer lets them, and no further", 
   // ceiling — the top of the range the original client draws ground cover in — so that number and
   // the slider's maximum have to be the same number.
   const radius = settingDefinition("grassRadius");
-  assert.equal(radius.group, "Мир");
+  assert.equal(radius.group, "Графика");
   assert.equal(radius.kind, "number");
   assert.equal(radius.max, GROUND_COVER_MAX_RADIUS);
   assert.equal(radius.min, 0, "zero is how the field is turned off");
   assert.equal(coerceSetting(radius, 9999), GROUND_COVER_MAX_RADIUS);
   assert.equal(coerceSetting(radius, -20), 0);
-  assert.equal(defaultSettings().grassRadius, 50);
+  assert.equal(defaultSettings().grassRadius, 80);
   const dense = settingDefinition("grassDense");
-  assert.equal(dense.group, "Мир");
   assert.equal(dense.kind, "boolean");
   assert.equal(defaultSettings().grassDense, true, "the per-cell reading is the one that reads as grass");
+  const density = settingDefinition("grassDensity");
+  assert.equal(density.kind, "number");
+  assert.equal(density.min, 1, "zero would be a second off-switch beside radius");
+  assert.equal(density.max, 4);
+  assert.equal(defaultSettings().grassDensity, 2, "meadows read twice as thick out of the box");
+  assert.equal(coerceSetting(density, 99), 4);
+  assert.equal(coerceSetting(density, -3), 1);
   // The field is generated one rebuild step wider than it is drawn, so that at its stalest — a
   // whole step of walking since the last rebuild — it still reaches the radius ahead of the
   // player. The step is the environment ranking's own.
   assert.equal(GROUND_COVER_MARGIN, RESELECT_DISTANCE);
-  assert.equal(GROUND_COVER_BUDGET, 6000);
+  assert.equal(GROUND_COVER_BUDGET, 10000);
 });
 
 test("the cover file is served beside its family, and a missing one rebuilds the tile once", async () => {

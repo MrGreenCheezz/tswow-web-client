@@ -1,6 +1,15 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 
+/** Generic, ammo, food, poison and reagent vendor bits in WotLK `NPCFlags`. */
+export const NPC_FLAGS_VENDOR_MASK = 0x00000f80;
+/** NPC flags for every service the native interact dispatcher can currently open. */
+export const NPC_FLAGS_INTERACTION_MASK = 0x00000001 | 0x00000002 | 0x00000070
+  | NPC_FLAGS_VENDOR_MASK | 0x00002000 | 0x00020000 | 0x00040000 | 0x00080000 | 0x00100000
+  | 0x00200000 | 0x00400000 | 0x04000000;
+/** `UNIT_NPC_FLAG_PETITIONER`: charter vendor for guilds and arena teams. */
+export const NPC_FLAG_PETITIONER = 0x00040000;
+
 export interface GossipOption {
   id: number;
   icon: number;
@@ -56,7 +65,10 @@ export interface QuestRewardItem {
 export interface QuestRewards {
   choices: QuestRewardItem[];
   items: QuestRewardItem[];
+  /** Positive signed RewOrReqMoney; zero when the quest charges money. */
   money: number;
+  /** Cost represented by a negative signed RewOrReqMoney; never a reward. */
+  requiredMoney: number;
   xpDifficulty: number;
   honor: number;
   displaySpell: number;
@@ -296,7 +308,11 @@ function readQuestRewards(reader: PacketReader, offer: boolean): QuestRewards {
   const itemCount = reader.u32();
   if (itemCount > 4) throw new RangeError(`Quest reward item count ${itemCount} exceeds the client limit`);
   const items = readRewardItems(reader, itemCount);
-  const money = reader.u32();
+  // Quest::BuildQuestRewards writes signed RewOrReqMoney through a uint32 packet word.
+  // Preserve its signed meaning before presenting it in the NPC window.
+  const signedMoney = reader.i32();
+  const money = Math.max(0, signedMoney);
+  const requiredMoney = Math.max(0, -signedMoney);
   const xpDifficulty = reader.u32();
   const honor = reader.u32();
   reader.f32();
@@ -310,9 +326,9 @@ function readQuestRewards(reader: PacketReader, offer: boolean): QuestRewards {
   for (let index = 0; index < 5; index++) reader.u32();
   for (let index = 0; index < 5; index++) reader.i32();
   for (let index = 0; index < 5; index++) reader.i32();
-  return { choices, items, money, xpDifficulty, honor, displaySpell, spell, titleId, talents, arenaPoints };
+  return { choices, items, money, requiredMoney, xpDifficulty, honor, displaySpell, spell, titleId, talents, arenaPoints };
 }
 
 function emptyRewards(): QuestRewards {
-  return { choices: [], items: [], money: 0, xpDifficulty: 0, honor: 0, displaySpell: 0, spell: 0, titleId: 0, talents: 0, arenaPoints: 0 };
+  return { choices: [], items: [], money: 0, requiredMoney: 0, xpDifficulty: 0, honor: 0, displaySpell: 0, spell: 0, titleId: 0, talents: 0, arenaPoints: 0 };
 }

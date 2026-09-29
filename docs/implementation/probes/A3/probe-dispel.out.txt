@@ -1,0 +1,19 @@
+Spell rows by DispelType: [[0,67226],[1,3568],[2,332],[3,286],[4,405],[5,44],[6,24],[8,23],[9,118],[10,1],[11,1]]
+Magic rows: {"magic":3568,"magicNotStealable":101,"magicPassive":83}
+118 "Превращение" Уровень 1 dispel=1 notStealable=false passive=false
+172 "Порча" Уровень 1 dispel=1 notStealable=false passive=false
+702 "Проклятие слабости" Уровень 1 dispel=2 notStealable=false passive=false
+1126 "Знак дикой природы" Уровень 1 dispel=1 notStealable=false passive=false
+1459 "Чародейский интеллект" Уровень 1 dispel=1 notStealable=false passive=false
+2818 "Смертельный яд" Уровень 1 dispel=4 notStealable=false passive=false
+3034 "Укус гадюки"  dispel=4 notStealable=false passive=false
+5782 "Страх" Уровень 1 dispel=1 notStealable=false passive=false
+6788 "Ослабленная душа"  dispel=0 notStealable=false passive=false
+8921 "Лунный огонь" Уровень 1 dispel=1 notStealable=false passive=false
+12472 "Стылая кровь"  dispel=1 notStealable=false passive=false
+20217 "Благословение королей"  dispel=1 notStealable=false passive=false
+21562 "Молитва стойкости" Уровень 1 dispel=1 notStealable=false passive=false
+25771 "Воздержанность"  dispel=0 notStealable=false passive=false
+34914 "Прикосновение вампира" Уровень 1 dispel=1 notStealable=false passive=false
+44572 "Глубокая заморозка"  dispel=1 notStealable=false passive=false
+55095 "Озноб"  dispel=3 notStealable=false passive=false

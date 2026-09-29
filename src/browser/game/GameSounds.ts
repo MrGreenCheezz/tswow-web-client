@@ -140,16 +140,25 @@ function ready(seen: Map<string, number>, key: string, gap: number, now: number)
 
 /** One of the interface's own noises, at the listener rather than anywhere in the world. */
 export function playUiSound(which: UiSound): void {
+  playNamedUiSound(UI_SOUNDS[which]);
+}
+
+/** Stock FrameXML's `PlaySound` addresses the same `SoundEntries.Name` rows as native UI. */
+export function playNamedUiSound(name: string): void {
+  // The sound route accepts only these characters. Reject a malformed Lua argument before the
+  // batched request is made; an unknown but valid name is resolved once and remains silent.
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) return;
   const sound = game.sound;
   const kits = game.soundKits;
   if (!sound || !kits) return;
-  const now = performance.now();
-  if (!ready(lastUi, which, UI_THROTTLE, now)) return;
-  const id = kits.named(UI_SOUNDS[which]);
+  const id = kits.named(name);
   if (id === undefined) {
-    deferSound(() => playUiSound(which));
+    if (!kits.namedAnswered(name)) deferSound(() => playNamedUiSound(name));
     return;
   }
+  // Charge the UI cooldown only after the name arrives. Otherwise a fast metadata reply consumes
+  // the first click while its deferred replay still falls inside the throttle interval.
+  if (!ready(lastUi, name, UI_THROTTLE, performance.now())) return;
   playKit(id, { channel: "interface" });
 }
 

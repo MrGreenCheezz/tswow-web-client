@@ -1,6 +1,11 @@
-import type { TalentData } from "../gateway/TalentMetadata.js";
+import type { SpellSkillAbilityInfo, TalentData } from "../gateway/TalentMetadata.js";
 
 export type { TalentData };
+
+/** `SkillLineCategory` 7, the class ability lines. */
+const SKILL_CATEGORY_CLASS = 7;
+/** Single-class rows a class-category line needs to count as that class's line (`skillLineClass`). */
+const CLASS_LINE_MIN_ROWS = 10;
 
 /**
  * Talent trees, glyphs and skill lines, fetched once for the session.
@@ -17,7 +22,14 @@ export class TalentClient {
   #tabsByClass = new Map<number, TalentData["tabs"]>();
   #talentsByTab = new Map<number, TalentData["talents"]>();
   #skillLines = new Map<number, TalentData["skillLines"][number]>();
+  #skillCategories = new Map<number, TalentData["skillCategories"][number]>();
+  #skillCategoryOrder: readonly TalentData["skillCategories"][number][] = Object.freeze([]);
   #glyphs = new Map<number, TalentData["glyphs"][number]>();
+  #spellAbilities = new Map<number, readonly SpellSkillAbilityInfo[]>();
+  /** Category-7 skill line to the class whose ability line it is (`skillLineClass`). */
+  #lineClasses = new Map<number, number>();
+  #revision = 0;
+  #failed = false;
   onStatus: ((message: string, error: boolean) => void) | undefined;
   onLoaded: (() => void) | undefined;
 
@@ -35,12 +47,14 @@ export class TalentClient {
         const response = await fetch(`${this.#baseUrl}/dbc/talents`);
         if (!response.ok) throw new Error(`Talent gateway returned ${response.status}`);
         const value = await response.json() as TalentData;
-        if (!Array.isArray(value.talents) || !Array.isArray(value.tabs)) throw new Error("malformed talent data");
+        if (!Array.isArray(value.talents) || !Array.isArray(value.tabs)
+          || !Array.isArray(value.skillCategories)) throw new Error("malformed talent data");
         this.#index(value);
         this.onLoaded?.();
       } catch (error) {
         // Left unfetched rather than retried: without it the talent window says so and the
         // spellbook falls back to one undivided list, which is what it was before this slice.
+        this.#failed = true;
         this.onStatus?.(`таланты: ${error instanceof Error ? error.message : String(error)}`, true);
       }
     })();
@@ -67,11 +81,69 @@ export class TalentClient {
       list.sort((left, right) => left.tier - right.tier || left.column - right.column);
     }
     for (const line of value.skillLines) this.#skillLines.set(line.id, line);
+    const categories = value.skillCategories
+      .filter((category) => Number.isInteger(category.id) && category.id > 0 && category.name.length > 0)
+      .map((category) => Object.freeze({ ...category }));
+    categories.sort((left, right) => left.orderIndex - right.orderIndex || left.id - right.id);
+    this.#skillCategoryOrder = Object.freeze(categories);
+    for (const category of this.#skillCategoryOrder) this.#skillCategories.set(category.id, category);
     for (const glyph of value.glyphs) this.#glyphs.set(glyph.id, glyph);
+    for (const [spellId, rows] of Object.entries(value.spellAbilities ?? {})) {
+      const id = Number(spellId);
+      if (!Number.isSafeInteger(id) || id <= 0 || !Array.isArray(rows)) continue;
+      this.#spellAbilities.set(id, Object.freeze(rows.map((row) => Object.freeze({ ...row }))));
+    }
+    this.#indexLineClasses();
+    this.#revision++;
+  }
+
+  /**
+   * Which class each class-category (7) skill line belongs to: the class its single-class
+   * `SkillLineAbility` rows name, once at least `CLASS_LINE_MIN_ROWS` of them do. Measured on this
+   * dataset (2026-09-28): the 30 talent-tree lines and Runeforging carry 11-183 such rows each, all
+   * of one class (Holy 594: 166 paladin rows and one priest row); the pet-family and minion lines
+   * carry none; Mounts (777) carries 4 paladin rows among 315 and Lockpicking (633) one rogue row —
+   * both general lines. A talent spell's own row is maskless (Corpse Explosion in Unholy, 51328),
+   * which is why a spell's tab has to ask its line's class and not only its row's mask.
+   */
+  #indexLineClasses(): void {
+    const counts = new Map<number, Map<number, number>>();
+    for (const rows of this.#spellAbilities.values()) {
+      for (const row of rows) {
+        const mask = row.classMask >>> 0;
+        if (mask === 0 || (mask & (mask - 1)) !== 0) continue;
+        const byClass = counts.get(row.skillLine) ?? new Map<number, number>();
+        byClass.set(mask, (byClass.get(mask) ?? 0) + 1);
+        counts.set(row.skillLine, byClass);
+      }
+    }
+    this.#lineClasses.clear();
+    for (const [line, byClass] of counts) {
+      if (this.#skillLines.get(line)?.categoryId !== SKILL_CATEGORY_CLASS) continue;
+      let bestMask = 0;
+      let bestCount = 0;
+      for (const [mask, count] of byClass) {
+        if (count > bestCount) {
+          bestMask = mask;
+          bestCount = count;
+        }
+      }
+      if (bestCount >= CLASS_LINE_MIN_ROWS) this.#lineClasses.set(line, Math.log2(bestMask) + 1);
+    }
   }
 
   get ready(): boolean {
     return this.#data !== undefined;
+  }
+
+  /** True after the optional snapshot failed; consumers may use their ungrouped fallback. */
+  get failed(): boolean {
+    return this.#failed;
+  }
+
+  /** Monotonic metadata revision, zero until the complete `/dbc/talents` snapshot lands. */
+  get revision(): number {
+    return this.#revision;
   }
 
   /** The three trees of one class, in the order the original client shows them. */
@@ -79,9 +151,11 @@ export class TalentClient {
     return this.#tabsByClass.get(classId) ?? [];
   }
 
-  /** The three pet trees, matched to a family by its `PetTalentType`. */
-  petTabs(petCategory: number): TalentData["tabs"] {
-    return (this.#data?.tabs ?? []).filter((tab) => tab.classMask === 0 && tab.petCategory === petCategory);
+  /** The pet trees whose core `PetTalentMask` accepts this family's mask. */
+  petTabs(familyMask: number): TalentData["tabs"] {
+    if (familyMask === 0) return [];
+    return (this.#data?.tabs ?? []).filter((tab) =>
+      tab.classMask === 0 && (tab.petTalentMask & familyMask) !== 0);
   }
 
   talentsIn(tabId: number): TalentData["talents"] {
@@ -90,6 +164,16 @@ export class TalentClient {
 
   skillLine(id: number): TalentData["skillLines"][number] | undefined {
     return this.#skillLines.get(id);
+  }
+
+  /** The stock category attached to a `SkillLine.CategoryID`, or undefined when it is unknown. */
+  skillCategory(id: number): TalentData["skillCategories"][number] | undefined {
+    return this.#skillCategories.get(id);
+  }
+
+  /** Immutable categories sorted by the client's explicit `SkillLineCategory.SortIndex`. */
+  skillCategories(): readonly TalentData["skillCategories"][number][] {
+    return this.#skillCategoryOrder;
   }
 
   glyph(id: number): TalentData["glyphs"][number] | undefined {
@@ -101,8 +185,23 @@ export class TalentClient {
     return this.#data?.spellSkill[spellId];
   }
 
-  /** A pet family's `PetTalentType`, or zero for a family with no trees at all. */
-  petTalentType(creatureFamily: number): number {
-    return this.#data?.petFamilies[creatureFamily] ?? 0;
+  /** All authoritative SkillLineAbility rows for a spell, including class/race masks. */
+  spellAbilitiesOf(spellId: number): readonly SpellSkillAbilityInfo[] | undefined {
+    return this.#spellAbilities.get(spellId);
+  }
+
+  /** The class (1-based id) whose ability line a class-category skill line is; undefined for any other line. */
+  skillLineClass(line: number): number | undefined {
+    return this.#lineClasses.get(line);
+  }
+
+  /** Core's `1 << CreatureFamily.PetTalentType`, including valid type zero. */
+  petTalentMask(creatureFamily: number): number {
+    return this.#data?.petFamilyMasks[creatureFamily] ?? 0;
+  }
+
+  /** `CreatureFamily.Name_lang`; undefined before the talents load or from an older gateway. */
+  petFamilyName(creatureFamily: number): string | undefined {
+    return this.#data?.petFamilyNames?.[creatureFamily] || undefined;
   }
 }

@@ -141,6 +141,40 @@ test("Л1 the cursor answers with the bag only where there is loot, and the hand
   assert.equal(worldCanvas.style.cursor, "", "and bare ground is left to the stylesheet's crosshair");
 });
 
+test("Л1 a quest giver introduces itself at any range, unless flagged not selectable", () => {
+  const objects = new Map([
+    [1n, unit(1n, { typeId: 4 })],
+    [5n, {
+      guid: 5n, typeId: 5,
+      position: { x: 100, y: 0, z: 0, orientation: 0 },
+      fields: new Map([
+        [UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 100],
+        [UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset, 2 << 8],
+        [UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, 0],
+      ]),
+    }],
+  ]);
+  game.world = {
+    state: { selfGuid: 1n, objects },
+    gameObjectTemplate: () => ({ type: 2, iconName: "", name: "Квестодатель" }),
+    waitForGameObjectTemplate: () => Promise.resolve(undefined),
+  };
+  game.scene = { pick: (x) => (x === 400 ? 5n : undefined) };
+  worldCanvas.style.cursor = "";
+  clock += 1_000;
+  move(400);
+  assert.equal(worldCanvas.style.cursor, "pointer",
+    "the name is not gated on interaction distance; the server still refuses a far click");
+  game.world.gameObjectTemplate = () => ({ type: 2, iconName: "", name: "Квестодатель" });
+  objects.get(5n).fields.set(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, 0x10);
+  clock += 1_000;
+  move(100);
+  clock += 1_000;
+  move(400);
+  assert.equal(worldCanvas.style.cursor, "",
+    "NOT_SELECTABLE stays the flag that hides the tooltip");
+});
+
 test("Л1 the last sample of a flick is taken, not dropped", async () => {
   // A pure leading-edge throttle loses the end of every gesture: the player sweeps from a mob onto
   // the body lying beside it and stops, the last `pointermove` arrives less than 16 ms after the

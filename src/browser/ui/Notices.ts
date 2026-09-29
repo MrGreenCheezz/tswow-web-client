@@ -13,7 +13,6 @@ import { playUiSound } from "../game/GameSounds.js";
 
 const notices: Notice[] = [];
 let container: HTMLElement | undefined;
-let dirty = false;
 
 function root(): HTMLElement | undefined {
   if (container?.isConnected) return container;
@@ -38,7 +37,8 @@ export function notice(text: string, kind: NoticeKind = "error"): void {
   if (kind === "error") playUiSound("questFailed");
   if (!settingOn("notices")) return;
   pushNotice(notices, text, kind, performance.now());
-  dirty = true;
+  // Drawn now rather than on the next frame: a frame that throws before `updateNotices` is exactly
+  // when «Кадр не рисуется» has to be read. The frame does not draw it again (`updateNotices`).
   drawNotices();
 }
 
@@ -55,11 +55,14 @@ export function drawNotices(): void {
   box.hidden = notices.length === 0;
 }
 
-/** Called once a frame: each notice expires on its own clock and nothing else removes it. */
+/**
+ * Called once a frame: each notice expires on its own clock and nothing else removes it, so the
+ * strip is drawn again only when one expired. A new notice was drawn by `notice` itself; marking it
+ * for this frame as well drew every notice twice.
+ */
 export function updateNotices(now: number): void {
   const before = notices.length;
   expireNotices(notices, now);
-  if (notices.length === before && !dirty) return;
-  dirty = false;
+  if (notices.length === before) return;
   drawNotices();
 }

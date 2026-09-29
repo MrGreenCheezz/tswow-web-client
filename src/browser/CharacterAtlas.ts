@@ -15,6 +15,9 @@ import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
+
+/** How long a first body waits for its other layers once the base skin is in (see `#build`). */
+export const CHARACTER_ATLAS_PARTIAL_PAINT_MS = 250;
 const SECTIONS: Record<string, { x: number; y: number; width: number; height: number }> = {
   armUpper: { x: 0, y: 0, width: 256, height: 128 },
   armLower: { x: 0, y: 128, width: 256, height: 128 },
@@ -68,8 +71,17 @@ import type { BodyLayer, CharacterAppearance, CharacterOptions } from "../gatewa
  * model-aware neutral belt in player and NPC appearances. 12 publishes the measured 505 worn-boot
  * choice for every non-hoof profile that actually paints a FootTexture component. 13 marks the
  * coordinated visual profile explicitly so patch-W-only geoset policy cannot leak into classic.
+ *
+ * 14 is HD-1, and it changes both halves of the answer. The geosets gain the coordinated pack's
+ * family-20 foot on the ten profiles that authored one, and the belt on all twenty — measured over
+ * the naked look of the twenty playable profiles, the emitted list gained 1801 or 1802 on nineteen
+ * of them and a 2001/2002 foot on ten. The body layers change with the re-extracted overlay: eleven
+ * of the twenty name different scalp and facial-hair sheets, and over every (skin, face) pair the
+ * form offers, the layers naming a file the live chain does not hold fall from **1,133 of 19,903 to
+ * 0 of 18,643**. Both are exactly the kind of change the note above is about — same shape, different
+ * values — so an hour of cached pre-HD-1 answers would be an hour of footless characters.
  */
-export const CHARACTER_APPEARANCE_VERSION = 13;
+export const CHARACTER_APPEARANCE_VERSION = 14;
 
 /**
  * And the same for `/dbc/creature-models`, which answers `max-age=3600` too and whose ids are
@@ -91,13 +103,17 @@ export const CHARACTER_APPEARANCE_VERSION = 13;
  * carries the active patch's model-aware neutral belt into NPC responses as well. 10 carries the
  * measured all-profile worn-boot choice into the same cached creature payload. 11 applies the
  * authoritative baked-NPC body item columns, including the waist and feet displays. 12 carries
- * the coordinated-profile marker embedded in the appearance.
+ * the coordinated-profile marker embedded in the appearance. 13 moves with the appearance version
+ * beside it for HD-1: `forNpc` builds its body through `forPlayer`, so every unbaked character
+ * display gains the family-20 foot and the neutral belt, and every one of them reads the
+ * re-extracted `CreatureDisplayInfo`/`CreatureDisplayInfoExtra`/`CreatureModelData` rows.
  */
-export const CREATURE_MODEL_VERSION = 12;
+export const CREATURE_MODEL_VERSION = 13;
 
 /**
- * And for `/dbc/character-options`, which is the third route answering `max-age=3600` off a query
- * string with no moving part in it — a race and a sex.
+ * And for `/dbc/character-options`, keyed by race, sex and, on creation screens, class. The
+ * current gateway answers `no-store`; the version also separates this contract from older
+ * deployments that cached answers for an hour.
  *
  * Here rather than in `Login.ts` for the same reason as the other two: this is the one place a
  * change to what the gateway answers has to be written down, and three cache-busters in three
@@ -110,9 +126,18 @@ export const CREATURE_MODEL_VERSION = 12;
  * values and not of shape, which is exactly the kind that went unbumped on the two routes above
  * until the review, and which an hour of cache would otherwise go on offering. 4 switches the
  * offered hair/geoset rows to the installed visual model patch. 5 rolls over the former cached
- * HD answer when visual metadata becomes non-cacheable across pack switches.
+ * HD answer when visual metadata becomes non-cacheable across pack switches. 6 adds the selected
+ * class to the URL so the core's death-knight-only CharSections are not offered to other classes.
+ *
+ * **HD-1 deliberately does not bump this**, and that is a measurement rather than an omission.
+ * `options()` reads `CharSections` flags and `CharacterFacialHairStyles` keys and nothing else, and
+ * although the re-extracted overlay adds 1,102 `CharSections` rows and 50 facial-hair rows, the
+ * offered rectangle does not move: built both ways on 2026-08-30, all twenty playable profiles came
+ * back byte-identical — HumanMale 13 skins / 24 faces / 12 styles / 13 colours / 9 facial, TaurenMale
+ * 22 / 10 / 8 / 3 / 7, and so on for the other eighteen. That extraction changed no options
+ * payload and therefore needed no contract version change.
  */
-export const CHARACTER_OPTIONS_VERSION = 5;
+export const CHARACTER_OPTIONS_VERSION = 6;
 
 /**
  * Whether an answer to that route is the lists this bundle reads and not the counts before them.
@@ -175,6 +200,35 @@ export function layerPaths(layer: BodyLayer): readonly string[] {
   return layer.alternate ? [layer.path, layer.alternate] : [layer.path];
 }
 
+/** Paints the layers that have a picture, in order, each into its rectangle; says how many did. */
+function paintBodyLayers(context: CanvasRenderingContext2D, layers: readonly BodyLayer[],
+  images: readonly (ImageBitmap | undefined)[]): number {
+  let painted = 0;
+  for (let index = 0; index < layers.length; index++) {
+    const image = images[index];
+    if (!image) continue;
+    const section = layers[index]!.section;
+    if (!section) {
+      context.drawImage(image, 0, 0, BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE);
+    } else {
+      const rect = SECTIONS[section];
+      if (!rect) continue;
+      context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+    }
+    painted++;
+  }
+  return painted;
+}
+
+/** The sampling every composed body is uploaded with; the pixels changed, so it is re-uploaded. */
+function configureBodyTexture(texture: THREE.Texture): void {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.flipY = false;
+  texture.needsUpdate = true;
+}
+
 /**
  * How long to wait before asking again for something that did not come, once per retry.
  *
@@ -223,6 +277,8 @@ export const CHARACTER_ATLAS_SOURCE_CACHE_COUNT_LIMIT = 512;
 export const CHARACTER_ATLAS_SOURCE_DECODED_PIXEL_LIMIT = 64 * 1024 * 1024;
 export const CHARACTER_ATLAS_SOURCE_RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024;
 export const CHARACTER_ATLAS_SOURCE_ENTRY_PIXEL_LIMIT = 1024 * 1024;
+/** Canvas paints are indivisible; spread a burst of completed looks over animation frames. */
+export const CHARACTER_ATLAS_PAINTS_PER_FRAME = 2;
 
 export interface CharacterAtlasResidencyLimits {
   readonly atlasCount: number;
@@ -303,6 +359,11 @@ interface CharacterAtlasComposeRequest {
   promise: Promise<THREE.Texture | undefined>;
 }
 
+interface CharacterAtlasPaintWaiter {
+  readonly request: CharacterAtlasComposeRequest;
+  readonly resolve: () => void;
+}
+
 class DeterministicCharacterAtlasImageError extends Error {}
 
 /** A renderer capability that is not finite or below three's baseline cannot improve sampling. */
@@ -362,6 +423,11 @@ export class CharacterAtlasClient {
   readonly #generations = new Map<string, number>();
   /** Compositions under way, so one look is painted once however many units are waiting on it. */
   readonly #composing = new Map<string, CharacterAtlasComposeRequest>();
+  /** Loaded looks awaiting a small, shared canvas-paint allowance. */
+  readonly #paintQueue: CharacterAtlasPaintWaiter[] = [];
+  #paintScheduled = false;
+  #paintFrameId: number | undefined;
+  #paintFallbackTimer: ReturnType<typeof setTimeout> | undefined;
   /** Image paths with a request actually in flight; resolved image promises are cache, not work. */
   readonly #activeImages = new Set<string>();
   /** Looks whose current atlas can never become complete without a new owner/cache epoch. */
@@ -633,21 +699,132 @@ export class CharacterAtlasClient {
     return requestPromise;
   }
 
+  #waitForPaintTurn(request: CharacterAtlasComposeRequest): Promise<void> {
+    // Node tools and page-free tests have no frame clock; their composition remains immediate.
+    if (typeof requestAnimationFrame !== "function") return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.#paintQueue.push({ request, resolve });
+      this.#schedulePaintTurn();
+    });
+  }
+
+  #schedulePaintTurn(): void {
+    if (this.#paintScheduled || this.#paintQueue.length === 0) return;
+    this.#paintScheduled = true;
+    this.#paintFrameId = requestAnimationFrame(() => this.#flushPaintTurn());
+    // requestAnimationFrame pauses in a hidden tab. Settle pending work there as well, so an
+    // ownership change cannot leave decoded image leases waiting until the tab is shown again.
+    this.#paintFallbackTimer = setTimeout(() => this.#checkHiddenPaintTurn(), 100);
+  }
+
+  #checkHiddenPaintTurn(): void {
+    if (!this.#paintScheduled) return;
+    if (document.hidden) {
+      this.#flushPaintTurn();
+    } else {
+      // A slow visible frame still has just one frame allowance; the timer only substitutes for
+      // a paused rAF once the tab is actually hidden.
+      this.#paintFallbackTimer = setTimeout(() => this.#checkHiddenPaintTurn(), 100);
+    }
+  }
+
+  #stopPaintSchedule(): void {
+    if (this.#paintFrameId !== undefined && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.#paintFrameId);
+    }
+    if (this.#paintFallbackTimer !== undefined) clearTimeout(this.#paintFallbackTimer);
+    this.#paintFrameId = undefined;
+    this.#paintFallbackTimer = undefined;
+    this.#paintScheduled = false;
+  }
+
+  #flushPaintTurn(): void {
+    if (!this.#paintScheduled) return;
+    this.#stopPaintSchedule();
+    let admitted = 0;
+    while (this.#paintQueue.length > 0 && admitted < CHARACTER_ATLAS_PAINTS_PER_FRAME) {
+      const waiter = this.#paintQueue.shift()!;
+      if (this.#isCurrentCompose(waiter.request)) admitted++;
+      waiter.resolve();
+    }
+    this.#schedulePaintTurn();
+  }
+
+  #cancelPaintWaiters(request: CharacterAtlasComposeRequest): void {
+    for (let index = this.#paintQueue.length - 1; index >= 0; index--) {
+      const waiter = this.#paintQueue[index]!;
+      if (waiter.request !== request) continue;
+      this.#paintQueue.splice(index, 1);
+      waiter.resolve();
+    }
+    if (this.#paintQueue.length === 0) this.#stopPaintSchedule();
+  }
+
+  #cancelAllPaintWaiters(): void {
+    this.#stopPaintSchedule();
+    for (const waiter of this.#paintQueue.splice(0)) waiter.resolve();
+  }
+
+  /**
+   * Publishes a first body out of the layers that have arrived, so the unit can leave its capsule;
+   * `#build` repaints the same canvas with every layer once the rest land. Nothing here touches the
+   * failure ledger — the full paint that follows is what decides whether a layer is missing.
+   */
+  async #paintFirst(request: CharacterAtlasComposeRequest, layers: readonly BodyLayer[],
+    arrived: readonly (CharacterAtlasImageLease | undefined | null)[]): Promise<void> {
+    await this.#waitForPaintTurn(request);
+    if (!this.#isCurrentCompose(request) || this.#atlases.has(request.key)) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = BODY_TEXTURE_SIZE;
+    canvas.height = BODY_TEXTURE_SIZE;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    if (paintBodyLayers(context, layers, arrived.map((lease) => lease?.image)) === 0) return;
+    const texture = new THREE.CanvasTexture(canvas);
+    configureBodyTexture(texture);
+    this.#setAtlasEntry({ key: request.key, texture, knownLogicalTextureBytes: undefined });
+    this.#generations.set(request.key, (this.#generations.get(request.key) ?? 0) + 1);
+    // Owed its remaining layers: were this composition abandoned before its full paint, `compose`
+    // would otherwise hand the partial body out as finished. The full paint clears it.
+    this.#defer(request.key, layers, this.#now());
+  }
+
   async #build(request: CharacterAtlasComposeRequest,
     layers: readonly BodyLayer[]): Promise<THREE.Texture | undefined> {
     const { key } = request;
     const spellings = layers.map((layer) => layerPaths(layer));
-    const leases = await Promise.all(spellings.map(async (paths) => {
+    // What each layer settled to so far: `null` still on its way, `undefined` settled with nothing.
+    const arrived: (CharacterAtlasImageLease | undefined | null)[] = layers.map(() => null);
+    const pending = spellings.map(async (paths, index) => {
+      let found: CharacterAtlasImageLease | undefined;
       for (const path of paths) {
         // A released primary candidate can settle empty after its last lease aborts. Do not let
         // that stale continuation acquire an alternate-path lease that did not exist when release
         // walked the request's ownership set.
-        if (!this.#isCurrentCompose(request)) return undefined;
-        const lease = await this.#image(path, request);
-        if (lease) return lease;
+        if (!this.#isCurrentCompose(request)) break;
+        found = await this.#image(path, request);
+        if (found) break;
       }
-      return undefined;
-    }));
+      arrived[index] = found;
+      return found;
+    });
+    const everything = Promise.all(pending);
+    // A first body gets painted once its base skin is here, rather than when its last layer is: the
+    // unit stays a capsule until `get` answers, and one cold layer used to hold all of it. Measured on
+    // the owner's session of 2026-09-28, the gateway published a cold texture every ~412 ms, one at a
+    // time, and a dressed character paints up to 24 layers. The grace keeps a body whose layers all
+    // arrive together from flashing bare skin; the full paint below lands in the same canvas.
+    if (layers.length > 1 && layers[0]?.section === undefined && !this.#atlases.has(key)) {
+      const base = await pending[0];
+      if (base && arrived.includes(null)) {
+        const complete = await Promise.race([
+          everything.then(() => true),
+          new Promise<false>((resolve) => { setTimeout(() => resolve(false), CHARACTER_ATLAS_PARTIAL_PAINT_MS); }),
+        ]);
+        if (!complete) await this.#paintFirst(request, layers, arrived);
+      }
+    }
+    const leases = await everything;
     try {
       const images = leases.map((lease) => lease?.image);
       // `release` and `dispose` are ownership boundaries. A request that crossed either may finish
@@ -665,6 +842,11 @@ export class CharacterAtlasClient {
         this.#defer(key, layers, retryAt);
         return undefined;
       }
+      // Several decoded looks can finish in one microtask turn when entering a city. Painting all
+      // their 512x512 canvases there blocks the next frame even though the downloads were async.
+      // Admit at most two paints per animation frame; a hidden tab uses the fallback timer.
+      await this.#waitForPaintTurn(request);
+      if (!this.#isCurrentCompose(request)) return undefined;
       // Painted into the canvas the last composition used, when there was one. A material holds the
       // Texture object, not the atlas map, so a body that gains its missing trousers has to gain them
       // *in place* — a new CanvasTexture would sit in this map with nothing sampling it.
@@ -679,31 +861,14 @@ export class CharacterAtlasClient {
         return undefined;
       }
 
-      let painted = 0;
-      for (let index = 0; index < layers.length; index++) {
-        const image = images[index];
-        if (!image) continue;
-        const section = layers[index]!.section;
-        if (!section) {
-          context.drawImage(image, 0, 0, BODY_TEXTURE_SIZE, BODY_TEXTURE_SIZE);
-        } else {
-          const rect = SECTIONS[section];
-          if (!rect) continue;
-          context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
-        }
-        painted++;
-      }
+      const painted = paintBodyLayers(context, layers, images);
       if (painted === 0) {
         this.#defer(key, layers, retryAt);
         return undefined;
       }
 
       const texture = previous?.texture ?? new THREE.CanvasTexture(canvas);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.wrapS = THREE.ClampToEdgeWrapping;
-      texture.wrapT = THREE.ClampToEdgeWrapping;
-      texture.flipY = false;
-      texture.needsUpdate = true;
+      configureBodyTexture(texture);
       const entry = previous ?? { key, texture, knownLogicalTextureBytes: undefined };
       this.#setAtlasEntry(entry);
       this.#generations.set(key, (this.#generations.get(key) ?? 0) + 1);
@@ -951,6 +1116,7 @@ export class CharacterAtlasClient {
       // Invalidate publication first. Releasing its exact leases may synchronously abort the last
       // pending source request, whose callbacks must already see this compose as stale.
       this.#composing.delete(key);
+      this.#cancelPaintWaiters(composing);
       for (const lease of [...composing.leases]) this.#releaseImageLease(lease);
     }
     const entry = this.#atlases.get(key);
@@ -1045,6 +1211,7 @@ export class CharacterAtlasClient {
     this.#sourceDecodedPixels = 0;
     this.#sourceBitmapCount = 0;
     this.#composing.clear();
+    this.#cancelAllPaintWaiters();
     this.#activeImages.clear();
     this.#imageFailures.clear();
     this.#failed.clear();

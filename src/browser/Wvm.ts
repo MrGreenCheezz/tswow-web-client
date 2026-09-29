@@ -102,7 +102,40 @@ export interface WvmSkeletonClip {
   animationId: number;
   /** Seconds. */
   duration: number;
+  /**
+   * `M2Sequence.blendTime` in seconds: how long the original client takes to blend into this pose.
+   *
+   * Undefined when the artifact does not carry one — either because it was written before the
+   * clip header's reserved u16 became this field, or because the sequence itself authored a zero
+   * (26 of HumanMale's 241 do). Both cases mean the same thing to a caller: there is no authored
+   * number here, use the blend the renderer would have used anyway.
+   */
+  blendTime?: number;
+  /**
+   * `M2Sequence.movingSpeed`: the ground speed this stride was authored for, in yards a second.
+   *
+   * Signed, because the file is — RidingHorse's Walkbackwards is −2.5 and travels backwards. Only
+   * a locomotion sequence carries one; 40 of RidingHorse's 43 authored a zero, which reads back
+   * here as `undefined` for the same reason a zero blend time does: it is the absence of a number,
+   * not the number zero, and dividing by it would be meaningless.
+   */
+  movingSpeed?: number;
+  /** The sequence-table slot this clip occupies — what another clip's `variationNext` names. */
+  variationIndex?: number;
+  /** The sequence the file says follows this one, as a table slot, or −1 for none. */
+  variationNext?: number;
   channels: Array<{ bone: number; kind: 0 | 1 | 2; times: Float32Array; values: Float32Array }>;
+}
+
+/** A bone channel driven by one of the model's independent global-sequence clocks. */
+export interface WvmSkeletonGlobalChannel {
+  bone: number;
+  kind: 0 | 1 | 2;
+  interpolation: number;
+  globalSequence: number;
+  /** Seconds, matching ordinary skeleton channels after decode. */
+  times: Float32Array;
+  values: Float32Array;
 }
 
 export interface WvmSkeleton {
@@ -111,6 +144,8 @@ export interface WvmSkeleton {
   pivots: Float32Array;
   /** The clips that travelled with the model — locomotion, and nothing else. */
   clips: WvmSkeletonClip[];
+  /** Bone tracks that keep running on the model's global clocks, even when no clip has keys. */
+  globalChannels: WvmSkeletonGlobalChannel[];
   /**
    * Every animation the model can play, shipped here or not.
    *
@@ -150,6 +185,15 @@ export const ATTACHMENT_SHOULDER_RIGHT = 5;
 export const ATTACHMENT_SHOULDER_LEFT = 6;
 export const ATTACHMENT_HELM = 11;
 export const ATTACHMENT_BACK = 12;
+/**
+ * The hip sheath points, right and left.
+ *
+ * Read off the playable models' own attachment tables (HumanMale carries 9 at z 1.19 on the
+ * right side and 10 mirrored on the left, Orc and Tauren the same pair) and confirmed by the
+ * reference client's sheath mapping, which hangs stowed one-handers there.
+ */
+export const ATTACHMENT_HIP_RIGHT = 9;
+export const ATTACHMENT_HIP_LEFT = 10;
 
 /**
  * One `M2Track`: keyed on the animation timeline, with one sub-track per sequence.
@@ -340,6 +384,20 @@ export interface WvmModel {
   textureTransforms: WvmTextureTransform[];
   /** Absent on 193 of the 1,323 readable creature models, and on most scenery. */
   portraitCamera?: WvmCamera;
+  /**
+   * The shot a model that is a *scene* was authored to be looked at through — `cameras[0]`,
+   * whatever its type says.
+   *
+   * The same record and the same 36 bytes as the field above, distinguished only by which flag the
+   * artifact set, because the two answer different questions. A unit's type-0 camera frames its
+   * face for a portrait frame; a glue set's camera is the composition itself. Measured over the 19
+   * models under `Interface\Glues\Models\`: 13 carry exactly one camera, every one of them type
+   * −1, and not one type-0 record exists in the directory — so before G1 every login-screen model
+   * arrived with no camera at all and its authored framing had to be guessed at.
+   *
+   * Never set at the same time as `portraitCamera`; the artifact cannot spell both.
+   */
+  sceneCamera?: WvmCamera;
 }
 
 const HEADER_SIZE = 72;
@@ -348,12 +406,42 @@ const BATCH_SIZE = 20;
 const ATTACHMENT_SIZE = 16;
 const SKINNED = 0x01;
 const PORTRAIT_CAMERA = 0x02;
+/** The same 36-byte slot, holding a scene camera rather than a portrait one. See `sceneCamera`. */
+const SCENE_CAMERA = 0x04;
 const CAMERA_SIZE = 36;
 const WVA1_HEADER_SIZE = 12;
 const SKELETON_HEADER_SIZE = 4;
 const BONE_SIZE = 16;
 const CLIP_HEADER_SIZE = 12;
 const CHANNEL_HEADER_SIZE = 8;
+/**
+ * The optional per-clip extras table that may follow the clips inside either container.
+ *
+ * Both containers end where their buffer does, so "anything left after the last clip" is the whole
+ * presence test — and an artifact written before slice A2 has nothing left, which is why it
+ * decodes exactly as it did. `CLIP_EXTRAS_RECORD_SIZE` is the size this build understands; the
+ * block carries its own, so a record grown by a later slice is stepped over rather than misread.
+ */
+/** Float64 slots per clip in a packed clip table (`decodeWvaAnimationsPacked`). */
+export const WVA_CLIP_STRIDE = 9;
+/** Slot offsets inside one packed clip record; an optional field the object form omits is NaN. */
+export const WVA_CLIP_ANIMATION = 0;
+export const WVA_CLIP_DURATION = 1;
+export const WVA_CLIP_BLEND_TIME = 2;
+export const WVA_CLIP_MOVING_SPEED = 3;
+export const WVA_CLIP_VARIATION_INDEX = 4;
+export const WVA_CLIP_VARIATION_NEXT = 5;
+export const WVA_CLIP_FIRST_CHANNEL = 6;
+export const WVA_CLIP_CHANNELS = 7;
+export const WVA_CLIP_FIRST_KEY = 8;
+/** Uint32 words per packed channel: `bone | kind << 16`, then the key count. */
+export const WVA_CHANNEL_STRIDE = 2;
+const CLIP_EXTRAS_MAGIC = "WVX1";
+const CLIP_EXTRAS_HEADER_SIZE = 8;
+const CLIP_EXTRAS_RECORD_SIZE = 8;
+const GLOBAL_BONE_CHANNELS_MAGIC = "WVG1";
+const GLOBAL_BONE_CHANNELS_HEADER_SIZE = 8;
+const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
 const decoder = new TextDecoder();
 
 function checkedBytes(count: number, stride: number, label: string): number {
@@ -401,7 +489,15 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   const colourCount = view.getUint16(66, true);
   const weightCount = view.getUint16(68, true);
   const transformCount = view.getUint16(70, true);
-  const hasCamera = (view.getUint8(13) & PORTRAIT_CAMERA) !== 0;
+  // One slot, and the flag says which of the two things it is. Both set is not a later addition a
+  // reader could step over — it is an artifact claiming one 36-byte record is two different
+  // records, so it is refused here rather than resolved by whichever branch happens to run first.
+  const cameraFlags = view.getUint8(13) & (PORTRAIT_CAMERA | SCENE_CAMERA);
+  if (cameraFlags === (PORTRAIT_CAMERA | SCENE_CAMERA)) {
+    throw new Error("WVM9 claims both a portrait and a scene camera in one slot");
+  }
+  const hasCamera = cameraFlags !== 0;
+  const sceneFramed = cameraFlags === SCENE_CAMERA;
 
   if (total !== data.byteLength) throw new Error(`WVM9 says it is ${total} bytes but ${data.byteLength} arrived`);
   if (indexBytes !== 2 && indexBytes !== 4) throw new Error("WVM9 index width is invalid");
@@ -562,17 +658,24 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
     globalSequences, particleEmitters, ribbonEmitters, colours, textureWeights, textureTransforms,
   };
   if (hasCamera && offset + CAMERA_SIZE <= data.byteLength) {
-    model.portraitCamera = {
+    const camera: WvmCamera = {
       fov: view.getFloat32(offset, true),
       near: view.getFloat32(offset + 4, true),
       far: view.getFloat32(offset + 8, true),
       position: [view.getFloat32(offset + 12, true), view.getFloat32(offset + 16, true), view.getFloat32(offset + 20, true)],
       target: [view.getFloat32(offset + 24, true), view.getFloat32(offset + 28, true), view.getFloat32(offset + 32, true)],
     };
+    // Which field it lands in is the whole difference between the two flags. `portraitCamera` keeps
+    // meaning «a unit's type-0 record», so `PortraitRenderer` and `portraitCameraSpec` see exactly
+    // what they saw before a scene camera could exist.
+    if (sceneFramed) model.sceneCamera = camera;
+    else model.portraitCamera = camera;
   }
   if (boneIndices) model.boneIndices = boneIndices;
   if (boneWeights) model.boneWeights = boneWeights;
-  if (skeletonOffset > 0) model.skeleton = { ...decodeSkeleton(data, skeletonOffset), animations };
+  if (skeletonOffset > 0) {
+    model.skeleton = { ...decodeSkeleton(data, skeletonOffset, data.byteLength), animations };
+  }
   return model;
 }
 
@@ -583,6 +686,35 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
  * that mean something else there, so the counts have to agree before a single key is read.
  */
 export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkeletonClip[] {
+  const { view, clipCount, boneCount } = preflightWvaAnimations(data, bones);
+  return readClips(view, data, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+}
+
+/** Every clip of one WVA block in three flat arrays; the layout is `WvaPackedAnimations`'. */
+export interface WvaPackedClips {
+  readonly clipTable: Float64Array<ArrayBuffer>;
+  readonly channelTable: Uint32Array<ArrayBuffer>;
+  readonly keys: Float32Array<ArrayBuffer>;
+  /** One past the highest bone any channel poses. */
+  readonly span: number;
+}
+
+/**
+ * `decodeWvaAnimations` into three flat arrays, for the decode worker to transfer.
+ *
+ * Same preflight, same per-key arithmetic, the same values in the same order — only the containers
+ * differ: one key backing and two index tables instead of a backing per clip, an object per channel
+ * and two views each (HumanMale: 182 backings, ~38k objects, ~76k views, all built only to be
+ * flattened again). `tests/wva-packed-sidecars.test.mjs` holds the two to the same bits.
+ */
+export function decodeWvaAnimationsPacked(data: ArrayBuffer, bones: number): WvaPackedClips {
+  const { view, clipCount, boneCount } = preflightWvaAnimations(data, bones);
+  return readClipsPacked(view, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
+}
+
+function preflightWvaAnimations(data: ArrayBuffer, bones: number): {
+  view: DataView; clipCount: number; boneCount: number;
+} {
   if (data.byteLength < WVA1_HEADER_SIZE || decoder.decode(new Uint8Array(data, 0, 4)) !== "WVA1") {
     throw new Error("Not a WVA1 animation block");
   }
@@ -593,11 +725,12 @@ export function decodeWvaAnimations(data: ArrayBuffer, bones: number): WvmSkelet
   if (boneCount !== bones) throw new Error(`WVA1 is rigged for ${boneCount} bones, the model has ${bones}`);
   const clipCount = view.getUint16(10, true);
   const end = preflightClips(view, WVA1_HEADER_SIZE, clipCount, boneCount, data.byteLength);
-  if (end !== data.byteLength) throw new Error("WVA1 has trailing bytes after its clips");
-  return readClips(view, data, WVA1_HEADER_SIZE, clipCount, boneCount);
+  const extrasEnd = preflightClipExtras(view, end, clipCount, data.byteLength);
+  if (extrasEnd !== data.byteLength) throw new Error("WVA1 has trailing bytes after its clips");
+  return { view, clipCount, boneCount };
 }
 
-function decodeSkeleton(data: ArrayBuffer, start: number): Omit<WvmSkeleton, "animations"> {
+function decodeSkeleton(data: ArrayBuffer, start: number, limit: number): Omit<WvmSkeleton, "animations"> {
   const view = new DataView(data);
   const boneCount = view.getUint16(start, true);
   const clipCount = view.getUint16(start + 2, true);
@@ -618,7 +751,20 @@ function decodeSkeleton(data: ArrayBuffer, start: number): Omit<WvmSkeleton, "an
     offset += 16;
   }
 
-  return { parents, flags, pivots, clips: readClips(view, data, offset, clipCount, boneCount) };
+  const clipsEnd = preflightClips(view, offset, clipCount, boneCount, limit);
+  const extrasEnd = preflightClipExtras(view, clipsEnd, clipCount, limit, true);
+  // `readClips` must stop before WVG1: otherwise its optional WVX1 reader would interpret the
+  // global-channel header as per-clip metadata. Old artifacts have extrasEnd === limit and decode
+  // to the same empty array they always implied.
+  return {
+    parents,
+    flags,
+    pivots,
+    clips: readClips(view, data, offset, clipCount, boneCount, extrasEnd),
+    globalChannels: extrasEnd < limit
+      ? readGlobalBoneChannels(view, extrasEnd, boneCount)
+      : [],
+  };
 }
 
 interface Wvm9Layout {
@@ -690,7 +836,8 @@ function preflightWvm9(view: DataView, length: number, layout: Wvm9Layout): void
     offset = preflightTrack(view, offset, length, 4);
     offset = preflightTrack(view, offset, length, 3);
   }
-  if (layout.hasCamera) offset = checkedEnd(offset, CAMERA_SIZE, length, "WVM9 portrait camera");
+  // One slot whichever flag named it, so the preflight neither knows nor needs to know which.
+  if (layout.hasCamera) offset = checkedEnd(offset, CAMERA_SIZE, length, "WVM9 camera");
 
   if ((layout.skeletonOffset !== 0) !== layout.skinned) {
     throw new Error("WVM9 skin flag and skeleton offset disagree");
@@ -712,7 +859,103 @@ function preflightSkeleton(view: DataView, start: number, limit: number): number
     throw new Error("WVM9 skeleton header is out of range");
   }
   const clipsAt = checkedCountEnd(start + SKELETON_HEADER_SIZE, boneCount, BONE_SIZE, limit, "WVM9 bone table");
-  return preflightClips(view, clipsAt, clipCount, boneCount, limit);
+  const clipsEnd = preflightClips(view, clipsAt, clipCount, boneCount, limit);
+  const extrasEnd = preflightClipExtras(view, clipsEnd, clipCount, limit, true);
+  return extrasEnd < limit
+    ? preflightGlobalBoneChannels(view, extrasEnd, boneCount, limit)
+    : extrasEnd;
+}
+
+/**
+ * Walks the optional extras table, and answers where the clip block really ends.
+ *
+ * Three answers, and the first is the one every artifact written before slice A2 gets: nothing
+ * follows the clips, so the clips are the end. Otherwise the magic has to be there — a container
+ * with unexplained trailing bytes is a container this reader does not understand, and saying so is
+ * better than posing a model with half a file. The record count must equal the clip count because
+ * the table is dense and positional: a mismatch would pair a stride with another clip's keyframes.
+ */
+function preflightClipExtras(
+  view: DataView,
+  start: number,
+  clipCount: number,
+  limit: number,
+  allowGlobalChannels = false,
+): number {
+  if (start === limit) return start;
+  checkedEnd(start, CLIP_EXTRAS_HEADER_SIZE, limit, "Animation clip extras header");
+  const magic = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + start, 4));
+  if (allowGlobalChannels && magic === GLOBAL_BONE_CHANNELS_MAGIC) return start;
+  if (magic !== CLIP_EXTRAS_MAGIC) throw new Error("Animation clips are followed by an unknown block");
+  const recordSize = view.getUint16(start + 4, true);
+  const count = view.getUint16(start + 6, true);
+  if (recordSize < CLIP_EXTRAS_RECORD_SIZE) throw new Error("Animation clip extras record is too small");
+  if (count !== clipCount) throw new Error("Animation clip extras count disagrees with the clips");
+  return checkedCountEnd(start + CLIP_EXTRAS_HEADER_SIZE, count, recordSize, limit,
+    "Animation clip extras");
+}
+
+function preflightGlobalBoneChannels(view: DataView, start: number, boneCount: number, limit: number): number {
+  checkedEnd(start, GLOBAL_BONE_CHANNELS_HEADER_SIZE, limit, "WVM9 global bone header");
+  const magic = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + start, 4));
+  if (magic !== GLOBAL_BONE_CHANNELS_MAGIC) throw new Error("WVM9 skeleton has an unknown trailing block");
+  const count = view.getUint16(start + 4, true);
+  let offset = start + GLOBAL_BONE_CHANNELS_HEADER_SIZE;
+  checkedCountEnd(offset, count, GLOBAL_BONE_CHANNEL_HEADER_SIZE, limit, "WVM9 global bone channel headers");
+  for (let index = 0; index < count; index++) {
+    checkedEnd(offset, GLOBAL_BONE_CHANNEL_HEADER_SIZE, limit, "WVM9 global bone channel header");
+    const bone = view.getUint16(offset, true);
+    const kind = view.getUint8(offset + 2);
+    const keys = view.getUint32(offset + 8, true);
+    if (bone >= boneCount) throw new Error("WVM9 global bone channel bone is out of range");
+    if (kind !== 0 && kind !== 1 && kind !== 2) throw new Error("WVM9 global bone channel kind is invalid");
+    offset += GLOBAL_BONE_CHANNEL_HEADER_SIZE;
+    offset = checkedCountEnd(offset, keys, 4, limit, "WVM9 global bone key times");
+    const components = kind === 1 ? 4 : 3;
+    offset = checkedCountEnd(offset, keys,
+      checkedBytes(components, kind === 1 ? 2 : 4, "WVM9 global bone key values"), limit,
+      "WVM9 global bone key values");
+  }
+  return offset;
+}
+
+function readGlobalBoneChannels(
+  view: DataView,
+  start: number,
+  boneCount: number,
+): WvmSkeletonGlobalChannel[] {
+  const count = view.getUint16(start + 4, true);
+  const channels: WvmSkeletonGlobalChannel[] = [];
+  let offset = start + GLOBAL_BONE_CHANNELS_HEADER_SIZE;
+  for (let index = 0; index < count; index++) {
+    const bone = view.getUint16(offset, true);
+    const kind = view.getUint8(offset + 2) as 0 | 1 | 2;
+    const interpolation = view.getUint8(offset + 3);
+    const globalSequence = view.getUint16(offset + 4, true);
+    const keys = view.getUint32(offset + 8, true);
+    offset += GLOBAL_BONE_CHANNEL_HEADER_SIZE;
+    const times = new Float32Array(keys);
+    for (let key = 0; key < keys; key++) times[key] = view.getUint32(offset + key * 4, true) / 1000;
+    offset += keys * 4;
+    const components = kind === 1 ? 4 : 3;
+    const values = new Float32Array(keys * components);
+    for (let key = 0; key < keys; key++) {
+      for (let part = 0; part < components; part++) {
+        if (kind === 1) {
+          const raw = view.getInt16(offset + (key * 4 + part) * 2, true);
+          values[key * 4 + part] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
+        } else {
+          values[key * components + part] = view.getFloat32(
+            offset + (key * components + part) * 4, true);
+        }
+      }
+    }
+    offset += keys * components * (kind === 1 ? 2 : 4);
+    if (bone < boneCount) channels.push({
+      bone, kind, interpolation, globalSequence, times, values,
+    });
+  }
+  return channels;
 }
 
 function preflightClips(view: DataView, start: number, clipCount: number, boneCount: number, limit: number): number {
@@ -789,27 +1032,47 @@ function preflightRibbonEmitter(view: DataView, at: number, limit: number): void
 }
 
 /** The clip encoding, which the model artifact and the animation block share byte for byte. */
-function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: number, boneCount: number): WvmSkeletonClip[] {
+function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: number, boneCount: number,
+  limit: number): WvmSkeletonClip[] {
   let offset = start;
   const clips: WvmSkeletonClip[] = [];
   for (let clip = 0; clip < clipCount; clip++) {
     const animationId = view.getUint16(offset, true);
+    // Reserved and written as zero from WVM6 until slice A1, `M2Sequence.blendTime` since. Zero is
+    // kept as "the artifact says nothing", not as an instant blend: an old cached artifact and a
+    // sequence that authored no blend time are the same byte here, and both want the fallback.
+    const blendTimeMs = view.getUint16(offset + 2, true);
     const duration = view.getUint32(offset + 4, true);
     const channelCount = view.getUint32(offset + 8, true);
     offset += 12;
     const channels: WvmSkeletonClip["channels"] = [];
+    // A clip is retained as a whole. Store its key data in one exact-sized backing instead of
+    // allocating two ArrayBuffers for every channel (tens of thousands per character sidecar).
+    // The preflight has already checked every channel and byte range before this allocation.
+    let keyFloats = 0;
+    let channelAt = offset;
+    for (let index = 0; index < channelCount; index++) {
+      const rotation = view.getUint8(channelAt + 2) === 1;
+      const keys = view.getUint32(channelAt + 4, true);
+      keyFloats += keys * (rotation ? 5 : 4);
+      channelAt += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
+    }
+    const keyData = new Float32Array(keyFloats);
+    let keyAt = 0;
     for (let index = 0; index < channelCount; index++) {
       const bone = view.getUint16(offset, true);
       const kind = view.getUint8(offset + 2) as 0 | 1 | 2;
       const keys = view.getUint32(offset + 4, true);
       offset += 8;
-      const times = new Float32Array(keys);
+      const times = keyData.subarray(keyAt, keyAt + keys);
+      keyAt += keys;
       for (let key = 0; key < keys; key++) {
         times[key] = view.getUint32(offset + key * 4, true) / 1000;
       }
       offset += keys * 4;
       const components = kind === 1 ? 4 : 3;
-      const values = new Float32Array(keys * components);
+      const values = keyData.subarray(keyAt, keyAt + keys * components);
+      keyAt += keys * components;
       for (let key = 0; key < keys; key++) {
         for (let part = 0; part < components; part++) {
           if (kind === 1) {
@@ -824,10 +1087,135 @@ function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: 
       offset += keys * components * (kind === 1 ? 2 : 4);
       if (bone < boneCount) channels.push({ bone, kind, times, values });
     }
-    clips.push({ animationId, duration: duration / 1000, channels });
+    clips.push({
+      animationId,
+      duration: duration / 1000,
+      ...(blendTimeMs > 0 ? { blendTime: blendTimeMs / 1000 } : {}),
+      channels,
+    });
   }
   if (offset > data.byteLength) throw new Error("Animation clips run past the end of the block");
+  readClipExtras(view, offset, limit, clips);
   return clips;
+}
+
+/**
+ * Pours the optional extras table onto the clips it belongs to, by position.
+ *
+ * A zero `movingSpeed` becomes `undefined` deliberately: the sequence table writes a real 0.0 on
+ * everything that does not travel — 40 of RidingHorse's 43 sequences — and «the stride was
+ * authored for no speed» and «the artifact does not carry a speed» want the same answer from every
+ * caller, which is "do not scale this clip". A `variationNext` of −1 is the file's own "nothing
+ * follows" and is dropped for the same reason.
+ */
+function readClipExtras(view: DataView, start: number, limit: number, clips: WvmSkeletonClip[]): void {
+  if (start >= limit) return;
+  const recordSize = view.getUint16(start + 4, true);
+  let offset = start + CLIP_EXTRAS_HEADER_SIZE;
+  for (const clip of clips) {
+    const movingSpeed = view.getFloat32(offset, true);
+    const variationNext = view.getInt16(offset + 4, true);
+    const variationIndex = view.getUint16(offset + 6, true);
+    if (Number.isFinite(movingSpeed) && movingSpeed !== 0) clip.movingSpeed = movingSpeed;
+    if (variationNext >= 0) clip.variationNext = variationNext;
+    clip.variationIndex = variationIndex;
+    // By the block's own record size, not this build's: a longer record is a later slice's, and
+    // stepping over the part we do not understand is the whole point of carrying the width.
+    offset += recordSize;
+  }
+}
+
+/**
+ * `readClips` and `readClipExtras` into flat tables. Every key goes through the same expression
+ * as there; an optional clip field the object form would omit is NaN here.
+ */
+function readClipsPacked(view: DataView, start: number, clipCount: number, boneCount: number,
+  limit: number): WvaPackedClips {
+  // Sizes first. The preflight has already checked every count and byte range walked here.
+  let offset = start;
+  let channelTotal = 0;
+  let keyFloats = 0;
+  for (let clip = 0; clip < clipCount; clip++) {
+    const channelCount = view.getUint32(offset + 8, true);
+    offset += CLIP_HEADER_SIZE;
+    for (let index = 0; index < channelCount; index++) {
+      const rotation = view.getUint8(offset + 2) === 1;
+      const keys = view.getUint32(offset + 4, true);
+      if (view.getUint16(offset, true) < boneCount) {
+        channelTotal++;
+        keyFloats += keys * (rotation ? 5 : 4);
+      }
+      offset += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
+    }
+  }
+  const clipTable = new Float64Array(clipCount * WVA_CLIP_STRIDE);
+  const channelTable = new Uint32Array(channelTotal * WVA_CHANNEL_STRIDE);
+  const keyData = new Float32Array(keyFloats);
+  let span = 0;
+  let channelAt = 0;
+  let keyAt = 0;
+  offset = start;
+  for (let clip = 0; clip < clipCount; clip++) {
+    const record = clip * WVA_CLIP_STRIDE;
+    const blendTimeMs = view.getUint16(offset + 2, true);
+    const channelCount = view.getUint32(offset + 8, true);
+    clipTable[record + WVA_CLIP_ANIMATION] = view.getUint16(offset, true);
+    clipTable[record + WVA_CLIP_DURATION] = view.getUint32(offset + 4, true) / 1000;
+    clipTable[record + WVA_CLIP_BLEND_TIME] = blendTimeMs > 0 ? blendTimeMs / 1000 : Number.NaN;
+    clipTable[record + WVA_CLIP_MOVING_SPEED] = Number.NaN;
+    clipTable[record + WVA_CLIP_VARIATION_INDEX] = Number.NaN;
+    clipTable[record + WVA_CLIP_VARIATION_NEXT] = Number.NaN;
+    clipTable[record + WVA_CLIP_FIRST_CHANNEL] = channelAt;
+    clipTable[record + WVA_CLIP_FIRST_KEY] = keyAt;
+    const firstChannel = channelAt;
+    offset += CLIP_HEADER_SIZE;
+    for (let index = 0; index < channelCount; index++) {
+      const bone = view.getUint16(offset, true);
+      const kind = view.getUint8(offset + 2);
+      const keys = view.getUint32(offset + 4, true);
+      offset += CHANNEL_HEADER_SIZE;
+      const components = kind === 1 ? 4 : 3;
+      const bytes = keys * 4 + keys * components * (kind === 1 ? 2 : 4);
+      if (bone >= boneCount) {
+        offset += bytes;
+        continue;
+      }
+      channelTable[channelAt * WVA_CHANNEL_STRIDE] = bone | (kind << 16);
+      channelTable[channelAt * WVA_CHANNEL_STRIDE + 1] = keys;
+      channelAt++;
+      if (bone >= span) span = bone + 1;
+      for (let key = 0; key < keys; key++) keyData[keyAt + key] = view.getUint32(offset + key * 4, true) / 1000;
+      keyAt += keys;
+      const values = offset + keys * 4;
+      const count = keys * components;
+      if (kind === 1) {
+        // M2CompQuat: int16 per component, x y z w, mapped back onto [-1, 1].
+        for (let at = 0; at < count; at++) {
+          const raw = view.getInt16(values + at * 2, true);
+          keyData[keyAt + at] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
+        }
+      } else {
+        for (let at = 0; at < count; at++) keyData[keyAt + at] = view.getFloat32(values + at * 4, true);
+      }
+      keyAt += count;
+      offset += bytes;
+    }
+    clipTable[record + WVA_CLIP_CHANNELS] = channelAt - firstChannel;
+  }
+  if (offset > view.byteLength) throw new Error("Animation clips run past the end of the block");
+  if (offset < limit) {
+    const recordSize = view.getUint16(offset + 4, true);
+    let at = offset + CLIP_EXTRAS_HEADER_SIZE;
+    for (let clip = 0; clip < clipCount; clip++, at += recordSize) {
+      const record = clip * WVA_CLIP_STRIDE;
+      const movingSpeed = view.getFloat32(at, true);
+      const variationNext = view.getInt16(at + 4, true);
+      if (Number.isFinite(movingSpeed) && movingSpeed !== 0) clipTable[record + WVA_CLIP_MOVING_SPEED] = movingSpeed;
+      if (variationNext >= 0) clipTable[record + WVA_CLIP_VARIATION_NEXT] = variationNext;
+      clipTable[record + WVA_CLIP_VARIATION_INDEX] = view.getUint16(at + 6, true);
+    }
+  }
+  return { clipTable, channelTable, keys: keyData, span };
 }
 
 /**
@@ -846,7 +1234,7 @@ export const TEXTURE_ROUTE_VERSION = "2";
  * revalidated ETag contract. Without a new URL, a response cached before that header change could
  * remain fresh for the rest of its original day even though the gateway itself was already fixed.
  */
-export const VISUAL_MODEL_ROUTE_VERSION = "2";
+export const VISUAL_MODEL_ROUTE_VERSION = "3";
 
 const COORDINATED_VISUAL_TEXTURE_PREFIXES = [
   "character\\", "creature\\", "item\\objectcomponents\\", "item\\texturecomponents\\",

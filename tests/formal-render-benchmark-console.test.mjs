@@ -112,6 +112,8 @@ test("console owns candidate state and never runs approved pending fixture", asy
   assert.equal(B.lighting, 1);
   assert.equal(A.settings.renderScale, 100);
   assert.equal(B.settings.renderScale, 100);
+  assert.equal(A.settings.godRays, false);
+  assert.equal(B.settings.godRays, false);
   assert.equal(A.settings.characterAtlasAnisotropy, false);
   assert.equal(B.settings.characterAtlasAnisotropy, true);
   const aWithoutKnob = { ...A.settings };
@@ -195,6 +197,8 @@ test("main wires the frozen formal console without replacing live diagnostics", 
   assert.match(source, /webclientRenderBenchmark\s*=\s*renderBenchmarkConsole/);
   assert.match(source, /game\.renderer\?\.benchmarkGraphicsConfiguration/,
     "formal environment metadata reads applied renderer settings, not only requested settings");
+  assert.match(source, /godRays: applied\.godRays,/,
+    "formal metadata records the renderer's applied god-rays value");
   assert.match(source, /createFormalRenderBenchmarkConsole\(\{/);
   assert.match(source, /webclientFormalRenderBenchmark\s*=\s*formalRenderBenchmarkConsole/);
   assert.doesNotMatch(source, /import\s+\{\s*createFormalRenderBenchmarkConsole/,

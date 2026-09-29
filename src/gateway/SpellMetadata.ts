@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { explicitUnitTargetContract } from "./ExplicitUnitTargetContract.js";
+import { explicitSpellTargetContract } from "./ExplicitSpellTargetContract.js";
 import { openDbc, type Dbc } from "./Dbc.js";
+import { parseSpellShapeshiftFormBonuses } from "./SpellShapeshiftForms.js";
 
 /**
  * `SPELL_ATTR0_PASSIVE`. A passive spell has no button; the real spellbook still lists it, greyed.
@@ -18,23 +21,164 @@ const SPELL_ATTR0_PASSIVE = 0x40;
 const SPELL_ATTR0_HIDDEN_CLIENTSIDE = 0x80;
 /** `SPELL_ATTR0_DISABLED_WHILE_ACTIVE`: the server starts recovery from the later event. */
 const SPELL_ATTR0_DISABLED_WHILE_ACTIVE = 0x02000000;
+/**
+ * `SPELL_ATTR0_ON_NEXT_SWING` and `_ON_NEXT_SWING_2`, which the core documents as handled
+ * identically by server and client (SharedDefines.h:409, 417): the strike replaces the next melee
+ * swing, and the tooltip's cast row says so («Следующая атака», `SPELL_ON_NEXT_SWING`).
+ */
+const SPELL_ATTR0_ON_NEXT_SWING = 0x00000004;
+const SPELL_ATTR0_ON_NEXT_SWING_2 = 0x00000400;
+/** `SPELL_ATTR1_CHANNELED_1` and `_2` (SharedDefines.h:446, 450): «Потоковое» on the cast row. */
+const SPELL_ATTR1_CHANNELED_1 = 0x00000004;
+const SPELL_ATTR1_CHANNELED_2 = 0x00000040;
 /** `SPELL_ATTR2_AUTOREPEAT_FLAG`: the spell occupies the ranged repeat container. */
 const SPELL_ATTR2_AUTOREPEAT_FLAG = 0x00000020;
+/** The original stance bar uses this flag and the authored StanceBarOrder. */
+const SPELL_ATTR2_DISPLAY_IN_STANCE_BAR = 0x00000010;
 /** `SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT` in SpellCategory.dbc. */
 const SPELL_CATEGORY_FLAG_COOLDOWN_STARTS_ON_EVENT = 0x04;
+
+/**
+ * Server-only linked effects have no client DBC row, but the world database names the visible
+ * spell that owns them.  Keep these aliases at the metadata boundary so every browser surface
+ * gets the owner's real localisation, icon and client-visibility flags instead of inventing an
+ * "unknown buff".  The current realm's `spell_linked_spell` row is `26023 -> 61418` (type 2,
+ * Pursuit of Justice mounted-speed effect); neither Spell.dbc shipped with the dataset nor the
+ * original client archive contains 61418.
+ */
+const SERVER_LINKED_SPELL_ALIASES = new Map<number, number>([
+  [61418, 26023],
+]);
+
+/** The v11 payload is understood by target-selection clients. */
+export const SPELL_TARGETING_CONTRACT_VERSION = 1;
+
+/** Semantic selection requirements, deliberately not SpellCastTargetFlags or packet bits. */
+export const SPELL_REQUIRED_TARGET_MASK = {
+  None: 0,
+  Unit: 1,
+  Item: 2,
+  Ground: 4,
+} as const;
+/** All combinations of the three bounded semantic bits. */
+export type SpellRequiredTargetMask = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/** A single selection flow the client may enter without inventing a target. */
+export const SPELL_REQUIRED_TARGET_MODE = {
+  Unknown: 0,
+  Unit: 1,
+  Item: 2,
+  Ground: 3,
+} as const;
+export type SpellRequiredTargetMode = typeof SPELL_REQUIRED_TARGET_MODE[keyof typeof SPELL_REQUIRED_TARGET_MODE];
+
+export interface SpellTargetingMetadata {
+  targetingContractVersion: number;
+  requiredTargetMask: SpellRequiredTargetMask;
+  requiredTargetMode: SpellRequiredTargetMode;
+}
+
+// SpellInfo::_InitializeExplicitTargetMask starts with Spell.dbc.Targets, then can add a
+// destination from implicit effects. Spell::InitExplicitTargets fills that derived destination
+// from the selected target or caster when the packet omits it. Only the DBC seed below describes
+// a direct client selection. Source, mixed and unsupported selections remain Unknown. A client
+// must fail closed for known v1 Unknown plus a nonzero mask; no general GameObject flow exists.
+const TARGET_FLAG_UNIT_SELECTION = 0x0011058e;
+const TARGET_FLAG_ITEM = 0x00000010;
+const TARGET_FLAG_SOURCE_LOCATION = 0x00000020;
+const TARGET_FLAG_DEST_LOCATION = 0x00000040;
+const KNOWN_SELECTION_FLAGS = TARGET_FLAG_UNIT_SELECTION | TARGET_FLAG_ITEM
+  | TARGET_FLAG_SOURCE_LOCATION | TARGET_FLAG_DEST_LOCATION;
+
+export function spellRequiredTargeting(targets: number): SpellTargetingMetadata {
+  const targetFlags = targets >>> 0;
+  let requiredTargetMask: SpellRequiredTargetMask = SPELL_REQUIRED_TARGET_MASK.None;
+  if ((targetFlags & TARGET_FLAG_UNIT_SELECTION) !== 0) {
+    requiredTargetMask = (requiredTargetMask | SPELL_REQUIRED_TARGET_MASK.Unit) as SpellRequiredTargetMask;
+  }
+  if ((targetFlags & TARGET_FLAG_ITEM) !== 0) {
+    requiredTargetMask = (requiredTargetMask | SPELL_REQUIRED_TARGET_MASK.Item) as SpellRequiredTargetMask;
+  }
+  if ((targetFlags & TARGET_FLAG_DEST_LOCATION) !== 0) {
+    requiredTargetMask = (requiredTargetMask | SPELL_REQUIRED_TARGET_MASK.Ground) as SpellRequiredTargetMask;
+  }
+
+  const unsupported = (targetFlags & ~KNOWN_SELECTION_FLAGS) !== 0;
+  const hasSource = (targetFlags & TARGET_FLAG_SOURCE_LOCATION) !== 0;
+  let requiredTargetMode: SpellRequiredTargetMode = SPELL_REQUIRED_TARGET_MODE.Unknown;
+  if (!unsupported && !hasSource) {
+    switch (requiredTargetMask) {
+      case SPELL_REQUIRED_TARGET_MASK.Unit:
+        requiredTargetMode = SPELL_REQUIRED_TARGET_MODE.Unit;
+        break;
+      case SPELL_REQUIRED_TARGET_MASK.Item:
+        requiredTargetMode = SPELL_REQUIRED_TARGET_MODE.Item;
+        break;
+      case SPELL_REQUIRED_TARGET_MASK.Ground:
+        requiredTargetMode = SPELL_REQUIRED_TARGET_MODE.Ground;
+        break;
+    }
+  }
+
+  return { targetingContractVersion: SPELL_TARGETING_CONTRACT_VERSION, requiredTargetMask, requiredTargetMode };
+}
 
 export interface SpellMetadata {
   id: number;
   name: string;
   rank: string;
   description: string;
+  /**
+   * `AuraDescription_lang`: what the 3.3.5 client shows on a buff or debuff's tooltip, which is
+   * not the cast description. «Боевой крик» (6673) casts as «Воин издает боевой крик, увеличивающий
+   * силу атаки всех участников группы…» and sits on the buff bar as «Сила атаки увеличена на $s1.».
+   * Measured on this dataset: 17,443 of 72,029 rows carry one and 13,553 of those differ from the
+   * description. Empty where the row has none; absent from a gateway older than the browser's
+   * v=13 key, which the browser reads as «use the description».
+   */
+  auraDescription?: string;
+  /** `SPELL_ATTR0_ON_NEXT_SWING` or `_2` (434 rows, «Удар героя» among them): «Следующая атака». */
+  onNextSwing?: boolean;
+  /**
+   * `SPELL_ATTR1_CHANNELED_1` or `_2`: «Потоковое». 1,961 rows, 1,745 of them with a cast time of 0
+   * — «Чародейские стрелы» (5143) is one — which is why `castTime` alone read them as instant.
+   */
+  channeled?: boolean;
   iconId: number;
   iconPath: string;
   passive: boolean;
   /** Marked invisible by the artist. Never belongs in the spellbook or on the aura bar. */
   hidden: boolean;
+  /** SPELL_ATTR0_TRADESPELL: recipes belong in a profession, not the spellbook. */
+  tradeSkill?: boolean;
+  /** Crafting operands come from the same DBC row as the spell description. */
+  effects?: number[];
+  effectItemType?: number[];
+  reagents?: Array<{ itemId: number; count: number }>;
+  tools?: number[];
+  requiredToolCategories?: number[];
+  requiredToolNames?: string[];
+  equippedItemClass?: number;
+  equippedItemSubclass?: number;
+  equippedItemInvTypes?: number;
   /** Auto Shot/Shoot: one targeted start request followed by server-timed ranged attacks. */
   autoRepeat: boolean;
+  displayInStanceBar: boolean;
+  stanceBarOrder: number;
+  /** SpellShapeshiftForm.dbc BonusActionBar for a MOD_SHAPESHIFT effect; absent if unresolved. */
+  bonusActionBarOffset?: number;
+  targetingContractVersion?: number;
+  requiredTargetMask?: SpellRequiredTargetMask;
+  requiredTargetMode?: SpellRequiredTargetMode;
+  /** Narrow v1 fallback for active implicit UNIT_TARGET* effects when legacy Targets is zero. */
+  unitTargetContractVersion?: number;
+  supportsExplicitUnitTarget?: boolean;
+  /** Bounded v2 semantic target shape and mandatory native-selection subset from the active TrinityCore target/effect tables. */
+  explicitTargetContractVersion?: number;
+  explicitTargetMask?: number;
+  /** Native choices that must be collected; inferred Unit/Source/destination data stays server-derived. */
+  clientSelectionMask?: number;
+  supportsExplicitTarget?: boolean;
   powerType: number;
   powerCost: number;
   /**
@@ -46,7 +190,8 @@ export interface SpellMetadata {
    *
    * The base it multiplies is the caster's, not the spell's: `Spell::CalcPowerCost` takes
    * `GetCreateMana()` — `UNIT_FIELD_BASE_MANA` — for a mana spell and the unit's maximum for rage,
-   * energy and runic power, so the resolution belongs on the client that knows the caster.
+   * focus, energy and happiness. The selected core does not apply `ManaCostPct` to rune or runic
+   * power. Resolution belongs on the client that knows the caster.
    */
   powerCostPercent: number;
   recoveryTime: number;
@@ -147,11 +292,14 @@ export function parseSpellMetadata(
   descriptionVariablesPayload?: Uint8Array,
   rangePayload?: Uint8Array,
   castTimePayload?: Uint8Array,
+  shapeshiftFormPayload?: Uint8Array,
 ): Map<number, SpellMetadata> {
   const view = (payload: Uint8Array): Buffer =>
     Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
   const spells = openDbc(view(spellPayload), "Spell");
   const icons = openDbc(view(iconPayload), "SpellIcon");
+  const formBonuses = shapeshiftFormPayload
+    ? parseSpellShapeshiftFormBonuses(shapeshiftFormPayload) : new Map<number, number>();
 
   const iconPaths = new Map<number, string>();
   for (const row of icons.rows()) iconPaths.set(icons.id(row), icons.string(row, "TextureFilename"));
@@ -179,7 +327,7 @@ export function parseSpellMetadata(
     for (const row of categories.rows()) categoryFlags.set(categories.id(row), categories.int(row, "Flags"));
   }
   // Two more indexes into two more small tables, resolved for the same reason as the two above.
-  const ranges = new Map<number, { min: number; max: number; flags: number }>();
+  const ranges = new Map<number, { min: number; max: number; maxFriendly: number; flags: number }>();
   if (rangePayload) {
     const table = openDbc(view(rangePayload), "SpellRange");
     for (const row of table.rows()) {
@@ -188,6 +336,7 @@ export function parseSpellMetadata(
       ranges.set(table.id(row), {
         min: table.float(row, "RangeMin", 0),
         max: table.float(row, "RangeMax", 0),
+        maxFriendly: table.float(row, "RangeMax", 1),
         flags: table.int(row, "Flags"),
       });
     }
@@ -209,17 +358,58 @@ export function parseSpellMetadata(
   const result = new Map<number, SpellMetadata>();
   for (const row of spells.rows()) {
     const id = spells.id(row);
+    const targeting = spellRequiredTargeting(spells.int(row, "Targets"));
+    const unitTargetContract = explicitUnitTargetContract({
+      targets: spells.int(row, "Targets"),
+      effects: perEffect((effect) => spells.int(row, "Effect", effect)),
+      implicitTargetA: perEffect((effect) => spells.int(row, "ImplicitTargetA", effect)),
+      implicitTargetB: perEffect((effect) => spells.int(row, "ImplicitTargetB", effect)),
+    });
+    const range = ranges.get(spells.int(row, "RangeIndex"));
+    const explicitTargetContract = explicitSpellTargetContract({
+      targets: spells.int(row, "Targets"),
+      effects: perEffect((effect) => spells.int(row, "Effect", effect)),
+      implicitTargetA: perEffect((effect) => spells.int(row, "ImplicitTargetA", effect)),
+      implicitTargetB: perEffect((effect) => spells.int(row, "ImplicitTargetB", effect)),
+      rangeMaxHostile: range?.max ?? 0,
+      rangeMaxFriendly: range?.maxFriendly ?? 0,
+    });
     const iconId = spells.int(row, "SpellIconID");
     const metadata: SpellMetadata = {
       id,
       name: spells.locstring(row, "Name_lang") || `Spell ${id}`,
       rank: spells.locstring(row, "NameSubtext_lang"),
       description: spells.locstring(row, "Description_lang"),
+      auraDescription: spells.locstring(row, "AuraDescription_lang"),
+      onNextSwing: (spells.int(row, "Attributes") & (SPELL_ATTR0_ON_NEXT_SWING | SPELL_ATTR0_ON_NEXT_SWING_2)) !== 0,
+      channeled: (spells.int(row, "AttributesEx") & (SPELL_ATTR1_CHANNELED_1 | SPELL_ATTR1_CHANNELED_2)) !== 0,
       iconId,
       iconPath: iconPaths.get(iconId) ?? "",
       passive: (spells.int(row, "Attributes") & SPELL_ATTR0_PASSIVE) !== 0,
       hidden: (spells.int(row, "Attributes") & SPELL_ATTR0_HIDDEN_CLIENTSIDE) !== 0,
+      tradeSkill: (spells.int(row, "Attributes") & 0x20) !== 0,
+      effects: perEffect((effect) => spells.int(row, "Effect", effect)),
+      effectItemType: perEffect((effect) => spells.int(row, "EffectItemType", effect)),
+      reagents: Array.from({ length: 8 }, (_, index) => ({
+        itemId: spells.int(row, "Reagent", index), count: spells.int(row, "ReagentCount", index),
+      })).filter((reagent) => reagent.itemId > 0 && reagent.count > 0),
+      tools: [0, 1].map((index) => spells.int(row, "Totem", index)).filter((id) => id > 0),
+      requiredToolCategories: [0, 1].map((index) => spells.int(row, "RequiredTotemCategoryID", index)).filter((id) => id > 0),
+      equippedItemClass: spells.int(row, "EquippedItemClass"),
+      equippedItemSubclass: spells.int(row, "EquippedItemSubclass"),
+      equippedItemInvTypes: spells.int(row, "EquippedItemInvTypes"),
       autoRepeat: (spells.int(row, "AttributesExB") & SPELL_ATTR2_AUTOREPEAT_FLAG) !== 0,
+      displayInStanceBar: (spells.int(row, "AttributesExB") & SPELL_ATTR2_DISPLAY_IN_STANCE_BAR) !== 0,
+      stanceBarOrder: spells.int(row, "StanceBarOrder"),
+      targetingContractVersion: targeting.targetingContractVersion,
+      requiredTargetMask: targeting.requiredTargetMask,
+      requiredTargetMode: targeting.requiredTargetMode,
+      unitTargetContractVersion: unitTargetContract.unitTargetContractVersion,
+      supportsExplicitUnitTarget: unitTargetContract.supportsExplicitUnitTarget,
+      explicitTargetContractVersion: explicitTargetContract.explicitTargetContractVersion,
+      explicitTargetMask: explicitTargetContract.explicitTargetMask,
+      clientSelectionMask: explicitTargetContract.clientSelectionMask,
+      supportsExplicitTarget: explicitTargetContract.supportsExplicitTarget,
       powerType: spells.int(row, "PowerType"),
       powerCost: spells.int(row, "ManaCost"),
       powerCostPercent: spells.int(row, "ManaCostPct"),
@@ -234,9 +424,9 @@ export function parseSpellMetadata(
       // `flag96`, the 96-bit family mask a talent's condition is written against.
       spellClassMask: [0, 1, 2].map((word) => spells.int(row, "SpellClassMask", word)),
       schoolMask: spells.int(row, "SchoolMask"),
-      rangeMin: ranges.get(spells.int(row, "RangeIndex"))?.min ?? 0,
-      rangeMax: ranges.get(spells.int(row, "RangeIndex"))?.max ?? 0,
-      rangeFlags: ranges.get(spells.int(row, "RangeIndex"))?.flags ?? 0,
+      rangeMin: range?.min ?? 0,
+      rangeMax: range?.max ?? 0,
+      rangeFlags: range?.flags ?? 0,
       castTime: castTimes.get(spells.int(row, "CastingTimeIndex")) ?? 0,
       effectAura: perEffect((effect) => spells.int(row, "EffectAura", effect)),
       effectMiscValue: perEffect((effect) => spells.int(row, "EffectMiscValue", effect)),
@@ -254,13 +444,18 @@ export function parseSpellMetadata(
     };
     const variables = descriptionVariables.get(metadata.descriptionVariablesId);
     if (variables !== undefined) metadata.descriptionVariables = variables;
+    const formEffect = metadata.effectAura.indexOf(36); // SPELL_AURA_MOD_SHAPESHIFT
+    if (formEffect >= 0) {
+      const bonus = formBonuses.get(metadata.effectMiscValue[formEffect]!);
+      if (bonus !== undefined) metadata.bonusActionBarOffset = bonus;
+    }
     result.set(id, metadata);
   }
   return result;
 }
 
 export async function loadSpellMetadata(directory: string): Promise<Map<number, SpellMetadata>> {
-  const [spells, icons, durations, radii, categories, variables, ranges, castTimes] = await Promise.all([
+  const [spells, icons, durations, radii, categories, variables, ranges, castTimes, shapeshiftForms] = await Promise.all([
     readFile(join(directory, "Spell.dbc")),
     readFile(join(directory, "SpellIcon.dbc")),
     readFile(join(directory, "SpellDuration.dbc")),
@@ -271,8 +466,47 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
     readFile(join(directory, "SpellDescriptionVariables.dbc")).catch(() => undefined),
     readFile(join(directory, "SpellRange.dbc")),
     readFile(join(directory, "SpellCastTimes.dbc")),
+    // Older/custom datasets can omit the side table. In that case the page offset remains
+    // unresolved; do not guess one from a stance name, spell id or display flag.
+    readFile(join(directory, "SpellShapeshiftForm.dbc")).catch(() => undefined),
   ]);
-  return parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes);
+  const metadata = parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes,
+    shapeshiftForms);
+  const toolNames = await loadTotemCategoryNames(directory);
+  for (const spell of metadata.values()) {
+    spell.requiredToolNames = (spell.requiredToolCategories ?? []).map((id) => toolNames.get(id) ?? "Профессиональный инструмент");
+  }
+  for (const [effectId, ownerId] of SERVER_LINKED_SPELL_ALIASES) {
+    if (metadata.has(effectId)) continue;
+    const owner = metadata.get(ownerId);
+    if (owner) metadata.set(effectId, { ...owner, id: effectId });
+  }
+  return metadata;
+}
+
+/** DBCStructure.h: ID, sixteen localised names, locale mask, category type and mask. */
+async function loadTotemCategoryNames(directory: string): Promise<Map<number, string>> {
+  const payload = await readFile(join(directory, "TotemCategory.dbc")).catch(() => undefined);
+  const result = new Map<number, string>();
+  if (!payload || payload.length < 20 || payload.subarray(0, 4).toString("latin1") !== "WDBC") return result;
+  const rows = payload.readUInt32LE(4);
+  if (payload.readUInt32LE(8) !== 20 || payload.readUInt32LE(12) !== 80) return result;
+  const strings = 20 + rows * 80;
+  if (strings + payload.readUInt32LE(16) !== payload.length) return result;
+  const locales = ["enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU"];
+  const preferred = Math.max(0, locales.indexOf(process.env["CLIENT_LOCALE"] ?? "ruRU"));
+  for (let index = 0; index < rows; index++) {
+    const at = 20 + index * 80;
+    for (const locale of [preferred, 0, ...Array.from({ length: 16 }, (_, slot) => slot)]) {
+      const offset = payload.readUInt32LE(at + 4 + locale * 4);
+      if (offset <= 0 || strings + offset >= payload.length) continue;
+      const end = payload.indexOf(0, strings + offset);
+      if (end <= strings + offset) continue;
+      result.set(payload.readUInt32LE(at), payload.subarray(strings + offset, end).toString("utf8"));
+      break;
+    }
+  }
+  return result;
 }
 
 export type SpellDbc = Dbc<"Spell">;

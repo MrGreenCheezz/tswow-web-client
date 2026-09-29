@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { SpellVisualCoordinator, usesStockRangedRelease } from "../dist/code/browser/SpellVisualLifecycle.js";
+import { CAST_END_GRACE_MS, IMPACT_KIT_MS, PACKET_KIT_MS } from "../dist/code/browser/SpellVisuals.js";
 
 class Events {
   #listeners = new Map();
@@ -288,6 +289,57 @@ test("start delay retimes a loaded handle and stop cancels it", () => {
   assert.equal(ref.calls.retimed.length, 1);
   current.events.emit("SPELL_CAST_STOP", { casterGuid: 1n, spellId: 7, interrupted: true });
   assert.ok(ref.calls.cancelled.length > 0);
+});
+
+test("a precast stands until its end packet, bounded by a grace past the bar", () => {
+  // The GO is sent on the first map update after the server's timer and lands after the local
+  // deadline; ending the stance on the deadline dropped the arms before every release.
+  for (const endPacket of ["go", "lost"]) {
+    let now = 1000;
+    const source = metadata(visual());
+    source.put(7);
+    const ref = rendererRef();
+    const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
+    const current = world();
+    coordinator.bindWorld(current);
+    current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 1000, channel: false });
+    const precast = ref.calls.plans[0].animations[0];
+    assert.equal(precast.animation, 11);
+    assert.equal(precast.at + precast.hold, 2000 + CAST_END_GRACE_MS, "the renderer hold carries the grace too");
+    now = 2000;
+    coordinator.tick(now);
+    now = 2000 + CAST_END_GRACE_MS - 1;
+    coordinator.tick(now);
+    assert.equal(ref.calls.cancelled.length, 0, `${endPacket}: the bar running out does not end the stance`);
+    if (endPacket === "go") {
+      current.events.emit("SPELL_GO", go());
+      assert.deepEqual(ref.calls.cancelled, [{ id: 1 }], "the GO ends it");
+      assert.ok(ref.calls.plans[1].animations.some((one) => one.guid === 1n && one.animation === 12),
+        "and hands over to the release");
+    } else {
+      now = 2000 + CAST_END_GRACE_MS;
+      coordinator.tick(now);
+      assert.deepEqual(ref.calls.cancelled, [{ id: 1 }], "a lost end packet is bounded by the grace");
+    }
+  }
+});
+
+test("pushback and channel refreshes retime to the new end plus the same grace", () => {
+  let now = 1000;
+  const source = metadata(visual());
+  source.put(7);
+  const ref = rendererRef();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
+  const current = world();
+  coordinator.bindWorld(current);
+  current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 1000, channel: false });
+  now = 1100;
+  current.events.emit("SPELL_CAST_DELAYED", { casterGuid: 1n, delay: 250 });
+  assert.deepEqual(ref.calls.retimed.at(-1), { handle: { id: 1 }, at: 2250 + CAST_END_GRACE_MS });
+  current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 7, castTime: 2000, channel: true });
+  now = 3000;
+  current.events.emit("SPELL_CHANNEL_UPDATE", { casterGuid: 1n, spellId: 7, remaining: 5000 });
+  assert.deepEqual(ref.calls.retimed.at(-1), { handle: { id: 2 }, at: 8000 + CAST_END_GRACE_MS });
 });
 
 test("late authored precast arrives without a speculative pose preceding it", () => {
@@ -901,4 +953,186 @@ test("channel GO suppresses every caster animation but keeps target animations, 
     "no GO animation may steal the held channel caster slot");
   assert.ok(sounds.includes(37));
   assert.equal(ref.calls.currentAction, "visual", "the channel action remains installed");
+});
+
+/* --- S3: kits the server names by number ------------------------------------------------------ */
+
+function kitSource() {
+  const values = new Map();
+  return {
+    values,
+    get(id) { return values.get(id); },
+    /** `undefined` records the gateway answer "this kit resolves to nothing". */
+    put(id, record) { values.set(id, record === undefined ? { id } : { id, kit: record }); },
+  };
+}
+
+const FOOD = kit({
+  animation: 61, sound: 45,
+  effects: [{ path: "Spells\Food_HealEffect_Base.m2", attachment: 19, scale: 1 }],
+});
+
+test("S3: a kit named by number draws on the unit it names", () => {
+  let now = 1000;
+  const kits = kitSource();
+  kits.put(406, FOOD);
+  const ref = rendererRef();
+  const sounds = [];
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+    playSound: (id) => { sounds.push(id); },
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 406, false);
+  assert.equal(ref.calls.plans.length, 1, "the kit is drawn, not only heard");
+  const plan = ref.calls.plans[0];
+  assert.deepEqual(plan.instances.map((instance) => instance.path),
+    ["Spells\Food_HealEffect_Base.m2"]);
+  assert.equal(plan.instances[0].anchor, 2n, "and hangs on the unit the packet named");
+  assert.equal(plan.instances[0].attachment, 19);
+  assert.equal(plan.instances[0].endsAt - plan.instances[0].startedAt, PACKET_KIT_MS);
+  assert.deepEqual(plan.animations.map((animation) => animation.animation), [61],
+    "the kit's authored AnimID reaches the unit action path");
+  assert.equal(plan.animations[0].guid, 2n);
+  assert.deepEqual(sounds, [45], "and the kit's own SoundID still plays");
+});
+
+test("S3: an impact kit takes the shorter window", () => {
+  let now = 1000;
+  const kits = kitSource();
+  kits.put(406, FOOD);
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 406, true);
+  const instance = ref.calls.plans[0].instances[0];
+  assert.equal(instance.endsAt - instance.startedAt, IMPACT_KIT_MS);
+  assert.ok(IMPACT_KIT_MS < PACKET_KIT_MS, "a hit is shorter than a flourish");
+});
+
+test("S3: a kit whose metadata is still on the wire is replayed when it lands", () => {
+  let now = 1000;
+  const kits = kitSource();
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 7668, false);
+  assert.equal(ref.calls.plans.length, 0);
+  assert.equal(coordinator.pendingCounts().kit, 1);
+  kits.put(7668, kit({ animation: 172, sound: 11658, effects: [{ path: "shadow_nova_area.m2", attachment: 1, scale: 0.1 }] }));
+  now += 50;
+  coordinator.onKitsLoaded([7668]);
+  assert.equal(coordinator.pendingCounts().kit, 0);
+  assert.equal(ref.calls.plans.length, 1);
+  assert.equal(ref.calls.plans[0].instances[0].path, "shadow_nova_area.m2");
+});
+
+test("S3: a queued kit older than the TTL is dropped rather than drawn late", () => {
+  let now = 1000;
+  const kits = kitSource();
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now, ttlMs: 2000,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 7668, false);
+  now += 2001;
+  coordinator.tick(now);
+  assert.equal(coordinator.pendingCounts().kit, 0, "frame expiry sweeps the kit queue too");
+  kits.put(7668, FOOD);
+  coordinator.onKitsLoaded([7668]);
+  assert.equal(ref.calls.plans.length, 0);
+});
+
+test("S3: a kit the route answered for with nothing stops being asked about", () => {
+  let now = 1000;
+  const kits = kitSource();
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 21, false);
+  assert.equal(coordinator.pendingCounts().kit, 1);
+  kits.put(21, undefined);
+  coordinator.onKitsLoaded([21]);
+  assert.equal(coordinator.pendingCounts().kit, 0);
+  assert.equal(ref.calls.plans.length, 0);
+  coordinator.playVisualKit(2n, 21, false);
+  assert.equal(coordinator.pendingCounts().kit, 0, "a resolved empty answer is not re-queued");
+});
+
+test("S3: a kit for a unit this client has not got draws nothing at the world origin", () => {
+  let now = 1000;
+  const kits = kitSource();
+  kits.put(406, FOOD);
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(0x999n, 406, false);
+  assert.equal(ref.calls.plans.length, 0);
+  coordinator.playVisualKit(0n, 406, false);
+  assert.equal(ref.calls.plans.length, 0);
+});
+
+test("S3: without a kit route the packet behaves exactly as it did before the slice", () => {
+  let now = 1000;
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 406, false);
+  assert.equal(ref.calls.plans.length, 0);
+  assert.equal(coordinator.pendingCounts().kit, 0);
+});
+
+test("S3: a kit that arrives before the renderer is deferred, not lost", () => {
+  let now = 1000;
+  const kits = kitSource();
+  kits.put(406, FOOD);
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: () => ref.get(), now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 406, false);
+  assert.equal(ref.calls.plans.length, 0, "there is no renderer yet");
+  ref.set(ref.renderer);
+  now += 10;
+  coordinator.tick(now);
+  assert.equal(ref.calls.plans.length, 1, "the frame that gets one draws it");
+  assert.equal(ref.calls.plans[0].instances[0].anchor, 2n);
+});
+
+test("S3: a world change invalidates a kit that was still waiting for its metadata", () => {
+  let now = 1000;
+  const kits = kitSource();
+  const ref = rendererRef();
+  const current = world();
+  const coordinator = new SpellVisualCoordinator({
+    metadata: metadata(), kitMetadata: kits, renderer: ref.renderer, now: () => now,
+  });
+  coordinator.bindWorld(current);
+  coordinator.playVisualKit(2n, 406, false);
+  assert.equal(coordinator.pendingCounts().kit, 1);
+  coordinator.worldChanged(current);
+  assert.equal(coordinator.pendingCounts().kit, 0);
+  kits.put(406, FOOD);
+  coordinator.onKitsLoaded([406]);
+  assert.equal(ref.calls.plans.length, 0, "a teleport is not a reason to draw the old map's kit");
 });

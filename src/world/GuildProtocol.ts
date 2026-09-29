@@ -29,6 +29,8 @@ export const GE_MOTD = 2;
 export interface GuildRank {
   flags: number;
   withdrawGoldLimit: number;
+  /** All six bank tab pairs are sent back when any part of the rank changes. */
+  tabs: Array<{ rights: number; slots: number }>;
 }
 
 export interface GuildMember {
@@ -67,12 +69,12 @@ export function parseGuildRoster(payload: Uint8Array): GuildRoster {
   for (let index = 0; index < rankCount; index++) {
     const flags = reader.u32();
     const withdrawGoldLimit = reader.u32();
-    // Each rank carries a permission and a withdraw limit for every bank tab.
+    // CMSG_GUILD_RANK rewrites these pairs too, even when only the rank name changes.
+    const tabs: GuildRank["tabs"] = [];
     for (let tab = 0; tab < GUILD_BANK_MAX_TABS; tab++) {
-      reader.u32();
-      reader.u32();
+      tabs.push({ rights: reader.u32(), slots: reader.u32() });
     }
-    ranks.push({ flags, withdrawGoldLimit });
+    ranks.push({ flags, withdrawGoldLimit, tabs });
   }
   const members: GuildMember[] = [];
   for (let index = 0; index < memberCount; index++) {
@@ -240,17 +242,20 @@ export function buildGuildPlayerName(name: string): Uint8Array {
  * `CMSG_GUILD_RANK`: one rank's whole permission row.
  *
  * The six tab pairs are always written, whatever the guild has bought — `GuildSetRankPermissions`
- * reads `GUILD_BANK_MAX_TABS` of them unconditionally, and stopping early leaves the server reading
- * the next packet's bytes as tab rights.
+ * reads `GUILD_BANK_MAX_TABS` of them unconditionally. Refuse an incomplete snapshot rather than
+ * padding it with zeros: the server would persist those zeros as revoked bank rights.
  */
 export function buildGuildRank(
   rankId: number, flags: number, name: string, withdrawGoldLimit: number,
   tabs: ReadonlyArray<{ rights: number; slots: number }>,
 ): Uint8Array {
+  if (tabs.length !== GUILD_BANK_MAX_TABS) {
+    throw new RangeError(`Guild rank requires ${GUILD_BANK_MAX_TABS} bank tab permission pairs`);
+  }
   const writer = new PacketWriter().u32(rankId).u32(flags).cString(name).u32(withdrawGoldLimit);
   for (let tab = 0; tab < GUILD_BANK_MAX_TABS; tab++) {
-    const entry = tabs[tab];
-    writer.u32(entry?.rights ?? 0).u32(entry?.slots ?? 0);
+    const entry = tabs[tab]!;
+    writer.u32(entry.rights).u32(entry.slots);
   }
   return writer.toUint8Array();
 }

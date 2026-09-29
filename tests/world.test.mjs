@@ -15,6 +15,7 @@ import {
 import { WorldConnection } from "../dist/code/world/WorldConnection.js";
 import { WorldCrypt } from "../dist/code/world/WorldCrypt.js";
 import { decompressObjectUpdate, isWorldObjectDead, WorldState } from "../dist/code/world/WorldState.js";
+import { WorldStore } from "../dist/code/world/WorldStore.js";
 import {
   MOVEMENT_FLAGS, buildMovementPacket, parseMovementPacket, writeMovementInfoBody,
 } from "../dist/code/world/MovementProtocol.js";
@@ -236,8 +237,19 @@ test("world state applies create, values and out-of-range object updates", () =>
   state.applyUpdate(values.toUint8Array());
   assert.equal(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset), 450);
 
-  state.applyUpdate(new PacketWriter().u32(1).u8(4).u32(1).packedGuid(guid).toUint8Array());
+  const retired = state.applyUpdate(new PacketWriter().u32(1).u8(4).u32(1).packedGuid(guid).toUint8Array());
+  assert.deepEqual(retired, [guid]);
   assert.equal(state.objects.has(guid), false);
+
+  // Object blocks cannot refresh packet-owned aura/cast state. A live replacement survives,
+  // but the old incarnation's state is still retired before its separate initial aura packet.
+  const replacement = create.toUint8Array();
+  const removeAndRecreate = new PacketWriter()
+    .u32(2).u8(4).u32(1).packedGuid(guid).bytes(replacement.subarray(4)).toUint8Array();
+  const recreated = new WorldState();
+  recreated.applyUpdate(replacement);
+  assert.deepEqual(recreated.applyUpdate(removeAndRecreate), [guid]);
+  assert.equal(recreated.objects.has(guid), true);
 });
 
 test("compressed object updates use the TrinityCore zlib envelope", async () => {
@@ -333,6 +345,17 @@ test("quest interaction packets decode details, requirements and rewards", () =>
   writeQuestRewards(offer, true);
   assert.equal(parseQuestOfferReward(offer.toUint8Array()).rewards.money, 100);
 
+  // Quest::BuildQuestRewards keeps a signed RewOrReqMoney, serialized as a uint32 word.
+  // A negative value is the turn-in cost, not a multi-billion-copper reward.
+  const paidOffer = new PacketWriter().u64(guid).u32(43).cString("Платное поручение").cString("Спасибо")
+    .u8(1).u32(0).u32(1).u32(0);
+  writeQuestRewards(paidOffer, true, -125);
+  const paidRewards = parseQuestOfferReward(paidOffer.toUint8Array()).rewards;
+  assert.deepEqual(
+    [paidRewards.money, paidRewards.requiredMoney],
+    [0, 125],
+  );
+
   assert.deepEqual(buildQuestGiverHello(guid), new PacketWriter().u64(guid).toUint8Array());
   assert.deepEqual(buildQuestQuery(guid, 42), new PacketWriter().u64(guid).u32(42).u8(0).toUint8Array());
   assert.deepEqual(buildQuestAccept(guid, 42), new PacketWriter().u64(guid).u32(42).u32(0).toUint8Array());
@@ -340,9 +363,9 @@ test("quest interaction packets decode details, requirements and rewards", () =>
   assert.deepEqual(buildQuestChooseReward(guid, 42, 2), new PacketWriter().u64(guid).u32(42).u32(2).toUint8Array());
 });
 
-function writeQuestRewards(writer, offer) {
+function writeQuestRewards(writer, offer, money = 100) {
   writer.u32(1).u32(25).u32(1).u32(1542).u32(1).u32(117).u32(2).u32(2473)
-    .u32(100).u32(3).u32(4).f32(0);
+    .i32(money).u32(3).u32(4).f32(0);
   if (offer) writer.u32(0);
   writer.u32(0).i32(0).u32(0).u32(0).u32(0).u32(0);
   for (let index = 0; index < 15; index++) writer.u32(0);
@@ -1031,6 +1054,9 @@ test("spell acceptance deduplication survives the 8-bit cast-count wrap", async 
 test("world travel notifies only for the own mover, with NEW_WORLD once", async () => {
   const guid = 0x1234n;
   const stranger = 0x5678n;
+  const pet = 0x9abcn;
+  const transport = 0xdef0n;
+  const gameObject = 0x1357n;
   const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
   const create = new PacketWriter()
     .u32(1).u8(2).packedGuid(guid).u8(4).u16(0x41)
@@ -1059,12 +1085,34 @@ test("world travel notifies only for the own mover, with NEW_WORLD once", async 
     close() {},
   };
   const client = new WorldClient(connection);
+  const store = new WorldStore(client.state);
+  const destroyed = [];
+  const auraChanges = [];
+  for (const stale of [pet, transport, gameObject]) {
+    client.state.move(stale, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } });
+  }
+  client.auras.set(pet, new Map([[3, { slot: 3, spellId: 7, flags: 0, casterLevel: 1, applications: 1 }]]));
+  store.flush();
+  store.events.on("OBJECT_DESTROYED", ({ guid: destroyedGuid }) => destroyed.push(destroyedGuid));
+  client.events.on("AURA_CHANGED", (change) => auraChanges.push(change));
   const arrivals = [];
-  client.onWorldChanged = (mapId, position) => arrivals.push({ mapId, position });
+  client.onWorldChanged = (mapId, position) => arrivals.push({
+    mapId, position, self: client.state.objects.get(guid)?.position,
+  });
   await client.loginCharacter(guid);
   await new Promise((resolve) => setImmediate(resolve));
+  store.flush();
   assert.deepEqual(arrivals.map(({ mapId }) => mapId), [571, 571, 571]);
   assert.deepEqual(arrivals.map(({ position }) => position.z), [6, 13, 33]);
+  assert.deepEqual(arrivals[0].self, { x: 4, y: 5, z: 6, orientation: 0 });
+  assert.deepEqual(destroyed.toSorted((left, right) => Number(left - right)), [pet, transport, gameObject].toSorted((left, right) => Number(left - right)));
+  assert.deepEqual(auraChanges.map((change) => change.guid), [pet]);
+  assert.equal(client.auras.has(pet), false);
+  assert.equal(client.state.objects.has(pet), false);
+  assert.equal(client.state.objects.has(transport), false);
+  assert.equal(client.state.objects.has(gameObject), false);
+  assert.equal(client.state.objects.has(stranger), true, "new-map updates still create normally");
+  store.detach();
   client.close();
 });
 
@@ -1110,6 +1158,42 @@ test("initial spells and spell casts match TrinityCore layouts", () => {
   assert.deepEqual(parseClearCooldown(event), { spellId: 133, guid: 0x1234n });
 });
 
+test("a superseded rank whose old spell is unknown is added, and a known one is replaced", async () => {
+  const queue = []; let wake;
+  const connection = {
+    sent: [],
+    push(opcode, payload) {
+      if (wake) { const resume = wake; wake = undefined; resume({ opcode, payload }); }
+      else queue.push({ opcode, payload });
+    },
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return queue.length ? Promise.resolve(queue.shift()) : new Promise((resolve) => { wake = resolve; }); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  try {
+    connection.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD,
+      new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+    await client.loginCharacter(1n);
+    for (let index = 0; index < 6; index++) await new Promise(setImmediate);
+    client.knownSpells = [{ id: 133, slot: 0 }];
+    const changes = [];
+    client.onSpellsChanged = (spells) => changes.push(spells.map((spell) => spell.id));
+    // The core sends no `SMSG_LEARNED_SPELL` for a new rank: this packet replaces the old one.
+    // With the old rank missing it must still add the spell instead of renaming nothing.
+    connection.push(OPCODES.SMSG_SUPERCEDED_SPELL, new PacketWriter().u32(143).u32(116).toUint8Array());
+    for (let index = 0; index < 6; index++) await new Promise(setImmediate);
+    assert.deepEqual(client.knownSpells.map((spell) => spell.id), [133, 116]);
+    assert.deepEqual(changes.at(-1), [133, 116]);
+    // A replacement still replaces in place.
+    connection.push(OPCODES.SMSG_SUPERCEDED_SPELL, new PacketWriter().u32(116).u32(126).toUint8Array());
+    for (let index = 0; index < 6; index++) await new Promise(setImmediate);
+    assert.deepEqual(client.knownSpells.map((spell) => spell.id), [133, 126]);
+  } finally {
+    client.close();
+  }
+});
+
 test("spell-go header exposes the confirmed caster and spell", () => {
   const payload = new PacketWriter()
     .packedGuid(0x11n)
@@ -1132,7 +1216,14 @@ test("spell-go header exposes the confirmed caster and spell", () => {
 
 test("world packet events expose complete GO, channel updates and aura diffs", async () => {
   const guid = 0x1234n;
+  const neighbour = 0x5678n;
   const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const neighbourCreate = new PacketWriter()
+    .u32(1).u8(2).packedGuid(neighbour).u8(3).u16(0x30)
+    .u32(0).u16(0).u32(123).f32(1).f32(2).f32(3).f32(0).u32(0);
+  for (let speed = 0; speed < 9; speed++) neighbourCreate.f32(speed + 1);
+  neighbourCreate.u32(0x0b);
+  writeUpdateFields(neighbourCreate, [[UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 42]]);
   const spellGo = new PacketWriter()
     .packedGuid(guid).packedGuid(guid).u8(1).u32(133).u32(0).u32(100)
     .u8(1).u64(0x55n).u8(0).u32(0)
@@ -1141,18 +1232,20 @@ test("world packet events expose complete GO, channel updates and aura diffs", a
     .packedGuid(guid).packedGuid(guid).u8(1).u32(133).u32(0).u32(1500)
     .toUint8Array();
   const auraAdd = new PacketWriter()
-    .packedGuid(guid).u8(3).u32(123).u8(AURA_FLAGS.positive | AURA_FLAGS.duration).u8(80).u8(2)
+    .packedGuid(neighbour).u8(3).u32(123).u8(AURA_FLAGS.positive | AURA_FLAGS.duration).u8(80).u8(2)
     .packedGuid(0x99n).u32(120_000).u32(90_000).toUint8Array();
   const auraRefresh = new PacketWriter()
-    .packedGuid(guid).u8(3).u32(123).u8(AURA_FLAGS.positive | AURA_FLAGS.duration).u8(81).u8(3)
+    .packedGuid(neighbour).u8(3).u32(123).u8(AURA_FLAGS.positive | AURA_FLAGS.duration).u8(81).u8(3)
     .packedGuid(0x99n).u32(120_000).u32(80_000).toUint8Array();
   const auraReplaceAll = new PacketWriter()
-    .packedGuid(guid).u8(4).u32(456).u8(AURA_FLAGS.positive).u8(82).u8(1)
+    .packedGuid(neighbour).u8(4).u32(456).u8(AURA_FLAGS.positive).u8(82).u8(1)
     .packedGuid(0x77n).toUint8Array();
+  const outOfRange = new PacketWriter().u32(1).u8(4).u32(1).packedGuid(neighbour).toUint8Array();
   const connection = {
     sent: [],
     packets: [
       { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_UPDATE_OBJECT, payload: neighbourCreate.toUint8Array() },
       { opcode: OPCODES.SMSG_SPELL_START, payload: spellStart },
       { opcode: OPCODES.SMSG_SPELL_GO, payload: spellGo },
       { opcode: OPCODES.MSG_CHANNEL_START, payload: new PacketWriter().packedGuid(guid).u32(5143).u32(5000).toUint8Array() },
@@ -1161,6 +1254,7 @@ test("world packet events expose complete GO, channel updates and aura diffs", a
       { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: auraAdd },
       { opcode: OPCODES.SMSG_AURA_UPDATE, payload: auraRefresh },
       { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: auraReplaceAll },
+      { opcode: OPCODES.SMSG_UPDATE_OBJECT, payload: outOfRange },
     ],
     send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
     read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
@@ -1193,13 +1287,137 @@ test("world packet events expose complete GO, channel updates and aura diffs", a
   assert.deepEqual(order, ["start:133", "stop", "start:5143", "channel:3200", "channel:0", "stop"]);
   assert.equal(client.casts.has(guid), false, "successful GO removes the matching non-channel cast");
   assert.equal(stops.at(-1).spellId, 5143);
-  assert.equal(auras.length, 3);
+  assert.equal(auras.length, 4);
   assert.deepEqual(auras[0].added.map((aura) => aura.spellId), [123]);
   assert.deepEqual(auras[0].removed, []);
   assert.deepEqual(auras[1].updated.map(({ before, after }) => [before.applications, after.applications]), [[2, 3]]);
   assert.deepEqual(auras[1].removed, []);
   assert.deepEqual(auras[2].removed.map((aura) => aura.spellId), [123]);
   assert.deepEqual(auras[2].added.map((aura) => aura.spellId), [456]);
+  assert.deepEqual(auras[3].removed.map((aura) => aura.spellId), [456]);
+  assert.equal(client.state.objects.has(neighbour), false);
+  assert.equal(client.auras.has(neighbour), false);
+  client.close();
+});
+
+test("compressed out-of-range retires packet-owned aura state in packet order", async () => {
+  const self = 0x1234n;
+  const neighbour = 0x5678n;
+  const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const create = new PacketWriter()
+    .u32(1).u8(2).packedGuid(neighbour).u8(3).u16(0x30)
+    .u32(0).u16(0).u32(123).f32(1).f32(2).f32(3).f32(0).u32(0);
+  for (let speed = 0; speed < 9; speed++) create.f32(speed + 1);
+  create.u32(0x0b);
+  writeUpdateFields(create, [[UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 42]]);
+  const aura = new PacketWriter()
+    .packedGuid(neighbour).u8(3).u32(456).u8(AURA_FLAGS.positive).u8(80).u8(1)
+    .packedGuid(self).toUint8Array();
+  const castStart = new PacketWriter()
+    .packedGuid(neighbour).packedGuid(neighbour).u8(1).u32(133).u32(0).u32(1500).toUint8Array();
+  const outOfRange = new PacketWriter().u32(1).u8(4).u32(1).packedGuid(neighbour).toUint8Array();
+  const compressedOutOfRange = new PacketWriter()
+    .u32(outOfRange.byteLength).bytes(new Uint8Array(deflateSync(outOfRange))).toUint8Array();
+  const connection = {
+    sent: [],
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_UPDATE_OBJECT, payload: create.toUint8Array() },
+      { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: aura },
+      { opcode: OPCODES.SMSG_SPELL_START, payload: castStart },
+      { opcode: OPCODES.SMSG_COMPRESSED_UPDATE_OBJECT, payload: compressedOutOfRange },
+    ],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  const changes = [];
+  const stops = [];
+  client.events.on("AURA_CHANGED", (change) => changes.push(change));
+  client.events.on("SPELL_CAST_STOP", (stop) => stops.push(stop));
+  await client.loginCharacter(self);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(changes.map((change) => [change.guid, change.added.length, change.removed.length]), [
+    [neighbour, 1, 0], [neighbour, 0, 1],
+  ]);
+  assert.deepEqual(stops.map((stop) => [stop.casterGuid, stop.spellId, stop.reason]), [
+    [neighbour, 133, "interrupted"],
+  ]);
+  assert.equal(client.state.objects.has(neighbour), false);
+  assert.equal(client.auras.has(neighbour), false);
+  assert.equal(client.casts.has(neighbour), false);
+  client.close();
+});
+
+test("out-of-range retires an aura that arrived before its object create", async () => {
+  const self = 0x1234n;
+  const unseen = 0x5678n;
+  const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const aura = new PacketWriter()
+    .packedGuid(unseen).u8(3).u32(456).u8(AURA_FLAGS.positive).u8(80).u8(1)
+    .packedGuid(self).toUint8Array();
+  const outOfRange = new PacketWriter().u32(1).u8(4).u32(1).packedGuid(unseen).toUint8Array();
+  const connection = {
+    sent: [],
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: aura },
+      { opcode: OPCODES.SMSG_UPDATE_OBJECT, payload: outOfRange },
+    ],
+    send(opcode, payload = new Uint8Array()) { this.sent.push({ opcode, payload }); },
+    read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); },
+    close() {},
+  };
+  const client = new WorldClient(connection);
+  const changes = [];
+  client.events.on("AURA_CHANGED", (change) => changes.push(change));
+  await client.loginCharacter(self);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(changes.map((change) => [change.guid, change.added.length, change.removed.length]), [
+    [unseen, 1, 0], [unseen, 0, 1],
+  ]);
+  assert.equal(client.auras.has(unseen), false);
+  client.close();
+});
+
+test("NEW_WORLD retires packet-only GUIDs and preserves self state", async () => {
+  const self = 0x1234n, unseen = 0x5678n, taxi = 0x901n, healer = 0x902n, quest = 0x903n;
+  const login = new PacketWriter().u32(1).f32(1).f32(2).f32(3).f32(0).toUint8Array();
+  const aura = guid => new PacketWriter().packedGuid(guid).u8(3).u32(456)
+    .u8(AURA_FLAGS.positive).u8(80).u8(1).packedGuid(self).toUint8Array();
+  const castStart = new PacketWriter().packedGuid(unseen).packedGuid(unseen)
+    .u8(1).u32(133).u32(0).u32(1500).toUint8Array();
+  const transfer = new PacketWriter().u32(571).f32(4).f32(5).f32(6).f32(0).toUint8Array();
+  const connection = {
+    packets: [
+      { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: login },
+      { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: aura(self) },
+      { opcode: OPCODES.SMSG_AURA_UPDATE_ALL, payload: aura(unseen) },
+      { opcode: OPCODES.SMSG_SPELL_START, payload: castStart },
+      { opcode: OPCODES.SMSG_NEW_WORLD, payload: transfer },
+    ],
+    send() {}, read() { return this.packets.length ? Promise.resolve(this.packets.shift()) : new Promise(() => {}); }, close() {},
+  };
+  const client = new WorldClient(connection);
+  client.state.selfGuid = self;
+  client.taxiNodeStatus.set(taxi, true);
+  client.spiritHealerTimers.set(healer, { milliseconds: 10, receivedAt: 0 });
+  client.questGiverStatus.set(quest, 1);
+  const removed = [], stops = [];
+  client.events.on("AURA_CHANGED", e => { if (e.removed.length) removed.push(e.guid); });
+  client.events.on("SPELL_CAST_STOP", e => stops.push(e.casterGuid));
+  await client.loginCharacter(self);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(removed, [unseen]);
+  assert.deepEqual(stops, [unseen]);
+  assert.equal(client.auras.has(unseen), false);
+  assert.equal(client.auras.get(self)?.get(3)?.spellId, 456);
+  assert.equal(client.casts.size, 0);
+  assert.equal(client.taxiNodeStatus.size + client.spiritHealerTimers.size + client.questGiverStatus.size, 0);
+  assert.deepEqual(client.state.objects.get(self)?.position, { x: 4, y: 5, z: 6, orientation: 0 });
   client.close();
 });
 
@@ -1700,4 +1918,178 @@ test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, restores sheath, and does 
   assert.deepEqual(errors, []);
   assert.equal(client.unhandledOpcodes.entries.has(OPCODES.SMSG_CANCEL_AUTO_REPEAT), false);
   client.close();
+});
+
+/* --- 10.06 / 10.05 / 2.07: the transport's close, the realm's queue, the rename ----------------- */
+
+/** A browser WebSocket for `WebSocketByteStream`, driven by the test instead of a network. */
+class FakeWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static last;
+  readyState = FakeWebSocket.CONNECTING;
+  binaryType = "blob";
+  #listeners = [];
+
+  constructor(url) {
+    this.url = url;
+    FakeWebSocket.last = this;
+  }
+
+  addEventListener(type, listener, options) {
+    this.#listeners.push({ type, listener, once: options?.once === true });
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+
+  dispatch(type, event = {}) {
+    for (const entry of [...this.#listeners]) {
+      if (entry.type !== type) continue;
+      if (entry.once) this.#listeners.splice(this.#listeners.indexOf(entry), 1);
+      entry.listener(event);
+    }
+  }
+
+  opened() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.dispatch("open");
+  }
+
+  closedBy(code, reason, wasClean) {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.dispatch("close", { code, reason, wasClean });
+  }
+}
+
+async function withFakeWebSocket(run) {
+  const saved = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    return await run();
+  } finally {
+    globalThis.WebSocket = saved;
+  }
+}
+
+test("a WebSocket closed under a read reports the gateway's close code and reason", async () => {
+  const { TransportClosedError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const opening = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.opened();
+    const stream = await opening;
+    const read = stream.readExactly(4);
+    // What Gateway.ts `bridge()` does when the worldserver socket goes: `close(1011, reason)`.
+    FakeWebSocket.last.closedBy(1011, "Backend unavailable", true);
+    const closed = (error) => error instanceof TransportClosedError
+      && error.code === 1011 && error.reason === "Backend unavailable" && error.wasClean === true;
+    await assert.rejects(read, closed);
+    await assert.rejects(stream.readExactly(1), closed, "a read after the close gets the same answer");
+  });
+});
+
+test("an abnormal drop is the close that follows the error, with its code, not an anonymous failure", async () => {
+  const { TransportClosedError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const opening = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.opened();
+    const stream = await opening;
+    const read = stream.readExactly(4);
+    // A browser fires `error` and then `close` (1006) for a connection that died: the close is
+    // the one that says what happened.
+    FakeWebSocket.last.dispatch("error");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(read, (error) => error instanceof TransportClosedError
+      && error.code === 1006 && error.wasClean === false);
+  });
+});
+
+test("a socket that never opens is a TransportConnectError naming the address", async () => {
+  const { TransportConnectError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const refused = WebSocketByteStream.connect("ws://gateway.test/auth");
+    FakeWebSocket.last.dispatch("error");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(refused, (error) => error instanceof TransportConnectError
+      && error.url === "ws://gateway.test/auth");
+    const closed = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(closed, (error) => error instanceof TransportConnectError);
+  });
+});
+
+/**
+ * What a worldserver writes to `WorldClient.connect`: SMSG_AUTH_CHALLENGE in the clear, then every
+ * header encrypted with the realm's key stream from the first packet after CMSG_AUTH_SESSION, as
+ * WorldSocket does. Payloads stay in the clear.
+ */
+function worldServer(sessionKey, packets) {
+  const header = (opcode, length) => Uint8Array.of((length + 2) >> 8, (length + 2) & 0xff, opcode & 0xff, opcode >> 8);
+  const challenge = new PacketWriter().u32(1).bytes(new Uint8Array(4)).bytes(new Uint8Array(32)).toUint8Array();
+  const headers = packets.map(([opcode, payload]) => header(opcode, payload.byteLength));
+  const encrypted = rc4(hmac(SERVER_ENCRYPTION_KEY, sessionKey), Uint8Array.from(headers.flatMap((bytes) => [...bytes])));
+  const parts = [header(OPCODES.SMSG_AUTH_CHALLENGE, challenge.byteLength), challenge];
+  packets.forEach(([, payload], index) => parts.push(encrypted.subarray(index * 4, index * 4 + 4), payload));
+  return Uint8Array.from(parts.flatMap((bytes) => [...bytes]));
+}
+
+const AUTH_SESSION_KEY = Uint8Array.from({ length: 40 }, (_, index) => index * 3 + 1);
+const worldLogin = { username: "TESTER", sessionKey: AUTH_SESSION_KEY, realmId: 1, realmName: "Круг Теней" };
+
+test("a queued session reports every place in the realm's queue before it is let in", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  // World::AddQueuedPlayer answers in SendAuthResponse's long form: code, billing time, billing
+  // flags, rested time, expansion, then the position (AuthHandler.cpp:22-38).
+  const first = new PacketWriter().u8(27).u32(0).u8(0).u32(0).u8(2).u32(7).u8(0).toUint8Array();
+  // Every later move of the queue is SendAuthWaitQueue: code, position, zero (WorldSession.cpp:770-786).
+  const moved = new PacketWriter().u8(27).u32(3).u8(0).toUint8Array();
+  // …and the way out of it is the one-byte AUTH_OK of SendAuthWaitQueue(0).
+  const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [
+    [OPCODES.SMSG_AUTH_RESPONSE, first],
+    [OPCODES.SMSG_AUTH_RESPONSE, moved],
+    [OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(12)],
+  ]));
+  const positions = [];
+  const client = await Client.connect(stream, worldLogin, { onQueue: (position) => positions.push(position) });
+  try {
+    assert.deepEqual(positions, [7, 3]);
+    assert.equal(client.realmName, "Круг Теней");
+  } finally {
+    client.close();
+  }
+});
+
+test("a refused session is a WorldAuthError carrying the core's code", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  const { WorldAuthError } = await import("../dist/code/world/CharacterProtocol.js");
+  for (const code of [14, 28, 21]) {
+    const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [[OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(code)]]));
+    await assert.rejects(Client.connect(stream, worldLogin),
+      (error) => error instanceof WorldAuthError && error.code === code, `code ${code}`);
+  }
+});
+
+test("renameCharacter sends CMSG_CHAR_RENAME and reads the core's normalised name back", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  const { buildRenameCharacter } = await import("../dist/code/world/CharacterProtocol.js");
+  const renamed = new PacketWriter().u8(0).u64(0x1234n).cString("Ана").toUint8Array();
+  const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [
+    [OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(12)],
+    [OPCODES.SMSG_CHAR_RENAME, renamed],
+  ]));
+  const client = await Client.connect(stream, worldLogin);
+  try {
+    const result = await client.renameCharacter(0x1234n, "ана");
+    assert.deepEqual({ ...result }, { result: 0, guid: 0x1234n, name: "Ана" });
+    // After CMSG_AUTH_SESSION every client header is 6 encrypted bytes; the payload stays readable.
+    const sent = stream.sent.at(-1);
+    assert.deepEqual([...sent.subarray(6)], [...buildRenameCharacter(0x1234n, "ана")]);
+  } finally {
+    client.close();
+  }
 });

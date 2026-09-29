@@ -22,6 +22,7 @@
 // walk that is done, for two trees a module does not edit by hand.
 
 import { createHash } from "node:crypto";
+import { watch, type FSWatcher } from "node:fs";
 import { readdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -39,13 +40,30 @@ export interface StampedSource extends StampedFile {
   kind: "archive" | "directory";
   /** Loose overlays ranked above the winner. One of them gaining this path makes the entry stale. */
   above: string[];
+  /** Real MPQs searched above the winner, plus any unopened MPQ tracked conservatively. */
+  aboveArchives?: StampedFile[];
+}
+
+/** A source path that did not exist when a generated fallback was published. */
+export interface StampedMissingSource {
+  path: string;
+  /** Loose overlays that can gain the path without changing the chain composition. */
+  loose: string[];
+  /** Real MPQs that can be replaced in place and start carrying the path. */
+  archives: StampedFile[];
 }
 
 export interface CacheStamp {
+  /** Generator/schema family; a route may require it to turn over legacy bytes once. */
+  generation?: string;
   /** The composition of the archive chain, hashed over its sorted names. */
   chain: string;
   sources: StampedSource[];
   files: StampedFile[];
+  /** Archive paths whose absence contributed to the generated result. */
+  missingSources?: StampedMissingSource[];
+  /** Plain files whose absence contributed to the generated result. */
+  missingFiles?: string[];
 }
 
 export interface DatasetChange {
@@ -64,6 +82,11 @@ export interface DatasetFingerprintOptions {
   clientDirectory?: string | undefined;
   /** How often the fingerprint may be recomputed. What that costs is at the top of this file. */
   intervalMs?: number | undefined;
+  /**
+   * Let archive writes invalidate the interval immediately. The periodic walk remains the
+   * fallback for filesystems on which `fs.watch` is unavailable or drops an event.
+   */
+  watchArchives?: boolean | undefined;
   /** For tests: the clock the interval is measured on. */
   now?: (() => number) | undefined;
   /**
@@ -86,9 +109,11 @@ const STAMP_SUFFIX = ".src";
  * can compute the same value — and sorted names cannot show that the ranking itself has changed,
  * though a change there hands paths to different sources. So the rule's own name is hashed with
  * them. It is duplicated rather than imported because `tools/` is plain .mjs run before anything is
- * compiled; `tests/dataset-fingerprint.test.mjs` fails the build if the two ever disagree.
+ * compiled; `tests/dataset-fingerprint.test.mjs` fails the build if the two ever disagree. The
+ * generation also turns over provenance schemas that could otherwise miss a winner change:
+ * order-3 records real MPQs searched above a lower source.
  */
-const ARCHIVE_ORDER = "order-2";
+const ARCHIVE_ORDER = "order-3";
 /**
  * Past this many checked entries the memo is emptied rather than grown.
  *
@@ -149,6 +174,37 @@ async function walkFiles(directory: string, into: string[], prefix = ""): Promis
     }
     const stats = await stampOf(absolute);
     if (stats) into.push(`${prefix}${entry.name.toLowerCase()}|${stats.size}|${stats.mtimeMs}`);
+  }
+}
+
+/**
+ * Index loose add-on paths without statting every Lua/XML/media file on the periodic request path.
+ * TOCs alone define installation, dependencies and load policy, so only they contribute mtimes to
+ * the coarse fingerprint. Individual served files still carry source stamps and are checked on a
+ * new gateway/process epoch; an autonomous pack is immutable for the lifetime of that process.
+ */
+async function walkAddonPaths(
+  directory: string,
+  held: Set<string>,
+  lines: string[],
+  prefix = "interface\\addons\\",
+): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolute = join(directory, entry.name);
+    let directoryEntry = entry.isDirectory();
+    if (entry.isSymbolicLink()) {
+      try { directoryEntry = (await stat(absolute)).isDirectory(); } catch { continue; }
+    }
+    if (directoryEntry) {
+      await walkAddonPaths(absolute, held, lines, `${prefix}${entry.name.toLowerCase()}\\`);
+      continue;
+    }
+    const path = `${prefix}${entry.name.toLowerCase()}`;
+    held.add(path);
+    if (!entry.name.toLowerCase().endsWith(".toc")) continue;
+    const stats = await stampOf(absolute);
+    if (stats) lines.push(`interface/addons|${path}|${stats.size}|${stats.mtimeMs}`);
   }
 }
 
@@ -214,6 +270,18 @@ export async function fingerprintArchives(clientDirectory: string): Promise<Arch
   };
 
   await walk(join(clientDirectory, "Data"));
+  const addonsDirectory = join(clientDirectory, "Interface", "AddOns");
+  try {
+    if ((await stat(addonsDirectory)).isDirectory()) {
+      const name = "interface/addons";
+      composition.push(`directory:${name}`);
+      const held = new Set<string>();
+      await walkAddonPaths(addonsDirectory, held, lines);
+      loose.set(name, held);
+    }
+  } catch {
+    // Root-level add-ons are optional. Their directory appearing later changes the chain digest.
+  }
   return {
     hash: digest(lines),
     chain: createHash("sha1").update([ARCHIVE_ORDER, ...composition.sort()].join("\n")).digest("hex"),
@@ -225,7 +293,8 @@ export async function fingerprintArchives(clientDirectory: string): Promise<Arch
 function parseStamp(value: unknown): CacheStamp | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Partial<CacheStamp>;
-  if (typeof record.chain !== "string" || !Array.isArray(record.sources) || !Array.isArray(record.files)) return undefined;
+  if ((record.generation !== undefined && typeof record.generation !== "string")
+    || typeof record.chain !== "string" || !Array.isArray(record.sources) || !Array.isArray(record.files)) return undefined;
   const stampedFile = (candidate: unknown): StampedFile | undefined => {
     if (typeof candidate !== "object" || candidate === null) return undefined;
     const file = candidate as Partial<StampedFile>;
@@ -244,8 +313,15 @@ function parseStamp(value: unknown): CacheStamp | undefined {
       || typeof source.name !== "string" || source.name.length === 0
       || (source.kind !== "archive" && source.kind !== "directory")
       || (source.above !== undefined
-        && (!Array.isArray(source.above) || !source.above.every((name) => typeof name === "string")))) {
+        && (!Array.isArray(source.above) || !source.above.every((name) => typeof name === "string")))
+      || (source.aboveArchives !== undefined && !Array.isArray(source.aboveArchives))) {
       return undefined;
+    }
+    const aboveArchives: StampedFile[] = [];
+    for (const candidate of source.aboveArchives ?? []) {
+      const archive = stampedFile(candidate);
+      if (!archive) return undefined;
+      aboveArchives.push(archive);
     }
     sources.push({
       ...file,
@@ -253,6 +329,7 @@ function parseStamp(value: unknown): CacheStamp | undefined {
       name: source.name,
       kind: source.kind,
       above: source.above ?? [],
+      ...(aboveArchives.length ? { aboveArchives } : {}),
     });
   }
   const files: StampedFile[] = [];
@@ -261,16 +338,48 @@ function parseStamp(value: unknown): CacheStamp | undefined {
     if (!file) return undefined;
     files.push(file);
   }
-  return { chain: record.chain, sources, files };
+  const missingSources: StampedMissingSource[] = [];
+  if (record.missingSources !== undefined) {
+    if (!Array.isArray(record.missingSources)) return undefined;
+    for (const candidate of record.missingSources) {
+      if (typeof candidate !== "object" || candidate === null) return undefined;
+      const missing = candidate as Partial<StampedMissingSource>;
+      if (typeof missing.path !== "string" || missing.path.length === 0
+        || !Array.isArray(missing.loose) || !missing.loose.every((name) => typeof name === "string")
+        || !Array.isArray(missing.archives)) return undefined;
+      const archives: StampedFile[] = [];
+      for (const archive of missing.archives) {
+        const file = stampedFile(archive);
+        if (!file) return undefined;
+        archives.push(file);
+      }
+      missingSources.push({ path: missing.path, loose: [...missing.loose], archives });
+    }
+  }
+  const missingFiles = record.missingFiles ?? [];
+  if (!Array.isArray(missingFiles) || !missingFiles.every((file) => typeof file === "string" && file.length > 0)) {
+    return undefined;
+  }
+  return {
+    ...(record.generation ? { generation: record.generation } : {}),
+    chain: record.chain,
+    sources,
+    files,
+    ...(missingSources.length ? { missingSources } : {}),
+    ...(missingFiles.length ? { missingFiles: [...missingFiles] } : {}),
+  };
 }
 
 /**
  * Watches the dataset and says what has to be forgotten.
  *
  * Nothing here polls on a timer: an idle gateway costs nothing, and the 42.8 ms of the two walks
- * are paid by the first request after the interval has run out — which is also why the interval
- * exists at all. Forced onto every request, the same 192 reads of `/texture` measure a median of
- * 40.7 ms each instead of 0.62 ms.
+ * are paid by the first request after the interval has run out. A gateway also asks for an
+ * archive watch: its event only marks the next request dirty, so steady-state `/texture` requests
+ * still cost one clock read rather than the whole archive walk. The interval remains the fallback
+ * because filesystem notifications are deliberately hints, not durable journal records. Forced
+ * onto every request, the same 192 reads of `/texture` measure a median of 40.7 ms each instead of
+ * 0.62 ms.
  */
 export class DatasetFingerprint {
   readonly #dbcDirectory: string | undefined;
@@ -289,8 +398,15 @@ export class DatasetFingerprint {
   #epoch = 0;
   #checkedAt: number | undefined;
   #pending: Promise<DatasetChange> | undefined;
+  /** Incremented by the filesystem callback; a counter cannot lose an event that lands mid-walk. */
+  #archiveRevision = 0;
+  /** Revision included in the last complete archive walk. */
+  #cleanArchiveRevision = 0;
+  #archiveWatcher: FSWatcher | undefined;
   /** Cache file → the epoch its stamp was last checked in. */
   readonly #verified = new Map<string, number>();
+  /** One filesystem stat per source path and epoch, shared by every cache entry that names it. */
+  readonly #sourceStats = new Map<string, Promise<StampedFile | undefined>>();
 
   constructor(options: DatasetFingerprintOptions) {
     this.#dbcDirectory = options.dbcDirectory;
@@ -299,11 +415,65 @@ export class DatasetFingerprint {
     this.#intervalMs = options.intervalMs ?? 2_000;
     this.#now = options.now ?? Date.now;
     this.#report = options.onProblem ?? ((message) => console.warn(`Dataset fingerprint: ${message}`));
+    if (options.watchArchives && this.#clientDirectory !== undefined) {
+      try {
+        // TSWoW publishes both real MPQ files and directory-shaped MPQs, whose changed file may be
+        // several levels below Data. Recursive watch is available on the desktop platforms this
+        // gateway supports. If a volume cannot provide it, the interval walk below still works.
+        this.#archiveWatcher = watch(
+          join(this.#clientDirectory, "Data"),
+          { recursive: true, persistent: false },
+          () => { this.#archiveRevision++; },
+        );
+        this.#archiveWatcher.on("error", (error) => {
+          this.#archiveRevision++;
+          this.#report(`archive change notifications stopped: ${error.message}; using periodic fingerprint fallback`);
+          this.#archiveWatcher?.close();
+          this.#archiveWatcher = undefined;
+        });
+      } catch (error) {
+        this.#report(
+          `archive change notifications are unavailable: ${error instanceof Error ? error.message : String(error)}; `
+          + "using periodic fingerprint fallback",
+        );
+      }
+    }
+  }
+
+  /** Releases the optional filesystem notification handle. */
+  close(): void {
+    this.#archiveWatcher?.close();
+    this.#archiveWatcher = undefined;
   }
 
   /** True when there is something to watch at all. */
   get watching(): boolean {
     return this.#dbcDirectory !== undefined || this.#dbcFiles.length > 0 || this.#clientDirectory !== undefined;
+  }
+
+  /** The archive half of the last complete walk; undefined before one, or without a client. */
+  get archivesHash(): string | undefined {
+    return this.#archivesHash;
+  }
+
+  /** The chain composition digest of the last complete walk, as `tools/mpq.mjs` computes it. */
+  get chain(): string | undefined {
+    return this.#chain;
+  }
+
+  /** Bumped by every walk that saw either half change. */
+  get epoch(): number {
+    return this.#epoch;
+  }
+
+  /**
+   * Whether the archive watch reported a write the walks have not accounted for yet.
+   *
+   * One comparison, so a caller that wants to notice a publish without an HTTP request (the
+   * supervised gateway's idle timer) can ask every second and pay for a walk only when this says so.
+   */
+  get archiveEventsPending(): boolean {
+    return this.#archiveRevision !== this.#cleanArchiveRevision;
   }
 
   /**
@@ -338,20 +508,29 @@ export class DatasetFingerprint {
    * Concurrent callers share one walk: on a busy gateway the alternative is one walk per request
    * in flight when the interval runs out.
    */
-  async poll(): Promise<DatasetChange> {
+  async poll(options: { force?: boolean } = {}): Promise<DatasetChange> {
     if (this.#pending) return this.#pending;
     const now = this.#now();
-    if (this.#checkedAt !== undefined && now - this.#checkedAt < this.#intervalMs) {
+    const invalidated = this.#archiveRevision !== this.#cleanArchiveRevision;
+    if (!options.force && !invalidated
+      && this.#checkedAt !== undefined && now - this.#checkedAt < this.#intervalMs) {
       return { epoch: this.#epoch, dbc: false, archives: false };
     }
-    this.#pending = this.#recompute().finally(() => {
+    const archiveRevision = this.#archiveRevision;
+    this.#pending = this.#recompute().then(({ change, complete }) => {
+      // Do not consume an event after a failed walk, or one that arrived while the walk was in
+      // progress. In both cases the next request bypasses the interval and tries the whole atomic
+      // snapshot again.
+      if (complete) this.#cleanArchiveRevision = archiveRevision;
+      return change;
+    }).finally(() => {
       this.#pending = undefined;
       this.#checkedAt = this.#now();
     });
     return this.#pending;
   }
 
-  async #recompute(): Promise<DatasetChange> {
+  async #recompute(): Promise<{ change: DatasetChange; complete: boolean }> {
     let dbc: { hash: string; files: number };
     let archives: ArchiveWalk | undefined;
     try {
@@ -372,7 +551,7 @@ export class DatasetFingerprint {
         this.#failing = true;
         this.#report(`${error instanceof Error ? error.message : String(error)} — nothing is being watched until this clears`);
       }
-      return { epoch: this.#epoch, dbc: false, archives: false };
+      return { change: { epoch: this.#epoch, dbc: false, archives: false }, complete: false };
     }
     if (this.#failing) {
       this.#failing = false;
@@ -386,8 +565,20 @@ export class DatasetFingerprint {
       this.#chain = archives.chain;
       this.#loose = archives.loose;
     }
-    if (dbcChanged || archivesChanged) this.#epoch++;
-    return { epoch: this.#epoch, dbc: dbcChanged, archives: archivesChanged };
+    if (dbcChanged || archivesChanged) {
+      this.#epoch++;
+      this.#sourceStats.clear();
+    }
+    return { change: { epoch: this.#epoch, dbc: dbcChanged, archives: archivesChanged }, complete: true };
+  }
+
+  #sourceStamp(file: string): Promise<StampedFile | undefined> {
+    let pending = this.#sourceStats.get(file);
+    if (!pending) {
+      pending = stampOf(file);
+      this.#sourceStats.set(file, pending);
+    }
+    return pending;
   }
 
   /**
@@ -416,7 +607,7 @@ export class DatasetFingerprint {
    * reaches it, which is the price of not stalling the request, and the pass is started once at
    * startup rather than by a request.
    */
-  async ensureCurrent(cacheFile: string, options: { requireStamp?: boolean } = {}): Promise<void> {
+  async ensureCurrent(cacheFile: string, options: { requireStamp?: boolean; generation?: string } = {}): Promise<void> {
     // With neither a dataset nor a client configured there is nothing for a stamp to be measured
     // against and no epoch will ever move, so every answer this could give would be a guess. A
     // gateway handed only a directory of published assets — which is what several of the tests
@@ -427,7 +618,7 @@ export class DatasetFingerprint {
     try {
       stamp = parseStamp(JSON.parse(await readFile(`${cacheFile}${STAMP_SUFFIX}`, "utf8")) as unknown);
     } catch {
-      if (options.requireStamp) {
+      if (options.requireStamp || options.generation !== undefined) {
         // A coordinated visual M2/BLP pack must not reuse an unstamped legacy PNG from the stock
         // client. Keep the default unstamped-cache policy for broad scenery/icon caches, but let
         // the caller that knows the bytes must match the current visual pack force regeneration.
@@ -439,6 +630,11 @@ export class DatasetFingerprint {
       // epoch. A stamp the restamp pass writes a moment later is therefore not read until the
       // epoch moves — which is exactly when it starts to matter, since nothing was stale until
       // something in the dataset moved.
+    }
+    if (options.generation !== undefined && stamp?.generation !== options.generation) {
+      await unlink(cacheFile).catch(() => undefined);
+      await unlink(`${cacheFile}${STAMP_SUFFIX}`).catch(() => undefined);
+      return;
     }
     if (stamp && await this.#stale(stamp)) {
       await unlink(cacheFile).catch(() => undefined);
@@ -462,21 +658,35 @@ export class DatasetFingerprint {
         for (const name of source.above ?? []) {
           if (this.#loose.get(name.toLowerCase())?.has(archiveKey(source.path))) return true;
         }
-        const current = await stampOf(source.file);
+        for (const archive of source.aboveArchives ?? []) {
+          const current = await this.#sourceStamp(archive.file);
+          if (!current || current.size !== archive.size || current.mtimeMs !== archive.mtimeMs) return true;
+        }
+        const current = await this.#sourceStamp(source.file);
         if (!current) {
-          // A loose file that is gone is gone: whatever answers that path now, it is not this.
-          // An archive that is gone cannot happen without the composition changing, so it is left
-          // to the check above rather than guessed at here.
-          if (source.kind === "directory") return true;
-          continue;
+          // Whatever supplied the generated bytes is gone. The composition check normally catches
+          // an archive removal first, but treating the direct evidence as stale also covers a
+          // same-name source being replaced between the two snapshots.
+          return true;
         }
         if (current.size !== source.size || current.mtimeMs !== source.mtimeMs) return true;
       }
+      for (const missing of stamp.missingSources ?? []) {
+        const path = archiveKey(missing.path);
+        for (const name of missing.loose) {
+          if (this.#loose.get(name.toLowerCase())?.has(path)) return true;
+        }
+        for (const archive of missing.archives) {
+          const current = await this.#sourceStamp(archive.file);
+          if (!current || current.size !== archive.size || current.mtimeMs !== archive.mtimeMs) return true;
+        }
+      }
     }
     for (const file of stamp.files) {
-      const current = await stampOf(file.file);
-      if (current && (current.size !== file.size || current.mtimeMs !== file.mtimeMs)) return true;
+      const current = await this.#sourceStamp(file.file);
+      if (!current || current.size !== file.size || current.mtimeMs !== file.mtimeMs) return true;
     }
+    for (const file of stamp.missingFiles ?? []) if (await this.#sourceStamp(file)) return true;
     return false;
   }
 }

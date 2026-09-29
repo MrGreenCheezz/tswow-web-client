@@ -20,8 +20,12 @@ const gridKeys = (grids) => grids.map(({ x, y }) => `${x}/${y}`);
 const tileCentre = (grid) => (31.5 - grid) * TERRAIN_GRID_SIZE;
 
 test("terrain footprint follows the circle around a tile centre", () => {
+  assert.equal(ENVIRONMENT_RANGE, 400);
   const keys = gridKeys(terrainGridFootprint(tileCentre(32), tileCentre(32), ENVIRONMENT_RANGE));
-  assert.deepEqual(keys, ["31/32", "32/31", "32/32", "32/33", "33/32"]);
+  assert.deepEqual(keys, ["31/31", "31/32", "31/33", "32/31", "32/32", "32/33", "33/31", "33/32", "33/33"]);
+  assert.deepEqual(gridKeys(terrainGridFootprint(tileCentre(32), tileCentre(32), 300)),
+    ["31/32", "32/31", "32/32", "32/33", "33/32"],
+    "a smaller circle still excludes diagonal tiles rather than always loading a square");
 });
 
 test("terrain footprint includes both tiles near a shared edge", () => {
@@ -103,7 +107,7 @@ test("EnvironmentClient loads the exact circular footprint and caches repeated r
     const x = tileCentre(32);
     const y = tileCentre(32);
     const first = client.objectsAround(7, x, y);
-    const expected = ["31/32", "32/31", "32/32", "32/33", "33/32"]
+    const expected = ["31/31", "31/32", "31/33", "32/31", "32/32", "32/33", "33/31", "33/32", "33/33"]
       .map((grid) => `/visual/environment/7/${grid}`)
       .sort();
     assert.deepEqual(requests.slice().sort(), expected);
@@ -633,8 +637,8 @@ test("terrain invalidation includes a diagonal tile for water corner dependencie
     await new Promise((resolve) => setImmediate(resolve));
     const before = terrain.tileRevision(1, centre);
 
-    // The corner cell at (33, 33) is diagonal to the centre tile. Its arrival must invalidate the
-    // centre tile even though terrain normals only borrow cardinal neighbours.
+    // The corner cell at (33, 33) is diagonal to the centre tile. Its arrival invalidates both the
+    // water corner and the canonical terrain endpoint shared by the four touching meshes.
     terrain.heightAt(1, cell(33), cell(33));
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(terrain.tileRevision(1, centre) > before, "a diagonal arrival changes the rebuild revision");

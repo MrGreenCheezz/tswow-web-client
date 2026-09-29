@@ -11,7 +11,7 @@ import {
 } from "../dist/code/browser/game/Collision.js";
 import { CollisionSource } from "../dist/code/browser/game/CollisionSource.js";
 import {
-  VMAP_LIQUID_CELL_YARDS, collisionModelLiquidAtEye, sampleCollisionLiquid,
+  VMAP_LIQUID_CELL_YARDS, collisionModelLiquidAt, collisionModelLiquidAtEye, positionLiquid, sampleCollisionLiquid,
 } from "../dist/code/browser/game/CollisionLiquid.js";
 import { parseVMapModelGroups } from "../dist/code/gateway/VMapModel.js";
 import { parseVMapTile } from "../dist/code/gateway/VMapProtocol.js";
@@ -671,6 +671,151 @@ test("WMO liquid uses the rendered triangle diagonal and tests the transformed c
   const wetUpper = { ...liquidGroup, groupId: 904 };
   assert.equal(collisionModelLiquidAtEye([dryLower, wetUpper], 0, placement, worldEye), undefined,
     "a wet upper group must not make the authoritative dry lower group underwater");
+});
+
+test("a room's own water answers for a point above or below it, and only inside the room", () => {
+  const cell = VMAP_LIQUID_CELL_YARDS;
+  const liquid = {
+    tilesX: 2, tilesY: 2, cornerX: 0, cornerY: 0, cornerZ: 3, type: 13,
+    heights: new Float32Array(9).fill(3), flags: Uint8Array.of(0, 0, 0, 0x0f),
+  };
+  const room = { bounds: { minX: 0, minY: 0, minZ: -5, maxX: 2 * cell, maxY: 2 * cell, maxZ: 10 }, groupId: 904, liquid };
+  const placement = { x: 100, y: 200, z: 10, rotationX: 0, rotationY: 90, rotationZ: 0, scale: 2 };
+  const placed = (x, y, z) => {
+    const point = transformCollisionMesh(Float32Array.of(x, y, z), Uint32Array.of(0), placement);
+    return { x: point[0], y: point[1], z: point[2] };
+  };
+  const under = collisionModelLiquidAt([room], 0, placement, placed(0.5 * cell, 0.5 * cell, 1));
+  assert.ok(under);
+  assert.equal(under.groupId, 904);
+  assert.ok(Math.abs(under.pointHeight - 1) < 1e-4);
+  assert.ok(Math.abs(under.worldHeight - (10 + 2 * 3)) < 1e-5, "model height 3, scaled by 2 onto a placement at 10");
+  // Unlike the eye's test, standing over the water still has a surface under it: that is the
+  // height the physics measures a fall into the pool, and water walking, against.
+  const over = collisionModelLiquidAt([room], 0, placement, placed(0.5 * cell, 0.5 * cell, 8));
+  assert.ok(Math.abs(over.worldHeight - 16) < 1e-5);
+  assert.equal(collisionModelLiquidAtEye([room], 0, placement, placed(0.5 * cell, 0.5 * cell, 8)), undefined,
+    "and the eye above it is still dry");
+  // Inside and dry is `null`, because an interior room keeps the map's water out even so.
+  assert.equal(collisionModelLiquidAt([room], 0, placement, placed(1.5 * cell, 1.5 * cell, 1)), null, "a dry cell");
+  assert.equal(collisionModelLiquidAt([{ ...room, liquid: undefined }], 0, placement, placed(0.5 * cell, 0.5 * cell, 1)),
+    null, "a room with no water at all");
+  // Outside the room's box the server would not have picked this room (`GroupModel::IsInsideObject`).
+  assert.equal(collisionModelLiquidAt([room], 0, placement, placed(0.5 * cell, 0.5 * cell, 12)), undefined);
+  assert.equal(collisionModelLiquidAt([room], 1, placement, placed(0.5 * cell, 0.5 * cell, 1)), undefined);
+});
+
+test("which water a unit is in follows Map::GetFullTerrainStatusForPosition", () => {
+  const pool = { height: 10, type: 13 };
+  const lake = { height: 20, type: 1 };
+  const room = (floorZ, groupFlags, liquid) => ({ floorZ, groupFlags, liquid });
+  const INTERIOR = 0x2000;
+  const OUTDOOR = 0x8;
+  // A room's own water, over its floor.
+  assert.equal(positionLiquid(5, room(2, INTERIOR, pool), 0, undefined), pool);
+  // The same grid running on under a raised walkway: the surface is under that floor.
+  assert.equal(positionLiquid(12, room(12, INTERIOR, pool), 0, undefined), undefined);
+  // Feet under the floor the column found are not on it.
+  assert.equal(positionLiquid(1, room(2, INTERIOR, pool), 0, undefined), undefined);
+  // A dome standing on a lake bed: an interior room keeps the lake out; open air does not.
+  assert.equal(positionLiquid(5, room(5, INTERIOR, undefined), 0, lake), undefined);
+  assert.equal(positionLiquid(5, room(5, OUTDOOR, undefined), 0, lake), lake);
+  // A bridge over the lake: the map's water under the floor does not count.
+  assert.equal(positionLiquid(25, room(25, OUTDOOR, undefined), 0, lake), undefined);
+  // Where both count, the map's water wins.
+  assert.equal(positionLiquid(5, room(2, OUTDOOR, pool), 0, lake), lake);
+  // The map's water alone: never under its own ground, never for feet under that ground.
+  assert.equal(positionLiquid(5, undefined, 0, lake), lake);
+  assert.equal(positionLiquid(-5, undefined, 0, lake), undefined, "a cave under the lake");
+  assert.equal(positionLiquid(5, undefined, 30, lake), undefined, "a surface below the ground");
+  // A room under the ground while the feet are above it is not the room they are in ...
+  assert.equal(positionLiquid(5, room(-10, INTERIOR, pool), 0, lake), lake);
+  // ... and it is when the feet are down there with it: a cistern under a field has its own water.
+  const cistern = { height: -7, type: 13 };
+  assert.equal(positionLiquid(-8, room(-10, INTERIOR, cistern), 0, lake), cistern);
+});
+
+/** One flat square room group at height `z`, as a model's group arrives from the collision route. */
+function roomGroup(z, size, flags, groupId) {
+  return {
+    bounds: { minX: -size, minY: -size, minZ: z, maxX: size, maxY: size, maxZ: z },
+    vertexCount: 6,
+    triangleCount: 2,
+    flags,
+    groupId,
+    vertices: floor(z, size),
+    indices: Uint32Array.from({ length: 6 }, (_unused, index) => index),
+  };
+}
+
+test("the WMO floor state tells a room not loaded yet from no room at all", async () => {
+  const originalFetch = globalThis.fetch;
+  const inn = { id: 77, kind: "wmo", name: "Inn.wmo", x: 12, y: 34, z: 5, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 };
+  globalThis.fetch = async () => new Response(JSON.stringify([inn]), { status: 200 });
+  try {
+    const source = new CollisionSource("ws://localhost:1234/world");
+    source.models.model = () => ({ groups: [roomGroup(0, 4, 0x2000, 904)] });
+    source.models.isResolved = () => true;
+    assert.equal(source.staticWmoFloorState(1, inn.x, inn.y, 10, -10), undefined, "nothing is built yet");
+    source.refresh(1, inn.x, inn.y);
+    await new Promise((resolve) => setImmediate(resolve));
+    source.refresh(1, inn.x, inn.y);
+    assert.equal(source.staticWmoFloorState(1, inn.x, inn.y, 10, -10)?.floorZ, 5);
+    assert.equal(source.staticWmoFloorState(1, inn.x + 20, inn.y, 10, -10), null, "built, and no room under here");
+    assert.equal(source.staticWmoFloorUnder(1, inn.x + 20, inn.y, 10, -10), undefined,
+      "the camera's locator still says undefined for both");
+    assert.equal(source.staticWmoFloorState(2, inn.x, inn.y, 10, -10), undefined, "another map is not built");
+    source.reset();
+    assert.equal(source.staticWmoFloorState(1, inn.x, inn.y, 10, -10), undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a column the floor query already walked answers the room the same way, without a second walk", async () => {
+  const originalFetch = globalThis.fetch;
+  const placements = [
+    { id: 77, kind: "wmo", name: "Inn.wmo", x: 12, y: 34, z: 5, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 },
+    // A crate standing in the room: an M2 floor over one corner, with no room of its own.
+    { id: 78, kind: "m2", name: "Crate.m2", x: 14, y: 36, z: 6, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 },
+  ];
+  globalThis.fetch = async () => new Response(JSON.stringify(placements), { status: 200 });
+  try {
+    const source = new CollisionSource("ws://localhost:1234/world");
+    source.models.model = (name) => ({ groups: [name === "Inn.wmo" ? roomGroup(0, 4, 0x2000, 904) : roomGroup(0, 1, 0, 0)] });
+    source.models.isResolved = () => true;
+    source.refresh(1, 12, 34);
+    await new Promise((resolve) => setImmediate(resolve));
+    source.refresh(1, 12, 34);
+    const walk = source.world.floorHitUnder.bind(source.world);
+    let walks = 0;
+    source.world.floorHitUnder = (x, y, fromZ, minZ, accept) => {
+      if (accept) walks++;
+      return walk(x, y, fromZ, minZ, accept);
+    };
+    // The physics' own floor query at the same feet: a step up, four hundred yards down, unfiltered.
+    const column = (x, y, z, depth = 400) => ({ fromZ: z + 1.6, minZ: z - depth, hit: walk(x, y, z + 1.6, z - depth) });
+    for (const [x, y, z, reused, why, depth] of [
+      [12, 34, 5, true, "on the room's floor, the column's top floor is the room's"],
+      [14, 36, 6, false, "on the crate, the top floor is an M2 and the room under it has to be walked for"],
+      [14, 36, 5, false, "the crate is inside the step the column reached over, not inside this range"],
+      [12, 34, 4, false, "the room's floor a step overhead is not the floor under the feet"],
+      [12, 34, 3, true, "under the room: nothing at or under the feet in a column as deep"],
+      [12, 34, 8, false, "a column that stops short tells nothing of the room below it", 1],
+    ]) {
+      const before = walks;
+      const answer = source.staticWmoFloorState(1, x, y, z + 0.1, z - 400, column(x, y, z, depth));
+      const walked = walks > before;
+      assert.deepEqual(answer, source.staticWmoFloorState(1, x, y, z + 0.1, z - 400), why);
+      assert.equal(walked, !reused, why);
+    }
+    // A top floor under the whole range answers too.
+    const before = walks;
+    assert.equal(source.staticWmoFloorState(1, 12, 34, 8, 5.5, { fromZ: 20, minZ: -20, hit: walk(12, 34, 20, -20) }), null);
+    assert.equal(walks, before);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("the liquid of the real Stormwind reads as five grids and 2,702 wet cells", async (t) => {

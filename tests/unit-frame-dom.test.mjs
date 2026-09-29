@@ -152,3 +152,29 @@ test("a list reuses its frames and hides what a smaller group left behind", () =
   list.render([]);
   assert.equal(list.root.hidden, true, "an empty list takes its container off the screen too");
 });
+
+test("a four-row party list preallocates stable portrait canvases and reuses them on reorder", () => {
+  const list = new UnitFrameList({ kind: "party", size: "full", portrait: true });
+  const frames = [0, 1, 2, 3].map((index) => list.at(index));
+  const canvases = frames.map((frame) => frame.portraitCanvas);
+  assert.equal(list.root.children.length, 4, "party portrait rows are ready before a member arrives");
+  assert.ok(canvases.every(Boolean));
+  assert.equal(new Set(canvases).size, 4, "each party row has its own canvas");
+  assert.deepEqual(canvases.map((canvas) => canvas.dataset.portraitSlot),
+    ["party1", "party2", "party3", "party4"]);
+
+  const entries = [1, 2, 3, 4].map((index) => ({
+    snapshot: unitSnapshot(BigInt(index), `Участник ${index}`, {
+      object: object({ health: 5, maxHealth: 10 }),
+    }),
+  }));
+  list.render(entries);
+  const originalFrames = [...frames];
+  const originalCanvases = [...canvases];
+  list.render([entries[3], entries[2], entries[1], entries[0]]);
+  assert.deepEqual(frames, originalFrames, "reorder does not replace party row buttons");
+  assert.deepEqual(frames.map((frame) => frame.portraitCanvas), originalCanvases,
+    "reorder does not replace party canvases");
+  assert.deepEqual(frames.map((frame) => frame.guid), [4n, 3n, 2n, 1n],
+    "reorder retargets the stable rows by GUID");
+});

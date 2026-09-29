@@ -1,0 +1,11 @@
+RFC2202 #1: ok 
+RFC2202 #2: ok 
+RFC2202 #3: ok 
+RFC2202 #4: ok 
+RFC2202 #5: ok 
+RFC2202 #6: ok 
+RFC2202 #7: ok 
+random comparisons against node:crypto: 1441, mismatches so far: 0
+world key parity: true
+WorldCrypt.create without subtle: TypeError: Cannot read properties of undefined (reading 'importKey')
+HMAC candidate: all good

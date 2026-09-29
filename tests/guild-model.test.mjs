@@ -13,6 +13,7 @@ import {
 import {
   buildGuildAddRank, buildGuildDelRank, buildGuildDisband, buildGuildLeader, buildGuildMemberNote,
   buildGuildRank, packWowTime, unpackWowTime,
+  GUILD_BANK_MAX_TABS,
 } from "../dist/code/world/GuildProtocol.js";
 
 function member(name, extra = {}) {
@@ -125,13 +126,21 @@ test("a bank log line tells an item entry from a money one", () => {
 });
 
 test("a rank is rewritten whole, with all six tab pairs whatever the guild owns", () => {
-  const payload = buildGuildRank(2, 0x40, "Офицер", 5000, [{ rights: 1, slots: 10 }]);
+  assert.throws(() => buildGuildRank(2, 0x40, "Офицер", 5000, [{ rights: 1, slots: 10 }]),
+    /six|6/, "a partial snapshot must never revoke the missing tab rights");
+  const tabs = Array.from({ length: GUILD_BANK_MAX_TABS }, (_, tab) => ({ rights: tab + 1, slots: (tab + 1) * 10 }));
+  const payload = buildGuildRank(2, 0x40, "Офицер", 5000, tabs);
   // 4 + 4 + "Офицер" + null + 4 + six pairs of two words.
   const nameBytes = new TextEncoder().encode("Офицер").length + 1;
   assert.equal(payload.length, 4 + 4 + nameBytes + 4 + 6 * 8);
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   assert.equal(view.getUint32(0, true), 2);
   assert.equal(view.getUint32(4, true), 0x40);
+  const firstTab = 4 + 4 + nameBytes + 4;
+  for (let tab = 0; tab < GUILD_BANK_MAX_TABS; tab++) {
+    assert.equal(view.getUint32(firstTab + tab * 8, true), tabs[tab].rights);
+    assert.equal(view.getUint32(firstTab + tab * 8 + 4, true), tabs[tab].slots);
+  }
 });
 
 test("adding a rank names it, removing one names nothing", () => {

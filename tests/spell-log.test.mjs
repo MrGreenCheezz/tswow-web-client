@@ -175,6 +175,35 @@ test("a threat list is hundredths, and the share is measured against its top", (
   assert.equal(tables.get(CASTER), undefined);
 });
 
+test("ordinary threat updates retain the server's current victim across list-size changes", () => {
+  // ThreatManager::UpdateVictim emits SMSG_HIGHEST_THREAT_UPDATE only when the victim changes;
+  // SendThreatListToClients can then send SMSG_THREAT_UPDATE as references join or leave.
+  const tables = new ThreatTables();
+  tables.apply(parseThreatUpdate(new PacketWriter()
+    .packedGuid(CASTER).packedGuid(TARGET).u32(2)
+    .packedGuid(TARGET).u32(10_000)
+    .packedGuid(0x55n).u32(8_000)
+    .toUint8Array(), true));
+  assert.equal(tables.get(CASTER)?.highestGuid, TARGET);
+
+  tables.apply(parseThreatUpdate(new PacketWriter()
+    .packedGuid(CASTER).u32(3)
+    .packedGuid(TARGET).u32(10_000)
+    .packedGuid(0x55n).u32(8_000)
+    .packedGuid(0x66n).u32(4_000)
+    .toUint8Array(), false));
+  assert.equal(tables.get(CASTER)?.highestGuid, TARGET,
+    "a third attacker does not change the creature's current victim");
+
+  tables.apply(parseThreatUpdate(new PacketWriter()
+    .packedGuid(CASTER).u32(2)
+    .packedGuid(0x55n).u32(9_000)
+    .packedGuid(0x66n).u32(4_000)
+    .toUint8Array(), false));
+  assert.equal(tables.get(CASTER)?.highestGuid, undefined,
+    "do not retain a victim omitted from a replacement list");
+});
+
 test("runes, modifiers, totems, combo points and power updates", () => {
   const runes = parseResyncRunes(new PacketWriter().u32(2).u8(0).u8(255).u8(3).u8(120).toUint8Array());
   // Readiness counts the wrong way round: 255 is ready, and the core sends 255 minus the cooldown.

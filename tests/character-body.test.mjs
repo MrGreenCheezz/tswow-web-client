@@ -767,6 +767,35 @@ test("an equipped belt keeps one active belt geoset and paints over trousers", w
   assert.equal(panel.flatTriangles, 0, "the belt look has no flat visible triangles");
 });
 
+test("an equipped belt still selects authored 1802 on profiles that only carry the worn variant",
+  withPatchW, async () => {
+    const index = await loadAppearanceIndex();
+    const profile = PROFILES[1];
+    const model = await modelOf(profile);
+    assert.ok(model, `${profile.name} should be readable for the equipped-belt control`);
+    const appearance = index.forPlayer(profile.race, profile.sex, 0, 0, 0, 0, 0, [
+      { slot: 5, inventoryType: 6, displayId: 6847 },
+    ]);
+    assert.deepEqual(appearance.geosets.filter((id) => Math.floor(id / 100) === 18), [1802],
+      "the actual waist item remaps semantic variant 1 to the model's authored worn variant");
+    assert.ok(appearance.body.some((layer) => layer.path.toLowerCase().includes("belt")),
+      `the equipped belt paints its component into the body atlas: ${appearance.body.map((layer) => layer.path)}`);
+
+    const panel = buildForLab(model, {
+      modelPath: `${modelPathOf(profile)}.m2`,
+      slots: characterSlots("", appearance),
+      geosets: geosetList(appearance.geosets),
+      baseUrl: "http://gateway:8090",
+      loadTexture: () => new THREE.Texture(),
+      slotTextures: new Map([[1, new THREE.Texture()]]),
+      skinned: false,
+      emitted: appearance.geosets,
+    }).panel;
+    const worn = panel.materials.filter((line) => line.geoset === 1802 && !line.hidden);
+    assert.ok(worn.some((line) => line.slot === 1 && line.triangles > 0),
+      `equipped 1802 remains drawable from the painted body atlas: ${JSON.stringify(worn)}`);
+  });
+
 test("a naked active model seeds its authored neutral belt", withPatchW, async () => {
   const index = await loadAppearanceIndex();
   const human = PROFILES[0];
@@ -790,29 +819,55 @@ test("a naked active model seeds its authored neutral belt", withPatchW, async (
   assert.ok(belt && belt.drawn > 0, `the active neutral belt is drawn: ${JSON.stringify(belt)}`);
 });
 
-test("every active model with a belt family gets a resolvable neutral belt", withPatchW, async () => {
+test("naked coordinated profiles request only the semantic neutral waist variant", withPatchW, async () => {
   const index = await loadAppearanceIndex();
-  let covered = 0;
+  let authored = 0;
   for (const profile of PROFILES) {
     const model = await modelOf(profile);
     assert.ok(model, `${profile.name} should be readable for the neutral belt corpus`);
     const present = presentGeosets(model);
-    const available = [...present].filter((id) => Math.floor(id / 100) === 18);
     const appearance = index.forPlayer(profile.race, profile.sex, 0, 0, 0, 0, 0);
     const emitted = appearance.geosets.filter((id) => Math.floor(id / 100) === 18);
-    if (available.length === 0) {
-      // GnomeMale has no authored belt family; an explicit seed is harmless because the browser
-      // drops the missing id, and no authored family means there is nothing to require here.
-      continue;
-    }
-    covered++;
-    assert.equal(emitted.length, 1, `${profile.name} emits one neutral belt: ${appearance.geosets}`);
+    assert.deepEqual(emitted, [1801],
+      `${profile.name} requests semantic variant 1 rather than inventing an equipped belt`);
     const resolved = resolveGeosets(geosetList(emitted), present).choice.explicit;
-    assert.ok([...resolved].some((id) => Math.floor(id / 100) === 18 && present.has(id)),
-      `${profile.name} neutral belt ${emitted[0]} resolves in ${available}`);
+    const selected = [...resolved].filter((id) => Math.floor(id / 100) === 18);
+    if (present.has(1801)) {
+      authored++;
+      assert.deepEqual(selected, [1801], `${profile.name} keeps its authored neutral waist bridge`);
+    } else {
+      assert.deepEqual(selected, [], `${profile.name} does not substitute worn variant 1802 for absent 1801`);
+    }
   }
-  assert.equal(covered, 19, "all active profiles except beltless GnomeMale have authored waist geometry");
+  assert.equal(authored, 11, "eleven active profiles author the semantic neutral waist variant");
 });
+
+test("HD-1 naked looks never render worn belt variant 1802 with the composed body atlas",
+  withPatchW, async () => {
+    const index = await loadAppearanceIndex();
+    const offenders = [];
+    for (const profile of PROFILES) {
+      const model = await modelOf(profile);
+      assert.ok(model, `${profile.name} should be readable for the naked waist texture proof`);
+      const appearance = index.forPlayer(profile.race, profile.sex, 0, 0, 0, 0, 0);
+      const panel = buildForLab(model, {
+        modelPath: `${modelPathOf(profile)}.m2`,
+        slots: characterSlots("", appearance),
+        geosets: geosetList(appearance.geosets),
+        baseUrl: "http://gateway:8090",
+        loadTexture: () => new THREE.Texture(),
+        slotTextures: new Map([[1, new THREE.Texture()]]),
+        skinned: false,
+        emitted: appearance.geosets,
+      }).panel;
+      const bodyAtlasTriangles = panel.materials
+        .filter((line) => line.geoset === 1802 && !line.hidden && line.slot === 1)
+        .reduce((sum, line) => sum + line.triangles, 0);
+      if (bodyAtlasTriangles > 0) offenders.push({ profile: profile.name, bodyAtlasTriangles });
+    }
+    assert.deepEqual(offenders, [],
+      `naked appearances must not render item-belt geometry with skin: ${JSON.stringify(offenders)}`);
+  });
 
 test("patch-W HumanMale boots keep their foot component drawable", withPatchW, async () => {
   // This is the live seam behind the missing-feet report: ItemDisplayInfo contributes both LL and
@@ -989,6 +1044,221 @@ test("patch-W baked NPC appearance keeps its foot-capable HumanMale mesh", withP
     `baked HumanMale draws real foot triangles: ${JSON.stringify(metrics)}`);
   assert.ok(metrics.legLowerTriangles > 0,
     `baked HumanMale keeps legLower coverage: ${JSON.stringify(metrics)}`);
+});
+
+/**
+ * Triangles of one geoset whose three corners all sit inside the atlas's `foot` rectangle.
+ *
+ * The same 0.49 / 0.8755 thresholds the footwear corpus above uses, so the two agree about what
+ * "in the foot rectangle" means: `foot` is `{x:256,y:448,w:256,h:64}` of the 512x512 atlas, i.e.
+ * u >= 0.5 and v >= 0.875 with a half-texel of slack.
+ *
+ * Only meaningful for a geoset whose every batch samples texture type 1. Family 5 and family 20 are
+ * such; **geoset 0 is not** — on the active HumanMale it also carries type 6 and type 8 batches
+ * whose coordinates address the hair sheet and the extra skin, so 24 of its triangles land in this
+ * rectangle in hair-sheet space while none of them is a foot. That is why the corpus below asks
+ * about z and not about UV.
+ */
+function footRectangleTriangles(model, geosetId) {
+  let triangles = 0;
+  for (const submesh of model.submeshes) {
+    if (submesh.geosetId !== geosetId || submesh.indexCount <= 0) continue;
+    for (let offset = submesh.indexStart; offset < submesh.indexStart + submesh.indexCount; offset += 3) {
+      const corners = [0, 1, 2].map((corner) => model.indices[offset + corner]);
+      if (corners.every((vertex) => model.uv0[vertex * 2] >= 0.49 && model.uv0[vertex * 2 + 1] >= 0.8755)) {
+        triangles++;
+      }
+    }
+  }
+  return triangles;
+}
+
+/** The lowest and highest z of the drawable triangles of `ids`, or undefined when none are drawn. */
+function heightRange(model, ids) {
+  let lowest = Infinity;
+  let highest = -Infinity;
+  for (const submesh of model.submeshes) {
+    if (submesh.indexCount <= 0 || (ids !== undefined && !ids.has(submesh.geosetId))) continue;
+    for (let offset = submesh.indexStart; offset < submesh.indexStart + submesh.indexCount; offset++) {
+      const z = model.positions[model.indices[offset] * 3 + 2];
+      if (z < lowest) lowest = z;
+      if (z > highest) highest = z;
+    }
+  }
+  return Number.isFinite(lowest) ? { lowest, highest } : undefined;
+}
+
+function submeshHeightRanges(model, geosetId) {
+  const ranges = [];
+  for (const submesh of model.submeshes) {
+    if (submesh.geosetId !== geosetId || submesh.indexCount <= 0) continue;
+    let lowest = Infinity;
+    let highest = -Infinity;
+    for (let offset = submesh.indexStart; offset < submesh.indexStart + submesh.indexCount; offset++) {
+      const z = model.positions[model.indices[offset] * 3 + 2];
+      lowest = Math.min(lowest, z);
+      highest = Math.max(highest, z);
+    }
+    ranges.push({ lowest, highest });
+  }
+  return ranges;
+}
+
+test("HD-1 Жмых keeps the authored waist bridge instead of mixing classic appearance with HD geometry",
+  withPatchW, async () => {
+    const profile = PROFILES.find((candidate) => candidate.race === 4 && candidate.sex === 0);
+    const model = await modelOf(profile);
+    assert.ok(model, "NightElfMale should be readable for the reported character regression");
+
+    const equipment = [
+      { slot: 3, inventoryType: 4, displayId: 3265 },
+      { slot: 6, inventoryType: 7, displayId: 9937 },
+      { slot: 7, inventoryType: 8, displayId: 9938 },
+    ];
+    const hd = (await loadAppearanceIndex()).forPlayer(4, 0, 8, 6, 3, 1, 5, equipment);
+    const classic = (await CharacterAppearanceIndex.load(dbcDirectory))
+      .forPlayer(4, 0, 8, 6, 3, 1, 5, equipment);
+    const hdChoice = worldCharacterGeosets(model, hd, true);
+    const classicChoice = worldCharacterGeosets(model, classic, true);
+
+    const trousers = heightRange(model, new Set([1301]));
+    const upperBody = submeshHeightRanges(model, 0)
+      .filter((range) => range.lowest > trousers.highest)
+      .sort((left, right) => left.lowest - right.lowest)[0];
+    assert.ok(upperBody, "the replacement model has a separately authored upper torso");
+    assert.ok(upperBody.lowest - trousers.highest > 0.05,
+      "the forbidden classic/HD pairing reproduces the visible waist gap");
+    assert.equal([...classicChoice.explicit].some((id) => Math.floor(id / 100) === 18), false,
+      "classic appearance has no replacement-model waist bridge");
+
+    const belt = [...hdChoice.explicit].find((id) => Math.floor(id / 100) === 18);
+    assert.ok(belt, `the coordinated appearance selects an authored waist: ${hd.geosets}`);
+    const bridge = heightRange(model, new Set([belt]));
+    assert.ok(bridge.lowest <= trousers.highest + 0.005,
+      `waist ${belt} reaches the trousers (${bridge.lowest} <= ${trousers.highest})`);
+    assert.ok(bridge.highest >= upperBody.lowest - 0.005,
+      `waist ${belt} reaches the upper torso (${bridge.highest} >= ${upperBody.lowest})`);
+  });
+
+test("HD-1 the coordinated pack's own foot mesh is named by whoever needs one", withPatchW, async () => {
+  // The owner's «ноги пропали», measured. Ten of the twenty active profiles have taken the foot out
+  // of geoset 0 and authored it as a family-20 mesh — the active HumanMale's geoset 0 spans z
+  // 0.71..2.02 where the classic one spans -0.00..1.96, and the 630 triangles between 0.00 and 0.13
+  // are geoset 2001. Nothing emitted family 20, so those ten stood on bare stumps in the world and
+  // on the glue screens alike.
+  //
+  // The oracle is the model and not the gateway's own table: a profile needs a foot mesh exactly
+  // when its geoset 0 stops well above the model's own floor, and the mesh it needs is the
+  // family-20 member that reaches that floor. That is what makes this a regression test rather than
+  // a restatement of `FOOT_GEOSET_PROFILES` — and it catches the two traps in the family,
+  // NightElfFemale's 2002 (a crown at z 2.04..2.17) and GnomeMale's 2002 (z 0.75..0.79), which a
+  // "lowest member of the family" fallback would have hung off an ankle.
+  const index = await loadAppearanceIndex();
+  let needing = 0;
+  for (const profile of PROFILES) {
+    const model = await modelOf(profile);
+    assert.ok(model, `${profile.name} should be readable for the foot corpus`);
+    const present = presentGeosets(model);
+    const whole = heightRange(model, undefined);
+    const body = heightRange(model, new Set([0]));
+    // A twentieth of the model's own height: far above the 1-2 mm of numerical slack at the sole
+    // and far below the 0.22 the smallest of the ten (GnomeMale, 1.00 tall) leaves open.
+    const slack = (whole.highest - whole.lowest) / 20;
+    const grounded = [...present]
+      .filter((id) => Math.floor(id / 100) === 20)
+      .filter((id) => heightRange(model, new Set([id])).lowest - whole.lowest <= slack);
+    const needsFoot = body.lowest - whole.lowest > slack;
+
+    const appearance = index.forPlayer(profile.race, profile.sex, 0, 0, 0, 0, 0);
+    const emitted = appearance.geosets.filter((id) => Math.floor(id / 100) === 20);
+    if (!needsFoot) {
+      assert.deepEqual(emitted, [],
+        `${profile.name} keeps its foot inside geoset 0 (down to z ${body.lowest.toFixed(2)}) `
+        + "and must not be sent one");
+      continue;
+    }
+    needing++;
+    assert.equal(grounded.length, 1,
+      `${profile.name} authored exactly one family-20 mesh at its floor, got ${grounded}`);
+    assert.deepEqual(emitted, grounded,
+      `${profile.name} names the family-20 mesh that actually reaches its floor`);
+    assert.equal(resolveGeosetId(grounded[0], present), grounded[0],
+      `${profile.name}'s foot mesh survives resolution rather than reading as "no foot"`);
+  }
+  // Nine of them name 2001 and DwarfMale names 2002; the count is what says the corpus found the
+  // split at all rather than passing because nobody needed anything.
+  assert.equal(needing, 10, `ten active profiles authored a separate foot mesh, got ${needing}`);
+});
+
+test("HD-1 a naked coordinated character stands on the ground again", withPatchW, async (t) => {
+  // Through the real build, because the defect was triangles that were not on the screen. For each
+  // profile that needs one, the naked look must draw its foot mesh, and — the part that is the
+  // defect rather than the fix — the same look with that one id taken out must stop short of the
+  // ground. Measured over the ten: HumanMale's drawn body ended at z 0.10 without it and reaches
+  // -0.01 with it, and the other nine are the same shape of gap.
+  const index = await loadAppearanceIndex();
+  let measured = 0;
+  for (const profile of PROFILES) {
+    const model = await modelOf(profile);
+    const appearance = index.forPlayer(profile.race, profile.sex, 0, 0, 0, 0, 0);
+    const foot = appearance.geosets.find((id) => Math.floor(id / 100) === 20);
+    if (foot === undefined) continue;
+    measured++;
+    const panel = buildForLab(model, {
+      modelPath: `${modelPathOf(profile)}.m2`,
+      slots: characterSlots("", appearance),
+      geosets: worldCharacterGeosets(model, appearance, true),
+      baseUrl: "http://gateway:8090",
+      loadTexture: () => new THREE.Texture(),
+      slotTextures: new Map([[1, new THREE.Texture()]]),
+      skinned: false,
+      emitted: appearance.geosets,
+    }).panel;
+    const line = panel.geosets.find((entry) => entry.id === foot);
+    assert.ok(line && line.drawn > 0, `${profile.name} draws its foot mesh: ${JSON.stringify(line)}`);
+    assert.equal(panel.flatTriangles, 0,
+      `${profile.name}: the foot mesh samples a filled slot (${panel.flatTriangles} flat)`);
+
+    const whole = heightRange(model, undefined);
+    const drawn = new Set(panel.geosets.filter((entry) => entry.drawn > 0).map((entry) => entry.id));
+    const withFoot = heightRange(model, drawn).lowest;
+    drawn.delete(foot);
+    const withoutFoot = heightRange(model, drawn).lowest;
+    t.diagnostic(`${profile.name}: geoset ${foot} takes the drawn body from z ${withoutFoot.toFixed(3)} `
+      + `down to ${withFoot.toFixed(3)}, against the model's own floor of ${whole.lowest.toFixed(3)}`);
+    // Five millimetres, four orders above the rounding these positions carry and two below the
+    // smallest gap the ten leave open (GnomeMale, 0.05 on a model 1.01 tall).
+    assert.ok(withoutFoot - withFoot > 0.005,
+      `${profile.name} without the foot mesh is the defect: the body stops at z ${withoutFoot.toFixed(3)}`);
+    // And it reaches the ground plane, not merely lower. `whole.lowest` is not the oracle here: it
+    // is -0.013 on HumanMale because the full boot 505 and the long skirt 1302 dip below the plane,
+    // and a naked character draws neither.
+    assert.ok(withFoot <= 0.01,
+      `${profile.name}'s naked look reaches z 0: ${withFoot.toFixed(3)}`);
+  }
+  assert.equal(measured, 10, `ten naked profiles draw a foot mesh, got ${measured}`);
+});
+
+test("HD-1 the fifth boot variant carries its own sole and is not doubled", withPatchW, async () => {
+  // The one exception, measured rather than assumed: 505 is the only family-5 member that reaches
+  // the sole, and it paints the foot rectangle itself. So a look that settles on it is not also
+  // sent the bare foot underneath, while every other boot variant is.
+  const index = await loadAppearanceIndex();
+  const profile = PROFILES[0];
+  const model = await modelOf(profile);
+  assert.ok(footRectangleTriangles(model, 505) > 0, "HumanMale's 505 paints the foot rectangle");
+
+  // Display 10141 carries a FootTexture component, which is what selects 505 on a non-hoof profile.
+  const booted = index.forPlayer(1, 0, 0, 0, 0, 0, 0, [{ slot: 7, inventoryType: 8, displayId: 10141 }]);
+  assert.ok(booted.geosets.includes(505), `display 10141 settles on 505: ${booted.geosets}`);
+  assert.deepEqual(booted.geosets.filter((id) => Math.floor(id / 100) === 20), [],
+    "a boot that carries its own sole is not given a second one underneath");
+
+  // Display 9892 is a trousers display: it moves no boot, so the naked boot variant stands and the
+  // foot mesh comes with it.
+  const trousered = index.forPlayer(1, 0, 0, 0, 0, 0, 0, [{ slot: 6, inventoryType: 7, displayId: 9892 }]);
+  assert.deepEqual(trousered.geosets.filter((id) => Math.floor(id / 100) === 20), [2001],
+    `a look that keeps the bare boot keeps the foot: ${trousered.geosets}`);
 });
 
 test("NPCItemDisplay slots drive baked NPC belt and boots", withPatchW, async () => {

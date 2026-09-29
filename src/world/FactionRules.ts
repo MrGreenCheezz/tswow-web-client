@@ -124,3 +124,14 @@ export const UNIT_FLAGS_UNCLICKABLE = UNIT_FLAG_UNINTERACTIBLE;
  * refuse a corpse mid-fight, as the reference client does (`combat_handler.cpp:1590`).
  */
 export const UNIT_FLAG_IN_COMBAT = 0x00080000;
+
+/**
+ * A dead creature that still has skin, herbs, ore or parts to give (`UnitDefines.h:161`).
+ *
+ * The core raises it once the body's ordinary loot is gone (`Creature::AllLootRemovedFromCorpse`,
+ * Creature.cpp) and drops it again in `Spell::EffectSkinning` (SpellEffects.cpp), the moment the
+ * gathering loot is handed out; `Spell::CheckCast` refuses effect 95 at a unit without it
+ * (`SPELL_FAILED_TARGET_UNSKINNABLE`). Public in `UNIT_FIELD_FLAGS`, so every viewer sees it.
+ * Which skill the body wants is not here but in its template (`CreatureGather.ts`).
+ */
+export const UNIT_FLAG_SKINNABLE = 0x04000000;

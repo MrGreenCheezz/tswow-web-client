@@ -13,6 +13,9 @@ import {
   parsePartyCommandResult,
   partyResultText,
 } from "../dist/code/world/GroupProtocol.js";
+import { OPCODES } from "../dist/code/generated/opcodes.js";
+import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
+import { WorldClient } from "../dist/code/world/WorldClient.js";
 
 const encoder = new TextEncoder();
 function bytes(...parts) {
@@ -112,4 +115,82 @@ test("client group packets match their handlers", () => {
   // HandleGroupAcceptOpcode skips a uint32 it never reads.
   assert.deepEqual([...buildGroupAccept()], [0, 0, 0, 0]);
   assert.deepEqual([...buildGroupUninvite(0x11n)], [...bytes(u64(0x11n), cstr(""))]);
+});
+
+function connection() {
+  const packets = [];
+  const sent = [];
+  let wake;
+  return {
+    sent,
+    push(opcode, payload) {
+      const packet = { opcode, payload };
+      if (wake) { const resolve = wake; wake = undefined; resolve(packet); }
+      else packets.push(packet);
+    },
+    read() { return packets.length ? Promise.resolve(packets.shift()) : new Promise((resolve) => { wake = resolve; }); },
+    send(opcode, payload = new Uint8Array()) { sent.push({ opcode, payload }); },
+    close() {},
+  };
+}
+
+async function settle() { for (let index = 0; index < 6; index++) await new Promise(setImmediate); }
+
+async function worldFixture() {
+  const transport = connection();
+  transport.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD, new PacketWriter().u32(0).f32(1).f32(2).f32(3).f32(0).toUint8Array());
+  const world = new WorldClient(transport);
+  await world.loginCharacter(13n);
+  await settle();
+  return { world, transport };
+}
+
+test("leaving, promoting and resetting instances are what their handlers read", async () => {
+  const { world, transport } = await worldFixture();
+  try {
+    transport.sent.length = 0;
+    world.leaveGroup();
+    world.setGroupLeader(0x77n);
+    world.resetInstances();
+    assert.deepEqual(transport.sent.map(({ opcode, payload }) => [opcode, [...payload]]), [
+      // HandleGroupDisbandOpcode and HandleResetInstancesOpcode read nothing (GroupHandler.cpp:396,
+      // MiscHandler.cpp:1294); HandleGroupSetLeaderOpcode a raw guid.
+      [OPCODES.CMSG_GROUP_DISBAND, []],
+      [OPCODES.CMSG_GROUP_SET_LEADER, [...u64(0x77n)]],
+      [OPCODES.CMSG_RESET_INSTANCES, []],
+    ]);
+  } finally { world.close(); }
+});
+
+test("the list that tells the player they are out ends the group; a group of one stays one", async () => {
+  const { world, transport } = await worldFixture();
+  try {
+    let changes = 0;
+    world.onGroupChanged = () => { changes += 1; };
+    // 2026-09-28: a dungeon-finder group of the player and four NPCBot dungeon bots — creature GUIDs,
+    // always online — as Group::SendUpdateToPlayer writes it for the player who leads it.
+    const bot = (entry, low) => (0xf130n << 48n) | (BigInt(entry) << 24n) | BigInt(low);
+    transport.push(OPCODES.SMSG_GROUP_LIST, groupList({
+      groupType: GROUPTYPE_LFG,
+      leader: 13n,
+      members: [["Lotheolan", 100644], ["Ruada", 100645], ["Valaatu", 100646], ["Erion", 100647]].map(([name, entry], index) => (
+        { name, guid: bot(entry, index + 1), status: MEMBER_STATUS_ONLINE, subGroup: 0, flags: 0, roles: 8 })),
+    }));
+    await settle();
+    assert.equal(world.group?.members.length, 4);
+    assert.equal(changes, 1);
+
+    // Group::RemoveMember's answer to the leaver, byte for byte (Group.cpp:821-824); a plain leave
+    // sends no SMSG_GROUP_DESTROYED with it.
+    transport.push(OPCODES.SMSG_GROUP_LIST,
+      bytes(u8(0x10), u8(0), u8(0), u8(0), u64(0x1f50_0000_0000_0001n), u32(8), u32(0), u64(0n)));
+    await settle();
+    assert.equal(world.group, undefined, "no members and no leader: the player is in no group");
+    assert.equal(changes, 2, "and the seam hears it, as it does SMSG_GROUP_DESTROYED");
+
+    transport.push(OPCODES.SMSG_GROUP_LIST, groupList({ members: [], leader: 0x11n }));
+    await settle();
+    assert.equal(world.group?.leaderGuid, 0x11n, "a group of one names its leader and stays a group");
+    assert.equal(changes, 3);
+  } finally { world.close(); }
 });

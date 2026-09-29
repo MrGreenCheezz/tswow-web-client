@@ -120,18 +120,56 @@ export interface CharacterMotion {
    * `MSG_MOVE_STOP_ASCEND`, which is why one number covers both.
    */
   vertical: number;
+  /**
+   * The last liquid answer at the character's own feet that was not {@link LIQUID_UNKNOWN}, and
+   * where it was given. An unknown answer within {@link LIQUID_RECALL_YARDS} of that point is read
+   * as this one, which is what keeps a swimmer swimming and a walker walking while the collision
+   * around them streams in; further away an unknown answer is read as dry.
+   */
+  liquid: { x: number; y: number; surface: LiquidSurface | undefined } | undefined;
 }
 
 export function newCharacterMotion(): CharacterMotion {
-  return { mode: "ground", velocityZ: 0, fallTime: 0, jump: undefined, pitch: 0, vertical: 0 };
+  return { mode: "ground", velocityZ: 0, fallTime: 0, jump: undefined, pitch: 0, vertical: 0, liquid: undefined };
 }
+
+/** A liquid surface: its world height, and the kind id its source carries. */
+export interface LiquidSurface {
+  height: number;
+  type: number;
+}
+
+/**
+ * What a liquid query answers while the world that decides it has not arrived — not the same
+ * thing as dry.
+ *
+ * Whose water the feet are in is the WMO group of the floor under them (`VMapManager2::
+ * getAreaAndLiquidData`), and that floor is streamed collision. Reading "not loaded yet" as "no
+ * water" drops a swimmer onto the bed for the frames a tile takes to arrive and starts the swim
+ * again when it does: a stop/start packet pair and an animation flicker per tile.
+ */
+export const LIQUID_UNKNOWN = Symbol("liquid not answered yet");
+export type LiquidAnswer = LiquidSurface | undefined | typeof LIQUID_UNKNOWN;
+
+/**
+ * How far from its last known answer an unknown one is still read as that answer: one cell of
+ * either liquid grid — the map file's 128 per tile, and a WMO's `MLIQ` on the same pitch.
+ */
+export const LIQUID_RECALL_YARDS = 533.3333333333334 / 128;
 
 /** What the world answers about a point. Handed in so the simulation can be run over a fake one. */
 export interface TerrainProbe {
   /** Ground height under a point, or undefined while that tile has not arrived. */
   ground(x: number, y: number): number | undefined;
-  /** The liquid surface over a point, and the map file's class flags for it. */
-  liquid(x: number, y: number): { height: number; type: number } | undefined;
+  /**
+   * The liquid a body whose feet are at `z` is in or over, or {@link LIQUID_UNKNOWN}.
+   *
+   * The height matters. The server asks it of the floor under those feet — a room's own `MLIQ`,
+   * and the map file's water only where no interior room is in the way (`Map::
+   * GetFullTerrainStatusForPosition`) — so the same column can be a lake at the bottom and a dry
+   * gallery above it.
+   */
+  liquid(x: number, y: number, z: number): LiquidAnswer;
   /** A hole in the ground: the tile says there is no floor here at all. */
   hole(x: number, y: number): boolean;
   /**
@@ -203,27 +241,63 @@ function isFlying(input: CharacterInput): boolean {
 /**
  * The floor at a point, which is very often not the ground.
  *
- * Four things can be the thing under a character's feet and they are checked in this order: a hole
- * has nothing at all; the height field; the server's own collision geometry, which is what a
- * building's floors are; and the surface of water for someone walking on it. The highest of them
- * that is not above a step over the character's head is the floor — which is why standing under a
- * bridge stands on the ground and standing on it stands on the bridge, from the same query.
+ * Four things can be the thing under a character's feet: the height field (unless its ADT chunk is
+ * a hole), the server's own collision geometry, which is what a building's floors are, and the
+ * surface of water for someone walking on it. An ADT hole removes only terrain. WMOs deliberately
+ * sit over such cut-outs, so returning before the VMAP query drops the character through the very
+ * tavern/city floor the hole was authored to expose. The highest usable surface wins — which is
+ * why standing under a bridge stands on the ground and standing on it stands on the bridge.
  */
-function floorAt(probe: TerrainProbe, input: CharacterInput, x: number, y: number, z: number): number | undefined {
-  if (probe.hole(x, y)) return undefined;
-  let floor = probe.ground(x, y);
+function floorAt(
+  probe: TerrainProbe, input: CharacterInput, motion: CharacterMotion, x: number, y: number, z: number,
+): number | undefined {
+  const floor = solidFloor(probe, x, y, z);
+  if (floor === undefined) return undefined;
+  return standingHeight(floor, input.waterWalking ? liquidOver(probe, motion, x, y, z) : undefined, input);
+}
+
+/** The ground and the collision geometry: the part of the floor that is not water or levitation. */
+function solidFloor(probe: TerrainProbe, x: number, y: number, z: number): number | undefined {
+  let floor = probe.hole(x, y) ? undefined : probe.ground(x, y);
   const solid = probe.floor?.(x, y, z + STEP_HEIGHT, z - FLOOR_SEARCH_DEPTH);
   if (solid !== undefined && (floor === undefined || solid > floor)) floor = solid;
+  return floor;
+}
+
+/** A solid floor raised to the water for a water walker, and to the hover height for a levitator. */
+function standingHeight(floor: number | undefined, liquid: LiquidSurface | undefined, input: CharacterInput): number | undefined {
   if (floor === undefined) return undefined;
-  const surface = input.waterWalking ? probe.liquid(x, y)?.height : undefined;
+  const surface = input.waterWalking ? liquid?.height : undefined;
   if (surface !== undefined && surface > floor) floor = surface;
   return input.hovering ? floor + input.hoverHeight : floor;
 }
 
-/** How deep the character is standing in liquid, or undefined where there is none. */
-function submersion(probe: TerrainProbe, x: number, y: number, z: number): number | undefined {
-  const liquid = probe.liquid(x, y);
-  return liquid === undefined ? undefined : liquid.height - z;
+/** The last known answer, when an unknown one is asked for near enough to it. */
+function recalledLiquid(motion: CharacterMotion, x: number, y: number): LiquidSurface | undefined {
+  const last = motion.liquid;
+  if (last === undefined) return undefined;
+  return Math.hypot(x - last.x, y - last.y) <= LIQUID_RECALL_YARDS ? last.surface : undefined;
+}
+
+/** The liquid over any point the step looks at, reading an unknown answer as the last known one. */
+function liquidOver(probe: TerrainProbe, motion: CharacterMotion, x: number, y: number, z: number): LiquidSurface | undefined {
+  const answer = probe.liquid(x, y, z);
+  return answer === LIQUID_UNKNOWN ? recalledLiquid(motion, x, y) : answer;
+}
+
+/** The liquid at the character's own feet. Known answers are remembered for the unknown ones. */
+function feetLiquid(probe: TerrainProbe, motion: CharacterMotion, x: number, y: number, z: number): LiquidSurface | undefined {
+  const answer = probe.liquid(x, y, z);
+  if (answer === LIQUID_UNKNOWN) return recalledLiquid(motion, x, y);
+  const last = motion.liquid;
+  if (last === undefined) {
+    motion.liquid = { x, y, surface: answer };
+  } else {
+    last.x = x;
+    last.y = y;
+    last.surface = answer;
+  }
+  return answer;
 }
 
 /** The light slot follows the camera eye crossing the surface, not the character's swim state. */
@@ -238,18 +312,72 @@ export function eyeUnderwater(
 }
 
 /**
+ * The one liquid surface the screen is looking through, for the frames where there is one.
+ *
+ * `eyeUnderwater` answers a boolean because a light slot is a boolean; the underwater screen
+ * effect needs the surface itself — how high it is and what kind of liquid it belongs to — and it
+ * needs it slightly before the eye passes it, because the near plane cuts the water first.
+ */
+export interface EyeLiquidSurface {
+  /** World Z of the surface over the eye. */
+  readonly height: number;
+  /** `LiquidType.dbc` row, or 0 where only the map file's flag byte is known. */
+  readonly entry: number;
+  /** The map file's liquid flag byte; 0 for a WMO's own `MLIQ` grid, which carries no flags. */
+  readonly flags: number;
+}
+
+/**
+ * Which of the two liquid sources the eye is looking through, and how high its surface is.
+ *
+ * The building wins where it answers at all, and that is not a preference: the WMO candidate is
+ * only ever built from the *authoritative floor group* the collision step already selected for this
+ * camera, so a room that reports liquid is the room the camera is standing in. The map file's lake
+ * over the roof is the outdoor answer and belongs to the frame where the building has none.
+ *
+ * `band` is how far above the surface the answer still counts — the near plane's half-height, the
+ * only slab of world that can be half in the water while the eye is not (wowee
+ * `renderer.cpp:2871-2875`).
+ */
+/**
+ * How far above a liquid surface the eye still counts as looking through it, for the two callers
+ * that sample liquid before the renderer sees the frame.
+ *
+ * Deliberately a round half yard rather than the renderer's exact crossing band: that band is a
+ * property of the camera's near plane and field of view, both of which live in the renderer, and
+ * the renderer re-derives and re-tests it there from its own camera. This one only has to be a
+ * superset — offering a surface the renderer then declines costs one comparison, while missing one
+ * it wanted would cost the effect. Measured against it: the world camera's band is 0.122 yards.
+ */
+export const EYE_LIQUID_SAMPLE_BAND = 0.5;
+
+export function eyeLiquidSurface(
+  eyeZ: number,
+  band: number,
+  wmo: EyeLiquidSurface | undefined,
+  terrain: EyeLiquidSurface | undefined,
+): EyeLiquidSurface | undefined {
+  if (!Number.isFinite(eyeZ)) return undefined;
+  const reach = Number.isFinite(band) && band > 0 ? band : 0;
+  for (const candidate of [wmo, terrain]) {
+    if (!candidate || !Number.isFinite(candidate.height)) continue;
+    if (eyeZ < candidate.height + reach) return candidate;
+  }
+  return undefined;
+}
+
+/**
  * Slides a move that would climb too steeply along the hill instead of up it.
  *
  * The uphill direction is the terrain gradient, measured with two probes either side. Only the
  * uphill part of the move is taken away, so a player pressed against a cliff still walks along it
  * and still walks away from it — which is what makes a steep hillside passable rather than sticky.
  *
- * Walls are not here. The only geometry this can ask about is the height field, so a building is
- * still walked through; that is slice U3, and it is the one thing in this file that is a stub
- * rather than an approximation.
+ * This step only handles terrain height. `stepCharacter` resolves server VMAP walls with
+ * `probe.pushOut` after the horizontal step and before asking for the floor height.
  */
-function slideAlongSlope(probe: TerrainProbe, input: CharacterInput, x: number, y: number, z: number,
-  dx: number, dy: number): { dx: number; dy: number } {
+function slideAlongSlope(probe: TerrainProbe, input: CharacterInput, motion: CharacterMotion,
+  x: number, y: number, z: number, dx: number, dy: number): { dx: number; dy: number } {
   /**
    * Whether going this way means climbing something that cannot be climbed.
    *
@@ -261,15 +389,15 @@ function slideAlongSlope(probe: TerrainProbe, input: CharacterInput, x: number, 
   const climbs = (moveX: number, moveY: number): boolean => {
     const run = Math.hypot(moveX, moveY);
     if (run < 1e-6) return false;
-    const from = floorAt(probe, input, x, y, z);
+    const from = floorAt(probe, input, motion, x, y, z);
     if (from === undefined) return false;
     const dirX = moveX / run;
     const dirY = moveY / run;
 
-    const near = floorAt(probe, input, x + dirX * CLIMB_PROBE, y + dirY * CLIMB_PROBE, z);
+    const near = floorAt(probe, input, motion, x + dirX * CLIMB_PROBE, y + dirY * CLIMB_PROBE, z);
     if (near !== undefined && near - from > STEP_HEIGHT) return true;
 
-    const far = floorAt(probe, input, x + dirX * SLOPE_PROBE, y + dirY * SLOPE_PROBE, z);
+    const far = floorAt(probe, input, motion, x + dirX * SLOPE_PROBE, y + dirY * SLOPE_PROBE, z);
     if (far === undefined) return false;
     const rise = far - from;
     return rise > STEP_HEIGHT && rise / SLOPE_PROBE > MAX_WALKABLE_GRADIENT;
@@ -343,7 +471,7 @@ export function stepCharacter(
   }
 
   if (motion.mode === "ground" && (dx !== 0 || dy !== 0)) {
-    const slid = slideAlongSlope(probe, input, position.x, position.y, position.z, dx, dy);
+    const slid = slideAlongSlope(probe, input, motion, position.x, position.y, position.z, dx, dy);
     dx = slid.dx;
     dy = slid.dy;
   }
@@ -359,11 +487,15 @@ export function stepCharacter(
     position.y = out.y;
   }
 
-  const floor = floorAt(probe, input, position.x, position.y, position.z);
-  const depth = submersion(probe, position.x, position.y, position.z);
+  // The solid floor first and the liquid second, at the same feet: a probe that walks the collision
+  // column for the one can answer the other from the same walk.
+  const solid = solidFloor(probe, position.x, position.y, position.z);
+  const liquid = feetLiquid(probe, motion, position.x, position.y, position.z);
+  const floor = standingHeight(solid, liquid, input);
+  const depth = liquid === undefined ? undefined : liquid.height - position.z;
 
   if (motion.mode === "swim") {
-    stepSwimming(position, motion, input, probe, elapsed, floor, depth, swimDepth, events);
+    stepSwimming(position, motion, input, elapsed, floor, liquid, swimDepth, events);
   } else if (motion.mode === "air") {
     stepAirborne(position, motion, input, probe, elapsed, floor, swimDepth, events);
   } else {
@@ -460,7 +592,8 @@ function stepAirborne(
 
   // Measured again after the drop rather than before it: at terminal velocity a frame is a yard,
   // and a yard is the difference between hitting the water and hitting the bottom of the lake.
-  const submerged = submersion(probe, position.x, position.y, position.z);
+  const liquid = feetLiquid(probe, motion, position.x, position.y, position.z);
+  const submerged = liquid === undefined ? undefined : liquid.height - position.z;
   // Water breaks a fall before the ground does, and the server agrees: it is the liquid level that
   // decides, not the lake bed.
   if (submerged !== undefined && submerged > swimDepth && !input.waterWalking) {
@@ -482,12 +615,12 @@ function land(position: WorldPosition, motion: CharacterMotion, floor: number, e
 }
 
 function stepSwimming(
-  position: WorldPosition, motion: CharacterMotion, input: CharacterInput, probe: TerrainProbe,
-  elapsed: number, floor: number | undefined, depth: number | undefined, swimDepth: number,
+  position: WorldPosition, motion: CharacterMotion, input: CharacterInput,
+  elapsed: number, floor: number | undefined, liquid: LiquidSurface | undefined, swimDepth: number,
   events: PhysicsEvent[],
 ): void {
-  const surface = probe.liquid(position.x, position.y)?.height;
-  if (surface === undefined || depth === undefined) {
+  const surface = liquid?.height;
+  if (surface === undefined) {
     // Swum out over dry land: fall the rest of the way rather than hanging in the air.
     motion.mode = "air";
     motion.velocityZ = 0;

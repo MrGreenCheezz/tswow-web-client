@@ -1,0 +1,4 @@
+Azeroth: 12 ADT sampled of 687; MCNK 3072; flag 0x1 on 3072; MCSH read 3072; sizeShadow 512:3072; shadowed area 18.5%; chunks with no shadow bit 1874, fully shadowed 60
+Kalimdor: 12 ADT sampled of 1018; MCNK 2816; flag 0x1 on 2816; MCSH read 2816; sizeShadow 512:2816; shadowed area 10.3%; chunks with no shadow bit 2197, fully shadowed 83
+Expansion01: 12 ADT sampled of 800; MCNK 3072; flag 0x1 on 932; MCSH read 932; sizeShadow 512:932,0:2140; shadowed area 41.9%; chunks with no shadow bit 0, fully shadowed 19
+Northrend: 12 ADT sampled of 1131; MCNK 3072; flag 0x1 on 710; MCSH read 710; sizeShadow 512:710,0:2362; shadowed area 19.8%; chunks with no shadow bit 0, fully shadowed 15

@@ -1,5 +1,6 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import type { ChannelNotify } from "./ChannelProtocol.js";
 
 // Layouts follow the active TrinityCore source: Chat.cpp `ChatHandler::BuildChatPacket` and
 // ChatHandler.cpp `HandleMessagechatOpcode`.
@@ -23,6 +24,13 @@ export const CHAT_MSG_MONSTER_YELL = 0x0e;
 export const CHAT_MSG_MONSTER_WHISPER = 0x0f;
 export const CHAT_MSG_MONSTER_EMOTE = 0x10;
 export const CHAT_MSG_CHANNEL = 0x11;
+/**
+ * The auto-reply toggles. The only two types whose empty text means something: TrinityCore's
+ * `HandleMessagechatOpcode` skips its empty-message return for them (ChatHandler.cpp:235-236) and
+ * then toggles the flag off, or sets the default reply (ChatHandler.cpp:528-564).
+ */
+export const CHAT_MSG_AFK = 0x17;
+export const CHAT_MSG_DND = 0x18;
 export const CHAT_MSG_BG_SYSTEM_NEUTRAL = 0x24;
 export const CHAT_MSG_BG_SYSTEM_ALLIANCE = 0x25;
 export const CHAT_MSG_BG_SYSTEM_HORDE = 0x26;
@@ -43,8 +51,29 @@ export const LANG_COMMON = 7;
 
 const ALLIANCE_RACES = new Set([1, 3, 4, 7, 11]);
 
-/** The racial language the server expects for ordinary chat, chosen from the player's race. */
+/** Where the dataset's own `ChrRaces.BaseLanguage` is looked up, once the browser has learned it. */
+let learnedRaceLanguage: ((race: number) => number | undefined) | undefined;
+
+/**
+ * Hands `languageForRace` the dataset's `ChrRaces.BaseLanguage` rows.
+ *
+ * The world layer does not fetch `/dbc/character-creation` itself; the browser learns it
+ * (`UnitSnapshot.learnCreationNames`) and registers the lookup here. On this dataset all eleven
+ * TSWoW races (12..21) say 7 (Common), which the compiled Alliance set below would have answered
+ * as Orcish — a language those characters do not have, so the server refused their every line
+ * with `LANG_NOT_LEARNED_LANGUAGE` (ChatHandler.cpp:95-112). `undefined` removes the lookup.
+ */
+export function useLearnedRaceLanguages(lookup: ((race: number) => number | undefined) | undefined): void {
+  learnedRaceLanguage = lookup;
+}
+
+/**
+ * The racial language the server expects for ordinary chat, chosen from the player's race: the
+ * learned `ChrRaces.BaseLanguage` when there is one, else the stock ten races' compiled split.
+ */
 export function languageForRace(race: number): number {
+  const learned = learnedRaceLanguage?.(race);
+  if (learned !== undefined && Number.isInteger(learned) && learned > 0) return learned;
   return ALLIANCE_RACES.has(race) ? LANG_COMMON : LANG_ORCISH;
 }
 
@@ -84,6 +113,22 @@ export interface ChatMessage {
    * when the name arrives — the same redraw that already fixes every other line.
    */
   emote?: TextEmote | undefined;
+  /**
+   * Set only by `WorldClient.pushLocalMessage`: this client wrote the text itself (a slash-command
+   * reply, a refusal, a «TSWoW Lua:» error line, a composed emote sentence), so a `|` in it is
+   * prose rather than a WoW escape the server meant. Stock FrameXML parses every pipe, and
+   * «/vehicle enter|leave|next» broke onto a new line at `|n`; the FrameXML seam doubles such pipes
+   * before the line reaches Lua. Never set on a parsed packet, nor on a line pushed with
+   * `{ markup: true }` (an add-on's `print`, whose markup is meant).
+   */
+  local?: true | undefined;
+  /**
+   * Set only on the line an `SMSG_CHANNEL_NOTIFY` wrote: the parsed notify, code and all. The text
+   * is the native chat's sentence; stock FrameXML is told instead through its own
+   * `CHAT_MSG_CHANNEL_NOTICE` / `_NOTICE_USER` / `_JOIN` / `_LEAVE` events, whose `YOU_LEFT` is the
+   * only thing that takes a channel off stock ChatFrame's list (ChatFrame.lua:2714-2717).
+   */
+  channelNotice?: ChannelNotify | undefined;
 }
 
 export function parseChatMessage(payload: Uint8Array, gmMessage = false): ChatMessage {

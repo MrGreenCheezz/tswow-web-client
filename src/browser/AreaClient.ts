@@ -1,6 +1,12 @@
-import type { AreaData, AreaInfo, ContinentInfo, MapAreaInfo, MapInfo, MapOverlayInfo } from "../gateway/AreaMetadata.js";
+import type { AreaData, AreaInfo, AreaPoiInfo, ContinentInfo, DungeonMapInfo, MapAreaInfo, MapInfo, MapOverlayInfo } from "../gateway/AreaMetadata.js";
+import { WorldMapHierarchy } from "./ui/WorldMapHierarchy.js";
+import { WorldMapZoneMapClient, type WorldMapZoneHit } from "./WorldMapZoneMap.js";
 
-export type { AreaData, AreaInfo, ContinentInfo, MapAreaInfo, MapInfo, MapOverlayInfo };
+export type { AreaData, AreaInfo, AreaPoiInfo, ContinentInfo, DungeonMapInfo, MapAreaInfo, MapInfo, MapOverlayInfo };
+
+export type WorldMapAreaHit =
+  | Exclude<WorldMapZoneHit, { status: "ready" }>
+  | { status: "ready"; areaId: number; mapArea?: MapAreaInfo };
 
 /**
  * Zones, their rectangles and their pictures, fetched once for the session.
@@ -21,13 +27,19 @@ export class AreaClient {
   readonly #overlaysByMapArea = new Map<number, MapOverlayInfo[]>();
   readonly #continentByMap = new Map<number, ContinentInfo>();
   readonly #mapById = new Map<number, MapInfo>();
+  readonly #worldMapZoneMaps: WorldMapZoneMapClient;
+  #worldMapHierarchy: WorldMapHierarchy | undefined;
   onStatus: ((message: string, error: boolean) => void) | undefined;
   onLoaded: (() => void) | undefined;
+  onWorldMapZoneMapChanged: ((mapId: number) => void) | undefined;
 
   constructor(gatewayWebSocketUrl: string) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#worldMapZoneMaps = new WorldMapZoneMapClient(gatewayWebSocketUrl);
+    this.#worldMapZoneMaps.onStatus = (message, error) => this.onStatus?.(message, error);
+    this.#worldMapZoneMaps.onChanged = (mapId) => this.onWorldMapZoneMapChanged?.(mapId);
   }
 
   /** Starts the one fetch this needs. Safe to call repeatedly; only the first does anything. */
@@ -41,7 +53,13 @@ export class AreaClient {
         // instance» would read `undefined` for an hour after an upgrade and answer «no». Bumped to
         // 4 by Н1а, which added `AreaInfo.ambienceId`: a reply cached from before it leaves every
         // zone without wind for that hour, which is silence rather than a wrong answer.
-        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=4`);
+        // Bumped to 5 for `ContinentInfo.worldMapId` and WorldMapTransforms: without them the
+        // hierarchy collapses every continent onto Cosmic and projects virtual-map zones in the
+        // wrong coordinate space until the hour-old response expires.
+        // Version 6 adds DungeonMap floors, AreaPOIs and WorldMapOverlay map points for stock FrameXML.
+        // Version 7 adds `ContinentInfo.taxiMin/taxiMax`, the square the stock TaxiFrame's TAXIMAP
+        // pictures are drawn for; an older reply leaves the flight map on its WorldMapArea stand-in.
+        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=7`);
         if (!response.ok) throw new Error(`Area gateway returned ${response.status}`);
         const value = await response.json() as AreaData;
         if (!Array.isArray(value.areas) || !Array.isArray(value.mapAreas)) throw new Error("malformed area data");
@@ -57,6 +75,11 @@ export class AreaClient {
 
   get ready(): boolean {
     return this.#data !== undefined;
+  }
+
+  /** Immutable-by-convention DBC snapshot for the stock FrameXML world-map C API. */
+  snapshot(): Readonly<AreaData> | undefined {
+    return this.#data;
   }
 
   #index(value: AreaData): void {
@@ -83,6 +106,7 @@ export class AreaClient {
     }
     for (const continent of value.continents) this.#continentByMap.set(continent.mapId, continent);
     for (const map of value.maps) this.#mapById.set(map.id, map);
+    this.#worldMapHierarchy = new WorldMapHierarchy(value);
   }
 
   area(areaId: number): AreaInfo | undefined {
@@ -136,6 +160,43 @@ export class AreaClient {
 
   map(mapId: number): MapInfo | undefined {
     return this.#mapById.get(mapId);
+  }
+
+  worldMapHierarchy(): WorldMapHierarchy | undefined {
+    return this.#worldMapHierarchy;
+  }
+
+  /** Bumped when an authored continent hit map either lands or proves unavailable. */
+  get worldMapZoneMapRevision(): number {
+    return this.#worldMapZoneMaps.revision;
+  }
+
+  /**
+   * Exact original-client hit under one point of a continent map.
+   *
+   * A ZMP cell names an AreaTable row, often a sub-area rather than the drawable zone. Walk the
+   * parent chain until it reaches a WorldMapArea on this physical continent. `ready` without a
+   * `mapArea` is still a complete authored answer (ocean is area id zero); callers must only use
+   * rectangle fallback for `unavailable`, never for that case.
+   */
+  worldMapAreaAt(continent: MapAreaInfo, u: number, v: number): WorldMapAreaHit {
+    const hit = this.#worldMapZoneMaps.hit(continent.mapId, continent, u, v);
+    if (hit.status !== "ready") return hit;
+    let areaId = hit.areaId;
+    for (let depth = 0; areaId > 0 && depth < 16; depth++) {
+      const mapArea = this.#mapAreaByAreaId.get(areaId);
+      // Blood-elf and draenei starting zones physically live on map 530, but their authored
+      // WorldMapArea rows name Azeroth/Kalimdor through DisplayMapID and their ids are present in
+      // those continents' ZMPs. Treat that display edge as belonging to the picture too; requiring
+      // physical map equality would make those islands precise no-target holes.
+      if (mapArea && (mapArea.mapId === continent.mapId || mapArea.displayMapId === continent.mapId)) {
+        return { ...hit, mapArea };
+      }
+      const area = this.#areaById.get(areaId);
+      if (!area || area.parentId <= 0 || area.parentId === areaId) break;
+      areaId = area.parentId;
+    }
+    return hit;
   }
 
   /**

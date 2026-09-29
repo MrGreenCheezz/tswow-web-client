@@ -58,15 +58,18 @@
  */
 
 import {
+  PLAYER_FLAGS_GHOST,
   POWER_COUNT, POWER_DISPLAY_SCALE, player as playerFields, readField, unit,
+  type UnitAuraAppearance,
 } from "../../world/Fields.js";
 import { GROUPTYPE_RAID } from "../../world/GroupProtocol.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../../world/FactionRules.js";
 import { formatGameTime } from "../../world/GameTimeProtocol.js";
-import { buildQuestLogView } from "../../world/QuestProtocol.js";
+import { buildCarriedItemCounts, buildQuestLogView, questObjectiveLabel } from "../../world/QuestProtocol.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import type { WorldClient } from "../../world/WorldClient.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
+import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inventory.js";
 import { game } from "../game/Context.js";
 import { reactionTo } from "../game/Targeting.js";
 import { allMembers } from "./GroupModel.js";
@@ -82,6 +85,17 @@ import { patchRegistry, windowRegistry } from "./WindowRegistry.js";
  */
 export const UNIT_FLAG_IN_COMBAT = 0x0008_0000;
 /**
+ * `PLAYER_FLAGS_GHOST`, `Player.h:354`, re-exported so this block still names every player bit the
+ * interface reads.
+ *
+ * The definition moved to `world/Fields.ts` when the renderer gained a second reader for it: it
+ * draws *other* players' ghosts translucent, and the renderer cannot import this module — one line
+ * of it reaches `game/Context.js` and the window registries, and the renderer is imported by node
+ * tests with no DOM at all. Re-exporting rather than redeclaring keeps `DeathScreenEffect`'s import
+ * path and its test working against exactly one definition of the bit.
+ */
+export { PLAYER_FLAGS_GHOST };
+/**
  * `PLAYER_FLAGS_RESTING`, `Player.h:355` — and it is `0x20`, not `0x10`.
  *
  * `0x10` next to it is `PLAYER_FLAGS_GHOST` (`:354`), so the off-by-one-bit reading of this field
@@ -91,6 +105,61 @@ export const PLAYER_FLAGS_RESTING = 0x0000_0020;
 
 /** `AURA_FLAGS.negative`: the bit the aura strip already reads to pick the red border. */
 const AURA_FLAG_NEGATIVE = 0x80;
+
+/**
+ * `SPELL_AURA_MOD_STEALTH` and `SPELL_AURA_MOD_INVISIBILITY` in `SpellAuraDefines.h`.
+ *
+ * Declared here rather than in `SpellMetadata.ts` for the same reason `Tracking.ts` declares its
+ * three: the number means nothing to the metadata client, and the one place that asks what an aura
+ * *does* is the reader that acts on it.
+ */
+const SPELL_AURA_MOD_STEALTH = 16;
+const SPELL_AURA_MOD_INVISIBILITY = 18;
+
+/**
+ * The see-through auras on one unit, out of the metadata the interface has already loaded.
+ *
+ * This is the *fallback* half of `unitAppearance` and not its authority — `UNIT_FIELD_BYTES_1`
+ * byte 2 is, and it wins wherever it arrives. What this covers is the gap the byte leaves: the
+ * viewer's own character, whose stealth aura is in `world.auras` from the moment the cast lands
+ * while its own `BYTES_1` update may be a round trip behind or, on some builds, never sent.
+ *
+ * Metadata is what makes the answer possible and also what delays it: `game.spells` is filled by
+ * `loadAuraMetadata`, so a spell nobody has ever seen is unknown for one gateway round trip.
+ * That is not a hole, because `loadAuraMetadata` re-runs `showAuras` when the batch lands and the
+ * whole map is pushed again — the same batch-boundary refresh `syncMountSpellIds` relies on.
+ */
+export function unitAppearanceAuras(guid: bigint): UnitAuraAppearance {
+  const auras = game.world?.auras.get(guid);
+  const appearance: UnitAuraAppearance = { stealth: false, invisibility: false };
+  if (!auras) return appearance;
+  for (const aura of auras.values()) {
+    const effectAura = game.spells.get(aura.spellId)?.effectAura;
+    if (!Array.isArray(effectAura)) continue;
+    if (effectAura.includes(SPELL_AURA_MOD_STEALTH)) appearance.stealth = true;
+    if (effectAura.includes(SPELL_AURA_MOD_INVISIBILITY)) appearance.invisibility = true;
+  }
+  return appearance;
+}
+
+/**
+ * Every unit the client currently holds auras for, for the renderer's per-unit appearance.
+ *
+ * Only the units that carry one of the two auras are in the map: the renderer's own default is
+ * "as authored", and a map with an entry per aura-bearing unit in view costs less than one per
+ * unit in the world. Pushed rather than pulled, exactly as `setStateVisuals` is, because the
+ * renderer must stay free of the DOM application's context object.
+ */
+export function unitAuraAppearances(): Map<bigint, UnitAuraAppearance> {
+  const byGuid = new Map<bigint, UnitAuraAppearance>();
+  const world = game.world;
+  if (!world) return byGuid;
+  for (const guid of world.auras.keys()) {
+    const appearance = unitAppearanceAuras(guid);
+    if (appearance.stealth || appearance.invisibility) byGuid.set(guid, appearance);
+  }
+  return byGuid;
+}
 
 /** Every root the view can publish. What a caller that wants the whole thing passes. */
 export const ALL_WINDOW_ROOTS: ReadonlySet<string> = new Set(WINDOW_STATE_ROOTS);
@@ -674,7 +743,9 @@ export function liveWindowSnapshot(options: LiveSnapshotOptions = {}): Expressio
     bag: () => bagViews(),
     quest: () => {
       if (!world || !self) return [];
-      return buildQuestLogView(playerFields.quests(self), world.questTemplates).map((entry) => ({
+      return buildQuestLogView(
+        playerFields.quests(self), world.questTemplates, questCarriedItemCounts(world),
+      ).map((entry) => ({
         id: entry.questId,
         // Empty until `SMSG_QUEST_QUERY_RESPONSE` lands: the log knows a quest is there before it
         // knows its name, and a placeholder here would be a name on the screen that is not one.
@@ -682,7 +753,19 @@ export function liveWindowSnapshot(options: LiveSnapshotOptions = {}): Expressio
         complete: entry.complete,
         failed: entry.failed,
         timer: entry.timer,
-        objectives: entry.objectives.map((objective) => ({ ...objective })),
+        objectives: entry.objectives.map((objective) => {
+          const resolvedName = objective.kind === "item"
+            ? game.itemMetadata?.get(objective.id)?.name ?? world.itemTemplates.get(objective.id)?.name
+            : objective.kind === "gameObject"
+              ? world.gameObjectTemplates.get(objective.id)?.name
+              : game.creatureMetadata?.get(objective.id)?.name ?? world.creatureTemplates.get(objective.id)?.name;
+          return {
+            text: questObjectiveLabel(objective, resolvedName),
+            have: objective.have,
+            need: objective.need,
+            done: objective.done,
+          };
+        }),
       }));
     },
     aura: () => (world?.aurasFor(selfGuid) ?? []).map((aura) => {
@@ -723,6 +806,26 @@ function bagViews(): readonly WindowBagView[] {
   const bags: WindowBagView[] = [bagView(255, inventory.backpack)];
   for (const bag of inventory.bags) bags.push(bagView(bag.bagSlot, bag.slots));
   return bags;
+}
+
+/** The carried-only inventory boundary used by both quest screens and module-window snapshots. */
+function questCarriedItemCounts(world: WorldClient): ReadonlyMap<number, number> | undefined {
+  const inventory = playerInventory(world.state);
+  if (!inventory) return undefined;
+  const stacks: Array<{ itemId: number; count: number }> = [];
+  const slots = [
+    ...inventory.equipment,
+    ...inventory.backpack,
+    ...inventory.keyring,
+    ...inventory.bags.flatMap((bag) => bag.slots),
+  ];
+  for (const slot of slots) {
+    if (slot.guid !== 0n && !slot.item) return undefined;
+    const itemId = entryOf(slot.item);
+    if (slot.item && itemId <= 0) return undefined;
+    if (itemId > 0) stacks.push({ itemId, count: stackCount(slot) });
+  }
+  return buildCarriedItemCounts(stacks);
 }
 
 function bagView(id: number, slots: readonly ItemSlotState[]): WindowBagView {

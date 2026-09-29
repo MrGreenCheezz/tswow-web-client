@@ -1,5 +1,5 @@
-import type { ItemMetadata } from "../gateway/ItemMetadata.js";
-import type { EventBus, WorldPacketEvents } from "../world/EventBus.js";
+import type { ItemMetadata, ItemSubclassName } from "../gateway/ItemMetadata.js";
+import type { EventBus, Unsubscribe, WorldPacketEvents } from "../world/EventBus.js";
 import type { ItemTemplate } from "../world/QueryCacheProtocol.js";
 import { spellIconUrl } from "./ui/IconImage.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
@@ -22,11 +22,19 @@ export class ItemMetadataClient {
   readonly #failures = new Map<number, { attempts: number; after: number }>();
   #world: ItemQuerySource | undefined;
   #changed: (() => void) | undefined;
+  #attachedUnsubscribe: Unsubscribe | undefined;
+  readonly #abort = new AbortController();
+  #disposed = false;
   #pending = 0;
   #success = 0;
   #error = 0;
   #generation = 0;
   readonly #now: () => number;
+  /** `ItemSubClass.dbc` by `class:subclass`, once `/dbc/item-subclasses` has answered. */
+  #subclasses: ReadonlyMap<string, ItemSubclassName> | undefined;
+  #subclassesPending = false;
+  #subclassFailures = 0;
+  #subclassesRetryAt = 0;
 
   /** Immutable current ownership; unresolved world queries remain pending after HTTP settles. */
   get stats(): Readonly<BenchmarkAsyncReadinessStats> {
@@ -69,9 +77,12 @@ export class ItemMetadataClient {
    * that way today.
    */
   attach(world: ItemQuerySource, onChanged: () => void): void {
+    if (this.#disposed) return;
     this.#world = world;
     this.#changed = onChanged;
-    world.events.on("QUERY_CACHE_CHANGED", (change) => {
+    // Reattaching this instance replaces its subscription; dispose retires a whole character.
+    this.#attachedUnsubscribe?.();
+    this.#attachedUnsubscribe = world.events.on("QUERY_CACHE_CHANGED", (change) => {
       // `SMSG_CLIENTCACHE_VERSION` said the realm's data moved: everything may be asked again.
       if (change.kind === "cleared") {
         this.#requested.clear();
@@ -100,7 +111,72 @@ export class ItemMetadataClient {
     return `${this.#baseUrl}/item-icon/${displayId}`;
   }
 
+  /**
+   * The word the stock item tooltip prints right of the slot — «Топор», «Латы», «Ткань» — for an
+   * item's class and subclass: `ItemSubClass.DisplayName_lang`, unless the row's `DisplayFlags`
+   * bit 0 says the client leaves it off (every ring, neck and trinket is armour «Разное» with that
+   * bit; the reading is the dataset's pattern, see `ItemSubclassName`).
+   *
+   * Synchronous, because a Lua tooltip setter cannot wait: the first call asks
+   * `/dbc/item-subclasses` and answers undefined, which is today's slot-only row, and a later
+   * redraw has the word. A gateway process that predates the route answers 404, and the ask is
+   * repeated no sooner than {@link ITEM_SUBCLASS_RETRY_MS} says — on demand, never on a timer — so
+   * a restarted gateway is picked up by the next tooltip after the wait.
+   */
+  tooltipSubclassName(itemClass: number, subClass: number): string | undefined {
+    const table = this.#subclasses;
+    if (!table) {
+      this.#loadSubclasses();
+      return undefined;
+    }
+    const row = table.get(`${itemClass}:${subClass}`);
+    return row && (row.displayFlags & 1) === 0 && row.name ? row.name : undefined;
+  }
+
+  #loadSubclasses(): void {
+    if (this.#disposed || this.#subclassesPending || this.#now() < this.#subclassesRetryAt) return;
+    this.#subclassesPending = true;
+    void (async () => {
+      try {
+        const response = await fetch(`${this.#baseUrl}/dbc/item-subclasses?v=1`, { signal: this.#abort.signal });
+        if (!response.ok) throw new Error(`Item subclass gateway returned ${response.status}`);
+        const value: unknown = await response.json();
+        if (!Array.isArray(value) || !value.every(isItemSubclassName)) {
+          throw new Error("Item subclass gateway returned invalid data");
+        }
+        if (this.#disposed) return;
+        this.#subclasses = new Map(value.map((row) => [`${row.itemClass}:${row.subClass}`, row]));
+      } catch {
+        if (this.#disposed) return;
+        this.#subclassFailures += 1;
+        const wait = ITEM_SUBCLASS_RETRY_MS[Math.min(this.#subclassFailures, ITEM_SUBCLASS_RETRY_MS.length) - 1]!;
+        this.#subclassesRetryAt = this.#now() + wait;
+      } finally {
+        this.#subclassesPending = false;
+      }
+    })();
+  }
+
+  /** Release subscriptions and pending batches when the owning character leaves the world. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#attachedUnsubscribe?.();
+    this.#attachedUnsubscribe = undefined;
+    this.#world = undefined;
+    this.#changed = undefined;
+    this.#abort.abort();
+    this.#cache.clear();
+    this.#requested.clear();
+    this.#httpPending.clear();
+    this.#wirePending.clear();
+    this.#failures.clear();
+    this.#pending = 0;
+    this.#generation++;
+  }
+
   async load(entries: readonly number[]): Promise<boolean> {
+    if (this.#disposed) return false;
     const now = this.#now();
     const missing = [...new Set(entries)].filter((entry) =>
       entry > 0 && !this.#requested.has(entry)
@@ -114,7 +190,7 @@ export class ItemMetadataClient {
     this.#pending++;
     let settled = false;
     const settle = (success: boolean): void => {
-      if (settled) return;
+      if (settled || this.#disposed) return;
       settled = true;
       this.#pending--;
       for (const entry of missing) this.#httpPending.delete(entry);
@@ -147,9 +223,12 @@ export class ItemMetadataClient {
       // busy channel with item links in it reaches two hundred without trying.
       for (let offset = 0; offset < missing.length; offset += ENTRIES_PER_REQUEST) {
         const chunk = missing.slice(offset, offset + ENTRIES_PER_REQUEST);
-        const response = await fetch(`${this.#baseUrl}/data/items?entries=${chunk.join(",")}`);
+        const response = await fetch(`${this.#baseUrl}/data/items?entries=${chunk.join(",")}`,
+          { signal: this.#abort.signal });
+        if (this.#disposed) return false;
         if (!response.ok) throw new Error(`Item metadata gateway returned ${response.status}`);
         const value: unknown = await response.json();
+        if (this.#disposed) return false;
         if (!Array.isArray(value) || !value.every(isItemMetadata)) throw new Error("Item metadata gateway returned invalid data");
         for (const metadata of value) {
           const previous = this.#cache.get(metadata.entry);
@@ -163,6 +242,8 @@ export class ItemMetadataClient {
       settle(true);
       return true;
     } catch (error) {
+      // Abort is expected for a retired owner; failures of the live owner retain their contract.
+      if (this.#disposed) return false;
       // Rearmed so a failure is not permanent, but not before the cooldown: a player's visible
       // equipment is asked for once a frame, and re-arming immediately turned an unreachable
       // gateway into a request per frame — and, now that a unit is rebuilt when its equipment
@@ -223,6 +304,21 @@ const ITEM_METADATA_RETRY_MS: readonly number[] = [5_000, 15_000, 30_000];
 
 /** What `GET /data/items` accepts in one request. */
 const ENTRIES_PER_REQUEST = 200;
+
+/**
+ * Waits between asks of `/dbc/item-subclasses` after a failure; the last repeats. A minute at the
+ * end because the likeliest failure is a gateway process older than the route, which only a
+ * restart fixes, and the ask is one small request made only while tooltips are being drawn.
+ */
+const ITEM_SUBCLASS_RETRY_MS: readonly number[] = [5_000, 15_000, 60_000];
+
+function isItemSubclassName(value: unknown): value is ItemSubclassName {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return Number.isInteger(row.itemClass) && Number.isInteger(row.subClass)
+    && typeof row.name === "string" && typeof row.verboseName === "string"
+    && Number.isInteger(row.displayFlags);
+}
 
 function isItemMetadata(value: unknown): value is ItemMetadata {
   if (!value || typeof value !== "object") return false;

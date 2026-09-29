@@ -1,0 +1,30 @@
+WMOAreaTable dbd: no layout
+AreaTable rows 2307, with LightID>0: 0
+maps without Light rows: 62
+  map 34 StormwindJail t1: area 717 parent 0 flags 0x0 LightID 0
+  map 43 WailingCaverns t1: area 718 parent 0 flags 0x0 LightID 0
+  map 48 Blackfathom t1: area 719 parent 0 flags 0x0 LightID 0
+  map 70 Uldaman t1: area 1337 parent 0 flags 0x0 LightID 0
+  map 90 GnomeragonInstance t1: area 721 parent 0 flags 0x0 LightID 0
+  map 109 SunkenTemple t1: area 1477 parent 0 flags 0x0 LightID 0
+  map 229 BlackRockSpire t1: area 1583 parent 0 flags 0x0 LightID 0
+  map 230 BlackrockDepths t1: area 1584 parent 0 flags 0x0 LightID 0
+  map 349 Mauradon t1: area 2100 parent 0 flags 0x0 LightID 0
+  map 389 OrgrimmarInstance t1: area 2437 parent 0 flags 0x0 LightID 0
+  map 409 MoltenCore t2: area 2717 parent 0 flags 0x0 LightID 0
+  map 533 Stratholme Raid t2: area 3456 parent 0 flags 0x1003 LightID 0
+  map 534 HyjalPast t2: area 616 parent 0 flags 0x40 LightID 0
+  map 544 HellfireRaid t2: area 3836 parent 0 flags 0x0 LightID 0
+  map 545 CoilfangPumping t1: area 3715 parent 0 flags 0x0 LightID 0
+  map 546 CoilfangMarsh t1: area 3716 parent 0 flags 0x0 LightID 0
+  map 547 CoilfangDraenei t1: area 3717 parent 0 flags 0x0 LightID 0
+  map 548 CoilfangRaid t2: area 3607 parent 0 flags 0x0 LightID 0
+  map 559 PVPZone05 t4: area 0 parent -1 flags 0x-1 LightID -1
+  map 562 bladesedgearena t4: area 3702 parent 0 flags 0x10080 LightID 0
+  map 565 GruulsLair t2: area 3923 parent 0 flags 0x0 LightID 0
+  map 576 Nexus70 t1: area 4265 parent 0 flags 0x0 LightID 0
+  map 604 GunDrak t1: area 0 parent -1 flags 0x-1 LightID -1
+  map 608 DalaranPrison t1: area 0 parent -1 flags 0x-1 LightID -1
+  map 624 WintergraspRaid t2: area 0 parent -1 flags 0x-1 LightID -1
+  map 632 IcecrownCitadel5Man t1: area 0 parent -1 flags 0x-1 LightID -1
+maps whose zone row names an existing Light row: 0 of 62
