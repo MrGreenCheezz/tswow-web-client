@@ -83,8 +83,8 @@ export interface GlueCreationTables {
 
 /** Where the per-profile answers come from. Injected so a node test needs no gateway. */
 export interface GlueCreationSource {
-  /** `/dbc/character-options?race=&sex=` — the five axes this race and sex actually have. */
-  options(race: number, sex: number): Promise<CharacterOptions | undefined>;
+  /** `/dbc/character-options?race=&sex=&class=` — only looks the selected class may create. */
+  options(race: number, sex: number, classId?: number): Promise<CharacterOptions | undefined>;
   /** `/dbc/char-start-outfit?race=&class=&sex=` — empty on an older gateway, which is not an error. */
   startOutfit(race: number, classId: number, sex: number): Promise<readonly StartOutfitItem[]>;
   /** `CreatureDisplayInfo` row for a race and sex; undefined when the dataset names none. */
@@ -187,7 +187,7 @@ export class GlueCreation {
   #sex = SEX_MALE;
   #facing = 0;
   #look: GlueCreationLook = { skin: 0, face: 0, hairStyle: 0, hairColor: 0, facialHair: 0 };
-  /** `race/sex` -> the answer, so flipping the sex back does not ask twice. */
+  /** `race/sex/class` -> the answer, so revisiting a profile does not ask twice. */
   readonly #optionCache = new Map<string, CharacterOptions | undefined>();
   readonly #outfitCache = new Map<string, readonly StartOutfitItem[]>();
   #optionsFor: CharacterOptions | undefined;
@@ -312,8 +312,8 @@ export class GlueCreation {
   selectClass(index: number): void {
     if (!this.classes[index - 1]) return;
     this.#classIndex = index;
-    // Only the outfit depends on the class; the five axes do not.
-    void this.refreshOutfit();
+    // The core rejects death-knight-only CharSections for every other class.
+    void this.refreshProfile(true);
   }
 
   selectSex(sex: number): void {
@@ -477,10 +477,11 @@ export class GlueCreation {
     if (!race) return;
     const generation = ++this.#generation;
     const sex = this.gender;
-    const key = `${race.id}/${sex}`;
+    const classId = this.selectedClass()?.id;
+    const key = `${race.id}/${sex}/${classId ?? "all"}`;
     let options = this.#optionCache.get(key);
     if (!this.#optionCache.has(key)) {
-      options = await this.#options.source.options(race.id, sex);
+      options = await this.#options.source.options(race.id, sex, classId);
       this.#optionCache.set(key, options);
     }
     if (generation !== this.#generation) return;

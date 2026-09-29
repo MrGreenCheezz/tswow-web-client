@@ -28,6 +28,12 @@
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
+/* Reserve the scrollbar's own height before fitting the stage, leaving the bottom controls visible. */
+#glue-host[data-glue-scroll] {
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
 /*
   Scoped, not global. `index.html` sets no `box-sizing` of its own, and the one place it is
   load-bearing here is the EditBox field, which carries the widget's `<TextInsets>` as padding on
@@ -37,8 +43,8 @@
 
 /*
   The 768-unit-tall logical screen. Its width is the display mode the corpus would have picked —
-  the viewport's aspect, capped at the 16:9 `GlueParent_OnLoad` refuses to go past — and
-  `Bootstrap.ts` stretches it onto the viewport the way a monitor stretches a mode onto a panel.
+  the viewport's aspect, bounded below by the proven 1024-unit creation layout and above by the
+  16:9 `GlueParent_OnLoad` cap. `Bootstrap.ts` stretches it onto the viewport; a narrow one scrolls.
   See `glueStageMapping`. A fixed 1024x768 box would distort every glue texture at 16:9, which the
   real client does not.
 */

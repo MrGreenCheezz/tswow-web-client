@@ -1,6 +1,7 @@
 import { AreaClient } from "../AreaClient.js";
 import { CHARACTER_OPTIONS_VERSION, isCharacterOptions, type CharacterOptions } from "../CharacterAtlas.js";
 import { isCreationData, raceDisplayId, type CharacterCreationData } from "../ui/CharacterCreation.js";
+import { learnCreationNames } from "../ui/UnitSnapshot.js";
 import type { StartOutfitItem } from "../../gateway/CharStartOutfit.js";
 import type { GlueCreationSource, GlueCreationTables } from "./GlueCreation.js";
 import type { GlueNameLookup } from "./GlueSession.js";
@@ -71,6 +72,10 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
       this.#creation = data;
       this.#races = new Map(data.races.map((race) => [race.id, race.name]));
       this.#classes = new Map(data.classes.map((entry) => [entry.id, entry.name]));
+      // The world quest/NPC formatter reads UnitSnapshot's shared class/race names. The stock
+      // Glue login has its own lookup, so without this bridge a custom class falls back to its id
+      // after entering the world even though Glue already loaded its ChrClasses row.
+      learnCreationNames(data.races, data.classes);
       this.onLoaded?.();
     })();
     return this.#pending;
@@ -121,11 +126,12 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
     return this.raceDisplayId(race, sex);
   }
 
-  /** The five appearance axes this race and sex actually have. */
-  async options(race: number, sex: number): Promise<CharacterOptions | undefined> {
+  /** The five appearance axes the selected race, sex and class may create. */
+  async options(race: number, sex: number, classId?: number): Promise<CharacterOptions | undefined> {
     try {
+      const classQuery = classId === undefined ? "" : `&class=${classId}`;
       const response = await fetch(
-        `${this.#origin}/dbc/character-options?v=${CHARACTER_OPTIONS_VERSION}&race=${race}&sex=${sex}`);
+        `${this.#origin}/dbc/character-options?v=${CHARACTER_OPTIONS_VERSION}&race=${race}&sex=${sex}${classQuery}`);
       if (!response.ok) throw new Error(`character options returned ${response.status}`);
       const answer = await response.json() as unknown;
       // An answer this bundle cannot read is no answer: the five arrows go dead rather than

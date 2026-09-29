@@ -26,7 +26,7 @@
 
 export type FrameXmlApiGroup =
   | "cvar" | "addon" | "actionbar" | "binding" | "money" | "chat" | "unit" | "quest"
-  | "minimap" | "pvp";
+  | "minimap" | "pvp" | "options";
 
 /** Human-readable group titles, for the report. */
 export const FRAMEXML_API_GROUP_TITLES: Readonly<Record<FrameXmlApiGroup, string>> = Object.freeze({
@@ -40,6 +40,7 @@ export const FRAMEXML_API_GROUP_TITLES: Readonly<Record<FrameXmlApiGroup, string
   quest: "журнал заданий",
   minimap: "мини-карта",
   pvp: "PvP",
+  options: "настройки клиента",
 });
 
 export interface FrameXmlNeutralAnswer {
@@ -118,6 +119,10 @@ const ACTION_BAR: readonly FrameXmlNeutralAnswer[] = [
   { name: "GetPetActionCooldown", group: "actionbar", values: [0, 0, 0], answer: "0, 0, 0", reason: "Same shape as the action cooldown." },
   { name: "GetPetActionSlotUsable", group: "actionbar", values: [false], answer: "false", reason: "No pet bar." },
   { name: "IsPetAttackAction", group: "actionbar", values: [false], answer: "false", reason: "No pet bar." },
+  { name: "GetNumShapeshiftForms", group: "actionbar", values: [0], answer: "0", reason: "No learned forms without a world seam." },
+  { name: "GetShapeshiftFormInfo", group: "actionbar", values: NOTHING, answer: "nil", reason: "No form exists at the requested index." },
+  { name: "GetShapeshiftFormCooldown", group: "actionbar", values: [0, 0, 0], answer: "0, 0, 0", reason: "No form is recovering." },
+  { name: "GetComboPoints", group: "actionbar", values: [0], answer: "0", reason: "No player or combo-point target without a world seam." },
 ];
 
 /**
@@ -129,10 +134,29 @@ const ACTION_BAR: readonly FrameXmlNeutralAnswer[] = [
  * concatenates the answer.
  */
 const BINDINGS: readonly FrameXmlNeutralAnswer[] = [
-  { name: "IsShiftKeyDown", group: "binding", values: [false], answer: "false", reason: "90 calls; nothing is held on a page nobody is typing into." },
-  { name: "IsControlKeyDown", group: "binding", values: [false], answer: "false", reason: "90 calls." },
-  { name: "IsAltKeyDown", group: "binding", values: [false], answer: "false", reason: "90 calls." },
-  { name: "IsModifiedClick", group: "binding", values: [false], answer: "false", reason: "39 static sites; a modified click needs a binding, and none is registered." },
+  {
+    name: "IsShiftKeyDown", group: "binding", answer: "either Shift held now",
+    reason: "90 calls. The page's modifier tracker (input/Modifiers.ts) is the state; a boot with no "
+      + "page — a test's — holds nothing, the old constant false.",
+  },
+  { name: "IsControlKeyDown", group: "binding", answer: "either Ctrl held now", reason: "90 calls; same tracker." },
+  { name: "IsAltKeyDown", group: "binding", answer: "either Alt held now", reason: "90 calls; same tracker." },
+  { name: "IsLeftShiftKeyDown", group: "binding", answer: "left Shift held now", reason: "RestrictedEnvironment.lua:159-162 copies the six sided checks at load." },
+  { name: "IsRightShiftKeyDown", group: "binding", answer: "right Shift held now", reason: "Same list." },
+  { name: "IsLeftControlKeyDown", group: "binding", answer: "left Ctrl held now", reason: "Same list." },
+  { name: "IsRightControlKeyDown", group: "binding", answer: "right Ctrl held now", reason: "Same list." },
+  { name: "IsLeftAltKeyDown", group: "binding", answer: "left Alt held now", reason: "Same list." },
+  { name: "IsRightAltKeyDown", group: "binding", answer: "right Alt held now", reason: "Same list." },
+  { name: "IsModifierKeyDown", group: "binding", answer: "any of Shift, Ctrl, Alt held now", reason: "Same list." },
+  {
+    name: "IsModifiedClick", group: "binding",
+    answer: "the action's modified-click binding against the held keys and the click's button",
+    reason: "39 static sites: chat links, dress-up, split stacks, mail and loot auto-loot all read it "
+      + "(LootFrame.xml:52, MailFrame.xml:172-177). The bindings are Bindings.xml:1325-1340's "
+      + "defaults; with no action it answers whether any modifier is held.",
+  },
+  { name: "GetModifiedClick", group: "binding", answer: "the action's binding string", reason: "InterfaceOptionsPanels.lua:134/362/453 read the auto-loot, self-cast and focus-cast keys." },
+  { name: "SetModifiedClick", group: "binding", answer: "rebinds the action for the session", reason: "The same panels' dropdowns write back through it." },
   { name: "GetBindingKey", group: "binding", values: NOTHING, answer: "nil", reason: "19 calls. Nothing is bound, and the client answers nil for an unbound command." },
   { name: "GetNumBindings", group: "binding", values: [0], answer: "0", reason: "The binding list is empty; a count of 0 makes every `for` over it run zero times." },
   { name: "GetBinding", group: "binding", values: NOTHING, answer: "nil", reason: "Behind `GetNumBindings`, which is 0." },
@@ -166,6 +190,7 @@ const BINDINGS: readonly FrameXmlNeutralAnswer[] = [
  * every one of them a nil in an expression with no guard.
  */
 const MONEY: readonly FrameXmlNeutralAnswer[] = [
+  { name: "GetNumBankSlots", group: "money", values: [0, false], answer: "0, false", reason: "No purchased slots without a player snapshot." },
   {
     name: "GetMoney", group: "money", values: [0], answer: "0",
     reason: "MoneyFrame.lua:19, 55 raises together with GetCursorMoney. 0 copper is what a "
@@ -282,6 +307,33 @@ const MINIMAP_PVP: readonly FrameXmlNeutralAnswer[] = [
       + "sentinel and keeps the stock arithmetic on the unavailable branch.",
   },
   {
+    name: "GetWorldPVPQueueStatus", group: "pvp", values: ["none"], answer: '"none"',
+    reason: "BattlefieldFrame.lua:323-357 counts a world-PvP queue whenever `status ~= \"none\"`; "
+      + "nothing answered nil, so numberQueues became 1 and MiniMapBattlefieldFrame showed a PvP "
+      + "icon with no queue (measured: IsShown()=true at 1748,170). 3.3.5 world-PvP queues are the "
+      + "SMSG_BATTLEFIELD_MGR_* family, which this client does not handle, so every slot is empty.",
+  },
+  {
+    name: "CanHearthAndResurrectFromArea", group: "pvp", values: [false], answer: "false",
+    reason: "BattlefieldFrame.lua:226 and :352 keep MiniMapBattlefieldFrame shown while this is "
+      + "true; it is Wintergrasp's hearth-out offer, which needs the same unhandled "
+      + "SMSG_BATTLEFIELD_MGR_* state.",
+  },
+  {
+    name: "GetNumBattlefields", group: "pvp", values: [0], answer: "0",
+    reason: "BattlefieldFrame.lua:403 adds 1 for the stock «first available» row — 40 raises of "
+      + "arithmetic on nil in the canned census. This client has no battlemaster instance list "
+      + "(GetBattlefieldInstanceInfo is unanswered too), so zero instances is the truthful count "
+      + "and leaves exactly the «first available» row.",
+  },
+  {
+    name: "GetExpansionLevel", group: "pvp", values: [2], answer: "2",
+    reason: "LFDFrame.lua:1 reads it once at file scope (`EXPANSION_LEVEL = GetExpansionLevel()`), "
+      + "before any seam is attached, so it must be a load-time constant. 2 is Wrath of the Lich "
+      + "King, the only expansion a build-12340 realm runs; GetAccountExpansionLevel answers the "
+      + "account's own level separately.",
+  },
+  {
     name: "GetNumBattlegroundTypes", group: "pvp", values: [0], answer: "0",
     reason: "PVPBattlegroundFrame.lua:62/291 iterates battleground rows; the neutral world has "
       + "no battleground catalog, so zero is the typed empty count.",
@@ -333,6 +385,30 @@ const QUEST: readonly FrameXmlNeutralAnswer[] = [
  * state binds in and the answer stops being a guess.
  */
 const UNITS: readonly FrameXmlNeutralAnswer[] = [
+  {
+    name: "GetUnitHealthModifier", group: "unit", values: [1], answer: "1",
+    reason: "PetPaperDollFrame.lua:588-589 multiplies stamina's health contribution by this value even before an owned pet has arrived. The multiplicative identity is the absent-aura baseline; the server's health aura modifier is not in the current update fields, so buffed-pet tooltip gains remain unavailable.",
+  },
+  {
+    name: "GetPetExperience", group: "unit", values: [0, 0], answer: "0, 0",
+    reason: "PetPaperDollFrame.lua:629-630 passes both results to a numeric slider even before an owned pet has arrived; absent pet XP has no progress or next-level range. A live pet reads UNIT_FIELD_PETEXPERIENCE and UNIT_FIELD_PETNEXTLEVELEXP instead.",
+  },
+  {
+    name: "GetMirrorTimerInfo", group: "unit", values: ["UNKNOWN"], answer: "UNKNOWN",
+    reason: "MirrorTimer.lua:89 explicitly treats UNKNOWN as an inactive timer; an empty world has no breath/fatigue packets.",
+  },
+  {
+    name: "GetMirrorTimerProgress", group: "unit", values: [0], answer: "0",
+    reason: "An inactive mirror timer has no remaining milliseconds; the live seam supplies realm progress when present.",
+  },
+  {
+    name: "GetSummonFriendCooldown", group: "unit", values: [0, 0], answer: "0, 0",
+    reason: "UnitPopup.lua:264 always adds both values; without an eligible recruit-a-friend relationship there is no summon cooldown.",
+  },
+  {
+    name: "CanSummonFriend", group: "unit", values: [false], answer: "false",
+    reason: "This client has no recruit-a-friend relationship state or summon action; keep that menu action unavailable.",
+  },
   {
     name: "UnitExists", group: "unit", values: [false], answer: "false",
     reason: "13 calls. false, not nil: `RestrictedEnvironment` concatenates the answer into a "
@@ -432,6 +508,10 @@ const UNITS: readonly FrameXmlNeutralAnswer[] = [
     reason: "UnitPopup.lua:459, 12 raises — `GetNumPartyMembers() > 0` compares number with nil.",
   },
   { name: "GetNumRaidMembers", group: "unit", values: [0], answer: "0", reason: "The other half of the same condition." },
+  {
+    name: "GetNumCompanions", group: "unit", values: [0], answer: "0",
+    reason: "PetPaperDollFrame.lua:52 compares the count with 0 to hide the «Питомцы» tab; nil kept tab 2 shown in a host without a seam (the live seam answers the real count).",
+  },
   { name: "GetPartyMember", group: "unit", values: NOTHING, answer: "nil", reason: "Behind a count of 0." },
   { name: "GetRaidRosterInfo", group: "unit", values: NOTHING, answer: "nil", reason: "Behind a count of 0." },
   {
@@ -448,7 +528,7 @@ const STATEFUL: readonly FrameXmlNeutralAnswer[] = [
   {
     name: "GetCVar", group: "cvar", answer: "the map, known client defaults, nil when unregistered",
     reason: "255 calls. The stateful map starts with the measured client default "
-      + "`lastTalkedToGM = \"\"`; every other unregistered name remains nil. What the map buys is "
+      + "`lastTalkedToGM = \"\"` and empty PaperDoll category preferences; every other unregistered name remains nil. What the map buys is "
       + "the round trip — `SetCVar(name, v)` then `GetCVar(name)` — which the option panels and "
       + "`PaperDollFrame` both do.",
   },
@@ -461,8 +541,8 @@ const STATEFUL: readonly FrameXmlNeutralAnswer[] = [
   },
   {
     name: "GetCVarDefault", group: "cvar", answer: "the known or registered default, else nil",
-    reason: "181 calls, OptionsPanelTemplates.lua:214; the measured `lastTalkedToGM` default is "
-      + "seeded, while an unknown name remains nil until RegisterCVar supplies a default.",
+    reason: "181 calls, OptionsPanelTemplates.lua:214; known session defaults are seeded, "
+      + "while an unknown name remains nil until RegisterCVar supplies a default.",
   },
   { name: "GetCVarMin", group: "cvar", values: NOTHING, answer: "nil", reason: "83 calls. A range belongs to a registered CVar and there are none; the sliders guard it." },
   {
@@ -497,9 +577,33 @@ const STATEFUL: readonly FrameXmlNeutralAnswer[] = [
   { name: "DisableAllAddOns", group: "addon", values: NOTHING, answer: "—", reason: "Same path." },
 ];
 
+/**
+ * Stock options panels also run their OnLoad scripts when the browser cannot
+ * provide the corresponding native device or display setting.  These answers
+ * are the panels' own unavailable branches, rather than invented hardware.
+ */
+const CLIENT_OPTIONS: readonly FrameXmlNeutralAnswer[] = [
+  {
+    name: "Sound_ChatSystem_GetNumInputDrivers", group: "options", values: [0], answer: "0",
+    reason: "AudioOptionsPanels.lua:600 iterates the voice capture devices; this client has no voice transport or capture-device owner.",
+  },
+  {
+    name: "Sound_ChatSystem_GetNumOutputDrivers", group: "options", values: [0], answer: "0",
+    reason: "AudioOptionsPanels.lua:791 iterates voice playback devices; voice chat is unavailable.",
+  },
+  {
+    name: "VoiceIsDisabledByClient", group: "options", values: [true], answer: "true",
+    reason: "The stock voice panel hides its enable switch when the client has no voice implementation.",
+  },
+  {
+    name: "IsVoiceChatAllowedByServer", group: "options", values: [false], answer: "false",
+    reason: "No voice session can be established by this browser client; the stock panel leaves the voice category unavailable.",
+  },
+];
+
 /** Every neutral answer this slice installs, in report order. */
 export const FRAMEXML_NEUTRAL_API: readonly FrameXmlNeutralAnswer[] = Object.freeze([
-  ...STATEFUL, ...ACTION_BAR, ...BINDINGS, ...MONEY, ...CHAT, ...QUEST, ...UNITS, ...MINIMAP_PVP,
+  ...STATEFUL, ...CLIENT_OPTIONS, ...ACTION_BAR, ...BINDINGS, ...MONEY, ...CHAT, ...QUEST, ...UNITS, ...MINIMAP_PVP,
 ]);
 
 /** The subset with a constant answer; the rest are the Lua module below. */
@@ -508,12 +612,28 @@ export const FRAMEXML_NEUTRAL_CONSTANTS: readonly FrameXmlNeutralAnswer[] = Obje
 );
 
 /**
+ * The client's default modified clicks: Bindings.xml:1325-1340, the `<ModifiedClick>` rows the
+ * client loads with its key bindings (that file is not in the TOC). Action → binding.
+ */
+export const FRAMEXML_MODIFIED_CLICK_DEFAULTS: readonly (readonly [action: string, binding: string])[] = Object.freeze([
+  ["SELFCAST", "ALT"], ["FOCUSCAST", "NONE"], ["AUTOLOOTTOGGLE", "SHIFT"], ["MAILAUTOLOOTTOGGLE", "SHIFT"],
+  ["STICKYCAMERA", "CTRL"], ["CHATLINK", "SHIFT-BUTTON1"], ["DRESSUP", "CTRL-BUTTON1"],
+  ["SOCKETITEM", "SHIFT-BUTTON2"], ["SPLITSTACK", "SHIFT"], ["PICKUPACTION", "SHIFT"],
+  ["COMPAREITEMS", "SHIFT"], ["OPENALLBAGS", "SHIFT"], ["QUESTWATCHTOGGLE", "SHIFT"],
+  ["TOKENWATCHTOGGLE", "SHIFT"], ["SHOWITEMFLYOUT", "ALT"], ["SHOWMULTICASTFLYOUT", "ALT"],
+] as const);
+
+const MODIFIED_CLICK_LUA = `{ ${FRAMEXML_MODIFIED_CLICK_DEFAULTS
+  .map(([action, binding]) => `{ "${action}", "${binding}" }`).join(", ")} }`;
+
+/**
  * The stateful half, in Lua.
  *
  * It writes into `__fxNeutralImpl`, which the boot prelude created and captured,
  * so the `_G` metamethod picks these up on first touch exactly like a constant
  * one — same counter, same first-touch traceback, same line in the census. The
- * host hands in only data: the module names the TOC recorded.
+ * host hands in only data: the module names the TOC recorded, and the held
+ * modifiers through `__fxModifierState`.
  */
 export const FRAMEXML_NEUTRAL_PRELUDE = `
 do
@@ -522,37 +642,194 @@ do
 
   ---------------------------------------------------------------- CVars
   -- One map, two views: what a CVar currently is, and what it was registered
-  -- with. The real client publishes this known session default before FrameXML
-  -- enters PLAYER_ENTERING_WORLD. Keep the seed narrow: unknown names remain
-  -- nil instead of becoming a table of plausible values nobody measured.
-  local values = { lastTalkedToGM = "" }
-  local defaults = { lastTalkedToGM = "" }
+  -- with. PaperDollFrame_OnEvent(VARIABLES_LOADED) explicitly tests the empty
+  -- category preferences, then chooses its class-specific right-hand stats.
+  -- nil would silently skip that initialization and leave both panels blank.
+  -- Keep the seed narrow: unknown names still remain nil.
+  local values = {
+    lasttalkedtogm = "", playerstatleftdropdown = "", playerstatrightdropdown = "",
+    -- InterfaceOptionsFrame.lua's own uvarInfo declares these three defaults.
+    targetoftargetmode = "5", displayworldpvpobjectives = "2", combattextfloatmode = "1",
+    -- The client default: action and bag tooltips go to GameTooltip_SetDefaultAnchor (the
+    -- bottom-right corner) instead of covering the bar they were opened from.
+    ubertooltips = "1",
+    -- Stock chat Lua consumes these selections itself. The style switch needs
+    -- ChatFrame edit-box ownership that this browser mount does not yet provide.
+    chatstyle = "classic", showtimestamps = "none",
+    -- The client's own threat defaults: warn always (the four OPTION_TOOLTIP_AGGRO_WARNING_DISPLAY
+    -- rows, InterfaceOptionsPanels.lua:690), no numeric percentage. Both are real options here:
+    -- IsThreatWarningEnabled (FrameXmlThreat.ts) and UnitFrame.lua's ShowNumericThreat read them.
+    threatwarning = "3", threatshownumeric = "0",
+    -- Inactive facilities still need typed values for their dropdown OnLoad.
+    conversationmode = "inline", camerasmoothstyle = "0",
+    camerasmoothtrackingstyle = "0", voicechatmode = "0", basemip = "0",
+    -- WorldMapFrame's own defaults. VARIABLES_LOADED reads worldMapOpacity through tonumber()
+    -- and WorldMapFrame_SetOpacity(nil) then failed at WorldMapFrame.lua:2139, closing the map
+    -- on the size-down button; questPOI unset left the objectives checkbox unchecked and
+    -- showBattlefieldMinimap unset left WorldMapZoneMinimapDropDown's text empty.
+    worldmapopacity = "0", miniworldmap = "0", questpoi = "1", advancedworldmap = "0",
+    showbattlefieldminimap = "1",
+    -- InterfaceOptionsFrame.lua:322-323's defaults; a live mount answers both from the settings
+    -- rows (FrameXmlSettingsCVar.ts) before this map.
+    lootundermouse = "0", autolootdefault = "0",
+    -- Blizzard_TimeManager's clock and alarm (blizzard_timemanager.lua:91-92 reads alarmTime
+    -- unguarded). The client ships 12-hour time for enUS; a ruRU player reads 24-hour clocks,
+    -- so the military-time switch starts on here and only an enUS locale turns it back off
+    -- below. Both remain ordinary SetCVar round-trips.
+    showclock = "1", timemgralarmtime = "0", timemgralarmmessage = "",
+    timemgralarmenabled = "0", timemgruselocaltime = "0", timemgrusemilitarytime = "1",
+  }
+  local defaults = {}
+  for key, value in pairs(values) do defaults[key] = value end
+  -- These are observations of the current browser client, not settings that
+  -- the original options panel can change: voice chat is absent, and textures
+  -- are loaded from their full base level.  The latter lets the stock texture
+  -- slider compute its display value without claiming SetCVar can resize art.
+  local readOnly = {
+    conversationmode = true, camerasmoothstyle = true,
+    camerasmoothtrackingstyle = true, combattextfloatmode = true, chatstyle = true,
+    voicechatmode = true, basemip = true,
+  }
+  if type(__fxLocale) == "string" and __fxLocale ~= "" then
+    values.locale = __fxLocale
+    defaults.locale = __fxLocale
+    readOnly.locale = true
+    if __fxLocale == "enUS" then
+      values.timemgrusemilitarytime = "0"
+      defaults.timemgrusemilitarytime = "0"
+    end
+  end
+  if __fxBrowserAudioOutput then
+    -- Web Audio plays through the browser-selected default destination. It
+    -- does not expose a list of native output drivers to this client.
+    values.sound_outputdriverindex = "0"
+    defaults.sound_outputdriverindex = "0"
+    readOnly.sound_outputdriverindex = true
+  end
   __fxCVarValues, __fxCVarDefaults = values, defaults
 
+  local function cvarKey(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    return lower(name)
+  end
+
   impl.RegisterCVar = function(name, value)
-    if type(name) ~= "string" or name == "" then return end
+    local key = cvarKey(name)
+    if key == nil or readOnly[key] then return end
     local text = value == nil and "" or tostring(value)
-    if defaults[name] == nil then defaults[name] = text end
-    if values[name] == nil then values[name] = text end
+    if defaults[key] == nil then defaults[key] = text end
+    if values[key] == nil then values[key] = text end
   end
   impl.SetCVar = function(name, value)
-    if type(name) ~= "string" or name == "" then return false end
-    values[name] = value == nil and "" or tostring(value)
+    local key = cvarKey(name)
+    if key == nil or readOnly[key] then return false end
+    values[key] = value == nil and "" or tostring(value)
     return true
   end
+  -- The two stat-panel choices, while the player has not picked one, answer what
+  -- PaperDollFrame_OnEvent(VARIABLES_LOADED) would have chosen for the class — at read
+  -- time. That handler runs strupper(select(2, UnitClass("player"))), and a mount that
+  -- boots before the server has sent the player's own object gets nil there: the handler
+  -- stopped on it and both panels stayed blank for the session. Asked again once the
+  -- class is known (every UpdatePaperdollStats reads these), the answer is the class's.
+  local statPanels = { playerstatleftdropdown = true, playerstatrightdropdown = true }
+  local function statPanelDefault(key)
+    if key == "playerstatleftdropdown" then return "PLAYERSTAT_BASE_STATS" end
+    local getClass = rawget(_G, "UnitClass")
+    local _, classFile = nil, nil
+    if type(getClass) == "function" then _, classFile = getClass("player") end
+    classFile = type(classFile) == "string" and string.upper(classFile) or ""
+    if classFile == "MAGE" or classFile == "PRIEST" or classFile == "WARLOCK" or classFile == "DRUID" then
+      return "PLAYERSTAT_SPELL_COMBAT"
+    elseif classFile == "HUNTER" then
+      return "PLAYERSTAT_RANGED_COMBAT"
+    end
+    return "PLAYERSTAT_MELEE_COMBAT"
+  end
+  local function cvarValue(key)
+    local text = values[key]
+    if text == "" and statPanels[key] then return statPanelDefault(key) end
+    return text
+  end
   impl.GetCVar = function(name)
-    if type(name) ~= "string" then return nil end
-    return values[name]
+    local key = cvarKey(name)
+    return key and cvarValue(key)
   end
   impl.GetCVarBool = function(name)
-    if type(name) ~= "string" then return nil end
-    local text = values[name]
+    local key = cvarKey(name)
+    if key == nil then return nil end
+    local text = cvarValue(key)
     if text == nil then return nil end
     return text ~= "0" and text ~= ""
   end
   impl.GetCVarDefault = function(name)
-    if type(name) ~= "string" then return nil end
-    return defaults[name]
+    local key = cvarKey(name)
+    return key and defaults[key]
+  end
+
+  ---------------------------------------------------------------- Modifiers
+  -- What is held now and the current click's button, from the page's tracker (input/Modifiers.ts)
+  -- through the boot's __fxModifierState: left/right Shift, Ctrl, Alt, then the button (1 left,
+  -- 2 right, 3 middle; 0 before any click). A boot with no page holds nothing.
+  local modifierState = __fxModifierState
+  local function held()
+    if type(modifierState) ~= "function" then return false, false, false, false, false, false, 0 end
+    return modifierState()
+  end
+  local function anyHeld()
+    local ls, rs, lc, rc, la, ra = held()
+    return ls or rs or lc or rc or la or ra
+  end
+  impl.IsShiftKeyDown = function() local ls, rs = held() return ls or rs end
+  impl.IsControlKeyDown = function() local _, _, lc, rc = held() return lc or rc end
+  impl.IsAltKeyDown = function() local _, _, _, _, la, ra = held() return la or ra end
+  impl.IsLeftShiftKeyDown = function() return (held()) end
+  impl.IsRightShiftKeyDown = function() return (select(2, held())) end
+  impl.IsLeftControlKeyDown = function() return (select(3, held())) end
+  impl.IsRightControlKeyDown = function() return (select(4, held())) end
+  impl.IsLeftAltKeyDown = function() return (select(5, held())) end
+  impl.IsRightAltKeyDown = function() return (select(6, held())) end
+  impl.IsModifierKeyDown = anyHeld
+
+  -- Bindings.xml's defaults; SetModifiedClick rebinds for the session (there is no binding store
+  -- for SaveBindings). A binding holds exactly its modifiers — SHIFT is either Shift with neither
+  -- Ctrl nor Alt, LSHIFT only the left one — as a key chord does (Bindings.ts chordOf), so
+  -- Ctrl+Shift+click is neither CHATLINK nor DRESSUP; BUTTONn names the click's button.
+  local clicks = {}
+  for _, row in ipairs(${MODIFIED_CLICK_LUA}) do clicks[row[1]] = row[2] end
+  local upper, gmatch, match = string.upper, string.gmatch, string.match
+  local function side(want, left, right)
+    if want == nil then return not left and not right end
+    if want == "L" then return left end
+    if want == "R" then return right end
+    return left or right
+  end
+  local function clicked(binding)
+    if type(binding) ~= "string" or binding == "" or upper(binding) == "NONE" then return false end
+    local shift, ctrl, alt, button
+    for token in gmatch(upper(binding), "[^%-]+") do
+      local sided, key = match(token, "^([LR]?)(%u+)$")
+      local want = sided ~= "" and sided or "*"
+      if key == "SHIFT" then shift = want
+      elseif key == "CTRL" then ctrl = want
+      elseif key == "ALT" then alt = want
+      else
+        local number = match(token, "^BUTTON(%d+)$")
+        if not number then return false end
+        button = tonumber(number)
+      end
+    end
+    local ls, rs, lc, rc, la, ra, current = held()
+    return side(shift, ls, rs) and side(ctrl, lc, rc) and side(alt, la, ra)
+      and (button == nil or button == current)
+  end
+  impl.IsModifiedClick = function(action)
+    if action == nil then return anyHeld() end
+    return clicked(clicks[action])
+  end
+  impl.GetModifiedClick = function(action) return clicks[action] end
+  impl.SetModifiedClick = function(action, binding)
+    if type(action) == "string" and type(binding) == "string" then clicks[action] = binding end
   end
 
   ---------------------------------------------------------------- AddOns

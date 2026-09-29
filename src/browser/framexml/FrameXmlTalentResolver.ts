@@ -13,6 +13,9 @@ export interface FrameXmlTalentMetadata {
   /** Changes whenever the complete `/dbc/talents` snapshot is replaced. */
   readonly revision: number;
   tabsForClass(classId: number): readonly FrameXmlTalentTabMetadata[];
+  /** Exact pet-tree membership from CreatureFamily and TalentTab DBC masks. */
+  petTabs?(familyMask: number): readonly FrameXmlTalentTabMetadata[];
+  petTalentMask?(creatureFamily: number): number;
   talentsIn(tabId: number): readonly FrameXmlTalentEntryMetadata[];
 }
 
@@ -21,6 +24,8 @@ export interface FrameXmlTalentTabMetadata {
   readonly id: number;
   readonly name: string;
   readonly orderIndex: number;
+  readonly classMask?: number;
+  readonly petTalentMask?: number;
   /** The current TalentClient has this id, not a resolved texture path. */
   readonly iconId?: number;
   /** `SpellIcon.TextureFilename`, resolved by the gateway. */
@@ -71,6 +76,10 @@ export interface FrameXmlTalentResolverSource {
   readonly talents: TalentsInfo | undefined;
   /** Must advance when a new `SMSG_TALENTS_INFO` replaces the packet snapshot. */
   readonly talentsRevision: number;
+  readonly petGuid?: bigint | undefined;
+  readonly petFamilyMask?: number | undefined;
+  readonly petTalents?: TalentsInfo | undefined;
+  readonly petTalentsRevision?: number | undefined;
   readonly talent: FrameXmlTalentMetadata | undefined;
 }
 
@@ -126,12 +135,12 @@ export interface FrameXmlTalentTabSnapshot {
   readonly iconTexture: string | undefined;
   readonly background: string | undefined;
   readonly pointsSpent: number;
-  /** Preview allocation is unsupported in this player-only slice; stock expects a numeric zero. */
+  /** Preview allocation is unsupported for both owners; stock expects a numeric zero. */
   readonly previewPointsSpent: 0;
   readonly talents: readonly FrameXmlTalentCellSnapshot[];
 }
 
-/** One player talent group; `group` is Lua-facing and `spec` is wire-facing. */
+/** One talent group; `group` is Lua-facing and `spec` is wire-facing. */
 export interface FrameXmlTalentGroupSnapshot {
   /** Lua's one-based group argument. */
   readonly group: number;
@@ -143,7 +152,7 @@ export interface FrameXmlTalentGroupSnapshot {
   readonly tabs: readonly FrameXmlTalentTabSnapshot[];
 }
 
-/** Immutable player-only projection for the Blizzard_TalentUI C API family. */
+/** Immutable projection for one Blizzard_TalentUI talent owner. `classId` is zero for a pet. */
 export interface FrameXmlTalentSnapshot {
   readonly classId: number;
   readonly activeTalentGroup: number;
@@ -157,6 +166,7 @@ export interface FrameXmlTalentSnapshot {
 
 export interface FrameXmlTalentResolvers {
   readonly talentSnapshot: () => FrameXmlTalentSnapshot | undefined;
+  readonly petTalentSnapshot: () => FrameXmlTalentSnapshot | undefined;
 }
 
 const TYPEID_PLAYER = 4;
@@ -192,6 +202,14 @@ function orderedTabs(metadata: FrameXmlTalentMetadata, classId: number): FrameXm
     .sort((left, right) => left.orderIndex - right.orderIndex || left.id - right.id);
 }
 
+function orderedPetTabs(metadata: FrameXmlTalentMetadata, familyMask: number): FrameXmlTalentTabMetadata[] {
+  return [...(metadata.petTabs?.(familyMask) ?? [])]
+    .filter((tab) => finiteInteger(tab.id) && tab.id > 0 && finiteInteger(tab.orderIndex)
+      && tab.classMask === 0 && finiteInteger(tab.petTalentMask)
+      && ((tab.petTalentMask & familyMask) !== 0))
+    .sort((left, right) => left.orderIndex - right.orderIndex || left.id - right.id);
+}
+
 function orderedTalents(metadata: FrameXmlTalentMetadata, tabId: number): FrameXmlTalentEntryMetadata[] {
   return [...metadata.talentsIn(tabId)]
     .filter((talent) => finiteInteger(talent.id) && talent.id > 0
@@ -200,21 +218,16 @@ function orderedTalents(metadata: FrameXmlTalentMetadata, tabId: number): FrameX
     .sort((left, right) => left.tier - right.tier || left.column - right.column || left.id - right.id);
 }
 
-function resolveSnapshot(
-  player: WorldObjectState | undefined,
-  talents: TalentsInfo | undefined,
-  metadata: FrameXmlTalentMetadata | undefined,
+function resolveFromTabs(
+  classId: number,
+  talents: TalentsInfo,
+  metadata: FrameXmlTalentMetadata,
+  tabs: readonly FrameXmlTalentTabMetadata[],
+  pointsPerTier: number,
 ): FrameXmlTalentSnapshot | undefined {
-  if (!player || player.typeId !== TYPEID_PLAYER || !talents || talents.pet
-    || !metadata || metadata.ready !== true) return undefined;
-
-  const classId = unit.classId(player);
-  if (!finiteInteger(classId) || classId < 1 || classId > 11) return undefined;
   if (!finiteInteger(talents.activeSpec) || talents.activeSpec < 0
     || talents.activeSpec >= talents.specs.length || talents.specs.length === 0) return undefined;
   if (!finiteInteger(talents.unspentPoints) || talents.unspentPoints < 0) return undefined;
-
-  const tabs = orderedTabs(metadata, classId);
   const allEntries = new Map<number, FrameXmlTalentEntryMetadata>();
   for (const tab of tabs) {
     for (const entry of orderedTalents(metadata, tab.id)) {
@@ -238,12 +251,13 @@ function resolveSnapshot(
       // any cell instead of accumulating a prefix while walking the rows.
       const pointsSpent = entries.reduce((total, entry) => {
         const rank = learned.get(entry.id) ?? 0;
-        return total + (finiteInteger(rank) && rank > 0 ? rank : 0);
+        return total + (finiteInteger(rank) && rank > 0
+          ? Math.min(rank, entry.ranks.length, pointsPerTier) : 0);
       }, 0);
 
       for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
         const entry = entries[entryIndex]!;
-        const rank = learned.get(entry.id) ?? 0;
+        const rank = Math.min(learned.get(entry.id) ?? 0, entry.ranks.length, pointsPerTier);
 
         const prerequisites: FrameXmlTalentPrerequisiteSnapshot[] = [];
         let meetsPrereq: boolean | undefined = true;
@@ -267,10 +281,8 @@ function resolveSnapshot(
             meetsPreviewPrereq: undefined,
           }));
         }
-        // TalentFrame's stock availability also enforces five points spent in the tree for every
-        // tier below the first. Explicit arrow prerequisites are not enough: a talent with no
-        // arrow in tier three is still unavailable until ten points are invested above it.
-        if (pointsSpent < entry.tier * 5 && meetsPrereq !== undefined) meetsPrereq = false;
+        // The core and TalentFrameBase use five points per player tier and three per pet tier.
+        if (pointsSpent < entry.tier * pointsPerTier && meetsPrereq !== undefined) meetsPrereq = false;
 
         const cell: FrameXmlTalentCellSnapshot = {
           index: entryIndex + 1,
@@ -281,7 +293,7 @@ function resolveSnapshot(
           tier: entry.tier + 1,
           column: entry.column + 1,
           rank,
-          maxRank: entry.ranks.length,
+          maxRank: Math.min(entry.ranks.length, pointsPerTier),
           isExceptional: entry.isExceptional,
           meetsPrereq,
           previewRank: undefined,
@@ -328,13 +340,39 @@ function resolveSnapshot(
   return Object.freeze(snapshot);
 }
 
+function resolveSnapshot(
+  player: WorldObjectState | undefined,
+  talents: TalentsInfo | undefined,
+  metadata: FrameXmlTalentMetadata | undefined,
+): FrameXmlTalentSnapshot | undefined {
+  if (!player || player.typeId !== TYPEID_PLAYER || !talents || talents.pet
+    || !metadata || metadata.ready !== true) return undefined;
+  const classId = unit.classId(player);
+  if (!finiteInteger(classId) || classId < 1 || classId > 11) return undefined;
+  return resolveFromTabs(classId, talents, metadata, orderedTabs(metadata, classId), 5);
+}
+
+/** A pet has one group, its own rank packet and DBC mask, and three points per tier. */
+export function resolveFrameXmlPetTalentSnapshot(
+  petGuid: bigint | undefined,
+  familyMask: number | undefined,
+  talents: TalentsInfo | undefined,
+  metadata: FrameXmlTalentMetadata | undefined,
+): FrameXmlTalentSnapshot | undefined {
+  if (petGuid === undefined || petGuid === 0n || !finiteInteger(familyMask) || familyMask === 0
+    || !talents?.pet || talents.activeSpec !== 0 || talents.specs.length !== 1
+    || !metadata || metadata.ready !== true) return undefined;
+  const tabs = orderedPetTabs(metadata, familyMask);
+  return tabs.length > 0 ? resolveFromTabs(0, talents, metadata, tabs, 3) : undefined;
+}
+
 /**
  * Resolve one immutable, player-only Blizzard_TalentUI snapshot.
  *
  * `TalentsInfo.activeSpec` and each packet rank are zero-based on the wire only at the parser
  * boundary.  The snapshot keeps both forms where a stock binding needs them: `spec`/`activeSpec`
  * remain wire-facing while `group`, `activeTalentGroup`, tab/talent indices, tiers, columns, and
- * learned ranks are the one-based values Lua displays.  No inspect or pet projection is allowed.
+ * learned ranks are the one-based values Lua displays. Inspect remains unavailable here.
  */
 export function resolveFrameXmlTalentSnapshot(
   player: WorldObjectState | undefined,
@@ -358,10 +396,15 @@ export function createFrameXmlTalentResolvers(
   let cachedPlayerRevision = Number.NaN;
   let cachedTalents: TalentsInfo | undefined;
   let cachedTalentsRevision = Number.NaN;
+  let cachedPetGuid: bigint | undefined;
+  let cachedPetFamilyMask = -1;
+  let cachedPetTalents: TalentsInfo | undefined;
+  let cachedPetTalentsRevision = -1;
   let cachedMetadata: FrameXmlTalentMetadata | undefined;
   let cachedMetadataRevision = Number.NaN;
   let cachedMetadataReady = false;
   let snapshot: FrameXmlTalentSnapshot | undefined;
+  let petSnapshot: FrameXmlTalentSnapshot | undefined;
 
   const refresh = (): void => {
     const source = read();
@@ -369,6 +412,9 @@ export function createFrameXmlTalentResolvers(
     const metadataReady = source.talent?.ready === true;
     if (source.player === cachedPlayer && source.playerRevision === cachedPlayerRevision
       && source.talents === cachedTalents && source.talentsRevision === cachedTalentsRevision
+      && source.petGuid === cachedPetGuid && (source.petFamilyMask ?? -1) === cachedPetFamilyMask
+      && source.petTalents === cachedPetTalents
+      && (source.petTalentsRevision ?? -1) === cachedPetTalentsRevision
       && source.talent === cachedMetadata && metadataRevision === cachedMetadataRevision
       && metadataReady === cachedMetadataReady) return;
 
@@ -376,16 +422,26 @@ export function createFrameXmlTalentResolvers(
     cachedPlayerRevision = source.playerRevision;
     cachedTalents = source.talents;
     cachedTalentsRevision = source.talentsRevision;
+    cachedPetGuid = source.petGuid;
+    cachedPetFamilyMask = source.petFamilyMask ?? -1;
+    cachedPetTalents = source.petTalents;
+    cachedPetTalentsRevision = source.petTalentsRevision ?? -1;
     cachedMetadata = source.talent;
     cachedMetadataRevision = metadataRevision;
     cachedMetadataReady = metadataReady;
     snapshot = resolveSnapshot(source.player, source.talents, source.talent);
+    petSnapshot = resolveFrameXmlPetTalentSnapshot(
+      source.petGuid, source.petFamilyMask, source.petTalents, source.talent);
   };
 
   return {
     talentSnapshot: () => {
       refresh();
       return snapshot;
+    },
+    petTalentSnapshot: () => {
+      refresh();
+      return petSnapshot;
     },
   };
 }

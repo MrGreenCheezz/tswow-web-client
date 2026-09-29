@@ -1,14 +1,56 @@
+import { FrameXmlWorldStates } from "./FrameXmlWorldStates.js";
+import { CannedFrameXmlCalendar } from "./FrameXmlCalendarCanned.js";
+import { FrameXmlHudMechanicsCanned } from "./FrameXmlHudMechanicsCanned.js";
+import { FrameXmlMap } from "./FrameXmlMap.js";
+import {
+  FRAMEXML_CANNED_LFD_PLAYER_GUID,
+  createCannedFrameXmlLfd,
+  frameXmlStockClassId,
+} from "./FrameXmlLfdCanned.js";
+import { createCannedFrameXmlLoot } from "./FrameXmlLootCanned.js";
+import { createCannedFrameXmlPopups } from "./FrameXmlPopupsCanned.js";
+import { createCannedFrameXmlFriends } from "./FrameXmlFriendsCanned.js";
+import { createCannedFrameXmlMail, FRAMEXML_CANNED_MAIL_ITEMS } from "./FrameXmlMailCanned.js";
+import { createCannedFrameXmlTrade } from "./FrameXmlTradeCanned.js";
+import { createCannedFrameXmlThreat } from "./FrameXmlThreatCanned.js";
+import { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
+import { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
+import { FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import { createCannedFrameXmlCurrency } from "./FrameXmlCurrencyCanned.js";
+import { createCannedFrameXmlTradeSkill } from "./FrameXmlTradeSkillCanned.js";
+import { createCannedFrameXmlAuction } from "./FrameXmlAuctionCanned.js";
+import { createCannedFrameXmlSocket } from "./FrameXmlSocketCanned.js";
+import { createCannedFrameXmlInspect } from "./FrameXmlInspectCanned.js";
+import { createCannedFrameXmlBarber } from "./FrameXmlBarberCanned.js";
+import { createCannedFrameXmlGlyphs } from "./FrameXmlGlyphCanned.js";
+import { createCannedFrameXmlCompanions } from "./FrameXmlCompanionsCanned.js";
+import { createCannedFrameXmlPetActionBar } from "./FrameXmlPetActionBarCanned.js";
+import { createCannedFrameXmlTitles } from "./FrameXmlTitlesCanned.js";
+import { createCannedFrameXmlEquipmentSets } from "./FrameXmlEquipmentSetsCanned.js";
+import { createCannedFrameXmlAchievements } from "./FrameXmlAchievementCanned.js";
+import { createCannedFrameXmlGuildBank } from "./FrameXmlGuildBankCanned.js";
+import { createCannedFrameXmlNpcWindows } from "./FrameXmlGossipCannedWindows.js";
+import { createCannedFrameXmlMacros } from "./FrameXmlMacroCanned.js";
+import { FrameXmlCursorModel, type FrameXmlActionButton } from "./FrameXmlCursor.js";
+import { ACTION_BUTTON_ITEM, ACTION_BUTTON_SPELL } from "../../world/ActionBarProtocol.js";
+import { FrameXmlBindingModel } from "./FrameXmlBinding.js";
+import { FrameXmlChatColors } from "./FrameXmlChatColors.js";
+import type { InputAction } from "../input/Bindings.js";
 import {
   frameXmlChatEventArgs,
   frameXmlChatEventName,
   frameXmlChatTextIsValid,
   frameXmlChatTypeCode,
+  frameXmlLanguageName,
+  FRAMEXML_TRACKING_NONE_TEXTURE,
   type FrameXmlCastingInfo,
   type FrameXmlChannelInfo,
   type FrameXmlMerchantItemInfo,
   type FrameXmlMerchantCostInfo,
+  type FrameXmlItemInfo,
   type FrameXmlBuybackItemInfo,
   type FrameXmlSpellCooldown,
+  type FrameXmlShapeshiftFormInfo,
   type FrameXmlSpellTabInfo,
   type FrameXmlSkillLineInfo,
   type FrameXmlAuraInfo,
@@ -36,16 +78,22 @@ import {
   FRAMEXML_POWER_TOKENS,
   FRAMEXML_SEAM_EVENTS,
   frameXmlInventorySlotInfo,
+  frameXmlItemEntry,
   FRAMEXML_CHAT_WINDOW_GROUPS,
+  frameXmlCombatLogWindowInfo,
+  frameXmlGeneralWindowInfo,
   type FrameXmlSeamPump,
   type FrameXmlMinimapZone,
   type FrameXmlWorldSeam,
 } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
-import type { FrameXmlSkillRow } from "./FrameXmlSkillResolver.js";
+import type { FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
+import { frameXmlSkillAbandonable, type FrameXmlSkillRow } from "./FrameXmlSkillResolver.js";
 import type { FrameXmlHonorSnapshot } from "./FrameXmlHonorResolver.js";
 import type { FrameXmlSettingsCVarAdapter } from "./FrameXmlSettingsCVar.js";
+import { createFrameXmlOptionsModel, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import type { FrameXmlInventoryTooltipItem } from "./FrameXmlCharacterTooltip.js";
+import { spellChatLink } from "../ui/ChatLink.js";
 import {
   FRAMEXML_CANNED_BATTLEGROUNDS,
   type FrameXmlBattlegroundCatalog,
@@ -110,6 +158,16 @@ export interface CannedAction {
   readonly count?: number;
 }
 
+/** Explicit offline stance fixture; the live seam resolves its rows from known spells and DBC. */
+export interface CannedShapeshiftForm {
+  readonly spellId: number;
+  readonly name: string;
+  readonly texture: string;
+  readonly castable?: boolean;
+  /** Explicit fixture value from SpellShapeshiftForm.dbc BonusActionBar. */
+  readonly bonusActionBarOffset?: number;
+}
+
 /** One item as exposed by the stock container C-API fixture. */
 export interface CannedContainerItem {
   /** The item entry is retained for diagnostics; the C-API does not return it directly. */
@@ -139,17 +197,32 @@ export interface CannedContainer {
   readonly slots: readonly (CannedContainerItem | undefined)[];
 }
 
-/** One ordinary vendor row. Extended currency costs are intentionally unsupported unless zero. */
+/** One deterministic vendor row for the stock merchant fixture. */
+export interface CannedMerchantCost {
+  readonly honor: number;
+  readonly arena: number;
+  readonly items: readonly {
+    readonly itemId?: number;
+    readonly name?: string;
+    readonly quality?: number;
+    readonly texture?: string;
+    readonly count: number;
+    readonly link?: string;
+  }[];
+}
+
 export interface CannedMerchantItem {
   readonly slot: number;
   readonly itemId: number;
   readonly name: string;
+  readonly quality?: number;
   readonly texture?: string;
   readonly price: number;
   readonly quantity: number;
   readonly numAvailable: number;
   readonly isUsable: boolean;
   readonly extendedCost?: number;
+  readonly cost?: CannedMerchantCost;
   readonly link?: string;
   readonly maxStack?: number;
 }
@@ -540,9 +613,10 @@ export const CANNED_REPUTATION: readonly FrameXmlFactionRow[] = Object.freeze([
     listId: 0,
     name: "Alliance",
     description: "Alliance factions",
-    standingId: 0,
+    // ReputationFrame indexes FACTION_BAR_COLORS[1..8] before checking isHeader.
+    standingId: 4,
     barMin: 0,
-    barMax: 0,
+    barMax: 3000,
     barValue: 0,
     canToggleAtWar: false,
     isHeader: true,
@@ -555,7 +629,7 @@ export const CANNED_REPUTATION: readonly FrameXmlFactionRow[] = Object.freeze([
     description: "Stormwind reputation",
     standingId: 5,
     barMin: 3000,
-    barMax: 6000,
+    barMax: 9000,
     barValue: 4500,
     canToggleAtWar: true,
     isHeader: false,
@@ -1074,6 +1148,34 @@ export const CANNED_CHAT_MESSAGES: readonly ChatMessage[] = Object.freeze([
   }),
 ]);
 
+/**
+ * Two real tracking rows of this dataset for the stock MiniMapTracking menu, read from the local
+ * gateway (`/dbc/spells?ids=2383,2580`) on 2026-09-24: both are SPELL_AURA_TRACK_RESOURCES (45)
+ * with LockType 2 (herbalism) and 3 (mining).
+ */
+export const CANNED_TRACKING: readonly { readonly spellId: number; readonly name: string; readonly texture: string }[] =
+  Object.freeze([
+    Object.freeze({ spellId: 2383, name: "Поиск трав", texture: "Interface\\Icons\\INV_Misc_Flower_02" }),
+    Object.freeze({ spellId: 2580, name: "Поиск минералов", texture: "Interface\\Icons\\Spell_Nature_Earthquake" }),
+  ]);
+
+/**
+ * Deterministic `UnitGUID` strings, in the `frameXmlGuid` form. The player's is the canned SAY
+ * line's sender (0x1), so chat `arg12` and `UnitGUID("player")` agree as they do live; the pet
+ * carries the 3.3.5 pet high GUID (0xF140), creature-like units the creature one (0xF130).
+ */
+const CANNED_UNIT_GUIDS: Readonly<Record<string, string>> = Object.freeze({
+  player: "0x0000000000000001",
+  target: "0xf130000000000101",
+  focus: "0xf130000000000102",
+  targettarget: "0xf130000000000103",
+  pet: "0xf140000000000104",
+  party1: "0x0000000000000011",
+  party2: "0x0000000000000012",
+  party3: "0x0000000000000013",
+  party4: "0x0000000000000014",
+});
+
 type CannedCastPhase = "idle" | "casting" | "channeling" | "done";
 type CannedTargetPhase = "idle" | "acquire" | "acquired" | "updated" | "lost" | "manual";
 
@@ -1094,7 +1196,8 @@ function isResolvedFactionRow(value: unknown): value is FrameXmlFactionRow {
   return typeof listId === "number" && Number.isInteger(listId) && listId >= 0
     && typeof row.name === "string" && row.name.length > 0
     && typeof row.description === "string"
-    && typeof row.standingId === "number" && Number.isFinite(row.standingId)
+    && typeof row.standingId === "number" && Number.isInteger(row.standingId)
+    && row.standingId >= 1 && row.standingId <= 8
     && typeof row.barMin === "number" && Number.isFinite(row.barMin)
     && typeof row.barMax === "number" && Number.isFinite(row.barMax)
     && typeof row.barValue === "number" && Number.isFinite(row.barValue)
@@ -1133,12 +1236,252 @@ function sameCannedItem(
  * whole of what F3 is for.
  */
 export class CannedWorldSeam implements FrameXmlWorldSeam {
+  /** GameTime's local clock and the stock calendar over a scripted month (FrameXmlCalendarCanned.ts). */
+  readonly calendar = new CannedFrameXmlCalendar();
+  /** One earth totem and one main-hand imbue from attach (FrameXmlHudMechanicsCanned.ts); tests script hits via `hit`. */
+  readonly hudMechanics = new FrameXmlHudMechanicsCanned();
+  /**
+   * The canned player is alive: corpse and release pins are explicitly absent (`null`), which is
+   * the answer WorldMapButton_OnUpdate needs to read `(0, 0)` instead of raising «corpseX nil»
+   * once per frame (worldmapframe.lua:900; 60 raises in the canned census while the map was open).
+   */
+  readonly map = new FrameXmlMap({
+    metadata: () => undefined, location: () => undefined,
+    corpseLocation: () => null, deathReleaseLocation: () => null,
+  });
+  /**
+   * The stock dungeon finder over a scripted world (FrameXmlLfdCanned.ts): a real slice of the
+   * dataset's LFG catalog for the level-60 canned player. Tests script packets via `lfdWorld`.
+   */
+  readonly #cannedLfd = createCannedFrameXmlLfd({
+    playerLevel: () => this.unitLevel("player") ?? 0,
+    playerClassId: () => frameXmlStockClassId(this.#playerClass[1]),
+    playerName: () => this.unitName("player"),
+    playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID,
+    playerFaction: () => "Alliance",
+    partyMemberCount: () => this.partyMemberCount(),
+    raidMemberCount: () => this.raidMemberCount(),
+    isPartyLeader: () => this.isPartyLeader(),
+  });
+  readonly lfd = this.#cannedLfd.model;
+  readonly lfdWorld = this.#cannedLfd.world;
+  /**
+   * The NPC windows over scripted worlds (FrameXmlGossipCannedWindows.ts): an innkeeper's page, a
+   * Stormwind flight master, a book and a plaque. Tests and the framexml.html
+   * `?npc=gossip|confirm|bank|taxi|itemtext|plaque` previews script them via `npc`
+   * (`npc.gossip.world.talk()`, `npc.taxi.world.open()`…).
+   */
+  readonly npc = createCannedFrameXmlNpcWindows({
+    bankOpen: () => this.#bankOpen,
+    buyBankSlot: () => this.buyBankSlot(),
+    playerLevel: () => this.unitLevel("player"),
+  });
+  readonly gossip = this.npc.gossip.model;
+  readonly bank = this.npc.bank;
+  readonly taxi = this.npc.taxi.model;
+  readonly itemText = this.npc.itemText.model;
+  /** The charter windows over one scripted world (`npc.charters.world`, FrameXmlPetitionCanned.ts). */
+  readonly tabard = this.npc.charters.tabard;
+  readonly registrar = this.npc.charters.registrar;
+  readonly petition = this.npc.charters.petition;
+  /** The stock PetStableFrame over the canned stable master (`npc.stable.world`, FrameXmlStableCanned.ts). */
+  readonly stable = this.npc.stable.model;
+  /**
+   * The stock loot window and group-loot rolls over a scripted world (FrameXmlLootCanned.ts): a
+   * level-60 corpse and a two-item roll. Tests and the `?loot=` preview script packets via `lootWorld`.
+   */
+  readonly #cannedLoot = createCannedFrameXmlLoot({
+    playerLevel: () => this.unitLevel("player") ?? 0,
+    playSound: (name) => this.playSound(name),
+  });
+  readonly loot = this.#cannedLoot.model;
+  readonly lootWorld = this.#cannedLoot.world;
+  /**
+   * The stock confirmations over a scripted world (FrameXmlPopupsCanned.ts): nothing is pending
+   * until a test or `framexml.html?popup=` scripts an invite, a death, a summon or a ready check.
+   */
+  readonly #cannedPopups = createCannedFrameXmlPopups();
+  readonly popups = this.#cannedPopups.model;
+  readonly popupsWorld = this.#cannedPopups.world;
+  /**
+   * The stock FriendsFrame over a scripted world (FrameXmlFriendsCanned.ts): five friends, two
+   * ignores, a guild the canned player leads, the canned party and two lockouts. Tests and the
+   * `?friends=` preview script `/who` answers, status changes and group lists via `socialWorld`.
+   */
+  readonly #cannedFriends = createCannedFrameXmlFriends();
+  readonly friends = this.#cannedFriends.model;
+  readonly socialWorld = this.#cannedFriends.world;
+  /**
+   * The stock mailbox and trade window over scripted worlds (FrameXmlMailCanned.ts,
+   * FrameXmlTradeCanned.ts): nothing is open until a test or `framexml.html?mail=`/`?trade=` calls
+   * `mailWorld.open()` or `tradeWorld.open()`; both carry their own bags and cursor.
+   */
+  readonly #cannedMail = createCannedFrameXmlMail();
+  readonly mail = this.#cannedMail.model;
+  readonly mailWorld = this.#cannedMail.world;
+  readonly #cannedTrade = createCannedFrameXmlTrade();
+  readonly trade = this.#cannedTrade.model;
+  readonly tradeWorld = this.#cannedTrade.world;
+  /** The canned target's threat list (FrameXmlThreatCanned.ts); tests move `threatWorld.threat`. */
+  readonly #cannedThreat = createCannedFrameXmlThreat({
+    unitGuid: (unit) => this.unitGuid(unit),
+    playerGuid: CANNED_UNIT_GUIDS["player"]!,
+    targetGuid: CANNED_UNIT_GUIDS["target"]!,
+    partyGuid: CANNED_UNIT_GUIDS["party1"]!,
+    inGroup: () => this.partyMemberCount() > 0 || this.raidMemberCount() > 0,
+  });
+  readonly threat = this.#cannedThreat.model;
+  readonly threatWorld = this.#cannedThreat.world;
+  /** The chat cache's LOCKED/DOCKED/UNINTERACTABLE flags, per attach like `#chatWindowShown`. */
+  readonly chatWindows = new FrameXmlChatWindowFlags();
+  /** What the stock abandon confirmation removed (`AbandonQuest`): the row leaves the canned log. */
+  readonly abandonedQuests: { slot: number; questId: number }[] = [];
+  /** The stock quest log's abandon flow over the canned rows (FrameXmlQuestAbandon.ts). */
+  readonly questAbandon = new FrameXmlQuestAbandonModel({
+    selection: () => this.#questSelection,
+    entry: (index) => {
+      const quest = this.#questAt(index);
+      return quest ? { slot: index - 1, questId: quest.questId } : undefined;
+    },
+    locate: (questId) => {
+      const index = this.#questRows().findIndex((quest) => quest.questId === questId);
+      return index < 0 ? undefined : { slot: index, questId };
+    },
+    title: (questId) => this.#quests.get(questId)?.title,
+    questItems: (questId) => this.#quests.get(questId)?.itemObjectives?.map((objective) => objective.itemId) ?? [],
+    carriedItems: () => {
+      const entries = new Set<number>();
+      for (const bag of this.#containers.values()) {
+        for (const item of bag) if (item?.entry !== undefined) entries.add(item.entry);
+      }
+      return entries;
+    },
+    abandon: (entry) => {
+      this.abandonedQuests.push(entry);
+      this.#quests.delete(entry.questId);
+      if (this.#questSelection > this.#questRows().length) this.#questSelection = 0;
+      this.#pump?.fire(FRAMEXML_SEAM_EVENTS.questLogUpdate);
+    },
+  });
+  /** No arena team, possession, scoreboard or add-on channel in the canned world: every answer is nil/false. */
+  readonly mechanics = new FrameXmlMechanicsModel({ world: () => undefined, self: () => undefined });
+  /** Four known currencies of the dataset's tables (FrameXmlCurrencyCanned.ts); tests move `currencyWorld`. */
+  readonly #cannedCurrency = createCannedFrameXmlCurrency();
+  readonly currency = this.#cannedCurrency.model;
+  readonly currencyWorld = this.#cannedCurrency.world;
+  /**
+   * The canned character's Blacksmithing and Enchanting (FrameXmlTradeSkillCanned.ts): no trade skill
+   * is open until a test, an owner or `framexml.html?tradeskill=` opens a line.
+   */
+  readonly #cannedTradeSkill = createCannedFrameXmlTradeSkill();
+  readonly tradeSkill = this.#cannedTradeSkill.model;
+  readonly tradeSkillWorld = this.#cannedTradeSkill.world;
+  /**
+   * The stock auction house over a scripted world (FrameXmlAuctionCanned.ts): nothing is open until a
+   * test or `framexml.html?auction=` calls `auctionWorld.open()`; it carries its own bags and cursor.
+   */
+  readonly #cannedAuction = createCannedFrameXmlAuction();
+  readonly auction = this.#cannedAuction.model;
+  readonly auctionWorld = this.#cannedAuction.world;
+  /**
+   * Stock socketing over a scripted head piece and four backpack gems (FrameXmlSocketCanned.ts):
+   * nothing is open until a test or `framexml.html?socket=` calls SocketInventoryItem(1).
+   */
+  readonly #cannedSocket = createCannedFrameXmlSocket();
+  readonly socket = this.#cannedSocket.model;
+  readonly socketWorld = this.#cannedSocket.world;
+  /**
+   * Inspection of a friendly canned mage (FrameXmlInspectCanned.ts): answers only while
+   * `setTarget(CANNED_INSPECT_TARGET)` holds her, her talents the canned fire tree.
+   */
+  readonly #cannedInspect = createCannedFrameXmlInspect(() => this.#target, () => this.#talentSnapshot);
+  readonly inspect = this.#cannedInspect.model;
+  readonly inspectWorld = this.#cannedInspect.world;
+  /** A tauren barber chair (FrameXmlBarberCanned.ts): shut until a test or `?barber=` calls `barberWorld.sit()`. */
+  readonly #cannedBarber = createCannedFrameXmlBarber();
+  readonly barber = this.#cannedBarber.model;
+  readonly barberWorld = this.#cannedBarber.world;
+  /** Two filled sockets and a stand-in realm for the glyph tab (FrameXmlGlyphCanned.ts); `glyphWorld.use()` raises the cursor. */
+  readonly #cannedGlyphs = createCannedFrameXmlGlyphs(() => this.unitLevel("player"));
+  readonly glyphs = this.#cannedGlyphs.model;
+  readonly glyphWorld = this.#cannedGlyphs.world;
+  /**
+   * Two mounts and one critter (FrameXmlCompanionsCanned.ts) for the pet page's «Спутники» and
+   * «Транспорт» sub-tabs; `companionWorld` scripts learning, forgetting and the realm's summons.
+   * A companion cast lands in `castSpellIds` like every other canned cast.
+   */
+  readonly #cannedCompanions = createCannedFrameXmlCompanions({
+    pickup: (spellId, type, index) => this.cursor.pickupCompanion(spellId, type, index),
+    onCast: (spellId) => { this.castSpellIds.push(spellId); },
+  });
+  readonly companions = this.#cannedCompanions.model;
+  readonly companionWorld = this.#cannedCompanions.world;
+  /**
+   * The wolf's pet bar (FrameXmlPetActionBarCanned.ts), dismissed until `petActionWorld.summon()`:
+   * the default HUD's measured layout has no pet bar in it; `petActionWorld.sent` records the presses.
+   */
+  readonly #cannedPetActions = createCannedFrameXmlPetActionBar();
+  readonly petActions = this.#cannedPetActions.model;
+  readonly petActionWorld = this.#cannedPetActions.world;
+  /** Three known titles, «Рядовой» worn, over the canned warrior (FrameXmlTitlesCanned.ts); `titleWorld.sent` is CMSG_SET_TITLE. */
+  readonly #cannedTitles = createCannedFrameXmlTitles(() => this.unitSex("player") === 3);
+  readonly titles = this.#cannedTitles.model;
+  readonly titleWorld = this.#cannedTitles.world;
+  /** One saved set over the canned paper doll (FrameXmlEquipmentSetsCanned.ts); `equipmentSetWorld.sent` is the packets. */
+  readonly #cannedEquipmentSets = createCannedFrameXmlEquipmentSets({
+    wornEntry: (slot) => this.#equipmentItem(slot)?.entry,
+    wornTexture: (slot) => this.inventoryItemTexture("player", slot),
+    macroIcon: (index) => this.macros.icon(index),
+    macroIconCount: () => this.macros.iconCount(),
+  });
+  readonly equipmentSets = this.#cannedEquipmentSets.model;
+  readonly equipmentSetWorld = this.#cannedEquipmentSets.world;
+  /** Every CMSG_UNLEARN_SKILL the canned realm was asked, by skill id (`AbandonSkill`). */
+  readonly abandonedSkills: number[] = [];
+  /**
+   * The canned character's achievements (FrameXmlAchievementCanned.ts) over dataset catalog rows:
+   * `achievementWorld.earn(id)` is an SMSG_ACHIEVEMENT_EARNED, `progress` an SMSG_CRITERIA_UPDATE.
+   */
+  readonly #cannedAchievements = createCannedFrameXmlAchievements();
+  readonly achievement = this.#cannedAchievements.model;
+  readonly achievementWorld = this.#cannedAchievements.world;
+  /**
+   * Three canned macros and six icons (FrameXmlMacroCanned.ts), and the real key table
+   * (input/Bindings.ts) whose RunBinding verbs are recorded in `bindingRuns` instead of run.
+   */
+  readonly #cannedMacros = createCannedFrameXmlMacros();
+  readonly macros = this.#cannedMacros.model;
+  readonly macroWorld = this.#cannedMacros;
+  /** The one cursor (FrameXmlCursor.ts): spells from the book and actions lifted off the canned bar. */
+  readonly cursor: FrameXmlCursorModel = new FrameXmlCursorModel(this);
+  readonly bindingRuns: InputAction[] = [];
+  readonly keyBindings = new FrameXmlBindingModel({ runAction: (action) => { this.bindingRuns.push(action); return true; } });
+  /**
+   * The canned guild's vault (FrameXmlGuildBankCanned.ts): nothing is open until a test or
+   * `framexml.html?guildbank=` calls `guildBankWorld.open()`. Its icon picker reads the canned macro
+   * icons; a vault stack dropped on a bag slot is recorded as the withdrawal into that slot.
+   */
+  readonly #cannedGuildBank = createCannedFrameXmlGuildBank({
+    clearCursor: () => this.macros.clearCursor(),
+    macroItemIcon: (index) => this.macros.itemIcon(index),
+  });
+  readonly guildBank = this.#cannedGuildBank.model;
+  readonly guildBankWorld = this.#cannedGuildBank.world;
+  /** The offline Elwynn snapshot has no active battlefield objectives. */
+  readonly worldStates = new FrameXmlWorldStates(() => [], () => ({
+    mapId: 0, zoneId: 12, areaId: 12, phaseMask: 1, states: new Map(),
+  }));
   realmName(): string {
     return "Canned Realm";
   }
 
+  /** The offline demonstration takes place at noon. */
+  gameTime(): readonly [number, number] { return [12, 0]; }
+
   readonly name = "canned";
   readonly #actions = new Map<number, CannedAction>();
+  /** The canned spellbook: the bar's spells as constructed (see the constructor). */
+  readonly #spellbook: readonly CannedAction[];
   readonly #containers = new Map<number, (CannedContainerItem | undefined)[]>();
   readonly #equipment: (CannedContainerItem | undefined)[];
   readonly #quests = new Map<number, CannedQuest>();
@@ -1169,7 +1512,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   #trainerOpen = false;
   #trainerSelection: number | undefined;
   readonly #trainerFilters = new Map<string, boolean>([
-    ["available", true], ["unavailable", true], ["used", true],
+    ["available", true], ["unavailable", true], ["used", false],
   ]);
   /** Exact spell ids passed through the stock BuyTrainerService boundary. */
   readonly trainerBuyRequests: number[] = [];
@@ -1202,10 +1545,20 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   readonly usedInventoryItems: { unit: string; slot: number }[] = [];
   readonly #cooldowns = new Map<number, RunningCooldown>();
   readonly castSpellIds: number[] = [];
+  readonly bankSlotBuyRequests: number[] = [];
+  readonly #shapeshiftForms: CannedShapeshiftForm[] = [];
+  #activeShapeshiftForm = 0;
+  #comboPoints = 0;
+  #bankSlotsBought = 0;
+  #bankOpen = false;
+  readonly #bankSlotPrices = new Map<number, number>();
   readonly #spellCvars = new Map<string, boolean>([["showallspellranks", false]]);
   readonly #settingsCVar: FrameXmlSettingsCVarAdapter | undefined;
+  /** The options C API over the settings adapter a test or preview supplies (FrameXmlOptions.ts). */
+  readonly options: FrameXmlOptionsModel | undefined;
   readonly #sendChatMessage: FrameXmlChatSender | undefined;
   #pump: FrameXmlSeamPump | undefined;
+  #actionPage = 1;
   #healthMax = CANNED_PLAYER.healthMax;
   #health = CANNED_PLAYER.healthMax;
   #powerMax = CANNED_PLAYER.powerMax;
@@ -1245,6 +1598,23 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   /** Test-visible observation of the client request made by `CancelUnitBuff`. */
   readonly cancelledAuraSpellIds: number[] = [];
   #chatLineId = 0;
+  /** The chat cache's SHOWN flags as the stock frames wrote them (`setChatWindowShown`); per attach. */
+  readonly #chatWindowShown = new Map<number, boolean>();
+  /** The chat cache's colours (FrameXmlChatColors.ts), raised at attach before the canned lines. */
+  readonly chatColors = new FrameXmlChatColors();
+  /** `tick` seconds of the last rendered frame and the newest frame intervals, for `GetFramerate`. */
+  #frameAt: number | undefined;
+  readonly #frameIntervals: number[] = [];
+  /** Names requested by stock `PlaySound` while exercising the canned interface. */
+  readonly playedSoundNames: string[] = [];
+  /** The player's `UnitClass` pair; `setPlayerClass` swaps in a TSWoW class for tests. */
+  #playerClass: readonly [string, string] = [CANNED_PLAYER.className, CANNED_PLAYER.classToken];
+  /** Which known unit token `"mouseover"` currently aliases; undefined is «nothing under the cursor». */
+  #mouseoverAlias: string | undefined;
+  /** The one active canned tracker (a spell id of `CANNED_TRACKING`), mirrored by GetTrackingInfo. */
+  #activeTracking: number | undefined;
+  /** Exact `SetTracking` requests as spell casts (positive) and aura cancels (negative ids). */
+  readonly trackingRequests: number[] = [];
 
   constructor(
     actions: readonly CannedAction[] = CANNED_ACTION_BAR,
@@ -1263,6 +1633,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#equipment = [...equipment].slice(0, 23);
     while (this.#equipment.length < 23) this.#equipment.push(undefined);
     for (const action of actions) this.#actions.set(action.slot, action);
+    // The book is the bar's spells as the page opens; moving a spell on the bar does not unlearn it.
+    this.#spellbook = [...this.#actions.values()].filter((action) => action.kind === "spell")
+      .sort((left, right) => left.slot - right.slot);
     for (const quest of quests) {
       if (Number.isInteger(quest.questId) && quest.questId > 0) {
         const copy: CannedQuest = quest.objectives && quest.itemObjectives
@@ -1287,6 +1660,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#merchant = merchant;
     this.#trainer = trainer;
     this.#settingsCVar = settingsCVar;
+    this.options = settingsCVar ? createFrameXmlOptionsModel(settingsCVar) : undefined;
     for (const container of containers) {
       if (!Number.isInteger(container.id)) continue;
       this.#containers.set(container.id, [...container.slots]);
@@ -1305,6 +1679,42 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   attach(pump: FrameXmlSeamPump): void {
     if (this.#pump) this.detach();
     this.#pump = pump;
+    // A new FrameXML load starts from the dock's default selection and a fresh frame clock.
+    this.#chatWindowShown.clear();
+    this.chatWindows.reset();
+    this.#frameAt = undefined;
+    this.#frameIntervals.length = 0;
+    // The chat cache's colours before anything can print a line (FrameXmlChatColors.ts).
+    this.chatColors.attach(pump);
+    this.threat.attach(pump);
+    this.mechanics.attach(pump);
+    this.worldStates.attach(pump);
+    this.map.attach(pump);
+    this.lfd.attach(pump);
+    this.npc.attach(pump);
+    this.loot.attach(pump);
+    this.popups.attach(pump);
+    this.friends.attach(pump);
+    this.mail.attach(pump);
+    this.trade.attach(pump);
+    this.currency.attach(pump);
+    this.tradeSkill.attach(pump);
+    this.auction.attach(pump);
+    this.socket.attach(pump);
+    this.inspect.attach(pump);
+    this.barber.attach(pump);
+    this.glyphs.attach(pump);
+    this.companions.attach(pump);
+    this.petActions.attach(pump);
+    this.titles.attach(pump);
+    this.equipmentSets.attach(pump);
+    this.achievement.attach(pump);
+    this.guildBank.attach(pump);
+    this.macros.attach(pump);
+    this.cursor.attach(pump);
+    this.keyBindings.attach(pump);
+    this.calendar.attach(pump);
+    this.hudMechanics.attach(pump);
     const now = pump.now();
     this.#startedAt = now;
     this.#healthAt = now;
@@ -1314,6 +1724,10 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#power = 0;
     this.#powerType = CANNED_PLAYER.powerType;
     this.#money = CANNED_PLAYER.money;
+    this.#activeShapeshiftForm = 0;
+    this.#comboPoints = 0;
+    this.#bankOpen = false;
+    this.bankSlotBuyRequests.length = 0;
     this.#stats = CANNED_PLAYER.stats;
     this.#resistances = CANNED_PLAYER.resistances;
     this.#attackPower = CANNED_PLAYER.attackPower;
@@ -1333,7 +1747,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#trainerSelection = undefined;
     this.#trainerFilters.set("available", true);
     this.#trainerFilters.set("unavailable", true);
-    this.#trainerFilters.set("used", true);
+    this.#trainerFilters.set("used", false);
     this.trainerBuyRequests.length = 0;
     this.#watchedFactionId = undefined;
     this.#collapsedFactionIds.clear();
@@ -1375,6 +1789,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#auraStartedAt = now;
     this.cancelledAuraSpellIds.length = 0;
     this.castSpellIds.length = 0;
+    this.#mouseoverAlias = undefined;
+    this.#activeTracking = undefined;
+    this.trackingRequests.length = 0;
     this.usedContainerItems.length = 0;
     this.usedInventoryItems.length = 0;
     // One slot is already recovering when the page opens, which is what the slice asks for: the
@@ -1442,6 +1859,36 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   detach(): void {
+    this.worldStates.detach();
+    this.map.detach();
+    this.lfd.detach();
+    this.npc.detach();
+    this.loot.detach();
+    this.popups.detach();
+    this.friends.detach();
+    this.mail.detach();
+    this.trade.detach();
+    this.currency.detach();
+    this.tradeSkill.detach();
+    this.auction.detach();
+    this.socket.detach();
+    this.inspect.detach();
+    this.barber.detach();
+    this.glyphs.detach();
+    this.companions.detach();
+    this.petActions.detach();
+    this.titles.detach();
+    this.equipmentSets.detach();
+    this.achievement.detach();
+    this.guildBank.detach();
+    this.macros.detach();
+    this.cursor.detach();
+    this.keyBindings.detach();
+    this.calendar.detach();
+    this.hudMechanics.detach();
+    this.chatColors.detach();
+    this.threat.detach();
+    this.mechanics.detach();
     this.#pump = undefined;
     this.#merchantOpen = false;
     this.#cooldowns.clear();
@@ -1468,13 +1915,17 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   /** Canned pages have no world connection, but retain the same validated callback contract. */
   sendChatMessage(text: string, type: string, language: number | undefined, target: FrameXmlChatTarget): void {
     const code = frameXmlChatTypeCode(type);
-    if (code === undefined || !frameXmlChatTextIsValid(text)) return;
+    if (code === undefined || !frameXmlChatTextIsValid(text, code)) return;
     if (typeof target === "number" && (code !== CHAT_MSG_CHANNEL
       || !Number.isFinite(target) || !Number.isInteger(target))) return;
     const normalizedTarget = typeof target === "number"
       ? String(Math.trunc(target))
       : target;
     this.#sendChatMessage?.(text, code, language, normalizedTarget);
+  }
+
+  playSound(name: string): void {
+    this.playedSoundNames.push(name);
   }
 
   chatWindowMessages(windowId: number): readonly string[] {
@@ -1487,8 +1938,27 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   chatWindowInfo(windowId: number): FrameXmlChatWindowInfo | undefined {
     if (!Number.isInteger(windowId) || windowId < 1 || windowId > 10) return undefined;
-    if (windowId === 1) return ["Общий", 14, 1, 1, 1, 0, true, true, true, false];
-    return ["", 0, 1, 1, 1, 0, false, true, false, false];
+    // Window 2 is the live seam's combat tab, so the dev page and the canned probes dock the same two frames.
+    const base: FrameXmlChatWindowInfo = windowId === 1 ? frameXmlGeneralWindowInfo(this.#chatWindowShown.get(1) ?? true)
+      : windowId === 2 ? frameXmlCombatLogWindowInfo()
+        : ["", 0, 1, 1, 1, 0, false, true, false, false];
+    // Stock's own LOCKED/DOCKED/UNINTERACTABLE writes ride over the seam's answer (FrameXmlChatWindowFlags.ts).
+    return this.chatWindows.apply(windowId, base, this.#chatWindowShown.get(windowId));
+  }
+
+  setChatWindowShown(windowId: number, shown: boolean): void {
+    if (Number.isInteger(windowId) && windowId >= 1 && windowId <= 10) this.#chatWindowShown.set(windowId, shown);
+  }
+
+  /**
+   * The canned page has no world renderer, so its rate is the one the HUD itself is drawn at: the
+   * mean of the newest 60 intervals between rendered `tick`s (the mount's and the preview's
+   * requestAnimationFrame step), 0 before the second frame.
+   */
+  framerate(): number {
+    if (this.#frameIntervals.length === 0) return 0;
+    const mean = this.#frameIntervals.reduce((sum, interval) => sum + interval, 0) / this.#frameIntervals.length;
+    return mean > 0 ? 1 / mean : 0;
   }
 
   /**
@@ -1501,6 +1971,30 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   tick(now: number): void {
     const pump = this.#pump;
     if (!pump) return;
+    this.cursor.sync();
+    if (this.#frameAt !== undefined && now > this.#frameAt) {
+      this.#frameIntervals.push(now - this.#frameAt);
+      if (this.#frameIntervals.length > 60) this.#frameIntervals.shift();
+    }
+    this.#frameAt = now;
+    this.worldStates.tick();
+    this.map.tick();
+    this.keyBindings.tick(now);
+    this.loot.tick();
+    this.popups.tick();
+    this.friends.tick();
+    this.mail.tick();
+    this.trade.tick();
+    this.tradeSkill.tick();
+    this.auction.tick();
+    this.socket.tick();
+    this.barber.tick();
+    this.glyphs.tick();
+    this.titles.tick();
+    this.equipmentSets.tick();
+    this.achievement.tick();
+    this.guildBank.tick();
+    this.hudMechanics.tick();
     for (const [slot, cooldown] of [...this.#cooldowns]) {
       if (now - cooldown.start < cooldown.duration) continue;
       this.#cooldowns.delete(slot);
@@ -1706,11 +2200,17 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   actionBarPage(): number {
-    return 1;
+    return this.#actionPage;
+  }
+
+  changeActionBarPage(page: number): void {
+    if (!Number.isInteger(page) || page < 1 || page > 6 || page === this.#actionPage) return;
+    this.#actionPage = page;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.actionPageChanged);
   }
 
   bonusBarOffset(): number {
-    return 0;
+    return this.#shapeshiftForms[this.#activeShapeshiftForm - 1]?.bonusActionBarOffset ?? 0;
   }
 
   /**
@@ -1723,6 +2223,8 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
    * cooldown, so that the wipe on the button is proof the chain completed.
    */
   useAction(slot: number): void {
+    // A press with a macro on the cursor puts it on the button (recorded in `macroWorld.placed`).
+    if (this.macros.placeCursor(slot)) return;
     const action = this.#actions.get(slot);
     const pump = this.#pump;
     if (!action || !pump || this.#cooldowns.has(slot)) return;
@@ -1733,6 +2235,57 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
     pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
     pump.fire(FRAMEXML_SEAM_EVENTS.actionState);
+  }
+
+  /** The canned slot as the server word's two halves: spell 0x00, item 0x80 (`Player.h`). */
+  actionButton(slot: number): FrameXmlActionButton | undefined {
+    const action = this.#actions.get(slot);
+    return action ? { action: action.id, type: action.kind === "item" ? ACTION_BUTTON_ITEM : ACTION_BUTTON_SPELL } : undefined;
+  }
+
+  /**
+   * The canned bar's CMSG_SET_ACTION_BUTTON: nothing is sent, the fixture's slot changes. A spell
+   * takes its book row, an item its row on the bar or in the bags; a macro stays with the canned
+   * macro model's `placed` record (FrameXmlMacroCanned.ts), as before.
+   */
+  setActionButton(slot: number, action: number, type: number): boolean {
+    if (!Number.isInteger(slot) || slot < 1 || slot > 144) return false;
+    if (action === 0) {
+      this.#actions.delete(slot);
+      this.#cooldowns.delete(slot);
+      return true;
+    }
+    let row: CannedAction | undefined;
+    if (type === ACTION_BUTTON_SPELL) {
+      row = this.#spellbook.find((spell) => spell.id === action);
+    } else if (type === ACTION_BUTTON_ITEM) {
+      row = [...this.#actions.values()].find((held) => held.kind === "item" && held.id === action);
+      if (!row) {
+        const texture = this.itemTexture(action);
+        const name = this.itemInfo(action)?.[0];
+        if (texture) row = { slot, id: action, kind: "item", name: name ?? "", iconId: 0, texture, recoveryMs: 0, rangeMax: 0 };
+      }
+    }
+    if (!row) return false;
+    this.#actions.set(slot, { ...row, slot });
+    this.#cooldowns.delete(slot);
+    return true;
+  }
+
+  spellBookSpellId(index: number, bookType: string | undefined): number | undefined {
+    if (bookType !== undefined && bookType !== "spell") return undefined;
+    return this.#spellAction(index)?.id;
+  }
+
+  /** A carried item's icon by entry, from the bar or the canned bags and equipment. */
+  itemTexture(entry: number): string | undefined {
+    const onBar = [...this.#actions.values()].find((held) => held.kind === "item" && held.id === entry);
+    if (onBar) return onBar.texture;
+    for (const bag of this.#containers.values()) {
+      const item = bag.find((candidate) => candidate?.entry === entry);
+      if (item?.texture) return item.texture;
+    }
+    return this.#equipment.find((item) => item?.entry === entry)?.texture;
   }
 
   // ---- player containers -----------------------------------------------
@@ -1846,14 +2399,56 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     };
   }
 
+  /**
+   * An item by entry for a link-shaped tooltip — SetHyperlink, SetLootItem, SetLootRollItem, the
+   * mail and quest links — from the fixture that shows it: the loot world's templates, the
+   * mailbox's items, a quest's reward rows. The merchant's own rows reach the tooltip through
+   * itemInfo (GetItemInfo).
+   */
+  itemTooltip(entry: number): FrameXmlInventoryTooltipItem | undefined {
+    const template = this.lootWorld.itemTemplates.get(entry);
+    if (template) return { entry, template };
+    let named: { readonly name: string; readonly quality?: number | undefined } | undefined = FRAMEXML_CANNED_MAIL_ITEMS.get(entry);
+    for (const quest of this.#quests.values()) {
+      if (named) break;
+      named = [...quest.rewardItems ?? [], ...quest.rewardChoiceItems ?? []].find((item) => item.itemId === entry);
+    }
+    return named ? {
+      entry,
+      metadata: { entry, name: named.name, displayId: 0, quality: named.quality ?? 1, inventoryType: 0, stackable: 0, iconId: 0 },
+    } : undefined;
+  }
+
   useInventoryItem(unit: string, slot: number): void {
     if (unit !== "player" || !this.#equipmentItem(slot)) return;
     this.usedInventoryItems.push({ unit, slot });
   }
 
+  // The fixture raises no bind prompt and holds no bag item, so the stock answers (FrameXmlItemActions.ts)
+  // are the empty ones: nothing pending to send or drop, nothing held to store, split or wear.
+  equipPendingItem(): void {}
+  cancelPendingEquip(): void {}
+  confirmBindOnUse(): void {}
+  storeCursorItemInBag(): boolean { return false; }
+  splitContainerItem(): boolean { return false; }
+  cursorCanGoInSlot(): boolean { return false; }
+
   pickupInventoryItem(): void {
     // The fixture intentionally has no pickup operation, matching the live host's lack of one.
   }
+
+  pickupContainerItem(bagId?: number, slot?: number): void {
+    // The fixture has no authoritative inventory state to validate a cursor source against. A held
+    // vault stack is the exception: it is withdrawn into the bag slot's wire position.
+    const meta = bagId === undefined ? undefined : this.#containerMeta.get(bagId);
+    if (meta && slot !== undefined && Number.isInteger(slot) && slot >= 1) {
+      this.guildBank.dropOnBagSlot({ bag: meta.hostBagSlot, slot: meta.hostSlotOffset + slot - 1 });
+    }
+  }
+
+  cursorHasItem(): boolean { return this.guildBank.cursorHasItem(); }
+  cursorInfo(): readonly unknown[] { return this.macros.cursorInfo() ?? this.guildBank.cursorInfo() ?? []; }
+  clearCursor(): void { this.macros.clearCursor(); this.guildBank.clearCursor(); }
 
   unitStat(unit: string, index: number): FrameXmlUnitStat {
     // Stock UnitStat is one-based; the fixture array follows generated STAT0..STAT4 order.
@@ -1938,6 +2533,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   // ---- quest log and tracker --------------------------------------------
+
+  questGiverCall(): readonly unknown[] {
+    // The canned world has quest-log fixtures, but no quest-giver packet page.
+    return [];
+  }
 
   #questRows(): CannedQuest[] {
     return [...this.#quests.values()];
@@ -2236,6 +2836,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     ];
   }
 
+  factionInfoById(): FrameXmlFactionInfo | undefined {
+    // A fixture row's visible index does not establish its Faction.dbc ID.
+    return undefined;
+  }
+
   selectedFaction(): number {
     return this.#factionIndex(this.#selectedFactionId);
   }
@@ -2469,6 +3074,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#targetTimelineStartedAt = undefined;
     this.#targetPhase = target === undefined ? "lost" : "manual";
     this.#target = target;
+    this.#comboPoints = 0;
     if (target === undefined || previous !== undefined && previous !== target) {
       this.#targetTarget = undefined;
       this.#targetTargetCasting = false;
@@ -2537,31 +3143,119 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return this.#pump?.fire(FRAMEXML_SEAM_EVENTS.health, "target") ?? 0;
   }
 
+  /**
+   * Point the `"mouseover"` token at one of the fixture's units (or at nothing), the canned
+   * equivalent of a settled world pick. A unit fires UPDATE_MOUSEOVER_UNIT like the live seam;
+   * leaving every unit does not. Returns how many handlers ran.
+   */
+  setMouseover(unit: string | undefined): number {
+    const alias = unit === undefined || unit === "mouseover" ? undefined : unit.toLowerCase();
+    if (alias === this.#mouseoverAlias) return 0;
+    this.#mouseoverAlias = alias;
+    return alias !== undefined && this.knownUnit(alias) !== undefined
+      ? this.#pump?.fire(FRAMEXML_SEAM_EVENTS.mouseover) ?? 0
+      : 0;
+  }
+
+  /**
+   * Give the canned player another class, e.g. the owner's TSWoW `("Герой", "HERO")` (class 13 on
+   * this dataset). Set it before the boot so VARIABLES_LOADED already sees it.
+   */
+  setPlayerClass(className: string, classToken: string): void {
+    this.#playerClass = [className, classToken];
+  }
+
+  /** `"mouseover"` is only ever an alias of a fixture token. */
+  #alias(unit: string): string {
+    return unit === "mouseover" ? this.#mouseoverAlias ?? "" : unit;
+  }
+
   /** The target frame has the player and one selected target in this fixture. */
   private isPlayer(unit: string): boolean {
-    return unit === "player";
+    return this.#alias(unit) === "player";
   }
 
   private target(unit: string): CannedTarget | undefined {
-    return unit === "target" ? this.#target : undefined;
+    return this.#alias(unit) === "target" ? this.#target : undefined;
   }
 
   private focus(unit: string): CannedTarget | undefined {
-    return unit === "focus" ? this.#focus : undefined;
+    return this.#alias(unit) === "focus" ? this.#focus : undefined;
   }
 
   private targetTarget(unit: string): CannedTarget | undefined {
-    return unit === "targettarget" ? this.#targetTarget : undefined;
+    return this.#alias(unit) === "targettarget" ? this.#targetTarget : undefined;
   }
 
   private pet(unit: string): CannedPet | undefined {
-    return unit === "pet" ? CANNED_PET : undefined;
+    return this.#alias(unit) === "pet" ? CANNED_PET : undefined;
   }
 
   private party(unit: string): CannedPartyMember | undefined {
-    const match = /^party([1-4])$/.exec(unit);
+    const match = /^party([1-4])$/.exec(this.#alias(unit));
     if (!match) return undefined;
     return CANNED_PARTY_MEMBERS[Number(match[1]) - 1];
+  }
+
+  /** `UnitGUID` for every unit the fixture can name, `mouseover` through its alias. */
+  unitGuid(unit: string): string | undefined {
+    // The player's own raid token, last in the canned raid (raidMemberCount).
+    const raid = this.raidMemberCount();
+    if (raid > 0 && this.#alias(unit) === `raid${raid}`) return CANNED_UNIT_GUIDS["player"];
+    if (this.knownUnit(unit) === undefined) return undefined;
+    return CANNED_UNIT_GUIDS[this.#alias(unit)];
+  }
+
+  /** `UnitReaction` from the fixture's own -1/0/1 relation. */
+  unitReaction(left: string, right: string): number | undefined {
+    const reaction = this.reaction(left, right);
+    return reaction === -1 ? 2 : reaction === 0 ? 4 : reaction === 1 ? 5 : undefined;
+  }
+
+  // ---- minimap indicators and languages --------------------------------
+
+  trackingCount(): number {
+    return CANNED_TRACKING.length;
+  }
+
+  trackingInfo(index: number): readonly [string, string, boolean, string] | undefined {
+    const row = CANNED_TRACKING[index - 1];
+    return row ? [row.name, row.texture, row.spellId === this.#activeTracking, "spell"] : undefined;
+  }
+
+  trackingTexture(): string {
+    return CANNED_TRACKING.find((row) => row.spellId === this.#activeTracking)?.texture
+      ?? FRAMEXML_TRACKING_NONE_TEXTURE;
+  }
+
+  /** Toggle one canned tracker, or clear it for `nil`; the stock button redraws on the event. */
+  setTracking(index: number | undefined): void {
+    const row = index === undefined ? undefined : CANNED_TRACKING[index - 1];
+    if (index !== undefined && !row) return;
+    const next = row === undefined || row.spellId === this.#activeTracking ? undefined : row.spellId;
+    if (this.#activeTracking !== undefined) this.trackingRequests.push(-this.#activeTracking);
+    if (next !== undefined) this.trackingRequests.push(next);
+    if (next === this.#activeTracking) return;
+    this.#activeTracking = next;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.tracking);
+  }
+
+  /** The canned mailbox is empty. */
+  hasNewMail(): boolean {
+    return false;
+  }
+
+  latestMailSenders(): readonly string[] {
+    return [];
+  }
+
+  /** The canned player is Human (`ChrRaces.BaseLanguage` 7, «всеобщий» in ruRU). */
+  defaultLanguage(): string {
+    return frameXmlLanguageName(7);
+  }
+
+  languages(): readonly string[] {
+    return [frameXmlLanguageName(7)];
   }
 
   private knownUnit(unit: string): CannedPlayer | CannedTarget | CannedPet | CannedPartyMember | undefined {
@@ -2571,21 +3265,32 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   unitExists(unit: string): boolean {
     if (unit.toLowerCase() === "npc") return (this.#merchantOpen && this.#merchant !== undefined)
-      || (this.#trainerOpen && this.#trainer !== undefined);
+      || (this.#trainerOpen && this.#trainer !== undefined)
+      || this.trade.partnerName() !== undefined
+      // The canned innkeeper, flight master and banker are creatures (FrameXmlGossipCannedWindows).
+      || this.npc.npcName() !== undefined;
     return this.knownUnit(unit) !== undefined;
   }
 
   unitName(unit: string): string | undefined {
+    if (unit.toLowerCase() === "npc" && this.trade.partnerName() !== undefined) return this.trade.partnerName();
     if (unit.toLowerCase() === "npc") return this.#merchantOpen ? this.#merchant?.name
-      : this.#trainerOpen ? this.#trainer?.name : undefined;
+      : this.#trainerOpen ? this.#trainer?.name : this.npc.npcName();
     return this.knownUnit(unit)?.name;
   }
 
+  questNpcPortraitGuid(): bigint | undefined {
+    return undefined;
+  }
+
   unitPvpName(unit: string): string | undefined {
-    // The canned world carries no separate title/PvP-name cache.  UnitPVPName falls back to the
-    // same authoritative display name rather than manufacturing a title or returning nil for a
-    // player the seam can already name.
-    return this.unitName(unit);
+    // The worn canned title around the player's name («Рядовой Игрок»); every other known unit
+    // is its bare name rather than nil, which CharacterFrame would print as a literal "nil".
+    const name = this.unitName(unit);
+    if (name === undefined) return undefined;
+    return this.isPlayer(unit)
+      ? this.titles.displayName(name, { chosen: this.titleWorld.chosen(), female: this.unitSex(unit) === 3 })
+      : name;
   }
 
   unitLevel(unit: string): number | undefined {
@@ -2593,6 +3298,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   unitClass(unit: string): readonly [string, string] | undefined {
+    if (this.isPlayer(unit)) return this.#playerClass;
     const known = this.knownUnit(unit);
     return known ? [known.className, known.classToken] : undefined;
   }
@@ -2648,6 +3354,54 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   money(): number {
     return this.#money;
+  }
+
+  comboPoints(source: string, target: string): number {
+    return source === "player" && target === "target" && this.#target ? this.#comboPoints : 0;
+  }
+
+  /** Simulate only a server combo-point update for the currently selected target. */
+  setComboPoints(points: number): void {
+    if (!Number.isInteger(points) || points < 0 || points > 5 || points === this.#comboPoints) return;
+    this.#comboPoints = points;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.unitComboPoints, "player");
+  }
+
+  bankSlots(): readonly [number, boolean] {
+    return [this.#bankSlotsBought, this.#bankSlotsBought === 7];
+  }
+
+  bankSlotCost(bought: number): number | undefined {
+    return Number.isInteger(bought) && bought >= 0 && bought < 7
+      ? this.#bankSlotPrices.get(bought) : undefined;
+  }
+
+  setBankSlotPrice(bought: number, copper: number): void {
+    if (Number.isInteger(bought) && bought >= 0 && bought < 7
+      && Number.isSafeInteger(copper) && copper >= 0) this.#bankSlotPrices.set(bought, copper);
+  }
+
+  /** This fixture records the request; a server-state simulation must change the slot count. */
+  buyBankSlot(): void {
+    if (this.#bankOpen && this.#bankSlotsBought < 7) this.bankSlotBuyRequests.push(this.#bankSlotsBought);
+  }
+
+  setBankSlotsBought(bought: number): void {
+    if (!Number.isInteger(bought) || bought < 0 || bought > 7 || bought === this.#bankSlotsBought) return;
+    this.#bankSlotsBought = bought;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.playerBankBagSlotsChanged);
+  }
+
+  openBankFrame(): void {
+    if (this.#bankOpen) return;
+    this.#bankOpen = true;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bankFrameOpened);
+  }
+
+  closeBankFrame(): void {
+    if (!this.#bankOpen) return;
+    this.#bankOpen = false;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bankFrameClosed);
   }
 
   // ---- trainer ----------------------------------------------------------
@@ -2782,13 +3536,22 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return CANNED_PARTY_MEMBERS.length;
   }
 
+  /**
+   * The canned social world's raid (`socialWorld.groupList(true)`), counted as the client counts
+   * it: its listed members, then the player, whom a group list never carries (LiveWorldSeam's rule).
+   */
   raidMemberCount(): number {
-    return 0;
+    const group = this.socialWorld.group;
+    return group && (group.groupType & 0x02) !== 0 ? group.members.length + 1 : 0;
   }
 
   isPartyLeader(): boolean {
     return this.#partyLeader && CANNED_PARTY_MEMBERS.length > 0;
   }
+
+  /** The demo's fixed party uses group loot with the stock uncommon threshold. */
+  lootMethod(): FrameXmlLootMethod { return ["group", undefined, undefined]; }
+  lootThreshold(): number { return 2; }
 
   /** Publish one packet-shaped battlemaster list and its stock notification edge. */
   setBattlefieldList(list: BattlefieldList | undefined): void {
@@ -2849,6 +3612,27 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   hasPetUI(): readonly [boolean, boolean] {
     return [CANNED_PET.visible, CANNED_PET.isHunterPet];
+  }
+
+  /** The pet page's abandon/rename requests, recorded instead of sent (FrameXmlCompanions.ts). */
+  readonly petRenames: string[] = [];
+  petAbandons = 0;
+
+  /** The canned pet is a hunter pet: abandonable, and renameable until `petRename` has named it. */
+  petCanBeAbandoned(): boolean {
+    return CANNED_PET.isHunterPet;
+  }
+
+  petCanBeRenamed(): boolean {
+    return CANNED_PET.isHunterPet && this.petRenames.length === 0;
+  }
+
+  petAbandon(): void {
+    this.petAbandons += 1;
+  }
+
+  petRename(name: string): void {
+    this.petRenames.push(name);
   }
 
   unitCastingInfo(unit: string): FrameXmlCastingInfo | undefined {
@@ -2936,7 +3720,12 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
         0, 0, 0, 0, false, undefined, undefined, 0, 0, ""];
     }
     return [row.name, false, true, row.skillRank, row.numTempPoints, row.skillModifier,
-      row.skillMaxRank, false, undefined, undefined, 0, 0, ""];
+      row.skillMaxRank, frameXmlSkillAbandonable(row), undefined, undefined, 0, 0, ""];
+  }
+
+  abandonSkill(index: number): void {
+    const row = Number.isInteger(index) && index >= 1 ? this.#visibleSkillRows()[index - 1] : undefined;
+    if (row?.kind === "skill" && frameXmlSkillAbandonable(row)) this.abandonedSkills.push(row.skillId);
   }
 
   adjustedSkillPoints(): number {
@@ -3095,10 +3884,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   private merchantItems(): readonly CannedMerchantItem[] {
     if (!this.#merchant) return [];
-    // The stock merchant page has no truthful ItemExtendedCost adapter yet.  Do not expose
-    // unsupported rows as ordinary-money rows: they would be clickable while the Lua branch
-    // expects an alternate currency tuple we cannot provide.
-    return this.#merchant.items.filter((item) => item.extendedCost === undefined || item.extendedCost === 0);
+    // Extended-cost rows are exposed as buyable: the live seam sends the same buy opcode and the
+    // server validates the alternate currency. Filtering them hid emblem/honor goods entirely.
+    return this.#merchant.items;
   }
 
   /** Atomically update the canned vendor state and emit the exact stock lifecycle edge. */
@@ -3147,15 +3935,14 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   merchantItemInfo(index: number): FrameXmlMerchantItemInfo | undefined {
     const item = this.merchantItem(index);
     if (!item) return undefined;
-    const supported = item.extendedCost === undefined || item.extendedCost === 0;
     return [
       item.name,
       item.texture,
       item.price,
       item.quantity,
       item.numAvailable,
-      supported && item.isUsable,
-       false,
+      item.isUsable,
+      (item.extendedCost ?? 0) > 0,
     ];
   }
 
@@ -3167,12 +3954,33 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return this.merchantItem(index)?.maxStack ?? 0;
   }
 
-  merchantItemCostInfo(_index: number): FrameXmlMerchantCostInfo {
-    // ItemExtendedCost is outside this host's inventory/currency contract. Do not invent it.
-    return [0, 0, 0];
+  merchantItemCostInfo(index: number): FrameXmlMerchantCostInfo {
+    const cost = this.merchantItem(index)?.cost;
+    return cost ? [cost.honor, cost.arena, cost.items.length] : [0, 0, 0];
   }
 
-  merchantItemCostItem(_index: number, _costIndex: number): readonly [string, number, string] | undefined {
+  merchantItemCostItem(index: number, costIndex: number): readonly [string | undefined, number, string | undefined] | undefined {
+    const required = this.merchantItem(index)?.cost?.items[costIndex - 1];
+    return required ? [required.texture, required.count, required.link] : undefined;
+  }
+
+  itemInfo(value: unknown): FrameXmlItemInfo | undefined {
+    const entry = frameXmlItemEntry(value);
+    if (entry === undefined) return undefined;
+    for (const item of this.#merchant?.items ?? []) {
+      if (item.itemId === entry && item.link && item.quality !== undefined) {
+        return [item.name, typeof value === "string" && value.includes("|Hitem:") ? value : item.link,
+          item.quality];
+      }
+      for (const required of item.cost?.items ?? []) {
+        if ((required.itemId === entry || frameXmlItemEntry(required.link) === entry)
+          && required.name && required.link && required.quality !== undefined) {
+          return [required.name,
+            typeof value === "string" && value.includes("|Hitem:") ? value : required.link,
+            required.quality];
+        }
+      }
+    }
     return undefined;
   }
 
@@ -3196,8 +4004,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   buyMerchantItem(index: number, count: number): void {
     const item = this.merchantItem(index);
-    if (!item || item.extendedCost !== undefined && item.extendedCost !== 0
-      || !item.isUsable || item.numAvailable === 0 || !Number.isInteger(count) || count < 1) return;
+    if (!item || !item.isUsable || item.numAvailable === 0 || !Number.isInteger(count) || count < 1) return;
     this.merchantBuyRequests.push({ slot: item.slot, count });
   }
 
@@ -3234,9 +4041,13 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   #spellActions(): readonly CannedAction[] {
-    return [...this.#actions.values()]
-      .filter((action) => action.kind === "spell")
-      .sort((left, right) => left.slot - right.slot);
+    return this.#spellbook;
+  }
+
+  /** The bar slot holding a spell now (the book row keeps the slot it started on). */
+  #barSlotOf(spellId: number): number | undefined {
+    for (const action of this.#actions.values()) if (action.kind === "spell" && action.id === spellId) return action.slot;
+    return undefined;
   }
 
   #spellAction(index: number): CannedAction | undefined {
@@ -3250,6 +4061,46 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   spellTabCount(): number {
     return this.#spellActions().length === 0 ? 0 : 1;
+  }
+
+  shapeshiftFormCount(): number { return this.#shapeshiftForms.length; }
+
+  shapeshiftFormInfo(index: number): FrameXmlShapeshiftFormInfo | undefined {
+    if (!Number.isInteger(index) || index < 1) return undefined;
+    const form = this.#shapeshiftForms[index - 1];
+    return form ? [form.texture, form.name, this.#activeShapeshiftForm === index,
+      form.castable !== false] : undefined;
+  }
+
+  shapeshiftFormCooldown(_index: number): FrameXmlSpellCooldown { return [0, 0, 0]; }
+
+  castShapeshiftForm(index: number): void {
+    if (!this.shapeshiftFormInfo(index)?.[3]) return;
+    const form = this.#shapeshiftForms[index - 1];
+    if (form) this.castSpellIds.push(form.spellId);
+  }
+
+  setShapeshiftForms(forms: readonly CannedShapeshiftForm[]): void {
+    const next = forms.slice(0, 10).filter((form) => Number.isSafeInteger(form.spellId)
+      && form.spellId > 0 && form.name.length > 0 && form.texture.length > 0
+      && (form.bonusActionBarOffset === undefined
+        || (Number.isSafeInteger(form.bonusActionBarOffset) && form.bonusActionBarOffset >= 0)));
+    if (JSON.stringify(next) === JSON.stringify(this.#shapeshiftForms)) return;
+    const oldOffset = this.bonusBarOffset();
+    this.#shapeshiftForms.splice(0, this.#shapeshiftForms.length, ...next);
+    if (this.#activeShapeshiftForm > next.length) this.#activeShapeshiftForm = 0;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftForms);
+    if (this.bonusBarOffset() !== oldOffset) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateBonusActionBar);
+  }
+
+  /** Simulate the server's later form/aura update independently of the cast request. */
+  setActiveShapeshiftForm(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index > this.#shapeshiftForms.length
+      || index === this.#activeShapeshiftForm) return;
+    const oldOffset = this.bonusBarOffset();
+    this.#activeShapeshiftForm = index;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftForm);
+    if (this.bonusBarOffset() !== oldOffset) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateBonusActionBar);
   }
 
   spellTabInfo(index: number): FrameXmlSpellTabInfo | undefined {
@@ -3269,11 +4120,24 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return this.#spellAction(index)?.texture;
   }
 
+  /** `GetSpellLink` over the fixture's spell actions, in the live seam's three shapes. */
+  spellLink(indexOrSpell: number | string, bookType?: string): string | undefined {
+    const actions = this.#spellActions();
+    const action = bookType !== undefined
+      ? bookType === "spell" && typeof indexOrSpell === "number" ? this.#spellAction(indexOrSpell) : undefined
+      : typeof indexOrSpell === "number"
+        ? actions.find((candidate) => candidate.id === indexOrSpell)
+        : actions.find((candidate) => candidate.name.toLocaleLowerCase() === indexOrSpell.trim().toLocaleLowerCase());
+    return action ? spellChatLink(action.id, action.name) : undefined;
+  }
+
   spellCooldown(index: number, _bookType: string | undefined): FrameXmlSpellCooldown {
     const action = this.#spellActionForValue(index);
-    const cooldown = action === undefined ? undefined : this.#cooldowns.get(action.slot);
+    const slot = action && this.#barSlotOf(action.id);
+    const cooldown = slot === undefined ? undefined : this.#cooldowns.get(slot);
     const now = this.#pump?.now() ?? 0;
-    if (!cooldown || now >= cooldown.start + cooldown.duration) return [0, 0, 0];
+    // A ready spell is `0, 0, 1`, as LiveWorldSeam.spellCooldown answers it (the stock book dims `enable ~= 1`).
+    if (!cooldown || now >= cooldown.start + cooldown.duration) return action === undefined ? [0, 0, 0] : [0, 0, 1];
     return [cooldown.start, cooldown.duration, 1];
   }
 
@@ -3299,9 +4163,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   castSpell(spell: number, _bookType: string | undefined): void {
     const action = this.#spellActionForValue(spell);
-    if (!action || this.#cooldowns.has(action.slot)) return;
+    // The fixture's cooldowns live on bar slots: the one holding this spell now, if any.
+    const slot = action && this.#barSlotOf(action.id);
+    if (!action || (slot !== undefined && this.#cooldowns.has(slot))) return;
     this.castSpellIds.push(action.id);
-    this.useAction(action.slot);
+    if (slot !== undefined) this.useAction(slot);
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown);
   }
 
@@ -3337,14 +4203,14 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return undefined;
   }
 
-  // ---- player talents ----------------------------------------------------
+  // ---- talents -----------------------------------------------------------
 
-  talentSnapshot(): FrameXmlTalentSnapshot {
-    return this.#talentSnapshot;
+  talentSnapshot(pet = false): FrameXmlTalentSnapshot | undefined {
+    return pet ? undefined : this.#talentSnapshot;
   }
 
   learnTalent(tab: number, index: number, pet: boolean | undefined, group: number | undefined): void {
-    // Canned data has no transport. Still enforce the same player-only boundary as LiveWorldSeam:
+    // Canned data has no pet packet or transport; enforce its player-only fixture boundary:
     // Lua coordinates are accepted only when they resolve to an active, affordable next rank.
     if (pet === true || (group !== undefined && group !== this.#talentSnapshot.activeTalentGroup)) return;
     const groupSnapshot = this.#talentSnapshot.groups[
@@ -3372,7 +4238,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   unitIsUnit(left: string, right: string): boolean {
     if (!this.unitExists(left) || !this.unitExists(right)) return false;
-    return left === right;
+    return this.#alias(left) === this.#alias(right);
   }
 
   unitIsPlayer(unit: string): boolean {
@@ -3402,7 +4268,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return this.unitIsDead(unit);
   }
 
-  private reaction(left: string, right: string): -1 | 0 | 1 | undefined {
+  private reaction(leftToken: string, rightToken: string): -1 | 0 | 1 | undefined {
+    const left = this.#alias(leftToken);
+    const right = this.#alias(rightToken);
     if (!this.unitExists(left) || !this.unitExists(right)) return undefined;
     if (left === right) return 1;
     if (left === "player" && right === "target") return this.#target?.reaction;

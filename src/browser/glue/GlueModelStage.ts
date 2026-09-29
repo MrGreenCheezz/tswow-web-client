@@ -272,6 +272,45 @@ export function glueQualityEffectiveStep(
   return direction < 0 && currentIndex > 0 ? 0 : undefined;
 }
 
+/** The renderer's one-off work counters: compiled programs and uploaded textures/geometries. */
+export interface GlueRendererWork {
+  readonly programs: number;
+  readonly textures: number;
+  readonly geometries: number;
+}
+
+/** Read {@link GlueRendererWork} off `WebGLRenderer.info`; a missing counter reads as zero. */
+export function glueRendererWork(info: {
+  readonly programs?: readonly unknown[] | null;
+  readonly memory?: { readonly textures?: number; readonly geometries?: number };
+}): GlueRendererWork {
+  return {
+    programs: info.programs?.length ?? 0,
+    textures: info.memory?.textures ?? 0,
+    geometries: info.memory?.geometries ?? 0,
+  };
+}
+
+/**
+ * Whether a model pass paid a one-off cost: it compiled a program or uploaded a texture or geometry
+ * the renderer had never held.
+ *
+ * **That is the character-select blur.** Picking another character builds a new figure and often a
+ * new racial backdrop, and the first pass that draws them compiles and uploads everything at once —
+ * measured on the canned charselect, switching Аларин → Лиэрель made one 364 ms pass. The warmup
+ * window only covers the renderer's first sixty passes, so that one outlier held the rolling mean
+ * near 16 ms for as long as it stayed in the window, and the ladder walked native → 0.75x → 0.5x →
+ * 0.35x: the whole screen at a third of its resolution, stretched, for several seconds (longer
+ * wherever the recovery lane is the eight-second one). A pass like that says what a *new* thing cost
+ * once, not what the scene costs per frame, so it must not steer; the next pass of the same scene is
+ * the honest sample.
+ */
+export function glueColdPass(before: GlueRendererWork, after: GlueRendererWork): boolean {
+  return after.programs > before.programs
+    || after.textures > before.textures
+    || after.geometries > before.geometries;
+}
+
 /**
  * How long the pass has to sit on the wrong side of the target before the ladder moves.
  *
@@ -1141,11 +1180,16 @@ export class GlueModelStage {
       targetWidth = Math.max(targetWidth, size.width);
       targetHeight = Math.max(targetHeight, size.height);
     }
+    // One-off work (a program compiled, a first upload, the shared target grown) is counted across
+    // the pass so it cannot steer the quality ladder; see `glueColdPass`.
+    const workBefore = glueRendererWork(renderer.info);
+    let grown = false;
     if (due.length > 0) {
       if (this.#targetWidth < targetWidth || this.#targetHeight < targetHeight) {
         this.#targetWidth = Math.max(this.#targetWidth, targetWidth);
         this.#targetHeight = Math.max(this.#targetHeight, targetHeight);
         renderer.setSize(this.#targetWidth, this.#targetHeight, false);
+        grown = true;
       }
       for (const { view, width, height } of due) {
         const seconds = view.pending;
@@ -1164,7 +1208,8 @@ export class GlueModelStage {
     // themselves force the login below its native target.
     const representative = due.some(({ view }) => view.animated || Boolean(view.actor));
     if (representative) this.#qualityRepresentativePasses += 1;
-    const steeringReady = this.#qualityRepresentativePasses > GLUE_QUALITY_WARMUP_PASSES;
+    const cold = grown || glueColdPass(workBefore, glueRendererWork(renderer.info));
+    const steeringReady = this.#qualityRepresentativePasses > GLUE_QUALITY_WARMUP_PASSES && !cold;
     const moved = this.#quality.sample(this.#lastFrameMs, nowMs, {
       representative,
       steeringReady,
@@ -1206,6 +1251,20 @@ export class GlueModelStage {
   /** Whether a widget has a scene to stand somebody in yet. */
   hasView(frame: FrameXmlFrame): boolean {
     return this.#views.has(frame);
+  }
+
+  /**
+   * Backdrop diagonal FOV for the standing-figure aspect compensation.
+   *
+   * The figure's own model carries a portrait camera made for a different frame; the number that
+   * matters here is the set's scene camera, read off the widget's live view.
+   */
+  backgroundFov(frameName: string): number | undefined {
+    for (const view of this.#views.values()) {
+      const fov = view.frame.name === frameName ? view.wvm?.sceneCamera?.fov : undefined;
+      if (fov !== undefined && Number.isFinite(fov) && fov > 0) return (fov * 180) / Math.PI;
+    }
+    return undefined;
   }
 
   /** The backdrop currently loaded in one widget, so the caller can tell when it changed. */
@@ -1877,6 +1936,27 @@ const UP = new THREE.Vector3(0, 1, 0);
  * the one `GLUE_LOGICAL_HEIGHT` is taken from.
  */
 export const GLUE_AUTHORED_ASPECT = 4 / 3;
+
+/** Past this aspect the figure compensation holds its 16:9 value; ultrawide is out of scope. */
+export const GLUE_FIGURE_COMPENSATION_MAX_ASPECT = 16 / 9;
+
+/**
+ * How much smaller a standing figure draws past 4:3, so it keeps its authored size.
+ *
+ * The backdrop camera's cover rule narrows the vertical field as the viewport widens, and a
+ * figure on its authored mark grows with it: a human fills ~60% of the frame at 4:3 and ~78%
+ * at 16:9. Scaling the actor by the current-to-authored vertical ratio holds the angular size
+ * while the sky stays fully covered — feet planted on the mark, nothing reframed. 4:3 and
+ * narrower read exactly 1, because the cover rule does not narrow there either.
+ */
+export function glueFigureScaleCompensation(diagonalDegrees: number, aspect: number): number {
+  if (!Number.isFinite(diagonalDegrees) || !Number.isFinite(aspect) || aspect <= 0) return 1;
+  const framed = Math.min(Math.max(aspect, GLUE_AUTHORED_ASPECT), GLUE_FIGURE_COMPENSATION_MAX_ASPECT);
+  const authored = glueSceneVerticalFov(diagonalDegrees, GLUE_AUTHORED_ASPECT);
+  const current = glueSceneVerticalFov(diagonalDegrees, framed);
+  if (!(authored > 0) || !(current > 0)) return 1;
+  return current / authored;
+}
 
 /**
  * The vertical field of view a backdrop wants, in degrees, for a viewport of this aspect.

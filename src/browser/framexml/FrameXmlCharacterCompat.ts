@@ -4,6 +4,14 @@
  * promoted into the corpus; they are deliberately not bridge widgets, so this compatibility floor
  * cannot change the measured widget corpus. The list is intentionally not positional: Skill is tab
  * 4 and Reputation is tab 3, so filtering an optional pane must never renumber placeholders.
+ *
+ * PetPaperDollFrame.xml is in the vertical (FrameXmlCorpus.ts), so its entry stands only for a
+ * narrower subset without it: the boot filters the promoted roots out (FrameXmlBoot.ts), and with
+ * the real page loaded stock PetPaperDollFrame_UpdateIsAvailable owns tab 2 (FrameXmlCompanions.ts).
+ *
+ * TokenFrame is never a FrameXML file in 3.3.5a: it is the load-on-demand Blizzard_TokenUI. Its
+ * placeholder stands until FrameXmlTokenOwner.ts loads that add-on, whose `<Frame name="TokenFrame"
+ * parent="CharacterFrame" id="5">` then takes the global, and stock TokenFrame_Update shows tab 5.
  */
 export const FRAMEXML_CHARACTER_OPTIONAL_SUBFRAMES = Object.freeze([
   Object.freeze({ name: "PetPaperDollFrame", id: 2 }),

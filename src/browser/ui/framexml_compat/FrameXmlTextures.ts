@@ -32,6 +32,9 @@ const UNREFERENCED_LIMIT = 192;
 
 /** Return the canonical form of an absolute HTTP(S) URL, if the reference is one. */
 function normalizedHttpTextureUrl(reference: string): string | undefined {
+  // Game paths (`Interface\\…`) are nearly every reference; letting `new URL` throw on each of
+  // them cost an exception per texture per render.
+  if (!/^https?:/i.test(reference)) return undefined;
   try {
     const absolute = new URL(reference);
     if (absolute.protocol !== "http:" && absolute.protocol !== "https:") return undefined;
@@ -50,6 +53,20 @@ function normalizedHttpTextureUrl(reference: string): string | undefined {
  * not a broken picture.
  */
 export function frameXmlTexturePath(reference: string): string {
+  const known = texturePaths.get(reference);
+  if (known !== undefined) return known;
+  const path = resolveTexturePath(reference);
+  // The corpus names a few thousand distinct pictures; a runaway producer only costs a refill.
+  if (texturePaths.size >= TEXTURE_PATH_CACHE_LIMIT) texturePaths.clear();
+  texturePaths.set(reference, path);
+  return path;
+}
+
+/** Resolved `frameXmlTexturePath` answers; the renderer asks again on every apply. */
+const texturePaths = new Map<string, string>();
+const TEXTURE_PATH_CACHE_LIMIT = 8192;
+
+function resolveTexturePath(reference: string): string {
   const trimmed = reference.trim();
   // This is transport normalization only. The injected resolver remains responsible for deciding
   // whether an absolute URL may be fetched directly (for example, by checking its gateway origin).
@@ -149,8 +166,12 @@ interface Entry {
 export interface FrameXmlTextureCacheOptions {
   /** Trusted host mapping from a `/texture`-shaped path to a URL. */
   readonly resolve: (path: string) => string;
-  /** Called once per newly arrived picture, so the renderer can re-apply it. */
-  readonly onChange?: () => void;
+  /**
+   * Called once per newly arrived picture with the path it is held under (`acquire`'s key) and
+   * whether it is a picture or an edge file's pieces, so the renderer can re-apply the frames that
+   * hold it (`FrameXmlDomRenderer.pictureArrived`).
+   */
+  readonly onChange?: (path: string, kind: "texture" | "edge") => void;
   /** Injected for tests; defaults to the global fetch. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -164,7 +185,7 @@ export interface FrameXmlTextureCacheOptions {
  */
 export class FrameXmlTextureCache implements FrameXmlTextureSource {
   readonly #resolve: (path: string) => string;
-  readonly #onChange: (() => void) | undefined;
+  readonly #onChange: ((path: string, kind: "texture" | "edge") => void) | undefined;
   readonly #fetch: typeof globalThis.fetch;
   readonly #entries = new Map<string, Entry>();
   /** Keys with `refs === 0`, oldest first, revoked past `UNREFERENCED_LIMIT`. */
@@ -302,7 +323,7 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
         }
         entry.objectUrl = objectUrl;
         entry.settled = true;
-        this.#onChange?.();
+        this.#onChange?.(path, "texture");
         return;
       } catch {
         entry.status = 0;
@@ -321,7 +342,7 @@ export class FrameXmlTextureCache implements FrameXmlTextureSource {
         return;
       }
       held.set = set;
-      this.#onChange?.();
+      this.#onChange?.(path, "edge");
     } catch {
       // A picture that will not decode is left absent; the caller keeps the frame's own colour.
     }

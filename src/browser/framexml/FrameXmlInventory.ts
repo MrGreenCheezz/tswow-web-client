@@ -8,6 +8,7 @@
  */
 
 import type { FrameXmlTsAddonStatus } from "./FrameXmlTsAddonStatus.js";
+import type { GlueWidgetStubDiagnostic } from "../glue/GlueWidgets.js";
 
 export interface FrameXmlStubRecord {
   /** The global's name, or `Type:Method` for a widget method. */
@@ -93,6 +94,7 @@ export interface FrameXmlFontObjectCensus {
 }
 
 export interface FrameXmlInventory {
+  readonly widgetStubs: readonly GlueWidgetStubDiagnostic[];
   readonly tsAddons: readonly FrameXmlTsAddonStatus[];
   readonly toc: string;
   readonly tocEntries: number;

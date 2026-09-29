@@ -323,6 +323,24 @@ end
 function issecure() return false end
 function debuginfo() end
 
+-- fengari keeps no collector of its own and raises «lua_gc not implemented» for every
+-- \`collectgarbage\` option. Client add-ons call it: MikScrollingBattleText runs
+-- \`collectgarbage("collect")\` at the end of loading its profiles (MSBTProfiles.lua:2097), and the
+-- raise took the rest of that function with it. The JavaScript engine owns the memory, so a
+-- collection request is accepted and does nothing, and the counters answer 0 kilobytes; the tuning
+-- options answer 5.1's defaults, and an unknown option still raises the way 5.1 does.
+local _gcOptions = { collect = 0, stop = 0, restart = 0, count = 0, step = true,
+  setpause = 200, setstepmul = 200, isrunning = true }
+function collectgarbage(option, argument)
+  option = option == nil and "collect" or option
+  local answer = _gcOptions[option]
+  if answer == nil then
+    error("bad argument #1 to 'collectgarbage' (invalid option '" .. tostring(option) .. "')", 2)
+  end
+  return answer
+end
+function gcinfo() return 0 end
+
 -- 5.3's \`/\` always answers a float, and a numeric \`for\` whose *initial* value is one runs its
 -- control variable as a float too. That is not cosmetic where the corpus builds a global's name
 -- out of it: \`CharacterCreate.numClasses = select("#", ...)/3\` is \`10.0\` on this dataset, so
@@ -490,6 +508,7 @@ const LUA_OK = 0;
 export class GlueLuaVm {
   readonly #state: LuaState;
   readonly #options: GlueLuaOptions;
+  readonly #hostSources: string[] = [];
   #decoder: GlueLuaTableDecoder | undefined;
   #encoder: GlueLuaValueEncoder | undefined;
   #errorHandler: GlueLuaRef | undefined;
@@ -529,6 +548,15 @@ export class GlueLuaVm {
     if (this.#closed) return;
     this.#closed = true;
     lua.lua_close(this.#state);
+  }
+
+  /**
+   * Whether `close()` has run. fengari throws on the first touch of a closed state («Cannot set
+   * properties of null»), so host callbacks that can outlive the VM — a tooltip redraw waiting on
+   * a late item row — ask this before calling in, rather than probing with a call that throws.
+   */
+  get closed(): boolean {
+    return this.#closed;
   }
 
   /**
@@ -615,6 +643,10 @@ export class GlueLuaVm {
   ): { readonly ok: boolean; readonly error?: string } {
     const L = this.#state;
     const top = lua.lua_gettop(L);
+    // The chunk, the traceback handler and every argument; see `call`.
+    if (!checkStack(L, args.length + 3)) {
+      return { ok: false, error: `${chunkName}: stack overflow passing ${args.length} arguments` };
+    }
     const loaded = this.loadBuffer(source, chunkName);
     if (loaded !== LUA_OK) {
       const message = lua.lua_tojsstring(L, -1);
@@ -699,6 +731,15 @@ export class GlueLuaVm {
   call(ref: GlueLuaRef, args: readonly unknown[] = [], results = 0): readonly unknown[] {
     const L = this.#state;
     const top = lua.lua_gettop(L);
+    // The function, its arguments and the traceback handler, asked for before the first push. A
+    // host call starts with `LUA_MINSTACK` (20) free slots and nothing grows them: a 3.3.5
+    // `COMBAT_LOG_EVENT_UNFILTERED` dispatch (event name + 19 payload values, through
+    // `__glueInvoke`'s fn/self/isEvent) threw fengari's «stack overflow» straight out of
+    // `bridge.tick`, which nothing on the world mount's frame loop catches.
+    if (!checkStack(L, args.length + 3)) {
+      this.reportError(`stack overflow passing ${args.length} arguments`);
+      return [];
+    }
     lua.lua_rawgeti(L, lua.LUA_REGISTRYINDEX, ref.key);
     if (!lua.lua_isfunction(L, -1)) {
       lua.lua_settop(L, top);
@@ -826,7 +867,25 @@ export class GlueLuaVm {
     for (let level = 0; level < 64 && lua.lua_getstack(this.#state, level, info); level += 1) {
       if (lua.lua_getinfo(this.#state, to_luastring("S"), info)) sources.push(to_jsstring(info.source));
     }
-    return sources;
+    return [...sources, ...this.#hostSources.slice().reverse()];
+  }
+
+  /** Source and line only: a full traceback searches all globals for function names in Fengari. */
+  callingLocation(excludedSource: string): string {
+    const info = new lua.lua_Debug();
+    for (let level = 0; level < 64 && lua.lua_getstack(this.#state, level, info); level += 1) {
+      if (!lua.lua_getinfo(this.#state, to_luastring("Sl", true), info)) continue;
+      const source = to_jsstring(info.source);
+      if (source === "=[C]" || source.includes(excludedSource) || info.currentline < 0) continue;
+      return source.replace(/^@/, "") + ":" + info.currentline;
+    }
+    return "";
+  }
+
+  /** XML creation has no Lua file on the stack, but its inline handlers still belong to that file. */
+  withCallingSource<T>(source: string, callback: () => T): T {
+    this.#hostSources.push(source);
+    try { return callback(); } finally { this.#hostSources.pop(); }
   }
 
   /** Retain the global `name` if it is a function, for a later `call`. */
@@ -891,6 +950,11 @@ export class GlueLuaVm {
         return;
       }
     if (typeof value === "object" && this.#encoder?.(L, value as object)) return;
+    // A nested table holds one more slot per level while its entries are pushed.
+    if (typeof value === "object" && !checkStack(L, 2)) {
+      lua.lua_pushnil(L);
+      return;
+    }
     if (Array.isArray(value)) {
       lua.lua_createtable(L, value.length, 0);
       value.forEach((entry, index) => {

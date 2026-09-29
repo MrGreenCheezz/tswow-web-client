@@ -2,6 +2,7 @@ import type { GlueLuaVm } from "../glue/GlueLua.js";
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlInventoryTooltipItem, FrameXmlInventoryTooltipSeam } from "./FrameXmlCharacterTooltip.js";
+import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
 import { newSocketInfoFromLua, openSocketingFromLua } from "../ui/Socketing.js";
 
 interface SocketSelection {
@@ -16,6 +17,12 @@ interface SocketSelection {
  * real equipped/carried item; the addon remains the owner of its button and OP85 request.
  * New-gem placement opens the native WebClient picker; pending replacements are exposed to the
  * addon's GetNewSocketInfo check so extraction cannot race a staged placement on the same item.
+ *
+ * Once the world mount has published the lazy stock owner (FrameXmlSocketOwner.ts), the same two
+ * Lua entry points hand the request to the seam's socket model instead, and the real
+ * Blizzard_ItemSocketingUI shows it: the C API below answers from that model while its session is
+ * open (and from the legacy selection otherwise), and gem-abilities' hooks on
+ * SocketInventoryItem/SocketContainerItem/ItemSocketingFrame_LoadUI run unchanged on either path.
  */
 export function installFrameXmlSocketing(
   vm: GlueLuaVm,
@@ -23,6 +30,8 @@ export function installFrameXmlSocketing(
   seam: FrameXmlWorldSeam | undefined,
 ): { afterLuaFile(path: string): void } {
   const source = seam as (FrameXmlWorldSeam & FrameXmlInventoryTooltipSeam) | undefined;
+  const stock = (): FrameXmlSocketModel | undefined => (seam?.socket?.active ? seam.socket : undefined);
+  const index = (value: unknown): number => Number(value);
   let selection: SocketSelection | undefined;
   const itemAt = (location: number, bag: number, slot: number): FrameXmlInventoryTooltipItem | undefined => {
     if (!Number.isInteger(slot) || !Number.isInteger(bag)) return undefined;
@@ -56,7 +65,40 @@ export function installFrameXmlSocketing(
     bridge.dispatchEvent(String(args[0]));
     return [];
   });
+  // The stock route: true when the published stock owner took the request (it may still be loading).
+  vm.registerGlobal("__fxSocketStock", (args) => {
+    const model = seam?.socket;
+    if (!model) return [false];
+    selection = undefined;
+    return [model.request({ location: Number(args[0]), bag: Number(args[1]), slot: Number(args[2]) })];
+  });
+  vm.registerGlobal("__fxSocketStockClose", () => [stock()?.close() === true]);
+  vm.registerGlobal("GetNumSockets", () => [stock()?.numSockets() ?? 0]);
+  vm.registerGlobal("GetSocketTypes", (args) => {
+    const type = stock()?.socketTypes(index(args[0]));
+    return type === undefined ? [] : [type];
+  });
+  vm.registerGlobal("GetExistingSocketInfo", (args) => stock()?.existingSocketInfo(index(args[0])) ?? []);
+  vm.registerGlobal("GetExistingSocketLink", (args) => {
+    const link = stock()?.existingSocketLink(index(args[0]));
+    return link === undefined ? [] : [link];
+  });
+  vm.registerGlobal("GetNewSocketLink", (args) => {
+    const link = stock()?.newSocketLink(index(args[0]));
+    return link === undefined ? [] : [link];
+  });
+  vm.registerGlobal("GetSocketItemRefundable", () => [stock()?.socketItemRefundable() === true]);
+  vm.registerGlobal("GetSocketItemBoundTradeable", () => [stock()?.socketItemBoundTradeable() === true]);
+  vm.registerGlobal("ClickSocketButton", (args) => { stock()?.clickSocket(index(args[0])); return []; });
+  vm.registerGlobal("AcceptSockets", () => { stock()?.accept(); return []; });
+  // ItemSocketingDescription:SetSocketedItem's link, the staged gems in place (FrameXmlSocketOwner.ts).
+  vm.registerGlobal("WebClientSocketedItemLink", () => {
+    const link = stock()?.socketedItemLink();
+    return link === undefined ? [] : [link];
+  });
   vm.registerGlobal("GetSocketItemInfo", () => {
+    const model = stock();
+    if (model) return model.socketItemInfo();
     const item = current();
     if (!item || !selection) return [];
     const texture = selection.location === 0
@@ -66,6 +108,8 @@ export function installFrameXmlSocketing(
       texture, item.metadata?.quality ?? item.template?.quality ?? 0];
   });
   vm.registerGlobal("GetNewSocketInfo", (args) => {
+    const model = stock();
+    if (model) return model.newSocketInfo(index(args[0]));
     if (!selection || !current()) return [];
     const staged = newSocketInfoFromLua(selection.location, selection.bag, selection.slot, Number(args[0]));
     return staged ? [staged] : [];
@@ -85,8 +129,15 @@ export function installFrameXmlSocketing(
 
 const SOCKETING_PRELUDE = `
 do
-  local function extractionEnabled(enabled)
+  -- The stand-in frame below, never the stock one: once Blizzard_ItemSocketingUI has loaded,
+  -- ItemSocketingFrame is the stock frame and none of the legacy code may touch its buttons.
+  local function legacyFrame()
     local frame = rawget(_G, "ItemSocketingFrame")
+    if frame and rawget(frame, "__webclientLegacy") then return frame end
+  end
+
+  local function extractionEnabled(enabled)
+    local frame = legacyFrame()
     if not frame then return end
     for _, button in ipairs({ frame:GetChildren() }) do
       local kind = button:GetObjectType()
@@ -97,7 +148,7 @@ do
   end
 
   function __fxSocketUpdate()
-    local frame = rawget(_G, "ItemSocketingFrame")
+    local frame = legacyFrame()
     if not frame then return end
     local name, icon = GetSocketItemInfo()
     if not name then
@@ -113,6 +164,7 @@ do
   function __fxSocketLoadUI()
     if rawget(_G, "ItemSocketingFrame") then return end
     local frame = CreateFrame("Frame", "ItemSocketingFrame", UIParent)
+    frame.__webclientLegacy = true
     UISpecialFrames = UISpecialFrames or {}
     table.insert(UISpecialFrames, "ItemSocketingFrame")
     frame:SetSize(390, 170)
@@ -152,14 +204,27 @@ do
   ItemSocketingFrame_Update = __fxSocketUpdate
 
   function CloseSocketInfo()
+    -- A stock session ends in the model, which raises SOCKET_INFO_CLOSE for the stock frame.
+    if __fxSocketStockClose() then return end
     __fxSocketClear()
-    extractionEnabled(false)
     local frame = rawget(_G, "ItemSocketingFrame")
+    -- The stock frame's own OnHide after its session already ended: nothing legacy to close.
+    if frame and not rawget(frame, "__webclientLegacy") then return end
+    extractionEnabled(false)
     if frame then frame:Hide() end
     __fxSocketEvent("SOCKET_INFO_CLOSE")
   end
 
   local function open(location, bag, slot)
+    -- The published stock owner takes the request (FrameXmlSocketOwner.ts); UIParent's
+    -- SOCKET_INFO_UPDATE then shows the real ItemSocketingFrame.
+    if __fxSocketStock(location, bag, slot) then return end
+    if rawget(_G, "ItemSocketingFrame") and not legacyFrame() then
+      -- Blizzard_ItemSocketingUI loaded but failed its gate: the native picker is the fallback.
+      if __fxSocketSelect(location, bag, slot) then __fxSocketInsert() end
+      __fxSocketClear()
+      return
+    end
     -- Frame creation starts hidden, so create it before committing the selected item: OnHide
     -- clears the previous session. The addon's LoadUI hook creates its own extraction button.
     ItemSocketingFrame_LoadUI()

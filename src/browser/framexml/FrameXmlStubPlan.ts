@@ -1,3 +1,5 @@
+import type { GlueLoadCheckpoint } from "../glue/GlueLoadScheduler.js";
+
 /**
  * What the in-world corpus asks of the host, measured from its own text.
  *
@@ -93,52 +95,61 @@ export const FRAMEXML_PRE_EXISTING_NAMES: ReadonlySet<string> = new Set([
  * `f"literal"` still reads as a call and the surrounding token boundaries do not move.
  */
 export function stripLuaText(source: string): string {
-  let out = "";
+  return stripLuaSource(source, false);
+}
+
+/** Copy code in spans: character-by-character concatenation creates millions of GC objects. */
+function stripLuaSource(source: string, keepStrings: boolean): string {
+  const spans: string[] = [];
   let index = 0;
-  const length = source.length;
+  let plainStart = 0;
   const longBracket = (at: number): string | undefined => {
     const match = /^\[(=*)\[/.exec(source.slice(at, at + 32));
     return match ? `]${match[1] ?? ""}]` : undefined;
   };
-  while (index < length) {
+  while (index < source.length) {
     const char = source[index]!;
     if (char === "-" && source[index + 1] === "-") {
+      spans.push(source.slice(plainStart, index));
       const closing = longBracket(index + 2);
       if (closing) {
         const end = source.indexOf(closing, index + 2);
-        index = end < 0 ? length : end + closing.length;
-        out += "\n";
-        continue;
+        index = end < 0 ? source.length : end + closing.length;
+        spans.push("\n");
+      } else {
+        const newline = source.indexOf("\n", index);
+        index = newline < 0 ? source.length : newline;
       }
-      const newline = source.indexOf("\n", index);
-      index = newline < 0 ? length : newline;
+      plainStart = index;
       continue;
     }
     if (char === '"' || char === "'") {
+      const start = index;
+      spans.push(source.slice(plainStart, start));
       index += 1;
-      while (index < length) {
-        if (source[index] === "\\") {
-          index += 2;
-          continue;
-        }
-        const inner = source[index]!;
-        index += 1;
+      while (index < source.length) {
+        const inner = source[index++]!;
+        if (inner === "\\") { index += 1; continue; }
         if (inner === char || inner === "\n") break;
       }
-      out += '""';
+      spans.push(keepStrings ? source.slice(start, index) : '""');
+      plainStart = index;
       continue;
     }
-    const closing = longBracket(index);
+    const closing = char === "[" ? longBracket(index) : undefined;
     if (closing) {
-      const end = source.indexOf(closing, index);
-      index = end < 0 ? length : end + closing.length;
-      out += '""';
+      const start = index;
+      spans.push(source.slice(plainStart, start));
+      const end = source.indexOf(closing, index + closing.length);
+      index = end < 0 ? source.length : end + closing.length;
+      spans.push(keepStrings ? source.slice(start, index) : '""');
+      plainStart = index;
       continue;
     }
-    out += char;
     index += 1;
   }
-  return out;
+  spans.push(source.slice(plainStart));
+  return spans.join("");
 }
 
 /** `<Script>…</Script>` bodies written inline, i.e. every one without a `file=` attribute. */
@@ -169,53 +180,38 @@ const METHOD_DEFINITION = /\bfunction[ \t]+[A-Za-z_][A-Za-z0-9_.]*[.:]([A-Za-z_]
  * installed, without special-casing LibStub or any other library name.
  */
 function stripLuaComments(source: string): string {
-  let out = "";
-  let index = 0;
-  const longBracket = (at: number): string | undefined => {
-    const match = /^\[(=*)\[/.exec(source.slice(at, at + 32));
-    return match ? `]${match[1] ?? ""}]` : undefined;
-  };
-  while (index < source.length) {
-    const char = source[index]!;
-    if (char === '"' || char === "'") {
-      const quote = char;
-      out += char;
-      index += 1;
-      while (index < source.length) {
-        const inner = source[index]!;
-        out += inner;
-        index += 1;
-        if (inner === "\\" && index < source.length) {
-          out += source[index]!;
-          index += 1;
-        } else if (inner === quote || inner === "\n") break;
-      }
-      continue;
-    }
-    if (char === "-" && source[index + 1] === "-") {
-      const closing = longBracket(index + 2);
-      if (closing) {
-        const end = source.indexOf(closing, index + 2);
-        index = end < 0 ? source.length : end + closing.length;
-        out += "\n";
-        continue;
-      }
-      const newline = source.indexOf("\n", index);
-      index = newline < 0 ? source.length : newline;
-      continue;
-    }
-    const closing = longBracket(index);
-    if (closing) {
-      const end = source.indexOf(closing, index + closing.length);
-      const until = end < 0 ? source.length : end + closing.length;
-      out += source.slice(index, until);
-      index = until;
-      continue;
-    }
-    out += char;
-    index += 1;
+  return stripLuaSource(source, true);
+}
+
+/**
+ * `local a, b, c = a, b, c` — a file-scope capture of globals into same-named locals, possibly
+ * wrapped over several lines. Every client add-on that caches the C API does this, and
+ * AnyIDTooltip's opening statement (core.lua:1-4) spans three lines.
+ */
+const IDENTITY_CAPTURE = /\blocal\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=(?!=)\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)(?![ \t]*[\w.:(\[{"'])/g;
+
+/**
+ * Names a chunk captures into a local of the same name.
+ *
+ * The call rule above cannot see through such a capture: `UnitGUID(unit)` then calls the *local*,
+ * so the name looks chunk-defined and is never planned. When no other planned file calls it
+ * directly, the capture ran against the `_G` metamethod with the name undeclared and got nil —
+ * measured: AnyIDTooltip's `local … UnitGUID … = … UnitGUID` left its OnTooltipSetUnit hook raising
+ * «attempt to call a nil value (upvalue 'UnitGUID')» on every GameTooltip:SetUnit (core.lua:212).
+ * Position matters: `local x, y = x, other.y` captures only `x`.
+ */
+function identityCaptures(source: string): ReadonlySet<string> {
+  const captured = new Set<string>();
+  IDENTITY_CAPTURE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = IDENTITY_CAPTURE.exec(source)) !== null) {
+    const left = match[1]!.split(",").map((name) => name.trim());
+    const right = match[2]!.split(",").map((name) => name.trim());
+    left.forEach((name, index) => {
+      if (name && name === right[index] && !LUA_KEYWORDS.has(name)) captured.add(name);
+    });
   }
-  return out;
+  return captured;
 }
 
 const STRING_CONSTANT = /\b(?:local[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:,[^=\r\n]*)?=[ \t]*(["'])([A-Za-z_][A-Za-z0-9_]*)\2/g;
@@ -235,11 +231,15 @@ function indexedGlobalAssignments(source: string): ReadonlySet<string> {
   const constants = new Map<string, string>();
   STRING_CONSTANT.lastIndex = 0;
   while ((match = STRING_CONSTANT.exec(code)) !== null) constants.set(match[1]!, match[3]!);
-  for (const [variable, value] of constants) {
-    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const indexed = new RegExp(`\\b_G[ \\t]*\\[[ \\t]*${escaped}[ \\t]*\\][ \\t]*=[^=]`);
-    const setter = new RegExp(`\\bsetglobal[ \\t]*\\([ \\t]*${escaped}[ \\t]*,`);
-    if (indexed.test(code) || setter.test(code)) result.add(value);
+  // Scan each syntax once instead of twice per string constant. Generated catalogues
+  // can contain thousands of constants but very few exported globals.
+  const indexed = /\b_G[ \t]*\[[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\][ \t]*=[^=]/g;
+  const setter = /\bsetglobal[ \t]*\([ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*,/g;
+  for (const pattern of [indexed, setter]) {
+    while ((match = pattern.exec(code)) !== null) {
+      const value = constants.get(match[1]!);
+      if (value !== undefined) result.add(value);
+    }
   }
   return result;
 }
@@ -255,7 +255,31 @@ function bump(counts: Map<string, number>, name: string): void {
  * one, so every definition in the whole corpus is collected before any call site is judged.
  */
 export function frameXmlStubPlan(chunks: readonly FrameXmlLuaChunk[]): FrameXmlStubPlan {
-  const stripped = chunks.map((chunk) => stripLuaText(chunk.source));
+  const steps = frameXmlStubPlanSteps(chunks);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/** Same two-pass plan, with task boundaries between source chunks during a world load. */
+export async function frameXmlStubPlanAsync(
+  chunks: readonly FrameXmlLuaChunk[], checkpoint: GlueLoadCheckpoint,
+): Promise<FrameXmlStubPlan> {
+  const steps = frameXmlStubPlanSteps(chunks);
+  let step = steps.next();
+  while (!step.done) {
+    await checkpoint();
+    step = steps.next();
+  }
+  return step.value;
+}
+
+function* frameXmlStubPlanSteps(chunks: readonly FrameXmlLuaChunk[]): Generator<void, FrameXmlStubPlan> {
+  const stripped: string[] = [];
+  for (const chunk of chunks) {
+    stripped.push(stripLuaText(chunk.source));
+    yield;
+  }
   const defined = new Set<string>();
   const attached = new Set<string>();
   for (let index = 0; index < stripped.length; index += 1) {
@@ -270,6 +294,7 @@ export function frameXmlStubPlan(chunks: readonly FrameXmlLuaChunk[]): FrameXmlS
     METHOD_DEFINITION.lastIndex = 0;
     while ((match = METHOD_DEFINITION.exec(source)) !== null) attached.add(match[1]!);
     for (const name of indexedGlobalAssignments(chunks[index]!.source)) defined.add(name);
+    yield;
   }
 
   const apiCallSites = new Map<string, number>();
@@ -288,11 +313,17 @@ export function frameXmlStubPlan(chunks: readonly FrameXmlLuaChunk[]): FrameXmlS
         if (name) locals.add(name);
       }
     }
+    // A local that merely aliases an undefined global is still that global in call position: the
+    // chunk calls the host function through its own upvalue, which is the same "called and never
+    // defined" fact the rule below is about. Only a capture that is then *called* counts, so a
+    // `local ChatFrame1 = ChatFrame1` (a widget read, never called) is not turned into a stub.
+    const captured = identityCaptures(source);
     CALL_POSITION.lastIndex = 0;
     while ((match = CALL_POSITION.exec(source)) !== null) {
       const name = match[2]!;
       if (LUA_KEYWORDS.has(name) || FRAMEXML_PRE_EXISTING_NAMES.has(name)) continue;
-      if (defined.has(name) || locals.has(name)) continue;
+      if (defined.has(name)) continue;
+      if (locals.has(name) && !captured.has(name)) continue;
       bump(apiCallSites, name);
     }
     METHOD_CALL.lastIndex = 0;
@@ -302,6 +333,7 @@ export function frameXmlStubPlan(chunks: readonly FrameXmlLuaChunk[]): FrameXmlS
       if (attached.has(name)) continue;
       bump(methodCallSites, name);
     }
+    yield;
   }
 
   const byCount = (entries: Map<string, number>): Map<string, number> =>

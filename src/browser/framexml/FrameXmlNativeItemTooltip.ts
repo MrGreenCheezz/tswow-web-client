@@ -51,14 +51,19 @@ export function installFrameXmlNativeItemTooltip(
     else GameTooltip:SetBagItem(bag, slot) end
   `, "@framexml-native-item-tooltip", ["kind", "bag", "slot"]);
   if (!dispatch) throw new Error("Could not compile the native item tooltip adapter");
-  vm.registerGlobal("__fxNativeItemTooltipLine", (args) => {
-    if (!active || key === undefined || typeof args[0] !== "string" || lines.length >= 64) return [];
-    const runs = parseFrameXmlText(args[0]);
-    const color = args.slice(1, 4).every((value) => typeof value === "number" && Number.isFinite(value))
-      ? `#${args.slice(1, 4).map((value) => Math.round(Math.max(0, Math.min(1, value as number)) * 255)
+  /** `r, g, b` from Lua as `#rrggbb`, or nothing when the caller gave none. */
+  const hexOf = (values: readonly unknown[]): string | undefined =>
+    values.length === 3 && values.every((value) => typeof value === "number" && Number.isFinite(value))
+      ? `#${values.map((value) => Math.round(Math.max(0, Math.min(1, value as number)) * 255)
         .toString(16).padStart(2, "0")).join("")}` : undefined;
-    lines.push({ text: runs.map((run) => run.text).join(""),
-      runs: runs.map((run) => ({ ...run, color: run.color ?? color })) });
+  const runsOf = (text: string, color: string | undefined): NonNullable<TooltipLine["runs"]> =>
+    parseFrameXmlText(text).map((run) => ({ ...run, color: run.color ?? color }));
+  const append = (runs: NonNullable<TooltipLine["runs"]>): void => {
+    const text = runs.map((run) => run.text).join("");
+    // `SetTooltipMoney` opens its row with `AddLine(" ")` and draws the coins over it; a blank
+    // row is not a line an add-on wrote.
+    if (text.trim().length === 0) return;
+    lines.push({ text, runs });
     if (!rebuilding && !refreshQueued) {
       refreshQueued = true;
       queueMicrotask(() => {
@@ -66,13 +71,32 @@ export function installFrameXmlNativeItemTooltip(
         if (active && key !== undefined) refreshTooltip();
       });
     }
+  };
+  vm.registerGlobal("__fxNativeItemTooltipLine", (args) => {
+    if (!active || key === undefined || typeof args[0] !== "string" || lines.length >= 64) return [];
+    append(runsOf(args[0], hexOf(args.slice(1, 4))));
+    return [];
+  });
+  // `AddDoubleLine(left, right, lr, lg, lb, rr, rg, rb)`: AnyIDTooltip's «ItemID: 12345» row. The
+  // native box has one column, so the two halves become one line with the stock gap between them.
+  vm.registerGlobal("__fxNativeItemTooltipDoubleLine", (args) => {
+    if (!active || key === undefined || lines.length >= 64) return [];
+    const left = typeof args[0] === "string" || typeof args[0] === "number" ? String(args[0]) : undefined;
+    if (left === undefined) return [];
+    const right = typeof args[1] === "string" || typeof args[1] === "number" ? String(args[1]) : "";
+    append([...runsOf(left, hexOf(args.slice(2, 5))),
+      ...(right.length > 0 ? [{ text: "  " }, ...runsOf(right, hexOf(args.slice(5, 8)))] : [])]);
     return [];
   });
   const hooked = vm.execute(`
-    local append = __fxNativeItemTooltipLine
+    local append, double = __fxNativeItemTooltipLine, __fxNativeItemTooltipDoubleLine
     hooksecurefunc(GameTooltip, "AddLine", function(self, text, r, g, b) append(text, r, g, b) end)
+    hooksecurefunc(GameTooltip, "AddDoubleLine", function(self, left, right, lr, lg, lb, rr, rg, rb)
+      double(left, right, lr, lg, lb, rr, rg, rb)
+    end)
   `, "@framexml-native-item-tooltip-hooks");
   vm.setGlobal("__fxNativeItemTooltipLine", undefined);
+  vm.setGlobal("__fxNativeItemTooltipDoubleLine", undefined);
   if (!hooked.ok) { active = false; vm.release(dispatch); throw new Error(hooked.error); }
   const hide = (): void => {
     if (key === undefined) return;

@@ -1,5 +1,6 @@
 import type { ItemMetadata } from "../ItemMetadata.js";
 import type { VendorInventory } from "../../world/VendorProtocol.js";
+import type { VendorCost } from "../../gateway/VendorCostMetadata.js";
 
 /** The part of the item-template row that can affect a MerchantFrame presentation. */
 export interface FrameXmlMerchantItemTemplate {
@@ -18,6 +19,8 @@ export interface FrameXmlMerchantMetadataCoordinatorOptions {
   vendor(): VendorInventory | undefined;
   itemMetadata(): FrameXmlMerchantMetadataCache | undefined;
   itemTemplate(entry: number): FrameXmlMerchantItemTemplate | undefined;
+  /** The already-loaded ItemExtendedCost row; a missing row never fabricates a price. */
+  costFor?(id: number): VendorCost | undefined;
   /** Called after an HTTP response changed the cache; the owner decides whether to repaint. */
   onMetadataLoaded(): void;
 }
@@ -25,7 +28,7 @@ export interface FrameXmlMerchantMetadataCoordinatorOptions {
 export interface FrameXmlMerchantMetadataRefresh {
   /** Whether the relevant presentation fields differ from the previous refresh. */
   readonly changed: boolean;
-  /** Stable signature of supported rows and their visible metadata. */
+  /** Stable signature of vendor rows, costs and their visible metadata. */
   readonly signature: string;
 }
 
@@ -39,9 +42,8 @@ export interface FrameXmlMerchantMetadataCoordinator {
 /**
  * Coordinates merchant item metadata without putting network work in a synchronous C API.
  *
- * Only ordinary-money rows enter this state machine.  The stock UI does not render unsupported
- * ItemExtendedCost rows in this slice, so metadata for those rows is neither prefetched nor able
- * to produce a repaint.  HTTP completion and the wire QUERY_CACHE_CHANGED callback can both call
+ * Both ordinary and extended-cost rows enter this state machine. Once the cost DBC arrives, its
+ * turn-in items are prefetched as well. HTTP completion and the wire QUERY_CACHE_CHANGED callback can both call
  * `refresh("metadata")`; the signature makes the second path a no-op.
  */
 export function createFrameXmlMerchantMetadataCoordinator(
@@ -50,26 +52,32 @@ export function createFrameXmlMerchantMetadataCoordinator(
   let request = "";
   let presentation = "";
 
-  const supportedRows = (vendor: VendorInventory): typeof vendor.items =>
-    vendor.items.filter((item) => item.extendedCost === 0);
+  const referencedEntries = (vendor: VendorInventory): number[] => [...new Set(vendor.items.flatMap((item) => [
+    item.itemId,
+    ...(options.costFor?.(item.extendedCost)?.items.map((cost) => cost.entry) ?? []),
+  ]))];
+
+  const metadataShape = (entry: number, metadata: FrameXmlMerchantMetadataCache | undefined): string => {
+    const value = metadata?.get(entry);
+    const template = options.itemTemplate(entry);
+    return [entry, value?.name ?? template?.name ?? "", value?.displayId ?? "",
+      value?.iconId ?? "", value?.stackable ?? template?.stackable ?? ""].join(":");
+  };
 
   const signatureOf = (
     vendor: VendorInventory,
     metadata: FrameXmlMerchantMetadataCache | undefined,
-  ): string => supportedRows(vendor).map((item) => {
-    const value = metadata?.get(item.itemId);
-    const template = options.itemTemplate(item.itemId);
+  ): string => vendor.items.map((item) => {
+    const cost = item.extendedCost > 0 ? options.costFor?.(item.extendedCost) : undefined;
     return [
-      item.itemId,
-      value?.name ?? template?.name ?? "",
-      value?.displayId ?? "",
-      value?.iconId ?? "",
-      value?.stackable ?? template?.stackable ?? "",
+      metadataShape(item.itemId, metadata), item.extendedCost,
+      cost?.honor ?? "", cost?.arena ?? "", cost?.arenaBracket ?? "", cost?.rating ?? "",
+      ...(cost?.items.map((required) => `${required.count}:${metadataShape(required.entry, metadata)}`) ?? []),
     ].join(":");
   }).join("|");
 
   const prefetch = (vendor: VendorInventory, metadata: FrameXmlMerchantMetadataCache): void => {
-    const unresolved = [...new Set(supportedRows(vendor).map((item) => item.itemId))]
+    const unresolved = referencedEntries(vendor)
       .filter((itemId) => !metadata.get(itemId));
     if (unresolved.length === 0) {
       request = "";

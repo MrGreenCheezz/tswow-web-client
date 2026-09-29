@@ -71,6 +71,35 @@ export interface FrameXmlRect {
   readonly bottom: number;
 }
 
+/**
+ * The GameTooltip box, shared by the C-method estimate (`GlueWidgets.sizeGameTooltip`) and the
+ * renderer that lays the rows out, so the width Lua reads before the next paint and the width the
+ * page then draws are computed from the same rules.
+ *
+ * `PADDING` is the stock template's own text inset: `GameTooltipTemplate.xml` anchors
+ * `$parentTextLeft1` at TOPLEFT (10, -10), and each further line TOPLEFT→BOTTOMLEFT at y = -2,
+ * which is `ROW_GAP`. `COLUMN_GAP` is the least room kept between a double line's two halves.
+ *
+ * `WRAP_WIDTH` is the widest a tooltip may grow for a line that *wraps* (`AddLine(…, wrap)`,
+ * `SetText(…, wrap)`, prose): such a line never widens the box past it, and wraps at whatever
+ * width the unwrapped rows gave the box when that is wider. It is the renderer's previous prose cap
+ * kept as a name, not a measurement — the 3.3.5 client's own wrap width for a prose-only tooltip
+ * has not been measured against the live client.
+ *
+ * A wrapped line does widen the box up to that cap, on purpose. The stricter rule, where wrapped
+ * lines add no width (`width: 0; min-width: 100%`) and the box is only its widest unwrapped row,
+ * draws a spell tooltip as narrow as its name. Measured on the dev page for «Боевой крик» plus a
+ * 92-character description: that rule gives a 102×144 box with the description 82 units wide and
+ * 108 tall; this one gives 360×60, with the description on 2 lines 340 wide.
+ */
+export const FRAME_XML_TOOLTIP_LAYOUT = Object.freeze({
+  PADDING: 10,
+  ROW_GAP: 2,
+  COLUMN_GAP: 8,
+  MIN_WIDTH: 32,
+  WRAP_WIDTH: 360,
+});
+
 /** Canonicalize widget element names as the client does (XML names are case-insensitive). */
 export function canonicalFrameXmlWidgetType(value: string): FrameXmlWidgetType | undefined {
   const wanted = value.trim().toLowerCase();
@@ -201,6 +230,12 @@ export interface FrameXmlTexCoords {
   readonly right: number;
   readonly top: number;
   readonly bottom: number;
+  /**
+   * The eight-number `SetTexCoord(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy)` when its corners are not
+   * an axis-aligned rectangle (a rotated or sheared picture: TaxiFrame's route lines, the paper
+   * doll's flyout arrows). `left`…`bottom` then only repeat UL, UR and LL for older readers.
+   */
+  readonly corners?: readonly [number, number, number, number, number, number, number, number] | undefined;
 }
 
 export interface FrameXmlInsets {
@@ -320,12 +355,21 @@ export interface FrameXmlEditBoxState {
   multiLine: boolean;
   historyLines: number;
   focused: boolean;
+  /**
+   * `autoFocus` / `SetAutoFocus`: the box takes the keyboard when it is shown. True unless the XML
+   * or Lua says otherwise, as in the client — the corpus writes `autoFocus="false"` 40 times and
+   * `"true"` twice, and eight stock StaticPopups (CHANNEL_INVITE, JOIN_CHANNEL, NAME_CHAT, …) get
+   * their caret from it alone.
+   */
+  autoFocus: boolean;
   highlightStart?: number | undefined;
   highlightEnd?: number | undefined;
   /** Native EditBox history is bounded by `historyLines`; this is not a chat log. */
   history: string[];
   historyIndex: number;
   cursorPosition: number;
+  /** Explicit Lua caret/selection requests; browser selection changes do not advance this. */
+  selectionRevision: number;
 }
 
 export interface FrameXmlSliderState {
@@ -342,6 +386,8 @@ export interface FrameXmlStatusBarState extends FrameXmlSliderState {
 }
 
 export interface FrameXmlScrollState {
+  /** Only this child's subtree scrolls; scrollbar frames and decoration stay fixed. */
+  child?: FrameXmlFrame | undefined;
   horizontalScroll: number;
   verticalScroll: number;
   horizontalScrollRange: number;
@@ -400,6 +446,15 @@ export interface LuaAddonRuntime {
   resolveGlobalHandler?(name: string): FrameXmlScriptHandler | undefined;
   /** Give the adapter the widget it must expose to Lua as `self`. */
   bindFrame?(frame: FrameXmlFrame): void;
+  /** Native animation objects are distinct from drawable child widgets. */
+  bindAnimations?(frame: FrameXmlFrame, elements: readonly FrameXmlElement[]): void;
+  tickAnimations?(elapsedSeconds: number): void;
+  /**
+   * Clear active effects when a region becomes hidden — called for every frame an OnHide reaches,
+   * including through a hidden ancestor. The widget layer also drops visibility-bound state here
+   * (a GameTooltip's owner), because it is the one hook every host already forwards.
+   */
+  hideAnimations?(frame: FrameXmlFrame): void;
   /** Drop the adapter's view of a widget that the bridge destroyed. */
   releaseFrame?(frame: FrameXmlFrame): void;
 }
@@ -412,6 +467,11 @@ export interface FrameXmlDiagnostic {
 export interface FrameXmlFrame {
   readonly type: FrameXmlWidgetType;
   readonly name: string;
+  /**
+   * Bumped by the bridge on every announced change to this frame. A renderer re-applies a frame
+   * whose version it has not applied; absent (a hand-made frame) means "always re-apply".
+   */
+  readonly renderVersion?: number;
   /** False when the bridge invented the name; `GetName()` must then return nil. */
   readonly named: boolean;
   readonly parent?: FrameXmlFrame;
@@ -431,6 +491,13 @@ export interface FrameXmlFrame {
   readonly drawSubLevel: number;
   readonly texCoords?: FrameXmlTexCoords | undefined;
   readonly vertexColor?: FrameXmlColor | undefined;
+  /**
+   * The Texture *is* a colour: `SetTexture(r, g, b[, a])` or an XML `<Color>` child. Only then does
+   * a Texture with no file paint a flat rectangle. `SetVertexColor` alone tints a picture and draws
+   * nothing without one — stock TargetFrame.lua calls `self.portrait:SetVertexColor(1, 1, 1)` on
+   * every update, and treating that as a fill painted the white square behind the target portrait.
+   */
+  readonly colorFill?: boolean;
   readonly gradient?: FrameXmlGradient | undefined;
   readonly alphaMode: string;
   readonly desaturated: boolean;
@@ -442,6 +509,11 @@ export interface FrameXmlFrame {
    * state rather than a recorded no-op.
    */
   readonly textureRotation: number;
+  /**
+   * The picture came from `SetPortraitToTexture`: drawn cropped to a circle, as the client renders
+   * a portrait under its ring art. A plain `SetTexture` clears it.
+   */
+  readonly portrait?: boolean;
   /**
    * The `button..Down`/`button..Up` combinations `RegisterForClicks` armed, upper-cased.
    *
@@ -456,11 +528,19 @@ export interface FrameXmlFrame {
   readonly movable: boolean;
   readonly moving: boolean;
   readonly tooltipCursorAnchor?: { readonly x: number; readonly y: number } | undefined;
+  /** `GameTooltip:SetMinimumWidth`, in UI units; the renderer's floor for the box. 0 when unset. */
+  readonly tooltipMinimumWidth?: number;
   readonly backdrop?: FrameXmlBackdrop | undefined;
   readonly backdropColor?: FrameXmlColor | undefined;
   readonly backdropBorderColor?: FrameXmlColor | undefined;
   /** Font object name currently applied to a FontString/EditBox/Button label. */
   readonly fontObject: string;
+  /**
+   * A Button's `<ButtonText>` that declared no font of its own, and therefore draws in its owner's
+   * state font: `<NormalFont>` while enabled, `<DisabledFont>` while disabled, `<HighlightFont>` under
+   * the pointer. See `FrameXmlUiBridge.syncButtonLabelFont`.
+   */
+  readonly inheritsButtonFont?: boolean;
   readonly textColor?: FrameXmlColor | undefined;
   readonly justifyH: string;
   readonly justifyV: string;
@@ -483,6 +563,10 @@ export interface FrameXmlFrame {
   readonly enabled: boolean;
   readonly checked: boolean;
   readonly alpha: number;
+  /** Transient animation result; Stop restores the authored/base alpha. */
+  readonly animationAlpha?: number | undefined;
+  /** Transient local transform; authored points and SetScale remain untouched. */
+  readonly animationTransform?: string | undefined;
   readonly scale: number;
   readonly frameLevel: number;
   readonly frameStrata: string;

@@ -2,28 +2,56 @@ import {
   ACTION_BUTTON_ITEM, ACTION_BUTTON_MACRO, ACTION_BUTTON_SPELL,
 } from "../../world/ActionBarProtocol.js";
 import {
-  isPlayerGhost, player as playerFields, readField, unit as unitField,
+  isPlayerGhost, PLAYER_FLAGS_AFK, PLAYER_FLAGS_DND, PLAYER_FLAGS_RESTING,
+  player as playerFields, readByte, readField, unit as unitField,
   UNIT_DYNFLAG_TAPPED, UNIT_DYNFLAG_TAPPED_BY_PLAYER,
 } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../../world/FactionRules.js";
+import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../../world/FactionRules.js";
 import { isWorldObjectDead } from "../../world/WorldState.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import type { WorldClient } from "../../world/WorldClient.js";
+import type { LevelUpInfo } from "../../world/CharacterProgressProtocol.js";
 import type { WorldStore } from "../../world/WorldStore.js";
 import { SELF } from "../../world/WorldStore.js";
 import {
   INVENTORY_SLOT_BAG_0,
   INVENTORY_SLOT_BAG_START,
+  BANK_BAG_SLOTS,
+  BANK_SLOT_BAG_START,
   BUYBACK_SLOT_START,
   BUYBACK_SLOTS,
+  EQUIPMENT_SLOT_NAMES,
+  INVENTORY_SLOT_ITEM_START,
+  KEYRING_SLOTS,
+  KEYRING_SLOT_START,
   entryOf,
   fieldGuid,
+  inventoryWatch,
+  isBankSlot,
+  itemWear,
   playerInventory,
+  slotAt,
   stackCount,
 } from "../Inventory.js";
 import type { BuybackSlotState, ItemSlotState, PlayerInventoryState } from "../Inventory.js";
-import { GROUPTYPE_RAID, MEMBER_STATUS_ONLINE, MEMBER_STATUS_PVP } from "../../world/GroupProtocol.js";
+import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";
+import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
+import {
+  FRAMEXML_BIND_CONFIRM_EVENTS, FRAMEXML_BIND_WHEN_EQUIPPED, FRAMEXML_BIND_WHEN_USE, FRAMEXML_DUAL_WIELD_SPELLS,
+  FRAMEXML_INVENTORY_ALERT_SLOTS, FRAMEXML_INVSLOT_AMMO, FRAMEXML_INVTYPE_AMMO, FRAMEXML_INVTYPE_NON_EQUIP,
+  FRAMEXML_ITEM_CLASS_CONSUMABLE,
+  FRAMEXML_ITEM_FIELD_FLAG_SOULBOUND, FRAMEXML_ITEM_INVENTORY_BAG_BIT_OFFSET, FRAMEXML_ITEM_INVENTORY_LOCATION_BAGS,
+  FRAMEXML_ITEM_INVENTORY_LOCATION_PLAYER, frameXmlEquipmentSlotsForInventoryType,
+} from "./FrameXmlItemActions.js";
+import { ITEM_EQUIP_COOLDOWN_MS } from "../../world/ItemProtocol.js";
+import { withEventOwnersExcluded } from "../ui/framexml_compat/FrameXmlRuntime.js";
+import { readSkills } from "../ui/Skills.js";
+import { characterCombatRatingBonus, spellCritFromIntellect, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
+import {
+  MIRROR_TIMER_BREATH, MIRROR_TIMER_FATIGUE, MIRROR_TIMER_NAMES, mirrorTimerRemaining,
+} from "../../world/MirrorTimerProtocol.js";
+import { GROUPTYPE_LFG, GROUPTYPE_RAID, LOOT_METHOD_MASTER, MEMBER_STATUS_ONLINE, MEMBER_STATUS_PVP } from "../../world/GroupProtocol.js";
 import type { GroupMember } from "../../world/GroupProtocol.js";
 import {
   GROUP_UPDATE_AURAS,
@@ -38,9 +66,20 @@ import {
   MEMBER_STATUS_GHOST,
   type PartyMemberStats,
 } from "../../world/PartyProtocol.js";
+import { MEMBER_STATUS_AFK, MEMBER_STATUS_DND } from "../../world/PartyProtocol.js";
+import {
+  frameXmlGroupRoles, frameXmlPartyLeaderIndex, frameXmlPlayerFlagAfk, frameXmlPlayerFlagDnd,
+  frameXmlPlayerFlagResting, frameXmlRaidTargetIndex, frameXmlRestState, frameXmlXpExhaustion,
+  type FrameXmlGroupRoles,
+} from "./FrameXmlPlayerStatus.js";
+import {
+  frameXmlGroupHas, frameXmlGroupLeader, frameXmlRaidIndex, frameXmlRaidOfficer, frameXmlUnitFlagsInCombat,
+} from "./FrameXmlUnitRelations.js";
 import { CHAT_MSG_ADDON, LANG_ADDON } from "../../world/SessionProtocol.js";
-import { CHAT_MSG_CHANNEL, CHAT_MSG_SYSTEM } from "../../world/ChatProtocol.js";
+import { CHAT_MSG_CHANNEL, CHAT_MSG_SYSTEM, languageForRace } from "../../world/ChatProtocol.js";
 import type { ChatMessage } from "../../world/ChatProtocol.js";
+import { CHAT_YOU_JOINED_NOTICE, type ChannelNotify } from "../../world/ChannelProtocol.js";
+import { isVehicleActionBar } from "../../world/PetProtocol.js";
 import {
   buildCarriedItemCounts,
   questObjectiveLabel,
@@ -55,15 +94,85 @@ import type {
 } from "../../world/QuestProtocol.js";
 import type { QuestLogEntry } from "../../world/Fields.js";
 import type { VendorItem } from "../../world/VendorProtocol.js";
+import type { VendorCost } from "../../gateway/VendorCostMetadata.js";
 import {
   TRAINER_SPELL_AVAILABLE,
   TRAINER_SPELL_KNOWN,
   TRAINER_SPELL_UNAVAILABLE,
 } from "../../world/TrainerProtocol.js";
 import type { SpellMetadata } from "../SpellMetadata.js";
+import type { SpellSkillAbilityInfo } from "../../gateway/TalentMetadata.js";
+import { frameXmlShapeshiftForms, type FrameXmlShapeshiftForm } from "./FrameXmlShapeshiftForms.js";
+import { FrameXmlWorldStates } from "./FrameXmlWorldStates.js";
+import { LiveFrameXmlCalendar } from "./FrameXmlCalendar.js";
+import { FrameXmlLfdModel } from "./FrameXmlLfd.js";
+import { FrameXmlLootModel, type FrameXmlLootHostContext } from "./FrameXmlLoot.js";
+import { FrameXmlPopupsModel } from "./FrameXmlPopups.js";
+import { FrameXmlFriendsModel, frameXmlSocialAreaLookup } from "./FrameXmlFriends.js";
+import { FrameXmlMailModel } from "./FrameXmlMail.js";
+import { FrameXmlTradeModel } from "./FrameXmlTrade.js";
+import { FrameXmlThreatModel } from "./FrameXmlThreat.js";
+import { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
+import { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
+import { FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import type { FrameXmlCurrencyModel } from "./FrameXmlCurrency.js";
+import { createLiveFrameXmlCurrency } from "./FrameXmlCurrencyLive.js";
+import { FrameXmlArenaOpponents } from "./FrameXmlArena.js";
+import type { FrameXmlAuctionModel } from "./FrameXmlAuction.js";
+import { createLiveFrameXmlAuction } from "./FrameXmlAuctionLive.js";
+import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
+import { createLiveFrameXmlSocket } from "./FrameXmlSocketLive.js";
+import type { FrameXmlInspectModel } from "./FrameXmlInspect.js";
+import { createLiveFrameXmlInspect } from "./FrameXmlInspectLive.js";
+import type { FrameXmlBarberModel } from "./FrameXmlBarber.js";
+import { createLiveFrameXmlBarber } from "./FrameXmlBarberLive.js";
+import type { FrameXmlGlyphModel } from "./FrameXmlGlyph.js";
+import { createLiveFrameXmlGlyphs } from "./FrameXmlGlyphLive.js";
+import { createLiveFrameXmlTitles, liveFrameXmlTitleWearer } from "./FrameXmlTitlesLive.js";
+import type { FrameXmlTitleModel } from "./FrameXmlTitles.js";
+import { createLiveFrameXmlEquipmentSets } from "./FrameXmlEquipmentSetsLive.js";
+import type { FrameXmlEquipmentSetModel } from "./FrameXmlEquipmentSets.js";
+import type { FrameXmlAchievementModel } from "./FrameXmlAchievement.js";
+import { createLiveFrameXmlAchievement } from "./FrameXmlAchievementLive.js";
+import type { FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
+import { createLiveFrameXmlGuildBank } from "./FrameXmlGuildBankLive.js";
+import { createLiveFrameXmlTradeSkill, type FrameXmlTradeSkillLiveHost, type FrameXmlTradeSkillModel } from "./FrameXmlTradeSkill.js";
+import { frameXmlPopupsLiveContext } from "./FrameXmlPopupsLive.js";
+import {
+  FrameXmlMacroModel, createFrameXmlMemoryMacroStore, type FrameXmlMacroIcons, type FrameXmlMacroStore,
+} from "./FrameXmlMacro.js";
+import { FrameXmlCursorModel, type FrameXmlActionButton } from "./FrameXmlCursor.js";
+import { FrameXmlBindingModel } from "./FrameXmlBinding.js";
+import { FrameXmlChatColors } from "./FrameXmlChatColors.js";
+import type { InputAction } from "../input/Bindings.js";
+import {
+  attachLiveFrameXmlNpcWindows, createLiveFrameXmlNpcWindows, detachLiveFrameXmlNpcWindows,
+  liveFrameXmlBankInventorySlot, liveFrameXmlGameObjectName, liveFrameXmlInteractionNpc, liveFrameXmlNpcUseContainerItem,
+  liveFrameXmlInteractionUnit,
+  type LiveFrameXmlNpcWindows,
+} from "./FrameXmlGossipLive.js";
+import { frameXmlBankContainer, frameXmlIsBankContainer, FRAMEXML_FIRST_BANK_INVENTORY_ID } from "./FrameXmlBank.js";
+import { frameXmlQuestTrivial } from "./FrameXmlGossip.js";
+import { frameXmlTaxiMapBounds } from "./FrameXmlTaxi.js";
+import { questGreenRange } from "./FrameXmlWorldSeam.js";
+import type { LfgStockCatalog } from "../LfgDungeons.js";
+import { FrameXmlHudMechanicsLive } from "./FrameXmlHudMechanicsLive.js";
+import { FrameXmlPetActionBarLive } from "./FrameXmlPetActionBarLive.js";
+import { FrameXmlMap, type FrameXmlMapSource } from "./FrameXmlMap.js";
+import { frameXmlPetExperience } from "./FrameXmlPetExperience.js";
+import { frameXmlHunterPet } from "./FrameXmlStable.js";
+import { FrameXmlCompanionModel, frameXmlPetCanBeRenamed, frameXmlUnitMounted } from "./FrameXmlCompanions.js";
+import { frameXmlPetSpellBonusDamage } from "./FrameXmlPetSpellPower.js";
+import { createFrameXmlServices, type FrameXmlServices, type FrameXmlSendMailItem } from "./FrameXmlServices.js";
+import type { WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
-import { QUALITY_LINK_COLORS } from "../ui/ChatLink.js";
-import { className, raceName } from "../ui/UnitSnapshot.js";
+import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink.js";
+import { className, classFileName, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
+import { settledHoveredUnitGuid } from "../game/HoverTarget.js";
+import { clientLocale } from "../Environment.js";
+import {
+  isTracking, trackingFieldsSignature, trackingSpellsOf, type TrackingSpell,
+} from "../ui/Tracking.js";
 import {
   AURA_FLAGS,
   type ActiveAura,
@@ -73,12 +182,25 @@ import {
   FRAMEXML_POWER_EVENTS,
   FRAMEXML_POWER_TOKENS,
   frameXmlInventorySlotInfo,
+  frameXmlItemEntry,
   FRAMEXML_CHAT_WINDOW_GROUPS,
   FRAMEXML_SEAM_EVENTS,
+  frameXmlCombatLogWindowInfo,
+  frameXmlGeneralWindowInfo,
   frameXmlChatEventArgs,
   frameXmlChatEventName,
+  frameXmlChannelNotice,
   frameXmlChatTextIsValid,
   frameXmlChatTypeCode,
+  frameXmlEscapeLocalChatText,
+  frameXmlGuid,
+  frameXmlLanguageName,
+  frameXmlLfgMode,
+  FRAMEXML_LANGUAGE_SKILLS,
+  FRAMEXML_TRACKING_NONE_TEXTURE,
+  type FrameXmlInstanceInfo,
+  type FrameXmlLfgMode,
+  type FrameXmlTrackingInfo,
   type FrameXmlChatSender,
   type FrameXmlChatTarget,
   type FrameXmlChatWindowChannels,
@@ -87,9 +209,12 @@ import {
   type FrameXmlChannelInfo,
   type FrameXmlMerchantItemInfo,
   type FrameXmlMerchantCostInfo,
+  type FrameXmlItemInfo,
   type FrameXmlBuybackItemInfo,
   type FrameXmlAuraInfo,
   type FrameXmlSpellCooldown,
+  type FrameXmlShapeshiftFormInfo,
+  type FrameXmlMirrorTimerInfo,
   type FrameXmlSpellTabInfo,
   type FrameXmlSkillLineInfo,
   type FrameXmlMinimapZone,
@@ -128,12 +253,24 @@ import {
 } from "./FrameXmlHonorResolver.js";
 import {
   createFrameXmlSkillResolvers,
+  frameXmlSkillAbandonable,
   type FrameXmlSkillRow,
   type FrameXmlSkillMetadata,
   type FrameXmlSkillResolvers,
 } from "./FrameXmlSkillResolver.js";
 import type { FrameXmlSettingsCVarAdapter } from "./FrameXmlSettingsCVar.js";
+import { createFrameXmlOptionsModel, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import type { FrameXmlInventoryTooltipItem } from "./FrameXmlCharacterTooltip.js";
+import type { ReputationCatalog } from "../../gateway/ReputationMetadata.js";
+import { frameXmlFactionInfoById } from "./FrameXmlFactionById.js";
+import {
+  frameXmlQuestGiverRead,
+  performFrameXmlQuestGiverCommand,
+  resolveFrameXmlQuestGiverCommand,
+} from "./FrameXmlQuestGiverAdapter.js";
+import { cachedQuestRewardSpellInfo } from "./FrameXmlQuestRewardData.js";
+import { publishFrameXmlNativeBankCursor } from "./FrameXmlItemCursorBridge.js";
+import { frameXmlLootMethod, FRAMEXML_LOOT_METHODS, type FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
 import { itemEnchantmentIds } from "../ItemEnchantments.js";
 import type {
   FrameXmlBattlegroundCatalog,
@@ -147,10 +284,6 @@ import {
 
 const ALLIANCE_RACE_IDS = new Set([1, 3, 4, 7, 11]);
 const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
-const RACE_TOKENS: Readonly<Record<number, string>> = Object.freeze({
-  1: "Human", 2: "Orc", 3: "Dwarf", 4: "NightElf", 5: "Scourge", 6: "Tauren",
-  7: "Gnome", 8: "Troll", 10: "BloodElf", 11: "Draenei",
-});
 
 /**
  * The same seam over this client's real world state — slice F3's seam (b).
@@ -184,10 +317,8 @@ const RACE_TOKENS: Readonly<Record<number, string>> = Object.freeze({
  * **What this seam does not do.** It is constructed in the world and mounted by the ordinary
  * default-on route; `?framexml=0` prevents that mount. It is not the DOM HUD's replacement and
  * nothing outside the mounted FrameXML route can reach it.
- * Item and macro slots answer with what they have — an item has no `Interface\Icons\…` path on
- * this client (item icons are generated PNGs behind `/item-icon/<displayId>`), so an item slot
- * answers `HasAction` truthfully and leaves the texture nil, which is the corpus' own «no icon»
- * branch rather than a broken picture.
+ * Item actions share the cached texture/inventory and cooldown sources used by the bags. The
+ * optional host action dispatcher also shares macro/equipment-set execution with keyboard input.
  * Faction and hostility have separate boundaries: the player's `UnitFactionGroup` is derived from
  * its authoritative race byte, while object relations still carry only a `UNIT_FIELD_FACTIONTEMPLATE`
  * id and need the optional `reaction` callback's exact resolver. The current mount leaves that
@@ -202,6 +333,18 @@ const RACE_TOKENS: Readonly<Record<number, string>> = Object.freeze({
 const LIVE_POLL_SECONDS = 0.06;
 const EMPTY_SPELL_TABS: readonly FrameXmlSpellTabInfo[] = Object.freeze([]);
 
+/**
+ * The paper-doll edges stock PaperDollFrame answers with `PaperDollFrame_UpdateStats()` for the
+ * player (PaperDollFrame.lua:187-194); UNIT_RESISTANCES runs `PaperDollFrame_SetResistances()` first.
+ * UNIT_ATTACK_POWER is not one: that frame registers it and does nothing with it.
+ */
+const PAPER_DOLL_STATS_EVENTS: ReadonlySet<string> = new Set([
+  FRAMEXML_SEAM_EVENTS.resistances, FRAMEXML_SEAM_EVENTS.stats, FRAMEXML_SEAM_EVENTS.rangedAttackPower,
+  FRAMEXML_SEAM_EVENTS.attackSpeed, FRAMEXML_SEAM_EVENTS.damage, FRAMEXML_SEAM_EVENTS.rangedDamage,
+  FRAMEXML_SEAM_EVENTS.damageDoneMods,
+]);
+const PAPER_DOLL_FRAME: ReadonlySet<string> = new Set(["PaperDollFrame"]);
+
 function isArenaBattlefieldList(list: BattlefieldList | undefined): boolean {
   return !!list
     && typeof list.battlemasterGuid === "bigint"
@@ -211,15 +354,27 @@ function isArenaBattlefieldList(list: BattlefieldList | undefined): boolean {
 }
 
 export interface LiveWorldSeamContext {
+  readonly mailDraftAttachments?: () => readonly bigint[];
+  readonly stableSlotPrice?: (slotsOwned: number) => number | undefined;
+  readonly mapSource?: FrameXmlMapSource;
+  readonly worldStateUi?: () => readonly WorldStateUiRow[] | undefined;
+  /** Exact class/level coefficients from the configured dataset's gtChanceToSpellCrit tables. */
+  readonly characterStats?: () => CharacterStatCatalog | undefined;
   readonly world: () => WorldClient | undefined;
   readonly store: () => WorldStore | undefined;
   readonly spell: (id: number) => SpellMetadata | undefined;
+  /** Resolved spell cache for the name form of `GetSpellInfo`; never fetches in a Lua C-API read. */
+  readonly spells?: () => Iterable<SpellMetadata>;
+  /** Authoritative SkillLineAbility supersession rows, cached by TalentClient. */
+  readonly spellAbilities?: (id: number) => readonly SpellSkillAbilityInfo[] | undefined;
   /** The interface-owned focus identity; sampled on the seam's existing rendered-frame path. */
   readonly focusGuid?: () => bigint | undefined;
   /** Optional FactionTemplate resolver supplied by the host when client-side faction data is ready. */
   readonly reaction?: (left: WorldObjectState, right: WorldObjectState) => number | undefined;
   /** Optional resolver joining Faction.dbc metadata to the live faction map. */
   readonly reputation?: (world: WorldClient) => readonly FrameXmlFactionRow[] | undefined;
+  /** Already fetched catalog linking Faction.dbc IDs to reputation-list slots. */
+  readonly reputationCatalog?: () => ReputationCatalog | undefined;
   /** SkillLine/SkillLineCategory metadata; absent means this host has no skill rows yet. */
   readonly skillMetadata?: () => FrameXmlSkillMetadata | undefined;
   /** Talent tree metadata; absent means Blizzard_TalentUI must remain safely empty. */
@@ -228,16 +383,34 @@ export interface LiveWorldSeamContext {
   readonly talentMetadataRevision?: () => number;
   /** Resolve the current `WorldMapArea` id used by Quest POI filtering, when area metadata is ready. */
   readonly worldMapAreaId?: () => number | undefined;
+  /**
+   * The render loop's measured requestAnimationFrame cadence (`WorldRenderer3D.fps`), for
+   * `GetFramerate`; absent, the seam answers 0 rather than a made-up rate.
+   */
+  readonly framerate?: () => number;
   /** `performance.now()` milliseconds — the clock the world's cooldowns are stamped in. */
   readonly monotonic: () => number;
   /** The global cooldown's end, in the same milliseconds; `game.globalCooldownUntil`. */
   readonly globalCooldownUntil: () => number;
   /** Cast a spell the way the rest of the client casts one; `ui/Spellbook.castSpell`. */
   readonly castSpell: (id: number) => void;
+  /** Configured bank bag slot price for the number already bought; cache-only. */
+  readonly bankSlotPrice?: (slotsBought: number) => number | undefined;
+  /** The keyboard/main-bar page, in stock Lua's 1-based 1..6 numbering. */
+  readonly actionBarPage?: () => number;
+  readonly changeActionBarPage?: (page: number) => void;
+  /** Execute an absolute 1-based action slot through the same dispatcher as keyboard input. */
+  readonly useAction?: (slot: number) => void;
   /** Optional skill-line tabs; absent hosts get one truthful undivided resolved-spell tab. */
   readonly spellTabs?: () => readonly FrameXmlSpellTabInfo[];
   /** 1-based tab ordinal for a spell. Returning undefined keeps it in the fallback tab. */
   readonly spellTabFor?: (spellId: number) => number | undefined;
+  /**
+   * Whether a known spell is a lower rank of another known one (FrameXmlSpellBookTabs.ts): the
+   * rows `GetSpellTabInfo`'s highest-rank offset/count leave out and
+   * `GetKnownSlotFromHighestRankSlot` steps over while `ShowAllSpellRanks` is off.
+   */
+  readonly spellIsLowerRank?: (spellId: number) => boolean;
   /** Optional CVar bridge used by SpellBookFrame's Show All Spell Ranks checkbox. */
   readonly getCVarBool?: (name: string) => boolean | undefined;
   readonly setCVar?: (name: string, value: boolean) => void;
@@ -245,10 +418,16 @@ export interface LiveWorldSeamContext {
   readonly settingsCVar?: FrameXmlSettingsCVarAdapter;
   /** Optional host bridge for FrameXML's `SendChatMessage`; called only for valid payloads. */
   readonly sendChatMessage?: FrameXmlChatSender;
+  /** Host audio path for a stock `PlaySound` name. */
+  readonly playSound?: (name: string) => void;
   /** Cached item texture resolver; it must not perform network I/O from a C-API read. */
   readonly itemTexture?: (entry: number) => string | undefined;
+  /** The loot packet's display-id icons, auto-loot switch and modifier (FrameXmlLootHost.ts). */
+  readonly lootHost?: FrameXmlLootHostContext;
   /** Cached item metadata for quest rewards; it must not perform network I/O from a C-API read. */
   readonly itemInfo?: (entry: number) => FrameXmlQuestItemMetadata | undefined;
+  /** Cache-only ItemExtendedCost lookup; the vendor packet carries only the row id. */
+  readonly vendorCost?: (id: number) => VendorCost | undefined;
   /** Cached creature metadata for quest targets; it must not perform network I/O from a C-API read. */
   readonly creatureInfo?: (entry: number) => FrameXmlQuestCreatureMetadata | undefined;
   /** Prefetches unresolved quest item/spell metadata outside C-API reads and reports cache arrival. */
@@ -269,6 +448,29 @@ export interface LiveWorldSeamContext {
   ) => FrameXmlMinimapZone | undefined;
   /** Cached `/dbc/battlegrounds` rows; C-API reads never start a fetch. */
   readonly battlegroundCatalog?: () => FrameXmlBattlegroundCatalog | undefined;
+  /**
+   * The `/dbc/lfg-dungeons` catalog in its version-2 shape, loaded before boot; undefined keeps
+   * every stock LFD answer empty and the native finder in charge (FrameXmlLfd.ts).
+   */
+  readonly lfgCatalog?: () => LfgStockCatalog | undefined;
+  /**
+   * Client locale for `Languages.dbc` names in chat and the language menu; `clientLocale()` (the
+   * configured VITE_CLIENT_LOCALE, ruRU by default) when absent.
+   */
+  readonly locale?: string;
+  /**
+   * `MapDifficulty.MaxPlayers` for a map and 0-based difficulty, when a host has the table. Absent,
+   * GetInstanceInfo falls back to the counts measured on this dataset (see `instanceInfo`).
+   */
+  readonly instanceMaxPlayers?: (mapId: number, difficulty: number) => number | undefined;
+  /** The mount's profession tables, subclass words and craft queue; absent, every trade skill stays closed. */
+  readonly tradeSkill?: FrameXmlTradeSkillLiveHost;
+  /** The two account-data macro stores (Macros.ts); absent, the macro API holds an empty, unsaved set. */
+  readonly macroStore?: FrameXmlMacroStore;
+  /** The macro window's icon lists, fetched when it first opens (FrameXmlMacroIcons.ts). */
+  readonly macroIcons?: FrameXmlMacroIcons;
+  /** RunBinding's verb for a compiled-in action (`Actions.runAction`). */
+  readonly runBinding?: (action: InputAction) => boolean;
 }
 
 interface LiveCastState {
@@ -281,6 +483,8 @@ interface LiveChatChannel {
   readonly number: number;
   readonly shortName: string;
   readonly displayName: string;
+  /** The held ChatChannels id (`WorldClient.channels`), 0 for a custom channel: stock's `arg7`. */
+  readonly zoneChannelId: number;
 }
 
 interface LiveContainer {
@@ -289,6 +493,14 @@ interface LiveContainer {
   readonly name: string | undefined;
   readonly bagFamily: number | undefined;
 }
+
+/**
+ * The 3.3.5 unit ids, lower-cased as the binding hands them over, each optionally followed by any
+ * number of `target`s («party1target», «targettarget»). `TargetUnit` given one of these selects
+ * that unit or nothing; only a string that is none of them is a name to look for.
+ */
+const FRAMEXML_UNIT_TOKEN =
+  /^(?:player|target|focus|mouseover|pet|vehicle|npc|none|party[1-4]|partypet[1-4]|raid\d{1,2}|raidpet\d{1,2}|arena[1-5]|arenapet[1-5]|boss[1-4])(?:target)*$/;
 
 /** The server may include a numeric prefix and/or a zone suffix in a channel display name. */
 function shortChannelName(raw: string): string {
@@ -310,7 +522,8 @@ function isResolvedFactionRow(value: unknown): value is FrameXmlFactionRow {
   return typeof listId === "number" && Number.isInteger(listId) && listId >= 0
     && typeof row.name === "string" && row.name.length > 0
     && typeof row.description === "string"
-    && typeof row.standingId === "number" && Number.isFinite(row.standingId)
+    && typeof row.standingId === "number" && Number.isInteger(row.standingId)
+    && row.standingId >= 1 && row.standingId <= 8
     && typeof row.barMin === "number" && Number.isFinite(row.barMin)
     && typeof row.barMax === "number" && Number.isFinite(row.barMax)
     && typeof row.barValue === "number" && Number.isFinite(row.barValue)
@@ -321,28 +534,181 @@ function isResolvedFactionRow(value: unknown): value is FrameXmlFactionRow {
 }
 
 export class LiveWorldSeam implements FrameXmlWorldSeam {
+  readonly worldStates: FrameXmlWorldStates;
+  readonly calendar: LiveFrameXmlCalendar;
+  readonly lfd: FrameXmlLfdModel;
+  /** The stock LootFrame/GroupLootFrame C API and its events (FrameXmlLoot.ts). */
+  readonly loot: FrameXmlLootModel;
+  /** The stock StaticPopup/ReadyCheckFrame confirmations (FrameXmlPopups.ts). */
+  readonly popups: FrameXmlPopupsModel;
+  /** The stock FriendsFrame/RaidFrame C API: friends, ignore, who, guild, raid (FrameXmlFriends.ts). */
+  readonly friends: FrameXmlFriendsModel;
+  /** The stock MailFrame C API and its send draft (FrameXmlMail.ts). */
+  readonly mail: FrameXmlMailModel;
+  /** The stock TradeFrame C API (FrameXmlTrade.ts). */
+  readonly trade: FrameXmlTradeModel;
+  /** The stock currency C API over the known-currency bits and the token slots (FrameXmlCurrencyLive.ts). */
+  readonly currency: FrameXmlCurrencyModel;
+  /** The enemy arena team behind `arenaN`/`arenapetN` and GetNumArenaOpponents (FrameXmlArena.ts). */
+  readonly arena: FrameXmlArenaOpponents;
+  /** The stock AuctionFrame C API, its sell slot and multisell (FrameXmlAuction.ts). */
+  readonly auction: FrameXmlAuctionModel;
+  /** The stock ItemSocketingFrame C API over the equipped/carried item and its gems (FrameXmlSocketModel.ts). */
+  readonly socket: FrameXmlSocketModel;
+  /** The stock InspectFrame C API over the inspection packets (FrameXmlInspect.ts). */
+  readonly inspect: FrameXmlInspectModel;
+  /** The stock BarberShopFrame C API over the chair and the player's appearance (FrameXmlBarber.ts). */
+  readonly barber: FrameXmlBarberModel;
+  readonly barberPrepare: () => Promise<void>;
+  /** The stock GlyphFrame C API over the glyph fields, SMSG_TALENTS_INFO and `/dbc/glyphs` (FrameXmlGlyphLive.ts). */
+  readonly glyphs: FrameXmlGlyphModel;
+  /** The stock title picker's C API over the title fields and `/dbc/char-titles` (FrameXmlTitlesLive.ts). */
+  readonly titles: FrameXmlTitleModel;
+  /** The stock equipment manager's C API over the equipment-set packets and the bags (FrameXmlEquipmentSetsLive.ts). */
+  readonly equipmentSets: FrameXmlEquipmentSetModel;
+  /** The stock PetPaperDollFrame's companion C API over the known mount/critter spells (FrameXmlCompanions.ts). */
+  readonly companions: FrameXmlCompanionModel;
+  /** The stock PetActionBarFrame and the pet commands over the pet bar packet (FrameXmlPetActionBarLive.ts). */
+  readonly petActions: FrameXmlPetActionBarLive;
+  /** The stock achievement C API over the achievement packets; the mount hands it the catalog (FrameXmlAchievement.ts). */
+  readonly achievement: FrameXmlAchievementModel;
+  /** The stock GuildBankFrame C API and its vault cursor (FrameXmlGuildBank.ts). */
+  readonly guildBank: FrameXmlGuildBankModel;
+  /** The stock TradeSkillFrame C API over the professions and the native craft queue (FrameXmlTradeSkill.ts). */
+  readonly tradeSkill: FrameXmlTradeSkillModel;
+  /** The macro C API over the account-data macro stores, and the macro cursor (FrameXmlMacro.ts). */
+  readonly macros: FrameXmlMacroModel;
+  /** The one cursor over the item, macro and vault holders, plus spells and lifted actions (FrameXmlCursor.ts). */
+  readonly cursor: FrameXmlCursorModel = new FrameXmlCursorModel(this);
+  /** The binding C API over this client's key table (FrameXmlBinding.ts). */
+  readonly keyBindings: FrameXmlBindingModel;
+  /** The options C API over the settings adapter, when the host supplies one (FrameXmlOptions.ts). */
+  readonly options: FrameXmlOptionsModel | undefined;
+  /** The stock Gossip/Bank/Taxi/ItemText frames' models (FrameXmlGossipLive.ts). */
+  readonly gossip: LiveFrameXmlNpcWindows["gossip"];
+  readonly bank: LiveFrameXmlNpcWindows["bank"];
+  readonly taxi: LiveFrameXmlNpcWindows["taxi"];
+  readonly itemText: LiveFrameXmlNpcWindows["itemText"];
+  /** The stock Tabard/Guild- and ArenaRegistrar/Petition frames' models (FrameXmlGossipLive.ts). */
+  readonly tabard: LiveFrameXmlNpcWindows["tabard"];
+  readonly registrar: LiveFrameXmlNpcWindows["registrar"];
+  readonly petition: LiveFrameXmlNpcWindows["petition"];
+  /** The stock PetStableFrame's model (FrameXmlStable.ts, FrameXmlStableLive.ts). */
+  readonly stable: LiveFrameXmlNpcWindows["stable"];
+  readonly map: FrameXmlMap;
+  /** The totem bar, the hit indicator and the temporary weapon enchants (FrameXmlHudMechanicsLive.ts). */
+  readonly hudMechanics: FrameXmlHudMechanicsLive;
+  readonly services: FrameXmlServices;
+  /** The stock threat C API over `WorldClient.threat` and its two UNIT_THREAT_* edges (FrameXmlThreat.ts). */
+  readonly threat: FrameXmlThreatModel;
+  /** The stock quest log's abandon confirmation over `abandonQuest` (FrameXmlQuestAbandon.ts). */
+  readonly questAbandon: FrameXmlQuestAbandonModel;
+  /** The chat cache's LOCKED/DOCKED/UNINTERACTABLE flags, per attach like `#chatWindowShown`. */
+  readonly chatWindows = new FrameXmlChatWindowFlags();
+  /** Arena teams, the possess bar, the battlefield winner and the add-on channel (FrameXmlMechanics.ts). */
+  readonly mechanics: FrameXmlMechanicsModel;
+  #serviceSignature = "";
+
+  petExperience(): readonly [number, number] { return frameXmlPetExperience(this.#pet()) ?? [0, 0]; }
+  petSpellBonusDamage(): number | undefined {
+    return this.#pet() ? frameXmlPetSpellBonusDamage(this.#self()) : undefined;
+  }
+
+  #sendMailItems(): readonly FrameXmlSendMailItem[] {
+    const world = this.#context.world();
+    return (this.#context.mailDraftAttachments?.() ?? []).map((guid): FrameXmlSendMailItem => {
+      const item = world?.state.objects.get(guid);
+      const entry = item ? entryOf(item) : 0;
+      const template = this.#itemTemplate(world, entry);
+      const metadata = this.#context.itemInfo?.(entry);
+      const count = item ? readField(item, "ITEM_FIELD_STACK_COUNT") : undefined;
+      return [template?.name ?? metadata?.name, this.#context.itemTexture?.(entry), count ?? 0,
+        template?.quality ?? metadata?.quality];
+    });
+  }
+
+  #servicesSignature(): string {
+    return JSON.stringify([this.#sendMailItems(), this.services.nextStableSlotCost(),
+      this.services.stableSlots(), this.#context.world()?.stableMasterGuid?.toString()]);
+  }
   realmName(): string | undefined {
     return this.#context.world()?.realmName;
   }
 
+  gameTime(): readonly [number, number] | undefined {
+    const time = this.#context.world()?.currentGameTime?.(this.#context.monotonic());
+    if (!time || !Number.isFinite(time.minuteOfDay)) return undefined;
+    const minutes = Math.floor((time.minuteOfDay % 1440 + 1440) % 1440);
+    return [Math.floor(minutes / 60), minutes % 60];
+  }
+
+  framerate(): number {
+    return this.#context.framerate?.() ?? 0;
+  }
+
+  /** The last CMSG_PING/SMSG_PONG round trip WorldClient measured, for GetNetStats. */
+  netLatency(): number | undefined {
+    return this.#context.world()?.latencyMs;
+  }
+
   readonly name = "live";
   readonly #context: LiveWorldSeamContext;
+  /**
+   * The mount builds this seam without `locale` (it hands `clientLocale()` only to FrameXmlBoot),
+   * so the fallback is the same configured client locale rather than a fixed ruRU: an enUS client
+   * must hear «Common», not «всеобщий», and GetDefaultLanguage must match its own chat lines.
+   */
+  get locale(): string { return this.#context.locale ?? clientLocale(); }
   #pump: FrameXmlSeamPump | undefined;
+  #releaseNativeBankCursor: (() => void) | undefined;
+  /** `count` is set for a split part (SplitContainerItem): the next drop sends CMSG_SPLIT_ITEM for that many. */
+  #itemCursor: { world: WorldClient; bag: number; slot: number; guid: bigint; count?: number } | undefined;
   readonly #unsubscribe: (() => void)[] = [];
   #polledAt = 0;
+  /**
+   * The two combat edges last told to Lua: the player's own swing (`WorldClient.attacking`, from
+   * SMSG_ATTACK_START/STOP) as PLAYER_ENTER/LEAVE_COMBAT, and `UNIT_FLAG_IN_COMBAT` on the player as
+   * PLAYER_REGEN_DISABLED/ENABLED. Both start false at attach, so the first check publishes a fight
+   * already under way (PlayerFrame keeps its combat glow only from these events).
+   */
+  #meleeAnnounced = false;
+  #combatAnnounced = false;
+  /** A level-up packet waiting for its level to land, with the free talent points before it. */
+  #pendingLevelUp: { info: LevelUpInfo; pointsBefore: number } | undefined;
   /** The last published shape of the bar, so a change fires one event instead of sixty a second. */
   #barSignature = "";
   #cooldownSignature = "";
+  #itemCooldownSignature = "";
+  #actionPage = 1;
+  readonly #mirrorTimerSignatures = new Map<number, string>();
   #spellSignature = "";
   #spellCooldownSignature = "";
+  #shapeshiftSignature = "";
+  #shapeshiftActiveSignature = "";
+  #shapeshiftCooldownSignature = "";
+  #bonusActionBarOffset = 0;
+  #comboSignature = "";
+  #bankSlotsBought: number | undefined;
+  #bankerGuid: bigint | undefined;
   /** Last vendor list shape delivered to stock MerchantFrame. */
   #merchantSignature = "";
   #trainerSelection: number | undefined;
   readonly #trainerFilters = new Map<string, boolean>([
-    ["available", true], ["unavailable", true], ["used", true],
+    ["available", true], ["unavailable", true], ["used", false],
   ]);
   /** Last published stock bag-id shapes; inventory fields are coalesced by WorldStore.any. */
   #containerSignatures = new Map<number, string>();
+  /**
+   * Every item entry those shapes were read from — the carried slots and the bags themselves — as
+   * of the last reconcile; undefined until there was one. An item answer about any other entry (a
+   * crowd's gear, a hundred at a time) cannot change a shape (`QUERY_CACHE_CHANGED` below).
+   */
+  #containerEntries: Set<number> | undefined;
+  /** The same for the quest signature: every reward, choice and objective item it named. */
+  #questItemIds: Set<number> | undefined;
+  /** And the creature and game-object objectives whose names it read. */
+  #questCreatureIds: Set<number> | undefined;
+  #questGameObjectIds: Set<number> | undefined;
   /** Paper-doll signatures are sampled at the same 60 ms world boundary as other derived state. */
   #inventorySignature = "";
   #statsSignature = "";
@@ -369,6 +735,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #skillRevision = 0;
   #talentRevision = 0;
   #talentMetadataRevision = Number.NaN;
+  #petTalentOwnerSeen = false;
+  #petTalentOwnerGuid: bigint | undefined;
+  #petTalentsAtOwnerChange: WorldClient["petTalents"];
+  #awaitPetTalentPacket = false;
   readonly #talentResolvers: FrameXmlTalentResolvers;
   #honorSignature = "";
   #honorCurrencySignature = "";
@@ -386,6 +756,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #arenaClosing = false;
   /** Only the first attach may adopt a list that arrived before FrameXML mounted. */
   #arenaInitialAttach = true;
+  /**
+   * When each SMSG_BATTLEFIELD_STATUS snapshot (a fresh object per packet) was first read, on the
+   * monotonic clock: its clocks are the server's at send time and count on from there.
+   */
+  readonly #battlefieldStatusSeen = new WeakMap<object, number>();
   #watchedFactionId: number | undefined;
   readonly #collapsedFactionIds = new Set<number>();
   /** Explicit UI overrides; absent entries retain the latest server-provided flag. */
@@ -449,41 +824,535 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #petAuraSignature = "";
   /** Local line IDs are only for FrameXML links; the wire packet has no line ID. */
   #chatLineId = 0;
+  /** `GetChatWindowChannels(1)` as last announced with UPDATE_CHAT_WINDOWS (`#chatWindowsUpdated`). */
+  #chatWindowsSignature = "";
+  /** The chat cache's SHOWN flags as the stock frames wrote them (`setChatWindowShown`); per attach. */
+  readonly #chatWindowShown = new Map<number, boolean>();
+  /**
+   * The chat cache's colours (FrameXmlChatColors.ts), scoped like the client's per-character cache:
+   * a `ChangeChatColor` outlives `/reload`, whose remount builds a new seam.
+   */
+  readonly chatColors = new FrameXmlChatColors(() => {
+    const world = this.#context.world();
+    const self = world?.state.selfGuid;
+    return self === undefined ? undefined : JSON.stringify([world?.realmName ?? "", self.toString()]);
+  });
+  /** The settled world pick last announced with UPDATE_MOUSEOVER_UNIT. */
+  #mouseoverGuid: bigint | undefined;
+  /** Minimap indicator shapes, sampled on the 60 ms poll: tracking, mail, LFG eye, difficulty. */
+  #trackingSignature = "";
+  #mailSignature = "";
+  /** What the last MSG_QUERY_NEXT_MAIL_TIME was asked against; see `#queryPendingMail`. */
+  #mailQueryWorld: WorldClient | undefined;
+  #mailNotice: unknown;
+  #mailboxOpen = false;
+  #lfgSignature = "";
+  #instanceSignature = "";
   /** The world deletes a cast before emitting STOP; retain only its identity until that edge. */
   readonly #castStates = new Map<bigint, LiveCastState>();
 
   constructor(context: LiveWorldSeamContext) {
     this.#context = context;
+    this.calendar = new LiveFrameXmlCalendar(context.world, context.monotonic);
+    this.lfd = new FrameXmlLfdModel({
+      world: () => context.world(),
+      catalog: () => context.lfgCatalog?.(),
+      playerLevel: () => this.unitLevel("player") ?? 0,
+      playerClassId: () => {
+        const player = this.#self();
+        return player ? unitField.classId(player) : undefined;
+      },
+      playerName: () => this.unitName("player"),
+      playerGuid: () => context.world()?.state.selfGuid,
+      playerFaction: () => {
+        const faction = this.unitFactionGroup("player");
+        return faction === "Alliance" || faction === "Horde" ? faction : undefined;
+      },
+      partyMemberCount: () => this.partyMemberCount(),
+      raidMemberCount: () => this.raidMemberCount(),
+      isPartyLeader: () => this.isPartyLeader(),
+      inDungeonInstance: () => this.instanceInfo()?.[1] === "party",
+      item: (entry) => {
+        const metadata = context.itemInfo?.(entry);
+        return metadata && metadata.name.length > 0
+          ? { name: metadata.name, texture: context.itemTexture?.(entry) ?? metadata.texture, quality: metadata.quality }
+          : undefined;
+      },
+      monotonic: () => context.monotonic(),
+    });
+    this.popups = new FrameXmlPopupsModel(frameXmlPopupsLiveContext({
+      world: () => context.world(),
+      self: () => this.#self(),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      playerLevel: () => this.unitLevel("player") ?? 0,
+      spellName: (id) => context.spell(id)?.name,
+      // DELETE_ITEM_CONFIRM names the stock cursor's item as #itemLink does (the realm's template,
+      // else the client metadata); the native «Разрушить» picks a bag item up onto the same cursor,
+      // unless the letter or the trade holds it (pickupContainerItem's rule).
+      cursorItem: () => {
+        const source = this.#cursorSource();
+        if (!source?.item) return undefined;
+        const entry = entryOf(source.item);
+        const template = this.#itemTemplate(context.world(), entry);
+        const metadata = context.itemInfo?.(entry);
+        return {
+          bag: source.bag, slot: source.slot,
+          name: (template?.found ? template.name : metadata?.name) ?? "",
+          quality: (template?.found ? template.quality : metadata?.quality) ?? 1,
+        };
+      },
+      pickupItem: (bag, slot) => {
+        const world = context.world();
+        const inventory = world && typeof world.state.objects?.get === "function" ? playerInventory(world.state) : undefined;
+        const source = inventory && slotAt(inventory, bag, slot);
+        if (!source?.item || source.guid === 0n || this.mail.attached(source.guid) || this.trade.offered(source.guid)) return false;
+        this.#setCursor(source);
+        return this.#cursorSource() !== undefined;
+      },
+      clearCursor: () => this.clearCursor(),
+      // Older seam doubles omit the clock; the world stamps its requests with performance.now().
+      monotonic: () => (typeof context.monotonic === "function" ? context.monotonic() : performance.now()),
+    }));
+    this.loot = new FrameXmlLootModel({
+      world: () => context.world(),
+      item: (entry) => context.itemInfo?.(entry),
+      displayIcon: (displayId) => context.lootHost?.displayIcon?.(displayId),
+      playerLevel: () => this.unitLevel("player") ?? 0,
+      autoLootDefault: () => context.lootHost?.autoLootDefault?.() ?? false,
+      autoLootModifier: () => context.lootHost?.autoLootModifier?.() ?? false,
+      playSound: (name) => this.playSound(name),
+    });
+    const socialAreas = frameXmlSocialAreaLookup(() => context.mapSource?.metadata());
+    this.friends = new FrameXmlFriendsModel({
+      world: () => context.world(),
+      playerGuid: () => context.world()?.state.selfGuid,
+      playerName: () => this.unitName("player"),
+      // PLAYER_GUILDID/PLAYER_GUILDRANK are PUBLIC fields: the player's and any visible player's.
+      // A player object whose PLAYER_GUILDID is 0 (or absent: a create block omits zero fields) is
+      // «in no guild» — /gquit and a kick zero it; undefined means «no such player object».
+      unitGuild: (unit) => {
+        const object = this.#unit(unit);
+        if (object?.typeId !== TYPEID_PLAYER) return undefined;
+        const guildId = readField(object, "PLAYER_GUILDID") ?? 0;
+        return guildId > 0 ? { guildId, rankId: readField(object, "PLAYER_GUILDRANK") ?? 0 } : { guildId: 0, rankId: 0 };
+      },
+      areaName: socialAreas.areaName,
+      mapInfo: socialAreas.mapInfo,
+      classInfo: (classId) => {
+        const token = classFileName(classId);
+        return token === undefined ? undefined : [className(classId), token];
+      },
+      raceName: (raceId) => raceFileName(raceId) === undefined ? undefined : raceName(raceId),
+      memberFacts: (guid) => {
+        const world = context.world();
+        const stats = world?.partyStats.get(guid);
+        const object = world?.state.objects.get(guid);
+        return {
+          level: stats?.level ?? (object ? unitField.level(object) : undefined),
+          classId: object ? unitField.classId(object) : undefined,
+          areaId: stats?.zoneId,
+          dead: object ? isWorldObjectDead(object) : undefined,
+        };
+      },
+      monotonic: () => context.monotonic(),
+    });
+    // Mail and trade share this seam's one bag cursor: a stock bag click picks an item up, and the
+    // attachment/trade slot takes it from the same GUID-checked source (#cursorSource).
+    {
+      const carried = (guid: bigint): ItemSlotState | undefined => {
+        const world = context.world();
+        const inventory = world && typeof world.state.objects?.get === "function"
+          ? playerInventory(world.state) : undefined;
+        return inventory
+          ? [...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
+            .find((slot) => slot.guid === guid && slot.item !== undefined)
+          : undefined;
+      };
+      const cursorItem = (): { guid: bigint; bag: number; slot: number } | undefined => {
+        const source = this.#cursorSource();
+        return source ? { guid: source.guid, bag: source.bag, slot: source.slot } : undefined;
+      };
+      const shared = {
+        item: (entry: number) => context.itemInfo?.(entry),
+        itemLink: (guid: bigint) => this.#itemLink(carried(guid)?.item),
+        cursorItem,
+        clearCursor: () => this.clearCursor(),
+        pickupItem: (guid: bigint) => { const slot = carried(guid); if (slot) this.#setCursor(slot); },
+        prefetchItems: (entries: readonly number[], onChanged: () => void) =>
+          context.prefetchQuestMetadata?.(entries, [], onChanged),
+        // An attachment or offer moved: repaint the carried bags' lock state (containerItemInfo).
+        locksChanged: () => {
+          for (const id of [0, 1, 2, 3, 4]) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bagUpdate, id);
+        },
+      };
+      this.mail = new FrameXmlMailModel({
+        ...shared,
+        world: () => context.world(),
+        itemObject: (guid) => {
+          const slot = carried(guid);
+          return slot?.item ? { entry: entryOf(slot.item), count: stackCount(slot) } : undefined;
+        },
+        creatureName: (entry) => context.creatureInfo?.(entry)?.name,
+      });
+      this.trade = new FrameXmlTradeModel({
+        ...shared,
+        world: () => context.world(),
+        displayIcon: (displayId) => context.lootHost?.displayIcon?.(displayId),
+        itemPosition: (guid) => {
+          const slot = carried(guid);
+          return slot ? { bag: slot.bag, slot: slot.slot } : undefined;
+        },
+        spellName: (id) => context.spell(id)?.name,
+      });
+    }
+    // The stock auction house's sell slot takes from the same carried bags and bag cursor.
+    this.auction = createLiveFrameXmlAuction({
+      world: () => context.world(),
+      itemInfo: (entry) => context.itemInfo?.(entry),
+      itemTexture: (entry) => context.itemTexture?.(entry),
+      prefetchItems: (itemIds, spellIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, spellIds, onChanged),
+      cursorSource: () => this.#cursorSource(),
+      setCursor: (slot) => this.#setCursor(slot),
+      clearCursor: () => this.clearCursor(),
+      itemLink: (item) => this.#itemLink(item),
+      playerLevel: () => this.unitLevel("player") ?? 0,
+      playerClassRace: () => {
+        const player = this.#self();
+        return player ? { classId: unitField.classId(player), raceId: unitField.race(player) } : undefined;
+      },
+      locksChanged: () => { for (const id of [0, 1, 2, 3, 4]) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bagUpdate, id); },
+    });
+    // The stock guild bank deposits from and withdraws into the same bags and bag cursor.
+    this.guildBank = createLiveFrameXmlGuildBank({
+      world: () => context.world(),
+      itemInfo: (entry) => context.itemInfo?.(entry),
+      itemTexture: (entry) => context.itemTexture?.(entry),
+      prefetchItems: (itemIds, spellIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, spellIds, onChanged),
+      cursorSource: () => this.#cursorSource(),
+      clearCursor: () => this.clearCursor(),
+      playerLevel: () => this.unitLevel("player") ?? 0,
+      macroItemIcon: (index) => this.macros.itemIcon(index),
+    });
+    // Stock socketing reads the same equipment, carried slots and bag cursor (FrameXmlSocketLive.ts).
+    this.socket = createLiveFrameXmlSocket({
+      world: () => context.world(),
+      equipment: (slot) => this.#equipmentSlot("player", slot),
+      container: (bag, slot) => this.#liveContainerSlot(bag, slot),
+      cursorSource: () => this.#cursorSource(),
+      setCursor: (slot) => this.#setCursor(slot),
+      clearCursor: () => this.clearCursor(),
+      itemInfo: (entry) => context.itemInfo?.(entry),
+      itemTexture: (entry) => context.itemTexture?.(entry),
+      prefetchItems: (itemIds, spellIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, spellIds, onChanged),
+      locksChanged: () => { for (const id of [0, 1, 2, 3, 4]) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.bagUpdate, id); },
+      now: () => context.monotonic() / 1000,
+    });
+    // Inspection: the unit the stock frame names, the inspection maps and the talent trees (FrameXmlInspectLive.ts).
+    this.inspect = createLiveFrameXmlInspect({
+      world: () => context.world(),
+      unitObject: (unit) => this.#unit(unit),
+      canAttack: (unit) => this.unitCanAttack("player", unit),
+      itemInfo: (entry) => context.itemInfo?.(entry),
+      itemTexture: (entry) => context.itemTexture?.(entry),
+      prefetchItems: (itemIds, spellIds, onChanged) => context.prefetchQuestMetadata?.(itemIds, spellIds, onChanged),
+      talentMetadata: () => context.talentMetadata?.(),
+    });
+    // The barber chair: the player's appearance bytes and the gateway's barber tables (FrameXmlBarberLive.ts).
+    ({ model: this.barber, prepare: this.barberPrepare } = createLiveFrameXmlBarber({ world: () => context.world() }));
+    // The glyph sockets: the player's glyph fields, the talents packet and the gateway's glyph tables.
+    this.glyphs = createLiveFrameXmlGlyphs({
+      world: () => context.world(),
+      spellName: (spellId) => this.spellInfo(spellId)?.[0],
+    }).model;
+    // The title picker: the chosen/known title fields, the sex byte and the gateway's CharTitles rows.
+    this.titles = createLiveFrameXmlTitles({ world: () => context.world() }).model;
+    // The equipment manager: WorldClient's sets, the bags for where each piece is, the worn pictures, the macro icons.
+    this.equipmentSets = createLiveFrameXmlEquipmentSets({
+      world: () => context.world(),
+      itemTexture: (entry) => this.#itemTexture(entry),
+      macroIcon: (index) => this.macros.icon(index),
+      macroIconCount: () => this.macros.iconCount(),
+    });
+    // The pet page's companions: the known mount/critter spells, the player's mount aura and the
+    // critters it summoned (FrameXmlCompanions.ts). Skill lines answer only once the catalog is
+    // ready, so a spell without rows is «none», not «not yet».
+    this.companions = new FrameXmlCompanionModel({
+      knownSpells: () => context.world()?.knownSpells,
+      spell: (id) => context.spell(id),
+      skillLines: (id) => {
+        const ready = context.skillMetadata ? context.skillMetadata()?.ready === true : true;
+        return ready ? (context.spellAbilities?.(id) ?? []).map((row) => row.skillLine) : undefined;
+      },
+      mounted: () => frameXmlUnitMounted(this.#self()),
+      hasAura: (spellId) => {
+        const world = context.world();
+        const guid = world?.state.selfGuid;
+        if (!world || guid === undefined) return false;
+        const auras = world.auras?.get(guid);
+        if (auras) {
+          for (const aura of auras.values()) if (aura.spellId === spellId) return true;
+          return false;
+        }
+        return typeof world.aurasFor === "function" && world.aurasFor(guid).some((aura) => aura.spellId === spellId);
+      },
+      forEachSummon: (visit) => {
+        const world = context.world();
+        const self = world?.state.selfGuid;
+        if (!world || self === undefined || typeof world.state.objects?.values !== "function") return;
+        for (const object of world.state.objects.values()) {
+          // TYPEID_UNIT: a critter is a creature; the player's own object names nobody as its summoner.
+          if (object.typeId !== 3 || readField(object, "UNIT_FIELD_SUMMONEDBY") !== self) continue;
+          const spellId = readField(object, "UNIT_CREATED_BY_SPELL");
+          if (spellId !== undefined && spellId > 0) visit(spellId, object.guid);
+        }
+      },
+      cast: (spellId) => context.castSpell(spellId),
+      dismissCritter: (guid) => context.world()?.dismissCritter?.(guid),
+      // GetSpellCooldown's arithmetic over the world's cooldown snapshot, by spell id: a book slot
+      // number and a spell id share one numeric argument in `spellCooldown`, and a mount's id can be
+      // a valid slot.
+      cooldown: (spellId) => {
+        const snapshot = context.world()?.cooldownSnapshots?.get(spellId);
+        const pump = this.#pump;
+        const monotonic = context.monotonic();
+        if (!snapshot || snapshot.endsAt <= monotonic || !pump) return [0, 0, 0];
+        return [pump.now() - (monotonic - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1];
+      },
+      pickup: (spellId, type, index) => this.cursor.pickupCompanion(spellId, type, index),
+      locale: () => this.locale,
+    });
+    // The professions read the same skills, recipes and carried slots as ui/Professions.ts.
+    this.tradeSkill = createLiveFrameXmlTradeSkill(context);
+    // Currencies: PLAYER_FIELD_KNOWN_CURRENCIES, the token slots and the item cache's names.
+    this.currency = createLiveFrameXmlCurrency(context);
+    // Arena opponents: the players in sight on the other arena team, and their pets.
+    this.arena = new FrameXmlArenaOpponents({
+      world: () => context.world(), spell: (id) => context.spell(id), monotonic: () => context.monotonic(),
+    });
+    this.achievement = createLiveFrameXmlAchievement(() => context.world(), () => this.unitFactionGroup("player"));
+    // Macros and key bindings: this client's own stores, which the native windows write too.
+    this.macros = new FrameXmlMacroModel({
+      store: context.macroStore ?? createFrameXmlMemoryMacroStore(),
+      ...(context.macroIcons ? { icons: context.macroIcons } : {}),
+      placeOnActionBar: (slot, macro) => {
+        const world = context.world();
+        if (!world) return false;
+        world.setActionButton(slot - 1, macro, ACTION_BUTTON_MACRO);
+        return true;
+      },
+    });
+    this.keyBindings = new FrameXmlBindingModel(context.runBinding ? { runAction: context.runBinding } : {});
+    this.options = context.settingsCVar ? createFrameXmlOptionsModel(context.settingsCVar) : undefined;
+    this.map = new FrameXmlMap(context.mapSource ?? { metadata: () => undefined, location: () => undefined });
+    // Totems, the hit indicator and the weapon imbues: the world's packet records and the same
+    // unit-token resolution the unit frames use; totem spell names are fetched outside C-API reads.
+    this.hudMechanics = new FrameXmlHudMechanicsLive({
+      world: () => context.world(),
+      store: () => context.store(),
+      monotonic: () => context.monotonic(),
+      spell: (id) => context.spell(id),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      prefetchSpells: (ids, onLoaded) => ensureSpellNames(ids, onLoaded),
+    });
+    // The pet bar: WorldClient's pet packet, timers and swing, the same unit tokens for a target.
+    this.petActions = new FrameXmlPetActionBarLive({
+      world: () => context.world(),
+      monotonic: () => context.monotonic(),
+      spell: (id) => context.spell(id),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      prefetchSpells: (ids, onLoaded) => ensureSpellNames(ids, onLoaded),
+    });
+    ({
+      gossip: this.gossip, bank: this.bank, taxi: this.taxi, itemText: this.itemText,
+      tabard: this.tabard, registrar: this.registrar, petition: this.petition, stable: this.stable,
+    } = createLiveFrameXmlNpcWindows({
+      world: () => context.world(),
+      unitName: (unit) => this.unitName(unit),
+      unitClassName: (unit) => this.unitClass(unit)?.[0],
+      unitRaceName: (unit) => this.unitRace(unit)?.[0],
+      unitSex: (unit) => this.unitSex(unit),
+      unitFlags: (unit) => {
+        const player = unit === "player" ? this.#self() : undefined;
+        return player ? unitField.flags(player) : undefined;
+      },
+      playerFaction: () => {
+        const faction = this.unitFactionGroup("player");
+        return faction === "Alliance" || faction === "Horde" ? faction : undefined;
+      },
+      itemTemplate: (entry) => {
+        const template = this.#itemTemplate(context.world(), entry);
+        return template?.found ? template : undefined;
+      },
+      itemAppearance: (entry) =>
+        `${this.#itemTemplate(context.world(), entry)?.quality ?? ""}:${this.#itemTexture(entry) ?? ""}`,
+      questLog: () => this.#questRows().map((row) => ({
+        questId: row.questId, complete: (row.state & QUEST_STATE_COMPLETE) !== 0,
+      })),
+      questTrivial: (level) => {
+        const playerLevel = this.unitLevel("player");
+        return frameXmlQuestTrivial(level, playerLevel, questGreenRange(playerLevel));
+      },
+      containerSlot: (bagId, slot) => this.#liveContainerSlot(bagId, slot),
+      cursorSlot: () => this.#cursorSource(),
+      clickBankSlot: (bag, slot) => this.clickNativeBankSlot(bag, slot),
+      clearCursor: () => this.clearCursor(),
+      continent: (mapId) => frameXmlTaxiMapBounds(
+        context.mapSource?.metadata()?.continents?.find((row) => row.mapId === mapId),
+        context.mapSource?.metadata()?.mapAreas.find((area) => area.mapId === mapId && area.areaId === 0)),
+      mapTransforms: () => context.mapSource?.metadata()?.transforms,
+      itemTexture: (entry) => this.#itemTexture(entry),
+    }));
+    this.services = createFrameXmlServices({
+      sendMailItems: () => this.#sendMailItems(),
+      stableService: () => {
+        const world = context.world();
+        const stable = world?.stable;
+        return stable && world?.stableMasterGuid !== 0n && world?.stableMasterGuid === stable.npcGuid
+          ? { masterGuid: stable.npcGuid, slotsOwned: stable.stableSlots } : undefined;
+      },
+      stableSlotPrice: (owned) => context.stableSlotPrice?.(owned),
+    });
+    this.worldStates = new FrameXmlWorldStates(() => context.worldStateUi?.(), () => {
+      const world = context.world();
+      const location = world?.worldStateContext;
+      if (!world || !location) return undefined;
+      const serverTime = world.currentServerTime?.(context.monotonic());
+      return { ...location, phaseMask: world.phaseMask, states: world.worldStates,
+        ...(serverTime === undefined ? {} : { serverTime }) };
+    });
+    this.threat = new FrameXmlThreatModel({
+      world: () => context.world(),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      inInstance: () => {
+        const type = this.instanceInfo()?.[1];
+        return type === "party" || type === "raid";
+      },
+      inGroup: () => this.partyMemberCount() > 0 || this.raidMemberCount() > 0,
+    });
+    this.questAbandon = new FrameXmlQuestAbandonModel({
+      selection: () => this.#questSelection,
+      entry: (index) => {
+        const entry = this.#questAt(index);
+        return entry ? { slot: entry.slot, questId: entry.questId } : undefined;
+      },
+      locate: (questId) => {
+        const entry = this.#questRows().find((row) => row.questId === questId);
+        return entry ? { slot: entry.slot, questId: entry.questId } : undefined;
+      },
+      title: (questId) => this.#questTemplateById(questId)?.title,
+      questItems: (questId) => {
+        const template = this.#questTemplateById(questId);
+        return template ? [template.startItem, ...template.itemObjectives.map((objective) => objective.itemId)] : undefined;
+      },
+      carriedItems: () => {
+        const inventory = this.#inventoryOf(context.world());
+        if (!inventory) return undefined;
+        const entries = new Set<number>();
+        for (const slot of [...inventory.backpack, ...inventory.keyring, ...inventory.bags.flatMap((bag) => bag.slots)]) {
+          if (slot.item) entries.add(entryOf(slot.item));
+        }
+        return entries;
+      },
+      abandon: (entry) => context.world()?.abandonQuest(entry.slot),
+    });
+    this.mechanics = new FrameXmlMechanicsModel({
+      world: () => context.world(),
+      self: () => this.#self(),
+      spell: (id) => context.spell(id),
+    });
     this.#skillResolvers = createFrameXmlSkillResolvers(() => ({
       player: this.#self(),
       playerRevision: this.#skillRevision,
       talent: this.#context.skillMetadata?.(),
     }));
-    this.#talentResolvers = createFrameXmlTalentResolvers(() => ({
-      player: this.#self(),
-      playerRevision: this.#talentRevision,
-      talents: this.#context.world()?.talents,
-      talentsRevision: this.#talentRevision,
-      talent: this.#context.talentMetadata?.(),
-    }));
+    this.#talentResolvers = createFrameXmlTalentResolvers(() => {
+      const world = this.#context.world();
+      const talent = this.#context.talentMetadata?.();
+      const family = world?.petSpells?.creatureFamily;
+      const petTalents = this.#currentPetTalents(world);
+      return {
+        player: this.#self(),
+        playerRevision: this.#talentRevision,
+        talents: world?.talents,
+        talentsRevision: this.#talentRevision,
+        petGuid: world?.petSpells?.guid,
+        petFamilyMask: family === undefined ? undefined : talent?.petTalentMask?.(family),
+        petTalents,
+        petTalentsRevision: this.#talentRevision,
+        talent,
+      };
+    });
   }
 
   attach(pump: FrameXmlSeamPump): void {
     // A mount/unmount can reattach the same seam. Do not leave the old packet listeners alive.
     if (this.#pump) this.detach();
     this.#pump = pump;
+    // A new FrameXML load starts from the dock's default selection, «Общий».
+    this.#chatWindowShown.clear();
+    this.chatWindows.reset();
+    // The chat cache's colours before anything can print a line (FrameXmlChatColors.ts).
+    this.chatColors.attach(pump);
+    this.threat.attach(pump);
+    this.mechanics.attach(pump);
+    this.#serviceSignature = this.#servicesSignature();
+    this.worldStates.attach(pump);
+    this.calendar.attach(pump);
+    this.lfd.attach(pump);
+    attachLiveFrameXmlNpcWindows(this, pump);
+    this.loot.attach(pump);
+    this.popups.attach(pump);
+    this.friends.attach(pump);
+    this.mail.attach(pump);
+    this.trade.attach(pump);
+    this.currency.attach(pump);
+    this.arena.attach(pump);
+    this.auction.attach(pump);
+    this.socket.attach(pump);
+    this.inspect.attach(pump);
+    this.barber.attach(pump);
+    this.glyphs.attach(pump);
+    this.companions.attach(pump);
+    this.titles.attach(pump);
+    this.equipmentSets.attach(pump);
+    this.achievement.attach(pump);
+    this.guildBank.attach(pump);
+    this.tradeSkill.attach(pump);
+    this.macros.attach(pump);
+    this.cursor.attach(pump);
+    this.keyBindings.attach(pump);
+    this.map.attach(pump);
+    this.hudMechanics.attach(pump);
+    this.petActions.attach(pump);
+    this.#context.world()?.requestWorldStateTime?.();
+    this.#releaseNativeBankCursor = publishFrameXmlNativeBankCursor({
+      clickBankSlot: (slot) => this.clickNativeBankSlot(slot.bag, slot.slot),
+    });
     // Reattachment can follow a world reset. The first poll must describe the new world's current
     // state, not compare it with the old world's signatures.
     this.#polledAt = Number.NEGATIVE_INFINITY;
+    this.#meleeAnnounced = false;
+    this.#combatAnnounced = false;
+    this.#pendingLevelUp = undefined;
     this.#barSignature = "";
     this.#cooldownSignature = "";
+    this.#itemCooldownSignature = "";
+    this.#actionPage = this.actionBarPage();
+    this.#mirrorTimerSignatures.clear();
     this.#spellSignature = "";
     this.#spellCooldownSignature = "";
+    this.#shapeshiftSignature = "";
+    this.#shapeshiftActiveSignature = "";
+    this.#shapeshiftCooldownSignature = "";
+    this.#bonusActionBarOffset = this.bonusBarOffset();
+    this.#comboSignature = "";
+    this.#bankSlotsBought = undefined;
+    this.#bankerGuid = undefined;
     this.#merchantSignature = "";
     this.#trainerSelection = undefined;
     this.#trainerFilters.set("available", true);
     this.#trainerFilters.set("unavailable", true);
-    this.#trainerFilters.set("used", true);
+    this.#trainerFilters.set("used", false);
     this.#containerSignatures.clear();
     this.#inventorySignature = "";
     this.#statsSignature = "";
@@ -511,6 +1380,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#skillRevision += 1;
     this.#talentRevision += 1;
     this.#talentMetadataRevision = Number.NaN;
+    this.#petTalentOwnerSeen = false;
+    this.#petTalentOwnerGuid = undefined;
+    this.#petTalentsAtOwnerChange = undefined;
+    this.#awaitPetTalentPacket = false;
     this.#selectedSkillId = undefined;
     this.#collapsedSkillCategories.clear();
     this.#selectedFactionId = undefined;
@@ -543,6 +1416,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#powerType = -1;
     this.#targetGuid = this.#target()?.guid;
     this.#targetName = this.#targetNameFor(this.#target()) ?? "";
+    this.#comboSignature = String(this.comboPoints("player", "target"));
+    this.#bankSlotsBought = this.bankSlots()?.[0];
+    this.#bankerGuid = this.#context.world()?.bankerGuid;
     this.#targetTargetGuid = this.#targetTarget()?.guid;
     this.#targetTargetName = this.#targetNameFor(this.#targetTarget()) ?? "";
     this.#focusGuid = this.#focus()?.guid;
@@ -570,6 +1446,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#petAuraSignature = this.#auraShapeSignature("pet");
     this.#castStates.clear();
     this.#chatLineId = 0;
+    // Empty shapes: the first poll after attach publishes whatever the world already has (a
+    // tracker switched on before the mount, mail waiting at login, a queue in progress).
+    this.#mouseoverGuid = undefined;
+    this.#trackingSignature = "";
+    this.#mailSignature = "";
+    this.#mailQueryWorld = undefined;
+    this.#lfgSignature = "";
+    this.#instanceSignature = "";
     const store = this.#context.store();
     if (store) {
       // PLAYER_SKILL_INFO_1_1 is a 384-word private array. Subscribe to the complete named field
@@ -608,18 +1492,48 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_HEALTH", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.health, "player");
       }));
+      // The combat flag is UNIT_FIELD_FLAGS' bit 19: PLAYER_REGEN_* within the frame it lands in.
+      this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_FLAGS", () => this.#reconcileCombat()));
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_MAXHEALTH", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.maxHealth, "player");
       }));
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_LEVEL", () => {
-        pump.fire(FRAMEXML_SEAM_EVENTS.levelUp);
-        // MainMenuBar listens to PLAYER_LEVEL_UP, while PlayerFrame.lua listens to UNIT_LEVEL. The
-        // same server field drives both paths; dropping the latter leaves PlayerLevelText stale.
+        // PlayerFrame.lua listens to UNIT_LEVEL for the level text. PLAYER_LEVEL_UP is the level-up
+        // packet's own event (#publishLevelUp), not this field's: the field also moves at login,
+        // where a bare PLAYER_LEVEL_UP made ChatFrame.lua:2567 raise on `format(LEVEL_UP, nil)`.
         pump.fire(FRAMEXML_SEAM_EVENTS.unitLevel, "player");
+        this.#publishLevelUp();
+      }));
+      // The form byte is written by Unit::SetShapeshiftForm. Publish the action-page edge as
+      // soon as that authoritative field arrives; the 60 ms poll also catches metadata arrival.
+      this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_BYTES_2", () => {
+        this.#reconcileShapeshiftActive();
+        this.#reconcileBonusActionBar();
       }));
       this.#unsubscribe.push(store.field(SELF, "PLAYER_XP", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.experience);
       }));
+      // One word carries the inn bit, AFK and DND (Player.h:354-359), and stock keeps a listener
+      // per family: PLAYER_UPDATE_RESTING repaints the «zzz» (PlayerFrame_UpdateStatus) and
+      // PLAYER_FLAGS_CHANGED("player") the «<AFK>» name — so each bit family gets its own edge,
+      // and a ghost/GM bit moving fires neither.
+      let playerFlags = this.#playerFlags() ?? 0;
+      this.#unsubscribe.push(store.field(SELF, "PLAYER_FLAGS", () => {
+        const next = this.#playerFlags() ?? 0;
+        const changed = playerFlags ^ next;
+        playerFlags = next;
+        if ((changed & PLAYER_FLAGS_RESTING) !== 0) pump.fire(FRAMEXML_SEAM_EVENTS.resting);
+        if ((changed & (PLAYER_FLAGS_AFK | PLAYER_FLAGS_DND)) !== 0) pump.fire(FRAMEXML_SEAM_EVENTS.playerFlags, "player");
+      }));
+      // The rested bonus ticks down with every kill (ExhaustionTick_OnEvent redraws the tick).
+      this.#unsubscribe.push(store.field(SELF, "PLAYER_REST_STATE_EXPERIENCE", () => {
+        pump.fire(FRAMEXML_SEAM_EVENTS.exhaustion);
+      }));
+      // PLAYER_AMMO_ID is the AmmoSlot's item (`#ammoEntry`), written by Player::SetAmmo/RemoveAmmo.
+      // The stock slot repaints on UNIT_INVENTORY_CHANGED("player") (PaperDollFrame.lua:1192, the
+      // AmmoSlot's OnEvent in PaperDollFrame.xml), so a new ammo takes that edge at once; the carried
+      // count moving under it (a shot, a sale) is caught by the paper doll's 60 ms poll in `tick`.
+      this.#unsubscribe.push(store.field(SELF, "PLAYER_AMMO_ID", () => this.#reconcilePaperDollInventory()));
       // Inventory fields have no named WorldStore event. `any` is the store's coalesced mutation
       // edge, so one packet batch produces at most one BAG_UPDATE per changed stock container and
       // one PLAYER_MONEY edge for changed coinage.
@@ -627,12 +1541,46 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         any?: (listener: () => void) => (() => void);
       }).any;
       if (typeof any === "function") {
+        // `any` fires on every flush in which anything at all changed, which in a crowd is every
+        // frame, while the containers and the carried counts only move with the player's own slot
+        // fields and item objects. The store's inventory watch (`Inventory.ts`) says when those
+        // did, so the two signature walks below run for an inventory change and not for a
+        // neighbour's step. Cached textures and names are still caught by the 60 ms poll in `tick`
+        // (containers) and by the cache edges below (quests); a cache change that has no edge of
+        // its own is picked up by the same bounded poll here. A focused store double without the
+        // watch's primitives keeps the old every-flush behaviour.
+        const watch = typeof (store as { fieldRange?: unknown }).fieldRange === "function"
+          && typeof (store as { object?: unknown }).object === "function" && store.events && store.state
+          ? inventoryWatch(store) : undefined;
+        // Attach seeds the container and quest signatures itself (`#reconcileContainers(true)`
+        // below), so the inventory as it stands now is the one they were built from.
+        let seenRevision = watch?.revision;
+        let questPolledAt = Number.NEGATIVE_INFINITY;
+        // The quest log's own words — a kill counter, an accepted quest — are the other store input
+        // of the quest signature. Their event is emitted earlier in the same flush than `any`.
+        let questFieldsMoved = false;
+        if (watch) {
+          this.#unsubscribe.push(store.events.on("PLAYER_QUEST_LOG_UPDATE", ({ guid }) => {
+            if (guid === this.#selfGuid()) questFieldsMoved = true;
+          }));
+        }
         this.#unsubscribe.push(any.call(store, () => {
-          this.#reconcileContainers();
+          const revision = watch?.revision;
+          const inventoryMoved = revision === undefined || revision !== seenRevision;
+          seenRevision = revision;
+          if (inventoryMoved) this.#reconcileContainers();
           this.#reconcileMoney();
+          this.#reconcileBankSlots();
+          // PLAYERBANKSLOTS_CHANGED and the bank bags' BAG_UPDATE (FrameXmlBank.ts).
+          this.bank.reconcile();
           // Item-objective progress is derived from the same carried fields. The signature gate
           // keeps ordinary inventory changes quiet when no quest objective count moved.
-          this.#publishQuestLogChange();
+          const now = typeof this.#context.monotonic === "function" ? this.#context.monotonic() : performance.now();
+          if (inventoryMoved || questFieldsMoved || now - questPolledAt >= LIVE_POLL_SECONDS * 1000) {
+            questFieldsMoved = false;
+            questPolledAt = now;
+            this.#publishQuestLogChange();
+          }
         }));
       }
       // Selection is a WorldClient property rather than a store field. Store events still carry
@@ -667,6 +1615,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           // repaint this player's TargetFrame.
           if (guid === this.#selfGuid()) this.#reconcileTarget();
           if (guid === this.#targetGuid && this.#target()?.guid === guid) this.#reconcileTargetTarget();
+          // FocusFrame's OnEvent runs TargetofTarget_Update(self.totFrame) for UNIT_TARGET of its
+          // own unit; the focus's target has no cached identity here, its frame reads it back.
+          if (guid === this.#focusGuid && this.#focus()?.guid === guid) pump.fire(FRAMEXML_SEAM_EVENTS.unitTarget, "focus");
         }));
         const targetField = <Name extends "UNIT_HEALTH" | "UNIT_MAX_HEALTH" | "UNIT_LEVEL" | "UNIT_FACTION" | "UNIT_DISPLAY_POWER" | "UNIT_POWER" | "UNIT_MAX_POWER">(
           name: Name,
@@ -726,6 +1677,21 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
                   : (FRAMEXML_POWER_MAX_EVENTS[powerType] ?? "UNIT_MAXMANA"), "targettarget");
               }
             }
+            // The focus's target has no cached identity (its frame is shown by TargetFrame_OnUpdate
+            // polling UnitExists); resolving it here is two map reads per event.
+            const focusTarget = this.#focusTarget();
+            if (focusTarget !== undefined && focusTarget.guid === guid) {
+              if (event === FRAMEXML_SEAM_EVENTS.health || event === FRAMEXML_SEAM_EVENTS.maxHealth
+                || event === FRAMEXML_SEAM_EVENTS.unitLevel || event === FRAMEXML_SEAM_EVENTS.faction
+                || event === FRAMEXML_SEAM_EVENTS.unitDisplayPower) {
+                pump.fire(event, "focus-target");
+              } else {
+                const powerType = unitField.powerType(focusTarget) ?? 0;
+                pump.fire(event === "UNIT_POWER"
+                  ? (FRAMEXML_POWER_EVENTS[powerType] ?? "UNIT_MANA")
+                  : (FRAMEXML_POWER_MAX_EVENTS[powerType] ?? "UNIT_MAXMANA"), "focus-target");
+              }
+            }
             const partyUnit = this.#partyUnitForGuid(guid);
             if (partyUnit) {
               if (event === FRAMEXML_SEAM_EVENTS.health || event === FRAMEXML_SEAM_EVENTS.maxHealth
@@ -772,6 +1738,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
             pump.fire(FRAMEXML_SEAM_EVENTS.playerFlags, "targettarget");
           }
         }));
+        // UNIT_FIELD_DISPLAYID arriving or changing (the player's own on login, a shapeshift, a
+        // mount) is the client's UNIT_PORTRAIT_UPDATE: CharacterMicroButton_OnEvent and
+        // UnitFrame_OnEvent call SetPortraitTexture again for that unit, which is how a stock
+        // claim made before the object was in view gets its face.
+        this.#unsubscribe.push(events.on("UNIT_DISPLAY_ID", ({ guid }) => {
+          const unit = this.#castUnit(guid) ?? (guid === this.#focusTarget()?.guid ? "focus-target" : undefined);
+          if (unit !== undefined) pump.fire(FRAMEXML_SEAM_EVENTS.unitPortrait, unit);
+        }));
         this.#unsubscribe.push(events.on("UNIT_NPC_FLAGS", ({ guid }) => {
           if (guid === this.#targetGuid && this.#target()?.guid === guid) {
             pump.fire(FRAMEXML_SEAM_EVENTS.classification, "target");
@@ -785,6 +1759,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     }
     const world = this.#context.world();
     if (world) {
+      this.#unsubscribe.push(world.events.on("BANK_OPENED", ({ bankerGuid }) => {
+        if (bankerGuid === undefined) this.clearCursor();
+        if (bankerGuid === this.#bankerGuid) return;
+        this.#bankerGuid = bankerGuid;
+        pump.fire(bankerGuid === undefined
+          ? FRAMEXML_SEAM_EVENTS.bankFrameClosed : FRAMEXML_SEAM_EVENTS.bankFrameOpened);
+      }));
+      this.#unsubscribe.push(world.events.on("COMBO_POINTS_CHANGED", () => this.#reconcileComboPoints()));
+      // MSG_RAID_TARGET_UPDATE, whole list or one mark: TargetFrame/FocusFrame re-read
+      // GetRaidTargetIndex(self.unit) on the stock event and carry no argument.
+      this.#unsubscribe.push(world.events.on("RAID_TARGET_UPDATE", () => {
+        pump.fire(FRAMEXML_SEAM_EVENTS.raidTarget);
+      }));
       // INIT_WORLD_STATES is the authoritative map/zone/area edge. The same primitive comparison
       // is also run in tick because mapId can become known on the movement path first.
       this.#reconcileZone(true);
@@ -792,15 +1779,23 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       // groups before replaying lines so the initial backlog reaches the freshly loaded frame.
       // Real WorldClient always owns a channel Map.  Keep older focused seam doubles that only
       // model auras/casts/minimap free of a synthetic chat configuration edge.
-      if (world.channels instanceof Map) pump.fire(FRAMEXML_SEAM_EVENTS.chatWindowsUpdated);
+      if (world.channels instanceof Map) this.#chatWindowsUpdated(pump, true);
       this.#replayChat(world, pump);
       const previousGroupCallback = world.onGroupChanged;
+      // The player's own role byte rides the group list header (SMSG_GROUP_LIST `ownRoles`);
+      // PlayerFrame refreshes its role icon on PLAYER_ROLES_ASSIGNED, not on the roster edge.
+      let ownRoles = world.group?.ownRoles;
       const groupCallback = () => {
         try {
           previousGroupCallback?.();
         } finally {
           this.#reconcileParty();
           pump.fire(FRAMEXML_SEAM_EVENTS.partyLeaderChanged);
+          const roles = world.group?.ownRoles;
+          if (roles !== ownRoles) {
+            ownRoles = roles;
+            pump.fire(FRAMEXML_SEAM_EVENTS.playerRolesAssigned);
+          }
         }
       };
       world.onGroupChanged = groupCallback;
@@ -822,21 +1817,32 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         if (world.onTrainerChanged === trainerCallback) world.onTrainerChanged = previousTrainerCallback;
       });
       if (this.#partySignature !== "") pump.fire(FRAMEXML_SEAM_EVENTS.partyMembers);
+      // SMSG_LEVELUP_INFO precedes the level it announces (`Player::GiveLevel` sends it before
+      // SetLevel); the event waits for the level field so the talent points can be measured.
+      this.#unsubscribe.push(world.events.on("LEVEL_UP", (info) => {
+        const self = this.#self();
+        this.#pendingLevelUp = {
+          info, pointsBefore: self ? readField(self, "PLAYER_CHARACTER_POINTS1") ?? 0 : 0,
+        };
+        this.#publishLevelUp();
+      }));
       this.#unsubscribe.push(world.events.on("PET_BAR_CHANGED", () => {
         this.#reconcilePet(true);
       }));
       this.#unsubscribe.push(world.events.on("TALENTS_CHANGED", ({ pet }) => {
-        // WorldClient emits once per authoritative talent packet/reset. Do not poll this edge:
-        // stock Blizzard_TalentUI relies on exactly one PLAYER_TALENT_UPDATE per player packet.
-        if (pet) return;
+        // WorldClient emits once per authoritative talent packet/reset. Stock Blizzard_TalentUI
+        // listens to separate player and pet edges; neither is a polled synthetic packet.
         this.#talentRevision += 1;
-        this.#pump?.fire(FRAMEXML_SEAM_EVENTS.talentsChanged);
+        this.#pump?.fire(pet ? FRAMEXML_SEAM_EVENTS.petTalentsChanged
+          : FRAMEXML_SEAM_EVENTS.talentsChanged);
       }));
       this.#unsubscribe.push(world.events.on("CHAT_MESSAGE", (message) => {
         this.#emitChatMessage(pump, world, message);
       }));
+      // Only when the channel list stock reads has changed: a member count or a roster leaves
+      // `GetChatWindowChannels` as it was (`#chatWindowsUpdated`).
       this.#unsubscribe.push(world.events.on("CHANNEL_CHANGED", () => {
-        pump.fire(FRAMEXML_SEAM_EVENTS.chatWindowsUpdated);
+        this.#chatWindowsUpdated(pump);
       }));
       this.#unsubscribe.push(world.events.on("WORLD_STATE_CHANGED", () => {
         this.#invalidateCurrentMapQuestIds();
@@ -978,15 +1984,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       // WorldClient's single legacy onSpellsChanged/onCooldownsChanged callbacks. The poll below
       // still catches removals and initial-spell replacement, for which the packet bus has no
       // dedicated event, while these edges make a learned spell/cooldown repaint immediate.
-      this.#unsubscribe.push(world.events.on("SPELL_LEARNED", () => {
+      this.#unsubscribe.push(world.events.on("SPELL_LEARNED", (event) => {
         this.#invalidateSpellEntries();
         pump.fire(FRAMEXML_SEAM_EVENTS.spellsChanged);
-        pump.fire(FRAMEXML_SEAM_EVENTS.learnedSpellInTab);
+        // arg1 is the tab: SpellBookFrame_OnEvent concatenates it into
+        // `"SpellBookSkillLineTab"..arg1.."Flash"` (SpellBookFrame.lua:62-64), which raised on a nil
+        // for every spell learned. A spell with no tab yet (its line still loading) flashes nothing.
+        const tab = this.#context.spellTabFor
+          ? this.#context.spellTabFor(event.spellId)
+          : this.#spellTabs(world).length > 0 ? 1 : undefined;
+        if (tab !== undefined) pump.fire(FRAMEXML_SEAM_EVENTS.learnedSpellInTab, tab);
         this.#spellSignature = this.#spellShapeSignature(world);
       }));
       this.#unsubscribe.push(world.events.on("SPELL_COOLDOWN_STARTED", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown);
         this.#spellCooldownSignature = this.#spellCooldownShapeSignature(world);
+        this.#reconcileItemCooldowns();
+      }));
+      this.#unsubscribe.push(world.events.on("ITEM_COOLDOWN_STARTED", () => {
+        this.#reconcileItemCooldowns();
       }));
       this.#unsubscribe.push(world.events.on("QUERY_CACHE_CHANGED", (event) => {
         if (event.kind === "cleared") {
@@ -998,22 +2014,33 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           this.#publishQuestLogChange(true);
           return;
         }
+        // Every visible piece of gear of every player in view, and every creature nearby, is asked
+        // of the server, so a crowd answers a few hundred of these in a burst, and each one rebuilt
+        // the signatures below. An answer can only move a signature that read its entry: the
+        // carried slots and bags for the containers, the quests' reward, objective and target
+        // entries for the log (recorded when each was last built; before that, every answer
+        // counts).
+        const entry = typeof event.id === "number" ? event.id : undefined;
+        const concerns = (entries: Set<number> | undefined): boolean =>
+          entry === undefined || entries === undefined || entries.has(entry);
         if (event.kind === "item") {
           // Item quality/name/bag-family metadata can arrive after the inventory update. The
           // signature includes those resolved fields, so ContainerFrame gets one redraw without
           // asking the query cache from a render loop.
-          this.#reconcileContainers();
+          if (concerns(this.#containerEntries)) this.#reconcileContainers();
+          // The open bank's slots and bank bags the same way (FrameXmlBank.ts; free with no banker).
+          this.bank.reconcile();
           // QuestInfo reward rows use the same synchronous item metadata cache. Once a query
           // arrives, repaint the selected log so an unresolved row becomes a real icon/name.
-          this.#publishQuestLogChange();
+          if (concerns(this.#questItemIds)) this.#publishQuestLogChange();
           return;
         }
         if (event.kind === "gameObject") {
-          this.#publishQuestLogChange();
+          if (concerns(this.#questGameObjectIds)) this.#publishQuestLogChange();
           return;
         }
         if (event.kind !== "creature") return;
-        this.#publishQuestLogChange();
+        if (concerns(this.#questCreatureIds)) this.#publishQuestLogChange();
         this.#reconcileFocus();
         this.#reconcileTargetTarget();
         const namedUnits: readonly [
@@ -1079,6 +2106,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#talentMetadataRevision = this.#context.talentMetadataRevision?.() ?? 0;
         pump.fire(FRAMEXML_SEAM_EVENTS.talentsChanged);
       }
+      if (this.#talentResolvers.petTalentSnapshot() !== undefined) {
+        this.#talentMetadataRevision = this.#context.talentMetadataRevision?.() ?? 0;
+        pump.fire(FRAMEXML_SEAM_EVENTS.petTalentsChanged);
+      }
     }
     // If the list arrived before FrameXML mounted, expose it once to the freshly loaded stock
     // root; subsequent packet callbacks and the bounded poll use the same signature gate.
@@ -1097,6 +2128,40 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   detach(): void {
+    this.worldStates.detach();
+    this.calendar.detach();
+    this.lfd.detach();
+    detachLiveFrameXmlNpcWindows(this);
+    this.loot.detach();
+    this.popups.detach();
+    this.friends.detach();
+    this.mail.detach();
+    this.trade.detach();
+    this.currency.detach();
+    this.arena.detach();
+    this.auction.detach();
+    this.socket.detach();
+    this.inspect.detach();
+    this.barber.detach();
+    this.glyphs.detach();
+    this.companions.detach();
+    this.titles.detach();
+    this.equipmentSets.detach();
+    this.achievement.detach();
+    this.guildBank.detach();
+    this.tradeSkill.detach();
+    this.macros.detach();
+    this.cursor.detach();
+    this.keyBindings.detach();
+    this.map.detach();
+    this.hudMechanics.detach();
+    this.petActions.detach();
+    this.chatColors.detach();
+    this.threat.detach();
+    this.mechanics.detach();
+    this.clearCursor();
+    this.#releaseNativeBankCursor?.();
+    this.#releaseNativeBankCursor = undefined;
     for (const off of this.#unsubscribe.splice(0)) off();
     this.#castStates.clear();
     this.#pump = undefined;
@@ -1170,6 +2235,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#targetTargetAuraSignature = "";
     this.#petAuraSignature = "";
     this.#chatLineId = 0;
+    this.#mouseoverGuid = undefined;
+    this.#trackingSignature = "";
+    this.#mailSignature = "";
+    this.#mailQueryWorld = undefined;
+    this.#lfgSignature = "";
+    this.#instanceSignature = "";
   }
 
   #selfGuid(): bigint | undefined {
@@ -1179,6 +2250,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** Emit one parsed line, translating the GUID/name boundary before Lua sees it. */
   #emitChatMessage(pump: FrameXmlSeamPump, world: WorldClient, message: ChatMessage): void {
     if (message.language === (LANG_ADDON | 0) || message.type === CHAT_MSG_ADDON) return;
+    // An achievement line's `$a` link and `$g` gender are the client's to write, from the catalog;
+    // the line waits for it once (FrameXmlAchievement.chatLine).
+    const written = this.achievement.chatLine(message, (line) => { if (this.#pump === pump) this.#emitChatMessage(pump, world, line); });
+    if (!written) return;
+    message = written;
+    if (message.channelNotice && this.#emitChannelNotice(pump, world, message.channelNotice)) return;
     const mappedEventName = frameXmlChatEventName(message.type);
     const eventName = mappedEventName ?? "CHAT_MSG_SYSTEM";
     const fallback = mappedEventName === undefined;
@@ -1188,9 +2265,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // A channel line without a joined-channel match would be dropped by stock ChatFrame anyway;
     // suppressing it here also keeps the seam honest while the native chat is owned by FrameXML.
     if (message.type === CHAT_MSG_CHANNEL && channel === undefined) return;
+    // Text the client wrote itself is prose: its pipes are doubled so stock parses them as
+    // literal characters (`ChatMessage.local`). Server text keeps every escape it was sent with.
+    const text = message.local ? frameXmlEscapeLocalChatText(message.text) : message.text;
     const displayMessage: ChatMessage = fallback
       ? {
         ...message,
+        text,
         type: CHAT_MSG_SYSTEM,
         language: 0,
         senderGuid: 0n,
@@ -1200,7 +2281,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         channel: "",
         tag: 0,
       }
-      : message;
+      : text === message.text ? message : { ...message, text };
     const sender = fallback ? "" : displayMessage.senderName
       || (displayMessage.senderGuid === world.state.selfGuid ? world.selfName : undefined)
       || (displayMessage.senderGuid === 0n ? "" : world.displayName(displayMessage.senderGuid));
@@ -1211,31 +2292,114 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       channel?.number ?? 0,
       channel?.shortName,
       channel?.displayName,
+      this.locale,
+      channel?.zoneChannelId ?? 0,
     );
     pump.fire(eventName, ...args);
   }
 
-  /** Resolve an incoming channel name to stock ChatFrame's 1-based current channel slot. */
+  /**
+   * One `SMSG_CHANNEL_NOTIFY` as the client raises it: `CHAT_MSG_CHANNEL_NOTICE` (`_USER`, `_JOIN`,
+   * `_LEAVE`) with stock's layout — `arg1` the notice token, `arg2` the player it is about, `arg4`
+   * «N. name», `arg5` the second player (who kicked, who banned), `arg7` the zone channel id,
+   * `arg8` the number, `arg9` the short name, and a number in `arg10`, which stock compares with 0
+   * (ChatFrame.lua:2796). This is what keeps stock ChatFrame's own channel list true: it drops a
+   * channel on `YOU_LEFT` alone (:2714-2717) and re-reads `GetChatWindowChannels` on
+   * `UPDATE_CHAT_WINDOWS`, raised here ahead of a `YOU_JOINED` so the new channel is on the list
+   * its own notice is filtered against.
+   *
+   * A join that replaced the zone channel of the same id (`ChannelNotify.replacedChannel`) is the
+   * client's `YOU_CHANGED` («Смена канала: [1. Общий: Западный край]», GlobalStrings.lua:1611).
+   * Its id and number are the old channel's; the list is re-read ahead of it only when the name
+   * stock lists has changed (`#chatWindowsUpdated`).
+   *
+   * False — and the caller writes the native system line as before — when stock has no sentence
+   * for the code, or the notice is about a channel the player is not in: stock shows a channel
+   * notice only for a channel on its list (:2697-2724), so «wrong password» or «not in area» for a
+   * channel never joined would be swallowed. `INVITE` is the exception stock itself makes.
+   */
+  #emitChannelNotice(pump: FrameXmlSeamPump, world: WorldClient, notice: ChannelNotify): boolean {
+    const changed = notice.code === CHAT_YOU_JOINED_NOTICE && notice.replacedChannel !== undefined;
+    const shape = changed
+      ? { event: "CHAT_MSG_CHANNEL_NOTICE", token: "YOU_CHANGED" } as const
+      : frameXmlChannelNotice(notice.code, notice.oldMemberFlags, notice.newMemberFlags);
+    if (!shape) return false;
+    const channel = this.#channelInfo(world, notice.channel);
+    if (!channel && shape.token !== "INVITE") return false;
+    if (notice.code === CHAT_YOU_JOINED_NOTICE) this.#chatWindowsUpdated(pump, !changed);
+    const nameOf = (guid: bigint): string => guid === 0n ? ""
+      : world.names?.get(guid) ?? (guid === world.state.selfGuid ? world.selfName : undefined)
+        ?? world.displayName(guid);
+    pump.fire(
+      shape.event,
+      shape.token,
+      notice.name || nameOf(notice.guid),
+      "",
+      channel?.displayName ?? notice.channel,
+      nameOf(notice.actorGuid),
+      "",
+      notice.channelId,
+      channel?.number ?? 0,
+      channel?.shortName ?? shortChannelName(notice.channel),
+      0,
+      ++this.#chatLineId,
+      frameXmlGuid(notice.guid),
+    );
+    return true;
+  }
+
+  /**
+   * Resolve an incoming channel name to stock ChatFrame's 1-based current channel slot: the held
+   * channel of that exact name, else the first one sharing its short name (a replayed line from a
+   * zone channel since swapped for the next zone's).
+   */
   #channelInfo(world: WorldClient, channel: string): LiveChatChannel | undefined {
     if (!channel || !(world.channels instanceof Map)) return undefined;
     const wanted = shortChannelName(channel);
+    const info = (name: string, number: number, channelId: number | undefined): LiveChatChannel => ({
+      number,
+      shortName: shortChannelName(name),
+      displayName: displayChannelName(name, number),
+      zoneChannelId: channelId ?? 0,
+    });
+    let byShortName: LiveChatChannel | undefined;
     let index = 1;
-    for (const name of world.channels.keys()) {
-      if (typeof name !== "string") {
-        index += 1;
-        continue;
-      }
-      const shortName = shortChannelName(name);
-      if (shortName === wanted) {
-        return {
-          number: index,
-          shortName,
-          displayName: displayChannelName(name, index),
-        };
+    for (const [name, held] of world.channels) {
+      if (typeof name === "string") {
+        if (name === channel) return info(name, index, held?.channelId);
+        if (byShortName === undefined && shortChannelName(name) === wanted) {
+          byShortName = info(name, index, held?.channelId);
+        }
       }
       index += 1;
     }
-    return undefined;
+    return byShortName;
+  }
+
+  /**
+   * Raise UPDATE_CHAT_WINDOWS when `GetChatWindowChannels(1)` answers something new, or always
+   * when `force`d (attach, a plain join, a replay that held notices).
+   *
+   * Every UPDATE_CHAT_WINDOWS re-runs `FloatingChatFrame_Update` and `ChatFrame_ConfigEventHandler`
+   * for each window, and both `Show()` a window whose `shown` is set (FloatingChatFrame.lua:138-142,
+   * ChatFrame.lua:2506-2508), while nothing in stock re-hides the dock's unselected frames
+   * afterwards. The client itself raises this event only when chat settings load, so window 1's
+   * `shown` is the chat cache's flag ChatFrame1 wrote from its own OnShow/OnHide
+   * ({@link frameXmlGeneralWindowInfo}): with «Журнал боя» selected it is false and the update only
+   * re-reads the lists. Before that, measured on the stock corpus, one update left ChatFrame1 and
+   * ChatFrame2 both shown until «Общий» was clicked. A member count or a roster, which change
+   * nothing stock reads, still raise nothing.
+   *
+   * A zone channel swapped in its slot still does when its name changes, as the dataset's
+   * «Общий: %s» does (ChatChannels.dbc): stock matches a channel only while the incoming «N. name»
+   * is longer than the listed name (ChatFrame.lua:2708), so a stale «Общий: Элвиннский лес» on the
+   * list would swallow every line of a shorter «Общий: Даларан».
+   */
+  #chatWindowsUpdated(pump: FrameXmlSeamPump, force = false): void {
+    const signature = JSON.stringify(this.chatWindowChannels(1));
+    if (!force && signature === this.#chatWindowsSignature) return;
+    this.#chatWindowsSignature = signature;
+    pump.fire(FRAMEXML_SEAM_EVENTS.chatWindowsUpdated);
   }
 
   /** Replay only the newest bounded non-addon lines; the world backlog itself remains untouched. */
@@ -1250,6 +2414,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     }
     replay.reverse();
     for (const message of replay) this.#emitChatMessage(pump, world, message);
+    // A replayed `YOU_LEFT` takes its channel off stock's list even when the player has since
+    // joined it again; one more UPDATE_CHAT_WINDOWS leaves the list as the world has it now.
+    if (replay.some((message) => message.channelNotice !== undefined)) this.#chatWindowsUpdated(pump, true);
   }
 
   /**
@@ -1483,6 +2650,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (id === -2) {
       return { id, slots: inventory.keyring, name: "Связка ключей", bagFamily: 0 };
     }
+    // BANK_CONTAINER (-1) and the bank bags 5..11, stock BankFrame's containers (FrameXmlBank.ts).
+    if (frameXmlIsBankContainer(id)) {
+      return frameXmlBankContainer(id, inventory, (entry) => {
+        const template = this.#itemTemplate(world, entry);
+        return template?.found ? template : undefined;
+      });
+    }
     if (!Number.isInteger(id) || id < 1 || id > 4) return undefined;
     const bag = inventory.bags.find((candidate) => candidate.bagSlot === INVENTORY_SLOT_BAG_START + id - 1);
     if (!bag) return undefined;
@@ -1495,7 +2669,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     };
   }
 
-  #liveContainers(world = this.#context.world()): Map<number, LiveContainer> {
+  /** `entries`, when given, collects every item entry the projection is read from. */
+  #liveContainers(world = this.#context.world(), entries?: Set<number>): Map<number, LiveContainer> {
     const result = new Map<number, LiveContainer>();
     if (!world) return result;
     // Focused seams may expose a world shell before its object map is ready. Inventory reads are
@@ -1503,9 +2678,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (typeof world.state.objects?.get !== "function") return result;
     const inventory = playerInventory(world.state);
     if (!inventory) return result;
+    // A carried bag's own template names its stock container (1-4, `#liveContainer`).
+    if (entries) for (const bag of inventory.bags) entries.add(entryOf(bag.bag));
     for (const id of [-2, 0, 1, 2, 3, 4]) {
       const container = this.#liveContainer(id, inventory, world);
-      if (container) result.set(id, container);
+      if (!container) continue;
+      result.set(id, container);
+      if (entries) for (const slot of container.slots) entries.add(entryOf(slot.item));
     }
     return result;
   }
@@ -1538,7 +2717,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #reconcileContainers(force = false): void {
     const pump = this.#pump;
     if (!pump) return;
-    const next = this.#liveContainers();
+    const entries = new Set<number>();
+    const next = this.#liveContainers(undefined, entries);
+    this.#containerEntries = entries;
     const changed = new Set<number>();
     for (const id of this.#containerSignatures.keys()) {
       if (!next.has(id)) changed.add(id);
@@ -1580,6 +2761,79 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     pump.fire(FRAMEXML_SEAM_EVENTS.playerMoney);
   }
 
+  #reconcileBankSlots(): void {
+    const bought = this.bankSlots()?.[0];
+    if (bought === undefined || bought === this.#bankSlotsBought) return;
+    this.#bankSlotsBought = bought;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.playerBankBagSlotsChanged);
+  }
+
+  #reconcileComboPoints(): void {
+    const next = String(this.comboPoints("player", "target"));
+    if (next === this.#comboSignature) return;
+    this.#comboSignature = next;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.unitComboPoints, "player");
+  }
+
+  #shapeshiftForms() {
+    return frameXmlShapeshiftForms(this.#context.world()?.knownSpells ?? [],
+      this.#context.spell, this.#context.spellAbilities);
+  }
+
+  #shapeshiftActive(form: FrameXmlShapeshiftForm): boolean {
+    const world = this.#context.world();
+    const player = this.#self();
+    if (!world || !player) return false;
+    if (form.formId !== undefined) return unitField.shapeshiftForm(player) === form.formId;
+    return world.aurasFor(player.guid).some((aura) => aura.spellId === form.spellId
+      && (aura.casterGuid === undefined || aura.casterGuid === player.guid));
+  }
+
+  #reconcileShapeshiftForms(): void {
+    const next = this.#shapeshiftForms()
+      .map((form) => `${form.spellId}:${form.order}:${form.texture}:${form.name}`).join("|");
+    if (next === this.#shapeshiftSignature) return;
+    this.#shapeshiftSignature = next;
+    this.#shapeshiftActiveSignature = "";
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftForms);
+    this.#reconcileShapeshiftActive();
+  }
+
+  #reconcileShapeshiftActive(): void {
+    const next = this.#shapeshiftForms().map((form) => this.#shapeshiftActive(form) ? "1" : "0").join("");
+    if (next === this.#shapeshiftActiveSignature) return;
+    this.#shapeshiftActiveSignature = next;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftForm);
+  }
+
+  #reconcileBonusActionBar(): void {
+    const next = this.bonusBarOffset();
+    if (next === this.#bonusActionBarOffset) return;
+    this.#bonusActionBarOffset = next;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateBonusActionBar);
+  }
+
+  #shapeshiftCooldownRemaining(spellId: number, now: number): number {
+    const world = this.#context.world();
+    const direct = Math.max(0, (world?.cooldownSnapshots?.get(spellId)?.endsAt ?? 0) - now);
+    return Math.max(direct, world?.cooldownRemaining?.(spellId, now) ?? 0);
+  }
+
+  #reconcileShapeshiftCooldowns(): void {
+    const world = this.#context.world();
+    const now = this.#context.monotonic();
+    const next = this.#shapeshiftForms().map((form) => {
+      const cooldown = world?.cooldownSnapshots?.get(form.spellId);
+      const remaining = this.#shapeshiftCooldownRemaining(form.spellId, now);
+      return remaining > 0
+        ? `${form.spellId}:${cooldown?.startedAt ?? ""}:${cooldown?.duration ?? ""}:${Math.round(now + remaining)}` : "";
+    }).join("|");
+    if (next === this.#shapeshiftCooldownSignature) return;
+    this.#shapeshiftCooldownSignature = next;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftCooldown);
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.updateShapeshiftUsable);
+  }
+
   #itemTemplate(world: WorldClient | undefined, entry: number) {
     return world && world.itemTemplates instanceof Map ? world.itemTemplates.get(entry) : undefined;
   }
@@ -1589,15 +2843,66 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return texture || undefined;
   }
 
+  /** Carried inventory only: bank/buyback entries cannot satisfy an action-bar item. */
+  #actionItems(entry: number): readonly ItemSlotState[] {
+    const world = this.#context.world();
+    if (!world || typeof world.state.objects?.get !== "function") return [];
+    const inventory = playerInventory(world.state);
+    if (!inventory) return [];
+    return [...inventory.equipment, ...inventory.backpack, ...inventory.keyring,
+      ...inventory.bags.flatMap((bag) => bag.slots)]
+      .filter((slot) => slot.item !== undefined && entryOf(slot.item) === entry);
+  }
+
+  /** Item spells use the realm's retained spell timer or its fixed equip cooldown. */
+  #itemCooldown(entry: number): FrameXmlContainerItemCooldown {
+    const world = this.#context.world();
+    const pump = this.#pump;
+    const spellId = itemUseSpellId(this.#itemTemplate(world, entry));
+    if (!world || !pump || spellId === undefined) return [0, 0, 0];
+    const now = this.#context.monotonic();
+    const equipEnd = world.itemCooldowns?.get(spellId) ?? 0;
+    const equipRemaining = Math.max(0, equipEnd - now);
+    const spellRemaining = world.cooldownRemaining(spellId, now);
+    if (equipRemaining >= spellRemaining && equipRemaining > 0) {
+      return [pump.now() - (ITEM_EQUIP_COOLDOWN_MS - equipRemaining) / 1000,
+        ITEM_EQUIP_COOLDOWN_MS / 1000, 1];
+    }
+    if (spellRemaining <= 0) return [0, 0, 0];
+    const snapshot = world.cooldownSnapshots?.get(spellId);
+    if (snapshot) {
+      return [pump.now() - (now - snapshot.startedAt) / 1000, snapshot.duration / 1000, 1];
+    }
+    return [pump.now(), spellRemaining / 1000, 1];
+  }
+
+  /** Announce timer start/clear/expiry once, so stock bag and paperdoll sweeps stay current. */
+  #reconcileItemCooldowns(): void {
+    const world = this.#context.world();
+    const pump = this.#pump;
+    if (!world || !pump) return;
+    const now = this.#context.monotonic();
+    const equip = [...(world.itemCooldowns ?? new Map<number, number>())]
+      .filter(([, end]) => end > now)
+      .map(([id, end]) => `e:${id}:${end}`);
+    const spells = [...(world.cooldownSnapshots ?? new Map())]
+      .filter(([, snapshot]) => snapshot.endsAt > now)
+      .map(([id, snapshot]) => `s:${id}:${snapshot.startedAt}:${snapshot.duration}:${snapshot.endsAt}`);
+    const signature = [...equip, ...spells].sort().join("|");
+    if (signature === this.#itemCooldownSignature) return;
+    this.#itemCooldownSignature = signature;
+    pump.fire(FRAMEXML_SEAM_EVENTS.bagUpdateCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
   // ---- merchant ---------------------------------------------------------
 
   #vendorItems(world: WorldClient | undefined): readonly VendorItem[] {
     const items = world?.vendor?.items;
     if (!items) return [];
-    // ItemExtendedCost is not represented by this client yet.  Keep those rows out of the stock
-    // money-only page instead of exposing a clickable row whose alternate-currency branch cannot
-    // be answered truthfully.
-    return items.filter((item) => item.extendedCost === 0);
+    // Extended-cost rows keep their original physical slots; the server validates each purchase.
+    return items;
   }
 
   #vendorItem(index: number) {
@@ -1610,16 +2915,21 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #vendorShape(world: WorldClient | undefined): string {
     const vendor = world?.vendor;
     if (!vendor) return "";
-    // Keep unsupported ItemExtendedCost rows out of the lifecycle signature too. They are not
-    // rendered by this money-only page, so changing one must not cause a pointless Lua redraw.
     return [vendor.guid.toString(), vendor.error ?? "", this.#merchantNameFor(world) ?? "",
       ...this.#vendorItems(world).map((item) => {
         const metadata = this.#context.itemInfo?.(item.itemId);
         const template = this.#itemTemplate(world, item.itemId);
+        const cost = this.#context.vendorCost?.(item.extendedCost);
         return [
           item.slot, item.itemId, item.displayId, item.leftInStock, item.price, item.buyCount,
           item.extendedCost, metadata?.name ?? (template?.found ? template.name : "") ?? "",
           metadata?.texture ?? this.#itemTexture(item.itemId) ?? "",
+          this.#merchantTemplateLink(item.itemId) ?? "",
+          cost?.honor ?? "", cost?.arena ?? "", cost?.arenaBracket ?? "", cost?.rating ?? "",
+          ...(cost?.items.map((required) => [required.entry, required.count,
+            this.#context.itemInfo?.(required.entry)?.texture ?? this.#itemTexture(required.entry) ?? "",
+            this.#merchantTemplateLink(required.entry) ?? "",
+          ].join(":")) ?? []),
         ].join(":");
       }), this.#buybackShape(world)].join("|");
   }
@@ -1692,14 +3002,30 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const template = this.#itemTemplate(world, item.itemId);
     const name = metadata?.name ?? (template?.found ? template.name : undefined) ?? `Предмет ${item.itemId}`;
     const texture = metadata?.texture ?? this.#itemTexture(item.itemId);
-    const supported = item.extendedCost === 0;
     const available = item.leftInStock !== 0;
-    return [name, texture, item.price, item.buyCount, item.leftInStock, supported && available, false];
+    // Stock Lua still offers a click when isUsable=false. The buy method below enforces the
+    // same unresolved-cost gate, while this flag makes the pending row visibly unavailable.
+    const costKnown = item.extendedCost === 0 || this.#context.vendorCost?.(item.extendedCost) !== undefined;
+    return [name, texture, item.price, item.buyCount, item.leftInStock,
+      available && costKnown, item.extendedCost > 0];
   }
 
-  merchantItemLink(_index: number): string | undefined {
-    // Vendor packets contain no item link and constructing one would fabricate enchant/seed data.
-    return undefined;
+  #merchantTemplateLink(entry: number): string | undefined {
+    if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
+    const template = this.#itemTemplate(this.#context.world(), entry);
+    const metadata = this.#context.itemInfo?.(entry);
+    const name = template?.found ? template.name : metadata?.name;
+    const quality = template?.found ? template.quality : metadata?.quality;
+    if (!name || !Number.isInteger(quality) || quality === undefined || quality < 0) return undefined;
+    // A vendor row is an item template, not an instance. TrinityCore builds this exact base-item
+    // form with zero enchant, gems and random-property fields for template links
+    // (Transmogrification::GetItemLink(uint32 entry)). Never present it as a purchased instance.
+    return itemChatLink(entry, quality, name);
+  }
+
+  merchantItemLink(index: number): string | undefined {
+    const item = this.#vendorItem(index);
+    return item ? this.#merchantTemplateLink(item.itemId) : undefined;
   }
 
   merchantItemMaxStack(index: number): number {
@@ -1708,13 +3034,36 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#itemTemplate(this.#context.world(), item.itemId)?.stackable ?? 0;
   }
 
-  merchantItemCostInfo(_index: number): FrameXmlMerchantCostInfo {
-    // ItemExtendedCost/currency ownership is not represented by this client's vendor snapshot.
-    return [0, 0, 0];
+  merchantItemCostInfo(index: number): FrameXmlMerchantCostInfo {
+    const item = this.#vendorItem(index);
+    const cost = item && item.extendedCost > 0 ? this.#context.vendorCost?.(item.extendedCost) : undefined;
+    return cost ? [cost.honor, cost.arena, cost.items.length] : [0, 0, 0];
   }
 
-  merchantItemCostItem(_index: number, _costIndex: number): readonly [string, number, string] | undefined {
-    return undefined;
+  merchantItemCostItem(index: number, costIndex: number): readonly [string | undefined, number, string | undefined] | undefined {
+    const item = this.#vendorItem(index);
+    if (!item || item.extendedCost === 0 || !Number.isInteger(costIndex) || costIndex < 1) return undefined;
+    const required = this.#context.vendorCost?.(item.extendedCost)?.items[costIndex - 1];
+    if (!required) return undefined;
+    // The DBC row names a template entry. Its link is available only when name and quality are
+    // known from the server item template or cached metadata.
+    return [this.#context.itemInfo?.(required.entry)?.texture ?? this.#itemTexture(required.entry),
+      required.count, this.#merchantTemplateLink(required.entry)];
+  }
+
+  itemInfo(value: unknown): FrameXmlItemInfo | undefined {
+    const entry = frameXmlItemEntry(value);
+    if (entry === undefined) return undefined;
+    const template = this.#itemTemplate(this.#context.world(), entry);
+    const metadata = this.#context.itemInfo?.(entry);
+    const name = template?.found ? template.name : metadata?.name;
+    const quality = template?.found ? template.quality : metadata?.quality;
+    const link = typeof value === "string" && value.includes("|Hitem:")
+      ? value : this.#merchantTemplateLink(entry);
+    if (!name || !Number.isInteger(quality) || quality === undefined || quality < 0 || !link) {
+      return undefined;
+    }
+    return [name, link, quality];
   }
 
   #liveBuyback(index: number): BuybackSlotState | undefined {
@@ -1744,11 +3093,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return [name, texture, slot.price, quantity, quantity, slot.price > 0];
   }
 
-  buybackItemLink(_index: number): string | undefined { return undefined; }
+  buybackItemLink(index: number): string | undefined {
+    return this.#itemLink(this.#liveBuyback(index)?.item);
+  }
 
   buyMerchantItem(index: number, count: number): void {
     const item = this.#vendorItem(index);
-    if (!item || item.extendedCost !== 0 || item.leftInStock === 0 || !Number.isInteger(count) || count < 1) return;
+    if (!item || item.leftInStock === 0 || !Number.isInteger(count) || count < 1) return;
+    // A missing DBC row would make GetMerchantItemCostInfo answer zeroes. Stock Lua treats that
+    // as a free purchase, so never submit an extended-cost request until its row is known.
+    if (item.extendedCost > 0 && !this.#context.vendorCost?.(item.extendedCost)) return;
     this.#context.world()?.buyFromVendor(item.slot, count);
   }
 
@@ -1777,12 +3131,48 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     const world = this.#context.world();
     if (!pump || !world) return;
+    // A holder that let go on its own (the item moved, the vault closed) takes the grid and picture along.
+    this.cursor.sync();
+    this.calendar.tick();
+    // Loot edges (LOOT_OPENED/…/CANCEL_LOOT_ROLL) follow the packets within one rendered frame.
+    this.loot.tick();
+    this.map.tick();
+    // PLAYER_TOTEM_UPDATE for a totem that ran out or lost its creature; UNIT_INVENTORY_CHANGED for an imbue.
+    this.hudMechanics.tick();
+    // Mail/trade repaint once item names or sender names arrive (their packet edges are events).
+    this.mail.tick();
+    this.trade.tick();
+    // KNOWN_CURRENCY_TYPES_UPDATE / CURRENCY_DISPLAY_UPDATE edges, once Blizzard_TokenUI took them.
+    this.currency.tick();
+    // ARENA_OPPONENT_UPDATE, UNIT_PET and the enemy frames' UNIT_* edges (outside an arena: two queue slots).
+    this.arena.tick();
+    this.auction.tick();
+    this.socket.tick();
+    this.barber.tick();
+    // GLYPH_ADDED/REMOVED/UPDATED once the realm's answer has moved a socket.
+    this.glyphs.tick();
+    // One CRITERIA_UPDATE per frame, however many criteria the packets since the last one moved.
+    this.achievement.tick();
+    // A bank opened or closed without a packet (the native window, a relog): GUILDBANKFRAME_* edges.
+    this.guildBank.tick();
+    // The open trade skill: deferred TRADE_SKILL_* edges, the repeat count, bags and item replies.
+    this.tradeSkill.tick();
+    // A key changed in the native window or a module action added: UPDATE_BINDINGS (throttled).
+    this.keyBindings.tick(now);
+    this.#reconcileActionPage();
+    this.#reconcileMirrorTimers();
     // Selection is a plain WorldClient property: `selectTarget` sends the packet but intentionally
     // emits no EventBus edge. Reconcile it before the throttled reads so a click is visible on the
     // next rendered frame rather than waiting for the 60 ms data poll.
     this.#reconcileTarget();
+    this.#reconcileComboPoints();
     this.#reconcileTargetTarget();
     this.#reconcileFocus();
+    // The settled hover is one Map lookup; reading it every frame also catches a hovered unit
+    // that despawned, which has no pointer event of its own.
+    this.#reconcileMouseover(world, pump);
+    // The player's swing is a plain WorldClient property with no bus edge; one read a frame.
+    this.#reconcileMelee(world, pump);
     // Resolving AreaClient metadata can allocate a small result object. Keep that callback on the
     // existing 60 ms seam poll, while still reconciling raw IDs immediately when they move.
     const resolveZone = now - this.#polledAt >= LIVE_POLL_SECONDS;
@@ -1805,6 +3195,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     }
     if (now - this.#polledAt < LIVE_POLL_SECONDS) return;
     this.#polledAt = now;
+    this.worldStates.tick();
+    // The server's confirmations (invites, death, summon, ready check …) sit in single-slot world
+    // fields with no bus edge; they are compared on this poll, within 60 ms of their packet.
+    this.popups.tick();
+    // Guild packets reach only WorldClient's single onGuildChanged slot and the group list only
+    // onGroupChanged; the social model compares their field identities on this poll instead.
+    this.friends.tick();
+    const serviceSignature = this.#servicesSignature();
+    if (serviceSignature !== this.#serviceSignature) {
+      this.#serviceSignature = serviceSignature;
+      pump.fire("MAIL_SEND_INFO_UPDATE");
+      pump.fire("PET_STABLE_UPDATE");
+    }
     // Merchant presentation reads item/name/texture metadata for every supported row. Keep that
     // cache-backed work on the bounded poll just like the other non-event-driven snapshots; packet
     // callbacks still use merchantChanged() for immediate lifecycle edges.
@@ -1825,14 +3228,23 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       if (hadRevision || this.#talentResolvers.talentSnapshot() !== undefined) {
         pump.fire(FRAMEXML_SEAM_EVENTS.talentsChanged);
       }
+      if (this.#talentResolvers.petTalentSnapshot() !== undefined) {
+        pump.fire(FRAMEXML_SEAM_EVENTS.petTalentsChanged);
+      }
     }
     // Inventory fields are event-driven through WorldStore.any; this bounded poll only catches
     // focused seam doubles and cached texture changes which have no named world event.
     this.#reconcileContainers();
+    this.#reconcileItemCooldowns();
     this.#reconcilePaperDoll();
     // Coinage normally arrives through the named WorldStore field subscription; this bounded
     // fallback also catches focused seam doubles that mutate the player without flushing fields.
     this.#reconcileMoney();
+    // Likewise the combat flag, whose store subscription publishes it within the frame, and a
+    // level-up whose level field reached a double with no store.
+    this.#reconcileCombat();
+    this.#publishLevelUp();
+    this.#reconcileBankSlots();
     // The spell list and cooldown map are not update fields. Keep their signatures primitive and
     // sample them at the same 60 ms boundary as the action bar, so removal/initial replacement
     // (which have no dedicated EventBus edge) still redraw the stock book without a per-rAF walk.
@@ -1842,21 +3254,37 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#spellSignature = spellSignature;
       pump.fire(FRAMEXML_SEAM_EVENTS.spellsChanged);
     }
+    // COMPANION_LEARNED/UNLEARNED/UPDATE: the known set, rows that arrived, the mount aura and the
+    // critter in view, on the same 60 ms boundary as the spell list above (FrameXmlCompanions.ts).
+    this.companions.tick();
+    // PET_BAR_UPDATE for a bar whose kind or spell rows changed without a packet, and
+    // PET_BAR_UPDATE_USABLE on the pet's power and life: one pet read a poll, none without a pet.
+    this.petActions.tick();
+    // KNOWN_TITLES_UPDATE / UNIT_NAME_UPDATE on the title fields and EQUIPMENT_SETS_CHANGED on the
+    // set list: two player-object reads a poll, which is why they sit on this boundary rather than
+    // on every rendered frame (the quest log pins zero object reads per sub-60 ms tick).
+    this.titles.tick();
+    this.equipmentSets.tick();
+    this.#reconcileShapeshiftForms();
     const spellCooldownSignature = this.#spellCooldownShapeSignature(world);
     if (spellCooldownSignature !== this.#spellCooldownSignature) {
       this.#spellCooldownSignature = spellCooldownSignature;
       pump.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown);
     }
+    this.#reconcileShapeshiftCooldowns();
     // Group membership normally arrives through WorldClient.onGroupChanged. Keep this existing
     // bounded poll only as a fallback for hosts that mutate the snapshot without invoking it;
     // never scan the roster on every rendered frame.
     this.#reconcileParty();
+    this.#reconcileMinimapIndicators(world, pump);
 
     const auraSignature = this.#auraShapeSignature("player");
     if (auraSignature !== this.#auraSignature) {
       this.#auraSignature = auraSignature;
       pump.fire(FRAMEXML_SEAM_EVENTS.aura, "player");
     }
+    this.#reconcileShapeshiftActive();
+    this.#reconcileBonusActionBar();
     const targetAuraSignature = this.#auraShapeSignature("target");
     if (targetAuraSignature !== this.#targetAuraSignature) {
       this.#targetAuraSignature = targetAuraSignature;
@@ -1874,7 +3302,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     }
 
     const bar = world.actionButtons
-      .map((button) => `${button.slot}:${button.type}:${button.action}`).join(",");
+      .map((button) => `${button.slot}:${button.type}:${button.action}:${this.actionTexture(button.slot + 1) ?? ""}`
+        + (button.type === ACTION_BUTTON_ITEM ? `:${this.actionCount(button.slot + 1)}:${this.isEquippedAction(button.slot + 1)}` : ""))
+      .join(",");
     if (bar !== this.#barSignature) {
       this.#barSignature = bar;
       pump.fire(FRAMEXML_SEAM_EVENTS.actionSlotChanged, 0);
@@ -1944,9 +3374,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const entry = entryOf(item.item);
     const template = this.#itemTemplate(world, entry);
     // The client has count and (when its item query has arrived) quality. The optional host cache
-    // supplies the exact renderer-compatible texture without making this read perform I/O. Lock
-    // and readable bits are not present in the current item update state and remain nil.
-    return [this.#itemTexture(entry), stackCount(item), undefined,
+    // supplies the exact renderer-compatible texture without making this read perform I/O. The
+    // server's lock bit is not in the item update state; the client's own locks are: an item
+    // attached to the send draft or offered in the trade window is locked, as in the client.
+    const locked = this.mail.attached(item.guid) || this.trade.offered(item.guid)
+      || this.auction.selling(item.guid) || this.socket.staged(item.guid) ? true : undefined;
+    return [this.#itemTexture(entry), stackCount(item), locked,
       template?.found ? template.quality : undefined, undefined];
   }
 
@@ -1975,9 +3408,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#itemLink(this.#liveContainerSlot(bagId, slot)?.item);
   }
 
-  containerItemCooldown(): FrameXmlContainerItemCooldown {
-    // WorldClient parses no per-item cooldown table (only spell/action cooldowns are retained).
-    return [0, 0, 0];
+  containerItemCooldown(bagId: number, slot: number): FrameXmlContainerItemCooldown {
+    return this.#itemCooldown(entryOf(this.#liveContainerSlot(bagId, slot)?.item));
   }
 
   bagName(bagId: number): string | undefined {
@@ -1992,7 +3424,160 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const item = this.#liveContainerSlot(bagId, slot);
     if (!world || !item?.item || item.guid === 0n) return;
-    world.useItem(item.bag, item.slot, item.guid);
+    // An enchant from the stock TradeSkillFrame is waiting for its item (SpellCanTargetItem): this is it.
+    if (this.tradeSkill.targetItem(item.guid)) return;
+    // A locked item (attached to the send draft or offered in the trade) is not used, as in the
+    // client: the letter or the trade already holds it, even on the inbox tab.
+    if (this.mail.attached(item.guid) || this.trade.offered(item.guid)) return;
+    if (this.auction.selling(item.guid)) return;
+    // … or staged in a stock socket (FrameXmlSocketModel.staged).
+    if (this.socket.staged(item.guid)) return;
+    // As in the client, a right-clicked bag item goes into the open send-mail draft or trade window.
+    if (this.mail.useItem(item.guid) || this.trade.useItem(item.guid)) return;
+    // … or, with the stock Auctions tab showing, into the auction sell slot (SetAuctionsTabShowing).
+    if (this.auction.useItem(item.guid)) return;
+    // … or, with the stock guild bank shown, into its current tab (FrameXmlGuildBank.useItem).
+    if (this.guildBank.useItem({ entry: entryOf(item.item), bag: item.bag, slot: item.slot })) return;
+    // At an open bank it moves across; a readable item is read (FrameXmlGossipLive.ts).
+    if (liveFrameXmlNpcUseContainerItem(this, world, bagId, slot, item)) return;
+    // A glyph raises the glyph cursor and USE_GLYPH; its socket is chosen in GlyphFrame (FrameXmlGlyph.ts).
+    if (this.glyphs.useItem({
+      guid: item.guid, bag: item.bag, slot: item.slot,
+      spellId: itemUseSpellId(this.#itemTemplate(world, entryOf(item.item))),
+    })) return;
+    // What is left is the client's own order (ContainerFrame.lua:722-734 has already kept the buyback
+    // tab and an extended-cost refund out of it): at a merchant the stack is sold, gear is worn, a
+    // bind-on-use item asks first, and only the rest is a plain use. Measured before this: a right
+    // click on a belt sent CMSG_USE_ITEM, which HandleUseItemOpcode refuses for anything with an
+    // InventoryType («some item classes can be used only in equipped state»), so nothing happened.
+    if (world.vendor !== undefined) {
+      world.sellToVendor(item.guid);
+      return;
+    }
+    this.#useCarriedItem(world, item, () => this.useContainerItem(bagId, slot));
+  }
+
+  /** The Lua cursor holds a GUID and a wire position; only the realm changes the inventory. */
+  #cursorSource(): ItemSlotState | undefined {
+    const selected = this.#itemCursor;
+    if (!selected) return undefined;
+    const world = this.#context.world();
+    const inventory = world?.state && typeof world.state.objects?.get === "function"
+      ? playerInventory(world.state) : undefined;
+    const source = inventory && slotAt(inventory, selected.bag, selected.slot);
+    // A split part outlives its stack no better than a whole item outlives its slot.
+    if (world !== selected.world || !source?.item || source.guid !== selected.guid
+      || (selected.count !== undefined && selected.count >= stackCount(source))
+      || (isBankSlot(selected.bag, selected.slot) && world.bankerGuid === undefined)) {
+      this.clearCursor();
+      return undefined;
+    }
+    return source;
+  }
+
+  #setCursor(source: ItemSlotState | undefined): void {
+    const world = this.#context.world();
+    this.#itemCursor = source?.item && source.guid !== 0n && world
+      ? { world, bag: source.bag, slot: source.slot, guid: source.guid } : undefined;
+    // One thing on the cursor: an item picked up drops a macro held there.
+    if (this.#itemCursor) this.macros.clearCursor();
+    if (this.#itemCursor) this.guildBank.clearCursor();
+    if (typeof document !== "undefined") {
+      document.body?.classList?.toggle("framexml-item-cursor", this.#itemCursor !== undefined);
+    }
+    this.#pump?.fire("CURSOR_UPDATE");
+  }
+
+  #clickItemSlot(target: ItemSlotState | undefined): boolean {
+    if (!target) return false;
+    const world = this.#context.world();
+    if (!world) return false;
+    const source = this.#cursorSource();
+    if (source) {
+      if (source.bag === target.bag && source.slot === target.slot) {
+        this.clearCursor();
+        return true;
+      }
+      if ((isBankSlot(source.bag, source.slot) || isBankSlot(target.bag, target.slot))
+        && world.bankerGuid === undefined) {
+        this.clearCursor();
+        return false;
+      }
+      const held = this.#itemCursor;
+      if (held?.count !== undefined) {
+        // A split part: CMSG_SPLIT_ITEM names its destination; the realm makes the stack or refuses.
+        world.splitItem(source.bag, source.slot, target.bag, target.slot, held.count);
+        this.clearCursor();
+        return true;
+      }
+      // Dropped on the paper doll, an unbound bind-on-equip item asks first (EQUIP_BIND_CONFIRM,
+      // FrameXmlItemActions.ts); the hand lets go either way, as in the client.
+      const template = target.bag === INVENTORY_SLOT_BAG_0 && target.slot < INVENTORY_SLOT_ITEM_START
+        ? this.#itemTemplate(world, entryOf(source.item)) : undefined;
+      if (template?.found) {
+        this.#equipCarriedItem(world, source, template, FRAMEXML_BIND_CONFIRM_EVENTS.equip,
+          { bag: target.bag, slot: target.slot });
+        this.clearCursor();
+        return true;
+      }
+      // CMSG_SWAP_INV_ITEM/CMSG_SWAP_ITEM ask the server to move or swap these exact positions.
+      // No local item is removed, and stale cursor GUIDs are rejected above before a packet goes out.
+      world.moveItem(source.bag, source.slot, target.bag, target.slot);
+      this.clearCursor();
+      return true;
+    }
+    if (!target.item || target.guid === 0n
+      || (isBankSlot(target.bag, target.slot) && world.bankerGuid === undefined)) return false;
+    this.#setCursor(target);
+    return true;
+  }
+
+  pickupContainerItem(bagId: number, slot: number): void {
+    const target = this.#liveContainerSlot(bagId, slot);
+    // A held guild bank stack goes into exactly this bag slot (FrameXmlGuildBank.dropOnBagSlot).
+    if (target && this.guildBank.dropOnBagSlot(target)) return;
+    // A locked bag item (attached to the send draft or offered in the trade) is neither picked up
+    // nor swapped with the cursor's item, as in the client. Measured before this: an offered item
+    // picked up again and dropped on another trade slot left the stock trade model and WorldClient
+    // disagreeing about which item that slot held. Dropping it back on its own slot still clears.
+    if (target?.item && target.guid !== 0n && (this.mail.attached(target.guid) || this.trade.offered(target.guid)
+      || this.auction.selling(target.guid))
+      && this.#cursorSource()?.guid !== target.guid) return;
+    // A gem staged in a stock socket is locked the same way; its socket gives it back.
+    if (target?.item && target.guid !== 0n && this.socket.staged(target.guid)) return;
+    this.#clickItemSlot(target);
+  }
+
+  /** The bank panel is still native; its slot coordinates use the same world inventory projection. */
+  clickNativeBankSlot(bag: number, slot: number): boolean {
+    const world = this.#context.world();
+    if (!world || world.bankerGuid === undefined || !isBankSlot(bag, slot)) return false;
+    const inventory = playerInventory(world.state);
+    if (bag === INVENTORY_SLOT_BAG_0 && slot >= BANK_SLOT_BAG_START
+      && slot < BANK_SLOT_BAG_START + BANK_BAG_SLOTS
+      && (!inventory || slot - BANK_SLOT_BAG_START >= inventory.bankBagSlotsBought)) return false;
+    return this.#clickItemSlot(inventory && slotAt(inventory, bag, slot));
+  }
+
+  cursorHasItem(): boolean { return this.#cursorSource() !== undefined || this.guildBank.cursorHasItem(); }
+
+  cursorInfo(): readonly unknown[] {
+    const macro = this.macros.cursorInfo();
+    if (macro) return macro;
+    const vault = this.guildBank.cursorInfo();
+    if (vault) return vault;
+    const source = this.#cursorSource();
+    if (!source?.item) return [];
+    const entry = entryOf(source.item);
+    const link = this.#itemLink(source.item);
+    return link ? ["item", entry, link] : ["item", entry];
+  }
+
+  clearCursor(): void {
+    this.macros.clearCursor();
+    this.guildBank.clearCursor();
+    if (!this.#itemCursor) return;
+    this.#setCursor(undefined);
   }
 
   // ---- paper doll -------------------------------------------------------
@@ -2002,6 +3587,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   #equipmentSlot(unit: string, slot: number): ItemSlotState | undefined {
+    // The keyring's inventory ids 87..118 (KeyRingButtonIDToInvSlotID), which its tooltip reads through.
+    if (unit === "player" && slot > KEYRING_SLOT_START && slot <= KEYRING_SLOT_START + KEYRING_SLOTS) {
+      return this.#inventoryOf(this.#context.world())?.keyring[slot - KEYRING_SLOT_START - 1];
+    }
+    // Stock BankFrame reads the bank as inventory ids 40..74 (BankButtonIDToInvSlotID, FrameXmlBank.ts).
+    if (unit === "player" && slot >= FRAMEXML_FIRST_BANK_INVENTORY_ID) {
+      return liveFrameXmlBankInventorySlot(this.#context.world(), slot);
+    }
     if (unit !== "player" || !Number.isInteger(slot) || slot < 1 || slot > 23) return undefined;
     const world = this.#context.world();
     if (!world || typeof world.state.objects?.get !== "function") return undefined;
@@ -2021,18 +3614,43 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     };
   }
 
+  /**
+   * The AmmoSlot, inventory id 0 (`INVSLOT_AMMO`, GetInventorySlotInfo("AmmoSlot")), is no item
+   * position: its item is PLAYER_AMMO_ID, the entry `Player::SetAmmo` wrote (Player.cpp:12246-12266),
+   * and its count every carried stack of that entry — the `GetItemCount` sum `HandleSetAmmoOpcode`
+   * checks (ItemHandler.cpp:829). Nothing while the field is 0. The field outlives the last arrow:
+   * a shot spends one with DestroyItemCount (Spell.cpp:5102-5103) and only the next shot with none
+   * left clears it (Spell.cpp:7429-7432), so a count of 0 keeps the entry.
+   */
+  #ammoEntry(unit: string): number | undefined {
+    const player = unit === "player" ? this.#self() : undefined;
+    const entry = player ? readField(player, "PLAYER_AMMO_ID") : undefined;
+    return entry !== undefined && Number.isSafeInteger(entry) && entry > 0 ? entry : undefined;
+  }
+
   inventoryItemTexture(unit: string, slot: number): string | undefined {
+    if (slot === FRAMEXML_INVSLOT_AMMO) {
+      const ammo = this.#ammoEntry(unit);
+      return ammo === undefined ? undefined : this.#itemTexture(ammo);
+    }
     const item = this.#equipmentSlot(unit, slot)?.item;
     return item ? this.#itemTexture(entryOf(item)) : undefined;
   }
 
   inventoryItemLink(unit: string, slot: number): string | undefined {
+    if (slot === FRAMEXML_INVSLOT_AMMO) {
+      const ammo = this.#ammoEntry(unit);
+      return ammo === undefined ? undefined : this.#entryLink(ammo);
+    }
     return this.#itemLink(this.#equipmentSlot(unit, slot)?.item);
   }
 
   #itemLink(item: WorldObjectState | undefined): string | undefined {
-    if (!item) return undefined;
-    const entry = entryOf(item);
+    return item ? this.#entryLink(entryOf(item), item) : undefined;
+  }
+
+  /** An entry's chat link; the instance's parts (enchantments, random suffix) are `item`'s, zero without one. */
+  #entryLink(entry: number, item?: WorldObjectState): string | undefined {
     if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
     const world = this.#context.world();
     const template = this.#itemTemplate(world, entry);
@@ -2041,9 +3659,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const quality = template?.found ? template.quality : metadata?.quality;
     const color = QUALITY_LINK_COLORS[quality ?? 1] ?? QUALITY_LINK_COLORS[1];
     const enchantOffset = UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset;
-    const enchant = (index: number): number => item.fields.get(enchantOffset + index * 3) ?? 0;
-    const random = (readField(item, "ITEM_FIELD_RANDOM_PROPERTIES_ID") ?? 0) | 0;
-    const suffix = readField(item, "ITEM_FIELD_PROPERTY_SEED") ?? 0;
+    const enchant = (index: number): number => item?.fields.get(enchantOffset + index * 3) ?? 0;
+    const random = item ? (readField(item, "ITEM_FIELD_RANDOM_PROPERTIES_ID") ?? 0) | 0 : 0;
+    const suffix = item ? readField(item, "ITEM_FIELD_PROPERTY_SEED") ?? 0 : 0;
     const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
     const level = player ? readField(player, "UNIT_FIELD_LEVEL") ?? 0 : 0;
     // TSItem::GetItemLink uses permanent, three socket and socket-bonus enchantments, then suffix/level.
@@ -2052,15 +3670,27 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   /** Item identity for GameTooltip; all reads stay on the already-cached world snapshot. */
   inventoryItemTooltip(unit: string, slot: number): FrameXmlInventoryTooltipItem | undefined {
+    if (slot === FRAMEXML_INVSLOT_AMMO) {
+      // The AmmoSlot's entry and carried count (`#ammoEntry`); ammo has no enchantment or durability.
+      const ammo = this.#ammoEntry(unit);
+      return ammo === undefined ? undefined : this.#entryTooltip(ammo, this.itemCount(ammo, false), []);
+    }
     const state = this.#equipmentSlot(unit, slot);
     if (!state?.item) return undefined;
     const entry = entryOf(state.item);
     if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
-    const world = this.#context.world();
-    const template = this.#itemTemplate(world, entry);
+    const result = this.#entryTooltip(entry, stackCount(state), itemEnchantmentIds(state.item));
+    const durability = readField(state.item, "ITEM_FIELD_DURABILITY");
+    return typeof durability === "number" && Number.isFinite(durability) && durability >= 0
+      ? { ...result, durability } : result;
+  }
+
+  /** The cached template and the host's metadata of an entry, for GameTooltip; nothing is fetched. */
+  #entryTooltip(entry: number, count: number, enchantments: readonly number[]): FrameXmlInventoryTooltipItem {
+    const template = this.#itemTemplate(this.#context.world(), entry);
     const metadata = this.#context.itemInfo?.(entry);
-    const result: FrameXmlInventoryTooltipItem = {
-      entry, count: stackCount(state), enchantments: itemEnchantmentIds(state.item),
+    return {
+      entry, count, enchantments,
       ...(template?.found === true ? { template } : {}),
       ...(metadata && metadata.name.length > 0 ? { metadata: {
         entry, name: metadata.name, displayId: 0,
@@ -2070,12 +3700,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         iconId: 0,
       } } : {}),
     };
-    const durability = readField(state.item, "ITEM_FIELD_DURABILITY");
-    return typeof durability === "number" && Number.isFinite(durability) && durability >= 0
-      ? { ...result, durability } : result;
   }
 
   inventoryItemCount(unit: string, slot: number): number {
+    if (slot === FRAMEXML_INVSLOT_AMMO) {
+      const ammo = this.#ammoEntry(unit);
+      return ammo === undefined ? 0 : this.itemCount(ammo, false);
+    }
     const item = this.#equipmentSlot(unit, slot);
     return item?.item ? stackCount(item) : 0;
   }
@@ -2091,10 +3722,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       && typeof durability === "number" && durability <= 0;
   }
 
-  inventoryItemCooldown(): FrameXmlContainerItemCooldown {
-    // WorldClient has no per-item cooldown table. Keep the stock neutral triple rather than
-    // deriving one from an action or spell cooldown with different semantics.
-    return [0, 0, 0];
+  inventoryItemCooldown(unit: string, slot: number): FrameXmlContainerItemCooldown {
+    return this.#itemCooldown(entryOf(this.#equipmentSlot(unit, slot)?.item));
   }
 
   inventoryItemLocked(): boolean {
@@ -2107,17 +3736,527 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const item = this.#equipmentSlot(unit, slot);
     if (!world || !item?.item || item.guid === 0n) return;
+    // At a merchant a right click on the paper doll sells the piece, as in the client.
+    if (world.vendor !== undefined) {
+      world.sellToVendor(item.guid);
+      return;
+    }
+    const entry = entryOf(item.item);
+    const template = this.#itemTemplate(world, entry);
+    if (template === undefined && this.#awaitItemTemplate(world, item, entry, () => this.useInventoryItem(unit, slot))) return;
+    // Worn gear with no use effect sends nothing, as in the client; the realm would only refuse it.
+    if (template?.found && itemUseSpellId(template) === undefined) return;
     // Equipment and bag use share the existing authoritative opcode bridge. Do not synthesize a
     // client-side equip/use operation when the world has not exposed an item to that bridge.
-    world.useItem(item.bag, item.slot, item.guid);
+    this.#useItemAfterBindPrompt(world, item, template);
   }
 
-  pickupInventoryItem(): void {
-    // There is currently no authoritative WorldClient pickup bridge. A no-op is safer than
-    // reusing move/equip operations, whose server semantics and acknowledgement differ.
+  pickupInventoryItem(unit: string, slot: number): void {
+    // An enchant waiting for its item takes the paper doll's click (PaperDollItemSlotButton_OnClick).
+    if (this.tradeSkill.targetItem(this.#equipmentSlot(unit, slot)?.guid)) return;
+    if (unit === "player" && slot === FRAMEXML_INVSLOT_AMMO) {
+      this.#dropOnAmmoSlot();
+      return;
+    }
+    this.#clickItemSlot(this.#equipmentSlot(unit, slot));
+  }
+
+  /**
+   * `PickupInventoryItem(INVSLOT_AMMO)`, the AmmoSlot's click and its OnReceiveDrag (PaperDollFrame.xml):
+   * the slot is no item position (`#ammoEntry`), so the held item is not moved there but named to
+   * CMSG_SET_AMMO — a whole stack or a split part alike, since no stack moves — and the hand lets go.
+   * The realm judges it as it judges a drop on a row the item cannot take (`#equipCarriedItem`):
+   * `Player::CanUseAmmo` refuses anything but INVTYPE_AMMO with EQUIP_ERR_ONLY_AMMO_CAN_GO_HERE
+   * (Player.cpp:12216-12244). With nothing held the click does nothing: what the original client
+   * does then is not established here.
+   */
+  #dropOnAmmoSlot(): void {
+    const world = this.#context.world();
+    const source = this.#cursorSource();
+    if (!world || !source?.item) return;
+    const entry = entryOf(source.item);
+    this.clearCursor();
+    if (entry > 0) world.setAmmo(entry);
+  }
+
+  // ---- the stock item actions (FrameXmlItemActions.ts) ------------------
+
+  /** An equip or swap held while a bind prompt is up: EquipPendingItem sends it, CancelPendingEquip drops it. */
+  #pendingEquip: {
+    world: WorldClient;
+    /** The stock slot id the prompt was fired with, which its answer hands back. */
+    slot: number;
+    source: { bag: number; slot: number; guid: bigint };
+    target?: { bag: number; slot: number };
+  } | undefined;
+  /** A use held while USE_BIND is up (ConfirmBindOnUse). */
+  #pendingUse: { world: WorldClient; bag: number; slot: number; guid: bigint } | undefined;
+  /** Drops the one click waiting for its item template (`#awaitItemTemplate`). */
+  #cancelPendingTemplateClick: (() => void) | undefined;
+
+  #inventoryOf(world: WorldClient | undefined): PlayerInventoryState | undefined {
+    return world && typeof world.state.objects?.get === "function" ? playerInventory(world.state) : undefined;
+  }
+
+  #itemSoulbound(item: WorldObjectState | undefined): boolean {
+    return item !== undefined && ((readField(item, "ITEM_FIELD_FLAGS") ?? 0) & FRAMEXML_ITEM_FIELD_FLAG_SOULBOUND) !== 0;
+  }
+
+  /** `Player::CanDualWield` is the dual-wield passive's effect; the known spells say whether it is there. */
+  #canDualWield(world: WorldClient): boolean {
+    return Array.isArray(world.knownSpells) && world.knownSpells.some((spell) => FRAMEXML_DUAL_WIELD_SPELLS.has(spell.id));
+  }
+
+  /** An item by id, link or — over the session's cached templates only — name; nothing is fetched. */
+  #itemEntryOf(world: WorldClient | undefined, value: unknown): number | undefined {
+    const direct = frameXmlItemEntry(value);
+    if (direct !== undefined) return direct;
+    if (typeof value !== "string" || value.length === 0 || !(world?.itemTemplates instanceof Map)) return undefined;
+    const wanted = value.toLowerCase();
+    for (const template of world.itemTemplates.values()) {
+      if (template.found && template.name.toLowerCase() === wanted) return template.entry;
+    }
+    return undefined;
+  }
+
+  /** A prompt counts as asked only when a handler took it (UIParent's); with none, nobody could ever answer. */
+  #askBindPrompt(event: string, ...args: readonly unknown[]): boolean {
+    return (this.#pump?.fire(event, ...args) ?? 0) > 0;
+  }
+
+  /**
+   * The stock slot id (1-based) an equip of this template would fill: the first empty of the slots its
+   * InventoryType may take, else the first (`Player::FindEquipSlot`); 0 for a type that fits no row.
+   */
+  #equipTargetSlot(world: WorldClient, template: ItemTemplate): number {
+    const candidates = frameXmlEquipmentSlotsForInventoryType(template.inventoryType, this.#canDualWield(world));
+    const inventory = this.#inventoryOf(world);
+    const empty = candidates.find((index) => index < EQUIPMENT_SLOT_NAMES.length
+      ? inventory?.equipment[index]?.item === undefined
+      : !inventory?.bags.some((bag) => bag.bagSlot === index));
+    const chosen = empty ?? candidates[0];
+    return chosen === undefined ? 0 : chosen + 1;
+  }
+
+  /**
+   * The realm decides what a right-clicked item does, but it decides by packet: CMSG_SET_AMMO for ammo,
+   * CMSG_AUTOEQUIP_ITEM for gear, CMSG_USE_ITEM for the rest, and it refuses the wrong one. The template
+   * tells them apart; one still on its way holds the click (`#awaitItemTemplate`), and `retry` is the
+   * click made again.
+   */
+  #useCarriedItem(world: WorldClient, item: ItemSlotState, retry: () => void): void {
+    const entry = entryOf(item.item);
+    const template = this.#itemTemplate(world, entry);
+    if (template === undefined && this.#awaitItemTemplate(world, item, entry, retry)) return;
+    // Ammo is neither worn nor used: its entry becomes PLAYER_AMMO_ID through CMSG_SET_AMMO, the one
+    // handler that takes INVTYPE_AMMO (HandleSetAmmoOpcode, ItemHandler.cpp:814; Player::CanUseAmmo,
+    // Player.cpp:12216). Measured before this: Rough Arrow sent CMSG_AUTOEQUIP_ITEM, which
+    // FindEquipSlot has no row for.
+    if (template?.found && template.inventoryType === FRAMEXML_INVTYPE_AMMO) {
+      world.setAmmo(entry);
+      return;
+    }
+    const worn = item.bag === INVENTORY_SLOT_BAG_0 && item.slot < INVENTORY_SLOT_ITEM_START;
+    // Gear is what fits an equipment row or a bag slot; a template naming no such InventoryType is not.
+    if (template?.found && !worn && frameXmlEquipmentSlotsForInventoryType(template.inventoryType, true).length > 0) {
+      this.#equipCarriedItem(world, item, template, FRAMEXML_BIND_CONFIRM_EVENTS.autoEquip);
+      return;
+    }
+    this.#useItemAfterBindPrompt(world, item, template);
+  }
+
+  /**
+   * CMSG_AUTOEQUIP_ITEM — or CMSG_SWAP_ITEM/CMSG_SWAP_INV_ITEM into `target` — for a carried item, after
+   * the bind prompt when wearing it would bind it: `event` is the auto-equip or the equip form
+   * (FRAMEXML_BIND_CONFIRM_EVENTS), its argument the slot the item would take. A prompt nobody handles
+   * (a corpus without UIParent) does not swallow the click: the realm binds on equip either way.
+   */
+  #equipCarriedItem(world: WorldClient, item: ItemSlotState, template: ItemTemplate, event: string,
+    target?: { bag: number; slot: number }): void {
+    const candidates = frameXmlEquipmentSlotsForInventoryType(template.inventoryType, this.#canDualWield(world));
+    const slot = target ? target.slot + 1 : this.#equipTargetSlot(world, template);
+    // A drop on a row the item cannot take is the realm's to refuse, not a prompt's to ask about.
+    const fits = target === undefined || (target.bag === INVENTORY_SLOT_BAG_0 && candidates.includes(target.slot));
+    if (fits && template.bonding === FRAMEXML_BIND_WHEN_EQUIPPED && !this.#itemSoulbound(item.item)) {
+      this.#pendingEquip = {
+        world, slot, source: { bag: item.bag, slot: item.slot, guid: item.guid }, ...(target ? { target } : {}),
+      };
+      if (this.#askBindPrompt(event, slot)) return;
+      this.#pendingEquip = undefined;
+    }
+    if (target) world.moveItem(item.bag, item.slot, target.bag, target.slot);
+    else world.equipItem(item.bag, item.slot);
+  }
+
+  /** CMSG_USE_ITEM (or CMSG_OPEN_ITEM, WorldClient.useItem), after USE_BIND for an unbound bind-on-use item. */
+  #useItemAfterBindPrompt(world: WorldClient, item: ItemSlotState, template: ItemTemplate | undefined): void {
+    if (template?.found && template.bonding === FRAMEXML_BIND_WHEN_USE && !this.#itemSoulbound(item.item)) {
+      this.#pendingUse = { world, bag: item.bag, slot: item.slot, guid: item.guid };
+      if (this.#askBindPrompt(FRAMEXML_BIND_CONFIRM_EVENTS.use)) return;
+      this.#pendingUse = undefined;
+    }
+    requestInventoryItemUse(item, () => world.useItem(item.bag, item.slot, item.guid));
+  }
+
+  /**
+   * The same right click means «wear» for a belt and «drink» for a potion, and only the item's template
+   * says which. One not yet in the session cache is asked of the realm (CMSG_ITEM_QUERY_SINGLE) and the
+   * click waits for the answer — one click at a time, resumed once, and only while the same item still
+   * stands in that slot (WorldClient.useItem keeps the same rule for its own deferred use). False when
+   * this world cannot be asked, which leaves the click to the plain use.
+   */
+  #awaitItemTemplate(world: WorldClient, item: ItemSlotState, entry: number, retry: () => void): boolean {
+    if (entry <= 0 || typeof world.itemTemplate !== "function" || typeof world.events?.on !== "function") return false;
+    this.#cancelPendingTemplateClick?.();
+    if (world.itemTemplate(entry) !== undefined) return false;
+    const { bag, slot, guid } = item;
+    const off = world.events.on("QUERY_CACHE_CHANGED", (event) => {
+      if (event.kind === "item" ? event.id !== entry : event.kind !== "cleared") return;
+      cancel();
+      if (event.kind !== "item" || this.#context.world() !== world) return;
+      const inventory = this.#inventoryOf(world);
+      const current = inventory && slotAt(inventory, bag, slot);
+      if (current?.guid === guid) retry();
+    });
+    const cancel = (): void => {
+      off();
+      const index = this.#unsubscribe.indexOf(cancel);
+      if (index >= 0) this.#unsubscribe.splice(index, 1);
+      if (this.#cancelPendingTemplateClick === cancel) this.#cancelPendingTemplateClick = undefined;
+    };
+    this.#cancelPendingTemplateClick = cancel;
+    // Detach drains this list, so a held click never outlives the seam's world subscriptions.
+    this.#unsubscribe.push(cancel);
+    return true;
+  }
+
+  equipPendingItem(slot: number | undefined): void {
+    const pending = this.#pendingEquip;
+    this.#pendingEquip = undefined;
+    const world = this.#context.world();
+    if (!pending || !world || pending.world !== world || (slot !== undefined && slot !== pending.slot)) return;
+    // The realm may have moved the item while the prompt was up: the answer names the item, not the slot.
+    const inventory = this.#inventoryOf(world);
+    const source = inventory && slotAt(inventory, pending.source.bag, pending.source.slot);
+    if (!source?.item || source.guid !== pending.source.guid) return;
+    if (pending.target) world.moveItem(source.bag, source.slot, pending.target.bag, pending.target.slot);
+    else world.equipItem(source.bag, source.slot);
+  }
+
+  cancelPendingEquip(slot: number | undefined): void {
+    // OnHide cancels after OnAccept too (StaticPopup.lua:1535): an answered prompt has nothing to drop.
+    if (this.#pendingEquip && (slot === undefined || slot === this.#pendingEquip.slot)) this.#pendingEquip = undefined;
+  }
+
+  confirmBindOnUse(): void {
+    const pending = this.#pendingUse;
+    this.#pendingUse = undefined;
+    const world = this.#context.world();
+    if (!pending || !world || pending.world !== world) return;
+    const inventory = this.#inventoryOf(world);
+    const source = inventory && slotAt(inventory, pending.bag, pending.slot);
+    if (!source?.item || source.guid !== pending.guid) return;
+    requestInventoryItemUse(source, () => world.useItem(source.bag, source.slot, source.guid));
+  }
+
+  /**
+   * `PutItemInBackpack()` / `PutItemInBag(20..23)`: the held item into that container's first free slot
+   * (CMSG_AUTOSTORE_BAG_ITEM; CMSG_SPLIT_ITEM to the slot for a split part), or — no bag in the slot —
+   * into the slot itself, which is how a held bag is equipped there. False with nothing held or nowhere
+   * to go, and stock opens the bag instead.
+   */
+  storeCursorItemInBag(bagId: number): boolean {
+    const world = this.#context.world();
+    const source = this.#cursorSource();
+    const inventory = this.#inventoryOf(world);
+    if (!world || !source?.item || !inventory) return false;
+    const container = this.#liveContainer(bagId, inventory, world);
+    if (!container) {
+      if (bagId < 1 || bagId > 4) return false;
+      const bagSlot = INVENTORY_SLOT_BAG_START + bagId - 1;
+      return this.#clickItemSlot({ index: bagId - 1, item: undefined, guid: 0n, bag: INVENTORY_SLOT_BAG_0, slot: bagSlot });
+    }
+    const count = this.#itemCursor?.count;
+    if (count !== undefined) {
+      const free = container.slots.find((candidate) => candidate.item === undefined);
+      if (free) world.splitItem(source.bag, source.slot, free.bag, free.slot, count);
+    } else {
+      world.storeItemInBag(source.bag, source.slot, bagId === 0 ? INVENTORY_SLOT_BAG_0 : INVENTORY_SLOT_BAG_START + bagId - 1);
+    }
+    this.clearCursor();
+    return true;
+  }
+
+  /**
+   * `SplitContainerItem(bag, slot, count)`: the part goes on the cursor, as in the client, and the next
+   * slot click (`#clickItemSlot`) or bag button (`storeCursorItemInBag`) sends CMSG_SPLIT_ITEM naming its
+   * destination; the realm makes the new stack. False for anything but a proper part of an unlocked stack.
+   */
+  splitContainerItem(bagId: number, slot: number, count: number): boolean {
+    const world = this.#context.world();
+    const source = this.#liveContainerSlot(bagId, slot);
+    if (!world || !source?.item || source.guid === 0n || !Number.isInteger(count) || count < 1
+      || count >= stackCount(source)) return false;
+    if (isBankSlot(source.bag, source.slot) && world.bankerGuid === undefined) return false;
+    // Locked as pickupContainerItem locks: the letter, the trade, the auction or a socket holds it.
+    if (this.mail.attached(source.guid) || this.trade.offered(source.guid) || this.auction.selling(source.guid)
+      || this.socket.staged(source.guid)) return false;
+    this.#setCursor(source);
+    if (!this.#itemCursor) return false;
+    this.#itemCursor = { ...this.#itemCursor, count };
+    return true;
+  }
+
+  deleteSplitCursorItem(): boolean {
+    const count = this.#itemCursor?.count;
+    if (count === undefined) return false;
+    const world = this.#context.world();
+    const source = this.#cursorSource();
+    if (world && source) world.destroyItem(source.bag, source.slot, count);
+    this.clearCursor();
+    return true;
+  }
+
+  autoEquipCursorItem(): void {
+    const world = this.#context.world();
+    const source = this.#cursorSource();
+    // A split part is a stack, and a stack is not worn.
+    if (!world || !source?.item || this.#itemCursor?.count !== undefined) return;
+    const template = this.#itemTemplate(world, entryOf(source.item));
+    this.clearCursor();
+    if (template?.found) this.#equipCarriedItem(world, source, template, FRAMEXML_BIND_CONFIRM_EVENTS.autoEquip);
+    else world.equipItem(source.bag, source.slot);
+  }
+
+  equipCursorItem(slot: number): void {
+    if (this.#cursorSource() === undefined) return;
+    this.#clickItemSlot(this.#equipmentSlot("player", slot));
+  }
+
+  /** `EquipItemByName(item[, slot])`: the first carried copy is worn, into `slot` when one is named. */
+  equipItemByName(value: unknown, slot: number | undefined): void {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const inventory = this.#inventoryOf(world);
+    if (!world || entry === undefined || !inventory) return;
+    const source = [...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
+      .find((candidate) => candidate.item !== undefined && entryOf(candidate.item) === entry);
+    if (!source) return;
+    const template = this.#itemTemplate(world, entry);
+    const target = slot !== undefined && slot >= 1 && slot <= 23 ? { bag: INVENTORY_SLOT_BAG_0, slot: slot - 1 } : undefined;
+    if (template?.found) {
+      this.#equipCarriedItem(world, source, template,
+        target ? FRAMEXML_BIND_CONFIRM_EVENTS.equip : FRAMEXML_BIND_CONFIRM_EVENTS.autoEquip, target);
+    } else if (target) {
+      world.moveItem(source.bag, source.slot, target.bag, target.slot);
+    } else {
+      world.equipItem(source.bag, source.slot);
+    }
+  }
+
+  /**
+   * A highlight only: the realm still judges the drop, and a held split part fits no slot but the
+   * AmmoSlot, which takes an INVTYPE_AMMO entry whatever the stack (`#dropOnAmmoSlot`). The AmmoSlot
+   * asks too: it is a PaperDollItemSlotButton, whose CURSOR_UPDATE calls CursorCanGoInSlot(self:GetID()).
+   */
+  cursorCanGoInSlot(slot: number): boolean {
+    const world = this.#context.world();
+    const source = this.#cursorSource();
+    if (!world || !source?.item) return false;
+    const template = this.#itemTemplate(world, entryOf(source.item));
+    if (!template?.found) return false;
+    if (slot === FRAMEXML_INVSLOT_AMMO) return template.inventoryType === FRAMEXML_INVTYPE_AMMO;
+    if (this.#itemCursor?.count !== undefined) return false;
+    return frameXmlEquipmentSlotsForInventoryType(template.inventoryType, this.#canDualWield(world)).includes(slot - 1);
+  }
+
+  containerItemDurability(bagId: number, slot: number): readonly [number, number] | undefined {
+    const wear = itemWear(this.#liveContainerSlot(bagId, slot)?.item);
+    return wear ? [wear.durability, wear.maximum] : undefined;
+  }
+
+  inventoryItemDurability(slot: number): readonly [number, number] | undefined {
+    const wear = itemWear(this.#equipmentSlot("player", slot)?.item);
+    return wear ? [wear.durability, wear.maximum] : undefined;
+  }
+
+  inventoryItemQuality(unit: string, slot: number): number | undefined {
+    const item = this.#equipmentSlot(unit, slot)?.item;
+    if (!item) return undefined;
+    const entry = entryOf(item);
+    const template = this.#itemTemplate(this.#context.world(), entry);
+    return template?.found ? template.quality : this.#context.itemInfo?.(entry)?.quality;
+  }
+
+  inventoryItemId(unit: string, slot: number): number | undefined {
+    const entry = entryOf(this.#equipmentSlot(unit, slot)?.item);
+    return entry > 0 ? entry : undefined;
+  }
+
+  containerItemId(bagId: number, slot: number): number | undefined {
+    const entry = entryOf(this.#liveContainerSlot(bagId, slot)?.item);
+    return entry > 0 ? entry : undefined;
+  }
+
+  /** Carried bags and the keyring, the bank on request; worn gear is `isEquippedItem`'s, as in the client. */
+  itemCount(value: unknown, includeBank: boolean): number {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const inventory = this.#inventoryOf(world);
+    return entry === undefined || !inventory ? 0 : this.#carriedCount(inventory, entry, includeBank);
+  }
+
+  /**
+   * `itemCount`'s sum over an inventory already built: the backpack, the keyring and the carried bags,
+   * the bank and its bags on request. Plain loops, because the paper doll's 60 ms poll runs it too.
+   */
+  #carriedCount(inventory: PlayerInventoryState, entry: number, includeBank: boolean): number {
+    let count = 0;
+    const add = (slots: readonly ItemSlotState[]): void => {
+      for (const candidate of slots) {
+        if (candidate.item !== undefined && entryOf(candidate.item) === entry) count += stackCount(candidate);
+      }
+    };
+    add(inventory.backpack);
+    add(inventory.keyring);
+    for (const bag of inventory.bags) add(bag.slots);
+    if (includeBank) {
+      add(inventory.bank);
+      for (const bag of inventory.bankBags) add(bag.slots);
+    }
+    return count;
+  }
+
+  /** The use spell's name and rank from the cached spell row; nil until the template and the row are both known. */
+  itemSpell(value: unknown): readonly [string, string] | undefined {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const template = entry === undefined ? undefined : this.#itemTemplate(world, entry);
+    const spellId = itemUseSpellId(template);
+    const spell = spellId === undefined ? undefined : this.#context.spell(spellId);
+    return spell ? [spell.name, spell.rank] : undefined;
+  }
+
+  itemIcon(value: unknown): string | undefined {
+    const entry = this.#itemEntryOf(this.#context.world(), value);
+    return entry === undefined ? undefined : this.itemTexture(entry);
+  }
+
+  isEquippableItem(value: unknown): boolean | undefined {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const template = entry === undefined ? undefined : this.#itemTemplate(world, entry);
+    if (!template?.found || !Number.isInteger(template.inventoryType)) return undefined;
+    return template.inventoryType !== FRAMEXML_INVTYPE_NON_EQUIP;
+  }
+
+  isEquippedItem(value: unknown): boolean {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const inventory = this.#inventoryOf(world);
+    if (entry === undefined || !inventory) return false;
+    return inventory.equipment.some((worn) => worn.item !== undefined && entryOf(worn.item) === entry)
+      || inventory.bags.some((bag) => entryOf(bag.bag) === entry);
+  }
+
+  /** Whether the item has a use at all; the realm's own checks (level, class, reagents) are not modelled. */
+  isUsableItem(value: unknown): boolean | undefined {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const template = entry === undefined ? undefined : this.#itemTemplate(world, entry);
+    return template?.found ? itemUseSpellId(template) !== undefined : undefined;
+  }
+
+  isConsumableItem(value: unknown): boolean | undefined {
+    const world = this.#context.world();
+    const entry = this.#itemEntryOf(world, value);
+    const template = entry === undefined ? undefined : this.#itemTemplate(world, entry);
+    return template?.found ? template.itemClass === FRAMEXML_ITEM_CLASS_CONSUMABLE : undefined;
+  }
+
+  itemCooldown(value: unknown): FrameXmlContainerItemCooldown {
+    const entry = this.#itemEntryOf(this.#context.world(), value);
+    return entry === undefined ? [0, 0, 0] : this.#itemCooldown(entry);
+  }
+
+  /**
+   * `GetInventoryItemsForSlot(slot, table)`: every carried item that fits the paper-doll slot, keyed by
+   * the equipment manager's packed location (Constants.lua:183-186: ITEM_INVENTORY_LOCATION_PLAYER, and
+   * for a bag ITEM_INVENTORY_LOCATION_BAGS with the stock container id above bit 8 and the 1-based slot
+   * below it), plus the worn item under PLAYER + slot, which PaperDollFrameItemFlyout_Show removes
+   * itself. Flat (location, id, …) for FrameXmlItemActions' Lua half to key; the bank is not offered.
+   */
+  inventoryItemsForSlot(slot: number): readonly number[] {
+    const world = this.#context.world();
+    if (!world || !Number.isInteger(slot) || slot < 1 || slot > 23) return [];
+    const result: number[] = [];
+    const worn = this.#equipmentSlot("player", slot)?.item;
+    if (worn) result.push(FRAMEXML_ITEM_INVENTORY_LOCATION_PLAYER + slot, entryOf(worn));
+    const dualWield = this.#canDualWield(world);
+    for (const [bagId, container] of this.#liveContainers(world)) {
+      // The keyring (-2) holds no gear.
+      if (bagId < 0) continue;
+      container.slots.forEach((candidate, index) => {
+        if (!candidate.item) return;
+        const template = this.#itemTemplate(world, entryOf(candidate.item));
+        if (!template?.found) return;
+        if (!frameXmlEquipmentSlotsForInventoryType(template.inventoryType, dualWield).includes(slot - 1)) return;
+        result.push(FRAMEXML_ITEM_INVENTORY_LOCATION_PLAYER + FRAMEXML_ITEM_INVENTORY_LOCATION_BAGS
+          + (bagId << FRAMEXML_ITEM_INVENTORY_BAG_BIT_OFFSET) + index + 1, template.entry);
+      });
+    }
+    return result;
+  }
+
+  /**
+   * `GetInventoryAlertStatus(index)` over DurabilityFrame's own slot order (FRAMEXML_INVENTORY_ALERT_SLOTS):
+   * 2 for a broken piece, 1 for one worn to a fifth, 0 otherwise — the thresholds the reference client
+   * answers with (CPPClientExample/wowee, lua_inventory_api.cpp); a piece without durability is sound.
+   */
+  inventoryAlertStatus(index: number): number {
+    const equipmentIndex = FRAMEXML_INVENTORY_ALERT_SLOTS[index - 1];
+    if (equipmentIndex === undefined) return 0;
+    const wear = itemWear(this.#inventoryOf(this.#context.world())?.equipment[equipmentIndex]?.item);
+    if (!wear) return 0;
+    if (wear.durability <= 0) return 2;
+    return wear.durability * 5 <= wear.maximum ? 1 : 0;
   }
 
   // ---- quest log and tracker --------------------------------------------
+
+  questGiverCall(name: string, args: readonly unknown[]): readonly unknown[] {
+    const world = this.#context.world();
+    if (!world) return [];
+    const command = resolveFrameXmlQuestGiverCommand(name, args, world);
+    if (command) {
+      performFrameXmlQuestGiverCommand(world, command);
+      return [];
+    }
+    const menuFacts = world.questList && name === "GetActiveTitle" ? {
+      activeCompleteByQuestId: new Map(this.#questRows().map((entry) => [
+        entry.questId, (entry.state & QUEST_STATE_COMPLETE) !== 0,
+      ])),
+    } : undefined;
+    return frameXmlQuestGiverRead(name, args, world, {
+      ...(menuFacts ? { menuFacts } : {}),
+      rewardMetadata: {
+        item: (itemId) => {
+          const cached = this.#questItemInfo({ itemId, count: 1 });
+          return cached && cached[1] ? {
+            name: cached[0], texture: cached[1],
+            ...(cached[3] === undefined ? {} : { quality: cached[3] }),
+            ...(cached[4] === undefined ? {} : { isUsable: cached[4] }),
+          } : undefined;
+        },
+        spell: (spellId) => {
+          const cached = this.#context.spell(spellId);
+          const known = Array.isArray(world.knownSpells)
+            ? world.knownSpells.some((spell) => spell.id === spellId) : undefined;
+          return cachedQuestRewardSpellInfo(cached, known);
+        },
+      },
+    }) ?? [];
+  }
 
   /** The browser log is the compact, header-free order present in the player's update fields. */
   #questRows(): QuestLogEntry[] {
@@ -2132,9 +4271,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   #questTemplate(entry: QuestLogEntry | undefined): QuestTemplate | undefined {
-    if (!entry) return undefined;
+    return entry ? this.#questTemplateById(entry.questId) : undefined;
+  }
+
+  #questTemplateById(questId: number): QuestTemplate | undefined {
     const templates = this.#context.world()?.questTemplates;
-    return templates instanceof Map ? templates.get(entry.questId) : undefined;
+    return templates instanceof Map ? templates.get(questId) : undefined;
   }
 
   #questIndexForId(questId: number): number | undefined {
@@ -2215,7 +4357,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!entry || !template) return undefined;
     const rows: FrameXmlQuestLogLeaderBoard[] = [];
     for (const [objectiveIndex, objective] of template.objectives.entries()) {
-      const have = entry.counters[objectiveIndex] ?? 0;
+      const slot = objective.slot ?? objectiveIndex;
+      const have = entry.counters[slot] ?? 0;
       const world = this.#context.world();
       const resolvedName = objective.gameObject
         ? world?.gameObjectTemplates?.get(objective.entry)?.name
@@ -2224,7 +4367,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const text = questObjectiveLabel({
         kind: objective.gameObject ? "gameObject" : "creature",
         id: objective.entry,
-        poiIndex: objectiveIndex,
+        poiIndex: slot,
         text: objective.text,
         have,
         need: objective.count,
@@ -2244,7 +4387,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const text = questObjectiveLabel({
         kind: "item",
         id: objective.itemId,
-        poiIndex: QUEST_OBJECTIVES + objectiveIndex,
+        poiIndex: QUEST_OBJECTIVES + (objective.slot ?? objectiveIndex),
         text: "",
         have: have ?? Number.NaN,
         need: objective.count,
@@ -2267,6 +4410,22 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // equipment/backpack/bag graph once per quest row when a single quest-log edge arrives.
     const hasItemObjectives = rows.some((entry) => (this.#questTemplate(entry)?.itemObjectives.length ?? 0) > 0);
     const carried = hasItemObjectives ? this.#questCarriedItems() : undefined;
+    // The entries whose cached rows this signature reads, for the query-answer edges.
+    const itemIds = new Set<number>();
+    const creatureIds = new Set<number>();
+    const gameObjectIds = new Set<number>();
+    for (const entry of rows) {
+      const template = this.#questTemplate(entry);
+      for (const item of template?.rewardItems ?? []) itemIds.add(item.itemId);
+      for (const item of template?.rewardChoiceItems ?? []) itemIds.add(item.itemId);
+      for (const objective of template?.itemObjectives ?? []) itemIds.add(objective.itemId);
+      for (const objective of template?.objectives ?? []) {
+        (objective.gameObject ? gameObjectIds : creatureIds).add(objective.entry);
+      }
+    }
+    this.#questItemIds = itemIds;
+    this.#questCreatureIds = creatureIds;
+    this.#questGameObjectIds = gameObjectIds;
     return rows.map((entry) => {
       const template = this.#questTemplate(entry);
       return [
@@ -2297,14 +4456,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
               && this.#context.world()!.knownSpells.some((known) => known.id === spellId)].join(":");
         })(),
         ...(template?.objectives ?? []).map((objective) => [
-          objective.entry, objective.count, objective.gameObject, objective.itemDrop, objective.text,
+          objective.slot, objective.entry, objective.count, objective.gameObject, objective.itemDrop, objective.text,
           objective.gameObject
             ? this.#context.world()?.gameObjectTemplates?.get(objective.entry)?.name ?? ""
             : this.#context.creatureInfo?.(objective.entry)?.name
               ?? this.#context.world()?.creatureTemplates?.get(objective.entry)?.name ?? "",
         ].join(":")),
         ...(template?.itemObjectives ?? []).map((objective) => [
-          objective.itemId, objective.count, carried?.get(objective.itemId) ?? "?",
+          objective.slot, objective.itemId, objective.count, carried?.get(objective.itemId) ?? "?",
           this.#context.itemInfo?.(objective.itemId)?.name
             ?? this.#itemTemplate(this.#context.world(), objective.itemId)?.name ?? "",
         ].join(":")),
@@ -2700,9 +4859,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#visibleFactionRows().length;
   }
 
-  factionInfo(index: number): FrameXmlFactionInfo | undefined {
-    const row = this.#factionAt(index);
-    if (!row) return undefined;
+  #factionInfoRow(row: FrameXmlFactionRow): FrameXmlFactionInfo {
     return [
       row.name,
       row.description,
@@ -2718,6 +4875,22 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#watchedFactionId === row.listId,
       row.isChild,
     ];
+  }
+
+  factionInfo(index: number): FrameXmlFactionInfo | undefined {
+    const row = this.#factionAt(index);
+    return row ? this.#factionInfoRow(row) : undefined;
+  }
+
+  factionInfoById(factionId: unknown): FrameXmlFactionInfo | undefined {
+    const rows = this.#allFactionRows();
+    return frameXmlFactionInfoById(
+      factionId, this.#context.reputationCatalog?.(), rows,
+      (index) => {
+        const row = rows[index - 1];
+        return row ? this.#factionInfoRow(row) : undefined;
+      },
+    );
   }
 
   selectedFaction(): number {
@@ -2833,20 +5006,22 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // The C API is one-based even though the generated fields are STAT0..STAT4.
     const i = Number.isInteger(index) ? index - 1 : -1;
     if (!object || i < 0 || i >= 5) return [0, 0, 0, 0];
-    const base = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_STAT0", i));
+    const effective = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_STAT0", i));
     const positive = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_POSSTAT0", i));
     const negative = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_NEGSTAT0", i));
-    return [base, base + positive + negative, positive, negative];
+    // StatSystem.cpp publishes the total; stock PaperDoll subtracts buffs from the first
+    // return for its tooltip. Adding the buffs again inflates the visible stat.
+    return [effective, effective, positive, negative];
   }
 
   unitResistance(unit: string, index: number): FrameXmlUnitStat {
     const object = this.#unitObject(unit);
     const i = Number.isInteger(index) ? index : -1;
     if (!object || i < 0 || i >= 7) return [0, 0, 0, 0];
-    const base = this.#signed(this.#rawField(object, "UNIT_FIELD_RESISTANCES", i));
+    const effective = this.#signed(this.#rawField(object, "UNIT_FIELD_RESISTANCES", i));
     const positive = this.#signed(this.#rawField(object, "UNIT_FIELD_RESISTANCEBUFFMODSPOSITIVE", i));
     const negative = this.#signed(this.#rawField(object, "UNIT_FIELD_RESISTANCEBUFFMODSNEGATIVE", i));
-    return [base, base + positive + negative, positive, negative];
+    return [effective - positive - negative, effective, positive, negative];
   }
 
   unitArmor(unit: string): FrameXmlUnitArmor {
@@ -2885,6 +5060,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return 0;
   }
 
+  spellCritChanceFromIntellect(unit: string): number | undefined {
+    const object = this.#unitObject(unit);
+    if (!object || unit !== "player") return undefined;
+    // Update masks omit zero-valued fields; STAT3 is the effective value, not POSSTAT3 added again.
+    const intellect = this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_STAT0", 3));
+    return spellCritFromIntellect(this.#context.characterStats?.(), unitField.classId(object) ?? 0,
+      unitField.level(object) ?? 0, intellect);
+  }
+
   unitMaxHealthModifier(): number {
     return 1;
   }
@@ -2897,12 +5081,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return 0;
   }
 
-  combatRating(): number {
-    return 0;
+  combatRating(index: number): number {
+    const object = this.#self();
+    // FrameXML's CR_* constants are one-based; the core's array is zero-based.
+    return object ? this.#rawField(object, "PLAYER_FIELD_COMBAT_RATING_1", index - 1) ?? 0 : 0;
   }
 
-  combatRatingBonus(): number {
-    return 0;
+  combatRatingBonus(index: number): number {
+    const object = this.#self();
+    return object ? characterCombatRatingBonus(this.#context.characterStats?.(), unitField.classId(object) ?? 0,
+      unitField.level(object) ?? 0, index, this.combatRating(index)) ?? 0 : 0;
   }
 
   armorPenetration(): number {
@@ -2910,15 +5098,68 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   critChance(): number {
-    return 0;
+    return this.#playerStatNumber("PLAYER_CRIT_PERCENTAGE");
   }
 
   expertise(): readonly [number, number] {
-    return [0, 0];
+    return [this.#playerStatNumber("PLAYER_EXPERTISE"), this.#playerStatNumber("PLAYER_OFFHAND_EXPERTISE")];
   }
 
   expertisePercent(): readonly [number, number] {
-    return [0, 0];
+    // Player.cpp::GetExpertiseDodgeOrParryReduction uses one quarter percent per point.
+    const [main, off] = this.expertise();
+    return [main / 4, off / 4];
+  }
+
+  #playerStatNumber(name: Parameters<typeof readField>[1]): number {
+    const object = this.#self();
+    return object ? this.#fieldNumber(object, name) ?? 0 : 0;
+  }
+
+  rangedCritChance(): number { return this.#playerStatNumber("PLAYER_RANGED_CRIT_PERCENTAGE"); }
+  dodgeChance(): number { return this.#playerStatNumber("PLAYER_DODGE_PERCENTAGE"); }
+  parryChance(): number { return this.#playerStatNumber("PLAYER_PARRY_PERCENTAGE"); }
+  blockChance(): number { return this.#playerStatNumber("PLAYER_BLOCK_PERCENTAGE"); }
+  shieldBlock(): number { return this.#playerStatNumber("PLAYER_SHIELD_BLOCK"); }
+
+  spellCritChance(school: number): number {
+    const object = this.#self();
+    return object ? this.#floatWord(this.#rawField(object, "PLAYER_SPELL_CRIT_PERCENTAGE1", school - 1)) ?? 0 : 0;
+  }
+
+  spellBonusDamage(school: number): number {
+    const object = this.#self();
+    return object ? this.#signed(this.#rawField(object, "PLAYER_FIELD_MOD_DAMAGE_DONE_POS", school - 1))
+      + this.#signed(this.#rawField(object, "PLAYER_FIELD_MOD_DAMAGE_DONE_NEG", school - 1)) : 0;
+  }
+
+  spellBonusHealing(): number { return this.#playerStatNumber("PLAYER_FIELD_MOD_HEALING_DONE_POS"); }
+
+  spellPenetration(): number {
+    // Player::ApplySpellPenetrationBonus stores the negative resistance modifier.
+    return -this.#signed(this.#playerStatNumber("PLAYER_FIELD_MOD_TARGET_RESISTANCE"));
+  }
+
+  manaRegen(): readonly [number, number] {
+    // StatSystem.cpp writes mana per second into the first (POWER_MANA) float of each array.
+    return [this.#playerStatNumber("UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER"),
+      this.#playerStatNumber("UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER")];
+  }
+
+  unitDefense(unit: string): readonly [number, number] {
+    const object = this.#unitObject(unit);
+    // SKILL_DEFENSE = 95 in the compatible core's SharedDefines.h.
+    const skill = object ? readSkills(object).find((entry) => entry.skillId === 95) : undefined;
+    return skill ? [skill.value, skill.temporaryBonus + skill.permanentBonus
+      + (object === this.#self() ? Math.trunc(this.combatRatingBonus(2)) : 0)] : [0, 0];
+  }
+
+  dodgeBlockParryChanceFromDefense(): number {
+    const object = this.#self();
+    if (!object) return 0;
+    const [base, bonus] = this.unitDefense("player");
+    // Player::UpdateBlockPercentage uses 0.04% per defense point above the level's cap.
+    return (base + bonus - (unitField.level(object) ?? 0) * 5) * 0.04;
   }
 
   unitAttackSpeed(unit: string): readonly [number, number | undefined] {
@@ -2976,6 +5217,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const world = this.#context.world();
       const inventory = world ? playerInventory(world.state) : undefined;
       if (!inventory) return undefined;
+      // The AmmoSlot as slot 0's readers draw it (`#ammoEntry`): a new PLAYER_AMMO_ID, an arrow spent,
+      // sold or banked, and the entry's icon arriving each repaint it through this row's edge.
+      const ammo = this.#ammoEntry("player");
+      const ammoSignature = ammo === undefined ? ""
+        : `${ammo}:${this.#carriedCount(inventory, ammo, false)}:${this.#itemTexture(ammo) ?? ""}`;
       return [...inventory.equipment, ...inventory.bags.map((bag) => ({
         index: bag.bagSlot,
         item: bag.bag,
@@ -2987,10 +5233,21 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         slot.item ? this.#itemTexture(entryOf(slot.item)) ?? "" : "",
         slot.item ? readField(slot.item, "ITEM_FIELD_DURABILITY") ?? "" : "",
         slot.item ? readField(slot.item, "ITEM_FIELD_MAXDURABILITY") ?? "" : "",
-      ].join(":")).join("|");
+      ].join(":")).join("|") + `|ammo:${ammoSignature}`;
     }
     if (kind === "stats") {
-      return Array.from({ length: 5 }, (_, index) => this.unitStat("player", index + 1).join(":")).join("|");
+      // Crit, rating, spellpower, avoidance and regeneration can change without a primary stat.
+      // UNIT_STATS is handled by the stock PaperDoll for every displayed category.
+      return [
+        ...Array.from({ length: 5 }, (_, index) => this.unitStat("player", index + 1).join(":")),
+        ...Array.from({ length: 25 }, (_, index) => this.combatRating(index + 1)),
+        this.critChance(), this.rangedCritChance(), ...this.expertise(),
+        ...Array.from({ length: 7 }, (_, index) => this.spellCritChance(index + 1)),
+        ...Array.from({ length: 7 }, (_, index) => this.spellBonusDamage(index + 1)),
+        this.spellBonusHealing(), this.spellPenetration(), ...this.manaRegen(),
+        this.dodgeChance(), this.parryChance(), this.blockChance(), this.shieldBlock(),
+        ...this.unitDefense("player"), unitField.level(object),
+      ].join("|");
     }
     if (kind === "resistance") {
       return Array.from({ length: 7 }, (_, index) => this.unitResistance("player", index).join(":")).join("|");
@@ -3016,10 +5273,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #reconcilePaperDoll(force = false): void {
     const pump = this.#pump;
     if (!pump) return;
+    // UNIT_RESISTANCES ahead of UNIT_STATS: of the stats edges it is the one whose PaperDollFrame
+    // handler does the most (see `statsDelivered` below).
     const rows: readonly ["inventory" | "stats" | "resistance" | "attackPower" | "rangedAttackPower" | "attackSpeed" | "damage" | "rangedDamage" | "damageModifier", string, string][] = [
       ["inventory", "#inventorySignature", FRAMEXML_SEAM_EVENTS.inventoryChanged],
-      ["stats", "#statsSignature", FRAMEXML_SEAM_EVENTS.stats],
       ["resistance", "#resistanceSignature", FRAMEXML_SEAM_EVENTS.resistances],
+      ["stats", "#statsSignature", FRAMEXML_SEAM_EVENTS.stats],
       ["attackPower", "#attackPowerSignature", FRAMEXML_SEAM_EVENTS.attackPower],
       ["rangedAttackPower", "#rangedAttackPowerSignature", FRAMEXML_SEAM_EVENTS.rangedAttackPower],
       ["attackSpeed", "#attackSpeedSignature", FRAMEXML_SEAM_EVENTS.attackSpeed],
@@ -3027,6 +5286,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       ["rangedDamage", "#rangedDamageSignature", FRAMEXML_SEAM_EVENTS.rangedDamage],
       ["damageModifier", "#damageModifierSignature", FRAMEXML_SEAM_EVENTS.damageDoneMods],
     ];
+    // An equip moves five or six of these rows in one poll, and PaperDollFrame answered each with
+    // PaperDollFrame_UpdateStats — every stat row read and rewritten again, 1.4-2.3 ms apiece in
+    // fengari over the stock corpus (Node 22, CharacterFrame open). The first stats edge of the poll
+    // reaches it; the rest go to every other listener (PetPaperDollFrame, add-ons) and not to it.
+    let statsDelivered = false;
     for (const [kind, _field, event] of rows) {
       const next = this.#paperDollSignature(kind);
       if (next === undefined) continue;
@@ -3049,8 +5313,28 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       else if (kind === "damage") this.#damageSignature = next;
       else if (kind === "rangedDamage") this.#rangedDamageSignature = next;
       else this.#damageModifierSignature = next;
-      pump.fire(event, "player");
+      if (!PAPER_DOLL_STATS_EVENTS.has(event)) {
+        pump.fire(event, "player");
+      } else if (statsDelivered) {
+        withEventOwnersExcluded(event, PAPER_DOLL_FRAME, () => pump.fire(event, "player"));
+      } else {
+        statsDelivered = true;
+        pump.fire(event, "player");
+      }
     }
+  }
+
+  /**
+   * `#reconcilePaperDoll`'s inventory row alone, for an edge that should not wait for the poll
+   * (PLAYER_AMMO_ID); it leaves the signature the poll compares, so one change fires once.
+   */
+  #reconcilePaperDollInventory(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    const next = this.#paperDollSignature("inventory");
+    if (next === undefined || next === this.#inventorySignature) return;
+    this.#inventorySignature = next;
+    pump.fire(FRAMEXML_SEAM_EVENTS.inventoryChanged, "player");
   }
 
   // ---- the world, read the way `ui/ActionBar.ts` reads it ----------------
@@ -3142,6 +5426,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return world && guid !== undefined && guid !== 0n ? world.state.objects.get(guid) : undefined;
   }
 
+  /** The focus's target mirror, as `#targetTarget` reads the target's: both objects must be present. */
+  #focusTarget(): WorldObjectState | undefined {
+    const focus = this.#focus();
+    const world = this.#context.world();
+    const guid = focus === undefined ? undefined : unitField.target(focus);
+    return world && guid !== undefined && guid !== 0n ? world.state.objects.get(guid) : undefined;
+  }
+
   /** The pet GUID is authoritative only when both the pet bar and an in-range world object agree. */
   #pet(): WorldObjectState | undefined {
     const world = this.#context.world();
@@ -3154,14 +5446,83 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (unit === "target") return this.#target();
     if (unit === "focus") return this.#focus();
     if (unit === "targettarget") return this.#targetTarget();
+    // FocusFrame's target-of-target row (TargetFrame.xml:678 creates it for "focus-target").
+    if (unit === "focus-target") return this.#focusTarget();
     if (unit === "pet") return this.#pet();
+    if (unit === "mouseover") return this.#mouseover();
+    if (unit.startsWith("arena")) return this.arena.object(unit);
     return this.#partyObject(unit);
+  }
+
+  /**
+   * The settled unit under the world cursor (`HoverTarget`), only while the same object is still
+   * in this seam's world. Every unit query — UnitExists, UnitName, UnitLevel, UnitHealth,
+   * UnitIsUnit, UnitGUID… — resolves `"mouseover"` through here.
+   */
+  #mouseover(): WorldObjectState | undefined {
+    const world = this.#context.world();
+    const guid = settledHoveredUnitGuid(world);
+    return world && guid !== undefined ? world.state.objects.get(guid) : undefined;
+  }
+
+  /**
+   * GUID-only tokens: identities stock and add-on code key maps by even when the object is out of
+   * range, and which the seam deliberately does not promote to full units (no event stream keeps
+   * their frames fresh). `raidN` follows `raidMemberCount`: the listed members in wire order, then
+   * the player, whom the server's group list never carries.
+   */
+  #guidOnlyUnit(unit: string): bigint | undefined {
+    const world = this.#context.world();
+    const group = world?.group;
+    const partyPet = /^partypet([1-4])$/.exec(unit);
+    if (partyPet) {
+      const member = this.#partyMember(`party${partyPet[1]}`);
+      const petGuid = member === undefined ? undefined : world?.partyStats.get(member.guid)?.petGuid;
+      return petGuid !== undefined && petGuid !== 0n ? petGuid : undefined;
+    }
+    const raid = /^raid([1-9]\d?)$/.exec(unit);
+    if (raid) {
+      if (!group || (group.groupType & GROUPTYPE_RAID) === 0) return undefined;
+      const index = Number(raid[1]);
+      return index === this.#raidSelfIndex(world) ? world?.state.selfGuid : group.members[index - 1]?.guid;
+    }
+    // An arena opponent or pet out of sight keeps its GUID for the match (FrameXmlArena.ts).
+    if (unit.startsWith("arena")) return this.arena.guid(unit);
+    if (unit === "vehicle") {
+      // A vehicle's spell bar replaces the pet bar and carries the vehicle's own GUID
+      // (`VehicleSpellInitialize`); an ordinary pet bar is not a vehicle.
+      const petSpells = world?.petSpells;
+      return petSpells && petSpells.guid !== 0n && isVehicleActionBar(petSpells.bar) ? petSpells.guid : undefined;
+    }
+    return undefined;
   }
 
   #unitGuid(unit: string): bigint | undefined {
     const object = this.#unit(unit);
     if (object) return object.guid;
-    return this.#partyMember(unit)?.guid;
+    return this.#partyMember(unit)?.guid ?? this.#guidOnlyUnit(unit);
+  }
+
+  /** `UnitGUID` in the text form chat's `arg12` already uses, so the two compare equal in Lua. */
+  unitGuid(unit: string): string | undefined {
+    const guid = this.#unitGuid(unit);
+    return guid === undefined || guid === 0n ? undefined : frameXmlGuid(guid);
+  }
+
+  /** `UnitReaction`'s stock index from the FactionTemplate relation this seam already resolves. */
+  unitReaction(left: string, right: string): number | undefined {
+    const reaction = this.#reaction(left, right);
+    return reaction === REACTION_HOSTILE ? 2
+      : reaction === REACTION_NEUTRAL ? 4
+        : reaction === REACTION_FRIENDLY ? 5 : undefined;
+  }
+
+  /** Announce a settled hover change; leaving every unit is not an UPDATE_MOUSEOVER_UNIT edge. */
+  #reconcileMouseover(world: WorldClient, pump: FrameXmlSeamPump): void {
+    const guid = settledHoveredUnitGuid(world);
+    if (guid === this.#mouseoverGuid) return;
+    this.#mouseoverGuid = guid;
+    if (guid !== undefined) pump.fire(FRAMEXML_SEAM_EVENTS.mouseover);
   }
 
   /** Translate one world caster identity to a live FrameXML unit without aliasing old targets. */
@@ -3263,8 +5624,35 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.focusChanged);
   }
 
+  /**
+   * A pet talent packet has no GUID. On a replacement pet, the core sends PET_SPELLS first and
+   * TALENTS_INFO after it; wait for that new packet rather than showing the previous pet's ranks.
+   */
+  #notePetTalentOwner(world: WorldClient | undefined): void {
+    const guid = world?.petSpells?.guid;
+    if (!this.#petTalentOwnerSeen) {
+      this.#petTalentOwnerSeen = true;
+      this.#petTalentOwnerGuid = guid;
+      return;
+    }
+    if (guid === this.#petTalentOwnerGuid) return;
+    this.#petTalentOwnerGuid = guid;
+    this.#awaitPetTalentPacket = guid !== undefined && guid !== 0n;
+    this.#petTalentsAtOwnerChange = world?.petTalents;
+  }
+
+  #currentPetTalents(world: WorldClient | undefined): WorldClient["petTalents"] {
+    this.#notePetTalentOwner(world);
+    const packet = world?.petTalents;
+    if (!this.#awaitPetTalentPacket) return packet;
+    if (packet === this.#petTalentsAtOwnerChange) return undefined;
+    this.#awaitPetTalentPacket = false;
+    return packet;
+  }
+
   /** Publish one UNIT_PET edge for a real pet bar/object identity transition. */
   #reconcilePet(force = false): void {
+    this.#notePetTalentOwner(this.#context.world());
     const nextGuid = this.#pet()?.guid;
     if (nextGuid === this.#petGuid) {
       if (force) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.petChanged, "player");
@@ -3346,6 +5734,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   actionTexture(slot: number): string | undefined {
+    const button = this.#button(slot);
+    if (button?.type === ACTION_BUTTON_ITEM) {
+      return this.#context.itemInfo?.(button.action)?.texture || this.#itemTexture(button.action);
+    }
+    // A macro wears the icon its window chose (the question mark when none was).
+    if (button?.type === ACTION_BUTTON_MACRO) return this.macros.slotTexture(button.action);
     const metadata = this.#metadata(slot);
     // An empty `iconPath` is a real answer on this dataset — `SpellIcon` has no row for the id —
     // and the corpus' own branch for a missing texture hides the icon and shows the empty
@@ -3353,10 +5747,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return metadata?.iconPath || undefined;
   }
 
-  /** Only a macro carries text on a bar, and its name is the text. */
+  /** Only a macro carries text on a bar, and its name is the text (the slot number until it has one). */
   actionText(slot: number): string | undefined {
     const button = this.#button(slot);
-    return button?.type === ACTION_BUTTON_MACRO ? String(button.action) : undefined;
+    return button?.type === ACTION_BUTTON_MACRO ? this.macros.slotName(button.action) ?? String(button.action) : undefined;
   }
 
   /** Resolve the stock 1-based slot to its server action identity without treating the slot as a spell id. */
@@ -3380,7 +5774,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   actionCount(slot: number): number {
-    return this.isStackableAction(slot) ? 1 : 0;
+    const button = this.#button(slot);
+    return button?.type === ACTION_BUTTON_ITEM
+      ? this.#actionItems(button.action).reduce((count, item) => count + stackCount(item), 0) : 0;
   }
 
   /**
@@ -3395,6 +5791,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const button = this.#button(slot);
     const pump = this.#pump;
+    if (button?.type === ACTION_BUTTON_ITEM) return this.#itemCooldown(button.action);
     if (!world || !pump || !button || button.type !== ACTION_BUTTON_SPELL) return [0, 0, 0];
     const monotonic = this.#context.monotonic();
     const snapshot = world.cooldownState(button.action);
@@ -3419,6 +5816,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   actionUsable(slot: number): readonly [boolean, boolean] {
     const button = this.#button(slot);
     if (!button) return [false, false];
+    if (button.type === ACTION_BUTTON_ITEM) {
+      return [this.#actionItems(button.action).length > 0 && this.#itemCooldown(button.action)[2] === 0, false];
+    }
     if (button.type !== ACTION_BUTTON_SPELL) return [true, false];
     const metadata = this.#metadata(slot);
     if (!metadata) return [true, false];
@@ -3438,14 +5838,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#button(slot)?.type === ACTION_BUTTON_ITEM;
   }
 
-  isEquippedAction(): boolean {
-    return false;
+  isEquippedAction(slot: number): boolean {
+    const button = this.#button(slot);
+    return button?.type === ACTION_BUTTON_ITEM && this.#actionItems(button.action)
+      .some((item) => item.bag === INVENTORY_SLOT_BAG_0 && item.slot < INVENTORY_SLOT_BAG_START);
   }
 
   isCurrentAction(slot: number): boolean {
     const button = this.#button(slot);
     const world = this.#context.world();
     if (!button || !world || button.type !== ACTION_BUTTON_SPELL) return false;
+    // A profession's opener while its stock trade skill window shows (FrameXmlTradeSkill.ts).
+    if (this.tradeSkill.openerShowing(this.#context.spell(button.action))) return true;
     return world.isActiveMountSpell(button.action);
   }
 
@@ -3462,19 +5866,87 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return undefined;
   }
 
-  /**
-   * Which page the FrameXML bar is on.
-   *
-   * 1 rather than the DOM bar's current page, deliberately: the DOM bar's `page` is a module-level
-   * `let` inside `ui/ActionBar.ts` with no accessor, and reaching into it would make two interfaces
-   * share one piece of hidden state. The FrameXML bar has `ActionBar_PageUp`/`PageDown` of its own
-   * and `ChangeActionBarPage` is the seam it would write through — F4's, not this slice's.
-   */
+  /** Stock arrows and keyboard input share the same main-bar page when the host supplies it. */
   actionBarPage(): number {
-    return 1;
+    const page = this.#context.actionBarPage?.() ?? this.#actionPage;
+    return Number.isInteger(page) && page >= 1 && page <= 6 ? page : 1;
+  }
+
+  changeActionBarPage(page: number): void {
+    if (!Number.isInteger(page) || page < 1 || page > 6 || page === this.actionBarPage()) return;
+    if (this.#context.changeActionBarPage) {
+      this.#context.changeActionBarPage(page);
+      this.#reconcileActionPage();
+    } else {
+      this.#actionPage = page;
+      this.#pump?.fire(FRAMEXML_SEAM_EVENTS.actionPageChanged);
+    }
+  }
+
+  #reconcileActionPage(): void {
+    const page = this.actionBarPage();
+    if (page === this.#actionPage) return;
+    this.#actionPage = page;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.actionPageChanged);
+  }
+
+  /** The active core sends FATIGUE/BREATH; FIRE is a server-only environmental damage timer. */
+  mirrorTimerInfo(index: number): FrameXmlMirrorTimerInfo {
+    const type = index === 1 ? MIRROR_TIMER_FATIGUE : index === 2 ? MIRROR_TIMER_BREATH : undefined;
+    if (type === undefined) return ["UNKNOWN"];
+    const held = this.#context.world()?.mirrorTimers?.get(type);
+    if (!held) return ["UNKNOWN"];
+    const timer = type === MIRROR_TIMER_BREATH ? "BREATH" : "EXHAUSTION";
+    return [timer, mirrorTimerRemaining(held.timer, held.receivedAt, this.#context.monotonic()),
+      held.timer.maxValue, held.timer.scale, held.timer.paused ? 1 : 0, MIRROR_TIMER_NAMES[type]!];
+  }
+
+  mirrorTimerProgress(timer: string): number {
+    const index = timer === "EXHAUSTION" ? 1 : timer === "BREATH" ? 2 : 0;
+    const info = this.mirrorTimerInfo(index);
+    return info[0] === "UNKNOWN" ? 0 : info[1];
+  }
+
+  #reconcileMirrorTimers(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    for (const [type, index, token] of [
+      [MIRROR_TIMER_FATIGUE, 1, "EXHAUSTION"], [MIRROR_TIMER_BREATH, 2, "BREATH"],
+    ] as const) {
+      const held = this.#context.world()?.mirrorTimers?.get(type);
+      const previous = this.#mirrorTimerSignatures.get(type);
+      if (!held) {
+        if (previous !== undefined) {
+          this.#mirrorTimerSignatures.delete(type);
+          pump.fire(FRAMEXML_SEAM_EVENTS.mirrorTimerStop, token);
+        }
+        continue;
+      }
+      const timer = held.timer;
+      const signature = `${held.receivedAt}:${timer.value}:${timer.maxValue}:${timer.scale}:${timer.paused}`;
+      if (signature === previous) continue;
+      this.#mirrorTimerSignatures.set(type, signature);
+      // A repeated START updates the stock dialog's value and paused bit atomically, using the
+      // authoritative snapshot. It also avoids the legacy PAUSE handler's mixed token/number arg.
+      pump.fire(FRAMEXML_SEAM_EVENTS.mirrorTimerStart, ...this.mirrorTimerInfo(index));
+    }
   }
 
   bonusBarOffset(): number {
+    const world = this.#context.world();
+    const form = this.#self();
+    if (!world || !form) return 0;
+    const formId = unitField.shapeshiftForm(form);
+    if (!formId) return 0;
+    for (const known of world.knownSpells ?? []) {
+      const metadata = this.#context.spell(known.id);
+      if (!metadata) continue;
+      const effect = metadata.effectAura.findIndex((aura) => aura === 36);
+      if (effect >= 0 && metadata.effectMiscValue[effect] === formId
+        && metadata.bonusActionBarOffset !== undefined) {
+        return metadata.bonusActionBarOffset;
+      }
+    }
     return 0;
   }
 
@@ -3484,7 +5956,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    */
   sendChatMessage(text: string, type: string, language: number | undefined, target: FrameXmlChatTarget): void {
     const code = frameXmlChatTypeCode(type);
-    if (code === undefined || !frameXmlChatTextIsValid(text)) return;
+    if (code === undefined || !frameXmlChatTextIsValid(text, code)) return;
     const resolvedTarget = typeof target === "number"
       ? code === CHAT_MSG_CHANNEL ? this.#channelTarget(target) : undefined
       : target;
@@ -3492,18 +5964,28 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#context.sendChatMessage?.(text, code, language, resolvedTarget);
   }
 
+  playSound(name: string): void {
+    this.#context.playSound?.(name);
+  }
+
   chatWindowMessages(windowId: number): readonly string[] {
     return windowId === 1 ? FRAMEXML_CHAT_WINDOW_GROUPS : [];
   }
 
+  /**
+   * Window 1's channels by short name, each with its zone channel id — the ChatChannels id a join
+   * gave a built-in channel, 0 for a custom one. Stock keeps that id in `zoneChannelList` and
+   * matches a notice's `arg7` against it (ChatFrame.lua:2710), which is how it follows General
+   * from zone to zone.
+   */
   chatWindowChannels(windowId: number): FrameXmlChatWindowChannels {
     if (windowId !== 1) return [];
     const channels = this.#context.world()?.channels;
     if (!(channels instanceof Map)) return [];
     const result: (string | number)[] = [];
-    for (const name of channels.keys()) {
+    for (const [name, held] of channels) {
       if (typeof name !== "string") continue;
-      result.push(shortChannelName(name), 0);
+      result.push(shortChannelName(name), held?.channelId ?? 0);
     }
     return result;
   }
@@ -3523,14 +6005,59 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   chatWindowInfo(windowId: number): FrameXmlChatWindowInfo | undefined {
     if (!Number.isInteger(windowId) || windowId < 1 || windowId > 10) return undefined;
-    if (windowId === 1) return ["Общий", 14, 1, 1, 1, 0, true, true, true, false];
-    return ["", 0, 1, 1, 1, 0, false, true, false, false];
+    const base: FrameXmlChatWindowInfo = windowId === 1 ? frameXmlGeneralWindowInfo(this.#chatWindowShown.get(1) ?? true)
+      : windowId === 2 ? frameXmlCombatLogWindowInfo(this.locale)
+        : ["", 0, 1, 1, 1, 0, false, true, false, false];
+    // Stock's own LOCKED/DOCKED/UNINTERACTABLE writes ride over the seam's answer (FrameXmlChatWindowFlags.ts).
+    return this.chatWindows.apply(windowId, base, this.#chatWindowShown.get(windowId));
+  }
+
+  setChatWindowShown(windowId: number, shown: boolean): void {
+    if (Number.isInteger(windowId) && windowId >= 1 && windowId <= 10) this.#chatWindowShown.set(windowId, shown);
   }
 
   useAction(slot: number): void {
+    // A press with a macro on the cursor puts it on the button, as in the client.
+    if (this.macros.placeCursor(slot)) return;
     const button = this.#button(slot);
-    if (!button || button.type !== ACTION_BUTTON_SPELL) return;
-    this.#context.castSpell(button.action);
+    if (!button) return;
+    if (this.#context.useAction) {
+      this.#context.useAction(slot);
+      return;
+    }
+    if (button.type === ACTION_BUTTON_SPELL) {
+      this.#context.castSpell(button.action);
+      return;
+    }
+    if (button.type !== ACTION_BUTTON_ITEM || !this.actionUsable(slot)[0]) return;
+    const world = this.#context.world();
+    const held = this.#actionItems(button.action)[0];
+    if (world && held) requestInventoryItemUse(held, () => world.useItem(held.bag, held.slot, held.guid));
+  }
+
+  /** The slot's server word, split as `Player.h` `ActionButton::GetAction`/`GetType` split it. */
+  actionButton(slot: number): FrameXmlActionButton | undefined {
+    const button = this.#button(slot);
+    return button ? { action: button.action, type: button.type } : undefined;
+  }
+
+  /** The native bar's own write (ui/ActionBar.ts `dropSlot`): CMSG_SET_ACTION_BUTTON plus the local copy. */
+  setActionButton(slot: number, action: number, type: number): boolean {
+    const world = this.#context.world();
+    if (!world || !Number.isInteger(slot) || slot < 1 || slot > 144) return false;
+    if (!Number.isSafeInteger(action) || action < 0 || action > 0x00ff_ffff) return false;
+    world.setActionButton(slot - 1, action, type);
+    return true;
+  }
+
+  spellBookSpellId(index: number, bookType: string | undefined): number | undefined {
+    // The pet book is not modelled (`hasPetSpells` answers false).
+    if (bookType !== undefined && bookType !== "spell") return undefined;
+    return this.#spellEntry(index)?.id;
+  }
+
+  itemTexture(entry: number): string | undefined {
+    return this.#context.itemInfo?.(entry)?.texture || this.#itemTexture(entry);
   }
 
   // ---- the player --------------------------------------------------------
@@ -3551,29 +6078,68 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#targetNameFor(object) ?? world.names.get(guid);
   }
 
+  /** Stock QuestFrame addresses the active giver as `questnpc`, independently of target selection. */
+  #questNpc(): { world: WorldClient; guid: bigint; object: WorldObjectState } | undefined {
+    const world = this.#context.world();
+    const guid = world?.questDialog?.guid ?? world?.questList?.guid;
+    if (!world || guid === undefined || guid === 0n) return undefined;
+    const object = world.state.objects.get(guid);
+    // With no object we cannot tell a streamed-out creature from a gameobject giver. Fail closed.
+    if (!object || (object.typeId !== TYPEID_UNIT && object.typeId !== TYPEID_PLAYER)) return undefined;
+    return { world, guid, object };
+  }
+
+  questNpcPortraitGuid(): bigint | undefined {
+    const giver = this.#questNpc();
+    // SetPortraitTexture displays the unit's current model. The server update field, not the
+    // creature-template entry or the selected target, identifies that model. A missing/zero
+    // display cannot produce a real portrait, so the host keeps QuestFrame's book fallback.
+    return giver && (unitField.displayId(giver.object) ?? 0) > 0 ? giver.guid : undefined;
+  }
+
   unitExists(unit: string): boolean {
+    if (unit.toLowerCase() === "questnpc") return this.#questNpc() !== undefined;
     if (unit.toLowerCase() === "npc") return this.#context.world()?.vendor !== undefined
-      || this.#context.world()?.trainer !== undefined;
+      || this.#context.world()?.trainer !== undefined
+      // The open trade's partner is "NPC" to TradeFrame_Update (UnitName("NPC"), TradeFrame.lua:57).
+      || this.trade.partnerName() !== undefined
+      // The creature a conversation, flight map or bank is open with, as UnitName("npc") names it.
+      || liveFrameXmlInteractionUnit(this.#context.world());
     return this.#unit(unit) !== undefined || this.#partyMember(unit) !== undefined;
   }
 
   unitName(unit: string): string | undefined {
+    if (unit.toLowerCase() === "questnpc") {
+      const giver = this.#questNpc();
+      if (!giver) return undefined;
+      return this.#targetNameFor(giver.object) ?? giver.world.names.get(giver.guid);
+    }
     if (unit.toLowerCase() === "npc") {
       const world = this.#context.world();
+      const partner = this.trade.partnerName();
+      if (partner !== undefined) return partner;
       if (world?.vendor) return this.#merchantName();
       const trainer = world?.trainer;
-      if (!trainer) return undefined;
+      if (!trainer) {
+        // GossipFrame/TaxiFrame/BankFrame title the conversation, flight master or banker (NPC lane).
+        const npc = liveFrameXmlInteractionNpc(world);
+        if (npc === undefined || !world) return undefined;
+        const talker = world.state.objects.get(npc);
+        return (talker ? this.#targetNameFor(talker) : undefined) ?? world.names.get(npc)
+          ?? liveFrameXmlGameObjectName(world, talker);
+      }
       const object = world.state.objects.get(trainer.guid);
       return (object ? this.#targetNameFor(object) : undefined) ?? world.names.get(trainer.guid);
     }
-    return this.#partyMember(unit)?.name ?? this.#targetNameFor(this.#unit(unit));
+    return this.#partyMember(unit)?.name ?? this.#targetNameFor(this.#unit(unit)) ?? this.arena.name(unit);
   }
 
   unitPvpName(unit: string): string | undefined {
-    // The world protocol supplies the character's display name, but not the optional title/PvP
-    // name record.  UnitPVPName therefore has the same truthful answer as UnitName until that
-    // cache exists; returning nil here makes CharacterFrame print a literal "nil".
-    return this.unitName(unit);
+    // The worn title around the name («Рядовой Игрок»), from any player object's public
+    // PLAYER_CHOSEN_TITLE and sex byte; the bare name until the CharTitles catalog lands, and for
+    // anything that is not a player. Nil only without a name: CharacterFrame would print "nil".
+    const name = this.unitName(unit);
+    return name === undefined ? undefined : this.titles.displayName(name, liveFrameXmlTitleWearer(this.#unit(unit)));
   }
 
   unitLevel(unit: string): number | undefined {
@@ -3581,20 +6147,38 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return (object ? unitField.level(object) : undefined) ?? this.#partyStats(unit)?.level;
   }
 
-  /** `UnitClass` answers the merged localised class name and the stock uppercase file token. */
+  /**
+   * `UnitClass` answers the merged localised class name and the dataset's `ChrClasses.Filename`.
+   *
+   * The token is the dataset's, not a compiled ten: a TSWoW class (HERO is id 13, ARCHAEOLOGIST
+   * id 12 on this dataset) answered nil before, and stock PaperDollFrame_SetStat's unguarded
+   * `strupper` (PaperDollFrame.lua:268-269) aborted the stat pane after «Сила» and printed
+   * «Человек, nil 80-го уровня». The dataset's own FrameXML carries rows for both tokens
+   * (Constants.lua:54-97 RAID_CLASS_COLORS, CLASS_SORT_ORDER, CLASS_ICON_TCOORDS; WorldStateFrame.lua
+   * CLASS_BUTTONS), so the real client with this dataset answers exactly these strings.
+   * `ensureFrameXmlCreationNames` learns the list before the world boot; until it is learned a
+   * custom class stays nil rather than receiving an invented token.
+   */
   unitClass(unit: string): readonly [string, string] | undefined {
     const object = this.#unit(unit);
+    // An arena opponent out of sight keeps the class the client saw (Blizzard_ArenaUI.lua:133-136).
+    const arenaClass = object ? undefined : this.arena.classId(unit);
+    if (arenaClass !== undefined) {
+      const arenaToken = classFileName(arenaClass);
+      return arenaToken === undefined ? undefined : [className(arenaClass), arenaToken];
+    }
     if (object?.typeId !== TYPEID_PLAYER) return undefined;
     const classId = object ? unitField.classId(object) : undefined;
-    const token = classId === undefined ? undefined : CLASS_TOKENS[classId];
+    const token = classFileName(classId);
     return token === undefined ? undefined : [className(classId), token];
   }
 
+  /** `UnitRace` with the dataset's `ChrRaces.ClientFileString`, custom rows included. */
   unitRace(unit: string): readonly [string, string] | undefined {
     const object = this.#unit(unit);
     if (object?.typeId !== TYPEID_PLAYER) return undefined;
     const raceId = unitField.race(object);
-    const token = raceId === undefined ? undefined : RACE_TOKENS[raceId];
+    const token = raceFileName(raceId);
     return token === undefined ? undefined : [raceName(raceId), token];
   }
 
@@ -3789,6 +6373,41 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#currentMoney() ?? 0;
   }
 
+  comboPoints(source: string, target: string): number {
+    const world = this.#context.world();
+    if (source !== "player" || this.#selfGuid() === undefined || !world) return 0;
+    const targetGuid = this.#unitGuid(target);
+    const combo = world.comboPoints;
+    return targetGuid !== undefined && combo?.guid === targetGuid
+      ? Math.max(0, Math.min(5, Math.trunc(combo.points))) : 0;
+  }
+
+  bankSlots(): readonly [number, boolean] | undefined {
+    const world = this.#context.world();
+    if (!world || typeof world.state.objects?.get !== "function") return undefined;
+    // The one byte `playerInventory(...).bankBagSlotsBought` reads, without building the three
+    // hundred slots around it: `#reconcileBankSlots` asks on every store flush.
+    const guid = world.state.selfGuid;
+    const player = guid === undefined ? undefined : world.state.objects.get(guid);
+    const bought = player ? readByte(player, "PLAYER_BYTES_2", 2) ?? 0 : undefined;
+    return bought !== undefined && Number.isInteger(bought) && bought >= 0 && bought <= BANK_BAG_SLOTS
+      ? [bought, bought === BANK_BAG_SLOTS] : undefined;
+  }
+
+  bankSlotCost(bought: number): number | undefined {
+    if (!Number.isInteger(bought) || bought < 0 || bought >= BANK_BAG_SLOTS) return undefined;
+    const price = this.#context.bankSlotPrice?.(bought);
+    return price !== undefined && Number.isSafeInteger(price) && price >= 0 ? price : undefined;
+  }
+
+  buyBankSlot(): void {
+    const world = this.#context.world();
+    const slots = this.bankSlots();
+    if (world?.bankerGuid !== undefined && slots && !slots[1]) world.buyBankSlot();
+  }
+
+  closeBankFrame(): void { this.#context.world()?.closeBank(); }
+
   partyMemberCount(): number {
     const group = this.#context.world()?.group;
     return group && (group.groupType & GROUPTYPE_RAID) === 0
@@ -3796,11 +6415,26 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       : 0;
   }
 
+  /**
+   * `GetNumRaidMembers` counts the player, as the client does: stock walks `raid1..N` and
+   * `GetRaidRosterInfo(1..N)` expecting to meet the player there (PlayerFrame.lua:473-491, the
+   * «Группа N» indicator). SMSG_GROUP_LIST never lists its receiver (Group::SendUpdateToPlayer), so
+   * the player is the one after the listed members — FrameXmlRaid's row order and `raid<N>` here.
+   */
   raidMemberCount(): number {
-    const group = this.#context.world()?.group;
-    return group && (group.groupType & GROUPTYPE_RAID) !== 0
-      ? group.members.length
-      : 0;
+    const world = this.#context.world();
+    const group = world?.group;
+    if (!group || (group.groupType & GROUPTYPE_RAID) === 0) return 0;
+    return group.members.length + (this.#raidSelfIndex(world) === undefined ? 0 : 1);
+  }
+
+  /** The player's `raid<i>` index when the list left the player out (never listed on the wire). */
+  #raidSelfIndex(world: WorldClient | undefined): number | undefined {
+    const self = world?.state.selfGuid;
+    const members = world?.group?.members;
+    if (self === undefined || self === 0n || !members) return undefined;
+    for (const member of members) if (member.guid === self) return undefined;
+    return members.length + 1;
   }
 
   isPartyLeader(): boolean {
@@ -3813,6 +6447,49 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       && group.leaderGuid === selfGuid;
   }
 
+  lootMethod(): FrameXmlLootMethod | undefined {
+    const world = this.#context.world();
+    return frameXmlLootMethod(world?.group, world?.state.selfGuid);
+  }
+
+  lootThreshold(): number {
+    return this.#context.world()?.group?.lootThreshold ?? 0;
+  }
+
+  setLootMethod(method: string, master: string | undefined, threshold: number | undefined): void {
+    const world = this.#context.world();
+    const group = world?.group;
+    const entry = Object.entries(FRAMEXML_LOOT_METHODS).find(([, token]) => token === method);
+    if (!world || !group || !entry || !this.isPartyLeader() || (group.groupType & GROUPTYPE_LFG) !== 0) return;
+    const value = Number(entry[0]);
+    const quality = threshold ?? group.lootThreshold;
+    // HandleLootMethodOpcode accepts uncommon through artifact, and checks the master is a member.
+    if (!Number.isInteger(quality) || quality < 2 || quality > 6) return;
+    let masterGuid = 0n;
+    if (value === LOOT_METHOD_MASTER) {
+      if (!master) return;
+      const name = master.toLocaleLowerCase();
+      const selfGuid = world.state.selfGuid;
+      if (master === "player" || this.unitName("player")?.toLocaleLowerCase() === name) {
+        masterGuid = selfGuid ?? 0n;
+      } else {
+        const member = this.#partyMember(master) ?? group.members.find((candidate) => candidate.name.toLocaleLowerCase() === name);
+        masterGuid = member?.guid ?? 0n;
+      }
+      if (masterGuid === 0n) return;
+    }
+    world.setLootMethod(value, masterGuid, quality);
+  }
+
+  setLootThreshold(threshold: number): void {
+    const world = this.#context.world();
+    const group = world?.group;
+    if (!world || !group || !this.isPartyLeader() || (group.groupType & GROUPTYPE_LFG) !== 0
+      || FRAMEXML_LOOT_METHODS[group.lootMethod] === undefined
+      || !Number.isInteger(threshold) || threshold < 2 || threshold > 6) return;
+    world.setLootMethod(group.lootMethod, group.masterLooterGuid, threshold);
+  }
+
   partyMember(index: number): string | undefined {
     if (!Number.isInteger(index) || index < 1 || index > 4) return undefined;
     const group = this.#context.world()?.group;
@@ -3820,11 +6497,52 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return group.members[index - 1]?.name;
   }
 
-  targetUnit(unit: string): void {
+  /**
+   * `TargetUnit(unit or name[, exactMatch])`. A unit token selects that unit, or nothing when it is
+   * absent. Anything else is a name, as stock `/target Name` (`SecureCmdList.TARGET`,
+   * ChatFrame.lua:1143-1150) and `/targetexact` (`TargetUnit(target, 1)`, :1153-1160) pass it: the
+   * nearest visible player or creature whose displayed name — `UnitName`'s own answer, so an
+   * unnamed row never matches — is that name, case-insensitively. Without `exactMatch` a name that
+   * only begins with the text counts too, after every whole-name match. That the partial match is a
+   * prefix rather than a substring is this client's reading, not a measurement of the original.
+   */
+  targetUnit(unit: string, exactMatch = false): void {
     const world = this.#context.world();
+    if (!world) return;
     const guid = this.#unitGuid(unit);
-    if (!world || guid === undefined || guid === 0n) return;
-    world.selectTarget(guid);
+    if (guid !== undefined && guid !== 0n) {
+      world.selectTarget(guid);
+      return;
+    }
+    if (FRAMEXML_UNIT_TOKEN.test(unit)) return;
+    const found = this.#nearestNamed(unit, exactMatch);
+    if (found !== undefined) world.selectTarget(found);
+  }
+
+  /** The nearest in-range player or creature called `name` (see {@link targetUnit}). */
+  #nearestNamed(name: string, exactMatch: boolean): bigint | undefined {
+    const world = this.#context.world();
+    const wanted = name.trim().toLocaleLowerCase();
+    const objects = world?.state.objects;
+    if (!world || !wanted || typeof objects?.values !== "function") return undefined;
+    const origin = this.#self()?.position;
+    let best: { guid: bigint; whole: boolean; distance: number } | undefined;
+    for (const object of objects.values()) {
+      if (object.typeId !== TYPEID_PLAYER && object.typeId !== TYPEID_UNIT) continue;
+      const shown = this.#targetNameFor(object)?.toLocaleLowerCase();
+      if (!shown) continue;
+      const whole = shown === wanted;
+      if (!whole && (exactMatch || !shown.startsWith(wanted))) continue;
+      const position = object.guid === world.state.selfGuid ? origin : object.position;
+      // A row the world has no position for is not somewhere the player can see.
+      if (!position) continue;
+      const distance = origin
+        ? Math.hypot(position.x - origin.x, position.y - origin.y, position.z - origin.z) : 0;
+      if (!best || (whole && !best.whole) || (whole === best.whole && distance < best.distance)) {
+        best = { guid: object.guid, whole, distance };
+      }
+    }
+    return best?.guid;
   }
 
   unitIsVisible(unit: string): boolean {
@@ -3843,7 +6561,29 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   hasPetUI(): readonly [boolean, boolean] {
     const petSpells = this.#context.world()?.petSpells;
-    return [petSpells !== undefined && petSpells.guid !== 0n, false];
+    const visible = petSpells !== undefined && petSpells.guid !== 0n;
+    // isHunterPet: the pet's UNIT_PET_FLAG_CAN_BE_ABANDONED, set for hunter pets only (FrameXmlStable.ts).
+    return [visible, visible && frameXmlHunterPet(this.#pet())];
+  }
+
+  /** `PetCanBeAbandoned`: the pet's UNIT_CAN_BE_ABANDONED flag — a hunter pet's (FrameXmlStable.ts). */
+  petCanBeAbandoned(): boolean {
+    return frameXmlHunterPet(this.#pet());
+  }
+
+  /** `PetCanBeRenamed`: the pet's UNIT_CAN_BE_RENAMED flag, cleared once a hunter pet has been named. */
+  petCanBeRenamed(): boolean {
+    return frameXmlPetCanBeRenamed(this.#pet());
+  }
+
+  /** `PetAbandon()`: CMSG_PET_ABANDON; the realm takes the bar down with the packet that follows. */
+  petAbandon(): void {
+    this.#context.world()?.abandonPet?.();
+  }
+
+  /** `PetRename(name)`: CMSG_PET_RENAME without declined forms, the stock popup's own call. */
+  petRename(name: string): void {
+    this.#context.world()?.renamePet?.(name);
   }
 
   /** Return the filtered 1-based player aura without exposing the server's raw slot number. */
@@ -4029,14 +6769,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return unit === "player" || unit === "target" || unit === "focus"
       || unit === "targettarget" || unit === "pet"
       ? this.#castInfo(unit, false) as FrameXmlCastingInfo | undefined
-      : undefined;
+      : this.arena.castInfo(unit, false) as FrameXmlCastingInfo | undefined;
   }
 
   unitChannelInfo(unit: string): FrameXmlChannelInfo | undefined {
     return unit === "player" || unit === "target" || unit === "focus"
       || unit === "targettarget" || unit === "pet"
       ? this.#castInfo(unit, true) as FrameXmlChannelInfo | undefined
-      : undefined;
+      : this.arena.castInfo(unit, true) as FrameXmlChannelInfo | undefined;
   }
 
   // ---- character skills -----------------------------------------------
@@ -4087,7 +6827,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         0, 0, 0, 0, false, undefined, undefined, 0, 0, ""];
     }
     return [row.name, false, true, row.skillRank, row.numTempPoints, row.skillModifier,
-      row.skillMaxRank, false, undefined, undefined, 0, 0, ""];
+      row.skillMaxRank, frameXmlSkillAbandonable(row), undefined, undefined, 0, 0, ""];
+  }
+
+  abandonSkill(index: number): void {
+    const row = Number.isInteger(index) && index >= 1 ? this.#visibleSkillRows()[index - 1] : undefined;
+    // The stock button shows on `isAbandonable` alone (SkillFrame.lua:221); the core refuses the rest.
+    if (row?.kind === "skill" && frameXmlSkillAbandonable(row)) this.#context.world()?.unlearnSkill(row.skillId);
   }
 
   adjustedSkillPoints(): number {
@@ -4125,16 +6871,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   buySkillTier(_index: number): void { /* no authoritative training packet */ }
   cancelSkillUps(): void { /* no authoritative training packet */ }
 
-  // ---- player talents ----------------------------------------------------
+  // ---- player and pet talents -------------------------------------------
 
-  talentSnapshot(): FrameXmlTalentSnapshot | undefined {
-    return this.#talentResolvers.talentSnapshot();
+  talentSnapshot(pet = false): FrameXmlTalentSnapshot | undefined {
+    return pet ? this.#talentResolvers.petTalentSnapshot()
+      : this.#talentResolvers.talentSnapshot();
   }
 
   learnTalent(tab: number, index: number, pet: boolean | undefined, group: number | undefined): void {
-    if (pet === true) return;
     const world = this.#context.world();
-    const snapshot = this.#talentResolvers.talentSnapshot();
+    const snapshot = this.talentSnapshot(pet === true);
     if (!world || !snapshot) return;
     const requestedGroup = group === undefined || !Number.isInteger(group)
       ? snapshot.activeTalentGroup : Math.trunc(group);
@@ -4144,7 +6890,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!groupSnapshot?.active || !cell || cell.maxRank <= 0 || cell.rank >= cell.maxRank
       || groupSnapshot.unspentPoints === undefined || groupSnapshot.unspentPoints <= 0
       || cell.meetsPrereq !== true) return;
-    world.learnTalent(cell.id, cell.rank + 1);
+    if (pet === true) {
+      const guid = world.petSpells?.guid;
+      if (guid !== undefined && guid !== 0n) {
+        world.learnPetTalents(guid, [{ talentId: cell.id, rank: cell.rank + 1 }]);
+      }
+    } else world.learnTalent(cell.id, cell.rank + 1);
   }
 
   // ---- player spellbook -------------------------------------------------
@@ -4288,15 +7039,51 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       ? "queued"
       : status.status === STATUS_WAIT_JOIN ? "confirm"
         : status.status === STATUS_IN_PROGRESS ? "active" : "none";
+    // teamSize is the packet's arena type (BattlegroundMgr.cpp:206), 0 for a battleground: stock
+    // reads non-zero as an arena, renames the queue ARENA_CASUAL/ARENA_RATED_MATCH "(N против N)"
+    // (BattlefieldFrame.lua:242-248) and disables the entry dialog's Leave Queue (StaticPopup.lua:492).
+    // That rename hides an arena's own name, which the seven-row catalog lacks; stock still
+    // concatenates it unguarded (BattlefieldFrame.lua:431), so it is the invited map's Map.dbc name,
+    // or "" while the all-arenas queue names no map.
+    const arena = status.isArena;
+    const name = row?.name ?? (arena
+      ? this.#context.mapSource?.metadata()?.maps.find((map) => map.id === status.mapId)?.name ?? ""
+      : undefined);
     return [
       state,
-      row?.name,
+      name,
       status.clientInstanceId,
       status.minLevel,
       status.maxLevel,
-      row?.maxGroupSize ?? 0,
+      arena ? status.arenaType : 0,
       status.rated,
     ];
+  }
+
+  battlefieldQueueTimes(index: number): readonly [number, number] {
+    const status = this.#context.world()?.battlefieldQueues.get(index - 1);
+    if (!status || status.cleared || status.status !== STATUS_WAIT_QUEUE) return [0, 0];
+    // Time2 is refreshed once a minute by the core (BattlegroundMgr.cpp:224); the client counts on.
+    return [status.averageWaitTime, status.timeInQueue + this.#battlefieldStatusAge(status)];
+  }
+
+  battlefieldInstanceTimes(): readonly [number, number] {
+    for (const status of this.#context.world()?.battlefieldQueues.values() ?? []) {
+      if (status.cleared || status.status !== STATUS_IN_PROGRESS) continue;
+      const age = this.#battlefieldStatusAge(status);
+      // Time1 is 0 while the match runs and the auto-leave countdown once it has ended
+      // (BattlegroundMgr.cpp:234); Time2 is the time since the match began.
+      return [status.autoLeaveTime > 0 ? Math.max(0, status.autoLeaveTime - age) : 0, status.elapsedTime + age];
+    }
+    return [0, 0];
+  }
+
+  /** Milliseconds since this status snapshot was first read. */
+  #battlefieldStatusAge(status: object): number {
+    const now = this.#context.monotonic();
+    const seen = this.#battlefieldStatusSeen.get(status);
+    if (seen === undefined) this.#battlefieldStatusSeen.set(status, now);
+    return seen === undefined ? 0 : Math.max(0, now - seen);
   }
 
   requestBattlegroundInstanceInfo(index: number): void {
@@ -4502,6 +7289,36 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#spellTabs().length;
   }
 
+  shapeshiftFormCount(): number { return this.#shapeshiftForms().length; }
+
+  shapeshiftFormInfo(index: number): FrameXmlShapeshiftFormInfo | undefined {
+    if (!Number.isInteger(index) || index < 1) return undefined;
+    const form = this.#shapeshiftForms()[index - 1];
+    if (!form) return undefined;
+    const castable = this.#shapeshiftCooldownRemaining(form.spellId, this.#context.monotonic()) <= 0;
+    return [form.texture, form.name, this.#shapeshiftActive(form), castable];
+  }
+
+  shapeshiftFormCooldown(index: number): FrameXmlSpellCooldown {
+    if (!Number.isInteger(index) || index < 1) return [0, 0, 0];
+    const form = this.#shapeshiftForms()[index - 1];
+    const cooldown = form && this.#context.world()?.cooldownSnapshots?.get(form.spellId);
+    const monotonic = this.#context.monotonic();
+    const remaining = form ? this.#shapeshiftCooldownRemaining(form.spellId, monotonic) : 0;
+    if (remaining <= 0 || !this.#pump) return [0, 0, 0];
+    if (cooldown && cooldown.endsAt - monotonic >= remaining) {
+      return [this.#pump.now() - (monotonic - cooldown.startedAt) / 1000,
+        cooldown.duration / 1000, 1];
+    }
+    return [this.#pump.now(), remaining / 1000, 1];
+  }
+
+  castShapeshiftForm(index: number): void {
+    if (!Number.isInteger(index) || index < 1) return;
+    const form = this.#shapeshiftForms()[index - 1];
+    if (form && this.shapeshiftFormInfo(index)?.[3]) this.#context.castSpell(form.spellId);
+  }
+
   spellTabInfo(index: number): FrameXmlSpellTabInfo | undefined {
     if (!Number.isInteger(index) || index < 1) return undefined;
     return this.#spellTabs()[index - 1];
@@ -4511,6 +7328,55 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const id = this.#spellEntry(index)?.id;
     const metadata = id === undefined ? undefined : this.#context.spell(id);
     return metadata === undefined ? undefined : [metadata.name, metadata.rank];
+  }
+
+  spellInfo(idOrName: number | string): readonly [string, string, string, number, number, number, number] | undefined {
+    let metadata: SpellMetadata | undefined;
+    if (typeof idOrName === "number") {
+      if (!Number.isSafeInteger(idOrName) || idOrName <= 0) return undefined;
+      metadata = this.#context.spell(idOrName);
+    } else if (idOrName.length > 0) {
+      for (const spell of this.#context.spells?.() ?? []) {
+        if (spell.name !== idOrName) continue;
+        // Rank selection is only meaningful among real cached rows with this exact name.
+        if (!metadata || spell.spellLevel > metadata.spellLevel) metadata = spell;
+      }
+    }
+    if (!metadata || !Number.isSafeInteger(metadata.id) || metadata.id <= 0
+      || typeof metadata.name !== "string" || !metadata.name
+      || typeof metadata.rank !== "string" || typeof metadata.iconPath !== "string"
+      || !Number.isFinite(metadata.castTime)
+      || !Number.isFinite(metadata.rangeMin) || !Number.isFinite(metadata.rangeMax)) return undefined;
+    return [metadata.name, metadata.rank, metadata.iconPath, metadata.castTime,
+      metadata.rangeMin, metadata.rangeMax, metadata.id];
+  }
+
+  /**
+   * `GetSpellLink`, from the same cached rows as `GetSpellName`: a book slot when `bookType` is
+   * given, else a spell id, else the name of a spell in the player's book — the highest rank of
+   * it, as the client resolves a name. The pet book is not modelled (`hasPetSpells` answers
+   * false), so a `"pet"` slot has no link. A row that has not arrived is nil, never a link to a
+   * «Spell N» the chat would then carry.
+   */
+  spellLink(indexOrSpell: number | string, bookType?: string): string | undefined {
+    let id: number | undefined;
+    if (bookType !== undefined) {
+      if (bookType !== "spell" || typeof indexOrSpell !== "number") return undefined;
+      id = this.#spellEntry(indexOrSpell)?.id;
+    } else if (typeof indexOrSpell === "number") {
+      id = Number.isSafeInteger(indexOrSpell) && indexOrSpell > 0 ? indexOrSpell : undefined;
+    } else {
+      const wanted = indexOrSpell.trim().toLocaleLowerCase();
+      let best: SpellMetadata | undefined;
+      for (const entry of wanted ? this.#spellEntries() : []) {
+        const spell = this.#context.spell(entry.id);
+        if (spell?.name.toLocaleLowerCase() !== wanted) continue;
+        if (!best || spell.spellLevel > best.spellLevel) best = spell;
+      }
+      id = best?.id;
+    }
+    const metadata = id === undefined ? undefined : this.#context.spell(id);
+    return metadata && metadata.name ? spellChatLink(metadata.id, metadata.name) : undefined;
   }
 
   spellTexture(index: number, _bookType: string | undefined): string | undefined {
@@ -4524,7 +7390,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     const monotonic = this.#context.monotonic();
     const snapshot = id === undefined ? undefined : world?.cooldownSnapshots?.get(id);
-    if (!snapshot || snapshot.endsAt <= monotonic || !pump) return [0, 0, 0];
+    // A known spell that is ready answers `0, 0, 1`: `enable` is 0 only for a cooldown held back
+    // (Stealth's), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467) dims the icon to 0.4
+    // for anything else — measured on the fixture, every ready spell in the stock book was dimmed.
+    if (!snapshot || snapshot.endsAt <= monotonic || !pump) return id === undefined ? [0, 0, 0] : [0, 0, 1];
     const start = pump.now() - (monotonic - snapshot.startedAt) / 1000;
     return [start, snapshot.duration / 1000, 1];
   }
@@ -4538,11 +7407,29 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return id === undefined ? undefined : this.#context.spell(id)?.passive;
   }
 
+  /**
+   * `SpellBook_GetSpellID` (SpellBookFrame.lua:591-601) counts in the rank-folded book while
+   * `ShowAllSpellRanks` is off and asks for the real slot here: the `index`-th row that is not a
+   * lower rank. Without a rank classifier every row is its own highest rank.
+   */
   knownSlotFromHighestRankSlot(index: number, _bookType: string | undefined): number | undefined {
-    return this.#spellEntry(index) === undefined ? undefined : index;
+    const lower = this.#context.spellIsLowerRank;
+    if (!lower) return this.#spellEntry(index) === undefined ? undefined : index;
+    if (!Number.isInteger(index) || index < 1) return undefined;
+    let seen = 0;
+    const entries = this.#spellEntries();
+    for (let slot = 0; slot < entries.length; slot += 1) {
+      if (lower(entries[slot]!.id)) continue;
+      seen += 1;
+      if (seen === index) return slot + 1;
+    }
+    return undefined;
   }
 
   spellIsSelected(index: number, _bookType: string | undefined): boolean {
+    // A profession's opener is the selected spell while its stock trade skill window shows.
+    const opener = this.#spellEntry(index)?.id;
+    if (opener !== undefined && this.tradeSkill.openerShowing(this.#context.spell(opener))) return true;
     return this.#spellEntry(index) !== undefined && false;
   }
 
@@ -4556,9 +7443,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   updateSpells(): void {
-    // The world owns the list and publishes its own packet/event edges. The call is retained as a
-    // truthful no-op because stock SpellBookFrame invokes it during OnLoad/PLAYER_ENTERING_WORLD.
+    // The world owns the list and publishes its own packet/event edges; this call is the client's
+    // `UpdateSpells()`, and what it does in the client is raise SPELLS_CHANGED. The stock book
+    // repaints itself on nothing else: SpellBookSkillLineTab_OnClick, the two page arrows and
+    // ShowAllSpellRanksCheckBox all end in UpdateSpells() and rely on SpellButton_OnEvent to
+    // redraw the twelve buttons (SpellBookFrame.lua). Kept as a bare cache invalidation, a tab
+    // click moved `selectedSkillLine` and not one button on the page.
     this.#invalidateSpellEntries();
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.spellsChanged);
   }
 
   getCVar(name: string): string | undefined {
@@ -4590,9 +7482,165 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return undefined;
   }
 
-  /** Resting is a client-side flag this client does not model; 1 is «Normal», as F3's canned seam. */
+  /**
+   * `GetRestState` follows the rested bonus (`frameXmlRestState`): MainMenuBar.lua:350-358 paints
+   * the bar blue for 1 and purple for 2, so the old constant 1 kept a rested-blue bar for a
+   * character with no bonus at all.
+   */
   restState(): readonly [number, string, number] {
-    return [1, "Normal", 1];
+    return frameXmlRestState(this.#restedExperience());
+  }
+
+  // ---- player status (FrameXmlPlayerStatus.ts) ---------------------------------------------
+
+  #playerFlags(): number | undefined {
+    const self = this.#self();
+    return self === undefined ? undefined : playerFields.flags(self);
+  }
+
+  #restedExperience(): number | undefined {
+    const self = this.#self();
+    return self === undefined ? undefined : playerFields.restedExperience(self);
+  }
+
+  isResting(): boolean {
+    return frameXmlPlayerFlagResting(this.#playerFlags());
+  }
+
+  xpExhaustion(): number | undefined {
+    return frameXmlXpExhaustion(this.#restedExperience());
+  }
+
+  unitIsAFK(unit: string): boolean {
+    return this.#unitAway(unit, frameXmlPlayerFlagAfk, MEMBER_STATUS_AFK);
+  }
+
+  unitIsDND(unit: string): boolean {
+    return this.#unitAway(unit, frameXmlPlayerFlagDnd, MEMBER_STATUS_DND);
+  }
+
+  /**
+   * A player in view carries `PLAYER_FLAGS` (a public field); a party member out of range only
+   * the status byte of SMSG_PARTY_MEMBER_STATS, whose AFK/DND bits are `GroupMemberOnlineStatus`.
+   * A creature has neither, and is never away.
+   */
+  #unitAway(unit: string, flag: (flags: number | undefined) => boolean, memberStatus: number): boolean {
+    const object = this.#unit(unit);
+    if (object !== undefined) return flag(playerFields.flags(object));
+    return ((this.#partyStats(unit)?.status ?? 0) & memberStatus) !== 0;
+  }
+
+  partyLeaderIndex(): number {
+    const world = this.#context.world();
+    return frameXmlPartyLeaderIndex(world?.group, world?.state.selfGuid);
+  }
+
+  /**
+   * PLAYER_LEVEL_UP with the stock nine arguments (ChatFrame.lua:2562-2600 prints each): the level,
+   * the health and mana gained and the five stat gains from SMSG_LEVELUP_INFO, and the talent points
+   * gained — which the packet does not carry — as the rise of PLAYER_CHARACTER_POINTS1 that
+   * `InitTalentForLevel` writes beside the new level, the realm's own rule for every class.
+   * Fired once the player's level field reads the packet's level.
+   */
+  #publishLevelUp(): void {
+    const pending = this.#pendingLevelUp;
+    const pump = this.#pump;
+    const self = this.#self();
+    if (!pending || !pump || !self || readField(self, "UNIT_FIELD_LEVEL") !== pending.info.level) return;
+    this.#pendingLevelUp = undefined;
+    const { info } = pending;
+    const points = Math.max(0, (readField(self, "PLAYER_CHARACTER_POINTS1") ?? 0) - pending.pointsBefore);
+    const stat = (index: number): number => info.statDelta[index] ?? 0;
+    pump.fire(FRAMEXML_SEAM_EVENTS.levelUp, info.level, info.healthDelta, info.powerDelta[0] ?? 0, points,
+      stat(0), stat(1), stat(2), stat(3), stat(4));
+  }
+
+  // ---- combat and the group's relations (FrameXmlUnitRelations.ts) ------
+
+  /** PLAYER_ENTER_COMBAT / PLAYER_LEAVE_COMBAT: the player's own auto-attack started or stopped. */
+  #reconcileMelee(world: WorldClient, pump: FrameXmlSeamPump): void {
+    const attacking = world.attacking === true;
+    if (attacking === this.#meleeAnnounced) return;
+    this.#meleeAnnounced = attacking;
+    pump.fire(attacking ? "PLAYER_ENTER_COMBAT" : "PLAYER_LEAVE_COMBAT");
+  }
+
+  /** PLAYER_REGEN_DISABLED / PLAYER_REGEN_ENABLED: the player's `UNIT_FLAG_IN_COMBAT` came or went. */
+  #reconcileCombat(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    const inCombat = this.inCombatLockdown();
+    if (inCombat === this.#combatAnnounced) return;
+    this.#combatAnnounced = inCombat;
+    pump.fire(inCombat ? "PLAYER_REGEN_DISABLED" : "PLAYER_REGEN_ENABLED");
+  }
+
+  unitAffectingCombat(unit: string): boolean {
+    const object = this.#unit(unit);
+    return object !== undefined && frameXmlUnitFlagsInCombat(unitField.flags(object));
+  }
+
+  inCombatLockdown(): boolean {
+    const self = this.#self();
+    return self !== undefined && frameXmlUnitFlagsInCombat(unitField.flags(self));
+  }
+
+  /**
+   * A unit token, or — as the calendar and the channel roster pass it — a player's name, to the
+   * guid the group list knows. Names match the list's own and the player's, case aside.
+   */
+  #relationGuid(unitOrName: string): bigint | undefined {
+    if (unitOrName.length === 0) return undefined;
+    const byToken = this.#unitGuid(unitOrName.toLowerCase());
+    if (byToken !== undefined) return byToken;
+    const world = this.#context.world();
+    const wanted = unitOrName.toLowerCase();
+    const member = world?.group?.members.find((candidate) => candidate.name.toLowerCase() === wanted);
+    if (member) return member.guid;
+    return world?.selfName !== undefined && world.selfName.toLowerCase() === wanted ? world.state.selfGuid : undefined;
+  }
+
+  unitInParty(unitOrName: string): boolean {
+    const world = this.#context.world();
+    return frameXmlGroupHas(world?.group, world?.state.selfGuid, this.#relationGuid(unitOrName));
+  }
+
+  unitInRaid(unitOrName: string): number | undefined {
+    const world = this.#context.world();
+    return frameXmlRaidIndex(world?.group, world?.state.selfGuid, this.#relationGuid(unitOrName));
+  }
+
+  unitIsPartyLeader(unitOrName: string): boolean {
+    return frameXmlGroupLeader(this.#context.world()?.group, this.#relationGuid(unitOrName));
+  }
+
+  unitIsRaidOfficer(unitOrName: string): boolean {
+    const world = this.#context.world();
+    return frameXmlRaidOfficer(world?.group, world?.state.selfGuid, this.#relationGuid(unitOrName));
+  }
+
+  unitGroupRoles(unit: string): FrameXmlGroupRoles {
+    const world = this.#context.world();
+    const group = world?.group;
+    if (!group) return frameXmlGroupRoles(undefined);
+    // The list never carries the player; the header does (`ownRoles`).
+    if (unit === "player") return frameXmlGroupRoles(group.ownRoles);
+    const guid = this.#unitGuid(unit);
+    if (guid === undefined) return frameXmlGroupRoles(undefined);
+    if (guid === world.state.selfGuid) return frameXmlGroupRoles(group.ownRoles);
+    return frameXmlGroupRoles(group.members.find((member) => member.guid === guid)?.roles);
+  }
+
+  optOutOfLoot(): boolean {
+    return this.#context.world()?.optOutOfLoot ?? false;
+  }
+
+  setOptOutOfLoot(passOnLoot: boolean): void {
+    this.#context.world()?.setOptOutOfLoot(passOnLoot);
+  }
+
+  raidTargetIndex(unit: string): number | undefined {
+    return frameXmlRaidTargetIndex(this.#context.world()?.raidTargets, this.#unitGuid(unit));
   }
 
   // ---- the base minimap -------------------------------------------------
@@ -4615,13 +7663,274 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!zone) return undefined;
     return [zone.pvpType, zone.isSubZonePvP, zone.factionName];
   }
+
+  // ---- minimap indicators -------------------------------------------------
+
+  /** Tracking spells among the known spells, by the same DBC test the native panel uses. */
+  #trackingSpells(world: WorldClient | undefined): TrackingSpell[] {
+    if (!world || !Array.isArray(world.knownSpells)) return [];
+    return trackingSpellsOf(world.knownSpells.map((known) => known.id), (id) => this.#context.spell(id));
+  }
+
+  trackingCount(): number {
+    return this.#trackingSpells(this.#context.world()).length;
+  }
+
+  trackingInfo(index: number): FrameXmlTrackingInfo | undefined {
+    const spell = this.#trackingSpells(this.#context.world())[index - 1];
+    if (!spell) return undefined;
+    // Every tracker this client models is a spell, which is also what stock keys its icon crop on.
+    return [spell.name, this.#context.spell(spell.spellId)?.iconPath ?? "", isTracking(spell, this.#self()), "spell"];
+  }
+
+  trackingTexture(): string {
+    const player = this.#self();
+    const active = this.#trackingSpells(this.#context.world()).find((spell) => isTracking(spell, player));
+    return (active && this.#context.spell(active.spellId)?.iconPath) || FRAMEXML_TRACKING_NONE_TEXTURE;
+  }
+
+  /**
+   * There is no tracking opcode: turning a tracker on is casting its spell and turning it off is
+   * `CMSG_CANCEL_AURA`, exactly as the native panel does (Tracking.ts). The cast goes through the
+   * host's `castSpell` — Spellbook.castSpell, the shared preflight with the known-spell, cooldown,
+   * `spellCastBlockReason` (GCD, combat) and ground-target checks — so the stock button can bypass
+   * none of them. The fields, not this call, then say what is tracked.
+   */
+  setTracking(index: number | undefined): void {
+    const world = this.#context.world();
+    const spells = this.#trackingSpells(world);
+    const player = this.#self();
+    if (!world) return;
+    if (index === undefined) {
+      for (const spell of spells) if (isTracking(spell, player)) world.cancelAura(spell.spellId);
+      return;
+    }
+    const spell = spells[index - 1];
+    if (!spell) return;
+    if (isTracking(spell, player)) world.cancelAura(spell.spellId);
+    else this.#context.castSpell(spell.spellId);
+  }
+
+  /** `MSG_QUERY_NEXT_MAIL_TIME` answers 0 while unread mail waits and minus one day otherwise. */
+  hasNewMail(): boolean {
+    const next = this.#context.world()?.nextMailTime;
+    return next !== undefined && next.nextMailTime >= 0;
+  }
+
+  latestMailSenders(): readonly string[] {
+    const world = this.#context.world();
+    if (!world || !this.hasNewMail()) return [];
+    const names: string[] = [];
+    for (const sender of world.nextMailTime?.senders ?? []) {
+      // Player mail names a GUID (queried when the packet landed); creature mail names its entry.
+      const name = sender.senderGuid !== 0n
+        ? world.names.get(sender.senderGuid)
+        : sender.altSenderType === MAIL_SENDER_CREATURE
+          ? world.creatureTemplates.get(sender.altSenderId)?.name
+          : undefined;
+      if (name) names.push(name);
+    }
+    return names.slice(0, 3);
+  }
+
+  lfgMode(): FrameXmlLfgMode | undefined {
+    const world = this.#context.world();
+    if (!world) return undefined;
+    return frameXmlLfgMode({
+      lfgStatus: world.lfgStatus,
+      lfgProposal: world.lfgProposal,
+      lfgRoleCheck: world.lfgRoleCheck,
+      groupType: world.group?.groupType,
+      inGroup: world.group !== undefined,
+      isGroupLeader: this.isPartyLeader(),
+    });
+  }
+
+  /**
+   * `GetInstanceInfo` from `Map.InstanceType` and the client's selected difficulties.
+   *
+   * `MapDifficulty.MaxPlayers` has no gateway route; a host may pass `instanceMaxPlayers`. Without
+   * it the answer comes from this dataset's MapDifficulty.dbc, carried as data (`RAID_MAX_PLAYERS`,
+   * `DUNGEON_MAX_PLAYERS`). A raid difficulty the map has no row for is downscaled the way the
+   * server builds the instance, so a 25-player selection in Karazhan reads 10 and difficulty 1.
+   * Inside a raid the server already reports the map's own difficulty when it differs from the
+   * selection (Player.cpp:23348-23358). A raid map missing from the table, i.e. a TSWoW custom
+   * raid, falls back to the uniform sizes of difficulties 1-3; its difficulty 0 stays unknown and
+   * the answer is nil, so the stock flag hides rather than print an invented size.
+   * `difficultyName` stays "": stock GetDungeonNameWithDifficulty (UIParent.lua:3374) then shows
+   * the bare instance name.
+   */
+  instanceInfo(): FrameXmlInstanceInfo | undefined {
+    const world = this.#context.world();
+    const mapId = world?.mapId;
+    if (!world || mapId === undefined) return undefined;
+    const map = this.#context.mapSource?.metadata()?.maps.find((row) => row.id === mapId);
+    if (!map) return undefined;
+    const type = INSTANCE_TYPES[map.instanceType] ?? "none";
+    const raid = type === "raid";
+    let difficulty = (raid ? world.raidDifficulty : world.dungeonDifficulty) ?? 0;
+    const known = this.#context.instanceMaxPlayers?.(mapId, difficulty);
+    let maxPlayers: number | undefined;
+    if (known !== undefined) maxPlayers = known;
+    else if (type === "party") maxPlayers = DUNGEON_MAX_PLAYERS[mapId] ?? 5;
+    else if (!raid) maxPlayers = 0;
+    else {
+      const sizes = RAID_MAX_PLAYERS[mapId];
+      if (sizes) {
+        const scaled = downscaledRaidDifficulty((index) => sizes[index] !== undefined, difficulty);
+        if (scaled !== undefined) difficulty = scaled;
+        maxPlayers = scaled === undefined ? undefined : sizes[scaled];
+      } else {
+        maxPlayers = RAID_MAX_PLAYERS_BY_DIFFICULTY[difficulty];
+      }
+    }
+    if (maxPlayers === undefined) return undefined;
+    return [map.name, type, difficulty + 1, "", maxPlayers, 0, false];
+  }
+
+  /**
+   * One edge per indicator whose shape moved since the previous 60 ms poll. Every «nothing to
+   * show» shape is `""`, the value attach starts from, so an empty world stays silent while a
+   * tracker, letter, queue or instance that predates the mount is published on the first poll.
+   */
+  #reconcileMinimapIndicators(world: WorldClient, pump: FrameXmlSeamPump): void {
+    // The active tracker lives in three player words; which spells are known is read afresh
+    // whenever the stock dropdown opens, so learning one is not a tracking edge.
+    const tracking = trackingFieldsSignature(this.#self());
+    if (tracking !== this.#trackingSignature) {
+      this.#trackingSignature = tracking;
+      pump.fire(FRAMEXML_SEAM_EVENTS.tracking);
+    }
+    this.#queryPendingMail(world);
+    const mail = this.hasNewMail() ? `1|${this.latestMailSenders().join("\u0001")}` : "";
+    if (mail !== this.#mailSignature) {
+      this.#mailSignature = mail;
+      pump.fire(FRAMEXML_SEAM_EVENTS.pendingMail);
+    }
+    const lfg = this.lfgMode()?.join("\u0001") ?? "";
+    if (lfg !== this.#lfgSignature) {
+      this.#lfgSignature = lfg;
+      pump.fire(FRAMEXML_SEAM_EVENTS.lfgUpdate);
+    }
+    const info = this.instanceInfo();
+    const instance = info === undefined || info[1] === "none" ? "" : info.join("\u0001");
+    if (instance !== this.#instanceSignature) {
+      this.#instanceSignature = instance;
+      pump.fire(FRAMEXML_SEAM_EVENTS.instanceInfo);
+    }
+  }
+
+  /**
+   * Ask the server what `HasNewMail` answers. `world.nextMailTime` is only ever a reply:
+   * TrinityCore sends MSG_QUERY_NEXT_MAIL_TIME only as the reply to one (HandleQueryNextMailTime,
+   * MailHandler.cpp:622) and announces a new letter with SMSG_RECEIVED_MAIL alone
+   * (Player::SendNewMail, Player.cpp:3084), which WorldClient turns into a fresh `mailMessage`.
+   * Nothing else in this client sends the query, so without this the stock MiniMapMailFrame could
+   * never show. It is asked in three cases: once per world, after the player object exists (the
+   * handler is STATUS_LOGGEDIN, Opcodes.cpp:775); on every new `mailMessage` (the received-mail
+   * notice, or a mailbox result); and when the mailbox closes, because the server recounts unread
+   * mail on CMSG_GET_MAIL_LIST and on each read (MailHandler.cpp:322, :562). Each is one small
+   * packet on a player action or a server notice, never a per-poll stream.
+   */
+  #queryPendingMail(world: WorldClient): void {
+    if (!this.#self()) return;
+    const notice = world.mailMessage;
+    const mailboxOpen = Boolean(world.mailboxGuid);
+    const ask = world !== this.#mailQueryWorld
+      || (notice !== this.#mailNotice && notice !== undefined)
+      || (this.#mailboxOpen && !mailboxOpen);
+    this.#mailQueryWorld = world;
+    this.#mailNotice = notice;
+    this.#mailboxOpen = mailboxOpen;
+    if (ask) world.requestNextMailTime?.();
+  }
+
+  // ---- chat languages ------------------------------------------------------
+
+  /** The player's `ChrRaces.BaseLanguage`, learned from the dataset for custom races too. */
+  #defaultLanguageId(): number | undefined {
+    const player = this.#self();
+    const raceId = player ? unitField.race(player) : undefined;
+    if (raceId === undefined) return undefined;
+    return raceBaseLanguage(raceId) ?? languageForRace(raceId);
+  }
+
+  /**
+   * `GetDefaultLanguage`: stock ChatFrame compares every line's `arg3` with it and hides the
+   * bracket for the player's own language (ChatFrame.lua:2901) — a Human no longer sees
+   * «[всеобщий]» on every SAY line.
+   */
+  defaultLanguage(): string | undefined {
+    const id = this.#defaultLanguageId();
+    const name = id === undefined ? "" : frameXmlLanguageName(id, this.locale);
+    return name || undefined;
+  }
+
+  /** The languages whose skill line is in the player's skill fields, in `Languages.dbc` order. */
+  languages(): readonly string[] {
+    const player = this.#self();
+    const known = new Set(player ? readSkills(player).map((skill) => skill.skillId) : []);
+    const names: string[] = [];
+    for (const [language, skill] of Object.entries(FRAMEXML_LANGUAGE_SKILLS)) {
+      if (!known.has(skill)) continue;
+      const name = frameXmlLanguageName(Number(language), this.locale);
+      if (name) names.push(name);
+    }
+    const fallback = this.defaultLanguage();
+    // Skill fields can trail the player object; the racial language is known from the race alone.
+    return names.length > 0 || fallback === undefined ? names : [fallback];
+  }
 }
 
-/** `Classes`, from the core's own enum; index is `UNIT_FIELD_BYTES_0`'s class byte. */
-const CLASS_TOKENS: readonly (string | undefined)[] = Object.freeze([
-  undefined, "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "DEATHKNIGHT",
-  "SHAMAN", "MAGE", "WARLOCK", undefined, "DRUID",
-]);
+/** `MailMessageType` MAIL_CREATURE: `altSenderId` is a creature entry. */
+const MAIL_SENDER_CREATURE = 3;
+
+/** `Map.InstanceType` to the strings stock `GetInstanceInfo` callers compare against. */
+const INSTANCE_TYPES: Readonly<Record<number, string>> = Object.freeze({
+  0: "none", 1: "party", 2: "raid", 3: "pvp", 4: "arena",
+});
+
+/**
+ * Raid difficulty 1..3 sizes, uniform across this dataset (all 15 rows: 25/10/25); difficulty 0 is
+ * raid-specific. Used only for a raid map missing from `RAID_MAX_PLAYERS`.
+ */
+const RAID_MAX_PLAYERS_BY_DIFFICULTY: Readonly<Record<number, number>> = Object.freeze({
+  1: 25, 2: 10, 3: 25,
+});
+
+/**
+ * `MapDifficulty.MaxPlayers` for every raid map (Map.InstanceType 2), indexed by 0-based
+ * difficulty. A hole is a difficulty that the map has no row for. Measured on this dataset's
+ * MapDifficulty.dbc (189 rows, 2026-09-24), which has 24 raid maps and 39 raid rows; difficulty 0
+ * alone is 10 for 11 raids, 20 for 2, 25 for 7 and 40 for 4. Map.MaxPlayers cannot stand in for
+ * it: Map.dbc says 5 for Ulduar and 0 for Icecrown Citadel.
+ */
+const RAID_MAX_PLAYERS: Readonly<Record<number, readonly number[]>> = Object.freeze({
+  169: [40], 249: [10, 25], 309: [20], 409: [40], 469: [40], 509: [20], 531: [40], 532: [10],
+  533: [10, 25], 534: [25], 544: [25], 548: [25], 550: [25], 564: [25], 565: [25], 568: [10],
+  580: [25], 603: [10, 25], 615: [10, 25], 616: [10, 25], 624: [10, 25],
+  631: [10, 25, 10, 25], 649: [10, 25, 10, 25], 724: [10, 25, 10, 25],
+});
+
+/**
+ * The dungeon rows of the same table that are not 5-player: map 44 (the unused old Monastery) is
+ * 10 and 229 (Blackrock Spire) is 15. Of the other 84 dungeon rows, 81 are 5 and three heroic rows
+ * (553, 554, 598) say 0. For those three the answer stays 5, which is what Map.MaxPlayers says for
+ * each of them; the real client's choice there is unmeasured.
+ */
+const DUNGEON_MAX_PLAYERS: Readonly<Record<number, number>> = Object.freeze({ 44: 10, 229: 15 });
+
+/**
+ * TrinityCore's GetDownscaledMapDifficultyData (DBCStores.cpp:827-849): a heroic difficulty the
+ * map lacks drops to its normal size, any other drops by one, and then by one more.
+ */
+function downscaledRaidDifficulty(has: (difficulty: number) => boolean, difficulty: number): number | undefined {
+  if (has(difficulty)) return difficulty;
+  let next = difficulty > 1 ? difficulty - 2 : difficulty - 1;
+  if (next >= 0 && has(next)) return next;
+  next -= 1;
+  return next >= 0 && has(next) ? next : undefined;
+}
 
 /** Object type ids in the 3.3.5 update block. */
 const TYPEID_UNIT = 3;

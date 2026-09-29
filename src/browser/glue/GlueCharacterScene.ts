@@ -19,6 +19,7 @@ import {
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { GlueCharacterView } from "./GlueCharacterApi.js";
 import type { GlueModelStage, GlueStageActor } from "./GlueModelStage.js";
+import { glueFigureScaleCompensation } from "./GlueModelStage.js";
 
 /**
  * The character standing in the character-select backdrop.
@@ -103,6 +104,13 @@ export interface GlueCharacterSceneOptions {
   readonly look: () => GlueSceneLook | undefined;
   /** The figure's rotation in degrees, read every drawn frame — the drag moves it continuously. */
   readonly facing: () => number;
+  /**
+   * Viewport width over height, read every drawn frame for the figure's aspect compensation.
+   * The stage stretches past 16:9 rather than pillarboxing, so the host box — not a constant —
+   * is what the drawn frame's aspect follows. Absent means 4:3, where the compensation is the
+   * identity by construction.
+   */
+  readonly aspect?: (() => number) | undefined;
   /** Which `Model` widget the figure stands in until `SetCharSelectModelFrame` says otherwise. */
   readonly modelFrame?: string;
   readonly onDiagnostic?: (message: string) => void;
@@ -111,6 +119,8 @@ export interface GlueCharacterSceneOptions {
 interface BuiltCharacter {
   readonly key: string;
   readonly actor: GlueStageActor;
+  /** Display scale the figure was built at, before aspect compensation. */
+  readonly baseScale: number;
 }
 
 interface CharacterBuildRequest {
@@ -212,6 +222,13 @@ export class GlueCharacterScene implements GlueCharacterView {
     const built = this.#built;
     if (!built) return;
     built.actor.facingDegrees = this.#options.facing();
+    // The backdrop camera covers narrower as the viewport widens; without this the figure grows
+    // with the zoom and fills four fifths of a 16:9 frame. Scaling about the model origin keeps
+    // the feet planted on the authored mark at every aspect. The FOV is the set's, read live —
+    // the figure's own model carries a portrait camera made for a different frame.
+    const aspect = this.#options.aspect?.() ?? 4 / 3;
+    const fov = this.#options.stage.backgroundFov(this.#modelFrameName) ?? Number.NaN;
+    built.actor.root.scale.setScalar(built.baseScale * glueFigureScaleCompensation(fov, aspect));
     if (!this.#unplaced) return;
     const frame = this.modelFrame();
     if (frame && this.#options.stage.setActor(frame, built.actor)) this.#unplaced = false;
@@ -334,7 +351,7 @@ export class GlueCharacterScene implements GlueCharacterView {
         return;
       }
       this.clear();
-      this.#built = { key, actor };
+      this.#built = { key, actor, baseScale: metadata.scale };
       const frame = this.modelFrame();
       this.#unplaced = !(frame && this.#options.stage.setActor(frame, actor));
       // `retain` is "keep only these": the previous character's body sheet — a 512x512 canvas —

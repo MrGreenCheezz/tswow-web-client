@@ -1,6 +1,23 @@
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 
+/**
+ * The Lua global that tells a TSWoW module it runs over the native HUD (the ordinary world,
+ * `addonsOnly`), not over the stock minimap cluster.
+ *
+ * The native minimap keeps its own zoom/rotate/tracking/world-map buttons on the ring where the
+ * stock cluster has none (style.css `.minimap-button`), so a module that places itself around
+ * `Minimap` by the stock art — minimap-hub's 193° — lands on one of them. It is a plain boolean read
+ * as `_G.__fxNativeHud`: the stub planner stubs only names the corpus *calls*, so a module reading
+ * it in the stock client (or the full FrameXML mount) sees nil and keeps its stock default.
+ */
+export const FRAMEXML_NATIVE_HUD_GLOBAL = "__fxNativeHud";
+
+/** Set before `boot.load()`, so a module reading it at file load or VARIABLES_LOADED sees it. */
+export function markFrameXmlNativeHud(boot: Pick<FrameXmlBoot, "vm">): void {
+  boot.vm.setGlobal(FRAMEXML_NATIVE_HUD_GLOBAL, true);
+}
+
 /** Paint module-created widgets and only the layout ancestors needed to position them. */
 export class FrameXmlTsAddonPresentation {
   readonly #boot: FrameXmlBoot;

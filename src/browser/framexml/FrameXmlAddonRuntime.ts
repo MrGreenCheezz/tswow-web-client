@@ -1,3 +1,4 @@
+import type { GlueLoadCheckpoint } from "../glue/GlueLoadScheduler.js";
 import {
   GlueLoader,
   type GlueFileProvider,
@@ -6,6 +7,7 @@ import {
   normalizeGluePath,
 } from "../glue/GlueLoader.js";
 import { GlueLuaVm } from "../glue/GlueLua.js";
+import type { FrameXmlSavedVariables } from "./FrameXmlSavedVariables.js";
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { parseFrameXml } from "../ui/framexml_compat/FrameXmlParser.js";
 import {
@@ -16,7 +18,7 @@ import {
 import { frameXmlHandlerScripts } from "./FrameXmlCorpus.js";
 import {
   frameXmlInlineScripts,
-  frameXmlStubPlan,
+  frameXmlStubPlanAsync,
   type FrameXmlLuaChunk,
   type FrameXmlStubPlan,
 } from "./FrameXmlStubPlan.js";
@@ -37,6 +39,7 @@ export interface FrameXmlAddonRuntimeResult {
 }
 
 export interface FrameXmlAddonRuntimeOptions {
+  readonly checkpoint?: GlueLoadCheckpoint;
   readonly provider: GlueFileProvider;
   readonly vm: GlueLuaVm;
   readonly bridge: FrameXmlUiBridge;
@@ -45,6 +48,7 @@ export interface FrameXmlAddonRuntimeOptions {
   /** Load-on-demand names accepted by the synchronous C API status binding. */
   readonly loadOnDemand?: readonly string[];
   readonly onRoots?: (roots: readonly FrameXmlFrame[]) => void;
+  readonly savedVariables?: FrameXmlSavedVariables;
 }
 
 interface AddonToc {
@@ -120,20 +124,24 @@ function addonDirectory(path: string): string {
  * existing `GlueLoader`, `FrameXmlUiBridge`, and template registry.
  */
 export class FrameXmlAddonRuntime {
+  readonly #checkpoint: GlueLoadCheckpoint | undefined;
   readonly #provider: GlueFileProvider;
   readonly #vm: GlueLuaVm;
   readonly #bridge: FrameXmlUiBridge;
   readonly #onRoots: ((roots: readonly FrameXmlFrame[]) => void) | undefined;
+  readonly #savedVariables: FrameXmlSavedVariables | undefined;
   readonly #initialModules = new Map<string, string>();
   readonly #records = new Map<string, AddonRecord>();
   readonly #loadOnDemand: ReadonlySet<string>;
   #closed = false;
 
   constructor(options: FrameXmlAddonRuntimeOptions) {
+    this.#checkpoint = options.checkpoint;
     this.#provider = options.provider;
     this.#vm = options.vm;
     this.#bridge = options.bridge;
     this.#onRoots = options.onRoots;
+    this.#savedVariables = options.savedVariables;
     for (const value of options.initialModules ?? []) {
       const name = canonicalName(value);
       if (name) this.#initialModules.set(name.toLowerCase(), name);
@@ -392,11 +400,17 @@ export class FrameXmlAddonRuntime {
       return failed;
     }
 
+    this.#savedVariables?.registerToc(toc.source, record.name);
     const namespace = this.#vm.createTable();
     const loader = new GlueLoader({
       vm: this.#vm,
       bridge: this.#bridge,
       provider: this.#provider,
+      checkpoint: async () => {
+        if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+        await this.#checkpoint?.();
+        if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+      },
       luaArguments: [record.name, namespace],
       maxFiles: 1024,
       maxDepth: 32,
@@ -436,6 +450,7 @@ export class FrameXmlAddonRuntime {
     const result = this.success(record.name, "loaded", dependencies, loaded.loaded, loaded.roots);
     record.result = result;
     this.#onRoots?.(loaded.roots);
+    this.#savedVariables?.finishModule(record.name);
     // Match the client lifecycle: a LoD module is observable only once all of its files ran.
     this.#bridge.dispatchEvent("ADDON_LOADED", record.name);
     return result;
@@ -536,7 +551,11 @@ export class FrameXmlAddonRuntime {
           const failure = await visitXml(target);
           if (failure) return failure;
         } else if (child.name === "Script") {
-          const reference = child.attributes.file?.trim() ?? "";
+          // A `<Script>` with no `file` is an inline body — `Blizzard_RaidUI.xml:1220` closes the
+          // add-on with one — and `frameXmlInlineScripts` above has already taken its text. Only a
+          // declared file has a path to resolve; refusing the inline form failed the whole module.
+          if (child.attributes.file === undefined) continue;
+          const reference = child.attributes.file.trim();
           const target = reference ? resolveGluePath(directory, reference) : undefined;
           if (!target) return `${normalized} has an invalid Script path`;
           const failure = await visitLua(target);
@@ -551,7 +570,11 @@ export class FrameXmlAddonRuntime {
         : await visitXml(entry.path);
       if (failure) return { error: failure };
     }
-    return { plan: frameXmlStubPlan(chunks) };
+    return { plan: await frameXmlStubPlanAsync(chunks, async () => {
+      if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+      await this.#checkpoint?.();
+      if (this.#closed) throw new Error("FrameXML add-on load cancelled");
+    }) };
   }
 
   /** Add per-addon names to the prelude's live tables without replacing the shared VM state. */

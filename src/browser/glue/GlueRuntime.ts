@@ -1,12 +1,13 @@
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { FrameXmlTemplateRegistry } from "../ui/framexml_compat/FrameXmlParser.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
-import { GlueLuaVm, type GlueLuaOptions } from "./GlueLua.js";
+import { GlueLuaRef, GlueLuaVm, type GlueLuaOptions } from "./GlueLua.js";
 import { GlueWidgetBinder } from "./GlueWidgets.js";
 import { GlueApi, type GlueApiOptions } from "./GlueApi.js";
 import type { GlueSession } from "./GlueSession.js";
 import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "./GlueLoader.js";
 import { hideGlueLoginControls } from "./GlueLoginScenePolicy.js";
+import { resizeAuthoredLoginScene } from "./GlueLoginLayout.js";
 
 /**
  * The glue screen's logical coordinate system.
@@ -18,12 +19,13 @@ import { hideGlueLoginControls } from "./GlueLoginScenePolicy.js";
  * 768 UI units and width follows the viewport's aspect (1024 at 4:3, 1365.33 at
  * 16:9). Everything else is anchored to edges or to the centre and adapts.
  *
- * Hence: 768 is the fixed axis and nothing here is ever a fixed 1024x768 box,
- * which would distort every glue texture on any modern display. How the 768
- * units reach the viewport — and what happens past 16:9, where the corpus has
- * no layout at all — is `glueStageMapping`.
+ * Hence: 768 is the fixed axis. Normal and wide windows follow their mode instead of forcing a
+ * 1024x768 box; narrow windows keep 1024 logical units and scroll so their panels cannot collide.
+ * How the 768 units reach the viewport is `glueStageMapping`.
  */
 export const GLUE_LOGICAL_HEIGHT = 768;
+/** The narrowest authored mode with a verified, non-overlapping character creation layout. */
+export const GLUE_MIN_LOGICAL_WIDTH = 1024;
 
 export interface GlueViewportMetrics {
   readonly scale: number;
@@ -57,7 +59,7 @@ export interface GlueStageMapping {
   readonly scaleX: number;
   /** Vertical viewport pixels per UI unit. */
   readonly scaleY: number;
-  /** The width `GetScreenWidth()` answers, in UI units. */
+  /** The width `GetScreenWidth()` answers, in UI units; a narrow window scrolls this canvas. */
   readonly virtualWidth: number;
   /** Always `GLUE_LOGICAL_HEIGHT`; the axis the client fixes. */
   readonly virtualHeight: number;
@@ -96,28 +98,36 @@ export interface GlueStageMapping {
  * stretched-wide login screen. Nothing about it is the client's doing.
  *
  * So the mode is capped at 16:9 — the corpus refuses to lay out wider — and the result is stretched
- * to fill the viewport, exactly as a panel does. At every aspect **at or below** 16:9 this is
- * arithmetically identical to the uniform scale that came before it (`scaleX === scaleY`, no
- * distortion, and 1024 UI units at 4:3). Past 16:9 the screen is stretched instead of being given
- * black bars — measured at the owner's maximised 1920x969, where the stock pillarbox took 78.2 UI
- * units off each side and put a 99 px black bar down both edges of a window their real client fills.
+ * to fill ordinary and wide viewports, exactly as a panel does. At every aspect **at or below** 16:9 the scales
+ * are equal. If that would squeeze the authored screen below its verified 1024-unit layout, the
+ * canvas stays 1024 units wide and the host scrolls horizontally; shrinking the controls further
+ * makes the character creation panels overlap. Past 16:9 the screen is stretched instead of being
+ * given black bars — measured at the owner's maximised 1920x969, where the stock pillarbox took
+ * 78.2 UI units off each side and put a 99 px black bar down both edges of a window their real client fills.
  */
 export function glueStageMapping(width: number, height: number): GlueStageMapping {
   const safeHeight = Number.isFinite(height) && height > 0 ? height : GLUE_LOGICAL_HEIGHT;
   const safeWidth = Number.isFinite(width) && width > 0 ? width : GLUE_LOGICAL_HEIGHT * (4 / 3);
   const scaleY = safeHeight / GLUE_LOGICAL_HEIGHT;
   const uncapped = safeWidth / scaleY;
-  const virtualWidth = Math.min(uncapped, GLUE_LOGICAL_HEIGHT * GLUE_MAX_ASPECT);
+  const fittedWidth = Math.min(uncapped, GLUE_LOGICAL_HEIGHT * GLUE_MAX_ASPECT);
+  const virtualWidth = Math.max(GLUE_MIN_LOGICAL_WIDTH, fittedWidth);
   return {
     // Below the cap the horizontal scale is *the same number* rather than one that agrees to
-    // fifteen decimal places: `safeWidth / (safeWidth / scaleY)` is not exactly `scaleY` in binary
-    // floating point, and a stage told to `scale(1.3671874999999998, 1.3671875)` is a stage that
-    // resamples a picture the uniform fit left alone.
-    scaleX: virtualWidth === uncapped ? scaleY : safeWidth / virtualWidth,
+    // fifteen decimal places. The same rule keeps controls readable when the minimum canvas
+    // scrolls: squeezing it back to the viewport would recreate the character-panel overlap.
+    scaleX: virtualWidth >= uncapped ? scaleY : safeWidth / virtualWidth,
     scaleY,
     virtualWidth,
     virtualHeight: GLUE_LOGICAL_HEIGHT,
   };
+}
+
+/** A minimum-width stage needs a scrollbar; ordinary and wide stages must never show one. */
+export function glueNeedsHorizontalScroll(width: number, height: number): boolean {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+  const mapping = glueStageMapping(width, height);
+  return mapping.virtualWidth * mapping.scaleX > width + 0.5;
 }
 
 /** A box in UI units, the pair `GetSize()` answers with. */
@@ -271,6 +281,18 @@ export class GlueRuntime {
   /** The account, realm list, world connection and character list this page is showing. */
   get session(): GlueSession {
     return this.api.session;
+  }
+
+  /** Resize the login module's already-created scene without replaying its OnLoad side effects. */
+  resizeLoginScene(virtualWidth: number): boolean {
+    const value = this.vm.getGlobal("LoginScene");
+    if (value instanceof GlueLuaRef) {
+      this.vm.release(value);
+      return false;
+    }
+    return value && typeof value === "object"
+      ? resizeAuthoredLoginScene(this.bridge, value as FrameXmlFrame, virtualWidth)
+      : false;
   }
 
   /** Advance OnUpdate by `elapsedSeconds`, the unit 3.3.5 hands the corpus. */

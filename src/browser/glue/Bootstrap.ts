@@ -4,7 +4,7 @@ import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.j
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
-import { GlueRuntime, glueStageMapping, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
+import { GlueRuntime, glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
 import { createHttpFileProvider } from "./GlueLoader.js";
 import { GlueBrowserAudio } from "./GlueAudio.js";
 import { GlueModelStage } from "./GlueModelStage.js";
@@ -103,17 +103,25 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
    * pillarboxes itself from and what the module's `lgzg.lua` divides to get its aspect, and a window
    * that has been resized since start-up would otherwise be answered with the size it opened at.
    *
-   * The host element first, the window second. `#glue-host` fills the viewport, so the two agree
-   * whenever both are real — but a page laid out while its window is not being shown can be handed a
-   * `window.innerWidth` of **0**, measured in this very browser, and `glueStageMapping` then
-   * (correctly) refuses it and falls back to 1024x768. The element's own box is the honest answer in
-   * that state, and the `ResizeObserver` below is what notices when the real one arrives, because no
-   * `resize` event is fired for it.
+   * The host's border box first, the window second. Scroll mode is decided from that stable box;
+   * when it is active, the usable height is the content box above the horizontal scrollbar. Keeping
+   * that mode fixed while measuring avoids a scrollbar appearing/disappearing near the threshold.
+   * A hidden pane can answer zero for both host and window, so `glueStageMapping` has a safe default;
+   * the `ResizeObserver` below notices when the host gets a real box without a window resize event.
    */
   function currentMetrics(): { scaleX: number; scaleY: number; virtualWidth: number } {
-    const width = host.clientWidth || window.innerWidth;
-    const height = host.clientHeight || window.innerHeight;
+    const box = host.getBoundingClientRect();
+    const width = box.width || window.innerWidth;
+    const fullHeight = box.height || window.innerHeight;
+    const height = host.hasAttribute("data-glue-scroll") && host.clientHeight > 0
+      ? host.clientHeight : fullHeight;
     return glueStageMapping(width, height);
+  }
+
+  /** Physical aspect of the model canvas, including the scrollable part of a narrow stage. */
+  function stageAspect(): number {
+    const metrics = currentMetrics();
+    return metrics.virtualWidth * metrics.scaleX / (GLUE_LOGICAL_HEIGHT * metrics.scaleY);
   }
 
   /**
@@ -121,17 +129,21 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
    *
    * The stage is laid out in UI units — 768 tall, as wide as the display mode the corpus would have
    * chosen — and then stretched to the viewport on both axes independently. `glueStageMapping`
-   * carries the measurement behind that: at or below 16:9 the two scales are equal and this is the
-   * uniform fit it has always been, and past 16:9 the mode is capped where `GlueParent_OnLoad` caps
-   * it and the panel does the stretching, which is what a 4:3 mode on a widescreen monitor has
-   * always looked like.
+   * keeps at least 1024 UI units for the character creation panels. When the viewport is narrower,
+   * the stage extends past the host's right edge and the host scrolls horizontally. Past 16:9 the
+   * mode is capped where `GlueParent_OnLoad` caps it and the panel does the stretching.
    */
   function fit(): void {
+    const box = host.getBoundingClientRect();
+    const width = box.width || window.innerWidth;
+    const height = box.height || window.innerHeight;
+    host.toggleAttribute("data-glue-scroll", glueNeedsHorizontalScroll(width, height));
     const metrics = currentMetrics();
     stage.style.width = `${metrics.virtualWidth}px`;
     stage.style.height = `${GLUE_LOGICAL_HEIGHT}px`;
     stage.style.transform = `scale(${metrics.scaleX}, ${metrics.scaleY})`;
     stage.style.transformOrigin = "top left";
+    runtime.resizeLoginScene(metrics.virtualWidth);
   }
 
   /**
@@ -141,7 +153,9 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
    * from `GetScreenWidth()` and the owner's `lgzg.lua` sizes its whole login scene from the
    * resolution string. A page that runs that while its window measures 0x0 — a background tab, a
    * hidden pane, a detached window — is laid out for the fallback size for the rest of its life, and
-   * no later resize can re-run a corpus OnLoad. Measured in this browser's pane: `innerWidth` and
+   * no later resize can re-run a corpus OnLoad. The login scene's explicit sizes are reflowed by
+   * `fit`; waiting still prevents every other one-time OnLoad decision from using fallback metrics.
+   * Measured in this browser's pane: `innerWidth` and
    * `#glue-host`'s own `clientWidth` both answer 0 while the pane is hidden, and the login scene
    * comes up 1024 wide in a 1280-wide window.
    *
@@ -186,13 +200,18 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
    * `CharacterSelectFrame_OnUpdate` turns the character by the difference between two readings of
    * this, so the constant `0, 0` it used to get was a screen whose drag did nothing. Divided by the
    * stage's scale because the stage is laid out in UI units and only *visually* scaled — the same
-   * distinction `FrameXmlDomRenderer.measure` makes. One divisor per axis, because past 16:9 the
-   * two differ and a single one would make a horizontal drag turn the character by the wrong angle.
+   * distinction `FrameXmlDomRenderer.measure` makes. Scroll offset is included so dragging a model
+   * after panning a narrow screen still reports its logical position. One divisor per axis, because
+   * past 16:9 the two differ and a single one would turn a character by the wrong angle.
    */
   let pointer: readonly [number, number] = [0, 0];
   const trackPointer = (event: PointerEvent): void => {
     const metrics = currentMetrics();
-    pointer = [event.clientX / metrics.scaleX, GLUE_LOGICAL_HEIGHT - event.clientY / metrics.scaleY];
+    const box = host.getBoundingClientRect();
+    pointer = [
+      (event.clientX - box.left + host.scrollLeft) / metrics.scaleX,
+      GLUE_LOGICAL_HEIGHT - (event.clientY - box.top + host.scrollTop) / metrics.scaleY,
+    ];
   };
 
   // Assigned right after the runtime is built: the C API needs the view and the view needs the
@@ -228,6 +247,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       screen: () => ({ width: Math.round(currentMetrics().virtualWidth), height: GLUE_LOGICAL_HEIGHT }),
       authUrl: gatewaySocketUrl(origin, "/auth"),
       connect: (url) => WebSocketByteStream.connect(url),
+      onAuthDiagnostic: (code) => console.warn("[glue auth] rejected with code", code),
       // A URL out of a patch archive is untrusted input; surface it instead of
       // navigating on the corpus' say-so.
       onLaunchUrl: (url) => report(`Ссылка из интерфейса: ${url}`),
@@ -272,11 +292,12 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     return url.href;
   };
 
-  // A newly arrived picture has to reach the element that asked for it, and the renderer already
-  // has exactly one path for "something changed": the bridge's mutation seam.
+  // A newly arrived picture has to reach the element that asked for it: the renderer draws it on
+  // the frames holding that path (`pictureArrived`) rather than re-applying every drawn frame.
+  let pictures: FrameXmlDomRenderer | undefined;
   const textures = new FrameXmlTextureCache({
     resolve: textureUrl,
-    onChange: () => runtime.bridge.touch(),
+    onChange: (path, kind) => { if (pictures) pictures.pictureArrived(path, kind); else runtime.bridge.touch(); },
   });
   const fonts = new FrameXmlFontLoader({ resolve: clientFileUrl });
 
@@ -285,6 +306,15 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     textures,
     textureResolver: textureUrl,
     fontResolver: clientFileUrl,
+    // CharacterCreate.lua keeps these localized captions in its Lua button.name fields. The
+    // drawable XML buttons have no text, so supply the same names to the accessibility tree.
+    accessibilityName: (frame) => {
+      const race = /^CharacterCreateRaceButton([1-9]\d*)$/.exec(frame.name);
+      if (race) return runtime.api.creation.availableRaces()[Number(race[1]) - 1]?.name;
+      const characterClass = /^CharacterCreateClassButton([1-9]\d*)$/.exec(frame.name);
+      if (characterClass) return runtime.api.creation.availableClasses()[Number(characterClass[1]) - 1]?.name;
+      return undefined;
+    },
     // `GlueParent` is the glue screens' root — every screen frame declares `parent="GlueParent"` —
     // so a frame Lua created with no parent belongs inside it and not beside it. See the option.
     createdRootParent: "GlueParent",
@@ -298,10 +328,12 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
             + (outcome.substituted ? ` → ${outcome.substituted}` : "")
             + (outcome.message ? `: ${outcome.message}` : ""));
         }
-        runtime.bridge.touch();
+        if (pictures) pictures.fontArrived();
+        else runtime.bridge.touch();
       });
     },
   });
+  pictures = renderer;
 
   // The document is the only thing that knows how big a `setAllPoints` frame came out, and the
   // corpus asks: `LoginScreen_OnLoad` sizes the whole login scene from `GlueParent:GetSize()`.
@@ -343,6 +375,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       return displayId === undefined ? undefined : characterLook(character, displayId);
     },
     facing: () => runtime.session.facing,
+    aspect: stageAspect,
     onDiagnostic: (message) => console.warn("[glue character]", message),
   });
   // The same class, the same route, a different source for the look: the creation screen's figure
@@ -354,6 +387,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     modelFrame: "CharacterCreate",
     look: () => runtime.api.creation.sceneLook(),
     facing: () => runtime.api.creation.facing,
+    aspect: stageAspect,
     onDiagnostic: (message) => console.warn("[glue creation]", message),
   });
   // A class name or a zone that arrived after the list was drawn is a list that has to be drawn
@@ -595,11 +629,16 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       characterScene?.dispose();
       creationScene?.dispose();
       models.dispose();
+      // And the renderer's own window listener, which `stop` does not own: left armed, every
+      // pointer move over the world read this hidden stage's rectangle and offset box — a forced
+      // layout in the middle of the world's frame for each frame of mouse movement.
+      renderer.setPointerTracking(false);
       host.hidden = true;
     },
     resume(screen?: string): void {
       host.hidden = false;
       if (!running) start();
+      renderer.setPointerTracking(true);
       if (screen) runtime.api.setGlueScreen(screen);
       // The stage was disposed, so both figures have to be asked for again. `update()` is a no-op
       // when the look has not changed — which after a dispose it always has, because the scene

@@ -45,6 +45,7 @@ import {
   mergeFrameXmlElements,
   parseFrameXml,
 } from "./FrameXmlParser.js";
+import { plainFrameXmlText } from "./FrameXmlText.js";
 
 // Keep the runtime's public type spelling local until FrameXmlTypes can be
 // consumed by generated declaration users. The cast is constrained by the
@@ -119,10 +120,40 @@ export const FRAME_XML_SCRIPT_PARAMETERS: Readonly<Record<string, readonly strin
   OnDragStart: ["self", "button"],
   OnDragStop: ["self"],
   OnReceiveDrag: ["self"],
+  // The rest of the handler names the dataset's FrameXML declares, audited against their bodies —
+  // a name missing here compiles with `self` alone, so a body reading its arguments reads globals.
+  // `GameTooltipTemplate.xml:248-253` is `GameTooltip_OnTooltipAddMoney(self, cost, maxcost)`; the
+  // ScrollingEdit bodies (12 of them) pass `x, y-10, w, h` on; `ActionBarFrame.xml` passes
+  // `name, value` and, from its `<PostClick>`, `button, down`. The GameTooltip notifications carry
+  // only the tooltip. `PreClick`/`PostClick` are the two script names without the `On` (see
+  // `SCRIPT_NODE`; `Click` raises them around OnClick).
+  OnTooltipAddMoney: ["self", "cost", "maxcost"],
+  OnTooltipSetDefaultAnchor: ["self"],
+  OnTooltipCleared: ["self"],
+  OnTooltipSetItem: ["self"],
+  OnTooltipSetSpell: ["self"],
+  OnTooltipSetUnit: ["self"],
+  OnTooltipSetQuest: ["self"],
+  OnTooltipSetAchievement: ["self"],
+  OnHyperlinkEnter: ["self", "link", "text"],
+  OnHyperlinkLeave: ["self", "link", "text"],
+  OnAttributeChanged: ["self", "name", "value"],
+  OnCursorChanged: ["self", "x", "y", "w", "h"],
+  PreClick: ["self", "button", "down"],
+  PostClick: ["self", "button", "down"],
+  OnInputLanguageChanged: ["self", "language"],
+  OnColorSelect: ["self", "r", "g", "b"],
+  OnMinMaxChanged: ["self", "min", "max"],
 });
 
-/** Everything the bridge treats as a script node inside `<Scripts>`. */
-const SCRIPT_NODE = /^On[A-Z][A-Za-z0-9_]*$/;
+/**
+ * Everything the bridge treats as a script node inside `<Scripts>`: the `On…` handlers, and the
+ * click wrappers `PreClick`/`PostClick`, which 3.3.5 names without the prefix. The dataset declares
+ * four such bodies — `<PostClick>` on ActionButtonTemplate (`ActionButton_UpdateState(self, button,
+ * down)`) and MultiCastActionButton, `<PreClick>self:SetChecked(0)` on SpellButtonTemplate and
+ * PetActionButtonTemplate — and before they were read here none of them ever ran.
+ */
+const SCRIPT_NODE = /^(?:On[A-Z][A-Za-z0-9_]*|PreClick|PostClick)$/;
 
 function truthyAttribute(value: string | undefined): boolean {
   return value !== undefined && /^(?:1|true|yes)$/i.test(value.trim());
@@ -170,6 +201,22 @@ function anchorRoles(point: string): {
     x: name.includes("LEFT") ? "LEFT" : name.includes("RIGHT") ? "RIGHT" : "CENTER",
     y: name.includes("TOP") ? "TOP" : name.includes("BOTTOM") ? "BOTTOM" : "CENTER",
   };
+}
+
+/** Which axes a frame's anchors pin on both edges, so that its size there is theirs. */
+function anchoredEdges(frame: FrameXmlFrame): { readonly x: boolean; readonly y: boolean } {
+  let left = false;
+  let right = false;
+  let top = false;
+  let bottom = false;
+  for (const point of frame.points) {
+    const roles = anchorRoles(point.point);
+    if (roles.x === "LEFT") left = true;
+    else if (roles.x === "RIGHT") right = true;
+    if (roles.y === "TOP") top = true;
+    else if (roles.y === "BOTTOM") bottom = true;
+  }
+  return { x: left && right, y: top && bottom };
 }
 
 function isVirtual(element: FrameXmlElement): boolean {
@@ -260,6 +307,9 @@ function dimensionOf(element: FrameXmlElement | undefined): { readonly x: number
   return { x: frameXmlNumber(abs, "x") ?? 0, y: frameXmlNumber(abs, "y") ?? 0 };
 }
 
+/** What a change can affect, from least to most: see `FrameXmlUiBridge.layoutVersion`. */
+export type FrameXmlMutationKind = "paint" | "layout" | "structure";
+
 class MutableFrameXmlFrame implements FrameXmlFrame {
   readonly type: RuntimeWidgetType;
   readonly name: string;
@@ -279,6 +329,8 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
   /** SetScript replaces an XML handler, including when the replacement is nil. */
   readonly scriptOverrides = new Set<string>();
   visible: boolean;
+  /** Bumped by every announced change to this frame; see `FrameXmlUiBridge.notifyMutation`. */
+  renderVersion = 0;
   text = "";
   texture = "";
   loaded = false;
@@ -287,23 +339,35 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
   drawSubLevel = 0;
   texCoords: FrameXmlTexCoords | undefined;
   vertexColor: FrameXmlColor | undefined;
+  /** See `FrameXmlFrame.colorFill`. */
+  colorFill = false;
   gradient: FrameXmlGradient | undefined;
   alphaMode = "BLEND";
   desaturated = false;
   textureRotation = 0;
+  portrait = false;
   readonly clickRegistrations = new Set<string>();
   readonly dragRegistrations = new Set<string>();
   clampedToScreen = false;
   movable = false;
   moving = false;
   tooltipCursorAnchor: { readonly x: number; readonly y: number } | undefined;
+  tooltipMinimumWidth = 0;
   backdrop: FrameXmlBackdrop | undefined;
   backdropColor: FrameXmlColor | undefined;
   backdropBorderColor: FrameXmlColor | undefined;
   fontObject = "";
+  inheritsButtonFont = false;
   textColor: FrameXmlColor | undefined;
   justifyH = "CENTER";
   justifyV = "MIDDLE";
+  /**
+   * The alignment is the string's own — a `justifyH`/`justifyV` on its `<ButtonText>`, or
+   * `SetJustifyH`/`SetJustifyV` — rather than its font object's. Only a label that draws in its
+   * button's state font reads these; see `syncButtonLabelFont`.
+   */
+  ownJustifyH = false;
+  ownJustifyV = false;
   readonly stateTextures = new Map<string, FrameXmlFrame>();
   stateTexture = "";
   readonly stateFonts = new Map<string, string>();
@@ -312,6 +376,8 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
   enabled = true;
   checked = false;
   alpha = 1;
+  animationAlpha: number | undefined;
+  animationTransform: string | undefined;
   scale = 1;
   frameLevel = 0;
   frameStrata = "MEDIUM";
@@ -327,7 +393,7 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
   readonly model: FrameXmlModelState = { file: "", scale: 1, calls: [] };
   readonly editBox: FrameXmlEditBoxState = {
     letters: 0, password: false, numeric: false, multiLine: false, historyLines: 0, focused: false,
-    history: [], historyIndex: -1, cursorPosition: 0,
+    autoFocus: true, history: [], historyIndex: -1, cursorPosition: 0, selectionRevision: 0,
   };
   readonly messageFrame: FrameXmlMessageFrameState = {
     maxLines: 128, displayDuration: 0, nonSpaceWrap: false, messages: [], revision: 0,
@@ -362,6 +428,11 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
     this.visible = !truthyAttribute(attributes["hidden"]);
     this.text = attributes["text"] ?? "";
     this.texture = attributes["file"] ?? attributes["texture"] ?? "";
+    // The client starts typed text at the left edge; only a FontString centres by default. No
+    // EditBox in the dataset corpus declares a justifyH (61 declarations, none on the box or its
+    // font string), and each pairs a `<TextInsets left=…>` with that left edge — the chat box's
+    // `SetTextInsets(15 + header width, …)`, the login boxes' `left="12"`.
+    if (type === "EditBox") this.justifyH = "LEFT";
   }
 
   /** Width/height are attribute-backed so `<Size>`, `width=` and SetWidth agree. */
@@ -381,6 +452,55 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
 /** The renderer packs one strata into a thousand z-index values; a raise may not leave the band. */
 const TOPLEVEL_MAX_FRAME_LEVEL = 999;
 
+/**
+ * The screen a host that measures nothing is assumed to have: 3.3.5 lays its UI out on a
+ * 768-unit-high logical screen (`GetScreenHeight()` answers 768 at UI scale 1, and
+ * `UIDropDownMenu.lua:746` still says «GetCenter() is returning coords relative to 1024x768»).
+ */
+const FRAME_XML_FALLBACK_SCREEN = Object.freeze({ width: 1024, height: 768 });
+
+/** How many frames `layoutReaches` walks before it assumes a change reaches the box it asks about. */
+const LAYOUT_REACH_LIMIT = 256;
+
+/**
+ * A box the page sizes from what is inside it: a tooltip, whose grid of lines is its size, or a
+ * button with an axis that neither a size of its own nor two anchors on opposite edges fix — it keeps
+ * its label in flow (`FrameXmlDomRenderer.applyButtonLabel`). Every other child is absolutely
+ * positioned and sizes nothing around it; a string's text is its own change.
+ */
+function sizedByContent(frame: FrameXmlFrame): boolean {
+  if (frame.type === "GameTooltip") return true;
+  if (frame.type !== "Button" && frame.type !== "CheckButton") return false;
+  const pinned = anchoredEdges(frame);
+  return !((pinned.x || Number(frame.attributes["width"]) > 0) && (pinned.y || Number(frame.attributes["height"]) > 0));
+}
+
+/** The frames the next dispatch of one event leaves out; see `withEventOwnersExcluded`. */
+let pendingEventExclusion: { readonly event: string; readonly owners: ReadonlySet<string> } | undefined;
+
+/**
+ * `dispatchEventExcept` for a caller that holds only an event pump — a world seam, whose `fire` is
+ * the bridge's `dispatchEvent` one call down. The first dispatch of `event` that `fire` causes, on
+ * whichever bridge, skips the frames named in `owners`; the exclusion is taken by that dispatch, so
+ * a handler firing the same event again is delivered as usual, and it never outlives `fire`.
+ */
+export function withEventOwnersExcluded<T>(event: string, owners: ReadonlySet<string>, fire: () => T): T {
+  const previous = pendingEventExclusion;
+  pendingEventExclusion = { event, owners };
+  try {
+    return fire();
+  } finally {
+    pendingEventExclusion = previous;
+  }
+}
+
+function takeEventExclusion(event: string): ReadonlySet<string> | undefined {
+  const pending = pendingEventExclusion;
+  if (pending === undefined || pending.event !== event) return undefined;
+  pendingEventExclusion = undefined;
+  return pending.owners;
+}
+
 export class FrameXmlUiBridge implements FrameXmlUiApi {
   readonly #registry: FrameXmlTemplateRegistry;
   #runtime: LuaAddonRuntime | undefined;
@@ -392,6 +512,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   readonly #pendingRelativePoints: PendingRelativePoint[] = [];
   readonly #unavailableScriptNotices = new Set<string>();
   readonly #mutationListeners = new Set<() => void>();
+  /** Per-frame change observers; see `observeFrameMutations`. */
+  readonly #frameObservers = new Set<(frame: FrameXmlFrame, kind: FrameXmlMutationKind) => void>();
   /** event name -> frames registered for it; kept so dispatch is not O(all frames). */
   readonly #byEvent = new Map<string, Set<MutableFrameXmlFrame>>();
   /**
@@ -405,6 +527,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   readonly #createdFrames = new Set<MutableFrameXmlFrame>();
   readonly #modelFrames = new Set<FrameXmlFrame>();
   #measure: ((frame: FrameXmlFrame) => { width: number; height: number } | undefined) | undefined;
+  #measureText: ((frame: FrameXmlFrame, text: string) => number | undefined) | undefined;
+  #screenRectSource: ((frame: FrameXmlFrame) => FrameXmlRect | undefined) | undefined;
   #mousePosition: readonly [number, number] = [0, 0];
   readonly #fontStyles = new Map<string, FrameXmlFontStyle>();
   /** `fontObjectStyle`'s cache; a superset of `#fontStyles`, filled on demand. */
@@ -415,7 +539,39 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   #dispatchDepth = 0;
   #mutationDepth = 0;
   #pendingNotification = false;
+  /** The pending notification carries a change that can move something, not paint only. */
+  #pendingLayout = false;
+  /** See `setPaintDeferral`. */
+  #deferPaint = false;
+  /** See `setLayoutDeferral`. */
+  #deferLayout = false;
+  /**
+   * A notification held at the outermost level carries a change that can move something, so the
+   * page is not what the bridge says until it is announced; see `settleDeferredLayout`.
+   */
+  #heldLayout = false;
+  /**
+   * With `setLayoutDeferral` on: the frames given a layout change by a batch that has ended and is
+   * held, and whether a change that names no frame was among them. A read settles held layout only
+   * when one of these can have moved the box it reads (`layoutReaches`).
+   */
+  readonly #heldLayoutFrames = new Set<FrameXmlFrame>();
+  #heldFrameless = false;
+  /**
+   * The same for the outermost batch still running. A read inside a batch never saw that batch's
+   * own changes on the page, and still does not unless a held change makes it settle.
+   */
+  readonly #batchLayoutFrames = new Set<FrameXmlFrame>();
+  #batchFrameless = false;
+  /** Inside a renderer's own reconciliation walk; see `runInRenderPass`. */
+  #renderPassDepth = 0;
   #mutationVersion = 0;
+  /** Changes to the tree itself (create, reparent, scroll child) and frameless touches. */
+  #structureVersion = 0;
+  /** Changes that can move or resize something (anchors, sizes, text, visibility). */
+  #layoutVersion = 0;
+  /** Lua `SetFocus`/`ClearFocus` calls so far; `Show` compares it across its OnShow scripts. */
+  #focusRequests = 0;
 
   constructor(registry = new FrameXmlTemplateRegistry(), options: FrameXmlUiBridgeOptions = {}) {
     this.#registry = registry;
@@ -435,6 +591,24 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   /** Monotonic host-side revision; renderers use it to skip idempotent syncs. */
   get mutationVersion(): number {
     return this.#mutationVersion;
+  }
+
+  /**
+   * Bumped by a change to the frame tree, or by a notification that names no frame. A renderer
+   * that sees it unchanged may skip hidden subtrees and the ownership sweep; see
+   * `FrameXmlDomRenderer.syncPass`.
+   */
+  get structureVersion(): number {
+    return this.#structureVersion;
+  }
+
+  /**
+   * Bumped by anything that can move or resize a frame. Unchanged means every change since the
+   * last render was paint only — alpha, colour, texcoords, a bar's fill, a cooldown — and nothing
+   * measured from the layout needs measuring again.
+   */
+  get layoutVersion(): number {
+    return this.#layoutVersion;
   }
 
   get frames(): readonly FrameXmlFrame[] {
@@ -467,6 +641,24 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     this.#measure = measure;
   }
 
+  /** Intrinsic glyph width, independent of the box a tab or wrapped label currently occupies. */
+  setTextMeasure(measure: ((frame: FrameXmlFrame, text: string) => number | undefined) | undefined): void {
+    this.#measureText = measure;
+  }
+
+  measureText(frame: FrameXmlFrame): number {
+    const label = frame.stateTextures.get("BUTTONTEXT") ?? frame;
+    const text = plainFrameXmlText(label.text);
+    if (!text) return 0;
+    const measured = this.#measureText?.(label, text);
+    if (measured !== undefined && Number.isFinite(measured) && measured > 0) return measured;
+    // OnLoad runs before a renderer exists. Keep auto-sized labels useful during that pass;
+    // once mounted, the host supplies font metrics even for hidden panels.
+    const style = label.fontObject ? this.fontObjectStyle(label.fontObject) : undefined;
+    const height = Number(label.attributes["fontHeight"] ?? style?.height ?? 14);
+    return Math.max(...text.split(/\r\n|\r|\n/).map((line) => [...line].length)) * height * 0.5;
+  }
+
   /** Trusted host cursor coordinates in logical UI units, with Y measured from the bottom. */
   setMousePosition(x: number, y: number): void {
     if (Number.isFinite(x) && Number.isFinite(y)) this.#mousePosition = [x, y];
@@ -474,69 +666,263 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
 
   get mousePosition(): readonly [number, number] { return this.#mousePosition; }
 
-  /** Effective size: what the host laid out, or the declared attributes when nothing has. */
+  /**
+   * Effective size: what the host laid out, else the distance between two opposite anchors, else
+   * the declared attributes.
+   *
+   * Two anchors on opposite edges size a region in the client whatever it declares: the LFD list's
+   * dungeon name is `<Size x="0">` with LEFT on its row at 40 and RIGHT on the level text's LEFT at
+   * -10 (LFGFrame.xml:118-134). Before a host has laid it out — OnLoad, a Node boot — its width
+   * used to be the text's own width, so `GetRight` answered `left + text width`.
+   */
   measure(frame: FrameXmlFrame): { readonly width: number; readonly height: number } {
+    return this.sizeOf(frame, true);
+  }
+
+  private sizeOf(frame: FrameXmlFrame, spans: boolean): { readonly width: number; readonly height: number } {
+    // The host measures the page, so the page has to show every change that can reach this box.
+    if (this.#heldLayout) this.settleDeferredLayout(frame);
     const measured = this.#measure?.(frame);
+    let width = measured && measured.width > 0 ? measured.width : undefined;
+    let height = measured && measured.height > 0 ? measured.height : undefined;
+    if (spans && (width === undefined || height === undefined) && frame.points.length > 1) {
+      const pinned = anchoredEdges(frame);
+      if ((pinned.x && width === undefined) || (pinned.y && height === undefined)) {
+        const rect = this.screenRect(frame, this.logicalScreen());
+        const scale = this.effectiveScale(frame);
+        if (pinned.x && width === undefined) width = rect.width / scale;
+        if (pinned.y && height === undefined) height = rect.height / scale;
+      }
+    }
     const declaredWidth = Number(frame.attributes["width"]);
     const declaredHeight = Number(frame.attributes["height"]);
+    const autoTextWidth = frame.type === "FontString" && (!Number.isFinite(declaredWidth) || declaredWidth === 0);
+    // A string with no height of its own is as tall as its text, as `GetStringHeight` already said:
+    // `OpenMail_Update` stacks the attachment rows under `OpenMailAttachmentText:GetHeight()`
+    // (MailFrame.lua:612), and a 0 put «Забрать приложения:» 14 units low, under the letter button.
+    const autoTextHeight = frame.type === "FontString" && (!Number.isFinite(declaredHeight) || declaredHeight === 0);
     return {
-      width: measured && measured.width > 0 ? measured.width
-        : Number.isFinite(declaredWidth) ? declaredWidth : 0,
-      height: measured && measured.height > 0 ? measured.height
-        : Number.isFinite(declaredHeight) ? declaredHeight : 0,
+      width: width ?? (autoTextWidth ? this.measureText(frame) : Number.isFinite(declaredWidth) ? declaredWidth : 0),
+      height: height ?? (autoTextHeight ? this.textHeight(frame) : Number.isFinite(declaredHeight) ? declaredHeight : 0),
     };
   }
 
-  /** Resolve the small rectangle surface used by stock chat docking code. */
-  geometry(frame: FrameXmlFrame): FrameXmlRect {
-    // Keep anchor recursion in CSS/top-origin coordinates. The public WoW
-    // methods use a bottom-origin vertical axis, so converting each recursive
-    // rectangle would make relative anchors mix coordinate systems.
+  /** The height of a string's own lines in its font: explicit line breaks only, no wrapping. */
+  private textHeight(frame: FrameXmlFrame): number {
+    const text = plainFrameXmlText(frame.text);
+    if (!text) return 0;
+    const style = frame.fontObject ? this.fontObjectStyle(frame.fontObject) : undefined;
+    const fontHeight = Number(frame.attributes["fontHeight"] ?? style?.height ?? 14);
+    return text.split(/\r\n|\r|\n/).length * (Number.isFinite(fontHeight) && fontHeight > 0 ? fontHeight : 14);
+  }
+
+  /**
+   * `GetEffectiveScale`: the product of this frame's scale and every ancestor's.
+   *
+   * Bounded like the renderer's walks — a malformed parent chain must not loop — and a scale that
+   * is not a positive number counts as 1, which is what the setters already refuse to store.
+   */
+  effectiveScale(frame: FrameXmlFrame): number {
+    let scale = 1;
+    let current: FrameXmlFrame | undefined = frame;
+    for (let depth = 0; current && depth < 64; depth += 1) {
+      scale *= Number.isFinite(current.scale) && current.scale > 0 ? current.scale : 1;
+      current = current.parent;
+    }
+    return scale;
+  }
+
+  /**
+   * The logical screen every frame is placed on, in UI units: what `UIParent` (in the world) or
+   * `GlueParent` (on the glue screens) measures, else the client's 768-unit-high default.
+   *
+   * A frame with no parent is positioned against the *screen* in the client, not against its own
+   * box. `DropDownList1/2` are the stock case (`UIDropDownMenu.xml:5,16`, toplevel and parentless):
+   * measured against themselves, the tracking list's `GetCenter()` came out at y = -28 and
+   * `GetTop()` -5 with `GetScreenHeight()` 768, so `ToggleDropDownMenu`'s «off the bottom of the
+   * screen» test (`UIDropDownMenu.lua:757`) fired on every list and flipped it upward, off the top.
+   */
+  private logicalScreen(): { readonly width: number; readonly height: number } {
+    for (const name of ["UIParent", "GlueParent"]) {
+      const root = this.#byName.get(name);
+      if (!root) continue;
+      // Not `measure`: the screen is what the anchor arithmetic starts from, so it cannot ask it.
+      const size = this.sizeOf(root, false);
+      if (size.width > 0 && size.height > 0) return size;
+    }
+    return { width: FRAME_XML_FALLBACK_SCREEN.width, height: FRAME_XML_FALLBACK_SCREEN.height };
+  }
+
+  /**
+   * Where a frame sits on the logical screen, in unscaled UI units with a CSS (top-origin) Y axis.
+   *
+   * Scale is folded in the way the renderer draws it: a frame's size and its anchor offsets are in
+   * its *own* units, so both are multiplied by its effective scale on the way to the screen (the
+   * renderer writes `offset * scale` in the parent's box, and the parent's box is itself scaled by
+   * the parent's effective scale).
+   *
+   * Every anchor counts, the way the renderer places the box: two anchors on opposite edges of an
+   * axis span it (the second one used to be ignored, so a region pinned LEFT and RIGHT reported its
+   * text's width from its left edge); otherwise an edge wins over a centre, and the last anchor of a
+   * role over an earlier one. Rectangles are memoised per question, so a chain of two-anchor frames
+   * resolves each ancestor once.
+   */
+  private screenRect(frame: FrameXmlFrame, screen: { readonly width: number; readonly height: number }): FrameXmlRect {
+    // Keep anchor recursion in CSS/top-origin coordinates. The public WoW methods use a
+    // bottom-origin vertical axis, so converting each recursive rectangle would make relative
+    // anchors mix coordinate systems.
+    const screenBox: FrameXmlRect = { left: 0, top: 0, width: screen.width, height: screen.height,
+      right: screen.width, bottom: screen.height };
+    const resolved = new Map<FrameXmlFrame, FrameXmlRect>();
     const resolve = (current: FrameXmlFrame, visiting: Set<FrameXmlFrame>): FrameXmlRect => {
-      const size = this.measure(current);
+      const known = resolved.get(current);
+      if (known) return known;
+      const scale = this.effectiveScale(current);
       if (visiting.has(current)) {
-        return { left: 0, top: 0, width: size.width, height: size.height,
-          right: size.width, bottom: size.height };
+        const own = this.sizeOf(current, false);
+        return { left: 0, top: 0, width: own.width * scale, height: own.height * scale,
+          right: own.width * scale, bottom: own.height * scale };
       }
       visiting.add(current);
-      const parent = current.parent
-        ? resolve(current.parent, visiting)
-        : { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
-      const point = current.points[0];
-      visiting.delete(current);
-      if (!point) {
-        return { left: 0, top: 0, width: size.width, height: size.height,
-          right: size.width, bottom: size.height };
+      // No parent means the screen itself, which is also what `UIParent` covers.
+      const parent = current.parent ? resolve(current.parent, visiting) : screenBox;
+      const x: Partial<Record<"LEFT" | "RIGHT" | "CENTER", number>> = {};
+      const y: Partial<Record<"TOP" | "BOTTOM" | "CENTER", number>> = {};
+      for (const point of current.points) {
+        const relative = point.relativeTo ? resolve(point.relativeTo, visiting) : parent;
+        const anchor = anchorRoles(point.point);
+        const target = anchorRoles(point.relativePoint ?? point.point);
+        x[anchor.x] = (target.x === "LEFT" ? relative.left
+          : target.x === "RIGHT" ? relative.right : relative.left + relative.width / 2) + (point.x ?? 0) * scale;
+        // FrameXML's positive Y points upward; the rectangle is CSS/top-origin.
+        y[anchor.y] = (target.y === "TOP" ? relative.top
+          : target.y === "BOTTOM" ? relative.bottom : relative.top + relative.height / 2) - (point.y ?? 0) * scale;
       }
-      const relative = point.relativeTo ? resolve(point.relativeTo, visiting) : parent;
-      const own = anchorRoles(point.point);
-      const target = anchorRoles(point.relativePoint ?? point.point);
-      const targetX = target.x === "LEFT" ? relative.left
-        : target.x === "RIGHT" ? relative.right : relative.left + relative.width / 2;
-      const targetY = target.y === "TOP" ? relative.top
-        : target.y === "BOTTOM" ? relative.bottom : relative.top + relative.height / 2;
-      const ownX = own.x === "LEFT" ? 0 : own.x === "RIGHT" ? size.width : size.width / 2;
-      const ownY = own.y === "TOP" ? 0 : own.y === "BOTTOM" ? size.height : size.height / 2;
-      const left = targetX + (point.x ?? 0) - ownX;
-      // FrameXML's positive Y points upward; the rectangle is CSS/top-origin.
-      const top = targetY - (point.y ?? 0) - ownY;
-      return { left, top, width: size.width, height: size.height,
-        right: left + size.width, bottom: top + size.height };
+      visiting.delete(current);
+      const spanX = x.LEFT !== undefined && x.RIGHT !== undefined;
+      const spanY = y.TOP !== undefined && y.BOTTOM !== undefined;
+      const own = spanX && spanY ? { width: 0, height: 0 } : this.sizeOf(current, false);
+      const width = spanX ? Math.max(0, x.RIGHT! - x.LEFT!) : own.width * scale;
+      const height = spanY ? Math.max(0, y.BOTTOM! - y.TOP!) : own.height * scale;
+      // An unanchored axis sits at the parent's origin — where the renderer's absolutely positioned
+      // box without offsets lands.
+      const left = x.LEFT ?? (x.RIGHT !== undefined ? x.RIGHT - width
+        : x.CENTER !== undefined ? x.CENTER - width / 2 : parent.left);
+      const top = y.TOP ?? (y.BOTTOM !== undefined ? y.BOTTOM - height
+        : y.CENTER !== undefined ? y.CENTER - height / 2 : parent.top);
+      const rect = { left, top, width, height, right: left + width, bottom: top + height };
+      resolved.set(current, rect);
+      return rect;
     };
-    const css = resolve(frame, new Set());
-    let topAncestor = frame;
-    while (topAncestor.parent) topAncestor = topAncestor.parent;
-    const screenHeight = this.measure(topAncestor).height;
-    // GetLeft/GetRight are already screen-left-origin. WoW's GetTop/GetBottom
-    // count upward from the bottom edge, unlike CSS's top-origin rectangle.
+    return resolve(frame, new Set());
+  }
+
+  /**
+   * `GetLeft`/`GetRight`/`GetTop`/`GetBottom`/`GetCenter`/`GetRect`: WoW's bottom-origin rectangle,
+   * in the frame's own (scaled) coordinate system — screen position divided by the effective scale,
+   * which is what stock code pairs with `GetCursorPosition() / GetEffectiveScale()` and `GetWidth()`.
+   */
+  geometry(frame: FrameXmlFrame): FrameXmlRect {
+    const screen = this.logicalScreen();
+    const css = this.screenRect(frame, screen);
+    const scale = this.effectiveScale(frame);
     return {
-      left: css.left,
-      top: screenHeight - css.top,
-      width: css.width,
-      height: css.height,
-      right: css.right,
-      bottom: screenHeight - css.bottom,
+      left: css.left / scale,
+      top: (screen.height - css.top) / scale,
+      width: css.width / scale,
+      height: css.height / scale,
+      right: css.right / scale,
+      bottom: (screen.height - css.bottom) / scale,
     };
+  }
+
+  /**
+   * Let the host answer "where is this frame on the screen right now": unscaled UI units, left
+   * origin, Y measured upward — `GetCursorPosition`'s own frame. The renderer answers from the laid
+   * out page and keeps the answer until its next paint; see `FrameXmlDomRenderer.screenRectOf`.
+   */
+  setScreenRectSource(source: ((frame: FrameXmlFrame) => FrameXmlRect | undefined) | undefined): void {
+    this.#screenRectSource = source;
+  }
+
+  /**
+   * `Frame:IsMouseOver(top, bottom, left, right)`: the cursor inside the frame's box, each edge
+   * pushed out by its offset (in the frame's own units; positive top/right grow the box).
+   *
+   * Stock code calls it every frame — `FCF_OnUpdate` three times per chat window
+   * (`FloatingChatFrame.lua:1074-1076`, the chat fade) and `WorldMapButton_OnUpdate` once per unit
+   * button — so it reads a rectangle the renderer already has, never the bridge's recursive anchor
+   * walk unless there is no renderer. A frame that is not visible is never under the cursor.
+   */
+  isMouseOver(frame: FrameXmlFrame, top = 0, bottom = 0, left = 0, right = 0): boolean {
+    if (!this.own(frame) || !this.isVisible(frame)) return false;
+    if (this.#heldLayout) this.settleDeferredLayout(frame);
+    let rect = this.#screenRectSource?.(frame);
+    if (!rect) {
+      const screen = this.logicalScreen();
+      const css = this.screenRect(frame, screen);
+      rect = { left: css.left, right: css.right, width: css.width, height: css.height,
+        top: screen.height - css.top, bottom: screen.height - css.bottom };
+    }
+    const scale = this.effectiveScale(frame);
+    const [x, y] = this.#mousePosition;
+    return x >= rect.left + left * scale && x <= rect.right + right * scale
+      && y >= rect.bottom + bottom * scale && y <= rect.top + top * scale;
+  }
+
+  /**
+   * Keep the size a host actually laid a frame out at, for Lua's `GetWidth`/`GetHeight`, without
+   * announcing it.
+   *
+   * The GameTooltip is the user: its box is sized by the page from the measured rows, and stock
+   * code reads it back (`SetTooltipMoney`, `GameTooltip_ShowCompareItem`'s `GetRight`/`GetWidth`).
+   * Nothing is re-rendered, because the page already shows exactly this size; announcing it would
+   * make the renderer re-apply the tooltip once more after every content change, for nothing.
+   */
+  recordLaidOutSize(frame: FrameXmlFrame, width: number, height: number): boolean {
+    const mutable = this.own(frame);
+    if (!mutable || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+    const nextWidth = String(Math.round(width * 100) / 100);
+    const nextHeight = String(Math.round(height * 100) / 100);
+    if (mutable.attributes["width"] === nextWidth && mutable.attributes["height"] === nextHeight) return false;
+    mutable.setAttribute("width", nextWidth);
+    mutable.setAttribute("height", nextHeight);
+    return true;
+  }
+
+  /**
+   * Put a Button's inheriting label in the font its state calls for: the `<DisabledFont>` while the
+   * button is disabled, otherwise the `<NormalFont>` (or `SetNormalFontObject`).
+   *
+   * 3.3.5 draws a button's text in the button's state fonts; the label FontString has none of its
+   * own. Before this the stock `CharacterFrameTabButtonTemplate` label (NormalFont
+   * GameFontNormalSmall, DisabledFont GameFontHighlightSmall) had no font object at all, painted in
+   * the host's 16px default and measured `GetStringWidth("Персонаж")` = 65.46 instead of the
+   * 10-point Friz width, which is what sized every tab too wide; the selected (disabled) tab never
+   * turned white. The highlight font is a pointer state and belongs to the renderer.
+   *
+   * The label is justified by that font too, unless it has an alignment of its own (`ownJustifyH`):
+   * a FontString's justification is its font object's until the string sets one. Every row of the
+   * stock profession and trainer lists is `ClassTrainerSkillButtonTemplate`, a bare `<ButtonText>`
+   * over `<NormalFont style="GameFontNormalLeft"/>` that Lua re-fonts per row
+   * (`SetNormalFontObject(TradeSkillTypeColor[…].font)`, all `…Left`); with the label kept at its
+   * CENTER default the recipe names, the headings and the collapse-all «Все» were drawn centred.
+   */
+  syncButtonLabelFont(frame: FrameXmlFrame, announce = true): boolean {
+    const button = this.own(frame);
+    const label = this.own(button?.stateTextures.get("BUTTONTEXT"));
+    if (!button || !label || !label.inheritsButtonFont) return false;
+    const font = (!button.enabled ? button.stateFonts.get("DISABLED") : undefined)
+      || button.stateFonts.get("NORMAL") || button.fontObject;
+    if (!font || label.fontObject === font) return false;
+    label.fontObject = font;
+    if (!label.ownJustifyH || !label.ownJustifyV) {
+      const style = this.fontStyle(font) ?? this.fontObjectStyle(font);
+      if (!label.ownJustifyH) label.justifyH = style?.justifyH || "CENTER";
+      if (!label.ownJustifyV) label.justifyV = style?.justifyV || "MIDDLE";
+    }
+    if (announce) this.notifyMutation(label);
+    return true;
   }
 
   /**
@@ -569,6 +955,18 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   }
 
   /**
+   * Hear every announced change to a named frame, with its kind, as it is made (before the batch
+   * that holds it notifies `subscribe`rs). A renderer uses it to reconcile the frames that changed
+   * instead of walking every drawn frame to find them; frameless changes (`touch`, tree
+   * creation) are not reported and bump `structureVersion`, which asks for the full walk.
+   * Host-side only, like `subscribe`.
+   */
+  observeFrameMutations(observer: (frame: FrameXmlFrame, kind: FrameXmlMutationKind) => void): () => void {
+    this.#frameObservers.add(observer);
+    return () => this.#frameObservers.delete(observer);
+  }
+
+  /**
    * Group a host-side operation into one render transaction.
    *
    * A single C-side operation can dispatch several FrameXML handlers — a screen switch walks
@@ -588,17 +986,220 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   }
 
   /**
+   * `runInMutationBatch` for a world event: with `setLayoutDeferral` on, an outermost batch keeps
+   * whatever it changed — a move, a new text, a shown frame included — for the host's frame step
+   * instead of announcing it when it ends.
+   *
+   * The seam's pump opens one of these per event it delivers, and those arrive in bursts outside the
+   * step: the store flush at the top of the game frame delivers every field that moved (a raid's
+   * worth of health and power), and every packet in between delivers its own. A health event alone
+   * sets the bar's value and its text, and the text is a layout change, so each such event used to
+   * reconcile the page on its own — measured with the stock vertical and 40 health/power events of
+   * five units: 40 layout passes before the step's own. Nested, or with deferral off, it is a plain
+   * batch; nothing a script reads goes stale, because every layout read settles first
+   * (`settleDeferredLayout`).
+   */
+  runInDeferrableBatch<T>(operation: () => T): T {
+    if (!this.#deferLayout || this.#dispatchDepth !== 0 || this.#mutationDepth !== 0) {
+      return this.runInMutationBatch(operation);
+    }
+    this.#mutationDepth += 1;
+    try {
+      return operation();
+    } finally {
+      this.#mutationDepth -= 1;
+      // Held, not announced: the step's `flushDeferredPaint` (or the next announcement) carries it.
+      if (this.#dispatchDepth === 0 && this.#mutationDepth === 0) this.holdBatch();
+    }
+  }
+
+  /** The outermost batch ended without an announcement: what it changed is held now. */
+  private holdBatch(): void {
+    if (this.#pendingNotification && this.#pendingLayout) this.#heldLayout = true;
+    for (const frame of this.#batchLayoutFrames) this.#heldLayoutFrames.add(frame);
+    this.#batchLayoutFrames.clear();
+    if (this.#batchFrameless) this.#heldFrameless = true;
+    this.#batchFrameless = false;
+  }
+
+  /**
+   * A renderer's own reconciliation walk, as one batch.
+   *
+   * The walk reads the bridge's geometry while it places frames (`FrameXmlDomRenderer`'s texture
+   * corners), and a read settles held layout by announcing it (`settleDeferredLayout`) — which would
+   * start the renderer's next pass inside the one still walking. A pass already reconciles every
+   * change made before it, so reads inside one never settle.
+   */
+  runInRenderPass<T>(operation: () => T): T {
+    return this.runInMutationBatch(() => {
+      this.#renderPassDepth += 1;
+      try {
+        return operation();
+      } finally {
+        this.#renderPassDepth -= 1;
+      }
+    });
+  }
+
+  /**
    * Coalesce mutations raised while a handler or host transaction is running.
    *
    * One OnShow of the login frame performs hundreds of Show/SetText/SetPoint
    * calls; re-rendering after each would make the screen quadratic in its own
    * size. Notification is deferred to the outermost dispatch/transaction instead.
    */
-  private notifyMutation(): void {
+  private notifyMutation(frame?: MutableFrameXmlFrame, kind: FrameXmlMutationKind = "layout"): void {
+    // The frame's own version lets a renderer re-apply only what changed; a notification without
+    // one is a change nobody can localise, and counts as structural.
+    if (frame) {
+      frame.renderVersion += 1;
+      for (const observer of this.#frameObservers) observer(frame, kind);
+    }
+    if (!frame || kind === "structure") this.#structureVersion += 1;
+    const layout = !frame || kind !== "paint";
+    if (layout) this.#layoutVersion += 1;
+    if (layout && this.#deferLayout) {
+      if (frame) this.#batchLayoutFrames.add(frame);
+      else this.#batchFrameless = true;
+    }
     if (this.#dispatchDepth > 0 || this.#mutationDepth > 0) {
+      this.#pendingNotification = true;
+      if (layout) this.#pendingLayout = true;
+      return;
+    }
+    if (this.#deferPaint && !layout) {
       this.#pendingNotification = true;
       return;
     }
+    this.announce();
+  }
+
+  /**
+   * Hold back notifications of paint-only changes made outside a batch the host marks as its frame
+   * (`flushDeferredPaint`), and of batches that changed paint only.
+   *
+   * A paint change (alpha, colour, a bar's value, a cooldown, a message line) neither moves nor
+   * shows anything, so nothing a script or the host reads — geometry, visibility, focus — depends
+   * on when it reaches the page, and the page draws it no earlier than its next animation frame
+   * anyway. The world mount turns this on and flushes at the end of its frame step, so every packet
+   * event between two frames that only paints shares that frame's reconciliation instead of paying
+   * one of its own (measured on the rich route: one paint pass per packet batch, 0.6 ms a frame in
+   * a ten-events-a-frame storm). A layout or structural change is still announced at once, and it
+   * carries whatever paint was held with it — unless a world event made it and `setLayoutDeferral`
+   * holds that too.
+   */
+  setPaintDeferral(enabled: boolean): void {
+    this.#deferPaint = enabled;
+    if (!enabled) this.flushDeferredPaint();
+  }
+
+  /**
+   * Hold back, as well, every change a world event makes (`runInDeferrableBatch`): moves, texts and
+   * shown frames included, until the host's frame step announces them with `flushDeferredPaint`.
+   *
+   * What Lua and the host read stays what it was. Anything that measures the page — `GetWidth`,
+   * `GetLeft`, `GetCenter`, `IsMouseOver`, the logical screen, a host's `elementFor` — first settles
+   * held layout (`settleDeferredLayout`), so a script that reads after an earlier event moved a frame
+   * gets the frame where that event put it, exactly as when every event was reconciled on its own.
+   * Only the pump's events are held: a click or a key still reaches the page when its batch ends, so
+   * focus and the pressed state follow the hand, not the next frame.
+   */
+  setLayoutDeferral(enabled: boolean): void {
+    this.#deferLayout = enabled;
+    if (!enabled) this.flushDeferredPaint();
+  }
+
+  /**
+   * Announce what `setPaintDeferral` and `setLayoutDeferral` held back, if anything and outside a
+   * batch: the world mount's frame step, once per frame.
+   */
+  flushDeferredPaint(): void {
+    if (this.#dispatchDepth !== 0 || this.#mutationDepth !== 0 || !this.#pendingNotification) return;
+    this.announce();
+  }
+
+  /**
+   * Announce held layout now, inside a batch too: something is about to measure the page.
+   *
+   * A held notification that can move something means the page is not yet what the bridge says, and
+   * every read of the page goes through here first — the bridge's own (`sizeOf`, `isMouseOver`) and
+   * the host's (`FrameXmlDomRenderer.elementFor`/`measure`). Paint alone is left for the step, as
+   * before: it moves nothing a read could see. Inside a renderer's walk it does nothing
+   * (`runInRenderPass`).
+   *
+   * A read of one frame's box (`frame`) settles only when an unannounced change can have moved or
+   * resized that box (`layoutReaches`). Stock OnUpdate code measures the same few frames every frame
+   * — `FCF_OnUpdate` asks each chat frame `IsMouseOver` and the combat log's button bar `GetHeight`,
+   * `CastingBarFrame_OnUpdate` asks the bar `GetWidth` for its spark — and a health text a packet
+   * rewrote moves none of them: settling for those reads cost the step a second pass on every frame
+   * a world event had changed any layout (measured with the stock vertical: two passes a frame, one
+   * of them forced from inside OnUpdate). A read that names no frame settles whatever is held.
+   */
+  settleDeferredLayout(frame?: FrameXmlFrame): void {
+    if (!this.#heldLayout || this.#renderPassDepth !== 0) return;
+    if (frame !== undefined && !this.#heldFrameless && !this.layoutReaches(frame)) return;
+    this.announce();
+  }
+
+  /**
+   * Whether a layout change not yet announced can have moved or resized `frame`'s drawn box.
+   *
+   * The box is placed from the frame itself, its parents (the containing blocks), and whatever any
+   * of those is anchored to — a sibling anchor is a measured position, re-placed when its target
+   * moves — and from those frames' own placement in turn. A box on that path that its content sizes
+   * (`sizedByContent`: a tooltip's grid, a sizeless button around its label) also follows what is
+   * inside it; a string sized by its text is its own change. Anything the walk cannot finish within
+   * its bound is assumed to reach.
+   */
+  private layoutReaches(frame: FrameXmlFrame): boolean {
+    const changed = this.#heldLayoutFrames;
+    if (changed.size === 0) return false;
+    const seen = new Set<FrameXmlFrame>();
+    const pending: FrameXmlFrame[] = [frame];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (seen.has(current)) continue;
+      if (seen.size >= LAYOUT_REACH_LIMIT) return true;
+      seen.add(current);
+      if (changed.has(current)) return true;
+      // A box on the path that its content sizes (a tooltip a money frame hangs under, a sizeless
+      // button) moves with a change anywhere inside it.
+      if (sizedByContent(current) && this.changedInside(current)) return true;
+      if (current.parent) pending.push(current.parent);
+      for (const point of current.points) if (point.relativeTo) pending.push(point.relativeTo);
+    }
+    return false;
+  }
+
+  /** Whether a held layout change was made to a frame inside `frame`. */
+  private changedInside(frame: FrameXmlFrame): boolean {
+    for (const moved of this.#heldLayoutFrames) {
+      for (let at = moved.parent, depth = 0; at && depth < 64; at = at.parent, depth += 1) {
+        if (at === frame) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Whether changes are waiting for `flushDeferredPaint`. */
+  get paintDeferred(): boolean {
+    return this.#pendingNotification && this.#dispatchDepth === 0 && this.#mutationDepth === 0;
+  }
+
+  /** Whether a held notification carries layout, i.e. whether a read would settle it. */
+  get layoutDeferred(): boolean {
+    return this.#heldLayout;
+  }
+
+  /** Announce every change not yet announced; nothing is pending or held afterwards. */
+  private announce(): void {
+    this.#pendingNotification = false;
+    this.#pendingLayout = false;
+    this.#heldLayout = false;
+    this.#heldLayoutFrames.clear();
+    this.#heldFrameless = false;
+    this.#batchLayoutFrames.clear();
+    this.#batchFrameless = false;
     this.emitMutation();
   }
 
@@ -615,8 +1216,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
 
   private flushPendingNotification(): void {
     if (this.#dispatchDepth !== 0 || this.#mutationDepth !== 0 || !this.#pendingNotification) return;
-    this.#pendingNotification = false;
-    this.emitMutation();
+    if (this.#deferPaint && !this.#pendingLayout) {
+      this.holdBatch();
+      return;
+    }
+    this.announce();
   }
 
   private diagnostic(scope: FrameXmlDiagnostic["scope"], message: string): void {
@@ -729,7 +1333,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     for (const child of element.children) {
       // `Attributes` used to be skipped here beside `Scripts` and `Events`, which is why F1
       // recorded the element as unparsed: it never reached `applyDeclaration`.
-      if (child.name === "Scripts" || child.name === "Events") continue;
+      if (child.name === "Scripts" || child.name === "Events" || child.name === "Animations") continue;
       if (isWidget(child)) {
         if (!isVirtual(child) && !this.applyEmbeddedWidget(frame, child)) {
           const built = this.buildElement(child, frame);
@@ -740,6 +1344,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       }
     }
     for (const anchor of element.children) this.collectPointDeclarations(anchor, frame);
+    // Before OnLoad, so a template's own sizing code (`PanelTemplates_TabResize` measuring
+    // `CharacterFrameTab1Text`) already measures the label in the font it will be drawn in.
+    if (frame.type === "Button" || frame.type === "CheckButton") this.syncButtonLabelFont(frame, false);
+    const animations = element.children.filter((child) => child.name === "Animations");
+    if (animations.length > 0) this.#runtime?.bindAnimations?.(frame, animations.flatMap((child) => child.children));
     if (frame.setAllPoints && frame.points.length === 0) {
       // `setAllPoints="true"` is the corpus' most common layout: every glue
       // screen root and every `*UI` container uses it. Expanding it into the
@@ -773,7 +1382,13 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     frame.alpha = frameXmlNumber(element, "alpha") ?? 1;
     frame.scale = frameXmlNumber(element, "scale") ?? 1;
     frame.frameLevel = frameXmlNumber(element, "frameLevel") ?? 0;
-    frame.frameStrata = frameXmlAttribute(element, "frameStrata")?.trim().toUpperCase() ?? "MEDIUM";
+    // A frame that declares no strata is in its parent's, as `CreateFrame(type, name, parent)` puts
+    // it: `GetFrameStrata` answers the parent's, and the renderer draws the child in that strata.
+    // Defaulting every child to MEDIUM made 522 widgets of the MPQ vertical look "above" their
+    // parent (the dock's tabs under a LOW `GeneralDockManager`, the minimap under a BACKGROUND
+    // cluster), which the strata layer of FrameXmlDomRenderer would have lifted out of place.
+    frame.frameStrata = frameXmlAttribute(element, "frameStrata")?.trim().toUpperCase()
+      ?? frame.parent?.frameStrata ?? "MEDIUM";
     frame.toplevel = frameXmlBoolean(element, "toplevel") ?? false;
     frame.clampedToScreen = frameXmlBoolean(element, "clampedToScreen") ?? false;
     frame.movable = frameXmlBoolean(element, "movable") ?? false;
@@ -814,6 +1429,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       frame.editBox.numeric = frameXmlBoolean(element, "numeric") ?? false;
       frame.editBox.multiLine = frameXmlBoolean(element, "multiLine") ?? false;
       frame.editBox.historyLines = frameXmlNumber(element, "historyLines") ?? 0;
+      frame.editBox.autoFocus = frameXmlBoolean(element, "autoFocus") ?? true;
     }
     if (frame.type === "MessageFrame" || frame.type === "ScrollingMessageFrame") {
       const maxLines = frameXmlNumber(element, "maxLines");
@@ -905,7 +1521,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           for (const child of element.children) {
             if (!isWidget(child) || isVirtual(child)) continue;
             const built = this.buildElement(child, frame);
-            if (built) frame.children.push(built);
+            if (built) {
+              frame.children.push(built);
+              frame.scroll.child = built;
+            }
           }
           return true;
         }
@@ -947,6 +1566,15 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
         return true;
       }
       case "ButtonText": {
+        // A Button has one font string. A second `<ButtonText>` — the instance's, after its template's
+        // (`TradeFrameTradeButton inherits="UIPanelButtonTemplate"` with `<ButtonText text="TRADE"/>`,
+        // TradeFrame.xml:501-519) — describes that same string, so it is merged into it: measured on
+        // the MPQ vertical, 2 buttons drew their label twice («Обмен» over «Обмен») before this.
+        const existing = this.own(frame.stateTextures.get("BUTTONTEXT"));
+        if (existing && existing.parent === frame) {
+          this.mergeButtonText(existing, element);
+          return true;
+        }
         const built = this.buildElement({ ...element, name: "FontString" }, frame, undefined, "FontString");
         const mutable = this.own(built);
         if (mutable) {
@@ -957,6 +1585,16 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           if (mutable.points.length === 0) {
             mutable.points.push({ point: "CENTER", relativeTo: frame, relativePoint: "CENTER", x: 0, y: 0 });
           }
+          // A label that names no font of its own draws in the button's state font. The state fonts
+          // may be declared after it (`CharacterFrameTemplates.xml:82-96` puts `<ButtonText>` before
+          // `<NormalFont>`), so the font is applied once the whole button is built — see
+          // `syncButtonLabelFont`. A label with an `inherits` of its own keeps that font, whatever
+          // kind of template it names (`PaperDollFrame.xml:112`'s title: `GameFontHighlightSmallLeft`).
+          mutable.inheritsButtonFont = !mutable.fontObject
+            && frameXmlAttribute(element, "inherits") === undefined
+            && mutable.attributes["font"] === undefined;
+          mutable.ownJustifyH = frameXmlAttribute(element, "justifyH") !== undefined;
+          mutable.ownJustifyV = frameXmlAttribute(element, "justifyV") !== undefined;
           frame.stateTextures.set("BUTTONTEXT", mutable);
           frame.children.push(mutable);
         }
@@ -974,8 +1612,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
         // On a Texture this is the vertex colour; on a FontString it is the
         // text colour. Same element, different destination — the corpus uses
         // both spellings inside the same file.
-        if (frame.type === "Texture") frame.vertexColor = colorOf(element);
-        else frame.textColor = colorOf(element);
+        if (frame.type === "Texture") {
+          frame.vertexColor = colorOf(element);
+          // A Texture's `<Color>` makes the Texture that colour (see `colorFill`).
+          frame.colorFill = true;
+        } else frame.textColor = colorOf(element);
         return true;
       case "BarTexture":
         if (frame.type === "StatusBar") {
@@ -1073,6 +1714,39 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   }
 
   /**
+   * A later `<ButtonText>` applied to the button's existing font string: its text, font, alignment,
+   * colour, size and anchors, each only where the later declaration says something. Anchors follow
+   * `<Anchor>`'s own rule (one per point); the name stays the first declaration's, which is the global
+   * stock Lua reaches the label by (`$parentText`).
+   */
+  private mergeButtonText(label: MutableFrameXmlFrame, element: FrameXmlElement): void {
+    const text = frameXmlAttribute(element, "text");
+    if (text !== undefined) label.text = this.globalString(text);
+    const inherits = frameXmlAttribute(element, "inherits")?.split(",")[0]?.trim();
+    const template = inherits ? this.#registry.get(inherits) : undefined;
+    if (inherits && (!template || template.element.name === FRAME_XML_FONT_ELEMENT)) {
+      label.fontObject = inherits;
+      label.inheritsButtonFont = false;
+    }
+    const justifyH = frameXmlAttribute(element, "justifyH")?.trim().toUpperCase();
+    const justifyV = frameXmlAttribute(element, "justifyV")?.trim().toUpperCase();
+    if (justifyH) {
+      label.justifyH = justifyH;
+      label.ownJustifyH = true;
+    }
+    if (justifyV) {
+      label.justifyV = justifyV;
+      label.ownJustifyV = true;
+    }
+    const size = effectiveSizeAttributes(element);
+    if (size["width"] !== undefined) label.setAttribute("width", size["width"]);
+    if (size["height"] !== undefined) label.setAttribute("height", size["height"]);
+    const color = colorOf(frameXmlChild(element, "Color"));
+    if (color) label.textColor = color;
+    for (const child of element.children) this.collectPointDeclarations(child, label);
+  }
+
+  /**
    * A widget's own anchors: the `<Anchor>` entries of its own `<Anchors>` block, and nothing else.
    *
    * This used to recurse through every child that was not a widget, and that reached into the
@@ -1111,13 +1785,34 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
         const relativePoint = frameXmlAttribute(element, "relativePoint");
         const dimension = dimensionOf(offset)
           ?? { x: frameXmlNumber(element, "x") ?? 0, y: frameXmlNumber(element, "y") ?? 0 };
-        const pointIndex = frame.points.push({
+        const anchor = {
           point,
           ...(relativeTo ? { relativeTo } : {}),
           ...(relativePoint ? { relativePoint } : {}),
           x: dimension.x,
           y: dimension.y,
-        }) - 1;
+        };
+        // An `<Anchor>` is the client's `SetPoint`: one anchor per point name, whatever it is relative
+        // to, so the instance's own anchor replaces the template's rather than joining it. The merged
+        // element carries the template's `<Anchors>` first. Measured on the MPQ vertical before this:
+        // 17 frames held a point twice, among them `ChatFrame1` — FloatingChatFrameTemplate's
+        // `BOTTOMLEFT 100,100` plus its own `BOTTOMLEFT 32,95`. `FCF_UpdateDockPosition`'s
+        // `SetPoint("BOTTOMLEFT", UIParent, …, 32, 115)` then replaced only the first, the renderer
+        // pinned both, and ChatFrame1 was drawn 140 units tall against Lua's 120.
+        const name = point.trim().toUpperCase();
+        const existing = frame.points.findIndex((candidate) => candidate.point.trim().toUpperCase() === name);
+        let pointIndex: number;
+        if (existing >= 0) {
+          frame.points[existing] = anchor;
+          pointIndex = existing;
+          // A template anchor still waiting for its target must not overwrite its replacement.
+          for (let index = this.#pendingRelativePoints.length - 1; index >= 0; index -= 1) {
+            const pending = this.#pendingRelativePoints[index];
+            if (pending?.frame === frame && pending.index === existing) this.#pendingRelativePoints.splice(index, 1);
+          }
+        } else {
+          pointIndex = frame.points.push(anchor) - 1;
+        }
         if (relativeName && relativeName !== "$parent" && !relativeTo) {
           this.#pendingRelativePoints.push({
             frame, index: pointIndex, relativeName: this.expandParentName(relativeName, frame.parent),
@@ -1365,7 +2060,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
 
   dispatchOnLoad(roots: readonly FrameXmlFrame[]): void {
     for (const root of roots) {
-      for (const child of root.children) this.dispatchOnLoad([child]);
+      // A copy: a child's OnLoad may reparent it (ArenaEnemyPetFrame_OnLoad's
+      // `self:SetParent(ArenaEnemyFrames)`, Blizzard_ArenaUI.lua:255), and splicing the live list
+      // skipped the next sibling's OnLoad — ArenaEnemyFrameNCastingBar never got its unit.
+      for (const child of [...root.children]) this.dispatchOnLoad([child]);
       // XML child widgets are initialized before their owner in the stock client.  Parent OnLoad
       // handlers routinely perform their first update against child state; TargetFrame.lua is a
       // concrete example because TargetFrame_OnLoad immediately updates the health/mana bars,
@@ -1378,9 +2076,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return this.runInMutationBatch(() => {
       const name = event.trim();
       if (!name) return 0;
+      const excluded = takeEventExclusion(name);
       let delivered = 0;
       for (const frame of [...(this.#byEvent.get(name) ?? [])]) {
-        if (!frame.registeredEvents.has(name)) continue;
+        if (!frame.registeredEvents.has(name) || excluded?.has(frame.name)) continue;
         this.dispatchScript(frame, "OnEvent", [name, ...args]);
         delivered += 1;
       }
@@ -1404,9 +2103,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return this.runInMutationBatch(() => {
       const name = event.trim();
       if (!name) return 0;
+      const excluded = takeEventExclusion(name);
       let delivered = 0;
       for (const frame of [...(this.#byEvent.get(name) ?? [])]) {
-        if (!frame.registeredEvents.has(name) || excludedFrameNames.has(frame.name)) continue;
+        if (!frame.registeredEvents.has(name) || excludedFrameNames.has(frame.name)
+          || excluded?.has(frame.name)) continue;
         this.dispatchScript(frame, "OnEvent", [name, ...args]);
         delivered += 1;
       }
@@ -1423,6 +2124,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    */
   tick(elapsedSeconds: number): number {
     return this.runInMutationBatch(() => {
+      this.#runtime?.tickAnimations?.(elapsedSeconds);
       let dispatched = 0;
       for (const frame of [...this.#updateFrames]) {
         if (!this.#frames.has(frame) || !this.isVisible(frame)) continue;
@@ -1555,7 +2257,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     });
   }
 
-  CreateFrame(type: string, name?: string, parent?: FrameXmlFrame, inherits?: string): FrameXmlFrame | undefined {
+  CreateFrame(
+    type: string, name?: string, parent?: FrameXmlFrame, inherits?: string, id?: number,
+  ): FrameXmlFrame | undefined {
     const resolvedType = canonicalWidgetType(type);
     if (!resolvedType) {
       this.diagnostic("addon", `CreateFrame("${type}") is not supported by the bounded bridge`);
@@ -1566,6 +2270,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const attributes: Record<string, string> = {};
     if (name) attributes["name"] = name;
     if (inherits) attributes["inherits"] = inherits;
+    // 3.3's fifth argument, the frame's ID, set before the template's OnLoad reads it as the XML
+    // `id` attribute would be (FCF_OpenTemporaryWindow's ChatFrame<N>, FloatingChatFrame_OnLoad).
+    if (id !== undefined && Number.isFinite(id)) attributes["id"] = String(Math.trunc(id));
     const element: FrameXmlElement = {
       name: resolvedType,
       attributes,
@@ -1641,6 +2348,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (previous) {
       const oldParent = this.own(previous);
       if (oldParent) {
+        if (oldParent.scroll.child === mutable) oldParent.scroll.child = undefined;
         for (let index = oldParent.children.length - 1; index >= 0; index -= 1) {
           if (oldParent.children[index] === mutable) oldParent.children.splice(index, 1);
         }
@@ -1660,8 +2368,41 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
         this.#createdRoots.splice(rootIndex, 1);
       }
     }
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "structure");
     return true;
+  }
+
+  /** Adopt a real scroll child without confusing it with the scrollbar in GetChildren(). */
+  SetScrollChild(frame: FrameXmlFrame, child?: FrameXmlFrame): boolean {
+    const owner = this.own(frame);
+    const content = this.own(child);
+    if (!owner || owner.type !== "ScrollFrame" || (child !== undefined && !content)) return false;
+    if (content && (content.type === "Texture" || content.type === "FontString")) return false;
+    return this.runInMutationBatch(() => {
+      if (content && !this.SetParent(content, owner)) return false;
+      owner.scroll.child = content;
+      this.notifyMutation();
+      return true;
+    });
+  }
+
+  /** User input and Lua share the same range clamp and change-only dispatch. */
+  SetValue(frame: FrameXmlFrame, value: number, snapToStep = false): boolean {
+    const mutable = this.own(frame);
+    if (!mutable || !Number.isFinite(value)) return false;
+    if (mutable.type !== "Slider" && mutable.type !== "StatusBar") return false;
+    const state = mutable.type === "StatusBar" ? mutable.statusBar : mutable.slider;
+    const { min, max, valueStep } = state;
+    const wanted = snapToStep && valueStep > 0
+      ? min + Math.round((value - min) / valueStep) * valueStep : value;
+    const clamped = Math.max(min, Math.min(Math.max(min, max), wanted));
+    if (clamped === state.value) return false;
+    return this.runInMutationBatch(() => {
+      state.value = clamped;
+      this.notifyMutation(this.own(frame), "paint");
+      this.dispatchScript(mutable, "OnValueChanged", [clamped]);
+      return true;
+    });
   }
 
   SetScript(frame: FrameXmlFrame, script: string, handler: FrameXmlScriptHandler | null): boolean {
@@ -1696,7 +2437,15 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return true;
   }
 
-  /** Dispatch a button activation with only the scalar arguments FrameXML exposes to Lua. */
+  /**
+   * Dispatch a button activation with only the scalar arguments FrameXML exposes to Lua.
+   *
+   * A click is three scripts in the client's order — `PreClick`, `OnClick`, `PostClick`, each with
+   * `(button, down)` — after a CheckButton has flipped its check. That order is what the stock
+   * bodies rely on: SpellButtonTemplate's `<PreClick>self:SetChecked(0)` takes back the flip before
+   * `SpellButton_OnClick` casts, and ActionButtonTemplate's `<PostClick>` re-reads
+   * `IsCurrentAction` once `SecureActionButton_OnClick` has used the action.
+   */
   Click(frame: FrameXmlFrame, button = "LeftButton", down = false): boolean {
     return this.runInMutationBatch(() => {
       const mutable = this.own(frame);
@@ -1704,8 +2453,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (!mutable || (mutable.type !== "Button" && mutable.type !== "CheckButton") || !name) return false;
       if (!mutable.enabled) return false;
       if (mutable.type === "CheckButton") mutable.checked = !mutable.checked;
-      this.dispatchScript(mutable, "OnClick", [name, down === true]);
-      this.notifyMutation();
+      const args = [name, down === true] as const;
+      this.dispatchScript(mutable, "PreClick", args);
+      this.dispatchScript(mutable, "OnClick", args);
+      this.dispatchScript(mutable, "PostClick", args);
+      this.notifyMutation(this.own(frame), "paint");
       return true;
     });
   }
@@ -1757,13 +2509,66 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return this.runInMutationBatch(() => {
       const mutable = this.own(frame);
       if (!mutable) return false;
-      const changed = !mutable.visible;
+      // Showing a shown frame changes nothing the renderer draws; announcing it anyway is what
+      // made every idle frame a full re-render (ActionButton_OnUpdate shows its count 5×/s).
+      if (mutable.visible) return true;
       mutable.visible = true;
-      if (changed) this.raiseToplevel(mutable);
-      if (changed) this.dispatchShowTree(mutable, "OnShow");
-      this.notifyMutation();
+      this.raiseToplevel(mutable);
+      const focusRequests = this.#focusRequests;
+      this.dispatchShowTree(mutable, "OnShow");
+      this.autoFocus(mutable, focusRequests);
+      this.notifyMutation(mutable);
       return true;
     });
+  }
+
+  /** `EditBox:SetFocus()`: this box holds the keyboard; the renderer moves the caret into it. */
+  SetFocus(frame: FrameXmlFrame): boolean {
+    const mutable = this.own(frame);
+    if (!mutable) return false;
+    this.#focusRequests += 1;
+    mutable.editBox.focused = true;
+    this.notifyMutation(mutable);
+    return true;
+  }
+
+  /** `EditBox:ClearFocus()`: the box lets the keyboard go and hears OnEditFocusLost. */
+  ClearFocus(frame: FrameXmlFrame): boolean {
+    return this.runInMutationBatch(() => {
+      const mutable = this.own(frame);
+      if (!mutable) return false;
+      this.#focusRequests += 1;
+      mutable.editBox.focused = false;
+      this.notifyMutation(mutable);
+      this.dispatchScript(mutable, "OnEditFocusLost", []);
+      return true;
+    });
+  }
+
+  /**
+   * `autoFocus`: an edit box that comes into view takes the keyboard. That is what puts the caret
+   * in the eight stock StaticPopups whose OnShow never calls `SetFocus` — measured on the rich route,
+   * CHANNEL_INVITE opened with the focus on `StaticPopup1Button1` and the typed «xyz» went nowhere.
+   *
+   * It runs after the OnShow scripts, and only when none of them placed the focus itself: in the
+   * client an OnShow that chooses has the last word. `AccountLogin_OnShow` picks the account or the
+   * password box although both are `autoFocus` (GlueXML never says otherwise) and the password box
+   * is the later one, and SET_FRIENDNOTE's `wideEditBox:SetFocus()` picks its box the same way.
+   * Among several boxes shown at once the last in the tree wins, as the last `SetFocus` would. A
+   * frame shown under a hidden parent is not in view, so it waits for the parent's `Show`.
+   */
+  private autoFocus(root: MutableFrameXmlFrame, focusRequests: number): void {
+    if (this.#focusRequests !== focusRequests || !this.isVisible(root)) return;
+    let target: MutableFrameXmlFrame | undefined;
+    const visit = (frame: MutableFrameXmlFrame): void => {
+      if (frame.type === "EditBox" && frame.editBox.autoFocus) target = frame;
+      for (const child of frame.children) {
+        const mutable = this.own(child);
+        if (mutable?.visible) visit(mutable);
+      }
+    };
+    if (root.visible) visit(root);
+    if (target) this.SetFocus(target);
   }
 
   /**
@@ -1797,10 +2602,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     return this.runInMutationBatch(() => {
       const mutable = this.own(frame);
       if (!mutable) return false;
-      const changed = mutable.visible;
+      if (!mutable.visible) return true;
       mutable.visible = false;
-      if (changed) this.dispatchShowTree(mutable, "OnHide");
-      this.notifyMutation();
+      this.dispatchShowTree(mutable, "OnHide");
+      this.notifyMutation(mutable);
       return true;
     });
   }
@@ -1815,6 +2620,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    */
   private dispatchShowTree(frame: MutableFrameXmlFrame, script: "OnShow" | "OnHide"): void {
     this.dispatchScript(frame, script, []);
+    if (script === "OnHide") this.#runtime?.hideAnimations?.(frame);
     for (const child of frame.children) {
       const mutable = this.own(child);
       if (mutable?.visible) this.dispatchShowTree(mutable, script);
@@ -1849,17 +2655,24 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     // dropped as over-constrained, and a 38-unit button laid itself out 126 units tall, reaching
     // down through the button below it.
     const existing = mutable.points.findIndex((candidate) => candidate.point.toUpperCase() === name);
-    if (existing >= 0) mutable.points[existing] = anchor;
-    else mutable.points.push(anchor);
-    this.notifyMutation();
+    if (existing >= 0) {
+      const current = mutable.points[existing]!;
+      if (current.point === anchor.point && current.relativeTo === anchor.relativeTo
+        && current.relativePoint === anchor.relativePoint && current.x === anchor.x && current.y === anchor.y) {
+        return true;
+      }
+      mutable.points[existing] = anchor;
+    } else mutable.points.push(anchor);
+    this.notifyMutation(mutable);
     return true;
   }
 
   ClearAllPoints(frame: FrameXmlFrame): boolean {
     const mutable = this.own(frame);
     if (!mutable) return false;
+    if (mutable.points.length === 0) return true;
     mutable.points = [];
-    this.notifyMutation();
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -1875,16 +2688,24 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       { point: "BOTTOMRIGHT", ...anchor, relativePoint: "BOTTOMRIGHT", x: 0, y: 0 },
     ];
     mutable.setAllPoints = true;
-    this.notifyMutation();
+    this.notifyMutation(mutable);
     return true;
   }
 
   SetText(frame: FrameXmlFrame, text: string): boolean {
     const mutable = this.own(frame);
     if (!mutable) return false;
+    // An EditBox's SetText also moves its caret and resets history, so it always counts.
+    if (mutable.type !== "EditBox" && mutable.text === String(text)) {
+      const label = this.own(mutable.stateTextures.get("BUTTONTEXT"));
+      if (!label || label.text === mutable.text) return true;
+    }
     mutable.text = String(text);
     if (mutable.type === "EditBox") {
       mutable.editBox.cursorPosition = mutable.text.length;
+      mutable.editBox.highlightStart = undefined;
+      mutable.editBox.highlightEnd = undefined;
+      mutable.editBox.selectionRevision++;
       mutable.editBox.historyIndex = -1;
     }
     // A Button owns its label as a separate FontString; SetText on the button
@@ -1892,7 +2713,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const label = mutable.stateTextures.get("BUTTONTEXT");
     const labelFrame = this.own(label);
     if (labelFrame) labelFrame.text = mutable.text;
-    this.notifyMutation();
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -1904,8 +2725,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const value = `${mutable.text.slice(0, position)}${String(text)}${mutable.text.slice(position)}`;
     mutable.text = value;
     mutable.editBox.cursorPosition = position + String(text).length;
+    mutable.editBox.highlightStart = undefined;
+    mutable.editBox.highlightEnd = undefined;
+    mutable.editBox.selectionRevision++;
     mutable.editBox.historyIndex = -1;
-    this.notifyMutation();
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -1914,7 +2738,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!mutable || mutable.type !== "EditBox") return false;
     mutable.editBox.cursorPosition = Math.max(0, Math.min(mutable.text.length,
       Number.isFinite(position) ? Math.trunc(position) : mutable.text.length));
-    this.notifyMutation();
+    mutable.editBox.highlightStart = undefined;
+    mutable.editBox.highlightEnd = undefined;
+    mutable.editBox.selectionRevision++;
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -1933,7 +2760,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     mutable.editBox.historyIndex = next;
     mutable.text = next === history.length ? "" : history[next] ?? "";
     mutable.editBox.cursorPosition = mutable.text.length;
-    this.notifyMutation();
+    mutable.editBox.highlightStart = undefined;
+    mutable.editBox.highlightEnd = undefined;
+    mutable.editBox.selectionRevision++;
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -1983,7 +2813,12 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     }
     state.revision += 1;
     this.refreshMessageScroll(frame, stickToBottom);
-    this.notifyMutation();
+    // Paint: the lines live in the frame's private message layer, which neither moves nor resizes
+    // the frame (and so nothing measured against it). As a layout change every chat line re-applied
+    // the chat frame's whole subtree and its dependents — measured on the rich route, 35 frames,
+    // 79 sibling measures and the accessibility walk, 2.1 ms a line on the fast cores. The same
+    // holds for every other message-layer change below.
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -1996,7 +2831,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     state.revision += 1;
     frame.scroll.verticalScroll = 0;
     frame.scroll.verticalScrollRange = 0;
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -2023,7 +2858,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (state.messages.length === before) return true;
     state.revision += 1;
     this.refreshMessageScroll(frame, frame.scroll.verticalScroll >= frame.scroll.verticalScrollRange);
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -2038,7 +2873,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       Number.isFinite(offset) ? offset : 0));
     if (wanted === frame.scroll.verticalScroll) return true;
     frame.scroll.verticalScroll = wanted;
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -2081,7 +2916,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     }
     frame.messageFrame.revision += 1;
     this.refreshMessageScroll(frame, stickToBottom);
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -2093,7 +2928,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!this.isMessageFrame(frame)) return false;
     frame.messageFrame.displayDuration = Math.max(0,
       Number.isFinite(duration) ? duration : frame.messageFrame.displayDuration);
-    this.notifyMutation();
+    this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
@@ -2104,8 +2939,12 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   SetTexture(frame: FrameXmlFrame, texture: unknown): boolean {
     const mutable = this.own(frame);
     if (!mutable || typeof texture !== "string") return false;
+    // A file (or nil) replaces a colour texture, so the flat fill goes with it.
+    const wasFill = mutable.colorFill;
+    mutable.colorFill = false;
+    if (mutable.texture === texture && !wasFill) return true;
     mutable.texture = texture;
-    this.notifyMutation();
+    this.notifyMutation(mutable);
     return true;
   }
 
@@ -2126,8 +2965,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const mutable = this.own(frame);
     const key = frameXmlAttributeKey(name);
     if (!mutable || key === undefined) return undefined;
+    // The value is stored either way; only a change is news to the renderer (the host still
+    // fires OnAttributeChanged on every call, see above).
+    const changed = mutable.secureAttributes.get(key) !== value || !mutable.secureAttributes.has(key);
     mutable.secureAttributes.set(key, value);
-    this.notifyMutation();
+    if (changed) this.notifyMutation(mutable, "paint");
     return key;
   }
 
@@ -2162,18 +3004,25 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   SetCooldown(frame: FrameXmlFrame, start: number, duration: number): boolean {
     const mutable = this.own(frame);
     if (!mutable) return false;
-    mutable.cooldown.start = Number.isFinite(start) ? start : 0;
-    mutable.cooldown.duration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
-    this.notifyMutation();
+    const nextStart = Number.isFinite(start) ? start : 0;
+    const nextDuration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+    if (mutable.cooldown.start === nextStart && mutable.cooldown.duration === nextDuration) return true;
+    mutable.cooldown.start = nextStart;
+    mutable.cooldown.duration = nextDuration;
+    this.notifyMutation(mutable, "paint");
     return true;
   }
 
-  /** Mutate one widget field and raise a single coalesced render notification. */
-  update(frame: FrameXmlFrame, mutate: (frame: MutableFrameXmlFrame) => void): boolean {
+  /**
+   * Mutate one widget field and raise a single coalesced render notification. `kind` is what the
+   * change can affect: "paint" only for fields that never move or resize anything.
+   */
+  update(frame: FrameXmlFrame, mutate: (frame: MutableFrameXmlFrame) => void,
+    kind: FrameXmlMutationKind = "layout"): boolean {
     const mutable = this.own(frame);
     if (!mutable) return false;
     mutate(mutable);
-    this.notifyMutation();
+    this.notifyMutation(mutable, kind);
     return true;
   }
 

@@ -1,3 +1,4 @@
+import type { GlueLoadCheckpoint } from "../glue/GlueLoadScheduler.js";
 import {
   normalizeGluePath,
   parseGlueToc,
@@ -11,6 +12,7 @@ import {
   type FrameXmlElement,
 } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { frameXmlInlineScripts, type FrameXmlLuaChunk } from "./FrameXmlStubPlan.js";
+import { frameXmlMailCorpusSource } from "./FrameXmlMailCorpus.js";
 
 /**
  * The corpus, read once and held.
@@ -178,6 +180,7 @@ export function frameXmlAddonModules(toc: string): readonly string[] {
 }
 
 export interface FrameXmlCorpusOptions {
+  readonly checkpoint?: GlueLoadCheckpoint;
   /** Guards a cyclic Include chain; the loader has its own, this one bounds the *scan*. */
   readonly maxFiles?: number;
   readonly maxDepth?: number;
@@ -306,6 +309,7 @@ export class FrameXmlCorpus implements GlueFileProvider {
       if (seen.has(file) || files.length >= maxFiles) return;
       seen.add(file);
       const source = await this.read(file);
+      await this.#options.checkpoint?.();
       if (source === undefined || source === "") {
         missing.push(file);
         return;
@@ -318,6 +322,7 @@ export class FrameXmlCorpus implements GlueFileProvider {
       if (seen.has(file) || depth > maxDepth || files.length >= maxFiles) return;
       seen.add(file);
       const source = await this.read(file);
+      await this.#options.checkpoint?.();
       if (source === undefined || source === "") {
         missing.push(file);
         return;
@@ -383,25 +388,12 @@ export class FrameXmlCorpus implements GlueFileProvider {
 
 /**
  * The action-bar + minimap + player/target-frame + aura + chat + spellbook + Character/PaperDoll
- * + bags + QuestLog + SkillFrame vertical's own TOC — fifty-three entries out of the real one's
- * 210.
+ * + bags + QuestLog + SkillFrame + map/calendar/world-state vertical's dependency TOC.
  *
  * Slice F3's third item asked whether `FrameXML.toc` can be cut to a dependency subset for
- * `MainMenuBar` without Lua errors, and the answer is measured rather than argued. On this dataset
- * (node, local MPQ chain), against the full corpus' 335 files / 10,085 KiB / 25,308 widgets. The
- * current measured candidate is 95 files / 2,377,435 bytes / 9,162 widgets before the world seam;
- * the mounted Canned/Live seam reaches its own post-event count. The MPQ regression tests keep the
- * exact bytes and runtime deltas as executable evidence.
- *
- * | | full TOC | this subset |
- * |---|---:|---:|
- * | files reached | 335 | **95** |
- * | bytes | 10,085 KiB | **2,377,435 bytes (~2,322 KiB)** |
- * | Lua chunks executed | 209 | **52** |
- * | files that fail to load | 0 | **0** |
- * | widgets | 25,308 | **9,162** |
- * | errors raised / distinct | 127 / 57 | **7 / 7** |
- * | load, node | 5,289 ms | measured by the MPQ regression |
+ * `MainMenuBar` without Lua errors. The subset now includes the original world map, calendar
+ * clock and world-state indicators. MPQ regression tests measure its dependency closure and
+ * retain the exact source order and interaction contracts as executable evidence.
  *
  * The order is the real TOC's own, because the corpus depends on it: `GlobalStrings.lua` first,
  * `Constants.lua` before anything that reads `PI`, the fonts before the templates that inherit
@@ -414,7 +406,10 @@ export class FrameXmlCorpus implements GlueFileProvider {
  * `GameMenuFrame.xml`, supplying the real HybridScrollFrame/HybridScrollBar templates that
  * QuestLog inherits. `Minimap.xml` occupies its stock slot after `MainMenuBar.xml` and before
  * `Cooldown.xml`, and its relative `Minimap.lua` is reached by
- * the corpus loader. `BuffFrame.xml` follows `MultiActionBars.xml` and reaches its relative
+ * the corpus loader. `MoneyInputFrame.lua`/`.xml` follow the money display template in their
+ * stock slots: StaticPopup inherits `MoneyInputFrameTemplate` even for dialogs without a money
+ * input, and its stock show path hides that concrete child unconditionally. `BuffFrame.xml`
+ * follows `MultiActionBars.xml` and reaches its relative
  * `BuffFrame.lua`; the player-frame tail follows the same order: `UnitFrame.xml` defines the
  * shared Lua helpers before `PlayerFrame.xml`.
  *
@@ -422,10 +417,8 @@ export class FrameXmlCorpus implements GlueFileProvider {
  *
  * * `Localization.xml` — its `LocalizeFrames()` re-anchors `PlayerHitIndicator`, which belongs to
  *   `PlayerFrame.xml`; including it costs one raise and buys nothing for this core vertical.
- * * `WorldFrame.xml` — its `OnUpdate` walks `STATICPOPUP_NUMDIALOGS` and `MIRRORTIMER_NUMTIMERS`
- *   every frame. `StaticPopup.xml` is present above for the Trainer LoD closure, but
- *   `MIRRORTIMER_NUMTIMERS` still has no owning surface here, so this omission would cost a raise
- *   *per rendered frame* rather than one at load.
+ * * `WorldFrame.xml` — the Three.js world viewport owns rendering and input; the stock world
+ *   widget is not an additional browser surface. Its popup positioning is owned by the DOM host.
  *
  * The chat additions are kept to the stock concrete chat cluster: `AutoComplete.xml` follows
  * `TextStatusBar.xml`, and `HistoryKeeper.lua`, `ChatFrame.xml` and `FloatingChatFrame.xml` follow
@@ -449,7 +442,7 @@ export class FrameXmlCorpus implements GlueFileProvider {
  * The container XML creates the thirteen concrete `ContainerFrame1..13` roots, each with its
  * thirty-six item buttons; the button XML creates the stock backpack, four carried-bag buttons, and
  * keyring button. The focused MPQ bridge test drives the real backpack click with the existing
- * inventory seam and records the remaining BankFrame owner as an explicit host-owned neutral seam.
+ * inventory seam. BankFrame is also loaded for container anchors while its actions remain native.
  * QuestLog then occupies the five stock TOC entries between `PaperDollFrame.xml` and the bags
  * tail; their five relative scripts and `QuestFrameTemplates.xml` are resolved by the same loader
  * rule. The real HybridScrollFrame pair is in the vertical at its earlier stock position rather
@@ -465,6 +458,8 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "AnimTimerFrame.xml",
   "MoneyFrame.lua",
   "MoneyFrame.xml",
+  "MoneyInputFrame.lua",
+  "MoneyInputFrame.xml",
   "GameTooltip.xml",
   "UIMenu.xml",
   "UIDropDownMenu.xml",
@@ -485,19 +480,41 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // vertical at its retail position so its StaticPopupDialogs table exists before Trainer Lua runs.
   "StaticPopup.xml",
   "OptionsPanelTemplates.xml",
+  // The realm's breath/fatigue snapshots drive the original three mirror bars and their Lua.
+  "MirrorTimer.xml",
+  // Stock TOC line 49. ContainerFrameItemButton_OnClick hides StackSplitFrame after every
+  // UseContainerItem; with the real frame loaded (+2 files, +8,205 B, +23 widgets, 0 Lua errors,
+  // measured) the bag gate no longer aliases it to GameMenuFrame, which frees the stock menu to show.
+  "StackSplitFrame.xml",
   "BattlefieldFrame.xml",
   "MainMenuBar.xml",
   // The stock row is loaded directly after its MainMenuBar owner. FrameXmlWorldMount hides all
   // ten buttons before session exercise, installs host-owned callbacks, and reveals them only
   // after the complete row/native replacement gate passes.
   "MainMenuBarMicroButtons.xml",
+  // UIParent_ManageFramePositions (also called by the stance bar) anchors this stock alert.
+  "TutorialFrame.xml",
   "Minimap.xml",
+  "GameTime.xml",
   "Cooldown.xml",
   "ActionButtonTemplate.xml",
   "ActionBarFrame.xml",
   "MultiActionBars.xml",
   "BuffFrame.xml",
+  // Stock TOC line 64: CombatFeedback.lua's hit indicator over the Player/Target/Pet portraits
+  // (CombatFeedback_Initialize/_OnCombatEvent/_OnUpdate, the UNIT_COMBAT handlers of PlayerFrame,
+  // TargetFrame and PetFrame) and LowHealthFrame. FrameXmlHudMechanics.ts fires UNIT_COMBAT from
+  // the world's combat packets. Measured over the canned seam together with TotemFrame.xml below:
+  // +4 files, +15,025 B, +35 widgets, 0 new Lua errors.
+  "CombatFeedback.xml",
   "CastingBarFrame.xml",
+  // Stock TOC line 66: UnitPopup, the unit menus. FriendsFrame's rows and chat's player links open
+  // FriendsDropDown, whose only initializer is UnitPopup_ShowMenu (FriendsFrame.lua:177-190) — the
+  // one stock way to whisper, invite, set a note or remove a friend. The Player/Target/Party frames'
+  // dropdowns use the same function. No frame of its own. Measured over the canned seam: +2 files,
+  // +64,100 B, +22 widgets (DropDownList buttons 20 → 22, with their parts: the unit frames'
+  // load-time menu initializers now add entries), 0 new Lua errors.
+  "UnitPopup.xml",
   "UnitFrame.xml",
   "HistoryKeeper.lua",
   "ChatFrame.xml",
@@ -507,10 +524,29 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "PlayerFrame.xml",
   "PartyFrame.xml",
   "TargetFrame.xml",
+  // Stock TOC line 78: the totem bar under PlayerFrame (TotemFrame, TotemFrameTotem1-4), whose
+  // TotemFrame_Update PetFrame.lua already called into nil. GetTotemInfo/GetTotemTimeLeft/
+  // DestroyTotem and PLAYER_TOTEM_UPDATE are FrameXmlHudMechanics.ts's. Measured with
+  // CombatFeedback.xml above.
+  "TotemFrame.xml",
   "PetFrame.xml",
   "SpellBookFrame.xml",
   "CharacterFrame.xml",
+  // Stock TOC line 83: the 3.3.5 equipment manager's Lua — the EquipmentManager frame
+  // (WEAR_EQUIPMENT_SET, the bag-space table) and the packed-location helpers PaperDollFrame's
+  // item flyout and GearManagerDialog call (EquipmentManager_UnpackLocation, _EquipSet). No XML
+  // of its own; without it the gear manager's buttons raise on every click (FrameXmlEquipmentSets.ts).
+  "EquipmentManager.lua",
   "PaperDollFrame.xml",
+  // Stock TOC line 85: the «Питомцы» tab (CharacterFrame tab 2) — the pet page and the Companions
+  // and Mounts sub-tabs. Its C API is FrameXmlCompanions.ts; stock PetPaperDollFrame_UpdateIsAvailable
+  // now owns the tab's visibility, evaluated once after the session events (FrameXmlBoot.ts).
+  // Measured over the canned seam: +2 files (PetPaperDollFrame.xml/.lua), +57,168 B. The tab's
+  // geometry and visibility are pinned by tests/framexml-custom-class-vertical.test.mjs (B13), the
+  // companion C API by tests/framexml-companions.test.mjs, and the Companions/Mounts sub-tabs,
+  // their CompanionButtons and the summon button's CallCompanion/DismissCompanion by
+  // tests/framexml-pet-companions-vertical.test.mjs.
+  "PetPaperDollFrame.xml",
   // SkillFrame is the first concrete optional CharacterFrame tab in this bounded closure. Its
   // relative SkillFrame.lua is reached by the loader rule. OptionsPanelTemplates.xml is retained
   // above for the SpellBook rank filter; the stock SkillSortButton remains commented out in this
@@ -526,27 +562,115 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "QuestLogFrame.xml",
   "QuestInfo.xml",
   "MerchantFrame.xml",
+  // Stock TOC line 95: TradeFrame and its fourteen item slots (FrameXmlTrade.ts/FrameXmlTradeOwner.ts).
+  // Its templates are all in the vertical already (ItemButtonTemplate, MoneyInputFrame).
+  "TradeFrame.xml",
   "ContainerFrame.xml",
+  // Stock TOC line 97: LootFrame, LootButton1-4, GroupLootDropDown and GroupLootFrame1-4, the loot
+  // window and group-loot rolls (FrameXmlLoot.ts/FrameXmlLootOwner.ts). Measured over the canned
+  // seam: +2 files (LootFrame.xml/.lua), +29,279 B, +174 widgets, 0 new Lua errors.
+  "LootFrame.xml",
+  // Stock TOC lines 98-99: the book/letter reader and the flight map (FrameXmlItemText.ts,
+  // FrameXmlTaxi.ts; owners FrameXmlItemTextOwner.ts/FrameXmlTaxiOwner.ts). Both roots are hidden.
+  // Measured over the canned seam: ItemText +2 files, +13,306 B, +48 widgets; Taxi +2 files,
+  // +12,260 B, +13 widgets (its node buttons are created on the first map); 0 new Lua errors.
+  "ItemTextFrame.xml",
+  "TaxiFrame.xml",
+  // Container anchors used by UIParent's stance layout query this concrete stock frame; since the
+  // NPC lane it is also the bank window once FrameXmlBankOwner.ts's gate publishes it.
+  "BankFrame.xml",
+  // Stock TOC lines 101-102: FriendsFrame (Friends/Ignore, Who, Guild tabs, AddFriendFrame,
+  // FriendsFriendsFrame) and RaidFrame, the Raid tab (FrameXmlFriends.ts/FrameXmlFriendsOwner.ts).
+  // RaidFrame is required: FriendsFrame_ShowSubFrame shows/hides `_G.RaidFrame` unconditionally.
+  // ChannelFrame.xml below declares parent="FriendsFrame" — the Chat tab — so it must follow them.
+  // All three roots are hidden. Measured over the canned seam: +4 files, +330,685 B, +2,179 widgets,
+  // 0 new Lua errors.
+  "FriendsFrame.xml",
+  "RaidFrame.xml",
   "ChannelFrame.xml",
+  // The stance layout calls ShowPetActionBar from this stock dependency. Its commands retain
+  // their native owner until the original pet action API is connected.
+  "PetActionBarFrame.xml",
+  "BonusActionBarFrame.xml",
   "MainMenuBarBagButtons.xml",
+  "WorldMapFrame.xml",
   // Root-level add-ons commonly hook the stock hyperlink tooltip objects during their top-level
   // Lua execution. ItemRef.xml is their native owner and sits at line 110 of the 3.3.5a TOC, so it
   // must exist before enabled add-ons run rather than being replaced with host-created stand-ins.
   "ItemRef.xml",
+  "ComboFrame.xml",
+  // Stock TOC lines 112-114: the tabard designer, the guild charter vendor and the charter window
+  // (FrameXmlTabard.ts, FrameXmlRegistrar.ts, FrameXmlPetition.ts; owners in the matching *Owner.ts).
+  // All three roots are hidden `left` panels, opened only by their own events. Measured over the
+  // canned seam with ArenaRegistrarFrame below: +8 files, +89,548 B, +450 widgets, 0 new Lua errors.
+  "TabardFrame.xml",
+  "GuildRegistrarFrame.xml",
+  "PetitionFrame.xml",
   "ColorPickerFrame.xml",
+  // Stock TOC line 118: GossipFrame, the NPC conversation (FrameXmlGossip.ts/FrameXmlGossipOwner.ts);
+  // its confirm/code dialogs are StaticPopup.xml's. Hidden root. Measured over the canned seam:
+  // +2 files, +25,730 B, +168 widgets (32 title buttons), 0 new Lua errors.
+  "GossipFrame.xml",
+  // Stock TOC line 119 (after GossipFrame, 118): MailFrame, OpenMailFrame and StationeryPopupFrame
+  // (FrameXmlMail.ts/FrameXmlMailOwner.ts). Its tab template is FriendsFrame.xml's, served by
+  // FrameXmlMailCorpus.ts while FriendsFrame.xml is outside this vertical.
+  "MailFrame.xml",
+  // Stock TOC line 120 (after MailFrame, 119): PetStableFrame, the hunter's stable (FrameXmlStable.ts/
+  // FrameXmlStableOwner.ts); its purchase dialog is StaticPopup.xml's. Hidden root. Measured over the
+  // canned seam: +2 files, +20,218 B, +94 widgets, 0 new Lua errors.
+  "PetStable.xml",
+  "WorldStateFrame.xml",
+  // Stock TOC line 123: DressUpFrame, the dressing room behind Ctrl+click's DressUpItemLink
+  // (FrameXmlDressUp.ts/FrameXmlDressUpMount.ts). Hidden root. Blizzard_AuctionDressUp.lua captures
+  // this file's DressUpItemLink at its load, so it has to be in the boot vertical, before the LoD add-on.
+  "DressUpFrame.xml",
   // The battleground closure keeps the retail order: BattlefieldFrame supplies shared queue
   // templates, PVPFrame owns the parent/honor page, and PVPBattlegroundFrame is the second tab.
   // ArenaFrame follows PVPBattlegroundFrame in the retail TOC and is the one stock owner of the
-  // battlemaster arena queue page.  ArenaRegistrarFrame remains outside this bounded vertical:
-  // it has no packet seam here and would otherwise advertise an unsupported charter flow.
+  // battlemaster arena queue page. ArenaRegistrarFrame (stock TOC 129) follows it: the arena charter
+  // vendor and PVPBannerFrame, over the charter packets (FrameXmlRegistrar.ts, FrameXmlRegistrarOwner.ts).
   // Trainer templates are a stock dependency of Blizzard_TrainerUI and precede PVP in FrameXML.toc.
   "ClassTrainerFrameTemplates.xml",
   "PVPFrame.xml",
   "PVPBattlegroundFrame.xml",
   "ArenaFrame.xml",
+  "ArenaRegistrarFrame.xml",
+  // The stock dungeon finder, stock TOC 130-132, after ArenaRegistrarFrame (129).
+  // LFGFrame.xml owns the shared role/choice templates and LFGEventFrame; LFDFrame.xml the finder,
+  // its ready/role-check popups and LFDSearchStatus (parented to Minimap.xml's MiniMapLFGFrame).
+  // LFRFrame.xml is loaded but never routed — TrinityCore 3.3.5 has no raid-browser protocol — because
+  // LFGFrame.lua touches LFRParentFrame and its role buttons unconditionally: without it the load
+  // raises «global 'LFRParentFrame'». Measured over the canned seam: +6 files, +188,270 B,
+  // +1,024 widgets, 0 new Lua errors.
+  "LFGFrame.xml",
+  "LFDFrame.xml",
+  "LFRFrame.xml",
   // CharacterFrame.lua toggles this real player-frame child while the character sheet is shown.
   // It is a stock XML dependency, not a synthetic placeholder; retain its late retail TOC slot.
   "AlternatePowerBar.xml",
+]);
+
+/**
+ * The options chain: stock TOC lines 37-45 without OptionsPanelTemplates.xml (line 39), which the
+ * vertical carries for SpellBook's rank filter. It is not load-on-demand in 3.3.5, but nothing in
+ * the HUD needs its frames, so FrameXmlOptionsOwner.ts loads it into the running VM on the first
+ * open of «Изображение», «Звук» or «Интерфейс» instead of at boot.
+ *
+ * Measured at boot over the MPQ vertical and the canned seam (Node, median of 5 alternating runs):
+ * +17 files, +410,196 B, +2,479 widgets, 0 new Lua errors, 2,201 → 2,539 ms (+338 ms, +15.4 %) —
+ * before the browser's 17 extra requests and the first sync's DOM for those widgets. Loaded late,
+ * the same files add nothing to the boot; the first open pays once: 419 ms in Node (median of 5,
+ * with the «WebClient» category), 0.8-0.9 s on the rich route with no task over 143 ms.
+ */
+export const FRAMEXML_OPTIONS_TOC: readonly string[] = Object.freeze([
+  "Sound.lua",
+  "OptionsFrameTemplates.xml",
+  "VideoOptionsFrame.xml",
+  "VideoOptionsPanels.xml",
+  "AudioOptionsFrame.xml",
+  "AudioOptionsPanels.xml",
+  "InterfaceOptionsFrame.xml",
+  "InterfaceOptionsPanels.xml",
 ]);
 
 /**
@@ -563,12 +687,13 @@ export function subsetTocProvider(
 ): { readonly provider: GlueFileProvider; readonly toc: string } {
   const key = normalizeGluePath(tocPath);
   const body = `## Interface: 30300\n${entries.join("\n")}\n`;
+  const files = frameXmlMailCorpusSource(source, entries);
   return {
     toc: key,
     provider: {
       async read(path: string): Promise<string | undefined> {
         if (normalizeGluePath(path) === key) return body;
-        return await source.read(path);
+        return await files.read(path);
       },
     },
   };
@@ -642,12 +767,13 @@ export function subsetWithActiveTsAddonsTocProvider(
     const lines = ["## Interface: 30300", ...entries, ...addonLines];
     return `${lines.join("\n")}\n`;
   };
+  const files = frameXmlMailCorpusSource(source, entries);
   return {
     toc: key,
     provider: {
       async read(path: string): Promise<string | undefined> {
         if (normalizeGluePath(path) === key) return await (body ??= build());
-        return await source.read(path);
+        return await files.read(path);
       },
     },
   };

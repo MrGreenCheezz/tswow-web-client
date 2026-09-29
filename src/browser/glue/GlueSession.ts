@@ -1,4 +1,4 @@
-import type { RealmInfo } from "../../auth/AuthProtocol.js";
+import { canSelectRealm, REALM_FLAG_OFFLINE, type RealmInfo } from "../../auth/AuthProtocol.js";
 import type { AuthSessionResult } from "../../auth/login.js";
 import type { CharacterSummary } from "../../world/CharacterProtocol.js";
 
@@ -80,7 +80,6 @@ export interface GlueSessionOptions {
  * compares against (`load == -3` recommended, `-2` new, `2` full).
  */
 const REALM_FLAG_VERSION_MISMATCH = 0x01;
-const REALM_FLAG_OFFLINE = 0x02;
 const REALM_FLAG_RECOMMENDED = 0x20;
 const REALM_FLAG_NEW = 0x40;
 const REALM_FLAG_FULL = 0x80;
@@ -174,6 +173,7 @@ export class GlueSession {
   #selectedRealm: RealmInfo | undefined;
   #world: GlueWorldConnection | undefined;
   #connecting = false;
+  #characterRefresh: Promise<void> | undefined;
   #characters: readonly CharacterSummary[] = [];
   #selectedIndex = 0;
   #facing = 0;
@@ -288,21 +288,20 @@ export class GlueSession {
   /**
    * `ChangeRealm(category, index)`: pick a realm, open a world connection, list its characters.
    *
-   * The screen goes to `charselect` first and the characters arrive into it, which is the order the
-   * original works in — `CharacterSelect_OnShow` asks for the list itself and draws an empty one
-   * until it lands.
+   * Stock `CharacterSelect_OnShow` reads `IsConnectedToServer()` only once when it labels the realm.
+   * Show it after the world handshake, so a connecting realm is not permanently labelled down.
    */
   changeRealm(category: number, index: number): void {
     const realm = this.realmsIn(category)[index - 1];
-    if (!realm) return;
+    if (!realm || !canSelectRealm(realm)) return;
     this.#selectedCategory = category;
     this.#selectedRealm = realm;
-    this.#options.setGlueScreen?.("charselect");
-    void this.connect(realm);
+    void this.connect(realm, true);
   }
 
   /** Open the world connection for one realm. Public so a test can drive it without the dialog. */
-  async connect(realm: RealmInfo): Promise<void> {
+  async connect(realm: RealmInfo, showScreenWhenConnected = false): Promise<void> {
+    if (!canSelectRealm(realm)) return;
     const auth = this.#auth;
     const connector = this.#options.connect;
     this.#selectedRealm = realm;
@@ -320,6 +319,9 @@ export class GlueSession {
         return;
       }
       this.#world = world;
+      // `SetGlueScreen` synchronously runs CharacterSelect_OnShow, which asks for characters.
+      // Coalesce that request with the one below so only one CMSG_CHAR_ENUM is in flight.
+      if (showScreenWhenConnected) this.#options.setGlueScreen?.("charselect");
       await this.refreshCharacters();
     } catch (error) {
       if (generation !== this.#generation) return;
@@ -335,6 +337,17 @@ export class GlueSession {
 
   /** `GetCharacterListUpdate()`: ask the world again and answer with CHARACTER_LIST_UPDATE. */
   async refreshCharacters(): Promise<void> {
+    if (this.#characterRefresh) return this.#characterRefresh;
+    const refresh = this.loadCharacters();
+    this.#characterRefresh = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.#characterRefresh === refresh) this.#characterRefresh = undefined;
+    }
+  }
+
+  private async loadCharacters(): Promise<void> {
     const world = this.#world;
     if (!world) {
       this.#characters = [];
@@ -460,6 +473,7 @@ export class GlueSession {
   closeWorld(): void {
     this.#generation += 1;
     this.#connecting = false;
+    this.#characterRefresh = undefined;
     this.#world?.close();
     this.#world = undefined;
     this.#characters = [];

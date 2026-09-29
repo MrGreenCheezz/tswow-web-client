@@ -125,6 +125,18 @@ export function resolveFrameXmlSkillRows(
   return Object.freeze(rows);
 }
 
+/**
+ * `SkillLineCategory` 11, the primary professions: in 3.3.5 the rows SkillRaceClassInfo flags
+ * SKILL_FLAG_UNLEARNABLE, and the only skills the core's HandleUnlearnSkillOpcode accepts. The
+ * `/dbc/talents` rows carry the category, not the flag, so this is `isAbandonable` — the value
+ * SkillFrame.lua:221 shows the unlearn button on.
+ */
+export const FRAMEXML_SKILL_CATEGORY_PROFESSION = 11;
+
+export function frameXmlSkillAbandonable(row: FrameXmlSkillLineRow): boolean {
+  return row.categoryId === FRAMEXML_SKILL_CATEGORY_PROFESSION;
+}
+
 function skillRow(entry: SkillEntry, line: FrameXmlSkillLineMetadata): FrameXmlSkillLineRow {
   return Object.freeze({
     kind: "skill",

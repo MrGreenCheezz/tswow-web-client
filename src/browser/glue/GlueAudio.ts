@@ -1,4 +1,5 @@
 import type { GlueAudioSink } from "./GlueApi.js";
+import { suspectPatchChainChange } from "../PatchChainChanged.js";
 
 /**
  * The glue screen's sound, over the gateway's `/sound` route.
@@ -230,6 +231,8 @@ export class GlueBrowserAudio implements GlueAudioSink {
     element.preload = "auto";
     element.addEventListener("error", () => {
       this.#onDiagnostic?.(`Звук недоступен: ${path}`);
+      // A media element never shows the 409's body: ask the gateway whether its patch latch is why.
+      suspectPatchChainChange(element.src);
     });
     return element;
   }

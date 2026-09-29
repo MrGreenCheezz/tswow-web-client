@@ -1,3 +1,4 @@
+import type { GlueLoadCheckpoint } from "./GlueLoadScheduler.js";
 import { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { frameXmlAttribute, parseFrameXml } from "../ui/framexml_compat/FrameXmlParser.js";
 import {
@@ -7,6 +8,7 @@ import {
   type FrameXmlFrame,
 } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { GlueLuaVm } from "./GlueLua.js";
+import { throwIfPatchChainChanged } from "../PatchChainChanged.js";
 
 /**
  * Where the interface files come from.
@@ -54,6 +56,10 @@ export interface GlueHttpProviderOptions {
  * the 404 is a skip; anything else is surfaced, because silently treating a
  * broken gateway as "file missing" would produce a login screen with half its
  * frames and no explanation.
+ *
+ * A 409 `client_patch_chain_changed` is the gateway saying a TSWoW build replaced the patches it
+ * booted with: that one raises the page's «Патчи TSWoW обновились» banner and throws
+ * `PatchChainChangedError`, so the screen that failed can say why instead of «returned 409».
  */
 export function createHttpFileProvider(options: GlueHttpProviderOptions): GlueFileProvider {
   const origin = options.gatewayOrigin.replace(/\/+$/, "");
@@ -64,6 +70,7 @@ export function createHttpFileProvider(options: GlueHttpProviderOptions): GlueFi
       url.searchParams.set("path", path.replaceAll("/", "\\"));
       const response = await doFetch(url.href, { headers: { accept: "text/plain" } });
       if (response.status === 404) return undefined;
+      await throwIfPatchChainChanged(response, url.pathname);
       if (!response.ok) {
         throw new Error(`${url.pathname}?path=${path} returned ${response.status}`);
       }
@@ -145,6 +152,7 @@ export interface GlueLoadResult {
 }
 
 export interface GlueLoaderOptions {
+  readonly checkpoint?: GlueLoadCheckpoint;
   readonly vm: GlueLuaVm;
   readonly bridge: FrameXmlUiBridge;
   readonly provider: GlueFileProvider;
@@ -176,6 +184,7 @@ const DEFAULT_MAX_DEPTH = 16;
  * because each screen declares `parent="GlueParent"` by name.
  */
 export class GlueLoader {
+  readonly #checkpoint: GlueLoadCheckpoint | undefined;
   readonly #vm: GlueLuaVm;
   readonly #bridge: FrameXmlUiBridge;
   readonly #provider: GlueFileProvider;
@@ -191,6 +200,7 @@ export class GlueLoader {
   readonly #seenXml = new Set<string>();
 
   constructor(options: GlueLoaderOptions) {
+    this.#checkpoint = options.checkpoint;
     this.#vm = options.vm;
     this.#bridge = options.bridge;
     this.#provider = options.provider;
@@ -226,6 +236,7 @@ export class GlueLoader {
     }
     // Font objects flatten their inherits chain against the finished registry,
     // so this runs once the whole TOC has declared them.
+    await this.#checkpoint?.();
     this.#bridge.registerFontObjects();
     return {
       tocEntries: entries,
@@ -249,6 +260,7 @@ export class GlueLoader {
       this.#diagnostics.push({ file: path, scope: "provider", message: String(error) });
       return undefined;
     }
+    await this.#checkpoint?.();
     if (source === undefined || source === "") {
       // A zero-byte file is how this corpus retires a screen (OptionsFrame.xml,
       // RaceSelect.xml and SoundOptionsFrame.xml are all 0 bytes); treat it the
@@ -301,6 +313,7 @@ export class GlueLoader {
     directory: string,
     depth: number,
   ): Promise<void> {
+    await this.#checkpoint?.();
     if (element.name === "Script") {
       const file = frameXmlAttribute(element, "file");
       if (file) {
@@ -332,7 +345,7 @@ export class GlueLoader {
       return;
     }
     if (!FRAME_XML_WIDGET_TYPES.has(element.name)) return;
-    const frame = this.#bridge.instantiate(element);
+    const frame = this.#vm.withCallingSource(path, () => this.#bridge.instantiate(element));
     if (frame && !frame.parent) this.#roots.push(frame);
   }
 }

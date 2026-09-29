@@ -1,3 +1,4 @@
+import type { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "../glue/GlueLoader.js";
 import { GlueLuaVm, type GlueLuaOptions } from "../glue/GlueLua.js";
 import {
@@ -20,7 +21,7 @@ import {
   subsetWithActiveTsAddonsTocProvider,
   type FrameXmlCorpusScan,
 } from "./FrameXmlCorpus.js";
-import { frameXmlStubPlan, type FrameXmlStubPlan } from "./FrameXmlStubPlan.js";
+import { frameXmlStubPlanAsync, type FrameXmlStubPlan } from "./FrameXmlStubPlan.js";
 import { FrameXmlTsAddonTracker, type FrameXmlTsAddonStatus } from "./FrameXmlTsAddonStatus.js";
 import {
   FRAMEXML_FONT_METHODS,
@@ -51,7 +52,10 @@ import {
 } from "./FrameXmlWorldSeam.js";
 import { createFrameXmlCharacterTooltipAdapter } from "./FrameXmlCharacterTooltip.js";
 import { installFrameXmlSocketing } from "./FrameXmlSocketing.js";
+import { installFrameXmlWorldMapArrowBindings } from "./FrameXmlWorldMapArrow.js";
+import { pageModifiers, type ModifierSource } from "../input/Modifiers.js";
 import { GlueLuaRef } from "../glue/GlueLua.js";
+import { FrameXmlSavedVariables, type FrameXmlSavedVariablesOptions } from "./FrameXmlSavedVariables.js";
 import {
   FrameXmlAddonRuntime,
   type FrameXmlAddonRuntimeResult,
@@ -95,9 +99,9 @@ const FRAMEXML_MICROBUTTON_STATE_OWNERS = Object.freeze([
  * Keep the stock row's pre-exercise lifecycle safe for every FrameXmlBoot consumer, including
  * inventory/seam tests that do not mount the browser world.  Only the two handlers whose
  * PLAYER_ENTERING_WORLD path calls the optional-panel-wide UpdateMicroButtons() are replaced;
- * CharacterMicroButton_OnEvent remains stock so the authored MicroButtonPortrait update path is
- * available to the host (the bridge does not claim a texture until SetPortraitTexture is bound).
- * The global
+ * CharacterMicroButton_OnEvent remains stock so its SetPortraitTexture(MicroButtonPortrait,
+ * "player") reaches the host's stock portrait claims (FrameXmlPortraits.ts), which paint the face
+ * under the crop and alpha the adapter below writes. The global
  * UpdateMicroButtons itself is also owned here when an unguarded optional owner is absent: stock
  * calls InterfaceOptionsFrame/FriendsFrame/LFDParentFrame/HelpFrame without nil checks, while
  * this bounded world intentionally gates those surfaces to their native or lazy owners.
@@ -232,29 +236,13 @@ __fxNeutralImpl = __fxNeutralImpl or {}
 __fxFontNames = __fxFontNames or {}
 
 local rawget, rawset, setmetatable, getmetatable = rawget, rawset, setmetatable, getmetatable
-local type, unpack, match, find, gmatch = type, table.unpack, string.match, string.find, string.gmatch
-local traceback = debug.traceback
+local type, unpack, match, byte = type, table.unpack, string.match, string.byte
 local api, neutral, calls, misses = __fxApi, __fxNeutral, __fxCalls, __fxMisses
 local impl, fontNames = __fxNeutralImpl, __fxFontNames
 
--- Where the corpus first reached for a name.
---
--- Taken once per name — the stub is written straight into the table that missed, so the metamethod
--- never sees that name again — which is what makes a traceback affordable at all. The first frame
--- that is not this chunk and not a C frame is the corpus; a script handler names itself
--- \`Frame:OnLoad\`, a file names its path, and both are more useful than a bare count.
-local function origin()
-  local text = traceback("", 1)
-  if type(text) ~= "string" then return "" end
-  for line in gmatch(text, "\\n\\t([^\\n]+)") do
-    if not find(line, "${PRELUDE_CHUNK}", 1, true) and not find(line, "^%[C%]") then
-      local where = match(line, "^(.-:%d+):")
-      if where then return where end
-      return line
-    end
-  end
-  return ""
-end
+-- Read only source/line in the host. A full debug.traceback recursively searches the
+-- growing global table for function names, although this census only needs a location.
+local origin = __fxOrigin
 
 local function makeStub(counter, key, values)
   if values == nil then
@@ -271,9 +259,12 @@ setmetatable(_G, {
   __index = function(globals, key)
     if type(key) ~= "string" then return nil end
     -- GlueLua.ts' rule, kept: 5.3's \`/\` answers a float, so a global named out of one is
-    -- \`CharacterCreateClassButton11.0\`. rawget, so a chain of misses cannot recurse.
-    local whole = match(key, "^(.-)%.0$")
-    if whole ~= nil then return rawget(globals, whole) end
+    -- \`CharacterCreateClassButton11.0\`. rawget, so a chain of misses cannot recurse. Only a
+    -- name ending in ".0" is matched: every miss comes through here, and most are not that.
+    if byte(key, -1) == 48 and byte(key, -2) == 46 then
+      local whole = match(key, "^(.-)%.0$")
+      if whole ~= nil then return rawget(globals, whole) end
+    end
     if api[key] then
       -- A neutral answer that needs state (the CVar map, the add-on list) is a
       -- Lua function the next chunk installed; the wrapper is what keeps it in
@@ -323,7 +314,11 @@ function __fxWrapMethodTable(methods, typeName)
       if type(key) ~= "string" then return nil end
       if not __fxMethodNames[key] then return nil end
       local label = typeName .. ":" .. key
-      local stub = makeStub(__fxMethodCalls, label, __fxMethodNeutral[key])
+      local answer = makeStub(__fxMethodCalls, label, __fxMethodNeutral[key])
+      local stub = function(self, ...)
+        __fxRecordWidgetStub(self, typeName, key)
+        return answer(self, ...)
+      end
       rawset(table_, key, stub)
       __fxNoteMethod(label, origin())
       return stub
@@ -519,17 +514,24 @@ do
 end
 `;
 
-/** Stock 3.3.5 item-quality colors returned by the client's C API. */
+/**
+ * Stock 3.3.5 item-quality colors returned by the client's C API.
+ *
+ * The fourth value is a colour code, `|c` included: UIParent.lua:96-102 stores it as
+ * `ITEM_QUALITY_COLORS[i].hex`, and its readers write `hex..name.."|r"` with no `|c` of their own
+ * (UIParent.lua:583/844-857, LootFrame.lua:303, UnitPopup.lua:411). Quality 7 (heirloom) shares the
+ * artifact colour in 3.3.5; the blue `00ccff` is a later client's.
+ */
 const FRAMEXML_ITEM_QUALITY_COLORS: Readonly<Record<number, readonly [number, number, number, string]>> = Object.freeze({
-  [-1]: [1, 1, 1, "ffffffff"],
-  0: [0.62, 0.62, 0.62, "ff9d9d9d"],
-  1: [1, 1, 1, "ffffffff"],
-  2: [0.12, 1, 0, "ff1eff00"],
-  3: [0, 0.44, 0.87, "ff0070dd"],
-  4: [0.64, 0.21, 0.93, "ffa335ee"],
-  5: [1, 0.5, 0, "ffff8000"],
-  6: [0.9, 0.8, 0.5, "ffe6cc80"],
-  7: [0, 0.8, 1, "ff00ccff"],
+  [-1]: [1, 1, 1, "|cffffffff"],
+  0: [0.62, 0.62, 0.62, "|cff9d9d9d"],
+  1: [1, 1, 1, "|cffffffff"],
+  2: [0.12, 1, 0, "|cff1eff00"],
+  3: [0, 0.44, 0.87, "|cff0070dd"],
+  4: [0.64, 0.21, 0.93, "|cffa335ee"],
+  5: [1, 0.5, 0, "|cffff8000"],
+  6: [0.9, 0.8, 0.5, "|cffe6cc80"],
+  7: [0.9, 0.8, 0.5, "|cffe6cc80"],
 });
 
 /** Which shims F1 added, for the report; kept as data so prose and code cannot drift. */
@@ -653,6 +655,9 @@ function now(): number {
 }
 
 export interface FrameXmlBootOptions {
+  /** Production world mounts yield between load steps so cached files cannot starve painting. */
+  readonly loadScheduler?: GlueLoadScheduler;
+  readonly savedVariables?: FrameXmlSavedVariablesOptions;
   /** Where the interface files come from; the gateway's `/client/file` in the browser. */
   readonly provider: GlueFileProvider;
   /** Defaults to `interface/framexml/framexml.toc`. */
@@ -668,7 +673,7 @@ export interface FrameXmlBootOptions {
   readonly subset?: readonly string[];
   /**
    * Preserve the generated `tsaddon-begin-lib` and named TSAddon blocks from the active TOC after
-   * the measured stock subset.  Production enables this; isolated stock capability tests do not.
+   * the measured stock subset. Production follows its addon preference; stock-only tests omit it.
    */
   readonly includeActiveTsAddons?: boolean;
   readonly lua?: GlueLuaOptions;
@@ -687,6 +692,10 @@ export interface FrameXmlBootOptions {
    * census measures and what `tests/framexml-corpus.test.mjs` pins.
    */
   readonly seam?: FrameXmlWorldSeam;
+  /** The world host paints stock QuestFramePortrait with its existing unit portrait renderer. */
+  readonly onQuestPortrait?: (guid: bigint | undefined) => void;
+  /** Every other stock SetPortraitTexture(texture, unit), unit lower-cased (FrameXmlPortraits.ts). */
+  readonly onUnitPortrait?: (texture: FrameXmlFrame, unit: string) => void;
   /** Optional owner for the measured special methods on the legacy 3.3.5 Minimap widget. */
   readonly minimapAdapter?: MinimapWidgetAdapter;
   /** Optional item owner for GameTooltip; defaults to the supplied world seam's cached items. */
@@ -704,6 +713,11 @@ export interface FrameXmlBootOptions {
    * pre-exercise publication leave it unset.
    */
   readonly beforeExercise?: (boot: FrameXmlBoot) => void;
+  /**
+   * The held modifiers and the current click's button behind IsShiftKeyDown, IsModifiedClick and
+   * MODIFIER_STATE_CHANGED. Defaults to the page's own tracker, which a page-less boot never feeds.
+   */
+  readonly modifiers?: ModifierSource;
 }
 
 /** The build string the glue slice measured; the same client, so the same answer. */
@@ -719,8 +733,14 @@ export class FrameXmlBoot {
   readonly binder: GlueWidgetBinder;
   readonly corpus: FrameXmlCorpus;
   readonly #addons: FrameXmlAddonRuntime;
+  readonly #savedVariables: FrameXmlSavedVariables;
+  #stopSavedVariablesPersistence: (() => void) | undefined;
+  #closed = false;
+  #stopModifierEvents: (() => void) | undefined;
   readonly #clientNetwork: FrameXmlClientNetworkBridge | undefined;
   readonly #options: FrameXmlBootOptions;
+  /** SoundPlayer's only output route is the browser's default Web Audio destination. */
+  readonly #browserAudioOutput: boolean;
   readonly #apiTouches = new Map<string, StubTouch>();
   readonly #methodTouches = new Map<string, StubTouch>();
   readonly #emitted = {
@@ -774,6 +794,8 @@ export class FrameXmlBoot {
 
   constructor(options: FrameXmlBootOptions) {
     this.#options = options;
+    this.#browserAudioOutput = typeof globalThis.AudioContext === "function"
+      || typeof (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext === "function";
     // The subset TOC is injected *under* the corpus rather than over it, so the scan, the stub plan
     // and the loader all walk the same short list. `?file=` keeps F1's rule instead — one file
     // loads, but the plan is still built from the whole corpus, because a single file's stub floor
@@ -784,7 +806,7 @@ export class FrameXmlBoot {
         : subsetTocProvider(options.provider, options.subset)
       : undefined;
     this.#subsetToc = subset?.toc;
-    this.corpus = new FrameXmlCorpus(subset?.provider ?? options.provider);
+    this.corpus = new FrameXmlCorpus(subset?.provider ?? options.provider, { checkpoint: this.checkpoint });
     this.vm = new TimedGlueLuaVm(options.lua ?? {});
     this.#clientNetwork = options.clientNetwork
       ? new FrameXmlClientNetworkBridge(this.vm, options.clientNetwork,
@@ -805,14 +827,18 @@ export class FrameXmlBoot {
         if (owner) this.#tsAddonFrames.set(frame, owner);
       },
       onStub: (method) => { this.#binderStubs.push(method); },
+      implicitGlobals: "referenced",
       ...(options.minimapAdapter === undefined ? {} : { minimapAdapter: options.minimapAdapter }),
       ...(gameTooltipAdapter === undefined ? {} : { gameTooltipAdapter }),
     });
     this.bridge.setRuntime(this.parentFirstRuntime(this.binder));
+    this.#savedVariables = new FrameXmlSavedVariables(this.vm, options.savedVariables);
     this.#addons = new FrameXmlAddonRuntime({
       provider: this.corpus,
+      checkpoint: this.checkpoint,
       vm: this.vm,
       bridge: this.bridge,
+      savedVariables: this.#savedVariables,
       ...(options.installedAddons === undefined ? {} : { loadOnDemand: options.installedAddons }),
       onRoots: (roots) => {
         for (const root of roots) this.#addonRootNames.add(root.name);
@@ -860,7 +886,10 @@ export class FrameXmlBoot {
           if (ancestor) binder.bindFrame(ancestor);
         }
       },
-      releaseFrame: (frame) => { binder.releaseFrame(frame); },
+        releaseFrame: (frame) => { binder.releaseFrame(frame); },
+        bindAnimations: (frame, elements) => { binder.bindAnimations(frame, elements); },
+        tickAnimations: (elapsedSeconds) => { binder.tickAnimations(elapsedSeconds); },
+        hideAnimations: (frame) => { binder.hideAnimations(frame); },
     };
   }
 
@@ -896,6 +925,12 @@ export class FrameXmlBoot {
     return this.#tsAddonResults;
   }
 
+  private readonly checkpoint = async (): Promise<void> => {
+    if (this.#closed) throw new Error("FrameXML load cancelled");
+    await this.#options.loadScheduler?.checkpoint();
+    if (this.#closed) throw new Error("FrameXML load cancelled");
+  };
+
   /**
    * Read the corpus, derive the stub floor, run it, and count everything that happened.
    *
@@ -911,16 +946,23 @@ export class FrameXmlBoot {
     const scanMs = now() - scanStarted;
 
     const planStarted = now();
-    const plan = frameXmlStubPlan(scan.chunks);
+    await this.checkpoint();
+    const plan = await frameXmlStubPlanAsync(scan.chunks, this.checkpoint);
     this.#plan = plan;
     const planMs = now() - planStarted;
+    await this.checkpoint();
 
     const tsAddons = new FrameXmlTsAddonTracker(
       await this.corpus.read(tocPath) ?? "", tocPath.slice(0, tocPath.lastIndexOf("/") + 1),
     );
+    await this.checkpoint();
     this.installBindings();
+    this.#savedVariables.installBindings();
+    this.#savedVariables.registerToc(await this.corpus.read(tocPath) ?? "");
     // Seeded first: the prelude's closures capture these tables, so they have to be the final ones.
     this.installStubFloor(plan, scan);
+    this.vm.setGlobal("__fxBrowserAudioOutput", this.#browserAudioOutput);
+    this.vm.setGlobal("__fxLocale", this.#options.locale ?? "ruRU");
     const preludeLoaded = this.vm.execute(FRAMEXML_PRELUDE, `@${PRELUDE_CHUNK}`);
     if (!preludeLoaded.ok) throw new Error(`framexml prelude failed: ${preludeLoaded.error}`);
     // After the prelude, because both fill tables it created and captured.
@@ -967,6 +1009,7 @@ export class FrameXmlBoot {
       if (!seamLoaded.ok) throw new Error(`framexml world seam failed: ${seamLoaded.error}`);
     }
     this.probeWidgets();
+    await this.checkpoint();
 
     const socketing = installFrameXmlSocketing(this.vm, this.bridge, this.#options.seam);
 
@@ -981,6 +1024,7 @@ export class FrameXmlBoot {
       vm: this.vm,
       bridge: this.bridge,
       provider: single?.provider ?? this.corpus,
+      checkpoint: this.checkpoint,
       // ClientNetwork.lua is an unmodified library entry followed by TSAddon entries. Arm its
       // registration wrapper at that file boundary, so a TSAddon callback owns its exact raw
       // opcode before a top-level Send() can receive a synchronous reply.
@@ -1007,6 +1051,11 @@ export class FrameXmlBoot {
     });
     const loadStarted = now();
     const result = await loader.load(single?.toc ?? tocPath);
+    await this.checkpoint();
+    this.#savedVariables.finishBaseModules(this.#tsAddonResults.filter((addon) => addon.ok).map((addon) => addon.module));
+    for (const addon of this.#tsAddonResults) {
+      if (addon.ok) this.bridge.dispatchEvent("ADDON_LOADED", addon.module);
+    }
     const loadMs = now() - loadStarted;
     this.#roots = result.roots;
     for (const name of this.#options.eagerAddons ?? []) {
@@ -1039,23 +1088,37 @@ export class FrameXmlBoot {
     // exist, but before seam.attach: LiveWorldSeam.attach itself can synchronously emit events.
     // Moving this after either attach or runExercise re-exposes stock handlers that reference an
     // optional panel the host has not loaded.
+    await this.checkpoint();
     this.#options.beforeExercise?.(this);
+    this.#secureActionButtonGrid();
 
     // Before the four session events, not after: `PLAYER_ENTERING_WORLD` is what makes every
     // action button ask `HasAction`, and a seam attached afterwards would answer a bar that had
     // already decided it was empty.
     this.#options.seam?.attach(this.pump);
+    await this.checkpoint();
 
     this.collectCounters();
     this.#exercise.apiBefore = this.#emitted.api.size;
     this.#exercise.methodsBefore = this.#emitted.method.size;
     this.#exercise.errorsBefore = this.vm.errors.length + this.#handledErrors.length;
-    if (this.#options.exercise !== false) this.runExercise();
+    if (this.#options.exercise !== false) await this.runExercise();
+    this.disableUnavailableOptions();
     this.collectCounters();
     this.#exercise.apiAfter = this.#emitted.api.size;
     this.#exercise.methodsAfter = this.#emitted.method.size;
     this.#exercise.errorsAfter = this.vm.errors.length + this.#handledErrors.length;
 
+    // Each side of a modifier going down or up, as the client raises it (key, 1/0) — PaperDoll's
+    // comparison tooltips and the multicast flyouts redraw on it. From here on: the session is up.
+    if (!this.#closed && !this.#stopModifierEvents) {
+      this.#stopModifierEvents = (this.#options.modifiers ?? pageModifiers()).onChange?.((key, down) => {
+        if (this.#closed) return;
+        this.bridge.runInMutationBatch(() => this.bridge.dispatchEvent("MODIFIER_STATE_CHANGED", key, down ? 1 : 0));
+      });
+    }
+
+    await this.checkpoint();
     this.#inventory = this.assemble(scan, plan, result, {
       scanMs, planMs, loadMs, totalMs: now() - startedAt,
     });
@@ -1075,6 +1138,50 @@ export class FrameXmlBoot {
       const tab = this.bridge.getFrame(`CharacterFrameTab${id}`);
       if (tab) this.bridge.Hide(tab);
     });
+    // CharacterFrame.xml:109-116 anchors Tab3 LEFT to Tab2's RIGHT at -15, and only stock
+    // PetPaperDollFrame_UpdateIsAvailable re-anchors it when the pet tab is hidden
+    // (PetPaperDollFrame.lua:54-55: `CharacterFrameTab3:SetPoint("LEFT", "CharacterFrameTab2",
+    // "LEFT", 0, 0)`). Without PetPaperDollFrame.xml that code never runs and a one-tab gap
+    // (83 px at 1920x919) stayed between «Персонаж» and «Репутация». Same SetPoint, which replaces
+    // the LEFT anchor exactly as the stock call does; a promoted pet page owns it again.
+    if (!realOptional.has("petpaperdollframe.xml")) {
+      const tab2 = this.bridge.getFrame("CharacterFrameTab2");
+      const tab3 = this.bridge.getFrame("CharacterFrameTab3");
+      if (tab2 && tab3) this.bridge.SetPoint(tab3, "LEFT", tab2, "LEFT", 0, 0);
+    }
+  }
+
+  /** Leave unsupported stock device and display choices visibly unavailable. */
+  private disableUnavailableOptions(): void {
+    const controls = [
+      "AudioOptionsSoundPanelHardwareDropDownButton",
+      "AudioOptionsVoicePanelInputDeviceDropDownButton",
+      "AudioOptionsVoicePanelOutputDeviceDropDownButton",
+      "AudioOptionsVoicePanelChatModeDropDownButton",
+      "VideoOptionsResolutionPanelResolutionDropDownButton",
+      "VideoOptionsResolutionPanelRefreshDropDownButton",
+      "VideoOptionsResolutionPanelMultiSampleDropDownButton",
+      "VideoOptionsEffectsPanelTextureResolution",
+      "InterfaceOptionsDisplayPanelAggroWarningDisplayButton",
+      "InterfaceOptionsSocialPanelChatStyleButton",
+      "InterfaceOptionsSocialPanelConversationModeButton",
+      "InterfaceOptionsCombatTextPanelFCTDropDownButton",
+      "InterfaceOptionsCameraPanelStyleDropDownButton",
+      "InterfaceOptionsMousePanelClickMoveStyleDropDownButton",
+    ];
+    for (const name of controls) {
+      const frame = this.bridge.getFrame(name);
+      if (frame) this.bridge.update(frame, (mutable) => { mutable.enabled = false; });
+    }
+    const unavailable = this.#options.locale === "ruRU" ? "Недоступно" : "Unavailable";
+    for (const name of [
+      "VideoOptionsResolutionPanelRefreshDropDownText",
+      "VideoOptionsResolutionPanelMultiSampleDropDownText",
+      ...(!this.#browserAudioOutput ? ["AudioOptionsSoundPanelHardwareDropDownText"] : []),
+    ]) {
+      const frame = this.bridge.getFrame(name);
+      if (frame) this.bridge.SetText(frame, unavailable);
+    }
   }
 
   /**
@@ -1084,11 +1191,12 @@ export class FrameXmlBoot {
    * cheapest honest way to reach the code behind an event registration, which is where the in-world
    * API actually lives: a TOC walk alone reaches only `OnLoad`.
    */
-  private runExercise(): void {
+  private async runExercise(): Promise<void> {
     const parent = this.bridge.getFrame("UIParent");
     if (parent) this.bridge.Show(parent);
     const events = this.#options.exerciseEvents ?? FRAMEXML_EXERCISE_EVENTS;
     for (const event of events) {
+      await this.checkpoint();
       this.#exercise.events.push(event);
       // `ADDON_LOADED` carries the addon's name; the rest carry nothing in 3.3.5.
       this.#exercise.dispatched += event === "ADDON_LOADED"
@@ -1096,6 +1204,26 @@ export class FrameXmlBoot {
         : this.bridge.dispatchEvent(event);
     }
     this.#exercise.dispatched += this.bridge.tick(0.016);
+    this.#evaluatePetTabAvailability();
+  }
+
+  /**
+   * The client decides the pet tab once the character is in the world: its login-time UNIT_PET and
+   * PET_BAR_UPDATE reach PetPaperDollFrame_UpdateTabs. Here the seam's HasPetUI/GetNumCompanions
+   * answer only after it attached — after `hideUnavailableCharacterTabs` ran, and before the
+   * session events above, none of which the stock handler acts on (PetPaperDollFrame.lua:119-160)
+   * — so the stock function runs here, once, where the client's login edge lands. From then on the
+   * seams' UNIT_PET and COMPANION_* events keep it current. Without the promoted page there is no
+   * such global and `hideUnavailableCharacterTabs` has already hidden the tab.
+   */
+  #evaluatePetTabAvailability(): void {
+    const update = this.vm.globalFunction("PetPaperDollFrame_UpdateIsAvailable");
+    if (!update) return;
+    try {
+      this.bridge.runInMutationBatch(() => { this.vm.call(update, [], 0); });
+    } finally {
+      this.vm.release(update);
+    }
   }
 
   /**
@@ -1105,9 +1233,42 @@ export class FrameXmlBoot {
    * a cooldown start comes out of the seam in these units and is compared against `GetTime()` by
    * the corpus and against this clock by the renderer's sweep.
    */
+  /**
+   * `ActionButton_ShowGrid`/`ActionButton_HideGrid` count a button's `showgrid` attribute only
+   * `if ( issecure() )` (ActionButton.lua:275, :291), and that counter is the whole of what shows
+   * an empty slot while something is held (ACTIONBAR_SHOWGRID, the spellbook's
+   * MultiActionBar_ShowAllGrids, MultiActionBars.lua:85-87) and hides it again. In the client both
+   * run as Blizzard's code, secure; this VM answers `issecure()` false (GlueLua.ts), which left every
+   * empty slot hidden, so nothing could be dropped on one. The two run with `issecure()` true, as
+   * the Options owner runs Blizzard's code (FrameXmlOptionsOwner.ts); nothing else changes answer.
+   */
+  #secureActionButtonGrid(): void {
+    const installed = this.vm.execute(`
+      do
+        local insecure, pcall, error, type, rawget = issecure, pcall, error, type, rawget
+        local function secure() return true end
+        for _, name in ipairs({ "ActionButton_ShowGrid", "ActionButton_HideGrid" }) do
+          local original = rawget(_G, name)
+          if type(original) == "function" then
+            _G[name] = function(...)
+              issecure = secure
+              local ok, message = pcall(original, ...)
+              issecure = insecure
+              if not ok then error(message, 0) end
+            end
+          end
+        end
+      end
+    `, "@webclient/actionbar-grid-secure");
+    if (!installed.ok) console.warn(`[FrameXML] action bar grid: ${installed.error}`);
+  }
+
   get pump(): { fire: (event: string, ...args: readonly unknown[]) => number; now: () => number } {
     return {
-      fire: (event, ...args) => {
+      // A world event: the store flush and the packet handlers deliver these in bursts between two
+      // frame steps, so what one changes may wait for the step (`runInDeferrableBatch`; the world
+      // mount turns that on with `setLayoutDeferral`).
+      fire: (event, ...args) => this.bridge.runInDeferrableBatch(() => {
         // LiveWorldSeam publishes ZONE_CHANGED_NEW_AREA when the zone changes. The vertical
         // corpus deliberately leaves the stock world-map owner out: FrameXmlWorldMount keeps the
         // native map action as the owner until a complete WorldMapFrame gate passes. Delivering
@@ -1119,7 +1280,7 @@ export class FrameXmlBoot {
           return this.bridge.dispatchEventExcept(event, WORLD_MAP_ZONE_EVENT_OWNERS, ...args);
         }
         return this.bridge.dispatchEvent(event, ...args);
-      },
+      }),
       now: () => Date.now() / 1000,
     };
   }
@@ -1134,11 +1295,40 @@ export class FrameXmlBoot {
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#stopModifierEvents?.();
+    this.#stopModifierEvents = undefined;
+    this.#stopSavedVariablesPersistence?.();
+    this.bridge.dispatchEvent("PLAYER_LOGOUT");
+    this.#savedVariables.flush();
     this.#clientNetwork?.close();
     this.#addons.close();
     this.#options.seam?.detach();
     this.vm.close();
   }
+
+  flushSavedVariables(): void {
+    if (!this.#closed) this.#savedVariables.flush();
+  }
+
+  /** The mounted browser owns checkpoints; headless corpus probes never create timers. */
+  startSavedVariablesPersistence(target: Window, document: Document): void {
+    if (this.#closed || !this.#options.savedVariables || this.#stopSavedVariablesPersistence) return;
+    const save = (): void => this.flushSavedVariables();
+    const hide = (): void => { if (document.visibilityState === "hidden") save(); };
+    target.addEventListener("pagehide", save);
+    document.addEventListener("visibilitychange", hide);
+    const interval = target.setInterval(save, 30000);
+    this.#stopSavedVariablesPersistence = () => {
+      target.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", hide);
+      target.clearInterval(interval);
+      this.#stopSavedVariablesPersistence = undefined;
+    };
+  }
+
+  get savedVariableDiagnostics() { return this.#savedVariables.diagnostics; }
 
   /** Load one LoD add-on into this boot's existing VM, registry, and widget bridge. */
   async loadAddon(name: string): Promise<FrameXmlAddonRuntimeResult> {
@@ -1160,6 +1350,10 @@ export class FrameXmlBoot {
    */
   private installBindings(): void {
     const vm = this.vm;
+    // Stock RaidFrame.lua / PartyMemberFrame.lua declare these group limits, but their panels
+    // are not part of the browser's HUD subset. WorldMapFrame iterates the same fixed slots.
+    vm.setGlobal("MAX_RAID_MEMBERS", 40);
+    vm.setGlobal("MAX_PARTY_MEMBERS", 4);
     // Before the stub floor and before the first TOC chunk: the real ClientNetwork.lua captures
     // this C-API entry while it defines CreateCustomPacket and the packet readers.
     this.#clientNetwork?.install();
@@ -1172,10 +1366,32 @@ export class FrameXmlBoot {
       const name = args[1] === undefined ? undefined : String(args[1]);
       const parent = args[2] as FrameXmlFrame | undefined;
       const inherits = args[3] === undefined ? undefined : String(args[3]);
-      return [this.bridge.CreateFrame(type, name, parent, inherits)];
+      // The fifth argument is the frame's ID: FCF_OpenTemporaryWindow creates ChatFrame<N> with
+      // FloatingChatFrameTemplate and N, and the template's OnLoad reads GetID() straight away
+      // (FloatingChatFrame.lua:60, 713). Dropped, every whisper pop-out raised at :804.
+      const id = typeof args[4] === "number" ? args[4] : undefined;
+      return [this.bridge.CreateFrame(type, name, parent, inherits, id)];
+    });
+    // Read by the neutral chunk's modifier family (IsShiftKeyDown, IsModifiedClick, …), which
+    // captures it before the corpus runs.
+    const modifiers = this.#options.modifiers ?? pageModifiers();
+    vm.registerGlobal("__fxModifierState", () => {
+      const held = modifiers.state();
+      return [held.LSHIFT, held.RSHIFT, held.LCTRL, held.RCTRL, held.LALT, held.RALT, held.button];
+    });
+    installFrameXmlWorldMapArrowBindings(vm, this.bridge, () => this.#options.seam?.map);
+    vm.registerGlobal("__fxRecordWidgetStub", (args) => {
+      const frame = args[0] && typeof args[0] === "object"
+        ? this.bridge.resolve(args[0] as FrameXmlFrame) : undefined;
+      this.binder.recordStubCall(String(args[2]), String(args[1]), frame);
+      return [];
     });
     vm.registerGlobal("GetTime", () => [Date.now() / 1000]);
     vm.registerGlobal("GetLocale", () => [this.#options.locale ?? "ruRU"]);
+    // Only the selected client locale is installed through this MPQ chain.
+    // The stock Languages panel sees one locale and does not offer a restart
+    // choice that this browser cannot fulfill.
+    vm.registerGlobal("GetExistingLocales", () => [this.#options.locale ?? "ruRU"]);
     vm.registerGlobal("GetBuildInfo", () => [...FRAMEXML_BUILD_INFO]);
     vm.registerGlobal("GetItemQualityColor", (args) => {
       const quality = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.trunc(args[0]) : -1;
@@ -1183,6 +1399,26 @@ export class FrameXmlBoot {
     });
     vm.registerGlobal("GetScreenWidth", () => [this.#options.screen?.().width ?? 1024]);
     vm.registerGlobal("GetScreenHeight", () => [this.#options.screen?.().height ?? 768]);
+    // The browser owns a single canvas viewport. Stock UIParent computes its widescreen offsets
+    // through the resolution-list API, so expose that same viewport as its one selectable mode.
+    vm.registerGlobal("GetScreenResolutions", () => {
+      const screen = this.#options.screen?.() ?? { width: 1024, height: 768 };
+      return [`${Math.max(1, Math.round(screen.width))}x${Math.max(1, Math.round(screen.height))}`];
+    });
+    vm.registerGlobal("GetCurrentResolution", () => [1]);
+    // Stock video options use zero as the explicit unavailable refresh-rate
+    // sentinel. There is no browser API here for enumerating display modes or
+    // for switching the renderer's multisample format after creation.
+    vm.registerGlobal("GetRefreshRates", () => [0]);
+    vm.registerGlobal("GetMultisampleFormats", () => []);
+    // The sound renderer connects to AudioContext.destination. It can use the
+    // browser's selected default output, but cannot enumerate or switch devices.
+    vm.registerGlobal("Sound_GameSystem_GetNumOutputDrivers", () =>
+      [this.#browserAudioOutput ? 1 : 0]);
+    vm.registerGlobal("Sound_GameSystem_GetOutputDriverNameByIndex", (args) =>
+      this.#browserAudioOutput && args[0] === 0
+        ? [this.#options.locale === "ruRU" ? "Выход браузера по умолчанию" : "Browser default output"]
+        : []);
     vm.registerGlobal("GetCursorPosition", () => [...this.bridge.mousePosition]);
     // File IO is asynchronous in the browser. LoadAddOn therefore reports the current
     // synchronous state; the host calls loadAddon() and only then exposes a loaded LoD module to
@@ -1201,6 +1437,7 @@ export class FrameXmlBoot {
     });
     for (const [name, value] of Object.entries(FRAMEXML_HOST_CONSTANTS)) vm.setGlobal(name, value);
     // First touch and the final read-back are the only two things that cross out of Lua.
+    vm.registerGlobal("__fxOrigin", () => [vm.callingLocation(PRELUDE_CHUNK)]);
     vm.registerGlobal("__fxNoteApi", (args) => {
       const name = String(args[0] ?? "");
       if (name && !this.#apiTouches.has(name)) {
@@ -1270,6 +1507,27 @@ export class FrameXmlBoot {
       for (const [name, binding] of Object.entries(FRAMEXML_SEAM_BINDINGS)) {
         vm.registerGlobal(`__fxSeam_${name}`, (args) => binding(seam, args));
       }
+      // A Texture widget cannot hold a 3D unit render; the world mount places a PortraitRenderer
+      // canvas above it and the picture underneath is the fallback. QuestFrame.lua calls this
+      // only after UnitExists("questnpc"), and its Texture gets the selected client's book icon.
+      // Every other Texture and unit — "npc"/"NPC" for Gossip, Bank, Taxi, Merchant, Trainer and
+      // the trade partner, "player", "pet", a party or ready-check unit — goes to the host
+      // (FrameXmlPortraits.ts), which puts the client's «portrait not available» art in a Texture
+      // it claims and leaves any other as stock Lua set it.
+      vm.registerGlobal("SetPortraitTexture", (args) => {
+        recordDirectApi("SetPortraitTexture");
+        const frame = args[0] && typeof args[0] === "object"
+          ? this.bridge.resolve(args[0] as FrameXmlFrame) : undefined;
+        if (frame?.type !== "Texture" || typeof args[1] !== "string") return [];
+        if (frame === this.bridge.getFrame("QuestFramePortrait")) {
+          if (args[1] !== "questnpc") return [];
+          this.bridge.SetTexture(frame, "Interface\\QuestFrame\\UI-QuestLog-BookIcon");
+          this.#options.onQuestPortrait?.(seam.questNpcPortraitGuid());
+          return [];
+        }
+        this.#options.onUnitPortrait?.(frame, args[1].toLowerCase());
+        return [];
+      });
     }
     vm.registerGlobal("__fxEmit", (args) => {
       const kind = String(args[0] ?? "");
@@ -1317,6 +1575,11 @@ export class FrameXmlBoot {
     // frame (`_G["ActionButton" .. index]`); every name here is a C-API function this host
     // genuinely implements, so declaring it is a statement of fact rather than a fallback.
     if (this.#options.seam) for (const name of FRAMEXML_SEAM_NAMES) api[name] = true;
+    // The same holds for F2's neutral table: every row is a C-API function with a documented
+    // answer. Declaring them makes the answer reachable from code outside this scan — a client
+    // add-on's file-scope capture, or a load-time read such as LFDFrame.lua:1's
+    // `EXPANSION_LEVEL = GetExpansionLevel()` — while an untouched name still costs nothing.
+    for (const answer of FRAMEXML_NEUTRAL_API) api[answer.name] = true;
     const methods: Record<string, boolean> = {};
     for (const name of plan.methodNames) methods[name] = true;
     for (const promotion of FRAMEXML_PROMOTED_METHODS) methods[promotion.name] = true;
@@ -1469,6 +1732,7 @@ export class FrameXmlBoot {
           .map(([type, count]) => ({ type, count })),
       },
       errors,
+      widgetStubs: this.binder.stubDiagnostics,
       api: this.stubRecords(
         this.#emitted.api, this.#apiTouches, plan.apiCallSites, FRAMEXML_PROMOTED_STUBS,
         new Map([

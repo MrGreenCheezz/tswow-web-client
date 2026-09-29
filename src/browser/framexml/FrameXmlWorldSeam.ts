@@ -39,8 +39,8 @@
  * * the base minimap's world labels — `GetMinimapZoneText`, `GetZoneText`, `GetSubZoneText` and
  *   the three-return `GetZonePVPInfo`. `GetTime` is installed by the boot's shared clock,
  *   while zoom (`Minimap:GetZoom*`/`SetZoom`) and rotation (`GetCVar`/`SetCVar`) are widget/CVar
- *   state rather than world seam values. `GetPlayerMapPosition` is not a base `Minimap.lua` call
- *   in the measured 3.3.5 client, so it is intentionally not promoted here.
+ *   state rather than world seam values. `FrameXmlMap` separately projects `GetPlayerMapPosition`
+ *   through the selected DBC map and floor for the original world map.
  *
  * `Minimap.xml` also registers `MINIMAP_PING`, but it is deliberately not promoted in this seam:
  * this client's packet carries absolute world coordinates while stock `Minimap.lua` expects
@@ -99,6 +99,53 @@ import {
 } from "../../world/ChatProtocol.js";
 import type { ChatMessage } from "../../world/ChatProtocol.js";
 import type { FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
+import type { FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
+import { FRAMEXML_QUEST_MENU_DATA_BINDINGS } from "./FrameXmlQuestMenuData.js";
+import { FRAMEXML_QUEST_GIVER_DATA_BINDINGS } from "./FrameXmlQuestGiverData.js";
+import { FRAMEXML_QUEST_REWARD_DATA_BINDINGS } from "./FrameXmlQuestRewardData.js";
+import { FRAMEXML_QUEST_FLAGS_DATA_BINDINGS } from "./FrameXmlQuestFlagsData.js";
+import { FRAMEXML_WORLD_STATE_BINDINGS, type FrameXmlWorldStates } from "./FrameXmlWorldStates.js";
+import { FRAMEXML_CALENDAR_SEAM_BINDINGS, type FrameXmlCalendar } from "./FrameXmlCalendar.js";
+import { FRAMEXML_HUD_MECHANICS_BINDINGS, type FrameXmlHudMechanics } from "./FrameXmlHudMechanics.js";
+import { FRAMEXML_MAP_BINDINGS, type FrameXmlMap } from "./FrameXmlMap.js";
+import { FRAMEXML_LFD_BINDINGS, FRAMEXML_LFD_PRELUDE, type FrameXmlLfdModel } from "./FrameXmlLfd.js";
+import { FRAMEXML_LOOT_BINDINGS, FRAMEXML_LOOT_PRELUDE, type FrameXmlLootModel } from "./FrameXmlLoot.js";
+import { FRAMEXML_POPUPS_BINDINGS, FRAMEXML_POPUPS_PRELUDE, type FrameXmlPopupsModel } from "./FrameXmlPopups.js";
+import { FRAMEXML_FRIENDS_BINDINGS, FRAMEXML_FRIENDS_PRELUDE, type FrameXmlFriendsModel } from "./FrameXmlFriends.js";
+import { FRAMEXML_MAIL_BINDINGS, FRAMEXML_MAIL_PRELUDE, type FrameXmlMailModel } from "./FrameXmlMail.js";
+import { FRAMEXML_TRADE_BINDINGS, type FrameXmlTradeModel } from "./FrameXmlTrade.js";
+import { FRAMEXML_CURRENCY_BINDINGS, type FrameXmlCurrencyModel } from "./FrameXmlCurrency.js";
+import { FRAMEXML_TRADESKILL_BINDINGS, FRAMEXML_TRADESKILL_PRELUDE, type FrameXmlTradeSkillModel } from "./FrameXmlTradeSkill.js";
+import { FRAMEXML_NPC_WINDOW_BINDINGS, type FrameXmlNpcWindowModels } from "./FrameXmlGossipSeam.js";
+import { createFrameXmlServices, FRAMEXML_SERVICE_BINDINGS, type FrameXmlServices } from "./FrameXmlServices.js";
+import { FRAMEXML_AUCTION_BINDINGS, type FrameXmlAuctionModel } from "./FrameXmlAuction.js";
+import { FRAMEXML_ACHIEVEMENT_BINDINGS, type FrameXmlAchievementModel } from "./FrameXmlAchievement.js";
+import { FRAMEXML_GUILDBANK_BINDINGS, type FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
+import { FRAMEXML_MACRO_BINDINGS, type FrameXmlMacroModel } from "./FrameXmlMacro.js";
+import { FRAMEXML_CURSOR_BINDINGS, type FrameXmlActionButton, type FrameXmlCursorModel } from "./FrameXmlCursor.js";
+import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
+import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
+import { FRAMEXML_RAID_LOD_BINDINGS } from "./FrameXmlRaidLodApi.js";
+import { FRAMEXML_ARENA_BINDINGS } from "./FrameXmlArenaApi.js";
+import type { FrameXmlArenaOpponents } from "./FrameXmlArena.js";
+import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
+import { FRAMEXML_INSPECT_BINDINGS, FRAMEXML_INSPECT_PRELUDE, type FrameXmlInspectModel } from "./FrameXmlInspect.js";
+import { FRAMEXML_BARBER_BINDINGS, type FrameXmlBarberModel } from "./FrameXmlBarber.js";
+import { FRAMEXML_COMPANION_BINDINGS, type FrameXmlCompanionModel } from "./FrameXmlCompanions.js";
+import {
+  FRAMEXML_PET_ACTION_BINDINGS, frameXmlWithPetBook, type FrameXmlPetActionBar,
+} from "./FrameXmlPetActionBar.js";
+import { FRAMEXML_GLYPH_BINDINGS, type FrameXmlGlyphModel } from "./FrameXmlGlyph.js";
+import { FRAMEXML_TITLE_BINDINGS, type FrameXmlTitleModel } from "./FrameXmlTitles.js";
+import { FRAMEXML_EQUIPMENT_SET_BINDINGS, type FrameXmlEquipmentSetModel } from "./FrameXmlEquipmentSets.js";
+import { FRAMEXML_ITEM_ACTION_BINDINGS, FRAMEXML_ITEM_ACTIONS_PRELUDE } from "./FrameXmlItemActions.js";
+import { FRAMEXML_OPTIONS_BINDINGS, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
+import { FRAMEXML_PLAYER_STATUS_BINDINGS, type FrameXmlPlayerStatus } from "./FrameXmlPlayerStatus.js";
+import { FRAMEXML_UNIT_RELATION_BINDINGS, type FrameXmlUnitRelations } from "./FrameXmlUnitRelations.js";
+import { FRAMEXML_MECHANICS_BINDINGS, FRAMEXML_MECHANICS_PRELUDE, type FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import type { FrameXmlThreatModel } from "./FrameXmlThreat.js";
+import type { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
+import type { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
 
 /**
  * How the seam reaches the interface: events in, and the clock both sides share.
@@ -151,11 +198,33 @@ export type FrameXmlSpellTabInfo = readonly [
   highestRankNumSpells: number,
 ];
 
+/** `GetSpellInfo`'s seven DBC-backed values for an already resolved spell. */
+export type FrameXmlSpellInfo = readonly [
+  name: string,
+  rank: string,
+  icon: string,
+  castTime: number,
+  minRange: number,
+  maxRange: number,
+  spellId: number,
+];
+
 /** `GetSpellCooldown`'s GetTime-based `(start, duration, enabled)` tuple. */
 export type FrameXmlSpellCooldown = readonly [
   start: number,
   duration: number,
   enabled: number,
+];
+
+/** The four values consumed by stock `ShapeshiftBar_Update`. */
+export type FrameXmlShapeshiftFormInfo = readonly [
+  texture: string, name: string, isActive: boolean, isCastable: boolean,
+];
+
+/** `GetMirrorTimerInfo`: an absent slot returns only the stock UNKNOWN token. */
+export type FrameXmlMirrorTimerInfo = readonly ["UNKNOWN"] | readonly [
+  timer: "BREATH" | "EXHAUSTION", valueMs: number, maxMs: number,
+  scale: number, paused: number, label: string,
 ];
 
 /** The exact thirteen values returned by the 3.3.5 `GetSkillLineInfo` API. */
@@ -249,12 +318,24 @@ export type FrameXmlBuybackItemInfo = readonly [
   isUsable: boolean,
 ];
 
-/** The three values returned by `GetMerchantItemCostInfo`; unsupported currencies stay zero. */
+/** The three values returned by `GetMerchantItemCostInfo`. */
 export type FrameXmlMerchantCostInfo = readonly [
   honorPoints: number,
   arenaPoints: number,
   itemCount: number,
 ];
+
+/** The cached name/link/rarity prefix of the 3.3.5 `GetItemInfo` tuple. */
+export type FrameXmlItemInfo = readonly [name: string, link: string, quality: number];
+
+/** Resolve a numeric item id or a native item hyperlink without trusting its display text. */
+export function frameXmlItemEntry(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const match = /(?:^|\|H)item:(\d+)(?::|\||$)/.exec(value);
+  const entry = match ? Number(match[1]) : undefined;
+  return entry !== undefined && Number.isSafeInteger(entry) && entry > 0 ? entry : undefined;
+}
 
 /** The structural tuple returned by `GetInventorySlotInfo`. */
 export type FrameXmlInventorySlotInfo = readonly [
@@ -476,7 +557,14 @@ export type FrameXmlChatSender = (
   target: string,
 ) => void;
 
-/** The `FCF_GetChatWindowInfo` ten-return tuple used by ChatFrame configuration. */
+/**
+ * The `FCF_GetChatWindowInfo` ten-return tuple used by ChatFrame configuration.
+ *
+ * `docked` is the dock slot, not a flag: `FloatingChatFrame_Update` hands it straight to
+ * `FCF_DockFrame(frame, docked)`, whose `FCFDock_AddChatFrame` inserts at that position
+ * (FloatingChatFrame.lua:151, 1987-1988). Window 1 answers `true` — it is the dock's primary and
+ * is already docked, so the position is never compared — and any other docked window its slot.
+ */
 export type FrameXmlChatWindowInfo = readonly [
   name: string,
   fontSize: number,
@@ -486,9 +574,50 @@ export type FrameXmlChatWindowInfo = readonly [
   alpha: number,
   shown: boolean,
   locked: boolean,
-  docked: boolean,
+  docked: number | boolean,
   uninteractable: boolean,
 ];
+
+/**
+ * Chat window 2 as the 3.3.5 client's default `chat-cache.txt` has it: the «Журнал боя» tab,
+ * docked in slot 2 beside «Общий» and not shown (`SHOWN 0` — a docked window that is not the
+ * dock's selection). Its message and channel lists stay empty on purpose: the mount mirrors the
+ * native combat feed into `ChatFrame2` (`FrameXmlChatApi.ts`), and a stock group registered here as
+ * well would print every combat line twice. The name is `COMBAT_LOG` from the dataset's
+ * GlobalStrings.lua:1716; enUS is the client's own «Combat Log».
+ *
+ * `shown` must stay false. `FloatingChatFrame_Update`'s shown branch (FloatingChatFrame.lua:138-142)
+ * runs `ChatFrame2:Show()` and `FCF_SetTabPosition(ChatFrame2, 0)` on every UPDATE_CHAT_WINDOWS,
+ * and `FCF_DockFrame` then returns early for a frame already docked (:1468), so the dock never
+ * repairs it: measured, the second update left ChatFrame2 shown over the selected ChatFrame1 and
+ * its tab anchored on ChatFrame2Background right over «Общий». Not shown and docked is the
+ * branch that leaves it alone, and `FCFDock_UpdateTabs` still shows the tab.
+ */
+export function frameXmlCombatLogWindowInfo(locale = "ruRU"): FrameXmlChatWindowInfo {
+  return [locale === "enUS" ? "Combat Log" : "Журнал боя", 14, 1, 1, 1, 0, false, true, 2, false];
+}
+
+/**
+ * Chat window 1, «Общий» — the dock's primary — with the chat cache's SHOWN flag as ChatFrame1
+ * last wrote it (`setChatWindowShown`; true until it writes anything).
+ *
+ * The 3.3.5 client answers `shown` from that cache, and ChatFrame1 keeps it true to the dock
+ * itself: selecting «Журнал боя» hides it, and its OnHide writes `SetChatWindowShown(1, nil)`;
+ * selecting «Общий» shows it and its OnShow writes 1 (FloatingChatFrame.xml:718, :729). The client
+ * raises UPDATE_CHAT_WINDOWS only when chat settings load; this seam also raises it when the channel
+ * list stock reads changes (a /join, a /leave, a zone crossing — `LiveWorldSeam`), and a constant
+ * `true` there made `FloatingChatFrame_Update(1)` and `ChatFrame_ConfigEventHandler`
+ * (FloatingChatFrame.lua:138-142, ChatFrame.lua:2506-2508) show ChatFrame1 over the selected combat
+ * log. With the cache's answer that update only re-registers window 1's groups and channels, and
+ * the dock keeps its selection: measured over the MPQ corpus and a real WorldClient, a /join, a zone
+ * crossing into the shorter «Общий: Даларан» and a /leave with «Журнал боя» selected left
+ * ChatFrame1 hidden, ChatFrame2 shown and its tab beside «Общий», and «Общий» had every line when
+ * reselected; before, the /join showed both frames. Window 2 keeps its constant not-shown answer:
+ * see {@link frameXmlCombatLogWindowInfo} for why its shown branch must never run after docking.
+ */
+export function frameXmlGeneralWindowInfo(shown = true): FrameXmlChatWindowInfo {
+  return ["Общий", 14, 1, 1, 1, 0, shown, true, true, false];
+}
 
 /** Numeric chat types that the parser can place in `ChatMessage`, by their stock event suffix. */
 export const FRAMEXML_CHAT_TYPE_NAMES: Readonly<Record<number, string>> = Object.freeze({
@@ -598,6 +727,10 @@ export const FRAMEXML_CHAT_WINDOW_GROUPS: readonly string[] = Object.freeze([
   "TARGETICONS",
 ]);
 
+/** `ChatMsg` 0x17/0x18 in SharedDefines.h: the auto-reply toggles stock `/afk` and `/dnd` send. */
+const CHAT_MSG_AFK = 0x17;
+const CHAT_MSG_DND = 0x18;
+
 /** SendChatMessage types this client can truthfully forward to its existing world builder. */
 export const FRAMEXML_CHAT_OUTBOUND_TYPES: Readonly<Record<string, number>> = Object.freeze({
   SAY: CHAT_MSG_SAY,
@@ -609,14 +742,114 @@ export const FRAMEXML_CHAT_OUTBOUND_TYPES: Readonly<Record<string, number>> = Ob
   WHISPER: CHAT_MSG_WHISPER,
   EMOTE: CHAT_MSG_EMOTE,
   CHANNEL: CHAT_MSG_CHANNEL,
+  // ChatFrame.lua:1936-1941 `SlashCmdList["CHAT_AFK"/"CHAT_DND"]` send `SendChatMessage(msg,
+  // "AFK"|"DND")`, usually with an empty msg. TrinityCore's HandleMessagechatOpcode reads a bare
+  // CString for both and treats an empty one as meaningful (ChatHandler.cpp:235-236, 528-564):
+  // it toggles the state off, or sets the server's default auto-reply.
+  AFK: CHAT_MSG_AFK,
+  DND: CHAT_MSG_DND,
 });
 
-/** The server's three language IDs represented in the stock FrameXML string slot. */
-const FRAMEXML_LANGUAGE_NAMES: Readonly<Record<number, string>> = Object.freeze({
-  0: "Universal",
-  1: "Orcish",
-  7: "Common",
+/**
+ * `Languages.dbc` names, per client locale, as stock ChatFrame's `arg3` needs them.
+ *
+ * Measured from this dataset's `dbc/Languages.dbc` (17 rows, ruRU string column) on 2026-09-24;
+ * the file is the client's own and the gateway has no route for it, so the rows are carried here
+ * the way `FRAMEXML_INVENTORY_SLOTS` carries the paper-doll table. The case is the client's: the
+ * ruRU rows are lower-case («всеобщий»), and stock prints `"["..arg3.."] "` verbatim.
+ *
+ * Id 0 (`LANG_UNIVERSAL`) has no row, so the client has no name for it and answers "" — stock
+ * ChatFrame.lua:2901 hides the bracket for an empty `arg3`. (Its `arg3 ~= "Universal"` literal
+ * only ever matched an enUS string.) Only the three ids this client previously named keep their
+ * English spelling for other locales; no enUS table was measured, so none is invented.
+ */
+const FRAMEXML_LANGUAGE_NAMES_BY_LOCALE: Readonly<Record<string, Readonly<Record<number, string>>>> = Object.freeze({
+  ruRU: Object.freeze({
+    0: "", 1: "орочий", 2: "дарнасский", 3: "таурахэ", 6: "дворфийский", 7: "всеобщий",
+    8: "язык демонов", 9: "язык титанов", 10: "талассийский", 11: "драконий", 12: "калимаг",
+    13: "гномский", 14: "язык троллей", 33: "наречие нежити", 35: "дренейский",
+    36: "наречие зомби", 37: "машинный гномский", 38: "машинный гоблинский",
+  }),
+  enUS: Object.freeze({ 0: "", 1: "Orcish", 7: "Common" }),
 });
+
+/**
+ * `SkillLine` ids of the language skills, from TrinityCore's `lang_description` (ObjectMgr.cpp:170)
+ * and `SkillType` (SharedDefines.h:2902-3008). A player knows a language exactly when the matching
+ * skill is in `PLAYER_SKILL_INFO_1_1`; this is how `GetNumLanguages` enumerates without a guess.
+ */
+export const FRAMEXML_LANGUAGE_SKILLS: Readonly<Record<number, number>> = Object.freeze({
+  1: 109, 2: 113, 3: 115, 6: 111, 7: 98, 8: 139, 9: 140, 10: 137, 11: 138, 12: 141,
+  13: 313, 14: 315, 33: 673, 35: 759,
+});
+
+function languageTable(locale: string | undefined): Readonly<Record<number, string>> {
+  return FRAMEXML_LANGUAGE_NAMES_BY_LOCALE[locale ?? "ruRU"] ?? FRAMEXML_LANGUAGE_NAMES_BY_LOCALE.enUS!;
+}
+
+/** The client's display name for a language id; "" for Universal and for an unnamed id. */
+export function frameXmlLanguageName(language: number, locale = "ruRU"): string {
+  return languageTable(locale)[language] ?? "";
+}
+
+/**
+ * The language id for a stock language *name*.
+ *
+ * Stock `ChatEdit_OnLoad` stores `GetDefaultLanguage()` in `editBox.language`, and every outbound
+ * `SendChatMessage` passes that string back (ChatFrame.lua:3669-3686), so the seam has to accept
+ * the name form as well as the numeric one. Case-insensitive; unknown names answer undefined.
+ */
+export function frameXmlLanguageId(name: string, locale = "ruRU"): number | undefined {
+  const wanted = name.trim().toLocaleLowerCase();
+  if (!wanted) return undefined;
+  for (const [id, label] of Object.entries(languageTable(locale))) {
+    if (label && label.toLocaleLowerCase() === wanted) return Number(id);
+  }
+  return undefined;
+}
+
+/**
+ * Escape a line this client wrote itself so stock FrameXML shows it as written.
+ *
+ * A FontString parses every `|` (FrameXmlText.ts), and `|n` is a line break: the native help line
+ * «/vehicle enter|leave|next|prev|eject» reached ChatFrame1 as two lines broken inside «next». The
+ * client's rule is that a literal pipe is written `||`. Only sequences that are well formed *and*
+ * that this client writes on purpose survive: `||`, `|cAARRGGBB` … `|r` (an `|r` with no open colour
+ * is prose), a whole `|H…|h…|h` link, a whole `|T…|t` icon, a `|4sing:plur;` plural and a `|3-N(`
+ * declension that closes. Everything else — `|n` included — is doubled.
+ */
+export function frameXmlEscapeLocalChatText(text: string): string {
+  if (!text.includes("|")) return text;
+  let output = "";
+  let colors = 0;
+  let at = 0;
+  while (at < text.length) {
+    const character = text[at]!;
+    if (character !== "|") {
+      output += character;
+      at += 1;
+      continue;
+    }
+    const rest = text.slice(at);
+    const sequence = /^\|\|/.exec(rest)?.[0]
+      ?? /^\|[cC][0-9a-fA-F]{8}/.exec(rest)?.[0]
+      ?? /^\|H[^|]*\|h[^|]*\|h/.exec(rest)?.[0]
+      ?? /^\|T[^|]*\|t/.exec(rest)?.[0]
+      ?? /^\|4[^:;|]*:[^;|]*;/.exec(rest)?.[0]
+      ?? (/^\|3-\d+\([^|)]*\)/.test(rest) ? /^\|3-\d+\(/.exec(rest)?.[0] : undefined)
+      ?? (colors > 0 ? /^\|[rR]/.exec(rest)?.[0] : undefined);
+    if (sequence === undefined) {
+      output += "||";
+      at += 1;
+      continue;
+    }
+    if (/^\|[cC]/.test(sequence)) colors += 1;
+    else if (/^\|[rR]$/.test(sequence)) colors -= 1;
+    output += sequence;
+    at += sequence.length;
+  }
+  return output;
+}
 
 /** A bounded protocol payload is the only validation this seam can perform without the world. */
 export const FRAMEXML_CHAT_MAX_BYTES = 255;
@@ -646,9 +879,15 @@ export function frameXmlChatTypeCode(type: string): number | undefined {
   return FRAMEXML_CHAT_OUTBOUND_TYPES[type];
 }
 
-/** Match the 255-byte server limit without splitting a UTF-8 code point. */
-export function frameXmlChatTextIsValid(text: string): boolean {
-  return text.length > 0 && utf8Length(text) <= FRAMEXML_CHAT_MAX_BYTES;
+/**
+ * Match the 255-byte server limit without splitting a UTF-8 code point.
+ *
+ * Empty text is refused except for the AFK/DND toggles, where the server gives an empty auto-reply
+ * its own meaning (see `FRAMEXML_CHAT_OUTBOUND_TYPES`).
+ */
+export function frameXmlChatTextIsValid(text: string, type?: number): boolean {
+  if (text.length === 0) return type === CHAT_MSG_AFK || type === CHAT_MSG_DND;
+  return utf8Length(text) <= FRAMEXML_CHAT_MAX_BYTES;
 }
 
 /** Build stock ChatFrame's twelve arguments from the client's already parsed message. */
@@ -659,6 +898,9 @@ export function frameXmlChatEventArgs(
   channelNumber = 0,
   channelName = message.channel,
   channelString?: string,
+  locale = "ruRU",
+  /** `arg7`: a built-in channel's ChatChannels id, which stock matches against `zoneChannelList`. */
+  zoneChannelId = 0,
 ): FrameXmlChatEventArgs {
   const flags = [
     (message.tag & 1) !== 0 ? "AFK" : "",
@@ -668,17 +910,106 @@ export function frameXmlChatEventArgs(
   return [
     message.text,
     message.type === CHAT_MSG_WHISPER_INFORM ? message.receiverName : sender,
-    FRAMEXML_LANGUAGE_NAMES[message.language] ?? "",
+    frameXmlLanguageName(message.language, locale),
     channelString ?? (channelNumber > 0 ? `${channelNumber}. ${channelName}` : channelName),
     message.receiverName,
     flags,
-    0,
+    zoneChannelId,
     channelNumber,
     channelName,
     0,
     lineId,
     frameXmlGuid(message.senderGuid),
   ];
+}
+
+/**
+ * `SMSG_CHANNEL_NOTIFY` codes (Channel.h `ChatNotify`) by the `arg1` token stock ChatFrame looks up
+ * as `CHAT_<token>_NOTICE`, and whether the notice names a player (`CHAT_MSG_CHANNEL_NOTICE_USER`,
+ * formatted with `arg2`/`arg5`, ChatFrame.lua:2778-2790) or not (`CHAT_MSG_CHANNEL_NOTICE`,
+ * :2791-2802). Every token here has its `CHAT_*_NOTICE` string in the dataset's GlobalStrings.lua;
+ * `NOT_IN_LFG` (0x21) has none, so stock would `format(nil, …)` and it stays a system line.
+ * `MODE_CHANGE` (0x0c) is spelled out by {@link frameXmlChannelNotice}; `JOINED`/`LEFT` (0x00/0x01),
+ * another player coming and going, are the `CHANNEL_JOIN`/`CHANNEL_LEAVE` chat types instead.
+ */
+const FRAMEXML_CHANNEL_NOTICE_TOKENS: Readonly<Record<number, readonly [token: string, user: boolean]>> = Object.freeze({
+  0x02: ["YOU_JOINED", false],
+  0x03: ["YOU_LEFT", false],
+  0x04: ["WRONG_PASSWORD", false],
+  0x05: ["NOT_MEMBER", false],
+  0x06: ["NOT_MODERATOR", false],
+  0x07: ["PASSWORD_CHANGED", true],
+  0x08: ["OWNER_CHANGED", true],
+  0x09: ["PLAYER_NOT_FOUND", true],
+  0x0a: ["NOT_OWNER", false],
+  0x0b: ["CHANNEL_OWNER", true],
+  0x0d: ["ANNOUNCEMENTS_ON", true],
+  0x0e: ["ANNOUNCEMENTS_OFF", true],
+  0x0f: ["MODERATION_ON", true],
+  0x10: ["MODERATION_OFF", true],
+  0x11: ["MUTED", false],
+  0x12: ["PLAYER_KICKED", true],
+  0x13: ["BANNED", false],
+  0x14: ["PLAYER_BANNED", true],
+  0x15: ["PLAYER_UNBANNED", true],
+  0x16: ["PLAYER_NOT_BANNED", true],
+  0x17: ["PLAYER_ALREADY_MEMBER", true],
+  0x18: ["INVITE", true],
+  0x19: ["INVITE_WRONG_FACTION", false],
+  0x1a: ["WRONG_FACTION", false],
+  0x1b: ["INVALID_NAME", false],
+  0x1c: ["NOT_MODERATED", false],
+  0x1d: ["PLAYER_INVITED", true],
+  0x1e: ["PLAYER_INVITE_BANNED", true],
+  0x1f: ["THROTTLED", false],
+  0x20: ["NOT_IN_AREA", false],
+  0x22: ["VOICE_ON", true],
+  0x23: ["VOICE_OFF", true],
+});
+
+/** `ChannelMemberFlags` (Channel.h) a `MODE_CHANGE` compares. */
+const CHANNEL_MEMBER_MODERATOR = 0x02;
+const CHANNEL_MEMBER_VOICED = 0x04;
+const CHANNEL_MEMBER_MUTED = 0x08;
+
+/** The stock event and `arg1` for one channel notify, or undefined when stock has no words for it. */
+export interface FrameXmlChannelNotice {
+  readonly event: "CHAT_MSG_CHANNEL_NOTICE" | "CHAT_MSG_CHANNEL_NOTICE_USER"
+    | "CHAT_MSG_CHANNEL_JOIN" | "CHAT_MSG_CHANNEL_LEAVE";
+  /** `arg1`: the `CHAT_<token>_NOTICE` key; "" for a join or leave, whose `arg1` is the (empty) text. */
+  readonly token: string;
+}
+
+/**
+ * Which stock event one `SMSG_CHANNEL_NOTIFY` becomes.
+ *
+ * A `MODE_CHANGE` carries the member's old and new flags and stock has a sentence per direction:
+ * moderator given or taken (`SET_/UNSET_MODERATOR`); the mute is the permission to talk
+ * (`SET_/UNSET_VOICE`, «получает разрешение на общение»); the voiced bit is voice chat
+ * (`SET_/UNSET_SPEAK`, «…право на голосовое общение»). That split is read off the dataset's own
+ * wording, GlobalStrings.lua; a change of the owner bit alone has its own `OWNER_CHANGED` notify
+ * and answers undefined here.
+ */
+export function frameXmlChannelNotice(
+  code: number, oldFlags = 0, newFlags = 0,
+): FrameXmlChannelNotice | undefined {
+  if (code === 0x00) return { event: "CHAT_MSG_CHANNEL_JOIN", token: "" };
+  if (code === 0x01) return { event: "CHAT_MSG_CHANNEL_LEAVE", token: "" };
+  if (code === 0x0c) {
+    const changed = oldFlags ^ newFlags;
+    const gained = (bit: number): boolean => (newFlags & bit) !== 0;
+    const token = (changed & CHANNEL_MEMBER_MODERATOR) !== 0
+      ? gained(CHANNEL_MEMBER_MODERATOR) ? "SET_MODERATOR" : "UNSET_MODERATOR"
+      : (changed & CHANNEL_MEMBER_MUTED) !== 0
+        ? gained(CHANNEL_MEMBER_MUTED) ? "UNSET_VOICE" : "SET_VOICE"
+        : (changed & CHANNEL_MEMBER_VOICED) !== 0
+          ? gained(CHANNEL_MEMBER_VOICED) ? "SET_SPEAK" : "UNSET_SPEAK"
+          : undefined;
+    return token === undefined ? undefined : { event: "CHAT_MSG_CHANNEL_NOTICE_USER", token };
+  }
+  const known = FRAMEXML_CHANNEL_NOTICE_TOKENS[code];
+  if (!known) return undefined;
+  return { event: known[1] ? "CHAT_MSG_CHANNEL_NOTICE_USER" : "CHAT_MSG_CHANNEL_NOTICE", token: known[0] };
 }
 
 /**
@@ -719,9 +1050,8 @@ export function frameXmlChatEventArgs(
  * world state has no indoor/zoom transition bit. `MINIMAP_UPDATE_ZOOM` and
  * `MINIMAP_UPDATE_TRACKING` similarly remain widget/settings concerns, not fabricated world edges.
  *
- * The three `ActionButton.lua` registrations that are *not* here — `ACTIONBAR_SHOWGRID`,
- * `ACTIONBAR_HIDEGRID` and `UPDATE_SHAPESHIFT_FORM` — are a drag in progress and a stance change,
- * neither of which any seam in this slice can produce.
+ * Drag-grid events remain owned by the renderer. Stance and combo events below are sourced from
+ * the known spell list, player fields, auras, cooldowns and combo-point packet.
  */
 export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   actionState: "ACTIONBAR_UPDATE_STATE",
@@ -729,6 +1059,8 @@ export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   actionCooldown: "ACTIONBAR_UPDATE_COOLDOWN",
   actionSlotChanged: "ACTIONBAR_SLOT_CHANGED",
   actionPageChanged: "ACTIONBAR_PAGE_CHANGED",
+  mirrorTimerStart: "MIRROR_TIMER_START",
+  mirrorTimerStop: "MIRROR_TIMER_STOP",
   bindings: "UPDATE_BINDINGS",
   experience: "PLAYER_XP_UPDATE",
   playerMoney: "PLAYER_MONEY",
@@ -770,6 +1102,14 @@ export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   learnedSpellInTab: "LEARNED_SPELL_IN_TAB",
   spellUpdateCooldown: "SPELL_UPDATE_COOLDOWN",
   updateShapeshiftForm: "UPDATE_SHAPESHIFT_FORM",
+  updateShapeshiftForms: "UPDATE_SHAPESHIFT_FORMS",
+  updateShapeshiftUsable: "UPDATE_SHAPESHIFT_USABLE",
+  updateShapeshiftCooldown: "UPDATE_SHAPESHIFT_COOLDOWN",
+  updateBonusActionBar: "UPDATE_BONUS_ACTIONBAR",
+  unitComboPoints: "UNIT_COMBO_POINTS",
+  bankFrameOpened: "BANKFRAME_OPENED",
+  bankFrameClosed: "BANKFRAME_CLOSED",
+  playerBankBagSlotsChanged: "PLAYERBANKBAGSLOTS_CHANGED",
   currentSpellCastChanged: "CURRENT_SPELL_CAST_CHANGED",
   tradeSkillShow: "TRADE_SKILL_SHOW",
   tradeSkillClose: "TRADE_SKILL_CLOSE",
@@ -801,8 +1141,16 @@ export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   battlefieldStatus: "UPDATE_BATTLEFIELD_STATUS",
   /** Group leader changed; ArenaFrame repaints its group-join affordance on this edge. */
   partyLeaderChanged: "PARTY_LEADER_CHANGED",
-  /** A battlemaster list/reward response arrived. */
-  battlefieldList: "PVPQUEUE_ANYWHERE_UPDATE_AVAILABLE",
+  /** The player's dungeon-finder role byte changed; PlayerFrame_UpdateRolesAssigned reads it back. */
+  playerRolesAssigned: "PLAYER_ROLES_ASSIGNED",
+  /**
+   * A battlemaster list/reward response arrived: the data for the stock PVPBattlegroundFrame, which
+   * repaints on PVPQUEUE_ANYWHERE_SHOW. Not PVPQUEUE_ANYWHERE_UPDATE_AVAILABLE — that one tells the
+   * frame its list is stale, and its handler (PVPBattleground_ResetInfo) asks for the list again,
+   * so answering every list with it ping-ponged CMSG/SMSG_BATTLEFIELD_LIST about twenty times a
+   * second for the whole session (live recording 27.09).
+   */
+  battlefieldList: "PVPQUEUE_ANYWHERE_SHOW",
   /** Opening the queue page asks the stock frame to fill itself. */
   battlegroundsShow: "PVPQUEUE_ANYWHERE_SHOW",
   npcBattlegroundsShow: "NPC_PVPQUEUE_ANYWHERE",
@@ -817,6 +1165,17 @@ export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   trainerUpdate: "TRAINER_UPDATE",
   trainerDescriptionUpdate: "TRAINER_DESCRIPTION_UPDATE",
   talentsChanged: "PLAYER_TALENT_UPDATE",
+  petTalentsChanged: "PET_TALENT_UPDATE",
+  /** The settled world pick under the cursor changed; GameTooltip.xml tests `IsUnit("mouseover")`. */
+  mouseover: "UPDATE_MOUSEOVER_UNIT",
+  /** Minimap.xml:479, MiniMapTracking — the active tracking aura changed. */
+  tracking: "MINIMAP_UPDATE_TRACKING",
+  /** Minimap.xml:141, MiniMapMailFrame — `HasNewMail` may have changed. */
+  pendingMail: "UPDATE_PENDING_MAIL",
+  /** Minimap.xml:549, MiniMapLFGFrame — `GetLFGMode`'s derived mode changed. */
+  lfgUpdate: "LFG_UPDATE",
+  /** Minimap.xml:735, MiniMapInstanceDifficulty — the instance or its difficulty changed. */
+  instanceInfo: "UPDATE_INSTANCE_INFO",
 } as const);
 
 /** `UnitPowerType`'s first return, from the core's own `Powers` enum. */
@@ -858,15 +1217,180 @@ export interface FrameXmlActionTooltip {
   readonly rank?: string;
 }
 
+/** `GetTrackingInfo(i)`'s four values, in the client's order (Minimap.lua:430). */
+export type FrameXmlTrackingInfo = readonly [name: string, texture: string, active: boolean, category: string];
+
+/** The picture `GetTrackingTexture` answers while nothing is tracked (Minimap.lua:409-411). */
+export const FRAMEXML_TRACKING_NONE_TEXTURE = "Interface\\Minimap\\Tracking\\None";
+
+/** `GetLFGMode`'s `(mode, submode)`; stock Minimap.lua:214-326 switches on both strings. */
+export type FrameXmlLfgMode = readonly [mode: string, submode?: string];
+
+/** `GetInstanceInfo`'s seven values (Minimap.lua:486). */
+export type FrameXmlInstanceInfo = readonly [
+  name: string,
+  instanceType: string,
+  difficulty: number,
+  difficultyName: string,
+  maxPlayers: number,
+  playerDifficulty: number,
+  isDynamicInstance: boolean,
+];
+
+/** The world facts `frameXmlLfgMode` reads; a structural subset of `WorldClient`. */
+export interface FrameXmlLfgSource {
+  readonly lfgStatus?: { readonly joined: boolean; readonly queued: boolean } | undefined;
+  readonly lfgProposal?: {
+    readonly state: number;
+    readonly players: readonly { readonly self: boolean; readonly answered: boolean; readonly accepted: boolean }[];
+  } | undefined;
+  readonly lfgRoleCheck?: { readonly state: number } | undefined;
+  /** `GROUPTYPE_*` bits of the current group, and whether this player leads it. */
+  readonly groupType?: number | undefined;
+  readonly isGroupLeader?: boolean | undefined;
+  readonly inGroup?: boolean | undefined;
+}
+
+/** `LfgProposalState` and `LfgRoleCheckState` values TrinityCore's LFG manager sends. */
+const LFG_PROPOSAL_INITIATING = 0;
+const LFG_ROLECHECK_INITIALITING = 2;
+const GROUPTYPE_LFG = 0x08;
+
+/**
+ * Derive the stock `GetLFGMode` answer from this client's dungeon-finder packets.
+ *
+ * The client keeps no mode string of its own; this is the smallest mapping the stock minimap eye
+ * needs, kept in one pure function so the full LFD owner can reuse it. Precedence follows what the
+ * packets mean: an open proposal outranks a running role check, which outranks a plain queue
+ * (`SMSG_LFG_UPDATE_PLAYER/PARTY` with `joined` and `queued`), which outranks being inside a
+ * finder group (`GROUPTYPE_LFG`). `submode` is «empowered» for a solo player or the leader, since
+ * only they may leave the queue (Minimap.lua:266 disables LEAVE_QUEUE for «unempowered»).
+ */
+export function frameXmlLfgMode(source: FrameXmlLfgSource): FrameXmlLfgMode | undefined {
+  const proposal = source.lfgProposal;
+  if (proposal && proposal.state === LFG_PROPOSAL_INITIATING) {
+    const self = proposal.players.find((player) => player.self);
+    return ["proposal", self?.answered && self.accepted ? "accepted" : "unaccepted"];
+  }
+  if (source.lfgRoleCheck?.state === LFG_ROLECHECK_INITIALITING) return ["rolecheck"];
+  const empowered = !source.inGroup || source.isGroupLeader === true;
+  if (source.lfgStatus?.joined && source.lfgStatus.queued) {
+    return ["queued", empowered ? "empowered" : "unempowered"];
+  }
+  if (source.groupType !== undefined && (source.groupType & GROUPTYPE_LFG) !== 0) return ["lfgparty"];
+  return undefined;
+}
+
 export interface FrameXmlWorldSeam {
+  readonly worldStates?: FrameXmlWorldStates;
+  readonly calendar?: FrameXmlCalendar;
+  readonly map?: FrameXmlMap;
+  /** The stock totem bar, hit indicator and temporary weapon enchants (FrameXmlHudMechanics.ts). */
+  readonly hudMechanics?: FrameXmlHudMechanics;
+  /** The stock dungeon finder's C API and its LFG_* events (FrameXmlLfd.ts). */
+  readonly lfd?: FrameXmlLfdModel;
+  /** The stock LootFrame/GroupLootFrame C API and its loot and loot-roll events (FrameXmlLoot.ts). */
+  readonly loot?: FrameXmlLootModel;
+  /** The stock StaticPopup/ReadyCheckFrame confirmations' C API and events (FrameXmlPopups.ts). */
+  readonly popups?: FrameXmlPopupsModel;
+  /** The stock FriendsFrame/RaidFrame C API (friends, ignore, who, guild, raid) and events (FrameXmlFriends.ts). */
+  readonly friends?: FrameXmlFriendsModel;
+  /** The stock MailFrame/OpenMailFrame C API, its send draft and MAIL_* events (FrameXmlMail.ts). */
+  readonly mail?: FrameXmlMailModel;
+  /** The stock TradeFrame C API and its TRADE_* events (FrameXmlTrade.ts). */
+  readonly trade?: FrameXmlTradeModel;
+  /** The stock currency C API (Blizzard_TokenUI, the backpack strip) and its two events (FrameXmlCurrency.ts). */
+  readonly currency?: FrameXmlCurrencyModel;
+  /** The enemy arena team (`arenaN`/`arenapetN`) Blizzard_ArenaUI reads (FrameXmlArena.ts). */
+  readonly arena?: FrameXmlArenaOpponents;
+  /** The stock TradeSkillFrame (Blizzard_TradeSkillUI) C API and its TRADE_SKILL_* events (FrameXmlTradeSkill.ts). */
+  readonly tradeSkill?: FrameXmlTradeSkillModel;
+  /** The stock AuctionFrame (Blizzard_AuctionUI) C API and its AUCTION_* events (FrameXmlAuction.ts). */
+  readonly auction?: FrameXmlAuctionModel;
+  /** The stock achievement C API (Blizzard_AchievementUI, WatchFrame, the alert) and its events (FrameXmlAchievement.ts). */
+  readonly achievement?: FrameXmlAchievementModel;
+  /** The stock GuildBankFrame (Blizzard_GuildBankUI) C API, its vault cursor and GUILDBANK* events (FrameXmlGuildBank.ts). */
+  readonly guildBank?: FrameXmlGuildBankModel;
+  /** The macro C API over this client's macro store, and the macro cursor (FrameXmlMacro.ts). */
+  readonly macros?: FrameXmlMacroModel;
+  /** The one cursor over every holder: spells, lifted actions, items for the bars (FrameXmlCursor.ts). */
+  readonly cursor?: FrameXmlCursorModel;
+  /** The binding C API over this client's key table (FrameXmlBinding.ts). */
+  readonly keyBindings?: FrameXmlBindingModel;
+  /** The options C API over the settings model: CVar ranges, the extra bars (FrameXmlOptions.ts). */
+  readonly options?: FrameXmlOptionsModel | undefined;
+  /** The stock Gossip/Bank/Taxi/ItemText frames' C API and events (FrameXmlGossipSeam.ts). */
+  readonly gossip?: FrameXmlNpcWindowModels["gossip"];
+  readonly bank?: FrameXmlNpcWindowModels["bank"];
+  readonly taxi?: FrameXmlNpcWindowModels["taxi"];
+  readonly itemText?: FrameXmlNpcWindowModels["itemText"];
+  /** The stock Tabard/GuildRegistrar/ArenaRegistrar/Petition frames' C API and events (same table). */
+  readonly tabard?: FrameXmlNpcWindowModels["tabard"];
+  readonly registrar?: FrameXmlNpcWindowModels["registrar"];
+  readonly petition?: FrameXmlNpcWindowModels["petition"];
+  /** The stock PetStableFrame's C API and events (FrameXmlStable.ts, same table). */
+  readonly stable?: FrameXmlNpcWindowModels["stable"];
+  /** The stock ItemSocketingFrame (Blizzard_ItemSocketingUI) C API and its SOCKET_INFO_* events (FrameXmlSocketModel.ts). */
+  readonly socket?: FrameXmlSocketModel;
+  /** The stock InspectFrame (Blizzard_InspectUI) C API over the inspection packets (FrameXmlInspect.ts). */
+  readonly inspect?: FrameXmlInspectModel;
+  /** The stock BarberShopFrame (Blizzard_BarbershopUI) C API over the barber chair (FrameXmlBarber.ts). */
+  readonly barber?: FrameXmlBarberModel;
+  /** Fetches the barber's gateway tables before its add-on loads (FrameXmlBarberLive.ts); absent offline. */
+  readonly barberPrepare?: () => Promise<void>;
+  /** The stock GlyphFrame (Blizzard_GlyphUI) C API over the glyph sockets and the glyph cursor (FrameXmlGlyph.ts). */
+  readonly glyphs?: FrameXmlGlyphModel;
+  /** The stock PaperDoll title picker's C API and UnitPVPName's title over the title fields and CharTitles (FrameXmlTitles.ts). */
+  readonly titles?: FrameXmlTitleModel;
+  /** The 3.3.5 equipment manager's C API (GearManagerDialog) over the equipment-set packets (FrameXmlEquipmentSets.ts). */
+  readonly equipmentSets?: FrameXmlEquipmentSetModel;
+  /** The stock threat C API (UnitFrame.lua's indicator) over the threat tables (FrameXmlThreat.ts). */
+  readonly threat?: FrameXmlThreatModel | undefined;
+  /** The stock quest log's abandon confirmation over CMSG_QUESTLOG_REMOVE_QUEST (FrameXmlQuestAbandon.ts). */
+  readonly questAbandon?: FrameXmlQuestAbandonModel | undefined;
+  /** The chat cache's LOCKED/DOCKED/UNINTERACTABLE flags as stock writes them (FrameXmlChatWindowFlags.ts). */
+  readonly chatWindows?: FrameXmlChatWindowFlags | undefined;
+  /** Arena teams, the possess bar, the battlefield winner and the add-on channel (FrameXmlMechanics.ts). */
+  readonly mechanics?: FrameXmlMechanicsModel | undefined;
+  readonly services?: FrameXmlServices;
+  petExperience?(): readonly [current: number, nextLevel: number];
+  petSpellBonusDamage?(): number | undefined;
+  /** The stock PetPaperDollFrame's companion C API over the known mount/critter spells (FrameXmlCompanions.ts). */
+  readonly companions?: FrameXmlCompanionModel | undefined;
+  /** The stock PetActionBarFrame's C API and the pet commands over the pet bar packet (FrameXmlPetActionBar.ts). */
+  readonly petActions?: FrameXmlPetActionBar | undefined;
+  /** `PetCanBeAbandoned`/`PetCanBeRenamed`: the pet's UNIT_FIELD_BYTES_2 pet-flags byte (FrameXmlCompanions.ts). */
+  petCanBeAbandoned?(): boolean;
+  petCanBeRenamed?(): boolean;
+  /** `PetAbandon()` / `PetRename(name)`: CMSG_PET_ABANDON and CMSG_PET_RENAME for the current pet. */
+  petAbandon?(): void;
+  petRename?(name: string): void;
+  /** `GetPetFoodTypes()`: the diet's names when a seam carries them; nothing otherwise (FrameXmlStable.ts). */
+  petFoodTypes?(): readonly string[];
   /** Exact auth-list realm name selected by the player. */
   realmName(): string | undefined;
+  /** Server world clock, as whole 24-hour hours/minutes; unknown until its login packet arrives. */
+  gameTime?(): readonly [hour: number, minute: number] | undefined;
+  /**
+   * `GetFramerate()`: frames per second as this host measures them, 0 before a second frame. Stock
+   * `MainMenuBarPerformanceBarFrame_OnEnter` formats it into the micro-menu tooltip
+   * (`MAINMENUBAR_FPS_LABEL`, MainMenuBar.lua:508); unbound, `format('%.0f', nil)` raised there.
+   */
+  framerate?(): number;
+  /**
+   * `GetNetStats()`'s latency: the last CMSG_PING/SMSG_PONG round trip in milliseconds
+   * (`WorldClient.latencyMs`), undefined before the first answer. MainMenuBar.lua:498 colours the
+   * micro-menu's latency bar with it and prints it in the tooltip.
+   */
+  netLatency?(): number | undefined;
   /** For the report: which implementation is answering. */
   readonly name: string;
 
   /** Called once, with the way back into the interface. */
   attach(pump: FrameXmlSeamPump): void;
   detach(): void;
+  /** Stock `PlaySound` names a `SoundEntries`/`UISoundLookups` row for interface playback. */
+  playSound(name: string): void;
   /** Stock `SendChatMessage` bridge; unsupported types and overlong text are ignored. */
   sendChatMessage(text: string, type: string, language: number | undefined, target: FrameXmlChatTarget): void;
   /** Message groups returned by `GetChatWindowMessages`; window 1 is the supported chat frame. */
@@ -875,6 +1399,14 @@ export interface FrameXmlWorldSeam {
   chatWindowChannels(windowId: number): FrameXmlChatWindowChannels;
   /** `FCF_GetChatWindowInfo`'s ten values, or undefined for an unsupported window id. */
   chatWindowInfo(windowId: number): FrameXmlChatWindowInfo | undefined;
+  /**
+   * `SetChatWindowShown(id, shown)`: the chat cache's SHOWN flag, which every stock ChatFrame writes
+   * from its own OnShow and OnHide (FloatingChatFrame.xml:718, :729) — so it follows the dock's
+   * selection — and `chatWindowInfo` answers back ({@link frameXmlGeneralWindowInfo}).
+   */
+  setChatWindowShown?(windowId: number, shown: boolean): void;
+  /** The chat cache's colours: UPDATE_CHAT_COLOR at attach and `ChangeChatColor` (FrameXmlChatColors.ts). */
+  readonly chatColors?: FrameXmlChatColors;
   /**
    * Advance the seam and fire whatever changed. Called once per rendered frame by the host, with
    * `GetTime()` seconds; a seam with nothing to animate may do nothing.
@@ -908,13 +1440,26 @@ export interface FrameXmlWorldSeam {
    */
   actionInRange(slot: number): number | undefined;
   actionBarPage(): number;
+  changeActionBarPage?(page: number): void;
+  mirrorTimerInfo?(index: number): FrameXmlMirrorTimerInfo;
+  mirrorTimerProgress?(timer: string): number;
   bonusBarOffset(): number;
   /** `SECURE_ACTIONS.action`'s call, once the secure attributes have resolved the slot. */
   useAction(slot: number, unit: string | undefined, button: string | undefined): void;
+  /** A 1-based slot's server action and `ActionButtonType` (FrameXmlCursor.ts); nil when empty. */
+  actionButton?(slot: number): FrameXmlActionButton | undefined;
+  /** CMSG_SET_ACTION_BUTTON for a 1-based slot (action 0 empties it); false without a bar to write. */
+  setActionButton?(slot: number, action: number, type: number): boolean;
+  /** The spell id in a 1-based spellbook slot, resolved exactly as `GetSpellName` resolves it. */
+  spellBookSpellId?(index: number, bookType: string | undefined): number | undefined;
+  /** An item's icon by entry, for an item action and the cursor picture; nil until known. */
+  itemTexture?(entry: number): string | undefined;
 
   // ---- the player --------------------------------------------------------
   unitExists(unit: string): boolean;
   unitName(unit: string): string | undefined;
+  /** Host-only portrait identity for the active quest page; absent without a loaded unit/display. */
+  questNpcPortraitGuid(): bigint | undefined;
   /** `UnitPVPName`'s display name; the live world has no separate title cache, so it follows the unit name. */
   unitPvpName(unit: string): string | undefined;
   unitLevel(unit: string): number | undefined;
@@ -933,16 +1478,31 @@ export interface FrameXmlWorldSeam {
   unitXPMax(unit: string): number;
   /** Authoritative player coinage in copper; the neutral answer is zero. */
   money(): number;
+  /** Combo points only belong to the supplied source/target identity pair. */
+  comboPoints(source: string, target: string): number;
+  /** Purchased bank bag slots and whether all seven are unlocked. Nil before player fields arrive. */
+  bankSlots(): readonly [bought: number, full: boolean] | undefined;
+  /** Next bank bag slot price in copper, or nil until the host has the configured price. */
+  bankSlotCost(bought: number): number | undefined;
+  buyBankSlot(): void;
+  closeBankFrame(): void;
   /** Number of non-player party members in the current non-raid group. */
   partyMemberCount(): number;
   /** Number of non-player raid members; zero is truthful when raid state is unavailable. */
   raidMemberCount(): number;
   /** True only when a real group snapshot names the local player as leader. */
   isPartyLeader(): boolean;
+  lootMethod?(): FrameXmlLootMethod | undefined;
+  lootThreshold?(): number;
+  setLootMethod?(method: string, master: string | undefined, threshold: number | undefined): void;
+  setLootThreshold?(threshold: number): void;
   /** The 1-based `GetPartyMember` name, or undefined for an empty/out-of-range slot. */
   partyMember(index: number): string | undefined;
-  /** `TargetUnit` resolves one known unit token and delegates selection to the world. */
-  targetUnit(unit: string): void;
+  /**
+   * `TargetUnit(unit or name[, exactMatch])`: a known unit token, else — as `/target Name` passes
+   * it — the nearest visible unit of that name; selection is the world's.
+   */
+  targetUnit(unit: string, exactMatch?: boolean): void;
   /** `UnitIsVisible` is true only while the seam has an in-range object for the unit. */
   unitIsVisible(unit: string): boolean;
   /** The current world contract has no possession bit; implementations answer conservatively. */
@@ -953,6 +1513,23 @@ export interface FrameXmlWorldSeam {
   hasPetUI(): readonly [boolean, boolean];
   /** `GetRestState`'s triple: state id, localised name, rest multiplier. */
   restState(): readonly [number, string, number];
+  /** The rest of the player-status family (FrameXmlPlayerStatus.ts); absent members answer «no». */
+  isResting?: FrameXmlPlayerStatus["isResting"];
+  xpExhaustion?: FrameXmlPlayerStatus["xpExhaustion"];
+  unitIsAFK?: FrameXmlPlayerStatus["unitIsAFK"];
+  unitIsDND?: FrameXmlPlayerStatus["unitIsDND"];
+  partyLeaderIndex?: FrameXmlPlayerStatus["partyLeaderIndex"];
+  unitGroupRoles?: FrameXmlPlayerStatus["unitGroupRoles"];
+  optOutOfLoot?: FrameXmlPlayerStatus["optOutOfLoot"];
+  setOptOutOfLoot?: FrameXmlPlayerStatus["setOptOutOfLoot"];
+  raidTargetIndex?: FrameXmlPlayerStatus["raidTargetIndex"];
+  /** Combat and the group's relations (FrameXmlUnitRelations.ts); absent members answer «no». */
+  unitAffectingCombat?: FrameXmlUnitRelations["unitAffectingCombat"];
+  inCombatLockdown?: FrameXmlUnitRelations["inCombatLockdown"];
+  unitInParty?: FrameXmlUnitRelations["unitInParty"];
+  unitInRaid?: FrameXmlUnitRelations["unitInRaid"];
+  unitIsPartyLeader?: FrameXmlUnitRelations["unitIsPartyLeader"];
+  unitIsRaidOfficer?: FrameXmlUnitRelations["unitIsRaidOfficer"];
 
   // ---- unit auras -------------------------------------------------------
   /** `UnitAura`'s 3.3.5 tuple for a 1-based filtered player slot. */
@@ -994,6 +1571,41 @@ export interface FrameXmlWorldSeam {
   unitIsTappedByAllThreatList(unit: string): boolean;
   /** RGB, in the same 0..1 values UnitSelectionColor hands to SetVertexColor. */
   unitSelectionColor(unit: string): readonly [number, number, number] | undefined;
+  /**
+   * `UnitGUID` in this client's `frameXmlGuid` text form (the same string chat `arg12` carries),
+   * or undefined for a token that names no unit. Client add-ons key maps by it every frame:
+   * MikScrollingBattleText's `petMap[UnitGUID(unitID)]` (MSBTParser.lua:767-769) raised «table
+   * index is nil» once per frame while the answer was nil.
+   */
+  unitGuid?(unit: string): string | undefined;
+  /** `UnitReaction`'s stock 1..8 index (2 hostile, 4 neutral, 5 friendly), or undefined. */
+  unitReaction?(left: string, right: string): number | undefined;
+
+  // ---- minimap indicators -------------------------------------------------
+  /** `GetNumTrackingTypes`: the tracking spells the player knows. */
+  trackingCount?(): number;
+  /** `GetTrackingInfo(i)`'s name, texture, active, category («spell» for every spell tracker). */
+  trackingInfo?(index: number): FrameXmlTrackingInfo | undefined;
+  /** `GetTrackingTexture`: the active tracker's icon, else the stock «None» picture. */
+  trackingTexture?(): string;
+  /** `SetTracking(i)` toggles one tracker; `SetTracking(nil)` cancels every active one. */
+  setTracking?(index: number | undefined): void;
+  /** `HasNewMail`: the server's pending-mail answer says something unread is waiting. */
+  hasNewMail?(): boolean;
+  /** `GetLatestThreeSenders`: the resolved names among the server's at most three senders. */
+  latestMailSenders?(): readonly string[];
+  /** `GetLFGMode`'s `(mode, submode)`, or undefined when the player is not in the dungeon finder. */
+  lfgMode?(): FrameXmlLfgMode | undefined;
+  /** `GetInstanceInfo`'s seven values, or undefined while the map row is unresolved. */
+  instanceInfo?(): FrameXmlInstanceInfo | undefined;
+
+  // ---- chat languages ------------------------------------------------------
+  /** The client locale whose `Languages.dbc` names the seam speaks; ruRU when absent. */
+  readonly locale?: string;
+  /** `GetDefaultLanguage`: the player's racial `ChrRaces.BaseLanguage`, by name. */
+  defaultLanguage?(): string | undefined;
+  /** `GetNumLanguages`/`GetLanguageByIndex`: the named languages the player's skills say it knows. */
+  languages?(): readonly string[];
 
   /** `UnitCastingInfo` for a unit the seam knows, or `undefined` when it is not casting. */
   unitCastingInfo(unit: string): FrameXmlCastingInfo | undefined;
@@ -1007,6 +1619,14 @@ export interface FrameXmlWorldSeam {
   spellTabInfo(index: number): FrameXmlSpellTabInfo | undefined;
   /** `GetSpellName`'s `(name, rank)` for a 1-based spellbook slot. */
   spellName(index: number, bookType: string | undefined): readonly [string, string] | undefined;
+  /** `GetSpellInfo` from cached DBC metadata; nil when the id/name has not resolved. */
+  spellInfo?(idOrName: number | string): FrameXmlSpellInfo | undefined;
+  /**
+   * `GetSpellLink`: the stock spell hyperlink (`|cff71d5ff|Hspell:ID|h[Name]|h|r`) for a spellbook
+   * slot when `bookType` is given, else for a spell id or a known spell's name; undefined — nil —
+   * when nothing resolves.
+   */
+  spellLink?(indexOrSpell: number | string, bookType?: string): string | undefined;
   spellTexture(index: number, bookType: string | undefined): string | undefined;
   spellCooldown(index: number, bookType: string | undefined): FrameXmlSpellCooldown;
   spellAutocast(index: number, bookType: string | undefined): readonly [boolean, boolean];
@@ -1015,6 +1635,10 @@ export interface FrameXmlWorldSeam {
   knownSlotFromHighestRankSlot(index: number, bookType: string | undefined): number | undefined;
   spellIsSelected(index: number, bookType: string | undefined): boolean;
   hasPetSpells(): boolean;
+  shapeshiftFormCount(): number;
+  shapeshiftFormInfo(index: number): FrameXmlShapeshiftFormInfo | undefined;
+  shapeshiftFormCooldown(index: number): FrameXmlSpellCooldown;
+  castShapeshiftForm(index: number): void;
   /** Existing client cast path; invalid/unknown spells are rejected there. */
   castSpell(spell: number, bookType: string | undefined): void;
   /** Tells the host to refresh spellbook state; stock Lua also calls this on load. */
@@ -1029,10 +1653,10 @@ export interface FrameXmlWorldSeam {
   /** Writes a stock CVar through the settings model; false preserves neutral behavior. */
   setCVarValue?(name: string, value: unknown): boolean | undefined;
 
-  // ---- player talents ----------------------------------------------------
-  /** Immutable player-only projection for Blizzard_TalentUI, or undefined until both packet and DBC are ready. */
-  talentSnapshot(): FrameXmlTalentSnapshot | undefined;
-  /** Maps Lua's tab/index/group to the existing player talent packet boundary. */
+  // ---- player and pet talents -------------------------------------------
+  /** Immutable player or pet projection for Blizzard_TalentUI, when packet and DBC are ready. */
+  talentSnapshot(pet?: boolean): FrameXmlTalentSnapshot | undefined;
+  /** Maps Lua's tab/index/group to the appropriate player or pet talent packet boundary. */
   learnTalent(tab: number, index: number, pet: boolean | undefined, group: number | undefined): void;
 
   // ---- character skills -----------------------------------------------
@@ -1052,6 +1676,8 @@ export interface FrameXmlWorldSeam {
   removeSkillUp(index: number): void;
   buySkillTier(index: number): void;
   cancelSkillUps(): void;
+  /** `AbandonSkill(index)`: CMSG_UNLEARN_SKILL for the profession in that visible row; any other row sends nothing. */
+  abandonSkill?(index: number): void;
 
   // ---- player containers -----------------------------------------------
   /** Stock bag ids: 0 is the backpack, 1..4 carried bags, -2 the keyring. */
@@ -1084,6 +1710,16 @@ export interface FrameXmlWorldSeam {
   battlefieldInfo(): readonly [string, string, number] | undefined;
   /** The queue slot tuple consumed by PVPBattlegroundFrame's status repaint. */
   battlefieldStatus(index: number): readonly [string, string | undefined, number, number, number, number, boolean];
+  /**
+   * `GetBattlefieldEstimatedWaitTime(i)` and `GetBattlefieldTimeWaited(i)`, milliseconds, for a
+   * queued slot; absent, both answer 0 (BattlefieldFrame.lua:260-261 reads 0 as QUEUE_TIME_UNAVAILABLE).
+   */
+  battlefieldQueueTimes?(index: number): readonly [estimatedWait: number, waited: number];
+  /**
+   * `GetBattlefieldInstanceExpiration()` and `GetBattlefieldInstanceRunTime()`, milliseconds, for
+   * the running match; absent, both answer 0 — no shutdown timer (BattlefieldFrame.lua:303).
+   */
+  battlefieldInstanceTimes?(): readonly [expiration: number, runTime: number];
   /** Requests the server's reward/instance list for a battleground type. */
   requestBattlegroundInstanceInfo(index: number): void;
   /** Joins the currently selected battleground; `true` is the group join button. */
@@ -1120,9 +1756,11 @@ export interface FrameXmlWorldSeam {
   merchantItemLink(index: number): string | undefined;
   /** Max stack for the vendor row, or zero when the host cannot answer it. */
   merchantItemMaxStack(index: number): number;
-  /** Extended currency costs are not represented by this host; the neutral tuple is all zero. */
+  /** Current ItemExtendedCost values from the cache; an unresolved row returns neutral zeroes. */
   merchantItemCostInfo(index: number): FrameXmlMerchantCostInfo;
-  merchantItemCostItem(index: number, costIndex: number): readonly [string, number, string] | undefined;
+  merchantItemCostItem(index: number, costIndex: number): readonly [string | undefined, number, string | undefined] | undefined;
+  /** Cache-only `GetItemInfo` prefix used by stock token-purchase confirmation. */
+  itemInfo(value: unknown): FrameXmlItemInfo | undefined;
   /** Number of currently available buyback rows. */
   buybackNumItems(): number;
   /** Exact six-value `GetBuybackItemInfo`, or undefined for a missing row. */
@@ -1184,6 +1822,11 @@ export interface FrameXmlWorldSeam {
   bagName(bagId: number): string | undefined;
   /** `UseContainerItem`; implementations must reject an empty/unsupported slot. */
   useContainerItem(bagId: number, slot: number): void;
+  /** Stock left-click item cursor. The server receives a move only on a valid second click. */
+  pickupContainerItem(bagId: number, slot: number): void;
+  cursorHasItem(): boolean;
+  cursorInfo(): readonly unknown[];
+  clearCursor(): void;
 
   // ---- paper doll -------------------------------------------------------
   /** `GetInventorySlotInfo`; undefined is the stock answer for an unknown slot name. */
@@ -1198,8 +1841,51 @@ export interface FrameXmlWorldSeam {
   inventoryItemLocked(unit: string, slot: number): boolean;
   /** Existing authoritative item-use path; unsupported units/slots are no-ops. */
   useInventoryItem(unit: string, slot: number): void;
-  /** There is no authoritative pickup path in the current host; this remains a no-op. */
+  /** Stock paper-doll slot IDs are one-based; pickup shares the container cursor. */
   pickupInventoryItem(unit: string, slot: number): void;
+
+  // ---- the stock item actions (FrameXmlItemActions.ts) --------------------
+  /**
+   * The bind prompts' answers (StaticPopup.lua:1525-1571): `EquipPendingItem(slot)` sends the equip
+   * or swap held since AUTOEQUIP_BIND_CONFIRM/EQUIP_BIND_CONFIRM fired with that slot,
+   * `CancelPendingEquip(slot)` drops it, `ConfirmBindOnUse()` performs the use held since
+   * USE_BIND_CONFIRM. Absent on a host without the prompts.
+   */
+  equipPendingItem?(slot: number | undefined): void;
+  cancelPendingEquip?(slot: number | undefined): void;
+  confirmBindOnUse?(): void;
+  /** `PutItemInBackpack`/`PutItemInBag(20..23)` by stock container id (0 the backpack): true when the held item went. */
+  storeCursorItemInBag?(bagId: number): boolean;
+  /** `SplitContainerItem`: the part onto the cursor; false leaves the stack where it is. */
+  splitContainerItem?(bagId: number, slot: number, count: number): boolean;
+  /** `DeleteCursorItem` for a split part on the cursor; false leaves a whole stack to FrameXmlPopups. */
+  deleteSplitCursorItem?(): boolean;
+  /** `AutoEquipCursorItem()`, `EquipCursorItem(slot)`, `EquipItemByName(item[, slot])`. */
+  autoEquipCursorItem?(): void;
+  equipCursorItem?(slot: number): void;
+  equipItemByName?(item: unknown, slot: number | undefined): void;
+  /** `CursorCanGoInSlot(slot)`: the held bag item fits that paper-doll slot. */
+  cursorCanGoInSlot?(slot: number): boolean;
+  /** `GetContainerItemDurability`/`GetInventoryItemDurability`: `[current, max]`, or nil without a durability pair. */
+  containerItemDurability?(bagId: number, slot: number): readonly [number, number] | undefined;
+  inventoryItemDurability?(slot: number): readonly [number, number] | undefined;
+  inventoryItemQuality?(unit: string, slot: number): number | undefined;
+  inventoryItemId?(unit: string, slot: number): number | undefined;
+  containerItemId?(bagId: number, slot: number): number | undefined;
+  /** The readers by id, link or cached name; nil (never a guess) while the template is unknown. */
+  itemCount?(item: unknown, includeBank: boolean): number;
+  itemSpell?(item: unknown): readonly [name: string, rank: string] | undefined;
+  itemIcon?(item: unknown): string | undefined;
+  isEquippableItem?(item: unknown): boolean | undefined;
+  isEquippedItem?(item: unknown): boolean;
+  isUsableItem?(item: unknown): boolean | undefined;
+  isConsumableItem?(item: unknown): boolean | undefined;
+  itemCooldown?(item: unknown): FrameXmlContainerItemCooldown;
+  /** `GetInventoryItemsForSlot`, as flat `location, id, …` pairs (FrameXmlItemActions.ts keys them). */
+  inventoryItemsForSlot?(slot: number): readonly number[];
+  /** `GetInventoryAlertStatus(index)`: 0 sound, 1 worn low, 2 broken. */
+  inventoryAlertStatus?(index: number): number;
+
   /** `UnitStat` uses 1..5 for the five generated STAT0..STAT4 fields. */
   unitStat(unit: string, index: number): FrameXmlUnitStat;
   unitArmor(unit: string): FrameXmlUnitArmor;
@@ -1210,22 +1896,40 @@ export interface FrameXmlWorldSeam {
   attackPowerForStat(statIndex: number, statValue: number): number;
   /** Derived agility contribution; zero when the host has no authoritative class formula. */
   critChanceFromAgility(unit: string): number;
+  /** Intellect contribution including its class base; unknown without DBC coefficients/player fields. */
+  spellCritChanceFromIntellect?(unit: string): number | undefined;
   /** Multiplicative health modifier; one is the neutral value without authoritative state. */
   unitMaxHealthModifier(unit: string): number;
   /** Derived spirit regeneration; zero when the unit's regen fields are not authoritative. */
   unitHealthRegenRateFromSpirit(unit: string): number;
   unitManaRegenRateFromSpirit(unit: string): number;
-  /** Combat-rating fields are not present in the current world snapshot. */
+  /** One-based index into the player's replicated combat-rating array. */
   combatRating(index: number): number;
   combatRatingBonus(index: number): number;
   armorPenetration(): number;
   critChance(): number;
+  rangedCritChance?(): number;
+  spellCritChance?(school: number): number;
+  spellBonusDamage?(school: number): number;
+  spellBonusHealing?(): number;
+  spellPenetration?(): number;
+  manaRegen?(): readonly [number, number];
+  dodgeChance?(): number;
+  parryChance?(): number;
+  blockChance?(): number;
+  shieldBlock?(): number;
+  unitDefense?(unit: string): readonly [number, number];
+  dodgeBlockParryChanceFromDefense?(): number;
   expertise(): readonly [number, number];
   expertisePercent(): readonly [number, number];
   /** Main-hand speed and optional off-hand speed; nil off-hand preserves stock no-off-hand logic. */
   unitAttackSpeed(unit: string): readonly [number, number | undefined];
   unitDamage(unit: string): FrameXmlUnitDamage;
   unitRangedDamage(unit: string): FrameXmlUnitRangedDamage;
+
+  // ---- quest giver C API -------------------------------------------------
+  /** Packet-backed greeting/dialog C API. Invalid or absent pages answer Lua nil. */
+  questGiverCall(name: string, args: readonly unknown[]): readonly unknown[];
 
   // ---- quest log and tracker --------------------------------------------
   /** Number of displayed rows and real quests; this seam has no synthetic headers. */
@@ -1287,6 +1991,8 @@ export interface FrameXmlWorldSeam {
   factionCount(): number;
   /** Exact thirteen-value `GetFactionInfo` tuple, or nil for an unresolved row. */
   factionInfo(index: number): FrameXmlFactionInfo | undefined;
+  /** Resolve a Faction.dbc ID through the cached list-slot catalog, or answer nil. */
+  factionInfoById(factionId: unknown): FrameXmlFactionInfo | undefined;
   /** Current displayed faction selection; zero means no selection. */
   selectedFaction(): number;
   setSelectedFaction(index: number): void;
@@ -1322,7 +2028,8 @@ function slotOf(value: unknown): number {
 }
 
 function unitOf(value: unknown): string {
-  return typeof value === "string" ? value : "";
+  // The original PetPaperDoll calls the same APIs with both "pet" and "Pet".
+  return typeof value === "string" ? value.toLowerCase() : "";
 }
 
 function filterOf(value: unknown): string | undefined {
@@ -1333,6 +2040,17 @@ function questIndexOf(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
   const index = Number(value);
   return Number.isFinite(index) ? Math.trunc(index) : undefined;
+}
+
+/**
+ * The 3.3.5 quest-colour range is wider than the creature XP range above level 59.
+ * Compatible core contract: MaNGOS::XP::GetQuestGreenRange in
+ * https://github.com/cmangos/mangos-wotlk/blob/master/src/game/Tools/Formulas.h
+ */
+export function questGreenRange(level: number | undefined): number {
+  if (level === undefined || !Number.isFinite(level) || level < 1) return 0;
+  if (level < 40) return 4 + Math.floor(level / 10);
+  return Math.min(12, Math.floor(level / 5));
 }
 
 function boolOf(value: unknown): boolean {
@@ -1360,14 +2078,91 @@ function talentGroupOf(snapshot: FrameXmlTalentSnapshot | undefined, value: unkn
   return snapshot?.activeTalentGroup ?? 0;
 }
 
-export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze({
+const QUEST_GIVER_C_API_NAMES = Object.freeze([
+  ...Object.keys(FRAMEXML_QUEST_MENU_DATA_BINDINGS),
+  ...Object.keys(FRAMEXML_QUEST_GIVER_DATA_BINDINGS),
+  ...Object.keys(FRAMEXML_QUEST_REWARD_DATA_BINDINGS),
+  ...Object.keys(FRAMEXML_QUEST_FLAGS_DATA_BINDINGS),
+  "SelectActiveQuest", "SelectAvailableQuest", "AcceptQuest", "CompleteQuest",
+  "GetQuestReward", "DeclineQuest", "CloseQuest",
+]);
+
+const QUEST_GIVER_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> =
+  Object.fromEntries(QUEST_GIVER_C_API_NAMES.map((name) => [
+    name, (seam: FrameXmlWorldSeam, args: readonly unknown[]) => seam.questGiverCall(name, args),
+  ]));
+
+const CLOSED_SERVICES = createFrameXmlServices({
+  sendMailItems: () => [], stableService: () => undefined, stableSlotPrice: () => undefined,
+});
+const SERVICE_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.fromEntries(
+  Object.entries(FRAMEXML_SERVICE_BINDINGS).map(([name, call]) => [name,
+    (seam: FrameXmlWorldSeam, args: readonly unknown[]) => call(seam.services ?? CLOSED_SERVICES, args)]),
+);
+
+// The spellbook names take a `bookType`; frameXmlWithPetBook answers the "pet" book from the pet model.
+export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze(frameXmlWithPetBook({
+  ...SERVICE_SEAM_BINDINGS,
+  ...FRAMEXML_WORLD_STATE_BINDINGS,
+  ...FRAMEXML_MAP_BINDINGS,
+  ...FRAMEXML_LFD_BINDINGS,
+  ...FRAMEXML_LOOT_BINDINGS,
+  ...FRAMEXML_POPUPS_BINDINGS,
+  ...FRAMEXML_FRIENDS_BINDINGS,
+  ...FRAMEXML_RAID_LOD_BINDINGS,
+  ...FRAMEXML_ARENA_BINDINGS,
+  ...FRAMEXML_MAIL_BINDINGS,
+  ...FRAMEXML_TRADE_BINDINGS,
+  ...FRAMEXML_CURRENCY_BINDINGS,
+  ...FRAMEXML_TRADESKILL_BINDINGS,
+  ...FRAMEXML_NPC_WINDOW_BINDINGS,
+  ...FRAMEXML_AUCTION_BINDINGS,
+  ...FRAMEXML_ACHIEVEMENT_BINDINGS,
+  ...FRAMEXML_GUILDBANK_BINDINGS,
+  ...FRAMEXML_MACRO_BINDINGS, ...FRAMEXML_BINDING_BINDINGS,
+  ...FRAMEXML_MECHANICS_BINDINGS,
+  ...FRAMEXML_CALENDAR_SEAM_BINDINGS,
+  ...FRAMEXML_HUD_MECHANICS_BINDINGS,
+  ...FRAMEXML_OPTIONS_BINDINGS,
+  ...FRAMEXML_PLAYER_STATUS_BINDINGS,
+  ...FRAMEXML_UNIT_RELATION_BINDINGS,
+  ...FRAMEXML_INSPECT_BINDINGS,
+  ...FRAMEXML_TITLE_BINDINGS, ...FRAMEXML_EQUIPMENT_SET_BINDINGS, AbandonSkill: (seam, args) => { seam.abandonSkill?.(slotOf(args[0])); return NOTHING; },
+  ...FRAMEXML_BARBER_BINDINGS,
+  ...FRAMEXML_COMPANION_BINDINGS,
+  ...FRAMEXML_PET_ACTION_BINDINGS,
+  // After the trade skill's: its SpellIsTargeting/SpellStopTargeting answer the glyph cursor first.
+  ...FRAMEXML_GLYPH_BINDINGS,
+  // After the bank's and the popups': its PutItemInBag/SplitContainerItem/DeleteCursorItem answer the
+  // carried bags and the split cursor first and hand the rest back.
+  ...FRAMEXML_ITEM_ACTION_BINDINGS,
+  GetPetExperience: (seam) => seam.petExperience?.() ?? [0, 0],
+  GetPetSpellBonusDamage: (seam) => [seam.petSpellBonusDamage?.() ?? 0],
+  ...QUEST_GIVER_SEAM_BINDINGS,
   GetRealmName: (seam) => optional(seam.realmName()),
+  GetGameTime: (seam) => seam.gameTime?.() ?? NOTHING,
+  GetFramerate: (seam) => {
+    const fps = seam.framerate?.() ?? 0;
+    return [Number.isFinite(fps) && fps > 0 ? fps : 0];
+  },
+  // Bandwidth in and out stay 0: the socket's byte rates are not measured by this client.
+  GetNetStats: (seam) => {
+    const latency = seam.netLatency?.();
+    return [0, 0, latency !== undefined && Number.isFinite(latency) && latency > 0 ? latency : 0];
+  },
+  PlaySound: (seam, args) => {
+    const name = args[0];
+    if (typeof name === "string" && /^[A-Za-z0-9_]{1,64}$/.test(name)) seam.playSound(name);
+    return NOTHING;
+  },
   SendChatMessage: (seam, args) => {
     const text = typeof args[0] === "string" ? args[0] : "";
     const type = typeof args[1] === "string" ? args[1] : "";
+    // Stock passes `editBox.language`, which it filled from GetDefaultLanguage/GetLanguageByIndex:
+    // a language *name*. Resolve it back to the id; a number is still accepted as the API allows.
     const language = typeof args[2] === "number" && Number.isFinite(args[2])
       ? Math.trunc(args[2])
-      : undefined;
+      : typeof args[2] === "string" ? frameXmlLanguageId(args[2], seam.locale) : undefined;
     const target = chatTargetOf(args[3]);
     if (target === undefined) return NOTHING;
     seam.sendChatMessage(text, type, language, target);
@@ -1376,6 +2171,12 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetChatWindowMessages: (seam, args) => [...seam.chatWindowMessages(slotOf(args[0]))],
   GetChatWindowChannels: (seam, args) => [...seam.chatWindowChannels(slotOf(args[0]))],
   GetChatWindowInfo: (seam, args) => seam.chatWindowInfo(slotOf(args[0])) ?? NOTHING,
+  SetChatWindowShown: (seam, args) => {
+    // Lua truthiness: ChatFrame's OnShow passes 1 and its OnHide nil.
+    seam.setChatWindowShown?.(slotOf(args[0]), args[1] !== undefined && args[1] !== null && args[1] !== false);
+    return NOTHING;
+  },
+  ...FRAMEXML_CHAT_COLOR_BINDINGS,
   HasAction: (seam, args) => [seam.hasAction(slotOf(args[0]))],
   GetActionTexture: (seam, args) => optional(seam.actionTexture(slotOf(args[0]))),
   GetActionText: (seam, args) => optional(seam.actionText(slotOf(args[0]))),
@@ -1396,35 +2197,69 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   IsAutoRepeatAction: (seam, args) => [seam.isAutoRepeatAction(slotOf(args[0]))],
   IsActionInRange: (seam, args) => optional(seam.actionInRange(slotOf(args[0]))),
   GetActionBarPage: (seam) => [seam.actionBarPage()],
+  ChangeActionBarPage: (seam, args) => {
+    if (typeof args[0] === "number") seam.changeActionBarPage?.(args[0]);
+    return NOTHING;
+  },
+  GetMirrorTimerInfo: (seam, args) => seam.mirrorTimerInfo?.(slotOf(args[0])) ?? ["UNKNOWN"],
+  GetMirrorTimerProgress: (seam, args) => [seam.mirrorTimerProgress?.(
+    typeof args[0] === "string" ? args[0].toUpperCase() : "",
+  ) ?? 0],
   GetBonusBarOffset: (seam) => [seam.bonusBarOffset()],
   UseAction: (seam, args) => {
-    seam.useAction(slotOf(args[0]), unitOf(args[1]) || undefined, unitOf(args[2]) || undefined);
+    seam.useAction(slotOf(args[0]), unitOf(args[1]) || undefined, filterOf(args[2]) || undefined);
     return NOTHING;
   },
   UnitExists: (seam, args) => [seam.unitExists(unitOf(args[0]))],
   UnitName: (seam, args) => optional(seam.unitName(unitOf(args[0]))),
   UnitPVPName: (seam, args) => optional(seam.unitPvpName(unitOf(args[0]))),
-  UnitLevel: (seam, args) => optional(seam.unitLevel(unitOf(args[0]))),
+  // The client answers 0 for a token with no unit: stock TargetFrame_CheckLevel (TargetFrame.lua:
+  // 236-242) runs `targetLevel > 0` unguarded for Target/Focus/Boss1-4 on every UNIT_FACTION
+  // ("player"), boss frames included while no boss exists — 6 raises per event with nil here.
+  UnitLevel: (seam, args) => [seam.unitLevel(unitOf(args[0])) ?? 0],
   UnitClass: (seam, args) => seam.unitClass(unitOf(args[0])) ?? NOTHING,
   UnitRace: (seam, args) => seam.unitRace(unitOf(args[0])) ?? NOTHING,
   UnitSex: (seam, args) => optional(seam.unitSex(unitOf(args[0]))),
   UnitIsConnected: (seam, args) => [seam.unitIsConnected(unitOf(args[0]))],
   UnitHealth: (seam, args) => [seam.unitHealth(unitOf(args[0]))],
   UnitHealthMax: (seam, args) => [seam.unitHealthMax(unitOf(args[0]))],
-  // `UnitMana`/`UnitManaMax`, 3.3.5's older spelling of the pair below, are deliberately absent:
-  // measured over all 335 files, **zero** call sites. The corpus was updated to `UnitPower`.
   UnitPower: (seam, args) => [seam.unitPower(unitOf(args[0]))],
   UnitPowerMax: (seam, args) => [seam.unitPowerMax(unitOf(args[0]))],
+  // `UnitMana`/`UnitManaMax` are 3.3.5's older spelling of the pair above: the unit's power of
+  // its display type. Stock never calls them (zero call sites in all 335 files), but add-ons
+  // written for 3.3.5 do. MikScrollingBattleText's UNIT_MANA handler (MSBTTriggers.lua:711)
+  // divides one by the other, and the nil stub raised msbttriggers.lua:526 on a player mana
+  // change in the live-seam census.
+  UnitMana: (seam, args) => [seam.unitPower(unitOf(args[0]))],
+  UnitManaMax: (seam, args) => [seam.unitPowerMax(unitOf(args[0]))],
   UnitPowerType: (seam, args) => seam.unitPowerType(unitOf(args[0])) ?? NOTHING,
   UnitXP: (seam, args) => [seam.unitXP(unitOf(args[0]))],
   UnitXPMax: (seam, args) => [seam.unitXPMax(unitOf(args[0]))],
   GetMoney: (seam) => [seam.money()],
+  GetComboPoints: (seam, args) => [seam.comboPoints(unitOf(args[0]), unitOf(args[1]))],
+  GetNumBankSlots: (seam) => seam.bankSlots() ?? NOTHING,
+  GetBankSlotCost: (seam, args) => optional(seam.bankSlotCost(slotOf(args[0]))),
+  BuyBankSlot: (seam) => { seam.buyBankSlot(); return NOTHING; },
+  CloseBankFrame: (seam) => { seam.closeBankFrame(); return NOTHING; },
   GetNumPartyMembers: (seam) => [seam.partyMemberCount()],
   GetNumRaidMembers: (seam) => [seam.raidMemberCount()],
   IsPartyLeader: (seam) => [seam.isPartyLeader()],
+  GetLootMethod: (seam) => seam.lootMethod?.() ?? NOTHING,
+  GetLootThreshold: (seam) => optional(seam.lootThreshold?.()),
+  SetLootMethod: (seam, args) => {
+    seam.setLootMethod?.(unitOf(args[0]), typeof args[1] === "string" ? args[1] : undefined,
+      typeof args[2] === "number" ? args[2] : undefined);
+    return NOTHING;
+  },
+  SetLootThreshold: (seam, args) => {
+    if (typeof args[0] === "number") seam.setLootThreshold?.(args[0]);
+    return NOTHING;
+  },
   GetPartyMember: (seam, args) => optional(seam.partyMember(slotOf(args[0]))),
   TargetUnit: (seam, args) => {
-    seam.targetUnit(unitOf(args[0]));
+    // `exactMatch` is a Lua truth value: `/targetexact` passes 1 (ChatFrame.lua:1159).
+    const exactMatch = args[1] !== undefined && args[1] !== null && args[1] !== false;
+    seam.targetUnit(unitOf(args[0]), exactMatch);
     return NOTHING;
   },
   UnitIsVisible: (seam, args) => [seam.unitIsVisible(unitOf(args[0]))],
@@ -1458,11 +2293,50 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   UnitIsTappedByPlayer: (seam, args) => [seam.unitIsTappedByPlayer(unitOf(args[0]))],
   UnitIsTappedByAllThreatList: (seam, args) => [seam.unitIsTappedByAllThreatList(unitOf(args[0]))],
   UnitSelectionColor: (seam, args) => seam.unitSelectionColor(unitOf(args[0])) ?? NOTHING,
+  UnitGUID: (seam, args) => optional(seam.unitGuid?.(unitOf(args[0]))),
+  UnitReaction: (seam, args) => optional(seam.unitReaction?.(unitOf(args[0]), unitOf(args[1]))),
+  // These four shadow the neutral constant `GetNumTrackingTypes = 0` (FrameXmlNeutralApi.ts): a
+  // seam name is installed into `__fxNeutralImpl` by FRAMEXML_SEAM_PRELUDE, which the `_G`
+  // metamethod consults before the constant table.
+  GetNumTrackingTypes: (seam) => [seam.trackingCount?.() ?? 0],
+  GetTrackingInfo: (seam, args) => seam.trackingInfo?.(slotOf(args[0])) ?? NOTHING,
+  GetTrackingTexture: (seam) => [seam.trackingTexture?.() ?? FRAMEXML_TRACKING_NONE_TEXTURE],
+  SetTracking: (seam, args) => {
+    // MiniMapTrackingDropDown_Initialize's «NONE» row passes `arg1 = nil` (Minimap.lua:462-465).
+    seam.setTracking?.(args[0] === undefined || args[0] === null ? undefined : slotOf(args[0]));
+    return NOTHING;
+  },
+  HasNewMail: (seam) => [seam.hasNewMail?.() ?? false],
+  GetLatestThreeSenders: (seam) => (seam.latestMailSenders?.() ?? []).slice(0, 3),
+  GetLFGMode: (seam) => seam.lfgMode?.() ?? NOTHING,
+  GetInstanceInfo: (seam) => seam.instanceInfo?.() ?? NOTHING,
+  GetDefaultLanguage: (seam) => optional(seam.defaultLanguage?.()),
+  GetNumLanguages: (seam) => [seam.languages?.().length ?? 0],
+  GetLanguageByIndex: (seam, args) => optional(seam.languages?.()[slotOf(args[0]) - 1]),
   UnitCastingInfo: (seam, args) => seam.unitCastingInfo(unitOf(args[0])) ?? NOTHING,
   UnitChannelInfo: (seam, args) => seam.unitChannelInfo(unitOf(args[0])) ?? NOTHING,
   GetNumSpellTabs: (seam) => [seam.spellTabCount()],
   GetSpellTabInfo: (seam, args) => seam.spellTabInfo(slotOf(args[0])) ?? NOTHING,
   GetSpellName: (seam, args) => seam.spellName(slotOf(args[0]), filterOf(args[1])) ?? NOTHING,
+  GetSpellInfo: (seam, args) => {
+    const value = args[0];
+    return (typeof value === "number" || typeof value === "string")
+      ? seam.spellInfo?.(value) ?? NOTHING
+      : NOTHING;
+  },
+  // Two shapes, told apart as the client does, by the second argument: `GetSpellLink(slot,
+  // bookType)` is a spellbook slot (SpellBookFrame, `GameTooltip:SetSpell`); `GetSpellLink(id or
+  // name)` a spell. The link is what gives stock `SetSpell`, AnyIDTooltip and `GetSpell` an id.
+  GetSpellLink: (seam, args) => {
+    const value = args[0];
+    const bookType = typeof args[1] === "string" ? args[1] : undefined;
+    if (bookType !== undefined) {
+      return typeof value === "number" ? optional(seam.spellLink?.(slotOf(value), bookType)) : NOTHING;
+    }
+    return typeof value === "number" || typeof value === "string"
+      ? optional(seam.spellLink?.(value))
+      : NOTHING;
+  },
   GetSpellTexture: (seam, args) => optional(seam.spellTexture(slotOf(args[0]), filterOf(args[1]))),
   GetSpellCooldown: (seam, args) => [...seam.spellCooldown(slotOf(args[0]), filterOf(args[1]))],
   GetSpellAutocast: (seam, args) => [...seam.spellAutocast(slotOf(args[0]), filterOf(args[1]))],
@@ -1472,6 +2346,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ),
   IsSelectedSpell: (seam, args) => [seam.spellIsSelected(slotOf(args[0]), filterOf(args[1]))],
   HasPetSpells: (seam) => [seam.hasPetSpells()],
+  GetNumShapeshiftForms: (seam) => [seam.shapeshiftFormCount()],
+  GetShapeshiftFormInfo: (seam, args) => seam.shapeshiftFormInfo(slotOf(args[0])) ?? NOTHING,
+  GetShapeshiftFormCooldown: (seam, args) => [...seam.shapeshiftFormCooldown(slotOf(args[0]))],
+  CastShapeshiftForm: (seam, args) => { seam.castShapeshiftForm(slotOf(args[0])); return NOTHING; },
   CastSpell: (seam, args) => {
     seam.castSpell(slotOf(args[0]), filterOf(args[1]));
     return NOTHING;
@@ -1499,35 +2377,35 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     return NOTHING;
   },
   GetActiveTalentGroup: (seam, args) => {
-    if (boolOf(args[0]) || boolOf(args[1])) return [0];
-    return [seam.talentSnapshot()?.activeTalentGroup ?? 0];
+    if (boolOf(args[0])) return [0];
+    return [seam.talentSnapshot(boolOf(args[1]))?.activeTalentGroup ?? 0];
   },
   GetNumTalentGroups: (seam, args) => {
-    if (boolOf(args[0]) || boolOf(args[1])) return [0];
-    return [seam.talentSnapshot()?.numTalentGroups ?? 0];
+    if (boolOf(args[0])) return [0];
+    return [seam.talentSnapshot(boolOf(args[1]))?.numTalentGroups ?? 0];
   },
   GetNumTalentTabs: (seam, args) => {
-    if (boolOf(args[0]) || boolOf(args[1])) return [0];
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[0])) return [0];
+    const snapshot = seam.talentSnapshot(boolOf(args[1]));
     return [snapshot?.groups[talentGroupOf(snapshot, args[2]) - 1]?.tabs.length ?? 0];
   },
   GetTalentTabInfo: (seam, args) => {
-    if (boolOf(args[1]) || boolOf(args[2])) return NOTHING;
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[1])) return NOTHING;
+    const snapshot = seam.talentSnapshot(boolOf(args[2]));
     const tab = snapshot?.groups[talentGroupOf(snapshot, args[3]) - 1]?.tabs[slotOf(args[0]) - 1];
-    // Preview allocations are deliberately unsupported in this player-only slice. The stock
+    // Preview allocations are deliberately unsupported here. The stock
     // TalentFrame nevertheless adds this value numerically, so the honest empty preview is 0,
     // not Lua nil (which aborts the first tab refresh).
     return tab ? [tab.name, tab.iconTexture, tab.pointsSpent, tab.background, tab.previewPointsSpent ?? 0] : NOTHING;
   },
   GetNumTalents: (seam, args) => {
-    if (boolOf(args[1]) || boolOf(args[2])) return [0];
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[1])) return [0];
+    const snapshot = seam.talentSnapshot(boolOf(args[2]));
     return [snapshot?.groups[talentGroupOf(snapshot, args[3]) - 1]?.tabs[slotOf(args[0]) - 1]?.talents.length ?? 0];
   },
   GetTalentInfo: (seam, args) => {
-    if (boolOf(args[2]) || boolOf(args[3])) return NOTHING;
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[2])) return NOTHING;
+    const snapshot = seam.talentSnapshot(boolOf(args[3]));
     const group = snapshot?.groups[talentGroupOf(snapshot, args[4]) - 1];
     const cell = group?.tabs[slotOf(args[0]) - 1]?.talents[slotOf(args[1]) - 1];
     if (!cell) return NOTHING;
@@ -1545,8 +2423,8 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     ];
   },
   GetTalentPrereqs: (seam, args) => {
-    if (boolOf(args[2]) || boolOf(args[3])) return NOTHING;
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[2])) return NOTHING;
+    const snapshot = seam.talentSnapshot(boolOf(args[3]));
     const group = snapshot?.groups[talentGroupOf(snapshot, args[4]) - 1];
     const cell = group?.tabs[slotOf(args[0]) - 1]?.talents[slotOf(args[1]) - 1];
     if (!cell) return NOTHING;
@@ -1557,8 +2435,8 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     return values;
   },
   GetUnspentTalentPoints: (seam, args) => {
-    if (boolOf(args[0]) || boolOf(args[1])) return [0];
-    const snapshot = seam.talentSnapshot();
+    if (boolOf(args[0])) return [0];
+    const snapshot = seam.talentSnapshot(boolOf(args[1]));
     return [snapshot?.groups[talentGroupOf(snapshot, args[2]) - 1]?.unspentPoints ?? 0];
   },
   GetGroupPreviewTalentPointsSpent: () => [0],
@@ -1616,6 +2494,12 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetBattlegroundInfo: (seam, args) => seam.battlegroundInfo(slotOf(args[0])) ?? NOTHING,
   GetBattlefieldInfo: (seam) => seam.battlefieldInfo() ?? NOTHING,
   GetBattlefieldStatus: (seam, args) => [...seam.battlefieldStatus(slotOf(args[0]))],
+  // BattlefieldFrame_UpdateStatus does arithmetic on these unguarded (BattlefieldFrame.lua:261, 303):
+  // a number always, 0 when the seam has no queue clock.
+  GetBattlefieldEstimatedWaitTime: (seam, args) => [seam.battlefieldQueueTimes?.(slotOf(args[0]))[0] ?? 0],
+  GetBattlefieldTimeWaited: (seam, args) => [seam.battlefieldQueueTimes?.(slotOf(args[0]))[1] ?? 0],
+  GetBattlefieldInstanceExpiration: (seam) => [seam.battlefieldInstanceTimes?.()[0] ?? 0],
+  GetBattlefieldInstanceRunTime: (seam) => [seam.battlefieldInstanceTimes?.()[1] ?? 0],
   RequestBattlegroundInstanceInfo: (seam, args) => {
     seam.requestBattlegroundInstanceInfo(slotOf(args[0]));
     return NOTHING;
@@ -1657,6 +2541,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetMerchantItemMaxStack: (seam, args) => [seam.merchantItemMaxStack(slotOf(args[0]))],
   GetMerchantItemCostInfo: (seam, args) => [...seam.merchantItemCostInfo(slotOf(args[0]))],
   GetMerchantItemCostItem: (seam, args) => seam.merchantItemCostItem(slotOf(args[0]), slotOf(args[1])) ?? NOTHING,
+  GetItemInfo: (seam, args) => seam.itemInfo(args[0]) ?? NOTHING,
   GetNumBuybackItems: (seam) => [seam.buybackNumItems()],
   GetBuybackItemInfo: (seam, args) => seam.buybackItemInfo(slotOf(args[0])) ?? NOTHING,
   GetBuybackItemLink: (seam, args) => optional(seam.buybackItemLink(slotOf(args[0]))),
@@ -1741,6 +2626,16 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     seam.useContainerItem(slotOf(args[0]), slotOf(args[1]));
     return NOTHING;
   },
+  PickupContainerItem: (seam, args) => {
+    seam.pickupContainerItem(slotOf(args[0]), slotOf(args[1]));
+    return NOTHING;
+  },
+  CursorHasItem: (seam) => [seam.cursorHasItem()],
+  GetCursorInfo: (seam) => seam.cursorInfo(),
+  ClearCursor: (seam) => {
+    seam.clearCursor();
+    return NOTHING;
+  },
   GetInventorySlotInfo: (seam, args) => seam.inventorySlotInfo(
     typeof args[0] === "string" ? args[0] : "",
   ) ?? NOTHING,
@@ -1763,11 +2658,12 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     seam.inventoryItemLocked(unitOf(args[0]), slotOf(args[1])),
   ],
   UseInventoryItem: (seam, args) => {
-    seam.useInventoryItem(unitOf(args[0]), slotOf(args[1]));
+    // Stock item actions take the player's slot ID, unlike the GetInventoryItem* readers.
+    seam.useInventoryItem("player", slotOf(args[0]));
     return NOTHING;
   },
   PickupInventoryItem: (seam, args) => {
-    seam.pickupInventoryItem(unitOf(args[0]), slotOf(args[1]));
+    seam.pickupInventoryItem("player", slotOf(args[0]));
     return NOTHING;
   },
   UnitStat: (seam, args) => [...seam.unitStat(unitOf(args[0]), slotOf(args[1]))],
@@ -1777,18 +2673,40 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   UnitRangedAttackPower: (seam, args) => [...seam.unitRangedAttackPower(unitOf(args[0]))],
   GetAttackPowerForStat: (seam, args) => [seam.attackPowerForStat(slotOf(args[0]), Number(args[1]))],
   GetCritChanceFromAgility: (seam, args) => [seam.critChanceFromAgility(unitOf(args[0]))],
+  // PaperDollFrame.lua:296 (and PetPaperDoll for a non-mana pet) passes this straight into
+  // `format(tooltip2, …)`: a missing value raises «bad argument #3 to '_format'» and aborts
+  // UpdatePaperdollStats after the intellect row. Without the class/level catalog the honest
+  // contribution this host can state is none, i.e. 0, never nil.
+  GetSpellCritChanceFromIntellect: (seam, args) => [
+    seam.spellCritChanceFromIntellect?.(unitOf(args[0])) ?? 0,
+  ],
   GetUnitMaxHealthModifier: (seam, args) => [seam.unitMaxHealthModifier(unitOf(args[0]))],
   GetUnitHealthRegenRateFromSpirit: (seam, args) => [seam.unitHealthRegenRateFromSpirit(unitOf(args[0]))],
   GetUnitManaRegenRateFromSpirit: (seam, args) => [seam.unitManaRegenRateFromSpirit(unitOf(args[0]))],
   GetCombatRating: (seam, args) => [seam.combatRating(slotOf(args[0]))],
   GetCombatRatingBonus: (seam, args) => [seam.combatRatingBonus(slotOf(args[0]))],
+  // Unit.h caps all three resilience critical-damage reductions at 33 percent.
+  GetMaxCombatRatingBonus: (_seam, args) => [15, 16, 17].includes(slotOf(args[0])) ? [33] : NOTHING,
   GetArmorPenetration: (seam) => [seam.armorPenetration()],
   GetCritChance: (seam) => [seam.critChance()],
+  GetRangedCritChance: (seam) => [seam.rangedCritChance?.() ?? 0],
+  GetSpellCritChance: (seam, args) => [seam.spellCritChance?.(slotOf(args[0])) ?? 0],
+  GetSpellBonusDamage: (seam, args) => [seam.spellBonusDamage?.(slotOf(args[0])) ?? 0],
+  GetSpellBonusHealing: (seam) => [seam.spellBonusHealing?.() ?? 0],
+  GetSpellPenetration: (seam) => [seam.spellPenetration?.() ?? 0],
+  GetManaRegen: (seam) => [...seam.manaRegen?.() ?? [0, 0]],
+  GetDodgeChance: (seam) => [seam.dodgeChance?.() ?? 0],
+  GetParryChance: (seam) => [seam.parryChance?.() ?? 0],
+  GetBlockChance: (seam) => [seam.blockChance?.() ?? 0],
+  GetShieldBlock: (seam) => [seam.shieldBlock?.() ?? 0],
+  UnitDefense: (seam, args) => [...seam.unitDefense?.(unitOf(args[0])) ?? [0, 0]],
+  GetDodgeBlockParryChanceFromDefense: (seam) => [seam.dodgeBlockParryChanceFromDefense?.() ?? 0],
   GetExpertise: (seam) => [...seam.expertise()],
   GetExpertisePercent: (seam) => [...seam.expertisePercent()],
   UnitAttackSpeed: (seam, args) => [...seam.unitAttackSpeed(unitOf(args[0]))],
   UnitDamage: (seam, args) => [...seam.unitDamage(unitOf(args[0]))],
   UnitRangedDamage: (seam, args) => [...seam.unitRangedDamage(unitOf(args[0]))],
+  GetQuestGreenRange: (seam) => [questGreenRange(seam.unitLevel("player"))],
   GetNumQuestLogEntries: (seam) => [...seam.questLogEntryCount()],
   GetQuestLogTitle: (seam, args) => [...seam.questLogTitle(slotOf(args[0]))],
   SelectQuestLogEntry: (seam, args) => {
@@ -1875,6 +2793,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   },
   GetNumFactions: (seam) => [seam.factionCount()],
   GetFactionInfo: (seam, args) => seam.factionInfo(slotOf(args[0])) ?? NOTHING,
+  GetFactionInfoByID: (seam, args) => seam.factionInfoById(args[0]) ?? NOTHING,
   GetSelectedFaction: (seam) => [seam.selectedFaction()],
   SetSelectedFaction: (seam, args) => {
     seam.setSelectedFaction(slotOf(args[0]));
@@ -1910,12 +2829,17 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   IsXPUserDisabled: (seam) => [seam.isXpUserDisabled()],
   GetMinimapZoneText: (seam) => optional(seam.minimapZoneText()),
   GetZoneText: (seam) => optional(seam.zoneText()),
+  // The zone's own name, concatenated unguarded into a bare /who (FriendsFrame.lua:1502,
+  // WhoFrame_GetDefaultWhoCommand): "" while the area metadata is unavailable, never nil.
+  GetRealZoneText: (seam) => [seam.zoneText() ?? ""],
   GetSubZoneText: (seam) => optional(seam.subZoneText()),
   GetZonePVPInfo: (seam) => {
     const info = seam.zonePvpInfo();
     return info === undefined ? NOTHING : [...info];
   },
-});
+  // Last: the one cursor answers the cursor C API over every holder above (FrameXmlCursor.ts).
+  ...FRAMEXML_CURSOR_BINDINGS,
+}));
 
 /** Every name the seam answers, in report order. */
 export const FRAMEXML_SEAM_NAMES: readonly string[] = Object.freeze(
@@ -1989,4 +2913,13 @@ do
     end
   end
 end
-`;
+${FRAMEXML_LFD_PRELUDE}
+${FRAMEXML_LOOT_PRELUDE}
+${FRAMEXML_POPUPS_PRELUDE}
+${FRAMEXML_FRIENDS_PRELUDE}
+${FRAMEXML_MAIL_PRELUDE}
+${FRAMEXML_TRADESKILL_PRELUDE}
+${FRAMEXML_BINDING_PRELUDE}
+${FRAMEXML_INSPECT_PRELUDE}
+${FRAMEXML_ITEM_ACTIONS_PRELUDE}
+${FRAMEXML_MECHANICS_PRELUDE}`;

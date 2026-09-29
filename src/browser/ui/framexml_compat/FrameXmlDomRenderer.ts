@@ -1,13 +1,26 @@
 import {
   FRAME_XML_MODEL_TYPES,
+  FRAME_XML_TOOLTIP_LAYOUT,
   type FrameXmlColor,
   type FrameXmlFontStyle,
   type FrameXmlFrame,
   type FrameXmlMessage,
+  type FrameXmlRect,
 } from "./FrameXmlTypes.js";
 import type { FrameXmlUiBridge } from "./FrameXmlRuntime.js";
 import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource } from "./FrameXmlTextures.js";
 import { hasFrameXmlEscapes, parseFrameXmlText } from "./FrameXmlText.js";
+import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
+
+/** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
+export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
+
+/** Where a host collects pass timings (`FrameXmlWorldPerf`); see `FrameXmlDomRendererOptions.perf`. */
+export interface FrameXmlRenderPerfSink {
+  sync(kind: FrameXmlSyncKind, ms: number): void;
+  /** A texture or font arrived and was applied to the frames holding it. */
+  picture?(ms: number): void;
+}
 
 export interface FrameXmlDomRendererOptions {
   /**
@@ -78,6 +91,13 @@ export interface FrameXmlDomRendererOptions {
    * `FrameXmlBoot` binds.
    */
   readonly clock?: () => number;
+  /** Localized host names for icon controls whose captions live outside the FrameXML tree. */
+  readonly accessibilityName?: (frame: FrameXmlFrame) => string | undefined;
+  /**
+   * Live counters (`FrameXmlWorldPerf`): each reconciliation pass is reported with what it had to
+   * do and how long it took. Two `performance.now()` reads per pass; nothing when absent.
+   */
+  readonly perf?: FrameXmlRenderPerfSink;
 }
 
 interface RenderedFrame {
@@ -85,11 +105,17 @@ interface RenderedFrame {
   readonly element: HTMLElement;
   /** Effective hidden state on the last sync, including hidden ancestors. */
   effectiveHidden?: boolean;
+  /** `frame.renderVersion` when this frame was last applied; see `syncFrame`. */
+  appliedVersion?: number | undefined;
+  /** `frame.renderVersion` at which a Cooldown was last found idle; see `tickCooldowns`. */
+  cooldownIdleAt?: number | undefined;
   readonly label?: HTMLElement;
   /** A private paint node for a Backdrop's inset background, below every authored region. */
   backdropBackground?: HTMLElement;
   /** A private paint node owning a Backdrop's eight edge layers, below every authored region. */
   backdropEdge?: HTMLElement;
+  /** The private node that takes the pointer for a frame with hit-rect insets; see `applyHitRect`. */
+  hitRect?: HTMLElement;
   /** Per-frame SVG tint filters; never attached to the authored frame or its children. */
   backdropFilters?: BackdropFilters | undefined;
   /**
@@ -106,6 +132,12 @@ interface RenderedFrame {
    * field lives inside it.
    */
   readonly input?: HTMLElement & { value?: string; disabled?: boolean };
+  /** Last explicit Lua selection request applied to the focused DOM input. */
+  editBoxSelectionRevision?: number;
+  /** Invisible native control handles drag/keyboard input while the original XML paints the art. */
+  readonly sliderInput?: HTMLInputElement;
+  /** Clips the ScrollChild alone; stock scrollbar buttons often sit outside the viewport. */
+  readonly scrollViewport?: HTMLElement;
   /** The single internal fill owned by a StatusBar; authored regions remain ordinary children. */
   readonly statusBarFill?: HTMLElement;
   /** Private scrolling paint layer owned by a MessageFrame; authored children remain untouched. */
@@ -117,6 +149,12 @@ interface RenderedFrame {
   /** Last message revision and scroll offset painted into messageLayer. */
   messageRevision?: number;
   messageScroll?: number;
+  /**
+   * Last measured ScrollFrame content range published through `OnScrollRangeChanged`.
+   * `undefined` before the first laid-out pass; layout-less hosts (the DOM stub) never set it.
+   */
+  scrollRange?: number;
+  horizontalScrollRange?: number;
   /** Message object references that correspond to the private layer's child order. */
   messageSnapshot?: readonly FrameXmlMessage[];
   /** Monotonic debug ordinal for message lines; retained nodes never need reindexing after a shift. */
@@ -134,6 +172,57 @@ interface RenderedFrame {
    * stripped and would rebuild the runs on every frame.
    */
   textSource?: string | undefined;
+  // The fields below are all set by `createFrame`, so every rendered frame keeps one shape.
+  /** The `trap` this frame was last synced with, so a pass can start at it; see `syncContext`. */
+  trap: number;
+  /** The pass (`#pass`) that last reached this frame. */
+  syncedPass: number;
+  /** The pass that last re-applied this frame's geometry; see `syncPass`'s paint branch. */
+  placedPass: number;
+  /** Paint state last applied, so a paint-only change re-applies only what moved; see `applyFrame`. */
+  appliedAnimationTransform: string | undefined;
+  appliedRotation: number | undefined;
+  appliedTexCoords: unknown;
+  appliedScale: number | undefined;
+  appliedAlpha: number | undefined;
+  appliedBackdrop: unknown;
+  appliedBackdropColor: unknown;
+  appliedBackdropBorderColor: unknown;
+  /** A button's drawn state (`stateKey`), which its state-texture children are drawn from. */
+  stateKey: string | undefined;
+}
+
+/**
+ * A strata layer: the box one frame is drawn in when its strata is above every stacking context
+ * around it (see `escapesStrata`).
+ *
+ * The client orders every frame by (strata, level) across the whole screen; the DOM orders a
+ * z-index only inside the nearest stacking context, and every FrameXML box is one. So a `TOOLTIP`
+ * child of a `LOW` frame used to count its z-index inside that frame only: measured on the rich
+ * route, `LFDSearchStatus` (TOOLTIP, LFDFrame.xml:688, a child of `MiniMapLFGFrame` in
+ * `MinimapCluster`) painted under `WatchFrame`'s tracker lines, and `GameTooltip` (TOOLTIP, under
+ * `UIParent`) under the parentless `DropDownList1` (FULLSCREEN_DIALOG) it describes.
+ *
+ * The frame's element is appended here instead of into its parent: a container-level box laid over
+ * the parent's painted rectangle — same size in the parent's own units, same cumulative scale and
+ * opacity, hidden with it — whose z-index is the frame's own. Coordinates, percentages, sibling
+ * measurement and hit testing inside it are those of the parent's box. Lua sees nothing:
+ * `GetParent`, visibility and geometry are the bridge's, unchanged.
+ */
+interface StrataLayer {
+  readonly element: HTMLElement;
+  /** The parent box last written, so an owner that did not move costs no style write. */
+  box?: string;
+  /** Hidden with a hidden owner or frame; the next visible walk places it again. */
+  parked?: boolean;
+}
+
+/** One `applyGeometry` held by a pass until its walk is done; see `syncPass`. */
+interface DeferredPlacement {
+  readonly element: HTMLElement;
+  readonly frame: FrameXmlFrame;
+  readonly declaredWidth: number | undefined;
+  readonly declaredHeight: number | undefined;
 }
 
 interface BackdropFilters {
@@ -159,6 +248,15 @@ interface FrameDrag {
 }
 
 let nextBackdropFilterId = 0;
+let nextRendererSerial = 0;
+
+/**
+ * How many distinct vertex colours get a filter of their own. The client's colours are 8-bit
+ * (`CImVector`), and the stock UI uses a handful — white, 0.4 grey for an unusable action, 0.5/0.5/1
+ * for no mana, 1/0.1/0.1 for an unusable item or an unbought bank slot — so this only bounds a
+ * script that animates a tint through thousands of values; past it a picture is drawn untinted.
+ */
+const TINT_FILTER_LIMIT = 4096;
 
 function numberValue(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
@@ -171,6 +269,15 @@ function px(value: number): string {
 }
 
 /** WoW colours are 0..1 floats; CSS wants 0..255 with the alpha left as a float. */
+/** The `shadowColor` attribute `SetShadowColor` writes: four channels in [0, 1], space-separated. */
+function shadowColorAttribute(value: string | undefined): FrameXmlColor | undefined {
+  if (value === undefined) return undefined;
+  const channels = value.split(" ").map(Number);
+  if (channels.length !== 4 || !channels.every(Number.isFinite)) return undefined;
+  const [r, g, b, a] = channels as [number, number, number, number];
+  return { r, g, b, a };
+}
+
 function cssColor(color: FrameXmlColor): string {
   const channel = (value: number): number => Math.round(Math.min(1, Math.max(0, value)) * 255);
   return `rgba(${channel(color.r)}, ${channel(color.g)}, ${channel(color.b)}, ${color.a})`;
@@ -200,6 +307,40 @@ function mouseButtonName(event: Event): string {
   return "LeftButton";
 }
 
+/**
+ * Whether placing a frame reads the laid-out page: an anchor on anything but its parent (measured,
+ * `measureSibling`), a clamp to the screen or a cursor anchor (both read client rectangles).
+ */
+function measuresLayout(frame: FrameXmlFrame): boolean {
+  if (frame.clampedToScreen || frame.tooltipCursorAnchor) return true;
+  for (const point of frame.points) if (point.relativeTo && point.relativeTo !== frame.parent) return true;
+  return false;
+}
+
+/** Two anchors on opposite horizontal edges: the width is theirs, not the text's. */
+function horizontallyPinned(frame: FrameXmlFrame): boolean {
+  let left = false;
+  let right = false;
+  for (const point of frame.points) {
+    const role = anchorRoles(point.point).x;
+    if (role === "LEFT") left = true;
+    else if (role === "RIGHT") right = true;
+  }
+  return left && right;
+}
+
+/** Two anchors on opposite vertical edges: the height is theirs, not the declared one. */
+function verticallyPinned(frame: FrameXmlFrame): boolean {
+  let top = false;
+  let bottom = false;
+  for (const point of frame.points) {
+    const role = anchorRoles(point.point).y;
+    if (role === "TOP") top = true;
+    else if (role === "BOTTOM") bottom = true;
+  }
+  return top && bottom;
+}
+
 /** Horizontal/vertical role of an anchor name, e.g. TOPLEFT -> ("LEFT", "TOP"). */
 function anchorRoles(point: string): { readonly x: "LEFT" | "RIGHT" | "CENTER"; readonly y: "TOP" | "BOTTOM" | "CENTER" } {
   const name = point.toUpperCase();
@@ -212,6 +353,8 @@ function anchorRoles(point: string): { readonly x: "LEFT" | "RIGHT" | "CENTER"; 
 const LAYER_Z: Readonly<Record<string, number>> = Object.freeze({
   BACKGROUND: 1, BORDER: 2, ARTWORK: 3, OVERLAY: 4, HIGHLIGHT: 5,
 });
+/** A button's implicit label, in OVERLAY like a template's `<ButtonText>`; see `applyButtonLabel`. */
+const BUTTON_LABEL_Z = String(LAYER_Z["OVERLAY"]! * 100);
 
 /**
  * Frame strata, lowest first, as the base of a frame's z-index.
@@ -228,6 +371,97 @@ const STRATA_Z: Readonly<Record<string, number>> = Object.freeze({
 });
 
 /**
+ * How many times one layout pass may place a frame through the anchor graph. A chain settles in
+ * one placement per link; the bound only matters for an anchor cycle, which the client refuses and
+ * the corpus does not contain, and it keeps a malformed add-on from spinning the pass.
+ */
+const MAX_PLACEMENTS_PER_PASS = 3;
+
+/** How much of one frame a pass re-applies; see `syncFrame`. */
+type ApplyMode = 0 | 1 | 2;
+const APPLY_NONE: ApplyMode = 0;
+/** Paint only: no geometry, backdrop or subtree unless what they draw from changed. */
+const APPLY_PAINT: ApplyMode = 1;
+const APPLY_FULL: ApplyMode = 2;
+
+/** What the bridge announced for one frame since the last pass, as a bit mask. */
+const CHANGE_PAINT = 1;
+const CHANGE_LAYOUT = 2;
+const CHANGE_STRUCTURE = 4;
+
+/**
+ * Past this many changed frames a pass walks the drawn tree as before instead of starting at each
+ * changed frame: the walk costs the same whatever changed, the per-frame route grows with it.
+ */
+const DIRTY_WALK_LIMIT = 512;
+
+/** What a button's state textures and label are drawn from (`stateTextureVisible`, `applyStateTexture`). */
+function stateKey(frame: FrameXmlFrame): string | undefined {
+  if (frame.stateTextures.size === 0) return undefined;
+  return `${frame.buttonState}|${frame.enabled}|${frame.checked}|${frame.highlightLocked}`;
+}
+
+function strataRank(frame: FrameXmlFrame): number {
+  return STRATA_Z[frame.frameStrata] ?? 2;
+}
+
+/**
+ * Whether a child frame draws above every stacking context it would be drawn inside, and so in a
+ * strata layer of its own. `trap` is the highest strata among those contexts: its parent and the
+ * parent's ancestors up to the container or the nearest strata layer.
+ *
+ * Regions (textures, font strings) draw in their frame's strata by definition. Frames declare a
+ * strata or inherit their parent's (FrameXmlRuntime's build), so a child is above its parent only
+ * when something said so: measured on the MPQ vertical, 60 frames, among them `GameTooltip`, the
+ * shopping tooltips and `SmallTextTooltip` (TOOLTIP), `StaticPopup1-4` and `GameMenuFrame` (DIALOG),
+ * the four extra action bars (HIGH) — all under a MEDIUM `UIParent` — the chat edit boxes (DIALOG
+ * under a BACKGROUND chat frame) and `LFDSearchStatus` (TOOLTIP) under the minimap eye.
+ *
+ * Only above the whole chain, not merely above the parent: `PetFrame` (LOW) is a child of
+ * `PlayerFrame` (BACKGROUND) inside `UIParent` (MEDIUM). Lifted to the container it would draw at
+ * LOW under *all* of `UIParent`, `PlayerFrame` included; inside `PlayerFrame` it stays above its
+ * parent and below `UIParent`'s MEDIUM frames, which is the client's order.
+ */
+function escapesStrata(child: FrameXmlFrame, trap: number): boolean {
+  if (child.type === "Texture" || child.type === "FontString") return false;
+  return strataRank(child) > trap;
+}
+
+function setAttributeIfChanged(element: HTMLElement, name: string, value: string): void {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
+/** An inline style property written only when it reads differently (a long percentage reads back rounded, and is written). */
+function setStyleIfChanged(
+  element: HTMLElement,
+  property: "left" | "top" | "right" | "bottom" | "transform" | "pointerEvents" | "writingMode" | "direction",
+  value: string,
+): void {
+  if (element.style[property] !== value) element.style[property] = value;
+}
+
+function indexHolder<T>(index: Map<string, Set<T>>, key: string, holder: T): void {
+  let holders = index.get(key);
+  if (!holders) index.set(key, (holders = new Set()));
+  holders.add(holder);
+}
+
+function unindexHolder<T>(index: Map<string, Set<T>>, key: string, holder: T): void {
+  const holders = index.get(key);
+  if (!holders) return;
+  holders.delete(holder);
+  if (holders.size === 0) index.delete(key);
+}
+
+function hideStrataLayer(layer: StrataLayer): void {
+  layer.parked = true;
+  if (layer.element.hidden) return;
+  layer.element.hidden = true;
+  // The page's own `[hidden]` rule may be outranked; the layer carries no other display.
+  layer.element.style.display = "none";
+}
+
+/**
  * Render the stateful FrameXML widget tree into a caller-owned DOM host.
  *
  * This is intentionally a binding, not a second WoW UI implementation: it
@@ -242,11 +476,19 @@ const STRATA_Z: Readonly<Record<string, number>> = Object.freeze({
  */
 export class FrameXmlDomRenderer {
   readonly #container: HTMLElement;
+  readonly #accessibility: FrameXmlAccessibility;
   readonly #textureResolver: ((texture: string) => string) | undefined;
   readonly #fontResolver: ((font: string) => string) | undefined;
   readonly #classPrefix: string;
   readonly #bridge: FrameXmlUiBridge | undefined;
   readonly #rendered = new Map<FrameXmlFrame, RenderedFrame>();
+  /** The frame an element draws, for the drop target under a released drag (`receiveDrag`). */
+  readonly #frameOfElement = new WeakMap<Element, FrameXmlFrame>();
+  /** The held thing's picture following the pointer (`setCursorPicture`), while one is held. */
+  #cursorPicture: { element: HTMLImageElement; path: string; cleanup: () => void } | undefined;
+  readonly #measuringHiddenGeometry = new Set<FrameXmlFrame>();
+  /** Hidden frames whose geometry this sync pass already refreshed; see `refreshHiddenGeometry`. */
+  #hiddenRefreshed: Set<FrameXmlFrame> | undefined;
   readonly #roots: FrameXmlFrame[] = [];
   readonly #unsubscribe: (() => void) | undefined;
   readonly #registeredFonts = new Map<string, string>();
@@ -258,16 +500,99 @@ export class FrameXmlDomRenderer {
   readonly #layoutOnly: ((frame: FrameXmlFrame) => boolean) | undefined;
   /** Every mounted `Cooldown` widget, so the sweep is advanced without walking the whole tree. */
   readonly #cooldowns = new Set<RenderedFrame>();
+  /**
+   * The widgets the layout pass lays out by type, indexed at creation so a layout sync does not scan
+   * all ~15,500 rendered frames of the world vertical three times to find a dozen of them.
+   */
+  readonly #tooltips = new Set<RenderedFrame>();
+  readonly #scrollFrames = new Set<RenderedFrame>();
+  readonly #sliders = new Set<RenderedFrame>();
+  /** The rendered frames the accessibility pass labels or checks for a modal, in creation order. */
+  readonly #a11yNodes = new Map<FrameXmlFrame, RenderedFrame>();
+  /**
+   * Anchor target → the frames anchored to it from outside their own parent's box (the anchors
+   * the layout pass has to measure). With `#anchorTargets`, its inverse, maintained by every
+   * `applyGeometry`; see `replaceDependents`.
+   */
+  readonly #dependents = new Map<FrameXmlFrame, Set<FrameXmlFrame>>();
+  readonly #anchorTargets = new Map<FrameXmlFrame, readonly FrameXmlFrame[]>();
+  /**
+   * Drawn frames last measured against a hidden target. A hidden target is measured from its inline
+   * geometry and does not take part in a sync, so nothing announces that its parent moved; these few
+   * are re-placed on every layout pass instead (the LFD list's 15 check boxes, centred on hidden lock
+   * icons, while the finder is open).
+   */
+  readonly #hiddenAnchored = new Set<FrameXmlFrame>();
+  /** Frames drawn above the strata of every stacking context around them, and their layers. */
+  readonly #strataLayers = new Map<FrameXmlFrame, StrataLayer>();
+  /**
+   * Texture-source path → the rendered frames holding it in one of their picture slots, and edge
+   * file → the frames holding its eight pieces; see `pictureArrived`.
+   */
+  readonly #pictureHolders = new Map<string, Set<RenderedFrame>>();
+  readonly #edgeHolders = new Map<string, Set<RenderedFrame>>();
   readonly #clock: () => number;
+  readonly #perf: FrameXmlRenderPerfSink | undefined;
   #fontStyleElement: HTMLStyleElement | undefined;
+  #textMeasureContext: CanvasRenderingContext2D | null | undefined;
   #addFilterElement: Element | undefined;
+  /** This renderer's own tint filters (`tintFilterId`), keyed by `rrggbb`, and the SVG holding them. */
+  readonly #tintFilters = new Map<string, string>();
+  #tintFilterElement: Element | undefined;
+  readonly #serial = nextRendererSerial++;
   #lastMutationVersion = -1;
+  /** The bridge's structure/layout versions at the last sync; -1 forces a full pass. */
+  #lastStructureVersion = -1;
+  #lastLayoutVersion = -1;
+  /** Frames re-applied by the sync in progress, for the paint-only follow-up passes. */
+  #appliedThisPass: RenderedFrame[] | undefined;
+  /** Frames whose geometry the sync in progress re-applied: the layout pass's anchor seeds. */
+  #movedThisPass: RenderedFrame[] | undefined;
+  /**
+   * Placements that read the page (`measuresLayout`), held while a pass walks the tree and made
+   * once the walk's writes are done; see `syncPass`.
+   */
+  #deferredPlacements: DeferredPlacement[] | undefined;
+  /**
+   * Message frames whose scroll offset the pass in progress has to map to pixels, held with the
+   * placements above: the mapping reads the layer's height; see `scrollMessageLayer`.
+   */
+  #messageScrolls: RenderedFrame[] | undefined;
+  /**
+   * Frames the bridge announced a change to since the last pass, with the kinds of change
+   * (`CHANGE_*`); drained by each pass into `#passDirty`. See `dirtyWalk`.
+   */
+  #dirty = new Map<FrameXmlFrame, number>();
+  #passDirty: ReadonlyMap<FrameXmlFrame, number> | undefined;
+  /** Serial of the pass in progress; see `RenderedFrame.syncedPass`. */
+  #pass = 0;
+  /** The pass in progress moved, resized, showed or hid a drawn frame. */
+  #passLayout = false;
+  readonly #unobserveFrames: (() => void) | undefined;
   #drag: FrameDrag | undefined;
   #cursor: { readonly x: number; readonly y: number } | undefined;
   #cursorCleanup: (() => void) | undefined;
+  /** Buttons under the pointer, for the `<HighlightFont>` their inheriting label switches to. */
+  readonly #hoveredButtons = new Set<FrameXmlFrame>();
+  /**
+   * Screen rectangles `IsMouseOver` has read since the last paint; `null` records "not drawn".
+   * Cleared by every sync that actually runs, by a window resize and by cursor-tooltip moves, the
+   * only things that move a drawn box.
+   */
+  readonly #screenRects = new Map<FrameXmlFrame, FrameXmlRect | null>();
+  /** The window-level pointer tracker and resize listener, released by `destroy`. */
+  #pointerCleanup: (() => void) | undefined;
+  /** See `setPointerTracking`. */
+  #pointerPaused = false;
+  /** Set by `destroy`: nothing re-arms a listener afterwards. */
+  #destroyed = false;
+  /** The container's resize observer, released by `destroy`; see `watchContainer`. */
+  #containerCleanup: (() => void) | undefined;
 
   constructor(container: HTMLElement, options: FrameXmlDomRendererOptions = {}) {
     this.#container = container;
+    this.#accessibility = new FrameXmlAccessibility(container,
+      options.accessibilityName ? { nameForFrame: options.accessibilityName } : {});
     this.#textureResolver = options.textureResolver;
     this.#fontResolver = options.fontResolver;
     this.#classPrefix = options.classPrefix?.trim() || "framexml";
@@ -279,16 +604,157 @@ export class FrameXmlDomRenderer {
     this.#frameFilter = options.frameFilter;
     this.#layoutOnly = options.layoutOnly;
     this.#clock = options.clock ?? ((): number => Date.now() / 1000);
+    this.#perf = options.perf;
+    this.#unobserveFrames = options.bridge?.observeFrameMutations((frame, kind) => {
+      const bit = kind === "paint" ? CHANGE_PAINT : kind === "layout" ? CHANGE_LAYOUT : CHANGE_STRUCTURE;
+      this.#dirty.set(frame, (this.#dirty.get(frame) ?? 0) | bit);
+    });
     this.#unsubscribe = options.bridge?.subscribe(() => this.sync());
+    options.bridge?.setTextMeasure((frame, text) => this.measureText(frame, text));
+    options.bridge?.setScreenRectSource((frame) => this.screenRectOf(frame));
+    this.trackPointer();
+    this.watchContainer();
+  }
+
+  /**
+   * Follow the container's own box: a browser resize, or a UI-scale change, gives the stage a new
+   * logical width (the world mount's and the glue's `fit`) without a single Lua mutation, so no sync
+   * runs and nothing in the frame tree is re-applied.
+   *
+   * Most of the screen follows by itself — a parent anchor is CSS of its containing block — but two
+   * kinds of box are numbers written from a measurement and would stay where they were:
+   *
+   * - strata layers, which copy their owner's box in layout pixels (`placeStrataLayer`). Measured on
+   *   the rich route after resizing 1400 → 2400 wide: `MultiBarBottomLeft`'s and `UIErrorsFrame`'s
+   *   layers stayed 1400 wide over a 2400-wide `UIParent`, and the bar stayed at x=97 while
+   *   `MainMenuBar` moved to 588;
+   * - sibling anchors, measured in pixels from the containing block (`measureSibling`), whose target
+   *   moved with a centred or right-anchored parent edge — the same bar, anchored to `ActionButton1`.
+   *
+   * A `ResizeObserver` rather than the window's `resize` event: it is delivered after layout, so the
+   * stage's new width is already the one measured, whichever of the page's listeners ran first; and
+   * it also sees the settings' UI-scale change, which resizes no window. A transform-only change (the
+   * same aspect at another size) does not change the logical box and costs nothing.
+   */
+  private watchContainer(): void {
+    const view = this.#container.ownerDocument?.defaultView as (Window & typeof globalThis) | null | undefined;
+    const Observer = view?.ResizeObserver;
+    if (typeof Observer !== "function") return;
+    const sizeOf = (): string => `${this.#container.offsetWidth}x${this.#container.offsetHeight}`;
+    // The observer reports the initial box once; only a box other than the one laid out counts.
+    let size = sizeOf();
+    const observer = new Observer(() => {
+      const now = sizeOf();
+      if (now === size) return;
+      size = now;
+      this.containerResized();
+    });
+    observer.observe(this.#container);
+    this.#containerCleanup = () => observer.disconnect();
+  }
+
+  /**
+   * Place again everything measured from the container's old box: every drawn strata layer (outer
+   * owners first, as the walk reaches them), every drawn frame with a measured anchor that the new
+   * box can have moved (`resizeInvariant`), every drawn frame clamped to the screen, and then —
+   * through the reverse anchor index — the dependents of whatever that moved. The walk covers the
+   * drawn tree once (O(drawn frames), on a resize only); a hidden subtree is placed when it is next
+   * shown, which re-applies it.
+   *
+   * It used to place every measured frame and every dependent of every drawn frame: measured on the
+   * rich route, 163 placements per observed resize, 3 of which moved anything, 3.6–4.7 ms a resize —
+   * once per frame of a window drag.
+   */
+  private containerResized(): void {
+    this.#screenRects.clear();
+    if (this.#strataLayers.size === 0 && this.#anchorTargets.size === 0) return;
+    const run = (): void => {
+      const queue: FrameXmlFrame[] = [];
+      const place = this.boundedPlacer();
+      const fixed = new Map<Element, boolean>();
+      for (const root of this.topLevel()) {
+        if (this.#frameFilter && !this.#frameFilter(root)) continue;
+        if (root.parent && this.#rendered.has(root.parent)) continue;
+        const drawn = this.#rendered.get(root);
+        if (!drawn || drawn.effectiveHidden !== false) continue;
+        if (this.#anchorTargets.has(root)) {
+          if (place(root)) this.queueMoved(root, queue);
+        } else if (root.clampedToScreen) this.clampToScreen(drawn.element, root);
+        this.resizeWalk(root, queue, place, fixed);
+      }
+      this.drainDependents(queue, place);
+    };
+    // The same per-pass memo a sync has: a measured frame behind a hidden anchor chain refreshes
+    // that chain once, not once per path through it (see `refreshHiddenGeometry`).
+    const outer = this.#hiddenRefreshed;
+    this.#hiddenRefreshed = new Set();
+    try {
+      // Placed against a page that shows every change already made (`settleDeferredLayout`).
+      this.#bridge?.settleDeferredLayout();
+      if (this.#bridge) this.#bridge.runInRenderPass(run);
+      else run();
+    } finally {
+      this.#hiddenRefreshed = outer;
+    }
+  }
+
+  /**
+   * Keep `GetCursorPosition`/`IsMouseOver`'s cursor current wherever the pointer is.
+   *
+   * The bridge only heard of the pointer when it entered a widget or pressed one, so leaving a
+   * chat window for the world canvas left the cursor inside the chat window and the stock fade
+   * (`FCF_OnUpdate` asking `chatFrame:IsMouseOver(…)`) could never see it go. On the window, not the
+   * document, so it reaches the pointer over the 3D canvas too; Chrome delivers `pointermove` once
+   * per animation frame, so this is one container rectangle read per frame of movement.
+   */
+  private trackPointer(): void {
+    const view = this.#container.ownerDocument?.defaultView;
+    if (!this.#bridge || typeof view?.addEventListener !== "function") return;
+    const move = (event: Event): void => this.rememberCursor(event);
+    const resize = (): void => this.#screenRects.clear();
+    view.addEventListener("pointermove", move, { capture: true, passive: true });
+    view.addEventListener("resize", resize);
+    this.#pointerCleanup = () => {
+      view.removeEventListener("pointermove", move, { capture: true });
+      view.removeEventListener("resize", resize);
+    };
+  }
+
+  /**
+   * Stop or resume following the pointer, for a page taken off the display without being torn down.
+   *
+   * The glue screens are the case (`Bootstrap.ts`'s `suspend`): they stay mounted under the world so
+   * the way back costs no reload, and their window-level `pointermove` listener stayed with them —
+   * `rememberCursor` reads the hidden container's rectangle and offset box on every move over the
+   * world, one forced layout per frame of mouse movement in the middle of the world's frame. Paused,
+   * no window listener is left (the cursor tooltip's document listener included, and the next layout
+   * pass does not bring it back); resumed, the listeners return and the boxes `IsMouseOver` kept are
+   * dropped, because the window may have changed size in between. The next move reports the cursor.
+   */
+  setPointerTracking(active: boolean): void {
+    if (active === !this.#pointerPaused || this.#destroyed) return;
+    this.#pointerPaused = !active;
+    if (!active) {
+      this.#pointerCleanup?.();
+      this.#pointerCleanup = undefined;
+      this.#cursorCleanup?.();
+      this.#cursorCleanup = undefined;
+      return;
+    }
+    this.#screenRects.clear();
+    this.trackPointer();
+    this.syncCursorTracking();
   }
 
   /** Replace the mounted roots. The container itself is never cleared. */
   mount(roots: readonly FrameXmlFrame[]): void {
     this.finishDrag(false);
+    this.#accessibility.destroy();
     for (const rendered of this.#rendered.values()) this.dropRendered(rendered);
     this.#rendered.clear();
     this.#roots.splice(0, this.#roots.length, ...roots);
     this.#lastMutationVersion = -1;
+    this.#lastStructureVersion = -1;
     this.sync();
   }
 
@@ -309,6 +775,7 @@ export class FrameXmlDomRenderer {
     }
     if (!changed) return;
     this.#lastMutationVersion = -1;
+    this.#lastStructureVersion = -1;
     this.sync();
   }
 
@@ -337,47 +804,308 @@ export class FrameXmlDomRenderer {
 
   /** Apply current frame state and reconcile child widgets. */
   sync(): void {
-    if (this.#bridge && this.#lastMutationVersion === this.#bridge.mutationVersion) return;
-    if (this.#drag && !this.#bridge?.isVisible(this.#drag.source)) this.finishDrag(true);
-    const active = new Set<FrameXmlFrame>();
-    // The mounted roots first, so the frame `createdRootParent` names has an element to adopt into
-    // by the time the parentless Lua frames are reached.
-    for (const root of this.#roots) {
-      if (this.#frameFilter && !this.#frameFilter(root)) continue;
-      this.syncFrame(root, this.#container, active);
+    // Range callbacks mutate sliders and other frames. Publish them after the whole layout pass,
+    // otherwise each ScrollFrame synchronously starts another full traversal before the next
+    // scroll range is measured (N scroll frames would build N nested renderer stacks). A render
+    // pass as well, so a geometry read in the walk cannot start the next pass inside this one.
+    if (this.#bridge) this.#bridge.runInRenderPass(() => this.measuredPass());
+    else this.measuredPass();
+  }
+
+  /** One `syncPass` with a per-pass measurement memo of its own (a nested pass follows new state). */
+  private measuredPass(): void {
+    const outer = this.#hiddenRefreshed;
+    this.#hiddenRefreshed = new Set();
+    const perf = this.#perf;
+    const kind = perf ? this.pendingKind() : "noop";
+    const started = perf ? performance.now() : 0;
+    try {
+      this.syncPass();
+    } finally {
+      this.#hiddenRefreshed = outer;
+      perf?.sync(kind, performance.now() - started);
     }
-    const adopted = this.createdRootHost();
-    for (const root of this.topLevel()) {
-      if (this.#roots.includes(root)) continue;
-      if (this.#frameFilter && !this.#frameFilter(root)) continue;
-      this.syncFrame(root, adopted, active);
+  }
+
+  /** What the next pass has to do, from the bridge's versions (the same test `syncPass` makes). */
+  private pendingKind(): FrameXmlSyncKind {
+    const bridge = this.#bridge;
+    if (!bridge) return "structural";
+    if (this.#lastMutationVersion === bridge.mutationVersion) return "noop";
+    if (this.#lastStructureVersion !== bridge.structureVersion) return "structural";
+    return this.#lastLayoutVersion !== bridge.layoutVersion ? "layout" : "paint";
+  }
+
+  private syncPass(): void {
+    const bridge = this.#bridge;
+    if (bridge && this.#lastMutationVersion === bridge.mutationVersion) return;
+    if (this.#drag && !bridge?.isVisible(this.#drag.source)) this.finishDrag(true);
+    // Most syncs carry a handful of named changes — a pulsing highlight's alpha, a health bar's
+    // fill — and the whole tree used to be re-applied and re-measured for each of them: measured
+    // on the dev page, 24 ms of a 35 ms idle frame. Only a change to the tree itself can add, move
+    // or drop a widget (`structural`), and only a layout change can move what another frame is
+    // measured against (`layout`); everything else is applied to the frames it names.
+    const structural = !bridge || this.#lastStructureVersion !== bridge.structureVersion;
+    let layout = structural || this.#lastLayoutVersion !== bridge.layoutVersion;
+    // A change to the tree can move any box; the boxes `IsMouseOver` cached go before the walk.
+    if (structural) this.#screenRects.clear();
+    const dirty = this.#dirty;
+    this.#dirty = new Map();
+    this.#passDirty = dirty;
+    this.#pass += 1;
+    this.#passLayout = false;
+    const active = structural ? new Set<FrameXmlFrame>() : undefined;
+    const applied: RenderedFrame[] = [];
+    const moved: RenderedFrame[] = [];
+    this.#appliedThisPass = applied;
+    this.#movedThisPass = moved;
+    // A measured placement made in the middle of the walk forces the browser to lay out every write
+    // made before it: measured on the first CharacterFrame open, 155 sibling measures at 0.1 ms each,
+    // 130 of which placed the frame exactly where it already was. They are made after the walk.
+    const deferred: DeferredPlacement[] = [];
+    this.#deferredPlacements = deferred;
+    const messageScrolls: RenderedFrame[] = [];
+    this.#messageScrolls = messageScrolls;
+    let hiddenMoved: readonly FrameXmlFrame[] = [];
+    try {
+      const walked = structural ? undefined : this.dirtyWalk(dirty);
+      if (walked) {
+        // Only what was drawn before or after the pass decides whether it is a layout pass: a
+        // hidden frame shown and hidden again within one frame (the party member's dispel flash,
+        // `PartyMemberFrame_OnUpdate`, every frame once its countdown ends) moved nothing drawn.
+        layout = this.#passLayout;
+        hiddenMoved = walked.hiddenMoved;
+      } else {
+        // The mounted roots first, so the frame `createdRootParent` names has an element to adopt
+        // into by the time the parentless Lua frames are reached.
+        for (const root of this.#roots) {
+          if (this.#frameFilter && !this.#frameFilter(root)) continue;
+          // A root Lua has since given a drawn parent is that parent's child now, and the parent's
+          // walk places it. Synced as a root as well, it went back to the container on every pass
+          // and the parent's walk took it back again: measured on framexml.html, `ChatFrame1Tab`
+          // (docked into `GeneralDockManager` by `FCF_DockFrame`) moved 1,092 times in 2 s of idle,
+          // two DOM moves per sync. A root whose parent is not drawn here (filtered out, or never
+          // mounted) stays one.
+          if (root.parent && this.#rendered.has(root.parent)) continue;
+          this.syncFrame(root, this.#container, active, false, structural);
+        }
+        const created = this.#includeCreatedRoots ? this.#bridge?.createdRoots ?? [] : [];
+        if (created.length > 0) {
+          const adopted = this.createdRootHost();
+          const mounted = new Set(this.#roots);
+          for (const root of created) {
+            if (mounted.has(root)) continue;
+            if (this.#frameFilter && !this.#frameFilter(root)) continue;
+            this.syncFrame(root, adopted, active, false, structural);
+          }
+        }
+      }
+    } finally {
+      this.#appliedThisPass = undefined;
+      this.#movedThisPass = undefined;
+      this.#passDirty = undefined;
+      this.#deferredPlacements = undefined;
+      this.#messageScrolls = undefined;
     }
-    for (const [frame, rendered] of this.#rendered) {
-      if (!active.has(frame)) {
-        this.dropRendered(rendered);
-        this.#rendered.delete(frame);
+    if (active) {
+      for (const [frame, rendered] of this.#rendered) {
+        if (!active.has(frame)) {
+          this.dropRendered(rendered);
+          this.#rendered.delete(frame);
+        }
       }
     }
-    // A sibling may be declared after the frame that points to it. Re-apply
-    // anchors once the whole mounted tree exists so relative geometry can be
-    // resolved when the host DOM provides layout rectangles.
+    // In walk order, after every write of the walk: a placement that changes nothing leaves the
+    // page clean for the next one's measure.
+    let layered: ReadonlySet<FrameXmlFrame> | undefined;
+    for (const placement of deferred) {
+      if (this.#rendered.get(placement.frame)?.element !== placement.element) continue;
+      if (!this.applyGeometry(placement.element, placement.frame, placement.declaredWidth, placement.declaredHeight)) continue;
+      // The walk laid the strata layers over this frame, and over whatever is drawn inside it, while
+      // it still had its old box: `childElementHost` places a layer as soon as its owner is
+      // re-applied, and this placement was held until now. Measured on the rich route, the open
+      // chat input (`ChatFrame1EditBox`, DIALOG) stayed where a moved chat frame had been. Laid
+      // again here, before the placements after this one in walk order — the frames inside those
+      // layers among them — measure anything.
+      if (this.#strataLayers.size === 0) continue;
+      layered ??= this.layeredFrames();
+      if (layered.has(placement.frame)) this.placeLayersBelow(placement.frame, layered);
+    }
+    for (const rendered of messageScrolls) {
+      if (this.#rendered.get(rendered.frame) === rendered) this.scrollMessageLayer(rendered);
+    }
+    if (!layout) {
+      // Paint only: nothing drawn moved, so nothing is re-measured. A frame whose geometry was
+      // re-applied anyway (a transform: an animation, a rotation, a mirrored texcoord) takes back
+      // the layouts other passes own for it — tooltip rows, scroll ranges, slider inputs.
+      // A hidden frame that moved can still be what a drawn frame is measured against.
+      const replaced = hiddenMoved.length > 0 && this.#hiddenAnchored.size > 0
+        && this.replaceHiddenAnchored(new Set(hiddenMoved));
+      const tooltips = new Set<RenderedFrame>();
+      for (const rendered of applied) {
+        if (rendered.effectiveHidden) continue;
+        const frame = rendered.frame;
+        if (rendered.placedPass === this.#pass) {
+          const owner = frame.type === "GameTooltip" ? rendered
+            : frame.parent?.type === "GameTooltip" ? this.#rendered.get(frame.parent) : undefined;
+          if (owner && !owner.effectiveHidden) tooltips.add(owner);
+        }
+        if (frame.type === "ScrollFrame") this.applyScrollFrame(rendered);
+        if (frame.type === "Slider") this.applySlider(rendered);
+      }
+      for (const tooltip of tooltips) this.layoutGameTooltip(tooltip);
+      // `IsMouseOver`'s boxes stay valid across a pass that moved nothing: the chat fade's three
+      // questions a frame read the layout once, not after every alpha flash.
+      if (moved.length > 0 || replaced) this.#screenRects.clear();
+      this.commitVersions();
+      return;
+    }
+    // A sibling may be declared after the frame that points to it, and a target may move or resize
+    // after its dependents were placed (ChatFrame1Tab auto-sizing to its label after ChatFrame2Tab
+    // was put at its RIGHT). Everything anchored to a frame this pass re-applied is placed again,
+    // and whatever is anchored to *those*, through the reverse index — not every sibling-anchored
+    // frame on the screen: measured on the dev page, that loop was 88–123 re-applies and 101–128
+    // sibling measures (3.9 ms of a 7–11 ms health-text sync) whatever had changed.
     // A hidden target has no browser layout rectangle (`display:none` makes all
     // offset* metrics zero). `measureSibling` falls back to the authored inline
-    // pixel geometry for that target and its hidden ancestors; no hidden frame
+    // geometry for that target and its hidden ancestors; no hidden frame
     // needs to be shown or reconciled during this pass.
-    for (const rendered of this.#rendered.values()) {
-      if (rendered.effectiveHidden) continue;
-      if (rendered.frame.points.some((point) => point.relativeTo && point.relativeTo !== rendered.frame.parent)) {
-        this.applyGeometry(rendered.element, rendered.frame);
-      }
-    }
+    this.replaceDependents(moved);
     // Tooltip paragraphs must be laid out after their FontStrings and sibling anchors. Their
     // rendered height can exceed the C-method's pre-DOM estimate by several wrapped lines.
-    for (const rendered of this.#rendered.values()) {
-      if (rendered.frame.type === "GameTooltip" && !rendered.effectiveHidden) this.layoutGameTooltip(rendered);
+    for (const rendered of this.#tooltips) {
+      if (!rendered.effectiveHidden) this.layoutGameTooltip(rendered);
+    }
+    // ScrollFrame viewports clip after every child has been laid out, so the measured content
+    // range observes the same pass. Firing here keeps stock scrollbar Lua (which only listens to
+    // `OnScrollRangeChanged`) working without the renderer guessing at slider state.
+    for (const rendered of this.#scrollFrames) {
+      if (!rendered.effectiveHidden) this.applyScrollFrame(rendered);
+    }
+    // Scroll-range handlers can change slider values during this same pass.
+    for (const rendered of this.#sliders) {
+      if (!rendered.effectiveHidden) this.applySlider(rendered);
     }
     this.syncCursorTracking();
-    if (this.#bridge) this.#lastMutationVersion = this.#bridge.mutationVersion;
+    this.#accessibility.sync(this.#rendered, this.#a11yNodes.values());
+    this.#screenRects.clear();
+    this.commitVersions();
+  }
+
+  private commitVersions(): void {
+    const bridge = this.#bridge;
+    if (!bridge) return;
+    this.#lastMutationVersion = bridge.mutationVersion;
+    this.#lastStructureVersion = bridge.structureVersion;
+    this.#lastLayoutVersion = bridge.layoutVersion;
+  }
+
+  /**
+   * A non-structural pass that starts at the frames the bridge named (`observeFrameMutations`)
+   * instead of walking the whole drawn tree to find them: measured on the rich route, the walk
+   * visited 769 frames and 721 child hosts to re-apply the 3–7 that an idle frame changes.
+   *
+   * Changed frames are reconciled outermost first, each from where its parent draws it, with the
+   * same `syncFrame` as the walk; a frame an ancestor's pass already reached is not visited twice.
+   * A frame's subtree is walked only when it has to be — a reveal, a change that moves or resizes
+   * it, or a button state its state textures are drawn from — so a paint change stays on its
+   * frame. `undefined` (the caller walks the tree as before) when a host filter decides what is
+   * drawn, when a changed frame is not where the last walk left it, or when so many frames changed
+   * that the walk is as cheap.
+   */
+  private dirtyWalk(dirty: ReadonlyMap<FrameXmlFrame, number>): { readonly hiddenMoved: readonly FrameXmlFrame[] } | undefined {
+    if (!this.#bridge || this.#frameFilter || this.#layoutOnly || dirty.size > DIRTY_WALK_LIMIT) return undefined;
+    const entries: { frame: FrameXmlFrame; rendered: RenderedFrame; depth: number; kinds: number; wasHidden: boolean }[] = [];
+    for (const [frame, kinds] of dirty) {
+      const rendered = this.#rendered.get(frame);
+      // Not drawn by this renderer (an unmounted root's subtree): the walk would not reach it either.
+      if (!rendered) continue;
+      if (rendered.effectiveHidden === undefined || !this.syncContext(frame, rendered, false)) return undefined;
+      let depth = 0;
+      for (let at = frame.parent; at && depth < 64; at = at.parent) depth += 1;
+      entries.push({ frame, rendered, depth, kinds, wasHidden: rendered.effectiveHidden });
+    }
+    entries.sort((left, right) => left.depth - right.depth);
+    for (const entry of entries) {
+      if (entry.rendered.syncedPass === this.#pass) continue;
+      const context = this.syncContext(entry.frame, entry.rendered, true);
+      if (!context) continue;
+      this.syncFrame(entry.frame, context.parent, undefined, context.ancestorHidden, false, APPLY_NONE, context.trap, true);
+    }
+    const hiddenMoved: FrameXmlFrame[] = [];
+    for (const entry of entries) {
+      if ((entry.kinds & ~CHANGE_PAINT) === 0) continue;
+      if (entry.wasHidden && entry.rendered.effectiveHidden) hiddenMoved.push(entry.frame);
+      else this.#passLayout = true;
+    }
+    return { hiddenMoved };
+  }
+
+  /**
+   * A layout change to hidden frames only: place again the drawn frames measured against a hidden
+   * target (`#hiddenAnchored`) that one of `moved` can have moved — the target itself, a hidden
+   * ancestor whose box it resolves against, or a hidden frame it is anchored to, transitively.
+   * Answers whether anything was placed.
+   */
+  private replaceHiddenAnchored(moved: ReadonlySet<FrameXmlFrame>): boolean {
+    const place = this.boundedPlacer();
+    const queue: FrameXmlFrame[] = [];
+    let placed = false;
+    for (const frame of [...this.#hiddenAnchored]) {
+      const seen = new Set<FrameXmlFrame>();
+      if (!(this.#anchorTargets.get(frame) ?? []).some((target) => this.hiddenBoxFollows(target, moved, seen, 0))) continue;
+      placed = true;
+      if (place(frame)) this.collectMoved(frame, queue, place);
+    }
+    this.drainDependents(queue, place);
+    return placed;
+  }
+
+  /** Whether a hidden target's authored box (`offsetMetrics`) can follow one of `moved`. */
+  private hiddenBoxFollows(target: FrameXmlFrame, moved: ReadonlySet<FrameXmlFrame>, seen: Set<FrameXmlFrame>, depth: number): boolean {
+    if (depth > 16) return true;
+    for (let at: FrameXmlFrame | undefined = target, up = 0; at && up < 64; at = at.parent, up += 1) {
+      if (seen.has(at)) return false;
+      seen.add(at);
+      if (moved.has(at)) return true;
+      // A drawn ancestor's box is the browser's; had it moved, this would be a layout pass.
+      if (this.#rendered.get(at)?.effectiveHidden === false) break;
+      for (const next of this.#anchorTargets.get(at) ?? []) {
+        if (this.hiddenBoxFollows(next, moved, seen, depth + 1)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Where the last walk drew one frame: its parent's host element for it, whether an ancestor
+   * hides it, and the strata trap it is drawn under. `place` also resolves the host the way the
+   * parent's walk does (`childElementHost`, which places a strata layer that was never placed);
+   * without it this only answers whether the frame can be located.
+   */
+  private syncContext(frame: FrameXmlFrame, rendered: RenderedFrame, place: boolean):
+  { readonly parent: HTMLElement; readonly ancestorHidden: boolean; readonly trap: number } | undefined {
+    const parent = frame.parent;
+    const parentRendered = parent ? this.#rendered.get(parent) : undefined;
+    if (parent && parentRendered) {
+      if (parentRendered.children.get(frame) !== rendered || parentRendered.effectiveHidden === undefined) return undefined;
+      const ancestorHidden = parentRendered.effectiveHidden;
+      const inner = Math.max(parentRendered.trap ?? -1, strataRank(parent));
+      if (!place) return { parent: parentRendered.element, ancestorHidden, trap: inner };
+      const host = this.childElementHost(parentRendered, frame, ancestorHidden, false, inner);
+      const escaped = host !== parentRendered.element && host !== parentRendered.scrollViewport;
+      return { parent: host, ancestorHidden, trap: escaped ? -1 : inner };
+    }
+    if (this.#roots.includes(frame)) return { parent: this.#container, ancestorHidden: false, trap: -1 };
+    if (!parent && this.#includeCreatedRoots && this.#bridge?.createdRoots.includes(frame)) {
+      return { parent: place ? this.createdRootHost() : this.#container, ancestorHidden: false, trap: -1 };
+    }
+    return undefined;
+  }
+
+  /** The kinds of change announced for one frame, including any made while this pass runs. */
+  private changeKinds(frame: FrameXmlFrame): number {
+    return (this.#passDirty?.get(frame) ?? 0) | (this.#dirty.get(frame) ?? 0);
   }
 
   /** Take an element off the page and give back every picture it was holding. */
@@ -387,32 +1115,109 @@ export class FrameXmlDomRenderer {
     rendered.backdropFilters?.svg.remove();
     rendered.backdropFilters = undefined;
     this.#cooldowns.delete(rendered);
+    this.#tooltips.delete(rendered);
+    this.#scrollFrames.delete(rendered);
+    this.#sliders.delete(rendered);
+    this.#a11yNodes.delete(rendered.frame);
+    this.indexAnchors(rendered.frame, undefined);
+    this.#hiddenAnchored.delete(rendered.frame);
+    this.dropStrataLayer(rendered.frame);
     if (!this.#textures) return;
-    for (const path of rendered.pictures.values()) this.#textures.release(path);
+    for (const path of rendered.pictures.values()) {
+      this.#textures.release(path);
+      unindexHolder(this.#pictureHolders, path, rendered);
+    }
     rendered.pictures.clear();
     if (rendered.edge) {
       this.#textures.releaseEdge(rendered.edge);
+      unindexHolder(this.#edgeHolders, rendered.edge, rendered);
       rendered.edge = undefined;
     }
   }
 
   /** Remove the renderer's nodes and stop observing bridge mutations. */
   destroy(): void {
+    this.#destroyed = true;
     this.#unsubscribe?.();
+    this.#unobserveFrames?.();
+    this.#dirty.clear();
+    this.#accessibility.destroy();
+    this.#bridge?.setTextMeasure(undefined);
+    this.#bridge?.setScreenRectSource(undefined);
+    this.#textMeasureContext = undefined;
     this.finishDrag(false);
+    this.setCursorPicture(undefined);
     this.#cursorCleanup?.();
     this.#cursorCleanup = undefined;
+    this.#pointerCleanup?.();
+    this.#pointerCleanup = undefined;
+    this.#containerCleanup?.();
+    this.#containerCleanup = undefined;
+    this.#hoveredButtons.clear();
+    this.#screenRects.clear();
     this.#cursor = undefined;
     this.#bridge?.setMousePosition(0, 0);
     for (const rendered of this.#rendered.values()) this.dropRendered(rendered);
     this.#rendered.clear();
     this.#roots.splice(0, this.#roots.length);
     this.#lastMutationVersion = -1;
+    this.#lastStructureVersion = -1;
     this.#fontStyleElement?.remove();
     this.#fontStyleElement = undefined;
     this.#addFilterElement?.remove();
     this.#addFilterElement = undefined;
+    this.#tintFilterElement?.remove();
+    this.#tintFilterElement = undefined;
+    this.#tintFilters.clear();
     this.#registeredFonts.clear();
+  }
+
+  /**
+   * The filter that multiplies a picture by its vertex colour, or `undefined` for white.
+   *
+   * `SetVertexColor` on a textured region is a multiply in the client — every texel's RGB times the
+   * colour, its alpha times the colour's alpha — and stock uses it as state: `UpdateBagSlotStatus`
+   * turns an unbought bank bag slot red with `SetItemButtonTextureVertexColor(1, 0.1, 0.1)`
+   * (BankFrame.lua:124), `ActionButton_UpdateUsable` greys an unusable action to 0.4 and blues an
+   * unaffordable one. The renderer used to keep the colour as an unused CSS variable, so all of them
+   * drew as plain pictures. `feColorMatrix` scales the three channels exactly (in sRGB, as the
+   * client's bytes are multiplied, not in the SVG default linearRGB); the alpha stays on `opacity`.
+   * One filter per 8-bit colour, shared by every picture of this renderer that wears it.
+   */
+  private tintFilterId(color: FrameXmlColor): string | undefined {
+    const channel = (value: number): number => Math.round(Math.min(1, Math.max(0, value)) * 255);
+    const r = channel(color.r);
+    const g = channel(color.g);
+    const b = channel(color.b);
+    if (r === 255 && g === 255 && b === 255) return undefined;
+    const key = ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+    const known = this.#tintFilters.get(key);
+    if (known !== undefined) return known;
+    if (this.#tintFilters.size >= TINT_FILTER_LIMIT) return undefined;
+    const document = this.#container.ownerDocument;
+    if (!document || typeof document.createElementNS !== "function") return undefined;
+    let svg = this.#tintFilterElement;
+    if (!svg) {
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("aria-hidden", "true");
+      svg.setAttribute("width", "0");
+      svg.setAttribute("height", "0");
+      svg.setAttribute("style", "position:absolute;width:0;height:0;overflow:hidden");
+      svg.setAttribute("data-framexml-tint-filters", "true");
+      this.#container.append(svg);
+      this.#tintFilterElement = svg;
+    }
+    const id = `${this.#classPrefix}-tint-${this.#serial}-${key}`;
+    const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
+    filter.setAttribute("id", id);
+    filter.setAttribute("color-interpolation-filters", "sRGB");
+    const matrix = document.createElementNS("http://www.w3.org/2000/svg", "feColorMatrix");
+    matrix.setAttribute("type", "matrix");
+    matrix.setAttribute("values", `${r / 255} 0 0 0 0 0 ${g / 255} 0 0 0 0 0 ${b / 255} 0 0 0 0 0 1 0`);
+    filter.append(matrix);
+    svg.append(filter);
+    this.#tintFilters.set(key, id);
+    return id;
   }
 
   /**
@@ -499,6 +1304,10 @@ export class FrameXmlDomRenderer {
    * host needs the box, and only the renderer knows which element that is.
    */
   elementFor(frame: FrameXmlFrame): HTMLElement | undefined {
+    // A host reading the page gets it current: held layout even from inside a batch (a Lua call
+    // that asks the host for a portrait box), and outside one the paint held for the frame step.
+    this.#bridge?.settleDeferredLayout();
+    if (this.#bridge?.paintDeferred) this.#bridge.flushDeferredPaint();
     return this.#rendered.get(frame)?.element;
   }
 
@@ -511,9 +1320,43 @@ export class FrameXmlDomRenderer {
    * pixels and would have to be divided by a scale this layer does not know.
    */
   measure(frame: FrameXmlFrame): { width: number; height: number } | undefined {
-    const element = this.#rendered.get(frame)?.element;
-    if (!element || typeof element.offsetWidth !== "number") return undefined;
+    // The bridge settles before it asks (`sizeOf`); a host asking directly gets the same page.
+    this.#bridge?.settleDeferredLayout(frame);
+    const rendered = this.#rendered.get(frame);
+    const element = rendered?.element;
+    if (!rendered || !element || typeof element.offsetWidth !== "number") return undefined;
+    // A string sized by its text, asked between its `SetText` and the next paint, would answer the
+    // width of the text the page still shows. Width 0 hands the question to the bridge, whose text
+    // measure reads the new string in its own font: measured on the stock chat box, «Шепнуть Bob:»
+    // answered the previous header's 49 while `GetStringWidth` was already right, and
+    // `ChatEdit_UpdateHeader`'s `SetTextInsets(15 + header:GetWidth(), …)` put the text over it.
+    if (frame.type === "FontString" && this.textPending(rendered) && !horizontallyPinned(frame)) {
+      return { width: 0, height: element.offsetHeight };
+    }
     return { width: element.offsetWidth, height: element.offsetHeight };
+  }
+
+  /** Whether a FontString's text or font changed since it was last painted. */
+  private textPending(rendered: RenderedFrame): boolean {
+    const { frame, element } = rendered;
+    const font = this.drawnFontObject(frame);
+    if (font && element.getAttribute("data-framexml-font") !== font) return true;
+    return hasFrameXmlEscapes(frame.text) ? rendered.textSource !== frame.text : element.textContent !== frame.text;
+  }
+
+  private measureText(frame: FrameXmlFrame, text: string): number | undefined {
+    if (this.#textMeasureContext === undefined) {
+      const canvas = this.#container.ownerDocument?.createElement("canvas");
+      this.#textMeasureContext = canvas?.getContext?.("2d") ?? null;
+    }
+    const context = this.#textMeasureContext;
+    if (!context || typeof context.measureText !== "function") return undefined;
+    const style = this.fontStyleOf(frame.fontObject);
+    const file = frame.attributes["fontFile"] ?? style?.file;
+    const family = file ? this.#registeredFonts.get(file.toLowerCase()) : undefined;
+    const height = numberValue(frame.attributes["fontHeight"]) ?? style?.height ?? 14;
+    context.font = height + "px " + (family ? '"' + family + '", ' : "") + "sans-serif";
+    return Math.max(...text.split(/\r\n|\r|\n/).map((line) => context.measureText(line).width));
   }
 
   /**
@@ -555,18 +1398,43 @@ export class FrameXmlDomRenderer {
     return added;
   }
 
+  /**
+   * One frame and its subtree. `structural` is a pass that may have added, moved or removed
+   * widgets: it walks hidden subtrees too and records every live frame in `active` for the sweep.
+   * Otherwise a frame is re-applied only when its own version moved, its effective visibility
+   * changed, or an ancestor was re-applied (z-order, scale and anchors reach it through that
+   * ancestor); the rest of the visible tree is only walked, to find the frames that did change.
+   * `trap` is the highest strata of the stacking contexts `parent` is inside (see `escapesStrata`);
+   * -1 at the container and in a strata layer.
+   *
+   * `cascade` is what the parent's pass asks of this frame: a full re-apply (the parent moved,
+   * resized or was revealed), a paint re-apply (the parent is a button whose drawn state changed)
+   * or nothing. A frame whose own change was paint only (`CHANGE_PAINT`: alpha, colour, a bar's
+   * fill) is re-applied without its geometry or subtree; see `applyFrame`. `dirtyWalk` (a pass that
+   * started at the changed frames) does not walk a subtree nothing asked it to.
+   */
   private syncFrame(
     frame: FrameXmlFrame,
     parent: HTMLElement,
-    active: Set<FrameXmlFrame>,
+    active: Set<FrameXmlFrame> | undefined,
     ancestorHidden = false,
+    structural = true,
+    cascade: ApplyMode = APPLY_NONE,
+    trap = -1,
+    dirtyWalk = false,
   ): RenderedFrame {
-    active.add(frame);
+    active?.add(frame);
     let rendered = this.#rendered.get(frame);
     if (!rendered) {
       rendered = this.createFrame(frame);
       this.#rendered.set(frame, rendered);
+      if (frame.type === "GameTooltip") this.#tooltips.add(rendered);
+      else if (frame.type === "ScrollFrame") this.#scrollFrames.add(rendered);
+      else if (frame.type === "Slider") this.#sliders.add(rendered);
+      if (frameXmlAccessibilityCares(frame)) this.#a11yNodes.set(frame, rendered);
     }
+    rendered.trap = trap;
+    rendered.syncedPass = this.#pass;
     if (rendered.element.parentElement !== parent) parent.append(rendered.element);
     const hidden = ancestorHidden || !frame.visible;
     const wasHidden = rendered.effectiveHidden;
@@ -576,27 +1444,77 @@ export class FrameXmlDomRenderer {
     // resource ownership in place until the ancestor is shown, when the state is applied once.
     // The first sync still walks the subtree so a later Show retains the same mounted shape.
     if (!firstSync && hidden && wasHidden) {
-      this.reparentExistingSubtree(frame, rendered);
-      this.dropRemovedHiddenChildren(frame, rendered);
-      this.markActiveSubtree(frame, active);
+      // …except the frame's own `hidden` bit. `markActiveSubtree` records the effective state of a
+      // subtree it parks without writing it, so a child that was *shown* when its ancestor was
+      // hidden and was hidden itself meanwhile still has `hidden=false` in the page. Once the
+      // ancestor is revealed nothing else would write it, and the child stayed on screen with its
+      // old text. Measured on the stock GameTooltip: after `Hide()` the next `SetText("Тестовый")`
+      // clears and hides TextLeft2..8 while the tooltip is hidden, and the DOM still painted
+      // "Stale line 1..6" and "SpellID: 81830" under the new title — the owner's player tooltip
+      // with item lines under it. Only the bit is written: the subtree stays parked, its textures
+      // and text are applied when the frame itself is next shown.
+      if (!ancestorHidden && !rendered.element.hidden) this.parkHidden(rendered);
+      if (structural) {
+        this.reparentExistingSubtree(frame, rendered, trap);
+        this.dropRemovedHiddenChildren(frame, rendered);
+        this.markActiveSubtree(frame, active);
+      }
       return rendered;
     }
-    if (this.#layoutOnly?.(frame)) {
-      rendered.element.hidden = hidden;
-      rendered.element.style.display = hidden ? "none" : "";
-      rendered.element.style.pointerEvents = "none";
-      this.applyGeometry(rendered.element, frame);
-    } else {
-      this.ensureBackdropPaint(rendered);
-      this.applyFrame(rendered, hidden);
+    const reveal = firstSync || hidden !== wasHidden;
+    const changed = frame.renderVersion === undefined || rendered.appliedVersion !== frame.renderVersion;
+    const kinds = changed ? this.changeKinds(frame) : 0;
+    let mode: ApplyMode;
+    if (structural || reveal || cascade === APPLY_FULL) mode = APPLY_FULL;
+    else if (changed) mode = kinds === CHANGE_PAINT ? APPLY_PAINT : APPLY_FULL;
+    else mode = cascade;
+    // A drawn frame shown, hidden, moved or resized: the pass has to measure what depends on it.
+    if (!firstSync && (hidden !== wasHidden || (changed && kinds !== CHANGE_PAINT && !hidden))) this.#passLayout = true;
+    const apply = mode !== APPLY_NONE;
+    let childCascade: ApplyMode = APPLY_NONE;
+    if (apply) {
+      if (this.#layoutOnly?.(frame)) {
+        rendered.element.hidden = hidden;
+        rendered.element.style.display = hidden ? "none" : "";
+        rendered.element.style.pointerEvents = "none";
+        this.applyGeometry(rendered.element, frame);
+        rendered.placedPass = this.#pass;
+        this.#movedThisPass?.push(rendered);
+        childCascade = APPLY_FULL;
+      } else {
+        this.ensureBackdropPaint(rendered);
+        const paint = mode === APPLY_PAINT;
+        // `false` is a paint-only apply that left the geometry alone.
+        const placed = this.applyFrame(rendered, hidden, paint) !== false;
+        if (placed) {
+          rendered.placedPass = this.#pass;
+          this.#movedThisPass?.push(rendered);
+        }
+        // A button's state textures and label are drawn from its state; a transform moves every
+        // strata layer drawn over it; anything else painted stays on the frame.
+        const state = stateKey(frame);
+        const stateChanged = state !== rendered.stateKey;
+        rendered.stateKey = state;
+        childCascade = !paint || placed ? APPLY_FULL : stateChanged ? APPLY_PAINT : APPLY_NONE;
+      }
+      rendered.appliedVersion = frame.renderVersion;
+      this.#appliedThisPass?.push(rendered);
+      // A strata, toplevel or attribute change can make a frame a modal dialog, or stop it being one.
+      if (changed) {
+        if (frameXmlAccessibilityCares(frame)) {
+          if (!this.#a11yNodes.has(frame)) this.#a11yNodes.set(frame, rendered);
+        } else this.#a11yNodes.delete(frame);
+      }
     }
 
     // A visible frame becoming hidden needs its own `hidden` bit applied, but its descendants can
     // now wait. Mark them active so the ownership sweep below does not mistake a skipped subtree
     // for an unmounted one, and record the effective state for the eventual reveal.
     if (hidden && !firstSync) {
-      this.reparentExistingSubtree(frame, rendered);
-      this.dropRemovedHiddenChildren(frame, rendered);
+      if (structural) {
+        this.reparentExistingSubtree(frame, rendered, trap);
+        this.dropRemovedHiddenChildren(frame, rendered);
+      }
       this.markActiveSubtree(frame, active);
       return rendered;
     }
@@ -604,13 +1522,22 @@ export class FrameXmlDomRenderer {
     // Message lines are private paint state. Keep them dormant with the rest of a hidden subtree;
     // the next reveal applies the latest bounded history exactly once.
     if (!this.#layoutOnly?.(frame)) this.applyMessageFrame(rendered);
+    // A pass that started at the changed frames reaches their changed descendants on its own.
+    if (dirtyWalk && childCascade === APPLY_NONE) return rendered;
 
-    const wanted = new Set(frame.children);
+    // This frame's element is a stacking context of its own: its children are trapped by it too.
+    const inner = Math.max(trap, strataRank(frame));
+    const moved = childCascade === APPLY_FULL;
     for (const child of frame.children) {
       if (this.#frameFilter && !this.#frameFilter(child)) continue;
-      const childRendered = this.syncFrame(child, rendered.element, active, hidden);
-      rendered.children.set(child, childRendered);
+      const parentElement = this.childElementHost(rendered, child, hidden, moved, inner);
+      const escaped = parentElement !== rendered.element && parentElement !== rendered.scrollViewport;
+      const childRendered = this.syncFrame(child, parentElement, active, hidden, structural, childCascade,
+        escaped ? -1 : inner, dirtyWalk);
+      if (rendered.children.get(child) !== childRendered) rendered.children.set(child, childRendered);
     }
+    if (!structural) return rendered;
+    const wanted = new Set(frame.children);
     for (const [child, childRendered] of rendered.children) {
       if (!wanted.has(child)) {
         // A live child may have moved to another parent since this rendered map
@@ -628,16 +1555,127 @@ export class FrameXmlDomRenderer {
     return rendered;
   }
 
+  /**
+   * The element one child of a drawn frame is appended to: the scroll viewport for a ScrollFrame's
+   * scroll child, a strata layer for a frame whose strata is above `trap` (see `escapesStrata`), the
+   * parent's own element otherwise.
+   *
+   * The layer is placed here, in the parent's walk, right after the parent itself was applied and
+   * before the child is — so the child's own anchors measure a box that is already where the parent
+   * is. It is measured only when the parent was re-applied this pass (a move, a resize, an alpha or
+   * a reveal all re-apply it) or the layer was never placed; otherwise this is two comparisons.
+   */
+  private childElementHost(
+    rendered: RenderedFrame,
+    child: FrameXmlFrame,
+    hidden: boolean,
+    applied: boolean,
+    trap: number,
+  ): HTMLElement {
+    const frame = rendered.frame;
+    if (frame.scroll.child === child && rendered.scrollViewport) return rendered.scrollViewport;
+    // Regions never escape, and they are most of the walk: 1,554 child visits per sync, measured on
+    // the dev page's vertical.
+    if (child.type === "Texture" || child.type === "FontString") return rendered.element;
+    if (!escapesStrata(child, trap)) {
+      if (this.#strataLayers.has(child)) this.dropStrataLayer(child);
+      return rendered.element;
+    }
+    let layer = this.#strataLayers.get(child);
+    if (!layer) {
+      const element = this.#container.ownerDocument?.createElement("div") ?? document.createElement("div");
+      element.setAttribute("data-framexml-strata-layer", child.name);
+      Object.assign(element.style, {
+        position: "absolute", left: "0px", top: "0px", width: "0px", height: "0px",
+        margin: "0", padding: "0", border: "0", pointerEvents: "none", transformOrigin: "50% 50%",
+      });
+      layer = { element };
+      hideStrataLayer(layer);
+      this.#strataLayers.set(child, layer);
+      this.#container.append(element);
+    }
+    const zIndex = String(1000 + (STRATA_Z[child.frameStrata] ?? 2) * 1000 + child.frameLevel);
+    if (layer.element.style.zIndex !== zIndex) layer.element.style.zIndex = zIndex;
+    if (hidden || !child.visible) {
+      hideStrataLayer(layer);
+    } else if (applied || layer.box === undefined || layer.parked) {
+      this.placeStrataLayer(layer, rendered);
+    }
+    return layer.element;
+  }
+
+  /**
+   * Lay a strata layer over its owner's painted box: the owner's own size (the child's percentages
+   * resolve against it), the cumulative scale of the owner and every ancestor about the centre (the
+   * transform `centringShift` reads back), and the product of their alphas, which is what CSS
+   * opacity would have composed inside them. A layout-only ancestor paints nothing and has none.
+   */
+  private placeStrataLayer(layer: StrataLayer, owner: RenderedFrame): void {
+    const element = layer.element;
+    // The page can take an owner off screen without Lua knowing: the world mount's stylesheet
+    // `display: none`s `PetActionBarFrame` (the native pet bar owns it), whose ten buttons are
+    // MEDIUM children of a LOW bar and would otherwise show up in their layers. Checked when the
+    // owner is re-applied, not on every walk (the layer is not left parked).
+    const boxes = owner.element.getClientRects?.();
+    if (boxes && boxes.length === 0) {
+      hideStrataLayer(layer);
+      layer.parked = false;
+      layer.box = "off-page";
+      return;
+    }
+    layer.parked = false;
+    if (element.hidden) {
+      element.hidden = false;
+      element.style.removeProperty("display");
+    }
+    let alpha = 1;
+    for (let frame: FrameXmlFrame | undefined = owner.frame, depth = 0; frame && depth < 64; frame = frame.parent, depth += 1) {
+      if (!this.#layoutOnly?.(frame)) alpha *= frame.animationAlpha ?? frame.alpha;
+    }
+    const at = offsetWithin(owner.element, this.#container);
+    const width = owner.element.offsetWidth;
+    const height = owner.element.offsetHeight;
+    let box: string;
+    if (at && typeof width === "number" && typeof height === "number") {
+      const left = at.left - (1 - at.scale) * width / 2;
+      const top = at.top - (1 - at.scale) * height / 2;
+      box = `${left} ${top} ${width} ${height} ${at.scale} ${alpha}`;
+      if (box === layer.box) return;
+      Object.assign(element.style, {
+        left: px(left), top: px(top), width: px(width), height: px(height),
+        transform: at.scale === 1 ? "" : `scale(${at.scale})`,
+      });
+    } else {
+      // A host with no layout (the tests' DOM stub): the whole container, which is the box of a
+      // root owner and harmless for any other.
+      box = `stage ${alpha}`;
+      if (box === layer.box) return;
+      Object.assign(element.style, { left: "0px", top: "0px", width: "100%", height: "100%", transform: "" });
+    }
+    element.style.opacity = alpha === 1 ? "" : String(alpha);
+    layer.box = box;
+  }
+
+  private dropStrataLayer(frame: FrameXmlFrame): void {
+    const layer = this.#strataLayers.get(frame);
+    if (!layer) return;
+    this.#strataLayers.delete(frame);
+    layer.element.remove();
+  }
+
   /** Adopt already-rendered descendants while a destination ancestor is hidden. */
-  private reparentExistingSubtree(frame: FrameXmlFrame, rendered: RenderedFrame): void {
+  private reparentExistingSubtree(frame: FrameXmlFrame, rendered: RenderedFrame, trap: number): void {
+    const inner = Math.max(trap, strataRank(frame));
     for (const child of frame.children) {
       const childRendered = this.#rendered.get(child);
       if (!childRendered) continue;
-      if (childRendered.element.parentElement !== rendered.element) {
-        rendered.element.append(childRendered.element);
+      const parentElement = this.childElementHost(rendered, child, true, false, inner);
+      if (childRendered.element.parentElement !== parentElement) {
+        parentElement.append(childRendered.element);
       }
       rendered.children.set(child, childRendered);
-      this.reparentExistingSubtree(child, childRendered);
+      const escaped = parentElement !== rendered.element && parentElement !== rendered.scrollViewport;
+      this.reparentExistingSubtree(child, childRendered, escaped ? -1 : inner);
     }
   }
 
@@ -658,12 +1696,31 @@ export class FrameXmlDomRenderer {
     }
   }
 
+  /**
+   * Hide one element that is already hidden in the bridge, and nothing more: no text, geometry or
+   * texture work, and no walk of its subtree, which its own `hidden` bit now suppresses.
+   */
+  private parkHidden(rendered: RenderedFrame): void {
+    const { frame, element } = rendered;
+    element.hidden = true;
+    element.setAttribute("aria-hidden", "true");
+    if (this.#layoutOnly?.(frame)) element.style.display = "none";
+    // An inline `display` outranks the user-agent `[hidden]` rule; only the live page's stylesheet
+    // restores it with `!important`. The tooltip's grid and a clamped string's line box are the
+    // inline displays this renderer sets.
+    if (frame.type === "GameTooltip") element.style.removeProperty("display");
+    if (frame.type === "FontString" && element.style.webkitLineClamp) element.style.display = "";
+  }
+
   /** Mark a skipped subtree as live without touching its DOM, styles, or texture leases. */
-  private markActiveSubtree(frame: FrameXmlFrame, active: Set<FrameXmlFrame>): void {
+  private markActiveSubtree(frame: FrameXmlFrame, active: Set<FrameXmlFrame> | undefined): void {
     if (this.#frameFilter && !this.#frameFilter(frame)) return;
-    active.add(frame);
+    active?.add(frame);
     const rendered = this.#rendered.get(frame);
     if (rendered) rendered.effectiveHidden = true;
+    // A strata layer is not inside its parent's element, so the parked ancestor does not hide it.
+    const layer = this.#strataLayers.get(frame);
+    if (layer) hideStrataLayer(layer);
     for (const child of frame.children) this.markActiveSubtree(child, active);
   }
 
@@ -676,6 +1733,7 @@ export class FrameXmlDomRenderer {
     element.classList.add(`${this.#classPrefix}-${frame.type.toLowerCase()}`);
     element.setAttribute("data-framexml-name", frame.name);
     element.setAttribute("data-framexml-type", frame.type);
+    this.#frameOfElement.set(element, frame);
 
     if (frame.type === "Button" || frame.type === "CheckButton") {
       element.setAttribute("type", "button");
@@ -686,17 +1744,66 @@ export class FrameXmlDomRenderer {
         //
         // A button that armed its own combinations with RegisterForClicks is driven by the two
         // listeners below instead, or it would fire twice on a release it asked for.
-        if (frame.clickRegistrations.size > 0) return;
+        if (frame.clickRegistrations.size > 0) {
+          // Native Enter/Space and assistive activation have no mouse press/release events.
+          // Honor the registered phases once; ordinary mouse clicks already dispatched them.
+          if ((event as MouseEvent).detail === 0) {
+            this.registeredClick(frame, event, true);
+            this.registeredClick(frame, event, false);
+          }
+          return;
+        }
         this.#bridge?.Click(frame, mouseButtonName(event), false);
       });
       element.addEventListener("mousedown", (event) => this.registeredClick(frame, event, true));
       element.addEventListener("mouseup", (event) => this.registeredClick(frame, event, false));
     }
     let input: (HTMLElement & { value?: string; disabled?: boolean }) | undefined;
+    let sliderInput: HTMLInputElement | undefined;
+    if (frame.type === "Slider") {
+      const range = element.ownerDocument.createElement("input");
+      range.setAttribute("type", "range");
+      range.setAttribute("data-framexml-slider-input", "true");
+      range.setAttribute("aria-label", frame.name);
+      Object.assign(range.style, {
+        position: "absolute", left: "0", top: "0", width: "100%", height: "100%",
+        margin: "0", padding: "0", opacity: "0", zIndex: "999", cursor: "pointer",
+      });
+      range.addEventListener("input", () => {
+        if (this.#layoutOnly?.(frame) || !frame.enabled || !this.#bridge?.isVisible(frame)) return;
+        this.#bridge.SetValue(frame, Number(range.value), true);
+      });
+      element.append(range);
+      sliderInput = range;
+    }
+    let scrollViewport: HTMLElement | undefined;
+    if (frame.type === "ScrollFrame") {
+      scrollViewport = element.ownerDocument.createElement("div");
+      scrollViewport.setAttribute("data-framexml-scroll-viewport", "true");
+      Object.assign(scrollViewport.style, {
+        position: "absolute", left: "0", top: "0", width: "100%", height: "100%", overflow: "hidden",
+      });
+      element.append(scrollViewport);
+    }
     if (frame.type === "EditBox") {
-      const field = (this.#container.ownerDocument?.createElement("input")
-        ?? document.createElement("input")) as HTMLElement & { value?: string; disabled?: boolean };
-      field.setAttribute("type", frame.editBox.password ? "password" : "text");
+      // A `multiLine` box writes its text from the top down and breaks lines: a `<textarea>`. An
+      // `<input>` centres its one line vertically — measured, `SendMailBodyEditBox` (MailFrame.xml:819,
+      // the corpus' one multi-line box) drew the letter's first line in the middle of the parchment.
+      const multiLine = frame.editBox.multiLine;
+      const tag = multiLine ? "textarea" : "input";
+      const field = (this.#container.ownerDocument?.createElement(tag)
+        ?? document.createElement(tag)) as HTMLElement & { value?: string; disabled?: boolean };
+      if (multiLine) {
+        // The pages' own edit-box rule targets `input`; the same box, inline.
+        Object.assign(field.style, {
+          position: "absolute", left: "0", top: "0", width: "100%", height: "100%", minHeight: "0",
+          margin: "0", padding: "0", border: "0", borderRadius: "0", background: "none", boxShadow: "none",
+          color: "inherit", font: "inherit", textAlign: "inherit", outline: "none", zIndex: "900",
+          resize: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word",
+        });
+      } else {
+        field.setAttribute("type", frame.editBox.password ? "password" : "text");
+      }
       field.setAttribute("data-framexml-input", "true");
       field.classList.add(`${this.#classPrefix}-input`);
       // Focus is a widget event in FrameXML, and both edit boxes on this login screen use it:
@@ -723,12 +1830,29 @@ export class FrameXmlDomRenderer {
         });
         this.#bridge?.fireScript(frame, "OnTextChanged", true);
       });
+      field.addEventListener("select", () => {
+        if (this.#layoutOnly?.(frame)) return;
+        const selection = (field as HTMLInputElement).selectionStart;
+        if (typeof selection !== "number" || selection === frame.editBox.cursorPosition) return;
+        this.#bridge?.update(frame, mutable => { mutable.editBox.cursorPosition = selection; });
+      });
       field.addEventListener("keydown", (event) => {
         if (this.#layoutOnly?.(frame)) return;
         const key = (event as KeyboardEvent).key;
         if (key === "Enter") this.#bridge?.fireScript(frame, "OnEnterPressed");
-        else if (key === "Escape") this.#bridge?.fireScript(frame, "OnEscapePressed");
-        else if (key === " ") this.#bridge?.fireScript(frame, "OnSpacePressed");
+        else if (key === "Escape") {
+          this.#bridge?.fireScript(frame, "OnEscapePressed");
+          // The script is the whole meaning of the press. The page's key handler knows this
+          // renderer's `<input>` (and stops there, see Controls.ts) but not the `<textarea>`: it took
+          // the press for its own back-out chain and closed every open window — measured, Escape in
+          // `SendMailBodyEditBox` (whose OnEscapePressed is `EditBox_ClearFocus`, MailFrame.xml:843)
+          // closed `MailFrame`. So the press is spent here, and a box the script took focus from
+          // loses the caret too, the way the client's does.
+          if (multiLine) {
+            (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
+            if (!frame.editBox.focused && field.ownerDocument?.activeElement === field) field.blur?.();
+          }
+        } else if (key === " ") this.#bridge?.fireScript(frame, "OnSpacePressed");
         else if (key === "Tab") this.#bridge?.fireScript(frame, "OnTabPressed");
         else if (key === "ArrowUp" || key === "ArrowDown") {
           const changed = this.#bridge?.NavigateEditBoxHistory(frame, key === "ArrowUp" ? -1 : 1) ?? false;
@@ -772,7 +1896,11 @@ export class FrameXmlDomRenderer {
       layer.style.right = "0";
       layer.style.top = "0";
       layer.style.bottom = "0";
-      layer.style.overflowY = "auto";
+      // Lua's chat buttons and mouse-wheel handlers own the scroll offset. Keep a scrollable
+      // clipping box for scrollTop, without browser bars shrinking the text or appearing on HUD
+      // messages; unlike overflow: clip, hidden still permits programmatic scrolling.
+      layer.style.overflowX = "hidden";
+      layer.style.overflowY = "hidden";
       layer.style.pointerEvents = "none";
       element.append(layer);
       messageLayer = layer;
@@ -788,11 +1916,14 @@ export class FrameXmlDomRenderer {
       this.rememberCursor(event);
       if (hovering) return;
       hovering = true;
+      this.hoverButtonFont(frame, true);
       this.#bridge?.Enter(frame);
     };
-    const leave = () => {
+    const leave = (event: Event) => {
       if (!hovering) return;
       hovering = false;
+      this.rememberCursor(event);
+      this.hoverButtonFont(frame, false);
       if (this.#layoutOnly?.(frame)) return;
       this.#bridge?.Leave(frame);
     };
@@ -800,6 +1931,19 @@ export class FrameXmlDomRenderer {
     element.addEventListener("mouseenter", enter);
     element.addEventListener("pointerleave", leave);
     element.addEventListener("mouseleave", leave);
+    element.addEventListener("wheel", (event) => {
+      if (this.#layoutOnly?.(frame) || !this.#bridge?.isVisible(frame) || !frame.enabled) return;
+      const enabled = frame.attributes["enableMouseWheel"] ?? frame.attributes["enablemousewheel"];
+      // Stock scroll templates declare OnMouseWheel without enableMouseWheel. An explicit
+      // EnableMouseWheel(false) still disables them (InterfaceOptionsPanels.lua relies on it).
+      if (enabled !== undefined && !/^(?:true|1)$/i.test(enabled)) return;
+      if (!this.#bridge.hasScript(frame, "OnMouseWheel")) return;
+      const delta = (event as WheelEvent).deltaY;
+      if (!Number.isFinite(delta) || delta === 0) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      this.#bridge.fireScript(frame, "OnMouseWheel", delta < 0 ? 1 : -1);
+    }, { passive: false });
 
     // OnMouseDown/OnMouseUp are separate scripts from OnClick and the character-select screen is
     // built on them: `CharacterSelectFrame_OnMouseDown` starts the drag that turns the character
@@ -832,8 +1976,22 @@ export class FrameXmlDomRenderer {
     return {
       frame,
       element,
+      trap: -1,
+      syncedPass: 0,
+      placedPass: 0,
+      appliedAnimationTransform: undefined,
+      appliedRotation: undefined,
+      appliedTexCoords: undefined,
+      appliedScale: undefined,
+      appliedAlpha: undefined,
+      appliedBackdrop: undefined,
+      appliedBackdropColor: undefined,
+      appliedBackdropBorderColor: undefined,
+      stateKey: undefined,
       ...(label ? { label } : {}),
       ...(input ? { input } : {}),
+      ...(sliderInput ? { sliderInput } : {}),
+      ...(scrollViewport ? { scrollViewport } : {}),
       ...(statusBarFill ? { statusBarFill } : {}),
       ...(messageLayer ? { messageLayer } : {}),
       children: new Map(),
@@ -888,6 +2046,8 @@ export class FrameXmlDomRenderer {
   private moveDrag(drag: FrameDrag, event: MouseEvent): void {
     if (this.#drag !== drag || !this.#bridge?.isVisible(drag.source)) return;
     if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    // The moving box is read off the page below; a world event may have moved it since the last pass.
+    this.#bridge.settleDeferredLayout();
     this.rememberCursor(event);
     if (!drag.started) {
       if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
@@ -935,15 +2095,19 @@ export class FrameXmlDomRenderer {
     if (!drag) return;
     this.#drag = undefined;
     drag.cleanup();
+    // The drop: the frame under the pointer receives what the drag put on the cursor. A drop
+    // consumes the release, so the element listeners below never see it.
+    const dropped = dispatch && drag.started && drag.registered && event !== undefined && this.receiveDrag(event);
     if (drag.captureMouseUp) {
       const element = this.#rendered.get(drag.source)?.element;
       const target = event?.target;
       const inside = target && element && (target === element || element.contains?.(target as Node));
       // Inside releases reach the existing element listener. Outside releases, blur, hide and
       // renderer teardown must invoke the original model's cleanup before detaching its nodes.
-      if (!inside) this.#bridge?.fireScript(drag.source, "OnMouseUp", drag.button);
+      if (!inside || dropped) this.#bridge?.fireScript(drag.source, "OnMouseUp", drag.button);
     }
     if (dispatch && drag.moving && this.#bridge?.isVisible(drag.moving)) {
+      this.#bridge.settleDeferredLayout();
       const element = this.#rendered.get(drag.moving)?.element;
       const rect = element?.getBoundingClientRect?.();
       // Commit the position after screen clamping, so GetPoint and the next layout keep it there.
@@ -954,6 +2118,96 @@ export class FrameXmlDomRenderer {
     }
     const moving = drag.moving ?? this.movingAncestor(drag.source);
     if (moving?.moving) this.#bridge?.update(moving, (mutable) => { mutable.moving = false; });
+  }
+
+  /**
+   * `OnReceiveDrag` on the frame a registered drag was released over — ActionButton's PlaceAction
+   * (ActionBarFrame.xml:25-29), SpellButton_OnDrag, a bag slot's PickupContainerItem, the stable's
+   * slots. The release is the drop's, so it does not also click the frame it landed on: the
+   * document-capture listener that got here stops it before the element's own mouseup.
+   *
+   * The receiver is the nearest frame up from the element under the pointer that has the script; a
+   * button or check button without one is the frame that took the mouse, and nothing is dropped.
+   */
+  private receiveDrag(event: Event): boolean {
+    const bridge = this.#bridge;
+    if (!bridge) return false;
+    for (let node = event.target as Element | null; node && node !== this.#container; node = node.parentElement) {
+      const frame = this.#frameOfElement.get(node);
+      if (!frame) continue;
+      if (frame.type === "Texture" || frame.type === "FontString") continue;
+      if (this.#layoutOnly?.(frame) || !bridge.isVisible(frame)) return false;
+      if (bridge.hasScript(frame, "OnReceiveDrag")) {
+        event.stopPropagation?.();
+        bridge.fireScript(frame, "OnReceiveDrag");
+        return true;
+      }
+      if (frame.type === "Button" || frame.type === "CheckButton") return false;
+    }
+    return false;
+  }
+
+  /**
+   * The icon of what the FrameXML cursor holds, drawn at the pointer (the client draws it as the
+   * cursor itself) until it is called with nothing. It never takes the mouse, so the drop still
+   * lands on the frame under it.
+   */
+  setCursorPicture(texture: string | undefined): void {
+    const path = texture?.trim() ?? "";
+    const held = this.#cursorPicture;
+    if (held && held.path === path) return;
+    if (held) {
+      held.cleanup();
+      held.element.remove();
+      if (this.#textures && held.path) this.#textures.release(frameXmlTexturePath(held.path));
+      this.#cursorPicture = undefined;
+    }
+    const doc = this.#container.ownerDocument;
+    if (!path || typeof doc?.addEventListener !== "function") return;
+    const element = doc.createElement("img");
+    element.setAttribute("data-framexml-cursor-picture", "true");
+    element.setAttribute("alt", "");
+    Object.assign(element.style, {
+      position: "fixed", width: "32px", height: "32px", pointerEvents: "none", zIndex: "2147483647",
+      left: "-64px", top: "-64px", opacity: "0.85",
+    });
+    const key = this.#textures ? frameXmlTexturePath(path) : "";
+    const source = (): string => (this.#textures ? this.#textures.peek(key) : this.#textureResolver?.(path)) ?? "";
+    if (this.#textures) this.#textures.acquire(key);
+    const place = (x: number, y: number): void => {
+      element.style.left = `${x - 16}px`;
+      element.style.top = `${y - 16}px`;
+      // A picture still being fetched is applied as soon as a move finds it arrived.
+      if (!element.getAttribute("src")) {
+        const url = source();
+        if (url) element.setAttribute("src", url);
+      }
+    };
+    const move = (next: Event): void => {
+      const mouse = next as MouseEvent;
+      if (Number.isFinite(mouse.clientX) && Number.isFinite(mouse.clientY)) place(mouse.clientX, mouse.clientY);
+    };
+    doc.addEventListener("mousemove", move, true);
+    doc.body?.append(element);
+    if (this.#cursor) place(this.#cursor.x, this.#cursor.y);
+    // A picture the cache is still fetching lands without waiting for the pointer to move.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let tries = 0;
+    const land = (): void => {
+      timer = undefined;
+      if (element.getAttribute("src")) return;
+      const url = source();
+      if (url) element.setAttribute("src", url);
+      else if ((tries += 1) < 50) timer = setTimeout(land, 100);
+    };
+    land();
+    this.#cursorPicture = {
+      element, path,
+      cleanup: () => {
+        doc.removeEventListener("mousemove", move, true);
+        if (timer !== undefined) clearTimeout(timer);
+      },
+    };
   }
 
   /** True when a mouse event reached this element only by bubbling out of a control inside it. */
@@ -977,50 +2231,75 @@ export class FrameXmlDomRenderer {
     this.#bridge?.Click(frame, button, down);
   }
 
-  private applyFrame(rendered: RenderedFrame, effectiveHidden = !rendered.frame.visible): void {
+  /**
+   * Apply one frame's state to its element. Answers whether its geometry was applied.
+   *
+   * `paintOnly` is a frame whose every change since the last apply was announced as paint
+   * (`FrameXmlUiApi.update(…, "paint")`: alpha, vertex and text colour, a bar's value and colour,
+   * a cooldown, texcoords, a rotation, an animation's alpha or transform). Its box did not move, so
+   * the geometry — which measures sibling anchors and so forces a style and layout pass after the
+   * writes before it — is applied again only when a transform it carries changed, and the backdrop
+   * only when the backdrop or its colours did. Measured on the rich route: the aura and party-status
+   * alpha flashes re-applied 7 frames a frame at 0.97 ms (P-cores), 0.69 ms of it two sibling
+   * measures, `ConsolidatedBuffs` and `PartyMemberFrame1Portrait`.
+   */
+  private applyFrame(rendered: RenderedFrame, effectiveHidden = !rendered.frame.visible, paintOnly = false): boolean {
     const { frame, element } = rendered;
     const mouse = frame.attributes["enableMouse"] ?? frame.attributes["enablemouse"];
     // Module cards and model previews are Frames with mouse scripts, not necessarily Buttons.
     // Explicitly enabled frames must escape the transparent world/layout parent's inherited rule.
-    element.style.pointerEvents = mouse === undefined ? "" : /^(?:true|1)$/i.test(mouse) ? "auto" : "none";
+    const wheel = frame.attributes["enableMouseWheel"] ?? frame.attributes["enablemousewheel"];
+    const receivesWheel = wheel === undefined ? this.#bridge?.hasScript(frame, "OnMouseWheel")
+      : /^(?:true|1)$/i.test(wheel);
+    const isControl = frame.type === "Button" || frame.type === "CheckButton"
+      || frame.type === "EditBox" || frame.type === "Slider";
+    const receives = mouse === undefined ? Boolean(receivesWheel || isControl) : /^(?:true|1)$/i.test(mouse);
+    // With hit-rect insets the box itself stops taking the pointer and a private node takes it
+    // instead; see `applyHitRect`.
+    const insetHit = this.applyHitRect(rendered, receives);
+    element.style.pointerEvents = receives && !insetHit ? "auto" : "none";
     const hidden = effectiveHidden;
     if (element.hidden !== hidden) element.hidden = hidden;
     const ariaHidden = String(hidden);
     if (element.getAttribute("aria-hidden") !== ariaHidden) {
       element.setAttribute("aria-hidden", ariaHidden);
     }
+    // `layoutGameTooltip` gives a shown tooltip an inline `display: grid`, which outranks the
+    // user-agent `[hidden]` rule; a hidden tooltip must not keep it (see `parkHidden`).
+    if (hidden && frame.type === "GameTooltip" && element.style.display) element.style.removeProperty("display");
 
     if (frame.type === "EditBox") {
       const input = rendered.input;
       if (input) {
         // The value is what somebody typed, so it is never run through the escape parser and never
         // becomes spans: `|` is a character an account name may legitimately contain.
-        if (input.value !== frame.text) input.value = frame.text;
+        const valueChanged = input.value !== frame.text;
+        if (valueChanged) input.value = frame.text;
         input.disabled = !frame.enabled;
-        input.setAttribute("type", frame.editBox.password ? "password" : "text");
+        const textarea = input.tagName === "TEXTAREA";
+        if (!textarea) input.setAttribute("type", frame.editBox.password ? "password" : "text");
         if (frame.editBox.letters > 0) input.setAttribute("maxlength", String(frame.editBox.letters));
         // `<TextInsets>` is the padding the client draws the caret inside; on this login screen it
         // is `left="12"`, which is what keeps the text off the border art.
         const insets = frame.textInsets;
         input.style.padding = insets
           ? `${px(insets.top)} ${px(insets.right)} ${px(insets.bottom)} ${px(insets.left)}`
-          : "";
+          : textarea ? "0" : "";
         // `EditBox:SetFocus()` is a real focus: `AccountLogin_OnShow` puts the caret in whichever
         // of the two boxes is still empty, and until this the caret never moved.
         const active = input.ownerDocument?.activeElement;
         if (frame.editBox.focused && active !== undefined && active !== input) input.focus?.();
-        const selection = (input as HTMLElement & {
-          selectionStart?: number | null;
-          selectionEnd?: number | null;
-          setSelectionRange?: (start: number, end: number) => void;
-        }).selectionStart;
         if (typeof input.ownerDocument?.activeElement === "object"
           && input.ownerDocument?.activeElement === input
-          && typeof frame.editBox.cursorPosition === "number"
-          && selection !== frame.editBox.cursorPosition) {
+          && (valueChanged || rendered.editBoxSelectionRevision !== frame.editBox.selectionRevision)) {
+          const start = frame.editBox.highlightStart ?? frame.editBox.cursorPosition;
+          const end = frame.editBox.highlightEnd ?? start;
+          // Animation and unrelated UI mutations must not undo Ctrl+A, a drag selection, or
+          // native arrow navigation. Only an explicit Lua request owns the next selection.
+          rendered.editBoxSelectionRevision = frame.editBox.selectionRevision;
           (input as HTMLElement & {
             setSelectionRange?: (start: number, end: number) => void;
-          }).setSelectionRange?.(frame.editBox.cursorPosition, frame.editBox.cursorPosition);
+          }).setSelectionRange?.(start, end);
         }
       }
     } else if (rendered.label) {
@@ -1029,21 +2308,44 @@ export class FrameXmlDomRenderer {
       // directly, so it must not duplicate the child.
       const owned = frame.stateTextures.has("BUTTONTEXT") ? "" : frame.text;
       this.applyText(rendered, rendered.label, owned);
+      // A button with no `<ButtonText>` that is given text draws it in its state font, as the
+      // client's implicit font string does.
+      if (owned && (frame.type === "Button" || frame.type === "CheckButton")) this.applyButtonLabel(rendered.label, frame);
     } else if (frame.type === "FontString") {
       this.applyText(rendered, element, frame.text);
     }
 
-    const width = numberValue(frame.attributes["width"]);
-    const height = numberValue(frame.attributes["height"]);
-    this.applyGeometry(element, frame, width, height);
+    const placed = !paintOnly || rendered.appliedAnimationTransform !== frame.animationTransform
+      || rendered.appliedRotation !== frame.textureRotation || rendered.appliedTexCoords !== frame.texCoords
+      || rendered.appliedScale !== frame.scale;
+    if (placed) {
+      const width = numberValue(frame.attributes["width"]);
+      const height = numberValue(frame.attributes["height"]);
+      this.applyGeometry(element, frame, width, height);
+      rendered.appliedAnimationTransform = frame.animationTransform;
+      rendered.appliedRotation = frame.textureRotation;
+      rendered.appliedTexCoords = frame.texCoords;
+      rendered.appliedScale = frame.scale;
+    }
 
-    element.style.opacity = frame.alpha === 1 ? "" : String(frame.alpha);
+    const alpha = frame.animationAlpha ?? frame.alpha;
+    element.style.opacity = alpha === 1 ? "" : String(alpha);
+    // A strata layer carries the product of its owners' alphas (`placeStrataLayer`); a full apply
+    // re-places the layers of its children, a paint-only one has to pass a new alpha on itself.
+    if (paintOnly && !placed && rendered.appliedAlpha !== alpha && this.#strataLayers.size > 0) this.refreshLayerAlphas(frame);
+    rendered.appliedAlpha = alpha;
     const zIndex = frame.type === "Texture" || frame.type === "FontString"
       ? String((LAYER_Z[frame.drawLayer] ?? 3) * 100 + frame.drawSubLevel)
       : String(1000 + (STRATA_Z[frame.frameStrata] ?? 2) * 1000 + frame.frameLevel);
     if (element.style.zIndex !== zIndex) element.style.zIndex = zIndex;
 
-    this.applyBackdrop(rendered);
+    if (!paintOnly || rendered.appliedBackdrop !== frame.backdrop || rendered.appliedBackdropColor !== frame.backdropColor
+      || rendered.appliedBackdropBorderColor !== frame.backdropBorderColor) {
+      this.applyBackdrop(rendered);
+      rendered.appliedBackdrop = frame.backdrop;
+      rendered.appliedBackdropColor = frame.backdropColor;
+      rendered.appliedBackdropBorderColor = frame.backdropBorderColor;
+    }
     this.applyFontStyle(element, frame);
 
     if (frame.type === "Texture") this.applyTexture(rendered);
@@ -1061,6 +2363,97 @@ export class FrameXmlDomRenderer {
         element.setAttribute("aria-checked", String(frame.checked));
       }
     }
+    return placed;
+  }
+
+  /**
+   * Pass one frame's new alpha on to the strata layers drawn over it: every drawn layer of a frame
+   * inside it (the layer is laid over the escaped frame's parent, `placeStrataLayer`).
+   */
+  private refreshLayerAlphas(owner: FrameXmlFrame): void {
+    for (const [child, layer] of this.#strataLayers) {
+      if (layer.parked || layer.box === undefined || layer.box === "off-page") continue;
+      let inside = false;
+      for (let at = child.parent, depth = 0; at && depth < 64; at = at.parent, depth += 1) {
+        if (at === owner) {
+          inside = true;
+          break;
+        }
+      }
+      const host = inside && child.parent ? this.#rendered.get(child.parent) : undefined;
+      if (host && host.effectiveHidden === false) this.placeStrataLayer(layer, host);
+    }
+  }
+
+  /**
+   * `<HitRectInsets>` / `SetHitRectInsets`: the part of a frame's box that takes the pointer.
+   *
+   * Positive insets cut the clickable box in from its edges, negative ones grow it past them — and
+   * neither touches what the frame or its children *draw*, nor where a child frame takes clicks of
+   * its own: the client hit-tests every frame by its own rectangle. So this is not a clip. The box
+   * itself stops taking the pointer (`pointer-events: none`, which also reaches its private label)
+   * and one transparent node inset by the four numbers takes it instead; press, release, wheel and
+   * enter/leave on that node reach the frame's own listeners exactly as before, because they bubble
+   * and the node belongs to no other frame. Measured in Chrome: a disabled `<button>` with such a
+   * node still gets enter/leave from it (and, like before, no press), and a node grown past the box
+   * (`right = -100`) takes the press out there.
+   *
+   * Measured over the dataset's FrameXML and Blizzard add-ons: 90 declarations. 39 are the
+   * 384×512-art panels — `CharacterFrame`/`PaperDollFrame` (`right=30 bottom=45`) and 37 more cut
+   * 30-35 off the right and 45-75 off the bottom — whose strip below the drawn art otherwise took
+   * the clicks meant for the chat frame under it; the unit frames (`PlayerFrame`,
+   * `TargetFrameTemplate`, `PartyMemberFrameTemplate`) cut away their empty corners; the micro
+   * buttons cut 18 off the top; and 8 check buttons grow right (`-55` … `-145`) over their label.
+   *
+   * A Slider's own range input already covers its box and takes the drag, so the insets go on that
+   * input. An EditBox keeps its box: its input is where the text is drawn (no corpus EditBox
+   * declares insets). Returns whether a private node now takes the pointer for the frame.
+   */
+  private applyHitRect(rendered: RenderedFrame, receives: boolean): boolean {
+    const { frame } = rendered;
+    const insets = receives && frame.type !== "EditBox" ? frame.hitRectInsets : undefined;
+    const active = insets !== undefined
+      && (insets.left !== 0 || insets.right !== 0 || insets.top !== 0 || insets.bottom !== 0);
+    const place = (node: HTMLElement): void => {
+      node.style.left = px(insets!.left);
+      node.style.right = px(insets!.right);
+      node.style.top = px(insets!.top);
+      node.style.bottom = px(insets!.bottom);
+    };
+    if (frame.type === "Slider") {
+      const input = rendered.sliderInput;
+      if (!input) return false;
+      if (active) {
+        place(input);
+        input.style.width = "auto";
+        input.style.height = "auto";
+        input.style.pointerEvents = "auto";
+      } else if (input.style.pointerEvents) {
+        Object.assign(input.style, { left: "0", top: "0", right: "", bottom: "", width: "100%", height: "100%", pointerEvents: "" });
+      }
+      return active;
+    }
+    if (!active) {
+      if (rendered.hitRect) rendered.hitRect.style.display = "none";
+      return false;
+    }
+    let node = rendered.hitRect;
+    if (!node) {
+      node = this.#container.ownerDocument?.createElement("div") ?? document.createElement("div");
+      node.setAttribute("aria-hidden", "true");
+      node.setAttribute("data-framexml-hit-rect", "true");
+      node.style.position = "absolute";
+      // Below every authored child: a child frame with a hit box of its own stays on top of it.
+      node.style.zIndex = "0";
+      node.style.pointerEvents = "auto";
+      const first = rendered.element.children[0];
+      if (first && typeof rendered.element.insertBefore === "function") rendered.element.insertBefore(node, first);
+      else rendered.element.append(node);
+      rendered.hitRect = node;
+    }
+    node.style.display = "";
+    place(node);
+    return true;
   }
 
   /** Paint only the private visible message layer; authored children are reconciled separately. */
@@ -1072,10 +2465,12 @@ export class FrameXmlDomRenderer {
     this.applyFontStyle(layer, frame);
     layer.style.whiteSpace = "pre-wrap";
     layer.style.overflowWrap = state.nonSpaceWrap ? "anywhere" : "normal";
-    layer.setAttribute("data-framexml-max-lines", String(state.maxLines));
-    layer.setAttribute("data-framexml-display-duration", String(state.displayDuration));
-    layer.setAttribute("data-framexml-nonspacewrap", String(state.nonSpaceWrap));
-    layer.setAttribute("data-framexml-scroll-range", String(frame.scroll.verticalScrollRange));
+    // Unchanged values are not written again: each write is a mutation record and a style
+    // invalidation of the layer, measured at 5 a pass on UIErrorsFrame and ChatFrame1.
+    setAttributeIfChanged(layer, "data-framexml-max-lines", String(state.maxLines));
+    setAttributeIfChanged(layer, "data-framexml-display-duration", String(state.displayDuration));
+    setAttributeIfChanged(layer, "data-framexml-nonspacewrap", String(state.nonSpaceWrap));
+    setAttributeIfChanged(layer, "data-framexml-scroll-range", String(frame.scroll.verticalScrollRange));
     if (rendered.messageRevision === state.revision
       && rendered.messageScroll === frame.scroll.verticalScroll) return;
 
@@ -1122,6 +2517,20 @@ export class FrameXmlDomRenderer {
       rendered.messageRevision = state.revision;
     }
     layer.setAttribute("data-framexml-scroll", String(frame.scroll.verticalScroll));
+    rendered.messageScroll = frame.scroll.verticalScroll;
+    // Inside a pass, after its held placements: the frame's own (a chat frame is clamped to the
+    // screen) or an ancestor's can still change the height the offset is mapped against, and a
+    // resize and a new line in one batch then left the newest lines below the bottom edge.
+    const held = this.#messageScrolls;
+    if (held) held.push(rendered);
+    else this.scrollMessageLayer(rendered);
+  }
+
+  /** Map a message frame's logical scroll offset to its layer's `scrollTop`; reads its layout. */
+  private scrollMessageLayer(rendered: RenderedFrame): void {
+    const layer = rendered.messageLayer;
+    if (!layer) return;
+    const { frame } = rendered;
     const scrollHeight = Number(layer.scrollHeight);
     const clientHeight = Number(layer.clientHeight);
     const pixelRange = Number.isFinite(scrollHeight) && Number.isFinite(clientHeight)
@@ -1133,7 +2542,6 @@ export class FrameXmlDomRenderer {
     // line wrapping and therefore the pixel range. This keeps bottom pinned after
     // a resize or a long wrapped message instead of treating one line as one pixel.
     if (typeof layer.scrollTop === "number") layer.scrollTop = pixelRange * fraction;
-    rendered.messageScroll = frame.scroll.verticalScroll;
   }
 
   private nextMessageIndex(rendered: RenderedFrame): number {
@@ -1155,7 +2563,39 @@ export class FrameXmlDomRenderer {
     line.style.color = cssColor(message.color);
     line.style.whiteSpace = "pre-wrap";
     line.style.overflowWrap = frame.messageFrame.nonSpaceWrap ? "anywhere" : "normal";
-    line.textContent = message.text;
+    if (!hasFrameXmlEscapes(message.text)) line.textContent = message.text;
+    else for (const run of parseFrameXmlText(message.text, true)) {
+      const span = line.ownerDocument.createElement("span");
+      span.textContent = run.text;
+      if (run.color !== undefined) span.style.color = run.color;
+      if (run.hyperlink !== undefined) {
+        const link = run.hyperlink;
+        span.setAttribute("role", "link");
+        span.setAttribute("tabindex", "0");
+        span.setAttribute("data-framexml-hyperlink", link);
+        span.style.cursor = "pointer";
+        span.style.pointerEvents = "auto";
+        const activate = (button: string): void => {
+          this.#bridge?.fireScript(frame, "OnHyperlinkClick", link, message.text, button);
+        };
+        span.addEventListener("click", (event) => {
+          event.stopPropagation?.();
+          activate("LeftButton");
+        });
+        span.addEventListener("contextmenu", (event) => {
+          event.preventDefault?.(); event.stopPropagation?.();
+          activate("RightButton");
+        });
+        span.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault?.(); event.stopPropagation?.(); activate("LeftButton");
+          }
+        });
+        span.addEventListener("mouseenter", () => this.#bridge?.fireScript(frame, "OnHyperlinkEnter", link, message.text));
+        span.addEventListener("mouseleave", () => this.#bridge?.fireScript(frame, "OnHyperlinkLeave", link, message.text));
+      }
+      line.append(span);
+    }
     return line;
   }
 
@@ -1287,6 +2727,25 @@ export class FrameXmlDomRenderer {
   }
 
   /**
+   * Draw again every string that carries a `|3` declension — for the host, after it installs the
+   * client's dictionary with `setFrameXmlDeclensionSource`: the strings already on the page were
+   * declined without it, and an unchanged string is otherwise never parsed again. Answers how many.
+   */
+  refreshDeclinedText(): number {
+    let redrawn = 0;
+    for (const rendered of this.#rendered.values()) {
+      const text = rendered.textSource;
+      if (text === undefined || !text.includes("|3")) continue;
+      const target = rendered.frame.type === "FontString" ? rendered.element : rendered.label;
+      if (!target) continue;
+      rendered.textSource = undefined;
+      this.applyText(rendered, target, text);
+      redrawn += 1;
+    }
+    return redrawn;
+  }
+
+  /**
    * Point one slot of one element at a picture, taking and giving back references as it moves.
    *
    * Returns the URL to use now, which is `undefined` while the bytes are still on their way — the
@@ -1306,15 +2765,147 @@ export class FrameXmlDomRenderer {
       if (wanted) {
         source.acquire(wanted);
         rendered.pictures.set(slot, wanted);
+        indexHolder(this.#pictureHolders, wanted, rendered);
       } else {
         rendered.pictures.delete(slot);
       }
+      if (held && ![...rendered.pictures.values()].includes(held)) unindexHolder(this.#pictureHolders, held, rendered);
     }
     return wanted ? source.peek(wanted) : undefined;
   }
 
+  /**
+   * A picture the texture source was still fetching has arrived: draw it on the frames holding it.
+   *
+   * The host's `FrameXmlTextureSource` calls this (through its `onChange`) instead of announcing a
+   * frameless bridge change, which is structural and re-applied every drawn frame of the HUD —
+   * measured on the rich route, 18 ms a picture on the fast cores and 33 ms on the slow ones, 606
+   * times in the 12 s after a mount and once per new icon afterwards. Only the slots that hold
+   * `path` are painted again, on frames that are drawn now; a hidden holder is applied in full when
+   * it is next shown. A texture drawn at the picture's own size (an `<img>` with no width or no
+   * height of its own) can change size when it arrives, so frames measured against it are placed
+   * again, as a layout pass would.
+   */
+  pictureArrived(path: string, kind: "texture" | "edge" = "texture"): void {
+    const holders = (kind === "edge" ? this.#edgeHolders : this.#pictureHolders).get(path);
+    if (!holders || holders.size === 0) return;
+    const perf = this.#perf;
+    const started = perf ? performance.now() : 0;
+    const run = (): void => {
+      for (const rendered of [...holders]) {
+        if (rendered.effectiveHidden !== false || this.#layoutOnly?.(rendered.frame)) continue;
+        if (kind === "edge") {
+          this.applyBackdrop(rendered);
+          continue;
+        }
+        for (const [slot, held] of rendered.pictures) {
+          if (held !== path) continue;
+          if (slot === "texture") {
+            this.applyTexture(rendered);
+            const style = rendered.element.style;
+            if (!style.width || !style.height) this.relayoutWhenDecoded(rendered);
+          } else if (slot === "statusBar") this.applyStatusBar(rendered);
+          else if (slot === "backdrop") this.applyBackdrop(rendered);
+        }
+      }
+    };
+    try {
+      // Painted and measured on a page that shows every change already made.
+      this.#bridge?.settleDeferredLayout();
+      if (this.#bridge) this.#bridge.runInRenderPass(run);
+      else run();
+    } finally {
+      perf?.picture?.(performance.now() - started);
+    }
+  }
+
+  /**
+   * An `<img>` with no width or no height of its own takes the picture's size, which the browser
+   * knows only once the bytes are decoded — after `src` is set, not when. Its measured dependents
+   * are placed again then. Measured on the rich route: 53 of the 10,932 textures, none drawn idle.
+   */
+  private relayoutWhenDecoded(rendered: RenderedFrame): void {
+    const element = rendered.element as HTMLElement & { complete?: boolean };
+    const settle = (): void => {
+      if (this.#rendered.get(rendered.frame) !== rendered || rendered.effectiveHidden !== false) return;
+      // Outside a pass (a `load` listener), held layout first: the relayout measures the page.
+      this.#bridge?.settleDeferredLayout();
+      if (this.#bridge) this.#bridge.runInRenderPass(() => this.relayout([rendered], true));
+      else this.relayout([rendered], true);
+    };
+    if (element.complete === false && typeof element.addEventListener === "function") {
+      element.addEventListener("load", settle, { once: true });
+    } else settle();
+  }
+
+  /**
+   * A font face finished loading: every string drawn in it has new metrics, which the page lays out
+   * by itself. What the renderer measured from the old metrics — frames anchored to a string, a
+   * string placed by a measured edge, tooltip boxes, scroll ranges — is measured again, instead of
+   * the structural re-apply of every drawn frame a frameless `bridge.touch()` costs.
+   */
+  fontArrived(): void {
+    const perf = this.#perf;
+    const started = perf ? performance.now() : 0;
+    const run = (): void => {
+      const measured: RenderedFrame[] = [];
+      for (const frame of this.#anchorTargets.keys()) {
+        const drawn = this.#rendered.get(frame);
+        if (drawn && drawn.effectiveHidden === false) measured.push(drawn);
+      }
+      for (const frame of this.#dependents.keys()) {
+        const drawn = this.#rendered.get(frame);
+        if (drawn && drawn.effectiveHidden === false) measured.push(drawn);
+      }
+      this.relayout(measured, true);
+    };
+    try {
+      this.#bridge?.settleDeferredLayout();
+      if (this.#bridge) this.#bridge.runInRenderPass(run);
+      else run();
+    } finally {
+      perf?.picture?.(performance.now() - started);
+    }
+  }
+
+  /**
+   * The measured half of a layout pass for frames that changed size or position outside a sync:
+   * their dependents through the anchor graph, then the tooltips, scroll ranges and slider inputs
+   * the layout pass lays out. `placeSeeds` places the seeds themselves first (a frame whose own
+   * placement was measured).
+   */
+  private relayout(seeds: readonly RenderedFrame[], placeSeeds = false): void {
+    this.#screenRects.clear();
+    const outer = this.#hiddenRefreshed;
+    this.#hiddenRefreshed = new Set();
+    try {
+      if (placeSeeds) {
+        const place = this.boundedPlacer();
+        const queue: FrameXmlFrame[] = [];
+        for (const rendered of seeds) {
+          const frame = rendered.frame;
+          // A seed that moved takes its drawn subtree with it; one that only changed size still
+          // moves whatever is anchored to its far edges.
+          if (this.#anchorTargets.has(frame) && place(frame)) this.collectMoved(frame, queue, place);
+          else if (this.#dependents.has(frame)) queue.push(frame);
+        }
+        this.drainDependents(queue, place);
+      } else {
+        this.replaceDependents(seeds);
+      }
+      for (const rendered of this.#tooltips) if (!rendered.effectiveHidden) this.layoutGameTooltip(rendered);
+      for (const rendered of this.#scrollFrames) if (!rendered.effectiveHidden) this.applyScrollFrame(rendered);
+      for (const rendered of this.#sliders) if (!rendered.effectiveHidden) this.applySlider(rendered);
+    } finally {
+      this.#hiddenRefreshed = outer;
+    }
+  }
+
   private applyTexture(rendered: RenderedFrame): void {
     const { frame, element } = rendered;
+    // `SetPortraitToTexture`: the picture cropped to the circle the portrait ring is cut for.
+    const radius = frame.portrait ? "50%" : "";
+    if ((element.style.borderRadius ?? "") !== radius) element.style.borderRadius = radius;
     const source = frame.texture.trim();
     if (element.getAttribute("data-framexml-texture") !== source) {
       element.setAttribute("data-framexml-texture", source);
@@ -1329,7 +2920,26 @@ export class FrameXmlDomRenderer {
       else element.removeAttribute("src");
     }
 
-    if (frame.texCoords) {
+    const corners = frame.texCoords?.corners;
+    if (corners) {
+      // The eight-number form: the picture is laid out by `textureCornerTransform` in
+      // `placeFrame`, and cut here to the quad the four corners name, in the image's own (untransformed)
+      // coordinates — which that transform then lands exactly on the widget's box. No crop inset:
+      // the host stylesheet's `[data-framexml-texcoords]` rules would re-crop the turned picture.
+      element.removeAttribute("data-framexml-texcoords");
+      element.style.removeProperty("--framexml-texcoord-inset");
+      const [ulx, uly, llx, lly, urx, ury, lrx, lry] = corners;
+      const clip = `polygon(${ulx * 100}% ${uly * 100}%, ${urx * 100}% ${ury * 100}%, `
+        + `${lrx * 100}% ${lry * 100}%, ${llx * 100}% ${lly * 100}%)`;
+      if (element.getAttribute("data-framexml-texcorners") !== clip) {
+        element.setAttribute("data-framexml-texcorners", clip);
+        element.style.setProperty("clip-path", clip);
+      }
+    } else if (element.getAttribute("data-framexml-texcorners") !== null) {
+      element.removeAttribute("data-framexml-texcorners");
+      element.style.removeProperty("clip-path");
+    }
+    if (frame.texCoords && !corners) {
       const { left, right, top, bottom } = frame.texCoords;
       // TexCoords name a sub-rectangle of an atlas that is then *stretched* over the widget, so a
       // crop alone is not the operation: `clip-path` hides the rest of the picture and leaves the
@@ -1349,7 +2959,7 @@ export class FrameXmlDomRenderer {
       const maxY = Math.max(top, bottom);
       const inset = `${minY * 100}% ${(1 - maxX) * 100}% ${(1 - maxY) * 100}% ${minX * 100}%`;
       element.style.setProperty("--framexml-texcoord-inset", inset);
-    } else {
+    } else if (!corners) {
       element.removeAttribute("data-framexml-texcoords");
       element.style.removeProperty("--framexml-texcoord-inset");
     }
@@ -1369,8 +2979,9 @@ export class FrameXmlDomRenderer {
       // painted flat. `lgzg.lua` builds the login screen's fade-in that way —
       // `LoginScreenBlend:SetTexture(0, 0, 0, 1)` over the whole of GlueParent, faded to zero once
       // the scene has loaded — and with only an `<img>` and no source it drew nothing, so the
-      // screen had no fade at all. A file, when there is one, keeps its own pixels.
-      element.style.backgroundColor = source ? "" : cssColor({ ...frame.vertexColor, a: 1 });
+      // screen had no fade at all. A file, when there is one, keeps its own pixels. Only a colour
+      // texture fills (`colorFill`): a bare `SetVertexColor` on a file-less Texture draws nothing.
+      element.style.backgroundColor = source || !frame.colorFill ? "" : cssColor({ ...frame.vertexColor, a: 1 });
     } else {
       element.style.removeProperty("--framexml-vertex-color");
       element.style.removeProperty("background-color");
@@ -1387,15 +2998,23 @@ export class FrameXmlDomRenderer {
     // -image placeholder. Measured on the owner's login screen: `AccountLogin.xml:171` declares
     // `<Texture file="">` at 100x100 anchored to the bottom edge, and it came out as an empty
     // 100x100 outline in the middle of the screen, eight units above the bottom.
-    const blank = !resolved && !frame.vertexColor && !frame.gradient;
+    // A vertex tint describes how to paint a *loaded* picture. While that picture is pending (or
+    // missing), an <img> with no src must stay invisible or Chrome paints its white broken-image
+    // placeholder in the item slot. A colour-only texture still paints its own rectangle.
+    const blank = !resolved
+      && (source !== "" || (!(frame.colorFill && frame.vertexColor) && !frame.gradient));
     if (blank) element.setAttribute("data-framexml-blank", "true");
     else element.removeAttribute("data-framexml-blank");
-    // One property, two effects, so they are composed rather than overwriting each other. The ADD
-    // conversion goes first: it is what the picture *is*, and a desaturate afterwards then greys
-    // the light rather than the plate it was cut out of.
+    // One property, three effects, composed rather than overwriting each other, in the order the
+    // client shades a texel: grey it (`SetDesaturated`), multiply it by the vertex colour, and only
+    // then turn it into the light an ADD picture adds. `grayscale(1)` and the ADD conversion use the
+    // same Rec. 709 weights, so the grey-first order draws an untinted ADD picture exactly as the
+    // former ADD-first order did; a tint is the one step that has to sit between them.
     const filters: string[] = [];
-    if (additive && resolved) filters.push(`url(#${this.addFilterId()})`);
     if (frame.desaturated) filters.push("grayscale(1)");
+    const tint = frame.vertexColor && resolved ? this.tintFilterId(frame.vertexColor) : undefined;
+    if (tint) filters.push(`url(#${tint})`);
+    if (additive && resolved) filters.push(`url(#${this.addFilterId()})`);
     element.style.filter = filters.join(" ");
   }
 
@@ -1414,7 +3033,16 @@ export class FrameXmlDomRenderer {
   tickCooldowns(now = this.#clock()): number {
     let running = 0;
     for (const rendered of this.#cooldowns) {
-      if (this.applyCooldown(rendered, now)) running += 1;
+      // Hidden, the sweep is drawn again by `applyFrame` when it is shown; idle, it can only start
+      // through `SetCooldown`, which moves the frame's version. Six hundred of the vertical's
+      // Cooldown widgets are one or the other on any frame.
+      if (rendered.effectiveHidden) continue;
+      const version = rendered.frame.renderVersion;
+      if (version !== undefined && rendered.cooldownIdleAt === version) continue;
+      if (this.applyCooldown(rendered, now)) {
+        running += 1;
+        rendered.cooldownIdleAt = undefined;
+      } else rendered.cooldownIdleAt = version;
     }
     return running;
   }
@@ -1725,22 +3353,136 @@ export class FrameXmlDomRenderer {
     if (!source) return undefined;
     const wanted = file ? frameXmlTexturePath(file) : "";
     if ((rendered.edge ?? "") !== wanted) {
-      if (rendered.edge) source.releaseEdge(rendered.edge);
+      if (rendered.edge) {
+        source.releaseEdge(rendered.edge);
+        unindexHolder(this.#edgeHolders, rendered.edge, rendered);
+      }
       rendered.edge = wanted || undefined;
-      if (wanted) source.acquireEdge(wanted);
+      if (wanted) {
+        source.acquireEdge(wanted);
+        indexHolder(this.#edgeHolders, wanted, rendered);
+      }
     }
     return wanted ? source.peekEdge(wanted) : undefined;
+  }
+
+  /**
+   * A font object's style, whichever way the corpus declared it.
+   *
+   * The registered `<Font>`s answer first, exactly as before — every state font the stock button
+   * templates name is one (`GameFontNormalSmall`, `GameFontHighlightSmallLeft`, …). The bridge's
+   * `fontObjectStyle` covers the rest the same way Lua's `GetFontObject` does: a font object
+   * declared as a virtual `<FontString>` (FrameXML has two, `WatchFontTemplate` and
+   * `ClassColorLegendFontStringTemplate`) and a name asked for before `registerFontObjects` ran.
+   */
+  private fontStyleOf(name: string): FrameXmlFontStyle | undefined {
+    if (!name) return undefined;
+    return this.#bridge?.fontStyle(name) ?? this.#bridge?.fontObjectStyle(name);
+  }
+
+  /** A button's current state font: highlight under the pointer, disabled, else normal. */
+  private buttonStateFont(button: FrameXmlFrame): string {
+    const fonts = button.stateFonts;
+    if (button.enabled && this.#hoveredButtons.has(button) && fonts.get("HIGHLIGHT")) return fonts.get("HIGHLIGHT")!;
+    return (!button.enabled ? fonts.get("DISABLED") : undefined) || fonts.get("NORMAL") || button.fontObject;
+  }
+
+  /**
+   * The font object one text widget is drawn in now. An inheriting `<ButtonText>` carries its
+   * button's normal/disabled font in the bridge (`syncButtonLabelFont`); the highlight font is a
+   * pointer state, so it is decided here and never written back to Lua.
+   */
+  private drawnFontObject(frame: FrameXmlFrame): string {
+    const owner = frame.inheritsButtonFont ? frame.parent : undefined;
+    if (owner && owner.enabled && this.#hoveredButtons.has(owner)) {
+      return owner.stateFonts.get("HIGHLIGHT") || frame.fontObject;
+    }
+    return frame.fontObject;
   }
 
   private applyFontStyle(element: HTMLElement, frame: FrameXmlFrame): void {
     if (frame.type !== "FontString" && frame.type !== "EditBox" && frame.type !== "SimpleHTML"
       && frame.type !== "MessageFrame" && frame.type !== "ScrollingMessageFrame") return;
-    const style = frame.fontObject ? this.#bridge?.fontStyle(frame.fontObject) : undefined;
-    if (frame.fontObject) element.setAttribute("data-framexml-font", frame.fontObject);
+    const style = this.applyFontFace(element, frame, this.drawnFontObject(frame));
+    if (frame.type === "FontString") {
+      // Block alignment preserves the inline color runs and explicit newlines. Flex would turn
+      // each WoW escape span into a separate item and change wrapping/justification.
+      const vertical = frame.justifyV || style?.justifyV;
+      element.style.alignContent = vertical === "TOP" ? "start" : vertical === "BOTTOM" ? "end" : "center";
+      // A FontString wraps at its own width unless the corpus opts out: quest text, tooltips
+      // and the character-creation info panels all rely on it, and none of them sets `wordWrap`.
+      // `pre-wrap` keeps the authored `|n` line breaks that `pre` was originally set for.
+      //
+      // Widthless strings stay single-line: with no width to wrap against the original draws one
+      // line, and that is also what keeps CENTER-anchored button labels whole — an absolutely
+      // positioned shrink-to-fit box at `left: 50%` would otherwise wrap them at half the button.
+      const wrapAttr = frame.attributes["wordWrap"];
+      const hasWidth = (numberValue(frame.attributes["width"]) ?? 0) > 0;
+      // A box that holds a single line never wraps, `wordWrap` or not: the client lays out as many
+      // lines as fit the height and truncates the last with "…". Stock UIDropDownMenu sets its text
+      // 155 wide and 10 high in GameFontHighlightSmall (10 px), and «Случайное подземелье Burning
+      // Crusade» was drawn on two lines, over the dropdown's art.
+      const fontHeight = numberValue(frame.attributes["fontHeight"]) ?? style?.height;
+      const declaredHeight = numberValue(frame.attributes["height"]);
+      const oneLine = declaredHeight !== undefined && declaredHeight > 0 && fontHeight !== undefined
+        && fontHeight > 0 && declaredHeight < 2 * fontHeight;
+      const wrap = !oneLine && (wrapAttr === "true" || (wrapAttr === undefined && hasWidth));
+      element.style.whiteSpace = wrap ? "pre-wrap" : "pre";
+      // `nonSpaceWrap` lets a line break inside a word with no space to break at, as the client's
+      // flag does; the default breaks between words only.
+      element.style.overflowWrap = wrap ? (frame.attributes["nonSpaceWrap"] === "true" ? "anywhere" : "break-word") : "";
+      // An unwrapped line in a box with a width of its own — declared, or spanned by two anchors,
+      // like the LFD list's dungeon name between its row's LEFT and the level text — stops at that
+      // width with an ellipsis instead of running into the next column. Clipped on x only (`clip`,
+      // unlike `hidden`, leaves the other axis visible), so descenders and the shadow still draw.
+      const bounded = !wrap && (hasWidth || horizontallyPinned(frame));
+      const overflowX = bounded ? "clip" : "";
+      if (element.style.overflowX !== overflowX) element.style.overflowX = overflowX;
+      const textOverflow = bounded ? "ellipsis" : "";
+      if (element.style.textOverflow !== textOverflow) element.style.textOverflow = textOverflow;
+      // …and a box of several lines shows the lines it holds, the last one ending in "…". The browser
+      // drew the rest below the box, over the next widget: measured on the rich route,
+      // `LootButton2Text` (93x38 in GameFontNormal, 12 px; LootFrame.xml:19-21) wrapped «Огромный
+      // флакон с лечебным зельем» to four lines and painted «зельем» over `LootButton3`.
+      //
+      // `-webkit-line-clamp` is the clamp this Chrome has: an unprefixed `line-clamp: 3` left the box
+      // `display: block` and every line painted. Measured in it: with `display: -webkit-box` and a
+      // vertical orient the box computes to `flow-root`, so `align-content` still justifies the string
+      // (a two-line label in a 38-unit box stays centred at 6/18), the ellipsis follows the last kept
+      // line, and the lines after it are still painted unless the box clips — on y only, so the
+      // shadow and the side bearings still draw. A line is one font height: every page sets
+      // `line-height: 1` on the widgets. The box's
+      // height is its declared one unless two vertical anchors pin it, and then it is left alone.
+      // The inline display outranks the `[hidden]` rule of a page that does not make it `!important`
+      // (glue.css), so it is written only while the string itself is shown; `parkHidden` drops it.
+      const lines = wrap && declaredHeight !== undefined && fontHeight !== undefined && fontHeight > 0
+        && !element.hidden && !verticallyPinned(frame) ? Math.floor(declaredHeight / fontHeight) : 0;
+      const clamped = lines >= 2;
+      if (clamped) {
+        if (element.style.display !== "-webkit-box") element.style.display = "-webkit-box";
+        if (element.style.webkitBoxOrient !== "vertical") element.style.webkitBoxOrient = "vertical";
+        if (element.style.webkitLineClamp !== String(lines)) element.style.webkitLineClamp = String(lines);
+        if (element.style.overflowY !== "clip") element.style.overflowY = "clip";
+      } else if (element.style.webkitLineClamp) {
+        element.style.display = "";
+        element.style.webkitBoxOrient = "";
+        element.style.webkitLineClamp = "";
+        element.style.overflowY = "";
+      }
+    }
+  }
+
+  /**
+   * The face, size, colour, alignment, shadow and outline of one font object on one element. Split
+   * from `applyFontStyle` so a button's state font can dress a label that is not its own widget.
+   */
+  private applyFontFace(element: HTMLElement, frame: FrameXmlFrame, fontObject: string): FrameXmlFontStyle | undefined {
+    const style = this.fontStyleOf(fontObject);
+    if (fontObject) setAttributeIfChanged(element, "data-framexml-font", fontObject);
     const file = frame.attributes["fontFile"] ?? style?.file;
     // Lua may first name a face while opening an addon after the initial font registry was loaded.
     if (file && !this.#registeredFonts.has(file.toLowerCase())) {
-      this.registerFonts([{ name: frame.fontObject, file, monochrome: false }]);
+      this.registerFonts([{ name: fontObject, file, monochrome: false }]);
     }
     const family = file ? this.#registeredFonts.get(file.toLowerCase()) : undefined;
     element.style.fontFamily = family ? `"${family}", sans-serif` : "";
@@ -1750,16 +3492,13 @@ export class FrameXmlDomRenderer {
     element.style.color = color ? cssColor(color) : "";
     const justify = frame.justifyH || style?.justifyH;
     element.style.textAlign = justify === "LEFT" ? "left" : justify === "RIGHT" ? "right" : "center";
-    if (frame.type === "FontString") {
-      // Block alignment preserves the inline color runs and explicit newlines. Flex would turn
-      // each WoW escape span into a separate item and change wrapping/justification.
-      const vertical = frame.justifyV || style?.justifyV;
-      element.style.alignContent = vertical === "TOP" ? "start" : vertical === "BOTTOM" ? "end" : "center";
-    }
-    if (style?.shadowColor) {
-      const dx = style.shadowOffsetX ?? 1;
-      const dy = -(style.shadowOffsetY ?? -1);
-      element.style.textShadow = `${px(dx)} ${px(dy)} 0 ${cssColor(style.shadowColor)}`;
+    // A shadow the string set for itself (`SetShadowColor`/`SetShadowOffset`, kept as attributes
+    // by the widget layer) outranks the font object's, the way `fontFile`/`fontHeight` do above.
+    const shadowColor = shadowColorAttribute(frame.attributes["shadowColor"]) ?? style?.shadowColor;
+    if (shadowColor) {
+      const dx = numberValue(frame.attributes["shadowOffsetX"]) ?? style?.shadowOffsetX ?? 1;
+      const dy = -(numberValue(frame.attributes["shadowOffsetY"]) ?? style?.shadowOffsetY ?? -1);
+      element.style.textShadow = `${px(dx)} ${px(dy)} 0 ${cssColor(shadowColor)}`;
     } else {
       element.style.removeProperty("text-shadow");
     }
@@ -1776,23 +3515,69 @@ export class FrameXmlDomRenderer {
         .join(", ");
       element.style.textShadow = element.style.textShadow ? `${element.style.textShadow}, ${ring}` : ring;
     }
+    return style;
   }
 
-  /** The stock tooltip's text rows flow inside one bounded background instead of overflowing it. */
+  /**
+   * The stock tooltip's rows, laid out the way the client sizes a GameTooltip: as wide as its
+   * widest unwrapped row plus the template's text inset, never narrower than `SetMinimumWidth` and
+   * never wider than the screen.
+   *
+   * This used to be a fixed box from the C-method's per-character estimate (7 units a character):
+   * measured on the dev page, the 14px header «Боевой крик» is 82 units against an estimate of 77,
+   * so a buff tooltip's title wrapped inside a 101-unit box, and every line had
+   * `overflow-wrap: anywhere`, so it broke mid-word — «SpellID:» came out 16 units wide and four
+   * lines tall. Now the box is sized by the browser from the rows themselves:
+   *
+   * - an unwrapped row (`wordWrap` false: titles, double lines, stat lines) is `white-space: pre`,
+   *   which never wraps and keeps an explicit `\n`, and it is what the box's `max-content` width
+   *   is made of;
+   * - a wrapped row (`AddLine(…, wrap)`, prose) wraps at word boundaries and contributes at most
+   *   `WRAP_WIDTH` to the box (`max-width`), while `min-width: 100%` lets it fill a box the
+   *   unwrapped rows made wider;
+   * - the columns are `auto auto`, not a flexible track: an item that spans a flexible track does
+   *   not contribute to a grid's intrinsic width, and every single-column row spans both.
+   *
+   * The laid-out size is written back to the bridge (`recordLaidOutSize`, unannounced) so
+   * `GetWidth`/`GetHeight` answer what is on the screen.
+   */
   private layoutGameTooltip(rendered: RenderedFrame): void {
     const { frame, element } = rendered;
-    const rows = new Map<number, { left?: HTMLElement; right?: HTMLElement }>();
-    let wrapped = false;
+    // A hidden tooltip keeps no inline grid: that display would outrank `[hidden]`.
+    if (rendered.effectiveHidden) return;
+    const layout = FRAME_XML_TOOLTIP_LAYOUT;
+    const prefix = `${frame.name}Text`;
+    const rows = new Map<number, { left?: RenderedFrame; right?: RenderedFrame }>();
+    const idle: RenderedFrame[] = [];
+    /** Every row FontString, and the other children anchored to one (see the end of this method). */
+    const lines = new Set<FrameXmlFrame>();
+    const riders: FrameXmlFrame[] = [];
     for (const child of frame.children) {
-      if (child.type !== "FontString" || !child.name.startsWith(`${frame.name}Text`)) continue;
-      const match = /^(Left|Right)(\d+)$/.exec(child.name.slice(`${frame.name}Text`.length));
+      if (child.type !== "FontString" || !child.name.startsWith(prefix)) {
+        if (child.points.some((point) => point.relativeTo?.parent === frame)) riders.push(child);
+        continue;
+      }
+      const match = /^(Left|Right)(\d+)$/.exec(child.name.slice(prefix.length));
       const line = this.#rendered.get(child);
-      if (!match || !line || line.effectiveHidden || !child.text) continue;
+      if (!match || !line) continue;
+      lines.add(child);
+      if (line.effectiveHidden || !child.text) {
+        idle.push(line);
+        continue;
+      }
       const index = Number(match[2]);
       const row = rows.get(index) ?? {};
-      row[match[1] === "Left" ? "left" : "right"] = line.element;
+      row[match[1] === "Left" ? "left" : "right"] = line;
       rows.set(index, row);
-      wrapped ||= child.attributes["wordWrap"] === "true";
+    }
+    // A line that left the rows gives its grid cell back. Hidden ones are not drawn anyway; a shown
+    // line with no text would otherwise stay a relatively positioned grid item holding a stale row.
+    for (const line of idle) {
+      const style = line.element.style;
+      if (!style.gridRow && !style.gridColumn) continue;
+      style.gridRow = "";
+      style.gridColumn = "";
+      style.position = "absolute";
     }
     if (rows.size === 0) return;
     const screen = this.#container.getBoundingClientRect?.();
@@ -1802,35 +3587,70 @@ export class FrameXmlDomRenderer {
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const available = screen && screen.width > 0 && parentScale > 0
       ? Math.max(1, screen.width / (parentScale * ownScale) - 16) : 640;
-    const declared = numberValue(frame.attributes["width"]) ?? 640;
-    element.style.width = px(Math.min(declared, wrapped ? 360 : 640, available));
-    element.style.height = "auto";
+    const floor = Math.min(available, Math.max(layout.MIN_WIDTH, frame.tooltipMinimumWidth ?? 0));
     element.style.boxSizing = "border-box";
-    element.style.padding = "10px";
+    element.style.padding = px(layout.PADDING);
     element.style.display = "grid";
-    element.style.gridTemplateColumns = "minmax(0, 1fr) auto";
-    element.style.columnGap = "8px";
-    element.style.rowGap = "2px";
+    element.style.width = "max-content";
+    element.style.minWidth = px(floor);
+    element.style.maxWidth = px(available);
+    element.style.height = "auto";
+    element.style.gridTemplateColumns = "auto auto";
+    element.style.columnGap = px(layout.COLUMN_GAP);
+    element.style.rowGap = px(layout.ROW_GAP);
     let index = 0;
     for (const [, row] of [...rows].sort(([left], [right]) => left - right)) {
       index++;
       for (const side of ["left", "right"] as const) {
         const line = row[side];
         if (!line) continue;
+        const style = line.element.style;
         // Preserve the actual text/color spans. Grid lays out paragraphs, not the inline runs.
-        line.style.position = "relative";
+        style.position = "relative";
         for (const property of ["left", "right", "top", "bottom", "transform", "translate", "width", "height"]) {
-          line.style.removeProperty(property);
+          style.removeProperty(property);
         }
-        line.style.minWidth = "0px";
-        line.style.maxWidth = "100%";
-        line.style.whiteSpace = "pre-wrap";
-        line.style.overflowWrap = "anywhere";
-        line.style.textAlign = side;
-        line.style.alignContent = "start";
-        line.style.gridRow = String(index);
-        line.style.gridColumn = side === "right" ? "2" : row.right ? "1" : "1 / -1";
+        if (line.frame.attributes["wordWrap"] === "true") {
+          style.whiteSpace = "pre-wrap";
+          style.overflowWrap = "break-word";
+          style.maxWidth = px(Math.max(1, layout.WRAP_WIDTH - 2 * layout.PADDING));
+          style.minWidth = "100%";
+        } else {
+          style.whiteSpace = "pre";
+          style.overflowWrap = "normal";
+          style.maxWidth = "";
+          style.minWidth = "0px";
+        }
+        style.textAlign = side;
+        style.alignContent = "start";
+        style.gridRow = String(index);
+        style.gridColumn = side === "right" ? "2" : row.right ? "1" : "1 / -1";
       }
+    }
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    if (typeof width === "number" && typeof height === "number" && width > 0 && height > 0
+      && this.#bridge?.recordLaidOutSize(frame, width, height)
+      && frame.points.some((point) => point.relativeTo && point.relativeTo !== frame.parent)) {
+      // An owner anchor (`SetOwner`'s ANCHOR_LEFT/BOTTOMLEFT/TOPRIGHT… put the tooltip's right or
+      // bottom edge on the owner) was placed with the size the C-method estimated before this
+      // paint; place it once more with the size just drawn.
+      this.applyGeometry(element, frame);
+      element.style.width = "max-content";
+      element.style.height = "auto";
+    }
+    // A frame riding on a row — stock `SetTooltipMoney` puts its `TooltipMoneyFrameTemplate` at
+    // `LEFT` of the blank row it just added (`GameTooltip.lua:124`) — was placed by the layout pass
+    // against where that row stood *before* this grid took it: the row's own anchor chain, absolute
+    // positions stacked from `TextLeft1`. Measured on the rich route (a priced two-handed axe, 14
+    // rows): the coins drawn at y = 1617 against their row at y = 559, then at x + 168 on the next
+    // hover. Placed again now, it measures the row where the grid put it.
+    for (const rider of riders) {
+      if (!rider.points.some((point) => point.relativeTo && lines.has(point.relativeTo))) continue;
+      const drawn = this.#rendered.get(rider);
+      if (!drawn || drawn.effectiveHidden) continue;
+      this.applyGeometry(drawn.element, rider);
+      this.#screenRects.delete(rider);
     }
     this.clampToScreen(element, frame);
   }
@@ -1853,6 +3673,100 @@ export class FrameXmlDomRenderer {
     if (left !== rect.left || top !== rect.top) {
       element.style.translate = `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`;
     }
+  }
+
+  /**
+   * `<HighlightFont>`: a button's label switches to it under the pointer, and back on leave.
+   *
+   * Page-only, like the highlight texture's `:hover` rule — the bridge keeps the normal/disabled
+   * font object, so a hover restyles one label and costs no render pass. Measured stock users:
+   * `CharacterFrameTabButtonTemplate` (yellow GameFontNormalSmall → white GameFontHighlightSmall),
+   * `UIPanelButtonTemplate` (GameFontNormal → GameFontHighlight).
+   */
+  private hoverButtonFont(frame: FrameXmlFrame, hovered: boolean): void {
+    if (frame.type !== "Button" && frame.type !== "CheckButton") return;
+    if (hovered) this.#hoveredButtons.add(frame);
+    else this.#hoveredButtons.delete(frame);
+    if (!frame.stateFonts.get("HIGHLIGHT")) return;
+    const label = frame.stateTextures.get("BUTTONTEXT");
+    if (label) {
+      const drawn = this.#rendered.get(label);
+      if (label.inheritsButtonFont && drawn && !drawn.effectiveHidden) this.applyFontStyle(drawn.element, label);
+      return;
+    }
+    const own = this.#rendered.get(frame);
+    if (own?.label && frame.text) this.applyButtonLabel(own.label, frame);
+  }
+
+  /**
+   * The text a Button with no `<ButtonText>` was given, drawn the way the client's implicit font
+   * string draws it: across the whole button, vertically centred, in the state font and justified
+   * by that font — a Button has no justification of its own, its font string does.
+   *
+   * Left to the page, the label was an inline run inside a `<button>`, and the user-agent centres
+   * those whatever the font says. Measured on the stock chat menu (`UIMenuButtonTemplate`, whose
+   * `<NormalFont>` is `GameFontNormalLeft`): «Сказать» was drawn centred at x = 95 in a button
+   * spanning 50…189, where the client starts it at the button's left edge.
+   *
+   * Only a button with a width of its own is spanned: a sizeless one keeps the label in flow, which
+   * is what has always given such a button (a script's `CreateFrame("Button")` + `SetText` and no
+   * `SetSize`) a box to click.
+   *
+   * Either way it is stacked where a template's `<ButtonText>` draws: OVERLAY, over the button's
+   * Normal/Pushed/Disabled textures (ARTWORK, 300) and under the HIGHLIGHT one (500). With no stacking
+   * of its own the span lay under them: measured on the rich route, UIPanelButtonGrayTemplate's
+   * «Удалить» (MacroDeleteButton) and «По умолчанию» (KeyBindingFrameDefaultButton) were blank grey
+   * plates. Only a label that carries text is positioned: 2,587 buttons draw on the rich route, and
+   * an empty span needs no paint layer of its own.
+   */
+  private applyButtonLabel(label: HTMLElement, frame: FrameXmlFrame): void {
+    const font = this.buttonStateFont(frame);
+    const style = font ? this.applyFontFace(label, frame, font) : undefined;
+    const justify = style?.justifyH || frame.justifyH;
+    const align = justify === "LEFT" ? "left" : justify === "RIGHT" ? "right" : "center";
+    label.style.textAlign = align;
+    if (label.style.zIndex !== BUTTON_LABEL_Z) label.style.zIndex = BUTTON_LABEL_Z;
+    if (!((numberValue(frame.attributes["width"]) ?? 0) > 0 || horizontallyPinned(frame))) {
+      // `relative` stacks an in-flow label without moving it.
+      if (label.style.position !== "relative") label.style.position = "relative";
+      return;
+    }
+    label.style.position = "absolute";
+    label.style.inset = "0";
+    label.style.display = "flex";
+    label.style.alignItems = "center";
+    label.style.justifyContent = align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center";
+    label.style.whiteSpace = "pre";
+  }
+
+  /**
+   * One frame's box on the logical screen — unscaled UI units, left origin, Y measured upward, the
+   * frame `rememberCursor` gives the bridge the cursor in — for `IsMouseOver`.
+   *
+   * Kept until the next paint (see `#screenRects`), so the three `FCF_OnUpdate` questions per chat
+   * window per frame read the layout once between paints, not once per call. A frame that is not
+   * drawn answers `undefined` and the bridge falls back to its own anchor arithmetic.
+   */
+  private screenRectOf(frame: FrameXmlFrame): FrameXmlRect | undefined {
+    const cached = this.#screenRects.get(frame);
+    if (cached !== undefined) return cached ?? undefined;
+    const rendered = this.#rendered.get(frame);
+    let rect: FrameXmlRect | undefined;
+    const box = rendered && !rendered.effectiveHidden ? this.#container.getBoundingClientRect?.() : undefined;
+    const drawn = box ? rendered?.element.getBoundingClientRect?.() : undefined;
+    if (box && drawn && box.width > 0 && box.height > 0) {
+      const width = this.#container.offsetWidth || box.width;
+      const height = this.#container.offsetHeight || box.height;
+      const scaleX = width / box.width;
+      const scaleY = height / box.height;
+      const left = (drawn.left - box.left) * scaleX;
+      const right = (drawn.right - box.left) * scaleX;
+      const top = height - (drawn.top - box.top) * scaleY;
+      const bottom = height - (drawn.bottom - box.top) * scaleY;
+      rect = { left, right, top, bottom, width: right - left, height: top - bottom };
+    }
+    this.#screenRects.set(frame, rect ?? null);
+    return rect;
   }
 
   private rememberCursor(event: Event): void {
@@ -1890,9 +3804,13 @@ export class FrameXmlDomRenderer {
 
   /** Cursor tracking exists only while an authored cursor tooltip is visible. */
   private syncCursorTracking(): void {
-    const tooltips = [...this.#rendered.values()].filter((rendered) =>
-      rendered.frame.tooltipCursorAnchor && !rendered.effectiveHidden);
-    if (tooltips.length === 0) {
+    // `SetOwner(…, "ANCHOR_CURSOR")` is a GameTooltip method, so the tooltip index is the whole set.
+    let tracking = false;
+    for (const rendered of this.#tooltips) {
+      if (rendered.frame.tooltipCursorAnchor && !rendered.effectiveHidden) tracking = true;
+    }
+    // A page off the display follows nothing (`setPointerTracking`).
+    if (!tracking || this.#pointerPaused || this.#destroyed) {
       this.#cursorCleanup?.();
       this.#cursorCleanup = undefined;
       return;
@@ -1902,15 +3820,115 @@ export class FrameXmlDomRenderer {
     if (typeof doc?.addEventListener !== "function") return;
     const move = (event: Event): void => {
       this.rememberCursor(event);
-      for (const rendered of this.#rendered.values()) {
-        if (rendered.frame.tooltipCursorAnchor && !rendered.effectiveHidden) {
-          this.applyGeometry(rendered.element, rendered.frame);
-          this.layoutGameTooltip(rendered);
+      const follow = (): void => {
+        for (const rendered of this.#tooltips) {
+          if (rendered.frame.tooltipCursorAnchor && !rendered.effectiveHidden) {
+            this.applyGeometry(rendered.element, rendered.frame);
+            this.layoutGameTooltip(rendered);
+            this.#screenRects.delete(rendered.frame);
+          }
         }
+      };
+      // Laid out like a pass: on a page showing every change that can reach a following tooltip
+      // (its lines, its parents), and without starting a pass inside this one. Once per move while
+      // one follows the pointer, so a world event's text elsewhere does not cost a pass per move.
+      for (const rendered of this.#tooltips) {
+        if (rendered.frame.tooltipCursorAnchor && !rendered.effectiveHidden) this.#bridge?.settleDeferredLayout(rendered.frame);
       }
+      if (this.#bridge) this.#bridge.runInRenderPass(follow);
+      else follow();
     };
     doc.addEventListener("mousemove", move, true);
     this.#cursorCleanup = () => doc.removeEventListener("mousemove", move, true);
+  }
+
+  /**
+   * Clip a ScrollFrame to its authored box and publish how far its content extends past it.
+   *
+   * The original clips unconditionally and reports the overflow through `OnScrollRangeChanged`,
+   * which is what the stock scrollbar template (slider min/max, thumb visibility) listens to.
+   * The Lua-facing scroll accessors already read and write `frame.scroll`, so publishing the
+   * measured range here is what connects the existing slider chain to real layout: slider drags
+   * and mouse-wheel steps land in `verticalScroll`, and the viewport follows through `scrollTop`.
+   *
+   * Stage children are laid out in UI units under a visual scale transform, so client/scroll
+   * pixels read here are already the Lua units the range is reported in. Hosts without layout
+   * (the DOM stub) report non-finite metrics and keep the previous Lua state untouched.
+   */
+  private applyScrollFrame(rendered: RenderedFrame): void {
+    const { frame, element, scrollViewport } = rendered;
+    if (!scrollViewport) return;
+    // The stock UIPanelScrollFrame puts its scrollbar to the RIGHT of this rectangle.
+    // Clipping the owner would hide that scrollbar and scroll its arrow buttons with the text.
+    if (element.style.overflow !== "visible") element.style.overflow = "visible";
+    const viewportHeight = Number(scrollViewport.clientHeight);
+    const viewportWidth = Number(scrollViewport.clientWidth);
+    const contentHeight = Number(scrollViewport.scrollHeight);
+    const contentWidth = Number(scrollViewport.scrollWidth);
+    const measurableY = Number.isFinite(viewportHeight) && Number.isFinite(contentHeight) && viewportHeight > 0;
+    const measurableX = Number.isFinite(viewportWidth) && Number.isFinite(contentWidth) && viewportWidth > 0;
+    const yrange = measurableY ? Math.max(0, contentHeight - viewportHeight) : frame.scroll.verticalScrollRange;
+    const xrange = measurableX ? Math.max(0, contentWidth - viewportWidth) : frame.scroll.horizontalScrollRange;
+    if ((measurableY || measurableX)
+      && (yrange !== (rendered.scrollRange ?? 0) || xrange !== (rendered.horizontalScrollRange ?? 0))) {
+      rendered.scrollRange = yrange;
+      rendered.horizontalScrollRange = xrange;
+      this.#bridge?.runInMutationBatch(() => {
+        this.#bridge?.update(frame, (mutable) => {
+          mutable.scroll.verticalScrollRange = yrange;
+          mutable.scroll.horizontalScrollRange = xrange;
+          mutable.scroll.verticalScroll = Math.max(0, Math.min(mutable.scroll.verticalScroll, yrange));
+          mutable.scroll.horizontalScroll = Math.max(0, Math.min(mutable.scroll.horizontalScroll, xrange));
+        });
+        this.#bridge?.fireScript(frame, "OnScrollRangeChanged", xrange, yrange);
+      });
+    }
+    if (typeof scrollViewport.scrollTop === "number" && scrollViewport.scrollTop !== frame.scroll.verticalScroll) {
+      scrollViewport.scrollTop = frame.scroll.verticalScroll;
+    }
+    if (typeof scrollViewport.scrollLeft === "number" && scrollViewport.scrollLeft !== frame.scroll.horizontalScroll) {
+      scrollViewport.scrollLeft = frame.scroll.horizontalScroll;
+    }
+  }
+
+  /**
+   * The invisible native range input under a Slider, and its THUMB placed at the value.
+   *
+   * Every layout pass applies every drawn slider — a stock scroll frame's scrollbar is one — so each
+   * property is written only when it reads differently: the same values written back on every pass
+   * were attribute and style invalidations for nothing. The final state is the one the unconditional
+   * writes left, including a thumb whose own geometry a pass just re-applied.
+   */
+  private applySlider(rendered: RenderedFrame): void {
+    const { frame, sliderInput } = rendered;
+    if (!sliderInput) return;
+    const { min, max, value, valueStep, orientation } = frame.slider;
+    const vertical = orientation !== "HORIZONTAL";
+    const minText = String(min);
+    const maxText = String(Math.max(min, max));
+    const stepText = valueStep > 0 ? String(valueStep) : "any";
+    const valueText = String(value);
+    const disabled = !frame.enabled || max <= min;
+    if (sliderInput.min !== minText) sliderInput.min = minText;
+    if (sliderInput.max !== maxText) sliderInput.max = maxText;
+    if (sliderInput.step !== stepText) sliderInput.step = stepText;
+    if (sliderInput.value !== valueText) sliderInput.value = valueText;
+    if (sliderInput.disabled !== disabled) sliderInput.disabled = disabled;
+    // WoW vertical scrollbars grow downward; horizontal sliders grow rightward.
+    setStyleIfChanged(sliderInput, "writingMode", vertical ? "vertical-lr" : "horizontal-tb");
+    setStyleIfChanged(sliderInput, "direction", "ltr");
+    setAttributeIfChanged(sliderInput, "aria-orientation", vertical ? "vertical" : "horizontal");
+    const thumb = frame.stateTextures.get("THUMB");
+    const thumbElement = thumb ? this.#rendered.get(thumb)?.element : undefined;
+    if (!thumbElement) return;
+    const ratio = max > min ? Math.min(1, Math.max(0, (value - min) / (max - min))) : 0;
+    setStyleIfChanged(thumbElement, "left", vertical ? "50%" : `${ratio * 100}%`);
+    setStyleIfChanged(thumbElement, "top", vertical ? `${ratio * 100}%` : "50%");
+    setStyleIfChanged(thumbElement, "right", "");
+    setStyleIfChanged(thumbElement, "bottom", "");
+    setStyleIfChanged(thumbElement, "transform", vertical ? `translate(-50%, ${-ratio * 100}%)`
+      : `translate(${-ratio * 100}%, -50%)`);
+    setStyleIfChanged(thumbElement, "pointerEvents", "none");
   }
 
   /**
@@ -1925,17 +3943,59 @@ export class FrameXmlDomRenderer {
     frame: FrameXmlFrame,
     declaredWidth?: number,
     declaredHeight?: number,
-  ): void {
-    if (element.style.position !== "absolute") element.style.position = "absolute";
-    for (const property of ["left", "right", "top", "bottom", "transform", "width", "height"]) {
-      element.style.removeProperty(property);
+  ): boolean {
+    const deferred = this.#deferredPlacements;
+    if (deferred && measuresLayout(frame)) {
+      deferred.push({ element, frame, declaredWidth, declaredHeight });
+      return true;
     }
-    const width = declaredWidth ?? numberValue(frame.attributes["width"]);
+    const translated = element.style.translate;
+    const moved = this.placeFrame(element, frame, declaredWidth, declaredHeight);
+    return moved || element.style.translate !== translated;
+  }
+
+  /** `applyGeometry`'s body; answers whether any inline edge, size or transform was rewritten. */
+  private placeFrame(
+    element: HTMLElement,
+    frame: FrameXmlFrame,
+    declaredWidth?: number,
+    declaredHeight?: number,
+  ): boolean {
+    this.indexAnchorTargets(frame);
+    if (element.style.position !== "absolute") element.style.position = "absolute";
+    const geometry: Partial<Record<"left" | "right" | "top" | "bottom" | "transform" | "width" | "height", string>> = {};
+    const rawWidth = declaredWidth ?? numberValue(frame.attributes["width"]);
+    // Stock tab labels use SetWidth(0) to restore their intrinsic width after clipping.
+    const width = frame.type === "FontString" && rawWidth === 0 ? undefined : rawWidth;
     const height = declaredHeight ?? numberValue(frame.attributes["height"]);
+    // A zero height on a FontString means "fit the text": the creation-screen info strings declare
+    // `y="0"` and the original grows them over their wrapped lines. Writing `0px` collapses the
+    // box while its unwrapped line still paints, which is the cut-off race/class text.
+    const autoHeight = frame.type === "FontString" && height === 0;
+    // A Lua reset to automatic text size must expose its intrinsic metrics before sibling
+    // anchoring. Stable geometry is otherwise kept intact while we read the existing layout.
+    if (frame.type === "FontString" && rawWidth === 0 && element.style.width) element.style.removeProperty("width");
+    if (autoHeight && element.style.height) element.style.removeProperty("height");
+    const commit = (): boolean => {
+      let changed = false;
+      for (const property of ["left", "right", "top", "bottom", "transform", "width", "height"] as const) {
+        const value = geometry[property];
+        if (value === undefined) {
+          if (element.style[property]) {
+            element.style.removeProperty(property);
+            changed = true;
+          }
+        } else if (element.style[property] !== value) {
+          element.style[property] = value;
+          changed = true;
+        }
+      }
+      return changed;
+    };
     const scale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     // Keep texture rotation/mirroring about the centre. The scale translation below keeps the
     // authored anchor fixed while leaving layout dimensions in the frame's own Lua units.
-    element.style.transformOrigin = "50% 50%";
+    if (element.style.transformOrigin !== "50% 50%") element.style.transformOrigin = "50% 50%";
     const scaleTransform = (x: number, y: number): string[] => scale === 1 ? [] : [
       ...(x === 0.5 ? [] : [`translateX(${(x - 0.5) * (1 - scale) * 100}%)`]),
       ...(y === 0.5 ? [] : [`translateY(${(y - 0.5) * (1 - scale) * 100}%)`]),
@@ -1947,25 +4007,33 @@ export class FrameXmlDomRenderer {
     // translate rather than a second property, because an element has only one.
     const rotation = frame.type === "Texture" && frame.textureRotation !== 0
       ? `rotate(${-frame.textureRotation}rad)` : "";
-    const mirrorX = frame.type === "Texture" && frame.texCoords !== undefined
+    const corners = frame.type === "Texture" ? frame.texCoords?.corners : undefined;
+    const mirrorX = frame.type === "Texture" && frame.texCoords !== undefined && !corners
       && frame.texCoords.left > frame.texCoords.right;
-    const mirrorY = frame.type === "Texture" && frame.texCoords !== undefined
+    const mirrorY = frame.type === "Texture" && frame.texCoords !== undefined && !corners
       && frame.texCoords.top > frame.texCoords.bottom;
+    // The eight-number SetTexCoord is the innermost step: it puts the picture into the box, and
+    // `SetRotation`, a scale and the centring translate then move the box as they always did.
+    const turned = corners ? this.textureCornerTransform(element, frame, corners) : undefined;
     const textureMirrors = [
       ...(mirrorX ? ["scaleX(-1)"] : []),
       ...(mirrorY ? ["scaleY(-1)"] : []),
     ];
+    const animated = frame.animationTransform ?? "";
 
     const points = frame.points;
     if (points.length === 0) {
       element.removeAttribute("data-framexml-point");
       element.removeAttribute("data-framexml-relative");
-      if (width !== undefined) element.style.width = px(width);
-      if (height !== undefined) element.style.height = px(height);
-      const transform = [...scaleTransform(0, 0), ...textureMirrors, rotation].filter(Boolean).join(" ");
-      if (transform) element.style.transform = transform;
+      if (width !== undefined) geometry.width = px(width);
+      if (height !== undefined && !autoHeight) geometry.height = px(height);
+      else if (autoHeight) delete geometry.height;
+      const transform = [...scaleTransform(0, 0), animated, ...textureMirrors, rotation, turned]
+        .filter(Boolean).join(" ");
+      if (transform) geometry.transform = transform;
+      const changed = commit();
       this.clampToScreen(element, frame);
-      return;
+      return changed;
     }
     const primary = points[0]!;
     element.setAttribute(
@@ -1975,12 +4043,20 @@ export class FrameXmlDomRenderer {
     if (primary.relativeTo) element.setAttribute("data-framexml-relative", primary.relativeTo.name);
     else element.removeAttribute("data-framexml-relative");
 
-    let pinnedLeft = false;
-    let pinnedRight = false;
-    let pinnedTop = false;
-    let pinnedBottom = false;
-    let translateX = false;
-    let translateY = false;
+    // Each axis keeps at most one constraint per role — LEFT/RIGHT/CENTER, TOP/BOTTOM/CENTER — the
+    // last anchor of a role winning, as the client keeps one anchor per point. A parent anchor is a
+    // CSS expression of the containing block (a `left`/`top` distance, a `right`/`bottom` distance,
+    // or a centre that a translate finishes); a sibling anchor is a measured number, in layout
+    // pixels from the containing block's left/top edge. The axes are resolved separately below.
+    //
+    // They used to be resolved anchor by anchor, each overwriting `left`/`top`, so a *mixed* pair
+    // came out as neither: the LFD list's dungeon name (LEFT on its row at 40, RIGHT on the level
+    // text's LEFT at -10; LFGFrame.xml:118-134) was drawn at `left: 92px; top: 0px` with the parent
+    // anchor's `translateY(-50%)` still on it — right-aligned against the level and half a row up.
+    const xEdges: Partial<Record<"LEFT" | "RIGHT" | "CENTER", string | number>> = {};
+    const yEdges: Partial<Record<"TOP" | "BOTTOM" | "CENTER", string | number>> = {};
+    let lastX: "LEFT" | "RIGHT" | "CENTER" = "LEFT";
+    let lastY: "TOP" | "BOTTOM" | "CENTER" = "TOP";
     for (const point of points) {
       const own = anchorRoles(point.point);
       const offsetX = (point.x ?? 0) * scale;
@@ -1989,23 +4065,15 @@ export class FrameXmlDomRenderer {
       const sibling = point.relativeTo && point.relativeTo !== frame.parent
         ? this.measureSibling(element, point.relativeTo)
         : undefined;
+      lastX = own.x;
+      lastY = own.y;
       if (sibling) {
-        // A sibling anchor needs the frame's own size to place an edge other
-        // than its top-left, so it is positioned from measured rectangles
-        // rather than from percentages of the containing block.
+        // A sibling anchor is positioned from measured rectangles (layout pixels, for the same
+        // reason `offsetWithin` uses them: a client rectangle is in device pixels and the stage is
+        // scaled), not from percentages of the containing block.
         const target = anchorRoles(point.relativePoint ?? point.point);
-        // Layout pixels, for the same reason `offsetWithin` uses them: a client rectangle is in
-        // device pixels and the stage is scaled.
-        // Width/height were cleared above. An <img> now reports its intrinsic pixel dimensions,
-        // so an authored 24px icon must take precedence over the temporary texture dimensions.
-        const ownWidth = width ?? (typeof element.offsetWidth === "number" ? element.offsetWidth : 0);
-        const ownHeight = height ?? (typeof element.offsetHeight === "number" ? element.offsetHeight : 0);
-        const ownLeft = own.x === "LEFT" ? 0 : own.x === "RIGHT" ? ownWidth : ownWidth / 2;
-        const ownTop = own.y === "TOP" ? 0 : own.y === "BOTTOM" ? ownHeight : ownHeight / 2;
-        element.style.left = px(sibling.x[target.x] + offsetX - ownLeft);
-        element.style.top = px(sibling.y[target.y] + offsetY - ownTop);
-        pinnedLeft = true;
-        pinnedTop = true;
+        xEdges[own.x] = sibling.x[target.x] + offsetX;
+        yEdges[own.y] = sibling.y[target.y] + offsetY;
         continue;
       }
       // Without measurable geometry a cross-frame anchor degrades to the
@@ -2014,36 +4082,48 @@ export class FrameXmlDomRenderer {
       // element stacked at the origin.
       const degraded = point.relativeTo !== undefined && point.relativeTo !== frame.parent;
       const target = degraded ? own : anchorRoles(point.relativePoint ?? point.point);
-      const relative = PARENT_ORIGIN;
-      const targetX = relative.x[target.x];
-      const targetY = relative.y[target.y];
-      if (own.x === "LEFT") {
-        element.style.left = offsetExpression(targetX, offsetX);
-        pinnedLeft = true;
-        translateX = false;
-      } else if (own.x === "RIGHT") {
-        element.style.right = offsetExpression(invert(targetX), -offsetX);
-        pinnedRight = true;
-      } else if (!pinnedLeft && !pinnedRight) {
-        element.style.left = offsetExpression(targetX, offsetX);
-        translateX = true;
-      }
-      if (own.y === "TOP") {
-        element.style.top = offsetExpression(targetY, offsetY);
-        pinnedTop = true;
-        translateY = false;
-      } else if (own.y === "BOTTOM") {
-        element.style.bottom = offsetExpression(invert(targetY), -offsetY);
-        pinnedBottom = true;
-      } else if (!pinnedTop && !pinnedBottom) {
-        element.style.top = offsetExpression(targetY, offsetY);
-        translateY = true;
-      }
+      const targetX = PARENT_ORIGIN.x[target.x];
+      const targetY = PARENT_ORIGIN.y[target.y];
+      xEdges[own.x] = own.x === "RIGHT" ? offsetExpression(invert(targetX), -offsetX) : offsetExpression(targetX, offsetX);
+      yEdges[own.y] = own.y === "BOTTOM" ? offsetExpression(invert(targetY), -offsetY) : offsetExpression(targetY, offsetY);
     }
+    // Authored dimensions win over an image's intrinsic size and the previous layout. Read only when
+    // a measured edge other than the leading one needs the frame's own size, so unchanged CSS is
+    // not re-measured per widget.
+    const ownWidth = (): number => width ?? (typeof element.offsetWidth === "number" ? element.offsetWidth : 0);
+    // A FontString's zero height is "fit the text" (`autoHeight` above), never a box of no height:
+    // a sibling centre anchor that subtracted half of 0 put the skill rank's *top* on the row's
+    // middle line, with the lower half of «407/450» under the next bar (SkillFrame.lua:81 anchors
+    // it LEFT to the name's RIGHT, and the name is a centred parent anchor that never hit this).
+    const ownHeight = (): number => (height !== undefined && !autoHeight)
+      ? height : (typeof element.offsetHeight === "number" ? element.offsetHeight : 0);
+    const x = resolveAnchorAxis(xEdges.LEFT, xEdges.RIGHT, xEdges.CENTER, lastX === "RIGHT", ownWidth);
+    const y = resolveAnchorAxis(yEdges.TOP, yEdges.BOTTOM, yEdges.CENTER, lastY === "BOTTOM", ownHeight);
+    if (x.start !== undefined) geometry.left = x.start;
+    if (x.end !== undefined) geometry.right = x.end;
+    if (x.span !== undefined) geometry.width = x.span;
+    if (y.start !== undefined) geometry.top = y.start;
+    if (y.end !== undefined) geometry.bottom = y.end;
+    if (y.span !== undefined) geometry.height = y.span;
+    const pinnedLeft = x.pinnedStart;
+    const pinnedRight = x.pinnedEnd;
+    const pinnedTop = y.pinnedStart;
+    const pinnedBottom = y.pinnedEnd;
+    const translateX = x.centred;
+    const translateY = y.centred;
     // Only a single-edge anchor keeps the declared size; a pinned pair defines
     // the box itself, and re-applying width would fight the second anchor.
-    if (width !== undefined && !(pinnedLeft && pinnedRight)) element.style.width = px(width);
-    if (height !== undefined && !(pinnedTop && pinnedBottom)) element.style.height = px(height);
+    // A sibling pair on opposing edges spans the distance the same way: the declared size only
+    // serves a single-edge anchor (the three-slice `$parentMiddle` between `$parentLeft` and
+    // `$parentRight`).
+    const spannedX = x.span !== undefined;
+    const spannedY = y.span !== undefined;
+    if (width !== undefined && !(pinnedLeft && pinnedRight) && !spannedX) geometry.width = px(width);
+    if (height !== undefined && !(pinnedTop && pinnedBottom) && !spannedY && !autoHeight) {
+      geometry.height = px(height);
+    } else if (autoHeight && !spannedY) {
+      delete geometry.height;
+    }
     // …except for a Texture, which is an `<img>`, and CSS sizes an absolutely positioned
     // *replaced* element from its intrinsic dimensions when width is `auto` — it does not solve
     // for the distance between the two pinned edges the way it does for a `<div>`. Measured on the
@@ -2065,25 +4145,310 @@ export class FrameXmlDomRenderer {
     // declaration and appears on hover.
     if (frame.type === "Texture" || scale !== 1) {
       if (pinnedLeft && pinnedRight) {
-        const span = `100% - (${element.style.left}) - (${element.style.right})`;
-        element.style.width = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
+        const span = `100% - (${geometry.left}) - (${geometry.right})`;
+        geometry.width = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
       }
       if (pinnedTop && pinnedBottom) {
-        const span = `100% - (${element.style.top}) - (${element.style.bottom})`;
-        element.style.height = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
+        const span = `100% - (${geometry.top}) - (${geometry.bottom})`;
+        geometry.height = scale === 1 ? `calc(${span})` : `calc((${span}) / ${scale})`;
       }
     }
     const anchor = anchorRoles(primary.point);
     const scaleX = pinnedLeft && pinnedRight ? 0 : anchor.x === "LEFT" ? 0 : anchor.x === "RIGHT" ? 1 : 0.5;
     const scaleY = pinnedTop && pinnedBottom ? 0 : anchor.y === "TOP" ? 0 : anchor.y === "BOTTOM" ? 1 : 0.5;
-    element.style.transform = [
+    geometry.transform = [
       ...(translateX ? ["translateX(-50%)"] : []),
       ...(translateY ? ["translateY(-50%)"] : []),
       ...scaleTransform(scaleX, scaleY),
+      animated,
       ...textureMirrors,
       rotation,
+      turned,
     ].filter(Boolean).join(" ");
+    const changed = commit();
     this.clampToScreen(element, frame);
+    return changed;
+  }
+
+  /**
+   * `SetTexCoord(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy)` as one CSS transform about the box's
+   * centre (the transform origin every widget has): the affine map that takes the untransformed
+   * picture — texture coordinate (u, v) at (u·w, v·h) of the box, `object-fit: fill` — to where the
+   * client samples it, UL at the top-left corner, UR at the top-right and LL at the bottom-left.
+   * `applyTexture` cuts the picture to the corners' quad in those same untransformed coordinates.
+   *
+   * With A = UR − UL, B = LL − UL and N = [A B]⁻¹, the box point q shows the texel
+   * UL + A·q.x/w + B·q.y/h, so the picture moves by N about the centre: in pixels the linear part is
+   * D·N·D⁻¹ (D = diag(w, h)) and the translation D·(N·(½ − UL) − ½). The translation is a
+   * percentage of the box, so only the aspect w/h is needed — taken from the bridge's own anchor
+   * walk, which has no rounding and forces no layout, and from the laid-out box without a bridge.
+   *
+   * Exact for a parallelogram of corners, which is every corpus call: the route line's rotation
+   * (TaxiFrame.lua:224-252) and the flyout arrows' quarter turns (PaperDollFrame.lua:1158, 2143).
+   * The client draws two triangles, so a quad whose LR is not UR + LL − UL differs in its LR half.
+   * Outside the picture the client clamps to its edge texels where the page shows nothing; the
+   * route line's picture has a clear border, so the two agree there.
+   */
+  private textureCornerTransform(
+    element: HTMLElement,
+    frame: FrameXmlFrame,
+    corners: readonly [number, number, number, number, number, number, number, number],
+  ): string | undefined {
+    const [ulx, uly, llx, lly, urx, ury] = corners;
+    const ax = urx - ulx;
+    const ay = ury - uly;
+    const bx = llx - ulx;
+    const by = lly - uly;
+    const determinant = ax * by - bx * ay;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return undefined;
+    let box: { readonly width: number; readonly height: number } | undefined = this.#bridge?.geometry(frame);
+    if (!box || !(box.width > 0) || !(box.height > 0)) {
+      box = { width: element.offsetWidth, height: element.offsetHeight };
+    }
+    if (!(box.width > 0) || !(box.height > 0)) return undefined;
+    const aspect = box.width / box.height;
+    const n11 = by / determinant;
+    const n12 = -bx / determinant;
+    const n21 = -ay / determinant;
+    const n22 = ax / determinant;
+    const tx = n11 * (0.5 - ulx) + n12 * (0.5 - uly) - 0.5;
+    const ty = n21 * (0.5 - ulx) + n22 * (0.5 - uly) - 0.5;
+    const round = (value: number): number => Math.round(value * 1e6) / 1e6 || 0;
+    return `translate(${round(tx * 100)}%, ${round(ty * 100)}%) `
+      + `matrix(${round(n11)}, ${round(n21 / aspect)}, ${round(n12 * aspect)}, ${round(n22)}, 0, 0)`;
+  }
+
+  /**
+   * Keep the reverse anchor index current for one frame: the frames it is measured against (anchors
+   * relative to anything but its parent), and whether one of them is hidden.
+   */
+  private indexAnchorTargets(frame: FrameXmlFrame): void {
+    let targets: FrameXmlFrame[] | undefined;
+    let hiddenTarget = false;
+    for (const point of frame.points) {
+      const target = point.relativeTo;
+      if (!target || target === frame.parent) continue;
+      if (!targets) targets = [target];
+      else if (!targets.includes(target)) targets.push(target);
+      if (this.#rendered.get(target)?.effectiveHidden) hiddenTarget = true;
+    }
+    this.indexAnchors(frame, targets);
+    // Only a drawn frame: a hidden one is placed again when it is revealed, which re-applies it.
+    if (hiddenTarget && this.#rendered.get(frame)?.effectiveHidden === false) this.#hiddenAnchored.add(frame);
+    else if (this.#hiddenAnchored.size > 0) this.#hiddenAnchored.delete(frame);
+  }
+
+  private indexAnchors(frame: FrameXmlFrame, targets: readonly FrameXmlFrame[] | undefined): void {
+    const previous = this.#anchorTargets.get(frame);
+    if (previous === undefined && targets === undefined) return;
+    if (previous && targets && previous.length === targets.length
+      && previous.every((target, index) => target === targets[index])) return;
+    for (const target of previous ?? []) {
+      if (targets?.includes(target)) continue;
+      const dependents = this.#dependents.get(target);
+      dependents?.delete(frame);
+      if (dependents?.size === 0) this.#dependents.delete(target);
+    }
+    for (const target of targets ?? []) {
+      if (previous?.includes(target)) continue;
+      let dependents = this.#dependents.get(target);
+      if (!dependents) this.#dependents.set(target, (dependents = new Set()));
+      dependents.add(frame);
+    }
+    if (targets) this.#anchorTargets.set(frame, targets);
+    else this.#anchorTargets.delete(frame);
+  }
+
+  /**
+   * Place again every drawn frame anchored to one of `moved` — the frames this pass re-applied,
+   * which include every drawn descendant of a re-applied frame — and, when one of those comes out
+   * somewhere else, everything anchored to it or to anything drawn inside it, transitively.
+   *
+   * The order is the anchor graph's, not the tree's, so a chain C → B → A settles in one pass when A
+   * resizes, whatever order the three were created in. Each frame is placed at most
+   * `MAX_PLACEMENTS_PER_PASS` times, which bounds an anchor cycle. Frames measured against a hidden
+   * target are placed again as well (see `#hiddenAnchored`).
+   */
+  private replaceDependents(moved: readonly RenderedFrame[]): void {
+    if (this.#dependents.size === 0 && this.#hiddenAnchored.size === 0) return;
+    const queue: FrameXmlFrame[] = [];
+    for (const rendered of moved) if (this.#dependents.has(rendered.frame)) queue.push(rendered.frame);
+    const place = this.boundedPlacer();
+    for (const frame of [...this.#hiddenAnchored]) if (place(frame)) this.collectMoved(frame, queue, place);
+    this.drainDependents(queue, place);
+  }
+
+  /**
+   * One pass's placement of a drawn frame through the anchor graph: at most
+   * `MAX_PLACEMENTS_PER_PASS` times each, answering whether it came out somewhere else. A frame
+   * that is not drawn is not placed (and leaves `#hiddenAnchored`); its reveal re-applies it.
+   */
+  private boundedPlacer(): (frame: FrameXmlFrame) => boolean {
+    const placements = new Map<FrameXmlFrame, number>();
+    return (dependent: FrameXmlFrame): boolean => {
+      const drawn = this.#rendered.get(dependent);
+      if (!drawn || drawn.effectiveHidden !== false) {
+        this.#hiddenAnchored.delete(dependent);
+        return false;
+      }
+      const count = placements.get(dependent) ?? 0;
+      if (count >= MAX_PLACEMENTS_PER_PASS) return false;
+      placements.set(dependent, count + 1);
+      return this.applyGeometry(drawn.element, dependent);
+    };
+  }
+
+  /** Place the dependents of every queued target, queueing in turn each one that moved. */
+  private drainDependents(queue: FrameXmlFrame[], place: (frame: FrameXmlFrame) => boolean): void {
+    for (let index = 0; index < queue.length; index += 1) {
+      const dependents = this.#dependents.get(queue[index]!);
+      if (!dependents) continue;
+      for (const dependent of [...dependents]) if (place(dependent)) this.collectMoved(dependent, queue, place);
+    }
+  }
+
+  /**
+   * A frame came out somewhere else without being re-applied, and everything drawn inside it went
+   * with it: queue it and its drawn descendants as anchor targets, place again the descendants that
+   * are themselves measured against something (their distance to it changed), and move the strata
+   * layers of descendants drawn above it. (A container resize has its own walk, `resizeWalk`.)
+   */
+  private collectMoved(
+    frame: FrameXmlFrame,
+    queue: FrameXmlFrame[],
+    place: (frame: FrameXmlFrame) => boolean,
+  ): void {
+    if (this.#dependents.has(frame)) queue.push(frame);
+    const owner = this.#rendered.get(frame);
+    for (const child of frame.children) {
+      const drawn = this.#rendered.get(child);
+      if (!drawn || drawn.effectiveHidden !== false) continue;
+      const layer = this.#strataLayers.get(child);
+      if (layer && owner) this.placeStrataLayer(layer, owner);
+      if (this.#anchorTargets.has(child)) place(child);
+      this.collectMoved(child, queue, place);
+    }
+  }
+
+  /** Every frame with a drawn strata layer below it: the layers' owners and their ancestors. */
+  private layeredFrames(): Set<FrameXmlFrame> {
+    const frames = new Set<FrameXmlFrame>();
+    for (const child of this.#strataLayers.keys()) {
+      if (this.#rendered.get(child)?.effectiveHidden !== false) continue;
+      for (let at = child.parent, depth = 0; at && depth < 64 && !frames.has(at); at = at.parent, depth += 1) frames.add(at);
+    }
+    return frames;
+  }
+
+  /**
+   * Lay the drawn strata layers below a frame that moved over their owners again, outer layers
+   * first (an inner owner's box is read through the layers around it). `layered` is
+   * `layeredFrames`, so the walk only goes down the paths that lead to a layer.
+   */
+  private placeLayersBelow(frame: FrameXmlFrame, layered: ReadonlySet<FrameXmlFrame>): void {
+    const owner = this.#rendered.get(frame);
+    if (!owner || owner.effectiveHidden !== false) return;
+    for (const child of frame.children) {
+      const layer = this.#strataLayers.get(child);
+      if (layer && this.#rendered.get(child)?.effectiveHidden === false) this.placeStrataLayer(layer, owner);
+      if (layered.has(child)) this.placeLayersBelow(child, layered);
+    }
+  }
+
+  /**
+   * `containerResized`'s walk below one drawn frame: strata layers and clamps are redone, a measured
+   * frame is placed again unless the resize cannot have moved what it is measured against, and a
+   * placement that moved queues everything inside it whose dependents are elsewhere.
+   */
+  private resizeWalk(
+    frame: FrameXmlFrame,
+    queue: FrameXmlFrame[],
+    place: (frame: FrameXmlFrame) => boolean,
+    fixed: Map<Element, boolean>,
+  ): void {
+    const owner = this.#rendered.get(frame);
+    for (const child of frame.children) {
+      const drawn = this.#rendered.get(child);
+      if (!drawn || drawn.effectiveHidden !== false) continue;
+      const layer = this.#strataLayers.get(child);
+      if (layer && owner) this.placeStrataLayer(layer, owner);
+      if (this.#anchorTargets.has(child)) {
+        if (!this.resizeInvariant(child, drawn, fixed) && place(child)) this.queueMoved(child, queue);
+      } else if (child.clampedToScreen) this.clampToScreen(drawn.element, child);
+      this.resizeWalk(child, queue, place, fixed);
+    }
+  }
+
+  /** A frame that moved, and every drawn frame inside it, as anchor targets whose dependents move. */
+  private queueMoved(frame: FrameXmlFrame, queue: FrameXmlFrame[]): void {
+    if (this.#dependents.has(frame)) queue.push(frame);
+    for (const child of frame.children) {
+      const drawn = this.#rendered.get(child);
+      if (drawn && drawn.effectiveHidden === false) this.queueMoved(child, queue);
+    }
+  }
+
+  /**
+   * Whether a container resize leaves a measured frame where it is. A sibling anchor is a number
+   * measured from the frame's containing block (`measureSibling`), and it cannot change when every
+   * target is drawn in the same containing block and that block's size does not follow the
+   * container (`fixedBox`): the target's CSS resolves against the same unchanged box, and a target
+   * that is itself placed again queues its dependents if it moves. Anything else — a target in
+   * another block or a strata layer, a hidden target, a clamp — is placed as before.
+   */
+  private resizeInvariant(frame: FrameXmlFrame, drawn: RenderedFrame, fixed: Map<Element, boolean>): boolean {
+    if (frame.clampedToScreen) return false;
+    const block = drawn.element.parentElement;
+    if (!block || !this.fixedBox(block, fixed)) return false;
+    for (const target of this.#anchorTargets.get(frame) ?? []) {
+      const measured = this.#rendered.get(target);
+      if (!measured || measured.effectiveHidden !== false || target.clampedToScreen) return false;
+      if (measured.element.parentElement !== block) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether a drawn frame's box keeps its size when the container is resized: both dimensions in
+   * pixels, or whatever is not in pixels (a pinned span's `calc`, content) resolved against a block
+   * that keeps its own. The container and strata layers (boxes copied from their owners) never do.
+   */
+  private fixedBox(element: Element, memo: Map<Element, boolean>): boolean {
+    const known = memo.get(element);
+    if (known !== undefined) return known;
+    let result = false;
+    const box = element as HTMLElement;
+    if (element !== this.#container && element.getAttribute("data-framexml-name") !== null
+      && element.getAttribute("data-framexml-strata-layer") === null) {
+      const pixels = /^-?\d+(?:\.\d+)?px$/;
+      const width = pixels.test(box.style.width ?? "");
+      const height = pixels.test(box.style.height ?? "");
+      result = (width && height) || (element.parentElement !== null && this.fixedBox(element.parentElement, memo));
+    }
+    memo.set(element, result);
+    return result;
+  }
+
+  /** A hidden intermediary still participates in the live anchor graph of visible widgets. */
+  private refreshHiddenGeometry(frame: FrameXmlFrame): void {
+    const rendered = this.#rendered.get(frame);
+    if (!rendered?.effectiveHidden || this.#measuringHiddenGeometry.has(frame)) return;
+    // Once per pass: every visible dependent of a hidden frame used to refresh its whole hidden
+    // chain again, each hidden link refreshing its own hidden targets in turn — a count that grows
+    // with the number of paths through the hidden anchor graph. Measured under the DOM stub with the
+    // MPQ vertical and the TSAddons: 100,000+ refreshes of `LFRBrowseFrame`'s column chain in one sync.
+    if (this.#hiddenRefreshed) {
+      if (this.#hiddenRefreshed.has(frame)) return;
+      this.#hiddenRefreshed.add(frame);
+    }
+    this.#measuringHiddenGeometry.add(frame);
+    try {
+      // Resolve hidden ancestors first, without revealing them or updating their paint/assets.
+      if (frame.parent) this.refreshHiddenGeometry(frame.parent);
+      this.applyGeometry(rendered.element, frame);
+    } finally {
+      this.#measuringHiddenGeometry.delete(frame);
+    }
   }
 
   /** Anchor target edges in pixels inside this element's containing block. */
@@ -2094,6 +4459,7 @@ export class FrameXmlDomRenderer {
     readonly x: Readonly<Record<"LEFT" | "RIGHT" | "CENTER", number>>;
     readonly y: Readonly<Record<"TOP" | "BOTTOM" | "CENTER", number>>;
   } | undefined {
+    this.refreshHiddenGeometry(target);
     const targetElement = this.#rendered.get(target)?.element;
     const parent = element.parentElement ?? this.#container;
     if (!targetElement) return undefined;
@@ -2185,30 +4551,32 @@ interface OffsetMetrics extends Offset {
  */
 function offsetMetrics(node: HTMLElement): OffsetMetrics | undefined {
   const hidden = hiddenInLayout(node);
-  const width = hidden ? inlinePixel(node.style?.width) ?? node.offsetWidth : node.offsetWidth;
-  const height = hidden ? inlinePixel(node.style?.height) ?? node.offsetHeight : node.offsetHeight;
   const parent = node.parentElement;
   // A hidden bottom/right-anchored widget has no offset geometry, but its containing block and its
   // own fixed FrameXML size are still authored inline. Resolve the missing leading edge before
   // accepting the browser's hidden-subtree zero. CharacterFrameTab1 is the important stock case:
   // Tab3 and Tab4 chain through a hidden Tab2, so one bogus top=0 moves the whole row to the title.
-  const parentWidth = parent
-    ? inlinePixel(parent.style?.width) ?? (parent.offsetWidth > 0 ? parent.offsetWidth : undefined)
-    : undefined;
-  const parentHeight = parent
-    ? inlinePixel(parent.style?.height) ?? (parent.offsetHeight > 0 ? parent.offsetHeight : undefined)
-    : undefined;
-  const right = hidden ? inlinePixel(node.style?.right) : undefined;
-  const bottom = hidden ? inlinePixel(node.style?.bottom) : undefined;
+  //
+  // Parent anchors are percentages of that block (`top: 50%` + a -50% translate for a LEFT anchor,
+  // `calc(100% - …)` for a right edge), and they are resolved against it too: read as pixels only,
+  // they fell back to the browser's zero. Measured on the LFD list: every row's check box is centred
+  // on its hidden lock icon (LEFT, x = 25, i.e. `left: 25px; top: 50%`), and it came out at
+  // `top: -10px`, half a row above its dungeon.
+  const parentWidth = hidden && parent ? blockSize(parent, "width") : undefined;
+  const parentHeight = hidden && parent ? blockSize(parent, "height") : undefined;
+  const width = hidden ? inlineLength(node.style?.width, parentWidth) ?? node.offsetWidth : node.offsetWidth;
+  const height = hidden ? inlineLength(node.style?.height, parentHeight) ?? node.offsetHeight : node.offsetHeight;
+  const right = hidden ? inlineLength(node.style?.right, parentWidth) : undefined;
+  const bottom = hidden ? inlineLength(node.style?.bottom, parentHeight) : undefined;
   const derivedLeft = right !== undefined && parentWidth !== undefined && typeof width === "number"
     ? parentWidth - right - width : undefined;
   const derivedTop = bottom !== undefined && parentHeight !== undefined && typeof height === "number"
     ? parentHeight - bottom - height : undefined;
   const left = hidden
-    ? inlinePixel(node.style?.left) ?? derivedLeft ?? node.offsetLeft
+    ? inlineLength(node.style?.left, parentWidth) ?? derivedLeft ?? node.offsetLeft
     : node.offsetLeft;
   const top = hidden
-    ? inlinePixel(node.style?.top) ?? derivedTop ?? node.offsetTop
+    ? inlineLength(node.style?.top, parentHeight) ?? derivedTop ?? node.offsetTop
     : node.offsetTop;
   if (typeof left !== "number" || typeof top !== "number"
     || typeof width !== "number" || typeof height !== "number") return undefined;
@@ -2232,6 +4600,107 @@ function hiddenInLayout(node: HTMLElement): boolean {
     current = current.parentElement;
   }
   return false;
+}
+
+/**
+ * One size of a containing block, for resolving a hidden child's percentages: an inline pixel size,
+ * else the laid-out one, else — a hidden block that is itself sized by percentages of its own
+ * parent — its inline expression resolved against that parent, up the hidden chain.
+ */
+function blockSize(node: HTMLElement, axis: "width" | "height", depth = 0): number | undefined {
+  const inline = node.style?.[axis];
+  const pixels = inlinePixel(inline);
+  if (pixels !== undefined) return pixels;
+  const measured = axis === "width" ? node.offsetWidth : node.offsetHeight;
+  if (typeof measured === "number" && measured > 0) return measured;
+  const parent = node.parentElement;
+  if (!parent || depth >= 64) return undefined;
+  return inlineLength(inline, blockSize(parent, axis, depth + 1));
+}
+
+/**
+ * An inline length the renderer wrote — `12px`, `50%`, `calc(100% - 70px)`,
+ * `calc(100% - (40px) - (calc(100% - 150px)))` — in pixels of a containing block `base` units long.
+ *
+ * Only the linear forms `applyGeometry` emits are understood: numbers in `px` or `%`, `+ - * /`,
+ * parentheses and nested `calc()`, where a product or quotient has a plain number on one side.
+ * Anything else (`auto`, `max-content`, a `%` with no base) is `undefined`, the caller's cue to fall
+ * back to the browser's own answer.
+ */
+function inlineLength(value: unknown, base: number | undefined): number | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const pixels = inlinePixel(value);
+  if (pixels !== undefined) return pixels;
+  const linear = parseCssLinear(value);
+  if (!linear) return undefined;
+  if (linear.percent === 0) return linear.pixels;
+  if (base === undefined) return undefined;
+  const resolved = linear.percent * base / 100 + linear.pixels;
+  return Number.isFinite(resolved) ? resolved : undefined;
+}
+
+/** `a·% + b·px`, the value of a linear CSS length; a plain number has neither unit. */
+interface CssLinear { readonly percent: number; readonly pixels: number; readonly number?: boolean }
+
+function parseCssLinear(source: string): CssLinear | undefined {
+  const tokens = source.match(/calc\(|[()+*/]|-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)?|-/gi);
+  if (!tokens || tokens.join("").length !== source.replace(/\s+/g, "").length) return undefined;
+  let index = 0;
+  const peek = (): string | undefined => tokens[index];
+  const expression = (): CssLinear | undefined => {
+    let left = term();
+    while (left && (peek() === "+" || peek() === "-")) {
+      const sign = tokens[index++] === "+" ? 1 : -1;
+      const right = term();
+      if (!right || Boolean(left.number) !== Boolean(right.number)) return undefined;
+      left = { percent: left.percent + sign * right.percent, pixels: left.pixels + sign * right.pixels,
+        ...(left.number ? { number: true } : {}) };
+    }
+    return left;
+  };
+  const term = (): CssLinear | undefined => {
+    let left = factor();
+    while (left && (peek() === "*" || peek() === "/")) {
+      const divide = tokens[index++] === "/";
+      const right = factor();
+      if (!right) return undefined;
+      if (divide) {
+        if (!right.number || right.pixels === 0) return undefined;
+        left = { percent: left.percent / right.pixels, pixels: left.pixels / right.pixels,
+          ...(left.number ? { number: true } : {}) };
+      } else if (right.number) {
+        left = { percent: left.percent * right.pixels, pixels: left.pixels * right.pixels,
+          ...(left.number ? { number: true } : {}) };
+      } else if (left.number) {
+        left = { percent: right.percent * left.pixels, pixels: right.pixels * left.pixels };
+      } else {
+        return undefined;
+      }
+    }
+    return left;
+  };
+  const factor = (): CssLinear | undefined => {
+    const token = tokens[index++];
+    if (token === undefined) return undefined;
+    if (token === "(" || token.toLowerCase() === "calc(") {
+      const inner = expression();
+      return tokens[index++] === ")" ? inner : undefined;
+    }
+    if (token === "-") {
+      const inner = factor();
+      return inner && { percent: -inner.percent, pixels: -inner.pixels, ...(inner.number ? { number: true } : {}) };
+    }
+    const match = /^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)?$/i.exec(token);
+    if (!match) return undefined;
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount)) return undefined;
+    const unit = match[2]?.toLowerCase();
+    return unit === "%" ? { percent: amount, pixels: 0 }
+      : unit === "px" ? { percent: 0, pixels: amount }
+        : { percent: 0, pixels: amount, number: true };
+  };
+  const result = expression();
+  return result && index === tokens.length && !result.number ? result : undefined;
 }
 
 function inlinePixel(value: unknown): number | undefined {
@@ -2376,6 +4845,65 @@ function offsetExpression(base: string, offset: number): string {
   if (offset === 0) return base;
   if (base === "0%") return px(offset);
   return `calc(${base} + ${px(offset)})`;
+}
+
+/** One axis of a frame's box, as CSS: see `resolveAnchorAxis`. */
+interface AnchorAxis {
+  /** `left`/`top`. */
+  readonly start?: string;
+  /** `right`/`bottom`, a distance from the containing block's far edge. */
+  readonly end?: string;
+  /** `width`/`height` between two measured edges. */
+  readonly span?: string;
+  readonly pinnedStart: boolean;
+  readonly pinnedEnd: boolean;
+  /** The start is a centre, finished by a -50% translate. */
+  readonly centred: boolean;
+}
+
+/**
+ * Resolve one axis from its three anchor roles. A string is a parent anchor's CSS (a start distance,
+ * an end distance, or a centre); a number is a sibling anchor's measured edge, in layout pixels
+ * from the containing block's start.
+ *
+ * - Both edges pin the box: two measured edges span it (`start` + `span`); a pair that involves a
+ *   parent anchor writes both CSS edges and lets the containing block solve the size, a measured
+ *   end becoming `calc(100% - edge)`. A measured pair that does not open (end ≤ start) keeps the
+ *   later anchor, at the frame's own size.
+ * - One edge, or only a centre, places the box at its own size; a measured end or centre needs
+ *   that size now, a parent centre leaves it to the translate.
+ */
+function resolveAnchorAxis(
+  start: string | number | undefined,
+  end: string | number | undefined,
+  centre: string | number | undefined,
+  endLast: boolean,
+  size: () => number,
+): AnchorAxis {
+  const placed = (value: string, centred = false): AnchorAxis =>
+    ({ start: value, pinnedStart: !centred, pinnedEnd: false, centred });
+  if (start !== undefined && end !== undefined) {
+    if (typeof start === "number" && typeof end === "number") {
+      if (end > start) return { start: px(start), span: px(end - start), pinnedStart: true, pinnedEnd: false, centred: false };
+      return placed(px(endLast ? end - size() : start));
+    }
+    return {
+      start: typeof start === "number" ? px(start) : start,
+      end: typeof end === "number" ? `calc(100% - ${px(end)})` : end,
+      pinnedStart: true,
+      pinnedEnd: true,
+      centred: false,
+    };
+  }
+  if (start !== undefined) return placed(typeof start === "number" ? px(start) : start);
+  if (end !== undefined) {
+    return typeof end === "number" ? placed(px(end - size()))
+      : { end, pinnedStart: false, pinnedEnd: true, centred: false };
+  }
+  if (centre !== undefined) {
+    return typeof centre === "number" ? placed(px(centre - size() / 2)) : placed(centre, true);
+  }
+  return { pinnedStart: false, pinnedEnd: false, centred: false };
 }
 
 /** A CSS family name derived from the WoW font path, stable across reloads. */

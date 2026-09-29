@@ -2,6 +2,7 @@ import type { GlueLuaVm } from "./GlueLua.js";
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { loginToRealmList, type AuthSessionResult } from "../../auth/login.js";
+import { AuthProtocolError } from "../../auth/AuthProtocol.js";
 import type { BinaryByteStream } from "../../transport/WebSocketByteStream.js";
 import { GlueSession, type GlueSessionOptions } from "./GlueSession.js";
 import {
@@ -9,6 +10,9 @@ import {
 } from "./GlueCharacterApi.js";
 import { GlueCreation, type GlueCreationOptions } from "./GlueCreation.js";
 import { installGlueCreateApi, type GlueCreationView } from "./GlueCreateApi.js";
+import {
+  frameXmlLuaDeclensionSetCount, frameXmlLuaDeclineName,
+} from "../ui/framexml_compat/FrameXmlDeclension.js";
 
 /**
  * Where glue sound goes.
@@ -66,6 +70,8 @@ export interface GlueApiOptions {
   readonly connect?: (url: string) => Promise<BinaryByteStream>;
   /** Called when the SRP6 handshake produced a session and a realm list. */
   readonly onSession?: (session: AuthSessionResult) => void;
+  /** Numeric authserver rejection only; never receives account or password. */
+  readonly onAuthDiagnostic?: (code: number) => void;
   /** Reported once per C-API global that is only a recorded stub. */
   readonly onStub?: (name: string) => void;
   readonly onLaunchUrl?: (url: string) => void;
@@ -119,6 +125,22 @@ const EMPTY_CREATION_SOURCE: GlueCreationOptions["source"] = {
 export const GLUE_BUILD_INFO: readonly [string, string, string, number] =
   Object.freeze(["3.3.5", "12340", "Jun 24 2010", 30300]) as readonly [string, string, string, number];
 
+/** AuthResult from the selected TrinityCore AuthCodes.h, mapped to plain GlueStrings. */
+const AUTH_FAILURE_STRINGS: Readonly<Record<number, string>> = {
+  0x03: "AUTH_BANNED",
+  0x04: "AUTH_UNKNOWN_ACCOUNT",
+  0x05: "AUTH_INCORRECT_PASSWORD",
+  0x06: "AUTH_ALREADY_ONLINE",
+  0x07: "AUTH_NO_TIME",
+  0x08: "AUTH_DB_BUSY",
+  0x09: "AUTH_VERSION_MISMATCH",
+  0x0b: "AUTH_BAD_SERVER_PROOF",
+  0x0c: "AUTH_SUSPENDED",
+  0x0d: "AUTH_REJECT",
+  0x0f: "AUTH_PARENTAL_CONTROL",
+  0x10: "AUTH_LOCKED_ENFORCED",
+};
+
 /**
  * CVars the glue screens read before anything has written one.
  *
@@ -168,14 +190,14 @@ const CONSTANT_STUBS: Readonly<Record<string, readonly unknown[]>> = Object.free
   // `CharacterSelect_OnUpdate` keeps the button hidden — which is the correct screen.
   RequestRealmSplitInfo: [], SetRealmSplitState: [], SetPreferredInfo: [], IsStreamingTrial: [false],
   // Character select / create — the rest of the list is real in `GlueCharacterApi.ts`; these are
-  // paid services and declension, which this server has no packets for.
-  RenameCharacter: [], DeclineCharacter: [], DeclineName: [],
+  // paid services and sending a declension, which this server has no packets for. (Declining a
+  // name is client-side and real: `installDeclension`.)
+  RenameCharacter: [], DeclineCharacter: [],
   // The whole of `CharacterCreate` is real in `GlueCreateApi.ts`; what stays here is the paid
   // services this server has no packets for, and the random-name generator, which in the original
   // is a server call (`CMSG_CHAR_RENAME`'s cousin) and not a table this client can carry.
   CustomizeExistingCharacter: [], GetRandomName: [""],
   PaidChange_GetCurrentRaceIndex: [1], PaidChange_GetCurrentClassIndex: [1], PaidChange_GetName: [""],
-  GetNumDeclensionSets: [0],
   // Account, billing and messages.
   GetGameAccountInfo: [], GetNumGameAccounts: [0], SetGameAccount: [], IsTrialAccount: [false],
   GetBillingPlan: [0], GetBillingTimeRemaining: [0], GetClientExpansionLevel: [2],
@@ -304,6 +326,7 @@ export class GlueApi {
     this.installBackgroundModels();
     this.installLogin();
     this.installLegalNotices();
+    this.installDeclension();
     installGlueCharacterApi({
       vm: this.#vm,
       session: this.#session,
@@ -349,6 +372,21 @@ export class GlueApi {
       vm.registerGlobal(query, () => [this.#acceptedNotices.has(query)]);
       vm.registerGlobal(accept, () => { this.#acceptedNotices.add(query); return []; });
     }
+  }
+
+  /**
+   * The ruRU declension step (`GlueLocalizationPost.lua`'s DeclensionFrame, shown on
+   * FORCE_DECLINE_CHARACTER): `GetNumDeclensionSets(name, sex)` pages the sets and
+   * `DeclineName(name, sex, set)` fills the five boxes. Both are the client's own rule engine
+   * (FrameXmlDeclension.ts, from Wow.exe 12340), not a server answer, so they are real here; they
+   * were constant stubs answering 0 sets and no forms.
+   */
+  private installDeclension(): void {
+    const vm = this.#vm;
+    vm.registerGlobal("DeclineName", (args) =>
+      frameXmlLuaDeclineName(typeof args[0] === "string" ? args[0] : String(args[0] ?? ""), args[1], args[2]));
+    vm.registerGlobal("GetNumDeclensionSets", (args) =>
+      [frameXmlLuaDeclensionSetCount(typeof args[0] === "string" ? args[0] : String(args[0] ?? ""), args[1])]);
   }
 
   /** The logical screen, live where the host has one and static where it does not. */
@@ -590,8 +628,17 @@ export class GlueApi {
       this.#loginStream?.close();
       this.#loginStream = undefined;
       this.fireEvent("CLOSE_STATUS_DIALOG");
-      const message = error instanceof Error ? error.message : String(error);
+      let message = error instanceof Error ? error.message : String(error);
+      if (error instanceof AuthProtocolError && error.code !== undefined) {
+        this.#options.onAuthDiagnostic?.(error.code);
+        const key = AUTH_FAILURE_STRINGS[error.code] ?? "AUTH_FAILED";
+        message = this.glueString(key, "Ошибка авторизации");
+      }
       this.fireEvent("OPEN_STATUS_DIALOG", "OKAY", message);
+      // GlueDialog_Show measures its FontString before calling GlueDialog:Show(). The DOM reports
+      // zero height while that frame is hidden, so its first background overlaps the OK button.
+      // The stock UPDATE_STATUS_DIALOG handler measures the now-visible text and resizes the box.
+      this.status(message);
     }
   }
 
