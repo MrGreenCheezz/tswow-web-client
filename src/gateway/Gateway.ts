@@ -33,6 +33,7 @@ import { loadMacroIcons } from "./MacroIcons.js";
 import { CALENDAR_CATALOG_VERSION, loadCalendarCatalog } from "./CalendarCatalog.js";
 import { GLYPH_CATALOG_VERSION, loadGlyphCatalog } from "./GlyphCatalog.js";
 import { CHAR_TITLES_VERSION, loadCharTitles } from "./CharTitleMetadata.js";
+import { serveCatalogRoute, type CatalogCache } from "./CatalogRoutes.js";
 import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
 import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
 import { loadReputationMetadata } from "./ReputationMetadata.js";
@@ -54,6 +55,8 @@ import {
 } from "./PatchStatus.js";
 import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./ClientMediaOverlay.js";
 import { validAssetPath } from "./AssetPath.js";
+import { listeningServerError } from "./ProcessGuard.js";
+import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import {
   isLoopbackAddress, MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
   validModuleFileName, validModuleName, writeModuleFile, type ModuleRoot,
@@ -327,8 +330,9 @@ export interface GatewayOptions {
   /**
    * Whether `PUT /modules/<kind>/<mod>/<file>` may write, and even then only from this machine.
    *
-   * Off unless `MODULE_UI_WRITE=1`. The gateway is an unauthenticated pipe by design and says so at
-   * start-up, so the one route that touches the disk is the one route that has to be asked for.
+   * Off unless `MODULE_UI_WRITE=1`. The gateway is an unauthenticated pipe by design (the start-up
+   * warning in `GatewayConfiguration.ts` says so when it listens beyond loopback and accepts any
+   * Origin), so the one route that touches the disk is the one route that has to be asked for.
    */
   moduleWrite?: boolean;
   /**
@@ -382,10 +386,6 @@ function rawDataToBuffer(data: RawData): Buffer {
   if (Array.isArray(data)) return Buffer.concat(data);
   if (data instanceof ArrayBuffer) return Buffer.from(data);
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-}
-
-function originAllowed(origin: string | undefined, allowed: readonly string[]): origin is string {
-  return origin !== undefined && (allowed.includes("*") || allowed.includes(origin));
 }
 
 /** A browser same-origin GET omits Origin; Fetch Metadata still distinguishes it from cross-site. */
@@ -691,6 +691,8 @@ class DatasetIndexes {
   charTitles: Promise<string> | undefined = undefined;
   /** The stock currency tab's CurrencyTypes/CurrencyCategory rows (CurrencyCatalog.ts), serialized once. */
   currencyCatalog: Promise<string> | undefined = undefined;
+  /** Every CatalogRoutes.ts answer, serialized once and keyed by pathname; `reset()` forgets the map. */
+  catalogs: CatalogCache | undefined = undefined;
   /** The serialized body and its validator, not the rows: the JSON is built once per dataset, not per request. */
   achievementCatalog: Promise<{ readonly body: string; readonly etag: string }> | undefined = undefined;
   reputationMetadata: ReturnType<typeof loadReputationMetadata> | undefined = undefined;
@@ -1685,8 +1687,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
      * by hand. A module and a filename never hold one, so the shape `[A-Za-z0-9_-]` already rules
      * out `..`, both separators and every absolute path — there is nothing left to check by hand.
      *
-     * `PUT` is answered by the same block, and refused by default. The gateway warns at start-up
-     * that it is an unauthenticated pipe (`main.ts:34-39`), so a route that writes files has to be
+     * `PUT` is answered by the same block, and refused by default. The gateway is an unauthenticated
+     * pipe (`createGatewayConfiguration` warns so at start-up when it listens beyond loopback and
+     * accepts any Origin), so a route that writes files has to be
      * switched on deliberately (`MODULE_UI_WRITE=1`) *and* has to be talking to this machine: the
      * check is on the socket's own address rather than on any header, because a header is written
      * by whoever is asking. М8's builder overlay is what turns it on.
@@ -2463,6 +2466,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       return;
     }
+
+    // Every catalog route added since char-titles (CatalogRoutes.ts): one table, one memo per dataset.
+    if (await serveCatalogRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
 
     // The stock PaperDoll title picker's CharTitles rows (CharTitleMetadata.ts), fetched once per world mount.
     if (request.method === "GET" && pathname === "/dbc/char-titles" && options.dbcDirectory) {
@@ -3437,25 +3443,28 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   authServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.auth));
   worldServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.world));
 
+  // Nothing in here may throw or leave an `error` unheard: Node has already taken its own handling
+  // off the socket, so either one would end the process (see UpgradeGuard.ts). Refusals go only
+  // through `refuseUpgrade`, which answers and then destroys.
   server.on("upgrade", (request, socket, head) => {
-    const origin = request.headers.origin;
-    if (!originAllowed(origin, options.allowedOrigins)) {
-      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-      return;
+    socket.on("error", () => socket.destroy());
+    try {
+      const route = routeUpgrade(request, { allowedOrigins: options.allowedOrigins });
+      if (route.kind === "refuse") {
+        refuseUpgrade(socket, route.status);
+        return;
+      }
+      const address = peerAddress(request);
+      if (bridged >= MAX_BRIDGED_SOCKETS || (bridgedPerAddress.get(address) ?? 0) >= MAX_BRIDGED_SOCKETS_PER_ADDRESS) {
+        refuseUpgrade(socket, 503);
+        return;
+      }
+      const selected = route.kind === "auth" ? authServer : worldServer;
+      selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));
+    } catch (error) {
+      console.error("Gateway: the upgrade handler failed; answered 500:", error);
+      refuseUpgrade(socket, 500);
     }
-
-    const pathname = new URL(request.url ?? "/", "http://gateway.local").pathname;
-    const selected = pathname === "/auth" ? authServer : pathname === "/world" ? worldServer : undefined;
-    if (!selected) {
-      socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
-      return;
-    }
-    const address = peerAddress(request);
-    if (bridged >= MAX_BRIDGED_SOCKETS || (bridgedPerAddress.get(address) ?? 0) >= MAX_BRIDGED_SOCKETS_PER_ADDRESS) {
-      socket.end("HTTP/1.1 503 Service Unavailable\r\n\r\n");
-      return;
-    }
-    selected.handleUpgrade(request, socket, head, (webSocket) => selected.emit("connection", webSocket, request));
   });
 
   try {
@@ -3463,6 +3472,11 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       server.once("error", reject);
       server.listen(options.port, options.host, () => {
         server.off("error", reject);
+        // From here an `error` is the running server's, not a failed start. A failed accept is thrown
+        // on with a line that says so: on Windows the server never accepts again after one, and the
+        // process guard closes the gateway in order rather than leave it deaf. Anything else is only
+        // logged (`listeningServerError`, ProcessGuard.ts).
+        server.on("error", (error) => listeningServerError(error));
         resolve();
       });
     });

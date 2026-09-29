@@ -101,12 +101,11 @@ test("a body is the lines that will run, and blank ones are not lines", () => {
   assert.deepEqual(macroLines("/dance\n\n  /say Привет  \n"), ["/dance", "/say Привет"]);
 });
 
-test("a conditional is refused out loud rather than half-run", () => {
-  // The real client evaluates `[combat]` in a restricted environment this one has no equivalent
-  // of, so running the line anyway would fire the wrong half of the macro. A single `[@unit]`
-  // is the one bracket form that runs.
-  const problems = macroProblems("Бой", "/cast [combat] Удар");
-  assert.ok(problems.some((line) => line.includes("условия")));
+test("a conditional is evaluated when it runs; only options that cannot be read are refused", () => {
+  // Conditions are the client's own macro options, evaluated as the line runs (macro/MacroOptions.ts),
+  // so `[combat]` is written like any other line; a bracket never closed cannot be read at all.
+  assert.deepEqual(macroProblems("Бой", "/cast [combat] Удар; Рывок"), []);
+  assert.ok(macroProblems("Бой", "/cast [combat Удар").some((line) => line.includes("не закрыта скобка")));
   assert.deepEqual(macroProblems("Бой", "/cast [@target] Удар"), []);
   assert.deepEqual(macroProblems("Танец", "/dance"), []);
   assert.ok(macroProblems("", "/dance").some((line) => line.includes("имя")));

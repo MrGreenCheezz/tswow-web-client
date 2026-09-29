@@ -8,12 +8,16 @@ import { sha1Bytes } from "../auth/Srp6.js";
 import {
   buildCharacterGuid,
   buildCreateCharacter,
+  buildRenameCharacter,
   parseCharacterList,
   parseCharacterResult,
   parseLoginVerifyWorld,
+  parseRenameResult,
+  WorldAuthError,
   type CharacterSummary,
   type CreateCharacterRequest,
   type LoginLocation,
+  type RenameResult,
 } from "./CharacterProtocol.js";
 import { WorldConnection, type WorldPacket } from "./WorldConnection.js";
 import { UnhandledOpcodeLog } from "./UnhandledOpcodes.js";
@@ -34,6 +38,7 @@ import {
   parsePlayerBound, parseProficiency, parseReferAFriendFailure, parseRemovedSpell,
   parseServerFirstAchievement, parseSocketGems, parseStandState, parseSupercededSpell,
   parseTalentsInfo, parseTitleEarned, parseUnlearnSpells,
+  buildBinderActivate, parseTalentWipeConfirm,
   type BindPoint, type EquipmentSet, type FactionState, type TalentsInfo,
 } from "./CharacterProgressProtocol.js";
 import { parseInspectTalent, type InspectResult } from "./InspectProtocol.js";
@@ -473,7 +478,8 @@ import {
 /** The part of a MovementInfo that is not the flags, the time or the position. */
 export type MovementExtra = Omit<MovementInfo, "flags" | "flags2" | "time" | "position">;
 import {
-  ackOpcodeForSpeed, buildForcedSpeedAck, buildKnockBackAck, buildMovementToggleAck, buildSplineDone, buildTeleportAck,
+  ackOpcodeForSpeed, buildForcedSpeedAck, buildKnockBackAck, buildMovementToggleAck, buildNotActiveMover,
+  buildSplineDone, buildTeleportAck,
   buildWorldportAck, isForcedSpeed, isMovementToggle, movementToggleFor, parseClientControlUpdate,
   parseForcedSpeed, parseKnockBack, parseMovementToggle, parseMultipleMoves, parseNewWorld,
   parseTeleportRequest, parseTransferAborted, parseTransferPending,
@@ -496,7 +502,12 @@ import {
   buildSetDifficulty, parseDungeonDifficulty, parseEncounterFrame, parseInstanceDifficulty,
   parseInstanceLockWarning, parseInstanceMapId, parseInstanceResetFailed, parseRaidGroupOnly,
   parseRaidInstanceInfo, parseRaidInstanceMessage, RAID_INSTANCE_WELCOME, type InstanceLockout,
+  buildInstanceLockResponse, buildAreaTrigger,
 } from "./InstanceProtocol.js";
+import {
+  canAfford, playerAlive, withinInteractionDistance,
+  type BinderConfirmRequest, type InstanceLockRequest, type TalentWipeAnswer, type TalentWipeRequest,
+} from "./ConfirmationProtocol.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { UNIT_FLAG_IN_COMBAT } from "./FactionRules.js";
 
@@ -508,6 +519,8 @@ const PENDING_CAST_TTL = 60_000;
 const GAME_OBJECT_TEMPLATE_WAIT_MS = 10_000;
 /** The flag-carrier poll: once a second is plenty for a map icon, however often the UI asks. */
 const FLAG_CARRIER_POLL_MS = 1_000;
+/** The shortest window `netBandwidth` turns into a rate; asking more often repeats the last one. */
+const NET_RATE_WINDOW_MS = 500;
 /** `UNIT_FLAG_MOUNT`: the authoritative mounted bit in `UNIT_FIELD_FLAGS`. */
 const UNIT_FLAG_MOUNT = 0x08000000;
 /** Spellbook's client action row: it maps to the melee protocol, never CMSG_CAST_SPELL. */
@@ -536,11 +549,15 @@ import {
   parseClearCooldown,
   parseCooldownEvent,
   parseInitialSpells,
+  isCooldownOnHold,
   parseSpellCastHeader, parseSpellGo,
   parseSpellCooldown,
   type KnownSpell,
 } from "./SpellProtocol.js";
 import { applyAuraUpdate, parseAuraUpdate, type ActiveAura } from "./AuraProtocol.js";
+import { missReasonText } from "./MissReasons.js";
+import { formatGlobalStringByName } from "./GlobalStringFormat.js";
+import { nameOr, WORLD_NAME_FALLBACKS, type WorldNameKind, type WorldNameSources } from "./WorldNames.js";
 import {
   buildGossipHello,
   buildGossipSelect,
@@ -633,12 +650,6 @@ export interface WorldLogin {
    */
   addons?: readonly DeclaredAddon[];
 }
-
-/** `SpellMissInfo`, in the core's own order, worded for the text that floats over a head. */
-const MISS_REASONS: Readonly<Record<number, string>> = {
-  1: "промах", 2: "сопротивление", 3: "уклонение", 4: "парирование", 5: "блок", 6: "уклонение",
-  7: "иммунитет", 8: "отражено", 9: "поглощено", 10: "отражено", 11: "не в цель", 12: "нет цели",
-};
 
 interface PendingSpellCast {
   spellId: number;
@@ -774,6 +785,8 @@ export class WorldClient {
   onEmote: ((guid: bigint, emoteId: number) => void) | undefined;
   /** The unit this client is allowed to move: its own character, or whatever it is possessing. */
   controlledGuid: bigint | undefined;
+  /** The unit the last `SMSG_CLIENT_CONTROL_UPDATE` refused (allowed = 0) — the character under a fear, or a vehicle left. */
+  controlRefusedGuid: bigint | undefined;
   /** Whether `SMSG_CLIENT_CONTROL_UPDATE` has spoken; until it does, the client claims its own. */
   #controlAnnounced = false;
   /** `SMSG_MOVE_KNOCK_BACK`: the character has been thrown, and the physics has to follow. */
@@ -804,6 +817,14 @@ export class WorldClient {
   summonRequest: SummonRequest | undefined;
   /** Monotonic deadlines are recorded when packets arrive, before any UI is opened. */
   summonExpiresAt = 0;
+  /**
+   * М1 (ConfirmationProtocol.ts): the innkeeper's «make this place home?», the trainer's talent-reset
+   * quote and the instance lock, each until answered once, out of the NPC's reach or past the
+   * server's deadline (`expireInteractionRequests`), or the map changes.
+   */
+  binderConfirm: BinderConfirmRequest | undefined;
+  talentWipeConfirm: TalentWipeRequest | undefined;
+  instanceLock: InstanceLockRequest | undefined;
   dungeonDifficulty = 0;
   raidDifficulty = 0;
   /** The difficulty of the map the character is standing on. */
@@ -845,6 +866,12 @@ export class WorldClient {
   readonly cooldowns = new Map<number, number>();
   /** The start/duration pair that produced each end time, for stable cooldown rendering. */
   readonly cooldownSnapshots = new Map<number, CooldownSnapshot>();
+  /**
+   * Cooldowns on hold — spell id to its category — from `SMSG_INITIAL_SPELLS`' special pair
+   * (`isCooldownOnHold`): the aura that holds them is up and the timer has not started. Not a timer
+   * and not in `cooldowns`; `SMSG_COOLDOWN_EVENT` or `SMSG_CLEAR_COOLDOWN` lets go of one.
+   */
+  readonly cooldownHolds = new Map<number, number>();
   onCooldownsChanged: (() => void) | undefined;
   onCooldownEvent: ((spellId: number) => void) | undefined;
   /** A spell went off: who cast it, which one, and everything the server says it landed on. */
@@ -979,6 +1006,12 @@ export class WorldClient {
   readonly chatLog: ChatMessage[] = [];
   onChatMessage: ((message: ChatMessage) => void) | undefined;
   readonly names = new NameCache();
+  /**
+   * М-A4-4: the browser's lookups for the ids this client prints — spells, zones, maps, items. Filled
+   * when the world is entered; until then, and on any miss, a text says a neutral word and never the
+   * number. Not `names`: that is the player-name cache above.
+   */
+  worldNames: WorldNameSources = {};
   onNamesChanged: (() => void) | undefined;
   group: GroupState | undefined;
   /**
@@ -1305,6 +1338,10 @@ export class WorldClient {
    * original client's does: `WorldSocket::HandlePing` reads it into `WorldSession::SetLatency`.
    */
   latencyMs: number | undefined;
+  /** The open `netBandwidth` window: when it opened and the socket's counters at that moment. */
+  #netWindow: { at: number; bytesIn: number; bytesOut: number } | undefined;
+  /** The rates the last closed window measured, in KB/s. */
+  #netRates = { inKBps: 0, outKBps: 0 };
   #closed = false;
   #pendingGossipGuid = 0n;
   /** A selected gossip option may answer with any NPC service instead of another gossip page. */
@@ -1356,7 +1393,15 @@ export class WorldClient {
     };
   }
 
-  static async connect(stream: BinaryByteStream, login: WorldLogin): Promise<WorldClient> {
+  /**
+   * `hooks.onQueue` hears the session's place in the realm's login queue each time it moves, for a
+   * screen that shows it; the connection only resolves once the realm lets the session in.
+   */
+  static async connect(
+    stream: BinaryByteStream,
+    login: WorldLogin,
+    hooks: { readonly onQueue?: (position: number) => void } = {},
+  ): Promise<WorldClient> {
     const connection = new WorldConnection(stream);
     const challengePacket = await connection.read();
     if (challengePacket.opcode !== OPCODES.SMSG_AUTH_CHALLENGE) throw new Error("Worldserver did not send SMSG_AUTH_CHALLENGE");
@@ -1407,9 +1452,17 @@ export class WorldClient {
 
     while (true) {
       const response = await client.#waitFor(OPCODES.SMSG_AUTH_RESPONSE);
-      const code = response.payload[0];
+      const payload = response.payload;
+      const code = payload[0];
       if (code === AUTH_OK) break;
-      if (code !== AUTH_WAIT_QUEUE) throw new Error(`World authentication failed with code ${code ?? "missing"}`);
+      if (code !== AUTH_WAIT_QUEUE) throw new WorldAuthError(code);
+      // Two layouts. World::AddQueuedPlayer answers with SendAuthResponse's long form: code, billing
+      // time, billing flags, rested time, expansion, then the position (AuthHandler.cpp:22-38). Every
+      // later move of the queue is SendAuthWaitQueue: code, position, a zero (WorldSession.cpp:770-786).
+      const at = payload.byteLength >= 15 ? 11 : 1;
+      if (payload.byteLength >= at + 4) {
+        hooks.onQueue?.(new DataView(payload.buffer, payload.byteOffset + at, 4).getUint32(0, true));
+      }
     }
     client.startPing();
     return client;
@@ -1428,6 +1481,11 @@ export class WorldClient {
   async deleteCharacter(guid: bigint): Promise<number> {
     this.#connection.send(OPCODES.CMSG_CHAR_DELETE, buildCharacterGuid(guid));
     return parseCharacterResult((await this.#waitFor(OPCODES.SMSG_CHAR_DELETE)).payload);
+  }
+
+  async renameCharacter(guid: bigint, name: string): Promise<RenameResult> {
+    this.#connection.send(OPCODES.CMSG_CHAR_RENAME, buildRenameCharacter(guid, name));
+    return parseRenameResult((await this.#waitFor(OPCODES.SMSG_CHAR_RENAME)).payload);
   }
 
   async loginCharacter(guid: bigint): Promise<LoginLocation> {
@@ -1490,6 +1548,11 @@ export class WorldClient {
       this.#awaitingTransportArrivalMapId = transportTransfer ? world.mapId : undefined;
       // A template answer from the old map cannot authorize an interaction in the new one.
       this.#settleAllGameObjectTemplateWaiters();
+      // Nor can a question asked there: the innkeeper and the trainer stayed behind, and the core
+      // binds a player to the instance left only while still inside it (Player::Update).
+      this.binderConfirm = undefined;
+      this.talentWipeConfirm = undefined;
+      this.#endInstanceLock();
       // TrinityCore removes the player from the old map, sends NEW_WORLD, then recreates self,
       // transport and visibility after WORLDPORT_ACK (Player.cpp:1887-1907; Map.cpp:3045-3080).
       // It therefore has no old-map OUT_OF_RANGE packet to retire these client objects. Keep the
@@ -1532,6 +1595,14 @@ export class WorldClient {
       // An old selected unit is gone after a map transfer. This also stops local melee/repeat
       // state without sending a speculative selection packet while WORLDPORT_ACK is in flight.
       this.#checkTarget();
+      // A battleground's end refuses the character's mover and leaves it to the client to drop that
+      // at the teleport (Battleground.cpp BlockMovement: «no need to send with uint8(1)»); the core
+      // allows the mover again on arrival without a packet (Player::SendInitialPacketsBeforeAddToMap).
+      // Start over as at login: `#activateMover` claims the character after this packet, behind the ACK.
+      this.movementReady = false;
+      this.controlledGuid = undefined;
+      this.controlRefusedGuid = undefined;
+      this.#controlAnnounced = false;
       // Nothing the player does counts until this is sent.
       this.#connection.send(OPCODES.MSG_MOVE_WORLDPORT_ACK, buildWorldportAck());
       // The handler for ACK changes the player's map synchronously. Query only afterwards, so
@@ -1605,12 +1676,12 @@ export class WorldClient {
       const control = parseClientControlUpdate(packet.payload);
       // Who the client may move. The server drops every movement packet from a client that has
       // not named its mover, and says nothing about it — so this reply is what keeps the character
-      // moving at all. It spells the guid the other way round, full rather than packed.
-      this.#connection.send(
-        control.allowed ? OPCODES.CMSG_SET_ACTIVE_MOVER : OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER,
-        buildCharacterGuid(control.guid));
+      // moving at all. The claim spells the guid in full; the release is read packed by the core.
+      if (control.allowed) this.#connection.send(OPCODES.CMSG_SET_ACTIVE_MOVER, buildCharacterGuid(control.guid));
+      else this.#connection.send(OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER, buildNotActiveMover(control.guid));
       this.movementReady = control.allowed;
       this.controlledGuid = control.allowed ? control.guid : undefined;
+      this.controlRefusedGuid = control.allowed ? undefined : control.guid;
       // From here on the server decides who moves what. Without this the claim made at login
       // would be re-made on the very next packet and take back control the server just revoked.
       this.#controlAnnounced = true;
@@ -1827,6 +1898,13 @@ export class WorldClient {
     // server processes the dismount first, while fields and auras remain server-authoritative.
     this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
     return activeMount;
+  }
+
+  /** `Dismount()` (/dismount): the same empty CMSG_CANCEL_MOUNT_AURA, only while mounted. */
+  dismount(): void {
+    const selfGuid = this.state.selfGuid;
+    if (this.#closed || selfGuid === undefined || !isMounted(this.state.objects.get(selfGuid))) return;
+    this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
   }
 
   castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false,
@@ -2111,6 +2189,24 @@ export class WorldClient {
     this.cooldownSnapshots.delete(spellId);
     this.#locallyStartedCooldowns.delete(spellId);
     this.itemCooldowns.delete(spellId);
+  }
+
+  /**
+   * Whether the spell is held: its cooldown starts when its aura ends, and until then the core
+   * refuses it (SPELL_FAILED_NOT_READY) with nothing to count down — stock `GetSpellCooldown`
+   * answers `enable = 0`. A hold holds its category too: `SpellHistory::AddCooldown` files the entry
+   * under it (SpellHistory.cpp:405-406) and `HasCooldown` refuses every spell of a category with an
+   * entry (:473-487). A spell's category is known here only from `SMSG_INITIAL_SPELLS`.
+   *
+   * A hold that starts mid-session sends no packet (`SpellAuras.cpp:571-577` starts it in silence),
+   * so only the holds a login reports are known.
+   */
+  isSpellOnHold(spellId: number): boolean {
+    if (this.cooldownHolds.has(spellId)) return true;
+    const categoryId = this.spellCategories.get(spellId);
+    if (categoryId === undefined || categoryId === 0) return false;
+    for (const held of this.cooldownHolds.values()) if (held === categoryId) return true;
+    return false;
   }
 
   cooldownRemaining(spellId: number, now = performance.now()): number {
@@ -2760,6 +2856,15 @@ export class WorldClient {
    */
   resetInstances(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_RESET_INSTANCES);
+  }
+
+  /**
+   * `CMSG_AREATRIGGER` (2.01): the character walked into this AreaTrigger.dbc volume. Everything the
+   * trigger does — a portal, a tavern, an objective, a flag — is the server's; the caller
+   * (browser/game/AreaTriggers.ts) sends the heartbeat that puts the character inside it first.
+   */
+  enterAreaTrigger(id: number): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_AREATRIGGER, buildAreaTrigger(id));
   }
 
   // --- Slice P5: the raid, the rolls, the guild bank, the calendar, contacts and charters. ---
@@ -3696,6 +3801,33 @@ export class WorldClient {
   }
 
   /**
+   * A name for an id a text is about to print (М-A4-4): the browser's lookup first, then — for an
+   * item — this client's own query cache, which asks the realm on a miss so that a later text has
+   * it; otherwise the neutral word for the thing. Never the number.
+   */
+  #nameOf(kind: WorldNameKind, id: number): string {
+    if (kind === "item") return nameOr((entry) => this.#itemName(entry), id, WORLD_NAME_FALLBACKS.item);
+    return nameOr((entry) => this.worldNames[kind]?.(entry), id, WORLD_NAME_FALLBACKS[kind]);
+  }
+
+  /** An item's name: the browser's lookup, else the query cache — which asks the realm once on a miss. */
+  #itemName(entry: number): string | undefined {
+    const named = this.worldNames.item?.(entry);
+    if (named !== undefined && named.trim() !== "") return named;
+    const template = this.itemTemplate(entry);
+    return template?.found ? template.name : undefined;
+  }
+
+  /** The names a cast refusal's tail may need; `spellFailureText` supplies the words for a miss. */
+  #castFailureNames(): WorldNameSources {
+    return {
+      area: (id) => this.worldNames.area?.(id),
+      item: (entry) => this.#itemName(entry),
+      itemSubclass: (itemClass, mask) => this.worldNames.itemSubclass?.(itemClass, mask),
+    };
+  }
+
+  /**
    * The name of an item *set* — what a random-suffix item is titled with.
    *
    * The one query here that answers nothing when the row is missing: no packet at all, not even a
@@ -4438,6 +4570,9 @@ export class WorldClient {
     this.#closed = true;
     this.#pendingItemUses.clear();
     this.summonRequest = undefined;
+    this.binderConfirm = undefined;
+    this.talentWipeConfirm = undefined;
+    this.instanceLock = undefined;
     this.sharedQuest = undefined;
     this.battlefieldQueues.clear();
     this.battlefieldInviteDeadlines.clear();
@@ -4486,7 +4621,16 @@ export class WorldClient {
   async #waitFor(opcode: number): Promise<WorldPacket> {
     for (let ignored = 0; ignored < 2000; ignored++) {
       const packet = await this.#connection.read();
-      if (this.#handleUtilityPacket(packet)) continue;
+      // The world loop's guarantee (`#deliver`), here too: a utility packet this client cannot
+      // parse is recorded and dropped, and does not reject the character list or the login that is
+      // waiting. The handlers are synchronous, so arrival order is untouched, and the awaited
+      // opcode is never one of theirs, so it cannot be lost to this.
+      try {
+        if (this.#handleUtilityPacket(packet)) continue;
+      } catch (error) {
+        this.#recordPacketError(packet.opcode, error instanceof Error ? error : new Error(String(error)), packet.payload.byteLength);
+        continue;
+      }
       if (packet.opcode === opcode) return packet;
       this.#deferred.push(packet);
     }
@@ -4518,6 +4662,31 @@ export class WorldClient {
     if (sequence !== sent.sequence) return;
     this.#pingSentAt = undefined;
     this.latencyMs = Math.max(0, Math.round(performance.now() - sent.at));
+  }
+
+  /**
+   * `GetNetStats()`' two rates: KB/s in and out, over the socket's wire bytes, headers included.
+   *
+   * Lazy, with no timer: a call that finds the open window at least `NET_RATE_WINDOW_MS` old turns
+   * the bytes since into rates and opens the next one; a call inside it answers the last rates. The
+   * first call only opens a window, so it answers zeros — as the stock client does before it has
+   * measured anything.
+   */
+  netBandwidth(): { inKBps: number; outKBps: number } {
+    const now = performance.now();
+    const bytesIn = this.#connection.bytesReceived ?? 0;
+    const bytesOut = this.#connection.bytesSent ?? 0;
+    const opened = this.#netWindow;
+    if (opened === undefined) this.#netWindow = { at: now, bytesIn, bytesOut };
+    else if (now - opened.at >= NET_RATE_WINDOW_MS) {
+      const seconds = (now - opened.at) / 1000;
+      this.#netRates = {
+        inKBps: Math.max(0, bytesIn - opened.bytesIn) / seconds / 1024,
+        outKBps: Math.max(0, bytesOut - opened.bytesOut) / seconds / 1024,
+      };
+      this.#netWindow = { at: now, bytesIn, bytesOut };
+    }
+    return { ...this.#netRates };
   }
 
   async #readWorld(): Promise<void> {
@@ -4851,11 +5020,15 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY) {
+      // The question the stock INSTANCE_LOCK dialog and the native prompt ask; SMSG_NEW_WORLD and
+      // SMSG_INSTANCE_DIFFICULTY came first (the core sends this from InstanceMap::AddPlayerToMap).
       const warning = parseInstanceLockWarning(packet.payload);
-      this.events.emit("WORLD_MESSAGE", {
-        text: `Вход свяжет с подземельем: ответ через ${Math.round(warning.milliseconds / 1000)} с`,
-        kind: "system",
-      });
+      const receivedAt = performance.now();
+      this.instanceLock = {
+        expiresAt: receivedAt + warning.milliseconds, encounterMask: warning.encounterMask,
+        previouslySaved: warning.previouslySaved, mapId: this.mapId ?? 0, difficulty: this.instanceDifficulty, receivedAt,
+      };
+      this.events.emit("INSTANCE_LOCK_START", warning);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_RAID_GROUP_ONLY) {
@@ -4985,6 +5158,61 @@ export class WorldClient {
     if (this.battlefieldWarInvite && serverTime !== undefined && this.battlefieldWarInvite.expiresAt <= serverTime) {
       this.battlefieldWarInvite = undefined;
     }
+    // The innkeeper's and the trainer's questions last while the NPC can take the answer; the
+    // instance lock until the server's minute is up — then the core binds by itself, unasked.
+    if (this.binderConfirm && !withinInteractionDistance(this.state, this.binderConfirm.guid)) this.binderConfirm = undefined;
+    if (this.talentWipeConfirm && !withinInteractionDistance(this.state, this.talentWipeConfirm.guid)) {
+      this.talentWipeConfirm = undefined;
+    }
+    if (this.instanceLock && this.instanceLock.expiresAt <= now) this.#endInstanceLock();
+  }
+
+  /**
+   * «Сделать это место своим домом»: CMSG_BINDER_ACTIVATE once — the question goes, then the packet.
+   * Not while dead or a ghost: the core ignores that answer (NPCHandler.cpp:292), so it waits.
+   */
+  confirmBinder(): boolean {
+    this.expireInteractionRequests();
+    const request = this.binderConfirm;
+    if (this.#closed || !request || !playerAlive(this.state)) return false;
+    this.binderConfirm = undefined;
+    this.#connection.send(OPCODES.CMSG_BINDER_ACTIVATE, buildBinderActivate(request.guid));
+    return true;
+  }
+
+  /** Cancel: nothing is sent, and the home stays where it was. */
+  declineBinder(): void {
+    this.binderConfirm = undefined;
+  }
+
+  /**
+   * The answer to a trainer's talent-reset quote: the question goes first, then — on accept, and
+   * only with the money for it — `confirmTalentWipe`'s 8 bytes. The caller says «not enough money».
+   */
+  answerTalentWipe(accept: boolean): TalentWipeAnswer {
+    this.expireInteractionRequests();
+    const request = this.talentWipeConfirm;
+    if (this.#closed || !request) return "none";
+    this.talentWipeConfirm = undefined;
+    if (!accept) return "declined";
+    if (!canAfford(this.state, request.cost)) return "unaffordable";
+    this.confirmTalentWipe(request.guid);
+    return "sent";
+  }
+
+  /** The instance lock's answer, once: 1 binds now, 0 leaves the instance (to the graveyard). */
+  respondInstanceLock(accept: boolean): boolean {
+    this.expireInteractionRequests();
+    if (this.#closed || !this.instanceLock) return false;
+    this.#endInstanceLock();
+    this.#connection.send(OPCODES.CMSG_INSTANCE_LOCK_RESPONSE, buildInstanceLockResponse(accept));
+    return true;
+  }
+
+  #endInstanceLock(): void {
+    if (!this.instanceLock) return;
+    this.instanceLock = undefined;
+    this.events.emit("INSTANCE_LOCK_STOP", {});
   }
 
   /** Asks a battleground spirit healer when the next resurrection sweep is, and to be in it. */
@@ -5660,6 +5888,10 @@ export class WorldClient {
       }
       this.events.emit("SPELL_GO", cast);
       this.onSpellVisual?.(cast.casterUnit, cast.spellId, cast.hits);
+      // Resist, dodge, parry, deflect, absorb, reflect and immunity are rolled when the spell goes
+      // off and written only here (Spell::UpdateSpellCastDataTargets, Spell.cpp:4677-4708); the miss
+      // log below carries only what is decided on landing (:2467-2471). Told the same way.
+      for (const miss of cast.misses) this.#reportSpellMiss(cast.casterUnit, miss.guid, cast.spellId, miss.reason);
       // A successful non-channel GO is the authoritative end of its cast bar. Channels remain in
       // `casts` until MSG_CHANNEL_UPDATE says zero, because their GO can arrive while the channel
       // is still ticking.
@@ -5695,11 +5927,18 @@ export class WorldClient {
       const now = performance.now();
       this.cooldowns.clear();
       this.cooldownSnapshots.clear();
+      this.cooldownHolds.clear();
       this.#pendingCasts.length = 0;
       this.#locallyStartedCooldowns.clear();
       for (const cooldown of initial.cooldowns) {
-        const duration = Math.max(cooldown.cooldown, cooldown.categoryCooldown);
         if (cooldown.categoryId !== 0) this.spellCategories.set(cooldown.spellId, cooldown.categoryId);
+        // On hold until its aura ends, not a 24.8-day timer: no end, no snapshot, no category
+        // lockout. Its SMSG_COOLDOWN_EVENT starts the real one.
+        if (isCooldownOnHold(cooldown)) {
+          this.cooldownHolds.set(cooldown.spellId, cooldown.categoryId);
+          continue;
+        }
+        const duration = Math.max(cooldown.cooldown, cooldown.categoryCooldown);
         if (duration > 0) {
           this.cooldowns.set(cooldown.spellId, now + duration);
           this.cooldownSnapshots.set(cooldown.spellId, { startedAt: now, duration, endsAt: now + duration });
@@ -5731,8 +5970,9 @@ export class WorldClient {
         // identical repeats, and leave unmatched manual spell failures untouched.
         if (!pending && duplicate) return true;
       }
-      // The words are the realm's own, out of its GlobalStrings; `DONT_REPORT` means say nothing.
-      const text = spellFailureText(failure.result);
+      // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
+      // `DONT_REPORT` means say nothing.
+      const text = spellFailureText(failure, this.#castFailureNames());
       if (text) this.onSpellStatus?.(text, true);
       return true;
     }
@@ -5770,11 +6010,18 @@ export class WorldClient {
       if (this.#isPetCooldown(event.guid)) {
         this.events.emit("PET_COOLDOWN_STARTED", { spellId: event.spellId });
       } else if (this.state.selfGuid === undefined || event.guid === this.state.selfGuid) {
+        // The aura that held this cooldown is gone and the server is starting the real timer
+        // (SpellHistory::SendCooldownEvent). Let go of the hold first: it is not a running timer,
+        // so the duplicate check below must not see it. The buttons hear of it once: from the
+        // timer below when one starts (`#applyCooldown`), otherwise from here.
+        const released = this.cooldownHolds.delete(event.spellId);
+        const endBefore = this.cooldowns.get(event.spellId);
         // A duplicate event can arrive after GO (or while the pending request is still waiting
         // for GO). Once an authoritative timer is live, do not move its end forward by packet
         // latency; CLEAR_COOLDOWN/SPELL_COOLDOWN are the explicit ways to replace that state.
-        if ((this.cooldowns.get(event.spellId) ?? 0) > performance.now()) {
+        if ((endBefore ?? 0) > performance.now()) {
           this.#locallyStartedCooldowns.delete(event.spellId);
+          if (released) this.onCooldownsChanged?.();
           return true;
         }
         const pending = this.#latestPendingCast(event.spellId);
@@ -5797,6 +6044,7 @@ export class WorldClient {
             this.#handlingServerCooldownEvent = false;
           }
         }
+        if (released && this.cooldowns.get(event.spellId) === endBefore) this.onCooldownsChanged?.();
       }
       return true;
     }
@@ -5806,6 +6054,7 @@ export class WorldClient {
         this.petCooldowns.delete(cleared.spellId);
         this.events.emit("PET_COOLDOWNS_CHANGED", {});
       } else if (this.state.selfGuid === undefined || cleared.guid === this.state.selfGuid) {
+        this.cooldownHolds.delete(cleared.spellId);
         this.#clearCooldown(cleared.spellId);
         this.onCooldownsChanged?.();
       }
@@ -6190,10 +6439,24 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PLAYER_BOUND) {
-      parsePlayerBound(packet.payload);
+      // Spell::EffectBind's own packet — only a bind sends it, while SMSG_BIND_POINT_UPDATE comes
+      // with every login and port — so the line is said once per new home, in the client's words.
+      const bound = parsePlayerBound(packet.payload);
+      this.binderConfirm = undefined;
+      this.events.emit("WORLD_MESSAGE", {
+        text: formatGlobalStringByName("ERR_DEATHBIND_SUCCESS_S", [this.#nameOf("area", bound.areaId)], "Ваш новый дом – %s."),
+        kind: "system",
+      });
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_BINDER_CONFIRM || packet.opcode === OPCODES.SMSG_INVALIDATE_PLAYER) {
+    if (packet.opcode === OPCODES.SMSG_BINDER_CONFIRM) {
+      // Player::SetBindPoint, from the innkeeper's gossip option: nothing moves until the answer.
+      const guid = parseGuidOnly(packet.payload);
+      this.binderConfirm = { guid, receivedAt: performance.now() };
+      this.events.emit("BINDER_CONFIRM", { guid });
+      return true;
+    }
+    if (packet.opcode === OPCODES.SMSG_INVALIDATE_PLAYER) {
       parseGuidOnly(packet.payload);
       return true;
     }
@@ -6325,8 +6588,18 @@ export class WorldClient {
       this.events.emit("TALENTS_CHANGED", { pet: talents.pet });
       return true;
     }
-    if (packet.opcode === OPCODES.SMSG_TALENTS_INVOLUNTARILY_RESET || packet.opcode === OPCODES.MSG_TALENT_WIPE_CONFIRM) {
+    if (packet.opcode === OPCODES.SMSG_TALENTS_INVOLUNTARILY_RESET) {
       this.events.emit("TALENTS_CHANGED", { pet: false });
+      return true;
+    }
+    if (packet.opcode === OPCODES.MSG_TALENT_WIPE_CONFIRM) {
+      // A quote, not a change: the talents move only after the answer, with SMSG_TALENTS_INFO. A
+      // zero guid is the core's answer to one: ResetTalents found no talent spent
+      // (SkillHandler.cpp:83-87, Player.cpp:4002-4006) — said, and nothing is asked.
+      const quote = parseTalentWipeConfirm(packet.payload);
+      this.talentWipeConfirm = quote.guid === 0n ? undefined : { ...quote, receivedAt: performance.now() };
+      if (quote.guid !== 0n) this.events.emit("TALENT_WIPE_CONFIRM", { guid: quote.guid, cost: quote.cost });
+      else this.onSpellStatus?.(formatGlobalStringByName("ERR_TALENT_WIPE_ERROR", [], "Очки талантов не расходовались."), true);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSPECT_TALENT) {
@@ -6371,18 +6644,19 @@ export class WorldClient {
       const update = parseEnchantTimeUpdate(packet.payload);
       // The item's duration field is milliseconds as of the update block that carried it; the
       // packet restates what is left in whole seconds (Player::AddEnchantmentDuration divides by
-      // 1000). Writing it back keeps the field the one place a countdown reads from.
-      const item = this.state.objects.get(update.itemGuid);
-      item?.fields.set(UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + update.slot * 3 + 1, update.duration * 1000);
+      // 1000). Writing it back keeps the field the one place a countdown reads from — through the
+      // state, so the store hears it, and only for an item this client has seen.
+      this.state.patchField(update.itemGuid,
+        UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + update.slot * 3 + 1, update.duration * 1000);
       this.events.emit("ITEM_ENCHANT_TIME_UPDATE", { ...update, receivedAt: performance.now() });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SOCKET_GEMS_RESULT) {
       const result = parseSocketGems(packet.payload);
-      // This packet is authoritative too, and can precede the general object update.
-      const item = this.state.objects.get(result.itemGuid);
+      // This packet is authoritative too, and can precede the general object update. Slots 2-5
+      // (SOCK_ENCHANTMENT_SLOT … BONUS_ENCHANTMENT_SLOT), the id word of each.
       for (const [index, enchantment] of result.enchantments.slice(0, 4).entries()) {
-        item?.fields.set(UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + (index + 2) * 3, enchantment);
+        this.state.patchField(result.itemGuid, UPDATE_FIELDS.ITEM_FIELD_ENCHANTMENT_1_1.offset + (index + 2) * 3, enchantment);
       }
       this.events.emit("SOCKET_GEMS_RESULT", result);
       return true;
@@ -6495,6 +6769,16 @@ export class WorldClient {
     return false;
   }
 
+  /**
+   * One spell that did not land on one target, from SMSG_SPELL_GO's miss list or SMSG_SPELLLOGMISS:
+   * the word over the head and the stock hit indicator's event, for every caster alike — the
+   * overlay and the portraits decide whom they show.
+   */
+  #reportSpellMiss(casterGuid: bigint, targetGuid: bigint, spellId: number, missInfo: number): void {
+    this.events.emit("FLOATING_TEXT", { guid: targetGuid, amount: 0, kind: "miss", critical: false, text: missReasonText(missInfo) });
+    this.events.emit("UNIT_COMBAT", { source: "miss", casterGuid, targetGuid, spellId, missInfo });
+  }
+
   #handleSpellLog(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_SPELL_START) {
       const start = parseSpellCastHeader(packet.payload);
@@ -6601,13 +6885,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLLOGMISS) {
+      // Only what is decided on landing — a hit-time evade or immunity (Spell.cpp:2467-2471) — and
+      // damage shields and splits (Unit.cpp:1731, :2164, :2210); cast-time misses are SPELL_GO's.
       const log = parseSpellMissLog(packet.payload);
-      for (const target of log.targets) {
-        this.events.emit("FLOATING_TEXT", { guid: target.guid, amount: 0, kind: "miss", critical: false, text: MISS_REASONS[target.missInfo] ?? "промах" });
-        this.events.emit("UNIT_COMBAT", {
-          source: "miss", casterGuid: log.casterGuid, targetGuid: target.guid, spellId: log.spellId, missInfo: target.missInfo,
-        });
-      }
+      for (const target of log.targets) this.#reportSpellMiss(log.casterGuid, target.guid, log.spellId, target.missInfo);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLDAMAGESHIELD) {
@@ -6952,8 +7233,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_CAST_FAILED) {
-      const failure = parsePetCastFailed(packet.payload);
-      this.#recordPetMessage(`Питомец не смог применить заклинание ${failure.spellId} (код ${failure.result})`, true);
+      // Written by the player's own `WriteCastResultInfo` (Spell.cpp:4385-4386), tail and all, so it
+      // is read and worded the same way; `DONT_REPORT` says nothing here either.
+      const text = spellFailureText(parsePetCastFailed(packet.payload), this.#castFailureNames());
+      if (text) this.#recordPetMessage(`Питомец: ${text}`, true);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_TAME_FAILURE) {
@@ -7506,11 +7789,20 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_BIDDER_NOTIFICATION) {
       const notification = parseAuctionBidderNotification(packet.payload);
-      // One packet for "you won" and "you were outbid": the only difference is whether the bidder
-      // is the player, so the wording has to be decided here rather than in the parser.
-      const mine = this.controlledGuid !== undefined && notification.bidderGuid === this.controlledGuid;
+      // One packet for "you won" and "you were outbid": the winner hears its own guid with bid and
+      // difference zero (AuctionHouseMgr.cpp:173), the outbid player the NEW bidder's guid (:277).
+      // So "mine" is the character's guid — not the unit it steers, which is a vehicle's in a
+      // vehicle and nobody's under fear or a charm, and turned a won lot into an outbid one. The
+      // controlled unit stands in only before the self CREATE has named the character.
+      const character = this.state.selfGuid ?? this.controlledGuid;
+      const mine = character !== undefined && notification.bidderGuid === character;
+      // The stock lines (the words FrameXmlAuction's notice prints too); the packet has no price
+      // for a win, so none is printed.
+      const item = this.#nameOf("item", notification.itemId);
       this.auctionMessage = {
-        text: mine ? `Лот ${notification.auctionId} выигран за ${notification.bidSum}` : `Вашу ставку на лот ${notification.auctionId} перебили`,
+        text: mine
+          ? formatGlobalStringByName("ERR_AUCTION_WON_S", [item], "Вы выиграли торги. Куплен предмет: %s.")
+          : formatGlobalStringByName("ERR_AUCTION_OUTBID_S", [item], "%s: предмет перекуплен."),
         error: !mine,
       };
       this.onAuctionChanged?.();
@@ -7521,7 +7813,15 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_AUCTION_OWNER_NOTIFICATION) {
       const sold = parseAuctionOwnerNotification(packet.payload);
-      this.auctionMessage = { text: `Ваш лот ${sold.auctionId} продан за ${sold.bid}`, error: false };
+      // A sale and an expiry send this same packet (AuctionHouseMgr.cpp:226, :250); an expiry has
+      // no bid. Stock words either way, as FrameXmlAuction's notice chooses them.
+      const item = this.#nameOf("item", sold.itemEntry);
+      this.auctionMessage = {
+        text: sold.bid > 0
+          ? formatGlobalStringByName("ERR_AUCTION_SOLD_S", [item], "На ваш товар \"%s\" нашелся покупатель.")
+          : formatGlobalStringByName("ERR_AUCTION_EXPIRED_S", [item], "Ваш товар (%s) снят с аукциона."),
+        error: false,
+      };
       this.onAuctionChanged?.();
       this.events.emit("AUCTION_STATE_CHANGED", {
         kind: "ownerNotification", auctionId: sold.auctionId, itemId: sold.itemEntry, bid: sold.bid,

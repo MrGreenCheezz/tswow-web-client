@@ -371,6 +371,21 @@ export class WorldState {
     this.observer?.fieldsChanged(guid, [index]);
   }
 
+  /**
+   * A packet's correction to one field of an object this state already holds — an enchantment's
+   * remaining time, a socketed gem. Reported like any field change, so the store hears it; unlike
+   * `setField`, never the moment an object starts existing: a correction for a guid no update
+   * block introduced is dropped, and false says so.
+   */
+  patchField(guid: bigint, index: number, value: number): boolean {
+    const object = this.objects.get(guid);
+    if (!object) return false;
+    object.fields.set(index, value);
+    this.revision++;
+    this.observer?.fieldsChanged(guid, [index]);
+    return true;
+  }
+
   startSpline(move: MonsterMove, now: number): void {
     const object = this.#get(move.guid);
     const finalPoint = move.points.at(-1);

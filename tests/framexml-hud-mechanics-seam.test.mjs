@@ -400,3 +400,203 @@ test("WorldClient emits UNIT_COMBAT for a spell miss list and an immunity log", 
     ]);
   } finally { world.close(); }
 });
+
+// ---- The death knight's runes (FrameXmlRunes.ts): GetRuneType, GetRuneCooldown and their events ----
+
+const RUNE_REGEN = UPDATE_FIELDS.PLAYER_RUNE_REGEN_1.offset;
+/** An update field's raw word for a float, as the realm writes PLAYER_RUNE_REGEN_1..4. */
+function floatBits(value) {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value, true);
+  return view.getUint32(0, true);
+}
+/** `WorldClient.runes` after SMSG_RESYNC_RUNES: fresh records, core types 0..3, readiness 255 = ready. */
+const resynced = (...runes) => runes.map(([type, readiness]) => ({ type, readiness }));
+/** Player.cpp runeSlotTypes, all ready. */
+const FRESH = [[0, 255], [0, 255], [1, 255], [1, 255], [2, 255], [2, 255]];
+const runeEvents = (fired) => fired.filter(([event]) => event.startsWith("RUNE_"));
+
+test("GetRuneType answers RuneFrame.lua's 1..4 for rune ids 1..6, nil outside them and before any resync", () => {
+  const { seam, world, events, fired, pump, call } = fixture();
+  world.runes = [];
+  seam.attach(pump);
+  assert.deepEqual(call("GetRuneType", 1), [], "no resync yet: no type, and the button hides its icon");
+  assert.deepEqual(call("GetRuneCooldown", 1), [0, 10, true], "and nothing to count down; the duration is still answered");
+  fired.length = 0;
+  world.runes = resynced(...FRESH);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map((id) => call("GetRuneType", id)), [[1], [1], [2], [2], [3], [3]]);
+  for (const outside of [0, 7, -1, "x"]) {
+    assert.deepEqual(call("GetRuneType", outside), [], `GetRuneType(${outside})`);
+    assert.deepEqual(call("GetRuneCooldown", outside), [], `GetRuneCooldown(${outside})`);
+  }
+  assert.deepEqual(runeEvents(fired), [1, 2, 3, 4, 5, 6].map((id) => ["RUNE_TYPE_UPDATE", id]),
+    "the first resync after the mount paints every icon; a ready rune needs no power edge");
+  // A type this bar has no icon for (RuneFrame.lua's four) is no type: RuneButton_Update would index nil.
+  world.runes[5].type = 4;
+  assert.deepEqual(call("GetRuneType", 6), []);
+  seam.detach();
+});
+
+test("GetRuneCooldown counts a spent rune from its resync on the GetTime clock; PLAYER_RUNE_REGEN is the duration", () => {
+  const { seam, world, events, pump, call, setPumpNow, setMonotonic } = fixture();
+  const player = world.state.objects.get(world.state.selfGuid);
+  world.runes = resynced(...FRESH);
+  seam.attach(pump);
+  setPumpNow(99);
+  // 128 leaves 127/255 of RUNE_BASE_COOLDOWN to wait (Player::ResyncRunes): 4.98 s, whatever the haste.
+  world.runes = resynced([0, 128], [0, 255], [1, 128], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  setPumpNow(100);
+  setMonotonic(987_654);
+  const remaining = 127 / 255 * 10;
+  const [start, duration, ready] = call("GetRuneCooldown", 3);
+  assert.equal(ready, false);
+  assert.equal(duration, 10, "no PLAYER_RUNE_REGEN yet: the base ten seconds");
+  assert.ok(Math.abs(start - (99 + remaining - 10)) < 1e-9, `start ${start}: read one GetTime second ago`);
+  assert.ok(Math.abs(start - (100 - 6.02)) < 0.01);
+  assert.deepEqual(call("GetRuneCooldown", 2), [0, 10, true], "a ready rune answers its duration too");
+  // Unholy (runes 3, 4) hasted to eight seconds: PLAYER_RUNE_REGEN_1 + 1 = 1000 / 8000 runes a second.
+  player.fields.set(RUNE_REGEN + 1, floatBits(0.125));
+  const [hastedStart, hastedDuration, hastedReady] = call("GetRuneCooldown", 3);
+  assert.deepEqual([hastedDuration, hastedReady], [8, false]);
+  assert.ok(Math.abs(hastedStart - (99 + remaining - 8)) < 1e-9, `hasted start ${hastedStart}`);
+  assert.equal(call("GetRuneCooldown", 1)[1], 10, "blood reads its own field (index 0)");
+  assert.deepEqual(call("GetRuneCooldown", 4), [0, 8, true], "a ready unholy rune answers the hasted duration");
+  // Past the wait with no packet — dead, or off the map in a far teleport, the core stops counting —
+  // the rune stays unready until the realm says it is: the sweep has run out, the button still waits.
+  setPumpNow(99 + remaining + 30);
+  assert.deepEqual(call("GetRuneCooldown", 3), [hastedStart, 8, false]);
+  seam.detach();
+});
+
+test("a waiting rune's start is one number however the two real clocks drift, so the sweep is not repainted every frame", async () => {
+  const world = { events: new FakeEvents(), state: { selfGuid: 1n, objects: new Map() }, totems: new Map(), runes: resynced(...FRESH) };
+  const model = new FrameXmlHudMechanicsLive({
+    world: () => world, monotonic: () => performance.now(), spell: () => undefined, unitGuid: () => undefined,
+  });
+  // FrameXmlBoot's pump: GetTime is Date.now() / 1000, whole milliseconds; monotonic is performance.now().
+  model.attach({ fire: () => 1, now: () => Date.now() / 1000 });
+  world.runes = resynced([0, 255], [0, 255], [1, 40], [1, 255], [2, 255], [2, 255]);
+  world.events.emit("RUNES_CHANGED", {});
+  const starts = [];
+  for (let frame = 0; frame < 12; frame++) {
+    starts.push(model.runeCooldown(3)[0]);
+    await new Promise((resolve) => setTimeout(resolve, 7));
+  }
+  assert.equal(new Set(starts).size, 1, `one start across twelve frames: ${starts.join(", ")}`);
+  model.detach();
+});
+
+test("a rune waiting at the mount, or past its estimate, is announced again on its next unready reading", () => {
+  const { seam, world, events, fired, pump, call, setPumpNow } = fixture();
+  // A remount mid-cooldown (ReloadUI, a switch of interface mode): the stock frame draws every rune
+  // ready — its PLAYER_ENTERING_WORLD repaints icons only — and nothing may fire before that event.
+  world.runes = resynced([0, 255], [0, 255], [1, 100], [1, 255], [2, 255], [2, 255]);
+  seam.attach(pump);
+  assert.deepEqual(runeEvents(fired), [], "nothing from attach: RuneFrame_FixRunes has not run yet");
+  assert.equal(call("GetRuneCooldown", 3)[2], false);
+  world.runes = resynced([0, 255], [0, 255], [1, 104], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(runeEvents(fired), [["RUNE_POWER_UPDATE", 3, false]], "the first reading after the mount hangs the sweep");
+  world.runes = resynced([0, 255], [0, 255], [1, 108], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.equal(runeEvents(fired).length, 1, "and the stream after it is quiet");
+  // Dead: Player::Update regenerates only while alive, so no resync comes and the estimate runs out.
+  setPumpNow(100 + 60);
+  assert.equal(call("GetRuneCooldown", 3)[2], false, "still unready: only the realm says ready");
+  // Resurrected: the frozen cooldown resumes with a reading that still waits — announced once more.
+  world.runes = resynced([0, 255], [0, 255], [1, 108], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(runeEvents(fired), [["RUNE_POWER_UPDATE", 3, false], ["RUNE_POWER_UPDATE", 3, false]]);
+  world.runes = resynced([0, 255], [0, 255], [1, 112], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.equal(runeEvents(fired).length, 2, "quiet again while the new estimate runs");
+  world.runes = resynced(...FRESH);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(runeEvents(fired).at(-1), ["RUNE_POWER_UPDATE", 3, true]);
+  seam.detach();
+});
+
+test("RUNE_POWER_UPDATE and RUNE_TYPE_UPDATE are edges: the resync stream is quiet, convert is a type edge, detach unsubscribes", () => {
+  const { seam, world, events, fired, pump, call } = fixture();
+  world.runes = resynced(...FRESH);
+  seam.attach(pump);
+  assert.deepEqual(runeEvents(fired), [], "runes known at the mount are PLAYER_ENTERING_WORLD's to paint, not announced");
+  fired.length = 0;
+  world.runes = resynced([0, 255], [0, 255], [1, 0], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(fired, [["RUNE_POWER_UPDATE", 3, false]]);
+  // Player::SetRuneCooldown resyncs every regen tick while a rune waits: the same shape, no edge.
+  world.runes = resynced([0, 255], [0, 255], [1, 26], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  world.runes = resynced([0, 255], [0, 255], [1, 51], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(fired, [["RUNE_POWER_UPDATE", 3, false]]);
+  // SMSG_ADD_RUNE_POWER: WorldClient marks the masked runes ready in place.
+  world.runes[2].readiness = 255;
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(fired, [["RUNE_POWER_UPDATE", 3, false], ["RUNE_POWER_UPDATE", 3, true]]);
+  // SMSG_CONVERT_RUNE: one rune's type, in place.
+  fired.length = 0;
+  world.runes[2].type = 3;
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(fired, [["RUNE_TYPE_UPDATE", 3]]);
+  assert.deepEqual(call("GetRuneType", 3), [4], "a death rune");
+  seam.detach();
+  world.runes = resynced([3, 0], [0, 0], [1, 0], [1, 0], [2, 0], [2, 0]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(fired, [["RUNE_TYPE_UPDATE", 3]], "nothing after detach");
+  assert.equal(events.listenerCount("RUNES_CHANGED"), 0);
+});
+
+test("a convert keeps the running cooldown's stamp; only a new reading of the rune re-stamps it", () => {
+  const { seam, world, events, pump, call, setPumpNow, setMonotonic } = fixture();
+  world.runes = resynced(...FRESH);
+  seam.attach(pump);
+  setPumpNow(50);
+  world.runes = resynced([0, 0], [0, 255], [1, 255], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  setPumpNow(52);
+  setMonotonic(4000);
+  world.runes[0].type = 3;
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(call("GetRuneCooldown", 1), [50, 10, false], "spent at 50, not at the convert");
+  // A resync at 53 that leaves 204/255 of ten seconds re-stamps: eight seconds from 53.
+  setPumpNow(53);
+  world.runes = resynced([3, 51], [0, 255], [1, 255], [1, 255], [2, 255], [2, 255]);
+  events.emit("RUNES_CHANGED", {});
+  assert.deepEqual(call("GetRuneCooldown", 1), [51, 10, false]);
+  seam.detach();
+});
+
+test("WorldClient's three rune packets reach the stock rune events through the live model", async () => {
+  const { world, transport } = await loggedIn();
+  try {
+    const fired = [];
+    const model = new FrameXmlHudMechanicsLive({
+      world: () => world, monotonic: () => 0, spell: () => undefined, unitGuid: () => undefined,
+    });
+    model.attach({ fire: (event, ...args) => { fired.push([event, ...args]); return 1; }, now: () => 0 });
+    const resync = (...runes) => {
+      const writer = new PacketWriter().u32(runes.length);
+      for (const [type, readiness] of runes) writer.u8(type).u8(readiness);
+      return writer.toUint8Array();
+    };
+    transport.push(OPCODES.SMSG_RESYNC_RUNES, resync(...FRESH));
+    await settle();
+    assert.deepEqual(fired, [1, 2, 3, 4, 5, 6].map((id) => ["RUNE_TYPE_UPDATE", id]));
+    fired.length = 0;
+    transport.push(OPCODES.SMSG_RESYNC_RUNES, resync([0, 255], [0, 255], [1, 0], [1, 255], [2, 255], [2, 255]));
+    transport.push(OPCODES.SMSG_RESYNC_RUNES, resync([0, 255], [0, 255], [1, 25], [1, 255], [2, 255], [2, 255]));
+    await settle();
+    transport.push(OPCODES.SMSG_CONVERT_RUNE, new PacketWriter().u8(2).u8(3).toUint8Array());
+    await settle();
+    transport.push(OPCODES.SMSG_ADD_RUNE_POWER, new PacketWriter().u32(0b100).toUint8Array());
+    await settle();
+    assert.deepEqual(fired, [["RUNE_POWER_UPDATE", 3, false], ["RUNE_TYPE_UPDATE", 3], ["RUNE_POWER_UPDATE", 3, true]]);
+    assert.equal(model.runeType(3), 4);
+    assert.deepEqual(model.runeCooldown(3), [0, 10, true]);
+    model.detach();
+  } finally { world.close(); }
+});

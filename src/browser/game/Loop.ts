@@ -26,6 +26,7 @@ import {
 } from "../SimpleScene.js";
 import { advanceCameraFrame, cameraAllowsUpwardOrbit } from "./CameraRig.js";
 import { updateGroundTargetPreview } from "./GroundTargetPreview.js";
+import { updateAreaTriggers } from "./AreaTriggers.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { attachedGlowTint, itemEnchantments } from "../ItemEnchantments.js";
 import { updateCastBars } from "../ui/CastBar.js";
@@ -351,6 +352,8 @@ function frame(now: number): void {
     // Turning, walking, gravity, the jump arc, the water, and the walls. What used to be here was
     // six lines that stuck the character to the ground whenever it happened to be within six yards.
     if (worldPhysicsReady()) advancePhysics(elapsed);
+    // 2.01: CMSG_AREATRIGGER for a volume the step just entered, its heartbeat first (AreaTriggers.ts).
+    updateAreaTriggers(now);
     hitchPhysics = performance.now();
     // Read after the step, not before: sending a packet replaces the state's position object, and
     // everything below draws the world around wherever the character now is.

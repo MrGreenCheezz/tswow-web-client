@@ -29,25 +29,58 @@ export interface FrameXmlPopupsOwner {
 }
 
 let owner: FrameXmlPopupsOwner | undefined;
+/** Whether Blizzard_TalentUI is loaded in the published owner's VM (CONFIRM_TALENT_WIPE's precondition). */
+let talentUiLoaded: (() => boolean) | undefined;
 
 /**
  * Publish the one gated stock popup owner and return an identity-safe cleanup. The cleanup only
  * unpublishes: dismissing a dialog runs its OnCancel/OnHide (DeclineGroup, CancelLogout …), and a
  * teardown must hand the pending questions back to the native panels, not answer them.
+ *
+ * `talentUi` answers whether Blizzard_TalentUI is loaded in that VM: UIParent's CONFIRM_TALENT_WIPE
+ * branch calls TalentFrame_LoadUI, which raises the add-on load error while it is not.
  */
-export function publishFrameXmlPopups(next: FrameXmlPopupsOwner): () => void {
+export function publishFrameXmlPopups(next: FrameXmlPopupsOwner, talentUi?: () => boolean): () => void {
   owner = next;
+  talentUiLoaded = talentUi;
   let cleaned = false;
   return (): void => {
     if (cleaned) return;
     cleaned = true;
-    if (owner === next) owner = undefined;
+    if (owner !== next) return;
+    owner = undefined;
+    talentUiLoaded = undefined;
   };
 }
 
 /** Whether the stock dialogs own the server's confirmations; the native prompts step aside then. */
 export function frameXmlPopupsPublished(): boolean {
   return owner !== undefined;
+}
+
+/** Blizzard_TalentUI loaded in the published VM; undefined while nothing is published or no host answers. */
+export function frameXmlPopupsTalentUiLoaded(): boolean | undefined {
+  const loaded = owner ? talentUiLoaded : undefined;
+  if (!loaded) return undefined;
+  try { return loaded(); } catch { return undefined; }
+}
+
+/**
+ * Server questions the stock dialogs cannot ask honestly — CONFIRM_TALENT_WIPE while Blizzard_TalentUI
+ * could not be loaded for UIParent's TalentFrame_LoadUI, INSTANCE_LOCK while the DungeonEncounter table
+ * is unknown (its «Убито боссов: %d/%d» would be invented) — which the native prompts therefore keep
+ * even while the stock owner is published. Keyed by the world's request object: a /reload or a remount
+ * does not move a question between owners, and a new packet is a new question.
+ */
+const leftToNative = new WeakSet<object>();
+
+export function markFrameXmlPopupLeftToNative(request: object): void {
+  leftToNative.add(request);
+}
+
+/** Whether the stock model left this question to the native prompt (InteractionPrompts.ts). */
+export function frameXmlPopupsLeftToNative(request: object | undefined): boolean {
+  return request !== undefined && leftToNative.has(request);
 }
 
 export function frameXmlPopupsOpen(): boolean {

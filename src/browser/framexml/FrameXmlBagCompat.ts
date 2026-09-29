@@ -1,3 +1,76 @@
+import { GlueLuaRef } from "../glue/GlueLua.js";
+
+/** The globals half of a VM, as the bag gate uses it (GlueLuaVm satisfies it). */
+export interface FrameXmlBagGlobalsVm {
+  getGlobal(name: string): unknown;
+  setGlobal(name: string, value: unknown): void;
+  /** Releases the scratch handle `getGlobal` answers for a table or function. */
+  release?(ref: GlueLuaRef): void;
+}
+
+/** A global's value, its scratch handle released; `unreadable` when the VM would not answer. */
+function readGlobal(vm: FrameXmlBagGlobalsVm, name: string): { readonly value: unknown } | "unreadable" {
+  let value: unknown;
+  try {
+    value = vm.getGlobal(name);
+  } catch {
+    return "unreadable";
+  }
+  if (value instanceof GlueLuaRef) {
+    try { vm.release?.(value); } catch { /* best-effort: the handle is scratch */ }
+  }
+  return { value };
+}
+
+/**
+ * Point each global that is still empty at its stand-in — `[name, frame]` pairs, in order — and
+ * append each pair it installed to `installed`, so a VM that throws mid-way leaves the caller a list
+ * to release. A global that holds anything else is left alone: the real frame may have taken it
+ * over since the gate looked (the options chain's InterfaceOptionsFrame), and the original wins. One
+ * that already holds this very stand-in counts as installed; one that cannot be read is skipped.
+ */
+export function installOwnedGlobals<T>(
+  vm: FrameXmlBagGlobalsVm,
+  pairs: readonly (readonly [name: string, frame: T])[],
+  installed: (readonly [name: string, frame: T])[],
+): void {
+  for (const pair of pairs) {
+    const current = readGlobal(vm, pair[0]);
+    if (current === "unreadable" || (current.value !== undefined && current.value !== pair[1])) continue;
+    vm.setGlobal(pair[0], pair[1]);
+    installed.push(pair);
+  }
+}
+
+/**
+ * Release globals a gate installed — `[name, frame]` pairs, newest first — each only while it still
+ * holds that very frame (compared by reference: a replacement may carry the same name).
+ *
+ * The bag gate points absent globals at a hidden stand-in (FrameXmlWorldMount.ts frameXmlBagGate).
+ * The real frame can take a global over afterwards — the options chain loads on the first
+ * «Интерфейс» and its InterfaceOptionsFrame wins (FrameXmlOptionsOwner.ts) — and a release that
+ * cleared the name unconditionally then took the real frame away: stock's next IsOptionFrameOpen()
+ * (ContainerFrame.lua:57/78/862, UIParent.lua:2163) indexed nil. A global that cannot be read is left
+ * alone; a table or function read back is released, not cleared. Answers the names cleared.
+ */
+export function releaseOwnedGlobals(
+  vm: FrameXmlBagGlobalsVm,
+  installed: readonly (readonly [name: string, frame: unknown])[],
+): readonly string[] {
+  const cleared: string[] = [];
+  for (const [name, frame] of [...installed].reverse()) {
+    const current = readGlobal(vm, name);
+    if (current === "unreadable" || current.value !== frame) continue;
+    try {
+      vm.setGlobal(name, undefined);
+      cleared.push(name);
+    } catch {
+      // Best-effort lifecycle cleanup: the remaining names are still released.
+    }
+  }
+  return cleared;
+}
+
 /**
  * The small part of PaperDollFrame.lua that MainMenuBarBagButtons.xml imports indirectly.
  *

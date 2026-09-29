@@ -393,7 +393,7 @@ test("a successful create sends every chosen value and moves to the character li
   });
 });
 
-test("every named create failure prints the dataset's own CHAR_CREATE string", async () => {
+test("every create refusal prints the corpus' own string for its code", async () => {
   for (const [code, key] of Object.entries(CHAR_CREATE_RESULT_STRINGS)) {
     if (Number(code) === 47) continue;
     const { model, calls } = creation({ result: Number(code) });
@@ -402,9 +402,57 @@ test("every named create failure prints the dataset's own CHAR_CREATE string", a
     assert.deepEqual(calls.screens, [], `code ${code} must not leave the creation screen`);
     assert.deepEqual(calls.dialogs, [`<${key}>`], `code ${code}`);
   }
-  // Name in use and invalid name are the two the screen shows most, and they are different strings.
+  // Name in use and a name refusal are the two the screen shows most, and they are different strings.
   assert.equal(CHAR_CREATE_RESULT_STRINGS[50], "CHAR_CREATE_NAME_IN_USE");
-  assert.equal(CHAR_CREATE_RESULT_STRINGS[42], "CHAR_CREATE_INVALID_NAME");
+  assert.equal(CHAR_CREATE_RESULT_STRINGS[90], "CHAR_NAME_TOO_SHORT");
+  // 42-44 are ACCOUNT_CREATE_FAILED, CHAR_LIST_RETRIEVING and CHAR_LIST_RETRIEVED: never an answer
+  // to CMSG_CHAR_CREATE, and never «invalid name».
+  assert.equal(CHAR_CREATE_RESULT_STRINGS[42], undefined);
+  assert.equal(CHAR_CREATE_RESULT_STRINGS[43], undefined);
+  assert.equal(CHAR_CREATE_RESULT_STRINGS[44], undefined);
+});
+
+test("a server name refusal prints its own reason instead of a code", async () => {
+  // The name refusals `HandleCharCreateOpcode` sends (`ObjectMgr::CheckPlayerName`'s result, a
+  // reserved name, a name in use), plus 62, which the core sends only from the faction change.
+  const refusals = [
+    [88, "CHAR_NAME_FAILURE"],
+    [90, "CHAR_NAME_TOO_SHORT"],
+    [91, "CHAR_NAME_TOO_LONG"],
+    [92, "CHAR_NAME_INVALID_CHARACTER"],
+    [95, "CHAR_NAME_RESERVED"],
+    // CHAR_NAME_CONSECUTIVE_SPACES is not in GlueStrings.lua: the generic refusal stands in for it.
+    [100, "CHAR_NAME_FAILURE"],
+    [50, "CHAR_CREATE_NAME_IN_USE"],
+    // The corpus spells the client's CHAR_CREATE_RESTRICTED_RACECLASS as the faction-change string.
+    [62, "CHAR_FACTION_CHANGE_RACECLASS_RESTRICTED"],
+  ];
+  for (const [code, key] of refusals) {
+    const { model, calls } = creation({ result: code });
+    assert.equal(await model.createCharacter("Аларин"), code);
+    assert.deepEqual(calls.screens, [], `code ${code} must not leave the creation screen`);
+    assert.deepEqual(calls.dialogs, [`<${key}>`], `code ${code}`);
+  }
+  // A number no table knows is the corpus' «unknown error»…
+  const { model, calls } = creation({ result: 250 });
+  assert.equal(await model.createCharacter("Аларин"), 250);
+  assert.deepEqual(calls.dialogs, ["<CHAR_CREATE_UNKNOWN>"]);
+
+  // …and a corpus with no string for the key still says which code the server sent. The stock
+  // dialog is re-measured once it is visible, which is what keeps a long refusal inside its box.
+  const events = [];
+  const bare = new GlueCreation({
+    tables: () => ({ races: RACES, classes: CLASSES }),
+    source: { options: async () => undefined, startOutfit: async () => [], displayId: () => 49 },
+    create: async () => 90,
+    fireEvent: (event, ...args) => { events.push([event, ...args].join(" / ")); },
+    glueString: () => undefined,
+  });
+  assert.equal(await bare.createCharacter("Аларин"), 90);
+  assert.deepEqual(events, [
+    "OPEN_STATUS_DIALOG / OKAY / Сервер отказал в создании, код 90.",
+    "UPDATE_STATUS_DIALOG / Сервер отказал в создании, код 90.",
+  ]);
 });
 
 test("a name the client itself refuses never reaches the wire", async () => {

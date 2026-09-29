@@ -21,6 +21,12 @@
  *   opening a window, so every uvar that had a value keeps it: its CVar is set to it before the
  *   panels read their CVars, and the global is restored after.
  *
+ * The chain's named frames become their globals as they are instantiated, over whatever stood there
+ * — the bag gate's hidden stand-in for InterfaceOptionsFrame included (FrameXmlWorldMount.ts
+ * frameXmlBagGate). That is meant: the original wins. An owner of such a stand-in has to tolerate
+ * losing its global and release only a global that still holds its own frame (releaseOwnedGlobals,
+ * FrameXmlBagCompat.ts), or its teardown takes the real frame away.
+ *
  * The owner follows the lazy LoD recipe (FrameXmlMacroBindingLod.ts): nothing at boot, the first
  * open loads, reconciles the renderer, gates, and only then shows; a failed load or gate demotes the
  * route for good and the native settings window opens instead.

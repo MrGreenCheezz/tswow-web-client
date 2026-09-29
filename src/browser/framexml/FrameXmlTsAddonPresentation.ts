@@ -18,6 +18,53 @@ export function markFrameXmlNativeHud(boot: Pick<FrameXmlBoot, "vm">): void {
   boot.vm.setGlobal(FRAMEXML_NATIVE_HUD_GLOBAL, true);
 }
 
+/**
+ * The stock surfaces painted over the native HUD beside the modules' own frames: explicit
+ * dependencies of our modules, whose own UI is required — unlike the empty layout ancestors of a
+ * module attached to the native character/minimap UI.
+ *
+ * - ItemSocketingFrame and GameTooltip, which modules open and fill.
+ * - StaticPopup1-4 (`STATICPOPUP_NUMDIALOGS`, FrameXmlPopupsOwner.ts FRAMEXML_STATIC_POPUP_COUNT):
+ *   the dialogs a module raises itself — tswow-store's purchase confirmation, retail-talents' resets.
+ *   The server's questions never reach them in this mode (FrameXmlAddonsOnlyMessages.ts).
+ * - UIErrorsFrame: a module's own warnings (survival's hunger and thirst); the world's messages are
+ *   unregistered from it there, since the native notice line says them.
+ */
+export const FRAMEXML_ADDONS_ONLY_SURFACES: readonly string[] = Object.freeze([
+  "ItemSocketingFrame", "GameTooltip",
+  "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4",
+  "UIErrorsFrame",
+]);
+
+let addonDialogsEscape: (() => boolean) | undefined;
+
+/**
+ * Escape for the stock dialogs a module raised over the native HUD, published by the `addonsOnly`
+ * mount while it lives (FrameXmlAddonsOnlyMessages.ts); answers the identity-safe withdrawal. Kept in
+ * this import-light module because the native Escape chain (Controls.ts) asks it first.
+ */
+export function publishFrameXmlAddonDialogsEscape(escape: () => boolean): () => void {
+  addonDialogsEscape = escape;
+  return () => { if (addonDialogsEscape === escape) addonDialogsEscape = undefined; };
+}
+
+/** Whether an overlay's Escape step is published: a withdrawn one holds no closure over its VM. */
+export function frameXmlAddonDialogsEscapePublished(): boolean {
+  return addonDialogsEscape !== undefined;
+}
+
+/**
+ * The native Escape chain's first question in `addonsOnly`: closes the dialogs Escape may dismiss
+ * through stock StaticPopup_EscapePressed and answers true when it did — then the press is spent,
+ * as stock ToggleGameMenu stops right there (UIParent.lua:2872): not the module window under the
+ * dialog, not the target. False when no such dialog is up or nothing is published.
+ */
+export function escapeFrameXmlAddonDialogs(): boolean {
+  const escape = addonDialogsEscape;
+  if (!escape) return false;
+  try { return escape(); } catch { return false; }
+}
+
 /** Paint module-created widgets and only the layout ancestors needed to position them. */
 export class FrameXmlTsAddonPresentation {
   readonly #boot: FrameXmlBoot;
@@ -53,12 +100,14 @@ export class FrameXmlTsAddonPresentation {
     }
     // These stock surfaces are explicit dependencies of our modules. Their own UI is required,
     // unlike the empty layout ancestors of a module attached to the native character/minimap UI.
-    for (const name of ["ItemSocketingFrame", "GameTooltip"]) {
+    for (const name of FRAMEXML_ADDONS_ONLY_SURFACES) {
       const frame = boot.bridge.getFrame(name);
       if (frame) visit(frame);
     }
+    // A frame already included brought its ancestors with it: each walk stops there, so a painted
+    // subtree costs its size, not its size times its depth.
     for (const frame of this.#painted) {
-      for (let current: FrameXmlFrame | undefined = frame; current; current = current.parent) {
+      for (let current: FrameXmlFrame | undefined = frame; current && !this.#included.has(current); current = current.parent) {
         this.#included.add(current);
       }
     }

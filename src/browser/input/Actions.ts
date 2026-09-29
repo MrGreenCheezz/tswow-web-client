@@ -4,6 +4,7 @@ import { COMMAND_ATTACK, isVehicleActionBar } from "../../world/PetProtocol.js";
 import { game } from "../game/Context.js";
 import { cycleEnemyTarget, setFocusToTarget } from "../game/Targeting.js";
 import { turnActionPage, useSlot } from "../ui/ActionBar.js";
+import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "../ui/NativeHudReplacement.js";
 import { chatInput, diagnosticsWindow, spellbookWindow } from "../ui/Dom.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { systemLine } from "../ui/Chat.js";
@@ -52,15 +53,18 @@ export function runAction(action: InputAction): boolean {
 
   const slot = ACTION_BAR_SLOTS.indexOf(action);
   if (slot >= 0) {
+    // No page given: the main row as shown, which under a stance, a form or stealth is its bonus page.
     useSlot(slot);
     return true;
   }
   // The four extra bars address as fixed pages of the same 144 slots, so their keys press the same
   // function the main bar's do — with the row's own page instead of the one the paging keys move.
+  // Under the stock HUD that is the page the stock multi-bar answering to the same key shows
+  // (`stockBase`, WORK_PLAN 4.16a); the native rows keep theirs until 4.16b moves them.
   for (const bar of EXTRA_ACTION_BARS) {
     const column = EXTRA_ACTION_BAR_SLOTS[bar.id]?.indexOf(action) ?? -1;
     if (column >= 0) {
-      useSlot(column, actionPage(bar.base));
+      useSlot(column, actionPage(nativeHudReplaced(NATIVE_LANES_REPLACED) ? bar.stockBase : bar.base));
       return true;
     }
   }

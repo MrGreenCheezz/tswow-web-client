@@ -14,6 +14,7 @@ import {
 } from "../TaxiMetadata.js";
 import { game } from "../game/Context.js";
 import { gameObjectAction, gameObjectLockHint } from "../game/Interaction.js";
+import { gatherPlan, performGather } from "../game/CreatureGather.js";
 import { notice } from "./Notices.js";
 import { BattlegroundClient, type BattlegroundCatalog } from "../BattlegroundMetadata.js";
 import { attachTooltip, confirmPanel } from "./Widgets.js";
@@ -148,6 +149,16 @@ export function interactWithGuid(guid: bigint): void {
   // A corpse only. A game object's loot is never requested — the server refuses the packet for
   // anything that is not a creature, and a chest's loot arrives once a spell has opened it.
   if (target.typeId === 3 && isWorldObjectDead(target)) {
+    // Loot first: while the server shows loot on the body the plan is empty and this stays
+    // CMSG_LOOT. A body whose loot is gone but that is still skinnable is gathered instead — the
+    // skill the creature asks for is cast at it and the core opens the LOOT_SKINNING window itself
+    // (CreatureGather.ts). Every other body keeps the loot request it always had.
+    const plan = gatherPlan(world, target);
+    if (plan) {
+      if ("hint" in plan) notice(plan.hint);
+      else performGather(world, plan);
+      return;
+    }
     world.openLoot(guid);
     return;
   }

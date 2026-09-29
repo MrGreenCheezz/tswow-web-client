@@ -23,8 +23,19 @@
  * whatever is still pending is shown by stock (the ordinary tick rule "pending and not yet shown"),
  * and every command binding is inert unless the stock owner holds the prompts — a Lua OnHide during
  * a gate probe or a teardown can therefore never answer a server question the native prompt owns.
+ *
+ * М1 (docs/implementation/line-A3.ru.md) adds three questions on the same rule: CONFIRM_BINDER (the
+ * innkeeper), CONFIRM_TALENT_WIPE (the trainer's quote — fired only once Blizzard_TalentUI is
+ * loaded, because UIParent's handler calls TalentFrame_LoadUI) and INSTANCE_LOCK_START/STOP (only
+ * with the DungeonEncounter table behind its boss line), over WorldClient's `binderConfirm`,
+ * `talentWipeConfirm`, `instanceLock` (world/ConfirmationProtocol.ts). A question stock cannot ask
+ * honestly is left to the native prompt (FrameXmlPopupsController.ts `frameXmlPopupsLeftToNative`);
+ * the innkeeper's and the trainer's are asked once per packet, as 3.3.5 fires them.
  */
+import { globalString } from "../../generated/globalStrings.js";
+import type { TalentWipeAnswer } from "../../world/ConfirmationProtocol.js";
 import { frameXmlPopupAnswer, markFrameXmlPopupAnswered } from "./FrameXmlPopupsAnswered.js";
+import { frameXmlPopupsLeftToNative, markFrameXmlPopupLeftToNative } from "./FrameXmlPopupsController.js";
 
 /** `ReadyCheckFrame` has no clock of its own; the client times a check out after 35 seconds. */
 export const FRAMEXML_READY_CHECK_SECONDS = 35;
@@ -43,6 +54,13 @@ export const FRAMEXML_NO_RELEASE_WINDOW_FLAG = 0x10;
  * arrival and the answer is normally back within a frame or two.
  */
 export const FRAMEXML_POPUP_NAME_WAIT_MS = 1500;
+/**
+ * How long a talent-reset question waits for Blizzard_TalentUI before the native prompt takes it.
+ * UIParent's CONFIRM_TALENT_WIPE branch calls TalentFrame_LoadUI() — UIParentLoadAddOn — right after
+ * showing the dialog (UIParent.lua:880-892): with the add-on not loaded the host's LoadAddOn answers
+ * NOT_READY and stock raises its load error, so the event is fired only once the add-on is in.
+ */
+export const FRAMEXML_TALENT_UI_WAIT_MS = 1500;
 /** `STATUS_WAIT_QUEUE`/`STATUS_WAIT_JOIN`/`STATUS_IN_PROGRESS` (PvpProtocol.ts), kept local so the model stays pure. */
 const BATTLEFIELD_WAIT_QUEUE = 1;
 const BATTLEFIELD_WAIT_JOIN = 2;
@@ -116,6 +134,56 @@ export interface FrameXmlPopupsWorld {
   useSelfResurrection?(): void;
   /** CMSG_DESTROYITEM for the item at a wire position (count 0: the whole stack). */
   destroyItem?(bag: number, slot: number): void;
+  // М1 (world/ConfirmationProtocol.ts): the world drops each of these once answered, out of the
+  // NPC's reach, past the server's deadline or on a new map.
+  /** SMSG_BINDER_CONFIRM: the innkeeper asking. */
+  readonly binderConfirm?: { readonly guid: bigint } | undefined;
+  /** MSG_TALENT_WIPE_CONFIRM: the trainer's quote, in copper. */
+  readonly talentWipeConfirm?: { readonly guid: bigint; readonly cost: number } | undefined;
+  /** SMSG_INSTANCE_LOCK_WARNING_QUERY: the server's deadline (monotonic ms) and the killed-boss mask. */
+  readonly instanceLock?: {
+    readonly expiresAt: number; readonly encounterMask: number; readonly previouslySaved: boolean;
+    readonly mapId: number; readonly difficulty: number;
+  } | undefined;
+  /** SMSG_BIND_POINT_UPDATE: where the hearthstone goes. */
+  readonly bindPoint?: { readonly areaId: number } | undefined;
+  /** SMSG_INIT_WORLD_STATES' zone and area: the place CONFIRM_BINDER names when the host has none. */
+  readonly worldStateContext?: { readonly zoneId: number; readonly areaId: number } | undefined;
+  /** CMSG_BINDER_ACTIVATE, once. */
+  confirmBinder?(): unknown;
+  answerTalentWipe?(accept: boolean): TalentWipeAnswer;
+  /** CMSG_INSTANCE_LOCK_RESPONSE, once. */
+  respondInstanceLock?(accept: boolean): unknown;
+}
+
+/**
+ * Blizzard_TalentUI as the host's lazy talent owner reports it: `ready` (loaded — UIParent's
+ * TalentFrame_LoadUI is quiet and PlayerTalentFrame_Open exists), `idle` (not loaded, the load not
+ * started), `loading`, `failed`.
+ */
+export type FrameXmlTalentUiState = "ready" | "idle" | "loading" | "failed";
+
+/** One `DungeonEncounter.dbc` row of a map and difficulty: its bit in the killed-boss mask and name. */
+export interface FrameXmlDungeonEncounter {
+  readonly bit: number;
+  readonly name: string;
+}
+
+/**
+ * The innkeeper's and the trainer's questions stock has asked. 3.3.5 fires CONFIRM_BINDER and
+ * CONFIRM_TALENT_WIPE when the packet arrives and nothing re-fires them on PLAYER_ENTERING_WORLD, so
+ * a /reload (re-publication) or a remount does not ask them again — the question itself stays
+ * pending, as stock's Cancel calls no C API (`/run ConfirmBinder()` still binds). Per request object,
+ * like `refusedInvitesAnnounced`. INSTANCE_LOCK is shown again: its dialog counts on from what is left.
+ */
+const stockAskedOnce = new WeakSet<object>();
+
+/** CONFIRM_BINDER's place when no name is loaded: the native prompt's own words. */
+const FRAMEXML_BIND_PLACE_FALLBACK = "Это место";
+
+/** Bit `bit` of a killed-boss mask (`1 << DungeonEncounter.Bit`, InstanceScript.cpp:940). */
+function killedBit(mask: number, bit: number): boolean {
+  return Number.isInteger(bit) && bit >= 0 && bit < 32 && ((mask >>> bit) & 1) === 1;
 }
 
 /** The item on the stock bag cursor: its wire position and what DELETE_ITEM_CONFIRM names. */
@@ -147,7 +215,10 @@ export interface FrameXmlPopupsContext {
   spellName?(id: number): string | undefined;
   /** `AreaTable` name of a zone id (the summon's destination). */
   areaName?(zoneId: number): string | undefined;
-  /** Whether the spirit healer that asked is still within INTERACTION_DISTANCE; undefined if unknown. */
+  /**
+   * Whether the spirit healer that asked is still within the core's NPC interaction range
+   * (`withinNpcInteraction`, ConfirmationProtocol.ts); undefined if unknown.
+   */
   spiritHealerInRange?(guid: bigint): boolean | undefined;
   /**
    * Whether the logout being counted was asked for by `Quit()` (GameMenu.ts keeps that intent):
@@ -163,6 +234,20 @@ export interface FrameXmlPopupsContext {
   clearCursor?(): void;
   /** Monotonic milliseconds on the clock the world stamps requests with (`performance.now`). */
   monotonic(): number;
+  /**
+   * Whether the NPC that asked (the innkeeper, the trainer) can still take the answer — the core's
+   * interaction range (`withinInteractionDistance`, ConfirmationProtocol.ts); undefined when unknown.
+   * Without it CheckBinderDist/CheckTalentMasterDist turn false when the world drops the question.
+   */
+  npcInRange?(guid: bigint): boolean | undefined;
+  /** The player's sub-zone, else zone: the place CONFIRM_BINDER names (the core binds where the player stands). */
+  playerAreaName?(): string | undefined;
+  /** Blizzard_TalentUI for CONFIRM_TALENT_WIPE; absent: the host has no lazy talent owner. */
+  talentUi?(): FrameXmlTalentUiState | undefined;
+  /** Start the lazy talent owner's load, without opening the window. */
+  loadTalentUi?(): void;
+  /** The DungeonEncounter rows of a map and difficulty (М2), undefined while the table is unknown. */
+  dungeonEncounters?(mapId: number, difficulty: number): readonly FrameXmlDungeonEncounter[] | undefined;
 }
 
 interface FrameXmlPopupsPump {
@@ -256,6 +341,11 @@ export class FrameXmlPopupsModel {
   /** Queue slots whose STATUS_WAIT_JOIN stock was told about. */
   readonly #battlefieldShown = new Set<number>();
   #healer: bigint | undefined;
+  readonly #binder = pending<NonNullable<FrameXmlPopupsWorld["binderConfirm"]>>();
+  readonly #talentWipe = pending<NonNullable<FrameXmlPopupsWorld["talentWipeConfirm"]>>();
+  /** The talent-reset question this model asked the host to load Blizzard_TalentUI for. */
+  #talentUiLoadFor: object | undefined;
+  readonly #instanceLock = pending<NonNullable<FrameXmlPopupsWorld["instanceLock"]>>();
 
   constructor(context: FrameXmlPopupsContext) {
     this.#context = context;
@@ -316,7 +406,9 @@ export class FrameXmlPopupsModel {
 
   #forgetShown(): void {
     for (const slot of [this.#invite, this.#duel, this.#resurrect, this.#summon, this.#guild, this.#arena,
-      this.#trade, this.#camp, this.#readyCheck] as Pending<unknown>[]) slot.shown = false;
+      this.#trade, this.#camp, this.#readyCheck, this.#binder, this.#talentWipe, this.#instanceLock] as Pending<unknown>[]) {
+      slot.shown = false;
+    }
     this.#duelOutShown = false;
     this.#campQuitShown = false;
     this.#deathShown = false;
@@ -374,6 +466,9 @@ export class FrameXmlPopupsModel {
     this.#observeCamp(world, now);
     this.#observeReadyCheck(world, now);
     this.#observeBattlefield(world, now);
+    this.#observeBinder(world, now);
+    this.#observeTalentWipe(world, now);
+    this.#observeInstanceLock(world, now);
   }
 
   /** Move a slot to `value`; a slot whose shown request went away fires `hide` (if any). */
@@ -642,6 +737,72 @@ export class FrameXmlPopupsModel {
       // names (BattlefieldFrame.lua:289); the seam's own UPDATE_BATTLEFIELD_STATUS carries no index.
       this.#pump?.fire("UPDATE_BATTLEFIELD_STATUS", slot + 1);
     }
+  }
+
+  #observeBinder(world: FrameXmlPopupsWorld, now: number): void {
+    // No cancel event: CONFIRM_BINDER's own OnUpdate closes it once CheckBinderDist is false — out
+    // of reach, answered, or the question dropped with the map (StaticPopup.lua:2519).
+    this.#track(this.#binder, world.binderConfirm, now);
+    const request = this.#binder.value;
+    if (!request || stockAskedOnce.has(request)) return;
+    this.#show(this.#binder, now, "CONFIRM_BINDER", (_request, late) => {
+      const place = this.#bindPlace(world);
+      return place ? [place] : late ? [FRAMEXML_BIND_PLACE_FALLBACK] : undefined;
+    });
+    if (this.#binder.shown) stockAskedOnce.add(request);
+  }
+
+  /**
+   * CONFIRM_BINDER's `%s`: the place the core binds, which is where the player stands
+   * (Spell::EffectBind, SpellEffects.cpp:5865 — `GetAreaId`): the host's sub-zone under the player,
+   * else the zone. Not SMSG_INIT_WORLD_STATES' area: that packet comes on a zone change only, so its
+   * area is where the zone was entered. "" while no name is loaded.
+   */
+  #bindPlace(world: FrameXmlPopupsWorld): string {
+    const own = this.#context.playerAreaName?.();
+    if (own) return own;
+    const zoneId = world.worldStateContext?.zoneId;
+    return (zoneId !== undefined && zoneId > 0 ? this.#context.areaName?.(zoneId) : undefined) || "";
+  }
+
+  #observeTalentWipe(world: FrameXmlPopupsWorld, now: number): void {
+    // CheckTalentMasterDist closes a shown dialog, as CheckBinderDist does.
+    this.#track(this.#talentWipe, world.talentWipeConfirm, now);
+    const request = this.#talentWipe.value;
+    if (!request || this.#talentWipe.shown || !this.#popupsOwned || this.#muted
+      || stockAskedOnce.has(request) || frameXmlPopupsLeftToNative(request)) return;
+    const talentUi = this.#context.talentUi?.();
+    if (talentUi === "ready") {
+      this.#show(this.#talentWipe, now, "CONFIRM_TALENT_WIPE", ({ cost }) => [cost]);
+      if (this.#talentWipe.shown) stockAskedOnce.add(request);
+      return;
+    }
+    // The first look starts the lazy load; a load that cannot start, fails, or takes longer than
+    // the wait leaves the question to the native prompt — for good, never two owners at once.
+    if (talentUi === "idle" && this.#context.loadTalentUi && this.#talentUiLoadFor !== request) {
+      this.#talentUiLoadFor = request;
+      this.#context.loadTalentUi();
+    }
+    const loading = talentUi === "loading" || (talentUi === "idle" && this.#talentUiLoadFor === request);
+    if (!loading || now - this.#talentWipe.seenAt >= FRAMEXML_TALENT_UI_WAIT_MS) markFrameXmlPopupLeftToNative(request);
+  }
+
+  #instanceLockPending(world: FrameXmlPopupsWorld, now: number): FrameXmlPopupsWorld["instanceLock"] {
+    const lock = world.instanceLock;
+    return lock && lock.expiresAt > now ? lock : undefined;
+  }
+
+  #observeInstanceLock(world: FrameXmlPopupsWorld, now: number): void {
+    // INSTANCE_LOCK_STOP is StaticPopup_Hide (UIParent.lua:876): a question answered, run out or left
+    // with the map. The dialog reads everything else through GetInstanceLockTimeRemaining.
+    this.#track(this.#instanceLock, this.#instanceLockPending(world, now), now, () => this.#fire("INSTANCE_LOCK_STOP"));
+    const lock = this.#instanceLock.value;
+    if (!lock || this.#instanceLock.shown || !this.#popupsOwned || this.#muted || frameXmlPopupsLeftToNative(lock)) return;
+    // The dialog always prints «Убито боссов: %d/%d». Without the DungeonEncounter table (М2) the
+    // total is unknown, so after the same wait a name gets the native prompt keeps the question: it
+    // says only the killed count.
+    if (this.#encounters(lock)) this.#show(this.#instanceLock, now, "INSTANCE_LOCK_START", () => []);
+    else if (now - this.#instanceLock.seenAt >= FRAMEXML_POPUP_NAME_WAIT_MS) markFrameXmlPopupLeftToNative(lock);
   }
 
   #spiritHealerConfirm(guid: bigint): void {
@@ -918,6 +1079,78 @@ export class FrameXmlPopupsModel {
       world.activateSpiritHealer(healer);
     });
   }
+
+  // ---- the innkeeper, the talent trainer (М1) ------------------------------------------------
+
+  /** The NPC that asked is still within reach; false with nothing asked. Unknown range keeps it up. */
+  #npcInRange(guid: bigint | undefined): boolean {
+    return guid === undefined ? false : this.#context.npcInRange?.(guid) ?? true;
+  }
+
+  /** `CheckBinderDist`: false hides CONFIRM_BINDER (its OnUpdate). */
+  binderInRange(): boolean { return this.#npcInRange(this.#world_()?.binderConfirm?.guid); }
+
+  /** `ConfirmBinder`: CMSG_BINDER_ACTIVATE once; stock's Cancel calls nothing. */
+  confirmBinder(): void { this.#command((world) => { if (world.binderConfirm) world.confirmBinder?.(); }); }
+
+  /** `GetBindLocation`: the hearthstone's area (SMSG_BIND_POINT_UPDATE), undefined until reported or named. */
+  bindLocation(): string | undefined {
+    const point = this.#world_()?.bindPoint;
+    return point ? this.#context.areaName?.(point.areaId) : undefined;
+  }
+
+  /** `CheckTalentMasterDist`: false hides CONFIRM_TALENT_WIPE (its OnUpdate). */
+  talentMasterInRange(): boolean { return this.#npcInRange(this.#world_()?.talentWipeConfirm?.guid); }
+
+  /**
+   * `ConfirmTalentWipe`: MSG_TALENT_WIPE_CONFIRM once. Short of money it is not sent — the core
+   * would ignore it without a word — and UIErrorsFrame says ERR_NOT_ENOUGH_MONEY instead.
+   */
+  confirmTalentWipe(): void {
+    this.#command((world) => {
+      if (!world.talentWipeConfirm || world.answerTalentWipe?.(true) !== "unaffordable") return;
+      this.#fire("UI_ERROR_MESSAGE", globalString("ERR_NOT_ENOUGH_MONEY") ?? "У вас недостаточно денег.");
+    });
+  }
+
+  // ---- the instance lock (М1) ------------------------------------------------------------------
+
+  #encounters(lock: NonNullable<FrameXmlPopupsWorld["instanceLock"]>): readonly FrameXmlDungeonEncounter[] | undefined {
+    return this.#context.dungeonEncounters?.(lock.mapId, lock.difficulty);
+  }
+
+  /**
+   * `GetInstanceLockTimeRemaining`: seconds left of the server's minute (fractional, as the dialog's
+   * own lockTimeleft counts on from it — a remount resumes, it does not restart), isPreviousInstance,
+   * the bosses and those killed. Without the DungeonEncounter table nothing about the bosses is
+   * invented: `0, 0`, what the client answers for a map without encounter rows (and the stock dialog
+   * is not asked then). With no question: `0, false, 0, 0` — numbers stock compares.
+   */
+  instanceLockTimeRemaining(): readonly [number, boolean, number, number] {
+    const world = this.#world_();
+    const now = this.#context.monotonic();
+    const lock = world ? this.#instanceLockPending(world, now) : undefined;
+    if (!lock) return [0, false, 0, 0];
+    const encounters = this.#encounters(lock) ?? [];
+    const complete = encounters.filter(({ bit }) => killedBit(lock.encounterMask, bit)).length;
+    return [Math.max(0, (lock.expiresAt - now) / 1000), lock.previouslySaved, encounters.length, complete];
+  }
+
+  /** `GetInstanceLockTimeRemainingEncounter(i)`: `bossName, texture, isKilled` (LFRFrame.lua:684); no texture. */
+  instanceLockEncounter(index: number): readonly [string, string, boolean] | undefined {
+    const world = this.#world_();
+    const lock = world ? this.#instanceLockPending(world, this.#context.monotonic()) : undefined;
+    if (!lock || !Number.isInteger(index) || index < 1) return undefined;
+    const encounter = this.#encounters(lock)?.[index - 1];
+    return encounter ? [encounter.name, "", killedBit(lock.encounterMask, encounter.bit)] : undefined;
+  }
+
+  /** `RespondInstanceLock(accept)`: CMSG_INSTANCE_LOCK_RESPONSE once, never past the deadline. */
+  respondInstanceLock(accept: boolean): void {
+    this.#command((world) => {
+      if (this.#instanceLockPending(world, this.#context.monotonic())) world.respondInstanceLock?.(accept);
+    });
+  }
 }
 
 /** The part of the world seam the bindings read. */
@@ -993,6 +1226,15 @@ export const FRAMEXML_POPUPS_BINDINGS: Readonly<Record<string, FrameXmlPopupsBin
   IsActiveBattlefieldArena: withPopups((popups) => popups.activeArena()),
   CheckSpiritHealerDist: withPopups((popups) => [popups.spiritHealerInRange()]),
   AcceptXPLoss: command((popups) => popups.acceptXpLoss()),
+  ConfirmBinder: command((popups) => popups.confirmBinder()),
+  CheckBinderDist: withPopups((popups) => [popups.binderInRange()]),
+  GetBindLocation: withPopups((popups) => optional(popups.bindLocation())),
+  ConfirmTalentWipe: command((popups) => popups.confirmTalentWipe()),
+  CheckTalentMasterDist: withPopups((popups) => [popups.talentMasterInRange()]),
+  GetInstanceLockTimeRemaining: withPopups((popups) => popups.instanceLockTimeRemaining()),
+  GetInstanceLockTimeRemainingEncounter: withPopups((popups, args) =>
+    popups.instanceLockEncounter(integerArg(args[0]) ?? 0) ?? NOTHING),
+  RespondInstanceLock: command((popups, args) => popups.respondInstanceLock(truthy(args[0]))),
   WebClientSelfResurrectName: withPopups((popups) => optional(popups.selfResurrectName())),
   WebClientResSicknessSeconds: withPopups((popups) => optional(popups.resSicknessSeconds())),
   WebClientCampTimeLeft: withPopups((popups) => optional(popups.campTimeLeft())),
@@ -1035,4 +1277,5 @@ export const FRAMEXML_POPUPS_EVENTS: readonly string[] = Object.freeze([
   "CORPSE_IN_INSTANCE", "CORPSE_OUT_OF_RANGE", "CONFIRM_SUMMON", "CANCEL_SUMMON", "GUILD_INVITE_REQUEST",
   "GUILD_INVITE_CANCEL", "ARENA_TEAM_INVITE_REQUEST", "TRADE_REQUEST", "TRADE_REQUEST_CANCEL",
   "PLAYER_CAMPING", "PLAYER_QUITING", "LOGOUT_CANCEL", "CONFIRM_XP_LOSS", "DELETE_ITEM_CONFIRM",
+  "CONFIRM_BINDER", "CONFIRM_TALENT_WIPE", "INSTANCE_LOCK_START", "INSTANCE_LOCK_STOP",
 ]);

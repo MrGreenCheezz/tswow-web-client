@@ -3,6 +3,7 @@ import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js"
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { loginToRealmList, type AuthSessionResult } from "../../auth/login.js";
 import { AuthProtocolError } from "../../auth/AuthProtocol.js";
+import { AUTH_RESULTS } from "../../generated/authResults.js";
 import type { BinaryByteStream } from "../../transport/WebSocketByteStream.js";
 import { GlueSession, type GlueSessionOptions } from "./GlueSession.js";
 import {
@@ -10,6 +11,9 @@ import {
 } from "./GlueCharacterApi.js";
 import { GlueCreation, type GlueCreationOptions } from "./GlueCreation.js";
 import { installGlueCreateApi, type GlueCreationView } from "./GlueCreateApi.js";
+import {
+  CLIENT_LOGIN_REFUSALS, authKey, describeFailure, showStatusMessage, type GlueAuthMessage,
+} from "./GlueMessages.js";
 import {
   frameXmlLuaDeclensionSetCount, frameXmlLuaDeclineName,
 } from "../ui/framexml_compat/FrameXmlDeclension.js";
@@ -82,7 +86,7 @@ export interface GlueApiOptions {
    * always the real implementation answering out of an empty session rather than a second set of
    * constant stubs — which is what lets the corpus smoke exercise it with no server at all.
    */
-  readonly session?: Omit<GlueSessionOptions, "fireEvent" | "setGlueScreen">;
+  readonly session?: Omit<GlueSessionOptions, "fireEvent" | "setGlueScreen" | "glueString" | "hasDialogType">;
   /**
    * «Вход в игровой мир» — where the character-select screen hands the player over.
    *
@@ -125,21 +129,12 @@ const EMPTY_CREATION_SOURCE: GlueCreationOptions["source"] = {
 export const GLUE_BUILD_INFO: readonly [string, string, string, number] =
   Object.freeze(["3.3.5", "12340", "Jun 24 2010", 30300]) as readonly [string, string, string, number];
 
-/** AuthResult from the selected TrinityCore AuthCodes.h, mapped to plain GlueStrings. */
-const AUTH_FAILURE_STRINGS: Readonly<Record<number, string>> = {
-  0x03: "AUTH_BANNED",
-  0x04: "AUTH_UNKNOWN_ACCOUNT",
-  0x05: "AUTH_INCORRECT_PASSWORD",
-  0x06: "AUTH_ALREADY_ONLINE",
-  0x07: "AUTH_NO_TIME",
-  0x08: "AUTH_DB_BUSY",
-  0x09: "AUTH_VERSION_MISMATCH",
-  0x0b: "AUTH_BAD_SERVER_PROOF",
-  0x0c: "AUTH_SUSPENDED",
-  0x0d: "AUTH_REJECT",
-  0x0f: "AUTH_PARENTAL_CONTROL",
-  0x10: "AUTH_LOCKED_ENFORCED",
-};
+/** The logon challenge's account name: one length byte, at most 16 UTF-8 bytes (`buildLogonChallenge`). */
+const MAX_ACCOUNT_NAME_BYTES = 16;
+const ACCOUNT_NAME_ENCODER = new TextEncoder();
+
+/** The Lua global `hasDialogType` answers through, cleared again after every question. */
+const DIALOG_TYPE_PROBE = "__glueDialogTypeProbe";
 
 /**
  * CVars the glue screens read before anything has written one.
@@ -189,10 +184,10 @@ const CONSTANT_STUBS: Readonly<Record<string, readonly unknown[]>> = Object.free
   // ever fires SERVER_SPLIT_NOTICE, so `SERVER_SPLIT_STATE_PENDING` stays at -1 and
   // `CharacterSelect_OnUpdate` keeps the button hidden — which is the correct screen.
   RequestRealmSplitInfo: [], SetRealmSplitState: [], SetPreferredInfo: [], IsStreamingTrial: [false],
-  // Character select / create — the rest of the list is real in `GlueCharacterApi.ts`; these are
-  // paid services and sending a declension, which this server has no packets for. (Declining a
-  // name is client-side and real: `installDeclension`.)
-  RenameCharacter: [], DeclineCharacter: [],
+  // Character select / create — the rest of the list is real in `GlueCharacterApi.ts`, the forced
+  // rename included; this is sending a declension, which this server has no packet for yet.
+  // (Declining a name is client-side and real: `installDeclension`.)
+  DeclineCharacter: [],
   // The whole of `CharacterCreate` is real in `GlueCreateApi.ts`; what stays here is the paid
   // services this server has no packets for, and the random-name generator, which in the original
   // is a server call (`CMSG_CHAR_RENAME`'s cousin) and not a table this client can carry.
@@ -274,6 +269,8 @@ export class GlueApi {
       ...options.session,
       fireEvent: (event, ...args) => { this.fireEvent(event, ...args); },
       setGlueScreen: (name) => { this.setGlueScreen(name); },
+      glueString: (key) => this.#vm.globalString(key),
+      hasDialogType: (type) => this.hasDialogType(type),
     });
     this.#creation = new GlueCreation({
       // An empty dataset is a working screen with nothing on it, which is what a gateway that is
@@ -575,8 +572,10 @@ export class GlueApi {
       void this.login(String(args[0] ?? ""), String(args[1] ?? ""));
       return [];
     });
-    vm.registerGlobal("CancelLogin", () => { this.cancelLogin(); return []; });
-    vm.registerGlobal("StatusDialogClick", () => { this.cancelLogin(); return []; });
+    // Both end whatever the CANCEL dialog was waiting for: the login, a realm's connection or its
+    // queue, a rename's answer.
+    vm.registerGlobal("CancelLogin", () => { this.cancelLogin(); this.#session.cancelPending(); return []; });
+    vm.registerGlobal("StatusDialogClick", () => { this.cancelLogin(); this.#session.cancelPending(); return []; });
   }
 
   private status(text: string): void {
@@ -589,6 +588,18 @@ export class GlueApi {
 
   async login(account: string, password: string): Promise<void> {
     const generation = ++this.#loginGeneration;
+    // What the client's DefaultServerLogin (FUN_004d8a30) refuses before it connects anywhere. The
+    // logon challenge carries at most 16 bytes of name: no authserver holds a longer one, and what it
+    // answers for a name it does not hold is WOW_FAIL_UNKNOWN_ACCOUNT.
+    const unsendable = !account ? CLIENT_LOGIN_REFUSALS.noAccountName
+      : !password ? CLIENT_LOGIN_REFUSALS.noPassword
+        : ACCOUNT_NAME_ENCODER.encode(account).byteLength > MAX_ACCOUNT_NAME_BYTES
+          ? authKey(AUTH_RESULTS.WOW_FAIL_UNKNOWN_ACCOUNT)
+          : undefined;
+    if (unsendable) {
+      this.showLoginRefusal(unsendable);
+      return;
+    }
     const connect = this.#options.connect;
     const url = this.#options.authUrl;
     this.fireEvent("OPEN_STATUS_DIALOG", "CANCEL", this.glueString("CONNECTING", "Соединение..."));
@@ -628,18 +639,40 @@ export class GlueApi {
       this.#loginStream?.close();
       this.#loginStream = undefined;
       this.fireEvent("CLOSE_STATUS_DIALOG");
-      let message = error instanceof Error ? error.message : String(error);
       if (error instanceof AuthProtocolError && error.code !== undefined) {
         this.#options.onAuthDiagnostic?.(error.code);
-        const key = AUTH_FAILURE_STRINGS[error.code] ?? "AUTH_FAILED";
-        message = this.glueString(key, "Ошибка авторизации");
+      } else {
+        // No result byte to name it: the player reads the client's words, the detail goes to the log.
+        this.#options.session?.onDiagnostic?.(`login: ${error instanceof Error ? error.message : String(error)}`);
       }
-      this.fireEvent("OPEN_STATUS_DIALOG", "OKAY", message);
-      // GlueDialog_Show measures its FontString before calling GlueDialog:Show(). The DOM reports
-      // zero height while that frame is hidden, so its first background overlaps the OK button.
-      // The stock UPDATE_STATUS_DIALOG handler measures the now-visible text and resizes the box.
-      this.status(message);
+      this.showLoginRefusal(describeFailure(error, "auth"));
     }
+  }
+
+  /**
+   * A refused login as the client shows it: its text, its fallback in a corpus without that text,
+   * and its stock dialog — or OKAY in a corpus without that type (`showStatusMessage`).
+   */
+  private showLoginRefusal(refusal: GlueAuthMessage): void {
+    showStatusMessage({
+      fire: (event, ...args) => { this.fireEvent(event, ...args); },
+      glueString: (key) => this.#vm.globalString(key),
+      hasDialogType: (type) => this.hasDialogType(type),
+    }, refusal, "Ошибка авторизации");
+  }
+
+  /** Whether the corpus defines `GlueDialogTypes[type]`. */
+  private hasDialogType(type: string): boolean {
+    const vm = this.#vm;
+    vm.setGlobal(DIALOG_TYPE_PROBE, undefined);
+    const ran = vm.execute(
+      `local which = ...; ${DIALOG_TYPE_PROBE} = type(GlueDialogTypes) == "table" and GlueDialogTypes[which] ~= nil`,
+      "@GlueApi:hasDialogType",
+      [type],
+    );
+    const present = ran.ok && vm.getGlobal(DIALOG_TYPE_PROBE) === true;
+    vm.setGlobal(DIALOG_TYPE_PROBE, undefined);
+    return present;
   }
 
   cancelLogin(): void {

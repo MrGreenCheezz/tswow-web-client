@@ -160,11 +160,43 @@ export function parseRaidGroupOnly(payload: Uint8Array): { homebindMilliseconds:
   return { homebindMilliseconds, reason: reader.u32() };
 }
 
-/** `SMSG_INSTANCE_LOCK_WARNING_QUERY`: `u32 milliseconds, u32 encounterMask, u8`. */
-export function parseInstanceLockWarning(payload: Uint8Array): { milliseconds: number; encounterMask: number } {
+export interface InstanceLockWarning {
+  milliseconds: number;
+  /** `InstanceScript::GetCompletedEncounterMask`: `1 << DungeonEncounter.Bit` per boss killed. */
+  encounterMask: number;
+  /** The byte after the mask, stock's `INSTANCE_LOCK_TIMER_PREVIOUSLY_SAVED` case; this core writes 0. */
+  previouslySaved: boolean;
+}
+
+/**
+ * `SMSG_INSTANCE_LOCK_WARNING_QUERY`: `u32 milliseconds, u32 completedEncounterMask, u8`
+ * (`InstanceMap::AddPlayerToMap`, Map.cpp:4155-4160: 60000, the mask, 0). Sent to a player entering
+ * an instance its group is permanently bound to; the core then waits 60 s for the answer
+ * (`SetPendingBind`) and binds by itself if none comes (`Player::Update`, Player.cpp:1313-1320).
+ */
+export function parseInstanceLockWarning(payload: Uint8Array): InstanceLockWarning {
   const reader = new PacketReader(payload);
   const milliseconds = reader.u32();
-  return { milliseconds, encounterMask: reader.u32() };
+  const encounterMask = reader.u32();
+  return { milliseconds, encounterMask, previouslySaved: reader.u8() !== 0 };
+}
+
+/**
+ * `CMSG_INSTANCE_LOCK_RESPONSE`: one byte (`HandleInstanceLockResponse`, MiscHandler.cpp:1545) — 1
+ * binds now, 0 is «Покинуть подземелье» (`RepopAtGraveyard`). Without a pending bind the core only
+ * logs the packet, so it is sent once.
+ */
+export function buildInstanceLockResponse(accept: boolean): Uint8Array {
+  return new PacketWriter().u8(accept ? 1 : 0).toUint8Array();
+}
+
+/**
+ * `CMSG_AREATRIGGER`: the AreaTrigger.dbc id just entered, one word (`HandleAreaTriggerOpcode`,
+ * MiscHandler.cpp:725). The core checks it against the position it last heard (in flight, unknown,
+ * out of range: silently ignored), so the sender reports the position first (browser/game/AreaTriggers.ts).
+ */
+export function buildAreaTrigger(id: number): Uint8Array {
+  return new PacketWriter().u32(id).toUint8Array();
 }
 
 /**

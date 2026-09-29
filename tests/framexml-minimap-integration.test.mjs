@@ -138,6 +138,7 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
     const zoneLabel = frame(candidate.boot, "MinimapZoneText");
     const zoomIn = frame(candidate.boot, "MinimapZoomIn");
     const zoomOut = frame(candidate.boot, "MinimapZoomOut");
+    const zoneBanner = frame(candidate.boot, "ZoneTextFrame");
     assert.equal(cluster.type, "Frame");
     assert.equal(minimap.type, "Minimap");
     assert.equal(zoneLabel.text, CANNED_MINIMAP_ZONE.minimapZoneText,
@@ -154,18 +155,26 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
       .map(([name]) => name),
     ["MinimapCluster", "WatchFrame", "BattlefieldFrame", "WorldStateAlwaysUpFrame"],
     "ZONE_CHANGED_NEW_AREA reaches the four stock zone owners in the promoted corpus");
+    // ZoneText.xml's zone banner (stock TOC line 51) owns all three zone events too.
     const zoneEventOwners = Object.freeze({
       ZONE_CHANGED: Object.freeze([
         ["MinimapCluster", cluster], ["BattlefieldFrame", battlefield],
-        ["WorldStateAlwaysUpFrame", worldState],
+        ["WorldStateAlwaysUpFrame", worldState], ["ZoneTextFrame", zoneBanner],
       ]),
       ZONE_CHANGED_INDOORS: Object.freeze([
-        ["MinimapCluster", cluster], ["WorldStateAlwaysUpFrame", worldState],
+        ["MinimapCluster", cluster], ["WorldStateAlwaysUpFrame", worldState], ["ZoneTextFrame", zoneBanner],
       ]),
       ZONE_CHANGED_NEW_AREA: Object.freeze([
         ["MinimapCluster", cluster], ["WatchFrame", watch], ["BattlefieldFrame", battlefield],
-        ["WorldStateAlwaysUpFrame", worldState],
+        ["WorldStateAlwaysUpFrame", worldState], ["ZoneTextFrame", zoneBanner],
       ]),
+    });
+    // ZoneText_OnEvent reads GetZoneText and GetSubZoneText once each, and GetZonePVPInfo through
+    // SetZoneText: once for the sub-zone banner, and once more when the zone banner starts — a zone
+    // name it has not shown yet, or NEW_AREA. The loop below meets the first ZONE_CHANGED with a new
+    // name (nothing fired a zone event before it), INDOORS and the repeated ZONE_CHANGED with the same.
+    const zoneBannerCalls = (starts) => ({
+      GetMinimapZoneText: 0, GetZoneText: 1, GetSubZoneText: 1, GetZonePVPInfo: starts ? 2 : 1,
     });
     for (const [event, expectedOwners] of Object.entries(zoneEventOwners)) {
       assert.deepEqual(
@@ -178,11 +187,13 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
     // This is the exact load-time census of the stock Minimap.lua path. GetZoneText and
     // GetSubZoneText belong to its tooltip branch and are not reached while the tooltip is closed;
     // a changed count is red evidence of a stock-path or dependency change, not a reason to skip.
+    // ZoneText.xml's SubZoneText_OnLoad adds one GetSubZoneText and, through SetZoneText, one
+    // GetZonePVPInfo at load.
     assert.deepEqual(inventoryCensus(candidate.inventory), {
       GetMinimapZoneText: 1,
       GetZoneText: 0,
-      GetSubZoneText: 0,
-      GetZonePVPInfo: 1,
+      GetSubZoneText: 1,
+      GetZonePVPInfo: 2,
     }, "exact stock Minimap.lua zone C-API census changed");
     assert.deepEqual(liveCensus(candidate.boot), inventoryCensus(candidate.inventory),
       "inventory census matches the live Lua wrappers");
@@ -266,9 +277,10 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
       assert.equal(candidate.boot.pump.fire(event), expectedHandlers,
         `${event} dispatches once per required stock owner`);
       assert.equal(zoneLabel.text, CANNED_MINIMAP_ZONE.minimapZoneText);
+      const bannerCalls = zoneBannerCalls(event !== "ZONE_CHANGED_INDOORS");
       for (const name of MINIMAP_API) {
-        const expectedDelta = ["GetMinimapZoneText", "GetZonePVPInfo"].includes(name)
-          ? expectedMinimapRefreshes : 0;
+        const expectedDelta = (["GetMinimapZoneText", "GetZonePVPInfo"].includes(name)
+          ? expectedMinimapRefreshes : 0) + bannerCalls[name];
         expectedZoneCensus[name] += expectedDelta;
         const afterZone = liveCensus(candidate.boot);
         assert.equal(afterZone[name] - beforeZone[name], expectedDelta,
@@ -282,9 +294,10 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
     const repeatedMinimapRefreshes = zoneEventOwners.ZONE_CHANGED.filter(([name, owner]) =>
       name === "MinimapCluster" && owner.registeredEvents.has("ZONE_CHANGED"),
     ).length;
+    const repeatedBannerCalls = zoneBannerCalls(false);
     for (const name of MINIMAP_API) {
-      const expectedDelta = ["GetMinimapZoneText", "GetZonePVPInfo"].includes(name)
-        ? repeatedMinimapRefreshes : 0;
+      const expectedDelta = (["GetMinimapZoneText", "GetZonePVPInfo"].includes(name)
+        ? repeatedMinimapRefreshes : 0) + repeatedBannerCalls[name];
       expectedZoneCensus[name] += expectedDelta;
       const afterRepeatedZone = liveCensus(candidate.boot);
       assert.equal(afterRepeatedZone[name] - beforeRepeatedZone[name], expectedDelta,

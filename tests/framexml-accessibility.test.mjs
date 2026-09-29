@@ -254,3 +254,69 @@ test("a stock error dialog traps focus, makes background inert and restores focu
   assert.equal(doc.activeElement, loginElement, "destroy returns to the original control");
   assert.equal(doc.listenerCount("focusin"), 0);
 });
+
+test("a world dialog is modeless: the world, the native HUD and other windows keep their input, focus stays where it was", () => {
+  const doc = fakeDocument();
+  // index.html: the FrameXML host sits beside #world-canvas and the native HUD under #world-viewport.
+  const worldCanvas = doc.createElement("canvas");
+  const chatInput = doc.createElement("input");
+  const host = doc.createElement("div");
+  const stage = doc.createElement("section");
+  doc.body.append(worldCanvas, chatInput, host);
+  host.append(stage);
+  const uiParentElement = doc.createElement("div");
+  stage.append(uiParentElement);
+  const moduleWindowElement = doc.createElement("div");
+  const moduleButtonElement = doc.createElement("button");
+  moduleWindowElement.append(moduleButtonElement);
+  const dialogElement = doc.createElement("div");
+  const textElement = doc.createElement("span");
+  const acceptElement = doc.createElement("button");
+  dialogElement.append(textElement, acceptElement);
+  uiParentElement.append(moduleWindowElement, dialogElement);
+
+  const bridge = new FrameXmlUiBridge();
+  const uiParent = bridge.CreateFrame("Frame", "UIParent");
+  const moduleWindow = bridge.CreateFrame("Frame", "ShopMainFrame", uiParent);
+  const moduleButton = bridge.CreateFrame("Button", "ShopMainFrameBuyButton", moduleWindow);
+  const dialog = bridge.CreateFrame("Frame", "StaticPopup1", uiParent);
+  const text = bridge.CreateFrame("FontString", "StaticPopup1Text", dialog);
+  const accept = bridge.CreateFrame("Button", "StaticPopup1Button1", dialog);
+  bridge.SetText(text, "Подтвердить покупку?");
+  bridge.SetText(accept, "Да");
+  bridge.SetText(moduleButton, "Купить");
+  const nodes = new Map();
+  mapped(nodes, uiParent, uiParentElement);
+  mapped(nodes, moduleWindow, moduleWindowElement);
+  mapped(nodes, moduleButton, moduleButtonElement);
+  mapped(nodes, dialog, dialogElement);
+  mapped(nodes, text, textElement);
+  mapped(nodes, accept, acceptElement);
+
+  chatInput.focus();
+  const helper = new FrameXmlAccessibility(stage, { dialogs: "modeless" });
+  helper.sync(nodes);
+  assert.equal(dialogElement.getAttribute("role"), "dialog", "still announced as a dialog");
+  assert.equal(dialogElement.getAttribute("aria-labelledby"), textElement.getAttribute("id"));
+  assert.equal(dialogElement.getAttribute("aria-modal"), null, "but not as a modal one");
+  for (const [name, element] of [["the world canvas", worldCanvas], ["the native chat box", chatInput],
+    ["the FrameXML host", host], ["the module's own window", moduleWindowElement]]) {
+    assert.equal(element.inert, false, `${name} keeps its input`);
+  }
+  assert.equal(doc.activeElement === chatInput, true, "the dialog does not take the keyboard");
+  assert.equal(doc.listenerCount("keydown") + doc.listenerCount("focusin"), 0, "no focus trap");
+  worldCanvas.focus();
+  helper.sync(nodes);
+  assert.equal(doc.activeElement === worldCanvas, true, "focus may leave for the world");
+  moduleButtonElement.focus();
+  helper.sync(nodes);
+  assert.equal(doc.activeElement === moduleButtonElement, true, "and for another window");
+
+  nodes.get(dialog).effectiveHidden = true;
+  dialogElement.hidden = true;
+  helper.sync(nodes);
+  assert.equal(dialogElement.getAttribute("role"), null);
+  assert.equal(doc.activeElement === moduleButtonElement, true, "closing it moves nothing");
+  helper.destroy();
+  assert.equal(worldCanvas.inert, false);
+});

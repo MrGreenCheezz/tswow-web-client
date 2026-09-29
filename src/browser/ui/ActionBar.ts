@@ -1,8 +1,10 @@
 import {
-  ACTION_BUTTONS_PER_PAGE, ACTION_BUTTON_EQUIPMENT_SET, ACTION_BUTTON_ITEM, ACTION_BUTTON_MACRO,
-  ACTION_BUTTON_SPELL, EXTRA_ACTION_BARS, actionPage, actionSlot, type ExtraActionBar,
+  ACTIONBAR_MAIN_PAGES, ACTION_BUTTONS_PER_PAGE, ACTION_BUTTON_EQUIPMENT_SET, ACTION_BUTTON_ITEM,
+  ACTION_BUTTON_MACRO, ACTION_BUTTON_SPELL, EXTRA_ACTION_BARS, actionPage, actionSlot, bonusActionPage,
+  type ExtraActionBar,
 } from "../../world/ActionBarProtocol.js";
 import { game } from "../game/Context.js";
+import { bonusBarHooks, currentBonusBarOffset } from "../game/BonusBar.js";
 import { playerInventory, stackCount } from "../Inventory.js";
 import { macroAt, runMacro } from "./Macros.js";
 import { wearEquipmentSetByIndex } from "./EquipmentSets.js";
@@ -36,7 +38,7 @@ import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement
  * pages of twelve; this shows one page and switches with Shift and a number, which is what the
  * original client's paging keys do.
  */
-const PAGES = 6;
+const PAGES = ACTIONBAR_MAIN_PAGES;
 
 /**
  * What key a slot wears in its corner, read from the binding table rather than written out here.
@@ -51,16 +53,51 @@ function slotKey(column: number, bar?: ExtraActionBar): string {
 }
 
 let page = 0;
+
+/** A main-row column's page when the bonus rule answers `bonusPage`: the key-bar override where it answers. */
+function mainColumnPage(column: number, bonusPage: number): number {
+  return bonusBarHooks.keyBarOverride?.(column) ?? bonusPage;
+}
+
+/**
+ * The page one main-row column shows and its key presses: the paging keys' page, except that on the
+ * first one a stance, a form or stealth puts its bonus page there, as stock `ActionButton_CalculateAction`
+ * does. `getActionBarPage` keeps answering the paging keys' page, as stock `GetActionBarPage` does.
+ */
+function mainBarPage(column: number): number {
+  return mainColumnPage(column, bonusActionPage(page, currentBonusBarOffset()));
+}
+
+/**
+ * The page each main-row column was drawn from. `refreshMainPages` brings it up to date in place and
+ * says whether a column moved: that is how a frame notices a stance, a form, stealth or a key-bar
+ * override coming or going, none of which has an event of its own here.
+ */
+const mainPages: number[] = Array.from({ length: ACTION_BUTTONS_PER_PAGE }, () => 0);
+const mainPageOf = (column: number): number => mainPages[column]!;
+
+function refreshMainPages(): boolean {
+  const bonusPage = bonusActionPage(page, currentBonusBarOffset());
+  let moved = false;
+  for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
+    const next = mainColumnPage(column, bonusPage);
+    if (next === mainPages[column]) continue;
+    mainPages[column] = next;
+    moved = true;
+  }
+  return moved;
+}
+
 const slots: IconButton[] = [];
 /**
- * The four bars the original client stacks beside the main one.
+ * The four native extra rows, each a row of the server's 144 slots pinned to a fixed page.
  *
- * They are not pages of anything, and yet they address exactly like pages: the server's 144 slots
- * are twelve rows of twelve, the paging keys walk the first six, and the bottom-left bar simply
- * *is* row 6. So an extra bar is a row pinned to a fixed page, and every function here that took a
- * column and read the current page now takes the page too. Nothing else had to change.
+ * Those pages are 7–10 (`ACTION_BAR_BASES`), the ones stock gives the bonus bars of stances, forms and
+ * stealth, while stock's own multi-bars stand on pages 6, 5, 3 and 4; moving the rows there, with the
+ * buttons players already placed, is WORK_PLAN 4.16 (b). Every function here that takes a column
+ * takes its page too, which is all an extra row needed.
  */
-const extraRows = new Map<ExtraActionBar, { element: HTMLElement; buttons: IconButton[] }>();
+const extraRows = new Map<ExtraActionBar, { element: HTMLElement; buttons: IconButton[]; pageOf: () => number }>();
 /** Which setting shows each, in the order they are stacked. */
 const EXTRA_BAR_SETTINGS: Readonly<Record<ExtraActionBar, string>> = {
   bottomLeft: "actionBarBottomLeft",
@@ -86,6 +123,8 @@ const DRAG_FORMAT = "application/x-webclient-action";
 function buildButton(column: number, barPage: () => number, bar?: ExtraActionBar): IconButton {
   const button = new IconButton({ key: slotKey(column, bar), onClick: () => useSlot(column, barPage()) });
   button.root.classList.add("ui-action-button");
+  // Attached once and reading the slot when it is shown: the contents change far more often
+  // than the button does, and a `title` on a greyed-out slot is never displayed at all.
   attachTooltip(button.root, () => slotTooltip(column, barPage(), bar));
   button.root.draggable = true;
   button.root.addEventListener("dragstart", (event) => {
@@ -103,6 +142,7 @@ function buildButton(column: number, barPage: () => number, bar?: ExtraActionBar
     if (!raw) return;
     dropSlot(column, JSON.parse(raw) as { action: number; type: number; from?: number }, barPage());
   });
+  // Right-click empties a slot, which is the only way to take something off a bar.
   button.root.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     const slot = actionSlot(barPage(), column);
@@ -133,11 +173,11 @@ function buildExtraRows(): void {
     element.className = vertical ? "action-bar action-bar-side-column" : "action-bar action-bar-extra";
     element.dataset["bar"] = bar.id;
     element.hidden = true;
-    const buttons = Array.from({ length: ACTION_BUTTONS_PER_PAGE }, (_, slot) =>
-      buildButton(slot, () => actionPage(bar.base), bar.id));
+    const pageOf = (): number => actionPage(bar.base);
+    const buttons = Array.from({ length: ACTION_BUTTONS_PER_PAGE }, (_, slot) => buildButton(slot, pageOf, bar.id));
     element.append(...buttons.map((button) => button.root));
     (vertical ? side : bottom).append(element);
-    extraRows.set(bar.id, { element, buttons });
+    extraRows.set(bar.id, { element, buttons, pageOf });
   }
   actionBar.parentElement?.insertBefore(bottom, actionBar);
   // The horizontal rows belong to #bottom-hud-center, but the vertical rail must remain a viewport
@@ -176,34 +216,9 @@ function build(): void {
   buildExtraRows();
   if (slots.length > 0) return;
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
-    const button = new IconButton({ key: slotKey(column), onClick: () => useSlot(column) });
-    button.root.classList.add("ui-action-button");
-    // Attached once and reading the slot when it is shown: the contents change far more often
-    // than the button does, and a `title` on a greyed-out slot is never displayed at all.
-    attachTooltip(button.root, () => slotTooltip(column));
-    button.root.draggable = true;
-    button.root.addEventListener("dragstart", (event) => {
-      const content = contentOf(column);
-      if (!content) {
-        event.preventDefault();
-        return;
-      }
-      event.dataTransfer?.setData(DRAG_FORMAT, JSON.stringify({ ...content, from: actionSlot(page, column) }));
-    });
-    button.root.addEventListener("dragover", (event) => event.preventDefault());
-    button.root.addEventListener("drop", (event) => {
-      event.preventDefault();
-      const raw = event.dataTransfer?.getData(DRAG_FORMAT);
-      if (!raw) return;
-      const dropped = JSON.parse(raw) as { action: number; type: number; from?: number };
-      dropSlot(column, dropped);
-    });
-    // Right-click empties a slot, which is the only way to take something off a bar.
-    button.root.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      const slot = actionSlot(page, column);
-      if (contentOf(column)) game.world?.setActionButton(slot, 0, 0);
-    });
+    // Every press, drag, drop, right-click and tooltip of the main row asks for its page then: the
+    // paging keys move it, and on the first page so do a stance, a form and stealth.
+    const button = buildButton(column, () => mainBarPage(column));
     slots.push(button);
     actionBar.append(button.root);
   }
@@ -213,7 +228,9 @@ function build(): void {
  * Puts what was dragged into a slot. A drag from another slot is a move: the server holds one
  * action per slot and nothing tells it the old one is gone unless the client says so.
  */
-function dropSlot(column: number, dropped: { action: number; type: number; from?: number }, barPage = page): void {
+function dropSlot(
+  column: number, dropped: { action: number; type: number; from?: number }, barPage = mainBarPage(column),
+): void {
   const world = game.world;
   if (!world || dropped.action <= 0) return;
   const target = actionSlot(barPage, column);
@@ -277,13 +294,13 @@ function requestSlotMetadata(): void {
   }
 }
 
-function contentOf(column: number, barPage = page): { action: number; type: number } | undefined {
+function contentOf(column: number, barPage = mainBarPage(column)): { action: number; type: number } | undefined {
   const slot = actionSlot(barPage, column);
   return game.world?.actionButtons.find((button) => button.slot === slot);
 }
 
 /** Why a slot cannot be pressed right now, or an empty string when it can. */
-function slotBlockedBy(column: number, now = performance.now(), barPage = page): string {
+function slotBlockedBy(column: number, now = performance.now(), barPage = mainBarPage(column)): string {
   const world = game.world;
   const content = contentOf(column, barPage);
   if (!world || !content) return "";
@@ -299,6 +316,7 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = page):
     if (spellId !== undefined && Math.max(
       world.itemCooldownRemaining(spellId, now), world.cooldownRemaining(spellId, now),
     ) > 0) return "Восстанавливается";
+    if (spellId !== undefined && world.isSpellOnHold?.(spellId)) return "Ещё не готово";
     return "";
   }
   if (content.type !== ACTION_BUTTON_SPELL) return "";
@@ -313,12 +331,19 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = page):
   // to a new cast and must not make dismounting unavailable.
   if (togglingMount) return "";
   if (world.cooldownRemaining(content.action, now) > 0) return "Восстанавливается";
+  // Held until its aura ends (Stealth after a stealthed login): the realm would answer NOT_READY.
+  // Grey and refused, with nothing to sweep (WorldClient.isSpellOnHold).
+  if (world.isSpellOnHold?.(content.action)) return "Ещё не готово";
   if ((metadata?.startRecoveryTime ?? 0) > 0 && game.globalCooldownUntil > now) return "Восстанавливается";
   if (!spellPowerAvailable(world, metadata)) return "Не хватает ресурса";
   return "";
 }
 
-export function useSlot(column: number, barPage = page): void {
+/**
+ * Presses one slot. Without a page it is the main row as shown — the bonus page under a stance, a
+ * form or stealth — which is what keys 1 to = mean; the extra bars and stock `UseAction` pass theirs.
+ */
+export function useSlot(column: number, barPage = mainBarPage(column), button?: string): void {
   const world = game.world;
   const content = contentOf(column, barPage);
   if (!world || !content) return;
@@ -330,7 +355,8 @@ export function useSlot(column: number, barPage = page): void {
     return;
   }
   if (content.type === ACTION_BUTTON_MACRO) {
-    runMacro(content.action);
+    // The mouse button that pressed a stock action button (`UseAction`'s third argument), for `[btn:N]`.
+    runMacro(content.action, button);
     return;
   }
   if (content.type === ACTION_BUTTON_EQUIPMENT_SET) {
@@ -368,7 +394,7 @@ export function upgradeActionBarRanks(): void {
 }
 
 /** What one slot holds, the key that presses it, and how anything gets onto the bar at all. */
-function slotTooltip(column: number, barPage = page, bar?: ExtraActionBar): TooltipContent {
+function slotTooltip(column: number, barPage = mainBarPage(column), bar?: ExtraActionBar): TooltipContent {
   const key = slotKey(column, bar);
   const chord = key ? `Клавиша: ${key}` : "";
   const content = contentOf(column, barPage);
@@ -417,23 +443,24 @@ function slotTooltip(column: number, barPage = page, bar?: ExtraActionBar): Tool
 export function showActionBar(): void {
   build();
   requestSlotMetadata();
-  drawRow(slots, page);
+  refreshMainPages();
+  drawRow(slots, mainPageOf);
   for (const bar of EXTRA_ACTION_BARS) {
     const row = extraRows.get(bar.id);
     if (!row) continue;
     // Hidden rows are not drawn: a bar the player has switched off costs nothing.
     row.element.hidden = !settingOn(EXTRA_BAR_SETTINGS[bar.id]);
-    if (!row.element.hidden) drawRow(row.buttons, actionPage(bar.base), bar.id);
+    if (!row.element.hidden) drawRow(row.buttons, row.pageOf, bar.id);
   }
   publishSideWidth();
   publishBottomBars();
 }
 
-/** One row of twelve, whichever bar it belongs to. */
-function drawRow(buttons: readonly IconButton[], barPage: number, bar?: ExtraActionBar): void {
+/** One row of twelve, whichever bar it belongs to; `pageOf` says which page each column shows. */
+function drawRow(buttons: readonly IconButton[], pageOf: (column: number) => number, bar?: ExtraActionBar): void {
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
     const button = buttons[column]!;
-    const content = contentOf(column, barPage);
+    const content = contentOf(column, pageOf(column));
     const key = slotKey(column, bar);
     if (!content) {
       button.root.dataset["empty"] = "";
@@ -499,19 +526,25 @@ export function updateActionBar(now: number): void {
   // a `--sweep` write per slot per frame of every global cooldown — is drawn for nobody. The rows
   // are redrawn from the world's state on the first frame after the stock owner lets them go.
   if (nativeHudReplaced(NATIVE_LANES_REPLACED)) return;
-  updateRow(slots, page, now);
+  // Taking a stance, a form or stealth — or leaving one — moves the main row to another page with
+  // no event of its own here; twelve integers compared a frame notice it (the offset behind them is
+  // cached). Only the main row is redrawn: nothing else moved, and the last `showActionBar` already
+  // asked for every slot's row, the bonus pages' included.
+  if (refreshMainPages()) drawRow(slots, mainPageOf);
+  updateRow(slots, mainPageOf, now);
   for (const bar of EXTRA_ACTION_BARS) {
     const row = extraRows.get(bar.id);
-    if (row && !row.element.hidden) updateRow(row.buttons, actionPage(bar.base), now);
+    if (row && !row.element.hidden) updateRow(row.buttons, row.pageOf, now);
   }
 }
 
-function updateRow(buttons: readonly IconButton[], barPage: number, now: number): void {
+function updateRow(buttons: readonly IconButton[], pageOf: (column: number) => number, now: number): void {
   const world = game.world;
   if (!world) return;
   const globalRemaining = Math.max(0, game.globalCooldownUntil - now);
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
     const button = buttons[column]!;
+    const barPage = pageOf(column);
     const content = contentOf(column, barPage);
     if (!content || (content.type !== ACTION_BUTTON_SPELL && content.type !== ACTION_BUTTON_ITEM)) {
       button.setCooldown(0);

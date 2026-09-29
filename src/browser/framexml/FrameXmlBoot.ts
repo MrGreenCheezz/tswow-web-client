@@ -35,7 +35,7 @@ import {
   FRAMEXML_NEUTRAL_CONSTANTS,
   FRAMEXML_NEUTRAL_PRELUDE,
 } from "./FrameXmlNeutralApi.js";
-import { FRAMEXML_BAG_COMPAT_PRELUDE } from "./FrameXmlBagCompat.js";
+import { FRAMEXML_BAG_COMPAT_PRELUDE, installOwnedGlobals, releaseOwnedGlobals } from "./FrameXmlBagCompat.js";
 import {
   FRAMEXML_CHARACTER_COMPAT_PRELUDE,
   FRAMEXML_CHARACTER_OPTIONAL_SUBFRAMES,
@@ -52,6 +52,7 @@ import {
 } from "./FrameXmlWorldSeam.js";
 import { createFrameXmlCharacterTooltipAdapter } from "./FrameXmlCharacterTooltip.js";
 import { installFrameXmlSocketing } from "./FrameXmlSocketing.js";
+import { FRAMEXML_SECURE_ENTRY_POINTS, installFrameXmlSecureWrappers } from "./FrameXmlSecureCalls.js";
 import { installFrameXmlWorldMapArrowBindings } from "./FrameXmlWorldMapArrow.js";
 import { pageModifiers, type ModifierSource } from "../input/Modifiers.js";
 import { GlueLuaRef } from "../glue/GlueLua.js";
@@ -1090,7 +1091,8 @@ export class FrameXmlBoot {
     // optional panel the host has not loaded.
     await this.checkpoint();
     this.#options.beforeExercise?.(this);
-    this.#secureActionButtonGrid();
+    this.#secureStockEntryPoints();
+    this.#standInOptionsFrame();
 
     // Before the four session events, not after: `PLAYER_ENTERING_WORLD` is what makes every
     // action button ask `HasAction`, and a seam attached afterwards would answer a bar that had
@@ -1234,33 +1236,54 @@ export class FrameXmlBoot {
    * the corpus and against this clock by the renderer's sweep.
    */
   /**
-   * `ActionButton_ShowGrid`/`ActionButton_HideGrid` count a button's `showgrid` attribute only
-   * `if ( issecure() )` (ActionButton.lua:275, :291), and that counter is the whole of what shows
-   * an empty slot while something is held (ACTIONBAR_SHOWGRID, the spellbook's
-   * MultiActionBar_ShowAllGrids, MultiActionBars.lua:85-87) and hides it again. In the client both
-   * run as Blizzard's code, secure; this VM answers `issecure()` false (GlueLua.ts), which left every
-   * empty slot hidden, so nothing could be dropped on one. The two run with `issecure()` true, as
-   * the Options owner runs Blizzard's code (FrameXmlOptionsOwner.ts); nothing else changes answer.
+   * The stock entry points that run as Blizzard's code, with `issecure()` true (FrameXmlSecureCalls.ts):
+   * `ActionButton_ShowGrid`/`ActionButton_HideGrid` count a button's `showgrid` only `if ( issecure() )`
+   * (ActionButton.lua:275, :291) — the empty slots a held spell is dropped on (ACTIONBAR_SHOWGRID,
+   * MultiActionBars.lua:85-87) — and `UnitPopup_ShowMenu` hides «Выбрать целью» and the raid's main
+   * tank/assist rows without it (UnitPopup.lua:593, :752, :758). Everywhere else `issecure()` is not
+   * secure. Wrapped after the whole load, so the unit frames' load-time menu initializers build
+   * exactly the rows (and dropdown buttons) they built before.
    */
-  #secureActionButtonGrid(): void {
-    const installed = this.vm.execute(`
-      do
-        local insecure, pcall, error, type, rawget = issecure, pcall, error, type, rawget
-        local function secure() return true end
-        for _, name in ipairs({ "ActionButton_ShowGrid", "ActionButton_HideGrid" }) do
-          local original = rawget(_G, name)
-          if type(original) == "function" then
-            _G[name] = function(...)
-              issecure = secure
-              local ok, message = pcall(original, ...)
-              issecure = insecure
-              if not ok then error(message, 0) end
-            end
-          end
-        end
-      end
-    `, "@webclient/actionbar-grid-secure");
-    if (!installed.ok) console.warn(`[FrameXML] action bar grid: ${installed.error}`);
+  #secureStockEntryPoints(): void {
+    installFrameXmlSecureWrappers(this.vm, FRAMEXML_SECURE_ENTRY_POINTS);
+  }
+
+  /** The owned `InterfaceOptionsFrame` global while the lazy options chain has not loaded (below). */
+  #optionsStandIn: readonly (readonly [string, FrameXmlFrame])[] = [];
+
+  /** That stand-in, which the bag gate accepts instead of aliasing its own (FrameXmlWorldMount.ts). */
+  get optionsFrameStandIn(): FrameXmlFrame | undefined {
+    return this.#optionsStandIn[0]?.[1];
+  }
+
+  /**
+   * UIParent's PLAYER_CONTROL_LOST handler (UIParent.lua:800-819) closes the windows through
+   * IsOptionFrameOpen (:2204-2210), which dereferences InterfaceOptionsFrame unconditionally — a
+   * frame of the options chain, which loads only on its first open (FRAMEXML_OPTIONS_TOC,
+   * FrameXmlOptionsOwner.ts). Until then an owned, hidden, unnamed stand-in answers «not open»; the
+   * chain's real frame takes the global over (installOwnedGlobals never covers it). The world mount's
+   * bag gate had its own stand-in, but only for its owner's lifetime and never in the add-ons-only
+   * mount; a boot without UIParent's IsOptionFrameOpen needs none.
+   */
+  #standInOptionsFrame(): void {
+    // rawget: a subset boot without UIParent must not count a miss for a name it never reads.
+    const probe = this.vm.compileFunction(
+      "return type(rawget(_G, 'IsOptionFrameOpen')) == 'function' and rawget(_G, 'InterfaceOptionsFrame') == nil",
+      "webclient/options-stand-in", []);
+    if (!probe) return;
+    let needed = false;
+    try {
+      needed = this.vm.call(probe, [], 1)[0] === true;
+    } finally {
+      this.vm.release(probe);
+    }
+    if (!needed) return;
+    const standIn = this.bridge.CreateFrame("Frame");
+    if (!standIn) return;
+    this.bridge.Hide(standIn);
+    const installed: (readonly [string, FrameXmlFrame])[] = [];
+    installOwnedGlobals(this.vm, [["InterfaceOptionsFrame", standIn]], installed);
+    this.#optionsStandIn = installed;
   }
 
   get pump(): { fire: (event: string, ...args: readonly unknown[]) => number; now: () => number } {
@@ -1305,6 +1328,8 @@ export class FrameXmlBoot {
     this.#clientNetwork?.close();
     this.#addons.close();
     this.#options.seam?.detach();
+    releaseOwnedGlobals(this.vm, this.#optionsStandIn);
+    this.#optionsStandIn = [];
     this.vm.close();
   }
 

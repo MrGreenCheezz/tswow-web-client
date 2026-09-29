@@ -218,15 +218,22 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
   // bridge the runtime owns, so one of the two has to arrive late.
   let characterScene: GlueCharacterScene | undefined;
   let creationScene: GlueCharacterScene | undefined;
-  const liveConnect: GlueWorldConnector = options.connect ?? (async (realm, auth) => {
+  const liveConnect: GlueWorldConnector = options.connect ?? (async (realm, auth, progress, signal) => {
     const stream = await WebSocketByteStream.connect(gatewaySocketUrl(origin, "/world"));
+    // The connecting dialog's Cancel closes the socket, which ends a wait in the realm's queue.
+    const abort = (): void => stream.close();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
     try {
+      progress?.({ stage: "authenticating" });
       return await WorldClient.connect(stream, {
         username: auth.username, sessionKey: auth.sessionKey, realmId: realm.id, realmName: realm.name,
-      });
+      }, { onQueue: (position) => progress?.({ stage: "queued", position }) });
     } catch (error) {
       stream.close();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
   });
   const runtime = new GlueRuntime({

@@ -1,5 +1,6 @@
-import type { CharacterSummary } from "../../world/CharacterProtocol.js";
+import { characterNeedsRename, RESPONSE_SUCCESS, type CharacterSummary } from "../../world/CharacterProtocol.js";
 import type { GlueLuaVm } from "./GlueLua.js";
+import { messageFor, responseKey } from "./GlueMessages.js";
 import type { GlueSession } from "./GlueSession.js";
 
 /**
@@ -157,13 +158,20 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
 
   /* --- Entering the world -------------------------------------------------------------------- */
 
-  vm.registerGlobal("EnterWorld", () => {
+  const enterWorld = (): void => {
     const character = session.selected;
     // `UpdateCharacterList` already disables the button with an empty list, so this is the case
     // where the list changed under a click — a delete that landed between the two.
     if (!character) {
       options.fireEvent("OPEN_STATUS_DIALOG", "OKAY", "Персонаж не выбран.");
-      return [];
+      return;
+    }
+    // The core loads a character it has marked for a new name only to refuse and kick it, and the
+    // screen would loop «disconnected → character select». The client's EnterWorld (FUN_004d9bd0)
+    // asks for the name instead; the event carries the key, which CharacterSelect.lua prints.
+    if (characterNeedsRename(character)) {
+      options.fireEvent("FORCE_RENAME_CHARACTER", "CHAR_RENAME_DESCRIPTION");
+      return;
     }
     // No host to hand it to: `glue.html` is a dev entry with no renderer, no HUD and no `game`
     // context behind it. Recorded and said out loud rather than silently doing nothing.
@@ -171,12 +179,49 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
       stub("EnterWorld");
       options.fireEvent("OPEN_STATUS_DIALOG", "OKAY",
         "Вход в мир доступен на главной странице клиента (index.html).");
-      return [];
+      return;
     }
     // Everything after this belongs to the host: it suspends these screens, adopts the world
     // connection the session opened, and runs the DOM app's own `enterWorld`. The glue side keeps
     // the session and the socket, so the way back is a screen change and not a new login.
     options.enterWorld({ character, index: session.selectedIndex });
-    return [];
+  };
+  vm.registerGlobal("EnterWorld", () => { enterWorld(); return []; });
+
+  /**
+   * `RenameCharacter(index, name)` — the rename dialog's OK, Enter and nothing else.
+   *
+   * The dialog hides itself only when this answers true (CharacterSelect.xml:1186, :1257), so it is
+   * true exactly when the request went out. What the client checks before sending (FUN_004d8d20)
+   * and every answer it gets back (FUN_004da090) re-open the dialog through FORCE_RENAME_CHARACTER
+   * with the reason's key: a name in use is CHAR_CREATE_NAME_IN_USE, anything else the core refuses
+   * is CHAR_RENAME_FAILED (`responseKey(code, "rename")`). A success rereads the list and carries on
+   * into the world with the renamed character, which is what the client does.
+   */
+  vm.registerGlobal("RenameCharacter", (args) => {
+    const index = number(args[0], 0);
+    const name = String(args[1] ?? "").trim();
+    const character = session.characters[index - 1];
+    const refuse = (key: string): unknown[] => {
+      options.fireEvent("FORCE_RENAME_CHARACTER", key);
+      return [false];
+    };
+    if (!character || !session.connected) return refuse("CHAR_RENAME_FAILED");
+    if (name.length === 0) return refuse("CHAR_NAME_NO_NAME");
+    if ([...name].length < 2) return refuse("CHAR_NAME_TOO_SHORT");
+    options.fireEvent("OPEN_STATUS_DIALOG", "CANCEL",
+      messageFor("CHAR_RENAME_IN_PROGRESS", (key) => vm.globalString(key), "Переименование персонажа..."));
+    void session.renameCharacter(index, name).then(async (answer) => {
+      // Cancelled, or never asked: nothing is waiting for a dialog.
+      if (!answer) return;
+      options.fireEvent("CLOSE_STATUS_DIALOG");
+      if (answer.result !== RESPONSE_SUCCESS) {
+        options.fireEvent("FORCE_RENAME_CHARACTER", responseKey(answer.result, "rename"));
+        return;
+      }
+      await session.refreshCharacters();
+      if (options.enterWorld && session.selected?.guid === character.guid) enterWorld();
+    });
+    return [true];
   });
 }

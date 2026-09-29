@@ -16,6 +16,15 @@
  * DOM-free.
  */
 
+import { parseMacroOptions } from "../macro/MacroOptions.js";
+
+// The one macro-condition evaluator (macro/MacroOptions.ts) and its world context
+// (macro/MacroContext.ts). The native commands take them from here, with the rest of the macro rules.
+export {
+  evaluateMacroOptions, installMacroOptionErrorSink, macroOptions, parseMacroOptions,
+} from "../macro/MacroOptions.js";
+export { createMacroContext } from "../macro/MacroContext.js";
+
 /** `MAX_ACCOUNT_MACROS` and `MAX_CHARACTER_MACROS` in Blizzard_MacroUI.lua. */
 export const MAX_ACCOUNT_MACROS = 36;
 export const MAX_CHARACTER_MACROS = 18;
@@ -82,19 +91,33 @@ export function trimMacroBody(body: string): string {
 }
 
 /**
- * A body as the lines that will be run.
+ * A body as its lines.
  *
  * Blank lines are dropped and leading spaces trimmed, because a macro is usually written with the
- * text box's own wrapping in mind. `#showtooltip` lines are display-only and skipped at run time.
- * A single `[@unit]` prefix (target/focus/self/player/pet) is allowed and resolved at run time;
- * any other `[condition]` is refused by `macroProblems` instead of silently running the wrong half.
+ * text box's own wrapping in mind. `#showtooltip`/`#show` lines are display-only and never run; a
+ * line without `/` is said in chat, as the client says it (macro/MacroRunner.ts). Conditions —
+ * `[mod:shift]`, `[combat]`, `[@focus,help]` — are evaluated when the line runs
+ * (macro/MacroOptions.ts); `macroProblems` refuses only what cannot be read.
  */
 export function macroLines(body: string): string[] {
   return body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
 }
 
-/** Units a macro may name with `[@unit]`. Everything else is a condition, not a target. */
-export const MACRO_UNITS = new Set(["target", "focus", "self", "player", "pet", "mouseover"]);
+/**
+ * Units a macro may name with `[@unit]` or `[target=unit]`: the player's own, the party's and the
+ * raid's, each also followed by any number of `target`s (`targettarget`, `focustarget`, `party1target`).
+ */
+export const MACRO_UNITS: ReadonlySet<string> = new Set([
+  "target", "focus", "self", "player", "pet", "mouseover",
+  "party1", "party2", "party3", "party4",
+  ...Array.from({ length: 40 }, (_, index) => `raid${index + 1}`),
+]);
+
+export function isMacroUnit(unit: string): boolean {
+  let token = unit.trim().toLowerCase();
+  while (token.length > "target".length && token.endsWith("target")) token = token.slice(0, -"target".length);
+  return MACRO_UNITS.has(token);
+}
 
 const SHOWTOOLTIP = /^#showtooltip\b/i;
 /** A `[@unit]` token anywhere in a combat line (`/cast [@target] Fireball`). */
@@ -115,13 +138,20 @@ export function macroTargetTokens(line: string): string[] {
   return [...line.matchAll(/\[@([A-Za-z]+)\]/g)].map((match) => match[1]!.toLowerCase());
 }
 
-const CONDITIONAL = /[\[\]]/;
+/** A slash line's command, lower-case, and what follows it. */
+function slashCommand(line: string): { command: string; rest: string } | undefined {
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(line);
+  return match ? { command: match[1]!.toLowerCase(), rest: (match[2] ?? "").trim() } : undefined;
+}
 
 /**
  * What is wrong with a macro, in words, or nothing.
  *
- * Said before it is saved rather than discovered when it does nothing: a macro that silently
- * skips the line it could not understand is worse than one that refuses to be written.
+ * Said before it is saved rather than discovered when it does nothing. Conditions are not a
+ * problem: they are evaluated when the line runs, as in the original client. A problem is what no
+ * evaluation can read — a `[` never closed, a target left empty — and what this client's own `/cast`
+ * and `/use` cannot do: a unit it cannot resolve, an addressed item. Every line runs, as in the
+ * client; what one press may send is the cast guard's to decide (SpellCastGuard.ts).
  */
 export function macroProblems(name: string, body: string): string[] {
   const problems: string[] = [];
@@ -131,32 +161,35 @@ export function macroProblems(name: string, body: string): string[] {
   }
   const lines = macroLines(body).filter((line) => stripShowtooltip(line) !== undefined);
   if (lines.length === 0) problems.push("Тело пустое — макрос ничего не сделает.");
-  // A combat line starts with /cast or /use; the [@unit] token may sit after the command.
-  const withoutTokens = (line: string): string => line.replace(/\[@[A-Za-z]+\]/g, " ");
-  const combat = lines.filter((line) => /^\/(cast|use)(?:\s|$)/i.test(withoutTokens(line).trim()));
-  // Only a single known [@unit] token on /cast is allowed; an item target needs a different
-  // CMSG_USE_ITEM target block and cannot silently use the current selection instead.
-  if (combat.some((line) => {
-    const tokens = macroTargetTokens(line);
-    if (tokens.length > 1 || tokens.some((token) => !MACRO_UNITS.has(token))
-      || (/^\/use\b/i.test(line) && tokens.length > 0)) return true;
-    return CONDITIONAL.test(withoutTokens(line));
-  })) {
-    problems.push("Для /cast доступна одна [@цель] (target, focus, self, player, pet, mouseover); условия и адресный /use не поддерживаются.");
+  let unknownUnit = false;
+  let addressedUse = false;
+  let badAction = false;
+  for (const line of lines) {
+    const slash = slashCommand(line);
+    if (!slash) continue;
+    const isCombat = slash.command === "cast" || slash.command === "use";
+    // Options are what a secure command reads; a chat line's text is not, unless it opens a bracket.
+    if (!isCombat && !slash.rest.startsWith("[")) continue;
+    const options = parseMacroOptions(slash.rest);
+    if (options.error !== undefined) {
+      problems.push(`«${line}»: ${options.error}.`);
+      continue;
+    }
+    if (!isCombat) continue;
+    const targets = options.clauses.flatMap((clause) => clause.groups.flatMap((group) =>
+      group.target === undefined ? [] : [group.target]));
+    // An item target needs another CMSG_USE_ITEM target block; the selection must not stand in for it.
+    if (slash.command === "use" && targets.length > 0) addressedUse = true;
+    else if (targets.some((unit) => !isMacroUnit(unit))) unknownUnit = true;
+    // An ID or a spell/item name per clause; names resolve at run time against the spellbook/bags.
+    const actions = options.clauses.map((clause) => clause.text);
+    if (!actions.some((action) => action.length > 0) || actions.some((action) => action.length > 64)) badAction = true;
   }
-  if (combat.length > 1) problems.push("За одно нажатие допускается только одна команда /cast или /use.");
-  if (combat.some((line) => {
-    const target = macroTargetUnit(line);
-    const rest = (target?.rest ?? line).trim();
-    const match = rest.match(/^\/(cast|use)\s+(.+)$/i);
-    if (!match) return true;
-    const argument = match[2]!.trim();
-    // ID or a spell/item name; names resolve at run time against the spellbook/inventory.
-    // A leftover [@...] inside the argument means the token sat in an unparseable spot.
-    return argument.length === 0 || argument.length > 64 || /[;\n]/.test(argument) || CONDITIONAL.test(argument);
-  })) {
-    problems.push("Формат боевой команды: /cast ID|Имя или /use ID|Имя, опционально [@цель].");
+  if (unknownUnit) {
+    problems.push("Цель [@…] для /cast: target, focus, player, pet, mouseover, party1–4, raid1–40 и их …target.");
   }
+  if (addressedUse) problems.push("Адресная цель [@…] для /use пока не поддерживается.");
+  if (badAction) problems.push("Формат боевой команды: /cast [условия] ID|Имя; … или /use [условия] ID|Имя.");
   return problems;
 }
 

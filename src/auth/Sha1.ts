@@ -1,10 +1,14 @@
 /**
- * SHA-1 in plain TypeScript, for pages that have no Web Crypto digest.
+ * SHA-1 and HMAC-SHA1 in plain TypeScript, for pages that have no Web Crypto.
  *
  * `crypto.subtle` exists only in a secure context: HTTPS, or a loopback address. A page served to
  * players as `http://<public address>/` has none, and SRP6 login hashes with SHA-1 throughout, so
  * without this fallback such a page could never log in. The protocol itself is unchanged — it is
  * the same SRP6 the original client runs over plain TCP.
+ *
+ * The world session needs HMAC-SHA1 besides (`WorldCrypt` keys its header RC4 with it), and uses
+ * {@link hmacSha1} always rather than only when `subtle` is missing: a fallback that no test in
+ * Node ever takes, because Node always has `subtle`, is how the http login stayed broken.
  */
 export function sha1(bytes: Uint8Array): Uint8Array {
   const bitLength = bytes.byteLength * 8;
@@ -55,4 +59,27 @@ export function sha1(bytes: Uint8Array): Uint8Array {
   const out = new DataView(digest.buffer);
   [h0, h1, h2, h3, h4].forEach((word, index) => out.setUint32(index * 4, word));
   return digest;
+}
+
+/** SHA-1's block size in bytes, which is HMAC's key block. */
+const HMAC_BLOCK_BYTES = 64;
+
+/**
+ * HMAC-SHA1 (RFC 2104): `sha1((K ^ opad) ‖ sha1((K ^ ipad) ‖ data))`, where K is the key hashed when
+ * it is longer than a block and zero-padded to one. Not constant-time, and it need not be: the only
+ * caller keys it with the 3.3.5 client's own public constants.
+ */
+export function hmacSha1(key: Uint8Array, data: Uint8Array): Uint8Array {
+  const block = new Uint8Array(HMAC_BLOCK_BYTES);
+  block.set(key.byteLength > HMAC_BLOCK_BYTES ? sha1(key) : key);
+  const inner = new Uint8Array(HMAC_BLOCK_BYTES + data.byteLength);
+  const outer = new Uint8Array(HMAC_BLOCK_BYTES + 20);
+  for (let index = 0; index < HMAC_BLOCK_BYTES; index++) {
+    const byte = block[index] ?? 0;
+    inner[index] = byte ^ 0x36;
+    outer[index] = byte ^ 0x5c;
+  }
+  inner.set(data, HMAC_BLOCK_BYTES);
+  outer.set(sha1(inner), HMAC_BLOCK_BYTES);
+  return sha1(outer);
 }

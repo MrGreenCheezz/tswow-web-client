@@ -1,5 +1,6 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import { parseCastFailure, type CastFailure } from "./SpellProtocol.js";
 
 // Layouts follow the active TrinityCore source: Player.cpp (`PetSpellInitialize`,
 // `PossessSpellInitialize`, `VehicleSpellInitialize`, `CharmSpellInitialize`, `RemovePet`,
@@ -254,27 +255,22 @@ export function parsePetActionSound(payload: Uint8Array): PetTalk {
   return { guid, talk };
 }
 
-export interface PetCastFailure {
-  /**
-   * Zero whenever the failure came from the pet bar rather than from a cast the client counted:
-   * that path never assigns the counter. Treat zero as "not correlated".
-   */
-  castCount: number;
-  spellId: number;
-  result: number;
-}
+/**
+ * A pet's refusal: the player's `CastFailure`, tail and all. Its `castCount` is zero whenever the
+ * failure came from the pet bar rather than from a cast the client counted — that path never
+ * assigns the counter — so zero means "not correlated".
+ */
+export type PetCastFailure = CastFailure;
 
 /**
- * The same three-field header the player's own `SMSG_CAST_FAILED` carries — the core builds both
- * through one helper — followed by a per-reason tail whose length depends on the reason and, for
- * three of them, on data that is not counted. The tail is left unread, exactly as the player's
- * cast failure is.
+ * `SMSG_PET_CAST_FAILED`: written by the player's own `Spell::WriteCastResultInfo`
+ * (`Spell.cpp:4385-4386`) — `u8 castCount, u32 spell, u8 result` and the result's tail — so it is
+ * read by the player's own `parseCastFailure`, under the pet opcode's name.
  *
  * Not sent while possessing or riding: those answer on `SMSG_CAST_FAILED` instead.
  */
 export function parsePetCastFailed(payload: Uint8Array): PetCastFailure {
-  const reader = new PacketReader(payload);
-  return { castCount: reader.u8(), spellId: reader.u32(), result: reader.u8() };
+  return parseCastFailure(payload);
 }
 
 /** `PetTameFailure` in SharedDefines.h. The enum starts at one; there is no zero. */

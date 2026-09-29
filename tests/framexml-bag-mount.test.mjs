@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 
 function fakeNode(tag) {
   const attributes = new Map();
@@ -72,6 +72,9 @@ try {
   clientDirectory = undefined;
 }
 const withClient = { skip: clientDirectory ? false : "no 3.3.5a client on this machine" };
+/** tools/mpq.mjs clientArchives answers one chain per process: a test that opens it leaves it to this hook. */
+const openedChains = new Set();
+after(() => { for (const chain of openedChains) chain.close(); });
 
 function frame(name, type, id) {
   return { name, type, ...(id === undefined ? {} : { id }), visible: false };
@@ -256,12 +259,101 @@ test("a post-publish stock error demotes the owner and releases its VM aliases",
   assert.equal(failures, 1, "stale cleanup does not demote a second time");
 });
 
+test("a real frame that takes a global over during the probe keeps it: through the probe, the owner and its release", () => {
+  const setup = fixture();
+  const { vm, bridge } = setup.boot;
+  const options = frame("InterfaceOptionsFrame", "Frame");
+  // The real frame takes the global over while the probe's click runs (the options chain's load).
+  const click = bridge.Click;
+  bridge.Click = (target, ...rest) => {
+    const result = click(target, ...rest);
+    if (vm.getGlobal("InterfaceOptionsFrame") !== options) vm.setGlobal("InterfaceOptionsFrame", options);
+    return result;
+  };
+  // Every write that took the global away from the real frame: a stand-in over it, or a release.
+  const covered = [];
+  const write = vm.setGlobal;
+  vm.setGlobal = (name, value) => {
+    if (vm.getGlobal(name) === options && value !== options) covered.push(name);
+    write(name, value);
+  };
+  const owner = frameXmlBagGate(setup.boot, setup.renderer);
+  assert.ok(owner !== undefined);
+  assert.equal(vm.getGlobal("InterfaceOptionsFrame") === options, true,
+    "after the gate the global is the real frame, not the stand-in reinstalled over it");
+  assert.equal(vm.getGlobal("BankFrame") === setup.boot.bridge.created[0], true, "the other stand-ins are installed");
+  owner.dispose();
+  assert.equal(vm.getGlobal("InterfaceOptionsFrame") === options, true, "and after the owner is released");
+  assert.equal(vm.getGlobal("BankFrame") === undefined, true, "while its own stand-ins go");
+  assert.deepEqual(covered, [], "no install covered the real frame and no release cleared it");
+});
+
+test("the real MPQ options chain replaces the InterfaceOptionsFrame stand-in, and releasing the bags keeps it", withClient, async () => {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoot.js");
+  const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
+  const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
+  const { loadFrameXmlOptionsChain } = await import("../dist/code/browser/framexml/FrameXmlOptionsOwner.js");
+  const chain = await clientArchives(clientDirectory);
+  openedChains.add(chain);
+  const decoder = new TextDecoder("utf-8");
+  const boot = new FrameXmlBoot({
+    subset: FRAMEXML_VERTICAL_TOC,
+    exercise: true,
+    seam: new CannedWorldSeam(),
+    locale: "ruRU",
+    provider: {
+      async read(path) {
+        const bytes = await chain.read(path);
+        return bytes ? decoder.decode(bytes) : undefined;
+      },
+    },
+    screen: () => ({ width: 1365, height: 768 }),
+  });
+  const lua = (code) => {
+    const fn = boot.vm.compileFunction(code, "bag-options-test", []);
+    assert.ok(fn !== undefined, "compiles");
+    try { return boot.vm.call(fn, [], 1); } finally { boot.vm.release(fn); }
+  };
+  try {
+    await boot.load();
+    const renderer = {
+      elementFor(target) {
+        const element = fakeNode("div");
+        element.setAttribute("data-framexml-name", target.name);
+        element.setAttribute("data-framexml-type", target.type);
+        return element;
+      },
+    };
+    assert.equal(boot.bridge.getFrame("InterfaceOptionsFrame") === undefined, true, "the chain is not loaded at boot");
+    const owner = frameXmlBagGate(boot, renderer);
+    assert.ok(owner !== undefined, "the stock bags pass their gate");
+    const stand = boot.vm.getGlobal("InterfaceOptionsFrame");
+    assert.equal(stand?.type, "Frame", "a stand-in answers IsOptionFrameOpen() meanwhile");
+    assert.equal(String(stand?.name).startsWith("__framexml_"), true, "an anonymous bridge frame");
+    // The first «Интерфейс»: the lazy chain loads into the same VM, and its frame wins the global.
+    const loaded = await loadFrameXmlOptionsChain(boot, { preset() {}, storageNote: () => "" });
+    assert.equal(loaded.ok, true, loaded.message);
+    const options = boot.bridge.getFrame("InterfaceOptionsFrame");
+    assert.equal(options?.name, "InterfaceOptionsFrame");
+    assert.equal(boot.vm.getGlobal("InterfaceOptionsFrame") === options, true, "the real frame replaced the stand-in");
+    const errors = boot.errorCount;
+    owner.dispose(); // what an unpublish, a demotion or a /reload teardown runs
+    assert.equal(boot.vm.getGlobal("InterfaceOptionsFrame") === options, true, "releasing the bags kept the real frame");
+    assert.deepEqual(lua("return IsOptionFrameOpen() and 1 or 0"), [0], "stock's check still reads the real frame");
+    assert.equal(boot.errorCount, errors, "no nil InterfaceOptionsFrame error");
+  } finally {
+    boot.close();
+  }
+});
+
 test("the real MPQ stock backpack click opens and closes through the gated owner", withClient, async () => {
   const { clientArchives } = await import("../tools/mpq.mjs");
   const { FrameXmlBoot } = await import("../dist/code/browser/framexml/FrameXmlBoot.js");
   const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
   const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
   const chain = await clientArchives(clientDirectory);
+  openedChains.add(chain);
   const decoder = new TextDecoder("utf-8");
   const seam = new CannedWorldSeam();
   const subset = [
@@ -303,7 +395,7 @@ test("the real MPQ stock backpack click opens and closes through the gated owner
     assert.ok(options && options !== boot.bridge.getFrame("GameMenuFrame"),
       "the missing options frame is a dedicated stand-in, not the game menu");
     assert.equal(options.visible, false);
-    assert.equal(boot.vm.getGlobal("StackSplitFrame"), stackSplit, "the real StackSplitFrame is not aliased");
+    assert.equal(boot.vm.getGlobal("StackSplitFrame") === stackSplit, true, "the real StackSplitFrame is not aliased");
     assert.equal(owner.isOpen(), false, "the probe is transactional");
     assert.equal(boot.vm.errors.length, vmErrors);
     assert.equal(boot.bridge.diagnostics.length, diagnostics);
@@ -314,6 +406,5 @@ test("the real MPQ stock backpack click opens and closes through the gated owner
     assert.equal(owner.isOpen(), false);
   } finally {
     boot.close();
-    chain.close();
   }
 });

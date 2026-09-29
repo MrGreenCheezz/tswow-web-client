@@ -268,8 +268,9 @@ test("the action bar vertical runs on the client's own corpus", withClient, asyn
   // The closure includes MoneyInputFrame, MirrorTimer, TutorialFrame and promoted GameTime
   // with its stock relative Lua. Those last two files raise the old 67-file ceiling to 69.
   // StackSplitFrame.xml/.lua (stock TOC line 49, loaded for the bag gate) sits inside this
-  // MultiActionBars prefix too: 2 more files, measured 71.
-  assert.ok(inventory.files.total <= 71, `files: ${inventory.files.total}`);
+  // MultiActionBars prefix too: 2 more files, measured 71. So do FadingFrame.xml/.lua and
+  // ZoneText.xml/.lua (stock TOC lines 50-51, the zone banners): 4 more, measured 75.
+  assert.ok(inventory.files.total <= 75, `files: ${inventory.files.total}`);
   assert.ok(inventory.files.total >= 30, `files: ${inventory.files.total}`);
   assert.equal(inventory.files.missing.length, 0);
   assert.equal(inventory.lua.failed, 0, "no file fails to load on the subset either");

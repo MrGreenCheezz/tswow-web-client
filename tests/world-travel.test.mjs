@@ -241,6 +241,37 @@ test("who the client may move arrives packed and is answered full", () => {
   assert.equal(parseClientControlUpdate(new PacketWriter().packedGuid(CREATURE).u8(0).toUint8Array()).allowed, false);
 });
 
+test("losing control names the old mover packed; gaining it names the new one in full", async () => {
+  // Two readers of one guid (MovementHandler.cpp): HandleSetActiveMoverOpcode reads a whole
+  // uint64 (:558-580), HandleMoveNotActiveMover reads `old_mover_guid.ReadAsPacked()` and drops
+  // the MovementInfo after it (:582-601). Eight raw bytes read as packed are a stranger's guid.
+  // The release itself does not depend on it — SetClientControl has already cleared the active
+  // mover (Player.cpp:24606, GameClient.cpp:37-46), so the handler logs "unset active mover FAILED"
+  // either way (:593) — but only the packed form puts the right guid in that line.
+  const guid = 0x1234n;
+  const control = (allowed) => ({
+    opcode: OPCODES.SMSG_CLIENT_CONTROL_UPDATE,
+    // Player::SetClientControl (Player.cpp:24590-24593): packed guid, u8 allowMove.
+    payload: new PacketWriter().packedGuid(guid).u8(allowed).toUint8Array(),
+  });
+  const { client, connection } = await travelClient([control(0), control(1)], guid);
+  const released = connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER);
+  assert.equal(released.length, 1);
+  assert.deepEqual([...released[0].payload], [0x03, 0x34, 0x12], "mask 0b11, then the two non-zero bytes");
+  const packed = new PacketReader(released[0].payload);
+  assert.equal(packed.packedGuid(), guid);
+  packed.assertFinished();
+
+  const claimed = connection.sent.filter(packet => packet.opcode === OPCODES.CMSG_SET_ACTIVE_MOVER);
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].payload.length, 8, "the claim stays eight bytes");
+  const full = new PacketReader(claimed[0].payload);
+  assert.equal(full.u64(), guid);
+  full.assertFinished();
+  assert.equal(client.controlledGuid, guid);
+  client.close();
+});
+
 test("the flight map is a full guid and a mask of one-based node ids", () => {
   // `TaxiHandler.cpp:109`: window, uint64 guid, current node, then a mask whose length is not in
   // the packet at all — it is sized from the row count of TaxiNodes.dbc and read to the end.

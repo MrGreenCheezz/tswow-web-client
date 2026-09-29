@@ -8,6 +8,7 @@ import {
   tempEnchantEquipmentSlot, totemPacketSlot,
   type FrameXmlHudMechanics, type FrameXmlTotemInfo, type FrameXmlWeaponEnchantInfo,
 } from "./FrameXmlHudMechanics.js";
+import { FRAMEXML_RUNE_EVENTS, FrameXmlRunesLive, type FrameXmlRuneCooldown } from "./FrameXmlRunes.js";
 import type { FrameXmlSeamPump } from "./FrameXmlWorldSeam.js";
 import { SELF, type WorldStore } from "../../world/WorldStore.js";
 
@@ -25,11 +26,13 @@ import { SELF, type WorldStore } from "../../world/WorldStore.js";
  * whether there is one; how long it has left comes from `SMSG_ITEM_ENCHANT_TIME_UPDATE`, which the
  * server sends on login and on every application and which the world stamps. A weapon seen with
  * a duration but no packet yet counts from its first sighting, the one honest fallback.
+ *
+ * Runes: `world.runes` and its `RUNES_CHANGED`, read and stamped by FrameXmlRunesLive.
  */
 
 /** The WorldClient surface this file reads; a structural type so tests can hand in a double. */
 export type FrameXmlHudMechanicsWorld = Pick<WorldClient, "events" | "state" | "totems">
-  & Partial<Pick<WorldClient, "destroyTotem" | "cancelTempEnchantment">>;
+  & Partial<Pick<WorldClient, "destroyTotem" | "cancelTempEnchantment" | "runes">>;
 
 /** The two store subscriptions the enchant watch uses; a test double may carry neither. */
 export type FrameXmlHudMechanicsStore = Partial<Pick<WorldStore, "fieldRange" | "object">>;
@@ -59,6 +62,8 @@ export const FRAMEXML_HUD_MECHANICS_EVENTS = Object.freeze({
   totemUpdate: "PLAYER_TOTEM_UPDATE",
   unitCombat: "UNIT_COMBAT",
   inventoryChanged: "UNIT_INVENTORY_CHANGED",
+  runePowerUpdate: FRAMEXML_RUNE_EVENTS.powerUpdate,
+  runeTypeUpdate: FRAMEXML_RUNE_EVENTS.typeUpdate,
 });
 
 interface LiveTotem {
@@ -92,14 +97,17 @@ export class FrameXmlHudMechanicsLive implements FrameXmlHudMechanics {
   #pollEnchants = false;
   /** The `object` subscription on each worn weapon (main hand, off hand), by its guid. */
   readonly #weaponWatch: { guid: bigint; off: () => void }[] = [];
+  readonly #runes: FrameXmlRunesLive;
 
   constructor(context: FrameXmlHudMechanicsLiveContext) {
     this.#context = context;
+    this.#runes = new FrameXmlRunesLive({ world: () => context.world() });
   }
 
   attach(pump: FrameXmlSeamPump): void {
     if (this.#pump) this.detach();
     this.#pump = pump;
+    this.#runes.attach(pump);
     // A totem placed before the interface mounted is read by TotemFrame's PLAYER_ENTERING_WORLD
     // refresh; only later edges are announced.
     for (let slot = 0; slot < MAX_TOTEMS; slot++) this.#published.set(slot, this.#activeTotem(slot)?.guid);
@@ -144,6 +152,7 @@ export class FrameXmlHudMechanicsLive implements FrameXmlHudMechanics {
   detach(): void {
     for (const off of this.#unsubscribe.splice(0)) off();
     for (const watch of this.#weaponWatch.splice(0)) watch.off();
+    this.#runes.detach();
     this.#pump = undefined;
     this.#published.clear();
     this.#enchantSignature = "";
@@ -205,6 +214,14 @@ export class FrameXmlHudMechanicsLive implements FrameXmlHudMechanics {
       pump.fire(FRAMEXML_HUD_MECHANICS_EVENTS.totemUpdate, slot + 1);
     }
     if (this.#pollEnchants) this.#refreshEnchants();
+  }
+
+  runeType(rune: number): number | undefined {
+    return this.#runes.runeType(rune);
+  }
+
+  runeCooldown(rune: number): FrameXmlRuneCooldown | undefined {
+    return this.#runes.runeCooldown(rune);
   }
 
   totemInfo(slot: number): FrameXmlTotemInfo {

@@ -1,6 +1,8 @@
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 import { SPELL_CAST_RESULT_NAMES, globalString } from "../generated/globalStrings.js";
+import { formatGlobalString, formatGlobalStringByName } from "./GlobalStringFormat.js";
+import { WORLD_NAME_FALLBACKS, type WorldNameSources } from "./WorldNames.js";
 
 /** `TARGET_FLAG_NONE`: no explicit target, which is what makes the server pick one. */
 export const TARGET_FLAG_NONE = 0x0000_0000;
@@ -43,6 +45,11 @@ export interface CastFailure {
   castCount: number;
   spellId: number;
   result: number;
+  /**
+   * The words `Spell::WriteCastResultInfo` writes after the result for that result (an area, the
+   * missing items, a custom error…); see `castFailureTailLength`. Absent when there were none.
+   */
+  extra?: number[];
 }
 
 export interface SpellCastHeader {
@@ -89,6 +96,25 @@ export interface SpellCooldownPacket {
   guid: bigint;
   flags: number;
   cooldowns: Array<{ spellId: number; duration: number }>;
+}
+
+/**
+ * The category word of a cooldown that is on hold rather than running.
+ *
+ * A spell whose cooldown starts only when its aura ends (Stealth, Prowl, Presence of Mind) is kept
+ * by the core with `CooldownEnd = now + MONTH` (`SpellHistory.cpp:298-303`), and
+ * `SpellHistory::WritePacket<Player>` writes anything past half a month as the special pair
+ * `cooldown 1, categoryCooldown 0x80000000` (`:254-258`) — read unsigned, 2 147 483 648.
+ */
+export const INFINITE_COOLDOWN_CATEGORY = 0x8000_0000;
+
+/**
+ * Whether an `SMSG_INITIAL_SPELLS` cooldown record is that hold: exactly the pair, and not a
+ * duration. No real cooldown reaches it (anything that long is written as the pair), and neither
+ * half alone is it — a 1 beside a zero is a real cooldown one millisecond from done.
+ */
+export function isCooldownOnHold(entry: Pick<SpellCooldown, "cooldown" | "categoryCooldown">): boolean {
+  return entry.cooldown === 1 && entry.categoryCooldown === INFINITE_COOLDOWN_CATEGORY;
 }
 
 export function parseInitialSpells(payload: Uint8Array): InitialSpells {
@@ -286,9 +312,71 @@ function parseSpellCastTargets(reader: PacketReader): SpellCastTargets | undefin
 
 /** `TARGET_FLAG_GAMEOBJECT`. The unit flag is 0x02; this is a different word entirely. */
 
+// `SpellCastResult` values whose refusal carries a tail or needs a word (SharedDefines.h:975-1167).
+const SPELL_FAILED_EQUIPPED_ITEM_CLASS = 29;
+const SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND = 30;
+const SPELL_FAILED_EQUIPPED_ITEM_CLASS_OFFHAND = 31;
+const SPELL_FAILED_NEED_AMMO_POUCH = 53;
+const SPELL_FAILED_NEED_EXOTIC_AMMO = 54;
+const SPELL_FAILED_NEED_MORE_ITEMS = 55;
+const SPELL_FAILED_ONLY_SHAPESHIFT = 94;
+const SPELL_FAILED_REAGENTS = 100;
+const SPELL_FAILED_REQUIRES_AREA = 101;
+const SPELL_FAILED_REQUIRES_SPELL_FOCUS = 102;
+const SPELL_FAILED_TOO_MANY_OF_ITEM = 129;
+const SPELL_FAILED_TOTEM_CATEGORY = 130;
+const SPELL_FAILED_TOTEMS = 131;
+const SPELL_FAILED_PREVENTED_BY_MECHANIC = 147;
+const SPELL_FAILED_MIN_SKILL = 150;
+const SPELL_FAILED_CUSTOM_ERROR = 172;
+const SPELL_FAILED_FISHING_TOO_LOW = 181;
+/** `ITEM_CLASS_WEAPON`: the class an exotic-ammo refusal's subclass mask belongs to. */
+const ITEM_CLASS_WEAPON = 2;
+
+/**
+ * The most `u32` words `Spell::WriteCastResultInfo` (`Spell.cpp:4161-4339`) writes after each
+ * result. Three write fewer than their most: TOTEMS and TOTEM_CATEGORY only the non-zero of their
+ * two, TOO_MANY_OF_ITEM its limit category only when the item has one.
+ */
+const CAST_FAILURE_TAILS: ReadonlyMap<number, number> = new Map([
+  [SPELL_FAILED_REQUIRES_SPELL_FOCUS, 1], // SpellFocusObject.dbc
+  [SPELL_FAILED_REQUIRES_AREA, 1], // AreaTable.dbc; zero for most spells
+  [SPELL_FAILED_TOTEMS, 2], // item entries
+  [SPELL_FAILED_TOTEM_CATEGORY, 2], // TotemCategory.dbc
+  [SPELL_FAILED_EQUIPPED_ITEM_CLASS, 2], // item class, subclass mask
+  [SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND, 2],
+  [SPELL_FAILED_EQUIPPED_ITEM_CLASS_OFFHAND, 2],
+  [SPELL_FAILED_TOO_MANY_OF_ITEM, 1], // ItemLimitCategory
+  [SPELL_FAILED_CUSTOM_ERROR, 1], // SpellCustomErrors, 0-99
+  [SPELL_FAILED_REAGENTS, 1], // the first missing reagent
+  [SPELL_FAILED_PREVENTED_BY_MECHANIC, 1], // Mechanic
+  [SPELL_FAILED_NEED_EXOTIC_AMMO, 1], // subclass mask
+  [SPELL_FAILED_NEED_MORE_ITEMS, 2], // item entry, count
+  [SPELL_FAILED_MIN_SKILL, 2], // SkillLine.dbc, value
+  [SPELL_FAILED_FISHING_TOO_LOW, 1], // skill level
+]);
+
+/** How many tail words a refusal with this result may carry. */
+export function castFailureTailLength(result: number): number {
+  return CAST_FAILURE_TAILS.get(result) ?? 0;
+}
+
+/**
+ * `SMSG_CAST_FAILED`, and `SMSG_PET_CAST_FAILED`, which the core writes with the same function
+ * (`Spell.cpp:4385-4386`): `u8 castCount, u32 spell, u8 result`, then the result's own tail.
+ *
+ * The tail is read up to the result's most and no further, and a buffer that ends early is not an
+ * error — older captures stop at the result byte. A result without a tail keeps no `extra`, whatever
+ * bytes may follow it.
+ */
 export function parseCastFailure(payload: Uint8Array): CastFailure {
   const reader = new PacketReader(payload);
-  return { castCount: reader.u8(), spellId: reader.u32(), result: reader.u8() };
+  const failure: CastFailure = { castCount: reader.u8(), spellId: reader.u32(), result: reader.u8() };
+  const most = castFailureTailLength(failure.result);
+  const extra: number[] = [];
+  while (extra.length < most && reader.remaining >= 4) extra.push(reader.u32());
+  if (extra.length > 0) failure.extra = extra;
+  return failure;
 }
 
 export function parseSpellCastHeader(payload: Uint8Array): SpellCastHeader {
@@ -306,7 +394,7 @@ export function parseSpellCastHeader(payload: Uint8Array): SpellCastHeader {
 /**
  * `SPELL_MISS_REFLECT`: the only miss reason that writes a second byte after itself.
  *
- * Eleven, not three. Three is a dodge — this repository's own `MISS_REASONS` says so, and the
+ * Eleven, not three. Three is a dodge — this repository's own `MissReasons.ts` says so, and the
  * reference client's `spell_defines.hpp` agrees. Reading it as three eats a byte after every
  * dodged attack and shifts the rest of the miss list.
  */
@@ -559,21 +647,122 @@ export function parseMountResult(payload: Uint8Array): number {
 }
 
 /**
+ * The words a refusal says in place of a name no table can give it yet. SkillLine,
+ * SpellFocusObject, TotemCategory and SpellMechanic have no gateway route (1.27б), and a stock
+ * template for a result whose data the core never sends (an ammo pouch, a shapeshift) has nothing
+ * to fill it with. Words for the thing, never its id.
+ */
+const CAST_FAILURE_WORDS = {
+  // A focus is an anvil, a forge or a cooking fire; a totem category a hammer, a pick or a rod.
+  spellFocus: "объект",
+  totemCategory: "инструмент",
+  mechanic: "эффект",
+  skill: "навык",
+  weapon: "оружие",
+  ammoPouch: "сумка для боеприпасов",
+  shapeshift: "особом облике",
+} as const;
+
+/**
  * Why a cast was refused, in the realm's own words.
  *
- * The wire carries a `SpellCastResult` byte and nothing else — the sentence has always been the
- * client's job, and this build's dataset holds 265 of them. What the interface printed instead was
- * «Заклинание 133 отклонено сервером, код 50», into a status line inside the spellbook window,
- * which is hidden unless the player happens to have it open.
+ * The wire carries a `SpellCastResult` byte and, for fifteen of them, a tail naming what was
+ * missing — the sentence has always been the client's job, and this build's dataset holds 265 of
+ * them. What the interface printed instead was «Заклинание 133 отклонено сервером, код 50», into a
+ * status line inside the spellbook window, which is hidden unless the player happens to have it
+ * open; and after that a template with its `%s` still in it.
+ *
+ * The tail fills the stock template (`formatGlobalString`: positional arguments, the ruRU
+ * declension marker, Lua escapes) with the names `names` can give: a zone, an item, a weapon class.
+ * Without one, a word stands in, or — where the template needs the name to make sense — the stock
+ * sentence that needs none (INCORRECT_AREA, EQUIPPED_ITEM). A custom error is its own string, and a
+ * custom error without one is the general SPELL_FAILED_UNKNOWN.
  *
  * `SPELL_FAILED_DONT_REPORT` is the server saying "show nothing"; it is the one answer that must
- * produce no message at all.
+ * produce no message at all. A bare result number is still accepted, as it was.
  */
-export function spellFailureText(result: number): string | undefined {
-  const name = SPELL_CAST_RESULT_NAMES[result];
+export function spellFailureText(failure: CastFailure | number, names: WorldNameSources = {}): string | undefined {
+  const cast: CastFailure = typeof failure === "number" ? { castCount: 0, spellId: 0, result: failure } : failure;
+  const name = SPELL_CAST_RESULT_NAMES[cast.result];
   if (name === "DONT_REPORT" || name === "SUCCESS") return undefined;
   // A code this build's enum does not know still gets said out loud: a refusal the player cannot
   // see is a spell that silently did nothing.
-  if (name === undefined) return `Заклинание отклонено (код ${result})`;
-  return globalString(`SPELL_FAILED_${name}`) ?? `Заклинание отклонено (код ${result})`;
+  const unknown = `Заклинание отклонено (код ${cast.result})`;
+  if (name === undefined) return unknown;
+  if (cast.result === SPELL_FAILED_CUSTOM_ERROR) {
+    const custom = cast.extra === undefined ? undefined : customErrorTemplate(cast.extra[0]);
+    return custom !== undefined ? formatGlobalString(custom) : formatGlobalStringByName("SPELL_FAILED_UNKNOWN", [], "Причина неизвестна.");
+  }
+  const template = globalString(`SPELL_FAILED_${name}`);
+  return template === undefined ? unknown : fillCastFailure(template, cast, names);
+}
+
+function fillCastFailure(template: string, cast: CastFailure, names: WorldNameSources): string {
+  const extra = cast.extra ?? [];
+  const first = extra[0] ?? 0;
+  const second = extra[1] ?? 0;
+  const itemName = (entry: number): string => knownName(entry > 0 ? names.item?.(entry) : undefined) ?? WORLD_NAME_FALLBACKS.item;
+  switch (cast.result) {
+    case SPELL_FAILED_REQUIRES_AREA: {
+      // Most spells send area zero (the core's default branch): nothing to name.
+      const area = knownName(first > 0 ? names.area?.(first) : undefined);
+      return area !== undefined ? formatGlobalString(template, [area])
+        : formatGlobalStringByName("SPELL_FAILED_INCORRECT_AREA", [], "Для этого вы должны быть в другой зоне.");
+    }
+    case SPELL_FAILED_EQUIPPED_ITEM_CLASS:
+    case SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND:
+    case SPELL_FAILED_EQUIPPED_ITEM_CLASS_OFFHAND: {
+      const subclass = knownName(extra.length >= 2 ? names.itemSubclass?.(first, second) : undefined);
+      return subclass !== undefined ? formatGlobalString(template, [subclass])
+        : formatGlobalStringByName("SPELL_FAILED_EQUIPPED_ITEM", [], "В экипировке недостает нужного предмета.");
+    }
+    case SPELL_FAILED_TOTEMS: {
+      // The template has one slot for up to two tools: both names, once each.
+      const tools = [...new Set(extra.filter((entry) => entry > 0).map(itemName))];
+      return formatGlobalString(template, [tools.length > 0 ? tools.join(", ") : WORLD_NAME_FALLBACKS.item]);
+    }
+    case SPELL_FAILED_REAGENTS:
+      return formatGlobalString(template, [itemName(first)]);
+    case SPELL_FAILED_NEED_MORE_ITEMS:
+      // «Требуется: %2$s %1$d.» — the wire is item then count, the template's arguments count then item.
+      return formatGlobalString(template, [second, itemName(first)]);
+    case SPELL_FAILED_MIN_SKILL:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.skill, second]);
+    case SPELL_FAILED_FISHING_TOO_LOW:
+      return formatGlobalString(template, [first]);
+    case SPELL_FAILED_NEED_EXOTIC_AMMO:
+      return formatGlobalString(template,
+        [knownName(first > 0 ? names.itemSubclass?.(ITEM_CLASS_WEAPON, first) : undefined) ?? CAST_FAILURE_WORDS.weapon]);
+    case SPELL_FAILED_REQUIRES_SPELL_FOCUS:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.spellFocus]);
+    case SPELL_FAILED_TOTEM_CATEGORY:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.totemCategory]);
+    case SPELL_FAILED_PREVENTED_BY_MECHANIC:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.mechanic]);
+    case SPELL_FAILED_NEED_AMMO_POUCH:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.ammoPouch]);
+    case SPELL_FAILED_ONLY_SHAPESHIFT:
+      return formatGlobalString(template, [CAST_FAILURE_WORDS.shapeshift]);
+    default:
+      // TOO_MANY_OF_ITEM's limit category, and every result without a tail: the template alone.
+      return formatGlobalString(template);
+  }
+}
+
+/**
+ * A `SpellCustomErrors` value's own sentence. Three of them (14, 63, 64) stand in GlobalStrings.lua
+ * under a `_NONE`-suffixed name only; an empty string is no sentence.
+ */
+function customErrorTemplate(customError: number | undefined): string | undefined {
+  if (customError === undefined) return undefined;
+  for (const name of [`SPELL_FAILED_CUSTOM_ERROR_${customError}`, `SPELL_FAILED_CUSTOM_ERROR_${customError}_NONE`]) {
+    const template = globalString(name);
+    if (template !== undefined && template.trim() !== "") return template;
+  }
+  return undefined;
+}
+
+/** A name a lookup actually gave: an empty or blank answer is none. */
+function knownName(name: string | undefined): string | undefined {
+  return name !== undefined && name.trim() !== "" ? name : undefined;
 }

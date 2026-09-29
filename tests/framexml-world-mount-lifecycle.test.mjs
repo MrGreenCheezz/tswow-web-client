@@ -1918,6 +1918,267 @@ test("addon overlay preserves native HUD and releases commands, menu actions and
   }
 });
 
+/**
+ * The add-on overlay's stock dialog and error line over a stubbed load: a shown `StaticPopup`-like
+ * frame Escape may dismiss, a stock `StaticPopup_EscapePressed` that records the press (and leaves
+ * the dialog up unless `hideOnPress`), a `UIErrorsFrame` and the boot's `hooksecurefunc` shim.
+ * Each generation's presses land in `escapes` under its index.
+ */
+function installAddonDialogsLoad({ hideOnPress = false } = {}) {
+  const previousLoad = FrameXmlBoot.prototype.load;
+  const boots = [];
+  const escapes = [];
+  FrameXmlBoot.prototype.load = async function addonDialogsLoad() {
+    const generation = boots.length;
+    boots.push(this);
+    seams.push({ seam: this.seam, closed: false });
+    this.isAddonLoaded = () => false;
+    this.bridge.CreateFrame("Frame", "UIParent");
+    this.bridge.CreateFrame("Frame", "GameMenuFrame");
+    this.bridge.CreateFrame("Frame", "LifecycleStaticPopup");
+    this.bridge.CreateFrame("MessageFrame", "UIErrorsFrame");
+    this.vm.registerGlobal("LifecycleEscape", () => { escapes.push(generation); return []; });
+    const result = this.vm.execute(`
+      function hooksecurefunc(target, name, hook)
+        if hook == nil then target, name, hook = _G, target, name end
+        local original = target[name]
+        target[name] = function(...) local results = { original(...) } hook(...) return table.unpack(results) end
+      end
+      assert(LifecycleStaticPopup:IsShown())
+      LifecycleStaticPopup.hideOnEscape = 1
+      StaticPopupDialogs = {}
+      StaticPopup_DisplayedFrames = { LifecycleStaticPopup }
+      function StaticPopup_EscapePressed()
+        LifecycleEscape()
+        ${hideOnPress ? "LifecycleStaticPopup:Hide()" : ""}
+        return 1
+      end
+    `, "@interface/framexml/staticpopup.lua");
+    assert.equal(result.ok, true, result.error);
+    this.seam.attach(this.pump);
+    return inventory;
+  };
+  return { boots, escapes, restore: () => { FrameXmlBoot.prototype.load = previousLoad; } };
+}
+
+const dialogSeam = (name) => Object.assign(seam(name), { popups: { popupsOwned: false } });
+
+test("world mounts draw their dialogs modeless in both modes: the world, the native HUD and other windows keep their input", async () => {
+  const previousMount = FrameXmlDomRenderer.prototype.mount;
+  const previousObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  const renderers = [];
+  FrameXmlDomRenderer.prototype.mount = function captureRenderer(...args) {
+    renderers.push(this);
+    return previousMount.apply(this, args);
+  };
+  const load = installAddonDialogsLoad();
+  try {
+    assert.equal((await mountFrameXmlVertical({ viewport, seam: dialogSeam("modeless-addons"), addonsOnly: true })).ok, true);
+    unmountFrameXmlVertical();
+    load.restore();
+    assert.equal((await mountFrameXmlVertical({ viewport, seam: seam("modeless-full") })).ok, true);
+    unmountFrameXmlVertical();
+    assert.deepEqual(renderers.map((renderer) => renderer.dialogs), ["modeless", "modeless"],
+      "a StaticPopup never makes #world-canvas or the native HUD inert, nor holds the keyboard");
+  } finally {
+    load.restore();
+    FrameXmlDomRenderer.prototype.mount = previousMount;
+    unmountFrameXmlVertical();
+    if (previousObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = previousObserver;
+  }
+});
+
+let escapeKeydown;
+/**
+ * Controls' real keydown Escape over the fake DOM: the key is wired once (wireControls), and what the
+ * press asks for is set for one run — `instanceof HTMLInputElement`, a document listener slot, the
+ * markup windows closed, a module window open under whatever the test shows, and a world with a
+ * target whose native closers (closeMailbox, closeGuildBank …) answer as no-ops.
+ */
+async function withEscapeKey(run) {
+  const windows = await import("../dist/code/browser/ui/Windows.js");
+  const dom = await import("../dist/code/browser/ui/Dom.js");
+  const controls = await import("../dist/code/browser/input/Controls.js");
+  const previousObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  const addedGlobals = ["HTMLInputElement", "HTMLSelectElement", "HTMLTextAreaElement"]
+    .filter((name) => globalThis[name] === undefined);
+  for (const name of addedGlobals) globalThis[name] = class {};
+  const addedDocumentListener = document.addEventListener === undefined;
+  if (addedDocumentListener) document.addEventListener = () => {};
+  const markup = ["characterWindow", "inventoryWindow", "spellbookWindow", "gossipWindow", "questWindow",
+    "lootWindow", "auctionWindow", "tradeWindow", "vendorWindow", "trainerWindow", "diagnosticsWindow"]
+    .map((name) => dom[name]).filter(Boolean);
+  const markupHidden = markup.map((node) => node.hidden);
+  for (const node of markup) node.hidden = true;
+  const previousWorld = game.world;
+  const calls = [];
+  const world = new Proxy({
+    state: { selfGuid: 1n, objects: new Map() }, targetGuid: 7n, chatLog: [], casts: new Map(),
+    logout: undefined, loggedOut: false, aurasFor: () => [], displayName: () => "",
+    selectTarget(guid) { this.targetGuid = guid; calls.push("selectTarget"); },
+  }, {
+    get(target, property, receiver) {
+      if (property in target) return Reflect.get(target, property, receiver);
+      return typeof property === "string" && /^(?:close|cancel|leave|decline|stop|end)/.test(property) ? () => {} : undefined;
+    },
+  });
+  const moduleWindow = { open: true, closes: 0, isOpen() { return this.open; }, close() { this.closes += 1; this.open = false; } };
+  const releaseModuleWindow = windows.registerEscapable(moduleWindow);
+  try {
+    if (!escapeKeydown) {
+      const windowListen = window.addEventListener;
+      window.addEventListener = (type, listener) => { if (type === "keydown") escapeKeydown = listener; else windowListen(type, listener); };
+      try { controls.wireControls(); } finally { window.addEventListener = windowListen; }
+    }
+    assert.equal(typeof escapeKeydown, "function");
+    const escape = () => escapeKeydown({ code: "Escape", key: "Escape", target: document.body, defaultPrevented: false,
+      repeat: false, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, preventDefault() {} });
+    await run({ escape, world, calls, moduleWindow, enterWorld: () => { game.world = world; } });
+  } finally {
+    releaseModuleWindow();
+    game.world = previousWorld;
+    unmountFrameXmlVertical();
+    markup.forEach((node, index) => { node.hidden = markupHidden[index]; });
+    for (const name of addedGlobals) delete globalThis[name];
+    if (addedDocumentListener) delete document.addEventListener;
+    if (previousObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = previousObserver;
+  }
+}
+
+test("one Escape closes only an add-on dialog: the module window beneath and the target wait for the next press", async () => {
+  const load = installAddonDialogsLoad({ hideOnPress: true });
+  try {
+    await withEscapeKey(async ({ escape, world, calls, moduleWindow, enterWorld }) => {
+      assert.equal((await mountFrameXmlVertical({ viewport, seam: dialogSeam("escape-dialog"), addonsOnly: true })).ok, true);
+      enterWorld();
+      escape();
+      assert.deepEqual(load.escapes, [0], "the press reached stock StaticPopup_EscapePressed");
+      assert.equal(moduleWindow.closes, 0, "and stopped there: the module window under the dialog stays open");
+      assert.equal(world.targetGuid, 7n, "the target stays");
+      assert.deepEqual(calls, []);
+      escape();
+      assert.deepEqual(load.escapes, [0], "no dialog is up now: the next press is the native chain's");
+      assert.equal(moduleWindow.closes, 1);
+      assert.equal(world.targetGuid, undefined);
+    });
+  } finally {
+    load.restore();
+  }
+});
+
+test("full HUD without the stock game menu: one Escape answers the published stock popups alone, as stock ToggleGameMenu", async () => {
+  const controller = await import("../dist/code/browser/framexml/FrameXmlPopupsController.js");
+  await withEscapeKey(async ({ escape, world, calls, moduleWindow, enterWorld }) => {
+    // The server's confirmations are stock's (the popups owner published), the game menu native.
+    const popups = { open: true, closes: 0, isOpen() { return this.open; }, close() { this.closes += 1; this.open = false; } };
+    const release = controller.publishFrameXmlPopups(popups);
+    try {
+      enterWorld();
+      escape();
+      assert.equal(popups.closes, 1, "StaticPopup_EscapePressed answered the dialog");
+      assert.equal(moduleWindow.closes, 0, "and the press stopped there: the window under it stays open");
+      assert.equal(world.targetGuid, 7n, "the target stays");
+      assert.deepEqual(calls, []);
+      escape();
+      assert.equal(popups.closes, 1, "no dialog is up now: the next press is the native chain's");
+      assert.equal(moduleWindow.closes, 1);
+      assert.equal(world.targetGuid, undefined);
+    } finally {
+      release();
+    }
+  });
+});
+
+test("full HUD: a shown stock dialog stands over the native windows, and the overlay falls back when the last one hides", async () => {
+  const previousLoad = FrameXmlBoot.prototype.load;
+  const previousObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  const boots = [];
+  FrameXmlBoot.prototype.load = async function dialogLayerLoad(...args) {
+    const result = await previousLoad.apply(this, args);
+    boots.push(this);
+    for (const name of ["StaticPopup1", "ReadyCheckFrame"]) this.bridge.Hide(this.bridge.CreateFrame("Frame", name));
+    assert.equal(this.vm.execute("STATICPOPUP_NUMDIALOGS = 1", "@interface/framexml/staticpopup.lua").ok, true);
+    return result;
+  };
+  try {
+    const mounted = await mountFrameXmlVertical({ viewport, seam: seam("dialog-layer") });
+    assert.equal(mounted.ok, true, mounted.message);
+    const host = viewport.children.find((node) => node.id === "framexml-world-host");
+    const layer = () => Number(host.style.zIndex || 0);
+    assert.equal(layer(), 0, "the stock HUD sits at its stylesheet's z-index 3, under the native windows");
+    const { bridge } = boots[0];
+    bridge.Show(bridge.getFrame("StaticPopup1"));
+    assert.equal(layer() > 30, true, "a PARTY_INVITE-like popup lifts the overlay over the native windows (31 and up)");
+    bridge.Show(bridge.getFrame("ReadyCheckFrame"));
+    bridge.Hide(bridge.getFrame("StaticPopup1"));
+    assert.equal(layer() > 30, true, "still over them while the ready check is up");
+    bridge.Hide(bridge.getFrame("ReadyCheckFrame"));
+    assert.equal(layer(), 0, "the last one hidden: back under the native windows");
+    bridge.Show(bridge.getFrame("StaticPopup1"));
+    assert.equal(layer() > 30, true, "and up again with the next dialog");
+  } finally {
+    FrameXmlBoot.prototype.load = previousLoad;
+    unmountFrameXmlVertical();
+    if (previousObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = previousObserver;
+  }
+});
+
+test("addon overlay dialogs: the Escape step is published per mount and withdrawn by the entry-point cleanup; a module line raises the overlay", async () => {
+  const {
+    escapeFrameXmlAddonDialogs, frameXmlAddonDialogsEscapePublished,
+  } = await import("../dist/code/browser/framexml/FrameXmlTsAddonPresentation.js");
+  const previousClose = FrameXmlBoot.prototype.close;
+  const previousObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  const load = installAddonDialogsLoad();
+  const deferred = [];
+  // Each VM stays open past its unmount: a step the cleanup left behind would still answer.
+  FrameXmlBoot.prototype.close = function deferredClose() { deferred.push(this); };
+  try {
+    const first = dialogSeam("dialogs-first");
+    const mounted = await mountFrameXmlVertical({ viewport, seam: first, addonsOnly: true });
+    assert.equal(mounted.ok, true, mounted.message);
+    assert.deepEqual(window.frameXmlWorld().surfaces, { popups: 0, errors: 0, serverQuestions: "native" });
+    assert.equal(first.popups.popupsOwned, false, "the server's confirmations are not handed to stock");
+    const host = viewport.children.find((node) => node.id === "framexml-world-host");
+    const layer = Number(host.style.zIndex);
+    assert.equal(load.boots[0].vm.execute('UIErrorsFrame:AddMessage("Голод начинает ослаблять вас!", 1, 0.25, 0.15, 1)',
+      "@interface/framexml/tsaddons/lifecycle/addon/addon.lua").ok, true);
+    assert.equal(Number(host.style.zIndex) > layer, true, "the overlay rose over the native windows with the line");
+    assert.equal(window.frameXmlWorld().surfaces.errors, 1);
+    assert.equal(escapeFrameXmlAddonDialogs(), true);
+    assert.deepEqual(load.escapes, [0], "one press reaches stock StaticPopup_EscapePressed once");
+    unmountFrameXmlVertical();
+    assert.equal(deferred.includes(load.boots[0]), true, "the unmount reached boot.close");
+    assert.equal(frameXmlAddonDialogsEscapePublished(), false, "the entry-point cleanup withdrew the step");
+    assert.equal(escapeFrameXmlAddonDialogs(), false, "nothing answers it (its VM is still open)");
+    assert.deepEqual(load.escapes, [0]);
+
+    const next = dialogSeam("dialogs-next");
+    assert.equal((await mountFrameXmlVertical({ viewport, seam: next, addonsOnly: true })).ok, true);
+    assert.equal(escapeFrameXmlAddonDialogs(), true);
+    assert.deepEqual(load.escapes, [0, 1], "one handler after the remount: the new mount's, once");
+    assert.equal(next.popups.popupsOwned, false);
+    unmountFrameXmlVertical();
+    assert.equal(frameXmlAddonDialogsEscapePublished(), false);
+    assert.equal(escapeFrameXmlAddonDialogs(), false);
+    assert.deepEqual(load.escapes, [0, 1]);
+  } finally {
+    load.restore();
+    FrameXmlBoot.prototype.close = previousClose;
+    unmountFrameXmlVertical();
+    for (const boot of deferred) previousClose.call(boot);
+    if (previousObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = previousObserver;
+  }
+});
+
 /** Run the newest scheduled HUD frame callback once (the fake rAF only records them). */
 function runNewestFrame() {
   const newest = [...raf.scheduled].reduce((best, entry) => (!best || entry.id > best.id ? entry : best), undefined);

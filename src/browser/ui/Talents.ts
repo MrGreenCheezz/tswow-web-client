@@ -5,7 +5,9 @@ import { unit, worldObject } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
 import { playerInventory } from "../Inventory.js";
 import { spellCastAllowed } from "../SpellCastGuard.js";
-import { Panel, attachTooltip } from "./Widgets.js";
+import { Panel, attachTooltip, confirmPanel } from "./Widgets.js";
+import { formatMoney } from "./Format.js";
+import { globalString } from "../../generated/globalStrings.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { formatSpellDescription } from "./SpellText.js";
@@ -219,22 +221,59 @@ function buildHeader(header: HTMLElement, info: TalentsInfo | undefined, petMask
     }));
   }
 
-  // Talent wipe: the server owns the cost and the NPC check. Confirm here, send
-  // `MSG_TALENT_WIPE_CONFIRM` with the gossip/target guid; the realm refuses when illegal.
-  if (!showingPet) {
-    const reset = tabButton("Сбросить", false, () => {
-      const world = game.world;
-      if (!world) return;
-      const guid = world.gossip?.guid ?? world.targetGuid;
-      if (guid === undefined || guid === 0n) {
-        world.onSpellStatus?.("Подойдите к тренеру и откройте диалог сброса талантов", true);
-        return;
-      }
-      world.confirmTalentWipe(guid);
+  if (!showingPet) header.append(talentResetButton());
+}
+
+/**
+ * «Сбросить» (1.28, part 1). The original talent frame has no reset button: the trainer's «Забыть
+ * таланты» makes the server send its quote (MSG_TALENT_WIPE_CONFIRM, `WorldClient.talentWipeConfirm`)
+ * and only accepting that question answers. The core keeps no pending state (SkillHandler.cpp:61-93):
+ * an answer naming a trainer in range resets and charges at once — so this button never sends on its
+ * own. With a quote it asks with the price; without one it is marked unavailable and says where to go.
+ * The window is repainted by talent packets, not by the quote, so the state is read again on hover and
+ * on click.
+ */
+function talentResetButton(): HTMLButtonElement {
+  const quoted = () => game.world?.talentWipeConfirm;
+  const reset = tabButton("Сбросить", false, () => {
+    const world = game.world;
+    const offer = sync();
+    if (!world || !offer) return;
+    confirmPanel(reset, {
+      title: "Сбросить таланты?",
+      lines: [
+        globalString("CONFIRM_TALENT_WIPE")
+          ?? "Вы уверены, что хотите отказаться от всех своих талантов? Все питомцы, которых вы контролируете, окажутся на свободе. Сброс талантов с каждым разом будет обходиться все дороже.",
+        `Стоимость: ${formatMoney(offer.cost)}`,
+      ],
+      confirm: "Принять",
+      danger: true,
+      onConfirm: () => {
+        // Only the question asked here: a newer quote was never confirmed.
+        if (world.talentWipeConfirm !== offer) return;
+        if (world.answerTalentWipe(true) === "unaffordable") {
+          world.onSpellStatus?.(globalString("ERR_NOT_ENOUGH_MONEY") ?? "У вас недостаточно денег.", true);
+        }
+      },
     });
-    reset.title = "Сбросить таланты (стоимость и проверка — на сервере)";
-    header.append(reset);
-  }
+  });
+  const sync = (): ReturnType<typeof quoted> => {
+    const offer = quoted();
+    if (offer) reset.removeAttribute("aria-disabled");
+    else reset.setAttribute("aria-disabled", "true");
+    return offer;
+  };
+  sync();
+  attachTooltip(reset, () => {
+    const offer = sync();
+    return {
+      title: "Сбросить таланты",
+      footer: [offer
+        ? `Стоимость: ${formatMoney(offer.cost)}`
+        : "Сброс талантов — у тренера своего класса, пункт «Забыть таланты»."],
+    };
+  });
+  return reset;
 }
 
 /** The core's pet-family mask, which matches the `TalentTab.PetTalentMask` trees. */

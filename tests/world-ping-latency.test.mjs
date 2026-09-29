@@ -64,6 +64,11 @@ test("a pong for the last ping measures the round trip, and the next ping carrie
     const seam = { netLatency: () => client.latencyMs };
     assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetNetStats(seam, []), [0, 0, measured]);
     assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetNetStats({}, []), [0, 0, 0], "a seam without it answers the neutral zeros");
+    // 1.30: with the world's own rates beside it. This fake socket counts no bytes, so the rates are
+    // zeros — finite ones — and the latency is still the measured round trip.
+    const live = { netLatency: () => client.latencyMs, netBandwidth: () => client.netBandwidth() };
+    assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetNetStats(live, []), [0, 0, measured]);
+    assert.deepEqual(client.netBandwidth(), { inKBps: 0, outKBps: 0 });
   } finally {
     client.close();
     mock.timers.reset();

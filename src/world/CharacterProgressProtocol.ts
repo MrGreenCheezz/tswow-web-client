@@ -97,6 +97,35 @@ export function parseGuidOnly(payload: Uint8Array): bigint {
 }
 
 /**
+ * `CMSG_BINDER_ACTIVATE`: the innkeeper's guid, full (`HandleBinderActivateOpcode`, NPCHandler.cpp:287)
+ * — the answer to `SMSG_BINDER_CONFIRM`, which carries that guid alone (`BinderConfirm::Write`,
+ * MiscPackets.cpp:37). The home moves only on this packet: `SendBindPoint` casts 3286 then.
+ */
+export function buildBinderActivate(guid: bigint): Uint8Array {
+  return new PacketWriter().u64(guid).toUint8Array();
+}
+
+/** A trainer's quote for resetting the character's talents. */
+export interface TalentWipeQuote {
+  guid: bigint;
+  /** Copper, `Player::ResetTalentsCost`. */
+  cost: number;
+}
+
+/**
+ * `MSG_TALENT_WIPE_CONFIRM` from the server: `u64 trainer, u32 cost` (`RespecWipeConfirm::Write`,
+ * TalentPackets.cpp:22). The client answers on the same opcode with the guid alone
+ * (`ConfirmRespecWipe::Read`, :30). A zero guid is not a question: `HandleTalentWipeConfirmOpcode`
+ * sends it when `ResetTalents` found nothing to reset (SkillHandler.cpp:83-87).
+ */
+export function parseTalentWipeConfirm(payload: Uint8Array): TalentWipeQuote {
+  const reader = new PacketReader(payload);
+  const quote = { guid: reader.u64(), cost: reader.u32() };
+  reader.assertFinished();
+  return quote;
+}
+
+/**
  * `UnitStandStateType`, `UnitDefines.h`: byte 0 of `UNIT_FIELD_BYTES_1`.
  *
  * Copied from the core rather than from memory, which is what a first draft of this list did — and

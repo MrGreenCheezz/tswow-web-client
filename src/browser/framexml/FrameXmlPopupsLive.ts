@@ -3,15 +3,15 @@
  * own unit resolver, so LiveWorldSeam constructs the popup model with one block.
  */
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
+import { withinInteractionDistance, withinNpcInteraction } from "../../world/ConfirmationProtocol.js";
 import { isPlayerGhost, readField } from "../../world/Fields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { fieldFloat, isWorldObjectDead, type WorldObjectState } from "../../world/WorldState.js";
 import { game } from "../game/Context.js";
 import type { FrameXmlPopupsContext, FrameXmlPopupsCursorItem } from "./FrameXmlPopups.js";
-import { frameXmlQuitIntent } from "./FrameXmlPopupsController.js";
+import { frameXmlPopupsTalentUiLoaded, frameXmlQuitIntent } from "./FrameXmlPopupsController.js";
+import { frameXmlTalentOpen, toggleFrameXmlTalent } from "./FrameXmlTalentController.js";
 
-/** `INTERACTION_DISTANCE` (ObjectDefines.h:24), measured between combat reaches as the server does. */
-const INTERACTION_DISTANCE = 5;
 /** Stock unit tokens a group member can hold: four party slots, forty raid slots. */
 const GROUP_TOKENS: readonly string[] = Object.freeze([
   ...Array.from({ length: 4 }, (_, index) => `party${index + 1}`),
@@ -71,17 +71,33 @@ export function frameXmlPopupsLiveContext(host: FrameXmlPopupsLiveHost): FrameXm
     },
     spellName: (id) => host.spellName(id),
     areaName: (zoneId) => game.areas?.area(zoneId)?.name,
+    // The core's GetNPCIfCanInteractWith range (ConfirmationProtocol.ts); undefined while unknown.
     spiritHealerInRange: (guid) => {
-      const world = host.world();
       const player = host.self();
-      const healer = world?.state.objects.get(guid);
-      if (!player?.position || !healer?.position) return undefined;
-      const distance = Math.hypot(
-        healer.position.x - player.position.x, healer.position.y - player.position.y,
-        healer.position.z - player.position.z,
-      );
-      return distance <= INTERACTION_DISTANCE + reach(player) + reach(healer);
+      const healer = host.world()?.state.objects.get(guid);
+      return player && healer ? withinNpcInteraction(player, healer) : undefined;
     },
+    // The innkeeper and the trainer: the rule WorldClient drops their questions by.
+    npcInRange: (guid) => {
+      const world = host.world();
+      return world ? withinInteractionDistance(world.state, guid) : undefined;
+    },
+    // CONFIRM_BINDER's place: the terrain's area under the player, as the native minimap reads it —
+    // SMSG_INIT_WORLD_STATES' area is where the zone was entered.
+    playerAreaName: () => {
+      const world = host.world();
+      const position = host.self()?.position;
+      if (!world || !position) return undefined;
+      const areaId = game.terrain?.areaAt(world.mapId, position.x, position.y) ?? 0;
+      return areaId > 0 ? game.areas?.area(areaId)?.name : undefined;
+    },
+    // CONFIRM_TALENT_WIPE waits for Blizzard_TalentUI in the published VM; its load is the published
+    // talent owner's own (the N key's path), which also opens the tree the question is about.
+    talentUi: () => {
+      const loaded = frameXmlPopupsTalentUiLoaded();
+      return loaded === undefined ? undefined : loaded ? "ready" : "idle";
+    },
+    loadTalentUi: () => { if (!frameXmlTalentOpen()) toggleFrameXmlTalent(); },
     // GameMenu.ts's Quit intent, registered with the popup controller (absent: CAMP, as before).
     quitting: () => frameXmlQuitIntent()?.quitting() === true,
     forceQuit: () => frameXmlQuitIntent()?.forceQuit(),

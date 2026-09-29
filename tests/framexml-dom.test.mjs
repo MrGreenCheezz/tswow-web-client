@@ -284,6 +284,49 @@ test("created roots stay explicit in world mode while glue keeps its historical 
   worldRenderer.destroy();
 });
 
+test("a shown StaticPopup freezes the page on the glue screens only; a world renderer's dialogs are modeless", () => {
+  // The page: the world canvas beside the FrameXML host, as index.html lays out #world-viewport.
+  const page = (options) => {
+    const bridge = new FrameXmlUiBridge();
+    const viewport = document.createElement("div");
+    const canvas = document.createElement("canvas");
+    const host = document.createElement("div");
+    const stage = document.createElement("section");
+    viewport.append(canvas, host);
+    host.append(stage);
+    const renderer = new FrameXmlDomRenderer(stage, { bridge, ...options });
+    const loaded = bridge.loadAddon(`<Ui><Frame name="UIParent" width="1024" height="768"><Frames>
+      <Frame name="ShopMainFrame" width="300" height="200"/>
+      <Frame name="StaticPopup1" hidden="true" width="320" height="100">
+        <Frames><Button name="StaticPopup1Button1" text="Да"/></Frames>
+      </Frame>
+    </Frames></Frame></Ui>`);
+    assert.equal(loaded.ok, true);
+    renderer.mount(loaded.roots);
+    assert.equal(bridge.Show(bridge.getFrame("StaticPopup1")), true);
+    const shop = find(stage, "ShopMainFrame");
+    const dialog = find(stage, "StaticPopup1");
+    return { renderer, canvas, host, shop, dialog };
+  };
+  const glue = page({});
+  assert.equal(glue.renderer.dialogs, "modal");
+  assert.equal(glue.dialog.getAttribute("aria-modal"), "true");
+  assert.equal(glue.canvas.inert, true, "glue: everything outside the dialog is inert, as before");
+  assert.equal(glue.shop.inert, true);
+  glue.renderer.destroy();
+  assert.equal(glue.canvas.inert === true, false, "and released with it");
+
+  const world = page({ dialogs: "modeless" });
+  assert.equal(world.renderer.dialogs, "modeless");
+  assert.equal(world.dialog.getAttribute("role"), "dialog");
+  assert.equal(world.dialog.getAttribute("aria-modal"), null);
+  for (const [name, element] of [["the world canvas", world.canvas], ["the FrameXML host", world.host],
+    ["a module window", world.shop]]) {
+    assert.equal(element.inert === true, false, `${name} keeps its input`);
+  }
+  world.renderer.destroy();
+});
+
 test("without a trusted texture resolver, addon texture values remain inert metadata", () => {
   const bridge = new FrameXmlUiBridge();
   const loaded = bridge.loadAddon(`<Ui><Frame name="Root"><Texture name="Icon" file="https://evil.invalid/pixel.png"/></Frame></Ui>`);

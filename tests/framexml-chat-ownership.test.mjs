@@ -334,6 +334,29 @@ test("the stock edit box owns the chat keys and the whole native chat window onl
   }
 });
 
+test("the mount hands the seam's macro context to the stock SecureCmdOptionParse", async () => {
+  includeChat = true;
+  includeStockEditBox = true;
+  const state = { combat: false };
+  const contextual = { ...seam("macro-context"), macroContext: () => ({ combat: () => state.combat }) };
+  try {
+    const result = await mountFrameXmlVertical({ viewport, seam: contextual });
+    assert.equal(result.ok, true);
+    const boot = boots.at(-1);
+    // What every stock SecureCmdList body and SecureStateDriver ask (ChatFrame.lua:1013-1416).
+    const parse = (options) => {
+      const call = boot.vm.compileFunction(`return (SecureCmdOptionParse(${JSON.stringify(options)}))`, "@test/macro", []);
+      try { return boot.vm.call(call, [], 1)[0]; } finally { boot.vm.release(call); }
+    };
+    assert.equal(parse("[combat] show; hide"), "hide");
+    state.combat = true;
+    assert.equal(parse("[combat] show; hide"), "show", "the seam's context, read at the moment of the call");
+  } finally {
+    includeStockEditBox = false;
+    unmountFrameXmlVertical();
+  }
+});
+
 test("chat gate failure keeps native display and fallback action", async () => {
   includeChat = false;
   const before = chatInput.value;

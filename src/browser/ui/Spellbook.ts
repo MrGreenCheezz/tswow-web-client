@@ -809,11 +809,14 @@ function setSpellButtonState(
   const togglingMount = typeof world?.isActiveMountSpell === "function"
     && world.isActiveMountSpell(spellId);
   const usable = spellButtonUsable(metadata);
-  const disabled = !usable || (!togglingMount && remaining > 0);
+  // Held until its aura ends (WorldClient.isSpellOnHold): not ready, and nothing to count down.
+  const held = !togglingMount && world?.isSpellOnHold?.(spellId) === true;
+  const disabled = !usable || (!togglingMount && remaining > 0) || held;
   const base = metadata?.name ?? unknownLabel("заклинание", spellId);
   const label = !usable && metadata?.passive ? `${base} · пассивное`
     : togglingMount ? `${base} · Снять маунта`
-      : remaining > 0 ? `${base} · Восстанавливается` : base;
+      : remaining > 0 ? `${base} · Восстанавливается`
+        : held ? `${base} · Ещё не готово` : base;
   // Called 60 times a second for every known spell: reads are free, writes force style and
   // accessibility work, so only touch the DOM when the value actually moved.
   if (button.disabled !== disabled) button.disabled = disabled;

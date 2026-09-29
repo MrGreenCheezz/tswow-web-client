@@ -80,6 +80,11 @@ export function setFocusToTarget(): void {
   game.focusGuid = game.world?.targetGuid;
 }
 
+/** The stock UI's `FocusUnit`/`ClearFocus` (FrameXmlTargetingApi.ts): the same focus, by guid. */
+export function setFocusGuid(guid: bigint | undefined): void {
+  game.focusGuid = guid;
+}
+
 export function focusUnit(): WorldObjectState | undefined {
   const world = game.world;
   if (!world || game.focusGuid === undefined) return undefined;

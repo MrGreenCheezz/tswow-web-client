@@ -163,7 +163,7 @@ function resizableView() {
   };
 }
 
-async function boot(files, { view, hostSize, provider, installedAddons } = {}) {
+async function boot(files, { view, hostSize, provider, installedAddons, rendererOptions } = {}) {
   const loaded = new FrameXmlBoot({
     exercise: false,
     ...(installedAddons ? { installedAddons } : {}),
@@ -179,7 +179,9 @@ async function boot(files, { view, hostSize, provider, installedAddons } = {}) {
   host.container = true;
   if (hostSize) Object.assign(host.style, { width: `${hostSize[0]}px`, height: `${hostSize[1]}px` });
   // A resolver makes every file texture a loaded picture, as the gateway's cache does.
-  const renderer = new FrameXmlDomRenderer(host, { bridge: loaded.bridge, textureResolver: (path) => `tex:${path}` });
+  const renderer = new FrameXmlDomRenderer(host, {
+    bridge: loaded.bridge, textureResolver: (path) => `tex:${path}`, ...rendererOptions,
+  });
   renderer.mount(loaded.roots);
   return {
     boot: loaded,
@@ -440,6 +442,81 @@ test("an autoFocus edit box takes the keyboard when it comes into view, unless a
     assert.deepEqual(lua("return LoginAccount:HasFocus() and 1 or 0, LoginPassword:HasFocus() and 1 or 0", 2), [0, 1]);
     assert.equal(loaded.errorCount, 0);
   } finally { done(); }
+});
+
+// The same two cases in a world renderer, whose dialogs are modeless: nothing traps the keyboard,
+// so the caret comes only from the renderer's own EditBox focus (SetFocus, autoFocus), and a dialog
+// without a focused box leaves the keyboard wherever the player had it.
+const WORLD = { rendererOptions: { dialogs: "modeless" } };
+const inputOf = (element, name) => element(name).children.find((child) => child.getAttribute("data-framexml-input") === "true");
+
+test("world: a dialog that gives its edit box the focus puts the caret there; one that does not takes no focus", async () => {
+  const { boot: loaded, doc, element, lua, close: done } = await boot({ "interface/framexml/frames.xml": POPUP }, WORLD);
+  try {
+    const input = inputOf(element, "StaticPopup1WideEditBox");
+    lua("StaticPopup1:Show()", 0);
+    assert.equal(element("StaticPopup1").getAttribute("aria-modal"), null, "a dialog, not a modal one");
+    assert.equal(doc.activeElement === input, true, "the caret is in the box");
+    assert.deepEqual(lua("return StaticPopup1WideEditBox:HasFocus() and 1 or 0, FocusLost", 2), [1, undefined]);
+    lua("StaticPopup1:Hide() StaticPopup1WideEditBox:ClearFocus() StaticPopup1:SetScript('OnShow', nil)", 0);
+    const chat = doc.createElement("input");
+    chat.focus();
+    lua("StaticPopup1:Show()", 0);
+    assert.equal(doc.activeElement === chat, true, "no Lua focus: the keyboard stays with the chat box");
+    assert.equal(doc.activeElement === element("StaticPopup1Button1"), false);
+    assert.equal(loaded.errorCount, 0);
+  } finally { done(); }
+});
+
+test("world: an autoFocus edit box takes the keyboard when it comes into view, unless an OnShow chose", async () => {
+  const { boot: loaded, doc, element, lua, close: done } = await boot({ "interface/framexml/frames.xml": AUTOFOCUS }, WORLD);
+  const focus = () => {
+    const active = doc.activeElement;
+    if (!active) return "none";
+    const field = active.getAttribute("data-framexml-input") === "true";
+    const owner = field ? active.parentElement : active;
+    return `${owner?.getAttribute("data-framexml-name") ?? "outside"}${field ? " input" : ""}`;
+  };
+  try {
+    lua("StaticPopup2EditBox:Show() StaticPopup2:Show()", 0);
+    assert.equal(element("StaticPopup2").getAttribute("aria-modal"), null);
+    assert.deepEqual(lua("return StaticPopup2EditBox:HasFocus() and 1 or 0, StaticPopup2Quiet:HasFocus() and 1 or 0", 2), [1, 0]);
+    assert.equal(focus(), "StaticPopup2EditBox input", "the caret is in the box");
+    lua("StaticPopup2:Hide() StaticPopup2EditBox:SetAutoFocus(false)", 0);
+    doc.createElement("input").focus();
+    lua("StaticPopup2:Show()", 0);
+    assert.deepEqual(lua("return StaticPopup2EditBox:HasFocus() and 1 or 0"), [0]);
+    assert.equal(focus(), "outside", "without an autoFocus box the dialog takes no focus of its own");
+    lua("StaticPopup2:Hide() ChooseAccount = true Login:Show()", 0);
+    assert.equal(focus(), "LoginAccount input", "an OnShow's SetFocus still has the last word");
+    assert.equal(loaded.errorCount, 0);
+  } finally { done(); }
+});
+
+const TAB = `<Ui>
+  <Frame name="StaticPopup3" frameStrata="DIALOG" toplevel="true" enableMouse="true">
+    <Size x="320" y="120"/><Anchors><Anchor point="TOP"/></Anchors>
+    <Frames>
+      <EditBox name="StaticPopup3EditBox" autoFocus="false"><Size x="250" y="20"/><Anchors><Anchor point="CENTER"/></Anchors>
+        <Scripts><OnTabPressed>Tabbed = (Tabbed or 0) + 1</OnTabPressed></Scripts></EditBox>
+      <EditBox name="StaticPopup3Plain" autoFocus="false"><Size x="250" y="20"/><Anchors><Anchor point="TOP"/></Anchors></EditBox>
+    </Frames>
+  </Frame>
+</Ui>`;
+
+test("Tab in a world edit box is the box's own (AutoCompleteEditBox_OnTabPressed); the login screens keep field-to-field Tab", async () => {
+  for (const [label, options, spent] of [["world", WORLD, true], ["glue", {}, false]]) {
+    const { element, lua, close: done } = await boot({ "interface/framexml/frames.xml": TAB }, options);
+    try {
+      for (const [name, scripted] of [["StaticPopup3EditBox", true], ["StaticPopup3Plain", false]]) {
+        let prevented = false;
+        inputOf(element, name).dispatch("keydown", { key: "Tab", preventDefault() { prevented = true; } });
+        assert.equal(prevented, spent, `${label} ${name}: the browser's focus walk is ${spent ? "held" : "left alone"}`);
+        if (scripted) assert.equal(lua("return Tabbed")[0], 1, `${label}: OnTabPressed ran`);
+      }
+      lua("Tabbed = nil", 0);
+    } finally { done(); }
+  }
 });
 
 test("the stock CHANNEL_INVITE popup, which never calls SetFocus, opens with its edit box focused", withClient, async () => {

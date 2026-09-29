@@ -3,12 +3,14 @@ import {
   EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, FRAMEXML_NO_TOTEM, tempEnchantEquipmentSlot, totemPacketSlot,
   type FrameXmlHudMechanics, type FrameXmlTotemInfo, type FrameXmlWeaponEnchantInfo,
 } from "./FrameXmlHudMechanics.js";
+import { FrameXmlRunesCanned, type FrameXmlRuneCooldown } from "./FrameXmlRunes.js";
 import type { FrameXmlSeamPump } from "./FrameXmlWorldSeam.js";
 
 /**
- * The totem bar, hit indicator and temporary weapon enchants over the scripted offline world: one
- * totem and one main-hand enchant from the moment the seam attaches, so the canned vertical draws
- * TotemFrame and TempEnchant1, and the MPQ tests can right-click them and watch the calls.
+ * The totem bar, hit indicator, temporary weapon enchants and runes over the scripted offline world:
+ * one totem and one main-hand enchant from the moment the seam attaches, so the canned vertical draws
+ * TotemFrame and TempEnchant1, and the MPQ tests can right-click them and watch the calls; and six
+ * ready runes, which RuneFrame draws once the canned player is a death knight (`setPlayerClass`).
  */
 
 /** A scripted totem in one of the client's four slots (Constants.lua: fire 1, earth 2, water 3, air 4). */
@@ -61,6 +63,8 @@ export class FrameXmlHudMechanicsCanned implements FrameXmlHudMechanics {
   readonly #enchants = new Map<number, RunningEnchant>();
   /** Every request the stock buttons made, in order: `DestroyTotem:<packet slot>`, `CancelTempEnchantment:<equipment slot>`. */
   readonly calls: string[] = [];
+  /** The six runes; tests script them with `useRune`, `refreshRune` and `convertRune`. */
+  readonly runes = new FrameXmlRunesCanned();
 
   constructor(totems: readonly CannedTotem[] = [CANNED_TOTEM], enchants: readonly CannedWeaponEnchant[] = [CANNED_WEAPON_ENCHANT]) {
     this.#seed = { totems, enchants };
@@ -68,6 +72,7 @@ export class FrameXmlHudMechanicsCanned implements FrameXmlHudMechanics {
 
   attach(pump: FrameXmlSeamPump): void {
     this.#pump = pump;
+    this.runes.attach(pump);
     const now = pump.now();
     this.#totems.clear();
     this.#enchants.clear();
@@ -85,12 +90,17 @@ export class FrameXmlHudMechanicsCanned implements FrameXmlHudMechanics {
 
   detach(): void {
     this.#pump = undefined;
+    this.runes.detach();
   }
 
-  /** Once a frame: a totem whose duration ran out leaves its slot with the same edge the live model fires. */
+  /**
+   * Once a frame: a totem whose duration ran out leaves its slot, and a spent rune whose ten seconds
+   * are over comes back, with the same edges the live model fires.
+   */
   tick(): void {
     const pump = this.#pump;
     if (!pump) return;
+    this.runes.tick();
     const now = pump.now();
     for (const [slot, totem] of [...this.#totems]) {
       if (now - totem.startTime < totem.duration) continue;
@@ -111,6 +121,14 @@ export class FrameXmlHudMechanicsCanned implements FrameXmlHudMechanics {
   /** Script a blow, heal, energize or miss on a unit token, as the live model words a packet. */
   hit(unit: string, action: string, descriptor: string, amount: number, school: number): void {
     this.#pump?.fire(FRAMEXML_HUD_MECHANICS_EVENTS.unitCombat, unit, action, descriptor, amount, school);
+  }
+
+  runeType(rune: number): number | undefined {
+    return this.runes.runeType(rune);
+  }
+
+  runeCooldown(rune: number): FrameXmlRuneCooldown | undefined {
+    return this.runes.runeCooldown(rune);
   }
 
   totemInfo(slot: number): FrameXmlTotemInfo {

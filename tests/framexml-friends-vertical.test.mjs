@@ -525,8 +525,10 @@ test("UnitPopup at retail TOC 66 gives the friend, who and guild rows their stoc
     owner.show("friends");
     await tick();
     lua(boot, `FriendsFrameFriendsScrollFrameButton1:Click("RightButton")`, 0);
-    assert.equal(menu(), "Аэлинда,WHISPER,INVITE,SET_NOTE,IGNORE,REMOVE_FRIEND,CANCEL",
-      "a friend row: whisper, invite, note and remove — what the native panel's row menu offered");
+    // TARGET («Цель») too: UnitPopup_ShowMenu runs as Blizzard's code, so `not issecure()` no longer
+    // hides it (UnitPopup.lua:593, FrameXmlSecureCalls.ts).
+    assert.equal(menu(), "Аэлинда,WHISPER,INVITE,TARGET,SET_NOTE,IGNORE,REMOVE_FRIEND,CANCEL",
+      "a friend row: whisper, invite, target, note and remove");
     // SET_NOTE opens stock's SET_FRIENDNOTE popup; accepting it is SetFriendNotes → CMSG_SET_CONTACT_NOTES.
     lua(boot, `for i = 1, DropDownList1.numButtons do local b = _G["DropDownList1Button" .. i]
       if b.value == "SET_NOTE" then b:Click() break end end`, 0);
@@ -538,7 +540,7 @@ test("UnitPopup at retail TOC 66 gives the friend, who and guild rows their stoc
     owner.show("who");
     seam.socialWorld.answerWho();
     lua(boot, `CloseDropDownMenus() WhoFrameButton1:Click("RightButton")`, 0);
-    assert.match(menu(), /^Аэлинда,WHISPER,INVITE,IGNORE,CANCEL$/, "a who row: no note or remove outside the friends list");
+    assert.match(menu(), /^Аэлинда,WHISPER,INVITE,TARGET,IGNORE,CANCEL$/, "a who row: no note or remove outside the friends list");
     owner.show("guild");
     await tick();
     seam.friends.tick();

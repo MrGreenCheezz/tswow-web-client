@@ -23,6 +23,17 @@ export class AuthProtocolError extends Error {
   }
 }
 
+/**
+ * The authserver's session proof (M2) did not match the one computed here: whoever answered does
+ * not hold the verifier it accepted the password against. The client's LOGIN_BAD_SERVER_PROOF.
+ */
+export class AuthServerProofError extends AuthProtocolError {
+  constructor() {
+    super("Authserver returned an invalid SRP6 session proof");
+    this.name = "AuthServerProofError";
+  }
+}
+
 export interface LogonChallenge extends SrpChallenge {
   securityFlags: number;
   crcSalt: Uint8Array;
@@ -139,7 +150,7 @@ export function parseLogonProof(packet: Uint8Array, expectedM2: Uint8Array): voi
   reader.u32();
   reader.u16();
   reader.assertFinished();
-  if (!equalBytes(M2, expectedM2)) throw new AuthProtocolError("Authserver returned an invalid SRP6 session proof");
+  if (!equalBytes(M2, expectedM2)) throw new AuthServerProofError();
 }
 
 export function buildRealmListRequest(): Uint8Array {

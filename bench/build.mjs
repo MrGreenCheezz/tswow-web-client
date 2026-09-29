@@ -50,8 +50,15 @@ function variantPlugin(variantDir) {
   };
 }
 
-export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = undefined) {
+/**
+ * `options.target`: the esbuild target, 'es2022' by default — the level of the production build since
+ * MEM-1 (vite.config.mjs BUILD_TARGET), so the benchmark runs code of the same form as the game. Another
+ * target (bench/run.mjs `--target modules`: the pre-MEM-1 production form) is an A/B side, never a baseline.
+ * The resolved options are returned as `result.bundleOptions`.
+ */
+export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = undefined, options = {}) {
   const variant = variantDir ? variantPlugin(variantDir) : undefined;
+  const bundleOptions = { target: options.target ?? 'es2022' };
   const result = await build({
     plugins: variant ? [variant.plugin] : [],
     entryPoints: {
@@ -60,9 +67,14 @@ export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = 
       'EnvironmentTileDecode.worker': 'src/browser/EnvironmentTileDecode.worker.ts',
       'PoseEngine.worker': 'src/browser/PoseEngine.worker.ts',
     },
-    outdir, bundle: true, format: 'esm', platform: 'browser', target: 'es2022',
+    outdir, bundle: true, format: 'esm', platform: 'browser', target: bundleOptions.target,
+    // The harness entry (bench-only) awaits at top level, which esbuild refuses below es2022 although
+    // the benchmark's Chrome runs it; game code has none (the pre-MEM-1 production build had this
+    // target), so allowing it changes nothing in how the game's classes are lowered.
+    ...(bundleOptions.target === 'es2022' ? {} : { supported: { 'top-level-await': true } }),
     minify: false, sourcemap: true, metafile: true, keepNames: true,
   });
   result.variantFiles = variant ? [...variant.used].sort() : [];
+  result.bundleOptions = bundleOptions;
   return result;
 }

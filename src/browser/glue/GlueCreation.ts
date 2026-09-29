@@ -2,6 +2,8 @@ import type { CharacterOptions } from "../CharacterAtlas.js";
 import type { CreationClass, CreationRace } from "../../gateway/CharacterCreation.js";
 import type { StartOutfitItem } from "../../gateway/CharStartOutfit.js";
 import type { GlueSceneLook } from "./GlueCharacterScene.js";
+import { RESPONSE_CODE_NAMES } from "../../generated/responseCodes.js";
+import { messageFor, openStatusDialog, responseKey } from "./GlueMessages.js";
 
 /**
  * What the character-creation screen has chosen, and the rules that keep it choosable.
@@ -39,41 +41,23 @@ export const NUM_CHAR_CUSTOMIZATIONS = 5;
 /** `SMSG_CHAR_CREATE`'s success code, the same number `WorldClient` checks. */
 export const CHAR_CREATE_SUCCESS = 47;
 
+/** What `HandleCharCreateOpcode` can answer: the `CHAR_CREATE_*` results and the name checks'. */
+const answersCharCreate = (name: string): boolean =>
+  (name.startsWith("CHAR_CREATE_") && name !== "CHAR_CREATE_IN_PROGRESS")
+  || (name.startsWith("CHAR_NAME_") && name !== "CHAR_NAME_SUCCESS");
+
 /**
- * The `CHAR_CREATE_*` GlueStrings the corpus' own dialog text uses, by response code.
+ * `SMSG_CHAR_CREATE`'s refusals by code, exactly as `responseKey(code, "create")` answers them.
  *
- * The codes are `ResponseCodes.h` of the core this client talks to: 47 `CHAR_CREATE_SUCCESS`,
- * 48 `CHAR_CREATE_ERROR`, 49 `CHAR_CREATE_FAILED`, 50 `CHAR_CREATE_NAME_IN_USE`, 51
- * `CHAR_CREATE_DISABLED`, 52 `CHAR_CREATE_PVP_TEAMS_VIOLATION`, 53 `CHAR_CREATE_SERVER_LIMIT`,
- * 54 `CHAR_CREATE_ACCOUNT_LIMIT`, 55 `CHAR_CREATE_SERVER_QUEUE`, 56 `CHAR_CREATE_ONLY_EXISTING`,
- * 57 `CHAR_CREATE_EXPANSION`, 58 `CHAR_CREATE_EXPANSION_CLASS`, 59 `CHAR_CREATE_LEVEL_REQUIREMENT`,
- * 60 `CHAR_CREATE_UNIQUE_CLASS_LIMIT`, 61 `CHAR_CREATE_CHARACTER_IN_GUILD`. The string keys are the
- * ones `GlueStrings.lua:168-185` actually defines, so the dialog prints the dataset's own wording;
- * `CHAR_NAME_FAILURE` (the client-side name check) is `CHAR_CREATE_INVALID_NAME`, which is what
- * `GlueDialogTypes["INVALID_NAME"]` shows.
+ * @deprecated The table is `GlueMessages.responseKey` since 1.19; this export stays one slice so
+ * its importers keep resolving. 42-44, which it once called «invalid name», are
+ * `ACCOUNT_CREATE_FAILED`, `CHAR_LIST_RETRIEVING` and `CHAR_LIST_RETRIEVED` and are not in it.
  */
-export const CHAR_CREATE_RESULT_STRINGS: Readonly<Record<number, string>> = Object.freeze({
-  47: "CHAR_CREATE_SUCCESS",
-  48: "CHAR_CREATE_ERROR",
-  49: "CHAR_CREATE_FAILED",
-  50: "CHAR_CREATE_NAME_IN_USE",
-  51: "CHAR_CREATE_DISABLED",
-  52: "CHAR_CREATE_PVP_TEAMS_VIOLATION",
-  53: "CHAR_CREATE_SERVER_LIMIT",
-  54: "CHAR_CREATE_ACCOUNT_LIMIT",
-  55: "CHAR_CREATE_SERVER_QUEUE",
-  56: "CHAR_CREATE_ONLY_EXISTING",
-  57: "CHAR_CREATE_EXPANSION",
-  58: "CHAR_CREATE_EXPANSION_CLASS",
-  59: "CHAR_CREATE_LEVEL_REQUIREMENT",
-  60: "CHAR_CREATE_UNIQUE_CLASS_LIMIT",
-  61: "CHAR_CREATE_CHARACTER_IN_GUILD",
-  // The three name refusals the core answers before it looks at anything else. All three print the
-  // one string the original prints, because `GlueStrings` has no separate wording for them.
-  42: "CHAR_CREATE_INVALID_NAME",
-  43: "CHAR_CREATE_INVALID_NAME",
-  44: "CHAR_CREATE_INVALID_NAME",
-});
+export const CHAR_CREATE_RESULT_STRINGS: Readonly<Record<number, string>> = Object.freeze(
+  Object.fromEntries([...RESPONSE_CODE_NAMES]
+    .filter(([, name]) => answersCharCreate(name))
+    .map(([code]) => [code, responseKey(code, "create")])),
+);
 
 /** The tables the screen is drawn from, however the host got them. */
 export interface GlueCreationTables {
@@ -528,7 +512,8 @@ export class GlueCreation {
    * Everything the wire needs comes from here rather than from the screen, which is what the client
    * does: the Lua only ever hands over the typed name. 47 is `CHAR_CREATE_SUCCESS` and puts the
    * player back on the character-select screen with the list refreshed; anything else is the
-   * dataset's own `CHAR_CREATE_*` wording in the corpus' own dialog.
+   * corpus' own string for that code (`responseKey`: a `CHAR_CREATE_*` result or the name check's
+   * `CHAR_NAME_*` reason) in the corpus' own dialog.
    */
   async createCharacter(name: string): Promise<number | undefined> {
     const race = this.selectedRace();
@@ -564,8 +549,7 @@ export class GlueCreation {
         this.#options.setGlueScreen?.("charselect");
         return result;
       }
-      const key = CHAR_CREATE_RESULT_STRINGS[result];
-      this.dialog(key ?? "CHAR_CREATE_UNKNOWN", `Сервер отказал в создании, код ${result}.`);
+      this.dialog(responseKey(result, "create"), `Сервер отказал в создании, код ${result}.`);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -577,8 +561,9 @@ export class GlueCreation {
     }
   }
 
+  /** The stock OKAY dialog, re-measured once it is visible so a long refusal stays inside its box. */
   private dialog(key: string | undefined, fallback: string): void {
-    const text = (key ? this.#options.glueString?.(key) : undefined) || fallback;
-    this.#options.fireEvent?.("OPEN_STATUS_DIALOG", "OKAY", text);
+    const text = messageFor(key, this.#options.glueString, fallback);
+    openStatusDialog((event, ...args) => { this.#options.fireEvent?.(event, ...args); }, "OKAY", text);
   }
 }

@@ -39,6 +39,10 @@ import type { GlueLuaRef, GlueLuaVm } from "../glue/GlueLua.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { installChatInputOwner, type ChatInputOwner } from "../ui/ChatInputOwner.js";
 import { className, raceName } from "../ui/UnitSnapshot.js";
+import {
+  evaluateMacroOptions, installMacroOptionErrorSink, macroOptions, type MacroContext,
+} from "../macro/MacroOptions.js";
+import { installMacroClickFrames, installMacroLineExecutor } from "../macro/MacroRunner.js";
 import { FRAMEXML_SEAM_NAMES } from "./FrameXmlWorldSeam.js";
 
 /** The part of `WorldClient` this module reads and calls; tests pass a recording fake. */
@@ -69,6 +73,11 @@ export interface FrameXmlChatApiDeps {
   readonly dispatchEvent?: (event: string, ...args: unknown[]) => void;
   /** Names another owner binds. Defaults to the world seam's binding table. */
   readonly reserved?: Iterable<string>;
+  /**
+   * What `SecureCmdOptionParse` evaluates macro conditions against — the world seam's
+   * `macroContext()`. Absent, it decides only what needs no state, as before macro conditions.
+   */
+  readonly macroContext?: () => MacroContext | undefined;
 }
 
 export interface FrameXmlChatApiInstall {
@@ -255,40 +264,33 @@ export function frameXmlWhoRequest(query: string): WhoRequest {
 }
 
 /**
- * `SecureCmdOptionParse`, for the clauses this client can decide without guessing.
+ * `SecureCmdOptionParse(options)`: the action its macro conditions choose and that clause's target.
  *
- * The original evaluates `[mod:shift,combat,@focus]`-style conditions against live state, and the
- * bracket groups in front of an action are alternatives: the first group whose conditions all hold
- * wins, with its own target. Here only target conditions — `[@unit]` or `[target=unit]` — can be
- * decided, and a group holding nothing else always holds, so the first group decides: an empty or
- * target-only first group answers the clause's action with that group's target (`[@focus][@target]
- * X` is X on focus), and a first group with any other condition answers `nil`, which is exactly what
- * the stub floor answered before. That keeps `SecureStateDriver` (which also calls this, every 0.2 s,
- * for state drivers a module may register) from being fed a value picked by ignoring its
- * conditions, while `/cast [@focus] X`, `/target X`, `/dismount` and `/leavevehicle` — every chat
- * use measured — get their action and target. The first clause always decides for the same reason.
- * An empty string answers `""`, which the stock handlers treat as «go» (`if SecureCmdOptionParse(msg)
- * then`).
+ * With a context this is the client's evaluation (macro/MacroOptions.ts): clauses in order, bracket
+ * groups as alternatives with their own targets, conditions within a group all holding; no clause
+ * holding answers `nil`. Every stock `SecureCmdList` body calls it (ChatFrame.lua:1013-1416), and so
+ * does `SecureStateDriver`, five times a second per registered driver (SecureStateDriver.lua:89).
+ *
+ * Without a context only what needs no state is decided, as before conditions were evaluated: the
+ * first clause, answered when its first group holds nothing but a target (`[@focus][@target] X` is
+ * X on focus), `nil` when that group has any other condition. An empty string answers `""`, which
+ * the stock handlers treat as «go» (`if SecureCmdOptionParse(msg) then`).
  */
-export function frameXmlSecureCmdOptionParse(options: string): readonly [string, string?] | readonly [] {
-  const first = (options.split(";")[0] ?? "").trim();
-  if (!first.startsWith("[")) return [first];
-  let rest = first;
-  const groups: string[][] = [];
-  while (rest.startsWith("[")) {
-    const close = rest.indexOf("]");
-    if (close < 0) return [];
-    groups.push(rest.slice(1, close).split(",").map((condition) => condition.trim())
-      .filter((condition) => condition.length > 0));
-    rest = rest.slice(close + 1).trim();
+export function frameXmlSecureCmdOptionParse(
+  options: string,
+  context?: MacroContext,
+): readonly [string, string?] | readonly [] {
+  const parsed = macroOptions(options);
+  if (context) {
+    const chosen = evaluateMacroOptions(parsed, context);
+    return chosen === undefined ? [] : chosen.target === undefined ? [chosen.text] : [chosen.text, chosen.target];
   }
-  let target: string | undefined;
-  for (const condition of groups[0] ?? []) {
-    const at = /^@(\S+)$/.exec(condition) ?? /^target\s*=\s*(\S+)$/i.exec(condition);
-    if (!at) return [];
-    target = at[1];
-  }
-  return target === undefined ? [rest] : [rest, target];
+  const first = parsed.clauses[0];
+  if (!first || first.error !== undefined) return [];
+  const group = first.groups[0];
+  if (group === undefined) return [first.text];
+  if (group.conditions.length > 0) return [];
+  return group.target === undefined ? [first.text] : [first.text, group.target];
 }
 
 /**
@@ -569,7 +571,7 @@ export function installFrameXmlChatApi(
       world.startAttack();
     }),
     StopAttack: withWorld((world) => world.stopAttack()),
-    SecureCmdOptionParse: (args) => frameXmlSecureCmdOptionParse(text(args[0])),
+    SecureCmdOptionParse: (args) => frameXmlSecureCmdOptionParse(text(args[0]), deps.macroContext?.()),
   };
 
   const installed: string[] = [];
@@ -955,6 +957,49 @@ function __webclientReplyTell()
 end
 `;
 
+/**
+ * The macro half of the stock chat (FrameXmlChatApi.ts `installFrameXmlStockChat`):
+ *
+ * - `__webclientMacroSay(text)`: a macro's line without `/`, said in SAY as the client's MacroEditBox
+ *   says it, whatever type the chat box sticks to.
+ * - `__webclientMacroOptionText(word)`: ERR_UNKNOWN_MACRO_OPTION_S for a word the client does not know.
+ * - `__webclientInstallItemParse()` / `__webclientRestoreItemParse()`: this client's IDs in stock
+ *   `/cast` and `/use`. Their one body (ChatFrame.lua:1029-1040, a local of ChatFrame.lua like the
+ *   hash that dispatches it) reads a bare number through the global `SecureCmdItemParse` as an
+ *   inventory slot. The wrapper keeps that for a bag slot, an equipment slot (0–19) and a slot that
+ *   holds an item; any other bare number is handed back as the action itself, so the body asks
+ *   `GetItemInfo` — an item the client knows is used (`UseItemByName`), anything else is cast
+ *   (`CastSpellByName`) — and both reach this client's `/use` and `/cast`, which read IDs.
+ */
+const MACRO_SOURCE = `
+function __webclientMacroSay(text)
+  SendChatMessage(text, "SAY")
+end
+function __webclientMacroOptionText(word)
+  return format(ERR_UNKNOWN_MACRO_OPTION_S or "%s", tostring(word))
+end
+function __webclientInstallItemParse()
+  local stock = SecureCmdItemParse
+  if type(stock) ~= "function" or __webclientStockItemParse then return false end
+  local lastEquipped = INVSLOT_LAST_EQUIPPED or 19
+  __webclientStockItemParse = stock
+  __webclientItemParse = function(item)
+    local name, bag, slot = stock(item)
+    local id = not bag and not name and tonumber(slot)
+    if id and id > lastEquipped then return slot, nil, nil end
+    return name, bag, slot
+  end
+  SecureCmdItemParse = __webclientItemParse
+  return true
+end
+function __webclientRestoreItemParse()
+  if __webclientStockItemParse and SecureCmdItemParse == __webclientItemParse then
+    SecureCmdItemParse = __webclientStockItemParse
+  end
+  __webclientStockItemParse, __webclientItemParse = nil, nil
+end
+`;
+
 
 /**
  * Makes the stock chat the one the keys reach, or answers undefined and changes nothing.
@@ -994,6 +1039,37 @@ export function installFrameXmlStockChat(
     }),
   });
   const slash = installFrameXmlNativeSlash(vm, deps);
+  // Macros (macro/MacroRunner.ts), and this client's IDs in stock /cast and /use (MACRO_SOURCE).
+  const macroLoaded = vm.execute(MACRO_SOURCE, "@webclient/chat-api:macro").ok;
+  const sayRef = macroLoaded ? vm.globalFunction("__webclientMacroSay") : undefined;
+  const errorTextRef = macroLoaded ? vm.globalFunction("__webclientMacroOptionText") : undefined;
+  const restoreItemParseRef = macroLoaded ? vm.globalFunction("__webclientRestoreItemParse") : undefined;
+  const installItemParseRef = macroLoaded ? vm.globalFunction("__webclientInstallItemParse") : undefined;
+  if (installItemParseRef) {
+    bridge.runInMutationBatch(() => vm.call(installItemParseRef, [], 1));
+    vm.release(installItemParseRef);
+  }
+  // A line runs as in the client: a slash line through EXECUTE_CHAT_LINE to stock MacroEditBox and
+  // ChatEdit_ParseText (ChatFrame.lua:2461-2482), a line without / said in SAY — the client's
+  // MacroEditBox, never the chat box's sticky type. Only once SecureCmdOptionParse has a context to
+  // evaluate conditions against: until then the native commands, which evaluate their own, keep the
+  // lines. `/click` reaches this UI's named frames.
+  const macroEditBox = bridge.getFrame("MacroEditBox");
+  const evaluatesConditions = deps.macroContext?.() !== undefined;
+  const stopMacroLines = evaluatesConditions && macroEditBox?.registeredEvents.has("EXECUTE_CHAT_LINE")
+    ? installMacroLineExecutor((line) => {
+      if (line.startsWith("/")) bridge.runInMutationBatch(() => bridge.dispatchEvent("EXECUTE_CHAT_LINE", line));
+      else if (sayRef) bridge.runInMutationBatch(() => vm.call(sayRef, [line], 0));
+    })
+    : undefined;
+  const stopClickFrames = installMacroClickFrames((name) => bridge.getFrame(name));
+  // ERR_UNKNOWN_MACRO_OPTION_S goes where the client's ERR_* lines go: UIErrorsFrame's UI_ERROR_MESSAGE.
+  const stopOptionErrors = errorTextRef ? installMacroOptionErrorSink((word) => {
+    const [message] = bridge.runInMutationBatch(() => vm.call(errorTextRef, [word], 1));
+    if (typeof message === "string" && message) {
+      bridge.runInMutationBatch(() => bridge.dispatchEvent("UI_ERROR_MESSAGE", message));
+    }
+  }) : undefined;
   const schedule = host.schedule ?? ((callback: () => void) => {
     if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(() => callback());
     else setTimeout(callback, 16);
@@ -1091,8 +1167,13 @@ export function installFrameXmlStockChat(
     releaseOwner();
     stopCombat?.();
     pending.length = 0;
+    stopMacroLines?.();
+    stopClickFrames();
+    stopOptionErrors?.();
+    if (restoreItemParseRef) bridge.runInMutationBatch(() => vm.call(restoreItemParseRef, [], 0));
     api.dispose();
     slash?.dispose();
     for (const ref of [openRef, insertRef, replyRef]) vm.release(ref);
+    for (const ref of [sayRef, errorTextRef, restoreItemParseRef]) if (ref) vm.release(ref);
   };
 }

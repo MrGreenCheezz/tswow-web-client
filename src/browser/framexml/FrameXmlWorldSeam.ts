@@ -122,6 +122,7 @@ import { FRAMEXML_AUCTION_BINDINGS, type FrameXmlAuctionModel } from "./FrameXml
 import { FRAMEXML_ACHIEVEMENT_BINDINGS, type FrameXmlAchievementModel } from "./FrameXmlAchievement.js";
 import { FRAMEXML_GUILDBANK_BINDINGS, type FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
 import { FRAMEXML_MACRO_BINDINGS, type FrameXmlMacroModel } from "./FrameXmlMacro.js";
+import type { MacroContext } from "../macro/MacroOptions.js";
 import { FRAMEXML_CURSOR_BINDINGS, type FrameXmlActionButton, type FrameXmlCursorModel } from "./FrameXmlCursor.js";
 import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
 import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
@@ -142,6 +143,9 @@ import { FRAMEXML_ITEM_ACTION_BINDINGS, FRAMEXML_ITEM_ACTIONS_PRELUDE } from "./
 import { FRAMEXML_OPTIONS_BINDINGS, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import { FRAMEXML_PLAYER_STATUS_BINDINGS, type FrameXmlPlayerStatus } from "./FrameXmlPlayerStatus.js";
 import { FRAMEXML_UNIT_RELATION_BINDINGS, type FrameXmlUnitRelations } from "./FrameXmlUnitRelations.js";
+import { FRAMEXML_CONTROL_BINDINGS, type FrameXmlPlayerControl } from "./FrameXmlControl.js";
+import { FRAMEXML_GROUP_COMMAND_BINDINGS, type FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
+import { FRAMEXML_TARGETING_BINDINGS, type FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
 import { FRAMEXML_MECHANICS_BINDINGS, FRAMEXML_MECHANICS_PRELUDE, type FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
 import type { FrameXmlThreatModel } from "./FrameXmlThreat.js";
 import type { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
@@ -335,6 +339,39 @@ export function frameXmlItemEntry(value: unknown): number | undefined {
   const match = /(?:^|\|H)item:(\d+)(?::|\||$)/.exec(value);
   const entry = match ? Number(match[1]) : undefined;
   return entry !== undefined && Number.isSafeInteger(entry) && entry > 0 ? entry : undefined;
+}
+
+/**
+ * `GetItemInfo` of a name or of an ID written as a string, which the client reads as a number
+ * (`lua_isnumber`): the client answers any item it knows. Here an ID is the item cache's first, and
+ * both are an item the player holds — the equipment, then the backpack and the four carried bags —
+ * found by its link's entry or the name the link shows, case aside. Stock `/cast` and `/use` ask it to
+ * tell an item from a spell (ChatFrame.lua:1033).
+ */
+function frameXmlItemInfoByName(seam: FrameXmlWorldSeam, value: unknown): FrameXmlItemInfo | undefined {
+  if (typeof value !== "string") return undefined;
+  const wanted = value.trim().toLowerCase();
+  if (!wanted || wanted.includes("|h")) return undefined;
+  const id = /^\d+$/.test(wanted) ? Number(wanted) : undefined;
+  const cached = id === undefined ? undefined : seam.itemInfo(id);
+  if (cached) return cached;
+  const held = (link: string | undefined, quality: number | undefined): FrameXmlItemInfo | undefined => {
+    const name = link === undefined ? undefined : /\|h\[([^\]]*)\]\|h/.exec(link)?.[1];
+    if (link === undefined || name === undefined) return undefined;
+    if (id === undefined ? name.toLowerCase() !== wanted : frameXmlItemEntry(link) !== id) return undefined;
+    return seam.itemInfo(link) ?? (quality === undefined ? undefined : [name, link, quality]);
+  };
+  for (let slot = 1; slot <= 19; slot += 1) {
+    const info = held(seam.inventoryItemLink("player", slot), undefined);
+    if (info) return info;
+  }
+  for (let bag = 0; bag <= 4; bag += 1) {
+    for (let slot = 1; slot <= seam.containerNumSlots(bag); slot += 1) {
+      const info = held(seam.containerItemLink(bag, slot), seam.containerItemInfo(bag, slot)?.[3]);
+      if (info) return info;
+    }
+  }
+  return undefined;
 }
 
 /** The structural tuple returned by `GetInventorySlotInfo`. */
@@ -1313,6 +1350,11 @@ export interface FrameXmlWorldSeam {
   readonly guildBank?: FrameXmlGuildBankModel;
   /** The macro C API over this client's macro store, and the macro cursor (FrameXmlMacro.ts). */
   readonly macros?: FrameXmlMacroModel;
+  /**
+   * What macro conditions — `SecureCmdOptionParse`'s `[combat]`, `[@focus,help]`, `[stance:2]` —
+   * are evaluated against: this seam's own answers to the same questions (macro/MacroContext.ts).
+   */
+  macroContext?(): MacroContext;
   /** The one cursor over every holder: spells, lifted actions, items for the bars (FrameXmlCursor.ts). */
   readonly cursor?: FrameXmlCursorModel;
   /** The binding C API over this client's key table (FrameXmlBinding.ts). */
@@ -1383,6 +1425,11 @@ export interface FrameXmlWorldSeam {
    * micro-menu's latency bar with it and prints it in the tooltip.
    */
   netLatency?(): number | undefined;
+  /**
+   * `GetNetStats()`' bandwidth in and out, KB/s over the world socket's bytes
+   * (`WorldClient.netBandwidth`); undefined, or no method at all, answers the neutral zeros.
+   */
+  netBandwidth?(): { inKBps: number; outKBps: number } | undefined;
   /** For the report: which implementation is answering. */
   readonly name: string;
 
@@ -1530,6 +1577,12 @@ export interface FrameXmlWorldSeam {
   unitInRaid?: FrameXmlUnitRelations["unitInRaid"];
   unitIsPartyLeader?: FrameXmlUnitRelations["unitIsPartyLeader"];
   unitIsRaidOfficer?: FrameXmlUnitRelations["unitIsRaidOfficer"];
+  /** `HasFullControl` (FrameXmlControl.ts); absent, the player holds the reins. */
+  hasFullControl?: FrameXmlPlayerControl["hasFullControl"];
+  /** The unit menus' and SecureTemplates' assistant and main tank/assist commands (FrameXmlGroupCommands.ts). */
+  readonly groupCommands?: FrameXmlGroupCommandsModel | undefined;
+  /** Focus, assist, dismount and the stance bar's cancel (FrameXmlTargetingApi.ts). */
+  readonly targeting?: FrameXmlTargeting | undefined;
 
   // ---- unit auras -------------------------------------------------------
   /** `UnitAura`'s 3.3.5 tuple for a 1-based filtered player slot. */
@@ -2126,6 +2179,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_OPTIONS_BINDINGS,
   ...FRAMEXML_PLAYER_STATUS_BINDINGS,
   ...FRAMEXML_UNIT_RELATION_BINDINGS,
+  ...FRAMEXML_CONTROL_BINDINGS, ...FRAMEXML_GROUP_COMMAND_BINDINGS, ...FRAMEXML_TARGETING_BINDINGS,
   ...FRAMEXML_INSPECT_BINDINGS,
   ...FRAMEXML_TITLE_BINDINGS, ...FRAMEXML_EQUIPMENT_SET_BINDINGS, AbandonSkill: (seam, args) => { seam.abandonSkill?.(slotOf(args[0])); return NOTHING; },
   ...FRAMEXML_BARBER_BINDINGS,
@@ -2145,10 +2199,15 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
     const fps = seam.framerate?.() ?? 0;
     return [Number.isFinite(fps) && fps > 0 ? fps : 0];
   },
-  // Bandwidth in and out stay 0: the socket's byte rates are not measured by this client.
+  // `bandwidthIn, bandwidthOut, latency` (MainMenuBar.lua:498 reads the third; add-ons the first
+  // two). A seam that does not measure the socket — the canned world — answers zeros for the rates.
   GetNetStats: (seam) => {
     const latency = seam.netLatency?.();
-    return [0, 0, latency !== undefined && Number.isFinite(latency) && latency > 0 ? latency : 0];
+    const bandwidth = seam.netBandwidth?.();
+    const rate = (value: number | undefined): number =>
+      value !== undefined && Number.isFinite(value) && value >= 0 ? value : 0;
+    return [rate(bandwidth?.inKBps), rate(bandwidth?.outKBps),
+      latency !== undefined && Number.isFinite(latency) && latency > 0 ? latency : 0];
   },
   PlaySound: (seam, args) => {
     const name = args[0];
@@ -2541,7 +2600,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetMerchantItemMaxStack: (seam, args) => [seam.merchantItemMaxStack(slotOf(args[0]))],
   GetMerchantItemCostInfo: (seam, args) => [...seam.merchantItemCostInfo(slotOf(args[0]))],
   GetMerchantItemCostItem: (seam, args) => seam.merchantItemCostItem(slotOf(args[0]), slotOf(args[1])) ?? NOTHING,
-  GetItemInfo: (seam, args) => seam.itemInfo(args[0]) ?? NOTHING,
+  GetItemInfo: (seam, args) => seam.itemInfo(args[0]) ?? frameXmlItemInfoByName(seam, args[0]) ?? NOTHING,
   GetNumBuybackItems: (seam) => [seam.buybackNumItems()],
   GetBuybackItemInfo: (seam, args) => seam.buybackItemInfo(slotOf(args[0])) ?? NOTHING,
   GetBuybackItemLink: (seam, args) => optional(seam.buybackItemLink(slotOf(args[0]))),

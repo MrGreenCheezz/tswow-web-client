@@ -1,6 +1,10 @@
 import { canSelectRealm, REALM_FLAG_OFFLINE, type RealmInfo } from "../../auth/AuthProtocol.js";
 import type { AuthSessionResult } from "../../auth/login.js";
-import type { CharacterSummary } from "../../world/CharacterProtocol.js";
+import type { CharacterSummary, RenameResult } from "../../world/CharacterProtocol.js";
+import {
+  describeFailure, formatGlueString, messageFor, openStatusDialog, responseKey, showStatusMessage,
+  type GlueStringLookup,
+} from "./GlueMessages.js";
 
 /**
  * What the glue screens know about the account, the realms and the characters on one of them.
@@ -25,6 +29,8 @@ export interface GlueWorldConnection {
    * two-line object.
    */
   createCharacter?(request: GlueCreateCharacterRequest): Promise<number>;
+  /** `CMSG_CHAR_RENAME`, optional for the same reason: the answer, with the name the core normalised. */
+  renameCharacter?(guid: bigint, name: string): Promise<RenameResult>;
   close(): void;
 }
 
@@ -42,8 +48,26 @@ export interface GlueCreateCharacterRequest {
   outfitId: number;
 }
 
-export type GlueWorldConnector =
-  (realm: RealmInfo, auth: AuthSessionResult) => Promise<GlueWorldConnection>;
+/**
+ * How far a world connection has come, as the connector reports it: the socket is open and the
+ * session is being checked, or the realm has queued it (`position`, again every time it moves).
+ */
+export interface GlueConnectProgress {
+  readonly stage: "authenticating" | "queued";
+  readonly position?: number;
+}
+
+/**
+ * Opens the world connection for a realm. `progress` hears the stages above; `signal` is aborted
+ * when the player cancels the connecting dialog, and the connector closes its socket then — which
+ * is what ends a wait in the realm's queue.
+ */
+export type GlueWorldConnector = (
+  realm: RealmInfo,
+  auth: AuthSessionResult,
+  progress?: (progress: GlueConnectProgress) => void,
+  signal?: AbortSignal,
+) => Promise<GlueWorldConnection>;
 
 /**
  * Names and display ids the screens have to show, from wherever the host gets them.
@@ -69,6 +93,10 @@ export interface GlueSessionOptions {
   readonly setGlueScreen?: (name: string) => void;
   readonly names?: GlueNameLookup;
   readonly onDiagnostic?: (message: string) => void;
+  /** The corpus' string for a GlueStrings key (`vm.globalString` in the page); a refusal's text. */
+  readonly glueString?: GlueStringLookup;
+  /** Whether the corpus defines `GlueDialogTypes[type]`, for a refusal the client shows in one. */
+  readonly hasDialogType?: (type: string) => boolean;
 }
 
 /**
@@ -179,6 +207,13 @@ export class GlueSession {
   #facing = 0;
   /** Bumped by every connect and every relogin; a late reply from an older one is dropped. */
   #generation = 0;
+  /** The connecting dialog of a ChangeRealm is up; the first character list closes it. */
+  #announced = false;
+  /** Tells the connector of the connection in flight to close its socket. */
+  #abort: AbortController | undefined;
+  /** Bumped by every rename and every cancel of one; an answer to an older one is dropped. */
+  #renameGeneration = 0;
+  #renaming = false;
 
   constructor(options: GlueSessionOptions) {
     this.#options = options;
@@ -299,7 +334,15 @@ export class GlueSession {
     void this.connect(realm, true);
   }
 
-  /** Open the world connection for one realm. Public so a test can drive it without the dialog. */
+  /**
+   * Open the world connection for one realm. Public so a test can drive it without the dialog.
+   *
+   * `showScreenWhenConnected` is ChangeRealm — the player's own choice of a realm — and that one
+   * waits in the stock CANCEL dialog the client puts up for it (FUN_004d8bd0, FUN_004dab40):
+   * «Соединение...», «Авторизация», the realm's queue with the button relabelled «Выбор мира», the
+   * list being fetched, and closed as the list arrives. A reconnect behind a screen that is already
+   * up (after the world, `?fake=`) does not announce itself.
+   */
   async connect(realm: RealmInfo, showScreenWhenConnected = false): Promise<void> {
     if (!canSelectRealm(realm)) return;
     const auth = this.#auth;
@@ -311,9 +354,25 @@ export class GlueSession {
       return;
     }
     const generation = ++this.#generation;
+    const announce = showScreenWhenConnected;
+    const abort = new AbortController();
     this.#connecting = true;
+    this.#abort = abort;
+    if (announce) {
+      this.#announced = true;
+      this.#options.fireEvent("OPEN_STATUS_DIALOG", "CANCEL", this.text("CSTATUS_CONNECTING", "Соединение..."));
+    }
+    const progress = (step: GlueConnectProgress): void => {
+      if (!announce || !this.#announced || generation !== this.#generation) return;
+      if (step.stage === "authenticating") {
+        this.#options.fireEvent("UPDATE_STATUS_DIALOG", this.text("CSTATUS_AUTHENTICATING", "Авторизация"));
+      } else {
+        this.#options.fireEvent("UPDATE_STATUS_DIALOG", this.queueText(realm, step.position ?? 0),
+          this.text("CHANGE_REALM", "Выбор мира"));
+      }
+    };
     try {
-      const world = await connector(realm, auth);
+      const world = await connector(realm, auth, progress, abort.signal);
       if (generation !== this.#generation) {
         world.close();
         return;
@@ -322,13 +381,53 @@ export class GlueSession {
       // `SetGlueScreen` synchronously runs CharacterSelect_OnShow, which asks for characters.
       // Coalesce that request with the one below so only one CMSG_CHAR_ENUM is in flight.
       if (showScreenWhenConnected) this.#options.setGlueScreen?.("charselect");
+      if (announce && this.#announced) {
+        this.#options.fireEvent("UPDATE_STATUS_DIALOG", this.text("CHAR_LIST_RETRIEVING", "Загрузка списка персонажей"));
+      }
       await this.refreshCharacters();
     } catch (error) {
       if (generation !== this.#generation) return;
       this.report(error);
     } finally {
-      if (generation === this.#generation) this.#connecting = false;
+      if (generation === this.#generation) {
+        this.#connecting = false;
+        this.#abort = undefined;
+      }
     }
+  }
+
+  /**
+   * StatusDialogClick on a CANCEL dialog this session put up: the realm connection in flight — its
+   * connector closes the socket, which also ends a wait in the realm's queue, and the realm list
+   * comes back — or the rename still waiting for its answer, which is then dropped. Every OKAY
+   * dialog ends in StatusDialogClick too, so with nothing in flight this does nothing.
+   */
+  cancelPending(): void {
+    if (this.#renaming) {
+      this.#renaming = false;
+      this.#renameGeneration += 1;
+    }
+    if (!this.#connecting || !this.#announced) return;
+    this.#announced = false;
+    this.closeWorld();
+    this.requestRealmList();
+  }
+
+  /**
+   * FUN_004dab40's line for a queued session: QUEUE_NAME_TIME_LEFT_UNKNOWN with the realm's name —
+   * the core sends no wait time — and the plainer forms in a corpus without it.
+   */
+  private queueText(realm: RealmInfo, position: number): string {
+    const glueString = this.#options.glueString;
+    const named = glueString?.("QUEUE_NAME_TIME_LEFT_UNKNOWN");
+    if (named && realm.name) return formatGlueString(named, realm.name, position);
+    const unnamed = glueString?.("QUEUE_TIME_LEFT_UNKNOWN");
+    if (unnamed) return formatGlueString(unnamed, position);
+    return formatGlueString(this.text("AUTH_WAIT_QUEUE", "Место в очереди: %d"), position);
+  }
+
+  private text(key: string, fallback: string): string {
+    return messageFor(key, this.#options.glueString, fallback);
   }
 
   get connecting(): boolean {
@@ -360,6 +459,11 @@ export class GlueSession {
       if (generation !== this.#generation) return;
       this.#characters = characters;
       if (this.#selectedIndex > characters.length) this.#selectedIndex = 0;
+      // The connecting dialog comes down as the list it was waiting for goes up.
+      if (this.#announced) {
+        this.#announced = false;
+        this.#options.fireEvent("CLOSE_STATUS_DIALOG");
+      }
       this.#options.fireEvent("CHARACTER_LIST_UPDATE");
     } catch (error) {
       if (generation !== this.#generation) return;
@@ -401,7 +505,9 @@ export class GlueSession {
    * `DeleteCharacter(index)`.
    *
    * 71 is `CHAR_DELETE_SUCCESS`; anything else is refused and said so in a dialog rather than
-   * silently leaving the character in the list.
+   * silently leaving the character in the list. The dialog prints the corpus' string for the code
+   * the core sent — it sends 74 (guild leader) and 75 (arena captain) — and `CHAR_DELETE_FAILED`
+   * for a number the enum does not have.
    */
   async deleteCharacter(index: number): Promise<number | undefined> {
     const character = this.#characters[index - 1];
@@ -412,7 +518,8 @@ export class GlueSession {
       const result = await world.deleteCharacter(character.guid);
       if (generation !== this.#generation) return undefined;
       if (result !== CHAR_DELETE_SUCCESS) {
-        this.dialog(`Удаление отклонено сервером, код ${result}.`);
+        this.dialog(messageFor(responseKey(result, "delete"), this.#options.glueString,
+          `Удаление отклонено сервером, код ${result}.`));
         return result;
       }
       if (this.#selectedIndex >= index) this.#selectedIndex = Math.max(0, this.#selectedIndex - 1);
@@ -445,6 +552,31 @@ export class GlueSession {
     return result;
   }
 
+  /**
+   * `CMSG_CHAR_RENAME` for the character at `index` — the wire half of `RenameCharacter`.
+   *
+   * `undefined` when the question was never asked (no connection, or one that cannot rename) or its
+   * answer was cancelled; a failed connection is reported like any other. The dialogs and the list
+   * that follow an answer belong to the C API, which is where the client handles them (FUN_004da090).
+   */
+  async renameCharacter(index: number, name: string): Promise<RenameResult | undefined> {
+    const character = this.#characters[index - 1];
+    const world = this.#world;
+    if (!character || !world?.renameCharacter) return undefined;
+    const generation = this.#generation;
+    const request = ++this.#renameGeneration;
+    this.#renaming = true;
+    try {
+      const result = await world.renameCharacter(character.guid, name);
+      return generation === this.#generation && request === this.#renameGeneration ? result : undefined;
+    } catch (error) {
+      if (generation === this.#generation && request === this.#renameGeneration) this.report(error);
+      return undefined;
+    } finally {
+      if (request === this.#renameGeneration) this.#renaming = false;
+    }
+  }
+
   /** The realm's own name and type, as `GetServerName()` returns them. */
   serverName(): { name: string; pvp: boolean; rp: boolean; down: boolean } | undefined {
     const realm = this.#selectedRealm;
@@ -473,6 +605,10 @@ export class GlueSession {
   closeWorld(): void {
     this.#generation += 1;
     this.#connecting = false;
+    this.#announced = false;
+    // A connection still being opened is told to close its socket rather than left to finish.
+    this.#abort?.abort();
+    this.#abort = undefined;
     this.#characterRefresh = undefined;
     this.#world?.close();
     this.#world = undefined;
@@ -488,14 +624,23 @@ export class GlueSession {
     this.#selectedRealm = undefined;
   }
 
+  /**
+   * A failure of the world connection, in the corpus' words (`describeFailure`): the exception's own
+   * English goes to the log only. Its dialog replaces the connecting one, if that was still up.
+   */
   private report(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    this.#options.onDiagnostic?.(message);
-    this.dialog(message);
+    this.#options.onDiagnostic?.(error instanceof Error ? error.message : String(error));
+    this.#announced = false;
+    showStatusMessage({
+      fire: (event, ...args) => { this.#options.fireEvent(event, ...args); },
+      glueString: this.#options.glueString,
+      hasDialogType: this.#options.hasDialogType,
+    }, describeFailure(error, "world"));
   }
 
+  /** The stock OKAY dialog, re-measured once it is visible so a long reason stays inside its box. */
   private dialog(message: string): void {
-    this.#options.fireEvent("OPEN_STATUS_DIALOG", "OKAY", message);
+    openStatusDialog((event, ...args) => { this.#options.fireEvent(event, ...args); }, "OKAY", message);
   }
 }
 

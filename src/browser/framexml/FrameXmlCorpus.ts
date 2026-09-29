@@ -413,10 +413,17 @@ export class FrameXmlCorpus implements GlueFileProvider {
  * `BuffFrame.lua`; the player-frame tail follows the same order: `UnitFrame.xml` defines the
  * shared Lua helpers before `PlayerFrame.xml`.
  *
- * Two entries of the full TOC are deliberately *not* here, each for a measured reason:
+ * Not every entry of the full TOC is here: 32 of its 139 stock entries (the TSWoW blocks aside) are
+ * not. Eight are `FRAMEXML_OPTIONS_TOC` below, loaded into the running VM on the options windows'
+ * first open. Most of the other 24 wait for an owner of their own in the work plan — for example
+ * `DurabilityFrame.xml` (3.06), `MultiCastActionBarFrame.xml` (3.07), `CoinPickupFrame.xml` (3.09),
+ * `VehicleMenuBar.xml` and `AnimationSystem.lua` (11.02) — and two are out for a measured reason:
  *
- * * `Localization.xml` — its `LocalizeFrames()` re-anchors `PlayerHitIndicator`, which belongs to
- *   `PlayerFrame.xml`; including it costs one raise and buys nothing for this core vertical.
+ * * `Localization.xml` — not for a raise: measured at its stock slot after `FontStyles.xml` over the
+ *   canned seam it costs +2 files, +968 B, 0 widgets and 0 Lua errors, since UIParent calls its
+ *   `LocalizeFrames()` on VARIABLES_LOADED, long after `PlayerFrame.xml` created the
+ *   `PlayerHitIndicator` it re-anchors. It waits for an answer to that function's
+ *   `SetEuropeanNumbers(true)` (plan item 3.09), which would otherwise be a new unanswered C API.
  * * `WorldFrame.xml` — the Three.js world viewport owns rendering and input; the stock world
  *   widget is not an additional browser surface. Its popup positioning is owned by the DOM host.
  *
@@ -486,6 +493,17 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // UseContainerItem; with the real frame loaded (+2 files, +8,205 B, +23 widgets, 0 Lua errors,
   // measured) the bag gate no longer aliases it to GameMenuFrame, which frees the stock menu to show.
   "StackSplitFrame.xml",
+  // Stock TOC lines 50-51: the zone and sub-zone banners (ZoneTextFrame, SubZoneTextFrame) over
+  // FadingFrame.lua's fade, driven by the seam's ZONE_CHANGED/ZONE_CHANGED_NEW_AREA and its
+  // GetZoneText/GetSubZoneText/GetZonePVPInfo; no native banner duplicates them. ZoneText.xml's third
+  // root, AutoFollowStatus, stays hidden until FollowUnit's AUTOFOLLOW_BEGIN/END exist (plan item 5.18).
+  // FadingFrame first: ZoneText_OnLoad calls FadingFrame_OnLoad. Measured over the canned seam: +4 files
+  // (FadingFrame.xml/.lua, ZoneText.xml/.lua), +9,692 B, +8 widgets, 0 new Lua errors
+  // (tests/framexml-zonetext-vertical.test.mjs); kept in the addonsOnly mode too — the four new
+  // entries of slice A2-1 together cost +69 to +112 ms of a ~3.6 s Node boot (median of 7
+  // alternating runs, twice), inside its ±300 ms spread.
+  "FadingFrame.xml",
+  "ZoneText.xml",
   "BattlefieldFrame.xml",
   "MainMenuBar.xml",
   // The stock row is loaded directly after its MainMenuBar owner. FrameXmlWorldMount hides all
@@ -645,6 +663,19 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "LFGFrame.xml",
   "LFDFrame.xml",
   "LFRFrame.xml",
+  // Stock TOC line 138: the death knight's six runes under PlayerFrame (FrameXmlRunes.ts answers
+  // GetRuneType/GetRuneCooldown and fires RUNE_POWER_UPDATE/RUNE_TYPE_UPDATE). Not optional, in the
+  // addonsOnly mode either: UnitFrame_SetUnit (UnitFrame.lua:64-77) calls RuneFrame:SetScale for a
+  // death knight's PlayerFrame and PetFrame unconditionally, so without the file PLAYER_ENTERING_WORLD
+  // raised and PlayerFrame_ToPlayerArt stopped at its first line. RuneFrame_OnLoad hides it for
+  // every other class. Measured over the canned seam as a death knight: +2 files, +10,620 B,
+  // +43 widgets, one Lua error fewer (that raise); as the canned warrior 0 new Lua errors
+  // (tests/framexml-rune-vertical.test.mjs).
+  "RuneFrame.xml",
+  // Stock TOC line 139: EasyMenu/EasyMenu_Initialize, the menu-table front of UIDropDownMenu.lua that
+  // Blizzard_CombatLog.xml:85 and third-party add-ons open their menus with. Lua only. Measured over
+  // the canned seam: +1 file, +1,009 B, 0 widgets, 0 new Lua errors (tests/framexml-easymenu-vertical.test.mjs).
+  "EasyMenu.lua",
   // CharacterFrame.lua toggles this real player-frame child while the character sheet is shown.
   // It is a stock XML dependency, not a synthetic placeholder; retain its late retail TOC slot.
   "AlternatePowerBar.xml",

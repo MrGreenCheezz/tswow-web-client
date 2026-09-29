@@ -3,6 +3,7 @@
 // ever called from a world event, long after both modules have finished evaluating — and it is the
 // right side of the cycle, because the way out ends in `connectRealm`, which lives there.
 import { leaveWorld } from "./Login.js";
+import { describeFailure } from "../glue/GlueMessages.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
@@ -72,6 +73,7 @@ import {
   type TextEmote,
 } from "../../world/ChatProtocol.js";
 import { emoteSoundId } from "../../world/EmoteRules.js";
+import { worldNameSources } from "../../world/WorldNames.js";
 import { EnvironmentClient, TerrainClient } from "../Terrain.js";
 import { TerrainSplatClient } from "../TerrainSplat.js";
 import { GroundCoverClient } from "../GroundCover.js";
@@ -94,6 +96,7 @@ import { BarberClient } from "../BarberClient.js";
 import { SlotPriceClient } from "../SlotPriceClient.js";
 import { VendorCostClient } from "../VendorCostClient.js";
 import { AreaClient } from "../AreaClient.js";
+import { startAreaTriggers, stopAreaTriggers } from "../AreaTriggerClient.js";
 import { MinimapTileClient } from "../MinimapTiles.js";
 import { SoundClient } from "../SoundClient.js";
 import { SoundPlayer } from "../Sound.js";
@@ -352,14 +355,17 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.onWorldError = (error) => {
     if (game.world !== world) return;
     clearHeldKeys();
+    // The client's words for the player (`describeFailure`), the exception's for the log.
+    const lost = describeFailure(error, "world").text ?? "Соединение с сервером разорвано";
+    console.warn("[world] connection lost:", error.message);
     worldStatus.className = "error";
-    worldStatus.textContent = error.message;
+    worldStatus.textContent = lost;
     // This callback is not "a packet went wrong" — `#deliver` swallows those and reports them
     // through `onPacketError`. It fires when `#connection.read()` itself threw, which means the
     // socket is gone, and a frozen world nobody can leave is worse than a screen that says so.
     // The login screen rather than the character list: without a connection there is no list.
     clearQuestLog();
-    leaveWorld("connection-lost", `Соединение с миром потеряно: ${error.message}`);
+    leaveWorld("connection-lost", lost);
   };
   // One packet this client cannot model no longer ends the session; it is reported and the
   // rest of the stream carries on.
@@ -1185,6 +1191,16 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       terrainStatus.textContent = message;
     };
     areas.load();
+    // 2.01: the AreaTrigger volumes the render loop checks (AreaTriggerClient.ts); retried, never fatal,
+    // and stopped with the session so no retry runs behind the character screen.
+    startAreaTriggers(gatewayInput.value);
+    entryLifecycle.track(stopAreaTriggers);
+    // М-A4-4: names for the ids the world's own texts print — a cast refusal's zone and weapon class.
+    // A table still loading answers nothing, and the text says a word instead of a number.
+    world.worldNames = worldNameSources({
+      area: (id) => areas.area(id)?.name,
+      itemSubclassName: (itemClass, subClass) => itemMetadata.tooltipSubclassName(itemClass, subClass),
+    });
     // Where pictures come from, and it is set *before* anything that draws one.
     //
     // It used to be five lines below `modules.load()`, and it worked by luck: the loader's first

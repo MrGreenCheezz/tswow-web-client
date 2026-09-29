@@ -11,6 +11,8 @@ export type SpellCastBlockReason =
   | "unknown"
   | "passive"
   | "cooldown"
+  /** Held until its aura ends (`WorldClient.isSpellOnHold`): the realm answers NOT_READY, and there is no sweep. */
+  | "hold"
   | "global-cooldown"
   | "power"
   | "dead";
@@ -126,6 +128,7 @@ export function spellCastBlockReason(
   const self = selfGuid === undefined ? undefined : world.state.objects.get(selfGuid);
   if (self && (self.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset) ?? 1) <= 0) return "dead";
   if (world.cooldownRemaining(spellId, now) > 0) return "cooldown";
+  if (world.isSpellOnHold?.(spellId)) return "hold";
   if (metadata.startRecoveryTime > 0 && game.globalCooldownUntil > now) return "global-cooldown";
 
   if (!spellPowerAvailable(world, metadata)) return "power";

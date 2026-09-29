@@ -170,6 +170,37 @@ test("stock page changes and keyboard page changes stay synchronized without dup
   seam.detach();
 });
 
+test("GetBonusBarOffset and UPDATE_BONUS_ACTIONBAR follow the form through the shared bonus-bar rule", () => {
+  // Battle and Defensive Stance as /dbc/spells joins them onto their spells: SPELL_AURA_MOD_SHAPESHIFT
+  // naming the form, and the form's BonusActionBar from SpellShapeshiftForm.dbc.
+  const stance = (id, form, offset) => ({
+    id, name: `stance ${id}`, rank: "", effectAura: [36, 0, 0], effectMiscValue: [form, 0, 0],
+    bonusActionBarOffset: offset,
+  });
+  const rows = new Map([[2457, stance(2457, 17, 1)], [71, stance(71, 18, 2)]]);
+  const { seam, world, player, clock, pump, fired } = fixture({ spell: (id) => rows.get(id) });
+  world.knownSpells = [{ id: 2457 }, { id: 71 }];
+  const setForm = (form) => player.fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset, form * 2 ** 24);
+  const bonusEvents = () => fired.filter(([name]) => name === FRAMEXML_SEAM_EVENTS.updateBonusActionBar).length;
+  assert.deepEqual(call(seam, "GetBonusBarOffset"), [0], "no form");
+  setForm(17);
+  assert.deepEqual(call(seam, "GetBonusBarOffset"), [1], "Battle Stance");
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  fired.length = 0;
+  setForm(18);
+  seam.tick(clock.lua + 1);
+  assert.deepEqual(call(seam, "GetBonusBarOffset"), [2], "Defensive Stance");
+  assert.equal(bonusEvents(), 1);
+  seam.tick(clock.lua + 2);
+  assert.equal(bonusEvents(), 1, "an unchanged form fires nothing");
+  setForm(0);
+  seam.tick(clock.lua + 3);
+  assert.deepEqual(call(seam, "GetBonusBarOffset"), [0], "left the stance");
+  assert.equal(bonusEvents(), 2);
+  seam.detach();
+});
+
 test("stock mirror timer APIs project realm breath/fatigue, pause, regeneration and stop", () => {
   const { seam, world, clock, pump, fired } = fixture();
   seam.attach(pump);

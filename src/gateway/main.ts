@@ -1,6 +1,7 @@
 import { startGateway } from "./Gateway.js";
 import { createGatewayConfiguration } from "./GatewayConfiguration.js";
 import { formatPatchStatusLine, type ClientPatchChange } from "./PatchStatus.js";
+import { createShutdown, installProcessGuard } from "./ProcessGuard.js";
 import { patchChangeMessage, processSupervisorChannel, superviseGateway } from "./SupervisedGateway.js";
 
 const configuration = await createGatewayConfiguration();
@@ -20,16 +21,21 @@ void gateway.patchStatus().then(
   (status) => console.log(formatPatchStatusLine(status)),
   (error: unknown) => console.warn(`Patch status unavailable: ${error instanceof Error ? error.message : String(error)}`),
 );
-let closing = false;
-async function shutdown(code: number): Promise<void> {
-  if (closing) return;
-  closing = true;
-  configuration.close();
-  await gateway.close();
-  process.exit(code);
-}
+// One way out for every caller: the close runs once, and the process leaves with the highest code
+// asked for, so a defect's 1 is not undone by the 0 of a Ctrl+C that was already closing.
+const shutdown = createShutdown({
+  close: async () => {
+    configuration.close();
+    await gateway.close();
+  },
+});
+// Socket noise that escaped a listener is logged and survived; anything else is logged whole and
+// closes the gateway with 1, within five seconds (ProcessGuard.ts). Not before `startGateway`: a
+// gateway that cannot start has to fail the ordinary way, with the non-zero exit the supervisor
+// watches for.
+installProcessGuard({ shutdown: (code) => shutdown(code, 5_000) });
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => { void shutdown(0); });
+  process.once(signal, () => shutdown(0));
 }
 
-if (supervisor) superviseGateway(gateway, supervisor, { shutdown: (code) => { void shutdown(code); } });
+if (supervisor) superviseGateway(gateway, supervisor, { shutdown: (code) => shutdown(code) });

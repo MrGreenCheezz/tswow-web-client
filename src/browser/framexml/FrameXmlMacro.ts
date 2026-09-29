@@ -24,12 +24,22 @@
  * OnClick) sits on the cursor as its slot: GetCursorInfo answers `"macro", position`, and the next
  * PlaceAction or action-button press puts it on that slot through CMSG_SET_ACTION_BUTTON (the same
  * `setActionButton` the native bar's drop uses).
+ *
+ * Running one: `RunMacro(id, button)` and `RunMacroText(text, button)` — a secure button's `macro`
+ * and `macrotext` types (SecureTemplates.lua:366-381) — hand their lines to the macro runner
+ * (macro/MacroRunner.ts) with the clicking mouse button, which `[btn:N]` reads; `StopMacro()` ends
+ * the running macro after its line (`/stopmacro`, ChatFrame.lua:1398-1402); `GetClickFrame(name)` is
+ * the frame of that name `/click` presses (ChatFrame.lua:1404-1416), from the frames the stock chat
+ * publishes to the runner; the stock body itself refuses anything but a Button.
  */
 
 import {
   MACRO_DEFAULT_ICON, MAX_ACCOUNT_MACROS, MAX_CHARACTER_MACROS, isAccountMacro,
   macroIcon, macroIndexes, trimMacroBody, trimMacroName, validMacroIcon, type Macro,
 } from "../ui/MacroModel.js";
+import {
+  macroBodyLines, macroClickFrame, macroLineExecutor, runMacroLines, stopMacro, type MacroLineExecutor,
+} from "../macro/MacroRunner.js";
 import type { FrameXmlSeamBinding, FrameXmlSeamPump } from "./FrameXmlWorldSeam.js";
 
 /** Where the macros live; `ui/Macros.ts` answers it with the two account-data stores. */
@@ -78,6 +88,19 @@ export function createFrameXmlMemoryMacroStore(initial: readonly Macro[] = []): 
 
 function textOf(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * `RunMacroText(text, button)`: the text's lines through the installed executor, else through
+ * `fallback`. The button is SecureActionButton's («LeftButton»…); an add-on may pass a number.
+ */
+function runMacroText(text: unknown, button: unknown, fallback?: MacroLineExecutor): void {
+  if (typeof text !== "string") return;
+  const execute = macroLineExecutor() ?? fallback;
+  const lines = macroBodyLines(text);
+  if (!execute || lines.length === 0) return;
+  const pressed = typeof button === "string" ? button : typeof button === "number" ? String(button) : undefined;
+  runMacroLines(lines, execute, pressed);
 }
 
 export class FrameXmlMacroModel {
@@ -264,6 +287,24 @@ export class FrameXmlMacroModel {
     this.#host.store.flush?.();
   }
 
+  // ---- running ---------------------------------------------------------------------------------
+
+  /** `RunMacro(id, button)`: the macro at that position or of that name. */
+  run(id: unknown, button: unknown): void {
+    const macro = this.#resolve(id);
+    if (macro) this.runText(macro.body, button);
+  }
+
+  /** `RunMacroText(text, button)`. */
+  runText(text: unknown, button: unknown): void {
+    runMacroText(text, button, this.#executeChatLine);
+  }
+
+  /** With no executor installed, the client's own route: EXECUTE_CHAT_LINE to stock MacroEditBox. */
+  readonly #executeChatLine = (line: string): void => {
+    this.#pump?.fire("EXECUTE_CHAT_LINE", line);
+  };
+
   // ---- the cursor ------------------------------------------------------------------------------
 
   /** `PickupMacro(id)`: the macro goes on the cursor; picking up the one already there drops it. */
@@ -367,4 +408,17 @@ export const FRAMEXML_MACRO_BINDINGS: Readonly<Record<string, FrameXmlSeamBindin
   },
   PlaceAction: (seam, args) => { seam.macros?.placeCursor(args[0]); return NOTHING; },
   SaveMacros: (seam) => { seam.macros?.save(); return NOTHING; },
+  RunMacro: (seam, args) => { seam.macros?.run(args[0], args[1]); return NOTHING; },
+  RunMacroText: (seam, args) => {
+    if (seam.macros) seam.macros.runText(args[0], args[1]);
+    else runMacroText(args[0], args[1]);
+    return NOTHING;
+  },
+  StopMacro: () => { stopMacro(); return NOTHING; },
+  // Any frame of that name (Wow.exe 0x564130 → 0x562990); the stock /click body checks it is a Button.
+  GetClickFrame: (_seam, args) => {
+    const name = typeof args[0] === "string" ? args[0] : "";
+    const frame = name ? macroClickFrame(name) : undefined;
+    return frame === undefined ? NOTHING : [frame];
+  },
 });

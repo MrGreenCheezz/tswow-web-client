@@ -511,3 +511,54 @@ test("stock entry points reach the owners: ShowMacroFrame, the game menu's two b
   for (let index = 0; index < 1000; index += 1) seam.keyBindings.tick();
   console.log(`[macro/binding] outside-change check: ${((performance.now() - tickStarted) / 1000 * 1000).toFixed(1)} us each`);
 });
+
+test("a macro on a secure action button runs the clause its conditions pick, with the click's own button", withClient, async () => {
+  await ready();
+  const { installFrameXmlStockChat } = await import("../dist/code/browser/framexml/FrameXmlChatApi.js");
+  const { pageModifiers } = await import("../dist/code/browser/input/Modifiers.js");
+  const errors = boot.errorCount;
+  const casts = [];
+  const input = { value: "", ownerDocument: { activeElement: null }, focus() {}, setSelectionRange() {} };
+  // The stock chat as the world mount installs it, with the seam's macro context wired in.
+  const release = installFrameXmlStockChat({ vm: boot.vm, bridge: boot.bridge, inputFor: () => input, schedule() {} }, {
+    world: () => undefined, notice() {}, cast: (argument) => casts.push(argument), use() {}, unitGuid: () => undefined,
+    commands: () => [], emotes: () => undefined, run: () => false,
+    macroContext: () => seam.macroContext(),
+  }, () => {});
+  assert.equal(typeof release, "function", "the vertical passes the stock chat gate");
+  const store = seam.macroWorld.store;
+  store.put({ index: 4, name: "Огонь", body: "#showtooltip\n/cast [mod:shift] Огненный шар; [btn:2] Ледяная стрела; Чародейская вспышка" });
+  try {
+    // SecureActionButtonTemplate's type "macro" is RunMacro(macro, button) (SecureTemplates.lua:366-381),
+    // what an add-on bar puts a macro on; "macrotext" is RunMacroText(text, button).
+    lua(`
+      local byName = CreateFrame("Button", "WebClientMacroProbe", UIParent, "SecureActionButtonTemplate")
+      byName:RegisterForClicks("AnyUp")
+      byName:SetAttribute("type", "macro")
+      byName:SetAttribute("macro", "Огонь")
+      local byText = CreateFrame("Button", "WebClientMacroTextProbe", UIParent, "SecureActionButtonTemplate")
+      byText:RegisterForClicks("AnyUp")
+      byText:SetAttribute("type", "macro")
+      byText:SetAttribute("macrotext", "/cast [btn:2] Кольцо льда; Стрела ледяного огня")`, 0);
+    click("WebClientMacroProbe", "LeftButton");
+    assert.deepEqual(casts, ["Чародейская вспышка"]);
+    click("WebClientMacroProbe", "RightButton");
+    assert.deepEqual(casts, ["Чародейская вспышка", "Ледяная стрела"], "[btn:2] is the right button");
+    pageModifiers().key({ code: "ShiftLeft", type: "keydown", shiftKey: true });
+    try {
+      click("WebClientMacroProbe", "RightButton");
+    } finally {
+      pageModifiers().key({ code: "ShiftLeft", type: "keyup", shiftKey: false });
+    }
+    assert.deepEqual(casts.at(-1), "Огненный шар", "the first clause wins over [btn:2]");
+    casts.length = 0;
+    click("WebClientMacroTextProbe", "LeftButton");
+    // A macro's /click reaches the other button with the button it names, as a macro of its own.
+    lua('RunMacroText("/click WebClientMacroTextProbe RightButton")', 0);
+    assert.deepEqual(casts, ["Стрела ледяного огня", "Кольцо льда"]);
+    assert.equal(boot.errorCount, errors, boot.vm.errors.slice(errors).join(" | "));
+  } finally {
+    store.remove(4);
+    release?.();
+  }
+});

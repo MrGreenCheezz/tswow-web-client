@@ -5,6 +5,8 @@ import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { GlueSession, glueBackgroundModelFor, realmLoad } from "../dist/code/browser/glue/GlueSession.js";
 import { fakeGlueSession } from "../dist/code/browser/glue/GlueFakeSession.js";
 import { glueStandPoint } from "../dist/code/browser/glue/GlueModelStage.js";
+import { WorldAuthError } from "../dist/code/world/CharacterProtocol.js";
+import { TransportClosedError } from "../dist/code/transport/WebSocketByteStream.js";
 
 // The realm list and the character list are read by the corpus *positionally*: `RealmList.lua:47`
 // unpacks fourteen values out of `GetRealmInfo` and `CharacterSelect.lua:314` ten out of
@@ -386,4 +388,153 @@ test("the C API hands the corpus the values in the order it unpacks them", async
   assert.ok(Array.isArray(seen) ? seen.includes("CHARACTER_LIST_UPDATE") : true);
 
   runtime.close();
+});
+
+// --- 10.05: the world connection as the stock status dialog, and its cancel -----------------------
+
+/** The corpus strings the connecting dialog prints, as `GlueStrings.lua` words them. */
+const CONNECT_STRINGS = {
+  CSTATUS_CONNECTING: "Соединение...",
+  CSTATUS_AUTHENTICATING: "Авторизация",
+  QUEUE_NAME_TIME_LEFT_UNKNOWN: "Свободных мест нет: %s\nМесто в очереди: %d\nВремя ожидания: идет расчет...",
+  QUEUE_TIME_LEFT_UNKNOWN: "Свободных мест нет\nМесто в очереди: %d\nВремя ожидания: идет расчет...",
+  AUTH_WAIT_QUEUE: "Место в очереди: %d",
+  CHANGE_REALM: "Выбор мира",
+  CHAR_LIST_RETRIEVING: "Загрузка списка персонажей",
+  AUTH_REJECT: "Ошибка входа в игру.",
+  AUTH_BANNED: "Учетная запись заблокирована.",
+  CHAR_LOGIN_NO_WORLD: "Сервер недоступен",
+  DISCONNECTED: "Соединение с сервером разорвано",
+};
+const connectStrings = (key) => CONNECT_STRINGS[key];
+const settle = async () => {
+  for (let round = 0; round < 6; round++) await new Promise((resolve) => setImmediate(resolve));
+};
+
+test("choosing a realm shows the stock status dialog: connecting, the queue, the list, then closes", async () => {
+  const canned = fakeGlueSession("charselect");
+  const world = await canned.connect();
+  let release;
+  const { session, events, screens } = recordingSession({
+    glueString: connectStrings,
+    connect: (realm, auth, progress) => new Promise((resolve) => {
+      // What the host's connector reports: the socket is open, then the realm queues the session.
+      progress?.({ stage: "authenticating" });
+      progress?.({ stage: "queued", position: 12 });
+      release = () => resolve(world);
+    }),
+  });
+  session.beginSession(canned.auth);
+  session.changeRealm(1, 1);
+  assert.deepEqual(events, [
+    ["OPEN_STATUS_DIALOG", "CANCEL", "Соединение..."],
+    ["UPDATE_STATUS_DIALOG", "Авторизация"],
+    // FUN_004dab40: the queue is QUEUE_NAME_TIME_LEFT_UNKNOWN (the core sends no time), with the
+    // button relabelled CHANGE_REALM.
+    ["UPDATE_STATUS_DIALOG", "Свободных мест нет: Круг Теней\nМесто в очереди: 12\nВремя ожидания: идет расчет...", "Выбор мира"],
+  ]);
+  events.length = 0;
+  release();
+  await settle();
+  assert.deepEqual(screens, ["charselect"]);
+  assert.deepEqual(events, [
+    ["UPDATE_STATUS_DIALOG", "Загрузка списка персонажей"],
+    ["CLOSE_STATUS_DIALOG"],
+    ["CHARACTER_LIST_UPDATE"],
+  ]);
+  assert.equal(session.characters.length, 3);
+  session.close();
+});
+
+test("cancelling the dialog in the queue drops the connection and returns to the realm list", async () => {
+  const canned = fakeGlueSession("charselect");
+  let aborted = false;
+  let lateClosed = false;
+  let late;
+  const { session, events } = recordingSession({
+    glueString: connectStrings,
+    connect: (realm, auth, progress, signal) => new Promise((resolve) => {
+      progress?.({ stage: "queued", position: 5 });
+      signal?.addEventListener("abort", () => { aborted = true; });
+      late = async () => resolve({ ...(await canned.connect()), close: () => { lateClosed = true; } });
+    }),
+  });
+  session.beginSession(canned.auth);
+  session.changeRealm(1, 1);
+  events.length = 0;
+
+  // StatusDialogClick on the CANCEL dialog.
+  session.cancelPending();
+  assert.equal(aborted, true, "the connector is told to close its socket");
+  assert.equal(session.connecting, false);
+  assert.deepEqual(events, [["OPEN_REALM_LIST"]]);
+
+  // The realm lets the session in anyway: the answer is closed, not adopted.
+  await late();
+  await settle();
+  assert.equal(lateClosed, true);
+  assert.equal(session.connected, false);
+  assert.deepEqual(events, [["OPEN_REALM_LIST"]]);
+
+  // With nothing in flight, the same click (every OKAY dialog ends in StatusDialogClick) does nothing.
+  session.cancelPending();
+  assert.deepEqual(events, [["OPEN_REALM_LIST"]]);
+  session.close();
+});
+
+// --- 10.06: a failed world connection in the corpus' words, never the exception's --------------------
+
+test("a refused world session prints the realm's reason, and the English detail only goes to the log", async () => {
+  const canned = fakeGlueSession("charselect");
+  const refuse = async (error, extra = {}) => {
+    const diagnostics = [];
+    const { session, events } = recordingSession({
+      glueString: connectStrings,
+      onDiagnostic: (message) => diagnostics.push(message),
+      connect: async () => { throw error; },
+      ...extra,
+    });
+    session.beginSession(canned.auth);
+    await session.connect(canned.realm);
+    session.close();
+    return { events, diagnostics };
+  };
+  const shown = (type, text, data) => [
+    data === undefined ? ["OPEN_STATUS_DIALOG", type, text] : ["OPEN_STATUS_DIALOG", type, text, data],
+    ["UPDATE_STATUS_DIALOG", text],
+  ];
+
+  const rejected = await refuse(new WorldAuthError(14));
+  assert.deepEqual(rejected.events, shown("OKAY", "Ошибка входа в игру."));
+  assert.match(rejected.diagnostics[0], /World authentication failed with code 14/);
+
+  // AUTH_BANNED opens the client's OKAY_WITH_URL, its HELP button pointed at AUTH_BANNED_URL…
+  const banned = await refuse(new WorldAuthError(28), { hasDialogType: (type) => type === "OKAY_WITH_URL" });
+  assert.deepEqual(banned.events, shown("OKAY_WITH_URL", "Учетная запись заблокирована.", "AUTH_BANNED_URL"));
+  // …or a plain OKAY in a corpus without that dialog type.
+  assert.deepEqual((await refuse(new WorldAuthError(28))).events, shown("OKAY", "Учетная запись заблокирована."));
+
+  // The gateway lost the worldserver (Gateway.ts `bridge()`): the realm is down, not the network.
+  assert.deepEqual((await refuse(new TransportClosedError(1011, "Backend unavailable", true))).events,
+    shown("OKAY", "Сервер недоступен"));
+  assert.deepEqual((await refuse(new TransportClosedError(1006, "", false))).events,
+    shown("OKAY", "Соединение с сервером разорвано"));
+});
+
+test("choosing a realm that refuses the session replaces the connecting dialog with the reason", async () => {
+  const canned = fakeGlueSession("charselect");
+  const { session, events } = recordingSession({
+    glueString: connectStrings,
+    connect: async () => { throw new WorldAuthError(14); },
+  });
+  session.beginSession(canned.auth);
+  session.changeRealm(1, 1);
+  await settle();
+  assert.deepEqual(events, [
+    ["OPEN_STATUS_DIALOG", "CANCEL", "Соединение..."],
+    ["OPEN_STATUS_DIALOG", "OKAY", "Ошибка входа в игру."],
+    ["UPDATE_STATUS_DIALOG", "Ошибка входа в игру."],
+  ]);
+  assert.equal(session.connecting, false);
+  session.close();
 });

@@ -1,10 +1,16 @@
 /** Native responses for server invitations. Server packets remain authoritative for BG state. */
 import { game } from "../game/Context.js";
+import { globalString } from "../../generated/globalStrings.js";
 import { STATUS_IN_PROGRESS, STATUS_WAIT_JOIN, STATUS_WAIT_QUEUE } from "../../world/PvpProtocol.js";
 import { LFG_ROLE_TANK, LFG_ROLE_HEALER, LFG_ROLE_DAMAGE } from "../../world/LfgProtocol.js";
+import type { WorldClient } from "../../world/WorldClient.js";
+import { canAfford, playerAlive } from "../../world/ConfirmationProtocol.js";
+import { formatMoney } from "./Format.js";
 import { Panel } from "./Widgets.js";
 import { frameXmlLfdPublished } from "../framexml/FrameXmlLfdController.js";
-import { frameXmlPopupsOwnBattlefieldEntry, frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
+import {
+  frameXmlPopupsLeftToNative, frameXmlPopupsOwnBattlefieldEntry, frameXmlPopupsPublished,
+} from "../framexml/FrameXmlPopupsController.js";
 
 let panel: Panel | undefined;
 let pending = new WeakSet<object>();
@@ -13,6 +19,45 @@ let lastTick = 0;
 let countdowns: Array<{ node: HTMLElement; deadline: number }> = [];
 let labels: Array<{ node: HTMLElement; text: () => string }> = [];
 let requestsUnchanged = (): boolean => false;
+/**
+ * The innkeeper's, the trainer's and the instance lock's questions as last rendered (М1,
+ * world/ConfirmationProtocol.ts), with whether the stock model left each of the last two here: no
+ * EnterWorld subscription repaints this panel for them, so the frame tick compares these — five
+ * reads — and renders on a change, a hidden panel included.
+ */
+type Confirmations = readonly [object | undefined, object | undefined, boolean, object | undefined, boolean];
+const NO_CONFIRMATIONS: Confirmations = [undefined, undefined, false, undefined, false];
+let confirmations: Confirmations = NO_CONFIRMATIONS;
+
+/** Whether the stock model left this question to this panel (FrameXmlPopupsController.ts). */
+function leftHere(request: object | undefined): boolean {
+  return frameXmlPopupsLeftToNative(request) === true;
+}
+
+function confirmationsMoved(world: WorldClient): boolean {
+  return world.binderConfirm !== confirmations[0] || world.talentWipeConfirm !== confirmations[1]
+    || leftHere(world.talentWipeConfirm) !== confirmations[2] || world.instanceLock !== confirmations[3]
+    || leftHere(world.instanceLock) !== confirmations[4];
+}
+
+/**
+ * CONFIRM_BINDER's place: the terrain's area under the player (the core binds there), else the zone —
+ * not SMSG_INIT_WORLD_STATES' area, which is where the zone was entered — else «Это место».
+ */
+function bindPlaceName(world: WorldClient): string {
+  const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  const areaId = self?.position ? game.terrain?.areaAt(world.mapId, self.position.x, self.position.y) ?? 0 : 0;
+  const zoneId = world.worldStateContext?.zoneId ?? 0;
+  return (areaId > 0 ? game.areas?.area(areaId)?.name : undefined)
+    ?? (zoneId > 0 ? game.areas?.area(zoneId)?.name : undefined)
+    ?? "Это место";
+}
+
+function killedBosses(mask: number): number {
+  let count = 0;
+  for (let rest = mask >>> 0; rest !== 0; rest >>>= 1) count += rest & 1;
+  return count;
+}
 
 /** `M:SS` for queue waits and battle clocks. */
 export function formatDuration(ms: number): string {
@@ -49,12 +94,15 @@ export function resetInteractionPrompts(): void {
   countdowns = [];
   labels = [];
   requestsUnchanged = () => false;
+  confirmations = NO_CONFIRMATIONS;
 }
 
 export function showInteractionPrompts(now = performance.now()): void {
   const world = game.world;
   if (!world) return resetInteractionPrompts();
   world.expireInteractionRequests(now);
+  confirmations = [world.binderConfirm, world.talentWipeConfirm, leftHere(world.talentWipeConfirm),
+    world.instanceLock, leftHere(world.instanceLock)];
   // Stock CONFIRM_SUMMON and CONFIRM_BATTLEFIELD_ENTRY (the invitation to enter, STATUS_WAIT_JOIN)
   // answer these while the stock popup owner is published; queue and match rows stay native. The
   // entry only when the gate also verified BattlefieldFrame, the frame that shows that dialog.
@@ -79,8 +127,26 @@ export function showInteractionPrompts(now = performance.now()): void {
   const outdoorWar = world.battlefieldWarInvite;
   const outdoorQueuedId = world.battlefieldQueuedId;
   const outdoorBattleId = world.battlefieldBattleId;
+  // Stock CONFIRM_BINDER, CONFIRM_TALENT_WIPE and INSTANCE_LOCK answer these while published — except
+  // a question the stock model left here (Blizzard_TalentUI not loaded for UIParent's
+  // TalentFrame_LoadUI; no DungeonEncounter table for the lock's boss line), which this panel keeps.
+  const binder = stockPopups ? undefined : world.binderConfirm;
+  // The core ignores the innkeeper's answer from a dead player or a ghost (NPCHandler.cpp:292).
+  const alive = playerAlive(world.state);
+  const talentQuote = world.talentWipeConfirm;
+  const talentLeftHere = leftHere(talentQuote);
+  const talentWipe = stockPopups && !talentLeftHere ? undefined : talentQuote;
+  // The core ignores an answer it cannot charge for without a word, so the shortfall is said here.
+  const talentAffordable = !talentWipe || canAfford(world.state, talentWipe.cost);
+  const lockQuestion = world.instanceLock;
+  const lockLeftHere = leftHere(lockQuestion);
+  const lock = stockPopups && !lockLeftHere ? undefined : lockQuestion;
   requestsUnchanged = () => game.world === world && frameXmlPopupsPublished() === stockPopups
     && frameXmlPopupsOwnBattlefieldEntry() === stockEntry
+    && (stockPopups || world.binderConfirm === binder) && (!binder || playerAlive(world.state) === alive)
+    && world.talentWipeConfirm === talentQuote && leftHere(talentQuote) === talentLeftHere
+    && world.instanceLock === lockQuestion && leftHere(lockQuestion) === lockLeftHere
+    && (!talentWipe || canAfford(world.state, talentWipe.cost) === talentAffordable)
     && (stockPopups || world.summonRequest === summon) && world.sharedQuest === shared
     && (!summon || world.summonBlockReason() === summonBlocked)
     && frameXmlLfdPublished() === stockLfg
@@ -93,7 +159,7 @@ export function showInteractionPrompts(now = performance.now()): void {
     && allQueues.every((queued) => world.battlefieldQueues.get(queued.queueSlot) === queued);
   countdowns = [];
   labels = [];
-  if (!summon && !shared && queues.length === 0 && !check && !boot && !proposal && !reward
+  if (!summon && !binder && !talentWipe && !lock && !shared && queues.length === 0 && !check && !boot && !proposal && !reward
     && offerContinue === undefined
     && !outdoorQueue && !outdoorWar && !outdoorQueuedId && !outdoorBattleId) {
     panel?.hide();
@@ -147,6 +213,45 @@ export function showInteractionPrompts(now = performance.now()): void {
     button(row, "Принять призыв", summon, () => world.summonRequest === summon,
       () => world.answerSummon(true), summonBlocked !== undefined);
     button(row, "Отклонить призыв", summon, () => world.summonRequest === summon, () => world.answerSummon(false));
+  }
+  if (binder) {
+    // Stock CONFIRM_BINDER's own sentence (GlobalStrings CONFIRM_BINDER).
+    const row = section(() => `${bindPlaceName(world)} станет вашим новым домом. Согласны?`);
+    if (!alive) {
+      const reason = document.createElement("p");
+      reason.textContent = "Сделать это место домом можно после воскрешения.";
+      row.append(reason);
+    }
+    button(row, "Сделать домом", binder, () => world.binderConfirm === binder, () => { world.confirmBinder(); }, !alive);
+    button(row, "Не менять дом", binder, () => world.binderConfirm === binder, () => world.declineBinder());
+  }
+  if (talentWipe) {
+    const notEnoughMoney = globalString("ERR_NOT_ENOUGH_MONEY") ?? "У вас недостаточно денег.";
+    const row = section(`Отказаться от всех талантов? Стоимость: ${formatMoney(talentWipe.cost)}.`);
+    if (!talentAffordable) {
+      const short = document.createElement("p");
+      short.textContent = notEnoughMoney;
+      row.append(short);
+    }
+    button(row, "Сбросить таланты", talentWipe, () => world.talentWipeConfirm === talentWipe, () => {
+      // The money can go between this repaint and the click: the refusal is said, not swallowed.
+      if (world.answerTalentWipe(true) === "unaffordable") world.onSpellStatus?.(notEnoughMoney, true);
+    }, !talentAffordable);
+    button(row, "Не сбрасывать", talentWipe, () => world.talentWipeConfirm === talentWipe,
+      () => { world.answerTalentWipe(false); });
+  }
+  if (lock) {
+    const name = game.areas?.map(lock.mapId)?.name ?? "подземелье";
+    const row = section(`Вы вошли в подземелье, в котором уже шли сражения. «${name}» сохранится за вами, когда время выйдет.`);
+    const killed = killedBosses(lock.encounterMask);
+    if (killed > 0) {
+      const bosses = document.createElement("p");
+      bosses.textContent = `Убито боссов: ${killed}`;
+      row.append(bosses);
+    }
+    countdown(row, lock.expiresAt);
+    button(row, "Принять сохранение", lock, () => world.instanceLock === lock, () => { world.respondInstanceLock(true); });
+    button(row, "Выйти из подземелья", lock, () => world.instanceLock === lock, () => { world.respondInstanceLock(false); });
   }
   if (shared) {
     const row = section(() => `${world.displayName(shared.initiatorGuid)} предлагает задание «${shared.title}».`);
@@ -282,6 +387,17 @@ export function showInteractionPrompts(now = performance.now()): void {
 }
 
 export function updateInteractionPrompts(now: number): void {
+  const world = game.world;
+  if (world) {
+    // The M1 questions end on the world's own terms — out of the NPC's reach, the server's deadline
+    // — which also closes the stock dialogs (CheckBinderDist, CheckTalentMasterDist, the lock's own
+    // clock): checked each frame only while one is pending, repainted the moment one moves.
+    if (world.binderConfirm || world.talentWipeConfirm || world.instanceLock) world.expireInteractionRequests(now);
+    if (confirmationsMoved(world)) {
+      showInteractionPrompts(now);
+      return;
+    }
+  }
   if (!panel?.visible || now - lastTick < 1000) return;
   lastTick = now;
   if (!requestsUnchanged() || countdowns.some(({ deadline }) => deadline <= now)) {

@@ -299,6 +299,45 @@ function str(value: unknown): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
+/**
+ * The 3.3.5 widget hierarchy `IsObjectType` answers by: every kind is also each of its parents, so a
+ * CheckButton is a Button (stock `/click` of an action button, ChatFrame.lua:1412), a Frame, a Region
+ * and a UIObject. FontString and the text frames are also FontInstances. Names match in any case.
+ */
+const WIDGET_PARENTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["Region", ["UIObject"]], ["LayeredRegion", ["Region"]], ["FontInstance", ["UIObject"]],
+  ["Frame", ["Region"]], ["Texture", ["LayeredRegion"]], ["FontString", ["LayeredRegion", "FontInstance"]],
+  ["Button", ["Frame"]], ["CheckButton", ["Button"]], ["EditBox", ["Frame", "FontInstance"]],
+  ["MessageFrame", ["Frame", "FontInstance"]], ["ScrollingMessageFrame", ["Frame", "FontInstance"]],
+  ["SimpleHTML", ["Frame", "FontInstance"]], ["Model", ["Frame"]], ["ModelFFX", ["Model"]],
+  ["PlayerModel", ["Model"]], ["DressUpModel", ["PlayerModel"]], ["TabardModel", ["PlayerModel"]],
+  ["ScrollFrame", ["Frame"]], ["Slider", ["Frame"]], ["StatusBar", ["Frame"]], ["Cooldown", ["Frame"]],
+  ["ColorSelect", ["Frame"]], ["GameTooltip", ["Frame"]], ["Minimap", ["Frame"]], ["MovieFrame", ["Frame"]],
+  ["QuestPOIFrame", ["Frame"]], ["WorldFrame", ["Frame"]],
+]);
+
+/** Each kind with every kind it inherits from, in lower case, built on first use. */
+const WIDGET_KINDS = new Map<string, ReadonlySet<string>>();
+
+function widgetKinds(type: string): ReadonlySet<string> {
+  let kinds = WIDGET_KINDS.get(type);
+  if (kinds === undefined) {
+    const collected = new Set([type.toLowerCase()]);
+    for (const parent of WIDGET_PARENTS.get(type) ?? []) for (const kind of widgetKinds(parent)) collected.add(kind);
+    kinds = collected;
+    WIDGET_KINDS.set(type, kinds);
+  }
+  return kinds;
+}
+
+/**
+ * `IsObjectType(wanted)`: the kind or one it inherits from, compared without regard to case as the
+ * client compares it — stock UIParent.lua:1301 asks `frame:IsObjectType("frame")`.
+ */
+function widgetIsA(type: string, wanted: string): boolean {
+  return widgetKinds(type).has(wanted.toLowerCase());
+}
+
 /** A flag argument as Lua reads it: nil and false are off, and so is `0`, which 3.3.5's setters take. */
 function luaTruthy(value: unknown): boolean {
   return value !== undefined && value !== null && value !== false && value !== 0;
@@ -1771,7 +1810,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     return {
       GetName: ({ self }) => [self.named ? self.name : undefined],
       GetObjectType: ({ self }) => [self.type],
-      IsObjectType: ({ self, args }) => [str(args[0]) === self.type],
+      IsObjectType: ({ self, args }) => [widgetIsA(self.type, str(args[0]))],
       GetParent: ({ self }) => [self.parent],
       SetParent: ({ frame, args }) => {
         const requested = args[0];

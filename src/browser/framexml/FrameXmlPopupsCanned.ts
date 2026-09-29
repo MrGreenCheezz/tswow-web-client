@@ -7,12 +7,15 @@
  * below set what the matching server message would.
  */
 import { EventBus } from "../../world/EventBus.js";
+import type { TalentWipeAnswer } from "../../world/ConfirmationProtocol.js";
 import {
   FRAMEXML_RELEASE_TIMER_FLAG,
   FrameXmlPopupsModel,
+  type FrameXmlDungeonEncounter,
   type FrameXmlPlayerLife,
   type FrameXmlPopupsContext,
   type FrameXmlPopupsWorld,
+  type FrameXmlTalentUiState,
 } from "./FrameXmlPopups.js";
 
 /** The canned player's GUID (the same character FrameXmlLfdCanned.ts queues). */
@@ -37,11 +40,26 @@ export const FRAMEXML_CANNED_POPUPS_BAG: ReadonlyMap<string, { readonly name: st
 
 /** Spirit Healer entry 6491 in the canned world; its object sits beside the canned player. */
 export const FRAMEXML_CANNED_SPIRIT_HEALER_GUID = 0xf130_0019_5b00_0001n;
+/** The canned innkeeper (entry 6740) asking CONFIRM_BINDER, and the class trainer (entry 5480) quoting a talent reset. */
+export const FRAMEXML_CANNED_INNKEEPER_GUID = 0xf130_0000_1a54_0001n;
+export const FRAMEXML_CANNED_TRAINER_GUID = 0xf130_0000_1568_0002n;
+
+/** The canned AreaTable names: Stormwind, Elwynn Forest and its Goldshire, where the canned player stands. */
+const FRAMEXML_CANNED_AREAS: ReadonlyMap<number, string> = new Map([
+  [1519, "Штормград"], [12, "Элвиннский лес"], [87, "Златоземье"],
+]);
+
+/** DungeonEncounter.dbc of the canned instance lock, Utgarde Keep (map 574) normal: each boss's bit and name. */
+export const FRAMEXML_CANNED_DUNGEON_ENCOUNTERS: ReadonlyMap<string, readonly FrameXmlDungeonEncounter[]> = new Map([
+  ["574/0", [
+    { bit: 0, name: "Принц Келесет" }, { bit: 1, name: "Скарвальд и Далронн" }, { bit: 2, name: "Ингвар Расхититель" },
+  ]],
+]);
 
 export type FrameXmlCannedPopupsCall =
-  | { readonly kind: "group" | "duel" | "resurrect" | "summon" | "guild" | "arena" | "readyCheck"; readonly accept: boolean }
-  | { readonly kind: "repop" | "reclaim" | "beginTrade" | "cancelTrade" | "finishReadyCheck" | "selfRes" | "forceQuit" }
-  | { readonly kind: "spiritHealer"; readonly guid: bigint }
+  | { readonly kind: "group" | "duel" | "resurrect" | "summon" | "guild" | "arena" | "readyCheck" | "instanceLock"; readonly accept: boolean }
+  | { readonly kind: "repop" | "reclaim" | "beginTrade" | "cancelTrade" | "finishReadyCheck" | "selfRes" | "forceQuit" | "loadTalentUi" }
+  | { readonly kind: "spiritHealer" | "binder" | "talentWipe"; readonly guid: bigint }
   | { readonly kind: "destroyItem"; readonly bag: number; readonly slot: number }
   | { readonly kind: "battlefield"; readonly slot: number; readonly enter: boolean };
 
@@ -92,6 +110,22 @@ export class FrameXmlCannedPopupsWorld implements FrameXmlPopupsWorld {
   readonly bag = new Map<string, { readonly name: string; readonly quality: number }>(FRAMEXML_CANNED_POPUPS_BAG);
   /** The stock bag cursor: the wire position of the item picked up. */
   cursor: { bag: number; slot: number } | undefined;
+  binderConfirm: { guid: bigint } | undefined;
+  talentWipeConfirm: { guid: bigint; cost: number } | undefined;
+  instanceLock: {
+    expiresAt: number; encounterMask: number; previouslySaved: boolean; mapId: number; difficulty: number;
+  } | undefined;
+  bindPoint: { areaId: number } | undefined;
+  /** SMSG_INIT_WORLD_STATES: Elwynn Forest, Goldshire. */
+  worldStateContext: { mapId: number; zoneId: number; areaId: number } | undefined = { mapId: 0, zoneId: 12, areaId: 87 };
+  /** The innkeeper or trainer that asked is within INTERACTION_DISTANCE. */
+  npcInRange = true;
+  /** The player's sub-zone, as the host's terrain reads it. */
+  playerArea: string | undefined = "Златоземье";
+  /** Blizzard_TalentUI as a lazy talent owner reports it; undefined: the host has none (CannedWorldSeam). */
+  talentUiState: FrameXmlTalentUiState | undefined;
+  /** PLAYER_FIELD_COINAGE, for the talent-reset quote. */
+  money = 1_000_000;
   #duelFlags = 0n;
   readonly #clock: () => number;
 
@@ -173,6 +207,30 @@ export class FrameXmlCannedPopupsWorld implements FrameXmlPopupsWorld {
   destroyItem(bag: number, slot: number): void {
     this.calls.push({ kind: "destroyItem", bag, slot });
     this.bag.delete(`${bag}:${slot}`);
+  }
+  confirmBinder(): boolean {
+    const request = this.binderConfirm;
+    if (!request) return false;
+    this.binderConfirm = undefined;
+    this.calls.push({ kind: "binder", guid: request.guid });
+    return true;
+  }
+  declineBinder(): void { this.binderConfirm = undefined; }
+  answerTalentWipe(accept: boolean): TalentWipeAnswer {
+    const request = this.talentWipeConfirm;
+    if (!request) return "none";
+    this.talentWipeConfirm = undefined;
+    if (!accept) return "declined";
+    if (this.money < request.cost) return "unaffordable";
+    this.calls.push({ kind: "talentWipe", guid: request.guid });
+    return "sent";
+  }
+  respondInstanceLock(accept: boolean): boolean {
+    const lock = this.instanceLock;
+    if (!lock || lock.expiresAt <= this.now()) return false;
+    this.instanceLock = undefined;
+    this.calls.push({ kind: "instanceLock", accept });
+    return true;
   }
 
   // ---- the stock bag cursor, as the seam keeps it ------------------------------------------
@@ -292,6 +350,16 @@ export class FrameXmlCannedPopupsWorld implements FrameXmlPopupsWorld {
   spiritHealer(guid = FRAMEXML_CANNED_SPIRIT_HEALER_GUID): void {
     this.events.emit("SPIRIT_HEALER_CONFIRM", { guid });
   }
+  /** SMSG_BINDER_CONFIRM: the innkeeper asks (a new object per packet, as WorldClient keeps it). */
+  binder(guid = FRAMEXML_CANNED_INNKEEPER_GUID): void { this.binderConfirm = { guid }; }
+  /** SMSG_BIND_POINT_UPDATE: the hearthstone's area (Goldshire). */
+  bound(areaId = 87): void { this.bindPoint = { areaId }; }
+  /** MSG_TALENT_WIPE_CONFIRM: the trainer's quote in copper. */
+  talentWipe(cost = 50_000, guid = FRAMEXML_CANNED_TRAINER_GUID): void { this.talentWipeConfirm = { guid, cost }; }
+  /** SMSG_INSTANCE_LOCK_WARNING_QUERY: Utgarde Keep normal, bosses 1 and 3 of 3 killed. */
+  lockWarning(milliseconds = 60_000, encounterMask = 0b101, mapId = 574, difficulty = 0, previouslySaved = false): void {
+    this.instanceLock = { expiresAt: this.now() + milliseconds, encounterMask, previouslySaved, mapId, difficulty };
+  }
 }
 
 /** The `framexml.html?popup=` and RICH-route scenes, each the server messages behind one dialog. */
@@ -311,8 +379,12 @@ export const FRAMEXML_CANNED_POPUP_SCENES: Readonly<Record<string, (world: Frame
   readycheck: (world) => world.startReadyCheck(),
   xploss: (world) => { world.die(); world.release(); world.spiritHealer(); },
   quit: (world) => world.quit(),
+  binder: (world) => world.binder(),
   // No DELETE_ITEM scene: CannedWorldSeam's CursorHasItem is always false, so the dialog's own
-  // OnUpdate closes it a frame later; the tests and the rich route give the seam this cursor.
+  // OnUpdate closes it a frame later; the tests and the rich route give the seam this cursor. No
+  // talent-reset scene: the canned seam has no lazy Blizzard_TalentUI owner, so the question stays
+  // with the native prompt; and no instance-lock scene: its dialog names the instance through
+  // GetInstanceInfo, which CannedWorldSeam does not answer.
 });
 
 /** A canned model over its own scripted world. */
@@ -334,8 +406,16 @@ export function createCannedFrameXmlPopups(
     unitGuid: (unit) => tokens().find(([token]) => token === unit)?.[1],
     unitToken: (guid) => tokens().find(([, member]) => member === guid)?.[0],
     spellName: (id) => (id === 20608 ? "Перерождение" : undefined),
-    areaName: (zoneId) => (zoneId === 1519 ? "Штормград" : undefined),
+    areaName: (zoneId) => FRAMEXML_CANNED_AREAS.get(zoneId),
     spiritHealerInRange: () => world.healerInRange,
+    npcInRange: () => world.npcInRange,
+    playerAreaName: () => world.playerArea,
+    talentUi: () => world.talentUiState,
+    loadTalentUi: () => {
+      world.calls.push({ kind: "loadTalentUi" });
+      if (world.talentUiState === "idle") world.talentUiState = "loading";
+    },
+    dungeonEncounters: (mapId, difficulty) => FRAMEXML_CANNED_DUNGEON_ENCOUNTERS.get(`${mapId}/${difficulty}`),
     quitting: () => world.quitting,
     forceQuit: () => { world.calls.push({ kind: "forceQuit" }); },
     cursorItem: () => world.cursorItem(),

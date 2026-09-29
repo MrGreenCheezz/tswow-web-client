@@ -393,6 +393,14 @@ export interface WorldPacketEvents {
   BUILDING_DAMAGE: { target: bigint; attacker: bigint; controller: bigint; damage: number; spellId: number };
   /** Somebody is offering to summon the character, and the offer expires. */
   SUMMON_REQUEST: { summoner: bigint; zoneId: number; timeoutMilliseconds: number };
+  /** An innkeeper asks whether to make this place home (SMSG_BINDER_CONFIRM); `binderConfirm` holds it. */
+  BINDER_CONFIRM: { guid: bigint };
+  /** A trainer quotes a talent reset (MSG_TALENT_WIPE_CONFIRM with a guid); `talentWipeConfirm` holds it. */
+  TALENT_WIPE_CONFIRM: { guid: bigint; cost: number };
+  /** Bind to this instance or leave it, within the server's minute (SMSG_INSTANCE_LOCK_WARNING_QUERY). */
+  INSTANCE_LOCK_START: { milliseconds: number; encounterMask: number; previouslySaved: boolean };
+  /** That question went: answered, run out, or the instance left. */
+  INSTANCE_LOCK_STOP: Record<string, never>;
   /** A flight master's map of destinations arrived. */
   TAXI_MENU: { guid: bigint; currentNode: number; knownNodes: number[] };
   /** A selected flight was accepted or refused; the native window owns the visible outcome. */

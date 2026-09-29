@@ -95,12 +95,18 @@ export async function openGlueFrontDoor(
     gatewayOrigin: origin,
     screen: options.screen ?? null,
     fake: options.fake ?? null,
-    connect: async (realm, auth) => {
+    connect: async (realm, auth, progress, signal) => {
       const stream = await WebSocketByteStream.connect(gatewaySocketUrl(origin, "/world"));
+      // The connecting dialog's Cancel: closing the socket is what ends WorldClient.connect's wait,
+      // in the realm's queue or anywhere before it.
+      const abort = (): void => stream.close();
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       try {
+        progress?.({ stage: "authenticating" });
         const client = await WorldClient.connect(stream, {
           username: auth.username, sessionKey: auth.sessionKey, realmId: realm.id, realmName: realm.name,
-        });
+        }, { onQueue: (position) => progress?.({ stage: "queued", position }) });
         // The account, for the half of the client that asks who is signed in. The DOM flow writes
         // this in its login form; on this road the answer is only known here.
         game.session = auth;
@@ -109,6 +115,8 @@ export async function openGlueFrontDoor(
       } catch (error) {
         stream.close();
         throw error;
+      } finally {
+        signal?.removeEventListener("abort", abort);
       }
     },
     onEnterWorld: ({ character }) => {

@@ -23,9 +23,21 @@ export interface WorldPacket {
 export class WorldConnection {
   readonly #stream: BinaryByteStream;
   #crypt: WorldCrypt | undefined;
+  #bytesSent = 0;
+  #bytesReceived = 0;
 
   constructor(stream: BinaryByteStream) {
     this.#stream = stream;
+  }
+
+  /** Bytes written to the socket, six-byte headers included: what `GetNetStats` rates outbound. */
+  get bytesSent(): number {
+    return this.#bytesSent;
+  }
+
+  /** Bytes read off the socket, four- or five-byte headers included. */
+  get bytesReceived(): number {
+    return this.#bytesReceived;
   }
 
   async enableEncryption(sessionKey: Uint8Array): Promise<void> {
@@ -52,6 +64,7 @@ export class WorldConnection {
     header[1] = size & 0xff;
     new DataView(header.buffer).setUint32(2, opcode, true);
     this.#stream.send(concatBytes(this.#crypt ? this.#crypt.encryptClientHeader(header) : header, payload));
+    this.#bytesSent += header.byteLength + payload.byteLength;
   }
 
   async read(): Promise<WorldPacket> {
@@ -62,6 +75,7 @@ export class WorldConnection {
     let rest = await this.#stream.readExactly(large ? 4 : 3);
     if (this.#crypt) rest = this.#crypt.decryptServerHeader(rest);
     const header = concatBytes(first, rest);
+    this.#bytesReceived += header.byteLength;
     const size = large
       ? (((header[0] ?? 0) & 0x7f) << 16) | ((header[1] ?? 0) << 8) | (header[2] ?? 0)
       : ((header[0] ?? 0) << 8) | (header[1] ?? 0);
@@ -70,7 +84,9 @@ export class WorldConnection {
     const payloadLength = size - 2;
     if (payloadLength < 0 || payloadLength > MAX_WORLD_PAYLOAD) throw new RangeError(`Invalid world payload size ${payloadLength}`);
 
-    return { opcode, payload: await this.#stream.readExactly(payloadLength) };
+    const payload = await this.#stream.readExactly(payloadLength);
+    this.#bytesReceived += payload.byteLength;
+    return { opcode, payload };
   }
 
   close(): void {

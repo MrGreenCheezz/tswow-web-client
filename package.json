@@ -77,8 +77,9 @@
     "gateway": "node --enable-source-maps tools/start-gateway.mjs",
     "pregateway": "npm run build",
     "gateway:dev": "npm run gateway",
-    "test": "npm run build && node --test",
-    "test:source": "node --import ./tools/register-test-sources.mjs --test --test-concurrency=4",
+    "test": "npm run build && node tools/run-tests.mjs --dist",
+    "test:source": "node tools/run-tests.mjs --source",
+    "test:file": "node tools/run-tests.mjs --source",
     "test:fingerprint-performance": "node --import ./tools/register-test-sources.mjs tools/check-dataset-fingerprint-performance.mjs"
   },
   "devDependencies": {

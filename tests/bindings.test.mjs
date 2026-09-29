@@ -158,9 +158,10 @@ test("a chord is written the way a player reads it", () => {
 });
 
 test("the four extra bars address as fixed pages of the same 144 slots", () => {
-  // Not a design choice — an observation. The server keeps 144 buttons as twelve rows of twelve,
-  // the paging keys walk the first six, and the bottom-left bar simply is row 6. That is why an
-  // extra bar needed no new addressing at all: it is a row pinned to a page.
+  // The server keeps 144 buttons as twelve rows of twelve and the paging keys walk the first six, so
+  // an extra bar needed no new addressing: it is a row pinned to a page. The native rows' pages are
+  // 7–10, which stock gives the stance and form bars (its multi-bars stand on 6, 5, 3 and 4, where the
+  // stock HUD's keys press — `stockBase`); these numbers stay pinned until WORK_PLAN 4.16b moves them.
   assert.deepEqual(EXTRA_ACTION_BARS.map((bar) => bar.base), [72, 84, 96, 108]);
   for (const bar of EXTRA_ACTION_BARS) {
     assert.equal(bar.base % ACTION_BUTTONS_PER_PAGE, 0, `${bar.id} does not start a row`);

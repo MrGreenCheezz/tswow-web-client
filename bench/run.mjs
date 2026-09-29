@@ -7,6 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
 import { summarize } from './metrics.mjs';
+import { DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -90,8 +91,11 @@ async function main() {
   await mkdir('bench/build', { recursive: true });
   await mkdir('bench/cache', { recursive: true });
   const variantDir = value('--variant');
-  const bundle = await buildBenchmarkBundle('bench/build', variantDir);
+  // --target modules rebuilds the pre-MEM-1 production form (an A/B side; the run is invalid).
+  const bundle = await buildBenchmarkBundle('bench/build', variantDir, parseBundleOptions(args));
   if (variantDir && bundle.variantFiles.length === 0) throw new Error(`--variant ${variantDir} replaced no source file`);
+  const bundleTarget = bundle.bundleOptions.target;
+  console.log(`Bundle target: ${[bundleTarget].flat().join(',')}${bundleTarget === DEFAULT_BENCHMARK_TARGET ? '' : ' (not the production target: the result is not valid)'}`);
   const sha = data => createHash('sha256').update(data).digest('hex');
   const sourceHashes = {};
   for (const path of Object.keys(bundle.metafile.inputs).sort()) {
@@ -101,6 +105,9 @@ async function main() {
   // A variant file replaces its working-tree source in the bundle, so it is what the hash covers.
   for (const path of bundle.variantFiles) sourceHashes[`variant:${path}`] = sha(await readFile(path));
   const sourceHash = sha(JSON.stringify(sourceHashes));
+  // How the sources were built, beside their hashes but outside sourceHash: two sides of an A/B that
+  // differ only in --target keep one sourceHash and differ in `bundle`.
+  sourceHashes['bundle-options'] = sha(JSON.stringify(bundle.bundleOptions));
   const configHash = sha(JSON.stringify(config));
   // The asset cache depends on scenes and views, never on which CPUs run the browser.
   const preparationHash = sha(JSON.stringify({ ...config, cpuPolicy: undefined }));
@@ -219,7 +226,7 @@ async function main() {
       '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])];
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
-    smoke, trace, diagnostic, captureAbba, config, configHash, sourceHash, sourceHashes,
+    smoke, trace, diagnostic, captureAbba, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -549,7 +556,8 @@ async function main() {
     // A player-style run (no pinning, a visible window or the desktop shell) answers a different
     // question than the strict P-core headless baseline, so it never replaces one.
     result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir
-      && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags;
+      && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
+      && bundleTarget === DEFAULT_BENCHMARK_TARGET;
     result.comparable = result.valid && !trace && !captureAbba && !heapProfile;
     await writeFile(resultPath, JSON.stringify(result, null, 2));
     console.log(`Result: ${resultPath}`);

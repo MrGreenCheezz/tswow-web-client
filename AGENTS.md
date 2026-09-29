@@ -39,11 +39,12 @@
 ```powershell
 node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
 # Пример узкой проверки; выбирай тест изменённой подсистемы.
-node --import ./tools/register-test-sources.mjs --test --test-concurrency=4 tests/asset-path.test.mjs
+npm run test:file -- tests/asset-path.test.mjs
 # Полный набор тестов текущих исходников при широкой области изменений.
 npm run test:source
 ```
 
+- Тесты запускай через `tools/run-tests.mjs` (`test:file`, `test:source`, `test`). Он ограничивает параллельность и кучу, берёт Node 22 из `.runtime/node` и завершает тестовый процесс, чья память превысила 6 ГБ. Полный набор — один прогон за раз, не параллельно с другими прогонами.
 - Source hook читает текущие TS-исходники без обновления `dist`; он не заменяет проверку типов.
 - `npm run typecheck` имеет `pretypecheck`, который генерирует данные. Для проверки без генерации используй прямой вызов `tsc` выше.
 - `npm run check:generated` проверяет соответствие генераторов; `npm run check:workspace` добавляет проверку модулей. Для них нужны входные данные текущей конфигурации.
@@ -53,7 +54,7 @@ npm run test:source
 
 ## Источники данных и связи проектов
 
-- `tools/generate-protocol.mjs` получает опкоды, направления пакетов и поля обновлений из выбранного TrinityCore; `TRINITYCORE_DIR` задаёт источник. Реальные таблицы лежат в `src/generated/protocol-data/`, а соседние `src/generated/opcodes.ts` и `opcodeCoverage.ts` только экспортируют их.
+- `tools/generate-protocol.mjs` получает опкоды, направления пакетов, поля обновлений, коды ответов (`ResponseCodes`) и результаты авторизации (`AuthResult`) из выбранного TrinityCore; `TRINITYCORE_DIR` задаёт источник. Реальные таблицы лежат в `src/generated/protocol-data/`, а соседние `src/generated/opcodes.ts`, `opcodeCoverage.ts`, `responseCodes.ts` и `authResults.ts` только экспортируют их.
 - `D:\WowTest\Tools\ProtocolGen\generate-protocol.mjs` читает эти реальные таблицы для Unity-каталога `WowOpcodeCatalog.cs`. Для его параметров `--opcodes` и `--coverage` нужны файлы из `protocol-data/`, а не фасады.
 - Ресурсы исходного клиента читаются из `CLIENT_DIR`. `CLIENT_PACK_DIR`, если задан, переключает ресурсный pipeline на готовый пакет с `Data/` и `client-pack.json`.
 - Dataset предоставляет DBC, карты, vmaps и `luaxml/Interface`; `tools/paths.mjs` разрешает `TSWOW_INSTALL`, `TSWOW_DATASET`, `DBC_DIR`, `MAPS_DIR`, `VMAPS_DIR`. Метаданные из world-БД инструменты получают через выбранный `WORLDSERVER_CONF`.

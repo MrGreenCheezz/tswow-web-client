@@ -21,11 +21,13 @@ const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWo
 const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
 const {
   FrameXmlCannedPopupsWorld, createCannedFrameXmlPopups, FRAMEXML_CANNED_SPIRIT_HEALER_GUID,
+  FRAMEXML_CANNED_INNKEEPER_GUID, FRAMEXML_CANNED_TRAINER_GUID,
 } = await import("../dist/code/browser/framexml/FrameXmlPopupsCanned.js");
 const {
   createFrameXmlPopupsOwner, frameXmlPopupsGate, installFrameXmlPopupsAdapters,
 } = await import("../dist/code/browser/framexml/FrameXmlPopupsOwner.js");
 const { FRAMEXML_NO_RELEASE_WINDOW_FLAG } = await import("../dist/code/browser/framexml/FrameXmlPopups.js");
+const { frameXmlPopupsLeftToNative } = await import("../dist/code/browser/framexml/FrameXmlPopupsController.js");
 const { markFrameXmlPopupAnswered } = await import("../dist/code/browser/framexml/FrameXmlPopupsAnswered.js");
 const decoder = new TextDecoder("utf-8");
 const normalize = (path) => path.replaceAll("\\", "/").toLowerCase();
@@ -638,6 +640,165 @@ test("the spirit healer's XP_LOSS asks twice, as stock does, and activates the h
     world.healerInRange = false;
     boot.bridge.tick(0.1);
     assert.deepEqual(visible(boot), [], "CheckSpiritHealerDist: walking away closes it");
+    assert.equal(boot.errorCount, 0);
+  } finally {
+    boot.close();
+  }
+});
+
+/** The visible dialog showing `which`, by name, or undefined. */
+function dialogName(boot, which) {
+  return lua(boot, `
+    for i = 1, STATICPOPUP_NUMDIALOGS do
+      local dialog = _G["StaticPopup" .. i]
+      if dialog:IsShown() and dialog.which == "${which}" then return dialog:GetName() end
+    end
+  `)[0];
+}
+
+test("CONFIRM_BINDER names the place, binds once, sends nothing on Cancel and closes out of the innkeeper's reach", withClient, async () => {
+  const { boot, world, model } = await published();
+  try {
+    world.binder();
+    model.tick();
+    assert.deepEqual(visible(boot), ["CONFIRM_BINDER|Златоземье станет вашим новым домом. Согласны?|Принять|on|Отмена"]);
+    click(boot, "CONFIRM_BINDER", 1);
+    lua(boot, "ConfirmBinder()", 0);
+    assert.deepEqual(world.calls, [{ kind: "binder", guid: FRAMEXML_CANNED_INNKEEPER_GUID }], "CMSG_BINDER_ACTIVATE once");
+    assert.deepEqual(visible(boot), []);
+    world.binder();
+    model.tick();
+    click(boot, "CONFIRM_BINDER", 2);
+    assert.deepEqual(visible(boot), []);
+    assert.equal(world.calls.length, 1, "Отмена sends nothing: the old home stays");
+    world.binder();
+    model.tick();
+    world.npcInRange = false;
+    boot.bridge.tick(0.1);
+    assert.deepEqual(visible(boot), [], "CheckBinderDist: walking away closes it");
+    assert.equal(world.calls.length, 1);
+    world.npcInRange = true;
+    model.popupsOwned = false;
+    model.popupsOwned = true;
+    boot.bridge.tick(0.1);
+    assert.deepEqual(visible(boot), [], "a /reload does not ask again: 3.3.5 fires CONFIRM_BINDER on the packet only");
+    assert.equal(lua(boot, "return GetBindLocation()")[0], undefined, "no bind point reported yet");
+    world.bound(87);
+    assert.equal(lua(boot, "return GetBindLocation()")[0], "Златоземье");
+    assert.equal(boot.errorCount, 0);
+  } finally {
+    boot.close();
+  }
+});
+
+test("CONFIRM_TALENT_WIPE shows the quote in its money frame and opens the loaded talent tree; Accept answers once", withClient, async () => {
+  const { boot, world, model } = await published();
+  // Blizzard_TalentUI as the lazy talent owner leaves it once loaded: LoadAddOn answers loaded, so
+  // UIParent's TalentFrame_LoadUI is quiet, and PlayerTalentFrame_Open exists.
+  boot.vm.registerGlobal("LoadAddOn", (args) => (args[0] === "Blizzard_TalentUI" ? [true] : [false, "MISSING"]));
+  lua(boot, `
+    WebClientTestTalentOpen = {}
+    PlayerTalentFrame_Open = function(pet, group)
+      WebClientTestTalentOpen[#WebClientTestTalentOpen + 1] = tostring(pet) .. ":" .. tostring(group)
+    end
+  `, 0);
+  try {
+    world.talentUiState = "ready";
+    world.talentWipe(50_000);
+    model.tick();
+    const rows = visible(boot);
+    assert.equal(rows.length, 1);
+    assert.match(rows[0], /^CONFIRM_TALENT_WIPE\|Вы уверены, что хотите отказаться от всех своих талантов\?.*\|Принять\|on\|Отмена$/);
+    const name = dialogName(boot, "CONFIRM_TALENT_WIPE");
+    assert.deepEqual(lua(boot, `local money = _G["${name}MoneyFrame"] return money:IsShown() and 1 or 0, money.staticMoney`, 2),
+      [1, 50_000], "MoneyFrame_Update(…MoneyFrame, arg1): the quote in copper");
+    assert.match(String(lua(boot, "return table.concat(WebClientTestTalentOpen, ',')")[0]), /^false:\d+$/,
+      "the talent tree opens beside the question, as the client does");
+    click(boot, "CONFIRM_TALENT_WIPE", 1);
+    lua(boot, "ConfirmTalentWipe()", 0);
+    assert.deepEqual(world.calls, [{ kind: "talentWipe", guid: FRAMEXML_CANNED_TRAINER_GUID }]);
+    assert.deepEqual(visible(boot), []);
+    world.talentWipe(50_000);
+    model.tick();
+    world.npcInRange = false;
+    boot.bridge.tick(0.1);
+    assert.deepEqual(visible(boot), [], "CheckTalentMasterDist: walking away closes it");
+    assert.equal(world.calls.length, 1);
+    assert.equal(boot.errorCount, 0);
+  } finally {
+    boot.close();
+  }
+});
+
+test("CONFIRM_TALENT_WIPE is never fired while Blizzard_TalentUI is not loaded: no Lua error, no message(), the native prompt keeps it", withClient, async () => {
+  const { boot, world, model, clock } = await published();
+  // message() writes only into a hidden BasicScriptErrors (BasicControls.xml:48-53).
+  const loadError = () => {
+    const [shown, text] = lua(boot, "return BasicScriptErrors:IsShown() and 1 or 0, BasicScriptErrorsText:GetText()", 2);
+    return Number(shown) === 1 ? String(text ?? "") : "";
+  };
+  lua(boot, "BasicScriptErrors:Hide()", 0);
+  try {
+    const before = boot.errorCount;
+    world.talentUiState = "loading";
+    world.talentWipe(50_000);
+    model.tick();
+    advance(boot, clock, model, 2);
+    assert.deepEqual(visible(boot), []);
+    assert.equal(frameXmlPopupsLeftToNative(world.talentWipeConfirm), true);
+    assert.equal(loadError(), "", "no «Ошибка загрузки (Blizzard_TalentUI)»");
+    assert.equal(boot.errorCount, before);
+    assert.deepEqual(world.calls, []);
+    // The hazard itself, through the same path: a host claiming the add-on is loaded when it is not.
+    world.talentUiState = "ready";
+    world.talentWipe(50_000);
+    model.tick();
+    assert.match(loadError(), /Blizzard_TalentUI/, "TalentFrame_LoadUI → UIParentLoadAddOn → message(): why the model waits");
+  } finally {
+    boot.close();
+  }
+});
+
+test("INSTANCE_LOCK counts what is left of the server's minute, names the dungeon and its bosses; Leave and Accept answer once", withClient, async () => {
+  const { boot, world, model, clock, seam } = await published();
+  // LiveWorldSeam answers GetInstanceInfo from the map inside an instance; the canned seam has no map.
+  Object.defineProperty(seam, "instanceInfo", { value: () => ["Крепость Утгард", "party", 1, "", 5, 0, false], configurable: true });
+  try {
+    world.lockWarning(60_000, 0b101, 574, 0);
+    model.tick();
+    advance(boot, clock, model, 1);
+    const [row] = visible(boot);
+    assert.equal(visible(boot).length, 1);
+    assert.match(row, /^INSTANCE_LOCK\|Вы вошли в подземелье, в котором уже шли сражения\..*Крепость Утгард.*59.*Убито боссов: 2\/3\|Принять\|on\|Покинуть подземелье$/s);
+    assert.deepEqual(lua(boot, "return GetInstanceLockTimeRemainingEncounter(2)", 3), ["Скарвальд и Далронн", "", false]);
+    advance(boot, clock, model, 20);
+    assert.match(visible(boot)[0], /Крепость Утгард.*39/s, "its own lockTimeleft keeps counting down");
+    click(boot, "INSTANCE_LOCK", 2);
+    lua(boot, "RespondInstanceLock(true)", 0);
+    assert.deepEqual(world.calls, [{ kind: "instanceLock", accept: false }], "«Покинуть подземелье»: one CMSG_INSTANCE_LOCK_RESPONSE 0");
+    model.tick();
+    assert.deepEqual(visible(boot), []);
+    world.lockWarning(60_000, 0b1, 574, 0);
+    model.tick();
+    advance(boot, clock, model, 1);
+    click(boot, "INSTANCE_LOCK", 1);
+    assert.deepEqual(world.calls.at(-1), { kind: "instanceLock", accept: true });
+    // Nobody answers: the dialog closes at the deadline and the core binds by itself.
+    world.lockWarning(60_000, 0b1, 574, 0);
+    model.tick();
+    advance(boot, clock, model, 30);
+    assert.equal(visible(boot).length, 1);
+    advance(boot, clock, model, 31);
+    assert.deepEqual(visible(boot), []);
+    assert.equal(world.calls.length, 2, "a timeout answers nothing (OnCancel's \"timeout\")");
+    // A /reload mid-question: re-published, it resumes at what is left, not a fresh minute.
+    world.lockWarning(60_000, 0b1, 574, 0);
+    model.tick();
+    clock.now += 45_000;
+    model.popupsOwned = false;
+    model.popupsOwned = true;
+    boot.bridge.tick(0.01);
+    assert.match(visible(boot)[0], /Крепость Утгард.*1[45]/s, "15 s left, not 60");
     assert.equal(boot.errorCount, 0);
   } finally {
     boot.close();

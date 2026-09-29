@@ -20,10 +20,12 @@ import {
   guildInviteText, guildInviteWindow, guildMessage, guildMotd, guildRoster, guildTitle, guildWindow,
 } from "./Dom.js";
 import {
-  GUILD_RIGHT_LABELS, eventLogLines, hasGuildRight, lastSeenText, rankLabel, rankRows, sortRoster,
+  GR_RIGHT_WITHDRAW_GOLD, GR_RIGHT_WITHDRAW_REPAIR, GUILD_RIGHT_LABELS, eventLogLines, hasGuildRight,
+  lastSeenText, rankLabel, rankRows, sortRoster,
 } from "./GuildModel.js";
 import { Tabs, confirmPanel, showMenu, type MenuItem } from "./Widgets.js";
 import { className } from "./UnitSnapshot.js";
+import { formatMoney } from "./Format.js";
 import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
 
 const TABS = [
@@ -35,6 +37,25 @@ const TABS = [
 let tabs: Tabs | undefined;
 let closedByPlayer = false;
 let logRequested = false;
+
+/** `GR_GUILDMASTER` (TrinityCore Guild.h): the one rank whose allowance is unlimited. */
+const GUILD_MASTER_RANK = 0;
+
+/**
+ * A rank's daily gold allowance (`BankMoneyPerDay`, copper) in words, the way the core applies it
+ * (`Guild::_GetMemberRemainingMoney`, Guild.cpp:2606-2618): the master is unlimited whatever is stored
+ * (`SetBankMoneyPerDay` forces it, :333-336); any other rank takes gold only with the withdraw-gold or
+ * the withdraw-for-repair right, up to its limit read as int32 (Guild.h:485), so 0 and anything from
+ * 2^31 up leave nothing to take. The old line printed the raw word: «лимит золота: 4294967295».
+ */
+export function withdrawGoldLimitText(rankId: number, rights: number, limit: number): string {
+  if (rankId === GUILD_MASTER_RANK) return "снятие золота без ограничений";
+  const perDay = limit | 0;
+  if ((rights & (GR_RIGHT_WITHDRAW_REPAIR | GR_RIGHT_WITHDRAW_GOLD)) === 0 || perDay <= 0) {
+    return "снятие золота запрещено";
+  }
+  return `лимит золота: ${formatMoney(perDay)}`;
+}
 
 function ensureTabs(): Tabs {
   if (tabs) return tabs;
@@ -225,9 +246,7 @@ function drawRanks(): void {
       rights.textContent = granted.length > 0 ? granted.join(", ") : "нет прав";
       const gold = document.createElement("span");
       gold.className = "guild-meta";
-      gold.textContent = row.rank.withdrawGoldLimit < 0
-        ? "снятие золота без ограничений"
-        : `лимит золота: ${row.rank.withdrawGoldLimit}`;
+      gold.textContent = withdrawGoldLimitText(row.rankId, row.rank.flags, row.rank.withdrawGoldLimit);
       const rename = document.createElement("button");
       rename.type = "button";
       rename.textContent = "Переименовать";

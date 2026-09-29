@@ -94,6 +94,13 @@ export interface FrameXmlDomRendererOptions {
   /** Localized host names for icon controls whose captions live outside the FrameXML tree. */
   readonly accessibilityName?: (frame: FrameXmlFrame) => string | undefined;
   /**
+   * What a shown dialog does to the rest of the page (FrameXmlAccessibility.ts). "modal", the
+   * default, is the login screens': everything outside the dialog goes inert and it holds the
+   * keyboard. A world mount passes "modeless": the client's StaticPopups sit over a live game, so
+   * #world-canvas, the native HUD and other windows keep their input and the chat box its focus.
+   */
+  readonly dialogs?: "modal" | "modeless";
+  /**
    * Live counters (`FrameXmlWorldPerf`): each reconciliation pass is reported with what it had to
    * do and how long it took. Two `performance.now()` reads per pass; nothing when absent.
    */
@@ -477,6 +484,7 @@ function hideStrataLayer(layer: StrataLayer): void {
 export class FrameXmlDomRenderer {
   readonly #container: HTMLElement;
   readonly #accessibility: FrameXmlAccessibility;
+  readonly #dialogs: "modal" | "modeless";
   readonly #textureResolver: ((texture: string) => string) | undefined;
   readonly #fontResolver: ((font: string) => string) | undefined;
   readonly #classPrefix: string;
@@ -591,8 +599,11 @@ export class FrameXmlDomRenderer {
 
   constructor(container: HTMLElement, options: FrameXmlDomRendererOptions = {}) {
     this.#container = container;
-    this.#accessibility = new FrameXmlAccessibility(container,
-      options.accessibilityName ? { nameForFrame: options.accessibilityName } : {});
+    this.#dialogs = options.dialogs ?? "modal";
+    this.#accessibility = new FrameXmlAccessibility(container, {
+      ...(options.accessibilityName ? { nameForFrame: options.accessibilityName } : {}),
+      dialogs: this.#dialogs,
+    });
     this.#textureResolver = options.textureResolver;
     this.#fontResolver = options.fontResolver;
     this.#classPrefix = options.classPrefix?.trim() || "framexml";
@@ -1297,6 +1308,11 @@ export class FrameXmlDomRenderer {
     return this.#container;
   }
 
+  /** The `dialogs` option this renderer was built with. */
+  get dialogs(): "modal" | "modeless" {
+    return this.#dialogs;
+  }
+
   /**
    * The element one widget is currently drawn as, if it is drawn at all.
    *
@@ -1853,8 +1869,14 @@ export class FrameXmlDomRenderer {
             if (!frame.editBox.focused && field.ownerDocument?.activeElement === field) field.blur?.();
           }
         } else if (key === " ") this.#bridge?.fireScript(frame, "OnSpacePressed");
-        else if (key === "Tab") this.#bridge?.fireScript(frame, "OnTabPressed");
-        else if (key === "ArrowUp" || key === "ArrowDown") {
+        else if (key === "Tab") {
+          this.#bridge?.fireScript(frame, "OnTabPressed");
+          // The client has no page focus order: in the world the press is the box's own
+          // (AutoCompleteEditBox_OnTabPressed keeps the caret and walks its list; a box without the
+          // script ignores it), so the browser does not carry the caret off to another node now that
+          // no modal trap holds it. The login screens keep field-to-field Tab (NativeAppShell.ts).
+          if (this.#dialogs === "modeless") (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
+        } else if (key === "ArrowUp" || key === "ArrowDown") {
           const changed = this.#bridge?.NavigateEditBoxHistory(frame, key === "ArrowUp" ? -1 : 1) ?? false;
           if (changed) (event as KeyboardEvent & { preventDefault?: () => void }).preventDefault?.();
         }

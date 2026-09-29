@@ -13,6 +13,14 @@ export interface FrameXmlAccessibilityNode {
 export interface FrameXmlAccessibilityOptions {
   /** Host-only names for fields Lua keeps on a button table (for example race/class DBC names). */
   readonly nameForFrame?: (frame: FrameXmlFrame) => string | undefined;
+  /**
+   * What a shown dialog (GlueDialog, StaticPopupN, a `modal` frame) does to the rest of the page.
+   * "modal", the default — the login screens: everything outside it goes inert and the keyboard is
+   * held inside it until it closes. "modeless" — the world: it is announced as a dialog and nothing
+   * else changes, as the client's StaticPopups sit over a live game: the 3D world, the native HUD and
+   * other windows keep their input, and focus stays wherever the player left it.
+   */
+  readonly dialogs?: "modal" | "modeless";
 }
 
 const MICRO_NAMES: Readonly<Record<string, readonly [string, string]>> = Object.freeze({
@@ -112,7 +120,7 @@ function inside(node: Element | null | undefined, ancestor: Element): boolean {
 /**
  * Add browser semantics to the already-rendered FrameXML projection. The helper never exposes a
  * DOM object to Lua and never owns a widget action: its only side effects are labels, focus and
- * background inertness while a modal frame is visible.
+ * background inertness while a modal frame is visible (focus and inertness with `dialogs: "modal"`).
  */
 export class FrameXmlAccessibility {
   readonly #container: HTMLElement;
@@ -133,6 +141,8 @@ export class FrameXmlAccessibility {
   readonly #elementIds = new WeakMap<HTMLElement, string>();
   readonly #inertBefore = new Map<HTMLElement, boolean>();
   readonly #document: Document;
+  /** See `FrameXmlAccessibilityOptions.dialogs`: whether a shown dialog freezes the page. */
+  readonly #modal: boolean;
   #activeModal: HTMLElement | undefined;
   /** The input of the drawn EditBox Lua last gave focus (`SetFocus`), as of the last sync. */
   #luaFocus: HTMLElement | undefined;
@@ -145,6 +155,7 @@ export class FrameXmlAccessibility {
     this.#container = container;
     this.#document = container.ownerDocument;
     this.#nameForFrame = options.nameForFrame;
+    this.#modal = options.dialogs !== "modeless";
   }
 
   #ru(): boolean {
@@ -361,7 +372,8 @@ export class FrameXmlAccessibility {
     const isAlert = (frame.name === "GlueDialog" && buttonCount === 1 && !!message && !!textOf(message))
       || /(?:Error|Alert)/i.test(frame.name);
     setAttributeIfChanged(element, "role", isAlert ? "alertdialog" : "dialog");
-    setAttributeIfChanged(element, "aria-modal", "true");
+    if (this.#modal) setAttributeIfChanged(element, "aria-modal", "true");
+    else element.removeAttribute("aria-modal");
     if (messageNode && !messageNode.effectiveHidden && textOf(message!)) {
       setAttributeIfChanged(element, "aria-labelledby", this.#domId(messageNode.element));
       element.removeAttribute("aria-label");
@@ -523,7 +535,8 @@ export class FrameXmlAccessibility {
     if (modal.element !== this.#activeModal) {
       if (!this.#activeModal) {
         const active = this.#document.activeElement;
-        this.#returnFocus = active && typeof (active as HTMLElement).focus === "function"
+        // A modeless dialog never took the keyboard, so closing it gives nothing back.
+        this.#returnFocus = this.#modal && active && typeof (active as HTMLElement).focus === "function"
           ? active as HTMLElement : undefined;
       } else {
         this.#activeModal.removeAttribute("role");
@@ -534,13 +547,15 @@ export class FrameXmlAccessibility {
         this.#addedTabIndex = false;
       }
       this.#activeModal = modal.element;
-      this.#listen(true);
-      this.#inertBackground(modal.element);
+      if (this.#modal) {
+        this.#listen(true);
+        this.#inertBackground(modal.element);
+      }
       this.#applyModalSemantics(modal, nodes);
-      this.#focusFirst();
+      if (this.#modal) this.#focusFirst();
     } else {
       this.#applyModalSemantics(modal, nodes);
-      if (!inside(this.#document.activeElement, modal.element)) this.#focusFirst();
+      if (this.#modal && !inside(this.#document.activeElement, modal.element)) this.#focusFirst();
     }
   }
 

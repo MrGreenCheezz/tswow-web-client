@@ -36,6 +36,7 @@ import {
 } from "../Inventory.js";
 import type { BuybackSlotState, ItemSlotState, PlayerInventoryState } from "../Inventory.js";
 import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";
+import { bonusBarOffset as worldBonusBarOffset } from "../game/BonusBar.js";
 import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import {
   FRAMEXML_BIND_CONFIRM_EVENTS, FRAMEXML_BIND_WHEN_EQUIPPED, FRAMEXML_BIND_WHEN_USE, FRAMEXML_DUAL_WIELD_SPELLS,
@@ -75,6 +76,11 @@ import {
 import {
   frameXmlGroupHas, frameXmlGroupLeader, frameXmlRaidIndex, frameXmlRaidOfficer, frameXmlUnitFlagsInCombat,
 } from "./FrameXmlUnitRelations.js";
+import {
+  FrameXmlControlEdge, frameXmlControlWords, frameXmlHasFullControl, frameXmlInControl,
+} from "./FrameXmlControl.js";
+import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
+import { FrameXmlTargetingModel } from "./FrameXmlTargetingApi.js";
 import { CHAT_MSG_ADDON, LANG_ADDON } from "../../world/SessionProtocol.js";
 import { CHAT_MSG_CHANNEL, CHAT_MSG_SYSTEM, languageForRace } from "../../world/ChatProtocol.js";
 import type { ChatMessage } from "../../world/ChatProtocol.js";
@@ -103,6 +109,8 @@ import {
 import type { SpellMetadata } from "../SpellMetadata.js";
 import type { SpellSkillAbilityInfo } from "../../gateway/TalentMetadata.js";
 import { frameXmlShapeshiftForms, type FrameXmlShapeshiftForm } from "./FrameXmlShapeshiftForms.js";
+import { createMacroContext, frameXmlSeamMacroSource, macroFormMemo } from "../macro/MacroContext.js";
+import type { MacroContext } from "../macro/MacroOptions.js";
 import { FrameXmlWorldStates } from "./FrameXmlWorldStates.js";
 import { LiveFrameXmlCalendar } from "./FrameXmlCalendar.js";
 import { FrameXmlLfdModel } from "./FrameXmlLfd.js";
@@ -369,6 +377,8 @@ export interface LiveWorldSeamContext {
   readonly spellAbilities?: (id: number) => readonly SpellSkillAbilityInfo[] | undefined;
   /** The interface-owned focus identity; sampled on the seam's existing rendered-frame path. */
   readonly focusGuid?: () => bigint | undefined;
+  /** Its writer, for `FocusUnit`/`ClearFocus` (FrameXmlTargetingApi.ts); absent, those change nothing. */
+  readonly setFocus?: (guid: bigint | undefined) => void;
   /** Optional FactionTemplate resolver supplied by the host when client-side faction data is ready. */
   readonly reaction?: (left: WorldObjectState, right: WorldObjectState) => number | undefined;
   /** Optional resolver joining Faction.dbc metadata to the live faction map. */
@@ -400,7 +410,7 @@ export interface LiveWorldSeamContext {
   readonly actionBarPage?: () => number;
   readonly changeActionBarPage?: (page: number) => void;
   /** Execute an absolute 1-based action slot through the same dispatcher as keyboard input. */
-  readonly useAction?: (slot: number) => void;
+  readonly useAction?: (slot: number, button?: string) => void;
   /** Optional skill-line tabs; absent hosts get one truthful undivided resolved-spell tab. */
   readonly spellTabs?: () => readonly FrameXmlSpellTabInfo[];
   /** 1-based tab ordinal for a spell. Returning undefined keeps it in the fallback tab. */
@@ -607,6 +617,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly chatWindows = new FrameXmlChatWindowFlags();
   /** Arena teams, the possess bar, the battlefield winner and the add-on channel (FrameXmlMechanics.ts). */
   readonly mechanics: FrameXmlMechanicsModel;
+  /** The unit menus' assistant and main tank/assist commands over the group packets (FrameXmlGroupCommands.ts). */
+  readonly groupCommands: FrameXmlGroupCommandsModel;
+  /** Focus, assist, dismount and the stance bar's cancel (FrameXmlTargetingApi.ts). */
+  readonly targeting: FrameXmlTargetingModel;
+  /** The last PLAYER_CONTROL_LOST/GAINED told to Lua (FrameXmlControl.ts). */
+  readonly #controlEdge = new FrameXmlControlEdge();
   #serviceSignature = "";
 
   petExperience(): readonly [number, number] { return frameXmlPetExperience(this.#pet()) ?? [0, 0]; }
@@ -649,6 +665,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /** The last CMSG_PING/SMSG_PONG round trip WorldClient measured, for GetNetStats. */
   netLatency(): number | undefined {
     return this.#context.world()?.latencyMs;
+  }
+
+  /** The world socket's KB/s in and out WorldClient measures, for GetNetStats. */
+  netBandwidth(): { inKBps: number; outKBps: number } | undefined {
+    return this.#context.world()?.netBandwidth?.();
   }
 
   readonly name = "live";
@@ -1260,6 +1281,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       self: () => this.#self(),
       spell: (id) => context.spell(id),
     });
+    this.groupCommands = new FrameXmlGroupCommandsModel({
+      world: () => context.world(), unitGuid: (unit) => this.#unitGuid(unit),
+    });
+    this.targeting = new FrameXmlTargetingModel({
+      world: () => context.world(),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      namedGuid: (name) => this.#relationGuid(name) ?? this.#nearestNamed(name, false),
+      setFocus: (guid) => context.setFocus?.(guid),
+      activeStanceEntries: () => this.#shapeshiftForms().filter((form) => this.#shapeshiftActive(form)),
+    });
     this.#skillResolvers = createFrameXmlSkillResolvers(() => ({
       player: this.#self(),
       playerRevision: this.#skillRevision,
@@ -1333,6 +1364,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#polledAt = Number.NEGATIVE_INFINITY;
     this.#meleeAnnounced = false;
     this.#combatAnnounced = false;
+    this.#controlEdge.reset();
     this.#pendingLevelUp = undefined;
     this.#barSignature = "";
     this.#cooldownSignature = "";
@@ -1492,8 +1524,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_HEALTH", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.health, "player");
       }));
-      // The combat flag is UNIT_FIELD_FLAGS' bit 19: PLAYER_REGEN_* within the frame it lands in.
-      this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_FLAGS", () => this.#reconcileCombat()));
+      // The combat flag is UNIT_FIELD_FLAGS' bit 19: PLAYER_REGEN_* within the frame it lands in;
+      // the fear/confusion/possession bits are PLAYER_CONTROL_* the same way (FrameXmlControl.ts).
+      this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_FLAGS", () => {
+        this.#reconcileCombat();
+        this.#reconcileControl();
+      }));
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_MAXHEALTH", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.maxHealth, "player");
       }));
@@ -3241,8 +3277,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // fallback also catches focused seam doubles that mutate the player without flushing fields.
     this.#reconcileMoney();
     // Likewise the combat flag, whose store subscription publishes it within the frame, and a
-    // level-up whose level field reached a double with no store.
+    // level-up whose level field reached a double with no store. SMSG_CLIENT_CONTROL_UPDATE has no
+    // bus edge at all: this poll is where a control change without a flag reaches Lua.
     this.#reconcileCombat();
+    this.#reconcileControl();
     this.#publishLevelUp();
     this.#reconcileBankSlots();
     // The spell list and cooldown map are not update fields. Keep their signatures primitive and
@@ -5793,6 +5831,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     if (button?.type === ACTION_BUTTON_ITEM) return this.#itemCooldown(button.action);
     if (!world || !pump || !button || button.type !== ACTION_BUTTON_SPELL) return [0, 0, 0];
+    // Held until its aura ends: stock answers `0, 0, 0` — `enable` 0, no sweep, not even the GCD's.
+    if (world.isSpellOnHold?.(button.action)) return [0, 0, 0];
     const monotonic = this.#context.monotonic();
     const snapshot = world.cooldownState(button.action);
     const remaining = world.cooldownRemaining(button.action, monotonic);
@@ -5827,6 +5867,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (world && world.cooldownRemaining(button.action, this.#context.monotonic()) > 0) {
       return [false, false];
     }
+    // A held spell is refused as NOT_READY until its aura ends (WorldClient.isSpellOnHold).
+    if (world?.isSpellOnHold?.(button.action)) return [false, false];
     return [true, false];
   }
 
@@ -5933,21 +5975,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   bonusBarOffset(): number {
-    const world = this.#context.world();
-    const form = this.#self();
-    if (!world || !form) return 0;
-    const formId = unitField.shapeshiftForm(form);
-    if (!formId) return 0;
-    for (const known of world.knownSpells ?? []) {
-      const metadata = this.#context.spell(known.id);
-      if (!metadata) continue;
-      const effect = metadata.effectAura.findIndex((aura) => aura === 36);
-      if (effect >= 0 && metadata.effectMiscValue[effect] === formId
-        && metadata.bonusActionBarOffset !== undefined) {
-        return metadata.bonusActionBarOffset;
-      }
-    }
-    return 0;
+    // The rule is shared with the native bar and keys 1 to = (game/BonusBar.ts).
+    return worldBonusBarOffset(this.#context.world(), (id) => this.#context.spell(id));
   }
 
   /**
@@ -6016,13 +6045,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (Number.isInteger(windowId) && windowId >= 1 && windowId <= 10) this.#chatWindowShown.set(windowId, shown);
   }
 
-  useAction(slot: number): void {
+  useAction(slot: number, _unit?: string, mouseButton?: string): void {
     // A press with a macro on the cursor puts it on the button, as in the client.
     if (this.macros.placeCursor(slot)) return;
     const button = this.#button(slot);
     if (!button) return;
     if (this.#context.useAction) {
-      this.#context.useAction(slot);
+      // The clicking mouse button reaches a macro on the slot: `[btn:N]` (Wow.exe 0x5abbc0).
+      this.#context.useAction(slot, mouseButton);
       return;
     }
     if (button.type === ACTION_BUTTON_SPELL) {
@@ -7391,8 +7421,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const monotonic = this.#context.monotonic();
     const snapshot = id === undefined ? undefined : world?.cooldownSnapshots?.get(id);
     // A known spell that is ready answers `0, 0, 1`: `enable` is 0 only for a cooldown held back
-    // (Stealth's), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467) dims the icon to 0.4
-    // for anything else — measured on the fixture, every ready spell in the stock book was dimmed.
+    // (Stealth's, WorldClient.isSpellOnHold), and SpellButton_UpdateButton (SpellBookFrame.lua:462-467)
+    // dims the icon to 0.4 for anything else — measured on the fixture, every ready spell in the
+    // stock book was dimmed.
+    if (id !== undefined && world?.isSpellOnHold?.(id)) return [0, 0, 0];
     if (!snapshot || snapshot.endsAt <= monotonic || !pump) return id === undefined ? [0, 0, 0] : [0, 0, 1];
     const start = pump.now() - (monotonic - snapshot.startedAt) / 1000;
     return [start, snapshot.duration / 1000, 1];
@@ -7555,6 +7587,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       stat(0), stat(1), stat(2), stat(3), stat(4));
   }
 
+  // ---- control (FrameXmlControl.ts) ----------------------------------------
+
+  /** `HasFullControl`: no fear, confusion, possession or stun, and the mover is the character. */
+  hasFullControl(): boolean {
+    return frameXmlHasFullControl(frameXmlControlWords(this.#context.world(), this.#self()));
+  }
+
+  /** PLAYER_CONTROL_LOST / _GAINED when the player goes out of control and back (not for a stun or a vehicle). */
+  #reconcileControl(): void {
+    this.#controlEdge.reconcile(frameXmlInControl(frameXmlControlWords(this.#context.world(), this.#self())), this.#pump);
+  }
+
   // ---- combat and the group's relations (FrameXmlUnitRelations.ts) ------
 
   /** PLAYER_ENTER_COMBAT / PLAYER_LEAVE_COMBAT: the player's own auto-attack started or stopped. */
@@ -7617,6 +7661,32 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   unitIsRaidOfficer(unitOrName: string): boolean {
     const world = this.#context.world();
     return frameXmlRaidOfficer(world?.group, world?.state.selfGuid, this.#relationGuid(unitOrName));
+  }
+
+  #macroContext: MacroContext | undefined;
+
+  /**
+   * Macro conditions over this seam (macro/MacroContext.ts): its unit, group and bar answers, the
+   * stance bar's own forms, and the world for what no stock function asks (mount, water, stealth).
+   * The form walks (stance, bonus bar) are remembered until the learned spells, the form or the
+   * resolved spell rows change: `bonusBarOffset` is a form lookup (game/BonusBar.ts) — a bonus bar
+   * that comes from anything else (possession, line A9) must join the key.
+   */
+  macroContext(): MacroContext {
+    if (this.#macroContext) return this.#macroContext;
+    const world = (): WorldClient | undefined => this.#context.world();
+    const revision = (): number | undefined => this.#context.talentMetadataRevision?.();
+    return this.#macroContext = createMacroContext({
+      ...frameXmlSeamMacroSource(this),
+      world,
+      shapeshiftForms: () => this.#shapeshiftForms(),
+      spellRevision: revision,
+      bonusBar: macroFormMemo(world, revision)(() => this.bonusBarOffset()),
+      spec: () => {
+        const talents = this.#context.world()?.talents;
+        return talents ? talents.activeSpec + 1 : 0;
+      },
+    });
   }
 
   unitGroupRoles(unit: string): FrameXmlGroupRoles {

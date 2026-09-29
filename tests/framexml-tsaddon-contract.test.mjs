@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
 import { FrameXmlBoot } from "../dist/code/browser/framexml/FrameXmlBoot.js";
 import { discoverFrameXmlAddonEntrypoints } from "../dist/code/browser/framexml/FrameXmlAddonEntrypoints.js";
@@ -138,6 +138,102 @@ test("a new TSWoW module is discovered without a name whitelist and finishes bef
     } finally { entrypoints.close(); }
     assert.deepEqual(boot.errors, []);
   } finally { boot.close(); }
+});
+
+let clientDirectory;
+try {
+  clientDirectory = (await import("../tools/paths.mjs")).clientDirectory();
+} catch {
+  clientDirectory = undefined;
+}
+/** tools/mpq.mjs clientArchives answers one chain per process: closed once, after every test. */
+const openedChains = new Set();
+after(() => { for (const chain of openedChains) chain.close(); });
+
+test("a module in the generated block raises its own stock dialog and error line over the native HUD", {
+  skip: clientDirectory ? false : "no 3.3.5a client on this machine",
+}, async () => {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  const { normalizeGluePath } = await import("../dist/code/browser/glue/GlueLoader.js");
+  const { FRAMEXML_VERTICAL_TOC, FRAMEXML_TOC_PATH } = await import("../dist/code/browser/framexml/FrameXmlCorpus.js");
+  const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
+  const { FrameXmlTsAddonPresentation, markFrameXmlNativeHud } = await import("../dist/code/browser/framexml/FrameXmlTsAddonPresentation.js");
+  const { mountFrameXmlAddonsOnlySurfaces } = await import("../dist/code/browser/framexml/FrameXmlAddonsOnlyMessages.js");
+  const chain = await clientArchives(clientDirectory);
+  openedChains.add(chain);
+  const decoder = new TextDecoder("utf-8");
+  const module = "interface/framexml/tsaddons/contract-dialogs/addon/";
+  // The winning TOC names one generated block; the subset provider appends it to the vertical.
+  const overlay = new Map([
+    [normalizeGluePath(FRAMEXML_TOC_PATH), [
+      "## tsaddon-begin: contract-dialogs",
+      "TSAddons/contract-dialogs/addon/addon.lua",
+      "## tsaddon-end: contract-dialogs",
+    ].join("\n")],
+    // retail-talents' reset and survival's warning, in the shapes TSTL emits for them.
+    [module + "addon.lua", `
+      StaticPopupDialogs["CONTRACT_RESET_TREE"] = {
+        text = "Сбросить ветку %s? Все вложенные очки вернутся.", button1 = "Да", button2 = "Нет",
+        OnAccept = function() ContractResets = (ContractResets or 0) + 1 end,
+        timeout = 0, whileDead = true, hideOnEscape = true,
+      }
+      local reset = CreateFrame("Button", "ContractResetButton", UIParent)
+      reset:SetSize(150, 24)
+      reset:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+      reset:SetScript("OnClick", function() StaticPopup_Show("CONTRACT_RESET_TREE", "Огонь") end)
+      SLASH_CONTRACTWARN1 = "/contractwarn"
+      SlashCmdList.CONTRACTWARN = function(text) UIErrorsFrame:AddMessage(text, 1, 0.25, 0.15, 1, false) end
+    `],
+  ]);
+  const seam = new CannedWorldSeam();
+  const boot = new FrameXmlBoot({
+    provider: {
+      async read(path) {
+        const key = normalizeGluePath(path);
+        if (overlay.has(key)) return overlay.get(key);
+        const bytes = await chain.read(path);
+        return bytes ? decoder.decode(bytes) : undefined;
+      },
+    },
+    locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC, includeActiveTsAddons: true, seam, exercise: true,
+    screen: () => ({ width: 1365, height: 768 }),
+  });
+  markFrameXmlNativeHud(boot);
+  let entrypoints;
+  let surfaces;
+  try {
+    await boot.load();
+    assert.equal(boot.isAddonLoaded("contract-dialogs"), true);
+    assert.deepEqual(boot.tsAddonResults.map((result) => [result.module, result.ok]), [["contract-dialogs", true]]);
+    const presentation = new FrameXmlTsAddonPresentation(boot);
+    surfaces = mountFrameXmlAddonsOnlySurfaces(boot, seam, {});
+    const reset = boot.bridge.getFrame("ContractResetButton");
+    assert.equal(boot.tsAddonOwner(reset), "contract-dialogs");
+    assert.equal(presentation.includes(reset), true, "the module's own button is painted");
+    assert.equal(boot.bridge.Click(reset, "LeftButton", false) !== false, true);
+    const dialog = boot.bridge.getFrame("StaticPopup1");
+    assert.equal(dialog.visible, true, "StaticPopup_Show from the module opened StaticPopup1");
+    assert.equal(presentation.includes(dialog), true, "and it is painted over the native HUD");
+    assert.equal(boot.bridge.getFrame("StaticPopup1Text").text, "Сбросить ветку Огонь? Все вложенные очки вернутся.");
+    assert.equal(boot.bridge.Click(boot.bridge.getFrame("StaticPopup1Button1"), "LeftButton", false) !== false, true);
+    assert.equal(boot.vm.getGlobal("ContractResets"), 1, "«Да» answered the module");
+    assert.equal(dialog.visible, false);
+    entrypoints = discoverFrameXmlAddonEntrypoints(boot);
+    const warn = entrypoints.commands.find((command) => command.name === "contractwarn");
+    assert.ok(warn !== undefined, "the module's slash command is an entry point");
+    const errorsFrame = boot.bridge.getFrame("UIErrorsFrame");
+    const before = boot.bridge.GetNumMessages(errorsFrame);
+    warn.run("Жажда начинает ослаблять вас!");
+    assert.equal(boot.bridge.GetNumMessages(errorsFrame), before + 1);
+    assert.equal(boot.bridge.GetMessageInfo(errorsFrame, before + 1)[0], "Жажда начинает ослаблять вас!");
+    assert.equal(presentation.includes(errorsFrame), true, "UIErrorsFrame is painted over the native HUD");
+    assert.deepEqual({ ...surfaces.counts() }, { popups: 1, errors: 1, serverQuestions: "native" });
+    assert.deepEqual(boot.errors, []);
+  } finally {
+    surfaces?.dispose();
+    entrypoints?.close();
+    boot.close();
+  }
 });
 
 for (const [name, files, library] of [

@@ -75,9 +75,20 @@ test("stock ChatEdit_ParseText reaches the world API, the native commands and a 
   const chain = await clientArchives(clientDirectory);
   const provider = { async read(path) { const data = await chain.read(path); return data ? decoder.decode(data) : undefined; } };
   const sent = [];
+  // The canned backpack's first slot holds a Hearthstone with the link a live bag slot answers.
+  const { CANNED_CONTAINERS } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
+  const hearthstone = {
+    entry: 6948, name: "Камень возвращения", texture: "Interface\\Icons\\INV_Misc_Rune_01", count: 1, quality: 1,
+    link: "|cffffffff|Hitem:6948:0:0:0:0:0:0:0:80|h[Камень возвращения]|h|r",
+  };
+  const containers = CANNED_CONTAINERS.map((container) => (container.id === 0
+    ? { ...container, slots: [hearthstone, ...container.slots.slice(1)] } : container));
+  const cannedSeam = new CannedWorldSeam(undefined, (...args) => sent.push(args), containers);
+  const runner = await import("../dist/code/browser/macro/MacroRunner.js");
+  const { frameXmlChatTypeCode } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
   const boot = new FrameXmlBoot({
     provider, locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC,
-    seam: new CannedWorldSeam(undefined, (...args) => sent.push(args)),
+    seam: cannedSeam,
     screen: () => ({ width: 1024, height: 768 }),
   });
   await boot.load();
@@ -93,6 +104,13 @@ test("stock ChatEdit_ParseText reaches the world API, the native commands and a 
   };
   const scheduled = [];
   let failures = 0;
+  // The macro conditions' answers (3.10): a context the test steers, as the world mount passes the
+  // seam's own (`macroContext`).
+  const held = { shift: false, focus: false };
+  const macroContext = {
+    modifier: (key) => held.shift && (key === undefined || key === "shift"),
+    exists: (unit) => unit === "focus" && held.focus,
+  };
   const release = installFrameXmlStockChat({
     vm: boot.vm, bridge: boot.bridge, inputFor: () => input, schedule: (callback) => scheduled.push(callback),
   }, {
@@ -109,6 +127,7 @@ test("stock ChatEdit_ParseText reaches the world API, the native commands and a 
       return true;
     },
     onCommandsChanged: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    macroContext: () => macroContext,
   }, () => { failures += 1; });
   try {
     assert.equal(typeof release, "function", "the real corpus passes the stock chat gate");
@@ -140,6 +159,102 @@ test("stock ChatEdit_ParseText reaches the world API, the native commands and a 
     // Secure commands (SecureCmdList is a local of ChatFrame.lua; these reach StartAttack/StopAttack).
     assert.deepEqual(type("/startattack").calls, [["startAttack"]]);
     assert.deepEqual(type("/stopattack").calls, [["stopAttack"]]);
+    // Macro conditions (3.10): stock SecureCmdList["CAST"] asks SecureCmdOptionParse, which now
+    // evaluates every clause against the host's context; CastSpellByName records what was chosen.
+    assert.deepEqual(type("/cast [mod:shift] Огненный шар; Ледяная стрела").calls, [["cast", "Ледяная стрела"]]);
+    held.shift = true;
+    assert.deepEqual(type("/cast [mod:shift] Огненный шар; Ледяная стрела").calls, [["cast", "Огненный шар"]]);
+    held.shift = false;
+    // The group that holds names the target; CastSpellByName hands it on as `[@unit]`.
+    assert.deepEqual(type("/cast [@focus,exists][] Превращение").calls, [["cast", "Превращение"]]);
+    held.focus = true;
+    assert.deepEqual(type("/cast [@focus,exists][] Превращение").calls, [["cast", "[@focus] Превращение"]]);
+    held.focus = false;
+    assert.deepEqual(type("/stopattack [mod:shift]").calls, [], "a condition that fails stops nothing");
+    // RunMacroText runs each line as the client does: EXECUTE_CHAT_LINE to stock MacroEditBox
+    // (ChatFrame.lua:2461-2482), and /stopmacro ends the macro after its own line.
+    calls.length = 0;
+    boot.vm.execute('RunMacroText("/cast [mod:shift] Огненный шар; Ледяная стрела\\n/stopmacro [nomod]\\n/cast Кольцо льда")',
+      "@test/macro");
+    assert.deepEqual(calls, [["cast", "Ледяная стрела"]], "the third line never ran");
+    calls.length = 0;
+    held.shift = true;
+    const sentBeforeMacro = sent.length;
+    // The chat box's sticky type is GUILD: a macro's line without / is said all the same.
+    boot.vm.execute('ChatFrame1EditBox:SetAttribute("chatType", "GUILD") ChatFrame1EditBox:SetAttribute("stickyType", "GUILD")',
+      "@test/sticky");
+    boot.vm.execute('RunMacroText("/cast [nomod] Огненный шар\\n/stopmacro [nomod]\\nнаписано в чат\\n#show Огненный шар\\n-- заметка\\n/cast Кольцо льда")',
+      "@test/macro");
+    held.shift = false;
+    boot.vm.execute('ChatFrame1EditBox:SetAttribute("chatType", "SAY") ChatFrame1EditBox:SetAttribute("stickyType", "SAY")',
+      "@test/sticky");
+    assert.deepEqual(calls, [["cast", "Кольцо льда"]], "a failed /stopmacro goes on");
+    // A line without / is said in SAY, as the client's MacroEditBox says it; # and - lines are comments.
+    assert.deepEqual(sent.slice(sentBeforeMacro).map((args) => [args[0], args[1]]),
+      [["написано в чат", frameXmlChatTypeCode("SAY")]]);
+    // Stock /cast and /use (one body, ChatFrame.lua:1029-1040) keep this client's IDs: a bare number past
+    // the equipment slots is an ID, which GetItemInfo tells apart — an item the client knows is used
+    // (UseItemByName), anything else cast (CastSpellByName) — and both reach this client's own commands.
+    assert.deepEqual(type("/cast 133").calls, [["cast", "133"]]);
+    assert.deepEqual(type("/use 6948").calls, [["use", "6948"]], "the Hearthstone in the backpack, by its ID");
+    assert.deepEqual(type("/cast [mod:shift] 116; 133").calls, [["cast", "133"]]);
+    assert.deepEqual(type("/use 13").calls, [], "an equipment slot stays the slot, as in the client: UseInventoryItem(13)");
+    boot.vm.execute('__webclientParsed = table.concat({ tostring(SecureCmdItemParse("0 1") ~= nil), tostring(select(3, SecureCmdItemParse("13"))) }, " ")',
+      "@test/item");
+    assert.equal(boot.vm.getGlobal("__webclientParsed"), "true 13", "a bag slot and an equipment slot parse as stock");
+    assert.deepEqual(type("/use Камень возвращения").calls, [["use", "Камень возвращения"]],
+      "GetItemInfo(name) knows the Hearthstone in the backpack, so it is used and not cast");
+    assert.deepEqual(type("/use Огненный шар").calls, [["cast", "Огненный шар"]], "a spell by /use is cast");
+    boot.vm.execute('__webclientItemName = GetItemInfo("камень возвращения")', "@test/item");
+    assert.equal(boot.vm.getGlobal("__webclientItemName"), "Камень возвращения");
+    // [btn:N] without a click: the client reads «LeftButton» (Wow.exe 0x5ef0d0).
+    assert.deepEqual(type("/cast [btn:1] Огненный шар; Ледяная стрела").calls, [["cast", "Огненный шар"]]);
+    // A word the client does not know holds and is reported once, in the UI error line.
+    boot.vm.execute(`
+      __webclientErrors = {}
+      local listener = CreateFrame("Frame")
+      listener:RegisterEvent("UI_ERROR_MESSAGE")
+      listener:SetScript("OnEvent", function(_, _, message) __webclientErrors[#__webclientErrors + 1] = message end)`,
+    "@test/errors");
+    calls.length = 0;
+    boot.vm.execute('RunMacroText("/cast [bogus] Огненный шар") RunMacroText("/cast [bogus] Огненный шар")', "@test/macro");
+    assert.deepEqual(calls, [["cast", "Огненный шар"], ["cast", "Огненный шар"]]);
+    boot.vm.execute("__webclientErrorCount = #__webclientErrors; __webclientError = __webclientErrors[1]", "@test/errors");
+    assert.equal(boot.vm.getGlobal("__webclientErrorCount"), 1);
+    assert.equal(boot.vm.getGlobal("__webclientError"), "Неизвестный параметр макроса: bogus");
+    // /click: GetClickFrame names a Button only, and the stock body clicks it with the button given.
+    boot.vm.execute(`
+      __webclientClicked = nil
+      local probe = CreateFrame("Button", "WebClientClickProbe", UIParent)
+      probe:SetScript("OnClick", function(self, button) __webclientClicked = button end)
+      local plain = CreateFrame("Frame", "WebClientClickPlain", UIParent)
+      plain:SetScript("OnMouseUp", function() __webclientClicked = "plain" end)`, "@test/click");
+    type("/click WebClientClickProbe RightButton");
+    assert.equal(boot.vm.getGlobal("__webclientClicked"), "RightButton");
+    boot.vm.execute("__webclientClicked = nil", "@test/click");
+    type("/click WebClientClickPlain");
+    assert.equal(boot.vm.getGlobal("__webclientClicked"), undefined, "the stock body clicks only a Button");
+    // GetClickFrame answers any frame of that name (Wow.exe 0x564130); ChatFrame.lua:1412 checks the kind.
+    boot.vm.execute('__webclientClickFrame = GetClickFrame("WebClientClickPlain"):GetName()', "@test/click");
+    assert.equal(boot.vm.getGlobal("__webclientClickFrame"), "WebClientClickPlain");
+    // A CheckButton IS a Button, as in the client's widget hierarchy — and so are the action buttons.
+    boot.vm.execute(`
+      local check = CreateFrame("CheckButton", "WebClientCheckProbe", UIParent)
+      check:SetScript("OnClick", function(self, button) __webclientClicked = "check " .. tostring(button) end)
+      local texture = UIParent:CreateTexture("WebClientTextureProbe")
+      __webclientKinds = table.concat({
+        tostring(check:IsObjectType("Button")), tostring(check:IsObjectType("Frame")), tostring(check:IsObjectType("Region")),
+        tostring(check:IsObjectType("UIObject")), tostring(check:IsObjectType("EditBox")),
+        tostring(texture:IsObjectType("LayeredRegion")), tostring(texture:IsObjectType("Frame")),
+        tostring(ActionButton1:IsObjectType("Button")),
+      }, " ")`, "@test/kinds");
+    assert.equal(boot.vm.getGlobal("__webclientKinds"), "true true true true false true false true");
+    type("/click WebClientCheckProbe");
+    assert.equal(boot.vm.getGlobal("__webclientClicked"), "check LeftButton");
+    const cooldownBefore = cannedSeam.actionCooldown(1);
+    type("/click ActionButton1");
+    assert.deepEqual(cooldownBefore, [0, 0, 0]);
+    assert.ok(cannedSeam.actionCooldown(1)[1] > 0, "/click ActionButton1 pressed the button: UseAction(1) started its cooldown");
     // `/who` is stock's while FriendsFrame.xml's WhoFrameEditBox exists (chatframe.lua:1944-1951):
     // the box takes the query and SendWho sends it; a bare /who asks for the default query and
     // opens the who tab through ShowWhoPanel.
@@ -285,8 +400,16 @@ test("stock ChatEdit_ParseText reaches the world API, the native commands and a 
     boot.vm.execute("BrowseName = nil", "@test/browse");
     assert.equal(boot.errorCount, errorsAtInstall + 1, "only the deliberate /script error");
   } finally {
+    const installedExecutor = runner.macroLineExecutor();
     release?.();
     assert.equal(chatInputReplaced(), false, "the cleanup returns the keys to the native input");
+    // The macro executor and the /click frames leave with the stock chat.
+    assert.equal(typeof installedExecutor, "function");
+    assert.equal(runner.macroLineExecutor(), undefined);
+    assert.equal(runner.macroClickFrame("WebClientClickProbe"), undefined);
+    // So does the ID reading of stock SecureCmdItemParse: a bare number is an inventory slot again.
+    boot.vm.execute('__webclientParsed = tostring(select(3, SecureCmdItemParse("133")))', "@test/item");
+    assert.equal(boot.vm.getGlobal("__webclientParsed"), "133");
     boot.close();
   }
 });

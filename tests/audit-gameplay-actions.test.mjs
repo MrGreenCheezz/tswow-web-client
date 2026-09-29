@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
+import { isolatedUi } from "./fixtures/isolated-ui.mjs";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
 import { PacketReader } from "../dist/code/protocol/PacketReader.js";
@@ -19,18 +18,6 @@ import { noteDrApplication, drFactor, resetDr } from "../dist/code/world/Diminis
 import { spellModifierText } from "../dist/code/world/SpellModifiers.js";
 import { objectiveHeaders } from "../dist/code/browser/ui/ScoreboardModel.js";
 import { ACTION_BUTTON_SPELL } from "../dist/code/world/ActionBarProtocol.js";
-
-async function isolatedUi(file, modules) {
-  const source = await readFile(new URL(`../src/browser/ui/${file}.ts`, import.meta.url), "utf8");
-  const js = ts.transpileModule(source, { compilerOptions: {
-    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
-  } }).outputText;
-  const exports = {};
-  new Function("require", "exports", js)((name) => modules[name] ?? new Proxy({}, {
-    get: () => () => {},
-  }), exports);
-  return exports;
-}
 
 test("/cast and /use execute combat actions rather than unknown chat commands", async () => {
   const casts = [], uses = [], messages = [];
@@ -195,22 +182,36 @@ test("BG queue -> invite -> enter -> playing -> leave waits for server state; ca
   } finally { ui.dispose(); }
 });
 
-test("macros reject conditions and multiple combat actions before executing any line", async () => {
+test("macros run every line and refuse only a unit or options /cast cannot read", async () => {
   const executions = [], notices = [];
   class AccountStore { value = []; }
+  const macroRunner = await import("../dist/code/browser/macro/MacroRunner.js");
   const macros = await isolatedUi("Macros", {
-    "../AccountStore.js": { AccountStore }, "./MacroModel.js": macroModel,
+    "../AccountStore.js": { AccountStore }, "./MacroModel.js": macroModel, "../macro/MacroRunner.js": macroRunner,
     "./Chat.js": { submitChat: (line) => executions.push(line) }, "./Notices.js": { notice: (message) => notices.push(message) },
   });
-  // `[combat]`/`[mod:...]`/`[@unknown]` are still conditions and refuse; only a single
-  // `[@target|focus|self|pet]` prefix is allowed. Two combat lines or a `;` chain refuse.
+  // Conditions are evaluated as a line runs (the combat commands behind submitChat), `;` separates
+  // their clauses, and every combat line runs — the cast guard decides what a press sends.
   for (const body of ["/say hello\n/cast [combat] 133", "/cast 133\n/use 6948", "/cast 133; /cast 116",
-    "/cast [mod:shift] 133", "/cast [@unknown] 133"]) {
+    "/cast [mod:shift] 133"]) {
+    executions.length = 0;
+    macros.macroStores[0].value = [{ index: 1, name: "test", body }];
+    macros.runMacro(1);
+    assert.deepEqual(executions, body.split("\n"));
+  }
+  // A line without / is said, as the client does; a # directive is not run.
+  executions.length = 0;
+  macros.macroStores[0].value = [{ index: 1, name: "test", body: "Всем привет\n#show Fireball\n/wave" }];
+  macros.runMacro(1);
+  assert.deepEqual(executions, ["Всем привет", "/wave"]);
+  // A unit /cast cannot resolve, or a bracket never closed, refuses the whole macro before any line.
+  executions.length = 0;
+  for (const body of ["/say hello\n/cast [@unknown] 133", "/say hello\n/cast [mod:shift 133"]) {
     macros.macroStores[0].value = [{ index: 1, name: "test", body }];
     macros.runMacro(1);
     assert.deepEqual(executions, []);
   }
-  assert.equal(notices.length, 5);
+  assert.equal(notices.length, 2);
   macros.macroStores[0].value = [{ index: 1, name: "test", body: "/say hello\n/cast 133" }];
   macros.runMacro(1);
   assert.deepEqual(executions, ["/say hello", "/cast 133"]);
@@ -244,10 +245,12 @@ test("combat commands use the existing cast guard and find an item in the curren
     "../game/GroundTarget.js": { requestInventoryItemUse: (slot, send) => send() },
   });
   commands.runCastCommand("133"); assert.deepEqual(casts, [133]); assert.equal(messages.length, 1);
-  // Names resolve against the spellbook; unknown names and conditions still refuse.
+  // Names resolve against the spellbook; unknown names and a condition that does not hold cast nothing.
   commands.runCastCommand("Fireball"); assert.deepEqual(casts, [133, 133]);
-  for (const invalid of ["[combat] 133", "133; /cast 116", "-1", "4294967296", "0", "Frostbolt"]) commands.runCastCommand(invalid);
+  for (const invalid of ["[combat] 133", "-1", "4294967296", "0", "Frostbolt"]) commands.runCastCommand(invalid);
   assert.deepEqual(casts, [133, 133]);
+  // `;` separates clauses, and the first one without conditions always holds, as in the client.
+  commands.runCastCommand("133; /cast 116"); assert.deepEqual(casts, [133, 133, 133]);
   commands.runUseCommand("6948"); assert.deepEqual(uses, [[2, 4, 88n]]);
   commands.runUseCommand("99999"); assert.equal(uses.length, 1);
 });
@@ -624,16 +627,17 @@ test("spell modifiers word themselves and scoreboard headers name the battlegrou
   assert.deepEqual(objectiveHeaders(0), []);
 });
 
-test("macros allow one [@unit], names and #showtooltip, and refuse the rest", async () => {
+test("macros accept conditions and alternative targets, and refuse unknown units and unreadable options", async () => {
   assert.deepEqual(macroModel.macroTargetUnit("/cast [@target] Fireball"),
     { unit: "target", rest: "/cast Fireball" });
   assert.deepEqual(macroModel.macroTargetTokens("/use [@focus] 6948"), ["focus"]);
   const problems = (body) => macroModel.macroProblems("test", body);
   assert.equal(problems("/cast [@target] 133").length, 0);
   assert.equal(problems("#showtooltip Fireball\n/cast 133").length, 0);
-  assert.ok(problems("/cast [combat] 133").length > 0);
+  assert.equal(problems("/cast [combat] 133").length, 0, "a condition is evaluated when the line runs");
   assert.ok(problems("/cast [@unknown] 133").length > 0);
-  assert.ok(problems("/cast [@target] [@focus] 133").length > 0);
+  assert.equal(problems("/cast [@target] [@focus] 133").length, 0, "two groups are alternatives");
+  assert.ok(problems("/cast [@target 133").length > 0, "a bracket never closed");
 });
 
 test("learning a top rank promotes bar slots holding its lower ranks", async () => {

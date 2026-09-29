@@ -127,6 +127,60 @@ export function parseCharacterResult(payload: Uint8Array): number {
   return result;
 }
 
+/**
+ * The realm refused the session: the `ResponseCodes` value its SMSG_AUTH_RESPONSE carried in place of
+ * AUTH_OK or AUTH_WAIT_QUEUE (AUTH_REJECT, AUTH_BANNED, AUTH_UNKNOWN_ACCOUNT… — WorldSocket.cpp),
+ * `undefined` when the packet was empty.
+ */
+export class WorldAuthError extends Error {
+  readonly code: number | undefined;
+
+  constructor(code: number | undefined) {
+    super(`World authentication failed with code ${code ?? "missing"}`);
+    this.name = "WorldAuthError";
+    this.code = code;
+  }
+}
+
+/**
+ * `CHARACTER_FLAG_RENAME` (Player.cpp:161): the core lists a character with `AT_LOGIN_RENAME` with
+ * this bit (Player.cpp:1545-1546) and refuses to load it into the world until it has a new name
+ * (Player.cpp:18123-18127), so the login would only end in a kick.
+ */
+export const CHARACTER_FLAG_RENAME = 0x00004000;
+
+/** `RESPONSE_SUCCESS`: what SMSG_CHAR_RENAME (and the other paid services) answer when they worked. */
+export const RESPONSE_SUCCESS = 0;
+
+export function characterNeedsRename(character: Pick<CharacterSummary, "flags">): boolean {
+  return (character.flags & CHARACTER_FLAG_RENAME) !== 0;
+}
+
+/** SMSG_CHAR_RENAME: the result, and on success the character and the name the core normalised. */
+export interface RenameResult {
+  result: number;
+  guid?: bigint;
+  name?: string;
+}
+
+/** CMSG_CHAR_RENAME: `ObjectGuid >> Name` (CharacterHandler.cpp:1137-1142) — a full u64, not packed. */
+export function buildRenameCharacter(guid: bigint, name: string): Uint8Array {
+  return new PacketWriter().u64(guid).cString(name).toUint8Array();
+}
+
+/** `SendCharRename` (CharacterHandler.cpp:2206-2216): `u8 result`, then guid and name on success only. */
+export function parseRenameResult(payload: Uint8Array): RenameResult {
+  const reader = new PacketReader(payload);
+  const result = reader.u8();
+  if (result !== RESPONSE_SUCCESS) {
+    reader.assertFinished();
+    return { result };
+  }
+  const renamed = { result, guid: reader.u64(), name: reader.cString() };
+  reader.assertFinished();
+  return renamed;
+}
+
 export function parseLoginVerifyWorld(payload: Uint8Array): LoginLocation {
   const reader = new PacketReader(payload);
   const location = {

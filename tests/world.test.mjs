@@ -1919,3 +1919,177 @@ test("SMSG_CANCEL_AUTO_REPEAT consumes a packed guid, restores sheath, and does 
   assert.equal(client.unhandledOpcodes.entries.has(OPCODES.SMSG_CANCEL_AUTO_REPEAT), false);
   client.close();
 });
+
+/* --- 10.06 / 10.05 / 2.07: the transport's close, the realm's queue, the rename ----------------- */
+
+/** A browser WebSocket for `WebSocketByteStream`, driven by the test instead of a network. */
+class FakeWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static last;
+  readyState = FakeWebSocket.CONNECTING;
+  binaryType = "blob";
+  #listeners = [];
+
+  constructor(url) {
+    this.url = url;
+    FakeWebSocket.last = this;
+  }
+
+  addEventListener(type, listener, options) {
+    this.#listeners.push({ type, listener, once: options?.once === true });
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+
+  dispatch(type, event = {}) {
+    for (const entry of [...this.#listeners]) {
+      if (entry.type !== type) continue;
+      if (entry.once) this.#listeners.splice(this.#listeners.indexOf(entry), 1);
+      entry.listener(event);
+    }
+  }
+
+  opened() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.dispatch("open");
+  }
+
+  closedBy(code, reason, wasClean) {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.dispatch("close", { code, reason, wasClean });
+  }
+}
+
+async function withFakeWebSocket(run) {
+  const saved = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    return await run();
+  } finally {
+    globalThis.WebSocket = saved;
+  }
+}
+
+test("a WebSocket closed under a read reports the gateway's close code and reason", async () => {
+  const { TransportClosedError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const opening = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.opened();
+    const stream = await opening;
+    const read = stream.readExactly(4);
+    // What Gateway.ts `bridge()` does when the worldserver socket goes: `close(1011, reason)`.
+    FakeWebSocket.last.closedBy(1011, "Backend unavailable", true);
+    const closed = (error) => error instanceof TransportClosedError
+      && error.code === 1011 && error.reason === "Backend unavailable" && error.wasClean === true;
+    await assert.rejects(read, closed);
+    await assert.rejects(stream.readExactly(1), closed, "a read after the close gets the same answer");
+  });
+});
+
+test("an abnormal drop is the close that follows the error, with its code, not an anonymous failure", async () => {
+  const { TransportClosedError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const opening = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.opened();
+    const stream = await opening;
+    const read = stream.readExactly(4);
+    // A browser fires `error` and then `close` (1006) for a connection that died: the close is
+    // the one that says what happened.
+    FakeWebSocket.last.dispatch("error");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(read, (error) => error instanceof TransportClosedError
+      && error.code === 1006 && error.wasClean === false);
+  });
+});
+
+test("a socket that never opens is a TransportConnectError naming the address", async () => {
+  const { TransportConnectError, WebSocketByteStream } = await import("../dist/code/transport/WebSocketByteStream.js");
+  await withFakeWebSocket(async () => {
+    const refused = WebSocketByteStream.connect("ws://gateway.test/auth");
+    FakeWebSocket.last.dispatch("error");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(refused, (error) => error instanceof TransportConnectError
+      && error.url === "ws://gateway.test/auth");
+    const closed = WebSocketByteStream.connect("ws://gateway.test/world");
+    FakeWebSocket.last.closedBy(1006, "", false);
+    await assert.rejects(closed, (error) => error instanceof TransportConnectError);
+  });
+});
+
+/**
+ * What a worldserver writes to `WorldClient.connect`: SMSG_AUTH_CHALLENGE in the clear, then every
+ * header encrypted with the realm's key stream from the first packet after CMSG_AUTH_SESSION, as
+ * WorldSocket does. Payloads stay in the clear.
+ */
+function worldServer(sessionKey, packets) {
+  const header = (opcode, length) => Uint8Array.of((length + 2) >> 8, (length + 2) & 0xff, opcode & 0xff, opcode >> 8);
+  const challenge = new PacketWriter().u32(1).bytes(new Uint8Array(4)).bytes(new Uint8Array(32)).toUint8Array();
+  const headers = packets.map(([opcode, payload]) => header(opcode, payload.byteLength));
+  const encrypted = rc4(hmac(SERVER_ENCRYPTION_KEY, sessionKey), Uint8Array.from(headers.flatMap((bytes) => [...bytes])));
+  const parts = [header(OPCODES.SMSG_AUTH_CHALLENGE, challenge.byteLength), challenge];
+  packets.forEach(([, payload], index) => parts.push(encrypted.subarray(index * 4, index * 4 + 4), payload));
+  return Uint8Array.from(parts.flatMap((bytes) => [...bytes]));
+}
+
+const AUTH_SESSION_KEY = Uint8Array.from({ length: 40 }, (_, index) => index * 3 + 1);
+const worldLogin = { username: "TESTER", sessionKey: AUTH_SESSION_KEY, realmId: 1, realmName: "Круг Теней" };
+
+test("a queued session reports every place in the realm's queue before it is let in", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  // World::AddQueuedPlayer answers in SendAuthResponse's long form: code, billing time, billing
+  // flags, rested time, expansion, then the position (AuthHandler.cpp:22-38).
+  const first = new PacketWriter().u8(27).u32(0).u8(0).u32(0).u8(2).u32(7).u8(0).toUint8Array();
+  // Every later move of the queue is SendAuthWaitQueue: code, position, zero (WorldSession.cpp:770-786).
+  const moved = new PacketWriter().u8(27).u32(3).u8(0).toUint8Array();
+  // …and the way out of it is the one-byte AUTH_OK of SendAuthWaitQueue(0).
+  const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [
+    [OPCODES.SMSG_AUTH_RESPONSE, first],
+    [OPCODES.SMSG_AUTH_RESPONSE, moved],
+    [OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(12)],
+  ]));
+  const positions = [];
+  const client = await Client.connect(stream, worldLogin, { onQueue: (position) => positions.push(position) });
+  try {
+    assert.deepEqual(positions, [7, 3]);
+    assert.equal(client.realmName, "Круг Теней");
+  } finally {
+    client.close();
+  }
+});
+
+test("a refused session is a WorldAuthError carrying the core's code", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  const { WorldAuthError } = await import("../dist/code/world/CharacterProtocol.js");
+  for (const code of [14, 28, 21]) {
+    const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [[OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(code)]]));
+    await assert.rejects(Client.connect(stream, worldLogin),
+      (error) => error instanceof WorldAuthError && error.code === code, `code ${code}`);
+  }
+});
+
+test("renameCharacter sends CMSG_CHAR_RENAME and reads the core's normalised name back", async () => {
+  const { WorldClient: Client } = await import("../dist/code/world/WorldClient.js");
+  const { buildRenameCharacter } = await import("../dist/code/world/CharacterProtocol.js");
+  const renamed = new PacketWriter().u8(0).u64(0x1234n).cString("Ана").toUint8Array();
+  const stream = new MemoryStream(worldServer(AUTH_SESSION_KEY, [
+    [OPCODES.SMSG_AUTH_RESPONSE, Uint8Array.of(12)],
+    [OPCODES.SMSG_CHAR_RENAME, renamed],
+  ]));
+  const client = await Client.connect(stream, worldLogin);
+  try {
+    const result = await client.renameCharacter(0x1234n, "ана");
+    assert.deepEqual({ ...result }, { result: 0, guid: 0x1234n, name: "Ана" });
+    // After CMSG_AUTH_SESSION every client header is 6 encrypted bytes; the payload stays readable.
+    const sent = stream.sent.at(-1);
+    assert.deepEqual([...sent.subarray(6)], [...buildRenameCharacter(0x1234n, "ана")]);
+  } finally {
+    client.close();
+  }
+});

@@ -2,7 +2,7 @@ import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
 import { createHttpFileProvider } from "../glue/GlueLoader.js";
 import { game, registerWorldContextCleanup } from "../game/Context.js";
-import { reactionBetween } from "../game/Targeting.js";
+import { reactionBetween, setFocusGuid } from "../game/Targeting.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionBar.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
@@ -75,6 +75,7 @@ import {
   publishFrameXmlBags,
   type FrameXmlBagOwner,
 } from "./FrameXmlBagController.js";
+import { installOwnedGlobals, releaseOwnedGlobals } from "./FrameXmlBagCompat.js";
 import {
   publishFrameXmlCharacter, frameXmlCharacterModelGate, createFrameXmlCharacterOwner,
   type FrameXmlCharacterOwner,
@@ -122,6 +123,7 @@ import { addModuleCommand, beginModuleCommandLoad, removeModuleCommands, systemL
 import { toggleGmTickets } from "../ui/GmTickets.js";
 import { discoverFrameXmlAddonEntrypoints } from "./FrameXmlAddonEntrypoints.js";
 import { FrameXmlTsAddonPresentation, markFrameXmlNativeHud } from "./FrameXmlTsAddonPresentation.js";
+import { mountFrameXmlAddonsOnlySurfaces, watchFrameXmlDialogLayer } from "./FrameXmlAddonsOnlyMessages.js";
 import { createFrameXmlTsAddonWindows } from "./FrameXmlTsAddonWindows.js";
 import { openCharacterWindow, registerEscapable } from "../ui/Windows.js";
 import {
@@ -856,7 +858,7 @@ export function frameXmlBagGate(
     const bankGlobal = vmGlobal("BankFrame");
     const merchantGlobal = vmGlobal("MerchantFrame");
     const stackSplitGlobal = vmGlobal("StackSplitFrame");
-    if ((!interfaceOptions && interfaceOptionsGlobal !== undefined)
+    if ((!interfaceOptions && interfaceOptionsGlobal !== undefined && interfaceOptionsGlobal !== boot.optionsFrameStandIn)
       || (!bank && bankGlobal !== undefined)
       || (!merchant && merchantGlobal !== undefined)
       || (!stackSplit && stackSplitGlobal !== undefined)) return undefined;
@@ -896,19 +898,18 @@ export function frameXmlBagGate(
       ...(stackSplitGlobal === undefined
         ? [["StackSplitFrame", stackSplit ?? proxy()] as const] : []),
     ];
+    // A stand-in goes only where the global is still empty and comes off only while it still holds
+    // the stand-in: the lazy options chain's real InterfaceOptionsFrame, loaded after publication
+    // (or while a probe runs), is never covered and stays when the owner goes (FrameXmlBagCompat.ts).
+    // withBagGlobals and the lifetime install below follow the same rule.
     const clearGlobals = (installed: readonly (readonly [string, FrameXmlFrame])[]): void => {
-      for (const [name] of [...installed].reverse()) {
-        try { boot.vm.setGlobal(name, undefined); } catch { /* best-effort lifecycle cleanup */ }
-      }
+      releaseOwnedGlobals(boot.vm, installed);
     };
     const withBagGlobals = <T>(operation: () => T): T => {
       if (aliases.length === 0) return operation();
       const installed: Array<readonly [string, FrameXmlFrame]> = [];
       try {
-        for (const alias of aliases) {
-          boot.vm.setGlobal(alias[0], alias[1]);
-          installed.push(alias);
-        }
+        installOwnedGlobals(boot.vm, aliases, installed);
         return operation();
       } finally {
         clearGlobals(installed);
@@ -945,10 +946,7 @@ export function frameXmlBagGate(
 
     try {
       const installed: Array<readonly [string, FrameXmlFrame]> = [];
-      for (const alias of lifetimeAliases) {
-        boot.vm.setGlobal(alias[0], alias[1]);
-        installed.push(alias);
-      }
+      installOwnedGlobals(boot.vm, lifetimeAliases, installed);
       let released = false;
       releaseLifetimeGlobals = (): void => {
         if (released) return;
@@ -1064,6 +1062,8 @@ function installStockChatInput(
       cast: runCastCommand,
       use: runUseCommand,
       unitGuid: macroUnitGuid,
+      // Macro conditions (`SecureCmdOptionParse`, stock macros) are evaluated over the seam's answers.
+      macroContext: () => seam.macroContext?.(),
       commands: nativeSlashCommands,
       emotes: () => game.world?.emotes,
       run: runNativeCommand,
@@ -3256,6 +3256,7 @@ export async function mountFrameXmlVertical(
     spells: () => game.spells.values(),
     spellAbilities: (id) => game.talentData?.spellAbilitiesOf(id),
     focusGuid: () => game.focusGuid,
+    setFocus: setFocusGuid,
     reaction: (self, target) => reactionBetween(self, target, game.factions),
     reputation: frameXmlLiveReputationRows,
     reputationCatalog: () => game.factions?.reputationCatalog,
@@ -3283,7 +3284,7 @@ export async function mountFrameXmlVertical(
     runBinding: runAction,
     actionBarPage: getActionBarPage,
     changeActionBarPage: (page) => turnActionPage(page - 1),
-    useAction: (slot) => useSlot((slot - 1) % 12, Math.floor((slot - 1) / 12)),
+    useAction: (slot, button) => useSlot((slot - 1) % 12, Math.floor((slot - 1) / 12), button),
     playSound: playNamedUiSound,
     ...(() => {
       const resolvers = createFrameXmlSpellBookTabResolvers(() => ({
@@ -3632,6 +3633,9 @@ export async function mountFrameXmlVertical(
         frameFilter: addonPresentation.includes,
         layoutOnly: addonPresentation.layoutOnly,
       } : {}),
+      // A StaticPopup over a live game freezes nothing: #world-canvas, the native HUD and the other
+      // windows keep their input and the chat box its focus (the login screens keep modal dialogs).
+      dialogs: "modeless",
       fontLoader: (file, family) => {
         void fonts.load(file, family).then(() => { if (pictures) pictures.fontArrived(); else touchAll(); });
       },
@@ -3755,6 +3759,12 @@ export async function mountFrameXmlVertical(
     }
 
     if (options.addonsOnly) {
+      // The dialogs and error lines the modules raise themselves: popup adapters, UIErrorsFrame off the
+      // world's messages and Escape, before the host is shown; the server's questions stay native
+      // (FrameXmlAddonsOnlyMessages.ts). Released with the add-on entry points.
+      const surfaces = mountFrameXmlAddonsOnlySurfaces(boot, seam, { raise: raiseAddonLayer });
+      const closeEntrypoints = resources.addonEntrypointsCleanup;
+      resources.addonEntrypointsCleanup = () => { surfaces.dispose(); closeEntrypoints?.(); };
       resources.nativeTooltipCleanup = installFrameXmlNativeItemTooltip(boot, (active) => {
         nativeTooltipActive = active;
       });
@@ -3812,7 +3822,8 @@ export async function mountFrameXmlVertical(
       // `boot` is the live VM/bridge for DevTools probes (`frameXmlWorld().boot.vm`); it is not copied by
       // `copy(frameXmlWorld().errors)`, the census the owner pastes.
       const diagnostic = (): unknown => ({ ...inventory, tsAddons: boot.tsAddonResults, errors: boot.errors,
-        widgetStubs: boot.binder.stubDiagnostics, savedVariables: boot.savedVariableDiagnostics, addonsOnly: true, boot });
+        widgetStubs: boot.binder.stubDiagnostics, savedVariables: boot.savedVariableDiagnostics, addonsOnly: true,
+        surfaces: surfaces.counts(), boot });
       Object.defineProperty(window, "frameXmlWorld", {
         configurable: true,
         value: diagnostic,
@@ -3931,6 +3942,9 @@ export async function mountFrameXmlVertical(
     // StaticPopup1-4 and ReadyCheckFrame become the server's confirmations once their stock tree,
     // UIParent's event branches and one silent muted probe pass; the native panels stay otherwise.
     installFrameXmlPopupsAdapters(boot);
+    // While one of them is up the overlay stands over the native windows, whose clicks would take a
+    // popup's buttons; it falls back when the last hides (FrameXmlAddonsOnlyMessages.ts).
+    watchFrameXmlDialogLayer(boot, { raise: () => gameWindows.raiseLayer(host), lower: () => { host.style.zIndex = ""; } });
     const stockPopups = frameXmlPopupsGate(seam, boot, renderer);
     if (stockPopups) resources.popupsOwner = createFrameXmlPopupsOwner(boot, seam.popups);
     else if (!options.seam) console.warn("[FrameXML popups] stock dialogs not published; the native prompts stay");
@@ -4263,7 +4277,7 @@ export async function mountFrameXmlVertical(
     // match's battlefield status), through the host instead of stock's load-error dialog.
     resources.arenaEnemyCleanup = mountFrameXmlArenaEnemy(seam, boot, renderer)?.cleanup;
     if (resources.popupsOwner) {
-      resources.popupsOwnerCleanup = publishFrameXmlPopups(resources.popupsOwner);
+      resources.popupsOwnerCleanup = publishFrameXmlPopups(resources.popupsOwner, () => boot.isAddonLoaded("Blizzard_TalentUI"));
       // From here the stock dialogs answer the server; the native prompts step aside at once and
       // whatever is still pending is shown by stock (FrameXmlPopups.ts popupsOwned edge).
       refreshFrameXmlPopupsNative();

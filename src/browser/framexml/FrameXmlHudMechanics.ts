@@ -1,11 +1,14 @@
+import { FRAMEXML_RUNE_READY, frameXmlRuneIndex, type FrameXmlRuneCooldown } from "./FrameXmlRunes.js";
 import type { FrameXmlSeamBinding } from "./FrameXmlWorldSeam.js";
 
 /**
- * The three stock HUD mechanics the boot census found without a host: the totem bar
+ * The stock HUD mechanics the boot census found without a host: the totem bar
  * (TotemFrame.xml, `GetTotemInfo`/`GetTotemTimeLeft`/`DestroyTotem`, `PLAYER_TOTEM_UPDATE`), the
- * hit indicator over the Player/Target/Pet portraits (CombatFeedback.xml, `UNIT_COMBAT`) and the
+ * hit indicator over the Player/Target/Pet portraits (CombatFeedback.xml, `UNIT_COMBAT`), the
  * temporary weapon enchant buttons of the buff frame (BuffFrame.lua's TemporaryEnchantFrame,
- * `GetWeaponEnchantInfo`/`CancelItemTempEnchantment`).
+ * `GetWeaponEnchantInfo`/`CancelItemTempEnchantment`) and the death knight's rune bar
+ * (RuneFrame.xml, `GetRuneType`/`GetRuneCooldown`, `RUNE_POWER_UPDATE`/`RUNE_TYPE_UPDATE`; the rune
+ * models are FrameXmlRunes.ts).
  *
  * This file is the contract and the C-API table; FrameXmlHudMechanicsLive.ts answers it over the
  * WorldClient and FrameXmlHudMechanicsCanned.ts over the scripted offline world. The hit indicator
@@ -65,8 +68,12 @@ export function tempEnchantEquipmentSlot(weapon: number): number | undefined {
   return undefined;
 }
 
-/** What the seam answers for the three mechanics; every read must stay cheap (totem buttons read per frame). */
+/** What the seam answers for the mechanics; every read must stay cheap (totem and rune buttons read per frame). */
 export interface FrameXmlHudMechanics {
+  /** `GetRuneType(id)`: RuneFrame.lua's 1..4, nothing outside ids 1..6 or before the realm said. */
+  runeType(rune: number): number | undefined;
+  /** `GetRuneCooldown(id)`: start (GetTime), duration, ready; nothing outside ids 1..6. */
+  runeCooldown(rune: number): FrameXmlRuneCooldown | undefined;
   /** `GetTotemInfo(slot)`, slot 1..4 in the client's numbering. */
   totemInfo(slot: number): FrameXmlTotemInfo;
   /** `GetTotemTimeLeft(slot)`: whole seconds left, 0 for an empty slot. */
@@ -86,8 +93,22 @@ function slotOf(value: unknown): number {
   return Number.isFinite(slot) ? Math.trunc(slot) : 0;
 }
 
-/** The five C-API names, answered by `seam.hudMechanics`; a seam without the model keeps the stock frames empty. */
+/**
+ * The seven C-API names, answered by `seam.hudMechanics`; a seam without the model keeps the stock
+ * frames empty (no totems, no enchants, runes with no type that are ready).
+ */
 export const FRAMEXML_HUD_MECHANICS_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze({
+  GetRuneType: (seam, args) => {
+    const type = seam.hudMechanics?.runeType(slotOf(args[0]));
+    return type === undefined ? NOTHING : [type];
+  },
+  // RuneButton_OnUpdate hands all three straight to CooldownFrame_SetTimer's `start > 0` compare, so a
+  // valid id always answers numbers; an id outside 1..6 answers nothing, as GetRuneType does.
+  GetRuneCooldown: (seam, args) => {
+    const rune = slotOf(args[0]);
+    if (frameXmlRuneIndex(rune) === undefined) return NOTHING;
+    return seam.hudMechanics?.runeCooldown(rune) ?? FRAMEXML_RUNE_READY;
+  },
   GetTotemInfo: (seam, args) => seam.hudMechanics?.totemInfo(slotOf(args[0])) ?? FRAMEXML_NO_TOTEM,
   GetTotemTimeLeft: (seam, args) => [seam.hudMechanics?.totemTimeLeft(slotOf(args[0])) ?? 0],
   DestroyTotem: (seam, args) => {

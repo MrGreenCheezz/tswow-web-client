@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import viteConfig, * as viteConfigModule from "../vite.config.mjs";
 import {
   BROWSER_OPTIMIZED_DEPENDENCIES,
   DEV_SERVER_WATCH_IGNORES,
@@ -82,6 +83,20 @@ test("development never serves provenance sidecars through spelling variants", (
   for (const url of ["/icons/1.png", "/icons/source", "/icons/file.src.png", "/src/main.ts"]) {
     assert.equal(isLocalProvenanceRequest(url), false, url);
   }
+});
+
+test("production build uses the benchmark's ES2022 target and keeps the previous CSS lowering", () => {
+  // MEM-1: Vite's default `modules` target lowers #private members to WeakMap helpers and class
+  // fields to __publicField in the game while the benchmark runs them natively. `cssTarget` would
+  // follow `target`; it stays on the list the build used before, so the CSS bytes do not change.
+  const previousModulesTarget = ["es2020", "edge88", "firefox78", "chrome87", "safari14"];
+  const { build } = viteConfig({ mode: "production", command: "build" });
+  assert.equal(build.target, "es2022");
+  assert.deepEqual(build.cssTarget, previousModulesTarget);
+  assert.equal(viteConfigModule.BUILD_TARGET, "es2022");
+  assert.deepEqual(viteConfigModule.CSS_TARGET, previousModulesTarget);
+  assert.equal(Object.isFrozen(viteConfigModule.CSS_TARGET), true);
+  assert.notEqual(build.cssTarget, viteConfigModule.CSS_TARGET, "Vite gets its own copy of the frozen list");
 });
 
 test("malformed URL encoding fails closed", () => {

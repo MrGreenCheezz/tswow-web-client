@@ -13,10 +13,9 @@
 // {ID, ConditionID, Name[16] + language mask, Name1[16] (female) + mask, MaskID}. Measured on
 // this dataset: 142 rows of 37 fields (148 bytes), only the ruRU slot filled, masks 1..142.
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { DBC_LOCALES, DBC_LOCSTRING_FIELDS, type DbcLocale } from "../generated/dbcLayouts.js";
-import { DbcError, DEFAULT_LOCALE } from "./Dbc.js";
+import { DEFAULT_LOCALE } from "./Dbc.js";
+import { readFixed, type FixedRows } from "./DbcFixed.js";
 
 /** The route's shape; the browser asks `?v=` this and refuses another. */
 export const CHAR_TITLES_VERSION = 1;
@@ -44,47 +43,6 @@ export interface CharTitleCatalog {
   version: number;
   /** Ascending by `maskId`. */
   titles: CharTitleRow[];
-}
-
-interface FixedRows {
-  readonly records: number;
-  int(row: number, field: number): number;
-  /** The string a field's offset names; empty for a zero offset or one outside the block. */
-  string(row: number, field: number): string;
-}
-
-async function readFixed(
-  dbcDirectory: string, table: string, layout: { fieldCount: number; recordSize: number },
-): Promise<FixedRows> {
-  const data = await readFile(join(dbcDirectory, `${table}.dbc`)).catch((error: Error) => {
-    throw new DbcError(`${table}.dbc could not be read from ${dbcDirectory}: ${error.message}`);
-  });
-  if (data.byteLength < 20 || data.subarray(0, 4).toString("latin1") !== "WDBC") {
-    throw new DbcError(`${table}: not a WDBC file`);
-  }
-  const records = data.readUInt32LE(4);
-  const fields = data.readUInt32LE(8);
-  const recordSize = data.readUInt32LE(12);
-  const stringsSize = data.readUInt32LE(16);
-  const stringsOffset = 20 + records * recordSize;
-  if (fields !== layout.fieldCount || recordSize !== layout.recordSize) {
-    throw new DbcError(`${table}: the file has ${fields} fields of ${recordSize} bytes, but DBCfmt.h `
-      + `declares ${layout.fieldCount} of ${layout.recordSize} for build 12340`);
-  }
-  if (stringsOffset + stringsSize !== data.byteLength) {
-    throw new DbcError(`${table}: the string block does not reach the end of the file`);
-  }
-  return {
-    records,
-    int: (row, field) => data.readInt32LE(20 + row * recordSize + field * 4),
-    string: (row, field) => {
-      const offset = data.readUInt32LE(20 + row * recordSize + field * 4);
-      if (offset === 0 || offset >= stringsSize) return "";
-      const start = stringsOffset + offset;
-      const end = data.indexOf(0, start);
-      return end < start ? "" : data.subarray(start, end).toString("utf8");
-    },
-  };
 }
 
 /** One locale of a localised string, then enUS, then any filled slot — as Dbc.locstring reads them. */

@@ -12,11 +12,15 @@ import { CAMERA_LOOK_SENSITIVITY, CAMERA_PITCH_LIMIT, zoomedDistance } from "../
 import { cameraMaxDistance } from "../ui/Settings.js";
 import { inSightFromCamera } from "../game/Targeting.js";
 import { setHoveredTarget } from "../game/HoverTarget.js";
+import { isSkinnableCorpse } from "../game/CreatureGather.js";
 import { cancelLogoutCountdown, gameMenuOpen, logoutCountdownOpen, toggleGameMenu } from "../ui/GameMenu.js";
 import {
   escapeFrameXmlGameMenu, registerFrameXmlNativeEscape, type FrameXmlNativeEscape,
 } from "../framexml/FrameXmlGameMenuController.js";
-import { frameXmlPopupsDropCursorItem } from "../framexml/FrameXmlPopupsController.js";
+import {
+  closeFrameXmlPopups, frameXmlPopupsDropCursorItem, frameXmlPopupsOpen,
+} from "../framexml/FrameXmlPopupsController.js";
+import { escapeFrameXmlAddonDialogs } from "../framexml/FrameXmlTsAddonPresentation.js";
 import { stopFrameXmlTradeSkillTargeting } from "../framexml/FrameXmlTradeSkillController.js";
 import { keyBindingsOpen, toggleKeyBindingsWindow } from "../ui/KeyBindings.js";
 import { notice } from "../ui/Notices.js";
@@ -158,6 +162,11 @@ const NATIVE_ESCAPE: FrameXmlNativeEscape = {
  */
 function backOut(): void {
   if (escapeFrameXmlGameMenu()) return;
+  // A stock dialog a TSWoW module raised over the native HUD takes the press alone, as stock
+  // ToggleGameMenu stops after StaticPopup_EscapePressed (UIParent.lua:2872) — and so do the
+  // published stock popups while the game menu is still the native one.
+  if (escapeFrameXmlAddonDialogs()) return;
+  if (frameXmlPopupsOpen() && closeFrameXmlPopups()) return;
   // The reticle backs out first: it is the most transient state on the screen, and Escape in the
   // original client cancels targeting before it touches windows, selection or the menu.
   if (pendingGroundTarget() !== undefined) {
@@ -388,6 +397,12 @@ const LOOT_CURSOR_SVG =
   + '<path d="M6 7h12" stroke="#2a1d08" stroke-width="2" stroke-linecap="round"/>'
   + "</svg>";
 const LOOT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(LOOT_CURSOR_SVG)}") 12 12, pointer`;
+/**
+ * Over a body whose loot is gone but that the server still marks skinnable: the click there casts
+ * the gathering skill (`CreatureGather.ts`), so the pointer says there is something to take. Its
+ * own value for the original's gathering pictures (WORK_PLAN 5.17); until then it is the bag.
+ */
+const SKIN_CURSOR = LOOT_CURSOR;
 
 /**
  * How often the cursor is allowed to ask the scene what is under it.
@@ -499,7 +514,8 @@ function applyHoverCursor(point: { clientX: number; clientY: number }): void {
   const objectName = object?.typeId === 5 ? gameObjectHoverName(object) : undefined;
   const wanted = !object || (object.typeId === 5 && objectName === undefined) ? ""
     : isWorldObjectDead(object) && isLootable(object) ? LOOT_CURSOR
-      : "pointer";
+      : isSkinnableCorpse(object) ? SKIN_CURSOR
+        : "pointer";
   if (objectName) showWorldObjectTooltip(objectName, point);
   else clearWorldObjectTooltip();
   if (hoveredGameObject) scheduleHoverWorldRefresh();

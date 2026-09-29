@@ -16,6 +16,9 @@ import { createCannedFrameXmlThreat } from "./FrameXmlThreatCanned.js";
 import { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
 import { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
 import { FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import { FRAMEXML_CONTROL_EVENTS } from "./FrameXmlControl.js";
+import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
+import type { FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
 import { createCannedFrameXmlCurrency } from "./FrameXmlCurrencyCanned.js";
 import { createCannedFrameXmlTradeSkill } from "./FrameXmlTradeSkillCanned.js";
 import { createCannedFrameXmlAuction } from "./FrameXmlAuctionCanned.js";
@@ -31,6 +34,8 @@ import { createCannedFrameXmlAchievements } from "./FrameXmlAchievementCanned.js
 import { createCannedFrameXmlGuildBank } from "./FrameXmlGuildBankCanned.js";
 import { createCannedFrameXmlNpcWindows } from "./FrameXmlGossipCannedWindows.js";
 import { createCannedFrameXmlMacros } from "./FrameXmlMacroCanned.js";
+import { createMacroContext, frameXmlSeamMacroSource } from "../macro/MacroContext.js";
+import type { MacroContext } from "../macro/MacroOptions.js";
 import { FrameXmlCursorModel, type FrameXmlActionButton } from "./FrameXmlCursor.js";
 import { ACTION_BUTTON_ITEM, ACTION_BUTTON_SPELL } from "../../world/ActionBarProtocol.js";
 import { FrameXmlBindingModel } from "./FrameXmlBinding.js";
@@ -1365,6 +1370,65 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   });
   /** No arena team, possession, scoreboard or add-on channel in the canned world: every answer is nil/false. */
   readonly mechanics = new FrameXmlMechanicsModel({ world: () => undefined, self: () => undefined });
+  /** `HasFullControl` (FrameXmlControl.ts): the canned player holds the reins until `setControlLost`. */
+  #controlLost = false;
+  hasFullControl(): boolean { return !this.#controlLost; }
+  /** A fear or a charm takes the character (true) or gives it back: PLAYER_CONTROL_LOST/GAINED; handlers run. */
+  setControlLost(lost: boolean): number {
+    if (lost === this.#controlLost) return 0;
+    this.#controlLost = lost;
+    return this.#pump?.fire(lost ? FRAMEXML_CONTROL_EVENTS.lost : FRAMEXML_CONTROL_EVENTS.gained) ?? 0;
+  }
+  /** What the unit menus' group commands sent (FrameXmlGroupCommands.ts): assistant, main tank/assist, AFK. */
+  readonly assistantCalls: { guid: bigint; apply: boolean }[] = [];
+  readonly assignments: { assignment: number; apply: boolean; guid: bigint }[] = [];
+  readonly pvpAfkReports: bigint[] = [];
+  /** The group commands over the canned social world's group (`socialWorld.groupList`), the player 0x42. */
+  readonly groupCommands = new FrameXmlGroupCommandsModel({
+    world: () => ({
+      group: this.socialWorld.group, state: this.socialWorld.state, selfName: CANNED_PLAYER.name,
+      setPartyAssistant: (guid, apply) => { this.assistantCalls.push({ guid, apply }); },
+      assignPartyRole: (assignment, apply, guid) => { this.assignments.push({ assignment, apply, guid }); },
+      reportPvpAfk: (guid) => { this.pvpAfkReports.push(guid); },
+    }),
+    unitGuid: (unit) => {
+      const world = this.socialWorld;
+      const members = world.group?.members ?? [];
+      const party = /^party([1-4])$/.exec(unit);
+      const raid = /^raid([1-9]\d?)$/.exec(unit);
+      if (unit === "player") return world.state.selfGuid;
+      if (party) return ((world.group?.groupType ?? 0) & 0x02) === 0 ? members[Number(party[1]) - 1]?.guid : undefined;
+      if (raid) return Number(raid[1]) === members.length + 1 ? world.state.selfGuid : members[Number(raid[1]) - 1]?.guid;
+      return undefined;
+    },
+  });
+  /** `FocusUnit`/`ClearFocus` in turn, as the new focus's `UnitGUID` (undefined: cleared), and `/dismount`s. */
+  readonly focusChanges: (string | undefined)[] = [];
+  dismounts = 0;
+  /**
+   * Focus, assist, dismount and cancelform (FrameXmlTargetingApi.ts) over the canned units: the canned
+   * target is the one unit the fixture's focus frame can hold; the canned units select nobody to assist.
+   */
+  readonly targeting: FrameXmlTargeting = {
+    focusUnit: (unit) => {
+      const token = unit === undefined || unit.trim() === "" ? "target" : unit.toLowerCase();
+      this.focusChanges.push(this.unitGuid(token));
+      if (token === "target") this.setFocus(this.#target);
+    },
+    // FocusFrame's PARTY_MEMBERS_CHANGED clears a focus that no longer exists (TargetFrame.lua:196-202):
+    // with no focus that is no change.
+    clearFocus: () => {
+      if (this.#focus === undefined) return;
+      this.focusChanges.push(undefined);
+      this.setFocus(undefined);
+    },
+    assistUnit: () => {},
+    dismount: () => { this.dismounts += 1; },
+    cancelShapeshiftForm: () => {
+      const form = this.#shapeshiftForms[this.#activeShapeshiftForm - 1];
+      if (form) this.cancelledAuraSpellIds.push(form.spellId);
+    },
+  };
   /** Four known currencies of the dataset's tables (FrameXmlCurrencyCanned.ts); tests move `currencyWorld`. */
   readonly #cannedCurrency = createCannedFrameXmlCurrency();
   readonly currency = this.#cannedCurrency.model;
@@ -1452,6 +1516,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   readonly #cannedMacros = createCannedFrameXmlMacros();
   readonly macros = this.#cannedMacros.model;
   readonly macroWorld = this.#cannedMacros;
+  #macroContext: MacroContext | undefined;
+  /** Macro conditions over the canned answers (macro/MacroContext.ts); no world, so no mount or water. */
+  macroContext(): MacroContext {
+    return this.#macroContext ??= createMacroContext(frameXmlSeamMacroSource(this));
+  }
   /** The one cursor (FrameXmlCursor.ts): spells from the book and actions lifted off the canned bar. */
   readonly cursor: FrameXmlCursorModel = new FrameXmlCursorModel(this);
   readonly bindingRuns: InputAction[] = [];

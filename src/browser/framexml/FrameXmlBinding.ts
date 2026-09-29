@@ -103,6 +103,8 @@ export const FRAMEXML_STOCK_BINDING_SECTIONS: readonly { readonly header: string
     ["TOGGLEWORLDMAP", "toggleWorldMap"], ["TOGGLELFGPARENT", "toggleLfd"],
   ] },
   { header: "MISC", rows: [["TOGGLEFPS", "toggleFps"]] },
+  // The multi-bars' keys are the native extra rows' actions; the slot a key presses follows the HUD
+  // on screen (Actions.runAction: under the stock HUD, the stock bar's own page — WORK_PLAN 4.16a).
   { header: "MULTIACTIONBAR", rows: numbered("MULTIACTIONBAR1BUTTON", "bottomLeftAction", 12) },
   { header: "BLANK4", rows: numbered("MULTIACTIONBAR2BUTTON", "bottomRightAction", 12) },
   { header: "BLANK5", rows: numbered("MULTIACTIONBAR3BUTTON", "rightAction", 12) },

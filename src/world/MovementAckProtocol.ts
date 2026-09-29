@@ -332,12 +332,30 @@ function counterBlockSize(guid: bigint): number {
  * (`WorldSession::IsRightUnitBeingMoved`), and sends no error when it does. A client that ignores
  * this packet is one whose character silently stops moving.
  *
- * The reply spells the same guid the other way round — full eight bytes rather than packed.
+ * The reply to `allowed` spells the same guid the other way round — full eight bytes rather than
+ * packed (`buildCharacterGuid`); the reply to a refusal does not (`buildNotActiveMover`).
  */
 export function parseClientControlUpdate(payload: Uint8Array): { guid: bigint; allowed: boolean } {
   const reader = new PacketReader(payload);
   const guid = reader.packedGuid();
   return { guid, allowed: reader.u8() !== 0 };
+}
+
+/**
+ * `CMSG_MOVE_NOT_ACTIVE_MOVER`: the mover this client lets go of, **packed**.
+ *
+ * `HandleMoveNotActiveMover` reads `old_mover_guid.ReadAsPacked()` and discards the rest of the
+ * packet (`MovementHandler.cpp:582-601`, the MovementInfo tail is "ignored for now"), unlike
+ * `HandleSetActiveMoverOpcode`, which reads a whole uint64 (`:558-580`). The eight bytes this used
+ * to share with the claim, read as packed, named some other guid. That changed only the log: the
+ * server has already let go before this reply arrives — `Player::SetClientControl` →
+ * `GameClient::SetMovedUnit(target, false)` → `RemoveAllowedMover` → `SetActivelyMovedUnit(nullptr)`
+ * (`Player.cpp:24606`, `GameClient.cpp:37-46`) — so the handler logs "unset active mover FAILED"
+ * either way (`:593`), now with the right guid in it. No MovementInfo follows: the core would throw
+ * it away.
+ */
+export function buildNotActiveMover(guid: bigint): Uint8Array {
+  return new PacketWriter().packedGuid(guid).toUint8Array();
 }
 
 /** `TransferAbortReason`, `Player.h:636-653`, worded for the player. */

@@ -160,6 +160,26 @@ export const JS_PROFILING_HEADERS = Object.freeze({
   "Document-Policy": "js-profiling",
 });
 
+/**
+ * The JavaScript level of the production bundle, the one the benchmark builds (`bench/build.mjs`).
+ *
+ * MEM-1: Vite's default (`modules`: es2020 and the browsers of 2020) makes esbuild lower every
+ * `#private` member to WeakMap/WeakSet helpers and every class field to `__publicField`, so the game
+ * paid two ephemeron-table lookups per field read and an object plus two closures per `x.#y++`
+ * that the benchmark never ran. ES2022 keeps both native, and class static blocks too (three r185 has
+ * six), so the browser floor is Electron 40 / Chrome 94+, Firefox 93+ and Safari 16.4+ — static blocks
+ * came to Safari only in 16.4, and adding `safari15.4` here would lower them and drag `#private` back to
+ * the helpers. `tools/check-dist-target.mjs dist/web` checks a build for leftover helpers.
+ */
+export const BUILD_TARGET = "es2022";
+
+/**
+ * CSS keeps the lowering it had: `build.cssTarget` defaults to `build.target`, and the CSS was built
+ * for Vite's previous `modules` list (Vite does not export that constant). Pinned, the CSS bytes —
+ * and so the hashed `dist/web/assets/*.css` names — stay what they were.
+ */
+export const CSS_TARGET = Object.freeze(["es2020", "edge88", "firefox78", "chrome87", "safari14"]);
+
 function port(value, fallback) {
   const parsed = Number.parseInt(value || String(fallback), 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid web port: ${value}`);
@@ -217,6 +237,9 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: "dist/web",
       emptyOutDir: true,
+      // MEM-1: the benchmark's level; workers are bundled with the same target.
+      target: BUILD_TARGET,
+      cssTarget: [...CSS_TARGET],
       // Moved out of dist/web by keepSourceMapsBesideBuild; they exist to read freeze recordings.
       sourcemap: "hidden",
       rollupOptions: {
