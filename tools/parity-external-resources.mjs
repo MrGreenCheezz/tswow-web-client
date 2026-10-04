@@ -2,7 +2,7 @@
  * Read-only resource snapshot for a parity capture against the selected 3.3.5a client.
  *
  * Run with the source hook so the gateway's current TypeScript fingerprint is used:
- *   node --import ./tools/register-test-sources.mjs tools/parity-external-resources.mjs --output parity/parity-external-resources.json
+ *   node --import ./tools/register-test-sources.mjs tools/parity-external-resources.mjs --output docs/parity/parity-external-resources.json
  *
  * The output file is JSON. StormLib writes diagnostics to stdout, so shell redirection is
  * unsuitable for the manifest. It contains resolved paths and hashes, never config contents.

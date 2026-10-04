@@ -1,8 +1,8 @@
 import type { GlueLuaVm } from "./GlueLua.js";
 import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
-import { loginToRealmList, type AuthSessionResult } from "../../auth/login.js";
-import { AuthProtocolError } from "../../auth/AuthProtocol.js";
+import { loginToRealmList, readRealmList, type AuthSessionResult } from "../../auth/login.js";
+import { AuthProtocolError, canSelectRealm, type RealmInfo } from "../../auth/AuthProtocol.js";
 import { AUTH_RESULTS } from "../../generated/authResults.js";
 import type { BinaryByteStream } from "../../transport/WebSocketByteStream.js";
 import { GlueSession, type GlueSessionOptions } from "./GlueSession.js";
@@ -12,8 +12,11 @@ import {
 import { GlueCreation, type GlueCreationOptions } from "./GlueCreation.js";
 import { installGlueCreateApi, type GlueCreationView } from "./GlueCreateApi.js";
 import {
-  CLIENT_LOGIN_REFUSALS, authKey, describeFailure, showStatusMessage, type GlueAuthMessage,
+  CLIENT_LOGIN_REFUSALS, authKey, describeFailure, openStatusDialog, showStatusMessage, type GlueAuthMessage,
 } from "./GlueMessages.js";
+import type { GlueNameRuleOptions } from "./GlueNameRules.js";
+import { GLUE_ADDON_GLOBALS, type GlueAddonList } from "./GlueAddons.js";
+import type { GlueCVarStore } from "./GlueCVarStore.js";
 import {
   frameXmlLuaDeclensionSetCount, frameXmlLuaDeclineName,
 } from "../ui/framexml_compat/FrameXmlDeclension.js";
@@ -110,7 +113,43 @@ export interface GlueApiOptions {
   readonly creation?: Pick<GlueCreationOptions, "source" | "tables" | "random">;
   /** The pointer in UI units, y from the bottom; without it the drag rotation cannot move. */
   readonly cursor?: () => readonly [number, number];
+  /**
+   * What this browser can actually show (10.19): the display's measured refresh rate and WebGL2's
+   * `MAX_SAMPLES`. Without it the video queries keep their constant answers.
+   */
+  readonly video?: GlueVideoCaps;
+  /**
+   * `QuitGame()` — «Выход» on the login screen (`AccountLogin_Exit`). The host closes its window;
+   * without it the call stays a recorded stub.
+   */
+  readonly onQuit?: () => void;
+  /** «Модификации» (10.09): the gateway's add-on list and this browser's switches; else stubs. */
+  readonly addons?: GlueAddonList;
+  /**
+   * Where the CVars that outlive a reload are kept (10.07): account name, realm, last character,
+   * `usesToken` — never a password (`GlueCVarStore`). Without it everything stays in memory.
+   */
+  readonly cvarStore?: GlueCVarStore;
 }
+
+/** The CVar `GetUsesToken`/`SetUsesToken` keep (10.10). */
+const USES_TOKEN_CVAR = "usesToken";
+
+export interface GlueVideoCaps {
+  /** Frames per second the page is being painted at; 60 until measured. */
+  refreshRate(): number;
+  /** `gl.getParameter(gl.MAX_SAMPLES)` of a WebGL2 context; 1 or less means no multisampling. */
+  maxSamples(): number;
+}
+
+/** The video queries `GlueApiOptions.video` answers for real; the constant stubs step aside. */
+const VIDEO_GLOBALS: ReadonlySet<string> = new Set([
+  "GetRefreshRates", "GetMultisampleFormats", "GetCurrentMultisampleFormat",
+]);
+
+/** Colour and depth bits of a multisample format triple; every WebGL2 default framebuffer is 24/24. */
+const MULTISAMPLE_COLOR_BITS = 24;
+const MULTISAMPLE_DEPTH_BITS = 24;
 
 /**
  * What the creation screen is told when nobody has given it a gateway.
@@ -166,6 +205,9 @@ const CVAR_DEFAULTS: Readonly<Record<string, string>> = Object.freeze({
   playIntroMovie: "1",
   useUiScale: "0",
   uiScale: "1",
+  // Registered by the client's name checks (FUN_007e2250) with "0"; anything else limits a new
+  // character name to ASCII letters (`GlueNameRules`).
+  forceEnglishNames: "0",
 });
 
 /**
@@ -184,15 +226,14 @@ const CONSTANT_STUBS: Readonly<Record<string, readonly unknown[]>> = Object.free
   // ever fires SERVER_SPLIT_NOTICE, so `SERVER_SPLIT_STATE_PENDING` stays at -1 and
   // `CharacterSelect_OnUpdate` keeps the button hidden — which is the correct screen.
   RequestRealmSplitInfo: [], SetRealmSplitState: [], SetPreferredInfo: [], IsStreamingTrial: [false],
-  // Character select / create — the rest of the list is real in `GlueCharacterApi.ts`, the forced
-  // rename included; this is sending a declension, which this server has no packet for yet.
-  // (Declining a name is client-side and real: `installDeclension`.)
-  DeclineCharacter: [],
-  // The whole of `CharacterCreate` is real in `GlueCreateApi.ts`; what stays here is the paid
-  // services this server has no packets for, and the random-name generator, which in the original
-  // is a server call (`CMSG_CHAR_RENAME`'s cousin) and not a table this client can carry.
-  CustomizeExistingCharacter: [], GetRandomName: [""],
-  PaidChange_GetCurrentRaceIndex: [1], PaidChange_GetCurrentClassIndex: [1], PaidChange_GetName: [""],
+  // Character select / create — the list is real in `GlueCharacterApi.ts`, the forced rename and
+  // `DeclineCharacter` (10.09) included; declining a name is client-side and real: `installDeclension`.
+  // The whole of `CharacterCreate` is real in `GlueCreateApi.ts`, the paid services (2.08) included;
+  // what stays here is the random-name generator. It is not a server call: this core's 3.3.5
+  // protocol has no random-name opcode, and the name table (NameGen.dbc) ships in the dataset. The
+  // stock button that calls it shows only under `ALLOW_RANDOM_NAME_BUTTON`, which this ruRU
+  // GlueXML never defines (CharacterCreate.lua), so the empty answer is not reached from stock Lua.
+  GetRandomName: [""],
   // Account, billing and messages.
   GetGameAccountInfo: [], GetNumGameAccounts: [0], SetGameAccount: [], IsTrialAccount: [false],
   GetBillingPlan: [0], GetBillingTimeRemaining: [0], GetClientExpansionLevel: [2],
@@ -209,12 +250,16 @@ const CONSTANT_STUBS: Readonly<Record<string, readonly unknown[]>> = Object.free
   ScanDLLStart: [], ScanDLLContinueAnyway: [], IsScanDLLFinished: [true],
   // Security matrix and token.
   GetMatrixCoordinates: [], MatrixCommit: [], MatrixRevert: [], MatrixEntered: [],
-  TokenEntered: [], PINEntered: [], GetUsesToken: [false], SetUsesToken: [],
-  // Addons: this client loads no glue addons.
+  // `TokenEntered`/`GetUsesToken`/`SetUsesToken` are real (10.10); PIN and matrix are never asked
+  // for by a 3.3.5 TrinityCore (AuthSession.cpp:422-435 sends neither), so they stay answers.
+  PINEntered: [],
+  // Addons: the constant answers for a host without `GlueApiOptions.addons` (`GlueAddons.ts`).
   GetNumAddOns: [0], GetAddOnInfo: [], GetAddOnDependencies: [], GetAddOnEnableState: [0],
   EnableAddOn: [], DisableAddOn: [], EnableAllAddOns: [], DisableAllAddOns: [], ResetAddOns: [],
   SaveAddOns: [], LaunchAddOnURL: [], IsAddonVersionCheckEnabled: [false], SetAddonVersionCheck: [],
-  // Video and audio options — the whole options tree is out of this slice.
+  // Video and audio options. `OptionsFrame.xml` is zero bytes in this corpus, so nothing builds the
+  // panel that reads these; the three `GlueApiOptions.video` answers for real are replaced below,
+  // the rest are things a browser has no such control over (stereo, gamma, terrain mip, sound drivers).
   GetVideoCaps: [],
   IsPlayerResolutionAvailable: [true], SetScreenResolution: [], GetRefreshRates: [60],
   GetMultisampleFormats: [], GetCurrentMultisampleFormat: [1], SetMultisampleFormat: [],
@@ -259,18 +304,36 @@ export class GlueApi {
   #currentScreen = "";
   #loginStream: BinaryByteStream | undefined;
   #loginGeneration = 0;
+  /**
+   * The auth connection a login opened, kept after it succeeded so `RequestRealmList` can ask the
+   * authserver again (10.08). Closed by the next login, `DisconnectFromServer`, entering the world
+   * and `close`.
+   */
+  #authStream: BinaryByteStream | undefined;
+  /** The login waiting for `TokenEntered` (10.10), and how to abandon it. */
+  #tokenWait: { resolve(token: string): void; reject(error: Error): void } | undefined;
 
   constructor(options: GlueApiOptions) {
     this.#vm = options.vm;
     this.#bridge = options.bridge;
     this.#options = options;
     this.#audio = options.audio ?? new RecordingGlueAudioSink();
+    for (const [name, value] of Object.entries(options.cvarStore?.load() ?? {})) this.#cvars.set(name, value);
     this.#session = new GlueSession({
       ...options.session,
       fireEvent: (event, ...args) => { this.fireEvent(event, ...args); },
       setGlueScreen: (name) => { this.setGlueScreen(name); },
       glueString: (key) => this.#vm.globalString(key),
       hasDialogType: (type) => this.hasDialogType(type),
+      // 10.07: the realm a player picks is remembered, and the character list opens on the one they
+      // last entered the world with (the client writes `lastCharacterIndex` in EnterWorld, 0x4d9bd0).
+      onRealmChosen: (realm) => { this.setCVar("realmName", realm.name); },
+      refreshRealms: () => this.refreshRealms(),
+      lastCharacterIndex: () => {
+        // 0, the default, is the first character — which CharacterSelect.lua picks by itself.
+        const index = Number.parseInt(this.#cvars.get("lastCharacterIndex") ?? "", 10);
+        return Number.isInteger(index) && index > 0 ? index : undefined;
+      },
     });
     this.#creation = new GlueCreation({
       // An empty dataset is a working screen with nothing on it, which is what a gateway that is
@@ -279,6 +342,9 @@ export class GlueApi {
       tables: options.creation?.tables ?? (() => ({ races: [], classes: [] })),
       ...(options.creation?.random ? { random: options.creation.random } : {}),
       create: async (request) => await this.#session.createCharacter(request),
+      paid: async (request) => await this.#session.paidService(request),
+      nameRules: () => this.nameRules(),
+      hasDialogType: (type) => this.hasDialogType(type),
       // The five axes and the start outfit arrive after the C call that asked for them returned.
       onChanged: () => { this.#options.creationView?.update(); },
       fireEvent: (event, ...args) => { this.fireEvent(event, ...args); },
@@ -310,8 +376,38 @@ export class GlueApi {
     return this.#audio;
   }
 
+  /** Every CVar write goes through here, so the store sees the ones it keeps (10.07). */
+  private setCVar(name: string, value: string): void {
+    this.#cvars.set(name, value);
+    this.#options.cvarStore?.save(name, this.#cvars);
+  }
+
   cvar(name: string): string | undefined {
     return this.#cvars.get(name);
+  }
+
+  /**
+   * What decides the alphabets of a new character name: the CVar `forceEnglishNames`, read as the
+   * client reads a CVar's number (a value that does not parse is 0), and the chosen realm's
+   * category's `Cfg_Categories` mask (`GlueSession.nameAlphabetMask`, 1.19) — 0, what the client
+   * uses without a row, while `/dbc/realm-categories` has not answered.
+   */
+  nameRules(): GlueNameRuleOptions {
+    const force = Number.parseInt(this.#cvars.get("forceEnglishNames") ?? "0", 10);
+    return { forceEnglishNames: Number.isFinite(force) && force !== 0, alphabetMask: this.#session.nameAlphabetMask() };
+  }
+
+  /**
+   * A message in the corpus' own words and dialog (`showStatusMessage`): for a host outside the
+   * glue modules — the way back from the world — that has a coded message and no corpus of its own.
+   */
+  showMessage(message: GlueAuthMessage, fallback?: string): void {
+    showStatusMessage({
+      fire: (event, ...args) => { this.fireEvent(event, ...args); },
+      glueString: (key) => this.#vm.globalString(key),
+      hasDialogType: (type) => this.hasDialogType(type),
+      dialogShown: (type) => this.dialogShown(type), // 3.35-review
+    }, message, fallback);
   }
 
   install(): void {
@@ -331,13 +427,27 @@ export class GlueApi {
       fireEvent: (event, ...args) => { this.fireEvent(event, ...args); },
       ...(this.#options.characterView ? { view: this.#options.characterView } : {}),
       ...(this.#options.cursor ? { cursor: this.#options.cursor } : {}),
-      ...(this.#options.enterWorld ? { enterWorld: this.#options.enterWorld } : {}),
+      ...(this.#options.enterWorld ? { enterWorld: (request: GlueEnterWorldRequest) => {
+        // 0x4d9bd0 writes the 0-based index as it hands the character over.
+        this.setCVar("lastCharacterIndex", String(request.index - 1));
+        // The auth connection kept for the realm dialog (10.08) has nothing to do in the world: held
+        // there it would pin a gateway socket and an authserver session per player for the whole
+        // game (and count twice against the gateway's per-address budget). Back at character select
+        // the dialog opens over the list it has.
+        this.closeAuth();
+        this.#options.enterWorld?.(request);
+      } } : {}),
       onStub: (name) => { this.recordStub(name); },
+      nameRules: () => this.nameRules(),
+      currentScreen: () => this.#currentScreen,
+      locale: () => this.#options.locale ?? "ruRU",
+      onDisconnect: () => { this.closeAuth(); },
     });
     installGlueCreateApi({
       vm: this.#vm,
       creation: this.#creation,
       ...(this.#options.creationView ? { view: this.#options.creationView } : {}),
+      character: (index) => this.#session.characters[index - 1],
     });
     this.installConstantStubs();
   }
@@ -409,6 +519,32 @@ export class GlueApi {
       `${Math.round(this.screenSize.width)}x${Math.round(this.screenSize.height)}`,
     ]);
     vm.registerGlobal("GetCurrentResolution", () => [1]);
+    this.#options.addons?.install(vm);
+    const onQuit = this.#options.onQuit;
+    if (onQuit) {
+      // Both spellings end the game; there is no launcher to run.
+      vm.registerGlobal("QuitGame", () => { onQuit(); return []; });
+      vm.registerGlobal("QuitGameAndRunLauncher", () => { onQuit(); return []; });
+    }
+    const video = this.#options.video;
+    if (video) {
+      // `GetRefreshRates()` lists the rates the mode offers; a page is painted at one, the display's.
+      vm.registerGlobal("GetRefreshRates", () => [Math.max(1, Math.round(video.refreshRate()))]);
+      // Triples of (colour bits, depth bits, samples): 1, 2, 4, 8… up to what WebGL2 allows.
+      const sampleCounts = (): number[] => {
+        const counts = [1];
+        for (let samples = 2; samples <= video.maxSamples(); samples *= 2) counts.push(samples);
+        return counts;
+      };
+      vm.registerGlobal("GetMultisampleFormats", () =>
+        sampleCounts().flatMap((samples) => [MULTISAMPLE_COLOR_BITS, MULTISAMPLE_DEPTH_BITS, samples]));
+      // 1-based index of the format `gxMultisample` names; a value no format has is the first.
+      vm.registerGlobal("GetCurrentMultisampleFormat", () => {
+        const wanted = Number.parseInt(this.#cvars.get("gxMultisample") ?? "1", 10);
+        const index = sampleCounts().indexOf(wanted);
+        return [index < 0 ? 1 : index + 1];
+      });
+    }
     vm.registerGlobal("LaunchURL", (args) => {
       const url = String(args[0] ?? "");
       // Never navigate on the corpus' say-so: a URL out of a patch archive is
@@ -438,7 +574,7 @@ export class GlueApi {
     });
     vm.registerGlobal("SetCVar", (args) => {
       const name = String(args[0] ?? "");
-      if (name) this.#cvars.set(name, args[1] === undefined ? "" : String(args[1]));
+      if (name) this.setCVar(name, args[1] === undefined ? "" : String(args[1]));
       return [];
     });
     vm.registerGlobal("RegisterCVar", (args) => {
@@ -453,12 +589,12 @@ export class GlueApi {
     // every attempt, so it is bound rather than stubbed.
     vm.registerGlobal("GetSavedAccountName", () => [this.#cvars.get("accountName") ?? ""]);
     vm.registerGlobal("SetSavedAccountName", (args) => {
-      this.#cvars.set("accountName", String(args[0] ?? ""));
+      this.setCVar("accountName", String(args[0] ?? ""));
       return [];
     });
     vm.registerGlobal("GetSavedAccountList", () => [this.#cvars.get("accountList") ?? ""]);
     vm.registerGlobal("SetSavedAccountList", (args) => {
-      this.#cvars.set("accountList", String(args[0] ?? ""));
+      this.setCVar("accountList", String(args[0] ?? ""));
       return [];
     });
   }
@@ -576,6 +712,39 @@ export class GlueApi {
     // queue, a rename's answer.
     vm.registerGlobal("CancelLogin", () => { this.cancelLogin(); this.#session.cancelPending(); return []; });
     vm.registerGlobal("StatusDialogClick", () => { this.cancelLogin(); this.#session.cancelPending(); return []; });
+    // 10.10: the authenticator code. `TokenEntered(code)` (Wow.exe 0x4dc4d0 → 0x4d8080) hands the
+    // typed code to the login that is waiting for it and puts the CANCEL dialog back up.
+    vm.registerGlobal("TokenEntered", (args) => {
+      const wait = this.#tokenWait;
+      if (wait === undefined || args[0] === undefined || args[0] === null) return [];
+      this.#tokenWait = undefined;
+      this.fireEvent("OPEN_STATUS_DIALOG", "CANCEL", this.glueString("AUTHENTICATING", "Проверка учётной записи..."));
+      wait.resolve(String(args[0]));
+      return [];
+    });
+    // `GetUsesToken()`/`SetUsesToken(flag)` (0x4dbf10/0x4dbf30): a remembered flag the login screen
+    // reads to show its code field up front; AccountLogin.lua sets it when a code is asked for.
+    vm.registerGlobal("GetUsesToken", () => [this.#cvars.get(USES_TOKEN_CVAR) === "1"]);
+    vm.registerGlobal("SetUsesToken", (args) => {
+      const value = args[0];
+      const on = value === true || (typeof value === "number" && value !== 0) || value === "1";
+      this.setCVar(USES_TOKEN_CVAR, on ? "1" : "0");
+      return [];
+    });
+  }
+
+  /**
+   * The login is past the challenge and the account wants an authenticator code: the status dialog
+   * goes, PLAYER_ENTER_TOKEN brings up the corpus' own code dialog (or its pre-filled field), and the
+   * proof waits for `TokenEntered`. A cancel, or a newer login, abandons the wait.
+   */
+  private awaitToken(generation: number): Promise<string> {
+    if (generation !== this.#loginGeneration) return Promise.reject(new Error("login superseded"));
+    this.#tokenWait?.reject(new Error("login superseded"));
+    const waiting = new Promise<string>((resolve, reject) => { this.#tokenWait = { resolve, reject }; });
+    this.fireEvent("CLOSE_STATUS_DIALOG");
+    this.fireEvent("PLAYER_ENTER_TOKEN");
+    return waiting;
   }
 
   private status(text: string): void {
@@ -600,12 +769,14 @@ export class GlueApi {
       this.showLoginRefusal(unsendable);
       return;
     }
+    this.closeAuth();
     const connect = this.#options.connect;
     const url = this.#options.authUrl;
     this.fireEvent("OPEN_STATUS_DIALOG", "CANCEL", this.glueString("CONNECTING", "Соединение..."));
     if (!connect || !url) {
       this.fireEvent("CLOSE_STATUS_DIALOG");
-      this.fireEvent("OPEN_STATUS_DIALOG", "OKAY", "Шлюз недоступен: логин не настроен.");
+      openStatusDialog((event, ...args) => { this.fireEvent(event, ...args); }, "OKAY",
+        "Шлюз недоступен: логин не настроен.");
       return;
     }
     try {
@@ -620,20 +791,17 @@ export class GlueApi {
         username: account,
         password,
         locale: this.#options.locale ?? "ruRU",
+        onTokenRequired: () => this.awaitToken(generation),
       });
       if (generation !== this.#loginGeneration) return;
       this.#loginStream = undefined;
-      stream.close();
+      // Kept open for the realm dialog's refreshes (10.08) rather than closed here.
+      this.#authStream = stream;
       this.fireEvent("CLOSE_STATUS_DIALOG");
       this.#session.beginSession(session);
       this.#options.onSession?.(session);
-      // Straight to the realm list rather than to `charselect`, and that is the corpus' own route:
-      // `RequestRealmList` fires OPEN_REALM_LIST, `RealmList:Show()` draws the dialog over the
-      // login screen, and its OK button calls `ChangeRealm`, which is what connects to a world and
-      // moves the screen on. The original has one more step in front of it — a preferred-realm
-      // reply that skips the dialog — and this build has nothing to answer it with, so the dialog
-      // always opens instead of a realm being chosen on the player's behalf.
-      this.#session.requestRealmList();
+      this.chooseRealmAfterLogin();
+
     } catch (error) {
       if (generation !== this.#loginGeneration) return;
       this.#loginStream?.close();
@@ -650,15 +818,27 @@ export class GlueApi {
   }
 
   /**
+   * After a login: the realm this browser last chose on this gateway (10.07), when it is in the list
+   * and open — SUGGEST_REALM, which the stock CharacterSelect answers with SetGlueScreen("charselect")
+   * and ChangeRealm. Otherwise, or in a corpus with nobody listening for it, the realm list: the
+   * corpus' own route, `RequestRealmList` → OPEN_REALM_LIST → `RealmList:Show()`, whose OK calls
+   * `ChangeRealm`.
+   */
+  chooseRealmAfterLogin(): void {
+    const remembered = this.#cvars.get("realmName");
+    const position = remembered ? this.#session.realmPosition(remembered) : undefined;
+    if (!position || !canSelectRealm(position.realm)
+      || this.fireEvent("SUGGEST_REALM", position.category, position.index) === 0) {
+      this.#session.showRealmList();
+    }
+  }
+
+  /**
    * A refused login as the client shows it: its text, its fallback in a corpus without that text,
    * and its stock dialog — or OKAY in a corpus without that type (`showStatusMessage`).
    */
   private showLoginRefusal(refusal: GlueAuthMessage): void {
-    showStatusMessage({
-      fire: (event, ...args) => { this.fireEvent(event, ...args); },
-      glueString: (key) => this.#vm.globalString(key),
-      hasDialogType: (type) => this.hasDialogType(type),
-    }, refusal, "Ошибка авторизации");
+    this.showMessage(refusal, "Ошибка авторизации");
   }
 
   /** Whether the corpus defines `GlueDialogTypes[type]`. */
@@ -675,8 +855,44 @@ export class GlueApi {
     return present;
   }
 
+  /** 3.35-review: whether GlueDialog is shown with `type` — GlueDialog_Show ran to its end. */
+  private dialogShown(type: string): boolean {
+    const vm = this.#vm;
+    vm.setGlobal(DIALOG_TYPE_PROBE, undefined);
+    const ran = vm.execute(
+      `local which = ...; ${DIALOG_TYPE_PROBE} = type(GlueDialog) == "table" and GlueDialog:IsShown() and GlueDialog.which == which and true or false`,
+      "@GlueApi:dialogShown",
+      [type],
+    );
+    const shown = ran.ok && vm.getGlobal(DIALOG_TYPE_PROBE) === true;
+    vm.setGlobal(DIALOG_TYPE_PROBE, undefined);
+    return shown;
+  }
+
+  /** `REALM_LIST` again on the auth connection, or `undefined` when none is open. */
+  private refreshRealms(): Promise<RealmInfo[]> | undefined {
+    const stream = this.#authStream;
+    if (!stream) return undefined;
+    return readRealmList(stream).catch((error: unknown) => {
+      // A dead connection is not asked again; the list the login brought stays up.
+      if (this.#authStream === stream) this.closeAuth();
+      throw error;
+    });
+  }
+
+  /** Drop the kept auth connection (a new login, `DisconnectFromServer`, the runtime closing). */
+  closeAuth(): void {
+    const stream = this.#authStream;
+    this.#authStream = undefined;
+    stream?.close();
+  }
+
   cancelLogin(): void {
+
     this.#loginGeneration += 1;
+    const wait = this.#tokenWait;
+    this.#tokenWait = undefined;
+    wait?.reject(new Error("login cancelled"));
     this.#loginStream?.close();
     this.#loginStream = undefined;
   }
@@ -691,6 +907,9 @@ export class GlueApi {
   private installConstantStubs(): void {
     const vm = this.#vm;
     for (const [name, results] of Object.entries(CONSTANT_STUBS)) {
+      if (this.#options.video && VIDEO_GLOBALS.has(name)) continue;
+      if (this.#options.onQuit && (name === "QuitGame" || name === "QuitGameAndRunLauncher")) continue;
+      if (this.#options.addons && GLUE_ADDON_GLOBALS.has(name)) continue;
       vm.registerGlobal(name, () => {
         this.recordStub(name);
         return results;

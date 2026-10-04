@@ -1,6 +1,8 @@
 import {
-  INPUT_ACTIONS, bindKey, describeChord, chordOf, keysOf, moduleActions, resetBindings,
+  INPUT_ACTIONS, bindKey, describeChord, chordOf, keysOf, moduleActions, onBindingsChanged, resetBindings,
 } from "../input/Bindings.js";
+import { frameXmlBindingCommand } from "../framexml/FrameXmlBinding.js";
+import { nativeString } from "./Strings.js";
 import { showActionBar } from "./ActionBar.js";
 import { Panel } from "./Widgets.js";
 import {
@@ -93,16 +95,40 @@ function slotButton(action: string, label: string, slot: 0 | 1): HTMLButtonEleme
   return button;
 }
 
+/** The stock name of a compiled-in action's command, or its own label when it has none. */
+function stockLabel(action: (typeof INPUT_ACTIONS)[number]["action"], label: string): string {
+  const command = frameXmlBindingCommand(action);
+  return command.startsWith("WEBCLIENT_") ? label : nativeString(`BINDING_NAME_${command}`, label);
+}
+
+/**
+ * The rows under one heading per group, groups in the order they first appear. The stock rows of
+ * 3.11 (input/StockActions.ts) follow the original table in `INPUT_ACTIONS` but belong to the same
+ * «Цель» or «Интерфейс» the player already knows, so a second heading of the same name would be
+ * the window lying about its own layout.
+ */
+export function groupedRows<Row extends { readonly group: string }>(rows: readonly Row[]): Row[] {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const list = groups.get(row.group);
+    if (list) list.push(row);
+    else groups.set(row.group, [row]);
+  }
+  return [...groups.values()].flat();
+}
+
 function draw(): void {
   if (!panel) return;
   const rows: HTMLElement[] = [];
   let group = "";
   // The compiled-in actions and then whatever the loaded modules offer, in one list because the
   // player has one keyboard. The module rows are the ones that ship unbound — see `ModuleAction`.
-  const listed: { action: string; group: string; label: string }[] = [
-    ...INPUT_ACTIONS,
+  const listed = groupedRows([
+    // A stock command is named as KeyBindingFrame names it (BINDING_NAME_*, 4.10); this client's own
+    // rows and the modules' keep their words.
+    ...INPUT_ACTIONS.map((entry) => ({ action: entry.action, group: entry.group, label: stockLabel(entry.action, entry.label) })),
     ...moduleActions().map((entry) => ({ action: entry.action, group: entry.group, label: entry.label })),
-  ];
+  ]);
   for (const entry of listed) {
     if (entry.group !== group) {
       group = entry.group;
@@ -142,6 +168,11 @@ function build(): Panel {
   });
   // Capture phase, so a key being bound never reaches the controls underneath.
   window.addEventListener("keydown", captureKey, true);
+  // A table taken from the account (4.12) while the window is open redraws it; a capture in
+  // progress is left alone and redraws when it ends.
+  onBindingsChanged(() => {
+    if (created.visible && !capturing) draw();
+  });
   return created;
 }
 

@@ -225,11 +225,19 @@ export function flattenHtmlMessage(text: string): string {
  *
  * GlueDialog_Show sizes its box while GlueDialog is still hidden, when the page measures the
  * FontString as 0 px tall; the stock UPDATE_STATUS_DIALOG handler measures the now-visible text and
- * sizes the box again, so a long refusal stays inside it. Markup is flattened into the plain type:
- * the *_HTML types draw GlueDialogHTML, a SimpleHTML this renderer does not paint yet (WORK_PLAN
- * 3.35), and would open empty.
+ * sizes the box again, so a long refusal stays inside it. Markup is flattened into a plain type.
+ *
+ * 3.35-bounds (03.10): a *_HTML type opens exactly as the client opens it (FUN_004d80c0 fires only
+ * OPEN_STATUS_DIALOG): the page as written into GlueDialogHTML, which GlueDialog_Show sizes from
+ * `GetBoundsRect()` — the page's own height now (GlueBoundsRect.ts), measured whether or not the dialog
+ * shows yet. UPDATE_STATUS_DIALOG would size the box from the hidden GlueDialogText instead.
  */
 export function openStatusDialog(fire: GlueFireEvent, type: string, text: string, data?: string): void {
+  if (/_HTML$/.test(type)) { // 3.35-bounds
+    if (data === undefined) fire("OPEN_STATUS_DIALOG", type, text);
+    else fire("OPEN_STATUS_DIALOG", type, text, data);
+    return;
+  }
   const plain = flattenHtmlMessage(text);
   if (data === undefined) fire("OPEN_STATUS_DIALOG", type, plain);
   else fire("OPEN_STATUS_DIALOG", type, plain, data);
@@ -261,8 +269,11 @@ export function formatGlueString(format: string, ...args: readonly unknown[]): s
   });
 }
 
-/** Where a failure happened: the authserver login, or the world connection of the glue screens. */
-export type GlueFailureContext = "auth" | "world";
+/**
+ * Where a failure happened: the authserver login, the world connection of the glue screens, or a
+ * character-creation request on it (whose non-transport failure is CHAR_CREATE_FAILED, not a login).
+ */
+export type GlueFailureContext = "auth" | "world" | "create";
 
 /** `4290` — the gateway's refusal of a login storm (item 10.01); a close code, not a byte. */
 const TOO_MANY_ATTEMPTS_CLOSE = 4290;
@@ -281,6 +292,14 @@ const WORLD_AUTH_URLS: Readonly<Partial<Record<ResponseCodeName, string>>> = {
 
 const okay = (key: string, text: string): GlueAuthMessage => ({ key, dialog: "OKAY", text });
 const withText = (message: GlueAuthMessage, text: string): GlueAuthMessage => ({ ...message, text: message.text ?? text });
+
+/**
+ * The world's read loop failed under a character in play. Whatever broke the read — a close, a
+ * backend gone, a stream error — the socket is gone and the player is told DISCONNECTED; the
+ * connection-phase keys `describeFailure` picks (CHAR_LOGIN_FAILED, CHAR_LOGIN_NO_WORLD) name a login
+ * that never happened here.
+ */
+export const WORLD_CONNECTION_LOST: GlueAuthMessage = okay("DISCONNECTED", "Соединение с сервером разорвано");
 
 /**
  * An exception as the client's words for it, on the connection it happened on: the key, the stock
@@ -320,8 +339,9 @@ export function describeFailure(error: unknown, context: GlueFailureContext): Gl
     }
     return okay("DISCONNECTED", "Соединение с сервером разорвано");
   }
-  return context === "auth"
-    ? withText(CLIENT_LOGIN_REFUSALS.failed, "Ошибка подключения.")
+  if (context === "auth") return withText(CLIENT_LOGIN_REFUSALS.failed, "Ошибка подключения.");
+  return context === "create"
+    ? okay("CHAR_CREATE_FAILED", "Не удалось создать персонажа")
     : okay("CHAR_LOGIN_FAILED", "Ошибка входа");
 }
 
@@ -331,16 +351,33 @@ export interface GlueStatusHost {
   readonly glueString?: GlueStringLookup | undefined;
   /** Whether the corpus defines `GlueDialogTypes[type]`; without it only OKAY is trusted. */
   readonly hasDialogType?: ((type: string) => boolean) | undefined;
+  /**
+   * 3.35-review: whether GlueDialog is up showing `type` now. An *_HTML type that did not open — a Lua
+   * error in GlueDialog_Show, such as a throw or no values from `GetBoundsRect` before its arithmetic —
+   * falls back to the plain type with the page flattened, so a refusal is never left unsaid.
+   */
+  readonly dialogShown?: ((type: string) => boolean) | undefined;
 }
 
 /**
  * A refusal in the corpus' own words, in the stock dialog it names. GlueDialog_Show indexes
  * GlueDialogTypes unguarded, so a type the corpus does not define becomes OKAY (and loses its data)
  * rather than a Lua error.
+ *
+ * 3.35-bounds (03.10): markup opens the dialog's HTML twin, as FUN_004d80c0 does for a login result
+ * whose string holds "<HTML>": OKAY_HTML, and CONNECTION_HELP_HTML for LOGIN_FAILED's CONNECTION_HELP
+ * (the ruRU corpus writes 20 LOGIN_* strings that way, LOGIN_UNKNOWN_ACCOUNT among them). A corpus without
+ * the twin keeps the plain type with the text flattened.
  */
 export function showStatusMessage(host: GlueStatusHost, message: GlueAuthMessage, fallback = "Ошибка"): void {
   const text = messageFor(message.key, host.glueString,
     messageFor(message.fallbackKey, host.glueString, message.text ?? fallback));
   const stock = message.dialog === "OKAY" || (host.hasDialogType?.(message.dialog) ?? false);
+  const twin = stock && (message.dialog === "OKAY" || message.dialog === "CONNECTION_HELP") && isHtmlMessage(text) // 3.35-bounds
+    ? `${message.dialog}_HTML` : undefined; // 3.35-bounds
+  if (twin !== undefined && (host.hasDialogType?.(twin) ?? false)) { // 3.35-bounds
+    openStatusDialog(host.fire, twin, text, message.data); // 3.35-bounds
+    if (host.dialogShown === undefined || host.dialogShown(twin)) return; // 3.35-review
+  } // 3.35-bounds
   openStatusDialog(host.fire, stock ? message.dialog : "OKAY", text, stock ? message.data : undefined);
 }

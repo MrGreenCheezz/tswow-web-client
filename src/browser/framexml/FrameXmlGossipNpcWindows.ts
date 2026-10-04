@@ -26,7 +26,7 @@ import {
 import { closeFrameXmlTaxi, frameXmlTaxiOpen, publishFrameXmlTaxi } from "./FrameXmlTaxiController.js";
 import { createFrameXmlTaxiOwner, frameXmlTaxiGate, installFrameXmlTaxiMap } from "./FrameXmlTaxiOwner.js";
 import { closeFrameXmlItemText, frameXmlItemTextOpen, publishFrameXmlItemText } from "./FrameXmlItemTextController.js";
-import { createFrameXmlItemTextOwner, frameXmlItemTextGate, installFrameXmlItemTextPage } from "./FrameXmlItemTextOwner.js";
+import { createFrameXmlItemTextOwner, frameXmlItemTextGate } from "./FrameXmlItemTextOwner.js";
 import type { FrameXmlTabardModel } from "./FrameXmlTabard.js";
 import type { FrameXmlRegistrarModel } from "./FrameXmlRegistrar.js";
 import type { FrameXmlPetitionModel } from "./FrameXmlPetition.js";
@@ -96,7 +96,6 @@ export function createFrameXmlNpcWindows(
   if (seam.taxi) installFrameXmlTaxiMap(boot, seam.taxi);
   if (seam.gossip) installFrameXmlGossipTitleText(boot);
   if (seam.gossip || seam.bank || seam.taxi) installFrameXmlNpcPortraits(boot);
-  if (seam.itemText) installFrameXmlItemTextPage(boot);
   const gossip = frameXmlGossipGate(seam, boot, renderer);
   if (gossip) installFrameXmlGossipQuestHandoff(boot, gossip.frame);
   const bank = frameXmlBankGate(seam, boot, renderer);

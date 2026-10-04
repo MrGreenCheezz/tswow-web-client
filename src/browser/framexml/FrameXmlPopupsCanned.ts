@@ -115,6 +115,9 @@ export class FrameXmlCannedPopupsWorld implements FrameXmlPopupsWorld {
   instanceLock: {
     expiresAt: number; encounterMask: number; previouslySaved: boolean; mapId: number; difficulty: number;
   } | undefined;
+  /** The current map and SMSG_INSTANCE_DIFFICULTY's difficulty (GetInstanceLockTimeRemaining with no lock). */
+  mapId: number | undefined = 0;
+  instanceDifficulty = 0;
   bindPoint: { areaId: number } | undefined;
   /** SMSG_INIT_WORLD_STATES: Elwynn Forest, Goldshire. */
   worldStateContext: { mapId: number; zoneId: number; areaId: number } | undefined = { mapId: 0, zoneId: 12, areaId: 87 };

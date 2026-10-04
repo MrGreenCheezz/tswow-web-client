@@ -11,12 +11,25 @@ import { formatMoney, formatPlayed, reputationRank } from "./Format.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { showProfessions } from "./Professions.js";
 import { skinnable, slotElement, slotSiblings } from "./Slots.js";
-import { textLine } from "./Widgets.js";
+import { setTip, textLine } from "./Widgets.js";
 import { toggleReputation } from "./Reputation.js";
+import { frameXmlReputationBase } from "../framexml/FrameXmlReputationResolver.js";
 import { className, raceName } from "./UnitSnapshot.js";
 import { stablePetRows } from "./StableControls.js";
 import { frameXmlStablePublished } from "../framexml/FrameXmlStableController.js";
 import { requestSpellCast } from "../game/GroundTarget.js";
+import {
+  PLAYER_FLAGS_HIDE_CLOAK, PLAYER_FLAGS_HIDE_HELM, SKILL_DEFENSE, showingCloak, showingHelm, unitHasMana,
+} from "../../world/CharacterStatFields.js";
+import { isCharacterStatCatalog, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
+import { characterStatSections, titleChoices, type SheetRow, type SheetSection } from "./CharacterSheetModel.js";
+import { readSkills } from "./Skills.js";
+import { nativeString } from "./Strings.js";
+import { createLiveFrameXmlTitles } from "../framexml/FrameXmlTitlesLive.js";
+import { FrameXmlCurrencyCatalogClient, createLiveFrameXmlCurrency } from "../framexml/FrameXmlCurrencyLive.js";
+import type { FrameXmlCurrencyModel } from "../framexml/FrameXmlCurrency.js";
+import { frameXmlClassHasRelicSlot } from "../framexml/FrameXmlRelicSlot.js";
+import type { WorldClient } from "../../world/WorldClient.js";
 
 /**
  * The character sheet: what the character is made of, beyond the health bar.
@@ -25,10 +38,11 @@ import { requestSpellCast } from "../game/GroundTarget.js";
  * resistances, the melee numbers — and the rest arrives in packets the world loop used to drop:
  * reputation, played time, titles, talent points.
  */
-const STAT_NAMES = ["Сила", "Ловкость", "Выносливость", "Интеллект", "Дух"];
-
 /** `SPELL_SCHOOL` order, and the first of them is armour rather than a resistance. */
 const RESISTANCE_NAMES = ["Броня", "Свет", "Огонь", "Природа", "Лёд", "Тьма", "Тайная магия"];
+
+/** Inventory slot 17 (zero-based), the ranged slot whose item the stock ranged rows test (slot 18 in Lua). */
+const RANGED_EQUIPMENT_SLOT = 17;
 
 function fieldAt(object: WorldObjectState, name: keyof typeof UPDATE_FIELDS, offset: number): number {
   return object.fields.get(UPDATE_FIELDS[name].offset + offset) ?? 0;
@@ -60,7 +74,233 @@ function section(title: string, lines: HTMLElement[]): HTMLElement {
 const characterStatsHost = slotElement("character-window/stats");
 const characterFooter = slotElement("character-window/footer");
 const drawStats = slotSiblings(characterStats, characterStatsHost);
-characterSheetPane.append(characterFooter);
+
+/**
+ * 4.03: the sheet's three controls — «Отображать шлем», «Отображать плащ» and the title picker.
+ *
+ * They live outside the box `drawStats` rebuilds every frame, for the reason the slot hosts above do:
+ * a control removed and re-inserted sixty times a second loses focus, and an open `<select>` closes.
+ * They are written only when what they show moved (see `syncSheetControls`), so a click is not
+ * overwritten by the old field value in the frames before the realm's answer arrives.
+ */
+function checkboxRow(label: string): { row: HTMLLabelElement; box: HTMLInputElement } {
+  const row = document.createElement("label");
+  row.className = "sheet-toggle";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  const text = document.createElement("span");
+  text.textContent = label;
+  row.append(box, text);
+  return { row, box };
+}
+
+const sheetControls = document.createElement("section");
+sheetControls.className = "sheet-section sheet-controls";
+sheetControls.hidden = true;
+const helmToggle = checkboxRow(nativeString("SHOW_HELM", "Отображать шлем"));
+const cloakToggle = checkboxRow(nativeString("SHOW_CLOAK", "Отображать плащ"));
+const titleRow = document.createElement("label");
+titleRow.className = "sheet-title-picker";
+titleRow.hidden = true;
+const titleLabel = document.createElement("span");
+titleLabel.textContent = "Звание";
+const titleSelect = document.createElement("select");
+titleRow.append(titleLabel, titleSelect);
+sheetControls.append(helmToggle.row, cloakToggle.row, titleRow);
+/**
+ * Wow.exe's ShowHelm/ShowCloak (0x006e0e00/0x006dd0f0, 0x006e0ef0/0x006dd1b0) send CMSG_SHOWING_HELM/
+ * CLOAK only when the player's flag says otherwise, and write no flag locally: the realm's answer does.
+ */
+function sendShowing(part: "helm" | "cloak", show: boolean): void {
+  const world = game.world;
+  const guid = world?.state.selfGuid;
+  const self = guid === undefined ? undefined : world?.state.objects.get(guid);
+  if (!world) return;
+  if (self && (part === "helm" ? showingHelm(self) : showingCloak(self)) === show) return;
+  if (part === "helm") world.setShowingHelm(show);
+  else world.setShowingCloak(show);
+}
+helmToggle.box.addEventListener("change", () => sendShowing("helm", helmToggle.box.checked));
+cloakToggle.box.addEventListener("change", () => sendShowing("cloak", cloakToggle.box.checked));
+characterSheetPane.append(sheetControls, characterFooter);
+
+/** The stock title model over the live fields (FrameXmlTitlesLive.ts), shared logic with PlayerTitleFrame. */
+const sheetTitles = createLiveFrameXmlTitles({ world: () => game.world, gatewayOrigin: () => game.gatewayOrigin });
+titleSelect.addEventListener("change", () => sheetTitles.model.setCurrent(Number(titleSelect.value)));
+
+/**
+ * The stock currency model (FrameXmlCurrencyLive.ts) with its own `/dbc/currencies` client, one per
+ * world session: the model remembers which item names it already asked for, and a new session's
+ * WorldClient has to be asked again.
+ */
+let sheetCurrency: FrameXmlCurrencyModel | undefined;
+let sheetCurrencyCatalog: FrameXmlCurrencyCatalogClient | undefined;
+
+/**
+ * What the sheet was last built from. `showCharacterSheet` is reached once a frame while any object
+ * update arrives — a city's walkers are enough — and the model, the skills, the currencies, the
+ * reputation sort and the signature cost a frame's worth of work for an unchanged sheet. So the
+ * inputs are compared first: the player's own fields by a running hash (one pass over the map), the
+ * packet-held parts and the fetched tables by identity. A currency's count lives in an item object
+ * and a late item or faction name in a cache, neither of them here, so the sheet is also rebuilt once
+ * a second while anything keeps asking.
+ */
+let builtInputs: readonly unknown[] | undefined;
+let builtAt = 0;
+const SHEET_REFRESH_MS = 1000;
+
+function fieldsHash(fields: ReadonlyMap<number, number>): number {
+  let hash = fields.size;
+  for (const [index, value] of fields) hash = (Math.imul(hash ^ index, 0x0100_0193) + value) | 0;
+  return hash;
+}
+
+function sheetInputs(world: WorldClient, self: WorldObjectState): unknown[] {
+  let factions = world.factions.size;
+  for (const faction of world.factions.values()) {
+    factions = (Math.imul(factions ^ faction.listId, 0x0100_0193) + faction.standing + faction.flags * 7) | 0;
+  }
+  return [world, self, fieldsHash(self.fields), statCatalog, sheetCurrencyCatalog?.current, world.playedTime,
+    world.talents, world.talents?.unspentPoints, world.achievements.size, world.titles.size, factions,
+    game.factions, game.factions?.reputationCatalog, world.itemTemplates.size];
+}
+
+/** What the controls showed last, so they are written only on a change. */
+let controlsWorld: WorldClient | undefined;
+let shownFlags: number | undefined;
+let shownTitles: string | undefined;
+/** Per world session: the one-time fetches (titles, currencies, rating tables). */
+let preparedWorld: WorldClient | undefined;
+let statCatalog: CharacterStatCatalog | undefined;
+
+/** `/dbc/character-stats?version=2` — the rating tables the stock sheet loads (FrameXmlCharacterStats.ts). */
+export const CHARACTER_STATS_PATH = "/dbc/character-stats?version=2";
+
+function prepareSheet(world: WorldClient): void {
+  if (preparedWorld === world) return;
+  preparedWorld = world;
+  statCatalog = undefined;
+  void sheetTitles.prepare();
+  const origin = game.gatewayOrigin;
+  sheetCurrency = undefined;
+  if (!origin) return;
+  sheetCurrency = createLiveFrameXmlCurrency({
+    world: () => game.world,
+    // Item names arrive by CMSG_ITEM_QUERY_SINGLE; WorldClient asks once per entry.
+    prefetchQuestMetadata: (itemIds) => { for (const id of itemIds) game.world?.itemTemplate(id); },
+  });
+  sheetCurrencyCatalog = new FrameXmlCurrencyCatalogClient(origin);
+  sheetCurrency.catalogSource = sheetCurrencyCatalog;
+  // Fetched once per world; the browser cache already holds the stock mount's answer when it ran.
+  void fetch(new URL(CHARACTER_STATS_PATH, origin).href).then(async (response) => {
+    const catalog: unknown = response.ok ? await response.json() : undefined;
+    if (preparedWorld === world && isCharacterStatCatalog(catalog)) statCatalog = catalog;
+  }).catch(() => { /* without the tables the rating tooltips and the defence row stay out */ });
+}
+
+/** Writes the three controls when the flag word or the title picker's inputs moved. */
+function syncSheetControls(world: WorldClient | undefined, self: WorldObjectState | undefined): void {
+  if (!world || !self) {
+    if (!sheetControls.hidden) sheetControls.hidden = true;
+    controlsWorld = undefined;
+    return;
+  }
+  if (controlsWorld !== world) {
+    controlsWorld = world;
+    shownFlags = undefined;
+    shownTitles = undefined;
+  }
+  if (sheetControls.hidden) sheetControls.hidden = false;
+  // Only the two hide bits: an AFK or resting edge must not undo a click still awaiting its answer.
+  const flags = (readField(self, "PLAYER_FLAGS") ?? 0) & (PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK);
+  if (flags !== shownFlags) {
+    shownFlags = flags;
+    helmToggle.box.checked = showingHelm(self);
+    cloakToggle.box.checked = showingCloak(self);
+  }
+  // Six known-title words, the worn title, the sex byte (a declined name) and whether the catalog landed.
+  const first = UPDATE_FIELDS.PLAYER__FIELD_KNOWN_TITLES.offset;
+  let key = `${sheetTitles.model.count()}|${readField(self, "PLAYER_CHOSEN_TITLE") ?? 0}|${unit.gender(self) ?? ""}`;
+  for (let index = 0; index < 6; index++) key += `|${self.fields.get(first + index) ?? 0}`;
+  if (key === shownTitles) return;
+  shownTitles = key;
+  const choices = titleChoices(sheetTitles.model);
+  titleRow.hidden = choices === undefined;
+  if (!choices) {
+    titleSelect.replaceChildren();
+    return;
+  }
+  titleSelect.replaceChildren(...choices.options.map((choice) => {
+    const option = document.createElement("option");
+    option.value = String(choice.value);
+    option.textContent = choice.label;
+    return option;
+  }));
+  titleSelect.value = String(choices.current);
+}
+
+/** One drawn block of the sheet as data: its rows, a muted heading line, and the reputation button. */
+type DrawnRow = SheetRow | { readonly heading: string };
+interface DrawnSection {
+  readonly title: string;
+  readonly key?: SheetSection["key"] | "currency";
+  readonly rows: readonly DrawnRow[];
+  readonly reputationButton?: boolean;
+}
+
+/**
+ * What the box showed last. The sheet is asked to draw once a frame while packets arrive
+ * (`renderInventory`), and a box rebuilt every frame both costs a frame's worth of DOM work and
+ * takes a hovered row — and its tooltip — away under the pointer; so the rows are built as data
+ * first and the box is rebuilt only when they read differently.
+ */
+let drawnSignature: string | undefined;
+
+function signatureOf(sections: readonly DrawnSection[]): string {
+  let signature = "";
+  for (const entry of sections) {
+    signature += `${entry.key ?? ""}${entry.title}${entry.reputationButton ? 1 : 0}`;
+    for (const row of entry.rows) {
+      signature += "heading" in row ? `#${row.heading}`
+        : `${row.label}${row.value}${row.tip ?? ""}${row.tone ?? ""}`;
+    }
+  }
+  return signature;
+}
+
+function drawnLine(entry: DrawnRow): HTMLElement {
+  if ("heading" in entry) return muted(entry.heading);
+  const line = textLine(entry.label, entry.value);
+  if (entry.tone) line.classList.add(entry.tone === "buff" ? "is-buff" : "is-debuff");
+  if (entry.tip) setTip(line, entry.tip);
+  return line;
+}
+
+function drawnSection(entry: DrawnSection): HTMLElement {
+  const lines = entry.rows.map(drawnLine);
+  if (entry.reputationButton) {
+    const all = document.createElement("button");
+    all.type = "button";
+    all.textContent = "Все фракции";
+    all.addEventListener("click", () => toggleReputation());
+    lines.push(all);
+  }
+  const block = section(entry.title, lines);
+  if (entry.key) block.dataset["sheetSection"] = entry.key;
+  return block;
+}
+
+/** The currencies the player knows, under their headings, as the stock token list orders them. */
+function currencySection(): DrawnSection | undefined {
+  if (!sheetCurrency) return undefined;
+  sheetCurrency.tick();
+  const rows = sheetCurrency.rows();
+  if (rows.length === 0) return undefined;
+  return {
+    title: nativeString("CURRENCY", "Валюта"), key: "currency",
+    rows: rows.map((entry) => entry.header ? { heading: entry.name ?? "" } : { label: entry.name ?? "…", value: String(entry.count) }),
+  };
+}
 skinnable("character-window", characterWindow);
 
 export type CharacterTab = "sheet" | "skills" | "collections";
@@ -178,7 +418,7 @@ function collectionSpell(spellId: number, kind: "Маунт" | "Питомец")
   button.className = "character-collection-card";
   button.disabled = metadata === undefined || metadata.passive;
   const name = metadata?.name ?? `${kind} — данные загружаются`;
-  button.title = name;
+  setTip(button, name);
   button.setAttribute("aria-label", name);
   const iconUrl = spellIconUrl(metadata?.iconId ?? 0, game.gatewayOrigin);
   if (iconUrl) {
@@ -197,7 +437,8 @@ function collectionSpell(spellId: number, kind: "Маунт" | "Питомец")
     requestSpellCast(spellId, () => current.castSpell(spellId, Math.max(
       metadata?.recoveryTime ?? 0,
       metadata?.categoryRecoveryTime ?? 0,
-      metadata?.startRecoveryTime ?? 0,
+      // L13-review 5.30: StartRecoveryTime no longer — the global part is the model's (PredictedGlobalCooldown.ts), and
+      // as the spell's own timer it held the category-0 mounts (47977, 71342, 75973) 1.5 s the realm does not.
     ), metadata?.cooldownStartedOnEvent ?? false));
   });
   return button;
@@ -258,73 +499,89 @@ export function showCharacterSheet(): void {
   const world = game.world;
   const guid = world?.state.selfGuid;
   const self = guid === undefined ? undefined : world?.state.objects.get(guid);
+  syncSheetControls(world, self);
   if (!world || !self) {
     characterIdentity.textContent = "Нет данных о персонаже";
+    drawnSignature = undefined;
+    builtInputs = undefined;
     drawStats([textLine("Персонаж", "нет данных")]);
     return;
   }
+  prepareSheet(world);
+  const inputs = sheetInputs(world, self);
+  const now = performance.now();
+  if (builtInputs && now - builtAt < SHEET_REFRESH_MS && inputs.length === builtInputs.length
+    && inputs.every((input, index) => input === builtInputs![index])) return;
+  builtInputs = inputs;
+  builtAt = now;
 
   const level = unit.level(self) ?? 0;
   const race = raceName(unit.race(self));
   const playerClass = className(unit.classId(self));
-  characterIdentity.textContent = [race, playerClass, `уровень ${level}`].filter(Boolean).join(" · ");
+  const identity = [race, playerClass, `уровень ${level}`].filter(Boolean).join(" · ");
+  if (characterIdentity.textContent !== identity) characterIdentity.textContent = identity;
   const experience = readField(self, "PLAYER_XP") ?? 0;
   const nextLevel = readField(self, "PLAYER_NEXT_LEVEL_XP") ?? 0;
   const money = readField(self, "PLAYER_FIELD_COINAGE") ?? 0;
 
-  const general = [
-    textLine("Раса", race),
-    textLine("Класс", playerClass),
-    textLine("Уровень", String(level)),
-    textLine("Опыт", nextLevel > 0 ? `${experience} / ${nextLevel}` : String(experience)),
-    textLine("Деньги", formatMoney(money)),
+  const line = (label: string, value: string): SheetRow => ({ label, value });
+  const general: SheetRow[] = [
+    line("Раса", race),
+    line("Класс", playerClass),
+    line("Уровень", String(level)),
+    line("Опыт", nextLevel > 0 ? `${experience} / ${nextLevel}` : String(experience)),
+    line("Деньги", formatMoney(money)),
   ];
   if (world.playedTime) {
-    general.push(textLine("Сыграно", formatPlayed(world.playedTime.total)));
-    general.push(textLine("На уровне", formatPlayed(world.playedTime.atLevel)));
+    general.push(line("Сыграно", formatPlayed(world.playedTime.total)));
+    general.push(line("На уровне", formatPlayed(world.playedTime.atLevel)));
   }
-  if (world.talents) general.push(textLine("Очки талантов", String(world.talents.unspentPoints)));
-  if (world.achievements.size > 0) general.push(textLine("Достижений", String(world.achievements.size)));
-  if (world.titles.size > 0) general.push(textLine("Титулов", String(world.titles.size)));
+  if (world.talents) general.push(line("Очки талантов", String(world.talents.unspentPoints)));
+  if (world.achievements.size > 0) general.push(line("Достижений", String(world.achievements.size)));
+  if (world.titles.size > 0) general.push(line("Титулов", String(world.titles.size)));
 
-  const stats = STAT_NAMES.map((name, index) => textLine(name, String(fieldAt(self, "UNIT_FIELD_STAT0", index))));
-
-  const combat = [
-    textLine("Сила атаки", String(fieldAt(self, "UNIT_FIELD_ATTACK_POWER", 0))),
-    textLine("Дальний бой", String(fieldAt(self, "UNIT_FIELD_RANGED_ATTACK_POWER", 0))),
-    textLine("Урон", `${Math.round(readField(self, "UNIT_FIELD_MINDAMAGE") ?? 0)}–${Math.round(readField(self, "UNIT_FIELD_MAXDAMAGE") ?? 0)}`),
-    textLine("Крит", `${(readField(self, "PLAYER_CRIT_PERCENTAGE") ?? 0).toFixed(2)} %`),
-    textLine("Уклонение", `${(readField(self, "PLAYER_DODGE_PERCENTAGE") ?? 0).toFixed(2)} %`),
-    textLine("Парирование", `${(readField(self, "PLAYER_PARRY_PERCENTAGE") ?? 0).toFixed(2)} %`),
-    textLine("Блок", `${(readField(self, "PLAYER_BLOCK_PERCENTAGE") ?? 0).toFixed(2)} %`),
-  ];
+  // 4.03: the stock PaperDoll's categories, read as LiveWorldSeam reads them (CharacterSheetModel.ts).
+  const classId = unit.classId(self) ?? 0;
+  const rangedSlot = UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + RANGED_EQUIPMENT_SLOT * 2;
+  const sections = characterStatSections(self, {
+    classId, level,
+    catalog: statCatalog,
+    defenseSkill: readSkills(self).find((skill) => skill.skillId === SKILL_DEFENSE),
+    hasMana: unitHasMana(self),
+    rangedWeapon: ((self.fields.get(rangedSlot) ?? 0) !== 0 || (self.fields.get(rangedSlot + 1) ?? 0) !== 0)
+      && !frameXmlClassHasRelicSlot(classId),
+  });
 
   const resistances = RESISTANCE_NAMES.map((name, index) =>
-    textLine(name, String(fieldAt(self, "UNIT_FIELD_RESISTANCES", index))));
+    line(name, String(fieldAt(self, "UNIT_FIELD_RESISTANCES", index))));
 
-  const blocks = [
-    section("Общее", general),
-    section("Характеристики", stats),
-    section("Бой", combat),
-    section("Сопротивления", resistances),
+  const blocks: DrawnSection[] = [
+    { title: "Общее", rows: general },
+    ...sections,
+    { title: "Сопротивления", rows: resistances },
   ];
+  const currency = currencySection();
+  if (currency) blocks.push(currency);
 
   // Only factions the character has actually met are worth a line; the server sends all 128.
-  const met = [...world.factions.values()].filter((faction) => (faction.flags & 1) !== 0 && faction.standing !== 0);
+  // 5.19: the standing shown is Faction.dbc's race/class base plus the wire's (Wow.exe 0x005d05b0);
+  // a home city met at the base alone (wire 0) is met all the same (FACTION_FLAG_VISIBLE).
+  const catalog = game.factions?.reputationCatalog;
+  const met = [...world.factions.values()].filter((faction) => (faction.flags & 1) !== 0)
+    .map((faction) => ({ listId: faction.listId, standing: frameXmlReputationBase(world, catalog, faction.listId) + faction.standing }));
   if (met.length > 0) {
     const lines = met
       .sort((left, right) => right.standing - left.standing)
       .slice(0, 20)
-      .map((faction) => textLine(
+      .map((faction) => line(
         game.factions?.name(faction.listId) ?? `Фракция ${faction.listId}`,
         `${reputationRank(faction.standing)} · ${faction.standing}`,
       ));
-    const all = document.createElement("button");
-    all.type = "button";
-    all.textContent = "Все фракции";
-    all.addEventListener("click", () => toggleReputation());
-    blocks.push(section("Репутация", [...lines, all]));
+    blocks.push({ title: "Репутация", rows: lines, reputationButton: true });
   }
 
-  drawStats(blocks);
+  const signature = signatureOf(blocks);
+  if (signature === drawnSignature) return;
+  drawnSignature = signature;
+  drawStats(blocks.map(drawnSection));
 }

@@ -8,6 +8,7 @@
 "use strict";
 
 const { execFileSync, spawn } = require("node:child_process");
+const { execFile } = require("node:child_process"); // L10 (10.11)
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -96,4 +97,39 @@ function startGateway(root, { port, logFile, timeoutMs = 120_000 }) {
   return { ready, stop };
 }
 
+// L10 (10.11, slice 3): the gateway this shell would start runs whatever dist/code holds; built
+// before its sources last changed, it serves yesterday's routes (a new one answers 404 and the page
+// reports the feature missing). The checkout answers itself — `tools/build-gateway.mjs --check`
+// walks the gateway's imports and compares times, compiling nothing.
+
+/**
+ * The check's exit code and output as the shell acts on them: 0 is a stale build (its last line
+ * names the first stale source), 1 a current one. Anything else — a crash, a timeout, no Node.js —
+ * is `unknown`, which never stops the game.
+ */
+function describeStaleness(exitCode, output) {
+  const line = String(output ?? "").trim().split(/\r?\n/).pop()?.trim() ?? "";
+  if (exitCode === 0) return { stale: true, text: line || "dist/code is older than the gateway's sources." };
+  if (exitCode === 1) return { stale: false };
+  return { stale: false, unknown: true, text: line || `the freshness check ended with ${exitCode}` };
+}
+
+/**
+ * Whether the checkout at `root` has a stale gateway build. Never rejects; a checkout from before
+ * the check existed answers `unknown`.
+ */
+function gatewayBuildState(root, { node = nodeExecutable(root), timeoutMs = 20_000 } = {}) {
+  const script = path.join(root, "tools", "build-gateway.mjs");
+  if (!fs.existsSync(script)) return Promise.resolve({ stale: false, unknown: true, text: `${script} not found` });
+  return new Promise((resolve) => {
+    execFile(node, [script, "--check"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        const code = error ? (typeof error.code === "number" ? error.code : -1) : 0;
+        resolve(describeStaleness(code, code === 0 ? stdout : `${stdout ?? ""}${stderr ?? ""}` || error?.message));
+      });
+  });
+}
+
 module.exports = { findWebClientRoot, listening, logTail, startGateway, waitUntilListening };
+module.exports.describeStaleness = describeStaleness; // L10 (10.11)
+module.exports.gatewayBuildState = gatewayBuildState; // L10 (10.11)

@@ -93,8 +93,8 @@ export interface FrameXmlTalentPrerequisiteSnapshot {
   /** Required learned rank, one-based. */
   readonly requiredRank: number;
   readonly meetsPrereq: boolean | undefined;
-  /** Preview allocations are not represented by the current packet. */
-  readonly meetsPreviewPrereq: undefined;
+  /** The prerequisite's preview rank meets the requirement; filled by FrameXmlTalentPreview.ts (3.33). */
+  readonly meetsPreviewPrereq: boolean | undefined;
 }
 
 /** One cell as `GetTalentInfo` can report it, plus its prerequisite coordinates. */
@@ -115,9 +115,9 @@ export interface FrameXmlTalentCellSnapshot {
   /** Current TalentClient has no exceptional marker. */
   readonly isExceptional: boolean | undefined;
   readonly meetsPrereq: boolean | undefined;
-  /** Preview allocations are deliberately not fabricated. */
-  readonly previewRank: undefined;
-  readonly meetsPreviewPrereq: undefined;
+  /** Learned plus previewed rank; the resolver leaves both to FrameXmlTalentPreview.ts (3.33). */
+  readonly previewRank: number | undefined;
+  readonly meetsPreviewPrereq: boolean | undefined;
   readonly prerequisites: readonly FrameXmlTalentPrerequisiteSnapshot[];
   /** Exact hyperlink syntax and localized spell name are not available here. */
   readonly link: undefined;
@@ -135,8 +135,8 @@ export interface FrameXmlTalentTabSnapshot {
   readonly iconTexture: string | undefined;
   readonly background: string | undefined;
   readonly pointsSpent: number;
-  /** Preview allocation is unsupported for both owners; stock expects a numeric zero. */
-  readonly previewPointsSpent: 0;
+  /** Previewed points in this tab (FrameXmlTalentPreview.ts, 3.33); stock expects a number. */
+  readonly previewPointsSpent: number;
   readonly talents: readonly FrameXmlTalentCellSnapshot[];
 }
 
@@ -348,7 +348,9 @@ function resolveSnapshot(
   if (!player || player.typeId !== TYPEID_PLAYER || !talents || talents.pet
     || !metadata || metadata.ready !== true) return undefined;
   const classId = unit.classId(player);
-  if (!finiteInteger(classId) || classId < 1 || classId > 11) return undefined;
+  // Any ChrClasses id with a TalentTab.ClassMask bit (1 << (id - 1)), not just the stock 1..11: a
+  // TSWoW class (HERO is 13 on this dataset) reads its own tabs once the DBC has them (9.05).
+  if (!finiteInteger(classId) || classId < 1 || classId > 31) return undefined;
   return resolveFromTabs(classId, talents, metadata, orderedTabs(metadata, classId), 5);
 }
 

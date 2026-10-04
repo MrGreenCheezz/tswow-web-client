@@ -21,14 +21,15 @@ import { usePanelHost } from "./ui/Widgets.js";
 import { wirePanelButtons } from "./ui/Windows.js";
 import { wireLoginForms } from "./app/Login.js";
 import {
-  frontDoorGatewayOrigin, frontDoorMode, gatewaySocketUrl, storedFrontDoorMode,
+  frontDoorMode, gatewayOverride, gatewaySocketUrl, storedFrontDoorMode,
 } from "./glue/FrontDoor.js";
 import { settings } from "./ui/Settings.js";
 import { settingNumber } from "./ui/SettingsModel.js";
 import { wirePerformanceCapture } from "./ui/PerformanceCapture.js";
 import { installPatchChainWatch } from "./PatchChainChanged.js";
-import { gatewayOrigin as defaultGatewayOrigin } from "./Environment.js";
+import { gatewayOrigin as defaultGatewayOrigin, pageGatewayPolicy } from "./Environment.js";
 import { installNativeAppShell } from "./app/NativeAppShell.js";
+import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./glue/GlueRetry.js";
 
 /**
  * Assembly. Everything this file used to do itself now lives in a module it can be found in:
@@ -57,6 +58,10 @@ wirePerformanceCapture();
 // the plan that owes each one a handler.
 (globalThis as unknown as { webclientUnhandledOpcodes: () => unknown }).webclientUnhandledOpcodes = () =>
   game.world?.unhandledOpcodes.summary() ?? [];
+
+// Opcodes accepted on purpose without an effect, each with its reason and plan item (5.29).
+(globalThis as unknown as { webclientIgnoredOpcodes: () => unknown }).webclientIgnoredOpcodes = () =>
+  game.world?.ignoredOpcodes.summary() ?? [];
 
 // Parser failures and malformed custom traffic have their own counter. A known opcode whose
 // payload failed to parse must not appear as an opcode without a handler.
@@ -223,7 +228,17 @@ startRenderLoop();
  * actually standing.
  */
 const frontDoorSearch = window.location.search;
-const frontDoorGateway = frontDoorGatewayOrigin(frontDoorSearch);
+// 10.03: a `?gateway=` link is honoured only for gateways this page already trusts (same host,
+// loopback-to-loopback, the compiled default or an allow-list); a refused one is said out loud and the
+// page stays on its default gateway.
+const frontDoorGatewayVerdict = gatewayOverride(frontDoorSearch, pageGatewayPolicy());
+const frontDoorGateway = frontDoorGatewayVerdict.kind === "use" ? frontDoorGatewayVerdict.origin : undefined;
+if (frontDoorGatewayVerdict.kind === "refused") {
+  console.warn(`[gateway] ${frontDoorGatewayVerdict.reason}`);
+  status.className = "error";
+  status.textContent = frontDoorGatewayVerdict.reason;
+  glueStatus.textContent = frontDoorGatewayVerdict.reason;
+}
 if (frontDoorGateway) {
   // The GlueXML login screen has no address field — the corpus' `AccountLogin` knows about an
   // account and a password and nothing else — so `?gateway=` is where a player pointing at a
@@ -252,6 +267,19 @@ if (frontDoorMode(frontDoorSearch, storedFrontDoorMode(globalThis.localStorage))
       });
     })
     .catch((error: unknown) => {
+      if (error instanceof GlueServerUnavailableError) {
+        // 10.16: the gateway is not answering. The DOM forms would need the same gateway, so they are
+        // no fallback here: say so, and load the page again once the gateway serves the screens.
+        console.error("[glue] сервер недоступен", error);
+        glueStage.hidden = true;
+        showGlueServerUnavailable({
+          container: glueHost,
+          origin: error.origin,
+          probe: () => probeGlueServer(error.origin),
+          onAvailable: () => window.location.reload(),
+        });
+        return;
+      }
       // A glue runtime that will not start must not leave a blank page: the DOM forms are still in
       // the document and are exactly the fallback the plan keeps them for.
       console.error("[glue] экран входа не загрузился, открыт запасной DOM-вход", error);

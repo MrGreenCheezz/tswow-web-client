@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { TERRAIN_GRID_SIZE } from "./Terrain.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -267,7 +268,7 @@ export class HorizonClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/horizon/${map}`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/horizon/${map}`));
       if (response.status === 404) {
         // A map without a WDL is a normal absence (instances/battlegrounds), not a failed load.
         this.#maps.set(map, null);

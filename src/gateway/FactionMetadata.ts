@@ -7,6 +7,16 @@
 import { openDbcFile } from "./Dbc.js";
 import { FACTION_RELATIONS, type FactionData, type FactionTemplate } from "../world/FactionRules.js";
 
+/**
+ * L18 5.05: a template row as `/dbc/factions?v=3` serves it — the masks plus `FactionTemplate.Flags`
+ * (column 2, DBCStructure.h:694; tools/dbd/FactionTemplate.dbd 3.3.5.12340), which Wow.exe reads at row
+ * +8 for CONTESTED_GUARD 0x1000 (0x007251c0, 0x0071f770) and HOSTILE_BY_DEFAULT 0x2000 (0x00715440).
+ * A gateway before v=3 sends rows without it; the browser reads that as "unknown".
+ */
+export interface FactionTemplateRow extends FactionTemplate {
+  readonly flags: number;
+}
+
 export async function loadFactionData(dbcDirectory: string): Promise<FactionData> {
   const table = await openDbcFile(dbcDirectory, "FactionTemplate");
   // And the names, which come from the other table and are keyed differently. `SMSG_INITIALIZE_FACTIONS`
@@ -25,7 +35,7 @@ export async function loadFactionData(dbcDirectory: string): Promise<FactionData
     const name = factions!.locstring(row, "Name_lang");
     if (name) names[index] = name;
   }
-  const templates: Record<number, FactionTemplate> = {};
+  const templates: Record<number, FactionTemplateRow> = {}; // L18 5.05: was FactionTemplate
   for (const row of table.rows()) {
     const id = table.id(row);
     if (id <= 0) continue;
@@ -41,6 +51,7 @@ export async function loadFactionData(dbcDirectory: string): Promise<FactionData
     }
     templates[id] = {
       faction: table.int(row, "Faction"),
+      flags: table.int(row, "Flags"), // L18 5.05
       factionGroup: table.int(row, "FactionGroup"),
       friendGroup: table.int(row, "FriendGroup"),
       enemyGroup: table.int(row, "EnemyGroup"),

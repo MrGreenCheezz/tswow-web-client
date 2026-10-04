@@ -24,6 +24,8 @@
 // comes from a generation the page did not boot with. So the page also asks when the tab comes back
 // and, at most every ten seconds, while it keeps loading from the gateway, and compares generations.
 
+import { beginGatewayCacheBypass, noteGatewayCacheGeneration, resetGatewayGeneration } from "./GatewayGeneration.js";
+
 export const PATCH_CHAIN_CHANGED = "client_patch_chain_changed";
 export const PATCH_CHAIN_CHANGED_MESSAGE = "Патчи TSWoW обновились — перезапустите шлюз и обновите страницу";
 
@@ -82,6 +84,8 @@ export interface PatchStatusSummaryLike {
   /** Only in the full answer: `tools/patch-status.mjs --json` for the disk as it is now. */
   readonly client?: { readonly summaryLine?: unknown; readonly generation?: unknown } | null;
   readonly clientError?: string;
+  /** 10.12: what tile URLs carry in `g=` (GatewayGeneration.ts); absent from a gateway built before it. */
+  readonly cacheGeneration?: string;
 }
 
 export type PatchStatusRead =
@@ -228,13 +232,18 @@ export async function readPatchStatus(
   } catch (error) {
     return { kind: "unreachable", error: error instanceof Error ? error.message : String(error) };
   }
-  if (response.status === 404) return { kind: "unsupported" };
+  if (response.status === 404) {
+    noteGatewayCacheGeneration(origin, undefined);
+    return { kind: "unsupported" };
+  }
   if (!response.ok) return { kind: "unreachable", error: `${url.pathname} answered ${response.status}` };
   try {
     const status = await response.json() as PatchStatusSummaryLike;
     if (typeof status?.generation !== "string" || typeof status.stale !== "boolean") {
       return { kind: "unreachable", error: `${url.pathname} answered an unknown shape` };
     }
+    // Every read keeps the tile URLs on the generation the gateway serves now (10.12).
+    noteGatewayCacheGeneration(origin, status.cacheGeneration);
     return { kind: "ok", status };
   } catch (error) {
     return { kind: "unreachable", error: error instanceof Error ? error.message : String(error) };
@@ -294,7 +303,7 @@ function renderBanner(route: string, initial?: PatchStateDescription): void {
   const reload = document.createElement("button");
   reload.type = "button";
   reload.textContent = "Обновить страницу";
-  reload.addEventListener("click", () => window.location.reload());
+  reload.addEventListener("click", () => reloadBypassingCache());
   const detail = document.createElement("span");
   detail.className = "patch-chain-banner-detail";
   detail.textContent = initial?.text ?? `Шлюз ответил 409 client_patch_chain_changed на ${route}.`;
@@ -328,6 +337,39 @@ async function refreshBanner(): Promise<void> {
   // The moment a reload would help is the one moment a collapsed banner must be seen again.
   if (description.reload && banner.reload.dataset["ready"] !== "true") setBannerCollapsed(false);
   banner.reload.dataset["ready"] = String(description.reload);
+}
+
+/** sessionStorage key: the banner's reload asks the next page to bypass cached tiles (10.12). */
+const RELOAD_BYPASS_KEY = "webclient.patchReloadAt";
+/** A flag older than this belongs to some other reload. */
+const RELOAD_BYPASS_MAX_AGE_MS = 120_000;
+
+/**
+ * The banner's reload. Tile URLs carry the gateway's cache generation, so the reloaded page asks
+ * for new URLs and cannot be handed the old tiles; the flag covers the moment before that page has
+ * heard the generation (`beginGatewayCacheBypass`).
+ */
+export function reloadBypassingCache(): void {
+  try {
+    globalThis.sessionStorage?.setItem(RELOAD_BYPASS_KEY, String(Date.now()));
+  } catch {
+    // No session storage: the reload still asks for the new generation once the page has it.
+  }
+  window.location.reload();
+}
+
+/** Reads and clears the banner's flag; whether this page was started by that reload. */
+function takeReloadBypass(now: number): boolean {
+  try {
+    const storage = globalThis.sessionStorage;
+    const at = storage?.getItem(RELOAD_BYPASS_KEY);
+    if (at === null || at === undefined) return false;
+    storage!.removeItem(RELOAD_BYPASS_KEY);
+    const age = now - Number(at);
+    return Number.isFinite(age) && age >= 0 && age < RELOAD_BYPASS_MAX_AGE_MS;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -507,6 +549,9 @@ export function installPatchChainWatch(
   observeResources();
   probeOnReturn();
   const gateway = origin();
+  if (gateway && takeReloadBypass(Date.now())) {
+    beginGatewayCacheBypass(gateway, `r${Date.now().toString(36)}${Math.floor(Math.random() * 0xffffff).toString(36)}`);
+  }
   if (gateway) {
     // The boot read counts as the first probe: activity asks again ten seconds from now.
     state.lastProbeAt = state.now();
@@ -532,4 +577,5 @@ export function resetPatchChainWatch(): void {
   state.now = Date.now;
   state.lastProbeAt = Number.NEGATIVE_INFINITY;
   state.probing = undefined;
+  resetGatewayGeneration();
 }

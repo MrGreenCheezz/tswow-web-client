@@ -16,6 +16,16 @@ import { createCannedFrameXmlThreat } from "./FrameXmlThreatCanned.js";
 import { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
 import { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
 import { FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import { FrameXmlPvpFlagModel } from "./FrameXmlPvpFlag.js";
+import { FrameXmlBattlefieldScoreModel } from "./FrameXmlScoreboard.js";
+import { FrameXmlDifficultyModel } from "./FrameXmlDifficulty.js";
+import { FrameXmlTalentGroupModel, type FrameXmlTalentGroupState } from "./FrameXmlTalentGroup.js";
+import { frameXmlCannedTrainerGroups, type FrameXmlCannedTrainerGroups } from "./FrameXmlTrainerCanned.js"; // L12 3.29
+import { frameXmlTrainerBuyAll, type FrameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import { FrameXmlQuestShareModel, QUEST_FLAG_SHARABLE } from "./FrameXmlQuestShare.js";
+import { FRAMEXML_RELIC_CLASS_TOKENS } from "./FrameXmlRelicSlot.js";
+import { FrameXmlArenaRosterModel } from "./FrameXmlArenaRoster.js";
+import { CANNED_SCOREBOARD_COLUMNS, FrameXmlPvpCannedWorld } from "./FrameXmlPvpCanned.js";
 import { FRAMEXML_CONTROL_EVENTS } from "./FrameXmlControl.js";
 import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import type { FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
@@ -91,6 +101,10 @@ import {
   type FrameXmlMinimapZone,
   type FrameXmlWorldSeam,
 } from "./FrameXmlWorldSeam.js";
+// 3.13 (L6): the client's zone headers over canned quests that name a zone.
+import { FrameXmlQuestLogModel, QUEST_FLAG_DAILY, type FrameXmlQuestLogTemplate } from "./FrameXmlQuestLog.js";
+import { questGreenRange as cannedQuestGreenRange } from "./FrameXmlWorldSeam.js";
+import type { QuestLogEntry } from "../../world/Fields.js";
 import type { FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
 import type { FrameXmlLootMethod } from "./FrameXmlGroupLoot.js";
 import { frameXmlSkillAbandonable, type FrameXmlSkillRow } from "./FrameXmlSkillResolver.js";
@@ -258,11 +272,18 @@ export interface CannedTrainerService extends TrainerSpell {
   readonly rank?: string;
   readonly iconPath?: string;
   readonly description?: string;
+  /** L12 3.29: the service's skill line, for a trainer with `skillLines`. */
+  readonly skillLine?: number;
 }
 
 export interface CannedTrainer extends Omit<TrainerList, "spells"> {
   readonly name: string;
   readonly services: readonly CannedTrainerService[];
+  /**
+   * L12 3.29: the skill lines' names by id. With them the trainer lists header rows, collapses, filters
+   * lines and buys «everything» as the live seam does (FrameXmlTrainerCanned.ts); without, a flat list.
+   */
+  readonly skillLines?: Readonly<Record<number, string>>;
 }
 
 export const CANNED_TRAINER: CannedTrainer = Object.freeze({
@@ -286,6 +307,28 @@ export const CANNED_TRAINER: CannedTrainer = Object.freeze({
       requiredSkillRank: 0, requiredAbilities: [0, 0, 0] as [number, number, number],
       name: "Кровопускание", rank: "", iconPath: "Interface\\Icons\\Ability_Gouge",
       description: "Наносит периодический урон." }),
+  ]),
+});
+
+/**
+ * L12 3.29: the same warrior trainer with skill lines (SkillLine ids 26 Оружие, 256 Неистовство, 257 Защита),
+ * for the vertical's header rows. The client sorts the lines by name and the services by level.
+ */
+export const CANNED_GROUPED_TRAINER: CannedTrainer = Object.freeze({
+  ...CANNED_TRAINER,
+  skillLines: Object.freeze({ 26: "Оружие", 256: "Неистовство", 257: "Защита" }),
+  services: Object.freeze([
+    ...CANNED_TRAINER.services.map((service) => Object.freeze({ ...service, skillLine: 26 })),
+    Object.freeze({ spellId: 6673, usable: TRAINER_SPELL_AVAILABLE, moneyCost: 10,
+      pointCost: [0, 0] as [number, number], requiredLevel: 1, requiredSkillLine: 0,
+      requiredSkillRank: 0, requiredAbilities: [0, 0, 0] as [number, number, number],
+      name: "Боевой крик", rank: "Уровень 1", iconPath: "Interface\\Icons\\Ability_Warrior_BattleShout",
+      description: "Воодушевляет группу.", skillLine: 256 }),
+    Object.freeze({ spellId: 71, usable: TRAINER_SPELL_AVAILABLE, moneyCost: 100,
+      pointCost: [0, 0] as [number, number], requiredLevel: 10, requiredSkillLine: 0,
+      requiredSkillRank: 0, requiredAbilities: [0, 0, 0] as [number, number, number],
+      name: "Оборонительная стойка", rank: "", iconPath: "Interface\\Icons\\Ability_Warrior_DefensiveStance",
+      description: "Оборонительная стойка.", skillLine: 257 }),
   ]),
 });
 
@@ -542,7 +585,19 @@ export interface CannedQuest {
   readonly rewardXP?: number;
   readonly rewardTitle?: string;
   readonly watched?: boolean;
+  /**
+   * 3.13 (L6): the quest's ZoneOrSort key — an AreaTable id (named by `CANNED_QUEST_ZONE_NAMES`), a
+   * negative QuestSort id, or 0 for the client's «Missing header!». Once any canned quest has one, the
+   * log is the client's displayed list with its zone headers (FrameXmlQuestLog.ts); without, it stays
+   * the plain canned order.
+   */
+  readonly zone?: number;
 }
+
+/** 3.13 (L6): header names of the canned zones (this dataset's AreaTable names). */
+export const CANNED_QUEST_ZONE_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  12: "Элвиннский лес", 40: "Западный Край",
+});
 
 export interface CannedQuestRewardSpell {
   readonly spellId: number;
@@ -700,7 +755,8 @@ export const CANNED_PET: CannedPet = Object.freeze({
   visible: true,
   possessed: false,
   happiness: 3,
-  happinessDamage: 0,
+  // L15 3.36: GetPetHappiness's second value — PetPersonality row 1's 1.25 for "happy" × 100 (Wow.exe 0x005d3b00).
+  happinessDamage: 125,
   isHunterPet: true,
 });
 
@@ -1171,10 +1227,10 @@ export const CANNED_TRACKING: readonly { readonly spellId: number; readonly name
  */
 const CANNED_UNIT_GUIDS: Readonly<Record<string, string>> = Object.freeze({
   player: "0x0000000000000001",
-  target: "0xf130000000000101",
-  focus: "0xf130000000000102",
-  targettarget: "0xf130000000000103",
-  pet: "0xf140000000000104",
+  target: "0xF130000000000101",
+  focus: "0xF130000000000102",
+  targettarget: "0xF130000000000103",
+  pet: "0xF140000000000104",
   party1: "0x0000000000000011",
   party2: "0x0000000000000012",
   party3: "0x0000000000000013",
@@ -1346,7 +1402,8 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     selection: () => this.#questSelection,
     entry: (index) => {
       const quest = this.#questAt(index);
-      return quest ? { slot: index - 1, questId: quest.questId } : undefined;
+      // 3.13 (L6): the quest's own slot, which is the displayed row only without headers.
+      return quest ? { slot: this.#questRows().indexOf(quest), questId: quest.questId } : undefined;
     },
     locate: (questId) => {
       const index = this.#questRows().findIndex((quest) => quest.questId === questId);
@@ -1364,12 +1421,53 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     abandon: (entry) => {
       this.abandonedQuests.push(entry);
       this.#quests.delete(entry.questId);
-      if (this.#questSelection > this.#questRows().length) this.#questSelection = 0;
+      if (this.#questSelection > this.#displayRows().length) this.#questSelection = 0; // 3.13 (L6)
       this.#pump?.fire(FRAMEXML_SEAM_EVENTS.questLogUpdate);
     },
   });
-  /** No arena team, possession, scoreboard or add-on channel in the canned world: every answer is nil/false. */
-  readonly mechanics = new FrameXmlMechanicsModel({ world: () => undefined, self: () => undefined });
+  /**
+   * The canned PvP world (FrameXmlPvpCanned.ts): empty by default — no flag, scoreboard or arena team,
+   * normal difficulties, the open world — so every PvP answer is the nil/false/0 it was before.
+   */
+  readonly pvpWorld = new FrameXmlPvpCannedWorld();
+  /** No possession or add-on channel; arena teams and the battlefield winner come from `pvpWorld`. */
+  readonly mechanics = new FrameXmlMechanicsModel({ world: () => this.pvpWorld, self: () => this.pvpWorld.selfObject() });
+  readonly pvpFlag = new FrameXmlPvpFlagModel({
+    flags: () => this.pvpWorld.playerFlags(), now: () => (this.#pump?.now() ?? 0) * 1000,
+    togglePvp: (enable) => this.pvpWorld.togglePvp(enable),
+  });
+  readonly scoreboard = new FrameXmlBattlefieldScoreModel({
+    world: () => this.pvpWorld, now: () => (this.#pump?.now() ?? 0) * 1000, worldStateUi: () => CANNED_SCOREBOARD_COLUMNS,
+  });
+  readonly difficulty = new FrameXmlDifficultyModel({
+    world: () => this.pvpWorld, instanceType: () => this.pvpWorld.instanceType,
+  });
+  /** The canned player's talent groups (one by default) and the activation spells cast by SetActiveTalentGroup. */
+  #talentGroups: FrameXmlTalentGroupState = { activeSpec: 0, specCount: 1 };
+  readonly talentGroupCasts: number[] = [];
+  readonly talentGroup = new FrameXmlTalentGroupModel({
+    talents: () => this.#talentGroups,
+    castSpell: (id) => { this.talentGroupCasts.push(id); },
+  });
+  /** Give the canned player `count` groups with the 1-based `active` one active; the edge fires as after a packet. */
+  setTalentGroups(count: number, active: number): void {
+    this.#talentGroups = { activeSpec: active - 1, specCount: count };
+    this.talentGroup.talentsChanged();
+  }
+  /** Quests QuestLogPushQuest sent; every canned quest is sharable and the canned party is there to take it. */
+  readonly sharedQuests: number[] = [];
+  readonly questShare = new FrameXmlQuestShareModel({
+    questIdAt: (index) => this.#questAt(index === 0 ? this.#questSelection : index)?.questId,
+    questFlags: () => QUEST_FLAG_SHARABLE,
+    hasPlayer: () => true,
+    partyMemberCount: () => this.partyMemberCount(),
+    raidMemberCount: () => this.raidMemberCount(),
+    share: (questId) => { this.sharedQuests.push(questId); },
+    cachedName: () => undefined,
+  });
+  readonly arenaRoster = new FrameXmlArenaRosterModel({
+    world: () => this.pvpWorld, self: () => this.pvpWorld.self, now: () => (this.#pump?.now() ?? 0) * 1000,
+  });
   /** `HasFullControl` (FrameXmlControl.ts): the canned player holds the reins until `setControlLost`. */
   #controlLost = false;
   hasFullControl(): boolean { return !this.#controlLost; }
@@ -1578,6 +1676,10 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   readonly #merchant: CannedMerchant | undefined;
   #merchantOpen = false;
   readonly #trainer: CannedTrainer | undefined;
+  /** L12 3.29: a trainer with skill lines answers through the live seam's list (FrameXmlTrainerCanned.ts). */
+  readonly #trainerGroups: FrameXmlCannedTrainerGroups<CannedTrainerService> | undefined;
+  /** L12 3.29: GetTrainerSkillLines and the skill-line filter, for a trainer with skill lines. */
+  readonly trainerSkillLines: FrameXmlTrainerSkillLineModel | undefined;
   #trainerOpen = false;
   #trainerSelection: number | undefined;
   readonly #trainerFilters = new Map<string, boolean>([
@@ -1728,6 +1830,12 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.#talentSnapshot = talentSnapshot;
     this.#merchant = merchant;
     this.#trainer = trainer;
+    // L12 3.29: the grouped list over the open trainer's services, filtered by the same type filter.
+    this.#trainerGroups = trainer?.skillLines ? frameXmlCannedTrainerGroups(
+      () => (this.trainerSupported() ? trainer.services : []), trainer.skillLines,
+      (type) => this.#trainerFilters.get(type) !== false, () => this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate),
+    ) : undefined;
+    this.trainerSkillLines = this.#trainerGroups?.skillLines; // L12 3.29
     this.#settingsCVar = settingsCVar;
     this.options = settingsCVar ? createFrameXmlOptionsModel(settingsCVar) : undefined;
     for (const container of containers) {
@@ -1743,11 +1851,62 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
       });
     }
     this.#sendChatMessage = sendChatMessage;
+    this.#syncQuestLogModel(); // 3.13 (L6)
+  }
+
+  // ---- 3.13 (L6): zone headers -------------------------------------------------------------
+
+  /** The canned log's PLAYER_QUEST_LOG slots and quest records, for the header model. */
+  readonly #questLogTemplates = new WeakMap<CannedQuest, FrameXmlQuestLogTemplate>();
+  /** PLAYER_FIELD_DAILY_QUESTS_1..25 and the completed-quest answer of the canned character. */
+  cannedDailyQuests: readonly number[] = new Array<number>(25).fill(0);
+  cannedCompletedQuests: readonly number[] = [];
+  readonly #questLogModel = new FrameXmlQuestLogModel({
+    rows: () => this.#questRows().map((quest, slot): QuestLogEntry => ({
+      slot, questId: quest.questId, state: quest.state ?? 0, counters: [], timer: 0,
+    })),
+    template: (questId) => {
+      const quest = this.#quests.get(questId);
+      if (!quest) return undefined;
+      let template = this.#questLogTemplates.get(quest);
+      if (!template) {
+        template = { level: quest.level ?? 0, title: quest.title ?? "", sortId: quest.zone ?? 0, type: 0,
+          flags: quest.daily === true ? QUEST_FLAG_DAILY : 0 };
+        this.#questLogTemplates.set(quest, template);
+      }
+      return template;
+    },
+    playerLevel: () => this.unitLevel("player"),
+    greenRange: () => cannedQuestGreenRange(this.unitLevel("player")),
+    areaName: (id) => CANNED_QUEST_ZONE_NAMES[id],
+    dailyQuests: () => this.cannedDailyQuests,
+    completedQuests: () => this.cannedCompletedQuests,
+  });
+  /**
+   * The quest log model the header C API reads (ExpandQuestHeader, GetQuestSortIndex, …): set once a
+   * canned quest names a zone. A test may put its own here.
+   */
+  questLog: FrameXmlQuestLogModel | undefined;
+
+  /** Point `questLog` at the header model when a canned quest names a zone (and nothing else holds it). */
+  #syncQuestLogModel(): void {
+    if (this.questLog !== undefined && this.questLog !== this.#questLogModel) return;
+    const zoned = this.#questRows().some((quest) => quest.zone !== undefined);
+    this.questLog = zoned ? this.#questLogModel : undefined;
+    if (zoned && this.#pump) this.#questLogModel.attach(this.#pump);
+  }
+
+  /** The displayed rows: with headers (undefined) when the header model is in use, else the canned order. */
+  #displayRows(): readonly (CannedQuest | undefined)[] {
+    const model = this.questLog;
+    if (!model) return this.#questRows();
+    return model.list().rows.map((row) => (row.header ? undefined : this.#quests.get(row.entry.questId)));
   }
 
   attach(pump: FrameXmlSeamPump): void {
     if (this.#pump) this.detach();
     this.#pump = pump;
+    if (this.questLog === this.#questLogModel) this.#questLogModel.attach(pump); // 3.13 (L6)
     // A new FrameXML load starts from the dock's default selection and a fresh frame clock.
     this.#chatWindowShown.clear();
     this.chatWindows.reset();
@@ -1757,6 +1916,12 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.chatColors.attach(pump);
     this.threat.attach(pump);
     this.mechanics.attach(pump);
+    this.pvpFlag.flagsChanged();
+    this.scoreboard.attach(pump);
+    this.difficulty.attach(pump);
+    this.talentGroup.attach(pump);
+    this.questShare.attach(pump);
+    this.arenaRoster.attach(pump);
     this.worldStates.attach(pump);
     this.map.attach(pump);
     this.lfd.attach(pump);
@@ -1928,6 +2093,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   detach(): void {
+    this.#questLogModel.detach(); // 3.13 (L6)
     this.worldStates.detach();
     this.map.detach();
     this.lfd.detach();
@@ -1958,6 +2124,11 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.chatColors.detach();
     this.threat.detach();
     this.mechanics.detach();
+    this.scoreboard.detach();
+    this.difficulty.detach();
+    this.talentGroup.detach();
+    this.questShare.detach();
+    this.arenaRoster.detach();
     this.#pump = undefined;
     this.#merchantOpen = false;
     this.#cooldowns.clear();
@@ -2064,6 +2235,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     this.achievement.tick();
     this.guildBank.tick();
     this.hudMechanics.tick();
+    this.scoreboard.tick();
     for (const [slot, cooldown] of [...this.#cooldowns]) {
       if (now - cooldown.start < cooldown.duration) continue;
       this.#cooldowns.delete(slot);
@@ -2613,7 +2785,8 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   #questAt(index: number): CannedQuest | undefined {
-    return Number.isInteger(index) && index >= 1 ? this.#questRows()[index - 1] : undefined;
+    // 3.13 (L6): a log index is a displayed row; a header row holds no quest.
+    return Number.isInteger(index) && index >= 1 ? this.#displayRows()[index - 1] : undefined;
   }
 
   #questIndex(index: number | undefined): number {
@@ -2621,11 +2794,14 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   questLogEntryCount(): readonly [number, number] {
+    if (this.questLog) return this.questLog.counts(); // 3.13 (L6): headers and the collapsed tail counted
     const count = this.#quests.size;
     return [count, count];
   }
 
   questLogTitle(index: number): FrameXmlQuestLogTitle {
+    // 3.13 (L6): a header row answers as the client's (FrameXmlQuestLog.ts).
+    if (this.questLog?.rowAt(index)?.header) return this.questLog.title(index, () => undefined);
     const quest = this.#questAt(index);
     if (!quest) return ["", 0, undefined, 0, false, false, undefined, false, 0, false];
     const state = quest.state ?? 0;
@@ -2650,6 +2826,9 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
       this.#questSelection = 0;
       return;
     }
+    // 3.13 (L6): a header row leaves the selection as it was (Wow.exe 0x5dffa0). The canned seam keeps
+    // the selection as a row index, so a collapse above it shifts what it names (the client keeps the id).
+    if (this.questLog?.rowAt(index)?.header) return;
     this.#questSelection = this.#questAt(index) ? index : 0;
   }
 
@@ -2793,7 +2972,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
 
   questIndexForWatch(index: number): number | undefined {
     if (!Number.isInteger(index) || index < 1) return undefined;
-    const rows = this.#questRows();
+    const rows = this.#displayRows(); // 3.13 (L6): the displayed index
     let watched = 0;
     for (let row = 0; row < rows.length; row++) {
       const quest = rows[row];
@@ -2997,6 +3176,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     if (JSON.stringify(previous) === JSON.stringify(next)) return 0;
     this.#quests.set(questId, next);
     if (next.watched === false) this.#unwatchedQuestIds.add(questId);
+    this.#syncQuestLogModel(); // 3.13 (L6): a zone given later brings the headers
     return this.#pump?.fire(FRAMEXML_SEAM_EVENTS.questLogUpdate) ?? 0;
   }
 
@@ -3020,7 +3200,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     const pump = this.#pump;
     if (!pump) return 0;
     let fired = 0;
-    const row = this.#questRows().findIndex((entry) => entry.questId === questId);
+    const row = this.#displayRows().findIndex((entry) => entry?.questId === questId); // 3.13 (L6)
     if (row >= 0) fired += pump.fire(FRAMEXML_SEAM_EVENTS.questWatchUpdate, row + 1);
     fired += pump.fire(FRAMEXML_SEAM_EVENTS.questLogUpdate);
     return fired;
@@ -3496,19 +3676,23 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   }
 
   trainerServiceCount(): number {
+    if (this.#trainerGroups) return this.#trainerGroups.list.count(); // L12 3.29
     this.normalizeTrainerSelection();
     return this.trainerRows().length;
   }
 
   private trainerRow(index: number): CannedTrainerService | undefined {
+    if (this.#trainerGroups) return this.#trainerGroups.list.service(index); // L12 3.29
     return Number.isInteger(index) && index > 0 ? this.trainerRows()[index - 1] : undefined;
   }
 
   trainerServiceInfo(index: number): readonly [string, string | undefined, string, boolean] | undefined {
+    if (this.#trainerGroups) return this.#trainerGroups.list.info(index); // L12 3.29
     const row = this.trainerRow(index);
     if (!row) return undefined;
+    // A service row's fourth value is 1, as Wow.exe 0x595090 answers it (nil only for a collapsed header).
     return [row.name, row.rank, row.usable === TRAINER_SPELL_AVAILABLE ? "available"
-      : row.usable === TRAINER_SPELL_KNOWN ? "used" : "unavailable", false];
+      : row.usable === TRAINER_SPELL_KNOWN ? "used" : "unavailable", true];
   }
 
   trainerServiceCost(index: number): readonly [number, number, number] {
@@ -3533,7 +3717,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     return 0;
   }
 
-  trainerServiceAbilityReq(_index: number, _requirement: number): readonly [number, boolean] | undefined {
+  trainerServiceAbilityReq(_index: number, _requirement: number): readonly [string | undefined, boolean] | undefined {
     return undefined;
   }
 
@@ -3549,6 +3733,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   trainerType(): number | undefined { return this.#trainerOpen ? this.#trainer?.trainerType : undefined; }
   trainerSelectionIndex(): number | undefined {
     if (!this.trainerSupported()) return undefined;
+    if (this.#trainerGroups) return this.#trainerGroups.list.selectionIndex(); // L12 3.29
     this.normalizeTrainerSelection();
     return this.#trainerSelection;
   }
@@ -3560,10 +3745,16 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   selectTrainerService(index: number): void {
     // The stock ClassTrainer_SetSelection call continues painting after this command returns.
     // Firing TRAINER_DESCRIPTION_UPDATE synchronously would re-enter that same Lua function.
+    if (this.#trainerGroups) { if (this.trainerSupported()) this.#trainerGroups.list.select(index); return; } // L12 3.29
     if (this.trainerRow(index)) this.#trainerSelection = index;
   }
   isTradeskillTrainer(): boolean { return this.#trainerOpen && this.#trainer?.trainerType === 2; }
   buyTrainerService(index: number): void {
+    if (index <= 0) { // L12 3.29: every visible available row in turn (Wow.exe 0x595e60 → 0x594e50)
+      if (this.#trainerGroups) frameXmlTrainerBuyAll(this.#trainerGroups.list.entries(), (id) => this.trainerBuyRequests.push(id));
+      else for (const row of this.trainerRows()) if (row.usable === TRAINER_SPELL_AVAILABLE) this.trainerBuyRequests.push(row.spellId);
+      return;
+    }
     const row = this.trainerRow(index);
     if (row && row.usable === TRAINER_SPELL_AVAILABLE) this.trainerBuyRequests.push(row.spellId);
   }
@@ -3571,6 +3762,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     if (!this.trainerSupported()) return;
     this.#trainerOpen = false;
     this.#trainerSelection = undefined;
+    this.#trainerGroups?.list.clear(); // L12 3.29
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
   }
   trainerChanged(event: "show" | "update" | "closed"): void {
@@ -3579,6 +3771,7 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
       && this.#trainer.trainerType !== 3)) return;
     this.#trainerOpen = true;
     this.normalizeTrainerSelection();
+    if (event === "show") this.#trainerGroups?.list.listChanged(); else this.#trainerGroups?.list.reselect(); // L12 3.29
     this.#pump?.fire(event === "show" ? FRAMEXML_SEAM_EVENTS.trainerUpdate : FRAMEXML_SEAM_EVENTS.trainerDescriptionUpdate);
   }
   trainerTypeFilter(type: string): boolean { return this.#trainerFilters.get(type) === true; }
@@ -3588,10 +3781,17 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
       this.#trainerSelection = undefined;
     }
     this.normalizeTrainerSelection();
+    this.#trainerGroups?.list.reselect(); // L12 3.29
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
   }
-  collapseTrainerSkillLine(_index: number): void { this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate); }
-  expandTrainerSkillLine(_index: number): void { this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate); }
+  collapseTrainerSkillLine(index: number): void { // L12 3.29: a header row's line, or all for 0 (0x596150)
+    if (this.#trainerGroups && !this.#trainerGroups.list.setExpanded(index, false)) return;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
+  }
+  expandTrainerSkillLine(index: number): void { // L12 3.29 (0x5961f0)
+    if (this.#trainerGroups && !this.#trainerGroups.list.setExpanded(index, true)) return;
+    this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
+  }
   characterPoints(_unit: string): readonly [number, number] { return [0, 0]; }
 
   /** Open the canned class/mount/pet-style trainer without manufacturing a profession dialog. */
@@ -4308,6 +4508,12 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
   unitIsUnit(left: string, right: string): boolean {
     if (!this.unitExists(left) || !this.unitExists(right)) return false;
     return this.#alias(left) === this.#alias(right);
+  }
+
+  /** `UnitHasRelicSlot` by the canned unit's class token (FrameXmlRelicSlot.ts). */
+  unitHasRelicSlot(unit: string): boolean {
+    const token = this.unitIsPlayer(unit) ? this.unitClass(unit)?.[1] : undefined;
+    return token !== undefined && FRAMEXML_RELIC_CLASS_TOKENS.has(token);
   }
 
   unitIsPlayer(unit: string): boolean {

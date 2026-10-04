@@ -3,7 +3,7 @@ import { unit } from "../../world/Fields.js";
 import { BARBER_TYPE_FACIAL, BARBER_TYPE_HAIR, BARBER_TYPE_SKIN } from "../../world/BarberRules.js";
 import type { BarberStyle } from "../../gateway/BarberMetadata.js";
 import { game } from "../game/Context.js";
-import { Panel } from "./Widgets.js";
+import { setTip, Panel } from "./Widgets.js";
 import { frameXmlBarberOwnsShop } from "../framexml/FrameXmlBarberController.js";
 
 /**
@@ -197,7 +197,7 @@ export function showBarberShop(): void {
     const confirm = document.createElement("button");
     confirm.type = "button";
     confirm.textContent = "Подтвердить стрижку";
-    confirm.title = "Цену спишет сервер; при нехватке золота он откажет словами";
+    setTip(confirm, "Цену спишет сервер; при нехватке золота он откажет словами");
     confirm.addEventListener("click", () => {
       const picked = selection;
       const target = game.world;

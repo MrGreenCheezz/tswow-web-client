@@ -22,6 +22,15 @@ let dirty = false;
 let pending = false;
 let message = "";
 
+/**
+ * 8.17: the stock help frame's «Сообщить о задержке» page (HelpFrame.xml, the BUTTON_LAG_* buttons,
+ * ruRU GlobalStrings.lua:1153-1168), in STATIC_CONSTANTS order Loot = 1 … Spell = 6; HelpReportLag
+ * (HelpFrame.lua:455) sends GMReportLag and shows LAG_SUCCESS (HELPFRAME_REPORTLAG_TEXT1).
+ */
+const LAG_KINDS: readonly (readonly [kind: number, label: string])[] = [
+  [1, "Добыча"], [2, "Аукционный дом"], [3, "Почта"], [4, "Чат"], [5, "Движение"], [6, "Заклинания и способности"],
+];
+
 function button(id: string, label: string, action: () => void): HTMLButtonElement {
   const element = document.createElement("button");
   element.id = id; element.type = "button"; element.textContent = label;
@@ -87,7 +96,12 @@ function build(): Parts {
     begin(); owner.resolveGmResponse();
   });
   const reload = button("gm-ticket-refresh", "Обновить", refresh);
-  panel.body.append(status, label, needMore, response, send, remove, resolve, reload);
+  const lagTitle = document.createElement("p"); lagTitle.textContent = "Сообщить о задержке";
+  const lag = LAG_KINDS.map(([kind, title]) => button(`gm-lag-${kind}`, title, () => {
+    if (!owner?.reportLag(kind)) return;
+    message = "Ваше сообщение о задержке отправлено."; render();
+  }));
+  panel.body.append(status, label, needMore, response, send, remove, resolve, reload, lagTitle, ...lag);
   return { panel, status, text, response, send, remove, resolve, refresh: reload, needMoreBox };
 }
 

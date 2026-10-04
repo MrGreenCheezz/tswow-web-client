@@ -14,7 +14,7 @@ import { game } from "../game/Context.js";
 import { entryOf, playerInventory, stackCount } from "../Inventory.js";
 import { rightRail } from "./Dom.js";
 import { clearSlot, skinnable, slot } from "./Slots.js";
-import { Panel, attachTooltip, confirmPanel, stackLabel, textLine, type TooltipContent } from "./Widgets.js";
+import { setTip, Panel, attachTooltip, confirmPanel, stackLabel, textLine, type TooltipContent } from "./Widgets.js";
 import { formatNpcText } from "./Npc.js";
 import { formatMoney } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
@@ -623,7 +623,7 @@ function buildQuestActions(entry: QuestLogEntryView, world: WorldClient | undefi
   // (`GroupProtocol.ts:59`), so one entry already means somebody to share with.
   const shareable = (world?.group?.members.length ?? 0) > 0;
   share.disabled = !shareable;
-  share.title = shareable ? "Поделиться заданием с группой" : "Вне группы делиться не с кем";
+  setTip(share, shareable ? "Поделиться заданием с группой" : "Вне группы делиться не с кем");
   share.addEventListener("click", () => {
     world?.shareQuest(entry.questId);
   });

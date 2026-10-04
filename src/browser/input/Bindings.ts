@@ -10,8 +10,13 @@
  * and everything that acts on one lives in `Actions.ts`. That is what lets this be tested.
  */
 
-/** Everything the keyboard can ask for. The order is the order the bindings window lists them. */
-export const INPUT_ACTIONS = [
+import { STOCK_ACTIONS, stockDefaultBindings } from "./StockActions.js";
+
+/**
+ * The actions this table was built with. The stock commands added since (3.11) are in
+ * `StockActions.ts`; {@link INPUT_ACTIONS} is both.
+ */
+const CORE_INPUT_ACTIONS = [
   { action: "moveForward", group: "Движение", label: "Вперёд" },
   { action: "moveBackward", group: "Движение", label: "Назад" },
   { action: "turnLeft", group: "Движение", label: "Поворот влево" },
@@ -124,7 +129,11 @@ export const INPUT_ACTIONS = [
   { action: "right2Action12", group: "Панель: Правая вторая", label: "Слот 12" },
 ] as const;
 
+/** Everything the keyboard can ask for. The order is the order the bindings window lists them. */
+export const INPUT_ACTIONS = [...CORE_INPUT_ACTIONS, ...STOCK_ACTIONS] as const;
+
 export type InputAction = (typeof INPUT_ACTIONS)[number]["action"];
+type CoreInputAction = (typeof CORE_INPUT_ACTIONS)[number]["action"];
 
 /** Primary and secondary, as the original client's bindings window has. An empty string is unbound. */
 export type BindingPair = readonly [string, string];
@@ -137,7 +146,7 @@ export type BindingPair = readonly [string, string];
  * original client has no loot key at all — it loots by clicking the corpse, which this client now
  * does too. Diagnostics and the bindings window are this client's own and have no original.
  */
-export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
+const CORE_DEFAULT_BINDINGS: Readonly<Record<CoreInputAction, BindingPair>> = {
   moveForward: ["KeyW", "ArrowUp"],
   moveBackward: ["KeyS", "ArrowDown"],
   turnLeft: ["KeyA", "ArrowLeft"],
@@ -262,6 +271,16 @@ export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
 };
 
 /**
+ * Every action's default: the core table above, then the stock rows' keys from the client's
+ * DefaultBindings.wtf (`StockActions.stockDefaultBindings`), which never take a chord the core
+ * table ships on.
+ */
+export const DEFAULT_BINDINGS: Readonly<Record<InputAction, BindingPair>> = {
+  ...CORE_DEFAULT_BINDINGS,
+  ...stockDefaultBindings(new Set(Object.values(CORE_DEFAULT_BINDINGS).flat().filter((chord) => chord !== ""))),
+};
+
+/**
  * The bar's slots and pages in order, so the bar can ask what key a slot wears without spelling
  * out the names — and so a rebound slot writes the new key in its own corner.
  */
@@ -300,7 +319,23 @@ export const HELD_ACTIONS: ReadonlySet<InputAction> = new Set<InputAction>([
   // both of those. That is how the original client binds them, and it is why they are held rather
   // than pressed: the verb still runs on the way down, the holding is what the physics reads.
   "jump", "sitOrStand",
+  // 5.09: Bindings.xml PITCHUP/PITCHDOWN (runOnUp) — PitchUpStart/Stop, PitchDownStart/Stop.
+  "pitchUp", "pitchDown",
+  // 11.02-input: VEHICLEAIMUP/VEHICLEAIMDOWN (runOnUp) — the same two functions (`heldMovementAction`).
+  "vehicleAimUp", "vehicleAimDown",
 ]);
+
+/**
+ * 11.02-input: the held action a key's action moves. VehicleAimUpStart/Stop and VehicleAimDownStart/Stop are
+ * PitchUpStart/Stop and PitchDownStart/Stop under a second name in Wow.exe's registration table (0x005fc8e0,
+ * 0x005fc570, 0x005fc920, 0x005fc5c0), so the VEHICLE section's aim keys drive the pitch axis itself — one
+ * bit each, as the client keeps it. Every other action is itself.
+ */
+export function heldMovementAction(action: InputAction): InputAction {
+  if (action === "vehicleAimUp") return "pitchUp";
+  if (action === "vehicleAimDown") return "pitchDown";
+  return action;
+}
 
 /**
  * Holding this turns a turn into a strafe, as the original client does. It is a rule and not a
@@ -438,8 +473,12 @@ function reindex(): void {
  * to an action-bar slot went to the newer `replyWhisper`, which `reindex` lists first.
  */
 export function loadBindings(): void {
+  readTables(readStored(STORAGE_KEY), readStored(MODULE_STORAGE_KEY));
+}
+
+/** {@link loadBindings}'s rules over two tables, whichever store they came from. */
+function readTables(saved: Record<string, unknown> | undefined, savedModules: Record<string, unknown> | undefined): void {
   bindings = { ...DEFAULT_BINDINGS };
-  const saved = readStored(STORAGE_KEY);
   if (saved) {
     const mentioned = new Set<InputAction>();
     for (const { action } of INPUT_ACTIONS) {
@@ -461,7 +500,7 @@ export function loadBindings(): void {
   // action a module *will* offer again, and dropping it here would mean losing it by logging in
   // before that module's file had been read.
   moduleBindings = {};
-  for (const [action, pair] of Object.entries(readStored(MODULE_STORAGE_KEY) ?? {})) {
+  for (const [action, pair] of Object.entries(savedModules ?? {})) {
     if (!Array.isArray(pair)) continue;
     moduleBindings[action] = [typeof pair[0] === "string" ? pair[0] : "", typeof pair[1] === "string" ? pair[1] : ""];
   }
@@ -506,6 +545,41 @@ function persist(): void {
     // A full or refused store loses the change on the next reload and nothing else: the session
     // it was made in still has it.
   }
+  for (const listener of [...changeListeners]) {
+    try {
+      listener();
+    } catch {
+      // One subscriber's failure (a panel not built yet) must not stop the others.
+    }
+  }
+}
+
+const changeListeners = new Set<() => void>();
+
+/**
+ * Called after every change the table keeps — a key bound or cleared, the reset, a copy taken
+ * from the account (`applyBindingTables`) — for what wears the keys: the micro buttons' captions
+ * (ui/HudKeys.ts, 4.10) and the account copy (input/InputAccount.ts, 4.12). Returns the unsubscribe.
+ */
+export function onBindingsChanged(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => { changeListeners.delete(listener); };
+}
+
+/** Both tables as plain objects, for the account copy (4.12): action → [first, second]. */
+export function bindingTables(): { core: Record<string, BindingPair>; modules: Record<string, BindingPair> } {
+  return { core: { ...bindings }, modules: { ...moduleBindings } };
+}
+
+/**
+ * Takes both tables from another store — the account copy (4.12) — by the same rules a saved table
+ * is read with ({@link loadBindings}): rows it does not mention keep their defaults unless it gives
+ * the chord to something else, rows it does not know are ignored here (the account copy keeps
+ * them), a module row is kept whole. Mirrored and announced like any other change.
+ */
+export function applyBindingTables(core: Record<string, unknown>, modules: Record<string, unknown>): void {
+  readTables(core, modules);
+  persist();
 }
 
 loadBindings();
@@ -628,4 +702,57 @@ export function resetBindings(): void {
   moduleBindings = {};
   reindex();
   persist();
+}
+
+/**
+ * Override bindings (`SetOverrideBinding*`, WORK_PLAN 3.11 slice D): keys a frame takes for itself
+ * on top of the player's table and gives back with `ClearOverrideBindings(owner)` — never saved, and
+ * dropped whole when the FrameXML VM goes away. One entry per owner and key; a priority entry beats
+ * a normal one, and among equals the latest set wins.
+ */
+export interface OverrideBinding {
+  readonly owner: string;
+  readonly priority: boolean;
+  /** The command it answers to: a stock command, `SPELL x`, `ITEM x`, `MACRO x` or `CLICK b:m`. */
+  readonly command: string;
+  /**
+   * L2 3.11: the table action a stock command stands for. A held one (HELD_ACTIONS: the movement
+   * keys, jump, pitch) is held by `Controls` while the key is down instead of `run` on the press.
+   */
+  readonly action?: InputAction | undefined;
+  run(): void;
+}
+
+const overrides = new Map<string, OverrideBinding[]>();
+
+/** Sets (or, with `binding` undefined, clears) one owner's override of one chord. */
+export function setOverrideBinding(owner: string, chord: string, binding: OverrideBinding | undefined): void {
+  if (!chord) return;
+  const list = (overrides.get(chord) ?? []).filter((entry) => entry.owner !== owner);
+  if (binding) list.push(binding);
+  if (list.length > 0) overrides.set(chord, list);
+  else overrides.delete(chord);
+}
+
+/** `ClearOverrideBindings(owner)`: every override that owner set. */
+export function clearOverrideBindings(owner: string): void {
+  for (const [chord, list] of [...overrides]) {
+    const kept = list.filter((entry) => entry.owner !== owner);
+    if (kept.length > 0) overrides.set(chord, kept);
+    else overrides.delete(chord);
+  }
+}
+
+/** Drops every override (the VM that set them is gone). */
+export function clearAllOverrideBindings(): void {
+  overrides.clear();
+}
+
+/** The override a key press runs, if any: what `Controls` asks before the table. */
+export function overrideFor(chord: string): OverrideBinding | undefined {
+  if (!chord || overrides.size === 0) return undefined;
+  const list = overrides.get(chord);
+  if (!list) return undefined;
+  for (let index = list.length - 1; index >= 0; index -= 1) if (list[index]!.priority) return list[index];
+  return list[list.length - 1];
 }

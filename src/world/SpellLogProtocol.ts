@@ -125,6 +125,8 @@ export interface PeriodicAuraLog {
   critical: boolean;
   /** Present for the energize and leech branches, which name the power they moved. */
   powerType: number | undefined;
+  /** 3.01: the mana leech's gain multiplier (Unit.cpp:5662); 0 for every other aura type. */
+  gainMultiplier?: number;
 }
 
 /**
@@ -163,7 +165,7 @@ export function parsePeriodicAuraLog(payload: Uint8Array): PeriodicAuraLog {
   } else if (auraType === AURA_PERIODIC_MANA_LEECH) {
     log.powerType = reader.u32();
     log.amount = reader.u32();
-    reader.f32();
+    log.gainMultiplier = reader.f32();
   }
   return log;
 }

@@ -256,14 +256,61 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Во сколько раз гуще авторской плотности. 1 — как в таблице, 4 — луг стеной (и тяжелее).",
   },
   {
-    // The original client's `cameraDistanceMaxFactor` (`InterfaceOptionsPanels.lua:1440`), which is
-    // a multiplier from 1 to 2 in steps of a tenth. In yards here rather than in multiples, for a
-    // reason that lives in the code above: `coerceSetting` rounds every number setting to a whole
-    // one, so a factor slider would collapse to 1 or 2 with nothing in between. Yards is also the
-    // unit the wheel already speaks, and 55 is where it has always stopped.
-    id: "cameraMaxDistance", label: "Максимальная дистанция камеры", group: "Игра", kind: "number", fallback: 55,
-    min: 15, max: 55, step: 5,
-    hint: "В ярдах. Как далеко колесо отпускает камеру: меньше — ближе к персонажу и меньше мира в кадре.",
+    // 5.14: the original client's `cameraDistanceMaxFactor` (`InterfaceOptionsPanels.lua:1440`, a
+    // multiplier 1–2 in tenths) over its `cameraDistanceMax` of 15 yards, in percent so the whole-number
+    // model keeps the tenths: 100 is 15 yards, 200 is 30. Replaces the yard ceiling `cameraMaxDistance`
+    // (15–55), which `parseSettings` migrates.
+    id: "cameraDistancePercent", label: "Максимальная дистанция камеры, %", group: "Игра", kind: "number", fallback: 100,
+    min: 100, max: 200, step: 10,
+    hint: "Как далеко колесо отпускает камеру: 100 — 15 ярдов, как в оригинале, 200 — 30 ярдов.",
+  },
+  {
+    // 5.14: not the original's; the 55-yard ceiling this client had before it took the original's
+    // 15 × factor. Off by default, as the plan's open question to the owner has it.
+    id: "cameraExtendedZoom", label: "Расширенный зум камеры", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Колесо отпускает камеру до 55 ярдов, а не до 15–30, как в оригинальном клиенте.",
+  },
+  {
+    // 5.14: the client's cameraSmoothStyle (InterfaceOptionsCameraPanelStyleDropDown): 0 never, 1
+    // horizontal while moving, 2 always, 4 while moving (the default).
+    id: "cameraSmoothStyle", label: "Выравнивание камеры", group: "Игра", kind: "number", fallback: 4,
+    min: 0, max: 4, step: 1,
+    hint: "0 — никогда, 1 — по горизонтали при движении, 2 — всегда, 4 — только при движении (как в оригинале).",
+  },
+  {
+    // 5.14: cameraYawSmoothSpeed, degrees a second (slider 90–270 by 10); the pitch follows at a
+    // quarter of it, as the stock slider's own SetCVar("cameraPitchSmoothSpeed", value/4) has it.
+    id: "cameraYawSmoothSpeed", label: "Скорость выравнивания камеры", group: "Игра", kind: "number", fallback: 180,
+    min: 90, max: 270, step: 10,
+    hint: "Градусов в секунду, с которыми камера возвращается за спину персонажа.",
+  },
+  {
+    // 5.14: mouseSpeed (0.5–1.5 by 0.05) in percent.
+    id: "mouseSpeedPercent", label: "Чувствительность мыши, %", group: "Игра", kind: "number", fallback: 100,
+    min: 50, max: 150, step: 5,
+    hint: "Насколько быстро мышь поворачивает камеру и персонажа.",
+  },
+  {
+    // 5.14: cameraYawMoveSpeed, degrees (slider 90–270 by 10); the pitch at half of it, as the stock
+    // slider's SetCVar("cameraPitchMoveSpeed", value/2) has it. 180 is this client's 0.2° a pixel.
+    id: "mouseLookSpeed", label: "Скорость обзора мышью", group: "Игра", kind: "number", fallback: 180,
+    min: 90, max: 270, step: 10,
+    hint: "Скорость поворота камеры при обзоре мышью.",
+  },
+  {
+    id: "mouseInvertPitch", label: "Инвертировать мышь", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Движение мыши вверх наклоняет камеру вниз.",
+  },
+  {
+    // 5.14: deselectOnClick (the stock Controls panel's «Фиксация на цели» is its inverse, iop.xml).
+    id: "deselectOnClick", label: "Снимать цель щелчком по земле", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Выключено — щелчок по пустому месту цель не снимает; снять её можно клавишей Esc.",
+  },
+  {
+    // L8 5.14: the client's cameraWaterCollision (the stock Camera panel's WATER_COLLISION, default "1" as Wow.exe
+    // registers it at 0x005fe029): the boom stops at the water's surface (game/CameraWater.ts).
+    id: "cameraWaterCollision", label: "Камера над и под водой", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Камера остаётся над водой, пока персонаж на поверхности, и под водой, когда он ныряет.",
   },
   {
     id: "originalFrameXml", label: "Оригинальный интерфейс WoW", group: "Интерфейс", kind: "boolean", fallback: false,
@@ -283,20 +330,29 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Меняет размер HUD и игровых окон, не снижая разрешение мира.",
   },
   {
+    // L7 4.16b: the stock multi-bars' pages 6, 5, 3 and 4 (1-based slots below); 3.32: shown or not
+    // is the character's toggles byte on the server, shared with the stock interface.
     id: "actionBarBottomLeft", label: "Нижняя левая панель команд", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Слоты 73-84 из тех 144, что держит сервер. Клавиши для них назначаются в окне привязок.",
+    hint: "Слоты 61-72 из тех 144, что держит сервер, — те же, что у стоковой панели. Клавиши для них назначаются в окне привязок.",
   },
   {
     id: "actionBarBottomRight", label: "Нижняя правая панель команд", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Слоты 85-96.",
+    hint: "Слоты 49-60.",
   },
   {
     id: "actionBarRight", label: "Правая панель команд", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Слоты 97-108.",
+    hint: "Слоты 25-36.",
   },
   {
     id: "actionBarRight2", label: "Вторая правая панель команд", group: "Интерфейс", kind: "boolean", fallback: false,
-    hint: "Слоты 109-120.",
+    hint: "Слоты 37-48.",
+  },
+  {
+    // L7 4.16b: the record of the one-time move of the native rows to the stock pages
+    // (ui/ActionBarAccountSync.ts) — the character's GUID counter × 16 plus a bit per talent group,
+    // so a value carried over by the browser mirror from another character does not count. Drawn nowhere.
+    id: "actionBarStockLayout", label: "Перенос дополнительных панелей (служебное)", group: "Интерфейс",
+    kind: "number", fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER, ownWindow: true,
   },
   {
     id: "minimapRotate", label: "Поворачивать миникарту", group: "Интерфейс", kind: "boolean", fallback: false,
@@ -373,6 +429,26 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     id: "lootUnderMouse", label: "Добыча под курсором", group: "Игра", kind: "boolean", fallback: false,
     // Only stock LootFrame reads it; the native fallback panel (ui/Npc.ts) keeps its own place.
     hint: "Оригинальное окно добычи открывается там, где стоит указатель мыши, а не у левого края экрана. Запасное окно клиента остаётся на своём месте.",
+  },
+  {
+    // The client's stopAutoAttackOnTargetChange (registered at 0x51dc1c with "0"; the stock Combat
+    // panel's STOP_AUTO_ATTACK). Off: a fight follows the selection to the next attackable unit.
+    id: "stopAutoAttackOnTargetChange", label: "Прекращать автоатаку при смене цели", group: "Игра", kind: "boolean",
+    fallback: false,
+    hint: "Выключено — как в оригинале по умолчанию: удары переходят на новую цель, если её можно атаковать.",
+  },
+  {
+    // L18 5.05: the client's autoRangedCombat (registered at 0x0051dbd3 with "1"; the stock Combat panel's
+    // AUTO_RANGED_COMBAT_TEXT). On: an attack is the controller of world/AutoRangedCombat.ts — the swing in
+    // melee reach, the book's Auto Shot out of it. No effect without such a spell (a wand's Shoot has none).
+    id: "autoRangedCombat", label: "Ближний/дальний бой", group: "Игра", kind: "boolean", fallback: true,
+    hint: "Включено — как в оригинале: в упор персонаж бьёт оружием, дальше стреляет «Автоматической стрельбой», если цель впереди и персонаж стоит. Для охотников.",
+  },
+  {
+    // The client's blockTrades (the stock Controls panel's BLOCK_TRADES). On, a trade offered by
+    // another player is refused at once (CMSG_BUSY_TRADE, Wow.exe 0x5873e0) — 5.25.
+    id: "blockTrades", label: "Отклонять предложения об обмене", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Предложение обмена от другого игрока сразу отклоняется, а в чат пишется, кто его прислал.",
   },
   {
     id: "chatLogHeight", label: "Высота окна чата", group: "Чат", kind: "number", fallback: 190,
@@ -462,7 +538,32 @@ export function parseSettings(text: string): SettingValues | undefined {
     const definition = settingDefinition(id);
     if (definition) values[id] = coerceSetting(definition, value);
   }
+  migrateCameraDistance(raw as Record<string, unknown>, values);
   return values;
+}
+
+/** 5.14: the client's `cameraDistanceMax`, which `cameraDistanceMaxFactor` multiplies (line-A9 5.14). */
+export const CAMERA_DISTANCE_MAX_BASE = 15;
+/** 5.14: the extended zoom's ceiling — this client's old 55 yards, `SimpleScene.CAMERA_MAX_DISTANCE`. */
+export const CAMERA_EXTENDED_ZOOM_DISTANCE = 55;
+
+/** 5.14: how far the wheel lets the camera out, in yards: 15 × factor, or the extended 55. */
+export function cameraCeilingYards(values: SettingValues): number {
+  if (settingBoolean(values, "cameraExtendedZoom")) return CAMERA_EXTENDED_ZOOM_DISTANCE;
+  return CAMERA_DISTANCE_MAX_BASE * settingNumber(values, "cameraDistancePercent") / 100;
+}
+
+/**
+ * 5.14: a blob written before the camera ceiling became the original's factor carries
+ * `cameraMaxDistance` in yards (15–55); it becomes the factor that covers it — yards / 15, to the
+ * tenth, inside 1–2 — and, past 30 yards, the extended zoom that alone reaches that far.
+ */
+function migrateCameraDistance(raw: Record<string, unknown>, values: SettingValues): void {
+  const yards = Number(raw.cameraMaxDistance);
+  if (!Number.isFinite(yards) || raw.cameraDistancePercent !== undefined) return;
+  const percent = settingDefinition("cameraDistancePercent");
+  if (percent) values.cameraDistancePercent = coerceSetting(percent, Math.round(yards / 15 * 10) * 10);
+  if (yards > 30 && raw.cameraExtendedZoom === undefined) values.cameraExtendedZoom = true;
 }
 
 /** Only what differs from the defaults, so the blob does not grow with every option added. */

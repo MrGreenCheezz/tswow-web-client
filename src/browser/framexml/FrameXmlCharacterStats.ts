@@ -1,5 +1,5 @@
 import { isCharacterStatCatalog, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
-import { isCreationData } from "../ui/CharacterCreation.js";
+import { fetchCreationWithClassFlags } from "../ui/CharacterCreation.js";
 import { creationClassFilesLearned, learnCreationNames } from "../ui/UnitSnapshot.js";
 
 /**
@@ -8,7 +8,7 @@ import { creationClassFilesLearned, learnCreationNames } from "../ui/UnitSnapsho
  * cached answer instead of fetching a second shape of the same route. `tests/` pins the two
  * numbers together; the constant is not imported because `GlueNames.ts` pulls the 3D atlas in.
  */
-export const FRAMEXML_CREATION_NAMES_PATH = "/dbc/character-creation?v=3";
+export const FRAMEXML_CREATION_NAMES_PATH = "/dbc/character-creation?v=4";
 
 /**
  * Make sure the dataset's `ChrClasses.Filename`/`ChrRaces.ClientFileString` rows are learned.
@@ -26,10 +26,9 @@ export async function ensureFrameXmlCreationNames(
 ): Promise<boolean> {
   if (creationClassFilesLearned()) return true;
   try {
-    const response = await doFetch(new URL(FRAMEXML_CREATION_NAMES_PATH, gatewayOrigin).href);
-    if (!response.ok) return false;
-    const value: unknown = await response.json();
-    if (!isCreationData(value)) return false;
+    // Past the browser cache once when the answer predates the class flags (review 30.09).
+    const value = await fetchCreationWithClassFlags(new URL(FRAMEXML_CREATION_NAMES_PATH, gatewayOrigin).href, doFetch);
+    if (!value) return false;
     learnCreationNames(value.races, value.classes);
     return creationClassFilesLearned();
   } catch {

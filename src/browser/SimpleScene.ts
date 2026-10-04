@@ -7,6 +7,8 @@ import type { EnvironmentObject } from "./Terrain.js";
 import { creatureIconSource, type CreatureMetadata } from "./CreatureMetadata.js";
 import { setIconSource } from "./ui/IconImage.js";
 import { drawPlate, plateLayout, stackPlates, type PlateBox, type PlateData } from "./NamePlate.js";
+import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
+import { drawnUnitPosition, hiddenBySeat, type DrawnPoint } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 
 export interface Vector3 {
   x: number;
@@ -86,6 +88,9 @@ export const CAMERA_MAX_PIVOT_HEIGHT = 3;
 
 /** How far outside its box a click still counts, in pixels. */
 const PICK_SLOP = 12;
+
+/** 11.02-tails: scratch for a seated passenger's drawn place (VehiclePassengerOverlay.ts), read at once. */
+const SEAT_DRAWN: DrawnPoint = { x: 0, y: 0, z: 0 };
 
 /** Pixel focal length of a vertical-fov perspective camera, matching THREE.PerspectiveCamera. */
 const FOCAL_PER_PIXEL_HEIGHT = 1 / (2 * Math.tan(CAMERA_FOV_DEGREES * Math.PI / 360));
@@ -331,7 +336,9 @@ export class SimpleScene {
       context.fillRect(0, 0, width, height);
     }
 
-    const player = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+    // 11.02-I: the camera and the 100-yard reach of the boxes and plates belong to the view subject
+    // (game/ViewSubject.ts) — the character, or a possessed unit or far sight eye once in view.
+    const player = viewSubjectIn(state);
     if (!player?.position) {
       context.fillStyle = "#d8e5ef";
       context.font = "16px system-ui";
@@ -369,7 +376,8 @@ export class SimpleScene {
       if (firstPerson && object.guid === state.selfGuid) continue;
       const squared = squaredDistance(objectPosition, playerPosition);
       if (!(squared < 100 * 100)) continue;
-      const point = projectPoint(objectPosition, camera, width, height);
+      // 11.02-tails: a passenger drawn on a vehicle's seat point is boxed and plated where it is drawn.
+      const point = projectPoint(drawnUnitPosition(object, SEAT_DRAWN) ?? objectPosition, camera, width, height);
       if (point === undefined) continue;
       objects.push({ object, distance: Math.sqrt(squared), point });
     }
@@ -378,11 +386,12 @@ export class SimpleScene {
     const plates: Array<{ box: PlateBox; data: PlateData; depth: number; clickable: boolean }> = [];
     for (const { object, point, distance } of objects) {
       const position = object.position!;
+      const drawnAt = drawnUnitPosition(object, SEAT_DRAWN) ?? position; // 11.02-tails: the seat point, if drawn on one
       const isUnit = object.typeId === 3 || object.typeId === 4;
       const dead = isWorldObjectDead(object);
       // Match the height of the body drawn in the WebGL scene so the plate sits on its head.
       const heightInWorld = isUnit ? unitHeight?.(object.guid) ?? 2 : 1.2;
-      const top = projectPoint({ x: position.x, y: position.y, z: position.z + heightInWorld }, camera, width, height);
+      const top = projectPoint({ x: drawnAt.x, y: drawnAt.y, z: drawnAt.z + heightInWorld }, camera, width, height); // 11.02-tails
       if (!top) continue;
       const bodyHeight = Math.max(4, point.y - top.y);
       const isSelected = object.guid === selectedGuid;
@@ -405,7 +414,8 @@ export class SimpleScene {
         // better, because a trigger no longer had to be under the cursor to steal the click.
         const self = object.guid === state.selfGuid;
         const clickable = self || ((unit.flags(object) ?? 0) & UNIT_FLAGS_UNCLICKABLE) === 0;
-        if (clickable) this.#pushUnitHit(object.guid, point, top.y, bodyHeight, dead, self);
+        // 11.02-tails: a HIDE_PASSENGER seat leaves no model to click (Wow.exe 0x004f8d10); the plate stays.
+        if (clickable && !hiddenBySeat(object)) this.#pushUnitHit(object.guid, point, top.y, bodyHeight, dead, self); // 11.02-tails
         if (this.#drawWorld && !dead) this.#drawUnit(object, point, top.y, bodyHeight, distance, object.guid === state.selfGuid, isSelected, metadata);
         // The dead are no longer refused here. `NamePlates.plateSource` is the one place that
         // decides what carries a plate, and it now keeps a corpse the server still marks lootable;

@@ -15,8 +15,9 @@
 // which ~190 ms is opening the thirty sources again. Run directly, this file is still the one-shot
 // generator it always was.
 
+import { randomUUID } from "node:crypto";
 import { writeSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { copyFile, link, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { m2Animations, parseM2, parseM2Skeleton, TEXTURE_TYPE_OWN } from "./m2.mjs";
@@ -26,10 +27,10 @@ import { baseAnimationIds, loadAnimationCatalog } from "./animations.mjs";
 import { parseWmoVisual, wmoDependencies, wmoGroupMeshes } from "./wmo-visual.mjs";
 import { WWM_TRIANGLE_BUDGET, encodeWwm, encodeWwmGroup } from "./wwm.mjs";
 import { writeBlpAsPng } from "./blp-png.mjs";
-import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT } from "./generate-texture.mjs";
+import { publishTexture, SourceMissing, SOURCE_MISSING_EXIT, validTexturePath } from "./generate-texture.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
-import { sourceStamp, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
+import { sourceStamp, stampIsCurrent, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
 // Out of the build, not copied: see the note over the same import in `generate-texture.mjs`.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
 
@@ -154,7 +155,7 @@ export async function publishVisualModel(requestedPath, hash, archives) {
     for (let index = 0; index < parsed.textures.length; index++) {
       const path = parsed.textures[index];
       if (!path) continue;
-      const written = await writeBlpAsPng(await archives.read(path), join(destination, `${hash}-${index}.png`));
+      const written = await publishWmoTexture(path, join(destination, `${hash}-${index}.png`), archives);
       if (written.ok) {
         textureUrls[index] = `/visual/texture/${hash}-${index}.png`;
         // A building's textures have no route that could regenerate them on their own, so they are
@@ -188,6 +189,69 @@ export async function publishVisualModel(requestedPath, hash, archives) {
   // A model that ships without one of its textures renders as flat colour, so say which and why
   // instead of leaving it to be discovered in game.
   if (unresolved.length > 0) console.warn(`  ${unresolved.length} texture(s) unresolved: ${unresolved.join("; ")}`);
+}
+
+/**
+ * One WMO texture beside its artifact, through the shared texture cache (10.20 slice 3).
+ *
+ * The WMO route keeps its own URL (`/visual/texture/<hash>-<n>.png`, which `WmoModel.ts` tells
+ * apart by its prefix), but the picture is the one `publishTexture` publishes for the same path —
+ * the same `blpToPng`, so the same bytes — and that one is decoded once for every building that
+ * uses it. Measured over the client's 1,985 root WMOs: 24,202 texture references to 4,853 distinct
+ * paths, so four decodes in five were repeats. The file is then hard-linked (or, where a link is
+ * refused, copied) into place under a temporary name and renamed, so a reader never sees half of it.
+ *
+ * A shared picture is used only when its stamp is current for this chain: `publishTexture` skips
+ * any file that has a stamp at all, and the gateway's `/texture` route is what retires stale ones —
+ * a WMO published from a stale picture would carry a stamp naming the new source and never be
+ * rebuilt. A path outside the texture class, a stale or missing shared picture, or any failure on
+ * the way falls back to decoding into place as before, with the same reasons.
+ */
+export async function publishWmoTexture(path, target, archives) {
+  if (validTexturePath(path)) {
+    try {
+      const shared = await publishTexture(path, archives);
+      if (!shared.cached || await stampIsCurrent(shared.destination, archives, { paths: [path] })) {
+        await linkOrCopy(shared.destination, target);
+        return { ok: true, shared: true };
+      }
+    } catch {
+      // Not in the client, undecodable, or the link and the copy both refused: the old way says why.
+    }
+  }
+  return writeBlpAsPng(await archives.read(path), target);
+}
+
+/** `target` becomes the same bytes as `source`: a hard link where allowed, a copy otherwise. */
+async function linkOrCopy(source, target) {
+  try {
+    const [from, to] = await Promise.all([stat(source, { bigint: true }), stat(target, { bigint: true })]);
+    if (from.ino !== 0n && from.ino === to.ino && from.dev === to.dev) return;
+  } catch {
+    // No target yet.
+  }
+  const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    try {
+      await link(source, temporary);
+    } catch {
+      // Another volume (EXDEV), a file system without links, or a refusal (EPERM): copy instead.
+      await copyFile(source, temporary);
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(temporary, target);
+        return;
+      } catch (error) {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+        if (attempt >= 5 || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw error;
+        await new Promise((done) => setTimeout(done, 15 * (attempt + 1)));
+      }
+    }
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** An `M2Array` out of the MD20 header: a count and a file offset, eight bytes. */

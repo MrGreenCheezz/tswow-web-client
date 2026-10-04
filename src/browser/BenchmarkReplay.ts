@@ -1,7 +1,10 @@
 import type { CameraRig } from "./game/CameraRig.js";
 import { MOVEMENT_MASK_MOVING } from "../world/MovementProtocol.js";
 import { composePassengerPosition, type TransportSeat } from "../world/TransportMath.js";
-import { shortestTurn, WorldState, type WorldObjectState } from "../world/WorldState.js";
+import { sampleCarrierGlide, type CarrierGlide } from "../world/TransportPassengers.js"; // L16 (11.01-E)
+import { sampleSpline, type SplineSample } from "../world/SplineModel.js";
+import { advanceDrift, type DriftSample } from "../world/MovementExtrapolation.js";
+import { shortestTurn, WorldState, type WorldObjectState, type WorldPosition } from "../world/WorldState.js";
 import { weatherKind, type Weather } from "../world/WorldMessageProtocol.js";
 
 /** The first version of the deterministic world replay wire contract. */
@@ -59,6 +62,11 @@ export interface WorldReplayObjectV1 {
   readonly transportTime: number | null;
   readonly speeds: readonly WorldReplaySpeedEntryV1[];
   readonly fields: readonly WorldReplayFieldEntryV1[];
+  /**
+   * A game object's full rotation (5.27), WoW axes. Optional and written only when the object has
+   * one, so a capture without any is byte-for-byte what it was before.
+   */
+  readonly rotation?: { readonly x: number; readonly y: number; readonly z: number; readonly w: number };
 }
 
 export type WorldReplaySceneV1 = "exterior" | "interior" | "underwater" | "rain";
@@ -340,7 +348,9 @@ function copyFrame(name: string, value: unknown, expectedIndex: number): WorldRe
 
 function copyObject(name: string, value: unknown): WorldReplayObjectV1 {
   const source = plainObject(name, value);
-  exactKeys(name, source, OBJECT_KEYS);
+  exactKeys(name, source, OBJECT_KEYS, ["rotation"]);
+  const rotation = source.rotation === undefined ? undefined : plainObject(`${name}.rotation`, source.rotation);
+  if (rotation !== undefined) exactKeys(`${name}.rotation`, rotation, ["x", "y", "z", "w"]);
   return {
     guid: canonicalGuid(`${name}.guid`, source.guid, false),
     typeId: source.typeId === null ? null : integerRange(`${name}.typeId`, source.typeId, 0, MAX_U8),
@@ -354,6 +364,14 @@ function copyObject(name: string, value: unknown): WorldReplayObjectV1 {
     transportTime: nullableIntegerRange(`${name}.transportTime`, source.transportTime, 0, MAX_U32),
     speeds: copyPairs(`${name}.speeds`, source.speeds, "speed") as readonly WorldReplaySpeedEntryV1[],
     fields: copyPairs(`${name}.fields`, source.fields, "field") as readonly WorldReplayFieldEntryV1[],
+    ...(rotation === undefined ? {} : {
+      rotation: {
+        x: finite(`${name}.rotation.x`, rotation.x),
+        y: finite(`${name}.rotation.y`, rotation.y),
+        z: finite(`${name}.rotation.z`, rotation.z),
+        w: finite(`${name}.rotation.w`, rotation.w),
+      },
+    }),
   };
 }
 
@@ -588,6 +606,7 @@ export function hydrateWorldReplaySnapshot(input: unknown): HydratedWorldReplayS
       transportTime: source.transportTime ?? undefined,
       speeds: source.speeds.length === 0 ? undefined : new Map(source.speeds) as WorldObjectState["speeds"],
       fields: new Map(source.fields),
+      rotation: source.rotation === undefined ? undefined : { ...source.rotation },
     };
     state.objects.set(object.guid, object);
   }
@@ -632,12 +651,21 @@ function cloneLiveObject(source: WorldObjectState): WorldObjectState {
       cyclic: source.motion.cyclic,
       flying: source.motion.flying,
       finalOrientation: source.motion.finalOrientation,
+      // The description and paths never change; the lap clock does, and must stay the live one's.
+      ...(source.motion.track === undefined ? {} : { track: { ...source.motion.track } }),
     },
     glide: source.glide === undefined ? undefined : { ...source.glide },
     transport: source.transport === undefined ? undefined : { ...source.transport },
     speeds: source.speeds === undefined ? undefined : new Map(source.speeds),
     transportTime: source.transportTime,
     fields: new Map(source.fields),
+    // 5.04/5.27: the extrapolation that draws a remote player this frame, and what turns a game
+    // object beyond its yaw. Copied, so materializing the capture never touches the live world.
+    drift: source.drift === undefined ? undefined : { ...source.drift },
+    pitch: source.pitch,
+    rotation: source.rotation === undefined ? undefined : { ...source.rotation },
+    positionTransport: source.positionTransport === undefined ? undefined : { ...source.positionTransport },
+    vehicleId: source.vehicleId,
   };
 }
 
@@ -645,16 +673,20 @@ function cloneLiveWorld(source: WorldState): WorldState {
   const copy = new WorldState();
   for (const object of source.objects.values()) copy.objects.set(object.guid, cloneLiveObject(object));
   copy.selfGuid = source.selfGuid;
+  copy.groundProbe = source.groundProbe;
   return copy;
 }
 
 const SPLINE_SCRUB_MASK = MOVEMENT_MASK_MOVING | 0x08000000;
+const SPLINE_SAMPLE: SplineSample = { x: 0, y: 0, z: 0, orientation: 0 };
+const DRIFT_SAMPLE: DriftSample = { x: 0, y: 0, z: 0, orientation: 0 };
 
 /**
  * Materialize a private world copy in dependency order. WorldState's frame updater intentionally
  * walks its insertion order, but capture must not make a passenger's pose depend on that order.
  */
-function materializeCaptureWorld(world: WorldState, now: number): void {
+function materializeCaptureWorld(world: WorldState, now: number,
+  carrierGlideOf?: (guid: bigint) => Readonly<CarrierGlide> | undefined): void { // L16: the live state's carrier glides
   const visiting = new Set<bigint>();
   const complete = new Set<bigint>();
 
@@ -672,8 +704,32 @@ function materializeCaptureWorld(world: WorldState, now: number): void {
     if (progress >= 1) object.glide = undefined;
   };
 
+  // Where every object stood before any was advanced: an arrival facing a target reads it from here,
+  // so the result does not depend on which of the two was materialized first.
+  const unadvanced = new Map<bigint, WorldPosition>();
+  for (const object of world.objects.values()) if (object.position) unadvanced.set(object.guid, { ...object.position });
+
   const advanceSpline = (object: WorldObjectState, motion: NonNullable<WorldObjectState["motion"]>): void => {
     if (!object.position) return;
+    const track = motion.track;
+    if (track) {
+      // The same evaluation as `WorldState.updateMotions`: parabola, fall, facing, cycles.
+      const done = sampleSpline(track, now - motion.startedAt, object.position.orientation, SPLINE_SAMPLE);
+      object.position.x = SPLINE_SAMPLE.x;
+      object.position.y = SPLINE_SAMPLE.y;
+      object.position.z = SPLINE_SAMPLE.z;
+      object.position.orientation = SPLINE_SAMPLE.orientation;
+      if (done) {
+        const facing = track.desc.facing;
+        const target = facing?.kind === "target" ? unadvanced.get(facing.guid) : undefined;
+        if (target && (target.x !== object.position.x || target.y !== object.position.y)) {
+          object.position.orientation = Math.atan2(target.y - object.position.y, target.x - object.position.x);
+        }
+        object.motion = undefined;
+        if (object.typeId === 3) object.movementFlags &= ~SPLINE_SCRUB_MASK;
+      }
+      return;
+    }
     const rawProgress = (now - motion.startedAt) / motion.duration;
     const progress = motion.cyclic ? ((rawProgress % 1) + 1) % 1 : Math.min(Math.max(rawProgress, 0), 1);
     const distance = progress * motion.totalLength;
@@ -710,10 +766,24 @@ function materializeCaptureWorld(world: WorldState, now: number): void {
         materialize(transport);
         if (object.position && transport.position) {
           object.position = composePassengerPosition(transport.position, seat as TransportSeat);
+          // L16 (11.01-E): somebody aboard a ship glides on its deck after a packet, as
+          // `WorldState.updateMotions` draws it (carry, then the carrier glide); a glide of another carrier is over.
+          const glide = carrierGlideOf?.(object.guid);
+          if (glide !== undefined && glide.carrier === seat.guid) sampleCarrierGlide(glide, transport.position, now, object.position);
         }
       }
     }
     if (ownGlide) advanceGlide(object, ownGlide);
+    // The order of `WorldState.updateMotions`: carry, glide, drift, spline. A drift is dropped there
+    // for a passenger or a unit on a spline, and so it is not advanced here.
+    const drift = object.drift;
+    if (drift !== undefined && object.position && !ownMotion && !seat) {
+      advanceDrift(drift, now, DRIFT_SAMPLE, world.groundProbe);
+      object.position.x = DRIFT_SAMPLE.x;
+      object.position.y = DRIFT_SAMPLE.y;
+      object.position.z = DRIFT_SAMPLE.z;
+      object.position.orientation = DRIFT_SAMPLE.orientation;
+    }
     if (ownMotion) advanceSpline(object, ownMotion);
     visiting.delete(object.guid);
     complete.add(object.guid);
@@ -764,6 +834,9 @@ function captureObject(source: WorldObjectState): WorldReplayObjectV1 {
     transportTime: source.transportTime ?? null,
     speeds,
     fields,
+    ...(source.rotation === undefined ? {} : {
+      rotation: { x: source.rotation.x, y: source.rotation.y, z: source.rotation.z, w: source.rotation.w },
+    }),
   };
 }
 
@@ -782,7 +855,7 @@ function captureInput(
     ["scenarioId", "mapId", "halfMinute", "weather", "rngSeed", "frameStepMs", "expectations"],
     ["selfGuid", "targetGuid", "focusGuid"]);
   const sampled = cloneLiveWorld(world);
-  materializeCaptureWorld(sampled, captureNowMs);
+  materializeCaptureWorld(sampled, captureNowMs, (guid) => world.carrierGlide(guid)); // L16: carrier glides
   const objects = [...sampled.objects.values()]
     .map(captureObject)
     .sort((left, right) => BigInt(left.guid) < BigInt(right.guid) ? -1 : 1);

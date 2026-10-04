@@ -45,6 +45,8 @@ const FAMILIES = [
   { prefix: "INVTYPE_", what: "what an item is worn as, keyed by `InventoryType`'s member name" },
   { prefix: "RESISTANCE", what: "the six schools — and armour, which rides school zero" },
   { prefix: "EMPTY_SOCKET_", what: "a gem socket's colour" },
+  // 4.10: the native key bindings window names a stock command as KeyBindingFrame does.
+  { prefix: "BINDING_NAME_", what: "a key binding's name, keyed by its Bindings.xml command" },
 ];
 
 /**
@@ -64,6 +66,60 @@ const EXTRA_STRINGS = [
   "DAY_ONELETTER_ABBR", "HOUR_ONELETTER_ABBR", "MINUTE_ONELETTER_ABBR", "SECOND_ONELETTER_ABBR",
   "ARMOR_TEMPLATE", "CONTAINER_SLOTS", "DAMAGE_TEMPLATE", "DPS_TEMPLATE", "DURABILITY_TEMPLATE",
   "SELL_PRICE", "SPEED",
+  // 1.32: the world layer's instance and zone messages (`src/world/WorldMessageTexts.ts`) — the
+  // sentences UIParent.lua and ChatFrame.lua print for SMSG_RAID_INSTANCE_MESSAGE,
+  // SMSG_INSTANCE_RESET(_FAILED) and SMSG_ZONE_UNDER_ATTACK — and the four unit words and the
+  // delimiter `SecondsToTime(seconds, nil, 1)` builds a lock's remaining time from.
+  "RAID_INSTANCE_WARNING_HOURS", "RAID_INSTANCE_WARNING_MIN", "RAID_INSTANCE_WARNING_MIN_SOON",
+  "RAID_INSTANCE_WELCOME", "RAID_INSTANCE_EXPIRED",
+  "INSTANCE_RESET_SUCCESS", "INSTANCE_RESET_FAILED", "INSTANCE_RESET_FAILED_OFFLINE", "INSTANCE_RESET_FAILED_ZONING",
+  "ZONE_UNDER_ATTACK",
+  "D_DAYS", "D_HOURS", "D_MINUTES", "D_SECONDS", "TIME_UNIT_DELIMITER",
+  // 4.10: the micro buttons' names (the first argument of MicroButtonTooltipText in the stock
+  // micro buttons' OnEnter), for ui/HudKeys.ts.
+  "CHARACTER_BUTTON", "SPELLBOOK_ABILITIES_BUTTON", "TALENTS_BUTTON", "QUESTLOG_BUTTON", "SOCIAL_BUTTON",
+  "WORLDMAP_BUTTON", "MAINMENU_BUTTON", "DUNGEONS_BUTTON",
+  // 4.04: the native unit tooltip's level line, rank and PvP words, as Wow.exe's unit tooltip writer
+  // (0x00621070) picks them, and the skinnable line's four words (ui/UnitTooltip.ts).
+  "TOOLTIP_UNIT_LEVEL", "TOOLTIP_UNIT_LEVEL_CLASS", "TOOLTIP_UNIT_LEVEL_CLASS_TYPE",
+  "TOOLTIP_UNIT_LEVEL_RACE_CLASS", "TOOLTIP_UNIT_LEVEL_RACE_CLASS_TYPE", "TOOLTIP_UNIT_LEVEL_TYPE",
+  "ELITE", "BOSS", "PLAYER", "CORPSE", "PVP_ENABLED",
+  "UNIT_SKINNABLE_LEATHER", "UNIT_SKINNABLE_HERB", "UNIT_SKINNABLE_ROCK", "UNIT_SKINNABLE_BOLTS",
+  // 4.13: the stock CAMP and QUIT popups' countdown (ui/LogoutCountdown.ts).
+  "CAMP_TIMER", "QUIT_TIMER",
+  // 4.07: the auction house's bid and buyout questions (Blizzard_AuctionUI.lua:192-222).
+  "BID_AUCTION_CONFIRMATION", "BUYOUT_AUCTION_CONFIRMATION",
+  // 4.08: the nineteen equipment slots' names, for the equipment set's «ignore this slot» list.
+  "HEADSLOT", "NECKSLOT", "SHOULDERSLOT", "SHIRTSLOT", "CHESTSLOT", "WAISTSLOT", "LEGSSLOT", "FEETSLOT",
+  "WRISTSLOT", "HANDSSLOT", "FINGER0SLOT", "FINGER1SLOT", "TRINKET0SLOT", "TRINKET1SLOT", "BACKSLOT",
+  "MAINHANDSLOT", "SECONDARYHANDSLOT", "RANGEDSLOT", "TABARDSLOT",
+  // 4.14: the dungeon finder's waits as LFDFrame.lua writes them, with SecondsToTime's abbreviations.
+  "DAYS_ABBR", "HOURS_ABBR", "MINUTES_ABBR", "SECONDS_ABBR", "LESS_THAN_ONE_MINUTE", "TIME_UNKNOWN",
+  "TIME_IN_QUEUE", "LFG_STATISTIC_AVERAGE_WAIT",
+  // 4.03: the native character sheet's rows and tooltips as PaperDollFrame.lua writes them
+  // (ui/CharacterSheetModel.ts), the helm/cloak toggles, the title picker's «Нет» and the pet book tab.
+  "PLAYERSTAT_BASE_STATS", "PLAYERSTAT_MELEE_COMBAT", "PLAYERSTAT_RANGED_COMBAT", "PLAYERSTAT_SPELL_COMBAT",
+  "PLAYERSTAT_DEFENSES", "PAPERDOLLFRAME_TOOLTIP_FORMAT",
+  "SPELL_STAT1_NAME", "SPELL_STAT2_NAME", "SPELL_STAT3_NAME", "SPELL_STAT4_NAME", "SPELL_STAT5_NAME",
+  "COMBAT_RATING_NAME2", "COMBAT_RATING_NAME6", "COMBAT_RATING_NAME7", "COMBAT_RATING_NAME8",
+  "COMBAT_RATING_NAME11", "COMBAT_RATING_NAME24",
+  "DAMAGE", "WEAPON_SPEED", "ATTACK_SPEED", "ATTACK_POWER", "MELEE_ATTACK_POWER", "RANGED_ATTACK_POWER",
+  "MELEE_ATTACK_POWER_TOOLTIP", "RANGED_ATTACK_POWER_TOOLTIP", "MELEE_CRIT_CHANCE", "RANGED_CRIT_CHANCE",
+  "STAT_EXPERTISE", "CR_HASTE_RATING_TOOLTIP", "CR_HIT_MELEE_TOOLTIP", "CR_HIT_RANGED_TOOLTIP", "CR_HIT_SPELL_TOOLTIP",
+  "CR_CRIT_MELEE_TOOLTIP", "CR_CRIT_RANGED_TOOLTIP", "CR_EXPERTISE_TOOLTIP", "CR_DODGE_TOOLTIP", "CR_PARRY_TOOLTIP",
+  "CR_BLOCK_TOOLTIP", "BONUS_DAMAGE", "BONUS_HEALING", "BONUS_HEALING_TOOLTIP", "SPELL_CRIT_CHANCE", "SPELL_HASTE",
+  "SPELL_HASTE_TOOLTIP", "MANA_REGEN", "MANA_REGEN_TOOLTIP", "NOT_APPLICABLE",
+  "DAMAGE_SCHOOL2", "DAMAGE_SCHOOL3", "DAMAGE_SCHOOL4", "DAMAGE_SCHOOL5", "DAMAGE_SCHOOL6", "DAMAGE_SCHOOL7",
+  "ARMOR", "DEFENSE", "DEFAULT_STATDEFENSE_TOOLTIP", "STAT_DODGE", "STAT_PARRY", "STAT_BLOCK", "STAT_RESILIENCE",
+  "DODGE_CHANCE", "PARRY_CHANCE", "BLOCK_CHANCE", "SHOW_HELM", "SHOW_CLOAK", "NONE", "CURRENCY",
+  "PET_TYPE_PET", "PET_TYPE_DEMON",
+  // 4.03 review: the armour and resilience tooltips (PaperDollFrame_SetArmor / _SetResilience).
+  "DEFAULT_STATARMOR_TOOLTIP", "PET_BONUS_TOOLTIP_ARMOR", "RESILIENCE_TOOLTIP",
+  // 1.28 (L7): the native glyph socket's removal question, as StaticPopup's CONFIRM_REMOVE_GLYPH asks it.
+  "CONFIRM_REMOVE_GLYPH",
+  // 4.03 (L7): the pet's share in the stamina, intellect and ranged attack power rows (ComputePetBonus).
+  "PET_BONUS_TOOLTIP_STAMINA", "PET_BONUS_TOOLTIP_INTELLECT", "PET_BONUS_TOOLTIP_RANGED_ATTACK_POWER",
+  "PET_BONUS_TOOLTIP_SPELLDAMAGE",
 ];
 
 // `NAME = "text";` with the text on one line. Escapes are kept verbatim: the client's own strings
@@ -142,7 +198,8 @@ for (const family of FAMILIES) {
 {
   const taken = EXTRA_STRINGS.filter((name) => found.has(name));
   lines.push(`// Taken by name: ${taken.join(", ")} —`);
-  lines.push("// unit words a duration falls back to, and the item tooltip's prefixless templates.");
+  lines.push("// unit words a duration falls back to, the item tooltip's prefixless templates, and the");
+  lines.push("// world layer's instance and zone messages with SecondsToTime's unit words.");
 }
 lines.push("");
 lines.push("export const GLOBAL_STRINGS: Readonly<Record<string, string>> = {");

@@ -1,6 +1,8 @@
 import type { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "../glue/GlueLoader.js";
 import { GlueLuaVm, type GlueLuaOptions } from "../glue/GlueLua.js";
+import { createFrameXmlClock, type FrameXmlClockSource } from "./FrameXmlClock.js"; // L5 3.27
+import { installFrameXmlLuaEnvironment } from "./FrameXmlLuaEnvironment.js"; // L5 3.27
 import {
   GlueWidgetBinder,
   type GameTooltipWidgetAdapter,
@@ -36,6 +38,19 @@ import {
   FRAMEXML_NEUTRAL_PRELUDE,
 } from "./FrameXmlNeutralApi.js";
 import { FRAMEXML_BAG_COMPAT_PRELUDE, installOwnedGlobals, releaseOwnedGlobals } from "./FrameXmlBagCompat.js";
+import { standInFrameXmlVehicleFrames } from "./FrameXmlDurabilityFrame.js";
+import { installFrameXmlOptionsCategoryQueue } from "./FrameXmlOptionsCategoryQueue.js";
+import { installFrameXmlLuaCompat } from "./FrameXmlLuaCompat.js";
+import {
+  frameXmlGlobalSelfCalls, frameXmlIsTsAddonChunk, type FrameXmlGlobalSelfCall,
+} from "./FrameXmlTsAddonLint.js";
+import {
+  captureFrameXmlStockCombatLogLoadUi, frameXmlDefinesCombatLogLoadUi, FrameXmlLoginState,
+  refuseFrameXmlCombatLogLoadUi,
+} from "./FrameXmlLoginEdge.js";
+import {
+  FrameXmlCVarStore, frameXmlCVarStorageKey, installFrameXmlCVarPersistence,
+} from "./FrameXmlCVarPersistence.js";
 import {
   FRAMEXML_CHARACTER_COMPAT_PRELUDE,
   FRAMEXML_CHARACTER_OPTIONAL_SUBFRAMES,
@@ -59,6 +74,7 @@ import { GlueLuaRef } from "../glue/GlueLua.js";
 import { FrameXmlSavedVariables, type FrameXmlSavedVariablesOptions } from "./FrameXmlSavedVariables.js";
 import {
   FrameXmlAddonRuntime,
+  frameXmlAddonNotReadyText,
   type FrameXmlAddonRuntimeResult,
 } from "./FrameXmlAddonRuntime.js";
 import {
@@ -394,6 +410,8 @@ end
  * Full function-environment mutation remains absent — see `vm.setfenvSites` in the inventory.
  * The one root add-on call measured in this client is `getfenv(0)`, whose Lua 5.1 answer is exactly
  * `_G`; that safe, non-mutating form is supplied below without exposing the debug library.
+ * L5 3.27 (03.10): `getfenv` and `newproxy` below are now stand-ins only — FrameXmlLuaEnvironment.ts
+ * installs 5.1's `newproxy` (userdata), `setfenv` and `getfenv` over them right after this chunk.
  */
 const FRAMEXML_LUA51_SHIMS = `
 -- The only environment lookup in the selected client add-ons is getfenv(0), used to capture the
@@ -544,10 +562,12 @@ export const FRAMEXML_ADDED_SHIMS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * The first four frames of a live client, as events.
+ * The first frames of a live client, as events. A TOC walk only runs `OnLoad`, and almost every
+ * in-world API call in FrameXML is behind one of these.
  *
- * The order is the real client's: variables, then addons, then login, then the world. A TOC walk
- * only runs `OnLoad`, and almost every in-world API call in FrameXML is behind one of these.
+ * `FRAMEXML_EXERCISE_EVENTS` is the census probe's set: its `ADDON_LOADED` carries the made-up name
+ * `Blizzard_FrameXML` to reach every handler of the event, which the real client never raises for
+ * FrameXML.toc. The session's own order is `FRAMEXML_VERTICAL_EXERCISE_EVENTS` below.
  */
 export type FrameXmlExerciseEvent =
   | "VARIABLES_LOADED" | "ADDON_LOADED" | "PLAYER_LOGIN" | "PLAYER_ENTERING_WORLD";
@@ -556,9 +576,19 @@ export const FRAMEXML_EXERCISE_EVENTS: readonly FrameXmlExerciseEvent[] = Object
   "VARIABLES_LOADED", "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD",
 ]);
 
-/** The bounded vertical owns no CombatLog add-on, so its exercise stops before PLAYER_LOGIN. */
+/**
+ * The session edges in Wow.exe 3.3.5a 12340's order (read-only Ghidra). The game-UI start
+ * (0x0052a980) marks the character not logged in, runs FrameXML.toc — the TSWoW blocks included,
+ * with no ADDON_LOADED of its own — then every enabled add-on, each closed by its ADDON_LOADED
+ * (0x005f80b0, after its SavedVariables ran; FrameXmlAddonRuntime.ts), then asks for the two account
+ * data sets and raises VARIABLES_LOADED once both are at hand (0x00518bf0; at once when they are
+ * cached — this browser keeps them locally), and with the player in the world enters it
+ * (0x00528010): PLAYER_LOGIN once per UI, cleared flag first so IsLoggedIn (0x0060a450) already
+ * answers 1 inside it, then PLAYER_ENTERING_WORLD. The add-ons' ADDON_LOADED is raised by the load
+ * itself, so it is not in this list.
+ */
 export const FRAMEXML_VERTICAL_EXERCISE_EVENTS: readonly FrameXmlExerciseEvent[] = Object.freeze([
-  "VARIABLES_LOADED", "ADDON_LOADED", "PLAYER_ENTERING_WORLD",
+  "VARIABLES_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD",
 ]);
 
 /**
@@ -703,6 +733,8 @@ export interface FrameXmlBootOptions {
   readonly gameTooltipAdapter?: GameTooltipWidgetAdapter;
   /** Live TSWoW custom-packet transport. Absent leaves `_CLIENT_NETWORK` to the measured stub floor. */
   readonly clientNetwork?: FrameXmlClientNetworkTransport;
+  /** The opcodes the TSWoW Lua subscribes to, on each change and empty at close (9.08). */
+  readonly clientNetworkChanged?: (opcodes: ReadonlySet<number>) => void;
   /** Root-level add-ons present in the selected client. */
   readonly installedAddons?: readonly string[];
   /** Enabled non-LoD add-ons executed before the first world event. */
@@ -719,6 +751,8 @@ export interface FrameXmlBootOptions {
    * MODIFIER_STATE_CHANGED. Defaults to the page's own tracker, which a page-less boot never feeds.
    */
   readonly modifiers?: ModifierSource;
+  /** L5 3.27: the milliseconds behind GetTime and `pump.now` (FrameXmlClock.ts); the page's monotonic clock by default. */
+  readonly clock?: FrameXmlClockSource;
 }
 
 /** The build string the glue slice measured; the same client, so the same answer. */
@@ -735,8 +769,12 @@ export class FrameXmlBoot {
   readonly corpus: FrameXmlCorpus;
   readonly #addons: FrameXmlAddonRuntime;
   readonly #savedVariables: FrameXmlSavedVariables;
+  /** Plan item 3.19: the CVars and modified clicks the stock UI wrote, across sessions. */
+  readonly #cvarStore: FrameXmlCVarStore | undefined;
   #stopSavedVariablesPersistence: (() => void) | undefined;
   #closed = false;
+  /** Behind IsLoggedIn: set as the exercise raises PLAYER_LOGIN. */
+  readonly #login = new FrameXmlLoginState();
   #stopModifierEvents: (() => void) | undefined;
   readonly #clientNetwork: FrameXmlClientNetworkBridge | undefined;
   readonly #options: FrameXmlBootOptions;
@@ -763,6 +801,7 @@ export class FrameXmlBoot {
   #roots: readonly FrameXmlFrame[] = [];
   readonly #addonRootNames = new Set<string>();
   #tsAddonResults: readonly FrameXmlTsAddonStatus[] = [];
+  #tsAddonHints: readonly FrameXmlGlobalSelfCall[] = [];
   readonly #tsAddonFrames = new Map<FrameXmlFrame, string>();
   readonly #seenTocFrames = new Set<FrameXmlFrame>();
 
@@ -793,8 +832,12 @@ export class FrameXmlBoot {
   /** The synthetic TOC of a subset load, or undefined for the whole corpus. */
   readonly #subsetToc: string | undefined;
 
+  /** L5 3.27: GetTime's clock — whole milliseconds that never go back (FrameXmlClock.ts). */
+  readonly #clock: () => number;
+
   constructor(options: FrameXmlBootOptions) {
     this.#options = options;
+    this.#clock = createFrameXmlClock(options.clock); // L5 3.27
     this.#browserAudioOutput = typeof globalThis.AudioContext === "function"
       || typeof (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext === "function";
     // The subset TOC is injected *under* the corpus rather than over it, so the scan, the stub plan
@@ -811,7 +854,7 @@ export class FrameXmlBoot {
     this.vm = new TimedGlueLuaVm(options.lua ?? {});
     this.#clientNetwork = options.clientNetwork
       ? new FrameXmlClientNetworkBridge(this.vm, options.clientNetwork,
-        (callback) => this.bridge.runInMutationBatch(callback))
+        (callback) => this.bridge.runInMutationBatch(callback), options.clientNetworkChanged)
       : undefined;
     this.bridge = new FrameXmlUiBridge(new FrameXmlTemplateRegistry(), {
       // `text="SOME_GLOBAL_STRING"` in XML: GlobalStrings.lua is the TOC's first entry, so by the
@@ -834,6 +877,9 @@ export class FrameXmlBoot {
     });
     this.bridge.setRuntime(this.parentFirstRuntime(this.binder));
     this.#savedVariables = new FrameXmlSavedVariables(this.vm, options.savedVariables);
+    this.#cvarStore = options.savedVariables ? new FrameXmlCVarStore(
+      options.savedVariables.storage, frameXmlCVarStorageKey(options.savedVariables.scope.account),
+    ) : undefined;
     this.#addons = new FrameXmlAddonRuntime({
       provider: this.corpus,
       checkpoint: this.checkpoint,
@@ -922,6 +968,11 @@ export class FrameXmlBoot {
     return this.#addonResults;
   }
 
+  /** TSWoW blocks' `_G:Name(…)` calls, found at load (plan item 9.09). */
+  get tsAddonHints(): readonly FrameXmlGlobalSelfCall[] {
+    return this.#tsAddonHints;
+  }
+
   get tsAddonResults(): readonly FrameXmlTsAddonStatus[] {
     return this.#tsAddonResults;
   }
@@ -951,6 +1002,10 @@ export class FrameXmlBoot {
     const plan = await frameXmlStubPlanAsync(scan.chunks, this.checkpoint);
     this.#plan = plan;
     const planMs = now() - planStarted;
+    // 9.09: `_G:Name(…)` in a TSWoW block — reported, run as Wow.exe runs it (FrameXmlTsAddonLint.ts).
+    this.#tsAddonHints = scan.chunks
+      .filter((chunk) => frameXmlIsTsAddonChunk(chunk.file) && /_G\s*:/.test(chunk.source))
+      .flatMap((chunk) => frameXmlGlobalSelfCalls(chunk.source, chunk.file));
     await this.checkpoint();
 
     const tsAddons = new FrameXmlTsAddonTracker(
@@ -997,6 +1052,8 @@ export class FrameXmlBoot {
     }
     const shimsLoaded = this.vm.execute(FRAMEXML_LUA51_SHIMS, `@${PRELUDE_CHUNK}:shims`);
     if (!shimsLoaded.ok) throw new Error(`framexml 5.1 shims failed: ${shimsLoaded.error}`);
+    // L5 3.27: 5.1's newproxy (userdata), setfenv and getfenv over the stand-ins above (FrameXmlLuaEnvironment.ts).
+    installFrameXmlLuaEnvironment(this.vm.state);
     const attributesLoaded = this.vm.execute(
       FRAMEXML_ATTRIBUTE_PRELUDE, `@${PRELUDE_CHUNK}:attributes`,
     );
@@ -1009,9 +1066,20 @@ export class FrameXmlBoot {
       const seamLoaded = this.vm.execute(FRAMEXML_SEAM_PRELUDE, `@${PRELUDE_CHUNK}:seam`);
       if (!seamLoaded.ok) throw new Error(`framexml world seam failed: ${seamLoaded.error}`);
     }
+    // After the seam composed SetCVar, before the corpus touches it (3.19): CVAR_UPDATE from
+    // SetCVar's third argument, and the saved CVars and modified clicks seeded back.
+    installFrameXmlCVarPersistence(this.vm, {
+      raise: (event, ...args) => this.pump.fire(event, ...args), store: this.#cvarStore,
+    }, PRELUDE_CHUNK);
     this.probeWidgets();
     await this.checkpoint();
 
+    // Before the corpus: Wow.exe's compat globals this VM lacked (sin/cos in degrees, strrev, …).
+    if (!installFrameXmlLuaCompat(this.vm, `@${PRELUDE_CHUNK}:compat`)) throw new Error("framexml Lua compat failed");
+    // Before the corpus: an add-on's options panel filed before the lazy options chain exists (3.18).
+    if (!installFrameXmlOptionsCategoryQueue(this.vm, `@${PRELUDE_CHUNK}:options-categories`)) {
+      throw new Error("framexml options category queue failed");
+    }
     const socketing = installFrameXmlSocketing(this.vm, this.bridge, this.#options.seam);
 
     // Whatever the plan is, the loader must find these files through the *cached* corpus, or every
@@ -1032,6 +1100,7 @@ export class FrameXmlBoot {
       afterLuaFile: (path) => {
         this.#clientNetwork?.activateCallbacks();
         socketing.afterLuaFile(path);
+        if (frameXmlDefinesCombatLogLoadUi(path)) captureFrameXmlStockCombatLogLoadUi(this.vm);
       },
       afterTocEntry: (entry, result) => {
         const owner = entry.path.replaceAll("\\", "/").match(/(?:^|\/)tsaddons\/([^/]+)\//i)?.[1]?.toLowerCase();
@@ -1059,6 +1128,8 @@ export class FrameXmlBoot {
     }
     const loadMs = now() - loadStarted;
     this.#roots = result.roots;
+    // L5c 3.18: GetAddOnMetadata answers every installed add-on from its TOC, loaded or not (0x00511430).
+    await this.#addons.primeMetadata(this.#options.installedAddons ?? []);
     for (const name of this.#options.eagerAddons ?? []) {
       const addon = await this.#addons.loadAddon(name);
       this.#addonResults.push(addon);
@@ -1093,6 +1164,10 @@ export class FrameXmlBoot {
     this.#options.beforeExercise?.(this);
     this.#secureStockEntryPoints();
     this.#standInOptionsFrame();
+    // DurabilityFrame_SetAlerts and MainMenuBar_ToPlayerArt read VehicleMenuBar.xml's frames unguarded (3.06).
+    standInFrameXmlVehicleFrames(this.vm, this.bridge);
+    // UIParent's PLAYER_LOGIN would load Blizzard_CombatLog, which has no owner yet (3.01).
+    refuseFrameXmlCombatLogLoadUi(this.vm);
 
     // Before the four session events, not after: `PLAYER_ENTERING_WORLD` is what makes every
     // action button ask `HasAction`, and a seam attached afterwards would answer a bar that had
@@ -1168,8 +1243,8 @@ export class FrameXmlBoot {
       "InterfaceOptionsSocialPanelChatStyleButton",
       "InterfaceOptionsSocialPanelConversationModeButton",
       "InterfaceOptionsCombatTextPanelFCTDropDownButton",
-      "InterfaceOptionsCameraPanelStyleDropDownButton",
       "InterfaceOptionsMousePanelClickMoveStyleDropDownButton",
+      // (5.14: the camera style dropdown is cameraSmoothStyle now, FrameXmlSettingsCVar.ts.)
     ];
     for (const name of controls) {
       const frame = this.bridge.getFrame(name);
@@ -1200,6 +1275,9 @@ export class FrameXmlBoot {
     for (const event of events) {
       await this.checkpoint();
       this.#exercise.events.push(event);
+      // 0x00528010 clears the «not logged in» flag before it raises PLAYER_LOGIN.
+      if (event === "PLAYER_LOGIN") this.#login.logIn();
+      this.#login.observe(event);
       // `ADDON_LOADED` carries the addon's name; the rest carry nothing in 3.3.5.
       this.#exercise.dispatched += event === "ADDON_LOADED"
         ? this.bridge.dispatchEvent(event, "Blizzard_FrameXML")
@@ -1286,12 +1364,18 @@ export class FrameXmlBoot {
     this.#optionsStandIn = installed;
   }
 
-  get pump(): { fire: (event: string, ...args: readonly unknown[]) => number; now: () => number } {
+  get pump(): {
+    fire: (event: string, ...args: readonly unknown[]) => number;
+    now: () => number;
+    listening: (event: string) => boolean;
+  } {
     return {
       // A world event: the store flush and the packet handlers deliver these in bursts between two
       // frame steps, so what one changes may wait for the step (`runInDeferrableBatch`; the world
       // mount turns that on with `setLayoutDeferral`).
       fire: (event, ...args) => this.bridge.runInDeferrableBatch(() => {
+        // A loading screen's PLAYER_LEAVING_WORLD/PLAYER_ENTERING_WORLD (FrameXmlWorldEntry.ts).
+        this.#login.observe(event);
         // LiveWorldSeam publishes ZONE_CHANGED_NEW_AREA when the zone changes. The vertical
         // corpus deliberately leaves the stock world-map owner out: FrameXmlWorldMount keeps the
         // native map action as the owner until a complete WorldMapFrame gate passes. Delivering
@@ -1304,17 +1388,34 @@ export class FrameXmlBoot {
         }
         return this.bridge.dispatchEvent(event, ...args);
       }),
-      now: () => Date.now() / 1000,
+      now: this.#clock, // L5 3.27 (was Date.now() / 1000)
+      // Whether a frame is registered for the event now: lets a source skip building arguments
+      // nobody would receive, without missing a frame that registers later (FrameXmlCombatLogLive).
+      listening: (event) => this.bridge.hasEventListeners(event),
     };
   }
 
   /** Advance the seam one rendered frame. A boot with no seam does nothing. */
-  tickSeam(now = Date.now() / 1000): void {
+  tickSeam(now = this.#clock()): void { // L5 3.27 (was Date.now() / 1000)
     this.#options.seam?.tick(now);
   }
 
   get seam(): FrameXmlWorldSeam | undefined {
     return this.#options.seam;
+  }
+
+  /** The character's in-combat flag, as the UI's own `UnitAffectingCombat("player")` answers it. */
+  #playerInCombat(): boolean {
+    const affecting = this.vm.globalFunction("UnitAffectingCombat");
+    if (!affecting) return false;
+    try {
+      const [answer] = this.vm.call(affecting, ["player"], 1);
+      return answer !== undefined && answer !== null && answer !== false;
+    } catch {
+      return false;
+    } finally {
+      this.vm.release(affecting);
+    }
   }
 
   close(): void {
@@ -1323,8 +1424,9 @@ export class FrameXmlBoot {
     this.#stopModifierEvents?.();
     this.#stopModifierEvents = undefined;
     this.#stopSavedVariablesPersistence?.();
-    this.bridge.dispatchEvent("PLAYER_LOGOUT");
+    this.#fireTeardownOnce();
     this.#savedVariables.flush();
+    this.#cvarStore?.flush();
     this.#clientNetwork?.close();
     this.#addons.close();
     this.#options.seam?.detach();
@@ -1335,18 +1437,52 @@ export class FrameXmlBoot {
 
   flushSavedVariables(): void {
     if (!this.#closed) this.#savedVariables.flush();
+    if (!this.#closed) this.#cvarStore?.flush();
   }
 
-  /** The mounted browser owns checkpoints; headless corpus probes never create timers. */
+  /** The 30 s save: budgeted, heavy variables rarely (`SAVED_VARIABLE_CHECKPOINT`, 9.06 review). */
+  checkpointSavedVariables(): void {
+    if (!this.#closed) this.#savedVariables.checkpoint();
+    if (!this.#closed) this.#cvarStore?.flush();
+  }
+
+  /**
+   * The UI teardown's events (PLAYER_LEAVING_WORLD, PLAYER_LOGOUT, see `FrameXmlLoginEdge`), once
+   * per boot: `close()` and a page that is really going away (9.06) share the latch, so AceDB-style
+   * handlers that strip their defaults run exactly once, before the last save.
+   */
+  #fireTeardownOnce(): void {
+    if (this.#teardownFired) return;
+    this.#teardownFired = true;
+    for (const event of this.#login.teardownEvents(() => this.#playerInCombat())) {
+      try { this.bridge.dispatchEvent(event); } catch { /* one handler must not cost the save */ }
+    }
+  }
+  #teardownFired = false;
+
+  /**
+   * The mounted browser owns checkpoints; headless corpus probes never create timers.
+   *
+   * Only `pagehide` with `persisted === false` is a logout (9.06): the page is being destroyed, so
+   * the teardown events run first and the save after them, as the real client saves after
+   * PLAYER_LOGOUT. `beforeunload` (cancellable), a hidden tab and the 30 s timer only save — the game
+   * goes on, and a PLAYER_LOGOUT there would make AceDB take the defaults off live data.
+   */
   startSavedVariablesPersistence(target: Window, document: Document): void {
     if (this.#closed || !this.#options.savedVariables || this.#stopSavedVariablesPersistence) return;
     const save = (): void => this.flushSavedVariables();
+    const leave = (event: Event): void => {
+      if (!this.#closed && (event as PageTransitionEvent).persisted !== true) this.#fireTeardownOnce();
+      save();
+    };
     const hide = (): void => { if (document.visibilityState === "hidden") save(); };
-    target.addEventListener("pagehide", save);
+    target.addEventListener("pagehide", leave);
+    target.addEventListener("beforeunload", save);
     document.addEventListener("visibilitychange", hide);
-    const interval = target.setInterval(save, 30000);
+    const interval = target.setInterval(() => this.checkpointSavedVariables(), 30000);
     this.#stopSavedVariablesPersistence = () => {
-      target.removeEventListener("pagehide", save);
+      target.removeEventListener("pagehide", leave);
+      target.removeEventListener("beforeunload", save);
       document.removeEventListener("visibilitychange", hide);
       target.clearInterval(interval);
       this.#stopSavedVariablesPersistence = undefined;
@@ -1354,6 +1490,11 @@ export class FrameXmlBoot {
   }
 
   get savedVariableDiagnostics() { return this.#savedVariables.diagnostics; }
+
+  /** The custom opcodes the TSWoW Lua is subscribed to; empty without a live transport (9.08). */
+  clientNetworkOpcodes(): ReadonlySet<number> {
+    return this.#clientNetwork?.opcodes() ?? new Set();
+  }
 
   /** Load one LoD add-on into this boot's existing VM, registry, and widget bridge. */
   async loadAddon(name: string): Promise<FrameXmlAddonRuntimeResult> {
@@ -1411,7 +1552,7 @@ export class FrameXmlBoot {
       this.binder.recordStubCall(String(args[2]), String(args[1]), frame);
       return [];
     });
-    vm.registerGlobal("GetTime", () => [Date.now() / 1000]);
+    vm.registerGlobal("GetTime", () => [this.#clock()]); // L5 3.27 (was Date.now() / 1000)
     vm.registerGlobal("GetLocale", () => [this.#options.locale ?? "ruRU"]);
     // Only the selected client locale is installed through this MPQ chain.
     // The stock Languages panel sees one locale and does not offer a restart
@@ -1460,7 +1601,14 @@ export class FrameXmlBoot {
       recordDirectApi("GetAddOnMetadata");
       return this.#addons.metadata(args[0], args[1]);
     });
+    // 1 from the PLAYER_LOGIN edge on, nil before it (FrameXmlLoginEdge.ts, 0x0060a450).
+    vm.registerGlobal("IsLoggedIn", () => {
+      recordDirectApi("IsLoggedIn");
+      return this.#login.isLoggedIn();
+    });
     for (const [name, value] of Object.entries(FRAMEXML_HOST_CONSTANTS)) vm.setGlobal(name, value);
+    // LoadAddOn's own reason while the files are on their way (FrameXmlAddonRuntime.loadStatus).
+    vm.setGlobal("ADDON_NOT_READY", frameXmlAddonNotReadyText(this.#options.locale ?? "ruRU"));
     // First touch and the final read-back are the only two things that cross out of Lua.
     vm.registerGlobal("__fxOrigin", () => [vm.callingLocation(PRELUDE_CHUNK)]);
     vm.registerGlobal("__fxNoteApi", (args) => {

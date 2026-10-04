@@ -10,6 +10,7 @@ import type { WorldObjectState } from "../../world/WorldState.js";
 import type { InspectResult } from "../../world/InspectProtocol.js";
 import { readField, unit as unitField } from "../../world/Fields.js";
 import { FrameXmlInspectModel, type FrameXmlInspectItem } from "./FrameXmlInspect.js";
+import { followUnit } from "../input/FollowCommand.js";
 import { resolveFrameXmlTalentSnapshot, type FrameXmlTalentMetadata, type FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
 import { frameXmlSocketItemLink } from "./FrameXmlSocketLive.js";
 import type { FrameXmlQuestItemMetadata } from "./FrameXmlWorldSeam.js";
@@ -111,6 +112,11 @@ export function createLiveFrameXmlInspect(host: LiveFrameXmlInspectHost): FrameX
       return player ? unitField.classId(player) : undefined;
     },
     requestInspect: (guid) => host.world()?.inspect(guid),
+    // 5.18: FollowUnit, by the stock unit tokens or a player's name (input/FollowCommand.ts).
+    follow: (unit) => {
+      const world = host.world();
+      return world ? followUnit(world, unit, (token) => host.unitObject(token)) : "ERR_GENERIC_NO_TARGET";
+    },
     requestHonor: (guid) => {
       const world = host.world();
       // A fresh request replaces the last answer: the arena list is merged by slot as its packets

@@ -34,6 +34,7 @@ import {
   FRAMEXML_RAID_CALLS, FrameXmlRaidModel, type FrameXmlRaidContext, type FrameXmlRaidWorld,
 } from "./FrameXmlRaid.js";
 import { FRAMEXML_CHANNELS_CALLS, FrameXmlChannelsModel, type FrameXmlChannelsWorld } from "./FrameXmlFriendsChannels.js";
+import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
 
 /**
  * The real client prints a `/who` answer of this many rows or fewer into chat while the Who tab is
@@ -93,7 +94,8 @@ export interface FrameXmlFriendsWorld extends FrameXmlGuildWorld, FrameXmlRaidWo
 /** What the model asks its host (LiveWorldSeam or the canned seam) besides the world. */
 export interface FrameXmlFriendsContext extends Omit<FrameXmlGuildContext, "world">, Omit<FrameXmlRaidContext, "world"> {
   world(): FrameXmlFriendsWorld | undefined;
-  raceName?(raceId: number): string | undefined;
+  /** L3-review: `female` picks the sexed name (Wow.exe 0x715970); undefined, `Name_lang`. */
+  raceName?(raceId: number, female?: boolean): string | undefined;
 }
 
 interface FriendsPump {
@@ -272,7 +274,8 @@ export class FrameXmlFriendsModel {
     const online = contact.status !== FRIEND_STATUS_OFFLINE;
     return [
       this.#name(contact.guid), online ? contact.level : 0,
-      online ? this.#context.classInfo?.(contact.classId)?.[0] ?? "" : "",
+      // L3-review: Wow.exe 0x6b4130 — the name cache's sex; no entry, Name_lang (female undefined).
+      online ? this.#context.classInfo?.(contact.classId, this.#context.female?.(contact.guid))?.[0] ?? "" : "",
       online ? this.#context.areaName?.(contact.areaId) ?? "" : "",
       online, statusCode(contact.status), contact.note === "" ? undefined : contact.note,
     ];
@@ -349,8 +352,9 @@ export class FrameXmlFriendsModel {
           case "name": return entry.name;
           case "guild": return entry.guild;
           case "zone": return this.#whoZone(entry);
-          case "race": return this.#context.raceName?.(entry.race) ?? "";
-          case "class": return this.#context.classInfo?.(entry.classId)?.[0] ?? "";
+          // L3-review: 0x6b5016 sorts by the row's sexed names, as GetWhoInfo shows them.
+          case "race": return this.#context.raceName?.(entry.race, femaleOf(entry.gender)) ?? "";
+          case "class": return this.#context.classInfo?.(entry.classId, femaleOf(entry.gender))?.[0] ?? "";
           case "level": return entry.level;
         }
       };
@@ -376,8 +380,10 @@ export class FrameXmlFriendsModel {
   whoInfo(index: number): readonly unknown[] | undefined {
     const entry = Number.isInteger(index) && index >= 1 ? this.#whoList()[index - 1] : undefined;
     if (!entry) return undefined;
-    const classInfo = this.#context.classInfo?.(entry.classId);
-    return [entry.name, entry.guild, entry.level, this.#context.raceName?.(entry.race) ?? "",
+    // L3-review: Wow.exe 0x6b4a80 names race and class by the row's sex byte (0x715970/0x7159e0).
+    const female = femaleOf(entry.gender);
+    const classInfo = this.#context.classInfo?.(entry.classId, female);
+    return [entry.name, entry.guild, entry.level, this.#context.raceName?.(entry.race, female) ?? "",
       classInfo?.[0] ?? "", this.#whoZone(entry), classInfo?.[1]];
   }
 

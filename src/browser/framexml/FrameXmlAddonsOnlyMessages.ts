@@ -34,6 +34,7 @@ import {
   createFrameXmlPopupsOwner, FRAMEXML_STATIC_POPUP_COUNT, installFrameXmlPopupsAdapters,
 } from "./FrameXmlPopupsOwner.js";
 import { publishFrameXmlAddonDialogsEscape } from "./FrameXmlTsAddonPresentation.js";
+import { FRAMEXML_HOST_HOOK_GLOBAL, withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 
 /** What UIErrorsFrame_OnLoad registers (UIErrorsFrame.lua:3-5): the world's messages. */
 export const FRAMEXML_ADDONS_ONLY_WORLD_MESSAGE_EVENTS: readonly string[] = Object.freeze([
@@ -138,7 +139,8 @@ export function mountFrameXmlAddonsOnlySurfaces(
     return [];
   });
   try {
-    frameXmlSilentProbe(boot, "webclient/addons-only-counters", `
+    // L5b 3.27: the dialogs' hook is the host's (FrameXmlHostHooks.ts): a module's SetScript keeps it.
+    withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "webclient/addons-only-counters", `
       local shown = ${SHOWN_GLOBAL}
       ${SHOWN_GLOBAL} = nil
       if type(shown) ~= "function" then return 0 end
@@ -146,7 +148,7 @@ export function mountFrameXmlAddonsOnlySurfaces(
       for index = 1, STATICPOPUP_NUMDIALOGS or 0 do
         local dialog = _G["StaticPopup" .. index]
         if type(dialog) == "table" and type(dialog.HookScript) == "function" then
-          dialog:HookScript("OnShow", function() shown("popup") end)
+          ${FRAMEXML_HOST_HOOK_GLOBAL}(dialog, "OnShow", function() shown("popup") end) -- L5b 3.27 (was dialog:HookScript)
           hooked = hooked + 1
         end
       end
@@ -155,7 +157,7 @@ export function mountFrameXmlAddonsOnlySurfaces(
         hooked = hooked + 1
       end
       return hooked
-    `, 1);
+    `, 1)); // L5b 3.27: withFrameXmlHostHooks
   } finally {
     boot.vm.setGlobal(SHOWN_GLOBAL, undefined);
   }
@@ -233,7 +235,8 @@ export function watchFrameXmlDialogLayer(
     return [];
   });
   try {
-    frameXmlSilentProbe(boot, "webclient/dialog-layer", `
+    // L5b 3.27: host hooks (FrameXmlHostHooks.ts): an add-on's SetScript on these scripts keeps them.
+    withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "webclient/dialog-layer", `
       local changed = ${LAYER_GLOBAL}
       ${LAYER_GLOBAL} = nil
       if type(changed) ~= "function" then return 0 end
@@ -241,13 +244,13 @@ export function watchFrameXmlDialogLayer(
       for _, name in ipairs({ ${DIALOG_LAYER_FRAMES.map((name) => `"${name}"`).join(", ")} }) do
         local frame = _G[name]
         if type(frame) == "table" and type(frame.HookScript) == "function" then
-          frame:HookScript("OnShow", function() changed(true) end)
-          frame:HookScript("OnHide", function() changed(false) end)
+          ${FRAMEXML_HOST_HOOK_GLOBAL}(frame, "OnShow", function() changed(true) end) -- L5b 3.27 (was frame:HookScript)
+          ${FRAMEXML_HOST_HOOK_GLOBAL}(frame, "OnHide", function() changed(false) end) -- L5b 3.27 (was frame:HookScript)
           hooked = hooked + 1
         end
       end
       return hooked
-    `, 1);
+    `, 1)); // L5b 3.27: withFrameXmlHostHooks
   } finally {
     boot.vm.setGlobal(LAYER_GLOBAL, undefined);
   }

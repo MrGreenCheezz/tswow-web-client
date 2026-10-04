@@ -22,13 +22,16 @@ export class ItemEnchantmentClient {
   readonly visuals = new Map<number, readonly string[]>();
 
   async #load(): Promise<void> {
-    const response = await fetch(`${this.origin}/dbc/item-enchantments`);
+    // `v=2`: the rows gained `flags` (SpellItemEnchantment.Flags, 2.05). The route does not read the
+    // query, so a gateway not yet restarted answers the old shape and `flags` stays undefined.
+    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=2`);
     if (!response.ok) throw new Error(`Не удалось загрузить сведения о камнях (${response.status})`);
     const data = await response.json() as ItemEnchantmentData;
     if (!Array.isArray(data.enchantments) || !Array.isArray(data.gems)
       || !data.enchantments.every((row) => Number.isInteger(row.id) && typeof row.name === "string"
         && Number.isInteger(row.gemItemId) && Number.isInteger(row.conditionId)
-        && (row.visual === undefined || Number.isInteger(row.visual)))
+        && (row.visual === undefined || Number.isInteger(row.visual))
+        && (row.flags === undefined || Number.isInteger(row.flags)))
       || !data.gems.every((row) => Number.isInteger(row.id) && Number.isInteger(row.enchantmentId)
         && Number.isInteger(row.color))) throw new Error("Некорректные сведения о камнях");
     this.enchantments.clear();
@@ -59,8 +62,9 @@ export class ItemEnchantmentClient {
 /**
  * An enchant's glow as a tint, read off the glow model filenames the dataset resolved.
  *
- * The original client hangs MDX particle models on the weapon; this client has no MDX particle
- * path, so the glow is an emissive tint in the art's own colour family. Colours come from the
+ * The original client hangs the glow's M2 (MDX) particle models on the weapon. This client does
+ * render M2 particles (ParticleRender.ts), but it does not attach an enchant's glow model to the
+ * weapon, so the glow is an emissive tint in the art's own colour family. Colours come from the
  * colour words the artists put in the filenames (`RedGlow_High`, `WhiteFlame_Low`) and from the
  * element words of the imbue families (`Shaman_Fire`, `PoisonDrip`, `FrozenRuneWeapon_State`).
  * Intensity follows the tier word: High strongest, Low softest.

@@ -56,6 +56,8 @@ const RESOLUTION = 128;
 const V9_COUNT = 129 * 129;
 const V8_COUNT = 128 * 128;
 const NO_HEIGHT = 0x01;
+/** Upper bound of `TerrainClient`'s tile-key string memo (strings only, ≈ 4,096 tiles visited). */
+const TILE_KEY_MEMO_LIMIT = 4096;
 /**
  * What the map extractor writes where a liquid rectangle covers no liquid.
  *
@@ -186,14 +188,19 @@ function gatewayBaseUrl(gatewayWebSocketUrl: string): string {
   return url.origin;
 }
 
+/**
+ * One axis of `terrainGrid`, or -1 off the closed map bounds (and for NaN/±Infinity). The per-sample
+ * terrain probes use the two axes directly so a height lookup allocates no grid object.
+ */
+function terrainGridAxis(value: number): number {
+  if (!Number.isFinite(value) || value < MAP_MIN || value > MAP_MAX) return -1;
+  return Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - value / TERRAIN_GRID_SIZE)));
+}
+
 export function terrainGrid(x: number, y: number): TerrainGrid | undefined {
-  if (!Number.isFinite(x) || !Number.isFinite(y)
-    || x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) return undefined;
-  const grid = {
-    x: Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - x / TERRAIN_GRID_SIZE))),
-    y: Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - y / TERRAIN_GRID_SIZE))),
-  };
-  return grid.x >= 0 && grid.x < GRID_COUNT && grid.y >= 0 && grid.y < GRID_COUNT ? grid : undefined;
+  const gridX = terrainGridAxis(x);
+  const gridY = terrainGridAxis(y);
+  return gridX < 0 || gridY < 0 ? undefined : { x: gridX, y: gridY };
 }
 
 /** The clipped 5x5 CPU dependency ring around a player's current terrain tile. */
@@ -438,7 +445,9 @@ export class TerrainTile {
     const holeRow = Math.trunc((row % 8) / 2);
     const holeColumn = Math.trunc((column % 8) / 2);
     const hole = this.#view.getUint16(this.#holesOffset + (cellRow * 16 + cellColumn) * 2, true);
-    return (hole & [0x1111, 0x2222, 0x4444, 0x8888][holeColumn]! & [0x000f, 0x00f0, 0x0f00, 0xf000][holeRow]!) !== 0;
+    // Column mask 0x1111/0x2222/0x4444/0x8888 and row mask 0x000f/0x00f0/0x0f00/0xf000, as shifts:
+    // two array literals per call were young garbage on a per-frame, per-remote-player probe.
+    return (hole & (0x1111 << holeColumn) & (0x000f << (holeRow * 4))) !== 0;
   }
 
   /**
@@ -506,6 +515,7 @@ export class TerrainClient {
   #lastTileX = -1;
   #lastTileY = -1;
   #lastTile: TerrainTile | null | undefined;
+  readonly #tileKeys = new Map<number, string>();
 
   constructor(gatewayWebSocketUrl: string, tileLimit: number = TERRAIN_TILE_CACHE_LIMIT) {
     if (!Number.isSafeInteger(tileLimit) || tileLimit <= 0) {
@@ -587,18 +597,46 @@ export class TerrainClient {
     return revision;
   }
 
+  /**
+   * Per-sample and allocation-free on a resident tile: no grid object, no key string (memoised),
+   * so the physics probe, ground cover, the camera and every extrapolated remote player can call
+   * it each frame without feeding the young generation.
+   */
   heightAt(map: number | undefined, x: number, y: number): number | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    const tile = this.#tileByGrid(map, grid);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    const tile = this.#tileByGrid(map, gridX, gridY);
     if (tile !== undefined) return tile?.heightAt(x, y);
-    const key = `${map}/${grid.x}/${grid.y}`;
+    this.#request(map, gridX, gridY);
+    return undefined;
+  }
+
+  /**
+   * `isHole(map, x, y) ? undefined : heightAt(map, x, y)` with one tile lookup — the ground under
+   * somebody else's extrapolated run (5.04): a terrain hole is no floor. Like `heightAt` it starts
+   * the load of a tile that has not answered yet.
+   */
+  groundHeightAt(map: number | undefined, x: number, y: number): number | undefined {
+    if (map === undefined) return undefined;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    const tile = this.#tileByGrid(map, gridX, gridY);
+    if (tile === undefined) {
+      this.#request(map, gridX, gridY);
+      return undefined;
+    }
+    return tile === null || tile.isHole(x, y) ? undefined : tile.heightAt(x, y);
+  }
+
+  #request(map: number, gridX: number, gridY: number): void {
+    const key = this.#tileKey(map, gridX, gridY);
     if (!this.#loading.has(key)) {
       this.#loading.add(key);
-      void this.#load(map, grid, key);
+      void this.#load(map, { x: gridX, y: gridY }, key);
     }
-    return undefined;
   }
 
   /**
@@ -625,9 +663,10 @@ export class TerrainClient {
 
   isHole(map: number | undefined, x: number, y: number): boolean {
     if (map === undefined) return false;
-    const grid = terrainGrid(x, y);
-    if (!grid) return false;
-    return this.#tileByGrid(map, grid)?.isHole(x, y) ?? false;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return false;
+    return this.#tileByGrid(map, gridX, gridY)?.isHole(x, y) ?? false;
   }
 
   /**
@@ -639,21 +678,23 @@ export class TerrainClient {
    */
   areaAt(map: number | undefined, x: number, y: number): number | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    return this.#tileByGrid(map, grid)?.areaAt(x, y);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    return this.#tileByGrid(map, gridX, gridY)?.areaAt(x, y);
   }
 
   liquidAt(map: number | undefined, x: number, y: number): { height: number; type: number; entry: number; cells: boolean } | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    return this.#tileByGrid(map, grid)?.liquidAt(x, y);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    return this.#tileByGrid(map, gridX, gridY)?.liquidAt(x, y);
   }
 
   async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
     try {
-      const response = await fetch(`${this.#baseUrl}/terrain/${map}/${grid.x}/${grid.y}`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/terrain/${map}/${grid.x}/${grid.y}`));
       if (response.status === 404) {
         this.#resolve(key, null);
         this.onStatus?.(`Terrain tile ${key} не найден`, true);
@@ -694,16 +735,33 @@ export class TerrainClient {
    * One sample's tile, through the single-entry cache above. Returns the terminal null as-is
    * (a known 404 must not retrigger a load) and undefined for tiles still on the wire.
    */
-  #tileByGrid(map: number, grid: TerrainGrid): TerrainTile | null | undefined {
-    if (map === this.#lastTileMap && grid.x === this.#lastTileX && grid.y === this.#lastTileY) {
+  #tileByGrid(map: number, gridX: number, gridY: number): TerrainTile | null | undefined {
+    if (map === this.#lastTileMap && gridX === this.#lastTileX && gridY === this.#lastTileY) {
       return this.#lastTile;
     }
-    const tile = this.#tile(`${map}/${grid.x}/${grid.y}`);
+    const tile = this.#tile(this.#tileKey(map, gridX, gridY));
     this.#lastTileMap = map;
-    this.#lastTileX = grid.x;
-    this.#lastTileY = grid.y;
+    this.#lastTileX = gridX;
+    this.#lastTileY = gridY;
     this.#lastTile = tile;
     return tile;
+  }
+
+  /**
+   * The `${map}/${x}/${y}` key, built once per tile: remote players on different tiles miss the
+   * single-entry cache on every probe, and a template string per miss was young garbage. The memo
+   * holds strings only (no tiles), so it never decides residency; it is dropped when it grows past
+   * a few continents' worth of visited tiles.
+   */
+  #tileKey(map: number, gridX: number, gridY: number): string {
+    const id = (map * GRID_COUNT + gridX) * GRID_COUNT + gridY;
+    let key = this.#tileKeys.get(id);
+    if (key === undefined) {
+      if (this.#tileKeys.size >= TILE_KEY_MEMO_LIMIT) this.#tileKeys.clear();
+      key = `${map}/${gridX}/${gridY}`;
+      this.#tileKeys.set(id, key);
+    }
+    return key;
   }
 
   /** Drops the single-entry cache: the entry it names no longer exists or has been replaced. */
@@ -817,6 +875,14 @@ export class EnvironmentClient {
   #backgroundReservationReleased = false;
   #backgroundReservationTimer: ReturnType<typeof setTimeout> | undefined;
   #modelDrainScheduled = false;
+  #groupDrainScheduled = false;
+  /**
+   * 10.21 (c): one ceiling over the three request lanes (models, WMO groups, animation sidecars),
+   * which used to add up to ten requests against Chromium's six connections per origin.
+   */
+  readonly #requestBudget = new EnvironmentRequestBudget(
+    ENVIRONMENT_REQUEST_LIMIT, (kind) => this.#requestSlotFreed(kind),
+  );
   #generation = 0;
   #objectsKey = "";
   #objectsCache: EnvironmentObject[] = [];
@@ -973,6 +1039,7 @@ export class EnvironmentClient {
     this.#deferredGroups = 0;
     this.#failedGroups = 0;
     this.#modelDrainScheduled = false;
+    this.#groupDrainScheduled = false;
     this.#animationDrainScheduled = false;
     this.#objectsKey = "";
     this.#objectsCache = [];
@@ -1301,10 +1368,15 @@ export class EnvironmentClient {
     const controller = this.#beginLoad();
     if (!controller) return;
     const failure = this.#animationFailures.get(job.key);
+    const priority = environmentFetchPriority(job.priority);
     try {
       const response = await fetch(
         visualAnimationsUrl(this.#baseUrl, job.name),
-        { signal: controller.signal, ...(failure?.reload ? { cache: "reload" as const } : {}) },
+        {
+          signal: controller.signal,
+          ...(failure?.reload ? { cache: "reload" as const } : {}),
+          ...(priority ? { priority } : {}),
+        },
       );
       if (this.#disposed) return;
       if (!response.ok) {
@@ -1363,9 +1435,14 @@ export class EnvironmentClient {
     while (this.#activeAnimations < ENVIRONMENT_ANIMATION_LOAD_CONCURRENCY) {
       const job = this.#nextAnimation();
       if (!job) return;
+      const release = this.#requestBudget.tryAcquire("animation", job.priority);
+      // The shared budget is spent: the job stays at its place in the queue until a slot frees.
+      if (!release) return;
+      this.#animationQueue.delete(job.key);
       this.#animationInflight.set(job.key, job);
       this.#activeAnimations++;
       void this.#loadAnimations(job).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#animationInflight.delete(job.key);
         this.#activeAnimations--;
@@ -1402,8 +1479,7 @@ export class EnvironmentClient {
       selected = job;
       selectedPriority = rank;
     }
-    if (!selected) return undefined;
-    this.#animationQueue.delete(selected.key);
+    // Peeked, not taken: the caller removes it once the request budget admits it.
     return selected;
   }
 
@@ -1458,9 +1534,14 @@ export class EnvironmentClient {
         && this.#activeModels >= MODEL_LOAD_CONCURRENCY - 1;
       const wanted = this.#nextModel(criticalOnly);
       if (wanted === undefined) return;
+      const release = this.#requestBudget.tryAcquire("model", wanted.priority);
+      // The shared budget is spent: the model keeps its place in the queue until a slot frees.
+      if (!release) return;
+      this.#modelQueue.delete(wanted.name);
       if (wanted.priority === "critical") this.#releaseBackgroundReservation();
       this.#activeModels++;
-      void this.#loadModel(wanted.name).finally(() => {
+      void this.#loadModel(wanted.name, environmentFetchPriority(wanted.priority)).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#activeModels--;
         this.#scheduleModelDrain();
@@ -1501,9 +1582,8 @@ export class EnvironmentClient {
       selectedPriority = rank;
     }
     if (selected === undefined) return undefined;
-    const priority = this.#modelQueue.get(selected)!;
-    this.#modelQueue.delete(selected);
-    return { name: selected, priority };
+    // Peeked, not taken: the caller removes it once the request budget admits it.
+    return { name: selected, priority: this.#modelQueue.get(selected)! };
   }
 
   #backgroundReservationActive(): boolean {
@@ -1532,8 +1612,11 @@ export class EnvironmentClient {
   #drainGroups(): void {
     if (this.#disposed) return;
     while (this.#activeGroups < MODEL_GROUP_LOAD_CONCURRENCY) {
-      const wanted = this.#groupQueue.shift();
+      const wanted = this.#groupQueue[0];
       if (!wanted) return;
+      const release = this.#requestBudget.tryAcquire("group", "normal");
+      if (!release) return;
+      this.#groupQueue.shift();
       this.#setGroupState(wanted.model, wanted.group, {
         status: "active",
         attempts: this.#groupState(wanted.model, wanted.group)?.attempts ?? 0,
@@ -1541,11 +1624,36 @@ export class EnvironmentClient {
       });
       this.#activeGroups++;
       void this.#loadGroup(wanted).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#activeGroups--;
-        this.#drainGroups();
+        // Behind the wake-ups `release` just queued for the other lanes (10.21 (c)): a synchronous
+        // drain here retook every freed slot and held ordinary models back until the last group.
+        this.#scheduleGroupDrain();
       });
     }
+  }
+
+  #scheduleGroupDrain(): void {
+    if (this.#disposed || this.#groupDrainScheduled) return;
+    this.#groupDrainScheduled = true;
+    queueMicrotask(() => {
+      if (this.#disposed) return;
+      this.#groupDrainScheduled = false;
+      this.#drainGroups();
+    });
+  }
+
+  /**
+   * A shared request slot came back: the other two lanes may have work the budget held back. They
+   * are asked before the releasing lane (whose own `.finally` schedules it next), so a long queue
+   * in one lane cannot keep the other two waiting.
+   */
+  #requestSlotFreed(kind: EnvironmentRequestKind): void {
+    if (this.#disposed) return;
+    if (kind !== "model" && this.#modelQueue.size > 0) this.#scheduleModelDrain();
+    if (kind !== "animation" && this.#animationQueue.size > 0) this.#scheduleAnimationDrain();
+    if (kind !== "group" && this.#groupQueue.length > 0) this.#scheduleGroupDrain();
   }
 
   #beginLoad(): AbortController | undefined {
@@ -1647,15 +1755,16 @@ export class EnvironmentClient {
     });
   }
 
-  async #loadModel(key: string): Promise<void> {
+  async #loadModel(key: string, priority?: RequestPriority): Promise<void> {
     const controller = this.#beginLoad();
     if (!controller) return;
     const separator = key.indexOf("|");
     const name = separator < 0 ? key : key.slice(0, separator);
+    const init: RequestInit = priority ? { signal: controller.signal, priority } : { signal: controller.signal };
     try {
       const response = await fetch(
         visualModelUrl(this.#baseUrl, name),
-        { signal: controller.signal },
+        init,
       );
       if (this.#disposed) return;
       if (response.ok) {
@@ -1674,8 +1783,8 @@ export class EnvironmentClient {
       if (response.status === 404) {
         const basename = name.replaceAll("\\", "/").split("/").at(-1) ?? name;
         const hull = await fetch(
-          `${this.#baseUrl}/environment/model/${encodeURIComponent(basename)}`,
-          { signal: controller.signal },
+          withGeneration(`${this.#baseUrl}/environment/model/${encodeURIComponent(basename)}`),
+          init,
         );
         if (this.#disposed) return;
         // The server's own collision hull, and it is no longer drawn: `drawableModel` in the
@@ -2052,14 +2161,14 @@ export class EnvironmentClient {
     if (!controller) return;
     try {
       let response = await fetch(
-        `${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}`,
+        withGeneration(`${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}`),
         { signal: controller.signal },
       );
       if (this.#disposed) return;
       const hadGatewayError = !response.ok && response.status !== 404;
       if (!response.ok) {
         response = await fetch(
-          `${this.#baseUrl}/environment/${map}/${grid.x}/${grid.y}`,
+          withGeneration(`${this.#baseUrl}/environment/${map}/${grid.x}/${grid.y}`),
           { signal: controller.signal },
         );
         if (this.#disposed) return;
@@ -2545,5 +2654,9 @@ import {
 import { wvaClipSetBacking, wvaClipSetConsumed } from "./WvaAnimationDecode.js";
 import type { WvaAnimationDecodeResult } from "./WvaAnimationDecodeProtocol.js";
 import { decodeWwm, decodeWwmGroup } from "./WmoModel.js";
+import { withGeneration } from "./GatewayGeneration.js";
+import {
+  ENVIRONMENT_REQUEST_LIMIT, EnvironmentRequestBudget, environmentFetchPriority, type EnvironmentRequestKind,
+} from "./EnvironmentRequestBudget.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { EnvironmentModel, ModelChannel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";

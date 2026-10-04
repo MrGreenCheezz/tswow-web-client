@@ -174,6 +174,10 @@ export interface FrameXmlMailWorld {
   closeMailbox(): void;
   requestMailList?(): void;
   copyMailText?(mailId: number): void;
+  /** 8.17: the sender side of CanComplainInboxItem (not the character, not a contact). */
+  canComplainAboutMail?(senderGuid: bigint): boolean;
+  /** 8.17: CMSG_COMPLAIN about the letter; true when it went out. */
+  complainAboutMail?(mailId: number, senderGuid: bigint): boolean;
 }
 
 export interface FrameXmlMailItem {
@@ -541,6 +545,31 @@ export class FrameXmlMailModel {
   returnToSender(index: unknown): void {
     const entry = this.#entry(index);
     if (entry && isMailReturnable(entry)) this.#command((world) => world.returnMail(entry.mailId, entry.senderGuid));
+  }
+
+  /**
+   * `CanComplainInboxItem` (Wow.exe 0x5713c0 → 0x56fa70): a letter from a player (sender type 0),
+   * not one returned (checked mask 0x02), not on the GM stationery (61), whose sender the world
+   * allows (not the character, not a contact).
+   */
+  canComplain(index: unknown): boolean {
+    const entry = this.#entry(index);
+    const world = this.#context.world();
+    if (!entry || !world?.canComplainAboutMail) return false;
+    return entry.senderType === 0 && (entry.flags & 0x02) === 0 && entry.stationeryId !== 61
+      && world.canComplainAboutMail(entry.senderGuid);
+  }
+
+  /**
+   * `ComplainInboxItem` (Wow.exe 0x571350 → 0x56faf0): the complaint, then CLOSE_INBOX_ITEM for
+   * the letter, which MailFrame.lua:83 answers by closing it.
+   */
+  complain(index: unknown): void {
+    const entry = this.#entry(index);
+    if (!entry || !this.canComplain(index)) return;
+    this.#command((world) => {
+      if (world.complainAboutMail?.(entry.mailId, entry.senderGuid)) this.#pump?.fire("CLOSE_INBOX_ITEM", Number(index));
+    });
   }
 
   /**
@@ -923,9 +952,10 @@ export const FRAMEXML_MAIL_BINDINGS: Readonly<Record<string, FrameXmlMailBinding
   AutoLootMailItem: command((mail, args) => mail.autoLoot(args[0])),
   DeleteInboxItem: command((mail, args) => mail.delete(args[0])),
   ReturnInboxItem: command((mail, args) => mail.returnToSender(args[0])),
-  // Spam complaints (CMSG_COMPLAIN) are not wired in this client: the report button stays hidden.
-  CanComplainInboxItem: () => [false],
-  ComplainInboxItem: () => NOTHING,
+  // 8.17: spam complaints about a letter (CMSG_COMPLAIN, type 0); InboxItemCanComplain is the
+  // usage-string name of the same C function (Wow.exe 0x5713c0).
+  CanComplainInboxItem: (host, args) => (host.mail?.canComplain(args[0]) ? [1] : NOTHING),
+  ComplainInboxItem: command((mail, args) => mail.complain(args[0])),
   CloseMail: command((mail) => mail.close()),
   SendMail: command((mail, args) => mail.send(args[0], args[1], args[2])),
   SetSendMailMoney: withMail((mail, args) => [mail.setSendMoney(args[0])]),

@@ -33,6 +33,7 @@ import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRende
 import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import { frameXmlItemEntry } from "./FrameXmlWorldSeam.js";
 import { frameXmlSilentProbe } from "./FrameXmlGameMenuOwner.js";
+import { FRAMEXML_HOST_HOOK_GLOBAL, withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 import {
   frameXmlNpcClean, frameXmlNpcFrames, frameXmlNpcRendered, type FrameXmlNpcFrameSpec,
 } from "./FrameXmlGossipGateKit.js";
@@ -322,7 +323,7 @@ if not rawget(methods, "__webclientDressUp") then
   end
 end
 if type(model.rotation) == "number" then model:SetRotation(model.rotation) end
-DressUpFrame:HookScript("OnShow", function() wake() end)
+${FRAMEXML_HOST_HOOK_GLOBAL}(DressUpFrame, "OnShow", function() wake() end) -- L5b 3.27 (was DressUpFrame:HookScript)
 return 1
 `;
 
@@ -385,7 +386,8 @@ export function installFrameXmlDressUp(
   boot.vm.registerGlobal(BINDING.tryOn, command((frame, args) => { models.tryOn(frame, args[0]); }));
   boot.vm.registerGlobal(BINDING.clear, command((frame) => models.clear(frame)));
   boot.vm.registerGlobal(BINDING.wake, () => { onChange(); return []; });
-  const installed = frameXmlSilentProbe(boot, "@webclient/dressup-model", DRESSUP_MODEL_METHODS, 1);
+  // L5b 3.27: DressUpFrame's wake is a host hook (FrameXmlHostHooks.ts): an add-on's SetScript keeps it.
+  const installed = withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "@webclient/dressup-model", DRESSUP_MODEL_METHODS, 1));
   if (Number(installed?.[0]) !== 1) return false;
   // Stock calls it as a flag: `if ( not link or not IsDressableItem(link) )` (DressUpFrame.lua:3).
   boot.vm.registerGlobal("IsDressableItem", (args) => models.isDressable(args[0]) === true ? [1] : []);

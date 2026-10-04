@@ -1,6 +1,7 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { fieldFloat } from "../../world/WorldState.js";
+import type { FrameXmlUiBridge } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import type { FrameXmlSeamPump } from "./FrameXmlWorldSeam.js";
 
 /**
@@ -86,6 +87,22 @@ export function frameXmlRuneCooldown(readiness: number, readAt: number, duration
   const wait = frameXmlRuneWait(readiness);
   const full = Math.max(duration, wait);
   return [readAt + wait - full, full, false];
+}
+
+/**
+ * The addonsOnly mode shows the native HUD and paints only the stock frames TSWoW modules use, so
+ * RuneFrame is never on screen there. It stays loaded — UnitFrame_SetUnit calls RuneFrame:SetScale
+ * for a death knight unconditionally (UnitFrame.lua:64-77) — but hidden: a hidden frame's buttons
+ * run no RuneButton_OnUpdate, so a spent rune costs the Lua VM nothing for a bar nobody sees, and
+ * `RuneFrame:IsShown()` tells a module the truth. Nothing in the stock files shows it again;
+ * RuneFrame_OnLoad is the only other Show/Hide of it. Called from the mount's `beforeExercise`, so
+ * it is down before PLAYER_ENTERING_WORLD. (The native HUD has no rune bar of its own.)
+ */
+export function hideFrameXmlRuneFrame(boot: {
+  readonly bridge: Pick<FrameXmlUiBridge, "getFrame" | "Hide">;
+}): void {
+  const frame = boot.bridge.getFrame("RuneFrame");
+  if (frame) boot.bridge.Hide(frame);
 }
 
 /** What both rune models answer; ids are the stock 1..6. */

@@ -112,6 +112,7 @@ import { FRAMEXML_LFD_BINDINGS, FRAMEXML_LFD_PRELUDE, type FrameXmlLfdModel } fr
 import { FRAMEXML_LOOT_BINDINGS, FRAMEXML_LOOT_PRELUDE, type FrameXmlLootModel } from "./FrameXmlLoot.js";
 import { FRAMEXML_POPUPS_BINDINGS, FRAMEXML_POPUPS_PRELUDE, type FrameXmlPopupsModel } from "./FrameXmlPopups.js";
 import { FRAMEXML_FRIENDS_BINDINGS, FRAMEXML_FRIENDS_PRELUDE, type FrameXmlFriendsModel } from "./FrameXmlFriends.js";
+import { FRAMEXML_AUTOCOMPLETE_BINDINGS, type FrameXmlAutoCompleteModel } from "./FrameXmlAutoComplete.js"; // L5c 3.18
 import { FRAMEXML_MAIL_BINDINGS, FRAMEXML_MAIL_PRELUDE, type FrameXmlMailModel } from "./FrameXmlMail.js";
 import { FRAMEXML_TRADE_BINDINGS, type FrameXmlTradeModel } from "./FrameXmlTrade.js";
 import { FRAMEXML_CURRENCY_BINDINGS, type FrameXmlCurrencyModel } from "./FrameXmlCurrency.js";
@@ -123,29 +124,56 @@ import { FRAMEXML_ACHIEVEMENT_BINDINGS, type FrameXmlAchievementModel } from "./
 import { FRAMEXML_GUILDBANK_BINDINGS, type FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
 import { FRAMEXML_MACRO_BINDINGS, type FrameXmlMacroModel } from "./FrameXmlMacro.js";
 import type { MacroContext } from "../macro/MacroOptions.js";
+import { FRAMEXML_COMBAT_LOG_BINDINGS, type FrameXmlCombatLogModel } from "./FrameXmlCombatLog.js";
+import { frameXmlMultiCastBindings, type FrameXmlMultiCastModel } from "./FrameXmlMultiCast.js";
 import { FRAMEXML_CURSOR_BINDINGS, type FrameXmlActionButton, type FrameXmlCursorModel } from "./FrameXmlCursor.js";
+import { FRAMEXML_CURSOR_MONEY_BINDINGS } from "./FrameXmlCursorMoney.js"; // L5c 3.09
+import { FRAMEXML_REPAIR_BINDINGS, type FrameXmlRepairModel } from "./FrameXmlRepair.js";
 import { FRAMEXML_BINDING_BINDINGS, FRAMEXML_BINDING_PRELUDE, type FrameXmlBindingModel } from "./FrameXmlBinding.js";
 import { FRAMEXML_CHAT_COLOR_BINDINGS, type FrameXmlChatColors } from "./FrameXmlChatColors.js";
 import { FRAMEXML_RAID_LOD_BINDINGS } from "./FrameXmlRaidLodApi.js";
 import { FRAMEXML_ARENA_BINDINGS } from "./FrameXmlArenaApi.js";
 import type { FrameXmlArenaOpponents } from "./FrameXmlArena.js";
+import { FRAMEXML_PVP_FLAG_BINDINGS, type FrameXmlPvpFlagModel } from "./FrameXmlPvpFlag.js";
+import { FRAMEXML_SCOREBOARD_BINDINGS, type FrameXmlBattlefieldScoreModel } from "./FrameXmlScoreboard.js";
+import { FRAMEXML_AREA_SPIRIT_HEALER_BINDINGS, type FrameXmlAreaSpiritHealerModel } from "./FrameXmlAreaSpiritHealer.js"; // L3 5.25
+import { FRAMEXML_DIFFICULTY_BINDINGS, type FrameXmlDifficultyModel } from "./FrameXmlDifficulty.js";
+import { FRAMEXML_TALENT_GROUP_BINDINGS, type FrameXmlTalentGroupModel } from "./FrameXmlTalentGroup.js";
+import { FRAMEXML_TRAINER_SKILL_LINE_BINDINGS, type FrameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import { FRAMEXML_TALENT_PREVIEW_BINDINGS, type FrameXmlTalentPreviewModel } from "./FrameXmlTalentPreview.js";
+import { FRAMEXML_CREATURE_TYPE_BINDINGS } from "./FrameXmlCreatureType.js";
+import { FRAMEXML_SERVER_PROMPTS_BINDINGS, type FrameXmlServerPromptsModel } from "./FrameXmlServerPrompts.js";
+import { frameXmlQuestPoiBindings, type FrameXmlQuestPoiModel } from "./FrameXmlQuestPoi.js";
+import { FRAMEXML_QUEST_SHARE_BINDINGS, type FrameXmlQuestShareModel } from "./FrameXmlQuestShare.js";
+import { FRAMEXML_SUPPORT_BINDINGS, type FrameXmlSupportModel } from "./FrameXmlSupport.js";
+import { FRAMEXML_QUEST_LOG_BINDINGS, FRAMEXML_QUEST_LOG_PRELUDE, type FrameXmlQuestLogModel } from "./FrameXmlQuestLog.js";
+import { FRAMEXML_BAG_PORTRAIT_PRELUDE, FRAMEXML_RELIC_SLOT_BINDINGS } from "./FrameXmlRelicSlot.js";
+import { FRAMEXML_ARENA_ROSTER_BINDINGS, type FrameXmlArenaRosterModel } from "./FrameXmlArenaRoster.js";
 import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
 import { FRAMEXML_INSPECT_BINDINGS, FRAMEXML_INSPECT_PRELUDE, type FrameXmlInspectModel } from "./FrameXmlInspect.js";
 import { FRAMEXML_BARBER_BINDINGS, type FrameXmlBarberModel } from "./FrameXmlBarber.js";
 import { FRAMEXML_COMPANION_BINDINGS, type FrameXmlCompanionModel } from "./FrameXmlCompanions.js";
+import { FRAMEXML_PET_DECLENSION_BINDINGS, type FrameXmlPetDeclensionModel } from "./FrameXmlPetDeclension.js"; // L17 3.09
 import {
   FRAMEXML_PET_ACTION_BINDINGS, frameXmlWithPetBook, type FrameXmlPetActionBar,
 } from "./FrameXmlPetActionBar.js";
+import { frameXmlWithPossess, type FrameXmlPossessModel } from "./FrameXmlPossess.js"; // 11.02-IF
+import { FRAMEXML_VEHICLE_PRELUDE, frameXmlWithVehicle, type FrameXmlVehicleModel } from "./FrameXmlVehicle.js"; // 11.02-F2
+import { frameXmlWithVehicleAim, type FrameXmlVehicleAimModel } from "./FrameXmlVehicleAim.js"; // 11.02-E
 import { FRAMEXML_GLYPH_BINDINGS, type FrameXmlGlyphModel } from "./FrameXmlGlyph.js";
+import { FRAMEXML_ITEM_TARGETING_BINDINGS } from "./FrameXmlItemTargeting.js";
+import { FRAMEXML_REFUND_BINDINGS } from "./FrameXmlRefund.js";
 import { FRAMEXML_TITLE_BINDINGS, type FrameXmlTitleModel } from "./FrameXmlTitles.js";
 import { FRAMEXML_EQUIPMENT_SET_BINDINGS, type FrameXmlEquipmentSetModel } from "./FrameXmlEquipmentSets.js";
 import { FRAMEXML_ITEM_ACTION_BINDINGS, FRAMEXML_ITEM_ACTIONS_PRELUDE } from "./FrameXmlItemActions.js";
+import { FRAMEXML_DURABILITY_BINDINGS } from "./FrameXmlDurabilityFrame.js";
 import { FRAMEXML_OPTIONS_BINDINGS, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import { FRAMEXML_PLAYER_STATUS_BINDINGS, type FrameXmlPlayerStatus } from "./FrameXmlPlayerStatus.js";
 import { FRAMEXML_UNIT_RELATION_BINDINGS, type FrameXmlUnitRelations } from "./FrameXmlUnitRelations.js";
 import { FRAMEXML_CONTROL_BINDINGS, type FrameXmlPlayerControl } from "./FrameXmlControl.js";
 import { FRAMEXML_GROUP_COMMAND_BINDINGS, type FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import { FRAMEXML_TARGETING_BINDINGS, type FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
+import { FRAMEXML_TARGET_NEAREST_BINDINGS, type FrameXmlTargetNearest } from "./FrameXmlTargetNearest.js"; // L2 1.10
 import { FRAMEXML_MECHANICS_BINDINGS, FRAMEXML_MECHANICS_PRELUDE, type FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
 import type { FrameXmlThreatModel } from "./FrameXmlThreat.js";
 import type { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
@@ -900,9 +928,13 @@ function utf8Length(text: string): number {
   return bytes;
 }
 
-/** Convert a wire GUID to a stable Lua-safe textual value. */
+/**
+ * Convert a wire GUID to a stable Lua-safe textual value: Wow.exe's "0x" and sixteen upper-case hex
+ * digits (0x0074d0d0, the form UnitGUID and the combat log hand out — add-ons written against the
+ * real client compare it with upper-case literals such as "0xF13").
+ */
 export function frameXmlGuid(guid: bigint): string {
-  return guid === 0n ? "" : `0x${guid.toString(16).padStart(16, "0")}`;
+  return guid === 0n ? "" : `0x${guid.toString(16).toUpperCase().padStart(16, "0")}`;
 }
 
 /** Map a numeric parser type to the exact event name stock ChatFrame registers. */
@@ -1132,9 +1164,16 @@ export const FRAMEXML_SEAM_EVENTS = Object.freeze({
   channelStop: "UNIT_SPELLCAST_CHANNEL_STOP",
   interruptible: "UNIT_SPELLCAST_INTERRUPTIBLE",
   notInterruptible: "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+  // 3.02 (FrameXmlCastEvents.ts).
+  castSent: "UNIT_SPELLCAST_SENT",
+  castSucceeded: "UNIT_SPELLCAST_SUCCEEDED",
+  castFailedQuiet: "UNIT_SPELLCAST_FAILED_QUIET",
   zoneChanged: "ZONE_CHANGED",
   zoneChangedNewArea: "ZONE_CHANGED_NEW_AREA",
   zoneChangedIndoors: "ZONE_CHANGED_INDOORS",
+  // 5.18: following (input/Follow.ts) for ZoneText.lua's AutoFollowStatus.
+  autofollowBegin: "AUTOFOLLOW_BEGIN",
+  autofollowEnd: "AUTOFOLLOW_END",
   spellsChanged: "SPELLS_CHANGED",
   learnedSpellInTab: "LEARNED_SPELL_IN_TAB",
   spellUpdateCooldown: "SPELL_UPDATE_COOLDOWN",
@@ -1324,6 +1363,10 @@ export interface FrameXmlWorldSeam {
   readonly map?: FrameXmlMap;
   /** The stock totem bar, hit indicator and temporary weapon enchants (FrameXmlHudMechanics.ts). */
   readonly hudMechanics?: FrameXmlHudMechanics;
+  /** 3.01: the combat log's buffer, filters and C API (FrameXmlCombatLog.ts); absent: an empty log. */
+  readonly combatLog?: FrameXmlCombatLogModel;
+  /** 3.07: the Call of the Elements bar's C API (FrameXmlMultiCast.ts); absent: no totem spells. */
+  readonly multiCast?: FrameXmlMultiCastModel;
   /** The stock dungeon finder's C API and its LFG_* events (FrameXmlLfd.ts). */
   readonly lfd?: FrameXmlLfdModel;
   /** The stock LootFrame/GroupLootFrame C API and its loot and loot-roll events (FrameXmlLoot.ts). */
@@ -1332,6 +1375,8 @@ export interface FrameXmlWorldSeam {
   readonly popups?: FrameXmlPopupsModel;
   /** The stock FriendsFrame/RaidFrame C API (friends, ignore, who, guild, raid) and events (FrameXmlFriends.ts). */
   readonly friends?: FrameXmlFriendsModel;
+  /** L5c 3.18: the stock AutoComplete's name list behind GetAutoCompleteResults (FrameXmlAutoComplete.ts). */
+  readonly autoComplete?: FrameXmlAutoCompleteModel;
   /** The stock MailFrame/OpenMailFrame C API, its send draft and MAIL_* events (FrameXmlMail.ts). */
   readonly mail?: FrameXmlMailModel;
   /** The stock TradeFrame C API and its TRADE_* events (FrameXmlTrade.ts). */
@@ -1357,6 +1402,8 @@ export interface FrameXmlWorldSeam {
   macroContext?(): MacroContext;
   /** The one cursor over every holder: spells, lifted actions, items for the bars (FrameXmlCursor.ts). */
   readonly cursor?: FrameXmlCursorModel;
+  /** The merchant's repair and the repair cursor (FrameXmlRepair.ts); absent, the four repair answers below. */
+  readonly repair?: FrameXmlRepairModel;
   /** The binding C API over this client's key table (FrameXmlBinding.ts). */
   readonly keyBindings?: FrameXmlBindingModel;
   /** The options C API over the settings model: CVar ranges, the extra bars (FrameXmlOptions.ts). */
@@ -1394,6 +1441,36 @@ export interface FrameXmlWorldSeam {
   readonly chatWindows?: FrameXmlChatWindowFlags | undefined;
   /** Arena teams, the possess bar, the battlefield winner and the add-on channel (FrameXmlMechanics.ts). */
   readonly mechanics?: FrameXmlMechanicsModel | undefined;
+  /** The player's PvP flag and its five-minute timer (FrameXmlPvpFlag.ts). */
+  readonly pvpFlag?: FrameXmlPvpFlagModel | undefined;
+  /** The battlefield scoreboard and LeaveBattlefield (FrameXmlScoreboard.ts). */
+  readonly scoreboard?: FrameXmlBattlefieldScoreModel | undefined;
+  /** L3 5.25: the battleground spirit guide's queue and the AREA_SPIRIT_HEAL clock (FrameXmlAreaSpiritHealer.ts). */
+  readonly areaSpiritHealer?: FrameXmlAreaSpiritHealerModel | undefined;
+  /** Dungeon/raid difficulty and IsInInstance (FrameXmlDifficulty.ts). */
+  readonly difficulty?: FrameXmlDifficultyModel | undefined;
+  /** SetActiveTalentGroup and ACTIVE_TALENT_GROUP_CHANGED (FrameXmlTalentGroup.ts). */
+  readonly talentGroup?: FrameXmlTalentGroupModel | undefined;
+  /** L12 3.29: GetTrainerSkillLines and the skill-line filter (FrameXmlTrainerSkillLines.ts). */
+  readonly trainerSkillLines?: FrameXmlTrainerSkillLineModel | undefined;
+  /** The talent preview: AddPreviewTalentPoints … LearnPreviewTalents (FrameXmlTalentPreview.ts, 3.33). */
+  readonly talentPreview?: FrameXmlTalentPreviewModel | undefined;
+  /** UnitCreatureType/UnitCreatureFamily (FrameXmlCreatureType.ts, 3.23A); absent on the canned seam. */
+  readonly creatureTypes?: { type(unit: string): string | undefined; family(unit: string): string | undefined | null } | undefined;
+  /** GetQuestLogPushable, QuestLogPushQuest and the sharer's MSG_QUEST_PUSH_RESULT lines (FrameXmlQuestShare.ts). */
+  readonly questShare?: FrameXmlQuestShareModel | undefined;
+  /** FlagTutorial, IsTutorialFlagged, GMReportLag (FrameXmlSupport.ts, 5.25/8.17); absent on the canned seam. */
+  readonly support?: FrameXmlSupportModel | undefined;
+  /** 3.13c: the quest POI C API (FrameXmlQuestPoi.ts); absent on the canned seam. */
+  readonly questPoi?: FrameXmlQuestPoiModel | undefined;
+  /** 3.22a: INSTANCE_BOOT_*, QUEST_ACCEPT_CONFIRM and their C API (FrameXmlServerPrompts.ts). */
+  readonly serverPrompts?: FrameXmlServerPromptsModel | undefined;
+  /** Quest log headers, collapsing, GetQuestLink, the special item, daily/completed counts (FrameXmlQuestLog.ts). */
+  readonly questLog?: FrameXmlQuestLogModel | undefined;
+  /** `UnitHasRelicSlot`: a player unit whose class has a relic slot (FrameXmlRelicSlot.ts). */
+  unitHasRelicSlot?(unit: string): boolean;
+  /** PVPFrame's arena team roster and team commands (FrameXmlArenaRoster.ts). */
+  readonly arenaRoster?: FrameXmlArenaRosterModel | undefined;
   readonly services?: FrameXmlServices;
   petExperience?(): readonly [current: number, nextLevel: number];
   petSpellBonusDamage?(): number | undefined;
@@ -1401,12 +1478,20 @@ export interface FrameXmlWorldSeam {
   readonly companions?: FrameXmlCompanionModel | undefined;
   /** The stock PetActionBarFrame's C API and the pet commands over the pet bar packet (FrameXmlPetActionBar.ts). */
   readonly petActions?: FrameXmlPetActionBar | undefined;
+  /** 11.02-IF: the possess bar and the possessed unit's spells on the main bar (FrameXmlPossess.ts). */
+  readonly possess?: FrameXmlPossessModel | undefined;
+  /** 11.02-F2: the vehicle C API and the UNIT_*_VEHICLE events (FrameXmlVehicle.ts). */
+  readonly vehicle?: FrameXmlVehicleModel | undefined;
+  /** 11.02-E: the VehicleAim* C API and VEHICLE_ANGLE_UPDATE on pitch changes (FrameXmlVehicleAim.ts). */
+  readonly vehicleAim?: FrameXmlVehicleAimModel | undefined;
   /** `PetCanBeAbandoned`/`PetCanBeRenamed`: the pet's UNIT_FIELD_BYTES_2 pet-flags byte (FrameXmlCompanions.ts). */
   petCanBeAbandoned?(): boolean;
   petCanBeRenamed?(): boolean;
   /** `PetAbandon()` / `PetRename(name)`: CMSG_PET_ABANDON and CMSG_PET_RENAME for the current pet. */
   petAbandon?(): void;
   petRename?(name: string): void;
+  /** L17 3.09: PetRename's checks and declensions, PET_FORCE_NAME_DECLENSION (FrameXmlPetDeclension.ts). */
+  readonly petDeclension?: FrameXmlPetDeclensionModel | undefined;
   /** `GetPetFoodTypes()`: the diet's names when a seam carries them; nothing otherwise (FrameXmlStable.ts). */
   petFoodTypes?(): readonly string[];
   /** Exact auth-list realm name selected by the player. */
@@ -1485,7 +1570,7 @@ export interface FrameXmlWorldSeam {
    * `ActionButton_OnUpdate` compares against both numbers explicitly and treats anything else as
    * «no indicator», which is why `undefined` is a real answer and not a gap.
    */
-  actionInRange(slot: number): number | undefined;
+  actionInRange(slot: number, unit?: string): number | undefined;
   actionBarPage(): number;
   changeActionBarPage?(page: number): void;
   mirrorTimerInfo?(index: number): FrameXmlMirrorTimerInfo;
@@ -1552,10 +1637,13 @@ export interface FrameXmlWorldSeam {
   targetUnit(unit: string, exactMatch?: boolean): void;
   /** `UnitIsVisible` is true only while the seam has an in-range object for the unit. */
   unitIsVisible(unit: string): boolean;
-  /** The current world contract has no possession bit; implementations answer conservatively. */
+  /** `UnitIsPossessed`: `UNIT_FLAG_POSSESSED` on the unit's flags (live: FrameXmlPossess.ts → `unitPossessed`). */
   unitIsPossessed(unit: string): boolean;
-  /** `GetPetHappiness`'s happiness and damage percentage, or undefined when not modelled. */
-  petHappiness(): readonly [number, number] | undefined;
+  /**
+   * `GetPetHappiness`'s happiness and damage percentage, or undefined when not modelled.
+   * 3.36 (L14): the live answer without a hunter's pet is `[undefined, 100]` — nil, 100 as Wow.exe (FrameXmlPetHappiness.ts).
+   */
+  petHappiness(): readonly [number | undefined, number] | undefined;
   /** `HasPetUI`'s `(hasPetUI, isHunterPet)` pair. */
   hasPetUI(): readonly [boolean, boolean];
   /** `GetRestState`'s triple: state id, localised name, rest multiplier. */
@@ -1583,6 +1671,8 @@ export interface FrameXmlWorldSeam {
   readonly groupCommands?: FrameXmlGroupCommandsModel | undefined;
   /** Focus, assist, dismount and the stance bar's cancel (FrameXmlTargetingApi.ts). */
   readonly targeting?: FrameXmlTargeting | undefined;
+  /** L2 1.10: `TargetNearest*` and `TargetLast*` (FrameXmlTargetNearest.ts); absent, they do nothing. */
+  readonly targetNearest?: FrameXmlTargetNearest | undefined;
 
   // ---- unit auras -------------------------------------------------------
   /** `UnitAura`'s 3.3.5 tuple for a 1-based filtered player slot. */
@@ -1594,11 +1684,11 @@ export interface FrameXmlWorldSeam {
   cancelUnitBuff(unit: string, index: number, filter: string | undefined): void;
 
   // ---- the base minimap -------------------------------------------------
-  /** `GetMinimapZoneText()`, or undefined while the zone metadata is unavailable. */
+  /** `GetMinimapZoneText()` (the most specific area); undefined, which the binding answers as "", while unknown. */
   minimapZoneText(): string | undefined;
-  /** `GetZoneText()`, or undefined while the area metadata is unavailable. */
+  /** `GetZoneText()`; undefined (bound as "") while the area metadata is unavailable. */
   zoneText(): string | undefined;
-  /** `GetSubZoneText()`, or undefined while the area metadata is unavailable. */
+  /** `GetSubZoneText()`; undefined (bound as "") without a sub-zone or area metadata. */
   subZoneText(): string | undefined;
   /** `GetZonePVPInfo()`'s tuple, preserving nil positions; undefined means no zone answer. */
   zonePvpInfo(): FrameXmlZonePvpInfo | undefined;
@@ -1840,7 +1930,8 @@ export interface FrameXmlWorldSeam {
   trainerServiceLevelReq(index: number): number;
   trainerServiceSkillReq(index: number): readonly [string | undefined, number, boolean];
   trainerServiceNumAbilityReq(index: number): number;
-  trainerServiceAbilityReq(index: number, requirement: number): readonly [number, boolean] | undefined;
+  /** 3.23F: the required spell's name («name (rank)») and whether the player knows it. */
+  trainerServiceAbilityReq(index: number, requirement: number): readonly [string | undefined, boolean] | undefined;
   trainerServiceStepReq(index: number): readonly [number | undefined, boolean];
   trainerServiceIcon(index: number): string | undefined;
   trainerServiceDescription(index: number): string | undefined;
@@ -1896,6 +1987,36 @@ export interface FrameXmlWorldSeam {
   useInventoryItem(unit: string, slot: number): void;
   /** Stock paper-doll slot IDs are one-based; pickup shares the container cursor. */
   pickupInventoryItem(unit: string, slot: number): void;
+  /** `SpellTargetItem(itemID|name|link)`: the item-target cursor takes that carried item (2.05). */
+  spellTargetItem?(query: unknown): void;
+  /** `ClickTargetTradeButton(index)`: the item-target cursor takes the trader's slot 7 (2.05). */
+  clickTargetTradeButton?(index: number): void;
+  /** `BindEnchant()`: BIND_ENCHANT's accept — 0x005210d0 again, the bind answered (0x00522f70). */
+  bindEnchant?(): void;
+  /** `ReplaceEnchant()`: REPLACE_ENCHANT's accept — the named item takes the waiting spell (0x005167a0). */
+  replaceEnchant?(): void;
+  /** 2.10 (FrameXmlRefund.ts): `GetContainerItemPurchaseInfo`'s five values, or nothing. */
+  containerItemPurchaseInfo?(bag: number, slot: number, equipped: boolean): readonly unknown[] | undefined;
+  /** 2.10: `GetContainerItemPurchaseItem`'s texture, count and link, or nothing. */
+  containerItemPurchaseItem?(bag: number, slot: number, index: number, equipped: boolean): readonly unknown[] | undefined;
+  /** 2.10: `ContainerRefundItemPurchase` — CMSG_ITEM_REFUND, or the client's error line. */
+  containerRefundItemPurchase?(bag: number, slot: number, equipped: boolean): void;
+  /** 2.10: `EndRefund(kind)` — END_REFUND's accept (1 the enchant, 2 the sockets). */
+  endRefund?(kind: number): void;
+  /** `ReplaceTradeEnchant()`: TRADE_REPLACE_ENCHANT's accept — the trade slot takes it (0x00510b80). */
+  replaceTradeEnchant?(): void;
+  /** L1 (1.10): `DropItemOnUnit(unit)` — wear, trade or feed the held bag item (0x0051bdd0). */
+  dropItemOnUnit?(unit: string): void;
+  /** L1 (3.23): `PickupMerchantItem` with a bag item held sells it (0x005853a0); true when one was held. */
+  sellCursorItemToMerchant?(): boolean;
+  /** L1 (3.23): the merchant row's item entry as the cursor holds it (0x00584080); undefined for no row. */
+  merchantItemEntry?(index: number): number | undefined;
+  /**
+   * L1 (3.23): a held merchant row dropped on a container slot (`bagId`) or a paper-doll slot (`bagId`
+   * undefined): CMSG_BUY_ITEM_IN_SLOT (0x005d7ff0 / 0x005e85d0 → 0x006d2ea0). True when sent, false
+   * when not, undefined with no merchant open (FrameXmlMerchantCursor.ts).
+   */
+  buyMerchantItemInSlot?(index: number, bagId: number | undefined, slot: number): boolean | undefined;
 
   // ---- the stock item actions (FrameXmlItemActions.ts) --------------------
   /**
@@ -1938,6 +2059,8 @@ export interface FrameXmlWorldSeam {
   inventoryItemsForSlot?(slot: number): readonly number[];
   /** `GetInventoryAlertStatus(index)`: 0 sound, 1 worn low, 2 broken. */
   inventoryAlertStatus?(index: number): number;
+  /** `OffhandHasWeapon()`: the off-hand item is a weapon (FrameXmlDurabilityFrame.ts, Wow.exe 0x005eac10). */
+  offhandHasWeapon?(): boolean;
 
   /** `UnitStat` uses 1..5 for the five generated STAT0..STAT4 fields. */
   unitStat(unit: string, index: number): FrameXmlUnitStat;
@@ -2120,6 +2243,9 @@ function chatTargetOf(value: unknown): FrameXmlChatTarget | undefined {
 
 /** `[]` is «answers nothing», which is nil in Lua; `[undefined]` would be nil too but noisier. */
 const NOTHING: readonly unknown[] = Object.freeze([]);
+/** `IsActionInRange`'s two numeric answers (Wow.exe 0x005a9d50 pushes 1.0 or 0.0). */
+const IN_RANGE: readonly unknown[] = Object.freeze([1]);
+const OUT_OF_RANGE: readonly unknown[] = Object.freeze([0]);
 
 function optional(value: unknown): readonly unknown[] {
   return value === undefined ? NOTHING : [value];
@@ -2154,7 +2280,10 @@ const SERVICE_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Obj
 );
 
 // The spellbook names take a `bookType`; frameXmlWithPetBook answers the "pet" book from the pet model.
-export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze(frameXmlWithPetBook({
+// 11.02-IF: frameXmlWithPossess answers slots 121-132 and the possess names while a possessed unit's bar is up.
+// 11.02-F2: frameXmlWithVehicle answers the vehicle C API while the vehicle tables are there.
+// 11.02-E: frameXmlWithVehicleAim answers VehicleAim* while the vehicle tables are there.
+export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding>> = Object.freeze(frameXmlWithVehicleAim(frameXmlWithVehicle(frameXmlWithPossess(frameXmlWithPetBook({
   ...SERVICE_SEAM_BINDINGS,
   ...FRAMEXML_WORLD_STATE_BINDINGS,
   ...FRAMEXML_MAP_BINDINGS,
@@ -2162,6 +2291,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_LOOT_BINDINGS,
   ...FRAMEXML_POPUPS_BINDINGS,
   ...FRAMEXML_FRIENDS_BINDINGS,
+  ...FRAMEXML_AUTOCOMPLETE_BINDINGS, // L5c 3.18
   ...FRAMEXML_RAID_LOD_BINDINGS,
   ...FRAMEXML_ARENA_BINDINGS,
   ...FRAMEXML_MAIL_BINDINGS,
@@ -2174,22 +2304,39 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_GUILDBANK_BINDINGS,
   ...FRAMEXML_MACRO_BINDINGS, ...FRAMEXML_BINDING_BINDINGS,
   ...FRAMEXML_MECHANICS_BINDINGS,
+  // PvP after the mechanics; IsInInstance is FrameXmlDifficulty's alone, after the arena table.
+  ...FRAMEXML_PVP_FLAG_BINDINGS, ...FRAMEXML_SCOREBOARD_BINDINGS, ...FRAMEXML_DIFFICULTY_BINDINGS,
+  ...FRAMEXML_AREA_SPIRIT_HEALER_BINDINGS, // L3 5.25
+  ...FRAMEXML_ARENA_ROSTER_BINDINGS,
+  ...FRAMEXML_TALENT_GROUP_BINDINGS, ...FRAMEXML_QUEST_SHARE_BINDINGS, ...FRAMEXML_RELIC_SLOT_BINDINGS,
+  ...FRAMEXML_SUPPORT_BINDINGS,
+  ...FRAMEXML_SERVER_PROMPTS_BINDINGS,
+  ...FRAMEXML_QUEST_LOG_BINDINGS,
   ...FRAMEXML_CALENDAR_SEAM_BINDINGS,
   ...FRAMEXML_HUD_MECHANICS_BINDINGS,
+  // 3.07, over the HUD's GetTotemInfo for an empty slot (FrameXmlMultiCast.ts).
+  ...frameXmlMultiCastBindings(FRAMEXML_HUD_MECHANICS_BINDINGS.GetTotemInfo!),
   ...FRAMEXML_OPTIONS_BINDINGS,
   ...FRAMEXML_PLAYER_STATUS_BINDINGS,
   ...FRAMEXML_UNIT_RELATION_BINDINGS,
   ...FRAMEXML_CONTROL_BINDINGS, ...FRAMEXML_GROUP_COMMAND_BINDINGS, ...FRAMEXML_TARGETING_BINDINGS,
+  ...FRAMEXML_TARGET_NEAREST_BINDINGS, // L2 1.10
   ...FRAMEXML_INSPECT_BINDINGS,
   ...FRAMEXML_TITLE_BINDINGS, ...FRAMEXML_EQUIPMENT_SET_BINDINGS, AbandonSkill: (seam, args) => { seam.abandonSkill?.(slotOf(args[0])); return NOTHING; },
   ...FRAMEXML_BARBER_BINDINGS,
   ...FRAMEXML_COMPANION_BINDINGS,
+  ...FRAMEXML_PET_DECLENSION_BINDINGS, // L17 3.09: after the companions', so its PetRename answers
   ...FRAMEXML_PET_ACTION_BINDINGS,
   // After the trade skill's: its SpellIsTargeting/SpellStopTargeting answer the glyph cursor first.
   ...FRAMEXML_GLYPH_BINDINGS,
+  // After the trade's, the trade skill's and the glyph's: the item-target cursor (2.05) answers
+  // SpellCanTargetItem first and owns SpellTargetItem, SpellTargetUnit and ClickTargetTradeButton.
+  ...FRAMEXML_ITEM_TARGETING_BINDINGS,
+  ...FRAMEXML_REFUND_BINDINGS,
   // After the bank's and the popups': its PutItemInBag/SplitContainerItem/DeleteCursorItem answer the
   // carried bags and the split cursor first and hand the rest back.
   ...FRAMEXML_ITEM_ACTION_BINDINGS,
+  ...FRAMEXML_DURABILITY_BINDINGS,
   GetPetExperience: (seam) => seam.petExperience?.() ?? [0, 0],
   GetPetSpellBonusDamage: (seam) => [seam.petSpellBonusDamage?.() ?? 0],
   ...QUEST_GIVER_SEAM_BINDINGS,
@@ -2251,10 +2398,15 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   IsConsumableAction: (seam, args) => [seam.isConsumableAction(slotOf(args[0]))],
   IsStackableAction: (seam, args) => [seam.isStackableAction(slotOf(args[0]))],
   IsEquippedAction: (seam, args) => [seam.isEquippedAction(slotOf(args[0]))],
-  IsCurrentAction: (seam, args) => [seam.isCurrentAction(slotOf(args[0]))],
-  IsAttackAction: (seam, args) => [seam.isAttackAction(slotOf(args[0]))],
-  IsAutoRepeatAction: (seam, args) => [seam.isAutoRepeatAction(slotOf(args[0]))],
-  IsActionInRange: (seam, args) => optional(seam.actionInRange(slotOf(args[0]))),
+  // 1 or nil, as Wow.exe 0x5aad40/0x5a9ba0/0x5a9c10 answer (FrameXmlActionRepeat.ts).
+  IsCurrentAction: (seam, args) => [seam.isCurrentAction(slotOf(args[0])) ? 1 : undefined],
+  IsAttackAction: (seam, args) => [seam.isAttackAction(slotOf(args[0])) ? 1 : undefined],
+  IsAutoRepeatAction: (seam, args) => [seam.isAutoRepeatAction(slotOf(args[0])) ? 1 : undefined],
+  // Asked by stock ActionButton_OnUpdate for every button every 0.2 s: shared answers, no allocation.
+  IsActionInRange: (seam, args) => {
+    const inRange = seam.actionInRange(slotOf(args[0]), typeof args[1] === "string" ? args[1] : undefined);
+    return inRange === 1 ? IN_RANGE : inRange === 0 ? OUT_OF_RANGE : NOTHING;
+  },
   GetActionBarPage: (seam) => [seam.actionBarPage()],
   ChangeActionBarPage: (seam, args) => {
     if (typeof args[0] === "number") seam.changeActionBarPage?.(args[0]);
@@ -2547,8 +2699,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   )],
   UnitPVPRank: (seam, args) => optional(seam.pvpRank(unitOf(args[0]))),
   GetPVPRankProgress: (seam) => [seam.pvpRankProgress()],
-  GetHonorCurrency: (seam) => [seam.pvpHonorCurrency()],
-  GetArenaCurrency: (seam) => [seam.pvpArenaCurrency()],
+  // Wow.exe 0x0060fc40/0x0060fcc0: the current points and the cap, 75000 honor / 10000 arena — the
+  // stock refund popup compares against the second value (StaticPopup.lua:143-146, 2.10).
+  GetHonorCurrency: (seam) => [seam.pvpHonorCurrency(), 75000],
+  GetArenaCurrency: (seam) => [seam.pvpArenaCurrency(), 10000],
   GetNumBattlegroundTypes: (seam) => [seam.battlegroundTypeCount()],
   GetBattlegroundInfo: (seam, args) => seam.battlegroundInfo(slotOf(args[0])) ?? NOTHING,
   GetBattlefieldInfo: (seam) => seam.battlefieldInfo() ?? NOTHING,
@@ -2605,7 +2759,8 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetBuybackItemInfo: (seam, args) => seam.buybackItemInfo(slotOf(args[0])) ?? NOTHING,
   GetBuybackItemLink: (seam, args) => optional(seam.buybackItemLink(slotOf(args[0]))),
   BuyMerchantItem: (seam, args) => {
-    seam.buyMerchantItem(slotOf(args[0]), Math.max(1, slotOf(args[1]) || 1));
+    // Wow.exe 0x005854c0: a missing or non-positive count is 1, a larger one stops at 255.
+    seam.buyMerchantItem(slotOf(args[0]), Math.min(255, Math.max(1, slotOf(args[1]) || 1)));
     return NOTHING;
   },
   BuybackItem: (seam, args) => {
@@ -2744,8 +2899,10 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   GetUnitManaRegenRateFromSpirit: (seam, args) => [seam.unitManaRegenRateFromSpirit(unitOf(args[0]))],
   GetCombatRating: (seam, args) => [seam.combatRating(slotOf(args[0]))],
   GetCombatRatingBonus: (seam, args) => [seam.combatRatingBonus(slotOf(args[0]))],
-  // Unit.h caps all three resilience critical-damage reductions at 33 percent.
-  GetMaxCombatRatingBonus: (_seam, args) => [15, 16, 17].includes(slotOf(args[0])) ? [33] : NOTHING,
+  // Unit.h caps all three resilience critical-damage reductions at 33 percent. L7 4.03: as Wow.exe
+  // 0x006082c0 answers it — the double at 0x00a1f778 for CR 15-17 and the one at 0x009ec208 (-1) for
+  // every other index (ui/CharacterSheetModel.ts `maxCombatRatingBonus`), never nil.
+  GetMaxCombatRatingBonus: (_seam, args) => [[15, 16, 17].includes(slotOf(args[0])) ? 33.000001311302185 : -1],
   GetArmorPenetration: (seam) => [seam.armorPenetration()],
   GetCritChance: (seam) => [seam.critChance()],
   GetRangedCritChance: (seam) => [seam.rangedCritChance?.() ?? 0],
@@ -2886,19 +3043,40 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   },
   GetAccountExpansionLevel: (seam) => [seam.accountExpansionLevel()],
   IsXPUserDisabled: (seam) => [seam.isXpUserDisabled()],
-  GetMinimapZoneText: (seam) => optional(seam.minimapZoneText()),
-  GetZoneText: (seam) => optional(seam.zoneText()),
-  // The zone's own name, concatenated unguarded into a bare /who (FriendsFrame.lua:1502,
-  // WhoFrame_GetDefaultWhoCommand): "" while the area metadata is unavailable, never nil.
+  // The four zone texts are strings in the client, "" when there is none: ZoneText_OnEvent tests
+  // `GetSubZoneText() == ""`, Minimap_SetTooltip compares the sub-zone with the zone, and
+  // WhoFrame_GetDefaultWhoCommand (FriendsFrame.lua:1502) concatenates GetRealZoneText unguarded.
+  // So "" while the area metadata is unavailable, and "" for the sub-zone of a zone's own ground.
+  GetMinimapZoneText: (seam) => [seam.minimapZoneText() ?? ""],
+  GetZoneText: (seam) => [seam.zoneText() ?? ""],
   GetRealZoneText: (seam) => [seam.zoneText() ?? ""],
-  GetSubZoneText: (seam) => optional(seam.subZoneText()),
+  GetSubZoneText: (seam) => [seam.subZoneText() ?? ""],
+  // The client pushes the number 1 or nil for isSubZonePvP, never false (its GetZonePVPInfo at
+  // Wow.exe 0x0051BA50); ZoneText.lua only tests it for truth.
   GetZonePVPInfo: (seam) => {
     const info = seam.zonePvpInfo();
-    return info === undefined ? NOTHING : [...info];
+    return info === undefined ? NOTHING : [info[0], info[1] === true ? 1 : undefined, info[2]];
   },
+  // Over the base GetGroupPreviewTalentPointsSpent: the talent preview (FrameXmlTalentPreview.ts, 3.33).
+  ...FRAMEXML_TALENT_PREVIEW_BINDINGS,
+  // Over the stable's pet-only UnitCreatureFamily and the neutral nil UnitCreatureType (3.23A).
+  ...FRAMEXML_CREATURE_TYPE_BINDINGS,
+  // 3.13c: over the two POI answers above — a seam with a POI model answers through it (FrameXmlQuestPoi.ts).
+  ...frameXmlQuestPoiBindings<FrameXmlWorldSeam>({
+    QuestMapUpdateAllQuests: (seam) => [seam.questMapUpdateAllQuests()],
+    QuestPOIGetQuestIDByVisibleIndex: (seam, args) => optional(seam.questPoiQuestIdByVisibleIndex(slotOf(args[0]))),
+  }),
+  // 3.01: the combat log (FrameXmlCombatLog.ts).
+  ...FRAMEXML_COMBAT_LOG_BINDINGS,
+  // L12 3.29: the trainer's skill-line filter, and BuyTrainerService over the base one (FrameXmlTrainerSkillLines.ts).
+  ...FRAMEXML_TRAINER_SKILL_LINE_BINDINGS,
   // Last: the one cursor answers the cursor C API over every holder above (FrameXmlCursor.ts).
   ...FRAMEXML_CURSOR_BINDINGS,
-}));
+  // L5c 3.09: money on that cursor, over the trade's inert PickupTradeMoney/AddTradeMoney and the neutral 0.
+  ...FRAMEXML_CURSOR_MONEY_BINDINGS,
+  // The repair answers over the neutral four above, and the three repair commands (FrameXmlRepair.ts).
+  ...FRAMEXML_REPAIR_BINDINGS,
+}))))); // 11.02-F2: one more closing parenthesis for frameXmlWithVehicle; 11.02-E: and one for frameXmlWithVehicleAim
 
 /** Every name the seam answers, in report order. */
 export const FRAMEXML_SEAM_NAMES: readonly string[] = Object.freeze(
@@ -2981,4 +3159,7 @@ ${FRAMEXML_TRADESKILL_PRELUDE}
 ${FRAMEXML_BINDING_PRELUDE}
 ${FRAMEXML_INSPECT_PRELUDE}
 ${FRAMEXML_ITEM_ACTIONS_PRELUDE}
-${FRAMEXML_MECHANICS_PRELUDE}`;
+${FRAMEXML_MECHANICS_PRELUDE}
+${FRAMEXML_BAG_PORTRAIT_PRELUDE}
+${FRAMEXML_QUEST_LOG_PRELUDE}
+${FRAMEXML_VEHICLE_PRELUDE}`; // 11.02-F2

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { TerrainGrid } from "./Terrain.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 /** Ground textures are republished at this size so one array can hold all of a tile's layers. */
 const LAYER_SIZE = 256;
@@ -225,7 +226,13 @@ export class TerrainSplatClient {
     let installed = false;
     try {
       const base = `${this.#baseUrl}/terrain-splat/${map}/${grid.x}/${grid.y}`;
-      const response = await fetch(base);
+      const response = await fetch(withGeneration(base));
+      // 7.23: 404 is the gateway saying this tile has nothing to paint (a stub under a dungeon, a
+      // map with no ADT) — final and not an error, so it is remembered like one but not reported.
+      if (response.status === 404) {
+        if (this.#isCurrent(request)) this.#tiles.set(request.key, null);
+        return;
+      }
       if (!response.ok) throw new Error(`Terrain splat gateway returned ${response.status}`);
       const value: unknown = await response.json();
       if (!this.#isCurrent(request)) return;
@@ -239,9 +246,9 @@ export class TerrainSplatClient {
       for (const id of new Set(layers)) request.layers.set(id, this.#acquireLayer(id));
       const results = await Promise.allSettled([
         Promise.all(layers.map((id) => request.layers.get(id)!.promise)),
-        this.#loadTexture(request, `${base}/alpha.png`),
-        this.#loadTexture(request, `${base}/index.png`),
-        painted ? this.#loadTexture(request, `${base}/mccv.png`) : Promise.resolve(undefined),
+        this.#loadTexture(request, withGeneration(`${base}/alpha.png`)),
+        this.#loadTexture(request, withGeneration(`${base}/index.png`)),
+        painted ? this.#loadTexture(request, withGeneration(`${base}/mccv.png`)) : Promise.resolve(undefined),
       ]);
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
@@ -328,7 +335,7 @@ export class TerrainSplatClient {
   #acquireLayer(id: string): LayerRecord {
     let layer = this.#layers.get(id);
     if (!layer) {
-      const promise = decodeImagePixels(`${this.#baseUrl}/terrain-layer/${id}.png`, LAYER_SIZE);
+      const promise = decodeImagePixels(withGeneration(`${this.#baseUrl}/terrain-layer/${id}.png`), LAYER_SIZE);
       layer = { id, promise, leases: 0 };
       this.#layers.set(id, layer);
       const exact = layer;

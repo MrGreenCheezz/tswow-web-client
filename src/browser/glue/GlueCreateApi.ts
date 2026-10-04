@@ -1,4 +1,5 @@
 import type { GlueLuaVm } from "./GlueLua.js";
+import type { CharacterSummary } from "../../world/CharacterProtocol.js";
 import { GlueCreation, raceFileToken, SEX_FEMALE, SEX_MALE } from "./GlueCreation.js";
 
 /**
@@ -27,6 +28,8 @@ export interface GlueCreateApiOptions {
   readonly vm: GlueLuaVm;
   readonly creation: GlueCreation;
   readonly view?: GlueCreationView;
+  /** The character-select list by 1-based index, for `CustomizeExistingCharacter` (2.08). */
+  readonly character?: (index: number) => CharacterSummary | undefined;
 }
 
 export function installGlueCreateApi(options: GlueCreateApiOptions): void {
@@ -136,10 +139,24 @@ export function installGlueCreateApi(options: GlueCreateApiOptions): void {
     return [];
   });
 
+  /* --- Paid services (2.08) ------------------------------------------------------------------ */
+
+  // `CharacterCreate_OnShow` with PAID_SERVICE_TYPE set: the character goes onto the screen as it is.
+  vm.registerGlobal("CustomizeExistingCharacter", (args) => {
+    if (creation.beginPaidService(options.character?.(number(args[0], 0)))) changed();
+    return [];
+  });
+  // `CharacterChangeFixup` compares button numbers against these to decide which buttons stay lit.
+  vm.registerGlobal("PaidChange_GetCurrentRaceIndex", () => [creation.paidRaceIndex()]);
+  vm.registerGlobal("PaidChange_GetCurrentClassIndex", () => [creation.paidClassIndex()]);
+  vm.registerGlobal("PaidChange_GetName", () => [creation.paidName()]);
+
   /* --- Creating ------------------------------------------------------------------------------ */
 
   vm.registerGlobal("CreateCharacter", (args) => {
-    void creation.createCharacter(String(args[0] ?? ""));
+    // No name at all in paid mode keeps the character's own (Wow.exe 0x4e0380).
+    const typed = args[0] === undefined || args[0] === null ? creation.paidName() : undefined;
+    void creation.createCharacter(typed ?? String(args[0] ?? ""));
     return [];
   });
 }

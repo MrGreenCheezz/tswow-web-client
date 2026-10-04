@@ -62,6 +62,7 @@ import {
 } from "../../world/LootRollProtocol.js";
 import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import { fieldFloat, type WorldObjectState } from "../../world/WorldState.js";
+import { frameXmlMasterLootTable } from "./FrameXmlMasterLoot.js"; // 5.28 (L6)
 
 /** `BIND_WHEN_PICKED_UP` in ItemTemplate.h. */
 const BIND_WHEN_PICKED_UP = 1;
@@ -143,6 +144,9 @@ export interface FrameXmlLootWorld {
   /** Answers the cache and asks the server on a miss; called from `tick` only, never a C API. */
   itemTemplate(entry: number): ItemTemplate | undefined;
   displayName?(guid: bigint): string;
+  /** 5.28 (L6): the name cache a master-loot candidate's name comes from (Wow.exe 0x588920 → 0x67d770). */
+  readonly names?: { get(guid: bigint): string | undefined } | undefined;
+  requestName?(guid: bigint): void;
   takeLootSlot(index: number): void;
   takeLootMoney(): void;
   closeLoot(): void;
@@ -259,6 +263,12 @@ export class FrameXmlLootModel {
   #nextRollId = 1;
   readonly #rollIds = new Map<bigint, number>();
   readonly #rolls = new Map<number, RollState>();
+  // ---- 5.28 (L6): master loot ----
+  /** The forty slots of the last list, with the inputs they were placed by. */
+  #candidateTable: { readonly candidates: readonly bigint[]; readonly group: GroupState | undefined;
+    readonly self: bigint | undefined; readonly table: readonly (bigint | undefined)[] } | undefined;
+  /** Candidates whose name was asked for by a GetMasterLootCandidate read and has not come yet. */
+  readonly #pendingNames = new Set<bigint>();
 
   constructor(context: FrameXmlLootContext) {
     this.#context = context;
@@ -522,27 +532,39 @@ export class FrameXmlLootModel {
   #candidate(index: number): bigint | undefined {
     const world = this.#context.world();
     if (!world || !Number.isInteger(index) || index < 1) return undefined;
+    // 5.28 (L6): Wow.exe's forty slots (FrameXmlMasterLoot.ts, 0x6fa690): in a raid each candidate takes
+    // the first free place of its subgroup in packet order, so the places are packed, not the roster's.
     const candidates = world.masterLootCandidates;
     const group = world.group;
-    if (!group || (group.groupType & GROUPTYPE_RAID) === 0) return candidates[index - 1];
-    const bySubgroup = new Map<number, bigint[]>();
-    const add = (subGroup: number, guid: bigint): void => {
-      const list = bySubgroup.get(subGroup) ?? [];
-      list.push(guid);
-      bySubgroup.set(subGroup, list);
-    };
     const self = world.state.selfGuid;
-    if (self !== undefined) add(group.ownSubGroup, self);
-    for (const member of group.members) add(member.subGroup, member.guid);
-    const subGroup = Math.floor((index - 1) / 5);
-    const guid = bySubgroup.get(subGroup)?.[(index - 1) % 5];
-    return guid !== undefined && candidates.includes(guid) ? guid : undefined;
+    let cached = this.#candidateTable;
+    // L6-review: placed once per list, as 0x6fa690 fills 0x00ca0550 when the packet comes; a later group list
+    // (a subgroup move) must not move a slot, or GiveMasterLoot's kept index (0x589600 → 0x6fa770, the
+    // CONFIRM_LOOT_DISTRIBUTION popup) would give to another player than the name it showed.
+    if (!cached || cached.candidates !== candidates) {
+      const raid = group && (group.groupType & GROUPTYPE_RAID) !== 0
+        ? { selfGuid: self, ownSubGroup: group.ownSubGroup, members: group.members } : undefined;
+      cached = { candidates, group, self, table: frameXmlMasterLootTable(candidates, raid) };
+      this.#candidateTable = cached;
+    }
+    return cached.table[index - 1];
   }
 
   masterLootCandidate(index: number): string | undefined {
     const guid = this.#candidate(index);
     if (guid === undefined) return undefined;
     const world = this.#context.world();
+    // 5.28 (L6): from the name cache when the world has one (0x67d770): an unknown name is nil, asked
+    // for, and announced by UPDATE_MASTER_LOOT_LIST when it comes; the player's own is always known.
+    if (world?.names && guid !== world.state.selfGuid) {
+      const cached = world.names.get(guid) || world.group?.members.find((member) => member.guid === guid)?.name;
+      if (cached) return cached;
+      if (!this.#muted) {
+        this.#pendingNames.add(guid);
+        world.requestName?.(guid);
+      }
+      return undefined;
+    }
     const name = world?.displayName?.(guid)
       || world?.group?.members.find((member) => member.guid === guid)?.name;
     return name || undefined;
@@ -655,7 +677,22 @@ export class FrameXmlLootModel {
     const world = this.#context.world();
     this.#reconcileLoot(world);
     this.#reconcileRolls(world);
+    this.#announceNames(world); // 5.28 (L6)
+    // L6-review: a new list is placed by the roster of the frame it came in (0x6fa690 runs in the packet handler).
+    if (world && world.masterLootCandidates !== this.#candidateTable?.candidates) this.#candidate(1);
     this.#flush();
+  }
+
+  /** 5.28 (L6): 0x588150 — a candidate name a read asked for has come: UPDATE_MASTER_LOOT_LIST once. */
+  #announceNames(world: FrameXmlLootWorld | undefined): void {
+    if (this.#pendingNames.size === 0) return;
+    let arrived = false;
+    for (const guid of this.#pendingNames) {
+      if (world?.names?.get(guid) === undefined) continue;
+      this.#pendingNames.delete(guid);
+      arrived = true;
+    }
+    if (arrived) this.#fire("UPDATE_MASTER_LOOT_LIST");
   }
 
   #resetOpening(): void {

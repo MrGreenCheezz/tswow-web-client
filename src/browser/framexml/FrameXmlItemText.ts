@@ -20,6 +20,7 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import type { GameObjectTemplate } from "../../world/GameObjectProtocol.js";
 import type { ItemTemplate, PageText } from "../../world/QueryCacheProtocol.js";
+import { frameXmlItemCreator, frameXmlItemIsMailText } from "./FrameXmlItemTextMail.js"; // 5.28 (L6)
 
 /** PageTextMaterial.dbc (this dataset, measured: 7 rows); stock builds `ItemText-<name>-*` from it. */
 export const FRAMEXML_PAGE_MATERIALS: Readonly<Record<number, string>> = Object.freeze({
@@ -42,6 +43,8 @@ export interface FrameXmlItemTextSource {
   readonly title: string;
   readonly firstPage: number;
   readonly material: number;
+  /** 5.28 (L6): a mail copy — the item's own text (CMSG_ITEM_TEXT_QUERY), no pages (FrameXmlItemTextMail.ts). */
+  readonly mail?: boolean;
 }
 
 /** The item template fields a reader needs. */
@@ -60,6 +63,12 @@ export interface FrameXmlItemTextWorld {
   pageText(pageId: number, guid?: bigint): PageText | undefined;
   /** `CMSG_READ_ITEM`; absent on a world that cannot send it. */
   readItem?(bag: number, slot: number): void;
+  /** 5.28 (L6): a mail copy's text by item guid, once answered; `requestItemText` asks (CMSG_ITEM_TEXT_QUERY). */
+  itemText?(itemGuid: bigint): string | undefined;
+  requestItemText?(itemGuid: bigint): void;
+  /** 5.28 (L6): the name cache ItemTextGetCreator reads (0x58a480 → 0x67d770). */
+  readonly names?: { get(guid: bigint): string | undefined } | undefined;
+  requestName?(guid: bigint): void;
 }
 
 /**
@@ -81,6 +90,10 @@ export function frameXmlItemTextSource(
   if (entry <= 0) return undefined;
   if (opened.kind === "item") {
     const template = world.itemTemplates.get(entry);
+    // 5.28 (L6): ITEM_FIELD_FLAG_READABLE reads the item's own text, pages or not (Wow.exe 0x58a1a0).
+    if (frameXmlItemIsMailText(object)) {
+      return template?.found ? { title: template.name, firstPage: 0, material: template.pageMaterial, mail: true } : undefined;
+    }
     return template?.found && template.pageText > 0
       ? { title: template.name, firstPage: template.pageText, material: template.pageMaterial }
       : undefined;
@@ -112,6 +125,8 @@ interface Reading {
   begun: boolean;
   /** The page READY was last raised for (its index in `pages`). */
   readyAt: number | undefined;
+  /** 5.28 (L6): a mail copy's text was asked for. */
+  textAsked?: boolean;
 }
 
 /** One owner of the reader's C API and of the four ITEM_TEXT_* events. */
@@ -123,6 +138,8 @@ export class FrameXmlItemTextModel {
   #muted = false;
   #reading: Reading | undefined;
   #probe: { title: string; pages: readonly string[]; material: number; index: number } | undefined;
+  /** 5.28 (L6): the creator whose name ItemTextGetCreator asked for, for the item it was asked on. */
+  #creatorPending: { readonly item: bigint; readonly creator: bigint } | undefined;
 
   constructor(context: FrameXmlItemTextContext) {
     this.#context = context;
@@ -184,7 +201,25 @@ export class FrameXmlItemTextModel {
       const source = frameXmlItemTextSource(world, reading.opened);
       if (!source) return;
       reading.source = source;
-      reading.pages.push(source.firstPage);
+      if (!source.mail) reading.pages.push(source.firstPage); // 5.28 (L6): a letter has no pages
+    }
+    // 5.28 (L6): a letter begins when its text is there (0x58a1a0 asks the cache, 0x589e90 reads it).
+    if (reading.source.mail) {
+      if (world.itemText?.(reading.opened.guid) === undefined) {
+        if (!reading.textAsked) {
+          reading.textAsked = true;
+          world.requestItemText?.(reading.opened.guid);
+        }
+        return;
+      }
+      if (!reading.begun) {
+        reading.begun = true;
+        pump.fire("ITEM_TEXT_BEGIN");
+      }
+      if (reading.readyAt === 0) return;
+      reading.readyAt = 0;
+      pump.fire("ITEM_TEXT_READY");
+      return;
     }
     if (!reading.begun) {
       reading.begun = true;
@@ -201,7 +236,7 @@ export class FrameXmlItemTextModel {
   #page(): PageText | undefined {
     const reading = this.#reading;
     const world = this.#context.world();
-    if (!reading || !world || reading.readyAt === undefined) return undefined;
+    if (!reading || !world || reading.readyAt === undefined || reading.source?.mail) return undefined; // 5.28 (L6)
     return world.pageText(reading.pages[reading.readyAt]!, reading.opened.guid);
   }
 
@@ -214,7 +249,42 @@ export class FrameXmlItemTextModel {
   text(): string | undefined {
     const probe = this.#probe;
     if (probe) return probe.pages[probe.index];
+    // 5.28 (L6): a letter's text is the item's own (0x589e90's mail branch).
+    const reading = this.#reading;
+    if (reading?.source?.mail) return this.#context.world()?.itemText?.(reading.opened.guid);
     return this.#page()?.text;
+  }
+
+  /**
+   * 5.28 (L6): `ItemTextGetCreator` (0x58a480): the open item's ITEM_FIELD_CREATOR by name, from the name
+   * cache; nil while unknown (asked for — its arrival raises BEGIN and READY again, see `tick`).
+   */
+  creator(): string | undefined {
+    const reading = this.#reading;
+    const world = this.#context.world();
+    if (this.#probe || !reading || reading.opened.kind !== "item" || !world) return undefined;
+    const creator = frameXmlItemCreator(world.state.objects.get(reading.opened.guid));
+    if (creator === undefined) return undefined;
+    const name = world.names?.get(creator);
+    if (name !== undefined) return name;
+    if (!this.#muted && this.#creatorPending?.creator !== creator) {
+      this.#creatorPending = { item: reading.opened.guid, creator };
+      world.requestName?.(creator);
+    }
+    return undefined;
+  }
+
+  /** 5.28 (L6): the asked creator name came for the item still open — BEGIN and READY again (0x58a450). */
+  tick(): void {
+    const pending = this.#creatorPending;
+    if (!pending) return;
+    const world = this.#context.world();
+    if (world?.names?.get(pending.creator) === undefined) return;
+    this.#creatorPending = undefined;
+    const reading = this.#reading;
+    if (!this.#owned || !this.#pump || !reading || reading.opened.guid !== pending.item || !reading.begun) return;
+    this.#pump.fire("ITEM_TEXT_BEGIN");
+    if (reading.readyAt !== undefined) this.#pump.fire("ITEM_TEXT_READY");
   }
 
   page(): number {
@@ -283,8 +353,16 @@ export class FrameXmlItemTextModel {
    * client does; false leaves the ordinary item use to the caller (also while unpublished, when
    * nothing could show the page).
    */
-  useItem(bag: number, slot: number, template: FrameXmlItemTextItem | undefined): boolean {
+  useItem(bag: number, slot: number, template: FrameXmlItemTextItem | undefined, guid?: bigint): boolean {
     const world = this.#context.world();
+    // 5.28 (L6): a mail copy (ITEM_FIELD_FLAG_READABLE) opens the reader itself, without CMSG_READ_ITEM;
+    // using the item already open closes it (Wow.exe 0x708c20 → 0x58a1a0 with the toggle).
+    if (this.#owned && world && guid !== undefined && frameXmlItemIsMailText(world.state.objects.get(guid))) {
+      if (this.#muted) return true;
+      if (this.#reading?.opened.guid === guid) this.close();
+      else this.open({ kind: "item", guid });
+      return true;
+    }
     if (!this.#owned || !world?.readItem || !frameXmlItemIsReadable(template)) return false;
     if (!this.#muted) world.readItem(bag, slot);
     return true;
@@ -305,14 +383,14 @@ const withReader = (answer: (reader: FrameXmlItemTextModel) => readonly unknown[
 
 const optional = (value: unknown): readonly unknown[] => value === undefined ? NOTHING : [value];
 
-/** The flat C API. `ItemTextGetCreator` is a mail copy's author, which no reader here carries. */
+/** The flat C API. 5.28 (L6): `ItemTextGetCreator` is the open item's creator — a mail copy's sender. */
 export const FRAMEXML_ITEM_TEXT_BINDINGS: Readonly<Record<string, FrameXmlItemTextBinding>> = Object.freeze({
   ItemTextGetItem: withReader((reader) => optional(reader.title())),
   ItemTextGetText: withReader((reader) => [reader.text() ?? ""]),
   ItemTextGetPage: withReader((reader) => [reader.page()]),
   ItemTextHasNextPage: withReader((reader) => [reader.hasNextPage()]),
   ItemTextGetMaterial: withReader((reader) => optional(reader.material())),
-  ItemTextGetCreator: () => NOTHING,
+  ItemTextGetCreator: withReader((reader) => optional(reader.creator())), // 5.28 (L6)
   ItemTextNextPage: withReader((reader) => { reader.next(); return NOTHING; }),
   ItemTextPrevPage: withReader((reader) => { reader.previous(); return NOTHING; }),
   CloseItemText: withReader((reader) => { reader.close(); return NOTHING; }),

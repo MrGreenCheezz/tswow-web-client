@@ -59,8 +59,8 @@ export interface FrameXmlSettingsCVarDefinition {
  *
  * The interface-volume control has no stock 3.3.5 CVar at all.  `showTimestamps` is absent because
  * the stock value is one of several format strings, while the browser only has a boolean, and the
- * stock chat consumes it itself.  `cameraDistanceMaxFactor` is a multiplier and the browser's
- * camera setting is a yard ceiling with no measured affine conversion.  `groundEffectDist` is the
+ * stock chat consumes it itself.  `cameraDistanceMaxFactor` is the camera ceiling's factor over the
+ * client's 15 yards, carried in percent (5.14).  `groundEffectDist` is the
  * browser's grass radius because both are the «Ground Clutter Radius» in yards
  * (VideoOptionsPanels.lua:389); `groundEffectDensity` is doodads per chunk against the browser's
  * multiplier over the authored density, so it is not.  `uiscale` is UIParent's scale and the
@@ -84,6 +84,13 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   // The loot model's own switch (FrameXmlLootHost.ts) and stock LootFrame_Show's placement.
   { cvar: "autoLootDefault", setting: "autoLoot", kind: "boolean" },
   { cvar: "lootUnderMouse", setting: "lootUnderMouse", kind: "boolean" },
+  // The stock Combat panel's STOP_AUTO_ATTACK; WorldClient.selectTarget reads it (5.05).
+  { cvar: "stopAutoAttackOnTargetChange", setting: "stopAutoAttackOnTargetChange", kind: "boolean" },
+  // L18 5.05: the stock Combat panel's «Ближний/дальний бой» (default "1", 0x0051dbd3); the world client's
+  // autoRangedCombat hook reads the setting (EnterWorld.ts, world/AutoRangedCombat.ts).
+  { cvar: "autoRangedCombat", setting: "autoRangedCombat", kind: "boolean" },
+  // The stock Controls panel's BLOCK_TRADES; WorldClient answers a trade offer with it (5.25).
+  { cvar: "blockTrades", setting: "blockTrades", kind: "boolean" },
   // The stock Features panel's «Использовать менеджер экипировки»; PaperDollFrame reads it on VARIABLES_LOADED.
   { cvar: "equipmentManager", setting: "equipmentManager", kind: "boolean" },
   { cvar: "Sound_MasterVolume", setting: "volumeMaster", kind: "volume" },
@@ -99,6 +106,19 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   // «Детализация ландшафта», 0.5–1.5: the same multiplier as the browser's object distance, in percent.
   { cvar: "environmentDetail", setting: "objectDistance", kind: "percent" },
   { cvar: "uiscale", setting: "uiScale", kind: "percent" },
+  // 5.14: the stock Camera, Mouse and Controls panels. The slider-derived cameraPitchSmoothSpeed
+  // (yaw/4) and cameraPitchMoveSpeed (yaw/2) stay the stock Lua's own writes; the camera derives the
+  // same ratios from the yaw settings (CameraRig.ts).
+  { cvar: "cameraDistanceMaxFactor", setting: "cameraDistancePercent", kind: "percent" },
+  { cvar: "cameraSmoothStyle", setting: "cameraSmoothStyle", kind: "number" },
+  { cvar: "cameraYawSmoothSpeed", setting: "cameraYawSmoothSpeed", kind: "number" },
+  { cvar: "mouseSpeed", setting: "mouseSpeedPercent", kind: "percent" },
+  { cvar: "cameraYawMoveSpeed", setting: "mouseLookSpeed", kind: "number" },
+  { cvar: "mouseInvertPitch", setting: "mouseInvertPitch", kind: "boolean" },
+  // The stock StickyTargeting check box inverts it itself (InterfaceOptionsPanels.xml); not here.
+  { cvar: "deselectOnClick", setting: "deselectOnClick", kind: "boolean" },
+  // L8 5.14: the Camera panel's WATER_COLLISION; the boom stops at the water (game/CameraWater.ts).
+  { cvar: "cameraWaterCollision", setting: "cameraWaterCollision", kind: "boolean" },
 ];
 
 export const FRAME_XML_SETTINGS_CVARS: readonly FrameXmlSettingsCVarDefinition[] = Object.freeze(

@@ -48,6 +48,10 @@ import { itemChatLink } from "../ui/ChatLink.js";
 import { formatSpellDescription } from "../ui/SpellText.js";
 import { globalString } from "../../generated/globalStrings.js";
 import { frameXmlNativeTargeting, runFrameXmlNativeEscape } from "./FrameXmlGameMenuController.js";
+import {
+  enchantBindsItem, enchantEndsRefund, enchantReplaceNames, sessionEnchantFlags, sessionEnchantName, tradeEnchantReplaceNames,
+  traderSlotEnchant, type ItemTargetWorld,
+} from "../game/SpellCursor.js";
 
 /** SharedDefines.h: SPELL_EFFECT_CREATE_ITEM and SPELL_EFFECT_CREATE_ITEM_2. */
 const ITEM_CREATION_EFFECTS: readonly number[] = [24, 157];
@@ -119,6 +123,11 @@ export interface FrameXmlTradeSkillCraft {
   craft(spellId: number, count: number): boolean;
   /** One enchant cast on a carried item; false when nothing was sent. */
   castOnItem?(spellId: number, itemGuid: bigint): boolean;
+  /**
+   * One enchant cast on the trader's «will not be traded» slot (`ClickTargetTradeButton(7)`,
+   * TARGET_FLAG_TRADE_ITEM slot 6); false when nothing was sent.
+   */
+  castOnTradeSlot?(spellId: number): boolean;
   /** StopTradeSkillRepeat: the queue ends after the cast in flight. */
   stop(): void;
   /** Casts still to go, the one in flight included; 0 while nothing is crafting. */
@@ -148,6 +157,17 @@ export interface FrameXmlTradeSkillSource {
   prefetch?(entries: readonly number[], onChanged: () => void): void;
   /** The item class facts of a carried item, for an enchant's target. */
   carriedItem?(guid: bigint): FrameXmlTradeSkillItemClass | undefined;
+  /**
+   * REPLACE_ENCHANT's two names when the enchant would replace one already on that carried item
+   * (Wow.exe 0x005210d0, game/SpellCursor.ts `enchantReplaceNames`); undefined sends without asking.
+   */
+  enchantReplace?(spell: SpellMetadata, guid: bigint): readonly [string, string] | undefined;
+  /** Whether BIND_ENCHANT is asked first for that carried item (0x005210d0, SpellCursor `enchantBindsItem`). */
+  enchantBind?(spell: SpellMetadata, guid: bigint): boolean;
+  /** 2.10: whether END_REFUND is asked next — a refundable purchase (0x005210d0, SpellCursor `enchantEndsRefund`). */
+  enchantEndsRefund?(spell: SpellMetadata, guid: bigint): boolean;
+  /** TRADE_REPLACE_ENCHANT's two names for the trader's seventh slot (0x005198a0). */
+  tradeEnchantReplace?(spell: SpellMetadata): readonly [string, string] | undefined;
   readonly craft?: FrameXmlTradeSkillCraft | undefined;
   /** The world this source reads; when it changes the window closes (a new character, a new world). */
   token?(): unknown;
@@ -826,17 +846,10 @@ export class FrameXmlTradeSkillModel {
    * The enchant is looked up among the line's recipes, not the rows on show: a filter or a collapsed
    * heading may hide it while the cursor is up, as neither drops the client's spell cursor.
    */
-  targetItem(guid: bigint | undefined): boolean {
-    const spellId = this.#targeting;
-    if (spellId === undefined || this.#muted) return false;
-    const skillId = this.#skillId;
-    const spell = skillId === undefined ? undefined
-      : this.#source.recipes(skillId).find((recipe) => recipe.spell.id === spellId)?.spell;
-    if (!spell) {
-      // The recipe is gone (unlearned): the cursor has nothing left to cast and the click is a click.
-      this.#setTargeting(undefined);
-      return false;
-    }
+  targetItem(guid: bigint | undefined, bindConfirmed = false): boolean {
+    const spell = this.#targetingSpell();
+    if (!spell) return false;
+    const spellId = spell.id;
     if (guid === undefined || guid === 0n) return true;
     const facts = this.#source.carriedItem?.(guid);
     if (!facts) return true;
@@ -847,8 +860,87 @@ export class FrameXmlTradeSkillModel {
       if (refusal) this.#pump?.fire("UI_ERROR_MESSAGE", refusal);
       return true;
     }
+    // A binding enchantment on an unbound item: BIND_ENCHANT first, the enchant still waiting; the
+    // client keeps the guid in the one place REPLACE_ENCHANT uses too (0x005210d0 → 0x189).
+    if (!bindConfirmed && this.#pump && this.#source.enchantBind?.(spell, guid) === true) {
+      this.#promptGuid = guid;
+      this.#pump.fire("BIND_ENCHANT");
+      return true;
+    }
+    // A refundable purchase would stop being one (2.10): END_REFUND with its kind, 1, which
+    // EndRefund(1) answers through the same re-run as BindEnchant (0x00523370 → 0x005210d0).
+    if (!bindConfirmed && this.#pump && this.#source.enchantEndsRefund?.(spell, guid) === true) {
+      this.#promptGuid = guid;
+      this.#pump.fire("END_REFUND", 1);
+      return true;
+    }
+    // An enchantment already there: the client asks first and keeps the enchant waiting (0x005210d0).
+    const replace = this.#source.enchantReplace?.(spell, guid);
+    if (replace && this.#pump) {
+      this.#promptGuid = guid;
+      this.#pump.fire("REPLACE_ENCHANT", replace[0], replace[1]);
+      return true;
+    }
     this.#setTargeting(undefined);
     this.#source.craft?.castOnItem?.(spellId, guid);
+    return true;
+  }
+
+  /** The recipe the enchant cursor waits with; an unlearned one drops the cursor (undefined). */
+  #targetingSpell(): SpellMetadata | undefined {
+    const spellId = this.#targeting;
+    if (spellId === undefined || this.#muted) return undefined;
+    const skillId = this.#skillId;
+    const spell = skillId === undefined ? undefined
+      : this.#source.recipes(skillId).find((recipe) => recipe.spell.id === spellId)?.spell;
+    // The recipe is gone (unlearned): the cursor has nothing left to cast and the click is a click.
+    if (!spell) this.#setTargeting(undefined);
+    return spell;
+  }
+
+  /** The item the last REPLACE_ENCHANT named (the client's one stored guid, DAT_00bd08d8). */
+  #promptGuid: bigint | undefined;
+
+  /**
+   * `BindEnchant()` for the enchant cursor (Wow.exe 0x00522f70): the item the last BIND_ENCHANT named
+   * goes through 0x005210d0 again with the bind answered — REPLACE_ENCHANT may still follow. False
+   * when no enchant waits or nothing was named.
+   */
+  bindEnchant(): boolean {
+    const guid = this.#promptGuid;
+    if (guid === undefined || !this.#targetingSpell()) return false;
+    return this.targetItem(guid, true);
+  }
+
+  /**
+   * `ReplaceEnchant()` for the enchant cursor (Wow.exe 0x005167a0 → 0x0080bc80): the item the last
+   * REPLACE_ENCHANT named takes the waiting enchant with no further check. False when no enchant
+   * waits or nothing was named.
+   */
+  replaceEnchant(): boolean {
+    const guid = this.#promptGuid;
+    const spell = guid === undefined ? undefined : this.#targetingSpell();
+    if (!spell || guid === undefined) return false;
+    this.#setTargeting(undefined);
+    this.#source.craft?.castOnItem?.(spell.id, guid);
+    return true;
+  }
+
+  /**
+   * `ClickTargetTradeButton(7)` with the enchant waiting (0x00586c80 → 0x005198a0 → 0x0080c5f0): the
+   * trader's seventh slot takes it, after TRADE_REPLACE_ENCHANT when that item already carries an
+   * enchantment; `confirmed` is `ReplaceTradeEnchant()` (0x00510b80). True when the click was the
+   * cursor's.
+   */
+  targetTradeSlot(confirmed = false): boolean {
+    const spell = this.#targetingSpell();
+    if (!spell) return false;
+    const replace = confirmed ? undefined : this.#source.tradeEnchantReplace?.(spell);
+    if (replace && this.#pump) {
+      this.#pump.fire("TRADE_REPLACE_ENCHANT", replace[0], replace[1]);
+      return true;
+    }
+    if (this.#source.craft?.castOnTradeSlot?.(spell.id) === true) this.#setTargeting(undefined);
     return true;
   }
 
@@ -997,6 +1089,10 @@ export interface FrameXmlTradeSkillLiveContext {
   readonly prefetchQuestMetadata?: (itemIds: readonly number[], spellIds: readonly number[], onChanged: () => void) => void;
   readonly monotonic: () => number;
   readonly tradeSkill?: FrameXmlTradeSkillLiveHost | undefined;
+  /** Enchantment names for the REPLACE_ENCHANT questions; the session's table when absent. */
+  readonly enchantName?: ((enchantId: number) => string | undefined) | undefined;
+  /** SpellItemEnchantment.Flags for the BIND_ENCHANT question; the session's table when absent. */
+  readonly enchantFlags?: ((enchantId: number) => number | undefined) | undefined;
 }
 
 function carriedSlots(world: FrameXmlTradeSkillWorld): ItemSlotState[] {
@@ -1082,6 +1178,23 @@ export function liveFrameXmlTradeSkillSource(context: FrameXmlTradeSkillLiveCont
       const slot = world ? carriedSlots(world).find((entry) => entry.guid === guid && entry.item) : undefined;
       return slot ? template(entryOf(slot.item)) : undefined;
     },
+    enchantReplace: (spell, guid) => {
+      const world = context.world();
+      const slot = world ? carriedSlots(world).find((entry) => entry.guid === guid && entry.item) : undefined;
+      return enchantReplaceNames(spell, slot?.item, context.enchantName ?? sessionEnchantName);
+    },
+    enchantBind: (spell, guid) => {
+      const world = context.world();
+      const slot = world ? carriedSlots(world).find((entry) => entry.guid === guid && entry.item) : undefined;
+      const entry = slot?.item ? entryOf(slot.item) : 0;
+      const inventoryType = entry > 0 ? world?.itemTemplate?.(entry)?.inventoryType : undefined;
+      return enchantBindsItem(spell, slot?.item, inventoryType, context.enchantFlags ?? sessionEnchantFlags);
+    },
+    enchantEndsRefund: (spell, guid) => enchantEndsRefund(spell,
+      context.world() as Pick<ItemTargetWorld, "itemRefunds" | "playedSecondsNow"> | undefined, guid),
+    tradeEnchantReplace: (spell) => tradeEnchantReplaceNames(spell,
+      traderSlotEnchant(context.world() as Pick<ItemTargetWorld, "theirOffer"> | undefined),
+      context.enchantName ?? sessionEnchantName),
     craft: context.tradeSkill?.craft,
     token: () => context.world(),
     // The route ui/Spellbook.ts and input/Actions.ts take from an opener to openProfession.

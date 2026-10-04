@@ -9,6 +9,13 @@ export interface ItemEnchantmentInfo {
   conditionId: number;
   /** `ItemVisual` (field 31): the glow the original client hangs on the enchanted item. */
   visual: number;
+  /**
+   * `Flags` (field 32; the client's record offset 0x40): `ENCHANTMENT_CAN_SOULBOUND` (0x01) binds
+   * the item it goes on — BIND_ENCHANT and TRADE_POTENTIAL_BIND_ENCHANT (plan item 2.05, Wow.exe
+   * 0x005210d0 and 0x007073e0) and `Spell::CheckItems`' SPELL_FAILED_NOT_TRADEABLE. Optional since the
+   * browser's `?v=2`: an older gateway does not send it.
+   */
+  flags?: number;
 }
 
 export interface GemPropertyInfo {
@@ -50,7 +57,7 @@ export function readItemEnchantments(data: Buffer): ItemEnchantmentInfo[] {
       name = data.toString("utf8", strings + offset, end);
       if (name) break;
     }
-    rows.push({ id: field(0), name, gemItemId: field(33), conditionId: field(34), visual: field(31) });
+    rows.push({ id: field(0), name, gemItemId: field(33), conditionId: field(34), visual: field(31), flags: field(32) });
   }
   return rows;
 }

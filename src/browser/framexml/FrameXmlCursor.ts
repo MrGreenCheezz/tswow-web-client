@@ -45,6 +45,8 @@ import { ACTION_BUTTON_EQUIPMENT_SET, ACTION_BUTTON_ITEM, ACTION_BUTTON_MACRO, A
 import { FRAMEXML_MACRO_BINDINGS } from "./FrameXmlMacro.js";
 import { FRAMEXML_PET_ACTION_EVENTS } from "./FrameXmlPetActionBar.js";
 import type { FrameXmlSeamBinding, FrameXmlSeamPump, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
+import { frameXmlDropHeldMerchantItem, frameXmlPickupMerchantItem } from "./FrameXmlMerchantCursor.js"; // L1 (3.23)
+import { frameXmlCoinCursorTexture } from "./FrameXmlCursorMoney.js"; // L5c-review 3.09
 
 /**
  * An item id or a native item hyperlink, as `FrameXmlWorldSeam.frameXmlItemEntry` reads one. Kept
@@ -73,7 +75,11 @@ export type FrameXmlCursorHeld =
   | { readonly kind: "equipmentset"; readonly id: number }
   | { readonly kind: "petaction"; readonly index: number }
   /** A companion off the pet page: its spell, and the index and kind GetCursorInfo answers. */
-  | { readonly kind: "companion"; readonly spellId: number; readonly companionType: string; readonly index: number };
+  | { readonly kind: "companion"; readonly spellId: number; readonly companionType: string; readonly index: number }
+  /** L1 (3.23): a merchant row (cursor type 5, Wow.exe 0x00520d30): its one-based index and item entry. */
+  | { readonly kind: "merchant"; readonly index: number; readonly entry: number }
+  /** L5c 3.09: money on the cursor — the player's (type 2, "money") or the guild vault's (type 0xc). */
+  | { readonly kind: "money" | "guildbankmoney"; readonly amount: number };
 
 /** The seam surface the cursor reads; the seam itself is the host. */
 export type FrameXmlCursorHost = Pick<FrameXmlWorldSeam,
@@ -103,6 +109,10 @@ function heldAction(held: FrameXmlCursorHeld): FrameXmlActionButton | undefined 
     case "petaction": return undefined;
     // A companion on a bar is the ordinary spell action the client's bar holds for one.
     case "companion": return { action: held.spellId, type: ACTION_BUTTON_SPELL };
+    // L1 (3.23): a merchant row is no action.
+    case "merchant": return undefined;
+    // L5c 3.09: neither is money.
+    case "money": case "guildbankmoney": return undefined;
   }
 }
 
@@ -170,16 +180,20 @@ export class FrameXmlCursorModel {
   #set(next: FrameXmlCursorHeld | undefined): void {
     // One thing on the cursor: taking something up lets go of what the other holders had.
     if (next) this.#host.clearCursor();
+    const previous = this.#held; // L5c 3.09
     this.#held = next;
+    this.#moneyReleased(previous); // L5c 3.09
     this.#fire("CURSOR_UPDATE");
     this.sync();
   }
 
   /** `ClearCursor()`: every holder lets go (a lifted action is gone, a bag item stays in its bag). */
   clear(): void {
+    const previous = this.#held; // L5c 3.09
     const had = this.#held !== undefined;
     this.#held = undefined;
     this.#host.clearCursor();
+    this.#moneyReleased(previous); // L5c 3.09
     if (had) this.#fire("CURSOR_UPDATE");
     this.sync();
   }
@@ -190,9 +204,47 @@ export class FrameXmlCursorModel {
    */
   clearOwn(reconcile = true): void {
     if (this.#held === undefined) return;
+    const previous = this.#held; // L5c 3.09
     this.#held = undefined;
+    this.#moneyReleased(previous); // L5c 3.09
     this.#fire("CURSOR_UPDATE");
     if (reconcile) this.sync();
+  }
+
+  // ---- L5c 3.09: money on the cursor --------------------------------------------------------------
+
+  /**
+   * Money let go of (Wow.exe 0x00519280 with its «notify» argument): the player's raises PLAYER_MONEY,
+   * the vault's GUILDBANK_UPDATE_MONEY, so the money frames that subtract GetCursorMoney redraw.
+   */
+  #moneyReleased(previous: FrameXmlCursorHeld | undefined, notify = true): void {
+    if (!notify || (previous?.kind !== "money" && previous?.kind !== "guildbankmoney")) return;
+    this.#fire(previous.kind === "money" ? "PLAYER_MONEY" : "GUILDBANK_UPDATE_MONEY");
+  }
+
+  /**
+   * Put money on the cursor (0x00520880 for the player's, 0x005208f0 for the vault's): whatever was
+   * held goes first, then the amount is held and the same money event announces it. Nothing moves on
+   * the server: the money stays the character's until a stock call puts it somewhere.
+   */
+  pickupMoney(kind: "money" | "guildbankmoney", amount: number): void {
+    if (!Number.isSafeInteger(amount) || amount <= 0) return;
+    this.#set({ kind, amount });
+    this.#fire(kind === "money" ? "PLAYER_MONEY" : "GUILDBANK_UPDATE_MONEY");
+  }
+
+  /** The money held, if any (GetCursorMoney reads one amount for both kinds, 0x00515a50). */
+  money(): { readonly kind: "money" | "guildbankmoney"; readonly amount: number } | undefined {
+    const held = this.#held;
+    return held?.kind === "money" || held?.kind === "guildbankmoney" ? held : undefined;
+  }
+
+  /** AddTradeMoney's let-go (0x00586d90 → 0x00519280(1, 0)): CURSOR_UPDATE, but no PLAYER_MONEY. */
+  dropMoneyQuietly(): void {
+    if (this.money() === undefined) return;
+    this.#held = undefined;
+    this.#fire("CURSOR_UPDATE");
+    this.sync();
   }
 
   // ---- pickups -----------------------------------------------------------------------------------
@@ -212,6 +264,12 @@ export class FrameXmlCursorModel {
     // over the button it started on picks up the same spell again, which keeps it held.
     if (held?.kind === "spell" && held.spellId === spellId) return;
     this.#set({ kind: "spell", spellId, bookType });
+  }
+
+  /** L1 (3.23): `PickupMerchantItem(index)` puts the row on the cursor (FrameXmlMerchantCursor.ts). */
+  pickupMerchantItem(index: number, entry: number): void {
+    if (!Number.isInteger(index) || index < 1 || !Number.isSafeInteger(entry) || entry <= 0) return;
+    this.#set({ kind: "merchant", index, entry });
   }
 
   /** `PickupItem(id or link)`: an item by entry, which can only be put on a bar. */
@@ -370,6 +428,10 @@ export class FrameXmlCursorModel {
       case "equipmentset": return ["equipmentset"];
       case "petaction": return ["petaction", held.index];
       case "companion": return ["companion", held.index, held.companionType];
+      // L1 (3.23): 0x00515200 answers type 5 with "merchant" and the one-based index.
+      case "merchant": return ["merchant", held.index];
+      // L5c 3.09: 0x00515200 — type 2 "money", type 0xc "guildbankmoney", each with the amount.
+      case "money": case "guildbankmoney": return [held.kind, held.amount];
     }
   }
 
@@ -439,6 +501,10 @@ export class FrameXmlCursorModel {
       case "macro": return host.macros?.slotTexture(held.slot);
       case "equipmentset": return host.equipmentSets?.iconOf(held.id);
       case "companion": return host.spellInfo?.(held.spellId)?.[2] || undefined;
+      // L1 (3.23): the row's item picture (0x00520d30 → 0x00616720).
+      case "merchant": return host.itemTexture?.(held.entry);
+      // L5c-review 3.09: the coins by amount (0x00616510 → 0x007e7cc0); before this the hand was empty.
+      case "money": case "guildbankmoney": return frameXmlCoinCursorTexture(held.amount);
       default: return undefined;
     }
   }
@@ -453,7 +519,9 @@ export class FrameXmlCursorModel {
     const item = info?.[0] === "item" ? frameXmlItemEntry(info[1]) : undefined;
     const macroPosition = info?.[0] === "macro" ? info[1] : undefined;
     // The macro model fires its own grid pair for its macro; everything else is counted here.
-    const grid = (own !== undefined && own.kind !== "petaction" && !(own.kind === "spell" && own.bookType === PET_BOOK))
+    // L1 (3.23): a merchant row shows no grid (0x00520d30 calls 0x005a7a70 for type 7 only).
+    const grid = (own !== undefined && own.kind !== "petaction" && own.kind !== "merchant" && !(own.kind === "spell" && own.bookType === PET_BOOK)
+      && own.kind !== "money" && own.kind !== "guildbankmoney") // L5c 3.09: money shows no grid (0x00520880)
       || item !== undefined;
     if (grid !== this.#grid) {
       this.#grid = grid;
@@ -506,16 +574,39 @@ export const FRAMEXML_CURSOR_BINDINGS: Readonly<Record<string, FrameXmlSeamBindi
     return result;
   },
   PickupContainerItem: (seam, args) => {
+    // L1 (3.23): a held merchant row is bought into the slot (0x005d7ff0 → 0x006d2ea0), before anything else.
+    if (frameXmlDropHeldMerchantItem(seam, slotArg(args[0]), slotArg(args[1]))) return NOTHING;
+    // Under the repair cursor (2.02) a held spell, action or set is only let go of: Wow.exe
+    // 0x005d7ff0 clears the hand and neither repairs nor lifts the item.
+    if (seam.cursor?.held() !== undefined && seam.repair?.inRepairMode()) {
+      seam.cursor.clear();
+      return NOTHING;
+    }
     seam.cursor?.clearOwn(false);
     seam.pickupContainerItem(slotArg(args[0]), slotArg(args[1]));
     seam.cursor?.sync();
     return NOTHING;
   },
   PickupInventoryItem: (seam, args) => {
+    // L1 (3.23): a held merchant row is bought into the paper-doll slot (0x005e85d0 → 0x006d2ea0).
+    if (frameXmlDropHeldMerchantItem(seam, undefined, slotArg(args[0]))) return NOTHING;
+    // Under the repair cursor a held spell, action or set keeps the paper doll's click (0x005e85d0).
+    if (seam.cursor?.held() !== undefined && seam.repair?.inRepairMode()) return NOTHING;
     seam.cursor?.clearOwn(false);
     // Stock item actions take the player's slot ID (PaperDollFrame.lua), as UseInventoryItem does.
     seam.pickupInventoryItem("player", slotArg(args[0]));
     seam.cursor?.sync();
+    return NOTHING;
+  },
+  // L1 (3.23): PickupMerchantItem (0x005853a0, FrameXmlMerchantCursor.ts) replaces the seam's no-op.
+  PickupMerchantItem: (seam, args) => {
+    frameXmlPickupMerchantItem(seam, args[0]);
+    return NOTHING;
+  },
+  // L1 (3.23): UseContainerItem lets a held merchant row go first (0x005d8650 → 0x00519280); the rest is the seam's.
+  UseContainerItem: (seam, args) => {
+    if (seam.cursor?.held()?.kind === "merchant") seam.cursor.clearOwn();
+    seam.useContainerItem(slotArg(args[0]), slotArg(args[1]));
     return NOTHING;
   },
   // The C side of SECURE_ACTIONS.action: a press with anything held places it instead of using.

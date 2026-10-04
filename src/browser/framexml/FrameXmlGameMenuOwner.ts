@@ -94,12 +94,12 @@ const ESCAPE_C_APIS: readonly (readonly [name: string, step: FrameXmlNativeEscap
 
 /**
  * `SpellIsTargeting()`, the query in front of `SpellStopTargeting` in stock's secure code: 1 while
- * the reticle is armed. Unbound, it answered nil from the stub floor, so the "stop" action and a
- * unit frame's right click never reached the reticle (measured over the MPQ corpus: a type="stop"
- * click left it armed at spell 116). Bound, the "target" action's `SpellIsTargeting()` branch
- * calls `SpellTargetUnit`, which nothing binds: a left click on a unit frame while the reticle is
- * armed selects nobody and keeps the reticle, as the world canvas does (the armed reticle owns
- * both clicks, Controls.ts).
+ * the reticle or the item-target cursor (game/SpellCursor.ts) is up. Unbound, it answered nil from
+ * the stub floor, so the "stop" action and a unit frame's right click never reached the reticle
+ * (measured over the MPQ corpus: a type="stop" click left it armed at spell 116). Bound, the
+ * "target" action's `SpellIsTargeting()` branch calls `SpellTargetUnit` (FrameXmlItemTargeting.ts),
+ * which a point or an item cursor answers with nothing (Wow.exe 0x0080bc80): a left click on a
+ * unit frame meanwhile selects nobody and keeps the cursor, as the world canvas does (Controls.ts).
  */
 const TARGETING_C_API = "SpellIsTargeting";
 

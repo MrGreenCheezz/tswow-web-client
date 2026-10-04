@@ -31,6 +31,7 @@ import {
   GR_RIGHT_PROMOTE, GR_RIGHT_REMOVE, GR_RIGHT_SETMOTD, GR_RIGHT_VIEWOFFNOTE, GR_RIGHT_WITHDRAW_GOLD,
   GR_RIGHT_WITHDRAW_GOLD_LOCK, GR_RIGHT_WITHDRAW_REPAIR, GR_RIGHT_CREATE_GUILDEVENT, GR_RIGHT_EMPTY,
 } from "../ui/GuildModel.js";
+import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
 
 /** `GR_GUILDMASTER` (Guild.h): rank 0 holds every right, whatever its stored word says. */
 const GUILD_MASTER_RANK = 0;
@@ -104,7 +105,8 @@ export interface FrameXmlGuildContext {
   unitGuild?(unit: string): { readonly guildId: number; readonly rankId: number } | undefined;
   playerGuid(): bigint | undefined;
   areaName?(areaId: number): string | undefined;
-  classInfo?(classId: number): readonly [name: string, token: string] | undefined;
+  /** L3-review: `female` picks the sexed name (Wow.exe 0x7159e0); undefined, `Name_lang`. */
+  classInfo?(classId: number, female?: boolean): readonly [name: string, token: string] | undefined;
   /** Monotonic milliseconds, for the roster request guard. */
   monotonic?(): number;
 }
@@ -287,7 +289,7 @@ export class FrameXmlGuildModel {
   }
 
   #className(member: GuildMember): string {
-    return this.#context.classInfo?.(member.classId)?.[0] ?? "";
+    return this.#context.classInfo?.(member.classId, femaleOf(member.gender))?.[0] ?? ""; // L3-review: row's sex
   }
 
   #members(): readonly GuildMember[] {
@@ -331,7 +333,8 @@ export class FrameXmlGuildModel {
   rosterInfo(index: number): readonly unknown[] | undefined {
     const member = this.#member(index);
     if (!member) return undefined;
-    const classInfo = this.#context.classInfo?.(member.classId);
+    // L3-review: Wow.exe 0x5cc9c0 names the class by the roster row's sex (0x7159e0).
+    const classInfo = this.#context.classInfo?.(member.classId, femaleOf(member.gender));
     const status = (member.status & MEMBER_STATUS_AFK) !== 0 ? 1 : (member.status & MEMBER_STATUS_DND) !== 0 ? 2 : 0;
     return [
       member.name, this.rankName(member.rankId), member.rankId, member.level, classInfo?.[0] ?? "",

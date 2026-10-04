@@ -109,18 +109,19 @@
               <!-- The bag bar builds its own buttons: backpack, four bags, keyring. -->
               <div id="bag-bar" class="bag-bar" aria-label="Сумки"></div>
               <div id="game-buttons">
-                <button id="character-toggle" type="button" title="Персонаж (C)" aria-label="Персонаж" aria-keyshortcuts="C">
+                <!-- L7 4.10: names, hints and key shortcuts are written by ui/HudKeys.ts from GlobalStrings and the binding table at world entry. -->
+                <button id="character-toggle" type="button" aria-label="Персонаж">
                   <img id="character-micro-icon" alt="" hidden />
                 </button>
-                <button id="inventory-toggle" type="button" title="Инвентарь (B)" aria-label="Инвентарь" aria-keyshortcuts="B"></button>
-                <button id="spellbook-toggle" type="button" title="Книга заклинаний (P)" aria-label="Книга заклинаний" aria-keyshortcuts="P"></button>
-                <button id="talents-toggle" type="button" title="Таланты (N)" aria-label="Таланты" aria-keyshortcuts="N"></button>
-                <button id="quest-toggle" type="button" title="Журнал заданий (L)" aria-label="Журнал заданий" aria-keyshortcuts="L">📜</button>
-                <button id="social-toggle" type="button" title="Общение" aria-label="Общение">👥</button>
-                <button id="worldmap-toggle" type="button" title="Карта мира (M)" aria-label="Карта мира" aria-keyshortcuts="M">🗺</button>
-                <button id="calendar-toggle" type="button" title="Календарь" aria-label="Календарь">📅</button>
-                <button id="lfg-toggle" type="button" title="Поиск подземелий" aria-label="Поиск подземелий"></button>
-                <button id="game-menu-toggle" type="button" title="Меню игры (Esc)" aria-label="Меню игры" aria-keyshortcuts="Escape" aria-haspopup="dialog" aria-controls="game-menu" aria-expanded="false"><span class="micro-button-glyph" aria-hidden="true">☰</span></button>
+                <button id="inventory-toggle" type="button" aria-label="Инвентарь"></button>
+                <button id="spellbook-toggle" type="button" aria-label="Книга заклинаний"></button>
+                <button id="talents-toggle" type="button" aria-label="Таланты"></button>
+                <button id="quest-toggle" type="button" aria-label="Журнал заданий">📜</button>
+                <button id="social-toggle" type="button" aria-label="Общение">👥</button>
+                <button id="worldmap-toggle" type="button" aria-label="Карта мира">🗺</button>
+                <button id="calendar-toggle" type="button" aria-label="Календарь">📅</button>
+                <button id="lfg-toggle" type="button" aria-label="Поиск подземелий"></button>
+                <button id="game-menu-toggle" type="button" aria-label="Меню игры" aria-haspopup="dialog" aria-controls="game-menu" aria-expanded="false"><span class="micro-button-glyph" aria-hidden="true">☰</span></button>
               </div>
             </div>
           </div>

@@ -1,6 +1,9 @@
+import { RESPONSE_CODES } from "../../generated/responseCodes.js";
 import { characterNeedsRename, RESPONSE_SUCCESS, type CharacterSummary } from "../../world/CharacterProtocol.js";
+import { CHARACTER_FLAG_DECLINED, enterWorldRefusal } from "./GlueEnterGate.js";
 import type { GlueLuaVm } from "./GlueLua.js";
-import { messageFor, responseKey } from "./GlueMessages.js";
+import { messageFor, openStatusDialog, responseKey } from "./GlueMessages.js";
+import { checkCharacterName, sameCharacterName, type GlueNameRuleOptions } from "./GlueNameRules.js";
 import type { GlueSession } from "./GlueSession.js";
 
 /**
@@ -55,6 +58,14 @@ export interface GlueCharacterApiOptions {
   readonly cursor?: () => readonly [number, number];
   /** Recorded so the report can say what the corpus reached for that this slice does not do. */
   readonly onStub?: (name: string) => void;
+  /** Which alphabets a new name may use right now (`forceEnglishNames`, the category's mask). */
+  readonly nameRules?: () => GlueNameRuleOptions;
+  /** The glue screen that is up (`GetCurrentGlueScreenName`), for an EnterWorld that had to wait. */
+  readonly currentScreen?: () => string;
+  /** `GetLocale()`: the declension step exists only on a ruRU client (10.09). */
+  readonly locale?: () => string;
+  /** `DisconnectFromServer()` also ends the auth connection kept for realm refreshes (10.08). */
+  readonly onDisconnect?: () => void;
 }
 
 /** `RealmListUpdateRate()` — seconds between automatic refreshes of the realm dialog. */
@@ -110,7 +121,7 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
     return server ? [server.name, server.pvp, server.rp, server.down] : [];
   });
   vm.registerGlobal("IsConnectedToServer", () => [session.connected]);
-  vm.registerGlobal("DisconnectFromServer", () => { session.closeWorld(); return []; });
+  vm.registerGlobal("DisconnectFromServer", () => { session.closeWorld(); options.onDisconnect?.(); return []; });
 
   /* --- The character list -------------------------------------------------------------------- */
 
@@ -158,27 +169,66 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
 
   /* --- Entering the world -------------------------------------------------------------------- */
 
+  const glueString = (key: string): string | undefined => vm.globalString(key);
+  const okay = (text: string): void => {
+    openStatusDialog((event, ...args) => { options.fireEvent(event, ...args); }, "OKAY", text);
+  };
+  /**
+   * The EnterWorld click waiting for the session's last request to be answered: which character it
+   * was for and on which screen. The latest click replaces an earlier one; a wait that ends with
+   * another character selected or another screen up drops it, so the click never fires later from
+   * the creation screen or for a character the player has moved away from.
+   */
+  let enterQueued: { readonly guid: bigint; readonly screen: string | undefined } | undefined;
+
   const enterWorld = (): void => {
     const character = session.selected;
     // `UpdateCharacterList` already disables the button with an empty list, so this is the case
     // where the list changed under a click — a delete that landed between the two.
     if (!character) {
-      options.fireEvent("OPEN_STATUS_DIALOG", "OKAY", "Персонаж не выбран.");
+      okay("Персонаж не выбран.");
       return;
     }
-    // The core loads a character it has marked for a new name only to refuse and kick it, and the
-    // screen would loop «disconnected → character select». The client's EnterWorld (FUN_004d9bd0)
-    // asks for the name instead; the event carries the key, which CharacterSelect.lua prints.
-    if (characterNeedsRename(character)) {
-      options.fireEvent("FORCE_RENAME_CHARACTER", "CHAR_RENAME_DESCRIPTION");
+    // FUN_004d9bd0's gate, in its order: a locked character gets the OKAY dialog with code 84's or
+    // 85's text; one the core has marked for a new name gets the rename dialog — the core would load
+    // it only to refuse and kick it, and the screen would loop «disconnected → character select».
+    // FORCE_RENAME_CHARACTER carries the key, which CharacterSelect.lua prints.
+    const refusal = enterWorldRefusal(character.flags, { name: character.name, locale: options.locale?.() ?? "" });
+    if (refusal?.kind === "locked") {
+      okay(messageFor(refusal.key, glueString, refusal.text));
+      return;
+    }
+    if (refusal?.kind === "rename") {
+      options.fireEvent("FORCE_RENAME_CHARACTER", refusal.key);
+      return;
+    }
+    // Step 4 (10.09): a Russian name with no declension yet. No argument: GlueLocalizationPost.lua
+    // then shows the declension frame, whose OK calls DeclineCharacter below.
+    if (refusal?.kind === "decline") {
+      options.fireEvent("FORCE_DECLINE_CHARACTER");
       return;
     }
     // No host to hand it to: `glue.html` is a dev entry with no renderer, no HUD and no `game`
     // context behind it. Recorded and said out loud rather than silently doing nothing.
     if (!options.enterWorld) {
       stub("EnterWorld");
-      options.fireEvent("OPEN_STATUS_DIALOG", "OKAY",
-        "Вход в мир доступен на главной странице клиента (index.html).");
+      okay("Вход в мир доступен на главной странице клиента (index.html).");
+      return;
+    }
+    // The world reads the socket from the moment it logs in. A request of these screens still
+    // waiting for its answer — a rename the player cancelled the wait for — would be a second reader
+    // on it, so the handover waits for that answer and then checks the character again.
+    if (session.busy) {
+      const waiting = enterQueued !== undefined;
+      enterQueued = { guid: character.guid, screen: options.currentScreen?.() };
+      if (waiting) return;
+      void session.idle().then(() => {
+        const click = enterQueued;
+        enterQueued = undefined;
+        if (!click || !session.connected) return;
+        if (session.selected?.guid !== click.guid || options.currentScreen?.() !== click.screen) return;
+        enterWorld();
+      });
       return;
     }
     // Everything after this belongs to the host: it suspends these screens, adopts the world
@@ -189,39 +239,101 @@ export function installGlueCharacterApi(options: GlueCharacterApiOptions): void 
   vm.registerGlobal("EnterWorld", () => { enterWorld(); return []; });
 
   /**
+   * `DeclineCharacter(index, case1…case5)` — the declension frame's OK (10.09).
+   *
+   * The client's own (Wow.exe 0x4e3530, then 0x4d9a40): an empty or missing case, a row that is not
+   * there, or a character already declined — nothing at all; otherwise the CANCEL dialog with
+   * CHAR_DECLINE_IN_PROGRESS, CMSG_SET_PLAYER_DECLINED_NAMES, and 1. The client also checks each
+   * case against the name with a rule of its own before sending; that rule is not reconstructed
+   * here — the core applies `CheckDeclinedNames` and its refusal comes back as the dialog below.
+   * The answer closes the status dialog; a refusal re-opens the frame with CHAR_DECLINE_FAILED.
+   */
+  vm.registerGlobal("DeclineCharacter", (args) => {
+    const index = number(args[0], 0);
+    const cases: string[] = [];
+    for (let at = 1; at <= 5; at++) {
+      const raw = args[at];
+      const form = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : "";
+      if (form.length === 0) return [];
+      cases.push(form);
+    }
+    const character = session.characters[index - 1];
+    if (!character || (character.flags & CHARACTER_FLAG_DECLINED) !== 0) return [];
+    options.fireEvent("OPEN_STATUS_DIALOG", "CANCEL",
+      messageFor("CHAR_DECLINE_IN_PROGRESS", glueString, "Обновление персонажа..."));
+    void session.declineCharacter(index, cases).then((outcome) => {
+      // Cancelled, or failed (the connection's own dialog is already up).
+      if (outcome === "cancelled" || outcome === "failed") return;
+      options.fireEvent("CLOSE_STATUS_DIALOG");
+      if (outcome !== "accepted") options.fireEvent("FORCE_DECLINE_CHARACTER", "CHAR_DECLINE_FAILED");
+    });
+    return [1];
+  });
+
+  /**
    * `RenameCharacter(index, name)` — the rename dialog's OK, Enter and nothing else.
    *
-   * The dialog hides itself only when this answers true (CharacterSelect.xml:1186, :1257), so it is
-   * true exactly when the request went out. What the client checks before sending (FUN_004d8d20)
-   * and every answer it gets back (FUN_004da090) re-open the dialog through FORCE_RENAME_CHARACTER
-   * with the reason's key: a name in use is CHAR_CREATE_NAME_IN_USE, anything else the core refuses
-   * is CHAR_RENAME_FAILED (`responseKey(code, "rename")`). A success rereads the list and carries on
-   * into the world with the renamed character, which is what the client does.
+   * The client's own (FUN_004e3410, then FUN_004d8d20), step for step. The dialog hides itself only
+   * when this answers something true (CharacterSelect.xml:1186, :1257):
+   * - no name, a row that is not there, or a character without CHARACTER_FLAG_RENAME: nothing at
+   *   all — no event, no answer;
+   * - its current name again (case ignored, Ё still not Е): FORCE_RENAME_CHARACTER with
+   *   CHAR_CREATE_NAME_IN_USE and no answer;
+   * - a name the client's own rules refuse (`checkCharacterName`, the name as typed — a space is an
+   *   invalid character): FORCE_RENAME_CHARACTER with that reason's key, and nil;
+   * - otherwise the CANCEL dialog with CHAR_RENAME_IN_PROGRESS, CMSG_CHAR_RENAME, and 1.
+   *
+   * The answer (FUN_004da090) closes the status dialog; a refusal re-opens the rename dialog with
+   * CHAR_CREATE_NAME_IN_USE for 50 and CHAR_RENAME_FAILED for anything else — the core answers a
+   * taken name with 48, so that one reads «failed» in the original too. A success renames the row
+   * and, when it is the selected one, carries on into the world.
    */
   vm.registerGlobal("RenameCharacter", (args) => {
     const index = number(args[0], 0);
-    const name = String(args[1] ?? "").trim();
+    const raw = args[1];
+    const name = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : "";
     const character = session.characters[index - 1];
-    const refuse = (key: string): unknown[] => {
-      options.fireEvent("FORCE_RENAME_CHARACTER", key);
-      return [false];
-    };
-    if (!character || !session.connected) return refuse("CHAR_RENAME_FAILED");
-    if (name.length === 0) return refuse("CHAR_NAME_NO_NAME");
-    if ([...name].length < 2) return refuse("CHAR_NAME_TOO_SHORT");
+    if (name.length === 0 || !character || !characterNeedsRename(character)) return [];
+    const renameAgain = (key: string): void => { options.fireEvent("FORCE_RENAME_CHARACTER", key); };
+    if (sameCharacterName(name, character.name)) {
+      renameAgain("CHAR_CREATE_NAME_IN_USE");
+      return [];
+    }
+    const verdict = checkCharacterName(name, options.nameRules?.() ?? {});
+    if (verdict !== RESPONSE_CODES.CHAR_NAME_SUCCESS) {
+      renameAgain(responseKey(verdict, "create"));
+      return [undefined];
+    }
+    // A connection that cannot carry the request (none, or a host's seam without the call): there is
+    // nobody to wait for, so the rename dialog comes back rather than a CANCEL dialog that no answer
+    // will ever close.
+    if (!session.canRename(index)) {
+      renameAgain("CHAR_RENAME_FAILED");
+      return [undefined];
+    }
     options.fireEvent("OPEN_STATUS_DIALOG", "CANCEL",
-      messageFor("CHAR_RENAME_IN_PROGRESS", (key) => vm.globalString(key), "Переименование персонажа..."));
-    void session.renameCharacter(index, name).then(async (answer) => {
-      // Cancelled, or never asked: nothing is waiting for a dialog.
-      if (!answer) return;
-      options.fireEvent("CLOSE_STATUS_DIALOG");
-      if (answer.result !== RESPONSE_SUCCESS) {
-        options.fireEvent("FORCE_RENAME_CHARACTER", responseKey(answer.result, "rename"));
+      messageFor("CHAR_RENAME_IN_PROGRESS", glueString, "Переименование персонажа..."));
+    void session.renameCharacter(index, name).then((outcome) => {
+      if (outcome.status === "unavailable") {
+        // The connection went away between the check and the send.
+        options.fireEvent("CLOSE_STATUS_DIALOG");
+        renameAgain("CHAR_RENAME_FAILED");
         return;
       }
-      await session.refreshCharacters();
-      if (options.enterWorld && session.selected?.guid === character.guid) enterWorld();
+      // Cancelled (a late success is the session's to apply) or failed (its dialog is already up).
+      if (outcome.status !== "answered") return;
+      const { answer } = outcome;
+      options.fireEvent("CLOSE_STATUS_DIALOG");
+      if (answer.result !== RESPONSE_SUCCESS) {
+        renameAgain(responseKey(answer.result, "rename"));
+        return;
+      }
+      // The row as the answer names it, not as a re-read list might: the list is applied from the
+      // answer (FUN_004e2870), so the character that goes in is the renamed one and not a stale row
+      // that still carries the rename flag.
+      session.applyRename(answer.guid ?? character.guid, answer.name ?? name);
+      if (session.selected?.guid === character.guid) enterWorld();
     });
-    return [true];
+    return [1];
   });
 }

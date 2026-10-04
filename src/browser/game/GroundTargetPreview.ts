@@ -30,6 +30,13 @@ interface CanvasPointer {
 }
 
 let pointer: CanvasPointer | undefined;
+/** 5.17: whether the last frame's reticle point was one the click would take (in range, on ground). */
+let reticleInRange: boolean | undefined;
+
+/** 5.17: the reticle's last verdict, for the cast cursor (Cast or UnableCast); undefined when none. */
+export function groundTargetInRange(): boolean | undefined {
+  return reticleInRange;
+}
 
 /**
  * Remembers where the pointer last was, in viewport units.
@@ -108,6 +115,7 @@ export function updateGroundTargetPreview(): void {
   const position = self?.position;
   const rect = spellId === undefined ? undefined : canvasRect();
   if (spellId === undefined || !world || !position || !pointer || !rect) {
+    reticleInRange = undefined;
     renderer.setGroundTargetPreview(undefined);
     renderer.setGameObjectPreview(undefined);
     return;
@@ -118,6 +126,7 @@ export function updateGroundTargetPreview(): void {
     pointer.clientX - rect.left, pointer.clientY - rect.top, rect.width, rect.height, range ?? FALLBACK_RANGE,
   );
   const inRange = point !== undefined && groundPointInRange(point, position, range);
+  reticleInRange = inRange;
   renderer.setGroundTargetPreview(point ? {
     x: point.x, y: point.y, z: point.z,
     radius: spellEffectRadius(metadata),

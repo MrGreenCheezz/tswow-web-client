@@ -17,6 +17,14 @@ export interface Placement {
   top: number;
 }
 
+/** Who hears about a layout the player changed (input/InputAccount.ts, 4.12). */
+let layoutListener: ((layout: Readonly<Record<string, Placement>>) => void) | undefined;
+
+/** Subscribes the one listener told after a window was dragged or the layout reset. */
+export function onWindowLayoutChanged(listener: ((layout: Readonly<Record<string, Placement>>) => void) | undefined): void {
+  layoutListener = listener;
+}
+
 /** How far each window in a cascade steps from the one under it, and how close counts as a clash. */
 export const CASCADE_STEP = 28;
 const CASCADE_NEAR = 24;
@@ -262,6 +270,9 @@ export class GameWindowManager {
   /** Let a hosted addon surface participate in the same focus order without changing its layout. */
   raiseLayer(element: HTMLElement): void { this.#raise(element); }
 
+  /** L5c 3.24: the highest z-index handed out so far (a hover lift reuses its own when nothing rose since). */
+  get topLayer(): number { return this.#topZIndex; }
+
   #raise(element: HTMLElement): void {
     if (Number.parseInt(element.style.zIndex, 10) === this.#topZIndex) return;
     this.#topZIndex++;
@@ -313,12 +324,32 @@ export class GameWindowManager {
       top: Number.parseFloat(drag.element.style.top) || 0,
     });
     writeStoredLayout(Object.fromEntries(this.#placements));
+    layoutListener?.(Object.fromEntries(this.#placements));
+  }
+
+  /** Every remembered position, as the store keeps it. */
+  layout(): Record<string, Placement> {
+    return Object.fromEntries(this.#placements);
+  }
+
+  /**
+   * Takes a remembered layout from another store — the account copy (4.12) — and puts the open
+   * windows where it says; a window it does not name keeps the place it has. Not announced: the
+   * copy came from where an announcement would go.
+   */
+  applyLayout(layout: Readonly<Record<string, Placement>>): void {
+    for (const [id, placement] of Object.entries(layout)) this.#placements.set(id, { left: placement.left, top: placement.top });
+    writeStoredLayout(Object.fromEntries(this.#placements));
+    for (const element of this.#windows) {
+      if (!element.hidden && layout[element.id] !== undefined) this.#place(element);
+    }
   }
 
   /** Drops every remembered position and lets the stylesheet lay the windows out again. */
   resetLayout(): void {
     this.#placements.clear();
     writeStoredLayout({});
+    layoutListener?.({});
     for (const element of this.#windows) {
       delete element.dataset.placed;
       element.style.removeProperty("left");

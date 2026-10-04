@@ -4,6 +4,7 @@ import { explicitUnitTargetContract } from "./ExplicitUnitTargetContract.js";
 import { explicitSpellTargetContract } from "./ExplicitSpellTargetContract.js";
 import { openDbc, type Dbc } from "./Dbc.js";
 import { parseSpellShapeshiftFormBonuses } from "./SpellShapeshiftForms.js";
+import { parseSummonProperties, spellSummonProperties, type SummonPropertiesRow } from "./SummonPropertiesMetadata.js"; // L13
 
 /**
  * `SPELL_ATTR0_PASSIVE`. A passive spell has no button; the real spellbook still lists it, greyed.
@@ -170,6 +171,71 @@ export interface SpellMetadata {
   targetingContractVersion?: number;
   requiredTargetMask?: SpellRequiredTargetMask;
   requiredTargetMode?: SpellRequiredTargetMode;
+  /**
+   * OPEN_LOCK (33) with ImplicitTargetA 26, TARGET_GAMEOBJECT_ITEM_TARGET: «Взлом замка» (1804), the
+   * lock picks and the keys — 19 rows on this dataset, all with Targets 0. The original client ORs
+   * TARGET_FLAG_GAMEOBJECT_ITEM into the pending mask for that implicit target (Wow.exe 0x00809610),
+   * so its cursor takes a carried item or a game object (0x0080bc80). Since the browser's `v=14`.
+   */
+  itemOrObject?: boolean;
+  /**
+   * `DispelType` (record +0x08), raw: 1 Magic, 2 Curse, 3 Disease, 4 Poison, 9 Enrage…
+   * (`SharedDefines.h` DispelType). Present on every row since the browser's `v=15` (5.20) — the
+   * browser tells an older gateway by its absence. UnitAura's isStealable tests `1 << dispelType`
+   * against the player's steal mask (Wow.exe 0x0053d680).
+   */
+  dispelType?: number;
+  /**
+   * UnitAura's fifth value as Wow.exe 0x006147c0 builds it: the `SpellDispelType.dbc` row's
+   * `InternalName` when that row's `ImmunityPossible` is set — "Magic", "Curse", "Disease",
+   * "Poison", and "" for Enrage (9) on this dataset, which BuffFrame.lua maps to
+   * `DebuffTypeColor[""]`. Absent for any other type (nil in Lua) and without the side table.
+   */
+  debuffType?: string;
+  /**
+   * The name the aura tooltip writes right of the aura's title (Wow.exe 0x00625350, `SetUnitAura`):
+   * the `SpellDispelType.dbc` row's localised `Name` («Магия», «Проклятие», «Исступление»…) when
+   * DispelType is not 0 and the row's `ImmunityPossible` is set. Absent otherwise. Since `v=15`.
+   */
+  dispelName?: string;
+  /**
+   * `DefenseType` (SpellDmgClass: 0 none, 1 magic, 2 melee, 3 ranged), raw. Since `v=16`, present on
+   * every row — the browser tells an older gateway by `preventionType`'s absence.
+   */
+  dmgClass?: number;
+  /**
+   * `PreventionType` (record +0x258 in the client's copy): 1 silence, 2 pacify. Wow.exe 0x007262e0
+   * treats only a cast with 1 as one the player's interrupts and silences can stop (UnitCastingInfo's
+   * notInterruptible, UNIT_SPELLCAST_(NOT_)INTERRUPTIBLE). Since `v=16`, on every row.
+   */
+  preventionType?: number;
+  /** `InterruptFlags` and `ChannelInterruptFlags`, raw (SpellInterruptFlags / channel flags). Since `v=16`. */
+  interruptFlags?: number;
+  channelInterruptFlags?: number;
+  /**
+   * The Call of the Elements slots this spell fills, as Wow.exe 0x00542030 files a learned spell into
+   * GetMultiCastTotemSpells' lists: only with SPELL_ATTR7_SUMMON_PLAYER_TOTEM (0x20), and per
+   * `RequiredTotemCategoryID` through 0x005a7b50 (2 → 0x2 earth, 3 → 0x8 air, 4 → 0x1 fire,
+   * 5 → 0x4 water, 21 → 0xf). Bit n is slot n+1 (fire 1, earth 2, water 3, air 4, Constants.lua).
+   * 0 for every other spell. Since `v=16`.
+   */
+  totemSlotMask?: number;
+  /**
+   * L13 (v=17, 5.30): `StartRecoveryCategory` (record +0x234 in the client's copy): the global cooldown's
+   * category. The realm keys its global cooldowns by it and starts none for 0 (Spell.cpp:8698,
+   * SpellHistory.cpp:585-594); Wow.exe 0x00807980 holds a spell while a running global part of the same
+   * category lasts (133 for 7,045 of the dataset's non-passive rows, 0 for 56,741). Present on every row
+   * since `v=17`, 0 included — the browser tells an older gateway by its absence.
+   */
+  startRecoveryCategory?: number;
+  /** L13 (v=17, 3.12): `EffectMiscValueB[3]`, raw (for SPELL_EFFECT_SUMMON, a SummonProperties id). */
+  effectMiscValueB?: number[];
+  /**
+   * L13 (v=17, 3.12): per effect, the `SummonProperties.dbc` row a SPELL_EFFECT_SUMMON (28) names by its
+   * EffectMiscValueB, null for any other effect or an id the table lacks (SummonPropertiesMetadata.ts).
+   * Only on rows with a summon effect, and only when the dataset ships the table.
+   */
+  summonProperties?: (SummonPropertiesRow | null)[];
   /** Narrow v1 fallback for active implicit UNIT_TARGET* effects when legacy Targets is zero. */
   unitTargetContractVersion?: number;
   supportsExplicitUnitTarget?: boolean;
@@ -229,6 +295,31 @@ export interface SpellMetadata {
    * with a 2. Nothing else in the payload can tell a five-yard reach from a five-yard spell.
    */
   rangeFlags: number;
+  /**
+   * The friendly slot of the same `SpellRange` row (`RangeMin[1]`, `RangeMax[1]`). The client picks
+   * the slot per target (Wow.exe 0x00801650: 1 when the caster can assist the target, 0x007293d0, or —
+   * without a unit target — when the spell reads as helpful, 0x007fe1b0) before it measures
+   * `IsActionInRange` (1.14b). They differ on 5 of the 65 rows (159-162, 167). Since the browser's
+   * `v=14`; absent from an older gateway, which the browser reads as «the hostile slot».
+   */
+  rangeMinFriendly?: number;
+  rangeMaxFriendly?: number;
+  /**
+   * The raw target columns 0x00809610 builds the client's target mask from, since `v=14`:
+   * `Targets` (record +0x40; the low 16 bits are the TARGET_FLAG_* mask),
+   * `ImplicitTargetA[3]` (+0x158) and `ImplicitTargetB[3]` (+0x164; read by 0x007fe1b0 only), and
+   * `TargetCreatureType` (+0x44).
+   */
+  targets?: number;
+  implicitTargetA?: number[];
+  implicitTargetB?: number[];
+  targetCreatureType?: number;
+  /**
+   * `Attributes` … `AttributesExG` (+0x10 … +0x2c), raw, since `v=14`: the range and target
+   * checks read bits of five of them (ATTR0 0x2 ranged, 0x404 next swing; ATTR2 0x1 dead targets;
+   * ATTR3 0x20000000 no caster modifiers; ATTR5 0x800 target of target; ATTR6 0x8, 0x1000000).
+   */
+  attributes?: number[];
   /** Milliseconds, already resolved through `SpellCastTimes.dbc` (71 rows). Zero is instant. */
   castTime: number;
   /**
@@ -283,6 +374,48 @@ export interface SpellMetadata {
 /** `MAX_SPELL_EFFECTS`: every effect column in this table is three wide. */
 const SPELL_EFFECTS = 3;
 
+/** The eight attribute words, in record order (+0x10 … +0x2c). */
+const SPELL_ATTRIBUTE_COLUMNS = [
+  "Attributes", "AttributesEx", "AttributesExB", "AttributesExC", "AttributesExD", "AttributesExE",
+  "AttributesExF", "AttributesExG",
+] as const;
+
+/** `SPELL_EFFECT_OPEN_LOCK` and `TARGET_GAMEOBJECT_ITEM_TARGET` (SharedDefines.h). */
+const SPELL_EFFECT_OPEN_LOCK = 33;
+const TARGET_GAMEOBJECT_ITEM_TARGET = 26;
+
+/**
+ * `itemOrObject`: an OPEN_LOCK effect whose ImplicitTargetA is TARGET_GAMEOBJECT_ITEM_TARGET — the
+ * 19 rows of this dataset («Взлом замка» 1804, the picks 491/857/10165/10166, the keys 19646…). «Открывание»
+ * (3365, 21651: target 23) is the object-click autocast and gets no cursor.
+ */
+export function opensLockOnItemOrObject(effects: readonly number[], implicitTargetA: readonly number[]): boolean {
+  return effects.some((effect, index) => effect === SPELL_EFFECT_OPEN_LOCK && implicitTargetA[index] === TARGET_GAMEOBJECT_ITEM_TARGET);
+}
+
+/** `SPELL_ATTR7_SUMMON_PLAYER_TOTEM` (SharedDefines.h): the shaman's own totems. */
+const SPELL_ATTR7_SUMMON_PLAYER_TOTEM = 0x20;
+
+/** Wow.exe 0x005a7b50: a TotemCategory id → the multi-cast slot bits it serves. */
+export function totemCategorySlotMask(category: number): number {
+  switch (category) {
+    case 2: return 0x2;
+    case 3: return 0x8;
+    case 4: return 0x1;
+    case 5: return 0x4;
+    case 21: return 0xf;
+    default: return 0;
+  }
+}
+
+/** `totemSlotMask`: the slots of both required totem categories, only for a player totem. */
+export function spellTotemSlotMask(attributesExG: number, requiredTotemCategories: readonly number[]): number {
+  if ((attributesExG & SPELL_ATTR7_SUMMON_PLAYER_TOTEM) === 0) return 0;
+  let mask = 0;
+  for (const category of requiredTotemCategories) mask |= totemCategorySlotMask(category);
+  return mask;
+}
+
 export function parseSpellMetadata(
   spellPayload: Uint8Array,
   iconPayload: Uint8Array,
@@ -293,6 +426,8 @@ export function parseSpellMetadata(
   rangePayload?: Uint8Array,
   castTimePayload?: Uint8Array,
   shapeshiftFormPayload?: Uint8Array,
+  dispelTypePayload?: Uint8Array,
+  summonPropertiesPayload?: Uint8Array, // L13 (v=17)
 ): Map<number, SpellMetadata> {
   const view = (payload: Uint8Array): Buffer =>
     Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -300,6 +435,11 @@ export function parseSpellMetadata(
   const icons = openDbc(view(iconPayload), "SpellIcon");
   const formBonuses = shapeshiftFormPayload
     ? parseSpellShapeshiftFormBonuses(shapeshiftFormPayload) : new Map<number, number>();
+  const debuffTypes = dispelTypePayload ? parseDebuffTypeNames(dispelTypePayload) : new Map<number, string>();
+  const dispelNames = dispelTypePayload
+    ? parseDispelTypeNames(dispelTypePayload, process.env["CLIENT_LOCALE"] ?? "ruRU") : new Map<number, string>();
+  // L13 (v=17): without the table no row gets `summonProperties` (unknown, not «no row»).
+  const summonProperties = summonPropertiesPayload ? parseSummonProperties(summonPropertiesPayload) : undefined;
 
   const iconPaths = new Map<number, string>();
   for (const row of icons.rows()) iconPaths.set(icons.id(row), icons.string(row, "TextureFilename"));
@@ -327,7 +467,7 @@ export function parseSpellMetadata(
     for (const row of categories.rows()) categoryFlags.set(categories.id(row), categories.int(row, "Flags"));
   }
   // Two more indexes into two more small tables, resolved for the same reason as the two above.
-  const ranges = new Map<number, { min: number; max: number; maxFriendly: number; flags: number }>();
+  const ranges = new Map<number, { min: number; max: number; minFriendly: number; maxFriendly: number; flags: number }>();
   if (rangePayload) {
     const table = openDbc(view(rangePayload), "SpellRange");
     for (const row of table.rows()) {
@@ -336,6 +476,7 @@ export function parseSpellMetadata(
       ranges.set(table.id(row), {
         min: table.float(row, "RangeMin", 0),
         max: table.float(row, "RangeMax", 0),
+        minFriendly: table.float(row, "RangeMin", 1),
         maxFriendly: table.float(row, "RangeMax", 1),
         flags: table.int(row, "Flags"),
       });
@@ -427,6 +568,25 @@ export function parseSpellMetadata(
       rangeMin: range?.min ?? 0,
       rangeMax: range?.max ?? 0,
       rangeFlags: range?.flags ?? 0,
+      rangeMinFriendly: range?.minFriendly ?? 0,
+      rangeMaxFriendly: range?.maxFriendly ?? 0,
+      targets: spells.int(row, "Targets") >>> 0,
+      implicitTargetA: perEffect((effect) => spells.int(row, "ImplicitTargetA", effect)),
+      implicitTargetB: perEffect((effect) => spells.int(row, "ImplicitTargetB", effect)),
+      targetCreatureType: spells.int(row, "TargetCreatureType") >>> 0,
+      attributes: SPELL_ATTRIBUTE_COLUMNS.map((column) => spells.int(row, column) >>> 0),
+      itemOrObject: opensLockOnItemOrObject(
+        perEffect((effect) => spells.int(row, "Effect", effect)),
+        perEffect((effect) => spells.int(row, "ImplicitTargetA", effect))),
+      dispelType: spells.int(row, "DispelType"),
+      dmgClass: spells.int(row, "DefenseType"),
+      preventionType: spells.int(row, "PreventionType"),
+      interruptFlags: spells.int(row, "InterruptFlags") >>> 0,
+      channelInterruptFlags: spells.int(row, "ChannelInterruptFlags") >>> 0,
+      totemSlotMask: spellTotemSlotMask(spells.int(row, "AttributesExG"),
+        [0, 1].map((index) => spells.int(row, "RequiredTotemCategoryID", index))),
+      startRecoveryCategory: spells.int(row, "StartRecoveryCategory"), // L13 (v=17)
+      effectMiscValueB: perEffect((effect) => spells.int(row, "EffectMiscValueB", effect)), // L13 (v=17)
       castTime: castTimes.get(spells.int(row, "CastingTimeIndex")) ?? 0,
       effectAura: perEffect((effect) => spells.int(row, "EffectAura", effect)),
       effectMiscValue: perEffect((effect) => spells.int(row, "EffectMiscValue", effect)),
@@ -442,6 +602,14 @@ export function parseSpellMetadata(
       procChance: Math.min(100, spells.int(row, "ProcChance")),
       descriptionVariablesId: spells.int(row, "DescriptionVariablesID"),
     };
+    const debuffType = debuffTypes.get(metadata.dispelType ?? 0);
+    if (debuffType !== undefined) metadata.debuffType = debuffType;
+    const dispelName = metadata.dispelType ? dispelNames.get(metadata.dispelType) : undefined;
+    if (dispelName !== undefined) metadata.dispelName = dispelName;
+    if (summonProperties) { // L13 (v=17)
+      const summon = spellSummonProperties(metadata.effects ?? [], metadata.effectMiscValueB ?? [], summonProperties);
+      if (summon !== undefined) metadata.summonProperties = summon;
+    }
     const variables = descriptionVariables.get(metadata.descriptionVariablesId);
     if (variables !== undefined) metadata.descriptionVariables = variables;
     const formEffect = metadata.effectAura.indexOf(36); // SPELL_AURA_MOD_SHAPESHIFT
@@ -470,8 +638,12 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
     // unresolved; do not guess one from a stance name, spell id or display flag.
     readFile(join(directory, "SpellShapeshiftForm.dbc")).catch(() => undefined),
   ]);
+  // Optional like the side tables above: without it every aura's debuffType stays nil.
+  const dispelTypes = await readFile(join(directory, "SpellDispelType.dbc")).catch(() => undefined);
+  // L13 (v=17): optional too — without it a summon effect's title stays unknown in the browser.
+  const summonProperties = await readFile(join(directory, "SummonProperties.dbc")).catch(() => undefined);
   const metadata = parseSpellMetadata(spells, icons, durations, radii, categories, variables, ranges, castTimes,
-    shapeshiftForms);
+    shapeshiftForms, dispelTypes, summonProperties);
   const toolNames = await loadTotemCategoryNames(directory);
   for (const spell of metadata.values()) {
     spell.requiredToolNames = (spell.requiredToolCategories ?? []).map((id) => toolNames.get(id) ?? "Профессиональный инструмент");
@@ -482,6 +654,62 @@ export async function loadSpellMetadata(directory: string): Promise<Map<number, 
     if (owner) metadata.set(effectId, { ...owner, id: effectId });
   }
   return metadata;
+}
+
+/**
+ * `SpellDispelType.dbc` (3.3.5.12340, WoWDBDefs: ID, Name_lang[17], Mask, ImmunityPossible,
+ * InternalName — 21 words a row): dispel type → the string UnitAura returns, kept only for rows
+ * with ImmunityPossible set, which is the test Wow.exe 0x006147c0 applies (row +0xc) before it
+ * hands out InternalName (row +0x10). An unreadable table gives an empty map.
+ */
+export function parseDebuffTypeNames(payload: Uint8Array): Map<number, string> {
+  const result = new Map<number, string>();
+  const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  if (bytes.length < 20 || bytes.subarray(0, 4).toString("latin1") !== "WDBC") return result;
+  const rows = bytes.readUInt32LE(4);
+  if (bytes.readUInt32LE(8) !== 21 || bytes.readUInt32LE(12) !== 84) return result;
+  const strings = 20 + rows * 84;
+  if (strings + bytes.readUInt32LE(16) !== bytes.length) return result;
+  for (let index = 0; index < rows; index++) {
+    const at = 20 + index * 84;
+    if (bytes.readUInt32LE(at + 19 * 4) === 0) continue;
+    const offset = bytes.readUInt32LE(at + 20 * 4);
+    if (strings + offset >= bytes.length) continue;
+    const end = bytes.indexOf(0, strings + offset);
+    if (end < 0) continue;
+    result.set(bytes.readUInt32LE(at), bytes.subarray(strings + offset, end).toString("utf8"));
+  }
+  return result;
+}
+
+/**
+ * `SpellDispelType.dbc`'s localised `Name_lang` (the client's locale column, then enUS, then any)
+ * for the rows with ImmunityPossible set — what Wow.exe 0x00625350 writes right of an aura
+ * tooltip's title (row +0x4 after the row +0xc test). An unreadable table gives an empty map.
+ */
+export function parseDispelTypeNames(payload: Uint8Array, locale: string): Map<number, string> {
+  const result = new Map<number, string>();
+  const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  if (bytes.length < 20 || bytes.subarray(0, 4).toString("latin1") !== "WDBC") return result;
+  const rows = bytes.readUInt32LE(4);
+  if (bytes.readUInt32LE(8) !== 21 || bytes.readUInt32LE(12) !== 84) return result;
+  const strings = 20 + rows * 84;
+  if (strings + bytes.readUInt32LE(16) !== bytes.length) return result;
+  const locales = ["enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU"];
+  const preferred = Math.max(0, locales.indexOf(locale));
+  for (let index = 0; index < rows; index++) {
+    const at = 20 + index * 84;
+    if (bytes.readUInt32LE(at + 19 * 4) === 0) continue;
+    for (const column of [preferred, 0, ...Array.from({ length: 16 }, (_, slot) => slot)]) {
+      const offset = bytes.readUInt32LE(at + 4 + column * 4);
+      if (offset <= 0 || strings + offset >= bytes.length) continue;
+      const end = bytes.indexOf(0, strings + offset);
+      if (end <= strings + offset) continue;
+      result.set(bytes.readUInt32LE(at), bytes.subarray(strings + offset, end).toString("utf8"));
+      break;
+    }
+  }
+  return result;
 }
 
 /** DBCStructure.h: ID, sixteen localised names, locale mask, category type and mask. */

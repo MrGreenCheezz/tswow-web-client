@@ -2,6 +2,14 @@ import { lauxlib, lua, to_luastring, type LuaState } from "fengari";
 import { GlueLuaRef, type GlueLuaVm } from "./GlueLua.js";
 import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
+import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
+import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
+import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
+import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
+import { messageScrollMethods } from "./GlueMessageScroll.js"; // L5 3.34
+import { simpleHtmlElementFontMethods } from "./GlueSimpleHtmlFonts.js"; // L5 3.35
+import { createGameTooltipExtras, type GameTooltipExtras, type GameTooltipExtrasAdapter } from "./GlueTooltipExtras.js";
+import { tooltipContentWithoutPrice } from "./GlueTooltipPrice.js"; // 2.10 (04.10, L4)
 import { frameXmlAttribute, frameXmlNumber, frameXmlChild } from "../ui/framexml_compat/FrameXmlParser.js";
 import type { FrameXmlUiBridge, MutableFrameXmlFrame } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import {
@@ -76,13 +84,13 @@ const STOCK_FUNCTION_SOURCE = /^@?interface\/(?:framexml|glues|addons\/blizzard_
 
 const FRAME_ID_KEY = "__glueFrameId";
 
-type MethodContext = {
+export type MethodContext = {
   readonly frame: FrameXmlFrame;
   readonly self: MutableFrameXmlFrame;
   readonly args: readonly unknown[];
   readonly binder: GlueWidgetBinder;
 };
-type WidgetMethod = (context: MethodContext) => readonly unknown[] | void;
+export type WidgetMethod = (context: MethodContext) => readonly unknown[] | void;
 
 function num(value: unknown, fallback = 0): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -151,6 +159,8 @@ const TOOLTIP_NORMAL = tooltipColor(1, 0.82, 0);
 const TOOLTIP_GREEN = tooltipColor(0.1, 1, 0.1);
 const TOOLTIP_RED = tooltipColor(1, 0.1, 0.1);
 const TOOLTIP_GRAY = tooltipColor(0.5, 0.5, 0.5);
+/** Wow.exe 0x00ad2da8 (BGRA ff cc 00 ff): the item tooltip's REFUND_TIME_REMAINING line (2.10). */
+const TOOLTIP_REFUND = tooltipColor(0, 0.8, 1);
 /** `ITEM_QUALITY_COLORS` 0..7: an item tooltip's title. */
 const TOOLTIP_QUALITY_COLORS: readonly FrameXmlColor[] = [
   tooltipColor(0x9d / 255, 0x9d / 255, 0x9d / 255),
@@ -256,7 +266,7 @@ interface GameTooltipWidgetState {
 }
 
 /** Item-specific data supplied by the world owner; the binder keeps the common API surface. */
-export interface GameTooltipWidgetAdapter {
+export interface GameTooltipWidgetAdapter extends GameTooltipExtrasAdapter {
   readonly inventoryItem: (unit: string, slot: number) => TooltipContent | undefined;
   readonly containerItem: (bag: number, slot: number) => TooltipContent | undefined;
   /** Bounded action-slot content; the callback receives the stock 1-based slot, never a spell id. */
@@ -272,6 +282,11 @@ export interface GameTooltipWidgetAdapter {
    * `OnTooltipSetSpell`; nothing for a command, a reaction or an empty slot, which keep the name line.
    */
   readonly petActionSpell?: (index: number) => number | undefined;
+  /**
+   * 11.02-IF-review: the possess spell (Wow.exe 0x00c234e0, FrameXmlPossess.ts) for
+   * `SetPossession(1)`; undefined while there is none.
+   */
+  readonly possessionSpell?: () => number | undefined;
   /** An item by entry, for `SetHyperlink` and the link-based setters (merchant, loot, quest). */
   readonly item?: (entry: number) => TooltipContent | undefined;
   /** A spell by id, for `SetHyperlink` (and aura tooltips without `aura`); undefined while nothing is known. */
@@ -282,6 +297,70 @@ export interface GameTooltipWidgetAdapter {
    * setters prefer it and fall back to `spell` when it is absent or answers nothing.
    */
   readonly aura?: (id: number) => TooltipContent | undefined;
+  /**
+   * The line the client itself adds to a skinnable creature's tooltip (`UNIT_SKINNABLE_*`, coloured
+   * by the player's skill against the creature's level): the global string's name, the colour-blind
+   * mark in front of it, and the colour. Nothing for a player or a unit without the flag.
+   */
+  /**
+   * The item's repair price, what `SetInventoryItem` answers third and `SetBagItem` second (Wow.exe
+   * 0x0062e050 and 0x0062f420, each through the price 0x00584b20): PaperDollFrame.lua:1346 and
+   * ContainerFrame.lua:775 add it as REPAIR_COST while InRepairMode. Absent or not a count: 0.
+   */
+  readonly inventoryItemRepairCost?: (unit: string, slot: number) => number;
+  readonly containerItemRepairCost?: (bag: number, slot: number) => number;
+  /**
+   * 2.10: seconds of purchase refund left for the item `SetBagItem`/`SetInventoryItem` shows, which
+   * draw the REFUND_TIME_REMAINING line (Wow.exe 0x006277f0); undefined draws none. The adapter asks
+   * the realm for a record it does not have yet. 2.10 (04.10, L4): any answer but undefined — the
+   * line, or 0 when this very draw sent CMSG_ITEM_REFUND_INFO — leaves the sell price out, as
+   * 0x006277f0 does (it writes the price only when it wrote neither).
+   */
+  readonly containerItemRefundSeconds?: (bag: number, slot: number) => number | undefined;
+  readonly inventoryItemRefundSeconds?: (unit: string, slot: number) => number | undefined;
+  /**
+   * 5.20: the localised SpellDispelType name an aura tooltip writes right of its title (Wow.exe
+   * 0x00625350: DispelType not 0 and the row's ImmunityPossible set); undefined writes none.
+   */
+  readonly auraDispelName?: (spellId: number) => string | undefined;
+  readonly unitSkinnable?: (unit: string, colorblind: boolean) => {
+    readonly globalName: string;
+    readonly prefix: string;
+    readonly color: { readonly r: number; readonly g: number; readonly b: number };
+  } | undefined;
+  /**
+   * 3.12e: a creature's sub-name, the line `SetUnit` writes under its name (Wow.exe 0x00621070 →
+   * 0x00719950, FrameXmlUnitSubName.ts); undefined writes none.
+   */
+  readonly unitSubName?: (unit: string) => string | undefined;
+  /**
+   * 3.12 (04.10, L4): a player's guild name from the guild cache by PLAYER_GUILDID, any player's
+   * (Wow.exe 0x00621070 → 0x0067d930, asking the realm on a miss); undefined falls back to
+   * `GetGuildInfo(unit)`.
+   */
+  readonly unitGuildName?: (unit: string) => string | undefined;
+  /**
+   * 3.12 (04.10, L4): the UNITNAME_SUMMON_TITLE<n> line under the sub-name (Wow.exe 0x0061e830):
+   * the GlobalStrings key and the owner's name it is filled with (undefined: UNKNOWNOBJECT, as
+   * 0x0074d750 answers before the name has come); undefined writes none.
+   */
+  readonly unitSummonTitle?: (unit: string) => { readonly globalName: string; readonly ownerName: string | undefined } | undefined;
+  /**
+   * 5.28 (04.10, L4 for L6): a corpse's loot owners, `MASTER_LOOTER: name` then `LOOT: name`, white,
+   * after the client's other lines (Wow.exe 0x00621070 at 0x0062220c; FrameXmlLootOwnerTooltip.ts).
+   */
+  readonly unitLootOwners?: (unit: string) => readonly { readonly globalName: string; readonly name: string }[];
+  /**
+   * 3.12 (04.10, L4): Wow.exe redraws a unit tooltip when a guild or a name its lines asked for comes
+   * (the cache callback 0x0061ddd0). `redraw` is called once, when one has; the answer withdraws the
+   * wait. Undefined when nothing is pending.
+   */
+  readonly watchUnitAnswers?: (unit: string, redraw: () => void) => (() => void) | undefined;
+}
+
+/** A tooltip setter's repair price: a whole copper count, anything else 0 (the client's uint). */
+function repairCostOf(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 function boundedMinimapNumber(value: unknown): number | undefined {
@@ -460,8 +539,14 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   readonly #handlerSources = new WeakMap<object, GlueLuaRef>();
   readonly #minimapState = new WeakMap<FrameXmlFrame, MinimapWidgetState>();
   readonly #gameTooltipState = new WeakMap<FrameXmlFrame, GameTooltipWidgetState>();
+  /** Contents whose `titleRight` takes the title's colour, not the rank's grey: an aura's dispel name (5.20). */
+  readonly #titleColouredRight = new WeakSet<TooltipContent>();
   /** The tooltip a failed setter is hiding right now; its OnHide keeps the owner (`hideGameTooltip`). */
   #tooltipKeepingOwner: FrameXmlFrame | undefined;
+  /** Plan item 3.12's setters (GlueTooltipExtras.ts), built once on first use. */
+  #tooltipExtras: GameTooltipExtras | undefined;
+  /** 3.12 (04.10, L4): each tooltip's unit redraw for a late guild or name (setGameTooltipUnit). */
+  readonly #unitRedraws = new WeakMap<FrameXmlFrame, () => void>();
   readonly #stubbed = new Set<string>();
   readonly #stubCounts = new Map<string, GlueWidgetStubDiagnostic>();
   readonly #frameModules = new WeakMap<FrameXmlFrame, string>();
@@ -471,10 +556,14 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   #animationsActive = false;
   readonly #animationFunctions = new Map<string, GlueLuaRef>();
 
+  /** L5 3.27: the references behind SetScript/HookScript (GlueScriptRefs.ts). */
+  readonly #scriptRefs: GlueScriptRefs;
+
   constructor(vm: GlueLuaVm, bridge: FrameXmlUiBridge, options: GlueWidgetBinderOptions = {}) {
     this.#vm = vm;
     this.#bridge = bridge;
     this.#options = options;
+    this.#scriptRefs = new GlueScriptRefs(vm, bridge, (handler) => { this.#handlerSources.delete(handler); }); // L5 3.27
     const installed = vm.execute(GLUE_INVOKE, "@GlueWidgets:invoke");
     if (!installed.ok) throw new Error(`glue dispatch helper failed to load: ${installed.error}`);
     this.#invoke = vm.globalFunction("__glueInvoke");
@@ -779,9 +868,14 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const messageFrame = { ...frameLike, ...this.textMethods(), ...this.messageMethods() };
     const model = { ...frameLike, ...this.modelMethods() };
     const minimap = { ...frameLike, ...this.minimapMethods() };
-    const simpleHtml = { ...frameLike, ...this.textMethods(), ...this.simpleHtmlMethods() };
+    const simpleHtml = { ...frameLike, ...this.textMethods(), ...this.simpleHtmlMethods(),
+      ...simpleHtmlElementFontMethods(this.#bridge, this.textMethods()) }; // L5 3.35: SetTextColor("h1", …) and the rest
     const movie = { ...frameLike, ...this.movieMethods() };
     const gameTooltip = { ...frameLike, ...this.textMethods(), ...this.gameTooltipMethods() };
+    // Plan item 3.21 (GlueWidgetMethodExtras.ts): the ColorSelect colour and the per-id recolour.
+    const colorSelect = { ...frameLike, ...colorSelectMethods(this.#bridge) };
+    const scrollingMessageFrame = { ...messageFrame, ...messageColorMethods(this.#bridge),
+      ...messageScrollMethods(this.#bridge) }; // L5 3.34: SetScrollOffset, GetCurrentScroll, ScrollToTop
 
     const byType: Readonly<Record<string, Record<string, WidgetMethod>>> = {
       Frame: frameLike,
@@ -803,8 +897,11 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       MovieFrame: movie,
       Cooldown: frameLike,
       MessageFrame: messageFrame,
-      ScrollingMessageFrame: messageFrame,
+      ScrollingMessageFrame: scrollingMessageFrame,
+      ColorSelect: colorSelect,
       GameTooltip: gameTooltip,
+      // 3.13c: WorldMapBlobFrame's blob drawing and hit test (GlueQuestPoiFrame.ts).
+      QuestPOIFrame: { ...frameLike, ...questPoiFrameMethods() },
     };
     for (const [type, methods] of Object.entries(byType)) {
       this.#metatables.set(type, this.createMetatable(type, methods));
@@ -1098,7 +1195,10 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const title = content.quality === undefined ? TOOLTIP_WHITE
       : TOOLTIP_QUALITY_COLORS[content.quality] ?? TOOLTIP_WHITE;
     if (!this.setGameTooltipLine(frame, content.title, "Left", title)) return false;
-    if (content.titleRight) this.setGameTooltipLine(frame, content.titleRight, "Right", TOOLTIP_GRAY, false, 1);
+    if (content.titleRight) {
+      this.setGameTooltipLine(frame, content.titleRight, "Right",
+        this.#titleColouredRight.has(content) ? title : TOOLTIP_GRAY, false, 1);
+    }
     /** Where this tooltip's price goes (see above), decided at the first price. */
     let money: "none" | "script" | "coins" | "words" | undefined;
     const moneyRoute = (): "none" | "script" | "coins" | "words" => {
@@ -1245,8 +1345,36 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const color = this.callGlobal("GameTooltip_UnitColor", [unit], 3);
     this.setGameTooltipLine(frame, name, "Left", luaColor(color, 0, TOOLTIP_WHITE));
     const player = this.callGlobal("UnitIsPlayer", [unit], 1)[0] === true;
-    const guild = player ? this.callGlobal("GetGuildInfo", [unit], 1)[0] : undefined;
-    if (typeof guild === "string" && guild.length > 0) this.setGameTooltipLine(frame, `<${guild}>`, "Left", TOOLTIP_WHITE);
+    // 3.12 (04.10, L4): the guild cache by PLAYER_GUILDID first — any player's, as 0x0067d930 reads
+    // it — and the Lua GetGuildInfo (the player's own guild) without one.
+    const guild = player
+      ? this.#options.gameTooltipAdapter?.unitGuildName?.(unit) ?? this.callGlobal("GetGuildInfo", [unit], 1)[0]
+      : undefined;
+    // The guild's name as it is: Wow.exe 0x00621070 hands it to the line writer 0x0061fec0 unwrapped (02.10).
+    if (typeof guild === "string" && guild.length > 0) this.setGameTooltipLine(frame, guild, "Left", TOOLTIP_WHITE);
+    // 3.12 (04.10, L4): colour-blind mode writes the unit's standing towards the player (Wow.exe
+    // 0x00621504: FACTION_STANDING_LABEL<reaction + 1> in the *player's* gender), white, before the
+    // sub-name. The CVar is read once here and handed to the skinnable line below.
+    const colorblind = this.callGlobal("GetCVarBool", ["colorblindMode"], 1)[0] === true;
+    if (colorblind) {
+      const reaction = num(this.callGlobal("UnitReaction", [unit, "player"], 1)[0], 0);
+      if (reaction >= 1 && reaction <= 8) {
+        const key = `FACTION_STANDING_LABEL${reaction}`;
+        const female = this.callGlobal("UnitSex", ["player"], 1)[0] === 3;
+        const standing = (female ? this.#vm.globalString(`${key}_FEMALE`) : undefined) ?? this.#vm.globalString(key);
+        if (standing) this.setGameTooltipLine(frame, standing, "Left", TOOLTIP_WHITE);
+      }
+    }
+    // 3.12e: a creature's sub-name, as the realm sent it, right under its name (FrameXmlUnitSubName.ts).
+    const subName = player ? undefined : this.#options.gameTooltipAdapter?.unitSubName?.(unit);
+    if (subName) this.setGameTooltipLine(frame, subName, "Left", TOOLTIP_WHITE);
+    // 3.12 (04.10, L4): UNITNAME_SUMMON_TITLE<n> with the owner's name (Wow.exe 0x0061e830), white.
+    const summon = this.#options.gameTooltipAdapter?.unitSummonTitle?.(unit);
+    const summonTemplate = summon ? this.#vm.globalString(summon.globalName) : undefined;
+    if (summon && summonTemplate) {
+      const owner = summon.ownerName ?? this.#vm.globalString("UNKNOWNOBJECT") ?? "UKNOWNOBJECT";
+      this.setGameTooltipLine(frame, formatClientTemplate(summonTemplate, owner), "Left", TOOLTIP_WHITE);
+    }
     const level = num(this.callGlobal("UnitLevel", [unit], 1)[0], 0);
     const levelText = level > 0 ? String(level) : "??";
     const global = (key: string): string | undefined => this.#vm.globalString(key);
@@ -1272,7 +1400,42 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     if (this.callGlobal("UnitIsPVP", [unit], 1)[0] === true) {
       this.setGameTooltipLine(frame, global("PVP") ?? "PvP", "Left", TOOLTIP_WHITE);
     }
+    // The `colorblindMode` CVar, read per SetUnit as the client does (Wow.exe 0x00620EE0): the
+    // composed GetCVarBool, so the stock options panel's SetCVar reaches it; unset is off.
+    const skinnable = this.#options.gameTooltipAdapter?.unitSkinnable;
+    const skin = skinnable?.(unit, colorblind); // 3.12 (04.10, L4): the reading above
+    const skinText = skin ? global(skin.globalName) : undefined;
+    if (skin && skinText) {
+      this.setGameTooltipLine(frame, skin.prefix + skinText, "Left", { ...skin.color, a: 1 });
+    }
+    // 5.28 (04.10, L4 for L6): a corpse's loot owners, white, after the lines above (Wow.exe
+    // 0x0062220c writes them only for a dead unit): «MASTER_LOOTER: name», «LOOT: name».
+    const looters = this.#options.gameTooltipAdapter?.unitLootOwners;
+    if (looters && this.callGlobal("UnitIsDead", [unit], 1)[0] === true) {
+      for (const owner of looters(unit)) {
+        this.setGameTooltipLine(frame, `${global(owner.globalName) ?? owner.globalName}: ${owner.name}`, "Left", TOOLTIP_WHITE);
+      }
+    }
     this.gameTooltipState(frame).unit = unit;
+    // 3.12 (04.10, L4): a guild or a name still on its way draws this unit again when it comes (0x0061ddd0);
+    // clearing the lines or hiding withdraws it, like a content redraw.
+    const watch = this.#options.gameTooltipAdapter?.watchUnitAnswers;
+    if (watch) {
+      // One redraw per tooltip frame, made once: it draws whatever unit the tooltip shows when it runs.
+      let redraw = this.#unitRedraws.get(frame);
+      if (!redraw) {
+        const state = this.gameTooltipState(frame);
+        redraw = () => {
+          state.cancelRefresh = undefined;
+          const shown = state.unit;
+          if (this.#vm.closed || !frame.visible || shown === undefined) return;
+          this.#bridge.runInMutationBatch(() => { this.setGameTooltipUnit(frame, shown); });
+        };
+        this.#unitRedraws.set(frame, redraw);
+      }
+      const cancel = watch(unit, redraw);
+      if (cancel) this.gameTooltipState(frame).cancelRefresh = cancel;
+    }
     this.sizeGameTooltip(frame);
     this.#bridge.Show(frame);
     this.#bridge.fireScript(frame, "OnTooltipSetUnit");
@@ -1310,17 +1473,22 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const remaining = duration > 0 && expiration > 0 ? expiration - num(this.callGlobal("GetTime", [], 1)[0], 0) : 0;
     const time = remaining > 0 ? this.auraTimeRemaining(remaining) : undefined;
     const spellId = num(values[10], 0);
+    const adapter = this.#options.gameTooltipAdapter;
+    // 5.20, Wow.exe 0x00625350: the SpellDispelType row's name right of the title, same colour.
+    const dispelName = spellId > 0 ? adapter?.auraDispelName?.(spellId) : undefined;
     const aura = (spell: TooltipContent | undefined): TooltipContent => {
       const lines: TooltipLine[] = (spell?.lines ?? [])
         .filter((line): line is TooltipLine => typeof line !== "string" && line.tone === "description");
       if (time) lines.push({ text: time, tone: "description", wrap: false });
       const refresh = spell?.refresh;
-      return {
+      const content: TooltipContent = {
         title: name, lines,
+        ...(dispelName ? { titleRight: dispelName } : {}),
         ...(refresh ? { refresh: { watch: (redraw: (next: TooltipContent) => void) => refresh.watch((next) => redraw(aura(next))) } } : {}),
       };
+      if (dispelName) this.#titleColouredRight.add(content);
+      return content;
     };
-    const adapter = this.#options.gameTooltipAdapter;
     const content = spellId > 0 ? adapter?.aura?.(spellId) ?? adapter?.spell?.(spellId) : undefined;
     return this.setGameTooltipContent(frame, aura(content));
   }
@@ -1335,6 +1503,52 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const template = this.#vm.globalString(key);
     // The plural escape stays in the string: the FontString resolves `|4` against the number.
     return template ? formatClientTemplate(template, count) : undefined;
+  }
+
+  /**
+   * 2.10, Wow.exe 0x006277f0: an item with refund time left gets a blank line (`" "`, 0x00ad2d2c's
+   * gold) and REFUND_TIME_REMAINING in 0x00ad2da8's colour (the BGRA bytes ff cc 00: r 0, g 0.8,
+   * b 1), wrapped — before OnTooltipSetItem, as the C tooltip writes it.
+   */
+  private addGameTooltipRefundLine(frame: FrameXmlFrame, seconds: number | undefined): void {
+    if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return;
+    const text = this.refundTimeRemaining(Math.floor(seconds));
+    if (!text) return;
+    this.setGameTooltipLine(frame, " ", "Left", TOOLTIP_NORMAL);
+    this.setGameTooltipLine(frame, text, "Left", TOOLTIP_REFUND, true);
+    this.sizeGameTooltip(frame);
+  }
+
+  /**
+   * REFUND_TIME_REMAINING's time, as 0x006277f0 writes it: 3660-7199 s (the stamp 1-3540 s before
+   * the played time) is «1 ч» + TIME_UNIT_DELIMITER + the whole minutes past the hour; anything else
+   * goes through 0x0061a9e0 in seconds rounded down — days, hours (24 → a day), minutes or seconds
+   * of INT_SPELL_DURATION_*.
+   */
+  private refundTimeRemaining(left: number): string | undefined {
+    const global = (key: string): string | undefined => this.#vm.globalString(key);
+    let time: string | undefined;
+    if (left >= 3660 && left <= 7199) {
+      const hours = global("INT_SPELL_DURATION_HOURS");
+      const minutes = global("INT_SPELL_DURATION_MIN");
+      if (!hours || !minutes) return undefined;
+      time = formatClientTemplate(hours, 1) + (global("TIME_UNIT_DELIMITER") ?? " ")
+        + formatClientTemplate(minutes, Math.floor((left - 3600) / 60));
+    } else {
+      let unit = "SEC";
+      let count = left;
+      if (left >= 86400) { unit = "DAYS"; count = Math.floor(left / 86400); }
+      else if (left >= 3600) {
+        count = Math.floor(left / 3600);
+        unit = count === 24 ? "DAYS" : "HOURS";
+        if (count === 24) count = 1;
+      } else if (left >= 60) { unit = "MIN"; count = Math.floor(left / 60); }
+      const template = global(`INT_SPELL_DURATION_${unit}`);
+      if (!template) return undefined;
+      time = formatClientTemplate(template, count);
+    }
+    const line = global("REFUND_TIME_REMAINING");
+    return line ? formatClientTemplate(line, time) : undefined;
   }
 
   /**
@@ -1412,6 +1626,51 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     }
   }
 
+  /** Plan item 3.12 (GlueTooltipExtras.ts): the setters over this binder's own drawing primitives. */
+  private tooltipExtras(): GameTooltipExtras {
+    return this.#tooltipExtras ??= createGameTooltipExtras({
+      adapter: () => this.#options.gameTooltipAdapter,
+      callGlobal: (name, args, results) => this.callGlobal(name, args, results),
+      callTable: (name, args, count) => {
+        const table = this.callGlobal(name, args, 1)[0];
+        if (!(table instanceof GlueLuaRef) || table.type !== "table") return undefined;
+        try {
+          const values: unknown[] = [];
+          for (let index = 1; index <= count; index += 1) values.push(this.callGlobal("rawget", [table, index], 1)[0]);
+          return values;
+        } finally {
+          this.#vm.release(table);
+        }
+      },
+      globalString: (key) => this.#vm.globalString(key),
+      link: (frame, link) => this.setGameTooltipLink(frame, link),
+      spell: (frame, id) => {
+        const content = this.#options.gameTooltipAdapter?.spell?.(id);
+        if (!content || !this.setGameTooltipContent(frame, content)) return false;
+        this.announceTooltipSpell(frame, content.title, spellContentRank(content), id);
+        return true;
+      },
+      rows: (frame, rows) => {
+        this.clearGameTooltipLines(frame);
+        for (const row of rows) {
+          if (row.right !== undefined) this.setGameTooltipDoubleLine(frame, row.text, row.right, row.color, row.rightColor ?? TOOLTIP_WHITE);
+          else this.setGameTooltipLine(frame, row.text, "Left", row.color, row.wrap === true);
+        }
+        this.sizeGameTooltip(frame);
+        this.#bridge.Show(frame);
+        return true;
+      },
+      hide: (frame) => this.hideGameTooltip(frame),
+      timeRemaining: (seconds) => this.auraTimeRemaining(seconds),
+      formatTemplate: (template, ...values) => formatClientTemplate(template, ...values),
+      // 3.12 (04.10, L4): the anchor GameTooltip's item, for the shopping tooltips' stat difference.
+      itemLinkOf: (anchor) => {
+        const tooltip = this.#bridge.resolve(anchor as FrameXmlFrame | undefined);
+        return tooltip?.type === "GameTooltip" ? this.gameTooltipState(tooltip).item?.link || undefined : undefined;
+      },
+    });
+  }
+
   /** Call a C-style global through the same seam wrapper the stock Lua already uses. */
   private callGlobal(name: string, args: readonly unknown[], results: number): readonly unknown[] {
     const functionRef = this.#vm.globalFunction(name);
@@ -1439,6 +1698,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       }
     };
     return {
+      // Plan item 3.12: SetTalent, SetGlyph, SetTotem, SetBuybackItem… (GlueTooltipExtras.ts).
+      ...this.tooltipExtras().methods,
       // The right-hand padding the stock code sets before a wide icon; kept for its getter.
       SetPadding: ({ frame, args }) => {
         bridge.update(frame, (m) => { m.setAttribute("padding", String(num(args[0]))); }, "paint");
@@ -1579,7 +1840,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         return [true];
       },
       // Returns (hasItem, hasCooldown, repairCost), the three values `PaperDollItemSlotButton_OnEnter`
-      // (`PaperDollFrame.lua:1338`) reads; the repair cost is 0 until the seam knows one.
+      // (`PaperDollFrame.lua:1338`) reads; the repair cost is the adapter's, 0 until it knows one.
       SetInventoryItem: ({ frame, args }) => {
         const unit = typeof args[0] === "string" ? args[0] : undefined;
         const slot = typeof args[1] === "number" ? args[1] : Number(args[1]);
@@ -1590,15 +1851,20 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
           return [false];
         }
         const content = this.#options.gameTooltipAdapter?.inventoryItem(unit, slot);
-        if (content === undefined || !this.setGameTooltipContent(frame, content)) {
+        // 2.10 (04.10, L4): the refund answer first — with one, the sell price is left out (GlueTooltipPrice.ts).
+        const refund = content === undefined ? undefined : this.#options.gameTooltipAdapter?.inventoryItemRefundSeconds?.(unit, slot);
+        if (content === undefined
+          || !this.setGameTooltipContent(frame, refund === undefined ? content : tooltipContentWithoutPrice(content))) {
           this.hideGameTooltip(frame);
           return [false];
         }
+        this.addGameTooltipRefundLine(frame, refund); // 2.10 (04.10, L4): read above
         const link = this.callGlobal("GetInventoryItemLink", [unit, slot], 1)[0];
         const cooldown = num(this.callGlobal("GetInventoryItemCooldown", [unit, slot], 2)[1], 0) > 0;
         this.announceTooltipItem(frame, content.title, typeof link === "string" ? link : "",
           unit.toLowerCase() === "player" && slot >= 1 && slot <= 19);
-        return [true, cooldown ? 1 : undefined, 0];
+        return [true, cooldown ? 1 : undefined,
+          repairCostOf(this.#options.gameTooltipAdapter?.inventoryItemRepairCost?.(unit, slot))];
       },
       // Returns (hasCooldown, repairCost), what `ContainerFrameItemButton_OnEnter`
       // (`ContainerFrame.lua:774`) reads; a cooldown makes it refresh the tooltip every 0.2 s.
@@ -1610,14 +1876,19 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
           return [false];
         }
         const content = this.#options.gameTooltipAdapter?.containerItem(bag, slot);
-        if (content === undefined || !this.setGameTooltipContent(frame, content)) {
+        // 2.10 (04.10, L4): the refund answer first — with one, the sell price is left out (GlueTooltipPrice.ts).
+        const refund = content === undefined ? undefined : this.#options.gameTooltipAdapter?.containerItemRefundSeconds?.(bag, slot);
+        if (content === undefined
+          || !this.setGameTooltipContent(frame, refund === undefined ? content : tooltipContentWithoutPrice(content))) {
           this.hideGameTooltip(frame);
           return [false];
         }
+        this.addGameTooltipRefundLine(frame, refund); // 2.10 (04.10, L4): read above
         const link = this.callGlobal("GetContainerItemLink", [bag, slot], 1)[0];
         const cooldown = num(this.callGlobal("GetContainerItemCooldown", [bag, slot], 2)[1], 0) > 0;
         this.announceTooltipItem(frame, content.title, typeof link === "string" ? link : "", false);
-        return [cooldown ? 1 : undefined, 0];
+        return [cooldown ? 1 : undefined,
+          repairCostOf(this.#options.gameTooltipAdapter?.containerItemRepairCost?.(bag, slot))];
       },
       ClearLines: ({ frame }) => { this.clearGameTooltipLines(frame); },
       AddLine: ({ frame, args }) => {
@@ -1657,7 +1928,12 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         const unit = this.gameTooltipState(frame).unit;
         return unit === undefined ? [] : [this.callGlobal("UnitName", [unit], 1)[0], unit];
       },
-      SetHyperlink: ({ frame, args }) => [this.setGameTooltipLink(frame, args[0])],
+      // quest:, talent: and glyph: links draw through GlueTooltipExtras.ts (plan item 3.12d).
+      SetHyperlink: ({ frame, args }) => {
+        const other = typeof args[0] === "string" && tooltipHyperlink(args[0]) === undefined
+          ? this.tooltipExtras().hyperlink(frame, args[0]) : undefined;
+        return [other ?? this.setGameTooltipLink(frame, args[0])];
+      },
       GetItem: ({ frame }) => {
         const item = this.gameTooltipState(frame).item;
         return item === undefined ? [] : [item.name, item.link];
@@ -1740,6 +2016,22 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
           return [false];
         }
         return [this.setGameTooltipContent(frame, { title: name })];
+      },
+      /**
+       * 11.02-IF-review: Wow.exe 0x006257c0. Slot 1 (rounded) is the possess spell's own tooltip —
+       * 0x006238a0 over 0x00c234e0 with the spell's cooldown left — answering 1 when it drew; any other
+       * slot, or no possess spell, answers nil and leaves the tooltip as it is. PossessButton_OnEnter
+       * (BonusActionBarFrame.lua:280-294) sends only slot 1 here and draws CANCEL for slot 2 itself.
+       * Not repeated: the cooldown-left line and the short form for UberTooltips 0.
+       */
+      SetPossession: ({ frame, args }) => {
+        if (Math.round(num(args[0], Number.NaN)) !== 1) return [];
+        const spellId = this.#options.gameTooltipAdapter?.possessionSpell?.();
+        if (spellId === undefined || !Number.isSafeInteger(spellId) || spellId <= 0) return [];
+        const content = this.#options.gameTooltipAdapter?.spell?.(spellId);
+        if (content === undefined || !this.setGameTooltipContent(frame, content)) return [];
+        this.announceTooltipSpell(frame, content.title, spellContentRank(content), spellId);
+        return [1];
       },
       SetPetAction: ({ frame, args }) => {
         const values = this.callGlobal("GetPetActionInfo", [args[0]], 2);
@@ -1882,10 +2174,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         const rect = bridge.geometry(frame);
         return [(rect.left + rect.right) / 2, (rect.bottom + rect.top) / 2];
       },
-      GetBoundsRect: ({ frame }) => {
-        const rect = bridge.geometry(frame);
-        return [rect.left, rect.bottom, rect.width, rect.height];
-      },
+      // 3.35-bounds: the frame with its shown regions and child frames, a SimpleHTML's page among them
+      // (Wow.exe 0x0049e700 → virtual +0x64 = 0x004913c0; GlueBoundsRect.ts).
+      GetBoundsRect: ({ frame }) => glueBoundsRect(bridge, frame), // 3.35-bounds
       // FloatingChatFrame.lua uses these to dock a chat window to the right edge of
       // the screen. The bridge owns the same rectangle used by layout, so this stays
       // useful before a DOM mount as well as after one.
@@ -2130,24 +2421,27 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       SetScript: ({ frame, args }) => {
         const script = str(args[0]);
         const handler = args[1];
+        // L5 3.27: through GlueScriptRefs — the old function's reference is freed, Lua's hooks go with it.
         if (handler instanceof GlueLuaRef && handler.type === "function") {
           const retained = this.#vm.retain(handler);
-          bridge.SetScript(frame, script, this.wrapHandler(retained, script === "OnEvent", this.needsLegacyGlobals(retained)));
+          this.#scriptRefs.setScript(frame, script, this.wrapHandler(retained, script === "OnEvent", this.needsLegacyGlobals(retained)), retained);
         } else {
-          bridge.SetScript(frame, script, null);
+          this.#scriptRefs.setScript(frame, script, null);
         }
       },
       GetScript: ({ frame, args }) => {
         const handler = bridge.GetScript(frame, str(args[0]));
         const ref = handler ? this.#handlerSources.get(handler) : undefined;
-        return ref ? [ref] : [];
+        // L5-review: with Lua hooks on the script, the client's hook closure (GlueScriptRefs.scriptValue).
+        return ref && handler ? [this.#scriptRefs.scriptValue(frame, str(args[0]), handler, ref)] : [];
       },
       HasScript: ({ frame, args }) => [bridge.hasScript(frame, str(args[0]))],
       HookScript: ({ frame, args }) => {
         const handler = args[1];
         if (handler instanceof GlueLuaRef && handler.type === "function") {
           const retained = this.#vm.retain(handler);
-          bridge.HookScript(frame, str(args[0]), this.wrapHandler(retained, str(args[0]) === "OnEvent", this.needsLegacyGlobals(retained)));
+          // L5 3.27: an empty slot takes the hook as its handler (Wow.exe 0x0049edb0); GlueScriptRefs.
+          this.#scriptRefs.hookScript(frame, str(args[0]), this.wrapHandler(retained, str(args[0]) === "OnEvent", this.needsLegacyGlobals(retained)), retained);
         }
       },
       RegisterEvent: ({ frame, args }) => { bridge.RegisterEvent(frame, str(args[0])); },
@@ -2533,6 +2827,14 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       GetMaxLines: ({ frame }) => [bridge.GetMaxLines(frame)],
       SetTimeVisible: ({ frame, args }) => { bridge.SetTimeVisible(frame, num(args[0])); },
       GetTimeVisible: ({ frame }) => [bridge.GetTimeVisible(frame)],
+      // 3.34: the line fade. `SetFading()` with no argument turns it on (Wow.exe 0x00974570), and
+      // `GetFading` answers 1 or nil (0x009745c0).
+      SetFading: ({ frame, args }) => { bridge.SetMessageFading(frame, args[0] === undefined || luaTruthy(args[0])); },
+      GetFading: ({ frame }) => [bridge.GetMessageFading(frame) ? 1 : undefined],
+      SetFadeDuration: ({ frame, args }) => { bridge.SetFadeDuration(frame, num(args[0], Number.NaN)); },
+      GetFadeDuration: ({ frame }) => [bridge.GetFadeDuration(frame)],
+      SetInsertMode: ({ frame, args }) => { bridge.SetInsertMode(frame, args[0]); },
+      GetInsertMode: ({ frame }) => [bridge.GetInsertMode(frame)],
       SetHyperlinksEnabled: ({ frame, args }) => {
         bridge.update(frame, (m) => { m.setAttribute("hyperlinksEnabled", luaTruthy(args[0]) ? "true" : "false"); }, "paint");
       },
@@ -2567,6 +2869,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
             }, frame.type === "StatusBar" ? "paint" : "layout");
           }
           const state = frame.type === "StatusBar" ? frame.statusBar : frame.slider;
+          if (frame.type === "Slider") {
+            // L5b-review: Wow.exe's Slider re-applies only a value that was set (CSimpleSlider
+            // 0x0096c470 via 0x00971df0): a fresh one takes the range, keeps its 0 and fires nothing.
+            // The stock options sliders' OnValueChanged wrote SetCVar(min) here (options vertical).
+            state.rangeSet = true;
+            if (!state.valueSet) return;
+          }
           bridge.SetValue(frame, state.value);
         });
       },
@@ -2775,8 +3084,42 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   }
 
   private simpleHtmlMethods(): Record<string, WidgetMethod> {
+    const bridge = this.#bridge;
+    const text = this.textMethods();
+    const header = (value: unknown): string | undefined => {
+      const element = typeof value === "string" ? value.trim().toLowerCase() : "";
+      return element === "h1" || element === "h2" || element === "h3" || element === "p" ? element : undefined;
+    };
     return {
-      SetHyperlinkFormat: this.stub("SetHyperlinkFormat"),
+      // 3.35: SimpleHTML's font methods take an optional element first — "h1", "h2", "h3" or "p" —
+      // and set that element's font (Wow.exe 0x009748f0); without one, or with "p", the page's.
+      SetFontObject: (call) => {
+        const element = header(call.args[0]);
+        if (element === undefined || element === "p") {
+          return text["SetFontObject"]!(element === "p" ? { ...call, args: call.args.slice(1) } : call);
+        }
+        const value = call.args[1];
+        const name = typeof value === "string" ? value
+          : bridge.resolve(value as FrameXmlFrame | undefined)?.fontObject ?? "";
+        const key = `FONTSTRINGHEADER${element.slice(1)}`;
+        if (call.self.stateFonts.get(key) === name) return;
+        bridge.update(call.frame, (m) => {
+          if (name) m.stateFonts.set(key, name);
+          else m.stateFonts.delete(key);
+        });
+      },
+      GetFontObject: (call) => {
+        const element = header(call.args[0]);
+        if (element === undefined || element === "p") return [call.self.fontObject || undefined];
+        return [call.self.stateFonts.get(`FONTSTRINGHEADER${element.slice(1)}`) || undefined];
+      },
+      // `hyperlinkFormat`: how an `<A href>` is written into the page's text (default `|H%s|h%s|h`).
+      SetHyperlinkFormat: ({ frame, self, args }) => {
+        const format = typeof args[0] === "string" ? args[0] : undefined;
+        if (format === undefined || self.attributes["hyperlinkFormat"] === format) return;
+        bridge.update(frame, (m) => { m.setAttribute("hyperlinkFormat", format); });
+      },
+      GetHyperlinkFormat: ({ self }) => [self.attributes["hyperlinkFormat"] ?? "|H%s|h%s|h"],
       GetContentHeight: ({ self }) => [num(self.attributes["height"])],
     };
   }

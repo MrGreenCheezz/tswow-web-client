@@ -62,7 +62,9 @@ export type FrameXmlCannedLfdCall =
   | { readonly kind: "roles"; readonly roles: number }
   | { readonly kind: "proposal" | "boot"; readonly accept: boolean }
   | { readonly kind: "teleport"; readonly toDungeon: boolean }
-  | { readonly kind: "continue"; readonly accept: boolean; readonly dungeons: readonly number[]; readonly roles: number };
+  | { readonly kind: "continue"; readonly accept: boolean; readonly dungeons: readonly number[]; readonly roles: number }
+  | { readonly kind: "comment"; readonly comment: string }
+  | { readonly kind: "search"; readonly join: boolean; readonly entry: number };
 
 /**
  * The canned world: `WorldClient`'s `lfg*` fields and commands, plus `emit` for scripted packets.
@@ -98,6 +100,8 @@ export class FrameXmlCannedLfdWorld implements FrameXmlLfdWorld {
     this.calls.push({ kind: "join", roles, dungeons: [...dungeons], comment });
   }
   leaveLfg(): void { this.calls.push({ kind: "leave" }); }
+  setLfgComment(comment: string): void { this.calls.push({ kind: "comment", comment }); }
+  searchLfg(join: boolean, entry: number): void { this.calls.push({ kind: "search", join, entry }); }
   setLfgRoles(roles: number): void { this.calls.push({ kind: "roles", roles }); }
   answerLfgProposal(accept: boolean): void {
     this.calls.push({ kind: "proposal", accept });
@@ -139,10 +143,10 @@ export class FrameXmlCannedLfdWorld implements FrameXmlLfdWorld {
     this.emit({ kind: "update" });
   }
 
-  /** SMSG_LFG_PROPOSAL_UPDATE for `entry` with five members, this player the tank. */
-  propose(entry: number, proposalId = 7, state = 0, selfAnswered = false): void {
+  /** SMSG_LFG_PROPOSAL_UPDATE for `entry` with five members, this player the tank; `encounters` is the killed-boss mask. */
+  propose(entry: number, proposalId = 7, state = 0, selfAnswered = false, encounters = 0): void {
     this.lfgProposal = {
-      dungeonEntry: entry, state, proposalId, encounters: 0, showWindow: true,
+      dungeonEntry: entry, state, proposalId, encounters, showWindow: true,
       players: [
         { roles: 0x02, self: true, inDungeon: false, sameGroup: false, answered: selfAnswered, accepted: selfAnswered },
         { roles: 0x04, self: false, inDungeon: false, sameGroup: false, answered: true, accepted: true },
@@ -189,7 +193,7 @@ export function frameXmlStockClassId(token: string | undefined): number | undefi
 /** A canned model over its own scripted world; the seam supplies the player's facts. */
 export function createCannedFrameXmlLfd(
   player: Pick<FrameXmlLfdContext, "playerLevel" | "playerClassId" | "playerName" | "playerGuid" | "playerFaction">
-    & Partial<Pick<FrameXmlLfdContext, "partyMemberCount" | "raidMemberCount" | "isPartyLeader">>,
+    & Partial<Pick<FrameXmlLfdContext, "partyMemberCount" | "raidMemberCount" | "isPartyLeader" | "dungeonEncounters">>,
   world = new FrameXmlCannedLfdWorld(),
   catalog: LfgStockCatalog | undefined = FRAMEXML_CANNED_LFD_CATALOG,
 ): { readonly model: FrameXmlLfdModel; readonly world: FrameXmlCannedLfdWorld } {

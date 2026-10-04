@@ -1,5 +1,6 @@
 import { startGlue } from "./Bootstrap.js";
 import { frontDoorGatewayOrigin } from "./FrontDoor.js";
+import { GlueServerUnavailableError, probeGlueServer, showGlueServerUnavailable } from "./GlueRetry.js";
 
 /**
  * `glue.html` — the standalone dev entry for the GlueXML screens.
@@ -17,6 +18,7 @@ const status = document.getElementById("glue-status");
 
 if (host && stage) {
   const parameters = new URL(window.location.href).searchParams;
+  // 10.03: only a gateway this page already trusts; a refused link is logged and the default used.
   const origin = frontDoorGatewayOrigin(window.location.search);
   void startGlue({
     host,
@@ -27,5 +29,14 @@ if (host && stage) {
     ...(origin ? { gatewayOrigin: origin } : {}),
   }).catch((error: unknown) => {
     console.error("[glue] интерфейс не загрузился", error);
+    if (error instanceof GlueServerUnavailableError) {
+      stage.hidden = true;
+      showGlueServerUnavailable({
+        container: host,
+        origin: error.origin,
+        probe: () => probeGlueServer(error.origin),
+        onAvailable: () => window.location.reload(),
+      });
+    }
   });
 }

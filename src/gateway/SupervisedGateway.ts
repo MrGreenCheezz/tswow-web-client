@@ -8,7 +8,7 @@
 //
 //   child → { type: "ready", generation, pid } · { type: "patch-chain-changed", at, first, epoch, changes }
 //         · { type: "status", auth, world, stale, lastChangeAt, declined? }
-//   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop" }
+//   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop", force? }
 
 import type { ClientPatchChange, PatchStatusSummary } from "./PatchStatus.js";
 
@@ -100,14 +100,15 @@ export function superviseGateway(
   };
   channel.onMessage((message) => {
     if (stopped || typeof message !== "object" || message === null) return;
-    const { type, reason } = message as { type?: unknown; reason?: unknown };
+    const { type, reason, force } = message as { type?: unknown; reason?: unknown; force?: unknown };
     if (type === "status?") {
       status();
     } else if (type === "shutdown") {
       // The supervisor counted the sessions a moment ago; one may have connected since, and
       // `close()` terminates every bridged socket. A restart is declined rather than drop a player
-      // in the middle of the world; the supervisor waits for them again. A stop always leaves.
-      if (reason === "restart") {
+      // in the middle of the world; the supervisor waits for them again. A stop always leaves, and
+      // so does a restart past the owner's deadline (`force`, 10.15 B, GATEWAY_RESTART_DEADLINE_MIN).
+      if (reason === "restart" && force !== true) {
         const sessions = gateway.connections();
         if (sessions.auth + sessions.world > 0) {
           status({ declined: true });

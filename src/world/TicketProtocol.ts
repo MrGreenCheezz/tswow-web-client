@@ -224,3 +224,20 @@ export function buildTicketSystemStatus(): Uint8Array {
 export function buildGmResponseResolve(): Uint8Array {
   return new PacketWriter().toUint8Array();
 }
+
+/**
+ * `CMSG_GM_REPORT_LAG` (8.17): `u32 kind, u32 mapId, f32 x, y, z` (HandleReportLag, TicketHandler.cpp:248).
+ * Wow.exe's GMReportLag (0x5ad020 → 0x5acf30) writes the Lua number minus one — STATIC_CONSTANTS
+ * Loot = 1 … Spell = 6 (table 0x00acfac0) go out as 0 … 5 — the current map and the player's position.
+ */
+export function buildReportLag(wireKind: number, mapId: number, x: number, y: number, z: number): Uint8Array {
+  return new PacketWriter().u32(wireKind >>> 0).u32(mapId >>> 0).f32(x).f32(y).f32(z).toUint8Array();
+}
+
+/**
+ * `CMSG_COMPLAIN` about a letter (8.17): `u8 0` (mail), `u64 sender`, `u32 0, u32 mailId, u32 0`
+ * (HandleComplainOpcode, MiscHandler.cpp:1190-1209; Wow.exe 0x56faf0 writes the same five fields).
+ */
+export function buildComplainMail(senderGuid: bigint, mailId: number): Uint8Array {
+  return new PacketWriter().u8(0).u64(senderGuid).u32(0).u32(mailId >>> 0).u32(0).toUint8Array();
+}

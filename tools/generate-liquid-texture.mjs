@@ -62,15 +62,18 @@ export async function liquidTexturePattern(directory, liquidClass) {
   return best.pattern;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const liquidClass = (process.argv[2] ?? "").toLowerCase();
-  if (!LIQUID_CLASSES.includes(liquidClass)) {
-    throw new Error(`Usage: node tools/generate-liquid-texture.mjs <${LIQUID_CLASSES.join("|")}>`);
-  }
-  const destination = resolve(root, process.env.LIQUID_DIR ?? "data/liquid");
+/** Where the strips are published; read on every call, so a long-lived worker follows the env. */
+export function liquidDirectory() {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", process.env.LIQUID_DIR ?? "data/liquid");
+}
+
+/**
+ * Publishes one class's strip and its JSON beside it, out of an open chain (the persistent worker
+ * calls this per job; the command line below calls it once). Leaves the chain open.
+ */
+export async function publishLiquidTexture(liquidClass, archives, destination = liquidDirectory()) {
+  if (!LIQUID_CLASSES.includes(liquidClass)) throw new Error(`${liquidClass} is not a liquid class`);
   const pattern = await liquidTexturePattern(dbcDirectory(), liquidClass);
-  const archives = await clientArchives(clientDirectory());
   const frames = [];
   const { paths: framePaths, stampPaths } = await liquidFrameInputs(archives, pattern);
   for (const path of framePaths) {
@@ -85,7 +88,6 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   }
   // Every present frame plus the first absence: changing either changes the strip.
   const stamp = await sourceStamp(archives, { paths: stampPaths, files: [join(dbcDirectory(), "LiquidType.dbc")] });
-  archives.close();
   if (frames.length === 0) throw new Error(`${pattern} has no frames in the client`);
 
   const { width, height } = frames[0];
@@ -98,5 +100,20 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   for (const file of [`${liquidClass}.png`, `${liquidClass}.json`]) {
     await writeSourceStamp(join(destination, file), stamp);
   }
-  console.log(`Generated liquid ${liquidClass}: ${frames.length} frames of ${width}x${height} from ${pattern}`);
+  return { frames: frames.length, width, height, pattern };
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  const liquidClass = (process.argv[2] ?? "").toLowerCase();
+  if (!LIQUID_CLASSES.includes(liquidClass)) {
+    throw new Error(`Usage: node tools/generate-liquid-texture.mjs <${LIQUID_CLASSES.join("|")}>`);
+  }
+  const archives = await clientArchives(clientDirectory());
+  let result;
+  try {
+    result = await publishLiquidTexture(liquidClass, archives);
+  } finally {
+    archives.close();
+  }
+  console.log(`Generated liquid ${liquidClass}: ${result.frames} frames of ${result.width}x${result.height} from ${result.pattern}`);
 }

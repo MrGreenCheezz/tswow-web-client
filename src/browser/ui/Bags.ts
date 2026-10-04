@@ -16,7 +16,7 @@ import { showEquipmentSets } from "./EquipmentSets.js";
 import { refreshBank } from "./Bank.js";
 import { attachDragAndDrop, bagSection, itemSlot } from "./ItemSlots.js";
 import { skinnable, slotElement } from "./Slots.js";
-import { Panel } from "./Widgets.js";
+import { setTip, Panel } from "./Widgets.js";
 import { setIconSource } from "./IconImage.js";
 import { BACKPACK_BUTTON_TEXTURE_PATH, nativeUiTextureUrl } from "./NativeUiSkin.js";
 
@@ -123,6 +123,26 @@ function wireBagSearch(): void {
   });
 }
 
+/** `ToggleBackpack()` (TOGGLEBACKPACK, 3.11): the backpack window alone. */
+export function toggleBackpack(): void {
+  inventoryWindow.hidden = !inventoryWindow.hidden;
+  if (!inventoryWindow.hidden && game.world) renderInventory(game.world.state);
+}
+
+/**
+ * `ToggleBag(id)` for a carried container, `id` 1–4 the bag-bar slot (TOGGLEBAG1-4, 3.11). False
+ * when no bag sits in that slot: the stock call opens nothing then, and the key stays unanswered.
+ */
+export function toggleBag(container: number): boolean {
+  const inventory = game.world && playerInventory(game.world.state);
+  const bag = inventory?.bags.find((entry) => entry.bagSlot === INVENTORY_SLOT_BAG_START + container - 1);
+  if (!bag) return false;
+  const panel = bagWindow(bag.bagSlot);
+  panel.toggle();
+  if (panel.visible && game.world) renderInventory(game.world.state);
+  return true;
+}
+
 export function toggleKeyring(): void {
   keyring().toggle();
   if (game.world) renderInventory(game.world.state);
@@ -209,7 +229,7 @@ function barButton(icon: string, title: string, free: number, size: number, onCl
   const button = document.createElement("button");
   button.type = "button";
   button.className = "bag-bar-button";
-  button.title = size > 0 ? `${title} · ${free} из ${size} свободно` : title;
+  setTip(button, size > 0 ? `${title} · ${free} из ${size} свободно` : title);
   if (icon.includes("/")) {
     const image = document.createElement("img");
     image.alt = "";

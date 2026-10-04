@@ -65,16 +65,38 @@ export function buildSetActionButton(slot: number, action: number, type: number)
 }
 
 /**
+ * `CMSG_SET_ACTIONBAR_TOGGLES`: one byte, bit `i` set when extra bar `i + 1` is shown — bottom
+ * left 0x01, bottom right 0x02, right 0x04, right two 0x08 (Wow.exe 0x5a8290, the Lua
+ * `SetActionBarToggles`, packs its first four arguments this way). The core stores the byte as is in
+ * `PLAYER_FIELD_BYTES` byte 2 (`HandleSetActionBarToggles`, MiscHandler.cpp:1018-1031).
+ */
+export function buildSetActionBarToggles(bars: number): Uint8Array {
+  return new PacketWriter().u8(bars & 0x0f).toUint8Array();
+}
+
+/**
  * Where each native bar starts in the server's 144 slots.
  *
- * The first six pages are the main bar: the paging keys walk them. The native extra rows stand on
- * pages 7–10 (slots 72, 84, 96, 108) — which are not free: stock uses exactly those pages for the
- * bonus bars of stances, forms and stealth (`bonusActionPage` below), and puts its own multi-bars on
- * main pages 6, 5, 3 and 4 instead (`stockBase` below). Moving the native rows onto the stock pages,
- * together with the buttons players already placed there, is WORK_PLAN 4.16 (b, an owner's decision).
+ * The first six pages are the main bar: the paging keys walk them. The four extra rows stand where
+ * stock's multi-bars do — main pages 6, 5, 3 and 4 (MultiActionBars.xml:41, 159, 277, 395;
+ * ActionButton.lua:6-9) — so a button placed in either interface is on the same slot in the other
+ * (L7 4.16b). Pages 7–10 belong to the bonus bars of stances, forms and stealth (`bonusActionPage`
+ * below); the native rows stood there until 4.16b (`LEGACY_EXTRA_BAR_BASES`).
  */
 export const ACTION_BAR_BASES = {
   main: 0,
+  bottomLeft: 60,
+  bottomRight: 48,
+  right: 24,
+  right2: 36,
+} as const;
+
+/**
+ * L7 4.16b: where the native extra rows stood before they moved to the stock pages — the bonus pages
+ * 7–10. Read only by the one-time migration (browser/ui/ActionBarStockLayout.ts), which copies what a
+ * player placed on a shown row there to the row's stock slot when that slot is empty.
+ */
+export const LEGACY_EXTRA_BAR_BASES = {
   bottomLeft: 72,
   bottomRight: 84,
   right: 96,
@@ -89,13 +111,16 @@ export type ExtraActionBar = "bottomLeft" | "bottomRight" | "right" | "right2";
  * `stockBase` is where the stock multi-bar answering to the same keys starts: MULTIACTIONBAR1..4
  * press MultiBarBottomLeft, MultiBarBottomRight, MultiBarRight and MultiBarLeft (Bindings.xml:875,
  * :959, :1043, :1127), which show pages 6, 5, 3 and 4 (ActionButton.lua:6-9, MultiActionBars.xml).
- * Under the stock HUD a key presses that slot, the one its button shows (WORK_PLAN 4.16a).
+ * Under the stock HUD a key presses that slot, the one its button shows (WORK_PLAN 4.16a). Since
+ * L7 4.16b the native row stands there too (`base` equals `stockBase`); `legacyBase` is its old page.
  */
-export const EXTRA_ACTION_BARS: ReadonlyArray<{ id: ExtraActionBar; base: number; stockBase: number; label: string }> = [
-  { id: "bottomLeft", base: ACTION_BAR_BASES.bottomLeft, stockBase: 60, label: "Нижняя левая" },
-  { id: "bottomRight", base: ACTION_BAR_BASES.bottomRight, stockBase: 48, label: "Нижняя правая" },
-  { id: "right", base: ACTION_BAR_BASES.right, stockBase: 24, label: "Правая" },
-  { id: "right2", base: ACTION_BAR_BASES.right2, stockBase: 36, label: "Правая вторая" },
+export const EXTRA_ACTION_BARS: ReadonlyArray<{
+  id: ExtraActionBar; base: number; stockBase: number; legacyBase: number; label: string;
+}> = [
+  { id: "bottomLeft", base: ACTION_BAR_BASES.bottomLeft, stockBase: 60, legacyBase: LEGACY_EXTRA_BAR_BASES.bottomLeft, label: "Нижняя левая" },
+  { id: "bottomRight", base: ACTION_BAR_BASES.bottomRight, stockBase: 48, legacyBase: LEGACY_EXTRA_BAR_BASES.bottomRight, label: "Нижняя правая" },
+  { id: "right", base: ACTION_BAR_BASES.right, stockBase: 24, legacyBase: LEGACY_EXTRA_BAR_BASES.right, label: "Правая" },
+  { id: "right2", base: ACTION_BAR_BASES.right2, stockBase: 36, legacyBase: LEGACY_EXTRA_BAR_BASES.right2, label: "Правая вторая" },
 ];
 
 /** Which page a slot belongs to, and where on that page it sits. */

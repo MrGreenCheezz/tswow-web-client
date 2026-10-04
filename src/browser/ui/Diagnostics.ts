@@ -107,10 +107,25 @@ export function showUnhandledOpcodes(): void {
   const packetErrors = game.world?.packetErrors.summary() ?? [];
   const packetErrorCount = game.world?.packetErrors.count ?? 0;
   const missing = summary.filter((entry) => entry.count > 0);
-  unhandledStatus.className = missing.length || packetErrorCount ? "error" : "muted";
+  // The object-update counters (5.26) and the syncs that found no path (5.02): an update packet
+  // that broke part-way is also in the error list above, but only here is what it cost counted.
+  const state = game.world?.state;
+  const updateFailures = state?.updateBlockFailures ?? 0;
+  const syncDropped = state?.splineSyncDropped ?? 0;
+  const worldNote = updateFailures || syncDropped
+    ? ` · сбоев обновлений объектов: ${updateFailures} (потеряно блоков: ${state?.updateBlocksLost ?? 0})`
+      + ` · синхронизаций сплайна без пути: ${syncDropped}`
+    : "";
+  // Accepted on purpose without an effect (5.29, world/IgnoredOpcodes.ts): counted, not hidden.
+  const ignored = game.world?.ignoredOpcodes.counts();
+  const ignoredTotal = ignored ? ignored["by-design"] + ignored.planned + ignored.unplanned + ignored.unregistered : 0;
+  const ignoredNote = ignored && ignoredTotal
+    ? ` · принято без эффекта: по замыслу ${ignored["by-design"]}, запланировано ${ignored.planned}, без пункта плана ${ignored.unplanned + ignored.unregistered}`
+    : "";
+  unhandledStatus.className = missing.length || packetErrorCount || updateFailures ? "error" : "muted";
   unhandledStatus.textContent = missing.length || packetErrorCount
-    ? `Опкоды без обработчика: ${missing.length} (${missing.reduce((total, entry) => total + entry.count, 0)} пакетов) · ошибки пакетов: ${packetErrorCount}`
-    : "Опкоды: необработанных пакетов и ошибок пока нет.";
+    ? `Опкоды без обработчика: ${missing.length} (${missing.reduce((total, entry) => total + entry.count, 0)} пакетов) · ошибки пакетов: ${packetErrorCount}${worldNote}${ignoredNote}`
+    : `Опкоды: необработанных пакетов и ошибок пока нет.${worldNote}${ignoredNote}`;
   unhandledOpcodeList.replaceChildren(
     ...packetErrors.slice(0, 20).map((entry) => {
       const row = document.createElement("p");

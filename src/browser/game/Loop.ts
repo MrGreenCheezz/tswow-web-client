@@ -5,6 +5,7 @@ import { updateSpellCooldowns } from "../ui/Spellbook.js";
 import { updateAuraDurations } from "../ui/Auras.js";
 import { diagnosticsWindow, fullFrameStatus, renderStatus, worldPanel } from "../ui/Dom.js";
 import { showStandIns } from "../ui/Diagnostics.js";
+import { showPoseWorkerStatus } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
 import { OPCODES } from "../../generated/opcodes.js";
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
 import { lightOverrideWeight } from "../LightClient.js";
@@ -25,9 +26,18 @@ import {
   CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PIVOT_HEIGHT, createCamera,
 } from "../SimpleScene.js";
 import { advanceCameraFrame, cameraAllowsUpwardOrbit } from "./CameraRig.js";
+import { characterMotion } from "../input/Movement.js"; // L8 5.14
+import { cameraWaterSurface } from "./CameraWater.js"; // L8 5.14
+import { settingOn } from "../ui/Settings.js"; // L8 5.14
+import { advanceCameraAutoFollow } from "../input/Controls.js";
 import { updateGroundTargetPreview } from "./GroundTargetPreview.js";
 import { updateAreaTriggers } from "./AreaTriggers.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
+import { moverGuid, moverObject, moverState } from "../input/Mover.js";
+import { ViewSubjectTracker, viewIsOut, viewSubject } from "./ViewSubject.js"; // 11.02-I
+import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
+import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
+import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { attachedGlowTint, itemEnchantments } from "../ItemEnchantments.js";
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
@@ -216,15 +226,12 @@ export function captureRenderTelemetry(capturedAt = performance.now()): Readonly
     accounting: accounting.snapshot(),
   }, captureBenchmarkClientReadiness());
 }
-/** The marks over heads go stale as the player walks, so they are asked for again now and then. */
-let questStatusAskedAt = 0;
 /** Consecutive frames that have thrown, reset by the first one that does not. */
 let frameFailures = 0;
 /** The last message reported, so a frame that throws every time says so once. */
 let lastFrameError = "";
 /** Long enough that the ordinary status line, written every 500 ms, does not overwrite the error. */
 const FRAME_ERROR_HOLD = 2_000;
-const QUEST_STATUS_INTERVAL = 5_000;
 /**
  * The frame's camera, handed the two things only `game` knows: what is solid and how high the
  * ground is.
@@ -236,25 +243,54 @@ const QUEST_STATUS_INTERVAL = 5_000;
  * arm a wall had granted, which on a street with a building behind it turned a -23.75-degree view
  * into a -85.00-degree one.
  */
-function advanceCameraView(player: WorldPosition, map: number | undefined, elapsed: number): void {
+function advanceCameraView(player: WorldPosition, map: number | undefined, elapsed: number,
+  subject?: WorldObjectState): void {
   const terrain = game.terrain;
-  const self = game.world?.state.selfGuid === undefined
+  const world = game.world;
+  // 11.02-I: the camera's subject (ViewSubject.ts) — the character unless something else is watched.
+  const self = subject ?? (world?.state.selfGuid === undefined
     ? undefined
-    : game.world.state.objects.get(game.world.state.selfGuid);
+    : world.state.objects.get(world.state.selfGuid));
+  // Its toggles: the mover's (the character's own `movementState` when it moves itself, Mover.ts);
+  // an object watched from afar has only its movement flags.
+  const toggles = world === undefined || self === undefined || self.guid !== moverGuid(world)
+    ? (self !== undefined && self.guid === world?.state.selfGuid ? world.movementState : undefined)
+    : moverState(world);
   advanceCameraFrame(game.camera, player, cameraPivotHeight(), {
     collision: game.collision?.world,
     heightAt: terrain && map !== undefined ? (x, y) => terrain.heightAt(map, x, y) : undefined,
     // A flying mover is not standing on its own feet. Let the camera use the full upward orbit;
     // actual roofs/floors are still enforced by CollisionWorld in cameraFloorHeight.
-    allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, game.world?.movementState),
+    allowUpwardOrbit: cameraAllowsUpwardOrbit(self?.movementFlags ?? 0, toggles),
+    waterZ: cameraWaterSurfaceOf(world, self, player), // L8 5.14
   }, elapsed);
 }
+
+/**
+ * L8 5.14: the surface the boom stops at under the stock `cameraWaterCollision` (CameraWater.ts, on by default as
+ * in Wow.exe): the water the mover's own feet last answered (the physics' query, WMO water included), while the
+ * camera is on the mover and that answer is for this column; none otherwise.
+ */
+function cameraWaterSurfaceOf(world: typeof game.world, subject: WorldObjectState | undefined,
+  player: WorldPosition): number | undefined {
+  if (world === undefined || subject === undefined || subject.guid !== moverGuid(world)) return undefined;
+  const liquid = characterMotion().liquid;
+  if (liquid?.surface === undefined || !settingOn("cameraWaterCollision")) return undefined;
+  return cameraWaterSurface(liquid, player.x, player.y);
+}
+
+/** 11.02-I: the camera's subject between frames, so a change of it clears the boom's eased limits. */
+const viewTracker = new ViewSubjectTracker();
+/** 11.02-I: `CMSG_FAR_SIGHT` as Wow.exe votes it (world/FarSight.ts). */
+const farSightLink = new FarSightLink();
 
 /** Last footprint handed to the terrain client; the ring only changes on tile borders. */
 let lastTerrainFootprintKey = "";
 
 function updateTerrainActiveTiles(world: typeof game.world): void {
-  const player = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  // 11.02-I: the ring the renderer re-pins, around the view subject (ViewSubject.ts) — the character,
+  // or a possessed unit or far sight eye once in view; the two callers must name the same ring.
+  const player = viewSubject(world);
   if (world?.mapId === undefined || !player?.position) {
     if (lastTerrainFootprintKey === "none") return;
     lastTerrainFootprintKey = "none";
@@ -286,7 +322,10 @@ function frame(now: number): void {
   // Until this RAF actually reaches draw(), its public admission/submission counters describe an
   // empty frame. This also covers loading, a hidden world panel, or an exception in earlier UI work.
   game.renderer?.markFrameNotRendered();
-  const elapsed = Math.min((now - lastFrame) / 1000, 0.1);
+  // 5.13: the physics takes the real frame (`advancePhysics` substeps and bounds it); the camera
+  // and the animations keep the 0.1 s clamp.
+  const elapsedRaw = (now - lastFrame) / 1000;
+  const elapsed = Math.min(elapsedRaw, 0.1);
   lastFrame = now;
   const world = game.world;
   updateFpsCounter(now, !!world && !worldPanel.hidden && !document.hidden);
@@ -298,6 +337,10 @@ function frame(now: number): void {
   drainWorldState();
   updateDeathReclaimCountdown(now);
   updateTerrainActiveTiles(game.world);
+  // 11.02-I: after the packets are in, whether or not the world is drawn this frame. A loading
+  // screen (a login, a transfer) or no world starts the camera's subject over as well.
+  farSightLink.update(world, game.worldLoading);
+  if (!world || game.worldLoading) viewTracker.reset();
   const hitchState = performance.now();
   if (!world) {
     clearPortraitTargets();
@@ -324,10 +367,10 @@ function frame(now: number): void {
   // Resolve the transfer barrier before physics.  A terrain tile can finish between frames, and
   // this is the first point at which both terrain and VMAP collision are known to be usable.
   updateLoadingScreen(now);
-  if (game.world && now - questStatusAskedAt > QUEST_STATUS_INTERVAL) {
-    questStatusAskedAt = now;
-    game.world.requestQuestGiverStatus();
-  }
+  // 5.23: the marks over heads are asked for as quest givers appear and as the quest log changes,
+  // a few per frame (WorldClient.noticeObject/questLogChanged); the queue keeps a 60 s sweep
+  // in place of the old five-second one.
+  game.world?.pumpQuestGiverStatus?.(now);
   const hitchLoading = performance.now();
   // Sections of the world pass a frame never reached stay NaN and are skipped from the record:
   // a loading-screen hitch still reports its state/ui/loading/panels sections.
@@ -347,17 +390,23 @@ function frame(now: number): void {
   }
   if (world && player?.position && !worldPanel.hidden) {
     // What is solid around the player, before it is asked what it is standing on. Nearly every
-    // frame this returns having done nothing at all.
-    game.collision?.refresh(world.mapId, player.position.x, player.position.y);
+    // frame this returns having done nothing at all. 11.02-I: around the unit the physics steps —
+    // a possessed creature far from the character walks on the collision around itself (Mover.ts).
+    const solidAround = moverObject(world)?.position ?? player.position;
+    game.collision?.refresh(world.mapId, solidAround.x, solidAround.y);
     // Turning, walking, gravity, the jump arc, the water, and the walls. What used to be here was
     // six lines that stuck the character to the ground whenever it happened to be within six yards.
-    if (worldPhysicsReady()) advancePhysics(elapsed);
+    if (worldPhysicsReady()) advancePhysics(elapsedRaw);
     // 2.01: CMSG_AREATRIGGER for a volume the step just entered, its heartbeat first (AreaTriggers.ts).
     updateAreaTriggers(now);
     hitchPhysics = performance.now();
     // Read after the step, not before: sending a packet replaces the state's position object, and
     // everything below draws the world around wherever the character now is.
-    const position = player.position ?? { x: 0, y: 0, z: 0, orientation: 0 };
+    // 11.02-I: around the camera's subject (ViewSubject.ts) — the character, or the object
+    // PLAYER_FARSIGHT names once it is in view (a possessed unit, a far sight eye). The boom, the
+    // light, the streamed scenery and the ears below are built around it.
+    const subject = viewSubject(world) ?? player;
+    const position = subject.position ?? player.position ?? { x: 0, y: 0, z: 0, orientation: 0 };
     // Where the arm hangs on this particular character, read off the model that is standing there
     // and read once. Every camera below is built from this one pair of numbers rather than each
     // asking for itself, because the world, the plates and the bubbles are drawn through three
@@ -367,11 +416,19 @@ function frame(now: number): void {
     // only in force until the player's own model has been built, and the change when it arrives is
     // instant rather than eased — the camera is recomputed every frame anyway, and the step is at
     // most a few tenths of a yard.
-    game.camera.pivotHeight = game.renderer?.unitPivotHeight(player.guid) ?? CAMERA_DEFAULT_PIVOT_HEIGHT;
-    game.camera.eyeHeight = game.renderer?.unitEyeHeight(player.guid) ?? CAMERA_DEFAULT_EYE_HEIGHT;
+    // 11.02-I: the subject's model (a far sight DynamicObject has none: the constants).
+    game.camera.pivotHeight = game.renderer?.unitPivotHeight(subject.guid) ?? CAMERA_DEFAULT_PIVOT_HEIGHT;
+    game.camera.eyeHeight = game.renderer?.unitEyeHeight(subject.guid) ?? CAMERA_DEFAULT_EYE_HEIGHT;
+    // 11.02-I: a new subject starts with nothing in the boom's way.
+    viewTracker.settle(game.camera, subject.guid, world, game.worldLoading);
+    // 11.02-GF3: the vehicle seat's camera (VehicleCamera.ts): the vehicle distance, a seat's zoom.
+    vehicleCamera.update(world.state, vehicleCatalog(), game.camera, now);
+    // 5.14: the camera's own way back behind the character (cameraSmoothStyle), before the boom.
+    // 11.02-I: not behind a facing that is not the player's to change (Wow.exe 0x005fa6b0).
+    if (!viewIsOut(world)) advanceCameraAutoFollow(elapsed);
     // One ray a frame, and after the collision world has been stocked and the character has moved,
     // so it is asked about where the camera is going rather than about where it has been.
-    advanceCameraView(position, world.mapId, elapsed);
+    advanceCameraView(position, world.mapId, elapsed, subject);
 
     // Only while the character is going somewhere: the server drops a mover that goes quiet, but
     // a character standing still has nothing to report. A fall counts as going somewhere.
@@ -559,6 +616,8 @@ function frame(now: number): void {
       // The capsule counter is about what is on the screen right now, so it rides the same
       // half-second tick rather than going stale from the moment the window was opened.
       if (!diagnosticsWindow.hidden) showStandIns();
+      // L10 (10.18): where crowd poses run (worker or main thread) and why, beside the frame times.
+      if (!diagnosticsWindow.hidden) showPoseWorkerStatus(fullFrameStatus);
     }
     game.scene?.draw(
       world.state,

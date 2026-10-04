@@ -1,4 +1,5 @@
 import { MAX_GLYPH_SLOTS } from "../../world/CharacterProgressProtocol.js";
+import { TALENT_SPEC_ACTIVATION_SPELLS } from "../../world/TalentSpecSpells.js";
 import type { TalentsInfo } from "../../world/CharacterProgressProtocol.js";
 import type { TalentTabInfo } from "../../gateway/TalentMetadata.js";
 import { unit, worldObject } from "../../world/Fields.js";
@@ -11,7 +12,11 @@ import { globalString } from "../../generated/globalStrings.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { ensureSpellNames } from "./SpellNames.js";
 import { formatSpellDescription } from "./SpellText.js";
-import { requestSpellCast } from "../game/GroundTarget.js";
+import { itemUseSpellId, requestSpellCast } from "../game/GroundTarget.js"; // L7 1.28: itemUseSpellId
+import { UPDATE_FIELDS } from "../../generated/updateFields.js"; // L7 1.28
+import { glyphChoicesForSocket, loadNativeGlyphCatalog } from "./GlyphSockets.js"; // L7 1.28
+import { nativeString } from "./Strings.js"; // L7 1.28
+import { showMenu } from "./Widgets.js"; // L7 1.28
 import { spellDescriptionContext } from "./Spellbook.js";
 import {
   TALENT_COLUMNS, learnedInTab, nextRankRequest, pointsInTree, talentArrows, talentTreeState,
@@ -40,11 +45,10 @@ import {
  */
 
 /**
- * The two spells that switch specialisation, from `SpellEffects.cpp:5734` — `damage - 1`, so
- * damage 1 activates spec 0. They are shown only when the character knows them, which is the same
- * test the original client's button makes.
+ * The two spells that switch specialisation (`world/TalentSpecSpells.ts`), shown only when the
+ * character knows them.
  */
-const ACTIVATE_SPEC_SPELLS = [63645, 63644];
+const ACTIVATE_SPEC_SPELLS = TALENT_SPEC_ACTIVATION_SPELLS;
 
 let activeTab = 0;
 /** Set while the pet's trees are being shown instead of the character's. */
@@ -408,39 +412,76 @@ function drawGlyphs(glyphRow: HTMLElement, info: TalentsInfo | undefined): void 
     if (id === 0) button.setAttribute("aria-disabled", "true");
     attachTooltip(button, () => {
       const row = glyph ? game.spells.get(glyph.spellId) : undefined;
+      // L7 1.28: a socket the level has not opened says so (PLAYER_GLYPHS_ENABLED, stock «Заблокировано»).
+      const self = game.world?.state.selfGuid === undefined ? undefined : game.world.state.objects.get(game.world.state.selfGuid);
+      const mask = self?.fields.get(UPDATE_FIELDS.PLAYER_GLYPHS_ENABLED.offset);
+      const locked = mask !== undefined && ((mask >>> slot) & 1) === 0;
       return id === 0
-        ? { title: "Ячейка символа", footer: ["Щелчок вставляет символ из сумок"] }
-        : { title: row?.name ?? `Символ ${id}`, footer: ["Щелчок вынимает символ"] };
+        ? { title: "Ячейка символа", footer: [locked ? "Ячейка ещё закрыта" : "Щелчок — выбрать символ из сумок для этой ячейки"] }
+        : { title: row?.name ?? `Символ ${id}`, footer: ["Щелчок убирает символ (он будет уничтожен)"] };
     });
     button.addEventListener("click", () => {
-      if (id !== 0) game.world?.removeGlyph(slot);
-      else insertGlyphFromBags();
+      // L7 1.28: a filled socket asks first (stock CONFIRM_REMOVE_GLYPH — the glyph is destroyed);
+      // an empty one offers the bag's glyph items that fit it and inscribes the chosen one there.
+      if (id !== 0) confirmGlyphRemoval(button, slot, game.spells.get(glyph?.spellId ?? 0)?.name ?? `Символ ${id}`);
+      else chooseGlyphForSocket(button, slot, glyphs);
     });
     glyphRow.append(button);
   }
 }
 
+/** L7 1.28: `RemoveGlyphFromSocket` behind stock's question (Blizzard_GlyphUI.lua:243-252, StaticPopup.lua:33-47). */
+function confirmGlyphRemoval(anchor: HTMLElement, slot: number, name: string): void {
+  confirmPanel(anchor, {
+    title: "Символ",
+    lines: [nativeString("CONFIRM_REMOVE_GLYPH", "Убрать символ «%s»? Он будет уничтожен.", name)],
+    confirm: "Убрать",
+    danger: true,
+    onConfirm: () => game.world?.removeGlyph(slot),
+  });
+}
+
 /**
- * Inserts a glyph by using the item: there is no "insert" opcode, only `CMSG_USE_ITEM`.
- * Uses the first glyph item found in the bags; the server validates slot/type/level.
+ * L7 1.28: inscribes into the socket that was clicked. There is no «insert» opcode: the glyph item's
+ * `CMSG_USE_ITEM` carries the socket in its glyph field (`WorldClient.useGlyphItem`), as stock
+ * `PlaceGlyphInSocket` sends it; the items offered are the ones `GlyphMatchesSocket` would accept.
  */
-function insertGlyphFromBags(): void {
+function chooseGlyphForSocket(anchor: HTMLElement, slot: number, inscribed: readonly number[]): void {
   const world = game.world;
   if (!world) return;
-  const inventory = playerInventory(world.state);
-  const bags = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)];
-  // Glyph items are consumables whose use casts the insert; find any usable glyph the server
-  // has a template for. The exact slot choice stays server-side — this only starts the use.
-  const candidate = bags.find((slot) => {
-    if (slot.item === undefined) return false;
-    const entry = worldObject.entry(slot.item) ?? 0;
-    const template = entry ? world.itemTemplate(entry) : undefined;
-    return (template?.name ?? "").toLowerCase().includes("символ")
-      || (template?.name ?? "").toLowerCase().includes("glyph");
+  void loadNativeGlyphCatalog(game.gatewayOrigin).then((catalog) => {
+    if (game.world !== world) return;
+    const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+    const mask = self?.fields.get(UPDATE_FIELDS.PLAYER_GLYPHS_ENABLED.offset);
+    const socket = {
+      enabled: mask !== undefined && ((mask >>> slot) & 1) === 1,
+      slotId: self?.fields.get(UPDATE_FIELDS.PLAYER_FIELD_GLYPH_SLOTS_1.offset + slot),
+    };
+    if (!socket.enabled) {
+      world.onSpellStatus?.("Эта ячейка символа ещё закрыта", true);
+      return;
+    }
+    if (!catalog) {
+      world.onSpellStatus?.("Список символов недоступен", true);
+      return;
+    }
+    const inventory = playerInventory(world.state);
+    const names = new Map<bigint, string>();
+    const items = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)]
+      .flatMap((held) => {
+        if (held.item === undefined || held.guid === undefined) return [];
+        const template = world.itemTemplate(worldObject.entry(held.item) ?? 0);
+        if (template?.name) names.set(held.guid, template.name);
+        return [{ guid: held.guid, bag: held.bag, slot: held.slot, useSpellId: itemUseSpellId(template) }];
+      });
+    const choices = glyphChoicesForSocket(catalog, items, socket, inscribed);
+    if (choices.length === 0) {
+      world.onSpellStatus?.("В сумках нет символов для этой ячейки", true);
+      return;
+    }
+    showMenu(anchor, "Начертать символ", choices.map((choice) => ({
+      label: names.get(choice.item.guid) ?? game.spells.get(choice.spellId)?.name ?? `Символ ${choice.glyphId}`,
+      run: () => world.useGlyphItem(choice.item.bag, choice.item.slot, choice.item.guid, slot),
+    })));
   });
-  if (!candidate?.item) {
-    world.onSpellStatus?.("В сумках нет символов для вставки", true);
-    return;
-  }
-  world.useItem(candidate.bag, candidate.slot, candidate.guid);
 }

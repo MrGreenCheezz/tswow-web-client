@@ -4,8 +4,11 @@ import { game } from "../game/Context.js";
 import { spellButtonUsable, type SpellMetadata } from "../SpellMetadata.js";
 import { syncMountSpellIds } from "../MountSpells.js";
 import { spellCastBlockReason } from "../SpellCastGuard.js";
-import { GROUND_TARGET_MODE, beginGroundTarget, isGroundTargetSpell } from "../game/GroundTarget.js";
-import { isCurrentSpellMetadataRequest, spellMetadataEpoch } from "./SpellNames.js";
+import { GROUND_TARGET_MODE, beginGroundTarget, cancelGroundTarget, isGroundTargetSpell } from "../game/GroundTarget.js";
+import { armItemTarget, isItemTargetSpell, spellTargetsObject } from "../game/SpellCursor.js";
+import { ensureSpellNames, isCurrentSpellMetadataRequest, spellMetadataEpoch } from "./SpellNames.js";
+import { PET_SPELL_DRAG_FORMAT, SPELLBOOK_PET_TAB, nativePetBook, petBookAutocast, petBookTab, type PetBookRow } from "./PetSpellbook.js";
+import { clearPetBookCooldowns, registerPetBookCooldown, updatePetBookCooldowns } from "./PetSpellbook.js"; // L7 4.03
 import {
   spellStatus, spellbookHideRanks, spellbookList, spellbookSearch, spellbookTabs, spellbookWindow,
 } from "./Dom.js";
@@ -13,8 +16,9 @@ import { lowerRankSpells, rankChainKey, type RankedSpell } from "./SpellRanks.js
 import { spellModifierText } from "../../world/SpellModifiers.js";
 import { skinnable, slotElement, slotSiblings } from "./Slots.js";
 import { actionDragPayload } from "./ActionBar.js";
+import { beginIconDrag } from "./DragGhost.js";
 import {
-  attachTooltip, cooldownDuration, cooldownLabel, cooldownView,
+  getTip, setTip, attachTooltip, cooldownDuration, cooldownLabel, cooldownView,
   type TooltipContent, type TooltipLine,
 } from "./Widgets.js";
 import { setIconSource, spellIconUrl } from "./IconImage.js";
@@ -26,6 +30,7 @@ import { notice } from "./Notices.js";
 import { readSkills } from "./Skills.js";
 import { professionOpener, professionSpellSkill } from "./ProfessionRules.js";
 import { openProfession, closeProfessions } from "./Professions.js";
+import { globalCooldownEndFor, globalCooldownSpanFor } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import {
   GENERAL_TAB_ICON, SPELLBOOK_GENERAL_TAB, SPELLBOOK_OTHER_CLASS_TAB, liveSpellbookTabs, spellAbilityMatchesActor,
   spellbookActor, spellbookClassLines, spellbookOtherClassSpell, spellbookOtherClassTabName, spellbookTabFor,
@@ -168,6 +173,7 @@ export function clearSpellbook(): void {
   drawSpellbookTabs([]);
   spellbookList.replaceChildren();
   spellButtons.clear();
+  clearPetBookCooldowns(); // L7 4.03
 }
 
 /** The paged spell book, its cooldown sweeps and casting from it. */
@@ -288,6 +294,7 @@ export function highestKnownRank(id: number): number {
 export function showSpells(): void {
   spellbookList.replaceChildren();
   spellButtons.clear();
+  clearPetBookCooldowns(); // L7 4.03
   const world = game.world;
   const talentData = game.talentData;
   if (world?.initialSpellsReceived && talentData && !talentData.ready
@@ -320,10 +327,13 @@ export function showSpells(): void {
     : spellbookTabFor(id, tabs.data, classLines, tabs.actor);
   const counts = new Map<number, number>();
   for (const id of knownIds) counts.set(tabOf(id), (counts.get(tabOf(id)) ?? 0) + 1);
+  // 4.03: the pet's book is a tab of its own, last, while there is one (PetSpellbook.ts).
+  const petTab = tabs === undefined ? undefined : petBookTab();
+  if (spellbookTab === SPELLBOOK_PET_TAB && !petTab) spellbookTab = undefined;
   // A tab the character has no spell in at all cannot stay selected: the strip would not draw it,
   // and the book would sit on «В этой вкладке нет активных заклинаний» with nothing on the screen
   // to press to get out of it. General is the fallback because the original book always has it.
-  if (spellbookTab === undefined || !counts.has(spellbookTab)) {
+  if (spellbookTab !== SPELLBOOK_PET_TAB && (spellbookTab === undefined || !counts.has(spellbookTab))) {
     // A class's own tree before the other classes' tab, which has no SkillLine name to sort by.
     const fallback = [...counts.keys()].filter((line) => line !== SPELLBOOK_GENERAL_TAB)
       .sort((left, right) => Number(left === SPELLBOOK_OTHER_CLASS_TAB) - Number(right === SPELLBOOK_OTHER_CLASS_TAB)
@@ -338,7 +348,14 @@ export function showSpells(): void {
   drawTabs(tabs, counts, {
     name: spellbookOtherClassTabName(className(tabs?.actor.classId), classLines.size > 0),
     iconId: otherFirst === undefined ? 0 : game.spells.get(otherFirst)?.iconId ?? 0,
+  }, petTab && {
+    name: petTab.name, count: petTab.rows.length,
+    iconId: petTab.rows[0] === undefined ? 0 : game.spells.get(petTab.rows[0].entry.spellId)?.iconId ?? 0,
   });
+  if (spellbookTab === SPELLBOOK_PET_TAB && petTab) {
+    drawPetBook(petTab.rows);
+    return;
+  }
   const inTab = known.filter((spell) => tabOf(spell.id) === spellbookTab);
 
   const lower = hideLowerRanks
@@ -402,6 +419,78 @@ export function showSpells(): void {
   updateSpellCooldowns(performance.now());
 }
 
+/**
+ * 4.03: the pet tab's page — the pet's spells in the realm's order, as the stock pet book lists them.
+ * A click is `CastSpell(i, "pet")`, a right click `ToggleSpellAutocast(i, "pet")`, a drag onto the pet
+ * bar `PickupSpell(i, "pet")` dropped there (PetBar.ts); all three through the stock pet book model.
+ */
+function drawPetBook(rows: readonly PetBookRow[]): void {
+  const ids = rows.map((row) => row.entry.spellId);
+  if (ids.some((id) => !game.spells.has(id))) ensureSpellNames(ids, () => showSpells());
+  const shown = rows.filter((row) => matchesQuery(row.entry.spellId));
+  spellStatus.className = shown.length > 0 ? "success" : "muted";
+  spellStatus.textContent = shown.length === 0
+    ? (spellbookQuery ? "Ничего не найдено." : "В этой вкладке нет активных заклинаний.")
+    : spellbookQuery ? `Найдено ${shown.length} из ${rows.length}` : `${shown.length} заклинаний`;
+  for (const row of shown) spellbookList.append(createPetSpellButton(row));
+}
+
+function createPetSpellButton(row: PetBookRow): HTMLButtonElement {
+  const spellId = row.entry.spellId;
+  const metadata = game.spells.get(spellId);
+  const autocast = petBookAutocast(row.entry);
+  const button = document.createElement("button");
+  const icon = document.createElement("span");
+  const label = document.createElement("span");
+  const badge = document.createElement("small");
+  button.type = "button";
+  button.className = autocast.on ? "spell-button pet-spell-button is-autocast" : "spell-button pet-spell-button";
+  button.dataset["petBookIndex"] = String(row.index);
+  attachTooltip(button, () => spellTooltip(spellId));
+  icon.className = "spell-icon";
+  icon.style.background = `hsl(${(metadata?.iconId ?? spellId) * 47 % 360} 45% 38%)`;
+  const iconUrl = spellIconUrl(metadata?.iconId ?? 0, game.gatewayOrigin);
+  if (iconUrl) {
+    const image = document.createElement("img");
+    image.alt = "";
+    image.addEventListener("error", () => image.remove(), { once: true });
+    setIconSource(image, iconUrl);
+    icon.append(image);
+  }
+  label.className = "spell-label";
+  label.textContent = [metadata?.name ?? unknownLabel("заклинание", spellId), metadata?.passive ? "пассивное" : "",
+    autocast.on ? "автоприменение" : ""].filter(Boolean).join(" · ");
+  badge.textContent = metadata?.rank ?? "";
+  button.append(icon, label, badge);
+  // L7 4.03: the row's cooldown sweep, as the character's rows draw theirs (PetSpellbook.ts).
+  const cooldown = document.createElement("span");
+  cooldown.className = "spell-cooldown";
+  cooldown.hidden = true;
+  button.append(cooldown);
+  registerPetBookCooldown(spellId, button, cooldown);
+  // Until the row lands nothing is sent; a passive spell is never sent (the model refuses it too).
+  const castable = metadata !== undefined && metadata.passive !== true;
+  button.disabled = !castable;
+  button.setAttribute("aria-label", label.textContent);
+  if (!castable) return button;
+  button.addEventListener("click", () => nativePetBook().castBookSpell(row.index));
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (autocast.autocastable) nativePetBook().toggleBookAutocast(row.index);
+  });
+  button.draggable = true;
+  button.addEventListener("dragstart", (event) => {
+    event.dataTransfer?.setData(PET_SPELL_DRAG_FORMAT, String(spellId));
+    beginIconDrag(event, icon, { label: metadata.name.trim().charAt(0) || undefined });
+  });
+  return button;
+}
+
+/** PET_BAR_CHANGED: the pet tab appears, goes or redraws its autocast marks while the book is open. */
+export function refreshPetSpellbook(): void {
+  if (!spellbookWindow.hidden) showSpells();
+}
+
 /** Name or rank, folded to lower case. Empty query matches everything. */
 function matchesQuery(spellId: number): boolean {
   if (!spellbookQuery) return true;
@@ -428,6 +517,7 @@ function drawTabs(
   tabs: { data: SpellbookTabData; actor: SpellbookActorContext } | undefined,
   counts: ReadonlyMap<number, number>,
   other: { readonly name: string; readonly iconId: number },
+  pet?: { readonly name: string; readonly count: number; readonly iconId: number },
 ): void {
   // A book whose skill lines have not landed still has a tab strip a module may have put a tab
   // into (М7) — and the host itself is out of the redraw either way.
@@ -456,6 +546,8 @@ function drawTabs(
   const rank = (line: number): number => (line === SPELLBOOK_GENERAL_TAB ? 0 : line === SPELLBOOK_OTHER_CLASS_TAB ? 2 : 1);
   entries.sort((left, right) => rank(left.line) - rank(right.line)
     || left.name.localeCompare(right.name) || left.line - right.line);
+  // The pet's book after all of the character's own, as the stock book puts its pet tab last.
+  if (pet) entries.push({ line: SPELLBOOK_PET_TAB, count: pet.count, name: pet.name, iconId: pet.iconId });
   drawSpellbookTabs(entries.map((entry) =>
     tabButton(entry.name, spellbookTab === entry.line, entry.line, entry.count, entry.iconId)));
 }
@@ -790,6 +882,8 @@ function createSpellButton(spellId: number, badge: string): HTMLButtonElement {
     button.addEventListener("dragstart", (event) => {
       const [format, payload] = actionDragPayload(spellId);
       event.dataTransfer?.setData(format, payload);
+      // 4.02: the spell's icon on the cursor rather than the whole row with its name and rank.
+      beginIconDrag(event, icon, { label: metadata?.name?.trim().charAt(0) || undefined });
     });
     const elements = spellButtons.get(spellId) ?? [];
     elements.push({ button, cooldown });
@@ -820,7 +914,7 @@ function setSpellButtonState(
   // Called 60 times a second for every known spell: reads are free, writes force style and
   // accessibility work, so only touch the DOM when the value actually moved.
   if (button.disabled !== disabled) button.disabled = disabled;
-  if (button.title !== label) button.title = label;
+  if (getTip(button) !== label) setTip(button, label);
   if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
   const ariaDisabled = String(disabled);
   if (button.getAttribute("aria-disabled") !== ariaDisabled) {
@@ -881,6 +975,13 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   if (isGroundTargetSpell(metadata)) {
     if (!beginGroundTarget(spellId)) return false;
     notice("Кликните по земле для выбора точки · правый клик или Esc — отмена", "info");
+    return true;
+  }
+  // Disenchant, Prospecting, Milling, Feed Pet wait for the item they go on (2.05, SpellCursor.ts).
+  if (explicitUnitTarget === undefined && isItemTargetSpell(metadata)) {
+    cancelGroundTarget();
+    if (!armItemTarget(world, spellId, undefined, spellTargetsObject(metadata))) return false;
+    notice("Выберите предмет · правый клик или Esc — отмена", "info");
     return true;
   }
   const cooldown = Math.max(metadata.recoveryTime, metadata.categoryRecoveryTime);
@@ -960,7 +1061,12 @@ export function updateSpellCooldowns(now: number): void {
     const metadata = game.spells.get(spellId);
     const own = world.cooldownRemaining(spellId, now);
     const ownState = world.cooldownState(spellId);
-    const gcdDuration = metadata?.startRecoveryTime ?? 0;
+    // L13-review 5.30: the cast guard's rule — the global cooldown of the row's own category and that entry's own
+    // length (0x00807980); unknown length: the row's StartRecoveryTime. A category-0 spell's button is not disabled
+    // by a 133 global cooldown it may be cast through, a 133 spell without a time of its own is.
+    const globalEnd = globalCooldownEndFor(game, metadata); // L13-review 5.30
+    const globalRemaining = globalEnd > now ? globalEnd - now : 0; // L13-review 5.30
+    const gcdDuration = globalRemaining > 0 ? globalCooldownSpanFor(game, metadata) || (metadata?.startRecoveryTime ?? 0) : 0; // L13-review 5.30
     // Keep the denominator stable. Deriving it from `remaining` on every frame makes the overlay
     // look stuck until it vanishes; WorldClient's snapshot preserves the real server/local window.
     const ownDuration = cooldownDuration(
@@ -968,7 +1074,7 @@ export function updateSpellCooldowns(now: number): void {
     );
     const view = cooldownView(
       now, own, ownDuration,
-      gcdDuration > 0 ? Math.max(0, game.globalCooldownUntil - now) : 0,
+      globalRemaining, // L13-review 5.30: was `gcdDuration > 0 ? shared remaining : 0`
       gcdDuration, ownState,
     );
     const cooling = view.remaining > 0;
@@ -993,4 +1099,5 @@ export function updateSpellCooldowns(now: number): void {
       }
     }
   }
+  updatePetBookCooldowns(now); // L7 4.03: the pet tab's rows
 }

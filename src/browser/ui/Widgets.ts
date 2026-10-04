@@ -9,6 +9,14 @@
  */
 
 import { setIconSource } from "./IconImage.js";
+import { attachTooltip, setTip, type TooltipContent } from "./Tooltip.js";
+
+// The tooltip lives in its own module (4.01); every name the panels imported from here still is.
+export {
+  TIP_DELAY_MS, TIP_WARM_MS, TOOLTIP_ID, armTip, attachTooltip, getTip, hideTooltip, hideTooltipAtPoint, plainTip,
+  refreshTooltip, setTip, showTooltipAtPoint,
+} from "./Tooltip.js";
+export type { TipSource, TooltipContent, TooltipLine, TooltipRefresh, TooltipTone } from "./Tooltip.js";
 
 /** How full a bar is, clamped, with an unknown or absent maximum reading as empty rather than NaN. */
 export function fillFraction(value: number | undefined, maximum: number | undefined): number {
@@ -330,7 +338,7 @@ export class SlotGrid {
       // the name either way, the way `ItemSlots.ts:337` does for the bags and the paper doll.
       if (content.title) slot.setAttribute("aria-label", content.title);
       if (content.tooltip) attachTooltip(slot, content.tooltip);
-      else if (content.title) slot.title = content.title;
+      else if (content.title) setTip(slot, content.title);
       if (content.icon) {
         const icon = document.createElement("img");
         setIconSource(icon, content.icon);
@@ -380,7 +388,7 @@ export class IconButton {
     this.root = document.createElement("button");
     this.root.type = "button";
     this.root.className = "ui-icon-button";
-    if (options.title) this.root.title = options.title;
+    if (options.title) setTip(this.root, options.title);
     if (options.icon) {
       const icon = document.createElement("img");
       setIconSource(icon, options.icon);
@@ -418,7 +426,7 @@ export class IconButton {
     key?: string | undefined;
     title?: string | undefined;
   }): void {
-    this.root.title = content.title ?? "";
+    setTip(this.root, content.title);
     for (const child of [...this.root.children]) if (child !== this.#sweep && child !== this.#cooldown) child.remove();
     if (content.icon) {
       const icon = document.createElement("img");
@@ -471,7 +479,7 @@ export class IconButton {
       this.#lastUsable = usable;
       this.root.classList.toggle("ui-unusable", !usable);
     }
-    if (reason !== undefined) this.root.title = reason;
+    if (reason !== undefined) setTip(this.root, reason);
   }
 }
 
@@ -648,6 +656,78 @@ export function confirmPanel(anchor: HTMLElement, options: ConfirmOptions): void
   openFloating(box, anchor);
 }
 
+export interface QuantityOptions {
+  title: string;
+  /** The largest number the field accepts; the smallest is 1. */
+  max: number;
+  /** The line under the field for the current number: a total price, for one. */
+  describe?: ((units: number) => string) | undefined;
+  confirm?: string | undefined;
+  onConfirm: (units: number) => void;
+}
+
+/** A typed number clamped to 1..max; anything that is not a number is 1. */
+export function clampQuantity(value: string | number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(Math.max(1, Math.trunc(max)), Math.trunc(parsed)));
+}
+
+/**
+ * How many (4.07): the stock stack split frame's job — a number field with ↑/↓, Enter to accept and
+ * Escape to close (the floating box's own), and a line that follows the number.
+ */
+export function quantityPanel(anchor: HTMLElement, options: QuantityOptions): void {
+  const box = document.createElement("div");
+  box.className = "ui-menu ui-confirm ui-quantity";
+  const heading = document.createElement("strong");
+  heading.textContent = options.title;
+  const field = document.createElement("input");
+  field.type = "number";
+  field.min = "1";
+  field.max = String(Math.max(1, Math.trunc(options.max)));
+  field.step = "1";
+  field.value = "1";
+  field.setAttribute("aria-label", options.title);
+  const line = document.createElement("p");
+  const units = (): number => clampQuantity(field.value, options.max);
+  const describe = (): void => { line.textContent = options.describe?.(units()) ?? ""; };
+  describe();
+  const accept = (): void => {
+    const count = units();
+    closeFloating();
+    options.onConfirm(count);
+  };
+  field.addEventListener("input", describe);
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      accept();
+    }
+  });
+  const actions = document.createElement("div");
+  actions.className = "ui-confirm-actions";
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.textContent = options.confirm ?? "Принять";
+  ok.addEventListener("click", (event) => {
+    event.stopPropagation();
+    accept();
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Отмена";
+  cancel.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeFloating();
+  });
+  actions.append(ok, cancel);
+  box.append(heading, field, line, actions);
+  openFloating(box, anchor);
+  field.focus();
+  field.select?.();
+}
+
 export interface TabDefinition {
   id: string;
   title: string;
@@ -708,192 +788,4 @@ export class Tabs {
       return button;
     }));
   }
-}
-
-let tooltipElement: HTMLElement | undefined;
-/** How to build the tooltip that is on screen again, so a late answer can redraw it in place. */
-let shownBy: (() => void) | undefined;
-let shownTooltipHide: (() => void) | undefined;
-
-/**
- * What a tooltip line *is*, which is what decides its colour.
- *
- * An item tooltip is not a list of equal sentences: a stat is green, a requirement the character
- * does not meet is red, an item's spell is cyan and its flavour text is gold, and the reference
- * client draws each of those with its own colour in the same order this client now prints them
- * (`wowee/src/ui/item_tooltip.cpp:339`, `:358`, `:381`, `:598`). The stylesheet reads the class;
- * the builder decides the tone.
- */
-export type TooltipTone = "stat" | "unmet" | "spell" | "flavour" | "gold" | "muted" | "description";
-
-export interface TooltipLine {
-  text: string;
-  tone?: TooltipTone | undefined;
-  /** Parsed Lua colour runs; text is still rendered through textContent. */
-  runs?: readonly { readonly text: string; readonly color?: string | undefined }[] | undefined;
-  /**
-   * The fields below are read only by the stock FrameXML `GameTooltip` (`setGameTooltipContent`);
-   * the native box above ignores them, so a builder that fills them keeps its native shape.
-   *
-   * `right` is the right half of a double line, the original's `AddDoubleLine` row: slot | armour
-   * type, damage | speed, cost | range, cast time | cooldown.
-   */
-  right?: string | undefined;
-  /** The exact 3.3.5 colour, `#rrggbb`, over the tone's; the stock grey has no tone. */
-  color?: string | undefined;
-  /** The right half's colour, `#rrggbb`; white when absent. */
-  rightColor?: string | undefined;
-  /** `AddLine(text, r, g, b, true)`: the original wraps «Use:» text and descriptions. */
-  wrap?: boolean | undefined;
-  /**
-   * A price. A stock tooltip draws the row with the corpus' own `SetTooltipMoney` — `label`, then
-   * the coins — when it can, and keeps `text`, the same price in words, as the row when it cannot.
-   */
-  money?: { readonly copper: number; readonly label: string } | undefined;
-}
-
-/**
- * How content built before everything it names arrived asks to be drawn again.
- *
- * `watch` calls `redraw` once, with the rebuilt content, when a late answer lands (an item row, a
- * spell's words, the enchantment table), and returns the cancel. A tooltip that has moved on says
- * so to its own redraw; a rebuilt content that still waits carries a `refresh` of its own.
- */
-export interface TooltipRefresh {
-  readonly watch: (redraw: (next: TooltipContent) => void) => () => void;
-}
-
-export interface TooltipContent {
-  title: string;
-  /** Item quality 0-6, read by the stylesheet for the title's colour. */
-  quality?: number | undefined;
-  /**
-   * A bare string is a plain line, which is what every caller but the item builder wants; the
-   * union rather than a widening to `TooltipLine` alone so that the twelve panels that pass a
-   * literal array of sentences — a confirmation, a keybinding chord, a talent's rank — keep saying
-   * exactly what they said.
-   */
-  lines?: readonly (string | TooltipLine)[] | undefined;
-  /** Dimmer trailing lines: what the thing is for, what a click will do. */
-  footer?: readonly string[] | undefined;
-  /** The title row's right half: a spell's rank, grey in the original (stock tooltip only). */
-  titleRight?: string | undefined;
-  /** Present while the content is missing a late answer; see {@link TooltipRefresh}. */
-  refresh?: TooltipRefresh | undefined;
-}
-
-/**
- * One tooltip for the whole interface, moved to whatever is asking.
- *
- * This replaces the browser's own `title`, which the interface leaned on everywhere and which is
- * the wrong tool for it: it appears after a second of stillness, cannot be styled, is not shown at
- * all on a disabled control — which is exactly where the *reason* lives — and never appears on a
- * touch device. An item's name deserves better than a native tooltip, and a talent that cannot be
- * clicked has to be able to say why.
- */
-export function attachTooltip(
-  target: HTMLElement,
-  content: () => TooltipContent | undefined,
-  lifecycle: { readonly onHide?: () => void } = {},
-): void {
-  const show = (): void => {
-    if (shownBy !== show) hideTooltip();
-    const shown = content();
-    if (!shown) { hideTooltip(); return; }
-    shownBy = show;
-    shownTooltipHide = lifecycle.onHide;
-    if (!tooltipElement) {
-      tooltipElement = document.createElement("div");
-      tooltipElement.className = "ui-tooltip";
-      // On the body rather than in the panel that asked: every game window is `overflow: auto`,
-      // and a tooltip inside one is clipped by it.
-      document.body.append(tooltipElement);
-    }
-    if (shown.quality !== undefined) tooltipElement.dataset["quality"] = String(shown.quality);
-    else delete tooltipElement.dataset["quality"];
-    const title = document.createElement("strong");
-    title.textContent = shown.title;
-    if (shown.quality !== undefined) title.dataset["quality"] = String(shown.quality);
-    const rows = (shown.lines ?? []).map((line) => typeof line === "string"
-      ? row(line, "")
-      : row(line.text, line.tone ? `ui-tooltip-${line.tone}` : "", line.runs));
-    const footer = (shown.footer ?? []).map((line) => row(line, "ui-tooltip-footer"));
-    tooltipElement.replaceChildren(title, ...rows, ...footer);
-    tooltipElement.hidden = false;
-    place(tooltipElement, target);
-  };
-  const hide = (): void => {
-    if (shownBy === show) hideTooltip();
-  };
-  target.addEventListener("pointerenter", show);
-  target.addEventListener("pointerleave", hide);
-  // Keyboard reaches it too, which is the whole point of not using `title`.
-  target.addEventListener("focus", show);
-  target.addEventListener("blur", hide);
-}
-
-function row(text: string, className: string, runs?: TooltipLine["runs"]): HTMLElement {
-  const line = document.createElement("div");
-  if (className) line.className = className;
-  if (runs) {
-    for (const run of runs) {
-      const span = document.createElement("span");
-      span.textContent = run.text;
-      if (run.color && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(run.color)) span.style.color = run.color;
-      line.append(span);
-    }
-  } else line.textContent = text;
-  return line;
-}
-
-/** Beside the thing that asked, nudged back inside the window when it would hang off an edge. */
-function place(tooltip: HTMLElement, target: HTMLElement): void {
-  const at = target.getBoundingClientRect();
-  const margin = 8;
-  const viewportWidth = Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1280;
-  const viewportHeight = Number.isFinite(window.innerHeight) && window.innerHeight > 0 ? window.innerHeight : 720;
-  const maxWidth = Math.max(160, viewportWidth - margin * 2);
-  tooltip.style.maxWidth = `${Math.round(maxWidth)}px`;
-  tooltip.style.maxHeight = `${Math.round(Math.max(96, viewportHeight - margin * 2))}px`;
-  tooltip.style.overflowY = "auto";
-  let size = tooltip.getBoundingClientRect();
-  const below = at.bottom + 6;
-  const belowSpace = Math.max(0, viewportHeight - below - margin);
-  const aboveSpace = Math.max(0, at.top - 6 - margin);
-  const available = Math.max(96, Math.max(belowSpace, aboveSpace));
-  if (size.height > available) {
-    tooltip.style.maxHeight = `${Math.round(available)}px`;
-    size = tooltip.getBoundingClientRect();
-  }
-  const left = Math.max(margin, Math.min(at.left, viewportWidth - size.width - margin));
-  const top = belowSpace >= size.height
-    ? below
-    : aboveSpace >= size.height
-      ? Math.max(margin, at.top - size.height - 6)
-      : margin;
-  tooltip.style.left = `${Math.round(left)}px`;
-  tooltip.style.top = `${Math.round(top)}px`;
-}
-
-/** Hidden without waiting for a pointer to leave: a rebuilt list drops the element under it. */
-export function hideTooltip(): void {
-  if (tooltipElement) tooltipElement.hidden = true;
-  shownBy = undefined;
-  const onHide = shownTooltipHide;
-  shownTooltipHide = undefined;
-  onHide?.();
-}
-
-/**
- * Builds the tooltip that is on screen again, for an answer that arrived after it went up.
- *
- * A tooltip is built once, on the pointer entering, out of whatever the client knew at that
- * instant — and an item's spell rows are asked for at exactly that instant, because hovering the
- * item is the only thing that ever asks for them (`ItemTooltip.itemTooltipFor`). The answer is a
- * network round trip later, by which time nobody is looking at the builder any more; without this
- * the name lands in `game.spells` and the line on screen keeps its number until the pointer
- * leaves and comes back.
- */
-export function refreshTooltip(): void {
-  if (tooltipElement && !tooltipElement.hidden) shownBy?.();
 }

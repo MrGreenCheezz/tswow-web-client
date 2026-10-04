@@ -198,3 +198,27 @@ export function mapChunkAlpha(data, start, size) {
   const available = size - alphaOffset;
   return { flags, alphaOffset, alphaSize: Math.max(0, Math.min(available, preferred || fallback)) };
 }
+
+/**
+ * Whether a tile's ground can be published as a splat (7.23).
+ *
+ * `none` — nothing to paint: the ADT has no MTEX, no MCNK, or not one chunk with a layer. Measured
+ *          over the 5,774 ADTs of this client (`docs/implementation/probes/A10/probe-723-census`):
+ *          598 tiles are such stubs (every Gundrak tile, the flat planes under dungeons) and 30
+ *          Kalimdor tiles have no MTEX/MCNK. The route answers 404 for them, once and for good.
+ * `partial` — some chunks carry no layer. 404 real tiles do this (Northrend 21/40 has one bare
+ *          chunk); such a chunk is published with an empty layer list and the shader draws its
+ *          fallback colour there.
+ * `ok` — every chunk has at least one layer.
+ *
+ * More than four layers is a broken chunk and stays an error, as it was.
+ */
+export function adtSplatVerdict(layerCounts, textureCount) {
+  let bare = 0;
+  for (const count of layerCounts) {
+    if (!Number.isInteger(count) || count < 0 || count > 4) throw new Error("Invalid ADT map chunk header");
+    if (count === 0) bare++;
+  }
+  if (textureCount === 0 || layerCounts.length === 0 || bare === layerCounts.length) return "none";
+  return bare > 0 ? "partial" : "ok";
+}

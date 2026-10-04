@@ -102,6 +102,28 @@ export function isCreationData(value: unknown): value is CharacterCreationData {
   return Array.isArray(candidate.races) && Array.isArray(candidate.classes);
 }
 
+/**
+ * `/dbc/character-creation?v=4` (the class rows' `flags` and `spellClassSet`), past the browser
+ * cache when it has to be. The route answers `max-age=3600` and does not read `?v=`, so a gateway
+ * not yet restarted serves the `v=3` shape under the `v=4` key and the browser keeps that answer for
+ * an hour after the restart. An answer whose class rows all lack `flags` is asked once more with
+ * `cache: "reload"`, as `/dbc/spells` does; a gateway that really is old answers the same again and
+ * that answer stands. Undefined when the route fails or answers something that is not the table.
+ */
+export async function fetchCreationWithClassFlags(
+  url: string, doFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
+): Promise<CharacterCreationData | undefined> {
+  const ask = async (init?: RequestInit): Promise<CharacterCreationData | undefined> => {
+    const response = await doFetch(url, init);
+    if (!response.ok) return undefined;
+    const value: unknown = await response.json();
+    return isCreationData(value) ? value : undefined;
+  };
+  const first = await ask();
+  if (!first || first.classes.length === 0 || first.classes.some((entry) => entry.flags !== undefined)) return first;
+  return (await ask({ cache: "reload" }).catch(() => undefined)) ?? first;
+}
+
 /** Keeps a late appearance answer from repainting another gateway, race, sex or class. */
 export class LatestAppearanceRequest {
   #serial = 0;

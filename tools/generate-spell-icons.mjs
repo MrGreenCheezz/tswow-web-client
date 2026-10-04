@@ -20,9 +20,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blpToPng } from "./blp-png.mjs";
 import { openDbcFile } from "./dbc.mjs";
+import { memoByFile } from "./dbc-memo.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
-import { sourceStamp, stampSidecar, writeSourceStamp } from "./source-stamp.mjs";
+import { SourceMissing } from "./source-missing.mjs";
+import { sourceStamp, stampSidecar, writeFileAtomic, writeSourceStamp } from "./source-stamp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -31,28 +33,20 @@ const FAMILIES = {
   spell: {
     table: "SpellIcon",
     field: "TextureFilename",
-    directory: resolve(root, process.env.SPELL_ICON_DIR ?? "public/icons"),
+    // Read on every use, so a long-lived worker (10.20) follows the env a test or the gateway set.
+    get directory() { return resolve(root, process.env.SPELL_ICON_DIR ?? "public/icons"); },
     label: "spell icons",
   },
   family: {
     table: "CreatureFamily",
     field: "IconFile",
-    directory: resolve(root, process.env.CREATURE_ICON_DIR ?? "public/creature-icons"),
+    get directory() { return resolve(root, process.env.CREATURE_ICON_DIR ?? "public/creature-icons"); },
     label: "creature-family icons",
   },
 };
 
-const arguments_ = process.argv.slice(2);
-const all = arguments_.length === 1 && arguments_[0] === "--all";
-const restamping = arguments_.length === 1 && arguments_[0] === "--restamp";
-const wantsFamily = arguments_[0] === "--family";
-const requested = (wantsFamily ? arguments_.slice(1) : arguments_).map(Number);
-if (!all && !restamping && (requested.length === 0 || !requested.every((id) => Number.isInteger(id) && id > 0))) {
-  throw new Error("Usage: node tools/generate-spell-icons.mjs --all | --restamp | [--family] <icon-id...>");
-}
-
 /**
- * The archive chain, opened on the first miss and closed once at the very end.
+ * The archive chain of a command-line run, opened on the first miss and closed once at the very end.
  *
  * One chain for the whole run and not one per table: `clientArchives` hands the same object to
  * every caller in the process, so closing it after the spell icons would leave the family icons
@@ -62,32 +56,6 @@ let chain;
 async function archiveChain() {
   chain ??= await clientArchives(clientDirectory());
   return chain;
-}
-
-try {
-  if (all) {
-    const spells = await publish(FAMILIES.spell, undefined);
-    const families = await publish(FAMILIES.family, undefined);
-    console.log(`Generated ${spells.written} spell icons and ${families.written} creature-family icons`);
-    const removed = spells.removed + families.removed;
-    if (removed > 0) console.log(`Removed ${removed} icon(s) left over from a previous dataset`);
-  } else if (restamping) {
-    const spells = await restamp(FAMILIES.spell);
-    const families = await restamp(FAMILIES.family);
-    // On stderr, unlike the two modes around it, and that is deliberate. This is the mode the
-    // gateway spawns at startup, and it is the only one whose report an operator ever sees:
-    // `main.ts` relays the child's stderr and throws its stdout away, because StormLib's
-    // WebAssembly build writes its banner and every heap resize onto stdout. `tools/restamp.mjs`
-    // reports on stderr for the same reason; `--all` is run by hand from `build-assets.bat` and
-    // keeps its report where a person running it will see it.
-    process.stderr.write(`Stamped ${spells.stamped + families.stamped} published icon(s) that carried no stamp\n`);
-    const dropped = spells.dropped + families.dropped;
-    if (dropped > 0) process.stderr.write(`Dropped ${dropped} that this dataset no longer decodes to\n`);
-  } else {
-    await publish(FAMILIES[wantsFamily ? "family" : "spell"], requested);
-  }
-} finally {
-  chain?.close();
 }
 
 /**
@@ -298,4 +266,83 @@ async function removeStale(directory, keep) {
     removed++;
   }
   return removed;
+}
+
+/**
+ * One id's picture out of an open chain, for the persistent worker (10.20): what a named run of the
+ * command line does for one id — same bytes, same stamp — with the table read once per version of
+ * its file. No row, no file named, or a file the client does not hold is `SourceMissing`, which the
+ * lane remembers for five minutes; the route answers 404 because the picture is not on disk.
+ *
+ * @param {{table: string, field: string, directory: string, label: string}} family
+ */
+async function publishOne(family, id, archives) {
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`${id} is not a ${family.table} id`);
+  const file = join(family.directory, `${id}.png`);
+  try {
+    await access(file);
+    await access(stampSidecar(file));
+    return { file, cached: true };
+  } catch {
+    // Not published yet, or published before it carried a stamp.
+  }
+  const table = join(dbcDirectory(), `${family.table}.dbc`);
+  const path = (await memoByFile(table, () => tablePaths(family))).get(id);
+  if (!path) throw new SourceMissing(`No icon found for ${family.table} ${id}`);
+  const blp = await archives.read(path);
+  if (!blp) throw new SourceMissing(`${path} is not in the client`);
+  const png = blpToPng(blp);
+  const stamp = await sourceStamp(archives, { paths: [path], files: [table] });
+  await mkdir(family.directory, { recursive: true });
+  await writeFileAtomic(file, png);
+  await writeSourceStamp(file, stamp);
+  return { file, cached: false, bytes: png.length };
+}
+
+/** `SpellIcon` row `iconId`'s picture (`/spell-icon/<id>`). */
+export function publishSpellIcon(iconId, archives) {
+  return publishOne(FAMILIES.spell, iconId, archives);
+}
+
+/** `CreatureFamily` row `familyId`'s picture (`/creature-icon/<id>`). */
+export function publishCreatureIcon(familyId, archives) {
+  return publishOne(FAMILIES.family, familyId, archives);
+}
+
+// Run directly: node tools/generate-spell-icons.mjs --all | --restamp | [--family] <icon-id...>
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  const arguments_ = process.argv.slice(2);
+  const all = arguments_.length === 1 && arguments_[0] === "--all";
+  const restamping = arguments_.length === 1 && arguments_[0] === "--restamp";
+  const wantsFamily = arguments_[0] === "--family";
+  const requested = (wantsFamily ? arguments_.slice(1) : arguments_).map(Number);
+  if (!all && !restamping && (requested.length === 0 || !requested.every((id) => Number.isInteger(id) && id > 0))) {
+    throw new Error("Usage: node tools/generate-spell-icons.mjs --all | --restamp | [--family] <icon-id...>");
+  }
+
+  try {
+    if (all) {
+      const spells = await publish(FAMILIES.spell, undefined);
+      const families = await publish(FAMILIES.family, undefined);
+      console.log(`Generated ${spells.written} spell icons and ${families.written} creature-family icons`);
+      const removed = spells.removed + families.removed;
+      if (removed > 0) console.log(`Removed ${removed} icon(s) left over from a previous dataset`);
+    } else if (restamping) {
+      const spells = await restamp(FAMILIES.spell);
+      const families = await restamp(FAMILIES.family);
+      // On stderr, unlike the two modes around it, and that is deliberate. This is the mode the
+      // gateway spawns at startup, and it is the only one whose report an operator ever sees:
+      // `main.ts` relays the child's stderr and throws its stdout away, because StormLib's
+      // WebAssembly build writes its banner and every heap resize onto stdout. `tools/restamp.mjs`
+      // reports on stderr for the same reason; `--all` is run by hand from `build-assets.bat` and
+      // keeps its report where a person running it will see it.
+      process.stderr.write(`Stamped ${spells.stamped + families.stamped} published icon(s) that carried no stamp\n`);
+      const dropped = spells.dropped + families.dropped;
+      if (dropped > 0) process.stderr.write(`Dropped ${dropped} that this dataset no longer decodes to\n`);
+    } else {
+      await publish(FAMILIES[wantsFamily ? "family" : "spell"], requested);
+    }
+  } finally {
+    chain?.close();
+  }
 }

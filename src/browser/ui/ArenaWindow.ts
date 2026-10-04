@@ -1,10 +1,12 @@
 /**
  * The arena team window.
  *
- * Eleven senders and six state fields existed and nothing read any of them. Creating a team is
- * deliberately absent: `CMSG_ARENA_TEAM_CREATE` is declared `Handle_NULL` in this core, and the
- * real route — buying and offering a charter — has no builder at either end. Offering a button
- * that the server answers with silence would be worse than not offering one.
+ * Eleven senders and six state fields existed and nothing read any of them. This window offers no
+ * «create team» button: `CMSG_ARENA_TEAM_CREATE` is declared `Handle_NULL` in this core, and a
+ * button the server answers with silence would be worse than none. A team is made the real way —
+ * buy a charter from an arena organizer, collect signatures, turn it in — through
+ * `PetitionProtocol.ts`/`WorldClient` and the native `Petition.ts` or the stock
+ * ArenaRegistrarFrame and PetitionFrame (FrameXmlRegistrar.ts, FrameXmlPetition.ts).
  *
  * An invitation names no team, because `SMSG_ARENA_TEAM_INVITE` carries only the inviter and the
  * team's *name*, so the prompt says what it knows rather than inventing a bracket.

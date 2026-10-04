@@ -209,7 +209,9 @@ export function installFrameXmlFriendsAdapters(boot: Pick<FrameXmlBoot, "vm">): 
       __webclientStockRaidLoadUI = load
       RaidFrame_LoadUI = function(...)
         local _, reason = LoadAddOn("Blizzard_RaidUI")
-        if reason ~= "MISSING" then return load(...) end
+        -- NOT_READY: an "owner" add-on (FRAMEXML_LOD_POLICY) that its owner loads; stock would
+        -- otherwise report «Ещё загружается» in the script-error dialog.
+        if reason ~= "MISSING" and reason ~= "NOT_READY" then return load(...) end
       end
     end
     local lists = {

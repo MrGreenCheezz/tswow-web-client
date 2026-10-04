@@ -7,6 +7,7 @@ import { settings } from "../ui/Settings.js";
 import { loadingScreenVisible } from "../ui/LoadingScreen.js";
 import { autoQualityStatus } from "../AutoQuality.js";
 import { setCaptureProbe } from "../../world/CaptureProbe.js";
+import { poseWorkerReport } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
 
 interface LongFrameEntry extends PerformanceEntry {
   readonly blockingDuration?: number;
@@ -49,7 +50,11 @@ type JsProfilerConstructor = new (options: { sampleInterval: number; maxBufferSi
 const JS_PROFILE_SAMPLE_INTERVAL_MS = 5;
 /** More than 60 s at the requested period; a full buffer stops sampling, and the report says so. */
 const JS_PROFILE_SAMPLE_LIMIT = 15_000;
-/** A packet whose handler took at least this long is kept individually, beside the per-opcode totals. */
+/**
+ * A packet whose delivery took at least this long is kept individually, beside the per-opcode
+ * totals. The time is wall time around `WorldClient.#deliver`, awaits inside the handler included,
+ * so it is an upper bound, not CPU; past the capture's event limit only the slowest are kept.
+ */
 const SLOW_PACKET_MS = 4;
 
 interface PacketTotals { count: number; bytes: number; ms: number; maxMs: number }
@@ -272,6 +277,8 @@ export function startPerformanceCapture(): boolean {
   lastCheckpoint = Number.NEGATIVE_INFINITY;
   // The stock HUD keeps its own window of counters; start it with the recording.
   metadata["frameXmlMounted"] = frameXmlPerf("reset") !== undefined;
+  // L10 (10.18): whether crowd poses ran in the worker or on the main thread, and why.
+  metadata["poseWorker"] = poseWorkerReport();
   setCaptureProbe(probe);
   startJsProfiler();
   for (const type of ["longtask", "long-animation-frame", "resource"]) {

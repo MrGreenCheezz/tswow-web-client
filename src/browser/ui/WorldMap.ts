@@ -15,7 +15,8 @@ import {
   type QuestMapObjectiveMarker, type QuestObjectiveNameResolver,
 } from "./QuestObjectiveMarkers.js";
 import { currentQuestLogEntries } from "./QuestLog.js";
-import { Panel } from "./Widgets.js";
+import { setTip, Panel } from "./Widgets.js";
+import { partyBlipMembers } from "../game/PartyPositions.js";
 import {
   worldMapNavigate,
   type WorldMapHierarchy, type WorldMapNode, type WorldMapNodeKey, type WorldMapTarget,
@@ -202,7 +203,7 @@ function build(): WorldMapParts {
   canvas.width = ART_WIDTH;
   canvas.height = ART_HEIGHT;
   canvas.setAttribute("aria-label", "Карта мира");
-  canvas.title = "ЛКМ — приблизить область, ПКМ — перейти на уровень выше";
+  setTip(canvas, "ЛКМ — приблизить область, ПКМ — перейти на уровень выше");
   canvas.addEventListener("mousemove", (event) => {
     hoveredMapPoint = mapPointAt(event);
     const target = hoveredMapPoint ? mapTargetAtPoint(hoveredMapPoint.u, hoveredMapPoint.v) : undefined;
@@ -519,7 +520,7 @@ function renderQuestMarkers(
     row.className = "world-map-objective-row";
     row.dataset["state"] = marker.state;
     row.dataset["kind"] = marker.kind;
-    row.title = description;
+    setTip(row, description);
 
     const ordinal = document.createElement("span");
     ordinal.className = "world-map-objective-number";
@@ -562,7 +563,7 @@ function renderQuestMarkers(
       pin.style.setProperty("--quest-pin-y", `${Math.round(Math.sin(angle) * radius)}px`);
     }
     pin.textContent = String(marker.ordinal);
-    pin.title = placement.precision === "area" ? `${description} · область цели` : description;
+    setTip(pin, placement.precision === "area" ? `${description} · область цели` : description);
     pin.setAttribute("aria-label", pin.title);
     pin.addEventListener("click", (event) => {
       event.preventDefault();
@@ -698,22 +699,24 @@ function drawMarkers(
   if (!world || !characterNode || world.mapId === undefined) return;
 
   // Party first, so the character's own arrow sits over them rather than under.
-  for (const member of world.group?.members ?? []) {
-    if (member.guid === world.state.selfGuid) continue;
-    const object = world.state.objects.get(member.guid);
-    if (!object?.position) continue;
+  // 4.06: a member out of sight is drawn at the whole-yard position the stats packet carries,
+  // smaller and paler (game/PartyPositions.ts).
+  for (const member of partyBlipMembers(world, (zoneId) => game.areas?.area(zoneId)?.mapId)) {
     const placement = worldMapDescendantPlacement(
-      hierarchy, current, characterNode, world.mapId, object.position,
+      hierarchy, current, characterNode, world.mapId, { x: member.x, y: member.y },
     );
     if (!placement) continue;
+    const radius = placement.precision === "point" ? 6 : 8;
     context.beginPath();
     context.arc(placement.point.u * ART_WIDTH, placement.point.v * ART_HEIGHT,
-      placement.precision === "point" ? 6 : 8, 0, Math.PI * 2);
+      member.precise ? radius : radius - 2, 0, Math.PI * 2);
+    context.globalAlpha = member.precise ? 1 : 0.6;
     context.fillStyle = "#65a9ff";
     context.fill();
     context.strokeStyle = "#04140c";
     context.lineWidth = 2;
     context.stroke();
+    context.globalAlpha = 1;
   }
 
   if (!self?.position) return;

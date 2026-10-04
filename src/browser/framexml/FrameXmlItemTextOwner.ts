@@ -28,67 +28,12 @@ const ITEM_TEXT_FRAMES: readonly FrameXmlNpcFrameSpec[] = [
   ["ItemTextCloseButton", "Button", ["OnClick"]],
 ];
 
-/**
- * ItemTextPageText is a SimpleHTML widget (ItemTextFrame.xml:203). The bridge stores its text (Lua
- * reads it back), but the DOM renderer paints text only for FontStrings, EditBoxes and labelled
- * buttons — measured: the page element's textContent stays "" while `GetText()` answers the page.
- * Until the renderer paints SimpleHTML, a FontString in the page's own font object
- * (ItemTextFontNormal: QuestFont_Large, LEFT) sits on the page's TOPLEFT at its 270-unit width and
- * follows its SetText/SetTextColor. Remove it once SimpleHTML draws, or the page would be painted
- * twice.
- *
- * A page is HTML when it begins with `<HTML>` (stock prepends a "\n"); SimpleHTML then lays out
- * blocks: each `<P>`/`<H1>`..`<H3>` on its own line, `<BR/>` a line break, whitespace between tags
- * only layout, `&lt;`-style entities decoded, other tags (`<BODY>`, `<IMG>`, `<A>`) not drawn. The
- * mirror keeps those line breaks — stripping the tags alone ran «Глава первая» into the paragraph
- * after it — but draws every block in the page's one font (SimpleHTML's headers would use the
- * `<H1>` font object, which ItemTextFrame.xml does not declare) and ignores `align`. Any other page
- * is plain text and is shown as it is.
+/*
+ * ItemTextPageText is a SimpleHTML widget (ItemTextFrame.xml:203) and the DOM renderer draws it
+ * (3.35, FrameXmlSimpleHtml.ts): an HTML page as the client lays it out — `<H1>`..`<H3>`/`<P>` blocks
+ * with their `align`, `<BR/>`, entities, links — and any other page as plain text. The FontString
+ * mirror that stood in for it until 03.10 is gone; with it the page would be painted twice.
  */
-const ITEM_TEXT_PAGE_MIRROR = `
-function WebClientItemTextPage(text)
-  text = tostring(text or "")
-  local html = string.match(text, "^%s*(<[Hh][Tt][Mm][Ll].*)$")
-  if not html then return text end
-  html = string.gsub(html, ">%s+<", "><")
-  html = string.gsub(html, "<[Bb][Rr]%s*/?>", "\\n")
-  -- \\001 marks a block's start: it breaks the line only when text precedes it.
-  html = string.gsub(html, "<[Pp]>", "\\001")
-  html = string.gsub(html, "<[Pp]%s[^>]*>", "\\001")
-  html = string.gsub(html, "<[Hh][1-6][^>]*>", "\\001")
-  html = string.gsub(html, "</[Pp]%s*>", "\\n")
-  html = string.gsub(html, "</[Hh][1-6]%s*>", "\\n")
-  html = string.gsub(html, "<[^>]*>", "")
-  html = string.gsub(html, "([^\\n])\\001", "%1\\n")
-  html = string.gsub(html, "\\001", "")
-  html = string.gsub(html, "&lt;", "<")
-  html = string.gsub(html, "&gt;", ">")
-  html = string.gsub(html, "&quot;", "\\"")
-  html = string.gsub(html, "&nbsp;", " ")
-  html = string.gsub(html, "&amp;", "&")
-  html = string.gsub(html, "^%s+", "")
-  html = string.gsub(html, "%s+$", "")
-  return html
-end
-if ItemTextPageText and ItemTextPageScrollChild and not ItemTextPageTextWebClient then
-  local page = ItemTextPageText
-  local mirror = ItemTextPageScrollChild:CreateFontString("ItemTextPageTextWebClient", "ARTWORK", "ItemTextFontNormal")
-  mirror:SetWidth(270)
-  mirror:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
-  mirror:SetJustifyH("LEFT")
-  mirror:SetJustifyV("TOP")
-  hooksecurefunc(page, "SetText", function(_, text)
-    mirror:SetText(WebClientItemTextPage(text))
-  end)
-  hooksecurefunc(page, "SetTextColor", function(_, r, g, b, a)
-    mirror:SetTextColor(r, g, b, a)
-  end)
-end
-`;
-
-export function installFrameXmlItemTextPage(boot: Pick<FrameXmlBoot, "vm">): boolean {
-  return boot.vm.executeReported(ITEM_TEXT_PAGE_MIRROR, "@webclient/itemtext-page");
-}
 
 export interface FrameXmlItemTextGateResult {
   readonly frame: FrameXmlFrame;
@@ -124,7 +69,7 @@ export function frameXmlItemTextGate(
         ItemTextNextPage()
         local second = (ItemTextPrevPageButton:IsShown() and not ItemTextNextPageButton:IsShown()
           and ItemTextCurrentPage:GetText() == "2"
-          and string.find(ItemTextPageTextWebClient:GetText() or "", "WebClient 2", 1, true)) and 1 or 0
+          and string.find(ItemTextPageText:GetText() or "", "WebClient 2", 1, true)) and 1 or 0
         HideUIPanel(ItemTextFrame)
         return first, second, ItemTextFrame:IsShown() and 1 or 0
       `, 3)));

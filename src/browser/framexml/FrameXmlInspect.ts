@@ -18,17 +18,16 @@
  * here, and everything else still reaches the seam's own binding.
  */
 import type { FrameXmlTalentSnapshot } from "./FrameXmlTalentResolver.js";
+import { frameXmlClassHasRelicSlot } from "./FrameXmlRelicSlot.js";
 
 /**
  * `CheckInteractDistance` indices: 1 inspect at 28 yards (`INSPECT_DISTANCE`, ObjectDefines.h), 2
- * trade at 11.11 (`TRADE_DISTANCE`), 3 duel at 9.9 — the client's own table. Index 4 (follow, 28
- * yards in the client) is left out: this client has no follow, `FollowUnit` is an unbound no-op, and
- * UnitPopup_OnUpdate enables its «Следовать» exactly when index 4 answers true (UnitPopup.lua:1041).
+ * trade at 11.11 (`TRADE_DISTANCE`), 3 duel at 9.9, 4 follow at 28 — the client's own table. 5.18:
+ * `FollowUnit` follows now (input/Follow.ts), so index 4 answers and UnitPopup_OnUpdate enables its
+ * «Следовать» by it (UnitPopup.lua:1041).
  */
-export const FRAMEXML_INTERACT_DISTANCES: Readonly<Record<number, number>> = Object.freeze({ 1: 28, 2: 11.11, 3: 9.9 });
+export const FRAMEXML_INTERACT_DISTANCES: Readonly<Record<number, number>> = Object.freeze({ 1: 28, 2: 11.11, 3: 9.9, 4: 28 });
 
-/** Classes whose ranged slot is a relic (`UnitHasRelicSlot`): paladin, shaman, death knight, druid. */
-const RELIC_CLASSES: ReadonlySet<number> = new Set([2, 6, 7, 11]);
 
 /** One equipped item of the inspected player, by `GetInventoryItem*`'s one-based slot. */
 export interface FrameXmlInspectItem {
@@ -94,6 +93,11 @@ export interface FrameXmlInspectHost {
   prefetchTalents?(guid: bigint, onChanged: () => void): void;
   /** Subscribe to the inspection answers; returns the unsubscribe. */
   subscribe?(model: FrameXmlInspectModel): () => void;
+  /**
+   * 5.18: `FollowUnit(unit[, exactMatch])` — a unit token or a player's name. Answers the
+   * GlobalStrings key of the refusal (UI_ERROR_MESSAGE), or undefined when following began.
+   */
+  follow?(unit: string, exactMatch: boolean): string | undefined;
 }
 
 interface InspectPump {
@@ -184,6 +188,12 @@ export class FrameXmlInspectModel {
     this.#honorFresh = false;
   }
 
+  /** 5.18: `FollowUnit` (Wow.exe 0x005224C0); a refusal goes to UIErrorsFrame, as the client's does. */
+  follow(unit: string, exactMatch: boolean): void {
+    const refusal = this.#host.follow?.(unit, exactMatch);
+    if (refusal) this.#pump?.fire("UI_ERROR_MESSAGE", this.globalString?.(refusal) ?? refusal);
+  }
+
   checkInteractDistance(unit: string, which: number): boolean {
     const range = FRAMEXML_INTERACT_DISTANCES[which];
     const distance = range === undefined ? undefined : this.#host.distance(unit);
@@ -202,7 +212,7 @@ export class FrameXmlInspectModel {
   hasRelicSlot(unit: string): boolean | undefined {
     const guid = this.#inspectedAs(unit);
     if (guid === undefined) return undefined;
-    return RELIC_CLASSES.has(this.#host.classId(guid) ?? 0);
+    return frameXmlClassHasRelicSlot(this.#host.classId(guid));
   }
 
   hasHonorData(): boolean {
@@ -234,6 +244,15 @@ export class FrameXmlInspectModel {
       team.name, team.size, team.rating, team.played, team.wins, team.playerPlayed, team.playerRating,
       ...rgb(team.backgroundColor), team.emblemStyle, ...rgb(team.emblemColor), team.borderStyle, ...rgb(team.borderColor),
     ];
+  }
+
+  /**
+   * 3.12 (04.10, L4): the inspected player's trees, for `GameTooltip:SetTalent(…, inspect)`
+   * (FrameXmlTooltipExtrasAdapter.ts); undefined with no inspection or before SMSG_INSPECT_TALENT.
+   */
+  talentSnapshot(): FrameXmlTalentSnapshot | undefined {
+    const guid = this.#inspection?.guid;
+    return guid === undefined ? undefined : this.#host.talents(guid);
   }
 
   /** The player talent API asked with `inspect = true`, answered from the inspected trees. */
@@ -332,6 +351,7 @@ export const FRAMEXML_INSPECT_BINDINGS: Readonly<Record<string, FrameXmlInspectB
   CanInspect: withInspect((inspect, args) => [inspect.canInspect(unitOf(args[0]), truthy(args[1]))], [false]),
   NotifyInspect: withInspect((inspect, args) => { inspect.notify(unitOf(args[0])); return NOTHING; }),
   ClearInspectPlayer: withInspect((inspect) => { inspect.clear(); return NOTHING; }),
+  FollowUnit: withInspect((inspect, args) => { inspect.follow(unitOf(args[0]), truthy(args[1])); return NOTHING; }),
   CheckInteractDistance: withInspect((inspect, args) => [inspect.checkInteractDistance(unitOf(args[0]), index(args[1]))], [false]),
   HasInspectHonorData: withInspect((inspect) => [inspect.hasHonorData()], [false]),
   RequestInspectHonorData: withInspect((inspect) => { inspect.requestHonor(); return NOTHING; }),
@@ -343,7 +363,8 @@ export const FRAMEXML_INSPECT_BINDINGS: Readonly<Record<string, FrameXmlInspectB
   }, [false]),
   WebClientInspectRelic: withInspect((inspect, args) => {
     const relic = inspect.hasRelicSlot(unitOf(args[0]));
-    return relic === undefined ? [false] : [true, relic];
+    // 1 or nil, as UnitHasRelicSlot answers (Wow.exe 0x611330).
+    return relic === undefined ? [false] : [true, relic ? 1 : undefined];
   }, [false]),
   WebClientInspectTalent: withInspect((inspect, args) => inspect.talentApi(String(args[0]), args.slice(1))),
 });

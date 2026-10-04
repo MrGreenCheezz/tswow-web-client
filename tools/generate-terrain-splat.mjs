@@ -6,17 +6,18 @@
 // ground textures at their own resolution, the per-chunk layer list and the alpha maps — and lets
 // the fragment shader blend them, so sharpness is limited only by the source art.
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { MCLY_ALPHA_COMPRESSED, MPHD_BIG_ALPHA, alphaNeedsEdgeFix, decodeAlpha, mapChunkAlpha, mapChunkColours, mapChunkDetail, mapChunkGrid } from "./adt-alpha.mjs";
+import { MCLY_ALPHA_COMPRESSED, MPHD_BIG_ALPHA, adtSplatVerdict, alphaNeedsEdgeFix, decodeAlpha, mapChunkAlpha, mapChunkColours, mapChunkDetail, mapChunkGrid } from "./adt-alpha.mjs";
+import { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 import { encodeGroundCover } from "./ground-cover.mjs";
 import { decodeBlp } from "./blp.mjs";
 import { openDbcFile } from "./dbc.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
-import { sourceStamp, stampGenerated, stampIsCurrent, writeSourceStamp } from "./source-stamp.mjs";
+import { sourceStamp, stampGenerated, stampIsCurrent, stampSidecar, writeSourceStamp } from "./source-stamp.mjs";
 
 /** Every ground texture is republished at this size so they can share one GPU texture array. */
 export const LAYER_SIZE = 256;
@@ -30,28 +31,47 @@ const MCCV_NEUTRAL = 127;
 const MAX_LAYERS = 32;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const mapId = Number.parseInt(process.argv[2] ?? "", 10);
-const gridX = Number.parseInt(process.argv[3] ?? "", 10);
-const gridY = Number.parseInt(process.argv[4] ?? "", 10);
-if (![mapId, gridX, gridY].every(Number.isInteger) || mapId < 0 || gridX < 0 || gridX > 63 || gridY < 0 || gridY > 63) {
-  throw new Error("Usage: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y>");
+
+function validTile(mapId, gridX, gridY) {
+  return [mapId, gridX, gridY].every(Number.isInteger) && mapId >= 0 && gridX >= 0 && gridX <= 63 && gridY >= 0 && gridY <= 63;
 }
 
-const textureDirectory = resolve(root, process.env.TERRAIN_TEXTURE_DIR ?? "data/terrain-textures", String(mapId));
-// Ground textures are shared between neighbouring tiles, so they live in one flat directory
-// keyed by content: the browser then downloads each of them exactly once.
-const layerDirectory = resolve(root, process.env.TERRAIN_LAYER_DIR ?? "data/terrain-layers");
+/**
+ * Publishes one tile's splat out of an open chain: the persistent tile worker calls this per job
+ * (10.20 slice 2), the command line below once. The output directories are read on every call, so
+ * a long-lived worker follows the env it was started with and a test's own. Leaves the chain open.
+ */
+export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
+  if (!validTile(mapId, gridX, gridY)) throw new Error(`${mapId}/${gridX}/${gridY} is not a terrain tile`);
+  const textureDirectory = resolve(root, process.env.TERRAIN_TEXTURE_DIR ?? "data/terrain-textures", String(mapId));
+  // Ground textures are shared between neighbouring tiles, so they live in one flat directory
+  // keyed by content: the browser then downloads each of them exactly once.
+  const layerDirectory = resolve(root, process.env.TERRAIN_LAYER_DIR ?? "data/terrain-layers");
 
-const mapName = await internalMapName(dbcDirectory(), mapId);
-if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
+  const mapName = await internalMapName(dbcDirectory(), mapId);
+  if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
 
-const archives = await clientArchives(clientDirectory());
-{
   const adtPath = `World\\Maps\\${mapName}\\${mapName}_${gridY}_${gridX}.adt`;
   const adt = await archives.read(adtPath);
-  if (!adt) throw new Error(`${adtPath} is not in the client`);
-  const bigAlpha = mapUsesBigAlpha(await archives.read(`World\\Maps\\${mapName}\\${mapName}.wdt`));
+  // 7.23: "not in the client" is the 404 channel, not a crash. Thirty-nine maps of this client are
+  // one WMO named by the WDT and have no ADT at all; their splat used to answer 500.
+  if (!adt) throw new SourceMissing(`${adtPath} is not in the client`);
+  const wdtPath = `World\\Maps\\${mapName}\\${mapName}.wdt`;
+  const bigAlpha = mapUsesBigAlpha(await archives.read(wdtPath));
   const parsed = parseAdt(adt, bigAlpha);
+  // 7.23: a tile with nothing to paint (the flat stubs under dungeons: every chunk without a layer,
+  // or no MTEX/MCNK at all) is answered 404 for as long as its ADT and WDT stay as they are. The
+  // empty `.nosplat` beside where the splat would be says so across gateway restarts; its stamp is
+  // the tile's own sources, so editing the ADT makes it stale and the gateway deletes it.
+  if (adtSplatVerdict(parsed.chunks.map((chunk) => chunk.layers.length), parsed.textures.length) === "none") {
+    await mkdir(textureDirectory, { recursive: true });
+    const marker = join(textureDirectory, `${gridX}-${gridY}.nosplat`);
+    // Stamp first: a marker without its stamp would be served as current for good, a stamp without
+    // its marker is only a stray sidecar.
+    await writeSourceStamp(marker, await sourceStamp(archives, { paths: [adtPath, wdtPath] }));
+    await writeFile(marker, "");
+    throw new SourceMissing(`${adtPath} has no ground layers to splat`);
+  }
   if (parsed.textures.length > MAX_LAYERS) throw new Error(`ADT uses ${parsed.textures.length} ground textures, more than the ${MAX_LAYERS} one array holds`);
 
   await mkdir(layerDirectory, { recursive: true });
@@ -158,11 +178,36 @@ const archives = await clientArchives(clientDirectory());
   for (const part of ["alpha.png", "index.png", ...(colours ? ["mccv.png"] : []), "cover.bin", "splat.json"]) {
     await writeSourceStamp(join(textureDirectory, `${gridX}-${gridY}.${part}`), stamp);
   }
+  // A tile that has layers now and was a stub before (a module painted it): its old 7.23 marker
+  // would otherwise go on answering 404 until the gateway noticed the stamp.
+  const marker = join(textureDirectory, `${gridX}-${gridY}.nosplat`);
+  await rm(marker, { force: true });
+  await rm(stampSidecar(marker), { force: true });
   const growing = parsed.chunks.reduce((count, chunk) => count + chunk.layers.filter((layer) => layer.effectId !== 0).length, 0);
   console.log(`Generated terrain splat ${mapId}/${gridX}/${gridY}: ${mapName}, ${layers.length} ground textures, ${parsed.chunks.length} chunks, ${bigAlpha ? "8 bit" : "4 bit"} alpha maps, ${growing} layers with a ground effect`);
   if (missingTextures.length > 0) console.warn(`  ${missingTextures.length} ground texture(s) fell back to flat colour: ${missingTextures.join("; ")}`);
 }
-archives.close();
+
+// Run directly: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y>
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  const mapId = Number.parseInt(process.argv[2] ?? "", 10);
+  const gridX = Number.parseInt(process.argv[3] ?? "", 10);
+  const gridY = Number.parseInt(process.argv[4] ?? "", 10);
+  if (!validTile(mapId, gridX, gridY)) {
+    throw new Error("Usage: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y>");
+  }
+  const archives = await clientArchives(clientDirectory());
+  try {
+    await publishTerrainSplat(mapId, gridX, gridY, archives);
+  } catch (error) {
+    // The gateway reads this exit code as its 404 (`sourceMissing`); anything else stays a crash.
+    if (!(error instanceof SourceMissing)) throw error;
+    console.error(error.message);
+    process.exitCode = SOURCE_MISSING_EXIT;
+  } finally {
+    archives.close();
+  }
+}
 
 /** Rescales a decoded BLP to the common layer size; a missing texture becomes a flat colour. */
 function layerPng(decoded, seed) {
@@ -223,7 +268,7 @@ function parseAdt(data, bigAlpha) {
     else if (tag === "MCNK") chunks.push(parseMapChunk(data, start, size, bigAlpha));
     offset = end;
   }
-  if (textures.length === 0 || chunks.length === 0) throw new Error("ADT has no terrain textures or chunks");
+  // No MTEX or no MCNK is no longer an error here: `adtSplatVerdict` calls it `none` (7.23).
   return { textures, chunks };
 }
 
@@ -231,9 +276,12 @@ function parseMapChunk(data, start, size, bigAlpha) {
   const { column, row } = mapChunkGrid(data, start);
   const layerCount = data.readUInt32LE(start + 12);
   const layerOffset = data.readUInt32LE(start + 28);
-  if (column > 15 || row > 15 || layerCount === 0 || layerCount > 4) throw new Error("Invalid ADT map chunk header");
+  // A chunk without a layer is a real thing (7.23: 404 real tiles have some, 598 stubs have only
+  // those): it gets an empty layer list, index 0 in every slot and zero alpha, and the shader draws
+  // its fallback colour there. More than four is still a broken chunk.
+  if (column > 15 || row > 15 || layerCount > 4) throw new Error("Invalid ADT map chunk header");
   const { flags, alphaOffset, alphaSize } = mapChunkAlpha(data, start, size);
-  if (start + layerOffset + layerCount * 16 > start + size) throw new Error("ADT map chunk data is truncated");
+  if (layerCount > 0 && start + layerOffset + layerCount * 16 > start + size) throw new Error("ADT map chunk data is truncated");
   const fixEdges = alphaNeedsEdgeFix(flags);
   const layers = [];
   for (let index = 0; index < layerCount; index++) {

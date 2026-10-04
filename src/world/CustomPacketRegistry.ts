@@ -53,6 +53,58 @@ const TRAFFIC_LIMIT = 64;
 /** Problems kept for the diagnostics window; the oldest is dropped past this. */
 const PROBLEM_LIMIT = 32;
 
+/**
+ * The entry backlog's bounds (9.03). Starting numbers, not measured: 2 MiB is a quarter of the
+ * reassembly quota (`CUSTOM_BUFFER_QUOTA`), 30 s is the `CMSG_PING` period the transport's own tail
+ * timeout uses, 512 messages is generous headroom. Take the held count and size at a live entry
+ * (`customPackets.backlog` before the release, 14.01) and adjust.
+ */
+export const CUSTOM_BACKLOG_MAX_MESSAGES = 512;
+export const CUSTOM_BACKLOG_MAX_BYTES = 2 * 1024 * 1024;
+export const CUSTOM_BACKLOG_TTL_MS = 30_000;
+
+/** What {@link CustomPacketRegistry.offer} did with one message. */
+export type CustomOfferResult =
+  /** A schema or a subscriber took it now. */
+  | "delivered"
+  /** The entry backlog holds it (or delivered it in an overflow release and reported it itself). */
+  | "held"
+  /** Nothing claimed it and nothing holds it: the caller records it as unhandled. */
+  | "unclaimed";
+
+export interface CustomBacklogOptions {
+  /** The consumers to wait for, by name (`"modules"`, `"lua"`). Empty: no backlog. */
+  readonly expect: readonly string[];
+  readonly maxMessages?: number | undefined;
+  readonly maxBytes?: number | undefined;
+  readonly ttlMs?: number | undefined;
+}
+
+export interface CustomBacklogState {
+  readonly holding: boolean;
+  readonly queued: number;
+  readonly bytes: number;
+  /** The consumers not yet ready, sorted. */
+  readonly waiting: readonly string[];
+  /** How the last backlog ended, for the diagnostics pane; undefined before the first release. */
+  readonly lastRelease: { readonly reason: string; readonly messages: number } | undefined;
+}
+
+interface EntryBacklog {
+  readonly waiting: Set<string>;
+  readonly queue: { readonly opcode: number; readonly body: Uint8Array }[];
+  bytes: number;
+  readonly maxMessages: number;
+  readonly maxBytes: number;
+  cancel: () => void;
+  releaseQueued: boolean;
+}
+
+const defaultSchedule = (run: () => void, ms: number): (() => void) => {
+  const timer = setTimeout(run, ms);
+  return () => clearTimeout(timer);
+};
+
 export type CustomPacketProblemKind =
   /** A message arrived and its declared schema could not read it. */
   | "decode"
@@ -128,6 +180,13 @@ export interface CustomPacketRegistryOptions {
   readonly onProblem?: ((problem: CustomPacketProblem) => void) | undefined;
   /** Injected by the tests; `Date.now` in the client. */
   readonly clock?: (() => number) | undefined;
+  /** The entry backlog's fallback timer; `setTimeout`/`clearTimeout` unless a test replaces it. */
+  readonly schedule?: ((run: () => void, ms: number) => () => void) | undefined;
+  /**
+   * A message the entry backlog held and nothing claimed when it was released. The live path's
+   * `"unclaimed"` answer is the caller's to record; this is the same record for held messages.
+   */
+  readonly onBacklogUnclaimed?: ((opcode: number, body: Uint8Array) => void) | undefined;
 }
 
 export type CustomRawHandler = (body: Uint8Array, opcode: number) => void;
@@ -163,6 +222,10 @@ export class CustomPacketRegistry {
   readonly #latest = new Map<string, CustomValue>();
   readonly #traffic = new Map<number, OpcodeTraffic>();
   #revision = 0;
+  readonly #schedule: (run: () => void, ms: number) => () => void;
+  readonly #onBacklogUnclaimed: ((opcode: number, body: Uint8Array) => void) | undefined;
+  #backlog: EntryBacklog | undefined;
+  #lastRelease: { reason: string; messages: number } | undefined;
   /** The last few decode and handler failures, for the diagnostics window. */
   readonly problems: CustomPacketProblem[] = [];
 
@@ -170,6 +233,119 @@ export class CustomPacketRegistry {
     this.#send = options.send;
     this.#onProblem = options.onProblem;
     this.#clock = options.clock ?? Date.now;
+    this.#schedule = options.schedule ?? defaultSchedule;
+    this.#onBacklogUnclaimed = options.onBacklogUnclaimed;
+  }
+
+  /**
+   * Starts holding every incoming message until each named consumer has called
+   * {@link consumerReady}, the bounds overflow, or the fallback timer fires (9.03).
+   *
+   * Why one FIFO for every opcode rather than a replay per subscriber: the consumers come up late —
+   * the JSON windows after `/modules/index`, the TSWoW Lua after the whole FrameXML load — and a
+   * module's order between its own opcodes (state, then delta) must survive. A replay on `on()`
+   * would also run a Lua callback inside `OnCustomPacket(...)`, before the add-on has finished its
+   * own load, which the real client never does. The cost is that a live message waits for the
+   * slowest consumer, at most `ttlMs`; every module of this install waits for a client-ready
+   * handshake anyway. The real TSWoW client simply loses such a message: this is a deliberate,
+   * bounded improvement on it, not fidelity.
+   *
+   * A no-op with an empty `expect` or while a backlog is already holding.
+   */
+  beginBacklog(options: CustomBacklogOptions): void {
+    if (this.#backlog || options.expect.length === 0) return;
+    const backlog: EntryBacklog = {
+      waiting: new Set(options.expect),
+      queue: [],
+      bytes: 0,
+      maxMessages: options.maxMessages ?? CUSTOM_BACKLOG_MAX_MESSAGES,
+      maxBytes: options.maxBytes ?? CUSTOM_BACKLOG_MAX_BYTES,
+      cancel: () => {},
+      releaseQueued: false,
+    };
+    backlog.cancel = this.#schedule(() => {
+      if (this.#backlog === backlog) this.flushBacklog("timeout");
+    }, options.ttlMs ?? CUSTOM_BACKLOG_TTL_MS);
+    this.#backlog = backlog;
+    this.#revision++;
+  }
+
+  /**
+   * One whole message from the transport: held while the entry backlog is, else {@link deliver}ed.
+   * The body is kept as given — the transport hands over a copy.
+   */
+  offer(opcode: number, body: Uint8Array): CustomOfferResult {
+    const backlog = this.#backlog;
+    if (!backlog) return this.deliver(opcode, body) ? "delivered" : "unclaimed";
+    backlog.queue.push({ opcode, body });
+    backlog.bytes += body.byteLength;
+    this.#revision++;
+    if (backlog.queue.length > backlog.maxMessages || backlog.bytes > backlog.maxBytes) {
+      // Released early, in order, the newest message last; reported like any other held one.
+      const claimed = this.#release("overflow");
+      return claimed.at(-1) === true ? "delivered" : "held";
+    }
+    return "held";
+  }
+
+  /**
+   * One expected consumer is subscribed. When the last one is, the backlog is released on a
+   * microtask — so the consumer's own `finally` has finished before any of its handlers run.
+   */
+  consumerReady(name: string): void {
+    const backlog = this.#backlog;
+    if (!backlog || !backlog.waiting.delete(name)) return;
+    this.#revision++;
+    if (backlog.waiting.size > 0 || backlog.releaseQueued) return;
+    backlog.releaseQueued = true;
+    queueMicrotask(() => {
+      if (this.#backlog === backlog) this.flushBacklog("ready");
+    });
+  }
+
+  /** Releases the backlog now: every held message in arrival order, through {@link deliver}. */
+  flushBacklog(reason: string): void {
+    this.#release(reason);
+  }
+
+  /** Drops the backlog without delivering it and cancels its timer (a world session ending). */
+  dispose(): void {
+    const backlog = this.#backlog;
+    if (!backlog) return;
+    this.#backlog = undefined;
+    backlog.cancel();
+    this.#revision++;
+  }
+
+  /** The backlog as the diagnostics pane shows it. */
+  get backlog(): CustomBacklogState {
+    const backlog = this.#backlog;
+    return {
+      holding: backlog !== undefined,
+      queued: backlog?.queue.length ?? 0,
+      bytes: backlog?.bytes ?? 0,
+      waiting: backlog ? [...backlog.waiting].sort() : [],
+      lastRelease: this.#lastRelease,
+    };
+  }
+
+  /** Ends the backlog and delivers what it held; answers whether each message was claimed. */
+  #release(reason: string): boolean[] {
+    const backlog = this.#backlog;
+    if (!backlog) return [];
+    // Cleared first: a handler that sends or subscribes meets the live path, and the queue is not
+    // kept after the release, so a later `forget` + `define` never sees these messages again.
+    this.#backlog = undefined;
+    backlog.cancel();
+    this.#lastRelease = { reason, messages: backlog.queue.length };
+    this.#revision++;
+    const claimed: boolean[] = [];
+    for (const { opcode, body } of backlog.queue.splice(0)) {
+      const taken = this.deliver(opcode, body);
+      claimed.push(taken);
+      if (!taken) this.#onBacklogUnclaimed?.(opcode, body);
+    }
+    return claimed;
   }
 
   /**
@@ -424,6 +600,7 @@ export class CustomPacketRegistry {
 
   /** Drops every schema, subscription, counter and sample. Used when a world session ends. */
   clear(): void {
+    this.dispose();
     this.#byName.clear();
     this.#byOpcode.clear();
     this.#owner.clear();

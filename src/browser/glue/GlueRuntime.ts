@@ -302,6 +302,7 @@ export class GlueRuntime {
 
   close(): void {
     this.api.cancelLogin();
+    this.api.closeAuth();
     // The world socket belongs to this runtime and to nothing else, so it goes with it.
     this.api.session.close();
     this.vm.close();

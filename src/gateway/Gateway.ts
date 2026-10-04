@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { connect as connectTcp, type Socket } from "node:net";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { environmentObjectInGrid, parseVMapGlobalSpawn, parseVMapTile, type EnvironmentObject } from "./VMapProtocol.js";
@@ -34,6 +34,8 @@ import { CALENDAR_CATALOG_VERSION, loadCalendarCatalog } from "./CalendarCatalog
 import { GLYPH_CATALOG_VERSION, loadGlyphCatalog } from "./GlyphCatalog.js";
 import { CHAR_TITLES_VERSION, loadCharTitles } from "./CharTitleMetadata.js";
 import { serveCatalogRoute, type CatalogCache } from "./CatalogRoutes.js";
+import { serveShipPathRoute } from "./TransportShipPaths.js";
+import { serveGameObjectModelsRoute } from "./GameObjectModels.js";
 import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
 import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
 import { loadReputationMetadata } from "./ReputationMetadata.js";
@@ -58,12 +60,23 @@ import { validAssetPath } from "./AssetPath.js";
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
 import {
-  isLoopbackAddress, MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
+  MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
   validModuleFileName, validModuleName, writeModuleFile, type ModuleRoot,
 } from "./ModuleIndex.js";
+import { isLoopbackOrigin, moduleWriteRefusal } from "./ModuleWritePolicy.js";
+import { BRIDGE_FLOW_DEFAULTS, BridgeStats, bridgeFlowLimits, type BridgeFlowLimits } from "./BridgeStats.js";
+import { respondFile } from "./FileResponse.js";
+import {
+  generateOnce, generationLane, recentlyFailed, sourceMissing, texturePriority, visualModelPriority,
+  SOURCE_MISSING_EXIT as SOURCE_MISSING, PRELOAD_PRIORITY,
+} from "./GenerationLane.js";
+import { AssetPreloader } from "./AssetPreloader.js";
+import {
+  LEGACY_TILE_DAY, LEGACY_TILE_HOUR, cacheGeneration, datasetCacheHeaders, datasetEtag, etagMatches,
+  isDatasetCacheRoute, processCacheNonce, tileCacheControl,
+} from "./CachePolicy.js";
 
 const MAX_CLIENT_MESSAGE = 64 * 1024;
-const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 /** How often a bridged socket is pinged; two missed pongs in a row close it. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Every upgrade opens a real worldserver socket, so an unbounded gateway exhausts the emulator. */
@@ -105,6 +118,11 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  */
 export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v22" {
   return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v22" : "visual-v21";
+}
+
+/** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */
+export function visualModelHash(modelPath: string): string {
+  return createHash("sha1").update(`${visualModelCacheNamespace(modelPath)}\0${modelPath.toLowerCase()}`).digest("hex");
 }
 
 /**
@@ -291,6 +309,8 @@ export interface GatewayOptions {
    * generator process reads the chain fresh anyway and needs nothing.
    */
   onArchivesChanged?: () => void;
+  /** 10.20: called when the dataset poll finds the DBC directory changed (workers recycle). */
+  onDatasetChanged?: () => void;
   /**
    * Every path the client archives hold under the character pipeline's texture subtrees.
    *
@@ -352,6 +372,23 @@ export interface GatewayOptions {
    */
   localAssetNonce?: string;
   peerAddress?: (request: IncomingMessage) => string | undefined;
+  /**
+   * 10.14: when a bridge stops reading the side that is ahead, and when it gives up (BridgeStats.ts).
+   * Absent means `BRIDGE_FLOW_DEFAULTS`; tests pass small numbers so a pause happens in kilobytes.
+   */
+  bridgeFlow?: Partial<BridgeFlowLimits>;
+  /** One line per closed bridge with its queue peaks and pauses (`GATEWAY_LOG_BACKPRESSURE=1`). */
+  logBackpressure?: boolean;
+  /**
+   * 10.22: publish the models of the served visual tile and its eight neighbours in the background
+   * (`AssetPreloader.ts`). Off when absent; needs `generateVisualTile` and `generateVisualModel`.
+   */
+  preload?: { perMinute?: number; perVisit?: number; pace?: number };
+  /**
+   * 10.22: the models of a published visual tile whose `<x>-<y>.models.json` is not written yet,
+   * derived off the main thread (the tile worker's `tile-models` job); `undefined` when unpublished.
+   */
+  listTileModels?: (map: number, gridX: number, gridY: number) => Promise<readonly string[] | undefined>;
 }
 
 /**
@@ -394,205 +431,95 @@ function sameOriginBrowserGet(request: IncomingMessage): boolean {
     && request.headers["sec-fetch-site"] === "same-origin";
 }
 
-/** How long a failed generation is remembered before the generator is given another chance. */
-const GENERATION_FAILURE_TTL_MS = 5 * 60_000;
-/**
- * How long a failure that was *not* "the archives do not hold this" is remembered.
- *
- * A missing source stays missing for the five minutes above. A run that died — a crashed child, a
- * worker recycled under it, a rename a virus scanner held up — is this minute's problem, and the
- * browser answers it with Т6's retry ladder at 2 s, 8 s and 30 s. With the five-minute memory every
- * one of those retries was refused with the same 500, so one transient failure left the texture or
- * the building missing for the rest of the session (measured: the ladder gives up after ~40 s).
- * Long enough to fold the burst of requests that arrive together into the one refusal, short
- * enough that the first retry runs the generator again.
- */
-const GENERATION_RETRY_TTL_MS = 1_500;
-/** Beyond this the expired half of the failure map is swept; it only ever holds broken keys. */
-const GENERATION_FAILURE_LIMIT = 4096;
-
-/**
- * The exit code a generator uses for "the archives do not hold this source".
- *
- * Every other way of failing — a child that crashed, a decoder that threw, a lane that refused —
- * is a fact about this minute rather than about the file, and the two have to leave this process
- * as different status codes. Т6 taught the browser to retry a 5xx on a backoff and to take a 404
- * as final; until this existed **every** way for `/texture` to fail answered 404, so a generator
- * child that died removed that layer — or, for a baked NPC whose only layer it was, the whole
- * unit — for the life of the tab, which is the very failure Т6 was written to end. Т7 sharpened
- * it: the first spelling the gateway offers is now one its own listing says is in the archives, so
- * a 404 on it is *more* likely to be a dead child than a missing file.
- *
- * Mirrored in `tools/generate-texture.mjs`, which is the end that chooses it; `npm test` pins the
- * two together, because a silent disagreement here reads to the browser as "no such file".
- */
-export const SOURCE_MISSING_EXIT = 3;
-
-/**
- * Whether a generator's rejection means the source is not in the client.
- *
- * The channel is the child's exit code, carried onto the rejection by whoever spawned it. The
- * message cannot be the channel: a child that crashes has no message at all, and one that throws
- * has whatever it last wrote to stderr.
- */
-export function sourceMissing(error: unknown): boolean {
-  return typeof error === "object" && error !== null
-    && (error as { exitCode?: unknown }).exitCode === SOURCE_MISSING_EXIT;
-}
-
-/**
- * One family of generated assets: a serial lane so generators do not fight over the MPQ archives,
- * a per-key in-flight map so concurrent requests share one run, and a short-lived record of
- * failures.
- *
- * The lane runs one job at a time, highest priority first and in arrival order within a priority.
- * It used to be a plain promise chain, strictly first come first served, and the texture lane
- * carries everything from a unit's skin to the minimap's tiles: measured on the owner's session of
- * 2026-09-28, 241 baked NPC skins went through it behind 80 minimap tiles, 33 icons and 21 world-map
- * tiles, and every one of those NPCs stood as a capsule until its skin was published.
- */
-interface GenerationLane {
-  running: boolean;
-  sequence: number;
-  readonly waiting: { priority: number; sequence: number; start(): void }[];
-  readonly jobs: Map<string, Promise<void>>;
-  // Why it failed, and not only until when: a missing source is remembered for five minutes, and a
-  // route that answered 404 for it has to go on answering 404 for the whole of that.
-  // Otherwise the first request tells the browser the truth and the next one tells it to come back.
-  readonly failures: Map<string, { until: number; missing: boolean }>;
-}
-
-function generationLane(): GenerationLane {
-  return { running: false, sequence: 0, waiting: [], jobs: new Map(), failures: new Map() };
-}
-
-/** Starts the lane's best waiting job if nothing is running. */
-function pumpLane(lane: GenerationLane): void {
-  if (lane.running || lane.waiting.length === 0) return;
-  let best = 0;
-  for (let index = 1; index < lane.waiting.length; index++) {
-    const candidate = lane.waiting[index]!;
-    const chosen = lane.waiting[best]!;
-    if (candidate.priority > chosen.priority
-      || (candidate.priority === chosen.priority && candidate.sequence < chosen.sequence)) best = index;
-  }
-  const [next] = lane.waiting.splice(best, 1);
-  lane.running = true;
-  next!.start();
-}
-
-/** Queues `run` on the lane; the promise settles with it. */
-function laneRun(lane: GenerationLane, run: () => Promise<void>, priority: number): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    lane.waiting.push({
-      priority,
-      sequence: lane.sequence++,
-      start: () => {
-        void Promise.resolve()
-          .then(run)
-          .then(resolve, reject)
-          .finally(() => {
-            lane.running = false;
-            pumpLane(lane);
-          });
-      },
-    });
-    pumpLane(lane);
-  });
-}
-
-/**
- * How urgently a `/texture` path is wanted, for its lane.
- *
- * 2 — what makes a unit appear: character and item component layers, creature skins and the baked
- *     NPC faces; until they are published the unit is a capsule (`CharacterAtlas` waits for its
- *     layers).
- * 0 — interface art that is drawn in a corner or a window: minimap tiles, world-map art, icons.
- * 1 — everything else, the world's own model textures.
- */
-export function texturePriority(path: string): number {
-  const lower = path.replaceAll("/", "\\").toLowerCase();
-  if (lower.startsWith("character\\") || lower.startsWith("item\\") || lower.startsWith("creature\\")
-    || lower.startsWith("textures\\bakednpctextures\\")) return 2;
-  if (lower.startsWith("textures\\minimap\\") || lower.startsWith("interface\\")) return 0;
-  return 1;
-}
-
-/**
- * Runs the generator for one key at most once at a time, on the family's lane.
- *
- * Nothing writes a negative result to disk, so without the failure memory an asset the client
- * simply does not ship — or one the generator cannot parse — re-enters the lane on every request
- * from every player and starves the assets that would have succeeded. The TTL is there so a
- * generator fixed at runtime, or a dependency that came back, heals without a restart.
- */
-async function generateOnce(
-  lane: GenerationLane, key: string, run: () => Promise<void>, priority = 1,
-): Promise<void> {
-  const remembered = lane.failures.get(key);
-  if (remembered && remembered.until > Date.now()) {
-    // Refused, but refused with the same news the run itself gave. A source the client does not
-    // hold does not start being held inside the five minutes, and the route above turns this into
-    // the 404 it turned the original rejection into rather than into "try again".
-    const refusal = new Error(`Generating ${key} failed recently`);
-    if (remembered.missing) (refusal as Error & { exitCode?: number }).exitCode = SOURCE_MISSING_EXIT;
-    throw refusal;
-  }
-  lane.failures.delete(key);
-  let job = lane.jobs.get(key);
-  if (!job) {
-    const generation = laneRun(lane, run, priority);
-    job = generation.finally(() => lane.jobs.delete(key));
-    lane.jobs.set(key, job);
-  }
-  try {
-    await job;
-  } catch (error) {
-    if (lane.failures.size >= GENERATION_FAILURE_LIMIT) {
-      const now = Date.now();
-      for (const [failed, failure] of lane.failures) if (failure.until <= now) lane.failures.delete(failed);
-    }
-    const missing = sourceMissing(error);
-    lane.failures.set(key, {
-      until: Date.now() + (missing ? GENERATION_FAILURE_TTL_MS : GENERATION_RETRY_TTL_MS),
-      missing,
-    });
-    throw error;
-  }
-}
+// The generation lanes live in GenerationLane.ts (10.20 slice 0); these three names are imported
+// from here by tests and older callers.
+export { SOURCE_MISSING_EXIT, sourceMissing, texturePriority } from "./GenerationLane.js";
 
 /** The lane key the whole published cache is stamped under: one pass, however it is started. */
 const RESTAMP_KEY = "restamp";
-
-/**
- * Whether this key's last run failed recently enough that `generateOnce` will refuse to run it.
- *
- * A caller that swallows the rejection needs to know which of the two it swallowed: the generator
- * having just run and failed, which is worth a line in the log, or the memory of a failure it
- * already reported, which is not — that one arrives once per request for the whole TTL.
- */
-function recentlyFailed(lane: GenerationLane, key: string): boolean {
-  const failure = lane.failures.get(key);
-  return failure !== undefined && failure.until > Date.now();
-}
 
 function peerAddress(request: IncomingMessage): string {
   return request.socket.remoteAddress ?? "unknown";
 }
 
-function bridge(webSocket: WebSocket, target: GatewayTarget): Socket {
+function bridge(
+  webSocket: WebSocket, target: GatewayTarget, flow: BridgeFlowLimits = BRIDGE_FLOW_DEFAULTS,
+  onClosed?: (stats: BridgeStats, reason: string | undefined) => void,
+): Socket {
   const tcp = connectTcp(target);
   // A WoW session is a stream of small packets, so Nagle plus the peer's delayed ACK can add up
   // to ~40 ms to each one — the largest latency win available for one line.
   tcp.setNoDelay(true);
   let failed = false;
+  let failure: string | undefined;
+  let finished = false;
+  const stats = new BridgeStats();
 
+  // 10.14: a side that is ahead is paused rather than the session dropped (BridgeStats.ts). One
+  // timer per bridge, and only while something is paused: it resumes a pause whose queue drained
+  // without a send callback to notice, and ends a pause the slow side never recovers from.
+  let clientPausedAt: number | undefined;
+  let backendPausedAt: number | undefined;
+  let flowCheck: ReturnType<typeof setInterval> | undefined;
+  const stopFlowCheck = () => {
+    if (flowCheck === undefined) return;
+    clearInterval(flowCheck);
+    flowCheck = undefined;
+  };
+  const finish = () => {
+    clearInterval(heartbeat);
+    stopFlowCheck();
+    if (finished) return;
+    finished = true;
+    onClosed?.(stats, failure);
+  };
+  // A paused socket cannot read the browser's answering close frame, and `ws` would then hold the
+  // session (and its per-address slot) until its own 30 s close timer: read again before closing.
+  const closeWebSocket = (code: number, reason?: string) => {
+    if (backendPausedAt !== undefined) webSocket.resume();
+    webSocket.close(code, reason);
+  };
   const fail = (reason: string) => {
     if (failed) return;
     failed = true;
+    failure = reason;
     clearInterval(heartbeat);
+    stopFlowCheck();
     tcp.destroy();
-    if (webSocket.readyState === WebSocket.OPEN) webSocket.close(1011, reason);
+    if (webSocket.readyState === WebSocket.OPEN) closeWebSocket(1011, reason);
+    else finish();
+  };
+  const settleFlow = () => {
+    if (clientPausedAt === undefined && backendPausedAt === undefined) {
+      stopFlowCheck();
+      stats.resumed(Date.now());
+    }
+  };
+  const resumeTcp = () => {
+    if (failed || clientPausedAt === undefined || webSocket.bufferedAmount >= flow.lowBytes) return;
+    clientPausedAt = undefined;
+    tcp.resume();
+    settleFlow();
+  };
+  const resumeWebSocket = () => {
+    if (failed || backendPausedAt === undefined) return;
+    backendPausedAt = undefined;
+    // A resume by the flow check leaves this pause's `drain` listener armed; drop it so pauses that
+    // never drain cannot pile listeners up on the socket.
+    tcp.off("drain", resumeWebSocket);
+    if (webSocket.readyState === WebSocket.OPEN) webSocket.resume();
+    settleFlow();
+  };
+  const startFlowCheck = () => {
+    if (flowCheck !== undefined) return;
+    flowCheck = setInterval(() => {
+      const now = Date.now();
+      resumeTcp();
+      if (backendPausedAt !== undefined && tcp.writableLength < flow.lowBytes) resumeWebSocket();
+      if (clientPausedAt !== undefined && now - clientPausedAt > flow.pauseLimitMs) fail("Client is too slow");
+      else if (backendPausedAt !== undefined && now - backendPausedAt > flow.pauseLimitMs) fail("Backend is too slow");
+    }, flow.checkMs);
+    flowCheck.unref();
   };
 
   // `ws` does not ping on its own, so an idle NAT or load balancer drops the world session with
@@ -625,23 +552,43 @@ function bridge(webSocket: WebSocket, target: GatewayTarget): Socket {
     }
 
     tcp.write(payload);
-    if (tcp.writableLength > MAX_BUFFERED_BYTES) fail("Backend is too slow");
+    const queued = tcp.writableLength;
+    stats.observe("backend", queued);
+    if (queued > flow.hardLimitBytes) {
+      fail("Backend is too slow");
+      return;
+    }
+    if (backendPausedAt === undefined && queued > flow.highBytes) {
+      backendPausedAt = Date.now();
+      stats.paused("backend", backendPausedAt);
+      webSocket.pause();
+      tcp.once("drain", resumeWebSocket);
+      startFlowCheck();
+    }
   });
 
   tcp.on("data", (data) => {
     if (webSocket.readyState !== WebSocket.OPEN) return;
-    if (webSocket.bufferedAmount > MAX_BUFFERED_BYTES) {
+    if (webSocket.bufferedAmount + data.byteLength > flow.hardLimitBytes) {
       fail("Client is too slow");
       return;
     }
-    webSocket.send(data, { binary: true });
+    webSocket.send(data, { binary: true }, resumeTcp);
+    const queued = webSocket.bufferedAmount;
+    stats.observe("client", queued);
+    if (clientPausedAt === undefined && queued > flow.highBytes) {
+      clientPausedAt = Date.now();
+      stats.paused("client", clientPausedAt);
+      tcp.pause();
+      startFlowCheck();
+    }
   });
   tcp.on("error", () => fail("Backend connection failed"));
   tcp.on("close", () => {
-    if (!failed && webSocket.readyState === WebSocket.OPEN) webSocket.close(1000);
+    if (!failed && webSocket.readyState === WebSocket.OPEN) closeWebSocket(1000);
   });
-  webSocket.on("close", () => { clearInterval(heartbeat); tcp.destroy(); });
-  webSocket.on("error", () => { clearInterval(heartbeat); tcp.destroy(); });
+  webSocket.on("close", () => { finish(); tcp.destroy(); });
+  webSocket.on("error", () => { finish(); tcp.destroy(); });
 
   return tcp;
 }
@@ -818,6 +765,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
    * Returning the promise rather than the value is also what keeps the `??=` below synchronous —
    * an `await` between the test and the assignment is how two requests start two loads.
    */
+  // 10.12: one random part per process for cache validators — a restart may be new code.
+  const cacheNonce = processCacheNonce();
   const characterTextures = (): Promise<CharacterTextureIndex | undefined> =>
     (indexes.characterTextures ??= loadCharacterTextures(options.listCharacterTextures));
   const environmentModels = new Map<string, Promise<Uint8Array>>();
@@ -846,11 +795,74 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   // any of them would make the first genuinely missing asset of that family queue behind the whole
   // of it — which is the stall this slice exists to remove.
   const restampLane = generationLane();
+  // 10.22: background publication after `/visual/environment` (AssetPreloader.ts). Keys and lanes are
+  // the routes' own, so a real request joins or promotes a background run instead of repeating it.
+  const preloader = options.preload && options.generateVisualTile && options.generateVisualModel
+    && options.visualTilesDirectory && options.visualModelsDirectory
+    ? new AssetPreloader({
+      ...options.preload,
+      lanes: [terrainTextureLane, itemIconLane, spellIconLane, visualTileLane, horizonLane, visualModelLane,
+        textureLane, soundLane, clientFileLane, liquidLane, minimapLane, worldMapZoneMapLane, restampLane],
+      tileModels: async (map, gridX, gridY) => {
+        const tiles = join(options.visualTilesDirectory!, String(map));
+        const list = join(tiles, `${gridX}-${gridY}.models.json`);
+        // The list carries its tile's stamp, so it is held to the tile's generation as well.
+        await fingerprint.ensureCurrent(list, { generation: "visual-tile-v4" });
+        try {
+          const names: unknown = JSON.parse(await readFile(list, "utf8"));
+          return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : undefined;
+        } catch {
+          // Absent, or unreadable: the worker derives it again below and rewrites it.
+        }
+        // A tile published before the list existed: the worker derives it (never this thread).
+        await fingerprint.ensureCurrent(join(tiles, `${gridX}-${gridY}.json`), { generation: "visual-tile-v4" });
+        return options.listTileModels?.(map, gridX, gridY);
+      },
+      publishTile: (map, gridX, gridY) => generateOnce(visualTileLane, `${map}/${gridX}/${gridY}`,
+        () => options.generateVisualTile!(map, gridX, gridY), PRELOAD_PRIORITY),
+      modelCurrent: async (path) => {
+        const modelPath = path.replaceAll("/", "\\");
+        // Not a path the route would serve: nothing to publish, so "current".
+        if (!validVisualModelPath(modelPath)) return true;
+        const filename = join(options.visualModelsDirectory!, `${visualModelHash(modelPath)}.bin`);
+        if (!await stat(filename).then(() => true, () => false)) return false;
+        if (!fingerprint.watching) return true;
+        // As the route sees it: an unstamped artifact is rebuilt on its first request
+        // (`requireStamp`), a stamped one is current unless a source moved. Read-only here — the
+        // route deletes, this only decides whether to publish.
+        if (!await stat(`${filename}.src`).then(() => true, () => false)) return false;
+        return fingerprint.isCurrent(filename);
+      },
+      publishModel: (path) => {
+        const modelPath = path.replaceAll("/", "\\");
+        const hash = visualModelHash(modelPath);
+        return generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash), PRELOAD_PRIORITY);
+      },
+      log: (line) => console.log(line),
+    })
+    : undefined;
   // One poll and what it makes stale. A request runs it first; so does the supervised gateway's
   // idle timer (`checkPatchChain`), which is how a publish is latched with no page open.
-  const observeDataset = async (): Promise<void> => {
-    const changed = await fingerprint.poll();
-    if (changed.dbc) indexes.reset();
+  //
+  // 10.21 (b): a request waits for the walk only when a change is already known (the archive watch
+  // fired) or the interval is 0; an interval that merely ran out walks beside the answer instead of
+  // in front of it (`DatasetFingerprint.mustWait`). The idle timer always waits: it exists to latch.
+  const observeDataset = async (mode: "request" | "wait" = "request"): Promise<void> => {
+    if (mode === "request" && !fingerprint.mustWait) {
+      if (fingerprint.dueForWalk) {
+        void fingerprint.poll().then(applyDatasetChange).catch((error: unknown) => {
+          console.warn(`Dataset poll failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+      return;
+    }
+    applyDatasetChange(await fingerprint.poll());
+  };
+  const applyDatasetChange = (changed: Awaited<ReturnType<DatasetFingerprint["poll"]>>): void => {
+    if (changed.dbc) {
+      indexes.reset();
+      options.onDatasetChanged?.();
+    }
     if (changed.archives) {
       // The startup-selected visual DBC directory and coordinated-model policy cannot be
       // switched safely under already loaded browser assets. Latch this for the rest of the
@@ -870,6 +882,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       indexes.forgetArchives();
       // A generator holding the old chain open would go on publishing out of it.
       options.onArchivesChanged?.();
+      // 10.22: whatever the preloader planned was planned against the old chain.
+      preloader?.recycle();
     }
   };
   const handle = (request: IncomingMessage, response: ServerResponse): void => void (async () => {
@@ -888,6 +902,11 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
 
     const url = new URL(request.url ?? "/", "http://gateway.local");
     const pathname = url.pathname;
+    // 10.12 (CachePolicy.ts): validators name the epoch this request started in, so a body built
+    // from indexes that a concurrent poll has since dropped is never filed under the newer tag.
+    const requestEpoch = fingerprint.epoch;
+    const requestDatasetTag = () => datasetEtag(cacheNonce, requestEpoch);
+    const requestCacheGeneration = () => cacheGeneration(cacheNonce, requestEpoch, patches.generation);
 
     // Deliberately outside `isClientVisualProfileRoute`: this is how the latch is reported, so it
     // keeps answering after it. Read-only (nothing on the network may reload anything) and
@@ -905,7 +924,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         "cache-control": "no-store",
         "content-type": "application/json; charset=utf-8",
       });
-      response.end(JSON.stringify(body));
+      // `cacheGeneration` (10.12) is what a page puts in `g=` on tile routes to cache them for good.
+      response.end(JSON.stringify({ ...body, cacheGeneration: requestCacheGeneration() }));
       return;
     }
 
@@ -918,6 +938,18 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       respondClientVisualProfileChanged(response, origin);
       return;
+    }
+
+    // 10.12: a `dataset` answer's tag does not depend on its body (CachePolicy.ts), so a browser
+    // that already holds this epoch's copy is answered before the route builds anything.
+    if (request.method === "GET" && isDatasetCacheRoute(pathname)
+      && etagMatches(request.headers["if-none-match"], requestDatasetTag())) {
+      const origin = request.headers.origin;
+      if (originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(304, { "access-control-allow-origin": origin, ...datasetCacheHeaders(requestDatasetTag()) });
+        response.end();
+        return;
+      }
     }
 
     if (request.method === "GET" && pathname === "/client/addons") {
@@ -966,18 +998,13 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         if (options.generateTexture) {
           await fingerprint.ensureCurrent(filename, { requireStamp: true });
         }
-        let data: Buffer;
-        try {
-          data = await readFile(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateTexture) throw error;
-          await rebuild();
-          data = await readFile(filename);
-        }
         // Every texture URL is path-stable, including scenery: a TSWoW module may replace any BLP
         // without changing the path. Conditional revalidation keeps unchanged reloads at 304 while
         // allowing the newly generated bytes to replace the browser's cached response immediately.
-        respondRevalidated(request, response, data, origin, "image/png");
+        // 10.21 (a): the validator is the file's `stat`, so a 304 never reads it (FileResponse.ts).
+        await respondFile(request, response, filename, {
+          origin, contentType: "image/png", rebuild: options.generateTexture ? rebuild : undefined,
+        });
       } catch (error) {
         // The two ways this route fails are not the same news, and answering 404 for both is what
         // left a character without his legs for the life of the tab: the browser takes a 404 as
@@ -1074,20 +1101,15 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       const suffix = group !== null ? `.g${group.padStart(3, "0")}` : visualModel ? "" : ".anim";
       const filename = join(options.visualModelsDirectory, `${hash}${suffix}.bin`);
       try {
-        const rebuild = () => generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash));
+        const rebuild = () => generateOnce(visualModelLane, hash, () => options.generateVisualModel!(modelPath, hash),
+          visualModelPriority(modelPath));
         // A visual-model filename hashes the route generation and MPQ path, not the source bytes.
         // The background restamper cannot recover that path from the hash, so an unstamped cache
         // made before a coordinated HD pack was installed must be regenerated on its first request.
         if (options.generateVisualModel) await fingerprint.ensureCurrent(filename, { requireStamp: true });
-        let data: Buffer;
-        try {
-          data = await readFile(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateVisualModel) throw error;
-          await rebuild();
-          data = await readFile(filename);
-        }
-        respondRevalidated(request, response, data, origin, "application/octet-stream");
+        await respondFile(request, response, filename, {
+          origin, contentType: "application/octet-stream", rebuild: options.generateVisualModel ? rebuild : undefined,
+        });
       } catch (error) {
         // The twin of the split `/texture` was given in Т6, and the one this route was left
         // without. Every way of failing here answered 404 — a generator child that died, a decoder
@@ -1114,26 +1136,13 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         return;
       }
       try {
-        const data = await readFile(join(options.visualModelsDirectory, `${visualTexture[1]}.png`));
         // The WMO generator rewrites this same hash-keyed PNG when an archive overlay changes.
         // It has no independent route key, so a one-day freshness window could leave an already
-        // open browser drawing the previous building texture. A content validator keeps the URL
+        // open browser drawing the previous building texture. A file validator keeps the URL
         // backwards-compatible while max-age=0 makes cached responses revalidate after republish.
-        const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
-        const cacheHeaders = {
-          "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=0, must-revalidate",
-          etag,
-          "content-type": "image/png",
-        };
-        const ifNoneMatch = request.headers["if-none-match"];
-        if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
-          response.writeHead(304, cacheHeaders);
-          response.end();
-          return;
-        }
-        response.writeHead(200, { ...cacheHeaders, "content-length": data.byteLength });
-        response.end(data);
+        await respondFile(request, response, join(options.visualModelsDirectory, `${visualTexture[1]}.png`), {
+          origin, contentType: "image/png",
+        });
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
       }
@@ -1171,11 +1180,13 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_HOUR),
           "content-length": data.byteLength,
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
+        // 10.22: the player is here; the neighbourhood's models are what comes next.
+        preloader?.noteTile(map, gridX, gridY);
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
       }
@@ -1204,7 +1215,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "image/png",
         });
@@ -1247,7 +1258,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           data = await readFile(filename);
         }
         if (data.byteLength !== 128 * 128 * 4) throw new Error(`Invalid world-map zone map ${map}`);
-        respondRevalidated(request, response, data, origin, "application/octet-stream");
+        await respondFile(request, response, filename, { origin, contentType: "application/octet-stream" });
       } catch (error) {
         const absent = sourceMissing(error)
           || (!options.generateWorldMapZoneMap && (error as NodeJS.ErrnoException).code === "ENOENT");
@@ -1278,7 +1289,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_HOUR),
           "content-length": data.byteLength,
           "content-type": "application/json; charset=utf-8",
         });
@@ -1312,7 +1323,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = await readFile(join(options.terrainLayersDirectory, `${terrainLayer[1]}.png`));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "image/png",
         });
@@ -1349,7 +1360,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "application/octet-stream",
         });
@@ -1395,12 +1406,21 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           data = await readFile(filename);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateTerrainSplat) throw error;
+          // 7.23: a tile the generator already found nothing to paint on (every chunk without a
+          // layer — the flat stubs under dungeons) left an empty `.nosplat` stamped with its ADT and
+          // WDT. While that stamp is current the answer is 404 without running the generator, also
+          // after a restart; a stale one is deleted here and the tile is tried again. Only on a
+          // miss, so a published tile pays nothing for it.
+          const marker = join(options.terrainTexturesDirectory, String(map), `${gridX}-${gridY}.nosplat`);
+          await fingerprint.ensureCurrent(marker);
+          const stub = await readFile(marker).then(() => true, () => false);
+          if (stub) throw Object.assign(new Error(`${map}/${gridX}/${gridY} has no splat`), { exitCode: SOURCE_MISSING });
           await rebuild();
           data = await readFile(filename);
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": part === "cover.bin"
             ? "application/octet-stream"
@@ -1408,7 +1428,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         });
         response.end(data);
       } catch (error) {
-        respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
+        // 7.23: "no ADT" and "nothing to paint" are the generator's `SourceMissing`, a final 404
+        // like `/texture`'s; anything else is a 500 the browser may retry.
+        const absent = sourceMissing(error) || (error as NodeJS.ErrnoException).code === "ENOENT";
+        respondError(response, absent ? 404 : 500, origin);
       }
       return;
     }
@@ -1442,7 +1465,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "image/png",
         });
@@ -1473,7 +1496,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = await readFile(join(options.mapsDirectory, filename));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_HOUR),
           "content-length": data.byteLength,
           "content-type": "application/octet-stream",
         });
@@ -1520,16 +1543,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const rebuild = () => generateOnce(soundLane, lower.slice(0, lower.lastIndexOf("\\") + 1) || lower,
           () => options.generateSound!(soundPath));
         if (options.generateSound) await fingerprint.ensureCurrent(filename);
-        let data: Buffer;
-        try {
-          data = await readFile(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateSound) throw error;
-          await rebuild();
-          data = await readFile(filename);
-        }
-        respondRevalidated(request, response, data, origin,
-          extension === ".mp3" ? "audio/mpeg" : "audio/wav");
+        await respondFile(request, response, filename, {
+          origin, contentType: extension === ".mp3" ? "audio/mpeg" : "audio/wav",
+          rebuild: options.generateSound ? rebuild : undefined,
+        });
       } catch {
         respondError(response, 404, origin);
       }
@@ -1583,15 +1600,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         // on the way out, so an unstamped one is a half-written cache rather than a legacy file,
         // and rebuilding it is right where serving it would be a guess.
         if (options.generateClientFile) await fingerprint.ensureCurrent(filename, { requireStamp: true });
-        let data: Buffer;
-        try {
-          data = await readFile(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateClientFile) throw error;
-          await rebuild();
-          data = await readFile(filename);
-        }
-        respondRevalidated(request, response, data, origin, clientFileContentType(extension));
+        await respondFile(request, response, filename, {
+          origin, contentType: clientFileContentType(extension), rebuild: options.generateClientFile ? rebuild : undefined,
+        });
       } catch (error) {
         // The same split `/texture` and `/visual/model` carry, and it matters more here than in
         // either: a `.toc` lists files that need not exist, so the loader has to treat a 404 as "not
@@ -1630,7 +1641,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify({ kits: (await indexes.soundIndex).spellKitSounds() });
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1704,7 +1715,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
      * off**, on purpose: the method is a fact about the route, while writing is a fact about this
      * gateway's configuration, and the second is what the 405 below says in words the author can
      * act on. A preflight that refused the method instead would turn that sentence into a network
-     * error with nothing in it.
+     * error with nothing in it. The exception is a page that is not on this machine (10.04): it can
+     * never write, so it is offered `GET` alone.
      */
     if ((request.method === "GET" || request.method === "PUT" || request.method === "OPTIONS")
       && pathname.startsWith("/modules/") && options.moduleDirectories) {
@@ -1721,7 +1733,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         if (request.method === "OPTIONS") {
           response.writeHead(204, {
             "access-control-allow-origin": origin,
-            "access-control-allow-methods": "GET, PUT",
+            // A page that is not on this machine can never write (10.04), so it is not offered `PUT`.
+            "access-control-allow-methods": isLoopbackOrigin(origin) ? "GET, PUT" : "GET",
             // Echoed rather than written out, so that a browser asking about a header this route
             // has never heard of gets an answer instead of a silent block.
             "access-control-allow-headers": request.headers["access-control-request-headers"] ?? "content-type",
@@ -1740,7 +1753,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           : "application/json; charset=utf-8";
         if (request.method === "PUT") {
           const peer = (options.peerAddress ?? socketPeerAddress)(request);
-          if (!options.moduleWrite || !isLoopbackAddress(peer)) {
+          // 10.04: the socket, the `Origin` and the absence of proxy headers all have to say "this
+          // machine" (`ModuleWritePolicy`) — a proxy on this box makes every socket look local.
+          if (!options.moduleWrite || moduleWriteRefusal(request.headers, peer) !== undefined) {
             // 405 and not 403: the route exists and the method is the part that is refused. The
             // `allow` header says so in the one word a client can act on.
             response.writeHead(405, { "access-control-allow-origin": origin, allow: "GET" }).end();
@@ -1856,7 +1871,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         });
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -1886,7 +1901,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(ids.map((id) => metadata.get(id)).filter(Boolean));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2002,7 +2017,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.lockData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2026,7 +2041,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.factionData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2050,7 +2065,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.worldStateUiMetadata);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2072,7 +2087,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.battlegroundMetadata);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2098,7 +2113,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.taxiMetadata);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2147,16 +2162,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       try {
         const rebuild = () => generateOnce(liquidLane, name, () => options.generateLiquidTexture!(name));
         if (options.generateLiquidTexture) await fingerprint.ensureCurrent(filename);
-        let data: Buffer;
-        try {
-          data = await readFile(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateLiquidTexture) throw error;
-          await rebuild();
-          data = await readFile(filename);
-        }
-        respondRevalidated(request, response, data, origin,
-          image ? "image/png" : "application/json; charset=utf-8");
+        await respondFile(request, response, filename, {
+          origin, contentType: image ? "image/png" : "application/json; charset=utf-8",
+          rebuild: options.generateLiquidTexture ? rebuild : undefined,
+        });
       } catch (error) {
         respondError(response, (error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500, origin);
       }
@@ -2188,7 +2197,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(lighting);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2212,7 +2221,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.areaData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2240,7 +2249,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.reputationMetadata);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2369,7 +2378,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.slotPrices);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2469,6 +2478,10 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
 
     // Every catalog route added since char-titles (CatalogRoutes.ts): one table, one memo per dataset.
     if (await serveCatalogRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+    // 11.01-A1: a ship's baked timetable per (path, speed, accel), memoised in the same per-dataset map.
+    if (await serveShipPathRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+    // 11.01-A2: display id → collision model name and box from vmaps/GameObjectModels.dtree (GameObjectModels.ts).
+    if (await serveGameObjectModelsRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
 
     // The stock PaperDoll title picker's CharTitles rows (CharTitleMetadata.ts), fetched once per world mount.
     if (request.method === "GET" && pathname === "/dbc/char-titles" && options.dbcDirectory) {
@@ -2585,7 +2598,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.barberStyles);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2613,7 +2626,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.barberCosts);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2635,7 +2648,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.characterStatData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2657,7 +2670,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.talentData);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2687,7 +2700,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(ids.map((id) => metadata.get(id)).filter(Boolean));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2721,7 +2734,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(entries.map((entry) => paths.get(entry) ?? { entry, period: 0, frames: [] }));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2744,7 +2757,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.liquidClasses);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2767,7 +2780,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.loadingScreens);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2794,7 +2807,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.groundEffects);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2938,7 +2951,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(await indexes.characterCreation);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -2984,7 +2997,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify((await indexes.charStartOutfit).outfit(race, classId, sex, outfit));
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -3062,7 +3075,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "image/png",
         });
@@ -3109,7 +3122,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           : index.tables());
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          ...datasetCacheHeaders(requestDatasetTag()),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -3256,7 +3269,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = await job;
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "application/octet-stream",
         });
@@ -3328,7 +3341,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = encodeCollisionModel(groups, selected);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=86400",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
           "content-length": data.byteLength,
           "content-type": "application/octet-stream",
         });
@@ -3376,7 +3389,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const data = JSON.stringify(objects);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
-          "cache-control": "public, max-age=3600",
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_HOUR),
           "content-type": "application/json; charset=utf-8",
         });
         response.end(data);
@@ -3404,11 +3417,14 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   }
   return {
     handle,
-    close: () => fingerprint.close(),
+    close: () => {
+      preloader?.close();
+      fingerprint.close();
+    },
     patchSummary: () => patches.summary(),
     patchStatus: () => patches.details(fingerprint.epoch),
     checkPatchChain: async () => {
-      if (fingerprint.watching) await observeDataset();
+      if (fingerprint.watching) await observeDataset("wait");
       return patches.summary();
     },
     get patchEventsPending() { return fingerprint.archiveEventsPending; },
@@ -3427,6 +3443,12 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
   // script can set it, so the gateway still belongs behind something that knows who is calling.
   let bridged = 0;
   const bridgedPerAddress = new Map<string, number>();
+  const flow = bridgeFlowLimits(options.bridgeFlow);
+  const logBridge = options.logBackpressure
+    ? (kind: string) => (stats: BridgeStats, reason: string | undefined) => {
+      console.log(stats.describe(kind, reason, Date.now()));
+    }
+    : undefined;
 
   const track = (webSocket: WebSocket, address: string, target: GatewayTarget): void => {
     bridged++;
@@ -3437,7 +3459,7 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
       if (remaining > 0) bridgedPerAddress.set(address, remaining);
       else bridgedPerAddress.delete(address);
     });
-    bridge(webSocket, target);
+    bridge(webSocket, target, flow, logBridge?.(target === options.world ? "world" : "auth"));
   };
 
   authServer.on("connection", (socket, request) => track(socket, peerAddress(request), options.auth));
@@ -3516,30 +3538,6 @@ export async function startGateway(options: GatewayOptions): Promise<RunningGate
  * 404 and 500 as a cross-origin failure and the real status never reaches the page. A rejected
  * origin is the one exception: echoing it back would defeat the check.
  */
-function respondRevalidated(
-  request: IncomingMessage,
-  response: ServerResponse,
-  data: Buffer,
-  origin: string | undefined,
-  contentType: string,
-): void {
-  const etag = `"${createHash("sha1").update(data).digest("hex")}"`;
-  const headers = {
-    ...(origin ? { "access-control-allow-origin": origin } : {}),
-    "cache-control": "public, max-age=0, must-revalidate",
-    "content-type": contentType,
-    etag,
-  };
-  const ifNoneMatch = request.headers["if-none-match"];
-  if (ifNoneMatch && ifNoneMatch.split(",").some((value) => value.trim() === etag || value.trim() === "*")) {
-    response.writeHead(304, headers);
-    response.end();
-    return;
-  }
-  response.writeHead(200, { ...headers, "content-length": data.byteLength });
-  response.end(data);
-}
-
 function respondError(response: ServerResponse, status: number, origin: string | undefined): void {
   response.writeHead(status, origin ? { "access-control-allow-origin": origin } : {}).end();
 }

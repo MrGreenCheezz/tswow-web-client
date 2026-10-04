@@ -1,13 +1,17 @@
 import { OPCODES } from "../generated/opcodes.js";
 import { playerInventory, slotAt, stackCount } from "../browser/Inventory.js";
+import { carriedOutsideBags } from "../browser/CarriedItems.js"; // L1 (2.05)
+import { buildBuyItemInSlot } from "./VendorSlotProtocol.js"; // L1 (3.23)
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
+import { buildRepairItem } from "./RepairProtocol.js";
 import type { BinaryByteStream } from "../transport/WebSocketByteStream.js";
 import { PacketSlice } from "../transport/PacketPump.js";
 import { sha1Bytes } from "../auth/Srp6.js";
 import {
   buildCharacterGuid,
   buildCreateCharacter,
+  buildDeclinedNames,
   buildRenameCharacter,
   parseCharacterList,
   parseCharacterResult,
@@ -21,18 +25,22 @@ import {
 } from "./CharacterProtocol.js";
 import { WorldConnection, type WorldPacket } from "./WorldConnection.js";
 import { UnhandledOpcodeLog } from "./UnhandledOpcodes.js";
+import { IgnoredOpcodeLog } from "./IgnoredOpcodes.js";
 import { PacketErrorLog, type PacketErrorCategory } from "./PacketErrors.js";
 import { buildCustomPacket, CustomPacketReassembler } from "./CustomPacket.js";
 import { CustomPacketRegistry } from "./CustomPacketRegistry.js";
+import { PendingRequests } from "./PendingRequests.js";
+import { buildShowingToggle } from "./CharacterStatFields.js";
 import { captureProbe, captureProbeActive } from "./CaptureProbe.js";
 import {
   buildBuyBankSlot, buildEquipmentSetDelete, buildEquipmentSetSave, buildEquipmentSetUse,
-  buildInspect, buildLearnPetTalents, buildLearnTalent, buildPlayedTimeQuery,
+  buildInspect, buildLearnPetTalents, buildLearnPreviewTalents, buildLearnTalent, buildPlayedTimeQuery,
   buildRemoveGlyph, buildSetTitle, buildStandStateChange, buildUnlearnSkill, MAX_EQUIPMENT_SETS, MAX_GLYPH_SLOTS,
   parseAchievementData, parseAchievementEarned, parseBindPoint, parseCriteriaUpdate,
   parseEnchantTimeUpdate, parseEquipmentSetList, parseEquipmentSetSaved, parseEquipmentSetUseResult,
   parseExplorationExperience,
   buildSetFactionAtWar, buildQueryInspectAchievements,
+  buildSetFactionInactive, buildSetWatchedFaction, NO_WATCHED_FACTION,
   parseFactionStanding, parseFactionVisible, parseForcedReactions, parseGuidOnly, parseInebriation,
   parseInitialFactions, parseItemTimeUpdate, parseLearnedSpell, parseLevelUpInfo, parsePlayedTime,
   parsePlayerBound, parseProficiency, parseReferAFriendFailure, parseRemovedSpell,
@@ -42,6 +50,14 @@ import {
   type BindPoint, type EquipmentSet, type FactionState, type TalentsInfo,
 } from "./CharacterProgressProtocol.js";
 import { parseInspectTalent, type InspectResult } from "./InspectProtocol.js";
+import {
+  buildItemRefund, buildItemRefundInfo, ITEM_FLAG_ITEM_PURCHASE_RECORD, ItemRefunds, itemRefundMessages,
+  parseItemRefundInfo, parseItemRefundResult,
+} from "./ItemRefundProtocol.js";
+import { buildWrapItem } from "./GiftWrapProtocol.js";
+import { buildFarSight } from "./FarSight.js"; // 11.02-I
+import { GuildNameCache } from "./GuildNameCache.js"; // 3.12 (04.10, L4)
+import { TargetHistory, targetHistoryKind } from "./TargetHistory.js"; // L2 1.10
 
 import {
   buildAbandonQuest, buildCompletedQuestsQuery, buildPushQuestToParty, buildQuestConfirmAccept, buildQuestInfoQuery,
@@ -54,7 +70,7 @@ import {
 
 import { EventBus, type SpellCastStopReason, type WorldPacketEvents } from "./EventBus.js";
 import {
-  parseActionButtons, type ActionButton, buildSetActionButton, ACTION_BUTTON_STATE_CLEAR,
+  parseActionButtons, type ActionButton, buildSetActionButton, ACTION_BUTTON_STATE_CLEAR, buildSetActionBarToggles,
 } from "./ActionBarProtocol.js";
 import {
   ThreatTables, parseThreatClear, parseThreatRemove, parseThreatUpdate,
@@ -64,11 +80,12 @@ import {
   parseFeignDeathResisted, parseMountSpecial, parsePartyKill,
 } from "./UnitEventProtocol.js";
 import {
-  parseDamageShieldLog, parseDispelLog, parseEnchantmentLog, parseExecuteLog, parseInstantKillLog,
+  parseDamageShieldLog, parseDispelLog, parseEnchantmentLog, parseInstantKillLog,
   parseMirrorImageData, parsePeriodicAuraLog, parseSpellDamageLog, parseSpellEnergizeLog,
   parseSpellHealLog, parseSpellLogPair, parseSpellMissLog, parseSpellVisualKit,
   AURA_PERIODIC_ENERGIZE, AURA_PERIODIC_HEAL, AURA_OBS_MOD_HEALTH, AURA_OBS_MOD_POWER,
 } from "./SpellLogProtocol.js";
+import { parseDispelFailed, parseExecuteLogDetail } from "./CombatFacts.js";
 
 import { advanceGameTime, parseLoginSetTimeSpeed, type GameTime } from "./GameTimeProtocol.js";
 import {
@@ -126,6 +143,8 @@ import {
 import {
   buildLfgJoin,
   buildLfgLeave,
+  buildSearchLfg,
+  buildSetLfgComment,
   buildLfgProposalResult,
   buildLfgSetRoles,
   buildLfgTeleport,
@@ -211,6 +230,7 @@ import {
 } from "./MailProtocol.js";
 import {
   TRADE_STATUS_BEGIN_TRADE,
+  TRADE_STATUS_BUSY,
   TRADE_STATUS_CLOSE_WINDOW,
   TRADE_STATUS_NOT_ON_TAPLIST,
   TRADE_STATUS_OPEN_WINDOW,
@@ -250,6 +270,7 @@ import {
   parseGroupList,
   parsePartyCommandResult,
   partyResultText,
+  ERR_VOTE_KICK_REASON_NEEDED,
   type GroupInvite,
   type GroupState,
 } from "./GroupProtocol.js";
@@ -355,6 +376,21 @@ import {
   buildRequestVehicleNextSeat, buildRequestVehiclePrevSeat, buildRequestVehicleSwitchSeat,
   parseCancelExpectedRideVehicleAura, parsePlayerVehicleData,
 } from "./VehicleProtocol.js";
+// 11.02-BCD: a seat by click, the driver's exit and seats, the controlled unit's own casts.
+import {
+  buildChangeSeatsOnControlledVehicle, buildDismissControlledVehicle, buildSpellClick, drivenVehicle,
+} from "./VehicleProtocol.js"; // 11.02-BCD
+import { SpellClickRepeatGuard } from "./VehicleClick.js"; // 11.02-BCD
+import { buildPetCastSpell, petBarCastsAsUnit, petSlotCastsSpell } from "./PetCastSpell.js"; // 11.02-BCD
+import { petSpellCastsAsUnitAt } from "./PetCastSpell.js"; // L13 11.02-D; L13-review 11.02-D: + the press's unit
+// 11.02-E: missile trajectories — the cast's flag 2 tail, the one re-aim, the page's solver.
+import {
+  MissileTrajectoryTracker, isVehicleSpellBar, missileCastPlan, missileShotSource, type MissileCastPlan,
+} from "./MissileCast.js"; // 11.02-E
+import {
+  CAST_FLAG_TRAJECTORY, buildCastSpellTrajectory, buildUpdateMissileTrajectory, trajectoryTail, trajectoryTargets,
+  type MissileMovementTail, type MissileShot,
+} from "./MissileTrajectory.js"; // 11.02-E
 import {
   battlegroundJoinResultText, buildBattlefieldList, buildBattlefieldPort,
   buildBattlefieldStatusQuery, buildBattlegroundPlayerPositionsQuery, buildBattlemasterHello,
@@ -407,7 +443,7 @@ import {
   type CreatureTemplate, type ItemSetName, type ItemTemplate, type PageText,
 } from "./QueryCacheProtocol.js";
 import {
-  buildGmResponseResolve, buildTicketCreate, buildTicketDelete, buildTicketGet,
+  buildComplainMail, buildGmResponseResolve, buildReportLag, buildTicketCreate, buildTicketDelete, buildTicketGet,
   buildTicketSystemStatus, buildTicketUpdate, isTicketSuccess, parseGmResponse,
   parseGmResponseStatusUpdate, parseGmTicket, parseTicketResponse, parseTicketSystemStatus,
   ticketResponseText, GMTICKET_QUEUE_STATUS_ENABLED, GMTICKET_STATUS_HASTEXT,
@@ -417,6 +453,7 @@ import {
   barberShopResultText, buildAlterAppearance, parseBarberShopResult, parseCharacterServiceResult,
   BARBER_SHOP_RESULT_SUCCESS,
   type CharacterServiceResult,
+  buildCustomizeCharacter, buildFactionOrRaceChange, type CharacterServiceRequest,
 } from "./CharacterServiceProtocol.js";
 import { parsePlayObjectSound, parsePlaySound, type SoundRequest } from "./SoundProtocol.js";
 import {
@@ -467,9 +504,14 @@ import {
 import {
   buildAreaSpiritHealerRequest, buildCorpseMapPositionQuery, buildCorpseQuery, buildReclaimCorpse, buildRepopRequest, buildResurrectResponse, buildSpiritHealerActivate, parseAreaSpiritHealerTime, parseCorpseMapPosition, parseCorpseQuery, parseCorpseReclaimDelay, parseDeathReleaseLoc, parseResurrectRequest, parseSpiritHealerConfirm, type CorpseLocation, type DeathReleaseLocation, type ResurrectRequest,
 } from "./DeathProtocol.js";
-import { decompressObjectUpdate, isWorldObjectDead, serverControlsMovement, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
-import { isPlayerGhost } from "./Fields.js";
-import { buildMovementPacket, parseMovementPacket, type MovementInfo } from "./MovementProtocol.js";
+import { decompressObjectUpdate, isWorldObjectDead, serverControlsMovement, UpdateBlockError, WorldState, type WorldObjectState, type WorldPosition } from "./WorldState.js";
+import { isPlayerGhost, unit as unitFields } from "./Fields.js";
+import { buildQuestGiverStatusQuery, QuestGiverStatusQueue } from "./QuestGiverStatusQueue.js";
+import { buildMovementPacket, MOVEMENT_FLAGS, parseMovementPacket, type MovementInfo } from "./MovementProtocol.js";
+import { normalizeOrientation } from "./TransportMath.js";
+import { isAttackableUnit } from "./TargetSearch.js";
+import { factionFlagsAfterAtWar, factionFlagsAfterStanding, parseSetFactionAtWar, reputationBaseOf } from "./ReputationReaction.js"; // L15 5.05
+import { AutoRangedCombat, type AutoRangedLimits } from "./AutoRangedCombat.js"; // L15 5.05
 import {
   mirrorTimerRemaining, parsePauseMirrorTimer, parseStartMirrorTimer, parseStopMirrorTimer,
   type MirrorTimer,
@@ -481,10 +523,15 @@ import {
   ackOpcodeForSpeed, buildForcedSpeedAck, buildKnockBackAck, buildMovementToggleAck, buildNotActiveMover,
   buildSplineDone, buildTeleportAck,
   buildWorldportAck, isForcedSpeed, isMovementToggle, movementToggleFor, parseClientControlUpdate,
-  parseForcedSpeed, parseKnockBack, parseMovementToggle, parseMultipleMoves, parseNewWorld,
+  knockBackMovement, parseForcedSpeed, parseKnockBack, parseMovementToggle, parseMultipleMoves, parseNewWorld,
   parseTeleportRequest, parseTransferAborted, parseTransferPending,
   type ForcedSpeedName, type KnockBack, type TransferPending,
 } from "./MovementAckProtocol.js";
+import {
+  applyMovementToggle, moverStateOf, refusalTakesControl, type MoverMovementState, type MoverState,
+} from "./MoverStates.js";
+import { seatedMovementInfo, unitSeat } from "./UnitSeat.js";
+import { writeMovementInfo } from "./MovementProtocol.js"; // 11.02-input
 import {
   isSplineMoveState, isSplineSpeed, parseFlightSplineSync, parseSplineMoveState, parseSplineSpeed,
 } from "./SplineStateProtocol.js";
@@ -501,7 +548,7 @@ import {
 import {
   buildSetDifficulty, parseDungeonDifficulty, parseEncounterFrame, parseInstanceDifficulty,
   parseInstanceLockWarning, parseInstanceMapId, parseInstanceResetFailed, parseRaidGroupOnly,
-  parseRaidInstanceInfo, parseRaidInstanceMessage, RAID_INSTANCE_WELCOME, type InstanceLockout,
+  parseRaidInstanceInfo, parseRaidInstanceMessage, type InstanceLockout,
   buildInstanceLockResponse, buildAreaTrigger,
 } from "./InstanceProtocol.js";
 import {
@@ -509,7 +556,7 @@ import {
   type BinderConfirmRequest, type InstanceLockRequest, type TalentWipeAnswer, type TalentWipeRequest,
 } from "./ConfirmationProtocol.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
-import { UNIT_FLAG_IN_COMBAT } from "./FactionRules.js";
+import { REACTION_NEUTRAL, UNIT_FLAG_IN_COMBAT } from "./FactionRules.js";
 
 /** `MAX_QUEST_LOG_SIZE`: the most quest ids one POI query may name before the server drops it. */
 const QUEST_POI_CHUNK = 25;
@@ -525,10 +572,13 @@ const NET_RATE_WINDOW_MS = 500;
 const UNIT_FLAG_MOUNT = 0x08000000;
 /** Spellbook's client action row: it maps to the melee protocol, never CMSG_CAST_SPELL. */
 export const MELEE_AUTO_ATTACK_SPELL_ID = 6603;
+/** How long CMSG_ATTACK_SWING waits for an answer before counting as lost (5.21). */
+const ATTACK_REQUEST_TTL_MS = 1_500;
 import {
   SHEATH_MELEE, SHEATH_RANGED, SHEATH_UNARMED,
   buildCombatGuid, buildSetSheathed, parseAttackStart, parseAttackStop, parseAttackerStateUpdate,
   parseEnvironmentalDamage, parseExperienceGain, parseHealthUpdate,
+  withinMeleeRange,
   type AttackerState, type EnvironmentalDamage, type ExperienceGain,
 } from "./CombatProtocol.js";
 import {
@@ -550,14 +600,19 @@ import {
   parseCooldownEvent,
   parseInitialSpells,
   isCooldownOnHold,
-  parseSpellCastHeader, parseSpellGo,
+  parseSpellStart, parseSpellGo, CAST_FLAG_PENDING,
   parseSpellCooldown,
   type KnownSpell,
 } from "./SpellProtocol.js";
+import { buildCastSpellTargeted, buildUseItemTargeted, TRADE_SLOT_NONTRADED } from "./SpellTargets.js";
 import { applyAuraUpdate, parseAuraUpdate, type ActiveAura } from "./AuraProtocol.js";
 import { missReasonText } from "./MissReasons.js";
 import { formatGlobalStringByName } from "./GlobalStringFormat.js";
 import { nameOr, WORLD_NAME_FALLBACKS, type WorldNameKind, type WorldNameSources } from "./WorldNames.js";
+import {
+  guildEventText, instanceResetFailedText, instanceResetText, itemPushText, learnedSpellText, questCompleteText,
+  questFailedText, questInvalidText, questLogFullText, raidInstanceText, spellSubject, zoneUnderAttackText,
+} from "./WorldMessageTexts.js";
 import {
   buildGossipHello,
   buildGossipSelect,
@@ -591,6 +646,8 @@ const CHAR_DELETE_SUCCESS = 71;
 /** TrinityCore/AzerothCore WotLK SpellCastResult values for a true cancel/interruption. */
 const SPELL_FAILED_INTERRUPTED = 40;
 const SPELL_FAILED_INTERRUPTED_COMBAT = 41;
+/** Wow.exe 0x007fecc0's «success» (187, SPELL_FAILED_UNKNOWN in SharedDefines.h): UNIT_SPELLCAST_SUCCEEDED. */
+export const SPELL_CAST_RESULT_SUCCESS = 187;
 const MOVEMENT_OPCODES = new Set<number>([
   OPCODES.MSG_MOVE_START_FORWARD,
   OPCODES.MSG_MOVE_START_BACKWARD,
@@ -641,6 +698,11 @@ export interface WorldLogin {
   realmId: number;
   /** Auth-list name of the selected realm; retained for the stock GetRealmName API. */
   realmName?: string;
+  /**
+   * Auth-list type byte of the selected realm (`Realm.h` RealmType, Cfg_Configs' column 2);
+   * retained for the stock UI's realm PvP rule (`frameXmlRealmPlayerKilling`).
+   */
+  realmType?: number;
   /**
    * Addons to declare in the authentication packet.
    *
@@ -733,6 +795,14 @@ export class WorldClient {
   /** A teleport has completed and the world has changed under the player. */
   /** Position is pending when NEW_WORLD carries a transport-local offset. */
   onWorldChanged: ((mapId: number, position: WorldPosition | undefined) => void) | undefined;
+  /**
+   * 1.17: the player was moved within the current map (Blink, Shadowstep, a hearthstone on the same
+   * continent, `.tele` within the map) — `MSG_MOVE_TELEPORT_ACK`, never `SMSG_NEW_WORLD`. `origin`
+   * is where the character stood before, undefined when it had no position. The protocol does not
+   * say how far the move was: `Player::TeleportTo` sends every same-map teleport down one branch.
+   * Unassigned, the arrival is reported through `onWorldChanged` as it always was.
+   */
+  onSameMapTeleport: ((mapId: number, destination: WorldPosition, origin: WorldPosition | undefined) => void) | undefined;
   onMovementStatus: ((ready: boolean, sentPackets: number) => void) | undefined;
   movementReady = false;
   movementPacketsSent = 0;
@@ -756,6 +826,23 @@ export class WorldClient {
     /** From `SMSG_MOVE_SET_COLLISION_HGT`, which overrides the model's own height when it comes. */
     collisionHeight: 0,
   };
+  /**
+   * M7-0: speeds and toggles of every unit the server has named in a force/toggle packet, by guid.
+   * The character's record is `speeds` + `movementState` themselves (`movementStateOf`, `speedsOf`).
+   */
+  readonly moverStates = new Map<bigint, MoverState>();
+  /**
+   * M7-0: the live MovementInfo of a mover, registered by the browser's movement layer. Every
+   * acknowledgement is built from the state of the unit it names (`#currentMovement(guid)`); without
+   * a provider (or for a unit it does not know) the object's own position and flags are used.
+   */
+  movementSnapshot: ((guid: bigint) => MovementInfo | undefined) | undefined;
+  movementStateOf(guid: bigint): MoverMovementState {
+    return moverStateOf(this.moverStates, guid, this.state.selfGuid, this.speeds, this.movementState).movement;
+  }
+  speedsOf(guid: bigint): Map<ForcedSpeedName, number> {
+    return moverStateOf(this.moverStates, guid, this.state.selfGuid, this.speeds, this.movementState).speeds;
+  }
   /** The last fall clock, jump block and pitch sent, so an acknowledgement echoes the same state. */
   #movementExtra: MovementExtra = {};
   /** TRANSFER_PENDING is the only indication that NEW_WORLD XYZ is transport-local. */
@@ -766,7 +853,102 @@ export class WorldClient {
   readonly mirrorTimers = new Map<number, { timer: MirrorTimer; receivedAt: number }>();
   onMirrorTimersChanged: (() => void) | undefined;
   targetGuid: bigint | undefined;
+  /**
+   * The server swings for this character: set by `SMSG_ATTACK_START`, cleared by `SMSG_ATTACK_STOP`
+   * and the swing errors (5.21). A request alone is `attackRequested`.
+   */
   attacking = false;
+  /**
+   * SMSG_ATTACK_STOP packets for this character so far, a refused request included. Wow.exe fires
+   * PLAYER_LEAVE_COMBAT for each of them (0x756800 case 0x144), not only after an ENTER (5.21).
+   */
+  attackStops = 0;
+  /**
+   * Whom the swing is aimed at (Wow.exe player +0xa20, 5.05): set with the request (0x98e540) and
+   * by SMSG_ATTACK_START, cleared by SMSG_ATTACK_STOP (0x756770) and by stopping. Not the selection:
+   * the server keeps `SetSelection` and `Attack` apart, and so does 0x756800 case 0x143.
+   */
+  attackVictim: bigint | undefined;
+  /**
+   * The CVar stopAutoAttackOnTargetChange (registered at 0x51dc1c, default "0"), read on every
+   * target change as SetTarget 0x524bf0 reads 0x00bd0924. The browser hands in its setting.
+   */
+  stopAutoAttackOnTargetChange: () => boolean = () => false;
+  /**
+   * The CVar blockTrades (5.25): Wow.exe's TRADE_STATUS handler (0x5873e0, status 1) answers an
+   * offer with CMSG_BUSY_TRADE and ERR_TRADE_BLOCKED_S while it is on. The settings replace this.
+   */
+  blockTrades: () => boolean = () => false;
+  /** A trade offer was just refused (5.25): the server's echo of the refusal is not news. */
+  #tradeRefused = false;
+  /**
+   * Whether the player may swing at a unit — CanAttack (0x729740), which a target change consults
+   * before carrying the swing over (0x6e2610). Reactions live in the browser's faction table, which
+   * replaces this; without it every unit reads neutral.
+   */
+  canAttackUnit: (object: WorldObjectState) => boolean = (object) => {
+    const selfGuid = this.state.selfGuid;
+    return isAttackableUnit(selfGuid === undefined ? undefined : this.state.objects.get(selfGuid), object, REACTION_NEUTRAL);
+  };
+  /**
+   * L15 5.05: the CVar autoRangedCombat (registered with "1" at 0x0051dbd3, pointer 0x00bd091c) — the
+   * stock Combat panel's «Ближний/дальний бой». Off until the browser hands in its setting.
+   */
+  autoRangedCombat: () => boolean = () => false; // L15 5.05
+  /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
+  autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
+  /** L15 5.05: the book's SPELL_ATTR4 0x01000000 spell (0x00be5d84 — Auto Shot), from `setAutoRangedCombatSpellIds`. */
+  #autoRangedSpellId: number | undefined; // L15 5.05
+  /** L15 5.05: the autoRangedCombat controller (AutoRangedCombat.ts) over this client's swing and repeat. */
+  readonly autoRanged = new AutoRangedCombat({ // L15 5.05
+    rangedSpell: () => this.#autoRangedSpell(), // L15 5.05
+    player: () => (this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid)), // L15 5.05
+    selection: () => (this.targetGuid === undefined ? undefined : this.state.objects.get(this.targetGuid)), // L15 5.05
+    meleeAttacking: () => this.#meleeEngaged(), // L15 5.05
+    repeatingSpell: () => this.autoRepeatSpellId, // L15 5.05
+    canAttack: (target) => this.#autoRangedCanAttack(target), // L15 5.05
+    limits: (spellId, player, target) => this.autoRangedLimits(spellId, player, target), // L15 5.05
+    swing: () => this.startAttack(true), // L15 5.05: 0x006e2610
+    stopSwing: () => this.#cancelMeleeAttack(false, false), // L15 5.05: 0x006d5f70
+    stopAttack: () => { this.autoRanged.stop(); this.#cancelMeleeAttack(false, false); }, // L15 5.05: 0x006e1660; L18 5.05: no sheath — its one packet is 0x007559e0's CMSG_ATTACKSTOP
+    shoot: (spellId, target) => this.#startAutoRepeat(spellId, 0, false, target.guid, false), // L15 5.05: 0x0080da40; L18-review: no facing — 0x0080cce0 never turns the character
+    cancelRepeat: () => this.#stopAutoRepeat(true, false), // L15 5.05: 0x00807560(1); L18 5.05: 0x26d alone — 0x00715ac0(0) is a local flag, no sheath
+  }); // L15 5.05
+  /** Selections cleared so far; Tab drops its list on each (0x524bf0 zeroes 0x00bd08cc). */
+  selectionClears = 0;
+  /** L2 1.10: last target, last enemy, last friend (TargetLast*, world/TargetHistory.ts). */
+  readonly targetHistory = new TargetHistory();
+  /**
+   * Requests waiting for the server's answer (5.21): "attack" (CMSG_ATTACK_SWING, 1.5 s),
+   * "boot-vote" (CMSG_LFG_SET_BOOT_VOTE, until the boot ends). Equipment sets keep their own, by set id.
+   */
+  readonly #pending = new PendingRequests<"attack" | "boot-vote">();
+  /** New equipment sets waiting for `SMSG_EQUIPMENT_SET_SAVED` to name them (Wow.exe +0x230). */
+  readonly #pendingEquipmentSets = new PendingRequests<number>();
+
+  /**
+   * CMSG_ATTACK_SWING went out and neither SMSG_ATTACK_START nor a refusal has come back. Wow.exe
+   * keeps the same word (player +0xa28, set by 0x98e540 beside the attack target) and lights the
+   * attack button from the target alone (IsCurrentSpell 0x806030), so the button reads
+   * `attacking || attackRequested`. Wow.exe has no deadline; this one lapses after 1.5 s because
+   * `Unit::Attack` can refuse without a packet (mounted, evading creature, GM victim).
+   */
+  get attackRequested(): boolean {
+    return this.#pending.has("attack", performance.now());
+  }
+
+  /**
+   * The boot vote is out and no SMSG_LFG_BOOT_PROPOSAL_UPDATE has answered it. The core answers
+   * only the vote that decides the boot, so this usually holds until the boot ends.
+   */
+  get lfgBootVotePending(): boolean {
+    return this.#pending.has("boot-vote", performance.now());
+  }
+
+  /** A new set saved and not yet named by `SMSG_EQUIPMENT_SET_SAVED`; re-saving it sends nothing. */
+  equipmentSetPending(setId: number): boolean {
+    return this.#pendingEquipmentSets.has(setId, performance.now());
+  }
   /**
    * The last swing complaint, still standing. Present while the server is swinging and missing
    * because of range or facing, and cleared by the next swing that lands — which is the only
@@ -827,8 +1009,19 @@ export class WorldClient {
   instanceLock: InstanceLockRequest | undefined;
   dungeonDifficulty = 0;
   raidDifficulty = 0;
-  /** The difficulty of the map the character is standing on. */
-  instanceDifficulty = 0;
+  /**
+   * The difficulty of the map the character is standing on (SMSG_INSTANCE_DIFFICULTY, sent with
+   * every map entry by SendInitialPacketsBeforeAddToMap, after SMSG_NEW_WORLD). Undefined between
+   * NEW_WORLD and that packet, so a dungeon's mode never outlives the dungeon (5.28). Wow.exe keeps
+   * it in 0x00bd0894 and GetInstanceInfo/GetInstanceDifficulty read only it (0x51a8c0, 0x515750).
+   */
+  instanceDifficulty: number | undefined = undefined;
+  /**
+   * 5.28 (L6): the player difficulty GetInstanceInfo answers sixth (Wow.exe 0x00bd1980, 0x51a8c0): the
+   * second word of SMSG_INSTANCE_DIFFICULTY (0x526bc0; the realm's «dynamic raid and heroic»,
+   * Player.cpp:23226) and the last byte of a group list with members (0x6d8fd0). Never reset, as there.
+   */
+  instancePlayerDifficulty = 0;
   /** Every permanent lockout this character holds. */
   lockouts: InstanceLockout[] = [];
   /** Battleground spirit healers and when each next sweeps, by healer guid. */
@@ -907,6 +1100,9 @@ export class WorldClient {
     channel: boolean;
     /** Ordinary START/FAILURE packets carry this 8-bit identity; channels do not. */
     castCount?: number;
+    /** 3.02: SMSG_SPELL_START's CAST_FLAG_IMMUNITY words (school, mechanic); absent without them. */
+    schoolImmunityMask?: number;
+    mechanicImmunityMask?: number;
   }>();
   /** The action bars as the server holds them: 144 slots, twelve pages of twelve. */
   actionButtons: ActionButton[] = [];
@@ -920,6 +1116,16 @@ export class WorldClient {
   readonly questTemplates = new Map<number, QuestTemplate>();
   /** The mark to draw over a head, by guid, as the server last reported it. */
   readonly questGiverStatus = new Map<bigint, number>();
+  /** When to ask for those marks, and for flight masters' discovery (5.23, `QuestGiverStatusQueue`). */
+  readonly #questGiverQueue = new QuestGiverStatusQueue({
+    queryOne: (guid) => {
+      if (!this.#closed) this.#connection.send(OPCODES.CMSG_QUESTGIVER_STATUS_QUERY, buildQuestGiverStatusQuery(guid));
+    },
+    queryTaxi: (guid) => this.requestTaxiNodeStatus(guid),
+    queryAll: () => {
+      if (!this.#closed) this.#connection.send(OPCODES.CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY, new Uint8Array());
+    },
+  });
   /** Every quest this character has ever finished, once it has been asked for. */
   readonly completedQuests = new Set<number>();
   /** A quest a party member is trying to share, waiting on an answer. */
@@ -952,6 +1158,19 @@ export class WorldClient {
   bindPoint: BindPoint | undefined;
   /** Seconds played, in total and at this level, once asked for. */
   playedTime: { total: number; atLevel: number } | undefined;
+  /** `performance.now()` when `playedTime` arrived, so the total can be counted on from it. */
+  playedTimeReceivedAt: number | undefined;
+
+  /**
+   * Seconds played by now: the last `SMSG_PLAYED_TIME` total plus the time since it arrived
+   * (`now` in `performance.now()` milliseconds). Undefined until the server has answered once.
+   */
+  playedSecondsNow(now: number = performance.now()): number | undefined {
+    const played = this.playedTime;
+    const at = this.playedTimeReceivedAt;
+    if (!played || at === undefined) return undefined;
+    return played.total + Math.max(0, Math.floor((now - at) / 1000));
+  }
   /** Set while a bank window is open, which needs the banker's guid to move anything. */
   bankerGuid: bigint | undefined;
   #pendingBankerGuid: bigint | undefined;
@@ -960,6 +1179,8 @@ export class WorldClient {
   /** Title mask bits the character has earned. */
   readonly titles = new Set<number>();
   readonly unhandledOpcodes = new UnhandledOpcodeLog();
+  /** Packets accepted on purpose without an effect, with the reason from `IGNORED_OPCODES` (5.29). */
+  readonly ignoredOpcodes = new IgnoredOpcodeLog();
   readonly packetErrors = new PacketErrorLog();
   /** Packets that landed while the login handshake owned the socket, waiting for the world loop. */
   readonly #deferred: WorldPacket[] = [];
@@ -979,9 +1200,13 @@ export class WorldClient {
   corpseReclaimReportedAt = 0;
   onDeathChanged: (() => void) | undefined;
   vendor: VendorInventory | undefined;
+  /** 2.10: purchase refund records per item (`SMSG_ITEM_REFUND_INFO_RESPONSE`) and which were asked for. */
+  readonly itemRefunds = new ItemRefunds();
   onVendorChanged: (() => void) | undefined;
   trainer: TrainerList | undefined;
   onTrainerChanged: (() => void) | undefined;
+  /** L17 3.09: SMSG_PET_NAME_INVALID as parsed — the stock DeclensionFrame reopens on its declined block. */
+  onPetNameInvalid: ((rejected: ReturnType<typeof parsePetNameInvalid>) => void) | undefined;
   /** Last vendor or trainer message, shown next to the open window. */
   merchantMessage: { text: string; error: boolean } | undefined;
   /** Last result of an inventory action, shown next to the bags. */
@@ -1054,6 +1279,11 @@ export class WorldClient {
   masterLootCandidates: bigint[] = [];
   /** Who owns the corpse the group is standing over. */
   lootOwners: LootOwners | undefined;
+  /**
+   * 5.28 (L6): SMSG_LOOT_LIST kept per corpse, as Wow.exe keeps it on the unit (0x71ca50 → +0xc40/+0xc48;
+   * a list for a unit not in view is dropped); the unit tooltip names both (0x622220). Goes with the unit.
+   */
+  readonly lootOwnersByUnit = new Map<bigint, LootOwners>();
   guildBank: GuildBankContent | undefined;
   guildBankLog: GuildBankLog | undefined;
   guildEventLog: GuildEventLogEntry[] | undefined;
@@ -1137,6 +1367,12 @@ export class WorldClient {
   readonly projectiles = new Map<bigint, { castCount: number; x: number; y: number; z: number }>();
   /** Names answered by pet number, which is the only correlator those packets carry. */
   readonly petNames = new Map<number, PetName>();
+  /**
+   * `SMSG_SET_PROFICIENCY` (5.22): item class → the subclass bits the character may use. Wow.exe
+   * 0x6cdeb0 keeps one word per class (0x00c9d4f0), read by the item checks 0x5e9250, 0x6dc3f0
+   * and the tooltip 0x628xxx through 0x6cde90; a class with no word (zero) is not restricted.
+   */
+  readonly proficiency = new Map<number, number>();
   /** Combo points the pet is holding, for a rogue-like charm. */
   petComboPoints: { guid: bigint; targetGuid: bigint; points: number } | undefined;
   petMessage: { text: string; error: boolean } | undefined;
@@ -1293,6 +1529,8 @@ export class WorldClient {
   onMailChanged: (() => void) | undefined;
   guildRoster: GuildRoster | undefined;
   guildQuery: GuildQueryInfo | undefined;
+  /** 3.12 (04.10, L4): every guild name SMSG_GUILD_QUERY_RESPONSE brought, for the unit tooltip. */
+  readonly guildNames = new GuildNameCache();
   guildInfo: GuildInfo | undefined;
   guildInvite: GuildInviteMessage | undefined;
   guildMessage: { text: string; error: boolean } | undefined;
@@ -1322,6 +1560,8 @@ export class WorldClient {
   /** An uncached item needs its template before we can choose USE_ITEM or OPEN_ITEM. */
   readonly #pendingItemUses = new Map<bigint, { bag: number; slot: number; entry: number }>();
   #castCount = 0;
+  /** 11.02-E: the note between a trajectory cast and its re-aim (Wow.exe unit+0xf68…0xf74, MissileCast.ts). */
+  readonly #missiles = new MissileTrajectoryTracker((guid, spellId) => this.#reaimMissile(guid, spellId)); // 11.02-E
   /** Requests waiting for the server's outcome. A request is not a cooldown. */
   readonly #pendingCasts: PendingSpellCast[] = [];
   /** GO can confirm a locally timed cast before the separate cooldown-event packet arrives. */
@@ -1374,16 +1614,22 @@ export class WorldClient {
     onProblem: (problem) => {
       this.#recordPacketError(OPCODES.CMSG_EMOTE, new Error(problem.text), undefined, `custom-${problem.kind}`);
     },
+    // A message the entry backlog (9.03) held and nothing claimed by its release: the same record
+    // the live path leaves for an unclaimed one.
+    onBacklogUnclaimed: (_opcode, body) => {
+      this.#recordUnhandled({ opcode: OPCODES.CMSG_EMOTE, payload: body });
+    },
   });
-  /** False until the login backlog has been drained; see the 0x102 branch in `#dispatch`. */
-  #worldEntered = false;
 
   /** The exact auth-list name selected for this connection. */
   readonly realmName: string | undefined;
+  /** The auth-list type byte of the realm (`WorldLogin.realmType`), undefined when not given. */
+  readonly realmType: number | undefined;
 
-  private constructor(connection: WorldConnection, realmName?: string) {
+  private constructor(connection: WorldConnection, realmName?: string, realmType?: number) {
     this.#connection = connection;
     this.realmName = realmName;
+    this.realmType = realmType;
     this.state.onSplineFinished = (guid, splineId) => {
       if (this.#closed || guid !== this.state.selfGuid) return;
       // TaxiHandler.cpp reads this entire echo before completing the flight segment or changing
@@ -1442,7 +1688,7 @@ export class WorldClient {
 
     connection.send(OPCODES.CMSG_AUTH_SESSION, authPayload);
     await connection.enableEncryption(login.sessionKey);
-    const client = new WorldClient(connection, login.realmName);
+    const client = new WorldClient(connection, login.realmName, login.realmType);
     // `SMSG_ADDON_INFO` carries no count of its own: the server writes exactly as many entries as
     // were declared above, and this is the only record of how many that was. Clamped because the
     // server clamps: `ReadAddonsInfo` truncates the declared list to `MaxSecureAddons` and answers
@@ -1488,6 +1734,28 @@ export class WorldClient {
     return parseRenameResult((await this.#waitFor(OPCODES.SMSG_CHAR_RENAME)).payload);
   }
 
+  /** `CMSG_CHAR_CUSTOMIZE` from the creation screen's paid mode (2.08); answered by SMSG_CHAR_CUSTOMIZE. */
+  async customizeCharacter(request: CharacterServiceRequest): Promise<CharacterServiceResult> {
+    this.#connection.send(OPCODES.CMSG_CHAR_CUSTOMIZE, buildCustomizeCharacter(request));
+    return parseCharacterServiceResult((await this.#waitFor(OPCODES.SMSG_CHAR_CUSTOMIZE)).payload, "customize");
+  }
+
+  /**
+   * `CMSG_CHAR_FACTION_CHANGE` or `CMSG_CHAR_RACE_CHANGE` (2.08): one body, the opcode says which; the
+   * core answers both with SMSG_CHAR_FACTION_CHANGE (CharacterHandler.cpp:2236-2253).
+   */
+  async changeRaceOrFaction(request: CharacterServiceRequest & { race: number }, faction: boolean): Promise<CharacterServiceResult> {
+    this.#connection.send(faction ? OPCODES.CMSG_CHAR_FACTION_CHANGE : OPCODES.CMSG_CHAR_RACE_CHANGE,
+      buildFactionOrRaceChange(request));
+    return parseCharacterServiceResult((await this.#waitFor(OPCODES.SMSG_CHAR_FACTION_CHANGE)).payload, "factionChange");
+  }
+
+  /** `CMSG_SET_PLAYER_DECLINED_NAMES` from character select (10.09); the core answers with a result. */
+  async declineCharacterNames(guid: bigint, name: string, cases: readonly string[]): Promise<{ result: number; guid: bigint }> {
+    this.#connection.send(OPCODES.CMSG_SET_PLAYER_DECLINED_NAMES, buildDeclinedNames(guid, name, cases));
+    return parseDeclinedNamesResult((await this.#waitFor(OPCODES.SMSG_SET_PLAYER_DECLINED_NAMES_RESULT)).payload);
+  }
+
   async loginCharacter(guid: bigint): Promise<LoginLocation> {
     this.#connection.send(OPCODES.CMSG_PLAYER_LOGIN, buildCharacterGuid(guid));
     const location = parseLoginVerifyWorld((await this.#waitFor(OPCODES.SMSG_LOGIN_VERIFY_WORLD)).payload);
@@ -1504,16 +1772,29 @@ export class WorldClient {
    * Every ack carries the full MovementInfo, and the server compares what comes back against
    * what it sent. Sending the player's current position and flags is what the real client does.
    */
-  #currentMovement(): MovementInfo {
-    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
-    const position = self?.position ?? { x: 0, y: 0, z: 0, orientation: 0 };
-    return {
-      flags: self?.movementFlags ?? 0,
+  #currentMovement(guid: bigint | undefined = this.state.selfGuid): MovementInfo {
+    // M7-0: the state of the unit the packet names — a vehicle's ACK echoing the character's
+    // position would teleport the vehicle onto it (`m_movementInfo = movementInfo`, MovementHandler.cpp:549-550).
+    const live = guid === undefined ? undefined : this.movementSnapshot?.(guid);
+    if (live) return live;
+    const object = guid === undefined ? undefined : this.state.objects.get(guid);
+    const position = object?.position ?? { x: 0, y: 0, z: 0, orientation: 0 };
+    const info: MovementInfo = {
+      flags: object?.movementFlags ?? 0,
       flags2: 0,
       time: Math.trunc(performance.now()) >>> 0,
       position,
-      ...this.#movementExtra,
     };
+    // 11.02-A: a character in a vehicle seat answers with the seat the server holds (UnitSeat.ts).
+    const vehicleSeat = guid === this.state.selfGuid ? unitSeat(this.state.objects, object) : undefined;
+    if (object && vehicleSeat) return seatedMovementInfo(object, vehicleSeat, this.movementState.rooted, info.time);
+    if (guid === this.state.selfGuid) return { ...info, ...this.#movementExtra };
+    const seat = object?.transport;
+    if (seat) {
+      info.flags |= MOVEMENT_FLAGS.onTransport;
+      info.transport = { guid: seat.guid, x: seat.x, y: seat.y, z: seat.z, orientation: seat.orientation, time: info.time, seat: seat.seat };
+    }
+    return info;
   }
 
   /** Complete a transport worldport only when the destination self update names world XYZ. */
@@ -1524,6 +1805,33 @@ export class WorldClient {
     if (!position) return;
     this.#awaitingTransportArrivalMapId = undefined;
     this.onWorldChanged?.(mapId, { ...position });
+  }
+
+  /**
+   * 1.17: the server moved the player within this map. The position is taken as it is — never
+   * glided, and a running spline (a charge, a jump) is dropped with no CMSG_MOVE_SPLINE_DONE, as
+   * `Unit::NearTeleportTo` disables it server-side (Unit.cpp:14046-14060). The echoed fall clock
+   * and jump go too: the core has just called `SetFallInformation(0, z)` (Player.cpp:1780,
+   * MovementHandler.cpp:243), so the next acknowledgement must not report the old arc. Wow.exe
+   * releases an open loot window on the same packet (0x0072D2D0 → 0x0072AEC0 → 0x00523640 sends
+   * CMSG_LOOT_RELEASE). The browser decides what else the move costs (`onSameMapTeleport`).
+   */
+  #selfTeleported(movement: MovementInfo, reply?: () => void): void {
+    const guid = this.state.selfGuid;
+    if (guid === undefined) return;
+    const before = this.state.objects.get(guid)?.position;
+    const origin = before ? { ...before } : undefined;
+    this.state.teleport(guid, movement);
+    this.#movementExtra = {};
+    if (this.loot) this.closeLoot();
+    // The reply precedes whatever the browser does about the move: Wow.exe sends it from its move
+    // queue (0x006EF860, event 0x2C → 0x007413F0 → 0x0071F0C0) and only then re-issues held keys
+    // (0x005FBBC0), and the core would drop any movement packet that overtook it.
+    reply?.();
+    if (this.mapId === undefined) return;
+    const destination = { ...movement.position };
+    if (this.onSameMapTeleport) this.onSameMapTeleport(this.mapId, destination, origin);
+    else this.onWorldChanged?.(this.mapId, destination);
   }
 
   /**
@@ -1553,6 +1861,8 @@ export class WorldClient {
       this.binderConfirm = undefined;
       this.talentWipeConfirm = undefined;
       this.#endInstanceLock();
+      this.#missiles.dispose(); // 11.02-E: the note lived on a unit of the old map (Wow.exe unit+0xf68)
+      this.targetHistory.reset(); // L2 1.10: 0x6e6020 → 0x528c30 clears last target, enemy and friend
       // TrinityCore removes the player from the old map, sends NEW_WORLD, then recreates self,
       // transport and visibility after WORLDPORT_ACK (Player.cpp:1887-1907; Map.cpp:3045-3080).
       // It therefore has no old-map OUT_OF_RANGE packet to retire these client objects. Keep the
@@ -1575,7 +1885,11 @@ export class WorldClient {
         for (const guid of cache.keys()) if (guid !== selfGuid) retired.add(guid);
       }
       for (const guid of retired) this.#retireWorldObject(guid);
+      // 5.23: what was asked on the old map is about objects that are gone.
+      this.#questGiverQueue.reset(performance.now());
       this.mapId = world.mapId;
+      // The new map's own SMSG_INSTANCE_DIFFICULTY follows the WORLDPORT_ACK (5.28).
+      this.instanceDifficulty = undefined;
       // Zone weather and scripted light are scoped to the map. A server that does not send an
       // explicit clear packet on transfer must not leave the previous zone's Dalaran/raid sky in
       // the new map while its first world packets are arriving.
@@ -1601,6 +1915,8 @@ export class WorldClient {
       // Start over as at login: `#activateMover` claims the character after this packet, behind the ACK.
       this.movementReady = false;
       this.controlledGuid = undefined;
+      // 11.02-A review: nor is any unit of the old map predicted any more.
+      this.state.predictedGuid = undefined;
       this.controlRefusedGuid = undefined;
       this.#controlAnnounced = false;
       // Nothing the player does counts until this is sent.
@@ -1609,21 +1925,28 @@ export class WorldClient {
       // QueryHandler resolves either the actual destination-map corpse or its removal on revive.
       if (ghostWorldport) this.queryCorpse();
       this.onWorldChanged?.(world.mapId, position);
+      // The stock UI's PLAYER_LEAVING_WORLD/PLAYER_ENTERING_WORLD pair (FrameXmlWorldEntry.ts).
+      this.events.emit("WORLD_TRANSFER", { mapId: world.mapId });
       this.onStateChange?.(this.state);
       return true;
     }
 
     if (packet.opcode === OPCODES.MSG_MOVE_TELEPORT_ACK) {
       const request = parseTeleportRequest(packet.payload);
-      if (this.state.selfGuid !== undefined && request.guid === this.state.selfGuid) {
-        this.state.move(request.guid, { flags: request.movement.flags, position: request.movement.position });
-        // Same-map teleports use this path rather than SMSG_NEW_WORLD. They still invalidate every
-        // streamed terrain/VMAP answer around the old point, so the browser must open the same
-        // destination loading barrier before running local gravity again.
-        if (this.mapId !== undefined) this.onWorldChanged?.(this.mapId, request.movement.position);
-      }
-      this.#connection.send(OPCODES.MSG_MOVE_TELEPORT_ACK,
+      // Same-map teleports use this path rather than SMSG_NEW_WORLD. The reply goes out at once:
+      // HandleMoveTeleportAck reads only `packedGuid, u32 counter, u32 time` (MovementHandler.cpp
+      // :213-266, neither checked), and until it arrives HandleMovementOpcodes drops every movement
+      // packet (:285-290) — so nothing sent after this can land at the old point.
+      const reply = () => this.#connection.send(OPCODES.MSG_MOVE_TELEPORT_ACK,
         buildTeleportAck(request.guid, request.counter, Math.trunc(performance.now()) >>> 0));
+      if (this.state.selfGuid !== undefined && request.guid === this.state.selfGuid) this.#selfTeleported(request.movement, reply);
+      else {
+        // A client-moved creature (a vehicle, a charmed mob): Unit::NearTeleportTo has already
+        // relocated it server-side (Unit.cpp:14054-14058), so it is snapped here too — or the next
+        // movement packet this client sends for it would carry the old position back.
+        this.state.teleport(request.guid, request.movement);
+        reply();
+      }
       this.onStateChange?.(this.state);
       return true;
     }
@@ -1634,6 +1957,12 @@ export class WorldClient {
     if (isSplineMoveState(packet.opcode)) {
       const state = parseSplineMoveState(packet.opcode, packet.payload);
       this.state.applyMovementFlag(state.guid, state.flag, state.set);
+      // 11.02-A: except a creature this client drives: `Unit::SetRooted` roots a non-player with the
+      // spline opcode even while a client moves it (Unit.cpp:12306-12318), and its own next packet
+      // would write the bit away — so the root is kept as its toggle as well.
+      if (state.flag === MOVEMENT_FLAGS.root && state.guid === this.controlledGuid && state.guid !== this.state.selfGuid) {
+        this.movementStateOf(state.guid).rooted = state.set;
+      }
       return true;
     }
 
@@ -1652,8 +1981,21 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_MOVE_KNOCK_BACK) {
       const knockBack = parseKnockBack(packet.payload);
       // Nothing moves until this goes back: `HandleMoveKnockBackAck` is what commits the position,
-      // so a client that stays silent is one the server never launched.
-      this.#connection.send(OPCODES.CMSG_MOVE_KNOCK_BACK_ACK, buildKnockBackAck(knockBack, this.#currentMovement()));
+      // so a client that stays silent is one the server never launched. 5.01: and what it says is
+      // what everybody else is shown (the core relays it as MSG_MOVE_KNOCK_BACK), so it already
+      // says falling, from a fall clock of 0, along the server's jump — not the standing state
+      // the character was in a moment before.
+      const after = knockBackMovement(knockBack, this.#currentMovement(knockBack.guid));
+      this.#connection.send(OPCODES.CMSG_MOVE_KNOCK_BACK_ACK, buildKnockBackAck(knockBack, after));
+      if (knockBack.guid === this.state.selfGuid) {
+        // Echoed by every acknowledgement until the physics reports its own fall.
+        this.#movementExtra = { fallTime: 0, jump: after.jump };
+        // Wow.exe drops an open loot window on a knock back of the player (0x0072D1B0: 0x0071B6B0
+        // → 0x00523640, the CMSG_LOOT_RELEASE sender), as it does on a near teleport.
+        if (this.loot) this.closeLoot();
+        // The flags only: the character is predicted locally, so `move` puts it where it is.
+        this.state.move(knockBack.guid, after);
+      }
       this.onKnockBack?.(knockBack);
       return true;
     }
@@ -1666,8 +2008,8 @@ export class WorldClient {
         if (!toggle) continue;
         this.#connection.send(toggle.ackOpcode, buildMovementToggleAck(
           { guid: move.guid, counter: move.counter, name: toggle.name, value: undefined, ackOpcode: toggle.ackOpcode },
-          this.#currentMovement()));
-        if (move.guid === this.state.selfGuid) this.#applyMovementToggle(toggle.name, undefined);
+          this.#currentMovement(move.guid)));
+        applyMovementToggle(this.movementStateOf(move.guid), toggle.name, undefined);
       }
       return true;
     }
@@ -1679,13 +2021,28 @@ export class WorldClient {
       // moving at all. The claim spells the guid in full; the release is read packed by the core.
       if (control.allowed) this.#connection.send(OPCODES.CMSG_SET_ACTIVE_MOVER, buildCharacterGuid(control.guid));
       else this.#connection.send(OPCODES.CMSG_MOVE_NOT_ACTIVE_MOVER, buildNotActiveMover(control.guid));
-      this.movementReady = control.allowed;
-      this.controlledGuid = control.allowed ? control.guid : undefined;
+      // M7-0: a refusal takes control away only from the unit it names. A late (vehicle, 0) after
+      // (character, 1) must not leave the character unable to move. Before any allowance the
+      // implicit mover is the character claimed at login (`#activateMover`).
+      if (control.allowed) {
+        this.movementReady = true;
+        this.controlledGuid = control.guid;
+      } else if (refusalTakesControl(this.controlledGuid, this.movementReady, this.state.selfGuid, control.guid)) {
+        this.movementReady = false;
+        this.controlledGuid = undefined;
+      }
+      // 11.02-A: a unit other than the character is now moved from here (Mover.ts): its positions are
+      // this client's own, and a spline root kept from an earlier drive no longer says anything.
+      const other = this.controlledGuid !== this.state.selfGuid ? this.controlledGuid : undefined;
+      if (control.allowed && other !== undefined) this.movementStateOf(other).rooted = false;
+      this.state.predictedGuid = other;
+      // 11.02-A review: and nobody else's last packet carries it on any more (WorldState.settlePredicted).
+      if (other !== undefined) this.state.settlePredicted(other);
       this.controlRefusedGuid = control.allowed ? undefined : control.guid;
       // From here on the server decides who moves what. Without this the claim made at login
       // would be re-made on the very next packet and take back control the server just revoked.
       this.#controlAnnounced = true;
-      this.onMovementStatus?.(control.allowed, this.movementPacketsSent);
+      this.onMovementStatus?.(this.movementReady, this.movementPacketsSent);
       return true;
     }
 
@@ -1698,9 +2055,10 @@ export class WorldClient {
 
     if (isForcedSpeed(packet.opcode)) {
       const speed = parseForcedSpeed(packet.opcode, packet.payload);
-      this.#connection.send(ackOpcodeForSpeed(speed.name), buildForcedSpeedAck(speed, this.#currentMovement()));
+      this.#connection.send(ackOpcodeForSpeed(speed.name), buildForcedSpeedAck(speed, this.#currentMovement(speed.guid)));
+      // M7-0: the rate belongs to the unit the packet names (the character's map is `speeds`).
+      this.speedsOf(speed.guid).set(speed.name, speed.speed);
       if (speed.guid === this.state.selfGuid) {
-        this.speeds.set(speed.name, speed.speed);
         // The state object too, and not only the physics map above: every OTHER rider's speed
         // reaches `state.setSpeed` through the MSG_MOVE_SET_* relay, so the renderer's mount gait
         // (A2's `unitTravelSpeed`) could pace a stranger's horse and not the owner's — the one
@@ -1712,11 +2070,11 @@ export class WorldClient {
 
     if (isMovementToggle(packet.opcode)) {
       const toggle = parseMovementToggle(packet.opcode, packet.payload);
-      this.#connection.send(toggle.ackOpcode, buildMovementToggleAck(toggle, this.#currentMovement()));
+      this.#connection.send(toggle.ackOpcode, buildMovementToggleAck(toggle, this.#currentMovement(toggle.guid)));
       // Acknowledged and then remembered. Acknowledging alone is what the client used to do, and
       // it is why a levitate, a water-walking buff and a root were all agreed to and then walked
-      // straight through.
-      if (toggle.guid === this.state.selfGuid) this.#applyMovementToggle(toggle.name, toggle.value);
+      // straight through. M7-0: remembered for the unit named, the character's own being `movementState`.
+      applyMovementToggle(this.movementStateOf(toggle.guid), toggle.name, toggle.value);
       return true;
     }
 
@@ -1732,28 +2090,26 @@ export class WorldClient {
    * It is also remembered, because every acknowledgement the server asks for has to echo the same
    * state, and an ack that says the character is standing still ends the jump it was sent during.
    */
-  /** One toggle, by the name `MOVEMENT_TOGGLES` gives it. Each pair is a state and its undoing. */
-  #applyMovementToggle(name: string, value: number | undefined): void {
-    const state = this.movementState;
-    if (name === "root") state.rooted = true;
-    else if (name === "unroot") state.rooted = false;
-    else if (name === "waterWalk") state.waterWalking = true;
-    else if (name === "landWalk") state.waterWalking = false;
-    else if (name === "featherFall") state.featherFall = true;
-    else if (name === "normalFall") state.featherFall = false;
-    else if (name === "hover") state.hovering = true;
-    else if (name === "unsetHover") state.hovering = false;
-    else if (name === "canFly") state.canFly = true;
-    else if (name === "cannotFly") state.canFly = false;
-    else if (name === "gravityOff") state.gravityDisabled = true;
-    else if (name === "gravityOn") state.gravityDisabled = false;
-    else if (name === "collisionHeight") state.collisionHeight = value ?? 0;
-  }
-
   sendMovement(opcode: number, flags: number, position: WorldPosition, extra: MovementExtra = {}): void {
     if (this.#closed || !this.movementReady || this.state.selfGuid === undefined) return;
     if (serverControlsMovement(this.state.objects.get(this.state.selfGuid))) return;
-    const movement = { flags, position };
+    // 11.02-A: nothing for the character while another unit is the mover (the core drops it,
+    // WorldSession.cpp:1784-1806) or while it sits in a vehicle seat (it would overwrite the seat).
+    if (this.controlledGuid !== undefined && this.controlledGuid !== this.state.selfGuid) return;
+    if (unitSeat(this.state.objects, this.state.objects.get(this.state.selfGuid))) return;
+    // 11.01-A3: `MOVEMENTFLAG_ONTRANSPORT` never goes without its block — a zero guid makes the
+    // core drop the passenger (MovementHandler.cpp:330-336). A caller that only knows the flags
+    // (`faceTarget`) gets the movement layer's seat, its facing taken relative to the carrier.
+    if ((flags & MOVEMENT_FLAGS.onTransport) !== 0 && extra.transport === undefined) {
+      const seat = this.movementSnapshot?.(this.state.selfGuid)?.transport;
+      const carrier = seat === undefined ? undefined : this.state.objects.get(seat.guid)?.position;
+      if (seat && carrier) {
+        extra = { ...extra, transport: { ...seat, orientation: normalizeOrientation(position.orientation - carrier.orientation) } };
+      } else flags &= ~MOVEMENT_FLAGS.onTransport;
+    }
+    // The seat goes with the packet into the state: without it `state.move` would take the
+    // character off the ship it just said it stands on (spec 11.01, point 1).
+    const movement = extra.transport ? { flags, position, transport: extra.transport } : { flags, position };
     this.#movementExtra = extra;
     this.#connection.send(
       opcode,
@@ -1765,16 +2121,87 @@ export class WorldClient {
     this.onStateChange?.(this.state);
   }
 
+  /**
+   * 11.02-A (M7): one movement packet for the unit this client moves. The character's own goes
+   * through `sendMovement` unchanged; any other guid only while it is the unit the server handed
+   * over (`controlledGuid`) and is not on a server spline — the core takes `MSG_MOVE_*` from the
+   * active mover alone and drops it while `movespline` runs (MovementHandler.cpp:275-279, 303-304).
+   */
+  sendMovementAs(guid: bigint, opcode: number, flags: number, position: WorldPosition, extra: MovementExtra = {}): void {
+    if (guid === this.state.selfGuid) {
+      this.sendMovement(opcode, flags, position, extra);
+      return;
+    }
+    if (this.#closed || !this.movementReady || guid !== this.controlledGuid) return;
+    if (serverControlsMovement(this.state.objects.get(guid))) return;
+    // 11.02-A review: a controlled unit that is itself a passenger (a turret accessory) would overwrite
+    // the seat its base places it from (MovementHandler.cpp:378, Vehicle.cpp:633-636) — as for the character.
+    if (unitSeat(this.state.objects, this.state.objects.get(guid))) return;
+    this.#connection.send(opcode, buildMovementPacket(guid, flags, position, Math.trunc(performance.now()) >>> 0, extra));
+    this.state.move(guid, extra.transport ? { flags, position, transport: extra.transport } : { flags, position });
+    this.movementPacketsSent++;
+    this.onMovementStatus?.(true, this.movementPacketsSent);
+    this.onStateChange?.(this.state);
+  }
+
+  /**
+   * 11.02-input: one movement packet of the active mover while it sits in a vehicle seat that lets it turn
+   * (browser/input/SeatedTurn.ts: a passenger of an ALLOW_TURNING seat, a controlled turret on its base).
+   * Only with the seat the state holds — ONTRANSPORT, that vehicle's guid and that seat byte — so the core
+   * keeps placing the unit from it (`m_movementInfo = movementInfo`, MovementHandler.cpp:378; Vehicle.cpp:
+   * 633-636); a packet without the block is never sent (the 11.02-A review's lost seat). The state is left
+   * as the caller turned it (the seat's orientation); false when nothing went out.
+   */
+  sendSeatedMovement(guid: bigint, opcode: number, info: MovementInfo): boolean {
+    if (this.#closed || !this.movementReady || this.state.selfGuid === undefined) return false;
+    if (guid !== (this.controlledGuid ?? this.state.selfGuid)) return false;
+    const object = this.state.objects.get(guid);
+    if (object === undefined || serverControlsMovement(object)) return false;
+    const seat = unitSeat(this.state.objects, object);
+    const block = info.transport;
+    if (seat === undefined || block === undefined || (info.flags & MOVEMENT_FLAGS.onTransport) === 0
+      || block.guid !== seat.guid || block.seat !== seat.seat) return false;
+    this.#connection.send(opcode, writeMovementInfo(new PacketWriter(), guid, info).toUint8Array());
+    this.movementPacketsSent++;
+    this.onMovementStatus?.(true, this.movementPacketsSent);
+    return true;
+  }
+
   selectTarget(guid: bigint | undefined): void {
     if (this.#closed || (guid !== undefined && !this.state.objects.has(guid))) return;
     // CMSG_SET_SELECTION names units only. Game objects are interacted with by their own guid in
     // their own opcode and must never occupy the unit target frame or leak onto this wire path.
     if (guid !== undefined && this.state.objects.get(guid)?.typeId === 5) return;
-    if (this.attacking) this.stopAttack();
-    if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
+    // SetTarget 0x524bf0 (5.05): a clear drops the Tab list; the unit already selected changes
+    // nothing — no packet, and the swing goes on.
+    if (guid === undefined) this.selectionClears++;
+    if (guid === this.targetGuid) return;
+    const next = guid === undefined ? undefined : this.state.objects.get(guid);
+    // With stopAutoAttackOnTargetChange off a fight follows the selection to whatever CanAttack
+    // accepts (0x6e4950 → 0x6e2610); anything else, or the CVar, ends it.
+    const follows = next !== undefined && !this.stopAutoAttackOnTargetChange() && this.canAttackUnit(next);
+    // L15 5.05: the autoRangedCombat mode is fighting too (0x5140e0, bit 2); 0x5241b0 → 0x6e1660 ends it
+    // — the shot it wanted cancelled — before the selection moves, and 0x6e4950 below starts it again.
+    const ranged = this.autoRanged.active; // L15 5.05
+    if (ranged) this.autoRanged.stop(); // L15 5.05
+    const melee = this.#meleeEngaged();
+    const repeat = this.autoRepeatSpellId;
+    // 0x5241b0 → 0x6e1660: the old swing ends before the selection moves, either way.
+    if (melee) {
+      if (follows) this.#cancelMeleeAttack(false, false);
+      else this.stopAttack();
+    }
+    if (repeat !== undefined) this.#stopAutoRepeat(!follows);
+    // L2 1.10: 0x524bf0 — the selection replaced becomes the last target; the new unit is judged now.
+    this.targetHistory.selected(this.targetGuid, guid, next === undefined ? undefined : targetHistoryKind(next, this.canAttackUnit));
     this.targetGuid = guid;
     this.#connection.send(OPCODES.CMSG_SET_SELECTION, buildCombatGuid(guid ?? 0n));
     this.onCombatStatus?.(guid === undefined ? "Цель сброшена" : "Цель выбрана", false, false);
+    if (!follows) return;
+    if (melee || ranged) this.startAttack(); // L15 5.05: `|| ranged`
+    // A running Auto Shot is re-aimed rather than cancelled: HandleCastSpellOpcode replaces the
+    // repeat when the unit target differs (SpellHandler.cpp:384-396).
+    else if (repeat !== undefined) this.#startAutoRepeat(repeat, 0, false, guid);
   }
 
   /**
@@ -1793,35 +2220,141 @@ export class WorldClient {
     this.sendMovement(OPCODES.MSG_MOVE_SET_FACING, self.movementFlags, { ...self.position, orientation });
   }
 
-  startAttack(): void {
-    if (this.#closed || this.targetGuid === undefined || this.attacking) return;
+  startAttack(meleeOnly = false): void { // L15 5.05: meleeOnly — the autoRangedCombat controller's own swing (0x006e2610)
+    if (!meleeOnly && this.#startAutoRanged()) return; // L15 5.05: 0x006e4950 with autoRangedCombat
+    if (this.#closed || this.targetGuid === undefined || this.#meleeEngaged()) return;
     const target = this.state.objects.get(this.targetGuid);
     if (!target || isWorldObjectDead(target)) {
       this.onCombatStatus?.("Для автоатаки нужна живая видимая цель", false, true);
       return;
     }
+    const selfGuid = this.state.selfGuid;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    // Wow.exe 0x6e4950 (5.05): `Unit::Attack` refuses a mounted player without a word, so the
+    // client dismounts first (0x7412e0, CMSG_CANCEL_MOUNT_AURA) — only within melee reach, else
+    // ERR_OUT_OF_RANGE; in flight CanAttack refuses (autoDismountFlying "0", 0x71b0c0).
+    if (self && isMounted(self)) {
+      if ((self.movementFlags & MOVEMENT_FLAGS.flying) !== 0) {
+        this.onCombatStatus?.("Нельзя атаковать верхом в полёте", false, true);
+        return;
+      }
+      const from = self.position;
+      const to = target.position;
+      const distance = from && to ? Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) : Number.POSITIVE_INFINITY;
+      if (!withinMeleeRange(unitFields.combatReach(self) ?? 0, unitFields.combatReach(target) ?? 0, distance)) {
+        this.onCombatStatus?.("Цель слишком далеко", false, true);
+        return;
+      }
+      this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
+    }
     // The realm keeps melee and CURRENT_AUTOREPEAT_SPELL independently. The UI exposes them as
     // alternative combat modes, so switching must cancel the old wire state before drawing steel.
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
-    this.faceTarget();
+    // L18-review: not the controller's own swing — 0x006e2610 never turns the character, and turning a hunter
+    // who runs from a mob at his back sends him into it (tests/auto-ranged-fight-rate.test.mjs, kiting).
+    if (!meleeOnly) this.faceTarget(); // L18-review: was unconditional
+    // 0x6e2610 stands a seated player up (0x6dcb40(0)) before the swing.
+    if (self && !isWorldObjectDead(self) && (unitFields.standState(self) ?? 0) !== 0) this.setStandState(0);
     // Draw the weapon first. The server publishes the sheath state in UNIT_FIELD_BYTES_2 and the
     // renderer hangs a weapon off a hand only while it is out, so a character who never says it
     // has drawn anything fights bare-handed however much steel is equipped.
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_MELEE));
     this.#connection.send(OPCODES.CMSG_ATTACK_SWING, buildCombatGuid(this.targetGuid));
-    this.attacking = true;
+    this.attackVictim = this.targetGuid;
+    // A request, not a swing (5.21): `attacking` waits for SMSG_ATTACK_START, as Wow.exe's
+    // PLAYER_ENTER_COMBAT does; the attack button lights from the request at once.
+    this.#pending.begin("attack", undefined, ATTACK_REQUEST_TTL_MS, performance.now());
     this.onCombatStatus?.("Запрос автоатаки отправлен", true, false);
   }
 
+  /** The swing runs or is requested: what stops it on the wire and what toggles it (Wow.exe 0x72c2b0). */
+  #meleeEngaged(): boolean {
+    return this.attacking || this.attackRequested;
+  }
+
   stopAttack(): void {
+    this.autoRanged.stop(); // L15 5.05: 0x006e1660 ends the autoRangedCombat mode too
     this.#cancelMeleeAttack(true);
   }
 
-  #cancelMeleeAttack(announce: boolean): void {
-    if (this.#closed || !this.attacking) return;
+  /**
+   * L15 5.05: Wow.exe 0x006e4950 when autoRangedCombat is on and the book holds the controller's spell
+   * (AutoRangedCombat.ts): the mount rules read that spell's range, and the controller — not an
+   * immediate swing — chooses the swing or the shot. False when it does not apply: the swing path runs.
+   */
+  #startAutoRanged(): boolean { // L15 5.05
+    const spell = this.#autoRangedSpell();
+    if (spell === undefined || this.#closed || this.targetGuid === undefined) return false;
+    const target = this.state.objects.get(this.targetGuid);
+    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
+    if (!target || !self || isWorldObjectDead(target)) return false;
+    if (isMounted(self)) {
+      if ((self.movementFlags & MOVEMENT_FLAGS.flying) !== 0) {
+        this.onCombatStatus?.("Нельзя атаковать верхом в полёте", false, true);
+        return true;
+      }
+      const from = self.position;
+      const to = target.position;
+      const distance = from && to ? Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) : Number.POSITIVE_INFINITY;
+      const limits = this.autoRangedLimits(spell, self, target);
+      if (limits === undefined || distance > limits.max) {
+        this.onCombatStatus?.("Цель слишком далеко", false, true);
+        return true;
+      }
+      this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
+    }
+    // L18-review: the player's own attack (right click, the button, /startattack, a fight carried to a new
+    // selection) turns to the unit once when it starts the mode, as this client's swing did when it started; a
+    // press while the mode runs turns nothing (the swing path's `#meleeEngaged` return), and the controller's
+    // switches never do (0x006e2610, 0x0080cce0 turn nobody).
+    if (!this.autoRanged.active && this.#autoRangedCanAttack(target)) this.faceTarget(); // L18-review
+    this.autoRanged.begin(target);
+    return true;
+  }
+
+  /** L15 5.05: 0x006d71e0 — the CVar on and the controller's spell in the book. */
+  #autoRangedSpell(): number | undefined { // L15 5.05
+    return this.autoRangedCombat() ? this.#autoRangedSpellId : undefined;
+  }
+
+  /** L15 5.05: 0x00729a70 for the controller — CanAttack, and no attack from a flying mount. */
+  #autoRangedCanAttack(target: WorldObjectState): boolean { // L15 5.05
+    const self = this.state.selfGuid === undefined ? undefined : this.state.objects.get(this.state.selfGuid);
+    if (self && isMounted(self) && (self.movementFlags & MOVEMENT_FLAGS.flying) !== 0) return false;
+    return this.canAttackUnit(target);
+  }
+
+  /**
+   * L15 5.05: the book's spells with SPELL_ATTR4 0x01000000 (AutoRangedCombat.ts); Wow.exe keeps the last
+   * one the spellbook adds (0x00542030 → 0x00be5d84) — Auto Shot alone in the dataset.
+   */
+  setAutoRangedCombatSpellIds(spellIds: Iterable<number>): void { // L15 5.05
+    this.#autoRangedSpellId = undefined;
+    for (const spellId of spellIds) {
+      if (Number.isSafeInteger(spellId) && spellId > 0) this.#autoRangedSpellId = spellId;
+    }
+  }
+
+  /**
+   * L15 5.05: Wow.exe 0x0080cce0 — the controller's spell cast by hand while the player is not fighting
+   * enters the mode (0x0072c2b0 → 0x006e4950), its first tick left to the next frame: the repeat just
+   * sent runs, and a target that walks into melee reach is met with the swing.
+   */
+  #enterAutoRangedAfterShot(spellId: number, explicitUnitTarget: bigint | undefined): void { // L15 5.05
+    if (spellId !== this.#autoRangedSpell() || this.autoRepeatSpellId !== spellId) return;
+    const guid = explicitUnitTarget ?? this.targetGuid;
+    const target = guid === undefined ? undefined : this.state.objects.get(guid);
+    if (target) this.autoRanged.begin(target, false);
+  }
+
+  #cancelMeleeAttack(announce: boolean, sheathe = true): void {
+    if (this.#closed || !this.#meleeEngaged()) return;
     this.#connection.send(OPCODES.CMSG_ATTACK_STOP);
-    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_UNARMED));
+    // A swing carried to a new target (5.05) keeps the weapon out: the next request draws it again.
+    if (sheathe) this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_UNARMED));
     this.attacking = false;
+    this.attackVictim = undefined;
+    this.#pending.confirm("attack");
     this.swingWarning = undefined;
     if (announce) this.onCombatStatus?.("Автоатака остановлена", false, false);
   }
@@ -1843,23 +2376,25 @@ export class WorldClient {
   }
 
   #startAutoRepeat(spellId: number, cooldownDuration: number, cooldownStartedOnEvent: boolean,
-    explicitUnitTarget?: bigint): void {
+    explicitUnitTarget?: bigint, face = true): void { // L18-review: face — false for the autoRangedCombat controller's shot
     const targetGuid = explicitUnitTarget ?? this.targetGuid;
     const target = targetGuid === undefined ? undefined : this.state.objects.get(targetGuid);
     if (targetGuid === undefined || !target || isWorldObjectDead(target)) {
       this.onSpellStatus?.("Для стрельбы нужна живая видимая цель", true);
       return;
     }
-    if (this.attacking) this.stopAttack();
+    // L15 5.05: 0x00800a00 → 0x006d5f70 stops only the swing (was stopAttack, which now ends the
+    // autoRangedCombat mode too — a shot the mode or the player starts keeps the mode).
+    this.#cancelMeleeAttack(true); // L15 5.05
     if (this.autoRepeatSpellId !== undefined) this.#stopAutoRepeat(true);
-    this.faceTarget(targetGuid);
+    if (face) this.faceTarget(targetGuid); // L18-review: was unconditional
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_RANGED));
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(
       OPCODES.CMSG_CAST_SPELL,
       buildAutoRepeatCastSpell(spellId, this.#castCount, targetGuid),
     );
-    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, targetGuid);
     this.autoRepeatSpellId = spellId;
     this.#autoRepeatFailure = undefined;
     this.onSpellStatus?.(`Автострельба ${spellId} запущена`, false);
@@ -1872,7 +2407,7 @@ export class WorldClient {
       if (restoreSheath) {
         this.#connection.send(
           OPCODES.CMSG_SET_SHEATHED,
-          buildSetSheathed(this.attacking ? SHEATH_MELEE : SHEATH_UNARMED),
+          buildSetSheathed(this.#meleeEngaged() ? SHEATH_MELEE : SHEATH_UNARMED),
         );
       }
     }
@@ -1907,6 +2442,16 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_CANCEL_MOUNT_AURA);
   }
 
+  /**
+   * CMSG_SET_SHEATHED with a chosen state (0 unarmed, 1 melee, 2 ranged) — `ToggleSheath()`'s packet
+   * (WORK_PLAN 3.11; the choice is `input/StockVerbs.nextSheathState`). The server publishes the
+   * result in UNIT_FIELD_BYTES_2.
+   */
+  setSheathed(state: number): void {
+    if (this.#closed || this.state.selfGuid === undefined) return;
+    this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(state));
+  }
+
   castSpell(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false,
     explicitUnitTarget?: bigint): void {
     if (this.#closed || this.state.selfGuid === undefined) return;
@@ -1919,13 +2464,14 @@ export class WorldClient {
     // 6603 is a client action, not a spell the realm has to teach through INITIAL_SPELLS. Keep it
     // ahead of the known-spell gate so a valid action-bar Attack can never fall into CAST_SPELL.
     if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
-      this.#cancelMountBeforeCast();
-      if (this.attacking) this.stopAttack();
+      // No pre-dismount here: startAttack owns the mount rules (Wow.exe 0x6e4950 / 0x729a70 —
+      // dismount only in reach, refuse in flight), and a dismount before it fell from flying mounts.
+      if (this.#meleeEngaged() || this.autoRanged.active) this.stopAttack(); // L15 5.05: 0x72c2b0 reads bit 2 too
       else this.startAttack();
       return;
     }
     if (!this.knownSpells.some((spell) => spell.id === spellId)) {
-      this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отсутствует в книге`, true);
       return;
     }
 
@@ -1933,10 +2479,17 @@ export class WorldClient {
 
     if (this.#autoRepeatSpellIds.has(spellId)) {
       if (this.autoRepeatSpellId === spellId) this.#stopAutoRepeat(true);
-      else this.#startAutoRepeat(spellId, cooldownDuration, cooldownStartedOnEvent, explicitUnitTarget);
+      else {
+        const fighting = this.#meleeEngaged() || this.autoRanged.active; // L15 5.05: 0x005140e0, before the shot stops the swing
+        this.#startAutoRepeat(spellId, cooldownDuration, cooldownStartedOnEvent, explicitUnitTarget);
+        if (!fighting) this.#enterAutoRangedAfterShot(spellId, explicitUnitTarget); // L15 5.05
+      }
       return;
     }
 
+    // 11.02-E: a missile trajectory spell goes out with its shot, or not at all (MissileCast.ts).
+    const missilePlan = this.#missilePlan(spellId, this.state.selfGuid); // 11.02-E
+    if (missilePlan !== undefined && !("shot" in missilePlan)) return; // 11.02-E
     this.#castCount = (this.#castCount + 1) & 0xff;
     // Ordinary casts name no unit: Trinity checks the server selection and falls back to the
     // caster when that selection is not valid for the spell. A macro's [@unit] instead names its
@@ -1947,12 +2500,13 @@ export class WorldClient {
     const casterGuid = this.controlledGuid ?? this.state.selfGuid;
     const caster = casterGuid === undefined ? undefined : this.state.objects.get(casterGuid);
     const destination = explicitUnit?.position ?? selected?.position ?? caster?.position;
-    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
+    if (missilePlan !== undefined) this.#sendCastSpellTrajectory(spellId, explicitUnitTarget, missilePlan.shot); // 11.02-E
+    else this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
       explicitUnitTarget === undefined ? undefined : { unitTarget: explicitUnitTarget }));
-    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, explicitUnitTarget);
     // With no explicit unit, the selection is only a likely target; SMSG_SPELL_GO is the answer.
     this.onSpellStatus?.(
-      `Заклинание ${spellId} отправлено на ${explicitUnitTarget !== undefined ? "указанную цель"
+      `${spellSubject(this.#knownName("spell", spellId))} отправлено на ${explicitUnitTarget !== undefined ? "указанную цель"
         : this.targetGuid === undefined ? "себя" : "выбранную цель"}`,
       false,
     );
@@ -1974,13 +2528,14 @@ export class WorldClient {
   ): void {
     if (this.#closed || this.state.selfGuid === undefined) return;
     if (spellId === MELEE_AUTO_ATTACK_SPELL_ID) {
-      this.#cancelMountBeforeCast();
-      if (this.attacking) this.stopAttack();
+      // No pre-dismount here: startAttack owns the mount rules (Wow.exe 0x6e4950 / 0x729a70 —
+      // dismount only in reach, refuse in flight), and a dismount before it fell from flying mounts.
+      if (this.#meleeEngaged() || this.autoRanged.active) this.stopAttack(); // L15 5.05: 0x72c2b0 reads bit 2 too
       else this.startAttack();
       return;
     }
     if (!this.knownSpells.some((spell) => spell.id === spellId)) {
-      this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отсутствует в книге`, true);
       return;
     }
 
@@ -1995,14 +2550,19 @@ export class WorldClient {
     if (!Number.isFinite(destination.x) || !Number.isFinite(destination.y) || !Number.isFinite(destination.z)) {
       return;
     }
+    // 11.02-E: a missile trajectory spell's points are the shot's, not the reticle's (0x00809f80).
+    const missilePlan = this.#missilePlan(spellId, this.state.selfGuid); // 11.02-E
+    if (missilePlan !== undefined && !("shot" in missilePlan)) return; // 11.02-E
     this.#castCount = (this.#castCount + 1) & 0xff;
     // The reticle resolves a world point, even when the caster is riding a transport. A nonzero
     // transport GUID would tell TrinityCore these floats are transport-relative offsets. Name a
     // unit when the caller has one, so Unit+Ground spells no longer collapse to Unknown.
-    this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
+    if (missilePlan !== undefined) this.#sendCastSpellTrajectory(spellId, unitTarget, missilePlan.shot); // 11.02-E
+    else this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpell(spellId, this.#castCount, destination,
       unitTarget !== undefined && unitTarget !== 0n ? { unitTarget } : undefined));
-    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
-    this.onSpellStatus?.(`Заклинание ${spellId} отправлено в выбранную точку`, false);
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent,
+      unitTarget !== undefined && unitTarget !== 0n ? unitTarget : undefined);
+    this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отправлено в выбранную точку`, false);
   }
 
   /** Crafting item targets are validated again by the realm; never mutate the item locally. */
@@ -2010,8 +2570,9 @@ export class WorldClient {
     if (this.#closed || this.state.selfGuid === undefined || itemGuid === 0n) return;
     if (!this.knownSpells.some((spell) => spell.id === spellId)) return;
     const inventory = playerInventory(this.state);
-    if (!inventory || ![...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
-      .some((slot) => slot.guid === itemGuid && slot.item !== undefined)) return;
+    if (!inventory || (![...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((bag) => bag.slots)]
+      .some((slot) => slot.guid === itemGuid && slot.item !== undefined)
+      && !carriedOutsideBags(this.state, inventory, itemGuid))) return; // L1 (2.05): a bag, the keyring, currency 118–149
     this.#cancelMountBeforeCast();
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnItem(spellId, this.#castCount, itemGuid));
@@ -2022,14 +2583,88 @@ export class WorldClient {
   castSpellOnUnit(spellId: number, targetGuid: bigint, cooldownDuration = 0, cooldownStartedOnEvent = false): void {
     if (this.#closed || this.state.selfGuid === undefined || targetGuid === 0n) return;
     if (!this.knownSpells.some((spell) => spell.id === spellId) && spellId !== DUEL_SPELL_ID) {
-      this.onSpellStatus?.(`Заклинание ${spellId} отсутствует в книге`, true);
+      this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отсутствует в книге`, true);
       return;
     }
     if (this.#cancelMountBeforeCast(spellId)) return;
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnUnit(spellId, this.#castCount, targetGuid));
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, targetGuid);
+    this.onSpellStatus?.(`${spellSubject(this.#knownName("spell", spellId))} отправлено на выбранную цель`, false);
+  }
+
+  /**
+   * A known spell on the trader's «will not be traded» slot (plan item 2.05): `CMSG_CAST_SPELL` with
+   * TARGET_FLAG_TRADE_ITEM and slot 6, as the client's trade-slot click writes it (Wow.exe
+   * 0x0080c5f0). The core parks the spell in the trade until both accept (Spell.cpp:3529-3541) and
+   * refuses a cast from an item there (SPELL_FAILED_ITEM_ENCHANT_TRADE_WINDOW, Spell.cpp:6406).
+   */
+  castSpellOnTradeSlot(spellId: number, cooldownDuration = 0, cooldownStartedOnEvent = false): boolean {
+    if (this.#closed || this.state.selfGuid === undefined || !this.tradeOpen) return false;
+    if (!this.knownSpells.some((spell) => spell.id === spellId)) return false;
+    const payload = buildCastSpellTargeted(spellId, (this.#castCount + 1) & 0xff, { tradeSlot: TRADE_SLOT_NONTRADED });
+    if (!payload) return false;
+    this.#cancelMountBeforeCast();
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, payload);
     this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent);
-    this.onSpellStatus?.(`Заклинание ${spellId} отправлено на выбранную цель`, false);
+    return true;
+  }
+
+  /**
+   * A known spell at a game object (plan item 2.05, «Взлом замка» from the cursor): `CMSG_CAST_SPELL`
+   * with TARGET_FLAG_GAMEOBJECT and the object's packed guid, as the client's cursor click writes it
+   * (Wow.exe 0x0080bc80). The object must be in view; the realm checks the lock (`Spell::CheckCast`,
+   * `EffectOpenLock`). False when nothing was sent.
+   */
+  castSpellOnGameObject(spellId: number, objectGuid: bigint, cooldownDuration = 0, cooldownStartedOnEvent = false): boolean {
+    if (this.#closed || this.state.selfGuid === undefined || objectGuid === 0n) return false;
+    if (this.state.objects.get(objectGuid)?.typeId !== 5) return false;
+    if (!this.knownSpells.some((spell) => spell.id === spellId)) return false;
+    const payload = buildCastSpellTargeted(spellId, (this.#castCount + 1) & 0xff, { gameObject: objectGuid });
+    if (!payload) return false;
+    this.#cancelMountBeforeCast();
+    this.#castCount = (this.#castCount + 1) & 0xff;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, payload);
+    this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, objectGuid);
+    return true;
+  }
+
+  /**
+   * A carried item's own spell at a game object (a key or a lock pick on a chest, 2.05): `CMSG_USE_ITEM`
+   * with TARGET_FLAG_GAMEOBJECT. The source must stand at its bag and slot and the object be in view.
+   */
+  useItemOnGameObject(bag: number, slot: number, itemGuid: bigint, spellId: number, objectGuid: bigint): boolean {
+    if (this.#closed || itemGuid === 0n || objectGuid === 0n) return false;
+    if (this.state.objects.get(objectGuid)?.typeId !== 5) return false;
+    const inventory = playerInventory(this.state);
+    if (!inventory || slotAt(inventory, bag, slot)?.guid !== itemGuid) return false;
+    const payload = buildUseItemTargeted(bag, slot, (this.#useCount + 1) & 0xff, spellId, itemGuid, { gameObject: objectGuid });
+    if (!payload) return false;
+    this.#useCount += 1;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM, payload);
+    return true;
+  }
+
+  /**
+   * Uses a carried item on another carried item (plan item 2.05: poisons, sharpening stones, oils,
+   * enchanting scrolls): `CMSG_USE_ITEM` with TARGET_FLAG_ITEM and the target's packed guid. Both
+   * must stand in the inventory as named — the source at its bag and slot, the target anywhere
+   * (bag or equipped, as `Player::GetItemByGuid` looks) — or nothing is sent. The realm validates
+   * the rest (`Spell::CheckItems`).
+   */
+  useItemOnItem(bag: number, slot: number, itemGuid: bigint, spellId: number, targetGuid: bigint): boolean {
+    if (this.#closed || itemGuid === 0n || targetGuid === 0n) return false;
+    const inventory = playerInventory(this.state);
+    if (!inventory || slotAt(inventory, bag, slot)?.guid !== itemGuid) return false;
+    if (![...inventory.equipment, ...inventory.backpack, ...inventory.bags.flatMap((container) => container.slots)]
+      .some((entry) => entry.guid === targetGuid && entry.item !== undefined)
+      && !carriedOutsideBags(this.state, inventory, targetGuid)) return false; // L1 (2.05): a bag, the keyring, currency 118–149
+    const payload = buildUseItemTargeted(bag, slot, (this.#useCount + 1) & 0xff, spellId, itemGuid, { item: targetGuid });
+    if (!payload) return false;
+    this.#useCount += 1;
+    this.#connection.send(OPCODES.CMSG_USE_ITEM, payload);
+    return true;
   }
 
   cancelSpellCast(): void {
@@ -2066,7 +2701,11 @@ export class WorldClient {
     castCount: number,
     cooldownDuration = 0,
     cooldownStartedOnEvent = false,
+    targetGuid?: bigint,
   ): void {
+    // 3.02: Wow.exe 0x0080ac90 raises UNIT_SPELLCAST_SENT right after it builds the request.
+    this.events.emit("SPELL_CAST_SENT", targetGuid === undefined || targetGuid === 0n
+      ? { spellId, castCount } : { spellId, castCount, targetGuid });
     this.#prunePendingCasts();
     this.#pendingCasts.push({
       spellId,
@@ -2376,6 +3015,7 @@ export class WorldClient {
 
   /** Retires aura/cast and transient NPC state belonging to the previous object incarnation. */
   #retireWorldObject(guid: bigint): void {
+    this.targetHistory.unitLeft(guid, this); // L2 1.10: 0x734fd0 → 0x524350 (a group member is kept)
     this.#cancelGameObjectTemplateWaiters(guid);
     const previousAuras = this.auras.get(guid);
     if (previousAuras !== undefined && this.auras.delete(guid)) {
@@ -2390,12 +3030,35 @@ export class WorldClient {
     const cast = this.casts.get(guid);
     if (cast) this.#endCast(guid, cast.spellId, "interrupted", cast.castCount);
     this.taxiNodeStatus.delete(guid);
+    this.lootOwnersByUnit.delete(guid); // 5.28 (L6)
     this.spiritHealerTimers.delete(guid);
     this.questGiverStatus.delete(guid);
+    this.#questGiverQueue.forget(guid);
+    // 2.10: the client keeps a refund record on the item object (+0x3d4); it goes with the item.
+    this.itemRefunds.forget(guid);
   }
 
   #retireWorldObjects(guids: readonly bigint[]): void {
     for (const guid of guids) this.#retireWorldObject(guid);
+  }
+
+  /**
+   * One update packet. A block that fails to parse still leaves the blocks before it applied
+   * (`WorldState.applyUpdate`, 5.26), and the objects those removed must be retired here as well —
+   * otherwise their auras and casts outlive them. The error goes on to `#deliver`, which records it.
+   */
+  #applyObjectUpdate(payload: Uint8Array): void {
+    let retired: readonly bigint[];
+    try {
+      retired = this.state.applyUpdate(payload);
+    } catch (error) {
+      if (error instanceof UpdateBlockError) this.#retireWorldObjects(error.retired);
+      throw error;
+    }
+    this.#retireWorldObjects(retired);
+    // 2.10: an item bought at an open merchant is asked about as it arrives (see #sweepItemRefunds).
+    if (this.vendor) this.#sweepItemRefunds();
+    this.#watchOwnPet();
   }
 
   /**
@@ -2426,7 +3089,7 @@ export class WorldClient {
     this.#cancelMountBeforeCast();
     this.#castCount = (this.#castCount + 1) & 0xff;
     this.#connection.send(OPCODES.CMSG_CAST_SPELL, buildCastSpellOnGameObject(spellId, this.#castCount, guid));
-    this.#trackPendingCast(spellId, this.#castCount);
+    this.#trackPendingCast(spellId, this.#castCount, 0, false, guid);
   }
 
   #handleGameObject(packet: WorldPacket): boolean {
@@ -2561,6 +3224,18 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_BUY_ITEM, buildBuyItem(vendor.guid, item.itemId, slot, count));
   }
 
+  /**
+   * L1 (3.23): CMSG_BUY_ITEM_IN_SLOT — the vendor row with list number `slot` into `bagSlot` of the
+   * container `bagGuid` (the player for his own inventory). Wow.exe 0x006d2ea0; the realm judges the
+   * place. True when sent.
+   */
+  buyFromVendorInSlot(slot: number, itemId: number, bagGuid: bigint, bagSlot: number, count = 1): boolean {
+    const vendor = this.vendor;
+    if (this.#closed || !vendor || bagGuid === 0n || !Number.isInteger(bagSlot) || bagSlot < 0 || bagSlot > 0xff) return false;
+    this.#connection.send(OPCODES.CMSG_BUY_ITEM_IN_SLOT, buildBuyItemInSlot(vendor.guid, itemId, slot, bagGuid, bagSlot, count));
+    return true;
+  }
+
   sellToVendor(itemGuid: bigint, count = 0): void {
     const vendor = this.vendor;
     if (this.#closed || !vendor || itemGuid === 0n) return;
@@ -2573,6 +3248,17 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_BUYBACK_ITEM, buildBuybackItem(vendor.guid, slot));
   }
 
+  /**
+   * `CMSG_REPAIR_ITEM` at the open merchant (2.02): one item by guid, or everything with 0n, and
+   * whether the guild bank pays. The price check and the merchant's repair flag are the caller's
+   * (browser/Repair.ts), as they are the original client's; the realm decides the rest.
+   */
+  repairAtVendor(itemGuid: bigint, guildBank: boolean): void {
+    const vendor = this.vendor;
+    if (this.#closed || !vendor) return;
+    this.#connection.send(OPCODES.CMSG_REPAIR_ITEM, buildRepairItem(vendor.guid, itemGuid, guildBank));
+  }
+
   closeVendor(): void {
     const hadVendor = this.vendor !== undefined;
     this.#pendingVendorGuid = 0n;
@@ -2580,6 +3266,81 @@ export class WorldClient {
     this.vendor = undefined;
     this.merchantMessage = undefined;
     this.onVendorChanged?.();
+  }
+
+  /**
+   * 2.10, Wow.exe 0x007089e0: `CMSG_ITEM_REFUND_INFO` for one of the player's items, once per item —
+   * only when its template carries ITEM_FLAG_ITEM_PURCHASE_RECORD (0x1000, the item cache's flags,
+   * 0x00707360 +0x18) and no record has come yet. A template not cached yet is asked for and the
+   * item is tried again at the next sweep. True when the request went out.
+   */
+  requestItemRefundInfo(guid: bigint): boolean {
+    if (this.#closed || guid === 0n || this.itemRefunds.info.has(guid)) return false;
+    const item = this.state.objects.get(guid);
+    if (!item || (item.typeId !== 1 && item.typeId !== 2)) return false;
+    const template = this.itemTemplate(item.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0);
+    if (!template || ((template.flags ?? 0) & ITEM_FLAG_ITEM_PURCHASE_RECORD) === 0) return false;
+    if (!this.itemRefunds.shouldAsk(guid)) return false;
+    this.#connection.send(OPCODES.CMSG_ITEM_REFUND_INFO, buildItemRefundInfo(guid));
+    return true;
+  }
+
+  /**
+   * Wow.exe 0x006d1760, on `SMSG_LIST_INVENTORY`: the equipped items (slots 0-18), the backpack
+   * (23-38) and the four bags' contents — not the bank, not the keyring — each asked for once.
+   * The original also asks when an item object is created (0x0070aa40); here the sweep also runs
+   * after every update packet while a merchant is open, which covers an item bought there.
+   */
+  #sweepItemRefunds(): void {
+    const inventory = playerInventory(this.state);
+    if (!inventory) return;
+    for (const slot of inventory.equipment) if (slot.guid !== 0n) this.requestItemRefundInfo(slot.guid);
+    for (const slot of inventory.backpack) if (slot.guid !== 0n) this.requestItemRefundInfo(slot.guid);
+    for (const bag of inventory.bags) {
+      for (const slot of bag.slots) if (slot.guid !== 0n) this.requestItemRefundInfo(slot.guid);
+    }
+  }
+
+  /**
+   * `ContainerRefundItemPurchase`, Wow.exe 0x005d91b0: with a refund record and a merchant open,
+   * `CMSG_ITEM_REFUND` goes out; otherwise nothing is sent and the answer is the client's
+   * ERR_INTERNAL_BAG_ERROR (game message 0xc). The window is not rechecked here — the realm answers
+   * code 10 for an expired one.
+   */
+  refundItem(guid: bigint): "ERR_INTERNAL_BAG_ERROR" | undefined {
+    if (this.#closed) return undefined;
+    if (!this.state.objects.has(guid) || !this.itemRefunds.info.has(guid) || !this.vendor) return "ERR_INTERNAL_BAG_ERROR";
+    this.#connection.send(OPCODES.CMSG_ITEM_REFUND, buildItemRefund(guid));
+    return undefined;
+  }
+
+  /** The refund packets (Wow.exe 0x006d1650, 0x006d9b40). */
+  #handleItemRefund(packet: WorldPacket): void {
+    if (packet.opcode === OPCODES.SMSG_ITEM_REFUND_INFO_RESPONSE) {
+      const { guid, info } = parseItemRefundInfo(packet.payload);
+      if (!this.itemRefunds.accept(guid, info, this.state.objects.has(guid))) return;
+      // The client asks its item cache for each cost item as the record lands (0x0067ca30 with
+      // the query flag), so GetContainerItemPurchaseItem can link them.
+      for (const cost of info.items) if (cost.itemId > 0 && cost.count > 0) this.itemTemplate(cost.itemId);
+      this.onVendorChanged?.();
+      return;
+    }
+    const result = parseItemRefundResult(packet.payload);
+    const self = this.state.objects.get(this.state.selfGuid ?? 0n);
+    const messages = itemRefundMessages(result, {
+      honor: self?.fields.get(UPDATE_FIELDS.PLAYER_FIELD_HONOR_CURRENCY.offset) ?? 0,
+      arena: self?.fields.get(UPDATE_FIELDS.PLAYER_FIELD_ARENA_CURRENCY.offset) ?? 0,
+      itemName: (itemId) => {
+        const template = this.itemTemplates.get(itemId);
+        return template?.name ? template.name : undefined;
+      },
+    });
+    for (const line of messages.lines) this.#systemChat(line);
+    if (messages.error) {
+      this.itemMessage = { text: formatGlobalStringByName(messages.error, [], messages.error), error: true };
+      this.onItemMessage?.();
+      this.events.emit("ITEM_REFUND_ERROR", { error: messages.error });
+    }
   }
 
   openTrainer(guid: bigint): void {
@@ -2610,6 +3371,19 @@ export class WorldClient {
   /** Equips the item in the given container slot into whatever slot fits. */
   equipItem(bag: number, slot: number): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_AUTOEQUIP_ITEM, buildAutoEquipItem(bag, slot));
+  }
+
+  /**
+   * Gift wrapping (2.05 slice E, Wow.exe 0x006dcf20): CMSG_WRAP_ITEM with the paper's and the item's
+   * bag and slot. Nothing without a paper object at its place (the client needs the paper object);
+   * the realm judges the rest. True when sent.
+   */
+  wrapItem(giftBag: number, giftSlot: number, itemBag: number, itemSlot: number): boolean {
+    if (this.#closed) return false;
+    const inventory = playerInventory(this.state);
+    if (!inventory || !slotAt(inventory, giftBag, giftSlot)?.item) return false;
+    this.#connection.send(OPCODES.CMSG_WRAP_ITEM, buildWrapItem(giftBag, giftSlot, itemBag, itemSlot));
+    return true;
   }
 
   /**
@@ -2808,6 +3582,15 @@ export class WorldClient {
   requestName(guid: bigint): void {
     if (this.#closed || !this.names.shouldQuery(guid)) return;
     this.#connection.send(OPCODES.CMSG_NAME_QUERY, buildNameQuery(guid));
+  }
+
+  /**
+   * Whether the character may use items of this class and subclass (`SMSG_SET_PROFICIENCY`, 5.22).
+   * As Wow.exe 0x6cde90/0x5e9250: no word for the class, or a zero word, restricts nothing.
+   */
+  isProficient(itemClass: number, subClass: number): boolean {
+    const mask = this.proficiency.get(itemClass) ?? 0;
+    return mask === 0 || (mask & (1 << (subClass & 31))) !== 0;
   }
 
   /**
@@ -3308,9 +4091,14 @@ export class WorldClient {
 
   voteToRemove(agree: boolean): void {
     this.expireInteractionRequests();
-    if (this.#closed || !this.lfgBoot?.inProgress || this.lfgBoot.voted) return;
+    const now = performance.now();
+    if (this.#closed || !this.lfgBoot?.inProgress || this.lfgBoot.voted || this.#pending.has("boot-vote", now)) return;
     this.#connection.send(OPCODES.CMSG_LFG_SET_BOOT_VOTE, buildLfgBootVote(agree));
-    this.lfgBoot.voted = true;
+    // Wow.exe SetLFGBootVote (0x554960) keeps "my vote" (0x00bea860) and leaves "I voted"
+    // (0x00bea85c) to the next SMSG_LFG_BOOT_PROPOSAL_UPDATE, which carries the receiver's own vote.
+    // The vote stays out until the boot ends: LFGMgr::UpdateBoot answers only a deciding vote
+    // (LFGMgr.cpp:1507-1509) and drops a second one from the same player silently (:1485).
+    this.#pending.begin("boot-vote", undefined, this.lfgBootExpiresAt - now, now);
     this.lfgBoot.votedYes = agree;
     this.events.emit("LFG_INFO_CHANGED", {});
   }
@@ -3327,6 +4115,8 @@ export class WorldClient {
     const button = this.petSpells?.bar[slot];
     if (this.#closed || !this.petSpells || !button) return;
     const target = targetGuid ?? this.targetGuid ?? 0n;
+    // 11.02-BCD: a spell on the bar of the unit this client steers (vehicle, possessed) is its own cast.
+    if (this.#castAsControlledUnit(petActionTypeOf(button.packed), petActionOf(button.packed), target)) return;
     this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, button.packed, target));
     this.#notePetOrder(button.packed);
   }
@@ -3339,7 +4129,85 @@ export class WorldClient {
   castPetSpell(spellId: number, state: number, targetGuid?: bigint): void {
     if (this.#closed || !this.petSpells || !Number.isSafeInteger(spellId) || spellId <= 0) return;
     const target = targetGuid ?? this.targetGuid ?? 0n;
+    if (this.#castAsControlledUnit(state, spellId, target)) return; // 11.02-BCD
     this.#connection.send(OPCODES.CMSG_PET_ACTION, buildPetAction(this.petSpells.guid, packPetAction(spellId, state), target));
+  }
+
+  /**
+   * 11.02-BCD (slice D): Wow.exe's pet bar (0x005d4210) casts a spell slot through its own cast path —
+   * `CMSG_PET_CAST_SPELL` from the unit (0x0080cce0 → 0x0080ac90) — when the bar's unit is the one the
+   * character controls (0x006dd060); `PetCastSpell.ts`. An empty spell slot sends nothing (0x004cfd20
+   * finds no spell 0). True when the press was handled here.
+   */
+  #castAsControlledUnit(state: number, spellId: number, target: bigint): boolean {
+    const bar = this.petSpells;
+    if (!bar || !petSlotCastsSpell(state)
+      || (!petBarCastsAsUnit(bar.guid, this.controlledGuid, this.state.selfGuid, this.state.objects.get(bar.guid)) // 11.02-BCD-review: + the bar's unit
+        && !petSpellCastsAsUnitAt(spellId, target))) return false; // L13 11.02-D: or AttributesEx4 0x20 (0x005d4210); L13-review: a ground spell only at a unit the player may attack
+    if (spellId <= 0) return true;
+    // The count is the one every cast of this client draws from; the target is the press's unit or the
+    // selection — the core drops it for a spell that names no unit (Spell::InitExplicitTargets).
+    const castCount = (this.#castCount + 1) & 0xff;
+    // 11.02-E: a missile trajectory spell carries its shot (flag 2), or is not sent (MissileCast.ts).
+    const missilePlan = this.#missilePlan(spellId, bar.guid); // 11.02-E
+    if (missilePlan !== undefined && !("shot" in missilePlan)) return true; // 11.02-E
+    const payload = missilePlan !== undefined // 11.02-E
+      ? buildPetCastSpell(bar.guid, castCount, spellId, CAST_FLAG_TRAJECTORY, trajectoryTargets(missilePlan.shot, target), // 11.02-E
+        trajectoryTail(missilePlan.shot, this.#missileMovementTail(bar.guid))) // 11.02-E
+      : buildPetCastSpell(bar.guid, castCount, spellId, 0, { unit: target === 0n ? undefined : target });
+    if (!payload) return true;
+    this.#castCount = castCount;
+    this.#connection.send(OPCODES.CMSG_PET_CAST_SPELL, payload);
+    if (missilePlan !== undefined) this.#missiles.cast(bar.guid, spellId, performance.now()); // 11.02-E
+    return true;
+  }
+
+  /**
+   * 11.02-E: MissileCast.ts `missileCastPlan` for this caster against the active mover (`controlledGuid`,
+   * else the character); a refusal with a reason is said, as Wow.exe's 0x00808200 says it.
+   */
+  #missilePlan(spellId: number, casterGuid: bigint | undefined): MissileCastPlan {
+    if (casterGuid === undefined) return undefined;
+    const plan = missileCastPlan(missileShotSource(), this.#missiles, spellId, casterGuid, this.controlledGuid ?? this.state.selfGuid);
+    if (plan !== undefined && "refused" in plan && plan.refused !== 0) {
+      const text = spellFailureText(plan.refused, this.#castFailureNames());
+      if (text) this.onSpellStatus?.(text, true);
+    }
+    return plan;
+  }
+
+  /**
+   * 11.02-E: the movement a trajectory packet ends with (0x0071f060 → 0x0071ef80): MSG_MOVE_STOP with the
+   * unit's MovementInfo when it is the active mover (0x0071ef20), else none (`u8 0`).
+   */
+  #missileMovementTail(guid: bigint): MissileMovementTail | undefined {
+    if (guid !== (this.controlledGuid ?? this.state.selfGuid)) return undefined;
+    return { opcode: OPCODES.MSG_MOVE_STOP, guid, info: this.#currentMovement(guid) };
+  }
+
+  /** 11.02-E: the character's trajectory cast — `CMSG_CAST_SPELL` with flag 2 (0x0080ac90, MissileTrajectory.ts). */
+  #sendCastSpellTrajectory(spellId: number, unit: bigint | undefined, shot: MissileShot): void {
+    const self = this.state.selfGuid;
+    if (self === undefined) return;
+    const payload = buildCastSpellTrajectory(spellId, this.#castCount, trajectoryTargets(shot, unit), shot, this.#missileMovementTail(self));
+    if (!payload) return;
+    this.#connection.send(OPCODES.CMSG_CAST_SPELL, payload);
+    this.#missiles.cast(self, spellId, performance.now());
+  }
+
+  /**
+   * 11.02-E: 0x006fe7e0 → 0x006fd6b0 — the noted cast's time is up: the shot again with the aim as it is
+   * now, as `CMSG_UPDATE_MISSILE_TRAJECTORY`, once (the note is gone already).
+   */
+  #reaimMissile(guid: bigint, spellId: number): void {
+    if (this.#closed) return;
+    // 11.02-E-review: the world frame 0x004fa5f0 runs 0x006fe7e0 on the active mover only — a note left on a unit that
+    // is no longer the mover (a vehicle left before the cast time was up) sends nothing.
+    if (guid !== (this.controlledGuid ?? this.state.selfGuid)) return; // 11.02-E-review
+    const shot = missileShotSource()?.shot(guid, spellId);
+    if (shot === undefined) return;
+    this.#connection.send(OPCODES.CMSG_UPDATE_MISSILE_TRAJECTORY,
+      buildUpdateMissileTrajectory(guid, spellId, shot, this.#missileMovementTail(guid)));
   }
 
   /** Stay, follow, attack or dismiss. */
@@ -3463,8 +4331,63 @@ export class WorldClient {
 
   /** The pet number comes first here, which is the reverse of every other query. */
   requestPetName(petNumber: number, petGuid: bigint): void {
-    if (this.#closed || this.petNames.has(petNumber)) return;
+    if (this.#closed || petNumber === 0 || this.petNames.has(petNumber) || this.#petNamesAsked.has(petNumber)) return;
+    this.#petNamesAsked.add(petNumber);
     this.#connection.send(OPCODES.CMSG_PET_NAME_QUERY, buildPetNameQuery(petNumber, petGuid));
+  }
+
+  /**
+   * 5.24: the name a player gave a pet, for the unit carrying `UNIT_FIELD_PETNUMBER` — undefined
+   * for anything else, or before `SMSG_PET_NAME_QUERY_RESPONSE` (an empty answer, for a pet the
+   * server could not see, names nothing either). The creature template's name stands in until then.
+   */
+  petNameOf(object: WorldObjectState): string | undefined {
+    const petNumber = object.typeId === 3 ? object.fields.get(UPDATE_FIELDS.UNIT_FIELD_PETNUMBER.offset) ?? 0 : 0;
+    return petNumber === 0 ? undefined : this.petNames.get(petNumber)?.name || undefined;
+  }
+
+  /** Pet numbers asked about and not yet answered: a pet in view is asked for once. */
+  readonly #petNamesAsked = new Set<number>();
+  /** The own pet's guid words and rename flag as last seen, so the per-update check builds nothing. */
+  #ownPetLow = 0;
+  #ownPetHigh = 0;
+  #ownPetGuid = 0n;
+  #ownPetRenameable: boolean | undefined;
+
+  #askPetName(object: WorldObjectState): void {
+    const petNumber = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_PETNUMBER.offset) ?? 0;
+    if (petNumber !== 0) this.requestPetName(petNumber, object.guid);
+  }
+
+  /**
+   * 5.24, after each update packet: the character's own pet (UNIT_FIELD_SUMMON) is asked for by
+   * name as it appears, and again once a rename went through — the core sends no name then
+   * (`HandlePetRename`, PetHandler.cpp:619-624), but the pet's CAN_BE_RENAMED bit (byte 2 of
+   * UNIT_FIELD_BYTES_2, 0x01 — 0x02 is CAN_BE_ABANDONED, UnitDefines.h:125-126) drops with it,
+   * and only on success.
+   */
+  #watchOwnPet(): void {
+    const selfGuid = this.state.selfGuid;
+    const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+    if (!self) return;
+    const low = self.fields.get(UPDATE_FIELDS.UNIT_FIELD_SUMMON.offset) ?? 0;
+    const high = self.fields.get(UPDATE_FIELDS.UNIT_FIELD_SUMMON.offset + 1) ?? 0;
+    if (low !== this.#ownPetLow || high !== this.#ownPetHigh) {
+      this.#ownPetLow = low;
+      this.#ownPetHigh = high;
+      this.#ownPetGuid = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+      this.#ownPetRenameable = undefined;
+    }
+    const pet = this.#ownPetGuid === 0n ? undefined : this.state.objects.get(this.#ownPetGuid);
+    if (!pet || pet.typeId !== 3) return;
+    const renameable = ((((pet.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) >>> 16) & 0xff) & 0x01) !== 0;
+    const petNumber = pet.fields.get(UPDATE_FIELDS.UNIT_FIELD_PETNUMBER.offset) ?? 0;
+    if (this.#ownPetRenameable === true && !renameable && petNumber !== 0) {
+      this.petNames.delete(petNumber);
+      this.#petNamesAsked.delete(petNumber);
+    }
+    this.#ownPetRenameable = renameable;
+    this.#askPetName(pet);
   }
 
   /**
@@ -3509,20 +4432,52 @@ export class WorldClient {
 
   /** A seat the server considers non-exitable ignores this in silence. */
   leaveVehicle(): void {
+    // 11.02-BCD: the driver dismisses the vehicle (Wow.exe 0x0074c7f0 → 0x005d46f0, VehicleHandler.cpp:27-50).
+    if (this.#asDriver(OPCODES.CMSG_DISMISS_CONTROLLED_VEHICLE, (vehicle, movement) => buildDismissControlledVehicle(vehicle, movement))) return;
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_REQUEST_VEHICLE_EXIT, buildRequestVehicleExit());
   }
 
   /** Stepping through seats: the opcode is the direction, and neither carries a body. */
   changeVehicleSeat(next: boolean): void {
     if (this.#closed) return;
+    // 11.02-BCD: the driver's step is seat ±1 with no accessory (Wow.exe 0x0074c8b0/0x0074c9a0, :99-100).
+    if (this.#asDriver(OPCODES.CMSG_CHANGE_SEATS_ON_CONTROLLED_VEHICLE,
+      (vehicle, movement) => buildChangeSeatsOnControlledVehicle(vehicle, movement, 0n, next ? 1 : -1))) return;
     if (next) this.#connection.send(OPCODES.CMSG_REQUEST_VEHICLE_NEXT_SEAT, buildRequestVehicleNextSeat());
     else this.#connection.send(OPCODES.CMSG_REQUEST_VEHICLE_PREV_SEAT, buildRequestVehiclePrevSeat());
   }
 
   /** The seat index is signed, and a negative one is meaningful. */
   takeVehicleSeat(vehicleGuid: bigint, seat: number): void {
+    // 11.02-BCD: the driver names the seat's vehicle as the accessory (Wow.exe 0x0074ca90, :101-105).
+    if (this.#asDriver(OPCODES.CMSG_CHANGE_SEATS_ON_CONTROLLED_VEHICLE,
+      (vehicle, movement) => buildChangeSeatsOnControlledVehicle(vehicle, movement, vehicleGuid, seat))) return;
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_REQUEST_VEHICLE_SWITCH_SEAT, buildRequestVehicleSwitchSeat(vehicleGuid, seat));
   }
+
+  /**
+   * 11.02-BCD (slice C): one of the driver's own packets, built from the driven vehicle's movement as
+   * every ACK of it is (`#currentMovement`); false when the character is not driving (`drivenVehicle`).
+   */
+  #asDriver(opcode: number, build: (vehicle: bigint, movement: MovementInfo) => Uint8Array): boolean {
+    if (this.#closed) return false;
+    const vehicle = drivenVehicle(this.state.objects, this.state.selfGuid, this.controlledGuid);
+    if (vehicle === undefined) return false;
+    this.#connection.send(opcode, build(vehicle, this.#currentMovement(vehicle)));
+    return true;
+  }
+
+  /**
+   * 11.02-BCD (slice B): `CMSG_SPELLCLICK` (VehicleProtocol.ts), once per vehicle a second — a refusal
+   * comes back as the ride spell's `SMSG_CAST_FAILED`. The decision to click is `VehicleClick.ts`.
+   */
+  spellClick(guid: bigint, now = performance.now()): void {
+    if (this.#closed || guid === 0n || !this.#spellClicks.allow(guid, now)) return;
+    this.#connection.send(OPCODES.CMSG_SPELLCLICK, buildSpellClick(guid));
+  }
+
+  /** 11.02-BCD: the one-click-a-second guard per vehicle. */
+  readonly #spellClicks = new SpellClickRepeatGuard();
 
   /** Climbing onto another player's vehicle. Both must be in the same raid and standing close. */
   enterPlayerVehicle(targetGuid: bigint): void {
@@ -3761,7 +4716,9 @@ export class WorldClient {
   leaveBattlefieldQueue(battleId: number): void {
     if (this.#closed || this.battlefieldQueuedId !== battleId) return;
     this.#connection.send(OPCODES.CMSG_BATTLEFIELD_MGR_EXIT_REQUEST, buildBattlefieldExitRequest(battleId));
-    // Battlefield::AskToLeaveQueue erases the membership and sends no acknowledgement.
+    // Battlefield::AskToLeaveQueue erases the membership and sends no acknowledgement. Optimistic by
+    // design (5.21): Wow.exe (0x54d6d0) only sends and waits for SMSG_BATTLEFIELD_MGR_EJECTED, which
+    // this core never sends for a queue exit, so waiting would leave the queue shown forever.
     this.battlefieldQueuedId = 0;
     this.events.emit("BATTLEFIELD_CHANGED", { battleId });
   }
@@ -3808,6 +4765,21 @@ export class WorldClient {
   #nameOf(kind: WorldNameKind, id: number): string {
     if (kind === "item") return nameOr((entry) => this.#itemName(entry), id, WORLD_NAME_FALLBACKS.item);
     return nameOr((entry) => this.worldNames[kind]?.(entry), id, WORLD_NAME_FALLBACKS[kind]);
+  }
+
+  /**
+   * 1.32: a name only when there is one — for texts that reword themselves around a missing name
+   * instead of splicing in the neutral word. Items and quests ask the realm on a miss (the query
+   * caches), so a later text has the answer.
+   */
+  #knownName(kind: WorldNameKind, id: number): string | undefined {
+    let name: string | undefined;
+    if (kind === "item") name = this.#itemName(id);
+    else if (kind === "quest") {
+      name = this.questTemplates.get(id)?.title ?? this.worldNames.quest?.(id);
+      if (name === undefined || name.trim() === "") this.queryQuest(id);
+    } else name = this.worldNames[kind]?.(id);
+    return name !== undefined && name.trim() !== "" ? name : undefined;
   }
 
   /** An item's name: the browser's lookup, else the query cache — which asks the realm once on a miss. */
@@ -3862,6 +4834,16 @@ export class WorldClient {
     if (!this.#closed && itemGuid !== 0n) this.#connection.send(OPCODES.CMSG_ITEM_TEXT_QUERY, buildItemTextQuery(itemGuid));
   }
 
+  /** The answer to `requestItemText`, once `ITEM_TEXT_RECEIVED` has named this guid (5.28). */
+  itemText(itemGuid: bigint): string | undefined {
+    return this.itemTexts.get(itemGuid);
+  }
+
+  /** Whether a flight master in view has a node this character knows (`SMSG_TAXINODE_STATUS`, 5.28). */
+  taxiNodeKnown(guid: bigint): boolean | undefined {
+    return this.taxiNodeStatus.get(guid);
+  }
+
   /**
    * Reads a readable item (`CMSG_READ_ITEM`: `u8 bag, u8 slot`, ItemHandler.cpp:351-382). The answer
    * is `SMSG_READ_ITEM_OK(guid)` when the character may use it, else FAILED plus an equip error.
@@ -3903,10 +4885,27 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_READY_FOR_ACCOUNT_DATA_TIMES, buildReadyForAccountDataTimes());
   }
 
-  /** Marks one tutorial tip as seen. Nothing comes back; the eight words arrive at next login. */
+  /**
+   * Marks one tutorial tip as seen. Nothing comes back; the eight words arrive at next login.
+   * 5.25: as Wow.exe 0x530450, a bit already set sends nothing, and the bit is set here at once.
+   */
   setTutorialSeen(index: number): void {
-    if (this.#closed || index < 0 || index >= MAX_ACCOUNT_TUTORIAL_VALUES * 32) return;
+    if (this.#closed || !Number.isInteger(index) || index < 0 || index >= MAX_ACCOUNT_TUTORIAL_VALUES * 32) return;
+    const word = index >>> 5;
+    const bit = 1 << (index & 31);
+    if (((this.tutorialFlags[word] ?? 0) & bit) !== 0) return;
+    while (this.tutorialFlags.length < MAX_ACCOUNT_TUTORIAL_VALUES) this.tutorialFlags.push(0);
+    this.tutorialFlags[word] = (this.tutorialFlags[word]! | bit) >>> 0;
     this.#connection.send(OPCODES.CMSG_TUTORIAL_FLAG, buildTutorialFlag(index));
+  }
+
+  /**
+   * 5.25: whether a tip is marked seen (Wow.exe 0x5222b0 reads the same words); undefined before
+   * `SMSG_TUTORIAL_FLAGS` arrived, which IsTutorialFlagged answers with nil.
+   */
+  isTutorialSeen(index: number): boolean | undefined {
+    if (this.tutorialFlags.length === 0 || !Number.isInteger(index) || index < 0) return undefined;
+    return ((this.tutorialFlags[index >>> 5] ?? 0) & (1 << (index & 31))) !== 0;
   }
 
   /** Sets every tutorial bit, or clears them all. Neither is answered. */
@@ -3958,12 +4957,79 @@ export class WorldClient {
   }
 
   /**
-   * Declares war on a reputation faction, or makes peace. The server answers with the faction's
-   * new state (`SMSG_SET_FACTION_STANDING`); nothing flips locally first.
+   * Declares war on a reputation faction, or makes peace — Wow.exe 0x005d0a10. The core answers
+   * nothing (`ReputationMgr::SetAtWar` only marks the row; `SendState` carries standings), so the
+   * client flips its own copy of the flag as it sends, exactly as the original does:
+   * * peace needs a standing of at least -3000 (the original compares > -3001) — below that
+   *   nothing happens and `"standing"` comes back;
+   * * peace in combat (UNIT_FLAG_IN_COMBAT) is refused before sending with `"combat"`, the
+   *   caller's `ERR_NOT_IN_COMBAT`;
+   * * war on a PEACE_FORCED row still goes to the server (a RIVAL row may be accepted there) but
+   *   the local bit is cleared rather than set — the client does not look at RIVAL.
+   * The list id must name one of the 128 slots (`< 0x80`). `baseStanding` is Faction.dbc's base for
+   * this character (`frameXmlReputationBase`): the wire's standing lacks it, and the -3000 test is
+   * on their sum (0x005d05b0).
    */
-  setFactionAtWar(listId: number, atWar: boolean): void {
-    if (this.#closed || !Number.isInteger(listId) || listId < 0) return;
+  setFactionAtWar(listId: number, atWar: boolean, baseStanding = 0): "standing" | "combat" | undefined {
+    if (this.#closed || !Number.isInteger(listId) || listId < 0 || listId >= 0x80) return undefined;
+    const faction = this.factions.get(listId);
+    if (!atWar) {
+      if (baseStanding + (faction?.standing ?? 0) < -3000) return "standing";
+      if (this.#selfInCombat()) return "combat";
+    }
+    if (faction) {
+      const flags = atWar && (faction.flags & 0x10) === 0 ? faction.flags | 0x02 : faction.flags & ~0x02;
+      this.factions.set(listId, { ...faction, flags });
+    }
     this.#connection.send(OPCODES.CMSG_SET_FACTION_ATWAR, buildSetFactionAtWar(listId, atWar));
+    this.events.emit("REPUTATION_CHANGED", {});
+    return undefined;
+  }
+
+  /**
+   * Marks a reputation row inactive or active — Wow.exe 0x005d1c10: the INACTIVE bit (0x20) of
+   * the client's copy flips and `CMSG_SET_FACTION_INACTIVE` goes out; the core answers nothing
+   * (`ReputationMgr::SetInactive`, ReputationMgr.cpp:506, only marks the row for saving).
+   */
+  setFactionInactive(listId: number, inactive: boolean): void {
+    if (this.#closed || !Number.isInteger(listId) || listId < 0 || listId >= 0x80) return;
+    const faction = this.factions.get(listId);
+    if (faction) {
+      this.factions.set(listId, { ...faction, flags: inactive ? faction.flags | 0x20 : faction.flags & ~0x20 });
+    }
+    this.#connection.send(OPCODES.CMSG_SET_FACTION_INACTIVE, buildSetFactionInactive(listId, inactive));
+    this.events.emit("REPUTATION_CHANGED", {});
+  }
+
+  /**
+   * The reputation list id the experience bar watches: the player's own
+   * `PLAYER_FIELD_WATCHED_FACTION_INDEX` (saved by the core, back at every login), undefined for
+   * none (`0xFFFFFFFF`) or before the player object exists.
+   */
+  get watchedFactionListId(): number | undefined {
+    const self = this.state.objects.get(this.state.selfGuid ?? 0n);
+    const value = self?.fields.get(UPDATE_FIELDS.PLAYER_FIELD_WATCHED_FACTION_INDEX.offset);
+    return value === undefined || (value >>> 0) === NO_WATCHED_FACTION ? undefined : value >>> 0;
+  }
+
+  /**
+   * Asks the server to watch a list id, or none — Wow.exe 0x005d0ba0: nothing changes locally,
+   * the core writes the player field and its update is the answer; a request equal to the field's
+   * current value is not sent, and nothing is sent before the player object exists.
+   */
+  setWatchedFaction(listId: number | undefined): void {
+    if (this.#closed) return;
+    const value = listId !== undefined && Number.isInteger(listId) && listId >= 0 ? listId : NO_WATCHED_FACTION;
+    const self = this.state.objects.get(this.state.selfGuid ?? 0n);
+    if (!self) return;
+    const current = self.fields.get(UPDATE_FIELDS.PLAYER_FIELD_WATCHED_FACTION_INDEX.offset);
+    if (current !== undefined && (current >>> 0) === value) return;
+    this.#connection.send(OPCODES.CMSG_SET_WATCHED_FACTION, buildSetWatchedFaction(value));
+  }
+
+  #selfInCombat(): boolean {
+    const self = this.state.objects.get(this.state.selfGuid ?? 0n);
+    return ((self?.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset) ?? 0) & UNIT_FLAG_IN_COMBAT) !== 0;
   }
 
   /** Opening a ticket. The chat log is optional and only read when timestamps travel with it. */
@@ -3996,6 +5062,50 @@ export class WorldClient {
     if (this.#closed) return;
     this.gmResponse = undefined;
     this.#connection.send(OPCODES.CMSG_GMRESPONSE_RESOLVE, buildGmResponseResolve());
+  }
+
+  /**
+   * 8.17, `GMReportLag(kind)`: kind is the Lua value, STATIC_CONSTANTS Loot = 1 … Spell = 6. As Wow.exe
+   * 0x5acf30: only with a character in the world, kind − 1 on the wire, the current map and the
+   * character's position. The core stores the row and answers nothing.
+   */
+  reportLag(kind: number): boolean {
+    const selfGuid = this.state.selfGuid;
+    const position = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid)?.position;
+    if (this.#closed || !position || !Number.isInteger(kind)) return false;
+    this.#connection.send(OPCODES.CMSG_GM_REPORT_LAG, buildReportLag(kind - 1, this.mapId ?? 0, position.x, position.y, position.z));
+    return true;
+  }
+
+  /**
+   * 8.17, the sender side of `CanComplainInboxItem` (Wow.exe 0x56fa70): not the character itself and
+   * not anyone on the contact list (0x6b3920 walks it). The letter's own checks are the mail model's.
+   */
+  canComplainAboutMail(senderGuid: bigint): boolean {
+    if (senderGuid === 0n || senderGuid === this.state.selfGuid) return false;
+    return !(this.contacts?.contacts.some((contact) => contact.guid === senderGuid) ?? false);
+  }
+
+  /** Senders complained about this session, newest first, at most 32 (Wow.exe 0x6b3750). */
+  readonly #complainedSenders: bigint[] = [];
+
+  /**
+   * 8.17, `ComplainInboxItem` (Wow.exe 0x56faf0): with the realm's complaint system on
+   * (SMSG_FEATURE_SYSTEM_STATUS) and the mailbox open, `CMSG_COMPLAIN` about the letter, then the
+   * list asked for again. A sender already complained about only says COMPLAINT_ADDED. True when
+   * the complaint went out — the caller then closes the letter (CLOSE_INBOX_ITEM).
+   */
+  complainAboutMail(mailId: number, senderGuid: bigint): boolean {
+    if (this.#closed || this.mailboxGuid === 0n || !this.featureStatus?.complaintStatus) return false;
+    if (this.#complainedSenders.includes(senderGuid)) {
+      this.#recordSystemLine(formatGlobalStringByName("COMPLAINT_ADDED", [], "Жалоба зарегистрирована."));
+      return false;
+    }
+    this.#complainedSenders.unshift(senderGuid);
+    if (this.#complainedSenders.length > 32) this.#complainedSenders.length = 32;
+    this.#connection.send(OPCODES.CMSG_COMPLAIN, buildComplainMail(senderGuid, mailId));
+    this.requestMailList();
+    return true;
   }
 
   /**
@@ -4233,7 +5343,19 @@ export class WorldClient {
   leaveLfg(): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_LFG_LEAVE, buildLfgLeave());
     this.lfgRolesChosen.clear();
-    this.lfgSearching = false;
+    // The queue state stays until SMSG_LFG_UPDATE_PLAYER/_PARTY or _SEARCH says otherwise: Wow.exe
+    // LeaveLFG (0x553ab0) clears only its own join-request words before sending (5.21).
+  }
+
+  /** `CMSG_SET_LFG_COMMENT` (3.25): the comment of a player already in the finder queue. */
+  setLfgComment(comment: string): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SET_LFG_COMMENT, buildSetLfgComment(comment));
+  }
+
+  /** `CMSG_SEARCH_LFG_JOIN`/`_LEAVE` (3.25): the raid browser's LFGDungeons id, type in the high byte. */
+  searchLfg(join: boolean, packedEntry: number): void {
+    if (this.#closed) return;
+    this.#connection.send(join ? OPCODES.CMSG_SEARCH_LFG_JOIN : OPCODES.CMSG_SEARCH_LFG_LEAVE, buildSearchLfg(packedEntry));
   }
 
   setLfgRoles(roles: number): void {
@@ -4290,6 +5412,11 @@ export class WorldClient {
 
   queryGuild(guildId: number): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_GUILD_QUERY, buildGuildQuery(guildId));
+  }
+
+  /** 3.12 (04.10, L4): CMSG_GUILD_QUERY for a guild the unit tooltip names, once (GuildNameCache.ts). */
+  queryGuildName(guildId: number): void {
+    if (!this.#closed && this.guildNames.shouldQuery(guildId)) this.#connection.send(OPCODES.CMSG_GUILD_QUERY, buildGuildQuery(guildId));
   }
 
   inviteToGuild(name: string): void {
@@ -4568,6 +5695,8 @@ export class WorldClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    // The entry backlog's timer and held messages (9.03) go with the session.
+    this.customPackets.dispose();
     this.#pendingItemUses.clear();
     this.summonRequest = undefined;
     this.binderConfirm = undefined;
@@ -4591,6 +5720,8 @@ export class WorldClient {
     }
     this.movementReady = false;
     this.#stopAutoRepeat(false);
+    this.autoRanged.end(); // L15 5.05: the controller's tick goes with the session
+    this.#missiles.dispose(); // 11.02-E
     this.#pendingCasts.length = 0;
     this.#locallyStartedCooldowns.clear();
     if (this.#pingTimer) clearInterval(this.#pingTimer);
@@ -4702,7 +5833,6 @@ export class WorldClient {
       await this.#deliver(packet);
       if (slice.exhausted) await slice.pause();
     }
-    this.#worldEntered = true;
     while (!this.#closed) {
       slice.readStarted();
       const packet = await this.#connection.read();
@@ -4740,15 +5870,9 @@ export class WorldClient {
         // A tswow module talking. Server to client rides `CMSG_EMOTE`'s number — 0x102, chosen
         // because the 3.3.5 client refuses higher ones (`CustomPacketDefines.h:27-31`) — and this
         // core never sends that opcode itself, so every one of these is a custom packet and none of
-        // them is an emote. First in the chain rather than inside `#handleUtilityPacket`, because
-        // the backlog this world loop drains first is packets that arrived during login: a module
-        // message from that window predates every handler a window could have registered, so it
-        // goes to the diagnostics log as a login-time drop instead of to a handler that is not
-        // there yet.
-        if (!this.#worldEntered) {
-          this.#recordUnhandled(packet, true);
-          return;
-        }
+        // them is an emote. A message from the login window (drained from `#deferred` first) goes
+        // the same way as a later one: to a handler registered before entry, or into the
+        // registry's entry backlog when `EnterWorld` started one for consumers still loading (9.03).
         const receipt = this.customPacketBuffer.receive(packet.payload);
         if (receipt.kind === "error") {
           this.#recordPacketError(packet.opcode, new Error(`custom packet ${receipt.error} (${receipt.code})`),
@@ -4758,9 +5882,9 @@ export class WorldClient {
           // the ones without, and wraps each subscriber on its own — one module's failure is not
           // the others', and that failure is the ordinary case rather than the exotic one: a JSON
           // schema that has fallen behind its livescript makes `decodeCustom` throw by design.
-          // `false` means nothing claimed the inner opcode, which is the only record such a message
-          // leaves anywhere else.
-          if (!this.customPackets.deliver(receipt.opcode, receipt.body)) this.#recordUnhandled(packet);
+          // `"unclaimed"` means nothing claimed the inner opcode, which is the only record such a
+          // message leaves anywhere else; a held one is recorded by `onBacklogUnclaimed` if need be.
+          if (this.customPackets.offer(receipt.opcode, receipt.body) === "unclaimed") this.#recordUnhandled(packet);
         }
         return;
       }
@@ -4768,11 +5892,11 @@ export class WorldClient {
       if (await this.#handleMovementControl(packet)) return;
 
       if (packet.opcode === OPCODES.SMSG_UPDATE_OBJECT) {
-        this.#retireWorldObjects(this.state.applyUpdate(packet.payload));
+        this.#applyObjectUpdate(packet.payload);
         this.#cancelStaleGameObjectTemplateWaiters();
         this.#finishTransportArrival();
       } else if (packet.opcode === OPCODES.SMSG_COMPRESSED_UPDATE_OBJECT) {
-        this.#retireWorldObjects(this.state.applyUpdate(decompressObjectUpdate(packet.payload)));
+        this.#applyObjectUpdate(decompressObjectUpdate(packet.payload));
         this.#cancelStaleGameObjectTemplateWaiters();
         this.#finishTransportArrival();
       } else if (packet.opcode === OPCODES.SMSG_DESTROY_OBJECT) {
@@ -4790,11 +5914,12 @@ export class WorldClient {
         // ordinary movement relay, which is what makes it easy to miss: routed through `move` it
         // would be *glided*, and a blink is about twenty yards — comfortably under the smoothing
         // threshold — so the mage would slide across the ground instead of vanishing.
+        // The core never sends this one to the teleported player (Unit::SendTeleportPacket,
+        // Unit.cpp:14100-14102, `SendMessageToSet(…, false)`); should it name the player, it is the
+        // same same-map move as the ACK above, without a reply.
         const movement = parseMovementPacket(packet.payload);
-        this.state.teleport(movement.guid, movement);
-        if (movement.guid === this.state.selfGuid && this.mapId !== undefined) {
-          this.onWorldChanged?.(this.mapId, movement.position);
-        }
+        if (movement.guid === this.state.selfGuid) this.#selfTeleported(movement);
+        else this.state.teleport(movement.guid, movement);
       } else if (isMovementRelaySpeed(packet.opcode)) {
         // A neighbour's speed changed. The same nine speeds the SMSG_SPLINE_SET_* family carries
         // for server-driven units, and they go into the same store: without them somebody who
@@ -4811,11 +5936,25 @@ export class WorldClient {
         // instruction, so there is nothing to answer and the movement info in it is already the
         // post-knock one.
         const knockBack = parseMovementRelayKnockBack(packet.payload);
-        this.state.move(knockBack.guid, knockBack.movement);
+        // 5.04: drawn as the fall it is (`MovementExtrapolation`). The tail is copied out of the
+        // victim's acknowledgement (MovementHandler.cpp:657-661), whose jump block this core reads
+        // only under FALLING — so for an acknowledgement that said "standing" it is four zeros and
+        // there is no arc to rebuild. A non-zero tail without FALLING (another core) still is one.
+        const movement = knockBack.movement;
+        if ((movement.flags & MOVEMENT_FLAGS.falling) === 0 && (knockBack.speedXY !== 0 || knockBack.speedZ !== 0)) {
+          movement.flags = (movement.flags | MOVEMENT_FLAGS.falling) & ~MOVEMENT_FLAGS.swimming;
+          movement.fallTime = 0;
+          movement.jump = {
+            velocity: knockBack.speedZ, sinAngle: knockBack.directionSin,
+            cosAngle: knockBack.directionCos, speed: knockBack.speedXY,
+          };
+        }
+        this.state.move(knockBack.guid, movement);
       } else if (packet.opcode === OPCODES.MSG_MOVE_TIME_SKIPPED) {
         // A neighbour's clock stalled and jumped. It moves nobody: acting on it as a position
         // change would move a player who did not move.
         parseMovementTimeSkipped(packet.payload);
+        this.#ignore(packet);
       } else if (packet.opcode === OPCODES.MSG_MOVE_ROOT
         || packet.opcode === OPCODES.MSG_MOVE_UNROOT
         || packet.opcode === OPCODES.MSG_MOVE_SET_COLLISION_HGT
@@ -4826,6 +5965,7 @@ export class WorldClient {
         // live. Rooting somebody else really does reach this client, but through
         // `SMSG_SPLINE_MOVE_ROOT` for a server-driven unit and through the update fields for a
         // player. Named so the ratchet counts them, and not parsed, because there is no sender.
+        this.#ignore(packet);
         return;
       } else if (packet.opcode === OPCODES.SMSG_MONSTER_MOVE || packet.opcode === OPCODES.SMSG_MONSTER_MOVE_TRANSPORT) {
         this.state.startSpline(
@@ -4898,7 +6038,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_ZONE_UNDER_ATTACK) {
       const areaId = parseZoneUnderAttack(packet.payload);
-      this.events.emit("WORLD_MESSAGE", { text: `Зона ${areaId} атакована`, kind: "defense" });
+      this.events.emit("WORLD_MESSAGE", { text: zoneUnderAttackText(this.#knownName("area", areaId)), kind: "defense" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TRIGGER_CINEMATIC || packet.opcode === OPCODES.SMSG_TRIGGER_MOVIE) {
@@ -4947,6 +6087,7 @@ export class WorldClient {
       const status = parseTaxiNodeStatus(packet.payload);
       // A burst of these arrives at login, one per flight master in view.
       this.taxiNodeStatus.set(status.guid, status.known);
+      this.events.emit("TAXI_NODE_STATUS_CHANGED", { guid: status.guid, known: status.known });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ACTIVATETAXIREPLY) {
@@ -4976,13 +6117,19 @@ export class WorldClient {
     if (packet.opcode === OPCODES.MSG_SET_DUNGEON_DIFFICULTY || packet.opcode === OPCODES.MSG_SET_RAID_DIFFICULTY) {
       const difficulty = parseDungeonDifficulty(packet.payload);
       if (packet.opcode === OPCODES.MSG_SET_RAID_DIFFICULTY) this.raidDifficulty = difficulty.difficulty;
-      else this.dungeonDifficulty = difficulty.difficulty;
+      else {
+        this.dungeonDifficulty = difficulty.difficulty;
+        // Group::SetDungeonDifficulty answers each member with inGroup set and sends no group
+        // list; the client writes the group's value from it too (Wow.exe 0x525530).
+        if (difficulty.inGroup && this.group) this.group.dungeonDifficulty = difficulty.difficulty;
+      }
       this.events.emit("INSTANCE_CHANGED", { difficulty: difficulty.difficulty });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_DIFFICULTY) {
       const difficulty = parseInstanceDifficulty(packet.payload);
       this.instanceDifficulty = difficulty.difficulty;
+      this.instancePlayerDifficulty = difficulty.dynamic ? 1 : 0; // 5.28 (L6): the second word
       this.events.emit("INSTANCE_CHANGED", { difficulty: difficulty.difficulty });
       return true;
     }
@@ -4994,30 +6141,28 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_RAID_INSTANCE_MESSAGE) {
       const message = parseRaidInstanceMessage(packet.payload);
       this.events.emit("WORLD_MESSAGE", {
-        text: message.type === RAID_INSTANCE_WELCOME
-          ? `Подземелье ${message.mapId}: сброс через ${Math.round(message.secondsLeft / 60)} мин`
-          : `Подземелье ${message.mapId} закроется через ${Math.round(message.secondsLeft / 60)} мин`,
+        text: raidInstanceText(message.type, this.#knownName("map", message.mapId), message.secondsLeft),
         kind: "system",
       });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_RESET) {
-      this.events.emit("WORLD_MESSAGE", { text: `Подземелье ${parseInstanceMapId(packet.payload)} сброшено`, kind: "system" });
+      this.events.emit("WORLD_MESSAGE", { text: instanceResetText(this.#knownName("map", parseInstanceMapId(packet.payload))), kind: "system" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_RESET_FAILED) {
       const failure = parseInstanceResetFailed(packet.payload);
-      this.events.emit("WORLD_MESSAGE", { text: `Не удалось сбросить подземелье ${failure.mapId}`, kind: "system" });
+      this.events.emit("WORLD_MESSAGE", { text: instanceResetFailedText(failure.reason, this.#knownName("map", failure.mapId)), kind: "system" });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_RESET_FAILED_NOTIFY || packet.opcode === OPCODES.SMSG_UPDATE_LAST_INSTANCE) {
       parseInstanceMapId(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_SAVE_CREATED || packet.opcode === OPCODES.SMSG_UPDATE_INSTANCE_OWNERSHIP) {
       // One word each, and this build hardcodes both: a bind was created, the party owns the
       // instance. Nothing to read, but they are answered for rather than dropped.
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY) {
       // The question the stock INSTANCE_LOCK dialog and the native prompt ask; SMSG_NEW_WORLD and
@@ -5026,14 +6171,17 @@ export class WorldClient {
       const receivedAt = performance.now();
       this.instanceLock = {
         expiresAt: receivedAt + warning.milliseconds, encounterMask: warning.encounterMask,
-        previouslySaved: warning.previouslySaved, mapId: this.mapId ?? 0, difficulty: this.instanceDifficulty, receivedAt,
+        previouslySaved: warning.previouslySaved, mapId: this.mapId ?? 0, difficulty: this.instanceDifficulty ?? 0, receivedAt,
       };
       this.events.emit("INSTANCE_LOCK_START", warning);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_RAID_GROUP_ONLY) {
       const only = parseRaidGroupOnly(packet.payload);
-      this.events.emit("WORLD_MESSAGE", {
+      // 3.22a: INSTANCE_BOOT_START/STOP and the deadline behind GetInstanceBootTimeRemaining (0x513ad0).
+      this.events.emit("INSTANCE_BOOT", { milliseconds: only.homebindMilliseconds });
+      // 0/0 only ends the warning (Player.cpp:22422); Wow.exe 0x6e3c10 prints nothing for it.
+      if (only.homebindMilliseconds > 0 || only.reason !== 0) this.events.emit("WORLD_MESSAGE", {
         text: only.homebindMilliseconds > 0
           ? `Только для рейда: выход через ${Math.round(only.homebindMilliseconds / 1000)} с`
           : "Только для рейда",
@@ -5082,7 +6230,7 @@ export class WorldClient {
       // sibling rather than read off a sender, which is the one thing this client does not do.
       // They are named so the coverage ratchet counts them and so one arriving from somewhere
       // else is a fact in the log rather than a silent drop.
-      return true;
+      return this.#ignore(packet);
     }
     return false;
   }
@@ -5222,6 +6370,20 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_AREA_SPIRIT_HEALER_QUEUE, buildAreaSpiritHealerRequest(healerGuid));
   }
 
+  /** L3 5.25: the query alone — Wow.exe 0x523eb0 sends it when the spirit guide in range changes. */
+  queryAreaSpiritHealer(healerGuid: bigint): void {
+    if (!this.#closed && healerGuid !== 0n) {
+      this.#connection.send(OPCODES.CMSG_AREA_SPIRIT_HEALER_QUERY, buildAreaSpiritHealerRequest(healerGuid));
+    }
+  }
+
+  /** L3 5.25: the queue alone — `AcceptAreaSpiritHeal` (Wow.exe 0x524b60). */
+  queueAreaSpiritHealer(healerGuid: bigint): void {
+    if (!this.#closed && healerGuid !== 0n) {
+      this.#connection.send(OPCODES.CMSG_AREA_SPIRIT_HEALER_QUEUE, buildAreaSpiritHealerRequest(healerGuid));
+    }
+  }
+
   /** Where the corpse lies on the world map, for one left inside an instance. */
   requestCorpseMapPosition(corpseGuid: bigint): void {
     if (this.#closed) return;
@@ -5234,6 +6396,15 @@ export class WorldClient {
     // Two-way opcodes: the client asks on the same number the server answers on.
     this.#connection.send(raid ? OPCODES.MSG_SET_RAID_DIFFICULTY : OPCODES.MSG_SET_DUNGEON_DIFFICULTY,
       buildSetDifficulty(difficulty));
+  }
+
+  /**
+   * 11.02-I: `CMSG_FAR_SIGHT`, `u8 apply` (MiscHandler.cpp:1251-1273). When to send it is
+   * `FarSightLink`'s (world/FarSight.ts), which votes as Wow.exe 0x006e2880 does.
+   */
+  sendFarSight(apply: boolean): void {
+    if (this.#closed) return;
+    this.#connection.send(OPCODES.CMSG_FAR_SIGHT, buildFarSight(apply));
   }
 
   /**
@@ -5263,6 +6434,12 @@ export class WorldClient {
 
   // Dropping these silently hid both the list of missing features and the packet corpus needed
   // to implement them, so every one is counted and the first few payloads are kept.
+  /** A branch that accepts `packet` and does nothing with it, on purpose (`IGNORED_OPCODES`, 5.29). */
+  #ignore(packet: WorldPacket): true {
+    this.ignoredOpcodes.record(packet);
+    return true;
+  }
+
   #recordUnhandled(packet: WorldPacket, duringLogin = false): void {
     const before = this.unhandledOpcodes.entries.size;
     this.unhandledOpcodes.record(packet, duringLogin);
@@ -5376,14 +6553,14 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_FAILED) {
       const { questId, reason } = parseQuestGiverFailed(packet.payload);
       const detail = reason === 0 ? "Задание не выполнено" : equipErrorText({ result: reason });
-      this.questMessage = { text: `Задание ${questId}: ${detail}`, error: true };
+      this.questMessage = { text: questFailedText(this.#knownName("quest", questId), detail), error: true };
       this.onQuestChanged?.();
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_QUESTGIVER_QUEST_INVALID || packet.opcode === OPCODES.SMSG_QUESTLOG_FULL) {
       const reader = new PacketReader(packet.payload);
       const reason = reader.remaining >= 4 ? reader.u32() : 0;
-      this.questMessage = { text: packet.opcode === OPCODES.SMSG_QUESTLOG_FULL ? "Журнал заданий заполнен" : `Задание отклонено сервером, код ${reason}`, error: true };
+      this.questMessage = { text: packet.opcode === OPCODES.SMSG_QUESTLOG_FULL ? questLogFullText() : questInvalidText(reason), error: true };
       this.onQuestChanged?.();
       return true;
     }
@@ -5401,7 +6578,7 @@ export class WorldClient {
       this.questDialog = undefined;
       this.gossip = undefined;
       const moneyText = money < 0 ? `списано ${-money} медных` : `деньги ${money}`;
-      this.questMessage = { text: `Задание ${questId} выполнено · опыт ${xp} · ${moneyText}`, error: false };
+      this.questMessage = { text: `${questCompleteText(this.#knownName("quest", questId))} · опыт ${xp} · ${moneyText}`, error: false };
       this.onGossipChanged?.();
       this.onQuestChanged?.();
       return true;
@@ -5542,7 +6719,12 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_GUILD_QUERY_RESPONSE) {
-      this.guildQuery = parseGuildQueryResponse(packet.payload);
+      const guild = parseGuildQueryResponse(packet.payload);
+      // 3.12 (04.10, L4): the name goes to the cache; an answer only the unit tooltip asked for,
+      // about someone else's guild, leaves the player's own guild slot alone (GuildNameCache.ts).
+      const ownGuildId = this.state.objects.get(this.state.selfGuid ?? 0n)?.fields.get(UPDATE_FIELDS.PLAYER_GUILDID.offset);
+      if (this.guildNames.accept(guild.guildId, guild.name, ownGuildId)) return true;
+      this.guildQuery = guild;
       this.onGuildChanged?.();
       if (this.tabardVendorGuid !== 0n) {
         this.events.emit("TABARD_VENDOR_CHANGED", { guid: this.tabardVendorGuid });
@@ -5570,7 +6752,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_GUILD_EVENT) {
       const event = parseGuildEvent(packet.payload);
       const who = event.params[0] ?? "";
-      this.guildMessage = { text: event.type === GE_MOTD ? `Гильдия: ${who}` : `Гильдия · событие ${event.type}${who ? ": " + who : ""}`, error: false };
+      this.guildMessage = { text: event.type === GE_MOTD ? `Гильдия: ${who}` : guildEventText(event.type, event.params), error: false };
       this.requestGuildRoster();
       this.onGuildChanged?.();
       // The bank's own events (a tab bought or renamed, the new total, the daily reset) reach the vault.
@@ -5613,7 +6795,30 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_TRADE_STATUS) {
       const info = parseTradeStatus(packet.payload);
+      // 5.25, Wow.exe 0x5873e0 status 1: an offer from someone on the ignore list is answered
+      // CMSG_IGNORE_TRADE (0x703ee0); with blockTrades on, CMSG_BUSY_TRADE (0x703e70) and
+      // ERR_TRADE_BLOCKED_S naming them (message 0xca, a system line). Neither opens a request.
+      if (info.status === TRADE_STATUS_BEGIN_TRADE && info.traderGuid !== 0n && !this.tradeOpen && !this.tradePending) {
+        const ignored = this.contacts?.contacts.some((contact) => contact.guid === info.traderGuid
+          && (contact.flags & SOCIAL_FLAG_IGNORED) !== 0) ?? false;
+        if (ignored || this.blockTrades()) {
+          if (!this.#closed) this.#connection.send(ignored ? OPCODES.CMSG_IGNORE_TRADE : OPCODES.CMSG_BUSY_TRADE);
+          this.#tradeRefused = true;
+          if (!ignored) {
+            this.#recordSystemLine(formatGlobalStringByName("ERR_TRADE_BLOCKED_S",
+              [this.names.get(info.traderGuid) ?? ""], "%s предлагает вам обмен. Вы отказались."));
+          }
+          return true;
+        }
+      }
+      // The core's TradeCancel(true, …) echoes the refusal (BUSY 0, IGNORE_YOU 14) to the refuser too;
+      // Wow.exe says nothing then (0x5873e0 cases 0 and 0xe need a trade partner, and none was kept).
+      if (this.#tradeRefused && !this.tradeOpen && !this.tradePending && (info.status === TRADE_STATUS_BUSY || info.status === 14)) {
+        this.#tradeRefused = false;
+        return true;
+      }
       if (info.status === TRADE_STATUS_BEGIN_TRADE) {
+        this.#tradeRefused = false;
         this.tradeOpen = false;
         this.tradePending = true;
         this.tradeBeginRequested = false;
@@ -5711,6 +6916,8 @@ export class WorldClient {
         return true;
       }
       this.group = list;
+      // 5.28 (L6): a list with members carries the player difficulty too (Wow.exe 0x6d8fd0).
+      if (list.members.length > 0 && list.raidHeroic !== undefined) this.instancePlayerDifficulty = list.raidHeroic;
       for (const member of this.group.members) this.names.accept({ guid: member.guid, known: true, name: member.name, realm: "", race: 0, gender: 0, classId: 0, declined: [] });
       this.onGroupChanged?.();
       return true;
@@ -5735,6 +6942,9 @@ export class WorldClient {
       const result = parsePartyCommandResult(packet.payload);
       this.groupMessage = result.result === 0 ? undefined : { text: partyResultText(result.result, result.member), error: true };
       this.onGroupChanged?.();
+      if (result.result === ERR_VOTE_KICK_REASON_NEEDED) {
+        this.events.emit("LFG_STATE_CHANGED", { kind: "voteKickReasonNeeded", name: result.member });
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_MESSAGECHAT || packet.opcode === OPCODES.SMSG_GM_MESSAGECHAT) {
@@ -5782,7 +6992,7 @@ export class WorldClient {
       // Group loot calls Player::SendNewItem with broadcast=true. Every group member receives
       // the packet, but its player GUID identifies whose inventory the realm actually changed.
       if (push.playerGuid !== this.state.selfGuid) return true;
-      this.itemMessage = { text: `Получено: предмет ${push.itemId} ×${push.count}`, error: false };
+      this.itemMessage = { text: itemPushText(this.#knownName("item", push.itemId), push.count), error: false };
       this.onItemMessage?.();
       return true;
     }
@@ -5792,6 +7002,7 @@ export class WorldClient {
       this.#pendingVendorGuid = 0n;
       this.#consumeGossipService(vendor.guid);
       this.vendor = vendor;
+      this.#sweepItemRefunds();
       this.merchantMessage = this.vendor.error === undefined
         ? undefined
         : { text: "У торговца нечего купить", error: true };
@@ -5840,7 +7051,7 @@ export class WorldClient {
       if (this.trainer) this.openTrainer(this.trainer.guid);
       // openTrainer intentionally clears an old interaction message. Publish this result after
       // the refresh request so it remains visible until the replacement list arrives.
-      this.merchantMessage = { text: `Изучено заклинание ${result.spellId}`, error: false };
+      this.merchantMessage = { text: learnedSpellText(this.#knownName("spell", result.spellId)), error: false };
       this.onTrainerChanged?.();
       return true;
     }
@@ -5876,7 +7087,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_PRE_RESURRECT || packet.opcode === OPCODES.SMSG_RESURRECT_FAILED) {
       // Nothing to show yet: the state that matters arrives with the following object update.
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_SPELL_GO) {
       const cast = parseSpellGo(packet.payload);
@@ -5886,12 +7097,22 @@ export class WorldClient {
         this.#confirmPendingCast(cast.spellId, cast.castId);
         if (this.autoRepeatSpellId === cast.spellId) this.#autoRepeatFailure = undefined;
       }
+      // 3.02: Wow.exe 0x0080e1b0 hands a GO without CAST_FLAG_PENDING (not triggered: Spell.cpp:4484-4485) to 0x007fecc0
+      // as 187, its own «success» — UNIT_SPELLCAST_SUCCEEDED, then STOP for the unit's current cast.
+      // 3.01-go-order (03.10): first, as 0x0080e1b0 does — before the missile, SPELL_CAST_SUCCESS (0x007519e0, the
+      // log's SPELL_GO) and the misses (0x00751b80).
+      if ((cast.castFlags & CAST_FLAG_PENDING) === 0) { // 3.01-go-order
+        this.events.emit("SPELL_CAST_RESULT", { // 3.01-go-order
+          casterGuid: cast.casterUnit, spellId: cast.spellId, castCount: cast.castId, result: SPELL_CAST_RESULT_SUCCESS, // 3.01-go-order
+        }); // 3.01-go-order
+      } // 3.01-go-order
       this.events.emit("SPELL_GO", cast);
       this.onSpellVisual?.(cast.casterUnit, cast.spellId, cast.hits);
       // Resist, dodge, parry, deflect, absorb, reflect and immunity are rolled when the spell goes
       // off and written only here (Spell::UpdateSpellCastDataTargets, Spell.cpp:4677-4708); the miss
       // log below carries only what is decided on landing (:2467-2471). Told the same way.
       for (const miss of cast.misses) this.#reportSpellMiss(cast.casterUnit, miss.guid, cast.spellId, miss.reason);
+      // 3.01-go-order: the GO's SPELL_CAST_RESULT (187) moved above SPELL_GO.
       // A successful non-channel GO is the authoritative end of its cast bar. Channels remain in
       // `casts` until MSG_CHANNEL_UPDATE says zero, because their GO can arrive while the channel
       // is still ticking.
@@ -5916,6 +7137,8 @@ export class WorldClient {
       const diff = auraDiff(previousAuras, currentAuras);
       this.events.emit("AURA_CHANGED", {
         guid: update.guid, previous: previousAuras, current: currentAuras, ...diff,
+        // 3.01: the combat log takes a unit's first full list as its quiet baseline.
+        replaceAll: update.replaceAll,
       });
       this.onAurasChanged?.();
       return true;
@@ -5960,6 +7183,14 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_CAST_FAILED) {
       const failure = parseCastFailure(packet.payload);
       const pending = this.#rejectPendingCast(failure.spellId, failure.castCount);
+      // 3.02: Wow.exe 0x00809af0 (opcode 0x130) hands the player's refusal through 0x00808200 to 0x007fecc0
+      // (UNIT_SPELLCAST_FAILED[_QUIET]); 0x00805610 is the pet's (SMSG_PET_CAST_FAILED 0x138 → 0x00806c30). (3.01-go-order: comment corrected)
+      if (this.state.selfGuid !== undefined) {
+        this.events.emit("SPELL_CAST_RESULT", {
+          casterGuid: this.state.selfGuid, spellId: failure.spellId, castCount: failure.castCount, result: failure.result,
+          refusal: true, // 3.01-castlog: the one SPELL_CAST_FAILED source (0x00809af0 → 0x00808200)
+        });
+      }
       const activeRepeat = this.autoRepeatSpellId === failure.spellId;
       if (activeRepeat) {
         const duplicate = this.#autoRepeatFailure?.spellId === failure.spellId
@@ -6081,6 +7312,14 @@ export class WorldClient {
 
 
   /** Puts an action on a bar slot, or empties the slot when the action is zero. */
+  /**
+   * `CMSG_SET_ACTIONBAR_TOGGLES`: the four extra bars (bit 0 bottom left … bit 3 right two). The
+   * server answers with `PLAYER_FIELD_BYTES` byte 2, which is where the shown bars are read back.
+   */
+  setActionBarToggles(bars: number): void {
+    this.#connection.send(OPCODES.CMSG_SET_ACTIONBAR_TOGGLES, buildSetActionBarToggles(bars));
+  }
+
   setActionButton(slot: number, action: number, type: number): void {
     this.#connection.send(OPCODES.CMSG_SET_ACTION_BUTTON, buildSetActionButton(slot, action, type));
     const kept = this.actionButtons.filter((button) => button.slot !== slot);
@@ -6100,7 +7339,10 @@ export class WorldClient {
     return cast.channel ? 1 - clamped : clamped;
   }
 
-  #beginCast(casterGuid: bigint, spellId: number, castTime: number, channel: boolean, castCount?: number): void {
+  #beginCast(
+    casterGuid: bigint, spellId: number, castTime: number, channel: boolean, castCount?: number,
+    immunity?: { school: number; mechanic: number },
+  ): void {
     if (castTime <= 0 && !channel) {
       // An instant cast has no bar to draw, but it still ends whatever was running.
       this.#endCast(casterGuid, spellId, "success", castCount);
@@ -6112,6 +7354,8 @@ export class WorldClient {
       duration: castTime,
       channel,
       ...(castCount === undefined ? {} : { castCount }),
+      ...(immunity === undefined || (immunity.school === 0 && immunity.mechanic === 0) ? {}
+        : { schoolImmunityMask: immunity.school, mechanicImmunityMask: immunity.mechanic }),
     });
     this.events.emit("SPELL_CAST_START", { casterGuid, spellId, castTime, channel });
   }
@@ -6135,8 +7379,14 @@ export class WorldClient {
     }
   }
 
+  /**
+   * A combat-log line's spell (1.32). Until the browser hands over a spell table, EnterWorld's
+   * `spellLine` puts the name back into exactly the «заклинание N» form, so that form stays while
+   * `worldNames.spell` is absent; with a table, the name or the neutral word — never the number.
+   */
   #spellName(spellId: number): string {
-    return `заклинание ${spellId}`;
+    if (!this.worldNames.spell) return `заклинание ${spellId}`;
+    return this.#nameOf("spell", spellId);
   }
 
   /**
@@ -6156,6 +7406,45 @@ export class WorldClient {
   /** Asks for the marks to draw over every head in range. */
   requestQuestGiverStatus(): void {
     this.#connection.send(OPCODES.CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY, new Uint8Array());
+    // 5.23: it answers for every quest giver in view, so the batch's waiting singles are covered.
+    this.#questGiverQueue.swept(performance.now());
+  }
+
+  /**
+   * 5.23: a unit or game object arrived or changed its flags (the store's OBJECT_CREATED,
+   * UNIT_NPC_FLAGS, GAMEOBJECT_STATE). A quest giver — UNIT_NPC_FLAG_QUESTGIVER 0x2, or a game object
+   * of type QUESTGIVER (2, byte 1 of GAMEOBJECT_BYTES_1) as `Player::SendQuestGiverStatusMultiple`
+   * picks them (Player.cpp:17410-17424) — is queued for `CMSG_QUESTGIVER_STATUS_QUERY`, a flight
+   * master (0x2000) for `CMSG_TAXINODE_STATUS_QUERY`, as Wow.exe's refresh 0x729f40/0x7111a0 does.
+   */
+  noticeObject(guid: bigint): void {
+    const object = this.state.objects.get(guid);
+    if (this.#closed || !object || guid === this.state.selfGuid) return;
+    let questGiver = false;
+    let flightMaster = false;
+    if (object.typeId === 3) {
+      const npcFlags = unitFields.npcFlags(object) ?? 0;
+      questGiver = (npcFlags & 0x2) !== 0;
+      flightMaster = (npcFlags & 0x2000) !== 0;
+      // 5.24: a player's pet is called by the name its owner gave it, asked for once by number.
+      this.#askPetName(object);
+    } else if (object.typeId === 5) {
+      questGiver = (((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff) === 2;
+    }
+    if (questGiver || flightMaster) this.#questGiverQueue.noticed(guid, { questGiver, flightMaster }, performance.now());
+  }
+
+  /**
+   * 5.23: the player's quest log changed (PLAYER_QUEST_LOG_UPDATE on the character): one sweep a
+   * moment later however many words moved, where Wow.exe 0x6df370 asks on each slot's change.
+   */
+  questLogChanged(): void {
+    if (!this.#closed) this.#questGiverQueue.sweepSoon(performance.now());
+  }
+
+  /** 5.23: once per frame, from the game loop — sends what the queue has due. */
+  pumpQuestGiverStatus(now: number): void {
+    if (!this.#closed) this.#questGiverQueue.pump(now);
   }
 
   /**
@@ -6280,6 +7569,12 @@ export class WorldClient {
     this.#connection.send(OPCODES.CMSG_LEARN_TALENT, buildLearnTalent(talentId, rank));
   }
 
+  /** `CMSG_LEARN_PREVIEW_TALENTS`: the previewed ranks (one-based here), answered by `SMSG_TALENTS_INFO`. */
+  learnPreviewTalents(talents: ReadonlyArray<{ talentId: number; rank: number }>): void {
+    if (this.#closed || talents.length === 0) return;
+    this.#connection.send(OPCODES.CMSG_LEARN_PREVIEW_TALENTS, buildLearnPreviewTalents(talents));
+  }
+
   /**
    * Confirms a talent wipe at an NPC (`MSG_TALENT_WIPE_CONFIRM` + guid).
    *
@@ -6346,9 +7641,15 @@ export class WorldClient {
    */
   saveEquipmentSet(setGuid: bigint, index: number, name: string, icon: string, pieces: ReadonlyArray<bigint>): void {
     if (this.#closed || index < 0 || index >= MAX_EQUIPMENT_SETS || !name) return;
+    // Wow.exe 0x5ade50 sends nothing for a set still waiting for its id: the core would mint a
+    // second guid for the same slot (Player::SetEquipmentSet with Guid 0).
+    const now = performance.now();
+    if (this.#pendingEquipmentSets.has(index, now)) return;
     this.#connection.send(OPCODES.CMSG_EQUIPMENT_SET_SAVE, buildEquipmentSetSave(setGuid, index, name, icon, pieces));
-    // The server never re-sends the list, so a saved set is folded in here. A new one keeps a zero
-    // guid until `SMSG_EQUIPMENT_SET_SAVED` names it, and without a guid it cannot be deleted.
+    // The server never re-sends the list, so a saved set is folded in here at once, as Wow.exe
+    // does (0x5af7e0 new, 0x5ade50 existing; 5.21). A new one keeps a zero guid and waits until
+    // `SMSG_EQUIPMENT_SET_SAVED` names it; a re-save of a named set is never answered.
+    if (setGuid === 0n) this.#pendingEquipmentSets.begin(index, undefined, Infinity, now);
     const existing = this.equipmentSets.find((set) => set.setId === index);
     const saved = { guid: setGuid, setId: index, name, icon, pieces: [...pieces] };
     if (existing) Object.assign(existing, saved);
@@ -6364,6 +7665,7 @@ export class WorldClient {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_EQUIPMENT_SET_USE, buildEquipmentSetUse(pieces));
   }
 
+  /** Optimistic by design (Wow.exe 0x5ae260 drops the set first): `DeleteEquipmentSet` never answers. */
   deleteEquipmentSet(setGuid: bigint): void {
     if (this.#closed || setGuid === 0n) return;
     this.equipmentSets = this.equipmentSets.filter((set) => set.guid !== setGuid);
@@ -6378,6 +7680,19 @@ export class WorldClient {
   setTitle(index: number): void {
     if (this.#closed || !Number.isInteger(index) || index < -1) return;
     this.#connection.send(OPCODES.CMSG_SET_TITLE, buildSetTitle(index));
+  }
+
+  /**
+   * 4.03/6.09: shows or hides the helm (CMSG_SHOWING_HELM) and the cloak (CMSG_SHOWING_CLOAK), one
+   * byte each. The core only flips PLAYER_FLAGS_HIDE_HELM/CLOAK and the field update is the answer,
+   * so nothing changes locally (CharacterHandler.cpp:1121-1135).
+   */
+  setShowingHelm(show: boolean): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SHOWING_HELM, buildShowingToggle(show));
+  }
+
+  setShowingCloak(show: boolean): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_SHOWING_CLOAK, buildShowingToggle(show));
   }
 
   /**
@@ -6432,7 +7747,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SEND_UNLEARN_SPELLS) {
       parseUnlearnSpells(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_BIND_POINT_UPDATE) {
       this.bindPoint = parseBindPoint(packet.payload);
@@ -6457,7 +7772,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_INVALIDATE_PLAYER) {
-      parseGuidOnly(packet.payload);
+      // 5.22: Wow.exe 0x635400 → 0x67a430 drops the cached name (a rename) and asks again for one it
+      // held. This core never builds the packet (Opcodes.cpp only); a TSWoW module or another core can.
+      const guid = parseGuidOnly(packet.payload);
+      if (this.names.invalidate(guid)) this.requestName(guid);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SHOW_BANK) {
@@ -6478,16 +7796,29 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_STANDSTATE_UPDATE) {
-      parseStandState(packet.payload);
+      // 5.22: Unit::SetStandState sends it to the player alone, ahead of the field update. Wow.exe
+      // 0x73f540 → 0x73f060 applies the state to the active player at once (pose, 0x6e2b30), so the
+      // byte of UNIT_FIELD_BYTES_1 is written now; the block that follows carries the same value.
+      const standState = parseStandState(packet.payload);
+      const selfGuid = this.state.selfGuid;
+      const self = selfGuid === undefined ? undefined : this.state.objects.get(selfGuid);
+      const offset = UPDATE_FIELDS.UNIT_FIELD_BYTES_1.offset;
+      const word = self?.fields.get(offset) ?? 0;
+      if (selfGuid !== undefined && self && (word & 0xff) !== standState) {
+        this.state.patchField(selfGuid, offset, ((word & ~0xff) | standState) >>> 0);
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PLAYED_TIME) {
       this.playedTime = parsePlayedTime(packet.payload);
+      this.playedTimeReceivedAt = performance.now();
       this.events.emit("CHARACTER_SHEET_CHANGED", {});
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SET_PROFICIENCY) {
-      parseProficiency(packet.payload);
+      // 5.22: Wow.exe 0x6cdeb0 replaces the class's word (no event); the item checks read it.
+      const proficiency = parseProficiency(packet.payload);
+      this.proficiency.set(proficiency.itemClass, proficiency.subclassMask >>> 0);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_TITLE_EARNED) {
@@ -6512,11 +7843,25 @@ export class WorldClient {
       const update = parseFactionStanding(packet.payload);
       for (const standing of update.standings) {
         const existing = this.factions.get(standing.listId);
-        this.factions.set(standing.listId, { listId: standing.listId, flags: existing?.flags ?? 0, standing: standing.standing });
+        // L15 5.05: Wow.exe 0x005d20a0 — at war below unfriendly, peace when the rank rose (ReputationReaction.ts);
+        // without the player's base standing (no catalog yet) the flag stays as it was.
+        const base = reputationBaseOf(standing.listId); // L15 5.05
+        const flags = base === undefined ? existing?.flags ?? 0 // L15 5.05
+          : factionFlagsAfterStanding(existing?.flags ?? 0, base + (existing?.standing ?? 0), base + standing.standing); // L15 5.05
+        this.factions.set(standing.listId, { listId: standing.listId, flags, standing: standing.standing }); // L15 5.05: flags
       }
       this.events.emit("REPUTATION_CHANGED", {});
       return true;
     }
+    // L15 5.05: Wow.exe 0x005d0850 — the core never sends it, but the client copies its at-war bit.
+    if (packet.opcode === OPCODES.SMSG_SET_FACTION_ATWAR) { // L15 5.05
+      const change = parseSetFactionAtWar(packet.payload); // L15 5.05
+      const existing = this.factions.get(change.listId); // L15 5.05
+      this.factions.set(change.listId, { listId: change.listId, flags: factionFlagsAfterAtWar(existing?.flags ?? 0, change.flags), // L15 5.05
+        standing: existing?.standing ?? 0 }); // L15 5.05
+      this.events.emit("REPUTATION_CHANGED", {}); // L15 5.05
+      return true; // L15 5.05
+    } // L15 5.05
     if (packet.opcode === OPCODES.SMSG_SET_FACTION_VISIBLE) {
       const listId = parseFactionVisible(packet.payload);
       const existing = this.factions.get(listId);
@@ -6576,7 +7921,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_SERVER_FIRST_ACHIEVEMENT) {
       parseServerFirstAchievement(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_TALENTS_INFO) {
       const talents = parseTalentsInfo(packet.payload);
@@ -6611,6 +7956,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_EQUIPMENT_SET_LIST) {
       this.equipmentSets = parseEquipmentSetList(packet.payload);
+      this.#pendingEquipmentSets.clear();
       this.events.emit("CHARACTER_SHEET_CHANGED", {});
       return true;
     }
@@ -6620,7 +7966,10 @@ export class WorldClient {
       // the next login.
       const saved = parseEquipmentSetSaved(packet.payload);
       const existing = this.equipmentSets.find((set) => set.setId === saved.setId);
-      if (existing) existing.guid = saved.guid;
+      this.#pendingEquipmentSets.confirm(saved.setId);
+      // Wow.exe 0x5ae760: the guid names the set and ends its wait; a zero guid drops it instead.
+      if (existing && saved.guid === 0n) this.equipmentSets = this.equipmentSets.filter((set) => set !== existing);
+      else if (existing) existing.guid = saved.guid;
       this.events.emit("CHARACTER_SHEET_CHANGED", {});
       return true;
     }
@@ -6637,7 +7986,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_TIME_UPDATE) {
-      parseItemTimeUpdate(packet.payload);
+      // 5.22: Item::SendTimeUpdate, seconds left (Item.cpp:1039). Wow.exe 0x6e6330 → 0x707070 keeps
+      // the item's end as now + seconds; here the item's own field takes the seconds through the
+      // state (the store hears it), as SMSG_ITEM_ENCHANT_TIME_UPDATE below, for an item this client has.
+      const update = parseItemTimeUpdate(packet.payload);
+      this.state.patchField(update.itemGuid, UPDATE_FIELDS.ITEM_FIELD_DURATION.offset, update.duration);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_ENCHANT_TIME_UPDATE) {
@@ -6664,29 +8017,36 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK || packet.opcode === OPCODES.SMSG_READ_ITEM_FAILED) {
       const readGuid = parseGuidOnly(packet.payload);
       // The refusal carries its own SMSG_INVENTORY_CHANGE_FAILURE; only OK opens the reader.
-      if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK) this.events.emit("ITEM_TEXT_OPENED", { kind: "item", guid: readGuid });
+      if (packet.opcode === OPCODES.SMSG_READ_ITEM_OK) {
+        // A mail copy carries its text by item guid (CMSG_ITEM_TEXT_QUERY), not as template pages (5.28).
+        const text = this.itemTexts.get(readGuid);
+        this.events.emit("ITEM_TEXT_OPENED", text === undefined ? { kind: "item", guid: readGuid } : { kind: "item", guid: readGuid, text });
+      }
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ITEM_REFUND_INFO_RESPONSE || packet.opcode === OPCODES.SMSG_ITEM_REFUND_RESULT) {
+      this.#handleItemRefund(packet);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CROSSED_INEBRIATION_THRESHOLD) {
       parseInebriation(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_DURABILITY_DAMAGE_DEATH) {
-      // Sent empty: dying costs durability, and the amount is in the item fields that follow.
+      // Sent empty (Player.cpp:4888): dying cost 10 % durability, the amounts follow in item fields.
+      // 5.22: Wow.exe 0x50c810 writes DURABILITYDAMAGE_DEATH as a system line (0x509dd0) and nothing more.
+      this.#recordSystemLine(formatGlobalStringByName("DURABILITYDAMAGE_DEATH", [], "Предметы вашей экипировки утратили 10% прочности."));
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_LEARNED_DANCE_MOVES) {
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_PROPOSE_LEVEL_GRANT) {
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_REFER_A_FRIEND_FAILURE) {
       parseReferAFriendFailure(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     return false;
   }
@@ -6743,12 +8103,13 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.MSG_QUEST_PUSH_RESULT) {
-      parseQuestPushResult(packet.payload);
+      this.events.emit("QUEST_PUSH_RESULT", parseQuestPushResult(packet.payload));
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_QUERY_QUESTS_COMPLETED_RESPONSE) {
       this.completedQuests.clear();
       for (const questId of parseCompletedQuests(packet.payload)) this.completedQuests.add(questId);
+      this.events.emit("QUESTS_COMPLETED", {});
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_QUEST_POI_QUERY_RESPONSE) {
@@ -6781,12 +8142,18 @@ export class WorldClient {
 
   #handleSpellLog(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_SPELL_START) {
-      const start = parseSpellCastHeader(packet.payload);
+      const start = parseSpellStart(packet.payload);
       const selfGuid = this.state.selfGuid;
       if (selfGuid === undefined || start.casterUnit === selfGuid || start.casterGuid === selfGuid) {
         this.#acceptPendingCast(start.spellId, start.castId, "start");
       }
-      this.#beginCast(start.casterUnit, start.spellId, start.castTime, false, start.castId);
+      // 3.02: the caster's immunities ride the cast for notInterruptible (Wow.exe +0xa64/+0xa68).
+      this.#beginCast(start.casterUnit, start.spellId, start.castTime, false, start.castId,
+        { school: start.schoolImmunityMask, mechanic: start.mechanicImmunityMask });
+      // 11.02-E: the active mover's noted trajectory cast is re-aimed when its cast time is up (0x00806700 → 0x006fbe50).
+      if (start.casterUnit === (this.controlledGuid ?? selfGuid)) this.#missiles.spellStart(start.casterUnit, start.spellId, start.castTime, performance.now()); // 11.02-E
+      // 3.01-castlog: every start, after the cast bar — 0x00806700 logs (0x00751920) after 0x00805330.
+      this.events.emit("SPELL_START", start); // 3.01-castlog
       return true;
     }
     if (packet.opcode === OPCODES.MSG_CHANNEL_START) {
@@ -6823,6 +8190,13 @@ export class WorldClient {
       if (this.state.selfGuid === undefined || failure.casterGuid === this.state.selfGuid) {
         this.#rejectPendingCast(failure.spellId, failure.castCount);
       }
+      // 3.02: both packets reach 0x007fecc0 in Wow.exe (SPELL_FAILURE 0x00809c70, SPELL_FAILED_OTHER 0x00806ad0 —
+      // registration 0x008100e0; 3.01-go-order: comment corrected) — the core sends the
+      // pair for every interrupt (Spell::SendInterrupted, Spell.cpp:4822-4837), so INTERRUPTED is
+      // raised twice, as in the original. STOP follows only while the cast is still current.
+      this.events.emit("SPELL_CAST_RESULT", {
+        casterGuid: failure.casterGuid, spellId: failure.spellId, castCount: failure.castCount, result: failure.result,
+      });
       const active = this.casts.get(failure.casterGuid);
       if (!active || active.spellId === failure.spellId) {
         const reason = failure.result === SPELL_FAILED_INTERRUPTED
@@ -6830,6 +8204,9 @@ export class WorldClient {
           ? "interrupted"
           : "failed";
         this.#endCast(failure.casterGuid, failure.spellId, reason, failure.castCount);
+        // 11.02-E-review: 0x007fecc0 ends the unit's current cast through 0x007fec00, which clears that spell's trajectory
+        // note (0x006fbe80 at 0x007fecb6): the next shot is not SPELL_IN_PROGRESS and no re-aim follows.
+        if (active?.castCount === undefined || active.castCount === failure.castCount) this.#missiles.clear(failure.spellId, failure.casterGuid); // 11.02-E-review
       }
       return true;
     }
@@ -6902,6 +8279,7 @@ export class WorldClient {
       this.events.emit("COMBAT_LOG", {
         ...log, critical: false, kind: "kill", text: `${this.#spellName(log.spellId)}: цель уничтожена`,
       });
+      this.events.emit("COMBAT_FACT", { source: "instakill", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLDISPELLOG || packet.opcode === OPCODES.SMSG_SPELLSTEALLOG) {
@@ -6914,6 +8292,7 @@ export class WorldClient {
           text: `${stolen ? "похищено" : "рассеяно"}: ${this.#spellName(entry.spellId)}`,
         });
       }
+      this.events.emit("COMBAT_FACT", { source: "dispel", log, stolen });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PROCRESIST || packet.opcode === OPCODES.SMSG_SPELLORDAMAGE_IMMUNE) {
@@ -6924,25 +8303,28 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_DISPEL_FAILED) {
-      // Caster, target, then the spells that would not come off. Only the fact is shown.
-      const log = parseExecuteLog(packet.payload);
+      // Caster, target, then the spells that would not come off — full guids (SpellEffects.cpp:2643-2647).
+      const log = parseDispelFailed(packet.payload);
       this.events.emit("COMBAT_LOG", {
-        casterGuid: log.casterGuid, targetGuid: 0n, spellId: log.spellId, critical: false,
+        casterGuid: log.casterGuid, targetGuid: log.targetGuid, spellId: log.spellId, critical: false,
         kind: "utility", text: "рассеивание не удалось",
       });
+      this.events.emit("COMBAT_FACT", { source: "dispelFailed", log });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_SPELLLOGEXECUTE) {
-      parseExecuteLog(packet.payload);
+      // 3.01: the effect records feed the combat log (SPELL_DRAIN, _INTERRUPT, _SUMMON…).
+      this.events.emit("COMBAT_FACT", { source: "execute", log: parseExecuteLogDetail(packet.payload) });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ENCHANTMENTLOG) {
-      parseEnchantmentLog(packet.payload);
+      // 3.01: ENCHANT_APPLIED.
+      this.events.emit("COMBAT_FACT", { source: "enchant", log: parseEnchantmentLog(packet.payload) });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_MIRRORIMAGE_DATA) {
       parseMirrorImageData(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_PLAY_SPELL_VISUAL || packet.opcode === OPCODES.SMSG_PLAY_SPELL_IMPACT) {
       const visual = parseSpellVisualKit(packet.payload);
@@ -7040,7 +8422,11 @@ export class WorldClient {
       // player never receives a packet naming themselves through a hostile deliverer — so
       // SPELL_EFFECT_FORCE_DESELECT did nothing here at all.
       const guid = parseClearTarget(packet.payload);
+      // L2 1.10: Wow.exe 0x756800 case 0x3bf lets go through 0x5241b0, not SetTarget(0): the
+      // dropped unit does not become the last target.
+      const lastTarget = this.targetHistory.lastTarget; // L2 1.10
       if (guid === this.targetGuid) this.selectTarget(undefined);
+      this.targetHistory.lastTarget = lastTarget; // L2 1.10
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_BREAK_TARGET) {
@@ -7059,7 +8445,10 @@ export class WorldClient {
       // `CMSG_SET_SELECTION 0` on the wire for each of them. Nothing is lost by leaving it alone:
       // a fear sends `SMSG_CLEAR_TARGET` with the same guid three lines later, and that branch
       // above drops the selection.
-      this.events.emit("TARGET_BROKEN", { guid: parseBreakTarget(packet.payload) });
+      const broken = parseBreakTarget(packet.payload); // L2 1.10
+      // L2 1.10: 0x526530 case 0x152 → 0x524350 — the caster leaves the target history too.
+      this.targetHistory.unitLeft(broken, this);
+      this.events.emit("TARGET_BROKEN", { guid: broken }); // L2 1.10: was parseBreakTarget(packet.payload) inline
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_AI_REACTION) {
@@ -7072,7 +8461,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_FEIGN_DEATH_RESISTED) {
       parseFeignDeathResisted(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_DISMOUNT) {
       // Announced rather than dropped. The state behind it arrives anyway as MOUNTDISPLAYID going
@@ -7188,6 +8577,7 @@ export class WorldClient {
         this.petComboPoints = undefined;
       } else {
         this.petSpells = spells;
+        if (isVehicleSpellBar(spells.bar)) missileShotSource()?.prime?.(); // 11.02-E: a vehicle's bar — the missile tables before its first shot
         this.petCooldowns.clear();
         const now = performance.now();
         for (const cooldown of spells.cooldowns) {
@@ -7202,7 +8592,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_PET_LEARNED_SPELL) {
       // A fresh bar follows this one, so the book is not patched here — it would be overwritten.
       parsePetLearnedSpell(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_PET_UNLEARNED_SPELL) {
       const spellId = parsePetUnlearnedSpell(packet.payload);
@@ -7230,7 +8620,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_PET_ACTION_SOUND) {
       // Only a summoned pet ever talks, and only about one time in ten; the sound itself is P8's.
       parsePetActionSound(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_PET_CAST_FAILED) {
       // Written by the player's own `WriteCastResultInfo` (Spell.cpp:4385-4386), tail and all, so it
@@ -7246,19 +8636,23 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_PET_NAME_QUERY_RESPONSE) {
       const name = parsePetNameQueryResponse(packet.payload);
       this.petNames.set(name.petNumber, name);
+      // 5.24: answered. An empty name (the server could not see the pet) keeps its number marked as
+      // asked, so a pet out of the server's reach is not asked about on every update.
+      if (name.name) this.#petNamesAsked.delete(name.petNumber);
       this.events.emit("PET_NAME_CHANGED", { petNumber: name.petNumber });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_NAME_INVALID) {
       const rejected = parsePetNameInvalid(packet.payload);
       this.#recordPetMessage(petNameErrorText(rejected.error), true);
+      this.onPetNameInvalid?.(rejected); // L17 3.09
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PET_GUIDS) {
       // Declared and never built: the only mention outside the opcode tables is a comment in
       // `SendInitialPacketsBeforeAddToMap`, which is also why the coverage report calls it live.
       // Named so the ratchet counts it, and not parsed, because there is no sender to read.
-      return true;
+      return this.#ignore(packet);
     }
 
     if (packet.opcode === OPCODES.MSG_LIST_STABLED_PETS) {
@@ -7286,13 +8680,14 @@ export class WorldClient {
       // A zero id is the message: this unit stopped being a vehicle.
       if (data.vehicleId === 0) this.vehicleKits.delete(data.guid);
       else this.vehicleKits.set(data.guid, data.vehicleId);
+      this.state.setVehicleKit(data.guid, data.vehicleId); // 11.02-F1: the object's Vehicle.dbc id, as CREATE's
       this.events.emit("VEHICLE_CHANGED", data);
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ON_CANCEL_EXPECTED_RIDE_VEHICLE_AURA) {
       // Empty body: stop waiting for the aura that would have seated the player.
       parseCancelExpectedRideVehicleAura(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     return false;
   }
@@ -7397,7 +8792,7 @@ export class WorldClient {
       // An arena-only hint that arrives just before SMSG_DESTROY_OBJECT for the same guid. Acting
       // on it would take the unit down a frame early and leave the real destroy nothing to remove.
       parseArenaUnitDestroyed(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
 
     if (packet.opcode === OPCODES.SMSG_INIT_WORLD_STATES) {
@@ -7678,6 +9073,7 @@ export class WorldClient {
       const text = parseItemTextQueryResponse(packet.payload);
       if (text.guid !== 0n) this.itemTexts.set(text.guid, text.text);
       this.events.emit("QUERY_CACHE_CHANGED", { kind: "itemText", id: text.guid });
+      if (text.guid !== 0n) this.events.emit("ITEM_TEXT_RECEIVED", { guid: text.guid });
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_PAGE_TEXT_QUERY_RESPONSE) {
@@ -7831,7 +9227,7 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_AUCTION_LIST_PENDING_SALES) {
       // Always zero in this core: the loop that would fill it is commented out.
       parseAuctionListPendingSales(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     return false;
   }
@@ -8029,6 +9425,11 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_LOOT_LIST) {
       this.lootOwners = parseLootList(packet.payload);
+      if (this.state.objects.has(this.lootOwners.corpseGuid)) this.lootOwnersByUnit.set(this.lootOwners.corpseGuid, this.lootOwners); // 5.28 (L6)
+      // The window names them ("master looter: …"); both are packed and may be empty (5.28).
+      if (this.lootOwners.masterLooterGuid !== 0n) this.requestName(this.lootOwners.masterLooterGuid);
+      if (this.lootOwners.allowedLooterGuid !== 0n) this.requestName(this.lootOwners.allowedLooterGuid);
+      this.events.emit("LOOT_LIST_CHANGED", { corpseGuid: this.lootOwners.corpseGuid });
       this.onLootChanged?.();
       return true;
     }
@@ -8242,16 +9643,16 @@ export class WorldClient {
       // Compiled by the core and never constructed, so this never arrives from this build. The
       // layout is read off the real writer rather than guessed from a sibling.
       parseCalendarInviteNotes(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_NOTES_ALERT) {
       parseCalendarInviteNotesAlert(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     if (packet.opcode === OPCODES.SMSG_CALENDAR_EVENT_INVITE_STATUS_ALERT) {
       // Also never constructed, and byte for byte the removed-invite alert above.
       parseCalendarEventStatusAlert(packet.payload);
-      return true;
+      return this.#ignore(packet);
     }
     return false;
   }
@@ -8330,7 +9731,9 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CHAT_PLAYER_NOT_FOUND) {
-      this.#recordSystemLine(`Игрок ${parseChatPlayerName(packet.payload)} не найден`);
+      const notFound = parseChatPlayerName(packet.payload); // L5c 3.18
+      this.#recordSystemLine(`Игрок ${notFound} не найден`);
+      this.events.emit("CHAT_PLAYER_NOT_FOUND", { name: notFound }); // L5c 3.18: the autocomplete list
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_CHAT_PLAYER_AMBIGUOUS) {
@@ -8347,8 +9750,11 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_COMPLAIN_RESULT) {
-      parseComplainResult(packet.payload);
-      this.#recordSystemLine("Жалоба принята");
+      // 8.17: Wow.exe 0x6e2e90 (0x3c8) — result 1 turns the complaint system off; otherwise
+      // COMPLAINT_ADDED as a system line (the core only ever writes a single 0, MiscHandler.cpp:1223).
+      const result = parseComplainResult(packet.payload);
+      if (result === 1 && this.featureStatus) this.featureStatus = { ...this.featureStatus, complaintStatus: 0 };
+      this.#recordSystemLine(formatGlobalStringByName("COMPLAINT_ADDED", [], "Жалоба зарегистрирована."));
       return true;
     }
     return false;
@@ -8572,6 +9978,8 @@ export class WorldClient {
         this.lfgBootExpiresAt = performance.now() + (boot.secondsLeft > 0 ? boot.secondsLeft * 1000 : 120_000);
       }
       this.lfgBoot = boot.inProgress ? boot : undefined;
+      // Every update carries the receiver's own vote: it is what answers CMSG_LFG_SET_BOOT_VOTE.
+      this.#pending.confirm("boot-vote");
       this.requestName(boot.victimGuid);
       this.events.emit("LFG_INFO_CHANGED", {});
       this.events.emit("LFG_STATE_CHANGED", { kind: "boot" });
@@ -8626,8 +10034,10 @@ export class WorldClient {
     if (packet.opcode === OPCODES.SMSG_ATTACK_START) {
       const attack = parseAttackStart(packet.payload);
       if (attack.attacker === this.state.selfGuid) {
-        this.targetGuid = attack.victim;
+        // The victim, not the selection: 0x756800 case 0x143 writes only the unit's attack target (5.05).
+        this.attackVictim = attack.victim;
         this.attacking = true;
+        this.#pending.confirm("attack");
         this.onCombatStatus?.("Автоатака началась", true, false);
       } else if (this.#isOwnPet(attack.attacker) && this.petAttackVictim !== attack.victim) {
         this.petAttackVictim = attack.victim;
@@ -8639,6 +10049,10 @@ export class WorldClient {
       const attack = parseAttackStop(packet.payload);
       if (attack.attacker === this.state.selfGuid) {
         this.attacking = false;
+        this.attackVictim = undefined;
+        this.attackStops++;
+        // Also the refusal of a request: HandleAttackSwingOpcode answers a bad target this way.
+        this.#pending.confirm("attack");
         if (attack.victimDied) this.state.setField(attack.victim, UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 0);
         this.onCombatStatus?.(attack.victimDied ? "Цель погибла" : "Автоатака остановлена сервером", false, false);
       } else if (this.#isOwnPet(attack.attacker) && this.petAttackVictim !== undefined) {
@@ -8675,7 +10089,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_ENVIRONMENTAL_DAMAGE_LOG) {
-      this.onEnvironmentalDamage?.(parseEnvironmentalDamage(packet.payload));
+      const damage = parseEnvironmentalDamage(packet.payload);
+      this.onEnvironmentalDamage?.(damage);
+      // 3.01: ENVIRONMENTAL_DAMAGE; the single slot above stays the native line.
+      this.events.emit("COMBAT_FACT", { source: "environmental", log: damage });
       return true;
     }
 
@@ -8691,7 +10108,9 @@ export class WorldClient {
       this.swingWarning = warning;
       // Facing the wrong way is the one of the two the client can fix by itself, and it has to:
       // the server sends this once and then stays quiet however long the player stands there.
-      if (packet.opcode === OPCODES.SMSG_ATTACK_SWING_BAD_FACING) this.faceTarget();
+      // L18-review: not while the autoRangedCombat mode runs — its swings come by themselves, and Wow.exe only
+      // latches the error (0x00756800 case 0x146 → 0x006cee70(2)); a turn would send a fleeing hunter into the mob.
+      if (packet.opcode === OPCODES.SMSG_ATTACK_SWING_BAD_FACING && !this.autoRanged.active) this.faceTarget(); // L18-review: `&& !active`
       this.onCombatStatus?.(warning, this.attacking, true);
       return true;
     }
@@ -8701,7 +10120,13 @@ export class WorldClient {
         : packet.opcode === OPCODES.SMSG_CANCEL_COMBAT ? "Бой завершён"
           : undefined;
     if (!error) return false;
+    // L15 5.05: Wow.exe 0x00756800 cases 0x148/0x149 and SMSG_CANCEL_COMBAT's 0x006e2210 call StopAttack
+    // 0x006e1660 — CMSG_ATTACK_STOP while a swing runs or is requested (the two above only latch an error).
+    this.autoRanged.stop(); // L15 5.05: and the autoRangedCombat mode with it
+    this.#cancelMeleeAttack(false, false); // L15 5.05; L15-review: no sheath — 0x006e1660 sends only 0x007559e0's CMSG_ATTACKSTOP
     this.attacking = false;
+    this.attackVictim = undefined;
+    this.#pending.confirm("attack");
     this.swingWarning = undefined;
     this.onCombatStatus?.(error, false, true);
     return true;
@@ -8724,19 +10149,25 @@ export class WorldClient {
    * rule, so it needs no branch of its own.
    */
   #checkTarget(): void {
+    // The swing ends with its victim (5.05), which need not be the selection: a charge or a script
+    // can aim the server's Attack elsewhere.
+    const victim = this.attackVictim === undefined ? undefined : this.state.objects.get(this.attackVictim);
+    if (this.attackVictim !== undefined && this.attackVictim !== this.targetGuid && (!victim || isWorldObjectDead(victim))
+      && this.#meleeEngaged()) this.#cancelMeleeAttack(false);
     if (this.targetGuid === undefined) return;
     const target = this.state.objects.get(this.targetGuid);
     if (target) {
       // What the method was written for, and the half of it that death still means.
       if (isWorldObjectDead(target)) {
-        if (this.attacking) this.#cancelMeleeAttack(false);
+        if (this.#meleeEngaged()) this.#cancelMeleeAttack(false);
         // Auto Shot 75 may remain in TrinityCore's repeat slot and keep emitting BAD_TARGETS.
         // Cancel it explicitly at the authoritative death edge instead of only forgetting it.
         this.#stopAutoRepeat(true);
       }
       return;
     }
-    if (this.attacking) this.#cancelMeleeAttack(false);
+    this.autoRanged.stop(); // L15 5.05: the selection gone (0x5241b0 → 0x6e1660) ends the autoRangedCombat mode
+    if (this.#meleeEngaged()) this.#cancelMeleeAttack(false);
     this.#stopAutoRepeat(true);
     this.targetGuid = undefined;
     this.onCombatStatus?.("Цель вышла из видимости", false, false);

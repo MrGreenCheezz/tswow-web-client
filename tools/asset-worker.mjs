@@ -1,7 +1,10 @@
-// A long-lived generator for the two families a zone asks for by the hundred: client textures and
-// visual models.
+// A long-lived generator. It began with the two families a zone asks for by the hundred — client
+// textures and visual models — and since 10.20 runs every generator registered in
+// `tools/asset-jobs.mjs` (icons, indexes, interface files, and the tile family in workers of their
+// own). Measured 02.10 by `bench/generators.mjs`: an icon or a horizon 2.4–6 ms against 283–330 ms
+// as a process, a ground splat 125 ms against 438 ms, a visual tile 447 ms against 818 ms.
 //
-// Every other miss in the gateway is a child process of its own, and for these two that was the
+// Before, every miss in the gateway was a child process of its own, and for these two that was the
 // whole cost. Measured on this machine (2026-09-28): a cold texture published by its own process
 // takes a median 387 ms, of which ~45 ms is starting node and 181–192 ms is opening the thirty
 // sources of the archive chain again; the same texture out of a chain that is already open takes
@@ -18,17 +21,19 @@
 // archives change under it. A decision taken on this side would race a job already on its way.
 //
 // Protocol, one JSON message each way per job:
-//   → { id, kind: "texture", path }            publishTexture(path)
-//   → { id, kind: "visual-model", path, hash }  publishVisualModel(path, hash)
-//   ← { id, ok: true, rss }
+//   → { id, kind, …fields }                     `ASSET_JOBS[kind]` in tools/asset-jobs.mjs (10.20):
+//                                               texture, visual-model, item/spell/creature icons,
+//                                               minimap index, zone map, liquid, client file, and
+//                                               the tile family (splat, visual tile, horizon,
+//                                               and tile-models for the 10.22 preloader)
+//   ← { id, ok: true, rss, result? }          `result` only for kinds registered with `result: true`
 //   ← { id, ok: false, missing, message, rss } `missing` is "the archives do not hold this"
 // `missing` is what `SOURCE_MISSING_EXIT` is for a one-shot generator: the one failure the gateway
 // answers 404 instead of 500.
 
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory } from "./paths.mjs";
-import { publishTexture, SourceMissing } from "./generate-texture.mjs";
-import { publishVisualModel } from "./generate-visual-model.mjs";
+import { assetJobEntry, isSourceMissing, runAssetJob } from "./asset-jobs.mjs";
 
 if (typeof process.send !== "function") {
   throw new Error("tools/asset-worker.mjs is started by the gateway with an IPC channel, not by hand");
@@ -54,16 +59,18 @@ process.on("disconnect", () => {
 async function run(job) {
   const id = job?.id;
   try {
-    archives ??= await clientArchives(clientDirectory());
-    if (job.kind === "texture") await publishTexture(String(job.path).replaceAll("/", "\\"), archives);
-    else if (job.kind === "visual-model") await publishVisualModel(String(job.path), String(job.hash), archives);
-    else throw new Error(`Unknown asset job ${String(job?.kind)}`);
-    reply({ id, ok: true });
+    // A job that reads no archive (`archives: false`, the tile-models list) does not open the chain.
+    const entry = assetJobEntry(job);
+    if (entry?.archives !== false) archives ??= await clientArchives(clientDirectory());
+    const result = await runAssetJob(job, archives);
+    // Only the kinds registered with `result: true` answer one: a publish call may return anything,
+    // and none of it should cross the channel by accident.
+    reply({ id, ok: true, ...(entry?.result === true && result !== undefined ? { result } : {}) });
   } catch (error) {
     reply({
       id,
       ok: false,
-      missing: error instanceof SourceMissing,
+      missing: isSourceMissing(error),
       message: error instanceof Error ? error.message : String(error),
     });
   }

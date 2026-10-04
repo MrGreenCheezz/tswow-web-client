@@ -10,8 +10,9 @@
  *   GetActionBarToggles/SetActionBarToggles below carries it (the four extra bars). Reads and writes
  *   go through the one settings model, persisted with the character like the native window's;
  * - a **stock-consumed session value** — no browser setting, but stock Lua this VM runs reads it
- *   (target of target, status texts, buff durations, quest tracking…). The neutral CVar map keeps it
- *   until the next world entry and the control says so in its tooltip;
+ *   (target of target, status texts, buff durations, quest tracking, the talent preview…). The
+ *   neutral CVar map keeps it, FrameXmlCVarPersistence.ts stores it in this browser (3.19), and the
+ *   control says so in its tooltip;
  * - **unavailable** — nothing here reads it (display modes, driver and effect detail, voice, camera
  *   and mouse tuning, name/nameplate granularity, combat-text details, server-side toggles with no
  *   packet). The control is disabled the way the client greys out unsupported hardware, with the
@@ -28,6 +29,7 @@ import {
   FRAME_XML_SETTINGS_CVARS, FRAME_XML_WEBCLIENT_CVARS, type FrameXmlSettingsCVarAdapter,
 } from "./FrameXmlSettingsCVar.js";
 import type { FrameXmlSeamBinding } from "./FrameXmlWorldSeam.js";
+import { FRAMEXML_HOST_HOOK_GLOBAL } from "./FrameXmlHostHooks.js"; // L5b 3.27
 
 /** The options C API the settings model answers (the CVar family itself is the seam's). */
 export interface FrameXmlOptionsModel {
@@ -35,7 +37,10 @@ export interface FrameXmlOptionsModel {
   cvarRange(name: string): readonly [min: number, max: number] | undefined;
   /** `GetActionBarToggles()`: bottom left, bottom right, right, right two. */
   actionBarToggles(): readonly [boolean, boolean, boolean, boolean];
-  /** `SetActionBarToggles(b1, b2, b3, b4, alwaysShow)`: the four bars; writes only what changed. */
+  /**
+   * `SetActionBarToggles(b1, b2, b3, b4, alwaysShow)`: the four bars. The settings write only what
+   * changed; the server gets the byte on every call, as Wow.exe 0x5a8290 sends it.
+   */
   setActionBarToggles(bars: readonly [boolean, boolean, boolean, boolean]): void;
   /** `RestoreVideoEffectsDefaults()`: every mapped name back to its default; writes only what differs. */
   restoreDefaults(names: readonly string[]): void;
@@ -43,19 +48,52 @@ export interface FrameXmlOptionsModel {
 
 const ACTION_BAR_CVARS = ["bottomLeftActionBar", "bottomRightActionBar", "rightActionBar", "rightTwoActionBar"] as const;
 
-export function createFrameXmlOptionsModel(cvars: FrameXmlSettingsCVarAdapter): FrameXmlOptionsModel {
-  const bars = (): [boolean, boolean, boolean, boolean] => [
+/**
+ * The server copy of the extra bars (plan item 3.32): the core keeps them in `PLAYER_FIELD_BYTES`
+ * byte 2 and takes them from `CMSG_SET_ACTIONBAR_TOGGLES`, so they follow the character to any
+ * browser. Wow.exe's `GetActionBarToggles` (0x5a8790) reads only that byte.
+ */
+export interface FrameXmlActionBarServer {
+  /** The byte's four bits (bit 0 bottom left … bit 3 right two); undefined before the player's fields arrive. */
+  toggles(): number | undefined;
+  /** Sends `CMSG_SET_ACTIONBAR_TOGGLES` with those four bits. */
+  send(bars: number): void;
+}
+
+/** The four booleans as the packet's bits: bottom left 0x01, bottom right 0x02, right 0x04, right two 0x08. */
+export function actionBarToggleBits(bars: readonly [boolean, boolean, boolean, boolean]): number {
+  return (bars[0] ? 0x01 : 0) | (bars[1] ? 0x02 : 0) | (bars[2] ? 0x04 : 0) | (bars[3] ? 0x08 : 0);
+}
+
+/**
+ * `server` absent (the canned seam, a test): the browser settings alone, as before. Present: the
+ * server's byte answers once it is known — at world entry the stock Action Bars panel copies it into
+ * its uvars and calls SetActionBarToggles, which writes the settings the native bars follow — and
+ * the settings stand in until then.
+ */
+export function createFrameXmlOptionsModel(
+  cvars: FrameXmlSettingsCVarAdapter, server?: FrameXmlActionBarServer,
+): FrameXmlOptionsModel {
+  const settingsBars = (): [boolean, boolean, boolean, boolean] => [
     cvars.get(ACTION_BAR_CVARS[0]) === "1", cvars.get(ACTION_BAR_CVARS[1]) === "1",
     cvars.get(ACTION_BAR_CVARS[2]) === "1", cvars.get(ACTION_BAR_CVARS[3]) === "1",
   ];
+  const bars = (): [boolean, boolean, boolean, boolean] => {
+    const bits = server?.toggles();
+    if (bits === undefined) return settingsBars();
+    return [(bits & 0x01) !== 0, (bits & 0x02) !== 0, (bits & 0x04) !== 0, (bits & 0x08) !== 0];
+  };
   return {
     cvarRange: (name) => cvars.range(name),
     actionBarToggles: bars,
     setActionBarToggles: (next) => {
-      const current = bars();
+      const current = settingsBars();
       ACTION_BAR_CVARS.forEach((cvar, index) => {
         if (current[index] !== next[index]) cvars.set(cvar, next[index] ? "1" : "0");
       });
+      // Only once the server's byte is known: before it, a send would put this browser's settings
+      // over the character's own bars (in the client the field always precedes the Lua call).
+      if (server && server.toggles() !== undefined) server.send(actionBarToggleBits(next));
     },
     restoreDefaults: (names) => {
       for (const name of names) {
@@ -126,8 +164,9 @@ const BROWSER_SOUND = "Звуковым устройством и его обр�
 const NOT_SUPPORTED = "Браузерный клиент этого не поддерживает.";
 const NO_NAMES = "Имена и таблички браузерного клиента включаются только целиком: «Таблички над врагами» и «над союзниками».";
 const NO_COMBAT_TEXT = "Всплывающий текст боя браузерного клиента включается только целиком.";
-// «WebClient → Игра» holds the camera's one browser setting, its maximum distance; there is none for the mouse.
-const CAMERA = "Камера браузерного клиента этого не поддерживает; её дальность — в разделе «WebClient → Игра».";
+// 5.14: the camera's style, speed and distance and the mouse's speeds and inversion are stock CVars now
+// (FrameXmlSettingsCVar.ts); terrain tilt, head bob, water collision and smart pivot have no consumer.
+const CAMERA = "Камера браузерного клиента этого не поддерживает.";
 
 function rows(reason: string, names: readonly string[]): (readonly [string, string])[] {
   return names.map((name) => [name, reason] as const);
@@ -163,12 +202,14 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
   ...rows(NOT_SUPPORTED, [
     "AudioOptionsSoundPanelErrorSpeech", "AudioOptionsSoundPanelEmoteSounds", "AudioOptionsSoundPanelPetSounds",
     "AudioOptionsSoundPanelLoopMusic", "AudioOptionsSoundPanelSoundInBG",
-    "InterfaceOptionsControlsPanelStickyTargeting", "InterfaceOptionsControlsPanelAutoDismount",
-    "InterfaceOptionsControlsPanelAutoClearAFK", "InterfaceOptionsControlsPanelBlockTrades",
+    "InterfaceOptionsControlsPanelAutoDismount",
+    "InterfaceOptionsControlsPanelAutoClearAFK",
     // The loot window's own modifier is Shift (FrameXmlLootHost.ts), not the stock modified click.
     "InterfaceOptionsControlsPanelAutoLootKeyDropDown",
-    "InterfaceOptionsCombatPanelAttackOnAssist", "InterfaceOptionsCombatPanelAutoRange",
-    "InterfaceOptionsCombatPanelStopAutoAttack", "InterfaceOptionsCombatPanelAutoSelfCast",
+    // L18 5.05: AutoRange (autoRangedCombat) and StopAutoAttack (stopAutoAttackOnTargetChange) have settings
+    // behind them (FrameXmlSettingsCVar.ts) and are usable; AttackOnAssist (assistAttack) has none.
+    "InterfaceOptionsCombatPanelAttackOnAssist", // L18 5.05: was also AutoRange
+    "InterfaceOptionsCombatPanelAutoSelfCast", // L18 5.05: was also StopAutoAttack
     // UseAction's unit is not honoured by the host (LiveWorldSeam.useAction casts the slot's spell).
     "InterfaceOptionsCombatPanelSelfCastKeyDropDown", "InterfaceOptionsCombatPanelFocusCastKeyDropDown",
     "InterfaceOptionsDisplayPanelShowCloak", "InterfaceOptionsDisplayPanelShowHelm",
@@ -182,7 +223,7 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "InterfaceOptionsActionBarsPanelSecureAbilityToggle",
     "InterfaceOptionsUnitFramePanelRaidRange", "InterfaceOptionsUnitFramePanelArenaEnemyFrames",
     "InterfaceOptionsUnitFramePanelArenaEnemyCastBar", "InterfaceOptionsUnitFramePanelArenaEnemyPets",
-    "InterfaceOptionsFeaturesPanelEquipmentManager", "InterfaceOptionsFeaturesPanelPreviewTalentChanges",
+    "InterfaceOptionsFeaturesPanelEquipmentManager",
     "InterfaceOptionsHelpPanelShowTutorials", "InterfaceOptionsHelpPanelLoadingScreenTips",
     "InterfaceOptionsHelpPanelShowLuaErrors", "InterfaceOptionsLanguagesPanelLocaleDropDown",
   ]),
@@ -212,15 +253,12 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "InterfaceOptionsCombatTextPanelAuras",
   ]),
   ...rows(CAMERA, [
-    "InterfaceOptionsCameraPanelStyleDropDown", "InterfaceOptionsCameraPanelFollowSpeedSlider",
-    "InterfaceOptionsCameraPanelMaxDistanceSlider", "InterfaceOptionsCameraPanelFollowTerrain",
-    "InterfaceOptionsCameraPanelHeadBob", "InterfaceOptionsCameraPanelWaterCollision",
+    "InterfaceOptionsCameraPanelFollowTerrain",
+    "InterfaceOptionsCameraPanelHeadBob", // L8 5.14: InterfaceOptionsCameraPanelWaterCollision drives cameraWaterCollision
     "InterfaceOptionsCameraPanelSmartPivot",
   ]),
   ...rows(NOT_SUPPORTED, [
-    "InterfaceOptionsMousePanelInvertMouse",
-    "InterfaceOptionsMousePanelClickToMove", "InterfaceOptionsMousePanelMouseSensitivitySlider",
-    "InterfaceOptionsMousePanelMouseLookSpeedSlider", "InterfaceOptionsMousePanelWoWMouse",
+    "InterfaceOptionsMousePanelClickToMove", "InterfaceOptionsMousePanelWoWMouse",
     "InterfaceOptionsMousePanelClickMoveStyleDropDown",
   ]),
 ]);
@@ -228,8 +266,11 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
 /** A disabled dropdown's text, as FrameXmlBoot.disableUnavailableOptions writes it for ruRU. */
 const UNAVAILABLE_TEXT = "Недоступно";
 
-/** What the stock-consumed controls say: the neutral CVar map is the VM's, rebuilt on world entry. */
-export const FRAMEXML_OPTIONS_SESSION_NOTE = "Действует до следующего входа в мир.";
+/**
+ * What the stock-consumed controls say: the neutral CVar map is kept in this browser
+ * (FrameXmlCVarPersistence.ts, 3.19), not with the character on the server.
+ */
+export const FRAMEXML_OPTIONS_SESSION_NOTE = "Сохраняется в этом браузере.";
 
 /** Controls whose CVar or uvar stock Lua in this VM reads, with no browser setting behind them. */
 export const FRAMEXML_OPTIONS_SESSION_ONLY: readonly string[] = Object.freeze([
@@ -252,6 +293,8 @@ export const FRAMEXML_OPTIONS_SESSION_ONLY: readonly string[] = Object.freeze([
   "InterfaceOptionsBuffsPanelCastableBuffs", "InterfaceOptionsBuffsPanelConsolidateBuffs",
   "InterfaceOptionsBuffsPanelShowCastableDebuffs",
   "InterfaceOptionsHelpPanelEnhancedTooltips", "InterfaceOptionsHelpPanelBeginnerTooltips",
+  // previewTalents: Blizzard_TalentUI's preview (FrameXmlTalentPreview.ts, 3.33).
+  "InterfaceOptionsFeaturesPanelPreviewTalentChanges",
 ]);
 
 /** The one stock switch whose browser answer is fixed: the interface size always applies. */
@@ -620,6 +663,8 @@ local unavailable = {
 local session = { ${session} }
 local fixed = { ${fixed} }
 local function noop() end
+-- L5b 3.27: the host's hook when run by withFrameXmlHostHooks (FrameXmlHostHooks.ts), else Lua's.
+local hook = rawget(_G, "${FRAMEXML_HOST_HOOK_GLOBAL}") or function(frame, script, fn) frame:HookScript(script, fn) end
 local function reasonTooltip(self)
   local control = self.webclientControl or self
   if not control.webclientReason then return end
@@ -644,11 +689,11 @@ for name, reason in pairs(unavailable) do
       local button = _G[name .. "Button"]
       if button then
         button.webclientControl = control
-        button:HookScript("OnEnter", reasonTooltip)
-        button:HookScript("OnLeave", function() GameTooltip:Hide() end)
+        hook(button, "OnEnter", reasonTooltip) -- L5b 3.27 (was button:HookScript)
+        hook(button, "OnLeave", function() GameTooltip:Hide() end) -- L5b 3.27
       end
-      control:HookScript("OnEnter", reasonTooltip)
-      control:HookScript("OnLeave", function() GameTooltip:Hide() end)
+      hook(control, "OnEnter", reasonTooltip) -- L5b 3.27 (was control:HookScript)
+      hook(control, "OnLeave", function() GameTooltip:Hide() end) -- L5b 3.27
     end
     control.Enable = noop
     disabled = disabled + 1

@@ -2,8 +2,10 @@ import * as THREE from "three";
 import { WorldSubmissionCapture, type WorldSubmissionSnapshot } from "./WorldSubmissionCapture.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import {
-  appearsDead, fieldFloat, isWorldObjectDead, type WorldObjectState, type WorldPosition, type WorldState,
+  appearsDead, fieldFloat, isWorldObjectDead, splineAnimationTier, type WorldObjectState, type WorldPosition, type WorldState,
 } from "../world/WorldState.js";
+import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
+import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
@@ -128,14 +130,19 @@ import {
   canonicalCollisionModelName,
   type StaticWmoFloor, type StaticWmoPlacementIdentity,
 } from "./game/CollisionSource.js";
+import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
+import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
+import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
+import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
 import {
   animatesAsGameObject, customGameObjectAnimation, gameObjectPose,
   GO_TYPE_MO_TRANSPORT, GO_TYPE_TRANSPORT,
 } from "./GameObjectAnimation.js";
 import {
-  TransportPathClient, placeOnTransportPath, sampleTransportPath, transportPhaseMs,
+  TransportPathClient, placeOnTransportPath, sampleTransportPath,
 } from "./TransportPath.js";
+import { liftPhaseMs } from "./LiftClock.js";
 import {
   HORIZON_FAR_PLANE, HorizonClient, buildHorizonGeometry, horizonTiles,
 } from "./Horizon.js";
@@ -3431,6 +3438,10 @@ export class WorldRenderer3D {
   /** Custom animations that arrived before the frame that could play them. */
   readonly #gameObjectAnimations = new Map<bigint, number>();
   readonly #units = new Map<bigint, RenderedUnit>();
+  /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
+  readonly #vehiclePassengers = new VehiclePassengerPoser();
+  /** 11.02-tails: scratch for a marked passenger's drawn place, read at once by `#updateSelectionRings`. */
+  readonly #ringSeatDrawn = { x: 0, y: 0, z: 0 };
   /** Mount-special packets can arrive before the rider or mount has been admitted and built. */
   readonly #mountSpecials = new Map<bigint, number>();
   /**
@@ -5330,9 +5341,11 @@ export class WorldRenderer3D {
     // body share is measured against it and put back once, not twice.
     const seat = unit?.mount?.seat ?? 0;
     const body = unit && !unit.body && unit.height - seat > 0 ? unit.height - seat : undefined;
+    // 11.02-H: a passenger drawn on its vehicle's seat point is that much higher than its own place.
+    const vehicleSeatLift = unit === undefined ? 0 : this.#vehiclePassengers.seatLift(unit.node);
     return cameraBodyHeight(
       attachment === undefined ? undefined : attachment * (unit?.scale ?? 1),
-      body, share, fallback) + seat;
+      body, share, fallback) + seat + vehicleSeatLift; // 11.02-H: + vehicleSeatLift
   }
 
   /**
@@ -5938,6 +5951,14 @@ export class WorldRenderer3D {
     this.#indoors = indoors;
   }
 
+  /**
+   * The last `setIndoors` answer — the floor under the character is a WMO group without MOGP 0x8.
+   * Read, not recomputed, by the stock UI's ZONE_CHANGED_INDOORS test (`playerIndoors`).
+   */
+  get indoors(): boolean {
+    return this.#indoors;
+  }
+
   /** Where to find a model's own liquid. Told once, like everything else the frame hands over. */
   setCollisionModels(models: ((name: string) => CollisionModel | undefined) | undefined): void {
     this.#collisionModels = models;
@@ -6482,7 +6503,7 @@ export class WorldRenderer3D {
     for (const kind of ["target", "focus"] as const) {
       const wanted = this.#selection[kind];
       const object = wanted === undefined ? undefined : state.objects.get(wanted.guid);
-      const position = object?.position;
+      const position = object === undefined ? undefined : drawnUnitPosition(object, this.#ringSeatDrawn); // 11.02-tails: on the seat
       // A corpse keeps no ring: the renderer lays a dead body down at its full length, so a ring
       // round its feet would sit at one end of it and read as a ring round nothing.
       if (!wanted || !object || !position || isWorldObjectDead(object)) {
@@ -7030,7 +7051,9 @@ export class WorldRenderer3D {
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
     this.#restoreZoneFog();
-    const player = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+    // 11.02-I: what the camera is built around (game/ViewSubject.ts) — the character, or a possessed
+    // unit or far sight eye once in view. The camera, the sun and every streamed ring are centred on it.
+    const player = viewSubjectIn(state);
     if (!player?.position) {
       this.clearTerrain();
       splatClient?.setActiveTiles(undefined, []);
@@ -10041,7 +10064,7 @@ export class WorldRenderer3D {
       this.#unitWarmHolds.delete(unit);
       const body = unitWarmBody(unit);
       if (body) this.#markUnitShown(unit, body);
-      unit.node.visible = hold.visible;
+      unit.node.visible = hold.visible && !this.#vehiclePassengers.hides(unit.node); // 11.02-H-review
     }
     for (const [part, hold] of this.#unitPartWarmHolds) {
       if (!hold.unit.node.parent || !hangsUnder(part, hold.unit.node)) {
@@ -11550,20 +11573,27 @@ export class WorldRenderer3D {
     const scale = gameObjectScale(object);
     if (scale !== undefined) rendered.node.scale.setScalar(scale);
     if (Number.isFinite(position.orientation)) {
-      rendered.node.quaternion.setFromRotationMatrix(mappedVmapRotation(
-        0, THREE.MathUtils.radToDeg(position.orientation), 0));
+      // `mappedVmapRotation(0, o, 0)` in closed form (a turn about scene +y): no four Matrix4 per
+      // object per frame.
+      sceneYaw(position.orientation, GAME_OBJECT_TILT);
+      rendered.node.quaternion.set(GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w);
+      // 5.27: a leaning bridge or a toppled pillar carries more rotation than its yaw. The tilt is
+      // in world axes, so it goes on after the yaw; a level object has none and is left as it was.
+      // 11.01-D: aboard a ship the local rotation is in the ship's frame (TransportPassengers.ts).
+      if (passengerGameObjectTilt(object, position.orientation, GAME_OBJECT_TILT)) {
+        toRenderAxes(GAME_OBJECT_TILT, GAME_OBJECT_TILT);
+        rendered.node.quaternion.premultiply(GAME_OBJECT_TILT_SCENE.set(
+          GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w));
+      }
     }
     const path = rendered.entry > 0 ? paths?.path(rendered.entry) : undefined;
     if (!path || path.period <= 0 || path.frames.length === 0) {
       rendered.node.position.set(position.x, position.z, -position.y);
       return;
     }
-    if (rendered.phaseAt === undefined) {
-      rendered.phaseMs = transportPhaseMs(
-        object.fields.get(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset), object.transportTime, path.period);
-      rendered.phaseAt = now;
-    }
-    const offset = sampleTransportPath(path, (rendered.phaseMs ?? 0) + (now - rendered.phaseAt));
+    // 11.01-B: the phase the physics stands the character on (LiftClock.ts): anchored when the
+    // create block was read rather than at first sight, and re-anchored by a new create block.
+    const offset = sampleTransportPath(path, liftPhaseMs(object, path.period, now));
     const at = placeOnTransportPath(rendered.base, offset);
     rendered.node.position.set(at.x, at.z, -at.y);
   }
@@ -11724,6 +11754,7 @@ export class WorldRenderer3D {
     this.#unitAnimationPrefetch.clear();
     this.#atlasFrameDemands.clear();
     this.#atlasFrameActive.clear();
+    this.#vehiclePassengers.begin(state.objects, vehicleCatalog()); // 11.02-H
     // The frustum is composed before admission so invisible neighbours do not consume the same
     // budget as the units on screen. Numeric sphere tests below allocate nothing per candidate.
     this.#frustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
@@ -11781,6 +11812,8 @@ export class WorldRenderer3D {
       const rendered = this.#units.get(object.guid);
       if (rendered?.applied) this.#atlasFrameActive.add(rendered.applied);
     }
+    // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
+    this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
     // Current poses across the whole crowd get first use of the animation slice. Spend any
     // remainder on the resident sidecars so future actions keep the original prefetch behaviour.
     for (const [template, path] of this.#unitAnimationPrefetch) {
@@ -12858,7 +12891,8 @@ export class WorldRenderer3D {
       standState: unitFields.standState(object) ?? UNIT_STAND_STATE_STAND,
       // Which tier a hovering unit animates on: the server's word, not the movement bit's. A unit
       // whose byte has not arrived is on the ground tier, which is what the core writes by default.
-      animationTier: unitFields.animationTier(object) ?? 0,
+      // A spline's own tier (a drake's takeoff or landing) overrides it once its effect begins.
+      animationTier: splineAnimationTier(object, now) ?? unitFields.animationTier(object) ?? 0,
       // The built mount rather than the field, so a rider whose horse has not downloaded keeps
       // running instead of gliding along in the seated pose with nothing underneath.
       mounted: unit.mount !== undefined,
@@ -12866,6 +12900,9 @@ export class WorldRenderer3D {
       // the stealth half reaches the pose: an invisible mage walks normally.
       stealth: unit.stealthed === true,
     };
+    // 11.02-H: the vehicle seat this unit sits in, when the tables know it; absent otherwise.
+    const vehicleSeat = unit.mount === undefined ? this.#vehiclePassengers.seatPose(object) : undefined;
+    if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
     // Stride tempo before anything poses: the gait scaler below reads it, and the node already
     // stands where this frame drew it.
     unit.strideSpeed = this.#strideSpeed(unit, unit.node.position, elapsed);
@@ -14533,6 +14570,10 @@ export function buildFullscreenGlowPasses(): FullscreenGlowPasses {
     uniforms,
   });
 }
+
+/** Scratch for `#placeGameObject`'s tilt (5.27), so placing a game object allocates nothing more. */
+const GAME_OBJECT_TILT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+const GAME_OBJECT_TILT_SCENE = new THREE.Quaternion();
 
 const VMAP_TO_THREE = new THREE.Matrix4().set(
   -1, 0, 0, 0,

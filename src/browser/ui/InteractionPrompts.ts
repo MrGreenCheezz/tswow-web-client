@@ -2,12 +2,14 @@
 import { game } from "../game/Context.js";
 import { globalString } from "../../generated/globalStrings.js";
 import { STATUS_IN_PROGRESS, STATUS_WAIT_JOIN, STATUS_WAIT_QUEUE } from "../../world/PvpProtocol.js";
-import { LFG_ROLE_TANK, LFG_ROLE_HEALER, LFG_ROLE_DAMAGE } from "../../world/LfgProtocol.js";
+import { LFG_ROLE_TANK, LFG_ROLE_HEALER, LFG_ROLE_DAMAGE, splitDungeonEntry } from "../../world/LfgProtocol.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { canAfford, playerAlive } from "../../world/ConfirmationProtocol.js";
+import { dungeonEncounterClient, encounterKilled } from "../DungeonEncounterClient.js";
 import { formatMoney } from "./Format.js";
 import { Panel } from "./Widgets.js";
 import { frameXmlLfdPublished } from "../framexml/FrameXmlLfdController.js";
+import { frameXmlSharedQuestAskedByStock } from "../framexml/FrameXmlServerPrompts.js";
 import {
   frameXmlPopupsLeftToNative, frameXmlPopupsOwnBattlefieldEntry, frameXmlPopupsPublished,
 } from "../framexml/FrameXmlPopupsController.js";
@@ -21,13 +23,22 @@ let labels: Array<{ node: HTMLElement; text: () => string }> = [];
 let requestsUnchanged = (): boolean => false;
 /**
  * The innkeeper's, the trainer's and the instance lock's questions as last rendered (М1,
- * world/ConfirmationProtocol.ts), with whether the stock model left each of the last two here: no
- * EnterWorld subscription repaints this panel for them, so the frame tick compares these — five
- * reads — and renders on a change, a hidden panel included.
+ * world/ConfirmationProtocol.ts), with whether the stock model left each of the last two here and,
+ * for a pending lock, whether the boss table has landed: no EnterWorld subscription repaints this
+ * panel for them, so the frame tick compares these — six reads — and renders on a change, a hidden
+ * panel included.
  */
-type Confirmations = readonly [object | undefined, object | undefined, boolean, object | undefined, boolean];
-const NO_CONFIRMATIONS: Confirmations = [undefined, undefined, false, undefined, false];
+type Confirmations = readonly [object | undefined, object | undefined, boolean, object | undefined, boolean, boolean];
+const NO_CONFIRMATIONS: Confirmations = [undefined, undefined, false, undefined, false, false];
 let confirmations: Confirmations = NO_CONFIRMATIONS;
+
+/**
+ * Whether the DungeonEncounter table is in hand while a lock question is pending: the boss line
+ * changes from the killed count to «killed/total» when it lands, so its arrival is a repaint too.
+ */
+function encounterTableFor(world: WorldClient): boolean {
+  return world.instanceLock !== undefined && dungeonEncounterClient(game.gatewayOrigin)?.table !== undefined;
+}
 
 /** Whether the stock model left this question to this panel (FrameXmlPopupsController.ts). */
 function leftHere(request: object | undefined): boolean {
@@ -37,7 +48,7 @@ function leftHere(request: object | undefined): boolean {
 function confirmationsMoved(world: WorldClient): boolean {
   return world.binderConfirm !== confirmations[0] || world.talentWipeConfirm !== confirmations[1]
     || leftHere(world.talentWipeConfirm) !== confirmations[2] || world.instanceLock !== confirmations[3]
-    || leftHere(world.instanceLock) !== confirmations[4];
+    || leftHere(world.instanceLock) !== confirmations[4] || encounterTableFor(world) !== confirmations[5];
 }
 
 /**
@@ -86,6 +97,43 @@ export function battlefieldQueueStatus(
   return `в очереди ${formatDuration(now - bases.waitBase)}${average}`;
 }
 
+/**
+ * What this panel names and defers to, given by the modules that own it (4.14): the dungeon finder's
+ * catalog and window (Social.ts) and the battlemaster catalog (Npc.ts). Registered rather than
+ * imported, so this panel loads without the page's DOM handles; each answers undefined until known.
+ */
+export interface InteractionPromptNames {
+  /** An LFGDungeons id's name. */
+  readonly dungeon?: ((dungeonId: number) => string | undefined) | undefined;
+  /** A BattlemasterList id's name. */
+  readonly battleground?: ((bgTypeId: number) => string | undefined) | undefined;
+  /** Whether the native finder window is up — it asks the proposal itself (Windows.ts lfgAccept). */
+  readonly lfgWindowOpen?: (() => boolean) | undefined;
+}
+let promptNames: InteractionPromptNames = {};
+
+/** Sets the given sources; a key passed as undefined drops that source. */
+export function registerInteractionPromptNames(names: InteractionPromptNames): void {
+  promptNames = { ...promptNames, ...names };
+}
+
+function dungeonName(entry: number): string {
+  const { dungeonId } = splitDungeonEntry(entry);
+  return promptNames.dungeon?.(dungeonId) ?? `Подземелье ${dungeonId}`;
+}
+
+function battlegroundLabel(bgTypeId: number): string {
+  const name = promptNames.battleground?.(bgTypeId);
+  return name ? `Поле боя «${name}»` : `Поле боя ${bgTypeId}`;
+}
+
+/** Whether the proposal was left to the native finder window at the last render. */
+let proposalInWindow = false;
+
+function lfgWindowAsksProposal(): boolean {
+  return promptNames.lfgWindowOpen?.() === true;
+}
+
 export function resetInteractionPrompts(): void {
   panel?.hide();
   pending = new WeakSet();
@@ -102,7 +150,7 @@ export function showInteractionPrompts(now = performance.now()): void {
   if (!world) return resetInteractionPrompts();
   world.expireInteractionRequests(now);
   confirmations = [world.binderConfirm, world.talentWipeConfirm, leftHere(world.talentWipeConfirm),
-    world.instanceLock, leftHere(world.instanceLock)];
+    world.instanceLock, leftHere(world.instanceLock), encounterTableFor(world)];
   // Stock CONFIRM_SUMMON and CONFIRM_BATTLEFIELD_ENTRY (the invitation to enter, STATUS_WAIT_JOIN)
   // answer these while the stock popup owner is published; queue and match rows stay native. The
   // entry only when the gate also verified BattlefieldFrame, the frame that shows that dialog.
@@ -110,7 +158,11 @@ export function showInteractionPrompts(now = performance.now()): void {
   const stockEntry = frameXmlPopupsOwnBattlefieldEntry();
   const summon = stockPopups ? undefined : world.summonRequest;
   const summonBlocked = summon ? world.summonBlockReason() : undefined;
-  const shared = world.sharedQuest;
+  // 3.22a: a share stock QUEST_ACCEPT_CONFIRM asked (FrameXmlServerPrompts.ts) is not asked here too —
+  // one share answered twice; any other share (before publication, an uncached sharer) stays native.
+  const sharedQuest = world.sharedQuest;
+  const sharedAsked = stockPopups && frameXmlSharedQuestAskedByStock(sharedQuest);
+  const shared = sharedAsked ? undefined : sharedQuest;
   const allQueues = [...world.battlefieldQueues.values()];
   const queues = stockEntry ? allQueues.filter((queued) => queued.status !== STATUS_WAIT_JOIN) : allQueues;
   // Stock LFDDungeonReadyPopup, LFDRoleCheckPopup and the VOTE_BOOT_PLAYER/LFG_OFFER_CONTINUE
@@ -120,7 +172,11 @@ export function showInteractionPrompts(now = performance.now()): void {
   const roleCheck = world.lfgRoleCheck;
   const check = !stockLfg && roleCheck?.state === 2 ? roleCheck : undefined;
   const boot = stockLfg ? undefined : world.lfgBoot;
-  const proposal = stockLfg ? undefined : world.lfgProposal;
+  // The native finder window shows the same proposal with its own buttons: one question, one prompt.
+  const proposalSeen = world.lfgProposal;
+  const inWindow = !stockLfg && proposalSeen !== undefined && lfgWindowAsksProposal();
+  proposalInWindow = inWindow;
+  const proposal = stockLfg || inWindow ? undefined : proposalSeen;
   const reward = world.lfgReward;
   const offerContinue = stockLfg ? undefined : world.lfgOfferContinue;
   const outdoorQueue = world.battlefieldQueueInvite;
@@ -147,11 +203,13 @@ export function showInteractionPrompts(now = performance.now()): void {
     && world.talentWipeConfirm === talentQuote && leftHere(talentQuote) === talentLeftHere
     && world.instanceLock === lockQuestion && leftHere(lockQuestion) === lockLeftHere
     && (!talentWipe || canAfford(world.state, talentWipe.cost) === talentAffordable)
-    && (stockPopups || world.summonRequest === summon) && world.sharedQuest === shared
+    && (stockPopups || world.summonRequest === summon) && world.sharedQuest === sharedQuest
+    && (stockPopups && frameXmlSharedQuestAskedByStock(sharedQuest)) === sharedAsked
     && (!summon || world.summonBlockReason() === summonBlocked)
     && frameXmlLfdPublished() === stockLfg
     && world.lfgRoleCheck === roleCheck && (stockLfg || world.lfgBoot === boot)
-    && (stockLfg || world.lfgProposal === proposal) && world.lfgReward === reward
+    && (stockLfg || (world.lfgProposal === proposalSeen && lfgWindowAsksProposal() === inWindow))
+    && world.lfgReward === reward
     && (stockLfg || world.lfgOfferContinue === offerContinue)
     && world.battlefieldQueueInvite === outdoorQueue && world.battlefieldWarInvite === outdoorWar
     && world.battlefieldQueuedId === outdoorQueuedId && world.battlefieldBattleId === outdoorBattleId
@@ -243,10 +301,16 @@ export function showInteractionPrompts(now = performance.now()): void {
   if (lock) {
     const name = game.areas?.map(lock.mapId)?.name ?? "подземелье";
     const row = section(`Вы вошли в подземелье, в котором уже шли сражения. «${name}» сохранится за вами, когда время выйдет.`);
-    const killed = killedBosses(lock.encounterMask);
+    // With the DungeonEncounter table (2.09 route) the line is stock's «killed/total», counted over
+    // the map's rows as the client counts them; without it, or for a map it has no rows for, only
+    // the killed count the mask itself says.
+    const encounters = dungeonEncounterClient(game.gatewayOrigin)?.encounters(lock.mapId, lock.difficulty);
+    const killed = encounters?.length
+      ? encounters.filter(({ bit }) => encounterKilled(lock.encounterMask, bit)).length
+      : killedBosses(lock.encounterMask);
     if (killed > 0) {
       const bosses = document.createElement("p");
-      bosses.textContent = `Убито боссов: ${killed}`;
+      bosses.textContent = encounters?.length ? `Убито боссов: ${killed}/${encounters.length}` : `Убито боссов: ${killed}`;
       row.append(bosses);
     }
     countdown(row, lock.expiresAt);
@@ -260,7 +324,8 @@ export function showInteractionPrompts(now = performance.now()): void {
   }
   for (const queued of queues) {
     const current = (): boolean => world.battlefieldQueues.get(queued.queueSlot) === queued;
-    const prefix = queued.isArena ? `Арена ${queued.arenaType}×${queued.arenaType}` : `Поле боя ${queued.bgTypeId}`;
+    // A live label: the battlemaster catalog may land after the row was drawn.
+    const prefix = (): string => (queued.isArena ? `Арена ${queued.arenaType}×${queued.arenaType}` : battlegroundLabel(queued.bgTypeId));
     // Packet snapshots rebased to the local clock at render: the tick below refreshes the label
     // without rebuilding the row, so the wait and the battle clocks keep running on screen.
     const bases = { waitBase: now - queued.timeInQueue, playBase: now - queued.elapsedTime };
@@ -270,7 +335,7 @@ export function showInteractionPrompts(now = performance.now()): void {
       { ...queued, inviteSecondsLeft: inviteSecondsLeft() }, bases, performance.now(), pending.has(queued),
     );
     const remaining = seconds(world.battlefieldInviteDeadlines.get(queued.queueSlot) ?? 0);
-    const row = section(() => `${prefix} · ${liveStatus()}`);
+    const row = section(() => `${prefix()} · ${liveStatus()}`);
     if (queued.status === STATUS_WAIT_JOIN) countdown(row, world.battlefieldInviteDeadlines.get(queued.queueSlot) ?? 0);
     if (queued.status === STATUS_WAIT_JOIN) {
       button(row, "Войти в бой", queued, current, () => world.portToBattleground(queued.queueSlot, true), remaining === 0, true);
@@ -359,20 +424,20 @@ export function showInteractionPrompts(now = performance.now()): void {
     button(row, "Отменить поиск", check, () => world.lfgRoleCheck === check, () => world.leaveLfg());
   }
   if (boot) {
-    const row = section(() => `Исключить ${world.displayName(boot.victimGuid)}? ${boot.reason} · за: ${boot.agree}/${boot.votesNeeded}${boot.voted ? " · голос отправлен" : ""}`);
+    const row = section(() => `Исключить ${world.displayName(boot.victimGuid)}? ${boot.reason} · за: ${boot.agree}/${boot.votesNeeded}${boot.voted || world.lfgBootVotePending ? " · голос отправлен" : ""}`);
     countdown(row, world.lfgBootExpiresAt);
-    button(row, "За исключение", boot, () => world.lfgBoot === boot, () => world.voteToRemove(true), boot.voted);
-    button(row, "Против исключения", boot, () => world.lfgBoot === boot, () => world.voteToRemove(false), boot.voted);
+    button(row, "За исключение", boot, () => world.lfgBoot === boot, () => world.voteToRemove(true), boot.voted || world.lfgBootVotePending);
+    button(row, "Против исключения", boot, () => world.lfgBoot === boot, () => world.voteToRemove(false), boot.voted || world.lfgBootVotePending);
   }
   if (proposal) {
     const answered = proposal.players.filter((player) => player.answered).length;
     const accepted = proposal.players.filter((player) => player.accepted).length;
-    const row = section(`Подземелье ${proposal.dungeonEntry}: группа готова (${accepted}/${proposal.players.length}, ответили ${answered}). Войти?`);
+    const row = section(() => `${dungeonName(proposal.dungeonEntry)}: группа готова (${accepted}/${proposal.players.length}, ответили ${answered}). Войти?`);
     button(row, "Принять вход", proposal, () => world.lfgProposal === proposal, () => world.answerLfgProposal(true));
     button(row, "Отклонить вход", proposal, () => world.lfgProposal === proposal, () => world.answerLfgProposal(false));
   }
   if (offerContinue !== undefined) {
-    const row = section(`Подземелье ${offerContinue} пройдено. Продолжить с этой группой?`);
+    const row = section(() => `${dungeonName(offerContinue)} пройдено. Продолжить с этой группой?`);
     button(row, "Остаться в группе", world, () => world.lfgOfferContinue === offerContinue,
       () => world.dismissLfgContinue());
     button(row, "Покинуть подземелье", world, () => world.lfgOfferContinue === offerContinue,
@@ -393,7 +458,9 @@ export function updateInteractionPrompts(now: number): void {
     // — which also closes the stock dialogs (CheckBinderDist, CheckTalentMasterDist, the lock's own
     // clock): checked each frame only while one is pending, repainted the moment one moves.
     if (world.binderConfirm || world.talentWipeConfirm || world.instanceLock) world.expireInteractionRequests(now);
-    if (confirmationsMoved(world)) {
+    // The finder window opened or closed over a pending proposal: the question moves here or away.
+    if (confirmationsMoved(world)
+      || (world.lfgProposal !== undefined && !frameXmlLfdPublished() && lfgWindowAsksProposal() !== proposalInWindow)) {
       showInteractionPrompts(now);
       return;
     }

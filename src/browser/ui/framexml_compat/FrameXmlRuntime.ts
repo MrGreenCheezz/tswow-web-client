@@ -46,6 +46,17 @@ import {
   parseFrameXml,
 } from "./FrameXmlParser.js";
 import { plainFrameXmlText } from "./FrameXmlText.js";
+import {
+  FRAME_XML_MESSAGE_FADE_DURATION,
+  FRAME_XML_MESSAGE_TIME_VISIBLE,
+  FrameXmlMessageFades,
+  frameXmlInsertMode,
+  frameXmlMessageLayout, // L5 3.34
+  frameXmlReviveMessageFades, // L5 3.34 (was frameXmlResetMessageFades)
+  frameXmlRetimeFading,
+  frameXmlRetimeShown,
+  frameXmlStampMessage,
+} from "./FrameXmlMessageFade.js";
 
 // Keep the runtime's public type spelling local until FrameXmlTypes can be
 // consumed by generated declaration users. The cast is constrained by the
@@ -266,6 +277,11 @@ function collectDeclarations(element: FrameXmlElement): Declarations {
     // not let a child's OnLoad/OnEvent overwrite the parent's handlers while
     // walking through a wrapper.
     if (current !== element && isWidget(current)) return;
+    // An AnimationGroup's (or an Animation's) own <Scripts> belong to that object — GlueWidgets
+    // bindAnimations binds them there. Walking into <Animations> gave the owning frame the group's
+    // handlers too: AnimTimerFrame.xml:27-30's group OnLoad `self:Play()` ran as the frame's OnLoad
+    // and reached a Frame:Play census stub (plan item 3.21).
+    if (name === "Animations") return;
     const nextScope = declarationScope || DECLARATION_CONTAINERS.has(name);
     for (const child of current.children) visit(child, nextScope);
   };
@@ -396,7 +412,8 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
     autoFocus: true, history: [], historyIndex: -1, cursorPosition: 0, selectionRevision: 0,
   };
   readonly messageFrame: FrameXmlMessageFrameState = {
-    maxLines: 128, displayDuration: 0, nonSpaceWrap: false, messages: [], revision: 0,
+    maxLines: 128, displayDuration: FRAME_XML_MESSAGE_TIME_VISIBLE, nonSpaceWrap: false, messages: [], revision: 0,
+    fading: true, fadeDuration: FRAME_XML_MESSAGE_FADE_DURATION, insertMode: "BOTTOM", fadeClock: 0, fadeRevision: 0,
   };
   readonly slider: FrameXmlSliderState = {
     min: 0, max: 0, value: 0, valueStep: 0, orientation: "VERTICAL",
@@ -522,6 +539,18 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
    * difference between a per-frame walk of tens and one of thousands.
    */
   readonly #updateFrames = new Set<MutableFrameXmlFrame>();
+  /** Message frames whose lines are counting down (3.34); only these are looked at by `tick`. */
+  readonly #messageFades = new FrameXmlMessageFades();
+  readonly #messageFadeHost = {
+    visible: (frame: FrameXmlFrame): boolean => this.isVisible(frame),
+    cleared: (frame: FrameXmlFrame): void => {
+      const mutable = this.own(frame);
+      if (!mutable) return;
+      mutable.messageFrame.revision += 1;
+      this.refreshMessageScroll(mutable, true);
+      this.notifyMutation(mutable, "paint");
+    },
+  };
   readonly #createdRoots: FrameXmlFrame[] = [];
   /** Frames created through the Lua/host CreateFrame APIs, for root bookkeeping after SetParent. */
   readonly #createdFrames = new Set<MutableFrameXmlFrame>();
@@ -657,6 +686,19 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const style = label.fontObject ? this.fontObjectStyle(label.fontObject) : undefined;
     const height = Number(label.attributes["fontHeight"] ?? style?.height ?? 14);
     return Math.max(...text.split(/\r\n|\r|\n/).map((line) => [...line].length)) * height * 0.5;
+  }
+
+  /**
+   * 3.35-bounds: the glyph width of `text` in a font object — a SimpleHTML block's lines, which are no
+   * frame of their own. The host's measure reads only a frame's font fields, so it is handed those.
+   */
+  measureFontText(fontObject: string, text: string): number {
+    if (!text) return 0;
+    const probe = { fontObject, attributes: {}, stateTextures: new Map(), text } as unknown as FrameXmlFrame;
+    const measured = this.#measureText?.(probe, text);
+    if (measured !== undefined && Number.isFinite(measured) && measured > 0) return measured;
+    const style = fontObject ? this.fontObjectStyle(fontObject) : undefined;
+    return [...text].length * Number(style?.height ?? 14) * 0.5;
   }
 
   /** Trusted host cursor coordinates in logical UI units, with Y measured from the bottom. */
@@ -1435,7 +1477,19 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       const maxLines = frameXmlNumber(element, "maxLines");
       const displayDuration = frameXmlNumber(element, "displayDuration");
       frame.messageFrame.maxLines = maxLines === undefined ? 128 : Math.max(0, Math.trunc(maxLines));
-      frame.messageFrame.displayDuration = displayDuration === undefined ? 0 : Math.max(0, displayDuration);
+      // The client's loader (0x00968da0) takes a duration only above 0; otherwise its default stays.
+      if (displayDuration !== undefined && displayDuration > 0) frame.messageFrame.displayDuration = displayDuration;
+      const fadeDuration = frameXmlNumber(element, "fadeDuration");
+      if (fadeDuration !== undefined && fadeDuration > 0) frame.messageFrame.fadeDuration = fadeDuration;
+      frame.messageFrame.fading = frameXmlBoolean(element, "fade") ?? true;
+      const insertMode = frameXmlAttribute(element, "insertMode");
+      if (insertMode !== undefined && insertMode.trim() !== "") {
+        frame.messageFrame.insertMode = insertMode.trim().toUpperCase() === "BOTTOM" ? "BOTTOM" : "TOP";
+        // L5 3.34: a ScrollingMessageFrame's loader (0x0096ac50) is the other way round: TOP only for "TOP".
+        if (frame.type === "ScrollingMessageFrame") {
+          frame.messageFrame.insertMode = insertMode.trim().toUpperCase() === "TOP" ? "TOP" : "BOTTOM";
+        }
+      }
     }
     if (frame.type === "Slider" || frame.type === "StatusBar") {
       const state = frame.type === "Slider" ? frame.slider : frame.statusBar;
@@ -1445,6 +1499,13 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       state.max = frameXmlNumber(element, "maxValue") ?? 0;
       state.value = frameXmlNumber(element, "defaultValue") ?? state.min;
       state.valueStep = frameXmlNumber(element, "valueStep") ?? 0;
+      if (frame.type === "Slider") {
+        // L5b-review: the client's loader (0x0096c500) sets a range only from minValue with maxValue,
+        // and a value only from defaultValue on top of that range.
+        const ranged = frameXmlNumber(element, "minValue") !== undefined && frameXmlNumber(element, "maxValue") !== undefined;
+        state.rangeSet = ranged;
+        state.valueSet = ranged && frameXmlNumber(element, "defaultValue") !== undefined;
+      }
     }
   }
 
@@ -1464,6 +1525,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       || frameXmlAttribute(child, "name") !== undefined) return false;
     const inherits = frameXmlAttribute(child, "inherits")?.trim();
     if (inherits) frame.fontObject = inherits.split(",")[0]?.trim() ?? frame.fontObject;
+    // 3.35-bounds: the page font's line spacing, which also parts its paragraphs (0x0096cc90, +0x2cc).
+    const htmlSpacing = frame.type === "SimpleHTML" ? frameXmlNumber(child, "spacing") : undefined;
+    if (htmlSpacing !== undefined) frame.setAttribute("spacing", String(htmlSpacing)); // 3.35-bounds
     const justifyH = frameXmlAttribute(child, "justifyH")?.trim().toUpperCase();
     const justifyV = frameXmlAttribute(child, "justifyV")?.trim().toUpperCase();
     if (justifyH) frame.justifyH = justifyH;
@@ -1563,6 +1627,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           ?? frameXmlAttribute(element, "inherits")?.trim();
         if (style) frame.stateFonts.set(element.name.replace(/Font$/, "").toUpperCase() || "NORMAL", style);
         if (element.name === "NormalFont" && style && !frame.fontObject) frame.fontObject = style;
+        // 3.35-bounds: a SimpleHTML header's own spacing (`<FontStringHeader1 spacing="4">`).
+        const headerSpacing = element.name.startsWith("FontStringHeader") ? frameXmlNumber(element, "spacing") : undefined;
+        if (headerSpacing !== undefined) frame.setAttribute(`spacing${element.name.slice(-1)}`, String(headerSpacing)); // 3.35-bounds
         return true;
       }
       case "ButtonText": {
@@ -2072,6 +2139,14 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     }
   }
 
+  /** Whether any frame is registered for the event right now (what `dispatchEvent` would reach). */
+  hasEventListeners(event: string): boolean {
+    const frames = this.#byEvent.get(event.trim());
+    if (!frames) return false;
+    for (const frame of frames) if (frame.registeredEvents.has(event.trim())) return true;
+    return false;
+  }
+
   dispatchEvent(event: string, ...args: readonly unknown[]): number {
     return this.runInMutationBatch(() => {
       const name = event.trim();
@@ -2125,6 +2200,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   tick(elapsedSeconds: number): number {
     return this.runInMutationBatch(() => {
       this.#runtime?.tickAnimations?.(elapsedSeconds);
+      this.#messageFades.tick(elapsedSeconds, this.#messageFadeHost);
       let dispatched = 0;
       for (const frame of [...this.#updateFrames]) {
         if (!this.#frames.has(frame) || !this.isVisible(frame)) continue;
@@ -2200,6 +2276,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (script === "OnLoad") mutable.loaded = true;
     this.#dispatchDepth += 1;
     try {
+      // L5 3.27: the hooks this call runs are the ones hooked when it began — a handler that clears its
+      // own script still has them called, as Wow.exe's hooking closure (0x00817050) goes on running.
+      const hooks = mutable.scriptHooks.get(script);
       const handler = this.resolveHandler(mutable, script);
       if (handler) {
         try {
@@ -2210,7 +2289,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       } else if (!mutable.scriptOverrides.has(script) && mutable.scriptSources.has(script)) {
         this.executeLegacyScript(mutable, script, args);
       }
-      for (const hook of mutable.scriptHooks.get(script) ?? []) {
+      for (const hook of hooks ?? []) { // L5 3.27 (was the list at this point)
         try {
           hook(mutable, ...args);
         } catch (error) {
@@ -2220,6 +2299,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     } finally {
       this.#dispatchDepth -= 1;
       this.flushPendingNotification();
+      this.flushReleasedScriptHandlers(); // L5 3.27
     }
   }
 
@@ -2396,6 +2476,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const wanted = snapToStep && valueStep > 0
       ? min + Math.round((value - min) / valueStep) * valueStep : value;
     const clamped = Math.max(min, Math.min(Math.max(min, max), wanted));
+    // L5b-review: a slider's value counts as set once SetValue runs with a range (0x0096c090).
+    if (mutable.type === "Slider" && state.rangeSet) state.valueSet = true;
     if (clamped === state.value) return false;
     return this.runInMutationBatch(() => {
       state.value = clamped;
@@ -2411,13 +2493,72 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!mutable || !name) return false;
     mutable.scriptOverrides.add(name);
     mutable.compiledScripts.delete(name);
+    const previous = mutable.scripts.get(name); // L5 3.27
     if (handler) mutable.scripts.set(name, handler);
     else mutable.scripts.delete(name);
+    if (handler) this.holdScriptHandler(handler); // L5 3.27
+    if (previous) this.dropScriptHandler(previous); // L5 3.27
     if (name === "OnUpdate") {
       if (handler) this.#updateFrames.add(mutable);
-      else this.#updateFrames.delete(mutable);
+      // L5 3.27: a frame with a hook left (the host's; Lua's go with SetScript) keeps ticking.
+      else if (!(mutable.scriptHooks.get(name)?.length)) this.#updateFrames.delete(mutable);
     }
     return true;
+  }
+
+  /**
+   * L5 3.27: take one hook off a script — the widget layer's SetScript drops the hooks Lua added, as
+   * Wow.exe's slot loses the hooking closure (0x0049ec80, 0x0049edb0). A dispatch already walking
+   * the hooks still calls it: the list is replaced, not edited.
+   */
+  unhookScript(frame: FrameXmlFrame, script: string, handler: FrameXmlScriptHandler): boolean {
+    const mutable = this.own(frame);
+    const name = script.trim();
+    const hooks = mutable?.scriptHooks.get(name);
+    if (!mutable || !hooks?.includes(handler)) return false;
+    const kept = hooks.filter((hook) => hook !== handler);
+    if (kept.length > 0) mutable.scriptHooks.set(name, kept);
+    else mutable.scriptHooks.delete(name);
+    if (name === "OnUpdate" && kept.length === 0 && !mutable.scripts.has(name)) this.#updateFrames.delete(mutable);
+    this.dropScriptHandler(handler);
+    return true;
+  }
+
+  /** L5 3.27: who is told when no script slot or hook list holds a handler any more (the widget layer frees its Lua function). */
+  onScriptHandlerReleased(listener: ((handler: FrameXmlScriptHandler) => void) | undefined): void {
+    this.#onScriptHandlerReleased = listener;
+  }
+
+  /** L5 3.27: how many script slots and hook lists hold each handler. */
+  readonly #scriptHandlerHolds = new WeakMap<FrameXmlScriptHandler, number>();
+  /** L5 3.27: handlers let go while a script runs; announced when the outermost dispatch ends. */
+  #releasedScriptHandlers: FrameXmlScriptHandler[] = [];
+  #onScriptHandlerReleased: ((handler: FrameXmlScriptHandler) => void) | undefined;
+
+  private holdScriptHandler(handler: FrameXmlScriptHandler): void {
+    this.#scriptHandlerHolds.set(handler, (this.#scriptHandlerHolds.get(handler) ?? 0) + 1);
+  }
+
+  private dropScriptHandler(handler: FrameXmlScriptHandler): void {
+    const holds = this.#scriptHandlerHolds.get(handler) ?? 0;
+    if (holds > 1) {
+      this.#scriptHandlerHolds.set(handler, holds - 1);
+      return;
+    }
+    this.#scriptHandlerHolds.delete(handler);
+    if (!this.#onScriptHandlerReleased) return;
+    this.#releasedScriptHandlers.push(handler);
+    this.flushReleasedScriptHandlers();
+  }
+
+  /** L5 3.27: outside any dispatch, announce the handlers nothing holds — unless one was set again meanwhile. */
+  private flushReleasedScriptHandlers(): void {
+    if (this.#dispatchDepth !== 0 || this.#releasedScriptHandlers.length === 0) return;
+    const released = this.#releasedScriptHandlers;
+    this.#releasedScriptHandlers = [];
+    for (const handler of released) {
+      if (!this.#scriptHandlerHolds.has(handler)) this.#onScriptHandlerReleased?.(handler);
+    }
   }
 
   GetScript(frame: FrameXmlFrame, script: string): FrameXmlScriptHandler | undefined {
@@ -2430,9 +2571,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const mutable = this.own(frame);
     const name = script.trim();
     if (!mutable || !name) return false;
-    const hooks = mutable.scriptHooks.get(name) ?? [];
-    hooks.push(handler);
+    // L5-review: a new list, not the old one grown — a dispatch walking the old list (its call began
+    // before this hook) does not call it, as the client's running closure does not (0x0049edb0).
+    const hooks = [...(mutable.scriptHooks.get(name) ?? []), handler];
     mutable.scriptHooks.set(name, hooks);
+    this.holdScriptHandler(handler); // L5 3.27
     if (name === "OnUpdate") this.#updateFrames.add(mutable);
     return true;
   }
@@ -2789,12 +2932,20 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     g = 1,
     b = 1,
     lineID?: unknown,
-    _isProtected?: unknown,
+    addToTop?: unknown,
     accessID?: unknown,
     extraData?: unknown,
   ): boolean {
     if (!this.isMessageFrame(frame)) return false;
+    // A MessageFrame's is `AddMessage(text[, r, g, b[, a]])` and draws nothing for an empty string
+    // (Wow.exe 0x009747c0); its lines then fade (3.34, FrameXmlMessageFade.ts).
+    if (frame.type === "MessageFrame") return this.addFadingMessage(frame, text, r, g, b, lineID);
     const state = frame.messageFrame;
+    // 3.3.5 `AddMessage(text, r, g, b, id, addToTop, accessID, typeID)`: the combat log refill walks
+    // newest → oldest with addToTop (Blizzard_CombatLog.lua:747), so the window reads oldest first.
+    // A full window keeps what it shows: the line that would go above the oldest does not fit.
+    const top = addToTop !== undefined && addToTop !== null && addToTop !== false;
+    if (top && state.messages.length >= state.maxLines) return true;
     const stickToBottom = frame.scroll.verticalScroll >= frame.scroll.verticalScrollRange;
     const channel = (value: unknown): number => {
       const number = typeof value === "number" ? value : Number(value);
@@ -2807,10 +2958,13 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       ...(accessID === undefined ? {} : { accessID }),
       ...(extraData === undefined ? {} : { extraData }),
     };
-    state.messages.push(message);
+    frameXmlStampMessage(state, message);
+    if (top) state.messages.unshift(message);
+    else state.messages.push(message);
     if (state.messages.length > state.maxLines) {
       state.messages.splice(0, state.messages.length - state.maxLines);
     }
+    this.#messageFades.track(frame, message);
     state.revision += 1;
     this.refreshMessageScroll(frame, stickToBottom);
     // Paint: the lines live in the frame's private message layer, which neither moves nor resizes
@@ -2819,6 +2973,43 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     // 79 sibling measures and the accessibility walk, 2.1 ms a line on the fast cores. The same
     // holds for every other message-layer change below.
     this.notifyMutation(this.own(frame), "paint");
+    return true;
+  }
+
+  /**
+   * MessageFrame:AddMessage. `messages` stays oldest first whatever the insert mode (the renderer
+   * puts the newest at the insert edge), and holds no more lines than the frame's height does: the
+   * client lays its lines into `floor(height / line height)` slots (0x00968790) and a new line
+   * pushes the last slot's out (0x00968210). The height is the declared one, so adding a line never
+   * measures the page; a frame without one keeps `maxLines`.
+   */
+  private addFadingMessage(
+    frame: MutableFrameXmlFrame, text: unknown, r: unknown, g: unknown, b: unknown, alpha: unknown,
+  ): boolean {
+    const value = text === undefined || text === null ? "" : String(text);
+    if (value === "") return true;
+    const state = frame.messageFrame;
+    const channel = (input: unknown): number => {
+      const number = typeof input === "number" ? input : Number(input);
+      return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
+    };
+    const message: FrameXmlMessage = {
+      text: value,
+      color: { r: channel(r), g: channel(g), b: channel(b), a: alpha === undefined || alpha === null ? 1 : channel(alpha) },
+    };
+    frameXmlStampMessage(state, message);
+    state.messages.push(message);
+    const height = Number(frame.attributes["height"]);
+    const insets = frame.textInsets;
+    const usable = height - (insets ? insets.top + insets.bottom : 0);
+    const style = frame.fontObject ? this.fontObjectStyle(frame.fontObject) : undefined;
+    const line = Number(frame.attributes["fontHeight"] ?? style?.height);
+    const keep = usable > 0 && line > 0 ? Math.min(state.maxLines, Math.floor(usable / line + 1e-4)) : state.maxLines;
+    if (state.messages.length > keep) state.messages.splice(0, state.messages.length - keep);
+    this.#messageFades.track(frame, message);
+    state.revision += 1;
+    this.refreshMessageScroll(frame, true);
+    this.notifyMutation(frame, "paint");
     return true;
   }
 
@@ -2855,6 +3046,19 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const state = frame.messageFrame;
     const before = state.messages.length;
     state.messages = state.messages.filter((message) => message.accessID !== accessID);
+    // 3.34-review: the client's call (Lua 0x00973270 → 0x0096a510) ends at the newest line with the
+    // lines it shows at full alpha and fresh countdowns (0x00969fa0, 0x00969410), whether or not a
+    // line went — as a scroll call does.
+    if (frame.type === "ScrollingMessageFrame" && state.messages.length > 0) {
+      frame.scroll.verticalScroll = frame.scroll.verticalScrollRange;
+      frameXmlReviveMessageFades(state, state.messages.length - 1, true); // L5 3.34 (was every line)
+      this.#messageFades.track(frame);
+      if (state.messages.length === before) {
+        this.refreshMessageScroll(frame, true);
+        this.notifyMutation(this.own(frame), "paint");
+        return true;
+      }
+    }
     if (state.messages.length === before) return true;
     state.revision += 1;
     this.refreshMessageScroll(frame, frame.scroll.verticalScroll >= frame.scroll.verticalScrollRange);
@@ -2871,7 +3075,18 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     if (!this.isMessageFrame(frame)) return false;
     const wanted = Math.max(0, Math.min(frame.scroll.verticalScrollRange,
       Number.isFinite(offset) ? offset : 0));
-    if (wanted === frame.scroll.verticalScroll) return true;
+    // Every scroll call — one that cannot move at a boundary too — shows the lines again with fresh
+    // countdowns (Wow.exe 0x00969410; 3.34, FrameXmlMessageFade.ts).
+    const revived = frame.type === "ScrollingMessageFrame" && frame.messageFrame.messages.length > 0;
+    if (revived) {
+      // L5 3.34: at the bottom only the lines that can be in view (the renderer's measure), as the client's slots.
+      frameXmlReviveMessageFades(frame.messageFrame, wanted, wanted >= frame.scroll.verticalScrollRange);
+      this.#messageFades.track(frame);
+    }
+    if (wanted === frame.scroll.verticalScroll) {
+      if (revived) this.notifyMutation(this.own(frame), "paint");
+      return true;
+    }
     frame.scroll.verticalScroll = wanted;
     this.notifyMutation(this.own(frame), "paint");
     return true;
@@ -2886,7 +3101,36 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   }
 
   ScrollUp(frame: FrameXmlFrame): boolean {
+    // L5 3.34: every line in view is the client's "at top" (0x0096a8a0, +0x2d0): no move, the lines revive.
+    if (frame.type === "ScrollingMessageFrame" && frameXmlMessageLayout(frame.messageFrame)?.fits === true) {
+      return this.SetVerticalScroll(frame, this.GetVerticalScroll(frame));
+    }
     return this.SetVerticalScroll(frame, this.GetVerticalScroll(frame) - 1);
+  }
+
+  /**
+   * L5 3.34: ScrollingMessageFrame `SetScrollOffset(offset)` (0x00973470 → 0x0096a970): the line
+   * `offset` lines before the newest becomes the current one — the bottom line, or with insertMode TOP
+   * the top one — taken modulo the line count; `GetCurrentScroll` (0x009690c0) answers that offset and
+   * `ScrollToTop` (0x0096a920) makes the oldest line current. Scroll calls, so the lines revive.
+   */
+  SetMessageScrollOffset(frame: FrameXmlFrame, offset: number): boolean {
+    if (frame.type !== "ScrollingMessageFrame" || !Number.isFinite(offset)) return false;
+    const count = frame.messageFrame.messages.length;
+    if (count === 0) return true;
+    // The client truncates the number (0x0088b9c0) and works in its ring of lines.
+    let target = (count - Math.trunc(offset) + count - 1) % count;
+    if (target < 1) target = 0;
+    return this.SetVerticalScroll(frame, Math.min(target, count - 1));
+  }
+
+  GetMessageCurrentScroll(frame: FrameXmlFrame): number {
+    if (frame.type !== "ScrollingMessageFrame" || frame.messageFrame.messages.length === 0) return 0;
+    return frame.scroll.verticalScrollRange - frame.scroll.verticalScroll;
+  }
+
+  ScrollToTop(frame: FrameXmlFrame): boolean {
+    return this.SetVerticalScroll(frame, 0);
   }
 
   ScrollDown(frame: FrameXmlFrame): boolean {
@@ -2926,14 +3170,60 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
 
   SetTimeVisible(frame: FrameXmlFrame, duration: number): boolean {
     if (!this.isMessageFrame(frame)) return false;
-    frame.messageFrame.displayDuration = Math.max(0,
-      Number.isFinite(duration) ? duration : frame.messageFrame.displayDuration);
+    // A shown line starts its "shown" countdown again at the new value (3.34).
+    frameXmlRetimeShown(frame.messageFrame, Math.max(0,
+      Number.isFinite(duration) ? duration : frame.messageFrame.displayDuration),
+    frame.type === "ScrollingMessageFrame"); // L5 3.34: its rule is 0x00969280's
+    this.#messageFades.track(frame);
     this.notifyMutation(this.own(frame), "paint");
     return true;
   }
 
   GetTimeVisible(frame: FrameXmlFrame): number {
     return this.isMessageFrame(frame) ? frame.messageFrame.displayDuration : 0;
+  }
+
+  /** `SetFadeDuration`: a line with fading left starts that countdown again at the new value (3.34). */
+  SetFadeDuration(frame: FrameXmlFrame, duration: number): boolean {
+    if (!this.isMessageFrame(frame) || !Number.isFinite(duration)) return false;
+    frameXmlRetimeFading(frame.messageFrame, Math.max(0, duration), frame.type === "ScrollingMessageFrame"); // L5 3.34: 0x009692c0's rule
+    this.#messageFades.track(frame);
+    this.notifyMutation(this.own(frame), "paint");
+    return true;
+  }
+
+  GetFadeDuration(frame: FrameXmlFrame): number {
+    return this.isMessageFrame(frame) ? frame.messageFrame.fadeDuration : 0;
+  }
+
+  /** `SetFading`: off, nothing counts and every line keeps the alpha it has (3.34). */
+  SetMessageFading(frame: FrameXmlFrame, fading: boolean): boolean {
+    if (!this.isMessageFrame(frame)) return false;
+    if (frame.messageFrame.fading === fading) return true;
+    frame.messageFrame.fading = fading;
+    frame.messageFrame.fadeRevision += 1;
+    this.#messageFades.track(frame);
+    this.notifyMutation(this.own(frame), "paint");
+    return true;
+  }
+
+  GetMessageFading(frame: FrameXmlFrame): boolean {
+    return this.isMessageFrame(frame) && frame.messageFrame.fading;
+  }
+
+  /** `SetInsertMode("TOP" | "BOTTOM")`: which edge a MessageFrame puts its newest line at. */
+  SetInsertMode(frame: FrameXmlFrame, mode: unknown): boolean {
+    const insertMode = frameXmlInsertMode(typeof mode === "string" ? mode : undefined);
+    if (!this.isMessageFrame(frame) || insertMode === undefined) return false;
+    if (frame.messageFrame.insertMode === insertMode) return true;
+    frame.messageFrame.insertMode = insertMode;
+    frame.messageFrame.revision += 1;
+    this.notifyMutation(this.own(frame), "paint");
+    return true;
+  }
+
+  GetInsertMode(frame: FrameXmlFrame): string | undefined {
+    return this.isMessageFrame(frame) ? frame.messageFrame.insertMode : undefined;
   }
 
   SetTexture(frame: FrameXmlFrame, texture: unknown): boolean {

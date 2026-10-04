@@ -147,8 +147,13 @@ export interface GameContext {
   /** Spell rows already resolved, by spell id. */
   spells: Map<number, SpellMetadata>;
   /**
-   * When the global cooldown ends. `SPELL_CAST_ACCEPTED` anchors it to the server-confirmed cast;
-   * the duration is the accepted spell's `StartRecoveryTime` from the DBC.
+   * When the global cooldown ends. L12-review 5.30: predicted from the request (`SPELL_CAST_SENT`) for
+   * the realm's duration or less (game/PredictedGlobalCooldown.ts, GlobalCooldownDuration.ts), taken
+   * back by a refusal; `SPELL_CAST_ACCEPTED` confirms it without moving it. L13-review 5.30: since L13 this is
+   * the end of the StartRecoveryCategory 133 global cooldown only (the ordinary spells', plus rows of an older
+   * gateway that carry no category); a spell is held — and swept — by its own category's end:
+   * `globalCooldownEndFor(game, row)` and `globalCooldownSpanFor(game, row)` (category 0 never, 38 by 38).
+   * Writing it from outside (the world's reset, a test) is the base every category but 0 then waits for.
    */
   globalCooldownUntil: number;
   /**

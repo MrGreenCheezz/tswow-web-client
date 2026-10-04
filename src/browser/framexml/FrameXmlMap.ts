@@ -38,9 +38,29 @@ export interface FrameXmlMapSource {
   readonly deathReleaseLocation?: () => FrameXmlMapLocation | null | undefined;
   /** The active battleground's authored flag/vehicle pins, if the world supplies them. */
   readonly battlefieldFlagPositions?: () => readonly {
-    readonly x: number; readonly y: number; readonly texture: string;
+    // L17 3.14: the token is nil when the carrier's side is unknown (Wow.exe 0x0054d010).
+    readonly x: number; readonly y: number; readonly texture: string | undefined;
   }[] | undefined;
   readonly battlefieldVehicleCount?: () => number | undefined;
+  /** L17 3.14: the vehicles GetBattlefieldVehicleInfo lists (Wow.exe 0x00be9f70, at most 40). */
+  readonly battlefieldVehicles?: () => readonly FrameXmlBattlefieldVehicle[] | undefined;
+  /** L17 3.14: Map.dbc MinimapIconScale of the running battlefield's map (0x00bea564), when known. */
+  readonly battlefieldMapIconScale?: () => number | undefined;
+}
+
+/** L17 3.14: one in-sight vehicle as GetBattlefieldVehicleInfo (0x0054c4d0) reads it. */
+export interface FrameXmlBattlefieldVehicle {
+  /** Where the vehicle stands; projected onto the displayed map like the player's own position. */
+  readonly location: FrameXmlMapLocation;
+  /** The unit's name (0x0072a000). */
+  readonly name: string | undefined;
+  /** UNIT_FLAG_POSSESSED (UNIT_FIELD_FLAGS byte 3, bit 0). */
+  readonly possessed: boolean;
+  /** "Drive", "Fly", "Idle", "Airship Horde", "Airship Alliance" by UiLocomotionType; nil without the vehicle flag. */
+  readonly type: string | undefined;
+  /** The player rides it: the stock maps leave it to the player arrow. */
+  readonly isPlayer: boolean;
+  readonly alive: boolean;
 }
 
 export interface FrameXmlMapPump {
@@ -337,7 +357,33 @@ export class FrameXmlMap {
   }
 
   getNumBattlefieldVehicles(): number | undefined {
+    // L17 3.14: Wow.exe 0x0054a140 answers the list's length whatever map is shown (Wintergrasp's
+    // vehicles too); the stock maps hide them on world and continent maps themselves.
+    const vehicles = this.#source.battlefieldVehicles?.();
+    if (vehicles) return vehicles.length;
     return this.#isBattlegroundMap() ? this.#source.battlefieldVehicleCount?.() : 0;
+  }
+
+  /**
+   * L17 3.14: `GetBattlefieldVehicleInfo(index)`, 0x0054c4d0 — the index-th listed vehicle in view,
+   * projected onto the displayed map (0x00544140): x, y, name, isPossessed, vehicleType, orientation,
+   * isPlayer, isAlive; nothing for an index past the list or a vehicle off the shown map (a (0, 0)
+   * answer, which the client tests for).
+   */
+  getBattlefieldVehicleInfo(index: number): MapValues {
+    const vehicle = this.#source.battlefieldVehicles?.()?.[index - 1];
+    const node = this.#node();
+    if (!vehicle || node?.kind !== "area") return NOTHING;
+    const point = this.#pointOnMap(node.mapArea, vehicle.location);
+    if (!point || !(point.u > 0 && point.u <= 1) || !(point.v > 0 && point.v <= 1)) return NOTHING;
+    return [point.u, point.v, vehicle.name, vehicle.possessed, vehicle.type,
+      vehicle.location.orientation ?? 0, vehicle.isPlayer, vehicle.alive];
+  }
+
+  /** L17 3.14: `GetBattlefieldMapIconScale()`, 0x0054c740 — the battlefield map's MinimapIconScale, else 1. */
+  getBattlefieldMapIconScale(): number {
+    const scale = this.#source.battlefieldMapIconScale?.();
+    return scale !== undefined && Number.isFinite(scale) ? scale : 1;
   }
 
   getCorpseMapPosition(): MapValues {
@@ -373,6 +419,51 @@ export class FrameXmlMap {
     const point = location && this.#pointOnMap(node.mapArea, location);
     return point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1
       ? [point.u, point.v] : OFF_MAP;
+  }
+
+  /** 3.13c: whether the area tables are here, so a quest POI can be placed on the displayed map. */
+  get hasAreaData(): boolean {
+    return this.#ensureData() !== undefined;
+  }
+
+  /**
+   * 3.13c: where a world position of a quest POI blob falls on the displayed map, by Wow.exe's tests
+   * (0x5e0110 / 0x5e0180 → 0x544140): on a dungeon floor the blob's map and floor must be the floor's;
+   * otherwise its map must be the displayed area's and — with flags 0x4 — its WorldMapArea the
+   * displayed one. Outside [0, 1]² (or on no area map) there is no point.
+   */
+  questPoiPoint(
+    blob: { readonly map: number; readonly worldMapAreaId: number; readonly floor: number; readonly flags?: number },
+    x: number, y: number,
+  ): { u: number; v: number } | undefined {
+    const node = this.#node();
+    if (node?.kind !== "area" || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+    const area = node.mapArea;
+    const floor = this.#floor;
+    const row = floor > 0 ? this.#floorRows(area).find((entry) => entry.floorIndex
+      === floor - (area.defaultDungeonFloor === -1 ? 1 : 0)) : undefined;
+    if (row) {
+      if (blob.map !== row.mapId || blob.floor !== row.floorIndex) return undefined;
+    } else if (blob.map !== area.mapId || (((blob.flags ?? 0) & 4) !== 0 && blob.worldMapAreaId !== area.id)) {
+      return undefined;
+    }
+    const point = this.#pointOnMap(area, { mapId: blob.map, areaId: 0, x, y });
+    return point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1 ? point : undefined;
+  }
+
+  /**
+   * 3.13d (L6): the displayed WorldMapArea's |LocLeft − LocRight| in yards, which sizes the quest icon
+   * spread (Wow.exe 0x5e3224); undefined on a dungeon floor or without an area map, where the client
+   * spreads nothing.
+   */
+  questPoiMapWidth(): number | undefined {
+    const node = this.#node();
+    if (node?.kind !== "area") return undefined;
+    const area = node.mapArea;
+    const floor = this.#floor;
+    if (floor > 0 && this.#floorRows(area).some((entry) => entry.floorIndex
+      === floor - (area.defaultDungeonFloor === -1 ? 1 : 0))) return undefined;
+    return Math.abs(area.left - area.right);
   }
 
   processMapClick(u: number, v: number): void {
@@ -663,6 +754,12 @@ export const FRAMEXML_MAP_BINDINGS: Readonly<Record<string, FrameXmlMapBinding>>
     ? [host.map.getNumBattlefieldFlagPositions()] : NOTHING,
   GetBattlefieldFlagPosition: (host, args) => host.map?.getBattlefieldFlagPosition(integer(args[0]) ?? 0) ?? NOTHING,
   GetNumBattlefieldVehicles: (host) => host.map ? [host.map.getNumBattlefieldVehicles()] : NOTHING,
+  // L17 3.14: the index is rounded (0x0054c4d0), the scale is 1 without a battlefield (0x0054c740).
+  GetBattlefieldVehicleInfo: (host, args) => {
+    const index = finite(args[0]);
+    return index === undefined ? NOTHING : host.map?.getBattlefieldVehicleInfo(Math.round(index)) ?? NOTHING;
+  },
+  GetBattlefieldMapIconScale: (host) => [host.map?.getBattlefieldMapIconScale() ?? 1],
   GetCorpseMapPosition: (host) => host.map?.getCorpseMapPosition() ?? NOTHING,
   GetDeathReleasePosition: (host) => host.map?.getDeathReleasePosition() ?? NOTHING,
   GetMapLandmarkInfo: (host, args) => host.map?.getMapLandmarkInfo(integer(args[0]) ?? 0) ?? NOTHING,

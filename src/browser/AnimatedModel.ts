@@ -11,6 +11,7 @@ import {
   type WvmSkeleton, type WvmSkeletonClip, type WvmSkeletonGlobalChannel,
 } from "./Wvm.js";
 import { markWvaClipSetConsumed, wvaClipSetSpan } from "./WvaAnimationDecode.js";
+import { seatPoseFamily, seatPoseWanted, vehicleSeatTransition, type VehiclePassengerSeatPose } from "./VehicleSeatPose.js"; // 11.02-H
 import { ANIMATION_FALLBACK, ANIMATION_IDS } from "../generated/animations.js";
 import { MOVEMENT_FLAGS } from "../world/MovementProtocol.js";
 import {
@@ -915,7 +916,11 @@ export function needsSidecarAnimations(
 export type AnimationRequestFamily = "any" | "mount" | "stealth";
 
 /** The family a pose's own `poseAnimation` list belongs to, so the two can never drift apart. */
-export function poseAnimationFamily(pose: Pick<UnitPose, "mounted" | "stealth">): AnimationRequestFamily {
+export function poseAnimationFamily(
+  pose: Pick<UnitPose, "mounted" | "stealth" | "vehicleSeat"> & { readonly dead?: boolean }, // 11.02-H: vehicleSeat, dead
+): AnimationRequestFamily {
+  // 11.02-H: a vehicle seat's ride loop is a seat pose like the rider's (`poseAnimation`'s branch).
+  if (seatPoseFamily(pose.vehicleSeat, pose.dead === true)) return "mount";
   if (pose.mounted === true) return "mount";
   return pose.stealth === true ? "stealth" : "any";
 }
@@ -1692,6 +1697,13 @@ export interface UnitPose {
    */
   mountSeat?: "upright" | "reclined" | "reclinedPassenger";
   /**
+   * 11.02-H: the vehicle seat the unit sits in, once the vehicle tables are here — the row's ride
+   * loop for the whole body, the one-shot on taking it and HIDE_PASSENGER (`VehicleSeatPose.ts`,
+   * Wow.exe 0x00747b20/0x007485b0). The seat row above arrived this way; `mountSeat` stays the
+   * mount's. Absent off a vehicle, on a ship, a lift or a mount, and without the tables.
+   */
+  vehicleSeat?: VehiclePassengerSeatPose | undefined;
+  /**
    * The unit is sneaking, so its ground locomotion is the crouched ladder.
    *
    * The same flag that fades it (`unitAppearance` in `world/Fields.ts`), and deliberately only the
@@ -1969,6 +1981,10 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   // seat pose that lives in the sidecar and none of them is a base id the fresh template already
   // resolves. That is the same precedent `spellVisualAnimationCandidates` set: what might be drawn
   // and what must be fetched are one question here.
+  // 11.02-H: a vehicle seat's ride loop, by the same rule — the one id, no Stand behind it, resolved
+  // inside the seat family (`poseAnimationFamily`). A seat that names no loop falls through.
+  const seatWanted = seatPoseWanted(pose.vehicleSeat);
+  if (seatWanted !== undefined) return { wanted: seatWanted, loop: true };
   if (pose.mounted) return { wanted: mountedRiderAnimations(pose), loop: true };
 
   const forward = has(MOVEMENT_FLAGS.forward);
@@ -2820,6 +2836,10 @@ export function mountSpecialAnimation(flying: boolean): number | undefined {
  */
 export function poseTransition(previous: UnitPose | undefined, next: UnitPose): number | undefined {
   if (!previous || next.dead) return undefined;
+  // 11.02-H: in or out of a vehicle seat, the only one-shot is the seat's own start on taking it
+  // (RideAnimStart / RideUpperAnimStart, Wow.exe 0x00747b20) — the vehicle does any jumping.
+  const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat);
+  if (seatTransition !== false) return seatTransition;
   const airborne = isAirborne;
   const swimming = (pose: UnitPose): boolean => (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0;
   if (swimming(next) || swimming(previous)) return undefined;

@@ -476,6 +476,26 @@ export class DatasetFingerprint {
     return this.#archiveRevision !== this.#cleanArchiveRevision;
   }
 
+  /** Whether the next `poll()` will walk (rather than answer "nothing changed" from the interval). */
+  get dueForWalk(): boolean {
+    return this.#pending !== undefined || this.#intervalMs === 0 || this.archiveEventsPending
+      || this.#checkedAt === undefined || this.#now() - this.#checkedAt >= this.#intervalMs;
+  }
+
+  /**
+   * Whether a request has to wait for the walk instead of letting it run beside the answer (10.21 b).
+   *
+   * Only when a change is *known* — the archive watch reported a write — or there is no baseline yet,
+   * or the interval is 0 (tests that edit the dataset and expect the very next request to see it).
+   * An interval that merely ran out starts the walk in the background: the 42–110 ms it costs used
+   * to land on the first request after every two idle seconds. The price is that a DBC edit, which
+   * no watch reports, is seen one request later; validators (`ensureCurrent`, CachePolicy's epoch
+   * tags) move with the epoch, so that one request is answered consistently from the old state.
+   */
+  get mustWait(): boolean {
+    return this.#intervalMs === 0 || this.archiveEventsPending || this.#checkedAt === undefined;
+  }
+
   /**
    * Whether one stamped file still belongs to the watched dataset/client.
    *

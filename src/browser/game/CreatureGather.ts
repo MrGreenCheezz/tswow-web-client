@@ -149,15 +149,53 @@ export function gatherPlan(
   object: WorldObjectState,
   metadataOf: (spellId: number) => GatherSpellRow | undefined = (spellId) => game.spells.get(spellId),
 ): GatherPlan | undefined {
+  const resolved = resolveGather(world, object, metadataOf);
+  if (resolved === undefined) return undefined;
+  if (resolved === "pending") return { hint: TEMPLATE_PENDING_HINT };
+  const { skill, spellId } = resolved;
+  return spellId === undefined ? { hint: `Нужен навык: ${SKILL_NAMES[skill]}` } : { spellId, guid: object.guid };
+}
+
+/** Which skill a hovered body asks for, and whether this character knows a spell that answers it. */
+export interface GatherCursor {
+  readonly skill: GatherSkill;
+  readonly able: boolean;
+}
+
+/**
+ * The pointer over a body the click would gather from, or `undefined` where it would not.
+ *
+ * The original client draws one cursor per skill, with a greyed twin for a character that cannot
+ * use it (`Interface/Cursor/Skin`, `GatherHerbs`, `Mine`, `EngineerSkin` and `Unable*` beside each,
+ * in the client's own archives). `able` follows the same rule as the click — a known spell of the
+ * body's own skill; whether that skill is high enough stays the realm's answer
+ * (`SPELL_FAILED_LOW_CASTLEVEL`). A body with loot on it is the bag's, and a template still out
+ * gives no cursor rather than a guessed skill.
+ */
+export function gatherCursor(
+  world: Pick<WorldClient, "creatureTemplate" | "knownSpells">,
+  object: WorldObjectState,
+  metadataOf: (spellId: number) => GatherSpellRow | undefined = (spellId) => game.spells.get(spellId),
+): GatherCursor | undefined {
+  const resolved = resolveGather(world, object, metadataOf);
+  if (resolved === undefined || resolved === "pending") return undefined;
+  return { skill: resolved.skill, able: resolved.spellId !== undefined };
+}
+
+/** The one reading both the click and the cursor share: body, loot, template, skill, spell. */
+function resolveGather(
+  world: Pick<WorldClient, "creatureTemplate" | "knownSpells">,
+  object: WorldObjectState,
+  metadataOf: (spellId: number) => GatherSpellRow | undefined,
+): { skill: GatherSkill; spellId: number | undefined } | "pending" | undefined {
   if (!isSkinnableCorpse(object) || isLootable(object)) return undefined;
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   if (entry <= 0) return undefined;
   const template = world.creatureTemplate(entry, object.guid);
-  if (!template) return { hint: TEMPLATE_PENDING_HINT };
+  if (!template) return "pending";
   if (!template.found) return undefined;
   const skill = gatherSkillOf(template.flags);
-  const spellId = gatherSpellFor(world.knownSpells, metadataOf, skill);
-  return spellId === undefined ? { hint: `Нужен навык: ${SKILL_NAMES[skill]}` } : { spellId, guid: object.guid };
+  return { skill, spellId: gatherSpellFor(world.knownSpells, metadataOf, skill) };
 }
 
 /**

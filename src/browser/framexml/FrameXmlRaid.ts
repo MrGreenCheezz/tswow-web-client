@@ -67,7 +67,10 @@ export interface FrameXmlRaidContext {
   world(): FrameXmlRaidWorld | undefined;
   mapInfo?(mapId: number): { readonly name: string; readonly instanceType: number } | undefined;
   areaName?(areaId: number): string | undefined;
-  classInfo?(classId: number): readonly [name: string, token: string] | undefined;
+  /** L3-review: `female` picks the sexed name (Wow.exe 0x7159e0); undefined, `Name_lang`. */
+  classInfo?(classId: number, female?: boolean): readonly [name: string, token: string] | undefined;
+  /** L3-review: a character's sex as the name cache holds it (0x573690/0x6b4130 read +0x144). */
+  female?(guid: bigint): boolean | undefined;
   memberFacts?(guid: bigint): FrameXmlRaidMemberFacts | undefined;
   playerName?(): string | undefined;
 }
@@ -153,7 +156,8 @@ export class FrameXmlRaidModel {
     const group = this.#inRaid();
     if (!row || !group) return undefined;
     const facts = this.#context.memberFacts?.(row.guid);
-    const classInfo = facts?.classId === undefined ? undefined : this.#context.classInfo?.(facts.classId);
+    const classInfo = facts?.classId === undefined ? undefined
+      : this.#context.classInfo?.(facts.classId, this.#context.female?.(row.guid)); // L3-review: 0x573690's sex
     const rank = group.leaderGuid === row.guid ? 2 : (row.flags & MEMBER_FLAG_ASSISTANT) !== 0 ? 1 : 0;
     const role = (row.flags & MEMBER_FLAG_MAINTANK) !== 0 ? "MAINTANK"
       : (row.flags & MEMBER_FLAG_MAINASSIST) !== 0 ? "MAINASSIST" : undefined;

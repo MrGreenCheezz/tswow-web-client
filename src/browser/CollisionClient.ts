@@ -1,5 +1,6 @@
 import { decodeCollisionModel, type CollisionModel } from "../world/CollisionFormat.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 export type { CollisionModel };
 
@@ -234,7 +235,7 @@ export class CollisionClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?v=3`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?v=3`));
       if (response.status === 204 || response.status === 404) {
         // The extractor wrote no collision for this model, which is its way of saying it has none.
         // 404 remains accepted for older gateways; the current route uses 204 so the browser does
@@ -276,7 +277,7 @@ export class CollisionClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?groups=${groups.join(",")}&v=3`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/collision/model/${encodeURIComponent(name)}?groups=${groups.join(",")}&v=3`));
       if (!response.ok || response.status === 204) {
         if (response.status === 204) {
           for (const group of groups) {

@@ -1,4 +1,5 @@
 import { TextureBitmapCache } from "./TextureBitmaps.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 /**
  * The baked minimap pictures, fetched by grid cell.
@@ -76,7 +77,7 @@ export class MinimapTileClient {
 
   async #loadIndex(map: number): Promise<void> {
     try {
-      const response = await fetch(`${this.#baseUrl}/minimap/${map}/index.json`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/minimap/${map}/index.json`));
       if (!response.ok) throw new Error(`Minimap gateway returned ${response.status}`);
       const value: unknown = await response.json();
       const tiles = (value as { tiles?: Record<string, unknown> } | null)?.tiles;

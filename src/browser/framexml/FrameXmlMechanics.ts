@@ -19,6 +19,9 @@
  *   not their own character and whose `SMSG_PET_SPELLS` bar is not a vehicle's. Both buttons carry
  *   the possessing spell — the aura on the controlled unit that the player cast — so slot 2's
  *   `CancelUnitBuff("player", name)` names the player's matching buff where one exists.
+ *   11.02-IF: superseded for the live seam by Wow.exe's own rule (FrameXmlPossess.ts: the character's
+ *   own aura, looked for on a PLAYER_FARSIGHT change; slot 2 the SpellIcon 693 cancel button); this
+ *   answer remains for a seam without that model (the canned world).
  * * `GetBattlefieldWinner()` — WorldStateFrame.lua:313/348/515: `MSG_PVP_LOG_DATA`'s winner byte
  *   once its «ended» byte is set (0 Horde, 1 Alliance, as :556 compares), nil during the match.
  * * `RequestBattlefieldPositions()` — `MSG_BATTLEGROUND_PLAYER_POSITIONS`, the flag-carrier poll.
@@ -40,7 +43,8 @@
  *   (PlayerFrame.lua:150, PartyMemberFrame.lua:274; no voice chat) are false; nothing here is
  *   pretending to be a Mac, a play-time limit or a speaker.
  * * `RegisterStaticConstants(STATIC_CONSTANTS)` — Constants.lua:475 hands the C client an empty
- *   table nothing in the corpus reads back; answering nothing is what the table's readers see.
+ *   table; Wow.exe (0x5ac320) fills it with the lag kinds Loot = 1 … Spell = 6, which HelpFrame.lua
+ *   passes to GMReportLag. The Lua half below does the same (8.17); the host binding stays empty.
  *
  * `GetAddOnMetadata` is answered by FrameXmlBoot directly from the load-on-demand runtime's TOCs and
  * `GetLFGQueuedList` by FrameXmlLfd's Lua prelude; neither is duplicated here.
@@ -53,7 +57,7 @@ import type { ActiveAura } from "../../world/AuraProtocol.js";
 import { isVehicleActionBar, type PetActionButton } from "../../world/PetProtocol.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
-import { className, classFileName } from "../ui/UnitSnapshot.js";
+import { className, classFileName, knownClassIds } from "../ui/UnitSnapshot.js";
 import { FRAMEXML_THREAT_BINDINGS, FRAMEXML_THREAT_PRELUDE, type FrameXmlThreatHost } from "./FrameXmlThreat.js";
 import { FRAMEXML_QUEST_ABANDON_BINDINGS, type FrameXmlQuestAbandonHost } from "./FrameXmlQuestAbandon.js";
 import { FRAMEXML_CHAT_WINDOW_FLAG_BINDINGS, type FrameXmlChatWindowFlagsHost } from "./FrameXmlChatWindowFlags.js";
@@ -235,14 +239,16 @@ export class FrameXmlMechanicsModel {
 }
 
 /**
- * `FillLocalizedClassList`'s rows: ChrClasses.Filename then the name this client shows for it.
- * The same rows for both tables: one name per class is what the dataset route carries (file comment).
+ * `FillLocalizedClassList`'s rows: ChrClasses.Filename then the name this client shows for it, for
+ * every class the dataset has (`knownClassIds`, so TSWoW's 12 and 13 too). `female` picks
+ * `Name_female_lang`, else `Name_male_lang`, each falling back to the base name (9.05). Id order:
+ * the Lua half keys the table by token, so the order is not observable.
  */
-export function frameXmlLocalizedClassPairs(): readonly string[] {
+export function frameXmlLocalizedClassPairs(female = false): readonly string[] {
   const pairs: string[] = [];
-  for (let classId = 1; classId <= 11; classId++) {
+  for (const classId of knownClassIds()) {
     const token = classFileName(classId);
-    if (token !== undefined) pairs.push(token, className(classId));
+    if (token !== undefined) pairs.push(token, className(classId, female));
   }
   return pairs;
 }
@@ -270,9 +276,14 @@ function indexOf(value: unknown): number {
   return Number.isFinite(index) ? Math.trunc(index) : 0;
 }
 
-/** The timed quests' remaining seconds with their 1-based rows, in log order. */
+/**
+ * The timed quests' remaining seconds with their 1-based rows, in log order. Every row counts, the
+ * collapsed tail included (Wow.exe 0x005e6240 / 0x005e4fb0 walk the whole list): the log has at
+ * most visible + quests rows (headers are visible), and a header row has no time left.
+ */
 function questTimers(host: FrameXmlMechanicsHost): readonly { readonly index: number; readonly seconds: number }[] {
-  const count = host.questLogEntryCount?.()[0] ?? 0;
+  const entries = host.questLogEntryCount?.();
+  const count = entries ? entries[0] + entries[1] : 0;
   const timers: { index: number; seconds: number }[] = [];
   for (let index = 1; index <= count; index++) {
     const seconds = host.questLogTimeLeft?.(index);
@@ -320,7 +331,7 @@ export const FRAMEXML_MECHANICS_BINDINGS: Readonly<Record<string,
     return timer === undefined ? NOTHING : [timer.index];
   },
   // The Lua half (FRAMEXML_MECHANICS_PRELUDE) writes these pairs into the table stock passes.
-  FillLocalizedClassList: () => [...frameXmlLocalizedClassPairs()],
+  FillLocalizedClassList: (_host, args) => [...frameXmlLocalizedClassPairs(args[0] === true)],
   IsMacClient: () => FALSE,
   NoPlayTime: () => FALSE,
   PartialPlayTime: () => FALSE,
@@ -341,6 +352,14 @@ do
       if type(t) ~= "table" then return end
       local names = { pairsOf(isFemale and true or false) }
       for index = 1, #names, 2 do t[names[index]] = names[index + 1] end
+    end
+  end
+  -- 8.17: Wow.exe RegisterStaticConstants (0x5ac320) fills the table it is handed with the lag kinds
+  -- of its table at 0x00acfac0; HelpFrame.lua:455 passes them to GMReportLag.
+  if impl ~= nil then
+    impl.RegisterStaticConstants = function(t)
+      if type(t) ~= "table" then return end
+      t.Loot, t.AuctionHouse, t.Mail, t.Chat, t.Movement, t.Spell = 1, 2, 3, 4, 5, 6
     end
   end
 end

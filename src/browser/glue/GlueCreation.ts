@@ -2,8 +2,12 @@ import type { CharacterOptions } from "../CharacterAtlas.js";
 import type { CreationClass, CreationRace } from "../../gateway/CharacterCreation.js";
 import type { StartOutfitItem } from "../../gateway/CharStartOutfit.js";
 import type { GlueSceneLook } from "./GlueCharacterScene.js";
-import { RESPONSE_CODE_NAMES } from "../../generated/responseCodes.js";
-import { messageFor, openStatusDialog, responseKey } from "./GlueMessages.js";
+import { RESPONSE_CODE_NAMES, RESPONSE_CODES } from "../../generated/responseCodes.js";
+import { describeFailure, messageFor, openStatusDialog, responseKey, showStatusMessage } from "./GlueMessages.js";
+import { checkCharacterName, type GlueNameRuleOptions } from "./GlueNameRules.js";
+import type { CharacterSummary } from "../../world/CharacterProtocol.js";
+import { paidServiceKind, RESPONSE_SUCCESS, type PaidServiceKind } from "../../world/CharacterServiceProtocol.js";
+import type { GluePaidServiceOutcome, GluePaidServiceRequest } from "./GlueSession.js";
 
 /**
  * What the character-creation screen has chosen, and the rules that keep it choosable.
@@ -81,6 +85,8 @@ export interface GlueCreationOptions {
   readonly tables: () => GlueCreationTables;
   /** `CreateCharacter(name)` — the world reply code, or undefined when there is no connection. */
   readonly create?: (request: GlueCreateRequest) => Promise<number | undefined>;
+  /** `CreateCharacter(name)` in paid mode (2.08): the session's `paidService`. */
+  readonly paid?: (request: GluePaidServiceRequest) => Promise<GluePaidServiceOutcome>;
   /** How the screen is told something happened. */
   readonly fireEvent?: (event: string, ...args: readonly unknown[]) => void;
   readonly setGlueScreen?: (name: string) => void;
@@ -95,6 +101,10 @@ export interface GlueCreationOptions {
   readonly onChanged?: () => void;
   /** `undefined` keeps the corpus' own wording; the host resolves a GlueStrings key. */
   readonly glueString?: (key: string) => string | undefined;
+  /** Whether the corpus defines `GlueDialogTypes[type]`, for a failed connection's dialog. */
+  readonly hasDialogType?: (type: string) => boolean;
+  /** Which alphabets the name may use right now; the client's defaults without it. */
+  readonly nameRules?: () => GlueNameRuleOptions;
   readonly onDiagnostic?: (message: string) => void;
   /** Injected in tests so a random look is reproducible. */
   readonly random?: () => number;
@@ -130,6 +140,26 @@ export interface GlueCreationLook {
 }
 
 const DEATH_KNIGHT_CLASS = 6;
+
+/** The character `CustomizeExistingCharacter` loaded, as it was when it was loaded (2.08). */
+export interface GluePaidCharacter {
+  readonly guid: bigint;
+  readonly name: string;
+  readonly race: number;
+  readonly classId: number;
+  /** Which packet `CreateCharacter` sends for it, by its list entry's customise flags. */
+  readonly kind: PaidServiceKind;
+}
+
+/** The status dialog each paid packet opens while it waits (Wow.exe 0x4d8e10, 0x4d8f20, 0x4d9040). */
+const PAID_IN_PROGRESS: Readonly<Record<PaidServiceKind, readonly [key: string, text: string]>> = {
+  customize: ["CHAR_CUSTOMIZE_IN_PROGRESS", "Изменение внешности персонажа…"],
+  faction: ["FACTION_CHANGE_IN_PROGRESS", "Обновление фракции…"],
+  race: ["RACE_CHANGE_IN_PROGRESS", "Обновление расы…"],
+};
+
+/** Upper-case ASCII folded, nothing else — the client compares the names with `_strnicmp`. */
+const asciiFold = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
 /**
  * Which `Interface\Glues\Models\UI_*` set stands behind a race on the creation screen.
@@ -179,6 +209,8 @@ export class GlueCreation {
   /** Bumped by every profile change; a late fetch for an older profile is dropped. */
   #generation = 0;
   #creating = false;
+  /** Paid mode (2.08): set by `beginPaidService`, cleared by `reset` (ResetCharCustomize). */
+  #paid: GluePaidCharacter | undefined;
 
   constructor(options: GlueCreationOptions) {
     this.#options = options;
@@ -391,10 +423,73 @@ export class GlueCreation {
 
   /**
    * `ResetCharCustomize()` — what `CharacterCreate_OnShow` calls, and the comment beside it in the
-   * corpus reads «randomly selects a combination». So this is a randomise and not a zeroing.
+   * corpus reads «randomly selects a combination». So this is a randomise and not a zeroing. It also
+   * ends paid mode: Wow.exe 0x4e1fd0 forgets the paid character before anything else.
    */
   reset(): void {
+    this.#paid = undefined;
     this.randomize();
+  }
+
+  /* --- Paid services (2.08) ------------------------------------------------------------------ */
+
+  /** The character in paid mode, or undefined on an ordinary creation screen. */
+  get paid(): GluePaidCharacter | undefined {
+    return this.#paid;
+  }
+
+  /**
+   * `CustomizeExistingCharacter(index)` — the existing character on the screen (Wow.exe 0x4e2330): its
+   * race, class, sex and the five looks it wears, with nothing randomised and nothing pulled into the
+   * new profile's range (`refreshProfile(false)`); a look the core zeroed for being invalid
+   * (Player.cpp:1502-1507) stays zero. A race or class the screen has no button for leaves that
+   * selection as it was, as the client's lookup does. A row that is not there changes nothing.
+   */
+  beginPaidService(character: CharacterSummary | undefined): boolean {
+    if (!character) return false;
+    this.#paid = {
+      guid: character.guid,
+      name: character.name,
+      race: character.race,
+      classId: character.classId,
+      kind: paidServiceKind(character.customizeFlags),
+    };
+    const raceAt = this.races.findIndex((race) => race.id === character.race);
+    if (raceAt >= 0) this.#raceIndex = raceAt + 1;
+    else this.#options.onDiagnostic?.(`paid service: race ${character.race} has no button`);
+    const classAt = this.classes.findIndex((entry) => entry.id === character.classId);
+    if (classAt >= 0) this.#classIndex = classAt + 1;
+    else this.#options.onDiagnostic?.(`paid service: class ${character.classId} has no button`);
+    this.#sex = character.gender === 1 ? SEX_FEMALE : SEX_MALE;
+    this.#look = {
+      skin: character.skin,
+      face: character.face,
+      hairStyle: character.hairStyle,
+      hairColor: character.hairColor,
+      facialHair: character.facialHair,
+    };
+    void this.refreshProfile(false);
+    return true;
+  }
+
+  /**
+   * `PaidChange_GetCurrentRaceIndex()` — the loaded character's race as a button number, whatever the
+   * screen has chosen since; 0 when it has none (Wow.exe 0x4e0ca0: the lookup's -1, plus one).
+   */
+  paidRaceIndex(): number {
+    const paid = this.#paid;
+    return paid ? this.races.findIndex((race) => race.id === paid.race) + 1 : 0;
+  }
+
+  /** `PaidChange_GetCurrentClassIndex()` — the same for the class (Wow.exe 0x4e0cd0). */
+  paidClassIndex(): number {
+    const paid = this.#paid;
+    return paid ? this.classes.findIndex((entry) => entry.id === paid.classId) + 1 : 0;
+  }
+
+  /** `PaidChange_GetName()` — the loaded character's name, nil outside paid mode (Wow.exe 0x4e1b70). */
+  paidName(): string | undefined {
+    return this.#paid?.name;
   }
 
   /* --- What is on the screen ----------------------------------------------------------------- */
@@ -516,13 +611,17 @@ export class GlueCreation {
    * `CHAR_NAME_*` reason) in the corpus' own dialog.
    */
   async createCharacter(name: string): Promise<number | undefined> {
+    if (this.#paid) return this.changeCharacter(this.#paid, name);
     const race = this.selectedRace();
     const entry = this.selectedClass();
     const create = this.#options.create;
-    const trimmed = name.trim();
     if (!race || !entry) return undefined;
-    if (trimmed.length < 2) {
-      this.dialog("CHAR_CREATE_INVALID_NAME", "Недопустимое имя персонажа");
+    // The client's own name check before anything is sent (`checkCharacterName`, the name as typed:
+    // a leading or trailing space is an invalid character, not something to trim away). Its refusal
+    // is the same dialog a refusal of the core's would be, with the reason's own text.
+    const verdict = checkCharacterName(name, this.#options.nameRules?.() ?? {});
+    if (verdict !== RESPONSE_CODES.CHAR_NAME_SUCCESS) {
+      this.dialog(responseKey(verdict, "create"), "Недопустимое имя персонажа");
       return undefined;
     }
     if (!create) {
@@ -533,7 +632,7 @@ export class GlueCreation {
     this.#creating = true;
     try {
       const result = await create({
-        name: trimmed,
+        name,
         race: race.id,
         classId: entry.id,
         gender: this.gender,
@@ -552,10 +651,81 @@ export class GlueCreation {
       this.dialog(responseKey(result, "create"), `Сервер отказал в создании, код ${result}.`);
       return result;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.#options.onDiagnostic?.(message);
-      this.dialog(undefined, message);
+      // The exception's English is for the log; the player reads the client's words for it
+      // (`describeFailure`): a dropped socket is DISCONNECTED, any other failure CHAR_CREATE_FAILED.
+      this.#options.onDiagnostic?.(error instanceof Error ? error.message : String(error));
+      showStatusMessage({
+        fire: (event, ...args) => { this.#options.fireEvent?.(event, ...args); },
+        glueString: this.#options.glueString,
+        hasDialogType: this.#options.hasDialogType,
+      }, describeFailure(error, "create"));
       return undefined;
+    } finally {
+      this.#creating = false;
+    }
+  }
+
+  /**
+   * `CreateCharacter(name)` in paid mode (Wow.exe 0x4e0380 → 0x4d8e10 / 0x4d8f20 / 0x4d9040).
+   *
+   * The name is checked by the creation rules unless it is the character's own (`_strnicmp`, ASCII
+   * case only), and a refusal is the creation screen's OKAY dialog. Then the CANCEL dialog with the
+   * service's IN_PROGRESS text and the packet the character's flags call for, carrying the sex, the
+   * five looks and — for a faction or race change — the chosen race's id. The answer (0x4d9190 for a
+   * customisation, 0x4d92d0 for the other two): success closes the dialog and goes back to
+   * `charselect`; a refusal is the OKAY dialog with the screen's key for it (`responseKey`), and the
+   * creation screen stays up in paid mode.
+   */
+  private async changeCharacter(paid: GluePaidCharacter, name: string): Promise<number | undefined> {
+    const race = this.selectedRace();
+    if (!race) return undefined;
+    if (asciiFold(name) !== asciiFold(paid.name)) {
+      const verdict = checkCharacterName(name, this.#options.nameRules?.() ?? {});
+      if (verdict !== RESPONSE_CODES.CHAR_NAME_SUCCESS) {
+        this.dialog(responseKey(verdict, "create"), "Недопустимое имя персонажа");
+        return undefined;
+      }
+    }
+    const context = paid.kind === "customize" ? "customize" : "faction";
+    const failed = (): void => {
+      this.dialog(responseKey(-1, context), "Не удалось изменить персонажа.");
+    };
+    const send = this.#options.paid;
+    if (!send) {
+      failed();
+      return undefined;
+    }
+    if (this.#creating) return undefined;
+    this.#creating = true;
+    try {
+      const [key, text] = PAID_IN_PROGRESS[paid.kind];
+      this.#options.fireEvent?.("OPEN_STATUS_DIALOG", "CANCEL", messageFor(key, this.#options.glueString, text));
+      const outcome = await send({
+        kind: paid.kind,
+        guid: paid.guid,
+        name,
+        race: race.id,
+        gender: this.gender,
+        skin: this.#look.skin,
+        face: this.#look.face,
+        hairStyle: this.#look.hairStyle,
+        hairColor: this.#look.hairColor,
+        facialHair: this.#look.facialHair,
+      });
+      if (outcome.status !== "answered") {
+        // Nobody to ask; otherwise cancelled (a late success is the session's to apply) or failed
+        // (the connection's own dialog is already up).
+        if (outcome.status === "unavailable") failed();
+        return undefined;
+      }
+      const { result } = outcome.answer;
+      if (result === RESPONSE_SUCCESS) {
+        this.#options.fireEvent?.("CLOSE_STATUS_DIALOG");
+        this.#options.setGlueScreen?.("charselect");
+        return result;
+      }
+      this.dialog(responseKey(result, context), `Сервер отказал, код ${result}.`);
+      return result;
     } finally {
       this.#creating = false;
     }

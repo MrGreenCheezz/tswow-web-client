@@ -1,7 +1,13 @@
 import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
+import { questLogNameClient } from "../QuestLogNameClient.js";
+import { creatureTypeClient } from "../CreatureTypeClient.js";
+import { characterRegenClient } from "../CharacterRegenClient.js";
+import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
+import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
 import { createHttpFileProvider } from "../glue/GlueLoader.js";
 import { game, registerWorldContextCleanup } from "../game/Context.js";
+import { globalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { reactionBetween, setFocusGuid } from "../game/Targeting.js";
 import { castSpell } from "../ui/Spellbook.js";
 import { getActionBarPage, turnActionPage, useSlot } from "../ui/ActionBar.js";
@@ -64,13 +70,20 @@ import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { unit, exploredZones, isAreaExplored, isPlayerGhost } from "../../world/Fields.js";
 import { isWorldObjectDead } from "../../world/WorldState.js";
-import type { FrameXmlFactionRow, FrameXmlQuestItemMetadata } from "./FrameXmlWorldSeam.js";
+import type { FrameXmlFactionRow, FrameXmlMinimapZone, FrameXmlQuestItemMetadata } from "./FrameXmlWorldSeam.js";
 import type { FrameXmlTalentMetadata } from "./FrameXmlTalentResolver.js";
 import { resolveFrameXmlReputationRows } from "./FrameXmlReputationResolver.js";
 import { FrameXmlBoot, FRAMEXML_VERTICAL_EXERCISE_EVENTS } from "./FrameXmlBoot.js";
 import { loadFrameXmlCharacterStats } from "./FrameXmlCharacterStats.js";
 import { fetchFrameXmlClientAddons } from "./FrameXmlClientAddons.js";
+import { frameXmlLodPreloadNames, frameXmlPreloadServerDown, startFrameXmlLodPreload } from "./FrameXmlLodPreload.js"; // L5c 3.24: the stop
+import { frameXmlPreloadOwnerAddon } from "./FrameXmlOwnerPreload.js"; // L5c 3.24
+import { frameXmlCombatLogOwned, loadFrameXmlCombatLog } from "./FrameXmlCombatLogOwner.js";
+import { createFrameXmlFallbackNotices } from "./FrameXmlFallbackNotices.js";
+import { frameXmlGlobalSelfCallHint } from "./FrameXmlTsAddonLint.js";
+import { notice } from "../ui/Notices.js";
 import { isPatchChainChangedError, type PatchChainChangedError } from "../PatchChainChanged.js";
+import { trustedGatewayIconUrl } from "../GatewayGeneration.js";
 import {
   publishFrameXmlBags,
   type FrameXmlBagOwner,
@@ -89,6 +102,8 @@ import {
 import { FRAMEXML_VERTICAL_TOC } from "./FrameXmlCorpus.js";
 import { resetFrameXmlTooltipRedraws } from "./FrameXmlCharacterTooltip.js";
 import { LiveWorldSeam } from "./LiveWorldSeam.js";
+import { frameXmlRealmPlayerKilling, frameXmlResolveZone } from "./FrameXmlZoneInfo.js";
+import { hideFrameXmlRuneFrame } from "./FrameXmlRunes.js";
 import { fetchFrameXmlWorldStates } from "./FrameXmlWorldStates.js";
 import { mailDraftAttachments } from "../ui/Mail.js";
 import { openCalendar, openNativeCalendar, toggleCalendar } from "../ui/Calendar.js";
@@ -108,6 +123,9 @@ import type { FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
 import { FRAMEXML_PET_ACTION_SLOTS } from "./FrameXmlPetActionBar.js";
 import { createFrameXmlSpellBookTabResolvers } from "./FrameXmlSpellBookTabs.js";
 import { installFrameXmlCursorDom } from "./FrameXmlCursorDom.js";
+import { installFrameXmlCoinPickupKeyboard } from "./FrameXmlCoinPickupKeyboard.js"; // L5c 3.09
+import { frameXmlLfdCompletionAlert } from "./FrameXmlLfdCompletion.js"; // L5c 3.25
+import { createFrameXmlTooltipLift, watchFrameXmlTooltipLayer } from "./FrameXmlTooltipLayer.js"; // L5c 3.24
 import { createFrameXmlSettingsCVar } from "./FrameXmlSettingsCVar.js";
 import { toggleSocialPanel } from "../ui/SocialPanel.js";
 import { closeSocialPanel, openSocialTab, toggleSocialTab } from "../ui/SocialPanel.js";
@@ -157,9 +175,16 @@ import { mountFrameXmlDressUp } from "./FrameXmlDressUpMount.js";
 import { mountFrameXmlInspectSocketBarber } from "./FrameXmlInspectMount.js";
 import { mountFrameXmlAchievement, provideFrameXmlAchievementCatalog } from "./FrameXmlAchievementMount.js";
 import { toggleFrameXmlAchievement } from "./FrameXmlAchievementController.js";
+import { holdFrameXmlMicroButtonsHidden } from "./FrameXmlMicroButtonHold.js"; // 11.02-F2-review
 import { mountFrameXmlGuildBank } from "./FrameXmlGuildBankMount.js";
 import { mountFrameXmlRaidGrid } from "./FrameXmlRaidLod.js";
-import { mountFrameXmlArenaEnemy } from "./FrameXmlArenaLod.js";
+import { FRAMEXML_NATIVE_ARENA_HIDE_SELECTOR, mountFrameXmlArenaEnemy } from "./FrameXmlArenaLod.js";
+import { installFrameXmlBattlefieldMinimapRefusal } from "./FrameXmlBattlefieldMinimap.js";
+// L17 3.14: Blizzard_BattlefieldMinimap through its owner, its C API and the battlefield map source.
+import { createFrameXmlBattlefieldMinimapOwner, installFrameXmlBattlefieldMinimapHooks } from "./FrameXmlBattlefieldMinimapLod.js";
+import { installFrameXmlBattlefieldMinimapApi } from "./FrameXmlBattlefieldMinimapApi.js";
+import { frameXmlBattlefieldMapSource, frameXmlGuidValue } from "./FrameXmlBattlefieldMapSource.js";
+import { vehicleCatalog as frameXmlVehicleCatalog } from "../VehicleClient.js"; // L17 3.14
 import { createFrameXmlGlyphExtension, type FrameXmlTalentLodExtension } from "./FrameXmlGlyphOwner.js";
 import { mountFrameXmlToken } from "./FrameXmlTokenOwner.js";
 import { publishFrameXmlGameMenu, type FrameXmlGameMenuOwner } from "./FrameXmlGameMenuController.js";
@@ -251,8 +276,10 @@ export function frameXmlLiveReputationRows(world: WorldClient): readonly FrameXm
  * after all renderer, Minimap, TargetFrame and portrait gates succeed; the optional target class is
  * added only after its own concrete structural/rendered gates. Both are removed during teardown;
  * no native `hidden` property or inline style is mutated. The overlay is
- * at `z-index: 3` — over both world canvases, under the native chat form (20), the windows (21/22)
- * and the menus (210). The optional chat display lane hides only the native tabs/log after its own
+ * at `z-index: 3` — over both world canvases, under the native chat form (20), the windows (21/22,
+ * and GameWindows' 30 and up) and the menus (210); a shown stock dialog (watchFrameXmlDialogLayer)
+ * and a pointerdown on a stock control (3.24) lift it over the native windows through
+ * `gameWindows.raiseLayer`. The optional chat display lane hides only the native tabs/log after its own
  * concrete FrameXML gates; the native form/input remains the command owner.
  *
  * **Its stylesheet is its own.** The four browser facts the widget renderer needs are written in
@@ -327,7 +354,8 @@ const FRAMEXML_WORLD_VISIBLE_ROOT_NAMES: ReadonlySet<string> = new Set([
   "PVPParentFrame",
   "PVPBattlegroundFrame",
   "ArenaFrame",
-  "TimerTracker",
+  // L14 (04.10): the dead "TimerTracker" entry is gone — no 3.3.5a FrameXML file declares that frame
+  // (a later client's countdown), so it admitted nothing.
   "MirrorTimerFrame",
   // LFGFrame.xml:213 declares the finder's event owner parentless and shown, with no size or art.
   // Its LFG_* events reach it through the bridge either way; admitting it records it as a real
@@ -569,6 +597,7 @@ const NATIVE_LANES_REPLACED_BY_VERTICAL = [
   "action-bar",        // MainMenuBar.xml (the primary twelve action buttons).
   "action-bar-extras", // MultiBarBottomLeft/Right.xml (the extra bottom action rows).
   "action-bar-side",   // MultiBarLeft/Right.xml (the extra side action rows).
+  "boss-frames",       // TargetFrame.xml (Boss1TargetFrame…Boss4TargetFrame over boss1…boss4, 3.16).
 ] as const;
 
 const NATIVE_LANES_HIDE_SELECTOR = NATIVE_LANES_REPLACED_BY_VERTICAL
@@ -638,8 +667,27 @@ const FRAMEXML_NATIVE_OWNED_DEPENDENCY_SELECTOR = [
  * The native #pet-bar steps aside only for the bar the stock one draws: a pet's or a charmed
  * creature's (`data-kind="pet"`, PetProtocol.ts `petBarKind`). A vehicle's bar, a possessed unit's
  * and the seat/eject row (`.is-vehicle`) have no stock owner in this vertical and stay native.
+ * (11.02-IF-review: a possessed unit's has one now — the next selector.)
  */
 const NATIVE_PET_BAR_HIDE_SELECTOR = `body.${NATIVE_PET_BAR_REPLACEMENT_CLASS} #pet-bar[data-kind="pet"]:not(.is-vehicle)`;
+/**
+ * 11.02-IF-review: a possessed unit's bar has a stock owner now — BonusActionBarFrame on page 11
+ * (FrameXmlPossess.ts) — and keys 1–= press it (ui/PossessActionBar.ts), so the native #pet-bar steps
+ * aside for it too while the stock MainMenuBar and PetActionBarFrame own their lanes. A unit whose bar
+ * Wow.exe keeps off the main bar (CREATURE_TYPE_FLAG_NO_PET_BAR, dead) has none there either. A
+ * vehicle's bar and the seat/eject row (`.is-vehicle`) stay native (slice F2).
+ */
+export const FRAMEXML_NATIVE_POSSESS_BAR_HIDE_SELECTOR =
+  `body.${NATIVE_LANES_REPLACEMENT_CLASS}.${NATIVE_PET_BAR_REPLACEMENT_CLASS} #pet-bar[data-kind="possess"]:not(.is-vehicle)`;
+/**
+ * 11.02-F2: the vehicle row has a stock owner while `#pet-bar[data-stock-vehicle]` (ui/VehicleBarGates.ts
+ * `stockOwnsVehicleRow`): VehicleMenuBar with its six buttons on slots 121-126 and the leave button,
+ * MainMenuBarVehicleLeaveButton and VehicleSeatIndicator (seats, eject) — FrameXmlVehicle.ts. Without the
+ * vehicle tables, or for a vehicle bar Wow.exe keeps off the main bar, the attribute is absent and the
+ * native row stays.
+ */
+export const FRAMEXML_NATIVE_VEHICLE_BAR_HIDE_SELECTOR =
+  `body.${NATIVE_LANES_REPLACEMENT_CLASS}.${NATIVE_PET_BAR_REPLACEMENT_CLASS} #pet-bar[data-stock-vehicle]`;
 
 /** Added beside the chat class only while `ChatFrame1EditBox` owns the chat keys (`ChatInputOwner`). */
 const NATIVE_CHAT_INPUT_REPLACEMENT_CLASS = "framexml-world-owns-chat-input";
@@ -1072,6 +1120,8 @@ function installStockChatInput(
       combatHistory,
       // Stock reads `docked` as the dock slot (FCF_DockFrame(frame, docked)); any truthy slot counts.
       combatWindowEnabled: () => {
+        // 3.01: the stock Blizzard_CombatLog owns ChatFrame2 once loaded; mirroring would double each line.
+        if (frameXmlCombatLogOwned(boot)) return false;
         const info = seam.chatWindowInfo?.(2);
         return info !== undefined && (info[6] === true || Boolean(info[8]));
       },
@@ -1516,8 +1566,11 @@ export function createLazyFrameXmlTrainerOwner(
     if (disposed || failed || pending || frame || !supported()) return;
     ownerToken = contextToken();
     ownerSignature = signature();
-    // Native remains the presentation owner while the async LoD request is pending.
-    showNative();
+    // Native remains the presentation owner while the async LoD request is pending — unless the idle
+    // preloader already has the add-on in (3.24): then the gate follows within this task and a failed
+    // gate still falls back to native through `fail`.
+    const preloaded = typeof boot.isAddonLoaded === "function" && boot.isAddonLoaded("Blizzard_TrainerUI");
+    if (!preloaded) showNative();
     const ticket = generation;
     pending = load(ticket).finally(() => {
       pending = undefined;
@@ -2434,10 +2487,13 @@ ${NATIVE_MINIMAP_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_RAIL_BELOW_STOCK_MINIMAP_CSS}
 ${FRAMEXML_NATIVE_OWNED_DEPENDENCY_SELECTOR} { display: none !important; }
 ${NATIVE_PET_BAR_HIDE_SELECTOR} { display: none !important; }
+${FRAMEXML_NATIVE_POSSESS_BAR_HIDE_SELECTOR} { display: none !important; } /* 11.02-IF-review */
+${FRAMEXML_NATIVE_VEHICLE_BAR_HIDE_SELECTOR} { display: none !important; } /* 11.02-F2 */
 ${NATIVE_CHAT_HIDE_SELECTOR} { display: none !important; }
 ${FRAMEXML_EDIT_BOX_INPUT_CSS}
 ${NATIVE_FOCUS_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_TOT_HIDE_SELECTOR} { display: none !important; }
+${FRAMEXML_NATIVE_ARENA_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_BAGS_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_CHARACTER_HIDE_SELECTOR} { display: none !important; }
 ${NATIVE_MICROBUTTONS_HIDE_SELECTOR} { display: none !important; }
@@ -2564,6 +2620,12 @@ interface FrameXmlMountResources {
   stockPortraitsCleanup?: () => void;
   /** The cursor picture and its let-go input (FrameXmlCursorDom.ts). */
   cursorDomCleanup?: () => void;
+  /** L5c 3.09: the shown CoinPickupFrame's keyboard (FrameXmlCoinPickupKeyboard.ts). */
+  coinPickupKeyboardCleanup?: () => void;
+  /** L5c 3.24: GameTooltip's lift over the native windows (FrameXmlTooltipLayer.ts). */
+  tooltipLayerCleanup?: () => void;
+  /** 3.13c: the WorldMapBlobFrame painter and its adapter (FrameXmlQuestBlobPainter.ts). */
+  questPoiFrameCleanup?: () => void;
   focusPortraitCleanup?: () => void;
   targetOfTargetPortraitCleanup?: () => void;
   /** The canvas created over FocusFrameToTPortrait (no native row stands behind it). */
@@ -2635,6 +2697,8 @@ interface FrameXmlMountResources {
   raidGridCleanup?: () => void;
   /** The lazy Blizzard_ArenaUI enemy frames (FrameXmlArenaLod.ts). */
   arenaEnemyCleanup?: (() => void) | undefined;
+  /** L17 3.14: the lazy Blizzard_BattlefieldMinimap (FrameXmlBattlefieldMinimapLod.ts). */
+  battlefieldMinimapCleanup?: (() => void) | undefined;
   /** The lazy Blizzard_TokenUI of the stock character tab 5 and the backpack strip (FrameXmlTokenOwner.ts). */
   tokenCleanup?: (() => void) | undefined;
   questOwner?: FrameXmlQuestOwner;
@@ -2800,6 +2864,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   }
   bestEffortCleanup(() => setNativeLanesReplacementActive(false));
   bestEffortCleanup(() => record.worldMapOwnerCleanup?.());
+  bestEffortCleanup(() => record.questPoiFrameCleanup?.());
   bestEffortCleanup(() => document.body.classList.remove("framexml-world-map-fullscreen"));
   bestEffortCleanup(() => record.questGiverEscapeCleanup?.());
   bestEffortCleanup(() => record.questGiverOwnerCleanup?.());
@@ -2846,6 +2911,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => record.lfdOwnerCleanup?.());
   if (!record.lfdOwnerCleanup) bestEffortCleanup(() => record.lfdOwner?.hide());
   bestEffortCleanup(() => { if (record.seam.lfd) record.seam.lfd.popupsOwned = false; });
+  bestEffortCleanup(() => { if (record.seam.lfd) record.seam.lfd.completionAlert = undefined; }); // L5c 3.25
   // The stock FriendsFrame likewise: the native social panel and guild window become the routes.
   bestEffortCleanup(() => record.friendsOwnerCleanup?.());
   if (!record.friendsOwnerCleanup) bestEffortCleanup(() => record.friendsOwner?.hide());
@@ -2893,6 +2959,7 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   // A Blizzard_RaidUI load still on its way settles into a disposed owner.
   bestEffortCleanup(() => record.raidGridCleanup?.());
   bestEffortCleanup(() => record.arenaEnemyCleanup?.());
+  bestEffortCleanup(() => record.battlefieldMinimapCleanup?.()); // L17 3.14
   // Likewise a Blizzard_TokenUI load on its way; the model's events stay with the disposed seam.
   bestEffortCleanup(() => record.tokenCleanup?.());
   // The stock trade skill window ends its line (CloseTradeSkill, as a /reload does) and is unpublished,
@@ -2963,6 +3030,8 @@ function cleanupPublishedMount(record: FrameXmlMountResources): void {
   bestEffortCleanup(() => setQuestGiverPortrait(undefined));
   bestEffortCleanup(() => record.stockPortraitsCleanup?.());
   bestEffortCleanup(() => record.cursorDomCleanup?.());
+  bestEffortCleanup(() => record.coinPickupKeyboardCleanup?.()); // L5c 3.09
+  bestEffortCleanup(() => record.tooltipLayerCleanup?.()); // L5c 3.24
   bestEffortCleanup(() => record.focusPortraitCleanup?.());
   bestEffortCleanup(() => record.targetOfTargetPortraitCleanup?.());
   bestEffortCleanup(() => record.focusTargetPortraitCleanup?.());
@@ -2998,6 +3067,8 @@ function cancelPendingMount(record: NonNullable<typeof pendingMount>): void {
 
 export interface FrameXmlWorldMountOptions {
   readonly savedVariablesScope?: import("./FrameXmlSavedVariables.js").FrameXmlSavedVariablesScope;
+  /** A saved variable that could not be saved or restored, once per variable and operation (9.06). */
+  readonly onSavedVariableProblem?: (diagnostic: import("./FrameXmlSavedVariables.js").FrameXmlSavedVariableDiagnostic) => void;
   /** Ordinary world: run our TSWoW modules over the native UI. */
   readonly addonsOnly?: boolean;
   /** False keeps diagnostic stock FrameXML free of generated TSWoW library/module blocks. */
@@ -3212,8 +3283,16 @@ export async function mountFrameXmlVertical(
     ensureSpellNames([...ids].filter((id) => id > 0));
   };
 
+  // The boot's GlobalStrings, once it exists: the zone resolver below names a territory's faction.
+  let globalStringOf: ((name: string) => string | undefined) | undefined;
+  // L17 3.14: the seam's unit resolution for the party/raid map pins, bound once the seam exists.
+  let battlefieldUnitGuid: (unit: string) => bigint | undefined = () => undefined;
   const seam = options.seam ?? new LiveWorldSeam({
     worldStateUi: () => worldStateUi,
+    // 3.13a: QuestSort headers and QuestInfo tags; retried on each mount after a stale gateway.
+    questLogNames: (() => { const names = questLogNameClient(origin); if (names?.state === "failed") names.retry(); return names; })(),
+    // 3.23A: UnitCreatureType/UnitCreatureFamily names; retried on each mount after a stale gateway.
+    creatureTypes: (() => { const types = creatureTypeClient(origin); if (types?.state === "failed") types.retry(); return types; })(),
     mailDraftAttachments,
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
     mapSource: {
@@ -3249,6 +3328,13 @@ export async function mountFrameXmlVertical(
         const explored = self ? exploredZones(self) : undefined;
         return explored && bit !== undefined && bit > 0 ? isAreaExplored(explored, bit) : undefined;
       },
+      // L17 3.14: team, flag and vehicle pins, the battlefield map's icon scale and the party/raid pins.
+      ...frameXmlBattlefieldMapSource({
+        world: () => game.world,
+        metadata: () => game.areas?.snapshot(),
+        vehicles: frameXmlVehicleCatalog,
+        unitGuid: (unit) => battlefieldUnitGuid(unit),
+      }),
     },
     world: () => game.world,
     store: () => game.store,
@@ -3262,6 +3348,18 @@ export async function mountFrameXmlVertical(
     reputationCatalog: () => game.factions?.reputationCatalog,
     skillMetadata: () => game.talentData,
     characterStats: () => characterStatCatalog,
+    // 3.23C: melee crit and spirit regeneration tables; retried on each mount after a stale gateway.
+    characterRegen: (() => {
+      const regen = characterRegenClient(origin);
+      if (regen?.state === "failed") regen.retry();
+      return () => regen?.table();
+    })(),
+    // 3.29/3.23F: the trainer's LEARN_SPELL/SKILL_STEP effects; retried on each mount after a stale gateway.
+    spellLearnEffects: (() => {
+      const effects = spellLearnEffectsClient(origin);
+      if (effects?.state === "failed") effects.retry();
+      return () => effects?.table();
+    })(),
     bankSlotPrice: (bought) => game.slotPrices?.bankSlotPrice(bought),
     talentMetadata: readTalentMetadata,
     talentMetadataRevision: () => {
@@ -3274,6 +3372,7 @@ export async function mountFrameXmlVertical(
     framerate: () => game.renderer?.fps ?? 0,
     monotonic: () => performance.now(),
     globalCooldownUntil: () => game.globalCooldownUntil,
+    globalCooldown: globalCooldownView(game), // L13-review 5.30: the sweeps and the redraw edge by category
     castSpell,
     // Blizzard_TradeSkillUI's professions: /dbc/talents, ItemSubClass words, the native craft queue.
     tradeSkill: frameXmlLiveTradeSkillHost(),
@@ -3356,37 +3455,34 @@ export async function mountFrameXmlVertical(
         });
       }
     },
-    minimapZone: (mapId, zoneId, areaId) => {
+    minimapZone: (mapId, zoneId, areaId): FrameXmlMinimapZone | undefined => {
       const areas = game.areas;
       const resolvedMapId = mapId ?? game.world?.mapId;
       if (!areas || resolvedMapId === undefined) return undefined;
-      // The native minimap caches terrain's precise area; prefer it over the coarser server area
-      // when available, then retain the server value as a truthful fallback. This callback is
-      // sampled by the seam's existing tick, not by a new per-rAF terrain scan.
-      const cachedAreaId = currentAreaId();
-      const resolvedAreaId = cachedAreaId > 0
-        ? cachedAreaId
-        : areaId !== undefined && areaId > 0 ? areaId : 0;
-      const area = resolvedAreaId > 0 ? areas.area(resolvedAreaId) : undefined;
-      // Keep the server's zone ID as the explicit parent lookup even when terrain supplied the
-      // child area; only fall back to the metadata-derived parent when it was not supplied.
-      const zone = (zoneId !== undefined ? areas.area(zoneId) : undefined)
-        ?? (area ? areas.zoneOf(area.id) : undefined);
-      const map = areas.map(resolvedMapId);
-      const zoneText = zone?.name ?? map?.name;
-      const result = {} as {
-        minimapZoneText?: string;
-        zoneText?: string;
-        subZoneText?: string;
-      };
-      if (zoneText !== undefined) {
-        result.minimapZoneText = zoneText;
-        result.zoneText = zoneText;
-      }
-      if (area && zone && area.id !== zone.id) result.subZoneText = area.name;
-      return Object.keys(result).length > 0 ? result : undefined;
+      // The native minimap caches terrain's precise area; the resolver prefers it over the coarser
+      // server area and keeps the server's zone as the explicit parent (FrameXmlZoneInfo.ts). This
+      // callback is sampled by the seam's existing tick, not by a new per-rAF terrain scan.
+      const team: string | undefined = seam.unitFactionGroup("player");
+      return frameXmlResolveZone(areas, {
+        mapId: resolvedMapId, zoneId, areaId, terrainAreaId: currentAreaId(),
+        ...(team === "Alliance" || team === "Horde" ? { team } : {}),
+        // The realm-list type byte through Cfg_Configs' PlayerKillingAllowed (Wow.exe 0x00405540).
+        realmPvp: frameXmlRealmPlayerKilling(game.world?.realmType),
+        // FACTION_ALLIANCE/FACTION_HORDE, the GlobalStrings.lua names; the English token only
+        // before the boot's strings exist, so FACTION_CONTROLLED_TERRITORY never formats a nil.
+        factionName: (side) => globalStringOf?.(side === "Alliance" ? "FACTION_ALLIANCE" : "FACTION_HORDE") ?? side,
+      });
     },
+    // The loading curtain: no zone edge while it is up, the settled one after it (LiveWorldSeam).
+    worldLoading: () => game.worldLoading,
+    // ZONE_CHANGED_INDOORS instead of ZONE_CHANGED: the per-frame answer the loop already hands the
+    // renderer (Collision.indoorsAt, the floor's MOGP 0x8 as the client's 0x007A1480 tests), read
+    // only when a zone name changes.
+    playerIndoors: () => game.renderer?.indoors === true,
   });
+  // L17 3.14: the live seam answers the number itself; a seam handed in answers the text form.
+  const unitGuidValue = (seam as { unitGuidValue?: (unit: string) => bigint | undefined }).unitGuidValue?.bind(seam);
+  battlefieldUnitGuid = unitGuidValue ?? ((unit) => frameXmlGuidValue(seam.unitGuid?.(unit)));
   // Before the boot attaches the seam: an achievement chat line waits for the gateway catalog's names.
   provideFrameXmlAchievementCatalog(seam, origin);
   let microButtonAdaptersInstalled = false;
@@ -3399,6 +3495,12 @@ export async function mountFrameXmlVertical(
     settingNumber(settings(), "uiScale"),
   );
   let questPortraitRequested = false;
+  // L17 3.14: the Blizzard_BattlefieldMinimap owner; its hooks go in before the session events, its load
+  // waits for the stock HUD to be published (FrameXmlBattlefieldMinimapLod.ts).
+  const battlefieldMinimap = createFrameXmlBattlefieldMinimapOwner({
+    boot: () => boot,
+    onFailure: (reason) => console.warn(`[FrameXML battlefield minimap] ${reason}; no battlefield minimap`),
+  });
   const boot = new FrameXmlBoot({
     loadScheduler: new GlueLoadScheduler(),
     ...(options.savedVariablesScope ? { savedVariables: {
@@ -3406,7 +3508,12 @@ export async function mountFrameXmlVertical(
       storage: {
         getItem: (key: string) => window.localStorage.getItem(key),
         setItem: (key: string, value: string) => window.localStorage.setItem(key, value),
+        removeItem: (key: string) => window.localStorage.removeItem(key),
+        // 9.06: enumeration finds v1 data saved through another gateway address.
+        get length() { return window.localStorage.length; },
+        key: (index: number) => window.localStorage.key(index),
       },
+      ...(options.onSavedVariableProblem ? { onProblem: options.onSavedVariableProblem } : {}),
     } } : {}),
     provider: createHttpFileProvider({ gatewayOrigin: origin }),
     locale: clientLocale(),
@@ -3417,6 +3524,8 @@ export async function mountFrameXmlVertical(
     // the existing opt-in mount API. A stock-only diagnostic never reads the generated TS blocks.
     includeActiveTsAddons: options.includeActiveTsAddons ?? true,
     ...(clientNetwork === undefined ? {} : { clientNetwork }),
+    // 9.08: a JSON window steps aside while the Lua of the same studio screen holds its opcode.
+    clientNetworkChanged: (opcodes) => game.modules?.noteLuaOpcodes(opcodes),
     exerciseEvents: FRAMEXML_VERTICAL_EXERCISE_EVENTS,
     seam,
     onQuestPortrait: (guid) => {
@@ -3430,7 +3539,21 @@ export async function mountFrameXmlVertical(
     // PLAYER_ENTERING_WORLD can dispatch UpdateMicroButtons and before the stage is published.
     beforeExercise: (loadedBoot) => {
       hideFrameXmlMicroButtons(loadedBoot);
-      if (options.addonsOnly) return;
+      // L17 3.14: Blizzard_BattlefieldMinimap goes through its owner, hooked before PLAYER_ENTERING_WORLD;
+      // the addonsOnly mode paints no stock HUD and keeps refusing it silently (FrameXmlBattlefieldMinimap.ts).
+      if (options.addonsOnly) installFrameXmlBattlefieldMinimapRefusal(loadedBoot);
+      else {
+        installFrameXmlBattlefieldMinimapHooks(loadedBoot, battlefieldMinimap);
+        installFrameXmlBattlefieldMinimapApi({
+          vm: loadedBoot.vm, bridge: loadedBoot.bridge, facing: () => seam.map?.playerFacing,
+          world: () => game.world, unitGuid: (unit) => battlefieldUnitGuid(unit),
+        });
+      }
+      if (options.addonsOnly) {
+        // Not painted in this mode; loaded for UnitFrame_SetUnit, hidden so its sweeps never tick.
+        hideFrameXmlRuneFrame(loadedBoot);
+        return;
+      }
       // The browser HUD shows all objectives supplied for the current map/area/phase. The
       // stock options panel (which normally seeds this presentation global) is not in this TOC.
       loadedBoot.vm.setGlobal("WORLD_PVP_OBJECTIVES_DISPLAY", "1");
@@ -3460,6 +3583,7 @@ export async function mountFrameXmlVertical(
       onError: (message) => { console.error("[framexml lua]", message); systemLine(`TSWoW Lua: ${message}`); },
     },
   });
+  globalStringOf = (name) => boot.vm.globalString(name);
   // Our modules over the native HUD: tell them the stock minimap cluster is not the one on screen
   // (minimap-hub picks a default angle clear of the native minimap buttons). Before the corpus runs.
   if (options.addonsOnly) markFrameXmlNativeHud(boot);
@@ -3493,6 +3617,12 @@ export async function mountFrameXmlVertical(
   let inventory;
   try {
     inventory = await boot.load();
+    // 9.09: a TSWoW block's `_G:Name(…)`, where the module's Lua errors go (lua.onError above).
+    for (const call of boot.tsAddonHints) {
+      const hint = frameXmlGlobalSelfCallHint(call);
+      console.warn(`[TSWoW] ${hint}`);
+      systemLine(`TSWoW: ${hint}`);
+    }
     // The stock clock's calendar button, /calendar and Calendar_Show reach ui/Calendar.ts, which asks the
     // stock CalendarFrame first (published below; FrameXmlCalendarOwner.ts) and opens the native otherwise.
     if (!options.addonsOnly) {
@@ -3531,6 +3661,28 @@ export async function mountFrameXmlVertical(
       // parent is not inherited by the bridge), and the roll icon's tooltip setter must exist.
       installFrameXmlLootAdapters(boot);
       if (epoch === mountEpoch) await loadFrameXmlStockClock(boot);
+      // 3.01: the stock combat log, in this loading window like the clock (FrameXmlCombatLogOwner.ts).
+      if (epoch === mountEpoch) await loadFrameXmlCombatLog(boot);
+    }
+    // 3.18/3.24: the load-on-demand add-ons whose first use would otherwise miss them — the trainer
+    // (its first open then skips the native window) and the client's own LoD add-ons outside
+    // FRAMEXML_LOD_POLICY (MSBTOptions for /msbt) — in this loading window, like the clock above,
+    // never after the reveal: a Lua file runs as one block (Blizzard_TrainerUI.lua 11-18 ms,
+    // MSBTOptionsPopups.lua 24 ms measured in Node), which no idle slice of a 144 Hz frame fits.
+    if (epoch === mountEpoch) {
+      let lodPreload: ReturnType<typeof startFrameXmlLodPreload> | undefined;
+      lodPreload = startFrameXmlLodPreload({
+        names: frameXmlLodPreloadNames(clientAddons),
+        // L5c 3.24: the auction and guild-bank add-ons need their owners' host preparation first.
+        load: (name) => frameXmlPreloadOwnerAddon(boot, name),
+        idle: async () => { if (epoch !== mountEpoch) lodPreload?.cancel(); },
+        onResult: (result) => {
+          if (!result.ok) console.warn(`[FrameXML] ${result.name} was not preloaded: ${result.message ?? "failed"}`);
+        },
+        // L5c 3.24: a gateway that is down fails every later read too, each after its retries.
+        stopAfter: frameXmlPreloadServerDown,
+      });
+      await lodPreload.done;
     }
     if (epoch !== mountEpoch) {
       cancelPendingMount(pending);
@@ -3573,16 +3725,10 @@ export async function mountFrameXmlVertical(
       // Live item metadata can return an already trusted gateway URL. Keep that route intact so
       // item/spell icons do not get wrapped as `/texture?path=https://...`; reject every other
       // absolute URL (including cross-origin values) and continue through the normal texture path.
-      try {
-        const absolute = new URL(path);
-        if (absolute.origin === origin && absolute.username === "" && absolute.password === ""
-          && absolute.search === "" && absolute.hash === ""
-          && /^(?:\/item-icon\/|\/spell-icon\/)\d+$/.test(absolute.pathname)) {
-          return absolute.href;
-        }
-      } catch {
-        // FrameXML texture names are not URLs; they use the `/texture?path=` route below.
-      }
+      // The icon URL may end in the gateway's `?g=` cache generation (10.12, GatewayGeneration.ts).
+      const trusted = trustedGatewayIconUrl(path, origin);
+      if (trusted !== undefined) return trusted;
+      // FrameXML texture names are not URLs; they use the `/texture?path=` route below.
       const url = new URL("/texture", origin);
       url.searchParams.set("path", path.replaceAll("/", "\\"));
       return url.href;
@@ -3617,6 +3763,11 @@ export async function mountFrameXmlVertical(
       ));
     };
     syncNativeAnchors();
+    // 3.24: a stock window whose gate refuses is told to the player once per kind (a canned world
+    // only warns), and listed in frameXmlWorld().fallbacks.
+    const fallbacks = createFrameXmlFallbackNotices({
+      notice: (text) => { if (!options.seam) notice(text, "info"); },
+    });
     const renderer = new FrameXmlDomRenderer(stage, {
       bridge: boot.bridge,
       textures,
@@ -3654,12 +3805,14 @@ export async function mountFrameXmlVertical(
         if (installed && epoch === mountEpoch && resources.renderer === renderer) renderer.refreshDeclinedText();
       });
     }
+    // 3.13c: the stock WorldMapBlobFrame's quest blobs (GlueQuestPoiFrame.ts, FrameXmlQuestBlobPainter.ts).
+    if (!options.addonsOnly) resources.questPoiFrameCleanup = installFrameXmlQuestPoiFrame(seam, renderer, textureUrl);
     let worldMapGateTried = false;
     const publishMapWhenReady = (): void => {
       if (options.addonsOnly || worldMapGateTried || !seam.map?.ready) return;
       worldMapGateTried = true;
       const owner = frameXmlWorldMapGate(boot, renderer, seam.map,
-        (reason) => console.warn(`[FrameXML map] ${reason}`));
+        (reason) => fallbacks.report("map", reason));
       if (!owner) return;
       closeWorldMap();
       resources.worldMapOwnerCleanup = publishFrameXmlWorldMap(owner);
@@ -3681,6 +3834,8 @@ export async function mountFrameXmlVertical(
     // What the stock cursor holds is drawn at the pointer; a press on the world or Escape lets go.
     if (!options.addonsOnly && seam.cursor) {
       resources.cursorDomCleanup = installFrameXmlCursorDom(document, seam.cursor, renderer);
+      // L5c 3.09: digits, erase, arrows, Enter and Escape reach a shown CoinPickupFrame.
+      resources.coinPickupKeyboardCleanup = installFrameXmlCoinPickupKeyboard(boot);
     }
 
     const questGiverWorld = !options.addonsOnly && !options.seam ? game.world : undefined;
@@ -3734,7 +3889,22 @@ export async function mountFrameXmlVertical(
         host.removeEventListener("pointerdown", raiseAddonLayer);
         characterWindow.removeEventListener("pointerdown", raiseAddonLayer);
       };
+    } else {
+      // 3.24: the stock windows share the screen with native ones (a demoted owner's fallback, the GM
+      // tickets): whichever was touched last is on top — GameWindows raises a native window on its own
+      // pointerdown, and a pointerdown on a stock control lifts the whole overlay over them. The host
+      // takes no pointer events itself (HOST_CSS), so only authored controls reach this listener.
+      const raiseStockLayer = (): void => gameWindows.raiseLayer(host);
+      host.addEventListener("pointerdown", raiseStockLayer);
+      resources.addonLayerCleanup = () => host.removeEventListener("pointerdown", raiseStockLayer);
     }
+    // L5c 3.24: a stock hover tooltip stands over the native windows while it is shown; a click on a
+    // stock control during the hover keeps the lift, as the click alone would have made it.
+    const tooltipLift = createFrameXmlTooltipLift(host, () => gameWindows.raiseLayer(host), () => gameWindows.topLayer);
+    const keepTooltipLift = (): void => tooltipLift.pointerDown();
+    host.addEventListener("pointerdown", keepTooltipLift);
+    const stopTooltipLayer = watchFrameXmlTooltipLayer(boot, tooltipLift, () => nativeTooltipActive);
+    resources.tooltipLayerCleanup = () => { host.removeEventListener("pointerdown", keepTooltipLift); stopTooltipLayer(); };
     const addonWindows = createFrameXmlTsAddonWindows(boot);
     const unregisterWindows = registerEscapable(addonWindows);
     const commandOwners = new Set<string>();
@@ -3805,6 +3975,7 @@ export async function mountFrameXmlVertical(
           // `setLayoutDeferral`) joins this frame's one pass.
           boot.bridge.flushDeferredPaint();
           renderer.tickCooldowns(now);
+          renderer.tickMessageFades();
           resources.models?.frame(elapsed, performance.now());
         } catch (error) {
           reportStepError(error);
@@ -3867,7 +4038,7 @@ export async function mountFrameXmlVertical(
     // The owner checks UnitClass("player") each time it opens, not here: the player's own object
     // may land after publication, and a token-less class demotes to the native sheet on that press.
     const character = frameXmlCharacterModelGate(boot, renderer,
-      (reason) => console.warn(`[framexml] CharacterFrame: ${reason}`));
+      (reason) => fallbacks.report("character", reason));
     if (character) {
       resources.characterPortraitCleanup = character.portraitCleanup;
       resources.characterOwner = createFrameXmlCharacterOwner(
@@ -3890,7 +4061,10 @@ export async function mountFrameXmlVertical(
     // Blizzard_TrainerUI is LoD. Keep its native browser panel as the fallback while the
     // asynchronous add-on load and exact tree gate are in flight.
     resources.trainerOwner = createLazyFrameXmlTrainerOwner(
-      seam, boot, renderer, () => demotePublishedTrainer(resources), () => game.world ?? seam,
+      seam, boot, renderer, () => {
+        fallbacks.report("trainer", "Blizzard_TrainerUI не загрузился или не прошёл проверку");
+        demotePublishedTrainer(resources);
+      }, () => game.world ?? seam,
     );
     resources.nativeTrainerWasHidden = trainerWindow.hidden;
     // Blizzard_TradeSkillUI is LoD as well: the first profession opens natively while it loads and
@@ -3931,12 +4105,12 @@ export async function mountFrameXmlVertical(
     // otherwise); a gateway still serving version 1 keeps the native #lfg-window.
     const stockLfd = frameXmlLfdGate(seam, boot, renderer);
     if (stockLfd) resources.lfdOwner = createFrameXmlLfdOwner(boot, stockLfd.frame);
-    else if (!options.seam) console.warn("[FrameXML LFD] stock dungeon finder not published; the native window stays");
+    else if (!options.seam) fallbacks.report("lfd", "LFDParentFrame не прошёл проверку");
     // FriendsFrame (Friends, Who, Guild, Chat, Raid tabs) becomes the social window once its tree and
     // one silent muted visit of every tab pass; the native social panel and guild window stay otherwise.
     const stockFriends = frameXmlFriendsGate(seam, boot, renderer);
     if (stockFriends) resources.friendsOwner = createFrameXmlFriendsOwner(boot, stockFriends.frame);
-    else if (!options.seam) console.warn("[FrameXML friends] stock FriendsFrame not published; the native social windows stay");
+    else if (!options.seam) fallbacks.report("friends", "FriendsFrame не прошёл проверку");
     // GossipFrame, BankFrame, TaxiFrame and ItemTextFrame, each behind its own gate (NPC lane).
     if (!options.addonsOnly) resources.npcWindows = mountFrameXmlNpcWindows(seam, boot, renderer, HOST_ID);
     // StaticPopup1-4 and ReadyCheckFrame become the server's confirmations once their stock tree,
@@ -3947,20 +4121,20 @@ export async function mountFrameXmlVertical(
     watchFrameXmlDialogLayer(boot, { raise: () => gameWindows.raiseLayer(host), lower: () => { host.style.zIndex = ""; } });
     const stockPopups = frameXmlPopupsGate(seam, boot, renderer);
     if (stockPopups) resources.popupsOwner = createFrameXmlPopupsOwner(boot, seam.popups);
-    else if (!options.seam) console.warn("[FrameXML popups] stock dialogs not published; the native prompts stay");
+    else if (!options.seam) fallbacks.report("popups", "StaticPopup не прошёл проверку");
     // LootFrame and GroupLootFrame1-4 own loot once their stock tree and one silent, muted synthetic
     // opening and roll pass (FrameXmlLootOwner.ts); the native #loot-window and roll cards stay otherwise.
     const stockLoot = seam.loot ? frameXmlLootGate(seam, boot, renderer) : undefined;
     if (stockLoot && seam.loot) resources.lootOwner = createFrameXmlLootOwner(boot, seam.loot, stockLoot.frame);
-    else if (!options.seam) console.warn("[FrameXML loot] stock loot window not published; the native window stays");
+    else if (!options.seam) fallbacks.report("loot", "LootFrame не прошёл проверку");
     // MailFrame/OpenMailFrame and TradeFrame own the mailbox and an open trade once their stock trees
     // and one silent, muted Show/Hide pass hold (FrameXmlMailOwner.ts, FrameXmlTradeOwner.ts).
     const stockMail = frameXmlMailGate(seam, boot, renderer);
     if (stockMail) resources.mailOwner = createFrameXmlMailOwner(boot, stockMail);
-    else if (!options.seam) console.warn("[FrameXML mail] stock mailbox not published; the native window stays");
+    else if (!options.seam) fallbacks.report("mail", "MailFrame не прошёл проверку");
     const stockTrade = frameXmlTradeGate(seam, boot, renderer);
     if (stockTrade) resources.tradeOwner = createFrameXmlTradeOwner(boot, stockTrade.frame);
-    else if (!options.seam) console.warn("[FrameXML trade] stock trade window not published; the native window stays");
+    else if (!options.seam) fallbacks.report("trade", "TradeFrame не прошёл проверку");
 
     const merchant = frameXmlMerchantGate(seam, boot, renderer);
     if (merchant) {
@@ -4126,6 +4300,7 @@ export async function mountFrameXmlVertical(
         // `setLayoutDeferral`) joins this frame's one pass.
         boot.bridge.flushDeferredPaint();
         renderer.tickCooldowns(now);
+        renderer.tickMessageFades();
         publishMapWhenReady();
         document.body.classList.toggle("framexml-world-map-fullscreen",
           boot.bridge.getFrame("WorldMapFrame")?.visible === true
@@ -4259,6 +4434,8 @@ export async function mountFrameXmlVertical(
       // From here the stock ready/role-check/boot/continue popups answer the server; the native
       // InteractionPrompts sections step aside (frameXmlLfdPublished).
       if (seam.lfd) seam.lfd.popupsOwned = true;
+      // L5c 3.25: the completion reward's stock owner, DungeonCompletionAlertFrame (AlertFrames.xml, on demand).
+      if (seam.lfd) seam.lfd.completionAlert = frameXmlLfdCompletionAlert(boot, renderer);
     }
     if (resources.friendsOwner) {
       // A native social panel or guild window opened while the corpus loaded closes first.
@@ -4276,6 +4453,10 @@ export async function mountFrameXmlVertical(
     // Blizzard_ArenaUI is LoD: the enemy arena frames load at the arena's PLAYER_ENTERING_WORLD (or the
     // match's battlefield status), through the host instead of stock's load-error dialog.
     resources.arenaEnemyCleanup = mountFrameXmlArenaEnemy(seam, boot, renderer)?.cleanup;
+    // L17 3.14: Blizzard_BattlefieldMinimap loads on the stock paths' first ask (a battleground's
+    // PLAYER_ENTERING_WORLD, ToggleBattlefieldMinimap, the world map's zone-map dropdown) — now, if one
+    // asked while the corpus loaded.
+    if (!options.addonsOnly) resources.battlefieldMinimapCleanup = battlefieldMinimap.publish(renderer);
     if (resources.popupsOwner) {
       resources.popupsOwnerCleanup = publishFrameXmlPopups(resources.popupsOwner, () => boot.isAddonLoaded("Blizzard_TalentUI"));
       // From here the stock dialogs answer the server; the native prompts step aside at once and
@@ -4395,7 +4576,7 @@ export async function mountFrameXmlVertical(
       achievementElement?.setAttribute("aria-label", "Достижения недоступны в этой сборке");
       resources.microButtonNativeReplacementActive = true;
       setNativeMicroButtonsReplacementActive(true);
-    } else hideFrameXmlMicroButtons(boot);
+    } else holdFrameXmlMicroButtonsHidden(boot, FRAMEXML_MICROBUTTON_NAMES); // 11.02-F2-review: VehicleMenuBar_MoveMicroButtons Shows them
     // Blizzard_AchievementUI is LoD and published only now, after the row gate saw the button
     // disabled; the button then follows HasCompletedAnyAchievement (FrameXmlAchievementMount.ts).
     resources.achievementCleanup = mountFrameXmlAchievement(seam, boot, renderer, {
@@ -4428,6 +4609,7 @@ export async function mountFrameXmlVertical(
     // `boot`/`renderer` are the live VM, bridge and DOM renderer for DevTools probes
     // (`frameXmlWorld().boot.vm.call(...)`); `copy(frameXmlWorld().errors)` never touches them.
     const diagnostic = (): unknown => ({ ...inventory, errors: boot.errors, numbers, cooldownWidgets: renderer.cooldownCount,
+      fallbacks: fallbacks.records,
       widgetStubs: boot.binder.stubDiagnostics, savedVariables: boot.savedVariableDiagnostics, boot, renderer });
     Object.defineProperty(window, "frameXmlWorld", {
       configurable: true,

@@ -968,6 +968,31 @@ export class CollisionWorld {
   }
 
   /**
+   * 5.12: the lowest flat surface over a point between two heights — the ceiling a rising head
+   * meets. The same triangles as `floorHitUnder` (a floor seen from below is the storey's ceiling)
+   * and the same column walk, asked for the minimum above rather than the maximum below. Only the
+   * height is needed, so nothing is materialised.
+   */
+  ceilingAbove(x: number, y: number, fromZ: number, toZ: number): number | undefined {
+    let best = Infinity;
+    for (const { mesh } of this.#meshes.values()) {
+      const bounds = mesh.bounds;
+      if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
+      if (bounds.maxZ < fromZ || bounds.minZ > toZ) continue;
+      const candidates = mesh.candidates(x, y, x, y);
+      const count = candidates ? candidates.length : mesh.triangleCount;
+      for (let entry = 0; entry < count; entry++) {
+        const triangle = candidates ? candidates[entry]! : entry;
+        const z = verticalHit(mesh.triangles, triangle, x, y);
+        if (z === undefined || !Number.isFinite(z) || z < fromZ || z > toZ || z >= best) continue;
+        if (!isFloorTriangle(mesh.triangles, triangle)) continue;
+        best = z;
+      }
+    }
+    return best === Infinity ? undefined : best;
+  }
+
+  /**
    * The same query, and what the winning triangle belongs to.
    *
    * Kept together because they are one walk: the flags of the floor under the feet are how the

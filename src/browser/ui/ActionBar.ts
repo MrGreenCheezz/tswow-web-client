@@ -20,7 +20,14 @@ import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js
 import { ITEM_EQUIP_COOLDOWN_MS } from "../../world/ItemProtocol.js";
 import { spellButtonUsable } from "../SpellMetadata.js";
 import { spellPowerAvailable } from "../SpellCastGuard.js";
+import { globalCooldownEndFor } from "../game/PredictedGlobalCooldown.js"; // L13 5.30
+import { globalCooldownSpanFor } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
 import { ensureSpellNames } from "./SpellNames.js";
+import { mainPageViewable } from "./ActionBarStockLayout.js"; // L7 4.16b
+// 11.02-IF-review: page 11 under possession is the possessed unit's bar (PossessActionBar.ts).
+import {
+  drawPossessSlot, possessKeyPage, possessMirrors, possessSlotTooltip, pressPossessSlot, updatePossessSlot,
+} from "./PossessActionBar.js";
 import { settingOn } from "./Settings.js";
 import { worldObject } from "../../world/Fields.js";
 import { MELEE_AUTO_ATTACK_SPELL_ID } from "../../world/WorldClient.js";
@@ -29,6 +36,10 @@ import { unknownLabel } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { notifyHudLayout } from "../GameWindows.js";
 import { NATIVE_LANES_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
+import { beginIconDrag } from "./DragGhost.js";
+import {
+  ACTION_DRAG_FORMAT, itemActionDragPayload as itemDrag, parseActionDrop, slotDragPayload, spellDragPayload,
+} from "./ActionDrag.js";
 
 /**
  * The action bar: twelve slots, driven by what the server says the player put there.
@@ -56,7 +67,8 @@ let page = 0;
 
 /** A main-row column's page when the bonus rule answers `bonusPage`: the key-bar override where it answers. */
 function mainColumnPage(column: number, bonusPage: number): number {
-  return bonusBarHooks.keyBarOverride?.(column) ?? bonusPage;
+  // 11.02-IF-review: the possess bar's page 11 for every column (GetBonusBarOffset 5, GetActionBarPage 1).
+  return possessKeyPage() ?? bonusBarHooks.keyBarOverride?.(column) ?? bonusPage;
 }
 
 /**
@@ -92,19 +104,44 @@ const slots: IconButton[] = [];
 /**
  * The four native extra rows, each a row of the server's 144 slots pinned to a fixed page.
  *
- * Those pages are 7–10 (`ACTION_BAR_BASES`), the ones stock gives the bonus bars of stances, forms and
- * stealth, while stock's own multi-bars stand on pages 6, 5, 3 and 4; moving the rows there, with the
- * buttons players already placed, is WORK_PLAN 4.16 (b). Every function here that takes a column
+ * L7 4.16b: those are stock's multi-bar pages 6, 5, 3 and 4 (`ACTION_BAR_BASES`), so a row shows the
+ * buttons the stock MultiBarBottomLeft, MultiBarBottomRight, MultiBarRight and MultiBarLeft show; until
+ * 4.16b they stood on pages 7–10, the bonus bars of stances, forms and stealth, and what players had
+ * placed there is copied over once (ActionBarAccountSync.ts). Every function here that takes a column
  * takes its page too, which is all an extra row needed.
  */
 const extraRows = new Map<ExtraActionBar, { element: HTMLElement; buttons: IconButton[]; pageOf: () => number }>();
 /** Which setting shows each, in the order they are stacked. */
-const EXTRA_BAR_SETTINGS: Readonly<Record<ExtraActionBar, string>> = {
+export const EXTRA_BAR_SETTINGS: Readonly<Record<ExtraActionBar, string>> = { // L7 3.32: exported
   bottomLeft: "actionBarBottomLeft",
   bottomRight: "actionBarBottomRight",
   right: "actionBarRight",
   right2: "actionBarRight2",
 };
+
+/**
+ * L7 3.32: once the character's toggles byte rules the rows (`PLAYER_FIELD_BYTES` byte 2, the bits
+ * stock's GetActionBarToggles reads — Wow.exe 0x5a8790), it answers here; before that, and under the
+ * stock interface, the settings do.
+ */
+let extraBarSource: (() => number | undefined) | undefined;
+
+export function setExtraBarVisibility(source: (() => number | undefined) | undefined): void {
+  extraBarSource = source;
+}
+
+/** Whether one extra row is shown. L7 3.32. */
+export function extraBarShown(bar: ExtraActionBar): boolean {
+  const bits = extraBarSource?.();
+  if (bits === undefined) return settingOn(EXTRA_BAR_SETTINGS[bar]);
+  const index = EXTRA_ACTION_BARS.findIndex((entry) => entry.id === bar);
+  return index >= 0 && (bits & (1 << index)) !== 0;
+}
+
+/** L7 4.16b: a main page the paging keys may show — not one a shown extra row already shows. */
+export function actionPageViewable(page0: number): boolean {
+  return mainPageViewable(page0, extraBarShown);
+}
 
 /**
  * Which of the four stand across the bottom and which stand on end at the right edge.
@@ -116,8 +153,6 @@ const EXTRA_BAR_SETTINGS: Readonly<Record<ExtraActionBar, string>> = {
  */
 const VERTICAL_BARS: ReadonlySet<ExtraActionBar> = new Set<ExtraActionBar>(["right", "right2"]);
 
-/** What a drag carries: where it came from, so a slot-to-slot drag can move rather than copy. */
-const DRAG_FORMAT = "application/x-webclient-action";
 
 /** One button, wired to a fixed row. The main bar passes the live page; an extra bar its own. */
 function buildButton(column: number, barPage: () => number, bar?: ExtraActionBar): IconButton {
@@ -133,14 +168,18 @@ function buildButton(column: number, barPage: () => number, bar?: ExtraActionBar
       event.preventDefault();
       return;
     }
-    event.dataTransfer?.setData(DRAG_FORMAT, JSON.stringify({ ...content, from: actionSlot(barPage(), column) }));
+    // Where it came from, so a slot-to-slot drag can move rather than copy (ui/ActionDrag.ts).
+    event.dataTransfer?.setData(...slotDragPayload(content, actionSlot(barPage(), column)));
+    // 4.02: the icon on the cursor, not a snapshot of the button with its key and cooldown.
+    beginIconDrag(event, button.root);
   });
   button.root.addEventListener("dragover", (event) => event.preventDefault());
   button.root.addEventListener("drop", (event) => {
     event.preventDefault();
-    const raw = event.dataTransfer?.getData(DRAG_FORMAT);
-    if (!raw) return;
-    dropSlot(column, JSON.parse(raw) as { action: number; type: number; from?: number }, barPage());
+    // 4.05: read strictly — a macro from its window, a spell, an item, another slot; anything else
+    // (another page's text) is ignored instead of throwing out of the handler.
+    const dropped = parseActionDrop(event.dataTransfer?.getData(ACTION_DRAG_FORMAT));
+    if (dropped) dropSlot(column, dropped, barPage());
   });
   // Right-click empties a slot, which is the only way to take something off a bar.
   button.root.addEventListener("contextmenu", (event) => {
@@ -198,14 +237,14 @@ function buildExtraRows(): void {
  */
 function publishSideWidth(): void {
   const shown = EXTRA_ACTION_BARS.filter((bar) =>
-    VERTICAL_BARS.has(bar.id) && settingOn(EXTRA_BAR_SETTINGS[bar.id])).length;
+    VERTICAL_BARS.has(bar.id) && extraBarShown(bar.id)).length; // L7 3.32
   document.documentElement.style.setProperty("--side-bars", String(shown));
 }
 
 /** Publish enabled horizontal rows for neighbouring HUD surfaces such as chat. */
 function publishBottomBars(): void {
   const shown = EXTRA_ACTION_BARS.filter((bar) =>
-    !VERTICAL_BARS.has(bar.id) && settingOn(EXTRA_BAR_SETTINGS[bar.id])).length;
+    !VERTICAL_BARS.has(bar.id) && extraBarShown(bar.id)).length; // L7 3.32
   document.documentElement.style.setProperty("--bottom-bars", String(shown));
   const stack = document.getElementById("action-bar-extras");
   if (stack) stack.hidden = shown === 0;
@@ -233,6 +272,8 @@ function dropSlot(
 ): void {
   const world = game.world;
   if (!world || dropped.action <= 0) return;
+  // 11.02-IF-review: nothing is dropped on the possess page (0x005abbc0 skips 0x78-0x83).
+  if (possessMirrors(barPage)) return;
   const target = actionSlot(barPage, column);
   if (dropped.from === target) return;
   const displaced = contentOf(column, barPage);
@@ -244,7 +285,7 @@ function dropSlot(
 
 /** Called by the spell book: a spell dragged out of it can land on a bar. */
 export function actionDragPayload(spellId: number): [string, string] {
-  return [DRAG_FORMAT, JSON.stringify({ action: spellId, type: ACTION_BUTTON_SPELL })];
+  return spellDragPayload(spellId);
 }
 
 /**
@@ -252,14 +293,13 @@ export function actionDragPayload(spellId: number): [string, string] {
  * item's entry, not the slot it came from, which is why a bar slot survives the item being moved.
  */
 export function itemActionDragPayload(entry: number): [string, string] {
-  return [DRAG_FORMAT, JSON.stringify({ action: entry, type: ACTION_BUTTON_ITEM })];
+  return itemDrag(entry);
 }
 
 function spellIcon(spellId: number): string | undefined {
   return spellIconUrl(game.spells.get(spellId)?.iconId ?? 0, game.gatewayOrigin);
 }
 
-/** What sits in one column of the page on screen. */
 /**
  * Asks for the names and icons of everything on the bar, and redraws when they land.
  *
@@ -294,7 +334,10 @@ function requestSlotMetadata(): void {
   }
 }
 
+/** What sits in one column of the page on screen. */
 function contentOf(column: number, barPage = mainBarPage(column)): { action: number; type: number } | undefined {
+  // 11.02-IF-review: the possess page holds the unit's words, never the character's slots 121-132.
+  if (possessMirrors(barPage)) return undefined;
   const slot = actionSlot(barPage, column);
   return game.world?.actionButtons.find((button) => button.slot === slot);
 }
@@ -334,7 +377,8 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = mainBa
   // Held until its aura ends (Stealth after a stealthed login): the realm would answer NOT_READY.
   // Grey and refused, with nothing to sweep (WorldClient.isSpellOnHold).
   if (world.isSpellOnHold?.(content.action)) return "Ещё не готово";
-  if ((metadata?.startRecoveryTime ?? 0) > 0 && game.globalCooldownUntil > now) return "Восстанавливается";
+  // L13 5.30: the guard's rule (SpellCastGuard.ts) — by StartRecoveryCategory; a row without it as before.
+  if (globalCooldownEndFor(game, metadata) > now) return "Восстанавливается";
   if (!spellPowerAvailable(world, metadata)) return "Не хватает ресурса";
   return "";
 }
@@ -344,6 +388,8 @@ function slotBlockedBy(column: number, now = performance.now(), barPage = mainBa
  * form or stealth — which is what keys 1 to = mean; the extra bars and stock `UseAction` pass theirs.
  */
 export function useSlot(column: number, barPage = mainBarPage(column), button?: string): void {
+  // 11.02-IF-review: under possession page 11 is the unit's bar (0x005abbc0 -> 0x005d4210).
+  if (pressPossessSlot(column, barPage)) return;
   const world = game.world;
   const content = contentOf(column, barPage);
   if (!world || !content) return;
@@ -397,6 +443,9 @@ export function upgradeActionBarRanks(): void {
 function slotTooltip(column: number, barPage = mainBarPage(column), bar?: ExtraActionBar): TooltipContent {
   const key = slotKey(column, bar);
   const chord = key ? `Клавиша: ${key}` : "";
+  // 11.02-IF-review: the possessed unit's spell, command or stance on page 11.
+  const possessed = possessSlotTooltip(column, barPage, chord);
+  if (possessed) return possessed;
   const content = contentOf(column, barPage);
   if (!content) {
     return {
@@ -449,7 +498,7 @@ export function showActionBar(): void {
     const row = extraRows.get(bar.id);
     if (!row) continue;
     // Hidden rows are not drawn: a bar the player has switched off costs nothing.
-    row.element.hidden = !settingOn(EXTRA_BAR_SETTINGS[bar.id]);
+    row.element.hidden = !extraBarShown(bar.id); // L7 3.32: the toggles byte once known
     if (!row.element.hidden) drawRow(row.buttons, row.pageOf, bar.id);
   }
   publishSideWidth();
@@ -460,8 +509,10 @@ export function showActionBar(): void {
 function drawRow(buttons: readonly IconButton[], pageOf: (column: number) => number, bar?: ExtraActionBar): void {
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
     const button = buttons[column]!;
-    const content = contentOf(column, pageOf(column));
     const key = slotKey(column, bar);
+    // 11.02-IF-review: the possess page draws the unit's bar.
+    if (drawPossessSlot(button, column, pageOf(column), key)) continue;
+    const content = contentOf(column, pageOf(column));
     if (!content) {
       button.root.dataset["empty"] = "";
       delete button.root.dataset["count"];
@@ -541,10 +592,11 @@ export function updateActionBar(now: number): void {
 function updateRow(buttons: readonly IconButton[], pageOf: (column: number) => number, now: number): void {
   const world = game.world;
   if (!world) return;
-  const globalRemaining = Math.max(0, game.globalCooldownUntil - now);
+  // L13-review 5.30: the global part is asked per slot below (by StartRecoveryCategory), no longer the shared end here.
   for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
     const button = buttons[column]!;
     const barPage = pageOf(column);
+    if (updatePossessSlot(button, column, barPage, now, slotKey)) continue; // 11.02-IF-review
     const content = contentOf(column, barPage);
     if (!content || (content.type !== ACTION_BUTTON_SPELL && content.type !== ACTION_BUTTON_ITEM)) {
       button.setCooldown(0);
@@ -569,7 +621,12 @@ function updateRow(buttons: readonly IconButton[], pageOf: (column: number) => n
     const metadata = game.spells.get(content.action);
     const own = world.cooldownRemaining(content.action, now);
     const ownState = world.cooldownState(content.action);
-    const gcdDuration = metadata?.startRecoveryTime ?? 0;
+    // L13-review 5.30: the press's rule (slotBlockedBy, SpellCastGuard.ts) — the global cooldown of the row's own
+    // category and that entry's own length (0x00807980); unknown length: the row's StartRecoveryTime, as before.
+    // Numbers only, the model's answer remembered between slots: nothing allocated per frame.
+    const globalEnd = globalCooldownEndFor(game, metadata); // L13-review 5.30
+    const globalRemaining = globalEnd > now ? globalEnd - now : 0; // L13-review 5.30
+    const gcdDuration = globalRemaining > 0 ? globalCooldownSpanFor(game, metadata) || (metadata?.startRecoveryTime ?? 0) : 0; // L13-review 5.30
     // The old code used `own + 1` as the duration on every frame. That makes the sweep start over
     // at almost 100% every frame. Prefer the stable start/duration captured by WorldClient; the
     // authored total is only a fallback for cooldowns whose packet has not supplied a snapshot.
@@ -579,7 +636,7 @@ function updateRow(buttons: readonly IconButton[], pageOf: (column: number) => n
     // The longer of the two decides the sweep: a spell on its own cooldown is not freed by the
     // global one running out.
     const view = cooldownView(
-      now, own, ownDuration, gcdDuration > 0 ? globalRemaining : 0, gcdDuration, ownState,
+      now, own, ownDuration, globalRemaining, gcdDuration, ownState, // L13-review 5.30: was `gcdDuration > 0 ? shared : 0`
     );
     button.setCooldown(view.fraction, cooldownLabel(view.remaining));
     // The same rule the key press asks, so the grey and the refusal cannot disagree.

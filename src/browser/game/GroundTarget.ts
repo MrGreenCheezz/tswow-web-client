@@ -1,10 +1,12 @@
 import { CAMERA_FOV_DEGREES, createCamera, type Camera, type Vector3 } from "../SimpleScene.js";
 import { cameraPivotHeight, game } from "./Context.js";
+import { viewSubjectPosition } from "./ViewSubject.js"; // 11.02-I
 import { spellCastBlockReason } from "../SpellCastGuard.js";
 import type { SpellMetadata } from "../../gateway/SpellMetadata.js";
 import { worldObject } from "../../world/Fields.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { CAMERA_TERRAIN_ESCAPE_DEPTH } from "./Collision.js";
+import { armItemTarget, cancelItemTarget, isItemTargetSpell, spellTargetsObject } from "./SpellCursor.js";
 
 /**
  * Ground-target (reticle) casts: Blizzard, Flamestrike and friends do not take the selection.
@@ -46,6 +48,8 @@ export function pendingGroundTargetItem(): { bag: number; slot: number; guid: bi
 
 export function beginGroundTarget(spellId: number): boolean {
   if (!game.world) return false;
+  // One pending spell at a time: the reticle replaces a cursor waiting for an item (SpellCursor.ts).
+  cancelItemTarget();
   game.groundTarget = spellId;
   // A fresh arming owns no item: the click below must not inherit a previous item reticle's
   // bag and slot. The item flow sets `groundTargetItem` itself right after this returns.
@@ -123,7 +127,8 @@ export function requestItemUse(
   ref: ItemUseRef,
   send: () => void,
   templates?: { get(entry: number): { spells?: ReadonlyArray<{ spellId: number; trigger: number }> } | undefined },
-  spells?: Map<number, Pick<SpellMetadata, "requiredTargetMode">>,
+  spells?: Map<number, Pick<SpellMetadata, "requiredTargetMode" | "itemOrObject">>,
+  waited = false,
 ): void {
   const world = game.world;
   if (!world) {
@@ -136,6 +141,30 @@ export function requestItemUse(
   if (spellId !== undefined && isGroundTargetSpell(metadata) && beginGroundTarget(spellId)) {
     game.groundTargetItem = { bag: ref.bag, slot: ref.slot, guid: ref.guid };
     world.onSpellStatus?.("Кликните по земле для выбора точки · правый клик или Esc — отмена", false);
+    return;
+  }
+  // An item whose own spell waits for an item (a poison, a sharpening stone, an enchanting scroll)
+  // raises the item-target cursor instead of a targetless use the realm would refuse (2.05).
+  if (spellId !== undefined && isItemTargetSpell(metadata)) {
+    cancelGroundTarget();
+    if (armItemTarget(world, spellId, { bag: ref.bag, slot: ref.slot, guid: ref.guid }, spellTargetsObject(metadata))) {
+      world.onSpellStatus?.("Выберите предмет · правый клик или Esc — отмена", false);
+      return;
+    }
+  }
+  // The item's spell row has not been asked for yet: a targetless use of a poison is a refusal the
+  // player cannot act on, so the row is fetched once and the use decided after it (failing open).
+  const client = game.spellMetadataClient;
+  if (spellId !== undefined && metadata === undefined && spells === undefined && !waited && client) {
+    const decide = (): void => {
+      if (game.world !== world) return;
+      requestItemUse(ref, send, templates, undefined, true);
+    };
+    void client.load([spellId]).then((loaded) => {
+      if (game.world !== world || game.spellMetadataClient !== client) return;
+      for (const [id, row] of loaded) game.spells.set(id, row);
+      decide();
+    }, decide);
     return;
   }
   send();
@@ -153,11 +182,19 @@ export function requestItemUse(
  */
 export function requestSpellCast(spellId: number, send: () => void): void {
   const world = game.world;
-  const metadata: Pick<SpellMetadata, "requiredTargetMode"> | undefined = game.spells.get(spellId);
+  const metadata: Pick<SpellMetadata, "requiredTargetMode" | "itemOrObject"> | undefined = game.spells.get(spellId);
   if (world && isGroundTargetSpell(metadata) && spellCastBlockReason(world, spellId) === undefined
     && beginGroundTarget(spellId)) {
     world.onSpellStatus?.("Кликните по земле для выбора точки · правый клик или Esc — отмена", false);
     return;
+  }
+  // Disenchant, Prospecting, Milling, Feed Pet: the spell waits for the item it goes on (2.05).
+  if (world && isItemTargetSpell(metadata) && spellCastBlockReason(world, spellId) === undefined) {
+    cancelGroundTarget();
+    if (armItemTarget(world, spellId, undefined, spellTargetsObject(metadata))) {
+      world.onSpellStatus?.("Выберите предмет · правый клик или Esc — отмена", false);
+      return;
+    }
   }
   send();
 }
@@ -381,8 +418,10 @@ export function resolveGroundTarget(
   clientX: number, clientY: number, canvasWidth: number, canvasHeight: number, targetRange: number,
 ): GroundPoint | undefined {
   const world = game.world;
-  const self = world?.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-  const position = self?.position;
+  // 11.02-I: the ray leaves the camera the world was drawn with, which is built around the view
+  // subject (ViewSubject.ts): a possessed unit or a far sight eye once in view. The range is still
+  // the caster's (`groundPointInRange` at the callers).
+  const position = viewSubjectPosition(world);
   if (!world || !position) return undefined;
   const boundedRange = Math.max(0, targetRange);
   return screenGroundPoint({

@@ -1,11 +1,12 @@
 import {
-  CAMERA_FIRST_PERSON_DISTANCE, CAMERA_MAX_DISTANCE, CAMERA_MIN_DISTANCE,
+  CAMERA_DEFAULT_PITCH, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_MAX_DISTANCE, CAMERA_MIN_DISTANCE,
   boomAnchor, createCamera, type Vector3,
 } from "../SimpleScene.js";
 import { boomLimits, type CollisionWorld } from "./Collision.js";
 import { FLOOR_SEARCH_DEPTH } from "./Physics.js";
 import { MOVEMENT_FLAGS } from "../../world/MovementProtocol.js";
 import type { WorldPosition } from "../../world/WorldState.js";
+import { cameraWaterArm, cameraWaterFloor } from "./CameraWater.js"; // L8 5.14
 
 /**
  * What the camera does between the player's hands and the geometry: the wheel, the easing, and
@@ -78,6 +79,56 @@ export interface CameraRig {
 
 /** How fast the mouse turns the camera, in radians a pixel. wowee's 0.2 deg/px (`hpp:342`). */
 export const CAMERA_LOOK_SENSITIVITY = (0.2 * Math.PI) / 180;
+
+/**
+ * 5.14: the mouse look's angle per pixel for the stock `mouseSpeed` (percent here) and
+ * `cameraYawMoveSpeed` (degrees, 180 by default): this client's 0.2° a pixel at the defaults, scaled
+ * by both. The vertical axis moves at `cameraPitchMoveSpeed`, which the stock slider keeps at half of
+ * the yaw speed (`InterfaceOptionsPanels.xml`, SetCVar("cameraPitchMoveSpeed", value/2)) — the same
+ * ratio as the defaults, so the look stays isotropic and the one number serves both axes.
+ */
+export function cameraLookPerPixel(mouseSpeedPercent: number, lookSpeedDegrees: number): number {
+  const speed = Number.isFinite(mouseSpeedPercent) && mouseSpeedPercent > 0 ? mouseSpeedPercent / 100 : 1;
+  const look = Number.isFinite(lookSpeedDegrees) && lookSpeedDegrees > 0 ? lookSpeedDegrees / 180 : 1;
+  return CAMERA_LOOK_SENSITIVITY * speed * look;
+}
+
+/** 5.14: the stock `cameraSmoothStyle` values (InterfaceOptionsCameraPanelStyleDropDown_Initialize). */
+export const CAMERA_SMOOTH_NEVER = 0;
+export const CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING = 1;
+export const CAMERA_SMOOTH_ALWAYS = 2;
+export const CAMERA_SMOOTH_WHEN_MOVING = 4;
+
+/** Moves an angle towards another by at most `step`, the short way round. */
+function stepAngle(current: number, target: number, step: number): number {
+  let delta = target - current;
+  delta = ((delta + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+  if (Math.abs(delta) <= step) return target;
+  return current + Math.sign(delta) * step;
+}
+
+/**
+ * 5.14: the camera bringing itself back behind the character, per the stock `cameraSmoothStyle`
+ * (GlobalStrings OPTION_TOOLTIP_CAMERA1–4): 0 never; 1 only the horizontal, only while the character
+ * moves; 4 both axes while it moves; 2 both axes always. The yaw offset goes to zero at
+ * `cameraYawSmoothSpeed` degrees a second, the tilt to the default at a quarter of that (the stock
+ * slider's SetCVar("cameraPitchSmoothSpeed", value/4)). Nothing while a mouse button holds the camera.
+ * Writes `yaw` and `pitch` — the player's numbers — because this is the original's own hand on them.
+ */
+export function advanceCameraFollow(
+  rig: CameraRig, style: number, yawSpeedDegrees: number, moving: boolean, mouseHeld: boolean, elapsed: number,
+): void {
+  if (mouseHeld || !(elapsed > 0) || !(yawSpeedDegrees > 0)) return;
+  if (style !== CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING && style !== CAMERA_SMOOTH_WHEN_MOVING
+    && style !== CAMERA_SMOOTH_ALWAYS) return;
+  if (style !== CAMERA_SMOOTH_ALWAYS && !moving) return;
+  const yawStep = yawSpeedDegrees * Math.PI / 180 * elapsed;
+  rig.yaw = stepAngle(rig.yaw, 0, yawStep);
+  if (style === CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING) return;
+  const pitchStep = yawStep / 4;
+  const gap = CAMERA_DEFAULT_PITCH - rig.pitch;
+  rig.pitch = Math.abs(gap) <= pitchStep ? CAMERA_DEFAULT_PITCH : rig.pitch + Math.sign(gap) * pitchStep;
+}
 
 /**
  * How far the camera may be tilted either way, in radians. wowee clamps at 88 degrees
@@ -394,6 +445,8 @@ export interface CameraWorld {
   heightAt?: ((x: number, y: number) => number | undefined) | undefined;
   /** True while gravity is disabled or flight is granted; permits the boom below synthetic feet. */
   allowUpwardOrbit?: boolean | undefined;
+  /** L8 5.14: the water surface the boom stops at (cameraWaterCollision, CameraWater.ts); none without it. */
+  waterZ?: number | undefined;
 }
 
 /**
@@ -483,7 +536,10 @@ export function advanceCameraFrame(
   const pivotZ = player.z + pivotHeight;
   const feetZ = player.z + CAMERA_FEET_CLEARANCE;
   const orbitOptions: CameraOrbitOptions = { allowBelowFeet: world.allowUpwardOrbit === true };
-  const floorForPitch = orbitOptions.allowBelowFeet ? Number.NEGATIVE_INFINITY : feetZ;
+  // L8 5.14: over water the surface is one more floor (CameraWater.ts); -Infinity without it.
+  const waterFloor = cameraWaterFloor(pivotZ, world.waterZ);
+  // L8 5.14: `Math.max(…, waterFloor)` around the old value.
+  const floorForPitch = Math.max(orbitOptions.allowBelowFeet ? Number.NEGATIVE_INFINITY : feetZ, waterFloor);
   if (rig.distance <= CAMERA_FIRST_PERSON_DISTANCE) {
     // Behind the character's own eyes there is no boom to obstruct and no floor to be held off:
     // the rig reads none of these three and snaps everything to the wheel's number.
@@ -501,7 +557,8 @@ export function advanceCameraFrame(
   const reach = boomLimits(boomAnchor(camera, wanted), camera.position, {
     world: world.collision, heightAt: world.heightAt,
   });
-  const wall = wanted * reach.wall;
+  // L8 5.14: was `wanted * reach.wall` — under water the surface stops the boom as a wall does (CameraWater.ts).
+  const wall = Math.min(wanted * reach.wall, cameraWaterArm(pivotZ, pitch, world.waterZ));
   const terrain = wanted * reach.terrain;
   // Where the camera is about to stand: the same three numbers `view` is the smallest of, taken
   // before the two limits are eased. `zoom` is the one the rig has not moved yet this frame, and
@@ -510,6 +567,7 @@ export function advanceCameraFrame(
   const standing = createCamera(player, rig.yaw, pitch, drawnArm(eased, wall, terrain), options);
   advanceCameraRig(rig, {
     wall, terrain, pivotZ,
-    floorZ: cameraFloorHeight(player, standing.position, pivotZ, world.collision, orbitOptions),
+    // L8 5.14: `Math.max(…, waterFloor)` around the old value.
+    floorZ: Math.max(cameraFloorHeight(player, standing.position, pivotZ, world.collision, orbitOptions), waterFloor),
   }, elapsed);
 }

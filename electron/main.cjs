@@ -19,8 +19,12 @@
 //   4. The Vite dev server at http://127.0.0.1:5173/ (web/start-dev.bat); the window waits for the
 //      gateway the developer starts.
 // A plain-http page on a non-loopback address (a player's server) is not a secure context, so the
-// shell asks Chromium to treat that origin as secure: Web Crypto and cross-origin isolation then
-// work as they do on 127.0.0.1.
+// shell asks Chromium to treat that origin as secure: cross-origin isolation (the crowd pose
+// worker's SharedArrayBuffer) then works as it does on 127.0.0.1. L10 (10.18): login no longer
+// needs it — without Web Crypto SRP6 hashes with src/auth/Sha1.ts (1.02).
+// L10 (10.17): the gateway is the page host's 8090 unless server.json (`gatewayPort`, `gatewayUrl`)
+// or --gateway-port/--gateway-url say otherwise; the page then gets it as `?gateway=`
+// (electron/gateway-target.cjs).
 //
 // Options (command line, `electron . --cpu-class=fastest`):
 //   --webclient-url=<url>     page to open instead of any other
@@ -34,6 +38,10 @@
 //   --no-isolation            do not add the cross-origin isolation headers to the page origin
 //   --no-js-profiling         do not allow the JS Self-Profiling API on the page (the freeze
 //                             recording, O → «Записать фризы», then records without stack samples)
+//   --gateway-port=<port>     L10 (10.17): the gateway listens on this port of the page's host
+//   --gateway-url=<url>       L10 (10.17): the gateway is at this origin (another host, or https)
+//   --allow-stale             L10 (10.11): start the checkout's gateway even when dist/code is older
+//                             than its sources
 // Chromium switches such as --remote-debugging-port=<port> pass through as usual.
 
 "use strict";
@@ -44,6 +52,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { serveStatic } = require("./static-server.cjs");
 const { findWebClientRoot, listening, logTail, startGateway, waitUntilListening } = require("./gateway.cjs");
+const { createRenderRecovery, parsePolicyOutput } = require("./recovery.cjs");
+const { parseServerConfig } = require("./server-config.cjs");
+const { gatewayBuildState } = require("./gateway.cjs"); // L10 (10.11)
+const { chooseGatewaySettings, gatewayTarget, insecureOriginsToTrust, parseGatewaySettings } = require("./gateway-target.cjs"); // L10 (10.17)
 
 function option(name, fallback) {
   const prefix = `--${name}=`;
@@ -55,14 +67,38 @@ function option(name, fallback) {
 function readServerConfig() {
   const file = path.join(__dirname, "server.json");
   if (!fs.existsSync(file)) return undefined;
-  const config = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (typeof config.url !== "string" || !/^https?:\/\//.test(config.url)) throw new Error(`${file}: url must be http(s)://…`);
-  return config;
+  try {
+    return parseServerConfig(fs.readFileSync(file, "utf8"), file);
+  } catch (error) {
+    // Said in words and the app closes, instead of Electron's "error in the main process" box.
+    dialog.showErrorBox("WoW WebClient", error.message);
+    app.exit(1);
+    return undefined;
+  }
+}
+
+/**
+ * L10 (10.17): where the gateway is — --gateway-port/--gateway-url, else server.json's `gatewayPort`/
+ * `gatewayUrl`, else nothing (the page host's 8090). A wrong value in server.json is said in words.
+ */
+function readGatewaySettings(config) {
+  const port = option("gateway-port", undefined);
+  const fromCommandLine = parseGatewaySettings({
+    gatewayPort: port === undefined ? undefined : Number(port), gatewayUrl: option("gateway-url", undefined),
+  }, "--gateway-port/--gateway-url");
+  try {
+    return chooseGatewaySettings(parseGatewaySettings(config, "server.json"), fromCommandLine);
+  } catch (error) {
+    dialog.showErrorBox("WoW WebClient", error.message);
+    app.exit(1);
+    return fromCommandLine;
+  }
 }
 
 const DEV_SERVER_URL = "http://127.0.0.1:5173/";
-/** Where the page looks for the gateway unless the build baked another VITE_GATEWAY_ORIGIN. */
-const GATEWAY_PORT = 8090;
+// L10 (10.17): no fixed gateway port constant any more — `gatewayTarget(page, gatewaySettings)` gives the
+// page host's 8090 (where the page looks unless its build baked VITE_GATEWAY_ORIGIN) or the
+// configured gateway.
 /** The gateway this shell started itself (built page, nothing listening); stopped on exit. */
 let startedGateway;
 const serverConfig = readServerConfig();
@@ -75,6 +111,9 @@ const serverUrlOption = option("server-url", undefined);
 if (serverUrlOption !== undefined && !/^https?:\/\//.test(serverUrlOption)) throw new Error(`--server-url: ${serverUrlOption}`);
 const remoteUrl = commandLineUrl === undefined ? serverUrlOption ?? serverConfig?.url : undefined;
 const explicitUrl = commandLineUrl ?? remoteUrl;
+const gatewaySettings = readGatewaySettings(serverConfig); // L10 (10.17)
+/** L10 (10.11): start the checkout's gateway even when its dist/code is older than its sources. */
+const allowStaleGateway = process.argv.includes("--allow-stale");
 const bundledWeb = path.join(__dirname, "web");
 const webDirOption = option("web-dir", undefined);
 const webDir = explicitUrl !== undefined ? undefined
@@ -106,10 +145,13 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 if (explicitUrl !== undefined) {
   const page = new URL(explicitUrl);
   if (page.protocol === "http:" && !LOOPBACK_HOSTS.has(page.hostname)) {
-    // SRP6 login needs Web Crypto and the crowd pose worker needs cross-origin isolation; both
-    // exist only in a secure context, which plain http on a public address is not.
-    const gatewayOrigin = `http://${page.hostname}:${GATEWAY_PORT}`;
-    app.commandLine.appendSwitch("unsafely-treat-insecure-origin-as-secure", `${page.origin},${gatewayOrigin}`);
+    // L10 (10.18): the crowd pose worker needs cross-origin isolation (a SharedArrayBuffer), which
+    // exists only in a secure context, and plain http on a public address is not one. Login does
+    // not depend on it any more: without Web Crypto SRP6 and the world session's HMAC run on
+    // src/auth/Sha1.ts (1.02). Other secure-context APIs (the clipboard) come along.
+    // L10 (10.17): the gateway's origin is the configured one, not <host>:8090.
+    const trusted = insecureOriginsToTrust(explicitUrl, gatewayTarget(explicitUrl, gatewaySettings).origin);
+    app.commandLine.appendSwitch("unsafely-treat-insecure-origin-as-secure", trusted.join(","));
   }
 }
 
@@ -144,6 +186,7 @@ function constrainSelf() {
 
 /** Applies the policy to shell processes started since the last pass (GPU, renderer, utility). */
 let sweeping = false;
+let policyOutputWarned = false;
 function constrainChildren() {
   if (!policyActive || sweeping) return;
   const fresh = app.getAppMetrics().map((metric) => metric.pid).filter((pid) => !constrained.has(pid));
@@ -152,7 +195,12 @@ function constrainChildren() {
   execFile("powershell.exe", policyArgs(fresh), { encoding: "utf8", windowsHide: true }, (error, stdout) => {
     sweeping = false;
     if (error) { console.warn(`[electron] cpu policy failed for ${fresh.join(",")}: ${error.message}`); return; }
-    for (const pid of JSON.parse(stdout).applied) constrained.add(pid);
+    const output = parsePolicyOutput(stdout);
+    if (!output.ok && !policyOutputWarned) {
+      policyOutputWarned = true;
+      console.warn(`[electron] cpu policy printed no result for ${fresh.join(",")}`);
+    }
+    for (const pid of output.applied) constrained.add(pid);
     const types = app.getAppMetrics().filter((metric) => fresh.includes(metric.pid)).map((metric) => metric.type);
     console.log(`[electron] constrained ${fresh.length} process(es): ${types.join(", ")}`);
   });
@@ -197,23 +245,27 @@ function serverStatusPage(what) {
  * only says so and waits for it.
  */
 async function openWhenGatewayListens(window, pageUrl) {
-  if (remoteUrl !== undefined) {
-    const host = new URL(remoteUrl).hostname;
-    if (!(await listening(GATEWAY_PORT, host))) {
-      window.loadURL(serverStatusPage(`Сервер ${host} не отвечает (порт ${GATEWAY_PORT}).`));
-      await waitUntilListening(GATEWAY_PORT, host);
+  const gateway = gatewayTarget(pageUrl, gatewaySettings); // L10 (10.17): was 8090 on the page's host
+  // L10-review (10.17): a configured gateway on another host is waited for there; only a loopback one is started here.
+  if (remoteUrl !== undefined || !LOOPBACK_HOSTS.has(gateway.hostname)) {
+    const host = gateway.hostname; // L10 (10.17)
+    if (!(await listening(gateway.port, host))) {
+      window.loadURL(serverStatusPage(`Сервер ${host} не отвечает (порт ${gateway.port}).`));
+      await waitUntilListening(gateway.port, host);
     }
-  } else if (!(await listening(GATEWAY_PORT))) {
+  } else if (!(await listening(gateway.port))) {
     const root = webDir === undefined ? undefined
       : findWebClientRoot([path.resolve(__dirname, ".."), path.resolve(path.dirname(process.execPath), "..", "..")]);
     const manual = "Запустите start-gateway.bat в папке WebClient — окно продолжит само.";
     if (root === undefined) {
-      window.loadURL(statusPage("Шлюз не запущен", `На 127.0.0.1:${GATEWAY_PORT} никто не отвечает.\n${manual}`));
+      window.loadURL(statusPage("Шлюз не запущен", `На 127.0.0.1:${gateway.port} никто не отвечает.\n${manual}`));
+    } else if (!allowStaleGateway && (await showStaleGatewayBuild(window, root))) {
+      // L10 (10.11): the status page says how to rebuild; the window goes on once a gateway listens.
     } else {
       const logFile = path.join(root, ".runtime", "logs", "electron-gateway.log");
       console.log(`[electron] starting the gateway in ${root}, log ${logFile}`);
       window.loadURL(statusPage("Запуск шлюза…", `${path.join(root, "tools", "start-gateway.mjs")}\nЖурнал: ${logFile}`));
-      startedGateway = startGateway(root, { port: GATEWAY_PORT, logFile });
+      startedGateway = startGateway(root, { port: gateway.port, logFile });
       try {
         await startedGateway.ready;
       } catch (error) {
@@ -223,13 +275,35 @@ async function openWhenGatewayListens(window, pageUrl) {
           `${error.message}\n\n${logTail(logFile)}\n\nЖурнал: ${logFile}\n${manual}`));
       }
     }
-    await waitUntilListening(GATEWAY_PORT);
+    await waitUntilListening(gateway.port);
   }
   if (!window.isDestroyed()) window.loadURL(pageUrl);
 }
 
+/**
+ * L10 (10.11): the checkout's dist/code built before the gateway's sources last changed would
+ * serve yesterday's routes, so it is not started; the window says why and how to rebuild. True
+ * when it is stale. An unknown answer (an older checkout, a failed check) starts it as before.
+ */
+async function showStaleGatewayBuild(window, root) {
+  const build = await gatewayBuildState(root);
+  if (build.unknown) console.warn(`[electron] gateway build freshness unknown: ${build.text}`);
+  if (!build.stale) return false;
+  console.warn(`[electron] not starting a stale gateway: ${build.text}`);
+  window.loadURL(statusPage("Шлюз собран из старых исходников", `${build.text}\n\n`
+    + "Запустите start-gateway.bat в папке WebClient: он пересоберёт шлюз и запустит его — окно продолжит само.\n"
+    + "Запустить прежнюю сборку как есть: WoWWebClient.exe --allow-stale (или start-built.bat --allow-stale)."));
+  return true;
+}
+
+/** L10 (10.17): the page to open, with `?gateway=` when the gateway is configured (--webclient-url stays as given). */
+async function resolveGamePageUrl() {
+  const url = await resolvePageUrl();
+  return url === undefined || commandLineUrl !== undefined ? url : gatewayTarget(url, gatewaySettings).pageUrl;
+}
+
 app.whenReady().then(async () => {
-  const pageUrl = await resolvePageUrl();
+  const pageUrl = await resolveGamePageUrl(); // L10 (10.17)
   if (pageUrl === undefined) { app.quit(); return; }
   console.log(`[electron] page ${pageUrl}${webDir !== undefined && explicitUrl === undefined ? ` (built: ${webDir})` : ""}`);
   Menu.setApplicationMenu(null);
@@ -289,7 +363,12 @@ app.whenReady().then(async () => {
     if (input.key === "F11") { window.setFullScreen(!window.isFullScreen()); event.preventDefault(); }
     else if (input.key === "F12" || (input.control && input.shift && input.key.toLowerCase() === "i")) {
       window.webContents.toggleDevTools(); event.preventDefault();
-    } else if (input.control && input.key.toLowerCase() === "r") { window.webContents.reload(); event.preventDefault(); }
+    } else if (input.control && input.key.toLowerCase() === "r") {
+      // On a status page (a `data:` URL) Ctrl+R means `"try the game again`", not `"reload this message`".
+      if (window.webContents.getURL().startsWith("data:")) window.loadURL(pageUrl);
+      else window.webContents.reload();
+      event.preventDefault();
+    }
   });
   // Without an answering page server Chromium shows a bare error page; say what is missing
   // instead, and open the page as soon as its server listens.
@@ -303,6 +382,18 @@ app.whenReady().then(async () => {
         + "или соберите Electron-версию: electron\\build.bat. Окно продолжит само."));
     const port = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
     waitUntilListening(port, target.hostname).then(() => { if (!window.isDestroyed()) window.loadURL(url); });
+  });
+  // 1.29: a renderer that crashed, was killed or ran out of memory left a blank window. Say so and
+  // bring the game back; when it keeps crashing, stay on the message (electron/recovery.cjs).
+  const recovery = createRenderRecovery();
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const decision = recovery.onGone(details.reason);
+    console.warn(`[electron] renderer gone: ${details.reason} (exit ${details.exitCode}) → ${decision.action}`);
+    if (decision.action === "ignore" || window.isDestroyed()) return;
+    window.loadURL(statusPage("Окно игры остановилось", decision.text));
+    if (decision.action === "reload") {
+      setTimeout(() => { if (!window.isDestroyed()) window.loadURL(pageUrl); }, decision.delayMs);
+    }
   });
   if (commandLineUrl !== undefined) window.loadURL(pageUrl);
   else openWhenGatewayListens(window, pageUrl).catch((error) => console.error(`[electron] ${error.stack}`));

@@ -20,7 +20,7 @@ import {
   RSVP_CHOICES, eventLine, formatWowDate, inviteStatusText, lockoutLines, monthGrid, monthName,
   serverMonth, stepMonth,
 } from "./CalendarModel.js";
-import { Panel, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, confirmPanel } from "./Widgets.js";
 import { calendarDateInput, calendarEventFields, calendarInputDate } from "./CalendarEditor.js";
 import {
   closeFrameXmlCalendar, frameXmlCalendarOpen, frameXmlCalendarOwnsErrors, openFrameXmlCalendar, toggleFrameXmlCalendar,
@@ -500,7 +500,7 @@ export function showCalendar(): void {
       const guild = document.createElement("button");
       guild.type = "button";
       guild.textContent = "Гильдия…";
-      guild.title = "Запросить состав гильдии для массового приглашения";
+      setTip(guild, "Запросить состав гильдии для массового приглашения");
       guild.addEventListener("click", () => {
         const min = Number(window.prompt("Минимальный уровень (0–80):", "1") ?? "");
         const max = Number(window.prompt("Максимальный уровень (0–80):", "80") ?? "");
@@ -514,7 +514,7 @@ export function showCalendar(): void {
       const arena = document.createElement("button");
       arena.type = "button";
       arena.textContent = "Арена…";
-      arena.title = "Запросить состав команды арены для массового приглашения";
+      setTip(arena, "Запросить состав команды арены для массового приглашения");
       arena.addEventListener("click", () => {
         const team = Number(window.prompt("ID команды арены:", "") ?? "");
         if (!Number.isInteger(team) || team <= 0) {

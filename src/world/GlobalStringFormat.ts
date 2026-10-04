@@ -48,8 +48,8 @@ export function formatGlobalStringByName(name: string, args: readonly (string | 
   return formatGlobalString(globalString(name) ?? fallback, args);
 }
 
-/** The escapes a Lua string literal resolves when GlobalStrings.lua is loaded. */
-function unescapeLua(text: string): string {
+/** The escapes a Lua string literal resolves when GlobalStrings.lua is loaded. L7 4.14: exported for ui/Strings.ts. */
+export function unescapeLua(text: string): string {
   if (!text.includes("\\")) return text;
   return text.replace(/\\(\d{1,3}|.)/g, (_whole, escape: string) => {
     if (/^\d+$/.test(escape)) return String.fromCharCode(Number(escape));

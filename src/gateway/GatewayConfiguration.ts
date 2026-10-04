@@ -1,9 +1,13 @@
 import type { GatewayOptions } from "./Gateway.js";
-import { AssetWorker, type AssetWorkerJob } from "./AssetWorker.js";
+import type { AssetWorkerJob } from "./AssetWorker.js";
+import { createAssetWorkers } from "./AssetWorkers.js";
+import { parsePreloadEnv } from "./AssetPreloader.js";
+import { PRELOAD_PRIORITY, texturePriority, visualModelPriority } from "./GenerationLane.js";
 import { parseCharacterTextures } from "./CharacterTextures.js";
 import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
 import { discoverClientAddons } from "./ClientAddons.js";
 import { readPatchStatusChild } from "./PatchStatus.js";
+import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -18,29 +22,30 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     return child;
   }
   /**
-   * The two families a zone asks for by the hundred are published by long-lived workers that hold
-   * the archive chain open between jobs (`tools/asset-worker.mjs` has the measurements: a cold
-   * texture 387 ms as its own process, 18 ms out of an open chain). One per family, so a city WMO
-   * being published does not hold up the pictures, and each is fed one job at a time by its
-   * family's serial lane. `ASSET_WORKERS=0` goes back to one process per miss.
+   * Generators run by long-lived workers that hold the archive chain open between jobs
+   * (`tools/asset-worker.mjs` has the measurements: a cold texture 387 ms as its own process, 18 ms
+   * out of an open chain). 10.20: one worker per family by job length (`texture` for the short jobs —
+   * pictures, icons, indexes, interface files; `model`; `tile`, one per tile kind), each fed one job
+   * at a time in priority order (`AssetWorkers.ts`, `AssetWorker.ts`). `ASSET_WORKERS=0` goes back
+   * to one process per miss; a list (`texture,model`) keeps only those families on workers.
    */
-  const assetWorkers = process.env.ASSET_WORKERS === "0" ? undefined : {
-    texture: new AssetWorker({
-      script: resolve(process.cwd(), "tools/asset-worker.mjs"),
-      cwd: process.cwd(), env: process.env, label: "texture", track,
-    }),
-    model: new AssetWorker({
-      script: resolve(process.cwd(), "tools/asset-worker.mjs"),
-      cwd: process.cwd(), env: process.env, label: "visual-model", track,
-    }),
-  };
-  function publish(worker: AssetWorker | undefined, job: AssetWorkerJob, script: string, args: string[]): Promise<void> {
-    return worker ? worker.run(job) : runAssetGenerator(script, args);
+  const assetWorkers = createAssetWorkers({ env: process.env, cwd: process.cwd(), track });
+  /** Through the job's worker when its family has one, else the one-shot generator as before. */
+  function publish(job: AssetWorkerJob, priority: number, script: string, args: string[]): Promise<void> {
+    const worker = assetWorkers.run(job, priority);
+    return worker ? worker.then(() => undefined) : runAssetGenerator(script, args);
   }
+  /**
+   * 10.22: background publication of the neighbourhood's models (`AssetPreloader.ts`), only with
+   * `ASSET_PRELOAD=1` and only when tiles and models run on workers — at one process per miss a
+   * background job costs ~0.4 s of process start each, too dear for work nobody asked for yet.
+   */
+  const preload = parsePreloadEnv(process.env);
+  const preloadOn = preload !== undefined && assetWorkers.handles("visual-model") && assetWorkers.handles("visual-tile");
+  if (preload !== undefined && !preloadOn) console.warn("ASSET_PRELOAD=1 ignored: needs the model and tile workers (ASSET_WORKERS)");
   function close(): void {
     closed = true;
-    assetWorkers?.texture.close();
-    assetWorkers?.model.close();
+    assetWorkers.close();
     for (const child of children) child.kill();
   }
   function port(name: string, fallback: number): number {
@@ -72,6 +77,9 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+
+  // 10.04: writing module files is for a loopback-only gateway; anything else refuses to start.
+  assertModuleWritePolicy({ moduleWrite: process.env["MODULE_UI_WRITE"] === "1", host, allowedOrigins });
 
   if (host !== "127.0.0.1" && host !== "localhost" && allowedOrigins.includes("*")) {
     console.warn(
@@ -205,14 +213,18 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     creatureMetadataFile: process.env.CREATURE_METADATA_FILE ?? resolve(process.cwd(), "data/creatures.json"),
     itemMetadataFile: process.env.ITEM_METADATA_FILE ?? resolve(process.cwd(), "data/items.json"),
     itemIconsDirectory: process.env.ITEM_ICON_DIR ?? resolve(process.cwd(), "data/item-icons"),
-    generateItemIcon: (displayId) => runAssetGenerator("generate-item-icon.mjs", [String(displayId)]),
+    // Interface art: priority 0 in its worker's queue, as `texturePriority` ranks `interface\`.
+    generateItemIcon: (displayId) => publish(
+      { kind: "item-icon", displayId }, 0, "generate-item-icon.mjs", [String(displayId)]),
     // `public/`, not `data/`: these two were filled by `build-assets.bat` and served beside the page
     // long before there was a route for them, and the whole point of the route is that what is
     // already published costs nothing. The env names match the generator's own.
     spellIconsDirectory: process.env.SPELL_ICON_DIR ?? resolve(process.cwd(), "public/icons"),
-    generateSpellIcon: (iconId) => runAssetGenerator("generate-spell-icons.mjs", [String(iconId)]),
+    generateSpellIcon: (iconId) => publish(
+      { kind: "spell-icon", iconId }, 0, "generate-spell-icons.mjs", [String(iconId)]),
     creatureIconsDirectory: process.env.CREATURE_ICON_DIR ?? resolve(process.cwd(), "public/creature-icons"),
-    generateCreatureIcon: (familyId) => runAssetGenerator("generate-spell-icons.mjs", ["--family", String(familyId)]),
+    generateCreatureIcon: (familyId) => publish(
+      { kind: "creature-icon", familyId }, 0, "generate-spell-icons.mjs", ["--family", String(familyId)]),
     // Everything published before stamps existed — 23,025 of the 24,796 files under `data/` on this
     // machine, plus 3,204 icons in `public/` — gets one here, in two passes started once when the
     // gateway comes up and never on a request path. `tools/restamp.mjs` walks `data/` and derives
@@ -241,14 +253,19 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     terrainTexturesDirectory: process.env.TERRAIN_TEXTURE_DIR ?? resolve(process.cwd(), "data/terrain-textures"),
     terrainLayersDirectory: process.env.TERRAIN_LAYER_DIR ?? resolve(process.cwd(), "data/terrain-layers"),
     generateTerrainTexture: (map, gridX, gridY) => runAssetGenerator("generate-terrain-tile.mjs", [String(map), String(gridX), String(gridY)]),
-    generateTerrainSplat: (map, gridX, gridY) => runAssetGenerator("generate-terrain-splat.mjs", [String(map), String(gridX), String(gridY)]),
+    generateTerrainSplat: (map, gridX, gridY) => publish(
+      { kind: "terrain-splat", map, gridX, gridY }, 0,
+      "generate-terrain-splat.mjs", [String(map), String(gridX), String(gridY)]),
     visualTilesDirectory: process.env.VISUAL_TILE_DIR ?? resolve(process.cwd(), "data/visual-tiles"),
-    generateVisualTile: (map, gridX, gridY) => runAssetGenerator("generate-visual-tile.mjs", [String(map), String(gridX), String(gridY)]),
+    generateVisualTile: (map, gridX, gridY) => publish(
+      { kind: "visual-tile", map, gridX, gridY }, 0,
+      "generate-visual-tile.mjs", [String(map), String(gridX), String(gridY)]),
     visualModelsDirectory: process.env.VISUAL_MODEL_DIR ?? resolve(process.cwd(), "data/visual-models"),
     horizonDirectory: process.env.HORIZON_DIR ?? resolve(process.cwd(), "data/horizon"),
-    generateHorizon: (map) => runAssetGenerator("generate-horizon.mjs", [String(map)]),
+    generateHorizon: (map) => publish({ kind: "horizon", map }, 0, "generate-horizon.mjs", [String(map)]),
+    // 10.20 slice 4: a creature's or a character's model ahead of a city WMO in the model worker.
     generateVisualModel: (path, hash) => publish(
-      assetWorkers?.model, { kind: "visual-model", path, hash }, "generate-visual-model.mjs", [path, hash]),
+      { kind: "visual-model", path, hash }, visualModelPriority(path), "generate-visual-model.mjs", [path, hash]),
     texturesDirectory: process.env.TEXTURE_DIR ?? resolve(process.cwd(), "data/textures"),
     // World map art is asked for a tile at a time and is only ever wanted a whole picture at a
     // time — twelve for a zone, plus one to four for each exploration overlay painted over it. Sent
@@ -256,20 +273,20 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // the first miss publishes the whole run and the rest are already on disk.
     generateTexture: (path) => path.replaceAll("/", "\\").toLowerCase().startsWith("interface\\worldmap\\")
       ? runAssetGenerator("generate-worldmap-art.mjs", [path])
-      : publish(assetWorkers?.texture, { kind: "texture", path }, "generate-texture.mjs", [path]),
+      : publish({ kind: "texture", path }, texturePriority(path), "generate-texture.mjs", [path]),
     // The workers above hold the chain they opened; a changed client needs a fresh one.
-    onArchivesChanged: () => {
-      assetWorkers?.texture.recycle();
-      assetWorkers?.model.recycle();
-    },
+    onArchivesChanged: () => assetWorkers.recycle(),
+    // And a changed DBC directory: the icon tables are keyed on their files inside the worker
+    // (`tools/dbc-memo.mjs`), and a fresh worker is the second guard.
+    onDatasetChanged: () => assetWorkers.recycle(),
     // Only on a machine that has a client: without one there is nothing to list, and the gateway
     // must then behave exactly as it did before Т7 — both spellings offered, the gendered one first.
     ...(clientDirectory === undefined ? {} : { listCharacterTextures }),
     minimapDirectory: process.env.MINIMAP_DIR ?? resolve(process.cwd(), "data/minimap"),
-    generateMinimapIndex: (map) => runAssetGenerator("generate-minimap-index.mjs", [String(map)]),
+    generateMinimapIndex: (map) => publish({ kind: "minimap-index", map }, 0, "generate-minimap-index.mjs", [String(map)]),
     worldMapZoneMapsDirectory: process.env.WORLD_MAP_ZONE_MAP_DIR
       ?? resolve(process.cwd(), "data/worldmap-zone-maps"),
-    generateWorldMapZoneMap: (map) => runAssetGenerator("generate-worldmap-zone-map.mjs", [String(map)]),
+    generateWorldMapZoneMap: (map) => publish({ kind: "zone-map", map }, 0, "generate-worldmap-zone-map.mjs", [String(map)]),
     soundDirectory: process.env.SOUND_DIR ?? resolve(process.cwd(), "data/sound"),
     // One path in, a whole `SoundEntries` row out. The generator does nothing but read and write, so
     // every millisecond of a miss is process start and the twenty-two archives; a footstep kit asked
@@ -280,9 +297,11 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // archives. One path in, one file out — there is no batch to publish, because a `.toc` names what
     // comes next and only the runtime that read it knows which of those it will actually want.
     clientFilesDirectory: process.env.CLIENT_FILE_DIR ?? resolve(process.cwd(), "data/client-files"),
-    generateClientFile: (path) => runAssetGenerator("generate-client-file.mjs", [path]),
+    // Priority 2: the glue screen waits on its interface files at the very start of a session.
+    generateClientFile: (path) => publish({ kind: "client-file", path }, 2, "generate-client-file.mjs", [path]),
     liquidDirectory: process.env.LIQUID_DIR ?? resolve(process.cwd(), "data/liquid"),
-    generateLiquidTexture: (liquidClass) => runAssetGenerator("generate-liquid-texture.mjs", [liquidClass]),
+    generateLiquidTexture: (liquidClass) => publish(
+      { kind: "liquid", liquidClass }, 1, "generate-liquid-texture.mjs", [liquidClass]),
     // What the modules on this machine ship for this client: message schemas, window definitions and
     // stylesheets. Scanned per request rather than memoised, because the whole point of it is to
     // notice that a module author just saved a file.
@@ -290,6 +309,16 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // The one route in this process that writes to the disk, and it stays shut unless it is asked
     // for by name. Even switched on it answers only a socket from this machine — see the route.
     moduleWrite: process.env["MODULE_UI_WRITE"] === "1",
+    // 10.14: one line per closed bridge with its queue peaks and pauses, to measure a remote line.
+    logBackpressure: process.env["GATEWAY_LOG_BACKPRESSURE"] === "1",
+    ...(preloadOn ? {
+      preload,
+      // The tile worker reads the published tile and answers its model list (`tools/tile-models.mjs`).
+      listTileModels: async (map: number, gridX: number, gridY: number) => {
+        const result = await assetWorkers.run({ kind: "tile-models", map, gridX, gridY }, PRELOAD_PRIORITY);
+        return Array.isArray(result) ? result.filter((name): name is string => typeof name === "string") : undefined;
+      },
+    } : {}),
   };
 
   /**

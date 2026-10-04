@@ -11,7 +11,7 @@ import { inArena } from "./UnitFrames.js";
 import {
   objectiveCount, objectiveHeaders, scoreColumns, scoreGroups, winnerText,
 } from "./ScoreboardModel.js";
-import { Panel, attachTooltip, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, attachTooltip, confirmPanel } from "./Widgets.js";
 
 interface Parts {
   panel: Panel;
@@ -100,7 +100,7 @@ export function showScoreboard(): void {
   const blocked = world !== undefined && inArena(world);
   if (blocked) refresh.setAttribute("aria-disabled", "true");
   else refresh.removeAttribute("aria-disabled");
-  refresh.title = "";
+  setTip(refresh, "");
 
   if (!world || !log) {
     status.textContent = world ? "Таблица ещё не запрашивалась" : "Нет соединения";

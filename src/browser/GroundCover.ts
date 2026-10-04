@@ -20,6 +20,7 @@
 import { TERRAIN_GRID_SIZE, type TerrainGrid } from "./Terrain.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 /** The file's magic, which is also its version: a later layout is `WGC2`. */
 export const GROUND_COVER_MAGIC = "WGC1";
@@ -980,7 +981,7 @@ export class GroundCoverClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/terrain-splat/${map}/${grid.x}/${grid.y}/cover.bin`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/terrain-splat/${map}/${grid.x}/${grid.y}/cover.bin`));
       if (response.status === 404) {
         // Cover is an optional generated family member; older tiles legitimately have no recipe.
         this.#tiles.set(key, null);

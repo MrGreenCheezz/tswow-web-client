@@ -68,7 +68,20 @@ export function attackPower(object: WorldObjectState): number | undefined {
   const low = halves === undefined ? 0 : (halves[0] << 16) >> 16;
   const high = halves === undefined ? 0 : (halves[1] << 16) >> 16;
   const multiplier = readField(object, "UNIT_FIELD_ATTACK_POWER_MULTIPLIER") ?? 0;
-  return Math.max(0, ((base | 0) + low + high) * (1 + multiplier));
+  // L7 4.03: each of the three is scaled on its own and rounded, as Wow.exe's UnitAttackPower
+  // (0x00610b60) does and CharacterStatFields.attackPower repeats — the sum scaled once drifted from
+  // the sheet by a point or two under a «+N % attack power» aura.
+  const scale = Math.fround(1 + (Number.isFinite(multiplier) ? multiplier : 0));
+  const scaled = (value: number): number => roundToEven(Math.fround(scale * Math.fround(value)));
+  return Math.max(0, scaled(base | 0) + scaled(low) + scaled(high));
+}
+
+/** L7 4.03: x87 `fistp` under the default control word — the nearest integer, a tie to the even one. */
+function roundToEven(value: number): number {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  const rounded = fraction > 0.5 || (fraction === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
+  return rounded === 0 ? 0 : rounded;
 }
 
 /** A guid held in a pair of slots at an offset from a named field, which is how the item slots run. */
@@ -252,6 +265,13 @@ export const PLAYER_FLAGS_GHOST = 0x0000_0010;
 export const PLAYER_FLAGS_AFK = 0x0000_0002;
 export const PLAYER_FLAGS_DND = 0x0000_0004;
 export const PLAYER_FLAGS_RESTING = 0x0000_0020;
+/**
+ * The PvP pair of the same word: `PLAYER_FLAGS_IN_PVP` (`Player.h:363`), the flag the player asked
+ * for, and `PLAYER_FLAGS_PVP_TIMER` (`:372`), set while the five minutes after switching it off run
+ * (`MiscHandler.cpp:563-572`, cleared by `Player::UpdatePvPFlag`).
+ */
+export const PLAYER_FLAGS_IN_PVP = 0x0000_0200;
+export const PLAYER_FLAGS_PVP_TIMER = 0x0004_0000;
 
 /**
  * How opaque a unit is drawn, and whether it moves like something that is sneaking.

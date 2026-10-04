@@ -1,0 +1,5 @@
+{
+  "//": "10.11 (L10): the gateway alone into the same dist/code as tsconfig.json - src/gateway, whatever it imports (tsc follows the imports), and the client-data implementations tools/start-gateway.mjs checks before it starts. Built by tools/build-gateway.mjs; the page still needs the full `npm run build`.",
+  "extends": "./tsconfig.json",
+  "include": ["src/gateway/**/*.ts", "src/generated/client-data/*.ts"]
+}

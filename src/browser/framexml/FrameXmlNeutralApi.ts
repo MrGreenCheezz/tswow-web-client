@@ -24,6 +24,9 @@
  * per call, and F1's counters are in Lua for exactly that reason.
  */
 
+import { FRAMEXML_GETTEXT_NEUTRAL, FRAMEXML_GETTEXT_PRELUDE } from "./FrameXmlGetText.js";
+import { FRAMEXML_CENSUS_REMAINDER_NEUTRAL } from "./FrameXmlCensusRemainder.js";
+
 export type FrameXmlApiGroup =
   | "cvar" | "addon" | "actionbar" | "binding" | "money" | "chat" | "unit" | "quest"
   | "minimap" | "pvp" | "options";
@@ -515,9 +518,10 @@ const UNITS: readonly FrameXmlNeutralAnswer[] = [
   { name: "GetPartyMember", group: "unit", values: NOTHING, answer: "nil", reason: "Behind a count of 0." },
   { name: "GetRaidRosterInfo", group: "unit", values: NOTHING, answer: "nil", reason: "Behind a count of 0." },
   {
-    name: "IsInInstance", group: "unit", values: [false, "none"], answer: 'false, "none"',
+    name: "IsInInstance", group: "unit", answer: 'nil, "none"',
     reason: "15 calls, UnitPopup.lua:457 destructures both. The client answers exactly this pair "
-      + "outside an instance, and the corpus compares the second against string literals.",
+      + "outside an instance (Wow.exe 0x5156a0: nil, not false), and the corpus compares the second "
+      + "against string literals. In the Lua half: a constant table cannot start with nil.",
   },
   { name: "IsPartyLFG", group: "unit", values: [false], answer: "false", reason: "9 calls; no group finder." },
   { name: "IsInGuild", group: "unit", values: [false], answer: "false", reason: "No guild." },
@@ -603,7 +607,8 @@ const CLIENT_OPTIONS: readonly FrameXmlNeutralAnswer[] = [
 
 /** Every neutral answer this slice installs, in report order. */
 export const FRAMEXML_NEUTRAL_API: readonly FrameXmlNeutralAnswer[] = Object.freeze([
-  ...STATEFUL, ...CLIENT_OPTIONS, ...ACTION_BAR, ...BINDINGS, ...MONEY, ...CHAT, ...QUEST, ...UNITS, ...MINIMAP_PVP,
+  ...STATEFUL, ...FRAMEXML_GETTEXT_NEUTRAL, ...CLIENT_OPTIONS, ...ACTION_BAR, ...BINDINGS, ...MONEY, ...CHAT, ...QUEST, ...UNITS, ...MINIMAP_PVP,
+  ...FRAMEXML_CENSUS_REMAINDER_NEUTRAL,
 ]);
 
 /** The subset with a constant answer; the rest are the Lua module below. */
@@ -653,13 +658,16 @@ do
     -- The client default: action and bag tooltips go to GameTooltip_SetDefaultAnchor (the
     -- bottom-right corner) instead of covering the bar they were opened from.
     ubertooltips = "1",
-    -- Stock chat Lua consumes these selections itself. The style switch needs
-    -- ChatFrame edit-box ownership that this browser mount does not yet provide.
+    -- Stock chat Lua consumes these selections itself. chatStyle stays read-only below: the
+    -- stock edit box is owned now (FrameXmlChatApi.ts installFrameXmlStockChat), but switching
+    -- to «im» was never checked against it, and chat is outside the work plan since 29.09.
     chatstyle = "classic", showtimestamps = "none",
     -- The client's own threat defaults: warn always (the four OPTION_TOOLTIP_AGGRO_WARNING_DISPLAY
     -- rows, InterfaceOptionsPanels.lua:690), no numeric percentage. Both are real options here:
     -- IsThreatWarningEnabled (FrameXmlThreat.ts) and UnitFrame.lua's ShowNumericThreat read them.
     threatwarning = "3", threatshownumeric = "0",
+    -- Wow.exe registers previewTalents with "0" (0x51d9b0); the talent preview reads it (3.33).
+    previewtalents = "0",
     -- Inactive facilities still need typed values for their dropdown OnLoad.
     conversationmode = "inline", camerasmoothstyle = "0",
     camerasmoothtrackingstyle = "0", voicechatmode = "0", basemip = "0",
@@ -707,6 +715,8 @@ do
     readOnly.sound_outputdriverindex = true
   end
   __fxCVarValues, __fxCVarDefaults = values, defaults
+  -- FrameXmlCVarPersistence.ts: no CVAR_UPDATE and nothing kept for these (3.19).
+  __fxCVarReadOnly = readOnly
 
   local function cvarKey(name)
     if type(name) ~= "string" or name == "" then return nil end
@@ -870,5 +880,9 @@ do
     return name, name, "", true, true, nil, "INSECURE"
   end
   impl.GetAddOnMemoryUsage = function() return 0 end
+
+  ---------------------------------------------------------------- IsInInstance
+  -- A leading nil cannot ride the constant table (its length would be the border before it).
+  impl.IsInInstance = function() return nil, "none" end
 end
-`;
+${FRAMEXML_GETTEXT_PRELUDE}`;

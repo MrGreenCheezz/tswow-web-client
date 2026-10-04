@@ -19,11 +19,16 @@ if (process.env.CLIENT_PACK_DIR) {
 
 assertGatewayConfiguration();
 assertBuiltClientDataImplementations();
-if (process.env.GATEWAY_RESTART_ON_PATCH === "1") {
-  // Opt-in (.env.example): this process stays as a thin supervisor and forks the gateway, restarting
-  // it after a settled TSWoW build when nobody is connected. See tools/gateway-supervisor.mjs.
-  const { runGatewaySupervisor } = await import("./gateway-supervisor.mjs");
-  await runGatewaySupervisor({ entry: new URL("../dist/code/gateway/main.js", import.meta.url) });
+const restartOnPatch = process.env.GATEWAY_RESTART_ON_PATCH === "1";
+if (restartOnPatch || process.env.GATEWAY_SUPERVISE === "1") {
+  // Opt-in (.env.example): this process stays as a thin supervisor and forks the gateway, starting
+  // it again after a crash (10.15) and — with GATEWAY_RESTART_ON_PATCH=1 — after a settled TSWoW
+  // build when nobody is connected. See tools/gateway-supervisor.mjs.
+  const { runGatewaySupervisor, supervisorOptionsFromEnv } = await import("./gateway-supervisor.mjs");
+  await runGatewaySupervisor({
+    entry: new URL("../dist/code/gateway/main.js", import.meta.url),
+    options: supervisorOptionsFromEnv(process.env),
+  });
 } else {
   await import("../dist/code/gateway/main.js");
 }

@@ -52,6 +52,22 @@ export interface AreaInfo {
   ambienceId: number;
   /** `ZoneIntroMusicTable::ID` — the sting on entering, once, before the zone's own track. */
   introSound: number;
+  /**
+   * `Flags`, column 4 of the 3.3.5.12340 layout (tools/dbd/AreaTable.dbd; TrinityCore's
+   * `AreaTableEntry::Flags`, `AreaFlags` in DBCEnums.h). `GetZonePVPInfo` reads the sanctuary
+   * (0x800), arena (0x80) and Wintergrasp (0x01000000) bits of it (FrameXmlZoneInfo.ts).
+   *
+   * Optional because a gateway older than route version 8 does not send it; the client then
+   * answers no PvP status rather than a guessed one.
+   */
+  flags?: number;
+  /**
+   * `FactionGroupMask`, column 28 (after the seventeen `AreaName_lang` slots 11-27): 2 Alliance,
+   * 4 Horde, 6 both, 0 none (TrinityCore `AreaTeams`). Measured on this dataset: 29 rows of 2,
+   * 41 of 4, two of 6 (Shattrath and Dalaran), 2,235 of 0 — set on zones, cities and a few of their
+   * districts, so a sub-area inherits it from the zone above. Optional as `flags` is.
+   */
+  factionGroupMask?: number;
 }
 
 export interface MapAreaInfo {
@@ -212,6 +228,8 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       zoneMusic: areaTable.int(row, "ZoneMusic"),
       ambienceId: areaTable.int(row, "AmbienceID"),
       introSound: areaTable.int(row, "IntroSound"),
+      flags: areaTable.int(row, "Flags"),
+      factionGroupMask: areaTable.int(row, "FactionGroupMask"),
     });
   }
 

@@ -3,6 +3,7 @@ import type { EventBus, Unsubscribe, WorldPacketEvents } from "../world/EventBus
 import type { ItemTemplate } from "../world/QueryCacheProtocol.js";
 import { spellIconUrl } from "./ui/IconImage.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 export type { ItemMetadata };
 
@@ -108,7 +109,7 @@ export class ItemMetadataClient {
   }
 
   displayIconUrl(displayId: number): string {
-    return `${this.#baseUrl}/item-icon/${displayId}`;
+    return withGeneration(`${this.#baseUrl}/item-icon/${displayId}`);
   }
 
   /**

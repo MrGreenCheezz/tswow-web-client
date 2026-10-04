@@ -12,6 +12,7 @@ import { formatMoney, reputationRankName, unknownLabel } from "./Format.js";
 import { ensureSpellNames, spellName } from "./SpellNames.js";
 import { formatSpellDescription } from "./SpellText.js";
 import { className, raceName } from "./UnitSnapshot.js";
+import { itemDurationParts, itemDurationSeconds } from "./ItemDurationText.js"; // 5.22 (04.10, L4)
 import {
   refreshTooltip, type TooltipContent, type TooltipLine, type TooltipRefresh, type TooltipTone,
 } from "./Widgets.js";
@@ -185,6 +186,15 @@ export function fillTemplate(template: string, ...values: ReadonlyArray<string |
 
 const signed = (value: number): string => value < 0 ? String(value) : `+${value}`;
 
+/** 5.22 (04.10, L4): a timed item's ITEM_DURATION_* line, or undefined (ItemDurationText.ts). */
+function itemDurationLine(templateDuration: number, left: number | undefined): string | undefined {
+  const seconds = itemDurationSeconds(templateDuration, left);
+  if (seconds === undefined) return undefined;
+  const { key, count } = itemDurationParts(seconds);
+  const template = globalString(key);
+  return template === undefined ? undefined : fillTemplate(template, count);
+}
+
 /**
  * One stat of the counted block, in words.
  *
@@ -238,6 +248,11 @@ export interface ItemTooltipContext {
   playerLevel?: number | undefined;
   /** `ITEM_FIELD_DURABILITY`, which only an item the player actually owns has. */
   durability?: number | undefined;
+  /**
+   * 5.22 (04.10, L4): `ITEM_FIELD_DURATION` of an item object, the seconds a timed item has left
+   * (ItemDurationText.ts); without it the record's own Duration is shown.
+   */
+  durationLeft?: number | undefined;
   /** `SkillLine.Name` for the skill an item demands, when the caller has the table. */
   skillName?: ((skillId: number) => string | undefined) | undefined;
   /**
@@ -264,6 +279,11 @@ export interface ItemTooltipContext {
    * a caller without it, or before that table has answered, gets the slot alone.
    */
   subclassName?: ((itemClass: number, subClass: number) => string | undefined) | undefined;
+  /**
+   * `SMSG_SET_PROFICIENCY` (5.22): false paints that subclass word red, as the original's tooltip
+   * (0x628xxx through 0x6cde90) does for armour and weapons the character cannot use.
+   */
+  proficient?: ((itemClass: number, subClass: number) => boolean) | undefined;
   /**
    * The row of an item's spell, for what a recipe's learn spell makes and takes: the product is
    * the `EffectItemType` of its `SPELL_EFFECT_CREATE_ITEM` effect, the reagents are the
@@ -363,6 +383,7 @@ export function itemTooltipContent(facts: ItemFacts, context: ItemTooltipContext
       push(fillTemplate(globalString("DURABILITY_TEMPLATE") ?? "",
         context.durability ?? template.maxDurability, template.maxDurability), "muted");
     }
+    push(itemDurationLine(template.duration, context.durationLeft)); // 5.22 (04.10, L4)
     const recipe = template.itemClass === ITEM_CLASS_RECIPE;
     if (recipe && template.description) push(`${globalString("ITEM_SPELL_TRIGGER_ONUSE") ?? ""} ${template.description}`.trim(), "spell");
     for (const spell of template.spells) {
@@ -456,6 +477,8 @@ const BASE_STAT_TYPES: readonly number[] = [0, 1, 3, 4, 5, 6, 7];
 
 /** `GRAY_FONT_COLOR`, which no tone maps to: an empty socket, an inactive socket bonus. */
 const STOCK_GRAY = "#808080";
+/** `RED_FONT_COLOR` (1.0, 0.125, 0.125): a subclass the character has no proficiency in (5.22). */
+const STOCK_RED = "#ff2020";
 
 /**
  * Two of the dataset's templates the generated table does not carry (it takes a named few beside
@@ -535,7 +558,8 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
     push(fillTemplate(globalString("CONTAINER_SLOTS") ?? "", template.containerSlots, slotWord ?? ""));
   } else if (slotWord) {
     const kind = template ? context.subclassName?.(template.itemClass, template.subClass) : undefined;
-    lines.push(kind ? { text: slotWord, right: kind } : { text: slotWord });
+    const proficient = !template || (context.proficient?.(template.itemClass, template.subClass) ?? true);
+    lines.push(kind ? { text: slotWord, right: kind, ...(proficient ? {} : { rightColor: STOCK_RED }) } : { text: slotWord });
   }
 
   if (template) {
@@ -593,6 +617,8 @@ export function stockItemTooltipContent(facts: ItemFacts, context: ItemTooltipCo
       push(fillTemplate(globalString("DURABILITY_TEMPLATE") ?? "", current, template.maxDurability),
         current <= 0 ? { tone: "unmet" } : {});
     }
+    // 5.22 (04.10, L4): white, right after durability (Wow.exe 0x006277f0; ItemDurationText.ts).
+    push(itemDurationLine(template.duration, context.durationLeft));
     const classes = allowedNames(template.allowableClass, PLAYABLE_CLASSES, className);
     if (classes) push(fillTemplate(globalString("ITEM_CLASSES_ALLOWED") ?? "", classes));
     const races = allowedNames(template.allowableRace, PLAYABLE_RACES, raceName);
@@ -724,6 +750,7 @@ function productContext(context: ItemTooltipContext): ItemTooltipContext {
   return {
     layout: "stock", nested: true, compare: false,
     playerLevel: context.playerLevel, skillName: context.skillName, subclassName: context.subclassName,
+    proficient: context.proficient,
     spellDescription: context.spellDescription, spellName: context.spellName,
     enchantment: context.enchantment, gemProperty: context.gemProperty,
     gemMetadataReady: context.gemMetadataReady, gemName: context.gemName,

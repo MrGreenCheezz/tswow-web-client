@@ -1,5 +1,6 @@
 import { formatWorldStateText, isWorldStateUiCatalog, type WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import type { FrameXmlSeamPump } from "./FrameXmlWorldSeam.js";
+import { FrameXmlWorldStateTimer, frameXmlWorldStateSignatureRow } from "./FrameXmlWorldStateTimer.js"; // L3 3.14
 
 export interface FrameXmlWorldStateSnapshot {
   readonly mapId: number;
@@ -20,18 +21,23 @@ export class FrameXmlWorldStates {
   readonly #snapshot: () => FrameXmlWorldStateSnapshot | undefined;
   #pump: FrameXmlSeamPump | undefined;
   #signature = "";
+  /** L3 3.14: WORLD_STATE_UI_TIMER_UPDATE once a second (FrameXmlWorldStateTimer.ts). */
+  readonly #timer = new FrameXmlWorldStateTimer();
   constructor(catalog: () => readonly WorldStateUiRow[] | undefined, snapshot: () => FrameXmlWorldStateSnapshot | undefined) {
     this.#catalog = catalog;
     this.#snapshot = snapshot;
   }
-  attach(pump: FrameXmlSeamPump): void { this.#pump = pump; this.#signature = ""; this.tick(); }
+  attach(pump: FrameXmlSeamPump): void { this.#pump = pump; this.#signature = ""; this.#timer.reset(); this.tick(); } // L3 3.14: timer reset
   detach(): void { this.#pump = undefined; this.#signature = ""; }
   tick(): void {
     if (!this.#pump) return;
-    const signature = JSON.stringify(this.rows());
-    if (signature === this.#signature) return;
-    this.#signature = signature;
-    this.#pump.fire("UPDATE_WORLD_STATES");
+    // L3 3.14: a Type-3 row's countdown texts are the timer event's, not a state change.
+    const signature = JSON.stringify(this.rows().map(frameXmlWorldStateSignatureRow));
+    if (signature !== this.#signature) { // L3 3.14: no early return, the timer runs after
+      this.#signature = signature;
+      this.#pump.fire("UPDATE_WORLD_STATES");
+    }
+    this.#timer.tick(this.#pump, this.#catalog, this.#snapshot); // L3 3.14
   }
   rows(): readonly FrameXmlWorldStateInfo[] {
     const snapshot = this.#snapshot();

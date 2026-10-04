@@ -10,7 +10,7 @@ import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import type { FrameXmlAuctionModel } from "./FrameXmlAuction.js";
 import { publishFrameXmlAuction } from "./FrameXmlAuctionController.js";
-import { createLazyFrameXmlAuctionOwner } from "./FrameXmlAuctionOwner.js";
+import { createLazyFrameXmlAuctionOwner } from "./FrameXmlAuctionOwner.js"; // L5c-review 3.24 (owner pending): as before L5c
 
 /**
  * Publish the lazy stock auction owner. Nothing loads at boot: the first MSG_AUCTION_HELLO (or a
@@ -19,7 +19,7 @@ import { createLazyFrameXmlAuctionOwner } from "./FrameXmlAuctionOwner.js";
  */
 export function mountFrameXmlAuction(
   seam: { readonly auction?: FrameXmlAuctionModel | undefined },
-  boot: Pick<FrameXmlBoot, "vm" | "bridge" | "errorCount" | "binder" | "loadAddon">,
+  boot: Pick<FrameXmlBoot, "vm" | "bridge" | "errorCount" | "binder" | "loadAddon">, // L5c-review 3.24 (owner pending)
   renderer: Pick<FrameXmlDomRenderer, "elementFor" | "addRoots" | "sync">,
 ): () => void {
   const model = seam.auction;
@@ -29,6 +29,8 @@ export function mountFrameXmlAuction(
     show: () => showAuctions(),
   }, (reason) => console.warn(`[FrameXML auction] ${reason}; the native window stays`));
   const release = publishFrameXmlAuction(owner);
+  // L5c-review 3.24 (owner pending): the add-on loads at the first auctioneer, as before L5c; L5c's
+  // publish-time `begin` for a preloaded add-on is withdrawn with the preload (FrameXmlLodPreload.ts).
   if (model.houseOpen()) owner.begin();
   return () => {
     release();

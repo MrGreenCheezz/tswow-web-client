@@ -44,6 +44,12 @@ export function nameOr(source: ((id: number) => string | undefined) | undefined,
 export interface WorldNameTables {
   area?(id: number): string | undefined;
   itemSubclassName?(itemClass: number, subClass: number): string | undefined;
+  /** 1.32: the single-id lookups, passed through as given (SpellMetadataClient, AreaClient's maps, …). */
+  spell?(id: number): string | undefined;
+  map?(id: number): string | undefined;
+  dungeon?(id: number): string | undefined;
+  item?(id: number): string | undefined;
+  quest?(id: number): string | undefined;
 }
 
 /**
@@ -53,13 +59,19 @@ export interface WorldNameTables {
  * one-handed weapon) the refusal says the stock sentence that needs none.
  */
 export function worldNameSources(tables: WorldNameTables): WorldNameSources {
-  return {
+  const sources: WorldNameSources = {
     area: (id) => tables.area?.(id),
     itemSubclass: (itemClass, subclassMask) => {
       const subClass = singleSubclass(subclassMask);
       return subClass === undefined ? undefined : tables.itemSubclassName?.(itemClass, subClass);
     },
   };
+  // Only the tables actually given: an absent `spell` tells the world layer nobody names spells
+  // yet, which it answers differently from a table that has not loaded a row (see WorldClient).
+  for (const kind of ["spell", "map", "dungeon", "item", "quest"] as const) {
+    if (tables[kind]) sources[kind] = (id) => tables[kind]?.(id);
+  }
+  return sources;
 }
 
 /** The one subclass a mask names, or undefined for none or several. The mask is an unsigned word. */

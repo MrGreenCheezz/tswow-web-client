@@ -131,7 +131,9 @@ function openSlotMenu(anchor: HTMLElement, slot: number): void {
     });
   }
   // Depositing needs a bag slot to take from, so the menu offers whatever is carried.
-  // Capped at thirty rows so the menu stays usable; the rest remain reachable via drag from bags.
+  // Capped at thirty rows so the menu stays usable. This window has no drag path (see the header),
+  // so an item past the thirtieth is reached only by moving it up in the bags, or through the stock
+  // GuildBankFrame, which deposits with the cursor (FrameXmlGuildBank*.ts).
   if (mayDeposit(world.guildPermissions, shownTab)) {
     const inventory = playerInventory(world.state);
     const carried = [...(inventory?.backpack ?? []), ...(inventory?.bags ?? []).flatMap((bag) => bag.slots)]

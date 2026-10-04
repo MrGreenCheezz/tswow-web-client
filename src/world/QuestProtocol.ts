@@ -114,6 +114,12 @@ export interface QuestTemplate {
   rewardHonor: number;
   startItem: number;
   flags: number;
+  /**
+   * The four `ItemDrop` (RequiredSourceItemId) slots as sent, holes included: `objectives` keeps only
+   * the slots with a creature or object, but the client reads all four (quest cache 0x1c74) for the
+   * tracker's special item. Optional for templates built by hand.
+   */
+  sourceItems?: number[];
   rewardTitleId: number;
   requiredPlayerKills: number;
   rewardTalents: number;
@@ -184,10 +190,12 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
   const completedText = reader.cString();
 
   const objectives: QuestObjective[] = [];
+  const sourceItems: number[] = [];
   for (let index = 0; index < QUEST_OBJECTIVES; index++) {
     const raw = reader.u32();
     const count = reader.u32();
     const itemDrop = reader.u32();
+    sourceItems.push(itemDrop);
     reader.u32();
     // The client is told a gameobject by having the top bit set on the entry.
     objectives.push({ slot: index, entry: raw & 0x7fff_ffff, gameObject: (raw & 0x8000_0000) !== 0, count, itemDrop, text: "" });
@@ -207,7 +215,7 @@ export function parseQuestQueryResponse(payload: Uint8Array): QuestTemplate {
   return {
     questId, level, minLevel, sortId, type, suggestedPlayers, nextQuest, rewardMoney, requiredMoney,
     rewardBonusMoney, rewardDisplaySpell, rewardSpellCast, rewardSpell: rewardSpellCast,
-    rewardHonor, startItem, flags, rewardTitleId,
+    rewardHonor, startItem, flags, sourceItems, rewardTitleId,
     requiredPlayerKills, rewardTalents, rewardItems, rewardChoiceItems, poi, title,
     objectivesText, details, areaDescription, completedText,
     objectives: objectives.filter((objective) => objective.entry > 0 && objective.count > 0),
@@ -327,6 +335,13 @@ export interface QuestPoiBlob {
   map: number;
   worldMapAreaId: number;
   floor: number;
+  /**
+   * The two words after the floor (TrinityCore's `Unk3`, `Unk4`), as Wow.exe 0x5e7370 keeps them (blob
+   * + 0x30, + 0x2c): the icon goes to the blob with the lowest `priority` (0x5e2eb0), and a blob whose
+   * `flags` have 0x4 counts only on its own WorldMapArea. Optional for blobs built by hand.
+   */
+  priority?: number;
+  flags?: number;
   points: QuestPoint[];
 }
 
@@ -350,8 +365,8 @@ export function parseQuestPoi(payload: Uint8Array): Map<number, QuestPoiBlob[]> 
         floor: reader.u32(),
         points: [],
       };
-      reader.u32();
-      reader.u32();
+      entry.priority = reader.u32();
+      entry.flags = reader.u32();
       const pointCount = reader.u32();
       if (pointCount > 1000) throw new RangeError(`Quest point of interest has ${pointCount} points`);
       for (let point = 0; point < pointCount; point++) entry.points.push({ x: reader.i32(), y: reader.i32() });

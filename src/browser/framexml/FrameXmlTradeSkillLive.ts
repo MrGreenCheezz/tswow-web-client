@@ -5,7 +5,7 @@
  */
 import { game } from "../game/Context.js";
 import {
-  castProfessionRecipeOnItem, craftProfessionRecipe, hideProfessionWindows, nativeProfessionOpen, openNativeProfession,
+  castProfessionRecipeOnItem, castProfessionRecipeOnTradeSlot, craftProfessionRecipe, hideProfessionWindows, nativeProfessionOpen, openNativeProfession,
   professionCraftRemaining, stopProfessionCraftRepeat,
 } from "../ui/Professions.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
@@ -21,6 +21,7 @@ import { publishFrameXmlTradeSkill, type FrameXmlTradeSkillOwner } from "./Frame
 export const FRAMEXML_LIVE_TRADESKILL_CRAFT: FrameXmlTradeSkillCraft = Object.freeze({
   craft: craftProfessionRecipe,
   castOnItem: castProfessionRecipeOnItem,
+  castOnTradeSlot: castProfessionRecipeOnTradeSlot,
   stop: stopProfessionCraftRepeat,
   remaining: professionCraftRemaining,
 });

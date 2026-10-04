@@ -1,4 +1,5 @@
 import { PacketReader } from "../protocol/PacketReader.js";
+import { SPLINE_FLAGS, type SplineFacing } from "./SplineModel.js";
 
 const MOVE_STOP = 1;
 const MOVE_FACING_SPOT = 2;
@@ -29,7 +30,21 @@ export interface MonsterMove {
   cyclic: boolean;
   /** A server-side flight spline has no movement flags word of its own. */
   flying?: boolean;
+  /** The facing angle, when the facing is an angle; kept for callers that predate `facing`. */
   finalOrientation: number | undefined;
+  /**
+   * The spline flags word as sent, without what `Mask_No_Monster_Move` strips (facing bits, the
+   * tier byte, Done). Kept whole for diagnostics: `0x1000` is `CanSwim` in this core, not a gait.
+   */
+  flags?: number;
+  /** Applied on arrival only (`MoveSpline::ComputePosition`); a target is a raw `u64`. */
+  facing?: SplineFacing | undefined;
+  /** `Parabolic`: vertical acceleration and the effect start, in ms from the path start. */
+  parabolic?: { acceleration: number; startMs: number } | undefined;
+  /** `Animation`: the tier (`AnimTier`) played from `startMs` on. */
+  animation?: { tier: number; startMs: number } | undefined;
+  /** `Enter_Cycle`: the first lap starts at the start point, every later one at the second. */
+  enterCycle?: boolean;
 }
 
 export function parseMonsterMove(payload: Uint8Array, transported = false): MonsterMove {
@@ -41,29 +56,32 @@ export function parseMonsterMove(payload: Uint8Array, transported = false): Mons
     transportGuid = reader.packedGuid();
     transportSeat = reader.i8();
   }
+  // `WriteCommonMonsterMovePart` (MovementPacketBuilder.cpp:44-86): a byte for MOVEMENTFLAG2_UNK7.
   reader.u8();
   const start = point(reader);
   const splineId = reader.u32();
   const moveType = reader.u8();
   let finalOrientation: number | undefined;
-  if (moveType === MOVE_FACING_TARGET) reader.u64();
-  else if (moveType === MOVE_FACING_ANGLE) finalOrientation = reader.f32();
-  else if (moveType === MOVE_FACING_SPOT) point(reader);
+  let facing: SplineFacing | undefined;
+  if (moveType === MOVE_FACING_TARGET) facing = { kind: "target", guid: reader.u64() };
+  else if (moveType === MOVE_FACING_ANGLE) {
+    finalOrientation = reader.f32();
+    facing = { kind: "angle", angle: finalOrientation };
+  } else if (moveType === MOVE_FACING_SPOT) {
+    const spot = point(reader);
+    facing = { kind: "spot", x: spot.x, y: spot.y, z: spot.z };
+  }
   if (moveType === MOVE_STOP) {
     reader.assertFinished();
     return { guid, transportGuid, transportSeat, splineId, points: [start], duration: 0, cyclic: false, finalOrientation };
   }
 
   const flags = reader.u32();
-  if (flags & FLAG_ANIMATION) {
-    reader.u8();
-    reader.u32();
-  }
+  let animation: MonsterMove["animation"];
+  if (flags & FLAG_ANIMATION) animation = { tier: reader.u8(), startMs: reader.u32() };
   const duration = reader.u32();
-  if (flags & FLAG_PARABOLIC) {
-    reader.f32();
-    reader.u32();
-  }
+  let parabolic: MonsterMove["parabolic"];
+  if (flags & FLAG_PARABOLIC) parabolic = { acceleration: reader.f32(), startMs: reader.u32() };
   const count = reader.u32();
   if (count > MAX_SPLINE_POINTS) throw new RangeError(`Invalid monster spline point count ${count}`);
   const points = [start];
@@ -89,6 +107,7 @@ export function parseMonsterMove(payload: Uint8Array, transported = false): Mons
   return {
     guid, transportGuid, transportSeat, splineId, points, duration, cyclic: (flags & FLAG_CYCLIC) !== 0,
     ...(flags & FLAG_FLYING ? { flying: true } : {}), finalOrientation,
+    flags, facing, parabolic, animation, enterCycle: (flags & SPLINE_FLAGS.enterCycle) !== 0,
   };
 }
 

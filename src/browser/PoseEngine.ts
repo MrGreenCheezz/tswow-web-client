@@ -562,6 +562,46 @@ function spawnBrowserPoseWorker(sab: SharedArrayBuffer, index: number, fail: (re
 
 let pageEngine: PoseEngine | null | undefined;
 
+/** Whether this page can run the crowd pose worker, and if not, why (10.18). */
+export type PoseEngineAvailability =
+  | { readonly state: "on" }
+  | { readonly state: "off" | "no-worker" | "no-sab" | "query" | "failed"; readonly reason: string };
+
+/**
+ * The decision `pagePoseEngine` makes, as a pure function of the page's globals.
+ *
+ * 10.18: a player on plain http at a public address never gets the worker — cross-origin isolation
+ * exists only in a secure context, so the COOP/COEP headers the page servers send are ignored there
+ * (the player app marks its origin secure; a browser needs TLS). This makes that visible instead of
+ * silent: one console line and `poseEngineStatus()` for a performance panel.
+ */
+export function poseEngineAvailability(scope: {
+  crossOriginIsolated?: boolean; location?: { search?: string };
+  Worker?: unknown; SharedArrayBuffer?: unknown; Atomics?: unknown;
+}): PoseEngineAvailability {
+  if (/[?&]poseworker=0(?:&|$)/.test(scope.location?.search ?? "")) {
+    return { state: "query", reason: "?poseworker=0" };
+  }
+  if (scope.crossOriginIsolated !== true) {
+    return {
+      state: "off",
+      reason: "the page is not cross-origin isolated (crossOriginIsolated=false: http outside loopback, or no COOP/COEP)",
+    };
+  }
+  if (typeof scope.Worker === "undefined") return { state: "no-worker", reason: "no Web Workers" };
+  if (typeof scope.SharedArrayBuffer === "undefined" || typeof scope.Atomics === "undefined") {
+    return { state: "no-sab", reason: "no SharedArrayBuffer/Atomics" };
+  }
+  return { state: "on" };
+}
+
+let pageEngineStatus: PoseEngineAvailability | undefined;
+
+/** Why the page's crowd poses run where they do; undefined until `pagePoseEngine` was first asked. */
+export function poseEngineStatus(): PoseEngineAvailability | undefined {
+  return pageEngineStatus;
+}
+
 /**
  * The page's pose engine, created on first use: only in a cross-origin isolated page with
  * SharedArrayBuffer, Atomics and Web Workers. `?poseworker=0` keeps crowds on the main thread,
@@ -571,14 +611,22 @@ export function pagePoseEngine(): PoseEngine | undefined {
   if (pageEngine !== undefined) return pageEngine ?? undefined;
   pageEngine = null;
   const scope = globalThis as { crossOriginIsolated?: boolean; location?: { search?: string } };
-  if (scope.crossOriginIsolated !== true || typeof Worker === "undefined") return undefined;
+  const availability = poseEngineAvailability(globalThis as Parameters<typeof poseEngineAvailability>[0]);
+  pageEngineStatus = availability;
+  if (availability.state !== "on") {
+    console.info(`[pose] crowd pose worker off: ${availability.reason}`);
+    return undefined;
+  }
   const search = scope.location?.search ?? "";
-  if (/[?&]poseworker=0(?:&|$)/.test(search)) return undefined;
   const count = Number(/[?&]poseworkers=(\d)(?:&|$)/.exec(search)?.[1] ?? 1);
   try {
     pageEngine = PoseEngine.create({ workers: Math.max(1, Math.min(POSE_MAX_WORKERS, count)) }) ?? null;
   } catch {
     pageEngine = null;
+  }
+  if (pageEngine === null) {
+    pageEngineStatus = { state: "failed", reason: "the pose engine could not be created" };
+    console.info(`[pose] crowd pose worker off: ${pageEngineStatus.reason}`);
   }
   return pageEngine ?? undefined;
 }

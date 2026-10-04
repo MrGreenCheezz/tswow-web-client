@@ -10,6 +10,8 @@
 //   MODULE_UI_WRITE=0    a forwarded connection can look local, and the write guard trusts that
 //   GATEWAY_RESTART_ON_PATCH=1 (unless .env says 0) after a TSWoW build the gateway restarts by
 //                        itself once nobody is connected, keeping this environment
+//   GATEWAY_SUPERVISE=1  (unless .env says 0) a crashed gateway is started again by itself
+// The page server answers index.html and its assets only (10.13), compressed and revalidated.
 // The page server lives in this process too, so stopping it (Ctrl+C, restart-gateway.bat) stops both.
 
 import "./env.mjs";
@@ -50,9 +52,15 @@ process.env.ALLOWED_ORIGINS = [...origins].join(",");
 process.env.GATEWAY_HOST = bind;
 process.env.MODULE_UI_WRITE = "0";
 process.env.GATEWAY_RESTART_ON_PATCH ??= "1";
+// 10.15: whatever .env says about restarts after a build, a crashed gateway comes back by itself
+// (tools/gateway-supervisor.mjs; a sixth crash in ten minutes still stops it).
+process.env.GATEWAY_SUPERVISE ??= "1";
 
 try {
-  await serveStatic(webRoot, { host: bind, port: webPort });
+  // 10.13: players get index.html and its assets only — glue.html, framexml.html and
+  // character-lab.html are the owner's benches, and the local-only notice is not for them —
+  // compressed, with validators, and the hashed bundles cached for good.
+  await serveStatic(webRoot, { host: bind, port: webPort, compress: true, publicPages: ["/", "/index.html"] });
 } catch (error) {
   throw new Error(error.code === "EADDRINUSE"
     ? `Port ${webPort} is taken; free it or set PUBLIC_WEB_PORT in .env.` : error.message, { cause: error });

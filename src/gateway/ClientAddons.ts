@@ -11,6 +11,11 @@ const CLIENT_ADDON_NAME = /^[!A-Za-z0-9_][!A-Za-z0-9_-]*$/;
 export interface ClientAddonDiscoveryOptions {
   /** Optional profile inside CLIENT_DIR/WTF. An explicit choice wins over automatic consensus. */
   readonly addonsFile?: string;
+  /**
+   * Also list the add-ons the profile disables (offline checks only, `CLIENT_ADDONS_INCLUDE_DISABLED`;
+   * the gateway never sets it — the owner's `AddOns.txt` decides what the browser loads).
+   */
+  readonly includeDisabled?: boolean;
 }
 
 /** Only explicit disabled entries matter; an unlisted installed add-on keeps its existing state. */
@@ -87,6 +92,27 @@ export async function discoverClientAddons(
   clientRoot: string,
   options: ClientAddonDiscoveryOptions = {},
 ): Promise<readonly ClientAddonDescriptor[]> {
+  const installed = await installedClientAddons(clientRoot);
+  if (options.includeDisabled === true) return installed;
+  const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
+  return installed.filter((addon) => !disabled.has(addon.name.toLowerCase()));
+}
+
+/**
+ * The installed add-ons (a root directory with its own `.toc`) that the profile disables, sorted —
+ * so the offline checks can say what they skipped instead of a bare count (9.07). Divergent
+ * profiles disable nothing (see `profileText`), and then nothing is named.
+ */
+export async function disabledByProfile(
+  clientRoot: string,
+  options: Pick<ClientAddonDiscoveryOptions, "addonsFile"> = {},
+): Promise<readonly string[]> {
+  const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
+  return (await installedClientAddons(clientRoot))
+    .filter((addon) => disabled.has(addon.name.toLowerCase())).map((addon) => addon.name);
+}
+
+async function installedClientAddons(clientRoot: string): Promise<readonly ClientAddonDescriptor[]> {
   const root = join(clientRoot, "Interface", "AddOns");
   let entries;
   try {
@@ -117,7 +143,5 @@ export async function discoverClientAddons(
       loadOnDemand: /^\s*##\s*LoadOnDemand\s*:\s*(?:1|true|yes)\s*$/im.test(source),
     });
   }
-  const disabled = disabledClientAddons(await profileText(clientRoot, options.addonsFile) ?? "");
-  return addons.filter((addon) => !disabled.has(addon.name.toLowerCase()))
-    .sort((left, right) => left.name.localeCompare(right.name, "en", { sensitivity: "base" }));
+  return addons.sort((left, right) => left.name.localeCompare(right.name, "en", { sensitivity: "base" }));
 }

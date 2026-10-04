@@ -8,7 +8,7 @@ import { showGuildBank, stepAsideGuildBank } from "../ui/GuildBank.js";
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";
 import type { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { publishFrameXmlGuildBank } from "./FrameXmlGuildBankController.js";
-import { createLazyFrameXmlGuildBankOwner, type FrameXmlGuildBankSeam } from "./FrameXmlGuildBankOwner.js";
+import { createLazyFrameXmlGuildBankOwner, type FrameXmlGuildBankSeam } from "./FrameXmlGuildBankOwner.js"; // L5c-review 3.24 (owner pending): as before L5c
 
 /**
  * Publish the lazy stock guild bank owner. Nothing loads at boot: the first banker visit (or a bank
@@ -17,7 +17,7 @@ import { createLazyFrameXmlGuildBankOwner, type FrameXmlGuildBankSeam } from "./
  */
 export function mountFrameXmlGuildBank(
   seam: FrameXmlGuildBankSeam,
-  boot: Pick<FrameXmlBoot, "vm" | "bridge" | "errorCount" | "binder" | "loadAddon">,
+  boot: Pick<FrameXmlBoot, "vm" | "bridge" | "errorCount" | "binder" | "loadAddon">, // L5c-review 3.24 (owner pending)
   renderer: Pick<FrameXmlDomRenderer, "elementFor" | "addRoots" | "sync">,
 ): () => void {
   const model = seam.guildBank;
@@ -27,6 +27,8 @@ export function mountFrameXmlGuildBank(
     show: () => showGuildBank(),
   }, (reason) => console.warn(`[FrameXML guild bank] ${reason}; the native window stays`));
   const release = publishFrameXmlGuildBank(owner);
+  // L5c-review 3.24 (owner pending): the add-on loads at the first banker visit, as before L5c; L5c's
+  // publish-time `begin` for a preloaded add-on is withdrawn with the preload (FrameXmlLodPreload.ts).
   if (model.bankOpen()) owner.begin();
   return () => {
     release();

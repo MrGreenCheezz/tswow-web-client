@@ -504,6 +504,19 @@ export function castProfessionRecipeOnItem(spellId: number, itemGuid: bigint): b
   return sendProfessionCast(spell, itemGuid, 1);
 }
 
+/**
+ * One known enchant on the trader's «will not be traded» slot (the stock TradeFrame's
+ * `ClickTargetTradeButton(7)` with the enchant waiting): `CMSG_CAST_SPELL` with TARGET_FLAG_TRADE_ITEM
+ * and slot 6 (WorldClient.castSpellOnTradeSlot). The realm parks it in the trade until both accept.
+ */
+export function castProfessionRecipeOnTradeSlot(spellId: number): boolean {
+  const spell = game.spells.get(spellId);
+  if (!game.world?.tradeOpen || !knownRecipe(spell) || !recipeRequiresItem(spell)) return false;
+  ensureCraftTracking();
+  if ((craftableCount(spell, carriedCounts(carriedSlots())) ?? 0) <= 0) return false;
+  return sendProfessionCast(spell, TRADE_SLOT_TARGET, 1);
+}
+
 /** StopTradeSkillRepeat: the queue ends after the cast in flight, which stays the server's to finish. */
 export function stopProfessionCraftRepeat(): void {
   if (craftQueue === undefined) return;
@@ -781,12 +794,18 @@ function continueCraftQueue(spellId: number): void {
   // On success `sendProfessionCast` armed the fresh queue and refreshed already.
 }
 
-function sendProfessionCast(spell: SpellMetadata, target?: bigint, count = 1): boolean {
+/** `sendProfessionCast`'s target for the trader's seventh slot rather than a carried item. */
+const TRADE_SLOT_TARGET = "trade-slot";
+
+function sendProfessionCast(spell: SpellMetadata, target?: bigint | typeof TRADE_SLOT_TARGET, count = 1): boolean {
   const world = game.world;
   if (!world || pendingCraft !== undefined || spellCastBlockReason(world, spell.id) !== undefined
     || (world.state.selfGuid !== undefined && world.casts.has(world.state.selfGuid))) return false;
   const cooldown = Math.max(spell.recoveryTime, spell.categoryRecoveryTime);
-  if (recipeRequiresItem(spell)) {
+  if (target === TRADE_SLOT_TARGET) {
+    if (!world.castSpellOnTradeSlot(spell.id, cooldown, spell.cooldownStartedOnEvent)) return false;
+    pendingCraft = spell.id;
+  } else if (recipeRequiresItem(spell)) {
     const slot = carriedSlots().find((entry) => entry.guid === target);
     const template = slot?.item && world.itemTemplate(entryOf(slot.item));
     if (target === undefined || !template?.found || !recipeAcceptsItem(spell, template)) return false;
@@ -802,7 +821,7 @@ function sendProfessionCast(spell: SpellMetadata, target?: bigint, count = 1): b
   // there is no cast in flight and nothing for a queue to follow.
   if (pendingCraft === spell.id) {
     const left = Math.max(0, Math.min(CRAFT_REPEAT_MAX, Math.floor(count) || 1) - 1);
-    craftQueue = left > 0 ? { spellId: spell.id, left, target } : undefined;
+    craftQueue = left > 0 && target !== TRADE_SLOT_TARGET ? { spellId: spell.id, left, target } : undefined;
   } else craftQueue = undefined;
   craftFeedback = "Запрос отправлен. Ожидаем ответ сервера…";
   craftTimeout = setTimeout(() => {

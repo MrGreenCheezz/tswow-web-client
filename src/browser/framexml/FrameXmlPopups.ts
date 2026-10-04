@@ -145,6 +145,13 @@ export interface FrameXmlPopupsWorld {
     readonly expiresAt: number; readonly encounterMask: number; readonly previouslySaved: boolean;
     readonly mapId: number; readonly difficulty: number;
   } | undefined;
+  /**
+   * The current map and SMSG_INSTANCE_DIFFICULTY's difficulty: with no lock pending the client
+   * still counts their DungeonEncounter rows for GetInstanceLockTimeRemaining (Wow.exe 0xbd088c,
+   * written at each world change, and 0xbd0894, which GetInstanceDifficulty returns plus one).
+   */
+  readonly mapId?: number | undefined;
+  readonly instanceDifficulty?: number | undefined;
   /** SMSG_BIND_POINT_UPDATE: where the hearthstone goes. */
   readonly bindPoint?: { readonly areaId: number } | undefined;
   /** SMSG_INIT_WORLD_STATES' zone and area: the place CONFIRM_BINDER names when the host has none. */
@@ -181,9 +188,13 @@ const stockAskedOnce = new WeakSet<object>();
 /** CONFIRM_BINDER's place when no name is loaded: the native prompt's own words. */
 const FRAMEXML_BIND_PLACE_FALLBACK = "Это место";
 
-/** Bit `bit` of a killed-boss mask (`1 << DungeonEncounter.Bit`, InstanceScript.cpp:940). */
+/**
+ * Bit `bit` of a killed-boss mask (`1 << DungeonEncounter.Bit`, InstanceScript.cpp:940), tested as
+ * the client tests it: `1 << (Bit & 31)` (Wow.exe 0x00553830), as DungeonEncounterClient's
+ * `encounterKilled`.
+ */
 function killedBit(mask: number, bit: number): boolean {
-  return Number.isInteger(bit) && bit >= 0 && bit < 32 && ((mask >>> bit) & 1) === 1;
+  return ((mask >>> 0) & (1 << (bit & 31))) !== 0;
 }
 
 /** The item on the stock bag cursor: its wire position and what DELETE_ITEM_CONFIRM names. */
@@ -1120,29 +1131,39 @@ export class FrameXmlPopupsModel {
   }
 
   /**
-   * `GetInstanceLockTimeRemaining`: seconds left of the server's minute (fractional, as the dialog's
-   * own lockTimeleft counts on from it — a remount resumes, it does not restart), isPreviousInstance,
+   * `GetInstanceLockTimeRemaining`: whole seconds left of the server's minute (Wow.exe 0x00516340
+   * divides the milliseconds left by 1000 as integers; the dialog's own lockTimeleft counts on from
+   * it — a remount resumes, it does not restart), isPreviousInstance,
    * the bosses and those killed. Without the DungeonEncounter table nothing about the bosses is
    * invented: `0, 0`, what the client answers for a map without encounter rows (and the stock dialog
-   * is not asked then). With no question: `0, false, 0, 0` — numbers stock compares.
+   * is not asked then). With no question the client still counts the current map's bosses against
+   * an empty mask (0x00516340 always calls 0x00553830 with 0xbd088c/0xbd0894): `0, false, N, 0`.
    */
   instanceLockTimeRemaining(): readonly [number, boolean, number, number] {
     const world = this.#world_();
     const now = this.#context.monotonic();
     const lock = world ? this.#instanceLockPending(world, now) : undefined;
-    if (!lock) return [0, false, 0, 0];
+    if (!lock) {
+      const current = world?.mapId === undefined ? undefined
+        : this.#context.dungeonEncounters?.(world.mapId, world.instanceDifficulty ?? 0);
+      return [0, false, current?.length ?? 0, 0];
+    }
     const encounters = this.#encounters(lock) ?? [];
     const complete = encounters.filter(({ bit }) => killedBit(lock.encounterMask, bit)).length;
-    return [Math.max(0, (lock.expiresAt - now) / 1000), lock.previouslySaved, encounters.length, complete];
+    return [Math.max(0, Math.floor((lock.expiresAt - now) / 1000)), lock.previouslySaved, encounters.length, complete];
   }
 
-  /** `GetInstanceLockTimeRemainingEncounter(i)`: `bossName, texture, isKilled` (LFRFrame.lua:684); no texture. */
-  instanceLockEncounter(index: number): readonly [string, string, boolean] | undefined {
+  /**
+   * `GetInstanceLockTimeRemainingEncounter(i)`: `bossName, texture, isKilled` (LFRFrame.lua:684) of
+   * the i-th row of the lock's map and difficulty in file order (Wow.exe 0x005538b0). The texture is
+   * the row's SpellIcon, nil for SpellIconID 0 — every row of this dataset; the route carries none.
+   */
+  instanceLockEncounter(index: number): readonly [string, undefined, boolean] | undefined {
     const world = this.#world_();
     const lock = world ? this.#instanceLockPending(world, this.#context.monotonic()) : undefined;
     if (!lock || !Number.isInteger(index) || index < 1) return undefined;
     const encounter = this.#encounters(lock)?.[index - 1];
-    return encounter ? [encounter.name, "", killedBit(lock.encounterMask, encounter.bit)] : undefined;
+    return encounter ? [encounter.name, undefined, killedBit(lock.encounterMask, encounter.bit)] : undefined;
   }
 
   /** `RespondInstanceLock(accept)`: CMSG_INSTANCE_LOCK_RESPONSE once, never past the deadline. */

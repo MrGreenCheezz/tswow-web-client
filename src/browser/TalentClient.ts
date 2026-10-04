@@ -1,4 +1,5 @@
 import type { SpellSkillAbilityInfo, TalentData } from "../gateway/TalentMetadata.js";
+import { dataRetryDelay } from "./FactionClient.js";
 
 export type { TalentData };
 
@@ -30,6 +31,9 @@ export class TalentClient {
   #lineClasses = new Map<number, number>();
   #revision = 0;
   #failed = false;
+  #retries = 0;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #abandoned = false;
   onStatus: ((message: string, error: boolean) => void) | undefined;
   onLoaded: (() => void) | undefined;
 
@@ -39,9 +43,19 @@ export class TalentClient {
     this.#baseUrl = url.origin;
   }
 
-  /** Starts the one fetch this needs. Safe to call repeatedly; only the first does anything. */
+  /** A newer client replaced this one (the next world entry): no more retries. */
+  abandon(): void {
+    this.#abandoned = true;
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
+  }
+
+  /**
+   * Starts the one fetch this needs. Safe to call repeatedly: a fetch in flight or a retry already
+   * waiting makes it a no-op.
+   */
   load(): void {
-    if (this.#data || this.#pending) return;
+    if (this.#data || this.#pending || this.#retryTimer !== undefined || this.#abandoned) return;
     this.#pending = (async () => {
       try {
         const response = await fetch(`${this.#baseUrl}/dbc/talents`);
@@ -50,12 +64,18 @@ export class TalentClient {
         if (!Array.isArray(value.talents) || !Array.isArray(value.tabs)
           || !Array.isArray(value.skillCategories)) throw new Error("malformed talent data");
         this.#index(value);
+        this.#failed = false;
         this.onLoaded?.();
       } catch (error) {
-        // Left unfetched rather than retried: without it the talent window says so and the
-        // spellbook falls back to one undivided list, which is what it was before this slice.
+        // Until it lands the talent window says so and the spellbook falls back to one undivided
+        // list; it is asked again with a growing pause (5.16), and the failure is said once.
         this.#failed = true;
-        this.onStatus?.(`таланты: ${error instanceof Error ? error.message : String(error)}`, true);
+        if (this.#retries === 0) this.onStatus?.(`таланты: ${error instanceof Error ? error.message : String(error)}`, true);
+        this.#pending = undefined;
+        this.#retryTimer = setTimeout(() => {
+          this.#retryTimer = undefined;
+          this.load();
+        }, dataRetryDelay(this.#retries++));
       }
     })();
   }
@@ -63,8 +83,9 @@ export class TalentClient {
   #index(value: TalentData): void {
     this.#data = value;
     for (const tab of value.tabs) {
-      // A tab belongs to every class its mask names, and the three pet trees name none.
-      for (let classId = 1; classId <= 11; classId++) {
+      // A tab belongs to every class its mask names, and the three pet trees name none. Every bit
+      // up to class 31, not 1..11: a dataset's own classes (12, 13 HERO) have tabs too (9.05).
+      for (let classId = 1; classId <= 31; classId++) {
         if ((tab.classMask & (1 << (classId - 1))) === 0) continue;
         const tabs = this.#tabsByClass.get(classId) ?? [];
         tabs.push(tab);

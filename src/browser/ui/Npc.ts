@@ -15,9 +15,20 @@ import {
 import { game } from "../game/Context.js";
 import { gameObjectAction, gameObjectLockHint } from "../game/Interaction.js";
 import { gatherPlan, performGather } from "../game/CreatureGather.js";
+import { rightClickAttacks } from "../game/Targeting.js";
+import { rightClickRefusesService } from "../game/Targeting.js"; // 11.02-tails
 import { notice } from "./Notices.js";
 import { BattlegroundClient, type BattlegroundCatalog } from "../BattlegroundMetadata.js";
-import { attachTooltip, confirmPanel } from "./Widgets.js";
+import { setTip, attachTooltip, confirmPanel, quantityPanel } from "./Widgets.js";
+import { vendorMaxUnits, vendorTotal } from "./VendorQuantity.js";
+import {
+  DEFAULT_COMBAT_REACH, PENDING_NPC_TIMEOUT_MS, beyondInteraction, npcWaitVerdict, tooFarText,
+} from "./NpcWait.js";
+import { gameObjectType } from "../SimpleScene.js";
+import { GO_FLAG_NOT_SELECTABLE, interactionDistance, interactiveGameObjectType } from "../../world/GameObjectProtocol.js";
+import { renderVendorRepair } from "./VendorRepair.js";
+import { renderVendorRefunds } from "./VendorRefund.js"; // 2.10 (04.10, L4)
+import { registerInteractionPromptNames } from "./InteractionPrompts.js";
 
 import {
   buybackItems, buybackTitle, deathReclaim, deathRelease, deathSpirit, deathStatus, deathWindow,
@@ -41,6 +52,8 @@ import { frameXmlCharterPublished, notifyFrameXmlCharters } from "../framexml/Fr
 import { notifyFrameXmlStable } from "../framexml/FrameXmlStableController.js";
 import { frameXmlLootPublished } from "../framexml/FrameXmlLootController.js";
 import { frameXmlPopupsPublished } from "../framexml/FrameXmlPopupsController.js";
+import { clickVehicle } from "../../world/VehicleClick.js"; // 11.02-BCD
+import { seatClickRefused } from "../game/SeatClick.js"; // 11.02-input
 
 /** Everything an NPC or a corpse opens: gossip, quests, vendors, trainers, loot, death. */
 
@@ -122,6 +135,8 @@ export function interactWithGuid(guid: bigint): void {
       if (self?.position && entry > 0 && world.gameObjectTemplates.has(entry)) {
         const hint = gameObjectLockHint(world, target, self.position);
         if (hint) notice(hint);
+        // 4.15: an object out of reach no longer eats the click in silence.
+        else if (gameObjectTooFar(world, target, self.position)) notice(tooFarText());
       }
       return;
     }
@@ -141,10 +156,15 @@ export function interactWithGuid(guid: bigint): void {
       else if (currentSelf?.position) {
         const hint = gameObjectLockHint(world, current, currentSelf.position);
         if (hint) notice(hint);
+        else if (gameObjectTooFar(world, current, currentSelf.position)) notice(tooFarText());
       }
     });
     return;
   }
+
+  // 11.02-input: from a vehicle seat without ALLOWS_INTERACTION a unit is only swung at — Wow.exe
+  // 0x00731260 asks 0x006d7aa0 before its corpse and service branches (game/SeatClick.ts).
+  if (seatClickRefused(world, target)) return;
 
   // A corpse only. A game object's loot is never requested — the server refuses the packet for
   // anything that is not a creature, and a chest's loot arrives once a spell has opened it.
@@ -163,11 +183,28 @@ export function interactWithGuid(guid: bigint): void {
     return;
   }
 
+  // 5.05: a right click on something the player may fight starts the swing — always on a hostile
+  // unit, on a neutral one only when it offers no service (the yellow innkeeper is talked to).
+  if (rightClickAttacks(target)) {
+    if (world.targetGuid !== guid) world.selectTarget(guid);
+    world.startAttack();
+    return;
+  }
+
+  // 11.02-tails: Wow.exe 0x00729530 hands a unit to its services and seats only when the player may
+  // talk to it (a ghost, a creator-only creature, a hostile one it cannot fight) — Targeting.ts.
+  if (rightClickRefusesService(target)) return;
+
+  // 11.02-BCD: a vehicle's seat (spell click, a group member's vehicle) when no earlier service applies —
+  // Wow.exe 0x006ddbb0's order (VehicleClick.ts); the NPC lane and its windows are left alone.
+  if (clickVehicle(world, target)) return;
+
   if (target.typeId !== 3) return;
 
   // The shared NPC lane belongs to the newly clicked creature from this point on. Closing its
   // previous service first also makes a delayed response from that older NPC stale.
   closeNpcServiceWindow();
+  pendingNpcGuid = guid;
   const npcFlags = target.fields.get(UPDATE_FIELDS.UNIT_NPC_FLAGS.offset) ?? 0;
   // Gossip remains first: when it exists, the server-authored menu is the authority that decides
   // which of several services this creature offers. Some neutral service NPCs have no gossip bit,
@@ -212,6 +249,61 @@ function performGameObjectAction(
   else world.useGameObject(guid);
 }
 
+/**
+ * 4.15: an interactive object the player is too far from — the same type, selectable, template and
+ * `Point` gates `gameObjectAction` applies, with the range test the other way round.
+ */
+export function gameObjectTooFar(
+  world: WorldClient, object: WorldObjectState, player: { x: number; y: number; z: number },
+): boolean {
+  const type = gameObjectType(object);
+  if (!interactiveGameObjectType(type)) return false;
+  if (((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0) & GO_FLAG_NOT_SELECTABLE) !== 0) return false;
+  const position = object.position;
+  if (!position) return false;
+  const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
+  const template = entry > 0 ? world.gameObjectTemplates.get(entry) : undefined;
+  if (!template || template.type !== type || template.iconName === "Point") return false;
+  return Math.hypot(position.x - player.x, position.y - player.y, position.z - player.z) > interactionDistance(type);
+}
+
+/** The NPC the «waiting» card is for, and the clock that gives up on it (4.15). */
+let pendingNpcGuid: bigint | undefined;
+let pendingNpcTimer: ReturnType<typeof setTimeout> | undefined;
+const PENDING_NPC_TEXT = "Ожидание ответа NPC…";
+
+function cancelPendingNpcTimeout(): void {
+  if (pendingNpcTimer !== undefined) clearTimeout(pendingNpcTimer);
+  pendingNpcTimer = undefined;
+}
+
+/**
+ * The server answers an NPC it will not serve with nothing (NpcWait.ts): after the wait, if the card
+ * still says it is waiting — any answer has replaced its text — it closes and says why.
+ */
+function armPendingNpcTimeout(): void {
+  cancelPendingNpcTimeout();
+  const world = game.world;
+  const guid = pendingNpcGuid;
+  if (!world || guid === undefined) return;
+  pendingNpcTimer = setTimeout(() => {
+    pendingNpcTimer = undefined;
+    if (game.world !== world || gossipWindow.hidden || gossipText.textContent !== PENDING_NPC_TEXT) return;
+    // An answer that opened a different window (a vendor list for a gossip click, the flight map)
+    // is still an answer: the card is left for its own window to take down.
+    if (world.gossip || world.questList || world.vendor || world.trainer || world.taxiMenu
+      || world.petitionVendor || world.battlefieldList) return;
+    gossipWindow.hidden = true;
+    const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+    const target = world.state.objects.get(guid);
+    const reach = (object: WorldObjectState): number =>
+      fieldFloat(object, UPDATE_FIELDS.UNIT_FIELD_COMBATREACH.offset) ?? DEFAULT_COMBAT_REACH;
+    const far = !target?.position || !self?.position ? !target
+      : beyondInteraction(self.position, target.position, reach(self), reach(target));
+    notice(npcWaitVerdict(far));
+  }, PENDING_NPC_TIMEOUT_MS);
+}
+
 function showPendingNpcDialog(title?: string): void {
   // Stock GossipFrame and TaxiFrame open on their own events, as the client does: no native
   // «waiting» placeholder beside them while they are published.
@@ -223,9 +315,10 @@ function showPendingNpcDialog(title?: string): void {
   gossipWindow.hidden = false;
   gossipTitle.textContent = title || targetName.textContent || "Разговор";
   gossipText.className = "gossip-text";
-  gossipText.textContent = "Ожидание ответа NPC…";
+  gossipText.textContent = PENDING_NPC_TEXT;
   gossipOptions.replaceChildren();
   gossipQuests.replaceChildren();
+  armPendingNpcTimeout();
 }
 
 function serviceButton(label: string, run: () => void): HTMLButtonElement {
@@ -329,6 +422,7 @@ export function showTaxiMenu(): void {
 
 /** Called by the shared window close button; late taxi packets may no longer reopen it. */
 export function closeNpcServiceWindow(): void {
+  cancelPendingNpcTimeout();
   visibleTaxiMenu = undefined;
   tabardSelection = undefined;
   tabardSelectionGuid = 0n;
@@ -354,6 +448,16 @@ function nativeBattlegroundClient(): BattlegroundClient | undefined {
   }
   return battlegroundClient;
 }
+
+// 4.14: the prompts panel's queue rows name the battleground from the battlemaster catalog (asked
+// for on first use; the row's label is live and picks the name up when it lands).
+registerInteractionPromptNames({
+  battleground: (bgTypeId) => {
+    const client = nativeBattlegroundClient();
+    if (client && !client.ready) void client.load();
+    return client?.catalog?.find((row) => row.bgTypeId === bgTypeId)?.name;
+  },
+});
 
 function drawBattlegroundList(
   world: WorldClient,
@@ -759,6 +863,12 @@ export function updateDeathReclaimCountdown(now = performance.now()): void {
   if (deathReclaim.textContent !== label) deathReclaim.textContent = label;
 }
 
+/** The player's copper, for the most a Shift+click can afford. */
+function vendorMoney(world: WorldClient): number {
+  const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
+  return self?.fields.get(UPDATE_FIELDS.PLAYER_FIELD_COINAGE.offset) ?? 0;
+}
+
 export function showMerchantMessage(target: HTMLElement): void {
   const message = game.world?.merchantMessage;
   target.className = message ? (message.error ? "error" : "success") : "muted";
@@ -770,6 +880,8 @@ export function showVendor(): void {
   const vendor = world?.vendor;
   if (!world || !vendor) {
     vendorWindow.hidden = true;
+    renderVendorRepair();
+    renderVendorRefunds(); // 2.10 (04.10, L4)
     return;
   }
   vendorWindow.hidden = false;
@@ -813,8 +925,33 @@ export function showVendor(): void {
             : `Нажмите, чтобы купить за ${formatMoney(item.price)}`)
           : "Товар кончился"],
       }));
-      button.addEventListener("click", () => {
-        if (sellable) world.buyFromVendor(item.slot, 1);
+      button.addEventListener("click", (event) => {
+        if (!sellable) return;
+        // 4.07: Shift+click is stock SPLITSTACK — how many purchases, up to a stack, the stock
+        // and the purse (VendorQuantity.ts); a plain click buys one, as before. A row stock would not
+        // split (a pack, a non-stacking item) does nothing on Shift+click, as in stock.
+        const max = event.shiftKey ? vendorMaxUnits({
+          stackable: world.itemTemplate(item.itemId)?.stackable ?? 1,
+          buyCount: item.buyCount,
+          leftInStock: item.leftInStock,
+          price: item.price,
+          extendedCost: item.extendedCost,
+          money: vendorMoney(world),
+        }) : 1;
+        if (max <= 1) {
+          if (!event.shiftKey) world.buyFromVendor(item.slot, 1);
+          return;
+        }
+        const slot = item.slot;
+        quantityPanel(button, {
+          title: "Сколько купить?",
+          max,
+          describe: (units) => (item.extendedCost > 0
+            ? `${units * Math.max(1, item.buyCount)} шт. · особая цена`
+            : `${units * Math.max(1, item.buyCount)} шт. · ${formatMoney(vendorTotal(item.price, units))}`),
+          confirm: "Купить",
+          onConfirm: (units) => world.buyFromVendor(slot, units),
+        });
       });
       return button;
     }),
@@ -826,6 +963,8 @@ export function showVendor(): void {
     vendorItems.replaceChildren(empty);
   }
   showBuyback(world);
+  renderVendorRepair();
+  renderVendorRefunds(); // 2.10 (04.10, L4)
 }
 
 /**
@@ -923,7 +1062,7 @@ export function showGossip(): void {
     // A gossip option is written for a reader just as the body above it is: 6 of them in the
     // base dump carry a `$b` and the class and race markers turn up here too.
     button.textContent = `◆ ${formatNpcText(option.text)}`;
-    button.title = [option.boxText, option.money > 0 ? `Стоимость: ${formatMoney(option.money)}` : ""].filter(Boolean).join("\n");
+    setTip(button, [option.boxText, option.money > 0 ? `Стоимость: ${formatMoney(option.money)}` : ""].filter(Boolean).join("\n"));
     const choose = (): void => {
       const code = option.coded ? window.prompt(option.boxText || "Введите ответ:") : undefined;
       if (option.coded && code === null) return;

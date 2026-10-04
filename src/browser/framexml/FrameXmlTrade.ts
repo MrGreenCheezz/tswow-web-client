@@ -30,6 +30,33 @@ import {
   type TradeOffer,
 } from "../../world/TradeProtocol.js";
 import { itemChatLink } from "../ui/ChatLink.js";
+import { UPDATE_FIELDS } from "../../generated/updateFields.js";
+import type { WorldObjectState } from "../../world/WorldState.js";
+import { ITEM_FIELD_FLAG_SOULBOUND, itemBoundByEnchantment, type EnchantFlagsOf } from "../game/SpellCursor.js";
+
+/** `ITEM_FIELD_FLAG_BOP_TRADEABLE` (ItemTemplate.h): a soulbound item still tradeable for two hours. */
+const ITEM_FIELD_FLAG_BOP_TRADEABLE = 0x100;
+/** The trade window of a BoP-tradeable item, in played seconds (Wow.exe 0x00708b40: 0x1c20). */
+const BOP_TRADE_WINDOW_SECONDS = 7200;
+
+/**
+ * TRADE_POTENTIAL_BIND_ENCHANT's argument (Wow.exe 0x005869a0, event 0x18c, format "%b") for the item
+ * the player puts in their own «will not be traded» slot: true when it is bound (0x00708520) but not
+ * bound for good (!0x00709550) — soulbound, still BoP-tradeable within the two played hours since
+ * `ITEM_FIELD_CREATE_PLAYED_TIME` (0x00708b40), and no enchantment on it binds (0x007073e0). An
+ * enchant from the partner would end that window, so TradeFrame.lua shows the warning. False for an
+ * empty slot and whenever the player's played time is unknown (`playedSeconds` undefined).
+ */
+export function tradePotentialBindEnchant(
+  item: WorldObjectState | undefined, playedSeconds: number | undefined, flagsOf: EnchantFlagsOf,
+): boolean {
+  if (!item || playedSeconds === undefined) return false;
+  const flags = item.fields.get(UPDATE_FIELDS.ITEM_FIELD_FLAGS.offset) ?? 0;
+  if ((flags & ITEM_FIELD_FLAG_SOULBOUND) === 0 || (flags & ITEM_FIELD_FLAG_BOP_TRADEABLE) === 0) return false;
+  if (itemBoundByEnchantment(item, flagsOf)) return false;
+  const created = item.fields.get(UPDATE_FIELDS.ITEM_FIELD_CREATE_PLAYED_TIME.offset) ?? 0;
+  return created - playedSeconds > -BOP_TRADE_WINDOW_SECONDS;
+}
 
 /** `TRADE_ENCHANT_SLOT` (TradeFrame.lua:3): stock slot 7 is wire slot 6. */
 export const FRAMEXML_TRADE_ENCHANT_SLOT = TRADE_SLOT_COUNT;
@@ -100,6 +127,11 @@ export interface FrameXmlTradeContext {
   prefetchItems?(entries: readonly number[], onChanged: () => void): void;
   /** The set of offered items changed: the bags repaint their lock state (`offered`). */
   locksChanged?(): void;
+  /**
+   * TRADE_POTENTIAL_BIND_ENCHANT's argument for the item now in the player's own seventh slot
+   * (`tradePotentialBindEnchant`); absent, the event is not raised.
+   */
+  potentialBindEnchant?(guid: bigint): boolean;
 }
 
 interface FrameXmlTradePump {
@@ -347,12 +379,16 @@ export class FrameXmlTradeModel {
         return;
       }
       const previous = this.#offered.get(wire);
+      // Recorded before the send: a world that answers the change at once (the canned one) diffs the
+      // slot inside the call, and TRADE_POTENTIAL_BIND_ENCHANT reads the guid behind slot 7 there.
+      this.#offered.set(wire, cursor.guid);
       if (world.offerTradeItem(wire, cursor.bag, cursor.slot) === false) {
         // Refused before sending (offered earlier through the native window): nothing moved.
+        if (previous === undefined) this.#offered.delete(wire);
+        else this.#offered.set(wire, previous);
         this.#refused(world);
         return;
       }
-      this.#offered.set(wire, cursor.guid);
       this.#context.clearCursor();
       if (previous !== undefined && previous !== cursor.guid) this.#context.pickupItem?.(previous);
       this.#context.locksChanged?.();
@@ -486,6 +522,12 @@ export class FrameXmlTradeModel {
       if (player !== this.#playerSlots[index]) {
         this.#playerSlots[index] = player;
         if (player === "" && this.#offered.delete(index)) this.#context.locksChanged?.();
+        // The own seventh slot: the client raises TRADE_POTENTIAL_BIND_ENCHANT before the slot's own
+        // event, true or false every time it changes (Wow.exe 0x005869a0 set, 0x00586aa0 cleared).
+        if (index === FRAMEXML_TRADE_ENCHANT_SLOT - 1 && this.#context.potentialBindEnchant) {
+          const guid = player === "" ? undefined : this.#offered.get(index);
+          pump.fire("TRADE_POTENTIAL_BIND_ENCHANT", guid !== undefined && this.#context.potentialBindEnchant(guid));
+        }
         pump.fire("TRADE_PLAYER_ITEM_CHANGED", index + 1);
       }
       const target = this.#shape(world.theirOffer?.items.find((item) => item.slot === index));
@@ -582,8 +624,9 @@ const command = (run: (trade: FrameXmlTradeModel, args: readonly unknown[]) => v
 
 /**
  * The flat C API. The two money getters replace F2's neutral zeros (FrameXmlNeutralApi.ts), which
- * MoneyTypeInfo["PLAYER"] subtracts from GetMoney. Cursor money is not modelled in this client
- * (GetCursorMoney is neutral 0), so the coin pickup/drop pair has nothing to move.
+ * MoneyTypeInfo["PLAYER"] subtracts from GetMoney. The coin pickup/drop pair below stays inert here:
+ * L5c 3.09 — FrameXmlCursorMoney.ts answers PickupTradeMoney/AddTradeMoney over the cursor's money,
+ * spread after this table in FRAMEXML_SEAM_BINDINGS.
  */
 export const FRAMEXML_TRADE_BINDINGS: Readonly<Record<string, FrameXmlTradeBinding>> = Object.freeze({
   GetTradePlayerItemInfo: withTrade((trade, args) => trade.playerItemInfo(args[0]) ?? NOTHING),
@@ -593,8 +636,8 @@ export const FRAMEXML_TRADE_BINDINGS: Readonly<Record<string, FrameXmlTradeBindi
   GetPlayerTradeMoney: (host) => [host.trade?.playerMoney() ?? 0],
   GetTargetTradeMoney: (host) => [host.trade?.targetMoney() ?? 0],
   ClickTradeButton: command((trade, args) => trade.clickPlayerSlot(args[0], truthy(args[1]))),
-  // Casting an enchant onto the partner's slot 7 needs a spell on the cursor, which this client has
-  // no targeting mode for; the click is inert rather than a guessed cast.
+  // Inert here; FRAMEXML_ITEM_TARGETING_BINDINGS (FrameXmlItemTargeting.ts, spread after these) binds
+  // it: slot 7 takes the waiting enchant or item-target spell as TARGET_FLAG_TRADE_ITEM slot 6.
   ClickTargetTradeButton: () => NOTHING,
   SetTradeMoney: command((trade, args) => trade.setMoney(args[0])),
   PickupTradeMoney: () => NOTHING,
@@ -604,7 +647,7 @@ export const FRAMEXML_TRADE_BINDINGS: Readonly<Record<string, FrameXmlTradeBindi
   // TradeFrame's OnHide. CancelTrade (the TRADE popup's decline, which also covers a pending request)
   // is FrameXmlPopups.ts's binding; both reach WorldClient.cancelTrade.
   CloseTrade: command((trade) => trade.cancel()),
-  // TRADE_POTENTIAL_BIND_ENCHANT needs the partner's enchant spell, which the extended status
-  // carries only as an id this client cannot validate for binding; the confirm has nothing to send.
+  // TRADE_REPLACE_ENCHANT's accept; FRAMEXML_ITEM_TARGETING_BINDINGS binds it (0x00510b80 →
+  // 0x0080c5f0). TRADE_POTENTIAL_BIND_ENCHANT is the model's (#diff, tradePotentialBindEnchant).
   ReplaceTradeEnchant: () => NOTHING,
 });

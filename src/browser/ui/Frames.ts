@@ -8,7 +8,7 @@ import { creatureIconSource, creatureTypeName } from "../CreatureMetadata.js";
 import type { CreatureModelClient, EquippedItem, UnitModel } from "../CreatureModelClient.js";
 import type { ItemMetadataClient } from "../ItemMetadata.js";
 import { game } from "../game/Context.js";
-import { Bar } from "./Widgets.js";
+import { setTip, Bar } from "./Widgets.js";
 import { showAuras } from "./Auras.js";
 import {
   attackButton, characterMicroIcon, clearTargetButton, form, interactButton, lootButton, playerHealthBar,
@@ -60,7 +60,7 @@ function duelButton(): HTMLButtonElement | undefined {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = "⚔ Дуэль";
-  button.title = "Вызвать выбранного игрока на дуэль";
+  setTip(button, "Вызвать выбранного игрока на дуэль");
   button.setAttribute("aria-label", "Вызвать на дуэль");
   button.hidden = true;
   button.addEventListener("click", () => {
@@ -481,6 +481,9 @@ export function repaintPlayerHud(): void {
 export function unitDisplayName(object: WorldObjectState): string {
   const world = game.world;
   if (object.typeId === 4 && world) return world.displayName(object.guid);
+  // 5.24: a player's pet by the name it was given (CMSG_PET_NAME_QUERY), not its kind.
+  const petName = world?.petNameOf?.(object);
+  if (petName) return petName;
   const entry = object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0;
   const name = object.typeId === 3 ? game.creatureMetadata?.get(entry)?.name : undefined;
   return name ?? `${typeNames[object.typeId ?? -1] ?? "object"} · entry ${entry}`;
@@ -547,7 +550,7 @@ export function showTarget(): void {
     if (duel) duel.hidden = true;
     clearTargetButton.disabled = true;
     attackButton.textContent = "⚔";
-    attackButton.title = "Начать атаку";
+    setTip(attackButton, "Начать атаку");
     return;
   }
 
@@ -640,7 +643,7 @@ export function showTarget(): void {
   const duelHidden = target.typeId !== 4 || target.guid === world.state.selfGuid;
   // The state has to be in the accessible name too: a static `aria-label` in the markup overrides
   // the title, so a screen reader was told "autoattack" whether it was running or not.
-  const attackLabel = world.attacking ? "Остановить атаку" : "Начать атаку";
+  const attackLabel = world.attacking || world.attackRequested ? "Остановить атаку" : "Начать атаку";
 
   // One string for the whole painted frame: while the target stands still, every packet used to
   // recompute the forty writes below with identical values. The power bar below stays outside
@@ -670,7 +673,7 @@ export function showTarget(): void {
     setIconSource(targetIcon, spellIconUrl(2273, game.gatewayOrigin) ?? "");
   };
   targetDetails.textContent = targetDetailsText;
-  targetDetails.title = targetDetailsTitle;
+  setTip(targetDetails, targetDetailsTitle);
   targetHealthBar.style.width = healthWidth;
   targetHealthText.textContent = healthText;
   targetPowerBar.root.hidden = powerHidden;
@@ -680,12 +683,12 @@ export function showTarget(): void {
   interactButton.hidden = interactHidden;
   if (interactDisabled) interactButton.setAttribute("aria-disabled", "true");
   else interactButton.removeAttribute("aria-disabled");
-  interactButton.title = interactLabel;
+  setTip(interactButton, interactLabel);
   interactButton.setAttribute("aria-label", interactLabel);
   lootButton.hidden = lootHidden;
   if (lootable) lootButton.removeAttribute("aria-disabled");
   else lootButton.setAttribute("aria-disabled", "true");
-  lootButton.title = lootLabel;
+  setTip(lootButton, lootLabel);
   lootButton.setAttribute("aria-label", lootLabel);
   vendorButton.hidden = vendorHidden;
   trainerButton.hidden = trainerHidden;
@@ -694,6 +697,6 @@ export function showTarget(): void {
   if (duel) duel.hidden = duelHidden;
   clearTargetButton.disabled = false;
   attackButton.textContent = "⚔";
-  attackButton.title = attackLabel;
+  setTip(attackButton, attackLabel);
   attackButton.setAttribute("aria-label", attackLabel);
 }

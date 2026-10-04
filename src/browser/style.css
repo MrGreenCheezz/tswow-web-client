@@ -1865,8 +1865,10 @@ body.native-wow-ui .ui-tooltip {
   word-break: normal;
   white-space: pre-line;
 }
-/* A hovered world object has only its name. Keep it a cursor label, not a 420px item card. */
-body.native-wow-ui .ui-tooltip.world-object-tooltip {
+/* A hovered world object has only its name, a unit a few short lines (4.04). Keep them cursor
+   labels sized to their words, not 420px item cards. */
+body.native-wow-ui .ui-tooltip.world-object-tooltip,
+body.native-wow-ui .ui-tooltip.is-cursor {
   min-width: 0;
   width: max-content;
   max-width: min(280px, calc(100vw - 16px));
@@ -1877,7 +1879,8 @@ body.native-wow-ui .ui-tooltip.world-object-tooltip {
   white-space: normal;
 }
 body.native-wow-ui .ui-tooltip strong { display: block; margin-bottom: 2px; font: 16px/1.2 "WoW Friz", serif; }
-body.native-wow-ui .ui-tooltip.world-object-tooltip strong { margin: 0; font-size: 14px; }
+body.native-wow-ui .ui-tooltip.world-object-tooltip strong,
+body.native-wow-ui .ui-tooltip.is-cursor strong { margin: 0; font-size: 14px; }
 body.native-wow-ui .ui-tooltip > div { margin-top: 1px; }
 body.native-wow-ui .ui-tooltip > .ui-tooltip-description {
   margin-top: 5px;
@@ -2190,6 +2193,21 @@ body.framexml-item-cursor #bank-window { cursor: grabbing; }
 body.framexml-cast-cursor #framexml-world-stage,
 body.framexml-cast-cursor #framexml-world-stage *,
 body.framexml-cast-cursor #world-canvas { cursor: var(--framexml-cast-cursor, crosshair); }
+/* A spell or item waiting for an item (2.05, game/SpellCursor.ts): the same cast cursor. */
+body.spell-item-cursor #framexml-world-stage,
+body.spell-item-cursor #framexml-world-stage *,
+body.spell-item-cursor .item-slot,
+body.spell-item-cursor #world-canvas { cursor: var(--framexml-cast-cursor, crosshair); }
+/* Gift-wrapping paper waiting for its item (2.05 E, 5.17: game/GiftWrap.ts): the same cast cursor. */
+body.gift-wrap-cursor #framexml-world-stage,
+body.gift-wrap-cursor #framexml-world-stage *,
+body.gift-wrap-cursor .item-slot { cursor: var(--framexml-cast-cursor, crosshair); }
+/* The merchant's repair cursor (2.02): the client's Repair.blp once ui/VendorRepair.ts has it. */
+body.repair-cursor #framexml-world-stage,
+body.repair-cursor #framexml-world-stage *,
+body.repair-cursor .item-slot,
+body.repair-cursor #world-canvas { cursor: var(--repair-cursor, crosshair); }
+.vendor-repair { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .bank-window .bag-grid { padding: 0; }
 .bank-bags { display: flex; gap: 5px; }
 .bank-bags .item-slot { width: 42px; min-height: 42px; }
@@ -2969,6 +2987,17 @@ body.native-wow-ui .pet-bar .ui-icon-button {
 .ui-slot-empty { border-style: dashed; opacity: .55; }
 .ui-slot-label { font-size: .7rem; color: #d9c77f; }
 .ui-slot-count { position: absolute; right: 2px; bottom: 1px; font-size: .66rem; font-style: normal; color: #fff; text-shadow: 0 1px 2px #000; }
+/* 4.02: the icon a native drag carries under the cursor (ui/DragGhost.ts), painted off screen for
+   the one task setDragImage needs it. */
+.drag-ghost { position: fixed; left: -1000px; top: -1000px; width: 36px; height: 36px; box-sizing: border-box; overflow: hidden; pointer-events: none; border: 1px solid #5b5b5b; border-radius: 4px; background: #0b0b0b; }
+.drag-ghost img { display: block; width: 100%; height: 100%; }
+.drag-ghost-label { display: grid; place-items: center; width: 100%; height: 100%; color: #ffd100; font: bold 16px/1 "WoW Friz", serif; }
+.drag-ghost-count { position: absolute; right: 2px; bottom: 1px; color: #fff; font: 11px/1 "WoW Arial Narrow", Arial, sans-serif; text-shadow: 0 0 2px #000, 1px 1px 0 #000; }
+.drag-ghost[data-quality="2"] { border-color: #1eff00; }
+.drag-ghost[data-quality="3"] { border-color: #0070dd; }
+.drag-ghost[data-quality="4"] { border-color: #a335ee; }
+.drag-ghost[data-quality="5"] { border-color: #ff8000; }
+.drag-ghost[data-quality="6"], .drag-ghost[data-quality="7"] { border-color: #e6cc80; }
 .ui-slot[data-quality="2"] { border-color: #1eff00; }
 .ui-slot[data-quality="3"] { border-color: #0070dd; }
 .ui-slot[data-quality="4"] { border-color: #a335ee; }
@@ -2990,6 +3019,20 @@ body.native-wow-ui .pet-bar .ui-icon-button {
 .ui-tooltip { position: fixed; z-index: 205; display: grid; gap: 2px; max-width: 300px; padding: 7px 10px; pointer-events: none; border: 1px solid #8b7445; border-radius: 6px; background: #0d0f12f5; box-shadow: 0 6px 18px #000b; font-size: .78rem; color: #e8dfc9; }
 .ui-tooltip strong { color: #ffd100; font-size: .84rem; }
 .ui-tooltip-footer { color: #9d9584; font-size: .72rem; }
+/* A plain hint (setTip, 4.01) — what the browser's `title` used to say: a narrow label, white like
+   the original's GameTooltip:SetText line, sized to its words rather than to an item card. */
+.ui-tooltip.is-plain { white-space: pre-line; }
+.ui-tooltip.is-plain strong { color: #ffffff; font-weight: normal; }
+body.native-wow-ui .ui-tooltip.is-plain {
+  min-width: 0;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: none;
+  overflow: visible;
+  gap: 0;
+  padding: 6px 9px;
+}
+body.native-wow-ui .ui-tooltip.is-plain strong { margin: 0; font: 14px/1.3 "WoW Arial Narrow", Arial, sans-serif; }
 /* Item quality, the one place a colour carries meaning rather than decoration. */
 .ui-tooltip strong[data-quality="0"] { color: #9d9d9d; }
 .ui-tooltip strong[data-quality="1"] { color: #ffffff; }
@@ -3055,6 +3098,8 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
 .logout-countdown { top: 50%; left: 50%; width: min(330px, calc(100vw - 32px)); min-height: 0; resize: none; transform: translate(-50%, -50%); z-index: 12; }
 .logout-countdown .ui-panel-body { display: grid; gap: 12px; padding: 14px; text-align: center; }
 .logout-countdown p { margin: 0; }
+/* 4.13: the count is read out by its live copy every five seconds; the copy itself is not drawn. */
+.logout-countdown p.logout-countdown-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .logout-countdown button { min-height: 30px; }
 .game-menu > header { justify-content: center; min-height: 30px; }
 .game-menu > header .window-close { position: absolute; right: 5px; }
@@ -3133,6 +3178,20 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
    own plate and its heading. */
 .sheet-section h4 { margin: 0 0 3px; color: #d9c77f; font-size: .76rem; }
 .character-stats .ui-line { padding: 1px 0; }
+/* 4.03: a stat raised or lowered by buffs, in PaperDollFormatStat's GREEN/RED_FONT_COLOR. */
+.character-stats .ui-line.is-buff > span:last-child { color: #1aff1a; }
+.character-stats .ui-line.is-debuff > span:last-child { color: #ff1a1a; }
+/* 4.03: «Отображать шлем/плащ» and the title picker, a plate of their own under the redrawn box. */
+.sheet-controls { display: grid; gap: 4px; margin: 0 12px 10px; color: #eee4c9; font-size: .76rem; }
+.sheet-controls[hidden], .sheet-title-picker[hidden] { display: none; }
+.sheet-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.sheet-toggle input { margin: 0; accent-color: #d9b44a; }
+.sheet-title-picker { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }
+.sheet-title-picker span { color: #d9c77f; }
+.sheet-title-picker select { min-width: 0; min-height: 24px; padding: 0 6px; color: #f1e6c2; border: 1px solid #79663d; border-radius: 4px; background: #1b1913; font: inherit; }
+/* 4.03: the pet tab's rows; an autocast spell wears a gold ring, the colour of the pet bar's active button. */
+.pet-spell-button.is-autocast { border-color: #e6ce7b; box-shadow: inset 0 0 0 1px #ffd24a, 0 0 6px #ffd24a66; }
+.pet-spell-button.is-autocast .spell-label { color: #ffe08a; }
 
 /* Slice I2's unit frames. One rule set for thirteen kinds of frame, because they are one widget:
    the differences are a size class and where the container puts them. */
@@ -3180,7 +3239,13 @@ body.native-wow-ui :is(.window-close, .frame-close)::after { transform: rotate(-
 
 .ui-unit-list { display: grid; gap: 3px; }
 /* Its own class rather than `ui-unit-list`, so it has to set the display itself. */
-.ui-raid-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
+/* 4.08: a column per subgroup — the list is subgroup after subgroup, five each, and filling by
+   rows cut the second subgroup across the first row's last three cells. */
+.ui-raid-grid { display: grid; grid-auto-flow: column; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(5, auto); gap: 2px; }
+/* An empty slot keeps its place and is nobody: no clicks, drawn faint. */
+.ui-unit-frame[data-empty] { pointer-events: none; opacity: .35; }
+/* 4.08: the equipment set's «leave this slot alone» list, one slot a row. */
+.equipment-set-slots label { display: flex; gap: 6px; align-items: center; }
 
 /* Reaction, threat and the raid mark are attributes rather than classes, so the player and target
    frames — which are page markup and carry buttons no other frame has — wear the same ones. */

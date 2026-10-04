@@ -10,6 +10,9 @@ import { formatSpellDescription } from "../ui/SpellText.js";
 import type { TooltipContent, TooltipRefresh } from "../ui/Widgets.js";
 import type { GameTooltipWidgetAdapter } from "../glue/GlueWidgets.js";
 import type { FrameXmlActionTooltip, FrameXmlWorldSeam } from "./FrameXmlWorldSeam.js";
+import type { FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";
+import type { FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
+import { frameXmlTooltipExtrasAdapter, type FrameXmlTooltipExtrasWorld } from "./FrameXmlTooltipExtrasAdapter.js";
 
 /**
  * The item identity that the stock inventory buttons own, kept separate from the five-value C API
@@ -23,6 +26,8 @@ export interface FrameXmlInventoryTooltipItem {
   readonly count?: number;
   readonly durability?: number;
   readonly enchantments?: readonly number[];
+  /** 5.22 (04.10, L4): ITEM_FIELD_DURATION, the seconds a timed item has left (ITEM_DURATION_* line). */
+  readonly durationLeft?: number | undefined;
 }
 
 /** Optional, item-aware extension implemented by the world seams without widening the base seam. */
@@ -36,6 +41,25 @@ export interface FrameXmlInventoryTooltipSeam {
    * no world behind it answers (CannedWorldSeam's fixtures); live, the world's cache is the source.
    */
   readonly itemTooltip?: (entry: number) => FrameXmlInventoryTooltipItem | undefined;
+  /**
+   * The client's own skinnable line for a unit (FrameXmlSkinnableTooltip.ts); live seams only.
+   * `colorblind` is the `colorblindMode` CVar the binder read for this SetUnit.
+   */
+  readonly unitSkinnableLine?: (unit: string, colorblind?: boolean) => FrameXmlSkinnableLine | undefined;
+  /** 3.12e: a creature's sub-name line (FrameXmlUnitSubName.ts); live seams only. */
+  readonly unitSubName?: (unit: string) => string | undefined;
+  /** 5.28 (L6): a corpse's MASTER_LOOTER/LOOT lines (FrameXmlLootOwnerTooltip.ts); live seams only. */
+  readonly unitLootOwners?: (unit: string) => readonly FrameXmlLootOwnerLine[];
+  /** 3.12 (04.10, L4): any player's guild name and the summon title line (FrameXmlUnitTooltipExtras.ts); live seams only. */
+  readonly unitGuildName?: (unit: string) => string | undefined;
+  readonly unitSummonTitle?: (unit: string) => { readonly globalName: string; readonly ownerName: string | undefined } | undefined;
+  readonly watchUnitAnswers?: (unit: string, redraw: () => void) => (() => void) | undefined;
+  /** The item's repair price for SetInventoryItem/SetBagItem (FrameXmlRepair.ts); live seams only. */
+  readonly inventoryItemRepairCost?: (unit: string, slot: number) => number;
+  readonly containerItemRepairCost?: (bag: number, slot: number) => number;
+  /** 2.10: refund seconds for the item tooltip's REFUND_TIME_REMAINING line (FrameXmlRefund.ts); live seams only. */
+  readonly containerItemRefundSeconds?: (bag: number, slot: number) => number | undefined;
+  readonly inventoryItemRefundSeconds?: (unit: string, slot: number) => number | undefined;
 }
 
 /** `INVSLOT_FIRST_EQUIPPED..INVSLOT_LAST_EQUIPPED`: the worn slots `SetInventoryItem` names. */
@@ -109,6 +133,8 @@ function stockItemContext(): ItemTooltipContext {
     layout: "stock",
     compare: false,
     subclassName: (itemClass, subClass) => game.itemMetadata?.tooltipSubclassName(itemClass, subClass),
+    // 5.22: the subclass word goes red without the proficiency (SMSG_SET_PROFICIENCY).
+    proficient: (itemClass, subClass) => game.world?.isProficient?.(itemClass, subClass) ?? true,
   };
   const book = spellbook;
   // With the spellbook loaded an item spell's description is filled from the character's own
@@ -145,6 +171,8 @@ function contentFor(
   if (item.durability !== undefined && Number.isFinite(item.durability) && item.durability >= 0) {
     context.durability = item.durability;
   }
+  // 5.22 (04.10, L4): the item object's time left, for ITEM_DURATION_* (Wow.exe 0x006277f0 → 0x007070b0).
+  if (item.durationLeft !== undefined && Number.isFinite(item.durationLeft)) context.durationLeft = item.durationLeft;
   return game.world && item.enchantments ? itemTooltipFor(item.entry, context) : itemTooltipContent(facts, context);
 }
 
@@ -253,6 +281,14 @@ function actionContent(action: FrameXmlActionTooltip | undefined): TooltipConten
  */
 export type FrameXmlCharacterTooltipAdapter = GameTooltipWidgetAdapter & {
   readonly aura: (id: number) => TooltipContent | undefined;
+  /**
+   * The line `GameTooltip:SetUnit` writes itself for a skinnable body, after the PvP line and
+   * before `OnTooltipSetUnit`: `prefix` plus the GlobalStrings value `globalName`, in `color`.
+   * `colorblind` is the `colorblindMode` CVar at the call; the prefix is its mark when on.
+   */
+  readonly unitSkinnable: (unit: string, colorblind: boolean) => FrameXmlSkinnableLine | undefined;
+  /** 5.28 (L6): the loot lines SetUnit writes for a corpse (FrameXmlLootOwnerTooltip.ts); read by SetUnit since 04.10 (L4). */
+  readonly unitLootOwners: (unit: string) => readonly FrameXmlLootOwnerLine[];
 };
 
 /** Build the common GameTooltip adapter from a live/canned item-aware seam. */
@@ -278,9 +314,25 @@ export function createFrameXmlCharacterTooltipAdapter(
     },
     // A pet bar spell for GameTooltip:SetPetAction (FrameXmlPetActionBar.ts); commands keep their name line.
     petActionSpell: (index) => source.petActions?.spellAt(index),
+    // 11.02-IF-review: GameTooltip:SetPossession(1) draws the seam's possess spell (FrameXmlPossess.ts).
+    possessionSpell: () => source.possess?.possessSpell || undefined,
     // Live, the world's item cache; with none (the canned routes) the seam's own item source first.
     item: (entry) => (game.world ? undefined : seamItemContent(source, entry)) ?? itemContent(entry),
     spell: (id) => linkedSpellContent(id),
     aura: (id) => linkedSpellContent(id, true),
+    // 5.20: `/dbc/spells?v=15`'s dispelName (SpellDispelType.Name, Wow.exe 0x00625350); none before it.
+    auraDispelName: (id) => game.spells.get(id)?.dispelName,
+    unitSkinnable: (unit, colorblind) => source.unitSkinnableLine?.(unit, colorblind),
+    unitSubName: (unit) => source.unitSubName?.(unit),
+    unitLootOwners: (unit) => source.unitLootOwners?.(unit) ?? [], // 5.28 (L6)
+    unitGuildName: (unit) => source.unitGuildName?.(unit), // 3.12 (04.10, L4)
+    unitSummonTitle: (unit) => source.unitSummonTitle?.(unit), // 3.12 (04.10, L4)
+    watchUnitAnswers: (unit, redraw) => source.watchUnitAnswers?.(unit, redraw), // 3.12 (04.10, L4)
+    inventoryItemRepairCost: (unit, slot) => source.inventoryItemRepairCost?.(unit, slot) ?? 0,
+    containerItemRepairCost: (bag, slot) => source.containerItemRepairCost?.(bag, slot) ?? 0,
+    containerItemRefundSeconds: (bag, slot) => source.containerItemRefundSeconds?.(bag, slot),
+    inventoryItemRefundSeconds: (unit, slot) => source.inventoryItemRefundSeconds?.(unit, slot),
+    // Plan item 3.12: talents, quest/glyph links and the reward spells (FrameXmlTooltipExtrasAdapter.ts).
+    ...frameXmlTooltipExtrasAdapter(source, (): FrameXmlTooltipExtrasWorld => game, (id) => linkedSpellContent(id)),
   };
 }

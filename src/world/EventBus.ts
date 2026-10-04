@@ -8,7 +8,7 @@ export type SpellCastStopReason = "success" | "interrupted" | "failed";
 export type LfgStateChangeKind =
   | "joinResult" | "queue" | "update" | "proposal" | "roleChosen" | "roleCheck" | "boot"
   | "playerInfo" | "partyInfo" | "reward" | "offerContinue" | "teleportDenied" | "search"
-  | "disabled";
+  | "disabled" | "voteKickReasonNeeded";
 
 export interface LfgStateChange {
   readonly kind: LfgStateChangeKind;
@@ -21,6 +21,8 @@ export interface LfgStateChange {
   readonly message?: string;
   /** `offerContinue`: the wire entry, `id + (type << 24)`; `lfgOfferContinue` keeps only the id. */
   readonly entry?: number;
+  /** `voteKickReasonNeeded`: the name SMSG_PARTY_COMMAND_RESULT carried — whom the vote is about. */
+  readonly name?: string;
 }
 
 /**
@@ -234,6 +236,8 @@ export interface WorldEvents {
 export interface WorldPacketEvents {
   SOCKET_GEMS_RESULT: { itemGuid: bigint; enchantments: number[] };
   INVENTORY_CHANGE_FAILURE: import("./ItemProtocol.js").EquipFailure;
+  /** 2.10: SMSG_ITEM_REFUND_RESULT codes 10/11 — the GlobalStrings key UIErrorsFrame shows. */
+  ITEM_REFUND_ERROR: { error: string };
   /** A ranged auto-repeat (Auto Shot or wand Shoot) stopped for this unit. */
   STOP_AUTOREPEAT_SPELL: { guid: bigint };
   /** A non-addon line entered the chat log; the same object reaches the legacy callback. */
@@ -256,10 +260,32 @@ export interface WorldPacketEvents {
     startedAt: number;
     source: "start" | "go";
   };
+  /**
+   * 3.02: this client sent a cast request (`CMSG_CAST_SPELL`) — Wow.exe 0x0080ac90 raises
+   * UNIT_SPELLCAST_SENT right after building it. `targetGuid` is the request's named unit or object.
+   */
+  SPELL_CAST_SENT: { spellId: number; castCount: number; targetGuid?: bigint };
+  /**
+   * 3.02: a cast's outcome as Wow.exe 0x007fecc0 takes it — 187 (the client's own "success",
+   * SPELL_FAILED_UNKNOWN in SharedDefines.h) from an SMSG_SPELL_GO without CAST_FLAG_PENDING, or the
+   * SpellCastResult of SMSG_CAST_FAILED (the player), SMSG_SPELL_FAILURE and SMSG_SPELL_FAILED_OTHER
+   * (each). Emitted before the SPELL_CAST_STOP the same packet causes.
+   * 3.01-castlog: `refusal` marks SMSG_CAST_FAILED's — the only one Wow.exe logs as SPELL_CAST_FAILED
+   * (0x00809af0 → 0x00808200 → 0x00751ad0; the interrupt pair's handlers 0x00809c70/0x00806ad0 log nothing).
+   */
+  SPELL_CAST_RESULT: { casterGuid: bigint; spellId: number; castCount: number; result: number; refusal?: true };
+  /** 3.01: combat facts UNIT_COMBAT does not carry (world/CombatFacts.ts). */
+  COMBAT_FACT: import("./CombatFacts.js").CombatFact;
   /** Pushback: damage taken while casting adds to what is left. */
   SPELL_CAST_DELAYED: { casterGuid: bigint; delay: number };
   /** A complete SMSG_SPELL_GO, including hit/miss lists and an optional target destination. */
   SPELL_GO: SpellGo;
+  /**
+   * 3.01-castlog: every SMSG_SPELL_START as parsed — instants, channels and triggered casts included —
+   * emitted after the cast bar's SPELL_CAST_START, as Wow.exe 0x00806700 updates the bar (0x00805330)
+   * before it logs (0x00751920).
+   */
+  SPELL_START: import("./SpellProtocol.js").SpellStart;
   /** Remaining channel time changed, including the zero update that precedes SPELL_CAST_STOP. */
   SPELL_CHANNEL_UPDATE: { casterGuid: bigint; spellId: number; remaining: number };
   /**
@@ -281,6 +307,8 @@ export interface WorldPacketEvents {
     added: readonly ActiveAura[];
     removed: readonly ActiveAura[];
     updated: readonly { before: ActiveAura; after: ActiveAura }[];
+    /** SMSG_AURA_UPDATE_ALL rather than one slot's SMSG_AURA_UPDATE (absent from older emitters). */
+    replaceAll?: boolean;
   };
   /** One line of the spell combat log, already worded and semantically classified. */
   COMBAT_LOG: {
@@ -355,6 +383,8 @@ export interface WorldPacketEvents {
   QUEST_GIVER_STATUS: { guid: bigint | undefined };
   /** A party member is sharing a quest, or the offer has been answered. */
   QUEST_SHARED: { quest: { questId: number; title: string; initiatorGuid: bigint } | undefined };
+  /** MSG_QUEST_PUSH_RESULT to the sharer: what one party member did with the offer (`QUEST_PARTY_MSG_*`). */
+  QUEST_PUSH_RESULT: { guid: bigint; result: number };
   /** A level, and what it brought. */
   LEVEL_UP: { level: number; healthDelta: number; powerDelta: number[]; statDelta: number[] };
   SPELL_LEARNED: { spellId: number };
@@ -401,12 +431,22 @@ export interface WorldPacketEvents {
   INSTANCE_LOCK_START: { milliseconds: number; encounterMask: number; previouslySaved: boolean };
   /** That question went: answered, run out, or the instance left. */
   INSTANCE_LOCK_STOP: Record<string, never>;
+  /**
+   * 3.22a: SMSG_RAID_GROUP_ONLY's homebind delay — above 0 the server will port the player out of a
+   * raid instance they have no raid group for (INSTANCE_BOOT_START), 0 the reminder taken back
+   * (INSTANCE_BOOT_STOP; Wow.exe 0x6e3c10 → 0x513ad0; FrameXmlServerPrompts.ts keeps the deadline).
+   */
+  INSTANCE_BOOT: { milliseconds: number };
   /** A flight master's map of destinations arrived. */
   TAXI_MENU: { guid: bigint; currentNode: number; knownNodes: number[] };
   /** A selected flight was accepted or refused; the native window owns the visible outcome. */
   TAXI_CHANGED: { guid: bigint; reply: number };
+  /** SMSG_TAXINODE_STATUS (5.28): whether a flight master in view has a node this character knows. */
+  TAXI_NODE_STATUS_CHANGED: { guid: bigint; known: boolean };
   /** The instance difficulty changed, or the list of lockouts did. */
   INSTANCE_CHANGED: { difficulty?: number; lockouts?: number };
+  /** SMSG_NEW_WORLD: the character left its map through a loading screen; the realm recreates it there. */
+  WORLD_TRANSFER: { mapId: number };
   /** A boss frame: engage, disengage, or an objective moving. */
   ENCOUNTER_FRAME: { type: number; guid: bigint | undefined; param1: number; param2: number };
   /** A spirit healer is asking whether to resurrect the character here and now. */
@@ -421,8 +461,15 @@ export interface WorldPacketEvents {
   MINIMAP_PING: { guid: bigint; x: number; y: number };
   /** Quest markers arrived, or a gossip menu named a place. */
   QUEST_POI: Record<string, never>;
+  /**
+   * SMSG_QUERY_QUESTS_COMPLETED_RESPONSE replaced `completedQuests` (the stock client raises
+   * QUEST_QUERY_COMPLETE after every answer, Wow.exe 0x005b5190).
+   */
+  QUESTS_COMPLETED: Record<string, never>;
   /** A need-or-greed roll opened, moved or finished. An undefined slot means the set was replaced. */
   LOOT_ROLL_CHANGED: { itemSlot: number | undefined; newItemGuid?: bigint };
+  /** SMSG_LOOT_LIST (5.28): the master looter and the round-robin owner of a corpse; `lootOwners` holds it. */
+  LOOT_LIST_CHANGED: { corpseGuid: bigint };
   /** The guild bank, its logs, its permissions or a tab's text changed. */
   GUILD_BANK_CHANGED: GuildBankChange;
   /** The calendar, one event of it, or the pending-invite count changed. */
@@ -437,6 +484,8 @@ export interface WorldPacketEvents {
   CHANNEL_CHANGED: { channel: string };
   /** The friends or ignore list changed, or a friend came online. */
   CONTACTS_CHANGED: Record<string, never>;
+  /** L5c 3.18: SMSG_CHAT_PLAYER_NOT_FOUND's name — the autocomplete list takes ONLINE back (Wow.exe 0x006e2e90). */
+  CHAT_PLAYER_NOT_FOUND: { name: string };
   /** A `/who` answer arrived. */
   WHO_RESULTS: Record<string, never>;
   /** A charter was queried, signed, renamed, refused or turned in. */
@@ -561,7 +610,9 @@ export interface WorldPacketEvents {
    * A reader opened: `SMSG_READ_ITEM_OK` for a readable item (`item`), `SMSG_GAMEOBJECT_PAGETEXT` for
    * a goober with a page (`object`). What it shows is in the named object's template and its pages.
    */
-  ITEM_TEXT_OPENED: { kind: "item" | "object"; guid: bigint };
+  ITEM_TEXT_OPENED: { kind: "item" | "object"; guid: bigint; text?: string };
+  /** SMSG_ITEM_TEXT_QUERY_RESPONSE (5.28): an item's text (a mail copy) arrived; `itemText(guid)` holds it. */
+  ITEM_TEXT_RECEIVED: { guid: bigint };
   /** The player's ticket, a game master's answer to it, or whether tickets are taken at all. */
   GM_TICKET_CHANGED: { kind?: "snapshot" | "result" | "system" | "response" | "resolved" };
   /** A rename, a customise, a faction change, or a haircut paid for. */
