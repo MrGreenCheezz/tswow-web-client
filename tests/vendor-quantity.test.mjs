@@ -54,6 +54,8 @@ test("auction bid and buyout ask first, with the sum, and send once on accept; t
       "./Format.js": format,
       "./Strings.js": { nativeString: (_key, fallback) => fallback },
       "../game/Context.js": { game: {} },
+      // suite-fix: L7 4.14 constructs the LFG queue clock at module load; a stub is no constructor.
+      "./LfgQueueClock.js": await import("../dist/code/browser/ui/LfgQueueClock.js"),
     });
     const bids = [];
     const world = { itemTemplate: () => ({ name: "Меч" }), bidOnAuction: (id, amount) => bids.push([id, amount]) };

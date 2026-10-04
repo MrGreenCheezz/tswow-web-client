@@ -8,6 +8,7 @@ import { anyGameWindowOpen, closeGameWindows } from "../ui/Windows.js";
 import { showTarget } from "../ui/Frames.js";
 import { interactWithGuid } from "../ui/Npc.js";
 import { CAMERA_PITCH_LIMIT, advanceCameraFollow, cameraLookPerPixel, zoomedDistance } from "../game/CameraRig.js";
+import { cameraYawOffFlip } from "../game/CameraViews.js"; // DEC-B 3.11
 import { cameraMaxDistance, settingOn, settings } from "../ui/Settings.js";
 import { settingNumber } from "../ui/SettingsModel.js";
 import { canAttackUnit, inSightFromCamera, reactionTo } from "../game/Targeting.js";
@@ -864,8 +865,10 @@ function syncButtons(event: PointerEvent): { releasedLeft: boolean; releasedRigh
   // 5.14: the right button going down turns the character to where the camera looks, and the
   // camera's offset is spent doing it — the view does not jump. A stun holds the facing (5.11),
   // and the camera keeps its offset.
-  if (right && !wasRight && game.camera.yaw !== 0 && turnCharacterBy(game.camera.yaw)) {
-    game.camera.yaw = 0;
+  // DEC-B 3.11: by the yaw without FlipCameraYaw's part, which stays (Wow.exe 0x6023d0 turns by camera+0x11c);
+  // was `game.camera.yaw !== 0 && turnCharacterBy(game.camera.yaw)` and `yaw = 0` — the same without a flip.
+  if (right && !wasRight && cameraYawOffFlip(game.camera) !== 0 && turnCharacterBy(cameraYawOffFlip(game.camera))) {
+    game.camera.yaw = game.camera.flipYaw ?? 0;
     drag.turned = true;
   }
   drag.left = left;
@@ -1040,7 +1043,7 @@ function wireMouse(): void {
       // goes back to zero rather than being carried around at the player's back.
       // 5.11: under a stun the facing is held, so the drag turns the camera as the left one does.
       if (turnCharacterBy(-event.movementX * perPixel)) {
-        camera.yaw = 0;
+        camera.yaw = camera.flipYaw ?? 0; // DEC-B 3.11: home is the flip (was 0)
         return;
       }
     }
@@ -1150,8 +1153,9 @@ function holdButton(bit: number, down: boolean): void {
   luaButtons = after;
   const rightBefore = drag.right || (before & TURN_OR_ACTION) !== 0;
   const right = drag.right || (after & TURN_OR_ACTION) !== 0;
-  if (right && !rightBefore && game.camera.yaw !== 0 && turnCharacterBy(game.camera.yaw)) {
-    game.camera.yaw = 0;
+  // DEC-B 3.11: without FlipCameraYaw's part, as the button's press (syncButtons).
+  if (right && !rightBefore && cameraYawOffFlip(game.camera) !== 0 && turnCharacterBy(cameraYawOffFlip(game.camera))) {
+    game.camera.yaw = game.camera.flipYaw ?? 0;
     luaTurned = true;
   }
   setMouseRun((drag.left || (after & CAMERA_OR_SELECT_OR_MOVE) !== 0) && right);

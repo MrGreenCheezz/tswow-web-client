@@ -158,8 +158,11 @@ test("11.02-F2: VehicleMenuBar.xml (142) and AnimationSystem.lua (144) sit at th
   for (const file of ["vehiclemenubar.xml", "animationsystem.lua"]) assert.ok(vertical.includes(file), `${file} is in the vertical`);
   assert.ok(toc.indexOf("vehiclemenubar.xml") < toc.indexOf("alternatepowerbar.xml"));
   assert.ok(toc.indexOf("alternatepowerbar.xml") < toc.indexOf("animationsystem.lua"));
+  // suite-fix: L17 3.09 (WORK_PLAN 3.09) appended LocalizationPost.xml, the stock TOC's last line, after these.
+  assert.ok(toc.indexOf("animationsystem.lua") < toc.indexOf("localizationpost.xml"));
   assert.deepEqual(vertical.slice(vertical.indexOf("easymenu.lua")),
-    ["easymenu.lua", "vehiclemenubar.xml", "alternatepowerbar.xml", "animationsystem.lua"], "the stock order");
+    ["easymenu.lua", "vehiclemenubar.xml", "alternatepowerbar.xml", "animationsystem.lua", "localizationpost.xml"],
+    "the stock order");
 });
 
 test("11.02-F2: driving a siege engine in the stock UI — panel, skin, seat indicator, a press, a seat, the leave button, home", withClient, async () => {

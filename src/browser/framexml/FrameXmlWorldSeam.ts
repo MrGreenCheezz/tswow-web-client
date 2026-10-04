@@ -174,6 +174,7 @@ import { FRAMEXML_CONTROL_BINDINGS, type FrameXmlPlayerControl } from "./FrameXm
 import { FRAMEXML_GROUP_COMMAND_BINDINGS, type FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import { FRAMEXML_TARGETING_BINDINGS, type FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
 import { FRAMEXML_TARGET_NEAREST_BINDINGS, type FrameXmlTargetNearest } from "./FrameXmlTargetNearest.js"; // L2 1.10
+import { FRAMEXML_CAMERA_VIEW_BINDINGS, type FrameXmlCameraViews } from "./FrameXmlCameraViews.js"; // DEC-B 3.11
 import { FRAMEXML_MECHANICS_BINDINGS, FRAMEXML_MECHANICS_PRELUDE, type FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
 import type { FrameXmlThreatModel } from "./FrameXmlThreat.js";
 import type { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
@@ -1673,6 +1674,8 @@ export interface FrameXmlWorldSeam {
   readonly targeting?: FrameXmlTargeting | undefined;
   /** L2 1.10: `TargetNearest*` and `TargetLast*` (FrameXmlTargetNearest.ts); absent, they do nothing. */
   readonly targetNearest?: FrameXmlTargetNearest | undefined;
+  /** DEC-B 3.11: SetView, SaveView, ResetView, NextView, PrevView, FlipCameraYaw (FrameXmlCameraViews.ts). */
+  readonly cameraViews?: FrameXmlCameraViews | undefined;
 
   // ---- unit auras -------------------------------------------------------
   /** `UnitAura`'s 3.3.5 tuple for a 1-based filtered player slot. */
@@ -2321,6 +2324,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_UNIT_RELATION_BINDINGS,
   ...FRAMEXML_CONTROL_BINDINGS, ...FRAMEXML_GROUP_COMMAND_BINDINGS, ...FRAMEXML_TARGETING_BINDINGS,
   ...FRAMEXML_TARGET_NEAREST_BINDINGS, // L2 1.10
+  ...FRAMEXML_CAMERA_VIEW_BINDINGS, // DEC-B 3.11
   ...FRAMEXML_INSPECT_BINDINGS,
   ...FRAMEXML_TITLE_BINDINGS, ...FRAMEXML_EQUIPMENT_SET_BINDINGS, AbandonSkill: (seam, args) => { seam.abandonSkill?.(slotOf(args[0])); return NOTHING; },
   ...FRAMEXML_BARBER_BINDINGS,

@@ -115,6 +115,7 @@ import {
 import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import { FrameXmlTargetingModel } from "./FrameXmlTargetingApi.js";
 import { FRAMEXML_LIVE_TARGET_NEAREST } from "./FrameXmlTargetNearestLive.js"; // L2 1.10
+import { liveCameraViews } from "../game/CameraViewsLive.js"; // DEC-B 3.11
 import { CHAT_MSG_ADDON, LANG_ADDON } from "../../world/SessionProtocol.js";
 import { CHAT_MSG_CHANNEL, CHAT_MSG_SYSTEM, languageForRace } from "../../world/ChatProtocol.js";
 import type { ChatMessage } from "../../world/ChatProtocol.js";
@@ -810,6 +811,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly targeting: FrameXmlTargetingModel;
   /** L2 1.10: TargetNearest* and TargetLast* over the browser's Tab list and target history. */
   readonly targetNearest = FRAMEXML_LIVE_TARGET_NEAREST;
+  /** DEC-B 3.11: the stock UI's camera views on the page's camera (game/CameraViewsLive.ts). */
+  readonly cameraViews = liveCameraViews;
   /** The last PLAYER_CONTROL_LOST/GAINED told to Lua (FrameXmlControl.ts). */
   readonly #controlEdge = new FrameXmlControlEdge();
   #serviceSignature = "";
@@ -1681,6 +1684,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       namedGuid: (name) => this.#relationGuid(name) ?? this.#nearestNamed(name, false),
       setFocus: (guid) => context.setFocus?.(guid),
       activeStanceEntries: () => this.#shapeshiftForms().filter((form) => this.#shapeshiftActive(form)),
+      // DEC-A 3.11: AssistUnit's UI error (Wow.exe 0x005216f0) and the assistAttack CVar (0x00bd0918).
+      uiError: (name) => { this.#pump?.fire("UI_ERROR_MESSAGE", globalString(name) ?? name); }, // DEC-A 3.11
+      assistAttack: () => this.getCVarBool("assistAttack") === true, // DEC-A 3.11
     });
     this.#skillResolvers = createFrameXmlSkillResolvers(() => ({
       player: this.#self(),

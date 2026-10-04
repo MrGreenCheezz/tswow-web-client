@@ -208,7 +208,7 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "InterfaceOptionsControlsPanelAutoLootKeyDropDown",
     // L18 5.05: AutoRange (autoRangedCombat) and StopAutoAttack (stopAutoAttackOnTargetChange) have settings
     // behind them (FrameXmlSettingsCVar.ts) and are usable; AttackOnAssist (assistAttack) has none.
-    "InterfaceOptionsCombatPanelAttackOnAssist", // L18 5.05: was also AutoRange
+    // DEC-A 3.11: AttackOnAssist has one now (the assistAttack setting, owner decision of 04.10) and is usable.
     "InterfaceOptionsCombatPanelAutoSelfCast", // L18 5.05: was also StopAutoAttack
     // UseAction's unit is not honoured by the host (LiveWorldSeam.useAction casts the slot's spell).
     "InterfaceOptionsCombatPanelSelfCastKeyDropDown", "InterfaceOptionsCombatPanelFocusCastKeyDropDown",

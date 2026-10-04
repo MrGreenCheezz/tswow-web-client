@@ -62,8 +62,9 @@ test("L18 5.05: the stock Combat panel's «Ближний/дальний бой�
   // with «не поддерживает» was wrong for either.
   assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCombatPanelAutoRange"), false);
   assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCombatPanelStopAutoAttack"), false);
-  // AttackOnAssist (assistAttack) still has no setting: it stays greyed.
-  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCombatPanelAttackOnAssist"), true);
+  // DEC-review 3.11: AttackOnAssist has the assistAttack setting since DEC-A (04.10) and is usable too
+  // (was: «still has no setting: it stays greyed», `true`).
+  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has("InterfaceOptionsCombatPanelAttackOnAssist"), false);
 });
 
 test("L18 5.05: EnterWorld hands the world client the setting as the CVar hook", async () => {

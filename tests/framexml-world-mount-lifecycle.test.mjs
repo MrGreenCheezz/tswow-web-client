@@ -1065,6 +1065,21 @@ FrameXmlBoot.prototype.load = async function loadStub() {
   return inventory;
 };
 
+// suite-fix: every mount now reads add-ons in its loading window — the stock combat log (3.01) and the
+// LoD preload (3.18/3.24) — through the gateway provider, and this fixture has no gateway: each read
+// waited out a refused connection plus the 0.5 + 1.5 + 4 s retry ladder (GlueRetry.ts), ≈12 s a mount,
+// and the file ran past the runner's 240 s. Answer at once what that read ends in (the addon runtime's
+// «failed to read …: GlueServerUnavailableError», which also stops the preload as frameXmlPreloadServerDown
+// expects). Tests that care about add-on loading install their own loadAddon.
+FrameXmlBoot.prototype.loadAddon = async function noGatewayLoadAddon(name) {
+  const toc = `interface/addons/${name.toLowerCase()}/${name.toLowerCase()}.toc`;
+  return Object.freeze({
+    ok: false, addon: name, status: "failed",
+    message: `failed to read ${toc}: GlueServerUnavailableError: Сервер недоступен: http://localhost:8090`,
+    dependencies: [], loaded: [], roots: [],
+  });
+};
+
 const originalClose = FrameXmlBoot.prototype.close;
 FrameXmlBoot.prototype.close = function closeTracked() {
   const record = seams.find((entry) => entry.seam === this.seam && !entry.closed);

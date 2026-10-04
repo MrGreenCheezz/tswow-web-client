@@ -100,6 +100,18 @@ export function resolveFiles(files, cwd = process.cwd()) {
   });
 }
 
+/**
+ * The whole suite as node --test sees it. Named files go as they are; the whole suite goes as one
+ * glob that Node expands itself, because 1126 explicit paths passed the Windows command-line limit
+ * (spawn ENAMETOOLONG, 2026-10-04). The glob is not recursive, so it matches what suiteFiles() lists
+ * and keeps .runtime/ experiments out (tests/run-tests-wrapper.test.mjs compares the two).
+ */
+export const SUITE_GLOB = "tests/*.test.mjs";
+
+export function nodeTestTargets(options) {
+  return options.files.length > 0 ? resolveFiles(options.files) : [SUITE_GLOB];
+}
+
 export function testArgs(options, files) {
   const args = [];
   if (options.mode === "source") args.push("--import", "./tools/register-test-sources.mjs");
@@ -159,7 +171,7 @@ function main() {
     WEBCLIENT_TEST_RSS_LIMIT_MB: String(options.rssLimitMb),
     WEBCLIENT_TEST_MEMORY_REPORT: report,
   };
-  const args = testArgs(options, files);
+  const args = testArgs(options, nodeTestTargets(options));
   console.error(`run-tests: Node ${process.version}, ${options.mode}, ${files.length} file(s), concurrency `
     + `${options.concurrency}, timeout ${options.timeoutMs} ms, heap ${options.heapMb} MB, `
     + `guard ${options.rssLimitMb} MB, total ${options.totalTimeoutMin} min`);

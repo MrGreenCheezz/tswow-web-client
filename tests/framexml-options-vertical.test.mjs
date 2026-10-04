@@ -488,7 +488,7 @@ test("L18 5.05: the Combat panel's auto-range and stop-on-target-change checkbox
   assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
     return InterfaceOptionsCombatPanelAutoRange:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelAutoRange:IsEnabled(),
       InterfaceOptionsCombatPanelStopAutoAttack:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelStopAutoAttack:IsEnabled(),
-      InterfaceOptionsCombatPanelAttackOnAssist:IsEnabled()`, 5), [1, 1, 0, 1, 0]);
+      InterfaceOptionsCombatPanelAttackOnAssist:IsEnabled()`, 5), [1, 1, 0, 1, 1]); // DEC-A 3.11: AttackOnAssist is live now (was 0)
   lua(boot, "InterfaceOptionsCombatPanelAutoRange:Click() InterfaceOptionsCombatPanelStopAutoAttack:Click()", 0);
   // The Interface panels apply at once (Cancel reverts), as the bar and audio panels above.
   assert.deepEqual(writes.slice(from).map(([id, value]) => `${id}=${value}`).sort(),
@@ -500,4 +500,27 @@ test("L18 5.05: the Combat panel's auto-range and stop-on-target-change checkbox
     InterfaceOptionsCombatPanelAutoRange:Click() InterfaceOptionsCombatPanelStopAutoAttack:Click() InterfaceOptionsFrameOkay:Click()`, 0);
   assert.equal(values().autoRangedCombat, true);
   assert.equal(values().stopAutoAttackOnTargetChange, false);
+});
+
+// DEC-A 3.11 (04.10, owner decision 4): the Combat panel's «Автоматическая помощь» (AttackOnAssist, cvar
+// "assistAttack", InterfaceOptionsPanels.xml) reads the assistAttack setting — off by default, as Wow.exe
+// registers it with "0" — and writes it at once; Cancel reverts, Okay keeps.
+test("DEC-A 3.11: the Combat panel's AttackOnAssist checkbox reads the assistAttack setting and writes it", withClient, async () => {
+  const { boot, writes, values } = await loaded();
+  const from = writes.length;
+  assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    return InterfaceOptionsCombatPanelAttackOnAssist:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelAttackOnAssist:IsEnabled(),
+      InterfaceOptionsCombatPanelAttackOnAssistText:GetText()`, 3), [0, 1, "Автоматическая помощь"]);
+  lua(boot, "InterfaceOptionsCombatPanelAttackOnAssist:Click()", 0);
+  assert.deepEqual(writes.slice(from).map(([id, value]) => `${id}=${value}`), ["assistAttack=true"]);
+  assert.deepEqual(lua(boot, `return GetCVar("assistAttack")`), ["1"]);
+  lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+  assert.equal(values().assistAttack, false, "Cancel reverts");
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    InterfaceOptionsCombatPanelAttackOnAssist:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.equal(values().assistAttack, true, "Okay keeps it");
+  // Back to the default for whatever runs after.
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    InterfaceOptionsCombatPanelAttackOnAssist:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.equal(values().assistAttack, false);
 });

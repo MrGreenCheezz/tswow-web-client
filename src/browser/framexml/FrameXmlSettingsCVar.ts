@@ -89,6 +89,9 @@ const FRAME_XML_SETTINGS_CVAR_ROWS: FrameXmlSettingsCVarDefinition[] = [
   // L18 5.05: the stock Combat panel's «Ближний/дальний бой» (default "1", 0x0051dbd3); the world client's
   // autoRangedCombat hook reads the setting (EnterWorld.ts, world/AutoRangedCombat.ts).
   { cvar: "autoRangedCombat", setting: "autoRangedCombat", kind: "boolean" },
+  // DEC-A 3.11: the stock Combat panel's «Автоматическая помощь» (ASSIST_ATTACK, default "0" at 0x009e14a0);
+  // native ASSISTTARGET (input/Actions.ts settingOn) and the stock AssistUnit (FrameXmlTargetingApi.ts) read it.
+  { cvar: "assistAttack", setting: "assistAttack", kind: "boolean" },
   // The stock Controls panel's BLOCK_TRADES; WorldClient answers a trade offer with it (5.25).
   { cvar: "blockTrades", setting: "blockTrades", kind: "boolean" },
   // The stock Features panel's «Использовать менеджер экипировки»; PaperDollFrame reads it on VARIABLES_LOADED.

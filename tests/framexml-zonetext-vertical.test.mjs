@@ -39,6 +39,9 @@ async function load(subset) {
     },
     locale: "ruRU", subset, seam, exercise: true,
     exerciseEvents: FRAMEXML_VERTICAL_EXERCISE_EVENTS, screen: () => ({ width: 1365, height: 768 }),
+    // suite-fix: since L5 3.27 GetTime reads FrameXmlClock (the page's monotonic clock), not Date.now;
+    // this hands it Date.now again so withClock below drives it.
+    clock: () => Date.now(),
   });
   const inventory = await boot.load();
   return { boot, seam, inventory, requests };
@@ -56,7 +59,7 @@ function color(boot, fontString) {
   return lua(boot, `return ${fontString}:GetTextColor()`, 3).map((channel) => Math.round(channel * 100) / 100);
 }
 
-/** GetTime is `Date.now() / 1000` (FrameXmlBoot); the banner's fade is driven by moving that clock. */
+/** GetTime is `Date.now() / 1000` (the boot's `clock` option above, suite-fix); the banner's fade is driven by moving that clock. */
 function withClock(run) {
   const realNow = Date.now;
   let clock = realNow.call(Date);

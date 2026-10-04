@@ -37,6 +37,7 @@ import { moverGuid, moverObject, moverState } from "../input/Mover.js";
 import { ViewSubjectTracker, viewIsOut, viewSubject } from "./ViewSubject.js"; // 11.02-I
 import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
 import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
+import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
 import { attachedGlowTint, itemEnchantments } from "../ItemEnchantments.js";
 import { updateCastBars } from "../ui/CastBar.js";
@@ -423,9 +424,12 @@ function frame(now: number): void {
     viewTracker.settle(game.camera, subject.guid, world, game.worldLoading);
     // 11.02-GF3: the vehicle seat's camera (VehicleCamera.ts): the vehicle distance, a seat's zoom.
     vehicleCamera.update(world.state, vehicleCatalog(), game.camera, now);
+    // DEC-B 3.11: a camera view's glide (CameraViews.ts); a new world is a new camera there.
+    cameraViews.frame(game.camera, now, world, game.session?.username);
     // 5.14: the camera's own way back behind the character (cameraSmoothStyle), before the boom.
     // 11.02-I: not behind a facing that is not the player's to change (Wow.exe 0x005fa6b0).
-    if (!viewIsOut(world)) advanceCameraAutoFollow(elapsed);
+    // DEC-B 3.11: nor while a view glides there (`&& !cameraViews.gliding`).
+    if (!viewIsOut(world) && !cameraViews.gliding) advanceCameraAutoFollow(elapsed);
     // One ray a frame, and after the collision world has been stocked and the character has moved,
     // so it is asked about where the camera is going rather than about where it has been.
     advanceCameraView(position, world.mapId, elapsed, subject);

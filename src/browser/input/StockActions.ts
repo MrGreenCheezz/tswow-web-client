@@ -117,6 +117,28 @@ export const STOCK_ACTIONS = [
   { action: "vehicleAimDecrement", command: "VEHICLEAIMDECREMENT", group: "Управление транспортом", label: "Опустить прицел" },
   { action: "vehicleCameraZoomIn", command: "VEHICLECAMERAZOOMIN", group: "Управление транспортом", label: "Приближение камеры" },
   { action: "vehicleCameraZoomOut", command: "VEHICLECAMERAZOOMOUT", group: "Управление транспортом", label: "Отдаление камеры" },
+
+  // DEC-B 3.11: Bindings.xml's CAMERA section (BINDING_HEADER_CAMERA «Обзор», BINDING_NAME_*); verbs over
+  // game/CameraViews.ts. DefaultBindings.wtf gives End to NEXTVIEW and Home to PREVVIEW and nothing to the
+  // rest. CAMERAZOOMIN/OUT are the wheel's (MOUSEWHEELUP/DOWN), which the table does not hold.
+  { action: "nextView", command: "NEXTVIEW", group: "Обзор", label: "Следующий ракурс" }, // DEC-B 3.11
+  { action: "prevView", command: "PREVVIEW", group: "Обзор", label: "Предыдущий ракурс" }, // DEC-B 3.11
+  { action: "setView1", command: "SETVIEW1", group: "Обзор", label: "Восстановить ракурс 1" }, // DEC-B 3.11
+  { action: "setView2", command: "SETVIEW2", group: "Обзор", label: "Восстановить ракурс 2" }, // DEC-B 3.11
+  { action: "setView3", command: "SETVIEW3", group: "Обзор", label: "Восстановить ракурс 3" }, // DEC-B 3.11
+  { action: "setView4", command: "SETVIEW4", group: "Обзор", label: "Восстановить ракурс 4" }, // DEC-B 3.11
+  { action: "setView5", command: "SETVIEW5", group: "Обзор", label: "Восстановить ракурс 5" }, // DEC-B 3.11
+  { action: "saveView1", command: "SAVEVIEW1", group: "Обзор", label: "Сохранить ракурс 1" }, // DEC-B 3.11
+  { action: "saveView2", command: "SAVEVIEW2", group: "Обзор", label: "Сохранить ракурс 2" }, // DEC-B 3.11
+  { action: "saveView3", command: "SAVEVIEW3", group: "Обзор", label: "Сохранить ракурс 3" }, // DEC-B 3.11
+  { action: "saveView4", command: "SAVEVIEW4", group: "Обзор", label: "Сохранить ракурс 4" }, // DEC-B 3.11
+  { action: "saveView5", command: "SAVEVIEW5", group: "Обзор", label: "Сохранить ракурс 5" }, // DEC-B 3.11
+  { action: "resetView1", command: "RESETVIEW1", group: "Обзор", label: "Сбросить ракурс 1" }, // DEC-B 3.11
+  { action: "resetView2", command: "RESETVIEW2", group: "Обзор", label: "Сбросить ракурс 2" }, // DEC-B 3.11
+  { action: "resetView3", command: "RESETVIEW3", group: "Обзор", label: "Сбросить ракурс 3" }, // DEC-B 3.11
+  { action: "resetView4", command: "RESETVIEW4", group: "Обзор", label: "Сбросить ракурс 4" }, // DEC-B 3.11
+  { action: "resetView5", command: "RESETVIEW5", group: "Обзор", label: "Сбросить ракурс 5" }, // DEC-B 3.11
+  { action: "flipCameraYaw", command: "FLIPCAMERAYAW", group: "Обзор", label: "Переключение камеры" }, // DEC-B 3.11
 ] as const satisfies readonly StockActionRow[];
 
 export type StockAction = (typeof STOCK_ACTIONS)[number]["action"];

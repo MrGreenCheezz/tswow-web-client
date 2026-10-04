@@ -75,6 +75,11 @@ export interface CameraRig {
   terrainView: number;
   pivotHeight: number;
   eyeHeight: number;
+  /**
+   * DEC-B 3.11: FlipCameraYaw's part of `yaw` (Wow.exe camera+0x12c, CameraViews.ts) — kept by the
+   * follow and the steer, which work on the rest. Absent or 0 without a flip.
+   */
+  flipYaw?: number | undefined;
 }
 
 /** How fast the mouse turns the camera, in radians a pixel. wowee's 0.2 deg/px (`hpp:342`). */
@@ -123,7 +128,7 @@ export function advanceCameraFollow(
     && style !== CAMERA_SMOOTH_ALWAYS) return;
   if (style !== CAMERA_SMOOTH_ALWAYS && !moving) return;
   const yawStep = yawSpeedDegrees * Math.PI / 180 * elapsed;
-  rig.yaw = stepAngle(rig.yaw, 0, yawStep);
+  rig.yaw = stepAngle(rig.yaw, rig.flipYaw ?? 0, yawStep); // DEC-B 3.11: home is the flip (was 0)
   if (style === CAMERA_SMOOTH_HORIZONTAL_WHEN_MOVING) return;
   const pitchStep = yawStep / 4;
   const gap = CAMERA_DEFAULT_PITCH - rig.pitch;

@@ -242,3 +242,18 @@ test("the settings list is the window's one scroller: per-tab position, wheel co
   assert.match(css, /\.setting-label > span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
     "a long Russian label wraps instead of pushing its control out of the row");
 });
+
+// DEC-A 3.11 (04.10, owner decision 4): the client's assistAttack — the stock Combat panel's ASSIST_ATTACK
+// («Автоматическая помощь», GlobalStrings.lua; tooltip OPTION_TOOLTIP_ASSIST_ATTACK) — is a «Игра» switch,
+// off by default: Wow.exe registers the CVar beside autoRangedCombat with "0" (default string at 0x009e14a0,
+// pointer 0x00bd0918). Native ASSISTTARGET and the stock AssistUnit read it.
+test("DEC-A 3.11: assistAttack is the stock «Автоматическая помощь», a «Игра» switch, off by default", () => {
+  const definition = SETTING_DEFINITIONS.find((entry) => entry.id === "assistAttack");
+  assert.ok(definition, "the setting exists");
+  assert.equal(definition.group, "Игра");
+  assert.equal(definition.kind, "boolean");
+  assert.equal(definition.fallback, false, "Wow.exe's default \"0\"");
+  assert.equal(definition.label, "Автоматическая помощь", "ASSIST_ATTACK in ruRU GlobalStrings.lua");
+  assert.equal(definition.ownWindow, undefined, "drawn in the settings window, not by its own owner");
+  assert.equal(settingMatchesQuery(definition, "помощь"), true);
+});

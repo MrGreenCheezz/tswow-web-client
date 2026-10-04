@@ -249,7 +249,9 @@ test("live chat has no duplicate subscriptions across detach/reattach and surviv
   fired.length = 0;
   events.emit("CHAT_MESSAGE", chatMessage());
   assert.equal(fired.length, 1);
-  assert.equal(events.listenerCount("CHAT_MESSAGE"), 1);
+  // suite-fix: two since L5c 3.18 — the chat pump and GetAutoCompleteResults' whisper ledger
+  // (FrameXmlAutoComplete.ts, attached and detached with the seam); each exactly once.
+  assert.equal(events.listenerCount("CHAT_MESSAGE"), 2);
 
   seam.detach();
   events.emit("CHAT_MESSAGE", chatMessage({ text: "stale" }));
@@ -257,6 +259,7 @@ test("live chat has no duplicate subscriptions across detach/reattach and surviv
   assert.equal(events.listenerCount("CHAT_MESSAGE"), 0);
 
   seam.attach(pump);
+  assert.equal(events.listenerCount("CHAT_MESSAGE"), 2, "suite-fix: a reattach adds no duplicate");
   fired.length = 0;
   for (let index = 0; index < 1000; index += 1) {
     events.emit("CHAT_MESSAGE", chatMessage({ text: `line-${index}` }));

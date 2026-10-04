@@ -522,7 +522,9 @@ test("11.02-I: the frame, the reticle and the overlay build their cameras from t
   assert.match(loop, /unitPivotHeight\(subject\.guid\)/);
   assert.match(loop, /unitEyeHeight\(subject\.guid\)/);
   assert.match(loop, /viewTracker\.settle\(game\.camera, subject\.guid, world, game\.worldLoading\);/);
-  assert.match(loop, /if \(!viewIsOut\(world\)\) advanceCameraAutoFollow\(elapsed\);/);
+  // DEC-review 3.11: DEC-B added `&& !cameraViews.gliding` (the follow waits for a camera view's glide); the
+  // 11.02-I half — no follow while the view is out — is the same (was `/if \(!viewIsOut\(world\)\) advance…/`).
+  assert.match(loop, /if \(!viewIsOut\(world\) && !cameraViews\.gliding\) advanceCameraAutoFollow\(elapsed\);/);
   assert.match(loop, /advanceCameraView\(position, world\.mapId, elapsed, subject\);/);
   assert.match(loop, /farSightLink\.update\(world, game\.worldLoading\);\n\s*if \(!world \|\| game\.worldLoading\) viewTracker\.reset\(\);/,
     "outside the drawn block, so a transfer without a position still starts the subject over");

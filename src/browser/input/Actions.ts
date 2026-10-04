@@ -64,6 +64,18 @@ import { // 11.02-input
 } from "./VehicleVerbs.js";
 import { vehicleCamera } from "../game/VehicleCamera.js"; // 11.02-input
 import { cameraMaxDistance } from "../ui/Settings.js"; // 11.02-input
+import { liveCameraViews, useCameraViewMotion } from "../game/CameraViewsLive.js"; // DEC-B 3.11
+import { VEHICLE_ZOOM_DISTANCE } from "../game/VehicleCamera.js"; // DEC-B 3.11
+import { settings } from "../ui/Settings.js"; // DEC-B 3.11
+import { settingNumber } from "../ui/SettingsModel.js"; // DEC-B 3.11
+
+// DEC-B 3.11: a view switch's speeds and ceiling (game/CameraViews.ts) — cameraYawSmoothSpeed, the pitch at a
+// quarter of it (the stock slider's cameraPitchSmoothSpeed), the wheel's ceiling of the moment (the vehicle's
+// 50 yards in vehicle mode). Set here for the Lua path too: LiveWorldSeam's graph stays DOM-free.
+useCameraViewMotion(() => {
+  const yaw = settingNumber(settings(), "cameraYawSmoothSpeed");
+  return { yawSpeed: yaw, pitchSpeed: yaw / 4, ceiling: vehicleCamera.vehicleMode ? VEHICLE_ZOOM_DISTANCE : cameraMaxDistance() };
+});
 
 /**
  * What each action does.
@@ -274,8 +286,12 @@ export function runAction(action: InputAction): boolean {
         uiError("ERR_GENERIC_NO_TARGET");
         return true;
       }
-      if (!selectUnit(macroUnitGuid("targettarget"))) return false; // L2 3.11
-      if (settingOn("assistAttack")) world.startAttack(); // L2 3.11
+      const assistedGuid = macroUnitGuid("targettarget"); // DEC-review 3.11: named (was inline below)
+      if (!selectUnit(assistedGuid)) return false; // L2 3.11
+      // DEC-review 3.11: the swing only at the unit just selected and only if CanAttack takes it — Wow.exe 0x6e4950 →
+      // 0x6e2610 asks 0x729a70 (→ 0x729740) and sends no CMSG_ATTACKSWING for the player himself or a friend.
+      const chosen = assistedGuid !== undefined && world.targetGuid === assistedGuid ? world.state.objects.get(assistedGuid) : undefined; // DEC-review 3.11
+      if (settingOn("assistAttack") && chosen !== undefined && world.canAttackUnit(chosen)) world.startAttack(); // L2 3.11; DEC-review 3.11: `&& chosen … canAttackUnit`
       return true;
     }
 
@@ -422,6 +438,20 @@ export function runAction(action: InputAction): boolean {
       // VehicleCameraZoomIn/Out(1.0) = CameraZoomIn/Out (0x006017e0/0x00601840): a yard, the wheel's bounds.
       game.camera.distance = vehicleCamera.zoomBy(game.camera.distance,
         action === "vehicleCameraZoomIn" ? -VEHICLE_CAMERA_KEY_YARDS : VEHICLE_CAMERA_KEY_YARDS, cameraMaxDistance());
+      return true;
+
+    // ---- DEC-B 3.11: Bindings.xml's CAMERA section (game/CameraViews.ts); false when the view did not change ----
+
+    case "nextView": return liveCameraViews.nextView(); // DEC-B 3.11: NextView() (End)
+    case "prevView": return liveCameraViews.prevView(); // DEC-B 3.11: PrevView() (Home)
+    case "setView1": case "setView2": case "setView3": case "setView4": case "setView5": // DEC-B 3.11
+      return liveCameraViews.setView(Number(action.slice(-1)));
+    case "saveView1": case "saveView2": case "saveView3": case "saveView4": case "saveView5": // DEC-B 3.11
+      return liveCameraViews.saveView(Number(action.slice(-1)));
+    case "resetView1": case "resetView2": case "resetView3": case "resetView4": case "resetView5": // DEC-B 3.11
+      return liveCameraViews.resetView(Number(action.slice(-1)));
+    case "flipCameraYaw": // DEC-B 3.11: FlipCameraYaw(180)
+      liveCameraViews.flipCameraYaw(180);
       return true;
 
     default: {

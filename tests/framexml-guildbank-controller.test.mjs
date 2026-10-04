@@ -255,35 +255,47 @@ test("a vault already open when the mount publishes starts the load at once", as
   }
 });
 
-// L5c-review 3.24 (owner pending): as before L5c, an add-on already in does not start the owner at
-// publish; Blizzard_GuildBankUI loads at the first banker visit (FrameXmlLodPreload.ts keeps it out).
-test("a guild-bank add-on already loaded still waits for the first banker visit", async () => {
-  const canned = createCannedFrameXmlGuildBank();
-  canned.model.attach({ fire: () => 1, now: () => 1 });
-  const loads = [];
-  const boot = {
-    vm: { compileFunction: () => ({}), call: () => [1], release() {}, errors: [], globalString: () => undefined },
-    bridge: { getFrame: () => undefined, isVisible: () => false, diagnostics: [] },
-    errorCount: 0,
-    binder: { stubDiagnostics: [] },
-    isAddonLoaded: () => true,
-    loadAddon: async (name) => { loads.push(name); return { ok: false, addon: name, status: "missing", dependencies: [], loaded: [], roots: [] }; },
+// L5c-review 3.24 (owner pending) had an add-on already in wait for the first banker visit.
+// DEC-A 3.24: the owner decided 04.10 — preload both — so L5c's publish-time begin is back: an add-on
+// the loading window already has in starts the owner at publish (its gate passes before any visit),
+// and one not in yet still waits for the first banker visit.
+test("a guild-bank add-on already loaded starts the owner at publish; one not in waits for the first banker visit", async () => { // DEC-A 3.24
+  const run = async (preloaded) => {
+    const canned = createCannedFrameXmlGuildBank();
+    canned.model.attach({ fire: () => 1, now: () => 1 });
+    const loads = [];
+    const asked = [];
+    const boot = {
+      vm: { compileFunction: () => ({}), call: () => [1], release() {}, errors: [], globalString: () => undefined },
+      bridge: { getFrame: () => undefined, isVisible: () => false, diagnostics: [] },
+      errorCount: 0,
+      binder: { stubDiagnostics: [] },
+      isAddonLoaded: (name) => { asked.push(name); return preloaded && name === "Blizzard_GuildBankUI"; },
+      loadAddon: async (name) => { loads.push(name); return { ok: false, addon: name, status: "missing", dependencies: [], loaded: [], roots: [] }; },
+    };
+    game.world = world({ guildBankerGuid: 0n });
+    const warn = console.warn;
+    console.warn = () => {};
+    const cleanup = mountFrameXmlGuildBank({ guildBank: canned.model }, boot, { elementFor: () => undefined, addRoots() {}, sync() {} });
+    try {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      canned.model.tick();
+      const atPublish = [...loads];
+      canned.world.open();
+      canned.model.tick();
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      return { atPublish, afterVisit: [...loads], asked };
+    } finally {
+      console.warn = warn;
+      cleanup();
+      game.world = undefined;
+    }
   };
-  game.world = world({ guildBankerGuid: 0n });
-  const warn = console.warn;
-  console.warn = () => {};
-  const cleanup = mountFrameXmlGuildBank({ guildBank: canned.model }, boot, { elementFor: () => undefined, addRoots() {}, sync() {} });
-  try {
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    canned.model.tick();
-    assert.deepEqual(loads, [], "no vault: no begin at publish");
-    canned.world.open();
-    canned.model.tick();
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    assert.deepEqual(loads, ["Blizzard_GuildBankUI"], "the activation starts it, as before");
-  } finally {
-    console.warn = warn;
-    cleanup();
-    game.world = undefined;
-  }
+  const preloaded = await run(true);
+  assert.deepEqual(preloaded.asked, ["Blizzard_GuildBankUI"], "the mount asks about the vault's add-on by its name");
+  assert.deepEqual(preloaded.atPublish, ["Blizzard_GuildBankUI"], "in already: begun at publish, before any banker visit");
+  assert.deepEqual(preloaded.afterVisit, ["Blizzard_GuildBankUI"], "and the activation starts nothing twice");
+  const cold = await run(false);
+  assert.deepEqual(cold.atPublish, [], "not in: no begin at publish");
+  assert.deepEqual(cold.afterVisit, ["Blizzard_GuildBankUI"], "the activation starts it, as before L5c");
 });

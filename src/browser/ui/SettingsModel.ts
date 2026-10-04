@@ -445,6 +445,13 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "Включено — как в оригинале: в упор персонаж бьёт оружием, дальше стреляет «Автоматической стрельбой», если цель впереди и персонаж стоит. Для охотников.",
   },
   {
+    // DEC-A 3.11: the client's assistAttack (registered beside autoRangedCombat with "0": default string
+    // 0x009e14a0, pointer 0x00bd0918; the stock Combat panel's ASSIST_ATTACK). On: AssistUnit (Wow.exe
+    // 0x00525eb0) attacks the unit it selected (0x006e4950) — native ASSISTTARGET and the stock /assist.
+    id: "assistAttack", label: "Автоматическая помощь", group: "Игра", kind: "boolean", fallback: false,
+    hint: "Включено — после «Помочь цели» (клавиша или /помочь) персонаж сразу атакует выбранную так цель. Выключено — как в оригинале по умолчанию: цель только выбирается.",
+  },
+  {
     // The client's blockTrades (the stock Controls panel's BLOCK_TRADES). On, a trade offered by
     // another player is refused at once (CMSG_BUSY_TRADE, Wow.exe 0x5873e0) — 5.25.
     id: "blockTrades", label: "Отклонять предложения об обмене", group: "Игра", kind: "boolean", fallback: false,

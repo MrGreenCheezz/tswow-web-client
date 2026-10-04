@@ -78,6 +78,7 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
   const commands = rows.map((row) => row[0]);
   assert.deepEqual(commands.filter((command) => command.startsWith("HEADER_")), [
     "HEADER_MOVEMENT", "HEADER_CHAT", "HEADER_ACTIONBAR", "HEADER_TARGETING", "HEADER_INTERFACE", "HEADER_MISC",
+    "HEADER_CAMERA", // DEC-B 3.11: the camera views' eighteen rows (input/StockActions.ts)
     "HEADER_MULTIACTIONBAR", "HEADER_BLANK4", "HEADER_BLANK5", "HEADER_BLANK6",
     "HEADER_VEHICLE", // 11.02-input: the VEHICLE section's nine rows (input/StockActions.ts)
     "HEADER_WEBCLIENT",

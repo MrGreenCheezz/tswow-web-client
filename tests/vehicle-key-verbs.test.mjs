@@ -261,7 +261,12 @@ test("11.02-input: in the stock UI the keys are the same table — SetBinding/Ge
   bindings.useBindingStorage({ getItem: () => null, setItem() {} });
   try {
     const runs = [];
-    const model = new binding.FrameXmlBindingModel({ runAction: (action) => { runs.push(action); return true; } });
+    // suite-fix: L8 5.09 (WORK_PLAN 5.09 «04.10, L8»): RunBinding holds a HELD_ACTIONS command on "down" and
+    // lets it go on "up" through the held machinery (VEHICLEAIMUP/DOWN are runOnUp: VehicleAimUpStart/Stop =
+    // PitchUpStart/Stop) instead of running a verb, so the two aim rows reach `movement.hold`, not `runAction`.
+    const holds = [];
+    const movement = { hold: (action, down) => { holds.push([action, down]); }, button() {}, mouselooking: () => false };
+    const model = new binding.FrameXmlBindingModel({ runAction: (action) => { runs.push(action); return true; }, movement });
     model.attach({ now: () => 0, fire: () => 1 });
     assert.equal(model.setBinding("CTRL-Y", "VEHICLEEXIT"), true);
     assert.deepEqual(model.bindingKey("VEHICLEEXIT"), ["CTRL-Y"]);
@@ -269,7 +274,10 @@ test("11.02-input: in the stock UI the keys are the same table — SetBinding/Ge
     assert.equal(bindings.actionFor("Ctrl+KeyY"), "vehicleExit", "the key the stock window set is the native table's");
     for (const [, command] of VEHICLE_ROWS) model.run(command, "down");
     model.run("VEHICLEEXIT", "up");
-    assert.deepEqual(runs, VEHICLE_ROWS.map(([action]) => action));
+    model.run("VEHICLEAIMUP", "up");
+    const HELD = new Set(["vehicleAimUp", "vehicleAimDown"]);
+    assert.deepEqual(runs, VEHICLE_ROWS.map(([action]) => action).filter((action) => !HELD.has(action)));
+    assert.deepEqual(holds, [["vehicleAimUp", true], ["vehicleAimDown", true], ["vehicleAimUp", false]]);
     const listed = Array.from({ length: model.count() }, (_, index) => model.binding(index + 1)[0]);
     const header = listed.indexOf("HEADER_VEHICLE");
     assert.ok(header > listed.indexOf("HEADER_BLANK6") && header < listed.indexOf("HEADER_WEBCLIENT"));

@@ -45,7 +45,7 @@ test("the missing TARGETING rows join the table with DefaultBindings.wtf's keys"
   assert.equal(stock.isStockAction("targetLastTarget"), true);
 });
 
-async function harness({ assistAttack = false } = {}) {
+async function harness({ assistAttack = false, settingOn = undefined } = {}) { // DEC-A 3.11: settingOn
   const calls = [];
   const self = { guid: SELF, typeId: 4, fields: new Map() };
   const enemy = { guid: ENEMY, typeId: 3, fields: new Map() };
@@ -58,6 +58,7 @@ async function harness({ assistAttack = false } = {}) {
     knownSpells: [],
     selectTarget(guid) { calls.push(["select", guid]); this.targetGuid = guid; },
     startAttack() { calls.push(["startAttack", this.targetGuid]); },
+    canAttackUnit: (object) => object.guid === ENEMY, // DEC-review 3.11: WorldClient's CanAttack hook (the browser's faction table)
     onSpellStatus(text, error) { calls.push(["status", text, error]); },
   };
   const game = { world, focusGuid: undefined, spells: new Map(), talentData: undefined };
@@ -79,7 +80,7 @@ async function harness({ assistAttack = false } = {}) {
     "./StockVerbs.js": verbs,
     "../game/TargetNearestModes.js": modes,
     "../ui/CombatCommands.js": { macroUnitGuid: (token) => units[token] },
-    "../ui/Settings.js": { settingOn: (id) => settings[id] === true, setSetting: () => true },
+    "../ui/Settings.js": { settingOn: settingOn ?? ((id) => settings[id] === true), setSetting: () => true }, // DEC-A 3.11: settingOn
     "../../generated/globalStrings.js": { globalString: (name) => `«${name}»` },
     "../game/Targeting.js": {
       cycleEnemyTarget: (step) => calls.push(["tab", step]),
@@ -150,4 +151,49 @@ test("L2-review: ASSISTTARGET with a corpse selected is ERR_GENERIC_NO_TARGET (0
   h.world.targetGuid = CORPSE;
   assert.equal(run(h, "assistTarget"), true);
   assert.deepEqual(h.calls, [["status", "«ERR_GENERIC_NO_TARGET»", true]], "no unit selected: the error, and nobody else selected");
+});
+
+// DEC-A 3.11 (04.10, owner decision 4): before the assistAttack setting existed, settingOn("assistAttack")
+// was always false. Now the stock Combat panel's AttackOnAssist writes it (SetCVar → FrameXmlSettingsCVar)
+// and Settings.ts's settingOn (settingBoolean over the stored values) is what ASSISTTARGET reads: the real
+// model chain, default "0" (Wow.exe 0x009e14a0) — no swing — and "1" — the swing (0x006e4950).
+test("DEC-A 3.11: ASSISTTARGET follows the assistAttack setting the stock checkbox writes", async () => {
+  const { defaultSettings, settingBoolean } = await import("../dist/code/browser/ui/SettingsModel.js");
+  const { createFrameXmlSettingsCVar } = await import("../dist/code/browser/framexml/FrameXmlSettingsCVar.js");
+  let values = defaultSettings();
+  const cvars = createFrameXmlSettingsCVar({
+    getSettings: () => values,
+    setSetting: (id, value) => { values = { ...values, [id]: value }; },
+  });
+  const h = await harness({ settingOn: (id) => settingBoolean(values, id) });
+  h.world.targetGuid = HEALER;
+  assert.equal(run(h, "assistTarget"), true);
+  assert.deepEqual(h.calls, [["select", ENEMY], ["showTarget"]], "the default: no swing");
+  assert.equal(cvars.set("assistAttack", "1"), true, "the stock checkbox's SetCVar");
+  h.world.targetGuid = HEALER;
+  assert.equal(run(h, "assistTarget"), true);
+  assert.deepEqual(h.calls, [["select", ENEMY], ["showTarget"], ["startAttack", ENEMY]], "on: the unit assisted is attacked");
+  cvars.set("assistAttack", "0");
+  h.world.targetGuid = HEALER;
+  run(h, "assistTarget");
+  assert.deepEqual(h.calls, [["select", ENEMY], ["showTarget"]], "off again");
+});
+
+// DEC-review 3.11 (04.10): as the stock AssistUnit (framexml-targeting-api-seam), the key's assistAttack swing goes
+// only at a unit CanAttack accepts — Wow.exe 0x006e4950 → 0x006e2610 asks 0x00729a70 and sends no CMSG_ATTACKSWING
+// when it refuses. A mob on the healer (or on the player) is assisted to the healer: selected, not attacked.
+test("DEC-review 3.11: ASSISTTARGET with assistAttack swings only at a unit the player may attack", async () => {
+  const h = await harness({ assistAttack: true });
+  const enemy = h.world.state.objects.get(ENEMY);
+  enemy.fields.set(UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, Number(HEALER));
+  h.world.targetGuid = ENEMY;
+  assert.equal(run(h, "assistTarget"), true);
+  assert.deepEqual(h.calls, [["select", HEALER], ["showTarget"]], "a friend: selected, no swing");
+  enemy.fields.set(UPDATE_FIELDS.UNIT_FIELD_TARGET.offset, Number(SELF));
+  h.world.targetGuid = ENEMY;
+  assert.equal(run(h, "assistTarget"), true);
+  assert.deepEqual(h.calls, [["select", SELF], ["showTarget"]], "the player himself: selected, no swing");
+  h.world.targetGuid = HEALER;
+  assert.equal(run(h, "assistTarget"), true);
+  assert.deepEqual(h.calls, [["select", ENEMY], ["showTarget"], ["startAttack", ENEMY]], "the healer's enemy: attacked");
 });

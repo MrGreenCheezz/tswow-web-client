@@ -11,6 +11,9 @@
  * L5c-review 3.24 (owner pending): the auction and guild-bank names are out of the preload list
  * (FrameXmlLodPreload.ts) until the owner decides; their branches here stay ready for that, and every
  * other name is the plain `boot.loadAddon` it was before L5c.
+ *
+ * DEC-A 3.24: the owner decided 04.10 — preload both: the auction and guild-bank names are in the
+ * list again, so both branches here run in every mount's loading window.
  */
 
 import type { FrameXmlBoot } from "./FrameXmlBoot.js";

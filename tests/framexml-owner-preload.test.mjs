@@ -11,6 +11,7 @@ import test, { after } from "node:test";
 // auction and guild-bank ones load at their first visit, as before L5c (cost in FrameXmlLodPreload.ts).
 // Their host preparation (FrameXmlOwnerPreload.ts) and the owners' begin-before-a-visit stay tested
 // below for the day the owner turns the preload back on.
+// DEC-A 3.24: that day is 04.10 — the owner decided to preload both again, as L5c had it.
 let clientDirectory;
 try {
   const paths = await import("../tools/paths.mjs");
@@ -53,12 +54,14 @@ function lua(boot, code, results = 1) {
   try { return boot.vm.call(fn, [], results); } finally { boot.vm.release(fn); }
 }
 
-test("the profession owner's add-on is preloaded after the trainer's; the auction and guild-bank ones wait for their first visit", () => {
-  // L5c-review 3.24 (owner pending): Blizzard_AuctionUI and Blizzard_GuildBankUI left the list.
-  assert.deepEqual([...FRAMEXML_PRELOADED_OWNER_ADDONS], ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI"]);
+test("the three owners' add-ons are preloaded after the trainer's", () => { // DEC-A 3.24: as L5c had it
+  // L5c-review 3.24 (owner pending) took Blizzard_AuctionUI and Blizzard_GuildBankUI out;
+  // DEC-A 3.24: the owner decided 04.10 — preload both.
+  assert.deepEqual([...FRAMEXML_PRELOADED_OWNER_ADDONS],
+    ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI", "Blizzard_AuctionUI", "Blizzard_GuildBankUI"]);
 });
 
-test("the preload leaves the house and the vault unloaded; their host preparation still works if turned back on", withClient, async () => {
+test("preloaded with no window open: no Lua error, nothing shown; the vault and the house open straight into stock", withClient, async () => { // DEC-A 3.24
   const seam = new CannedWorldSeam();
   const boot = new FrameXmlBoot({
     provider: { async read(path) { const data = await chain.read(path); return data ? decoder.decode(data) : undefined; } },
@@ -67,21 +70,12 @@ test("the preload leaves the house and the vault unloaded; their host preparatio
   try {
     await boot.load();
     const errors = boot.errorCount;
-    // L5c-review 3.24 (owner pending): what the mount's loading window preloads now.
+    // DEC-A 3.24: what the mount's loading window preloads — all four, the owners' host preparation first.
+    lua(boot, "__ownerPreloadTabs = GetNumGuildBankTabs; return 1");
     for (const name of FRAMEXML_PRELOADED_OWNER_ADDONS) {
       const result = await frameXmlPreloadOwnerAddon(boot, name);
       assert.equal(result.ok, true, `${name}: ${result.message}`);
-    }
-    for (const name of ["Blizzard_AuctionUI", "Blizzard_GuildBankUI"]) {
-      assert.equal(boot.isAddonLoaded(name), false, `${name} waits for its first visit`);
-    }
-    assert.equal(boot.errorCount, errors, `no Lua error: ${boot.vm.errors.slice(-3).join(" | ")}`);
-    // The dormant option: the owners' host preparation and a begin before any visit.
-    lua(boot, "__ownerPreloadTabs = GetNumGuildBankTabs; return 1");
-    for (const name of ["Blizzard_TradeSkillUI", "Blizzard_AuctionUI", "Blizzard_GuildBankUI"]) {
-      const result = await frameXmlPreloadOwnerAddon(boot, name);
-      assert.equal(result.ok, true, `${name}: ${result.message}`);
-      assert.equal(boot.isAddonLoaded(name), true);
+      assert.equal(boot.isAddonLoaded(name), true, `${name} is in before any visit`);
     }
     // The owners' host preparation ran first, as their own `load` runs it before the add-on.
     // (The auction one, DressUpTexturePath, is the vertical DressUpFrame.lua's already: a no-op here.)

@@ -56,6 +56,9 @@ async function loadCandidate(chain, clock) {
     subset: FRAMEXML_VERTICAL_TOC,
     seam,
     screen: () => ({ width: 1024, height: 768 }),
+    // suite-fix: since L5 3.27 GetTime and pump.now read FrameXmlClock, not Date.now; without this the
+    // boot ran on the real clock while `tickSeam(clock.now)` passed the test's 1000 s.
+    clock: () => Math.round(clock.now * 1000),
   });
   const inventory = await boot.load();
   return { boot, seam, inventory, requests: new Set(requests), clock };

@@ -83,5 +83,6 @@ test("the mount's list: the trainer first, then the client's LoD add-ons outside
     { name: "blizzard_combatlog", loadOnDemand: true },
   // L5c 3.24: the profession owner's add-on follows the trainer's. L5c-review 3.24 (owner pending):
   // the auction and guild-bank add-ons load at their first visit again, as before L5c.
-  ]), ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI", "MSBTOptions"]);
+  // DEC-A 3.24: the owner decided 04.10 — preload both: the auction and guild-bank add-ons follow.
+  ]), ["Blizzard_TrainerUI", "Blizzard_TradeSkillUI", "Blizzard_AuctionUI", "Blizzard_GuildBankUI", "MSBTOptions"]);
 });

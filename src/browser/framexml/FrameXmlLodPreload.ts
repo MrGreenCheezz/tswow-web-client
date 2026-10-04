@@ -37,9 +37,16 @@ import type { FrameXmlClientAddon } from "./FrameXmlClientAddons.js";
  * The options: preload both again (add the names here and restore the publish-time `begin` in
  * FrameXmlAuctionMount.ts / FrameXmlGuildBankMount.ts), preload GuildBank only for guild members, or
  * keep the first visit. FrameXmlOwnerPreload.ts keeps their host preparation for that day.
+ *
+ * DEC-A 3.24: the owner decided 04.10 — preload both. Blizzard_AuctionUI and Blizzard_GuildBankUI are
+ * back in this list and FrameXmlAuctionMount.ts / FrameXmlGuildBankMount.ts begin their owners at
+ * publish again, exactly as L5c had it; the cost above (≈+250 ms and ≈+22.6 MB per session on the
+ * loading window, the 109-114 ms Auction block) is accepted. The stop at a gateway that is down
+ * (`frameXmlPreloadServerDown`) and the profession owner's «already loaded» check stay.
  */
 export const FRAMEXML_PRELOADED_OWNER_ADDONS: readonly string[] = Object.freeze([
   "Blizzard_TrainerUI", "Blizzard_TradeSkillUI", // L5c 3.24: the second; L5c-review 3.24 (owner pending): Auction/GuildBank out
+  "Blizzard_AuctionUI", "Blizzard_GuildBankUI", // DEC-A 3.24: owner decided 04.10: preload both
 ]);
 
 /** What the world mount preloads: the owners' list, then the client's own LoD add-ons outside the policy. */

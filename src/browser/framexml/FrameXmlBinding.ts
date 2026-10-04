@@ -22,7 +22,7 @@
  * (:2966, :3113), which read the KEY_ and BINDING_NAME_ strings and ask GetBindingByKey. The
  * prelude only gives the WebClient rows the BINDING_ strings those functions look up.
  *
- * What stays out: stock commands this client has no verb for (the camera views, the raid marks…;
+ * What stays out: stock commands this client has no verb for (the camera wheel's two, the raid marks…; the views have one since DEC-B 3.11;
  * TOGGLESHEATH and the other rows of input/StockActions.ts have one since 3.11) are neither listed nor bindable — `SetBinding` refuses them rather than storing a key
  * that would do nothing. Mouse buttons and the wheel are refused too: the table holds keyboard
  * chords only (`Controls.ts` dispatches nothing else). Escape is the game menu and cannot move
@@ -126,6 +126,9 @@ export const FRAMEXML_STOCK_BINDING_SECTIONS: readonly { readonly header: string
     ["TOGGLEWORLDMAP", "toggleWorldMap"], ["TOGGLELFGPARENT", "toggleLfd"],
   ] },
   { header: "MISC", rows: [["TOGGLEFPS", "toggleFps"]] },
+  // DEC-B 3.11: Bindings.xml's CAMERA section — its view rows are input/StockActions.ts rows (withStockRows);
+  // CAMERAZOOMIN/OUT, the wheel's, stay out.
+  { header: "CAMERA", rows: [] },
   // The multi-bars' keys are the native extra rows' actions; the slot a key presses follows the HUD
   // on screen (Actions.runAction: under the stock HUD, the stock bar's own page — WORK_PLAN 4.16a).
   { header: "MULTIACTIONBAR", rows: numbered("MULTIACTIONBAR1BUTTON", "bottomLeftAction", 12) },
