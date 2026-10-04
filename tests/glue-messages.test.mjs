@@ -613,7 +613,7 @@ test("every key the tables answer is a string the client's GlueStrings.lua defin
   }
 });
 
-test("the stock GlueDialog.lua shows each kind of refusal in its plain text, without a Lua error", withClient, async () => {
+test("the stock GlueDialog.lua shows each kind of refusal in the dialog the client picks, without a Lua error", withClient, async () => {
   const chain = await clientChain();
   const luaErrors = [];
   let answer = 0x04;
@@ -646,13 +646,16 @@ test("the stock GlueDialog.lua shows each kind of refusal in its plain text, wit
     await runtime.load();
     const html = runtime.bridge.getFrame("GlueDialogHTML");
     const plain = runtime.bridge.getFrame("GlueDialogText");
+    // 3.35-bounds (03.10): FUN_004d80c0 opens a markup string's HTML twin — OKAY_HTML, and
+    // CONNECTION_HELP_HTML for LOGIN_FAILED — whose GlueDialogHTML draws the page as written and is sized
+    // by GetBoundsRect (GlueBoundsRect.ts); PARENTAL_CONTROL has no twin, and this corpus' text is plain.
     const cases = [
       // The core's everyday refusal: LOGIN_UNKNOWN_ACCOUNT is markup in this corpus.
-      [0x04, "OKAY", "LOGIN_UNKNOWN_ACCOUNT", undefined],
-      [0x0b, "CONNECTION_HELP", "LOGIN_FAILED", undefined],
-      [0x0f, "PARENTAL_CONTROL", "LOGIN_PARENTALCONTROL", "AUTH_PARENTAL_CONTROL_URL"],
+      [0x04, "OKAY_HTML", "LOGIN_UNKNOWN_ACCOUNT", undefined, true],
+      [0x0b, "CONNECTION_HELP_HTML", "LOGIN_FAILED", undefined, true],
+      [0x0f, "PARENTAL_CONTROL", "LOGIN_PARENTALCONTROL", "AUTH_PARENTAL_CONTROL_URL", false],
     ];
-    for (const [code, which, key, data] of cases) {
+    for (const [code, which, key, data, markup] of cases) {
       answer = code;
       const source = runtime.vm.globalString(key);
       assert.equal(typeof source, "string", `the corpus loaded and defines ${key}`);
@@ -662,10 +665,14 @@ test("the stock GlueDialog.lua shows each kind of refusal in its plain text, wit
       assert.equal(probe("GlueDialog.which"), which);
       assert.equal(probe("GlueDialog.data"), data);
       assert.equal(runtime.bridge.getFrame("GlueDialog")?.visible, true);
-      assert.equal(plain?.visible, true, "the text is in the FontString this renderer draws");
-      assert.equal(html?.visible, false);
-      assert.equal(plain?.text, flattenHtmlMessage(source));
-      assert.ok(!/<a |<p|<\/?html>/i.test(plain?.text ?? ""), `no markup left in ${key}`);
+      assert.equal(html?.visible, markup, `${key}: GlueDialogHTML ${markup ? "draws" : "does not draw"} it`);
+      assert.equal(plain?.visible, !markup);
+      if (markup) {
+        assert.equal(html?.text, source, "the page as written");
+      } else {
+        assert.equal(plain?.text, flattenHtmlMessage(source));
+        assert.ok(!/<a |<p|<\/?html>/i.test(plain?.text ?? ""), `no markup left in ${key}`);
+      }
     }
   } finally {
     runtime.close();

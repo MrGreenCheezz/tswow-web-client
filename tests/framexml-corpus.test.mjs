@@ -350,9 +350,23 @@ test("the real FrameXML corpus loads through the glue engine", withClient, async
   assert.ok(boot.bridge.getFrame("GameTooltip"), "GameTooltip exists — the F1 grammar addition");
   assert.ok(boot.bridge.getFrame("ActionButton1"), "the action bar's buttons exist");
   assert.ok(boot.bridge.getFrame("MainMenuBar"), "the main bar exists");
-  // Includes the animation widget types added to the Minimap, dropdown and model tables.
-  assert.equal(boot.wrappedWidgetTypes, 21,
+  // Includes the animation widget types added to the Minimap, dropdown and model tables, and
+  // ColorSelect's own table (plan item 3.21: SetColorRGB/GetColorRGB).
+  // 11.02-F2-review (03.10): 23 — QuestPOIFrame's own table (plan item 3.13c, 02.10: glue/GlueQuestPoiFrame.ts,
+  // Wow.exe's method table 0xacf180) joined the 21 of the committed tree and ColorSelect's; before it the type
+  // shared Frame's table and was counted as "already wrapped". Neither 3.34/3.35 nor 11.02-F2 adds a table.
+  assert.equal(boot.wrappedWidgetTypes, 23,
     "every widget type the layer knows has a method fallback, including Minimap and model frames");
+  {
+    const own = boot.vm.compileFunction(`local frame = getmetatable(CreateFrame("Frame")).__index
+      local function own(kind) return getmetatable(CreateFrame(kind)).__index ~= frame and 1 or 0 end
+      return own("QuestPOIFrame"), own("ColorSelect"), own("WorldFrame")`, "corpus-own-tables", []);
+    try {
+      assert.deepEqual(boot.vm.call(own, [], 3), [1, 1, 0], "QuestPOIFrame and ColorSelect have their own tables; WorldFrame shares Frame's");
+    } finally {
+      boot.vm.release(own);
+    }
+  }
 
   // ---- the VM verdict, which is what item (3) of the slice was for -------
   assert.deepEqual(inventory.vm.getfenvSites, [], "FrameXML never names getfenv");

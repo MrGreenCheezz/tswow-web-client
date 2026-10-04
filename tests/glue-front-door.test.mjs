@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   FRONT_DOOR_STORAGE_KEY, frontDoorGatewayOrigin, frontDoorHost, frontDoorMode, frontDoorReturn,
-  gatewaySocketUrl, storedFrontDoorMode, useFrontDoor,
+  gatewayOverride, gatewaySocketUrl, parseGatewayOverride, storedFrontDoorMode, useFrontDoor,
 } from "../dist/code/browser/glue/FrontDoor.js";
+import { gatewayPolicy, storedGatewayAllowList } from "../dist/code/browser/Environment.js";
 import { adoptWorldConnection } from "../dist/code/browser/app/WorldAdoption.js";
 import { GlueRuntime } from "../dist/code/browser/glue/GlueRuntime.js";
 import { createFixtureProvider } from "../dist/code/browser/glue/GlueLoader.js";
@@ -57,6 +58,76 @@ test("the glue screens are the default and the query flag wins in both direction
   assert.equal(frontDoorMode("?legacy-login=maybe"), "glue");
 });
 
+/* --- 10.03: which gateways a link may point the page at ------------------------------------- */
+
+const publicPage = { pageHostname: "203.0.113.10", defaultOrigin: "http://203.0.113.10:8090", allowedOrigins: [] };
+const loopbackPage = { pageHostname: "127.0.0.1", defaultOrigin: "http://127.0.0.1:8090", allowedOrigins: [] };
+
+test("a ?gateway= link is honoured only for a gateway the page already trusts", () => {
+  // The page's own host on another port: the owner's serving layout.
+  assert.deepEqual(gatewayOverride("?gateway=203.0.113.10:8090", publicPage),
+    { kind: "use", origin: "http://203.0.113.10:8090" });
+  assert.deepEqual(gatewayOverride("?gateway=http://203.0.113.10:9999", publicPage),
+    { kind: "use", origin: "http://203.0.113.10:9999" });
+  // A stranger's gateway would get the login screen's code and the SRP transcript.
+  const evil = gatewayOverride("?gateway=evil.example:8090", publicPage);
+  assert.equal(evil.kind, "refused");
+  assert.equal(evil.origin, "http://evil.example:8090");
+  assert.match(evil.reason, /не разрешён/);
+  assert.match(evil.reason, /http:\/\/203\.0\.113\.10:8090/, "the refusal names the gateway actually used");
+  // The reason is printed on the page the link opened: it must not hand the player a ready-made
+  // command that trusts the very host the link tried to send them to.
+  assert.doesNotMatch(evil.reason, /localStorage|setItem|evil\.example"\]/);
+  // An allow-list entry, from the build or from this browser.
+  assert.equal(gatewayOverride("?gateway=wss://gw.example.net/auth", publicPage).kind, "refused");
+  assert.deepEqual(gatewayOverride("?gateway=wss://gw.example.net/auth",
+    { ...publicPage, allowedOrigins: ["https://gw.example.net"] }),
+    { kind: "use", origin: "https://gw.example.net" });
+  assert.equal(gatewayOverride("?gateway=wss://gw.example.net/auth",
+    { ...publicPage, allowedOrigins: ["http://gw.example.net"] }).kind, "refused",
+    "the scheme is part of the origin");
+  // The compiled default is always fine, even on another host.
+  assert.equal(gatewayOverride("?gateway=https://gw.example.net",
+    { ...publicPage, defaultOrigin: "https://gw.example.net" }).kind, "use");
+  // Development: loopback page, loopback gateway, any spelling.
+  assert.equal(gatewayOverride("?gateway=localhost:8091", loopbackPage).kind, "use");
+  assert.equal(gatewayOverride("?gateway=[::1]:8091", loopbackPage).kind, "use");
+  // …but a public page may not be pointed at the visitor's own machine.
+  assert.equal(gatewayOverride("?gateway=127.0.0.1:8091", publicPage).kind, "refused");
+  // Host comparison ignores case, as URLs do.
+  assert.equal(gatewayOverride("?gateway=GW.Example.NET:8090",
+    { ...publicPage, pageHostname: "Gw.Example.net" }).kind, "use");
+  // No parameter, or one that is not an address: nothing to refuse.
+  assert.deepEqual(gatewayOverride("", publicPage), { kind: "none" });
+  assert.deepEqual(gatewayOverride("?gateway=javascript:alert(1)", publicPage), { kind: "none" });
+  // The origin-only form answers the same.
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    assert.equal(frontDoorGatewayOrigin("?gateway=evil.example:8090", publicPage), undefined);
+    assert.equal(frontDoorGatewayOrigin("?gateway=203.0.113.10:8090", publicPage), "http://203.0.113.10:8090");
+    assert.equal(warnings.length, 1, "a refusal is said once, in the console");
+    // Outside a browser there is no page, so nothing is trusted by default.
+    assert.equal(frontDoorGatewayOrigin("?gateway=127.0.0.1:8091"), undefined);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("the gateway policy is built from the page, the build and this browser", () => {
+  const storage = { getItem: (key) => key === "webclient.gatewayAllowed" ? '["https://b.example"]' : null };
+  const policy = gatewayPolicy({ protocol: "http:", hostname: "203.0.113.10" }, " https://a.example , ", storage, "");
+  assert.deepEqual(policy, {
+    pageHostname: "203.0.113.10",
+    defaultOrigin: "http://203.0.113.10:8090",
+    allowedOrigins: ["https://a.example", "https://b.example"],
+  });
+  assert.deepEqual(storedGatewayAllowList({ getItem: () => "not json" }), []);
+  assert.deepEqual(storedGatewayAllowList({ getItem: () => '{"a":1}' }), []);
+  assert.deepEqual(storedGatewayAllowList({ getItem() { throw new Error("blocked"); } }), []);
+  assert.deepEqual(storedGatewayAllowList({ getItem: () => '["x", 3]' }), ["x"]);
+});
 test("a browser that refuses site data still gets a front door", () => {
   assert.equal(storedFrontDoorMode(null), null);
   assert.equal(storedFrontDoorMode(undefined), null);
@@ -69,19 +140,19 @@ test("a browser that refuses site data still gets a front door", () => {
 
 test("the gateway override takes every spelling a player is likely to paste", () => {
   // The DOM form was pre-filled with a ws URL, so that is the string most likely to be copied.
-  assert.equal(frontDoorGatewayOrigin("?gateway=ws://10.0.0.5:8090/auth"), "http://10.0.0.5:8090");
-  assert.equal(frontDoorGatewayOrigin("?gateway=wss://gw.example.net/auth"), "https://gw.example.net");
-  assert.equal(frontDoorGatewayOrigin("?gateway=http://127.0.0.1:8091"), "http://127.0.0.1:8091");
-  assert.equal(frontDoorGatewayOrigin("?gateway=https://gw.example.net"), "https://gw.example.net");
+  assert.equal(parseGatewayOverride("?gateway=ws://10.0.0.5:8090/auth"), "http://10.0.0.5:8090");
+  assert.equal(parseGatewayOverride("?gateway=wss://gw.example.net/auth"), "https://gw.example.net");
+  assert.equal(parseGatewayOverride("?gateway=http://127.0.0.1:8091"), "http://127.0.0.1:8091");
+  assert.equal(parseGatewayOverride("?gateway=https://gw.example.net"), "https://gw.example.net");
   // A bare host:port, which is what the address actually is.
-  assert.equal(frontDoorGatewayOrigin("?gateway=127.0.0.1:8091"), "http://127.0.0.1:8091");
+  assert.equal(parseGatewayOverride("?gateway=127.0.0.1:8091"), "http://127.0.0.1:8091");
   // Nothing to say, or nothing understandable: the compiled default stands.
-  assert.equal(frontDoorGatewayOrigin(""), undefined);
-  assert.equal(frontDoorGatewayOrigin("?gateway="), undefined);
-  assert.equal(frontDoorGatewayOrigin("?gateway=%%%"), undefined);
-  assert.equal(frontDoorGatewayOrigin("?gateway=javascript:alert(1)"), undefined,
+  assert.equal(parseGatewayOverride(""), undefined);
+  assert.equal(parseGatewayOverride("?gateway="), undefined);
+  assert.equal(parseGatewayOverride("?gateway=%%%"), undefined);
+  assert.equal(parseGatewayOverride("?gateway=javascript:alert(1)"), undefined,
     "only http(s)/ws(s) is an address; anything else is refused rather than half-understood");
-  assert.equal(frontDoorGatewayOrigin("?gateway=file:///etc/passwd"), undefined);
+  assert.equal(parseGatewayOverride("?gateway=file:///etc/passwd"), undefined);
 
   assert.equal(gatewaySocketUrl("http://127.0.0.1:8091", "/auth"), "ws://127.0.0.1:8091/auth");
   assert.equal(gatewaySocketUrl("https://gw.example.net", "/world"), "wss://gw.example.net/world");
@@ -369,8 +440,13 @@ test("main.ts chooses the front door once and loads the Lua VM only when it wins
   assert.match(source, /characterPanel\.hidden = true/);
   // The gateway override has to reach the DOM field: `EnterWorld` builds every asset client from it.
   assert.match(source, /gatewayInput\.value = gatewaySocketUrl\(frontDoorGateway, "\/auth"\)/);
+  // 10.03: the override goes through the policy, never straight from the query.
+  assert.match(source, /gatewayOverride\(frontDoorSearch, pageGatewayPolicy\(\)\)/);
+  assert.doesNotMatch(source, /parseGatewayOverride/);
   // A glue runtime that will not start falls back to the forms rather than to a blank page.
   assert.match(source, /loginPanel\.hidden = false/);
+  // …unless the gateway itself is down (10.16): the forms need it too, so the page says so and waits.
+  assert.match(source, /if \(error instanceof GlueServerUnavailableError\) \{[^}]*showGlueServerUnavailable\(/s);
 });
 
 test("both roads into a world end in the same adoption, and the resets are written once", async () => {
@@ -392,7 +468,7 @@ test("both roads into a world end in the same adoption, and the resets are writt
   assert.doesNotMatch(source, /new WorldStore\(/, "building the store is the shared function's job");
   assert.doesNotMatch(source, /bindPlayerHud\(game\.store\)/, "…and so is binding the HUD");
   // The way out asks the front door where to land; legacy keeps the character panel.
-  assert.match(source, /export function leaveWorld\(exit: WorldExit, message\?: string\): void/);
+  assert.match(source, /export function leaveWorld\(exit: WorldExit, message\?: GlueAuthMessage\): void/);
   assert.match(source, /const front = frontDoorHost\(\);\s*\n\s*if \(front\) \{/);
   assert.match(source, /front\.returnFromWorld\(exit, message\);/);
   assert.match(source, /characterPanel\.hidden = false;/);

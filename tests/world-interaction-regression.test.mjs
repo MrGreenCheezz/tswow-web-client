@@ -178,7 +178,8 @@ test("an eligible game object exposes its server name in a cursor-following hove
     "a world replacement must not leave the previous world's tooltip or inline cursor behind");
   assert.doesNotMatch(controls, /return\s+template\?\.name\s*\|\|\s*gameObjectLabel\(object\)/,
     "a debug gameobject-entry label must not masquerade as a localized server name");
-  assert.match(controls, /worldObjectTooltip\.replaceChildren\(title\)/,
+  // 4.04: through the shared tooltip's cursor mode (ui/Tooltip.ts), not a div of its own.
+  assert.match(controls, /showTooltipAtPoint\(OBJECT_TIP, worldObjectTooltip\.content, point\.clientX, point\.clientY\)/,
     "the resolved hover name is painted in a cursor-following tooltip");
   assert.match(controls, /clearWorldObjectTooltip\(\)/,
     "leaving an object or starting a camera drag must remove the hover tooltip");

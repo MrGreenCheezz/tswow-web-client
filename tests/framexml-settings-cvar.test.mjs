@@ -38,6 +38,12 @@ test("the supported table is only the settings the browser currently consumes", 
       ["ffxGlow", "fullscreenGlow"],
       ["autoLootDefault", "autoLoot"],
       ["lootUnderMouse", "lootUnderMouse"],
+      // The stock Combat panel's STOP_AUTO_ATTACK, read by WorldClient.selectTarget (5.05).
+      ["stopAutoAttackOnTargetChange", "stopAutoAttackOnTargetChange"],
+      // L18 5.05: the stock Combat panel's «Ближний/дальний бой», read by the autoRangedCombat controller.
+      ["autoRangedCombat", "autoRangedCombat"],
+      // The stock Controls panel's BLOCK_TRADES, read by WorldClient on a trade offer (5.25).
+      ["blockTrades", "blockTrades"],
       // The stock Features panel's equipment-manager switch, persisted so GearManagerToggleButton
       // survives a reload (FrameXmlEquipmentSets.ts); an ownWindow setting, drawn by that panel alone.
       ["equipmentManager", "equipmentManager"],
@@ -52,8 +58,42 @@ test("the supported table is only the settings the browser currently consumes", 
       ["groundEffectDist", "grassRadius"],
       ["environmentDetail", "objectDistance"],
       ["uiscale", "uiScale"],
+      // 5.14: the stock Camera, Mouse and Controls panels.
+      ["cameraDistanceMaxFactor", "cameraDistancePercent"],
+      ["cameraSmoothStyle", "cameraSmoothStyle"],
+      ["cameraYawSmoothSpeed", "cameraYawSmoothSpeed"],
+      ["mouseSpeed", "mouseSpeedPercent"],
+      ["cameraYawMoveSpeed", "mouseLookSpeed"],
+      ["mouseInvertPitch", "mouseInvertPitch"],
+      ["deselectOnClick", "deselectOnClick"],
+      // L8 5.14: the Camera panel's WATER_COLLISION (game/CameraWater.ts).
+      ["cameraWaterCollision", "cameraWaterCollision"],
     ],
   );
+});
+
+test("5.14 the camera and mouse CVars are the original's numbers and write through the settings", () => {
+  const { adapter, writes, values } = fakeSettings();
+  assert.equal(adapter.getDefault("cameraDistanceMaxFactor"), "1");
+  assert.deepEqual(adapter.range("cameraDistanceMaxFactor"), [1, 2], "the stock slider's own 1–2");
+  assert.equal(adapter.set("cameraDistanceMaxFactor", "1.5"), true);
+  assert.equal(values().cameraDistancePercent, 150);
+  assert.equal(adapter.get("cameraDistanceMaxFactor"), "1.5");
+  assert.equal(adapter.getDefault("cameraSmoothStyle"), "4", "«Только при движении» by default");
+  assert.equal(adapter.set("cameraSmoothStyle", "2"), true);
+  assert.equal(adapter.get("cameraSmoothStyle"), "2");
+  assert.equal(adapter.getDefault("cameraYawSmoothSpeed"), "180");
+  assert.deepEqual(adapter.range("cameraYawSmoothSpeed"), [90, 270]);
+  assert.equal(adapter.getDefault("mouseSpeed"), "1");
+  assert.deepEqual(adapter.range("mouseSpeed"), [0.5, 1.5]);
+  adapter.set("mouseSpeed", "0.75");
+  assert.equal(values().mouseSpeedPercent, 75);
+  assert.equal(adapter.getDefault("cameraYawMoveSpeed"), "180");
+  assert.equal(adapter.getDefault("mouseInvertPitch"), "0");
+  assert.equal(adapter.getDefault("deselectOnClick"), "1", "the stock StickyTargeting box inverts it itself");
+  adapter.set("deselectOnClick", "0");
+  assert.equal(values().deselectOnClick, false);
+  assert.equal(writes.length, 4);
 });
 
 test("environmentDetail is the object distance as the stock 0.5-1.5 multiplier", () => {
@@ -192,7 +232,7 @@ test("unsupported CVars never create state or call the host", () => {
   const { adapter, writes } = fakeSettings();
 
   for (const name of [
-    "Sound_InterfaceVolume", "showTimestamps", "cameraDistanceMaxFactor", "groundEffectDensity",
+    "Sound_InterfaceVolume", "showTimestamps", "cameraPitchSmoothSpeed", "groundEffectDensity",
     "useUiScale", "gxResolution", "EnableVoiceChat", "webclient_", "webclient_spellbookHideLowerRanks", "",
   ]) {
     assert.equal(adapter.get(name), undefined, name);

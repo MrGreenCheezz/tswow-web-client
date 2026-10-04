@@ -14,7 +14,7 @@ test("comparison profile fixes optional graphics without resetting player prefer
     grassDensity: 4,
     volumeMaster: 35,
     uiScale: 115,
-    cameraMaxDistance: 30,
+    cameraDistancePercent: 200,
     chatTimestamps: true,
     tswowAddons: true,
   };
@@ -31,7 +31,7 @@ test("comparison profile fixes optional graphics without resetting player prefer
     assert.ok(SETTING_DEFINITIONS.some((definition) => definition.id === id), `${id} is a real setting`);
     assert.equal(profile[id], value, id);
   }
-  for (const id of ["volumeMaster", "uiScale", "cameraMaxDistance", "chatTimestamps", "tswowAddons"]) {
+  for (const id of ["volumeMaster", "uiScale", "cameraDistancePercent", "chatTimestamps", "tswowAddons"]) {
     assert.equal(profile[id], original[id], `${id} remains the player's choice`);
   }
   assert.equal(original.renderScale, 65, "preparing a profile does not mutate the saved source object");

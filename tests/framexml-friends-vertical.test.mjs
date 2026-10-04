@@ -347,10 +347,12 @@ test("raid tab: convert to raid, the saved instance list and RAID_ROSTER_UPDATE"
     assert.deepEqual(lua(boot, "return table.concat(__raidEvents, ',')"), ["RAID_ROSTER_UPDATE"],
       "one edge per new raid roster, through RaidFrame's stock handler (RaidFrame_LoadUI, RaidFrame_Update)");
     assert.deepEqual(lua(boot, "return table.concat(__raidMessages, '|')"), [""],
-      "RaidFrame_LoadUI skips the Blizzard_RaidUI this client does not ship: no «Ошибка загрузки» dialog");
+      "RaidFrame_LoadUI skips the Blizzard_RaidUI its owner loads: no «Ошибка загрузки» dialog");
     assert.deepEqual(lua(boot, "return BasicScriptErrors:IsShown() and 1 or 0, BasicScriptErrorsText:GetText()", 2), dialog,
       "the script-error dialog is as it was");
-    assert.deepEqual(lua(boot, "return LoadAddOn('Blizzard_RaidUI')", 2), [false, "MISSING"],
+    // Blizzard_RaidUI is an `owner` add-on (FRAMEXML_LOD_POLICY, 30.09): FrameXmlRaidLod loads it, and
+    // LoadAddOn only reports NOT_READY, which the adapter skips like MISSING.
+    assert.deepEqual(lua(boot, "return LoadAddOn('Blizzard_RaidUI')", 2), [false, "NOT_READY"],
       "the skip rests on the add-on runtime's own answer");
     assert.deepEqual(seam.friends.raid.rosterInfo(1).slice(0, 5), ["Альфа", 1, 1, 60, "Воин"], "raid1 is the first listed member");
     assert.deepEqual(seam.friends.raid.rosterInfo(5).slice(0, 3), ["Игрок", 2, 1], "the player, after the listed members, leads in subgroup 1");
@@ -509,7 +511,10 @@ test("UnitPopup at retail TOC 66 gives the friend, who and guild rows their stoc
     const before = metric(baseline.inventory);
     const afterLoad = metric(candidate.inventory);
     const delta = Object.fromEntries(Object.keys(before).map((key) => [key, afterLoad[key] - before[key]]));
-    assert.deepEqual(delta, { files: 2, bytes: 64100, widgets: 22, errors: 0, distinct: 0, luaFailed: 0 },
+    // UnitPopup.xml declares no frames; the widgets it used to add (22) were two extra dropdown rows
+    // grown while GetDungeonDifficulty answered nothing. Since 1.08 (FrameXmlDifficulty.ts) it answers
+    // 1, and UnitPopup.lua:700 hides the difficulty rows below level 65, so the rows already exist.
+    assert.deepEqual(delta, { files: 2, bytes: 64100, widgets: 0, errors: 0, distinct: 0, luaFailed: 0 },
       `UnitPopup closure delta ${JSON.stringify(delta)}`);
     console.log(`[friends] UnitPopup load ms baseline ${Math.round(baseline.loadMs)} candidate ${Math.round(candidate.loadMs)}`);
     baseline.boot.close();

@@ -89,13 +89,17 @@ test("a stock control is unavailable, session-only or fixed — never two of the
     assert.match(name, /^(?:Video|Audio|Interface)Options/, name);
     assert.ok(reason.length > 10, `${name} says why`);
   }
-  // «WebClient → Игра» holds the camera's one browser setting; no reason sends a mouse control there.
+  // 5.14: «WebClient → Игра» keeps only the extended zoom; the camera's and the mouse's stock controls
+  // are CVars now, and what has no consumer says so.
   const game = frameXmlOptionsWebClientGroups().find((group) => group.key === "Game");
-  assert.deepEqual(game.controls.map((control) => control.setting), ["cameraMaxDistance"]);
-  for (const [name, reason] of FRAMEXML_OPTIONS_UNAVAILABLE) {
-    if (reason.includes("WebClient → Игра")) assert.match(name, /^InterfaceOptionsCameraPanel/, name);
+  assert.deepEqual(game.controls.map((control) => control.setting), ["cameraExtendedZoom"]);
+  for (const name of ["InterfaceOptionsCameraPanelStyleDropDown", "InterfaceOptionsCameraPanelFollowSpeedSlider",
+    "InterfaceOptionsCameraPanelMaxDistanceSlider", "InterfaceOptionsMousePanelInvertMouse",
+    "InterfaceOptionsMousePanelMouseSensitivitySlider", "InterfaceOptionsMousePanelMouseLookSpeedSlider",
+    "InterfaceOptionsControlsPanelStickyTargeting"]) {
+    assert.equal(unavailable.has(name), false, name);
   }
-  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.get("InterfaceOptionsMousePanelInvertMouse"), "Браузерный клиент этого не поддерживает.");
+  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.get("InterfaceOptionsCameraPanelSmartPivot"), "Камера браузерного клиента этого не поддерживает.");
   // The mapped controls stay usable.
   for (const name of ["VideoOptionsEffectsPanelFullScreenGlow", "VideoOptionsEffectsPanelClutterRadius",
     "VideoOptionsResolutionPanelUIScaleSlider", "AudioOptionsSoundPanelEnableSound", "AudioOptionsSoundPanelAmbienceVolume",

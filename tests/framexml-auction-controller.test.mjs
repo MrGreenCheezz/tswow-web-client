@@ -273,3 +273,34 @@ test("a newer owner published over a stale one keeps its own strings and open re
     game.world = undefined;
   }
 });
+
+// L5c-review 3.24 (owner pending): as before L5c, an add-on already in does not start the owner at
+// publish; Blizzard_AuctionUI loads at the first auctioneer (FrameXmlLodPreload.ts keeps it out).
+test("an auction add-on already loaded still waits for the first auctioneer", async () => {
+  const canned = createCannedFrameXmlAuction();
+  canned.model.attach({ fire: () => 1, now: () => 1 });
+  const loads = [];
+  const boot = {
+    vm: { compileFunction: () => undefined, call: () => [], release() {}, errors: [], globalString: () => undefined },
+    bridge: { getFrame: () => undefined, isVisible: () => false, diagnostics: [] },
+    errorCount: 0,
+    binder: { stubDiagnostics: [] },
+    isAddonLoaded: () => true,
+    loadAddon: async (name) => { loads.push(name); return { ok: false, addon: name, status: "missing", dependencies: [], loaded: [], roots: [] }; },
+  };
+  game.world = world({ auctioneerGuid: 0n });
+  const warn = console.warn;
+  console.warn = () => {};
+  const cleanup = mountFrameXmlAuction({ auction: canned.model }, boot, { elementFor: () => undefined, addRoots() {}, sync() {} });
+  try {
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    assert.deepEqual(loads, [], "no auctioneer: no begin at publish");
+    canned.world.open();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    assert.deepEqual(loads, ["Blizzard_AuctionUI"], "the first hello starts it, as before");
+  } finally {
+    console.warn = warn;
+    cleanup();
+    game.world = undefined;
+  }
+});

@@ -12,6 +12,7 @@ function node(tag = 'div') {
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     append(...children) { this.children.push(...children); for (const child of children) child.parentNode = this; },
     replaceChildren(...children) { this.children = []; this.append(...children); },
+    after(...siblings) { for (const sibling of siblings) sibling.parentNode = this.parentNode; },
     addEventListener(type, listener) { listeners.set(type, listener); }, removeEventListener() {},
     setAttribute(name, value) { attrs.set(name, String(value)); }, getAttribute(name) { return attrs.get(name) ?? null; },
     querySelector(selector) { return selector === 'button[type="submit"]' ? node('button') : undefined; },

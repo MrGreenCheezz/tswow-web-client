@@ -19,11 +19,20 @@ class FakeElement {
   hasAttribute(name) { return this.attributes.has(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
+  get parentElement() { return this.parent ?? null; }
   closest(selector) {
     const wanted = /^\[draggable="true"\]$/.test(selector);
-    for (let node = this; node; node = node.parent) if (wanted && node.getAttribute("draggable") === "true") return node;
+    const titled = selector === "[title]";
+    for (let node = this; node; node = node.parent) {
+      if (wanted && node.getAttribute("draggable") === "true") return node;
+      if (titled && node.hasAttribute("title")) return node;
+    }
     return null;
   }
+  // What the tooltip module (setTip) asks of an element it attaches to.
+  addEventListener(type, listener) { (this.listeners ??= []).push({ type, listener }); }
+  removeEventListener() {}
+  matches(selector) { return selector === ":hover" ? this.hover === true : false; }
   contains(other) {
     for (let node = other; node; node = node.parent) if (node === this) return true;
     return false;
@@ -37,10 +46,17 @@ class FakeInput extends FakeHTMLElement {
 }
 class FakeTextArea extends FakeInput {}
 class FakeSelect extends FakeHTMLElement {}
+// The safety net watches `title` writes; the double hands the test its callback.
+const observers = [];
+class FakeMutationObserver {
+  constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+  observe(target, options) { this.target = target; this.options = options; }
+  disconnect() { this.disconnected = true; }
+}
 const saved = {};
 for (const [name, value] of Object.entries({
   Element: FakeElement, HTMLElement: FakeHTMLElement, HTMLInputElement: FakeInput,
-  HTMLTextAreaElement: FakeTextArea, HTMLSelectElement: FakeSelect,
+  HTMLTextAreaElement: FakeTextArea, HTMLSelectElement: FakeSelect, MutationObserver: FakeMutationObserver,
 })) {
   saved[name] = globalThis[name];
   globalThis[name] = value;
@@ -49,8 +65,9 @@ after(() => { for (const [name, value] of Object.entries(saved)) globalThis[name
 
 const {
   NATIVE_APP_SHELL_ATTRIBUTE, NATIVE_APP_SHELL_CSS, installNativeAppShell, nativeShellAllowsDrag, nativeShellBlocksKey,
-  nativeShellEditableTarget,
+  nativeShellEditableTarget, nativeShellAdoptTitle,
 } = await import("../dist/code/browser/app/NativeAppShell.js");
+const { getTip, hideTooltip } = await import("../dist/code/browser/ui/Tooltip.js");
 
 function listenerHost() {
   const listeners = [];
@@ -215,4 +232,61 @@ test("the shell withholds selection, ghost drags, file drops, mouse navigation, 
   assert.equal(win.listeners.length, 0, "every window listener removed");
   assert.equal(styles[0].removed, true);
   assert.equal(doc.documentElement.getAttribute(NATIVE_APP_SHELL_ATTRIBUTE), null);
+});
+
+test("4.01 every title becomes the interface's tooltip before the browser can show it", async () => {
+  const { doc, win } = fixture();
+  const undo = installNativeAppShell(doc, win);
+  const observer = observers.at(-1);
+  assert.deepEqual(observer.options, { subtree: true, attributes: true, attributeFilter: ["title"] },
+    "a write of `title` alone, anywhere in the page");
+
+  // On the pointer's way in: the attribute goes, the hint stays, and an unnamed icon button gets
+  // the words as its name.
+  const icon = new FakeHTMLElement("button", { title: "Персонаж (C)" });
+  doc.dispatch("pointerover", { target: icon });
+  assert.equal(icon.hasAttribute("title"), false, "no attribute left for the browser to show");
+  assert.equal(getTip(icon), "Персонаж (C)");
+  assert.equal(icon.getAttribute("aria-label"), "Персонаж (C)");
+
+  // A button with its own text keeps its name; the hint becomes its description.
+  const named = new FakeHTMLElement("button", { title: "Начать атаку" });
+  named.textContent = "Атака";
+  doc.dispatch("pointerover", { target: named });
+  assert.equal(named.getAttribute("aria-label"), null);
+  assert.equal(named.getAttribute("aria-description"), "Начать атаку");
+
+  // Entering a child of a titled element: the titled ancestors are converted, the nearest armed.
+  const outer = new FakeHTMLElement("section", { title: "Окно" });
+  const row = new FakeHTMLElement("div", { title: "Строка" }, outer);
+  const text = new FakeHTMLElement("span", {}, row);
+  doc.dispatch("pointerover", { target: text });
+  assert.equal(row.hasAttribute("title"), false);
+  assert.equal(outer.hasAttribute("title"), false, "otherwise the browser falls back to the outer one");
+  assert.equal(getTip(row), "Строка");
+  hideTooltip(); // the armed hint would draw into a document this double does not have
+
+  // A field keeps its validation hint.
+  const field = new FakeInput("input", { title: "Только цифры" });
+  doc.dispatch("pointerover", { target: field });
+  assert.equal(field.getAttribute("title"), "Только цифры");
+  assert.equal(nativeShellAdoptTitle(field), false);
+
+  // A title written after the pointer came in is taken in the observer's microtask.
+  const late = new FakeHTMLElement("div");
+  late.setAttribute("title", "Прочность 10 из 50");
+  observer.callback([{ target: late, attributeName: "title" }]);
+  assert.equal(late.hasAttribute("title"), false);
+  assert.equal(getTip(late), "Прочность 10 из 50");
+  late.setAttribute("title", "Прочность 9 из 50");
+  observer.callback([{ target: late, attributeName: "title" }]);
+  assert.equal(getTip(late), "Прочность 9 из 50", "a rewrite updates the hint");
+  assert.equal(late.getAttribute("aria-label"), "Прочность 9 из 50", "the label the shell wrote follows the hint");
+  late.setAttribute("title", "");
+  observer.callback([{ target: late, attributeName: "title" }]);
+  assert.equal(getTip(late), undefined, "an emptied title removes the hint");
+
+  undo();
+  assert.equal(observer.disconnected, true);
+  assert.equal(doc.listeners.length, 0);
 });

@@ -91,7 +91,8 @@ test("StackSplitFrame.xml joins at its stock slot after MirrorTimer: two files, 
     .map((entry) => normalize(entry.path).replace("interface/framexml/", ""));
   assert.equal(toc.indexOf("stacksplitframe.xml"), toc.indexOf("mirrortimer.xml") + 2, "retail: MirrorTimer, CoinPickupFrame, StackSplitFrame");
   const vertical = FRAMEXML_VERTICAL_TOC.map(normalize);
-  assert.equal(vertical.indexOf("stacksplitframe.xml"), vertical.indexOf("mirrortimer.xml") + 1);
+  // L5c 3.09: CoinPickupFrame.xml now sits between them, as in the stock TOC.
+  assert.equal(vertical.indexOf("stacksplitframe.xml"), vertical.indexOf("mirrortimer.xml") + 2);
   let baseline;
   let candidate;
   try {

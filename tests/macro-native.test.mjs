@@ -272,7 +272,7 @@ test("runMacro runs the slash lines through the one runner: conditions choose, /
  * A macro whose /cast lines reach the real cast guard (SpellCastGuard.ts) and a real WorldClient:
  * Spellbook.castSpell's order — the shared guard, then the one wire request — with the packets sent.
  */
-async function guardedMacros() {
+async function guardedMacros({ predictedGcd = false } = {}) {
   const { WorldClient } = await import("../dist/code/world/WorldClient.js");
   const { OPCODES } = await import("../dist/code/generated/opcodes.js");
   const { spellCastBlockReason } = await import("../dist/code/browser/SpellCastGuard.js");
@@ -293,6 +293,9 @@ async function guardedMacros() {
   game.world = world;
   game.spells = new Map([[133, row("Огненный шар", 1500)], [116, row("Ледяная стрела", 1500)], [12472, row("Стылая кровь", 0)]]);
   game.globalCooldownUntil = 0;
+  // L12 5.30: what app/EnterWorld.ts attaches to every world (game/PredictedGlobalCooldown.ts).
+  const { attachPredictedGlobalCooldown } = await import("../dist/code/browser/game/PredictedGlobalCooldown.js");
+  const offs = predictedGcd ? attachPredictedGlobalCooldown(world, game, () => game.spells) : [];
   const castSpell = (id, unit) => {
     if (spellCastBlockReason(world, id) !== undefined) return false;
     world.castSpell(id, 0, false, unit);
@@ -309,6 +312,7 @@ async function guardedMacros() {
     { index: 2, name: "Всё", body: "/cast Стылая кровь\n/cast Огненный шар\n/cast Ледяная стрела" },
   ];
   const restore = () => {
+    for (const off of offs) off();
     game.world = saved.world;
     game.spells = saved.spells;
     game.globalCooldownUntil = saved.gcd;
@@ -335,13 +339,11 @@ test("every /cast line reaches the cast guard: exclusive lines cast one spell, a
   }
 });
 
-// The client starts its global cooldown when a cast is sent, so a second spell on it in the same press
-// is stopped locally. Here the cooldown starts only when the realm accepts the cast
-// (SPELL_CAST_ACCEPTED, app/EnterWorld.ts), so both go out and the realm refuses the second: 5.30.
-test("two unconditional /cast lines on the global cooldown send only the first", {
-  todo: "5.30: a predicted local global cooldown from the moment a cast is sent",
-}, async () => {
-  const { macros, packets, restore } = await guardedMacros();
+// The client starts its global cooldown when a cast is sent (Wow.exe 0x0080ac90 → 0x00805d70), so a
+// second spell on it in the same press is stopped locally (0x0080cce0 → 0x00809000): 5.30 (L12, 04.10).
+// Without the prediction both went out and the realm refused the second.
+test("two unconditional /cast lines on the global cooldown send only the first", async () => {
+  const { macros, packets, restore } = await guardedMacros({ predictedGcd: true });
   try {
     macros.runMacro(2);
     assert.deepEqual(packets, [12472, 133]);

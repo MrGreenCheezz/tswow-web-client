@@ -3,13 +3,17 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 
-async function sourceModule(path, replacements = []) {
+async function sourceUrl(path, replacements = []) {
   let source = await readFile(new URL(path, import.meta.url), "utf8");
   for (const [from, to] of replacements) source = source.replace(from, to);
   const javascript = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
   }).outputText;
-  return import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
+  return `data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`;
+}
+
+async function sourceModule(path, replacements = []) {
+  return import(await sourceUrl(path, replacements));
 }
 
 const wvmUrl = new URL("../dist/code/browser/Wvm.js", import.meta.url).href;
@@ -17,6 +21,8 @@ const collisionFormatUrl = new URL("../dist/code/world/CollisionFormat.js", impo
 const collisionClientUrl = new URL("../dist/code/browser/CollisionClient.js", import.meta.url).href;
 const terrainUrl = new URL("../dist/code/browser/Terrain.js", import.meta.url).href;
 const collisionUrl = new URL("../dist/code/browser/game/Collision.js", import.meta.url).href;
+// The gateway-generation helper has no build output of its own yet; both collision clients import it.
+const gatewayGenerationUrl = await sourceUrl("../src/browser/GatewayGeneration.ts");
 const physics = await sourceModule("../src/browser/game/Physics.ts");
 const wind = await sourceModule("../src/browser/VegetationWind.ts", [
   ['"./Wvm.js"', JSON.stringify(wvmUrl)],
@@ -24,11 +30,13 @@ const wind = await sourceModule("../src/browser/VegetationWind.ts", [
 ]);
 const collisionClient = await sourceModule("../src/browser/CollisionClient.ts", [
   ['"../world/CollisionFormat.js"', JSON.stringify(collisionFormatUrl)],
+  ['"./GatewayGeneration.js"', JSON.stringify(gatewayGenerationUrl)],
 ]);
 const collisionSource = await sourceModule("../src/browser/game/CollisionSource.ts", [
   ['"../CollisionClient.js"', JSON.stringify(collisionClientUrl)],
   ['"../Terrain.js"', JSON.stringify(terrainUrl)],
   ['"./Collision.js"', JSON.stringify(collisionUrl)],
+  ['"../GatewayGeneration.js"', JSON.stringify(gatewayGenerationUrl)],
 ]);
 const collisionFormat = await import(collisionFormatUrl);
 const {

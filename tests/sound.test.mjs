@@ -105,7 +105,7 @@ test("Ж2.1 the sound route serves from disk, and answers 404 for what the clien
     assert.equal(first.headers.get("content-type"), "audio/wav");
     assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const etag = first.headers.get("etag");
-    assert.match(etag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(etag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
     assert.equal((await first.arrayBuffer()).byteLength, 27908);
     assert.equal(runs, 1);
 

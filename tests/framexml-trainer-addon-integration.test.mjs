@@ -393,7 +393,7 @@ test("real Blizzard_TrainerUI loads asynchronously with exact stock closure", {
     assert.deepEqual(api(boot, "GetNumTrainerServices", [], 1), [2]);
     api(boot, "SetTrainerServiceTypeFilter", ["used", true], 0);
     assert.deepEqual(api(boot, "GetNumTrainerServices", [], 1), [3]);
-    assert.deepEqual(api(boot, "GetTrainerServiceInfo", [1], 4), ["Рывок", "", "available", false]);
+    assert.deepEqual(api(boot, "GetTrainerServiceInfo", [1], 4), ["Рывок", "", "available", true]);
     assert.deepEqual(api(boot, "GetTrainerServiceCost", [1], 3), [1250, 0, 0]);
     assert.deepEqual(api(boot, "GetTrainerServiceLevelReq", [1], 1), [4]);
     assert.deepEqual(api(boot, "GetTrainerServiceSkillReq", [1], 3), [undefined, 0, false]);

@@ -90,3 +90,105 @@ test("coverage is measured against a whole protocol, not a fragment", () => {
   assert.ok(OUTBOUND_OPCODES.size > 400, `only ${OUTBOUND_OPCODES.size} outbound opcodes classified`);
   assert.ok(live().length > 450, `only ${live().length} inbound opcodes are live`);
 });
+
+// ---- 5.29: opcodes accepted on purpose without an effect (src/world/IgnoredOpcodes.ts) ----------
+
+const { IGNORED_OPCODES } = await import("../dist/code/world/IgnoredOpcodes.js");
+const worldClientPath = join(sourceDir, "world", "WorldClient.ts");
+const backlogPath = join(sourceDir, "world", "OpcodeBacklog.ts");
+const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+/** Every `if (packet.opcode === OPCODES.A || … ) { … }` branch of WorldClient with its body. */
+async function worldClientBranches() {
+  const source = await readFile(worldClientPath, "utf8");
+  const opener = /if \(packet\.opcode === OPCODES\.([A-Z0-9_]+)((?:\s*\|\|\s*packet\.opcode === OPCODES\.[A-Z0-9_]+)*)\)\s*\{/g;
+  const branches = [];
+  let match;
+  while ((match = opener.exec(source)) !== null) {
+    const names = [match[1], ...[...match[2].matchAll(/OPCODES\.([A-Z0-9_]+)/g)].map((entry) => entry[1])];
+    let depth = 1;
+    let index = opener.lastIndex;
+    while (depth > 0 && index < source.length) {
+      const ch = source[index++];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+    }
+    branches.push({ names, body: stripComments(source.slice(opener.lastIndex, index - 1)).replace(/\s+/g, " ").trim() });
+  }
+  return branches;
+}
+
+/** The four movement relays sit in an `else if` chain of `#dispatch`, not in an `if` of their own. */
+const DISPATCH_CHAIN_IGNORED = ["MSG_MOVE_ROOT", "MSG_MOVE_UNROOT", "MSG_MOVE_SET_COLLISION_HGT",
+  "MSG_MOVE_UPDATE_CAN_TRANSITION_BETWEEN_SWIM_AND_FLY", "MSG_MOVE_TIME_SKIPPED"];
+
+test("5.29 every ignored opcode is an inbound opcode with a reason, and a plan item when planned", async () => {
+  const plan = await readFile(join(sourceDir, "..", "docs", "WORK_PLAN.ru.md"), "utf8");
+  for (const [name, entry] of IGNORED_OPCODES) {
+    const reach = INBOUND_OPCODES.get(name);
+    assert.ok(reach !== undefined, `${name} is not an inbound opcode`);
+    if (entry.kind !== "by-design") assert.equal(reach, "live", `${name}: only a live opcode can be a gap or planned work`);
+    assert.ok(entry.reason.trim().length > 10, `${name} needs a reason`);
+    assert.ok(["by-design", "planned", "unplanned"].includes(entry.kind), `${name}: kind ${entry.kind}`);
+    if (entry.kind === "planned") {
+      assert.match(entry.plan ?? "", /^\d+\.\d{2}$/, `${name}: a planned entry names its WORK_PLAN item`);
+      assert.ok(plan.includes(`**${entry.plan}**`), `${name}: WORK_PLAN has no item ${entry.plan}`);
+    } else {
+      assert.equal(entry.plan, undefined, `${name}: only a planned entry carries a plan item`);
+    }
+    assert.equal(OPCODE_BACKLOG.has(name), false, `${name} cannot be both missing and ignored`);
+  }
+});
+
+test("5.29 no WorldClient branch drops a packet silently: every effect-free branch goes through #ignore", async () => {
+  const bare = (await worldClientBranches())
+    // A body that only parses, with or without `return true`, or nothing at all: the `else if`
+    // chain of #dispatch needs no return, so a parse-only branch there drops the packet too.
+    .filter(({ body }) => /^(?:(?:const [a-zA-Z]+ = )?(?:void )?parse[A-Za-z]+\([^;]*\);?)? ?(?:return(?: true)?;?)?$/.test(body))
+    .map(({ names }) => names.join(","));
+  assert.deepEqual(bare, [], "answer these with `return this.#ignore(packet)` and list them in IGNORED_OPCODES, or give them an effect");
+});
+
+test("5.29 the registry and the #ignore branches name the same opcodes", async () => {
+  const branches = await worldClientBranches();
+  const ignoring = new Set(DISPATCH_CHAIN_IGNORED);
+  for (const { names, body } of branches) {
+    if (/^(?:(?:const [a-zA-Z]+ = )?parse[A-Za-z]+\([^;]*\); )?return this\.#ignore\(packet\);?$/.test(body)) {
+      for (const name of names) ignoring.add(name);
+    }
+  }
+  const source = await readFile(worldClientPath, "utf8");
+  assert.match(source, /MSG_MOVE_UPDATE_CAN_TRANSITION_BETWEEN_SWIM_AND_FLY\) \{[\s\S]{0,900}?this\.#ignore\(packet\);\s*return;/,
+    "the four never-built movement relays are counted too");
+  assert.match(source, /OPCODES\.MSG_MOVE_TIME_SKIPPED\) \{[\s\S]{0,400}?parseMovementTimeSkipped\(packet\.payload\);\s*this\.#ignore\(packet\);/,
+    "the time-skip relay is counted too");
+  assert.deepEqual([...ignoring].filter((name) => !IGNORED_OPCODES.has(name)), [], "ignored without a registry entry");
+  assert.deepEqual([...IGNORED_OPCODES.keys()].filter((name) => !ignoring.has(name)), [],
+    "registry entries whose branch no longer ignores them: strike them off (the effect landed)");
+});
+
+test("5.29 the registry only shrinks, and the accounting in OpcodeBacklog.ts is the measured one", async () => {
+  // Ratchet: lower this when an entry is struck off; never raise it to make room. 37 → 38 on
+  // 2026-10-01 was a correction of the measurement (MSG_MOVE_TIME_SKIPPED parsed and dropped in the
+  // #dispatch chain, invisible to the bare-branch pattern), not room for a new gap.
+  // 38 → 36 on 2026-10-02: SMSG_SPELLLOGEXECUTE and SMSG_ENCHANTMENTLOG feed the combat log (3.01).
+  // 36 → 31 on 2026-10-02: five 5.22 handlers got their Wow.exe reaction (SERVER_FIRST_ACHIEVEMENT
+  // stays, reclassified by design: its only effect is a chat line).
+  assert.ok(IGNORED_OPCODES.size <= 31, `${IGNORED_OPCODES.size} ignored opcodes, more than the 31 recorded on 2026-10-02`);
+  const liveNames = live();
+  const ignoredLive = [...IGNORED_OPCODES].filter(([name]) => INBOUND_OPCODES.get(name) === "live");
+  const byKind = (kind) => ignoredLive.filter(([, entry]) => entry.kind === kind).length;
+  const measured = {
+    live: liveNames.length,
+    effect: liveNames.length - ignoredLive.length,
+    byDesign: byKind("by-design"),
+    planned: byKind("planned"),
+    unplanned: byKind("unplanned"),
+  };
+  const header = await readFile(backlogPath, "utf8");
+  const claim = header.match(/(\d+) live inbound opcodes: (\d+) with an effect, (\d+) without one by design, (\d+) planned, (\d+) without a plan item/);
+  assert.ok(claim, "OpcodeBacklog.ts states the accounting in the measured form");
+  assert.deepEqual({
+    live: Number(claim[1]), effect: Number(claim[2]), byDesign: Number(claim[3]), planned: Number(claim[4]), unplanned: Number(claim[5]),
+  }, measured, "update the numbers in the OpcodeBacklog.ts header (and docs/CLIENT_PARITY_PLAN.ru.md §2)");
+});

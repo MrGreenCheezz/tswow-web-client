@@ -256,16 +256,21 @@ test("the cooldown, the cursor and the pet page's own calls", async () => {
   assert.deepEqual(renames, []);
   // UNIT_FIELD_BYTES_2's pet-flags byte (2): UNIT_CAN_BE_RENAMED 0x01 | UNIT_CAN_BE_ABANDONED 0x02.
   world.petSpells = { guid: PET, closed: false, creatureFamily: 1, duration: 0, reactState: 0, commandState: 0, flags: 0, bar: [], spells: [], cooldowns: [] };
-  world.state.objects.set(PET, { guid: PET, typeId: 3, fields: unitFields([["UNIT_FIELD_BYTES_2", 0x03 << 16]]) });
+  // L17 3.09: PetRename is Wow.exe's 0x005d5670 now (FrameXmlPetDeclension.ts): the pet must be the
+  // player's (UNIT_FIELD_SUMMONEDBY) and renameable, the name must pass the client's check, and a Cyrillic
+  // name on ruRU first opens the declension frame — so a Latin name is the plain send here.
+  world.state.objects.set(PET, { guid: PET, typeId: 3, fields: unitFields([["UNIT_FIELD_BYTES_2", 0x03 << 16], ["UNIT_FIELD_SUMMONEDBY", SELF]]) });
   assert.deepEqual(call(seam, "PetCanBeAbandoned"), [true]);
   assert.deepEqual(call(seam, "PetCanBeRenamed"), [true]);
-  world.state.objects.get(PET).fields = unitFields([["UNIT_FIELD_BYTES_2", 0x02 << 16]]);
+  call(seam, "PetRename", "Rex");
+  call(seam, "PetRename", "   ");
+  assert.deepEqual(renames, ["Rex"], "a renameable pet takes a good name; spaces fail the client's check");
+  world.state.objects.get(PET).fields = unitFields([["UNIT_FIELD_BYTES_2", 0x02 << 16], ["UNIT_FIELD_SUMMONEDBY", SELF]]);
   assert.deepEqual(call(seam, "PetCanBeRenamed"), [false], "named once: the flag is gone");
   call(seam, "PetAbandon");
   call(seam, "PetRename", "Шарик");
-  call(seam, "PetRename", "   ");
   assert.equal(state.abandons, 1);
-  assert.deepEqual(renames, ["Шарик"]);
+  assert.deepEqual(renames, ["Rex"], "not renameable: nothing more is sent");
   assert.deepEqual(call(seam, "GetPetFoodTypes"), [], "no diet table on this client: nothing, never a guess");
 });
 

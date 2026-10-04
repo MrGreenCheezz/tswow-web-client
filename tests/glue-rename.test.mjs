@@ -84,7 +84,7 @@ async function renameStage() {
   clearSeen();
   return {
     runtime, lua, seen, clearSeen, settle, renames, entered, base,
-    answer: (result) => answer(result),
+    answer: async (result) => { await settle(); answer(result); },
     rename: (at, name) => { characters = characters.map((character, index) => (index === at ? { ...character, name, flags: character.flags & ~0x4000 } : character)); },
   };
 }
@@ -107,18 +107,20 @@ test("EnterWorld on a character marked for a new name opens the rename dialog in
   }
 });
 
-test("RenameCharacter sends the name, answers true so the dialog hides, and shows the refusal", async () => {
+test("RenameCharacter sends the name, answers 1 so the dialog hides, and shows the refusal", async () => {
   const stage = await renameStage();
   try {
     stage.lua("SelectCharacter(2); return 1");
     stage.clearSeen();
-    assert.equal(stage.lua('return RenameCharacter(2, "  Ана ")'), true);
+    // FUN_004d8d20 pushes the number 1 when the request went out.
+    assert.equal(stage.lua('return RenameCharacter(2, "Ана")'), 1);
+    await stage.settle();
     assert.deepEqual(stage.renames, [[stage.base[1].guid, "Ана"]]);
     assert.deepEqual(stage.seen(), ["OPEN_STATUS_DIALOG / CANCEL / Переименование персонажа..."]);
 
     // FUN_004da090: every refusal but a name in use is the screen's own CHAR_RENAME_FAILED.
     stage.clearSeen();
-    stage.answer({ result: 89 });
+    await stage.answer({ result: 89 });
     await stage.settle();
     assert.deepEqual(stage.seen(), [
       "CLOSE_STATUS_DIALOG / nil / nil",
@@ -126,8 +128,8 @@ test("RenameCharacter sends the name, answers true so the dialog hides, and show
     ]);
 
     stage.clearSeen();
-    assert.equal(stage.lua('return RenameCharacter(2, "Аларин")'), true);
-    stage.answer({ result: 50 });
+    assert.equal(stage.lua('return RenameCharacter(2, "Аларин")'), 1);
+    await stage.answer({ result: 50 });
     await stage.settle();
     assert.deepEqual(stage.seen().slice(1), [
       "CLOSE_STATUS_DIALOG / nil / nil",
@@ -143,18 +145,21 @@ test("a successful rename rereads the list and carries on into the world, as the
   const stage = await renameStage();
   try {
     stage.lua("SelectCharacter(2); return 1");
-    assert.equal(stage.lua('return RenameCharacter(2, "Ана")'), true);
+    assert.equal(stage.lua('return RenameCharacter(2, "Ана")'), 1);
     stage.clearSeen();
     stage.rename(1, "Ана");
-    stage.answer({ result: 0, guid: stage.base[1].guid, name: "Ана" });
+    await stage.answer({ result: 0, guid: stage.base[1].guid, name: "Ана" });
     await stage.settle();
     assert.deepEqual(stage.seen(), [
       "CLOSE_STATUS_DIALOG / nil / nil",
       "CHARACTER_LIST_UPDATE / nil / nil",
     ], "no rename dialog again");
     assert.equal(stage.lua("return (GetCharacterInfo(2))"), "Ана");
-    // FUN_004da090 → FUN_004d9bd0: the renamed character, still selected, enters the world.
-    assert.deepEqual(stage.entered, [[2, "Ана"]]);
+    // FUN_004da090 → FUN_004d9bd0: the renamed character, still selected, goes on to EnterWorld —
+    // whose step 4 (10.09) now stops a Russian name at the declension frame: the rename cleared the
+    // declined flag (FUN_004e2870), exactly as it does in the client.
+    assert.deepEqual(stage.entered, []);
+    assert.equal(stage.runtime.session.characters[1].flags & 0x02000000, 0);
   } finally {
     stage.runtime.close();
   }
@@ -165,14 +170,17 @@ test("RenameCharacter refuses what it can see is wrong without sending anything"
   try {
     stage.lua("SelectCharacter(2); return 1");
     stage.clearSeen();
-    // FUN_004d8d20 checks the name itself first; a refusal keeps the dialog up with its reason.
-    assert.equal(stage.lua('return RenameCharacter(2, "   ")'), false);
-    assert.equal(stage.lua('return RenameCharacter(2, "А")'), false);
-    assert.equal(stage.lua('return RenameCharacter(9, "Ана")'), false);
+    // FUN_004d8d20 checks the name itself first (the name as typed: a space is an invalid
+    // character, never trimmed); a refusal keeps the dialog up with its reason and answers nil.
+    assert.equal(stage.lua('return RenameCharacter(2, "   ")'), undefined);
+    assert.equal(stage.lua('return RenameCharacter(2, "  Ана ")'), undefined);
+    assert.equal(stage.lua('return RenameCharacter(2, "А")'), undefined);
+    // FUN_004e3410: a row that is not there is nothing at all.
+    assert.equal(stage.lua('return RenameCharacter(9, "Ана")'), undefined);
     assert.deepEqual(stage.seen(), [
-      "FORCE_RENAME_CHARACTER / CHAR_NAME_NO_NAME / nil",
+      "FORCE_RENAME_CHARACTER / CHAR_NAME_INVALID_CHARACTER / nil",
+      "FORCE_RENAME_CHARACTER / CHAR_NAME_INVALID_CHARACTER / nil",
       "FORCE_RENAME_CHARACTER / CHAR_NAME_TOO_SHORT / nil",
-      "FORCE_RENAME_CHARACTER / CHAR_RENAME_FAILED / nil",
     ]);
     assert.deepEqual(stage.renames, []);
   } finally {
@@ -184,11 +192,11 @@ test("cancelling the rename's status dialog drops the answer that arrives after 
   const stage = await renameStage();
   try {
     stage.lua("SelectCharacter(2); return 1");
-    assert.equal(stage.lua('return RenameCharacter(2, "Ана")'), true);
+    assert.equal(stage.lua('return RenameCharacter(2, "Ана")'), 1);
     // The CANCEL dialog's button: GlueDialog.lua runs StatusDialogClick().
     stage.lua("StatusDialogClick(); return 1");
     stage.clearSeen();
-    stage.answer({ result: 89 });
+    await stage.answer({ result: 89 });
     await stage.settle();
     assert.deepEqual(stage.seen(), [], "no dialog for an answer nobody is waiting for");
     assert.deepEqual(stage.entered, []);

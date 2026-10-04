@@ -37,6 +37,7 @@ function controller(game, probes = { listener: undefined }) {
     navigator: { userAgent: 'test' }, innerWidth: 320, innerHeight: 240, devicePixelRatio: 1,
     performance, settings: () => ({}), autoQualityStatus: () => ({}),
     formalRenderBenchmarkExclusiveActive: () => false, renderBenchmarkRuntime: { active: false },
+    poseWorkerReport: () => ({ state: 'on', predicted: false }), // L10 (10.18): PerformanceCapture.ts imports it
     loadingScreenVisible: () => false, PerformanceObserver: undefined,
     setTimeout: () => 1, clearTimeout() {},
   };

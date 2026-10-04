@@ -29,8 +29,8 @@ test("liquid metadata and strips conditionally revalidate their path-stable URLs
     assert.equal(image.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const metadataTag = metadata.headers.get("etag");
     const imageTag = image.headers.get("etag");
-    assert.match(metadataTag ?? "", /^"[0-9a-f]{40}"$/);
-    assert.match(imageTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(metadataTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
+    assert.match(imageTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
     await metadata.arrayBuffer();
     await image.arrayBuffer();
 

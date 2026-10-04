@@ -262,7 +262,7 @@ test("Escape inside a FrameXML edit box is that box's own; elsewhere the native 
     plain.focus();
     escape(plain);
     assert.equal(dom.auctionWindow.hidden, true, "the native Escape chain closed the window");
-    assert.equal(game.world.targetGuid, undefined);
+    assert.equal(game.world.targetGuid, 0x42n, "4.04: one step per press — the window went, the target stays");
   } finally {
     dom.auctionWindow.hidden = true;
     game.world = undefined;

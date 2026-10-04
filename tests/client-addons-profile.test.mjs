@@ -69,3 +69,32 @@ test('identical native profiles disable add-ons while divergent profiles require
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('includeDisabled lists profile-disabled add-ons too, and disabledByProfile names them (9.07)', async () => {
+  const { disabledByProfile } = await import('../dist/code/gateway/ClientAddons.js');
+  const root = await mkdtemp(join(tmpdir(), 'webclient-addon-disabled-'));
+  try {
+    for (const name of ['X', 'Kept']) {
+      const directory = join(root, 'Interface', 'AddOns', name);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, `${name}.toc`), `${name}.lua\n`);
+    }
+    // A directory with no TOC is not an add-on, disabled or not.
+    await mkdir(join(root, 'Interface', 'AddOns', 'Blizzard_Stub'), { recursive: true });
+    const profile = join(root, 'WTF', 'Account', 'A', 'R', 'C');
+    await mkdir(profile, { recursive: true });
+    await writeFile(join(profile, 'AddOns.txt'), 'X: disabled\nMissing: disabled\nBlizzard_Stub: disabled\n');
+
+    assert.deepEqual((await discoverClientAddons(root)).map((addon) => addon.name), ['Kept']);
+    assert.deepEqual((await discoverClientAddons(root, { includeDisabled: true })).map((addon) => addon.name), ['Kept', 'X']);
+    assert.deepEqual(await disabledByProfile(root), ['X'], 'only installed add-ons with a TOC are named');
+
+    // Divergent profiles disable nothing, so nothing is named.
+    const other = join(root, 'WTF', 'Account', 'A', 'R', 'D');
+    await mkdir(other, { recursive: true });
+    await writeFile(join(other, 'AddOns.txt'), 'Kept: disabled\n');
+    assert.deepEqual(await disabledByProfile(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

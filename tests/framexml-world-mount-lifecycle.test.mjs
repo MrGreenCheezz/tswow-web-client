@@ -441,6 +441,33 @@ test("EnterWorld watches the saved UI preference and scopes runtime switching to
     "the old query opt-in must not remain on the ordinary route");
 });
 
+test("EnterWorld holds module messages from login until the JSON windows and the Lua are subscribed (9.03)", async () => {
+  const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
+  const begin = source.search(/if \(tswowAddonsEnabled\) world\.customPackets\.beginBacklog\(\{ expect: \["modules", "lua"\] \}\);/);
+  const login = source.indexOf("await world.loginCharacter(");
+  assert.ok(begin > 0 && begin < login, "the backlog starts before the login packets can arrive");
+  assert.match(source, /void modules\.load\(\)\.finally\(\(\) => world\.customPackets\.consumerReady\("modules"\)\);/,
+    "the windows report ready whether or not their load succeeded");
+  assert.match(source, /finally \{ finishModuleCommandLoad\(\); world\.customPackets\.consumerReady\("lua"\); \}/,
+    "the Lua reports ready in the mount's finally, after the TOC's subscriptions");
+});
+
+test("EnterWorld keys saved variables by realm name, migrates the address key and reports problems (9.06)", async () => {
+  const source = await readFile(new URL("../src/browser/app/EnterWorld.ts", import.meta.url), "utf8");
+  const scope = source.slice(source.indexOf("const savedVariablesScope = "), source.indexOf("} : undefined;", source.indexOf("const savedVariablesScope = ")));
+  assert.match(scope, /\brealm: world\.realmName,/, "no gateway address in the realm part");
+  assert.match(scope, /legacyRealm: JSON\.stringify\(\[new URL\(gatewayInput\.value\.replace\(\/\^ws\/, "http"\)\)\.origin, world\.realmName\]\)/);
+  assert.match(source, /onSavedVariableProblem: \(problem\) => \{/);
+  const mount = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
+  assert.match(mount, /removeItem: \(key: string\) => window\.localStorage\.removeItem\(key\)/);
+  assert.match(mount, /onProblem: options\.onSavedVariableProblem/);
+});
+
+test("the world mount tells the module loader which opcodes the TSWoW Lua holds (9.08)", async () => {
+  const mount = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
+  assert.match(mount, /clientNetworkChanged: \(opcodes\) => game\.modules\?\.noteLuaOpcodes\(opcodes\),/);
+});
+
 test("chat explains pending addon commands and retires only the matching world load", async () => {
   const chat = await import("../dist/code/browser/ui/Chat.js");
   const previousWorld = game.world;
@@ -526,7 +553,7 @@ test("world root selection rejects visible orphan helpers while retaining hidden
       "GeneralDockManager",
       "FloatingChatFrameManager",
       "MirrorTimer1",
-      "TimerTracker",
+      // L14 (04.10): TimerTracker is no 3.3.5a frame (no FrameXML file declares it), so it is no owner.
       "TargetFrame",
       "FocusFrame",
       "Boss1TargetFrame",
@@ -537,11 +564,12 @@ test("world root selection rejects visible orphan helpers while retaining hidden
   );
   for (const name of [
     "UIParent", "ChatFrame1", "ChatFrame1EditBox", "GeneralDockManager", "FloatingChatFrameManager",
-    "MirrorTimer1", "TimerTracker",
+    "MirrorTimer1", "MirrorTimerFrame",
     "PlayerFrame", "TargetFrame", "Boss1TargetFrame",
   ]) assert.equal(frameXmlWorldVisibleRootAllowed(name), true, `${name} should be an owner`);
   for (const name of [
     "QuestInfoRequiredMoneyFrame", "ChatChannelDropDown", "ChatBNPlayerDropDown", "UnknownVisibleHelper",
+    "TimerTracker", // L14 (04.10): the dead entry is gone
   ]) assert.equal(frameXmlWorldVisibleRootAllowed(name), false, `${name} must stay lifecycle-owned`);
 });
 
@@ -2063,7 +2091,8 @@ test("one Escape closes only an add-on dialog: the module window beneath and the
       escape();
       assert.deepEqual(load.escapes, [0], "no dialog is up now: the next press is the native chain's");
       assert.equal(moduleWindow.closes, 1);
-      assert.equal(world.targetGuid, undefined);
+      // 4.04: the native chain is one step per press too — the window went, the target is the next press's.
+      assert.equal(world.targetGuid, 7n);
     });
   } finally {
     load.restore();
@@ -2086,7 +2115,8 @@ test("full HUD without the stock game menu: one Escape answers the published sto
       escape();
       assert.equal(popups.closes, 1, "no dialog is up now: the next press is the native chain's");
       assert.equal(moduleWindow.closes, 1);
-      assert.equal(world.targetGuid, undefined);
+      // 4.04: one step per press — the window went, the target is the next press's.
+      assert.equal(world.targetGuid, 7n);
     } finally {
       release();
     }
@@ -2268,8 +2298,10 @@ test("ReloadUI remounts the HUD after the Lua caller unwinds; DisableAllAddOns i
       && child.style.visibility === "visible");
     assert.equal(hostPublished(), true, "the first mount is still published while Lua unwinds");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // Wait for the complete remount (attach happens inside load; publication comes after it).
-    for (let attempt = 0; attempt < 100
+    // Wait for the complete remount (attach happens inside load; publication comes after it). Bounded
+    // by time, not by a handful of polls: the 3.18 LoD preload runs between attach and publication,
+    // and without a gateway its reads wait out a refused connection (≈1-2 s on Windows).
+    for (let attempt = 0; attempt < 4000
       && !(seamEvents.filter((event) => event === "reload:attach").length > attachesBefore && hostPublished());
       attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -2354,6 +2386,49 @@ test("a hovered world unit drives the stock GameTooltip through the engine calls
   } finally {
     setHoveredTarget(undefined, undefined);
     game.world = undefined;
+    unmountFrameXmlVertical();
+  }
+});
+
+test("full HUD (3.24): a pointerdown on a stock control lifts the overlay over the native windows; unmount drops the listener", async () => {
+  const mounted = await mountFrameXmlVertical({ viewport, seam: seam("pointer-layer") });
+  let host;
+  try {
+    assert.equal(mounted.ok, true, mounted.message);
+    host = viewport.children.find((node) => node.id === "framexml-world-host");
+    const layer = () => Number(host.style.zIndex || 0);
+    assert.equal(layer(), 0, "at its stylesheet's z-index 3 until touched");
+    host.dispatchEvent({ type: "pointerdown" });
+    assert.equal(layer() > 30, true, "the stock window touched last is over the native ones (31 and up)");
+  } finally {
+    unmountFrameXmlVertical();
+  }
+  host.style.zIndex = "";
+  host.dispatchEvent({ type: "pointerdown" });
+  assert.equal(Number(host.style.zIndex || 0), 0, "no listener after unmount");
+});
+
+test("3.18/3.24 review: the LoD preload runs in the mount's own loading window, never after the HUD is shown", async () => {
+  // Measured (review A2-3, Node, real corpus): Blizzard_TrainerUI.lua executes as one 11-18 ms block
+  // and MSBTOptionsPopups.lua as one 24 ms block. No idle slice at 144 Hz (13.9 ms frame) fits an
+  // indivisible file, so an idle preload after the reveal hitched live play; the mount's pending
+  // phase is already a sliced loading window (2.6 s in Node), like the stock clock's add-on.
+  const previousLoadAddon = FrameXmlBoot.prototype.loadAddon;
+  const calls = [];
+  FrameXmlBoot.prototype.loadAddon = async function recordLoad(name) {
+    const host = viewport.children.find((node) => node.id === "framexml-world-host");
+    calls.push({ name, visibility: host?.style.visibility ?? "absent" });
+    return { ok: true, addon: name, status: "loaded", dependencies: [], loaded: [], roots: [] };
+  };
+  try {
+    const mounted = await mountFrameXmlVertical({ viewport, seam: seam("lod-preload") });
+    assert.equal(mounted.ok, true, mounted.message);
+    const preloaded = calls.filter((call) => call.name === "Blizzard_TrainerUI");
+    assert.equal(preloaded.length, 1, "the trainer is in before the mount resolves");
+    assert.deepEqual(calls.filter((call) => call.visibility === "visible").map((call) => call.name), [],
+      "no add-on is loaded while the published HUD is on screen");
+  } finally {
+    FrameXmlBoot.prototype.loadAddon = previousLoadAddon;
     unmountFrameXmlVertical();
   }
 });

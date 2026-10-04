@@ -338,6 +338,48 @@ test("between polls the interval is respected, and concurrent callers share one 
   }
 });
 
+test("10.21 (b): an interval that ran out walks beside the request; only a known change is waited for", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "webclient-dbc-print-"));
+  const client = await looseClient({ "Textures\\One.blp": "BLP-one" });
+  let fingerprint;
+  try {
+    await writeFile(join(directory, "Spell.dbc"), "WDBC-one");
+    let clock = 1_000;
+    fingerprint = new DatasetFingerprint({
+      dbcDirectory: directory, clientDirectory: client, intervalMs: 2_000, now: () => clock, watchArchives: true,
+    });
+    assert.equal(fingerprint.mustWait, true, "no baseline yet: the first request waits");
+    await fingerprint.poll();
+    // The watch may still deliver the fixture's own creation events late (measured on Windows):
+    // walk until it is quiet, as the gateway's two startup polls do.
+    for (let settle = 0; settle < 20 && fingerprint.archiveEventsPending; settle++) {
+      await new Promise((done) => setTimeout(done, 100));
+      await fingerprint.poll();
+    }
+    assert.equal(fingerprint.mustWait, false);
+    assert.equal(fingerprint.dueForWalk, false, "inside the interval there is nothing to walk");
+    clock += 2_000;
+    assert.equal(fingerprint.dueForWalk, true);
+    assert.equal(fingerprint.mustWait, false, "an expired interval alone is no reason to hold a request");
+
+    // A TSWoW publish writes into a patch directory: the watch knows, so the next request waits.
+    await writeFile(join(client, "Data", "ruRU", "patch-ruRU-A.MPQ", "Textures", "Two.blp"), "BLP-two");
+    for (let wait = 0; wait < 500 && !fingerprint.archiveEventsPending; wait++) await new Promise((done) => setTimeout(done, 10));
+    assert.equal(fingerprint.archiveEventsPending, true, "the archive watch reported the write");
+    assert.equal(fingerprint.mustWait, true);
+    assert.equal(fingerprint.dueForWalk, true);
+    const change = await fingerprint.poll();
+    assert.equal(change.archives, true);
+    assert.equal(fingerprint.mustWait, false, "the walk accounted for it");
+  } finally {
+    fingerprint?.close();
+    await rm(directory, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+  const zero = new DatasetFingerprint({ dbcDirectory: tmpdir(), intervalMs: 0 });
+  assert.equal(zero.mustWait, true, "interval 0 (tests) keeps every request waiting");
+});
+
 test("an entry is dropped when a source is installed beside the one it was built from", async () => {
   // The rule that catches "a module was installed" rather than "a module edited its content". A
   // new patch directory can win a path away from the archive that used to answer it without

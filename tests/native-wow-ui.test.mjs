@@ -195,8 +195,10 @@ test("the production HUD owns a WotLK-shaped native skin and paperdoll", async (
     "native microbutton art must not be covered by duplicate shortcut-letter stickers");
   for (const [id, key] of [["character-toggle", "C"], ["inventory-toggle", "B"],
     ["spellbook-toggle", "P"], ["talents-toggle", "N"], ["game-menu-toggle", "Escape"]]) {
-    assert.match(html, new RegExp(`id="${id}"[^>]+aria-label="[^"]+"[^>]+aria-keyshortcuts="${key}"`),
-      `${id} keeps its shortcut in accessibility metadata instead of painting it over the icon`);
+    // L7 4.10: the key lives in accessibility metadata, written from the binding table by ui/HudKeys.ts
+    // (tests/hud-keys.test.mjs) rather than fixed in the markup, where a rebinding made it lie.
+    assert.match(html, new RegExp(`id="${id}"[^>]+aria-label="[^"]+"`), `${id} has an accessible name before the HUD writes its own`);
+    assert.doesNotMatch(html, new RegExp(`id="${id}"[^>]*(?:aria-keyshortcuts|title)=`), `${id}: no static ${key} in the markup`);
   }
   assert.match(html, /id="game-menu-toggle"[\s\S]*micro-button-glyph[^>]*aria-hidden="true"[^>]*>☰</,
     "the sixth control is a menu symbol, not another shortcut letter");

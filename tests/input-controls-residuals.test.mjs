@@ -93,6 +93,7 @@ const gameMenu = await import("../dist/code/browser/framexml/FrameXmlGameMenuCon
 const popups = await import("../dist/code/browser/framexml/FrameXmlPopupsController.js");
 const dom = await import("../dist/code/browser/ui/Dom.js");
 const controls = await import("../dist/code/browser/input/Controls.js");
+const gameMenuModule = await import("../dist/code/browser/ui/GameMenu.js");
 usePanelHost({ viewport: document.body, attach() {} });
 controls.wireControls();
 
@@ -169,6 +170,69 @@ test("a left click on the world with an item on the stock cursor asks DELETE_ITE
     clickWorld();
     assert.deepEqual(again.selections, [undefined]);
   } finally {
+    game.world = undefined;
+  }
+});
+
+// 4.04: before the stock menu is published, Escape is stock ToggleGameMenu's order one step per
+// press (UIParent.lua:2868-2903) — SpellStopCasting, then CloseAllWindows, then ClearTarget, then
+// the menu. It used to close every window, drop the target and never touch the cast on one press.
+test("native Escape: the cast, then the windows, then the target, then the menu — one per press", () => {
+  const world = worldStub();
+  let cancels = 0;
+  world.casts = new Map([[1n, { duration: 3000, startedAt: performance.now() }]]);
+  world.cancelSpellCast = () => { cancels += 1; };
+  world.targetGuid = 5n;
+  game.world = world;
+  dom.auctionWindow.hidden = false;
+  try {
+    escape(false);
+    assert.equal(cancels, 1, "the first press stops the cast");
+    assert.equal(dom.auctionWindow.hidden, false, "and leaves the windows open");
+    assert.equal(world.targetGuid, 5n, "and the target selected");
+    assert.equal(gameMenuModule.gameMenuOpen(), false, "and opens no menu");
+    escape(false);
+    assert.equal(cancels, 1, "a cast already asked to stop is not cancelled again");
+    assert.equal(dom.auctionWindow.hidden, true, "the second press closes the windows");
+    assert.equal(world.targetGuid, 5n, "and only the windows");
+    escape(false);
+    assert.equal(world.targetGuid, undefined, "the third drops the target");
+    assert.equal(gameMenuModule.gameMenuOpen(), false);
+    escape(false);
+    assert.equal(gameMenuModule.gameMenuOpen(), true, "the fourth opens the menu");
+    world.targetGuid = 6n;
+    escape(false);
+    assert.equal(gameMenuModule.gameMenuOpen(), false, "an open menu closes before anything else");
+    assert.equal(world.targetGuid, 6n);
+  } finally {
+    dom.auctionWindow.hidden = true;
+    gameMenuModule.closeGameMenu();
+    game.world = undefined;
+  }
+});
+
+// 4.13: the native logout countdown is the CAMP popup's stand-in, and Escape on it is CAMP's
+// hideOnEscape — CancelLogout — before the menu, the cast or any window.
+test("native Escape with the logout countdown up cancels the logout and does nothing else", () => {
+  const world = worldStub();
+  let cancels = 0;
+  world.logout = { result: 0, instant: false };
+  world.loggedOut = false;
+  world.cancelLogout = () => { cancels += 1; };
+  world.targetGuid = 5n;
+  game.world = world;
+  dom.auctionWindow.hidden = false;
+  try {
+    gameMenuModule.updateLogoutPending(world, true);
+    assert.equal(gameMenuModule.logoutCountdownOpen(), true);
+    escape(false);
+    assert.equal(cancels, 1, "CancelLogout");
+    assert.equal(dom.auctionWindow.hidden, false, "the window stays");
+    assert.equal(world.targetGuid, 5n, "the target stays");
+    assert.equal(gameMenuModule.gameMenuOpen(), false, "no menu");
+  } finally {
+    gameMenuModule.resetLogoutPending();
+    dom.auctionWindow.hidden = true;
     game.world = undefined;
   }
 });

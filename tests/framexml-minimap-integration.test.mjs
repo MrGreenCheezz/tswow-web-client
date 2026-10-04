@@ -324,7 +324,8 @@ test("MPQ Minimap.xml/Lua drives the canned seam and widget adapter", withClient
       candidate.boot.vm.getGlobal("__factionName"),
     ], [
       CANNED_MINIMAP_ZONE.pvpType,
-      CANNED_MINIMAP_ZONE.isSubZonePvP,
+      // The client's second value is 1 or nil, never false (GetZonePVPInfo, Wow.exe 0x0051BA50).
+      CANNED_MINIMAP_ZONE.isSubZonePvP ? 1 : undefined,
       CANNED_MINIMAP_ZONE.factionName,
     ]);
     for (const name of MINIMAP_API) expectedZoneCensus[name] += 1;

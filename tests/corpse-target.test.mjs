@@ -107,6 +107,7 @@ const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js")
 const { game } = await import("../dist/code/browser/game/Context.js");
 const { updateMinimap, minimapSettings } = await import("../dist/code/browser/ui/Minimap.js");
 const { showTarget } = await import("../dist/code/browser/ui/Frames.js");
+const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 const { resetHeadOverlay, showChatBubble, updateHeadOverlay } =
   await import("../dist/code/browser/ui/HeadOverlay.js");
 const { createCamera, projectPoint } = await import("../dist/code/browser/SimpleScene.js");
@@ -242,7 +243,7 @@ test("Л1 «Обыскать» is marked rather than disabled, and says which it
     withTarget(unit(2n, { x: 2, health: 0, dynamicFlags: 0x01 }));
     assert.equal(lootButton.hidden, false);
     assert.equal(lootButton.getAttribute("aria-disabled"), null);
-    assert.equal(lootButton.title, "Обыскать");
+    assert.equal(getTip(lootButton), "Обыскать");
     assert.equal(lootButton.getAttribute("aria-label"), "Обыскать");
     assert.equal(lootButton.disabled, false,
       "marked, never disabled: the client's copy of the bit lags a round-robin handover");
@@ -253,7 +254,7 @@ test("Л1 «Обыскать» is marked rather than disabled, and says which it
     withTarget(unit(2n, { x: 2, health: 0, dynamicFlags: 0x04 }));
     assert.equal(lootButton.hidden, false);
     assert.equal(lootButton.getAttribute("aria-disabled"), "true");
-    assert.equal(lootButton.title, "Здесь нечего обыскивать");
+    assert.equal(getTip(lootButton), "Здесь нечего обыскивать");
     assert.equal(lootButton.getAttribute("aria-label"), "Здесь нечего обыскивать",
       "the markup's static aria-label outranks the tooltip, so the name is rewritten too");
     assert.equal(lootButton.disabled, false);

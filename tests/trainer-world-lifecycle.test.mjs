@@ -155,7 +155,7 @@ test("matching trainer success survives the refresh request until the new list a
   connection.push(OPCODES.SMSG_TRAINER_BUY_SUCCEEDED, buySucceededPacket(guid, 42));
   await settle();
 
-  assert.deepEqual(client.merchantMessage, { text: "Изучено заклинание 42", error: false });
+  assert.deepEqual(client.merchantMessage, { text: "Изучено новое заклинание.", error: false });
   assert.equal(notifications, 1);
   assert.equal(connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_TRAINER_LIST).length, 1);
   client.close();

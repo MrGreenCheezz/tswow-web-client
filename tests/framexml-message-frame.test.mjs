@@ -249,10 +249,13 @@ test("hidden message mutations defer private DOM work until one reveal", () => {
   assert.equal(layer.replaceChildrenCalls, baseline, "hidden updates do not rebuild lines");
   assert.equal(layer.children.length, 0);
   bridge.Show(chat);
-  assert.equal(layer.replaceChildrenCalls, baseline + 1, "reveal paints latest history once");
+  // Once: one rebuild at most — since 02.10 none, the two lines are appended to the empty layer.
+  const revealed = layer.replaceChildrenCalls;
+  assert.ok(revealed - baseline <= 1, "reveal paints latest history once");
   assert.deepEqual(layer.children.map((line) => line.textContent), ["hidden-one", "hidden-two"]);
   renderer.sync();
-  assert.equal(layer.replaceChildrenCalls, baseline + 1, "unchanged revealed state stays stable");
+  assert.equal(layer.replaceChildrenCalls, revealed, "unchanged revealed state stays stable");
+  assert.equal(layer.children.length, 2);
   renderer.destroy();
 });
 

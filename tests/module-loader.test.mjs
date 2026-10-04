@@ -810,3 +810,112 @@ test("a module's stylesheets become one style node, and unloading takes it away"
     gateway.restore();
   }
 });
+
+/* ---------------------------------------------------------------------------------------------
+ * 9.08 — one studio screen, one window: the JSON window steps aside while the Lua owns its opcode
+ * ------------------------------------------------------------------------------------------- */
+
+const microtask = () => new Promise((resolve) => queueMicrotask(resolve));
+const studioScreen = (id, opcodeIn, opcodeOut, inlineOpcode = opcodeIn + 100) => windowFile(id, {
+  slash: id, binding: `Key_${id}`,
+  packets: { enabled: true, opcodeIn, opcodeOut },
+  messages: { messages: [{ ...shopState, name: `${id}.Inline`, opcode: inlineOpcode }] },
+});
+
+test("9.08 a window whose packet opcode the Lua subscribes to is taken down, its command, key and schemas with it", async () => {
+  // Either side of the packet pair, or an opcode only its inline messages use.
+  for (const luaOpcode of [4001, 4002, 4101]) {
+    const gateway = fakeGateway({
+      "/modules/index": index(entry("shop", { windows: [{ file: "shop.json" }, { file: "bank.json" }] })),
+      "/modules/ui/shop/shop.json": studioScreen("shop", 4001, 4002),
+      "/modules/ui/shop/bank.json": studioScreen("bank", 4010, 4011),
+    });
+    const { loader, packets, windows, commands, bindings } = loaderFor();
+    try {
+      await loader.load();
+      assert.equal(windows.size, 2);
+      loader.noteLuaOpcodes(new Set([luaOpcode]));
+      assert.equal(windows.size, 2, "applied on a microtask");
+      await microtask();
+      assert.deepEqual(windows.list().map((window) => window.id), ["bank"], `Lua on ${luaOpcode}`);
+      assert.deepEqual(loader.suppressed.map(({ module, file, windowId, opcode }) => ({ module, file, windowId, opcode })),
+        [{ module: "shop", file: "shop.json", windowId: "shop", opcode: luaOpcode }]);
+      assert.deepEqual([...commands.keys()], ["bank"], "the twin's slash command is gone, the other window's stays");
+      assert.deepEqual([...bindings.keys()], ["module:shop:Key_bank"]);
+      assert.equal(packets.message("shop.Inline"), undefined, "its inline schema is forgotten");
+      assert.ok(packets.message("bank.Inline"));
+      assert.deepEqual([...loader.problems], [], "stepping aside is not a problem");
+    } finally {
+      loader.unload();
+      gateway.restore();
+    }
+  }
+});
+
+test("9.08 a window file that arrives after the Lua claimed its opcode is never registered; others still load", async () => {
+  const gateway = fakeGateway({
+    "/modules/index": index(entry("shop", { windows: [{ file: "shop.json" }, { file: "bank.json" }] })),
+    "/modules/ui/shop/shop.json": studioScreen("shop", 4001, 4002),
+    "/modules/ui/shop/bank.json": studioScreen("bank", 4010, 4011),
+  });
+  const { loader, packets, windows, commands } = loaderFor();
+  try {
+    loader.noteLuaOpcodes(new Set([4001]));
+    await microtask();
+    await loader.load();
+    assert.deepEqual(windows.list().map((window) => window.id), ["bank"]);
+    assert.equal(packets.message("shop.Inline"), undefined);
+    assert.deepEqual([...commands.keys()], ["bank"]);
+    assert.equal(loader.suppressed.length, 1);
+    // The file counts as loaded: the next poll does not fetch it again.
+    const asked = gateway.asked.length;
+    await loader.poll();
+    assert.deepEqual(gateway.asked.slice(asked), ["/modules/index"]);
+    assert.deepEqual([...loader.problems], []);
+  } finally {
+    loader.unload();
+    gateway.restore();
+  }
+});
+
+test("9.08 when the Lua lets go (unloaded), the next poll brings the window back", async () => {
+  const gateway = fakeGateway({
+    "/modules/index": index(entry("shop", { windows: [{ file: "shop.json" }] })),
+    "/modules/ui/shop/shop.json": studioScreen("shop", 4001, 4002),
+  });
+  const { loader, windows, commands } = loaderFor();
+  try {
+    await loader.load();
+    loader.noteLuaOpcodes(new Set([4002]));
+    await microtask();
+    assert.equal(windows.size, 0);
+    loader.noteLuaOpcodes(new Set());
+    await microtask();
+    await loader.poll();
+    assert.deepEqual(windows.list().map((window) => window.id), ["shop"]);
+    assert.deepEqual([...commands.keys()], ["shop"]);
+    assert.deepEqual(loader.suppressed, []);
+  } finally {
+    loader.unload();
+    gateway.restore();
+  }
+});
+
+test("9.08 a window without packets, or with packets disabled, is not a twin of anything", async () => {
+  const gateway = fakeGateway({
+    "/modules/index": index(entry("shop", { windows: [{ file: "plain.json" }, { file: "off.json" }] })),
+    "/modules/ui/shop/plain.json": windowFile("plain"),
+    "/modules/ui/shop/off.json": windowFile("off", { packets: { enabled: false, opcodeIn: 4001, opcodeOut: 4002 } }),
+  });
+  const { loader, windows } = loaderFor();
+  try {
+    await loader.load();
+    loader.noteLuaOpcodes(new Set([0, 4001, 4002]));
+    await microtask();
+    assert.deepEqual(windows.list().map((window) => window.id).sort(), ["off", "plain"]);
+    assert.deepEqual(loader.suppressed, []);
+  } finally {
+    loader.unload();
+    gateway.restore();
+  }
+});

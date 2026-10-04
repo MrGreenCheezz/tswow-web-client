@@ -841,3 +841,28 @@ test("the liquid of the real Stormwind reads as five grids and 2,702 wet cells",
   }
   assert.equal(wet, 2702);
 });
+
+test("5.12: the ceiling over a head is the lowest storey above it, not the highest, and never a wall", async () => {
+  const world = new CollisionWorld();
+  world.set(1, new CollisionMesh(floor(0)));
+  world.set(2, new CollisionMesh(floor(4)));
+  world.set(3, new CollisionMesh(floor(9)));
+  world.set(4, new CollisionMesh(wall(0.5, -2, 20)));
+  // A head rising from 2 to 12 meets the storey at 4 first.
+  assert.equal(world.ceilingAbove(0, 0, 2, 12), 4);
+  // Above the first storey it meets the second; the floor below the interval does not count.
+  assert.equal(world.ceilingAbove(0, 0, 5, 12), 9);
+  assert.equal(world.ceilingAbove(0, 0, 9.5, 12), undefined);
+  // Off the building there is nothing over the head.
+  assert.equal(world.ceilingAbove(50, 0, 0, 100), undefined);
+});
+
+test("5.07: a wall between the new step and the old one stops a walker", async () => {
+  const { STEP_HEIGHT } = await import("../dist/code/browser/game/Physics.js");
+  const world = new CollisionWorld();
+  world.set(1, new CollisionMesh(wall(2, 0, 1.2)));
+  const blocked = world.pushOut(2.2, 0, 0, 0.4, 2, STEP_HEIGHT);
+  assert.ok(blocked.x >= 2 + 0.4 - 1e-3, `a 1.2 lip let the walker into it at ${blocked.x}`);
+  const old = world.pushOut(2.2, 0, 0, 0.4, 2, 1.6);
+  assert.deepEqual([old.x, old.y], [2.2, 0], "under the old 1.6 it was a kerb");
+});

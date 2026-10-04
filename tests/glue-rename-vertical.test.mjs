@@ -71,8 +71,11 @@ test("the stock rename dialog opens for a marked character and its OK sends the 
 
     // OK with a name: the dialog's own OnClick calls RenameCharacter(selectedIndex, text).
     lua('CharacterRenameEditBox:SetText("Ана"); CharacterRenameButton1:Click(); return 1');
+    assert.equal(dialog?.visible, false, "RenameCharacter answered 1, so the stock OnClick hid it");
+    // The request goes out once the list request CharacterSelect_OnShow made has its answer: one
+    // reader on the connection at a time.
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(renames, [[characters[1].guid, "Ана"]]);
-    assert.equal(dialog?.visible, false, "RenameCharacter answered true, so the stock OnClick hid it");
 
     // The core refuses (89): FORCE_RENAME_CHARACTER brings the dialog back with CHAR_RENAME_FAILED.
     for (let round = 0; round < 6; round++) await new Promise((resolve) => setImmediate(resolve));

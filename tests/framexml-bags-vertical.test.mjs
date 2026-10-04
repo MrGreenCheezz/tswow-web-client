@@ -120,8 +120,16 @@ const EXPECTED_DELTA = Object.freeze({
   api: 6,
   // The bag closure also resolves five baseline errors, including four occurrences of the
   // missing CONTAINER_OFFSET_X constant while UIParent lays out the incomplete baseline.
-  errors: -8,
-  distinctErrors: -5,
+  // DurabilityFrame.xml joined both arms (3.06, 30.09): in the no-bags baseline UIParent's layout
+  // reads its durabilityXOffset from the missing container offsets and raises twice more; the bag
+  // closure resolves those too, measured -8/-5 -> -10/-7. The full vertical raises none of them.
+  // L5c-review (04.10): VehicleMenuBar.xml joined both arms (11.02-F2, stock TOC 142). Its stock
+  // VehicleSeatIndicator_OnEvent runs VehicleSeatIndicator_UnloadTextures on PLAYER_ENTERING_WORLD
+  // (VehicleMenuBar.lua:962-964 → :920 UIParent_ManageFramePositions): one more layout pass, which
+  // raises at UIParent.lua:1916 only in the no-bags baseline. Measured with VehicleMenuBar.xml left
+  // out of both arms: -10/-7 again; with it: baseline 35 -> candidate 24, -11/-7.
+  errors: -11,
+  distinctErrors: -7,
 });
 const EXPECTED_BAG_API_SITES = Object.freeze({
   // BankFrame.lua now defines UpdateBagButtonHighlight in both arms, so its two
@@ -129,7 +137,9 @@ const EXPECTED_BAG_API_SITES = Object.freeze({
   PlaySound: 14,
   IsModifiedClick: 11,
   GetContainerItemInfo: 9,
-  OpenCoinPickupFrame: 6,
+  // L5c-review (04.10): OpenCoinPickupFrame (6) and UpdateCoinPickupFrame (1) left this census when
+  // CoinPickupFrame.xml joined the vertical (L5c 3.09, stock TOC 48): CoinPickupFrame.lua defines
+  // both in both arms, so MoneyFrame.lua's call sites are corpus-owned.
   ResetCursor: 6,
   GetContainerNumSlots: 4,
   DropCursorMoney: 3,
@@ -191,7 +201,6 @@ const EXPECTED_BAG_API_SITES = Object.freeze({
   ShowContainerSellCursor: 1,
   SocketContainerItem: 1,
   SpellCanTargetItem: 1,
-  UpdateCoinPickupFrame: 1,
   WithdrawGuildBankMoney: 1,
 });
 const decoder = new TextDecoder("utf-8");
@@ -415,12 +424,19 @@ test("MPQ bags vertical loads stock item templates and concrete container roots"
       ["interface/framexml/mainmenubarmicrobuttons.lua", 39, 2],
       ["interface/framexml/paperdollframe.lua", 2161, 1],
       ["interface/framexml/paperdollframe.lua", 2335, 1],
-      ["interface/framexml/uiparent.lua", 1937, 4],
+      // DurabilityFrame.xml (3.06, 30.09): the no-bags baseline's durabilityXOffset starts from the
+      // missing CONTAINER_OFFSET_X (UIParent.lua:1914, :1916), cleared by the same closure.
+      ["interface/framexml/uiparent.lua", 1914, 2],
+      // L5c-review (04.10): the third :1916 pass is VehicleSeatIndicator_UnloadTextures on
+      // PLAYER_ENTERING_WORLD (VehicleMenuBar.xml, 11.02-F2; see EXPECTED_DELTA.errors).
+      ["interface/framexml/uiparent.lua", 1916, 3],
+      // Two of the four :1937 passes now stop earlier, at :1914/:1916.
+      ["interface/framexml/uiparent.lua", 1937, 2],
       ["interface/framexml/voicechat.lua", 236, 1],
       // MailFrame.xml's lock overlay anchors to SendMailAttachment1, an ItemButtonTemplate
       // button whose template lives in this closure's ItemButtonTemplate.xml.
       ["SendMailFrameLockSendMail:OnLoad", 2, 1],
-    ], "the bag closure clears the exact six missing-dependency errors");
+    ], "the bag closure clears the exact eight missing-dependency errors");
     const candidateSpecificErrors = candidate.inventory.errors.filter(
       (error) => !baselineErrors.has(errorKey(error)),
     );
@@ -501,11 +517,19 @@ test("stock backpack click opens, refreshes, and closes the ContainerFrame seam"
     const carriedContainer = candidate.boot.bridge.getFrame("ContainerFrame2");
     assert.ok(carriedButton, "stock CharacterBag0Slot is present");
     assert.ok(carriedContainer, "stock ContainerFrame2 is present");
+    // Plan 1.15: SetBagPortraitTexture (ContainerFrame.lua:507) draws bag 1's item icon, inventory
+    // slot 20, into the frame's round portrait; the backpack's portrait is not the bag icon.
+    const bagIcon = "Interface\\Icons\\INV_Misc_Bag_08";
+    seam.setInventoryItem(20, { entry: 4496, texture: bagIcon, count: 1, quality: 1 });
+    assert.notEqual(candidate.boot.bridge.getFrame("ContainerFrame1Portrait")?.texture, bagIcon);
     assert.equal(candidate.boot.bridge.Click(carriedButton, "LeftButton", false), true,
       "the stock carried-bag click dispatches");
     assert.equal(carriedContainer.visible, true,
       "the stock carried-bag click opens ContainerFrame2 through ToggleBag");
     assert.equal(carriedButton.checked, true, "the carried-bag frame checks its stock button");
+    const carriedPortrait = candidate.boot.bridge.getFrame("ContainerFrame2Portrait");
+    assert.equal(carriedPortrait?.texture, bagIcon, "the bag's icon is the container's portrait");
+    assert.equal(carriedPortrait?.portrait, true, "drawn as a round portrait (SetPortraitToTexture)");
     const carriedIcon = candidate.boot.bridge.getFrame("ContainerFrame2Item4IconTexture");
     const carriedCount = candidate.boot.bridge.getFrame("ContainerFrame2Item4Count");
     assert.equal(carriedIcon?.texture, "Interface\\Icons\\INV_Potion_54",

@@ -187,6 +187,8 @@ async function nativeActionBar() {
 
   const bar = await isolatedUi("ActionBar", {
     "../../world/ActionBarProtocol.js": protocol,
+    // 4.05: the drag payloads and the strict drop reader live there now.
+    "./ActionDrag.js": await import("../dist/code/browser/ui/ActionDrag.js"),
     "../input/Bindings.js": bindings,
     "../game/Context.js": context,
     "../game/BonusBar.js": await bonusBarModule(),

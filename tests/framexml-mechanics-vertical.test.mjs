@@ -30,10 +30,10 @@ const SEAM_NAMES = [
   "GetQuestTimers", "GetQuestIndexForTimer", "IsMacClient", "NoPlayTime", "PartialPlayTime", "UnitIsTalking",
   "GetArenaTeam", "GetPossessInfo", "IsPossessBarVisible", "SetChatWindowLocked",
   "SetChatWindowUninteractable", "SetChatWindowDocked", "SendAddonMessage", "GetBattlefieldWinner",
-  "RequestBattlefieldPositions", "RegisterStaticConstants",
+  "RequestBattlefieldPositions",
 ];
 /** Names whose Lua half wraps the binding (the CVar read, the table fill). */
-const WRAPPED_NAMES = ["IsThreatWarningEnabled", "FillLocalizedClassList"];
+const WRAPPED_NAMES = ["IsThreatWarningEnabled", "FillLocalizedClassList", "RegisterStaticConstants"];
 
 async function load(seam = new CannedWorldSeam()) {
   const boot = new FrameXmlBoot({
@@ -77,7 +77,9 @@ test("every census name resolves to the seam, and the stock Lua reaches each ans
       for _ in pairs(LOCALIZED_CLASS_NAMES_MALE) do n = n + 1 end
       return n, LOCALIZED_CLASS_NAMES_MALE.WARRIOR, LOCALIZED_CLASS_NAMES_FEMALE.MAGE, LOCALIZED_CLASS_NAMES_MALE.DEATHKNIGHT`, 4),
     [10, "Воин", "Маг", "Рыцарь смерти"]);
-    assert.deepEqual(lua(boot, "return type(STATIC_CONSTANTS), next(STATIC_CONSTANTS)", 2), ["table", undefined]);
+    // 8.17: Constants.lua:475 hands STATIC_CONSTANTS over and, as Wow.exe 0x5ac320, gets the lag kinds back.
+    assert.deepEqual(lua(boot, "local c = STATIC_CONSTANTS return c.Loot, c.AuctionHouse, c.Mail, c.Chat, c.Movement, c.Spell", 6),
+      [1, 2, 3, 4, 5, 6]);
 
     // The threatWarning CVar: the client default, the options dropdown's write, and its default.
     assert.deepEqual(lua(boot, `return GetCVar("threatWarning"), GetCVarDefault("threatWarning"), IsThreatWarningEnabled()`, 3), ["3", "3", true]);

@@ -561,7 +561,8 @@ test("melee and ranged auto-combat switch modes with explicit wire cancellation"
     OPCODES.CMSG_ATTACK_SWING,
   ]);
   assert.equal(client.autoRepeatSpellId, undefined);
-  assert.equal(client.attacking, true);
+  // 5.21: a request until SMSG_ATTACK_START answers it (optimistic-state.test.mjs).
+  assert.equal(client.attackRequested, true);
   client.close();
 });
 

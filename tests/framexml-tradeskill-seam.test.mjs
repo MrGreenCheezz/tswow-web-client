@@ -319,8 +319,9 @@ test("a muted probe sends nothing and raises nothing; unlearning the line closes
 
 test("the bindings are the seam's, and the prelude resolves ENSCRIBE and the slot names in Lua", () => {
   // The spell cursor is shared with the glyph tab (FrameXmlGlyph.ts): its two names answer the glyph
-  // cursor first and otherwise are exactly these.
-  const composed = new Set(["SpellIsTargeting", "SpellStopTargeting"]);
+  // cursor first and otherwise are exactly these; SpellCanTargetItem answers the item-target cursor
+  // (2.05, FrameXmlItemTargeting.ts) first the same way.
+  const composed = new Set(["SpellIsTargeting", "SpellStopTargeting", "SpellCanTargetItem"]);
   for (const name of Object.keys(FRAMEXML_TRADESKILL_BINDINGS)) {
     if (composed.has(name)) {
       assert.deepEqual([...FRAMEXML_SEAM_BINDINGS[name]({}, [])], [...FRAMEXML_TRADESKILL_BINDINGS[name]({}, [])],
@@ -508,4 +509,28 @@ test("GetTradeSkillNumMade answers a stack's range, and a recipe without reagent
   call("TradeSkillOnlyShowMakeable", 1);
   assert.deepEqual(rows(call).map(([name]) => name), ["Рецепт без реагентов"],
     "no blasting powder in the bags hides the dynamite; nothing to lack keeps the other");
+});
+
+test("an enchant over an enchanted item asks REPLACE_ENCHANT; ReplaceEnchant casts it; slot 7 of a trade takes it", () => {
+  const { call, world, model, events } = fixture({ open: FRAMEXML_CANNED_ENCHANTING });
+  world.replaceNames.set(FRAMEXML_CANNED_BRACERS_GUID, ["Старые чары", "Новые чары"]);
+  call("DoTradeSkill", 3, 1);
+  events.length = 0;
+  assert.equal(model.targetItem(FRAMEXML_CANNED_BRACERS_GUID), true);
+  assert.deepEqual(world.calls, [], "nothing before the answer (Wow.exe 0x005210d0)");
+  assert.deepEqual(events, [["REPLACE_ENCHANT", "Старые чары", "Новые чары"]]);
+  assert.deepEqual(call("SpellCanTargetItem"), [true], "the enchant still waits");
+  assert.equal(model.replaceEnchant(), true);
+  assert.deepEqual(world.calls, [{ kind: "item", spellId: 7418, guid: FRAMEXML_CANNED_BRACERS_GUID }]);
+  assert.equal(model.replaceEnchant(), false, "nothing waits any more");
+
+  call("DoTradeSkill", 3, 1);
+  world.tradeReplaceNames = ["Чары партнёра", "Новые чары"];
+  events.length = 0;
+  assert.equal(model.targetTradeSlot(), true);
+  assert.deepEqual(events, [["TRADE_REPLACE_ENCHANT", "Чары партнёра", "Новые чары"]]);
+  assert.equal(world.calls.length, 1, "asked first (0x005198a0)");
+  assert.equal(model.targetTradeSlot(true), true, "ReplaceTradeEnchant");
+  assert.deepEqual(world.calls.at(-1), { kind: "trade", spellId: 7418 });
+  assert.equal(model.targetTradeSlot(), false, "the enchant went");
 });

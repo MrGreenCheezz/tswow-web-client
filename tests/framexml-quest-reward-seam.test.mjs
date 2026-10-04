@@ -74,7 +74,8 @@ test("Live quest leaderboard reads sparse progress from the original server slot
     }]]),
   };
   const seam = new LiveWorldSeam({ world: () => world, store: () => undefined });
-  assert.deepEqual(seam.questLogLeaderBoard(1, 1), ["Третий слот: 7/10", "monster", false]);
+  // Log line 1 is the quest's zone header (FrameXmlQuestLog.ts), the quest is line 2.
+  assert.deepEqual(seam.questLogLeaderBoard(1, 2), ["Третий слот: 7/10", "monster", false]);
 });
 
 class FakeEvents {
@@ -162,7 +163,8 @@ test("Live reward metadata is prefetched outside getters and repaints once when 
   });
   const pump = { fire: (event, ...args) => { fired.push([event, ...args]); return 1; }, now: () => 10 };
   seam.attach(pump);
-  seam.selectQuestLogEntry(1);
+  // Log line 1 is the quest's zone header (FrameXmlQuestLog.ts), the quest is line 2.
+  seam.selectQuestLogEntry(2);
   fired.length = 0;
   assert.equal(seam.questLogRewardInfo(1), undefined, "unresolved item metadata remains nil");
   assert.equal(seam.questLogRewardSpell(), undefined, "unresolved spell metadata remains nil");

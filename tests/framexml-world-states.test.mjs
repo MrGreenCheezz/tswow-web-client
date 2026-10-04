@@ -161,14 +161,15 @@ test("world-state text and signatures advance on a real timer without emitting d
   const resolver = new FrameXmlWorldStates(() => [row], () => snapshot);
   const events = [];
   resolver.attach({ fire(event) { events.push(event); return 1; }, now: () => 0 });
-  assert.deepEqual(resolver.rows()[0].slice(0, 3), [0, 1, "Score 7, remaining 1:00"]);
+  // L3-review: Wow.exe 0x576e50 writes "%02d:%02d" under an hour (format string at 0xa11554).
+  assert.deepEqual(resolver.rows()[0].slice(0, 3), [0, 1, "Score 7, remaining 01:00"]);
   assert.deepEqual(events, ["UPDATE_WORLD_STATES"]);
   resolver.tick();
   assert.equal(events.length, 1);
   snapshot.serverTime = 1_001;
   resolver.tick();
   assert.equal(events.length, 2, "timer text changed by one server second");
-  assert.equal(resolver.rows()[0][2], "Score 7, remaining 0:59");
+  assert.equal(resolver.rows()[0][2], "Score 7, remaining 00:59"); // L3-review: "%02d:%02d"
   states.set(10, 8);
   resolver.tick();
   assert.equal(events.length, 3, "state text changes trigger an original UI refresh");
@@ -253,4 +254,15 @@ test("stock MPQ WorldStateFrame.lua paints and updates a capture bar from DBC st
     boot.close();
     await chain.close();
   }
+});
+
+// L3-review: Wow.exe 0x576e50 measures `%Nk` against the server clock (0x548700) and writes
+// "%02d:%02d" under an hour (0xa11554), "%d:%02d:%02d" from one hour on (0xa11560); never negative.
+test("the %Nk countdown pads minutes under an hour and shows hours from one hour on", () => {
+  const at = (seconds) => formatWorldStateText("%20k", new Map([[20, 1_000 + seconds]]), 1_000);
+  assert.equal(at(9), "00:09");
+  assert.equal(at(3_599), "59:59");
+  assert.equal(at(3_600), "1:00:00");
+  assert.equal(at(36_061), "10:01:01");
+  assert.equal(at(-5), "00:00", "a passed deadline is clamped at zero");
 });

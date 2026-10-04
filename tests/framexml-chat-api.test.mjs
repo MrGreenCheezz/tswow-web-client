@@ -205,7 +205,8 @@ test("group, guild, friend and ignore calls take a name, a unit token or the tar
   assert.deepEqual(world.calls, [
     ["rollDice", 1, 100], ["rollDice", 10, 50],
     ["inviteToGroup", "Foo"], ["inviteToGroup", "Target"],
-    ["removeFromGroup", 0x77n],
+    // 5.25: with the reason argument (none here), as Wow.exe UninviteUnit sends it.
+    ["removeFromGroup", 0x77n, ""],
     ["inviteToGuild", "Foo"], ["removeGuildMember", "Foo"], ["promoteGuildMember", "Foo"],
     ["demoteGuildMember", "Foo"], ["setGuildLeader", "Foo"], ["setGuildMotd", "motd"],
     ["leaveGuild"], ["requestGuildInfo"],

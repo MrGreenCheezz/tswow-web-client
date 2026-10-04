@@ -49,12 +49,12 @@ test("a group member's loot push never confirms an item in my bags", async () =>
 
     connection.push(OPCODES.SMSG_ITEM_PUSH_RESULT, itemPush(0x1234n, 4306));
     await settle();
-    assert.deepEqual(client.itemMessage, { text: "Получено: предмет 4306 ×1", error: false });
+    assert.deepEqual(client.itemMessage, { text: "Получено: предмет ×1", error: false });
     assert.equal(messageEvents, 1, "my own loot is still confirmed");
 
     connection.push(OPCODES.SMSG_ITEM_PUSH_RESULT, itemPush(0x7777n, 6948));
     await settle();
-    assert.deepEqual(client.itemMessage, { text: "Получено: предмет 4306 ×1", error: false },
+    assert.deepEqual(client.itemMessage, { text: "Получено: предмет ×1", error: false },
       "the peer's later loot cannot replace my own result");
     assert.equal(messageEvents, 1);
   } finally {

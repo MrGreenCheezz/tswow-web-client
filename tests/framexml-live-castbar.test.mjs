@@ -4,6 +4,12 @@ import test from "node:test";
 // World cast events have two subscribers per attach: the player cast bar and the arena opponents' cast
 // bars (FrameXmlArena.ts). The checks below are about duplicates on re-attach and a clean detach.
 const CAST_SUBSCRIBERS = 2;
+// seam-sweep: the combat log's SPELL_CAST_START entries no longer hear the bar's SPELL_CAST_START — since
+// 3.01-castlog they come from the bus event SPELL_START (the whole SMSG_SPELL_START, Wow.exe 0x00806700 →
+// 0x00805330 → 0x006fbe50 → 0x00751920; WORK_PLAN 3.01, «03.10, линия stock-small (`3.01-castlog`)»), so
+// SPELL_CAST_START has the two bar subscribers and SPELL_START the combat log's one.
+const CAST_START_SUBSCRIBERS = CAST_SUBSCRIBERS;
+const SPELL_START_SUBSCRIBERS = 1;
 
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const { WorldClient } = await import("../dist/code/world/WorldClient.js");
@@ -57,6 +63,8 @@ function fixture({ channel = false, castCount = 17, metadata = true } = {}) {
   let pumpNow = 123.456;
   const pump = {
     fire: (event, ...args) => {
+      // The combat log (3.01) hears the same cast edges; nobody here listens to it.
+      if (event.startsWith("COMBAT_LOG_EVENT")) return 0;
       fired.push([event, ...args]);
       return 1;
     },
@@ -110,9 +118,14 @@ test("cast start, delayed, interrupted and stop events carry the player and cast
   events.emit("SPELL_CAST_DELAYED", { casterGuid: selfGuid, delay: 125 });
   assert.deepEqual(fired, [["UNIT_SPELLCAST_DELAYED", "player", "Test Spell", "Rank 2", 17]]);
 
+  // 3.02: the outcome comes first (Wow.exe 0x007fecc0: INTERRUPTED), then STOP for the current cast.
   fired.length = 0;
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 17, result: 40 });
   events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: true });
-  assert.deepEqual(fired, [["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 17]]);
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 17],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 17],
+  ]);
   world.casts.delete(selfGuid);
   assert.equal(seam.unitCastingInfo("player"), undefined);
 
@@ -165,11 +178,15 @@ test("attach seeds an active ordinary cast before its world stop edge", () => {
     spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 32,
   });
   seam.attach(pump);
-  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS);
   fired.length = 0;
   world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 32, result: 40 });
   events.emit("SPELL_CAST_STOP", { casterGuid: selfGuid, spellId: 42, interrupted: true });
-  assert.deepEqual(fired, [["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 32]]);
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 32],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 32],
+  ]);
   seam.detach();
 });
 
@@ -187,7 +204,7 @@ test("attach seeds an active channel so its deleted-world stop remains CHANNEL_S
   seam.detach();
 });
 
-test("cast stop reason maps failure, interruption and success without guessing", () => {
+test("3.02: the cast result raises FAILED/INTERRUPTED/SUCCEEDED before STOP, as Wow.exe 0x007fecc0", () => {
   const { events, world, seam, pump, fired, selfGuid } = fixture({ castCount: 41 });
   seam.attach(pump);
   fired.length = 0;
@@ -195,6 +212,17 @@ test("cast stop reason maps failure, interruption and success without guessing",
   events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
   fired.length = 0;
   world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 41, result: 12 });
+  events.emit("SPELL_CAST_STOP", {
+    casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "failed",
+  });
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_FAILED", "player", "Test Spell", "Rank 2", 41],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 41],
+  ]);
+  // The core's second packet of the pair: the outcome again, but no cast is current — no STOP.
+  fired.length = 0;
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 41, result: 12 });
   events.emit("SPELL_CAST_STOP", {
     casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "failed",
   });
@@ -206,10 +234,14 @@ test("cast stop reason maps failure, interruption and success without guessing",
   events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
   fired.length = 0;
   world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 42, result: 41 });
   events.emit("SPELL_CAST_STOP", {
     casterGuid: selfGuid, spellId: 42, interrupted: true, reason: "interrupted",
   });
-  assert.deepEqual(fired, [["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 42]]);
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_INTERRUPTED", "player", "Test Spell", "Rank 2", 42],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 42],
+  ]);
 
   world.casts.set(selfGuid, {
     spellId: 42, startedAt: 900, duration: 2500, channel: false, castCount: 43,
@@ -217,10 +249,14 @@ test("cast stop reason maps failure, interruption and success without guessing",
   events.emit("SPELL_CAST_START", { casterGuid: selfGuid, spellId: 42, castTime: 2500, channel: false });
   fired.length = 0;
   world.casts.delete(selfGuid);
+  events.emit("SPELL_CAST_RESULT", { casterGuid: selfGuid, spellId: 42, castCount: 43, result: 187 });
   events.emit("SPELL_CAST_STOP", {
     casterGuid: selfGuid, spellId: 42, interrupted: false, reason: "success",
   });
-  assert.deepEqual(fired, [["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 43]]);
+  assert.deepEqual(fired, [
+    ["UNIT_SPELLCAST_SUCCEEDED", "player", "Test Spell", "Rank 2", 43],
+    ["UNIT_SPELLCAST_STOP", "player", "Test Spell", "Rank 2", 43],
+  ]);
 });
 
 test("active cast uses a stable synchronous fallback when spell metadata is unavailable", () => {
@@ -284,13 +320,15 @@ test("non-self casts are ignored and detach removes every cast subscription", ()
   events.emit("SPELL_CAST_START", { casterGuid: 0x99n, spellId: 42, castTime: 2500, channel: false });
   events.emit("SPELL_CAST_STOP", { casterGuid: 0x99n, spellId: 42, interrupted: false });
   assert.deepEqual(fired, []);
-  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS);
+  assert.equal(events.listenerCount("SPELL_START"), SPELL_START_SUBSCRIBERS); // seam-sweep
   assert.equal(events.listenerCount("SPELL_CAST_STOP"), CAST_SUBSCRIBERS);
   assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), CAST_SUBSCRIBERS);
   assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), CAST_SUBSCRIBERS);
 
   seam.detach();
   assert.equal(events.listenerCount("SPELL_CAST_START"), 0);
+  assert.equal(events.listenerCount("SPELL_START"), 0); // seam-sweep
   assert.equal(events.listenerCount("SPELL_CAST_STOP"), 0);
   assert.equal(events.listenerCount("SPELL_CAST_DELAYED"), 0);
   assert.equal(events.listenerCount("SPELL_CHANNEL_UPDATE"), 0);

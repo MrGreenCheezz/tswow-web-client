@@ -232,3 +232,190 @@ test("a throwing owner is demoted and the click stays native", () => {
     game.scene = undefined;
   }
 });
+
+/**
+ * 5.05: a right click on a unit the player may fight starts the swing (Npc.ts `interactWithGuid`,
+ * after the corpse branch): always on a hostile one, on a neutral one only when it offers no
+ * service. Reactions come from a stub faction table; template 1 is the player's.
+ */
+function fightWorld(units) {
+  const selections = [];
+  const attacks = [];
+  const gossips = [];
+  const objects = new Map([[1n, {
+    guid: 1n, typeId: 4,
+    fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100], [UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 1],
+      [UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, 0x8]]),
+  }]]);
+  for (const { guid, template, npcFlags = 0 } of units) {
+    objects.set(guid, {
+      guid, typeId: 3,
+      fields: new Map([[UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, 100], [UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, template],
+        [UPDATE_FIELDS.UNIT_NPC_FLAGS.offset, npcFlags]]),
+    });
+  }
+  const world = {
+    selections, attacks, gossips,
+    state: { selfGuid: 1n, objects }, targetGuid: undefined, chatLog: [], forcedReactions: new Map(),
+    // The selection is recorded rather than kept, so the target frame stays on its empty branch.
+    selectTarget(guid) { selections.push(guid); this.lastSelected = guid; },
+    startAttack() { attacks.push(this.lastSelected); },
+    openGossip(guid) { gossips.push(guid); },
+    openLoot() {}, closeAuctionHouse() {}, cancelTrade() {}, closeBank() {}, closeLoot() {}, aurasFor: () => [],
+    displayName: () => "", closeGossip() {}, closeVendor() {}, closeTrainer() {}, closeNpcServices() {},
+  };
+  return world;
+}
+
+/** Template 2 hostile, 3 neutral, 4 friendly to template 1. */
+const factionStub = {
+  ready: true,
+  reaction: (_mine, theirs) => (theirs === 2 ? -1 : theirs === 4 ? 1 : 0),
+  factionOf: (template) => template * 10,
+  // 11.02-tails-review: the /dbc/reputation catalog is in and none of these factions keeps a
+  // reputation, so 0x00729530's reaction test is judged on the masks (UnitInteractGate.ts).
+  reputationCatalog: { version: 1, factions: {} },
+};
+
+test("5.05 a right click on a hostile unit starts the swing, and on a friend or a neutral innkeeper it does not", () => {
+  const HOSTILE = 20n;
+  const NEUTRAL_KEEPER = 21n;
+  const FRIEND = 22n;
+  const NEUTRAL_BOAR = 23n;
+  const world = fightWorld([
+    { guid: HOSTILE, template: 2 },
+    { guid: NEUTRAL_KEEPER, template: 3, npcFlags: 0x1 },
+    { guid: FRIEND, template: 4 },
+    { guid: NEUTRAL_BOAR, template: 3 },
+  ]);
+  game.world = world;
+  const previousFactions = game.factions;
+  game.factions = factionStub;
+  let under = HOSTILE;
+  game.scene = { pick: () => under };
+  try {
+    rightClick();
+    assert.deepEqual(world.attacks, [HOSTILE], "a hostile unit is attacked once");
+    under = FRIEND;
+    rightClick();
+    assert.deepEqual(world.attacks, [HOSTILE], "a friend is never attacked by a click");
+    under = NEUTRAL_KEEPER;
+    rightClick();
+    assert.deepEqual(world.attacks, [HOSTILE], "a neutral with a service is talked to");
+    assert.deepEqual(world.gossips, [NEUTRAL_KEEPER]);
+    under = NEUTRAL_BOAR;
+    rightClick();
+    assert.deepEqual(world.attacks, [HOSTILE, NEUTRAL_BOAR], "a neutral with nothing to offer is fought");
+  } finally {
+    game.world = undefined;
+    game.scene = undefined;
+    game.factions = previousFactions;
+  }
+});
+
+test("5.05 review: before the faction table lands a right click never swings, at a guard or a bot", () => {
+  // Every unit reads neutral without the table, and a neutral unit with no service is fought — so a
+  // flagless friendly guard, party member or NPCBot would have been attacked (with a dismount in
+  // front of the swing). Until the table is in, the click stays what it was before 5.05.
+  const GUARD = 30n;
+  const world = fightWorld([{ guid: GUARD, template: 4 }]);
+  game.world = world;
+  const previousFactions = game.factions;
+  game.scene = { pick: () => GUARD };
+  try {
+    for (const factions of [undefined, { ...factionStub, ready: false }]) {
+      game.factions = factions;
+      rightClick();
+      assert.deepEqual(world.attacks, [], factions === undefined ? "no faction client" : "table not ready");
+    }
+  } finally {
+    game.world = undefined;
+    game.scene = undefined;
+    game.factions = previousFactions;
+  }
+});
+
+/**
+ * 11.02-tails: Wow.exe 0x00731260 hands a live unit to the interaction chain only through 0x00729530
+ * (world/UnitInteractGate.ts) and attacks it otherwise: NPC flags and both reactions neutral or
+ * better, or UNIT_FLAG2_ALLOW_ENEMY_INTERACT 0x4000 whatever the reactions; a ghost only to a
+ * creature that shows itself to ghosts. Ghidra notes: .runtime/re-2026-10-03/l1102bcd-review/r1.c, r2.c.
+ */
+test("11.02-tails a hostile NPCBot for hire (ALLOW_ENEMY_INTERACT) is talked to, a hostile service it cannot fight is left alone", () => {
+  const FOR_HIRE = 40n;
+  const SHIELDED = 41n;
+  const RAIDER = 42n;
+  const world = fightWorld([
+    { guid: FOR_HIRE, template: 2, npcFlags: 0x1 },
+    { guid: SHIELDED, template: 2, npcFlags: 0x1 },
+    { guid: RAIDER, template: 2, npcFlags: 0x1 },
+  ]);
+  world.state.objects.get(FOR_HIRE).fields.set(UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset, 0x4000);
+  // UNIT_FLAG_NON_ATTACKABLE: CanAttack (0x00729740) refuses it, and 0x00729530 refuses a hostile talk.
+  world.state.objects.get(SHIELDED).fields.set(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, 0x2);
+  game.world = world;
+  const previousFactions = game.factions;
+  game.factions = factionStub;
+  let under = FOR_HIRE;
+  game.scene = { pick: () => under };
+  try {
+    rightClick();
+    assert.deepEqual(world.attacks, [], "the bot for hire is not fought");
+    assert.deepEqual(world.gossips, [FOR_HIRE], "it is talked to — its hire menu");
+    under = SHIELDED;
+    rightClick();
+    assert.deepEqual(world.attacks, [], "nothing to swing at");
+    assert.deepEqual(world.gossips, [FOR_HIRE], "and no talk with a hostile unit either (the old click asked for gossip)");
+    under = RAIDER;
+    rightClick();
+    assert.deepEqual(world.attacks, [RAIDER], "an ordinary hostile with a gossip flag is still fought");
+    assert.deepEqual(world.gossips, [FOR_HIRE]);
+  } finally {
+    game.world = undefined;
+    game.scene = undefined;
+    game.factions = previousFactions;
+  }
+});
+
+test("11.02-tails a ghost's right click reaches only the creatures that show themselves to ghosts", () => {
+  const HEALER = 50n;
+  const VENDOR = 51n;
+  const UNKNOWN = 52n;
+  const world = fightWorld([
+    { guid: HEALER, template: 4, npcFlags: 0x1 | 0x4000 },
+    { guid: VENDOR, template: 4, npcFlags: 0x1 },
+    { guid: UNKNOWN, template: 4, npcFlags: 0x1 },
+  ]);
+  const entries = [[HEALER, 6491], [VENDOR, 1000], [UNKNOWN, 1001]];
+  for (const [guid, entry] of entries) world.state.objects.get(guid).fields.set(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, entry);
+  world.creatureTemplates = new Map([
+    [6491, { entry: 6491, found: true, flags: 0x2 }],
+    [1000, { entry: 1000, found: true, flags: 0 }],
+  ]);
+  world.state.objects.get(1n).fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, 0x10);
+  game.world = world;
+  const previousFactions = game.factions;
+  game.factions = factionStub;
+  let under = HEALER;
+  game.scene = { pick: () => under };
+  try {
+    rightClick();
+    assert.deepEqual(world.gossips, [HEALER], "the spirit healer (CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS)");
+    under = VENDOR;
+    rightClick();
+    assert.deepEqual(world.gossips, [HEALER], "a living vendor does not answer the dead");
+    under = UNKNOWN;
+    rightClick();
+    assert.deepEqual(world.gossips, [HEALER, UNKNOWN], "a template not cached yet keeps the old click");
+    // Alive again: the same vendor is talked to.
+    world.state.objects.get(1n).fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, 0);
+    under = VENDOR;
+    rightClick();
+    assert.deepEqual(world.gossips, [HEALER, UNKNOWN, VENDOR]);
+    assert.deepEqual(world.attacks, [], "a friend is never fought");
+  } finally {
+    game.world = undefined;
+    game.scene = undefined;
+    game.factions = previousFactions;
+  }
+});

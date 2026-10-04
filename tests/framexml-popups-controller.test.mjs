@@ -276,6 +276,46 @@ test("every native prompt steps aside while the stock owner is published, and co
   }
 });
 
+test("a shared quest steps aside only once stock QUEST_ACCEPT_CONFIRM asked it (3.22a)", async () => {
+  const { FrameXmlServerPromptsModel } = await import("../dist/code/browser/framexml/FrameXmlServerPrompts.js");
+  const { EventBus } = await import("../dist/code/world/EventBus.js");
+  const world = pendingWorld();
+  world.events = new EventBus();
+  world.names = new Map([[5n, "Тралл"]]);
+  world.answerSharedQuest = (accept) => { world.calls.push(`share:${accept}`); };
+  const ask = () => world.events.emit("QUEST_SHARED", { quest: world.sharedQuest });
+  const model = new FrameXmlServerPromptsModel({ world: () => world, monotonic: () => 0 });
+  const fired = [];
+  model.attach({ fire(event, ...args) { fired.push([event, ...args]); return 1; } });
+  game.world = world;
+  let release = () => {};
+  const text = () => { prompts.showInteractionPrompts(0); return allText(panel("interaction-prompts")); };
+  try {
+    // Shared before stock owned the popups: the native row asks, and keeps asking after publication —
+    // stock never heard of this share, hiding the row would leave it unanswerable.
+    world.sharedQuest = { questId: 11, title: "Поиски Тралла", initiatorGuid: 5n };
+    ask();
+    assert.match(text(), /предлагает задание «Поиски Тралла»/);
+    release = controller.publishFrameXmlPopups(owner());
+    assert.match(text(), /предлагает задание «Поиски Тралла»/, "published, but stock did not ask this one");
+    // A share stock asks: one question, one surface.
+    world.sharedQuest = { questId: 12, title: "Волчья охота", initiatorGuid: 5n };
+    ask();
+    assert.deepEqual(fired.at(-1), ["QUEST_ACCEPT_CONFIRM", "Тралл", "Волчья охота"]);
+    assert.doesNotMatch(text(), /предлагает задание/, "QUEST_ACCEPT_CONFIRM asks instead");
+    // A sharer whose name is not cached: Wow.exe raises nothing (0x58bc50), so the native row asks.
+    world.sharedQuest = { questId: 13, title: "Тайна", initiatorGuid: 9n };
+    ask();
+    assert.match(text(), /предлагает задание «Тайна»/);
+    assert.deepEqual(world.calls, [], "nothing answered on the way");
+  } finally {
+    model.detach();
+    release();
+    prompts.resetInteractionPrompts();
+    game.world = undefined;
+  }
+});
+
 test("the battleground entry stays native when the gate did not verify BattlefieldFrame", () => {
   const world = pendingWorld();
   game.world = world;

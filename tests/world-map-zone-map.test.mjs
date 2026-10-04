@@ -229,7 +229,7 @@ test("the narrow zone-map route serves exact bytes and collapses concurrent gene
     assert.equal(generated, 1, "one generation repairs a truncated cache for both requests");
     assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const etag = first.headers.get("etag");
-    assert.match(etag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(etag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
     assert.deepEqual(new Uint8Array(await first.arrayBuffer()), authored);
     await second.arrayBuffer();
 

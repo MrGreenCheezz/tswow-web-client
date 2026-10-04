@@ -221,10 +221,12 @@ test("the stock seam answers a held spell as stock does: no cooldown, not enable
     // The spell next to it is an ordinary one: the global cooldown, usable, enabled.
     assert.deepEqual(call(seam, "GetActionCooldown", 2), [499, 1.5, 1]);
     assert.deepEqual(call(seam, "IsUsableAction", 2), [true, false]);
-    assert.deepEqual(call(seam, "GetSpellCooldown", EVASION), [0, 0, 1]);
+    // L12 5.30: GetSpellCooldown answers the global part too (Wow.exe 0x00540e80 → 0x00807980).
+    assert.deepEqual(call(seam, "GetSpellCooldown", EVASION), [499, 1.5, 1]);
     held.clear();
     assert.deepEqual(call(seam, "IsUsableAction", 1), [true, false]);
-    assert.deepEqual(call(seam, "GetSpellCooldown", STEALTH), [0, 0, 1]);
+    // L12 5.30: released, it shares the running global part (this fixture's rows all have 1.5 s).
+    assert.deepEqual(call(seam, "GetSpellCooldown", STEALTH), [499, 1.5, 1]);
   } finally {
     seam.detach();
   }
@@ -235,6 +237,7 @@ test("the native book and bar keep a held spell's press at home", async () => {
   const { castSpell, showSpells, updateSpellCooldowns } = await import("../dist/code/browser/ui/Spellbook.js");
   const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
   const { spellbookList } = await import("../dist/code/browser/ui/Dom.js");
+  const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
   const { ACTION_BUTTON_SPELL } = await import("../dist/code/world/ActionBarProtocol.js");
   const sent = [];
   const held = new Set([STEALTH]);
@@ -265,9 +268,9 @@ test("the native book and bar keep a held spell's press at home", async () => {
     // The book's button: disabled and said to be not ready, with no sweep to draw.
     showSpells();
     updateSpellCooldowns(performance.now());
-    const button = (id) => spellbookList.children.find((child) => child.title.startsWith(`spell ${id}`));
+    const button = (id) => spellbookList.children.find((child) => (getTip(child) ?? "").startsWith(`spell ${id}`));
     assert.equal(button(STEALTH)?.disabled, true);
-    assert.equal(button(STEALTH)?.title, `spell ${STEALTH} · Ещё не готово`);
+    assert.equal(getTip(button(STEALTH)), `spell ${STEALTH} · Ещё не готово`);
     assert.equal(button(EVASION)?.disabled, false);
     assert.equal(castSpell(STEALTH), false, "the book");
     useSlot(0, 0);

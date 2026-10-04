@@ -70,12 +70,18 @@ function areaDbcs() {
   forest[9] = 7;
   forest[10] = 5;
   forest[11] = areaStrings.offsets.get("Элвиннский лес");
+  // Flags (4) and FactionGroupMask (28, after the seventeen AreaName_lang slots): Elwynn's real
+  // 0x40 and Alliance 2. Neither is the neighbour of the other, nor of anything above.
+  forest[4] = 0x40;
+  forest[28] = 2;
   const river = Array(36).fill(0);
   river[0] = 87;
   river[1] = 0;
   river[2] = 12;
   river[3] = 200;
   river[11] = areaStrings.offsets.get("Ривер");
+  // Goldshire's real flags; its mask is 0 — a sub-area inherits the zone's.
+  river[4] = 0x40300040;
 
   const mapAreaStrings = stringBlock(["Elwynn"]);
   // WorldMapArea: ID, MapID, AreaID, AreaName, LocLeft, LocRight, LocTop, LocBottom, DisplayMapID.
@@ -220,8 +226,10 @@ test("the areas endpoint serves all eight authored map tables", async () => {
     // AreaTable has no MapID: the map an area belongs to is called ContinentID.
     assert.deepEqual(data.areas[0], {
       id: 12, parentId: 0, mapId: 0, areaBit: 126, explorationLevel: 5, name: "Элвиннский лес",
-      zoneMusic: 3, ambienceId: 35, introSound: 7,
+      zoneMusic: 3, ambienceId: 35, introSound: 7, flags: 0x40, factionGroupMask: 2,
     });
+    // Route version 8: `GetZonePVPInfo` reads both columns (FrameXmlZoneInfo.ts).
+    assert.deepEqual([data.areas[1].flags, data.areas[1].factionGroupMask], [0x40300040, 0]);
     assert.equal(data.areas[1].parentId, 12, "a sub-area names the zone it sits in");
     // A sub-area usually names no music of its own and inherits the zone's; carrying the zero is
     // what lets `zoneMusicOf` know to look upwards rather than fall silent in a tavern.
@@ -311,7 +319,8 @@ test("the area client indexes what a map needs to ask", async () => {
     requests++;
     // The `v` is this route's cache-buster: the reply is held for an hour, so a field added to
     // `AreaInfo` would otherwise be missing for an hour after the gateway learned to send it.
-    assert.match(String(url), /\/dbc\/areas\?v=\d+$/);
+    // Version 8 carries AreaTable.Flags and FactionGroupMask for GetZonePVPInfo.
+    assert.match(String(url), /\/dbc\/areas\?v=8$/);
     return { ok: true, status: 200, json: async () => payload };
   };
   try {

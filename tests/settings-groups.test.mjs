@@ -90,7 +90,7 @@ test("client settings are distributed across small, named groups", () => {
     "the old catch-all world group must not survive");
   assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "renderScale")?.group, "Графика");
   assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "godRays")?.group, "Эффекты");
-  assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "cameraMaxDistance")?.group, "Игра");
+  assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "cameraDistancePercent")?.group, "Игра");
 });
 
 test("settings search uses player-facing labels and hints", () => {

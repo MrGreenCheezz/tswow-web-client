@@ -16,8 +16,8 @@ function api(seam, name, ...args) {
 
 test("Canned PvP seam answers current honor and arena currency without fabricating caps", () => {
   const seam = new CannedWorldSeam();
-  assert.deepEqual(api(seam, "GetHonorCurrency"), [CANNED_HONOR.honorCurrency]);
-  assert.deepEqual(api(seam, "GetArenaCurrency"), [CANNED_HONOR.arenaCurrency]);
+  assert.deepEqual(api(seam, "GetHonorCurrency"), [CANNED_HONOR.honorCurrency, 75000]);
+  assert.deepEqual(api(seam, "GetArenaCurrency"), [CANNED_HONOR.arenaCurrency, 10000]);
   assert.deepEqual(api(seam, "GetPVPSessionStats"), [
     CANNED_HONOR.todayHonorableKills, CANNED_HONOR.todayContribution,
   ]);

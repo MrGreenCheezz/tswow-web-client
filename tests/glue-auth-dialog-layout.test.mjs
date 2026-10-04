@@ -63,8 +63,31 @@ function measureDialogText(runtime) {
 /** `GlueDialog_OnEvent`'s UPDATE_STATUS_DIALOG: 32 + text + 8 + a 40 px button + 16. */
 const remeasured = (text) => 32 + 18 * lines(text) + 8 + 40 + 16;
 
-test("auth rejection remeasures the stock status dialog after it becomes visible", withClient, async () => {
-  const { flattenHtmlMessage } = await import("../dist/code/browser/glue/GlueMessages.js");
+/**
+ * 3.35-bounds (03.10): the HTML twin's box. FUN_004d80c0 opens OKAY_HTML for a login result whose
+ * string holds "<HTML>"; GlueDialog_Show sizes GlueDialogBackground as 16 + text + 8 + button + 16 with
+ * the text's height from `GlueDialogHTML:GetBoundsRect()` (GlueDialog.lua:607-630) — Wow.exe 0x0049e700,
+ * whose CSimpleFrame +0x64 (0x004913c0) takes in the page's paragraphs (regions of the widget).
+ * Here every character is 9 units wide, so a 450-unit line holds 50; a word longer than that is cut.
+ */
+const CHAR = 9;
+function wrappedLines(text, width) {
+  const chars = Math.floor(width / CHAR);
+  let lines = 0;
+  let line = "";
+  for (let word of text.split(" ")) {
+    const candidate = line === "" ? word : `${line} ${word}`;
+    if ([...candidate].length <= chars) { line = candidate; continue; }
+    if (line !== "") lines += 1;
+    while ([...word].length > chars) { lines += 1; word = [...word].slice(chars).join(""); }
+    line = word;
+  }
+  return lines + 1;
+}
+
+test("an HTML auth refusal opens OKAY_HTML, its box sized from the page while the dialog is hidden", withClient, async () => {
+  const { parseFrameXmlSimpleHtml } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlSimpleHtml.js");
+  const { plainFrameXmlText } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlText.js");
   const { runtime, luaErrors } = await corpusRuntime({
     authUrl: "ws://fixture.invalid/auth",
     connect: async () => ({
@@ -78,12 +101,108 @@ test("auth rejection remeasures the stock status dialog after it becomes visible
   });
   try {
     const { dialog, background, label } = measureDialogText(runtime);
+    runtime.bridge.setTextMeasure((_frame, text) => CHAR * [...text].length);
+    const html = runtime.bridge.getFrame("GlueDialogHTML");
     await runtime.api.login("NONEXISTENT", "irrelevant");
     assert.deepEqual(luaErrors, []);
     assert.equal(dialog.visible, true);
-    // 0x04 is the client's LOGIN_UNKNOWN_ACCOUNT (FUN_008cb160), written as markup in the corpus
-    // and flattened for the FontString this renderer draws.
-    assert.equal(label.text, flattenHtmlMessage(runtime.vm.globalString("LOGIN_UNKNOWN_ACCOUNT")));
+    // 0x04 is the client's LOGIN_UNKNOWN_ACCOUNT (FUN_008cb160), written as markup in the corpus.
+    const markup = runtime.vm.globalString("LOGIN_UNKNOWN_ACCOUNT");
+    assert.match(markup ?? "", /<html>/i);
+    assert.equal(html.visible, true, "GlueDialogHTML draws it");
+    assert.equal(label.visible, false, "GlueDialogText is hidden");
+    assert.equal(html.text, markup, "the page as written");
+    const [block] = parseFrameXmlSimpleHtml(markup, html.attributes.hyperlinkFormat);
+    const lines = wrappedLines(plainFrameXmlText(block.text), 450);
+    assert.ok(lines > 1, `a refusal long enough to need the height: ${lines} lines`);
+    const font = runtime.bridge.fontObjectStyle("GlueFontNormalLarge");
+    const textHeight = Math.max(30, lines * font.height + (lines - 1) * 2);
+    assert.equal(Number(background.attributes.height), 16 + textHeight + 8 + 40 + 16,
+      "GlueDialog_Show's own sum, with GetBoundsRect's height of the page");
+  } finally {
+    runtime.close();
+  }
+});
+
+test("the HTML refusal dismisses with Enter and Escape, a new login shows it again; a broken measure still shows a dialog (3.35-review)", withClient, async () => {
+  const { flattenHtmlMessage } = await import("../dist/code/browser/glue/GlueMessages.js");
+  const { runtime, luaErrors } = await corpusRuntime({
+    authUrl: "ws://fixture.invalid/auth",
+    connect: async () => ({
+      send() {},
+      async readExactly() { return Uint8Array.of(0, 0, 4); },
+      close() {},
+    }),
+  });
+  const which = () => {
+    runtime.vm.setGlobal("__which", undefined);
+    assert.equal(runtime.vm.execute("__which = GlueDialog.which", "@glue-auth-dialog-layout").ok, true);
+    return runtime.vm.getGlobal("__which");
+  };
+  const key = (name) => assert.equal(runtime.vm.execute(`GlueDialog_OnKeyDown("${name}")`, "@glue-auth-dialog-layout").ok, true);
+  try {
+    const { dialog, label } = measureDialogText(runtime);
+    const html = runtime.bridge.getFrame("GlueDialogHTML");
+    // A page block's measure (its probe is no frame of its own) that throws: GetBoundsRect raises a Lua
+    // error inside GlueDialog_Show, before GlueDialog:Show().
+    let broken = true;
+    runtime.bridge.setTextMeasure((frame, text) => {
+      if (broken && frame.type === undefined) throw new Error("measure broke");
+      return CHAR * [...text].length;
+    });
+    const markup = runtime.vm.globalString("LOGIN_UNKNOWN_ACCOUNT");
+    await runtime.api.login("NONEXISTENT", "irrelevant");
+    // The corpus' own handler (GlueBasicControls.xml: _ERRORMESSAGE → ScriptErrors) shows the Lua error…
+    assert.match(runtime.bridge.getFrame("ScriptErrors_Message")?.text ?? "", /measure broke/);
+    // …and the refusal is said all the same.
+    assert.equal(dialog.visible, true, "a dialog all the same");
+    assert.equal(which(), "OKAY", "the plain dialog, as before 3.35");
+    assert.equal(label.visible, true);
+    assert.equal(html.visible, false);
+    assert.equal(label.text, flattenHtmlMessage(markup));
+    key("ENTER");
+    assert.equal(dialog.visible, false, "OKAY dismisses it");
+
+    broken = false;
+    luaErrors.length = 0;
+    await runtime.api.login("NONEXISTENT", "irrelevant");
+    assert.deepEqual(luaErrors, []);
+    assert.equal(dialog.visible, true);
+    assert.equal(which(), "OKAY_HTML");
+    assert.equal(html.visible, true);
+    key("ENTER");
+    assert.equal(dialog.visible, false, "Enter clicks OKAY");
+    await runtime.api.login("NONEXISTENT", "irrelevant");
+    assert.equal(which(), "OKAY_HTML", "a new login shows it again");
+    assert.equal(dialog.visible, true);
+    key("ESCAPE");
+    assert.equal(dialog.visible, false, "Escape clicks the only button");
+    assert.deepEqual(luaErrors, []);
+  } finally {
+    runtime.close();
+  }
+});
+
+test("auth rejection remeasures the stock status dialog after it becomes visible", withClient, async () => {
+  const { runtime, luaErrors } = await corpusRuntime({
+    authUrl: "ws://fixture.invalid/auth",
+    connect: async () => ({
+      send() {},
+      async readExactly(length) {
+        assert.equal(length, 3);
+        return Uint8Array.of(0, 0, 6);
+      },
+      close() {},
+    }),
+  });
+  try {
+    const { dialog, background, label } = measureDialogText(runtime);
+    await runtime.api.login("NONEXISTENT", "irrelevant");
+    assert.deepEqual(luaErrors, []);
+    assert.equal(dialog.visible, true);
+    // 0x06 is the client's LOGIN_ALREADYONLINE (FUN_008cb160), plain text in the corpus. (0x04's
+    // LOGIN_UNKNOWN_ACCOUNT is markup and opens OKAY_HTML since 3.35-bounds, the test above.)
+    assert.equal(label.text, runtime.vm.globalString("LOGIN_ALREADYONLINE"));
     assert.ok(lines(label.text) > 1, "a refusal long enough to need the height");
     assert.equal(Number(background.attributes.height), remeasured(label.text),
       "stock UPDATE_STATUS_DIALOG sizes its box from the visible text and button");
@@ -204,6 +323,16 @@ function texts(node, found = []) {
   return found;
 }
 
+/** The element the renderer drew for the frame `name`. */
+function drawn(root, name) {
+  if (root.getAttribute?.("data-framexml-name") === name) return root;
+  for (const child of root.children) {
+    const found = drawn(child, name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 test("an <html> refusal reaches the page as text, not as an empty SimpleHTML box", withClient, async () => {
   const previous = globalThis.document;
   globalThis.document = fakeDocument();
@@ -211,7 +340,8 @@ test("an <html> refusal reaches the page as text, not as an empty SimpleHTML box
   let built;
   try {
     const { FrameXmlDomRenderer } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlDomRenderer.js");
-    const { flattenHtmlMessage } = await import("../dist/code/browser/glue/GlueMessages.js");
+    const { parseFrameXmlSimpleHtml } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlSimpleHtml.js");
+    const { plainFrameXmlText } = await import("../dist/code/browser/ui/framexml_compat/FrameXmlText.js");
     built = await corpusRuntime({
       authUrl: "ws://fixture.invalid/auth",
       connect: async () => ({
@@ -230,9 +360,15 @@ test("an <html> refusal reaches the page as text, not as an empty SimpleHTML box
 
     const markup = runtime.vm.globalString("LOGIN_UNKNOWN_ACCOUNT");
     assert.match(markup ?? "", /<html>/i, "the corpus writes this refusal as markup");
-    const expected = flattenHtmlMessage(markup);
+    // 3.35-bounds (03.10): OKAY_HTML, as FUN_004d80c0 opens it — GlueDialogHTML draws the page, its link
+    // in the widget's hyperlinkFormat (`[%s]` in green).
+    const page = drawn(host, "GlueDialogHTML");
+    assert.ok(page, "GlueDialogHTML is drawn");
+    const layer = page.children.find((child) => child.getAttribute("data-framexml-html-layer") === "true");
+    const [block] = parseFrameXmlSimpleHtml(markup, runtime.bridge.getFrame("GlueDialogHTML").attributes.hyperlinkFormat);
+    const expected = plainFrameXmlText(block.text);
+    assert.equal(texts(layer).join(""), expected, `the refusal is drawn: ${expected}`);
     const onPage = texts(host);
-    assert.ok(onPage.includes(expected), `the refusal is drawn: ${expected}`);
     assert.ok(!onPage.some((text) => /<html|<a |<p[ >]/i.test(text)), "no markup is drawn as text");
   } finally {
     renderer?.destroy();

@@ -53,7 +53,7 @@ test("vertical PLAYER_ENTERING_WORLD keeps the empty GM CVar neutral", withClien
   try {
     const inventory = await boot.load();
     assert.deepEqual(inventory.exercise.events, [...FRAMEXML_VERTICAL_EXERCISE_EVENTS],
-      "vertical exercise must omit PLAYER_LOGIN, whose CombatLog addon is outside the subset");
+      "the vertical exercise raises the session edges in order; PLAYER_LOGIN finds CombatLog_LoadUI refused");
 
     assert.deepEqual(callLua(boot, "GetCVar", ["lastTalkedToGM"]), [""],
       "the measured default CVar must be an empty string");

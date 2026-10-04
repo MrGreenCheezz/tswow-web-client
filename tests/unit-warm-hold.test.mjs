@@ -111,6 +111,8 @@ function rig() {
     unitWarmHolds: new Map(), unitPartWarmHolds: new Map(), unitWarmTracked: new WeakSet(),
     fadeTwins: new WeakMap(), capsuleTwins: undefined, worldLight: createWorldLightUniforms(),
     unitBodyGeometry: new THREE.CapsuleGeometry(0.5, 1, 4, 12), submissionSerial: 1,
+    // 11.02-H-review: the release asks the vehicle poser whether a HIDE_PASSENGER seat hid the node.
+    vehiclePassengers: { hides: () => false },
   });
   return { h, renderer };
 }
@@ -228,6 +230,18 @@ test("a held unit the frame did not draw keeps waiting, and one that left the sc
   gone.node.removeFromParent();
   h.releaseWarmUnits();
   assert.equal(h.unitWarmHolds.has(gone), false);
+});
+
+test("11.02-H-review: a passenger a HIDE_PASSENGER seat hid stays hidden through its release", () => {
+  const { h, renderer } = rig();
+  const unit = riggedUnit();
+  h.vehiclePassengers = { hides: (node) => node === unit.node };
+  assert.equal(frame(h, unit, 0), false);
+  renderer.state.ready = true;
+  assert.equal(frame(h, unit, 16), false, "released, and still no model while it sits there");
+  assert.equal(h.unitWarmHolds.size, 0, "the hold itself is over");
+  h.vehiclePassengers = { hides: () => false };
+  assert.equal(frame(h, unit, 32), true, "out of the seat: drawn");
 });
 
 test("the player's first appearance waits at most UNIT_WARM_HOLD_SELF_FRAMES, and is never hidden again", () => {

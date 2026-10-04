@@ -17,7 +17,10 @@ import {
   cameraFloorHeight, cameraFloorPitch,
   zoomedDistance,
 } from "../dist/code/browser/game/CameraRig.js";
-import { coerceSetting, settingDefinition } from "../dist/code/browser/ui/SettingsModel.js";
+import {
+  CAMERA_DISTANCE_MAX_BASE, CAMERA_EXTENDED_ZOOM_DISTANCE, cameraCeilingYards, coerceSetting, defaultSettings,
+  parseSettings, settingDefinition,
+} from "../dist/code/browser/ui/SettingsModel.js";
 import { ATTACHMENT_HELM, ATTACHMENT_SHOULDER_RIGHT } from "../dist/code/browser/Wvm.js";
 import { attachmentHeight } from "../dist/code/browser/Attachment.js";
 import { buildWorldCamera } from "../dist/code/browser/WorldRenderer3D.js";
@@ -936,26 +939,43 @@ test("К2 flying camera still respects a real collision floor", () => {
 });
 
 test("К2 the wheel stops where the player's own ceiling says, not where the constant does", () => {
-  const definition = settingDefinition("cameraMaxDistance");
+  // 5.14: the original's cameraDistanceMax (15) × cameraDistanceMaxFactor (1–2), in percent.
+  const definition = settingDefinition("cameraDistancePercent");
   assert.ok(definition, "«Максимальная дистанция камеры» has to exist to be applied");
+  assert.equal(settingDefinition("cameraMaxDistance"), undefined, "the yard ceiling is gone, migrated");
   assert.equal(definition.kind, "number");
   assert.equal(definition.group, "Игра");
-  assert.equal(definition.fallback, CAMERA_MAX_DISTANCE, "by default the wheel goes where it always went");
-  assert.equal(definition.max, CAMERA_MAX_DISTANCE);
-  assert.ok(definition.min > CAMERA_MIN_DISTANCE, "and the tightest ceiling is still an orbit");
+  assert.equal(definition.fallback, 100);
+  assert.deepEqual([definition.min, definition.max, definition.step], [100, 200, 10]);
+  assert.equal(CAMERA_DISTANCE_MAX_BASE, 15);
+  assert.equal(CAMERA_EXTENDED_ZOOM_DISTANCE, CAMERA_MAX_DISTANCE, "the extended zoom is the rig's hard limit");
+  const values = defaultSettings();
+  assert.equal(cameraCeilingYards(values), 15, "by default the wheel stops where the original's does");
+  assert.equal(cameraCeilingYards({ ...values, cameraDistancePercent: 150 }), 22.5);
+  assert.equal(cameraCeilingYards({ ...values, cameraDistancePercent: 200 }), 30);
+  assert.equal(cameraCeilingYards({ ...values, cameraExtendedZoom: true }), CAMERA_MAX_DISTANCE);
+  assert.ok(15 > CAMERA_MIN_DISTANCE, "and the tightest ceiling is still an orbit");
+  // A blob from before 5.14 carries the yard ceiling: it becomes the factor that covers it.
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 30 })).cameraDistancePercent, 200);
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 30 })).cameraExtendedZoom, false);
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 20 })).cameraDistancePercent, 130);
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 45 })).cameraExtendedZoom, true,
+    "past 30 yards only the extended zoom reaches as far as the player had it");
+  assert.equal(parseSettings(JSON.stringify({ cameraMaxDistance: 45, cameraDistancePercent: 120 })).cameraDistancePercent, 120,
+    "a blob that already has the factor keeps it");
 
-  for (const ceiling of [definition.min, 30, definition.max]) {
+  for (const ceiling of [15, 30, CAMERA_MAX_DISTANCE]) {
     let distance = CAMERA_DEFAULT_DISTANCE;
     for (let notch = 0; notch < 60; notch++) distance = zoomedDistance(distance, 100, ceiling);
     assert.equal(distance, ceiling, `sixty notches out under a ${ceiling}-yard ceiling`);
   }
   // The blob the account carries is not a promise: a ceiling above the constant is still refused.
   assert.equal(zoomedDistance(CAMERA_DEFAULT_DISTANCE, 100_000, 900), CAMERA_MAX_DISTANCE);
-  assert.equal(coerceSetting(definition, 900), CAMERA_MAX_DISTANCE);
+  assert.equal(coerceSetting(definition, 900), definition.max);
   assert.equal(coerceSetting(definition, 1), definition.min);
   // And the way in is not the ceiling's business: first person is reachable under the tightest.
-  assert.equal(zoomedDistance(CAMERA_MIN_DISTANCE, -100, definition.min), CAMERA_FIRST_PERSON_DISTANCE);
-  assert.equal(zoomedDistance(CAMERA_FIRST_PERSON_DISTANCE, 100, definition.min), CAMERA_MIN_DISTANCE);
+  assert.equal(zoomedDistance(CAMERA_MIN_DISTANCE, -100, 15), CAMERA_FIRST_PERSON_DISTANCE);
+  assert.equal(zoomedDistance(CAMERA_FIRST_PERSON_DISTANCE, 100, 15), CAMERA_MIN_DISTANCE);
 });
 
 test("К2 the boom's two answers are measured apart, and the ground behind the wall as well", () => {

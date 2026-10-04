@@ -79,6 +79,7 @@ const {
   spellbookSearchKeyDown,
 } = await import("../dist/code/browser/ui/Spellbook.js");
 const { useSlot } = await import("../dist/code/browser/ui/ActionBar.js");
+const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 const { loadAuraMetadata } = await import("../dist/code/browser/ui/Auras.js");
 const { clearSpellNames, ensureSpellNames } = await import("../dist/code/browser/ui/SpellNames.js");
 const { lowerRankSpells, rankChainKey } = await import("../dist/code/browser/ui/SpellRanks.js");
@@ -293,7 +294,7 @@ test("an active mount remains clickable while its local recovery is visible", ()
     const button = spellbookList.children[0];
     assert.equal(button.disabled, false);
     assert.equal(button.getAttribute("aria-disabled"), "false");
-    assert.equal(button.title, "Стремительный скакун · Снять маунта");
+    assert.equal(getTip(button), "Стремительный скакун · Снять маунта");
     assert.equal(button.getAttribute("aria-label"), "Стремительный скакун · Снять маунта");
   } finally {
     game.world = undefined;

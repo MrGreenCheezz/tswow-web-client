@@ -178,17 +178,17 @@ test("the opener is the checked spell and the current action while its stock win
   assert.ok(opener > 0, `the opener is in the book: ${JSON.stringify(book)}`);
   const selected = () => book.flatMap((name, index) => name && call("IsSelectedSpell", seam, index + 1, "spell")[0] ? [name] : []);
   assert.deepEqual(selected(), []);
-  assert.deepEqual(call("IsCurrentAction", seam, 1), [false]);
+  assert.deepEqual(call("IsCurrentAction", seam, 1), [undefined]);
   seam.tradeSkill.open(164);
   seam.tradeSkill.show();
   assert.equal(fired.at(-1), "TRADE_SKILL_SHOW");
   assert.deepEqual(selected(), ["Кузнечное дело"]);
-  assert.deepEqual(call("IsCurrentAction", seam, 1), [true]);
-  assert.deepEqual(call("IsCurrentAction", seam, 2), [false], "a recipe on the bar is not the opener");
+  assert.deepEqual(call("IsCurrentAction", seam, 1), [1]);
+  assert.deepEqual(call("IsCurrentAction", seam, 2), [undefined], "a recipe on the bar is not the opener");
   call("CloseTradeSkill", seam);
   assert.equal(fired.at(-1), "TRADE_SKILL_CLOSE");
   assert.deepEqual(selected(), []);
-  assert.deepEqual(call("IsCurrentAction", seam, 1), [false]);
+  assert.deepEqual(call("IsCurrentAction", seam, 1), [undefined]);
 });
 
 test("the ItemSubClass words are read once, on demand, and a failed read is retried after a wait", async () => {

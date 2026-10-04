@@ -37,7 +37,7 @@ function writeQuest({
   writer.cString(title).cString("Убей волков").cString("Подробности").cString("Область").cString("Готово");
   for (let index = 0; index < 4; index++) {
     const objective = objectives[index];
-    writer.u32(objective?.entry ?? 0).u32(objective?.count ?? 0).u32(0).u32(0);
+    writer.u32(objective?.entry ?? 0).u32(objective?.count ?? 0).u32(objective?.itemDrop ?? 0).u32(0);
   }
   for (let index = 0; index < 6; index++) {
     const item = items[index];
@@ -77,13 +77,15 @@ test("sparse quest objectives retain server slot identities for counters and POI
   // update fields and quest_poi.ObjectiveIndex address those original slots.
   const quest = parseQuestQueryResponse(writeQuest({
     objectives: [
-      { entry: 0, count: 0, text: "Текст пустого нулевого слота" },
+      { entry: 0, count: 0, itemDrop: 6001, text: "Текст пустого нулевого слота" },
       undefined,
       { entry: 299, count: 10, text: "Третий слот" },
     ],
     items: [undefined, undefined, undefined, { itemId: 769, count: 8 }],
   }));
   assert.deepEqual(quest.objectives.map(({ slot, entry }) => [slot, entry]), [[2, 299]]);
+  assert.deepEqual(quest.sourceItems, [6001, 0, 0, 0],
+    "every ItemDrop slot is kept, a slot without a creature included (the client reads all four)");
   assert.equal(quest.objectives[0].text, "Третий слот",
     "objective text is indexed before the four wire slots are compacted");
   assert.deepEqual(quest.itemObjectives.map(({ slot, itemId }) => [slot, itemId]), [[3, 769]]);

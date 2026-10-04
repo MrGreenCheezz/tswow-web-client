@@ -174,8 +174,8 @@ test("a hostile target cannot be inspected; a target change closes the stock fra
     assert.equal(boot.bridge.isVisible(frame), true);
     const errors = boot.errorCount;
     assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 1), CheckInteractDistance("target", 3)', 2), [true, true]);
-    // Follow (index 4) does not exist here: UnitPopup_OnUpdate keeps «Следовать» grey on it.
-    assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 4)'), [false]);
+    // 5.18: follow (index 4, 28 yards) answers now; UnitPopup_OnUpdate enables «Следовать» by it.
+    assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 4)'), [true]);
     seam.setTarget(CANNED_TARGET);
     assert.equal(boot.bridge.isVisible(frame), false, "PLAYER_TARGET_CHANGED and CanInspect false hide it");
     assert.deepEqual(lua(boot, 'return CanInspect("target")'), [false]);

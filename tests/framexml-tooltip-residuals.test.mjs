@@ -267,3 +267,94 @@ test("a click runs PreClick, OnClick and PostClick with its button, after a Chec
     assert.deepEqual(boot.errors, []);
   } finally { boot.close(); }
 });
+
+test("SetInventoryItem answers the repair price third and SetBagItem second, from the adapter", async () => {
+  // PaperDollFrame.lua:1338/1346 and ContainerFrame.lua:774-775 read them for REPAIR_COST in repair mode.
+  const asked = [];
+  const { boot, run } = await bootTooltip({
+    inventoryItem: () => AXE,
+    containerItem: () => AXE,
+    inventoryItemRepairCost: (unit, slot) => { asked.push(["inventory", unit, slot]); return 1632; },
+    containerItemRepairCost: (bag, slot) => { asked.push(["bag", bag, slot]); return slot === 2 ? Number.NaN : slot === 3 ? 12.5 : 428; },
+  });
+  try {
+    run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
+    assert.deepEqual(run(`local a, b, c = GameTooltip:SetInventoryItem("player", 1) return a, b == nil, c`, 3), [true, true, 1632]);
+    assert.deepEqual(run(`local a, b = GameTooltip:SetBagItem(0, 1) return a == nil, b`, 2), [true, 428]);
+    assert.deepEqual(run(`local a, b = GameTooltip:SetBagItem(0, 2) return a == nil, b`, 2), [true, 0], "a bad answer reads 0");
+    assert.deepEqual(run(`local a, b = GameTooltip:SetBagItem(0, 3) return b`, 1), [0], "a fraction is no copper count");
+    assert.deepEqual(asked, [["inventory", "player", 1], ["bag", 0, 1], ["bag", 0, 2], ["bag", 0, 3]]);
+    assert.deepEqual(boot.errors, []);
+  } finally { boot.close(); }
+  const plain = await bootTooltip({ inventoryItem: () => AXE, containerItem: () => AXE });
+  try {
+    plain.run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
+    assert.deepEqual(plain.run(`local a, b, c = GameTooltip:SetInventoryItem("player", 1) return c`, 1), [0], "no adapter answer: 0");
+    assert.deepEqual(plain.run(`local a, b = GameTooltip:SetBagItem(0, 1) return b`, 1), [0]);
+  } finally { plain.boot.close(); }
+});
+
+test("a skinnable creature's tooltip carries the client's own skinning line, coloured by the adapter", async () => {
+  const asked = [];
+  const { boot, run, line } = await bootTooltip({
+    unitSkinnable: (unit) => {
+      asked.push(unit);
+      return unit === "target"
+        ? { globalName: "UNIT_SKINNABLE_LEATHER", prefix: "", color: { r: 1, g: 0.5, b: 0.25 } }
+        : undefined;
+    },
+  });
+  try {
+    run(`
+      UNIT_SKINNABLE_LEATHER = "Можно снять шкуру"
+      function UnitExists(unit) return unit == "target" or unit == "player" end
+      function UnitName(unit) if unit == "target" then return "Волк" end if unit == "player" then return "Тест" end end
+      function UnitIsPlayer(unit) return unit == "player" end
+      function UnitLevel() return 10 end
+      function UnitIsPVP() return false end`);
+    run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
+    assert.deepEqual(run(`return GameTooltip:SetUnit("target")`, 1), [true]);
+    const lines = run(`return GameTooltip:NumLines()`, 1)[0];
+    const last = line("Left", lines);
+    assert.equal(last.text, "Можно снять шкуру", "the skinning line is the last one before OnTooltipSetUnit");
+    assert.deepEqual([last.textColor.r, last.textColor.g, last.textColor.b], [1, 0.5, 0.25]);
+    assert.deepEqual(run(`return GameTooltip:SetUnit("player")`, 1), [true]);
+    const playerLines = run(`return GameTooltip:NumLines()`, 1)[0];
+    assert.notEqual(line("Left", playerLines).text, "Можно снять шкуру", "no line where the adapter answers nothing");
+    assert.deepEqual(asked, ["target", "player"]);
+    assert.deepEqual(boot.errors, []);
+  } finally { boot.close(); }
+});
+
+test("the skinning line's colour-blind mark follows the colorblindMode CVar at SetUnit time", async () => {
+  // Wow.exe 0x00620EE0 prefixes the word with the difficulty mark while colorblindMode is on; the
+  // binder reads the CVar through the same GetCVarBool the stock options panel's SetCVar feeds.
+  const asked = [];
+  const { boot, run, line } = await bootTooltip({
+    unitSkinnable: (unit, colorblind) => {
+      asked.push(colorblind);
+      return { globalName: "UNIT_SKINNABLE_LEATHER", prefix: colorblind ? "[++]" : "", color: { r: 1, g: 1, b: 0 } };
+    },
+  });
+  try {
+    run(`
+      UNIT_SKINNABLE_LEATHER = "Можно снять шкуру"
+      function UnitExists(unit) return unit == "target" end
+      function UnitName(unit) if unit == "target" then return "Волк" end end
+      function UnitIsPlayer() return false end
+      function UnitLevel() return 10 end
+      function UnitIsPVP() return false end`);
+    run(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")`);
+    const last = () => line("Left", run(`return GameTooltip:NumLines()`, 1)[0]).text;
+    run(`GameTooltip:SetUnit("target")`);
+    assert.equal(last(), "Можно снять шкуру", "unset: the client default 0, no mark");
+    run(`SetCVar("colorblindMode", "1")`);
+    run(`GameTooltip:SetUnit("target")`);
+    assert.equal(last(), "[++]Можно снять шкуру");
+    run(`SetCVar("colorblindMode", "0")`);
+    run(`GameTooltip:SetUnit("target")`);
+    assert.equal(last(), "Можно снять шкуру");
+    assert.deepEqual(asked, [false, true, false]);
+    assert.deepEqual(boot.errors, []);
+  } finally { boot.close(); }
+});

@@ -129,3 +129,37 @@ test('logout response opens Cancel, its acknowledgement clears pending state, an
     game.world = undefined;
   }
 });
+
+// 4.13: the native panel counts the server's twenty seconds as the stock CAMP popup does and waits
+// for the server past zero; the clock stops with the panel.
+test('the native countdown shows the seconds left and then waits for the server', async () => {
+  const realPerformance = globalThis.performance;
+  let clock = 1_000;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => clock }, configurable: true, writable: true });
+  const world = { logout: { result: 0, instant: false }, loggedOut: false, cancelLogout() {}, requestLogout() {} };
+  game.world = world;
+  try {
+    updateLogoutPending(world, true);
+    const countdown = document.body.children.find(element => element.id === 'logout-countdown');
+    const line = all(countdown).find(element => element.className === 'logout-countdown-time');
+    const announce = all(countdown).find(element => element.className === 'logout-countdown-announce');
+    assert.match(line.textContent, /\b20\b/, 'twenty seconds at the response');
+    assert.equal(announce.getAttribute('aria-live'), 'polite');
+    assert.equal(announce.textContent, line.textContent, 'the first count is announced');
+    clock += 5_000;
+    updateLogoutPending(world, true); // a repeated sync of the same logout keeps the clock
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.match(line.textContent, /\b15\b/);
+    clock += 1_000;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.match(line.textContent, /\b14\b/);
+    assert.match(announce.textContent, /\b15\b/, 'the reader copy moves every five seconds only');
+    clock += 30_000;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(line.textContent, 'Ожидание сервера…');
+  } finally {
+    resetLogoutPending();
+    game.world = undefined;
+    Object.defineProperty(globalThis, 'performance', { value: realPerformance, configurable: true, writable: true });
+  }
+});

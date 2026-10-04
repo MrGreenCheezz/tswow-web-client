@@ -197,7 +197,9 @@ test("movement packets are played out instead of teleporting other units", () =>
   state.move(7n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } }, 0);
   assert.deepEqual(state.objects.get(7n).position, { x: 0, y: 0, z: 0, orientation: 0 });
 
-  state.move(7n, { flags: 1, position: { x: 9, y: 0, z: 0, orientation: 0 } }, 1000);
+  // A packet that says the unit stands (flags 0) is glided to; one that says it runs is carried on
+  // from its position instead (5.04, tests/movement-extrapolation.test.mjs).
+  state.move(7n, { flags: 0, position: { x: 9, y: 0, z: 0, orientation: 0 } }, 1000);
   assert.equal(state.objects.get(7n).position.x, 0, "the new position is not applied at once");
 
   state.updateMotions(1090);

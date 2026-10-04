@@ -38,11 +38,12 @@ test("hovering an action never paints an opaque BLP over its icon", async () => 
 
 test("an item tooltip applies and then clears quality on the tooltip frame itself", async () => {
   const [widgets, css] = await Promise.all([
-    read("src/browser/ui/Widgets.ts"),
+    // The tooltip moved out of Widgets.ts into its own module (4.01).
+    read("src/browser/ui/Tooltip.ts"),
     read("src/browser/style.css"),
   ]);
-  assert.match(widgets, /tooltipElement\.dataset\["quality"\]\s*=\s*String\(shown\.quality\)/);
-  assert.match(widgets, /delete tooltipElement\.dataset\["quality"\]/,
+  assert.match(widgets, /box\.dataset\["quality"\]\s*=\s*String\(shown\.quality\)/);
+  assert.match(widgets, /delete box\.dataset\["quality"\]/,
     "a spell tooltip shown after an item must not inherit the item's border");
   for (const quality of [0, 1, 2, 3, 4, 5, 6, 7]) {
     assert.match(css, new RegExp(`body\\.native-wow-ui \\.ui-tooltip\\[data-quality=["']${quality}["']\\][^{}]*\\{[^}]*border-color:`, "s"),
@@ -80,6 +81,6 @@ test("active unresolved auras are retried and repainted when metadata later beco
     "the server-only Pursuit of Justice aura must inherit its client-visible owner's metadata");
   assert.match(metadata, /metadata\.set\(effectId,\s*\{\s*\.\.\.owner,\s*id:\s*effectId\s*\}\)/,
     "a linked effect must be returned under the aura id requested by the browser");
-  assert.match(client, /\/dbc\/spells\?ids=\$\{[^}]+\}&v=13/,
+  assert.match(client, /\/dbc\/spells\?ids=\$\{[^}]+\}&v=17/, // L13: v=17
     "the current targeting-contract metadata version also invalidates cached empty v=8 linked-aura responses");
 });

@@ -328,6 +328,12 @@ test("MPQ stock QuestLog/WatchFrame mounts, lists, details and cleans up through
       assert.equal(boot.bridge.Click(firstButton, "LeftButton", false), true,
         "first stock quest row click is dispatched through the bridge");
       assert.equal(seam.questLogSelection(), 1, "stock click selects the first canned quest");
+      // Plan 1.12: the canned quest is sharable and the canned party is there — «Поделиться» is
+      // enabled by QuestLogFrame.lua:871 and its click reaches QuestLogPushQuest.
+      const pushButton = frame(boot, "QuestLogFramePushQuestButton");
+      assert.equal(pushButton.enabled, true, "the stock share button is enabled");
+      assert.equal(boot.bridge.Click(pushButton, "LeftButton", false), true);
+      assert.deepEqual(seam.sharedQuests, [CANNED_QUESTS[0].questId], "the click shares the selected quest");
       const detailTitle = frame(boot, "QuestInfoTitleHeader");
       const detailDescription = frame(boot, "QuestInfoDescriptionText");
       const detailObjectives = frame(boot, "QuestInfoObjectivesText");

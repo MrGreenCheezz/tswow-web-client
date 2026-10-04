@@ -126,8 +126,9 @@ test("live QuestLog reads update fields and cached templates without per-frame s
     creatureTemplates: new Map(),
     gameObjectTemplates: new Map([[456, { name: "Сундук Братства" }]]),
     questTemplates: new Map(), questPoi: new Map([
-      [77, [{ map: 1, worldMapAreaId: 10 }]],
-      [88, [{ map: 1, worldMapAreaId: 11 }]],
+      // 3.13c: a blob counts for an objective still open (Wow.exe 0x5e2950): slot 1, the chest.
+      [77, [{ map: 1, worldMapAreaId: 10, objectiveIndex: 1, points: [] }]],
+      [88, [{ map: 1, worldMapAreaId: 11, objectiveIndex: 1, points: [] }]],
     ]), cooldownRemaining: () => 0,
     currentServerTime: () => 100,
     queryQuestCalls: [],
@@ -152,15 +153,17 @@ test("live QuestLog reads update fields and cached templates without per-frame s
     now: () => 1,
   });
   fired.length = 0;
-  assert.deepEqual(call("GetNumQuestLogEntries", seam), [1, 1]);
-  assert.deepEqual(call("QuestMapUpdateAllQuests", seam), [1]);
-  assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 1), [77]);
-  assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 2), []);
+  // A quest whose record is not cached is not listed yet, as in the client (Wow.exe 0x005e6940),
+  // and building the list asks for it.
+  assert.deepEqual(call("GetNumQuestLogEntries", seam), [0, 0]);
+  // 3.13c: without the quest's record there is no objective mask, so no POI (Wow.exe 0x5e2950).
+  assert.deepEqual(call("QuestMapUpdateAllQuests", seam), [0]);
+  assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 1), []);
   assert.deepEqual(call("GetQuestLogTitle", seam, 1), [
-    "", 0, undefined, 0, false, false, undefined, false, 77, false,
+    "", 0, undefined, 0, false, false, undefined, false, 0, false,
   ]);
   call("SelectQuestLogEntry", seam, 1);
-  assert.deepEqual(world.queryQuestCalls, [77]);
+  assert.deepEqual([...new Set(world.queryQuestCalls)], [77]);
   assert.deepEqual(call("GetQuestLogQuestText", seam), []);
   assert.deepEqual(call("GetNumQuestLeaderBoards", seam), [0]);
 
@@ -183,6 +186,12 @@ test("live QuestLog reads update fields and cached templates without per-frame s
   fired.length = 0;
   worldListeners.get("QUEST_LOG_CHANGED")?.({});
   assert.deepEqual(fired, [], "same template edge is deduplicated");
+  // Now listed: line 1 is its ZoneOrSort 0 header, the quest is line 2.
+  assert.deepEqual(call("GetNumQuestLogEntries", seam), [2, 1]);
+  assert.deepEqual(call("GetQuestLogTitle", seam, 1), [
+    "Missing header! (quest designers)", 0, undefined, 0, true, false, undefined, false, 0, false,
+  ]);
+  call("SelectQuestLogEntry", seam, 2);
   assert.deepEqual(call("GetQuestLogQuestText", seam), ["Detail", "Objectives"]);
   assert.equal(world.creatureTemplates.size, 0,
     "stock names an objective directly from context metadata without a world template");
@@ -192,56 +201,58 @@ test("live QuestLog reads update fields and cached templates without per-frame s
   assert.deepEqual(call("GetQuestLogTimeLeft", seam), [50]);
   assert.deepEqual(call("GetQuestLogGroupNum", seam), [2]);
   assert.deepEqual(call("GetNumQuestWatches", seam), [1], "live defaults current rows to watched");
-  assert.deepEqual(call("GetQuestIndexForWatch", seam, 1), [1]);
-  assert.deepEqual(call("IsQuestWatched", seam, 1), [true]);
+  assert.deepEqual(call("GetQuestIndexForWatch", seam, 1), [2]);
+  assert.deepEqual(call("IsQuestWatched", seam, 2), [true]);
   fired.length = 0;
-  call("RemoveQuestWatch", seam, 1);
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1]]);
+  call("RemoveQuestWatch", seam, 2);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2]]);
   fired.length = 0;
-  call("RemoveQuestWatch", seam, 1);
+  call("RemoveQuestWatch", seam, 2);
   assert.deepEqual(fired, [], "live duplicate removal is quiet");
-  call("AddQuestWatch", seam, 1, 300);
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1]]);
+  call("AddQuestWatch", seam, 2, 300);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2]]);
   fired.length = 0;
 
   worldListeners.get("QUEST_PROGRESS")?.({ questId: 77, entry: 123, count: 2, required: 3 });
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1]]);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2]]);
   worldListeners.get("QUEST_PROGRESS")?.({ questId: 77, entry: 123, count: 2, required: 3 });
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1]], "same progress is quiet");
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2]], "same progress is quiet");
 
   fields.set(base + 2, 3);
   storeListeners.get("PLAYER_QUEST_LOG_UPDATE")?.({ guid: selfGuid });
   assert.deepEqual(fired, [
-    [FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1],
+    [FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2],
     [FRAMEXML_SEAM_EVENTS.unitQuestLogChanged, "player"],
   ]);
   storeListeners.get("PLAYER_QUEST_LOG_UPDATE")?.({ guid: selfGuid });
   assert.deepEqual(fired, [
-    [FRAMEXML_SEAM_EVENTS.questWatchUpdate, 1],
+    [FRAMEXML_SEAM_EVENTS.questWatchUpdate, 2],
     [FRAMEXML_SEAM_EVENTS.unitQuestLogChanged, "player"],
   ], "same field shape is quiet");
   assert.deepEqual(call("GetQuestLogLeaderBoard", seam, 1), ["Лесной волк: 3/3", "monster", true]);
   assert.deepEqual(call("GetNumQuestWatches", seam), [1]);
-  assert.deepEqual(call("GetQuestIndexForWatch", seam, 1), [1]);
-  assert.deepEqual(call("IsQuestWatched", seam, 1), [true]);
+  assert.deepEqual(call("GetQuestIndexForWatch", seam, 1), [2]);
+  assert.deepEqual(call("IsQuestWatched", seam, 2), [true]);
 
   // Explicit removals are retained by quest id when a row leaves and later returns; new ids
   // retain the native-compatible default watched state.
   const stride = UPDATE_FIELDS.PLAYER_QUEST_LOG_2_1.offset - base;
-  call("RemoveQuestWatch", seam, 1);
+  call("RemoveQuestWatch", seam, 2);
   fields.set(base, 0);
   fields.set(base + stride, 77);
   storeListeners.get("PLAYER_QUEST_LOG_UPDATE")?.({ guid: selfGuid });
-  assert.deepEqual(call("IsQuestWatched", seam, 1), [false]);
+  assert.deepEqual(call("IsQuestWatched", seam, 2), [false]);
+  world.questTemplates.set(88, { ...world.questTemplates.get(77), questId: 88, title: "Other" });
   fields.set(base + stride, 88);
   storeListeners.get("PLAYER_QUEST_LOG_UPDATE")?.({ guid: selfGuid });
-  assert.deepEqual(call("IsQuestWatched", seam, 1), [true]);
+  assert.deepEqual(call("IsQuestWatched", seam, 2), [true]);
 
   fields.set(base, 77);
   storeListeners.get("PLAYER_QUEST_LOG_UPDATE")?.({ guid: selfGuid });
   assert.deepEqual(call("QuestMapUpdateAllQuests", seam), [1],
     "current map area excludes a remote WorldMapArea on the same map");
-  assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 1), [77]);
+  // The second value is the quest's displayed log row: header, «Other» (88), «Resolved» (77).
+  assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 1), [77, 3]);
   assert.deepEqual(call("QuestPOIGetQuestIDByVisibleIndex", seam, 2), []);
 
   fired.length = 0;
@@ -333,7 +344,8 @@ test("stock QuestLog prefetches cold objective metadata when a cached quest ente
   assert.deepEqual(gameObjectQueries, [[456, 0n]]);
   assert.deepEqual(prefetchCalls, [[[999], []]]);
   assert.equal(typeof finishPrefetch, "function");
-  call("SelectQuestLogEntry", seam, 1);
+  // Line 1 is the quest's ZoneOrSort 0 header (FrameXmlQuestLog.ts), the quest is line 2.
+  call("SelectQuestLogEntry", seam, 2);
   assert.deepEqual(call("GetQuestLogLeaderBoard", seam, 1), ["Существо #123: 0/3", "monster", false]);
   assert.deepEqual(call("GetQuestLogLeaderBoard", seam, 2), ["Объект #456: 0/1", "object", false]);
   assert.deepEqual(call("GetQuestLogLeaderBoard", seam, 3), ["Предмет #999", "item", false]);

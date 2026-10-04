@@ -115,3 +115,22 @@ test("ticket serialization cannot send after its world connection has closed", a
   await pending;
   assert.deepEqual(afterClose, []);
 });
+
+test("8.17: the lag buttons send GMReportLag's packet (kind − 1, map, position) and say it was sent", async () => {
+  const transport = connection();
+  const world = new WorldClient(transport);
+  transport.push(OPCODES.SMSG_LOGIN_VERIFY_WORLD, new PacketWriter().u32(1).f32(10).f32(20).f32(30).f32(0).toUint8Array());
+  await world.loginCharacter(1n);
+  game.world = world;
+  world.state.selfGuid = 1n;
+  world.state.objects.set(1n, { guid: 1n, typeId: 4, fields: new Map(), position: { x: 10, y: 20, z: 30, orientation: 0 } });
+  try {
+    toggleGmTickets();
+    at("gm-lag-5").click(); // «Движение», STATIC_CONSTANTS.Movement
+    const lag = transport.sent.filter((packet) => packet.opcode === OPCODES.CMSG_GM_REPORT_LAG);
+    assert.equal(lag.length, 1);
+    const reader = new PacketReader(lag[0].payload);
+    assert.deepEqual([reader.u32(), reader.u32(), reader.f32(), reader.f32(), reader.f32()], [4, world.mapId ?? 0, 10, 20, 30]);
+    assert.ok(all(at("gm-ticket-window")).some((entry) => entry.textContent === "Ваше сообщение о задержке отправлено."));
+  } finally { resetGmTickets(); world.close(); game.world = undefined; }
+});

@@ -216,34 +216,36 @@ test("UNIT_COMBAT reaches every stock token the target is, worded by the pure ma
   const { seam, events, fired, pump, selfGuid, targetGuid } = fixture();
   seam.attach(pump);
   fired.length = 0;
+  // The same facts also feed the combat log (3.01, COMBAT_LOG_EVENT*); this test reads UNIT_COMBAT.
+  const unitCombat = () => fired.filter((entry) => entry[0] === "UNIT_COMBAT");
   const log = (targetGuid, overrides = {}) => ({
     targetGuid, casterGuid: 0x99n, spellId: 133, damage: 1234, overkill: 0, schoolMask: 0x04, absorbed: 0,
     resisted: 0, periodic: false, blocked: 0, hitInfo: 2, critical: true, ...overrides,
   });
   events.emit("UNIT_COMBAT", { source: "spellDamage", log: log(selfGuid) });
-  assert.deepEqual(fired, [["UNIT_COMBAT", "player", "WOUND", "CRITICAL", 1234, 4]]);
+  assert.deepEqual(unitCombat(), [["UNIT_COMBAT", "player", "WOUND", "CRITICAL", 1234, 4]]);
   fired.length = 0;
   events.emit("UNIT_COMBAT", { source: "spellDamage", log: log(targetGuid, { critical: false, damage: 10 }) });
-  assert.deepEqual(fired, [["UNIT_COMBAT", "target", "WOUND", "", 10, 4]]);
+  assert.deepEqual(unitCombat(), [["UNIT_COMBAT", "target", "WOUND", "", 10, 4]]);
   fired.length = 0;
   events.emit("UNIT_COMBAT", { source: "melee", swing: {
     hitInfo: HITINFO_AFFECTS_VICTIM, attacker: targetGuid, victim: selfGuid, damage: 0, overkill: 0,
     victimState: VICTIMSTATE_DODGE, blocked: 0, damages: [{ schoolMask: 1, damage: 0, absorbed: 0, resisted: 0 }],
   } });
-  assert.deepEqual(fired, [["UNIT_COMBAT", "player", "DODGE", "", 0, 1]]);
+  assert.deepEqual(unitCombat(), [["UNIT_COMBAT", "player", "DODGE", "", 0, 1]]);
   fired.length = 0;
   events.emit("UNIT_COMBAT", { source: "heal", log: {
     targetGuid: 0x77n, casterGuid: selfGuid, spellId: 2050, amount: 300, overheal: 0, absorbed: 0, critical: false,
   } });
-  assert.deepEqual(fired, [], "a unit no stock frame shows gets no event");
+  assert.deepEqual(unitCombat(), [], "a unit no stock frame shows gets no event");
   events.emit("UNIT_COMBAT", { source: "periodic", log: {
     targetGuid: selfGuid, casterGuid: 0x99n, spellId: 172, auraType: 53, amount: 0, overAmount: 0, schoolMask: 0,
     absorbed: 0, resisted: 0, critical: false, powerType: undefined,
   } });
-  assert.deepEqual(fired, [], "a leech tick shows nothing");
+  assert.deepEqual(unitCombat(), [], "a leech tick shows nothing");
   seam.detach();
   events.emit("UNIT_COMBAT", { source: "spellDamage", log: log(selfGuid) });
-  assert.deepEqual(fired, []);
+  assert.deepEqual(unitCombat(), []);
   assert.equal(events.listenerCount("UNIT_COMBAT"), 0);
 });
 

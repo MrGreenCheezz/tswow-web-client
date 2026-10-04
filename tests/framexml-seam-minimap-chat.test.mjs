@@ -324,9 +324,10 @@ test("GetInstanceInfo answers Map.InstanceType, the selected difficulty and a me
   assert.deepEqual(call(seam, "GetInstanceInfo"), ["Мертвые копи", "party", 2, "", 5, 0, false]);
   world.mapId = 631;
   world.raidDifficulty = 1;
-  assert.deepEqual(call(seam, "GetInstanceInfo"), ["Цитадель Ледяной Короны", "raid", 2, "", 25, 0, false]);
+  // 5.28 (04.10, L6): Icecrown Citadel has Map Flags 0x100 — the seventh value is true (FrameXmlInstanceDynamic.ts).
+  assert.deepEqual(call(seam, "GetInstanceInfo"), ["Цитадель Ледяной Короны", "raid", 2, "", 25, 0, true]);
   world.raidDifficulty = 0;
-  assert.deepEqual(call(seam, "GetInstanceInfo"), ["Цитадель Ледяной Короны", "raid", 1, "", 10, 0, false],
+  assert.deepEqual(call(seam, "GetInstanceInfo"), ["Цитадель Ледяной Короны", "raid", 1, "", 10, 0, true],
     "10-player normal: Minimap.lua:486 prints 10 on the difficulty flag");
   maps.push({ id: 532, name: "Каражан", instanceType: 2 }, { id: 9000, name: "Свой рейд", instanceType: 2 },
     { id: 229, name: "Пик Черной горы", instanceType: 1 });

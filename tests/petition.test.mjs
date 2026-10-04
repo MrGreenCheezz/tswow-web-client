@@ -24,7 +24,7 @@ globalThis.window = { addEventListener() {}, removeEventListener() {}, innerWidt
   setTimeout: (...args) => setTimeout(...args), clearTimeout: (...args) => clearTimeout(...args) };
 globalThis.location = { origin: "http://localhost:5173", protocol: "http:", hostname: "localhost" };
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
+const { getTip, usePanelHost } = await import("../dist/code/browser/ui/Widgets.js");
 usePanelHost({ viewport: document.body, attach() {} });
 const { showPetition, petitionOpen, closePetition, resetPetition } = await import("../dist/code/browser/ui/Petition.js");
 const all = (root) => [root, ...root.children.flatMap(all)];
@@ -127,6 +127,6 @@ test("a stranger signs or declines, and an arena charter cannot turn in without 
     showPetition();
     assert.equal(at("petition-turn-in").disabled, true,
       "an arena turn-in without an emblem would destroy the charter server-side");
-    assert.match(at("petition-turn-in").title, /эмблем/);
+    assert.match(getTip(at("petition-turn-in")) ?? "", /эмблем/);
   } finally { resetPetition(); game.world = undefined; owned.world.close(); }
 });

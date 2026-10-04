@@ -718,8 +718,10 @@ test("EnvironmentClient stats split queued and active model and animation jobs a
       residentAnimations: 0,
       failedAnimations: 0,
       deferredAnimations: 0,
-      queuedAnimations: 0,
-      activeAnimations: 1,
+      // 10.21 (c): the four critical models fill the shared request budget, so the normal-priority
+      // sidecar waits in its queue instead of opening a fifth connection beside them.
+      queuedAnimations: 1,
+      activeAnimations: 0,
       modelDecodedTypedBackingBytes: 0,
       modelDecodedNumericArrayElements: 0,
       modelDecodedTypedBackingOverflowBytes: 0,

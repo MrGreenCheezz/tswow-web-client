@@ -319,7 +319,8 @@ function floatBits(value) {
  */
 function factionTemplateDbc() {
   const alliance = [1, 1, 0, 2, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
-  const horde = [2, 2, 0, 4, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+  // L18 5.05: column 2 is Flags (DBCStructure.h:694); 0x1000 FACTION_TEMPLATE_FLAG_CONTESTED_GUARD.
+  const horde = [2, 2, 0x1000, 4, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0];
   return dbcFixture(14, [alliance, horde], Uint8Array.of(0));
 }
 
@@ -595,9 +596,10 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     // Names travel with the templates: the reputation block on the wire is 128 slots numbered by
     // `ReputationIndex`, and without this the character sheet can only print the number.
     assert.deepEqual(factionBody.names, { 21: "Дарнас" });
+    // L18 5.05: the template flags ride along (/dbc/factions?v=3) — CONTESTED_GUARD for 0x007251c0/0x0071f770.
     assert.deepEqual(factionBody.templates, {
-      1: { faction: 1, factionGroup: 2, friendGroup: 2, enemyGroup: 4, enemies: [], friends: [] },
-      2: { faction: 2, factionGroup: 4, friendGroup: 4, enemyGroup: 2, enemies: [], friends: [] },
+      1: { faction: 1, flags: 0, factionGroup: 2, friendGroup: 2, enemyGroup: 4, enemies: [], friends: [] },
+      2: { faction: 2, flags: 0x1000, factionGroup: 4, friendGroup: 4, enemyGroup: 2, enemies: [], friends: [] },
     });
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/factions`)).status, 403);
     const creatures = await fetch(`http://127.0.0.1:${gateway.port}/data/creatures?entries=123`, {
@@ -742,7 +744,7 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.equal(visualTexture.status, 200);
     assert.equal(visualTexture.headers.get("content-type"), "image/png");
     const initialTextureTag = visualTexture.headers.get("etag");
-    assert.match(initialTextureTag ?? "", /^"[0-9a-f]{40}"$/, "WMO textures need a content validator");
+    assert.match(initialTextureTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/, "WMO textures need a content validator");
     assert.equal(visualTexture.headers.get("cache-control"), "public, max-age=0, must-revalidate");
 
     // A republished WMO keeps the same hash-keyed filename. A browser must therefore be able to
@@ -834,6 +836,28 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // book's 7,369 spells resolve to row 2, whose 5 yards mean «melee» rather than five of
     // anything, and the browser has nothing else to tell that row from a five-yard spell.
     rangeFlags: 2,
+    // v=14 (1.14b, 2.05): the friendly slot of the same row, the raw target columns and attribute
+    // words IsActionInRange reads, and the lock-pick flag. This row targets nothing and opens nothing.
+    rangeMinFriendly: 0,
+    rangeMaxFriendly: 35,
+    targets: 0,
+    implicitTargetA: [0, 0, 0],
+    implicitTargetB: [0, 0, 0],
+    targetCreatureType: 0,
+    attributes: [0, 0, 0, 0, 0, 0, 0, 0],
+    itemOrObject: false,
+    // v=15 (5.20): DispelType, raw; no SpellDispelType table here, so no debuffType either.
+    dispelType: 0,
+    // v=16 (3.01, 3.02, 3.07): DefenseType, PreventionType, the two interrupt flag words, raw, and
+    // the multi-cast slots of a player totem (none here).
+    dmgClass: 0,
+    preventionType: 0,
+    interruptFlags: 0,
+    channelInterruptFlags: 0,
+    totemSlotMask: 0,
+    // L13 (v=17, 5.30/3.12): StartRecoveryCategory and EffectMiscValueB, raw; no summon effect, no summon rows.
+    startRecoveryCategory: 0,
+    effectMiscValueB: [0, 0, 0],
     castTime: 1500,
     effects: [0, 0, 0],
     effectAura: [0, 0, 0],
@@ -1324,7 +1348,7 @@ test("same-origin browser texture GETs work and interface art is revalidated", a
     assert.equal(scenery.headers.get("cache-control"), "public, max-age=0, must-revalidate",
       "a module may replace scenery under the same path too");
     const sceneryTag = scenery.headers.get("etag");
-    assert.match(sceneryTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(sceneryTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
     assert.equal(await scenery.text(), "PNG-scenery");
     const unchangedScenery = await fetch(
       `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(sceneryPath)}`,
@@ -1559,8 +1583,8 @@ test("an HD-to-classic patch switch blocks every paired visual/profile route unt
     assert.equal(hdModel.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const textureTag = hdTexture.headers.get("etag");
     const modelTag = hdModel.headers.get("etag");
-    assert.match(textureTag ?? "", /^"[0-9a-f]{40}"$/);
-    assert.match(modelTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(textureTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
+    assert.match(modelTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
 
     assert.equal((await fetch(textureUrl, {
       headers: { ...headers, "if-none-match": textureTag },

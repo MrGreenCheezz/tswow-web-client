@@ -89,7 +89,8 @@ test("the live seam gives a learned class 13 player a complete paper doll", with
   forgetCreationNames();
   learnCreationNames(
     [{ id: 1, name: "Человек", clientFileString: "Human", baseLanguage: 7 }],
-    [{ id: 13, name: "Герой", fileName: "HERO" }],
+    [{ id: 13, name: "Герой", fileName: "HERO" },
+      { id: 3, name: "Охотник", nameMale: "Охотник", nameFemale: "Охотница", fileName: "HUNTER" }],
   );
   const fields = new Map();
   const set = (name, value, index = 0) => fields.set(UPDATE_FIELDS[name].offset + index, value >>> 0);
@@ -122,6 +123,11 @@ test("the live seam gives a learned class 13 player a complete paper doll", with
     }
     const shown = parseFrameXmlText(boot.bridge.getFrame("CharacterLevelText").text).map((run) => run.text).join("");
     assert.equal(shown, "Человек, Герой 80-го уровня");
+    // Constants.lua:91-92 filled both lists at load from the learned classes (9.05): HERO past 11,
+    // the female column for the hunter, and this corpus's own class count.
+    assert.deepEqual(lua(boot, `return LOCALIZED_CLASS_NAMES_MALE.HERO, LOCALIZED_CLASS_NAMES_FEMALE.HERO,
+      LOCALIZED_CLASS_NAMES_MALE.HUNTER, LOCALIZED_CLASS_NAMES_FEMALE.HUNTER, MAX_CLASSES`, 5),
+    ["Герой", "Герой", "Охотник", "Охотница", 12]);
   } finally {
     boot.close();
     forgetCreationNames();
