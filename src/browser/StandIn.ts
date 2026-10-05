@@ -197,8 +197,17 @@ export class StandInLedger {
   }
 }
 
-/** The diagnostics line: how many capsules there are and, if any, why. */
-export function standInSummary(report: StandInReport): string {
+/**
+ * The diagnostics line: how many capsules there are and, if any, why — and, when the report carries
+ * it (05.10-A7b-9, 7.18), the environment's line under it.
+ */
+export function standInSummary(report: StandInReport & { environment?: EnvironmentStandInReport }): string {
+  const units = unitStandInSummary(report);
+  return report.environment ? `${units}\n${environmentStandInSummary(report.environment)}` : units;
+}
+
+/** The capsule line alone. */
+export function unitStandInSummary(report: StandInReport): string {
   // Said apart from «none» on purpose: "no capsules" is an answer about the units and this is the
   // absence of the question, which is what the window shows while the world is still loading.
   if (!report.walked) return "Капсулы: кадр до юнитов не дошёл — мир ещё грузится.";
@@ -214,4 +223,240 @@ export function standInSummary(report: StandInReport): string {
     .filter((reason) => report.byReason[reason] > 0)
     .map((reason) => `${STAND_IN_REASON_LABELS[reason]} ${report.byReason[reason]}`);
   return `Капсул: ${report.total} · ${parts.join(" · ")}${stale}`;
+}
+
+// ── 05.10-A7b-9 (7.18): the environment's stand-ins ─────────────────────────────────────────────
+//
+// The unit ledger above counts pills; the world around them was never counted at all, so «no
+// stand-ins in a warmed scene» could not be measured for the buildings, trees and props. Before
+// this the renderer's `#environmentNode` folded three facts into one look — a model on its way
+// (a tree's trunk and canopy, or nothing), a model that came back as the server's collision hull
+// (nothing: the building is simply absent) and a model the client does not ship (the same
+// nothing). The ledger keeps them apart, per frame, with fixed counters and a short sample list.
+
+/** What `EnvironmentClient.modelState` knows about one model path. */
+export type EnvironmentModelState = "resident" | "pending" | "hull" | "missing" | "failed";
+
+/**
+ * Why a placement is drawn as a stand-in on this frame.
+ *
+ * * `pending` — the model is on its way, or has arrived and waits for a later frame's build budget.
+ * * `hull` — the gateway had no visual model and served the collision hull; drawn as nothing.
+ * * `missing` — the archives do not hold the model (404 on both routes). Permanent for the session.
+ * * `failed` — the request failed four times or the payload cannot be decoded. Permanent.
+ */
+export type EnvironmentStandInReason = "pending" | "hull" | "missing" | "failed";
+
+export const ENVIRONMENT_STAND_IN_REASONS: readonly EnvironmentStandInReason[] = ["pending", "hull", "missing", "failed"];
+
+export const ENVIRONMENT_STAND_IN_REASON_LABELS: Readonly<Record<EnvironmentStandInReason, string>> = {
+  pending: "модель в пути",
+  hull: "только корпус столкновений",
+  missing: "нет в клиенте",
+  failed: "не загрузилась",
+};
+
+/** One model path standing in on this frame; `count` is how many placements share it. */
+export interface EnvironmentStandInSample {
+  model: string;
+  reason: EnvironmentStandInReason;
+  count: number;
+}
+
+/** Placements the tiles under the player could not carry (7.19). */
+export interface EnvironmentTileLossCounts {
+  /** Objects whose fields this client could not read, left out of their tile. */
+  rejected: number;
+  /** Objects past the tile's object cap, cut on the client. */
+  truncated: number;
+  /** WMO doodads the generator cut (`X-Tile-Truncated`). */
+  generator: number;
+}
+
+/** Requests waiting on the retry ladder (1.24): flat ground, noon light or a bare horizon until then. */
+export interface EnvironmentRetryCounts {
+  splat: number;
+  light: number;
+  horizon: number;
+}
+
+export interface EnvironmentStandInReport {
+  total: number;
+  byReason: Record<EnvironmentStandInReason, number>;
+  /** Stand-ins drawn as a trunk and canopy (1.23 decides which names get one). Part of `total`. */
+  canopy: number;
+  samples: EnvironmentStandInSample[];
+  /** Whether the frame this report describes walked the placements at all. */
+  walked: boolean;
+  /** Filled at report time from the environment client, not by the renderer. */
+  tiles?: EnvironmentTileLossCounts;
+  /** Filled at report time from the splat, light and horizon clients. */
+  retrying?: EnvironmentRetryCounts;
+}
+
+/**
+ * One frame's environment stand-ins.
+ *
+ * Written from the admission loop for every admitted placement that is not its model, so it must
+ * cost nothing on a warm frame and nearly nothing on a cold one: four counters, and a fixed pool of
+ * sample records reused from frame to frame, keyed on the model path the placement already holds.
+ */
+export class EnvironmentStandInLedger {
+  #pending = 0;
+  #hull = 0;
+  #missing = 0;
+  #failed = 0;
+  #canopy = 0;
+  #walked = false;
+  readonly #pool: EnvironmentStandInSample[] = [];
+  #used = 0;
+  readonly #index = new Map<string, number>();
+
+  /** Starts a frame that walks the placements. */
+  begin(): void {
+    this.#clear();
+    this.#walked = true;
+  }
+
+  /** Starts a frame that will not reach the placements. */
+  idle(): void {
+    this.#clear();
+    this.#walked = false;
+  }
+
+  #clear(): void {
+    this.#pending = 0;
+    this.#hull = 0;
+    this.#missing = 0;
+    this.#failed = 0;
+    this.#canopy = 0;
+    this.#used = 0;
+    if (this.#index.size > 0) this.#index.clear();
+  }
+
+  note(model: string, reason: EnvironmentStandInReason, canopy = false): void {
+    if (reason === "pending") this.#pending++;
+    else if (reason === "hull") this.#hull++;
+    else if (reason === "missing") this.#missing++;
+    else this.#failed++;
+    if (canopy) this.#canopy++;
+    const at = this.#index.get(model);
+    if (at !== undefined) {
+      const sample = this.#pool[at]!;
+      sample.count++;
+      // A path both waiting and written off in one frame is reported by the worse fact.
+      if (sample.reason === "pending" && reason !== "pending") sample.reason = reason;
+      return;
+    }
+    let slot = this.#used;
+    if (slot >= STAND_IN_SAMPLE_LIMIT) {
+      // Full. A cold frame's hundred models on their way must not hide the one that never comes:
+      // a permanent reason takes the place of the last waiting one, and nothing else is dropped.
+      if (reason === "pending") return;
+      slot = -1;
+      for (let index = this.#used - 1; index >= 0; index--) {
+        if (this.#pool[index]!.reason === "pending") {
+          slot = index;
+          break;
+        }
+      }
+      if (slot < 0) return;
+      this.#index.delete(this.#pool[slot]!.model);
+    } else {
+      this.#used++;
+    }
+    const sample = this.#pool[slot];
+    if (sample) {
+      sample.model = model;
+      sample.reason = reason;
+      sample.count = 1;
+    } else {
+      this.#pool[slot] = { model, reason, count: 1 };
+    }
+    this.#index.set(model, slot);
+  }
+
+  report(): EnvironmentStandInReport {
+    const samples: EnvironmentStandInSample[] = [];
+    for (let index = 0; index < this.#used; index++) {
+      const { model, reason, count } = this.#pool[index]!;
+      samples.push({ model, reason, count });
+    }
+    // Permanent facts first: a model that will never come is the line worth reading.
+    samples.sort((a, b) => Number(a.reason === "pending") - Number(b.reason === "pending"));
+    return {
+      total: this.#pending + this.#hull + this.#missing + this.#failed,
+      byReason: { pending: this.#pending, hull: this.#hull, missing: this.#missing, failed: this.#failed },
+      canopy: this.#canopy,
+      samples,
+      walked: this.#walked,
+    };
+  }
+}
+
+/** The sources the report adds at read time; structural, so this file stays free of the clients. */
+export interface EnvironmentStandInSources {
+  environment?: { tileLosses(): EnvironmentTileLossCounts } | undefined;
+  splat?: { readonly retrying: number } | undefined;
+  light?: { readonly retrying: number } | undefined;
+  horizon?: { readonly retrying: number } | undefined;
+}
+
+/** The ledger's frame plus the tile losses (7.19) and retry waits (1.24) the clients hold now. */
+export function environmentStandInsWith(
+  report: EnvironmentStandInReport,
+  sources: EnvironmentStandInSources,
+): EnvironmentStandInReport {
+  return {
+    ...report,
+    ...(sources.environment ? { tiles: sources.environment.tileLosses() } : {}),
+    retrying: {
+      splat: sources.splat?.retrying ?? 0,
+      light: sources.light?.retrying ?? 0,
+      horizon: sources.horizon?.retrying ?? 0,
+    },
+  };
+}
+
+/** Whether anything in the environment report is worth the error colour. */
+export function environmentStandInsFault(report: EnvironmentStandInReport): boolean {
+  const tiles = report.tiles;
+  const retrying = report.retrying;
+  return report.total > 0
+    || (tiles !== undefined && tiles.rejected + tiles.truncated + tiles.generator > 0)
+    || (retrying !== undefined && retrying.splat + retrying.light + retrying.horizon > 0);
+}
+
+/** The diagnostics line for the environment. */
+export function environmentStandInSummary(report: EnvironmentStandInReport): string {
+  const extras: string[] = [];
+  const tiles = report.tiles;
+  if (tiles) {
+    const lost: string[] = [];
+    if (tiles.rejected > 0) lost.push(`нечитаемых ${tiles.rejected}`);
+    if (tiles.truncated > 0) lost.push(`сверх предела ${tiles.truncated}`);
+    if (tiles.generator > 0) lost.push(`доодадов срезано генератором ${tiles.generator}`);
+    if (lost.length > 0) extras.push(`плитки потеряли: ${lost.join(", ")}`);
+  }
+  const retrying = report.retrying;
+  if (retrying) {
+    const waits: string[] = [];
+    if (retrying.splat > 0) waits.push(`земля ${retrying.splat}`);
+    if (retrying.light > 0) waits.push(`свет ${retrying.light}`);
+    if (retrying.horizon > 0) waits.push(`горизонт ${retrying.horizon}`);
+    if (waits.length > 0) extras.push(`ждут повтора: ${waits.join(", ")}`);
+  }
+  const tail = extras.length > 0 ? ` · ${extras.join(" · ")}` : "";
+  if (!report.walked) return `Окружение: кадр до размещений не дошёл${tail}.`;
+  if (report.total === 0) return `Окружение: заглушек нет${tail}.`;
+  const parts = ENVIRONMENT_STAND_IN_REASONS
+    .filter((reason) => report.byReason[reason] > 0)
+    .map((reason) => `${ENVIRONMENT_STAND_IN_REASON_LABELS[reason]} ${report.byReason[reason]}`);
+  const canopy = report.canopy > 0 ? ` · из них кроной ${report.canopy}` : "";
+  return `Окружение: заглушек ${report.total} · ${parts.join(" · ")}${canopy}${tail}`;
+}
+
+/** The unit report with the environment beside it, as `WorldRenderer3D.standInReport` returns it. */
+export interface WorldStandInReport extends StandInReport {
+  environment: EnvironmentStandInReport;
 }

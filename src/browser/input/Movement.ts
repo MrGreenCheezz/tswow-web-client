@@ -20,6 +20,7 @@ import { heldMovementAction } from "./Bindings.js"; // 11.02-input
 import { advanceFollow, cancelFollow, followRunning, forgetFollow } from "./Follow.js";
 import { gameObjectColliderFrame, liftCarrying, takeLiftSettled } from "../game/GameObjectColliders.js";
 import { farSightHoldsBody, viewIsOut } from "../game/ViewSubject.js"; // 11.02-I
+import { jumpSpentByMountSpecial, mountSpecialJumpPress, mountSpecialJumpRelease } from "./MountSpecial.js"; // 05.10-A7a-G 6.20
 import {
   beginRideFrame, endRideFrame, forgetRide, rideActive, rideCarrierMoving, rideImpulse, rideTransportBlock, rideTurned, stepRideSubstep,
   takeRideFlip, type RideFrameInput,
@@ -633,7 +634,7 @@ export function advancePhysics(elapsed: number): void {
   const input = INPUT;
   input.forward = ready ? forwardAxis() : 0;
   input.strafe = ready ? strafeAxis() : 0;
-  input.ascend = ready && held.has("jump");
+  input.ascend = ready && held.has("jump") && !jumpSpentByMountSpecial(); // 05.10-A7a-G 6.20: a press the mount trick took
   // The key that sits down on land takes a swimmer down, which is what it does in the original
   // client: there is nothing to sit on in a lake.
   input.descend = ready && held.has("sitOrStand");
@@ -1104,12 +1105,35 @@ export function beginHeld(action: InputAction): void {
   // or the air: 0x005FACE0 and 0x005FB1A0 run only then). syncMovement below reports the axis the
   // follow leaves behind.
   if (FOLLOW_BREAKING.has(action) || (FOLLOW_BREAKING_ALOFT.has(action) && pitchMatters())) cancelFollow();
+  if (action === "jump") mountSpecialOnJumpKey(); // 05.10-A7a-G 6.20
   held.add(action);
   syncMovement();
 }
 
+/**
+ * 05.10-A7a-G 6.20: the jump key on a standing ground mount is the mount's trick (MountSpecial.ts,
+ * Wow.exe 0x0072eb80) — only for the character as its own mover, with control and the view on it.
+ */
+function mountSpecialOnJumpKey(): void {
+  const world = game.world;
+  if (!world?.movementReady || game.worldLoading || otherMoverGuid(world) !== undefined) return;
+  if (movementBlocked() !== undefined || viewIsOut(world)) return;
+  const self = selfObject();
+  const selfGuid = world.state.selfGuid;
+  if (!self || selfGuid === undefined) return;
+  const mountDisplayId = self.fields.get(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset) ?? 0;
+  mountSpecialJumpPress({
+    flags: movementFlags(),
+    mountDisplayId,
+    mountRefuses: mountDisplayId > 0 && game.creatureModels?.get(mountDisplayId)?.noMountSpecial === true,
+    send: () => world.sendMountSpecial(),
+    play: () => game.renderer?.playMountSpecial(selfGuid),
+  });
+}
+
 export function endHeld(action: InputAction): void {
   action = heldMovementAction(action); // 11.02-input: as `beginHeld`
+  if (action === "jump") mountSpecialJumpRelease(); // 05.10-A7a-G 6.20
   if (!held.delete(action)) return;
   syncMovement();
 }
@@ -1158,6 +1182,7 @@ export function toggleWalkRun(): void {
 export function releaseAllInput(): void {
   const wasMoving = held.size > 0 || autoRunning || mouseRunning;
   held.clear();
+  mountSpecialJumpRelease(); // 05.10-A7a-G 6.20
   autoRunning = false;
   mouseRunning = false;
   if (wasMoving) {

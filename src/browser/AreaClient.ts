@@ -63,7 +63,11 @@ export class AreaClient {
         // GetZonePVPInfo. The route ignores `v`, so a gateway not yet restarted answers the version-7
         // shape to this request: without the two fields the zone banner and the minimap label carry
         // no PvP status (FrameXmlZoneInfo.ts) and everything else reads as before.
-        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=8`);
+        // 05.10-L17t: version 9 adds `MapInfo.minimapIconScale` (Map.dbc column 58) for
+        // GetBattlefieldMapIconScale; a version-8 reply leaves it 1.0 (FrameXmlBattlefieldMapSource.ts).
+        // 05.10-A7b-4: the same unreleased version 9 also carries `MapInfo.areaTableId` (Map.dbc column 22),
+        // the zone of a single-WMO dungeon (AreaLocator.ts); without it the label stays the map's name.
+        const response = await fetch(`${this.#baseUrl}/dbc/areas?v=9`);
         if (!response.ok) throw new Error(`Area gateway returned ${response.status}`);
         const value = await response.json() as AreaData;
         if (!Array.isArray(value.areas) || !Array.isArray(value.mapAreas)) throw new Error("malformed area data");

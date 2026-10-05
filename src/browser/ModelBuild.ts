@@ -21,6 +21,8 @@ import {
   textureUrl, type WvmBatch, type WvmColour, type WvmModel, type WvmTextureTransform, type WvmTrack,
 } from "./Wvm.js";
 import { sampleTrack } from "./Particles.js";
+import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7a-F1
+import { resolvedCombiner, secondUnitTransform } from "./M2Combiners.js"; // 05.10-A7a-F2
 import type { CharacterAppearance } from "../gateway/CharacterAppearance.js";
 import { applyWorldLight, type WorldLightUniforms } from "./WorldLighting.js";
 import {
@@ -425,6 +427,11 @@ const BATCH_INVISIBLE = 0.01;
  * with no state. A unit's own clip cannot drive this without one material per unit, which would
  * undo the build cache; carrying the animation-to-sequence map and reading the played one is the
  * next slice, and what it buys is the death fade.
+ *
+ * 05.10-A7a-F1 correction: HumanMale's track keyed under Death is the texture weight of its two
+ * death-knight eye-glow cards (geoset 1703), which blink 1 → 0 → 1 within 433 ms — not a body fade.
+ * The real Death fades are creatures' (922 batches in 184 models: elementals, voidwalkers, wraiths);
+ * `BatchDeathFade.ts` reads them per unit from the played Death clip.
  */
 const REST_SEQUENCE = 0;
 
@@ -463,6 +470,9 @@ export interface AnimatedBatch {
    */
   transform?: WvmTextureTransform;
   map?: THREE.Texture;
+  /** 05.10-A7a-F2 (6.16б): the second stage's own transform and the texture it moves (`alphaMap`). */
+  transform2?: WvmTextureTransform;
+  map2?: THREE.Texture;
   /** Loop durations a track may be bound to, carried so the entry can be sampled on its own. */
   globalSequences: Uint32Array;
   /** Whether the tint reaches `material.color`; a batch with no texture keeps its diagnosis colour. */
@@ -496,6 +506,7 @@ export function updateBatchAppearance(
     // material that is not visible, and three checks that per geometry group.
     entry.material.visible = opacity > BATCH_INVISIBLE;
     if (entry.transform && entry.map) writeTextureMatrix(entry.transform, entry.map.matrix, at);
+    if (entry.transform2 && entry.map2) writeTextureMatrix(entry.transform2, entry.map2.matrix, at); // 05.10-A7a-F2
     syncModelPlacementTintMaterials(entry.material);
   }
 }
@@ -577,6 +588,7 @@ function sameBatchMaterial(left: WvmBatch, right: WvmBatch): boolean {
     && left.priorityPlane === right.priorityPlane && left.materialLayer === right.materialLayer
     && left.shaderId === right.shaderId && left.colorIndex === right.colorIndex
     && left.textureWeight === right.textureWeight && left.textureTransform === right.textureTransform
+    && (left.textureTransform2 ?? -1) === (right.textureTransform2 ?? -1) // 05.10-A7a-F2
     && left.textures.length === right.textures.length
     && left.textures.every((texture, index) => texture === right.textures[index])
     && left.uvSets.length === right.uvSets.length
@@ -861,7 +873,8 @@ export function buildModel(
     // now.
     const { colour, weight } = batchTracks(model, batch);
     const transform = model.textureTransforms?.[batch.textureTransform];
-    if (colour || weight || (transform && map)) {
+    const transform2 = layer ? secondUnitTransform(model, batch) : undefined; // 05.10-A7a-F2 (6.16б)
+    if (colour || weight || (transform && map) || transform2) {
       const entry: AnimatedBatch = {
         material,
         globalSequences: model.globalSequences,
@@ -871,6 +884,7 @@ export function buildModel(
         ...(colour ? { colour } : {}),
         ...(weight ? { weight } : {}),
         ...(transform && map ? { transform, map } : {}),
+        ...(transform2 && layer ? { transform2, map2: layer } : {}), // 05.10-A7a-F2
       };
       animatedBatches.push(entry);
     }
@@ -914,6 +928,7 @@ function batchMoves(entry: AnimatedBatch): boolean {
   return [
     entry.colour?.rgb, entry.colour?.alpha, entry.weight,
     entry.transform?.translation, entry.transform?.rotation, entry.transform?.scaling,
+    entry.transform2?.translation, entry.transform2?.rotation, entry.transform2?.scaling, // 05.10-A7a-F2
   ].some((track) =>
     track !== undefined && (track.globalSequence >= 0 || track.tracks.some((sub) => sub.times.length > 1)));
 }
@@ -1170,11 +1185,14 @@ function buildMaterial(
   }
 
   const steps: ShaderStep[] = [];
-  const second = secondLayer(model, batch, options);
-  if (second) {
-    material.alphaMap = second.texture;
-    steps.push(second.step);
-  }
+  // 05.10-A7a-F2 (6.22, 6.16е, 6.16б): an extended artifact folds its stages by the id the client
+  // resolved (`M2Combiners.ts`); an older one, and a 0x8000 special id, keep `secondLayer`.
+  const combiner = resolvedCombiner(model, batch, material instanceof THREE.MeshStandardMaterial, {
+    ...options, privateView: privateTextureView, authoredSecondUvSet: () => authoredSecondUvSet(model, batch),
+  });
+  const second = combiner ?? secondLayer(model, batch, options);
+  if (second?.texture) material.alphaMap = second.texture; // 05.10-A7a-F2: a one-stage step has none
+  if (second?.step) steps.push(second.step);
   const fog = fogStep(batch.blendMode);
   if (fog) steps.push(fog);
   applyShaderSteps(material, steps);
@@ -1373,6 +1391,8 @@ export function applyBlendMode(material: THREE.Material & { alphaTest: number },
       material.transparent = true;
       material.alphaTest = 0;
       material.blending = THREE.NormalBlending;
+      // 05.10-A7a-F1 (6.16д): the wowee reading, behind a switch until lookdev/14.25 frames decide.
+      if (!renderSwitches.m2AlphaDepthWrite) material.depthWrite = false;
       break;
     case BLEND_NO_ALPHA_ADD:
       material.transparent = true;

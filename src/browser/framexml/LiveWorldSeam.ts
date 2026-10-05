@@ -48,6 +48,8 @@ import {
 } from "../game/SpellCursor.js";
 import { END_BOUND_TRADEABLE_ITEM_ENCHANT } from "../game/BoundTradeable.js"; // L1 (2.05/3.22)
 import { frameXmlObservePendingSpells } from "./FrameXmlBoundTradeable.js"; // L1 (2.05)
+import { observeSpellEnchantQuestion } from "../game/MainHandEnchant.js"; // 05.10-2.05
+import { frameXmlResetCursor } from "./FrameXmlSetCursor.js"; // 05.10-5.17 review
 import { currencyTokenSlots } from "../CarriedItems.js"; // L1 (2.05)
 import { frameXmlLiveDropItemOnUnit } from "./FrameXmlDropItemOnUnit.js"; // L1 (1.10)
 import { frameXmlBuyMerchantItemInSlot } from "./FrameXmlMerchantCursor.js"; // L1 (3.23)
@@ -263,6 +265,9 @@ import { frameXmlPetExperience } from "./FrameXmlPetExperience.js";
 import { frameXmlHunterPet } from "./FrameXmlStable.js";
 import { FRAMEXML_PET_HAPPINESS_EVENT, FrameXmlPetHappinessWatch, frameXmlPetHappiness } from "./FrameXmlPetHappiness.js"; // 3.36 (L14)
 import { frameXmlHasPetUI } from "./FrameXmlHasPetUI.js"; // L15 5.05
+import { frameXmlPetFoodTypes, type FrameXmlPetFoodNames } from "./FrameXmlPetFood.js"; // 05.10-petfood
+import { liveFrameXmlHelmCloak } from "./FrameXmlHelmCloak.js"; // 05.10-A7a-A 6.09
+import { PLAYER_FLAGS_HIDE_CLOAK, PLAYER_FLAGS_HIDE_HELM } from "../../world/CharacterStatFields.js"; // 05.10-A7a-A 6.09
 import { FrameXmlCompanionModel, frameXmlPetCanBeRenamed, frameXmlUnitMounted } from "./FrameXmlCompanions.js";
 import { frameXmlPetSpellBonusDamage } from "./FrameXmlPetSpellPower.js";
 import { createFrameXmlServices, type FrameXmlServices, type FrameXmlSendMailItem } from "./FrameXmlServices.js";
@@ -607,6 +612,8 @@ export interface LiveWorldSeamContext {
   readonly questLogNames?: FrameXmlQuestLogNames | undefined;
   /** 3.23A: the creature type/family names (CreatureTypeClient.ts); undefined until the route answers. */
   readonly creatureTypes?: { table(): FrameXmlCreatureTypeNames | undefined } | undefined;
+  /** 05.10-petfood: CreatureFamily.PetFoodMask and ItemPetFood names (PetFoodClient.ts); undefined until the route answers. */
+  readonly petFoods?: { table(): FrameXmlPetFoodNames | undefined } | undefined; // 05.10-petfood
 }
 
 interface LiveCastState {
@@ -701,6 +708,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly inventoryAlerts: FrameXmlInventoryAlerts = createFrameXmlInventoryAlerts((index) => this.inventoryAlertStatus(index));
   /** PLAYER_LEAVING_WORLD/PLAYER_ENTERING_WORLD around a loading screen (FrameXmlWorldEntry.ts). */
   readonly worldEntry: FrameXmlWorldEntry = createFrameXmlWorldEntry();
+  /** 05.10-A7a-A 6.09: ShowHelm/ShowCloak/ShowingHelm/ShowingCloak over PLAYER_FLAGS (FrameXmlHelmCloak.ts). */
+  readonly helmCloak = liveFrameXmlHelmCloak(() => this.#context.world());
   /** L5c 3.18: GetAutoCompleteResults over contacts, guild roster, group and whispers. */
   readonly autoComplete = new FrameXmlAutoCompleteModel({
     world: () => this.#context.world(),
@@ -1777,7 +1786,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // L1 (2.05): every arm and drop of either raises ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (0x0053b480).
     const stopPendingSpellEvents = frameXmlObservePendingSpells(() => this.#pump,
       [observeItemTarget, (observer) => this.tradeSkill.observeTargeting(observer)]);
+    // 05.10-2.05: the weapon pick's question, 0x0081b530(0x28d, "%s", "spellenchant") (game/MainHandEnchant.ts).
+    const stopSpellEnchant = observeSpellEnchantQuestion(() => { this.#pump?.fire("END_BOUND_TRADEABLE", "spellenchant"); });
     this.#unobserveSpellCursors = () => {
+      stopSpellEnchant(); // 05.10-2.05
+      frameXmlResetCursor(); // 05.10-5.17 review: the interface going away takes its SetCursor choice along
       stopItemCursor();
       stopEnchantCursor();
       stopPendingSpellEvents(); // L1 (2.05)
@@ -2006,7 +2019,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.pvpFlag.flagsChanged();
         if ((changed & PLAYER_FLAGS_RESTING) !== 0) pump.fire(FRAMEXML_SEAM_EVENTS.resting);
         // PlayerFrame shows the PvP timer on PLAYER_FLAGS_CHANGED (PlayerFrame.lua:235-240).
-        if ((changed & (PLAYER_FLAGS_AFK | PLAYER_FLAGS_DND | PLAYER_FLAGS_IN_PVP | PLAYER_FLAGS_PVP_TIMER)) !== 0) {
+        // 05.10-A7a-A 6.09: the helm and cloak bits too — the stock Display panel's two boxes re-read
+        // ShowingHelm/ShowingCloak on this event. (Wow.exe's PLAYER_FLAGS handler 0x006e0fd0 fires
+        // event 0x18f, PLAYER_FLAGS_CHANGED, at 0x006e1062 for every change of the word, not per bit.)
+        if ((changed & (PLAYER_FLAGS_AFK | PLAYER_FLAGS_DND | PLAYER_FLAGS_IN_PVP | PLAYER_FLAGS_PVP_TIMER
+          | PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK)) !== 0) {
           pump.fire(FRAMEXML_SEAM_EVENTS.playerFlags, "player");
         }
       }));
@@ -7654,6 +7671,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // hunter's flag (FrameXmlHasPetUI.ts); the abandon byte (FrameXmlStable.ts) is PetCanBeAbandoned's.
     return frameXmlHasPetUI(this.#pet(), (guid) => this.#context.world()?.state.objects.get(guid)); // L15 5.05
   }
+
+  /** 05.10-petfood: `GetPetFoodTypes()`, Wow.exe 0x005d3bd0 — the hunter pet's diet names (FrameXmlPetFood.ts). */
+  petFoodTypes(): readonly string[] { // 05.10-petfood
+    const world = this.#context.world();
+    const pet = this.#pet();
+    const entry = pet ? frameXmlCreatureEntry(pet) : undefined;
+    const template = entry === undefined ? undefined : world?.creatureTemplates.get(entry);
+    const family = template && template.found !== false ? template.creatureFamily : undefined;
+    return frameXmlPetFoodTypes(pet, (guid) => world?.state.objects.get(guid), family, this.#context.petFoods?.table());
+  } // 05.10-petfood
 
   /** `PetCanBeAbandoned`: the pet's UNIT_CAN_BE_ABANDONED flag — a hunter pet's (FrameXmlStable.ts). */
   petCanBeAbandoned(): boolean {

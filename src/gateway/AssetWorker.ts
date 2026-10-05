@@ -15,10 +15,16 @@ export type AssetWorkerJob =
   | { kind: "minimap-index"; map: number }
   | { kind: "zone-map"; map: number }
   | { kind: "liquid"; liquidClass: string }
+  /** 05.10-A7b-8 (7.09 A): one LiquidType texture family's strip (`tools/generate-liquid-texture.mjs`). */
+  | { kind: "liquid-family"; family: string }
   | { kind: "client-file"; path: string }
-  | { kind: "terrain-splat"; map: number; gridX: number; gridY: number }
-  | { kind: "visual-tile"; map: number; gridX: number; gridY: number }
+  // 05.10-A7b-7: `generation` names the splat generation to write (absent: an older gateway's files).
+  | { kind: "terrain-splat"; map: number; gridX: number; gridY: number; generation?: string }
+  // 05.10-A7b-1: `generation` names the tile generation to write (absent: v4, an older gateway's job).
+  | { kind: "visual-tile"; map: number; gridX: number; gridY: number; generation?: string }
   | { kind: "horizon"; map: number }
+  /** 05.10-A7b-7 (7.08): one map's horizon colour out of its minimap (`tools/generate-horizon-colour.mjs`). */
+  | { kind: "horizon-colour"; map: number }
   /** 10.22: the models a published visual tile places; answers `string[]`, or `null` when unpublished. */
   | { kind: "tile-models"; map: number; gridX: number; gridY: number };
 

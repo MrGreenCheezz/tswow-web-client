@@ -40,6 +40,7 @@ export function createLiveFrameXmlDressUpHost(): FrameXmlDressUpHost {
         hairStyle: (look >>> 16) & 0xff,
         hairColor: (look >>> 24) & 0xff,
         facialHair: look2 & 0xff,
+        classId: (bytes >>> 8) & 0xff, // 05.10-A7a-G 6.18: as ui/Frames.ts unitModelFor (6.10)
         equipment: visibleEquipmentFor(object, game.itemMetadata),
       };
     },

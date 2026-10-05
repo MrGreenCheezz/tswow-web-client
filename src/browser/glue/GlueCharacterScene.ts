@@ -5,12 +5,14 @@ import {
   M2_TO_SCENE, buildSkinnedTemplateFrom, disposeSkinnedInstance, instantiateSkinned,
   resolveAnimation, type SkinnedInstance, type SkinnedTemplate,
 } from "../AnimatedModel.js";
-import { attachmentOffset, attachmentPoint, boneOf, SHEATH_MELEE } from "../Attachment.js";
+import { attachmentOffset, attachmentPoint, boneOf } from "../Attachment.js"; // 05.10-A7a-G 6.18: SHEATH_MELEE → charSelectSheath
 import {
   CHARACTER_APPEARANCE_VERSION, CREATURE_MODEL_VERSION, CharacterAtlasClient, appearanceKey,
   type CharacterAppearance,
 } from "../CharacterAtlas.js";
-import { EVERY_GEOSET, buildModel, characterSlots, geosetList, type BuiltModel } from "../ModelBuild.js";
+import { EVERY_GEOSET, buildModel, characterSlots, type BuiltModel } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
+import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
+import { charSelectWears, figureSheath } from "./CharSelectWorn.js"; // 05.10-A7a-G 6.18
 import { ModelTextureLoader } from "../TextureLoad.js";
 import {
   TEXTURE_TYPE_BODY, TEXTURE_TYPE_OBJECT_SKIN, decodeWvm9, isWvm9, visualModelUrl,
@@ -40,6 +42,8 @@ import { glueFigureScaleCompensation } from "./GlueModelStage.js";
 export function wornQuery(character: CharacterSummary): string {
   const worn: string[] = [];
   for (const [slot, item] of character.equipment.entries()) {
+    // 05.10-A7a-G 6.18: hidden helm/cloak and the class's weapons, as Wow.exe 0x004e3cd0 (CharSelectWorn.ts).
+    if (!charSelectWears(slot, character.classId, character.flags)) continue;
     if (item.displayId > 0) worn.push(`${slot}:${item.inventoryType}:${item.displayId}`);
   }
   // Sorted for a stable identity, exactly as `CreatureModelClient.playerAppearance` sorts it: the
@@ -62,6 +66,8 @@ export interface GlueSceneLook {
   /** `CreatureDisplayInfo` row the mesh comes from. */
   readonly displayId: number;
   readonly race: number;
+  /** 05.10-A7a-A 6.10: the class, sent as `class=` (the death knight's eye glow); absent sends none. */
+  readonly classId?: number | undefined;
   readonly sex: number;
   readonly skin: number;
   readonly face: number;
@@ -72,6 +78,8 @@ export interface GlueSceneLook {
   readonly items: string;
   /** Named in diagnostics, so a failure says who failed. */
   readonly label: string;
+  /** 05.10-A7a-G review 6.18: the select screen's figure (its weapon hang, CharSelectWorn.figureSheath); absent elsewhere. */
+  readonly charSelect?: true;
 }
 
 /** The look of a character out of the character list, for the select screen. */
@@ -85,6 +93,7 @@ export function characterLook(character: CharacterSummary, displayId: number): G
     ].join("/"),
     displayId,
     race: character.race,
+    classId: character.classId, // 05.10-A7a-A 6.10
     sex: character.gender,
     skin: character.skin,
     face: character.face,
@@ -93,6 +102,7 @@ export function characterLook(character: CharacterSummary, displayId: number): G
     facialHair: character.facialHair,
     items,
     label: character.name,
+    charSelect: true, // 05.10-A7a-G review 6.18
   };
 }
 
@@ -294,7 +304,7 @@ export class GlueCharacterScene implements GlueCharacterView {
       const built = buildModel(wvm, {
         modelPath: metadata.model,
         slots: characterSlots(metadata.textures, appearance),
-        geosets: geosetList(appearance.geosets),
+        geosets: figureGeosets(wvm, appearance), // 05.10-A7a-G 6.18: the world's boot choice (worldCharacterGeosets)
         baseUrl: this.#options.gatewayOrigin,
         loadTexture: (url) => this.#textures.load(url),
         ...(body ? { slotTextures: new Map([[TEXTURE_TYPE_BODY, body]]) } : {}),
@@ -363,7 +373,7 @@ export class GlueCharacterScene implements GlueCharacterView {
       // that appears only once its helmet has is a screen that looks broken while the gateway
       // thinks. Exactly the order `CharacterLab` puts them in.
       if (instance && template) {
-        await this.hangAttachments(request, wvm, appearance, instance, template);
+        await this.hangAttachments(request, wvm, appearance, instance, template, look.charSelect === true); // 05.10-A7a-G review 6.18: + the screen
       }
     } catch (error) {
       // Stale/aborted work is expected during a fast selection or world handoff, and must not
@@ -386,12 +396,14 @@ export class GlueCharacterScene implements GlueCharacterView {
     appearance: CharacterAppearance,
     instance: SkinnedInstance,
     template: SkinnedTemplate,
+    charSelect: boolean, // 05.10-A7a-G review 6.18
   ): Promise<void> {
     const { signal } = request.controller;
     for (const item of appearance.attached ?? []) {
       // Sheath state is not in `SMSG_CHAR_ENUM` and the original draws the character on this screen
       // with its weapons out, which is `SHEATH_MELEE`.
-      const point = attachmentPoint(item, SHEATH_MELEE);
+      // 05.10-A7a-G 6.18: the hunter's bow in the left hand (Wow.exe 0x004eacd0, CharSelectWorn.ts).
+      const point = attachmentPoint(item, figureSheath(item.slot, charSelect)); // 05.10-A7a-G review 6.18: the creation screen keeps SHEATH_MELEE
       if (point === undefined) continue;
       const bone = boneOf(wvm, instance, point);
       if (!bone) continue;
@@ -438,7 +450,8 @@ export class GlueCharacterScene implements GlueCharacterView {
     const query = `v=${CHARACTER_APPEARANCE_VERSION}&race=${look.race}&sex=${look.sex}`
       + `&skin=${look.skin}&face=${look.face}&hair=${look.hairStyle}`
       + `&hairColor=${look.hairColor}&facialHair=${look.facialHair}`
-      + (look.items ? `&items=${encodeURIComponent(look.items)}` : "");
+      + (look.items ? `&items=${encodeURIComponent(look.items)}` : "")
+      + (look.classId === undefined ? "" : `&class=${look.classId}`); // 05.10-A7a-A 6.10
     return await this.json<CharacterAppearance>(
       `${this.#options.gatewayOrigin}/dbc/character-appearance?${query}`, "внешность", signal);
   }

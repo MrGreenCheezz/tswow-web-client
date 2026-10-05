@@ -6,11 +6,11 @@
 // ground textures at their own resolution, the per-chunk layer list and the alpha maps — and lets
 // the fragment shader blend them, so sharpness is limited only by the source art.
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { MCLY_ALPHA_COMPRESSED, MPHD_BIG_ALPHA, adtSplatVerdict, alphaNeedsEdgeFix, decodeAlpha, mapChunkAlpha, mapChunkColours, mapChunkDetail, mapChunkGrid } from "./adt-alpha.mjs";
+import { MCLY_ALPHA_COMPRESSED, MPHD_BIG_ALPHA, adtSplatVerdict, alphaNeedsEdgeFix, decodeAlpha, mapChunkAlpha, mapChunkColours, mapChunkDetail, mapChunkGrid, mapChunkShadow } from "./adt-alpha.mjs";
 import { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 import { encodeGroundCover } from "./ground-cover.mjs";
 import { decodeBlp } from "./blp.mjs";
@@ -30,6 +30,25 @@ const MCCV_NEUTRAL = 127;
 /** A tile may not use more distinct ground textures than one array can hold. */
 const MAX_LAYERS = 32;
 
+/**
+ * 05.10-A7b-7 (M-A7b-1, 7.06 + 7.16): the splat generation the gateway serves and names in its job
+ * (`src/gateway/TerrainSplatGeneration.ts` holds the same string; `tests/terrain-splat-v2.test.mjs`
+ * keeps them equal). One bump for both items of the release:
+ *   * 7.06 — `alpha.png` is RGBA and its alpha is the chunk's baked `MCSH` shadow (255 lit, 0 shadow);
+ *   * 7.16 — a ground texture that is not 256x256 is resampled (box down, bilinear up, wrapping)
+ *     instead of point-sampled, published under a `terrain-layer-v2` id at 256 or 512, and
+ *     `splat.json` names the array's `layerSize`;
+ *   * 7.16 Г (05.10-A7b-7Г, same unreleased generation) — each ground texture's `<name>_s.blp`
+ *     alpha is published as a grey specular mask beside the layers and `splat.json.specular` names
+ *     them (one id or null per layer); the layer files themselves do not change.
+ * A job without a generation is a gateway still serving the older files: it gets exactly the bytes
+ * and stamps it got before (no generation in the stamp, RGB alpha, `terrain-layer-v1` ids) — the
+ * tile worker loads this file fresh from disk, so that path must not move.
+ */
+export const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2";
+/** 05.10-A7b-7: the largest layer the v2 array holds; a bigger texture is box-filtered down to it. */
+export const LAYER_MAX_SIZE = 512;
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function validTile(mapId, gridX, gridY) {
@@ -41,8 +60,14 @@ function validTile(mapId, gridX, gridY) {
  * (10.20 slice 2), the command line below once. The output directories are read on every call, so
  * a long-lived worker follows the env it was started with and a test's own. Leaves the chain open.
  */
-export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
+export async function publishTerrainSplat(mapId, gridX, gridY, archives, options = {}) {
   if (!validTile(mapId, gridX, gridY)) throw new Error(`${mapId}/${gridX}/${gridY} is not a terrain tile`);
+  // 05.10-A7b-7: which generation to write; none named is what a running older gateway expects.
+  const generation = options?.generation;
+  if (generation !== undefined && generation !== TERRAIN_SPLAT_GENERATION) {
+    throw new Error(`Unknown terrain splat generation ${String(generation)}`);
+  }
+  const v2 = generation === TERRAIN_SPLAT_GENERATION;
   const textureDirectory = resolve(root, process.env.TERRAIN_TEXTURE_DIR ?? "data/terrain-textures", String(mapId));
   // Ground textures are shared between neighbouring tiles, so they live in one flat directory
   // keyed by content: the browser then downloads each of them exactly once.
@@ -58,7 +83,7 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
   if (!adt) throw new SourceMissing(`${adtPath} is not in the client`);
   const wdtPath = `World\\Maps\\${mapName}\\${mapName}.wdt`;
   const bigAlpha = mapUsesBigAlpha(await archives.read(wdtPath));
-  const parsed = parseAdt(adt, bigAlpha);
+  const parsed = parseAdt(adt, bigAlpha, v2);
   // 7.23: a tile with nothing to paint (the flat stubs under dungeons: every chunk without a layer,
   // or no MTEX/MCNK at all) is answered 404 for as long as its ADT and WDT stay as they are. The
   // empty `.nosplat` beside where the splat would be says so across gateway restarts; its stamp is
@@ -77,8 +102,24 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
   await mkdir(layerDirectory, { recursive: true });
   const missingTextures = [];
   const layers = [];
+  /** 05.10-A7b-7 (7.16): v2 only — the side of each published layer, for `splat.json`'s `layerSize`. */
+  const layerSides = [];
+  /** 05.10-A7b-7Г (7.16 Г): v2 only — per layer, the id of its `_s.blp` specular mask or null. */
+  const specularMasks = [];
+  const specularWarnings = [];
   for (let index = 0; index < parsed.textures.length; index++) {
-    const id = createHash("sha1").update(`terrain-layer-v1\0${parsed.textures[index].toLowerCase()}`).digest("hex");
+    // 05.10-A7b-7 (7.16): v2 reads the texture first, because its native size picks the id. A
+    // 256x256 one (99 % of the ground textures sampled, `probe-layer-census.out.txt`) is copied
+    // pixel for pixel by either generation and keeps its v1 id and file; any other size is
+    // resampled and gets a v2 id, so the two generations never write different bytes to one name.
+    let blp;
+    let prefix = "terrain-layer-v1";
+    if (v2) {
+      blp = await archives.read(parsed.textures[index]);
+      const native = blpSize(blp);
+      if (native && !(native.width === LAYER_SIZE && native.height === LAYER_SIZE)) prefix = "terrain-layer-v2";
+    }
+    const id = createHash("sha1").update(`${prefix}\0${parsed.textures[index].toLowerCase()}`).digest("hex");
     layers.push(id);
     const destination = join(layerDirectory, `${id}.png`);
     // Skipped because it is still the same picture, not merely because a file with that name is
@@ -86,9 +127,15 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
     // publishes under the same name: `access` alone would step over the stale grass every time
     // the tile around it was rebuilt, and nothing else in the machine ever rewrites a layer —
     // `/terrain-layer` cannot, since an id does not say which path it came from.
-    if (await stampIsCurrent(destination, archives, { paths: [parsed.textures[index]] })) continue;
+    if (await stampIsCurrent(destination, archives, { paths: [parsed.textures[index]] })) {
+      if (v2) {
+        layerSides.push(await pngSide(destination));
+        specularMasks.push(await publishSpecularMask(archives, layerDirectory, parsed.textures[index], layerSides.at(-1), specularWarnings)); // 05.10-A7b-7Г
+      }
+      continue;
+    }
     let decoded;
-    const blp = await archives.read(parsed.textures[index]);
+    if (!v2) blp = await archives.read(parsed.textures[index]);
     try {
       if (blp) decoded = decodeBlp(blp);
     } catch (error) {
@@ -97,8 +144,11 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
     // A ground texture that will not decode becomes a flat colour rather than a hole, which is
     // right for the render but invisible in the log unless it is named here.
     if (!decoded) missingTextures.push(parsed.textures[index]);
-    await writeFile(destination, PNG.sync.write(layerPng(decoded, index), { colorType: 6 }));
+    const picture = prefix === "terrain-layer-v2" ? resampledLayerPng(decoded, index) : layerPng(decoded, index);
+    if (v2) layerSides.push(picture.width); // 05.10-A7b-7
+    await writeFile(destination, PNG.sync.write(picture, { colorType: 6 }));
     await stampGenerated(destination, archives, { paths: [parsed.textures[index]] });
+    if (v2) specularMasks.push(await publishSpecularMask(archives, layerDirectory, parsed.textures[index], picture.width, specularWarnings)); // 05.10-A7b-7Г
   }
 
   // One 1024x1024 picture holds every chunk's three overlay alpha maps in its colour channels,
@@ -130,7 +180,9 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
         alpha.data[target] = chunk.layers[1]?.alpha?.[source] ?? 0;
         alpha.data[target + 1] = chunk.layers[2]?.alpha?.[source] ?? 0;
         alpha.data[target + 2] = chunk.layers[3]?.alpha?.[source] ?? 0;
-        alpha.data[target + 3] = 255;
+        // 05.10-A7b-7 (7.06): v2 carries MCSH in the fourth channel, 255 lit and 0 in shadow — the
+        // client reads it as `texture[1].w` (`terrain2.bls`); legacy writes RGB and drops this.
+        alpha.data[target + 3] = chunk.shadow?.[source] ? 0 : 255;
       }
     }
   }
@@ -165,15 +217,25 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
   const cover = encodeGroundCover(parsed.chunks);
 
   await mkdir(textureDirectory, { recursive: true });
-  await writeFile(join(textureDirectory, `${gridX}-${gridY}.alpha.png`), PNG.sync.write(alpha, { colorType: 2 }));
+  await writeFile(join(textureDirectory, `${gridX}-${gridY}.alpha.png`), PNG.sync.write(alpha, { colorType: v2 ? 6 : 2 }));
   await writeFile(join(textureDirectory, `${gridX}-${gridY}.index.png`), PNG.sync.write(index, { colorType: 6 }));
   if (colours) await writeFile(join(textureDirectory, `${gridX}-${gridY}.mccv.png`), PNG.sync.write(colours, { colorType: 2 }));
   await writeFile(join(textureDirectory, `${gridX}-${gridY}.cover.bin`), cover);
-  await writeFile(join(textureDirectory, `${gridX}-${gridY}.splat.json`), JSON.stringify({ layers, ...(colours ? { mccv: true } : {}) }));
+  // 05.10-A7b-7 (7.16): v2 names the side of the layer array (256, or 512 when a layer is that big).
+  const layerSize = v2 ? Math.max(LAYER_SIZE, ...layerSides) : undefined;
+  // 05.10-A7b-7Г (7.16 Г): v2 names the specular masks, one id or null per layer, when any exists.
+  const specular = v2 && specularMasks.some((id) => id !== null) ? specularMasks : undefined;
+  await writeFile(join(textureDirectory, `${gridX}-${gridY}.splat.json`), JSON.stringify({
+    layers, ...(layerSize !== undefined ? { layerSize } : {}), ...(colours ? { mccv: true } : {}),
+    ...(specular ? { specular } : {}), // 05.10-A7b-7Г
+  }));
   // Five files from one read of the tile, so all five carry the same stamp: each is served under
   // its own URL and each has to be able to say for itself whether it is still current.
   const stamp = await sourceStamp(archives, {
-    paths: [adtPath, `World\\Maps\\${mapName}\\${mapName}.wdt`, ...parsed.textures],
+    paths: [adtPath, `World\\Maps\\${mapName}\\${mapName}.wdt`, ...parsed.textures,
+      // 05.10-A7b-7Г: v2 also depends on every `_s.blp`, present or absent (a module may add one).
+      ...(v2 ? parsed.textures.map(specularTexturePath).filter(Boolean) : [])],
+    ...(v2 ? { generation } : {}), // 05.10-A7b-7
   });
   for (const part of ["alpha.png", "index.png", ...(colours ? ["mccv.png"] : []), "cover.bin", "splat.json"]) {
     await writeSourceStamp(join(textureDirectory, `${gridX}-${gridY}.${part}`), stamp);
@@ -184,21 +246,25 @@ export async function publishTerrainSplat(mapId, gridX, gridY, archives) {
   await rm(marker, { force: true });
   await rm(stampSidecar(marker), { force: true });
   const growing = parsed.chunks.reduce((count, chunk) => count + chunk.layers.filter((layer) => layer.effectId !== 0).length, 0);
-  console.log(`Generated terrain splat ${mapId}/${gridX}/${gridY}: ${mapName}, ${layers.length} ground textures, ${parsed.chunks.length} chunks, ${bigAlpha ? "8 bit" : "4 bit"} alpha maps, ${growing} layers with a ground effect`);
+  const shadowed = v2 ? parsed.chunks.filter((chunk) => chunk.shadow).length : 0; // 05.10-A7b-7
+  console.log(`Generated terrain splat ${mapId}/${gridX}/${gridY}: ${mapName}, ${layers.length} ground textures, ${parsed.chunks.length} chunks, ${bigAlpha ? "8 bit" : "4 bit"} alpha maps, ${growing} layers with a ground effect${v2 ? `, ${shadowed} chunks with a baked shadow, layers ${layerSize}², ${specularMasks.filter(Boolean).length} specular masks` : ""}`); // 05.10-A7b-7Г: masks
   if (missingTextures.length > 0) console.warn(`  ${missingTextures.length} ground texture(s) fell back to flat colour: ${missingTextures.join("; ")}`);
+  // 05.10-A7b-7Г: such a layer is drawn without a mask (no specular), not without its colour.
+  if (specularWarnings.length > 0) console.warn(`  ${specularWarnings.length} specular texture(s) did not decode: ${specularWarnings.join("; ")}`);
 }
 
-// Run directly: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y>
+// Run directly: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y> [generation]
+// (05.10-A7b-7: the gateway passes `terrain-splat-v2`; without it the files an older gateway expects.)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
   const gridX = Number.parseInt(process.argv[3] ?? "", 10);
   const gridY = Number.parseInt(process.argv[4] ?? "", 10);
   if (!validTile(mapId, gridX, gridY)) {
-    throw new Error("Usage: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y>");
+    throw new Error("Usage: node tools/generate-terrain-splat.mjs <map> <grid-x> <grid-y> [generation]");
   }
   const archives = await clientArchives(clientDirectory());
   try {
-    await publishTerrainSplat(mapId, gridX, gridY, archives);
+    await publishTerrainSplat(mapId, gridX, gridY, archives, process.argv[5] ? { generation: process.argv[5] } : undefined);
   } catch (error) {
     // The gateway reads this exit code as its 404 (`sourceMissing`); anything else stays a crash.
     if (!(error instanceof SourceMissing)) throw error;
@@ -237,6 +303,165 @@ function layerPng(decoded, seed) {
   return png;
 }
 
+/** 05.10-A7b-7: a BLP2's mip-0 size from its header, without decoding it; `undefined` if not one. */
+export function blpSize(blp) {
+  if (!blp || blp.length < 20 || blp.toString("latin1", 0, 4) !== "BLP2") return undefined;
+  const width = blp.readUInt32LE(12);
+  const height = blp.readUInt32LE(16);
+  return width > 0 && height > 0 ? { width, height } : undefined;
+}
+
+/** 05.10-A7b-7: the width of a published PNG, from its IHDR (the first 24 bytes). */
+async function pngSide(path) {
+  const handle = await open(path, "r");
+  try {
+    const header = Buffer.alloc(24);
+    await handle.read(header, 0, 24, 0);
+    return header.readUInt32BE(16);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * 05.10-A7b-7 (7.16 A): the v2 layer for a ground texture that is not 256x256 — 1 % of those
+ * sampled (`.runtime/re-2026-10-05/a7b-7/probe-layer-census.out.txt`: 8x8, 16x16, 768x128), and
+ * whatever a module ships. The side is 512 when the texture has at least 512² pixels and 256
+ * otherwise, so a strip like 768x128 does not quadruple its tile's array. Each axis is resampled on
+ * its own: a box average where the source is larger (no texel dropped, unlike `layerPng`'s nearest
+ * point) and a wrapping bilinear filter where it is smaller — the layer repeats across the ground,
+ * so its right edge blends into its left. Alpha stays 255 as in v1: the ground textures of this
+ * client carry none (`alphaDepth 0` on all 336 sampled).
+ */
+export function resampledLayerPng(decoded, seed) {
+  if (!decoded || !decoded.width || !decoded.height) return layerPng(decoded, seed);
+  const side = decoded.width * decoded.height >= LAYER_MAX_SIZE * LAYER_MAX_SIZE ? LAYER_MAX_SIZE : LAYER_SIZE;
+  const pixels = resampleRgba(decoded, side); // 05.10-A7b-7Г: shared with the specular mask
+  const png = new PNG({ width: side, height: side });
+  for (let pixel = 0; pixel < side * side; pixel++) {
+    png.data[pixel * 4] = Math.round(Math.min(255, Math.max(0, pixels[pixel * 4])));
+    png.data[pixel * 4 + 1] = Math.round(Math.min(255, Math.max(0, pixels[pixel * 4 + 1])));
+    png.data[pixel * 4 + 2] = Math.round(Math.min(255, Math.max(0, pixels[pixel * 4 + 2])));
+    png.data[pixel * 4 + 3] = 255;
+  }
+  return png;
+}
+
+/** A decoded RGBA image resampled to `side`², each axis on its own (see `resampledLayerPng`). */
+function resampleRgba(decoded, side) {
+  let pixels = Float32Array.from(decoded.data);
+  pixels = resampleRows(pixels, decoded.width, decoded.height, side);
+  pixels = transposeRgba(pixels, side, decoded.height);
+  pixels = resampleRows(pixels, decoded.height, side, side);
+  return transposeRgba(pixels, side, side);
+}
+
+/**
+ * 05.10-A7b-7Г (7.16 Г): the client's specular companion of a ground texture, `<name>_s.blp`
+ * (Wow.exe carries the string `_s.blp`; benilla's layer reader loads it first). Probed on three
+ * tiles (`.runtime/re-2026-10-05/a7b-7/review/probe-spec-*.out.txt`): present for nearly every
+ * ground texture, 256², RGB the base texture's (|Δ| ≤ 0.08) and alpha the specular mask.
+ */
+export function specularTexturePath(path) {
+  return /\.blp$/i.test(path) ? path.replace(/\.blp$/i, "_s.blp") : undefined;
+}
+
+/**
+ * 05.10-A7b-7Г: the alpha of a decoded `_s.blp` as an opaque grey picture `side` wide — copied when
+ * the sizes agree, resampled like a layer otherwise. Grey and opaque on purpose: the browser
+ * decodes layers through a 2D canvas, which premultiplies, so a mask carried in a layer's own alpha
+ * (mostly near 0) would take the colour with it; a grey value comes back exactly.
+ */
+export function specularMaskPng(decoded, side) {
+  if (!decoded || !decoded.width || !decoded.height) return undefined;
+  const png = new PNG({ width: side, height: side });
+  const same = decoded.width === side && decoded.height === side;
+  const pixels = same ? decoded.data : resampleRgba(decoded, side);
+  for (let pixel = 0; pixel < side * side; pixel++) {
+    const value = same ? pixels[pixel * 4 + 3] : Math.round(Math.min(255, Math.max(0, pixels[pixel * 4 + 3])));
+    png.data[pixel * 4] = value;
+    png.data[pixel * 4 + 1] = value;
+    png.data[pixel * 4 + 2] = value;
+    png.data[pixel * 4 + 3] = 255;
+  }
+  return png;
+}
+
+/**
+ * 05.10-A7b-7Г: publishes the mask of one ground texture beside the layers (v2 only) and returns its
+ * id, or null when the texture has no `_s.blp` (or it will not decode). The id is the `_s` path's,
+ * under its own prefix, so it never names a layer; the stamp covers both BLPs, since the side
+ * follows the base texture.
+ */
+async function publishSpecularMask(archives, layerDirectory, texture, side, warnings) {
+  const path = specularTexturePath(texture);
+  if (!path) return null;
+  const id = createHash("sha1").update(`terrain-specular-v1\0${path.toLowerCase()}`).digest("hex");
+  const destination = join(layerDirectory, `${id}.png`);
+  const inputs = { paths: [texture, path] };
+  if (await stampIsCurrent(destination, archives, inputs)) return id;
+  const blp = await archives.read(path);
+  if (!blp) return null;
+  let mask;
+  try {
+    mask = specularMaskPng(decodeBlp(blp), side);
+  } catch (error) {
+    warnings.push(`${path} (${error instanceof Error ? error.message : error})`);
+  }
+  if (!mask) return null;
+  await writeFile(destination, PNG.sync.write(mask, { colorType: 0 }));
+  await stampGenerated(destination, archives, inputs);
+  return id;
+}
+
+/** Resamples every row of an RGBA float image from `width` to `target` texels (box down, wrapping bilinear up). */
+function resampleRows(pixels, width, height, target) {
+  const out = new Float32Array(target * height * 4);
+  const scale = width / target;
+  for (let row = 0; row < height; row++) {
+    const source = row * width * 4;
+    const destination = row * target * 4;
+    for (let x = 0; x < target; x++) {
+      const at = destination + x * 4;
+      if (scale >= 1) {
+        // Box: the source span [x * scale, (x + 1) * scale), partial texels weighted by coverage.
+        const start = x * scale;
+        const end = start + scale;
+        for (let texel = Math.floor(start); texel < Math.min(width, Math.ceil(end - 1e-9)); texel++) {
+          const weight = (Math.min(end, texel + 1) - Math.max(start, texel)) / scale;
+          for (let channel = 0; channel < 4; channel++) out[at + channel] += pixels[source + texel * 4 + channel] * weight;
+        }
+      } else {
+        const centre = (x + 0.5) * scale - 0.5;
+        const left = Math.floor(centre);
+        const fraction = centre - left;
+        const a = source + (((left % width) + width) % width) * 4;
+        const b = source + ((((left + 1) % width) + width) % width) * 4;
+        for (let channel = 0; channel < 4; channel++) {
+          out[at + channel] = pixels[a + channel] * (1 - fraction) + pixels[b + channel] * fraction;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Swaps rows and columns of an RGBA float image `width` wide and `height` tall. */
+function transposeRgba(pixels, width, height) {
+  const out = new Float32Array(pixels.length);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      const from = (row * width + column) * 4;
+      const to = (column * height + row) * 4;
+      out[to] = pixels[from];
+      out[to + 1] = pixels[from + 1];
+      out[to + 2] = pixels[from + 2];
+      out[to + 3] = pixels[from + 3];
+    }
+  }
+  return out;
+}
+
 /** The internal directory name of a map, e.g. 0 -> "Azeroth". */
 async function internalMapName(directory, id) {
   const maps = await openDbcFile(directory, "Map");
@@ -255,7 +480,7 @@ function mapUsesBigAlpha(wdt) {
 }
 
 
-function parseAdt(data, bigAlpha) {
+function parseAdt(data, bigAlpha, shadows = false) {
   const chunks = [];
   let textures = [];
   for (let offset = 0; offset + 8 <= data.length;) {
@@ -265,14 +490,14 @@ function parseAdt(data, bigAlpha) {
     const end = start + size;
     if (end > data.length) throw new Error(`Truncated ADT ${tag} chunk`);
     if (tag === "MTEX") textures = data.subarray(start, end).toString("latin1").split("\0").filter(Boolean);
-    else if (tag === "MCNK") chunks.push(parseMapChunk(data, start, size, bigAlpha));
+    else if (tag === "MCNK") chunks.push(parseMapChunk(data, start, size, bigAlpha, shadows));
     offset = end;
   }
   // No MTEX or no MCNK is no longer an error here: `adtSplatVerdict` calls it `none` (7.23).
   return { textures, chunks };
 }
 
-function parseMapChunk(data, start, size, bigAlpha) {
+function parseMapChunk(data, start, size, bigAlpha, shadows = false) {
   const { column, row } = mapChunkGrid(data, start);
   const layerCount = data.readUInt32LE(start + 12);
   const layerOffset = data.readUInt32LE(start + 28);
@@ -304,7 +529,9 @@ function parseMapChunk(data, start, size, bigAlpha) {
     const payload = data.subarray(start + alphaOffset + layer.alphaOffset, start + alphaOffset + end);
     layer.alpha = decodeAlpha(payload, { compressed: (layer.flags & MCLY_ALPHA_COMPRESSED) !== 0, bigAlpha, fixEdges });
   }
-  return { column, row, layers, detail: mapChunkDetail(data, start, size), colours: mapChunkColours(data, start, size) };
+  // 05.10-A7b-7 (7.06): MCSH only for the v2 generation, so the legacy path reads what it always read.
+  const shadow = shadows ? mapChunkShadow(data, start, size) : undefined;
+  return { column, row, layers, detail: mapChunkDetail(data, start, size), colours: mapChunkColours(data, start, size), shadow };
 }
 
 function reversedTag(data, offset) {

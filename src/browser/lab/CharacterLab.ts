@@ -27,7 +27,8 @@ import {
   CHARACTER_OPTIONS_VERSION, CREATURE_MODEL_VERSION, CharacterAtlasClient, appearanceKey,
   type CharacterAppearance,
 } from "../CharacterAtlas.js";
-import { EVERY_GEOSET, characterSlots, geosetList, type BuiltModel } from "../ModelBuild.js";
+import { EVERY_GEOSET, characterSlots, type BuiltModel } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
+import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { ModelTextureLoader } from "../TextureLoad.js";
 import { raceName } from "../ui/UnitSnapshot.js";
 import {
@@ -211,7 +212,7 @@ async function makeCharacter(look: LabLook, query: LabQuery): Promise<LabCharact
   const { built, panel } = buildForLab(model, {
     modelPath: metadata.model,
     slots: characterSlots(metadata.textures, appearance),
-    geosets: geosetList(emitted),
+    geosets: figureGeosets(model, appearance, query.geosets), // 05.10-A7a-G 6.18: the world's choice unless `geosets=` overrides it
     baseUrl,
     loadTexture: (url) => textures.load(url),
     ...(slotTextures ? { slotTextures } : {}),

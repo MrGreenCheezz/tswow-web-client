@@ -17,16 +17,19 @@ do
     LEFT = {-50, 0}, CENTER = {0, 0}, RIGHT = {50, 0},
     BOTTOMLEFT = {-50, 50}, BOTTOM = {0, 50}, BOTTOMRIGHT = {50, 50},
   }
+  -- 05.10 suite-fix: a negated zero is -0, and the native string.format (3.27) prints it as "-0"
+  -- like Wow.exe's Lua; the CSS takes "0".
+  local function css(value) if value == 0 then return 0 end return value end
   local function atOrigin(animation, operation)
     local point = origins[animation.originPoint] or origins.CENTER
     local before, after = {}, {}
     if point[1] ~= 0 or point[2] ~= 0 then
       before[#before + 1] = string.format("translate(%s%%, %s%%)", point[1], point[2])
-      after[#after + 1] = string.format("translate(%s%%, %s%%)", -point[1], -point[2])
+      after[#after + 1] = string.format("translate(%s%%, %s%%)", css(-point[1]), css(-point[2]))
     end
     if animation.originX ~= 0 or animation.originY ~= 0 then
-      before[#before + 1] = string.format("translate(%spx, %spx)", animation.originX, -animation.originY)
-      table.insert(after, 1, string.format("translate(%spx, %spx)", -animation.originX, animation.originY))
+      before[#before + 1] = string.format("translate(%spx, %spx)", animation.originX, css(-animation.originY))
+      table.insert(after, 1, string.format("translate(%spx, %spx)", css(-animation.originX), animation.originY))
     end
     before[#before + 1] = operation
     for _, part in ipairs(after) do before[#before + 1] = part end
@@ -35,7 +38,7 @@ do
   local function visual(animation, progress)
     if animation.kind == "Translation" then
       local x, y = animation.offsetX * progress, animation.offsetY * progress
-      return (x ~= 0 or y ~= 0) and string.format("translate(%spx, %spx)", x, -y) or nil
+      return (x ~= 0 or y ~= 0) and string.format("translate(%spx, %spx)", css(x), css(-y)) or nil
     end
     if animation.kind == "Rotation" then
       local angle = animation.radians * progress

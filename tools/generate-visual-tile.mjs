@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import * as THREE from "three";
 import { globalMapObjects, parseAdtPlacements, placementReachesCell } from "./adt-placements.mjs";
 import { staticM2AdmissionRadius } from "./m2.mjs";
-import { parseWmoDoodadSets, validParsedWmoDoodadSets, wmoDependencies } from "./wmo-visual.mjs";
+import { parseWmoDoodadSets, validParsedWmoDoodadSets, wmoDependencies, wmoRootId } from "./wmo-visual.mjs";
 import { openDbcFile } from "./dbc.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
@@ -22,6 +22,24 @@ const VMAP_TO_THREE = new THREE.Matrix4().set(
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WMO_DOODAD_CACHE_VERSION = 1;
 
+// 05.10-A7b-1 (M-A7b-1): one bump for slice 1 of line A7b — the effective doodad set (7.02), the
+// owner class of a WMO doodad (7.03 slice 1), `wmoId`/`nameSet` on WMO placements (7.13) and the
+// truncation sidecar (7.19). The gateway names the generation it serves in the job
+// (`src/gateway/VisualTileGeneration.ts`); a gateway that names none is one still running
+// `visual-tile-v4`, whose asset worker loads this file fresh from disk, and it keeps receiving the
+// exact v4 bytes (and the v1 doodad cache) — `tests/visual-tile-v5.test.mjs` compares them.
+export const VISUAL_TILE_GENERATION = "visual-tile-v5";
+export const LEGACY_VISUAL_TILE_GENERATION = "visual-tile-v4";
+/** The doodad-set cache of the v5 generation: effective sets with MODD index and owner class. */
+const WMO_DOODAD_CACHE_V2 = Object.freeze({ key: "wmo-doodad-light-v2", version: 2 });
+/** The visual tile's hard cap, shared with the browser's decoder (`EnvironmentTileDecode.ts`). */
+const VISUAL_TILE_OBJECT_LIMIT = 10_000;
+
+/** `<x>-<y>.meta.json` beside a tile: what the v5 generator could not fit (7.19). */
+export function visualTileMetaFile(tileFile) {
+  return tileFile.replace(/\.json$/i, ".meta.json");
+}
+
 function validTile(mapId, gridX, gridY) {
   return [mapId, gridX, gridY].every(Number.isInteger) && mapId >= 0 && gridX >= 0 && gridX <= 63 && gridY >= 0 && gridY <= 63;
 }
@@ -31,8 +49,15 @@ function validTile(mapId, gridX, gridY) {
  * job (10.20 slice 2), the command line below once. Output directories are read on every call, so
  * a long-lived worker follows its env and a test's. Leaves the chain open.
  */
-export async function publishVisualTile(mapId, gridX, gridY, archives) {
+export async function publishVisualTile(mapId, gridX, gridY, archives, options = {}) {
   if (!validTile(mapId, gridX, gridY)) throw new Error(`${mapId}/${gridX}/${gridY} is not a terrain tile`);
+  // 05.10-A7b-1: which generation to write; none named is the v4 a running older gateway expects.
+  const generation = options?.generation ?? LEGACY_VISUAL_TILE_GENERATION;
+  if (generation !== LEGACY_VISUAL_TILE_GENERATION && generation !== VISUAL_TILE_GENERATION) {
+    throw new Error(`Unknown visual tile generation ${String(generation)}`);
+  }
+  const v5 = generation === VISUAL_TILE_GENERATION;
+  const placementOptions = v5 ? { nameSet: true } : undefined;
   const destination = resolve(root, process.env.VISUAL_TILE_DIR ?? "data/visual-tiles", String(mapId), `${gridX}-${gridY}.json`);
   const wmoDoodadCacheDirectory = resolve(
     root,
@@ -46,7 +71,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
   // What the tile was read out of, for the stamp: the ADT, or for a map that is one WMO its WDT.
   const tileSources = [adtPath];
   let objects;
-  if (adt) objects = parseAdtPlacements(adt);
+  if (adt) objects = parseAdtPlacements(adt, placementOptions);
   else {
     // Thirty-nine maps of this client have no ADT at all: the WDT says "one global map object"
     // (MPHD flag 0x1) and names it in its own MWMO/MODF — Wailing Caverns, Blackrock Depths, Molten
@@ -56,7 +81,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
     // not missing. Before this every cell of such a map failed, and the dungeon drew nothing.
     const wdtPath = `World\\Maps\\${mapName}\\${mapName}.wdt`;
     const wdt = await archives.read(wdtPath);
-    const global = wdt ? globalMapObjects(wdt) : undefined;
+    const global = wdt ? globalMapObjects(wdt, placementOptions) : undefined;
     if (!global) throw new Error(`${adtPath} is not in the client`);
     tileSources.push(wdtPath);
     objects = global.filter((placement) => placementReachesCell(placement, gridX, gridY));
@@ -64,6 +89,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
   const wmoPaths = [...new Set(objects.filter((object) => object.kind === "wmo").map((object) => object.name))];
   let doodadCount = 0;
   let missingWmos = 0;
+  let truncated = 0;
   const wmoSourcePaths = new Set(wmoPaths);
   if (wmoPaths.length > 0) {
     const roots = new Map();
@@ -81,8 +107,10 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
         // outdoor path when a custom/malformed WMO cannot enumerate its group files.
       }
       for (const groupPath of groupPaths) wmoSourcePaths.add(groupPath);
+      const wmoId = v5 ? wmoRootId(data) : undefined;
       roots.set(path.toLowerCase(), {
-        doodadSets: await cachedWmoDoodadSets(data, path, groupPaths, archives, wmoDoodadCacheDirectory),
+        doodadSets: await cachedWmoDoodadSets(data, path, groupPaths, archives, wmoDoodadCacheDirectory, v5),
+        ...(wmoId !== undefined ? { wmoId } : {}),
       });
     }
     const expanded = [];
@@ -91,20 +119,30 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
       if (placement.kind !== "wmo") continue;
       const wmo = roots.get(placement.name.toLowerCase());
       if (!wmo) continue;
+      // 05.10-A7b-1 (7.13): the WMOAreaTable key travels with the placement (`nameSet` came with it).
+      if (wmo.wmoId !== undefined) placement.wmoId = wmo.wmoId;
       const requestedSet = placement.doodadSet ?? 0;
+      // Under v5 each set is already the effective one (set 0 plus the placement's set, 7.02); a set
+      // past the table falls back to set 0 alone, as wowee and the old path both do.
       const doodads = wmo.doodadSets[requestedSet] ?? wmo.doodadSets[0] ?? [];
-      for (let doodadIndex = 0; doodadIndex < doodads.length && objects.length + expanded.length < 10_000; doodadIndex++) {
-        expanded.push(worldDoodad(placement, doodads[doodadIndex], doodadIndex));
+      let doodadIndex = 0;
+      for (; doodadIndex < doodads.length && objects.length + expanded.length < VISUAL_TILE_OBJECT_LIMIT; doodadIndex++) {
+        expanded.push(worldDoodad(placement, doodads[doodadIndex], doodadIndex, v5));
       }
+      // 05.10-A7b-1 (7.19): the cap is no longer silent.
+      truncated += doodads.length - doodadIndex;
     }
     doodadCount = expanded.length;
     for (const object of expanded) objects.push(object);
   }
 
-  // Admission runs before a model is requested or built. An unbounded M2 otherwise consumes one
-  // of the 320 exterior slots even when it is behind the camera. Read each distinct outdoor model
-  // from the same source chain as the tile and publish a conservative origin-centred radius only
-  // for static geometry. Rigged and emitter models deliberately retain the old fail-open path.
+  // Admission runs before a model is requested or built. Outdoor M2s have their own scenery budget
+  // (ENVIRONMENT_SCENERY_BUDGET = 1 024 in WorldRenderer3D.ts) with a size-based leash; 320 and 48
+  // are the near-WMO and far-WMO-shell budgets and 360 the building doodads'. Without a radius an
+  // M2 cannot be culled before it is built, so admission spends scenery slots on objects behind the
+  // camera. Read each distinct outdoor model from the same source chain as the tile and publish a
+  // conservative origin-centred radius only for static geometry. Rigged and emitter models
+  // deliberately retain the old fail-open path.
   const outdoorM2Paths = new Map();
   for (const object of objects) {
     if (object.kind === "m2" && object.interior !== true) {
@@ -127,10 +165,19 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
   // The tile and every building whose furniture was read out of it: a module that changes a WMO's
   // doodad set changes this list without touching the ADT.
   const stamp = await sourceStamp(archives, {
-    generation: "visual-tile-v4",
+    generation,
     paths: [...tileSources, ...wmoSourcePaths, ...outdoorM2Paths.values()],
   });
   await writeSourceStamp(destination, stamp);
+  if (v5) {
+    // 05.10-A7b-1 (7.19): the tile stays a bare array (every reader keeps working); what the cap cut
+    // goes beside it, and the route turns it into `X-Tile-Truncated`. A tile that fits has none.
+    const meta = visualTileMetaFile(destination);
+    if (truncated > 0) {
+      console.warn(`Visual tile ${mapId}/${gridX}/${gridY}: ${truncated} WMO doodad(s) past the ${VISUAL_TILE_OBJECT_LIMIT}-object cap not published`);
+      await writeFileAtomic(meta, JSON.stringify({ truncated }));
+    } else await rm(meta, { force: true });
+  }
   // 10.22: the distinct models of the tile, furniture included, for the gateway's preloader — a few
   // KB it can read instead of parsing this file (`tools/tile-models.mjs`). Same stamp: it is a
   // function of the tile. Stamp before bytes, so a torn write never leaves a list served as current.
@@ -139,10 +186,11 @@ export async function publishVisualTile(mapId, gridX, gridY, archives) {
   await writeFileAtomic(models, JSON.stringify(tileModelNames(objects)));
   const absent = missingWmos > 0 ? `, ${missingWmos} WMO(s) not in the client` : "";
   console.log(`Generated visual tile ${mapId}/${gridX}/${gridY}: ${objects.length} objects (${doodadCount} WMO doodads)${absent}`);
-  return { objects: objects.length, doodads: doodadCount };
+  return v5 ? { objects: objects.length, doodads: doodadCount, truncated } : { objects: objects.length, doodads: doodadCount };
 }
 
-// Run directly: node tools/generate-visual-tile.mjs <map> <grid-x> <grid-y>
+// Run directly: node tools/generate-visual-tile.mjs <map> <grid-x> <grid-y> [generation]
+// (05.10-A7b-1: the gateway passes `visual-tile-v5`; without it the v4 tile an older gateway expects.)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
   const gridX = Number.parseInt(process.argv[3] ?? "", 10);
@@ -152,7 +200,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   }
   const archives = await clientArchives(clientDirectory());
   try {
-    await publishVisualTile(mapId, gridX, gridY, archives);
+    await publishVisualTile(mapId, gridX, gridY, archives,
+      process.argv[5] ? { generation: process.argv[5] } : undefined);
   } finally {
     archives.close();
   }
@@ -165,7 +214,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
  * generation, so this source-stamped, normalized-root-path cache turns the other fifteen runs into
  * one small JSON read while still invalidating when the root, any group, or archive chain changes.
  */
-async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory) {
+async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory, effective = false) {
+  if (effective) {
+    return cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory);
+  }
   const hash = createHash("sha1")
     .update(`wmo-doodad-light-v1\0${rootPath.toLowerCase()}`)
     .digest("hex");
@@ -205,7 +257,43 @@ async function cachedWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmo
   return sets;
 }
 
-function worldDoodad(placement, doodad, doodadIndex) {
+/**
+ * 05.10-A7b-1: the v5 twin of the cache above, under its own key so neither generation ever reads or
+ * overwrites the other's file: effective sets (7.02) with each record's MODD index and owner class
+ * (7.03 slice 1). A running v4 gateway keeps its v1 entries untouched.
+ */
+async function cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, archives, wmoDoodadCacheDirectory) {
+  const { key, version } = WMO_DOODAD_CACHE_V2;
+  const hash = createHash("sha1").update(`${key}\0${rootPath.toLowerCase()}`).digest("hex");
+  const destination = join(wmoDoodadCacheDirectory, `${hash}.json`);
+  const inputs = { generation: key, paths: [rootPath, ...groupPaths] };
+  try {
+    if (await stampIsCurrent(destination, archives, inputs)) {
+      const cached = JSON.parse(await readFile(destination, "utf8"));
+      if (cached?.version === version && validParsedWmoDoodadSets(cached.sets)) return cached.sets;
+    }
+  } catch {
+    // A torn/invalid optimization cache is only a miss.
+  }
+  const groups = [];
+  for (const groupPath of groupPaths) {
+    const group = await archives.read(groupPath);
+    if (group) groups.push(group);
+  }
+  const sets = parseWmoDoodadSets(rootData, groups, { effective: true });
+  const temporary = `${destination}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(temporary, JSON.stringify({ version, sets }));
+    await rename(temporary, destination);
+    await stampGenerated(destination, archives, inputs);
+  } catch {
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
+  return sets;
+}
+
+function worldDoodad(placement, doodad, doodadIndex, v5 = false) {
   const parentRotation = mappedRotation(placement.rotationX, placement.rotationY, placement.rotationZ);
   const position = new THREE.Vector3(-doodad.x, doodad.z, doodad.y)
     .multiplyScalar(placement.scale)
@@ -230,7 +318,10 @@ function worldDoodad(placement, doodad, doodadIndex) {
     // Azeroth_31_49, the Goldshire tile, holds 1,302 terrain placements and 6,638 WMO doodads.
     // The browser draws them on their own budget so a fork on a table in the inn cannot take the
     // draw call a tree fifty metres away needed.
-    interior: true,
+    //
+    // 05.10-A7b-1 (7.03 slice 1): under v5 a doodad only outdoor groups own — a façade lamp, a sign,
+    // a banner — is outdoor scenery: size-based range and the scenery quota, not the 60-yard leash.
+    interior: !(v5 && doodad.outdoor === true),
     name: doodad.name,
     x: position.x,
     y: -position.z,

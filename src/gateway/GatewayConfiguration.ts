@@ -8,6 +8,8 @@ import { selectClientMediaOverlay } from "./ClientMediaOverlay.js";
 import { discoverClientAddons } from "./ClientAddons.js";
 import { readPatchStatusChild } from "./PatchStatus.js";
 import { assertModuleWritePolicy } from "./ModuleWritePolicy.js";
+import { VISUAL_TILE_GENERATION } from "./VisualTileGeneration.js"; // 05.10-A7b-1
+import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -253,16 +255,20 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     terrainTexturesDirectory: process.env.TERRAIN_TEXTURE_DIR ?? resolve(process.cwd(), "data/terrain-textures"),
     terrainLayersDirectory: process.env.TERRAIN_LAYER_DIR ?? resolve(process.cwd(), "data/terrain-layers"),
     generateTerrainTexture: (map, gridX, gridY) => runAssetGenerator("generate-terrain-tile.mjs", [String(map), String(gridX), String(gridY)]),
+    // 05.10-A7b-7: the splat generation is named too (v2: MCSH in the alpha, resampled odd layers).
     generateTerrainSplat: (map, gridX, gridY) => publish(
-      { kind: "terrain-splat", map, gridX, gridY }, 0,
-      "generate-terrain-splat.mjs", [String(map), String(gridX), String(gridY)]),
+      { kind: "terrain-splat", map, gridX, gridY, generation: TERRAIN_SPLAT_GENERATION }, 0,
+      "generate-terrain-splat.mjs", [String(map), String(gridX), String(gridY), TERRAIN_SPLAT_GENERATION]),
     visualTilesDirectory: process.env.VISUAL_TILE_DIR ?? resolve(process.cwd(), "data/visual-tiles"),
+    // 05.10-A7b-1: the generation is named, so the tools write v5 for this gateway and v4 for an older one.
     generateVisualTile: (map, gridX, gridY) => publish(
-      { kind: "visual-tile", map, gridX, gridY }, 0,
-      "generate-visual-tile.mjs", [String(map), String(gridX), String(gridY)]),
+      { kind: "visual-tile", map, gridX, gridY, generation: VISUAL_TILE_GENERATION }, 0,
+      "generate-visual-tile.mjs", [String(map), String(gridX), String(gridY), VISUAL_TILE_GENERATION]),
     visualModelsDirectory: process.env.VISUAL_MODEL_DIR ?? resolve(process.cwd(), "data/visual-models"),
     horizonDirectory: process.env.HORIZON_DIR ?? resolve(process.cwd(), "data/horizon"),
     generateHorizon: (map) => publish({ kind: "horizon", map }, 0, "generate-horizon.mjs", [String(map)]),
+    // 05.10-A7b-7 (7.08): `/horizon/<map>/colour.png`, beside the `.wdl` in the same directory.
+    generateHorizonColour: (map) => publish({ kind: "horizon-colour", map }, 0, "generate-horizon-colour.mjs", [String(map)]),
     // 10.20 slice 4: a creature's or a character's model ahead of a city WMO in the model worker.
     generateVisualModel: (path, hash) => publish(
       { kind: "visual-model", path, hash }, visualModelPriority(path), "generate-visual-model.mjs", [path, hash]),
@@ -282,8 +288,13 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     // Only on a machine that has a client: without one there is nothing to list, and the gateway
     // must then behave exactly as it did before Т7 — both spellings offered, the gendered one first.
     ...(clientDirectory === undefined ? {} : { listCharacterTextures }),
+    // 05.10-11.01: transports' convex volumes (WMO MCVP) for `/vmap/gobject-volumes`; no client, no route.
+    ...(clientDirectory === undefined ? {} : { readConvexVolumes }),
     minimapDirectory: process.env.MINIMAP_DIR ?? resolve(process.cwd(), "data/minimap"),
     generateMinimapIndex: (map) => publish({ kind: "minimap-index", map }, 0, "generate-minimap-index.mjs", [String(map)]),
+    // 05.10-A7b-3 (7.14): every WMO's baked tiles in one file, once per md5translate — a one-shot
+    // process, not a worker kind: one run per patch does not earn a job of its own.
+    generateWmoMinimapIndex: () => runAssetGenerator("generate-minimap-index.mjs", ["--wmo"]),
     worldMapZoneMapsDirectory: process.env.WORLD_MAP_ZONE_MAP_DIR
       ?? resolve(process.cwd(), "data/worldmap-zone-maps"),
     generateWorldMapZoneMap: (map) => publish({ kind: "zone-map", map }, 0, "generate-worldmap-zone-map.mjs", [String(map)]),
@@ -302,6 +313,9 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
     liquidDirectory: process.env.LIQUID_DIR ?? resolve(process.cwd(), "data/liquid"),
     generateLiquidTexture: (liquidClass) => publish(
       { kind: "liquid", liquidClass }, 1, "generate-liquid-texture.mjs", [liquidClass]),
+    // 05.10-A7b-8 (7.09 A): a LiquidType texture family's strip, `family/<slug>` beside the classes.
+    generateLiquidFamily: (family) => publish(
+      { kind: "liquid-family", family }, 1, "generate-liquid-texture.mjs", ["--family", family]),
     // What the modules on this machine ship for this client: message schemas, window definitions and
     // stylesheets. Scanned per request rather than memoised, because the whole point of it is to
     // notice that a module author just saved a file.
@@ -350,6 +364,35 @@ export async function createGatewayConfiguration(): Promise<{ options: GatewayOp
           return;
         }
         resolveJob([...parseCharacterTextures(answer)]);
+      });
+    });
+  }
+
+  /**
+   * 05.10-11.01: `tools/convex-volumes.mjs <root>…` out of a child — the MCVP planes of WMO roots,
+   * one JSON object on stderr (StormLib owns stdout), as `listCharacterTextures` reads its answer.
+   * A few roots per dataset (ships and zeppelins in view), memoised by the route.
+   */
+  function readConvexVolumes(paths: readonly string[]): Promise<Readonly<Record<string, readonly number[] | null>>> {
+    if (closed) return Promise.reject(new Error("Resource provider is closed"));
+    return new Promise((resolveJob, rejectJob) => {
+      let answer = "";
+      const child = track(spawn(process.execPath, [resolve(process.cwd(), "tools/convex-volumes.mjs"), ...paths], {
+        cwd: process.cwd(), env: process.env, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
+      }));
+      child.stderr!.setEncoding("utf8");
+      child.stderr!.on("data", (data: string) => { answer += data; });
+      child.once("error", rejectJob);
+      child.once("exit", (code) => {
+        if (code !== 0) {
+          rejectJob(new Error(answer.trim() || `convex-volumes.mjs exited with ${String(code)}`));
+          return;
+        }
+        try {
+          resolveJob(JSON.parse(answer) as Record<string, readonly number[] | null>);
+        } catch (error) {
+          rejectJob(error as Error);
+        }
       });
     });
   }

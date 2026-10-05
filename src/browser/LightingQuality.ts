@@ -98,7 +98,24 @@ export function withToneShoulder(chunk: string): string {
   return chunk.replace(TONE_MAPPING_STUB_GLSL, TONE_SHOULDER_GLSL);
 }
 
-export type LightingQuality = 0 | 1 | 2;
+export type LightingQuality = 0 | 1 | 2 | 3;
+
+/**
+ * 05.10-7.20: «сравнение», the level the original client is compared against. Owner decision 05.10:
+ * the classic, authored frame of quality 0 — no grade, no fixture pools, no shafts, the client's key
+ * light, baked MCSH, the lit coloured horizon — with quality 1's shadow pass on top, because the
+ * reference install runs `extShadowQuality 5` (real-time shadows). It is 3 rather than a slot between
+ * 0 and 1 so the levels the owner already saved (0, 1, 2) keep their meaning.
+ */
+export const LIGHTING_QUALITY_COMPARISON = 3;
+
+/**
+ * 05.10-7.20: whether this level draws the classic (client-faithful) look rather than the enhanced
+ * one. Every renderer branch that used to single out quality 0 asks this instead.
+ */
+export function lightingClassicLook(quality: number): boolean {
+  return quality === 0 || quality === LIGHTING_QUALITY_COMPARISON;
+}
 
 export interface LightingCapabilities {
   /** A lost/restricted context can keep the light balance while declining the extra pass. */
@@ -229,13 +246,31 @@ const PROFILES: Readonly<Record<LightingQuality, Omit<LightingProfile,
     shadowDistance: 200,
     shadowFarRefreshFrames: 30,
   },
+  // 05.10-7.20 «сравнение»: quality 0's tonal fields. Its shadow pass is quality 1's, read from that
+  // row by `lightingProfile` (one source for the numbers), so the zeros below are never used.
+  3: {
+    exposure: 1,
+    immersiveStrength: 0,
+    localLights: 0,
+    godRayStrength: 0,
+    wantedShadowMapSize: 0,
+    wantedShadowFarMapSize: 0,
+    shadowCasters: 0,
+    shadowExtent: 0,
+    shadowIntensity: 0,
+    shadowRadius: 0,
+    shadowCascades: 0,
+    shadowCascadeSplits: [],
+    shadowDistance: 0,
+    shadowFarRefreshFrames: 0,
+  },
 };
 
 /** Numbers may come from an old account blob, a module or a hand-edited local mirror. */
 export function normaliseLightingQuality(value: unknown): LightingQuality {
   const number = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(number)) return 1;
-  return Math.max(0, Math.min(2, Math.round(number))) as LightingQuality;
+  return Math.max(0, Math.min(LIGHTING_QUALITY_COMPARISON, Math.round(number))) as LightingQuality; // 05.10-7.20
 }
 
 /**
@@ -267,12 +302,14 @@ export function lightingProfile(
     : Number.isFinite(capabilities.maxTextureSize)
       ? Math.max(0, Math.floor(capabilities.maxTextureSize))
       : 0;
-  const shadowMapSize = capabilities.shadowMaps && source.wantedShadowMapSize > 0 && limit >= 512
-    ? Math.min(source.wantedShadowMapSize, limit >= 1024 ? 1024 : 512)
+  // 05.10-7.20: the comparison level takes quality 1's whole shadow pass.
+  const pass = quality === LIGHTING_QUALITY_COMPARISON ? PROFILES[1] : source;
+  const shadowMapSize = capabilities.shadowMaps && pass.wantedShadowMapSize > 0 && limit >= 512
+    ? Math.min(pass.wantedShadowMapSize, limit >= 1024 ? 1024 : 512)
     : 0;
   // A context capped at 512 is also likely to be fill/draw constrained. Keep high's tonal profile
   // but fall back to balanced's caster count and camera footprint for its optional pass.
-  const shadowSource = quality === 2 && shadowMapSize < 1024 ? PROFILES[1] : source;
+  const shadowSource = quality === 2 && shadowMapSize < 1024 ? PROFILES[1] : pass; // 05.10-7.20: pass
   const shadows = shadowMapSize > 0;
   const shadowFarMapSize = shadows
     ? Math.min(shadowSource.wantedShadowFarMapSize, limit >= 2048 ? 2048 : limit >= 1024 ? 1024 : 512)

@@ -54,7 +54,7 @@ export const IGNORED_OPCODES: ReadonlyMap<OpcodeName, IgnoredOpcodeReason> = new
   ["SMSG_CALENDAR_EVENT_INVITE_STATUS_ALERT", byDesign("compiled by the core and never constructed")],
 
   // --- planned -----------------------------------------------------------------------------------
-  ["SMSG_MIRRORIMAGE_DATA", planned("6.11", "the copied appearance of Mirror Image")],
+  // 05.10-A7a-H: SMSG_MIRRORIMAGE_DATA struck off — it dresses the unit now (6.11б, MirrorImages.ts).
 
   // --- unplanned: Wow.exe reacts, no plan item yet -----------------------------------------------
   ["SMSG_RESET_FAILED_NOTIFY", unplanned("Wow.exe 0x50cee0 prints RESET_FAILED_NOTIFY (players still inside)")],

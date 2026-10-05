@@ -8,7 +8,8 @@
  * metadata, and the handful of rooms the player is standing in are fetched one at a time afterwards.
  */
 
-import { VISUAL_MODEL_ROUTE_VERSION } from "./Wvm.js";
+import { VISUAL_MODEL_ROUTE_VERSION, textureUrl } from "./Wvm.js"; // 05.10-A7b-2: textureUrl
+import { decodeWmoMaterialSection, type WmoMaterial } from "./WmoMaterials.js"; // 05.10-A7b-3
 
 const MAGIC_WWM1 = "WWM1";
 const MAGIC_WWM2 = "WWM2";
@@ -218,6 +219,8 @@ export interface WmoRun {
   blendMode: number;
   materialFlags: number;
   lighting: number;
+  /** 05.10-A7b-3 (7.11): the MOMT record (index into {@link WmoModel.materials}); absent before v25. */
+  materialIndex?: number;
 }
 
 /** One of the lamps the artist hung inside the building, as `MOLT` records it. */
@@ -350,6 +353,15 @@ export interface WmoModel {
   vertexAlphaFixed?: boolean;
   /** WME4, per doodad set; empty on artifacts without it. */
   doodadRooms?: readonly WmoDoodadRooms[];
+  /** 05.10-A7b-3 (7.11 P2): WME5, the MOMT table; absent on artifacts before `visual-wmo-v25`. */
+  materials?: readonly WmoMaterial[];
+  /**
+   * 05.10-A7b-2 (7.11 P1): per MOMT record, the gateway URL of its second texture (`/texture?path=`),
+   * or "" for none; beside {@link materials}, which the artifact carries without a base URL.
+   */
+  materialTextureUrls?: readonly string[];
+  /** 05.10-A7b-3 (7.11 P4): MOSB verbatim (may be an absolute authoring path); absent when none. */
+  skybox?: string;
 }
 
 function validWmoBounds(bounds: WmoBounds): boolean {
@@ -490,12 +502,15 @@ export function decodeWwm(data: ArrayBuffer, baseUrl: string): WmoModel {
     offset += size;
   }
   const metadataOffset = view.getUint32(20, true);
-  const { portals, fogs, doodadRooms } = decodeMetadata(bytes, view, metadataOffset, offset, groups);
+  const { portals, fogs, doodadRooms, materials, skybox } = decodeMetadata(bytes, view, metadataOffset, offset, groups);
   const model: WmoModel = {
     ambient, textureUrls, lights, groups, fogs, complete, vertexLight, vertexAlphaFixed,
     doodadRooms: doodadRooms ?? [],
   };
   if (portals) model.portals = portals;
+  if (materials) model.materials = materials; // 05.10-A7b-3
+  if (materials) model.materialTextureUrls = materials.map((material) => (material.texture2 ? textureUrl(baseUrl, material.texture2) : "")); // 05.10-A7b-2
+  if (skybox !== undefined) model.skybox = skybox; // 05.10-A7b-3
   return model;
 }
 
@@ -569,7 +584,7 @@ function decodeMetadata(
   metadataOffset: number,
   bodyEnd: number,
   groups: WmoGroup[],
-): { portals?: WmoPortals; fogs: WmoFog[]; doodadRooms?: WmoDoodadRooms[] } {
+): { portals?: WmoPortals; fogs: WmoFog[]; doodadRooms?: WmoDoodadRooms[]; materials?: WmoMaterial[]; skybox?: string } {
   if (metadataOffset === 0 || metadataOffset < bodyEnd || metadataOffset + 8 > bytes.byteLength) return { fogs: [] };
   const decoder = new TextDecoder();
   const magic = decoder.decode(bytes.subarray(metadataOffset, metadataOffset + 4));
@@ -587,6 +602,7 @@ function decodeMetadata(
       ...withPortals(decodePortalExtension(bytes, view, extensionOffset, groups, false)),
       fogs: decodeFogExtension(bytes, view, extensionOffset, groups),
       doodadRooms: decodeDoodadRooms(bytes, view, extensionOffset, groups.length),
+      ...decodeWmoMaterialSection(bytes, view, extensionOffset), // 05.10-A7b-3
     };
   }
   // Accept the short-lived direct-WME2 artifact too. Published artifacts put WME1 first so an old
@@ -596,6 +612,7 @@ function decodeMetadata(
       ...withPortals(decodePortalExtension(bytes, view, metadataOffset, groups, true)),
       fogs: decodeFogExtension(bytes, view, metadataOffset, groups),
       doodadRooms: decodeDoodadRooms(bytes, view, metadataOffset, groups.length),
+      ...decodeWmoMaterialSection(bytes, view, metadataOffset), // 05.10-A7b-3
     }
     : { fogs: [] };
 }
@@ -1201,14 +1218,17 @@ export function decodeWwmGroup(data: ArrayBuffer): { index: number; mesh: WmoGro
     const start = view.getUint32(at, true);
     const count = view.getUint32(at + 4, true);
     if (count === 0 || count % 3 !== 0 || start + count > indexCount) throw new Error("WMO group run does not fit its geometry");
-    runs.push({
+    const record = view.getUint16(at + 14, true); // 05.10-A7b-3: MOMT record + 1, 0 before v25
+    const entry: WmoRun = {
       start,
       count,
       material: view.getUint16(at + 8, true),
       blendMode: view.getUint8(at + 10),
       materialFlags: view.getUint8(at + 11),
       lighting: view.getUint8(at + 12),
-    });
+    };
+    if (record !== 0) entry.materialIndex = record - 1;
+    runs.push(entry);
   }
   const lightRefs = new Uint16Array(data.slice(lightOffset, lightOffset + lightRefCount * 2));
   return { index, mesh: { positions, uvs, colours, indices, runs, lightRefs, ...(normals ? { normals } : {}) } };

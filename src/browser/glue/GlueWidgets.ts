@@ -3,6 +3,7 @@ import { GlueLuaRef, type GlueLuaVm } from "./GlueLua.js";
 import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
 import { colorSelectMethods, messageColorMethods } from "./GlueWidgetMethodExtras.js";
+import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
@@ -857,8 +858,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   private buildMetatables(): void {
     const base = this.baseMethods();
     const region = { ...base, ...this.regionMethods() };
-    const frameLike = { ...base, ...this.frameMethods() };
-    const fontString = { ...region, ...this.textMethods() };
+    // 05.10-3.21 (GlueWidgetMethodFills.ts): Frame:IgnoreDepth and FontString:SetAlphaGradient.
+    const frameLike = { ...base, ...this.frameMethods(), ...frameDepthMethods() };
+    const fontString = { ...region, ...this.textMethods(), ...fontStringGradientMethods(this.#bridge) };
     const button = { ...frameLike, ...this.textMethods(), ...this.buttonMethods() };
     const checkButton = { ...button, ...this.checkButtonMethods() };
     const editBox = { ...frameLike, ...this.textMethods(), ...this.editBoxMethods() };
@@ -2291,7 +2293,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // re-implementing printf here.
         const [format, ...rest] = args;
         const formatted = this.formatThroughLua(str(format), rest);
-        bridge.SetText(frame, formatted);
+        // 05.10-3.27-review: a refused format (Wow.exe 0x00818070 raises before the text is set)
+        // leaves the text as it was; the error went to the handler from vm.call.
+        if (formatted !== undefined) bridge.SetText(frame, formatted);
       },
       SetTextColor: ({ frame, self, args }) => {
         const color = colorArgs(args);
@@ -3175,11 +3179,14 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   }
 
   /** Format through the VM so SetFormattedText obeys the same 5.1 shim. */
-  private formatThroughLua(format: string, args: readonly unknown[]): string {
+  private formatThroughLua(format: string, args: readonly unknown[]): string | undefined {
     const ref = this.#vm.globalFunction("format");
     if (!ref) return format;
-    const [result] = this.#vm.call(ref, [format, ...args], 1);
+    const answer = this.#vm.call(ref, [format, ...args], 1);
     this.#vm.release(ref);
+    // 05.10-3.27-review: vm.call answers nothing when format raised — undefined, the text stays.
+    if (answer.length === 0) return undefined;
+    const [result] = answer;
     return typeof result === "string" ? result : format;
   }
 }

@@ -10,6 +10,7 @@ import { formatMoney } from "./Format.js";
 import { Panel } from "./Widgets.js";
 import { frameXmlLfdPublished } from "../framexml/FrameXmlLfdController.js";
 import { frameXmlSharedQuestAskedByStock } from "../framexml/FrameXmlServerPrompts.js";
+import { liveAreaIdAt } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 import {
   frameXmlPopupsLeftToNative, frameXmlPopupsOwnBattlefieldEntry, frameXmlPopupsPublished,
 } from "../framexml/FrameXmlPopupsController.js";
@@ -57,7 +58,7 @@ function confirmationsMoved(world: WorldClient): boolean {
  */
 function bindPlaceName(world: WorldClient): string {
   const self = world.state.selfGuid === undefined ? undefined : world.state.objects.get(world.state.selfGuid);
-  const areaId = self?.position ? game.terrain?.areaAt(world.mapId, self.position.x, self.position.y) ?? 0 : 0;
+  const areaId = self?.position ? liveAreaIdAt(world.mapId, self.position.x, self.position.y) : 0; // 05.10-A7b-4
   const zoneId = world.worldStateContext?.zoneId ?? 0;
   return (areaId > 0 ? game.areas?.area(areaId)?.name : undefined)
     ?? (zoneId > 0 ? game.areas?.area(zoneId)?.name : undefined)

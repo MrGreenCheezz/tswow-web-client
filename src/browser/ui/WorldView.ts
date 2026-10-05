@@ -3,6 +3,7 @@ import { runFrameTasks } from "../../transport/PacketPump.js";
 import { player, unit } from "../../world/Fields.js";
 import { WorldObjectState, WorldState, isWorldObjectDead } from "../../world/WorldState.js";
 import { creatureIconSource } from "../CreatureMetadata.js";
+import { corpseDisplayRequest } from "../CorpseModel.js"; // 05.10-A7a-G2 6.05
 import { game } from "../game/Context.js";
 import { renderInventory } from "./Bags.js";
 import { setIconSource } from "./IconImage.js";
@@ -133,6 +134,7 @@ export function showWorldState(state: WorldState): void {
   // Every visible unit needs its M2 resolved from UNIT_FIELD_DISPLAYID; the client dedupes.
   if (game.creatureModels) {
     for (const object of state.objects.values()) {
+      if (object.typeId === 7) { game.creatureModels.request(corpseDisplayRequest(object)); continue; } // 05.10-A7a-G2 6.05: a corpse's body
       if (object.typeId !== 3 && object.typeId !== 4) continue;
       game.creatureModels.request(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0);
       // And its mount, which is a display id of the same table and would otherwise never be

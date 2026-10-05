@@ -291,6 +291,7 @@ export class ItemMetadataClient {
       subClass: template.subClass,
       soundOverrideSubclass: template.soundOverrideSubclass,
       material: template.material,
+      sheath: template.sheath, // 05.10-A7a-G2 6.08: the stowed point (SheathPoints.ts)
     };
     if (!sameItemMetadata(known, next)) {
       this.#cache.set(entry, next);
@@ -333,5 +334,6 @@ function sameItemMetadata(left: ItemMetadata | undefined, right: ItemMetadata): 
     && left.quality === right.quality && left.inventoryType === right.inventoryType
     && left.stackable === right.stackable && left.iconId === right.iconId
     && left.itemClass === right.itemClass && left.subClass === right.subClass
-    && left.soundOverrideSubclass === right.soundOverrideSubclass && left.material === right.material;
+    && left.soundOverrideSubclass === right.soundOverrideSubclass && left.material === right.material
+    && left.sheath === right.sheath; // 05.10-A7a-G2 6.08
 }

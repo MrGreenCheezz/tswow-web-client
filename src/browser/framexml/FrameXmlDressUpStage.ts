@@ -28,7 +28,8 @@ export function frameXmlDressUpKey(outfit: FrameXmlDressUpOutfit): string {
   const worn = outfit.equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
     + (item.subClass === undefined ? "" : `:${item.subClass}`)).join(",");
   return `dressup:${look.displayId}/${look.race}/${look.sex}/${look.skin}/${look.face}/${look.hairStyle}`
-    + `/${look.hairColor}/${look.facialHair}/${worn}`;
+    + `/${look.hairColor}/${look.facialHair}/${worn}`
+    + (look.classId === undefined ? "" : `/c${look.classId}`); // 05.10-A7a-G 6.18
 }
 
 /**
@@ -44,7 +45,8 @@ export function frameXmlDressUpSource(
   const metadata = models.get(look.displayId);
   if (!metadata) { models.request(look.displayId); return undefined; }
   const appearance = models.playerAppearance(look.race, look.sex, look.skin, look.face, look.hairStyle,
-    look.hairColor, look.facialHair, outfit.equipment);
+    look.hairColor, look.facialHair, outfit.equipment,
+    ...(look.classId === undefined ? [] : [look.classId])); // 05.10-A7a-G 6.18: the class, as unitModelFor
   if (!appearance) return undefined;
   return {
     key: `${frameXmlDressUpKey(outfit)}:${metadata.model}:${metadata.textures}`,

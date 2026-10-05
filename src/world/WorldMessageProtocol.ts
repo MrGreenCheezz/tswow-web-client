@@ -99,6 +99,8 @@ export const LIGHT_SLOT_CLEAR = 0;
 export const LIGHT_SLOT_UNDERWATER = 1;
 export const LIGHT_SLOT_STORM = 2;
 export const LIGHT_SLOT_UNDERWATER_STORM = 3;
+/** 05.10-A7b-5 (7.15): slot 4, the death light a ghost sees — read since light payload v5. */
+export const LIGHT_SLOT_DEATH = 4;
 
 /** `SMSG_WEATHER`: `u32 state, f32 intensity, u8 abrupt` — `MiscPackets.cpp:105-109`. */
 export function parseWeather(payload: Uint8Array): Weather {

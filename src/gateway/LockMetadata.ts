@@ -18,9 +18,10 @@ const LOCK_CASES = 8;
 const SPELL_EFFECTS = 3;
 
 export async function loadLockData(dbcDirectory: string): Promise<LockData> {
-  const [lock, spell] = await Promise.all([
+  const [lock, spell, lockType] = await Promise.all([
     openDbcFile(dbcDirectory, "Lock"),
     openDbcFile(dbcDirectory, "Spell"),
+    openDbcFile(dbcDirectory, "LockType"), // 05.10-5.17
   ]);
 
   const locks: Record<number, LockCase[]> = {};
@@ -49,5 +50,12 @@ export async function loadLockData(dbcDirectory: string): Promise<LockData> {
       });
     }
   }
-  return { locks, openers };
+  // 05.10-5.17: the cursor a lock type shows (Wow.exe 0x0070F9B0 reads the lock's first type's
+  // CursorName): four stock types and whatever a dataset adds, such as 1000 → Mine.
+  const lockTypeCursors: Record<number, string> = {};
+  for (const row of lockType.rows()) {
+    const cursor = lockType.string(row, "CursorName");
+    if (cursor) lockTypeCursors[lockType.id(row)] = cursor;
+  }
+  return { locks, openers, lockTypeCursors };
 }

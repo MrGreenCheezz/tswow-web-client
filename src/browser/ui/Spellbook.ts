@@ -6,6 +6,7 @@ import { syncMountSpellIds } from "../MountSpells.js";
 import { spellCastBlockReason } from "../SpellCastGuard.js";
 import { GROUND_TARGET_MODE, beginGroundTarget, cancelGroundTarget, isGroundTargetSpell } from "../game/GroundTarget.js";
 import { armItemTarget, isItemTargetSpell, spellTargetsObject } from "../game/SpellCursor.js";
+import { castOnMainHandWeapon } from "../game/MainHandEnchant.js"; // 05.10-2.05
 import { ensureSpellNames, isCurrentSpellMetadataRequest, spellMetadataEpoch } from "./SpellNames.js";
 import { PET_SPELL_DRAG_FORMAT, SPELLBOOK_PET_TAB, nativePetBook, petBookAutocast, petBookTab, type PetBookRow } from "./PetSpellbook.js";
 import { clearPetBookCooldowns, registerPetBookCooldown, updatePetBookCooldowns } from "./PetSpellbook.js"; // L7 4.03
@@ -980,6 +981,8 @@ export function castSpell(spellId: number, explicitUnitTarget?: bigint): boolean
   // Disenchant, Prospecting, Milling, Feed Pet wait for the item they go on (2.05, SpellCursor.ts).
   if (explicitUnitTarget === undefined && isItemTargetSpell(metadata)) {
     cancelGroundTarget();
+    // 05.10-2.05: a SPELL_ATTR0_TARGET_MAINHAND_ITEM imbue picks the worn weapon itself (MainHandEnchant.ts).
+    if (castOnMainHandWeapon(world, spellId, undefined, metadata)) return true;
     if (!armItemTarget(world, spellId, undefined, spellTargetsObject(metadata))) return false;
     notice("Выберите предмет · правый клик или Esc — отмена", "info");
     return true;

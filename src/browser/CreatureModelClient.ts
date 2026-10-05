@@ -1,5 +1,7 @@
 import type { CreatureModelMetadata } from "../gateway/CreatureModelMetadata.js";
-import type { EquippedItem } from "../gateway/CharacterAppearance.js";
+import type { AttachedModel, EquippedItem } from "../gateway/CharacterAppearance.js"; // 05.10-A7a-B 6.02: AttachedModel
+import { NpcWeaponClient } from "./NpcWeapons.js"; // 05.10-A7a-B 6.02
+import { isParticleColours } from "./CreatureGeosetData.js"; // 05.10-A7a-H 6.11а
 import {
   CHARACTER_APPEARANCE_VERSION, CREATURE_MODEL_VERSION, IMAGE_RETRY_BACKOFF_MS,
   type CharacterAppearance,
@@ -13,6 +15,12 @@ export interface UnitModel extends CreatureModelMetadata {
   appearance?: CharacterAppearance;
   /** True while one of the player's visible item rows is still missing from ItemMetadata. */
   appearancePending?: boolean;
+  /** 05.10-A7a-B 6.02: a creature's UNIT_VIRTUAL_ITEM_SLOT_ID weapons as slots 15–17 (NpcWeapons.ts). */
+  held?: AttachedModel[];
+  /** 05.10-A7a-B 6.02: true while one of those entries is still being asked for. */
+  heldPending?: boolean;
+  /** 05.10-A7a-G2 6.08: a player's SheatheType by hand slot, from the item query (SheathPoints.ts). */
+  wornSheathe?: Readonly<Record<number, number>>;
 }
 
 /**
@@ -79,7 +87,11 @@ export class CreatureModelClient {
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#now = now;
+    this.npcWeapons = new NpcWeaponClient(url.origin, now); // 05.10-A7a-B 6.02
   }
+
+  /** 05.10-A7a-B 6.02: what creatures hold, by item entry (`/dbc/npc-weapons`, NpcWeapons.ts). */
+  readonly npcWeapons: NpcWeaponClient;
 
   get(displayId: number): CreatureModelMetadata | undefined {
     return this.#cache.get(displayId);
@@ -92,7 +104,8 @@ export class CreatureModelClient {
    */
   playerAppearance(race: number, sex: number, skin: number, face: number, hairStyle: number,
     hairColor: number, facialHair: number,
-    equipment: readonly EquippedItem[] = []): CharacterAppearance | undefined {
+    equipment: readonly EquippedItem[] = [],
+    classId?: number): CharacterAppearance | undefined { // 05.10-A7a-A 6.10: the class decides the DK eye glow
     // Equipment belongs in the key: changing armour changes the body texture, the geosets and
     // what hangs off the bones, so it is a different appearance and a different composed atlas.
     // Sorted for a stable identity — the order it paints in is the gateway's decision, not this
@@ -102,7 +115,12 @@ export class CreatureModelClient {
     // wand would leave the attached model right while its shoot pose stays wrong.
     const worn = equipment.map((item) => `${item.slot}:${item.inventoryType}:${item.displayId}`
       + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
-    const key = `${race}/${sex}/${skin}/${face}/${hairStyle}/${hairColor}/${facialHair}/${worn}`;
+    // 05.10-A7a-A 6.10: an integer class 0..255 joins the key and the request; anything else is the
+    // old classless look (no `class=`, which an older gateway ignores anyway).
+    const knownClass = classId !== undefined && Number.isInteger(classId) && classId >= 0 && classId <= 255
+      ? classId : undefined;
+    const key = `${race}/${sex}/${skin}/${face}/${hairStyle}/${hairColor}/${facialHair}/${worn}`
+      + (knownClass === undefined ? "" : `/c${knownClass}`);
     const known = this.#appearances.get(key);
     if (known !== undefined) return known;
     if (this.#requestedAppearances.has(key)) return undefined;
@@ -133,7 +151,8 @@ export class CreatureModelClient {
         // before it.
         const query = `v=${CHARACTER_APPEARANCE_VERSION}&race=${race}&sex=${sex}&skin=${skin}&face=${face}`
           + `&hair=${hairStyle}&hairColor=${hairColor}&facialHair=${facialHair}`
-          + (worn ? `&items=${encodeURIComponent(worn)}` : "");
+          + (worn ? `&items=${encodeURIComponent(worn)}` : "")
+          + (knownClass === undefined ? "" : `&class=${knownClass}`); // 05.10-A7a-A 6.10
         const response = await fetch(`${this.#baseUrl}/dbc/character-appearance?${query}`);
         if (!response.ok) throw new Error(`Character appearance gateway returned ${response.status}`);
         const value = await response.json() as CharacterAppearance;
@@ -267,5 +286,16 @@ function isMetadata(value: unknown): value is CreatureModelMetadata {
     // And zero is a real answer here for the same reason: 917 of the 1,331 rows of
     // `CreatureModelData` name no seat, and the renderer falls back to the model's own bounds.
     && typeof metadata.mountHeight === "number" && Number.isFinite(metadata.mountHeight)
-    && typeof metadata.textures === "string";
+    && typeof metadata.textures === "string"
+    // 05.10-A7a-A 6.11а: optional, absent from an older gateway's answer.
+    && optionalFiniteNumber(metadata.alpha) && optionalFiniteNumber(metadata.geosetData)
+    && optionalFiniteNumber(metadata.particleColor)
+    && isParticleColours(metadata.particleColors) // 05.10-A7a-H 6.11а
+    // 05.10-A7a-G 6.20: optional too, `true` where present.
+    && (metadata.noMountSpecial === undefined || metadata.noMountSpecial === true);
+}
+
+/** 05.10-A7a-A 6.11а: absent, or a finite number. */
+function optionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
 }

@@ -48,6 +48,7 @@ import { frameXmlShapeshiftForms } from "../framexml/FrameXmlShapeshiftForms.js"
 import { toggleReputation } from "../ui/Reputation.js";
 import { toggleSocialPanel } from "../ui/SocialPanel.js";
 import { toggleScoreboard } from "../ui/Scoreboard.js";
+import { toggleFrameXmlBattlefieldMinimap } from "../framexml/FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t
 import { minimapSettings, setMinimapRotation, zoomMinimap } from "../ui/Minimap.js";
 import { pressPetButton } from "../ui/PetBar.js";
 import { castSpell } from "../ui/Spellbook.js";
@@ -400,6 +401,9 @@ export function runAction(action: InputAction): boolean {
     case "toggleMinimapRotation":
       setMinimapRotation(!minimapSettings().rotate);
       return true;
+
+    case "toggleBattlefieldMinimap": // 05.10-L17t: stock UI only; the native HUD has no zone minimap
+      return toggleFrameXmlBattlefieldMinimap();
 
     case "previousActionPage":
       // L7 4.16b: ActionBar_PageDown/PageUp skip a page a shown extra row already shows.

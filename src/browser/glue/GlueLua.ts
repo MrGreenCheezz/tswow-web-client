@@ -202,6 +202,8 @@ local function _cast(value, kind)
   return value
 end
 
+-- 05.10-3.27: replaced after this chunk by Wow.exe's str_format (GlueLuaFormat.ts, installed from
+-- installGlueLuaNatives); this Lua version is no longer reachable from the VM.
 function string.format(fmt, ...)
   local count = select("#", ...)
   if type(fmt) ~= "string" or count == 0 then return _format(fmt, ...) end

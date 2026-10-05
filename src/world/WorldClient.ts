@@ -1,4 +1,5 @@
 import { OPCODES } from "../generated/opcodes.js";
+import { MirrorImages, buildGetMirrorImageData } from "./MirrorImages.js"; // 05.10-A7a-H 6.11б
 import { playerInventory, slotAt, stackCount } from "../browser/Inventory.js";
 import { carriedOutsideBags } from "../browser/CarriedItems.js"; // L1 (2.05)
 import { buildBuyItemInSlot } from "./VendorSlotProtocol.js"; // L1 (3.23)
@@ -512,6 +513,8 @@ import { normalizeOrientation } from "./TransportMath.js";
 import { isAttackableUnit } from "./TargetSearch.js";
 import { factionFlagsAfterAtWar, factionFlagsAfterStanding, parseSetFactionAtWar, reputationBaseOf } from "./ReputationReaction.js"; // L15 5.05
 import { AutoRangedCombat, type AutoRangedLimits } from "./AutoRangedCombat.js"; // L15 5.05
+import { castFailureWords } from "./CastFailureWords.js"; // 05.10-3.01
+import { RefusalQuietRules, autoRepeatRefusalAction, autoRepeatWaitsForCast, refusalLimitCategoryText, type RefusalLimitCategory } from "./AutoRepeatRefusal.js"; // 05.10-5.05
 import {
   mirrorTimerRemaining, parsePauseMirrorTimer, parseStartMirrorTimer, parseStopMirrorTimer,
   type MirrorTimer,
@@ -897,6 +900,13 @@ export class WorldClient {
   autoRangedCombat: () => boolean = () => false; // L15 5.05
   /** L15 5.05: the range of the controller's spell for the player against a target (0x00802c30); the browser's. */
   autoRangedLimits: (spellId: number, player: WorldObjectState, target: WorldObjectState) => AutoRangedLimits | undefined = () => undefined; // L15 5.05
+  /**
+   * 05.10-3.02: an ItemLimitCategory row by id (name, quantity) for SPELL_FAILED_TOO_MANY_OF_ITEM's error-frame
+   * sentence (Wow.exe 0x00808200 case 0x81); the browser's (ItemLimitCategoryClient.ts). Undefined — the plain words.
+   */
+  castFailureLimitCategory: (id: number) => RefusalLimitCategory | undefined = () => undefined; // 05.10-3.02
+  /** 05.10-5.05/3.02: 0x00808200's error-frame quiet rules (`local_14`, AutoRepeatRefusal.ts). */
+  readonly #refusalQuiet = new RefusalQuietRules(); // 05.10-5.05
   /** L15 5.05: the book's SPELL_ATTR4 0x01000000 spell (0x00be5d84 — Auto Shot), from `setAutoRangedCombatSpellIds`. */
   #autoRangedSpellId: number | undefined; // L15 5.05
   /** L15 5.05: the autoRangedCombat controller (AutoRangedCombat.ts) over this client's swing and repeat. */
@@ -911,7 +921,13 @@ export class WorldClient {
     swing: () => this.startAttack(true), // L15 5.05: 0x006e2610
     stopSwing: () => this.#cancelMeleeAttack(false, false), // L15 5.05: 0x006d5f70
     stopAttack: () => { this.autoRanged.stop(); this.#cancelMeleeAttack(false, false); }, // L15 5.05: 0x006e1660; L18 5.05: no sheath — its one packet is 0x007559e0's CMSG_ATTACKSTOP
-    shoot: (spellId, target) => this.#startAutoRepeat(spellId, 0, false, target.guid, false), // L15 5.05: 0x0080da40; L18-review: no facing — 0x0080cce0 never turns the character
+    shoot: (spellId, target) => { // L15 5.05: 0x0080da40; L18-review: no facing — 0x0080cce0 never turns the character
+      // 05.10-5.05: held while the player's cast bar runs (AutoRepeatRefusal.ts) — the realm would refuse it with
+      // SPELL_IN_PROGRESS; false, as 0x0080da40's, when nothing went out.
+      if (autoRepeatWaitsForCast(this.state.selfGuid === undefined ? undefined : this.casts.get(this.state.selfGuid), performance.now())) return false; // 05.10-5.05
+      this.#startAutoRepeat(spellId, 0, false, target.guid, false);
+      return this.autoRepeatSpellId === spellId; // 05.10-5.05
+    },
     cancelRepeat: () => this.#stopAutoRepeat(true, false), // L15 5.05: 0x00807560(1); L18 5.05: 0x26d alone — 0x00715ac0(0) is a local flag, no sheath
   }); // L15 5.05
   /** Selections cleared so far; Tab drops its list on each (0x524bf0 zeroes 0x00bd08cc). */
@@ -958,6 +974,12 @@ export class WorldClient {
   onCombatStatus: ((message: string, attacking: boolean, error: boolean) => void) | undefined;
   /** Every melee swing in view, the player's own and everyone else's. */
   onSwing: ((swing: AttackerState) => void) | undefined;
+  /**
+   * 05.10-A7a-D2: SMSG_ATTACK_START (victim) / SMSG_ATTACK_STOP (undefined) for any attacker in view —
+   * Wow.exe keeps every unit's melee target (`+0xa20`, 0x756800 cases 0x143/0x144) and flinches a
+   * victim that is swinging itself with CombatWound rather than StandWound (0x736640).
+   */
+  onMeleeAttack: ((attacker: bigint, victim: bigint | undefined) => void) | undefined;
   /**
    * `SMSG_EMOTE`: a unit is doing something with its body rather than saying anything.
    *
@@ -1054,8 +1076,8 @@ export class WorldClient {
   readonly #autoRepeatSpellIds = new Set<number>();
   /** The locally requested server repeat container, separate from melee `attacking`. */
   autoRepeatSpellId: number | undefined;
-  /** Last background repeat error already reported; reset by success, stop or a changed result. */
-  #autoRepeatFailure: { spellId: number; result: number } | undefined;
+  // 05.10-5.05: #autoRepeatFailure (keyed on the repeating spell, reset by GO/start/stop) became #refusalQuiet —
+  // Wow.exe 0x00808200 keys it on the wanted spell 0x00d397cc and resets it only through 0x007fe190.
   readonly cooldowns = new Map<number, number>();
   /** The start/duration pair that produced each end time, for stable cooldown rendering. */
   readonly cooldownSnapshots = new Map<number, CooldownSnapshot>();
@@ -1231,6 +1253,10 @@ export class WorldClient {
   readonly chatLog: ChatMessage[] = [];
   onChatMessage: ((message: ChatMessage) => void) | undefined;
   readonly names = new NameCache();
+  /** 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies, asked for by `ui/Frames.ts unitModelFor` (MirrorImages.ts). */
+  readonly mirrorImages = new MirrorImages((guid) => {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_GET_MIRRORIMAGE_DATA, buildGetMirrorImageData(guid));
+  }, () => performance.now());
   /**
    * М-A4-4: the browser's lookups for the ids this client prints — spells, zones, maps, items. Filled
    * when the world is entered; until then, and on any miss, a text says a neutral word and never the
@@ -2260,6 +2286,7 @@ export class WorldClient {
     // has drawn anything fights bare-handed however much steel is equipped.
     this.#connection.send(OPCODES.CMSG_SET_SHEATHED, buildSetSheathed(SHEATH_MELEE));
     this.#connection.send(OPCODES.CMSG_ATTACK_SWING, buildCombatGuid(this.targetGuid));
+    this.autoRanged.noteFailureReset(); // 05.10-3.01: 0x006e2610 → 0x007fe190 (0x006e2862), after its swing
     this.attackVictim = this.targetGuid;
     // A request, not a swing (5.21): `attacking` waits for SMSG_ATTACK_START, as Wow.exe's
     // PLAYER_ENTER_COMBAT does; the attack button lights from the request at once.
@@ -2396,7 +2423,6 @@ export class WorldClient {
     );
     this.#trackPendingCast(spellId, this.#castCount, cooldownDuration, cooldownStartedOnEvent, targetGuid);
     this.autoRepeatSpellId = spellId;
-    this.#autoRepeatFailure = undefined;
     this.onSpellStatus?.(`Автострельба ${spellId} запущена`, false);
   }
 
@@ -2412,7 +2438,6 @@ export class WorldClient {
       }
     }
     this.autoRepeatSpellId = undefined;
-    this.#autoRepeatFailure = undefined;
   }
 
   /** Whether a classified mount spell currently has its own aura on the player. */
@@ -3036,6 +3061,7 @@ export class WorldClient {
     this.#questGiverQueue.forget(guid);
     // 2.10: the client keeps a refund record on the item object (+0x3d4); it goes with the item.
     this.itemRefunds.forget(guid);
+    this.mirrorImages.forget(guid); // 05.10-A7a-H review: a unit's look goes with it (6.11б)
   }
 
   #retireWorldObjects(guids: readonly bigint[]): void {
@@ -4171,7 +4197,10 @@ export class WorldClient {
     const plan = missileCastPlan(missileShotSource(), this.#missiles, spellId, casterGuid, this.controlledGuid ?? this.state.selfGuid);
     if (plan !== undefined && "refused" in plan && plan.refused !== 0) {
       const text = spellFailureText(plan.refused, this.#castFailureNames());
-      if (text) this.onSpellStatus?.(text, true);
+      const quiet = this.#refusalQuiet.quiet(spellId, plan.refused, performance.now(), // 05.10-5.05: 0x00808200's local_14
+        this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
+      if (text && !quiet) this.onSpellStatus?.(text, true); // 05.10-5.05: + !quiet
+      this.events.emit("SPELL_CAST_REFUSED_LOCAL", { spellId, result: plan.refused, ...castFailureWords({}, () => text) }); // 05.10-3.01
     }
     return plan;
   }
@@ -7095,8 +7124,8 @@ export class WorldClient {
       const ownCast = selfGuid === undefined || cast.casterUnit === selfGuid || cast.casterGuid === selfGuid;
       if (ownCast) {
         this.#confirmPendingCast(cast.spellId, cast.castId);
-        if (this.autoRepeatSpellId === cast.spellId) this.#autoRepeatFailure = undefined;
       }
+      if ((cast.castFlags & CAST_FLAG_PENDING) === 0) this.#refusalQuiet.spellGo(); // 05.10-5.05: 0x0080e1b0, whoever cast it
       // 3.02: Wow.exe 0x0080e1b0 hands a GO without CAST_FLAG_PENDING (not triggered: Spell.cpp:4484-4485) to 0x007fecc0
       // as 187, its own «success» — UNIT_SPELLCAST_SUCCEEDED, then STOP for the unit's current cast.
       // 3.01-go-order (03.10): first, as 0x0080e1b0 does — before the missile, SPELL_CAST_SUCCESS (0x007519e0, the
@@ -7189,18 +7218,23 @@ export class WorldClient {
         this.events.emit("SPELL_CAST_RESULT", {
           casterGuid: this.state.selfGuid, spellId: failure.spellId, castCount: failure.castCount, result: failure.result,
           refusal: true, // 3.01-castlog: the one SPELL_CAST_FAILED source (0x00809af0 → 0x00808200)
+          ...castFailureWords(failure, () => spellFailureText(failure, this.#castFailureNames())), // 05.10-3.01
         });
       }
-      const activeRepeat = this.autoRepeatSpellId === failure.spellId;
-      if (activeRepeat) {
-        const duplicate = this.#autoRepeatFailure?.spellId === failure.spellId
-          && this.#autoRepeatFailure.result === failure.result;
-        this.#autoRepeatFailure = { spellId: failure.spellId, result: failure.result };
-        // Auto Shot may stay active while the core emits the same background failure every ranged
-        // timer. Preserve the first edge (including the request's own failure), suppress only its
-        // identical repeats, and leave unmatched manual spell failures untouched.
-        if (!pending && duplicate) return true;
-      }
+      // 05.10-5.05: Wow.exe 0x00808200 (the realm's refusal, last argument 1) — the repeat's stop rules, then the
+      // error frame's quiet rules against the wanted spell, both in AutoRepeatRefusal.ts (was: duplicates of the
+      // repeating spell kept quiet until a GO, a start or a stop; the repeat was never stopped).
+      const repeat = autoRepeatRefusalAction({ // 05.10-5.05
+        spellId: failure.spellId, result: failure.result, repeating: this.autoRepeatSpellId, // 05.10-5.05
+        wanted: this.autoRanged.wantedSpellId, fromServer: true, answersRequest: pending !== undefined, // 05.10-5.05
+      }); // 05.10-5.05
+      if (repeat !== "keep") this.#stopAutoRepeat(repeat === "stop", false); // 05.10-5.05: 0x00807560(1) — 0x26d alone
+      const quiet = this.#refusalQuiet.quiet(failure.spellId, failure.result, performance.now(), // 05.10-5.05
+        this.autoRanged.wantedSpellId, this.autoRanged.failureResets); // 05.10-5.05
+      // 05.10-3.02: case 0x81 — a known limit category's ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED_IS, past local_14.
+      const limited = refusalLimitCategoryText(failure.result, failure.extra, this.castFailureLimitCategory); // 05.10-3.02
+      if (limited !== undefined) { this.onSpellStatus?.(limited, true); return true; } // 05.10-3.02
+      if (quiet) return true; // 05.10-5.05
       // The words are the realm's own, out of its GlobalStrings, filled from the packet's tail;
       // `DONT_REPORT` means say nothing.
       const text = spellFailureText(failure, this.#castFailureNames());
@@ -7693,6 +7727,11 @@ export class WorldClient {
 
   setShowingCloak(show: boolean): void {
     if (!this.#closed) this.#connection.send(OPCODES.CMSG_SHOWING_CLOAK, buildShowingToggle(show));
+  }
+
+  /** 05.10-A7a-G 6.20: CMSG_MOUNTSPECIAL_ANIM, empty (MovementHandler.cpp:603); when — browser/input/MountSpecial.ts. */
+  sendMountSpecial(): void {
+    if (!this.#closed) this.#connection.send(OPCODES.CMSG_MOUNTSPECIAL_ANIM, new Uint8Array());
   }
 
   /**
@@ -8323,8 +8362,10 @@ export class WorldClient {
       return true;
     }
     if (packet.opcode === OPCODES.SMSG_MIRRORIMAGE_DATA) {
-      parseMirrorImageData(packet.payload);
-      return this.#ignore(packet);
+      const mirror = parseMirrorImageData(packet.payload); // 05.10-A7a-H 6.11б
+      // 05.10-A7a-H review: a reply for a unit already gone (despawned, teleported away) is not kept.
+      if (this.state.objects.has(mirror.guid)) this.mirrorImages.receive(mirror);
+      return true;
     }
     if (packet.opcode === OPCODES.SMSG_PLAY_SPELL_VISUAL || packet.opcode === OPCODES.SMSG_PLAY_SPELL_IMPACT) {
       const visual = parseSpellVisualKit(packet.payload);
@@ -10033,6 +10074,7 @@ export class WorldClient {
   #handleCombat(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_ATTACK_START) {
       const attack = parseAttackStart(packet.payload);
+      this.onMeleeAttack?.(attack.attacker, attack.victim); // 05.10-A7a-D2
       if (attack.attacker === this.state.selfGuid) {
         // The victim, not the selection: 0x756800 case 0x143 writes only the unit's attack target (5.05).
         this.attackVictim = attack.victim;
@@ -10047,6 +10089,7 @@ export class WorldClient {
     }
     if (packet.opcode === OPCODES.SMSG_ATTACK_STOP) {
       const attack = parseAttackStop(packet.payload);
+      this.onMeleeAttack?.(attack.attacker, undefined); // 05.10-A7a-D2
       if (attack.attacker === this.state.selfGuid) {
         this.attacking = false;
         this.attackVictim = undefined;

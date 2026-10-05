@@ -37,6 +37,9 @@ import { clientDirectory } from "./paths.mjs";
 export const CHARACTER_TEXTURE_PREFIXES = [
   "Item\\TextureComponents\\",
   "Textures\\BakedNpcTextures\\",
+  // 05.10-A7a-B 6.01: helmet models, so an NPC's helmet without a file for its race and sex hides
+  // nothing (`CharacterAppearanceIndex#helmetDrawn`); 13,493 paths in the F:/Circle chain.
+  "Item\\ObjectComponents\\Head\\",
 ];
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {

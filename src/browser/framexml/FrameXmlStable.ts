@@ -10,8 +10,9 @@
  * `IsAtStableMaster` and `SetPetStablePaperdoll`; the slot template's OnClick/OnDragStart call
  * `ClickStablePet`/`PickupStablePet` (PetStable.xml:42-54); the frame's OnHide calls `ClosePetStables`
  * (PetStable.xml:399); the purchase popup's OnAccept calls `BuyStableSlot` (StaticPopup.lua:2725-2731).
- * `GetStablePetFoodTypes` and `GetPetFoodTypes` stay unanswered: the diet is `CreatureFamily.PetFoodMask` over `ItemPetFood.dbc`,
- * and this client carries neither table's names — the tooltip's `%s` then reads «nil», never a guess.
+ * 05.10-petfood: `GetStablePetFoodTypes(index)` (PetStable.lua:101, :151-152) is Wow.exe 0x005a16a0 — the listed pet
+ * of that slot (0 the active one), its creature cache family, and the diet names of that family
+ * (FrameXmlPetFood.ts over `/dbc/pet-foods`); no hunter check, unlike `GetPetFoodTypes` (the live seam's).
  *
  * Settled against the selected TrinityCore (NPCHandler.cpp):
  *
@@ -42,6 +43,7 @@
  */
 import { readByte } from "../../world/Fields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import { frameXmlFamilyFoodNames, type FrameXmlPetFoodNames } from "./FrameXmlPetFood.js"; // 05.10-petfood
 import {
   MAX_PET_STABLES, STABLED_PET_ACTIVE, STABLED_PET_STABLED, STABLE_ERR_EXOTIC, STABLE_ERR_MONEY,
   STABLE_ERR_STABLE, STABLE_SUCCESS_BUY_SLOT, STABLE_SUCCESS_STABLE, STABLE_SUCCESS_UNSTABLE,
@@ -113,6 +115,8 @@ export interface FrameXmlStableContext {
   petEntry?(): number | undefined;
   /** `StableSlotPrices.dbc` row `slotsOwned + 1` in copper; undefined until loaded. */
   stableSlotPrice?(slotsOwned: number): number | undefined;
+  /** 05.10-petfood: the diet tables (PetFoodClient.ts); undefined until `/dbc/pet-foods` answers. */
+  petFoods?(): FrameXmlPetFoodNames | undefined; // 05.10-petfood
 }
 
 interface FrameXmlStablePump {
@@ -346,6 +350,13 @@ export class FrameXmlStableModel {
     return [facts.icon, pet.name, pet.level, facts.family, facts.talent];
   }
 
+  /** 05.10-petfood: `GetStablePetFoodTypes(slot)`, Wow.exe 0x005a16a0 — the slot pet's family diet (FrameXmlPetFood.ts). */
+  petFoodTypes(slot: number): readonly string[] { // 05.10-petfood
+    const pet = frameXmlStableSlotPet(this.#current(), slot);
+    if (!pet || pet.creatureId <= 0) return NOTHING;
+    return frameXmlFamilyFoodNames(this.#context.creatureFamily(pet.creatureId), this.#context.petFoods?.());
+  } // 05.10-petfood
+
   /** `GetSelectedStablePet()`. */
   selected(): number {
     return this.#current() ? this.#selected : -1;
@@ -495,6 +506,7 @@ export const FRAMEXML_STABLE_BINDINGS: Readonly<Record<string, FrameXmlStableBin
     (host.stable?.answering ? host.stable.nextSlotCost() : host.services?.nextStableSlotCost()) ?? 0],
   GetNumStablePets: (host) => [host.stable?.numPets() ?? 0],
   GetStablePetInfo: withStable((stable, args) => stable.petInfo(slotArg(args[0])) ?? NOTHING),
+  GetStablePetFoodTypes: withStable((stable, args) => stable.petFoodTypes(slotArg(args[0]))), // 05.10-petfood
   GetSelectedStablePet: (host) => [host.stable?.selected() ?? -1],
   ClickStablePet: withStable((stable, args) => stable.click(slotArg(args[0])) ? [true] : NOTHING),
   PickupStablePet: withStable((stable, args) => { stable.pickup(slotArg(args[0])); return NOTHING; }),

@@ -50,6 +50,7 @@ import {
   gameTooltipItemStats, gameTooltipStatDelta, gameTooltipStatDeltaRows, type GameTooltipStatSource,
 } from "./GlueTooltipStatDelta.js"; // 3.12 (04.10, L4)
 import { gameTooltipStatTableKnown } from "./GlueTooltipStatDelta.js"; // L4-review
+import { tooltipSpellByIdMethods } from "./GlueWidgetMethodFills.js"; // 05.10-3.21
 
 /** One requirement of a talent the player does not meet yet. */
 export type GameTooltipTalentRequirement =
@@ -515,5 +516,6 @@ export function createGameTooltipExtras(host: GameTooltipExtrasHost): GameToolti
       return [1];
     },
   };
-  return { methods, hyperlink };
+  // 05.10-3.21: GameTooltip:SetSpellByID (GlueWidgetMethodFills.ts).
+  return { methods: { ...methods, ...tooltipSpellByIdMethods(host) }, hyperlink };
 }

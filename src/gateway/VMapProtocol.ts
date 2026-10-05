@@ -40,6 +40,10 @@ export interface EnvironmentObject {
   /** Source M2 vertex radius around its placement origin; only safe static scenery carries it. */
   admissionRadius?: number;
   bounds?: EnvironmentBounds;
+  /** 05.10-A7b-1 (7.13): a WMO placement's MOHD.wmoID (visual-tile-v5); absent on older tiles and vmap spawns. */
+  wmoId?: number;
+  /** 05.10-A7b-1 (7.13): a WMO placement's MODF.nameSet (visual-tile-v5), WMOAreaTable NameSetID. */
+  nameSet?: number;
 }
 
 export function parseVMapTile(payload: Uint8Array): EnvironmentObject[] {

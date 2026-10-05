@@ -62,6 +62,14 @@ export class MinimapTileClient {
     return this.#pictures.bitmap(`textures\\Minimap\\${hash}.blp`);
   }
 
+  /**
+   * 05.10-A7b-4 (7.14): a bake by its md5 alone — a WMO group's cell (WmoMinimapDraw.ts). The same cache as
+   * the ADT cells, so a picture both use is held once.
+   */
+  picture(hash: string): ImageBitmap | undefined {
+    return this.#pictures.bitmap(`textures\\Minimap\\${hash}.blp`);
+  }
+
   /** Whether the map has any minimap at all, once its index is known. */
   hasTiles(map: number): boolean {
     return (this.index(map)?.size ?? 0) > 0;

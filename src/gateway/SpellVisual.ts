@@ -25,6 +25,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { openDbc, type Dbc } from "./Dbc.js";
+import { parseSpellMissileMotions, type SpellMissileMotionRow } from "./SpellMissileMotion.js"; // 05.10-A7a-E
+import {
+  kitChains, parseCameraShakes, parseSpellChainEffects,
+  type SpellChainEffect, type SpellVisualChain, type SpellVisualShake,
+} from "./SpellKitExtras.js"; // 05.10-A7a-E
+export type { SpellChainEffect, SpellVisualChain, SpellVisualShake } from "./SpellKitExtras.js"; // 05.10-A7a-E
 
 /**
  * M2 attachment ids, as the twenty playable models and every creature number them.
@@ -108,6 +114,10 @@ export interface SpellVisualKit {
    * still dropped below, but the sound of a kit that *also* shows something now travels with it.
    */
   sound: number;
+  /** 05.10-A7a-E (6.13): ShakeID's CameraShakes rows (SpellEffectCameraShakes), when the kit names any. */
+  shake?: SpellVisualShake[];
+  /** 05.10-A7a-E (6.13): the kit's beam slots (CharProc 0/12 → SpellChainEffects), when it has any. */
+  chains?: SpellVisualChain[];
 }
 
 /**
@@ -132,7 +142,7 @@ export interface SpellVisualMissile {
    * and one of 0..13 on the rest — a hand, an elbow, a shoulder — which is exactly the range of
    * places a bolt is thrown from.
    *
-   * There is a matching `MissileDestinationAttachment` in the table and it is not carried, because
+   * There is a matching `MissileDestinationAttachment` in the table and it is not read (05.10-A7a-E: carried raw as `dest`), because
    * nothing here can read it: it is 1 on 74% of those visuals, 2 on 19% and 0 on 5%, and as M2
    * attachment ids those are the right hand, the left hand and the shield. A fireball does not
    * land on the target's off hand. Whatever the three values select, it is not an attachment, and
@@ -159,6 +169,21 @@ export interface SpellVisualMissile {
   speed: number;
   /** SoundEntries row played when this missile is launched, or zero/absent. */
   sound?: number;
+  // 05.10-A7a-E (6.12): the rest of the SpellVisual missile columns, each only when it says something.
+  /** SpellVisual.MissileMotion → SpellMissileMotion row (script verbatim, MissileCount ≥ 1). */
+  motion?: SpellMissileMotionRow;
+  /**
+   * SpellVisual.MissileDestinationAttachment, raw (1 ×6,738, 0 ×2,055, 2 ×658 …). Carried, not read: what
+   * it selects is not settled (see the note on `attachment`); the page aims at the target's chest.
+   */
+  dest?: number;
+  /** SpellVisual.MissilePathType when not 0 (1 ×25, 2 ×81); meaning not settled, carried only. */
+  pathType?: number;
+  /** MissileFollowGround{Height, DropSpeed, Approach, Flags} when Height ≠ 0 (≈226 visuals); not applied yet. */
+  followGround?: { height: number; dropSpeed: number; approach: number; flags: number };
+  /** SpellVisual.MissileCastOffset / MissileImpactOffset when not all zero (71 rows); frame not settled, carried only. */
+  castOffset?: [number, number, number];
+  impactOffset?: [number, number, number];
 }
 
 /**
@@ -268,10 +293,49 @@ function effectExtras(model: EffectModel): { areaSize?: number } {
   return model.areaSize > 0 ? { areaSize: model.areaSize } : {};
 }
 
+/** 05.10-A7a-E (6.12): the optional missile columns of one SpellVisual row. */
+function missileExtras(
+  visuals: Dbc<"SpellVisual">,
+  row: number,
+  motions: ReadonlyMap<number, SpellMissileMotionRow>,
+): Partial<SpellVisualMissile> {
+  const extras: Partial<SpellVisualMissile> = {};
+  const motion = motions.get(visuals.int(row, "MissileMotion"));
+  if (motion) extras.motion = motion;
+  extras.dest = visuals.int(row, "MissileDestinationAttachment");
+  const pathType = visuals.int(row, "MissilePathType");
+  if (pathType !== 0) extras.pathType = pathType;
+  const height = visuals.int(row, "MissileFollowGroundHeight");
+  if (height !== 0) {
+    extras.followGround = {
+      height,
+      dropSpeed: visuals.int(row, "MissileFollowGroundDropSpeed"),
+      approach: visuals.int(row, "MissileFollowGroundApproach"),
+      flags: visuals.int(row, "MissileFollowGroundFlags"),
+    };
+  }
+  const vector = (field: "MissileCastOffset" | "MissileImpactOffset"): [number, number, number] | undefined => {
+    const value: [number, number, number] = [visuals.float(row, field, 0), visuals.float(row, field, 1), visuals.float(row, field, 2)];
+    return value.every(Number.isFinite) && value.some((component) => component !== 0) ? value : undefined;
+  };
+  const castOffset = vector("MissileCastOffset");
+  if (castOffset) extras.castOffset = castOffset;
+  const impactOffset = vector("MissileImpactOffset");
+  if (impactOffset) extras.impactOffset = impactOffset;
+  return extras;
+}
+
+/** 05.10-A7a-E (6.13): the shake and chain tables a kit resolves through; empty when the files are absent. */
+interface KitExtraTables {
+  shakes: ReadonlyMap<number, SpellVisualShake[]>;
+  chains: ReadonlyMap<number, SpellChainEffect>;
+}
+
 function readKits(
   kits: Dbc<"SpellVisualKit">,
   paths: ReadonlyMap<number, EffectModel>,
   modelAttaches: ReadonlyMap<number, readonly SpellVisualEffect[]> = new Map(),
+  extras: KitExtraTables = { shakes: new Map(), chains: new Map() }, // 05.10-A7a-E
 ): Map<number, SpellVisualKit> {
   const result = new Map<number, SpellVisualKit>();
   for (const row of kits.rows()) {
@@ -284,10 +348,21 @@ function readKits(
     const startAnimation = kits.int(row, "StartAnimID");
     const animation = kits.int(row, "AnimID");
     const sound = Math.max(0, kits.int(row, "SoundID"));
-    // A kit that shows nothing, asks for no pose and makes no noise is not a kit. Screen shake is
-    // all that is left of those rows and this client does not shake the screen.
-    if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0) continue;
-    result.set(kits.id(row), { startAnimation, animation, effects, sound });
+    // 05.10-A7a-E (6.13): a kit's camera shake and its beams travel with it, and a kit with only those
+    // is kept (it used to be dropped: "this client does not shake the screen").
+    const shake = extras.shakes.get(kits.int(row, "ShakeID"));
+    const chains = extras.chains.size === 0 ? [] : kitChains({
+      procs: [0, 1, 2, 3].map((slot) => kits.int(row, "CharProc", slot)),
+      param0: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamZero", slot)),
+      param1: [0, 1, 2, 3].map((slot) => kits.float(row, "CharParamOne", slot)),
+    }, extras.chains);
+    // A kit that shows nothing, asks for no pose, makes no noise, shakes nothing and draws no beam is not a kit.
+    if (effects.length === 0 && startAnimation < 0 && animation < 0 && sound === 0 && !shake && chains.length === 0) continue;
+    result.set(kits.id(row), {
+      startAnimation, animation, effects, sound,
+      ...(shake ? { shake } : {}),
+      ...(chains.length > 0 ? { chains } : {}),
+    });
   }
   return result;
 }
@@ -340,17 +415,33 @@ function buffer(payload: Uint8Array): Buffer {
  * otherwise the browser would hold two vocabularies for one thing and only one of them would be
  * tested.
  */
+/** 05.10-A7a-E (6.13): the optional kit-extra files, as the loaders read them (absent → no shakes/beams). */
+export interface KitExtraPayloads {
+  spellEffectCameraShakes?: Uint8Array | undefined;
+  cameraShakes?: Uint8Array | undefined;
+  spellChainEffects?: Uint8Array | undefined;
+}
+
+function kitExtraTables(payloads: KitExtraPayloads | undefined): KitExtraTables {
+  return {
+    shakes: payloads?.spellEffectCameraShakes && payloads.cameraShakes
+      ? parseCameraShakes(payloads.spellEffectCameraShakes, payloads.cameraShakes) : new Map(),
+    chains: payloads?.spellChainEffects ? parseSpellChainEffects(payloads.spellChainEffects) : new Map(),
+  };
+}
+
 function resolveKitTables(
   kitPayload: Uint8Array,
   namePayload: Uint8Array,
   modelAttachPayload: Uint8Array | undefined,
+  extraPayloads?: KitExtraPayloads, // 05.10-A7a-E
 ): { paths: ReadonlyMap<number, EffectModel>; kitsById: Map<number, SpellVisualKit> } {
   const kits = openDbc(buffer(kitPayload), "SpellVisualKit");
   const names = openDbc(buffer(namePayload), "SpellVisualEffectName");
   const modelAttaches = modelAttachPayload
     ? openDbc(buffer(modelAttachPayload), "SpellVisualKitModelAttach") : undefined;
   const paths = effectPaths(names);
-  return { paths, kitsById: readKits(kits, paths, readModelAttaches(modelAttaches, paths)) };
+  return { paths, kitsById: readKits(kits, paths, readModelAttaches(modelAttaches, paths), kitExtraTables(extraPayloads)) };
 }
 
 /** Every resolvable kit, by `SpellVisualKit` id — the answer `/dbc/spell-visual-kits` indexes. */
@@ -358,8 +449,9 @@ export function parseSpellVisualKits(
   kitPayload: Uint8Array,
   namePayload: Uint8Array,
   modelAttachPayload?: Uint8Array,
+  extraPayloads?: KitExtraPayloads, // 05.10-A7a-E
 ): Map<number, SpellVisualKit> {
-  return resolveKitTables(kitPayload, namePayload, modelAttachPayload).kitsById;
+  return resolveKitTables(kitPayload, namePayload, modelAttachPayload, extraPayloads).kitsById;
 }
 
 export function parseSpellVisuals(
@@ -369,17 +461,20 @@ export function parseSpellVisuals(
   namePayload: Uint8Array,
   durationPayload?: Uint8Array,
   modelAttachPayload?: Uint8Array,
+  motionPayload?: Uint8Array, // 05.10-A7a-E
+  extraPayloads?: KitExtraPayloads, // 05.10-A7a-E
 ): Map<number, SpellVisualMetadata> {
   const spells = openDbc(buffer(spellPayload), "Spell");
   const visuals = openDbc(buffer(visualPayload), "SpellVisual");
   const durations = durationPayload ? openDbc(buffer(durationPayload), "SpellDuration") : undefined;
+  const motions = motionPayload ? parseSpellMissileMotions(motionPayload) : new Map<number, SpellMissileMotionRow>(); // 05.10-A7a-E
 
   const durationById = new Map<number, number>();
   if (durations) {
     for (const row of durations.rows()) durationById.set(durations.id(row), durations.int(row, "Duration"));
   }
 
-  const { paths, kitsById } = resolveKitTables(kitPayload, namePayload, modelAttachPayload);
+  const { paths, kitsById } = resolveKitTables(kitPayload, namePayload, modelAttachPayload, extraPayloads); // 05.10-A7a-E
 
   // One record per visual, built once and then shared by every spell that names it — 27,133
   // spells reach 9,406 visuals, so building per spell would build each one three times over.
@@ -399,6 +494,7 @@ export function parseSpellVisuals(
         // Filled in per spell below: the speed belongs to the spell, not to the visual, and one
         // visual is shared by many spells.
         speed: 0,
+        ...missileExtras(visuals, row, motions), // 05.10-A7a-E
       };
     }
     const missileSound = Math.max(0, visuals.int(row, "MissileSound"));
@@ -469,15 +565,17 @@ async function readModelAttachTable(
 }
 
 export async function loadSpellVisuals(directory: string, visualDbcDirectory = directory): Promise<Map<number, SpellVisualMetadata>> {
-  const [spells, visuals, kits, names, durations, modelAttaches] = await Promise.all([
+  const [spells, visuals, kits, names, durations, modelAttaches, motions] = await Promise.all([
     readFile(join(directory, "Spell.dbc")),
     readFile(join(directory, "SpellVisual.dbc")),
     readFile(join(directory, "SpellVisualKit.dbc")),
     readFile(join(directory, "SpellVisualEffectName.dbc")),
     readFile(join(directory, "SpellDuration.dbc")).catch(() => undefined),
     readModelAttachTable(directory, visualDbcDirectory),
+    readFile(join(directory, "SpellMissileMotion.dbc")).catch(() => undefined), // 05.10-A7a-E
   ]);
-  return parseSpellVisuals(spells, visuals, kits, names, durations, modelAttaches);
+  return parseSpellVisuals(spells, visuals, kits, names, durations, modelAttaches, motions,
+    await readKitExtraPayloads(directory)); // 05.10-A7a-E
 }
 
 /**
@@ -494,5 +592,15 @@ export async function loadSpellVisualKits(directory: string, visualDbcDirectory 
     readFile(join(directory, "SpellVisualEffectName.dbc")),
     readModelAttachTable(directory, visualDbcDirectory),
   ]);
-  return parseSpellVisualKits(kits, names, modelAttaches);
+  return parseSpellVisualKits(kits, names, modelAttaches, await readKitExtraPayloads(directory)); // 05.10-A7a-E
+}
+
+/** 05.10-A7a-E (6.13): the three kit-extra tables; a missing file only means no shakes or no beams. */
+async function readKitExtraPayloads(directory: string): Promise<KitExtraPayloads> {
+  const [spellEffectCameraShakes, cameraShakes, spellChainEffects] = await Promise.all([
+    readFile(join(directory, "SpellEffectCameraShakes.dbc")).catch(() => undefined),
+    readFile(join(directory, "CameraShakes.dbc")).catch(() => undefined),
+    readFile(join(directory, "SpellChainEffects.dbc")).catch(() => undefined),
+  ]);
+  return { spellEffectCameraShakes, cameraShakes, spellChainEffects };
 }

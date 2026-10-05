@@ -42,6 +42,126 @@ export function liquidClassOf(flags: number, entry = 0, classes?: ReadonlyMap<nu
   return "water";
 }
 
+// ---- 05.10-A7b-8 (7.09 slice A): surfaces -------------------------------------------------------
+// Which animation strip a `LiquidType` row is drawn with.
+//
+// The four class strips (`/liquid/water` …) are the family of the lowest-numbered row of each sound
+// bank: `lake_a`, `ocean_h`, `lava`, `slime`. Three rows of this client name another family and were
+// drawn with their class's strip: 9 "Fast Water" (`fast_a`, 16 frames), 15 "Green Lava" (`lavagreen`)
+// and 181 "Orange Slime" (`LavaOrange`). A "surface" is the class when the row's family is its
+// class's own strip, and `class|family` otherwise; the shading (profile, colours, overlay) always
+// follows the class, only the strip follows the family. Without the v2 table (a gateway older than
+// R1) every surface is a class, which is exactly the look before this slice.
+//
+// Kept in this file, not a sibling module: tests import `src/browser/Water.ts` directly, where a
+// runtime import of `./X.js` does not resolve.
+
+export type LiquidSurface = LiquidClass | `${LiquidClass}|${string}`;
+
+/** The class order the map flag and `SoundBank` share: 0 water, 1 ocean, 2 magma, 3 slime. */
+const CLASSES: readonly LiquidClass[] = LIQUID_CLASSES;
+
+/** A strip family is a lower-cased archive file name; the gateway route accepts nothing else. */
+export const LIQUID_FAMILY_SLUG = /^[a-z0-9_]{1,32}$/;
+
+/** The part of `/dbc/liquid-types?v=2` a surface is decided from. */
+export interface LiquidSurfaceRow {
+  soundBank: number;
+  family: string;
+  textures: readonly string[];
+}
+
+/** The class a surface is shaded as. No allocation: called per material per frame. */
+export function liquidSurfaceClass(surface: LiquidSurface): LiquidClass {
+  for (const liquidClass of CLASSES) {
+    if (surface === liquidClass) return liquidClass;
+    if (surface.startsWith(liquidClass) && surface.charCodeAt(liquidClass.length) === 124) return liquidClass;
+  }
+  return "water";
+}
+
+/** The strip family a surface names, or `undefined` for a class surface (its class strip). */
+export function liquidSurfaceFamily(surface: LiquidSurface): string | undefined {
+  const bar = surface.indexOf("|");
+  return bar < 0 ? undefined : surface.slice(bar + 1);
+}
+
+/** Whether a row names an animated family (`….%d.blp`), the only kind a strip is built from. */
+function animated(row: LiquidSurfaceRow): boolean {
+  return (row.textures[0] ?? "").includes("%d") && LIQUID_FAMILY_SLUG.test(row.family);
+}
+
+/**
+ * Row id → surface, out of the v2 table. The class strip's family is decided exactly as the strip
+ * generator decides it (`liquidTexturePattern`: the lowest id of the bank with an animated
+ * texture), so a row whose family is that one keeps sharing the class strip — no second download
+ * and no second texture for the same frames.
+ */
+export function buildLiquidSurfaces(
+  classes: ReadonlyMap<number, LiquidClass>,
+  rows: Readonly<Record<string, LiquidSurfaceRow>>,
+): Map<number, LiquidSurface> {
+  const classFamily = new Map<LiquidClass, { id: number; family: string }>();
+  for (const [key, row] of Object.entries(rows)) {
+    const id = Number(key);
+    const bankClass = CLASSES[row.soundBank];
+    if (!bankClass || !animated(row)) continue;
+    const best = classFamily.get(bankClass);
+    if (!best || id < best.id) classFamily.set(bankClass, { id, family: row.family });
+  }
+  const surfaces = new Map<number, LiquidSurface>();
+  for (const [id, liquidClass] of classes) {
+    const row = rows[String(id)];
+    const own = classFamily.get(liquidClass)?.family;
+    surfaces.set(id, row && animated(row) && own !== undefined && row.family !== own
+      ? `${liquidClass}|${row.family}`
+      : liquidClass);
+  }
+  return surfaces;
+}
+
+/**
+ * What `/dbc/liquid-types` answered: the v2 body (`{ version: 2, classes, rows }`) or the v1 record
+ * of classes an older gateway sends whatever the query says.
+ */
+export function parseLiquidTypes(value: unknown): {
+  classes: Map<number, LiquidClass>;
+  surfaces: Map<number, LiquidSurface> | undefined;
+} {
+  const body = value as { version?: unknown; classes?: unknown; rows?: unknown } | null;
+  const v2 = body !== null && typeof body === "object" && body.version === 2
+    && typeof body.classes === "object" && body.classes !== null;
+  const record = (v2 ? body!.classes : value) as Record<string, unknown>;
+  const classes = new Map<number, LiquidClass>();
+  for (const [id, named] of Object.entries(record ?? {})) {
+    if ((CLASSES as readonly unknown[]).includes(named)) classes.set(Number(id), named as LiquidClass);
+  }
+  if (!v2 || typeof body!.rows !== "object" || body!.rows === null) return { classes, surfaces: undefined };
+  const rows: Record<string, LiquidSurfaceRow> = {};
+  for (const [id, row] of Object.entries(body!.rows as Record<string, unknown>)) {
+    const candidate = row as Partial<LiquidSurfaceRow> | null;
+    if (!candidate || typeof candidate.family !== "string" || typeof candidate.soundBank !== "number"
+      || !Array.isArray(candidate.textures)) continue;
+    rows[id] = { soundBank: candidate.soundBank, family: candidate.family, textures: candidate.textures.map(String) };
+  }
+  return { classes, surfaces: buildLiquidSurfaces(classes, rows) };
+}
+
+/**
+ * The surface a cell or a WMO liquid is drawn with: the row's own surface once the v2 table has
+ * arrived, else its class exactly as `liquidClassOf` decides it.
+ */
+export function liquidSurfaceOf(
+  classOf: LiquidClass,
+  entry: number,
+  surfaces: ReadonlyMap<number, LiquidSurface> | undefined,
+): LiquidSurface {
+  const named = entry > 0 ? surfaces?.get(entry) : undefined;
+  // A row's surface carries the class the table gave it; the flag fallback never disagrees with a
+  // surface of a row the table names, because both read the same `classes`.
+  return named !== undefined && liquidSurfaceClass(named) === classOf ? named : classOf;
+}
+
 /** One repeat of the surface texture per liquid cell, which is the grid the heights are on. */
 export const LIQUID_CELL_YARDS = 533.3333333333334 / 128;
 /** How fast the thirty frames are walked. A one-second loop, which is what the client looks like. */
@@ -72,14 +192,16 @@ export interface LiquidStrip {
 export class LiquidTextureClient {
   onStatus: ((message: string, error: boolean) => void) | undefined;
   readonly #baseUrl: string;
-  readonly #strips = new Map<LiquidClass, LiquidStrip | null>();
-  readonly #loading = new Set<LiquidClass>();
-  readonly #stripFailures = new Map<LiquidClass, { attempts: number; after: number }>();
+  readonly #strips = new Map<LiquidSurface, LiquidStrip | null>(); // 05.10-A7b-8: by surface
+  readonly #loading = new Set<LiquidSurface>();
+  readonly #stripFailures = new Map<LiquidSurface, { attempts: number; after: number }>();
   /** Texture ownership is exact even if a non-standard loader hands the same object to two paths. */
   readonly #disposedTextures = new WeakSet<THREE.Texture>();
   /** Handles returned by TextureLoader remain owned until their callback settles or the session ends. */
   readonly #pendingTextureHandles = new Set<THREE.Texture>();
   #classes: Map<number, LiquidClass> | undefined;
+  /** 05.10-A7b-8: row -> surface from the v2 table; absent against an older gateway (v1 record). */
+  #surfaces: Map<number, LiquidSurface> | undefined;
   #loadingClasses = false;
   #classFailure: { attempts: number; after: number } | undefined;
   /** Invalidates callbacks captured by the world session being torn down. */
@@ -141,6 +263,7 @@ export class LiquidTextureClient {
     this.#loading.clear();
     this.#stripFailures.clear();
     this.#classes = undefined;
+    this.#surfaces = undefined; // 05.10-A7b-8
     this.#loadingClasses = false;
     this.#classFailure = undefined;
     this.onStatus = undefined;
@@ -181,6 +304,17 @@ export class LiquidTextureClient {
     return this.#classes;
   }
 
+  /**
+   * 05.10-A7b-8 (7.09 A): row -> surface (`class` or `class|family`), from the same request as
+   * `classes`. `undefined` until it lands, and for good against a gateway older than R1, whose body
+   * is the v1 record of classes: every surface is then its class, the look before the slice.
+   */
+  get surfaces(): ReadonlyMap<number, LiquidSurface> | undefined {
+    if (this.#disposed) return undefined;
+    void this.classes;
+    return this.#surfaces;
+  }
+
   async #loadClasses(): Promise<void> {
     const epoch = this.#epoch;
     let settled = false;
@@ -194,15 +328,13 @@ export class LiquidTextureClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/dbc/liquid-types`);
+      // 05.10-A7b-8: `?v=2`; an older gateway ignores the query and answers the v1 record.
+      const response = await fetch(`${this.#baseUrl}/dbc/liquid-types?v=2`);
       if (!response.ok) throw new Error(`Liquid type gateway returned ${response.status}`);
-      const value = await response.json() as Record<string, string>;
-      const classes = new Map<number, LiquidClass>();
-      for (const [id, named] of Object.entries(value)) {
-        if ((LIQUID_CLASSES as readonly string[]).includes(named)) classes.set(Number(id), named as LiquidClass);
-      }
+      const { classes, surfaces } = parseLiquidTypes(await response.json());
       if (!this.#isCurrent(epoch)) return;
       this.#classes = classes;
+      this.#surfaces = surfaces;
       this.#classFailure = undefined;
       // The same counter the strips bump: a tile drawn before the table arrived is classing its
       // cells by the flag, and this is what sends it back to do it again.
@@ -222,8 +354,13 @@ export class LiquidTextureClient {
     }
   }
 
-  get(liquidClass: LiquidClass): LiquidStrip | undefined {
+  get(liquidClass: LiquidSurface): LiquidStrip | undefined {
     if (this.#disposed) return undefined;
+    // 05.10-A7b-8: a family strip that is finally unavailable (404 from an older gateway, a family
+    // the client lacks, the retries spent) draws with its class strip rather than the flat sheet.
+    if (this.#stripFailures.get(liquidClass)?.after === Infinity && liquidClass.includes("|")) {
+      return this.get(liquidSurfaceClass(liquidClass));
+    }
     const strip = this.#strips.get(liquidClass);
     if (strip) return strip;
     const failure = this.#stripFailures.get(liquidClass);
@@ -236,7 +373,7 @@ export class LiquidTextureClient {
     return undefined;
   }
 
-  async #load(liquidClass: LiquidClass): Promise<void> {
+  async #load(liquidClass: LiquidSurface): Promise<void> {
     const epoch = this.#epoch;
     let loaderTexture: THREE.Texture | undefined;
     let settled = false;
@@ -250,7 +387,12 @@ export class LiquidTextureClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/liquid/${liquidClass}`);
+      // 05.10-A7b-8: a family surface asks `/liquid/family/<slug>`; a class keeps `/liquid/<class>`.
+      const family = liquidSurfaceFamily(liquidClass);
+      if (family !== undefined && !LIQUID_FAMILY_SLUG.test(family)) throw new LiquidStripAbsent(family);
+      const stripPath = family === undefined ? `/liquid/${liquidClass}` : `/liquid/family/${family}`;
+      const response = await fetch(`${this.#baseUrl}${stripPath}`);
+      if (family !== undefined && response.status === 404) throw new LiquidStripAbsent(family);
       if (!response.ok) throw new Error(`Liquid gateway returned ${response.status}`);
       const value = await response.json() as { frames?: unknown };
       const frames = value.frames;
@@ -261,7 +403,7 @@ export class LiquidTextureClient {
       let callbackSettled = false;
       let resolvedTexture: THREE.Texture | undefined;
       const texture = await new Promise<THREE.Texture>((resolve, reject) => {
-        loaderTexture = new THREE.TextureLoader().load(`${this.#baseUrl}/liquid/${liquidClass}.png`,
+        loaderTexture = new THREE.TextureLoader().load(`${this.#baseUrl}${stripPath}.png`,
           (loaded) => {
             if (callbackSettled) {
               if (loaded !== resolvedTexture) this.#disposeTexture(loaded);
@@ -311,7 +453,8 @@ export class LiquidTextureClient {
       if (loaderTexture) this.#disposeTexture(loaderTexture);
       this.#strips.set(liquidClass, null);
       const attempts = (this.#stripFailures.get(liquidClass)?.attempts ?? 0) + 1;
-      const wait = WATER_RETRY_BACKOFF_MS[attempts - 1];
+      // 05.10-A7b-8: an absent family is final at once; its class strip stands in.
+      const wait = error instanceof LiquidStripAbsent ? undefined : WATER_RETRY_BACKOFF_MS[attempts - 1];
       this.#stripFailures.set(liquidClass, {
         attempts,
         after: wait === undefined ? Infinity : this.#now() + wait,
@@ -326,6 +469,13 @@ export class LiquidTextureClient {
 }
 
 const WATER_RETRY_BACKOFF_MS: readonly number[] = [2_000, 8_000, 30_000];
+
+/** 05.10-A7b-8: a family strip the gateway does not have (404): not worth a retry. */
+class LiquidStripAbsent extends Error {
+  constructor(family: string) {
+    super(`Liquid family ${family} is not published`);
+  }
+}
 
 export interface LiquidMaterialUniforms {
   liquidFrame: { value: number };
@@ -796,10 +946,11 @@ export function setLiquidWaterShaderProfile(
 /** Applies the same binding to an already-built animated liquid material. */
 export function applyLiquidShaderProfile(
   liquid: LiquidMaterial,
-  liquidClass: LiquidClass,
+  surface: LiquidSurface, // 05.10-A7b-8: shaded by its class
   profile: Readonly<Partial<WaterShaderProfile>> | undefined,
   shared: WaterShaderSharedUniforms,
 ): void {
+  const liquidClass = liquidSurfaceClass(surface);
   setLiquidWaterShaderProfile(liquid.material, liquidClass, profile, shared);
   setLiquidFantasyGlowProfile(
     liquid.material,
@@ -1320,7 +1471,9 @@ const WATER_SUN_GLITTER_GLSL = `
  * Magma and slime are not translucent and are not lit: lava does not take the sky's colour, it
  * gives its own.
  */
-export function buildLiquidMaterial(liquidClass: LiquidClass, strip: LiquidStrip): LiquidMaterial {
+export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip): LiquidMaterial {
+  // 05.10-A7b-8: one program per class; a family differs only in its strip.
+  const liquidClass = liquidSurfaceClass(surface);
   const glowing = liquidClass === "magma" || liquidClass === "slime";
   const uniforms: LiquidMaterialUniforms = {
     liquidFrame: { value: 0 },
@@ -1383,8 +1536,9 @@ export function buildLiquidMaterial(liquidClass: LiquidClass, strip: LiquidStrip
 }
 
 /** Points a liquid material at the frame this moment falls on, and at the zone's own water. */
-export function updateLiquidMaterial(liquid: LiquidMaterial, liquidClass: LiquidClass,
+export function updateLiquidMaterial(liquid: LiquidMaterial, surface: LiquidSurface,
   sample: LightSample | undefined, seconds: number): void {
+  const liquidClass = liquidSurfaceClass(surface); // 05.10-A7b-8: no allocation
   liquid.uniforms.liquidFrame.value =
     Math.floor(seconds * LIQUID_FRAMES_PER_SECOND) % liquid.uniforms.liquidFrames.value;
   if (!sample || liquidClass === "magma" || liquidClass === "slime") return;

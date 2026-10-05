@@ -9,6 +9,8 @@ import { showPoseWorkerStatus } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
 import { OPCODES } from "../../generated/opcodes.js";
 import { formatGameTime, halfMinuteOfDay } from "../../world/GameTimeProtocol.js";
 import { lightOverrideWeight } from "../LightClient.js";
+import { GhostLightFade } from "../LightStateFade.js"; // 05.10-A7b-5 (7.15)
+import { isPlayerGhost } from "../../world/Fields.js"; // 05.10-A7b-5 (7.15)
 import { mountModel, unitModel } from "../ui/Frames.js";
 import {
   MOVEMENT_HEARTBEAT_INTERVAL, advancePhysics, isMoving, movementHeartbeat, sendMovement,
@@ -39,11 +41,12 @@ import { FarSightLink } from "../../world/FarSight.js"; // 11.02-I
 import { vehicleCamera } from "./VehicleCamera.js"; // 11.02-GF3
 import { cameraViews } from "./CameraViews.js"; // DEC-B 3.11
 import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-GF3
-import { attachedGlowTint, itemEnchantments } from "../ItemEnchantments.js";
+import { attachedGlow, itemEnchantments } from "../ItemEnchantments.js"; // 05.10-A7a-E: attachedGlow (slots + tint)
 import { updateCastBars } from "../ui/CastBar.js";
 import { updateActionBar } from "../ui/ActionBar.js";
 import { updateMirrorTimers } from "../ui/MirrorTimers.js";
 import { currentAreaId, updateMinimap } from "../ui/Minimap.js";
+import { updateLiveAreaLocator } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 import { updateWorldMap } from "../ui/WorldMap.js";
 import { updateHeadOverlay } from "../ui/HeadOverlay.js";
 import { plateSource, selectionRingColour } from "../ui/NamePlates.js";
@@ -101,6 +104,8 @@ let renderStatusShownAt = 0;
 let fullFrameStatusShownAt = 0;
 /** Full callback work, kept apart from the renderer's update/submit timer. */
 const fullFrameClock = new FullFrameClock();
+/** 05.10-A7b-5 (7.15): the two-second turn between the living light and the death light. */
+const ghostLightFade = new GhostLightFade();
 
 /**
  * The slowest recent frames, broken down by loop section, newest last.
@@ -460,8 +465,12 @@ function frame(now: number): void {
     // the artwork around them: the same triangle the physics step just stood on, and the same
     // question `Map::IsOutdoors` answers on the server. Standing on terrain there is no collision
     // floor and no answer, which reads as open air.
+    // 05.10-A7b-4 (7.13): the core's whole rule (AreaLocator.ts — MOGP 0x8 under WMOAreaTable Flags 4/2,
+    // AreaTable INSIDE/OUTSIDE off a building), recomputed as the character moves; the floor's own flag
+    // below while the locator has no current answer.
+    const located = updateLiveAreaLocator(now, world.mapId, position, environment);
     game.renderer?.setIndoors(
-      game.collision?.world.indoorsAt(
+      located?.indoors ?? game.collision?.world.indoorsAt(
         position.x, position.y, position.z + STEP_HEIGHT, position.z - FLOOR_SEARCH_DEPTH,
       ) ?? false,
     );
@@ -517,10 +526,16 @@ function frame(now: number): void {
           ? { height: terrainLiquid.height, entry: terrainLiquid.entry, flags: terrainLiquid.type }
           : undefined,
       );
+      // 05.10-A7b-5 (7.10, 7.15): the liquid that holds the eye — its LiquidType row names the light
+      // under lava and slime and the ocean's darkening by depth — and the ghost's death light.
+      const eyeLiquidType = wmoUnderwater ? wmoLiquid?.type : terrainUnderwater ? terrainLiquid?.entry : undefined;
+      const eyeLiquidDepth = wmoUnderwater && wmoLiquid ? wmoLiquid.worldHeight - lightCamera.position.z
+        : terrainUnderwater && terrainLiquid ? terrainLiquid.height - lightCamera.position.z : 0;
+      const ghostLight = ghostLightFade.weight(player !== undefined && isPlayerGhost(player), now);
       const lightSample = game.light?.sample(
         world.mapId, position.x, position.y, half, storm, position.z,
         lightOverride?.overrideLightId, overrideWeight, lightOverride?.areaLightId,
-        world.overrideLightFromId, underwater,
+        world.overrideLightFromId, underwater, ghostLight, eyeLiquidType, eyeLiquidDepth,
       );
       game.renderer?.updateLighting(lightSample, half, underwater);
     }
@@ -558,8 +573,8 @@ function frame(now: number): void {
     const enchantClient = game.gatewayOrigin ? itemEnchantments(game.gatewayOrigin) : undefined;
     if (enchantClient && !enchantClient.ready) void enchantClient.load().catch(() => {});
     game.renderer?.setEnchantGlow(enchantClient?.ready
-      ? (object: WorldObjectState, slot: number) =>
-        attachedGlowTint(object, slot, (id) => enchantClient.glowModels(id))
+      ? (object: WorldObjectState, slot: number, displayId?: number) =>
+        attachedGlow(object, slot, enchantClient, displayId) // 05.10-A7a-E (6.14); 05.10-A7a-E2: the display's glow
       : undefined);
     hitchLight = performance.now();
     const renderer = game.renderer;

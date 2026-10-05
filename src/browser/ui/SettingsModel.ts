@@ -68,9 +68,11 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     hint: "При долгой просадке кадров клиент сам опускает масштаб отрисовки не ниже 40% и возвращает его, когда запас держится. Ручной масштаб выше — потолок, а не приказ.",
   },
   {
+    // 05.10-7.20: 3 is «сравнение» (LightingQuality.ts LIGHTING_QUALITY_COMPARISON) — after 2 so a saved
+    // 0, 1 or 2 keeps its meaning; the default stays 1.
     id: "lightingQuality", label: "Качество освещения", group: "Графика", kind: "number", fallback: 1,
-    min: 0, max: 2, step: 1,
-    hint: "0 — исходное освещение, 1 — мягкий тёплый свет и фонари, 2 — больше источников света и детальные тени.",
+    min: 0, max: 3, step: 1,
+    hint: "0 — исходное освещение, 1 — мягкий тёплый свет и фонари, 2 — больше источников света и детальные тени, 3 — сравнение: исходное освещение и тени, как в оригинале с тенями.",
   },
   {
     id: "wmoOcclusion", label: "Скрывать невидимые помещения", group: "Графика", kind: "boolean", fallback: true,

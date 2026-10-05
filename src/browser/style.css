@@ -2207,6 +2207,10 @@ body.repair-cursor #framexml-world-stage,
 body.repair-cursor #framexml-world-stage *,
 body.repair-cursor .item-slot,
 body.repair-cursor #world-canvas { cursor: var(--repair-cursor, crosshair); }
+/* 05.10-5.17: the cursor a stock frame chose with SetCursor (framexml/FrameXmlSetCursor.ts), over the
+   stock interface only, after the mode cursors above so it wins until ResetCursor. */
+body.framexml-set-cursor #framexml-world-stage,
+body.framexml-set-cursor #framexml-world-stage * { cursor: var(--framexml-set-cursor, default); }
 .vendor-repair { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .bank-window .bag-grid { padding: 0; }
 .bank-bags { display: flex; gap: 5px; }

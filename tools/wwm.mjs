@@ -67,13 +67,29 @@
 //             36  the same three for a camera in water, 44 u8[3] RGB
 //       Both tables are multiples of four bytes, so the section needs no padding of its own.
 //
-//   ..  WME4, straight after WME3 (found by WME3's length) and only on a building of rooms alone:
+//   ..  WME4, straight after WME3 (found by WME3's length) and only on a building of rooms alone
+//       (or, 05.10-A7b-2, on any building of a `visual-wmo-v25` artifact — one that carries WME5):
 //       the MODR rooms of each doodad the tiles place, per doodad set in the tiles' own numbering:
 //         0  char[4] "WME4"
 //         4  u32 setCount
 //         8  u32 the length of this section
 //        12  setCount × { u32 doodadCount, u32 ownerCount }
 //        ..  per set: u32[doodadCount + 1] offsets into its u16[ownerCount] groups, padded to four
+//
+//   ..  WME5 (05.10-A7b-3, `visual-wmo-v25` only), after WME4 when there is one, else after WME3
+//       (a reader follows WME3's length, skips WME4 by its own, and checks the magic):
+//         0  char[4] "WME5"
+//         4  u32 materialCount — MOMT records in file order; a run's reserved word names one
+//         8  u32 stringCount
+//        12  u32 skyboxLength, the MOSB bytes
+//        16  u32 the length of this section, padded to four
+//        20  materialCount × 24 bytes:
+//              0 u32 MOMT flags, verbatim
+//              4 u8 shader, 5 u8 blend mode, 6 u8 ground type, 7 u8 reserved
+//              8 u8[4] sidnColour RGBA, 12 u8[4] diffColour RGBA, 16 u8[4] colour2 RGBA
+//             20 u16 texture 2: string index + 1, 0 for none; 22 u16 reserved
+//        ..  stringCount × { u16 length, bytes }: texture-2 paths as MOTX spells them
+//        ..  the MOSB string, verbatim (`tools/wmo-visual.mjs` `wmoSkybox`)
 //
 // A block is self-contained, and it is the same bytes whether it arrives inside the header's file
 // or on its own as `<hash>.g<NNN>.bin`:
@@ -91,7 +107,8 @@
 //  ..  f32[3] × vertexCount authored normals when block flag bit 0 is set
 //  ..  the index list, numbered from this group's own first vertex, padded to a multiple of four
 //  ..  the runs, 16 bytes each: u32 start, u32 count, u16 material, u8 blendMode,
-//      u8 materialFlags, u8 lighting, u8 reserved, u16 reserved
+//      u8 materialFlags, u8 lighting, u8 reserved, u16 MOMT record + 1 (05.10-A7b-3: zero —
+//      "not stated" — on every run before `visual-wmo-v25`)
 //  ..  the light references, u16 each, padded to a multiple of four
 //
 // Three things travel that the geometry cannot be read without, and none of them is applied here.
@@ -129,6 +146,10 @@ export const WWM_VERTEX_ALPHA_UNFIXED = 0x04;
 export const WWM_DOODAD_ROOMS_MAGIC = "WME4";
 export const WWM_DOODAD_ROOMS_HEADER_SIZE = 12;
 export const WWM_DOODAD_ROOMS_SET_SIZE = 8;
+/** 05.10-A7b-3 (7.11 P2/P4): after WME4 (or WME3): the MOMT table and MOSB, `visual-wmo-v25` only. */
+export const WWM_MATERIALS_MAGIC = "WME5";
+export const WWM_MATERIALS_HEADER_SIZE = 20;
+export const WWM_MATERIAL_SIZE = 24;
 /** Header word 20 continues to point at the legacy envelope old WWM1 readers understand. */
 export const WWM1_METADATA_MAGIC = "WME1";
 export const WWM1_METADATA_HEADER_SIZE = 8;
@@ -222,6 +243,11 @@ export function encodeWwmGroup(group, index) {
     data.writeUInt8(Math.min(255, run.blendMode ?? 0), offset + 10);
     data.writeUInt8(Math.min(255, run.materialFlags ?? 0), offset + 11);
     data.writeUInt8(Math.min(255, run.lighting ?? 0), offset + 12);
+    // 05.10-A7b-3 (7.11): the run's MOMT record + 1 in the reserved word (0: not stated), only on a
+    // `visual-wmo-v25` run; older runs leave it zero, which every reader skips.
+    if (Number.isInteger(run.materialIndex) && run.materialIndex >= 0 && run.materialIndex < 0xffff) {
+      data.writeUInt16LE(run.materialIndex + 1, offset + 14);
+    }
     offset += WWM1_RUN_SIZE;
   }
   for (const reference of lightRefs) {
@@ -274,10 +300,21 @@ export function encodeWwm(model, textureUrls, include) {
   // Only a building of rooms alone reads WME4 (the browser's `wmoInteriorOnly`); anything with a
   // street keeps the 60-yard doodad leash, so its header is not made to carry the table — Stormwind's
   // 6,157 doodads would add 37 KB to the 58 KB a browser takes before choosing a room.
-  const doodadRooms = interiorOnlyModel(groups) ? safeDoodadRooms(model.doodadRooms, groups.length) : undefined;
+  // 05.10-A7b-2 (7.03 slice 3): a `visual-wmo-v25` artifact (the one carrying WME5's material table)
+  // carries it for a building with a street too: from the street the browser now walks into its rooms
+  // through their doors, and their furniture follows the rooms seen (Stormwind's head ≈ +36 KB once).
+  // A `visual-wmo-v22` job never has the table, so its bytes stay exactly as they were.
+  // A building with a street and no table to carry (no doodads) keeps WME5 straight after WME3.
+  const streetRooms = !interiorOnlyModel(groups) && Array.isArray(model.materialTable)
+    ? safeDoodadRooms(model.doodadRooms, groups.length) : undefined;
+  const doodadRooms = interiorOnlyModel(groups) ? safeDoodadRooms(model.doodadRooms, groups.length)
+    : streetRooms !== undefined && streetRooms.length > 0 ? streetRooms : undefined;
   const doodadRoomsLength = doodadRooms === undefined ? 0 : WWM_DOODAD_ROOMS_HEADER_SIZE + doodadRooms.reduce(
     (total, set) => total + WWM_DOODAD_ROOMS_SET_SIZE + set.offsets.length * 4 + align4(set.groups.length * 2), 0);
-  const metadataLength = legacyMetadataLength + extensionLength + fogLength + doodadRoomsLength;
+  // 05.10-A7b-3 (7.11 P2/P4): WME5 only when the model carries a material table (`visual-wmo-v25`).
+  const materialSection = encodeMaterialSection(model.materialTable, model.skybox);
+  const metadataLength = legacyMetadataLength + extensionLength + fogLength + doodadRoomsLength
+    + (materialSection?.length ?? 0);
   const data = Buffer.alloc(WWM1_HEADER_SIZE + tableLength + textureLength + lightLength + bodyLength + metadataLength);
   data.write(wwm2 ? WWM2_MAGIC : WWM1_MAGIC, 0, "ascii");
   data.writeUInt32LE(groups.length, 4);
@@ -400,6 +437,8 @@ export function encodeWwm(model, textureUrls, include) {
 
   // WME4 follows WME3 by WME3's own length, the way WME3 follows WME2: a reader that stops earlier
   // never sees it. Per set: doodad and owner counts, then CSR offsets and u16 group indices.
+  // 05.10-A7b-3: WME5 closes the chain — after WME4 when there is one, else after WME3.
+  if (materialSection !== undefined) data.set(materialSection, fogOffset + fogLength + doodadRoomsLength);
   if (doodadRooms === undefined) return data;
   const roomsOffset = fogOffset + fogLength;
   data.write(WWM_DOODAD_ROOMS_MAGIC, roomsOffset, "ascii");
@@ -416,6 +455,59 @@ export function encodeWwm(model, textureUrls, include) {
     for (const group of set.groups) data.writeUInt16LE(group, offset), offset += 2;
     offset = align4(offset);
   }
+  return data;
+}
+
+/**
+ * 05.10-A7b-3 (7.11 P2/P4): WME5 — the MOMT table and MOSB — as one aligned block, or undefined.
+ *
+ * Optional like every extension: a table that does not fit its own limits is left out and the
+ * runs' records then name nothing (`WmoMaterials.ts` answers undefined for them).
+ */
+function encodeMaterialSection(materials, skybox) {
+  if (!Array.isArray(materials) || materials.length > 65_535) return undefined;
+  const strings = [];
+  const stringIndexes = new Map();
+  const stringIndex = (value) => {
+    if (typeof value !== "string" || value.length === 0) return 0;
+    let index = stringIndexes.get(value);
+    if (index === undefined) {
+      index = strings.length;
+      stringIndexes.set(value, index);
+      strings.push(encoder.encode(value));
+    }
+    return index + 1;
+  };
+  const textures = materials.map((material) => stringIndex(material?.texture2));
+  if (strings.length > 65_534 || strings.some((value) => value.length > 1000)) return undefined;
+  const sky = typeof skybox === "string" && skybox.length > 0 ? encoder.encode(skybox) : new Uint8Array(0);
+  if (sky.length > 1000) return undefined;
+  const stringLength = strings.reduce((total, value) => total + 2 + value.length, 0);
+  const length = align4(WWM_MATERIALS_HEADER_SIZE + materials.length * WWM_MATERIAL_SIZE + stringLength + sky.length);
+  const data = Buffer.alloc(length);
+  data.write(WWM_MATERIALS_MAGIC, 0, "ascii");
+  data.writeUInt32LE(materials.length, 4);
+  data.writeUInt32LE(strings.length, 8);
+  data.writeUInt32LE(sky.length, 12);
+  data.writeUInt32LE(length, 16);
+  let offset = WWM_MATERIALS_HEADER_SIZE;
+  for (const [index, material] of materials.entries()) {
+    data.writeUInt32LE((material?.flags ?? 0) >>> 0, offset);
+    data.writeUInt8(Math.min(255, material?.shader ?? 0), offset + 4);
+    data.writeUInt8(Math.min(255, material?.blendMode ?? 0), offset + 5);
+    data.writeUInt8(Math.min(255, material?.groundType ?? 0), offset + 6);
+    for (const [at, colour] of [[8, material?.sidnColour], [12, material?.diffColour], [16, material?.colour2]]) {
+      for (let channel = 0; channel < 4; channel++) data.writeUInt8(clampByte(colour?.[channel] ?? 0), offset + at + channel);
+    }
+    data.writeUInt16LE(textures[index], offset + 20);
+    offset += WWM_MATERIAL_SIZE;
+  }
+  for (const value of strings) {
+    data.writeUInt16LE(value.length, offset);
+    data.set(value, offset + 2);
+    offset += 2 + value.length;
+  }
+  data.set(sky, offset);
   return data;
 }
 

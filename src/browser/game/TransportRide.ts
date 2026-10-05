@@ -138,6 +138,11 @@ export interface RideFooting {
   mode: MovementMode;
   /** In the air with flight or levitation: the character steers its own altitude. */
   flying: boolean;
+  /**
+   * 05.10-11.01: whether the offset is inside the carrier model's convex volume (WMO MCVP,
+   * `CarrierVolumes.insideConvexVolume`); undefined while unknown (an older gateway, an M2).
+   */
+  inside?: boolean | undefined;
 }
 
 /**
@@ -159,6 +164,14 @@ export function rideVerdict(ride: RideState, local: { x: number; y: number; z: n
   const worldUnder = worldZ !== undefined && (deckZ === undefined || worldZ > deckZ);
   // Stood on, or about to be: the support is the world's (a pier, a dock).
   if (worldUnder && feetZ - worldZ! <= STEP_HEIGHT) return true;
+  // 05.10-11.01: Wow.exe takes a falling passenger off only outside the model's convex volume, on the
+  // first falling step out of it (0x007618b0 → 0x006ec7b0 refused while 0x0077ffb0 says «inside»).
+  // Known, it replaces the frame count in the air; on the ground the deck and the pier rule as before.
+  if (footing.mode === "air" && footing.inside !== undefined) {
+    if (!footing.inside) return true;
+    ride.offDeckFrames = 0;
+    return false;
+  }
   if (deckZ !== undefined && !worldUnder) ride.offDeckFrames = 0;
   // A deck still loading is no evidence either way.
   else if (footing.deckKnown) ride.offDeckFrames++;

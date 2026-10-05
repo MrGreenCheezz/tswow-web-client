@@ -17,6 +17,8 @@ import { toggleTrackingMenu, trackingMatcher } from "./Tracking.js";
 import { toggleWorldMap } from "./WorldMap.js";
 import { setTip } from "./Widgets.js";
 import { partyBlipMembers } from "../game/PartyPositions.js";
+// 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
+import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
 
 /**
  * The minimap: the client's own baked tiles under the character, with the zone name and the
@@ -573,7 +575,8 @@ export function updateMinimap(now: number): void {
   const animating = pings.length > 0;
   const key = `${world.mapId}|${Math.round(self.position.x * 8)}|${Math.round(self.position.y * 8)}`
     + `|${Math.round(self.position.orientation * 256)}|${size}`
-    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`;
+    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`
+    + `|${liveWmoMinimapRevision()}`; // 05.10-A7b-4 (7.14): the floor's building and its answer
   // The state is what the blips are made of, and it used to be in the key as its revision — which
   // every packet about anybody moves, so in a crowd the whole circle was repainted every frame for
   // neighbours far outside it. When the revision has moved, the blips are collected (one walk of
@@ -621,7 +624,7 @@ function drawMinimap(
   context: CanvasRenderingContext2D,
   size: number,
   mapId: number,
-  position: { x: number; y: number; orientation: number },
+  position: { x: number; y: number; z?: number; orientation: number },
   blips: MinimapBlips,
   now: number,
 ): void {
@@ -636,7 +639,10 @@ function drawMinimap(
 
   context.translate(radius, radius);
   if (settings.rotate) context.rotate(position.orientation);
-  drawTiles(context, size, mapId, position);
+  // 05.10-A7b-4 (7.14): in an interior room of a building with bakes, its pictures replace the ADT tiles.
+  if (drawLiveWmoMinimap(context, mapId, position, size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL)) === 0) {
+    drawTiles(context, size, mapId, position);
+  }
   drawBlips(context, radius, position, blips, now);
   context.restore();
 
@@ -954,14 +960,21 @@ function updateLabels(
   // tile's own 16×16 area grid, which is the ground half of what `Map::GetAreaId` does.
   if (now - zoneCheckedAt < ZONE_INTERVAL) return;
   zoneCheckedAt = now;
-  const areaId = game.terrain?.areaAt(world.mapId, position.x, position.y) ?? 0;
+  // 05.10-A7b-4 (7.13): the located area — a WMO room's WMOAreaTable area, the grid, then Map.AreaTableID.
+  const areaId = liveAreaIdAt(world.mapId, position.x, position.y);
   if (areaId !== zoneAreaId) zoneAreaId = areaId;
   const areas = game.areas;
   const area = areas?.area(zoneAreaId);
   const zone = areas?.zoneOf(zoneAreaId);
-  const zoneText = zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "";
+  // 05.10-A7b-4 (7.13): a room's names over the outdoor ones (AreaLocator.ts `indoorZoneTexts`).
+  const texts = liveIndoorZoneTexts(
+    zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "",
+    area && zone && area.id !== zone.id ? area.name : "",
+    area?.name ?? "",
+  );
+  const zoneText = texts.zoneText;
   if (view.zone.textContent !== zoneText) view.zone.textContent = zoneText;
-  const subzoneText = area && zone && area.id !== zone.id ? area.name : "";
+  const subzoneText = texts.subZoneText;
   if (view.subzone.textContent !== subzoneText) view.subzone.textContent = subzoneText;
 }
 
@@ -976,7 +989,7 @@ export function currentAreaId(): number {
   const world = game.world;
   const self = playerOf(world?.state);
   if (world && self?.position) {
-    zoneAreaId = game.terrain?.areaAt(world.mapId, self.position.x, self.position.y) ?? 0;
+    zoneAreaId = liveAreaIdAt(world.mapId, self.position.x, self.position.y); // 05.10-A7b-4
   }
   return zoneAreaId;
 }

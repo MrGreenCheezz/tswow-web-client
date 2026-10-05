@@ -22,6 +22,10 @@ import { REALM_CATEGORIES_VERSION, loadRealmCategories } from "./RealmCategoryMe
 import { QUEST_LOG_NAMES_VERSION, loadQuestLogNames } from "./QuestLogNameMetadata.js";
 import { VEHICLES_VERSION, loadVehicles } from "./VehicleMetadata.js"; // 11.02-F1
 import { SPELL_MISSILES_VERSION, loadSpellMissiles } from "./SpellMissileMetadata.js"; // 11.02-E-review
+import { ITEM_LIMIT_CATEGORIES_VERSION, loadItemLimitCategories } from "./ItemLimitCategoryMetadata.js"; // 05.10-3.01
+import { PET_FOODS_VERSION, loadPetFoods } from "./PetFoodMetadata.js"; // 05.10-petfood
+import { WEAPON_ANIMS_VERSION, loadWeaponAnims } from "./WeaponAnimMetadata.js"; // 05.10-A7a-D 6.06
+import { WMO_AREAS_VERSION, loadWmoAreas } from "./WmoAreaMetadata.js"; // 05.10-A7b-4
 import { originAllowed } from "./UpgradeGuard.js";
 
 export interface CatalogRoute {
@@ -54,6 +58,14 @@ export const CATALOG_ROUTES: readonly CatalogRoute[] = Object.freeze([
   { pathname: "/dbc/vehicles", version: VEHICLES_VERSION, load: loadVehicles },
   // 11.02-E-review: SpellMissile.dbc and every spell's SpellMissileID — the trajectory casts (SpellMissileMetadata.ts).
   { pathname: "/dbc/spell-missiles", version: SPELL_MISSILES_VERSION, load: loadSpellMissiles },
+  // 05.10-3.01: ItemLimitCategory — TOO_MANY_OF_ITEM's words in the combat log (ItemLimitCategoryMetadata.ts).
+  { pathname: "/dbc/item-limit-categories", version: ITEM_LIMIT_CATEGORIES_VERSION, load: loadItemLimitCategories }, // 05.10-3.01
+  // 05.10-petfood: CreatureFamily.PetFoodMask and ItemPetFood names — GetPetFoodTypes (PetFoodMetadata.ts).
+  { pathname: "/dbc/pet-foods", version: PET_FOODS_VERSION, load: loadPetFoods }, // 05.10-petfood
+  // 05.10-A7a-D 6.06: ItemSubClass weapon seq columns, AttackAnimKits and AttackAnimTypes (WeaponAnimMetadata.ts).
+  { pathname: "/dbc/weapon-anims", version: WEAPON_ANIMS_VERSION, load: loadWeaponAnims }, // 05.10-A7a-D 6.06
+  // 05.10-A7b-4 7.13: WMOAreaTable rooms — area, indoor/outdoor flags and names by the core's cut key (WmoAreaMetadata.ts).
+  { pathname: "/dbc/wmo-areas", version: WMO_AREAS_VERSION, load: loadWmoAreas }, // 05.10-A7b-4
 ]);
 
 /** The serialised answers, by pathname, for the dataset on disk: `DatasetIndexes.catalogs`. */

@@ -2,11 +2,17 @@ import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 // Aliased: the parameter every paint takes is also called `player`.
 import { POWER, isLootable, player as playerFields, unit } from "../../world/Fields.js";
 import { NPC_FLAGS_INTERACTION_MASK, NPC_FLAGS_VENDOR_MASK } from "../../world/NpcProtocol.js";
+import { PLAYER_FLAGS_HIDE_CLOAK, PLAYER_FLAGS_HIDE_HELM } from "../../world/CharacterStatFields.js"; // 05.10-A7a-A 6.09
 import { WorldObjectState, isWorldObjectDead } from "../../world/WorldState.js";
 import { SELF, WorldStore } from "../../world/WorldStore.js";
 import { creatureIconSource, creatureTypeName } from "../CreatureMetadata.js";
 import type { CreatureModelClient, EquippedItem, UnitModel } from "../CreatureModelClient.js";
 import type { ItemMetadataClient } from "../ItemMetadata.js";
+import { withVirtualWeapons } from "../NpcWeapons.js"; // 05.10-A7a-B 6.02
+import { wornSheathes } from "../SheathPoints.js"; // 05.10-A7a-G2 6.08
+import { corpseModelFor } from "../CorpseModel.js"; // 05.10-A7a-G2 6.05
+import { mirrorImageModelFor } from "../MirrorImageModel.js"; // 05.10-A7a-H 6.11б
+import { UNIT_FLAG2_MIRROR_IMAGE, type MirrorImages } from "../../world/MirrorImages.js"; // 05.10-A7a-H 6.11б
 import { game } from "../game/Context.js";
 import { setTip, Bar } from "./Widgets.js";
 import { showAuras } from "./Auras.js";
@@ -86,6 +92,16 @@ function duelButton(): HTMLButtonElement | undefined {
 const VISIBLE_ITEM_FIRST = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
 const VISIBLE_ITEM_STRIDE = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - VISIBLE_ITEM_FIRST;
 const VISIBLE_ITEM_COUNT = 19;
+// 05.10-A7a-A 6.09: PLAYER_FLAGS_HIDE_HELM/CLOAK (Player.h:364-365; PLAYER_FLAGS is PUBLIC, so other
+// players' bits arrive too) and the two visible-item words they hide: EQUIPMENT_SLOT_HEAD 0, BACK 14.
+const VISIBLE_SLOT_HEAD = 0;
+const VISIBLE_SLOT_BACK = 14;
+
+/** 05.10-A7a-A 6.09: the hide-helm and hide-cloak bits of a player's PLAYER_FLAGS (0 for others). */
+function hiddenWornFlags(object: WorldObjectState): number {
+  if (object.typeId !== 4) return 0;
+  return (object.fields.get(UPDATE_FIELDS.PLAYER_FLAGS.offset) ?? 0) & (PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK);
+}
 
 interface ResolvedPlayerModel {
   readonly creatureModels: CreatureModelClient;
@@ -98,6 +114,8 @@ interface ResolvedPlayerModel {
   readonly look: number;
   readonly look2: number;
   readonly visibleItems: Uint32Array;
+  /** 05.10-A7a-A 6.09: PLAYER_FLAGS & (HIDE_HELM | HIDE_CLOAK) the look was built with. */
+  readonly hiddenWorn: number;
   readonly model: UnitModel;
 }
 
@@ -129,10 +147,23 @@ export function unitModelFor(
   object: WorldObjectState,
   creatureModels: CreatureModelClient | undefined,
   itemMetadata: ItemMetadataClient | undefined,
+  mirrorImages?: Pick<MirrorImages, "get" | "awaiting">, // 05.10-A7a-H 6.11б: SMSG_MIRRORIMAGE_DATA replies
 ): UnitModel | undefined {
+  // 05.10-A7a-G2 6.05: a corpse (or the renderer's view of one) wears its owner's look or its bones.
+  if (object.typeId === 7) return corpseModelFor(object, creatureModels);
   const displayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
   const metadata = creatureModels?.get(displayId);
-  if (!metadata || object.typeId !== 4 || !creatureModels) return metadata;
+  if (!metadata || !creatureModels) return metadata;
+  // 05.10-A7a-B 6.02: a creature's UNIT_VIRTUAL_ITEM_SLOT_ID weapons ride `held` (NpcWeapons.ts).
+  if (object.typeId !== 4) {
+    // 05.10-A7a-H 6.11б: a mirror image, outfit NPC or NPCBot wears the look its reply describes.
+    const flags2 = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS_2.offset) ?? 0;
+    const worn = mirrorImages !== undefined && (flags2 & UNIT_FLAG2_MIRROR_IMAGE) !== 0
+      ? mirrorImageModelFor(object, metadata, mirrorImages.get(object.guid, displayId, flags2), creatureModels,
+        mirrorImages.awaiting(object.guid, displayId))
+      : metadata;
+    return withVirtualWeapons(worn, object, creatureModels.npcWeapons);
+  }
   // A player who is not currently in their own body: a cat, a bear, a sheep, a ghost wolf. The
   // server writes NATIVEDISPLAYID once, in `Player::InitDisplayIds`, and moves DISPLAYID for every
   // shapeshift — the field is PUBLIC (`generated/updateFields.ts:799-806`), so the difference is
@@ -149,24 +180,28 @@ export function unitModelFor(
   const bytes = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_0.offset) ?? 0;
   const look = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES.offset) ?? 0;
   const look2 = object.fields.get(UPDATE_FIELDS.PLAYER_BYTES_2.offset) ?? 0;
+  const hiddenWorn = hiddenWornFlags(object); // 05.10-A7a-A 6.09
   const cached = resolvedPlayerModels.get(object);
   if (cached && cached.creatureModels === creatureModels && cached.itemMetadata === itemMetadata
     && cached.creatureGeneration === creatureModels.generation
     && cached.itemGeneration === itemMetadata?.generation
     && cached.displayId === displayId && cached.nativeDisplayId === nativeDisplayId
     && cached.bytes === bytes && cached.look === look && cached.look2 === look2
+    && cached.hiddenWorn === hiddenWorn // 05.10-A7a-A 6.09
     && visibleItemsMatch(object.fields, cached.visibleItems)) return cached.model;
   const equipment = visibleEquipmentFor(object, itemMetadata);
   const appearance = creatureModels?.playerAppearance(
     bytes & 0xff, (bytes >>> 16) & 0xff,
     look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
-    look2 & 0xff, equipment);
+    look2 & 0xff, equipment, (bytes >>> 8) & 0xff); // 05.10-A7a-A 6.10: the class, for the DK eye glow
   if (appearance === undefined) return undefined;
   const appearancePending = visibleEquipmentMetadataPendingFor(object, itemMetadata);
+  const wornSheathe = wornSheathes(equipment); // 05.10-A7a-G2 6.08: where the hands' weapons stow
   const model: UnitModel = {
     ...metadata,
     appearance,
     appearancePending,
+    ...(wornSheathe === undefined ? {} : { wornSheathe }), // 05.10-A7a-G2 6.08
   };
   // Pending item rows must keep the existing retry path active. Both real clients expose a
   // generation that changes when their async answers arrive; replay/test clients without one
@@ -176,7 +211,7 @@ export function unitModelFor(
     resolvedPlayerModels.set(object, {
       creatureModels, itemMetadata, creatureGeneration: creatureModels.generation,
       itemGeneration: itemMetadata?.generation, displayId, nativeDisplayId,
-      bytes, look, look2, visibleItems: visibleItemsSnapshot(object.fields), model,
+      bytes, look, look2, visibleItems: visibleItemsSnapshot(object.fields), hiddenWorn, model, // 05.10-A7a-A 6.09
     });
   }
   return model;
@@ -184,7 +219,7 @@ export function unitModelFor(
 
 /** The live wrapper retains the UI's current clients; replay callers pass the captured ones. */
 export function unitModel(object: WorldObjectState): UnitModel | undefined {
-  return unitModelFor(object, game.creatureModels, game.itemMetadata);
+  return unitModelFor(object, game.creatureModels, game.itemMetadata, game.world?.mirrorImages); // 05.10-A7a-H 6.11б
 }
 
 /**
@@ -237,12 +272,18 @@ export function visibleEquipmentFor(
   void itemMetadata?.load(worn.map(({ entry }) => entry)).catch(() => undefined);
 
   const equipment: EquippedItem[] = [];
+  const hidden = hiddenWornFlags(object); // 05.10-A7a-A 6.09
   for (const { slot, entry } of worn) {
+    // 05.10-A7a-A 6.09: a helm or cloak the player hid is not worn for the look (TC's mirror image
+    // does the same, SpellHandler.cpp) — still loaded above, so the pending test does not wait on it.
+    if ((slot === VISIBLE_SLOT_HEAD && (hidden & PLAYER_FLAGS_HIDE_HELM) !== 0)
+      || (slot === VISIBLE_SLOT_BACK && (hidden & PLAYER_FLAGS_HIDE_CLOAK) !== 0)) continue;
     const item = itemMetadata?.get(entry);
     if (item && item.displayId > 0) {
       equipment.push({
         slot, inventoryType: item.inventoryType, displayId: item.displayId,
         ...(item.subClass === undefined ? {} : { subClass: item.subClass }),
+        ...(item.sheath === undefined ? {} : { sheathe: item.sheath }), // 05.10-A7a-G2 6.08: not in the look's key
       });
     }
   }

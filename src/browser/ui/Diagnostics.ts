@@ -2,6 +2,10 @@ import { game } from "../game/Context.js";
 import { gatewayOrigin as defaultGatewayOrigin } from "../Environment.js";
 import { bootPatchGeneration, describePatchState, patchChainChanged, readPatchStatus } from "../PatchChainChanged.js";
 import { STAND_IN_REASON_LABELS, standInSummary } from "../StandIn.js";
+import { // 05.10-A7b-9 (7.18)
+  ENVIRONMENT_STAND_IN_REASON_LABELS, environmentStandInsFault, environmentStandInsWith,
+} from "../StandIn.js";
+import { ENVIRONMENT_STAND_IN_MARKER_LEASE_MS } from "../EnvironmentStandInMarkers.js"; // 05.10-A7b-9
 import {
   capsuleReasons, capsuleStatus, customPacketList, customPacketModules, customPacketStatus, customPacketWarnings, diagnosticsPackets,
   diagnosticsState, diagnosticsTabs, diagnosticsWindow, diagnosticsWindows,
@@ -39,8 +43,18 @@ export function showStandIns(): void {
     capsuleReasons.replaceChildren();
     return;
   }
-  capsuleStatus.className = report.total > 0 || report.stale > 0 ? "error" : "muted";
-  capsuleStatus.textContent = standInSummary(report);
+  // 05.10-A7b-9 (7.18): the environment's stand-ins under the capsules, with what the tiles lost
+  // (7.19) and what waits on the retry ladder (1.24); while this window is open the renderer also
+  // outlines placements whose model will never come.
+  const environment = environmentStandInsWith(report.environment, {
+    environment: game.environment, splat: game.terrainSplat, light: game.light, horizon: game.horizon,
+  });
+  // 05.10 review A7b-9: also reached with the window hidden (unhandled opcodes, packet errors,
+  // login, module load) — a lease from there drew boxes in ordinary play.
+  if (!diagnosticsWindow.hidden) game.renderer?.showEnvironmentStandInMarkers(performance.now() + ENVIRONMENT_STAND_IN_MARKER_LEASE_MS);
+  capsuleStatus.className = report.total > 0 || report.stale > 0 || environmentStandInsFault(environment) ? "error" : "muted";
+  capsuleStatus.style.whiteSpace = "pre-line"; // 05.10-A7b-9: two lines, units then environment
+  capsuleStatus.textContent = standInSummary({ ...report, environment });
   capsuleReasons.replaceChildren(
     ...report.samples.map((sample) => {
       const row = document.createElement("p");
@@ -49,6 +63,12 @@ export function showStandIns(): void {
       // can identify, and a stale model is a unit identified as the wrong thing.
       const wearing = sample.wearing === "model" ? " · в прежней модели" : "";
       row.textContent = `display ${sample.displayId} · ${STAND_IN_REASON_LABELS[sample.reason]}${wearing}${model}`;
+      return row;
+    }),
+    // 05.10-A7b-9 (7.18): one row per model path standing in, permanent reasons first.
+    ...environment.samples.map((sample) => {
+      const row = document.createElement("p");
+      row.textContent = `${sample.model} · ${ENVIRONMENT_STAND_IN_REASON_LABELS[sample.reason]} ×${sample.count}`;
       return row;
     }),
   );

@@ -7,6 +7,7 @@ import { worldObject } from "../../world/Fields.js";
 import type { WorldObjectState, WorldPosition } from "../../world/WorldState.js";
 import { CAMERA_TERRAIN_ESCAPE_DEPTH } from "./Collision.js";
 import { armItemTarget, cancelItemTarget, isItemTargetSpell, spellTargetsObject } from "./SpellCursor.js";
+import { castOnMainHandWeapon } from "./MainHandEnchant.js"; // 05.10-2.05
 
 /**
  * Ground-target (reticle) casts: Blizzard, Flamestrike and friends do not take the selection.
@@ -147,6 +148,8 @@ export function requestItemUse(
   // raises the item-target cursor instead of a targetless use the realm would refuse (2.05).
   if (spellId !== undefined && isItemTargetSpell(metadata)) {
     cancelGroundTarget();
+    // 05.10-2.05: a SPELL_ATTR0_TARGET_MAINHAND_ITEM item (a fishing lure) picks the worn weapon itself.
+    if (castOnMainHandWeapon(world, spellId, { bag: ref.bag, slot: ref.slot, guid: ref.guid })) return;
     if (armItemTarget(world, spellId, { bag: ref.bag, slot: ref.slot, guid: ref.guid }, spellTargetsObject(metadata))) {
       world.onSpellStatus?.("Выберите предмет · правый клик или Esc — отмена", false);
       return;
@@ -191,6 +194,8 @@ export function requestSpellCast(spellId: number, send: () => void): void {
   // Disenchant, Prospecting, Milling, Feed Pet: the spell waits for the item it goes on (2.05).
   if (world && isItemTargetSpell(metadata) && spellCastBlockReason(world, spellId) === undefined) {
     cancelGroundTarget();
+    // 05.10-2.05: a shaman's weapon imbue goes on the worn weapon it picks, without the cursor.
+    if (castOnMainHandWeapon(world, spellId)) return;
     if (armItemTarget(world, spellId, undefined, spellTargetsObject(metadata))) {
       world.onSpellStatus?.("Выберите предмет · правый клик или Esc — отмена", false);
       return;

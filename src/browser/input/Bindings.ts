@@ -490,6 +490,11 @@ function readTables(saved: Record<string, unknown> | undefined, savedModules: Re
     migrateWalkOffSlash(mentioned);
     const taken = new Set<string>();
     for (const action of mentioned) for (const chord of bindings[action]) if (chord) taken.add(chord);
+    // 05.10 L17t-review: a module row's key is the player's too (modules ship unbound; only bindKey writes it),
+    // so a newer default does not take it either — reindex would hand the press to the compiled-in row.
+    for (const pair of Object.values(savedModules ?? {})) {
+      if (Array.isArray(pair)) for (const chord of pair) if (typeof chord === "string" && chord) taken.add(chord);
+    }
     for (const { action } of INPUT_ACTIONS) {
       if (mentioned.has(action)) continue;
       const [first, second] = bindings[action];

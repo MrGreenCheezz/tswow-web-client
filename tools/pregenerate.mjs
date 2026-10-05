@@ -33,7 +33,9 @@ import { visualModelHash } from "./visual-model-key.mjs";
 
 export const PREGENERATE_FAMILIES = Object.freeze(["splat", "tile", "models", "players"]);
 /** The visual tile generation the gateway requires (`/visual/environment`). */
-const VISUAL_TILE_GENERATION = "visual-tile-v4";
+const VISUAL_TILE_GENERATION = "visual-tile-v5"; // 05.10-A7b-1
+/** The terrain splat generation the gateway requires (`/terrain-splat`). */
+const TERRAIN_SPLAT_GENERATION = "terrain-splat-v2"; // 05.10-A7b-7
 
 const directory = (variable, fallback) => resolve(repositoryRoot, process.env[variable] ?? fallback);
 
@@ -209,14 +211,17 @@ export async function pregenerate(options, archives, log = (line) => console.log
     if (families.has("splat")) {
       const base = join(textures, String(options.map), `${gridX}-${gridY}`);
       results.push(`splat ${await work(`splat ${gridX}/${gridY}`,
-        async () => await stampStillCurrent(`${base}.splat.json`, archives) || await stampStillCurrent(`${base}.nosplat`, archives),
-        async () => (await load("splat", "./generate-terrain-splat.mjs")).publishTerrainSplat(options.map, gridX, gridY, archives))}`);
+        async () => await stampStillCurrent(`${base}.splat.json`, archives, { generation: TERRAIN_SPLAT_GENERATION })
+          || await stampStillCurrent(`${base}.nosplat`, archives),
+        async () => (await load("splat", "./generate-terrain-splat.mjs")).publishTerrainSplat(options.map, gridX, gridY, archives,
+          { generation: TERRAIN_SPLAT_GENERATION }))}`); // 05.10-A7b-7
     }
     const tileFile = join(tilesDirectory, String(options.map), `${gridX}-${gridY}.json`);
     if (families.has("tile")) {
       const current = await stampStillCurrent(tileFile, archives, { generation: VISUAL_TILE_GENERATION });
       results.push(`tile ${await work(`tile ${gridX}/${gridY}`, async () => current,
-        async () => (await load("tile", "./generate-visual-tile.mjs")).publishVisualTile(options.map, gridX, gridY, archives))}`);
+        async () => (await load("tile", "./generate-visual-tile.mjs")).publishVisualTile(options.map, gridX, gridY, archives,
+          { generation: VISUAL_TILE_GENERATION }))}`); // 05.10-A7b-1
       // A current tile published before its model list existed gets the list, not a rebuild.
       if (current && !options.dryRun && !await stat(tileModelsFile(options.map, gridX, gridY)).then(() => true, () => false)) {
         await publishTileModels(options.map, gridX, gridY);

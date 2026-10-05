@@ -15,6 +15,7 @@ import { decodeBlp } from "./blp.mjs";
 import { openDbcFile } from "./dbc.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
+import { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 import { sourceStamp, writeSourceStamp } from "./source-stamp.mjs";
 
 /** How many frames of a family the client cycles. Every family in this client ships exactly this. */
@@ -74,6 +75,58 @@ export function liquidDirectory() {
 export async function publishLiquidTexture(liquidClass, archives, destination = liquidDirectory()) {
   if (!LIQUID_CLASSES.includes(liquidClass)) throw new Error(`${liquidClass} is not a liquid class`);
   const pattern = await liquidTexturePattern(dbcDirectory(), liquidClass);
+  return publishStrip(liquidClass, pattern, archives, destination);
+}
+
+// ---- 05.10-A7b-8 (7.09 slice A): one strip per LiquidType texture family ----------------------
+//
+// The class strips above stay exactly as they were (an older gateway asks for them, and its worker
+// loads this file fresh): a family strip is a second, separate namespace, `family/<slug>.png|json`
+// under the same directory, asked for by `/liquid/family/<slug>` only by a browser that read the v2
+// table. Of the seven families in this client four are the class strips' own (`lake_a`, `ocean_h`,
+// `lava`, `slime`, which the browser keeps taking from `/liquid/<class>`); `fast_a` (16 frames),
+// `lavagreen` and `lavaorange` are the ones only this route publishes.
+
+/** A family name: the lower-cased file name of `Texture[0]` without `.%d.blp`. */
+export const LIQUID_FAMILY_SLUG = /^[a-z0-9_]{1,32}$/;
+
+/** The family of a `LiquidType.Texture[0]` path (the same rule as the gateway's `liquidFamily`). */
+export function liquidFamilyOf(texture) {
+  const file = texture.replaceAll("/", "\\").split("\\").pop() ?? "";
+  return file.replace(/(?:\.%d)?\.blp$/i, "").toLowerCase();
+}
+
+/** The animated pattern of a family, from the lowest-numbered row that names it. */
+export async function liquidFamilyPattern(directory, family) {
+  if (!LIQUID_FAMILY_SLUG.test(family)) throw new SourceMissing(`${family} is not a liquid family`);
+  const types = await openDbcFile(directory, "LiquidType");
+  let best;
+  for (const row of types.rows()) {
+    const pattern = types.string(row, "Texture", 0);
+    if (!pattern || !pattern.includes("%d") || liquidFamilyOf(pattern) !== family) continue;
+    const id = types.id(row);
+    if (!best || id < best.id) best = { id, pattern };
+  }
+  if (!best) throw new SourceMissing(`No LiquidType row names the animated family ${family}`);
+  return best.pattern;
+}
+
+/** Where family strips are published, beside the class strips. */
+export function liquidFamilyDirectory(destination = liquidDirectory()) {
+  return join(destination, "family");
+}
+
+/** Publishes one family's strip and JSON (`family/<slug>.png|json`). Leaves the chain open. */
+export async function publishLiquidFamily(family, archives, destination = liquidDirectory()) {
+  const pattern = await liquidFamilyPattern(dbcDirectory(), family);
+  return publishStrip(family, pattern, archives, liquidFamilyDirectory(destination), true);
+}
+
+/**
+ * The strip writer both namespaces share; for a class its bytes are those of the writer before
+ * 05.10-A7b-8 (proved on the four class strips, `.runtime/re-2026-10-05/A7b-8`).
+ */
+async function publishStrip(liquidClass, pattern, archives, destination, missingIsSource = false) {
   const frames = [];
   const { paths: framePaths, stampPaths } = await liquidFrameInputs(archives, pattern);
   for (const path of framePaths) {
@@ -88,7 +141,10 @@ export async function publishLiquidTexture(liquidClass, archives, destination = 
   }
   // Every present frame plus the first absence: changing either changes the strip.
   const stamp = await sourceStamp(archives, { paths: stampPaths, files: [join(dbcDirectory(), "LiquidType.dbc")] });
-  if (frames.length === 0) throw new Error(`${pattern} has no frames in the client`);
+  if (frames.length === 0) {
+    if (missingIsSource) throw new SourceMissing(`${pattern} has no frames in the client`); // 05.10-A7b-8
+    throw new Error(`${pattern} has no frames in the client`);
+  }
 
   const { width, height } = frames[0];
   const strip = new PNG({ width, height: height * frames.length });
@@ -103,7 +159,22 @@ export async function publishLiquidTexture(liquidClass, archives, destination = 
   return { frames: frames.length, width, height, pattern };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+  && process.argv[2] === "--family") {
+  // 05.10-A7b-8: node tools/generate-liquid-texture.mjs --family <slug>
+  const family = process.argv[3] ?? "";
+  const archives = await clientArchives(clientDirectory());
+  try {
+    const result = await publishLiquidFamily(family, archives);
+    console.log(`Generated liquid family ${family}: ${result.frames} frames of ${result.width}x${result.height} from ${result.pattern}`);
+  } catch (error) {
+    if (!(error instanceof SourceMissing)) throw error;
+    console.error(error.message);
+    process.exitCode = SOURCE_MISSING_EXIT;
+  } finally {
+    archives.close();
+  }
+} else if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const liquidClass = (process.argv[2] ?? "").toLowerCase();
   if (!LIQUID_CLASSES.includes(liquidClass)) {
     throw new Error(`Usage: node tools/generate-liquid-texture.mjs <${LIQUID_CLASSES.join("|")}>`);

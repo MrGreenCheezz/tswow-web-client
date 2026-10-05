@@ -118,6 +118,23 @@ export const WVM9_PORTRAIT_CAMERA = 0x02;
 export const WVM9_SCENE_CAMERA = 0x04;
 /** f32 fov (radians), f32 near, f32 far, f32 position[3], f32 target[3]. */
 export const WVM9_CAMERA_SIZE = 36;
+/**
+ * 05.10-A7a-F2 (6.22, 6.16б, 6.17): the artifact carries the "WVE1" block — see `encodeExtensions`.
+ *
+ * Set only on artifacts published under the `visual-v23` namespace. With it the batch record's
+ * `shaderId` is the id Wow.exe resolves at load (tools/m2-combiners.mjs), not the raw u16 of the
+ * skin; without it the record is byte-for-byte what WVM9 always wrote, which is what keeps a
+ * gateway that is still running the `visual-v21` namespace serving its old readers unchanged.
+ */
+export const WVM9_EXTENDED = 0x08;
+export const WVE1_MAGIC = "WVE1";
+export const WVE1_HEADER_SIZE = 12;
+/** i16 second-unit texture transform, u16 reserved. A reader steps by the block's own size word. */
+export const WVE1_BATCH_RECORD_SIZE = 4;
+/** u16 size, u16 type, i16 bone, u16 reserved, f32 position[3]; then seven tracks. */
+const WVE1_LIGHT_FIXED_SIZE = 20;
+const LIGHT_TRACKS = [["ambientColor", 3], ["ambientIntensity", 1], ["diffuseColor", 3], ["diffuseIntensity", 1],
+  ["attenuationStart", 1], ["attenuationEnd", 1], ["visibility", 1]];
 /** A submesh entry: geoset id, then where its triangles live in the shared index list. */
 export const WVM9_SUBMESH_SIZE = 12;
 /** A batch entry: everything needed to build one material and know when to draw it. */
@@ -169,7 +186,9 @@ export const GLOBAL_BONE_CHANNEL_HEADER_SIZE = 12;
  * @param animations every animation id the model has, from m2Animations; defaults to the shipped
  *   clips, which is right for a model whose whole set travels with it
  */
-export function encodeWvm9(model, skeleton, animations = undefined, effects = undefined) {
+export function encodeWvm9(model, skeleton, animations = undefined, effects = undefined, options = {}) {
+  // 05.10-A7a-F2: `options.extensions` — write the WVE1 block and the resolved shader ids.
+  const extensions = options.extensions === true ? encodeExtensions(model) : undefined;
   const vertexCount = model.positions.length / 3;
   // Zero is allowed: a pure-emitter model has no geometry and is still a model. See tools/m2.mjs.
   if (!Number.isInteger(vertexCount)) throw new Error("WVM9 vertex count is not a whole number");
@@ -241,7 +260,8 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
     + colourBlocks.reduce((total, block) => total + block.length, 0)
     + weightBlocks.reduce((total, block) => total + block.length, 0)
     + transformBlocks.reduce((total, block) => total + block.length, 0)
-    + (camera ? WVM9_CAMERA_SIZE : 0);
+    + (camera ? WVM9_CAMERA_SIZE : 0)
+    + (extensions?.length ?? 0); // 05.10-A7a-F2
   const skeletonBlock = skeleton ? encodeSkeleton(skeleton) : undefined;
   const total = WVM9_HEADER_SIZE + bodySize + (skeletonBlock?.length ?? 0);
 
@@ -250,7 +270,7 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
   data.writeUInt32LE(vertexCount, 4);
   data.writeUInt32LE(model.indices.length, 8);
   data.writeUInt8(indexBytes, 12);
-  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag, 13);
+  data.writeUInt8((skinned ? WVM9_SKINNED : 0) | cameraFlag | (extensions ? WVM9_EXTENDED : 0), 13); // 05.10-A7a-F2
   data.writeUInt16LE(model.submeshes.length, 14);
   data.writeUInt16LE(model.batches.length, 16);
   data.writeUInt16LE(model.textures.length, 18);
@@ -309,7 +329,8 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
     data.writeInt16LE(batch.textures[1] ?? -1, offset + 10);
     data.writeInt16LE(batch.textureWeight ?? -1, offset + 12);
     data.writeInt16LE(batch.textureTransform ?? -1, offset + 14);
-    data.writeUInt16LE(batch.shaderId & 0xffff, offset + 16);
+    // 05.10-A7a-F2 (6.22): the extended artifact carries the id the client resolves at load.
+    data.writeUInt16LE((extensions ? batch.resolvedShaderId ?? batch.shaderId : batch.shaderId) & 0xffff, offset + 16);
     data.writeUInt16LE(batch.colorIndex & 0xffff, offset + 18);
     offset += WVM9_BATCH_SIZE;
   }
@@ -352,9 +373,65 @@ export function encodeWvm9(model, skeleton, animations = undefined, effects = un
     }
     offset += WVM9_CAMERA_SIZE;
   }
+  if (extensions) {
+    // 05.10-A7a-F2: last in the body, after the camera and before the skeleton.
+    data.set(extensions, offset);
+    offset += extensions.length;
+  }
   if (offset !== WVM9_HEADER_SIZE + bodySize) throw new Error("WVM9 body size mismatch");
   if (skeletonBlock) data.set(skeletonBlock, offset);
   return data;
+}
+
+/**
+ * 05.10-A7a-F2: the "WVE1" block, written last in the body under `WVM9_EXTENDED`.
+ *
+ *   0  char[4] "WVE1"
+ *   4  u16   batch record size (4 today; a reader steps by this)
+ *   6  u16   batch record count, always the header's batch count
+ *   8  u16   light count
+ *  10  u16   reserved
+ *  12  batch records: i16 second-unit `textureTransform` (−1 none, 6.16б), u16 reserved
+ *      then the lights (6.17), each led by its own byte length like an emitter:
+ *      u16 size, u16 type, i16 bone, u16 reserved, f32 position[3], then seven tracks — ambient
+ *      colour (3), ambient intensity, diffuse colour (3), diffuse intensity, attenuation start,
+ *      attenuation end, visibility.
+ */
+function encodeExtensions(model) {
+  const batches = model.batches;
+  const lights = (model.lights ?? []).slice(0, 255).map((light) => {
+    const tracks = LIGHT_TRACKS.map(([name, components]) => encodeTrack(light[name], components));
+    const size = WVE1_LIGHT_FIXED_SIZE + tracks.reduce((total, block) => total + block.length, 0);
+    if (size > 0xffff) throw new Error("WVM9 light record is too large");
+    const record = Buffer.alloc(size);
+    record.writeUInt16LE(size, 0);
+    record.writeUInt16LE(light.type & 0xffff, 2);
+    record.writeInt16LE(Math.max(-1, Math.min(32_767, light.bone)), 4);
+    for (let axis = 0; axis < 3; axis++) record.writeFloatLE(light.position[axis], 8 + axis * 4);
+    let offset = WVE1_LIGHT_FIXED_SIZE;
+    for (const block of tracks) {
+      record.set(block, offset);
+      offset += block.length;
+    }
+    return record;
+  });
+  const size = WVE1_HEADER_SIZE + batches.length * WVE1_BATCH_RECORD_SIZE
+    + lights.reduce((total, record) => total + record.length, 0);
+  const block = Buffer.alloc(size);
+  block.write(WVE1_MAGIC, 0, "ascii");
+  block.writeUInt16LE(WVE1_BATCH_RECORD_SIZE, 4);
+  block.writeUInt16LE(batches.length, 6);
+  block.writeUInt16LE(lights.length, 8);
+  let offset = WVE1_HEADER_SIZE;
+  for (const batch of batches) {
+    block.writeInt16LE(Math.max(-1, Math.min(32_767, batch.textureTransform2 ?? -1)), offset);
+    offset += WVE1_BATCH_RECORD_SIZE;
+  }
+  for (const record of lights) {
+    block.set(record, offset);
+    offset += record.length;
+  }
+  return block;
 }
 
 /* --- Emitters -------------------------------------------------------------------------------

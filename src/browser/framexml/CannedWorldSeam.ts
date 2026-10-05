@@ -26,6 +26,7 @@ import { FrameXmlQuestShareModel, QUEST_FLAG_SHARABLE } from "./FrameXmlQuestSha
 import { FRAMEXML_RELIC_CLASS_TOKENS } from "./FrameXmlRelicSlot.js";
 import { FrameXmlArenaRosterModel } from "./FrameXmlArenaRoster.js";
 import { CANNED_SCOREBOARD_COLUMNS, FrameXmlPvpCannedWorld } from "./FrameXmlPvpCanned.js";
+import type { FrameXmlHelmCloakHost, FrameXmlWornPart } from "./FrameXmlHelmCloak.js"; // 05.10-A7a-A 6.09
 import { FRAMEXML_CONTROL_EVENTS } from "./FrameXmlControl.js";
 import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import type { FrameXmlTargeting } from "./FrameXmlTargetingApi.js";
@@ -1436,6 +1437,13 @@ export class CannedWorldSeam implements FrameXmlWorldSeam {
     flags: () => this.pvpWorld.playerFlags(), now: () => (this.#pump?.now() ?? 0) * 1000,
     togglePvp: (enable) => this.pvpWorld.togglePvp(enable),
   });
+  /** 05.10-A7a-A 6.09: CMSG_SHOWING_HELM/CLOAK the canned panel sent, in order; the flags stay the server's. */
+  readonly helmCloakSent: { part: FrameXmlWornPart; show: boolean }[] = [];
+  /** 05.10-A7a-A 6.09: ShowHelm/ShowingHelm/ShowCloak/ShowingCloak over the canned player's PLAYER_FLAGS. */
+  readonly helmCloak: FrameXmlHelmCloakHost = {
+    playerFlags: () => this.pvpWorld.playerFlags(),
+    send: (part, show) => { this.helmCloakSent.push({ part, show }); },
+  };
   readonly scoreboard = new FrameXmlBattlefieldScoreModel({
     world: () => this.pvpWorld, now: () => (this.#pump?.now() ?? 0) * 1000, worldStateUi: () => CANNED_SCOREBOARD_COLUMNS,
   });

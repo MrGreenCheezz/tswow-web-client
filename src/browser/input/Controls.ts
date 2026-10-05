@@ -538,6 +538,7 @@ const CURSOR_RULES: CursorRules = {
   },
   spellRange: (spellId) => game.spells.get(spellId)?.rangeMax,
   lockCase: (lockId) => game.locks?.casesOf(lockId)[0],
+  lockTypeCursor: (lockType) => game.locks?.lockTypeCursor(lockType), // 05.10-5.17: /dbc/locks?v=1
 };
 
 /** 5.17: the cursor a mode puts under everything with no cursor of its own (Wow.exe 0x00616270). */

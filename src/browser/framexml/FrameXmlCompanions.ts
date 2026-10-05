@@ -37,9 +37,8 @@
  * The pet page's own C API rides along. `PetCanBeAbandoned`/`PetCanBeRenamed` read the pet's
  * `UNIT_FIELD_BYTES_2` pet-flags byte (`UNIT_CAN_BE_ABANDONED` 0x02, `UNIT_CAN_BE_RENAMED` 0x01,
  * UnitDefines.h), `PetAbandon`/`PetRename` send the two pet opcodes. `GetPetFoodTypes` answers what a
- * seam carries, which today is nothing: the diet is `CreatureFamily.PetFoodMask` over
- * `ItemPetFood.dbc`, and this client has neither table's names (FrameXmlStable.ts, the same rule
- * for the stable's tooltip).
+ * seam carries: the live seam reads `CreatureFamily.PetFoodMask` over `ItemPetFood.dbc` from
+ * `/dbc/pet-foods` (05.10-petfood, FrameXmlPetFood.ts); a seam without it answers nothing.
  */
 import { readByte, unit as unitField } from "../../world/Fields.js";
 import type { WorldObjectState } from "../../world/WorldState.js";

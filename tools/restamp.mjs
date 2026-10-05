@@ -42,7 +42,7 @@ import { openDbcFile } from "./dbc.mjs";
 import { PNG } from "pngjs";
 import { blpToPng } from "./blp-png.mjs";
 import { textureId } from "./generate-texture.mjs";
-import { LIQUID_CLASSES, liquidFrameInputs, liquidTexturePattern } from "./generate-liquid-texture.mjs";
+import { LIQUID_CLASSES, liquidFamilyPattern, liquidFrameInputs, liquidTexturePattern } from "./generate-liquid-texture.mjs";
 import { soundId, soundKitFiles } from "./generate-sound.mjs";
 import { MINIMAP_TRS } from "./minimap-index.mjs";
 import { parseAdtPlacements } from "./adt-placements.mjs";
@@ -108,7 +108,7 @@ const FAMILIES = [
   {
     name: "visual-models",
     directory: cacheDirectory("VISUAL_MODEL_DIR", "data/visual-models"),
-    // sha1(`visual-v21\0<path>`) for M2 or `visual-wmo-v22` for WMO, same as the gateway — and the
+    // sha1(`visual-v23\0<path>`) for M2 or `visual-wmo-v22` for WMO, same as the gateway — and the (05.10-A7a-F2)
     // stamp names every file the model's own publish read: .skin, external .anim or WMO groups.
     inputs: (name) => (/\.bin$/i.test(name) ? undefined : null),
   },
@@ -679,6 +679,16 @@ async function horizonInputs(name) {
 
 /** `<class>.png` and `<class>.json`: the thirty frames of the family and the table that names it. */
 async function liquidInputs(name) {
+  // 05.10-A7b-8 (7.09 A): `family/<slug>.png|json`, one LiquidType texture family.
+  const family = /^family\/([a-z0-9_]{1,32})\.(png|json)$/.exec(name)?.[1];
+  if (family !== undefined) {
+    const familyPattern = await liquidFamilyPattern(dbcDirectory(), family).catch(() => undefined);
+    if (!familyPattern) return undefined;
+    const familyFrames = await liquidFrameInputs(await archiveChain(), familyPattern, LIQUID_FRAMES);
+    return familyFrames.paths.length === 0
+      ? undefined
+      : { paths: familyFrames.stampPaths, files: [join(dbcDirectory(), "LiquidType.dbc")] };
+  }
   const liquidClass = name.replace(/\.(png|json)$/i, "");
   if (!LIQUID_CLASSES.includes(liquidClass) || liquidClass === name) return undefined;
   const pattern = await liquidTexturePattern(dbcDirectory(), liquidClass);

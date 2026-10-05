@@ -11,7 +11,9 @@ import { loadCreatureMetadata } from "./CreatureMetadata.js";
 import { encodeVMapModel, parseVMapModel, parseVMapModelGroups, type CollisionGroup } from "./VMapModel.js";
 import { loadGameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import { loadTransportPaths } from "./TransportPaths.js";
-import { loadLiquidClasses } from "./LiquidMetadata.js";
+import { loadLiquidClasses, loadLiquidRows } from "./LiquidMetadata.js"; // 05.10-A7b-5: loadLiquidRows
+import { VISUAL_TILE_GENERATION, visualTileTruncation } from "./VisualTileGeneration.js"; // 05.10-A7b-1
+import { TERRAIN_SPLAT_GENERATION } from "./TerrainSplatGeneration.js"; // 05.10-A7b-7
 import { loadLoadingScreens } from "./LoadingScreenMetadata.js";
 import { loadGroundEffects } from "./GroundEffects.js";
 import { loadCreatureModelMetadata } from "./CreatureModelMetadata.js";
@@ -36,6 +38,8 @@ import { CHAR_TITLES_VERSION, loadCharTitles } from "./CharTitleMetadata.js";
 import { serveCatalogRoute, type CatalogCache } from "./CatalogRoutes.js";
 import { serveShipPathRoute } from "./TransportShipPaths.js";
 import { serveGameObjectModelsRoute } from "./GameObjectModels.js";
+import { serveGameObjectVolumesRoute, type ConvexVolumeReader } from "./GameObjectVolumes.js"; // 05.10-11.01
+import { serveNpcWeaponsRoute } from "./NpcWeapons.js"; // 05.10-A7a-B 6.02
 import { CURRENCY_CATALOG_VERSION, loadCurrencyCatalog } from "./CurrencyCatalog.js";
 import { ACHIEVEMENT_CATALOG_VERSION, loadAchievementCatalog } from "./AchievementMetadata.js";
 import { loadReputationMetadata } from "./ReputationMetadata.js";
@@ -59,6 +63,7 @@ import { AUDIO_DBC_FILES, CLIENT_MEDIA_PROFILE_FILE, VISUAL_DBC_FILES } from "./
 import { validAssetPath } from "./AssetPath.js";
 import { listeningServerError } from "./ProcessGuard.js";
 import { originAllowed, refuseUpgrade, routeUpgrade } from "./UpgradeGuard.js";
+import { WMO_MINIMAP_ROUTE, serveWmoMinimapRoute, type WmoMinimapMemo } from "./WmoMinimapRoute.js"; // 05.10-A7b-3
 import {
   MAX_MODULE_FILE_BYTES, moduleFileKind, readModuleFile, readModuleIndex,
   validModuleFileName, validModuleName, writeModuleFile, type ModuleRoot,
@@ -116,8 +121,18 @@ const MAX_BRIDGED_SOCKETS_PER_ADDRESS = 8;
  * rig whose sequences all travel at zero, and the mount over it would go on skating for as long as
  * the old entry stayed fresh. The name is what retires it.
  */
-export function visualModelCacheNamespace(modelPath: string): "visual-v21" | "visual-wmo-v22" {
-  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v22" : "visual-v21";
+// 05.10-A7a-F2: visual-v23 (23 follows the shared sequence past visual-wmo-v22) is WVM9 with the
+// optional WVE1 block (`WVM9_EXTENDED`): batch shader ids resolved the way Wow.exe resolves them
+// (6.22, sphere-map stages for 6.16е), the second unit's texture transform (6.16б) and the M2 lights
+// (6.17). The generator writes WVE1 only for a hash of this namespace, so a gateway still running
+// visual-v21 keeps receiving the exact v21 bytes from the same freshly loaded tools.
+// 05.10-A7b-1 (7.02): visual-wmo-v25 is the same WWM2 whose WME4 room tables walk each doodad set as
+// a placement draws it — set 0 plus the set's own records — the numbering of `visual-tile-v5`. Only
+// tables of sets past 0 change, invisibly in the bytes' layout, so the name turns over. 24 is skipped
+// on purpose: line A7a has it planned for the next M2 bump (visual-v24). The generator writes the
+// effective tables only for a hash of this namespace, so a gateway on visual-wmo-v22 keeps its bytes.
+export function visualModelCacheNamespace(modelPath: string): "visual-v23" | "visual-wmo-v25" {
+  return modelPath.toLowerCase().endsWith(".wmo") ? "visual-wmo-v25" : "visual-v23";
 }
 
 /** The artifact name of a `/visual/model` path, as the route computes it (10.22: the preloader's key). */
@@ -283,6 +298,8 @@ export interface GatewayOptions {
   /** Where the extracted `.wdl` files live: one per map, and the whole of the far horizon. */
   horizonDirectory?: string;
   generateHorizon?: (map: number) => Promise<void>;
+  /** 05.10-A7b-7 (7.08): publishes `<horizonDirectory>/<map>.colour.png` from the map's minimap. */
+  generateHorizonColour?: (map: number) => Promise<void>;
   /** Where published client textures live, keyed on their path in the archives. */
   texturesDirectory?: string;
   /** Where the animated liquid strips live, one per liquid class. */
@@ -297,10 +314,14 @@ export interface GatewayOptions {
    */
   minimapDirectory?: string;
   generateMinimapIndex?: (map: number) => Promise<void>;
+  /** 05.10-A7b-3 (7.14): publishes `<minimapDirectory>/wmo.json`, every WMO's baked tiles (WmoMinimapRoute.ts). */
+  generateWmoMinimapIndex?: () => Promise<void>;
   /** Published 128×128 uint32 continent hit masks, keyed only by Map.dbc id. */
   worldMapZoneMapsDirectory?: string;
   generateWorldMapZoneMap?: (map: number) => Promise<void>;
   generateLiquidTexture?: (liquidClass: string) => Promise<void>;
+  /** 05.10-A7b-8 (7.09 A): publishes `<liquidDirectory>/family/<slug>.png|json`. */
+  generateLiquidFamily?: (family: string) => Promise<void>;
   generateTexture?: (path: string) => Promise<void>;
   /**
    * Called when the dataset poll finds the client's archives changed — a patch directory gained
@@ -321,6 +342,8 @@ export interface GatewayOptions {
    * a child and only its answer stays: 36,027 paths, 2,347 KiB.
    */
   listCharacterTextures?: () => Promise<readonly string[]>;
+  /** 05.10-11.01: WMO roots' MCVP planes out of a child (`tools/convex-volumes.mjs`) for `/vmap/gobject-volumes`. */
+  readConvexVolumes?: ConvexVolumeReader;
   /**
    * Where published client sounds live, keyed on their path in the archives.
    *
@@ -610,6 +633,8 @@ class DatasetIndexes {
   gameObjectMetadata: ReturnType<typeof loadGameObjectDisplayMetadata> | undefined = undefined;
   transportPaths: ReturnType<typeof loadTransportPaths> | undefined = undefined;
   liquidClasses: ReturnType<typeof loadLiquidClasses> | undefined = undefined;
+  /** 05.10-A7b-5 (7.09): the `?v=2` body of `/dbc/liquid-types`. */
+  liquidRows: ReturnType<typeof loadLiquidRows> | undefined = undefined;
   loadingScreens: ReturnType<typeof loadLoadingScreens> | undefined = undefined;
   groundEffects: ReturnType<typeof loadGroundEffects> | undefined = undefined;
   creatureModelMetadata: ReturnType<typeof loadCreatureModelMetadata> | undefined = undefined;
@@ -790,6 +815,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
   const clientFileLane = generationLane();
   const liquidLane = generationLane();
   const minimapLane = generationLane();
+  const wmoMinimapMemo: WmoMinimapMemo = {}; // 05.10-A7b-3 (7.14): the parsed wmo.json, per process
   const worldMapZoneMapLane = generationLane();
   // Its own lane, and not one of the eleven above: the pass reads every family, and putting it on
   // any of them would make the first genuinely missing asset of that family queue behind the whole
@@ -807,7 +833,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const tiles = join(options.visualTilesDirectory!, String(map));
         const list = join(tiles, `${gridX}-${gridY}.models.json`);
         // The list carries its tile's stamp, so it is held to the tile's generation as well.
-        await fingerprint.ensureCurrent(list, { generation: "visual-tile-v4" });
+        await fingerprint.ensureCurrent(list, { generation: VISUAL_TILE_GENERATION } /* 05.10-A7b-1 */);
         try {
           const names: unknown = JSON.parse(await readFile(list, "utf8"));
           return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : undefined;
@@ -815,7 +841,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           // Absent, or unreadable: the worker derives it again below and rewrites it.
         }
         // A tile published before the list existed: the worker derives it (never this thread).
-        await fingerprint.ensureCurrent(join(tiles, `${gridX}-${gridY}.json`), { generation: "visual-tile-v4" });
+        await fingerprint.ensureCurrent(join(tiles, `${gridX}-${gridY}.json`), { generation: VISUAL_TILE_GENERATION } /* 05.10-A7b-1 */);
         return options.listTileModels?.(map, gridX, gridY);
       },
       publishTile: (map, gridX, gridY) => generateOnce(visualTileLane, `${map}/${gridX}/${gridY}`,
@@ -1168,7 +1194,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       try {
         const rebuild = () => generateOnce(visualTileLane, key, () => options.generateVisualTile!(map, gridX, gridY));
         if (options.generateVisualTile) {
-          await fingerprint.ensureCurrent(filename, { generation: "visual-tile-v4" });
+          await fingerprint.ensureCurrent(filename, { generation: VISUAL_TILE_GENERATION } /* 05.10-A7b-1 */);
         }
         let data: Buffer;
         try {
@@ -1178,11 +1204,17 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
           await rebuild();
           data = await readFile(filename);
         }
+        // 05.10-A7b-1 (7.19): a tile the 10,000-object cap cut says by how much (the browser's
+        // diagnostics read it); none for a tile that fits, so the usual answer is unchanged.
+        const truncated = await visualTileTruncation(filename);
         response.writeHead(200, {
           "access-control-allow-origin": origin,
           "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_HOUR),
           "content-length": data.byteLength,
           "content-type": "application/json; charset=utf-8",
+          ...(truncated > 0
+            ? { "x-tile-truncated": String(truncated), "access-control-expose-headers": "x-tile-truncated" }
+            : {}),
         });
         response.end(data);
         // 10.22: the player is here; the neighbourhood's models are what comes next.
@@ -1266,6 +1298,16 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       }
       return;
     }
+
+    // 05.10-A7b-3 (7.14): `/minimap/wmo?path=&v=1`, one WMO's baked tiles (WmoMinimapRoute.ts).
+    if (pathname === WMO_MINIMAP_ROUTE && options.minimapDirectory && await serveWmoMinimapRoute(request, response, url, wmoMinimapMemo, {
+      minimapDirectory: options.minimapDirectory,
+      allowedOrigins: options.allowedOrigins,
+      generate: options.generateWmoMinimapIndex
+        ? () => generateOnce(minimapLane, "wmo", () => options.generateWmoMinimapIndex!()) : undefined,
+      ensureCurrent: options.generateWmoMinimapIndex ? (file) => fingerprint.ensureCurrent(file) : undefined,
+      cacheControl: (requested) => tileCacheControl(requested, requestCacheGeneration(), LEGACY_TILE_HOUR),
+    })) return;
 
     const minimapIndex = pathname.match(/^\/minimap\/(\d{1,4})\/index\.json$/);
     if (request.method === "GET" && minimapIndex && options.minimapDirectory) {
@@ -1372,6 +1414,43 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       return;
     }
 
+    // 05.10-A7b-7 (7.08 slice A): the far horizon's colour — the map's minimap averaged to one texel
+    // per WDL cell, 1024x1024 (`tools/generate-horizon-colour.mjs`). A new file name beside the
+    // `.wdl`, so no version: a gateway older than this answers 404 and the browser keeps the flat
+    // green. A map with no minimap bake is the generator's `SourceMissing`, also a final 404.
+    const horizonColour = pathname.match(/^\/horizon\/(\d{1,4})\/colour\.png$/);
+    if (request.method === "GET" && horizonColour && options.horizonDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const map = Number(horizonColour[1]);
+      const filename = join(options.horizonDirectory, `${map}.colour.png`);
+      try {
+        if (options.generateHorizonColour) await fingerprint.ensureCurrent(filename);
+        let data: Buffer;
+        try {
+          data = await readFile(filename);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.generateHorizonColour) throw error;
+          await generateOnce(horizonLane, `horizon-colour:${map}`, () => options.generateHorizonColour!(map));
+          data = await readFile(filename);
+        }
+        response.writeHead(200, {
+          "access-control-allow-origin": origin,
+          "cache-control": tileCacheControl(url.searchParams.get("g"), requestCacheGeneration(), LEGACY_TILE_DAY),
+          "content-length": data.byteLength,
+          "content-type": "image/png",
+        });
+        response.end(data);
+      } catch (error) {
+        const absent = sourceMissing(error) || (error as NodeJS.ErrnoException).code === "ENOENT";
+        respondError(response, absent ? 404 : 500, origin);
+      }
+      return;
+    }
+
     // The ingredients of one tile, five files from one read of its ADT: the layer list, the alpha
     // maps, the per-chunk index, the painted vertex colours and — since the ground-cover slice —
     // the recipe for what grows on it. `cover.bin` is a *new name* in the family rather than a new
@@ -1400,7 +1479,9 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       try {
         const rebuild = () => generateOnce(terrainTextureLane, `splat:${map}/${gridX}/${gridY}`,
           () => options.generateTerrainSplat!(map, gridX, gridY));
-        if (options.generateTerrainSplat) await fingerprint.ensureCurrent(filename);
+        if (options.generateTerrainSplat) {
+          await fingerprint.ensureCurrent(filename, { generation: TERRAIN_SPLAT_GENERATION } /* 05.10-A7b-7 */);
+        }
         let data: Buffer;
         try {
           data = await readFile(filename);
@@ -1436,6 +1517,8 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       return;
     }
 
+    // 05.10-A7b-1 (7.19): not used by the browser — the ground is drawn from `/terrain-splat`;
+    // kept for `tests/gateway.test.mjs` and external tools. Removing it is the owner's decision.
     const terrainTexture = pathname.match(/^\/terrain-texture\/(\d{1,4})\/(\d{1,2})\/(\d{1,2})$/);
     if (request.method === "GET" && terrainTexture && options.terrainTexturesDirectory) {
       const origin = request.headers.origin;
@@ -2147,6 +2230,34 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       return;
     }
 
+    // 05.10-A7b-8 (7.09 slice A): one LiquidType texture family's strip (`fast_a`, `lavagreen`,
+    // `lavaorange` — the rows that are not their class's own strip). A new path beside the class
+    // route, so no version: a gateway older than this answers 404 and the browser keeps the class
+    // strip. A family the table or the archives lack is the generator's `SourceMissing`: 404.
+    const liquidFamily = pathname.match(/^\/liquid\/family\/([a-z0-9_]{1,32})(\.png)?$/);
+    if (request.method === "GET" && liquidFamily && options.liquidDirectory) {
+      const origin = request.headers.origin;
+      if (!originAllowed(origin, options.allowedOrigins)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const name = liquidFamily[1]!;
+      const image = liquidFamily[2] !== undefined;
+      const filename = join(options.liquidDirectory, "family", `${name}.${image ? "png" : "json"}`);
+      try {
+        const rebuild = () => generateOnce(liquidLane, `family:${name}`, () => options.generateLiquidFamily!(name));
+        if (options.generateLiquidFamily) await fingerprint.ensureCurrent(filename);
+        await respondFile(request, response, filename, {
+          origin, contentType: image ? "image/png" : "application/json; charset=utf-8",
+          rebuild: options.generateLiquidFamily ? rebuild : undefined,
+        });
+      } catch (error) {
+        const absent = sourceMissing(error) || (error as NodeJS.ErrnoException).code === "ENOENT";
+        respondError(response, absent ? 404 : 500, origin);
+      }
+      return;
+    }
+
     // One liquid's thirty animation frames as a single strip, and the sidecar that says how many
     // and how big. Generated on first request like every other asset here.
     const liquid = pathname.match(/^\/liquid\/([a-z]{4,6})(\.png)?$/);
@@ -2482,6 +2593,12 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
     if (await serveShipPathRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
     // 11.01-A2: display id → collision model name and box from vmaps/GameObjectModels.dtree (GameObjectModels.ts).
     if (await serveGameObjectModelsRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+    // 05.10-11.01: display id → WMO convex volume (MCVP) for leaving a transport in the air (GameObjectVolumes.ts).
+    if (await serveGameObjectVolumesRoute(request, response, url, indexes.catalogs ??= new Map(), options)) return;
+    // 05.10-A7a-B 6.02: a creature's UNIT_VIRTUAL_ITEM_SLOT_ID entries → held models via Item.dbc (NpcWeapons.ts).
+    if (await serveNpcWeaponsRoute(request, response, url, indexes.catalogs ??= new Map(), options,
+      () => indexes.characterAppearance ??= CharacterAppearanceIndex.load(options.dbcDirectory!, characterTextures(),
+        options.visualDbcDirectory, options.coordinatedVisuals ?? false))) return; // 05.10-A7a-B 6.02
 
     // The stock PaperDoll title picker's CharTitles rows (CharTitleMetadata.ts), fetched once per world mount.
     if (request.method === "GET" && pathname === "/dbc/char-titles" && options.dbcDirectory) {
@@ -2753,8 +2870,16 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         return;
       }
       try {
-        indexes.liquidClasses ??= loadLiquidClasses(options.dbcDirectory);
-        const data = JSON.stringify(await indexes.liquidClasses);
+        // 05.10-A7b-5 (7.09): `?v=2` answers `{ version, classes, rows }` — the whole row. The bare
+        // path keeps the v1 record of classes, which is what a page built before v2 asks for.
+        let data: string;
+        if (url.searchParams.get("v") === "2") {
+          indexes.liquidRows ??= loadLiquidRows(options.dbcDirectory);
+          data = JSON.stringify(await indexes.liquidRows);
+        } else {
+          indexes.liquidClasses ??= loadLiquidClasses(options.dbcDirectory);
+          data = JSON.stringify(await indexes.liquidClasses);
+        }
         response.writeHead(200, {
           "access-control-allow-origin": origin,
           ...datasetCacheHeaders(requestDatasetTag()),
@@ -2907,7 +3032,12 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
       // `face` and `facialHair` are new; a caller that omits them gets 0, the plain look.
       const appearance = ["race", "sex", "skin", "face", "hair", "hairColor", "facialHair"]
         .map((name) => Number.parseInt(url.searchParams.get(name) ?? "0", 10));
-      if (appearance.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+      // 05.10-A7a-A 6.10: the optional `class` (UNIT_FIELD_BYTES_0 byte 1) decides the death knight's
+      // eye glow; absent is the old spelling and draws none.
+      const appearanceClassParam = url.searchParams.get("class");
+      const appearanceClass = appearanceClassParam === null ? undefined : Number.parseInt(appearanceClassParam, 10);
+      if (appearance.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+        || (appearanceClass !== undefined && (!Number.isInteger(appearanceClass) || appearanceClass < 0 || appearanceClass > 255))) {
         respondError(response, 400, origin);
         return;
       }
@@ -2922,7 +3052,7 @@ export async function createGatewayAssetHandler(options: GatewayOptions): Promis
         const equipment = parseEquipment(url.searchParams.get("items") ?? "");
         const data = JSON.stringify(index.forPlayer(
           appearance[0]!, appearance[1]!, appearance[2]!, appearance[3]!,
-          appearance[4]!, appearance[5]!, appearance[6]!, equipment));
+          appearance[4]!, appearance[5]!, appearance[6]!, equipment, appearanceClass)); // 05.10-A7a-A 6.10
         response.writeHead(200, {
           "access-control-allow-origin": origin,
           "cache-control": "no-store",

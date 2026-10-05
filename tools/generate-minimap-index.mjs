@@ -12,7 +12,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MINIMAP_TRS, loadMinimapIndex, tilesOfMap } from "./minimap-index.mjs";
+import { MINIMAP_TRS, loadMinimapIndex, tilesOfMap, wmoMinimapRoots } from "./minimap-index.mjs";
 import { internalMapName, mapsWithDirectory } from "./map-directory.mjs";
 import { clientArchives } from "./mpq.mjs";
 import { clientDirectory, dbcDirectory } from "./paths.mjs";
@@ -35,15 +35,36 @@ export async function publishMinimapIndex(mapId, directory, index, archives) {
   return { destination, tiles: Object.keys(tiles).length };
 }
 
-// Run directly: node tools/generate-minimap-index.mjs 0     (or --all)
+/**
+ * 05.10-A7b-3 (7.14): every WMO's baked minimap tiles in one file, `wmo.json` beside the map indexes:
+ * `{ version: 1, roots: { "<root>": { "<group>": { "<x>-<y>": hash } } } }`. One read of md5translate
+ * answers all 793 roots (11,106 tiles), so the gateway's `/minimap/wmo` route serves any building out
+ * of one memoised file rather than a generator run per building. A new file name, so no generation:
+ * a gateway older than the route never asks for it.
+ */
+export async function publishWmoMinimapIndex(index, archives) {
+  const roots = wmoMinimapRoots(index);
+  const destination = resolve(minimapDirectory(), "wmo.json");
+  await mkdir(dirname(destination), { recursive: true });
+  await writeFile(destination, JSON.stringify({ version: 1, roots }));
+  if (archives) await stampGenerated(destination, archives, { paths: [MINIMAP_TRS] });
+  return { destination, roots: Object.keys(roots).length };
+}
+
+// Run directly: node tools/generate-minimap-index.mjs 0     (or --all; --wmo for wmo.json, 05.10-A7b-3)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const all = process.argv.includes("--all");
+  const wmo = process.argv.includes("--wmo"); // 05.10-A7b-3
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
-  if (!all && !Number.isInteger(mapId)) throw new Error("Usage: node tools/generate-minimap-index.mjs <map> | --all");
+  if (!all && !wmo && !Number.isInteger(mapId)) throw new Error("Usage: node tools/generate-minimap-index.mjs <map> | --all");
 
   const archives = await clientArchives(clientDirectory());
   try {
     const index = await loadMinimapIndex(archives);
+    if (wmo) { // 05.10-A7b-3 (7.14)
+      const result = await publishWmoMinimapIndex(index, archives);
+      console.log(`WMO minimap index: ${result.roots} roots`);
+    } else {
     // One read of a 1.5 MB file answers every map, so `--all` costs no more than one.
     const wanted = all
       ? await mapsWithDirectory(dbcDirectory())
@@ -60,6 +81,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
       if (!all) console.log(`Minimap index for map ${map.id} (${map.directory}): ${result.tiles} tiles`);
     }
     if (all) console.log(`Published ${published + empty} minimap indexes: ${published} with tiles, ${empty} empty`);
+    } // 05.10-A7b-3
   } finally {
     archives.close();
   }

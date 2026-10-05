@@ -35,6 +35,7 @@
  */
 import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "fengari";
 import { installGlueLuaBase51 } from "./GlueLuaBase51.js"; // L5b
+import { installGlueLuaFormat } from "./GlueLuaFormat.js"; // 05.10-3.27
 
 /**
  * The C-API calls this file needs beyond src/types/fengari.d.ts, named one by one (as GlueLua's
@@ -262,4 +263,6 @@ export function installGlueLuaNatives(L: LuaState): void {
   lua.lua_setglobal(L, to_luastring("strsplit"));
   // L5b: 5.1's `tostring`, `pairs` (over this `next`), `ipairs` and `math.fmod` (GlueLuaBase51.ts).
   installGlueLuaBase51(L, next);
+  // 05.10-3.27: Wow.exe's str_format (0x00853c50) as `string.format` and `format` (GlueLuaFormat.ts).
+  installGlueLuaFormat(L);
 }

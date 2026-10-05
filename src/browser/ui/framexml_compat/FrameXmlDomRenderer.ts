@@ -10,6 +10,7 @@ import {
 import type { FrameXmlUiBridge } from "./FrameXmlRuntime.js";
 import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource } from "./FrameXmlTextures.js";
 import { hasFrameXmlEscapes, parseFrameXmlText } from "./FrameXmlText.js";
+import { paintFrameXmlAlphaGradient } from "./FrameXmlAlphaGradient.js"; // 05.10-3.21
 import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
 import { frameXmlPaintLineFade, frameXmlPaintLineFades } from "./FrameXmlMessageFade.js";
 import { frameXmlMessageAlphaReplaced, frameXmlNoteMessageLayout } from "./FrameXmlMessageFade.js"; // L5 3.34
@@ -2366,7 +2367,13 @@ export class FrameXmlDomRenderer {
       // client's implicit font string does.
       if (owned && (frame.type === "Button" || frame.type === "CheckButton")) this.applyButtonLabel(rendered.label, frame);
     } else if (frame.type === "FontString") {
-      this.applyText(rendered, element, frame.text);
+      // 05.10-3.21: SetAlphaGradient draws the text itself while it fades (FrameXmlAlphaGradient.ts).
+      const gradient = paintFrameXmlAlphaGradient(element, frame);
+      if (gradient === "painted") rendered.textSource = frame.text;
+      else {
+        if (gradient === "cleared") rendered.textSource = undefined;
+        this.applyText(rendered, element, frame.text);
+      }
     }
 
     const placed = !paintOnly || rendered.appliedAnimationTransform !== frame.animationTransform

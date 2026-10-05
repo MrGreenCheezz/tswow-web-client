@@ -168,7 +168,7 @@ const GO_TYPES_WITH_CURSOR = new Set([0, 1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 17, 18
 /**
  * LockType.dbc CursorName for the stock lock types (1 Lockpicking PickLock, 2 Herbalism GatherHerbs,
  * 3 Mining Mine, 19 Fishing FishingCursor; the rest are empty). A dataset's own lock types need the
- * gateway's lock table to carry the column (`LockCursorData.lockTypeCursors`).
+ * gateway's lock table to carry the column (05.10-5.17: `/dbc/locks?v=1` `lockTypeCursors`, LockClient).
  */
 const STOCK_LOCK_TYPE_CURSORS: Readonly<Record<number, string>> = Object.freeze({
   1: "PickLock", 2: "GatherHerbs", 3: "Mine", 19: "FishingCursor",
@@ -393,8 +393,22 @@ export const REPAIR_CURSOR_FILE = CURSOR_FILES[C.REPAIR]!;
 
 // ---- the pictures ---------------------------------------------------------------------------------
 
+/**
+ * 05.10-5.17: `SetCursor(path)` with a name outside the table is a file of its own (id 53, 0x00616830),
+ * read from that path as given ("Interface\CURSOR\Driver") rather than from Interface\Cursor. Its key
+ * here carries this prefix so the two kinds never share a picture.
+ */
+const PATH_PREFIX = "path:";
+/** The picture key of a `SetCursor` file path (see {@link cursorTexturePath}). */
+export function pathCursorName(path: string): string {
+  return PATH_PREFIX + path;
+}
+
 /** The keyword a cursor shows until (and unless) its picture arrives. */
 function fallbackFor(name: string): string {
+  // 05.10-5.17: a path the client cannot load leaves its cursor blank (0x00616830 zeroes the picture
+  // buffer and still selects id 53 — FloatingChatFrame.xml:552 hides the pointer that way).
+  if (name.startsWith(PATH_PREFIX)) return failedAt.has(name) ? "none" : "";
   if (name === "" || name === "Point") return "";
   return name.startsWith("Unable") ? "not-allowed" : "pointer";
 }
@@ -421,6 +435,11 @@ export function onCursorPicture(listener: () => void): () => void {
 
 /** The archive path of a cursor file. */
 export function cursorTexturePath(name: string): string {
+  // 05.10-5.17: a SetCursor path as given, .blp added when it names no extension (as the vehicle's does).
+  if (name.startsWith(PATH_PREFIX)) {
+    const path = name.slice(PATH_PREFIX.length);
+    return /\.[A-Za-z0-9]{3,4}$/.test(path) ? path : `${path}.blp`;
+  }
   return `Interface\\Cursor\\${name}.blp`;
 }
 
@@ -459,6 +478,8 @@ function requestPicture(name: string): void {
     // The keyword stays; asked again after a while.
     requested.delete(name);
     failedAt.set(name, Date.now());
+    // 05.10-5.17: a path's blank cursor is a change of picture too.
+    if (name.startsWith(PATH_PREFIX)) for (const listener of pictureListeners) listener();
   });
 }
 

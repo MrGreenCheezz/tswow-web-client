@@ -80,8 +80,11 @@ export interface AutoRangedCombatHost {
    * for) — no CMSG_SET_SHEATHED.
    */
   stopAttack(): void;
-  /** 0x0080da40: the repeating cast at the target. L18-review: without turning the character either. */
-  shoot(spellId: number, target: WorldObjectState): void;
+  /**
+   * 0x0080da40: the repeating cast at the target. L18-review: without turning the character either.
+   * 05.10-5.05: false when nothing went out (0x0080da40's own false — no 0x007fe190 then).
+   */
+  shoot(spellId: number, target: WorldObjectState): boolean | void;
   /**
    * 0x00807560(1): CMSG_CANCEL_AUTO_REPEAT_SPELL and the repeat forgotten. L18 5.05: no CMSG_SET_SHEATHED
    * either — 0x00715ac0(0) only clears a local flag (+0xa38 bit 0x200), 0x0072afe0 resets an animation
@@ -149,6 +152,23 @@ export class AutoRangedCombat {
   }
 
   /**
+   * 05.10-3.01: how many times 0x007fe190 has run — the wanted spell's remembered refusal (0x00d397c8)
+   * forgotten, read by the combat log's SPELL_CAST_FAILED rules (FrameXmlCombatLogCasts.ts). Its three
+   * callers: StopAttack 0x006e1660 ({@link stop}), the swing 0x006e2610 (WorldClient.startAttack) and this
+   * controller's shot ({@link tick}).
+   */
+  get failureResets(): number {
+    return this.#failureResets;
+  }
+
+  /** 05.10-3.01: one more 0x007fe190. */
+  noteFailureReset(): void {
+    this.#failureResets++;
+  }
+
+  #failureResets = 0; // 05.10-3.01
+
+  /**
    * 0x006e4950's ranged branch, after the mount rules: a unit CanAttack refuses stops a running mode;
    * otherwise the controller is registered and, unless `tickNow` is false (a hand-cast shot entering the
    * mode, 0x0080cce0), runs once at once.
@@ -199,13 +219,16 @@ export class AutoRangedCombat {
     if (distance <= min * min && host.meleeAttacking()) return;
     if (host.meleeAttacking()) host.stopSwing();
     if (this.#wanted === undefined) this.#wanted = spell;
-    if (facesForShot(player, target) && (player.movementFlags & AUTO_RANGED_STILL_MASK) === 0 && distance < max * max) {
-      host.shoot(spell, target);
+    if (facesForShot(player, target) && (player.movementFlags & AUTO_RANGED_STILL_MASK) === 0 && distance < max * max
+      && host.shoot(spell, target) !== false) { // 05.10-5.05: only a shot that went out
+      // 05.10-3.01: 0x006e2df3 — 0x007fe190 once 0x0080da40 has cast the shot (here: once it is asked for).
+      this.#failureResets++;
     }
   }
 
   /** 0x006e1660's half: the wanted spell dropped — its repeat cancelled when that is what runs — and the mode left. */
   stop(): void {
+    this.#failureResets++; // 05.10-3.01: 0x006e16d2 — 0x006e1660 calls 0x007fe190 every time
     if (this.#wanted !== undefined) {
       this.#wanted = undefined;
       const spell = this.#host.rangedSpell();

@@ -11,9 +11,11 @@ import { GroundCoverClient } from "../GroundCover.js";
 import { LightClient } from "../LightClient.js";
 import { LiquidTextureClient } from "../Water.js";
 import { HorizonClient } from "../Horizon.js";
+import { environmentStandInsWith } from "../StandIn.js"; // 05.10-A7b-9 (7.18)
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
-import { buildModel, characterSlots, geosetList } from "../ModelBuild.js";
+import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
+import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { addSkinnedClips, buildSkinnedTemplateFrom, instantiateSkinned } from "../AnimatedModel.js";
 import { decodeWvm9, decodeWvaAnimations, visualModelUrl, visualAnimationsUrl, TEXTURE_TYPE_BODY } from "../Wvm.js";
 import { acquireRenderBenchmarkFormalGpuObserver } from "../RenderBenchmarkRuntime.js";
@@ -261,6 +263,12 @@ if (movement) {
     for (let i = 1; i < due; i++) if (!state.objects.has(objects[i]!.guid)) state.objects.set(objects[i]!.guid, objects[i]!);
   };
   phases = () => ({ query: queryMs, ...worldRenderer.drawPhaseMs });
+  // 05.10-A7b-9 (7.18): the environment stand-ins with the tile losses and retry waits of this run's clients.
+  const benchStandIns = () => {
+    const report = worldRenderer.standInReport();
+    return { ...report, environment: environmentStandInsWith(report.environment,
+      { environment, splat, light: lighting, horizon }) };
+  };
   readiness = () => {
     const e = environment.stats, t = terrain.stats, s = splat.stats, r = worldRenderer.benchmarkReadiness;
     const async = [cover.stats, lighting.stats, liquids.stats, horizon.stats];
@@ -273,7 +281,7 @@ if (movement) {
     const errors = e.failedModels + e.failedTiles + e.failedGroups + e.failedAnimations
       + r.modelTexturesErrors + r.worldTexturesErrors + r.characterAtlasErrors + t.failed + s.failed + async.reduce((n, x) => n + x.error, 0);
     return { pending, errors, details: { environment: e, terrain: t, splat: s, renderer: r,
-      units: worldRenderer.telemetry.unitsDrawn, standIns: worldRenderer.standInReport() } };
+      units: worldRenderer.telemetry.unitsDrawn, standIns: benchStandIns() } };
   };
 } else {
   const appearance = display.appearance;
@@ -289,7 +297,7 @@ if (movement) {
   const textures: Promise<THREE.Texture>[] = [];
   const loader = new THREE.TextureLoader();
   const built = buildModel(model, { modelPath: display.model, baseUrl,
-    slots: characterSlots(display.textures, appearance), geosets: geosetList(appearance.geosets),
+    slots: characterSlots(display.textures, appearance), geosets: figureGeosets(model, appearance), // 05.10-A7a-G 6.18
     slotTextures: new Map([[TEXTURE_TYPE_BODY, body]]), skinned: true,
     coalesceAdjacentBatches: true,
     loadTexture(url) {

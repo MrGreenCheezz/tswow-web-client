@@ -2,6 +2,7 @@ import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { gatewayOrigin as defaultGatewayOrigin, clientLocale } from "../Environment.js";
 import { questLogNameClient } from "../QuestLogNameClient.js";
 import { creatureTypeClient } from "../CreatureTypeClient.js";
+import { petFoodClient } from "../PetFoodClient.js"; // 05.10-petfood
 import { characterRegenClient } from "../CharacterRegenClient.js";
 import { spellLearnEffectsClient } from "../SpellLearnEffectsClient.js";
 import { installFrameXmlQuestPoiFrame } from "./FrameXmlQuestBlobPainter.js";
@@ -61,6 +62,7 @@ import {
   forgetMinimap,
   minimapWidgetAdapter,
 } from "../ui/Minimap.js";
+import { liveIndoorZoneTexts, liveWmoInterior } from "../AreaLocatorLive.js"; // 05.10-A7b-4 (+ review)
 import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
@@ -183,6 +185,7 @@ import { installFrameXmlBattlefieldMinimapRefusal } from "./FrameXmlBattlefieldM
 // L17 3.14: Blizzard_BattlefieldMinimap through its owner, its C API and the battlefield map source.
 import { createFrameXmlBattlefieldMinimapOwner, installFrameXmlBattlefieldMinimapHooks } from "./FrameXmlBattlefieldMinimapLod.js";
 import { installFrameXmlBattlefieldMinimapApi } from "./FrameXmlBattlefieldMinimapApi.js";
+import { publishFrameXmlBattlefieldMinimapKey } from "./FrameXmlBattlefieldMinimapKey.js"; // 05.10-L17t
 import { frameXmlBattlefieldMapSource, frameXmlGuidValue } from "./FrameXmlBattlefieldMapSource.js";
 import { vehicleCatalog as frameXmlVehicleCatalog } from "../VehicleClient.js"; // L17 3.14
 import { createFrameXmlGlyphExtension, type FrameXmlTalentLodExtension } from "./FrameXmlGlyphOwner.js";
@@ -3293,6 +3296,8 @@ export async function mountFrameXmlVertical(
     questLogNames: (() => { const names = questLogNameClient(origin); if (names?.state === "failed") names.retry(); return names; })(),
     // 3.23A: UnitCreatureType/UnitCreatureFamily names; retried on each mount after a stale gateway.
     creatureTypes: (() => { const types = creatureTypeClient(origin); if (types?.state === "failed") types.retry(); return types; })(),
+    // 05.10-petfood: GetPetFoodTypes' diet tables; retried on each mount after a stale gateway.
+    petFoods: (() => { const foods = petFoodClient(origin); if (foods?.state === "failed") foods.retry(); return foods; })(), // 05.10-petfood
     mailDraftAttachments,
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
     mapSource: {
@@ -3471,6 +3476,7 @@ export async function mountFrameXmlVertical(
         // FACTION_ALLIANCE/FACTION_HORDE, the GlobalStrings.lua names; the English token only
         // before the boot's strings exist, so FACTION_CONTROLLED_TERRITORY never formats a nil.
         factionName: (side) => globalStringOf?.(side === "Alliance" ? "FACTION_ALLIANCE" : "FACTION_HORDE") ?? side,
+        indoorTexts: liveIndoorZoneTexts, // 05.10-A7b-4 (7.13): a WMO room's names
       });
     },
     // The loading curtain: no zone edge while it is up, the settled one after it (LiveWorldSeam).
@@ -3478,7 +3484,9 @@ export async function mountFrameXmlVertical(
     // ZONE_CHANGED_INDOORS instead of ZONE_CHANGED: the per-frame answer the loop already hands the
     // renderer (Collision.indoorsAt, the floor's MOGP 0x8 as the client's 0x007A1480 tests), read
     // only when a zone name changes.
-    playerIndoors: () => game.renderer?.indoors === true,
+    // 05.10 review A7b-4: since A7b-4 the renderer's flag is the server's outdoors (WMOAreaTable 4/2,
+    // AreaTable INSIDE); the client's event keeps the MOGP test, asked of the locator's floor.
+    playerIndoors: () => liveWmoInterior() ?? game.renderer?.indoors === true,
   });
   // L17 3.14: the live seam answers the number itself; a seam handed in answers the text form.
   const unitGuidValue = (seam as { unitGuidValue?: (unit: string) => bigint | undefined }).unitGuidValue?.bind(seam);
@@ -3501,6 +3509,7 @@ export async function mountFrameXmlVertical(
     boot: () => boot,
     onFailure: (reason) => console.warn(`[FrameXML battlefield minimap] ${reason}; no battlefield minimap`),
   });
+  let battlefieldMinimapHooked = false; // 05.10-L17t: the Shift+M key is published only over the hooks
   const boot = new FrameXmlBoot({
     loadScheduler: new GlueLoadScheduler(),
     ...(options.savedVariablesScope ? { savedVariables: {
@@ -3543,7 +3552,7 @@ export async function mountFrameXmlVertical(
       // the addonsOnly mode paints no stock HUD and keeps refusing it silently (FrameXmlBattlefieldMinimap.ts).
       if (options.addonsOnly) installFrameXmlBattlefieldMinimapRefusal(loadedBoot);
       else {
-        installFrameXmlBattlefieldMinimapHooks(loadedBoot, battlefieldMinimap);
+        battlefieldMinimapHooked = installFrameXmlBattlefieldMinimapHooks(loadedBoot, battlefieldMinimap); // 05.10-L17t: result kept
         installFrameXmlBattlefieldMinimapApi({
           vm: loadedBoot.vm, bridge: loadedBoot.bridge, facing: () => seam.map?.playerFacing,
           world: () => game.world, unitGuid: (unit) => battlefieldUnitGuid(unit),
@@ -4457,6 +4466,12 @@ export async function mountFrameXmlVertical(
     // PLAYER_ENTERING_WORLD, ToggleBattlefieldMinimap, the world map's zone-map dropdown) — now, if one
     // asked while the corpus loaded.
     if (!options.addonsOnly) resources.battlefieldMinimapCleanup = battlefieldMinimap.publish(renderer);
+    // 05.10-L17t 3.14: Shift+M (TOGGLEBATTLEFIELDMINIMAP) runs stock ToggleBattlefieldMinimap through the hooks.
+    if (!options.addonsOnly && battlefieldMinimapHooked) {
+      const ownerCleanup = resources.battlefieldMinimapCleanup;
+      const keyCleanup = publishFrameXmlBattlefieldMinimapKey(boot);
+      resources.battlefieldMinimapCleanup = () => { keyCleanup(); ownerCleanup?.(); };
+    }
     if (resources.popupsOwner) {
       resources.popupsOwnerCleanup = publishFrameXmlPopups(resources.popupsOwner, () => boot.isAddonLoaded("Blizzard_TalentUI"));
       // From here the stock dialogs answer the server; the native prompts step aside at once and

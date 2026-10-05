@@ -6,9 +6,9 @@
  * * **The battlefield map** (0x00bea564) is the map of the SMSG_BATTLEFIELD_STATUS slot in progress
  *   (0x0054ae40, status 3). `GetBattlefieldMapIconScale` (0x0054c740) is that map's Map.dbc
  *   MinimapIconScale (record +0x28), 1.0 without one; Arathi Basin's is 1.25 on this dataset, every
- *   other battleground's and arena's 1. The gateway's map rows do not carry the column yet
- *   (`/dbc/areas`, gateway/AreaMetadata.ts `MapInfo`), so until a row has `minimapIconScale` this
- *   answers nothing and the map answers 1.0.
+ *   other battleground's and arena's 1. The gateway's map rows carry it from `/dbc/areas` version 9
+ *   (gateway/AreaMetadata.ts `MapInfo.minimapIconScale`, 05.10-L17t); a row without it (a gateway not
+ *   yet restarted) answers nothing and the map answers 1.0.
  * * **Team positions** (0x00bea180, `GetNumBattlefieldPositions`/`GetBattlefieldPosition`, 0x0054a040/
  *   0x0054c2e0) are the player part of MSG_BATTLEGROUND_PLAYER_POSITIONS (0x0054b3f0). TrinityCore
  *   always writes none (BattleGroundHandler.cpp:291), and WorldClient keeps both parts in one
@@ -36,7 +36,7 @@
  * No allocation per call: the flag and vehicle answers are pooled and rebuilt only when their inputs
  * change.
  */
-import type { AreaData, MapAreaInfo } from "../../gateway/AreaMetadata.js";
+import type { AreaData, AreaInfo, MapAreaInfo } from "../../gateway/AreaMetadata.js";
 import { readField, unit as unitField } from "../../world/Fields.js";
 import { GROUPTYPE_RAID } from "../../world/GroupProtocol.js";
 import { STATUS_IN_PROGRESS } from "../../world/PvpProtocol.js";
@@ -150,6 +150,17 @@ export function frameXmlBattlefieldMapSource(
   let vehiclesCatalog: VehicleCatalog | undefined;
   let areaCache: { data: Readonly<AreaData> | undefined; mapId: number; area: MapAreaInfo | undefined } | undefined;
   let scaleCache: { data: Readonly<AreaData> | undefined; mapId: number; scale: number | undefined } | undefined;
+  // L17-review 05.10: AreaTable by id, per snapshot — the raid pins ask for 40 members every frame.
+  let zoneIndex: { data: Readonly<AreaData>; byId: Map<number, AreaInfo> } | undefined;
+  const zoneOf = (data: Readonly<AreaData> | undefined, zoneId: number): AreaInfo | undefined => {
+    if (!data) return undefined;
+    if (zoneIndex?.data !== data) {
+      const byId = new Map<number, AreaInfo>();
+      for (const area of data.areas) if (!byId.has(area.id)) byId.set(area.id, area);
+      zoneIndex = { data, byId };
+    }
+    return zoneIndex.byId.get(zoneId);
+  };
   /** One answer object for positionOfUnit: the map reads it at once (per-frame raid pins). */
   const memberLocation = { mapId: 0, areaId: 0, x: 0, y: 0 };
   const place = (mapId: number, areaId: number, x: number, y: number): typeof memberLocation => {
@@ -247,7 +258,7 @@ export function frameXmlBattlefieldMapSource(
       const stats = world.partyStats?.get(guid);
       if (!stats || ((stats.status ?? 0) & MEMBER_STATUS_UNPLACED) !== 0) return undefined;
       if (stats.zoneId === undefined || stats.positionX === undefined || stats.positionY === undefined) return undefined;
-      const zone = options.metadata()?.areas.find((area) => area.id === stats.zoneId);
+      const zone = zoneOf(options.metadata(), stats.zoneId);
       if (!zone) return undefined;
       return place(zone.mapId, stats.zoneId, signedShort(stats.positionX), signedShort(stats.positionY));
     },

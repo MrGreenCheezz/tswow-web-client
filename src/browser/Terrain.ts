@@ -814,6 +814,8 @@ export class EnvironmentClient {
   readonly #tiles = new Map<string, EnvironmentObject[] | null>();
   readonly #knownMissingTiles = new Set<string>();
   readonly #failedTiles = new Set<string>();
+  /** 05.10-A7b-9 (7.18): what each loaded tile could not carry (7.19), for the stand-in report. */
+  readonly #tileLosses = new Map<string, EnvironmentTileLossCounts>();
   readonly #loading = new Set<string>();
   /** Keys in the exact footprint most recently requested by `objectsAround`. */
   #activeTiles = new Set<string>();
@@ -1014,6 +1016,7 @@ export class EnvironmentClient {
     this.#tiles.clear();
     this.#knownMissingTiles.clear();
     this.#failedTiles.clear();
+    this.#tileLosses.clear(); // 05.10-A7b-9
     this.#loading.clear();
     this.#models.clear();
     this.#failedModelEntries.clear();
@@ -1225,6 +1228,46 @@ export class EnvironmentClient {
     const key = modelKey(name);
     if (!this.#isModelPrefetched(key)) return undefined;
     return this.#lookupModel(key, "background");
+  }
+
+  /**
+   * 05.10-A7b-9 (7.18): what this client knows about one model, read without asking for it.
+   *
+   * `model()` answers `undefined` for three different facts — on its way, known absent (404),
+   * given up on — and a collision hull comes back as a model the renderer refuses to draw. The
+   * stand-in report needs them apart. No request, no LRU touch, no allocation beyond the key.
+   * A path nobody has asked for yet is `pending`: nothing says it never will be.
+   */
+  modelState(name: string): EnvironmentModelState {
+    const key = modelKey(name);
+    const value = this.#models.get(key);
+    if (value) return value.visual === true ? "resident" : "hull";
+    if (value === null) return this.#failedModelEntries.has(key) ? "failed" : "missing";
+    const failure = this.#modelFailures.get(key);
+    if (failure?.after === Number.POSITIVE_INFINITY && !this.#requestedModels.has(key)) return "failed";
+    return "pending";
+  }
+
+  /**
+   * 05.10-A7b-9 (7.18): placements the tiles under the player lost (7.19), summed over the tiles
+   * of the current footprint only — a tile the player walked away from is not this scene's loss.
+   * For diagnostics and the bench, never per frame.
+   */
+  tileLosses(): EnvironmentTileLossCounts {
+    let rejected = 0;
+    let truncated = 0;
+    let generator = 0;
+    for (const [key, lost] of this.#tileLosses) {
+      if (!this.#tiles.get(key)) {
+        this.#tileLosses.delete(key);
+        continue;
+      }
+      if (!this.#activeTiles.has(key)) continue;
+      rejected += lost.rejected;
+      truncated += lost.truncated;
+      generator += lost.generator;
+    }
+    return { rejected, truncated, generator };
   }
 
   #isModelPrefetched(key: string): boolean {
@@ -2161,7 +2204,8 @@ export class EnvironmentClient {
     if (!controller) return;
     try {
       let response = await fetch(
-        withGeneration(`${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}`),
+        // 05.10-A7b-1 (M-A7b-1): `?v=5` is the `visual-tile-v5` tile; an older gateway ignores it.
+        withGeneration(`${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}?v=${VISUAL_TILE_ROUTE_VERSION}`),
         { signal: controller.signal },
       );
       if (this.#disposed) return;
@@ -2183,11 +2227,20 @@ export class EnvironmentClient {
         return;
       }
       if (!response.ok) throw new Error(`Environment gateway returned ${response.status}`);
-      const value = await this.#tileDecoder.decodeResponse(response, controller.signal);
+      const report = await this.#tileDecoder.decodeResponseReport(response, controller.signal);
       if (this.#disposed) return;
+      const value = report.objects;
       this.#resolve(key, value, "resident");
       const loaded = [...this.#tiles.values()].filter((tile): tile is EnvironmentObject[] => Array.isArray(tile));
       this.onStatus?.(`VMAP tiles: ${loaded.length} · объектов: ${loaded.reduce((sum, tile) => sum + tile.length, 0)}`, false);
+      // 05.10-A7b-1 (7.19): what the tile could not carry is said, not swallowed.
+      const lost = environmentTileLosses(report, response.headers?.get?.("x-tile-truncated"));
+      if (lost) this.onStatus?.(`Environment tile ${key}: ${lost}`, true);
+      // 05.10-A7b-9 (7.18): the same counts, kept for the stand-in report while the tile is held.
+      const generator = environmentTileGeneratorCut(response.headers?.get?.("x-tile-truncated"));
+      if (report.rejected > 0 || report.truncated > 0 || generator > 0) {
+        this.#tileLosses.set(key, { rejected: report.rejected, truncated: report.truncated, generator });
+      } else this.#tileLosses.delete(key);
     } catch (error) {
       if (this.#disposed) return;
       this.#resolve(key, null, "failed");
@@ -2640,7 +2693,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 import type { EnvironmentBounds, EnvironmentObject } from "../gateway/VMapProtocol.js";
-import { EnvironmentTileDecodeClient } from "./EnvironmentTileDecode.js";
+import {
+  EnvironmentTileDecodeClient, VISUAL_TILE_ROUTE_VERSION, environmentTileLosses, // 05.10-A7b-1
+} from "./EnvironmentTileDecode.js";
+import { environmentTileGeneratorCut } from "./EnvironmentTileDecode.js"; // 05.10-A7b-9
+import type { EnvironmentModelState, EnvironmentTileLossCounts } from "./StandIn.js"; // 05.10-A7b-9
 // The same ladder, from the file that measured it: a model the gateway has to build out of the
 // archives fails in exactly the way a body texture does, and two different waits would be two
 // numbers to keep in step for no reason.

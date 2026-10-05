@@ -42,13 +42,12 @@
  *
  * Deliberate differences: a spell row not fetched yet is not kept out (nil name, as the other entries
  * do) and its cast time is the packet's; the name test reads the gateway's placeholder
- * `Spell <id>` (gateway/SpellMetadata.ts) as the empty name it stands for. SPELL_FAILED_TOO_MANY_OF_ITEM
- * (129) with an item, which 0x00808200 writes past the repeat test with another text, is written as
- * any other result. Not modelled (03.10 review): 0x007fe190 resets the auto-repeat spell's remembered
- * result (0x00d397c8 = 187) whenever auto-repeat stops — WorldClient raises no edge for that, so a
- * refusal repeated across a stop and a restart stays quiet here; and 0x0080e1b0 handles a GO only when
- * 0x007fd830 can resolve the GUIDs at cast record +0x48/+0x50 (the target block's location transports
- * [assumed]), which this log does not check.
+ * `Spell <id>` (gateway/SpellMetadata.ts) as the empty name it stands for. 05.10-3.01: SPELL_FAILED_TOO_MANY_OF_ITEM
+ * (129) with a limit category, which 0x00808200 writes past the repeat test with another text, is `forced`
+ * (FrameXmlCombatLogFailed.ts), and 0x007fe190's resets of the auto-repeat result are `autoRepeatReset`
+ * (was: «not modelled, whenever auto-repeat stops» — its callers are the attack paths, not the repeat's
+ * end). Not modelled (03.10 review): 0x0080e1b0 handles a GO only when 0x007fd830 can resolve the GUIDs at
+ * cast record +0x48/+0x50 (the target block's location transports [assumed]), which this log does not check.
  */
 
 import type { SpellMetadata } from "../SpellMetadata.js";
@@ -167,10 +166,12 @@ export class FrameXmlCombatLogCastRules {
 
   /**
    * SMSG_CAST_FAILED: whether SPELL_CAST_FAILED is written (0x00809af0 → 0x00808200 → 0x00751ad0).
-   * `now` is a millisecond clock; `autoRepeatSpellId` the spell auto-repeating now, if any.
+   * `now` is a millisecond clock; `autoRepeatSpellId` the spell auto-repeating now, if any — 05.10-3.01: the
+   * one 0x00808200 compares is 0x00d397cc, the autoRangedCombat controller's wanted spell (0x007fe180; only
+   * 0x006e2be0 sets it, through 0x007fe140 at 0x006e2d77), not the repeating one (0x00d397d0).
    */
   failed(spellId: number, result: number, now: number, autoRepeatSpellId: number | undefined,
-    spell: CastLogSpell | undefined): boolean {
+    spell: CastLogSpell | undefined, forced = false): boolean { // 05.10-3.01: + forced
     let quiet = false;
     if (autoRepeatSpellId !== undefined && autoRepeatSpellId !== 0 && spellId === autoRepeatSpellId) {
       if (result === this.#autoRepeatResult) quiet = true;
@@ -184,7 +185,19 @@ export class FrameXmlCombatLogCastRules {
       this.#last = { spellId, result, at: now };
     }
     if (result === SPELL_FAILED_DONT_REPORT || result === SPELL_FAILED_CUSTOM_ERROR) return false;
-    return !quiet && !castFailedHidden(spell);
+    // 05.10-3.01: TOO_MANY_OF_ITEM with its limit-category row (FrameXmlCombatLogFailed.ts) is written past the
+    // repeat tests (0x00808ac3 jumps over `local_14`), after they have updated their state above.
+    return (forced || !quiet) && !castFailedHidden(spell);
+  }
+
+  /**
+   * 05.10-3.01: 0x007fe190 — the auto-repeat spell's remembered result back to 187, so its next refusal is
+   * written. Its only callers (a scan of every E8 call in .text): StopAttack 0x006e1660 (0x006e16d2,
+   * unconditional), the swing 0x006e2610 (0x006e2862) and the autoRangedCombat controller 0x006e2be0
+   * (0x006e2df3, when 0x0080da40 casts the shot) — world/AutoRangedCombat.ts counts them.
+   */
+  autoRepeatReset(): void {
+    this.#autoRepeatResult = undefined;
   }
 
   /** A new world: nothing carries over. */

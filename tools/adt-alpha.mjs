@@ -176,6 +176,39 @@ export function mapChunkColours(data, start, size) {
   return data.subarray(at + 8, at + 8 + 580);
 }
 
+/** 05.10-A7b-7 (7.06): MCNK header flag `has_mcsh` — the chunk carries a baked shadow map. */
+export const MCNK_HAS_SHADOW = 0x1;
+const MCNK_OFFSET_SHADOW = 0x2c;
+/** 64 rows of 64 bits. */
+const MCSH_BYTES = 512;
+
+/**
+ * 05.10-A7b-7 (7.06): `MCSH`, the shadow the world editor baked into one chunk — 64x64 bits on the
+ * alpha map's own raster, row `y` at byte `y * 8`, column `x` at bit `x & 7` of byte `x >> 3` (lowest
+ * bit first). A set bit is ground in shadow. Returns 4,096 bytes of 0/1, or `undefined` when the chunk
+ * has none (flag 0x1 clear, no offset, or no `MCSH` tag there).
+ *
+ * The offset at header 0x2C counts from the chunk's data like `MCCV`'s, so the tag sits at
+ * `data + ofs - 8` (`docs/implementation/probes/A7b/probe-mcsh.mjs` reads every flagged chunk of 48
+ * ADTs that way). No 63x63 edge correction: every chunk with a shadow map in the six tiles of
+ * `.runtime/re-2026-10-05/a7b-7/probe-layers-mcsh.out.txt` (Azeroth, Kalimdor, Outland, Northrend)
+ * has `do_not_fix_alpha_map` set, and its last row and column already equal their neighbours.
+ */
+export function mapChunkShadow(data, start, size) {
+  const flags = data.readUInt32LE(start + MCNK_OFFSET_FLAGS);
+  if ((flags & MCNK_HAS_SHADOW) === 0) return undefined;
+  const offset = data.readUInt32LE(start + MCNK_OFFSET_SHADOW);
+  if (!offset || offset < 8 || offset + MCSH_BYTES > size + 8) return undefined;
+  const at = start + offset - 8;
+  if (at + 8 + MCSH_BYTES > data.length || tagAt(data, at) !== "MCSH") return undefined;
+  const bits = data.subarray(at + 8, at + 8 + MCSH_BYTES);
+  const shadow = new Uint8Array(ALPHA_SIZE);
+  for (let y = 0; y < ALPHA_SIDE; y++) {
+    for (let x = 0; x < ALPHA_SIDE; x++) shadow[y * ALPHA_SIDE + x] = (bits[y * 8 + (x >> 3)] >> (x & 7)) & 1;
+  }
+  return shadow;
+}
+
 /** True when the MCNK header flags ask for the 63x63 edge correction. */
 export function alphaNeedsEdgeFix(chunkFlags) {
   return (chunkFlags & MCNK_DO_NOT_FIX_ALPHA_MAP) === 0;

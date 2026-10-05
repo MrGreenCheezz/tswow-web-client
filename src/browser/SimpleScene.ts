@@ -445,6 +445,8 @@ export class SimpleScene {
       // over WebGL it was a yellow service bar painted through the real spell effect. Other object
       // types, notably Corpse, keep the marker because WebGL has no authored representation for
       // them yet and this overlay is still the only way the player can see them.
+      // 05.10-A7a-G2 6.05: a corpse the renderer draws as its body or bones (CorpseModel.ts) needs no marker.
+      else if (object.typeId === 7 && unitHeight?.(object.guid) !== undefined) continue;
       else if (this.#drawWorld || object.typeId !== 6) {
         this.#drawMarker(object, point, top.y, bodyHeight, distance, isSelected);
       }

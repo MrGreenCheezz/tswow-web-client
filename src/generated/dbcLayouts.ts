@@ -2,7 +2,7 @@
 // under tools/dbd (CC BY-SA 4.0 — see tools/dbd/README.md). Do not edit by hand;
 // run `npm run dbc:generate`. `npm run build` fails if this file has drifted.
 //
-// Build 3.3.5.12340, 79 tables.
+// Build 3.3.5.12340, 81 tables.
 
 /** How a field is stored. Every WDBC slot is a word unless the definition says narrower. */
 export type DbcFieldType = "int" | "float" | "string" | "locstring";
@@ -679,6 +679,16 @@ export const DBC_LAYOUTS = {
       "Flags": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
     },
   },
+  LiquidMaterial: {
+    fieldCount: 3,
+    recordSize: 12,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "LVF": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Flags": { index: 2, byteOffset: 8, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+    },
+  },
   LiquidType: {
     fieldCount: 45,
     recordSize: 180,
@@ -726,6 +736,18 @@ export const DBC_LAYOUTS = {
       "Index": { index: 9, byteOffset: 36, byteSize: 4, arraySize: 8, stride: 1, type: "int", unsigned: false },
       "Skill": { index: 17, byteOffset: 68, byteSize: 4, arraySize: 8, stride: 1, type: "int", unsigned: false },
       "Action": { index: 25, byteOffset: 100, byteSize: 4, arraySize: 8, stride: 1, type: "int", unsigned: false },
+    },
+  },
+  LockType: {
+    fieldCount: 53,
+    recordSize: 212,
+    idField: "ID",
+    fields: {
+      "ID": { index: 0, byteOffset: 0, byteSize: 4, arraySize: 1, stride: 1, type: "int", unsigned: false },
+      "Name_lang": { index: 1, byteOffset: 4, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "ResourceName_lang": { index: 18, byteOffset: 72, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "Verb_lang": { index: 35, byteOffset: 140, byteSize: 4, arraySize: 1, stride: 17, type: "locstring", unsigned: false },
+      "CursorName": { index: 52, byteOffset: 208, byteSize: 4, arraySize: 1, stride: 1, type: "string", unsigned: false },
     },
   },
   Map: {

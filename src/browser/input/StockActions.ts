@@ -79,6 +79,8 @@ export const STOCK_ACTIONS = [
   { action: "minimapZoomIn", command: "MINIMAPZOOMIN", group: "Интерфейс", label: "Миникарта: приблизить" },
   { action: "minimapZoomOut", command: "MINIMAPZOOMOUT", group: "Интерфейс", label: "Миникарта: отдалить" },
   { action: "toggleMinimapRotation", command: "TOGGLEMINIMAPROTATION", group: "Интерфейс", label: "Вращение миникарты" },
+  // 05.10-L17t 3.14: stock ToggleBattlefieldMinimap in the mounted stock UI (FrameXmlBattlefieldMinimapKey.ts).
+  { action: "toggleBattlefieldMinimap", command: "TOGGLEBATTLEFIELDMINIMAP", group: "Интерфейс", label: "Карта зоны" }, // 05.10-L17t
 
   { action: "previousActionPage", command: "PREVIOUSACTIONPAGE", group: "Панель команд", label: "Предыдущая страница" },
   { action: "nextActionPage", command: "NEXTACTIONPAGE", group: "Панель команд", label: "Следующая страница" },

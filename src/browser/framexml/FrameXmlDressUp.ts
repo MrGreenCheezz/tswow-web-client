@@ -65,6 +65,8 @@ export interface FrameXmlDressUpLook {
   readonly hairStyle: number;
   readonly hairColor: number;
   readonly facialHair: number;
+  /** 05.10-A7a-G 6.18: UNIT_FIELD_BYTES_0 byte 1, sent as `class=` (the death knight's eye glow, 6.10). */
+  readonly classId?: number | undefined;
   /** What the unit is visibly wearing now (PLAYER_VISIBLE_ITEM_*), rows that have arrived only. */
   readonly equipment: readonly FrameXmlDressUpWorn[];
 }

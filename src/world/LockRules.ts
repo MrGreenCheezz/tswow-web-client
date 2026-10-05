@@ -30,6 +30,11 @@ export interface LockData {
   /** Lock id to its non-empty cases. A lock with no cases at all is left out. */
   locks: Record<number, LockCase[]>;
   openers: LockOpener[];
+  /**
+   * 05.10-5.17: LockType.dbc CursorName by lock type, the non-empty ones only — the cursor over a
+   * locked object (Wow.exe 0x0070F9B0). Absent from a gateway older than `/dbc/locks?v=1`.
+   */
+  lockTypeCursors?: Record<number, string>;
 }
 
 /**

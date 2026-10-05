@@ -34,10 +34,12 @@ export const ASSET_JOB_FAMILY: Readonly<Record<AssetWorkerJob["kind"], AssetFami
   "minimap-index": "texture",
   "zone-map": "texture",
   liquid: "texture",
+  "liquid-family": "texture", // 05.10-A7b-8
   "client-file": "texture",
   "terrain-splat": "tile",
   "visual-tile": "tile",
   horizon: "tile",
+  "horizon-colour": "tile", // 05.10-A7b-7
   "tile-models": "tile",
 };
 
@@ -86,6 +88,8 @@ export function assetWorkerSlot(kind: AssetWorkerJob["kind"]): string {
   // The preloader's tile-models list reads one file and no archive: it rides the visual-tile
   // worker (10.22) rather than starting a fourth tile process for a few milliseconds of work.
   if (kind === "tile-models") return "tile:visual-tile";
+  // 05.10-A7b-7 (7.08): once per map, beside the `.wdl` it colours — the horizon worker, not a fifth.
+  if (kind === "horizon-colour") return "tile:horizon";
   const family = ASSET_JOB_FAMILY[kind];
   return family === "tile" ? `tile:${kind}` : family;
 }

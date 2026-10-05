@@ -188,6 +188,22 @@ export interface MapInfo {
    * 24 raids, 6 battlegrounds, 5 arenas.
    */
   instanceType: number;
+  /**
+   * 05.10-L17t: `MinimapIconScale`, column 58 of the 3.3.5.12340 layout (tools/dbd/Map.dbd; TrinityCore
+   * DBCStructure.h:1089 leaves it unread). Wow.exe answers `GetBattlefieldMapIconScale` (0x0054c740)
+   * with the battlefield map's value (in-memory record +0x28), 1.0 without a row; Arathi Basin's is 1.25
+   * on this dataset, every other battleground's and arena's 1. Optional: a gateway older than route
+   * version 9 does not send it, and the call then answers 1.0 (FrameXmlBattlefieldMapSource.ts).
+   */
+  minimapIconScale?: number;
+  /**
+   * 05.10-A7b-4 (7.01/7.13): `AreaTableID`, column 22 (tools/dbd/Map.dbd; TrinityCore `MapEntry::AreaTableID`)
+   * — the area of a point that neither a WMO room nor the terrain grid names (Map.cpp `GetAreaId`, the last
+   * fallback). Every single-WMO dungeon has one (43 Wailing Caverns 718, 34 the Stockade 717); 0 on the maps
+   * without an AreaTable row (559, 604, 608, 624, 632). Rides the unreleased route version 9: a reply
+   * without it leaves the zone label on the map's name, as before (AreaLocator.ts).
+   */
+  areaTableId?: number;
 }
 
 export interface AreaData {
@@ -333,6 +349,8 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       directory: mapTable.string(row, "Directory"),
       name: mapTable.locstring(row, "MapName_lang"),
       instanceType: mapTable.int(row, "InstanceType"),
+      minimapIconScale: mapTable.float(row, "MinimapIconScale"), // 05.10-L17t
+      areaTableId: mapTable.int(row, "AreaTableID"), // 05.10-A7b-4
     });
   }
 

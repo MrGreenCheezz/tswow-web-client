@@ -530,6 +530,8 @@ export class GlueCreation {
       ].join("/"),
       displayId,
       race: race.id,
+      // 05.10-A7a-A 6.10: the class being created (a death knight's eyes glow in the preview).
+      ...(this.selectedClass()?.id === undefined ? {} : { classId: this.selectedClass()!.id }),
       sex: this.gender,
       skin: look.skin,
       face: look.face,

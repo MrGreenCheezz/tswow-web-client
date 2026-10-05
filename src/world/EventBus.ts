@@ -273,7 +273,18 @@ export interface WorldPacketEvents {
    * 3.01-castlog: `refusal` marks SMSG_CAST_FAILED's — the only one Wow.exe logs as SPELL_CAST_FAILED
    * (0x00809af0 → 0x00808200 → 0x00751ad0; the interrupt pair's handlers 0x00809c70/0x00806ad0 log nothing).
    */
-  SPELL_CAST_RESULT: { casterGuid: bigint; spellId: number; castCount: number; result: number; refusal?: true };
+  SPELL_CAST_RESULT: {
+    casterGuid: bigint; spellId: number; castCount: number; result: number; refusal?: true;
+    /** 05.10-3.01: a refusal's words as the error frame says them (0x00808200's `local_10`), when it has any. */
+    text?: string;
+    /** 05.10-3.01: a refusal's tail (`CastFailure.extra`), when it has one. */
+    extra?: readonly number[];
+  };
+  /**
+   * 05.10-3.01: a cast the client refuses itself, before any packet (0x00809f80's calls to 0x00808200 at
+   * 0x00809fa8, 0x0080a0e7, 0x0080a1ec: MissileCast.ts) — the combat log's SPELL_CAST_FAILED like a server's.
+   */
+  SPELL_CAST_REFUSED_LOCAL: { spellId: number; result: number; text?: string };
   /** 3.01: combat facts UNIT_COMBAT does not carry (world/CombatFacts.ts). */
   COMBAT_FACT: import("./CombatFacts.js").CombatFact;
   /** Pushback: damage taken while casting adds to what is left. */

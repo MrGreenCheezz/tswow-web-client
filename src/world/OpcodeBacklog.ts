@@ -18,8 +18,8 @@ export type PlanSlice = "spells" | "quests" | "character" | "world" | "social" |
  * is to fail the build the moment the core gains an opcode nobody has claimed.
  *
  * A branch is not an effect. Accounting of 2026-10-01 (5.29), checked by the same test against
- * `IgnoredOpcodes.ts`: 514 live inbound opcodes: 484 with an effect, 18 without one by design, 1 planned, 11 without a plan item
- * yet — the last three counted at run time by `webclientIgnoredOpcodes()`. "With an effect" means
+ * `IgnoredOpcodes.ts`: 514 live inbound opcodes: 485 with an effect, 18 without one by design, 0 planned, 11 without a plan item
+ * yet — the last three counted at run time by `webclientIgnoredOpcodes()` (05.10-A7a-H: MIRRORIMAGE_DATA left, 6.11б). "With an effect" means
  * the branch changes state or emits something; whether anything reads that state is 5.28's ratchet.
  *
  * The count goes down as slices land, and up when the measurement itself is corrected — which is

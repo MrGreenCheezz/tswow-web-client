@@ -300,7 +300,8 @@ function build(): Panel {
   const comparison = document.createElement("button");
   comparison.type = "button";
   comparison.textContent = "Контрольный профиль графики";
-  setTip(comparison, "Масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены.");
+  // 05.10-7.20: the profile now carries the reference install's Config.wtf values (ComparisonProfile.ts).
+  setTip(comparison, "Как оригинал владельца: освещение «сравнение» (исходный свет и тени), объекты 150%, трава 140 ярдов, масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены.");
   comparison.addEventListener("click", () => { applySettingsPreset("comparison"); });
   const reset = document.createElement("button");
   reset.type = "button";

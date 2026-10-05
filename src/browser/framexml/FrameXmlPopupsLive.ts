@@ -12,6 +12,7 @@ import { dungeonEncounterClient } from "../DungeonEncounterClient.js";
 import type { FrameXmlDungeonEncounter, FrameXmlPopupsContext, FrameXmlPopupsCursorItem } from "./FrameXmlPopups.js";
 import { frameXmlPopupsTalentUiLoaded, frameXmlQuitIntent } from "./FrameXmlPopupsController.js";
 import { frameXmlTalentOpen, toggleFrameXmlTalent } from "./FrameXmlTalentController.js";
+import { liveAreaIdAt } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 
 /** Stock unit tokens a group member can hold: four party slots, forty raid slots. */
 const GROUP_TOKENS: readonly string[] = Object.freeze([
@@ -100,7 +101,7 @@ export function frameXmlPopupsLiveContext(host: FrameXmlPopupsLiveHost): FrameXm
       const world = host.world();
       const position = host.self()?.position;
       if (!world || !position) return undefined;
-      const areaId = game.terrain?.areaAt(world.mapId, position.x, position.y) ?? 0;
+      const areaId = liveAreaIdAt(world.mapId, position.x, position.y); // 05.10-A7b-4
       return areaId > 0 ? game.areas?.area(areaId)?.name : undefined;
     },
     // CONFIRM_TALENT_WIPE waits for Blizzard_TalentUI in the published VM; its load is the published

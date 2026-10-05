@@ -5,8 +5,9 @@ import {
   type SkinnedInstance, type SkinnedTemplate,
 } from "../AnimatedModel.js";
 import {
-  EVERY_GEOSET, buildModel, characterSlots, geosetList, updateBatchAppearance, type BuiltModel,
+  EVERY_GEOSET, buildModel, characterSlots, updateBatchAppearance, type BuiltModel, // 05.10-A7a-G 6.18: geosetList → figureGeosets
 } from "../ModelBuild.js";
+import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import {
   billboardView, buildModelEffects, disposeModelEffects, updateModelEffects, type ModelEffects,
 } from "../ParticleRender.js";
@@ -1505,7 +1506,7 @@ export class GlueModelStage {
       const anisotropy = this.#renderer?.capabilities.getMaxAnisotropy();
       const built = buildModel(wvm, {
         modelPath: path,
-        geosets: appearance ? geosetList(appearance.geosets) : EVERY_GEOSET,
+        geosets: figureGeosets(wvm, appearance), // 05.10-A7a-G 6.18: the world's boot choice; EVERY_GEOSET without an appearance
         ...(source ? { slots: characterSlots(source.textures ?? "", appearance) } : {}),
         ...(body ? { slotTextures: new Map([[TEXTURE_TYPE_BODY, body]]) } : {}),
         baseUrl: this.#options.gatewayOrigin,

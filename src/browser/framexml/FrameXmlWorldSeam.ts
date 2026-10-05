@@ -164,9 +164,11 @@ import { FRAMEXML_GLYPH_BINDINGS, type FrameXmlGlyphModel } from "./FrameXmlGlyp
 import { FRAMEXML_ITEM_TARGETING_BINDINGS } from "./FrameXmlItemTargeting.js";
 import { FRAMEXML_REFUND_BINDINGS } from "./FrameXmlRefund.js";
 import { FRAMEXML_TITLE_BINDINGS, type FrameXmlTitleModel } from "./FrameXmlTitles.js";
+import { FRAMEXML_HELM_CLOAK_BINDINGS, type FrameXmlHelmCloakHost } from "./FrameXmlHelmCloak.js"; // 05.10-A7a-A 6.09
 import { FRAMEXML_EQUIPMENT_SET_BINDINGS, type FrameXmlEquipmentSetModel } from "./FrameXmlEquipmentSets.js";
 import { FRAMEXML_ITEM_ACTION_BINDINGS, FRAMEXML_ITEM_ACTIONS_PRELUDE } from "./FrameXmlItemActions.js";
 import { FRAMEXML_DURABILITY_BINDINGS } from "./FrameXmlDurabilityFrame.js";
+import { FRAMEXML_SET_CURSOR_BINDINGS } from "./FrameXmlSetCursor.js"; // 05.10-5.17
 import { FRAMEXML_OPTIONS_BINDINGS, type FrameXmlOptionsModel } from "./FrameXmlOptions.js";
 import { FRAMEXML_PLAYER_STATUS_BINDINGS, type FrameXmlPlayerStatus } from "./FrameXmlPlayerStatus.js";
 import { FRAMEXML_UNIT_RELATION_BINDINGS, type FrameXmlUnitRelations } from "./FrameXmlUnitRelations.js";
@@ -1432,6 +1434,8 @@ export interface FrameXmlWorldSeam {
   readonly glyphs?: FrameXmlGlyphModel;
   /** The stock PaperDoll title picker's C API and UnitPVPName's title over the title fields and CharTitles (FrameXmlTitles.ts). */
   readonly titles?: FrameXmlTitleModel;
+  /** 05.10-A7a-A 6.09: ShowHelm/ShowCloak/ShowingHelm/ShowingCloak over PLAYER_FLAGS (FrameXmlHelmCloak.ts). */
+  readonly helmCloak?: FrameXmlHelmCloakHost | undefined;
   /** The 3.3.5 equipment manager's C API (GearManagerDialog) over the equipment-set packets (FrameXmlEquipmentSets.ts). */
   readonly equipmentSets?: FrameXmlEquipmentSetModel;
   /** The stock threat C API (UnitFrame.lua's indicator) over the threat tables (FrameXmlThreat.ts). */
@@ -1493,7 +1497,7 @@ export interface FrameXmlWorldSeam {
   petRename?(name: string): void;
   /** L17 3.09: PetRename's checks and declensions, PET_FORCE_NAME_DECLENSION (FrameXmlPetDeclension.ts). */
   readonly petDeclension?: FrameXmlPetDeclensionModel | undefined;
-  /** `GetPetFoodTypes()`: the diet's names when a seam carries them; nothing otherwise (FrameXmlStable.ts). */
+  /** `GetPetFoodTypes()`: the diet's names when a seam carries them; nothing otherwise (05.10-petfood: FrameXmlPetFood.ts). */
   petFoodTypes?(): readonly string[];
   /** Exact auth-list realm name selected by the player. */
   realmName(): string | undefined;
@@ -2326,6 +2330,7 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   ...FRAMEXML_TARGET_NEAREST_BINDINGS, // L2 1.10
   ...FRAMEXML_CAMERA_VIEW_BINDINGS, // DEC-B 3.11
   ...FRAMEXML_INSPECT_BINDINGS,
+  ...FRAMEXML_HELM_CLOAK_BINDINGS, // 05.10-A7a-A 6.09
   ...FRAMEXML_TITLE_BINDINGS, ...FRAMEXML_EQUIPMENT_SET_BINDINGS, AbandonSkill: (seam, args) => { seam.abandonSkill?.(slotOf(args[0])); return NOTHING; },
   ...FRAMEXML_BARBER_BINDINGS,
   ...FRAMEXML_COMPANION_BINDINGS,
@@ -2341,6 +2346,8 @@ export const FRAMEXML_SEAM_BINDINGS: Readonly<Record<string, FrameXmlSeamBinding
   // carried bags and the split cursor first and hand the rest back.
   ...FRAMEXML_ITEM_ACTION_BINDINGS,
   ...FRAMEXML_DURABILITY_BINDINGS,
+  // 05.10-5.17: after the NPC windows' (the bank's inert ResetCursor), the pointer's own SetCursor/ResetCursor.
+  ...FRAMEXML_SET_CURSOR_BINDINGS,
   GetPetExperience: (seam) => seam.petExperience?.() ?? [0, 0],
   GetPetSpellBonusDamage: (seam) => [seam.petSpellBonusDamage?.() ?? 0],
   ...QUEST_GIVER_SEAM_BINDINGS,

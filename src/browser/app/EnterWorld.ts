@@ -151,6 +151,10 @@ import {
 } from "../framexml/FrameXmlQuestGiverController.js";
 import { createFrameXmlMerchantMetadataCoordinator } from "../framexml/FrameXmlMerchantMetadata.js";
 import { WorldEntryLifecycle } from "./WorldEntryLifecycle.js";
+import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.02
+import { swingAction } from "../game/CombatAnimations.js"; // 05.10-A7a-D 6.06
+import { SwingMeleeReactions } from "../game/SwingReactionHost.js"; // 05.10-A7a-D2 6.06
+import { weaponAnimClient } from "../WeaponAnimations.js"; // 05.10-A7a-D 6.06
 /**
  * Entering the world: the login handshake for a chosen character, the asset clients that realm
  * needs, and the couple of dozen callbacks that connect the world client to the panels.
@@ -507,11 +511,19 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     showSwingWarning(world);
     showTarget();
   };
+  // 05.10-A7a-D2 6.06: the victim reacts at the attacker's swing events ($CPP parry/dodge/block, $CAH
+  // wound), as Wow.exe does — not when the packet arrives (game/SwingReactionCues.ts).
+  const swingReactions = new SwingMeleeReactions(world.state, () => game.renderer); // 05.10-A7a-D2
+  entryLifecycle.track(() => swingReactions.dispose()); // 05.10-A7a-D2
+  world.onMeleeAttack = (attacker, victim) => swingReactions.meleeAttack(attacker, victim); // 05.10-A7a-D2
   world.onSwing = (swing) => {
     logSwing(world, swing);
     // Which swing it is comes from what the attacker is visibly holding; the renderer knows that
     // and the log does not, so it is told the action rather than the animation.
-    game.renderer?.playUnitAction(swing.attacker, "attack");
+    // 05.10-A7a-D 6.06: HITINFO_OFFHAND swings the left hand; the swing is the held subclass's own
+    // (05.10-A7a-D-review: Wow.exe 0x755130, no AttackAnimKits roll); 05.10-A7a-D2: the victim's
+    // dodge, parry, block or flinch follows from the swing's own clock.
+    swingReactions.swing(swing, swingAction(swing.hitInfo)); // 05.10-A7a-D2
     // And what it sounded like. Whoosh, landing, grunt and cry are all chosen from this one packet,
     // in `CombatSounds`, because none of that needs a DOM and all of it needs testing. This is the
     // only thing in the client that makes a noise for a melee blow, and it can be: `COMBAT_LOG`,
@@ -886,6 +898,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // The same, for a cast refusal: it went to a line inside the spellbook and nowhere else.
     if (error) notice(message);
   };
+  // 05.10-3.02: TOO_MANY_OF_ITEM's limit-category sentence (Wow.exe 0x00808200 case 0x81) reads the ItemLimitCategory
+  // rows; until the gateway serves /dbc/item-limit-categories (it waits for a restart) the refusal keeps its plain words.
+  itemLimitCategoryClient(game.gatewayOrigin)?.load(); // 05.10-3.02
+  // 05.10-A7a-D 6.06: the weapon → swing/stance/parry tables; until the gateway serves /dbc/weapon-anims
+  // (it waits for a restart) the stand-in ItemSubClass columns apply and swings have no kit variants.
+  weaponAnimClient(game.gatewayOrigin)?.load(); // 05.10-A7a-D
+  world.castFailureLimitCategory = (id) => itemLimitCategoryClient(game.gatewayOrigin)?.category(id); // 05.10-3.02
   world.onCooldownsChanged = () => updateSpellCooldowns(performance.now());
   world.onCooldownEvent = (spellId) => {
     const metadata = game.spells.get(spellId);

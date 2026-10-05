@@ -4,7 +4,8 @@
  * Facts come from the packet bus — UNIT_COMBAT (melee, spell damage, heal, energize, periodic, miss,
  * damage shield, immune, resist), COMBAT_FACT (environmental, execute, enchant, instakill, dispel,
  * failed dispel), SPELL_START, SPELL_GO, SPELL_CAST_RESULT (3.01-castlog: the cast entries' rules are
- * FrameXmlCombatLogCasts.ts), AURA_CHANGED, PARTY_KILL and the
+ * FrameXmlCombatLogCasts.ts; 05.10-3.01: SPELL_CAST_REFUSED_LOCAL, the words FrameXmlCombatLogFailed.ts),
+ * AURA_CHANGED, PARTY_KILL and the
  * health falling to 0 (UNIT_DIED) — and become entries (world/CombatEventModel.ts) in the buffer
  * (FrameXmlCombatLog.ts), then COMBAT_LOG_EVENT and COMBAT_LOG_EVENT_UNFILTERED.
  *
@@ -47,6 +48,10 @@ import {
 import { FrameXmlCombatLogBuffer, type FrameXmlCombatLogModel } from "./FrameXmlCombatLog.js";
 import type { SpellGo, SpellStart } from "../../world/SpellProtocol.js"; // 3.01-castlog
 import { FrameXmlCombatLogCastRules } from "./FrameXmlCombatLogCasts.js"; // 3.01-castlog
+import { combatLogLimitCategoryText, type CombatLogLimitCategory } from "./FrameXmlCombatLogFailed.js"; // 05.10-3.01
+import { formatGlobalStringByName } from "../../world/GlobalStringFormat.js"; // 05.10-3.01
+import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.01
+import { game } from "../game/Context.js"; // 05.10-3.01
 
 /** How long an event nobody took is not built again. */
 export const FRAMEXML_COMBAT_LOG_PROBE_MS = 1000;
@@ -71,6 +76,12 @@ export interface FrameXmlCombatLogLiveDeps {
   readonly now?: () => number;
   /** The world-state bus (WorldStore.events) for UNIT_HEALTH. */
   readonly stateEvents?: () => { on(name: "UNIT_HEALTH", listener: (event: { guid: bigint }) => void): () => void } | undefined;
+  /**
+   * 05.10-3.01: an ItemLimitCategory row (TOO_MANY_OF_ITEM's words) and the fetch of the rows, asked at attach;
+   * the page's `/dbc/item-limit-categories` catalog (ItemLimitCategoryClient.ts) when absent.
+   */
+  readonly limitCategory?: (id: number) => CombatLogLimitCategory | undefined;
+  readonly prepareLimitCategories?: () => void;
 }
 
 export interface FrameXmlCombatLogPump {
@@ -411,14 +422,51 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
   }
 
   /** The player's SMSG_CAST_FAILED → SPELL_CAST_FAILED (0x00809af0 → 0x00808200 → 0x00751ad0). */
-  castResult(event: { casterGuid: bigint; spellId: number; castCount: number; result: number; refusal?: true }): void {
+  castResult(event: {
+    casterGuid: bigint; spellId: number; castCount: number; result: number; refusal?: true;
+    text?: string; extra?: readonly number[]; // 05.10-3.01
+  }): void {
     const world = this.#deps.world();
     if (event.refusal !== true || event.result === SPELL_CAST_RESULT_SUCCESS) return;
     if (event.casterGuid !== world?.state?.selfGuid) return;
-    const now = this.#deps.monotonic?.() ?? performance.now();
-    if (!this.#castRules.failed(event.spellId, event.result, now, world?.autoRepeatSpellId, this.#spellRow(event.spellId))) return;
-    castFailedEntry(event.casterGuid, event.spellId, this.#deps.failureText?.(event.spellId, event.result) ?? "", this);
+    this.#refused(event.spellId, event.result, event.text, event.extra, world); // 05.10-3.01
   }
+
+  /** 05.10-3.01: the client's own refusal (0x00809f80 → 0x00808200): the same rules, the active player's entry. */
+  localRefusal(event: { spellId: number; result: number; text?: string }): void {
+    const world = this.#deps.world();
+    if (world?.state?.selfGuid === undefined || event.result === SPELL_CAST_RESULT_SUCCESS) return;
+    this.#refused(event.spellId, event.result, event.text, undefined, world);
+  }
+
+  /**
+   * 05.10-3.01: 0x00808200's log half for the active player (0x004d3790): the repeat rules against the
+   * autoRangedCombat controller's wanted spell (0x00d397cc) with 0x007fe190's resets caught up first; the
+   * words — TOO_MANY_OF_ITEM's limit-category sentence (past the repeat rules) or the refusal's own; none,
+   * no entry (0x00751ad0).
+   */
+  #refused(spellId: number, result: number, text: string | undefined, extra: readonly number[] | undefined,
+    world: WorldClient | undefined): void {
+    const self = world?.state?.selfGuid;
+    if (self === undefined) return;
+    const resets = world?.autoRanged?.failureResets;
+    if (resets !== undefined && resets !== this.#seenResets) {
+      this.#seenResets = resets;
+      this.#castRules.autoRepeatReset();
+    }
+    const now = this.#deps.monotonic?.() ?? performance.now();
+    const limit = combatLogLimitCategoryText(result, extra, this.#limitCategory, formatGlobalStringByName);
+    if (!this.#castRules.failed(spellId, result, now, world?.autoRanged?.wantedSpellId, this.#spellRow(spellId),
+      limit !== undefined)) return;
+    const words = limit ?? (text || this.#deps.failureText?.(spellId, result));
+    if (!words) return;
+    castFailedEntry(self, spellId, words, this);
+  }
+
+  /** 05.10-3.01: the last `AutoRangedCombat.failureResets` the rules have caught up with. */
+  #seenResets: number | undefined;
+  readonly #limitCategory = (id: number): CombatLogLimitCategory | undefined => // 05.10-3.01
+    this.#deps.limitCategory ? this.#deps.limitCategory(id) : itemLimitCategoryClient(game.gatewayOrigin)?.category(id);
 
   auraChanged(event: {
     guid: bigint; replaceAll?: boolean; previous?: ReadonlyMap<number, ActiveAura>;
@@ -497,6 +545,9 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
     this.#quietFiltered = 0;
     this.#quietUnfiltered = 0;
     const world = this.#deps.world();
+    this.#seenResets = world?.autoRanged?.failureResets; // 05.10-3.01
+    if (this.#deps.prepareLimitCategories) this.#deps.prepareLimitCategories(); // 05.10-3.01
+    else itemLimitCategoryClient(game.gatewayOrigin)?.load(); // 05.10-3.01
     if (!world?.events) return;
     const on = world.events.on.bind(world.events);
     this.#unsubscribe.push(
@@ -505,6 +556,7 @@ export class FrameXmlCombatLogLive implements FrameXmlCombatLogModel, CombatEntr
       on("SPELL_START", (start) => this.spellStart(start)), // 3.01-castlog
       on("SPELL_GO", (go) => this.spellGo(go)), // 3.01-castlog
       on("SPELL_CAST_RESULT", (event) => this.castResult(event)), // 3.01-castlog
+      on("SPELL_CAST_REFUSED_LOCAL", (event) => this.localRefusal(event)), // 05.10-3.01
       on("AURA_CHANGED", (event) => this.auraChanged(event)),
       on("PARTY_KILL", (event) => this.partyKill(event.killerGuid, event.victimGuid)),
     );

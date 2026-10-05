@@ -27,7 +27,9 @@ export class LockClient {
     if (this.#data || this.#pending) return;
     this.#pending = (async () => {
       try {
-        const response = await fetch(`${this.#baseUrl}/dbc/locks`);
+        // 05.10-5.17: v=1 adds `lockTypeCursors` (LockType.dbc CursorName); an older gateway answers
+        // without it and the stock types' names stand in (input/Cursors.ts).
+        const response = await fetch(`${this.#baseUrl}/dbc/locks?v=1`);
         if (!response.ok) throw new Error(`Lock gateway returned ${response.status}`);
         const value = await response.json() as LockData;
         if (!value.locks || !Array.isArray(value.openers)) throw new Error("malformed lock data");
@@ -51,6 +53,12 @@ export class LockClient {
    */
   casesOf(lockId: number): readonly LockCase[] {
     return this.#data?.locks[lockId] ?? [];
+  }
+
+  /** 05.10-5.17: LockType.dbc CursorName of a lock type, when the gateway sent the column and it is not empty. */
+  lockTypeCursor(lockType: number): string | undefined {
+    const name: unknown = this.#data?.lockTypeCursors?.[lockType];
+    return typeof name === "string" && name !== "" ? name : undefined;
   }
 
   /** The spell that opens this lock for a player who knows these, or 0 when nothing does. */

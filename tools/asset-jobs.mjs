@@ -90,6 +90,13 @@ export const ASSET_JOBS = Object.freeze({
     load: () => import("./generate-liquid-texture.mjs"),
     run: (module, job, archives) => module.publishLiquidTexture(String(job.liquidClass), archives),
   },
+  // 05.10-A7b-8 (7.09 A): one LiquidType texture family's strip (`family/<slug>`), a new kind so an
+  // older gateway's `liquid` jobs keep their exact bytes.
+  "liquid-family": {
+    family: "texture",
+    load: () => import("./generate-liquid-texture.mjs"),
+    run: (module, job, archives) => module.publishLiquidFamily(String(job.family), archives),
+  },
   "client-file": {
     family: "texture",
     load: () => import("./generate-client-file.mjs"),
@@ -98,12 +105,16 @@ export const ASSET_JOBS = Object.freeze({
   "terrain-splat": {
     family: "tile",
     load: () => import("./generate-terrain-splat.mjs"),
-    run: (module, job, archives) => module.publishTerrainSplat(Number(job.map), Number(job.gridX), Number(job.gridY), archives),
+    // 05.10-A7b-7: the splat generation the gateway serves; a job without one comes from an older gateway.
+    run: (module, job, archives) => module.publishTerrainSplat(Number(job.map), Number(job.gridX), Number(job.gridY), archives,
+      job.generation === undefined ? undefined : { generation: String(job.generation) }),
   },
   "visual-tile": {
     family: "tile",
     load: () => import("./generate-visual-tile.mjs"),
-    run: (module, job, archives) => module.publishVisualTile(Number(job.map), Number(job.gridX), Number(job.gridY), archives),
+    // 05.10-A7b-1: the generation the gateway serves; a job without one comes from a gateway still on v4.
+    run: (module, job, archives) => module.publishVisualTile(Number(job.map), Number(job.gridX), Number(job.gridY), archives,
+      job.generation === undefined ? undefined : { generation: String(job.generation) }),
   },
   // 10.22: the models one published visual tile places, for the preloader (`tools/tile-models.mjs`).
   // Reads the tile file only — `archives: false` — and answers the list (`result: true`: the worker
@@ -119,6 +130,12 @@ export const ASSET_JOBS = Object.freeze({
     family: "tile",
     load: () => import("./generate-horizon.mjs"),
     run: (module, job, archives) => module.publishHorizon(Number(job.map), archives),
+  },
+  // 05.10-A7b-7 (7.08): the horizon's colour, averaged out of the map's minimap bakes.
+  "horizon-colour": {
+    family: "tile",
+    load: () => import("./generate-horizon-colour.mjs"),
+    run: (module, job, archives) => module.publishHorizonColour(Number(job.map), archives),
   },
 });
 

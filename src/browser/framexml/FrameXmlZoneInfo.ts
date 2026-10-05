@@ -167,6 +167,11 @@ export interface FrameXmlZoneInput {
   readonly realmPvp?: boolean;
   /** The localised faction name `FACTION_CONTROLLED_TERRITORY` is formatted with. */
   readonly factionName: (team: FrameXmlFactionTeam) => string;
+  /**
+   * 05.10-A7b-4 (7.13): a WMO room's names over the outdoor zone and sub-zone texts (AreaLocator.ts
+   * `indoorZoneTexts`; `leafName` is the located area's own name). Absent outside the live world.
+   */
+  readonly indoorTexts?: (zoneText: string, subZoneText: string, leafName: string) => { zoneText: string; subZoneText: string };
 }
 
 /**
@@ -186,9 +191,14 @@ export function frameXmlResolveZone(areas: FrameXmlZoneAreas, input: FrameXmlZon
   const zone = (input.zoneId !== undefined ? areas.area(input.zoneId) : undefined)
     ?? (area ? areas.zoneOf(area.id) : undefined);
   const map = areas.map(input.mapId);
-  const zoneText = zone?.name ?? map?.name;
+  let zoneText = zone?.name ?? map?.name;
   if (zoneText === undefined) return undefined;
-  const subZoneText = area && zone && area.id !== zone.id ? area.name : undefined;
+  let subZoneText = area && zone && area.id !== zone.id ? area.name : undefined;
+  if (input.indoorTexts) { // 05.10-A7b-4 (7.13)
+    const indoor = input.indoorTexts(zoneText, subZoneText ?? "", area?.name ?? "");
+    zoneText = indoor.zoneText;
+    subZoneText = indoor.subZoneText === "" ? undefined : indoor.subZoneText;
+  }
   const result: {
     minimapZoneText: string; zoneText: string; subZoneText?: string;
     pvpType?: string; isSubZonePvP?: boolean; factionName?: string;

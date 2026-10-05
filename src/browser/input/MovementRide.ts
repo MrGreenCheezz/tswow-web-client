@@ -11,6 +11,7 @@ import {
   rideVerdict, stepRide, withinRideBounds, worldFloorUnder, type RideFloor, type RideState,
 } from "../game/TransportRide.js";
 import { forgetRideObjects, noteRideObjects, resumableSeat } from "./RideResume.js";
+import { CarrierVolumes, insideConvexVolume } from "../game/CarrierVolumes.js"; // 05.10-11.01
 
 /**
  * 11.01 slice A3, the page's half: which ship the character stands on, kept between frames for
@@ -35,6 +36,11 @@ export interface RideCarriers {
   clear(): void;
 }
 
+/** 05.10-11.01: a carrier's convex volume (WMO MCVP planes, `CarrierVolumes`); undefined while unknown. */
+export interface RideVolumes {
+  forObject(object: WorldObjectState): Float64Array | null | undefined;
+}
+
 /**
  * How near (2D, yards) a ship's deck is fetched and kept: past {@link RIDE_MAX_OFFSET}'s box with
  * room to load before it arrives at a dock. Further away its meshes are released.
@@ -45,6 +51,9 @@ const SHIP_RESCAN_MS = 1000;
 
 let models: GameObjectCollisionModels | undefined;
 let carriers: RideCarriers | undefined;
+// 05.10-11.01: the convex volumes of this gateway, and the source the ride asks (tests swap it).
+let volumeClient: CarrierVolumes | undefined;
+let volumes: RideVolumes | undefined;
 let ride: RideState | undefined;
 /** The ride flipped on or off this frame; `Movement` sends the packet that says so. */
 let flipped = false;
@@ -73,6 +82,13 @@ export function startTransportRide(gatewayUrl: string, geometry: CollisionModelS
     models = new GameObjectCollisionModels(origin, geometry);
   }
   models.retry();
+  // 05.10-11.01
+  if (volumeClient?.origin !== origin) {
+    volumeClient?.stop();
+    volumeClient = new CarrierVolumes(origin);
+  }
+  volumeClient.retry();
+  volumes = volumeClient;
   const source = models;
   carriers = new TransportCollision({
     model: (displayId) => source.model(displayId),
@@ -88,6 +104,8 @@ export function startTransportRide(gatewayUrl: string, geometry: CollisionModelS
 /** The world session is retired: no deck requests behind the character screen. */
 export function stopTransportRide(): void {
   models?.stop();
+  volumeClient?.stop(); // 05.10-11.01
+  volumes = undefined;
   carriers?.clear();
   carriers = undefined;
   forgetRide();
@@ -104,6 +122,11 @@ export function setRideCarriers(source: RideCarriers | undefined): void {
   carriers = source;
   forgetRide();
   forgetRideObjects();
+}
+
+/** Tests (05.10-11.01): the carriers' convex volumes, without a gateway. */
+export function setRideVolumes(source: RideVolumes | undefined): void {
+  volumes = source;
 }
 
 /** Drops the ride's own state (counters, scans); the server's seat on the character stays. */
@@ -302,6 +325,7 @@ export function beginRideFrame(frame: RideFrameInput): TerrainProbe | undefined 
     if (!carrier || !pose) continue;
     toCarrierLocal(pose, position.x, position.y, position.z, FEET);
     if (!withinRideBounds(FEET)) continue;
+    volumes?.forObject(carrier); // 05.10-11.01: asked before boarding, so the volume is there when it is needed.
     const deck = carriers?.forObject(carrier);
     if (!deck) continue;
     const z = deckFloorUnder(deck, FEET.x, FEET.y, FEET.z);
@@ -352,6 +376,9 @@ export function endRideFrame(frame: RideFrameInput): void {
   if (!pose || !position) return;
   writeSeat(frame.self);
   const deck = PROBE.deck;
+  // 05.10-11.01: in the air the convex volume decides, when this gateway gives it (rideVerdict).
+  const carrier = frame.objects.get(ride.guid);
+  const planes = frame.motion.mode === "air" && carrier !== undefined ? volumes?.forObject(carrier) : undefined;
   const leaving = rideVerdict(ride, LOCAL, {
     deckZ: deck === undefined ? undefined : deckFloorUnder(deck, LOCAL.x, LOCAL.y, LOCAL.z),
     deckKnown: deck !== undefined,
@@ -359,6 +386,8 @@ export function endRideFrame(frame: RideFrameInput): void {
     poseZ: pose.z,
     mode: frame.motion.mode,
     flying: frame.flying,
+    // A root without MCVP (no plane) is left to the frames: what Wow.exe does there is not established.
+    inside: planes ? (planes.length === 0 ? undefined : insideConvexVolume(planes, LOCAL.x, LOCAL.y, LOCAL.z)) : undefined,
   });
   if (leaving) leave(frame.self, frame.motion);
 }

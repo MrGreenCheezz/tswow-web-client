@@ -17,6 +17,7 @@
 // give noise.
 
 import { readTrack } from "./m2-particles.mjs";
+import { readCombinerCombos, resolveShaderId } from "./m2-combiners.mjs"; // 05.10-A7a-F2
 
 const HEADER = {
   globalLoops: 0x14,
@@ -35,6 +36,7 @@ const HEADER = {
   boundingBox: 0xa0,
   attachments: 0xf0,
   events: 0x100,
+  lights: 0x108, // 05.10-A7a-F2 (6.17)
   cameras: 0x110,
   ribbonEmitters: 0x120,
   particleEmitters: 0x128,
@@ -85,6 +87,8 @@ export const CAMERA_TYPE_PORTRAIT = 0;
  * rather than a field nobody read.
  */
 const ATTACHMENT_SIZE = 40;
+/** 05.10-A7a-F2 (6.17): M2Light — type, bone, position, seven tracks. */
+const LIGHT_SIZE = 16 + TRACK_SIZE * 7;
 
 /**
  * Attachment ids, named from where they sit rather than from a wiki.
@@ -245,6 +249,8 @@ export function parseM2(model, skin) {
   const textureCoordCombos = readLookup(model, HEADER.textureCoordCombos);
   const textureWeightCombos = readLookup(model, HEADER.textureWeightCombos);
   const textureTransformCombos = readLookup(model, HEADER.textureTransformCombos);
+  // 05.10-A7a-F2 (6.22): `texture_combiner_combos`, present only under header flag 0x08.
+  const combinerCombos = readCombinerCombos(model);
 
   const submeshBlock = array(skin, 0x1c);
   const batchBlock = array(skin, 0x24);
@@ -283,6 +289,17 @@ export function parseM2(model, skin) {
       used.push(slot !== undefined && slot < textures.length ? slot : -1);
     }
     const material = materials[materialIndex] ?? { flags: 0, blendMode: 0 };
+    // 05.10-A7a-F2 (6.22, 6.16е, 6.16б): the units' raw coord combos — 0xFFFF is the sphere-map
+    // stage that `uvSets` below still folds into UV set 0 for the legacy artifact — the shader id
+    // the client resolves at load, and the second unit's own texture transform.
+    const rawTextureCount = skin.readUInt16LE(at + 14);
+    const coordIndex = skin.readUInt16LE(at + 18);
+    const rawCoords = Array.from({ length: Math.min(rawTextureCount, 4) },
+      (_, unit) => textureCoordCombos[coordIndex + unit] ?? 0);
+    const resolvedShaderId = resolveShaderId({
+      rawShaderId: skin.readUInt16LE(at + 2), textureCount: rawTextureCount, coords: rawCoords,
+      opaque: material.blendMode === 0, combiners: combinerCombos,
+    });
     batches.push({
       submesh,
       // Draw order. The client sorts on these before it sorts on anything else, and without them
@@ -300,6 +317,15 @@ export function parseM2(model, skin) {
       // The combo tables use 0xFFFF for "none", not a missing entry.
       textureWeight: optional(textureWeightCombos[skin.readUInt16LE(at + 20)]),
       textureTransform: optional(textureTransformCombos[skin.readUInt16LE(at + 22)]),
+      // 05.10-A7a-F2: what the extended artifact carries (see `encodeWvm9`'s `extensions`).
+      resolvedShaderId,
+      textureCoords: used.map((_, unit) => {
+        const coord = rawCoords[unit] ?? 0;
+        return coord > 2 ? -1 : coord;
+      }),
+      textureTransform2: used.length > 1
+        ? optional(textureTransformCombos[skin.readUInt16LE(at + 22) + 1])
+        : -1,
     });
   }
 
@@ -314,6 +340,7 @@ export function parseM2(model, skin) {
     portraitCamera: readPortraitCamera(model),
     // Mutually exclusive with the one above by construction — see `readSceneCamera`.
     sceneCamera: readSceneCamera(model),
+    lights: readLights(model), // 05.10-A7a-F2 (6.17)
     // Counted, not parsed: what a model asks for that this pipeline still cannot draw.
     unsupported: {
       globalLoops: array(model, HEADER.globalLoops).count,
@@ -633,6 +660,43 @@ function readAttachments(model, boneCount) {
     });
   }
   return result;
+}
+
+/**
+ * 05.10-A7a-F2 (6.17): the model's own `M2Light` records — header 0x108 count, 0x10C offset.
+ *
+ * 156 bytes a record: u16 type (0 directional, 1 point), i16 bone, C3Vector position, then seven
+ * `M2Track`s — ambient colour, ambient intensity, diffuse colour, diffuse intensity, attenuation
+ * start, attenuation end, visibility (the last one `M2Track<uint8>`). The 05.10 census found 104 of
+ * 22,498 readable models carrying any. A record naming a bone outside the skeleton is dropped, as
+ * attachments are; keys under a sequence held in an external `.anim` are dropped as colours are.
+ */
+export function readLights(model) {
+  const block = array(model, HEADER.lights);
+  if (block.count === 0 || block.count > 256 || !fits(model, block, LIGHT_SIZE)) return [];
+  const boneCount = array(model, HEADER.bones).count;
+  const inside = sequenceStorage(model);
+  const lights = [];
+  for (let index = 0; index < block.count; index++) {
+    const at = block.offset + index * LIGHT_SIZE;
+    const bone = model.readInt16LE(at + 2);
+    if (bone >= boneCount) continue;
+    const track = (slot, components, kind = "float") =>
+      ownedTrack(readTrack(model, at + 16 + slot * TRACK_SIZE, components, kind), inside);
+    lights.push({
+      type: model.readUInt16LE(at),
+      bone,
+      position: [model.readFloatLE(at + 4), model.readFloatLE(at + 8), model.readFloatLE(at + 12)],
+      ambientColor: track(0, 3),
+      ambientIntensity: track(1, 1),
+      diffuseColor: track(2, 3),
+      diffuseIntensity: track(3, 1),
+      attenuationStart: track(4, 1),
+      attenuationEnd: track(5, 1),
+      visibility: track(6, 1, "uint8"),
+    });
+  }
+  return lights;
 }
 
 /**

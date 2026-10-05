@@ -212,7 +212,7 @@ export const FRAMEXML_OPTIONS_UNAVAILABLE: ReadonlyMap<string, string> = new Map
     "InterfaceOptionsCombatPanelAutoSelfCast", // L18 5.05: was also StopAutoAttack
     // UseAction's unit is not honoured by the host (LiveWorldSeam.useAction casts the slot's spell).
     "InterfaceOptionsCombatPanelSelfCastKeyDropDown", "InterfaceOptionsCombatPanelFocusCastKeyDropDown",
-    "InterfaceOptionsDisplayPanelShowCloak", "InterfaceOptionsDisplayPanelShowHelm",
+    // 05.10-A7a-A 6.09: ShowCloak/ShowHelm are usable — ShowCloak/ShowHelm/ShowingX (FrameXmlHelmCloak.ts).
     "InterfaceOptionsDisplayPanelDetailedLootInfo", "InterfaceOptionsDisplayPanelAggroWarningDisplay",
     "InterfaceOptionsDisplayPanelPlayAggroSounds", "InterfaceOptionsDisplayPanelShowItemLevel",
     "InterfaceOptionsDisplayPanelCinematicSubtitles",
@@ -465,7 +465,8 @@ end
 local previous
 for index, preset in ipairs({
   { "Enhanced", "enhanced", "Улучшенная графика", "Мягкие тени, атмосферная дымка, солнечные лучи и эффекты воды. Масштаб отрисовки сохранится." },
-  { "Comparison", "comparison", "Контрольный профиль графики", "Масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены." },
+  -- 05.10-7.20: the same tip as Settings.ts's button.
+  { "Comparison", "comparison", "Контрольный профиль графики", "Как оригинал владельца: освещение «сравнение» (исходный свет и тени), объекты 150%, трава 140 ярдов, масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены." },
 }) do
   local button = CreateFrame("Button", root:GetName() .. preset[1], root, "UIPanelButtonTemplate")
   button:SetWidth(220)

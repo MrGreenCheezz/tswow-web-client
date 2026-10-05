@@ -19,6 +19,7 @@ import {
 import type {
   SpellVisualEffectTransform, SpellVisualKitRecord, SpellVisualMetadata,
 } from "../gateway/SpellVisual.js";
+import { DynamicObjectAreas } from "./DynamicObjectVisual.js"; // 05.10-A7a-G2 6.05б
 
 /** The finite effects the renderer owns while an aura is present. */
 export interface StateVisualDescriptor {
@@ -86,6 +87,9 @@ export interface SpellVisualLifecycleWorld {
     readonly objects: ReadonlyMap<bigint, {
       position: (Point & { orientation?: number }) | undefined;
       targetGuid: bigint | undefined;
+      /** 05.10-A7a-G2 6.05б: what a DynamicObject is read from (DynamicObjectVisual.ts); absent in pure fakes. */
+      typeId?: number | undefined;
+      fields?: ReadonlyMap<number, number>;
     }>;
   };
   readonly auras: ReadonlyMap<bigint, ReadonlyMap<number, ActiveAura>>;
@@ -379,6 +383,11 @@ export class SpellVisualCoordinator {
   /** Whether the renderer is owed a `setStateVisuals`: the old per-packet call, coalesced. */
   #stateVisualsDue = false;
   #lastRenderer: SpellVisualLifecycleRenderer | undefined;
+  /** 05.10-A7a-G2 6.05б: the areas of DynamicObjects no seen cast draws (DynamicObjectVisual.ts). */
+  readonly #areas = new DynamicObjectAreas({
+    visual: (spellId) => this.#getVisual(spellId),
+    renderer: () => this.#renderer(),
+  });
 
   constructor(options: Options) {
     this.#metadataSource = options.metadata;
@@ -572,6 +581,7 @@ export class SpellVisualCoordinator {
     this.#askUnresolvedSpells();
     this.#expireQueues(now);
     this.#drainSounds(now);
+    if (this.#world) this.#areas.sync(this.#world.state.objects, now); // 05.10-A7a-G2 6.05б
     if (this.#starts.size === 0) return;
     for (const [guid, active] of this.#starts) {
       // The end packet finishes a cast; the local clock only bounds a lost one (CAST_END_GRACE_MS).
@@ -602,6 +612,7 @@ export class SpellVisualCoordinator {
 
   #clearEffects(): void {
     const renderer = this.#renderer();
+    this.#areas.clear(); // 05.10-A7a-G2 6.05б
     for (const active of this.#starts.values()) this.#cancelStart(active);
     this.#starts.clear();
     this.#pending.go.length = 0;
@@ -789,6 +800,7 @@ export class SpellVisualCoordinator {
       this.#cancelStart(active);
       this.#starts.delete(active.casterGuid);
     }
+    this.#areas.noteCast(cast.casterUnit !== 0n ? cast.casterUnit : cast.casterGuid, cast.spellId, now); // 05.10-A7a-G2 6.05б: its area is this cast's
     const visual = this.#getVisual(cast.spellId);
     const key = `go:${receipt}:${cast.casterGuid}:${cast.casterUnit}:${cast.spellId}`;
     // Snapshot anchor positions at receipt. Metadata may arrive after the unit has moved, but the
@@ -889,7 +901,8 @@ export class SpellVisualCoordinator {
       castTime: active.duration, channel: active.channel,
     }, active.startedAt);
 
-    const hasRenderable = plan.instances.length > 0 || plan.animations.length > 0;
+    const hasRenderable = plan.instances.length > 0 || plan.animations.length > 0
+      || (plan.beams?.length ?? 0) > 0; // 05.10-A7a-E: a channel's beam alone is renderable
     // A sound-only start has no renderer handle to retime. It is still a one-shot event, so a
     // later pushback/channel refresh must not dispatch the same sound again.
     if (!hasRenderable && active.soundDispatched) {
@@ -903,7 +916,8 @@ export class SpellVisualCoordinator {
     if (!renderer) return;
 
     this.#cancelHandle(active);
-    if (plan.instances.length > 0 || plan.animations.length > 0 || plan.sounds.length > 0) {
+    if (plan.instances.length > 0 || plan.animations.length > 0 || plan.sounds.length > 0
+      || (plan.beams?.length ?? 0) > 0) { // 05.10-A7a-E
       active.handle = this.#dispatchPlan(plan, active.receivedAt, now, world, false);
       if (plan.sounds.length > 0 && !hasRenderable) active.soundDispatched = true;
     }
@@ -1278,9 +1292,14 @@ export class SpellVisualCoordinator {
     const animations = plan.animations.filter((animation) =>
       animation.hold <= 0 || animation.at + animation.hold > now);
     const filtered: SpellVisualPlan = { instances, animations, sounds: [] };
+    // 05.10-A7a-E (6.13): beams and camera shakes travel with the plan's handle.
+    const beams = plan.beams?.filter((beam) => beam.endsAt > now);
+    if (beams && beams.length > 0) filtered.beams = beams;
+    if (plan.shakes && plan.shakes.length > 0) filtered.shakes = plan.shakes;
+    const extras = (filtered.beams?.length ?? 0) + (filtered.shakes?.length ?? 0);
     const renderer = this.#renderer();
     if (!renderer) {
-      if (deferIfMissingRenderer && (instances.length > 0 || animations.length > 0 || plan.sounds.length > 0)) {
+      if (deferIfMissingRenderer && (instances.length > 0 || animations.length > 0 || plan.sounds.length > 0 || extras > 0)) {
         this.#deferred.push({ plan, receivedAt, epoch: this.#epoch, world, ...(state ? { state } : {}) });
         if (state) this.#stateQueued.add(state.key);
         while (this.#deferred.length > this.#caps.go + this.#caps.start) this.#deferred.shift();
@@ -1299,7 +1318,7 @@ export class SpellVisualCoordinator {
       if (now - sound.at > this.#ttl) continue;
       this.#queueSound(sound, epoch, guard, state);
     }
-    if (instances.length === 0 && animations.length === 0) {
+    if (instances.length === 0 && animations.length === 0 && extras === 0) { // 05.10-A7a-E: extras
       this.#drainSounds(now);
       return undefined;
     }
