@@ -94,8 +94,11 @@ test("the horizon draws around the ring, never under it", withHorizon, () => {
   assert.equal(geometry.getIndex().count, tiles.length * 16 * 16 * 12, "four triangles a cell");
   assert.ok(geometry.getIndex().array instanceof Uint16Array,
     "the production horizon ring uses half-width GPU indices");
-  assert.equal(geometry.getAttribute("normal"), undefined,
-    "the unlit horizon does not rebuild unused normals at every tile crossing");
+  // 05.10-A7b-7 (7.08): the classic path lights the horizon, so it carries analytic normals (from
+  // the height grid, no `computeVertexNormals` scan) and colour UVs. Primitives only: a failing
+  // assert on the attribute itself would format a 100k-float array (the memory guard's 6 GB).
+  assert.equal(geometry.getAttribute("normal")?.count, positions.count, "one normal a vertex");
+  assert.equal(geometry.getAttribute("uv")?.count, positions.count, "one colour UV a vertex");
 
   // A vertex of the first tile lands where that tile stands in the world, in scene coordinates.
   const first = tiles[0];

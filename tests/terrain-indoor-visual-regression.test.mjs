@@ -77,7 +77,12 @@ test("an indoor WMO fog record never replaces the whole scene fog seen through a
   const end = renderer.indexOf("\n  }", start) + 4;
   assert.ok(start >= 0 && end > start, "WMO fog application seam exists");
   const method = renderer.slice(start, end);
-  assert.doesNotMatch(method, /this\.#scene\.fog|fog\.color|fog\.near|fog\.far/,
+  // 05.10-A7b-2 (7.12): the client's one fog per frame — the room's record does become the scene's
+  // fog while the camera is in it, behind `renderSwitches.wmoRoomFogOnScene`; switched off, nothing
+  // past the gate touches the scene fog (the reading this test guarded until then).
+  const gate = method.indexOf("if (!renderSwitches.wmoRoomFogOnScene) return;");
+  assert.ok(gate > 0, "the scene-fog write sits behind the switch");
+  assert.doesNotMatch(method.slice(0, gate), /this\.#scene\.fog|fog\.color|fog\.near|fog\.far/,
     "Goldshire's peach 83-yard MFOG is room metadata, not a global outdoor fog state");
   assert.match(method, /#wmoInteriorFog/,
     "the authored room record stays available to the WMO-only material path");
@@ -96,9 +101,11 @@ test("Goldshire inn furniture cannot be evicted by the interior draw quota while
 });
 
 test("legacy visual tiles are invalidated once so indoor MODR lighting reaches every map", () => {
-  assert.match(visualTileGenerator, /generation:\s*["']visual-tile-v4["']/,
+  // 05.10-A7b-1: v5 (tests/visual-tile-v5.test.mjs); v4 remains the generation of a job that names none.
+  assert.match(visualTileGenerator, /LEGACY_VISUAL_TILE_GENERATION = ["']visual-tile-v4["']/,
     "new visual-tile stamps need an explicit generator generation");
-  assert.match(gateway, /ensureCurrent\(filename,\s*\{\s*generation:\s*["']visual-tile-v4["']\s*\}\)/,
+  assert.match(visualTileGenerator, /sourceStamp\(archives, \{\s*generation,/);
+  assert.match(gateway, /ensureCurrent\(filename,\s*\{\s*generation:\s*VISUAL_TILE_GENERATION\s*\}/,
     "the route must reject tiles built before WMO group ownership was available");
   assert.match(fingerprint, /options\.generation[\s\S]{0,180}?stamp\?*\.generation/,
     "cache validation must compare the route's requested generation with its stamp");

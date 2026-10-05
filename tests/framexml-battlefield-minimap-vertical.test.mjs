@@ -163,6 +163,33 @@ test("Blizzard_BattlefieldMinimap loads through its owner in Warsong Gulch, show
     assert.deepEqual(lua(boot, "return BattlefieldMinimap:IsShown() and 1 or 0, GetCVar('showBattlefieldMinimap')", 2), [1, "1"]);
     assert.equal(boot.errorCount, errors, `no Lua error toggling: ${newErrors()}`);
 
+    // ---- 05.10 review: the published key, and stock's other branches (outside: zone map "2"; arena: nothing) ----
+    const { publishFrameXmlBattlefieldMinimapKey, toggleFrameXmlBattlefieldMinimap } = await import(
+      "../dist/code/browser/framexml/FrameXmlBattlefieldMinimapKey.js",
+    );
+    const shown = () => lua(boot, "return BattlefieldMinimap:IsShown() and 1 or 0, GetCVar('showBattlefieldMinimap')", 2);
+    const keyCleanup = publishFrameXmlBattlefieldMinimapKey(boot);
+    try {
+      assert.equal(toggleFrameXmlBattlefieldMinimap(), true);
+      assert.deepEqual(shown(), [0, "0"], "the key hides a shown one");
+      seam.pvpWorld.instanceType = 0;
+      assert.deepEqual(lua(boot, "return select(2, IsInInstance())"), ["none"]);
+      toggleFrameXmlBattlefieldMinimap();
+      assert.deepEqual(shown(), [1, "2"], "outside a battleground: the zone map, CVar 2");
+      toggleFrameXmlBattlefieldMinimap();
+      assert.deepEqual(shown(), [0, "0"]);
+      seam.pvpWorld.instanceType = 4;
+      assert.deepEqual(lua(boot, "return select(2, IsInInstance())"), ["arena"]);
+      toggleFrameXmlBattlefieldMinimap();
+      assert.deepEqual(shown(), [0, "0"], "an arena: stock does not show it");
+    } finally {
+      seam.pvpWorld.instanceType = 3;
+      toggleFrameXmlBattlefieldMinimap();
+      keyCleanup();
+    }
+    assert.deepEqual(shown(), [1, "1"], "back in the battleground: shown again for the rest");
+    assert.equal(boot.errorCount, errors, `no Lua error across the branches: ${newErrors()}`);
+
     // ---- the stock OnUpdate's cost (every frame while shown) ----
     const frames = 200;
     const started = performance.now();

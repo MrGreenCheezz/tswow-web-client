@@ -104,3 +104,47 @@ test("an AnimationGroup's OnLoad runs on the group, not on the frame that owns i
     AnimTimerFrameCountdownAnimGroup:GetObjectType(), AnimTimerFrameCountdownAnimGroup:IsPlaying()`, 3),
   [true, "AnimationGroup", true]);
 });
+
+// 05.10-3.21: the census of 05.10 (.runtime/re-2026-10-05/3.21) — FontString:SetAlphaGradient,
+// Frame:IgnoreDepth, GameTooltip:SetSpellByID now have real entries (GlueWidgetMethodFills.ts).
+test("the quest text types itself in: SetAlphaGradient answers 1 until start passes the last glyph", withClient, () => {
+  const errors = boot.errorCount;
+  assert.equal(lua("return type(rawget(getmetatable(QuestInfoDescriptionText).__index, 'SetAlphaGradient'))")[0], "function");
+  lua(`QuestInfoFrame.acceptButton = QuestInfoFrame.acceptButton or QuestFrameAcceptButton
+    QUEST_FADING_DISABLE = "0"
+    QuestInfoDescriptionText:SetText("абвгдеж")
+    QuestInfoDescriptionText:SetAlphaGradient(0, 0)
+    QuestInfo_ShowFadingFrame()`, 0);
+  assert.equal(lua("return QuestInfoFrame.acceptButton:IsEnabled()")[0] ? 1 : 0, 0, "Accept waits for the text");
+  // 70 glyphs a second: 0.05 s → start 3 of 7, still fading.
+  lua("QuestInfoFadingFrame_OnUpdate(QuestInfoFadingFrame, 0.05)", 0);
+  assert.equal(lua("return QuestInfoFadingFrame.fading")[0], 1);
+  // 0.1 s more → start 10, past the seventh glyph: done, Accept enabled.
+  lua("QuestInfoFadingFrame_OnUpdate(QuestInfoFadingFrame, 0.1)", 0);
+  assert.equal(lua("return QuestInfoFadingFrame.fading")[0], undefined);
+  assert.equal(lua("return QuestInfoFrame.acceptButton:IsEnabled()")[0] ? 1 : 0, 1);
+  assert.deepEqual(lua("return pcall(QuestInfoDescriptionText.SetAlphaGradient, QuestInfoDescriptionText, 'x', 1)", 2)
+    .map((value, index) => index === 0 ? value : /Usage: QuestInfoDescriptionText:SetAlphaGradient\(start, length\)/.test(String(value))),
+  [false, true]);
+  assert.equal(boot.errorCount, errors);
+});
+
+test("IgnoreDepth takes a boolean; SetSpellByID refuses a non-number and answers nil for a spell not in the book", withClient, () => {
+  const names = inventory.methods.map((record) => record.name);
+  for (const name of ["Frame:IgnoreDepth", "FontString:SetAlphaGradient", "GameTooltip:SetSpellByID"]) {
+    assert.ok(!names.includes(name), `${name} is not a census stub`);
+  }
+  assert.deepEqual(lua(`local f = CreateFrame("Frame", "IgnoreDepthProbe")
+    local ok = pcall(f.IgnoreDepth, f, true)
+    local bad, message = pcall(f.IgnoreDepth, f, 1)
+    return ok, bad, message`, 3).map((value, index) => index < 2 ? value : /Usage: IgnoreDepthProbe:IgnoreDepth\(ignore\)/.test(String(value))),
+  [true, false, true]);
+  assert.deepEqual(lua(`local ok, message = pcall(GameTooltip.SetSpellByID, GameTooltip, "fire")
+    return ok, message`, 2).map((value, index) => index === 0 ? value : /Invalid spell ID in GameTooltip:SetSpellByID/.test(String(value))),
+  [false, true]);
+  // The canned world's book holds nothing: nil, and the tooltip is left as it was.
+  assert.deepEqual(lua(`GameTooltip:SetOwner(UIParent, "ANCHOR_NONE") GameTooltip:SetText("before")
+    local answer = GameTooltip:SetSpellByID(133, false, true)
+    return answer, GameTooltipTextLeft1:GetText()`, 2), [undefined, "before"]);
+  lua("GameTooltip:Hide()", 0);
+});

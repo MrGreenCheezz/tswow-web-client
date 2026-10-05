@@ -43,12 +43,13 @@ test("headroom scales ambient and diffuse together and only when their sum clips
 test("the CPU oracle distinguishes terrain, ordinary surfaces and two-sided foliage", () => {
   const ambient = { r: 0.1, g: 0.1, b: 0.1 };
   const diffuse = { r: 0.4, g: 0.3, b: 0.2 };
-  assert.deepEqual(
-    worldLightFactor(ambient, diffuse, -1, 1, 0, "terrain"),
-    worldLightFactor(ambient, diffuse, 1, 1, 0, "terrain"),
-    "terrain uses the reference abs(N.L)",
-  );
-  close(worldLightFactor(ambient, diffuse, 0, 1, 0, "terrain").r, 0.1 + 0.4 * 0.2);
+  // 05.10-A7b-0 7.07: Shaders/Vertex/arbvp1/terrain.bls — ambient + diffuse * clamp(N.L, 0, 1);
+  // the wowee-era abs(N.L) and 0.2 floor are gone from the classic path.
+  close(worldLightFactor(ambient, diffuse, -1, 1, 0, "terrain").r, 0.1); // a slope facing away: ambient only
+  close(worldLightFactor(ambient, diffuse, -0.5, 1, 0, "terrain").r, 0.1);
+  close(worldLightFactor(ambient, diffuse, 0, 1, 0, "terrain").r, 0.1); // no 0.2 floor
+  close(worldLightFactor(ambient, diffuse, 0.5, 1, 0, "terrain").r, 0.1 + 0.5 * 0.4);
+  close(worldLightFactor(ambient, diffuse, 1, 1, 0, "terrain").r, 0.5);
   close(worldLightFactor(ambient, diffuse, -1, 1, 0, "surface").r, 0.1);
   close(worldLightFactor(ambient, diffuse, 1, 1, 0, "surface").r, 0.5);
   close(worldLightFactor(ambient, diffuse, -1, 1, 0, "foliage").r, 0.5);
@@ -93,7 +94,7 @@ test("Stormwind noon stays within five bytes of the independent 120-channel disp
   for (const albedoByte of albedos) {
     for (const ndotl of normals) {
       const factor = worldLightFactor(ambient, diffuse, ndotl, 1, 0, "terrain");
-      const nl = Math.max(Math.abs(ndotl), 0.2);
+      const nl = Math.max(ndotl, 0); // 05.10-A7b-0 7.07: terrain.bls clamp(N.L, 0, 1)
       for (const channel of channels) {
         const referenceFactor = (ambient[channel] + diffuse[channel] * nl) * scale;
         const expected = byte(srgbToLinear(clamp(albedoByte / 255 * referenceFactor)));
@@ -109,7 +110,9 @@ test("Stormwind noon stays within five bytes of the independent 120-channel disp
   const mean = errors.reduce((sum, error) => sum + error, 0) / errors.length;
   const unheadedMean = unheadedErrors.reduce((sum, error) => sum + error, 0) / unheadedErrors.length;
   assert.ok(mean <= 5, `mean channel error ${mean.toFixed(3)} bytes`);
-  assert.ok(unheadedMean > 16, `headroom mutation was not detected: ${unheadedMean.toFixed(3)}`);
+  // 05.10-A7b-0 7.07: 16 → 10 — with clamp(N.L, 0, 1) the four back-facing normals are ambient only,
+  // where headroom matters less; the unheaded mean is 12.7 bytes against ≤ 5 with headroom.
+  assert.ok(unheadedMean > 10, `headroom mutation was not detected: ${unheadedMean.toFixed(3)}`);
 });
 
 test("Light.dbc multipliers remain numeric uniforms rather than being sRGB-decoded", () => {
@@ -145,6 +148,32 @@ test("the shared GLSL owns one light and shadow integration with per-surface mod
   assert.match(WORLD_LIGHT_BODY, /pow\( wowLight, vec3\( 2\.2 \) \)/);
 });
 
+// 05.10-A7b-0 7.07: the classic terrain light is the client's own (terrain.bls); the enhanced grade
+// keeps the wrap it was tuned against, so the cinematic look does not change.
+test("7.07 classic terrain is max(N.L, 0); the enhanced grade alone keeps abs(N.L) with a 0.2 floor", () => {
+  const terrainBranch = WORLD_LIGHT_BODY.slice(
+    WORLD_LIGHT_BODY.indexOf("#if defined( WOW_LIGHT_TERRAIN )"),
+    WORLD_LIGHT_BODY.indexOf("#elif defined( WOW_LIGHT_FOLIAGE )"),
+  );
+  assert.match(terrainBranch, /float wowNL = max\( wowDot, 0\.0 \);/);
+  assert.doesNotMatch(WORLD_LIGHT_BODY, /float wowNL = max\( abs\( wowDot \), 0\.2 \)/);
+  assert.match(terrainBranch, /float wowGradeNL = max\( abs\( wowDot \), 0\.2 \);/);
+  assert.match(WORLD_LIGHT_BODY, /vec3 wowAuthoredLight = max\( wowAmbient \+ wowDiffuse \* \( wowNL \* wowShadow \), vec3\( 0\.0 \) \);/);
+  const grade = WORLD_LIGHT_BODY.slice(
+    WORLD_LIGHT_BODY.indexOf("if ( wowImmersiveStrength > 0.0001 )"),
+    WORLD_LIGHT_BODY.indexOf("reflectedLight.directDiffuse"),
+  );
+  assert.ok(grade.length > 0);
+  assert.doesNotMatch(grade, /\bwowNL\b/, "the grade reads its own N.L");
+  assert.doesNotMatch(grade, /\bwowAuthoredLight\b/, "the grade mixes against its own authored light");
+  assert.match(grade, /wowLight = mix\( wowGradeAuthored, wowImmersiveLit, wowImmersiveStrength \);/);
+  // Every surface other than terrain grades exactly as before: the two names are the same values.
+  assert.match(WORLD_LIGHT_BODY, /#if !defined\( WOW_LIGHT_TERRAIN \)\s+float wowGradeNL = wowNL;/);
+  assert.match(WORLD_LIGHT_BODY, /#else\s+vec3 wowGradeAuthored = wowAuthoredLight;/);
+  // Quality zero is the classic light: the authored equation and nothing on top.
+  assert.match(WORLD_LIGHT_BODY, /vec3 wowLight = wowAuthoredLight;/);
+});
+
 test("applyWorldLight preserves an existing hook and key and removes three's BRDF block", () => {
   const material = new THREE.MeshStandardMaterial();
   let previousRan = false;
@@ -170,7 +199,7 @@ test("applyWorldLight preserves an existing hook and key and removes three's BRD
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
   assert.equal((shader.fragmentShader.match(/getShadow\(/g) ?? []).length, 1,
     "the stock lookup is removed before the authored lookup is inserted");
-  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v5:surface");
+  assert.equal(material.customProgramCacheKey(), "previous-key|world-light-r185-v6:surface");
 });
 
 test("portrait clone removes only the world wrapper and keeps the pre-world hook and key", () => {
@@ -287,7 +316,8 @@ test("the terrain mode survives the splat hook that arrives after the base mater
   assert.match(shader.fragmentShader, /#define WOW_LIGHT_TERRAIN/);
   assert.match(shader.fragmentShader, /uniform sampler2DArray splatLayers/);
   assert.equal(shader.fragmentShader.includes("#include <lights_fragment_begin>"), false);
-  assert.equal(material.customProgramCacheKey(), "world-light-r185-v5:terrain|terrain-splat");
+  // 05.10-A7b-7: the splat program is v2 (baked MCSH shadow, per-chunk alpha clamp).
+  assert.equal(material.customProgramCacheKey(), "world-light-r185-v6:terrain|terrain-splat-v2");
 });
 
 test("renderer material policy hooks every lit world path and leaves authored flat paths alone", async () => {

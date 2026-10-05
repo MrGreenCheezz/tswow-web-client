@@ -524,3 +524,28 @@ test("DEC-A 3.11: the Combat panel's AttackOnAssist checkbox reads the assistAtt
     InterfaceOptionsCombatPanelAttackOnAssist:Click() InterfaceOptionsFrameOkay:Click()`, 0);
   assert.equal(values().assistAttack, false);
 });
+
+// 05.10-A7a-A 6.09: the Display panel's «Показывать шлем/плащ» (InterfaceOptionsPanels.xml:571-645) read
+// ShowingHelm/ShowingCloak and their click is ShowHelm("1"/"0") — CMSG_SHOWING_HELM/CLOAK only when the
+// flag says otherwise; the flag stays the server's (FrameXmlHelmCloak.ts).
+test("6.09: the Display panel's helm and cloak boxes read PLAYER_FLAGS and send the packet on a click", withClient, async () => {
+  const { boot, seam } = await loaded();
+  seam.pvpWorld.setPlayerFlags(0x400);
+  const from = seam.helmCloakSent.length;
+  try {
+    assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsDisplayPanel)
+      return InterfaceOptionsDisplayPanelShowHelm:GetValue(), InterfaceOptionsDisplayPanelShowCloak:GetValue(),
+        InterfaceOptionsDisplayPanelShowHelm:IsEnabled(), InterfaceOptionsDisplayPanelShowCloak:IsEnabled()`, 4),
+    ["0", "1", 1, 1]);
+    lua(boot, "InterfaceOptionsDisplayPanelShowHelm:Click()", 0);
+    assert.deepEqual(seam.helmCloakSent.slice(from), [{ part: "helm", show: true }]);
+    lua(boot, "InterfaceOptionsDisplayPanelShowCloak:Click()", 0);
+    assert.deepEqual(seam.helmCloakSent.slice(from), [{ part: "helm", show: true }, { part: "cloak", show: false }]);
+    // Cancel puts the old values back through SetValue: the helm's "0" matches the unchanged flag and
+    // sends nothing; the cloak's "1" matches too.
+    lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+    assert.equal(seam.helmCloakSent.length - from, 2, "Cancel sends nothing the flags already say");
+  } finally {
+    seam.pvpWorld.setPlayerFlags(0);
+  }
+});

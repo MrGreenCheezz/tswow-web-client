@@ -149,6 +149,8 @@ test("environment construction observes elapsed time and resumes without disposi
     ENVIRONMENT_BUILD_BUDGET: 16, MODEL_RANGE: 100,
     legacyDecodedModelReplaced: () => false,
     environmentVegetation: () => false,
+    // 05.10 suite-fix 2: the 7.18 stand-in ledger (05.10-A7b-9) — a model-less build is a stand-in.
+    environmentFarEligible: () => false, drawableModel: model => model !== undefined, standInKind: () => "none",
   });
   const harness = new Harness();
   let clock = 0;
@@ -165,6 +167,8 @@ test("environment construction observes elapsed time and resumes without disposi
     environmentVisibilitySphere() {}, assignEnvironmentInstance() {},
     prefetchEnvironmentModels() {}, updateVegetationGrowth() {}, poseDoodads() {}, updateInstances() {},
     setEnvironmentAdmitted() {},
+    environmentStandIns: { begin() {} }, environmentStandInMarkers: { beginFrame() {}, endFrame() {} },
+    noteEnvironmentStandIn() {},
     disposeEnvironment() { assert.fail("unchanged residents must not be rebuilt"); },
   });
   for (let frame = 1; frame <= 20; frame++) {
@@ -173,5 +177,8 @@ test("environment construction observes elapsed time and resumes without disposi
   }
   const retained = [...harness.environment.values()].map(item => item.node);
   harness.updateEnvironment({ x: 0, y: 0, z: 0 }, objects, undefined, 0.016);
-  assert.deepEqual([...harness.environment.values()].map(item => item.node), retained);
+  // 05.10 suite-fix 2: identities compared as primitives — a three.js node never reaches assert.
+  const after = [...harness.environment.values()].map(item => item.node);
+  assert.equal(after.length, retained.length);
+  assert.equal(after.filter((node, index) => node !== retained[index]).length, 0, "every retained node is kept");
 });

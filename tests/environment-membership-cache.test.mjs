@@ -27,6 +27,8 @@ function fixture() {
     THREE, shouldReselect: () => false, CAMERA_FAST_TURN_RATE: 3, WARM_PRUNE_INTERVAL_FRAMES: 60,
     ENVIRONMENT_BUILD_BUDGET: 16, MODEL_RANGE: 100, legacyDecodedModelReplaced: () => false,
     environmentVegetation: () => false,
+    // 05.10 suite-fix 2: the 7.18 stand-in ledger (05.10-A7b-9) names the far-eligible rule.
+    environmentFarEligible: () => false, drawableModel: model => model !== undefined, standInKind: () => 'none',
     selectEnvironmentAdmission: candidates => candidates.filter(row => row.object.selected !== false),
   };
   const Harness = Function(...Object.keys(dependencies), body + '; return Harness;')(...Object.values(dependencies));
@@ -38,6 +40,8 @@ function fixture() {
     environment: new Map(), environmentGroup: new THREE.Group(), camera: new THREE.PerspectiveCamera(),
     frustum: new THREE.Frustum(), frustumMatrix: new THREE.Matrix4(),
     environmentBuildBudget: { begin() {}, take: () => false },
+    environmentStandIns: { begin() {} }, environmentStandInMarkers: { beginFrame() {}, endFrame() {} },
+    noteEnvironmentStandIn() {},
     prefetchEnvironmentModels() {}, updateVegetationGrowth() {}, poseDoodads() {}, updateInstances() {},
     setEnvironmentAdmitted(rendered, drawn) { decisions.push([rendered.source, drawn ? 'draw' : 'warm']); },
     removeEnvironment(id, rendered) { decisions.push([rendered.source, 'remove']); this.environment.delete(id); },

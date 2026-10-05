@@ -465,13 +465,13 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   // v12 is where a WMO became its groups: a model over the triangle budget writes one file per
   // group beside the header, and `group` asks for one of them. v13 is where the artifact gained
   // the colour and texture-weight tables and the portrait camera, and v15 the texture transforms.
-  const visualHash = createHash("sha1").update(`visual-v21\0${visualPath.toLowerCase()}`).digest("hex");
+  const visualHash = createHash("sha1").update(`visual-v23\0${visualPath.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${visualHash}.bin`), Buffer.from("WVM2-test"));
   // LightSkybox metadata is normalized to this archive spelling before it reaches the browser.
   // Keep an artifact under the real Dalaran path so the regression covers the final model route,
   // not only the DBC parser's string value.
   const skyboxPath = "ENVIRONMENTS\\Stars\\DalaranSkyBox.m2";
-  const skyboxHash = createHash("sha1").update(`visual-v21\0${skyboxPath.toLowerCase()}`).digest("hex");
+  const skyboxHash = createHash("sha1").update(`visual-v23\0${skyboxPath.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${skyboxHash}.bin`), Buffer.from("WVM2-dalaran-sky"));
   // The poses the model did not ship with live beside it under the same key.
   await writeFile(join(visualModelsDirectory, `${visualHash}.anim.bin`), Buffer.from("WVA1-test"));
@@ -1046,7 +1046,7 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
   const dbcDirectory = await mkdtemp(join(tmpdir(), "webclient-bump-dbc-"));
   const path = "World\\Tree.m2";
   const stale = createHash("sha1").update(`visual-v13\0${path.toLowerCase()}`).digest("hex");
-  const current = createHash("sha1").update(`visual-v21\0${path.toLowerCase()}`).digest("hex");
+  const current = createHash("sha1").update(`visual-v23\0${path.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${stale}.bin`), Buffer.from("WVM8-artifact"));
   let generated = 0;
   const gateway = await startGateway({
@@ -1084,8 +1084,8 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
 test("the two artifact namespaces move independently and never collide", () => {
   // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
-  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v21");
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v22");
+  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v23"); // 05.10-A7a-F2
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v25"); // 05.10-A7b-1
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {

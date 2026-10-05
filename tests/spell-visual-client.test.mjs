@@ -32,7 +32,8 @@ test("SpellVisualClient batches same-turn ids once and permanently remembers suc
     assert.equal(client.get(11).precast.sound, 7);
     assert.equal(client.get(12), undefined);
     assert.equal(urls.length, 1, "one JavaScript turn becomes one metadata batch");
-    assert.equal(new URL(urls[0]).searchParams.get("v"), "7",
+    // 05.10-A7a-E: v=8 is slice E's one bump (missile motion/columns, kit shakes and chains).
+    assert.equal(new URL(urls[0]).searchParams.get("v"), "8",
       "non-cacheable visual metadata rolls the old client cache contract");
     assert.equal(new URL(urls[0]).searchParams.get("ids"), ids.join(","));
     client.get(12);
@@ -216,6 +217,38 @@ test("S3: a malformed kit is transient, and the kit queue is not the spell queue
     assert.deepEqual(loaded, [7668]);
     assert.equal(client.get(7668).kit.sound, 11658);
     assert.equal(client.pending, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("05.10-A7a-E: the v=8 missile columns are accepted, malformed ones refused, and the v=7 shape still served", async () => {
+  const original = globalThis.fetch;
+  const missile = { path: "Spells\\Bolt.m2", scale: 1, attachment: 22, speed: 20 };
+  const answers = [
+    [
+      { id: 1, missile: { ...missile, motion: { id: 13, script: "transMag = 1", count: 1 }, dest: 1, pathType: 2,
+        castOffset: [0, 0, 1], impactOffset: [1, 0, 0], followGround: { height: 100, dropSpeed: 0, approach: 0, flags: 6 } } },
+      { id: 2, missile },
+    ],
+    [{ id: 3, missile: { ...missile, motion: { id: 13, script: 7, count: 1 } } }],
+    [{ id: 4, missile: { ...missile, castOffset: [0, 1] } }],
+  ];
+  let call = 0;
+  globalThis.fetch = async () => ({ ok: true, async json() { return answers[call++]; } });
+  try {
+    const client = new SpellVisualClient("http://localhost:8090/ws");
+    client.onStatus = () => {};
+    client.get(1); client.get(2);
+    await tick(); await tick();
+    assert.equal(client.get(1).missile.motion.id, 13);
+    assert.equal(client.get(2).missile.motion, undefined, "the older gateway's answer is a valid record");
+    client.get(3);
+    await tick(); await tick();
+    assert.equal(client.get(3), undefined, "a script that is not a string is refused");
+    client.get(4);
+    await tick(); await tick();
+    assert.equal(client.get(4), undefined, "an offset that is not three numbers is refused");
   } finally {
     globalThis.fetch = original;
   }

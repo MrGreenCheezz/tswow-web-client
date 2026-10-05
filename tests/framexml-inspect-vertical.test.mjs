@@ -204,6 +204,8 @@ test("a failed gate hands InspectUnit back to the stock function", withClient, a
     assert.equal(owner.failed, true);
     assert.deepEqual(fallbacks, ["target"]);
     assert.equal(frameXmlInspectGate(boot, renderer()) !== undefined, true, "the same tree gates with a rendered DOM");
+    // 05.10 suite-fix: the unitless probe sets the paper doll's own shown flag aside; it must leave it as the XML made it.
+    assert.deepEqual(lua(boot, "return InspectPaperDollFrame:IsShown() and 1 or 0"), [1], "the gate leaves the paper doll shown");
     unroute();
     assert.equal(lua(boot, "return InspectUnit == __fxStockInspectUnit")[0], false);
     assert.equal(lua(boot, "return __fxStockInspectUnit")[0], undefined, "the cleanup restores the stock InspectUnit");

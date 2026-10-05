@@ -8,6 +8,7 @@ import {
   installPatchChainWatch, readPatchStatus, reloadBypassingCache, resetPatchChainWatch,
 } from "../dist/code/browser/PatchChainChanged.js";
 import { EnvironmentClient, TerrainClient } from "../dist/code/browser/Terrain.js";
+import { VISUAL_TILE_ROUTE_VERSION } from "../dist/code/browser/EnvironmentTileDecode.js"; // 05.10 suite-fix 2
 import { IMMUTABLE, LEGACY_TILE_HOUR, REVALIDATE, tileCacheControl } from "../dist/code/gateway/CachePolicy.js";
 
 // 10.12, browser half: tile URLs carry the gateway's `cacheGeneration` once it is known.
@@ -98,7 +99,7 @@ test("terrain, environment and collision fallbacks request their tiles with g", 
     environment.dispose();
     const terrainUrl = urls.find((url) => url.includes("/terrain/"));
     assert.equal(terrainUrl, `${GATEWAY}/terrain/0/32/32?g=c0ffee`);
-    assert.ok(urls.some((url) => url === `${GATEWAY}/visual/environment/0/32/32?g=c0ffee`), urls.join("\n"));
+    assert.ok(urls.some((url) => url === `${GATEWAY}/visual/environment/0/32/32?v=${VISUAL_TILE_ROUTE_VERSION}&g=c0ffee`), urls.join("\n"));
     assert.ok(urls.some((url) => url === `${GATEWAY}/environment/model/Missing.m2?g=c0ffee`), "the hull fallback");
     const visualModel = urls.find((url) => url.includes("/visual/model"));
     assert.ok(visualModel && !visualModel.includes("g="), "visual models revalidate by ETag, not by g");

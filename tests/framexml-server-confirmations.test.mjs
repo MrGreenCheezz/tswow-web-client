@@ -702,6 +702,9 @@ async function nativePrompts(world, extraModules = {}) {
     "../../world/PvpProtocol.js": pvp,
     "../../world/LfgProtocol.js": lfg,
     "../framexml/FrameXmlLfdController.js": { frameXmlLfdPublished: () => false },
+    // 05.10 suite-fix 2: since 05.10-A7b-4 the place comes through the live locator, which (no locator
+    // answer here) falls back to this fake's terrain grid, as the real one does.
+    "../AreaLocatorLive.js": { liveAreaIdAt: (mapId, x, y) => game.terrain?.areaAt(mapId, x, y) ?? 0 },
     // The real left-to-native registry, the one the stock model marks.
     "../framexml/FrameXmlPopupsController.js": {
       frameXmlPopupsPublished: () => state.published, frameXmlPopupsOwnBattlefieldEntry: () => false,

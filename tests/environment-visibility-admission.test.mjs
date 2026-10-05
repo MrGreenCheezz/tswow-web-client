@@ -515,7 +515,8 @@ test("turn-frame intake is capped for nodes and WMO rooms, shells first", async 
     "a newly admitted castle ramps its rooms instead of hitching one frame");
   const update = updateEnvironmentSource(source);
   assert.match(update, /let environmentBuilds = 0;/, "the node budget resets every frame");
-  assert.match(update, /if \(environmentBuilds >= ENVIRONMENT_BUILD_BUDGET\) continue;/,
+  // 05.10 suite-fix 2: 7.18 (05.10-A7b-9) counts the waiting stand-in inside the skip block.
+  assert.match(update, /if \(environmentBuilds >= ENVIRONMENT_BUILD_BUDGET(?: \|\| !this\.#environmentBuildBudget\.take\(\))?\) \{[^{}]*\bcontinue;\s*\}/,
     "a skipped admission is retried while it is still admitted");
   const wmoStart = source.indexOf("  #updateWmoGroups(");
   const wmoEnd = source.indexOf("\n  #", wmoStart + 10);

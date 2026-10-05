@@ -1006,6 +1006,18 @@ test("Т3 a race the section table says nothing about keeps the hair the geoset 
     const table = await rawTables();
     const { openDbcFile } = await import("../tools/dbc.mjs");
     const extra = await openDbcFile(dbcDirectory, "CreatureDisplayInfoExtra");
+    // 05.10-A7a-B 6.01: the helmet column, read the way `forNpc` reads it (a named model, the per-sex
+    // HelmetGeosetVisID, column 0 of HelmetGeosetVisData as a race bitmask).
+    const itemDisplays = await openDbcFile(dbcDirectory, "ItemDisplayInfo");
+    const helmetVis = await openDbcFile(dbcDirectory, "HelmetGeosetVisData");
+    const displayRows = new Map([...itemDisplays.rows()].map((row) => [itemDisplays.id(row), row]));
+    const hairMasks = new Map([...helmetVis.rows()].map((row) => [helmetVis.id(row), helmetVis.int(row, "HideGeoset", 0)]));
+    const helmetHidesHair = (row, race, sex) => {
+      const display = displayRows.get(extra.int(row, "NPCItemDisplay", 0));
+      if (display === undefined || !itemDisplays.string(display, "ModelName", 0)) return false;
+      return ((hairMasks.get(itemDisplays.int(display, "HelmetGeosetVisID", sex === 1 ? 1 : 0)) ?? 0) & (1 << race)) !== 0;
+    };
+    let helmeted = 0;
 
     assert.equal(table.hairSections(9, 0), 0, "the goblin male has no CharSections hair row at all");
     assert.equal(table.hairSections(19, 0), 0, "and neither has the taunka male");
@@ -1031,8 +1043,18 @@ test("Т3 a race the section table says nothing about keeps the hair the geoset 
       if (table.hairSections(race, sex) > 0) continue;
       undescribed++;
       races.set(`${race}/${sex}`, (races.get(`${race}/${sex}`) ?? 0) + 1);
-      if (!appearanceIndex.forNpc(id).geosets.includes(wig)) wigless++;
+      // 05.10-A7a-B 6.01: a drawn helmet whose HelmetGeosetVisData hides the hair takes the wig off by
+      // design (npc-equipment.test.mjs); this test is about the section table, so those rows step aside.
+      // 05.10 review: only when `forNpc` really hangs that helmet, and then the wig must be gone.
+      const look = appearanceIndex.forNpc(id);
+      if (helmetHidesHair(row, race, sex) && look.attached.some((item) => item.slot === 0)) {
+        helmeted++;
+        assert.ok(!look.geosets.includes(wig), `extra ${id}: a drawn hair-hiding helmet takes the wig off`);
+        continue;
+      }
+      if (!look.geosets.includes(wig)) wigless++;
     }
+    assert.equal(helmeted, 36, `36 wear a drawn hair-hiding helmet (spec 6.01 recount), not ${helmeted}`); // 05.10 review
     assert.equal(rows, 15475, `15,475 extended display records, not ${rows}`);
     assert.deepEqual([...races].sort(), [["19/0", 99], ["9/0", 502]]);
     assert.equal(undescribed, 601, `601 extended rows name a wig for a race with no hair rows, not ${undescribed}`);

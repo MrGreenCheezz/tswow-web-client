@@ -303,7 +303,9 @@ test("11.02-E-review: a shot that is not finite is SPELL_FAILED_ERROR — nothin
     client.castSpellAt(LEAP, { x: 1, y: 2, z: 3 });
     assert.equal(castsOf(connection).length, 1, "nothing goes out");
     assert.deepEqual(sentEvents.map(({ spellId }) => spellId), [STRIKE], "no UNIT_SPELLCAST_SENT for a cast never sent");
-    assert.deepEqual(statuses.slice(said).map(({ error }) => error), [true, true], `the refusal, never «sent»: ${JSON.stringify(statuses)}`);
+    // 05.10-5.05: the second LEAP refusal (the same spell and result within 3 s) is quiet — 0x00808200's local_14
+    // (was: [true, true]).
+    assert.deepEqual(statuses.slice(said).map(({ error }) => error), [true], `the refusal, never «sent»: ${JSON.stringify(statuses)}`);
     client.castSpell(STRIKE);
     assert.equal(connection.sent.at(-1).payload[0], (count + 1) & 0xff, "the refused casts drew no count");
     client.controlledGuid = VEHICLE;

@@ -22,6 +22,11 @@ import {
 import { ANIMATION_DATA_AVAILABLE, ANIMATION_IDS } from "../dist/code/generated/animations.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { appearsDead, isWorldObjectDead } from "../dist/code/world/WorldState.js";
+import { attachedOf, weaponMetadataPending } from "../dist/code/browser/NpcWeapons.js"; // 05.10-A7a-B 6.02
+import { isBaseIdle } from "../dist/code/browser/AnimatedModel.js"; // 05.10-A7a-C
+import { UNIT_FLAG_STUNNED, syncFlagPoses } from "../dist/code/browser/UnitFlagPoses.js"; // 05.10-A7a-C 6.07
+import { extendSidecarWait, poseExitClips, sidecarClaims } from "../dist/code/browser/SidecarWait.js"; // 05.10-A7a-G2 6.19
+import { poseTakesWholeBody, wholeBodyOutlivesBase } from "../dist/code/browser/game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
 
 const arbiter = await import(process.env.UNIT_ACTION_ARBITER_MODULE
   ?? new URL("../dist/code/browser/UnitActionArbiter.js", import.meta.url).href);
@@ -99,17 +104,19 @@ test("expiry drops what has run out and an idle queue can be forgotten", () => {
 
 /* --- Where a pose is drawn --------------------------------------------------------------------- */
 
-test("a pose goes to the upper layer over a non-idle base by its body flags, not by an action kind", withAnimationData, () => {
+// 05.10-6.21: by Wow.exe's split list (0x71d800, game/AnimationSplit.ts), no longer by Bodyflags 0x8.
+test("a pose goes to the upper layer over a non-idle base by Wow.exe's split list, not by an action kind", withAnimationData, () => {
   // The old rule promoted a running one-shot only when it had an action kind (a swing, a shot);
   // spell and emote poses had none, so a unit that started moving slid with its legs locked.
   for (const [name, layer] of [["SpellCastOmni", "cast"], ["SpellCastDirected", "cast"], ["ReadySpellOmni", "cast"],
     ["Attack1H", "melee"], ["CombatWound", "reaction"], ["EmoteTalk", "emote"], ["EmoteWave", "emote"]]) {
     const animation = ANIMATION_IDS[name];
-    assert.equal(animationPlaysOnUpperBody(animation), true, `${name} carries Bodyflags 0x8`);
+    assert.equal(animationPlaysOnUpperBody(animation), true, `${name} is on the split list`); // 05.10-6.21
     assert.equal(unitActionDisplay(layer, true, false), "upper", `${name} plays over a moving base`);
     assert.equal(unitActionDisplay(layer, true, true), "full", `${name} owns a standing unit`);
   }
-  for (const name of ["EmoteRoar", "EmoteDance", "Special1H", "ChannelCastOmni", "ChannelCastDirected", "Whirlwind"]) {
+  // 05.10-6.21: EmoteRoar, EmoteDance, Special1H and the ChannelCast pair are on Wow.exe's list; these are not.
+  for (const name of ["Whirlwind", "Mutilate", "EmoteKneel"]) {
     assert.equal(animationPlaysOnUpperBody(ANIMATION_IDS[name]), false, `${name} is a whole-body pose`);
   }
   assert.equal(unitActionDisplay("emote", false, false), "yield", "a roar is not drawn over running legs");
@@ -317,9 +324,16 @@ function executor({ moving = false, overrides = {}, legless = false } = {}) {
     UnitActionQueue, unitActionDisplay, unitActionEndsOnMovement, heldClipPlaysOnce, locomotionUnderlayClip,
     animationPlaysOnUpperBody: (animation) => animation === CAST || animation === PRECAST,
     ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [state.moving ? RUN : 0] }),
+    isBaseIdle: () => !state.moving, // 05.10-A7a-C: #settleUnitAction asks isBaseIdle
+    poseTakesWholeBody, // 05.10-6.21b
+    wholeBodyOutlivesBase, // 05.10: ревью 6.21b
     isTerminalUnitPose: (pose) => pose.dead === true, isUnitMoving: () => state.moving,
     pendingActionExpired: () => false, pendingActionFate: () => "drop",
     weaponPose: () => "unarmed", actionAnimation: () => [],
+    attachedOf, weaponMetadataPending, // 05.10-A7a-B 6.02: #entryAnimation reads the merged list
+    combatAnimations: () => undefined, // 05.10-A7a-D 6.06: #entryAnimation asks for a swing variant / reaction
+    extendSidecarWait, poseExitClips, sidecarClaims, // 05.10-A7a-G2 6.19
+    resolveAnimation: (clips, wanted) => wanted.find((id) => clips.has(id)), // 05.10-A7a-D 6.06
     resolveSpellVisualAnimation: (clips, wanted) => wanted.find((id) => clips.has(id)),
     resolveActionAnimation: () => undefined, spellVisualAnimationCandidates: (wanted) => wanted,
     chooseAnimation: () => ({ animation: state.moving ? RUN : 0, loop: true }),
@@ -401,12 +415,25 @@ test("executor: a moving cast plays on the upper body at its own phase, exactly,
   reference.update(phase + 0.2);
   assert.ok(bones[2].quaternion.angleTo(arm.quaternion) < 1e-6,
     "past the hand-over window the arm is the cast's, not an average with the run");
+  // 05.10-6.21 (A10 6.21, change 1): a pose already on the upper layer is not moved there again —
+  // the early `shown` check in #startUnitAction; without it every frame reset the one-shot.
+  const overlay = unit.overlayAction;
+  let time = overlay.time;
+  for (const now of [520, 540]) {
+    unit.skinned.mixer.update(0.02);
+    assert.equal(frame(now), "upper");
+    assert.equal(unit.overlayAction === overlay, true, "the same overlay action");
+    assert.ok(unit.overlayAction.time > time, "its time only grows");
+    time = unit.overlayAction.time;
+  }
 });
 
-test("executor: a whole-body one-shot gives way when the unit moves, and the gait cross-fades in", () => {
+test("executor: a whole-body hold waits while the unit moves; a mounted one-shot gives way", () => {
+  // 05.10-6.21b: owner decision — a one-shot off the list over running legs now takes the whole body
+  // (next test); it still gives way on a rider (0x7385c0's rider branch plays it on neither track).
   const moving = executor({ moving: true });
   moving.submit("emote", CHANNEL, false, 3_000, 0);
-  assert.equal(moving.frame(0), undefined, "a pose that cannot be drawn over running legs is not drawn");
+  assert.equal(moving.frame(0, { mounted: true }), undefined, "a rider does not draw a pose off the list");
   assert.equal(moving.queue.size, 0, "and a one-shot that gave way is over");
   assert.equal(moving.unit.animationId, RUN);
   const held = executor({ moving: true });
@@ -428,6 +455,46 @@ test("executor: a whole-body one-shot gives way when the unit moves, and the gai
   assert.equal(legless.frame(0), undefined);
   assert.equal(legless.queue.size, 0);
   assert.equal(legless.unit.overlayAction, undefined);
+});
+
+// 05.10-6.21b: owner decision — Mutilate, Stormstrike and the other poses off Wow.exe's split list
+// (0x71d800) play with the whole body over a moving base, as Wow.exe puts them on the whole-model
+// track (0x723e30 = 0); the unit keeps travelling and the gait comes back when the pose hands back.
+test("executor: a one-shot off the list takes the whole body on the run, then the gait comes back", () => {
+  const { unit, bones, queue, submit, frame, clips } = executor({ moving: true });
+  assert.equal(frame(0), undefined);
+  assert.equal(unit.animationId, RUN);
+  const entry = submit("cast", CHANNEL, false, 3_000, 10);
+  assert.equal(frame(10), "full", "the pose takes the whole body over running legs");
+  assert.equal(unit.animationId, CHANNEL);
+  assert.equal(unit.action.getClip() === clips.get(CHANNEL), true, "the whole clip, legs included");
+  assert.equal(unit.overlayAction === undefined || unit.overlayPreservesLocomotion !== true, true, "no upper-body overlay");
+  assert.equal(entry.payload.swingSeconds, undefined, "drawn, so no undrawn-swing clock");
+  unit.skinned.mixer.update(1);
+  const leg = new THREE.Quaternion().fromArray(turn(0.1));
+  assert.ok(bones[1].quaternion.angleTo(leg) < 1e-6, "the leg holds the pose's key, not the run's");
+  const handBack = 10 + (0.5 - ACTION_ANIMATION_BLEND) * 1_000;
+  assert.equal(queue.top().until, handBack, "handed back one blend before the clip ends");
+  assert.equal(frame(handBack - 1), "full");
+  assert.equal(frame(handBack), undefined, "then the pose is over");
+  assert.equal(unit.animationId, RUN, "and the gait is back");
+  assert.equal(queue.size, 0, "nothing stuck in the queue");
+  // 05.10: ревью 6.21b — started standing, then running: the pose shares Wow.exe's whole-model track
+  // with the base, and the run the base switches to when the unit sets off replaces it (A10 6.21
+  // "until movement re-sets the animation"). It gives way as before 6.21b; the legs do not slide
+  // locked in the pose for the rest of the clip.
+  const late = executor();
+  late.submit("emote", CHANNEL, false, 3_000, 0);
+  assert.equal(late.frame(0), "full");
+  late.state.moving = true;
+  assert.equal(late.frame(100), undefined, "setting off ends a whole-body pose begun standing");
+  assert.equal(late.unit.animationId, RUN, "the gait takes over");
+  assert.equal(late.queue.size, 0, "and the one-shot is over");
+  // Begun on the run, it keeps the whole body while the unit keeps running.
+  const kept = executor({ moving: true });
+  kept.submit("emote", CHANNEL, false, 3_000, 0);
+  assert.equal(kept.frame(0), "full");
+  assert.equal(kept.frame(100), "full", "still running: still the pose");
 });
 
 test("executor: a release takes over from the precast by cross-fade, and a cancelled pose is faded, never stopped", () => {
@@ -498,6 +565,26 @@ test("executor: a one-shot hands back one blend before its clip ends, and the we
   assert.equal(unit.animationId, PRECAST, "the stance underneath comes back when the flinch hands back");
 });
 
+// 05.10-A7a-D 6.06: the swing variant and the victim's reaction come from `combatAnimations`
+// (game/CombatAnimations.ts) — the executor plays its ladder, and a reaction waits under a swing.
+test("executor: a swing variant and a reaction are drawn from combatAnimations, the reaction under the swing", () => {
+  const ladders = { attack: [CAST], parry: [PRECAST] };
+  const { unit, queue, frame } = executor({
+    overrides: { combatAnimations: (payload) => payload.reaction === "parry" ? ladders.parry
+      : payload.action === "attack" ? ladders.attack : undefined },
+  });
+  const pending = (extra) => ({ wanted: [], action: undefined, stage: "main", sequenceAt: 0,
+    waitUntil: 900, sidecarWaitUntil: 3_000, source: "external", ...extra });
+  queue.submit({ layer: "reaction", held: false, until: 3_000, payload: pending({ reaction: "parry" }) }, 0);
+  assert.equal(frame(0), "full");
+  assert.equal(unit.animationId, PRECAST, "the parry ladder, not the empty wanted list");
+  queue.submit({ layer: "melee", held: false, until: 3_000, payload: pending({ action: "attack", roll: 0.5 }) }, 100);
+  assert.equal(frame(100), "full");
+  assert.equal(unit.animationId, CAST, "the unit's own swing takes over at once, by its variant ladder");
+  assert.equal(queue.submit({ layer: "reaction", held: false, until: 3_000, payload: pending({ reaction: "parry" }) }, 200),
+    undefined, "and a flinch does not cut into it");
+});
+
 test("executor: the start deadlines do not cut short a shot that started late", () => {
   const { unit, queue, frame } = executor({
     overrides: { pendingActionExpired, resolveActionAnimation: () => CAST },
@@ -513,4 +600,54 @@ test("executor: the start deadlines do not cut short a shot that started late", 
   assert.equal(frame(1_600), "full", "and runs past that window to its own hand-back");
   assert.equal(unit.animationId, CAST);
   assert.equal(frame(1_200 + (1 - ACTION_ANIMATION_BLEND) * 1_000), undefined, "then hands back");
+});
+
+/* --- 05.10-A7a-C: the standing base (6.03/6.04) and the flag poses (6.07) ----------------------- */
+
+const READY = 26;
+const STUN = 14;
+const stanceExecutor = (state) => {
+  const run = executor({
+    overrides: {
+      isBaseIdle,
+      poseAnimation: (pose) => ({ wanted: [pose.movementFlags !== 0 ? RUN : pose.ready?.[0] ?? 0] }),
+      chooseAnimation: (clips, pose) => ({ animation: pose.movementFlags !== 0 ? RUN : pose.ready?.[0] ?? 0, loop: true }),
+    },
+  });
+  for (const [id, name, arm] of [[READY, "ready", 0.7], [STUN, "stun", -0.5]]) {
+    const clip = new THREE.AnimationClip(name, 1, [swing(1, 0.2, 0.2), swing(2, arm, arm)]);
+    run.clips.set(id, clip);
+    run.unit.template.overlayClips.set(id, locomotionOverlayClip(clip, lowerBody));
+    run.unit.template.animations.add(id);
+  }
+  return run;
+};
+const stancePose = (extra = {}) => ({ dead: false, movementFlags: 0, spline: false, standState: 0, ready: [READY], ...extra });
+
+test("executor: a whole-body swing over a combat stance plays on the whole body and the stance comes back", () => {
+  const { unit, queue, submit, frame } = stanceExecutor();
+  assert.equal(frame(0, stancePose()), undefined);
+  assert.equal(unit.animationId, READY, "the guard stands in his stance");
+  // CHANNEL has no upper-body flag in this harness: over a base that is not "standing" it would yield.
+  submit("melee", CHANNEL, false, 3_000, 0);
+  assert.equal(frame(10, stancePose()), "full", "the stance is a standing base: the swing owns the body");
+  assert.equal(unit.animationId, CHANNEL);
+  const handBack = queue.top().until;
+  assert.equal(frame(handBack, stancePose()), undefined);
+  assert.equal(unit.animationId, READY, "and the stance returns after it");
+});
+
+test("executor: a STUNNED hold survives a flinch and walking, and leaves with the flag", () => {
+  const { unit, queue, frame } = stanceExecutor();
+  const submitAt = (now) => (request) => queue.submit(request, now);
+  syncFlagPoses(0, UNIT_FLAG_STUNNED, false, 0, queue, submitAt(0));
+  assert.equal(frame(0, stancePose({ ready: undefined })), "full");
+  assert.equal(unit.animationId, STUN);
+  assert.equal(queue.submit({ layer: "reaction", held: false, until: 3_000, payload: {} }, 100), undefined,
+    "a CombatWound cannot replace it");
+  assert.equal(frame(200, stancePose({ ready: undefined, movementFlags: 1 })), "full", "a pushed unit stays stunned");
+  assert.equal(frame(10_000_000, stancePose({ ready: undefined })), "full", "no deadline ends it");
+  syncFlagPoses(UNIT_FLAG_STUNNED, 0, false, 10_000_100, queue, submitAt(10_000_100));
+  assert.equal(frame(10_000_100, stancePose()), undefined);
+  assert.equal(unit.animationId, READY);
 });

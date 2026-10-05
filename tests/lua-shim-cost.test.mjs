@@ -133,6 +133,16 @@ test("format and pairs shims stay within an instruction budget on the combat log
   }
 });
 
+// 05.10-3.27: the cases where Wow.exe's str_format (0x00853c50) answers otherwise than the shim did:
+// %s is luaL_checklstring (nil raises), a missing argument is luaL_check*'s «got no value», a
+// trailing '%' is «invalid option in `format'», and the function is named 'format'.
+const CLIENT_ANSWERS = {
+  '"%s", nil': "err:bad argument #2 to 'format' (string expected, got nil)",
+  '"%s %s", "only"': "err:bad argument #3 to 'format' (string expected, got no value)",
+  '"100%"': "err:invalid option in `format'",
+  '"%d", "12abc"': "err:bad argument #2 to 'format' (number expected, got string)",
+};
+
 test("the planned format answers exactly as the scanning shim did", () => {
   const vm = new GlueLuaVm();
   try {
@@ -156,7 +166,9 @@ test("the planned format answers exactly as the scanning shim did", () => {
         return vm.getGlobal("__r");
       };
       // Twice: the second call goes through the cached plan.
-      const expected = oracle.run(body("__oracleformat"));
+      // 05.10-3.27: format is Wow.exe's str_format now (GlueLuaFormat.ts); where the client parts
+      // from the scanning shim, its answer stands (tests/glue-lua-format.test.mjs has the rest).
+      const expected = CLIENT_ANSWERS[args] ?? oracle.run(body("__oracleformat"));
       assert.equal(run("string.format"), expected, `format(${args})`);
       assert.equal(run("string.format"), expected, `format(${args}), cached`);
     }

@@ -199,6 +199,35 @@ test("party and raid pins: a member in view at its position, out of view at its 
   assert.equal(frameXmlGuidValue("party1"), undefined);
 });
 
+// L17-review 05.10: the stock OnUpdates ask GetPlayerMapPosition for all 40 raid slots every frame; an
+// out-of-view member's zone must not cost a scan of AreaTable (2307 rows on this dataset) per call.
+test("out-of-view pins look the member's zone up by id, not by a scan of the area rows per call", withDataset, () => {
+  const world = battleground();
+  const far = 0x62n;
+  world.partyStats.set(far, { status: 1, zoneId: 3277, positionX: 1210, positionY: 1500 });
+  let reads = 0;
+  const areas = new Proxy(data.areas, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const counted = { ...data, areas };
+  const map = source(world, { data: counted, unitGuid: (token) => (token === "raid2" ? far : undefined) });
+  for (let frame = 0; frame < 50; frame += 1) {
+    assert.equal(map.positionOfUnit("raid2")?.areaId, 3277);
+  }
+  assert.ok(reads <= data.areas.length, `area rows read ${reads} times for 50 calls (${data.areas.length} rows)`);
+  // A new snapshot (the gateway's areas reloaded) is indexed again.
+  let snapshot = data;
+  const reloaded = frameXmlBattlefieldMapSource({
+    world: () => world, metadata: () => snapshot, vehicles: () => undefined, unitGuid: () => far,
+  });
+  assert.equal(reloaded.positionOfUnit("raid2")?.areaId, 3277);
+  snapshot = { ...data, areas: data.areas.filter((area) => area.id !== 3277) };
+  assert.equal(reloaded.positionOfUnit("raid2"), undefined);
+});
+
 test("PlayerIsPVPInactive: aura 43681 on a unit in view, or in an out-of-view member's stats", () => {
   const inView = 0x71n;
   const away = 0x72n;

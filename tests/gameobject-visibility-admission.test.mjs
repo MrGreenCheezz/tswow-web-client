@@ -147,8 +147,11 @@ test("renderer gates game-object requests on visibility admission and keeps reje
   ]) {
     assert.equal(candidatePass.includes(forbidden), false, `admission must not call ${forbidden}`);
   }
-  assert.match(candidatePass, /if \(distance > GAMEOBJECT_RANGE\) continue;/,
+  // 05.10-7.05: the range is the transport-aware one; still no pin bypass.
+  assert.match(candidatePass, /if \(!gameObjectWithinAdmissionRange\(distance, transport, GAMEOBJECT_RANGE\)\) continue;/,
     "target/focus priority does not extend game-object residency range");
+  assert.doesNotMatch(candidatePass, /gameObjectWithinAdmissionRange\([^)]*isPinned/,
+    "a target/focus pin must not bypass the game-object resident range");
   assert.doesNotMatch(candidatePass, /distance > GAMEOBJECT_RANGE\s*&&\s*!isPinned/,
     "a target/focus pin must not bypass the game-object resident range");
   assert.match(candidatePass, /this\.#gameObjectVisibilityRadius\(object, this\.#gameObjects\.get\(object\.guid\)\)/,
@@ -157,7 +160,7 @@ test("renderer gates game-object requests on visibility admission and keeps reje
     "unknown silhouettes fail open while trusted static bounds participate in visibility");
   assert.doesNotMatch(candidatePass, /(?:metadata|client|paths)\b|image\(|#placeGameObject\(|#disposeGameObject\(/,
     "candidate classification cannot resolve visual resources or mutate a resident");
-  assert.match(update, /const admission = selectGameObjectAdmission\(candidates, GAMEOBJECT_BUDGET\)/,
+  assert.match(update, /const admission = selectGameObjectAdmissionWithTransports\(candidates, GAMEOBJECT_BUDGET\)/, // 05.10-7.05
     "the visibility-filtered candidate set is budgeted by the stable selector");
   assert.match(update, /this\.#gameObjectsDropped = admission\.dropped/,
     "telemetry reports only visible/pinned budget rejects");

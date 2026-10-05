@@ -82,6 +82,20 @@ test("unsized placements keep the legacy leashes; detail scales M2s only", () =>
   assert.equal(environmentDrawRange(hut, 1.5), ENVIRONMENT_RANGE, "buildings are not scenery doodads");
 });
 
+// 05.10-A7b-0 1.23: a street lamp is named after no tree, so it keeps the 400-yard leash.
+test("1.23 an unsized street lamp or dragon spine is not vegetation: legacy 400, not 600", () => {
+  const lamp = m2("lamp", 0, 0, undefined, { name: "WORLD\\GENERIC\\HUMAN\\PASSIVE DOODADS\\LAMPS\\STORMWINDSTREETLAMP01.M2" });
+  assert.equal(environmentDrawRange(lamp), ENVIRONMENT_RANGE);
+  const spine = m2("spine", 0, 0, undefined, { name: "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DB_DRAGONSPINE02BLUE.M2" });
+  assert.equal(environmentDrawRange(spine), ENVIRONMENT_RANGE);
+});
+
+// 05.10-A7b-0 7.22: 320/48 are the WMO budgets, not M2 slots (M2s have the 1 024 scenery budget).
+test("7.22 the visual-tile generator no longer says M2s consume the 320 exterior slots", () => {
+  const source = readFileSync(new URL("../tools/generate-visual-tile.mjs", import.meta.url), "utf8");
+  assert.ok(!source.includes("320 exterior slots"));
+});
+
 test("candidates and residents follow each placement's own leash, horizontally", () => {
   const player = { x: 0, y: 0 };
   const objects = [

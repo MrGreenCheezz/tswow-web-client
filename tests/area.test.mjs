@@ -278,6 +278,8 @@ test("the areas endpoint serves all eight authored map tables", async () => {
     // a module window's `inInstance` condition is exactly that question.
     assert.deepEqual(data.maps[0], {
       id: 0, directory: "Azeroth", name: "Восточные королевства", instanceType: 2,
+      minimapIconScale: 0, // 05.10-L17t: column 58, left zero by this synthetic row
+      areaTableId: 0, // 05.10-A7b-4: column 22, likewise (the real 43 → 718 is in wmo-area.test.mjs)
     });
   });
 });
@@ -320,7 +322,8 @@ test("the area client indexes what a map needs to ask", async () => {
     // The `v` is this route's cache-buster: the reply is held for an hour, so a field added to
     // `AreaInfo` would otherwise be missing for an hour after the gateway learned to send it.
     // Version 8 carries AreaTable.Flags and FactionGroupMask for GetZonePVPInfo.
-    assert.match(String(url), /\/dbc\/areas\?v=8$/);
+    // 05.10-L17t: version 9 adds Map.dbc MinimapIconScale for GetBattlefieldMapIconScale.
+    assert.match(String(url), /\/dbc\/areas\?v=9$/);
     return { ok: true, status: 200, json: async () => payload };
   };
   try {

@@ -5,7 +5,7 @@ import { globalString } from "../dist/code/generated/globalStrings.js";
 import { parseCastFailure, spellFailureText } from "../dist/code/world/SpellProtocol.js";
 import { formatGlobalString } from "../dist/code/world/GlobalStringFormat.js";
 import { singleSubclass, worldNameSources } from "../dist/code/world/WorldNames.js";
-import { castFailedPacket, settle, travelClient } from "./fixtures/world-packets.mjs";
+import { castFailedPacket, settle, spellGoPacket, travelClient } from "./fixtures/world-packets.mjs";
 
 // 1.27. `Spell::WriteCastResultInfo` (game/Spells/Spell.cpp:4161-4339) writes `u8 castCount,
 // u32 spell, u8 result` and then a tail that depends on the result, every value a u32:
@@ -169,6 +169,9 @@ test("the world prints the player's and the pet's refusals with their tails", as
   try {
     connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 3, spellId: 41617, result: R.REQUIRES_AREA, tail: [3905] }));
     connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 4, spellId: 1459, result: R.REAGENTS, tail: [17020] }));
+    // 05.10-5.05: the same spell and result within 3 s is quiet (Wow.exe 0x00808200); a GO without
+    // CAST_FLAG_PENDING forgets the last refusal (0x0080e1b0).
+    connection.push(OPCODES.SMSG_SPELL_GO, spellGoPacket({ caster: self, spellId: 133 }));
     // An uncached reagent: the word now, the query for the name on its way.
     connection.push(OPCODES.SMSG_CAST_FAILED, castFailedPacket({ castCount: 5, spellId: 1459, result: R.REAGENTS, tail: [17031] }));
     connection.push(OPCODES.SMSG_PET_CAST_FAILED, castFailedPacket({ spellId: 3110, result: R.OUT_OF_RANGE }));

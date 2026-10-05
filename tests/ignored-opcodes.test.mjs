@@ -43,22 +43,38 @@ async function loggedIn() {
   return { client, connection };
 }
 
-test("5.29 a planned-but-ignored packet is counted with its reason, not as unhandled", async () => {
+// 05.10-A7a-H: SMSG_MIRRORIMAGE_DATA, the planned example here until 6.11б gave it its effect, is
+// replaced by an unplanned one (SMSG_UPDATE_LAST_INSTANCE, a u32 map id); no planned entry is left.
+test("5.29 an unplanned-but-ignored packet is counted with its reason, not as unhandled", async () => {
   const { client, connection } = await loggedIn();
-  // SMSG_MIRRORIMAGE_DATA, a creature's short form (guid … guild id), planned for 6.11. (Until
-  // 2026-10-02 this was SMSG_SET_PROFICIENCY, which 5.22 gave its effect.)
-  const mirror = () => new PacketWriter().u64(0xf130000000000001n).u32(1).u8(1).u8(0).u8(8).u8(0).u8(0).u8(0).u8(0).u8(0)
-    .u32(0).toUint8Array();
-  connection.push(OPCODES.SMSG_MIRRORIMAGE_DATA, mirror());
-  connection.push(OPCODES.SMSG_MIRRORIMAGE_DATA, mirror());
+  const lastInstance = () => new PacketWriter().u32(36).toUint8Array();
+  connection.push(OPCODES.SMSG_UPDATE_LAST_INSTANCE, lastInstance());
+  connection.push(OPCODES.SMSG_UPDATE_LAST_INSTANCE, lastInstance());
   await settle();
   const [entry] = client.ignoredOpcodes.summary();
-  assert.equal(entry?.name, "SMSG_MIRRORIMAGE_DATA");
+  assert.equal(entry?.name, "SMSG_UPDATE_LAST_INSTANCE");
   assert.equal(entry?.count, 2);
-  assert.equal(entry?.kind, "planned");
-  assert.equal(entry?.plan, "6.11");
+  assert.equal(entry?.kind, "unplanned");
   assert.deepEqual(client.unhandledOpcodes.summary(), []);
-  assert.deepEqual(client.ignoredOpcodes.counts(), { "by-design": 0, planned: 2, unplanned: 0, unregistered: 0 });
+  assert.deepEqual(client.ignoredOpcodes.counts(), { "by-design": 0, planned: 0, unplanned: 2, unregistered: 0 });
+  client.close();
+});
+
+test("05.10-A7a-H 6.11б a mirror image reply is kept for the unit, not counted as ignored", async () => {
+  const { client, connection } = await loggedIn();
+  const mirror = new PacketWriter().u64(0xf130000000000001n).u32(49).u8(1).u8(0).u8(8).u8(0).u8(0).u8(0).u8(0).u8(0)
+    .u32(0).toUint8Array();
+  // 05.10 review H: a reply is kept only for a unit the client still knows (mirror-image-review.test.mjs).
+  client.state.move(0xf130000000000001n, { flags: 0, position: { x: 1, y: 0, z: 0, orientation: 0 } });
+  connection.push(OPCODES.SMSG_MIRRORIMAGE_DATA, mirror);
+  await settle();
+  assert.equal(client.ignoredOpcodes.entries.size, 0);
+  assert.deepEqual(client.unhandledOpcodes.summary(), []);
+  assert.equal(client.mirrorImages.get(0xf130000000000001n, 49, 0x10)?.classId, 8);
+  const before = connection.sent.length;
+  assert.equal(client.mirrorImages.get(0xf130000000000002n, 49, 0x10), undefined);
+  assert.equal(connection.sent.length, before + 1);
+  assert.equal(connection.sent.at(-1).opcode, OPCODES.CMSG_GET_MIRRORIMAGE_DATA);
   client.close();
 });
 

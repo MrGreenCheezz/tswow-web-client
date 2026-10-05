@@ -18,8 +18,11 @@ function fixture() {
   const root = new THREE.Group(), bone = new THREE.Bone();
   root.add(bone);
   const deps = { THREE, UPDATE_FIELDS, attachmentPoint: () => 1, boneOf: () => bone,
+    worldAttachmentPoint: () => 1, sheatheOf: () => undefined, // 05.10-A7a-G2 6.08
+    glowSlotsKey: () => "", glowPlacement: () => [], attachGlowAnchors() {}, resolveGlowModels() {}, mountGlowBodies: () => 0, glowAnchorsOf: () => [], // 05.10-A7a-G2: 6.14 helpers the harness lacked
     attachmentOffset: () => new THREE.Vector3(), attachmentRotation: () => undefined,
-    TEXTURE_TYPE_OBJECT_SKIN: 2, EVERY_GEOSET: 'all' };
+    TEXTURE_TYPE_OBJECT_SKIN: 2, EVERY_GEOSET: 'all',
+    attachedOf: (metadata) => metadata?.appearance?.attached }; // 05.10-A7a-B 6.02
   const Harness = Function(...Object.keys(deps), js + '; return Harness;')(...Object.values(deps));
   const harness = new Harness();
   const geometry = new THREE.BoxGeometry(1, 2, 0.5);

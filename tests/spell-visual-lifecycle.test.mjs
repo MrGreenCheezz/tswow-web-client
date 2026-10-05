@@ -1136,3 +1136,27 @@ test("S3: a world change invalidates a kit that was still waiting for its metada
   coordinator.onKitsLoaded([406]);
   assert.equal(ref.calls.plans.length, 0, "a teleport is not a reason to draw the old map's kit");
 });
+
+test("05.10-A7a-E: a channel whose kit is only a beam still reaches the renderer, beam and handle together", () => {
+  let now = 1000;
+  const chain = {
+    slot: 0, proc: 0, param1: 0,
+    effect: { id: 719, texture: "Textures\\SpellChainEffects\\HealBeam_Desaturated.blp", width: 0.5, avgSegLen: 4,
+      noiseScale: 0, texCoordScale: -2, textureLength: 2, segDuration: 1000, segDelay: 200, flags: 72, jointCount: 0,
+      color: [51, 58, 247, 91], blendMode: 3, renderLayer: 0 },
+  };
+  const shake = [{ type: 0, direction: 2, amplitude: 2, frequency: 3, duration: 0.4, phase: 0, coefficient: 1 }];
+  const source = metadata();
+  source.put(689, { id: 689, channel: { ...kit(), chains: [chain] }, cast: { ...kit(), shake } });
+  const ref = rendererRef();
+  const coordinator = new SpellVisualCoordinator({ metadata: source, renderer: ref.renderer, now: () => now });
+  const current = world();
+  coordinator.bindWorld(current);
+  current.events.emit("SPELL_CAST_START", { casterGuid: 1n, spellId: 689, castTime: 5000, channel: true });
+  assert.equal(ref.calls.plans.length, 1, "a beam alone is something to draw");
+  assert.equal(ref.calls.plans[0].beams.length, 1);
+  assert.equal(ref.calls.plans[0].beams[0].to.channelOf, 1n);
+  current.events.emit("SPELL_GO", go(689));
+  assert.equal(ref.calls.plans.length, 2, "a cast kit that only shakes is dispatched");
+  assert.equal(ref.calls.plans[1].shakes.length, 1);
+});

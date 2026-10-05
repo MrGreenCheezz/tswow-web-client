@@ -174,7 +174,8 @@ test("5.29 the registry only shrinks, and the accounting in OpcodeBacklog.ts is 
   // 38 → 36 on 2026-10-02: SMSG_SPELLLOGEXECUTE and SMSG_ENCHANTMENTLOG feed the combat log (3.01).
   // 36 → 31 on 2026-10-02: five 5.22 handlers got their Wow.exe reaction (SERVER_FIRST_ACHIEVEMENT
   // stays, reclassified by design: its only effect is a chat line).
-  assert.ok(IGNORED_OPCODES.size <= 31, `${IGNORED_OPCODES.size} ignored opcodes, more than the 31 recorded on 2026-10-02`);
+  // 05.10-A7a-H: 31 → 30 — SMSG_MIRRORIMAGE_DATA struck off, it now dresses the unit (6.11б).
+  assert.ok(IGNORED_OPCODES.size <= 30, `${IGNORED_OPCODES.size} ignored opcodes, more than the 30 recorded on 2026-10-05`);
   const liveNames = live();
   const ignoredLive = [...IGNORED_OPCODES].filter(([name]) => INBOUND_OPCODES.get(name) === "live");
   const byKind = (kind) => ignoredLive.filter(([, entry]) => entry.kind === kind).length;

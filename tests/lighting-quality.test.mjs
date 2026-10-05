@@ -96,7 +96,7 @@ test("quality coercion is stable for account and hand-edited values", () => {
   assert.equal(normaliseLightingQuality(-20), 0);
   assert.equal(normaliseLightingQuality(0.6), 1);
   assert.equal(normaliseLightingQuality("2"), 2);
-  assert.equal(normaliseLightingQuality(99), 2);
+  assert.equal(normaliseLightingQuality(99), 3); // 05.10-7.20: 3 is the comparison level
   assert.equal(normaliseLightingQuality(Number.NaN), 1);
 });
 
@@ -114,10 +114,10 @@ test("lighting quality is an account setting with off, balanced and high values"
   assert.ok(definition);
   assert.equal(definition.fallback, 1);
   assert.equal(definition.min, 0);
-  assert.equal(definition.max, 2);
+  assert.equal(definition.max, 3); // 05.10-7.20
   assert.equal(defaultSettings().lightingQuality, 1);
   assert.equal(parseSettings('{"lightingQuality":0}')?.lightingQuality, 0);
-  assert.equal(parseSettings('{"lightingQuality":99}')?.lightingQuality, 2);
+  assert.equal(parseSettings('{"lightingQuality":99}')?.lightingQuality, 3); // 05.10-7.20
 });
 
 test("character atlas anisotropy is an opt-in account experiment", async () => {

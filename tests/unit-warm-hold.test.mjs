@@ -13,6 +13,8 @@ import {
   unitWarmBody, updateBorrowedMaterials,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { spawnFadeFactor, SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/AnimatedModel.js";
+import { glowBodyMeshes } from "../dist/code/browser/WeaponGlowBody.js"; // 05.10: ревью E2
+import { glowAnchorsOf } from "../dist/code/browser/WeaponGlow.js"; // 05.10: ревью E2
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
 
 // The unit warm hold (city-arrival: seven shader programs linked inside the frame a unit was first
@@ -53,6 +55,7 @@ const Harness = (() => {
   const deps = {
     THREE, spawnFadeFactor, programWarmupKind, unitWarmBody, createFadeProgramTwin, createUnitCapsuleMaterial,
     borrowFadedMaterials, returnBorrowedMaterials, updateBorrowedMaterials,
+    glowBodyMeshes, glowAnchorsOf, // 05.10: ревью E2 — `#unitOpacityMeshes` reaches the glow bodies
     UNIT_WARM_HOLD_FRAMES, UNIT_WARM_HOLD_SELF_FRAMES, UNIT_FADE_RETURN_HOLD_FRAMES, APPEARANCE_PENDING_WAIT_MS,
   };
   return Function(...Object.keys(deps), `${code}; return Harness;`)(...Object.values(deps));
@@ -655,9 +658,9 @@ test("the renderer holds and releases units in the order the harness above assum
   const order = [
     "if (presented && unit.admittedAt === undefined) unit.admittedAt = now;",
     "if (unit.shadowCaster === undefined) this.#trackUnitMeshes(unit, self);",
-    "const held = this.#holdUnitUntilWarm(unit, self, presented, appearance.opacity, now);",
+    "const held = this.#holdUnitUntilWarm(unit, self, presented, displayOpacity, now);", // 05.10-A7a-H 6.11а: aura opacity × CreatureModelAlpha
     "unit.node.visible = presented && !held;",
-    "const opacity = appearance.opacity * spawnFadeFactor(unit.admittedAt, now);",
+    "const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now);", // 05.10-A7a-H 6.11а
     "this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));",
     "this.#applyUnitShadow(unit, shadowCaster);",
   ].map(line => draw.indexOf(line));

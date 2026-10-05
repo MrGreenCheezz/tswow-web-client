@@ -125,7 +125,9 @@ test("the guard terminates a process whose own memory passes the limit, even ins
   assert.equal(result.stdout.includes("survived"), false);
   assert.match(result.stderr, /\[test-memory-guard\] .*passed the limit of 256 MB/);
   assert.equal(result.records.killed.length, 1);
-  assert.ok(result.records.killed[0].peakMb > 256 && result.records.killed[0].peakMb < 1024,
+  // 05.10 suite-fix 2: the record is whole MB (Math.round), so a sample of 256.0–256.5 MB — over the
+  // limit in bytes — is reported as 256 (seen once under full-suite load); >= is the exact bound.
+  assert.ok(result.records.killed[0].peakMb >= 256 && result.records.killed[0].peakMb < 1024,
     `terminated at ${result.records.killed[0].peakMb} MB`);
 });
 

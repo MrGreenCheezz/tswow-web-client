@@ -5,6 +5,8 @@ import { TerrainStreamingWindow, terrainTileKey } from "../dist/code/browser/Ter
 import { terrainGeometrySteps } from "../dist/code/browser/TerrainGeometry.js";
 import { waterCornerHeight, shouldRefreshWaterForNeighbour } from "../dist/code/browser/WorldRenderer3D.js";
 import { LIQUID_CELL_YARDS, liquidCalmOf, liquidClassOf } from "../dist/code/browser/Water.js";
+// 05.10 suite-fix 2: water is grouped by surface since 05.10-A7b-8.
+import { liquidSurfaceClass, liquidSurfaceOf } from "../dist/code/browser/Water.js";
 
 /** Execute the actual private methods without constructing a browser/WebGL renderer. */
 export function rendererMethods(source, names, clock = performance) {
@@ -22,9 +24,11 @@ export function rendererMethods(source, names, clock = performance) {
   return Function("THREE", "TERRAIN_GRID_SIZE", "terrainGrid", "terrainTileKey", "TERRAIN_SUBDIVISIONS",
     "LIQUID_CELL_YARDS", "DEEP_WATER_YARDS", "liquidClassOf", "waterCornerHeight",
     "TERRAIN_BUILD_BUDGET", "TERRAIN_REBUILD_BUDGET", "TERRAIN_PREPARE_MS", "TERRAIN_PREPARE_STEPS",
-    "buildTerrainMaterial", "shouldRefreshWaterForNeighbour", "performance", "TERRAIN_REPAIR_STEPS", "terrainGeometrySteps", "liquidCalmOf", js + "; return Harness;")(
+    "buildTerrainMaterial", "shouldRefreshWaterForNeighbour", "performance", "TERRAIN_REPAIR_STEPS", "terrainGeometrySteps", "liquidCalmOf",
+    "liquidSurfaceClass", "liquidSurfaceOf", js + "; return Harness;")(
       THREE, TERRAIN_GRID_SIZE, terrainGrid, terrainTileKey, 128, LIQUID_CELL_YARDS, 10,
-      liquidClassOf, waterCornerHeight, 1, 2, 1.5, 12, () => new THREE.MeshLambertMaterial(), shouldRefreshWaterForNeighbour, clock, 128, terrainGeometrySteps, liquidCalmOf);
+      liquidClassOf, waterCornerHeight, 1, 2, 1.5, 12, () => new THREE.MeshLambertMaterial(), shouldRefreshWaterForNeighbour, clock, 128, terrainGeometrySteps, liquidCalmOf,
+      liquidSurfaceClass, liquidSurfaceOf);
 }
 
 export function streamingHarness(source, options = {}) {

@@ -253,7 +253,11 @@ test("an active Auto Shot reports one failure edge instead of repeating the same
   connection.push(OPCODES.SMSG_CAST_FAILED, failure);
   await settle();
 
-  assert.equal(client.autoRepeatSpellId, 75, "ordinary ranged failures leave Auto Shot active");
+  // 05.10-5.05: Wow.exe 0x00808200 stops a repeat it refuses (0x00807560(1)) unless it is the autoRangedCombat
+  // controller's wanted spell refused by the realm with a result off its list; this hand-started one is not wanted
+  // (was: «ordinary ranged failures leave Auto Shot active»). The two repeats are quiet by the 3-second rule.
+  assert.equal(client.autoRepeatSpellId, undefined, "a hand-started Auto Shot stops on its first refusal");
+  assert.equal(connection.sent.filter(({ opcode }) => opcode === OPCODES.CMSG_CANCEL_AUTO_REPEAT_SPELL).length, 1);
   assert.equal(failures.length, 1);
   client.close();
 });

@@ -42,6 +42,8 @@ test("every registered generator exports the publish function its entry calls", 
     "zone-map": "publishWorldMapZoneMap", liquid: "publishLiquidTexture", "client-file": "publishClientFile",
     "terrain-splat": "publishTerrainSplat", "visual-tile": "publishVisualTile", horizon: "publishHorizon",
     "tile-models": "publishTileModels",
+    "horizon-colour": "publishHorizonColour", // 05.10-A7b-7
+    "liquid-family": "publishLiquidFamily", // 05.10-A7b-8
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(ASSET_JOBS).sort());
   for (const [kind, name] of Object.entries(expected)) {
