@@ -3789,6 +3789,9 @@ export async function mountFrameXmlVertical(
       // an explicitly-owned load-on-demand root with renderer.addRoots() after its gate; keeping the
       // renderer's glue default enabled preserves GlueXML's historical dynamic roots elsewhere.
       includeCreatedRoots: options.addonsOnly ?? false,
+      // 06.10-dropdown: an admitted root with no anchor (Blizzard_CombatLog.xml:6 `CombatLogDropDown`)
+      // has no rectangle in Wow.exe and draws nothing; it is no longer laid out at the top-left corner.
+      unanchoredRootsUndrawn: !options.addonsOnly,
       ...(addonPresentation ? {
         frameFilter: addonPresentation.includes,
         layoutOnly: addonPresentation.layoutOnly,

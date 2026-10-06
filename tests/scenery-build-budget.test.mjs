@@ -7,6 +7,7 @@ import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
 import { hypot2 } from "../dist/code/browser/GroundCover.js";
 import { selectGameObjectAdmission } from "../dist/code/browser/RenderAdmission.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
+import * as transportAdmission from "../dist/code/browser/GameObjectTransportAdmission.js"; // 06.10-7.24: 05.10-7.05's helpers
 
 const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
 function methods(names, dependencies = {}) {
@@ -87,6 +88,9 @@ function gameObjects(cost = 3) {
     UPDATE_FIELDS, GAMEOBJECT_RANGE: 300, GAMEOBJECT_BUDGET: 96, GAMEOBJECT_FRUSTUM_MARGIN: 1,
     selectGameObjectAdmission, legacyDecodedModelReplaced: () => false,
     fieldFloat: () => 1, clampSize: value => value,
+    // 06.10-7.24: the build placement turns by the node yaw; 05.10-7.05 asks about moving transports.
+    gameObjectNodeYaw: (orientation) => orientation + Math.PI, gameObjectWireIsMovingTransport: () => false,
+    ...transportAdmission,
   });
   const harness = new Harness();
   let clock = 0;

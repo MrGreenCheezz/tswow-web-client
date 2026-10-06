@@ -246,7 +246,8 @@ test("the world renderer separates local-light and outdoor M2 instances", () => 
   assert.match(renderer, /rendered\.source\.localLight\s*\?\s*["']local["']\s*:\s*["']world["']/,
     "one material bucket must never mix local and outdoor lighting modes");
   assert.match(renderer, /createInstancedModelPlacementLocalLightMaterials\(built\.materials\)/);
-  assert.match(renderer, /localLight\.attribute\.setXYZ\(index,\s*localLight\[0\],\s*localLight\[1\],\s*localLight\[2\]\)/,
+  // 06.10-doodad-light: as bytes — normalized setXYZ stored 256 - v (tests/doodad-instanced-local-light).
+  assert.match(renderer, /writeInstancedLocalLight\(entry\.localLight\.attribute,\s*index,\s*localLight\)/,
     "instancing must retain each placement's own authored RGB");
   assert.match(renderer, /localLight\.attribute\.needsUpdate\s*=\s*true/);
 });

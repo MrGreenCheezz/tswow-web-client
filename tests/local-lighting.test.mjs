@@ -8,6 +8,7 @@ import {
 } from "../dist/code/browser/LocalLighting.js";
 import { applyWorldLight, createWorldLightUniforms, setWorldLightDaylight } from "../dist/code/browser/WorldLighting.js";
 import { lightingProfile } from "../dist/code/browser/LightingQuality.js";
+import { fixtureLightSource } from "../dist/code/browser/FixtureLightSources.js"; // 06.10-render-fix
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 const lampName = "World\\Generic\\Human\\Passive Doodads\\Lampposts\\DuskwoodLamppost.m2";
@@ -150,24 +151,26 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   const js = ts.transpileModule(`class Harness { ${method.getText(parsed).replaceAll("#", "")} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const Harness = Function("modelFixtureLights", "sampleFixtureLight", js + ";return Harness;")(
-    modelFixtureLights, sampleFixtureLight);
+  const Harness = Function("modelFixtureLights", "sampleFixtureLight", "fixtureLightSource", js + ";return Harness;")(
+    modelFixtureLights, sampleFixtureLight, fixtureLightSource); // 06.10-render-fix
   const harness = new Harness();
   const model = lampModel();
   const placement = new THREE.Group();
   placement.position.set(2, 0, 0);
   placement.visible = false;
   const matrix = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(placement.position);
-  const retained = { node: placement, admitted: false, source: { name: lampName }, wvm: model, instanceMatrix: matrix };
+  const retained = { node: placement, admitted: false, source: { id: 1, name: lampName }, wvm: model, instanceMatrix: matrix }; // 06.10-render-fix: ids
   const farPlacement = new THREE.Group();
   farPlacement.position.set(1000, 0, 0);
   const expensive = new THREE.Group();
   expensive.updateWorldMatrix = () => { throw new Error("distant fixture propagated its pose"); };
-  const far = { node: farPlacement, source: { name: lampName }, wvm: model, skinned: { root: expensive } };
+  const far = { node: farPlacement, source: { id: 3, name: lampName }, wvm: model, skinned: { root: expensive } };
   Object.assign(harness, {
     localLightSelection: new LocalLightSelection(), localLightSample: sample(), localLightMatrix: new THREE.Matrix4(),
     lightingProfile: lightingProfile(1), worldLight: createWorldLightUniforms(), camera: new THREE.PerspectiveCamera(),
-    environment: new Map([[1, retained], [2, { ...retained, interior: true }], [3, far]]), gameObjects: new Map(),
+    environment: new Map([[1, retained], [2, { ...retained, interior: true, source: { id: 2, interior: true, name: lampName } }], [3, far],
+      // 06.10-render-fix: a building's façade lamp (v5 tile: `interior: false`) lights nothing.
+      [-1, { ...retained, source: { id: -(10047 * 1_000_000 + 1), interior: false, name: lampName } }]]), gameObjects: new Map(),
   });
   harness.updateFixtureLights(1000);
   assert.equal(harness.worldLight.wowLocalLightCount.value, 1, "instancing and frustum hiding must not extinguish an outdoor lamp");
@@ -194,7 +197,7 @@ test("production fixture pass keeps instanced offscreen lamps, skips interiors a
   rigRoot.add(lampBone);
   const bones = Array(5), inverses = Array(5);
   bones[4] = lampBone; inverses[4] = new THREE.Matrix4();
-  harness.environment.set(5, { node: rigPlacement, source: { name: lampName }, wvm: rigModel,
+  harness.environment.set(5, { node: rigPlacement, source: { id: 5, name: lampName }, wvm: rigModel,
     skinned: { root: rigRoot, mixer: { time: 0.25 }, skeleton: { bones } }, template: { boneInverses: inverses } });
   harness.updateFixtureLights(1150);
   close(harness.worldLight.wowLocalLightPosition.value[0].x, 12);

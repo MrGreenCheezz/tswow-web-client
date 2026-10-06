@@ -58,12 +58,13 @@ export const FRAMEXML_CENSUS_REMAINDER_NEUTRAL: readonly FrameXmlNeutralAnswer[]
   // non-zero, the strings "1".."9"/"t"/"y"/"enabled" true and "0"/"f"/"n"/"disabled" false, any
   // other value true) into a flag (0x0084f010) that only the "%F" conversion of string.format and
   // of the widget formatter reads (0x00853c50 / 0x00818070 → 0x0084f030: between digits, '.' and
-  // ',' trade places). Nothing in the stock corpus formats with %F, and this client's Lua
-  // string.format has no %F at all, so the flag has no reader here; it answers nothing, as the
-  // client does.
+  // ',' trade places). Nothing in the stock corpus formats with %F. 05.10-3.27b: a host C function
+  // answers it (FrameXmlEuropeanNumbers.ts, installed by FrameXmlBoot before the corpus runs, so
+  // this row is never reached and only documents the answer): it sets the flag that GlueLuaFormat.ts
+  // and GlueWidgetFormat.ts read for %F, and answers nothing, as the client does.
   {
     name: "SetEuropeanNumbers", group: "options", values: NOTHING, answer: "—",
-    reason: "Localization.lua:11 (ruRU LocalizeFrames) turns it on; its flag only changes string.format's "
-      + "%F output (decimal comma), which no stock file uses and this VM's format does not implement.",
+    reason: "Localization.lua:11 (ruRU LocalizeFrames) turns it on; a host C function sets the flag "
+      + "that string.format's and SetFormattedText's %F read (decimal comma); no stock file uses %F.",
   },
 ]);

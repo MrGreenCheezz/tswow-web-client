@@ -40,11 +40,11 @@ const LUA_INTEGER_MAX = 2147483647;
  *
  * Two 5.3-vs-5.1 divergences cannot be aliased away and are handled here:
  * `string.format("%d", 3.7)` is a hard error in 5.3 (5.1 truncated), and
- * `tostring(6/2)` is `"3.0"` in 5.3 against `"3"` in 5.1. `format` and
- * `tostring` are both wrapped. The remaining hole is documented in
- * `src/browser/glue/README.md`: `"x"..(6/2)` still concatenates as `x3.0`,
- * because 5.3 coerces numbers to strings inside the VM where no metamethod can
- * intercept it.
+ * `tostring(6/2)` is `"3.0"` in 5.3 against `"3"` in 5.1. `tostring` is
+ * wrapped here; `format` is a native host function since 05.10 (3.27,
+ * `GlueLuaFormat.ts`). The remaining hole: `"x"..(6/2)` still concatenates as
+ * `x3.0`, because 5.3 coerces numbers to strings inside the VM where no
+ * metamethod can intercept it.
  */
 const LUA51_SHIMS = `
 local _format, _tostring = string.format, tostring

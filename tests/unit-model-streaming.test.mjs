@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
 import { hypot2 } from "../dist/code/browser/GroundCover.js";
 import { selectUnitAdmission } from "../dist/code/browser/RenderAdmission.js";
+import { UnitShadowCasterSet } from "../dist/code/browser/UnitShadowCasters.js"; // 06.10-shadow
 // suite-fix: 11.02-H made #updateUnits seat vehicle passengers (begin/place) every frame.
 import { VehiclePassengerPoser } from "../dist/code/browser/VehiclePassengerPose.js";
 import { vehicleCatalog } from "../dist/code/browser/VehicleClient.js";
@@ -132,6 +133,7 @@ test("renderer continues updating all admitted units and removes objects that le
   const camera = new THREE.PerspectiveCamera();
   Object.assign(h, {
     vehiclePassengers: new VehiclePassengerPoser(), // suite-fix: 11.02-H
+    unitShadowCasters: new UnitShadowCasterSet(), lightingProfile: { shadowMapSize: 0, shadowCasters: 0, shadowExtent: 0 }, // 06.10-shadow
     unitAnimationBudget: new FrameBuildBudget(), unitAnimationPrefetch: new Map(),
     standIns: { begin() {} }, unitBuildBudget: new FrameBuildBudget(2, 2, () => 0),
     atlasFrameDemands: new Set(), atlasFrameActive: new Set(), frustumMatrix: new THREE.Matrix4(),

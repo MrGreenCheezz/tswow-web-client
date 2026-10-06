@@ -5,6 +5,8 @@ import {
   appearsDead, fieldFloat, isWorldObjectDead, splineAnimationTier, type WorldObjectState, type WorldPosition, type WorldState,
 } from "../world/WorldState.js";
 import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
+import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
+import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
 import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
@@ -50,12 +52,14 @@ import {
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
 import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
+import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
   lightingClassicLook, // 05.10-7.20
   stabiliseDirectionalShadowCenter, unitCastsEnhancedShadow, withToneShoulder, toneShoulder,
   type LightingProfile,
 } from "./LightingQuality.js";
+import { UnitShadowCasterSet, unitShadowFootprint, unitShadowInReach, type UnitShadowSphere } from "./UnitShadowCasters.js"; // 06.10-shadow
 import {
   CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot,
 } from "./CascadedShadows.js";
@@ -123,6 +127,7 @@ import {
   createModelPlacementTintMaterials, disposeModelPlacementTintMaterials, modelPlacementTintColour,
   type ModelPlacementTint,
 } from "./ModelPlacementTint.js";
+import { writeInstancedLocalLight } from "./InstancedLocalLight.js"; // 06.10-doodad-light
 import {
   BuiltModelCache, disposeEvictedBuiltModels, knownGeometryBufferBytes,
   type BuiltModelCacheStats, type EvictedBuiltModel,
@@ -2323,6 +2328,8 @@ interface RenderedGameObject extends PosedModel {
   admissionMetadataRevision?: number;
   /** `OBJECT_FIELD_ENTRY`: what a transport path is keyed on. Not the display id. */
   entry: number;
+  /** 06.10-7.24: the model box clicks land in (model axes); null when the model has none. */
+  pickBox?: ModelBox | null;
   /** Where it stands when it is not travelling — a lift's path is an offset from this. */
   base: WorldPosition;
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
@@ -4729,6 +4736,28 @@ export class WorldRenderer3D {
     return nodes.length;
   };
 
+  // 06.10-shadow: unit casters with hysteresis, and admission of units whose shadow reaches the view
+  // (UnitShadowCasters.ts). Owner's live report 06.10: level 3's unit shadows popped in and out.
+  readonly #unitShadowCasters = new UnitShadowCasterSet<bigint>();
+  readonly #unitShadowSphere: UnitShadowSphere = { x: 0, y: 0, z: 0, radius: 0 };
+  /**
+   * Whether a unit whose body is off screen has to be drawn anyway (posed; three culls its main-pass
+   * draw) because it may cast and its shadow footprint lies in a view-fitted cascade and in the view.
+   * A unit that is not measurable (`radius` undefined) is already admitted as visible.
+   */
+  #unitShadowSeen(
+    position: Readonly<{ x: number; y: number; z: number }>,
+    distance: number,
+    radius: number,
+  ): boolean {
+    if (!this.#sunCascades.active || this.#interiorLight !== undefined
+      || !unitShadowInReach(distance, this.#lightingProfile)) return false;
+    const sphere = this.#unitShadowSphere;
+    return unitShadowFootprint(position.x, position.z, -position.y, radius, this.#sunOffset, sphere)
+      && this.#sunCascades.viewFittedCovers(sphere.x, sphere.y, sphere.z, sphere.radius)
+      && unitSphereVisibleInFrustum(sphere.x, sphere.y, sphere.z, sphere.radius, this.#frustum.planes, UNIT_FRUSTUM_MARGIN);
+  }
+
   /** Terrain tiles and the horizon: the casters a cascade culls by their light-plane footprint. */
   readonly #boundedShadowCasters = (out: THREE.Mesh[]): void => {
     for (const terrain of this.#terrains.values()) out.push(terrain.mesh);
@@ -5418,6 +5447,25 @@ export class WorldRenderer3D {
   /** Height of the drawn body, so the 2D overlay can put a name plate right above it. */
   unitHeight(guid: bigint): number | undefined {
     return this.#units.get(guid)?.height;
+  }
+
+  /**
+   * 06.10-7.24: the eight world corners of a game object's model box as it is drawn this frame —
+   * the drawn position (a lift's included), the object's whole rotation and its scale — for the
+   * overlay's click box (GameObjectPickBox.ts). False until a model with a box is drawn.
+   */
+  gameObjectPickCorners(object: WorldObjectState, out: Float64Array): boolean {
+    const rendered = this.#gameObjects.get(object.guid);
+    if (!rendered || !rendered.actual || !rendered.node.visible) return false;
+    if (rendered.pickBox === undefined) rendered.pickBox = modelPickBox(rendered) ?? null;
+    if (!rendered.pickBox) return false;
+    const at = rendered.node.position;
+    GAME_OBJECT_PICK_AT.x = at.x;
+    GAME_OBJECT_PICK_AT.y = -at.z;
+    GAME_OBJECT_PICK_AT.z = at.y;
+    gameObjectWorldRotation(object, rendered.base.orientation, GAME_OBJECT_PICK_ROTATION);
+    placedBoxCorners(rendered.pickBox, GAME_OBJECT_PICK_AT, GAME_OBJECT_PICK_ROTATION, rendered.node.scale.x, out);
+    return true;
   }
 
   /** Where the camera orbits this unit: the shoulder of the body actually standing there. */
@@ -6918,7 +6966,7 @@ export class WorldRenderer3D {
     if (!ghost) return;
     ghost.node.position.set(preview.x, preview.z, -preview.y);
     ghost.node.quaternion.setFromRotationMatrix(mappedVmapRotation(
-      0, THREE.MathUtils.radToDeg(preview.orientation), 0));
+      0, THREE.MathUtils.radToDeg(gameObjectNodeYaw(preview.orientation)), 0)); // 06.10-7.24
     ghost.node.scale.setScalar(Math.max(0.05, Math.min(40, preview.scale)));
   }
 
@@ -8407,7 +8455,8 @@ export class WorldRenderer3D {
         // Indoor WMO lamps already contribute baked room lighting. Keep their pools confined to
         // that path instead of shining an unshadowed point through the building's exterior wall.
         // Outdoor retained lamps remain active when the fixture is just outside the camera view.
-        if (rendered.interior || rendered.source.localLight) continue;
+        // 06.10-render-fix: and no doodad of a building, whose v5 façade lamps are `interior: false`.
+        if (!fixtureLightSource(rendered.source)) continue;
         visit(rendered, rendered.source.name, rendered.node);
       }
       for (const rendered of this.#gameObjects.values()) {
@@ -10232,7 +10281,8 @@ export class WorldRenderer3D {
         entry.mesh.setMatrixAt(index, rendered.instanceMatrix!);
         const localLight = rendered.source.localLight;
         if (entry.localLight && localLight) {
-          entry.localLight.attribute.setXYZ(index, localLight[0], localLight[1], localLight[2]);
+          // 06.10-doodad-light: bytes, not normalized setXYZ (which stored 256 - v: blue furniture).
+          writeInstancedLocalLight(entry.localLight.attribute, index, localLight);
         } else {
           entry.mesh.setColorAt(
             index,
@@ -11754,7 +11804,7 @@ export class WorldRenderer3D {
           y: position.y,
           z: position.z,
           rotationX: 0,
-          rotationY: THREE.MathUtils.radToDeg(position.orientation),
+          rotationY: THREE.MathUtils.radToDeg(gameObjectNodeYaw(position.orientation)), // 06.10-7.24
           rotationZ: 0,
           // The server's own scale, which used to be the literal 1. A mailbox and the Dark Portal
           // are the same model at different sizes on more objects than one would expect.
@@ -12000,7 +12050,7 @@ export class WorldRenderer3D {
     if (Number.isFinite(position.orientation)) {
       // `mappedVmapRotation(0, o, 0)` in closed form (a turn about scene +y): no four Matrix4 per
       // object per frame.
-      sceneYaw(position.orientation, GAME_OBJECT_TILT);
+      sceneYaw(gameObjectNodeYaw(position.orientation), GAME_OBJECT_TILT); // 06.10-7.24: the core's Rz(o) (GameObjectModelFrame.ts)
       rendered.node.quaternion.set(GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w);
       // 5.27: a leaning bridge or a toppled pillar carries more rotation than its yaw. The tilt is
       // in world axes, so it goes on after the yaw; a level object has none and is left as it was.
@@ -12216,7 +12266,7 @@ export class WorldRenderer3D {
         value: object,
         distance: Number.isFinite(distance) ? distance : Number.MAX_VALUE,
         pinned: isPinned,
-        visible,
+        visible: visible || this.#unitShadowSeen(object.position, distance, radius!), // 06.10-shadow
       });
     }
     const admission = selectUnitAdmission(candidates, UNIT_BUDGET);
@@ -12230,14 +12280,16 @@ export class WorldRenderer3D {
     const inRange = new Set(candidates.map(({ value }) => value.guid));
 
     const drawn = new Set<bigint>();
+    this.#unitShadowCasters.begin(); // 06.10-shadow
     for (const [rank, { value: object, distance }] of admission.admitted.entries()) {
       drawn.add(object.guid);
       this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel, displayAnswered,
         mountModel,
-        unitCastsEnhancedShadow(rank, distance, this.#lightingProfile));
+        this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile)); // 06.10-shadow: was unitCastsEnhancedShadow
       const rendered = this.#units.get(object.guid);
       if (rendered?.applied) this.#atlasFrameActive.add(rendered.applied);
     }
+    this.#unitShadowCasters.end(); // 06.10-shadow
     // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
     this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
     this.afterUnits?.(now); // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments
@@ -15136,6 +15188,9 @@ export function buildFullscreenGlowPasses(): FullscreenGlowPasses {
 
 /** Scratch for `#placeGameObject`'s tilt (5.27), so placing a game object allocates nothing more. */
 const GAME_OBJECT_TILT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+/** 06.10-7.24: scratch for `gameObjectPickCorners`, which runs per clickable object per frame. */
+const GAME_OBJECT_PICK_ROTATION: Quat = { x: 0, y: 0, z: 0, w: 1 };
+const GAME_OBJECT_PICK_AT = { x: 0, y: 0, z: 0 };
 const GAME_OBJECT_TILT_SCENE = new THREE.Quaternion();
 
 const VMAP_TO_THREE = new THREE.Matrix4().set(

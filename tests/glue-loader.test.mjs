@@ -274,11 +274,14 @@ test("the C API answers where it can and records where it cannot", async () => {
   const vm = runtime.vm;
   vm.execute("BUILD = { GetBuildInfo() }; LOCALE = GetLocale()", "@probe");
   assert.equal(vm.getGlobal("LOCALE"), "ruRU");
-  vm.execute("V, B, D, N = GetBuildInfo()", "@probe2");
+  // 06.10-glue-fix: the glue GetBuildInfo (0x004dbe60) answers VERSION, RELEASE_BUILD and three
+  // strings; the fixture defines neither GlueString, so the first two are "".
+  vm.execute("T, R, V, B, D, N = GetBuildInfo()", "@probe2");
   assert.deepEqual(
-    [vm.getGlobal("V"), vm.getGlobal("B"), vm.getGlobal("D"), vm.getGlobal("N")],
-    [...GLUE_BUILD_INFO],
+    [vm.getGlobal("T"), vm.getGlobal("R"), vm.getGlobal("V"), vm.getGlobal("B"), vm.getGlobal("D")],
+    ["", "", ...GLUE_BUILD_INFO],
   );
+  assert.equal(vm.getGlobal("N"), undefined);
 
   // CVars round-trip through the same map the glue defaults live in.
   assert.equal(runtime.api.cvar("readTOS"), "0");

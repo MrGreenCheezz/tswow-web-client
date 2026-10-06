@@ -1459,6 +1459,17 @@ const WATER_SUN_GLITTER_GLSL = `
   }
 `;
 
+/** Water and ocean: the hue is the zone's band colour, the strip's alpha only rides it as ripple. */
+const WATER_LIQUID_COLOUR_GLSL = `float liquidRipple = 0.70 + 0.60 * sampledDiffuseColor.a;
+      diffuseColor.rgb *= liquidBody * liquidRipple;`;
+/**
+ * 06.10-render-fix: magma and slime are their strip's own colour. Their BLPs carry the hue (the
+ * strips measure about rgb 173/20/0 for lava, 64/124/17 for slime, alpha 255 throughout), while the
+ * band colour stays the white stand-in; the water line above threw the strip RGB away, so every
+ * lava, slime, green lava and orange slime surface drew as white × ripple — a white sheet.
+ */
+const GLOWING_LIQUID_COLOUR_GLSL = `diffuseColor.rgb *= liquidBody * sampledDiffuseColor.rgb;`;
+
 /**
  * The surface material for one liquid class.
  *
@@ -1525,8 +1536,7 @@ export function buildLiquidMaterial(surface: LiquidSurface, strip: LiquidStrip):
       // wave signal is the strip's alpha, which spans the full 0..1: ripple brightness rides
       // on it around the authored hue, and the surface alpha breathes with it too.
       vec3 liquidBody = mix(liquidShallowColour, liquidDeepColour, liquidDepthMix);
-      float liquidRipple = 0.70 + 0.60 * sampledDiffuseColor.a;
-      diffuseColor.rgb *= liquidBody * liquidRipple;
+      ${glowing ? GLOWING_LIQUID_COLOUR_GLSL : WATER_LIQUID_COLOUR_GLSL}
       diffuseColor.a *= mix(liquidShallowAlpha, liquidDeepAlpha, liquidDepthMix)
         * mix(${WATER_TEXTURE_ALPHA_FLOOR}, 1.0, sampledDiffuseColor.a);
     `);

@@ -415,6 +415,25 @@ export class CascadedSunShadows {
     shadow.radius = Math.min(3, Math.max(1, SHADOW_BLUR_YARDS / texel));
   }
 
+  /**
+   * 06.10-shadow: whether a sphere (scene space) overlaps the light-plane square of any view-fitted
+   * cascade as last placed — the only maps a unit's shadow can be drawn into (the cached cascade
+   * never draws units). The renderer admits an off-screen unit for its shadow only when this holds.
+   * False before the first placement. Allocation-free.
+   */
+  viewFittedCovers(x: number, y: number, z: number, radius: number): boolean {
+    const { right, up } = this.#basis;
+    const r = x * right.x + y * right.y + z * right.z;
+    const u = x * up.x + y * up.y + z * up.z;
+    for (const cascade of this.#cascades) {
+      if (cascade.far || !(cascade.extent > 0)) continue;
+      const centre = cascade.light.target.position;
+      const reach = cascade.extent + radius;
+      if (Math.abs(r - centre.dot(right)) <= reach && Math.abs(u - centre.dot(up)) <= reach) return true;
+    }
+    return false;
+  }
+
   /** Visits the added cascades' live render targets; the primary's are its owner's to report. */
   visitMaps(visit: (owner: THREE.DirectionalLight, target: THREE.RenderTarget) => void): void {
     for (const light of this.#extras) {

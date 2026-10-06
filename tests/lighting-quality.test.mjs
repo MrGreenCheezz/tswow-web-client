@@ -150,7 +150,8 @@ test("world integration confines shadow flags to ranked units and terrain receiv
   const admissionCall = updateUnits.indexOf(admissionCallText, candidatePush);
   const admittedLoopText = "for (const [rank, { value: object, distance }] of admission.admitted.entries())";
   const admittedLoop = updateUnits.indexOf(admittedLoopText, admissionCall);
-  const shadowCallText = "unitCastsEnhancedShadow(rank, distance, this.#lightingProfile)";
+  // 06.10-shadow: the strict rule is unitCastsEnhancedShadow, applied with hysteresis (UnitShadowCasters.ts).
+  const shadowCallText = "this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile)";
   const shadowCall = updateUnits.indexOf(shadowCallText, admittedLoop);
   const distanceText = "const distance = hypot2(object.position.x - player.x, object.position.y - player.y);";
   const distanceRead = updateUnits.indexOf(distanceText);

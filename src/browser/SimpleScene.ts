@@ -217,6 +217,63 @@ export function projectPoint(point: Vector3, camera: Camera, width: number, heig
   };
 }
 
+/** 06.10-7.24: an axis-aligned screen rectangle. */
+export interface ScreenRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const BOX_CORNERS = new Float64Array(24);
+
+/**
+ * 06.10-7.24: the screen rectangle around a game object's model box (the eight corners
+ * `corners` writes), or undefined when there is no box or a corner is behind the camera.
+ */
+export function projectedBoxRect(
+  object: WorldObjectState,
+  corners: (object: WorldObjectState, out: Float64Array) => boolean,
+  camera: Camera,
+  width: number,
+  height: number,
+): ScreenRect | undefined {
+  if (!corners(object, BOX_CORNERS)) return undefined;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  // 06.10-7.24-review: `projectPoint` inlined — it allocated two objects per corner, sixteen per
+  // clickable object per frame.
+  const focal = height * FOCAL_PER_PIXEL_HEIGHT;
+  const { position, forward, right, up } = camera;
+  for (let corner = 0; corner < 8; corner++) {
+    const rx = BOX_CORNERS[corner * 3]! - position.x;
+    const ry = BOX_CORNERS[corner * 3 + 1]! - position.y;
+    const rz = BOX_CORNERS[corner * 3 + 2]! - position.z;
+    const depth = rx * forward.x + ry * forward.y + rz * forward.z;
+    if (!(depth > 0.2)) return undefined;
+    const px = width / 2 + (rx * right.x + ry * right.y + rz * right.z) * focal / depth;
+    const py = height / 2 - (rx * up.x + ry * up.y + rz * up.z) * focal / depth;
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function unionRect(rect: ScreenRect, x: number, y: number, width: number, height: number): ScreenRect {
+  const left = Math.min(rect.x, x);
+  const top = Math.min(rect.y, y);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(rect.x + rect.width, x + width) - left,
+    height: Math.max(rect.y + rect.height, y + height) - top,
+  };
+}
+
 export function healthRatio(object: WorldObjectState): number | undefined {
   const health = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset);
   const maximum = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset);
@@ -255,6 +312,12 @@ const GAMEOBJECT_NAMES: Partial<Record<number, string>> = {
  */
 export function gameObjectType(object: WorldObjectState): number {
   return ((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff;
+}
+
+/** 06.10-7.24-review: whether a click can land on this game object (the test `#drawGameObject` makes). */
+export function clickableGameObject(object: WorldObjectState): boolean {
+  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
+  return interactiveGameObjectType(gameObjectType(object)) && (flags & GO_FLAG_NOT_SELECTABLE) === 0;
 }
 
 export function gameObjectLabel(object: WorldObjectState): string {
@@ -321,6 +384,8 @@ export class SimpleScene {
      * saying exactly what they said before.
      */
     cameraPivotHeight = CAMERA_DEFAULT_PIVOT_HEIGHT,
+    /** 06.10-7.24: a game object's model box as drawn (world corners), for its click box. */
+    gameObjectCorners?: (object: WorldObjectState, out: Float64Array) => boolean,
   ): void {
     const { width, height } = this.#resize();
     const context = this.#context;
@@ -439,7 +504,9 @@ export class SimpleScene {
         const data = plateFor?.(object, distance);
         const anchorY = dead ? point.y - Math.max(14, bodyHeight * 0.45) / 2 : top.y;
         if (data) plates.push({ box: plateLayout(data, point.x, anchorY), data, depth: point.depth, clickable: !dead });
-      } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected);
+      } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected,
+        gameObjectCorners && clickableGameObject(object) // 06.10-7.24-review: no box for what nothing can click
+          ? projectedBoxRect(object, gameObjectCorners, camera, width, height) : undefined); // 06.10-7.24
       // A dynamic object is the server-side anchor for a lasting spell area, not authored art of
       // its own. In the Canvas fallback a marker is still useful because no spell model is drawn;
       // over WebGL it was a yellow service bar painted through the real spell effect. Other object
@@ -592,7 +659,8 @@ export class SimpleScene {
     }
   }
 
-  #drawGameObject(object: WorldObjectState, point: ScreenPoint, top: number, bodyHeight: number, distance: number, selected: boolean): void {
+  #drawGameObject(object: WorldObjectState, point: ScreenPoint, top: number, bodyHeight: number, distance: number, selected: boolean,
+    modelRect?: ScreenRect): void { // 06.10-7.24
     const context = this.#context;
     const size = Math.max(10, Math.min(34, bodyHeight * 1.7));
     const centerY = top + bodyHeight / 2;
@@ -607,9 +675,12 @@ export class SimpleScene {
     // anything with an object. Making it only there meant the collision hulls that fill a city —
     // 261 of the 739 objects inside the draw radius on the worst measured circle — could still be
     // picked, become the target, wear a selection ring, and then refuse every interaction.
-    const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-    if (interactiveGameObjectType(type) && (flags & GO_FLAG_NOT_SELECTABLE) === 0) {
-      this.#hits.push({ guid: object.guid, x: point.x - size / 2 - 4, y: centerY - size / 2 - 4, width: size + 8, height: size + 8 });
+    if (clickableGameObject(object)) { // 06.10-7.24-review: the test moved to `clickableGameObject`
+      // 06.10-7.24: the model's own box on the screen, never smaller than the old marker square.
+      const x = point.x - size / 2 - 4;
+      const y = centerY - size / 2 - 4;
+      const hit = modelRect ? unionRect(modelRect, x, y, size + 8, size + 8) : { x, y, width: size + 8, height: size + 8 };
+      this.#hits.push({ guid: object.guid, x: hit.x, y: hit.y, width: hit.width, height: hit.height });
     }
     // The diamond and the label are the painted fallback's way of saying a door is there. With the
     // real door drawn behind it, it was a yellow lozenge painted over the door.

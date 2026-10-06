@@ -441,7 +441,10 @@ test("the shipped maps load once, only on request, and a failure keeps the proce
 test("renderer fetches the maps only under an enhanced water leaf and tags still water", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /if \(next\.waterSunGlitter \|\| next\.waterSkyReflection\) this\.#waterDetailMaps\.request\(\);/);
-  assert.match(source, /const profile = this\.#lightingProfile\.quality === 0 \? undefined : this\.#cinematicRequested;/);
+  // 06.10: 05.10-7.20 widened «classic» to the comparison level too; quality 0 must still be classic.
+  assert.match(source, /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/);
+  const { lightingClassicLook } = await import("../dist/code/browser/LightingQuality.js");
+  assert.equal(lightingClassicLook(0), true);
   assert.match(source, /this\.#waterShaderUniforms\.visibleSun\.value\.copy\(sun\);/);
   assert.match(source, /geometry\.setAttribute\("liquidCalm", new THREE\.Float32BufferAttribute\(surface\.calm, 1\)\);/);
   assert.match(source, /this\.#waterDetailMaps\.dispose\(\);/);

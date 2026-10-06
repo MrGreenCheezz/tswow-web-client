@@ -7,6 +7,7 @@ import { fontStringGradientMethods, frameDepthMethods } from "./GlueWidgetMethod
 import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
+import { luaWidgetFormat } from "./GlueWidgetFormat.js"; // 05.10-3.27b
 import { messageScrollMethods } from "./GlueMessageScroll.js"; // L5 3.34
 import { simpleHtmlElementFontMethods } from "./GlueSimpleHtmlFonts.js"; // L5 3.35
 import { createGameTooltipExtras, type GameTooltipExtras, type GameTooltipExtrasAdapter } from "./GlueTooltipExtras.js";
@@ -553,6 +554,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   readonly #frameModules = new WeakMap<FrameXmlFrame, string>();
   #invoke: GlueLuaRef | undefined;
   #call: GlueLuaRef | undefined;
+  /** 05.10-3.27b: Wow.exe's widget formatter 0x00818070 as a Lua C function (GlueWidgetFormat.ts). */
+  #widgetFormat: GlueLuaRef | undefined;
   #nextId = 0;
   #animationsActive = false;
   readonly #animationFunctions = new Map<string, GlueLuaRef>();
@@ -2288,11 +2291,11 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       SetText: ({ frame, args }) => { bridge.SetText(frame, str(args[0])); },
       GetText: ({ self }) => [self.text],
       SetFormattedText: ({ frame, args }) => {
-        // The corpus reaches SetFormattedText through Lua's own format, which
-        // the shim layer already made 5.1-shaped; reuse it rather than
-        // re-implementing printf here.
+        // 05.10-3.27b: Wow.exe's FontString/Button SetFormattedText (0x0048d800 / 0x009779b0) use
+        // the widget formatter 0x00818070, not str_format (GlueWidgetFormat.ts).
         const [format, ...rest] = args;
-        const formatted = this.formatThroughLua(str(format), rest);
+        // 05.10-3.27b: the format goes as it came — a nil one raises (luaL_checklstring), as in Wow.exe.
+        const formatted = this.formatThroughLua(format, rest);
         // 05.10-3.27-review: a refused format (Wow.exe 0x00818070 raises before the text is set)
         // leaves the text as it was; the error went to the handler from vm.call.
         if (formatted !== undefined) bridge.SetText(frame, formatted);
@@ -3178,15 +3181,17 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     return backdrop;
   }
 
-  /** Format through the VM so SetFormattedText obeys the same 5.1 shim. */
-  private formatThroughLua(format: string, args: readonly unknown[]): string | undefined {
-    const ref = this.#vm.globalFunction("format");
-    if (!ref) return format;
-    const answer = this.#vm.call(ref, [format, ...args], 1);
-    this.#vm.release(ref);
+  /** 05.10-3.27b: format through Wow.exe's widget formatter 0x00818070 (GlueWidgetFormat.ts), not `format`. */
+  private formatThroughLua(format: unknown, args: readonly unknown[]): string | undefined {
+    if (!this.#widgetFormat) {
+      const L = this.#vm.state;
+      lua.lua_pushjsfunction(L, luaWidgetFormat);
+      this.#widgetFormat = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "function");
+    }
+    const answer = this.#vm.call(this.#widgetFormat, [format, ...args], 1);
     // 05.10-3.27-review: vm.call answers nothing when format raised — undefined, the text stays.
     if (answer.length === 0) return undefined;
     const [result] = answer;
-    return typeof result === "string" ? result : format;
+    return typeof result === "string" ? result : undefined; // 05.10-3.27b: always a string
   }
 }

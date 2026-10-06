@@ -197,8 +197,15 @@
   853 write-then-read cycles per sync — stopped converging and the renderer never painted again.
   Reverted rather than shipped half-understood; the cure belongs with a batched read/write layout
   pass, not with this one line. See the G7 journal entry.
+
+  06.10-glue-fix: except the private hit-rect node (FrameXmlDomRenderer.applyHitRect). It is marked
+  aria-hidden for screen readers, but it is the only thing that takes the pointer for a frame with
+  <HitRectInsets> — the frame's own box is set to pointer-events: none — so hiding it made every
+  CharSelectCharacterButton (insets bottom=15) click-through: a press on another character's row
+  reached CharacterSelectUI and turned the figure instead of selecting. It sits inside its frame's
+  element, so a hidden frame still takes it out of the page.
 */
-#glue-stage [aria-hidden="true"] { display: none; }
+#glue-stage [aria-hidden="true"]:not([data-framexml-hit-rect]) { display: none; }
 
 /*
   A Texture with no picture and no colour keeps its rectangle and paints nothing — the renderer

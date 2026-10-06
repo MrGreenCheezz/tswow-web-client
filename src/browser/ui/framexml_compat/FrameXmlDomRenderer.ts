@@ -64,6 +64,16 @@ export interface FrameXmlDomRendererOptions {
    * a world is loading would become an unsolicited top-level overlay.
    */
   readonly includeCreatedRoots?: boolean;
+  /**
+   * 06.10-dropdown: a parentless frame with no anchor point has no rectangle, so Wow.exe draws
+   * neither it nor anything anchored inside it. Without this the renderer laid such a root out at
+   * the stage's top-left corner: Blizzard_CombatLog.xml:6 declares `CombatLogDropDown` (a shown
+   * UIDropDownMenuTemplate, no parent, no anchors), the world admits the addon's roots, and its
+   * empty box and arrow button sat above the player frame. Opt-in, because the fixture suites lay
+   * out an unanchored sized "Screen" root as their stage. Lua state (`IsShown`/`IsVisible`) is
+   * untouched; a later `SetPoint` reveals the root on the next pass.
+   */
+  readonly unanchoredRootsUndrawn?: boolean;
   /** Host-selected subtrees; omitted widgets never paint or receive input. */
   readonly frameFilter?: (frame: FrameXmlFrame) => boolean;
   /** Keep a stock ancestor's geometry/visibility without painting its native UI twice. */
@@ -279,6 +289,11 @@ function numberValue(value: string | undefined): number | undefined {
 
 function px(value: number): string {
   return `${value}px`;
+}
+
+/** 06.10-dropdown: a parentless frame (not a region) with no anchor point, which has no rectangle. */
+function unanchoredRoot(frame: FrameXmlFrame): boolean {
+  return !frame.parent && frame.points.length === 0 && frame.type !== "Texture" && frame.type !== "FontString";
 }
 
 /** WoW colours are 0..1 floats; CSS wants 0..255 with the alpha left as a float. */
@@ -516,6 +531,7 @@ export class FrameXmlDomRenderer {
   readonly #fontLoader: ((file: string, family: string) => void) | undefined;
   readonly #createdRootParent: string;
   readonly #includeCreatedRoots: boolean;
+  readonly #unanchoredRootsUndrawn: boolean; // 06.10-dropdown
   readonly #frameFilter: ((frame: FrameXmlFrame) => boolean) | undefined;
   readonly #layoutOnly: ((frame: FrameXmlFrame) => boolean) | undefined;
   /** Every mounted `Cooldown` widget, so the sweep is advanced without walking the whole tree. */
@@ -636,6 +652,7 @@ export class FrameXmlDomRenderer {
     this.#fontLoader = options.fontLoader;
     this.#createdRootParent = options.createdRootParent?.trim() ?? "";
     this.#includeCreatedRoots = options.includeCreatedRoots ?? true;
+    this.#unanchoredRootsUndrawn = options.unanchoredRootsUndrawn ?? false; // 06.10-dropdown
     this.#frameFilter = options.frameFilter;
     this.#layoutOnly = options.layoutOnly;
     this.#clock = options.clock ?? ((): number => Date.now() / 1000);
@@ -1478,7 +1495,9 @@ export class FrameXmlDomRenderer {
     rendered.trap = trap;
     rendered.syncedPass = this.#pass;
     if (rendered.element.parentElement !== parent) parent.append(rendered.element);
-    const hidden = ancestorHidden || !frame.visible;
+    // 06.10-dropdown: an unanchored root has no rectangle (see `unanchoredRootsUndrawn`).
+    const hidden = ancestorHidden || !frame.visible
+      || (this.#unanchoredRootsUndrawn && unanchoredRoot(frame));
     const wasHidden = rendered.effectiveHidden;
     const firstSync = wasHidden === undefined;
     rendered.effectiveHidden = hidden;

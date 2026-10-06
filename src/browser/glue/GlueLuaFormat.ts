@@ -92,12 +92,27 @@ export function setLuaFormatEuropeanNumbers(L: LuaState, on: boolean): void {
 // The result being built, and one item's body before padding.
 let out = new Uint8Array(256);
 let outLength = 0;
-const body = new Uint8Array(1024);
+// 05.10-3.27b: 8 KiB — the widget formatter (GlueWidgetFormat.ts) allows `%.4096f`-sized bodies.
+const body = new Uint8Array(8192);
 let bodyLength = 0;
 // One item's prefix: a sign, or "0x".
 let prefix0 = 0;
 let prefix1 = 0;
 let prefixLength = 0;
+
+// 05.10-3.27b: the widget formatter (GlueWidgetFormat.ts) builds its text in the same buffer.
+/** The buffer the result is being built in (it is replaced when it grows). */
+export function formatOutput(): Uint8Array {
+  return out;
+}
+/** The result's length so far. */
+export function formatOutputLength(): number {
+  return outLength;
+}
+/** Cut the result back to `length` bytes (0 starts a new one). */
+export function setFormatOutputLength(length: number): void {
+  outLength = length;
+}
 
 function reserve(extra: number): void {
   const need = outLength + extra;
@@ -109,12 +124,13 @@ function reserve(extra: number): void {
   out = grown;
 }
 
-function putByte(byte: number): void {
+// 05.10-3.27b: exported for the widget formatter (GlueWidgetFormat.ts).
+export function putByte(byte: number): void {
   if (outLength === out.length) reserve(1);
   out[outLength++] = byte;
 }
 
-function putBytes(bytes: Uint8Array, start: number, length: number): void {
+export function putBytes(bytes: Uint8Array, start: number, length: number): void { // 05.10-3.27b
   reserve(length);
   out.set(bytes.subarray(start, start + length), outLength);
   outLength += length;
@@ -328,7 +344,8 @@ function fastFixed(value: number, precision: number, alternate: boolean): boolea
   return true;
 }
 
-function floatItem(L: LuaState, arg: number, conversion: number, flags: number, width: number, precision: number): void {
+export function floatItem(L: LuaState, // 05.10-3.27b
+  arg: number, conversion: number, flags: number, width: number, precision: number): void {
   const value = aux.luaL_checknumber(L, arg);
   bodyLength = 0;
   prefixLength = 0;
@@ -356,7 +373,8 @@ function floatItem(L: LuaState, arg: number, conversion: number, flags: number, 
   putItem(body, 0, bodyLength, flags, width);
 }
 
-function integerItem(L: LuaState, arg: number, conversion: number, flags: number, width: number, precision: number): void {
+export function integerItem(L: LuaState, // 05.10-3.27b
+  arg: number, conversion: number, flags: number, width: number, precision: number): void {
   const value = aux.luaL_checknumber(L, arg);
   bodyLength = 0;
   prefixLength = 0;
@@ -411,7 +429,8 @@ function stringArg(L: LuaState, arg: number): Uint8Array {
   return aux.luaL_checklstring(L, arg);
 }
 
-function stringItem(L: LuaState, arg: number, flags: number, width: number, precision: number, precisionDigits: number): void {
+export function stringItem(L: LuaState, // 05.10-3.27b
+  arg: number, flags: number, width: number, precision: number, precisionDigits: number): void {
   const text = stringArg(L, arg);
   if (precisionDigits === 0 && text.length >= 100) {
     putBytes(text, 0, text.length);

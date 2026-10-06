@@ -3,6 +3,7 @@ import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "../glue/
 import { GlueLuaVm, type GlueLuaOptions } from "../glue/GlueLua.js";
 import { createFrameXmlClock, type FrameXmlClockSource } from "./FrameXmlClock.js"; // L5 3.27
 import { installFrameXmlLuaEnvironment } from "./FrameXmlLuaEnvironment.js"; // L5 3.27
+import { installFrameXmlEuropeanNumbers } from "./FrameXmlEuropeanNumbers.js"; // 05.10-3.27b
 import {
   GlueWidgetBinder,
   type GameTooltipWidgetAdapter,
@@ -1054,6 +1055,8 @@ export class FrameXmlBoot {
     if (!shimsLoaded.ok) throw new Error(`framexml 5.1 shims failed: ${shimsLoaded.error}`);
     // L5 3.27: 5.1's newproxy (userdata), setfenv and getfenv over the stand-ins above (FrameXmlLuaEnvironment.ts).
     installFrameXmlLuaEnvironment(this.vm.state);
+    // 05.10-3.27b: SetEuropeanNumbers sets the `%F` flag of format and SetFormattedText (FrameXmlEuropeanNumbers.ts).
+    installFrameXmlEuropeanNumbers(this.vm.state);
     const attributesLoaded = this.vm.execute(
       FRAMEXML_ATTRIBUTE_PRELUDE, `@${PRELUDE_CHUNK}:attributes`,
     );

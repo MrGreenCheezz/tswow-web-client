@@ -99,6 +99,11 @@ function loopUnitHeight(guid: bigint): number | undefined {
   return game.renderer?.unitHeight(guid);
 }
 
+/** 06.10-7.24: a game object's drawn model box, for its click box. */
+function loopGameObjectCorners(object: WorldObjectState, out: Float64Array): boolean {
+  return game.renderer?.gameObjectPickCorners(object, out) ?? false;
+}
+
 let lastFrame = performance.now();
 let renderStatusShownAt = 0;
 let fullFrameStatusShownAt = 0;
@@ -651,6 +656,7 @@ function frame(now: number): void {
       plateSource(now),
       game.camera.distance,
       cameraPivotHeight(),
+      game.renderer ? loopGameObjectCorners : undefined, // 06.10-7.24
     );
     hitchScene = performance.now();
     // After both draw passes on purpose: the bubbles and the damage numbers are anchored with the

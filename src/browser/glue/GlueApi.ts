@@ -164,9 +164,14 @@ const EMPTY_CREATION_SOURCE: GlueCreationOptions["source"] = {
   displayId: () => undefined,
 };
 
-/** The 3.3.5a build this client speaks, as `GetBuildInfo()` returns it. */
-export const GLUE_BUILD_INFO: readonly [string, string, string, number] =
-  Object.freeze(["3.3.5", "12340", "Jun 24 2010", 30300]) as readonly [string, string, string, number];
+/**
+ * 06.10-glue-fix: the glue `GetBuildInfo()` — Wow.exe 0x004dbe60 (registration 0x00ac3e08), not the
+ * in-game one (0x0050f890: version, build, date, TOC number). It answers five strings: the localized
+ * `VERSION` and `RELEASE_BUILD` (through the GetText lookup 0x00819d40, "" when absent), then these
+ * three. AccountLogin.lua:15-16 prints all five through `SetFormattedText(VERSION_TEMPLATE, …)`.
+ */
+export const GLUE_BUILD_INFO: readonly [string, string, string] =
+  Object.freeze(["3.3.5", "12340", "Jun 24 2010"]) as readonly [string, string, string];
 
 /** The logon challenge's account name: one length byte, at most 16 UTF-8 bytes (`buildLogonChallenge`). */
 const MAX_ACCOUNT_NAME_BYTES = 16;
@@ -504,7 +509,10 @@ export class GlueApi {
 
   private installClientInfo(): void {
     const vm = this.#vm;
-    vm.registerGlobal("GetBuildInfo", () => [...GLUE_BUILD_INFO]);
+    // 06.10-glue-fix: five values, as 0x004dbe60 (see GLUE_BUILD_INFO).
+    vm.registerGlobal("GetBuildInfo", () => [
+      vm.globalString("VERSION") ?? "", vm.globalString("RELEASE_BUILD") ?? "", ...GLUE_BUILD_INFO,
+    ]);
     vm.registerGlobal("GetLocale", () => [this.#options.locale ?? "ruRU"]);
     // GlueParent_OnLoad divides these to decide whether to pillarbox itself.
     vm.registerGlobal("GetScreenWidth", () => [this.screenSize.width]);

@@ -29,8 +29,8 @@ import { worldFloorUnder } from "./TransportRide.js";
  * them, but where the client draws them on their path (LiftClock.ts) rather than at the spawn the
  * core never moves them from. Other types the core also makes solid (chests, buttons, goobers,
  * generic props) are left out on purpose: the owner plays dungeons daily, and a misplaced prop in a
- * corridor costs more than one missing (the renderer may draw game objects half a turn from the core
- * frame — plan item 7.24). A state that never came, a model the gateway has no row for, a gateway
+ * corridor costs more than one missing (06.10-7.24-review: the renderer now draws every game object,
+ * M2 or WMO, in this same `Rz(o)` frame — world/GameObjectModelFrame.ts). A state that never came, a model the gateway has no row for, a gateway
  * without `/vmap/gobject-models` (404): no collider, exactly as before this slice.
  *
  * Lifts are client-only rides (spec 11.01, mechanism 5): the character standing on a lift's floor is
