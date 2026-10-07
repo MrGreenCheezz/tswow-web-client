@@ -257,8 +257,12 @@ test("technical game objects never enter the pick stack ahead of an interactive 
 
   assert.match(scene, /interactiveGameObjectType/,
     "the scene must know which GO types have a client interaction path");
+  // 06.10-7.24-review: the test moved into `clickableGameObject`, which guards the hit push.
   assert.match(scene,
-    /if\s*\(interactiveGameObjectType\(type\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0\)[^{]*\{[\s\S]{0,240}?this\.#hits\.push/,
+    /function clickableGameObject\([^)]*\)[^{]*\{[\s\S]{0,200}?interactiveGameObjectType\(gameObjectType\(object\)\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0/,
+    "a GO is clickable only when its type has an interaction path and it is selectable");
+  assert.match(scene,
+    /if\s*\(clickableGameObject\(object\)\)[^{]*\{[\s\S]{0,400}?this\.#hits\.push/,
     "unsupported collision helpers must be rejected before they can hide a usable GO behind them in the hit stack");
 });
 

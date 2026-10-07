@@ -233,3 +233,29 @@ test("production eviction is post-admission and pins exact renderer borrower ide
     /retainedBuildKeys\(\)[\s\S]*if \(!this\.#formalBenchmarkIsolation\) activeAtlases\.add\(key\)/,
     "physical portrait roots always pin residency but do not enter formal-isolated readiness");
 });
+
+test("P1-10b: peek reads without touching and epoch moves only on set, delete and clear", () => {
+  const cache = new BuiltModelCache({ count: 2, knownBufferBytes: 1024 });
+  const a = built(8);
+  const b = built(8);
+  const start = cache.epoch;
+  cache.set("a", a).set("b", b);
+  assert.ok(cache.epoch > start, "set moves the epoch");
+  let epoch = cache.epoch;
+  assert.equal(cache.get("b"), b);
+  assert.equal(cache.peek("a"), a, "peeked after b was touched: a stamp here would make b the oldest");
+  assert.equal(cache.peek("missing"), undefined);
+  assert.equal(cache.epoch, epoch, "get and peek leave the epoch alone");
+  cache.set("c", built(8));
+  assert.deepEqual(cache.evictUnpinned(new Set()).map(({ key }) => key), ["a"],
+    "a peeked entry is still the oldest");
+  epoch = cache.epoch;
+  assert.equal(cache.delete("b"), true);
+  assert.ok(cache.epoch > epoch, "delete moves the epoch");
+  epoch = cache.epoch;
+  assert.equal(cache.delete("b"), false);
+  assert.equal(cache.epoch, epoch, "deleting nothing changes nothing");
+  cache.clear();
+  assert.ok(cache.epoch > epoch, "clear moves the epoch");
+  assert.equal(cache.evictUnpinned(new Set()).length, 0);
+});

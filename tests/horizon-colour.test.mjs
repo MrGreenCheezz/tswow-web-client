@@ -362,7 +362,10 @@ test("the renderer picks the horizon material per frame from the preset and buil
   const body = source.slice(source.indexOf("  #updateHorizon(player: WorldPosition"));
   const method = body.slice(0, body.indexOf("\n  }\n"));
   assert.match(method, /this\.#horizonMaterials\.select\(this\.#lightingProfile\.quality, \(\) => horizonClient\?\.colour\(map\)\)/);
-  assert.ok(method.indexOf("#horizonMaterials.select(") < method.indexOf("if (this.#horizon?.key === key) return;"),
+  // P1-13b: the unchanged-ring test compares the centre tile and revision as numbers.
+  const unchanged = method.indexOf("if (this.#horizon?.tile === tile && this.#horizon.revision === revision) return;");
+  assert.ok(unchanged > 0, "the numeric unchanged-ring early return");
+  assert.ok(method.indexOf("#horizonMaterials.select(") < unchanged,
     "chosen before the unchanged-ring early return, so a preset change or a late picture applies at once");
   assert.match(method, /buildHorizonGeometry\(tiles, \(x, y\) => horizonTileAt\(world, x, y\)\), horizonMaterial\)/);
   assert.match(source, /this\.#horizonMaterials\?\.dispose\(\);/);

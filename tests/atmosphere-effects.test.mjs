@@ -111,7 +111,9 @@ test("vegetation shaders carry the field branch, mixed out by the shared uniform
   material.onBeforeCompile(shader, undefined);
   assert.match(shader.vertexShader, new RegExp(WIND_FIELD_MARKER));
   assert.match(shader.vertexShader, /uniform vec4 uVegetationWindField;/);
-  assert.match(shader.vertexShader, /mix\( 0\.1 \* vegetationWindWave, vegetationWindFieldOffset\.x, vegetationWindFieldMix \)/);
+  // P1-08: the amplitude is the profile uniform's x, no longer the literal 0.1.
+  assert.match(shader.vertexShader, /mix\( uVegetationWindA\.x \* vegetationWindWave, vegetationWindFieldOffset\.x, vegetationWindFieldMix \)/);
+  assert.equal(shader.uniforms.uVegetationWindA.value.x, 0.1);
   assert.doesNotMatch(shader.vertexShader, /transformed\.z \+=/);
   assert.equal(shader.uniforms.uVegetationWindField, WIND_FIELD_UNIFORM);
 });

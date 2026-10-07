@@ -432,7 +432,11 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
     if (path === "environment") harness.disposeEnvironment({ node });
     if (path === "gameObject") harness.disposeGameObject({ node });
     if (path === "unit") harness.clearUnitNode({ node, attached: new Map() });
-    if (path === "wmo") harness.clearWmoGroups({ built: new Map([[0, { mesh }]]) }, node);
+    // P1-12b: a leaving room touches its geometry entry in the built-model cache.
+    if (path === "wmo") {
+      harness.wmoGeometries = new Map();
+      harness.clearWmoGroups({ built: new Map([[0, { mesh, entry: { cacheKey: "room" } }]]) }, node);
+    }
     if (path === "attachments") harness.detachAll({ attached: new Map([["hand", node]]) });
     if (path === "mount") harness.dropMount({ node: scene, mount: { node } });
     assert.equal(warmup.queued, 0, `${path}: detached cached meshes must not be compiled`);

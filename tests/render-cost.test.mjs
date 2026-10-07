@@ -214,6 +214,39 @@ test("the renderer envelope spans draw entry through dirty portrait readback and
     "a throwing world/portrait pass still closes the renderer envelope");
 });
 
+test("P1-20a: the state section is marked in four pieces, each reaching both the hitch ring and the averages", async () => {
+  const source = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  const frame = source.slice(source.indexOf("function frame(now: number): void {"),
+    source.indexOf("export function animate(now: number): void {"));
+  const at = (text) => {
+    const index = frame.indexOf(text);
+    assert.ok(index >= 0, `${text} must be in frame()`);
+    return index;
+  };
+  const marks = [
+    at("const stateFlushStart = performance.now();"),
+    at("game.store?.flush();"),
+    at("const stateFlushed = performance.now();"),
+    at("world?.state.updateMotions(now);"),
+    at("const stateMoved = performance.now();"),
+    at("game.spellVisualCoordinator?.tick(now);"),
+    at("const stateVisuals = performance.now();"),
+    at("drainWorldState();"),
+    at("const stateViewed = performance.now();"),
+    at("const hitchState = performance.now();"),
+  ];
+  for (let index = 1; index < marks.length; index++) {
+    assert.ok(marks[index - 1] < marks[index], `mark ${index} is out of order: flush < motions < visuals < view < hitchState`);
+  }
+  for (const name of ["state.flush", "state.motions", "state.visuals", "state.view"]) {
+    assert.ok(frame.includes(`hitchSections["${name}"] =`), `${name} is a hitch section`);
+    assert.ok(frame.includes(`addSectionAverage("${name}",`), `${name} is an average leaf`);
+  }
+  assert.ok(frame.includes(`addSectionAverage("state.rest",`), "the remainder of state is its own leaf");
+  assert.equal(frame.includes(`addSectionAverage("state",`), false, "the averages hold leaves only");
+  assert.ok(frame.includes(`addCheckpointSection("state.view",`), "the capture's checkpoints carry state.view");
+});
+
 test("draw clears per-frame admission counters before a player-less early return", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const resetStart = source.indexOf("  #resetFrameCounters(): void {");

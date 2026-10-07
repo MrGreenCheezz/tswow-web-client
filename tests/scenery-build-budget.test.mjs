@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
 import { hypot2 } from "../dist/code/browser/GroundCover.js";
 import { selectGameObjectAdmission } from "../dist/code/browser/RenderAdmission.js";
+import { sameWmoSelection } from "../dist/code/browser/WmoGroupRange.js";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import * as transportAdmission from "../dist/code/browser/GameObjectTransportAdmission.js"; // 06.10-7.24: 05.10-7.05's helpers
 
@@ -26,34 +27,56 @@ function methods(names, dependencies = {}) {
   return Function(...Object.keys(deps), body + "; return Harness;")(...Object.values(deps));
 }
 
+/** `BuiltModelCache`'s surface the room pass reads: `peek` without touching, `epoch` on set/delete. */
+class EpochCache extends Map {
+  epoch = 0;
+  peeks = 0;
+  peek(key) { this.peeks++; return super.get(key); }
+  set(key, value) { this.epoch++; return super.set(key, value); }
+  delete(key) {
+    const had = super.delete(key);
+    if (had) this.epoch++;
+    return had;
+  }
+}
+
 function rooms(cost = 3) {
-  const Harness = methods(["#updateWmoGroups"], { WMO_GROUP_BUILD_BUDGET: 6 });
+  const Harness = methods(["#updateWmoGroups", "#clearWmoGroups"], { WMO_GROUP_BUILD_BUDGET: 6, sameWmoSelection });
   const harness = new Harness();
   let clock = 0;
+  let meshes = 0;
   Object.assign(harness, {
-    submissionSerial: 1, wmoGroupBuildSerial: -1, wmoGroupBuilds: 0,
+    submissionSerial: 1, wmoGroupBuildSerial: -1, wmoGroupBuilds: 0, wmoGroupsPending: 0,
     wmoGroupBuildBudget: new FrameBuildBudget(6, 2, () => clock),
     wmoGeometryBuild: { retain() {} },
     programWarmup: { unregisterObject() {} },
     // The warm hold (tests/program-warmup-shadow-depth.test.mjs) only hides a room until its
     // programs link; construction and attachment, which this suite measures, are unaffected.
     holdWmoGroupUntilWarm() {},
-    wmoGeometries: new Map(),
+    wmoGeometries: new EpochCache(),
     wmoGroupCacheKey: (model, index) => `${model.id}:${index}`,
     wmoGroupMesh(model, index) {
       // The real mesh builder takes the material budget after its incremental geometry is ready.
       if (!this.wmoGroupBuildBudget.take()) return undefined;
       clock += cost;
-      const entry = {};
-      this.wmoGeometries.set(this.wmoGroupCacheKey(model, index), entry);
+      meshes++;
+      const cacheKey = this.wmoGroupCacheKey(model, index);
+      const entry = this.wmoGeometries.peek(cacheKey) ?? { cacheKey };
+      if (this.wmoGeometries.peek(cacheKey) !== entry) this.wmoGeometries.set(cacheKey, entry);
       return { entry, mesh: new THREE.Object3D() };
     },
   });
-  const placement = id => ({
-    model: { id, groups: Array.from({ length: 6 }, (_, i) => ({ mesh: {}, exterior: i === 5, indoor: i !== 5 })) },
-    rangeGroups: [0, 1, 2, 3, 4, 5], rangePlayer: { x: 0, y: 0, z: 0 }, built: new Map(),
-  });
-  return { harness, placement, player: { x: 0, y: 0, z: 0 } };
+  const placement = id => {
+    const placed = {
+      model: { id, groups: Array.from({ length: 6 }, (_, i) => ({ mesh: {}, exterior: i === 5, indoor: i !== 5 })) },
+      // P1-12a: the distance table, answering a test-controlled selection.
+      selection: [0, 1, 2, 3, 4, 5],
+      built: new Map(),
+    };
+    placed.ranges = { select: () => placed.selection };
+    return placed;
+  };
+  return { harness, placement, player: { x: 0, y: 0, z: 0 }, meshes: () => meshes };
 }
 
 test("a costly WMO room stops construction across buildings until the next frame", () => {
@@ -64,7 +87,7 @@ test("a costly WMO room stops construction across buildings until the next frame
   harness.updateWmoGroups(second, player, secondNode);
   assert.equal(first.built.size + second.built.size, 1);
   assert.ok(first.built.has(5), "the shell wins even when fewer than seven groups need building");
-  first.rangeGroups = [];
+  first.selection = [];
   harness.updateWmoGroups(first, player, firstNode);
   assert.equal(firstNode.children.length, 0, "hiding remains immediate after the slice is spent");
   harness.submissionSerial++;
@@ -81,6 +104,92 @@ test("cheap WMO groups retain the six-build ceiling and eventually attach every 
   harness.submissionSerial++;
   harness.updateWmoGroups(b, player, new THREE.Group());
   assert.equal(b.built.size, 6);
+});
+
+/** One placement with every room attached and the pass settled on it. */
+function settledRooms() {
+  const fixture = rooms(0);
+  const placed = fixture.placement("settled");
+  const node = new THREE.Group();
+  const frame = () => {
+    fixture.harness.submissionSerial++;
+    fixture.harness.updateWmoGroups(placed, fixture.player, node);
+  };
+  frame();
+  assert.equal(placed.built.size, 6);
+  assert.equal(placed.appliedSettled, true);
+  return { ...fixture, placed, node, frame };
+}
+
+test("P1-12b: a settled frame builds, peeks and touches nothing", () => {
+  const { harness, placed, node, frame, meshes } = settledRooms();
+  const before = { meshes: meshes(), peeks: harness.wmoGeometries.peeks, children: [...node.children] };
+  let touches = 0;
+  const get = harness.wmoGeometries.get.bind(harness.wmoGeometries);
+  harness.wmoGeometries.get = (key) => { touches++; return get(key); };
+  // A fresh array with the same rooms, as a portal walk would hand out, is the same selection.
+  placed.selection = [...placed.selection];
+  frame();
+  frame();
+  assert.equal(meshes(), before.meshes, "no room mesh was asked for");
+  assert.equal(harness.wmoGeometries.peeks, before.peeks, "no entry was peeked");
+  assert.equal(touches, 0, "no entry was touched");
+  assert.deepEqual(node.children, before.children);
+  assert.equal(placed.built.size, 6);
+});
+
+test("P1-12b: a selection change detaches at once and touches the leaving room", () => {
+  const { harness, placed, node, frame } = settledRooms();
+  const touched = [];
+  const get = harness.wmoGeometries.get.bind(harness.wmoGeometries);
+  harness.wmoGeometries.get = (key) => { touched.push(key); return get(key); };
+  placed.selection = [0, 1, 2, 3, 5];
+  frame();
+  assert.equal(placed.built.has(4), false);
+  assert.equal(node.children.length, 5);
+  assert.deepEqual(touched, ["settled:4"], "only the room that left becomes recent");
+  assert.equal(placed.appliedSettled, true);
+});
+
+test("P1-12b: a cache epoch change with a replaced entry detaches the room and attaches it anew", () => {
+  const { harness, placed, node, frame } = settledRooms();
+  const old = placed.built.get(2);
+  // Another placement (or an eviction and rebuild) replaced the entry under the same key.
+  harness.wmoGeometries.set("settled:2", { cacheKey: "settled:2" });
+  frame();
+  const now = placed.built.get(2);
+  assert.ok(now && now !== old, "the room was rebuilt on the current entry");
+  assert.equal(now.entry, harness.wmoGeometries.get("settled:2"));
+  assert.equal(node.children.includes(old.mesh), false);
+  assert.equal(node.children.includes(now.mesh), true);
+  assert.equal(node.children.length, 6);
+});
+
+test("P1-12b: after clearWmoGroups the next frame attaches every room again", () => {
+  const { harness, placed, node, frame, meshes } = settledRooms();
+  harness.clearWmoGroups(placed, node);
+  assert.equal(node.children.length, 0);
+  assert.equal(placed.appliedSettled, false);
+  const before = meshes();
+  frame();
+  assert.equal(meshes() - before, 6);
+  assert.equal(placed.built.size, 6);
+  assert.equal(node.children.length, 6);
+});
+
+test("P1-12b: a frame that could not build every wanted room is not settled", () => {
+  const fixture = rooms(3);
+  const placed = fixture.placement("slow");
+  const node = new THREE.Group();
+  fixture.harness.updateWmoGroups(placed, fixture.player, node);
+  assert.ok(placed.built.size < 6);
+  assert.equal(placed.appliedSettled, false);
+  for (let frame = 0; frame < 6 && placed.built.size < 6; frame++) {
+    fixture.harness.submissionSerial++;
+    fixture.harness.updateWmoGroups(placed, fixture.player, node);
+  }
+  assert.equal(placed.built.size, 6, "the remaining rooms attach on later frames");
+  assert.equal(placed.appliedSettled, true);
 });
 
 function gameObjects(cost = 3) {

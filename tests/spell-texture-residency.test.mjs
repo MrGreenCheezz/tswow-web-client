@@ -1011,3 +1011,99 @@ test("model URL deduplication stays local and does not own directly supplied or 
   }
   cached.dispose(); supplied.dispose();
 });
+
+test("P1-11: revision moves on acquire, release, settle, eviction and clear, never on touch or stats", () => {
+  const requests = [];
+  withTextureLoader(function (_url, onLoad, _progress, onError) {
+    const texture = rgbaTexture();
+    requests.push({ texture, onLoad, onError });
+    return texture;
+  }, () => {
+    const loader = new ModelTextureLoader({ cache: true, limits: { count: 1, knownLogicalTextureBytes: 1024 } });
+    let revision = loader.revision;
+    const moved = (what) => {
+      assert.ok(loader.revision > revision, `${what} moves the revision`);
+      revision = loader.revision;
+    };
+    const still = (what) => assert.equal(loader.revision, revision, `${what} leaves the revision`);
+
+    const a = loader.acquire("a.blp", "owner-a");
+    moved("acquire of a new URL");
+    assert.equal(loader.leaseStatus(a), "pending");
+    const again = loader.acquire("a.blp", "owner-again");
+    moved("a second lease on the same request");
+    assert.equal(loader.touch(a), true);
+    still("touch");
+    void loader.stats;
+    void loader.residencyStats;
+    void loader.pressureSnapshot();
+    void loader.overflowCount;
+    still("reading stats, residency, pressure and overflow");
+    requests[0].onLoad(a.texture);
+    moved("settlement");
+    assert.equal(loader.leaseStatus(a), "ready");
+    again.release();
+    moved("release");
+    again.release();
+    still("a repeated release");
+    assert.equal(loader.owns(again), false, "a released lease is not owned");
+    assert.equal(loader.leaseStatus(again), undefined);
+
+    const b = loader.acquire("b.blp", "owner-b");
+    moved("acquire of b");
+    requests[1].onError();
+    moved("failure");
+    assert.equal(loader.leaseStatus(b), "failed");
+    a.release();
+    moved("release of a");
+    assert.deepEqual(loader.residencyStats.overflowCount, loader.overflowCount);
+    assert.equal(loader.overflowCount, 1);
+    assert.deepEqual(loader.evictUnleased(), ["a.blp"]);
+    moved("eviction");
+    assert.deepEqual(loader.evictUnleased(), []);
+    still("an eviction pass with nothing to do");
+    assert.equal(loader.owns(b), true);
+    loader.clear();
+    moved("clear");
+    assert.equal(loader.owns(b), false, "a lease from before clear is stale");
+    assert.equal(loader.touch(b), false);
+    assert.equal(loader.leaseStatus(b), undefined);
+
+    // A replacement request for the same URL: the old lease is stale even though the URL is cached.
+    const fresh = loader.acquire("b.blp", "owner-fresh");
+    assert.equal(loader.owns(fresh), true);
+    assert.equal(loader.owns(b), false);
+    assert.equal(loader.leaseStatus(fresh), "pending");
+  });
+});
+
+test("P1-11: the numeric overflow getters equal the residency stats fields", () => {
+  const sizes = new Map([["unknown.blp", undefined], ["a.blp", [2, 1]], ["b.blp", [2, 2]], ["c.blp", [1, 1]]]);
+  withTextureLoader(function (url, onLoad) {
+    const size = sizes.get(url);
+    const texture = size ? rgbaTexture(...size) : new THREE.Texture();
+    onLoad?.(texture);
+    return texture;
+  }, () => {
+    const loader = new ModelTextureLoader({ cache: true, limits: { count: 2, knownLogicalTextureBytes: 12 } });
+    const leases = [];
+    const check = () => {
+      const stats = loader.residencyStats;
+      assert.equal(loader.overflowCount, stats.overflowCount);
+      assert.equal(loader.overflowKnownLogicalTextureBytes, stats.overflowKnownLogicalTextureBytes);
+    };
+    check();
+    for (const url of sizes.keys()) {
+      leases.push(loader.acquire(url, url));
+      check();
+    }
+    assert.ok(loader.overflowCount > 0 && loader.overflowKnownLogicalTextureBytes > 0);
+    for (const lease of leases) {
+      lease.release();
+      loader.evictUnleased();
+      check();
+    }
+    loader.clear();
+    check();
+  });
+});

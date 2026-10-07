@@ -275,7 +275,7 @@ test("game-object admission stamps only the current model identity and resets tr
   for (const field of [
     "admissionDisplayId", "admissionScale", "admissionEntry", "admissionMetadataRevision",
   ]) {
-    assert.match(clear, new RegExp(`delete rendered\\.${field}`),
+    assert.match(clear, new RegExp(`rendered\\.${field} = undefined;`),
       `trust clearing invalidates stale ${field}`);
   }
 
@@ -317,9 +317,9 @@ test("game-object admission stamps only the current model identity and resets tr
   const place = source.slice(placeStart, placeEnd);
   assert.match(place, /if \(nextEntry !== rendered\.entry\)/,
     "entry revision is compared with the retained transport identity");
-  assert.match(place, /delete rendered\.phaseAt/,
+  assert.match(place, /rendered\.phaseAt = undefined;/,
     "entry changes restart transport phase acquisition");
-  assert.match(place, /delete rendered\.phaseMs/,
+  assert.match(place, /rendered\.phaseMs = undefined;/,
     "entry changes discard the old transport phase");
   assert.match(place, /rendered\.entry = nextEntry/,
     "the current transport entry is installed before path lookup");

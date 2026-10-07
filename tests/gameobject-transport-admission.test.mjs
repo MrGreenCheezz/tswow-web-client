@@ -17,6 +17,7 @@ import {
   placeEnvironmentNode,
   wmoGroupBoxes,
   wmoGroupsInRange,
+  wmoShellRange,
 } from "../dist/code/browser/WorldRenderer3D.js";
 
 const candidate = (value, distance, transport, extra = {}) =>
@@ -162,6 +163,12 @@ test("a moving transport's hull holds the transport range whatever its size or b
   const body = source.slice(start, source.indexOf("  #stampGameObjectAdmission(", start));
   assert.match(body, /#updateWmoGroups\(rendered\.wmo, viewer, rendered\.node, client, false,\s*\n?\s*transportShell \? GAMEOBJECT_TRANSPORT_SHELL_RANGE : undefined\)/);
   const groups = source.slice(source.indexOf("  #updateWmoGroups("), source.indexOf("  #wmoRoomsFromOpenAir("));
-  assert.match(groups, /wmoGroupsInRange\(placed\.model, placed\.boxes, player, undefined, shellRange\)/);
-  assert.match(groups, /placed\.rangeShell !== shellRange/);
+  // P1-12a: the placement's range table answers with the hull leash (tests/wmo-range-table.test.mjs).
+  assert.match(groups, /placed\.ranges\.select\(player\.x, player\.y, shellRange\)/);
+  const { WmoRangeTable } = await import("../dist/code/browser/WmoGroupRange.js");
+  const table = new WmoRangeTable(model, boxes, 60, wmoShellRange);
+  assert.deepEqual(table.select(player.x, player.y), []);
+  assert.deepEqual(table.select(player.x, player.y, GAMEOBJECT_TRANSPORT_SHELL_RANGE), [1]);
+  assert.deepEqual(table.select(0, 800, GAMEOBJECT_TRANSPORT_SHELL_RANGE), []);
+  assert.deepEqual(table.select(player.x, player.y), [], "dropping the hull leash drops the hull");
 });

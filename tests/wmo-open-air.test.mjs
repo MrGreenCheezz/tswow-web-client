@@ -80,8 +80,9 @@ test("the renderer walks from open air only for static buildings with a street, 
     /return interiorOnlyDoodadShown\(object\) === undefined \? INTERIOR_RANGE : boundWmoDoodadLeash\(object\);/);
   assert.match(source, /return INTERIOR_ONLY_DOODADS\.get\(object\)\?\.rooms\.leash \?\? INTERIOR_ONLY_RANGE;/);
   // Only the static-environment call opts in (moving game objects keep distance selection).
-  const calls = [...source.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, player, rendered\.node, client(, true)?\)/g)];
-  assert.deepEqual(calls.map((match) => match[1] ?? ""), [", true", ""]);
+  // 05.10-7.05-review: the game-object call measures from the transport viewer and passes false.
+  const calls = [...source.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, (?:player|viewer), rendered\.node, client, (true|false)\b/g)];
+  assert.deepEqual(calls.map((match) => match[1]), ["true", "false"]);
 });
 
 // 05.10 review A7b-2: since slice 3 every admitted building with a street and WME4 binds its doodads,
@@ -105,3 +106,4 @@ test("a snapshot's WMO doodads are grouped by placement once, in snapshot order"
   assert.match(bind, /for \(const object of wmoDoodadsOfPlacement\(objects, placed\.visualId\)\) \{/);
   assert.doesNotMatch(bind, /for \(const object of objects\)/, "no walk over the whole snapshot per placement");
 });
+

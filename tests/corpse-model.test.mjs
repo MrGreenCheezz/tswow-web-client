@@ -118,7 +118,9 @@ test("the hooks: admission, the dead pose, the display request, the model, the m
   const renderer = src("browser/WorldRenderer3D.ts");
   assert.match(renderer, /candidate\.typeId === 7 \? corpseUnitView\(candidate\) : candidate/);
   assert.match(renderer, /const dead = isWorldObjectDead\(object\) \|\| object\.typeId === 7;/);
-  assert.match(src("browser/ui/WorldView.ts"), /corpseDisplayRequest\(object\)/);
+  // P1-20c: the world pass's model requests moved to UnitModelRequests.ts (events + WorldView's sweep).
+  assert.match(src("browser/UnitModelRequests.ts"), /corpseDisplayRequest\(object\)/);
+  assert.match(src("browser/ui/WorldView.ts"), /sweepUnitModels\(state, game\.creatureModels\)/);
   assert.match(src("browser/ui/Frames.ts"), /if \(object\.typeId === 7\) return corpseModelFor\(object, creatureModels\);/);
   assert.match(src("browser/SimpleScene.ts"), /object\.typeId === 7 && unitHeight\?\.\(object\.guid\) !== undefined/);
 });

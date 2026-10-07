@@ -28,7 +28,7 @@ function rendererFixture() {
   };
 }
 
-function controller(game, probes = { listener: undefined }) {
+function controller(game, probes = { listener: undefined }, overrides = {}) {
   const deps = {
     game, FrameCapture, captureScriptFile, CAPTURE_DURATION_MS: 60000,
     setCaptureProbe(listener) { probes.listener = listener; },
@@ -40,10 +40,68 @@ function controller(game, probes = { listener: undefined }) {
     poseWorkerReport: () => ({ state: 'on', predicted: false }), // L10 (10.18): PerformanceCapture.ts imports it
     loadingScreenVisible: () => false, PerformanceObserver: undefined,
     setTimeout: () => 1, clearTimeout() {},
+    ...overrides,
   };
   return Function(...Object.keys(deps), js + '\nreturn { startPerformanceCapture, stopPerformanceCapture, '
-    + 'beginPerformanceCaptureFrame, endPerformanceCaptureFrame, performanceCaptureReport, performanceCaptureReady };')(...Object.values(deps));
+    + 'beginPerformanceCaptureFrame, endPerformanceCaptureFrame, performanceCaptureReport, performanceCaptureReady, '
+    + 'addCheckpointSection };')(...Object.values(deps));
 }
+
+test('P1-20a: each checkpoint carries the per-frame average of the sections frames added since the last one', () => {
+  const game = { world: { state: { objects: new Map() } }, renderer: rendererFixture() }, api = controller(game);
+  api.addCheckpointSection('state.view', 5);
+  assert.equal(api.startPerformanceCapture(), true);
+  // The first frame takes the first checkpoint; nothing added before the capture leaks into it.
+  api.beginPerformanceCaptureFrame();
+  api.addCheckpointSection('state.view', 0.25);
+  api.endPerformanceCaptureFrame(performance.now(), 4, false);
+  api.stopPerformanceCapture();
+  const checkpoints = api.performanceCaptureReport().events.checkpoints;
+  assert.equal(checkpoints.length, 1);
+  assert.deepEqual(checkpoints[0].sections, { 'state.view': 0.25 });
+  // Outside a recording the call is a no-op.
+  api.addCheckpointSection('state.view', 7);
+  assert.equal(api.startPerformanceCapture(), true);
+  api.beginPerformanceCaptureFrame();
+  api.endPerformanceCaptureFrame(performance.now(), 4, false);
+  api.stopPerformanceCapture();
+  assert.equal(api.performanceCaptureReport().events.checkpoints[0].sections, undefined);
+});
+
+/**
+ * P1-20 review: a frame that turns the loading screen on is not counted, so its sections must not
+ * enter the window either; and a section seen in the recording reports 0, not nothing.
+ */
+test('P1-20a: an uncounted frame leaves no time in the checkpoint average, and a zero section reads 0', () => {
+  let offset = 0;
+  const flags = { loading: false };
+  const clock = { now: () => performance.now() + offset };
+  const game = { world: { state: { objects: new Map() } }, renderer: rendererFixture() };
+  const api = controller(game, undefined, { performance: clock, loadingScreenVisible: () => flags.loading });
+  assert.equal(api.startPerformanceCapture(), true);
+  const frame = (ms, rare = 0, turnLoadingOn = false) => {
+    api.beginPerformanceCaptureFrame();
+    api.addCheckpointSection('state.view', ms);
+    api.addCheckpointSection('state.rare', rare);
+    if (turnLoadingOn) flags.loading = true; // Loop.ts: updateLoadingScreen runs after the state parts
+    api.endPerformanceCaptureFrame(clock.now(), ms, false);
+  };
+  frame(0.1, 3); // takes the first checkpoint
+  frame(40, 0, true); // begins active, ends behind the loading screen: not counted
+  flags.loading = false;
+  for (let index = 0; index < 9; index++) frame(0.1);
+  offset += 600;
+  frame(0.1); // second checkpoint: ten counted 0.1 ms frames since the first
+  offset += 600;
+  frame(0); // third: one frame of zeros
+  api.stopPerformanceCapture();
+  const sections = api.performanceCaptureReport().events.checkpoints.map((checkpoint) => checkpoint.sections);
+  assert.equal(sections.length, 3);
+  assert.deepEqual(sections[0], { 'state.view': 0.1, 'state.rare': 3 });
+  assert.ok(Math.abs(sections[1]['state.view'] - 0.1) < 1e-9, `${sections[1]['state.view']} ms: the loading frame leaked in`);
+  assert.equal(sections[1]['state.rare'], 0, 'a section seen in the recording reads 0 rather than missing');
+  assert.deepEqual(sections[2], { 'state.view': 0, 'state.rare': 0 });
+});
 
 /** The JS Self-Profiling API as Chromium shapes it: a trace object from an asynchronous stop(). */
 class FakeProfiler extends EventTarget {

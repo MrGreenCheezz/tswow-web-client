@@ -289,11 +289,11 @@ test("the renderer grows admitted vegetation and freezes it settled", async () =
     "a settled tree is restored to exactly its authored scale");
   assert.match(growth, /part\.matrixWorldAutoUpdate = false;/,
     "settling re-freezes the subtree like any other placement");
-  assert.match(growth, /delete rendered\.growthStartedAt;/,
+  assert.match(growth, /rendered\.growthStartedAt = undefined;/,
     "a settled tree costs no per-frame work afterwards");
   assert.match(growth, /node\.updateMatrix\(\);/,
     "same-frame readers see the stepped scale, not last render's");
-  assert.match(source, /everVisible\?: boolean;/,
+  assert.match(source, /everVisible: boolean \| undefined;/,
     "a seen placement is remembered so frustum re-entry reads whole at once");
 });
 

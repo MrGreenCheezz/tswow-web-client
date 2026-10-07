@@ -803,3 +803,51 @@ test("11.02-IF-review: the page's cooldown and usability are the unit's, not the
   assert.deepEqual(call("IsUsableAction", 121), [true, false]);
   seam.detach();
 });
+
+test("P1-16 review: the possess page hears ACTIONBAR_UPDATE_COOLDOWN/_USABLE for the pet bar's timers and usability", () => {
+  const { seam, call, pump, frame, mindControl, release, world, mob, fired } = fixture();
+  const CD = "ACTIONBAR_UPDATE_COOLDOWN";
+  const US = "ACTIONBAR_UPDATE_USABLE";
+  const count = (name) => fired.filter(([event]) => event === name).length;
+  seam.attach(pump);
+  // No possession: a pet timer is the pet bar's alone (PET_BAR_UPDATE_COOLDOWN), not the action bar's.
+  frame();
+  fired.length = 0;
+  world.petCooldowns.set(FIREBALL, pump.now() * 1000 + 3_000);
+  world.events.emit("PET_COOLDOWNS_CHANGED", {});
+  frame();
+  assert.equal(count(CD) + count(US), 0, "no mirrored page, no action-bar event");
+  world.petCooldowns.clear();
+  world.events.emit("PET_COOLDOWNS_CHANGED", {});
+  mindControl();
+  frame();
+  frame();
+  fired.length = 0;
+  // SMSG_SPELL_COOLDOWN for the possessed unit's Fireball (slot 122).
+  world.petCooldowns.set(FIREBALL, pump.now() * 1000 + 8_000);
+  world.events.emit("PET_COOLDOWNS_CHANGED", {});
+  assert.equal(count(CD), 1, "the sweep starts");
+  assert.equal(count(US), 1);
+  const [, duration, enable] = call("GetActionCooldown", 122);
+  assert.deepEqual([duration, enable], [8, 1]);
+  fired.length = 0;
+  for (let index = 0; index < 20; index++) frame();
+  assert.equal(count(CD) + count(US), 0, "two seconds of countdown are reads");
+  for (let index = 0; index < 70; index++) frame();
+  assert.deepEqual(call("GetActionCooldown", 122), [0, 0, 0]);
+  assert.equal(count(CD), 1, "the timer's end redraws the sweep");
+  assert.equal(count(US), 1);
+  fired.length = 0;
+  // The possessed unit dies: its spells grey out (the pet bar's usable signature), no timer moved.
+  mob.fields.set(HEALTH, 0);
+  frame();
+  assert.deepEqual(call("IsUsableAction", 122), [false, false]);
+  assert.equal(count(US), 1, "USABLE for the greying");
+  assert.equal(count(CD), 0, "no COOLDOWN without a timer change");
+  fired.length = 0;
+  frame();
+  assert.equal(count(CD) + count(US), 0);
+  release();
+  frame();
+  seam.detach();
+});

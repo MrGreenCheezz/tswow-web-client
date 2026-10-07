@@ -131,11 +131,18 @@ test("renderer WMO integration detaches final-demand borrowers and evicts resour
     source.indexOf("  #updateWmoGroups("),
     source.indexOf("\n  /** Keep the one collision-proven room answer"),
   );
-  assert.ok(groupUpdate.includes("const wanted = new Set(selected);"), "portal-refined selection is authoritative");
+  // P1-12b: the wanted rooms are a mask filled from the final (portal-refined) selection.
+  assert.ok(groupUpdate.includes("for (let at = 0; at < selected.length; at++) wanted[selected[at]!] = 1;"),
+    "portal-refined selection is authoritative");
+  assert.ok(!groupUpdate.includes("new Set(selected)"), "P1-12b: no Set per building per frame");
   assert.ok(groupUpdate.includes("node.remove(built.mesh);"));
   assert.ok(groupUpdate.includes("placed.built.delete(index);"));
-  assert.ok(groupUpdate.includes("this.#wmoGeometries.get(this.#wmoGroupCacheKey(placed.model, index))"),
-    "a live hit touches the exact current-parent LRU entry");
+  assert.ok(groupUpdate.includes("if (this.#wmoGeometries.peek(built.entry.cacheKey) === built.entry) continue;"),
+    "P1-12b: a live room is checked against its exact entry without touching it or building a key");
+  assert.ok(groupUpdate.includes("this.#wmoGeometries.get(built.entry.cacheKey);\n          placed.built.delete(index);"),
+    "P1-12b: a leaving room becomes recent as it detaches");
+  assert.ok(!groupUpdate.includes("this.#wmoGeometries.get(this.#wmoGroupCacheKey("),
+    "P1-12b: no key string per attached room");
 
   const entryType = source.slice(
     source.indexOf("interface WmoGroupGeometryEntry {"),
@@ -163,6 +170,12 @@ test("renderer WMO integration detaches final-demand borrowers and evicts resour
   assert.ok(wmoEviction.includes("this.#worldMaterials.commitPins(materialPins)"));
   assert.ok(!wmoEviction.includes("wmoRunMaterials"));
   assert.ok(!wmoEviction.includes("material.dispose"));
+  assert.ok(!wmoEviction.includes("new Set<WorldMaterialEntry>(wmo.materialPins)"),
+    "P1-10c: the room pins are committed as built, not copied");
+  const borrowersStart = source.indexOf("  #wmoGroupBorrowers(): {");
+  const borrowers = source.slice(borrowersStart, source.indexOf("\n  }\n", borrowersStart));
+  assert.ok(borrowers.includes("placed.built,"), "P1-10c: the borrower map itself is walked");
+  assert.ok(!borrowers.includes("placed.built.values()"), "P1-10c: no iterator per placed building");
 
   const admission = source.indexOf("this.#updateEffects(player.position, now, elapsed);");
   const eviction = source.indexOf("this.#evictWmoResources();");
