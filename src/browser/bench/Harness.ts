@@ -24,6 +24,7 @@ import { UnitSceneGroup } from "../UnitSceneGroup.js";
 import { applyRendererGraphicsSettings } from "../RendererGraphicsSettings.js";
 import { defaultSettings, type SettingValues } from "../ui/SettingsModel.js";
 import { nextBenchmarkFrame } from "./FrameClock.js";
+import { installKnownMissingTextureLedger, errorsAreKnownMissingTextures } from "./KnownMissingTextures.js"; // 06.10-P1-00b
 
 interface Graphics {
   lightingQuality: number; grassRadius: number; grassDense: boolean; grassDensity: number; fullscreenGlow: boolean;
@@ -102,6 +103,8 @@ Math.random = () => {
   return randomState / 4294967296;
 };
 const baseUrl = location.origin;
+// 06.10-P1-00b: textures the corpus lacks (404) are drawn as the white pixel, as in the game.
+const missingTextures = installKnownMissingTextureLedger(globalThis, baseUrl);
 async function checked(url: string): Promise<Response> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Asset ${response.status}: ${url}`);
@@ -281,7 +284,8 @@ if (movement) {
     const errors = e.failedModels + e.failedTiles + e.failedGroups + e.failedAnimations
       + r.modelTexturesErrors + r.worldTexturesErrors + r.characterAtlasErrors + t.failed + s.failed + async.reduce((n, x) => n + x.error, 0);
     return { pending, errors, details: { environment: e, terrain: t, splat: s, renderer: r,
-      units: worldRenderer.telemetry.unitsDrawn, standIns: benchStandIns() } };
+      units: worldRenderer.telemetry.unitsDrawn, standIns: benchStandIns(),
+      knownMissingTextures: [...missingTextures.missing], textureOtherFailures: missingTextures.otherFailures } }; // 06.10-P1-00b
   };
 } else {
   const appearance = display.appearance;
@@ -377,7 +381,11 @@ async function settle(fraction: number) {
     const status = readiness();
     stable = status.pending === 0 ? stable + 1 : 0;
     if (stable >= 6) {
-      if (status.errors) throw new Error(`Asset errors: ${JSON.stringify(status)}`);
+      // 06.10-P1-00b: model-texture errors that are all 404s of the corpus settle like a known-missing tile.
+      const modelTexturesErrors = (status.details as { renderer?: { modelTexturesErrors?: number } } | null)?.renderer?.modelTexturesErrors ?? 0;
+      if (status.errors && !errorsAreKnownMissingTextures({ errors: status.errors, modelTexturesErrors }, missingTextures)) {
+        throw new Error(`Asset errors: ${JSON.stringify(status)}`);
+      }
       return status;
     }
   }

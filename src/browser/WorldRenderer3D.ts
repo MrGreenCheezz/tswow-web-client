@@ -13,10 +13,10 @@ import {
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight, createCamera, type HeightSampler,
 } from "./SimpleScene.js";
-import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
+import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
-import { TerrainStreamingWindow, terrainTileKey, type TerrainStreamingPlan } from "./TerrainStreaming.js";
+import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStreaming.js";
 import { ProgramWarmup, programWarmupKind, WarmHold, type ProgramWarmupKind } from "./ProgramWarmup.js";
 import { useFloatUniformSetters } from "./FloatUniformSetters.js";
 import { ShaderProgramTrace, type ShaderProgramEvent } from "./ShaderProgramTrace.js";
@@ -169,6 +169,7 @@ import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
 import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
+import { WmoRangeTable, sameWmoSelection } from "./WmoGroupRange.js"; // P1-12a/b
 import {
   WMO_OPEN_AIR_ROOM_RANGE, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates,
   wmoOpenAirNoteWalk, wmoOpenAirWalkStale, type WmoOpenAirState,
@@ -670,26 +671,66 @@ export interface WmoGroupResourceBorrower<TGeometry> {
   readonly mesh: THREE.Object3D;
 }
 
-/** Adds only wrappers physically attached to their placement node to the exact live-pin sets. */
+/** What `collectAttachedBorrower` is collecting into, reused instead of a closure per placement. */
+const attachedPinScratch: {
+  parent: THREE.Object3D | undefined;
+  geometryPins: Set<unknown> | undefined;
+  materialPins: Set<WorldMaterialEntry> | undefined;
+  count: number;
+} = { parent: undefined, geometryPins: undefined, materialPins: undefined, count: 0 };
+
+function collectAttachedBorrower(
+  this: typeof attachedPinScratch,
+  borrower: WmoGroupResourceBorrower<unknown>,
+): void {
+  if (borrower.mesh.parent !== this.parent) return;
+  this.geometryPins!.add(borrower.entry);
+  const entries = borrower.materialEntries;
+  for (let index = 0; index < entries.length; index++) this.materialPins!.add(entries[index]!);
+  this.count++;
+}
+
+/**
+ * Adds only wrappers physically attached to their placement node to the exact live-pin sets.
+ *
+ * P1-10c: a `Map` of borrowers is walked with `forEach`, which hands out no iterator result per
+ * room — this runs for every placed building on every submitted frame. Same pins, same order.
+ */
 export function collectAttachedWmoGroupResourcePins<TGeometry>(
   parent: THREE.Object3D,
-  borrowers: Iterable<WmoGroupResourceBorrower<TGeometry>>,
+  borrowers: Iterable<WmoGroupResourceBorrower<TGeometry>> | ReadonlyMap<unknown, WmoGroupResourceBorrower<TGeometry>>,
   geometryPins: Set<TGeometry>,
   materialPins: Set<WorldMaterialEntry>,
 ): number {
+  if (borrowers instanceof Map) {
+    const scratch = attachedPinScratch;
+    scratch.parent = parent;
+    scratch.geometryPins = geometryPins as Set<unknown>;
+    scratch.materialPins = materialPins;
+    scratch.count = 0;
+    try {
+      (borrowers as ReadonlyMap<unknown, WmoGroupResourceBorrower<unknown>>).forEach(collectAttachedBorrower, scratch);
+      return scratch.count;
+    } finally {
+      scratch.parent = undefined;
+      scratch.geometryPins = undefined;
+      scratch.materialPins = undefined;
+    }
+  }
   let wrapperCount = 0;
-  for (const borrower of borrowers) {
+  for (const borrower of borrowers as Iterable<WmoGroupResourceBorrower<TGeometry>>) {
     if (borrower.mesh.parent !== parent) continue;
     geometryPins.add(borrower.entry);
-    for (const materialEntry of borrower.materialEntries) materialPins.add(materialEntry);
+    const entries = borrower.materialEntries;
+    for (let index = 0; index < entries.length; index++) materialPins.add(entries[index]!);
     wrapperCount++;
   }
   return wrapperCount;
 }
 
 export interface LegacyResourceBorrower<TGeometry> {
-  readonly legacyGeometry?: TGeometry;
-  readonly materialEntries?: readonly WorldMaterialEntry[];
+  readonly legacyGeometry?: TGeometry | undefined;
+  readonly materialEntries?: readonly WorldMaterialEntry[] | undefined;
 }
 
 /** Pins one retained legacy borrower's resources; 1 when it borrowed anything, else 0. */
@@ -2052,13 +2093,18 @@ import {
 } from "./CharacterAtlas.js";
 import { PortraitRenderer, type PortraitSource, type PortraitSlot, type PortraitTarget } from "./PortraitRenderer.js";
 
+/**
+ * P1-09: every field of a retained record is present from its creation literal on, absent values
+ * written as `undefined` and cleared with `= undefined`, never `delete` — one V8 hidden class per
+ * record kind, no dictionary mode. A new field is `T | undefined` and goes into the literal.
+ */
 interface RenderedEnvironment {
   actual: boolean;
   /** 05.10-A7b-9 (7.18): what the node is when it is not the model — set at build, read by the stand-in ledger. */
-  standIn?: "canopy" | "empty" | "hull";
+  standIn: "canopy" | "empty" | "hull" | undefined;
   node: THREE.Object3D;
   /** `env:<id>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact immutable placement snapshot represented by this retained node. */
   source: EnvironmentObject;
   /** Draw admission is separate from `node.visible`, which instancing may deliberately clear. */
@@ -2067,15 +2113,15 @@ interface RenderedEnvironment {
   /** Submission serial of the most recent admitted frame, used by the bounded hidden LRU. */
   lastAdmittedFrame: number;
   /** Conservative scene sphere stamped only for a static, emitter-free retained M2. */
-  visibilitySphere?: EnvironmentVisibilitySphere;
+  visibilitySphere: EnvironmentVisibilitySphere | undefined;
   /** Exact cache entry borrowed by this placement, when it is a built WVM model. */
-  built?: BuiltModel;
+  built: BuiltModel | undefined;
   /** Exact decoded legacy parent and resources borrowed by this retained placement. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** Per-placement material ids carrying immutable albedo or indoor-light state. */
-  tintMaterials?: readonly THREE.Material[];
+  tintMaterials: readonly THREE.Material[] | undefined;
   /**
    * The mesh inside the node, whose world matrix is the model's own frame.
    *
@@ -2083,8 +2129,8 @@ interface RenderedEnvironment {
    * model space into the scene. An emitter's position is written in model space, so it is the
    * inner matrix it has to be transformed by and not the outer one.
    */
-  visual?: THREE.Object3D;
-  wvm?: WvmModel;
+  visual: THREE.Object3D | undefined;
+  wvm: WvmModel | undefined;
   /**
    * The model's own water, one mesh per liquid grid, standing in the scene rather than on the node.
    *
@@ -2094,11 +2140,11 @@ interface RenderedEnvironment {
    * thing in the city as if it were at that corner. Each sheet is its own object centred on its own
    * water instead, which is what the tile's water gets for nothing by being a mesh per tile.
    */
-  liquid?: THREE.Mesh[];
+  liquid: THREE.Mesh[] | undefined;
   /** The liquid-strip generation the sheets were built at, so a late strip rebuilds them. */
-  liquidGeneration?: number;
+  liquidGeneration: number | undefined;
   /** A WMO drawn room by room, with the boxes that decide which rooms those are. */
-  wmo?: PlacedWmo;
+  wmo: PlacedWmo | undefined;
   /**
    * Which built model this placement is a copy of, when it is one that can be instanced.
    *
@@ -2106,11 +2152,11 @@ interface RenderedEnvironment {
    * an instance has no `Object3D` of its own, and `#updateEffects` places a torch's sparks by
    * reading the matrix of the placement's mesh.
    */
-  instanceKey?: string;
+  instanceKey: string | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
-  instanceBucket?: string;
+  instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
-  instanceMatrix?: THREE.Matrix4;
+  instanceMatrix: THREE.Matrix4 | undefined;
   /**
    * Submission serial the grow-in started on, for vegetation only.
    *
@@ -2118,9 +2164,9 @@ interface RenderedEnvironment {
    * matrices stay live, and instancing waits: an instance matrix is exact placement state, and
    * a tree mid-growth is not exact. Cleared with the freeze when it settles.
    */
-  growthStartedAt?: number;
+  growthStartedAt: number | undefined;
   /** Grow-in length in frames for this placement: slow for far trees, quick for near ones. */
-  growthTotal?: number;
+  growthTotal: number | undefined;
   /**
    * Whether this placement has ever been seen grown or whole.
    *
@@ -2128,7 +2174,7 @@ interface RenderedEnvironment {
    * during a fast camera turn motion masks an instant appearance, while a tree inflating
    * mid-turn reads as broken. Only the first sight eases in.
    */
-  everVisible?: boolean;
+  everVisible: boolean | undefined;
   /**
    * A rig, for the scenery that has one.
    *
@@ -2137,10 +2183,10 @@ interface RenderedEnvironment {
    * not frozen, it is not instanced, and it costs a mixer step on every frame it is close enough
    * and on screen.
    */
-  skinned?: SkinnedInstance;
-  template?: SkinnedTemplate;
+  skinned: SkinnedInstance | undefined;
+  template: SkinnedTemplate | undefined;
   /** The model path, kept so the held-back clips can be asked for by name. */
-  model?: string;
+  model: string | undefined;
 }
 
 interface PlacedWmo {
@@ -2156,16 +2202,22 @@ interface PlacedWmo {
   /** Only meshes attached for the final distance/portal demand remain in this map. */
   built: Map<number, RenderedWmoGroup>;
   /**
-   * Player position the cached distance selection below was computed for, if any.
-   * `wmoGroupsInRange` is pure in (model, boxes, player): an exactly unchanged player gets
-   * the identical set back, so standing still inside a city skips hundreds of box-distance
-   * evaluations per building per frame. The portal refinement above it still runs every frame
-   * — it reads the camera, which moves without the player.
+   * P1-12a: the distance selection (`wmoGroupsInRange`) of this placement, answered from a rest
+   * radius: the same array while the player moves less than the nearest leash edge is away. The
+   * portal refinement still runs every frame — it reads the camera, which moves without the player.
+   * The 05.10-7.05-review shell leash of a moving transport is passed to `select` with the player.
    */
-  rangePlayer?: { x: number; y: number; z: number };
-  rangeGroups?: readonly number[];
-  /** 05.10-7.05-review: the shell leash `rangeGroups` was computed with (undefined: by box size). */
-  rangeShell?: number | undefined;
+  ranges: Pick<WmoRangeTable, "select">;
+  /** P1-12b: the wanted groups of the frame as a mask (allocated once, refilled per full pass). */
+  groupMask?: Uint8Array;
+  /**
+   * P1-12b: the selection the last full pass attached, a copy owned here (the walks hand out
+   * scratch arrays), the cache epoch it saw after its own builds, and whether it left nothing
+   * missing or waiting. All three hold → the same selection again has nothing to do.
+   */
+  appliedSelection?: number[];
+  appliedEpoch?: number;
+  appliedSettled?: boolean;
   /** 05.10-A7b-2 (7.03 slice 3): the open-air portal walk's scratch and last inputs. */
   openAir?: WmoOpenAirState;
 }
@@ -2286,28 +2338,29 @@ export function locatedWmoFog(
  * a custom animation can arrive for it out of nowhere.
  */
 interface RenderedGameObject extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   actual: boolean;
   node: THREE.Object3D;
   /** `obj:<guid>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact cache entry borrowed by this object, when it is a built WVM model. */
-  built?: BuiltModel;
+  built: BuiltModel | undefined;
   /** Exact decoded legacy parent and resources borrowed while this object is retained. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** The mesh carrying the model-space rotation, for an unrigged model's emitters. */
-  visual?: THREE.Object3D;
-  wvm?: WvmModel;
-  wmo?: PlacedWmo;
+  visual: THREE.Object3D | undefined;
+  wvm: WvmModel | undefined;
+  wmo: PlacedWmo | undefined;
   /** The model path, so the poses it held back can be asked for by name. */
-  model?: string;
+  model: string | undefined;
   /** The state byte it was last drawn in. Undefined until the first draw, which is what snaps. */
-  state?: number;
+  state: number | undefined;
   /** Display/scale/entry tuple for which the retained static WVM bounds are trusted. */
-  admissionDisplayId?: number;
-  admissionScale?: number;
-  admissionEntry?: number;
+  admissionDisplayId: number | undefined;
+  admissionScale: number | undefined;
+  admissionEntry: number | undefined;
   /**
    * When the object first became visible, in the renderer's clock, for the spawn fade.
    *
@@ -2315,29 +2368,30 @@ interface RenderedGameObject extends PosedModel {
    * their model arrived. Preserved across display rebuilds so a door that changes state does
    * not fade twice; cleared with the record itself.
    */
-  admittedAt?: number | undefined;
+  admittedAt: number | undefined;
   /**
    * The opacity currently applied: 1 once settled. Compared edge-triggered like the units so a
    * settled object costs nothing per frame, and quantized so a fade borrows a bounded handful
    * of private material copies instead of one per frame.
    */
-  fadedOpacity?: number | undefined;
+  fadedOpacity: number | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
-  opacityBorrows?: MaterialBorrow[];
+  opacityBorrows: MaterialBorrow[] | undefined;
   /** Metadata-cache revision that last proved the display id still maps to `model`. */
-  admissionMetadataRevision?: number;
+  admissionMetadataRevision: number | undefined;
   /** `OBJECT_FIELD_ENTRY`: what a transport path is keyed on. Not the display id. */
   entry: number;
   /** 06.10-7.24: the model box clicks land in (model axes); null when the model has none. */
-  pickBox?: ModelBox | null;
+  pickBox: ModelBox | null | undefined;
   /** Where it stands when it is not travelling — a lift's path is an offset from this. */
   base: WorldPosition;
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
-  phaseMs?: number | undefined;
-  phaseAt?: number | undefined;
+  phaseMs: number | undefined;
+  phaseAt: number | undefined;
 }
 
 interface RenderedTerrain {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   material: THREE.MeshLambertMaterial;
   mesh: THREE.Mesh;
   /** Revision of this tile and its eight neighbours, which is what terrain/water edges borrow. */
@@ -2349,9 +2403,9 @@ interface RenderedTerrain {
   /** Which liquid strips had arrived when these surfaces were built. */
   liquidGeneration: number;
   /** One mesh per liquid class the tile contains. */
-  water?: THREE.Mesh[];
+  water: THREE.Mesh[] | undefined;
   /** Hidden splats upload one texture per quiet frame, before they become visible. */
-  textureWarmup?: THREE.Texture[];
+  textureWarmup: THREE.Texture[] | undefined;
 }
 
 interface PreparedTerrain {
@@ -2395,21 +2449,22 @@ interface TerrainRepair {
  * back with its lid closing on a loop.
  */
 interface PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   skinned: SkinnedInstance | undefined;
   template: SkinnedTemplate | undefined;
   /** The locomotion/idle action, kept alive underneath a transient overlay when needed. */
   action: THREE.AnimationAction | undefined;
   animationId: number;
   /** The semantic action currently owning the full-body mixer slot, when it is not locomotion. */
-  actionKind?: UnitAction;
+  actionKind: UnitAction | undefined;
   /** Optional upper-body action. Its filtered clip owns no lower-body tracks. */
-  overlayAction?: THREE.AnimationAction;
-  overlayAnimationId?: number;
+  overlayAction: THREE.AnimationAction | undefined;
+  overlayAnimationId: number | undefined;
   /** The semantic action owning the upper-body slot; needed to cancel a real ranged pose. */
-  overlayActionKind?: UnitAction;
-  overlayPreservesLocomotion?: boolean;
+  overlayActionKind: UnitAction | undefined;
+  overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
-  overlayFadeUntil?: number;
+  overlayFadeUntil: number | undefined;
   /** A one-shot playing over the pose — a jump landing, a swing, an emote — and when it ends. */
   overlayUntil: number;
   /**
@@ -2418,10 +2473,10 @@ interface PosedModel {
    * Zero whenever the model is not in a gait at all, so nothing but a stride ever carries a
    * deadline. Both a unit and the mount under it have one, because both change gait on their own.
    */
-  gaitCommittedUntil?: number;
+  gaitCommittedUntil: number | undefined;
   /** The template `flatPoseProgram` was resolved for; see `#flatPose`. */
-  flatPoseTemplate?: SkinnedTemplate;
-  flatPoseProgram?: FastPoseProgram | undefined;
+  flatPoseTemplate: SkinnedTemplate | undefined;
+  flatPoseProgram: FastPoseProgram | undefined;
 }
 
 /** Which unit wears a ring and what colour it is, as the interface works it out. */
@@ -2475,15 +2530,16 @@ export interface GameObjectPreview {
 }
 
 interface RenderedUnit extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   node: THREE.Group;
   /** `unit:<guid>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact appearance build borrowed by the body currently standing in the node. */
   built: BuiltModel | undefined;
   /** Legacy fallback ownership is separate from appearance/WVM builds. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** Last shadow policy applied to this model tree; undefined when its children change. */
   shadowCaster: boolean | undefined;
   /** The stand-in capsule, present until a skinned model for the display id has arrived. */
@@ -2498,7 +2554,7 @@ interface RenderedUnit extends PosedModel {
    * seconds before it is drawn, and fading from creation would be over before the first pixel.
    * Units returning from frustum culling keep their stamp and read full opacity at once.
    */
-  admittedAt?: number | undefined;
+  admittedAt: number | undefined;
   /**
    * Where the node stood on the previous posed frame, for stride-tempo measurement.
    *
@@ -2514,9 +2570,9 @@ interface RenderedUnit extends PosedModel {
   /** Yards a second from the last stride measurement, or undefined before the second frame. */
   strideSpeed: number | undefined;
   /** Last rig and its staggered animation clock; a newly attached rig always gets its first pose. */
-  animationClock?: UnitAnimationClock;
-  animationClockRig?: SkinnedInstance;
-  animationClockMountRig?: SkinnedInstance | undefined;
+  animationClock: UnitAnimationClock | undefined;
+  animationClockRig: SkinnedInstance | undefined;
+  animationClockMountRig: SkinnedInstance | undefined;
   height: number;
   radius: number;
   scale: number;
@@ -2531,10 +2587,10 @@ interface RenderedUnit extends PosedModel {
   */
   applied: string;
   /** Display/object-scale pair for which `wvm` is known to be the live wire appearance. */
-  admissionDisplayId?: number;
-  admissionObjectScale?: number;
+  admissionDisplayId: number | undefined;
+  admissionObjectScale: number | undefined;
   /** Whether the settled appearance declares gear hanging outside the body's own WVM bounds. */
-  admissionHasAuthoredAttachments?: boolean;
+  admissionHasAuthoredAttachments: boolean | undefined;
   /**
    * Helmets, pauldrons and weapons hanging off the bones, by `slot/side`. They arrive after the
    * body — each is its own download — so they are attached as they turn up rather than waited for.
@@ -2550,13 +2606,13 @@ interface RenderedUnit extends PosedModel {
    * which is why dismounting used to leave a rigless creature's name plate at saddle height for the
    * rest of the object's life.
    */
-  bodyHeight?: number;
+  bodyHeight: number | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
-  wvm?: WvmModel;
+  wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
-  visual?: THREE.Object3D;
+  visual: THREE.Object3D | undefined;
   /** The second model this one is riding, once it has been built. See `#updateMount`. */
-  mount?: RenderedMount;
+  mount: RenderedMount | undefined;
   /**
    * How opaque this unit is drawn right now: 1 for everything the server says nothing about.
    *
@@ -2567,33 +2623,33 @@ interface RenderedUnit extends PosedModel {
    */
   unitOpacity: number;
   /** 05.10-A7a-H 6.11а: the display's `ParticleColor` row, refreshed every frame from its metadata. */
-  particleColours?: readonly number[] | undefined;
+  particleColours: readonly number[] | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
-  opacityBorrows?: MaterialBorrow[];
+  opacityBorrows: MaterialBorrow[] | undefined;
   /**
    * The body (`unitWarmBody`) the warm hold last let onto the screen. A body that is not this one
    * is new, and is checked against the warm pass before it is drawn; see `#holdUnitUntilWarm`.
    */
-  warmShown?: THREE.Object3D;
+  warmShown: THREE.Object3D | undefined;
   /** Whether a model, not just the capsule, has been on screen: the player's is never hidden again. */
-  modelShown?: boolean;
+  modelShown: boolean | undefined;
   /** Frames a finished fade has kept its copies waiting for the shared programs; see `#unitFadeReturnWaits`. */
-  fadeReturnFrames?: number;
+  fadeReturnFrames: number | undefined;
   /** When, in the renderer's clock, this player's look was first seen with item rows pending. */
-  appearancePendingSince?: number;
+  appearancePendingSince: number | undefined;
   /** Whether the server says this unit is sneaking, for the pose. See `unitAppearance`. */
-  stealthed?: boolean;
+  stealthed: boolean | undefined;
   /**
    * How far the lower body is currently turned off the facing, in radians. See `strafeYawTarget`.
    *
    * Per unit and not per model: two humans strafing in opposite directions share one template and
    * one set of clips, and the turn is the only part of the pose that is theirs alone.
    */
-  strafeYaw?: number;
+  strafeYaw: number | undefined;
   /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
-  deathFade?: DeathFadeState | undefined;
+  deathFade: DeathFadeState | undefined;
   /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
-  flagPoses?: number;
+  flagPoses: number | undefined;
 }
 
 /**
@@ -2700,6 +2756,7 @@ function hangsUnder(object: THREE.Object3D, ancestor: THREE.Object3D): boolean {
  * a galloping horse carries the character with it.
  */
 interface RenderedMount extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   /** What is built and standing there, under the same name `#unitKey` gives a unit's own model. */
   key: string;
   /** Exact cache entry borrowed by this mount. */
@@ -2718,7 +2775,7 @@ interface RenderedMount extends PosedModel {
    * landing can be told apart down here too. The rider has had one since the jump one-shots were
    * written; the horse under it never did, which is why it had no JumpStart or JumpEnd at all.
    */
-  pose?: UnitPose;
+  pose: UnitPose | undefined;
 }
 
 /**
@@ -3945,7 +4002,8 @@ export class WorldRenderer3D {
   }
   readonly #terrains = new Map<string, RenderedTerrain>();
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
-  #horizon: { mesh: THREE.Mesh; key: string } | undefined;
+  /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
+  #horizon: { mesh: THREE.Mesh; tile: number; revision: number } | undefined;
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
   /** 05.10-A7b-7 (7.08): the classic path's lit, coloured horizon beside the flat one above. */
   #horizonMaterials: HorizonMaterialSelector | undefined;
@@ -5376,16 +5434,16 @@ export class WorldRenderer3D {
       }
       rendered.action = undefined;
       rendered.animationId = -1;
-      delete rendered.actionKind;
-      delete rendered.overlayAction;
-      delete rendered.overlayAnimationId;
-      delete rendered.overlayActionKind;
+      rendered.actionKind = undefined;
+      rendered.overlayAction = undefined;
+      rendered.overlayAnimationId = undefined;
+      rendered.overlayActionKind = undefined;
       rendered.overlayPreservesLocomotion = false;
-      delete rendered.overlayFadeUntil;
+      rendered.overlayFadeUntil = undefined;
       rendered.overlayUntil = 0;
-      delete rendered.state;
-      delete rendered.phaseMs;
-      delete rendered.phaseAt;
+      rendered.state = undefined;
+      rendered.phaseMs = undefined;
+      rendered.phaseAt = undefined;
     }
     for (const unit of this.#units.values()) {
       if (unit.skinned) {
@@ -5394,12 +5452,12 @@ export class WorldRenderer3D {
       }
       unit.action = undefined;
       unit.animationId = -1;
-      delete unit.actionKind;
-      delete unit.overlayAction;
-      delete unit.overlayAnimationId;
-      delete unit.overlayActionKind;
+      unit.actionKind = undefined;
+      unit.overlayAction = undefined;
+      unit.overlayAnimationId = undefined;
+      unit.overlayActionKind = undefined;
       unit.overlayPreservesLocomotion = false;
-      delete unit.overlayFadeUntil;
+      unit.overlayFadeUntil = undefined;
       unit.overlayUntil = 0;
       unit.pose = undefined;
       const mount = unit.mount;
@@ -5410,12 +5468,12 @@ export class WorldRenderer3D {
       if (mount) {
         mount.action = undefined;
         mount.animationId = -1;
-        delete mount.actionKind;
-        delete mount.overlayAction;
-        delete mount.overlayAnimationId;
-        delete mount.overlayActionKind;
+        mount.actionKind = undefined;
+        mount.overlayAction = undefined;
+        mount.overlayAnimationId = undefined;
+        mount.overlayActionKind = undefined;
         mount.overlayPreservesLocomotion = false;
-        delete mount.overlayFadeUntil;
+        mount.overlayFadeUntil = undefined;
         mount.overlayUntil = 0;
       }
     }
@@ -6351,7 +6409,7 @@ export class WorldRenderer3D {
       mesh.geometry.dispose();
       this.#scene.remove(mesh);
     }
-    delete rendered.liquid;
+    rendered.liquid = undefined;
   }
 
   /**
@@ -8140,7 +8198,7 @@ export class WorldRenderer3D {
     const borrows = unit.opacityBorrows;
     if (!borrows) return;
     returnBorrowedMaterials(borrows);
-    delete unit.opacityBorrows;
+    unit.opacityBorrows = undefined;
     unit.shadowCaster = undefined;
   }
 
@@ -8180,7 +8238,7 @@ export class WorldRenderer3D {
     }
     if (current) {
       returnBorrowedMaterials(current);
-      delete rendered.opacityBorrows;
+      rendered.opacityBorrows = undefined;
     }
     rendered.fadedOpacity = wanted;
     if (wanted >= 1 || meshes.length === 0) return;
@@ -9014,8 +9072,11 @@ export class WorldRenderer3D {
       || (this.#liquidTextures?.generation ?? 0) !== pendingRepair.liquidGeneration)) {
       this.#cancelTerrainRepair();
     }
-    for (const grid of grids) {
-      const key = `${map}/${grid.x}/${grid.y}`;
+    // P1-13b: the plan's keys, built once per plan (the same `${map}/${x}/${y}` strings).
+    const gridKeys = plan.visibleTileKeys;
+    for (let index = 0; index < grids.length; index++) {
+      const grid = grids[index]!;
+      const key = gridKeys[index]!;
       const revision = terrainClient?.tileRevision(map, grid) ?? 0;
       const ownRevision = terrainClient?.ownRevision(map, grid) ?? 0;
       // The tile under the player is exempt from the budgets below: one tile is bounded
@@ -9149,7 +9210,7 @@ export class WorldRenderer3D {
         previous.geometry.dispose();
       }
       if (water.length > 0) rendered.water = water;
-      else delete rendered.water;
+      else rendered.water = undefined;
       for (const mesh of water) {
         this.#scene.add(mesh);
         this.#programWarmup.registerObject(mesh);
@@ -9164,7 +9225,8 @@ export class WorldRenderer3D {
     terrainClient: TerrainClient | undefined, splatClient: TerrainSplatClient | undefined,
     plan: TerrainStreamingPlan): void {
     const pending = this.#terrainPreparation;
-    if (pending && (!plan.prepare.some(grid => terrainTileKey(map, grid) === pending.key)
+    const prepareKeys = plan.prepareTileKeys; // P1-13b: `terrainTileKey(map, prepare[i])`
+    if (pending && (!prepareKeys.includes(pending.key)
       || terrainClient?.tileRevision(map, pending.grid) !== pending.revision
       || (this.#liquidTextures?.generation ?? 0) !== pending.liquidGeneration)) {
       this.#cancelTerrainPreparation();
@@ -9173,8 +9235,9 @@ export class WorldRenderer3D {
     const deadline = performance.now() + TERRAIN_PREPARE_MS;
     let uploaded = false;
     let requestedSplat = false;
-    for (const grid of plan.prepare) {
-      const key = terrainTileKey(map, grid);
+    for (let index = 0; index < plan.prepare.length; index++) {
+      const grid = plan.prepare[index]!;
+      const key = prepareKeys[index]!;
       // Empty map tiles have no ground textures; wait for their own CPU answer before asking.
       const hasGround = terrainClient.ownRevision(map, grid) > 0
         && terrainClient.heightAt(map, (31.5 - grid.x) * TERRAIN_GRID_SIZE,
@@ -9196,8 +9259,9 @@ export class WorldRenderer3D {
     }
     if (performance.now() >= deadline) return;
     if (!this.#terrainPreparation) {
-      for (const grid of plan.prepare) {
-        const key = terrainTileKey(map, grid);
+      for (let index = 0; index < plan.prepare.length; index++) {
+        const grid = plan.prepare[index]!;
+        const key = prepareKeys[index]!;
         if (this.#terrains.has(key)) continue;
         let ready = true;
         for (let ox = -1; ox <= 1; ox++) {
@@ -9238,7 +9302,7 @@ export class WorldRenderer3D {
       mesh.receiveShadow = this.#lightingProfile.shadowMapSize > 0;
       const rendered: RenderedTerrain = {
         mesh, material, revision: job.revision, ownRevision: job.ownRevision,
-        liquidGeneration: job.liquidGeneration, splatted: false,
+        liquidGeneration: job.liquidGeneration, splatted: false, water: undefined, textureWarmup: undefined,
       };
       this.#terrains.set(job.key, rendered);
       this.#scene.add(mesh);
@@ -9281,9 +9345,10 @@ export class WorldRenderer3D {
    * there is nothing in it that changes as the camera moves.
    */
   #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined): void {
-    const centre = map === undefined ? undefined : terrainGrid(player.x, player.y);
+    // P1-13b: the centre tile as one number (`map * 4096 + cell`); its grid object only on a rebuild.
+    const cell = map === undefined ? -1 : terrainGridIndex(player.x, player.y);
     const world = horizonClient?.get(map);
-    if (!centre || !world) {
+    if (map === undefined || cell < 0 || !world) {
       if (this.#horizon) {
         this.#scene.remove(this.#horizon.mesh);
         this.#horizon.mesh.geometry.dispose();
@@ -9291,16 +9356,18 @@ export class WorldRenderer3D {
       }
       return;
     }
-    const key = `${map}/${centre.x}/${centre.y}/${horizonClient?.revision ?? 0}`;
+    const tile = map * 4096 + cell;
+    const revision = horizonClient?.revision ?? 0;
     // 05.10-A7b-7 (7.08): lit and coloured on the classic path once the map's picture is in.
     this.#horizonMaterials ??= new HorizonMaterialSelector(this.#horizonMaterial, this.#worldLight);
     const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map));
     if (this.#horizon && this.#horizon.mesh.material !== horizonMaterial) this.#horizon.mesh.material = horizonMaterial;
-    if (this.#horizon?.key === key) return;
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) return;
     if (this.#horizon) {
       this.#scene.remove(this.#horizon.mesh);
       this.#horizon.mesh.geometry.dispose();
     }
+    const centre = { x: Math.floor(cell / 64), y: cell % 64 };
     const tiles = horizonTiles(world, centre);
     if (tiles.length === 0) {
       this.#horizon = undefined;
@@ -9311,7 +9378,7 @@ export class WorldRenderer3D {
     // neither depth nor a depth test, so anything sharing that order is painted over by it —
     // measured as a horizon that loaded, selected its 63 tiles, built its mesh and never appeared.
     mesh.renderOrder = 0;
-    this.#horizon = { mesh, key };
+    this.#horizon = { mesh, tile, revision };
     this.#scene.add(mesh);
   }
 
@@ -9323,7 +9390,10 @@ export class WorldRenderer3D {
     const material = buildTerrainMaterial(this.#worldLight);
     const mesh = new THREE.Mesh(this.#terrainGeometry(map, grid, player, heightAt, terrainClient), material);
     mesh.receiveShadow = this.#lightingProfile.shadowMapSize > 0;
-    const rendered: RenderedTerrain = { material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0 };
+    const rendered: RenderedTerrain = {
+      material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0,
+      water: undefined, textureWarmup: undefined,
+    };
     this.#terrains.set(key, rendered);
     this.#scene.add(mesh);
     this.#programWarmup.registerObject(mesh);
@@ -9366,7 +9436,7 @@ export class WorldRenderer3D {
       mesh.geometry.dispose();
       this.#scene.remove(mesh);
     }
-    delete rendered.water;
+    rendered.water = undefined;
     this.#installWater(rendered, this.#waterGeometry(map, grid, heightAt, terrainClient));
   }
 
@@ -9786,11 +9856,33 @@ export class WorldRenderer3D {
         const node = building?.node ?? rig?.node ?? this.#environmentNode(object, model);
         rendered = {
           actual: Boolean(model),
+          standIn: undefined,
           node,
+          effectKey: undefined,
           source: object,
           admitted: true,
           interior: object.interior === true,
           lastAdmittedFrame: this.#submissionSerial,
+          visibilitySphere: undefined,
+          built: undefined,
+          decodedModel: undefined,
+          legacyGeometry: undefined,
+          materialEntries: undefined,
+          tintMaterials: undefined,
+          visual: undefined,
+          wvm: undefined,
+          liquid: undefined,
+          liquidGeneration: undefined,
+          wmo: undefined,
+          instanceKey: undefined,
+          instanceBucket: undefined,
+          instanceMatrix: undefined,
+          growthStartedAt: undefined,
+          growthTotal: undefined,
+          everVisible: undefined,
+          skinned: undefined,
+          template: undefined,
+          model: undefined,
         };
         // 05.10-A7b-9 (7.18): the shape `#environmentNode` chose when it did not draw the model.
         if (!building && !rig && !drawableModel(model)) {
@@ -9991,8 +10083,8 @@ export class WorldRenderer3D {
           part.matrixAutoUpdate = false;
           part.matrixWorldAutoUpdate = false;
         });
-        delete rendered.growthStartedAt;
-        delete rendered.growthTotal;
+        rendered.growthStartedAt = undefined;
+        rendered.growthTotal = undefined;
         this.#growingVegetation--;
         this.#assignEnvironmentInstance(
           rendered,
@@ -10053,7 +10145,7 @@ export class WorldRenderer3D {
   /** Removes one placement after it leaves range or loses the bounded warm LRU. */
   #removeEnvironment(id: number, rendered: RenderedEnvironment): void {
     this.#disposeEnvironment(rendered);
-    delete rendered.liquidGeneration;
+    rendered.liquidGeneration = undefined;
     this.#environment.delete(id);
     this.#dropEffects(`env:${id}`);
     this.#instancesDirty = true;
@@ -10128,15 +10220,15 @@ export class WorldRenderer3D {
     // Paired with the increment where growth starts: a disposed node never settles, so the
     // counter follows the flag rather than the settle path.
     if (rendered.growthStartedAt !== undefined) {
-      delete rendered.growthStartedAt;
-      delete rendered.growthTotal;
+      rendered.growthStartedAt = undefined;
+      rendered.growthTotal = undefined;
       this.#growingVegetation--;
     }
     disposeSkinnedInstance(rendered.skinned);
-    delete rendered.skinned;
-    delete rendered.template;
+    rendered.skinned = undefined;
+    rendered.template = undefined;
     disposeModelPlacementTintMaterials(rendered.tintMaterials);
-    delete rendered.tintMaterials;
+    rendered.tintMaterials = undefined;
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
     rendered.node.removeFromParent();
     this.#dropWmoLiquid(rendered);
@@ -10574,7 +10666,7 @@ export class WorldRenderer3D {
    */
   #unitFadeReturnWaits(unit: RenderedUnit, wanted: number): boolean {
     if (wanted < 1 || (unit.opacityBorrows === undefined && !unit.material.transparent)) {
-      if (unit.fadeReturnFrames !== undefined) delete unit.fadeReturnFrames;
+      if (unit.fadeReturnFrames !== undefined) unit.fadeReturnFrames = undefined;
       return false;
     }
     const frames = unit.fadeReturnFrames ?? 0;
@@ -11039,16 +11131,18 @@ export class WorldRenderer3D {
     const node = placeEnvironmentNode(new THREE.Group(), object);
     node.updateMatrixWorld(true);
     const modelToWorld = node.matrixWorld.clone().multiply(VMAP_TO_THREE);
+    const boxes = wmoGroupBoxes(model, object);
     return {
       node,
       placed: {
         visualId: object.id,
         name: object.name,
         model,
-        boxes: wmoGroupBoxes(model, object),
+        boxes,
         modelToWorld,
         worldToModel: modelToWorld.clone().invert(),
         built: new Map(),
+        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, wmoShellRange), // P1-12a
       },
     };
   }
@@ -11069,11 +11163,14 @@ export class WorldRenderer3D {
 
   /** Detaches placement-local borrowers without disposing their shared geometry or materials. */
   #clearWmoGroups(placed: PlacedWmo, node: THREE.Object3D): void {
-    for (const { mesh } of placed.built.values()) {
+    for (const { entry, mesh } of placed.built.values()) {
       this.#programWarmup.unregisterObject(mesh);
       node.remove(mesh);
+      // P1-12b: an attached room is no longer touched every frame; it becomes recent as it leaves.
+      this.#wmoGeometries.get(entry.cacheKey);
     }
     placed.built.clear();
+    placed.appliedSettled = false; // P1-12b: the next frame attaches in full
   }
 
   /** Interior-only placements by visual id; retired by `#updateSkybox` once not updated. */
@@ -11199,19 +11296,9 @@ export class WorldRenderer3D {
     staticEnvironment = false,
     shellRange?: number, // 05.10-7.05-review
   ): void {
-    // Same inputs, same set: the player standing still re-asks the identical question for every
-    // admitted building sixty times a second.
-    let distanceGroups = placed.rangeGroups;
-    if (distanceGroups === undefined
-      || placed.rangePlayer?.x !== player.x
-      || placed.rangePlayer?.y !== player.y
-      || placed.rangePlayer?.z !== player.z
-      || placed.rangeShell !== shellRange) { // 05.10-7.05-review
-      distanceGroups = wmoGroupsInRange(placed.model, placed.boxes, player, undefined, shellRange); // 05.10-7.05-review
-      placed.rangeShell = shellRange; // 05.10-7.05-review
-      placed.rangePlayer = { x: player.x, y: player.y, z: player.z };
-      placed.rangeGroups = distanceGroups;
-    }
+    // P1-12a: the same set while no group can have crossed its leash — the player re-asks the
+    // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
+    let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     const fogPlacement = staticEnvironment && placed.visualId === this.#wmoFogVisualId;
     // A building of rooms alone that the camera or the player has entered is chosen through its
     // portals from the far leash (a dungeon's halls outrun sixty yards); seen from outside it keeps
@@ -11258,8 +11345,6 @@ export class WorldRenderer3D {
     if (staticEnvironment && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
       selected = this.#wmoRoomsFromOpenAir(placed, player, selected, walked);
     }
-    const wanted = new Set(selected);
-    const missing: number[] = [];
     // Room builds (geometry compose, material setup, uploads) are the building-shaped turn
     // hitch: a newly admitted castle can want dozens of rooms on one frame. Build at most a
     // few per submitted frame across every admitted building — shells first, because they are
@@ -11270,20 +11355,36 @@ export class WorldRenderer3D {
       this.#wmoGroupBuilds = 0;
       this.#wmoGroupBuildBudget.begin();
     }
+    // P1-12b: the selection the last full pass attached in full, over the same cache entries — every
+    // wanted room is attached to its exact current entry and nothing else is, so the pass below
+    // would detach, build and request nothing.
+    if (placed.appliedSettled && placed.appliedEpoch === this.#wmoGeometries.epoch
+      && sameWmoSelection(placed.appliedSelection, selected)) return;
+    const groups = placed.model.groups;
+    let wanted = placed.groupMask;
+    if (wanted === undefined || wanted.length !== groups.length) {
+      wanted = placed.groupMask = new Uint8Array(groups.length);
+    } else wanted.fill(0);
+    for (let at = 0; at < selected.length; at++) wanted[selected[at]!] = 1;
+    const missing: number[] = [];
     const buildable: number[] = [];
-    for (const [index, group] of placed.model.groups.entries()) {
+    for (let index = 0; index < groups.length; index++) {
+      const group = groups[index]!;
       const built = placed.built.get(index);
-      if (!wanted.has(index)) {
+      if (!wanted[index]) {
         if (built) {
           this.#programWarmup.unregisterObject(built.mesh);
           node.remove(built.mesh);
+          // An attached room is not touched while it stays; it becomes recent as it leaves.
+          this.#wmoGeometries.get(built.entry.cacheKey);
           placed.built.delete(index);
         }
         continue;
       }
       if (built) {
-        const retained = this.#wmoGeometries.get(this.#wmoGroupCacheKey(placed.model, index));
-        if (retained === built.entry) continue;
+        // `peek`: the room is pinned while attached, so its recency matters only once it leaves.
+        if (this.#wmoGeometries.peek(built.entry.cacheKey) === built.entry) continue;
+        this.#wmoGeometries.get(built.entry.cacheKey);
         // A wrapper may never outlive its exact cache entry or decoded parent.
         this.#programWarmup.unregisterObject(built.mesh);
         node.remove(built.mesh);
@@ -11319,6 +11420,12 @@ export class WorldRenderer3D {
     this.#wmoGroupsPending += buildable.length - attached;
     // A model that came whole has nothing to ask for, and asking would be a request per frame.
     if (missing.length > 0 && !placed.model.complete) client?.requestModelGroups(placed.name, missing);
+    // P1-12b: the epoch after this pass's own builds; a later set or delete anywhere reopens it.
+    const applied = placed.appliedSelection ??= [];
+    applied.length = selected.length;
+    for (let at = 0; at < selected.length; at++) applied[at] = selected[at]!;
+    placed.appliedEpoch = this.#wmoGeometries.epoch;
+    placed.appliedSettled = missing.length === 0 && attached === buildable.length;
   }
 
   /**
@@ -11601,10 +11708,10 @@ export class WorldRenderer3D {
 
   /** Clears every part of the proof used to cull a retained static game object. */
   #clearGameObjectAdmissionTrust(rendered: RenderedGameObject): void {
-    delete rendered.admissionDisplayId;
-    delete rendered.admissionScale;
-    delete rendered.admissionEntry;
-    delete rendered.admissionMetadataRevision;
+    rendered.admissionDisplayId = undefined;
+    rendered.admissionScale = undefined;
+    rendered.admissionEntry = undefined;
+    rendered.admissionMetadataRevision = undefined;
   }
 
   /**
@@ -11918,7 +12025,7 @@ export class WorldRenderer3D {
     this.#programWarmup.unregisterObject(rendered.node);
     if (rendered.opacityBorrows) {
       returnBorrowedMaterials(rendered.opacityBorrows);
-      delete rendered.opacityBorrows;
+      rendered.opacityBorrows = undefined;
     }
     disposeSkinnedInstance(rendered.skinned);
     rendered.skinned = undefined;
@@ -11942,9 +12049,38 @@ export class WorldRenderer3D {
       template: undefined,
       action: undefined,
       animationId: -1,
+      actionKind: undefined,
+      overlayAction: undefined,
+      overlayAnimationId: undefined,
+      overlayActionKind: undefined,
+      overlayPreservesLocomotion: undefined,
+      overlayFadeUntil: undefined,
       overlayUntil: 0,
+      gaitCommittedUntil: undefined,
+      flatPoseTemplate: undefined,
+      flatPoseProgram: undefined,
+      effectKey: undefined,
+      built: undefined,
+      decodedModel: undefined,
+      legacyGeometry: undefined,
+      materialEntries: undefined,
+      visual: undefined,
+      wvm: undefined,
+      wmo: undefined,
+      model: undefined,
+      state: undefined,
+      admissionDisplayId: undefined,
+      admissionScale: undefined,
+      admissionEntry: undefined,
+      admittedAt: undefined,
+      fadedOpacity: undefined,
+      opacityBorrows: undefined,
+      admissionMetadataRevision: undefined,
       entry: object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0,
+      pickBox: undefined,
       base: { x: placement.x, y: placement.y, z: placement.z, orientation: THREE.MathUtils.degToRad(placement.rotationY) },
+      phaseMs: undefined,
+      phaseAt: undefined,
     };
     if (modelName) rendered.model = modelName;
     if (model && model.wvm === undefined && model.wmo === undefined) {
@@ -12042,8 +12178,8 @@ export class WorldRenderer3D {
       rendered.entry = nextEntry;
       // A transport path is part of the retained identity. Do not carry the
       // old path's phase into a newly admitted entry.
-      delete rendered.phaseMs;
-      delete rendered.phaseAt;
+      rendered.phaseMs = undefined;
+      rendered.phaseAt = undefined;
     }
     const scale = gameObjectScale(object);
     if (scale !== undefined) rendered.node.scale.setScalar(scale);
@@ -12329,7 +12465,8 @@ export class WorldRenderer3D {
    */
   #wmoGroupBorrowers(): {
     readonly geometryPins: ReadonlySet<WmoGroupGeometryEntry>;
-    readonly materialPins: ReadonlySet<WorldMaterialEntry>;
+    /** A fresh set each call: `#evictWmoResources` adds the legacy pins to it and commits it. */
+    readonly materialPins: Set<WorldMaterialEntry>;
     readonly wrapperCount: number;
   } {
     const geometryPins = new Set<WmoGroupGeometryEntry>();
@@ -12339,7 +12476,7 @@ export class WorldRenderer3D {
       if (!placed) return;
       wrapperCount += collectAttachedWmoGroupResourcePins(
         node,
-        placed.built.values(),
+        placed.built,
         geometryPins,
         materialPins,
       );
@@ -12395,11 +12532,12 @@ export class WorldRenderer3D {
     for (const { built } of this.#wmoGeometries.evictUnpinned(geometryPins)) {
       built.geometry.dispose();
     }
-    this.#wmoPreparedGeometryPins.clear();
+    if (this.#wmoPreparedGeometryPins.size) this.#wmoPreparedGeometryPins.clear();
     for (const { built } of this.#legacyGeometries.evictUnpinned(legacy.geometryPins)) {
       built.geometry.dispose();
     }
-    const materialPins = new Set<WorldMaterialEntry>(wmo.materialPins);
+    // P1-10c: the room pins' own fresh set, not a copy of it; same entries in the same order.
+    const materialPins = wmo.materialPins;
     for (const entry of legacy.materialPins) materialPins.add(entry);
     this.#worldMaterials.commitPins(materialPins);
   }
@@ -12534,6 +12672,17 @@ export class WorldRenderer3D {
         strideX: 0, strideY: 0, strideZ: 0, strideReady: false, strideSpeed: undefined,
         height: 0, radius: 0, scale: 1, dead: !dead, tint: tint ^ 1, applied: "",
         attached: new Map(), unitOpacity: 1, particleColours: undefined, // 05.10-A7a-H: one shape from birth
+        // P1-09b: every optional field present from birth, so no unit ever changes hidden class.
+        actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
+        overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
+        gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+        effectKey: undefined, decodedModel: undefined, legacyGeometry: undefined, materialEntries: undefined,
+        admittedAt: undefined, animationClock: undefined, animationClockRig: undefined,
+        animationClockMountRig: undefined, admissionDisplayId: undefined, admissionObjectScale: undefined,
+        admissionHasAuthoredAttachments: undefined, bodyHeight: undefined, wvm: undefined, visual: undefined,
+        mount: undefined, opacityBorrows: undefined, warmShown: undefined, modelShown: undefined,
+        fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
+        strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -12627,9 +12776,9 @@ export class WorldRenderer3D {
       unit.admissionObjectScale = currentObjectScale;
       unit.admissionHasAuthoredAttachments = (metadata?.appearance?.attached.length ?? 0) > 0;
     } else {
-      delete unit.admissionDisplayId;
-      delete unit.admissionObjectScale;
-      delete unit.admissionHasAuthoredAttachments;
+      unit.admissionDisplayId = undefined;
+      unit.admissionObjectScale = undefined;
+      unit.admissionHasAuthoredAttachments = undefined;
     }
 
     if (detailedCapture) {
@@ -12734,7 +12883,7 @@ export class WorldRenderer3D {
    */
   #appearanceWaits(unit: RenderedUnit, metadata: UnitModel, now: number): boolean {
     if (metadata.appearancePending !== true) {
-      if (unit.appearancePendingSince !== undefined) delete unit.appearancePendingSince;
+      if (unit.appearancePendingSince !== undefined) unit.appearancePendingSince = undefined;
       return false;
     }
     // A replay epoch rewinds the clock; the wait restarts from there rather than lasting until the
@@ -12824,7 +12973,7 @@ export class WorldRenderer3D {
       unit.wvm = model.wvm;
       // A rigged unit is posed through its bones, so there is no single mesh matrix to fall back
       // on and the emitter frames come from the skeleton instead.
-      delete unit.visual;
+      unit.visual = undefined;
       return undefined;
     }
 
@@ -12958,8 +13107,12 @@ export class WorldRenderer3D {
     unit.mount = {
       key, built, node, metadata, wvm, skinned, template: rigged ?? undefined,
       action: undefined, animationId: -1, overlayUntil: 0,
+      actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
+      overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
+      gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
+      pose: undefined,
     };
     unit.shadowCaster = undefined;
   }
@@ -13049,7 +13202,7 @@ export class WorldRenderer3D {
     this.#programWarmup.unregisterObject(mount.node);
     disposeSkinnedInstance(mount.skinned);
     mount.node.removeFromParent();
-    delete unit.mount;
+    unit.mount = undefined;
     unit.shadowCaster = undefined;
     // The body's own height back, for the rigless branch as well as the rigged one. Nothing else
     // writes `unit.height` for a unit that has a model — `#shapeCapsule` returns on `if (!body)`
@@ -13237,21 +13390,21 @@ export class WorldRenderer3D {
     unit.shadowCaster = undefined;
     unit.body = undefined;
     unit.built = undefined;
-    delete unit.wvm;
-    delete unit.visual;
-    delete unit.decodedModel;
-    delete unit.legacyGeometry;
-    delete unit.materialEntries;
+    unit.wvm = undefined;
+    unit.visual = undefined;
+    unit.decodedModel = undefined;
+    unit.legacyGeometry = undefined;
+    unit.materialEntries = undefined;
     unit.skinned = undefined;
     unit.template = undefined;
     // Whatever goes in next writes its own; until it does there is no body to be the height of, and
     // a stale one would put the next capsule's name plate on the last model's head.
-    delete unit.bodyHeight;
+    unit.bodyHeight = undefined;
     unit.action = undefined;
     unit.animationId = -1;
-    delete unit.admissionDisplayId;
-    delete unit.admissionObjectScale;
-    delete unit.admissionHasAuthoredAttachments;
+    unit.admissionDisplayId = undefined;
+    unit.admissionObjectScale = undefined;
+    unit.admissionHasAuthoredAttachments = undefined;
     // A pose carried across a change of model would have the new one land from a jump the old one
     // took, so the unit starts again from whatever the next frame says it is doing.
     unit.pose = undefined;
@@ -13278,7 +13431,7 @@ export class WorldRenderer3D {
     unit.bodyHeight = template.height;
     unit.height = template.height * metadata.scale;
     unit.animationId = -1;
-    delete unit.actionKind;
+    unit.actionKind = undefined;
     unit.applied = key;
   }
 
@@ -14205,9 +14358,8 @@ export class WorldRenderer3D {
         current.setLoop(wantedLoop, Infinity);
         current.clampWhenFinished = !loop;
         current.play();
-        if (actionKind === undefined) delete unit.overlayActionKind;
-        else unit.overlayActionKind = actionKind;
-        delete unit.overlayFadeUntil;
+        unit.overlayActionKind = actionKind;
+        unit.overlayFadeUntil = undefined;
         const fade = animationFadeWindow(clip.duration, fullDuration);
         unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
         return;
@@ -14236,10 +14388,9 @@ export class WorldRenderer3D {
       }
       unit.overlayAction = next;
       unit.overlayAnimationId = animation;
-      if (actionKind === undefined) delete unit.overlayActionKind;
-      else unit.overlayActionKind = actionKind;
+      unit.overlayActionKind = actionKind;
       unit.overlayPreservesLocomotion = true;
-      delete unit.overlayFadeUntil;
+      unit.overlayFadeUntil = undefined;
       const fade = animationFadeWindow(clip.duration, fullDuration);
       unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
       return;
@@ -14276,8 +14427,7 @@ export class WorldRenderer3D {
       unit.action.setLoop(wantedLoop, Infinity);
       unit.action.clampWhenFinished = !loop;
       unit.action.play();
-      if (actionKind === undefined) delete unit.actionKind;
-      else unit.actionKind = actionKind;
+      unit.actionKind = actionKind;
       // Restarting the same clip ends the same way it would have if it were a different one, so
       // it leaves the same blend window free. See the tail comment at the bottom of this method.
       const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
@@ -14308,8 +14458,7 @@ export class WorldRenderer3D {
     }
     unit.action = next;
     unit.animationId = animation;
-    if (actionKind === undefined) delete unit.actionKind;
-    else unit.actionKind = actionKind;
+    unit.actionKind = actionKind;
     // A one-shot holds the unit for its own length, less the blend that takes it away again — and
     // that subtraction is not optional. `fullDuration` (a spell visual's own animation) used to
     // subtract nothing, so the pose pass came back for the unit at the exact millisecond the clip
@@ -14337,11 +14486,11 @@ export class WorldRenderer3D {
   #clearOverlay(unit: PosedModel, hard = false): void {
     if (hard) unit.overlayAction?.stop();
     else unit.overlayAction?.fadeOut(ACTION_ANIMATION_BLEND);
-    delete unit.overlayAction;
-    delete unit.overlayAnimationId;
-    delete unit.overlayActionKind;
+    unit.overlayAction = undefined;
+    unit.overlayAnimationId = undefined;
+    unit.overlayActionKind = undefined;
     unit.overlayPreservesLocomotion = false;
-    delete unit.overlayFadeUntil;
+    unit.overlayFadeUntil = undefined;
     unit.overlayUntil = 0;
   }
 

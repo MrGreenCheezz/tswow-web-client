@@ -427,7 +427,7 @@ import {
   buildAddonBlock, buildAddonMessageBody, buildLogoutCancel, buildLogoutRequest,
   buildPlayerLogout, buildQueryTime, buildRealmSplit, buildReadyForAccountDataTimes,
   buildRequestAccountData, buildTutorialClear, buildTutorialFlag, buildTutorialReset,
-  buildUpdateAccountData, chatServerMessageText, deflate, inflate, parseAccountDataTimes,
+  buildUpdateAccountData, chatServerMessageText, deflate, inflateAccountData, parseAccountDataTimes,
   parseAddonInfo, parseAddonMessageBody, parseChatServerMessage, parseClientCacheVersion,
   parseDeclinedNamesResult, parseEmptySessionPacket, parseFeatureSystemStatus, parseMotd,
   parseLogoutResponse, parseNotification, parseQueryTimeResponse, parseRealmSplit,
@@ -6017,7 +6017,7 @@ export class WorldClient {
         // handled below
       } else if (this.#handlePvp(packet)) {
         // handled below
-      } else if (await this.#handleSession(packet)) {
+      } else if (this.#handleSession(packet)) {
         // handled below
       } else {
         this.#recordUnhandled(packet);
@@ -8967,12 +8967,13 @@ export class WorldClient {
    * answers, the ticket window, the barber's chair and the sounds.
    *
    * Slice P8. Two threads run through it. The account blobs and the addon block are deflate on the
-   * wire in both directions, which is why this handler is the only asynchronous one — inflating is
-   * a stream here, not a call. And the five query answers are the replacement for the original
+   * wire in both directions. Inflating used to be a `DecompressionStream`, which made this the one
+   * asynchronous handler and held every later packet for several task turns; it is a synchronous
+   * call now (`inflateAccountData`, P1-21a), so the loop goes on in the same turn. The five query answers are the replacement for the original
    * client's `WDB` cache: they are asked for once, kept for the session, and thrown away when
    * `SMSG_CLIENTCACHE_VERSION` says the realm's data moved, which is the one job that packet has.
    */
-  async #handleSession(packet: WorldPacket): Promise<boolean> {
+  #handleSession(packet: WorldPacket): boolean {
     if (packet.opcode === OPCODES.SMSG_ACCOUNT_DATA_TIMES) {
       this.accountDataTimes = parseAccountDataTimes(packet.payload);
       this.events.emit("ACCOUNT_DATA_CHANGED", { type: undefined });
@@ -8982,7 +8983,7 @@ export class WorldClient {
       const blob = parseUpdateAccountData(packet.payload);
       if (blob.decompressedSize === 0) this.accountData.delete(blob.type);
       else {
-        const plain = await inflate(blob.compressed, blob.decompressedSize);
+        const plain = inflateAccountData(blob.compressed, blob.decompressedSize);
         // The stored value is a C string: the server wrote it out of a std::string and the
         // terminator travels with it, so the last byte is dropped rather than kept as a NUL.
         const end = plain.indexOf(0) < 0 ? plain.byteLength : plain.indexOf(0);

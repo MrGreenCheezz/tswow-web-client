@@ -20,7 +20,7 @@ import {
   type EyeLiquidSurface,
 } from "./Physics.js";
 import { collisionLiquidEyeSubmerged, collisionModelLiquidAtEye } from "./CollisionLiquid.js";
-import { ENVIRONMENT_STREAM_RANGE, terrainGrid, terrainGridDependencyFootprint } from "../Terrain.js";
+import { ENVIRONMENT_STREAM_RANGE, terrainGridDependencyFootprint, terrainGridIndex } from "../Terrain.js";
 import { updateZoneSound } from "./ZoneSound.js";
 import { updateWeatherSound } from "./WeatherAmbience.js";
 import { updateCombatSounds } from "./CombatSounds.js";
@@ -73,7 +73,8 @@ import { ResourceAccountingLedger } from "../ResourceAccounting.js";
 import { renderBenchmarkRuntime } from "../RenderBenchmarkRuntime.js";
 import { formalRenderBenchmarkExclusiveActive } from "../RenderBenchmarkExclusiveLease.js";
 import {
-  beginPerformanceCaptureFrame, captureFrameSections, endPerformanceCaptureFrame, performanceCaptureActive,
+  addCheckpointSection, beginPerformanceCaptureFrame, captureFrameSections, endPerformanceCaptureFrame,
+  performanceCaptureActive,
 } from "./PerformanceCapture.js";
 
 /**
@@ -295,24 +296,29 @@ const viewTracker = new ViewSubjectTracker();
 /** 11.02-I: `CMSG_FAR_SIGHT` as Wow.exe votes it (world/FarSight.ts). */
 const farSightLink = new FarSightLink();
 
-/** Last footprint handed to the terrain client; the ring only changes on tile borders. */
-let lastTerrainFootprintKey = "";
+/**
+ * Last footprint handed to the terrain client; the ring only changes on tile borders. P1-13a: a
+ * number — `map * 4096 + cell` on the map, `-2 - map` off it, -1 without a map or a player (NaN
+ * before the first frame) — so the per-frame comparison builds no string.
+ */
+let lastTerrainFootprintKey = Number.NaN;
+const NO_TERRAIN_FOOTPRINT = -1;
 
 function updateTerrainActiveTiles(world: typeof game.world): void {
   // 11.02-I: the ring the renderer re-pins, around the view subject (ViewSubject.ts) — the character,
   // or a possessed unit or far sight eye once in view; the two callers must name the same ring.
   const player = viewSubject(world);
   if (world?.mapId === undefined || !player?.position) {
-    if (lastTerrainFootprintKey === "none") return;
-    lastTerrainFootprintKey = "none";
+    if (lastTerrainFootprintKey === NO_TERRAIN_FOOTPRINT) return;
+    lastTerrainFootprintKey = NO_TERRAIN_FOOTPRINT;
     game.terrain?.setActiveTiles(undefined, []);
     return;
   }
   // The 5x5 ring is a pure function of the center tile: skip the 25-object build plus the
   // client's own Set/string/evict pass while standing still. The renderer's own #updateTerrain
   // re-pins the same ring on drawn frames; this call covers loading and hidden-panel frames.
-  const center = terrainGrid(player.position.x, player.position.y);
-  const key = center === undefined ? `${world.mapId}/none` : `${world.mapId}/${center.x}/${center.y}`;
+  const cell = terrainGridIndex(player.position.x, player.position.y);
+  const key = cell < 0 ? -2 - world.mapId : world.mapId * 4096 + cell;
   if (key === lastTerrainFootprintKey) return;
   lastTerrainFootprintKey = key;
   const grids = terrainGridDependencyFootprint(player.position.x, player.position.y);
@@ -342,10 +348,17 @@ function frame(now: number): void {
   updateFpsCounter(now, !!world && !worldPanel.hidden && !document.hidden);
   // Everything the packets changed since the last frame is delivered here, once, before anything
   // reads it: a panel is woken by the fields it asked for rather than by every packet that lands.
+  // P1-20a: the four big pieces of `state` are marked on their own (`state.flush|motions|visuals|view`),
+  // so a live recording says which of them a packet burst lands in; the rest is `state.rest`.
+  const stateFlushStart = performance.now();
   game.store?.flush();
+  const stateFlushed = performance.now();
   world?.state.updateMotions(now);
+  const stateMoved = performance.now();
   game.spellVisualCoordinator?.tick(now);
+  const stateVisuals = performance.now();
   drainWorldState();
+  const stateViewed = performance.now();
   updateDeathReclaimCountdown(now);
   updateTerrainActiveTiles(game.world);
   // 11.02-I: after the packets are in, whether or not the world is drawn this frame. A loading
@@ -719,6 +732,15 @@ function frame(now: number): void {
       ui: hitchUi - hitchState,
       loading: hitchLoading - hitchUi,
     };
+    // Nested inside `state`, as `render.*` is inside `render`, and only when they count.
+    const stateFlushMs = stateFlushed - stateFlushStart;
+    const stateMotionsMs = stateMoved - stateFlushed;
+    const stateVisualsMs = stateVisuals - stateMoved;
+    const stateViewMs = stateViewed - stateVisuals;
+    if (stateFlushMs > 0.05) hitchSections["state.flush"] = stateFlushMs;
+    if (stateMotionsMs > 0.05) hitchSections["state.motions"] = stateMotionsMs;
+    if (stateVisualsMs > 0.05) hitchSections["state.visuals"] = stateVisualsMs;
+    if (stateViewMs > 0.05) hitchSections["state.view"] = stateViewMs;
     let hitchPrevious = hitchLoading;
     const hitchInner: Array<[string, number]> = [
       ["physics", hitchPhysics],
@@ -768,7 +790,18 @@ function frame(now: number): void {
   // Baseline averages, every frame: numeric adds into the reused sums, no allocation. Unrolled
   // rather than looped over pairs: a pairs array would allocate on every frame.
   sectionSamples++;
-  addSectionAverage("state", hitchState - hitchStart);
+  // Leaves only: `state` is its four marked pieces plus the rest (the FPS counter, the death
+  // countdown, the terrain pins, the far-sight link).
+  addSectionAverage("state.flush", stateFlushed - stateFlushStart);
+  addSectionAverage("state.motions", stateMoved - stateFlushed);
+  addSectionAverage("state.visuals", stateVisuals - stateMoved);
+  addSectionAverage("state.view", stateViewed - stateVisuals);
+  addSectionAverage("state.rest", (hitchState - hitchStart) - (stateViewed - stateFlushStart));
+  // And into the capture's half-second checkpoints, where ordinary frames are not otherwise sectioned.
+  addCheckpointSection("state.flush", stateFlushed - stateFlushStart);
+  addCheckpointSection("state.motions", stateMoved - stateFlushed);
+  addCheckpointSection("state.visuals", stateVisuals - stateMoved);
+  addCheckpointSection("state.view", stateViewed - stateVisuals);
   addSectionAverage("ui", hitchUi - hitchState);
   addSectionAverage("loading", hitchLoading - hitchUi);
   let averageAt = hitchLoading;

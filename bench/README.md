@@ -174,6 +174,14 @@ glow, god rays, трава 80/3. Камера облетает игрока на
   у сторон такой пары он совпадает. Боевую сборку на помощники проверяет
   `node tools/check-dist-target.mjs [каталог…]` (по умолчанию `dist/web`; код 1 — помощники найдены,
   2 — каталога нет).
+- `--bench-env <prod|dev>` — чем бандл стенда заменяет `import.meta.env` (`bench/build.mjs`, esbuild
+  `define`). По умолчанию `prod` — как у `vite build`: `{"BASE_URL":"/","MODE":"production","DEV":false,
+  "PROD":true,"SSR":false}`, поэтому `rendererDebugShaderErrors()` даёт `false` и three не читает
+  журналы шейдеров при каждой линковке — как в игре (P1-02a, NET-22). `dev` — прежний бандл
+  (`import.meta.env` не определён, проверки шейдеров включены): только для сравнения с результатами,
+  снятыми до P1-02a; такой прогон невалиден. Значение пишется в `bundle.env` и в
+  `sourceHashes["bundle-options"]`; `sourceHash` у сторон пары совпадает. Отпечаток стороны в `--trace` —
+  `programEvents[0].checkShaderErrors`. `bench/lookdev.mjs` берёт умолчание `prod` (кадры не меняются).
 - `--js-flags "<флаги V8>"` — Chrome/Electron с этими флагами V8, например
   `--js-flags "--allow-natives-syntax"` для проверки вида массивов (`%HasDoubleElements`) из варианта
   стенда. Проверку вида делайте до любого кода, который читает массивы разных видов в одном месте:

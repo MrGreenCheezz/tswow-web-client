@@ -326,6 +326,12 @@ function dimensionOf(element: FrameXmlElement | undefined): { readonly x: number
 /** What a change can affect, from least to most: see `FrameXmlUiBridge.layoutVersion`. */
 export type FrameXmlMutationKind = "paint" | "layout" | "structure";
 
+/** How `SetText` announces a FontString's new text; see `FrameXmlUiBridge.setTextLayoutPolicy`. */
+export type FrameXmlTextLayoutPolicy = "auto" | "always";
+
+/** A line break the string draws: a real one, or the `|n` escape. */
+const TEXT_LINE_BREAK = /\r|\n|\|n/;
+
 class MutableFrameXmlFrame implements FrameXmlFrame {
   readonly type: RuntimeWidgetType;
   readonly name: string;
@@ -347,6 +353,14 @@ class MutableFrameXmlFrame implements FrameXmlFrame {
   visible: boolean;
   /** Bumped by every announced change to this frame; see `FrameXmlUiBridge.notifyMutation`. */
   renderVersion = 0;
+  /**
+   * Some anchor has named this frame as its `relativeTo` — the frame's box is measured by another
+   * frame's placement. Monotonic: set by every anchor writer (`readAnchor`,
+   * `resolvePendingRelativePoints`, `SetPoint`, `SetAllPoints`, and `update` of any kind but paint as
+   * the safety net) and never cleared, so a string that was ever a target keeps announcing its
+   * text as layout (`FrameXmlUiBridge.textOnlyPaints`).
+   */
+  anchorTarget = false;
   text = "";
   texture = "";
   loaded = false;
@@ -476,6 +490,9 @@ const TOPLEVEL_MAX_FRAME_LEVEL = 999;
  */
 const FRAME_XML_FALLBACK_SCREEN = Object.freeze({ width: 1024, height: 768 });
 
+/** P1-14d: the hooks of a script nobody hooked — shared and frozen instead of a `[]` per dispatch. */
+export const NO_HOOKS: readonly FrameXmlScriptHandler[] = Object.freeze([]);
+
 /** How many frames `layoutReaches` walks before it assumes a change reaches the box it asks about. */
 const LAYOUT_REACH_LIMIT = 256;
 
@@ -574,6 +591,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   #deferPaint = false;
   /** See `setLayoutDeferral`. */
   #deferLayout = false;
+  /** See `setTextLayoutPolicy`. */
+  #textLayoutPolicy: FrameXmlTextLayoutPolicy = "always";
   /**
    * A notification held at the outermost level carries a change that can move something, so the
    * page is not what the bridge says until it is announced; see `settleDeferredLayout`.
@@ -1149,6 +1168,83 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
   setLayoutDeferral(enabled: boolean): void {
     this.#deferLayout = enabled;
     if (!enabled) this.flushDeferredPaint();
+  }
+
+  /**
+   * How `SetText` announces a FontString's new text (P1-15a). `"always"` (the default) is a layout
+   * change, as it always was; `"auto"` makes it paint when nothing measures the string's box
+   * (`textOnlyPaints`), so a buff timer or a health text rewritten every frame no longer costs the
+   * frame step a layout pass. The world mount turns `"auto"` on next to `setPaintDeferral`;
+   * `"always"` is the fallback and the oracle of the DOM-snapshot differential.
+   */
+  setTextLayoutPolicy(policy: FrameXmlTextLayoutPolicy): void {
+    this.#textLayoutPolicy = policy === "auto" ? "auto" : "always";
+  }
+
+  get textLayoutPolicy(): FrameXmlTextLayoutPolicy {
+    return this.#textLayoutPolicy;
+  }
+
+  /**
+   * Whether `SetText(frame, next)` on a FontString can be announced as paint: no layout read
+   * depends on the string's box, so the page may draw the new text with the next paint pass.
+   *
+   * All at once:
+   * 1. the text stays empty or non-empty (`Boolean(old) === Boolean(new)`: emptiness shows/hides
+   *    a button's native name and a modal's message); and a string without a fixed height neither
+   *    wraps (a declared width, or `wordWrap="true"`) nor has a line break in the old or the new
+   *    text — `GetHeight` reads its height from the page (`StaticPopup_Resize` right after
+   *    `SetFormattedText`);
+   * 2. nobody measures its box: no anchor names it (`anchorTarget`), or the box is fixed on both
+   *    axes (a declared size > 0, or two opposite anchors); no ancestor is sized by its content
+   *    (a tooltip, a sizeless button) or a ScrollFrame; it is not clamped to the screen;
+   * 3. its own placement does not read its own size: the box is fixed, or every anchor is on its
+   *    parent (a CSS expression; a sibling anchor's RIGHT/CENTER edge is «edge − size», measured);
+   * 4. no accessible name is made of its text: no EditBox or Slider ancestor (their label is the
+   *    caption's text), and not `<control>Text` beside a control (`namedPeer`).
+   */
+  private textOnlyPaints(frame: MutableFrameXmlFrame, next: string): boolean {
+    if (frame.type !== "FontString") return false;
+    const previous = frame.text;
+    // Empty as drawn: a colour- or icon-only or blank string measures and names like no text
+    // (P1-15a review: `"|cffff0000|r"` on a button's only label kept a stale aria-label).
+    const drawn = (text: string | undefined): boolean => plainFrameXmlText(text ?? "").trim() !== "";
+    if (drawn(previous) !== drawn(next)) return false;
+    if (frame.clampedToScreen) return false;
+    const pinned = anchoredEdges(frame);
+    const width = Number(frame.attributes["width"]);
+    const height = Number(frame.attributes["height"]);
+    const fixedX = pinned.x || width > 0;
+    const fixedY = pinned.y || height > 0;
+    if (!fixedY) {
+      if (width > 0 || frame.attributes["wordWrap"] === "true") return false;
+      if (TEXT_LINE_BREAK.test(previous) || TEXT_LINE_BREAK.test(next)) return false;
+    }
+    const fixed = fixedX && fixedY;
+    if (frame.anchorTarget && !fixed) return false;
+    if (!fixed) {
+      for (const point of frame.points) {
+        if (point.relativeTo !== undefined && point.relativeTo !== frame.parent) return false;
+      }
+    }
+    for (let at = frame.parent, depth = 0; at; at = at.parent, depth += 1) {
+      if (depth >= 64) return false;
+      if (at.type === "ScrollFrame" || at.type === "EditBox" || at.type === "Slider" || sizedByContent(at)) return false;
+    }
+    if (frame.named && frame.name.endsWith("Text")) {
+      const peer = this.#byName.get(frame.name.slice(0, -4));
+      if (peer && (peer.type === "Button" || peer.type === "CheckButton" || peer.type === "EditBox"
+        || peer.type === "Slider")) return false;
+    }
+    return true;
+  }
+
+  /** Flag every frame `frame`'s anchors name as an anchor target; see `anchorTarget`. */
+  private markAnchorTargets(frame: MutableFrameXmlFrame): void {
+    for (const point of frame.points) {
+      const target = point.relativeTo;
+      if (target instanceof MutableFrameXmlFrame) target.anchorTarget = true;
+    }
   }
 
   /**
@@ -1859,6 +1955,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
           x: dimension.x,
           y: dimension.y,
         };
+        if (relativeTo instanceof MutableFrameXmlFrame) relativeTo.anchorTarget = true;
         // An `<Anchor>` is the client's `SetPoint`: one anchor per point name, whatever it is relative
         // to, so the instance's own anchor replaces the template's rather than joining it. The merged
         // element carries the template's `<Anchors>` first. Measured on the MPQ vertical before this:
@@ -1895,6 +1992,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (!pending) continue;
       const relativeTo = this.#byName.get(pending.relativeName);
       if (!relativeTo) continue;
+      relativeTo.anchorTarget = true;
       const point = pending.frame.points[pending.index];
       if (point) pending.frame.points[pending.index] = { ...point, relativeTo };
       this.#pendingRelativePoints.splice(index, 1);
@@ -2153,9 +2251,11 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       if (!name) return 0;
       const excluded = takeEventExclusion(name);
       let delivered = 0;
+      // P1-14d: one argument list for every frame (dispatchScript only reads it), made on the first.
+      let eventArgs: readonly unknown[] | undefined;
       for (const frame of [...(this.#byEvent.get(name) ?? [])]) {
         if (!frame.registeredEvents.has(name) || excluded?.has(frame.name)) continue;
-        this.dispatchScript(frame, "OnEvent", [name, ...args]);
+        this.dispatchScript(frame, "OnEvent", eventArgs ??= [name, ...args]);
         delivered += 1;
       }
       return delivered;
@@ -2202,9 +2302,10 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       this.#runtime?.tickAnimations?.(elapsedSeconds);
       this.#messageFades.tick(elapsedSeconds, this.#messageFadeHost);
       let dispatched = 0;
+      const updateArgs = [elapsedSeconds]; // P1-14d: one list for every frame
       for (const frame of [...this.#updateFrames]) {
         if (!this.#frames.has(frame) || !this.isVisible(frame)) continue;
-        this.dispatchScript(frame, "OnUpdate", [elapsedSeconds]);
+        this.dispatchScript(frame, "OnUpdate", updateArgs);
         dispatched += 1;
       }
       return dispatched;
@@ -2289,7 +2390,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       } else if (!mutable.scriptOverrides.has(script) && mutable.scriptSources.has(script)) {
         this.executeLegacyScript(mutable, script, args);
       }
-      for (const hook of hooks ?? []) { // L5 3.27 (was the list at this point)
+      for (const hook of hooks ?? NO_HOOKS) { // L5 3.27 (was the list at this point); P1-14d: NO_HOOKS
         try {
           hook(mutable, ...args);
         } catch (error) {
@@ -2789,6 +2890,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       ...(x === undefined ? {} : { x }),
       ...(y === undefined ? {} : { y }),
     };
+    if (anchor.relativeTo instanceof MutableFrameXmlFrame) anchor.relativeTo.anchorTarget = true;
     // A frame holds at most one anchor per point name: `SetPoint("BOTTOM", …)` on a frame whose
     // XML already anchored BOTTOM *moves* it, and only `ClearAllPoints` empties the set. Appending
     // instead is what put the owner's Options button on top of Exit game — measured:
@@ -2825,6 +2927,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     // Same rule as the XML attribute: no target at all means the containing block, which for a
     // frame with no parent is the screen. Refusing there left a Lua-created root unpositioned.
     const target = this.own(relativeTo) ?? mutable.parent;
+    if (target instanceof MutableFrameXmlFrame) target.anchorTarget = true;
     const anchor = target ? { relativeTo: target } : {};
     mutable.points = [
       { point: "TOPLEFT", ...anchor, relativePoint: "TOPLEFT", x: 0, y: 0 },
@@ -2843,6 +2946,8 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
       const label = this.own(mutable.stateTextures.get("BUTTONTEXT"));
       if (!label || label.text === mutable.text) return true;
     }
+    // P1-15a: decided against the text the page still shows, before it is replaced.
+    const paints = this.#textLayoutPolicy === "auto" && this.textOnlyPaints(mutable, String(text));
     mutable.text = String(text);
     if (mutable.type === "EditBox") {
       mutable.editBox.cursorPosition = mutable.text.length;
@@ -2856,7 +2961,7 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const label = mutable.stateTextures.get("BUTTONTEXT");
     const labelFrame = this.own(label);
     if (labelFrame) labelFrame.text = mutable.text;
-    this.notifyMutation(mutable);
+    this.notifyMutation(mutable, paints ? "paint" : "layout");
     return true;
   }
 
@@ -3312,6 +3417,9 @@ export class FrameXmlUiBridge implements FrameXmlUiApi {
     const mutable = this.own(frame);
     if (!mutable) return false;
     mutate(mutable);
+    // The safety net for anchor writers outside the bridge (the renderer's drag placement, the
+    // widget layer): a change that can move something may have written anchors.
+    if (kind !== "paint") this.markAnchorTargets(mutable);
     this.notifyMutation(mutable, kind);
     return true;
   }

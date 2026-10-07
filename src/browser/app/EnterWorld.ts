@@ -18,9 +18,10 @@ import {
 } from "../ui/Dom.js";
 import { clearSpellbook, loadSpellMetadata, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
 import { showTarget } from "../ui/Frames.js";
-import { bossDisengaged, bossEngaged, forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
+import { forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
+import { bindUnitFrameRefresh } from "../ui/UnitFrameRefresh.js"; // P1-20b
+import { bindUnitModelRequests } from "../UnitModelRequests.js"; // P1-20c
 import { applyPortraitVisibility, clearPortraitTargets, mountNativeCharacterPortrait } from "../ui/Portraits.js";
-import { ENCOUNTER_FRAME_DISENGAGE, ENCOUNTER_FRAME_ENGAGE } from "../../world/InstanceProtocol.js";
 import { queueWorldState, showWorldState } from "../ui/WorldView.js";
 import { queueFrameTask } from "../../transport/PacketPump.js";
 import { ENVIRONMENT_NAMES, logSwing, pushCombatLine, showSwingWarning } from "../ui/CombatLog.js";
@@ -745,21 +746,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   onWorldEvent("ARENA_TEAM_CHANGED", () => showArenaWindow());
   onWorldEvent("WEATHER_CHANGED", () => queueWorldState(world.state));
   onWorldEvent("ACTION_BUTTONS_CHANGED", () => showActionBar());
-  // Boss frames. The packet carries one engage or disengage at a time and never a list, so the
-  // list is kept in the frames module and fed from here.
-  onWorldEvent("ENCOUNTER_FRAME", (frame) => {
-    if (frame.type === ENCOUNTER_FRAME_ENGAGE) bossEngaged(frame.guid);
-    else if (frame.type === ENCOUNTER_FRAME_DISENGAGE) bossDisengaged(frame.guid);
-    else return;
-    showUnitFrames();
-  });
-  // A raid mark moved, so somebody's frame gained or lost its star.
-  onWorldEvent("RAID_TARGET_UPDATE", () => showUnitFrames());
-  // The pet bar arriving or coming down is what tells the pet frame there is a pet at all.
-  onWorldEvent("PET_BAR_CHANGED", () => showUnitFrames());
-
-  onWorldEvent("PARTY_MEMBER_STATS", () => showUnitFrames());
-  onWorldEvent("THREAT_CHANGED", () => showUnitFrames());
+  // Boss frames, raid marks, the pet bar, member stats, threat (P1-20b): the boss list is edited at
+  // once, and the frames are painted by the frame's one world refresh rather than once per packet.
+  for (const stop of bindUnitFrameRefresh(world.events, () => queueWorldState(world.state))) entryLifecycle.track(stop);
   // The bank window opens itself the moment the banker grants permission, and closes with it.
   // Someone in the party marked a spot. The packet has been arriving and going nowhere.
   onWorldEvent("MINIMAP_PING", (ping) => addMinimapPing(ping.x, ping.y));
@@ -1161,6 +1150,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       modelStatus.className = error ? "error" : "success";
       modelStatus.textContent = `Models: ${message}`;
     };
+    // P1-20c: unit models are asked for by the store's events, not by a walk of every object per refresh.
+    if (game.store) {
+      for (const stop of bindUnitModelRequests(game.store, world.state, creatureModels,
+        () => game.creatureModels === creatureModels && game.world === world)) entryLifecycle.track(stop);
+    }
     const itemMetadata = new ItemMetadataClient(gatewayInput.value);
     game.itemMetadata = itemMetadata;
     // Same for items, plus the one thing a slot needs beyond a repaint: the inventory only redraws

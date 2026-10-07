@@ -1,4 +1,8 @@
+import { guidBytes } from "./Guid.js";
+
 const encoder = new TextEncoder();
+/** Scratch for `packedGuid`: synchronous, so one is enough. */
+const GUID_BYTES = new Uint8Array(8);
 const MAX_GUID = 0xffff_ffff_ffff_ffffn;
 const MIN_I64 = -0x8000_0000_0000_0000n;
 const MAX_I64 = 0x7fff_ffff_ffff_ffffn;
@@ -47,6 +51,7 @@ export class PacketWriter {
   }
 
   u64(value: bigint): this {
+    if (typeof value !== "bigint") throw new TypeError("GUID must be a bigint"); // P1-21 review
     if (value < 0n || value > MAX_GUID) throw new RangeError("u64 is outside the unsigned 64-bit range");
     return this.#fixed(8, (view) => view.setBigUint64(0, value, true));
   }
@@ -79,17 +84,20 @@ export class PacketWriter {
   packedGuid(value: bigint): this {
     if (value < 0n || value > MAX_GUID) throw new RangeError("GUID is outside the unsigned 64-bit range");
 
+    // The eight bytes come out of a DataView rather than eight `>> BigInt(index * 8) & 0xffn`, which
+    // made three bigints a byte (P1-21c). The mask is written first, so it is filled in afterwards.
+    guidBytes(value, GUID_BYTES);
+    const maskAt = this.#bytes.length;
+    this.#bytes.push(0);
     let mask = 0;
-    const packed = [];
     for (let index = 0; index < 8; index++) {
-      const byte = Number((value >> BigInt(index * 8)) & 0xffn);
+      const byte = GUID_BYTES[index]!;
       if (byte !== 0) {
         mask |= 1 << index;
-        packed.push(byte);
+        this.#bytes.push(byte);
       }
     }
-    this.u8(mask);
-    for (const byte of packed) this.#bytes.push(byte);
+    this.#bytes[maskAt] = mask;
     return this;
   }
 

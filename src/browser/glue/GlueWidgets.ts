@@ -8,6 +8,7 @@ import { questPoiFrameMethods } from "./GlueQuestPoiFrame.js";
 import { glueBoundsRect } from "./GlueBoundsRect.js"; // 3.35-bounds
 import { GlueScriptRefs } from "./GlueScriptRefs.js"; // L5 3.27
 import { luaWidgetFormat } from "./GlueWidgetFormat.js"; // 05.10-3.27b
+import { formatWidgetTextFast } from "./GlueWidgetFormatFast.js"; // P1-14e
 import { messageScrollMethods } from "./GlueMessageScroll.js"; // L5 3.34
 import { simpleHtmlElementFontMethods } from "./GlueSimpleHtmlFonts.js"; // L5 3.35
 import { createGameTooltipExtras, type GameTooltipExtras, type GameTooltipExtrasAdapter } from "./GlueTooltipExtras.js";
@@ -265,6 +266,30 @@ interface GameTooltipWidgetState {
    * would redraw and its closure does not stay in the answer's registry until the answer comes.
    */
   cancelRefresh: (() => void) | undefined;
+  /** The tooltip's line FontStrings by row; see `gameTooltipLines`. */
+  readonly lines: GameTooltipLineCache;
+}
+
+/**
+ * A tooltip's `<name>TextLeft<i>`/`<name>TextRight<i>` FontStrings by row (P1-19).
+ *
+ * `gameTooltipLine` built the name and asked the bridge for it on every call, and every `AddLine`
+ * cleared and sized the tooltip over all 64 rows of both sides: measured offline, 1,421 name
+ * lookups for `SetOwner` + 10 lines. The references are kept instead — the Lua contract is the
+ * global name (`_G["GameTooltipTextLeft"..i]`) and that is left alone. The rows are read off the
+ * frame's children again whenever the bridge's `structureVersion` (every widget creation anywhere —
+ * which is also the only way a global name is re-pointed — and every `SetParent`) or the frame's
+ * child count moved since the last read (`structure`, `childCount`; -1: never read). So a line
+ * created by other code (`CreateFontString("GameTooltipTextLeft12")`) or moved in is found, a line
+ * whose name another widget took is dropped, and a kept line that has left the frame is not
+ * returned. `highWater` is the highest row with a line.
+ */
+interface GameTooltipLineCache {
+  readonly Left: (FrameXmlFrame | undefined)[];
+  readonly Right: (FrameXmlFrame | undefined)[];
+  highWater: number;
+  childCount: number;
+  structure: number;
 }
 
 /** Item-specific data supplied by the world owner; the binder keeps the common API surface. */
@@ -515,6 +540,11 @@ export interface GlueWidgetBinderOptions {
    * `arg1..9` nowhere) and writing eleven globals per handler was most of its cost.
    */
   readonly implicitGlobals?: "always" | "referenced";
+  /**
+   * P1-14e: true sends every `SetFormattedText` through the Lua formatter, as before the JS fast
+   * path for the common formats (GlueWidgetFormatFast.ts) — the rollback until the live check.
+   */
+  readonly legacyFormat?: boolean;
 }
 
 /**
@@ -537,6 +567,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   readonly #options: GlueWidgetBinderOptions;
   readonly #refs = new Map<FrameXmlFrame, GlueLuaRef>();
   readonly #byId = new Map<number, FrameXmlFrame>();
+  /**
+   * P1-14a: each bound widget's Lua table (fengari's `Table` object, as `lua_topointer` gives it) to
+   * its frame, so decoding `self` reads no string key. `#byId` stays the fallback for a table that
+   * merely carries a `__glueFrameId` (a copy of a frame's fields).
+   */
+  readonly #frameOfTable = new WeakMap<object, FrameXmlFrame>();
+  #frameDecodeFallbacks = 0;
   readonly #metatables = new Map<string, GlueLuaRef>();
   readonly #handlerSources = new WeakMap<object, GlueLuaRef>();
   readonly #minimapState = new WeakMap<FrameXmlFrame, MinimapWidgetState>();
@@ -676,6 +713,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       lua.lua_pushvalue(L, -1);
       lua.lua_setglobal(L, to_luastring(frame.name));
     }
+    this.#frameOfTable.set(lua.lua_topointer(L, -1) as object, frame); // P1-14a
     const ref = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "table");
     lua.lua_settop(L, top);
     this.#refs.set(frame, ref);
@@ -791,8 +829,23 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     lua.lua_settop(L, top);
   }
 
+  /** P1-14a: decodes that found no bound table and resolved a frame through `__glueFrameId`. */
+  get frameDecodeFallbacks(): number {
+    return this.#frameDecodeFallbacks;
+  }
+
   private decodeFrame(L: LuaState, index: number): FrameXmlFrame | undefined {
     if (lua.lua_type(L, index) !== lua.LUA_TTABLE) return undefined;
+    // P1-14a: the widget's own table — no string pushed, hashed or looked up.
+    const bound = this.#frameOfTable.get(lua.lua_topointer(L, index) as object);
+    if (bound !== undefined) return bound;
+    const frame = this.decodeFrameById(L, index);
+    if (frame !== undefined) this.#frameDecodeFallbacks += 1;
+    return frame;
+  }
+
+  /** The decode before P1-14a: a table whose raw `__glueFrameId` names a bound frame. */
+  private decodeFrameById(L: LuaState, index: number): FrameXmlFrame | undefined {
     const absolute = lua.lua_absindex(L, index);
     lua.lua_pushstring(L, to_luastring(FRAME_ID_KEY));
     // Raw, so a corpus table that merely has an `__index` metamethod is never
@@ -812,17 +865,28 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
 
   /** Turn a retained Lua function into a bridge handler with the implicit env. */
   private wrapHandler(ref: GlueLuaRef, isEvent: boolean, legacy = true): FrameXmlScriptHandler {
+    // P1-14d: the leading arguments of `__glueCall` (fn, self) and `__glueInvoke` (fn, self,
+    // isEvent), one list per handler refilled per dispatch: callWith reads it only while pushing,
+    // before the Lua function runs, so a nested dispatch of the same handler cannot disturb it.
+    const directLead: unknown[] = [ref, undefined];
+    const invokeLead: unknown[] = [ref, undefined, isEvent];
     const handler: FrameXmlScriptHandler = (self, ...args) => {
       const module = this.#frameModules.get(self);
       // An add-on's frame keeps the legacy globals whatever its handler looks like.
       const direct = legacy || module !== undefined ? undefined : this.#call;
       const invokeRef = this.#invoke;
       if (!invokeRef) return;
-      const invoke = direct
-        ? (): void => { this.#vm.call(direct, [ref, self, ...args], 0); }
-        : (): void => { this.#vm.call(invokeRef, [ref, self, isEvent, ...args], 0); };
-      if (module) this.#vm.withCallingSource(`interface/addons/${module}/handler`, invoke);
-      else invoke();
+      if (module) {
+        const invoke = direct
+          ? (): void => { this.#vm.call(direct, [ref, self, ...args], 0); }
+          : (): void => { this.#vm.call(invokeRef, [ref, self, isEvent, ...args], 0); };
+        this.#vm.withCallingSource(`interface/addons/${module}/handler`, invoke);
+        return;
+      }
+      const lead = direct ? directLead : invokeLead;
+      lead[1] = self;
+      this.#vm.callWith(direct ?? invokeRef, lead, args, 0);
+      lead[1] = undefined;
     };
     this.#handlerSources.set(handler, ref);
     return handler;
@@ -920,14 +984,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     lua.lua_createtable(L, 0, names.length);
     for (const name of names) {
       const method = methods[name]!;
-      this.#vm.pushBinding(`${type}:${name}`, (args) => {
-        const frame = args[0];
+      // P1-14d: self and the rest come apart from the binding — no `args.slice(1)` per call.
+      this.#vm.pushMethodBinding(`${type}:${name}`, (frame, args) => {
         const self = this.#bridge.resolve(frame as FrameXmlFrame | undefined);
-        if (!self) return [];
-        const result = method({
-          frame: frame as FrameXmlFrame, self, args: args.slice(1), binder: this,
+        if (!self) return undefined;
+        return method({
+          frame: frame as FrameXmlFrame, self, args, binder: this,
         });
-        return result ?? [];
       });
       lua.lua_setfield(L, -2, to_luastring(name));
     }
@@ -1004,6 +1067,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       state = {
         owner: undefined, anchor: "ANCHOR_RIGHT", nextLine: 1, minimumWidth: 0,
         unit: undefined, item: undefined, spell: undefined, equipped: false, cancelRefresh: undefined,
+        lines: { Left: [], Right: [], highWater: 0, childCount: -1, structure: -1 },
       };
       this.#gameTooltipState.set(frame, state);
     }
@@ -1075,12 +1139,34 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     create = false,
   ): FrameXmlFrame | undefined {
     if (index < 1 || index > GAME_TOOLTIP_MAX_LINES) return undefined;
+    const cache = this.gameTooltipLines(frame);
+    const kept = cache[side][index];
+    if (kept) {
+      if (kept.parent === frame && kept.type === "FontString") return kept;
+      // Moved off the tooltip: read the rows again (that pass keeps only the frame's own children).
+      cache.childCount = -1;
+      return this.gameTooltipLine(frame, side, index, create);
+    }
+    // No line in this row among the frame's children; only creating one needs the name.
+    if (!create) return undefined;
     const name = `${frame.name}Text${side}${index}`;
     let line = this.#bridge.getFrame(name);
-    if (!line && create) {
+    if (!line) {
+      const before = frame.children.length;
+      const structure = this.#bridge.structureVersion;
       line = this.#bridge.createChild(frame, "FontString", name, "ARTWORK",
         index === 1 ? "GameTooltipHeaderText" : "GameTooltipText");
       if (line) {
+        // The one child just added, with the one structural change its creation is, is this row:
+        // the kept rows stay current without a new pass. Anything more and the next call reads them.
+        if (cache.childCount === before && cache.structure === structure
+          && this.#bridge.structureVersion === structure + 1 && frame.children.length === before + 1
+          && frame.children[before] === line && line.parent === frame && line.type === "FontString") {
+          cache[side][index] = line;
+          cache.highWater = Math.max(cache.highWater, index);
+          cache.childCount = frame.children.length;
+          cache.structure = this.#bridge.structureVersion;
+        }
         this.bindFrame(line);
         const previous = this.gameTooltipLine(frame, side, index - 1);
         this.#bridge.SetPoint(line, "TOPLEFT", previous ?? frame,
@@ -1088,6 +1174,33 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       }
     }
     return line?.parent === frame && line.type === "FontString" ? line : undefined;
+  }
+
+  /**
+   * The tooltip's kept rows (`GameTooltipLineCache`), read again off its children whenever the
+   * bridge's structure or their number changed: one pass over the children, the same lines the
+   * 64 × 2 name lookups found — a child FontString named `<name>Text(Left|Right)<i>` that still
+   * holds that name.
+   */
+  private gameTooltipLines(frame: FrameXmlFrame): GameTooltipLineCache {
+    const cache = this.gameTooltipState(frame).lines;
+    const structure = this.#bridge.structureVersion;
+    if (cache.childCount === frame.children.length && cache.structure === structure) return cache;
+    cache.Left.length = 0;
+    cache.Right.length = 0;
+    cache.highWater = 0;
+    const prefix = `${frame.name}Text`;
+    for (const child of frame.children) {
+      if (child.type !== "FontString" || child.parent !== frame || !child.name.startsWith(prefix)) continue;
+      const match = /^(Left|Right)([1-9]\d*)$/.exec(child.name.slice(prefix.length));
+      const index = match ? Number(match[2]) : 0;
+      if (!match || index > GAME_TOOLTIP_MAX_LINES || this.#bridge.getFrame(child.name) !== child) continue;
+      cache[match[1] as "Left" | "Right"][index] = child;
+      cache.highWater = Math.max(cache.highWater, index);
+    }
+    cache.childCount = frame.children.length;
+    cache.structure = structure;
+    return cache;
   }
 
   /** Withdraw the redraw a tooltip's drawn content is waiting on; see `cancelRefresh`. */
@@ -1102,7 +1215,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
   private clearGameTooltipLines(frame: FrameXmlFrame): void {
     const state = this.gameTooltipState(frame);
     this.cancelGameTooltipRefresh(frame);
-    for (let index = 1; index <= GAME_TOOLTIP_MAX_LINES; index += 1) {
+    // Up to the highest row that has a line (`gameTooltipLines`); every row past it has none.
+    for (let index = 1; index <= this.gameTooltipLines(frame).highWater; index += 1) {
       for (const side of ["Left", "Right"] as const) {
         const line = this.gameTooltipLine(frame, side, index);
         // An action button refreshes its tooltip five times a second; lines that are already
@@ -1288,7 +1402,7 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // The drawing keeps a redraw of its own when the new content still waits for something.
         const {
           owner: _owner, anchor: _anchor, nextLine: _nextLine, minimumWidth: _minimumWidth,
-          cancelRefresh: _cancelRefresh, ...identity
+          cancelRefresh: _cancelRefresh, lines: _lines, ...identity
         } = state;
         this.#bridge.runInMutationBatch(() => {
           this.setGameTooltipContent(frame, next);
@@ -1569,7 +1683,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     const wrapWidth = Math.max(1, layout.WRAP_WIDTH - 2 * layout.PADDING);
     const rows: { readonly width: number; readonly lines: readonly { natural: number; wraps: boolean; lineBox: number }[] }[] = [];
     let content = 0;
-    for (let index = 1; index <= GAME_TOOLTIP_MAX_LINES; index += 1) {
+    // Up to the highest row that has a line (`gameTooltipLines`); every row past it has none.
+    for (let index = 1; index <= this.gameTooltipLines(frame).highWater; index += 1) {
       const lines: { natural: number; wraps: boolean; lineBox: number }[] = [];
       let width = 0;
       for (const side of ["Left", "Right"] as const) {
@@ -2204,7 +2319,13 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         if (scale > 0 && self.scale !== scale) bridge.update(frame, (m) => { m.scale = scale; });
       },
       GetScale: ({ self }) => [self.scale],
-      SetID: ({ frame, args }) => { bridge.update(frame, (m) => { m.id = num(args[0]); }); },
+      // 07.10 (P1-15 census): `TemporaryEnchantFrame_Update` sets the same id every frame while a
+      // weapon enchant is up, and each call announced a layout pass — 600 of 600 frames in the
+      // census scene. An unchanged id changes nothing, like `SetScale` above.
+      SetID: ({ self, frame, args }) => {
+        const id = num(args[0]);
+        if (self.id !== id) bridge.update(frame, (m) => { m.id = id; });
+      },
       GetID: ({ self }) => [self.id],
       // The same product `GetLeft`/`GetTop`/`GetCenter` divide by, so the two always agree.
       GetEffectiveScale: ({ frame }) => [bridge.effectiveScale(frame)],
@@ -2295,7 +2416,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
         // the widget formatter 0x00818070, not str_format (GlueWidgetFormat.ts).
         const [format, ...rest] = args;
         // 05.10-3.27b: the format goes as it came — a nil one raises (luaL_checklstring), as in Wow.exe.
-        const formatted = this.formatThroughLua(format, rest);
+        // P1-14e: the white-listed formats answer in JS, the same text by construction.
+        const fast = this.#options.legacyFormat ? undefined : formatWidgetTextFast(format, rest);
+        const formatted = fast ?? this.formatThroughLua(format, rest);
         // 05.10-3.27-review: a refused format (Wow.exe 0x00818070 raises before the text is set)
         // leaves the text as it was; the error went to the handler from vm.call.
         if (formatted !== undefined) bridge.SetText(frame, formatted);

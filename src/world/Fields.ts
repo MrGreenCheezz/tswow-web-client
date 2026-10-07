@@ -1,4 +1,5 @@
 import { UPDATE_FIELDS, type UpdateFieldName } from "../generated/updateFields.js";
+import { guidFromWords } from "../protocol/Guid.js";
 import type { WorldObjectState } from "./WorldState.js";
 
 /**
@@ -38,7 +39,7 @@ export function readField<Name extends UpdateFieldName>(
   }
   if (field.type === "LONG") {
     const high = object.fields.get(field.offset + 1) ?? 0;
-    return ((BigInt(high) << 32n) | BigInt(raw)) as FieldValue<Name>;
+    return longFromSlots(raw, high) as FieldValue<Name>;
   }
   return raw as FieldValue<Name>;
 }
@@ -88,7 +89,19 @@ function roundToEven(value: number): number {
 export function readGuidAt(object: WorldObjectState, index: number): bigint | undefined {
   const low = object.fields.get(index);
   if (low === undefined) return undefined;
-  return (BigInt(object.fields.get(index + 1) ?? 0) << 32n) | BigInt(low);
+  return longFromSlots(low, object.fields.get(index + 1) ?? 0);
+}
+
+/**
+ * Two slots as one u64. Wire words are u32 and go through `guidFromWords` (one bigint instead of
+ * four, P1-21c); anything else a caller has put in a slot — a bigint, a negative or fractional
+ * number — keeps the old expression's answer, or its TypeError/RangeError.
+ */
+function longFromSlots(low: number, high: number): bigint {
+  if (typeof low === "number" && typeof high === "number" && (low >>> 0) === low && (high >>> 0) === high) {
+    return guidFromWords(low, high);
+  }
+  return (BigInt(high) << 32n) | BigInt(low);
 }
 
 /**

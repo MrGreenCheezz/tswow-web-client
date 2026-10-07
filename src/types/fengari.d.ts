@@ -19,7 +19,8 @@ declare module "fengari" {
   export type LuaJsFunction = (L: LuaState) => number;
 
   export function to_luastring(value: string, cache?: boolean): LuaString;
-  export function to_jsstring(value: LuaString): string;
+  /** P1-14b: `from`/`to` bound the bytes; `replacement` gives U+FFFD for invalid UTF-8 instead of throwing. */
+  export function to_jsstring(value: LuaString, from?: number, to?: number, replacement?: boolean): string;
 
   export const FENGARI_VERSION: string;
 
@@ -68,6 +69,8 @@ declare module "fengari" {
     function lua_tonumber(L: LuaState, index: number): number;
     function lua_tointeger(L: LuaState, index: number): number;
     function lua_tojsstring(L: LuaState, index: number): string;
+    /** P1-14b: the string's own bytes (a number is converted in place); null when not a string or number. */
+    function lua_tolstring(L: LuaState, index: number): LuaString | null;
     function lua_pushnil(L: LuaState): void;
     function lua_pushboolean(L: LuaState, value: boolean): void;
     function lua_pushnumber(L: LuaState, value: number): void;

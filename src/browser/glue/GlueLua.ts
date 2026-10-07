@@ -1,6 +1,7 @@
 import { lauxlib, lua, lualib, to_luastring, to_jsstring, type LuaState } from "fengari";
 import { push as pushInterop, tojs as interopToJs } from "fengari-interop";
 import { installGlueLuaNatives } from "./GlueLuaNatives.js"; // L5 3.27
+import { luaStringToJs } from "./LuaStrings.js"; // P1-14b
 
 // Fengari's lua_Integer is a signed 32-bit value in the browser build. Keep the
 // integer path for ids/counts (so Lua 5.1-style tostring still says "1"), but
@@ -669,6 +670,8 @@ export type GlueLuaTableDecoder = (L: LuaState, index: number) => unknown | unde
 export type GlueLuaValueEncoder = (L: LuaState, value: object) => boolean;
 
 export type GlueLuaBinding = (args: readonly unknown[]) => readonly unknown[] | void;
+/** P1-14d: a method binding — its first argument (the widget's self) apart from the rest. */
+export type GlueLuaMethodBinding = (first: unknown, rest: readonly unknown[]) => readonly unknown[] | void;
 
 const LUA_OK = 0;
 
@@ -690,6 +693,8 @@ export class GlueLuaVm {
   #errorHandler: GlueLuaRef | undefined;
   #defaultErrorHandler: GlueLuaRef | undefined;
   #closed = false;
+  /** P1-14d: the registry reference the last `toValue` made, for a binding's release list. */
+  #fresh: GlueLuaRef | undefined;
   /** Errors that reached no handler; kept so a loader can report them. */
   readonly errors: string[] = [];
   /** Chunks that only lexed after Lua 5.1's unknown-escape rule was applied. */
@@ -907,16 +912,26 @@ export class GlueLuaVm {
   }
 
   /** Call a retained Lua function; failures go through the corpus' handler. */
-  call(ref: GlueLuaRef, args: readonly unknown[] = [], results = 0): readonly unknown[] {
+  call(ref: GlueLuaRef, args: readonly unknown[] = NO_VALUES, results = 0): readonly unknown[] {
+    return this.callWith(ref, NO_VALUES, args, results);
+  }
+
+  /**
+   * P1-14d: `call(ref, [...lead, ...args], results)` without building that array — the handler
+   * dispatch's fn/self/isEvent go first, then the script's own arguments. Both lists are read only
+   * while they are pushed, before the function runs.
+   */
+  callWith(ref: GlueLuaRef, lead: readonly unknown[], args: readonly unknown[], results = 0): readonly unknown[] {
     const L = this.#state;
     const top = lua.lua_gettop(L);
+    const count = lead.length + args.length;
     // The function, its arguments and the traceback handler, asked for before the first push. A
     // host call starts with `LUA_MINSTACK` (20) free slots and nothing grows them: a 3.3.5
     // `COMBAT_LOG_EVENT_UNFILTERED` dispatch (event name + 19 payload values, through
     // `__glueInvoke`'s fn/self/isEvent) threw fengari's «stack overflow» straight out of
     // `bridge.tick`, which nothing on the world mount's frame loop catches.
-    if (!checkStack(L, args.length + 3)) {
-      this.reportError(`stack overflow passing ${args.length} arguments`);
+    if (!checkStack(L, count + 3)) {
+      this.reportError(`stack overflow passing ${count} arguments`);
       return [];
     }
     lua.lua_rawgeti(L, lua.LUA_REGISTRYINDEX, ref.key);
@@ -924,17 +939,23 @@ export class GlueLuaVm {
       lua.lua_settop(L, top);
       return [];
     }
-    for (const arg of args) this.pushValue(arg);
+    for (let index = 0; index < lead.length; index += 1) this.pushValue(lead[index]);
+    for (let index = 0; index < args.length; index += 1) this.pushValue(args[index]);
     const handlerIndex = this.pushTracebackHandler(top + 1);
-    const status = lua.lua_pcall(L, args.length, results, handlerIndex);
+    const status = lua.lua_pcall(L, count, results, handlerIndex);
     if (status !== LUA_OK) {
       const message = lua.lua_tojsstring(L, -1);
       lua.lua_settop(L, top);
       this.reportError(message);
       return [];
     }
-    const values: unknown[] = [];
     const resultCount = results === lua.LUA_MULTRET ? lua.lua_gettop(L) - top - 1 : results;
+    // P1-14c: a call that asked for nothing (every handler dispatch) allocates no result array.
+    if (resultCount === 0) {
+      lua.lua_settop(L, top);
+      return NO_VALUES;
+    }
+    const values: unknown[] = [];
     for (let index = 0; index < resultCount; index += 1) {
       values.push(this.toValue(top + 1 + index + 1));
     }
@@ -972,6 +993,18 @@ export class GlueLuaVm {
 
   /** Push a JS function as a Lua value without naming it (for method tables). */
   pushBinding(name: string, binding: GlueLuaBinding): void {
+    this.pushBindingWith(name, binding, undefined);
+  }
+
+  /**
+   * P1-14d: a widget method — the binding gets its first argument (the widget table, decoded) and
+   * the rest as their own list, so no `args.slice(1)` per call.
+   */
+  pushMethodBinding(name: string, method: GlueLuaMethodBinding): void {
+    this.pushBindingWith(name, undefined, method);
+  }
+
+  private pushBindingWith(name: string, binding: GlueLuaBinding | undefined, method: GlueLuaMethodBinding | undefined): void {
     const L = this.#state;
     lua.lua_pushjsfunction(L, (state: LuaState): number => {
       // `state` is the thread that actually called us, which is not the main
@@ -979,19 +1012,26 @@ export class GlueLuaVm {
       // against it; registry references are shared across threads either way.
       const count = lua.lua_gettop(state);
       const args: unknown[] = [];
-      const scratch: GlueLuaRef[] = [];
+      // P1-14d: only a call that made a registry reference gets a list to release them from.
+      let scratch: GlueLuaRef[] | undefined;
+      let first: unknown;
       for (let index = 1; index <= count; index += 1) {
-        args.push(this.toValue(index, scratch, state));
+        this.#fresh = undefined;
+        const value = this.toValue(index, undefined, state);
+        if (this.#fresh !== undefined) (scratch ??= []).push(this.#fresh);
+        if (method !== undefined && index === 1) first = value;
+        else args.push(value);
       }
-      let results: readonly unknown[] = [];
+      this.#fresh = undefined;
+      let results: readonly unknown[];
       try {
-        results = binding(args) ?? [];
+        results = (method !== undefined ? method(first, args) : binding!(args)) ?? NO_VALUES;
       } catch (error) {
-        for (const ref of scratch) this.release(ref);
+        if (scratch !== undefined) for (const ref of scratch) this.release(ref);
         lua.lua_pushstring(state, to_luastring(`${name}: ${String(error)}`));
         return lua.lua_error(state);
       }
-      for (const ref of scratch) this.release(ref);
+      if (scratch !== undefined) for (const ref of scratch) this.release(ref);
       lua.lua_settop(state, 0);
       // A C function is guaranteed `LUA_MINSTACK` — **twenty** — free slots and nothing more, and
       // this is the first binding in the client to answer with more than that:
@@ -1165,7 +1205,9 @@ export class GlueLuaVm {
     const L = state;
     const type = lua.lua_type(L, index);
     if (type === lua.LUA_TNONE || type === lua.LUA_TNIL) return undefined;
-    if (type === lua.LUA_TBOOLEAN || type === lua.LUA_TNUMBER || type === lua.LUA_TSTRING) {
+    // P1-14b: the string's bytes decoded without fengari's per-byte `+=` (LuaStrings.ts), same text.
+    if (type === lua.LUA_TSTRING) return luaStringToJs(lua.lua_tolstring(L, index)!);
+    if (type === lua.LUA_TBOOLEAN || type === lua.LUA_TNUMBER) {
       return interopToJs(L, index);
     }
     if (type === lua.LUA_TTABLE || type === lua.LUA_TFUNCTION) {
@@ -1177,6 +1219,7 @@ export class GlueLuaVm {
         type === lua.LUA_TFUNCTION ? "function" : "table",
       );
       scratch?.push(ref);
+      this.#fresh = ref; // P1-14d
       return ref;
     }
     // L5 3.27: a userdata — `newproxy`'s frame handles (FrameXmlLuaEnvironment.ts) — crosses as a
@@ -1185,6 +1228,7 @@ export class GlueLuaVm {
       lua.lua_pushvalue(L, index);
       const ref = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "userdata");
       scratch?.push(ref);
+      this.#fresh = ref; // P1-14d
       return ref;
     }
     return undefined;
@@ -1200,15 +1244,22 @@ export class GlueLuaVm {
    */
   private pushTracebackHandler(targetIndex: number): number {
     const L = this.#state;
-    lua.lua_pushjsfunction(L, (state: LuaState): number => {
-      const message = lua.lua_tojsstring(state, -1);
-      lauxlib.luaL_traceback(state, state, to_luastring(message ?? "error"), 1);
-      return 1;
-    });
+    // P1-14c: one handler for every call — it captures nothing, so a closure per call was garbage.
+    lua.lua_pushjsfunction(L, TRACEBACK_HANDLER);
     lua.lua_insert(L, targetIndex);
     return targetIndex;
   }
 }
+
+/** P1-14c: the message handler of every `call`/`execute`: the error message with a Lua traceback. */
+function TRACEBACK_HANDLER(state: LuaState): number {
+  const message = lua.lua_tojsstring(state, -1);
+  lauxlib.luaL_traceback(state, state, to_luastring(message ?? "error"), 1);
+  return 1;
+}
+
+/** P1-14c: what `call` answers with no results asked for — shared, frozen. */
+const NO_VALUES: readonly unknown[] = Object.freeze([]);
 
 /** The shim source, exported so a test can assert what is actually installed. */
 export const GLUE_LUA51_SHIM_SOURCE = LUA51_SHIMS;

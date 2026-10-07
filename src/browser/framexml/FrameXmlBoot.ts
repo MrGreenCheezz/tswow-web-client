@@ -257,6 +257,9 @@ local rawget, rawset, setmetatable, getmetatable = rawget, rawset, setmetatable,
 local type, unpack, match, byte = type, table.unpack, string.match, string.byte
 local api, neutral, calls, misses = __fxApi, __fxNeutral, __fxCalls, __fxMisses
 local impl, fontNames = __fxNeutralImpl, __fxFontNames
+-- P1-14f: census "touch" (the host sets this before the prelude runs): an answered name is bound to
+-- its answer itself after the first read — calls[key] then counts touches, not calls.
+local touchOnly = __fxTouchOnly == true
 
 -- Read only source/line in the host. A full debug.traceback recursively searches the
 -- growing global table for function names, although this census only needs a location.
@@ -290,7 +293,11 @@ setmetatable(_G, {
       -- first-touch traceback.
       local answer = impl[key]
       local stub
-      if answer ~= nil then
+      if answer ~= nil and touchOnly then
+        -- P1-14f: no Lua wrapper in front of every C-API call; the touch is counted once.
+        calls[key] = (calls[key] or 0) + 1
+        stub = answer
+      elseif answer ~= nil then
         stub = function(...)
           calls[key] = (calls[key] or 0) + 1
           return answer(...)
@@ -754,6 +761,13 @@ export interface FrameXmlBootOptions {
   readonly modifiers?: ModifierSource;
   /** L5 3.27: the milliseconds behind GetTime and `pump.now` (FrameXmlClock.ts); the page's monotonic clock by default. */
   readonly clock?: FrameXmlClockSource;
+  /**
+   * P1-14f: how the stub floor counts an *answered* C-API name. "calls" (the default — tests and
+   * framexml.html) keeps a Lua wrapper in front of the answer and counts every call; "touch" binds
+   * the global to the answer itself after the first read, so `__fxCalls` (and `frameXmlWorld().api`)
+   * says 1 for it. Unanswered names count every call in both modes.
+   */
+  readonly census?: "calls" | "touch";
 }
 
 /** The build string the glue slice measured; the same client, so the same answer. */
@@ -1770,6 +1784,8 @@ export class FrameXmlBoot {
     const methodNeutral: Record<string, readonly unknown[]> = {};
     for (const promotion of FRAMEXML_PROMOTED_METHODS) methodNeutral[promotion.name] = promotion.values;
     this.vm.setGlobal("__fxApi", api);
+    // P1-14f: read once by the prelude that follows (FrameXmlBootOptions.census).
+    this.vm.setGlobal("__fxTouchOnly", this.#options.census === "touch");
     this.vm.setGlobal("__fxMethodNames", methods);
     this.vm.setGlobal("__fxNeutral", neutral);
     this.vm.setGlobal("__fxMethodNeutral", methodNeutral);

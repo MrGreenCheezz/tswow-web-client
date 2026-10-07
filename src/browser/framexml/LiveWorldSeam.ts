@@ -252,7 +252,7 @@ import { FrameXmlMultiCastLive } from "./FrameXmlMultiCastLive.js";
 import { spellFailureText } from "../../world/SpellProtocol.js";
 import { FrameXmlPetActionBarLive } from "./FrameXmlPetActionBarLive.js";
 import { FrameXmlPossessModel } from "./FrameXmlPossess.js"; // 11.02-IF
-import { POSSESS_BONUS_BAR_OFFSET } from "../../world/PossessBar.js"; // 11.02-IF
+import { POSSESS_BONUS_BAR_OFFSET, POSSESS_FIRST_SLOT, POSSESS_MIRRORED_SLOTS } from "../../world/PossessBar.js"; // 11.02-IF; P1-16 review
 import { FrameXmlVehicleModel } from "./FrameXmlVehicle.js"; // 11.02-F2
 import { FrameXmlPetDeclensionModel } from "./FrameXmlPetDeclension.js"; // L17 3.09
 import { FrameXmlVehicleAimModel } from "./FrameXmlVehicleAim.js"; // 11.02-E
@@ -901,7 +901,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #pendingLevelUp: { info: LevelUpInfo; pointsBefore: number } | undefined;
   /** The last published shape of the bar, so a change fires one event instead of sixty a second. */
   #barSignature = "";
-  #cooldownSignature = "";
+  /** P1-16: spell-slot timers without a snapshot, as `slot:end` (constant while they run). */
+  #actionCooldownSignature = "";
+  /** P1-16 review: the possess/vehicle page's mirrored timers and usability (`#currentMirroredActionSignature`). */
+  #mirroredActionSignature = "";
   #itemCooldownSignature = "";
   #actionPage = 1;
   readonly #mirrorTimerSignatures = new Map<number, string>();
@@ -1824,7 +1827,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#controlEdge.reset();
     this.#pendingLevelUp = undefined;
     this.#barSignature = "";
-    this.#cooldownSignature = "";
+    this.#actionCooldownSignature = "";
+    this.#mirroredActionSignature = "";
     this.#itemCooldownSignature = "";
     this.#actionPage = this.actionBarPage();
     this.#mirrorTimerSignatures.clear();
@@ -2540,9 +2544,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         pump.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown);
         this.#spellCooldownSignature = this.#spellCooldownShapeSignature(world);
         this.#reconcileItemCooldowns();
+        this.#reconcileActionCooldowns(); // P1-16
       }));
       this.#unsubscribe.push(world.events.on("ITEM_COOLDOWN_STARTED", () => {
         this.#reconcileItemCooldowns();
+        this.#reconcileActionCooldowns(); // P1-16
+      }));
+      // P1-16 review: slots 121–132 under a possess or vehicle bar answer from the pet bar's timers
+      // (FrameXmlPossess.ts), and stock ActionButton redraws them only on these two events. Subscribed
+      // after `petActions.attach`, so its own handler has stamped the new timers by now.
+      this.#unsubscribe.push(world.events.on("PET_COOLDOWNS_CHANGED", () => {
+        if (this.possess.mirrorIndex(POSSESS_FIRST_SLOT) === undefined) return;
+        this.#mirroredActionSignature = this.#currentMirroredActionSignature();
+        pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+        pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
       }));
       this.#unsubscribe.push(world.events.on("QUERY_CACHE_CHANGED", (event) => {
         if (event.kind === "cleared") {
@@ -2754,7 +2769,6 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#pump = undefined;
     this.#polledAt = Number.NEGATIVE_INFINITY;
     this.#barSignature = "";
-    this.#cooldownSignature = "";
     this.#spellSignature = "";
     this.#spellCooldownSignature = "";
     this.#merchantSignature = "";
@@ -3473,6 +3487,68 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
   }
 
+  /**
+   * P1-16 (UI-6): ACTIONBAR_UPDATE_COOLDOWN + _USABLE once per edge of a spell slot's timer that
+   * #reconcileItemCooldowns does not see — one with no snapshot behind it (a category timer from
+   * SMSG_INITIAL_SPELLS, a bare `cooldowns` end) or one that outlasts its snapshot. `slot:end` is
+   * constant while the timer runs, so a start, a reset and the natural end each change it once.
+   * The pair stays a pair: `actionUsable` reads the remaining time, and stock
+   * `ActionButton_UpdateUsable` repaints the icon only on its event. The global cooldown has its
+   * own edge in `tick` (#globalCooldownEdge, COOLDOWN only; its end is the sweep's own).
+   */
+  #reconcileActionCooldowns(): void {
+    const world = this.#context.world();
+    const pump = this.#pump;
+    if (!world || !pump) return;
+    const now = this.#context.monotonic();
+    let signature = "";
+    for (const button of world.actionButtons) {
+      if (button.type !== ACTION_BUTTON_SPELL) continue;
+      const remaining = world.cooldownRemaining(button.action, now);
+      if (remaining <= 0) continue;
+      const end = now + remaining;
+      const snapshot = world.cooldownSnapshots?.get(button.action);
+      // The snapshot's own start, reset and end are #reconcileItemCooldowns' signature.
+      if (snapshot && snapshot.endsAt > now && Math.abs(snapshot.endsAt - end) < 1) continue;
+      signature += `${button.slot}:${Math.round(end)},`;
+    }
+    if (signature === this.#actionCooldownSignature) return;
+    this.#actionCooldownSignature = signature;
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
+  /**
+   * P1-16 review: the possess/vehicle page's mirrored slots (121–130) as `enable:duration:usable`
+   * each, "" while no such bar is on the main bar. Clock-free: a start comes with
+   * PET_COOLDOWNS_CHANGED (handled in `attach`), so the poll only has to see a timer end (its triple
+   * goes idle) and usability following the pet's power and life.
+   */
+  #currentMirroredActionSignature(): string {
+    if (this.possess.mirrorIndex(POSSESS_FIRST_SLOT) === undefined) return "";
+    let signature = "";
+    for (let slot = POSSESS_FIRST_SLOT; slot < POSSESS_FIRST_SLOT + POSSESS_MIRRORED_SLOTS; slot++) {
+      const index = this.possess.mirrorIndex(slot);
+      if (index === undefined || index < 0) continue;
+      const [, duration, enable] = this.possess.cooldown(index);
+      signature += `${enable}:${duration}:${this.possess.usable(index) ? 1 : 0},`;
+    }
+    return signature;
+  }
+
+  /** P1-16 review: ACTIONBAR_UPDATE_* for the mirrored slots — the pair for a timer, USABLE alone otherwise. */
+  #reconcileMirroredActions(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    const next = this.#currentMirroredActionSignature();
+    const previous = this.#mirroredActionSignature;
+    if (next === previous) return;
+    this.#mirroredActionSignature = next;
+    const timers = (signature: string): string => signature.replace(/:[01],/g, ",");
+    if (timers(next) !== timers(previous)) pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
   // ---- merchant ---------------------------------------------------------
 
   #vendorItems(world: WorldClient | undefined): readonly VendorItem[] {
@@ -3918,16 +3994,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#barSignature = bar;
       pump.fire(FRAMEXML_SEAM_EVENTS.actionSlotChanged, 0);
     }
-    const monotonic = this.#context.monotonic();
-    const cooldowns = world.actionButtons
-      .filter((button) => button.type === ACTION_BUTTON_SPELL)
-      .map((button) => `${button.slot}:${Math.round(world.cooldownRemaining(button.action, monotonic) / 250)}`)
-      .join(",");
-    if (cooldowns !== this.#cooldownSignature) {
-      this.#cooldownSignature = cooldowns;
-      pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-      pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
-    }
+    // P1-16 (UI-6): cooldown edges, not a 250 ms bucket of the remaining time (that re-fired the
+    // pair four times a second per recovering slot). Snapshot timers are #reconcileItemCooldowns'.
+    this.#reconcileActionCooldowns();
+    this.#reconcileMirroredActions(); // P1-16 review: the possess/vehicle page
     // Power has no `SELF` field of its own — the index depends on the power type — so it is polled
     // beside the two above rather than subscribed like health.
     const player = this.#self();

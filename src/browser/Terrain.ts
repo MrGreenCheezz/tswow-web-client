@@ -19,6 +19,8 @@ export const TERRAIN_TILE_CACHE_LIMIT = 64;
 export const ENVIRONMENT_TILE_CACHE_LIMIT = 64;
 /** Completed decoded model entries retained by the CPU cache; current-frame pins may exceed it. */
 export const ENVIRONMENT_MODEL_CACHE_LIMIT = 256;
+/** P1-10a: count overflow past which `#evictModels` sorts once instead of scanning per eviction. */
+const MODEL_EVICTION_SORT_THRESHOLD = 16;
 /** Completed decoded animation entries retained by the CPU cache; current-frame pins may exceed it. */
 export const ENVIRONMENT_ANIMATION_CACHE_LIMIT = 128;
 /** Queued model requests retained between resource-frame commits. */
@@ -203,6 +205,16 @@ export function terrainGrid(x: number, y: number): TerrainGrid | undefined {
   return gridX < 0 || gridY < 0 ? undefined : { x: gridX, y: gridY };
 }
 
+/**
+ * P1-13a: `terrainGrid` as one number, `gridX * 64 + gridY`, or -1 where it answers undefined.
+ * The same arithmetic, without the grid object: hot paths compare and index cells by it.
+ */
+export function terrainGridIndex(x: number, y: number): number {
+  const gridX = terrainGridAxis(x);
+  const gridY = terrainGridAxis(y);
+  return gridX < 0 || gridY < 0 ? -1 : gridX * GRID_COUNT + gridY;
+}
+
 /** The clipped 5x5 CPU dependency ring around a player's current terrain tile. */
 export function terrainGridDependencyFootprint(x: number, y: number): TerrainGrid[] {
   const center = terrainGrid(x, y);
@@ -226,11 +238,29 @@ export function terrainGridDependencyFootprint(x: number, y: number): TerrainGri
  * edge never requests an out-of-range tile, while shared tile edges are not dropped.
  */
 export function terrainGridFootprint(x: number, y: number, range: number): TerrainGrid[] {
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(range)) return [];
+  const count = terrainGridFootprintCells(x, y, range, FOOTPRINT_SCRATCH);
+  const grids: TerrainGrid[] = [];
+  for (let index = 0; index < count; index++) {
+    const cell = FOOTPRINT_SCRATCH[index]!;
+    grids.push({ x: Math.floor(cell / GRID_COUNT), y: cell % GRID_COUNT });
+  }
+  return grids;
+}
+
+/** Scratch of {@link terrainGridFootprint}: the whole map's cells; the call is synchronous. */
+const FOOTPRINT_SCRATCH = new Int32Array(GRID_COUNT * GRID_COUNT);
+
+/**
+ * P1-13a: {@link terrainGridFootprint} as cells (`gridX * 64 + gridY`) written into `out` (room for
+ * the whole map, 4096), in the same order — ascending, so equal footprints are equal sequences.
+ * Returns how many were written.
+ */
+export function terrainGridFootprintCells(x: number, y: number, range: number, out: Int32Array): number {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(range)) return 0;
   const radius = Math.max(0, range);
   const outsideX = Math.max(MAP_MIN - x, 0, x - MAP_MAX);
   const outsideY = Math.max(MAP_MIN - y, 0, y - MAP_MAX);
-  if (outsideX * outsideX + outsideY * outsideY > radius * radius) return [];
+  if (outsideX * outsideX + outsideY * outsideY > radius * radius) return 0;
 
   // Include one index on either side of each extent so a circle tangent to a shared tile edge is
   // considered by both tiles despite floating-point boundaries in the grid calculation.
@@ -243,7 +273,7 @@ export function terrainGridFootprint(x: number, y: number, range: number): Terra
   const maxGridY = Math.min(GRID_COUNT - 1, Math.max(0,
     Math.floor(GRID_CENTER - (y - radius) / TERRAIN_GRID_SIZE) + 1));
   const radiusSquared = radius * radius;
-  const grids: TerrainGrid[] = [];
+  let count = 0;
   for (let gridX = minGridX; gridX <= maxGridX; gridX++) {
     const minX = (GRID_CENTER - gridX - 1) * TERRAIN_GRID_SIZE;
     const maxX = (GRID_CENTER - gridX) * TERRAIN_GRID_SIZE;
@@ -252,10 +282,10 @@ export function terrainGridFootprint(x: number, y: number, range: number): Terra
       const minY = (GRID_CENTER - gridY - 1) * TERRAIN_GRID_SIZE;
       const maxY = (GRID_CENTER - gridY) * TERRAIN_GRID_SIZE;
       const dy = y < minY ? minY - y : y > maxY ? y - maxY : 0;
-      if (dx * dx + dy * dy <= radiusSquared) grids.push({ x: gridX, y: gridY });
+      if (dx * dx + dy * dy <= radiusSquared) out[count++] = gridX * GRID_COUNT + gridY;
     }
   }
-  return grids;
+  return count;
 }
 
 export class TerrainTile {
@@ -501,6 +531,11 @@ export class TerrainClient {
   readonly #tiles = new Map<string, TerrainTile | null>();
   readonly #loading = new Set<string>();
   readonly #tileRevisions = new Map<string, number>();
+  /**
+   * P1-13a: `#tileRevisions` by number — map → one revision per cell (`gridX * 64 + gridY`, 0 for
+   * none). Written beside it in the same two places; the per-frame `tileRevision` reads only this.
+   */
+  readonly #revisionCells = new Map<number, Float64Array>();
   #activeTiles = new Set<string>();
   #activeTilesTracked = false;
   #revision = 0;
@@ -572,7 +607,32 @@ export class TerrainClient {
 
   /** How many times this tile alone changed: this replaces its interior and reopens its holes. */
   ownRevision(map: number, grid: TerrainGrid): number {
-    return this.#tileRevisions.get(`${map}/${grid.x}/${grid.y}`) ?? 0;
+    return this.#cellRevision(map, grid.x, grid.y);
+  }
+
+  /** P1-13a: one tile's revision from the numeric mirror; 0 off the map or for a tile never seen. */
+  #cellRevision(map: number, gridX: number, gridY: number): number {
+    if (!(gridX >= 0 && gridX < GRID_COUNT && gridY >= 0 && gridY < GRID_COUNT)
+      || (gridX | 0) !== gridX || (gridY | 0) !== gridY) return 0;
+    const cells = this.#revisionCells.get(map);
+    return cells?.[gridX * GRID_COUNT + gridY] ?? 0;
+  }
+
+  /** P1-13a: mirrors one `#tileRevisions` write; `key` is `${map}/${x}/${y}` (a rare path). */
+  #setCellRevision(key: string, revision: number): void {
+    const [mapText, xText, yText] = key.split("/");
+    const map = Number(mapText);
+    const gridX = Number(xText);
+    const gridY = Number(yText);
+    if (!Number.isInteger(gridX) || !Number.isInteger(gridY)
+      || gridX < 0 || gridX >= GRID_COUNT || gridY < 0 || gridY >= GRID_COUNT) return;
+    let cells = this.#revisionCells.get(map);
+    if (!cells) {
+      if (revision === 0) return;
+      cells = new Float64Array(GRID_COUNT * GRID_COUNT);
+      this.#revisionCells.set(map, cells);
+    }
+    cells[gridX * GRID_COUNT + gridY] = revision;
   }
 
   /**
@@ -587,13 +647,18 @@ export class TerrainClient {
    * the corner tiles are already in that ring. It does not add downloads.
    */
   tileRevision(map: number, grid: TerrainGrid): number {
-    let revision = this.ownRevision(map, grid);
-    for (const [x, y] of [
-      [1, 0], [-1, 0], [0, 1], [0, -1],
-      [1, 1], [1, -1], [-1, 1], [-1, -1],
-    ] as const) {
-      revision += this.#tileRevisions.get(`${map}/${grid.x + x}/${grid.y + y}`) ?? 0;
-    }
+    const x = grid.x;
+    const y = grid.y;
+    // P1-13a: the same sum in the same order, from the numeric mirror — no key strings, no pairs.
+    let revision = this.#cellRevision(map, x, y);
+    revision += this.#cellRevision(map, x + 1, y);
+    revision += this.#cellRevision(map, x - 1, y);
+    revision += this.#cellRevision(map, x, y + 1);
+    revision += this.#cellRevision(map, x, y - 1);
+    revision += this.#cellRevision(map, x + 1, y + 1);
+    revision += this.#cellRevision(map, x + 1, y - 1);
+    revision += this.#cellRevision(map, x - 1, y + 1);
+    revision += this.#cellRevision(map, x - 1, y - 1);
     return revision;
   }
 
@@ -649,9 +714,11 @@ export class TerrainClient {
    */
   isReady(map: number | undefined, x: number, y: number): boolean {
     if (map === undefined) return false;
-    const grid = terrainGrid(x, y);
-    if (!grid) return false;
-    const key = `${map}/${grid.x}/${grid.y}`;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return false;
+    // P1-13a: the memoised key — no grid object and no template string per probe.
+    const key = this.#tileKey(map, gridX, gridY);
     if (this.#tiles.has(key)) {
       this.#touchTile(key);
       return true;
@@ -719,6 +786,7 @@ export class TerrainClient {
     this.#invalidateTileCache();
     this.#revision++;
     this.#tileRevisions.set(key, this.#revision);
+    this.#setCellRevision(key, this.#revision);
     this.#evictTiles();
   }
 
@@ -777,6 +845,7 @@ export class TerrainClient {
   #deleteTile(key: string): void {
     this.#tiles.delete(key);
     this.#tileRevisions.delete(key);
+    this.#setCellRevision(key, 0);
     this.#invalidateTileCache();
   }
 
@@ -820,6 +889,9 @@ export class EnvironmentClient {
   /** Keys in the exact footprint most recently requested by `objectsAround`. */
   #activeTiles = new Set<string>();
   readonly #models = new Map<string, EnvironmentModel | null>();
+  /** P1-10a: recency stamp of every `#models` key, written on insertion and on each hit. */
+  readonly #modelUsed = new Map<string, number>();
+  #modelClock = 0;
   /** Terminal decoded/source-limit failures cached separately from genuine archive absence. */
   readonly #failedModelEntries = new Set<string>();
   readonly #animations = new Map<string, WvmSkeletonClip[] | null>();
@@ -886,7 +958,16 @@ export class EnvironmentClient {
     ENVIRONMENT_REQUEST_LIMIT, (kind) => this.#requestSlotFreed(kind),
   );
   #generation = 0;
-  #objectsKey = "";
+  /**
+   * P1-13a: what `#objectsCache` was merged for — map (undefined: nothing valid), tile generation
+   * and the footprint cells (`#footprintCount` of `#footprintCells`); `#footprintNext` is the
+   * buffer the next query writes into, swapped in on a miss.
+   */
+  #objectsMap: number | undefined;
+  #objectsGeneration = 0;
+  #footprintCells = new Int32Array(GRID_COUNT * GRID_COUNT);
+  #footprintNext = new Int32Array(GRID_COUNT * GRID_COUNT);
+  #footprintCount = 0;
   #objectsCache: EnvironmentObject[] = [];
   #resourceFrameCommitted = false;
   #disposed = false;
@@ -981,9 +1062,8 @@ export class EnvironmentClient {
     this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys = this.#frameAnimationKeys;
     this.#activeGroupDemands = this.#frameGroupDemands;
-    this.#frameModelKeys = new Set();
-    this.#frameAnimationKeys = new Set();
-    this.#frameGroupDemands = new Map();
+    // P1-10a: the `#frame*` collections keep pointing at the committed ones until the next
+    // `beginResourceFrame` replaces them; every reader of `#frame*` runs only while a frame is open.
     this.#resourceFrameCommitted = true;
     this.#pruneModelWork();
     this.#pruneGroupWork();
@@ -1019,6 +1099,7 @@ export class EnvironmentClient {
     this.#tileLosses.clear(); // 05.10-A7b-9
     this.#loading.clear();
     this.#models.clear();
+    this.#modelUsed.clear();
     this.#failedModelEntries.clear();
     this.#animations.clear();
     this.#modelCosts.clear();
@@ -1044,7 +1125,7 @@ export class EnvironmentClient {
     this.#modelDrainScheduled = false;
     this.#groupDrainScheduled = false;
     this.#animationDrainScheduled = false;
-    this.#objectsKey = "";
+    this.#objectsMap = undefined; // P1-13a
     this.#objectsCache = [];
     this.onStatus = undefined;
   }
@@ -1153,15 +1234,30 @@ export class EnvironmentClient {
       this.#evictTiles();
       return [];
     }
-    // One key string per footprint tile, shared by the active set, the touch order, the cache key
-    // and the tile lookups below (the old code built three string forms per tile every frame).
-    // Tile loads and evictions both bump `#generation`, so a cache-key hit also means the touch
-    // and eviction passes would be no-ops — return before that churn, not after it.
-    const footprint = terrainGridFootprint(x, y, range);
-    const keys = footprint.map((grid) => `${map}/${grid.x}/${grid.y}`);
-    const sortedKeys = [...keys].sort();
-    const cacheKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
-    if (cacheKey === this.#objectsKey) return this.#objectsCache;
+    // Tile loads and evictions both bump `#generation`, so a hit on (map, generation, footprint)
+    // also means the touch and eviction passes would be no-ops — return before that churn.
+    // P1-13a: the footprint as cells in a reused buffer; they come out ascending, so comparing the
+    // sequences is comparing the sets the sorted key strings used to compare.
+    const next = this.#footprintNext;
+    const count = terrainGridFootprintCells(x, y, range, next);
+    if (map === this.#objectsMap && this.#generation === this.#objectsGeneration
+      && count === this.#footprintCount && sameCells(next, this.#footprintCells, count)) {
+      return this.#objectsCache;
+    }
+    this.#footprintNext = this.#footprintCells;
+    this.#footprintCells = next;
+    this.#footprintCount = count;
+
+    // One key string per footprint tile, shared by the active set, the touch order and the tile
+    // lookups below — built only when the footprint, the map or the tiles changed.
+    const footprint: TerrainGrid[] = [];
+    const keys: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const cell = next[index]!;
+      const grid = { x: Math.floor(cell / GRID_COUNT), y: cell % GRID_COUNT };
+      footprint.push(grid);
+      keys.push(`${map}/${grid.x}/${grid.y}`);
+    }
 
     this.#activeTiles = new Set(keys);
 
@@ -1183,7 +1279,8 @@ export class EnvironmentClient {
         void this.#load(map, grid, key);
       }
     }
-    this.#objectsKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
+    this.#objectsMap = map;
+    this.#objectsGeneration = this.#generation;
     this.#objectsCache = [...objects.values()];
     return this.#objectsCache;
   }
@@ -1278,11 +1375,11 @@ export class EnvironmentClient {
   #lookupModel(key: string, priority: ModelLoadPriority): EnvironmentModel | undefined {
     const value = this.#models.get(key);
     if (value) {
-      this.#touchModel(key);
+      this.#stampModel(key);
       return value;
     }
     if (value === null) {
-      this.#touchModel(key);
+      this.#stampModel(key);
       return undefined;
     }
     if (this.#requestedModels.has(key)) {
@@ -2038,10 +2135,17 @@ export class EnvironmentClient {
   }
 
   #touchModel(key: string): void {
-    if (!this.#models.has(key)) return;
-    const value = this.#models.get(key)!;
-    this.#models.delete(key);
-    this.#models.set(key, value);
+    if (this.#models.has(key)) this.#stampModel(key);
+  }
+
+  /**
+   * P1-10a (MEM-2): a hit is stamped in place rather than re-inserted into `#models`; a `delete`
+   * + `set` per admitted placement rebuilt the table every few frames. `#evictModels` takes the
+   * smallest stamp, which is the entry the re-insertion order used to put first.
+   */
+  #stampModel(key: string): void {
+    if (this.#modelClock >= recencyStampLimit) this.#modelClock = renumberRecency(this.#modelUsed);
+    this.#modelUsed.set(key, ++this.#modelClock);
   }
 
   #touchAnimation(key: string): void {
@@ -2065,6 +2169,7 @@ export class EnvironmentClient {
     }
     this.#deleteModelEntry(key);
     this.#models.set(key, value);
+    this.#stampModel(key);
     if (outcome === "failed") this.#failedModelEntries.add(key);
     if (cost) {
       this.#modelCosts.set(key, cost);
@@ -2136,6 +2241,7 @@ export class EnvironmentClient {
     if (!this.#models.has(key)) return undefined;
     const model = this.#models.get(key)!;
     this.#models.delete(key);
+    this.#modelUsed.delete(key);
     this.#failedModelEntries.delete(key);
     const cost = this.#modelCosts.get(key);
     if (cost) {
@@ -2163,18 +2269,48 @@ export class EnvironmentClient {
     while (this.#models.size > this.#modelLimit
       || this.#modelTypedBackingBytes > this.#modelTypedBackingBudget
       || this.#modelNumericArrayElements > this.#modelNumericArrayBudget) {
-      let removed = false;
+      // The oldest stamp among the inactive entries; the order the re-insertion LRU kept.
+      let oldest: string | undefined;
+      let oldestUsed = Infinity;
+      let inactive = 0;
       for (const key of this.#models.keys()) {
         if (this.#activeModelKeys.has(key)) continue;
-        const model = this.#deleteModelEntry(key);
-        this.#requestedModels.delete(key);
-        this.#modelFailures.delete(key);
-        if (model) this.#releaseEvictedModelGroups(model);
-        removed = true;
-        break;
+        inactive++;
+        const used = this.#modelUsed.get(key)!;
+        if (used < oldestUsed) {
+          oldestUsed = used;
+          oldest = key;
+        }
       }
-      if (!removed) return;
+      if (oldest === undefined) return;
+      if (this.#models.size - this.#modelLimit > MODEL_EVICTION_SORT_THRESHOLD && inactive > 1) {
+        // A teleport overflows by hundreds: one sorted pass instead of a scan per eviction.
+        this.#evictModelsSorted();
+        return;
+      }
+      this.#evictModelKey(oldest);
     }
+  }
+
+  /** Evicts inactive entries oldest stamp first until every model limit holds again. */
+  #evictModelsSorted(): void {
+    const order: string[] = [];
+    for (const key of this.#models.keys()) if (!this.#activeModelKeys.has(key)) order.push(key);
+    order.sort((left, right) => this.#modelUsed.get(left)! - this.#modelUsed.get(right)!);
+    for (const key of order) {
+      if (this.#models.size <= this.#modelLimit
+        && this.#modelTypedBackingBytes <= this.#modelTypedBackingBudget
+        && this.#modelNumericArrayElements <= this.#modelNumericArrayBudget) return;
+      // `#releaseEvictedModelGroups` touches only group state, never `#models`; the key is still here.
+      if (this.#models.has(key)) this.#evictModelKey(key);
+    }
+  }
+
+  #evictModelKey(key: string): void {
+    const model = this.#deleteModelEntry(key);
+    this.#requestedModels.delete(key);
+    this.#modelFailures.delete(key);
+    if (model) this.#releaseEvictedModelGroups(model);
   }
 
   #evictAnimations(): void {
@@ -2313,9 +2449,17 @@ export class EnvironmentClient {
     // A cached objects result may have been computed before this eviction. Force the next query to
     // rebuild it, and expose the transition through the same generation used by load completion.
     this.#generation++;
-    this.#objectsKey = "";
+    this.#objectsMap = undefined; // P1-13a
     this.#objectsCache = [];
   }
+}
+
+/** P1-13a: whether the first `count` cells of two footprint buffers are equal. */
+function sameCells(left: Int32Array, right: Int32Array, count: number): boolean {
+  for (let index = 0; index < count; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 /** Cache key for one model in one set of textures; matches the query the gateway hashes on. */
@@ -2712,6 +2856,7 @@ import { wvaClipSetBacking, wvaClipSetConsumed } from "./WvaAnimationDecode.js";
 import type { WvaAnimationDecodeResult } from "./WvaAnimationDecodeProtocol.js";
 import { decodeWwm, decodeWwmGroup } from "./WmoModel.js";
 import { withGeneration } from "./GatewayGeneration.js";
+import { recencyStampLimit, renumberRecency } from "./RecencyStamps.js";
 import {
   ENVIRONMENT_REQUEST_LIMIT, EnvironmentRequestBudget, environmentFetchPriority, type EnvironmentRequestKind,
 } from "./EnvironmentRequestBudget.js";

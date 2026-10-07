@@ -51,15 +51,33 @@ function variantPlugin(variantDir) {
 }
 
 /**
+ * What `vite build` puts in place of `import.meta.env` (NET-22, P1-02a): the game reads `DEV` in
+ * WorldRenderer3D `rendererDebugShaderErrors` (production turns three's shader checks off) and only the
+ * `VITE_*` keys in Environment.ts `publicEnvironment()` (none here: equivalent to the former `{}`).
+ */
+export const PRODUCTION_IMPORT_META_ENV = Object.freeze({ BASE_URL: '/', MODE: 'production', DEV: false, PROD: true, SSR: false });
+
+/** esbuild `define` for a bench env: `prod` substitutes the production env; `dev` leaves it undefined (the former bundle). */
+export function benchmarkEnvDefine(env) {
+  if (env === 'prod') return { 'import.meta.env': JSON.stringify(PRODUCTION_IMPORT_META_ENV) };
+  if (env === 'dev') return {};
+  throw new Error(`bench env must be prod or dev, not ${JSON.stringify(env)}`);
+}
+
+/**
  * `options.target`: the esbuild target, 'es2022' by default — the level of the production build since
  * MEM-1 (vite.config.mjs BUILD_TARGET), so the benchmark runs code of the same form as the game. Another
  * target (bench/run.mjs `--target modules`: the pre-MEM-1 production form) is an A/B side, never a baseline.
- * The resolved options are returned as `result.bundleOptions`.
+ * `options.env`: 'prod' by default — `import.meta.env` is the production Vite env, as in the game
+ * (P1-02a); 'dev' (bench/run.mjs `--bench-env dev`) is the bundle before P1-02a, where the env is
+ * undefined and reads as development. The resolved options are returned as `result.bundleOptions`.
  */
 export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = undefined, options = {}) {
   const variant = variantDir ? variantPlugin(variantDir) : undefined;
-  const bundleOptions = { target: options.target ?? 'es2022' };
+  const bundleOptions = { target: options.target ?? 'es2022', env: options.env ?? 'prod' };
+  const define = benchmarkEnvDefine(bundleOptions.env);
   const result = await build({
+    define,
     plugins: variant ? [variant.plugin] : [],
     entryPoints: {
       harness: 'src/browser/bench/Harness.ts',

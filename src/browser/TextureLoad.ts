@@ -10,6 +10,7 @@ import {
   knownLogicalTextureBytes, type RetainedResourceVisitor,
 } from "./ResourceAccounting.js";
 import { suspectPatchChainChange } from "./PatchChainChanged.js";
+import { recencyStampLimit, renumberByUsed } from "./RecencyStamps.js";
 
 export type ModelTextureStatus = "pending" | "ready" | "failed";
 
@@ -69,7 +70,12 @@ interface TextureEntry {
   status: ModelTextureStatus;
   knownLogicalTextureBytes: number | undefined;
   readonly leases: Set<ModelTextureLease>;
+  /** P1-10b: recency stamp, written at creation and on every touch; the smallest is the oldest. */
+  used: number;
 }
+
+/** The shared answer of an eviction pass with nothing to do. */
+const NOTHING_EVICTED: readonly string[] = Object.freeze([]);
 
 const DEFAULT_CACHE_LIMITS: ModelTextureCacheLimits = Object.freeze({
   count: 256,
@@ -570,6 +576,15 @@ export class ModelTextureLoader {
   readonly #errors = new Set<number>();
   #generation = 0;
   #requestSequence = 0;
+  #clock = 0;
+  /** Renumberings so far: an eviction pass that sees this change stops trusting its stamp marks. */
+  #renumbers = 0;
+  /**
+   * P1-11: structural revision of the URL cache — a record created, settled or removed, a lease
+   * taken or released, bytes measured, the cache cleared. Touches and reads never move it, so a
+   * caller that saw the same revision twice knows every lease, status and byte count is unchanged.
+   */
+  #revision = 0;
   #knownLogicalTextureBytes = 0;
   /** Texture.dispose emits on every call, so cached-base ownership needs its own exact-once guard. */
   readonly #disposedTextures = new WeakSet<THREE.Texture>();
@@ -647,8 +662,13 @@ export class ModelTextureLoader {
       status: "pending",
       knownLogicalTextureBytes: undefined,
       leases: new Set(),
+      // Replacing a URL record kept the old record's place in the re-insertion LRU; so does its stamp.
+      used: this.#cacheEnabled ? (this.#entries.get(url)?.used ?? this.#nextUsed()) : 0,
     };
-    if (this.#cacheEnabled) this.#entries.set(url, entry);
+    if (this.#cacheEnabled) {
+      this.#entries.set(url, entry);
+      this.#revision++;
+    }
     let texture: THREE.Texture;
     // The browser loader is asynchronous, but keeping completion until the returned texture is
     // assigned also makes this safe for test loaders and cache layers that invoke callbacks inline.
@@ -705,6 +725,7 @@ export class ModelTextureLoader {
       completionTexture = completedTexture;
       this.#pending--;
       this.#generation++;
+      this.#revision++;
       if (terminalStatus === "ready") this.#ready++;
       else this.#failed++;
       if (terminalStatus === "ready") this.#errors.delete(entry.requestId);
@@ -732,6 +753,7 @@ export class ModelTextureLoader {
     } catch (error) {
       // No usable texture handle exists when the underlying loader itself throws. Keep the
       // historical throw while restoring exact current counters for subsequent readiness checks.
+      this.#revision++;
       if (this.#isCurrent(entry)) {
         if (entry.cached) {
           if (!settled) {
@@ -824,29 +846,61 @@ export class ModelTextureLoader {
       release: () => {
         if (released) return;
         released = true;
+        this.#revision++;
         // Delete from the captured exact record, never whichever request now occupies this URL.
         entry.leases.delete(lease);
       },
     });
     entry.leases.add(lease);
+    this.#revision++;
     return lease;
+  }
+
+  /** P1-11: the structural revision; see the field. Not moved by touches or by reading stats. */
+  get revision(): number { return this.#revision; }
+
+  /** Whether {@link touch} would accept this lease, without touching anything. */
+  owns(lease: ModelTextureLease): boolean {
+    return this.#ownedEntry(lease) !== undefined;
+  }
+
+  /** The status of the exact current request this lease borrows, or undefined for a stale lease. */
+  leaseStatus(lease: ModelTextureLease): ModelTextureStatus | undefined {
+    return this.#ownedEntry(lease)?.status;
+  }
+
+  /** `residencyStats.overflowCount` without walking the records or building the stats object. */
+  get overflowCount(): number {
+    return Math.max(0, this.#entries.size - this.#cacheLimits.count);
+  }
+
+  /** `residencyStats.overflowKnownLogicalTextureBytes`, likewise. */
+  get overflowKnownLogicalTextureBytes(): number {
+    return Math.max(0, this.#knownLogicalTextureBytes - this.#cacheLimits.knownLogicalTextureBytes);
   }
 
   /** Promotes only the exact current unreleased cached request borrowed by this lease. */
   touch(lease: ModelTextureLease): boolean {
-    if (!this.#cacheEnabled || lease.released) return false;
-    const entry = this.#entries.get(lease.url);
-    if (!entry || entry.requestId !== lease.requestId || entry.texture !== lease.texture
-      || !entry.leases.has(lease)) return false;
+    const entry = this.#ownedEntry(lease);
+    if (!entry) return false;
     this.#touch(entry);
     return true;
+  }
+
+  /** The exact current unreleased cached request this lease borrows, if any. */
+  #ownedEntry(lease: ModelTextureLease): TextureEntry | undefined {
+    if (!this.#cacheEnabled || lease.released) return undefined;
+    const entry = this.#entries.get(lease.url);
+    if (!entry || entry.requestId !== lease.requestId || entry.texture !== lease.texture
+      || !entry.leases.has(lease)) return undefined;
+    return entry;
   }
 
   /** Exact current pressure records in true texture LRU order. */
   pressureSnapshot(): readonly ModelTexturePressureRecord[] {
     if (!this.#cacheEnabled) return Object.freeze([]);
     const records: ModelTexturePressureRecord[] = [];
-    for (const entry of this.#entries.values()) {
+    for (const entry of this.#byRecency()) {
       records.push(Object.freeze({
         url: entry.url,
         requestId: entry.requestId,
@@ -860,21 +914,37 @@ export class ModelTextureLoader {
 
   /** Removes oldest settled, unleased cached bases until both soft limits are met. */
   evictUnleased(): readonly string[] {
-    if (!this.#cacheEnabled) return Object.freeze([]);
+    if (!this.#cacheEnabled || this.#withinCacheLimits()) return NOTHING_EVICTED;
     const evicted: string[] = [];
-    for (const [url, entry] of this.#entries) {
-      if (this.#withinCacheLimits()) break;
-      if (entry.status === "pending" || entry.leases.size > 0) continue;
-      const countOverflow = this.#entries.size > this.#cacheLimits.count;
-      const knownByteOverflow = this.#knownLogicalTextureBytes
-        > this.#cacheLimits.knownLogicalTextureBytes;
-      // With count already within budget, an unknown/zero-byte record cannot reduce the only
-      // violated metric. Preserve true LRU order among useful candidates by scanning onward to the
-      // oldest entry whose known allocation can actually converge byte pressure.
-      if (!countOverflow && knownByteOverflow
-        && (entry.knownLogicalTextureBytes ?? 0) === 0) continue;
-      this.#removeCachedEntry(entry);
-      evicted.push(url);
+    // The re-insertion LRU walked the live map: a record a dispose listener touched (or created)
+    // during the pass moved behind every other one and came up again only at the end. Rounds keep
+    // that order: one round takes the records stamped up to `mark` oldest first, skipping any that
+    // a listener stamps meanwhile; while the limits are still exceeded, the next round takes the
+    // ones stamped since. A renumbering mid-pass (once in hours) restarts from the whole cache.
+    let floor = 0;
+    for (;;) {
+      const mark = this.#clock;
+      const renumbers = this.#renumbers;
+      for (const entry of this.#byRecency(floor)) {
+        if (this.#withinCacheLimits()) break;
+        const url = entry.url;
+        // A record a dispose listener replaced or removed during this pass is no longer a candidate.
+        if (this.#entries.get(url) !== entry) continue;
+        if (renumbers !== this.#renumbers || entry.used > mark) continue;
+        if (entry.status === "pending" || entry.leases.size > 0) continue;
+        const countOverflow = this.#entries.size > this.#cacheLimits.count;
+        const knownByteOverflow = this.#knownLogicalTextureBytes
+          > this.#cacheLimits.knownLogicalTextureBytes;
+        // With count already within budget, an unknown/zero-byte record cannot reduce the only
+        // violated metric. Preserve true LRU order among useful candidates by scanning onward to the
+        // oldest entry whose known allocation can actually converge byte pressure.
+        if (!countOverflow && knownByteOverflow
+          && (entry.knownLogicalTextureBytes ?? 0) === 0) continue;
+        this.#removeCachedEntry(entry);
+        evicted.push(url);
+      }
+      if (this.#withinCacheLimits() || (this.#clock === mark && renumbers === this.#renumbers)) break;
+      floor = renumbers === this.#renumbers ? mark : 0;
     }
     return Object.freeze(evicted);
   }
@@ -882,6 +952,7 @@ export class ModelTextureLoader {
   /** Releases cached textures and starts a new async-completion epoch. Safe to repeat. */
   clear(): void {
     this.#epoch++;
+    this.#revision++;
     const detached = [...this.#entries.values()];
     for (const entry of detached) entry.leases.clear();
     // Publish the new empty epoch before synchronous Texture.dispose listeners run. A listener may
@@ -977,11 +1048,26 @@ export class ModelTextureLoader {
 
   #touch(entry: TextureEntry): void {
     if (!entry.cached || this.#entries.get(entry.url) !== entry) return;
-    this.#entries.delete(entry.url);
-    this.#entries.set(entry.url, entry);
+    entry.used = this.#nextUsed();
+  }
+
+  #nextUsed(): number {
+    if (this.#clock >= recencyStampLimit) {
+      this.#clock = renumberByUsed(this.#entries.values());
+      this.#renumbers++;
+    }
+    return ++this.#clock;
+  }
+
+  /** The current cached records stamped after `floor`, oldest first, as the re-insertion LRU kept them. */
+  #byRecency(floor = 0): TextureEntry[] {
+    const records: TextureEntry[] = [];
+    for (const entry of this.#entries.values()) if (entry.used > floor) records.push(entry);
+    return records.sort((left, right) => left.used - right.used);
   }
 
   #applyCompletion(entry: TextureEntry): void {
+    this.#revision++;
     const texture = entry.texture;
     if (!texture || !this.#isCurrent(entry)) return;
     if (entry.status === "ready") texture.needsUpdate = true;
@@ -1001,6 +1087,7 @@ export class ModelTextureLoader {
   #removeCachedEntry(entry: TextureEntry): void {
     if (this.#entries.get(entry.url) !== entry) return;
     this.#entries.delete(entry.url);
+    this.#revision++;
     if (entry.status === "pending") this.#pending--;
     else if (entry.status === "ready") this.#ready--;
     else {

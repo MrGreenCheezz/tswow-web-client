@@ -212,6 +212,8 @@ export interface WorldEvents {
   UNIT_LEVEL: { guid: bigint };
   UNIT_TARGET: { guid: bigint };
   UNIT_DISPLAY_ID: { guid: bigint };
+  /** P1-20c: the mount's display id; a name of its own, so `UNIT_DISPLAY_ID` listeners are not woken by mounts. */
+  UNIT_MOUNT_DISPLAY_ID: { guid: bigint };
   UNIT_FLAGS: { guid: bigint };
   UNIT_DYNAMIC_FLAGS: { guid: bigint };
   UNIT_NPC_FLAGS: { guid: bigint };

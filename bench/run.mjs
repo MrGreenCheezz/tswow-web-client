@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
 import { summarize } from './metrics.mjs';
-import { DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
+import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -96,6 +96,10 @@ async function main() {
   if (variantDir && bundle.variantFiles.length === 0) throw new Error(`--variant ${variantDir} replaced no source file`);
   const bundleTarget = bundle.bundleOptions.target;
   console.log(`Bundle target: ${[bundleTarget].flat().join(',')}${bundleTarget === DEFAULT_BENCHMARK_TARGET ? '' : ' (not the production target: the result is not valid)'}`);
+  // P1-02a: --bench-env dev rebuilds the former bundle (import.meta.env undefined → three's shader
+  // checks on); results before P1-02a compare only with it, and the run is invalid.
+  const bundleEnv = bundle.bundleOptions.env;
+  console.log(`Bundle env: ${bundleEnv}${bundleEnv === DEFAULT_BENCHMARK_ENV ? '' : ' (not the production env: the result is not valid)'}`);
   const sha = data => createHash('sha256').update(data).digest('hex');
   const sourceHashes = {};
   for (const path of Object.keys(bundle.metafile.inputs).sort()) {
@@ -106,7 +110,7 @@ async function main() {
   for (const path of bundle.variantFiles) sourceHashes[`variant:${path}`] = sha(await readFile(path));
   const sourceHash = sha(JSON.stringify(sourceHashes));
   // How the sources were built, beside their hashes but outside sourceHash: two sides of an A/B that
-  // differ only in --target keep one sourceHash and differ in `bundle`.
+  // differ only in --target or --bench-env keep one sourceHash and differ in `bundle`.
   sourceHashes['bundle-options'] = sha(JSON.stringify(bundle.bundleOptions));
   const configHash = sha(JSON.stringify(config));
   // The asset cache depends on scenes and views, never on which CPUs run the browser.
@@ -122,6 +126,7 @@ async function main() {
   const blobTasks = new Map();
   const requested = new Map();
   const requestFailures = [];
+  const knownMissingTextureLines = new Set(); // 06.10-P1-00b
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Benchmark gateway must be loopback');
@@ -295,7 +300,17 @@ async function main() {
     page.setDefaultTimeout(config.timeoutSeconds * 1000);
     const pageErrors = [];
     page.on('pageerror', error => { pageErrors.push(error.message); console.error(`Page error: ${error.message}`); });
-    page.on('console', message => { if (message.type() === 'error') { pageErrors.push(message.text()); console.error(message.text()); } });
+    page.on('console', message => {
+      if (message.type() !== 'error') return;
+      // 06.10-P1-00b: Chrome's own line for a texture the corpus lacks (the cache holds its 404); the
+      // harness accounts for it (KnownMissingTextures.ts) and the result keeps it in readiness.
+      const at = message.location()?.url;
+      if (at && /^Failed to load resource: the server responded with a status of 404\b/.test(message.text())) {
+        const key = (() => { try { const u = new URL(at); return u.origin === origin && u.pathname === '/texture' ? u.pathname + u.search : null; } catch { return null; } })();
+        if (key && cache[key]?.status === 404) { knownMissingTextureLines.add(key); return; }
+      }
+      pageErrors.push(message.text()); console.error(message.text());
+    });
     await page.goto(sceneUrl, { waitUntil: 'load' });
     // The shell has already pinned itself; re-applying its own policy here verifies the mask on
     // every process it owns. With --cpu-class none nothing is touched.
@@ -551,13 +566,14 @@ async function main() {
     result.assetManifest = Object.fromEntries([...requested.entries()].sort(([a], [b]) => a.localeCompare(b)));
     result.assetHash = sha(JSON.stringify(result.assetManifest));
     result.errors.push(...requestFailures);
+    result.knownMissingTextures = [...knownMissingTextureLines].sort(); // 06.10-P1-00b
     result.allowLoad = allowLoad;
     result.variant = variantDir ? { dir: variantDir, files: bundle.variantFiles } : null;
     // A player-style run (no pinning, a visible window or the desktop shell) answers a different
     // question than the strict P-core headless baseline, so it never replaces one.
     result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir
       && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
-      && bundleTarget === DEFAULT_BENCHMARK_TARGET;
+      && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV;
     result.comparable = result.valid && !trace && !captureAbba && !heapProfile;
     await writeFile(resultPath, JSON.stringify(result, null, 2));
     console.log(`Result: ${resultPath}`);

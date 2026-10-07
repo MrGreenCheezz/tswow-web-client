@@ -275,6 +275,7 @@ export function startPerformanceCapture(): boolean {
   packetsByOpcode = new Map();
   packetsPerSecond = [];
   lastCheckpoint = Number.NEGATIVE_INFINITY;
+  resetCheckpointSections();
   // The stock HUD keeps its own window of counters; start it with the recording.
   metadata["frameXmlMounted"] = frameXmlPerf("reset") !== undefined;
   // L10 (10.18): whether crowd poses ran in the worker or on the main thread, and why.
@@ -364,6 +365,7 @@ export function beginPerformanceCaptureFrame(): void {
   if (!frameRecording) return;
   frameStartedAt = performance.now();
   frameWasActive = worldActive();
+  clearFrameSections();
   if (!frameWasActive) frameRecording.breakCadence();
 }
 
@@ -373,6 +375,63 @@ export function captureFrameSections(at: number, cpuMs: number, sections: Readon
   }
 }
 
+/**
+ * P1-20a: section sums of every recorded frame since the last checkpoint. `cpuSections` keeps only
+ * the slow frames, so ordinary frames had no sectioned number at all; each checkpoint now carries
+ * their average (`sections`, ms per frame). Disabled path is one check.
+ */
+const checkpointSectionSums: Record<string, number> = {};
+let checkpointSectionFrames = 0;
+/**
+ * This frame's sections, kept apart until `endPerformanceCaptureFrame` knows whether the frame is
+ * counted: a frame that turns the loading screen on is not, and its time must not land in a window
+ * whose frame count leaves it out (a 40 ms loading frame would otherwise inflate ten 0.1 ms ones 41×).
+ */
+const frameSectionScratch: Record<string, number> = {};
+
+export function addCheckpointSection(name: string, milliseconds: number): void {
+  if (!frameRecording || frameRecording !== recording || !frameWasActive) return;
+  if (!Number.isFinite(milliseconds)) return;
+  // A zero still marks the section as seen, so its checkpoints report 0 rather than nothing.
+  frameSectionScratch[name] = (frameSectionScratch[name] ?? 0) + Math.max(0, milliseconds);
+}
+
+/** Moves a counted frame's sections into the checkpoint window. */
+function commitFrameSections(): void {
+  for (const name of Object.keys(frameSectionScratch)) {
+    checkpointSectionSums[name] = (checkpointSectionSums[name] ?? 0) + frameSectionScratch[name]!;
+    frameSectionScratch[name] = 0;
+  }
+}
+
+function clearFrameSections(): void {
+  for (const name of Object.keys(frameSectionScratch)) frameSectionScratch[name] = 0;
+}
+
+/**
+ * Averages since the last call, and restarts the window. Every section seen in this recording is
+ * present, 0 included: an absent key would drop that checkpoint from the distribution and bias a
+ * rarely non-zero part upwards. Undefined when the recording has seen no section at all.
+ */
+function takeCheckpointSections(): Record<string, number> | undefined {
+  const frames = checkpointSectionFrames;
+  let sections: Record<string, number> | undefined;
+  for (const name of Object.keys(checkpointSectionSums)) {
+    const sum = checkpointSectionSums[name]!;
+    checkpointSectionSums[name] = 0;
+    if (frames > 0) (sections ??= {})[name] = sum / frames;
+  }
+  checkpointSectionFrames = 0;
+  return sections;
+}
+
+/** A new recording forgets the sections the last one saw. */
+function resetCheckpointSections(): void {
+  for (const name of Object.keys(checkpointSectionSums)) delete checkpointSectionSums[name];
+  for (const name of Object.keys(frameSectionScratch)) delete frameSectionScratch[name];
+  checkpointSectionFrames = 0;
+}
+
 /** Checkpoint reads are outside CPU measurement and never walk the full resource accounting tree. */
 export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed: boolean): void {
   const capture = frameRecording;
@@ -380,6 +439,8 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
   captureShaderPrograms(capture);
   if (frameWasActive && worldActive()) {
     capture.frame(rafAt, frameStartedAt, cpuMs, failed);
+    commitFrameSections();
+    checkpointSectionFrames++;
     if (frameStartedAt - lastCheckpoint >= 500) {
       lastCheckpoint = frameStartedAt;
       const checkpointStart = performance.now();
@@ -395,6 +456,7 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
           terrain: game.terrain?.stats, quality: autoQualityStatus(),
           // A sawtooth here is garbage collection; a drop next to a long interval points at a major GC.
           heap: jsHeap(), worldObjects: game.world?.state.objects.size,
+          sections: takeCheckpointSections(),
           diagnosticMs: performance.now() - checkpointStart,
         });
       } catch {

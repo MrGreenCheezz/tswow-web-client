@@ -16,8 +16,16 @@ export const WIND_FIELD_MARKER = "wind-field-v1";
 
 /** The one clock shared by every installed wind material. The renderer updates `.value` once/frame. */
 export const VEGETATION_WIND_TIME: IUniform<number> = { value: 0 };
-export const VEGETATION_WIND_MARKER = "vegetation-wind-v1";
+/**
+ * v2 (P1-08): the profile's numbers are uniforms, not GLSL literals, so every profile shares one
+ * shader text and one program per material configuration; the marker is the program key's part.
+ */
+export const VEGETATION_WIND_MARKER = "vegetation-wind-v2";
 export const VEGETATION_WIND_TIME_UNIFORM = "uVegetationWindTime";
+/** (amplitude, frequency, phase, baseZ) of the material's profile. */
+export const VEGETATION_WIND_A_UNIFORM = "uVegetationWindA";
+/** (inverseHeight, fieldAmplitude, crossFrequency = 0.73·f, flutterFrequency = 4.7·f). */
+export const VEGETATION_WIND_B_UNIFORM = "uVegetationWindB";
 export const VEGETATION_WIND_MAX_AMPLITUDE = 0.35;
 /** x gets full amplitude and local y half; culling must cover their simultaneous radial reach. */
 export const VEGETATION_WIND_CULL_PADDING = Math.hypot(
@@ -53,8 +61,9 @@ const WIND_REJECTED_FLAGS = MATERIAL_NO_DEPTH_TEST | MATERIAL_NO_DEPTH_WRITE;
 
 /**
  * A material-independent profile. `baseZ` and `height` are in the WVM model's local z-up frame.
- * The profile is intentionally numeric and finite: it is embedded into GLSL as constants so a
- * bad caller cannot turn a shader replacement into source text.
+ * The profile is intentionally numeric and finite. Since P1-08 it reaches the shader as the two
+ * vec4 uniforms above (rounded exactly as the former GLSL literals were, see `windUniformValues`),
+ * so it never becomes source text at all.
  */
 export interface VegetationWindProfile {
   readonly amplitude: number;
@@ -265,6 +274,11 @@ export function installVegetationWind(
 
   const previousCompile = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey();
+  // P1-08: the profile's own uniform objects. Every copy that chains this hook (placement tints,
+  // fade twins) closes over the same two, so its values follow the source material's.
+  const values = windUniformValues(safe);
+  const windA: IUniform<THREE.Vector4> = { value: values.a };
+  const windB: IUniform<THREE.Vector4> = { value: values.b };
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms, renderer: WebGLRenderer) => {
     previousCompile.call(material, shader, renderer);
     if (!shader.vertexShader.includes(BEGIN_VERTEX)) {
@@ -273,23 +287,52 @@ export function installVegetationWind(
     shader.uniforms[VEGETATION_WIND_TIME_UNIFORM] = VEGETATION_WIND_TIME;
     shader.uniforms[WIND_FIELD_UNIFORM_NAME] = WIND_FIELD_UNIFORM;
     shader.uniforms[WIND_GUST_UNIFORM_NAME] = WIND_GUST_UNIFORM;
+    shader.uniforms[VEGETATION_WIND_A_UNIFORM] = windA;
+    shader.uniforms[VEGETATION_WIND_B_UNIFORM] = windB;
     shader.vertexShader = `uniform float ${VEGETATION_WIND_TIME_UNIFORM};\n`
       + `uniform vec4 ${WIND_FIELD_UNIFORM_NAME};\nuniform vec4 ${WIND_GUST_UNIFORM_NAME};\n`
-      + shader.vertexShader.replace(BEGIN_VERTEX, `${BEGIN_VERTEX}\n${windBody(safe)}`);
+      + `uniform vec4 ${VEGETATION_WIND_A_UNIFORM};\nuniform vec4 ${VEGETATION_WIND_B_UNIFORM};\n`
+      + shader.vertexShader.replace(BEGIN_VERTEX, `${BEGIN_VERTEX}\n${WIND_BODY}`);
   };
-  material.customProgramCacheKey = () => `${previousKey}|${profileKey}`;
+  // The shader text is the same for every profile, so the program key carries only the version:
+  // three asks `onBeforeCompile` per material (its uniforms are the material's own) even when the
+  // key finds an existing program, so profiles that share a program still upload their own values.
+  material.customProgramCacheKey = () => `${previousKey}|${VEGETATION_WIND_MARKER}`;
   installedProfiles.set(material, profileKey);
 }
 
 const installedProfiles = new WeakMap<THREE.Material, string>();
 
-function windBody(profile: SafeWindProfile): string {
-  const amplitude = numberText(profile.amplitude);
-  const crossFrequency = numberText(profile.frequency * 0.73);
-  const frequency = numberText(profile.frequency);
-  const phase = numberText(profile.phase);
-  const baseZ = numberText(profile.baseZ);
-  const inverseHeight = numberText(profile.inverseHeight);
+/**
+ * The numbers the shader reads, exactly as the former GLSL literals carried them: each passes
+ * through `numberText` (8 decimals) and back, and the two derived frequencies are computed here in
+ * double precision as before. A literal and a uniform then hold the same float32 (barring a
+ * double-rounding tie).
+ */
+export function windUniformValues(profile: VegetationWindProfile): { a: THREE.Vector4; b: THREE.Vector4 } {
+  const safe = safeProfile(profile);
+  if (!safe) throw new Error("Vegetation wind profile is not finite");
+  const literal = (value: number): number => Number(numberText(value));
+  return {
+    a: new THREE.Vector4(
+      literal(safe.amplitude), literal(safe.frequency), literal(safe.phase), literal(safe.baseZ),
+    ),
+    b: new THREE.Vector4(
+      literal(safe.inverseHeight), literal(safe.fieldAmplitude),
+      literal(safe.frequency * 0.73), literal(safe.frequency * 4.7),
+    ),
+  };
+}
+
+const WIND_BODY = windBody();
+
+function windBody(): string {
+  const amplitude = `${VEGETATION_WIND_A_UNIFORM}.x`;
+  const frequency = `${VEGETATION_WIND_A_UNIFORM}.y`;
+  const phase = `${VEGETATION_WIND_A_UNIFORM}.z`;
+  const baseZ = `${VEGETATION_WIND_A_UNIFORM}.w`;
+  const inverseHeight = `${VEGETATION_WIND_B_UNIFORM}.x`;
+  const crossFrequency = `${VEGETATION_WIND_B_UNIFORM}.z`;
   return [
     `// ${VEGETATION_WIND_MARKER}`,
     "vec3 vegetationWindWorldOrigin = ( modelMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;",
@@ -301,7 +344,7 @@ function windBody(profile: SafeWindProfile): string {
     `float vegetationWindPhase = dot( vegetationWindWorldOrigin.xz, vec2( 0.071, 0.113 ) ) + ${phase};`,
     `float vegetationWindWave = sin( ${VEGETATION_WIND_TIME_UNIFORM} * ${frequency} + vegetationWindPhase );`,
     `float vegetationWindCross = sin( ${VEGETATION_WIND_TIME_UNIFORM} * ${crossFrequency} + vegetationWindPhase * 1.37 );`,
-    ...windFieldBody(profile),
+    ...windFieldBody(),
     // With the field's mix at 0 (experimentalWindGusts OFF) these are exactly the original
     // standing sway: x gets `amplitude * wave`, y half the amplitude on the cross wave.
     // M2 is z-up before the renderer's model-to-scene rotation, so both horizontal sway axes are
@@ -320,10 +363,10 @@ function windBody(profile: SafeWindProfile): string {
  * VEGETATION_WIND_CULL_PADDING stays exact. Wind direction arrives in scene space and is turned
  * into this model's local z-up frame by the transpose of its (possibly instanced) basis.
  */
-function windFieldBody(profile: SafeWindProfile): string[] {
-  const fieldAmplitude = numberText(profile.fieldAmplitude);
-  const flutterFrequency = numberText(profile.frequency * 4.7);
-  const phase = numberText(profile.phase);
+function windFieldBody(): string[] {
+  const fieldAmplitude = `${VEGETATION_WIND_B_UNIFORM}.y`;
+  const flutterFrequency = `${VEGETATION_WIND_B_UNIFORM}.w`;
+  const phase = `${VEGETATION_WIND_A_UNIFORM}.z`;
   const time = VEGETATION_WIND_TIME_UNIFORM;
   const field = WIND_FIELD_UNIFORM_NAME;
   const gust = WIND_GUST_UNIFORM_NAME;
@@ -382,7 +425,8 @@ export function windFieldAmplitude(profile: Pick<VegetationWindProfile, "amplitu
   return Math.min(ceiling, Math.max(profile.amplitude, Math.min(0.09, profile.height * 0.1)));
 }
 
-function numberText(value: number): string {
+/** The GLSL literal text the wind used before P1-08; kept as the rounding its uniforms follow. */
+export function numberText(value: number): string {
   const rounded = Number(value.toFixed(8));
   const text = rounded.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
   return text === "-0" || text === "0" ? "0.0" : text.includes(".") ? text : `${text}.0`;

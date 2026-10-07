@@ -7,7 +7,8 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { readField } from "../../world/Fields.js";
 import type { WorldObjectState, WorldState } from "../../world/WorldState.js";
-import { fieldGuid } from "../Inventory.js";
+import { SELF, type WorldStore } from "../../world/WorldStore.js";
+import { fieldGuid, inventoryWatch, type InventoryWatch } from "../Inventory.js";
 import {
   FRAMEXML_CURRENCY_CATALOG_VERSION,
   FrameXmlCurrencyModel,
@@ -103,11 +104,144 @@ export interface FrameXmlCurrencyLiveHost {
   readonly itemInfo?: (entry: number) => { readonly name: string; readonly texture?: string } | undefined;
   readonly itemTexture?: (entry: number) => string | undefined;
   readonly prefetchQuestMetadata?: (itemIds: readonly number[], spellIds: readonly number[], onChanged: () => void) => void;
+  /** P1-17: the world's store, whose field edges move the currency revision. */
+  readonly store?: () => WorldStore | undefined;
+  /**
+   * P1-17: a monotonic number that moves whenever anything `itemInfo`, `itemTexture` or
+   * `world().itemTemplates` answers for an item may have changed. `ItemMetadataClient.revision` alone
+   * is not that: the live `itemInfo` falls back to `WorldClient.itemTemplates`, which has no revision
+   * (its edge is the QUERY_CACHE_CHANGED event). The live mount therefore passes none.
+   */
+  readonly itemRevision?: () => number;
+  /**
+   * P1-17: without `itemRevision` (the live mount), names and icons are re-read on a 60 ms boundary of
+   * this clock (ms), so the revision moves every 60 ms and the list is rebuilt at most that often.
+   */
+  readonly monotonic?: () => number;
+}
+
+/** Without an item revision, the item cache is re-read on the seam's own poll boundary. */
+const CURRENCY_ITEM_POLL_MS = 60;
+
+/**
+ * P1-17 (UI-7): the revision behind the live currency model — a monotonic sum that moves whenever
+ * an input of `frameXmlCurrencySnapshot` or of the item reads may have changed:
+ *
+ * * its own count: the 64 words of PLAYER_FIELD_CURRENCYTOKEN_SLOT_1, the 2 of
+ *   PLAYER_FIELD_KNOWN_CURRENCIES, PLAYER_FIELD_HONOR_CURRENCY and PLAYER_FIELD_ARENA_CURRENCY, a new
+ *   store, world state or player object;
+ * * the store's inventory watch (Inventory.ts): every field of every item object, its arrival and
+ *   removal — the token stacks and entries;
+ * * the item cache: `itemRevision`, or else the 60 ms boundary of `monotonic`.
+ *
+ * Undefined — rebuild on every read, the old behaviour — while detached, without a store, with a store
+ * double that lacks the primitives (`fieldRange`, `object`, `events`), with a store that no longer
+ * observes its state or one that is not the world's, and with neither item clock.
+ * Changes arrive with `WorldStore.flush`, once a frame, as the inventory's do.
+ */
+export class CurrencyRevision {
+  readonly #host: FrameXmlCurrencyLiveHost;
+  #own = 0;
+  #attached = false;
+  #store: WorldStore | undefined;
+  #watch: InventoryWatch | undefined;
+  readonly #stops: (() => void)[] = [];
+  #state: WorldState | undefined;
+  #player: WorldObjectState | undefined;
+  #inventoryBase = 0;
+  #inventoryLast = Number.NEGATIVE_INFINITY;
+  #itemsBase = 0;
+  #itemsLast = Number.NEGATIVE_INFINITY;
+
+  constructor(host: FrameXmlCurrencyLiveHost) {
+    this.#host = host;
+  }
+
+  /** Subscriptions are taken on the first read after this, against the store of that moment. */
+  attach(): void {
+    this.#attached = true;
+    this.#own += 1;
+  }
+
+  detach(): void {
+    this.#attached = false;
+    this.#release();
+    this.#store = undefined;
+  }
+
+  /** How many store subscriptions are held now (tests). */
+  get subscriptions(): number {
+    return this.#stops.length;
+  }
+
+  revision(): number | undefined {
+    if (!this.#attached) return undefined;
+    const store = this.#host.store?.();
+    if (store !== this.#store) {
+      this.#release();
+      this.#store = store;
+      this.#own += 1;
+      if (store) this.#subscribe(store);
+    }
+    const watch = this.#watch;
+    if (!store || !watch || store.state.observer !== store) return undefined;
+    const state = this.#host.world()?.state;
+    if (state !== store.state) return undefined;
+    const self = state.selfGuid;
+    const player = self === undefined ? undefined : state.objects.get(self);
+    if (state !== this.#state || player !== this.#player) {
+      this.#state = state;
+      this.#player = player;
+      this.#own += 1;
+    }
+    const items = this.#host.itemRevision?.()
+      ?? (this.#host.monotonic ? Math.floor(this.#host.monotonic() / CURRENCY_ITEM_POLL_MS) : undefined);
+    if (items === undefined || !Number.isFinite(items)) return undefined;
+    // Each term only grows, so the sum moves whenever one does. A term that went back (a new store's
+    // watch, a replaced item cache) is lifted past its last value, so it reads as a change too.
+    let inventory = watch.revision + this.#inventoryBase;
+    if (inventory < this.#inventoryLast) {
+      this.#inventoryBase += this.#inventoryLast - inventory + 1;
+      inventory = this.#inventoryLast + 1;
+    }
+    this.#inventoryLast = inventory;
+    let cache = items + this.#itemsBase;
+    if (cache < this.#itemsLast) {
+      this.#itemsBase += this.#itemsLast - cache + 1;
+      cache = this.#itemsLast + 1;
+    }
+    this.#itemsLast = cache;
+    return this.#own + inventory + cache;
+  }
+
+  #subscribe(store: WorldStore): void {
+    const primitives = store as Partial<Pick<WorldStore, "field" | "fieldRange" | "object" | "events" | "state">>;
+    if (typeof primitives.fieldRange !== "function" || typeof primitives.field !== "function"
+      || typeof primitives.object !== "function" || !primitives.events || !primitives.state) return;
+    const bump = (): void => { this.#own += 1; };
+    this.#stops.push(store.fieldRange(SELF, "PLAYER_FIELD_CURRENCYTOKEN_SLOT_1", bump));
+    this.#stops.push(store.fieldRange(SELF, "PLAYER_FIELD_KNOWN_CURRENCIES", bump));
+    this.#stops.push(store.field(SELF, "PLAYER_FIELD_HONOR_CURRENCY", bump));
+    this.#stops.push(store.field(SELF, "PLAYER_FIELD_ARENA_CURRENCY", bump));
+    this.#watch = inventoryWatch(store);
+  }
+
+  #release(): void {
+    for (const stop of this.#stops.splice(0)) stop();
+    // The inventory watch belongs to its store (Inventory.ts `inventoryWatch`), not to this revision.
+    this.#watch = undefined;
+    this.#state = undefined;
+    this.#player = undefined;
+  }
 }
 
 /** The live model. Its catalog arrives later, from the world mount (FrameXmlTokenOwner.ts). */
 export function createLiveFrameXmlCurrency(host: FrameXmlCurrencyLiveHost): FrameXmlCurrencyModel {
+  const revision = new CurrencyRevision(host);
   return new FrameXmlCurrencyModel({
+    revision: () => revision.revision(),
+    attach: () => revision.attach(),
+    detach: () => revision.detach(),
     snapshot: () => {
       const state = host.world()?.state;
       return state && typeof state.objects?.get === "function" ? frameXmlCurrencySnapshot(state) : undefined;

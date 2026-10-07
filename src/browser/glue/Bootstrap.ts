@@ -149,6 +149,9 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     stage.style.transform = `scale(${metrics.scaleX}, ${metrics.scaleY})`;
     stage.style.transformOrigin = "top left";
     runtime.resizeLoginScene(metrics.virtualWidth);
+    // A refit can move or rescale the stage without a resize the renderer hears (a transform-only
+    // change): it measures the container again (P1-18). `pictures` is the renderer once built.
+    pictures?.invalidateContainerBox();
   }
 
   /**

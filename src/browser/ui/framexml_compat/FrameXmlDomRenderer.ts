@@ -121,7 +121,30 @@ export interface FrameXmlDomRendererOptions {
    * do and how long it took. Two `performance.now()` reads per pass; nothing when absent.
    */
   readonly perf?: FrameXmlRenderPerfSink;
+  /**
+   * Milliseconds, for the container box's safety expiry (`containerBox`) only. Defaults to
+   * `performance.now()`; a test passes its own to step the 250 ms by hand.
+   */
+  readonly boxClock?: () => number;
 }
+
+/**
+ * The container's page box as `containerBox` keeps it: its client rectangle and its offset (layout)
+ * size, the two reads every cursor move and tooltip clamp needs.
+ */
+interface ContainerBox {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly width: number;
+  readonly height: number;
+  readonly offsetWidth: number;
+  readonly offsetHeight: number;
+}
+
+/** How long a kept container box is trusted with no resize, scroll or observer call in between. */
+const CONTAINER_BOX_TTL_MS = 250;
 
 interface RenderedFrame {
   readonly frame: FrameXmlFrame;
@@ -636,6 +659,11 @@ export class FrameXmlDomRenderer {
   #destroyed = false;
   /** The container's resize observer, released by `destroy`; see `watchContainer`. */
   #containerCleanup: (() => void) | undefined;
+  /** See `containerBox`. */
+  #containerBox: ContainerBox | undefined;
+  /** `#boxClock()` when `#containerBox` was read. */
+  #containerBoxAt = 0;
+  readonly #boxClock: () => number;
 
   constructor(container: HTMLElement, options: FrameXmlDomRendererOptions = {}) {
     this.#container = container;
@@ -657,6 +685,7 @@ export class FrameXmlDomRenderer {
     this.#layoutOnly = options.layoutOnly;
     this.#clock = options.clock ?? ((): number => Date.now() / 1000);
     this.#perf = options.perf;
+    this.#boxClock = options.boxClock ?? ((): number => performance.now());
     this.#unobserveFrames = options.bridge?.observeFrameMutations((frame, kind) => {
       const bit = kind === "paint" ? CHANGE_PAINT : kind === "layout" ? CHANGE_LAYOUT : CHANGE_STRUCTURE;
       this.#dirty.set(frame, (this.#dirty.get(frame) ?? 0) | bit);
@@ -696,6 +725,8 @@ export class FrameXmlDomRenderer {
     // The observer reports the initial box once; only a box other than the one laid out counts.
     let size = sizeOf();
     const observer = new Observer(() => {
+      // Any call, before the size test: the box can move on the page without changing size.
+      this.invalidateContainerBox();
       const now = sizeOf();
       if (now === size) return;
       size = now;
@@ -757,19 +788,64 @@ export class FrameXmlDomRenderer {
    * chat window for the world canvas left the cursor inside the chat window and the stock fade
    * (`FCF_OnUpdate` asking `chatFrame:IsMouseOver(…)`) could never see it go. On the window, not the
    * document, so it reaches the pointer over the 3D canvas too; Chrome delivers `pointermove` once
-   * per animation frame, so this is one container rectangle read per frame of movement.
+   * per animation frame. The container's box comes from `containerBox`, so a stable page reads no
+   * layout per move; a resize or a scroll anywhere (capture) drops the kept box.
    */
   private trackPointer(): void {
     const view = this.#container.ownerDocument?.defaultView;
     if (!this.#bridge || typeof view?.addEventListener !== "function") return;
     const move = (event: Event): void => this.rememberCursor(event);
-    const resize = (): void => this.#screenRects.clear();
+    const resize = (): void => {
+      this.#screenRects.clear();
+      this.invalidateContainerBox();
+    };
+    const scroll = (): void => this.invalidateContainerBox();
     view.addEventListener("pointermove", move, { capture: true, passive: true });
     view.addEventListener("resize", resize);
+    view.addEventListener("scroll", scroll, { capture: true, passive: true });
     this.#pointerCleanup = () => {
       view.removeEventListener("pointermove", move, { capture: true });
       view.removeEventListener("resize", resize);
+      view.removeEventListener("scroll", scroll, { capture: true });
     };
+  }
+
+  /**
+   * Forget the container's kept box (`containerBox`); the next reader measures it again. For a host
+   * that moves the stage by means the renderer does not hear of.
+   */
+  invalidateContainerBox(): void {
+    this.#containerBox = undefined;
+  }
+
+  /**
+   * The container's client rectangle and offset size, kept between reads.
+   *
+   * `rememberCursor` ran on every window `pointermove`, every widget enter/leave and every press, and
+   * each call read `getBoundingClientRect()` and `offsetWidth/offsetHeight` — a forced layout in the
+   * middle of the frame whenever the page had pending style. The box only changes when the window
+   * resizes, a page scrolls, or the stage is refitted (its logical size: the `ResizeObserver`), and
+   * each of those drops it; a position change with none of them is covered by a 250 ms expiry (at
+   * most four reads a second). Only a measurable box is kept: an unlaid (zero-size) container is
+   * read again each time, as before. The rectangles of the element and its parent stay live.
+   */
+  private containerBox(): ContainerBox | undefined {
+    const now = this.#boxClock();
+    const kept = this.#containerBox;
+    if (kept && now - this.#containerBoxAt < CONTAINER_BOX_TTL_MS && now >= this.#containerBoxAt) return kept;
+    this.#containerBox = undefined;
+    const rect = this.#container.getBoundingClientRect?.();
+    if (!rect) return undefined;
+    const box: ContainerBox = {
+      left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+      width: rect.width, height: rect.height,
+      offsetWidth: this.#container.offsetWidth, offsetHeight: this.#container.offsetHeight,
+    };
+    if (box.width > 0 && box.height > 0) {
+      this.#containerBox = box;
+      this.#containerBoxAt = now;
+    }
+    return box;
   }
 
   /**
@@ -794,6 +870,7 @@ export class FrameXmlDomRenderer {
       return;
     }
     this.#screenRects.clear();
+    this.invalidateContainerBox();
     this.trackPointer();
     this.syncCursorTracking();
   }
@@ -805,6 +882,7 @@ export class FrameXmlDomRenderer {
     for (const rendered of this.#rendered.values()) this.dropRendered(rendered);
     this.#rendered.clear();
     this.#roots.splice(0, this.#roots.length, ...roots);
+    this.invalidateContainerBox();
     this.#lastMutationVersion = -1;
     this.#lastStructureVersion = -1;
     this.sync();
@@ -826,6 +904,7 @@ export class FrameXmlDomRenderer {
       changed = true;
     }
     if (!changed) return;
+    this.invalidateContainerBox();
     this.#lastMutationVersion = -1;
     this.#lastStructureVersion = -1;
     this.sync();
@@ -1207,6 +1286,7 @@ export class FrameXmlDomRenderer {
     this.#pointerCleanup = undefined;
     this.#containerCleanup?.();
     this.#containerCleanup = undefined;
+    this.invalidateContainerBox();
     this.#hoveredButtons.clear();
     this.#screenRects.clear();
     this.#cursor = undefined;
@@ -3861,10 +3941,13 @@ export class FrameXmlDomRenderer {
       style.position = "absolute";
     }
     if (rows.size === 0) return;
-    const screen = this.#container.getBoundingClientRect?.();
+    const screen = this.containerBox();
     const parent = element.parentElement ?? this.#container;
-    const parentRect = parent.getBoundingClientRect?.();
-    const parentScale = parentRect && parent.offsetWidth > 0 ? parentRect.width / parent.offsetWidth : 1;
+    // A tooltip drawn straight in the container measures against the kept box (`containerBox`).
+    const parentBox = parent === this.#container ? screen : undefined;
+    const parentRect = parentBox ?? parent.getBoundingClientRect?.();
+    const parentWidth = parentBox ? parentBox.offsetWidth : parent.offsetWidth;
+    const parentScale = parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1;
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const available = screen && screen.width > 0 && parentScale > 0
       ? Math.max(1, screen.width / (parentScale * ownScale) - 16) : 640;
@@ -3940,16 +4023,21 @@ export class FrameXmlDomRenderer {
   private clampToScreen(element: HTMLElement, frame: FrameXmlFrame): void {
     this.positionCursorTooltip(element, frame);
     element.style.removeProperty("translate");
-    if (!frame.clampedToScreen || !element.getBoundingClientRect || !this.#container.getBoundingClientRect) return;
-    const screen = this.#container.getBoundingClientRect();
+    if (!frame.clampedToScreen || !element.getBoundingClientRect) return;
+    const screen = this.containerBox();
+    if (!screen) return;
     const rect = element.getBoundingClientRect();
     if (!(screen.width > 0 && screen.height > 0 && rect.width > 0 && rect.height > 0)) return;
     const left = Math.max(screen.left, Math.min(rect.left, screen.right - rect.width));
     const top = Math.max(screen.top, Math.min(rect.top, screen.bottom - rect.height));
     const parent = element.parentElement ?? this.#container;
-    const parentRect = parent.getBoundingClientRect?.();
-    const scaleX = parentRect && parent.offsetWidth > 0 ? parentRect.width / parent.offsetWidth : 1;
-    const scaleY = parentRect && parent.offsetHeight > 0 ? parentRect.height / parent.offsetHeight : 1;
+    // A frame drawn straight in the container measures against the kept box (`containerBox`).
+    const parentBox = parent === this.#container ? screen : undefined;
+    const parentRect = parentBox ?? parent.getBoundingClientRect?.();
+    const parentWidth = parentBox ? parentBox.offsetWidth : parent.offsetWidth;
+    const parentHeight = parentBox ? parentBox.offsetHeight : parent.offsetHeight;
+    const scaleX = parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1;
+    const scaleY = parentRect && parentHeight > 0 ? parentRect.height / parentHeight : 1;
     if (!(scaleX > 0 && scaleY > 0)) return;
     if (left !== rect.left || top !== rect.top) {
       element.style.translate = `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`;
@@ -4033,11 +4121,11 @@ export class FrameXmlDomRenderer {
     if (cached !== undefined) return cached ?? undefined;
     const rendered = this.#rendered.get(frame);
     let rect: FrameXmlRect | undefined;
-    const box = rendered && !rendered.effectiveHidden ? this.#container.getBoundingClientRect?.() : undefined;
+    const box = rendered && !rendered.effectiveHidden ? this.containerBox() : undefined;
     const drawn = box ? rendered?.element.getBoundingClientRect?.() : undefined;
     if (box && drawn && box.width > 0 && box.height > 0) {
-      const width = this.#container.offsetWidth || box.width;
-      const height = this.#container.offsetHeight || box.height;
+      const width = box.offsetWidth || box.width;
+      const height = box.offsetHeight || box.height;
       const scaleX = width / box.width;
       const scaleY = height / box.height;
       const left = (drawn.left - box.left) * scaleX;
@@ -4054,10 +4142,10 @@ export class FrameXmlDomRenderer {
     const mouse = event as MouseEvent;
     if (Number.isFinite(mouse.clientX) && Number.isFinite(mouse.clientY)) {
       this.#cursor = { x: mouse.clientX, y: mouse.clientY };
-      const rect = this.#container.getBoundingClientRect?.();
+      const rect = this.containerBox();
       if (rect && rect.width > 0 && rect.height > 0) {
-        const width = this.#container.offsetWidth || rect.width;
-        const height = this.#container.offsetHeight || rect.height;
+        const width = rect.offsetWidth || rect.width;
+        const height = rect.offsetHeight || rect.height;
         this.#bridge?.setMousePosition((mouse.clientX - rect.left) * width / rect.width,
           height - (mouse.clientY - rect.top) * height / rect.height);
       }
@@ -4069,10 +4157,14 @@ export class FrameXmlDomRenderer {
     const cursor = this.#cursor;
     if (!anchor || !cursor) return;
     const parent = element.parentElement ?? this.#container;
-    const rect = parent.getBoundingClientRect?.();
+    // A tooltip drawn straight in the container measures against the kept box (`containerBox`).
+    const box = parent === this.#container ? this.containerBox() : undefined;
+    const rect = box ?? parent.getBoundingClientRect?.();
     if (!rect) return;
-    const scaleX = parent.offsetWidth > 0 ? rect.width / parent.offsetWidth : 1;
-    const scaleY = parent.offsetHeight > 0 ? rect.height / parent.offsetHeight : 1;
+    const parentWidth = box ? box.offsetWidth : parent.offsetWidth;
+    const parentHeight = box ? box.offsetHeight : parent.offsetHeight;
+    const scaleX = parentWidth > 0 ? rect.width / parentWidth : 1;
+    const scaleY = parentHeight > 0 ? rect.height / parentHeight : 1;
     if (!(scaleX > 0 && scaleY > 0)) return;
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const height = element.offsetHeight || numberValue(frame.attributes["height"]) || 0;

@@ -42,7 +42,20 @@ function optionValue(args, name) {
   return found;
 }
 
-/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target }`. */
+/** The bench env the game runs with (P1-02a): `import.meta.env` is the production Vite env. */
+export const DEFAULT_BENCHMARK_ENV = 'prod';
+
+/** `--bench-env` value → 'prod' (none or `prod`) or 'dev' (the bundle before P1-02a); anything else throws. */
+export function resolveBenchmarkEnv(value) {
+  if (value === undefined || value === DEFAULT_BENCHMARK_ENV) return DEFAULT_BENCHMARK_ENV;
+  if (value === 'dev') return 'dev';
+  throw new Error(`--bench-env expects prod or dev, not ${JSON.stringify(value)}`);
+}
+
+/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target, env }`. */
 export function parseBundleOptions(args) {
-  return { target: resolveBenchmarkTarget(optionValue(args, '--target')) };
+  return {
+    target: resolveBenchmarkTarget(optionValue(args, '--target')),
+    env: resolveBenchmarkEnv(optionValue(args, '--bench-env')),
+  };
 }

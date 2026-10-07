@@ -13,6 +13,26 @@ export class ByteQueue {
     this.#length += bytes.byteLength;
   }
 
+  /**
+   * Copies the first `length` bytes into `target` without consuming them; false when fewer are held.
+   * For the few bytes of a packet header, so a byte loop rather than `set` over subarrays.
+   */
+  peek(target: Uint8Array, length: number): boolean {
+    if (!Number.isInteger(length) || length < 0 || length > this.#length || length > target.byteLength) return false;
+    let chunkIndex = 0;
+    let chunk = this.#chunks[0];
+    let offset = this.#headOffset;
+    for (let written = 0; written < length; written++) {
+      while (chunk && offset >= chunk.byteLength) {
+        chunk = this.#chunks[++chunkIndex];
+        offset = 0;
+      }
+      if (!chunk) throw new Error("ByteQueue accounting error");
+      target[written] = chunk[offset++]!;
+    }
+    return true;
+  }
+
   read(length: number): Uint8Array {
     if (!Number.isInteger(length) || length < 0 || length > this.#length) {
       throw new RangeError(`ByteQueue needs ${length} bytes but has ${this.#length}`);

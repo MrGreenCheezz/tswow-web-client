@@ -43,7 +43,7 @@ const windows = Array.from({ length: Math.ceil(capture.durationMs / 10000) }, (_
 const inWindow = (atMs, window) => atMs >= window.fromMs && atMs < window.toMs;
 const sections = events.cpuSections;
 const sectionNames = ['render', 'render.submit.world', 'render.units.pose', 'render.env', 'render.visuals',
-  'render.units.appearance', 'render.warm', 'render.submit.sky', 'render.submit.postprocess', 'portraits', 'ui', 'state', 'scene'];
+  'render.units.appearance', 'render.warm', 'render.submit.sky', 'render.submit.postprocess', 'portraits', 'ui', 'state', 'state.flush', 'state.motions', 'state.visuals', 'state.view', 'scene'];
 const sum = values => values.reduce((a, b) => a + b, 0);
 const report = {
   sourceCapture: basename(input), sha256: createHash('sha256').update(bytes).digest('hex'),
@@ -91,6 +91,9 @@ const report = {
   checkpointAnimationLod: Object.fromEntries(animationLodCounts
     .map(key => [key, distribution(checkpoints.map(checkpoint => checkpoint.renderer.animationLod?.[key]))])),
   gpuRollingMedianMs: distribution(checkpoints.map(checkpoint => checkpoint.renderer.gpu.p50)),
+  // P1-20a: every frame's state pieces, averaged per half-second checkpoint (older captures: absent).
+  checkpointSectionsMs: Object.fromEntries(['state.flush', 'state.motions', 'state.visuals', 'state.view']
+    .map(key => [key, distribution(checkpoints.map(checkpoint => checkpoint.sections?.[key]))])),
   worldSubmission: {
     samples: submissions.length, totalMs: distribution(submissions.map(sample => sample.totalMs)),
     partsMs: Object.fromEntries(parts.map(key => [key, distribution(submissions.map(sample => sample.partsMs[key]))])),

@@ -3185,6 +3185,8 @@ export async function mountFrameXmlVertical(
   host.setAttribute("aria-hidden", "true");
   viewport.append(host);
 
+  /** The renderer once it is built below, for `fit` (P1-18: its kept container box). */
+  let fitRenderer: FrameXmlDomRenderer | undefined;
   const fit = (): void => {
     const width = host.clientWidth || window.innerWidth;
     const height = host.clientHeight || window.innerHeight;
@@ -3194,6 +3196,9 @@ export async function mountFrameXmlVertical(
     stage.style.width = `${logical.width}px`;
     stage.style.height = `${logical.height}px`;
     stage.style.transform = `scale(${logical.scale})`;
+    // A refit can move or rescale the stage without a resize the renderer hears (a transform-only
+    // change, a UI-scale change before its observer runs): it measures the container again.
+    fitRenderer?.invalidateContainerBox();
   };
   fit();
   window.addEventListener("resize", fit);
@@ -3537,6 +3542,9 @@ export async function mountFrameXmlVertical(
     clientNetworkChanged: (opcodes) => game.modules?.noteLuaOpcodes(opcodes),
     exerciseEvents: FRAMEXML_VERTICAL_EXERCISE_EVENTS,
     seam,
+    // P1-14f (D9 default): answered C API bound after the first touch; frameXmlWorld().api counts
+    // touches for those names, unanswered names still count every call.
+    census: "touch",
     onQuestPortrait: (guid) => {
       questPortraitRequested = true;
       setQuestGiverPortrait(guid);
@@ -3804,6 +3812,7 @@ export async function mountFrameXmlVertical(
       },
     });
     resources.renderer = renderer;
+    fitRenderer = renderer;
     pictures = renderer;
     geometryRenderer = renderer;
     renderer.registerFonts(boot.bridge.fontStyles);
@@ -4001,6 +4010,8 @@ export async function mountFrameXmlVertical(
       host.setAttribute("aria-hidden", "false");
       boot.bridge.setPaintDeferral(true);
       boot.bridge.setLayoutDeferral(true);
+      // P1-15a: a FontString text nothing measures is a paint change in the world.
+      boot.bridge.setTextLayoutPolicy("auto");
       current.frame = window.requestAnimationFrame(step);
       // `boot` is the live VM/bridge for DevTools probes (`frameXmlWorld().boot.vm`); it is not copied by
       // `copy(frameXmlWorld().errors)`, the census the owner pastes.
@@ -4611,6 +4622,8 @@ export async function mountFrameXmlVertical(
     // paint from any source, and everything a world event changes (`setLayoutDeferral`).
     boot.bridge.setPaintDeferral(true);
     boot.bridge.setLayoutDeferral(true);
+    // P1-15a: a FontString text nothing measures is a paint change in the world.
+    boot.bridge.setTextLayoutPolicy("auto");
     current.frame = window.requestAnimationFrame(step);
 
     const numbers = {

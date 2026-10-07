@@ -89,7 +89,53 @@ export class WorldConnection {
     return { opcode, payload };
   }
 
+  /**
+   * The next packet if it is already buffered whole, else undefined — synchronously (P1-21b1).
+   *
+   * All or nothing: on undefined nothing has been consumed and the header cipher has not moved, so
+   * the caller falls back on `read()` and gets the same packet. RC4 is a stream cipher; advanced over
+   * a header whose payload has not arrived it could not be put back, which is why the header is
+   * first decrypted on a copy of the cipher state (`peekServerHeader`) and only committed once the
+   * whole packet is there. Framing, the size check and its message are `read()`'s. A stream without
+   * the optional synchronous API (the test streams with only `readExactly`) always answers undefined.
+   */
+  tryRead(): WorldPacket | undefined {
+    const stream = this.#stream;
+    if (typeof stream.peek !== "function" || typeof stream.readBuffered !== "function") return undefined;
+    const buffered = stream.buffered ?? 0;
+    if (buffered < 4) return undefined;
+    const peekLength = buffered >= 5 ? 5 : 4;
+    if (!stream.peek(PEEK_RAW, peekLength)) return undefined;
+    const crypt = this.#crypt;
+    const plain = crypt ? PEEK_PLAIN : PEEK_RAW;
+    if (crypt) crypt.peekServerHeader(PEEK_RAW, peekLength, PEEK_PLAIN);
+    const large = (plain[0]! & 0x80) !== 0;
+    const headerLength = large ? 5 : 4;
+    if (peekLength < headerLength) return undefined;
+    const size = large
+      ? ((plain[0]! & 0x7f) << 16) | (plain[1]! << 8) | plain[2]!
+      : (plain[0]! << 8) | plain[1]!;
+    const opcodeOffset = large ? 3 : 2;
+    const opcode = plain[opcodeOffset]! | (plain[opcodeOffset + 1]! << 8);
+    const payloadLength = size - 2;
+    if (payloadLength < 0 || payloadLength > MAX_WORLD_PAYLOAD) throw new RangeError(`Invalid world payload size ${payloadLength}`);
+    if (buffered < headerLength + payloadLength) return undefined;
+
+    // Commit: the header through the real cipher (exactly once), then the payload.
+    const header = stream.readBuffered(headerLength);
+    if (!header) return undefined;
+    if (crypt) crypt.decryptServerHeader(header);
+    const payload = stream.readBuffered(payloadLength);
+    if (!payload) throw new Error("World stream lost buffered bytes between the header and the payload");
+    this.#bytesReceived += headerLength + payloadLength;
+    return { opcode, payload };
+  }
+
   close(): void {
     this.#stream.close();
   }
 }
+
+/** Scratch for `tryRead`'s header look-ahead: synchronous, so one pair is enough. */
+const PEEK_RAW = new Uint8Array(5);
+const PEEK_PLAIN = new Uint8Array(5);
