@@ -212,7 +212,11 @@ function shadowSummary(checkpoints) {
       };
     }),
     frames,
-    shadowOnlyCasters: mean(ascending(samples.map((stats) => stats.shadowOnlyCasters))),
+    // P2-01a renamed the field: owners with an active gate-2 caster. Recordings made before it carry
+    // `shadowOnlyCasters` (every node the old toggle showed), reported apart and never mixed in.
+    shadowOnlyOwners: mean(ascending(samples.map((stats) => stats.shadowOnlyOwners))),
+    ...(samples.some((stats) => stats.shadowOnlyCasters !== undefined)
+      ? { shadowOnlyCastersLegacy: mean(ascending(samples.map((stats) => stats.shadowOnlyCasters))) } : {}),
   };
 }
 
@@ -580,7 +584,9 @@ function formatTelemetry(telemetry) {
   if (telemetry.shadow) {
     lines.push(`  shadow cascades: ${telemetry.shadow.cascades.map((cascade, index) => `#${index} ${fixed(cascade.drawCalls, 0)} draws`
       + ` ${fixed(cascade.cpuMs)} ms (max ${fixed(cascade.cpuMaxMs)}) ${percent(cascade.rendersPerFrame, 0)} of frames`).join(' · ')}`
-      + ` · shadow-only casters ${fixed(telemetry.shadow.shadowOnlyCasters, 1)}`);
+      + (telemetry.shadow.shadowOnlyCastersLegacy !== undefined
+        ? ` · shadow-only casters (pre-P2-01 toggle count) ${fixed(telemetry.shadow.shadowOnlyCastersLegacy, 1)}`
+        : ` · shadow-only owners ${fixed(telemetry.shadow.shadowOnlyOwners, 1)}`));
   }
   if (telemetry.stacking) lines.push(`  stacking: ${JSON.stringify(telemetry.stacking)}`);
   const extra = telemetry.frameExtra;

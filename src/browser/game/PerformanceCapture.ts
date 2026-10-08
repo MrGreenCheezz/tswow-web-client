@@ -514,14 +514,14 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
  */
 function shadowCheckpoint(stats: undefined | {
   readonly cascades: readonly { readonly rendered: boolean; readonly drawCalls: number; readonly cpuMs: number; readonly renders: number }[];
-  readonly frames: number; readonly shadowOnlyCasters: number;
+  readonly frames: number; readonly shadowOnlyOwners: number;
 }): unknown {
   if (stats === undefined) return undefined;
   return {
     cascades: stats.cascades.map((cascade) => ({
       rendered: cascade.rendered, drawCalls: cascade.drawCalls, cpuMs: round2(cascade.cpuMs), renders: cascade.renders,
     })),
-    frames: stats.frames, shadowOnlyCasters: stats.shadowOnlyCasters,
+    frames: stats.frames, shadowOnlyOwners: stats.shadowOnlyOwners, // P2-01a: was shadowOnlyCasters (old toggle count)
   };
 }
 

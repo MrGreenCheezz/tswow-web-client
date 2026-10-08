@@ -61,8 +61,9 @@ import {
 } from "./LightingQuality.js";
 import { UnitShadowCasterSet, unitShadowFootprint, unitShadowInReach, type UnitShadowSphere } from "./UnitShadowCasters.js"; // 06.10-shadow
 import {
-  CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot,
+  CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot, type ShadowCasterCensus,
 } from "./CascadedShadows.js";
+import { ShadowCasterList, type CasterGate } from "./ShadowCasterList.js"; // P2-01a
 import {
   applyHorizonAerialFog, applyWorldLight, createWorldLightUniforms,
   setWorldLightAerialFog, setWorldLightDaylight, setWorldLightImmersiveStrength, setWorldLightUniforms,
@@ -4030,8 +4031,12 @@ export class WorldRenderer3D {
    * handed back unchanged at quality 0. See CascadedShadows.ts.
    */
   readonly #sunCascades = new CascadedSunShadows(this.#sun, this.#worldLight.wowShadowFade);
-  /** Retained scenery shown for the shadow pass only, restored right after it. */
-  readonly #shadowOnlyNodes: THREE.Object3D[] = [];
+  /**
+   * P2-01a: every mesh whose `castShadow` is on, registered where the flag is written
+   * (the scenery, WMO stand-in and unit shadow policies); the cascades draw this list
+   * instead of walking the scene. See ShadowCasterList.ts.
+   */
+  readonly #shadowCasters = new ShadowCasterList();
   readonly #sunOffset = new THREE.Vector3(0, 400, 0);
   /** 05.10-sun: scratch for the classic (quality 0) key light from `ClassicSun.ts`. */
   readonly #classicKeyLight = { x: 0, y: 1, z: 0 };
@@ -4662,7 +4667,9 @@ export class WorldRenderer3D {
     const cascades = this.#sunCascades.active;
     // Which meshes the cached cascade draws, folded into one number: a change means it is stale.
     let farCasters = 0;
-    const apply = (node: THREE.Object3D, include: boolean): void => {
+    // P2-01a: a placement's meshes register with their placement as owner, so the gate can show
+    // retained scenery the view did not admit to the shadow pass (what `#shadowOnlyToggle` did).
+    const apply = (node: THREE.Object3D, include: boolean, rendered?: RenderedEnvironment): void => {
       node.traverse((child) => {
         if (!(child instanceof THREE.Mesh) || child.userData[WMO_SHADOW_PROXY] === true) return;
         let eligible = wanted && include;
@@ -4689,6 +4696,8 @@ export class WorldRenderer3D {
           casts = radius >= SCENERY_SHADOW_MIN_RADIUS;
         }
         if (child.castShadow !== casts) child.castShadow = casts;
+        if (rendered) this.#shadowCasters.set(child, casts, rendered.node, this.#environmentShadowGate, rendered);
+        else this.#shadowCasters.set(child, casts);
         if (child.receiveShadow !== eligible) child.receiveShadow = eligible;
         const far = casts && cascades && radius >= SCENERY_FAR_SHADOW_MIN_RADIUS;
         if (far) {
@@ -4698,7 +4707,7 @@ export class WorldRenderer3D {
       });
     };
     for (const rendered of this.#environment.values()) {
-      apply(rendered.node, rendered.wmo === undefined);
+      apply(rendered.node, rendered.wmo === undefined, rendered);
       if (rendered.wmo) farCasters = (farCasters + this.#syncWmoShadows(rendered.wmo, wanted)) % 4294967296;
     }
     for (const { mesh } of this.#instances.values()) apply(mesh, true);
@@ -4715,6 +4724,7 @@ export class WorldRenderer3D {
     for (const terrain of this.#terrains.values()) {
       const mesh = terrain.mesh;
       if (mesh.castShadow !== wanted) mesh.castShadow = wanted;
+      this.#shadowCasters.set(mesh, wanted);
       if (wanted && cascades) {
         mesh.layers.enable(SHADOW_FAR_LAYER);
         farCasters = (farCasters + mesh.id * 2654435761) % 4294967296;
@@ -4724,6 +4734,7 @@ export class WorldRenderer3D {
       const mesh = this.#horizon.mesh;
       const casts = wanted && cascades;
       if (mesh.castShadow !== casts) mesh.castShadow = casts;
+      this.#shadowCasters.set(mesh, casts);
       if (casts) {
         mesh.layers.enable(SHADOW_FAR_LAYER);
         farCasters = (farCasters + mesh.id * 2654435761) % 4294967296;
@@ -4760,6 +4771,7 @@ export class WorldRenderer3D {
         .some((material) => material instanceof THREE.MeshStandardMaterial);
       if (mesh.receiveShadow !== receives) mesh.receiveShadow = receives;
       if (mesh.castShadow) mesh.castShadow = false;
+      this.#shadowCasters.set(mesh, false);
       const casts = wanted && this.#sunCascades.active && (!group.indoor || group.exterior);
       let proxy = this.#wmoShadowProxies.get(mesh);
       if (casts && proxy === undefined) {
@@ -4780,6 +4792,7 @@ export class WorldRenderer3D {
       }
       if (!proxy) continue;
       if (proxy.castShadow !== casts) proxy.castShadow = casts;
+      this.#shadowCasters.set(proxy, casts);
       if (proxy.visible !== casts) proxy.visible = casts;
       if (casts) fold = (fold + proxy.id * 2654435761) % 4294967296;
     }
@@ -4793,25 +4806,52 @@ export class WorldRenderer3D {
    * behind the camera, or beside the frame, would drop its shadow out of the ground it falls on,
    * and shadows would come and go at the screen's edges as the camera turns. Three has already built
    * this frame's draw lists when it asks for shadows, so what is shown here reaches the shadow maps
-   * and never the view; the cascades hide it again straight after. Interior doodads, stand-ins and
-   * WMO placements (whose hidden rooms are detached anyway) are left alone.
+   * and never the view. Interior doodads, stand-ins and WMO placements (whose hidden rooms are
+   * detached anyway) are left alone.
+   *
+   * P2-01a: this used to show those nodes around the cascades and hide them again
+   * (`#shadowOnlyToggle`, a walk of every placement each shadow frame). Now each placement's casters
+   * carry it as their owner and this gate answers 2 — "ignore the owner's own `visible`" — for
+   * exactly the placements the toggle showed; every other one keeps the plain visibility rule (1),
+   * so the set of casters is the one the toggle produced.
    */
-  readonly #shadowOnlyToggle = (on: boolean): number => {
-    const nodes = this.#shadowOnlyNodes;
-    if (!on) {
-      for (const node of nodes) node.visible = false;
-      nodes.length = 0;
-      return 0;
-    }
-    if (!this.#sceneryShadowsApplied) return 0;
-    for (const rendered of this.#environment.values()) {
-      if (rendered.admitted || !rendered.actual || rendered.interior || rendered.wmo
-        || rendered.node.visible) continue;
-      rendered.node.visible = true;
-      nodes.push(rendered.node);
-    }
-    return nodes.length;
+  readonly #environmentShadowGate: CasterGate = (ref) => {
+    const rendered = ref as RenderedEnvironment;
+    return !rendered.admitted && this.#sceneryShadowsApplied && rendered.actual && !rendered.interior
+      && rendered.wmo === undefined ? 2 : 1;
   };
+
+  /**
+   * P2-01a census (bench `sceneStats.shadowCasterList`): the caster list against three's walk of
+   * the scene with the old toggle's nodes shown. Undefined at quality 0.
+   */
+  shadowCasterCensus(): ShadowCasterCensus | undefined {
+    const shown = new Set<THREE.Object3D>();
+    const placements = new Map<THREE.Object3D, RenderedEnvironment>();
+    for (const rendered of this.#environment.values()) {
+      placements.set(rendered.node, rendered);
+      if (!this.#sceneryShadowsApplied) continue;
+      if (rendered.admitted || !rendered.actual || rendered.interior || rendered.wmo || rendered.node.visible) continue;
+      shown.add(rendered.node);
+    }
+    // Scenery draws by gate and by whether the placement could join an instance bucket (the
+    // entry condition of P2-01c1: gate-2 draws of instanceable world-lane copies).
+    const classify = (mesh: THREE.Mesh): string | undefined => {
+      for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
+        const rendered = placements.get(node);
+        if (!rendered) continue;
+        // P2-01c2 entry: WMO stand-ins and solid single statics apart from alpha-keyed ones.
+        if (mesh.userData[WMO_SHADOW_PROXY] === true) return `gate${this.#environmentShadowGate(rendered)}|wmoProxy`;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const keyed = materials.some((material) => material.alphaTest > 0);
+        const lane = rendered.instanceKey === undefined ? (keyed ? "single-alpha" : "single-solid")
+          : rendered.source.localLight !== undefined ? "instanceable-local" : "instanceable";
+        return `gate${this.#environmentShadowGate(rendered)}|${lane}`;
+      }
+      return undefined;
+    };
+    return this.#sunCascades.casterCensus(this.#scene, (node) => shown.has(node), classify);
+  }
 
   // 06.10-shadow: unit casters with hysteresis, and admission of units whose shadow reaches the view
   // (UnitShadowCasters.ts). Owner's live report 06.10: level 3's unit shadows popped in and out.
@@ -6843,6 +6883,7 @@ export class WorldRenderer3D {
       this.#glowPasses.godRays,
     ]) material.dispose();
     this.#sunCascades.dispose();
+    this.#shadowCasters.clear(); // P2-01a
     this.#skyCelestials.dispose(); // 05.10-A7b-6
     this.#skyCelestialTextures.clear(); // 05.10-A7b-6
     this.#wmoEnvTextures.clear(); // 05.10-A7b-2
@@ -8157,7 +8198,7 @@ export class WorldRenderer3D {
     }
     // Map sizes, extents, bias and blur all belong to the cascades (CascadedShadows.ts), which
     // place every map from the camera each frame. Quality 0 hands the sun back as it was.
-    this.#sunCascades.setShadowOnlyCasters(this.#shadowOnlyToggle);
+    this.#sunCascades.setCasterList(this.#shadowCasters); // P2-01a: replaces the shadow-only toggle
     this.#sunCascades.setBoundedCasters(this.#boundedShadowCasters);
     this.#sunCascades.configure(this.#scene, this.#renderer, next);
     for (const terrain of this.#terrains.values()) terrain.mesh.receiveShadow = shadows;
@@ -8347,6 +8388,7 @@ export class WorldRenderer3D {
         depthWrite: material.depthWrite,
       }));
       node.castShadow = enabled && eligible;
+      this.#shadowCasters.set(node, enabled && eligible);
       node.receiveShadow = enabled && eligible;
     });
     unit.shadowCaster = enabled;

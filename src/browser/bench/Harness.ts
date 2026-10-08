@@ -678,7 +678,10 @@ host.__bench = {
     const programKeys = (renderer.info.programs ?? []).map((program) => ({
       name: program.name, usedTimes: program.usedTimes, key: (program as { cacheKey?: string }).cacheKey ?? "",
     }));
+    // P2-01a: the caster list against three's own walk of the scene, cascade by cascade, as
+    // that frame left them (`missing = extra = 0` is the condition for P2-01b and c1–c2).
+    const shadowCasterList = world?.shadowCasterCensus() ?? null;
     return { byBranch, drawsByBranch, shadowDraws, materials: materials.size, visibleMaterials: visibleMaterials.size,
-      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys };
+      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys, shadowCasterList };
   },
 };
