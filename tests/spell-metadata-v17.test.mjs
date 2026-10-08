@@ -137,8 +137,10 @@ test("served v=17 columns match Spell.dbc and SummonProperties.dbc on every row 
   const table = parseSummonProperties(summon);
   assert.ok(table.size > 100, `${table.size} SummonProperties rows`);
   let rows = 0;
+  let tableRows = 0;
   let summons = 0;
   for (const row of spells.rows()) {
+    tableRows += 1;
     const id = spells.id(row);
     const served = metadata.get(id);
     if (!served) continue;
@@ -155,7 +157,9 @@ test("served v=17 columns match Spell.dbc and SummonProperties.dbc on every row 
     assert.deepEqual(served.summonProperties,
       effects.map((effect, index) => (effect === 28 ? table.get(miscValueB[index]) ?? null : null)), `spell ${id}`);
   }
-  assert.ok(rows > 70_000, `${rows} rows`);
+  // Every Spell.dbc row: 49,839 on the base dataset (08.10, the stock table), over 70,000 with modules.
+  assert.equal(rows, tableRows, `${rows} of ${tableRows} rows`);
+  assert.ok(rows >= 49_839, `${rows} rows`);
   assert.ok(summons > 2_000, `${summons} summon rows`);
   const at = (id) => metadata.get(id);
   assert.deepEqual([at(7744).startRecoveryCategory, at(7744).startRecoveryTime], [133, 0], "Воля Отрекшихся");

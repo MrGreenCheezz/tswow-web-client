@@ -416,8 +416,13 @@ test("the renderer only enters the cinematic path when a post leaf is active", a
   // the player stands in).
   assert.match(source, /const wanted = this\.#cinematic\.profile\.sceneryShadows && this\.#lightingProfile\.shadowMapSize > 0\s+&& this\.#interiorLight === undefined;/);
   assert.match(source, /if \(!wanted && !this\.#sceneryShadowsApplied\) return;/);
-  // Lighting quality 0 is the faithful frame: it overrides every requested cinematic leaf.
-  assert.match(source, /const profile = this\.#lightingProfile\.quality === 0 \? undefined : this\.#cinematicRequested;/);
+  // Lighting quality 0 is the faithful frame: it overrides every requested cinematic leaf. Since
+  // 05.10-7.20 the renderer asks `lightingClassicLook`, which also covers the comparison level 3.
+  assert.match(source, /const profile = lightingClassicLook\(this\.#lightingProfile\.quality\) \? undefined : this\.#cinematicRequested;/);
+  const { lightingClassicLook } = await import("../dist/code/browser/LightingQuality.js");
+  assert.equal(lightingClassicLook(0), true, "quality 0 still drops the cinematic leaves");
+  assert.equal(lightingClassicLook(1), false);
+  assert.equal(lightingClassicLook(2), false);
   // Under the cinematic chain the shaft leaf is CinematicPost's march; the classic pass is skipped.
   assert.match(source, /const rayStrength = this\.#cinematic\.active \? 0 : this\.#prepareGodRays\(targets\);/);
   assert.match(source, /shafts: cinematicShafts,/);

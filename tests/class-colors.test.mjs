@@ -37,10 +37,18 @@ test("the dataset colours reproduce the compiled table for the stock ten", { ski
   for (const [id, token] of Object.entries(CLASS_FILE_NAMES)) {
     assert.equal(CLASS_COLOR_DATA[token], CLASS_COLORS[id], token);
   }
-  assert.equal(CLASS_SORT_ORDER_DATA.length, 12, "this dataset's MAX_CLASSES");
+  // 13.08 (owner 08.10: the base dataset is the reference): the stock ten are always in the order;
+  // a custom-class module adds its own after them (12 with the old HERO/ARCHAEOLOGIST install).
+  const stock = Object.values(CLASS_FILE_NAMES);
+  for (const token of stock) assert.ok(CLASS_SORT_ORDER_DATA.includes(token), `${token} in CLASS_SORT_ORDER`);
+  assert.ok(CLASS_SORT_ORDER_DATA.length >= stock.length, "this dataset's MAX_CLASSES");
 });
 
-test("classColor of a learned HERO is the dataset's #d9a340, not a derived hue", { skip }, () => {
+// HERO (class 13) is a custom-class module's; the base dataset has none.
+const heroSkip = skip || (CLASS_COLOR_DATA.HERO === undefined
+  ? "no HERO class in this dataset (custom-class module not installed)" : false);
+
+test("classColor of a learned HERO is the dataset's #d9a340, not a derived hue", { skip: heroSkip }, () => {
   forgetCreationNames();
   try {
     assert.equal(classColor(13), generatedClassColor(13), "unlearned: no token, the derived hue");

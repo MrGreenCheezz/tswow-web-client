@@ -33,7 +33,9 @@ test("served dispelType matches Spell.dbc on every row, debuffType follows it", 
   const [spells, metadata] = await Promise.all([openDbcFile(dbcDirectory, "Spell"), loadSpellMetadata(dbcDirectory)]);
   const expected = { 1: "Magic", 2: "Curse", 3: "Disease", 4: "Poison", 9: "" };
   let rows = 0;
+  let tableRows = 0;
   for (const row of spells.rows()) {
+    tableRows += 1;
     const id = spells.id(row);
     const served = metadata.get(id);
     if (!served) continue;
@@ -42,7 +44,10 @@ test("served dispelType matches Spell.dbc on every row, debuffType follows it", 
     assert.equal(served.dispelType, raw, `spell ${id}`);
     assert.equal(served.debuffType, expected[raw], `spell ${id} type ${raw}`);
   }
-  assert.ok(rows > 70_000, `${rows} rows checked`);
+  // Every Spell.dbc row is served and checked. The base dataset (08.10) is the stock table, 49,839
+  // rows up to id 80864; the install with modules had more than 70,000.
+  assert.equal(rows, tableRows, `${rows} of ${tableRows} rows checked`);
+  assert.ok(rows >= 49_839, `${rows} rows checked`);
   const pick = (id) => [metadata.get(id).dispelType, metadata.get(id).debuffType];
   assert.deepEqual(pick(118), [1, "Magic"], "Превращение");
   assert.deepEqual(pick(172), [1, "Magic"], "Порча");

@@ -3,6 +3,7 @@ import test from "node:test";
 import { enhancedGraphicsSettings, ENHANCED_GRAPHICS_OVERRIDES } from "../dist/code/browser/ui/EnhancedGraphics.js";
 import { defaultSettings, parseSettings, serialiseSettings, settingDefinition } from "../dist/code/browser/ui/SettingsModel.js";
 import { comparisonGraphicsSettings } from "../dist/code/browser/ui/ComparisonProfile.js";
+import { LIGHTING_QUALITY_COMPARISON, lightingClassicLook } from "../dist/code/browser/LightingQuality.js";
 
 test("enhanced lighting can be enabled and saved without resetting player preferences", () => {
   const current = { ...defaultSettings(), renderScale: 75, autoQuality: false, uiScale: 110,
@@ -21,6 +22,10 @@ test("enhanced lighting can be enabled and saved without resetting player prefer
   const baseline = comparisonGraphicsSettings(enhanced);
   assert.equal(baseline.experimentalAerialHeightFog, false);
   assert.equal(baseline.godRays, false);
-  assert.equal(baseline.lightingQuality, 0);
+  // 05.10-7.20: the baseline is level 3 «сравнение» (the classic frame plus quality 1's shadow
+  // pass, because the reference install runs extShadowQuality 5), not quality 0.
+  assert.equal(LIGHTING_QUALITY_COMPARISON, 3);
+  assert.equal(baseline.lightingQuality, LIGHTING_QUALITY_COMPARISON);
+  assert.equal(lightingClassicLook(baseline.lightingQuality), true, "the baseline draws the classic look");
   assert.equal(baseline.volumeMaster, 25);
 });

@@ -175,11 +175,19 @@ test("a consumer that keeps its legacy button next to the hub fails the scenario
   }
 });
 
+// The scenarios are the modules' own. On the base dataset of 08.10 (owner decision: no modules)
+// none of them is installed and there is nothing to compare the table with; as soon as one is,
+// every key must name a module of this install again.
+const { TSWOW_ADDON_SCENARIOS } = await import("../tools/check-tswow-addons.mjs");
+const { tswowModuleInstalled } = await import("./fixtures/tswow-modules.mjs");
+const scenarioModules = Object.keys(TSWOW_ADDON_SCENARIOS);
+const anyScenarioModule = scenarioModules.some((module) => tswowModuleInstalled(module));
 test("every TSWOW_ADDON_SCENARIOS key names a module with an addon directory in this install", {
-  skip: MODULES && existsSync(MODULES) ? false : "no TSWoW install",
+  skip: !(MODULES && existsSync(MODULES)) ? "no TSWoW install"
+    : anyScenarioModule ? false
+      : `none of the TSWOW_ADDON_SCENARIOS modules (${scenarioModules.join(", ")}) is installed (base dataset without modules)`,
 }, async () => {
-  const { TSWOW_ADDON_SCENARIOS } = await import("../tools/check-tswow-addons.mjs");
-  const stale = Object.keys(TSWOW_ADDON_SCENARIOS).filter((module) => !existsSync(join(MODULES, module, "addon")));
+  const stale = scenarioModules.filter((module) => !existsSync(join(MODULES, module, "addon")));
   assert.deepEqual(stale, [], "a scenario for a module that no longer exists");
 });
 

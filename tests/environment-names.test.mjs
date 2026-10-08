@@ -99,7 +99,13 @@ test("1.23 a basename veto beats a tree directory, a tree directory alone admits
 });
 
 const TILES = "data/visual-tiles";
-test("1.23 corpus: no street/spine path is a tree, the count stays near the probe's 92 617", { skip: !existsSync(TILES) }, () => {
+// The cached tiles are whatever the gateway has published so far, so their totals move as the cache
+// grows (probe-trees3: 92 617 trees of 193 722 outdoor M2; 08.10: 97 978 of 211 224). What does
+// not move is the classifier against the regular expression it replaced, on the same corpus: it
+// only takes things away (the probe added 0 objects) and what it takes away is a few per cent —
+// lanterns, spines, stumps, logs, roots (probe 3 936 of 96 553 = 4.1 %; 08.10 4 698 of 102 676 = 4.6 %).
+const OLD_TREE_RULE = /tree|oak|pine|willow|bush|shrub/i;
+test("1.23 corpus: no street/spine path is a tree, and only a few per cent of the old rule's trees are vetoed", { skip: !existsSync(TILES) }, () => {
   const counts = new Map();
   for (const map of readdirSync(TILES)) {
     const dir = join(TILES, map);
@@ -113,11 +119,19 @@ test("1.23 corpus: no street/spine path is a tree, the count stays near the prob
     }
   }
   let trees = 0;
+  let oldTrees = 0;
+  const added = [];
   for (const [name, count] of counts) {
+    if (OLD_TREE_RULE.test(name)) oldTrees += count;
     if (environmentVegetationKind(name) !== "tree") continue;
     trees += count;
+    if (!OLD_TREE_RULE.test(name)) added.push(name);
     const base = name.toLowerCase().split(/[\\/]/).at(-1);
     assert.ok(!/street|spine/.test(base), `${name} is a tree`);
   }
-  assert.ok(Math.abs(trees - 92_617) <= 1_500, `tree objects ${trees}`);
+  assert.ok(oldTrees > 10_000, `a corpus worth measuring: ${oldTrees} objects the old rule took`);
+  assert.deepEqual(added.slice(0, 5), [], "nothing the old rule rejected becomes a tree");
+  const vetoed = (oldTrees - trees) / oldTrees;
+  assert.ok(vetoed >= 0.02 && vetoed <= 0.07,
+    `vetoed ${oldTrees - trees} of ${oldTrees} (${(vetoed * 100).toFixed(1)} %), trees ${trees}`);
 });

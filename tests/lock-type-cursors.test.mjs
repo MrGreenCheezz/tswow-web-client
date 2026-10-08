@@ -15,8 +15,19 @@ const withDataset = { skip: dbcDirectory ? false : "no tswow dataset on this mac
 test("the gateway's lock table carries every non-empty LockType CursorName", withDataset, async () => {
   const { loadLockData } = await import("../dist/code/gateway/LockMetadata.js");
   const data = await loadLockData(dbcDirectory);
-  // The four stock names and the dataset's own 1000 «Лесозаготовка»; the 17 empty ones are left out.
-  assert.deepEqual(data.lockTypeCursors, { 1: "PickLock", 2: "GatherHerbs", 3: "Mine", 19: "FishingCursor", 1000: "Mine" });
+  // Every non-empty CursorName of the dataset's LockType.dbc, read here with the tools' own reader;
+  // the empty ones are left out. The base dataset (08.10) has 21 rows and the four stock names; the
+  // install with modules also had its own 1000 «Лесозаготовка» → Mine.
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const table = await openDbcFile(dbcDirectory, "LockType");
+  const expected = {};
+  for (const row of table.rows()) {
+    const cursor = table.string(row, "CursorName");
+    if (cursor) expected[table.id(row)] = cursor;
+  }
+  assert.deepEqual(data.lockTypeCursors, expected);
+  assert.deepEqual(Object.fromEntries(Object.entries(expected).filter(([id]) => Number(id) < 1000)),
+    { 1: "PickLock", 2: "GatherHerbs", 3: "Mine", 19: "FishingCursor" }, "the four stock names");
   assert.ok(Object.keys(data.locks).length > 300, "the locks as before");
   assert.ok(data.openers.length > 100, "the openers as before");
 });

@@ -102,9 +102,34 @@ test("dataset: spells reach beams through their visual's kits", withDataset, asy
   assert.equal(visuals.get(689).channel.chains[0].effect.id, 719, "Drain Life");
   assert.equal(visuals.get(421).cast.chains[0].effect.id, 743, "Chain Lightning");
   // Measured 05.10 (spells, both SpellVisualID slots merged): 1,537 reach a CharProc 0 beam (the census
-  // counted 1,570 before the merge), 97 a CharProc 12 one.
-  assert.equal(byProc0, 1537);
-  assert.equal(byProc12, 97);
+  // counted 1,570 before the merge), 97 a CharProc 12 one — on the install with modules. Since 08.10
+  // the expectation is counted here from Spell.dbc and SpellVisual.dbc with the tools' own reader,
+  // over the kits the test above pins: per phase the first SpellVisualID slot whose visual names a
+  // kit wins. The base dataset gives 1,536 and 97.
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const [spellTable, visualTable] = await Promise.all([
+    openDbcFile(dbcDirectory, "Spell"), openDbcFile(dbcDirectory, "SpellVisual"),
+  ]);
+  const kitsById = parseSpellVisualKits(await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"),
+    undefined, { spellChainEffects: chainFile });
+  const KIT_FIELDS = ["PrecastKit", "CastKit", "ImpactKit", "StateKit", "StateDoneKit", "ChannelKit",
+    "CasterImpactKit", "TargetImpactKit", "MissileTargetingKit", "InstantAreaKit", "ImpactAreaKit", "PersistentAreaKit"];
+  let expectProc0 = 0;
+  let expectProc12 = 0;
+  for (const row of spellTable.rows()) {
+    const visualRows = [0, 1].map((slot) => visualTable.rowOf(spellTable.int(row, "SpellVisualID", slot)))
+      .filter((visualRow) => visualRow !== undefined);
+    const procs = new Set();
+    for (const field of KIT_FIELDS) {
+      const chosen = visualRows.map((visualRow) => kitsById.get(visualTable.int(visualRow, field))).find(Boolean);
+      for (const chain of chosen?.chains ?? []) procs.add(chain.proc);
+    }
+    if (procs.has(0)) expectProc0++;
+    if (procs.has(12)) expectProc12++;
+  }
+  assert.ok(expectProc0 > 1000 && expectProc12 > 50, `${expectProc0} / ${expectProc12}`);
+  assert.equal(byProc0, expectProc0);
+  assert.equal(byProc12, expectProc12);
 });
 
 test("the planner draws a cast kit's beams caster → target → next target, and a channel's to its channel object", () => {

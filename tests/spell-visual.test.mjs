@@ -241,11 +241,43 @@ test("05.10-A7a-E: a missile carries its SpellMissileMotion script and its other
     assert.equal(typeof missile.motion.script, "string");
     assert.ok(missile.motion.count >= 1 && missile.motion.count <= 10, `${visual.id}: count ${missile.motion.count}`);
   }
-  // Measured 05.10 on this dataset: 167 of the 185 scripts SpellVisual names are reachable from a spell,
-  // on 1,195 spells; 56 spells carry a cast or impact offset.
-  assert.equal(motions.size, 167);
-  assert.equal(withMotion, 1195);
-  assert.equal(withOffsets, 56);
+  // Measured 05.10 on the install with modules: 167 of the 185 scripts SpellVisual names are reachable
+  // from a spell, on 1,195 spells; 56 spells carry a cast or impact offset. Since 08.10 the counts are
+  // taken here from Spell.dbc, SpellVisual.dbc and SpellVisualEffectName.dbc with the tools' own
+  // reader: a spell's missile is that of the first SpellVisualID slot whose MissileModel names an
+  // .mdx/.m2 effect, its motion that visual's MissileMotion row. The base dataset gives 167, 1,193, 56.
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const { parseSpellMissileMotions } = await import("../dist/code/gateway/SpellMissileMotion.js");
+  const [spellTable, visualTable, nameTable] = await Promise.all([
+    openDbcFile(dbcDirectory, "Spell"), openDbcFile(dbcDirectory, "SpellVisual"),
+    openDbcFile(dbcDirectory, "SpellVisualEffectName"),
+  ]);
+  const motionRows = parseSpellMissileMotions(await read("SpellMissileMotion.dbc"));
+  const modelNames = new Set();
+  for (const row of nameTable.rows()) {
+    if (/\.(mdx|m2)$/i.test(nameTable.string(row, "FileName"))) modelNames.add(nameTable.id(row));
+  }
+  const offset = (row, field) => {
+    const value = [0, 1, 2].map((index) => visualTable.float(row, field, index));
+    return value.every(Number.isFinite) && value.some((component) => component !== 0);
+  };
+  const expectMotions = new Set();
+  let expectWithMotion = 0;
+  let expectWithOffsets = 0;
+  for (const row of spellTable.rows()) {
+    const missileRow = [0, 1].map((slot) => visualTable.rowOf(spellTable.int(row, "SpellVisualID", slot)))
+      .find((visualRow) => visualRow !== undefined && modelNames.has(visualTable.int(visualRow, "MissileModel")));
+    if (missileRow === undefined) continue;
+    if (offset(missileRow, "MissileCastOffset") || offset(missileRow, "MissileImpactOffset")) expectWithOffsets++;
+    const motion = motionRows.get(visualTable.int(missileRow, "MissileMotion"));
+    if (!motion) continue;
+    expectWithMotion++;
+    expectMotions.add(motion.id);
+  }
+  assert.ok(expectWithMotion > 1000 && expectMotions.size > 100, `${expectWithMotion} / ${expectMotions.size}`);
+  assert.equal(motions.size, expectMotions.size);
+  assert.equal(withMotion, expectWithMotion);
+  assert.equal(withOffsets, expectWithOffsets);
 });
 
 test("SpellVisualKitModelAttach merges kit 1027 with its authored transform and drops dangling parents", withDataset, async () => {

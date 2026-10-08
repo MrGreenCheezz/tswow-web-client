@@ -29,8 +29,10 @@ test("served v=16 columns match Spell.dbc on every row; the shaman's totems land
   ]);
   const [spells, metadata] = await Promise.all([openDbcFile(dbcDirectory, "Spell"), loadSpellMetadata(dbcDirectory)]);
   let rows = 0;
+  let tableRows = 0;
   let totems = 0;
   for (const row of spells.rows()) {
+    tableRows += 1;
     const id = spells.id(row);
     const served = metadata.get(id);
     if (!served) continue;
@@ -44,11 +46,20 @@ test("served v=16 columns match Spell.dbc on every row; the shaman's totems land
     assert.equal(served.totemSlotMask, mask, `spell ${id} totemSlotMask`);
     if (mask !== 0) totems += 1;
   }
-  assert.ok(rows > 70_000, `${rows} rows checked`);
-  // This dataset's built Spell.dbc has no RequiredTotemCategoryID on the shaman totems (the module
-  // gem-abilities clears RequiredTotems, gems.ts:488), so the client the realm patches — and Wow.exe
-  // with it — files none of them into a multi-cast slot. The stock columns (dbc_source) do.
+  // Every Spell.dbc row is served and checked. The base dataset (08.10) is the stock table, 49,839
+  // rows up to id 80864; the install with modules had more than 70,000.
+  assert.equal(rows, tableRows, `${rows} of ${tableRows} rows checked`);
+  assert.ok(rows >= 49_839, `${rows} rows checked`);
+  // With the module gem-abilities the built Spell.dbc has no RequiredTotemCategoryID on the shaman
+  // totems (it clears RequiredTotems, gems.ts:488), so the client the realm patches — and Wow.exe
+  // with it — files none of them into a multi-cast slot. The stock columns (dbc_source) do, and so
+  // does the built table of the base dataset (08.10: 103 spells with a slot).
   const slot = (id) => metadata.get(id)?.totemSlotMask;
+  const { tswowModuleInstalled } = await import("./fixtures/tswow-modules.mjs");
+  if (!tswowModuleInstalled("gem-abilities")) {
+    assert.deepEqual([3599, 8071, 5394, 8512].map(slot), [0x1, 0x2, 0x4, 0x8], "fire, earth, water, air");
+    assert.ok(totems > 50, `${totems} totem spells file into a slot`);
+  }
   assert.equal(slot(66842), 0, "Зов стихий summons no totem of its own");
   assert.equal(slot(133), 0, "Огненный шар");
   const sourceDirectory = dbcDirectory.replace(/[\\/]dbc[\\/]?$/, "/dbc_source");

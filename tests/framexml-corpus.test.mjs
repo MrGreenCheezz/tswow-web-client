@@ -316,16 +316,28 @@ test("every neutral answer says what it answers and why", () => {
  * Floors are what must not regress; ceilings are the work queue. The numbers are the ones F2
  * actually took against `F:/Circle` on 2026-08-30, with headroom for a dataset that is not
  * byte-identical. F1's own numbers are quoted beside each ceiling it lowered.
+ *
+ * 08.10: the reference is the base dataset without modules (owner decision). Its FrameXML.toc is
+ * the stock one — 139 entries, the same count as the copy in `patch-ruRU-3.MPQ` — and the corpus
+ * it reaches is 264 files, 5.28 MB, 138 executed Lua chunks, 25 046 widgets. The 2026-08-30 floors
+ * (200 entries, 330 files, 10 MB, 208 chunks, 25 300 widgets) were the install with modules, whose
+ * files tswow appends to that TOC; a dataset with modules still passes the floors below.
  */
+const STOCK_FRAMEXML_TOC_ENTRIES = 139;
+const tocLines = (text) => text.split(/\r?\n/).map((line) => line.trim())
+  .filter((line) => line !== "" && !line.startsWith("#")).length;
 test("the real FrameXML corpus loads through the glue engine", withClient, async () => {
   const provider = await corpusProvider();
   const boot = new FrameXmlBoot({ provider, locale: "ruRU", screen: () => ({ width: 1024, height: 768 }) });
   const inventory = await boot.load();
 
   // ---- the corpus itself -------------------------------------------------
-  assert.ok(inventory.tocEntries >= 200, `TOC entries: ${inventory.tocEntries}`);
-  assert.ok(inventory.files.total >= 330, `files: ${inventory.files.total}`);
-  assert.ok(inventory.files.bytes >= 10_000_000, `bytes: ${inventory.files.bytes}`);
+  // Every line of the TOC the chain serves is an entry, counted here without the loader's parser.
+  const toc = await provider.read("Interface/FrameXML/FrameXML.toc");
+  assert.equal(inventory.tocEntries, tocLines(toc), "every TOC line is an entry");
+  assert.ok(inventory.tocEntries >= STOCK_FRAMEXML_TOC_ENTRIES, `TOC entries: ${inventory.tocEntries}`);
+  assert.ok(inventory.files.total >= 260, `files: ${inventory.files.total}`);
+  assert.ok(inventory.files.bytes >= 5_000_000, `bytes: ${inventory.files.bytes}`);
   assert.equal(inventory.files.missing.length, 0, "every TOC entry resolves through the MPQ chain");
 
   // ---- what parsed and ran ----------------------------------------------
@@ -333,15 +345,16 @@ test("the real FrameXML corpus loads through the glue engine", withClient, async
   assert.ok(inventory.xml.parsed >= 130, `parsed XML: ${inventory.xml.parsed}`);
   assert.equal(inventory.xml.unknownDeclarations.length, 0,
     `declarations the grammar drops: ${JSON.stringify(inventory.xml.unknownDeclarations)}`);
-  assert.ok(inventory.lua.executed >= 208, `executed Lua chunks: ${inventory.lua.executed}`);
+  assert.ok(inventory.lua.executed >= 135, `executed Lua chunks: ${inventory.lua.executed}`);
   // F1: 7, every one of them `_G.GameFontNormal:GetFont()` at file scope. F2 made font objects
   // globals, so this is a floor now and not a ceiling — nothing may fail to load again.
   assert.equal(inventory.lua.failed, 0, `Lua files that failed to load: ${inventory.lua.failed}`);
 
   // ---- what exists afterwards -------------------------------------------
   // F1 24,770 → F2 25,308 → F3 25,352: a working `SetAttribute` lets `UIDropDownMenu`'s
-  // `createframes` attribute reach `UIDropDownMenu_CreateFrames`, which builds the rest.
-  assert.ok(inventory.widgets.total >= 25_300, `widgets: ${inventory.widgets.total}`);
+  // `createframes` attribute reach `UIDropDownMenu_CreateFrames`, which builds the rest. Those
+  // were with modules; the base dataset of 08.10 builds 25 046.
+  assert.ok(inventory.widgets.total >= 25_000, `widgets: ${inventory.widgets.total}`);
   assert.ok(inventory.widgets.templates >= 450, `templates: ${inventory.widgets.templates}`);
   assert.ok(inventory.widgets.fonts >= 140, `font objects: ${inventory.widgets.fonts}`);
   assert.ok(inventory.widgets.roots >= 60, `roots: ${inventory.widgets.roots}`);
@@ -381,8 +394,25 @@ test("the real FrameXML corpus loads through the glue engine", withClient, async
   assert.ok(inventory.fonts.reached >= 10, `font objects read: ${inventory.fonts.reached}`);
   assert.ok(inventory.fonts.interopWraps >= 15,
     `widget methods rewired for font objects: ${inventory.fonts.interopWraps}`);
-  assert.ok(inventory.fonts.methodCalls.some((entry) => entry.name === "GetFont" && entry.calls > 0),
-    "GetFont is the one Font method this corpus calls, and it is answered");
+  // The modules' corpus called GetFont on font objects while it loaded (F1's seven file-scope
+  // `_G.GameFontNormal:GetFont()` lines); the base corpus of 08.10 calls no Font method at all, so
+  // the line is run here, on the booted VM, and must be answered the same way.
+  assert.ok(inventory.fonts.methodCalls.every((entry) => entry.name === "GetFont"),
+    `GetFont is the one Font method this corpus calls: ${JSON.stringify(inventory.fonts.methodCalls)}`);
+  {
+    const probe = boot.vm.compileFunction(
+      "local file, height, flags = _G.GameFontNormal:GetFont() return type(file), file, height, type(flags)",
+      "corpus-getfont", []);
+    try {
+      const [kind, file, height, flagsKind] = boot.vm.call(probe, [], 4);
+      assert.equal(kind, "string", "GameFontNormal:GetFont() answers a file, not nil");
+      assert.match(file, /\.ttf$/i, `font file ${file}`);
+      assert.ok(height > 0, `font height ${height}`);
+      assert.equal(flagsKind, "string");
+    } finally {
+      boot.vm.release(probe);
+    }
+  }
   assert.equal(inventory.misses.filter((entry) => /^GameFont/.test(entry.name)).length, 0,
     "no font object is a nil global any more");
   const answeredNames = new Set(inventory.neutral.filter((entry) => entry.calls > 0)
@@ -461,7 +491,9 @@ test("the corpus provider reads each file once", withClient, async () => {
   for (const file of scan.files) await corpus.read(file.path);
   assert.equal(reads, before, "a second walk costs no reads at all");
   assert.equal(corpus.requests, reads);
-  assert.ok(scan.files.length >= 330, `scanned files: ${scan.files.length}`);
+  // 264 on the base dataset (08.10), 335 with the modules of 2026-08-30.
+  assert.ok(scan.files.length >= 260, `scanned files: ${scan.files.length}`);
+  assert.ok(scan.tocEntries >= STOCK_FRAMEXML_TOC_ENTRIES, `scanned TOC entries: ${scan.tocEntries}`);
   sharedChain.close();
   sharedChain = undefined;
 });

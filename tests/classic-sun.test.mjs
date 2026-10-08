@@ -77,7 +77,11 @@ test("renderer hooks: quality 0 takes the client's key light and sun, the others
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const update = source.slice(source.indexOf("  updateLighting(sample"), source.indexOf("  #syncCinematicLight("));
   assert.match(update, /05\.10-sun/);
-  assert.match(update, /quality === 0\s*\n?\s*\? classicKeyLightDirection\(time, this\.#classicKeyLight\)\s*\n?\s*: sunDirection\(time\)/);
+  // 05.10-7.20: the quality-0 branches ask `lightingClassicLook`, true for 0 and the comparison
+  // level 3, false for the enhanced presets 1 and 2.
+  const { lightingClassicLook } = await import("../dist/code/browser/LightingQuality.js");
+  assert.deepEqual([0, 1, 2].map(lightingClassicLook), [true, false, false]);
+  assert.match(update, /lightingClassicLook\(this\.#lightingProfile\.quality\)[^\n]*\n\s*\? classicKeyLightDirection\(time, this\.#classicKeyLight\)\s*\n\s*: sunDirection\(time\)/);
   // The shadow light is placed from the same direction (the cascades read #sunOffset).
   assert.match(update, /#sunOffset\.set\(direction\.x, direction\.y, direction\.z\)/);
   const cinematic = source.slice(source.indexOf("  #syncCinematicLight("), source.indexOf("  setCinematicProfile("));
@@ -85,7 +89,7 @@ test("renderer hooks: quality 0 takes the client's key light and sun, the others
   const rays = source.slice(source.indexOf("  #prepareGodRays("), source.indexOf("  #prepareGodRays(") + 600);
   assert.match(rays, /#visibleSun\(this\.#godRaySun\)/);
   const visible = source.slice(source.indexOf("  #visibleSun("), source.indexOf("  #visibleSun(") + 500);
-  assert.match(visible, /quality === 0\s*\n?\s*\? classicSunDirection\(this\.#lightTime, target\)\s*\n?\s*: godRaySunDirection\(this\.#lightTime, target\)/);
+  assert.match(visible, /lightingClassicLook\(this\.#lightingProfile\.quality\)[^\n]*\n\s*\? classicSunDirection\(this\.#lightTime, target\)\s*\n?\s*: godRaySunDirection\(this\.#lightTime, target\)/);
   // Indoors still wins afterwards: the room's light direction is applied after the key light.
   assert.ok(update.indexOf("setWorldLightIndoor") > update.indexOf("classicKeyLightDirection"));
 });

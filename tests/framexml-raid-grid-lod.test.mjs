@@ -180,10 +180,12 @@ async function stage({ barrier = false, missing = false, broken = false, raid = 
         if (data) bytes.set(key, data.byteLength);
         const text = data ? decoder.decode(data) : undefined;
         // A grid that loads and then raises in its first update: what the gate must catch. It also
-        // stands for a module whose XML has class buttons past the stock thirteen (9.05: the dataset
-        // has 12 classes, so MAX_RAID_CLASS_BUTTONS is 15): 14 and 15 are created shown.
+        // stands for a module whose XML has class buttons past the stock thirteen (9.05: a dataset
+        // with 12 classes has MAX_RAID_CLASS_BUTTONS = MAX_CLASSES + 3 = 15): 14 and 15 are created
+        // shown. The base dataset (08.10) has 10 classes and 13, so the patch raises it to 15 itself.
         return broken && text && key.endsWith("/blizzard_raidui.lua")
           ? `${text}\nfunction RaidGroupFrame_Update() error("broken grid") end
+MAX_RAID_CLASS_BUTTONS = math.max(MAX_RAID_CLASS_BUTTONS, 15)
 for i = 14, MAX_RAID_CLASS_BUTTONS do CreateFrame("Button", "RaidClassButton" .. i, RaidFrame):Show() end\n` : text;
       },
     },
