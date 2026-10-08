@@ -277,11 +277,11 @@ test('P1-04 telemetry fields are summarised when a capture has them', () => {
     { atMs: 0, heap: { usedMB: 400 }, renderer: { animationLod: { doodadsPosed: 10 } },
       poseWorker: { jobs: 100, worker: 90, stolen: 6, overridden: 4, waitMs: 1, mainMs: 2, frames: 10, workersReady: 1 },
       shadow: { cascades: [{ drawCalls: 100, cpuMs: 1, renders: 10 }, { drawCalls: 40, cpuMs: 0.5, renders: 2 }], frames: 10,
-        shadowOnlyCasters: 3 } },
+        shadowOnlyOwners: 3 } },
     { atMs: 500, heap: { usedMB: 410 }, renderer: { animationLod: { doodadsPosed: 30 } },
       poseWorker: { jobs: 300, worker: 250, stolen: 20, overridden: 10, waitMs: 5, mainMs: 12, frames: 30, workersReady: 1 },
       shadow: { cascades: [{ drawCalls: 120, cpuMs: 1.5, renders: 30 }, { drawCalls: 60, cpuMs: 0.7, renders: 7 }], frames: 30,
-        shadowOnlyCasters: 5 } },
+        shadowOnlyOwners: 5 } },
   ];
   const rows = capture().frames.length;
   const extra = {
@@ -300,7 +300,14 @@ test('P1-04 telemetry fields are summarised when a capture has them', () => {
     cumulative: true });
   assert.deepEqual(telemetry.shadow.cascades.map((cascade) => cascade.rendersPerFrame), [1, 0.25]);
   assert.deepEqual(telemetry.shadow.cascades.map((cascade) => cascade.drawCalls), [110, 50]);
-  assert.equal(telemetry.shadow.shadowOnlyCasters, 4);
+  assert.equal(telemetry.shadow.shadowOnlyOwners, 4);
+  assert.equal(telemetry.shadow.shadowOnlyCastersLegacy, undefined, "a P2-01 recording has no legacy toggle count");
+  // A recording from before P2-01 keeps its toggle count apart, never as owners.
+  const legacy = analyzeCapture({ ...capture({ extra }), events: { checkpoints: checkpoints.map((checkpoint, index) => ({
+    ...checkpoint, shadow: { ...checkpoint.shadow, shadowOnlyOwners: undefined, shadowOnlyCasters: index ? 9 : 7 },
+  })) } }).telemetry.shadow;
+  assert.equal(legacy.shadowOnlyCastersLegacy, 8);
+  assert.equal(legacy.shadowOnlyOwners, null);
   assert.deepEqual(telemetry.stacking, { frames: 22, stacked: 3 });
   assert.deepEqual(telemetry.doodadsPosed, { mean: 20, max: 30 });
   assert.deepEqual(telemetry.frameExtra.columns, ['netMs', 'frameXmlMs']);

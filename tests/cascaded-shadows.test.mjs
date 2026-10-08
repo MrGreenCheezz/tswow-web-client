@@ -20,7 +20,11 @@ function fakeRenderer() {
     info: { render: { calls: 0 } },
     shadowMap: {
       render(lights, scene, camera) {
-        calls.push({ lights: [...lights], camera, needsUpdate: lights.map((light) => light.shadow.needsUpdate) });
+        calls.push({
+          lights: [...lights], camera, needsUpdate: lights.map((light) => light.shadow.needsUpdate), scene,
+          meshes: scene.isScene ? null : scene.children.flatMap((group) => group.children),
+          shown: scene.isScene ? null : scene.children.flatMap((group) => group.children).map((mesh) => mesh.visible),
+        });
         renderer.info.render.calls += lights.length;
         // three allocates a light's map on its first shadow render.
         for (const light of lights) light.shadow.map ??= { dispose() {} };
@@ -206,7 +210,7 @@ test("each cascade is drawn through a camera whose layers name its casters", () 
     "units and small props never reach the cached cascade");
   assert.equal(shown, 1);
   assert.equal(hidden, 1, "hidden casters are hidden again after the cascades render");
-  assert.equal(cascades.stats.shadowOnlyCasters, 7);
+  assert.equal(cascades.stats.shadowOnlyOwners, 7);
   assert.deepEqual(cascades.stats.cascades.map((cascade) => cascade.drawCalls), [1, 1, 1]);
 
   // A render of some other scene passes straight through with its own lights.
@@ -215,6 +219,71 @@ test("each cascade is drawn through a camera whose layers name its casters", () 
   renderer.shadowMap.render([other], scene, camera);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].lights[0], other);
+});
+
+test("with a caster list each cascade walks the list's root; other lights still walk the scene", async () => {
+  const { ShadowCasterList, ShadowCasterRoot } = await import("../dist/code/browser/ShadowCasterList.js");
+  const { cascades, renderer, scene, calls } = setup(2);
+  const camera = makeCamera();
+  const list = new ShadowCasterList();
+  const tree = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial());
+  tree.castShadow = true;
+  scene.add(tree);
+  list.set(tree, true);
+  let toggled = 0;
+  cascades.setShadowOnlyCasters(() => { toggled++; return 0; });
+  cascades.setCasterList(list);
+  cascades.update(camera, sunTowards, 1);
+  renderer.shadowMap.render(cascades.lights, scene, camera);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.ok(call.scene instanceof ShadowCasterRoot, "three walks the list's root, not the scene");
+    assert.deepEqual(call.meshes, [tree]);
+  }
+  assert.equal(toggled, 0, "the shadow-only toggle is not called while a list is set");
+
+  // Lights that are not cascades still get the scene.
+  calls.length = 0;
+  renderer.shadowMap.render([new THREE.DirectionalLight()], scene, camera);
+  assert.equal(calls[0].scene, scene);
+
+  // Without a list the scene and the toggle come back.
+  cascades.setCasterList(undefined);
+  calls.length = 0;
+  cascades.update(camera, sunTowards, 2);
+  renderer.shadowMap.render(cascades.lights, scene, camera);
+  assert.ok(calls.every((call) => call.scene === scene));
+  assert.equal(toggled, 2, "on and off once");
+});
+
+test("a hidden legacy placement that is its own owner casts through gate 2, shown for the pass only", async () => {
+  const { ShadowCasterList } = await import("../dist/code/browser/ShadowCasterList.js");
+  const { cascades, renderer, scene, calls } = setup(2);
+  const camera = makeCamera();
+  const list = new ShadowCasterList();
+  // `#modelNode`'s legacy path: the placement node is the mesh itself, hidden while not admitted.
+  const legacy = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial());
+  legacy.castShadow = true;
+  legacy.visible = false;
+  scene.add(legacy);
+  list.set(legacy, true, legacy, () => 2, {});
+  cascades.setCasterList(list);
+  cascades.update(camera, sunTowards, 1);
+  renderer.shadowMap.render(cascades.lights, scene, camera);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.deepEqual(call.meshes, [legacy]);
+    assert.deepEqual(call.shown, [true], "three stops at a hidden object: it is shown while the cascades render");
+  }
+  assert.equal(legacy.visible, false, "hidden again for the view");
+  assert.equal(cascades.stats.shadowOnlyOwners, 1);
+  // Gate 1 keeps it hidden and out.
+  list.set(legacy, true, legacy, () => 1, {});
+  calls.length = 0;
+  cascades.update(camera, sunTowards, 2);
+  renderer.shadowMap.render(cascades.lights, scene, camera);
+  assert.ok(calls.every((call) => call.meshes.length === 0));
+  assert.equal(legacy.visible, false);
 });
 
 test("quality 0 hands the sun back untouched and keeps the shadow pass a pass-through", () => {

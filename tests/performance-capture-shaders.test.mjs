@@ -19,7 +19,7 @@ function rendererFixture() {
     programs: [], enabled: [], resetGpuTimingEpoch() {},
     drawPhaseMs: { terrain: 0, env: 0 }, poseResets: 0,
     poseWorkerStats(reset = false) { const stats = { jobs: 3, worker: 2, stolen: 1, workersReady: 2 }; if (reset) this.poseResets++; return stats; },
-    shadowCascadeStats: { cascades: [{ mapSize: 2048, extent: 40, texel: 0.04, rendered: true, drawCalls: 12, cpuMs: 0.123, renders: 5 }], frames: 5, shadowOnlyCasters: 2 },
+    shadowCascadeStats: { cascades: [{ mapSize: 2048, extent: 40, texel: 0.04, rendered: true, drawCalls: 12, cpuMs: 0.123, renders: 5 }], frames: 5, shadowOnlyOwners: 2 },
     setShaderProgramCapture(enabled) {
       this.enabled.push(enabled);
       trace = enabled ? new ShaderProgramTrace(this.programs, performance.now()) : undefined;
@@ -242,7 +242,7 @@ test('P1-04: the report carries every-frame draw phases, frame extras, stacking 
   const checkpoint = report.events.checkpoints[0];
   assert.deepEqual(checkpoint.poseWorker, { jobs: 3, worker: 2, stolen: 1, workersReady: 2 });
   assert.deepEqual(checkpoint.shadow, {
-    cascades: [{ rendered: true, drawCalls: 12, cpuMs: 0.12, renders: 5 }], frames: 5, shadowOnlyCasters: 2,
+    cascades: [{ rendered: true, drawCalls: 12, cpuMs: 0.12, renders: 5 }], frames: 5, shadowOnlyOwners: 2,
   });
   assert.ok(report.notes.some((note) => note.includes('visuals.particles is inside visuals.effects')));
   // A new recording starts its totals afresh.
