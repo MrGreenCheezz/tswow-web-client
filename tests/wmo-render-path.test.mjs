@@ -263,7 +263,8 @@ test("the renderer notes interior-only buildings, lights units by the room and h
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /const entered = staticEnvironment && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
   assert.match(source, /if \(entered\) distanceGroups = this\.#interiorOnlyRange\(placed, player\);/);
-  assert.match(source, /entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined,/);
+  // P1-12c: named once, for the walk and for its memo (`WmoPortalMemo.ts`).
+  assert.match(source, /const screenApertures = entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined;/);
   assert.match(source, /if \(portalSelection\.used\) \{\r?\n\s+selected = portalSelection\.groups;\r?\n\s+clipped = entered;/,
     "the rectangles count only when the walk was used");
   assert.match(source, /if \(entered && !clipped\) selected = roomLeash;/,

@@ -271,6 +271,47 @@ test("draw clears per-frame admission counters before a player-less early return
     "selection state may survive, but groundCoverDrawn is the frame-submission count");
 });
 
+test("P1-04: the visuals subphases exist, are reset every frame and are clocked only during a capture", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const literalStart = source.indexOf("  readonly #drawPhaseMs: Record<string, number> = {");
+  const literal = source.slice(literalStart, source.indexOf("\n  };", literalStart));
+  const resetStart = source.indexOf("  #resetFrameCounters(): void {");
+  const resets = source.slice(resetStart, source.indexOf("\n  }", resetStart));
+  assert.ok(literalStart >= 0 && resetStart >= 0);
+  for (const key of ["visuals.rigs", "visuals.effects", "visuals.particles"]) {
+    assert.ok(literal.includes(`"${key}": 0,`), `${key} is in the #drawPhaseMs literal`);
+    // Unrolled, as every other phase: a missed reset would carry the last capture frame's value on.
+    assert.ok(resets.includes(`this.#drawPhaseMs["${key}"] = 0;`), `${key} is reset in #resetFrameCounters`);
+  }
+
+  // Every write to a visuals subphase sits behind the capture flag, which is the shader trace.
+  const writes = [...source.matchAll(/^.*#drawPhaseMs\["visuals\.\w+"\] = (?!0;).*$/gm)].map(match => match[0]);
+  assert.equal(writes.length, 3, writes.join("\n"));
+  for (const write of writes) assert.match(write, /^\s*if \(detailedCapture\) this\.#drawPhaseMs\["visuals\.\w+"\] = /);
+  const drawStart = source.indexOf("  draw(\n");
+  const draw = source.slice(drawStart, source.indexOf("\n  #resetFrameCounters(): void {", drawStart));
+  const flag = draw.indexOf("const detailedCapture = this.#shaderProgramTrace !== undefined;");
+  const rigs = draw.indexOf("this.#updateVisuals(now, elapsed, environmentClient);");
+  const effects = draw.indexOf("this.#updateEffects(player.position, now, elapsed);");
+  assert.ok(flag >= 0 && flag < rigs && rigs < draw.indexOf(`#drawPhaseMs["visuals.rigs"] = performance.now()`));
+  assert.ok(draw.indexOf(`#drawPhaseMs["visuals.rigs"] = performance.now()`) < effects
+    && effects < draw.indexOf(`#drawPhaseMs["visuals.effects"] = performance.now()`));
+  assert.match(draw, /let visualPartAt = detailedCapture \? performance\.now\(\) : 0;/, "no clock read without a capture");
+
+  // Particles: summed over every updateModelEffects call inside #updateEffects (so inside visuals.effects).
+  const effectsStart = source.indexOf("  #updateEffects(player: WorldPosition, now: number, elapsed: number): void {");
+  const updateEffects = source.slice(effectsStart, source.indexOf("\n  }\n", effectsStart));
+  assert.equal(updateEffects.split("updateModelEffects(").length - 1, 1, "one particle step call site");
+  assert.match(updateEffects, /const particleAt = detailedCapture \? performance\.now\(\) : 0;\n\s*updateModelEffects\(/);
+  assert.match(updateEffects, /if \(detailedCapture\) particleMs \+= performance\.now\(\) - particleAt;/);
+  assert.match(updateEffects, /if \(detailedCapture\) this\.#drawPhaseMs\["visuals\.particles"\] = particleMs;\s*$/);
+
+  // ENV-12: the posed-doodad count rides in telemetry.animationLod.
+  const telemetry = source.slice(source.indexOf("  get telemetry(): "), source.indexOf("  get builtModelResidencyStats("));
+  assert.match(telemetry, /doodadsPosed: number;/);
+  assert.match(telemetry, /doodadsPosed: this\.#doodadsPosed,/);
+});
+
 test("animate re-arms exactly one RAF even when frame work or final telemetry throws", async () => {
   const source = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
   const animateStart = source.indexOf("export function animate(now: number): void {");

@@ -94,7 +94,7 @@ test("the renderer reports each pass with what it had to do", async () => {
   }
 });
 
-test("a running freeze recording hears long steps and long between-frame passes, nothing else", async () => {
+test("a running freeze recording hears long steps and long between-frame passes, and every step's time", async () => {
   const { setCaptureProbe } = await import("../dist/code/world/CaptureProbe.js");
   let now = 100;
   const heard = [];
@@ -108,8 +108,12 @@ test("a running freeze recording hears long steps and long between-frame passes,
     perf.stepBegin(); now += 1; perf.stepEnd();
   } finally { setCaptureProbe(undefined); }
   perf.stepBegin(); now += 40; perf.stepEnd();
+  // P1-04: every step while a recording listens, the 1 ms one included, as `frameXmlStepTime`
+  // (a per-frame column in the recording); only long ones as `frameXmlSteps` events.
   assert.deepEqual(heard, [
+    ["frameXmlStepTime", 130, { ms: 25 }],
     ["frameXmlSteps", 130, { stepMs: 25, seamTickMs: 20, onUpdateMs: 3, handlers: 7, syncInStepMs: 2 }],
     ["frameXmlSyncs", 150, { kind: "layout", ms: 6 }],
+    ["frameXmlStepTime", 156, { ms: 1 }],
   ]);
 });

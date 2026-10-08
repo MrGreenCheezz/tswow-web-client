@@ -27,6 +27,9 @@ const physics = await sourceModule("../src/browser/game/Physics.ts");
 const wind = await sourceModule("../src/browser/VegetationWind.ts", [
   ['"./Wvm.js"', JSON.stringify(wvmUrl)],
   ['"./WindField.js"', JSON.stringify(new URL("../dist/code/browser/WindField.js", import.meta.url).href)],
+  // P1-08: the module builds `THREE.Vector4` uniforms, so "three" is a runtime import too
+  // (the same loader fix as tests/vegetation-wind.test.mjs).
+  ['from "three"', `from ${JSON.stringify(import.meta.resolve("three"))}`],
 ]);
 const collisionClient = await sourceModule("../src/browser/CollisionClient.ts", [
   ['"../world/CollisionFormat.js"', JSON.stringify(collisionFormatUrl)],

@@ -4,6 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 import { FrameCapture, captureScriptFile } from '../dist/code/browser/FrameCapture.js';
 import { ShaderProgramTrace } from '../dist/code/browser/ShaderProgramTrace.js';
+import { FrameExtraColumns, PhaseAccumulator, StackingProbe } from '../dist/code/browser/game/CaptureExtras.js';
 
 // Execute the actual capture controller with browser/game dependencies replaced at the boundary.
 const source = await readFile(new URL('../src/browser/game/PerformanceCapture.ts', import.meta.url), 'utf8');
@@ -16,6 +17,9 @@ function rendererFixture() {
   let trace;
   return {
     programs: [], enabled: [], resetGpuTimingEpoch() {},
+    drawPhaseMs: { terrain: 0, env: 0 }, poseResets: 0,
+    poseWorkerStats(reset = false) { const stats = { jobs: 3, worker: 2, stolen: 1, workersReady: 2 }; if (reset) this.poseResets++; return stats; },
+    shadowCascadeStats: { cascades: [{ mapSize: 2048, extent: 40, texel: 0.04, rendered: true, drawCalls: 12, cpuMs: 0.123, renders: 5 }], frames: 5, shadowOnlyCasters: 2 },
     setShaderProgramCapture(enabled) {
       this.enabled.push(enabled);
       trace = enabled ? new ShaderProgramTrace(this.programs, performance.now()) : undefined;
@@ -30,7 +34,8 @@ function rendererFixture() {
 
 function controller(game, probes = { listener: undefined }, overrides = {}) {
   const deps = {
-    game, FrameCapture, captureScriptFile, CAPTURE_DURATION_MS: 60000,
+    game, FrameCapture, captureScriptFile, CAPTURE_DURATION_MS: 60000, CAPTURE_FRAME_LIMIT: 20000,
+    FrameExtraColumns, PhaseAccumulator, StackingProbe, // P1-04: PerformanceCapture.ts imports them
     setCaptureProbe(listener) { probes.listener = listener; },
     world3dCanvas: { getContext: () => null }, worldPanel: { hidden: false },
     document: { hidden: false, addEventListener() {}, removeEventListener() {} },
@@ -204,4 +209,49 @@ test('without the document policy the capture still records and says why stacks 
     assert.equal(report.entrySupport.jsProfiler, 'unavailable: NotAllowedError');
     assert.equal(report.jsProfile, undefined);
   } finally { delete globalThis.Profiler; }
+});
+
+test('P1-04: the report carries every-frame draw phases, frame extras, stacking and checkpoint worker/shadow numbers', () => {
+  const probes = { listener: undefined };
+  const renderer = rendererFixture();
+  const game = { world: { state: { objects: new Map() } }, renderer }, api = controller(game, probes);
+  assert.equal(api.startPerformanceCapture(), true);
+  assert.equal(renderer.poseResets, 1, 'the worker counters start with the recording');
+  const frame = (phases) => {
+    api.beginPerformanceCaptureFrame();
+    Object.assign(renderer.drawPhaseMs, phases);
+    api.endPerformanceCaptureFrame(performance.now() + frame.count++, 4, false);
+  };
+  frame.count = 1;
+  const now = performance.now();
+  probes.listener('packets', now, { opcode: 0xa9, bytes: 10, ms: 2.5 });
+  probes.listener('frameXmlStepTime', now, { ms: 1.25 });
+  frame({ terrain: 0.5, env: 1.5 }); // env and net fire, 4 ms: not over the sum
+  probes.listener('frameXmlStepTime', now + 1, { ms: 0.5 });
+  frame({ terrain: 3, env: 1.5 }); // terrain and env fire, 4.5 ms: stacks
+  api.stopPerformanceCapture();
+  const report = api.performanceCaptureReport();
+  assert.equal(report.telemetryRevision, 2);
+  assert.equal(report.drawPhases.frames, 2);
+  assert.deepEqual(report.drawPhases.phases.terrain, { sumMs: 3.5, meanMs: 1.75, maxMs: 3, frames: 2, nonZeroFrames: 2 });
+  assert.deepEqual(report.frameExtra, { columns: ['netMs', 'frameXmlMs'], netMs: [2.5, 0], frameXmlMs: [1.25, 0.5] });
+  assert.equal(report.frameExtra.netMs.length, report.frames.length, 'one value per frame row');
+  assert.equal(report.stacking.frames, 2);
+  assert.equal(report.stacking.stackedFrames, 1);
+  assert.equal(report.events.frameXmlStepTime, undefined, 'step times never enter the event log');
+  const checkpoint = report.events.checkpoints[0];
+  assert.deepEqual(checkpoint.poseWorker, { jobs: 3, worker: 2, stolen: 1, workersReady: 2 });
+  assert.deepEqual(checkpoint.shadow, {
+    cascades: [{ rendered: true, drawCalls: 12, cpuMs: 0.12, renders: 5 }], frames: 5, shadowOnlyCasters: 2,
+  });
+  assert.ok(report.notes.some((note) => note.includes('visuals.particles is inside visuals.effects')));
+  // A new recording starts its totals afresh.
+  assert.equal(api.startPerformanceCapture(), true);
+  frame({ terrain: 0.5, env: 0 });
+  api.stopPerformanceCapture();
+  const next = api.performanceCaptureReport();
+  assert.equal(next.drawPhases.frames, 1);
+  assert.equal(next.drawPhases.phases.terrain.sumMs, 0.5);
+  assert.equal(next.stacking.frames, 1);
+  assert.deepEqual(next.frameExtra.netMs, [0]);
 });

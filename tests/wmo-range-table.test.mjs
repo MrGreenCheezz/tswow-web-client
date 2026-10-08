@@ -133,6 +133,77 @@ test("P1-12a: a building with no ranged group never recomputes after the first a
   assert.equal(table.recomputes, 1);
 });
 
+test("P1-12: selects counts every call, recomputes only the ones the rest radius did not answer", () => {
+  const building = syntheticBuilding(10);
+  const table = new WmoRangeTable(building.model, building.boxes, 60, wmoShellRange);
+  assert.equal(table.selects, 0);
+  assert.equal(table.recomputes, 0);
+  table.select(0, 0);
+  assert.deepEqual([table.selects, table.recomputes], [1, 1], "the first answer is a recompute");
+  table.select(0, 0);
+  table.select(0, 0);
+  assert.deepEqual([table.selects, table.recomputes], [3, 1], "standing still reuses the set");
+  table.select(1500, -1500);
+  assert.deepEqual([table.selects, table.recomputes], [4, 2], "a teleport recomputes");
+  table.select(1500, -1500, 900);
+  assert.deepEqual([table.selects, table.recomputes], [5, 3], "a new shell leash recomputes");
+  table.select(Number.NaN, 0);
+  table.select(Number.NaN, 0);
+  assert.deepEqual([table.selects, table.recomputes], [7, 5], "NaN never answers from the radius");
+});
+
+test("P1-12: tables sharing a totals object sum into it; a table without one counts alone", () => {
+  const totals = { selects: 0, recomputes: 0 };
+  const a = new WmoRangeTable(syntheticBuilding(11).model, syntheticBuilding(11).boxes, 60, wmoShellRange);
+  const b = new WmoRangeTable(syntheticBuilding(12).model, syntheticBuilding(12).boxes, 60, wmoShellRange);
+  const alone = new WmoRangeTable(syntheticBuilding(13).model, syntheticBuilding(13).boxes, 60, wmoShellRange);
+  a.totals = totals;
+  b.totals = totals;
+  for (const [x, y] of [[0, 0], [0, 0], [800, 800], [800, 800.001]]) {
+    a.select(x, y);
+    b.select(-x, y);
+    alone.select(x, y);
+  }
+  assert.deepEqual(totals, { selects: a.selects + b.selects, recomputes: a.recomputes + b.recomputes });
+  assert.equal(totals.selects, 8);
+  assert.ok(totals.recomputes >= 4 && totals.recomputes < 8, `${totals.recomputes}`);
+  assert.equal(alone.totals, undefined);
+  assert.equal(alone.selects, 4);
+});
+
+test("P1-12: the bench reads the counters over the measured frames only", async () => {
+  const { wmoRangeSummary } = await import("../bench/metrics.mjs");
+  const frames = Array.from({ length: 200 }, () => [10]);
+  const counters = (gs, gr, os, or) => ({ groups: { selects: gs, recomputes: gr }, openAir: { selects: os, recomputes: or } });
+  const summary = wmoRangeSummary({ frames, wmoRangeAtStart: counters(100, 40, 10, 5),
+    telemetry: { wmoRange: counters(4100, 70, 30, 15) } });
+  assert.deepEqual(summary, { selects: 4020, recomputes: 40, recomputesPerFrame: 0.2,
+    groups: { selects: 4000, recomputes: 30 }, openAir: { selects: 20, recomputes: 10 } });
+  assert.equal(wmoRangeSummary({ frames, wmoRangeAtStart: null, telemetry: { wmoRange: counters(1, 1, 0, 0) } }), null);
+  assert.equal(wmoRangeSummary({ frames, telemetry: null }), null);
+  assert.equal(wmoRangeSummary({ frames: [], wmoRangeAtStart: counters(0, 0, 0, 0), telemetry: { wmoRange: counters(1, 1, 0, 0) } }), null);
+});
+
+test("P1-12: the renderer sums both kinds of table into telemetry and the harness marks the start", async () => {
+  const [source, harness, run] = await Promise.all([
+    readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/browser/bench/Harness.ts", import.meta.url), "utf8"),
+    readFile(new URL("../bench/run.mjs", import.meta.url), "utf8"),
+  ]);
+  const update = source.slice(source.indexOf("  #updateWmoGroups("), source.indexOf("  #wmoRoomsFromOpenAir("));
+  assert.match(update, /placed\.ranges\.totals \?\?= this\.#wmoRangeGroups;\n\s*let distanceGroups = placed\.ranges\.select\(player\.x, player\.y, shellRange\);/);
+  const openAir = source.slice(source.indexOf("  #wmoRoomsFromOpenAir("), source.indexOf("  #considerWmoFog("));
+  assert.match(openAir, /ranges\.totals \?\?= this\.#wmoRangeOpenAir;[^\n]*\n\s*wmoOpenAirNoteCandidates\(state, ranges\.select\(player\.x, player\.y\)/);
+  // Robust to a fake `ranges` holding only `select` (tests, Pick<> typing): nothing else is read off it.
+  assert.doesNotMatch(update, /placed\.ranges\.(?!select\(|totals \?\?=)/);
+  const telemetry = source.slice(source.indexOf("  get telemetry(): "), source.indexOf("  get builtModelResidencyStats("));
+  assert.match(telemetry, /groups: Object\.freeze\(\{ selects: this\.#wmoRangeGroups\.selects, recomputes: this\.#wmoRangeGroups\.recomputes \}\)/);
+  assert.match(telemetry, /openAir: Object\.freeze\(\{ selects: this\.#wmoRangeOpenAir\.selects, recomputes: this\.#wmoRangeOpenAir\.recomputes \}\)/);
+  assert.match(harness, /world\?\.poseWorkerStats\(true\);[\s\S]{0,200}const wmoRangeAtStart = world\?\.telemetry\.wmoRange \?\? null;\n\s*const start = await nextFrame\(\);/);
+  assert.match(harness, /telemetry: world\?\.telemetry \?\? null, wmoRangeAtStart,/);
+  assert.match(run, /wmoRange: wmoRangeSummary\(raw\)/);
+});
+
 test("P1-12a: the reference and the shell rule stay untouched in the renderer", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /if \(Math\.hypot\(outsideX, outsideZ\) < range\) chosen\.push\(index\);/);

@@ -269,8 +269,10 @@ test("renderer integration is static-WMO-only and exposes portal savings", async
     readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8"),
   ]);
   assert.match(settings, /setWmoOcclusion\(settingBoolean\(values, "wmoOcclusion"\)\)/);
-  const calls = [...world.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, player, rendered\.node, client(, true)?\)/g)];
-  assert.deepEqual(calls.map((match) => match[1] ?? ""), [", true", ""],
+  // 05.10-7.05-review: the game-object call measures from the transport viewer and passes false
+  // (then its transport shell leash), as in wmo-open-air.test.mjs.
+  const calls = [...world.matchAll(/this\.#updateWmoGroups\(rendered\.wmo, (?:player|viewer), rendered\.node, client, (true|false)\b/g)];
+  assert.deepEqual(calls.map((match) => match[1]), ["true", "false"],
     "only the static environment call opts in; moving game objects keep distance selection");
   assert.match(world, /staticEnvironment && \(this\.#indoors \|\| entered\) && this\.#wmoOcclusion/,
     "the collision-backed indoor state, or standing in a building of rooms alone (whose rooms have "
