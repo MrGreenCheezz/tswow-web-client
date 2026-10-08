@@ -21,6 +21,10 @@ export const ENVIRONMENT_TILE_CACHE_LIMIT = 64;
 export const ENVIRONMENT_MODEL_CACHE_LIMIT = 256;
 /** P1-10a: count overflow past which `#evictModels` sorts once instead of scanning per eviction. */
 const MODEL_EVICTION_SORT_THRESHOLD = 16;
+/** P1-10a-2: frames a model key may go undemanded before `#sweepModelDemand` may drop it. */
+const MODEL_DEMAND_IDLE_FRAMES = 600;
+/** P1-10a-2: commits between two checks of `#sweepModelDemand`. */
+const MODEL_DEMAND_SWEEP_INTERVAL = 64;
 /** Completed decoded animation entries retained by the CPU cache; current-frame pins may exceed it. */
 export const ENVIRONMENT_ANIMATION_CACHE_LIMIT = 128;
 /** Queued model requests retained between resource-frame commits. */
@@ -917,11 +921,27 @@ export class EnvironmentClient {
   #animationTypedBackingBytes = 0;
   #animationNumericArrayElements = 0;
   #resourceFrameOpen = false;
-  #frameModelKeys = new Set<string>();
+  /**
+   * P1-10a-2 (MEM-2): every model key a resource frame demanded, kept across frames — the per-frame
+   * `Set` it replaces was rebuilt from empty each frame (`(native add) ← model`, 0.8–2.2 KB a frame).
+   * The value is `frame · 2 + carried`: the number of the last frame that demanded the key, and
+   * whether the frame committed before it had demanded it too, so the committed footprint stays
+   * readable while the next frame is open. `#isModelActive` is the old `#activeModelKeys.has`,
+   * `#isFrameModelDemand` the old `#frameModelKeys.has`. Keys idle for `MODEL_DEMAND_IDLE_FRAMES`
+   * are swept once the map outgrows the footprint (`#sweepModelDemand`).
+   */
+  readonly #modelDemand = new Map<string, number>();
+  /** The number of the open frame, else of the last one opened. */
+  #demandFrame = 0;
+  /** The number of the last committed frame; 0 before the first commit (no key carries it). */
+  #committedFrame = 0;
+  /** Distinct keys the open frame has demanded, and the committed one did. */
+  #frameDemandCount = 0;
+  #committedDemandCount = 0;
+  #nextDemandSweep = 0;
   #frameAnimationKeys = new Set<string>();
   /** Exact WMO group demands made by the currently open frame, keyed by decoded parent identity. */
   #frameGroupDemands = new Map<EnvironmentModel, Set<number>>();
-  #activeModelKeys = new Set<string>();
   /** Position-based speculative interest, renewed each frame independently of the scan cadence. */
   #modelPrefetchInterest: ModelPrefetchInterest | undefined;
   #frameModelPrefetchInterest: ModelPrefetchInterest | undefined;
@@ -1046,7 +1066,10 @@ export class EnvironmentClient {
     if (this.#disposed) return;
     if (this.#resourceFrameOpen) throw new Error("Environment resource frame is already open");
     this.#resourceFrameOpen = true;
-    this.#frameModelKeys = new Set();
+    // The values must stay small integers: renumber long before `frame · 2 + 1` leaves the Smi range.
+    if ((this.#demandFrame + 1) * 2 + 1 > recencyStampLimit) this.#rebaseModelDemand();
+    this.#demandFrame++;
+    this.#frameDemandCount = 0;
     this.#frameModelPrefetchInterest = undefined;
     this.#frameAnimationKeys = new Set();
     this.#frameGroupDemands = new Map();
@@ -1057,7 +1080,8 @@ export class EnvironmentClient {
     if (this.#disposed) return;
     if (!this.#resourceFrameOpen) return;
     this.#resourceFrameOpen = false;
-    this.#activeModelKeys = this.#frameModelKeys;
+    this.#committedFrame = this.#demandFrame;
+    this.#committedDemandCount = this.#frameDemandCount;
     this.#modelPrefetchInterest = this.#frameModelPrefetchInterest;
     this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys = this.#frameAnimationKeys;
@@ -1070,6 +1094,49 @@ export class EnvironmentClient {
     this.#pruneAnimationWork();
     this.#evictModels();
     this.#evictAnimations();
+    this.#sweepModelDemand();
+  }
+
+  /** P1-10a-2: whether the committed frame demanded this model key (the old `#activeModelKeys`). */
+  #isModelActive(key: string): boolean {
+    const value = this.#modelDemand.get(key);
+    if (value === undefined) return false;
+    const frame = value >> 1;
+    if (frame === this.#committedFrame) return true;
+    // Re-demanded by the open frame: the low bit says whether the committed one had it.
+    return this.#resourceFrameOpen && frame === this.#demandFrame && (value & 1) === 1;
+  }
+
+  /** P1-10a-2: whether the open frame has demanded this model key (the old `#frameModelKeys`). */
+  #isFrameModelDemand(key: string): boolean {
+    const value = this.#modelDemand.get(key);
+    return value !== undefined && value >> 1 === this.#demandFrame;
+  }
+
+  /**
+   * P1-10a-2: drops keys no frame has demanded for `MODEL_DEMAND_IDLE_FRAMES` once the map holds
+   * more than four footprints, checked at most every `MODEL_DEMAND_SWEEP_INTERVAL` commits. An idle
+   * key answers neither `#isModelActive` nor `#isFrameModelDemand`, so dropping it changes nothing
+   * but the size of the map.
+   */
+  #sweepModelDemand(): void {
+    const demand = this.#modelDemand;
+    if (demand.size <= 4 * this.#committedDemandCount + 256 || this.#committedFrame < this.#nextDemandSweep) return;
+    this.#nextDemandSweep = this.#committedFrame + MODEL_DEMAND_SWEEP_INTERVAL;
+    const oldest = this.#committedFrame - MODEL_DEMAND_IDLE_FRAMES;
+    for (const [key, value] of demand) if (value >> 1 < oldest) demand.delete(key);
+  }
+
+  /** P1-10a-2: renumbers the frames to 1 (the committed one); every older key is idle and goes. */
+  #rebaseModelDemand(): void {
+    const committed = this.#committedFrame;
+    for (const [key, value] of this.#modelDemand) {
+      if (committed > 0 && value >> 1 === committed) this.#modelDemand.set(key, 2);
+      else this.#modelDemand.delete(key);
+    }
+    this.#committedFrame = committed > 0 ? 1 : 0;
+    this.#demandFrame = 1;
+    this.#nextDemandSweep = 0;
   }
 
   /** Relinquishes only this client's references; renderer-owned decoded payloads are not mutated. */
@@ -1084,10 +1151,11 @@ export class EnvironmentClient {
     this.#backgroundReservationTimer = undefined;
     this.#resourceFrameOpen = false;
     this.#resourceFrameCommitted = false;
-    this.#frameModelKeys.clear();
+    this.#modelDemand.clear();
+    this.#frameDemandCount = 0;
+    this.#committedDemandCount = 0;
     this.#frameAnimationKeys.clear();
     this.#frameGroupDemands.clear();
-    this.#activeModelKeys.clear();
     this.#modelPrefetchInterest = undefined;
     this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys.clear();
@@ -1145,7 +1213,7 @@ export class EnvironmentClient {
     let failedModels = 0;
     for (const [key, model] of this.#models) {
       if (model === null && this.#failedModelEntries.has(key)) {
-        if (!this.#resourceFrameCommitted || this.#activeModelKeys.has(key)) failedModels++;
+        if (!this.#resourceFrameCommitted || this.#isModelActive(key)) failedModels++;
       } else if (model === null) knownMissingModels++;
       else residentModels++;
     }
@@ -1971,8 +2039,8 @@ export class EnvironmentClient {
     const wait = IMAGE_RETRY_BACKOFF_MS[attempt - 1];
     this.#requestedModels.delete(key);
     const demandedByCurrentFrame = this.#resourceFrameOpen
-      ? this.#frameModelKeys.has(key)
-      : this.#activeModelKeys.has(key);
+      ? this.#isFrameModelDemand(key)
+      : this.#isModelActive(key);
     if (this.#resourceFrameCommitted && !demandedByCurrentFrame && !this.#isModelPrefetched(key)) {
       // A request that finishes after the renderer has moved on must not leave a retry ledger for
       // an unbounded stream of old scenery. Re-entry will make a fresh demand-driven request.
@@ -1995,12 +2063,12 @@ export class EnvironmentClient {
   /** Drop work outside both the current draw footprint and the renewed position-based prefetch set. */
   #pruneModelWork(): void {
     for (const key of this.#modelQueue.keys()) {
-      if (this.#activeModelKeys.has(key) || this.#isModelPrefetched(key)) continue;
+      if (this.#isModelActive(key) || this.#isModelPrefetched(key)) continue;
       this.#modelQueue.delete(key);
       this.#requestedModels.delete(key);
     }
     for (const key of this.#modelFailures.keys()) {
-      if (!this.#activeModelKeys.has(key) && !this.#isModelPrefetched(key)) this.#modelFailures.delete(key);
+      if (!this.#isModelActive(key) && !this.#isModelPrefetched(key)) this.#modelFailures.delete(key);
     }
   }
 
@@ -2062,7 +2130,8 @@ export class EnvironmentClient {
       };
     }
     const stats = { queuedGroups: 0, activeGroups: this.#activeGroups, deferredGroups: 0, failedGroups: 0 };
-    for (const key of this.#activeModelKeys) {
+    for (const key of this.#modelDemand.keys()) {
+      if (!this.#isModelActive(key)) continue;
       const model = this.#models.get(key);
       if (!model) continue;
       const states = this.#requestedGroups.get(model);
@@ -2081,7 +2150,7 @@ export class EnvironmentClient {
 
   #isActiveGroupDemand(wanted: { name: string; group: number; model: EnvironmentModel }): boolean {
     const key = modelKey(wanted.name);
-    return this.#activeModelKeys.has(key)
+    return this.#isModelActive(key)
       && this.#models.get(key) === wanted.model
       && this.#activeGroupDemands.get(wanted.model)?.has(wanted.group) === true;
   }
@@ -2126,8 +2195,15 @@ export class EnvironmentClient {
     }
   }
 
+  /** P1-10a-2: in place for a key seen before — no per-frame `Set` to grow from empty. */
   #touchModelDemand(key: string): void {
-    if (this.#resourceFrameOpen) this.#frameModelKeys.add(key);
+    if (!this.#resourceFrameOpen) return;
+    const frame = this.#demandFrame;
+    const value = this.#modelDemand.get(key);
+    if (value !== undefined && value >> 1 === frame) return;
+    const carried = value !== undefined && value >> 1 === this.#committedFrame ? 1 : 0;
+    this.#modelDemand.set(key, frame * 2 + carried);
+    this.#frameDemandCount++;
   }
 
   #touchAnimationDemand(key: string): void {
@@ -2274,7 +2350,7 @@ export class EnvironmentClient {
       let oldestUsed = Infinity;
       let inactive = 0;
       for (const key of this.#models.keys()) {
-        if (this.#activeModelKeys.has(key)) continue;
+        if (this.#isModelActive(key)) continue;
         inactive++;
         const used = this.#modelUsed.get(key)!;
         if (used < oldestUsed) {
@@ -2295,7 +2371,7 @@ export class EnvironmentClient {
   /** Evicts inactive entries oldest stamp first until every model limit holds again. */
   #evictModelsSorted(): void {
     const order: string[] = [];
-    for (const key of this.#models.keys()) if (!this.#activeModelKeys.has(key)) order.push(key);
+    for (const key of this.#models.keys()) if (!this.#isModelActive(key)) order.push(key);
     order.sort((left, right) => this.#modelUsed.get(left)! - this.#modelUsed.get(right)!);
     for (const key of order) {
       if (this.#models.size <= this.#modelLimit

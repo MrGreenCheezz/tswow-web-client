@@ -484,6 +484,8 @@ host.__bench = {
     // The seed frame is rendered before timing. Every recorded interval ends after the preceding draw.
     render(0, 0, frame++);
     world?.poseWorkerStats(true);
+    // P1-12: the rest-radius counters are cumulative; the measured frames are the difference.
+    const wmoRangeAtStart = world?.telemetry.wmoRange ?? null;
     const start = await nextFrame();
     let previous = start, sampleCount = 0, repeatedRafCallbacks = 0;
     recording = true;
@@ -532,7 +534,7 @@ host.__bench = {
       Array.from(samples.subarray(index * columns.length, (index + 1) * columns.length)));
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
       hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
-      telemetry: world?.telemetry ?? null, poseWorker: world?.poseWorkerStats() ?? null,
+      telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
       ...(diagnostic ? { worldSubmissions, textureUploads: [...textureUploads] } : {}),
       ...(links ? { programLinks, holdDebug: debugSink.__benchDebug ?? [], disposals } : {}) };
   },

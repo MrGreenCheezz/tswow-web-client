@@ -7,6 +7,25 @@ export function distribution(values) {
     p99: sorted[Math.ceil(sorted.length * .99) - 1], max: sorted.at(-1) };
 }
 
+/**
+ * P1-12: the rest-radius tables over the measured frames — the renderer's cumulative
+ * `telemetry.wmoRange` at the end minus the harness's `wmoRangeAtStart`, distance (`groups`) and
+ * open-air tables together. `recomputesPerFrame` is per measured frame (all placements summed).
+ * Null when the harness had no world renderer or predates the counters.
+ */
+export function wmoRangeSummary(result) {
+  const end = result.telemetry?.wmoRange;
+  const start = result.wmoRangeAtStart;
+  const frames = result.frames?.length ?? 0;
+  if (!end || !start || !frames) return null;
+  const delta = key => (end.groups[key] - start.groups[key]) + (end.openAir[key] - start.openAir[key]);
+  const selects = delta('selects');
+  const recomputes = delta('recomputes');
+  return { selects, recomputes, recomputesPerFrame: recomputes / frames,
+    groups: { selects: end.groups.selects - start.groups.selects, recomputes: end.groups.recomputes - start.groups.recomputes },
+    openAir: { selects: end.openAir.selects - start.openAir.selects, recomputes: end.openAir.recomputes - start.openAir.recomputes } };
+}
+
 export function summarize(result) {
   const column = name => result.frames.map(row => row[result.columns.indexOf(name)]);
   const intervals = column('intervalMs');

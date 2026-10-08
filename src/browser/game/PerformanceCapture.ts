@@ -1,4 +1,5 @@
-import { CAPTURE_DURATION_MS, FrameCapture, captureScriptFile } from "../FrameCapture.js";
+import { CAPTURE_DURATION_MS, CAPTURE_FRAME_LIMIT, FrameCapture, captureScriptFile } from "../FrameCapture.js";
+import { FrameExtraColumns, PhaseAccumulator, StackingProbe } from "./CaptureExtras.js";
 import { formalRenderBenchmarkExclusiveActive } from "../RenderBenchmarkExclusiveLease.js";
 import { renderBenchmarkRuntime } from "../RenderBenchmarkRuntime.js";
 import { game } from "./Context.js";
@@ -80,6 +81,14 @@ let completedProfile: unknown;
 let packetsByOpcode = new Map<number, PacketTotals>();
 let packetsPerSecond: PacketTotals[] = [];
 let frameXmlAtStop: unknown;
+/**
+ * P1-04: every recorded frame's draw phases, the budget-stacking sensor, and packet/FrameXML time
+ * per frame row. Preallocated once (2 × Float32Array(CAPTURE_FRAME_LIMIT) = 160 KB) and reset by
+ * each new recording.
+ */
+const phaseTotals = new PhaseAccumulator();
+const stacking = new StackingProbe();
+const frameExtra = new FrameExtraColumns(CAPTURE_FRAME_LIMIT);
 
 export function onPerformanceCaptureChanged(listener: () => void): void { changed = listener; }
 export function performanceCaptureActive(): boolean { return recording !== undefined; }
@@ -148,6 +157,12 @@ function visibilityChanged(): void {
 function probe(kind: string, at: number, details: Readonly<Record<string, unknown>>): void {
   const capture = recording;
   if (!capture) return;
+  // Every FrameXML step (up to 144 a second): a frame column, never an event, or it would fill
+  // the 240-entry log in two seconds.
+  if (kind === "frameXmlStepTime") {
+    frameExtra.addFrameXml(Number(details["ms"]));
+    return;
+  }
   if (kind !== "packets") {
     capture.event(kind, at, details);
     return;
@@ -156,6 +171,7 @@ function probe(kind: string, at: number, details: Readonly<Record<string, unknow
   const bytes = Number(details["bytes"]);
   const ms = Number(details["ms"]);
   if (!Number.isFinite(opcode) || !Number.isFinite(bytes) || !Number.isFinite(ms)) return;
+  frameExtra.addNet(ms);
   const totals = packetsByOpcode.get(opcode) ?? { count: 0, bytes: 0, ms: 0, maxMs: 0 };
   addPacket(totals, bytes, ms);
   packetsByOpcode.set(opcode, totals);
@@ -276,6 +292,11 @@ export function startPerformanceCapture(): boolean {
   packetsPerSecond = [];
   lastCheckpoint = Number.NEGATIVE_INFINITY;
   resetCheckpointSections();
+  phaseTotals.reset();
+  stacking.reset();
+  frameExtra.reset();
+  // Checkpoints carry the worker's counters since this point (P1-04).
+  game.renderer?.poseWorkerStats(true);
   // The stock HUD keeps its own window of counters; start it with the recording.
   metadata["frameXmlMounted"] = frameXmlPerf("reset") !== undefined;
   // L10 (10.18): whether crowd poses ran in the worker or on the main thread, and why.
@@ -332,7 +353,10 @@ export function performanceCaptureReport(): unknown {
     ms: round2(totals.ms), maxMs: round2(totals.maxMs),
   });
   return {
-    version: 2, ...metadata, entrySupport: { ...entrySupport }, ...completed.report(),
+    version: 2, telemetryRevision: 2, ...metadata, entrySupport: { ...entrySupport }, ...completed.report(),
+    drawPhases: phaseTotals.report(),
+    stacking: stacking.report(),
+    frameExtra: frameExtra.report(),
     packets: {
       byOpcode: [...packetsByOpcode].sort((left, right) => right[1].ms - left[1].ms).map(packetRow),
       perSecond: packetsPerSecond.map((totals, second) => ({
@@ -349,6 +373,11 @@ export function performanceCaptureReport(): unknown {
       "A long interval ends at this row and may be caused by CPU work in the PREVIOUS row or between callbacks.",
       "CPU is synchronous elapsed callback time, including driver waits; nested render.* sections overlap render.",
       "render.units.* and render.submit.* are capture-only subphases included in their parent totals; do not sum them twice.",
+      "render.visuals.* are inside render.visuals; visuals.particles is inside visuals.effects.",
+      "drawPhases (telemetryRevision 2) sums every drawPhaseMs key over every recorded frame; meanMs divides by drawPhases.frames, the recorded frame rows.",
+      "frameExtra.netMs[i] and frameExtra.frameXmlMs[i] belong to frames[i]: packet handler time and FrameXML step time since the previous row, i.e. what fills that row's interval outside cpuMs.",
+      "stacking counts frames where at least two budgeted phases (budgetsMs, net = packet time) reached fireShare of their budget and together passed sumMs; env includes WMO groups, so it is an upper estimate, not a budget measurement.",
+      "checkpoints[].poseWorker are the pose worker's counters since capture start; in checkpoints[].shadow, cascades[].renders and frames are totals since the cascades were configured (difference two checkpoints), rendered/drawCalls/cpuMs describe each cascade's last render.",
       "GPU checkpoints contain delayed rolling query results, not the current frame; pending/unavailable is not zero.",
       "GPU query envelope covers world update/submission and portraits; it can include waits for CPU submission, not just busy GPU time.",
       "Resource completion and new GL objects are correlations, not proof of the cause. No resource URLs are exported.",
@@ -439,6 +468,13 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
   captureShaderPrograms(capture);
   if (frameWasActive && worldActive()) {
     capture.frame(rafAt, frameStartedAt, cpuMs, failed);
+    // P1-04: only a frame that became a row feeds the per-frame extras, so they align with `frames`.
+    const netMs = frameExtra.pendingNetMs;
+    if (frameExtra.commit(capture.count)) {
+      const phases = game.renderer?.drawPhaseMs;
+      phaseTotals.add(phases);
+      stacking.add(phases, netMs);
+    }
     commitFrameSections();
     checkpointSectionFrames++;
     if (frameStartedAt - lastCheckpoint >= 500) {
@@ -457,14 +493,36 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
           // A sawtooth here is garbage collection; a drop next to a long interval points at a major GC.
           heap: jsHeap(), worldObjects: game.world?.state.objects.size,
           sections: takeCheckpointSections(),
+          poseWorker: game.renderer?.poseWorkerStats(),
+          shadow: shadowCheckpoint(game.renderer?.shadowCascadeStats),
           diagnosticMs: performance.now() - checkpointStart,
         });
       } catch {
         capture.event("diagnosticErrors", performance.now(), { stage: "checkpoint" });
       }
     }
-  } else capture.breakCadence();
+  } else {
+    capture.breakCadence();
+    frameExtra.discard();
+  }
   if (capture.full || performance.now() - capture.startedAt >= CAPTURE_DURATION_MS) stopPerformanceCapture();
+}
+
+/**
+ * The cascades' cumulative counters (P1-04), without the static map sizes and extents, which the
+ * renderer telemetry and settings already describe.
+ */
+function shadowCheckpoint(stats: undefined | {
+  readonly cascades: readonly { readonly rendered: boolean; readonly drawCalls: number; readonly cpuMs: number; readonly renders: number }[];
+  readonly frames: number; readonly shadowOnlyCasters: number;
+}): unknown {
+  if (stats === undefined) return undefined;
+  return {
+    cascades: stats.cascades.map((cascade) => ({
+      rendered: cascade.rendered, drawCalls: cascade.drawCalls, cpuMs: round2(cascade.cpuMs), renders: cascade.renders,
+    })),
+    frames: stats.frames, shadowOnlyCasters: stats.shadowOnlyCasters,
+  };
 }
 
 function captureShaderPrograms(capture: FrameCapture): void {

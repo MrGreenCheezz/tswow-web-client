@@ -203,7 +203,10 @@ export interface WmoPortalWalkScratch {
   /** A ring of group indices; a group is queued at most once at a time. */
   queue: Int32Array;
   readonly portal: Float64Array;
-  readonly selected: number[];
+  /** The answer's groups; P1-12c: replaced by a new array only when their number changes. */
+  selected: number[];
+  /** P1-12c: where a walk picks its groups before they are compared with `selected`; never shrinks. */
+  readonly picks: number[];
   readonly result: { groups: readonly number[]; candidates: number; visible: number; culled: number; used: boolean };
 }
 
@@ -216,6 +219,7 @@ export function createWmoPortalWalkScratch(): WmoPortalWalkScratch {
     queue: new Int32Array(0),
     portal: new Float64Array(4),
     selected: [],
+    picks: [],
     result: { groups: [], candidates: 0, visible: 0, culled: 0, used: false },
   };
 }
@@ -269,10 +273,7 @@ function selectFromOpenAir(
   queued.fill(0, 0, count);
   let head = 0;
   let size = 0;
-  for (let index = 0; index < count; index++) {
-    const group = groups[index]!;
-    if (group.boundsValid === false || !validBounds(group.bounds)) return scratchFallback(scratch, distanceGroups);
-  }
+  if (!cachedValidGroupBounds(groups)) return scratchFallback(scratch, distanceGroups);
   const viewerValid = viewer !== undefined && finitePoint(viewer);
   // 05.10 review A7b-2: the street and the rooms whose boxes hold the camera or the viewer, together.
   // A room box is no proof the camera is in that room — a city's are districts (Dalaran's up to
@@ -296,17 +297,16 @@ function selectFromOpenAir(
     size--;
     queued[sourceIndex] = 0;
     const source = groups[sourceIndex]!;
-    const sMinX = apertures[sourceIndex * 4]!;
-    const sMaxX = apertures[sourceIndex * 4 + 1]!;
-    const sMinY = apertures[sourceIndex * 4 + 2]!;
-    const sMaxY = apertures[sourceIndex * 4 + 3]!;
     const end = source.portalStart + source.portalCount;
     for (let at = source.portalStart; at < end; at++) {
       const reference = portals.references[at]!;
       const target = reference.group;
       if (target === sourceIndex) continue;
       const definition = portals.definitions[reference.portal]!;
-      if (!projectPortalInto(portals.vertices, definition, modelToClip, sMinX, sMaxX, sMinY, sMaxY, portal)) continue;
+      // P1-12c: the parent rectangle by its offset — doubles passed to a call that is not inlined
+      // were boxed, four heap numbers per portal per walk. A target's own rectangle is written
+      // below only after this projection has read its source's, so reading in place is the same.
+      if (!projectPortalInto(portals.vertices, definition, modelToClip, apertures, sourceIndex * 4, portal)) continue;
       const base = target * 4;
       if (reached[target] === 0) {
         reached[target] = 1;
@@ -334,12 +334,26 @@ function selectFromOpenAir(
     }
   }
 
-  const selected = scratch.selected;
-  selected.length = 0;
-  for (const index of distanceGroups) {
+  // P1-12c: picked into a buffer that never shrinks — `length = 0` dropped the backing store of the
+  // answer every walk and the pushes grew it again. The answer array is kept while its contents
+  // are, overwritten in place at the same length, and replaced only when the length changes.
+  const picks = scratch.picks;
+  let picked = 0;
+  for (let at = 0; at < distanceGroups.length; at++) {
+    const index = distanceGroups[at]!;
     const group = groups[index];
     if (!group) return scratchFallback(scratch, distanceGroups);
-    if (reached[index] === 1 || group.exterior || !group.indoor || group.portalCount === 0) selected.push(index);
+    if (reached[index] === 1 || group.exterior || !group.indoor || group.portalCount === 0) {
+      if (picked < picks.length) picks[picked] = index;
+      else picks.push(index);
+      picked++;
+    }
+  }
+  let selected = scratch.selected;
+  if (selected.length === picked) {
+    for (let at = 0; at < picked; at++) selected[at] = picks[at]!;
+  } else {
+    selected = scratch.selected = picks.slice(0, picked);
   }
   if (screenApertures && screenApertures.length >= count * 4) {
     for (let index = 0; index < count; index++) {
@@ -348,12 +362,21 @@ function selectFromOpenAir(
       screenApertures[index * 4 + 2] = 1;
       screenApertures[index * 4 + 3] = -1;
     }
-    for (const index of selected) {
-      const whole = reached[index] !== 1;
-      screenApertures[index * 4] = whole ? -1 : apertures[index * 4]!;
-      screenApertures[index * 4 + 1] = whole ? 1 : apertures[index * 4 + 1]!;
-      screenApertures[index * 4 + 2] = whole ? -1 : apertures[index * 4 + 2]!;
-      screenApertures[index * 4 + 3] = whole ? 1 : apertures[index * 4 + 3]!;
+    // P1-12c: indexed, and no value that is a small integer on one branch and a double on the other —
+    // the iterator and the merged value were both heap objects in code the browser had not optimised.
+    for (let at = 0; at < picked; at++) {
+      const base = selected[at]! * 4;
+      if (reached[selected[at]!] !== 1) {
+        screenApertures[base] = -1;
+        screenApertures[base + 1] = 1;
+        screenApertures[base + 2] = -1;
+        screenApertures[base + 3] = 1;
+      } else {
+        screenApertures[base] = apertures[base]!;
+        screenApertures[base + 1] = apertures[base + 1]!;
+        screenApertures[base + 2] = apertures[base + 2]!;
+        screenApertures[base + 3] = apertures[base + 3]!;
+      }
     }
   }
   const result = scratch.result;
@@ -363,6 +386,28 @@ function selectFromOpenAir(
   result.culled = Math.max(0, distanceGroups.length - selected.length);
   result.used = true;
   return result;
+}
+
+/**
+ * P1-12c: whether every group's box can be trusted, once per group table (and its length) — the
+ * table is as immutable as the graph `cachedValidGraph` keys on. The open-air walk asked it of
+ * every group on every walk.
+ */
+const BOUNDS_VALIDATION = new WeakMap<object, { readonly count: number; readonly valid: boolean }>();
+
+function cachedValidGroupBounds(groups: readonly WmoOcclusionGroup[]): boolean {
+  const known = BOUNDS_VALIDATION.get(groups);
+  if (known !== undefined && known.count === groups.length) return known.valid;
+  let valid = true;
+  for (let index = 0; index < groups.length; index++) {
+    const group = groups[index]!;
+    if (group.boundsValid === false || !validBounds(group.bounds)) {
+      valid = false;
+      break;
+    }
+  }
+  BOUNDS_VALIDATION.set(groups, { count: groups.length, valid });
+  return valid;
 }
 
 function cachedValidGraph(groups: readonly WmoOcclusionGroup[], portals: WmoPortals): boolean {
@@ -426,11 +471,19 @@ function finitePoint(point: WmoOcclusionPoint): boolean {
 }
 
 function validMatrix(matrix: readonly number[]): boolean {
-  return matrix.length === 16 && matrix.every((value) => Number.isFinite(value));
+  if (matrix.length !== 16) return false;
+  // P1-12c: indexed — `every` handed each element to its callback as a heap number. A hole is
+  // skipped, as `every` skips it.
+  for (let index = 0; index < 16; index++) {
+    if (!Number.isFinite(matrix[index]) && index in matrix) return false;
+  }
+  return true;
 }
 
 /** 05.10-A7b-2: `projectPortalInto`'s answer for the allocating walk; doubles, as it always had. */
 const PROJECTED = new Float64Array(4);
+/** P1-12c: the parent rectangle of the allocating walk, in the layout `projectPortalInto` reads. */
+const PARENT = new Float64Array(4);
 
 function projectPortal(
   vertices: Float32Array,
@@ -438,7 +491,11 @@ function projectPortal(
   matrix: readonly number[],
   parent: Aperture,
 ): Aperture | undefined {
-  if (!projectPortalInto(vertices, definition, matrix, parent.minX, parent.maxX, parent.minY, parent.maxY, PROJECTED)) {
+  PARENT[0] = parent.minX;
+  PARENT[1] = parent.maxX;
+  PARENT[2] = parent.minY;
+  PARENT[3] = parent.maxY;
+  if (!projectPortalInto(vertices, definition, matrix, PARENT, 0, PROJECTED)) {
     return undefined;
   }
   return { minX: PROJECTED[0]!, maxX: PROJECTED[1]!, minY: PROJECTED[2]!, maxY: PROJECTED[3]! };
@@ -447,16 +504,15 @@ function projectPortal(
 /**
  * 05.10-A7b-2: the screen rectangle a portal is seen through from a parent rectangle, written into
  * `out` (minX, maxX, minY, maxY); false when it is not seen. Conservative widening — to the whole
- * parent — wherever the projection of its corners cannot be trusted.
+ * parent — wherever the projection of its corners cannot be trusted. P1-12c: the parent is the four
+ * doubles of `parents` at `parentAt` (same order), so no double crosses a call and none is boxed.
  */
 function projectPortalInto(
   vertices: Float32Array,
   definition: { startVertex: number; vertexCount: number },
   matrix: readonly number[],
-  parentMinX: number,
-  parentMaxX: number,
-  parentMinY: number,
-  parentMaxY: number,
+  parents: Float64Array,
+  parentAt: number,
   out: Float64Array,
 ): boolean {
   let minX = Infinity;
@@ -476,8 +532,11 @@ function projectPortalInto(
     const clipY = matrix[1]! * x + matrix[5]! * y + matrix[9]! * z + matrix[13]!;
     const clipZ = matrix[2]! * x + matrix[6]! * y + matrix[10]! * z + matrix[14]!;
     const w = matrix[3]! * x + matrix[7]! * y + matrix[11]! * z + matrix[15]!;
-    if (!Number.isFinite(clipX) || !Number.isFinite(clipY)
-      || !Number.isFinite(clipZ) || !Number.isFinite(w)) return writeAperture(out, parentMinX, parentMaxX, parentMinY, parentMaxY);
+    // P1-12c: `v - v === 0` is `Number.isFinite(v)` for a number, and the comparisons below are
+    // `Math.min`/`Math.max` with their signed zeros; neither is a call that boxes its doubles in code
+    // the browser runs unoptimised (the portal walk sat in its middle tier).
+    if (!(clipX - clipX === 0) || !(clipY - clipY === 0)
+      || !(clipZ - clipZ === 0) || !(w - w === 0)) return copyAperture(out, parents, parentAt);
     if (w > CLIP_W_EPSILON) {
       front++;
       // In WebGL clip space the near plane is z = -w. A polygon between the eye and that plane,
@@ -486,34 +545,40 @@ function projectPortalInto(
       if (clipZ <= -w + CLIP_NEAR_EPSILON) nearUncertain = true;
       const ndcX = clipX / w;
       const ndcY = clipY / w;
-      if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY)) return writeAperture(out, parentMinX, parentMaxX, parentMinY, parentMaxY);
-      minX = Math.min(minX, ndcX);
-      maxX = Math.max(maxX, ndcX);
-      minY = Math.min(minY, ndcY);
-      maxY = Math.max(maxY, ndcY);
+      if (!(ndcX - ndcX === 0) || !(ndcY - ndcY === 0)) return copyAperture(out, parents, parentAt);
+      // Both finite here and the bounds never NaN; a zero meeting a zero keeps Math.min's -0 / max's +0.
+      if (ndcX < minX || (ndcX === 0 && minX === 0 && 1 / ndcX < 0)) minX = ndcX;
+      if (ndcX > maxX || (ndcX === 0 && maxX === 0 && 1 / ndcX > 0)) maxX = ndcX;
+      if (ndcY < minY || (ndcY === 0 && minY === 0 && 1 / ndcY < 0)) minY = ndcY;
+      if (ndcY > maxY || (ndcY === 0 && maxY === 0 && 1 / ndcY > 0)) maxY = ndcY;
     } else if (w < -CLIP_W_EPSILON) {
       behind++;
     } else {
       uncertain++;
     }
   }
-  if (front === 0) return uncertain > 0 ? writeAperture(out, parentMinX, parentMaxX, parentMinY, parentMaxY) : false;
+  if (front === 0) return uncertain > 0 ? copyAperture(out, parents, parentAt) : false;
   // Clipping an edge that crosses the eye/near plane can cover more of the screen than either
   // projected endpoint. Widening to the incoming aperture is the conservative answer.
-  if (behind > 0 || uncertain > 0 || nearUncertain) return writeAperture(out, parentMinX, parentMaxX, parentMinY, parentMaxY);
-  const clippedMinX = Math.max(parentMinX, minX);
-  const clippedMaxX = Math.min(parentMaxX, maxX);
-  const clippedMinY = Math.max(parentMinY, minY);
-  const clippedMaxY = Math.min(parentMaxY, maxY);
+  if (behind > 0 || uncertain > 0 || nearUncertain) return copyAperture(out, parents, parentAt);
+  const clippedMinX = Math.max(parents[parentAt]!, minX);
+  const clippedMaxX = Math.min(parents[parentAt + 1]!, maxX);
+  const clippedMinY = Math.max(parents[parentAt + 2]!, minY);
+  const clippedMaxY = Math.min(parents[parentAt + 3]!, maxY);
   if (!(clippedMinX <= clippedMaxX && clippedMinY <= clippedMaxY)) return false;
-  return writeAperture(out, clippedMinX, clippedMaxX, clippedMinY, clippedMaxY);
+  out[0] = clippedMinX;
+  out[1] = clippedMaxX;
+  out[2] = clippedMinY;
+  out[3] = clippedMaxY;
+  return true;
 }
 
-function writeAperture(out: Float64Array, minX: number, maxX: number, minY: number, maxY: number): true {
-  out[0] = minX;
-  out[1] = maxX;
-  out[2] = minY;
-  out[3] = maxY;
+/** P1-12c: widening to the whole parent — four doubles copied between typed arrays. */
+function copyAperture(out: Float64Array, parents: Float64Array, parentAt: number): true {
+  out[0] = parents[parentAt]!;
+  out[1] = parents[parentAt + 1]!;
+  out[2] = parents[parentAt + 2]!;
+  out[3] = parents[parentAt + 3]!;
   return true;
 }
 

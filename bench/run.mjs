@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
-import { summarize } from './metrics.mjs';
+import { summarize, wmoRangeSummary } from './metrics.mjs';
 import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -508,12 +508,13 @@ async function main() {
           screenshots.push(name);
         }
         pageErrors.push(...screenshotErrors);
-        const scenarioResult = { ...raw, summary, prepared, screenshots, pageErrors,
+        const scenarioResult = { ...raw, summary, wmoRange: wmoRangeSummary(raw), prepared, screenshots, pageErrors,
           screenshotPolicy: scenario.startsWith('world-crowd-') || isCityScenario(scenario) ? 'fresh-prepared-scene-v1' : 'after-measurement-v1',
           cacheMisses: cacheMisses - missesBefore, measurementCacheMisses: measurementMisses };
         result.scenarios.push(scenarioResult);
         await writeFile(resultPath, JSON.stringify({ ...result, incomplete: true }, null, 2));
         console.log(`${scenario}: ${summary.averageFps.toFixed(2)} FPS; 1% ${summary.onePercentLowFps.toFixed(2)}; p99 ${summary.p99FrameMs.toFixed(2)}ms; >30ms ${summary.framesOver30Ms}; CPU ${summary.cpuMs.mean.toFixed(2)}ms; GPU ${summary.gpuMs.mean?.toFixed(2) ?? 'unavailable'}ms`);
+        if (scenarioResult.wmoRange) console.log(`${scenario}: wmoRange ${scenarioResult.wmoRange.recomputes}/${scenarioResult.wmoRange.selects} recomputes/selects; ${scenarioResult.wmoRange.recomputesPerFrame.toFixed(3)} recomputes/frame`);
         await browser.close(); browser = undefined;
         if (pageErrors.length) result.errors.push(...pageErrors.map(error => `${scenario}: ${error}`));
         if (measurementMisses) result.errors.push(`${scenario}: ${measurementMisses} uncached assets during measurement; run npm run bench -- --prepare, then repeat`);

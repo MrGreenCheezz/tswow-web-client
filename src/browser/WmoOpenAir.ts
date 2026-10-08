@@ -62,6 +62,9 @@ export function wmoOpenAirNoteCandidates(
   z: number,
 ): void {
   state.candidates = candidates;
+  // P1-12c: the candidates may come back as the very array of the last walk (a rest radius), but
+  // the walk also seeds from the viewer, who moved — so a new position always walks again.
+  state.walkedCandidates = undefined;
   state.candidatesAt.x = x;
   state.candidatesAt.y = y;
   state.candidatesAt.z = z;

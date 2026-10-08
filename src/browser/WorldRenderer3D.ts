@@ -169,7 +169,8 @@ import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
 import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
 import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
-import { WmoRangeTable, sameWmoSelection } from "./WmoGroupRange.js"; // P1-12a/b
+import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
+import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
 import {
   WMO_OPEN_AIR_ROOM_RANGE, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates,
   wmoOpenAirNoteWalk, wmoOpenAirWalkStale, type WmoOpenAirState,
@@ -2207,7 +2208,7 @@ interface PlacedWmo {
    * portal refinement still runs every frame — it reads the camera, which moves without the player.
    * The 05.10-7.05-review shell leash of a moving transport is passed to `select` with the player.
    */
-  ranges: Pick<WmoRangeTable, "select">;
+  ranges: Pick<WmoRangeTable, "select"> & Partial<Pick<WmoRangeTable, "totals">>;
   /** P1-12b: the wanted groups of the frame as a mask (allocated once, refilled per full pass). */
   groupMask?: Uint8Array;
   /**
@@ -2220,6 +2221,13 @@ interface PlacedWmo {
   appliedSettled?: boolean;
   /** 05.10-A7b-2 (7.03 slice 3): the open-air portal walk's scratch and last inputs. */
   openAir?: WmoOpenAirState;
+  /**
+   * P1-12c: the open-air candidates (`wmoGroupsInRange` on `WMO_OPEN_AIR_ROOM_RANGE`) answered from
+   * a rest radius, as `ranges` answers the distance selection; made on the first open-air frame.
+   */
+  openAirRanges?: WmoRangeTable;
+  /** P1-12c: the indoor portal walk's last inputs and answer (`WmoPortalMemo.ts`). */
+  portalMemo?: WmoPortalMemo;
 }
 
 /** The sole renderer owner of one converted WMO group geometry. */
@@ -4177,6 +4185,10 @@ export class WorldRenderer3D {
     "units.appearance": 0,
     "units.pose": 0,
     "units.presentation": 0,
+    // P1-04: capture-only, inside `visuals`; `visuals.particles` is inside `visuals.effects`.
+    "visuals.rigs": 0,
+    "visuals.effects": 0,
+    "visuals.particles": 0,
     "submit.sky": 0,
     "submit.world": 0,
     "submit.postprocess": 0,
@@ -4213,6 +4225,13 @@ export class WorldRenderer3D {
   #wmoPortalModels = 0;
   #wmoPortalCandidates = 0;
   #wmoPortalCulled = 0;
+  /**
+   * P1-12 telemetry: `select` calls and recomputes of every placement's rest-radius tables since
+   * this renderer was made — the distance tables of `#updateWmoGroups` and the open-air candidate
+   * tables apart. Cumulative (a reader takes differences); mutated in place, never reallocated.
+   */
+  readonly #wmoRangeGroups: WmoRangeTotals = { selects: 0, recomputes: 0 };
+  readonly #wmoRangeOpenAir: WmoRangeTotals = { selects: 0, recomputes: 0 };
   /**
    * The same pair for emitters, and what the GPU is holding.
    *
@@ -4977,6 +4996,16 @@ export class WorldRenderer3D {
     readonly animationLod: Readonly<{
       near: number; medium: number; far: number; critical: number;
       full: number; flat: number; skipped: number;
+      /** P1-04: doodads posed last frame (ENV-12). */
+      doodadsPosed: number;
+    }>;
+    /**
+     * P1-12: cumulative `select` calls and recomputes of the rest-radius tables — `groups` for the
+     * `#updateWmoGroups` distance tables, `openAir` for the open-air candidate tables.
+     */
+    readonly wmoRange: Readonly<{
+      groups: Readonly<{ selects: number; recomputes: number }>;
+      openAir: Readonly<{ selects: number; recomputes: number }>;
     }>;
     readonly worldSubmission?: WorldSubmissionSnapshot;
   } {
@@ -5010,11 +5039,17 @@ export class WorldRenderer3D {
       full: this.#unitAnimationFull,
       flat: this.#unitAnimationFlat,
       skipped: this.#unitAnimationSkipped,
+      doodadsPosed: this.#doodadsPosed,
+    });
+    // Copies, so a held snapshot does not move with the live counters.
+    const wmoRange = Object.freeze({
+      groups: Object.freeze({ selects: this.#wmoRangeGroups.selects, recomputes: this.#wmoRangeGroups.recomputes }),
+      openAir: Object.freeze({ selects: this.#wmoRangeOpenAir.selects, recomputes: this.#wmoRangeOpenAir.recomputes }),
     });
     const worldSubmission = this.#worldSubmissionCapture?.snapshot();
     return worldSubmission === undefined
-      ? Object.freeze({ ...snapshot, animationLod })
-      : Object.freeze({ ...snapshot, animationLod, worldSubmission });
+      ? Object.freeze({ ...snapshot, animationLod, wmoRange })
+      : Object.freeze({ ...snapshot, animationLod, wmoRange, worldSubmission });
   }
 
   /** Exact exposed geometry-array residency for every bounded renderer geometry cache. */
@@ -7528,11 +7563,17 @@ export class WorldRenderer3D {
     drawPhaseAt = performance.now();
     // Before the emitters and after the units: a flourish in somebody's hand reads their bone,
     // and its own emitters then read the flourish.
+    // P1-04: detailed clocks run only during an explicit capture; they overlap their parent phases.
+    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    let visualPartAt = detailedCapture ? performance.now() : 0;
     this.#updateVisuals(now, elapsed, environmentClient);
+    if (detailedCapture) this.#drawPhaseMs["visuals.rigs"] = performance.now() - visualPartAt;
     this.#chainBeams?.update(now, this.#missilePoints, state, this.#camera.position); // 05.10-A7a-E (6.13)
     // After everything has been placed and posed, and before anything is drawn: an emitter reads
     // the matrix of the bone it hangs on, and that matrix is only right once the pose is.
+    if (detailedCapture) visualPartAt = performance.now();
     this.#updateEffects(player.position, now, elapsed);
+    if (detailedCapture) this.#drawPhaseMs["visuals.effects"] = performance.now() - visualPartAt;
     this.#updateFixtureLights(now);
     // New weather materials must enter the same warm pass as every other first-frame draw.
     this.#updateWeather(elapsed);
@@ -7592,8 +7633,8 @@ export class WorldRenderer3D {
     const submitTexturesBefore = this.#textureCount();
     const submitGeometriesBefore = this.#geometryCount();
     const glow = this.#beginFullscreenGlow();
-    // Detailed clocks run only during an explicit capture. These overlap their parent phases.
-    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    // Detailed clocks (`detailedCapture`, above) run only during an explicit capture. These overlap
+    // their parent phases.
     let submitPartAt = detailedCapture ? performance.now() : 0;
     try {
       this.#renderer.autoClear = true;
@@ -7667,6 +7708,9 @@ export class WorldRenderer3D {
     this.#drawPhaseMs["units.appearance"] = 0;
     this.#drawPhaseMs["units.pose"] = 0;
     this.#drawPhaseMs["units.presentation"] = 0;
+    this.#drawPhaseMs["visuals.rigs"] = 0;
+    this.#drawPhaseMs["visuals.effects"] = 0;
+    this.#drawPhaseMs["visuals.particles"] = 0;
     this.#drawPhaseMs["submit.sky"] = 0;
     this.#drawPhaseMs["submit.world"] = 0;
     this.#drawPhaseMs["submit.postprocess"] = 0;
@@ -8788,6 +8832,9 @@ export class WorldRenderer3D {
     }
 
     let effectBuilds = 0;
+    // P1-04: the particle step summed over every group, only during an explicit capture.
+    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    let particleMs = 0;
     for (const entry of wanted) {
       let held = this.#effects.get(entry.key);
       // Rebuilt when the model itself changes — a druid shifting form, a chest opening — because
@@ -8871,6 +8918,7 @@ export class WorldRenderer3D {
       const firstBurst = newSpellEffects && entry.spell !== undefined
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
+      const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,
         // A unit's emitters follow the clip it is playing; a doodad has no clip to follow, so its
@@ -8895,8 +8943,10 @@ export class WorldRenderer3D {
         firstBurst,
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
       });
+      if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
+    if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
   }
 
   #markExpiredSpellEffectPhases(now: number): void {
@@ -11230,7 +11280,8 @@ export class WorldRenderer3D {
     const model = placed.model;
     const rooms = this.#interiorOnlyRoomsOf(placed);
     rooms.visible.fill(0);
-    for (const index of selected) rooms.visible[index] = 1;
+    // P1-12c: indexed — an array iterator per call (every admitted building with a street, every frame).
+    for (let at = 0; at < selected.length; at++) rooms.visible[selected[at]!] = 1;
     rooms.clipped = clipped;
     // The same frame's camera as the portal walk: `#updateEnvironment` set it before admission.
     if (clipped) rooms.clip.set(this.#frustumMatrix.elements);
@@ -11298,6 +11349,8 @@ export class WorldRenderer3D {
   ): void {
     // P1-12a: the same set while no group can have crossed its leash — the player re-asks the
     // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
+    // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
+    placed.ranges.totals ??= this.#wmoRangeGroups;
     let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     const fogPlacement = staticEnvironment && placed.visualId === this.#wmoFogVisualId;
     // A building of rooms alone that the camera or the player has entered is chosen through its
@@ -11317,15 +11370,24 @@ export class WorldRenderer3D {
         this.#wmoModelToClip
           .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
           .premultiply(this.#camera.projectionMatrix);
-        const portalSelection = selectWmoPortalGroups(
-          placed.model.groups,
-          placed.model.portals,
-          distanceGroups,
-          this.#wmoCameraModel,
-          this.#wmoModelToClip.elements,
-          this.#wmoViewerModel,
-          entered ? this.#interiorOnlyRoomsOf(placed).apertures : undefined,
-        );
+        const screenApertures = entered ? this.#interiorOnlyRoomsOf(placed).apertures : undefined;
+        // P1-12c: the same inputs as the last walk of this placement give its answer (`WmoPortalMemo.ts`).
+        const memo = placed.portalMemo ??= createWmoPortalMemo();
+        let portalSelection = wmoPortalMemoAnswer(memo, placed.model, distanceGroups, this.#wmoCameraModel,
+          this.#wmoModelToClip.elements, this.#wmoViewerModel, screenApertures);
+        if (portalSelection === undefined) {
+          portalSelection = selectWmoPortalGroups(
+            placed.model.groups,
+            placed.model.portals,
+            distanceGroups,
+            this.#wmoCameraModel,
+            this.#wmoModelToClip.elements,
+            this.#wmoViewerModel,
+            screenApertures,
+          );
+          wmoPortalMemoNote(memo, placed.model, distanceGroups, this.#wmoCameraModel,
+            this.#wmoModelToClip.elements, this.#wmoViewerModel, screenApertures, portalSelection);
+        }
         if (portalSelection.used) {
           selected = portalSelection.groups;
           clipped = entered;
@@ -11453,8 +11515,10 @@ export class WorldRenderer3D {
     }
     const state = placed.openAir ??= createWmoOpenAirState();
     if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
-      wmoOpenAirNoteCandidates(state, wmoGroupsInRange(model, placed.boxes, player, WMO_OPEN_AIR_ROOM_RANGE),
-        player.x, player.y, player.z);
+      // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
+      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, wmoShellRange);
+      ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
+      wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
     }
     const clip = this.#wmoModelToClip
       .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)

@@ -11,6 +11,12 @@ export function sameWmoSelection(applied: readonly number[] | undefined, selecte
   return true;
 }
 
+/** P1-12: `select` calls and recomputes summed over the tables that share this object. */
+export interface WmoRangeTotals {
+  selects: number;
+  recomputes: number;
+}
+
 /** A group with no triangles: never chosen. */
 const KIND_EMPTY = 0;
 /** A non-empty group with no trustworthy box: always chosen (conservative). */
@@ -53,6 +59,13 @@ export class WmoRangeTable {
   #slackSq = 0;
   /** Recomputes so far (tests and diagnostics). */
   recomputes = 0;
+  /** `select` calls so far; `recomputes / selects` is the share the rest radius did not answer. */
+  selects = 0;
+  /**
+   * P1-12 telemetry: totals shared by many tables (the renderer's, by kind of table), counted with
+   * the two above when set; undefined counts into this table alone.
+   */
+  totals: WmoRangeTotals | undefined = undefined;
 
   constructor(
     model: { readonly groups: readonly Pick<WmoGroup, "triangleCount" | "exterior" | "indoor">[] },
@@ -97,6 +110,8 @@ export class WmoRangeTable {
    * the answer is unchanged. `shellRange` is the moving-transport hull leash (05.10-7.05-review).
    */
   select(x: number, y: number, shellRange?: number): readonly number[] {
+    this.selects++;
+    if (this.totals !== undefined) this.totals.selects++;
     if (shellRange !== this.#shellOverride) {
       this.#fillRanges(shellRange);
       this.#slackSq = 0;
@@ -121,6 +136,7 @@ export class WmoRangeTable {
 
   #recompute(x: number, y: number): readonly number[] {
     this.recomputes++;
+    if (this.totals !== undefined) this.totals.recomputes++;
     const z = -y;
     const scratch = this.#scratch;
     let count = 0;
