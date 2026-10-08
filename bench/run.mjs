@@ -7,7 +7,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
 import { summarize, wmoRangeSummary } from './metrics.mjs';
-import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
+import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_TARGET, heapProfileFileName, heapProfileSamplingOptions, parseBundleOptions,
+  parseHeapProfileMode } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -37,8 +38,10 @@ async function main() {
   // --links: the harness names the draw behind every program linked inside a measured frame.
   const links = args.includes('--links');
   // Allocation sampling over the measured seconds (CDP HeapProfiler): where the frame's garbage comes
-  // from. Its own overhead makes the run incomparable, like --trace.
-  const heapProfile = args.includes('--heap-profile');
+  // from. Its own overhead makes the run incomparable, like --trace. --heap-profile=promoted keeps only
+  // what outlived the young generation (P1-03a): null, 'all' or 'promoted'.
+  const heapProfileMode = parseHeapProfileMode(args);
+  const heapProfile = heapProfileMode !== null;
   const diagnostic = args.includes('--diagnostic');
   const captureAbba = args.includes('--capture-abba');
   // Development runs under background load: the load is still recorded and the result is marked
@@ -231,7 +234,7 @@ async function main() {
       '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])];
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
-    smoke, trace, diagnostic, captureAbba, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
+    smoke, trace, diagnostic, captureAbba, heapProfileMode, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -457,14 +460,13 @@ async function main() {
         if (trace) { await client.send('Profiler.enable'); await client.send('Profiler.setSamplingInterval', { interval: 1000 }); await client.send('Profiler.start'); }
         if (heapProfile) {
           await client.send('HeapProfiler.enable');
-          await client.send('HeapProfiler.startSampling', { samplingInterval: 16384,
-            includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+          await client.send('HeapProfiler.startSampling', heapProfileSamplingOptions(heapProfileMode));
         }
         const missesAtMeasurement = cacheMisses;
         const raw = await page.evaluate(() => window.__bench.run());
         if (heapProfile) {
           const sampled = await client.send('HeapProfiler.stopSampling');
-          await writeFile(join(out, `${scenario}.heapprofile`), JSON.stringify(sampled.profile));
+          await writeFile(join(out, heapProfileFileName(scenario, heapProfileMode)), JSON.stringify(sampled.profile));
         }
         if (trace) raw.programEvents = await page.evaluate(() => window.__benchProgramEvents);
         if (trace) raw.programFirstUse = await page.evaluate(() => window.__benchProgramFirstUse);

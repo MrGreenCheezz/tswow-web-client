@@ -59,3 +59,50 @@ export function parseBundleOptions(args) {
     env: resolveBenchmarkEnv(optionValue(args, '--bench-env')),
   };
 }
+
+/** Heap-profile modes (P1-03a): `all` samples every allocation, `promoted` only what survived minor GCs. */
+export const HEAP_PROFILE_MODES = Object.freeze(['all', 'promoted']);
+
+/**
+ * `--heap-profile` → 'all'; `--heap-profile=all|promoted` → that mode; absent → null. An unknown mode,
+ * a separate value (`--heap-profile promoted`, which would pass as a scenario-less flag) or a repeat throws.
+ */
+export function parseHeapProfileMode(args) {
+  let mode = null;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg !== '--heap-profile' && !arg.startsWith('--heap-profile=')) continue;
+    if (mode !== null) throw new Error('--heap-profile is given twice');
+    if (arg === '--heap-profile') {
+      const next = args[index + 1];
+      if (next !== undefined && HEAP_PROFILE_MODES.includes(next)) {
+        throw new Error(`--heap-profile takes its mode after "=": --heap-profile=${next}`);
+      }
+      mode = 'all';
+      continue;
+    }
+    const value = arg.slice('--heap-profile='.length);
+    if (!HEAP_PROFILE_MODES.includes(value)) {
+      throw new Error(`--heap-profile expects all or promoted, not ${JSON.stringify(value)}`);
+    }
+    mode = value;
+  }
+  return mode;
+}
+
+/**
+ * CDP `HeapProfiler.startSampling` parameters for a mode. Without the include flags the profile holds
+ * only objects alive at stop; the major flag adds those a full GC freed, the minor flag those a
+ * scavenge freed. `promoted` leaves the minor flag off: what outlived the young generation (plus what
+ * is still young at stop) — the input of "what feeds the old generation".
+ */
+export function heapProfileSamplingOptions(mode) {
+  if (!HEAP_PROFILE_MODES.includes(mode)) throw new Error(`unknown heap-profile mode ${JSON.stringify(mode)}`);
+  return { samplingInterval: 16384, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: mode === 'all' };
+}
+
+/** `<scenario>.heapprofile` for `all` (the name before P1-03a), `<scenario>.promoted.heapprofile` for `promoted`. */
+export function heapProfileFileName(scenario, mode) {
+  if (!HEAP_PROFILE_MODES.includes(mode)) throw new Error(`unknown heap-profile mode ${JSON.stringify(mode)}`);
+  return mode === 'all' ? `${scenario}.heapprofile` : `${scenario}.${mode}.heapprofile`;
+}

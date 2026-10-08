@@ -152,6 +152,27 @@ city ≈ 1 %, world-crowd-64 ≈ 3 %, movement ≈ 4 %; `series-p1xxs.json`). И
   (порог P1-12 ≤ 0,25).
 - Полный прогон 08.10 после правок: 8589 прошли, 22 упали — все из списка 13.08 (20 файлов); `wmo-occlusion` починен.
 
+### 08.10: P1-03 MEM-4, диагностика GC (ЗАМЕР; часть под нагрузкой AION2 2,4–3,4 ядра — помечена)
+
+- **03a `--heap-profile=promoted`: готов.** Проверка `all` против прежнего запуска: 0,2–1,2 % (порог ±3 %).
+  Доживает до старого поколения: city 15,95 из 870 КБ/кадр (**1,7 %**, 1,16 МБ/с), movement 17,85 из 532 (**3,5 %**, 4,15 МБ/с).
+  Верх доживших в city: `getParameters` three 2,79 КБ/кадр, `Particles.spawn` 2,45 (доживает 42 %), `set` 1,72 (79 %),
+  `Terrain get stats` 0,62 (95 %); в movement — `getParameters` 3,99, `environmentResidentsInRange` 1,83,
+  `environmentCandidatesInRange` 1,45. Таблицы — `.runtime/perf-step22/gc/p103a-*-promoted.txt`.
+- **03b разбор журнала GC: инструмент готов (`bench/analyze-gc-log.mjs`), живая сессия — за владельцем.**
+  Поправки к спецификации: (1) с `--trace-gc-nvp` V8 печатает только nvp-строку без причины; (2) Electron 40 пишет
+  `Incremental Mark-Compact (reduce)` и `Scavenge (interleaved)`; (3) в песочнице рендерер Electron ничего не
+  печатает в stdout; (4) рабочий путь без `--no-sandbox` — события `V8.GCTraceGCNVP` трассы запуска:
+  `WoWWebClient.exe --trace-startup=v8,disabled-by-default-v8.gc --trace-startup-format=json --trace-startup-duration=120
+  --trace-startup-file=<f>.json` (177 сборок рендерера с причинами в упакованном приложении).
+  Стенд, ≈ 20 с: city 41 scavenge, 0,95 мс, доживает 0,4 % новой области, полных 0; city-arrival 57 (120 мс в сумме),
+  доживает 6,5 %, одна полная 10,7 мс; толпа и movement (под нагрузкой) — 33–42 scavenge, 1–2 полных по 4,8–8,5 мс.
+  Вердикт везде «не решено»: доживает много ниже порога 30 %.
+- **03c `--max-semi-space-size=64`: NO-GO по воротам** (доживает 0,4–7,5 % при пороге 30 %). Диагностические пары:
+  новая область 32 → 64 МБ, scavenge 49 → 25–27, сумма пауз −12…−24 %, средняя пауза ×1,37–1,73 (предел ×1,5),
+  доживает столько же — полные сборки не трогает. `main.cjs` не менялся.
+- Перемежающийся сбой стенда `--browser electron` («Electron window did not open the scene», 3 из 4) — старый, с 27.09.
+
 ## Шаг 22 — 06.10: база стенда P1-00b на текущем дереве
 
 **Условия.** HEAD `2be438e`, ветка `perf/optimization`. Не закоммичены только правки стенда этого среза (ниже).
