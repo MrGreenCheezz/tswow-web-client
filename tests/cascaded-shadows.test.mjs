@@ -3,7 +3,8 @@ import test from "node:test";
 import * as THREE from "three";
 
 import {
-  CascadedSunShadows, SHADOW_CASCADE_BLEND, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, farCascadeStale,
+  CascadedSunShadows, SHADOW_CASCADE_BLEND, SHADOW_FAR_IDLE_REFRESH_MS, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER,
+  farCascadeReason, farCascadeStale,
 } from "../dist/code/browser/CascadedShadows.js";
 import {
   SHADOW_FADE_FRACTION, frustumSliceSphere, lightingProfile,
@@ -156,8 +157,11 @@ test("the outermost cascade is cached and re-rendered only when it must be", () 
   const camera = makeCamera();
   const lights = cascades.lights;
   const far = lights.at(-1);
-  const renderFrame = (frame) => {
-    cascades.update(camera, sunTowards, frame);
+  // 144 Hz unless a test moves the clock itself (P2-02b: the interval also waits on the clock).
+  let farRendered = 0;
+  cascades.setFarRenderListener(() => farRendered++);
+  const renderFrame = (frame, ms = frame * 6.944) => {
+    cascades.update(camera, sunTowards, frame, ms);
     calls.length = 0;
     renderer.shadowMap.render(lights, scene, camera);
     return calls.map((call) => call.lights[0]);
@@ -171,19 +175,63 @@ test("the outermost cascade is cached and re-rendered only when it must be", () 
   camera.updateMatrixWorld();
   assert.equal(renderFrame(4).includes(far), true, "leaving the margin re-renders it");
   assert.equal(renderFrame(5).includes(far), false);
-  assert.equal(renderFrame(5 + profile.shadowFarRefreshFrames).includes(far), true, "the refresh interval re-renders it");
+  assert.equal(renderFrame(5 + profile.shadowFarRefreshFrames).includes(far), false,
+    "P2-02b: the frame interval alone no longer re-draws an unchanged map");
+  const idle = 4 * 6.944 + SHADOW_FAR_IDLE_REFRESH_MS;
+  assert.equal(renderFrame(6 + profile.shadowFarRefreshFrames, idle - 1).includes(far), false, "just short of the clock interval");
+  assert.equal(renderFrame(7 + profile.shadowFarRefreshFrames, idle).includes(far), true, "the clock interval re-renders it");
+  assert.equal(renderFrame(8 + profile.shadowFarRefreshFrames, idle + 4000).includes(far), false,
+    "and the frame interval still holds it back right after a render, however much time passed");
   cascades.invalidateFar();
-  assert.equal(renderFrame(6 + profile.shadowFarRefreshFrames).includes(far), true, "a caster change re-renders it");
-  assert.equal(renderFrame(7 + profile.shadowFarRefreshFrames).includes(far), false);
+  assert.equal(renderFrame(9 + profile.shadowFarRefreshFrames, idle + 4001).includes(far), true, "a caster change re-renders it");
+  assert.equal(renderFrame(10 + profile.shadowFarRefreshFrames, idle + 4002).includes(far), false);
   const turned = new THREE.Vector3(0.3, 0.5, -0.8);
-  cascades.update(camera, turned, 8 + profile.shadowFarRefreshFrames);
+  cascades.update(camera, turned, 11 + profile.shadowFarRefreshFrames, idle + 4003);
   calls.length = 0;
   renderer.shadowMap.render(lights, scene, camera);
   assert.equal(calls.some((call) => call.lights[0] === far), true, "a turned sun re-renders it");
+  // P2-02b: a rigged far caster keeps the frame interval; without one the clock holds it back.
+  const renderTurned = (frame, ms) => {
+    cascades.update(camera, turned, frame, ms);
+    calls.length = 0;
+    renderer.shadowMap.render(lights, scene, camera);
+    return calls.some((call) => call.lights[0] === far);
+  };
+  const R = profile.shadowFarRefreshFrames;
+  assert.equal(renderTurned(11 + 2 * R, idle + 4003 + R * 6.944), false, "still: the clock holds it back");
+  cascades.setFarAnimated(true);
+  assert.equal(renderTurned(12 + 2 * R, idle + 4003 + (R + 1) * 6.944), true, "animated: the frame interval re-renders it");
+  assert.equal(renderTurned(13 + 2 * R, idle + 4003 + (R + 2) * 6.944), false, "and not again on the next frame");
+  cascades.setFarAnimated(false);
+  assert.equal(renderTurned(13 + 3 * R, idle + 4003 + (2 * R + 2) * 6.944), false);
 
   assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 1, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1 }), false);
   assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 1, refreshFrames: 30, offset: 11, margin: 20, sunDot: 1 }), true);
   assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 1, refreshFrames: 30, offset: Number.NaN, margin: 20, sunDot: 1 }), true);
+  // P2-02b: without a clock the frame interval decides as before; with one, both must have passed.
+  assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 30, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1 }), true);
+  assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 30, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1, msSinceRender: 1999, idleRefreshMs: 2000 }), false);
+  assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 30, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1, msSinceRender: 2000, idleRefreshMs: 2000 }), true);
+  assert.equal(farCascadeStale({ dirty: false, framesSinceRender: 29, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1, msSinceRender: 9000, idleRefreshMs: 2000 }), false);
+  // One reason per render, the first that holds.
+  const base = { dirty: false, extentChanged: false, framesSinceRender: 1, refreshFrames: 30, offset: 5, margin: 20, sunDot: 1, msSinceRender: 10, idleRefreshMs: 2000 };
+  assert.equal(farCascadeReason(base), undefined);
+  assert.equal(farCascadeReason({ ...base, dirty: true, offset: 50 }), "dirty");
+  assert.equal(farCascadeReason({ ...base, extentChanged: true, offset: 50 }), "extent");
+  assert.equal(farCascadeReason({ ...base, offset: 50, sunDot: 0.5 }), "offset");
+  assert.equal(farCascadeReason({ ...base, sunDot: 0.5 }), "sun");
+  assert.equal(farCascadeReason({ ...base, framesSinceRender: 30, msSinceRender: 2000 }), "interval");
+  const snapshot = cascades.stats;
+  assert.equal(snapshot.farReasons.dirty + snapshot.farReasons.offset + snapshot.farReasons.sun + snapshot.farReasons.interval
+    + snapshot.farReasons.extent, snapshot.cascades.at(-1).renders, "every cached render has one reason");
+  assert.ok(snapshot.cascades.every((cascade) => cascade.cpuMsTotal >= cascade.cpuMsMax && cascade.drawCallsTotal >= 0));
+  assert.equal(farRendered, snapshot.cascades.at(-1).renders, "the listener hears every cached render, and nothing else");
+  // Scheduled but never rendered (the far light left out of the call): no reason is counted.
+  cascades.invalidateFar();
+  cascades.update(camera, turned, 14 + 3 * R, idle + 9000);
+  renderer.shadowMap.render(lights.slice(0, -1), scene, camera);
+  assert.deepEqual(cascades.stats.farReasons, snapshot.farReasons);
+  assert.equal(farRendered, snapshot.cascades.at(-1).renders);
 });
 
 test("each cascade is drawn through a camera whose layers name its casters", () => {

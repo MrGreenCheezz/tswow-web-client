@@ -347,8 +347,9 @@ test("frustum visibility is applied before independent quotas and all-visible ti
 test("environment update admits candidates before resource lookup and keeps warm residents separate from disposal", async () => {
   const source = await worldSource();
   const update = updateEnvironmentSource(source);
-  const candidateAt = update.indexOf("environmentCandidatesInRange(");
-  const admissionAt = update.indexOf("selectEnvironmentAdmission(");
+  const candidateAt = update.indexOf("environmentRankInRange(");
+  // P2-04c: the update pass admits through the allocation-free single pass.
+  const admissionAt = update.indexOf("admitEnvironmentInto(");
   const modelAt = update.indexOf("client?.model(");
   assert.ok(candidateAt >= 0, "the update pass must produce cheap wire candidates first");
   assert.ok(admissionAt > candidateAt, "frustum/admission follows candidate collection");
@@ -359,9 +360,13 @@ test("environment update admits candidates before resource lookup and keeps warm
     assert.equal(preResource.includes(forbidden), false, `candidate pass must not call ${forbidden}`);
   }
 
-  const retainedVisibilityAt = update.indexOf("selectEnvironmentAdmission(");
+  const retainedVisibilityAt = update.indexOf("admitEnvironmentInto(");
   assert.ok(retainedVisibilityAt >= 0, "static admission must consult the frustum-aware selector");
-  const retainedContext = update.slice(retainedVisibilityAt, retainedVisibilityAt + 600);
+  assert.match(update.slice(retainedVisibilityAt, retainedVisibilityAt + 400), /this\.#retainedEnvironmentSphere,/,
+    "the retained-sphere lookup is the renderer's own field, not a closure per run");
+  const sphereAt = source.indexOf("readonly #retainedEnvironmentSphere = ");
+  assert.ok(sphereAt >= 0);
+  const retainedContext = source.slice(sphereAt, sphereAt + 600);
   assert.match(retainedContext, /rendered(?:\?\.)?source\s*===\s*object/,
     "retained static spheres must be borrowed only from the exact placement entry");
   assert.match(retainedContext, /#environmentVisibilitySpheres\.get\(object\)/,

@@ -54,6 +54,8 @@ function harness(legacy) {
     visuals: [], pendingVisualAnimations: [], units: new Map(), environment: new Map(), gameObjects: new Map(),
     effects: new Map(), visualGroup: new THREE.Group(), effectGroup: new THREE.Group(),
     camera: new THREE.PerspectiveCamera(), billboard: {}, boneMatrix: new THREE.Matrix4(),
+    // 12.08: the effects pass culls emitters against the camera's frustum.
+    effectFrustum: new THREE.Frustum(), effectFrustumMatrix: new THREE.Matrix4(),
     baseUrl: 'fixture', replaySeed: 12340, experimentalShaderProfile: { fantasyGlow: false },
     programWarmup: { registerObject() {} }, pumpSpellPrewarm() {}, markExpiredSpellEffectPhases() {},
     // A new set is held until its programs are warm; this harness has no warm pass, so nothing holds.

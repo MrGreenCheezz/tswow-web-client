@@ -53,6 +53,7 @@ function rooms(cost = 3) {
     // The warm hold (tests/program-warmup-shadow-depth.test.mjs) only hides a room until its
     // programs link; construction and attachment, which this suite measures, are unaffected.
     holdWmoGroupUntilWarm() {},
+    releaseWmoRoomShadow() {}, // P2-02b: the room's far-cascade bookkeeping, not measured here
     wmoGeometries: new EpochCache(),
     wmoGroupCacheKey: (model, index) => `${model.id}:${index}`,
     wmoGroupMesh(model, index) {
@@ -277,7 +278,7 @@ test("environment construction observes elapsed time and resumes without disposi
     frustum: new THREE.Frustum(), frustumMatrix: new THREE.Matrix4(),
     environmentBuildBudget: new FrameBuildBudget(16, 2, () => clock),
     doodadRig() {}, environmentNode() { clock += 3; return new THREE.Group(); },
-    environmentVisibilitySphere() {}, assignEnvironmentInstance() {},
+    environmentVisibilitySphere() {}, assignEnvironmentInstance() {}, sceneryShadowsForPlacement() {},
     prefetchEnvironmentModels() {}, updateVegetationGrowth() {}, poseDoodads() {}, updateInstances() {},
     setEnvironmentAdmitted() {},
     environmentStandIns: { begin() {} }, environmentStandInMarkers: { beginFrame() {}, endFrame() {} },

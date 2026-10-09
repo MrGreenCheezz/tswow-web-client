@@ -25,7 +25,8 @@ function methods(names, dependencies = {}) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   // `hypot2` is the renderer's exact, allocation-free `Math.hypot`; every harnessed method may call it.
-  const deps = { THREE, hypot2, ...dependencies };
+  // P2-03a: `applySlotDepth` gives a folded build's mesh its slot depth; no-op over these fixtures.
+  const deps = { THREE, hypot2, applySlotDepth: () => {}, ...dependencies };
   return Function(...Object.keys(deps), body + "; return Harness;")(...Object.values(deps));
 }
 function bodyHarness(budget = new FrameBuildBudget(2, 2, () => 0)) {

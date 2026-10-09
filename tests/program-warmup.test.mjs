@@ -428,7 +428,8 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
     material.addEventListener("dispose", () => disposed++);
     warmup.registerObject(node);
     const harness = Object.assign(new Harness(), { programWarmup: warmup, environmentGroup: scene,
-      gameObjectGroup: scene, dropWmoLiquid() {}, releaseUnitOpacity() {}, clearOverlay() {}, showCapsule() {} });
+      gameObjectGroup: scene, dropWmoLiquid() {}, releaseUnitOpacity() {}, clearOverlay() {}, showCapsule() {},
+      forgetSceneryFar() {}, releaseWmoRoomShadow() {} }); // P2-02b: shadow bookkeeping, not under test here
     if (path === "environment") harness.disposeEnvironment({ node });
     if (path === "gameObject") harness.disposeGameObject({ node });
     if (path === "unit") harness.clearUnitNode({ node, attached: new Map() });

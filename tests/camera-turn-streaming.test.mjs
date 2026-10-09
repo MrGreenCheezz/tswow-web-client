@@ -215,7 +215,7 @@ test("the renderer retains the wider resident set and warms ahead", async () => 
   const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
   assert.match(loop, /objectsAround\(world\.mapId, position\.x, position\.y, ENVIRONMENT_STREAM_RANGE\)/,
     "the placement pool covers the far tier and its resident band");
-  assert.match(source, /this\.#environmentResidents = environmentResidentsInRange\(pool, player, this\.#environmentDetail\);/,
+  assert.match(source, /const ranked = environmentRankInRange\(pool, player, this\.#environmentDetail\);\s+this\.#environmentCandidates = ranked\.candidates;\s+this\.#environmentResidents = ranked\.residents;/,
     "residents are computed from the wide pool on reselect, like candidates");
   // The actual disposal/admission decisions are exercised through #updateEnvironment in
   // environment-membership-cache.test.mjs. This test covers the wider source and prefetch path.

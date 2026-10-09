@@ -210,7 +210,7 @@ test("«Дальность прорисовки объектов» is the stock 
   const settings = await readFile(new URL("../src/browser/ui/Settings.ts", import.meta.url), "utf8");
   assert.match(settings, /setEnvironmentDetail\?\.\(settingNumber\(values, "objectDistance"\) \/ 100\)/);
   const world = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
-  assert.match(world, /environmentCandidatesInRange\(pool, player, this\.#environmentDetail\)/,
+  assert.match(world, /environmentRankInRange\(pool, player, this\.#environmentDetail\)/,
     "the candidate pass reads the applied detail");
   assert.match(world, /setEnvironmentDetail\(detail: number\): void \{[\s\S]{0,200}this\.#environmentCandidatesAt = undefined;/,
     "a changed detail reselects on the next frame");

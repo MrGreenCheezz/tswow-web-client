@@ -4,7 +4,8 @@ import test from "node:test";
 
 // P2-01a: the cascades draw only what is registered in the caster list, so a `castShadow` written
 // anywhere without its `#shadowCasters.set(...)` beside it is a shadow that silently disappears.
-const WRITERS = new Set(["#syncSceneryShadows", "#syncWmoShadows", "#applyUnitShadow"]);
+// P2-02a: the scenery walk became per-mesh and per-room helpers.
+const WRITERS = new Set(["#syncSceneryShadows", "#applySceneryShadowFlags", "#syncWmoRoomShadow", "#applyUnitShadow"]);
 const NEAR = 3;
 
 export function castShadowWriters(text) {
