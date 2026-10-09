@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { LUA51_NATIVE } from "../dist/code/browser/lua/LuaVm.js";
 
 // `issecure()` for Blizzard's own entry points (FrameXmlSecureCalls.ts), over a bare Lua VM: the
 // glue shims answer `issecure()` false (GlueLua.ts); once wrappers are installed a wrapped function
@@ -89,6 +90,18 @@ test("a coroutine suspended inside a wrapped call does not leave its resumer sec
   const lua = vm();
   try {
     installFrameXmlSecureWrappers(lua, ["Yielder"]);
+    if (LUA51_NATIVE) {
+      // ARC-4: Lua 5.1 (Wow.exe's, the wasm VM) cannot yield across the wrapper's xpcall — the coroutine
+      // fails at its first yield, and the resumer is left exactly as insecure as it was.
+      const [ok, message, outside] = run(lua, `
+        local co = coroutine.create(Yielder)
+        local ok, message = coroutine.resume(co)
+        return ok, message, issecure() == nil`, 3);
+      assert.equal(ok, false);
+      assert.match(message, /attempt to yield across metamethod\/C-call boundary/);
+      assert.equal(outside, true);
+      return;
+    }
     assert.deepEqual(run(lua, `
       local co = coroutine.create(Yielder)
       local ok, before = coroutine.resume(co)

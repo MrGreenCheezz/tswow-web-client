@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lua } from "fengari";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // Plan item 3.27, review of L5 (04.10): script slots and hooks as Wow.exe 3.3.5a (12340) keeps them
 // (notes .runtime/re-2026-10-03/l5-runtime/g1.c, g4.c). HookScript (0x0049edb0) on a slot with a

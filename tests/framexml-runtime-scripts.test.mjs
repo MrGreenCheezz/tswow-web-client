@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lua } from "fengari";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // Plan item 3.27 (03.10, L5): script handlers as Wow.exe 3.3.5a keeps them. SetScript (0x0049ec80)
 // unrefs the slot's old function before it stores the new one; HookScript (0x0049edb0) on an empty

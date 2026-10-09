@@ -7,7 +7,7 @@ import test from "node:test";
 // with other walks of the same table (`if next(t) then`, a nested `for k in next, t`), and against
 // the preamble's Lua `next` (the order oracle) on tables nothing changes.
 const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
-const { lua: luaApi, to_luastring } = await import("fengari");
+const { lua: luaApi, to_luastring, LUA51_NATIVE } = await import("../dist/code/browser/lua/LuaVm.js");
 
 // L5b 3.27: `pairs({})` answers the native next now (5.1's pairs, GlueLuaBase51.ts), so the raw
 // walk these tests take their key sets from is a host function over lua_next.
@@ -23,6 +23,16 @@ const RawGlueLuaVm = class extends GlueLuaVm {
     luaApi.lua_setglobal(this.state, to_luastring("RAWNEXT"));
   }
 };
+
+/**
+ * ARC-4: the keys a walk handed out. Under fengari the native next follows the emulation's order (the
+ * oracle's); on PUC Lua 5.1 (the wasm VM) next is PUC's own and the hash part comes in PUC's order —
+ * there the contract is the set, each key exactly once.
+ */
+function assertWalk(actual, expected, message) {
+  if (LUA51_NATIVE) assert.deepEqual(String(actual).split(" ").sort(), expected.split(" ").sort(), message);
+  else assert.equal(actual, expected, message);
+}
 
 function run(vm, source) {
   const result = vm.execute(source, "@next-walks");
@@ -61,8 +71,8 @@ test("a wipe that asks next(t) whether the table is empty yet still clears every
       __empty = EMPTY
     `);
     // The constructor's raw order is x y 5 4 3 2 1: the old walk stopped after `1`.
-    assert.equal(vm.getGlobal("__ctor"), "1 2 3 4 5 x y");
-    assert.equal(vm.getGlobal("__append"), "1 2 3 4 5 x y");
+    assertWalk(vm.getGlobal("__ctor"), "1 2 3 4 5 x y");
+    assertWalk(vm.getGlobal("__append"), "1 2 3 4 5 x y");
     assert.equal(vm.getGlobal("__empty"), true);
   } finally {
     vm.close();
@@ -85,7 +95,7 @@ test("a nested walk of the same table after a hole was cleared does not move the
       __b1, __b2 = walk(constructorList(), holeAt4), walk(appendedList(), holeAt4)
     `);
     for (const name of ["__a1", "__a2", "__b1", "__b2"]) {
-      assert.equal(vm.getGlobal(name), "1 2 3 4 5 x y", name);
+      assertWalk(vm.getGlobal(name), "1 2 3 4 5 x y", name);
     }
   } finally {
     vm.close();
@@ -134,8 +144,11 @@ test("a run the table has lost stays its array part: index order, and no scan of
       __pairs = table.concat(raw, " ")
     `);
     // As PUC's array part, which clearing never shrinks: 3 and 50 by index, then the rest.
-    assert.equal(vm.getGlobal("__order"), "3 50 a b 3001");
-    assert.equal(vm.getGlobal("__pairs"), "3 50 a b 3001"); // L5b 3.27 (was "a 50 b 3001 3")
+    assertWalk(vm.getGlobal("__order"), "3 50 a b 3001");
+    assertWalk(vm.getGlobal("__pairs"), "3 50 a b 3001"); // L5b 3.27 (was "a 50 b 3001 3")
+    // ARC-4: what follows measures the JS next emulation (its index reads, its array-first answer);
+    // on PUC 5.1 (the wasm VM) next is PUC's own and has neither.
+    if (LUA51_NATIVE) return;
     const rawgeti = lua.lua_rawgeti;
     let reads = 0;
     lua.lua_rawgeti = (...args) => { reads += 1; return rawgeti(...args); };

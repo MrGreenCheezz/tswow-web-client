@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GlueLuaVm } from "../dist/code/browser/glue/GlueLua.js";
-import { lauxlib, lua, lualib, to_jsstring, to_luastring } from "fengari";
+import { LUA51_NATIVE, lauxlib, lua, lualib, to_jsstring, to_luastring } from "../dist/code/browser/lua/LuaVm.js";
+
+// ARC-4: on PUC Lua 5.1 (the wasm VM) neither shim exists — format is the host's str_format on both VMs,
+// pairs is PUC's own — and fengari's count hook (lua_sethook) is what measures them.
+const FENGARI_SHIMS_ONLY = LUA51_NATIVE && "the 5.3 format/pairs shims and fengari's count hook exist only on the fengari VM";
 
 // The 5.1 `format` and `pairs` shims sit under every stock combat-log line: measured 02.10 on the
 // vertical with Blizzard_CombatLog, 60 % of a COMBAT_LOG_EVENT's Lua time was the `format` shim
@@ -113,7 +117,7 @@ function instructions(vm, source, chunk) {
   return count;
 }
 
-test("format and pairs shims stay within an instruction budget on the combat log's shapes", () => {
+test("format and pairs shims stay within an instruction budget on the combat log's shapes", { skip: FENGARI_SHIMS_ONLY }, () => {
   const vm = new GlueLuaVm();
   try {
     // Blizzard_CombatLog.lua:1799 (CombatLog_Color_FloatToText) and a plain %s, 100 calls each.
@@ -143,7 +147,7 @@ const CLIENT_ANSWERS = {
   '"%d", "12abc"': "err:bad argument #2 to 'format' (number expected, got string)",
 };
 
-test("the planned format answers exactly as the scanning shim did", () => {
+test("the planned format answers exactly as the scanning shim did", { skip: FENGARI_SHIMS_ONLY }, () => {
   const vm = new GlueLuaVm();
   try {
     const oracle = oracleState();

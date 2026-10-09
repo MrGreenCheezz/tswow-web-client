@@ -154,6 +154,10 @@ test("UNIT_COMBAT paints the stock hit indicators: a crit on the player, a heal 
     seam.hudMechanics.hit("player", "WOUND", "CRITICAL", 1234, 1);
     assert.deepEqual(lua(boot, "return PlayerHitIndicator:IsShown(), PlayerHitIndicator:GetText(), PlayerHitIndicator:GetAlpha()", 3),
       [true, "1234", 0], "shown at alpha 0, the fade-in is CombatFeedback_OnUpdate's");
+    // CombatFeedback_OnUpdate fades by GetTime() - feedbackStartTime, not by the tick's elapsed: let the
+    // clock move past the hit's millisecond first (a fast VM reached the tick inside it, alpha 0).
+    const [hitAt] = lua(boot, "return GetTime()");
+    while (lua(boot, "return GetTime()")[0] === hitAt) { /* wait for the next clock reading */ }
     boot.bridge.tick(0.1);
     const [alpha] = lua(boot, "return PlayerHitIndicator:GetAlpha()");
     assert.ok(alpha > 0 && alpha <= 1, `fading in after one frame: ${alpha}`);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lua } from "fengari";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // P1-14e: SetFormattedText answers the stock UI's common formats in JS (GlueWidgetFormatFast.ts);
 // whatever the fast path answers must be what Wow.exe's widget formatter (GlueWidgetFormat.ts,

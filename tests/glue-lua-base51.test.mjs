@@ -10,6 +10,14 @@ import test from "node:test";
 // chopping FISTP keeping the low 32 bits). `pairs` and `ipairs` are 5.1's (0x008546e0, 0x00854770
 // with 0x00854720): the native `next` with the table and nil, and raw reads from 1.
 const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
+const { LUA51_NATIVE } = await import("../dist/code/browser/lua/LuaVm.js");
+
+/**
+ * ARC-4: on PUC Lua 5.1 (the wasm VM) these are 5.1's own functions, and its luaL_argerror names a C
+ * function called straight through pcall '?' (no call site to name it from) — the name fengari's JS
+ * emulations wrote is what 5.1 prints only when a Lua call site names the function.
+ */
+const viaPcall = (name) => (LUA51_NATIVE ? "?" : name);
 
 function withVm(body) {
   const vm = new GlueLuaVm();
@@ -74,7 +82,7 @@ test("tostring keeps 5.1's rules: __tostring answers anything, no argument is an
     assert.equal(vm.execute("SOME_TABLE = {}", "@base51").ok, true);
     assert.match(value(vm, "tostring(SOME_TABLE)"), /^table: /);
     assert.match(value(vm, "tostring(print)"), /^function: /);
-    assert.equal(failure(vm, "tostring"), "bad argument #1 to 'tostring' (value expected)");
+    assert.equal(failure(vm, "tostring"), `bad argument #1 to '${viaPcall("tostring")}' (value expected)`);
   });
 });
 
@@ -102,8 +110,8 @@ test("format's integer conversions cast as the client's str_format does, and nev
     for (const [args, expected] of cases) {
       assert.equal(value(vm, `format(${args})`), expected, `format(${args})`);
     }
-    assert.equal(failure(vm, 'format, "%c", "x"'), "bad argument #2 to 'format' (number expected, got string)");
-    assert.equal(failure(vm, 'format, "%2$c", 1, {}'), "bad argument #3 to 'format' (number expected, got table)");
+    assert.equal(failure(vm, 'format, "%c", "x"'), `bad argument #2 to '${viaPcall("format")}' (number expected, got string)`);
+    assert.equal(failure(vm, 'format, "%2$c", 1, {}'), `bad argument #3 to '${viaPcall("format")}' (number expected, got table)`);
     assert.match(failure(vm, 'format, "%d", "x"'), /number expected, got string/);
   });
 });
@@ -118,7 +126,8 @@ test("math.fmod is C's fmod: a zero divisor answers NaN instead of raising, whol
     assert.equal(value(vm, "mod(-7, 3)"), -1);
     assert.equal(value(vm, '"x" .. math.fmod(7, 3)'), "x1");
     assert.equal(value(vm, "math.fmod(2^40 + 3, 7)"), 5);
-    assert.equal(value(vm, "math.fmod(-2147483647 - 1, -1)"), 0);
+    // C's fmod keeps the dividend's sign: -0 on PUC 5.1 (and Wow.exe's MSVC fmod); the emulation said 0.
+    assert.equal(value(vm, "math.fmod(-2147483647 - 1, -1)"), LUA51_NATIVE ? -0 : 0);
     assert.equal(value(vm, "math.fmod(5.5, 2)"), 1.5);
     assert.equal(value(vm, "math.fmod(-5.5, 2)"), -1.5);
     assert.equal(value(vm, 'math.fmod("7", "4")'), 3);
@@ -155,13 +164,16 @@ test("pairs is 5.1's: the native next, the table and nil, whatever the metatable
     `, "@pairs");
     assert.equal(result.ok, true, result.error);
     const [shape, keys, viaNext, viaPairs, left] = String(vm.getGlobal("__r")).split("|");
-    assert.equal(shape, "truetruetrue");
+    // PUC 5.1's pairs hands back its own closure of luaB_next (an upvalue), not the global next.
+    assert.equal(shape, LUA51_NATIVE ? "falsetruetrue" : "truetruetrue");
     assert.equal(keys, "1 2 x");
     assert.equal(viaPairs, viaNext);
-    assert.equal(viaPairs, "3 50 a b 301");
+    // The emulation's idea of PUC's order; on PUC 5.1 itself the order is its own (same set, pairs = next).
+    if (LUA51_NATIVE) assert.deepEqual(viaPairs.split(" ").sort(), ["3", "50", "a", "b", "301"].sort());
+    else assert.equal(viaPairs, "3 50 a b 301");
     assert.equal(left, "nil");
-    assert.equal(failure(vm, "pairs, nil"), "bad argument #1 to 'pairs' (table expected, got nil)");
-    assert.equal(failure(vm, "pairs"), "bad argument #1 to 'pairs' (table expected, got no value)");
+    assert.equal(failure(vm, "pairs, nil"), `bad argument #1 to '${viaPcall("pairs")}' (table expected, got nil)`);
+    assert.equal(failure(vm, "pairs"), `bad argument #1 to '${viaPcall("pairs")}' (table expected, got no value)`);
   });
 });
 
@@ -185,6 +197,6 @@ test("ipairs is 5.1's: raw reads from 1 to the first nil, __index never asked", 
     `, "@ipairs");
     assert.equal(result.ok, true, result.error);
     assert.equal(vm.getGlobal("__r"), "|1=x|1=1,2=2|true0|0");
-    assert.equal(failure(vm, "ipairs, nil"), "bad argument #1 to 'ipairs' (table expected, got nil)");
+    assert.equal(failure(vm, "ipairs, nil"), `bad argument #1 to '${viaPcall("ipairs")}' (table expected, got nil)`);
   });
 });

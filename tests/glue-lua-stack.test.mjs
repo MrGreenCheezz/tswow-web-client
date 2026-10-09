@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GlueLuaVm } from "../dist/code/browser/glue/GlueLua.js";
-import { lua } from "fengari";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // A host call starts with LUA_MINSTACK (20) free slots. A 3.3.5 COMBAT_LOG_EVENT_UNFILTERED carries
 // the event name and nineteen payload values, and `__glueInvoke` adds fn/self/isEvent in front.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { to_jsstring, to_luastring } from "fengari";
+import { to_jsstring, to_luastring } from "../dist/code/browser/lua/LuaVm.js";
 
 // P1-14b: Lua strings reach a binding through luaStringToJs (LuaStrings.ts), which must give the
 // exact text fengari's lossy decoder gives — `to_jsstring(bytes, 0, n, true)` — for any bytes.

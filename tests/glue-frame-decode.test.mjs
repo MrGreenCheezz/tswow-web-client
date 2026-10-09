@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lua } from "fengari";
+import { lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // P1-14a: decoding a widget's `self` reads the frame from its Lua table's identity
 // (`lua_topointer` → WeakMap), not from a `__glueFrameId` string key pushed and hashed per call.

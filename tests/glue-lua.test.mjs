@@ -7,7 +7,7 @@ import {
   GlueLuaVm,
   relaxLua51Escapes,
 } from "../dist/code/browser/glue/GlueLua.js";
-import { lua } from "fengari";
+import { LUA51_NATIVE, lua } from "../dist/code/browser/lua/LuaVm.js";
 
 test("host calls collect variable Lua results and preserve the caller stack", () => {
   const vm = new GlueLuaVm();
@@ -138,10 +138,12 @@ test("Lua 5.1's unknown-escape rule rescues a chunk 5.3 refuses to lex", () => {
   const vm = new GlueLuaVm({ onError: (message) => assert.fail(message) });
   assert.equal(vm.execute('BAD = "a? \\Не b"', "@relaxed.lua").ok, true);
   assert.equal(vm.getGlobal("BAD"), "a? Не b");
-  assert.deepEqual(vm.relaxedChunks, ["@relaxed.lua"]);
+  // ARC-4: PUC 5.1 (the wasm VM) lexes it as Wow.exe does, so nothing needs relaxing there.
+  const relaxed = LUA51_NATIVE ? [] : ["@relaxed.lua"];
+  assert.deepEqual(vm.relaxedChunks, relaxed);
   // A chunk that is simply broken still fails; the retry is not a catch-all.
   assert.equal(vm.execute("function (", "@broken.lua").ok, false);
-  assert.deepEqual(vm.relaxedChunks, ["@relaxed.lua"]);
+  assert.deepEqual(vm.relaxedChunks, relaxed);
   vm.close();
 });
 

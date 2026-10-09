@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lua } from "fengari";
+import { LUA51_NATIVE, lua } from "../dist/code/browser/lua/LuaVm.js";
 
 // Plan item 3.27 (03.10, L5): `next` and `strsplit` as the host C functions of GlueLuaNatives.ts.
 const { GlueLuaVm } = await import("../dist/code/browser/glue/GlueLua.js");
@@ -125,7 +125,8 @@ test("next walks the array run first, ascending, then the rest — without measu
       __bad = select(2, pcall(next, nil))
     `);
     assert.equal(vm.getGlobal("__secure"), "1=a,2=b");
-    assert.match(String(vm.getGlobal("__bad")), /bad argument #1 to 'next' \(table expected/);
+    // ARC-4: PUC 5.1's luaL_argerror names a C function called straight through pcall '?'.
+    assert.match(String(vm.getGlobal("__bad")), LUA51_NATIVE ? /bad argument #1 to '\?' \(table expected/ : /bad argument #1 to 'next' \(table expected/);
   } finally {
     vm.close();
   }
