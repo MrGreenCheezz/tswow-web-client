@@ -1,6 +1,8 @@
-import { lauxlib, lua, lualib, to_luastring, to_jsstring, type LuaState } from "fengari";
-import { push as pushInterop, tojs as interopToJs } from "fengari-interop";
+import {
+  LUA51_NATIVE, lauxlib, lua, lualib, push as pushInterop, to_jsstring, to_luastring, tojs as interopToJs, type LuaState,
+} from "../lua/LuaVm.js";
 import { installGlueLuaNatives } from "./GlueLuaNatives.js"; // L5 3.27
+import { GLUE_LUA51_NATIVE_SHIMS } from "./GlueLua51NativeShims.js"; // ARC-4 A4
 import { luaStringToJs } from "./LuaStrings.js"; // P1-14b
 
 // Fengari's lua_Integer is a signed 32-bit value in the browser build. Keep the
@@ -705,7 +707,8 @@ export class GlueLuaVm {
     this.#state = lauxlib.luaL_newstate();
     lualib.luaL_openlibs(this.#state);
     this.installErrorProtocol();
-    const shimmed = this.execute(LUA51_SHIMS, "@GlueLua:shims");
+    // ARC-4 A4: on the 5.1 VM its own library stands; the 5.3 emulations are fengari's alone.
+    const shimmed = this.execute(LUA51_NATIVE ? GLUE_LUA51_NATIVE_SHIMS : LUA51_SHIMS, "@GlueLua:shims");
     if (!shimmed.ok) throw new Error(`glue Lua shims failed to load: ${shimmed.error}`);
     installGlueLuaNatives(this.#state); // L5 3.27: `next` in O(n), Wow.exe's `strsplit` (GlueLuaNatives.ts)
     const compat = this.execute(WOW_COMPAT_LUA, "@GlueLua:compat");
@@ -1145,8 +1148,11 @@ export class GlueLuaVm {
       lua.lua_pushnil(L);
       return;
     }
+    // ARC-4 A4: 5.1 (the wasm VM, Wow.exe) has one number type and prints 1 as "1" by itself; there a
+    // whole number is a plain double too, so -0 keeps its sign ("-0", as Wow.exe's "%.14g" prints it).
     if (
-      typeof value === "number"
+      !LUA51_NATIVE
+      && typeof value === "number"
       && Number.isSafeInteger(value)
       && value >= LUA_INTEGER_MIN
       && value <= LUA_INTEGER_MAX
@@ -1262,7 +1268,7 @@ function TRACEBACK_HANDLER(state: LuaState): number {
 const NO_VALUES: readonly unknown[] = Object.freeze([]);
 
 /** The shim source, exported so a test can assert what is actually installed. */
-export const GLUE_LUA51_SHIM_SOURCE = LUA51_SHIMS;
+export const GLUE_LUA51_SHIM_SOURCE = LUA51_NATIVE ? GLUE_LUA51_NATIVE_SHIMS : LUA51_SHIMS;
 
 /**
  * The shims this slice measured as load-bearing, with their corpus call counts.

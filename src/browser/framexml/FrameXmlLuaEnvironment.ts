@@ -22,7 +22,7 @@
  * - `getfenv([f | level])`: that `_ENV`, or the globals for level 0, a C function or a function
  *   without one. The old stand-in answered level 0 only.
  */
-import { lauxlib, lua as luaApi, to_jsstring, to_luastring, type LuaState } from "fengari";
+import { lauxlib, lua as luaApi, restoreLua51Environment, to_jsstring, to_luastring, type LuaState } from "../lua/LuaVm.js";
 
 /** The C-API calls beyond src/types/fengari.d.ts, named one by one; fengari implements them all. */
 interface Lua53Calls {
@@ -127,6 +127,11 @@ function getfenv(L: LuaState): number {
 
 /** Install the three as globals, over the preamble's stand-ins (FrameXmlBoot.ts calls this after them). */
 export function installFrameXmlLuaEnvironment(L: LuaState): void {
+  // ARC-4 A4: on the 5.1 VM these three are its own, kept aside by openlibs; put them back.
+  if (restoreLua51Environment) {
+    restoreLua51Environment(L);
+    return;
+  }
   lua.lua_pushjsfunction(L, newproxy);
   lua.lua_setglobal(L, to_luastring("newproxy"));
   lua.lua_pushjsfunction(L, setfenv);

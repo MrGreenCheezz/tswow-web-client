@@ -44,7 +44,7 @@
  * a rounding tie go through JS's toExponential. format cannot re-enter itself: it calls no
  * metamethod and no Lua.
  */
-import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "fengari";
+import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { lua51NumberText } from "./GlueLuaBase51.js";
 
 /** The C-API calls this file needs beyond src/types/fengari.d.ts; fengari implements each one. */

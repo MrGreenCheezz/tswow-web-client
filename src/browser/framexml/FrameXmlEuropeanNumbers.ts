@@ -13,7 +13,7 @@
  * 0x00815400 (frameXmlShowArgument), any other type and no argument at all the default, true.
  * Notes: .runtime/re-2026-10-05/l327b/g1.txt.
  */
-import { lua, to_luastring, type LuaState } from "fengari";
+import { lua, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { setLuaFormatEuropeanNumbers } from "../glue/GlueLuaFormat.js";
 import { frameXmlShowArgument } from "./FrameXmlHelmCloak.js";
 

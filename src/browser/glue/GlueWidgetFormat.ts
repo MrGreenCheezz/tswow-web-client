@@ -37,7 +37,7 @@
  * Cost: one pass over the format, in GlueLuaFormat's module buffer; no allocation except a number
  * under `%s` (its tostring text) and the pushed result.
  */
-import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "fengari";
+import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { lua51NumberText } from "./GlueLuaBase51.js";
 import {
   floatItem, formatOutput, formatOutputLength, integerItem, putByte, putBytes, setFormatOutputLength,

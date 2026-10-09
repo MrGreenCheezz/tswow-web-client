@@ -15,7 +15,7 @@
  * 160 ns for the Cyrillic. A cache keyed by the byte array's identity was not taken: only constants
  * keep their array, while every string built by `..` or `format` would add a dead weak entry.
  */
-import { to_jsstring } from "fengari";
+import { to_jsstring } from "../lua/LuaVm.js";
 
 /** Below this many bytes the char-code loop beats a TextDecoder call. */
 const SHORT = 16;

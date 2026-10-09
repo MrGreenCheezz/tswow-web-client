@@ -31,7 +31,7 @@
  * arguments still answer an integer here, so `"x" .. mod(7, 3)` stays "x1" rather than 5.3's "x1.0".
  * (The `%` operator on two integers with a zero divisor is fengari's VM and still raises.)
  */
-import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "fengari";
+import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 
 /** The C-API calls this file needs beyond src/types/fengari.d.ts; fengari implements each one. */
 interface Lua53Calls {

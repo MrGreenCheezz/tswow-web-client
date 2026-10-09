@@ -47,8 +47,11 @@ const RESULT_GLOBAL = "__fxSecureWrapResult";
  */
 const SECURE_WRAPPERS = `
 local names = { ... }
-local rawget, type, xpcall, error = rawget, type, xpcall, error
-local running = coroutine.running
+local rawget, type, xpcall, error, select = rawget, type, xpcall, error, select
+local unpack = unpack or table.unpack
+-- 5.1 (Wow.exe, the wasm VM) answers nil on the main thread, where 5.3 answers the thread: key it "main".
+local _running = coroutine.running
+local function running() return _running() or "main" end
 local traceback = debug and debug.traceback
 local state = rawget(_G, "__fxSecureCalls")
 if state == nil then
@@ -80,7 +83,9 @@ for index = 1, #names do
     local wrapper = function(...)
       local thread = running()
       depth[thread] = (depth[thread] or 0) + 1
-      return leave(thread, xpcall(original, withTraceback, ...))
+      -- 5.1's xpcall passes no arguments to the function: carry them in a closure (also right on 5.3).
+      local count, args = select("#", ...), { ... }
+      return leave(thread, xpcall(function() return original(unpack(args, 1, count)) end, withTraceback))
     end
     wrappers[wrapper] = true
     _G[name] = wrapper

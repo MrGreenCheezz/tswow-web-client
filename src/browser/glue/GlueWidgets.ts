@@ -1,4 +1,4 @@
-import { lauxlib, lua, to_luastring, type LuaState } from "fengari";
+import { lauxlib, lua, releaseLuaPointer, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { GlueLuaRef, type GlueLuaVm } from "./GlueLua.js";
 import { glueCallingAddon } from "./GlueAddonIdentity.js";
 import { GLUE_ANIMATION_PRELUDE } from "./GlueAnimations.js";
@@ -573,6 +573,8 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
    * merely carries a `__glueFrameId` (a copy of a frame's fields).
    */
   readonly #frameOfTable = new WeakMap<object, FrameXmlFrame>();
+  /** ARC-4 A4: the other direction, so a released frame gives its table's token back (`releaseFrame`). */
+  readonly #tableOfFrame = new WeakMap<FrameXmlFrame, object>();
   #frameDecodeFallbacks = 0;
   readonly #metatables = new Map<string, GlueLuaRef>();
   readonly #handlerSources = new WeakMap<object, GlueLuaRef>();
@@ -713,7 +715,9 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
       lua.lua_pushvalue(L, -1);
       lua.lua_setglobal(L, to_luastring(frame.name));
     }
-    this.#frameOfTable.set(lua.lua_topointer(L, -1) as object, frame); // P1-14a
+    const table = lua.lua_topointer(L, -1) as object;
+    this.#frameOfTable.set(table, frame); // P1-14a
+    this.#tableOfFrame.set(frame, table);
     const ref = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "table");
     lua.lua_settop(L, top);
     this.#refs.set(frame, ref);
@@ -731,6 +735,15 @@ export class GlueWidgetBinder implements LuaAddonRuntime {
     if (release) this.#vm.call(release, [frame]);
     this.#vm.release(ref);
     this.#refs.delete(frame);
+    // ARC-4 A4: on the wasm VM a token stands for an address, which Lua may give a new table once this
+    // one is collected; forget it so that table cannot decode as this frame. A later decode of this
+    // frame's own table still finds it through `__glueFrameId` (decodeFrameById), as before.
+    const table = this.#tableOfFrame.get(frame);
+    if (table !== undefined) {
+      this.#frameOfTable.delete(table);
+      this.#tableOfFrame.delete(frame);
+      releaseLuaPointer(table);
+    }
   }
 
   bindAnimations(frame: FrameXmlFrame, elements: readonly FrameXmlElement[]): void {

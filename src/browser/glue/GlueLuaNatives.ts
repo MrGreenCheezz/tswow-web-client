@@ -33,7 +33,7 @@
  * overflow", as the client's does. The preamble's Lua version looked for the delimiter as one
  * substring and counted `pieces` one short.
  */
-import { lauxlib, lua as luaApi, to_luastring, type LuaState } from "fengari";
+import { LUA51_NATIVE, lauxlib, lua as luaApi, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import { installGlueLuaBase51 } from "./GlueLuaBase51.js"; // L5b
 import { installGlueLuaFormat } from "./GlueLuaFormat.js"; // 05.10-3.27
 
@@ -257,6 +257,14 @@ function raise(L: LuaState): number {
  * (GlueLuaBase51.ts).
  */
 export function installGlueLuaNatives(L: LuaState): void {
+  if (LUA51_NATIVE) {
+    // ARC-4 A4: PUC 5.1's own next/pairs/ipairs/tostring/math.fmod stand; Wow.exe's strsplit and
+    // str_format are host functions on both VMs.
+    lua.lua_pushjsfunction(L, strsplit);
+    lua.lua_setglobal(L, to_luastring("strsplit"));
+    installGlueLuaFormat(L);
+    return;
+  }
   lua.lua_pushjsfunction(L, next);
   lua.lua_setglobal(L, to_luastring("next"));
   lua.lua_pushjsfunction(L, strsplit);

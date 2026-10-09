@@ -1,4 +1,4 @@
-import { lua, to_luastring, type LuaState } from "fengari";
+import { lua, to_luastring, type LuaState } from "../lua/LuaVm.js";
 import type { GlueLuaVm } from "../glue/GlueLua.js";
 import { glueCallingAddon } from "../glue/GlueAddonIdentity.js";
 

@@ -2,6 +2,8 @@ import type { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
 import { GlueLoader, type GlueFileProvider, type GlueLoadResult } from "../glue/GlueLoader.js";
 import { GlueLuaVm, type GlueLuaOptions } from "../glue/GlueLua.js";
 import { createFrameXmlClock, type FrameXmlClockSource } from "./FrameXmlClock.js"; // L5 3.27
+import { FRAMEXML_LUA51_NATIVE_SHIMS } from "./FrameXmlLua51NativeShims.js"; // ARC-4 A4
+import { LUA51_NATIVE } from "../lua/LuaVm.js"; // ARC-4 A4
 import { installFrameXmlLuaEnvironment } from "./FrameXmlLuaEnvironment.js"; // L5 3.27
 import { installFrameXmlEuropeanNumbers } from "./FrameXmlEuropeanNumbers.js"; // 05.10-3.27b
 import {
@@ -1072,7 +1074,7 @@ export class FrameXmlBoot {
         throw new Error(`framexml character compat failed: ${characterCompatLoaded.error}`);
       }
     }
-    const shimsLoaded = this.vm.execute(FRAMEXML_LUA51_SHIMS, `@${PRELUDE_CHUNK}:shims`);
+    const shimsLoaded = this.vm.execute(LUA51_NATIVE ? FRAMEXML_LUA51_NATIVE_SHIMS : FRAMEXML_LUA51_SHIMS, `@${PRELUDE_CHUNK}:shims`);
     if (!shimsLoaded.ok) throw new Error(`framexml 5.1 shims failed: ${shimsLoaded.error}`);
     // L5 3.27: 5.1's newproxy (userdata), setfenv and getfenv over the stand-ins above (FrameXmlLuaEnvironment.ts).
     installFrameXmlLuaEnvironment(this.vm.state);
