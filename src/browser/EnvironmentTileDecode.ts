@@ -18,8 +18,10 @@ export type EnvironmentTileDecodeResponse =
  * 05.10-A7b-1 (M-A7b-1): `?v=` of `/visual/environment` — the `visual-tile-v5` generation. The route
  * matches the path only; the version keeps a browser from reusing a v4 answer it cached before the
  * gateway restart. The client reads both: v5 adds only optional fields and `interior: false` doodads.
+ * P2-04x: `visual-tile-v6` writes each non-WMO record into its own tile only; the client's merge by id
+ * is the same over any mix of v4–v6 tiles.
  */
-export const VISUAL_TILE_ROUTE_VERSION = 5;
+export const VISUAL_TILE_ROUTE_VERSION = 6;
 
 /**
  * 05.10-A7b-1 (7.19): a diagnostics line for what one tile could not carry — objects the check left

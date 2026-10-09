@@ -28,7 +28,20 @@ const WMO_DOODAD_CACHE_VERSION = 1;
 // (`src/gateway/VisualTileGeneration.ts`); a gateway that names none is one still running
 // `visual-tile-v4`, whose asset worker loads this file fresh from disk, and it keeps receiving the
 // exact v4 bytes (and the v1 doodad cache) — `tests/visual-tile-v5.test.mjs` compares them.
-export const VISUAL_TILE_GENERATION = "visual-tile-v5";
+//
+// P2-04x: `visual-tile-v6` is v5 with one placement in one tile. On a map with ADTs a non-WMO record
+// (an M2 placement or a WMO doodad) is written only into the tile its point lies in, unless that
+// tile cannot carry it — its point is off the map, its ADT is missing, or its ADT does not list the
+// placement (for a doodad: the parent WMO). WMO placements stay in every tile that lists them, and a
+// map that is one WMO (no ADT, WDT global object) is untouched. The browser streams every tile its
+// footprint circle (radius ENVIRONMENT_STREAM_RANGE, 810) touches, and no point record is drawn
+// farther than that, so the tile of the record's point is always loaded whenever the record could be
+// drawn: the union of ids over a footprint is unchanged, only the copies are gone (Stormwind: 80 % of
+// the 86 321 records of its 14-tile footprint). A v5 gateway still gets v5 bytes; a client mixing
+// v5 and v6 tiles keeps every record (a v6 tile drops only what the record's own tile carries in
+// either generation).
+export const VISUAL_TILE_GENERATION = "visual-tile-v6";
+export const VISUAL_TILE_GENERATION_V5 = "visual-tile-v5";
 export const LEGACY_VISUAL_TILE_GENERATION = "visual-tile-v4";
 /** The doodad-set cache of the v5 generation: effective sets with MODD index and owner class. */
 const WMO_DOODAD_CACHE_V2 = Object.freeze({ key: "wmo-doodad-light-v2", version: 2 });
@@ -53,10 +66,13 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
   if (!validTile(mapId, gridX, gridY)) throw new Error(`${mapId}/${gridX}/${gridY} is not a terrain tile`);
   // 05.10-A7b-1: which generation to write; none named is the v4 a running older gateway expects.
   const generation = options?.generation ?? LEGACY_VISUAL_TILE_GENERATION;
-  if (generation !== LEGACY_VISUAL_TILE_GENERATION && generation !== VISUAL_TILE_GENERATION) {
+  if (generation !== LEGACY_VISUAL_TILE_GENERATION && generation !== VISUAL_TILE_GENERATION_V5
+    && generation !== VISUAL_TILE_GENERATION) {
     throw new Error(`Unknown visual tile generation ${String(generation)}`);
   }
-  const v5 = generation === VISUAL_TILE_GENERATION;
+  // v6 is v5 plus one placement in one tile (P2-04x).
+  const v6 = generation === VISUAL_TILE_GENERATION;
+  const v5 = v6 || generation === VISUAL_TILE_GENERATION_V5;
   const placementOptions = v5 ? { nameSet: true } : undefined;
   const destination = resolve(root, process.env.VISUAL_TILE_DIR ?? "data/visual-tiles", String(mapId), `${gridX}-${gridY}.json`);
   const wmoDoodadCacheDirectory = resolve(
@@ -71,6 +87,8 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
   // What the tile was read out of, for the stamp: the ADT, or for a map that is one WMO its WDT.
   const tileSources = [adtPath];
   let objects;
+  // P2-04x: the WMO placement each expanded doodad belongs to.
+  const doodadParents = new Map();
   if (adt) objects = parseAdtPlacements(adt, placementOptions);
   else {
     // Thirty-nine maps of this client have no ADT at all: the WDT says "one global map object"
@@ -126,14 +144,28 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
       // past the table falls back to set 0 alone, as wowee and the old path both do.
       const doodads = wmo.doodadSets[requestedSet] ?? wmo.doodadSets[0] ?? [];
       let doodadIndex = 0;
-      for (; doodadIndex < doodads.length && objects.length + expanded.length < VISUAL_TILE_OBJECT_LIMIT; doodadIndex++) {
-        expanded.push(worldDoodad(placement, doodads[doodadIndex], doodadIndex, v5));
+      // P2-04x: v6 expands every doodad and applies the cap after the copies are gone.
+      for (; doodadIndex < doodads.length && (v6 || objects.length + expanded.length < VISUAL_TILE_OBJECT_LIMIT); doodadIndex++) {
+        const doodad = worldDoodad(placement, doodads[doodadIndex], doodadIndex, v5);
+        doodadParents.set(doodad, placement.id);
+        expanded.push(doodad);
       }
       // 05.10-A7b-1 (7.19): the cap is no longer silent.
       truncated += doodads.length - doodadIndex;
     }
     doodadCount = expanded.length;
     for (const object of expanded) objects.push(object);
+  }
+  // P2-04x: one placement in one tile, on maps with ADTs. The neighbour ADTs read for it join the stamp.
+  const neighbourSources = [];
+  if (v6 && adt) {
+    objects = await ownTileRecords(objects, doodadParents, mapName, gridX, gridY, archives, placementOptions, neighbourSources);
+    if (objects.length > VISUAL_TILE_OBJECT_LIMIT) {
+      // ADT placements come first and an ADT holds at most 10 000, so only doodads fall past the cap.
+      truncated += objects.length - VISUAL_TILE_OBJECT_LIMIT;
+      objects.length = VISUAL_TILE_OBJECT_LIMIT;
+    }
+    doodadCount = objects.reduce((count, object) => count + (doodadParents.has(object) ? 1 : 0), 0);
   }
 
   // Admission runs before a model is requested or built. Outdoor M2s have their own scenery budget
@@ -166,7 +198,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
   // doodad set changes this list without touching the ADT.
   const stamp = await sourceStamp(archives, {
     generation,
-    paths: [...tileSources, ...wmoSourcePaths, ...outdoorM2Paths.values()],
+    paths: [...tileSources, ...neighbourSources, ...wmoSourcePaths, ...outdoorM2Paths.values()],
   });
   await writeSourceStamp(destination, stamp);
   if (v5) {
@@ -190,7 +222,7 @@ export async function publishVisualTile(mapId, gridX, gridY, archives, options =
 }
 
 // Run directly: node tools/generate-visual-tile.mjs <map> <grid-x> <grid-y> [generation]
-// (05.10-A7b-1: the gateway passes `visual-tile-v5`; without it the v4 tile an older gateway expects.)
+// (the gateway passes `visual-tile-v6`; without it the v4 tile an older gateway expects.)
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const mapId = Number.parseInt(process.argv[2] ?? "", 10);
   const gridX = Number.parseInt(process.argv[3] ?? "", 10);
@@ -291,6 +323,52 @@ async function cachedEffectiveWmoDoodadSets(rootData, rootPath, groupPaths, arch
     await rm(temporary, { force: true }).catch(() => undefined);
   }
   return sets;
+}
+
+/** `terrainGrid` of `src/browser/Terrain.ts`, one axis: -1 off the map. */
+const GRID_SIZE = 533.3333333333334;
+function gridAxis(value) {
+  if (!Number.isFinite(value) || value < -32 * GRID_SIZE || value > 32 * GRID_SIZE) return -1;
+  return Math.max(0, Math.min(63, Math.floor(32 - value / GRID_SIZE)));
+}
+
+/**
+ * P2-04x: the records of tile (gridX, gridY) that belong here — every WMO placement, and every other
+ * record whose own tile is this one or cannot carry it. Order is kept. `sources` collects the
+ * neighbour ADT paths consulted (present or absent), which the tile's stamp then names.
+ */
+async function ownTileRecords(objects, doodadParents, mapName, gridX, gridY, archives, placementOptions, sources) {
+  const listings = new Map();
+  const listing = async (x, y) => {
+    const path = `World\\Maps\\${mapName}\\${mapName}_${y}_${x}.adt`;
+    if (listings.has(path)) return listings.get(path);
+    sources.push(path);
+    const data = await archives.read(path);
+    let listed = null;
+    if (data) {
+      listed = { m2: new Set(), wmo: new Set() };
+      for (const placement of parseAdtPlacements(data, placementOptions)) listed[placement.kind]?.add(placement.id);
+    }
+    listings.set(path, listed);
+    return listed;
+  };
+  const kept = [];
+  for (const object of objects) {
+    if (object.kind === "wmo") {
+      kept.push(object);
+      continue;
+    }
+    const ownX = gridAxis(object.x), ownY = gridAxis(object.y);
+    if (ownX < 0 || ownY < 0 || (ownX === gridX && ownY === gridY)) {
+      kept.push(object);
+      continue;
+    }
+    const listed = await listing(ownX, ownY);
+    const parent = doodadParents.get(object);
+    const carried = parent !== undefined ? listed?.wmo.has(parent) : listed?.m2.has(object.id);
+    if (!carried) kept.push(object);
+  }
+  return kept;
 }
 
 function worldDoodad(placement, doodad, doodadIndex, v5 = false) {
