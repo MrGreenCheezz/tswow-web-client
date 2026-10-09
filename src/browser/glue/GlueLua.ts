@@ -1,5 +1,7 @@
 import { lauxlib, lua, lualib, to_luastring, to_jsstring, type LuaState } from "fengari";
 import { push as pushInterop, tojs as interopToJs } from "fengari-interop";
+import { installGlueLuaNatives } from "./GlueLuaNatives.js"; // L5 3.27
+import { luaStringToJs } from "./LuaStrings.js"; // P1-14b
 
 // Fengari's lua_Integer is a signed 32-bit value in the browser build. Keep the
 // integer path for ids/counts (so Lua 5.1-style tostring still says "1"), but
@@ -39,11 +41,11 @@ const LUA_INTEGER_MAX = 2147483647;
  *
  * Two 5.3-vs-5.1 divergences cannot be aliased away and are handled here:
  * `string.format("%d", 3.7)` is a hard error in 5.3 (5.1 truncated), and
- * `tostring(6/2)` is `"3.0"` in 5.3 against `"3"` in 5.1. `format` and
- * `tostring` are both wrapped. The remaining hole is documented in
- * `src/browser/glue/README.md`: `"x"..(6/2)` still concatenates as `x3.0`,
- * because 5.3 coerces numbers to strings inside the VM where no metamethod can
- * intercept it.
+ * `tostring(6/2)` is `"3.0"` in 5.3 against `"3"` in 5.1. `tostring` is
+ * wrapped here; `format` is a native host function since 05.10 (3.27,
+ * `GlueLuaFormat.ts`). The remaining hole: `"x"..(6/2)` still concatenates as
+ * `x3.0`, because 5.3 coerces numbers to strings inside the VM where no
+ * metamethod can intercept it.
  */
 const LUA51_SHIMS = `
 local _format, _tostring = string.format, tostring
@@ -112,40 +114,154 @@ local function _positional(fmt, args)
   return table.concat(out), values, taken
 end
 
-function string.format(fmt, ...)
-  local count = select("#", ...)
-  if type(fmt) ~= "string" or count == 0 then return _format(fmt, ...) end
-  local args, index, position = {...}, 0, 1
+-- What one format string needs, worked out once and cached (02.10, measured: re-scanning the
+-- string on every call was 60 % of a stock combat-log line). \`true\`: nothing to rewrite, the
+-- arguments go straight through. Otherwise { fmt = rewritten, src = argument index per slot
+-- (positional only), count = slots (positional only), ints = slots of integer specifiers }.
+-- L5b 3.27: also kinds (per ints entry: 1 for d/i, 2 for o/u/x/X), chars = slots of %c and charKinds.
+local _plans, _planCount = {}, 0
+local _type, _tonumber, _floor, _mathtype, _unpack, _huge = type, tonumber, math.floor, math.type, table.unpack, math.huge
+local _identity = setmetatable({}, { __index = function(_, key) return key end })
+local function _plan(fmt)
+  local work, src, count = fmt, nil, nil
   if string.find(fmt, "%%%d+%$") then
-    fmt, args, count = _positional(fmt, args)
+    work, src, count = _positional(fmt, _identity)
   end
+  local ints, index, position = nil, 0, 1
+  local kinds, chars, charKinds, cuts = nil, nil, nil, nil -- L5b 3.27
   while true do
-    local start = string.find(fmt, "%%", position)
+    local start = string.find(work, "%%", position)
     if not start then break end
-    if string.sub(fmt, start + 1, start + 1) == "%" then
+    if string.sub(work, start + 1, start + 1) == "%" then
       position = start + 2
     else
-      local spec, stop = string.match(fmt, "^%%[-+ #0-9.]*(%a)()", start)
+      local spec, stop = string.match(work, "^%%[-+ #0-9.]*(%a)()", start)
       position = stop or (start + 2)
       if spec then
         index = index + 1
-        if spec == "d" or spec == "i" or spec == "u" or spec == "o"
-           or spec == "x" or spec == "X" or spec == "c" then
-          local value = args[index]
-          if type(value) == "string" then value = tonumber(value) end
-          if type(value) == "number" and value == value
-             and value ~= math.huge and value ~= -math.huge then
-            args[index] = math.floor(value)
-          end
+        if spec == "c" then
+          -- L5b 3.27: a %c item becomes a plain %s of the text _cast makes; its kind { padding, left }.
+          local flags, width = string.match(work, "^%%([-+ #0]*)(%d*)", start)
+          local left = string.find(flags, "-", 1, true) ~= nil
+          local pad = (not left and string.find(flags, "0", 1, true)) and "0" or " "
+          chars, charKinds, cuts = chars or {}, charKinds or {}, cuts or {}
+          chars[#chars + 1] = index
+          charKinds[#chars] = { string.rep(pad, (tonumber(width) or 1) - 1), left }
+          cuts[#cuts + 1] = start
+          cuts[#cuts + 1] = stop
+        elseif spec == "d" or spec == "i" or spec == "u" or spec == "o" -- L5b 3.27: %c above (was here)
+           or spec == "x" or spec == "X" then
+          ints = ints or {}
+          ints[#ints + 1] = index
+          -- L5b 3.27: how the client's str_format casts the slot (_cast): 1 for d/i, 2 for o/u/x/X.
+          kinds = kinds or {}
+          kinds[#ints] = (spec == "d" or spec == "i") and 1 or 2
         end
       end
     end
   end
-  return _format(fmt, table.unpack(args, 1, count))
+  if cuts ~= nil then -- L5b 3.27: the last item first, so the earlier positions hold
+    for at = #cuts - 1, 1, -2 do
+      work = string.sub(work, 1, cuts[at] - 1) .. "%s" .. string.sub(work, cuts[at + 1])
+    end
+  end
+  if src == nil and ints == nil and chars == nil then return true end -- L5b 3.27: chars
+  return { fmt = work, src = src, count = count, ints = ints, kinds = kinds, chars = chars, charKinds = charKinds } -- L5b 3.27
+end
+
+-- L5b 3.27: Wow.exe's str_format (0x00853c50) reads an integer slot as a double and casts it like C:
+-- %d/%i/%c through __ftol2_sse (0x0088b9c0, cvttsd2si) — toward zero, and outside the int32 range,
+-- NaN and the infinities alike, -2147483648; %o/%u/%x/%X through FISTP with the chop mode — toward
+-- zero into 64 bits, the low 32 kept, 0 outside the int64 range. A %c prints the int's low byte,
+-- padded to its width, and luaL_addstring stops at a zero byte: only padding before it stays. The
+-- shim used to floor (format("%d", -3.7) was -4) and passed what has no int32 form to fengari,
+-- which raised; fengari's own %c ignored the width.
+local _ceil, _strchar, _int32, _int64, _uint32 = math.ceil, string.char, 2^31, 2^63, 2^32
+local function _cast(value, kind)
+  if value ~= value then
+    value = kind == 2 and 0 or -_int32
+  else
+    if value >= 0 then value = _floor(value) else value = _ceil(value) end
+    if kind == 2 then
+      if value >= _int64 or value < -_int64 then
+        value = 0
+      else
+        value = value % _uint32
+        if value >= _int32 then value = value - _uint32 end
+      end
+    elseif value >= _int32 or value < -_int32 then
+      value = -_int32
+    end
+  end
+  if _type(kind) == "table" then
+    value = value % 256
+    local pad, left = kind[1], kind[2]
+    if value == 0 then return left and "" or pad end
+    if left then return _strchar(value) .. pad end
+    return pad .. _strchar(value)
+  end
+  return value
+end
+
+-- 05.10-3.27: replaced after this chunk by Wow.exe's str_format (GlueLuaFormat.ts, installed from
+-- installGlueLuaNatives); this Lua version is no longer reachable from the VM.
+function string.format(fmt, ...)
+  local count = select("#", ...)
+  if type(fmt) ~= "string" or count == 0 then return _format(fmt, ...) end
+  local plan = _plans[fmt]
+  if plan == nil then
+    if _planCount >= 1024 then _plans, _planCount = {}, 0 end
+    plan = _plan(fmt)
+    _plans[fmt] = plan
+    _planCount = _planCount + 1
+  end
+  if plan == true then return _format(fmt, ...) end
+  local args = {...}
+  local src = plan.src
+  if src ~= nil then
+    local values = {}
+    count = plan.count
+    for slot = 1, count do values[slot] = args[src[slot]] end
+    args = values
+  end
+  local ints = plan.ints
+  if ints ~= nil then
+    for slot = 1, #ints do
+      local index = ints[slot]
+      local value = args[index]
+      -- An integer already is what the cast would make of it.
+      if _mathtype(value) ~= "integer" then
+        if _type(value) == "string" then value = _tonumber(value) end
+        if _type(value) == "number" then
+          -- L5b 3.27 (was the floor of a finite value): from 0 to 2^31 every cast is the floor.
+          if value >= 0 and value < _int32 then args[index] = _floor(value)
+          else args[index] = _cast(value, plan.kinds[slot]) end
+        end
+      end
+    end
+  end
+  local chars = plan.chars -- L5b 3.27: each %c, now a %s of _cast's text
+  if chars ~= nil then
+    local charKinds = plan.charKinds
+    for slot = 1, #chars do
+      local index = chars[slot]
+      local value = args[index]
+      if _type(value) == "string" then value = _tonumber(value) or value end
+      if _type(value) ~= "number" then
+        -- As luaL_checknumber would: the %s it became would print anything.
+        local given = src ~= nil and src[index] or index
+        error("bad argument #" .. (given + 1) .. " to 'format' (number expected, got "
+          .. (given > select("#", ...) and "no value" or _type(value)) .. ")", 2)
+      end
+      args[index] = _cast(value, charKinds[slot])
+    end
+  end
+  return _format(plan.fmt, _unpack(args, 1, count))
 end
 
 -- 5.1 printed a whole float as "3"; 5.3 prints "3.0". Glue text is assembled
 -- from these, so restore the 5.1 spelling for integral floats.
+-- L5b 3.27: replaced after this chunk by the client's tostring (GlueLuaBase51.ts), "%.14g" for any number.
 function tostring(value)
   if type(value) == "number" and value % 1 == 0 and value == value
      and value ~= math.huge and value ~= -math.huge then
@@ -277,8 +393,12 @@ end
 -- is then measured once per loop instead of once per step, and a body that
 -- clears the field it was just handed (the \`wipe\` idiom) cannot shrink the run
 -- out from under the traversal.
+-- L5b 3.27: replaced after this chunk by 5.1's pairs over the native next (GlueLuaBase51.ts).
 function pairs(t)
   local n = _arrayLength(t)
+  -- No array run: the walk is exactly the raw one (02.10, measured on the combat log's hash-only
+  -- colour tables: the closure cost 186 instructions for four keys).
+  if n == 0 then return _next, t, nil end
   local index, hashKey, inHash = 0, nil, false
   return function()
     if not inHash then
@@ -366,6 +486,63 @@ setmetatable(_G, {
     return rawget(globals, whole)
   end,
 })
+`;
+
+/**
+ * The part of Wow.exe 3.3.5a 12340's embedded «compat.lua» (text at 0x00a44980, read-only) that the
+ * shims above do not already give. FrameScript_Initialize (0x00819bb0) runs that chunk last, in every
+ * Lua state it makes: at client start (0x00404130 — the glue state) and at each game-UI start
+ * (0x0052a980). `sin`, `cos`, `tan` take degrees and `asin`, `acos`, `atan`, `atan2` return them;
+ * `deg`, `rad`, `exp`, `log`, `log10`, `frexp`, `ldexp` are the math library's; `foreach`,
+ * `foreachi`, `strrev`, `PI`; `string.trim/split/join/replace` point at `strtrim`, `strsplit`,
+ * `strjoin`, `strreplace`, and the chunk's `wipe = table.wipe` means the table library has `wipe`.
+ * fengari is Lua 5.3, so 5.1's `math.log10`, `math.atan2` and `table.foreach(i)` are supplied the
+ * way 5.1 answered them. Without these the stock MainMenuBar_GetRightABPos (`sin(fraction*90)`,
+ * MainMenuBar.lua:26) raised on a nil at every loading screen's PLAYER_ENTERING_WORLD.
+ */
+export const WOW_COMPAT_LUA = `
+local math, table, string = math, table, string
+if math.log10 == nil then math.log10 = function (x) return math.log(x, 10) end end
+if math.atan2 == nil then math.atan2 = function (y, x) return math.atan(y, x) end end
+if table.foreach == nil then
+  table.foreach = function (t, f)
+    for k, v in pairs(t) do
+      local result = f(k, v)
+      if result ~= nil then return result end
+    end
+  end
+end
+if table.foreachi == nil then
+  table.foreachi = function (t, f)
+    for i = 1, #t do
+      local result = f(i, t[i])
+      if result ~= nil then return result end
+    end
+  end
+end
+if table.wipe == nil then table.wipe = wipe end
+foreach = table.foreach
+foreachi = table.foreachi
+acos = function (x) return math.deg(math.acos(x)) end
+asin = function (x) return math.deg(math.asin(x)) end
+atan = function (x) return math.deg(math.atan(x)) end
+atan2 = function (x,y) return math.deg(math.atan2(x,y)) end
+cos = function (x) return math.cos(math.rad(x)) end
+deg = math.deg
+exp = math.exp
+frexp = math.frexp
+ldexp = math.ldexp
+log = math.log
+log10 = math.log10
+PI = math.pi
+rad = math.rad
+sin = function (x) return math.sin(math.rad(x)) end
+tan = function (x) return math.tan(math.rad(x)) end
+strrev = string.reverse
+string.trim = strtrim
+string.split = strsplit
+string.join = strjoin
+string.replace = strreplace
 `;
 
 /**
@@ -493,6 +670,8 @@ export type GlueLuaTableDecoder = (L: LuaState, index: number) => unknown | unde
 export type GlueLuaValueEncoder = (L: LuaState, value: object) => boolean;
 
 export type GlueLuaBinding = (args: readonly unknown[]) => readonly unknown[] | void;
+/** P1-14d: a method binding — its first argument (the widget's self) apart from the rest. */
+export type GlueLuaMethodBinding = (first: unknown, rest: readonly unknown[]) => readonly unknown[] | void;
 
 const LUA_OK = 0;
 
@@ -514,6 +693,8 @@ export class GlueLuaVm {
   #errorHandler: GlueLuaRef | undefined;
   #defaultErrorHandler: GlueLuaRef | undefined;
   #closed = false;
+  /** P1-14d: the registry reference the last `toValue` made, for a binding's release list. */
+  #fresh: GlueLuaRef | undefined;
   /** Errors that reached no handler; kept so a loader can report them. */
   readonly errors: string[] = [];
   /** Chunks that only lexed after Lua 5.1's unknown-escape rule was applied. */
@@ -526,6 +707,9 @@ export class GlueLuaVm {
     this.installErrorProtocol();
     const shimmed = this.execute(LUA51_SHIMS, "@GlueLua:shims");
     if (!shimmed.ok) throw new Error(`glue Lua shims failed to load: ${shimmed.error}`);
+    installGlueLuaNatives(this.#state); // L5 3.27: `next` in O(n), Wow.exe's `strsplit` (GlueLuaNatives.ts)
+    const compat = this.execute(WOW_COMPAT_LUA, "@GlueLua:compat");
+    if (!compat.ok) throw new Error(`glue Lua compat failed to load: ${compat.error}`);
   }
 
   get state(): LuaState {
@@ -728,16 +912,26 @@ export class GlueLuaVm {
   }
 
   /** Call a retained Lua function; failures go through the corpus' handler. */
-  call(ref: GlueLuaRef, args: readonly unknown[] = [], results = 0): readonly unknown[] {
+  call(ref: GlueLuaRef, args: readonly unknown[] = NO_VALUES, results = 0): readonly unknown[] {
+    return this.callWith(ref, NO_VALUES, args, results);
+  }
+
+  /**
+   * P1-14d: `call(ref, [...lead, ...args], results)` without building that array — the handler
+   * dispatch's fn/self/isEvent go first, then the script's own arguments. Both lists are read only
+   * while they are pushed, before the function runs.
+   */
+  callWith(ref: GlueLuaRef, lead: readonly unknown[], args: readonly unknown[], results = 0): readonly unknown[] {
     const L = this.#state;
     const top = lua.lua_gettop(L);
+    const count = lead.length + args.length;
     // The function, its arguments and the traceback handler, asked for before the first push. A
     // host call starts with `LUA_MINSTACK` (20) free slots and nothing grows them: a 3.3.5
     // `COMBAT_LOG_EVENT_UNFILTERED` dispatch (event name + 19 payload values, through
     // `__glueInvoke`'s fn/self/isEvent) threw fengari's «stack overflow» straight out of
     // `bridge.tick`, which nothing on the world mount's frame loop catches.
-    if (!checkStack(L, args.length + 3)) {
-      this.reportError(`stack overflow passing ${args.length} arguments`);
+    if (!checkStack(L, count + 3)) {
+      this.reportError(`stack overflow passing ${count} arguments`);
       return [];
     }
     lua.lua_rawgeti(L, lua.LUA_REGISTRYINDEX, ref.key);
@@ -745,17 +939,23 @@ export class GlueLuaVm {
       lua.lua_settop(L, top);
       return [];
     }
-    for (const arg of args) this.pushValue(arg);
+    for (let index = 0; index < lead.length; index += 1) this.pushValue(lead[index]);
+    for (let index = 0; index < args.length; index += 1) this.pushValue(args[index]);
     const handlerIndex = this.pushTracebackHandler(top + 1);
-    const status = lua.lua_pcall(L, args.length, results, handlerIndex);
+    const status = lua.lua_pcall(L, count, results, handlerIndex);
     if (status !== LUA_OK) {
       const message = lua.lua_tojsstring(L, -1);
       lua.lua_settop(L, top);
       this.reportError(message);
       return [];
     }
-    const values: unknown[] = [];
     const resultCount = results === lua.LUA_MULTRET ? lua.lua_gettop(L) - top - 1 : results;
+    // P1-14c: a call that asked for nothing (every handler dispatch) allocates no result array.
+    if (resultCount === 0) {
+      lua.lua_settop(L, top);
+      return NO_VALUES;
+    }
+    const values: unknown[] = [];
     for (let index = 0; index < resultCount; index += 1) {
       values.push(this.toValue(top + 1 + index + 1));
     }
@@ -793,6 +993,18 @@ export class GlueLuaVm {
 
   /** Push a JS function as a Lua value without naming it (for method tables). */
   pushBinding(name: string, binding: GlueLuaBinding): void {
+    this.pushBindingWith(name, binding, undefined);
+  }
+
+  /**
+   * P1-14d: a widget method — the binding gets its first argument (the widget table, decoded) and
+   * the rest as their own list, so no `args.slice(1)` per call.
+   */
+  pushMethodBinding(name: string, method: GlueLuaMethodBinding): void {
+    this.pushBindingWith(name, undefined, method);
+  }
+
+  private pushBindingWith(name: string, binding: GlueLuaBinding | undefined, method: GlueLuaMethodBinding | undefined): void {
     const L = this.#state;
     lua.lua_pushjsfunction(L, (state: LuaState): number => {
       // `state` is the thread that actually called us, which is not the main
@@ -800,19 +1012,26 @@ export class GlueLuaVm {
       // against it; registry references are shared across threads either way.
       const count = lua.lua_gettop(state);
       const args: unknown[] = [];
-      const scratch: GlueLuaRef[] = [];
+      // P1-14d: only a call that made a registry reference gets a list to release them from.
+      let scratch: GlueLuaRef[] | undefined;
+      let first: unknown;
       for (let index = 1; index <= count; index += 1) {
-        args.push(this.toValue(index, scratch, state));
+        this.#fresh = undefined;
+        const value = this.toValue(index, undefined, state);
+        if (this.#fresh !== undefined) (scratch ??= []).push(this.#fresh);
+        if (method !== undefined && index === 1) first = value;
+        else args.push(value);
       }
-      let results: readonly unknown[] = [];
+      this.#fresh = undefined;
+      let results: readonly unknown[];
       try {
-        results = binding(args) ?? [];
+        results = (method !== undefined ? method(first, args) : binding!(args)) ?? NO_VALUES;
       } catch (error) {
-        for (const ref of scratch) this.release(ref);
+        if (scratch !== undefined) for (const ref of scratch) this.release(ref);
         lua.lua_pushstring(state, to_luastring(`${name}: ${String(error)}`));
         return lua.lua_error(state);
       }
-      for (const ref of scratch) this.release(ref);
+      if (scratch !== undefined) for (const ref of scratch) this.release(ref);
       lua.lua_settop(state, 0);
       // A C function is guaranteed `LUA_MINSTACK` — **twenty** — free slots and nothing more, and
       // this is the first binding in the client to answer with more than that:
@@ -986,7 +1205,9 @@ export class GlueLuaVm {
     const L = state;
     const type = lua.lua_type(L, index);
     if (type === lua.LUA_TNONE || type === lua.LUA_TNIL) return undefined;
-    if (type === lua.LUA_TBOOLEAN || type === lua.LUA_TNUMBER || type === lua.LUA_TSTRING) {
+    // P1-14b: the string's bytes decoded without fengari's per-byte `+=` (LuaStrings.ts), same text.
+    if (type === lua.LUA_TSTRING) return luaStringToJs(lua.lua_tolstring(L, index)!);
+    if (type === lua.LUA_TBOOLEAN || type === lua.LUA_TNUMBER) {
       return interopToJs(L, index);
     }
     if (type === lua.LUA_TTABLE || type === lua.LUA_TFUNCTION) {
@@ -998,6 +1219,16 @@ export class GlueLuaVm {
         type === lua.LUA_TFUNCTION ? "function" : "table",
       );
       scratch?.push(ref);
+      this.#fresh = ref; // P1-14d
+      return ref;
+    }
+    // L5 3.27: a userdata — `newproxy`'s frame handles (FrameXmlLuaEnvironment.ts) — crosses as a
+    // reference too, so a binding that keeps a value (SetAttribute's frameref-*) hands it back.
+    if (type === lua.LUA_TUSERDATA) {
+      lua.lua_pushvalue(L, index);
+      const ref = new GlueLuaRef(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX), "userdata");
+      scratch?.push(ref);
+      this.#fresh = ref; // P1-14d
       return ref;
     }
     return undefined;
@@ -1013,15 +1244,22 @@ export class GlueLuaVm {
    */
   private pushTracebackHandler(targetIndex: number): number {
     const L = this.#state;
-    lua.lua_pushjsfunction(L, (state: LuaState): number => {
-      const message = lua.lua_tojsstring(state, -1);
-      lauxlib.luaL_traceback(state, state, to_luastring(message ?? "error"), 1);
-      return 1;
-    });
+    // P1-14c: one handler for every call — it captures nothing, so a closure per call was garbage.
+    lua.lua_pushjsfunction(L, TRACEBACK_HANDLER);
     lua.lua_insert(L, targetIndex);
     return targetIndex;
   }
 }
+
+/** P1-14c: the message handler of every `call`/`execute`: the error message with a Lua traceback. */
+function TRACEBACK_HANDLER(state: LuaState): number {
+  const message = lua.lua_tojsstring(state, -1);
+  lauxlib.luaL_traceback(state, state, to_luastring(message ?? "error"), 1);
+  return 1;
+}
+
+/** P1-14c: what `call` answers with no results asked for — shared, frozen. */
+const NO_VALUES: readonly unknown[] = Object.freeze([]);
 
 /** The shim source, exported so a test can assert what is actually installed. */
 export const GLUE_LUA51_SHIM_SOURCE = LUA51_SHIMS;

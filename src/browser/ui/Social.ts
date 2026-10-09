@@ -19,7 +19,12 @@ import { firstFreeTradeSlot } from "../../world/TradeProtocol.js";
 import { game } from "../game/Context.js";
 import { showUnitFrames } from "./UnitFrames.js";
 import { ITEM_DRAG_FORMAT, readItemDrag } from "./ItemSlots.js";
-import { attachTooltip, confirmPanel } from "./Widgets.js";
+import { clickTradeEnchantSlot } from "./ItemTargetClick.js";
+import { setTip, attachTooltip, confirmPanel } from "./Widgets.js";
+import { nativeString } from "./Strings.js";
+import { formatLfgAverage, formatLfgQueued, formatLfgWait } from "./LfgWait.js";
+import { LfgQueueClock } from "./LfgQueueClock.js"; // L7 4.14
+import { registerInteractionPromptNames } from "./InteractionPrompts.js";
 
 import { systemLine } from "./Chat.js";
 import {
@@ -76,10 +81,17 @@ export function showGroup(): void {
   showUnitFrames();
 }
 
+/** `TRADE_SLOT_NONTRADED`: the seventh row, whose item stays with its owner and takes enchants. */
+const TRADE_ENCHANT_SLOT_INDEX = 6;
+
 export function tradeItemList(
   target: HTMLElement,
   offer: { money: number; spellId?: number; items: Array<{ slot: number; itemId: number; count: number }> } | undefined,
-  options?: { onClearSlot?: (slot: number) => void },
+  options?: {
+    onClearSlot?: (slot: number) => void;
+    /** The trader's «will not be traded» row (slot 6) takes a spell waiting for an item (2.05). */
+    onEnchantSlot?: (row: HTMLElement) => boolean;
+  },
 ): void {
   if (!offer) {
     target.replaceChildren();
@@ -96,12 +108,18 @@ export function tradeItemList(
       : template?.name || metadata?.name || unknownLabel("предмет", item.itemId);
     row.textContent = item.count > 1 ? `${name} ×${item.count}` : name;
     if (item.itemId !== 0) attachTooltip(row, () => itemTooltipFor(item.itemId, { count: item.count, footer: ["В обмене"] }));
+    const onEnchantSlot = options?.onEnchantSlot;
+    if (onEnchantSlot !== undefined && item.slot === TRADE_ENCHANT_SLOT_INDEX) {
+      row.addEventListener("click", (event) => {
+        if (onEnchantSlot(row)) event.stopPropagation();
+      });
+    }
     if (options?.onClearSlot !== undefined) {
       const clear = document.createElement("button");
       clear.type = "button";
       clear.className = "trade-clear";
       clear.textContent = "×";
-      clear.title = "Снять с обмена";
+      setTip(clear, "Снять с обмена");
       clear.setAttribute("aria-label", `Снять ${name} с обмена`);
       clear.addEventListener("click", () => options.onClearSlot?.(item.slot));
       row.append(clear);
@@ -138,7 +156,7 @@ export function selectedLfgRoles(): number {
 function updateLfgJoinAvailability(): void {
   const hasCombatRole = (selectedLfgRoles() & (LFG_ROLE_TANK | LFG_ROLE_HEALER | LFG_ROLE_DAMAGE)) !== 0;
   lfgJoin.disabled = !hasCombatRole;
-  lfgJoin.title = hasCombatRole ? "Начать поиск группы" : "Выберите роль: танк, лекарь или урон";
+  setTip(lfgJoin, hasCombatRole ? "Начать поиск группы" : "Выберите роль: танк, лекарь или урон");
 }
 
 /**
@@ -512,7 +530,7 @@ function lfgDungeonRow(world: WorldClient, dungeon: LfgDungeon, level: number | 
     const badge = document.createElement("span");
     badge.className = "lfg-heroic-icon";
     badge.setAttribute("aria-hidden", "true");
-    badge.title = "Героический режим";
+    setTip(badge, "Героический режим");
     wrapper.append(badge);
   }
   const text = document.createElement("span");
@@ -524,15 +542,15 @@ function lfgDungeonRow(world: WorldClient, dungeon: LfgDungeon, level: number | 
     const icon = document.createElement("span");
     icon.className = "lfg-lock-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.title = lock;
+    setTip(icon, lock);
     wrapper.append(icon);
     input.setAttribute("aria-label", `${label} — ${lock}`);
   } else if (level !== undefined
     && ((dungeon.minLevel > 0 && level < dungeon.minLevel)
       || (dungeon.maxLevel > 0 && level > dungeon.maxLevel))) {
-    text.title = `Ваш уровень ${level}: сервер может отклонить запрос`;
+    setTip(text, `Ваш уровень ${level}: сервер может отклонить запрос`);
   } else if (dungeon.description) {
-    text.title = dungeon.description;
+    setTip(text, dungeon.description);
   }
   wrapper.append(text);
   if (dungeon.minLevel > 0 && dungeon.maxLevel > 0) {
@@ -746,7 +764,7 @@ function renderLfgRandomPane(world: WorldClient): void {
       const icon = document.createElement("span");
       icon.className = "lfg-lock-icon";
       icon.setAttribute("aria-hidden", "true");
-      icon.title = lock;
+      setTip(icon, lock);
       label.append(icon);
     }
     const text = document.createElement("span");
@@ -783,7 +801,7 @@ function renderLfgRandomPane(world: WorldClient): void {
 }
 
 /** A catalog name for a plain dungeon id: entry form, level range and heroic prefix included. */
-function lfgDungeonNameById(dungeonId: number): string {
+export function lfgDungeonNameById(dungeonId: number): string {
   const catalog = lfgDungeonClient?.catalog?.find((row) => row.id === dungeonId);
   if (!catalog) return `Подземелье ${dungeonId}`;
   const heroic = lfgDungeonHeroic(catalog);
@@ -801,9 +819,36 @@ function lfgDungeonNameById(dungeonId: number): string {
  * now gets its stock atlas icon and its own wait/needed pair, which is what the player actually
  * watches while queued.
  */
+/**
+ * L7 4.14: the «time in queue» line moves between status packets, as stock LFDSearchStatus_OnUpdate
+ * moves it (LFDFrame.lua:1149-1151): once a second while the window is up and the queue is the one
+ * drawn; the timer stops itself on the first tick after either goes.
+ */
+const lfgQueueClock = new LfgQueueClock();
+let lfgQueueLine: HTMLElement | undefined;
+let lfgQueueTimer: ReturnType<typeof setInterval> | undefined;
+
+function stopLfgQueueTicker(): void {
+  if (lfgQueueTimer !== undefined) clearInterval(lfgQueueTimer);
+  lfgQueueTimer = undefined;
+  lfgQueueLine = undefined;
+}
+
+function tickLfgQueueLine(): void {
+  const queue = game.world?.lfgQueue;
+  const line = lfgQueueLine;
+  if (!queue || !line || lfgWindow.hidden) {
+    stopLfgQueueTicker();
+    return;
+  }
+  const text = formatLfgQueued(lfgQueueClock.elapsed(queue, performance.now()));
+  if (line.textContent !== text) line.textContent = text;
+}
+
 function renderLfgQueue(world: WorldClient): void {
   const queue = world.lfgQueue;
   if (!queue) {
+    stopLfgQueueTicker(); // L7 4.14
     if (world.lfgStatus?.joined) {
       const line = document.createElement("span");
       line.className = "lfg-queue-state";
@@ -818,7 +863,13 @@ function renderLfgQueue(world: WorldClient): void {
   const rows: HTMLElement[] = [];
   const state = document.createElement("span");
   state.className = "lfg-queue-state";
-  state.textContent = `В очереди ${Math.round(queue.queuedSeconds / 60)} мин`;
+  // 4.14: every wait on the wire is seconds (LFGHandler.cpp:464-474); stock words (ui/LfgWait.ts).
+  // L7 4.14: the packet's count plus the time since it came, and a once-a-second tick after it.
+  state.textContent = formatLfgQueued(lfgQueueClock.elapsed(queue, performance.now()));
+  // Re-armed on every draw: one timer, in step with the line it moves, never a stale one.
+  stopLfgQueueTicker();
+  lfgQueueLine = state;
+  lfgQueueTimer = setInterval(tickLfgQueueLine, 1000);
   rows.push(state);
   if (queue.dungeonId > 0) {
     const dungeon = document.createElement("span");
@@ -826,12 +877,14 @@ function renderLfgQueue(world: WorldClient): void {
     dungeon.textContent = lfgDungeonNameById(queue.dungeonId);
     rows.push(dungeon);
   }
-  const average = document.createElement("span");
-  average.className = "lfg-queue-average";
-  average.textContent = queue.waitTimeAverage < 0
-    ? "среднее ожидание неизвестно"
-    : `среднее ожидание ${Math.round(queue.waitTimeAverage / 60000)} мин`;
-  rows.push(average);
+  // Stock's statistic is `myWait` — the wire's wait for the player's own roles (LFGQueue.cpp:597-624),
+  // not the dungeon's average — and is hidden while unknown (LFDFrame.lua:1137-1143).
+  if (queue.waitTime >= 0) {
+    const average = document.createElement("span");
+    average.className = "lfg-queue-average";
+    average.textContent = formatLfgAverage(queue.waitTime);
+    rows.push(average);
+  }
   const roles: ReadonlyArray<readonly [string, number, number, number]> = [
     ["tank", LFG_ROLE_TANK, queue.waitTimeTank, queue.tanksNeeded],
     ["healer", LFG_ROLE_HEALER, queue.waitTimeHealer, queue.healersNeeded],
@@ -841,14 +894,14 @@ function renderLfgQueue(world: WorldClient): void {
     const slot = document.createElement("span");
     slot.className = "lfg-queue-role";
     slot.dataset["lfgRole"] = role;
-    slot.title = `${rolesText(mask)}: ${wait < 0 ? "ожидание неизвестно" : `ожидание ${Math.round(wait / 60000)} мин`}, нужно ${needed}`;
+    setTip(slot, `${rolesText(mask)}: ${formatLfgWait(wait)}, нужно ${needed}`);
     const icon = document.createElement("span");
     icon.className = "lfg-queue-role-icon";
     icon.setAttribute("aria-hidden", "true");
     paintLfgRoleCell(icon, role);
     const label = document.createElement("span");
     label.className = "lfg-queue-role-label";
-    label.textContent = `${wait < 0 ? "?" : `${Math.round(wait / 60000)} мин`} · нужно ${needed}`;
+    label.textContent = `${wait < 0 ? "?" : formatLfgWait(wait)} · нужно ${needed}`;
     slot.append(icon, label);
     rows.push(slot);
   }
@@ -884,7 +937,7 @@ function renderLfgProposalRoles(players: ReadonlyArray<{ roles: number; answered
     const crop = texCoordsToBackground(column, row, ROLE_ATLAS_SIZE, ROLE_CELL);
     const icon = document.createElement("span");
     icon.className = "lfg-proposal-role";
-    icon.title = rolesText(member.roles);
+    setTip(icon, rolesText(member.roles));
     if (iconUrl) {
       icon.style.backgroundImage = `url(${JSON.stringify(iconUrl)})`;
       icon.style.backgroundSize = crop.size;
@@ -958,13 +1011,35 @@ export function auctionEntryBox(
   const bidButton = document.createElement("button");
   bidButton.type = "button";
   bidButton.textContent = `Ставка ${formatMoney(next)}`;
-  bidButton.addEventListener("click", () => world.bidOnAuction(entry.auctionId, next));
+  // 4.07: stock asks before money leaves (Blizzard_AuctionUI.lua:192-222, the browse tab's
+  // StaticPopup_Show("BID_AUCTION"/"BUYOUT_AUCTION"), Blizzard_AuctionUI.xml:841, 859); the bids
+  // tab's «Ставка» raises a bid without asking (:1238), its «Выкуп» asks (:1220). The lot and the
+  // sum stay in the closure: the list is rebuilt whole while the question is up.
+  const auctionId = entry.auctionId;
+  bidButton.addEventListener("click", () => {
+    if (auctionTab === "bids") {
+      world.bidOnAuction(auctionId, next);
+      return;
+    }
+    confirmPanel(bidButton, {
+      title: nativeString("BID_AUCTION_CONFIRMATION", "Ставка на аукционе:"),
+      lines: [formatMoney(next)],
+      confirm: "Принять",
+      onConfirm: () => world.bidOnAuction(auctionId, next),
+    });
+  });
   box.append(bidButton);
   if (entry.buyout > 0) {
     const buyoutButton = document.createElement("button");
     buyoutButton.type = "button";
     buyoutButton.textContent = `Выкуп ${formatMoney(entry.buyout)}`;
-    buyoutButton.addEventListener("click", () => world.bidOnAuction(entry.auctionId, entry.buyout));
+    const buyout = entry.buyout;
+    buyoutButton.addEventListener("click", () => confirmPanel(buyoutButton, {
+      title: nativeString("BUYOUT_AUCTION_CONFIRMATION", "Выкупить товар за:"),
+      lines: [formatMoney(buyout)],
+      confirm: "Принять",
+      onConfirm: () => world.bidOnAuction(auctionId, buyout),
+    }));
     box.append(buyoutButton);
   }
   return box;
@@ -1137,6 +1212,7 @@ export function lfgWindowOpen(): boolean {
 export function closeLfgWindow(): void {
   lfgWindowRequested = false;
   lfgWindow.hidden = true;
+  stopLfgQueueTicker(); // L7 4.14
 }
 
 /**
@@ -1214,7 +1290,7 @@ export function showTrade(): void {
   tradeTheirTitle.textContent = world.tradePartnerAccepted ? "Вам предлагают · партнёр согласен" : "Вам предлагают";
   tradeTheirTitle.className = world.tradePartnerAccepted ? "trade-accepted" : "";
   tradeItemList(tradeMine, world.ownTradeOffer(), { onClearSlot: (slot) => world.clearTradeItem(slot) });
-  tradeItemList(tradeTheirs, world.theirOffer);
+  tradeItemList(tradeTheirs, world.theirOffer, { onEnchantSlot: (row) => clickTradeEnchantSlot(row) });
 }
 
 export function showDuel(): void {
@@ -1241,3 +1317,14 @@ export function updateDuel(now: number): void {
   lastDuelTick = now;
   showDuel();
 }
+
+// 4.14: the prompts panel names a proposal's or a finished dungeon's row from this catalog (asked
+// for on first use) and leaves the proposal to this window while it is up.
+registerInteractionPromptNames({
+  dungeon: (dungeonId) => {
+    const client = nativeLfgDungeonClient();
+    if (client && !client.ready) void client.load();
+    return client?.catalog?.some((row) => row.id === dungeonId) ? lfgDungeonNameById(dungeonId) : undefined;
+  },
+  lfgWindowOpen,
+});

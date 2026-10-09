@@ -44,7 +44,7 @@ function fakeDocument() {
 globalThis.document = fakeDocument();
 // `place` nudges a tooltip back inside the window, so there has to be one to be inside of.
 globalThis.window = { innerWidth: 1280, innerHeight: 720 };
-const { Bar, IconButton, Panel, SlotGrid, attachTooltip, refreshTooltip, usePanelHost } =
+const { Bar, IconButton, Panel, SlotGrid, attachTooltip, getTip, refreshTooltip, usePanelHost } =
   await import("../dist/code/browser/ui/Widgets.js");
 
 test("an action icon keeps its image when a key label is assigned", () => {
@@ -93,7 +93,9 @@ test("a slot grid renders what it is given and numbers its slots", () => {
   assert.equal(grid.root.children.length, 3);
   assert.equal(first.dataset.slot, "0");
   assert.equal(first.dataset.quality, "3");
-  assert.equal(first.title, "Кинжал");
+  // The hint is the interface's tooltip now (4.01), not the browser's `title`.
+  assert.equal(first.title, undefined);
+  assert.equal(getTip(first), "Кинжал");
   assert.equal(first.getAttribute("aria-label"), "Кинжал");
   assert.equal(first.children.at(-1).textContent, "20");
   assert.ok(second.classList.contains("ui-slot-empty"));

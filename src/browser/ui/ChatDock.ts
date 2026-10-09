@@ -25,7 +25,7 @@ import { chatInput, chatLog, chatTabs } from "./Dom.js";
 import { unknownLabel } from "./Format.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { setSetting, settingOn } from "./Settings.js";
-import { attachTooltip, type TooltipContent } from "./Widgets.js";
+import { setTip, attachTooltip, type TooltipContent } from "./Widgets.js";
 
 /** How many lines one pane holds. The model keeps five hundred; this is what is drawn. */
 const PANE_LINES = 200;
@@ -460,7 +460,7 @@ function renderPrefix(message: ChatMessage, prefix: string): Node[] {
   const sender = document.createElement("span");
   sender.className = "chat-sender";
   sender.textContent = target;
-  sender.title = `Написать в личку: /w ${target}`;
+  setTip(sender, `Написать в личку: /w ${target}`);
   sender.addEventListener("click", () => insertIntoChat(`/w ${target} `));
   return [
     document.createTextNode(prefix.slice(0, at)),

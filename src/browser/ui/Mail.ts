@@ -8,7 +8,7 @@ import { formatMoney } from "./Format.js";
 import { setIconSource } from "./IconImage.js";
 import { itemTooltipFor } from "./ItemTooltip.js";
 import { nativeUiTextureUrl } from "./NativeUiSkin.js";
-import { Panel, attachTooltip, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, attachTooltip, confirmPanel } from "./Widgets.js";
 import { frameXmlMailPublished } from "../framexml/FrameXmlMailController.js";
 
 const PAGE_SIZE = 7;
@@ -242,7 +242,7 @@ function showInbox(world: WorldClient): void {
     const meta = document.createElement("span");
     meta.className = `mail-entry-status${entry.daysLeft < 1 ? " expiring" : ""}`;
     meta.textContent = `${formatMailExpiry(entry.daysLeft)}${entry.attachments.length ? " · вложение" : entry.money ? " · деньги" : ""}`;
-    row.title = `${entry.subject}\nОт: ${sender(world, entry)}${entry.cod ? `\nНаложенный платёж: ${formatMoney(entry.cod)}` : ""}`;
+    setTip(row, `${entry.subject}\nОт: ${sender(world, entry)}${entry.cod ? `\nНаложенный платёж: ${formatMoney(entry.cod)}` : ""}`);
     row.append(icon, words, meta);
     return row;
   }));
@@ -297,7 +297,7 @@ function showLetter(world: WorldClient, entry: MailEntry): void {
       mailBody.focus();
     });
     reply.disabled = !senderName(world, entry);
-    if (reply.disabled) reply.title = "Ожидание имени отправителя";
+    if (reply.disabled) setTip(reply, "Ожидание имени отправителя");
     actions.append(reply);
   }
   if (isMailReturnable(entry)) actions.append(button("Вернуть", () => confirmPanel(actions, { title: "Вернуть письмо отправителю?", confirm: "Вернуть", onConfirm: () => world.returnMail(entry.mailId, entry.senderGuid) })));
@@ -309,9 +309,9 @@ function showLetter(world: WorldClient, entry: MailEntry): void {
   // MailHandler.cpp only rejects deletion of COD mail. Stock MailFrame.lua confirms deletion of
   // deletable mail even when it holds money or attachments (auction/returned/system letters).
   remove.disabled = entry.cod > 0 || (isMailReturnable(entry) && (entry.money > 0 || entry.attachments.length > 0));
-  if (remove.disabled) remove.title = entry.cod > 0
+  if (remove.disabled) setTip(remove, entry.cod > 0
     ? "Письмо с наложенным платежом нельзя удалить"
-    : "Сначала заберите деньги и вложения или верните письмо отправителю";
+    : "Сначала заберите деньги и вложения или верните письмо отправителю");
   actions.append(remove);
   body.append(actions);
   reader.body.replaceChildren(body);
@@ -348,7 +348,7 @@ function showComposer(world: WorldClient): void {
     const metadata = game.itemMetadata?.get(entryOf(slot.item));
     const remove = button("", () => { attachments = attachments.filter((item) => item !== guid); showMail(); });
     remove.disabled = sending;
-    remove.title = `Убрать вложение: ${metadata?.name ?? "Предмет"}`;
+    setTip(remove, `Убрать вложение: ${metadata?.name ?? "Предмет"}`);
     const icon = document.createElement("img"); icon.alt = metadata?.name ?? "Предмет";
     if (metadata && game.itemMetadata) setIconSource(icon, game.itemMetadata.iconUrl(metadata));
     remove.append(icon);

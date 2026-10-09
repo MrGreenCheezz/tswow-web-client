@@ -15,3 +15,10 @@ export interface ClassIconCell {
 export const CLASS_ICON_DATA_AVAILABLE: boolean = implementation.CLASS_ICON_DATA_AVAILABLE;
 export const CLASS_ICON_TCOORDS: Readonly<Record<string, ClassIconCell>> =
   implementation.CLASS_ICON_TCOORDS;
+/**
+ * `RAID_CLASS_COLORS` of the dataset's Constants.lua as `#rrggbb`, by `ChrClasses.Filename` (9.05).
+ * Empty in a redistributable copy without local client data.
+ */
+export const CLASS_COLOR_DATA: Readonly<Record<string, string>> = implementation.CLASS_COLOR_DATA;
+/** `CLASS_SORT_ORDER` of the same file; `MAX_CLASSES` is its length. */
+export const CLASS_SORT_ORDER_DATA: readonly string[] = implementation.CLASS_SORT_ORDER_DATA;

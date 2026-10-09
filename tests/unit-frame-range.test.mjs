@@ -28,6 +28,8 @@ function makeNode(tag) {
 globalThis.document = { createElement: (tag) => makeNode(tag) };
 
 const { UnitFrame } = await import("../dist/code/browser/ui/UnitFrame.js");
+// The reason is the interface's tooltip (4.01), read back with getTip rather than from `title`.
+const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 
 function snapshot() {
   return {
@@ -43,15 +45,15 @@ test("an out-of-range member fades with a reason, and coming back clears it", ()
   frame.show(snapshot(), { outOfRange: true });
   assert.equal(frame.root.hidden, false);
   assert.ok(frame.root.className.split(" ").includes("is-out-of-range"));
-  assert.match(frame.root.title, /дальности/);
+  assert.match(getTip(frame.root), /дальности/);
   frame.show(snapshot(), { outOfRange: false });
   assert.ok(!frame.root.className.split(" ").includes("is-out-of-range"));
-  assert.equal(frame.root.title, "");
+  assert.equal(getTip(frame.root) ?? "", "");
 });
 
 test("an unknown range leaves the frame exactly as it was", () => {
   const frame = new UnitFrame({ kind: "raid", size: "grid" });
   frame.show(snapshot(), {});
   assert.ok(!frame.root.className.split(" ").includes("is-out-of-range"));
-  assert.equal(frame.root.title, "");
+  assert.equal(getTip(frame.root) ?? "", "");
 });

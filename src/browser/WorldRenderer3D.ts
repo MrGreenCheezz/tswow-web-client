@@ -2,28 +2,40 @@ import * as THREE from "three";
 import { WorldSubmissionCapture, type WorldSubmissionSnapshot } from "./WorldSubmissionCapture.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import {
-  appearsDead, fieldFloat, isWorldObjectDead, type WorldObjectState, type WorldPosition, type WorldState,
+  appearsDead, fieldFloat, isWorldObjectDead, splineAnimationTier, type WorldObjectState, type WorldPosition, type WorldState,
 } from "../world/WorldState.js";
+import { sceneYaw, toRenderAxes, type Quat } from "../world/GameObjectRotation.js";
+import { gameObjectNodeYaw, gameObjectWorldRotation, placedBoxCorners, type ModelBox } from "../world/GameObjectModelFrame.js"; // 06.10-7.24
+import { modelPickBox } from "./GameObjectPickBox.js"; // 06.10-7.24
+import { passengerGameObjectTilt } from "../world/TransportPassengers.js";
 import {
   CAMERA_DEFAULT_DISTANCE, CAMERA_DEFAULT_EYE_HEIGHT, CAMERA_DEFAULT_PITCH, CAMERA_DEFAULT_PIVOT_HEIGHT,
   CAMERA_EYE_BODY_SHARE, CAMERA_FIRST_PERSON_DISTANCE, CAMERA_FOV_DEGREES, CAMERA_PIVOT_BODY_SHARE,
   cameraBodyHeight, createCamera, type HeightSampler,
 } from "./SimpleScene.js";
-import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
+import { ENVIRONMENT_FAR_RANGE, ENVIRONMENT_RANGE, ENVIRONMENT_RESIDENT_HYSTERESIS, ENVIRONMENT_STREAM_RANGE, TERRAIN_GRID_SIZE, modelKey, terrainGrid, terrainGridIndex, type EnvironmentClient, type EnvironmentModel, type EnvironmentObject, type TerrainClient } from "./Terrain.js";
 import { terrainGeometryData, terrainGeometrySteps, type TerrainGeometryData } from "./TerrainGeometry.js";
 export { terrainGeometryData, terrainHeightField, terrainNormals, surfaceNormal, type TerrainGeometryData } from "./TerrainGeometry.js";
-import { TerrainStreamingWindow, terrainTileKey, type TerrainStreamingPlan } from "./TerrainStreaming.js";
+import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStreaming.js";
 import { ProgramWarmup, programWarmupKind, WarmHold, type ProgramWarmupKind } from "./ProgramWarmup.js";
 import { useFloatUniformSetters } from "./FloatUniformSetters.js";
 import { ShaderProgramTrace, type ShaderProgramEvent } from "./ShaderProgramTrace.js";
-import { EnvironmentSpatialIndex } from "./EnvironmentSpatialIndex.js";
+import { EnvironmentGridIndex } from "./EnvironmentGridIndex.js";
+import { environmentVegetationKind } from "./EnvironmentNames.js"; // 05.10-A7b-0 1.23
 import {
-  selectGameObjectAdmission, selectUnitAdmission, stableBoundedTopKWhere,
+  gameObjectWithinAdmissionRange, selectGameObjectAdmissionWithTransports, transportWmoViewer,
+  GAMEOBJECT_TRANSPORT_SHELL_RANGE, // 05.10-7.05-review
+  type GameObjectAdmissionCandidate,
+} from "./GameObjectTransportAdmission.js"; // 05.10-7.05
+import {
+  BoundedTopK, selectGameObjectAdmission, selectUnitAdmission, stableBoundedTopKWhere,
   type UnitAdmissionCandidate,
 } from "./RenderAdmission.js";
 import {
   applyTerrainSplat, setTerrainSplatMicroNormals, type TerrainSplatClient,
 } from "./TerrainSplat.js";
+import { setTerrainBakedShadowStrength, terrainBakedShadowStrength } from "./TerrainSplat.js"; // 05.10-A7b-7
+import { setTerrainSpecularStrength, terrainSpecularStrength } from "./TerrainSplat.js"; // 05.10-A7b-7Г
 import {
   GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS, createGroundCoverCellCache,
   groundCoverRecipeSource, hypot2, scatterGroundCover, writeGroundCoverInstanceMatrices,
@@ -31,16 +43,30 @@ import {
 } from "./GroundCover.js";
 import { createGroundCoverFadeUniforms, type GroundCoverFadeUniforms } from "./GroundCoverFade.js";
 import { skyboxAnimationTimeMs } from "./LightClient.js";
+import { classicKeyLightDirection, classicSunDirection } from "./ClassicSun.js"; // 05.10-sun
+import {
+  SKY_STARS_MODEL, SkyCelestials, createSkyCelestialInput, skyBasicMaterials, skyTextureSource, skyboxClipTimeMs,
+  skyboxCoversSky,
+  skyPostDrawsSun, // 05.10-A7b-6-review
+} from "./SkyCelestials.js"; // 05.10-A7b-6
 import type { LightSample, ResolvedColour } from "./LightTypes.js";
+import { lightDarkensByDepth, liquidLightTint, type UnderwaterLight } from "./UnderwaterLiquidLight.js"; // 05.10-A7b-5 review
 import { LocalLightSelection, modelFixtureLights, sampleFixtureLight } from "./LocalLighting.js";
+import { fixtureLightSource } from "./FixtureLightSources.js"; // 06.10-render-fix
 import {
   GOD_RAY_STRENGTH_SCALE_MAX, godRayStrengthScale, lightingProfile, shadowMaterialEligible,
+  lightingClassicLook, // 05.10-7.20
   stabiliseDirectionalShadowCenter, unitCastsEnhancedShadow, withToneShoulder, toneShoulder,
   type LightingProfile,
 } from "./LightingQuality.js";
+import { UnitShadowCasterSet, unitShadowFootprint, unitShadowInReach, type UnitShadowSphere } from "./UnitShadowCasters.js"; // 06.10-shadow
 import {
-  CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot,
+  CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot, type ShadowCasterCensus,
 } from "./CascadedShadows.js";
+import { ShadowCasterList, type CasterGate } from "./ShadowCasterList.js"; // P2-01a
+import {
+  SCENERY_SHADOW_CAST, SCENERY_SHADOW_FAR, SCENERY_SHADOW_RECEIVE, sceneryShadowFlags, type SceneryShadowTraits,
+} from "./SceneryShadowFlags.js"; // P2-02a
 import {
   applyHorizonAerialFog, applyWorldLight, createWorldLightUniforms,
   setWorldLightAerialFog, setWorldLightDaylight, setWorldLightImmersiveStrength, setWorldLightUniforms,
@@ -53,12 +79,14 @@ import {
   buildLiquidMaterial, copyWaterSkyBands, createWaterShaderSharedUniforms,
   liquidClassOf, updateLiquidMaterial, WATER_FALLBACK_OPACITY, WaterDetailNormalMaps, liquidCalmOf,
   type LiquidClass, type LiquidMaterial, type LiquidTextureClient, type WaterShaderSharedUniforms,
+  liquidSurfaceClass, liquidSurfaceOf, type LiquidSurface, // 05.10-A7b-8
 } from "./Water.js";
 import { DAY_HALF_MINUTES } from "../world/GameTimeProtocol.js";
 import { DUEL_OUT_OF_BOUNDS_YARDS } from "../world/DuelProtocol.js";
 import type { EnchantGlow } from "./ItemEnchantments.js";
 import type { GameObjectDisplayMetadata } from "./GameObjectMetadata.js";
 import type { CreatureModelMetadata, UnitModel } from "./CreatureModelClient.js";
+import { attachedOf, virtualItemEntry, weaponMetadataPending } from "./NpcWeapons.js"; // 05.10-A7a-B 6.02 (virtualItemEntry: 05.10 review)
 import { ANIMATION_IDS } from "../generated/animations.js";
 import {
   M2_TO_SCENE, actionAnimation, addSkinnedClips, mergeSkinnedClips, animatesAsDoodad, applyBillboardBones,
@@ -73,7 +101,7 @@ import {
   ACTION_SIDECAR_WAIT, LOOP_ANIMATION_BLEND, SHOOT_METADATA_WAIT, mountSpecialAnimation,
   clipMovingSpeed, mountGaitTimeScale, mountPose, mountPoseTransition, unitTravelSpeed,
   isLocomotionGait, locomotionAuthoredSpeed, measuredTravelSpeed, unitGaitTimeScale, spawnFadeFactor,
-  weaponPose,
+  weaponPose, isBaseIdle, // 05.10-A7a-C: isBaseIdle
   applyStrafeYaw, stepStrafeYaw, strafeYawBonesFor, strafeYawTarget,
   fastPoseProgramFor, writeGlobalSequenceLocals,
   type RigSkeleton, type SkinnedInstance, type SkinnedTemplate, type UnitAction, type UnitPose,
@@ -83,20 +111,30 @@ import {
   unitActionDisplay, unitActionEndsOnMovement,
   type ShownUnitAction, type UnitActionDisplay, type UnitActionEntry, type UnitActionLayer, type UnitActionPayload,
 } from "./UnitActionArbiter.js";
+import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase.js"; // 05.10-6.21b; ревью 6.21b
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
-  EVERY_GEOSET, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
+  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
   setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
   type AnimatedBatch, type BuiltModel, type GeosetChoice, type TextureSlots,
 } from "./ModelBuild.js";
+import { WVM_SLOT_SAMPLERS, applySlotDepth } from "./SlotMaterial.js"; // P2-03a
+import { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
+import { StaticSceneryGroup } from "./StaticSceneryGroup.js"; // RND-12
+import { dropDeathFade, syncDeathFade, type DeathFadeState } from "./BatchDeathFade.js"; // 05.10-A7a-F1
+import { applyStandingPose } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
+import { combatAnimations, type CombatReaction } from "./game/CombatAnimations.js"; // 05.10-A7a-D 6.06
+import { kitWoundAnimation } from "./game/AnimationSplit.js"; // 05.10-6.21
+import { flagPoseBits, poseTransitionClip, syncFlagPoses } from "./UnitFlagPoses.js"; // 05.10-A7a-C 6.07; -review: poseTransitionClip
 import {
   MODEL_PLACEMENT_LOCAL_LIGHT_ATTRIBUTE, MODEL_PLACEMENT_LOCAL_LIGHT_DIRECTION,
   createInstancedModelPlacementLocalLightMaterials, createModelPlacementLocalLightMaterials,
   createModelPlacementTintMaterials, disposeModelPlacementTintMaterials, modelPlacementTintColour,
   type ModelPlacementTint,
 } from "./ModelPlacementTint.js";
+import { writeInstancedLocalLight } from "./InstancedLocalLight.js"; // 06.10-doodad-light
 import {
   BuiltModelCache, disposeEvictedBuiltModels, knownGeometryBufferBytes,
   type BuiltModelCacheStats, type EvictedBuiltModel,
@@ -112,13 +150,18 @@ import {
 import { FrameBuildBudget } from "./FrameBuildBudget.js";
 import { UnitSceneGroup } from "./UnitSceneGroup.js";
 import { StandInLedger, type StandInReason, type StandInReport, type StandInWearing } from "./StandIn.js";
+import { EnvironmentStandInLedger, type EnvironmentStandInReason, type WorldStandInReport } from "./StandIn.js"; // 05.10-A7b-9 7.18
+import { EnvironmentStandInMarkers } from "./EnvironmentStandInMarkers.js"; // 05.10-A7b-9 7.18
 import {
   ATTACHMENT_HELM, ATTACHMENT_MOUNT_SEAT, ATTACHMENT_SHOULDER_RIGHT,
   TEXTURE_TYPE_BODY, TEXTURE_TYPE_OBJECT_SKIN, modelOwnTexturePaths, textureUrl, type WvmModel,
 } from "./Wvm.js";
 import {
-  attachmentHeight, attachmentOffset, attachmentPoint, attachmentRotation, boneOf, mountNesting, mountSeatOffset,
+  attachmentHeight, attachmentOffset, attachmentRotation, boneOf, mountNesting, mountSeatOffset,
 } from "./Attachment.js";
+import { sheatheOf, worldAttachmentPoint } from "./SheathPoints.js"; // 05.10-A7a-G2 6.08
+import { extendSidecarWait, poseExitClips, sidecarClaims } from "./SidecarWait.js"; // 05.10-A7a-G2 6.19
+import { corpseUnitView } from "./CorpseModel.js"; // 05.10-A7a-G2 6.05
 import {
   wmoDoodadInAperture, wmoDoodadRoomVisible, wmoFloorLight, wmoInteriorGroupAt, wmoInteriorOnly, wmoLandFogAt,
   wmoRunIsInterior, type WmoDoodadRooms, type WmoFog, type WmoGroup, type WmoModel, type WmoRun,
@@ -128,22 +171,41 @@ import {
   canonicalCollisionModelName,
   type StaticWmoFloor, type StaticWmoPlacementIdentity,
 } from "./game/CollisionSource.js";
+import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
+import { VehiclePassengerPoser } from "./VehiclePassengerPose.js"; // 11.02-H
+import { vehicleCatalog } from "./VehicleClient.js"; // 11.02-H
+import { drawnUnitPosition } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 import { selectWmoPortalGroups } from "./WmoOcclusion.js";
+import { WmoRangeTable, sameWmoSelection, type WmoRangeTotals } from "./WmoGroupRange.js"; // P1-12a/b
+import { createWmoPortalMemo, wmoPortalMemoAnswer, wmoPortalMemoNote, type WmoPortalMemo } from "./WmoPortalMemo.js"; // P1-12c
+import {
+  WMO_OPEN_AIR_ROOM_RANGE, createWmoOpenAirState, wmoOpenAirCandidatesStale, wmoOpenAirNoteCandidates,
+  wmoOpenAirNoteWalk, wmoOpenAirWalkStale, type WmoOpenAirState,
+  wmoDoodadsOfPlacement, // 05.10 review A7b-2
+} from "./WmoOpenAir.js"; // 05.10-A7b-2 (7.03 slice 3)
+import { wmoRunMaterial } from "./WmoMaterials.js"; // 05.10-A7b-2 (7.11 P1)
+import { applyWmoRunLook, wmoRunLook, wmoRunLookKey } from "./WmoRunLook.js"; // 05.10-A7b-2 (7.11 P1)
+import { createWmoRoomFog, wmoRoomFogFor } from "./WmoRoomFog.js"; // 05.10-A7b-2 (7.12)
+import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7b-2 (7.12)
 import {
   animatesAsGameObject, customGameObjectAnimation, gameObjectPose,
   GO_TYPE_MO_TRANSPORT, GO_TYPE_TRANSPORT,
 } from "./GameObjectAnimation.js";
 import {
-  TransportPathClient, placeOnTransportPath, sampleTransportPath, transportPhaseMs,
+  TransportPathClient, placeOnTransportPath, sampleTransportPath,
 } from "./TransportPath.js";
+import { liftPhaseMs } from "./LiftClock.js";
 import {
   HORIZON_FAR_PLANE, HorizonClient, buildHorizonGeometry, horizonTiles,
 } from "./Horizon.js";
+import { horizonTileAt } from "./Horizon.js"; // 05.10-A7b-7
+import { HorizonMaterialSelector } from "./HorizonMaterial.js"; // 05.10-A7b-7
 import {
   billboardView, buildModelEffects, disposeModelEffects, resetModelEffects, setModelEffectsFantasyGlow,
   updateModelEffects,
   visitModelEffectsResources, type ModelEffects,
 } from "./ParticleRender.js";
+import { creatureDisplayAlpha, creatureGeosetChoice, particleColouredWvm } from "./CreatureDisplayLook.js"; // 05.10-A7a-H 6.11а
 import { WeatherEffect, advanceWeather, weatherDensity, type WeatherFade } from "./WeatherEffect.js";
 import { VEGETATION_WIND_CULL_PADDING, VEGETATION_WIND_TIME } from "./VegetationWind.js";
 import {
@@ -168,11 +230,22 @@ import type { BenchmarkRendererReadinessInput } from "./RenderBenchmarkReadiness
 import { weatherIsBlack, weatherKind, type Weather } from "../world/WorldMessageProtocol.js";
 import type { BillboardView } from "./Particles.js";
 import {
-  missileDirection, missilePoint,
+  missileDirection,
   spellVisualTransformEuler, spellVisualTransformOffset,
   type SpellVisualPlan, type VisualAnimation, type VisualAnimationMode, type VisualInstance,
 } from "./SpellVisuals.js";
 import type { SpellVisualEffectTransform } from "../gateway/SpellVisual.js";
+import { flyMissileInstance, missileQuaternion, missileSample, type MissilePoints } from "./MissileFlight.js"; // 05.10-A7a-E
+import { ChainBeams } from "./ChainBeam.js"; // 05.10-A7a-E
+import { CameraShakeBank } from "./CameraShake.js"; // 05.10-A7a-E
+import {
+  attachGlowAnchors, detachGlowAnchors, glowEmitterEntries, glowPlacement, glowSlotsKey, resolveGlowModels,
+  glowAnchorsOf, // 05.10-A7a-E2
+} from "./WeaponGlow.js"; // 05.10-A7a-E (6.14)
+import {
+  glowHasMesh, makeGlowBody, mountGlowBodies, pinGlowBuilds, poseGlowBodies, type GlowBody,
+  fadeGlowEmitters, glowBodyMeshes, glowShown, // 05.10: ревью E2 — glows follow the unit's opacity and visibility
+} from "./WeaponGlowBody.js"; // 05.10-A7a-E2 (6.14): the effect models' meshes
 import {
   isPlayerGhost, isUnitCreeping, unitAppearance, unit as unitFields,
   type UnitAuraAppearance,
@@ -351,13 +424,17 @@ export function underwaterOverlayFrame(
   eyeZ: number,
   band: number,
   liquidClass: LiquidClass,
+  light?: UnderwaterLight, // 05.10-A7b-5 review (7.10): the frame's light sample
 ): UnderwaterOverlayFrame | undefined {
   if (!surface || !Number.isFinite(surface.height) || !Number.isFinite(eyeZ)) return undefined;
+  // 05.10-A7b-5 review (7.10): magma and slime once the frame's light is their own LiquidType
+  // light row — its fog colour is the authored colour of that view (UnderwaterLiquidLight.ts).
+  const liquidTint = liquidClass === "magma" || liquidClass === "slime" ? liquidLightTint(light) : undefined;
   // Water and ocean only, and this is a decision rather than an omission: both of the reference's
   // tints are water, there is no authored number anywhere for what magma or slime look like from
   // the inside, and a dark blue screen in a lava lake is a wrong answer where nothing is merely a
   // missing one. Swimming in either is fatal within seconds in any case.
-  if (liquidClass !== "water" && liquidClass !== "ocean") return undefined;
+  if (liquidClass !== "water" && liquidClass !== "ocean" && !liquidTint) return undefined;
   const crossingBand = Number.isFinite(band) && band > 0 ? band : UNDERWATER_MIN_BAND;
   const eyeDepth = surface.height - eyeZ;
   // From a near plane's half-height *above* the surface: standing in a lake looking across it, the
@@ -365,12 +442,14 @@ export function underwaterOverlayFrame(
   // water. Safe only because the seam below is geometric — a pixel whose ray enters the world above
   // the surface still comes out untouched, so the band costs nothing where there is no water.
   if (!(eyeDepth > -crossingBand)) return undefined;
-  const canal = underwaterLiquidIsCanal(surface.entry);
+  const canal = !liquidTint && underwaterLiquidIsCanal(surface.entry);
   return {
     depth: Math.max(0, eyeDepth),
     canal,
-    tint: canal ? UNDERWATER_CANAL_TINT : UNDERWATER_LAKE_TINT,
-    fogStrength: underwaterFogStrength(eyeDepth, canal),
+    tint: liquidTint ?? (canal ? UNDERWATER_CANAL_TINT : UNDERWATER_LAKE_TINT),
+    // 05.10-A7b-5 review (7.10): where the light already darkens by depth (the oceans' LiquidType
+    // columns), the overlay holds its surface strength so the depth is darkened once.
+    fogStrength: lightDarkensByDepth(light) ? UNDERWATER_SURFACE_HANDOFF : underwaterFogStrength(eyeDepth, canal),
     crossing: eyeDepth < crossingBand,
   };
 }
@@ -499,7 +578,15 @@ export function wmoRunMaterialCacheKey(
   blendMode: number,
   materialFlags: number,
   interior: boolean,
+  look?: { readonly record: number; readonly key: string }, // 05.10-A7b-2 (7.11 P1)
 ): string {
+  // 05.10-A7b-2: a run whose MOMT record has a look is its own material; every other run keeps the
+  // exact key it always had (an older artifact, a plain Diffuse record).
+  if (look !== undefined) {
+    return JSON.stringify([
+      parentToken, "wmo-run", materialIndex, textureUrl, blendMode, materialFlags, interior, look.record, look.key,
+    ]);
+  }
   return JSON.stringify([
     parentToken, "wmo-run", materialIndex, textureUrl, blendMode, materialFlags, interior,
   ]);
@@ -518,6 +605,8 @@ interface WmoInteriorFogUniforms {
  * paints terrain, units and the sky seen through a doorway with a tavern's short peach fog. This
  * small material-local substitution keeps Light.dbc authoritative outside while retaining the
  * authored room distances and colour on the interior surfaces that own them.
+ * 05.10-A7b-2 (7.12): the client does keep one fog per frame; the scene now takes the room's too,
+ * behind `renderSwitches.wmoRoomFogOnScene` — off, this material-local fog is again the only one.
  */
 export function applyWmoInteriorFog(
   material: THREE.MeshBasicMaterial,
@@ -590,26 +679,66 @@ export interface WmoGroupResourceBorrower<TGeometry> {
   readonly mesh: THREE.Object3D;
 }
 
-/** Adds only wrappers physically attached to their placement node to the exact live-pin sets. */
+/** What `collectAttachedBorrower` is collecting into, reused instead of a closure per placement. */
+const attachedPinScratch: {
+  parent: THREE.Object3D | undefined;
+  geometryPins: Set<unknown> | undefined;
+  materialPins: Set<WorldMaterialEntry> | undefined;
+  count: number;
+} = { parent: undefined, geometryPins: undefined, materialPins: undefined, count: 0 };
+
+function collectAttachedBorrower(
+  this: typeof attachedPinScratch,
+  borrower: WmoGroupResourceBorrower<unknown>,
+): void {
+  if (borrower.mesh.parent !== this.parent) return;
+  this.geometryPins!.add(borrower.entry);
+  const entries = borrower.materialEntries;
+  for (let index = 0; index < entries.length; index++) this.materialPins!.add(entries[index]!);
+  this.count++;
+}
+
+/**
+ * Adds only wrappers physically attached to their placement node to the exact live-pin sets.
+ *
+ * P1-10c: a `Map` of borrowers is walked with `forEach`, which hands out no iterator result per
+ * room — this runs for every placed building on every submitted frame. Same pins, same order.
+ */
 export function collectAttachedWmoGroupResourcePins<TGeometry>(
   parent: THREE.Object3D,
-  borrowers: Iterable<WmoGroupResourceBorrower<TGeometry>>,
+  borrowers: Iterable<WmoGroupResourceBorrower<TGeometry>> | ReadonlyMap<unknown, WmoGroupResourceBorrower<TGeometry>>,
   geometryPins: Set<TGeometry>,
   materialPins: Set<WorldMaterialEntry>,
 ): number {
+  if (borrowers instanceof Map) {
+    const scratch = attachedPinScratch;
+    scratch.parent = parent;
+    scratch.geometryPins = geometryPins as Set<unknown>;
+    scratch.materialPins = materialPins;
+    scratch.count = 0;
+    try {
+      (borrowers as ReadonlyMap<unknown, WmoGroupResourceBorrower<unknown>>).forEach(collectAttachedBorrower, scratch);
+      return scratch.count;
+    } finally {
+      scratch.parent = undefined;
+      scratch.geometryPins = undefined;
+      scratch.materialPins = undefined;
+    }
+  }
   let wrapperCount = 0;
-  for (const borrower of borrowers) {
+  for (const borrower of borrowers as Iterable<WmoGroupResourceBorrower<TGeometry>>) {
     if (borrower.mesh.parent !== parent) continue;
     geometryPins.add(borrower.entry);
-    for (const materialEntry of borrower.materialEntries) materialPins.add(materialEntry);
+    const entries = borrower.materialEntries;
+    for (let index = 0; index < entries.length; index++) materialPins.add(entries[index]!);
     wrapperCount++;
   }
   return wrapperCount;
 }
 
 export interface LegacyResourceBorrower<TGeometry> {
-  readonly legacyGeometry?: TGeometry;
-  readonly materialEntries?: readonly WorldMaterialEntry[];
+  readonly legacyGeometry?: TGeometry | undefined;
+  readonly materialEntries?: readonly WorldMaterialEntry[] | undefined;
 }
 
 /** Pins one retained legacy borrower's resources; 1 when it borrowed anything, else 0. */
@@ -734,6 +863,11 @@ interface InteriorOnlyRooms {
   /** The far-leash candidate rooms, for the player position they were chosen at. */
   farAt?: { x: number; y: number; z: number };
   far?: readonly number[];
+  /**
+   * 05.10-A7b-2 (7.03 slice 3): how far a bound doodad shown by these rooms is drawn — the
+   * open-air room leash for a building with a street; unset, `INTERIOR_ONLY_RANGE`.
+   */
+  leash?: number | undefined;
 }
 
 /** A doodad of an interior-only placement: its rooms, and its answer for one `serial` of them. */
@@ -767,6 +901,11 @@ function interiorOnlyDoodadShown(object: EnvironmentObject): boolean | undefined
     entry.shown = interiorOnlyDoodadVisible(entry, object);
   }
   return entry.shown;
+}
+
+/** 05.10-A7b-2 (7.03 slice 3): a bound doodad's leash — its rooms', else the environment range. */
+function boundWmoDoodadLeash(object: EnvironmentObject): number {
+  return INTERIOR_ONLY_DOODADS.get(object)?.rooms.leash ?? INTERIOR_ONLY_RANGE;
 }
 
 function interiorOnlyDoodadVisible(entry: InteriorOnlyDoodad, object: EnvironmentObject): boolean | undefined {
@@ -957,7 +1096,7 @@ export function environmentSceneryRange(object: EnvironmentObject, detail = 1): 
  */
 export function environmentDrawRange(object: EnvironmentObject, detail = 1): number {
   if (object.interior === true) {
-    return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : INTERIOR_ONLY_RANGE;
+    return interiorOnlyDoodadShown(object) === undefined ? INTERIOR_RANGE : boundWmoDoodadLeash(object); // 05.10-A7b-2
   }
   if (environmentFarEligible(object)) return ENVIRONMENT_FAR_RANGE;
   const legacy = environmentVegetation(object) ? ENVIRONMENT_VEGETATION_RANGE : ENVIRONMENT_RANGE;
@@ -1058,6 +1197,34 @@ export function environmentResidentsInRange(
     if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) residents.push({ object, distance, range });
   }
   return residents;
+}
+
+/**
+ * P2-04b: {@link environmentCandidatesInRange} and {@link environmentResidentsInRange} in one pass —
+ * each placement's distance and leash are computed once, and a candidate is the same record as its
+ * resident (every candidate is a resident: its leash is the narrower one). Both arrays come out in
+ * source order, exactly as the two passes give them; the records are never mutated by their readers.
+ * Two passes over the Stormwind pool (≈ 11.8 thousand placements) cost 1.0 ms and 79 KB per
+ * reselection, this one 0.51 ms and 34 KB (`.runtime/perf-step23/probe-env-reselect.mjs`).
+ */
+export function environmentRankInRange(
+  objects: readonly EnvironmentObject[],
+  player: Pick<WorldPosition, "x" | "y">,
+  detail = 1,
+): { candidates: RankedEnvironmentObject[]; residents: RankedEnvironmentObject[] } {
+  const candidates: RankedEnvironmentObject[] = [];
+  const residents: RankedEnvironmentObject[] = [];
+  for (let index = 0; index < objects.length; index++) {
+    const object = objects[index]!;
+    const distance = placementDistance(object, player);
+    const range = environmentDrawRange(object, detail);
+    if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) {
+      const ranked: RankedEnvironmentObject = { object, distance, range };
+      residents.push(ranked);
+      if (distance < range) candidates.push(ranked);
+    }
+  }
+  return { candidates, residents };
 }
 
 /**
@@ -1306,6 +1473,55 @@ export function selectEnvironmentAdmission(
   ];
 }
 
+/** P2-04c: one reusable bounded heap per admission tier, in concatenation order. */
+const ADMISSION_HEAPS = [
+  new BoundedTopK<RankedEnvironmentObject>(), new BoundedTopK<RankedEnvironmentObject>(),
+  new BoundedTopK<RankedEnvironmentObject>(), new BoundedTopK<RankedEnvironmentObject>(),
+] as const;
+
+/**
+ * P2-04c: `selectEnvironmentAdmission` in one pass and without allocating: each candidate is asked
+ * its tier once (the four passes asked four times — most of the admission's time in the city
+ * bench), and each tier's reusable heap takes the accepted ones in candidate order, so the picks
+ * and their order are exactly the four passes'. The result is written into `out` (cleared first),
+ * which the caller alternates between two arrays so each run still has a new identity.
+ * `selectEnvironmentAdmission` stays as the reference and for hand-built lists.
+ */
+export function admitEnvironmentInto(
+  candidates: readonly RankedEnvironmentObject[],
+  planes: readonly UnitFrustumPlane[],
+  retainedSphereOf: ((object: EnvironmentObject) => EnvironmentVisibilitySphere | undefined) | undefined,
+  vertexPadding: number,
+  out: RankedEnvironmentObject[],
+): RankedEnvironmentObject[] {
+  const [near, scenery, far, interior] = ADMISSION_HEAPS;
+  near.reset(ENVIRONMENT_BUDGET);
+  scenery.reset(ENVIRONMENT_SCENERY_BUDGET);
+  far.reset(ENVIRONMENT_FAR_BUDGET);
+  interior.reset(INTERIOR_BUDGET);
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index]!;
+    const tier = environmentAdmissionTier(candidate);
+    if (tier === undefined) continue;
+    // A hand-built list is held to the same strict leash the candidate pass applies.
+    if (tier === "scenery" && candidate.distance >= (candidate.range ?? environmentDrawRange(candidate.object))) continue;
+    const retainedSphere = candidate.object.bounds === undefined
+      ? retainedSphereOf?.(candidate.object) ?? environmentSourceVisibilitySphere(candidate.object, vertexPadding)
+      : undefined;
+    if (!environmentObjectVisibleInFrustum(candidate.object, planes, ENVIRONMENT_FRUSTUM_MARGIN, retainedSphere)) continue;
+    if (tier === "near") near.offer(candidate, candidate.distance);
+    else if (tier === "scenery") scenery.offer(candidate, environmentSceneryScore(candidate));
+    else if (tier === "far") far.offer(candidate, candidate.distance);
+    else interior.offer(candidate, candidate.distance);
+  }
+  out.length = 0;
+  near.drainInto(out);
+  scenery.drainInto(out);
+  far.drainInto(out);
+  interior.drainInto(out);
+  return out;
+}
+
 /**
  * Which of a tile's placements are drawn this frame, nearest first.
  *
@@ -1399,6 +1615,7 @@ export function wmoGroupsInRange(
   boxes: readonly (THREE.Box3 | undefined)[],
   player: WorldPosition,
   roomRange = INTERIOR_RANGE,
+  shellRange?: number, // 05.10-7.05-review: a moving transport's hull leash (its admission range)
 ): number[] {
   const x = player.x;
   const z = -player.y;
@@ -1417,7 +1634,7 @@ export function wmoGroupsInRange(
     // the whole WMO. Groups wide enough to read as skyline hold the far leash with the placement
     // that earned it; small exterior bits keep the near one.
     const range = group.exterior || !group.indoor
-      ? wmoShellRange(box)
+      ? shellRange ?? wmoShellRange(box) // 05.10-7.05-review
       : roomRange;
     const outsideX = Math.max(box.min.x - x, 0, x - box.max.x);
     const outsideZ = Math.max(box.min.z - z, 0, z - box.max.z);
@@ -1481,8 +1698,7 @@ export function placeEnvironmentNode(node: THREE.Object3D, object: EnvironmentOb
  * the way `selectEnvironment` and `placementDistance` already are.
  */
 export function standInKind(object: EnvironmentObject): "tree" | "none" {
-  if (/tree|oak|pine|willow|bush|shrub/i.test(object.name)) return "tree";
-  return "none";
+  return environmentVegetationKind(object.name); // 05.10-A7b-0 1.23: lamps, spines, stumps are not trees
 }
 
 /**
@@ -1546,7 +1762,10 @@ const PLAYER_RANGED_ITEM = PLAYER_HEAD_ITEM + 17 * PLAYER_VISIBLE_ITEM_STRIDE;
 export function unitWireHasCompositeSilhouette(object: WorldObjectState): boolean {
   const mountDisplayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_MOUNTDISPLAYID.offset) ?? 0;
   if (mountDisplayId !== 0) return true;
-  if (object.typeId !== 4) return false;
+  // 05.10 review A7a-B 6.02: a creature's held weapons (NpcWeapons.ts) are on the wire as well.
+  if (object.typeId !== 4) {
+    return virtualItemEntry(object, 0) !== 0 || virtualItemEntry(object, 1) !== 0 || virtualItemEntry(object, 2) !== 0;
+  }
   return (object.fields.get(PLAYER_HEAD_ITEM) ?? 0) !== 0
     || (object.fields.get(PLAYER_SHOULDER_ITEM) ?? 0) !== 0
     || (object.fields.get(PLAYER_MAIN_HAND_ITEM) ?? 0) !== 0
@@ -1959,11 +2178,18 @@ import {
 } from "./CharacterAtlas.js";
 import { PortraitRenderer, type PortraitSource, type PortraitSlot, type PortraitTarget } from "./PortraitRenderer.js";
 
+/**
+ * P1-09: every field of a retained record is present from its creation literal on, absent values
+ * written as `undefined` and cleared with `= undefined`, never `delete` — one V8 hidden class per
+ * record kind, no dictionary mode. A new field is `T | undefined` and goes into the literal.
+ */
 interface RenderedEnvironment {
   actual: boolean;
+  /** 05.10-A7b-9 (7.18): what the node is when it is not the model — set at build, read by the stand-in ledger. */
+  standIn: "canopy" | "empty" | "hull" | undefined;
   node: THREE.Object3D;
   /** `env:<id>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact immutable placement snapshot represented by this retained node. */
   source: EnvironmentObject;
   /** Draw admission is separate from `node.visible`, which instancing may deliberately clear. */
@@ -1972,15 +2198,15 @@ interface RenderedEnvironment {
   /** Submission serial of the most recent admitted frame, used by the bounded hidden LRU. */
   lastAdmittedFrame: number;
   /** Conservative scene sphere stamped only for a static, emitter-free retained M2. */
-  visibilitySphere?: EnvironmentVisibilitySphere;
+  visibilitySphere: EnvironmentVisibilitySphere | undefined;
   /** Exact cache entry borrowed by this placement, when it is a built WVM model. */
-  built?: BuiltModel;
+  built: BuiltModel | undefined;
   /** Exact decoded legacy parent and resources borrowed by this retained placement. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** Per-placement material ids carrying immutable albedo or indoor-light state. */
-  tintMaterials?: readonly THREE.Material[];
+  tintMaterials: readonly THREE.Material[] | undefined;
   /**
    * The mesh inside the node, whose world matrix is the model's own frame.
    *
@@ -1988,8 +2214,8 @@ interface RenderedEnvironment {
    * model space into the scene. An emitter's position is written in model space, so it is the
    * inner matrix it has to be transformed by and not the outer one.
    */
-  visual?: THREE.Object3D;
-  wvm?: WvmModel;
+  visual: THREE.Object3D | undefined;
+  wvm: WvmModel | undefined;
   /**
    * The model's own water, one mesh per liquid grid, standing in the scene rather than on the node.
    *
@@ -1999,11 +2225,11 @@ interface RenderedEnvironment {
    * thing in the city as if it were at that corner. Each sheet is its own object centred on its own
    * water instead, which is what the tile's water gets for nothing by being a mesh per tile.
    */
-  liquid?: THREE.Mesh[];
+  liquid: THREE.Mesh[] | undefined;
   /** The liquid-strip generation the sheets were built at, so a late strip rebuilds them. */
-  liquidGeneration?: number;
+  liquidGeneration: number | undefined;
   /** A WMO drawn room by room, with the boxes that decide which rooms those are. */
-  wmo?: PlacedWmo;
+  wmo: PlacedWmo | undefined;
   /**
    * Which built model this placement is a copy of, when it is one that can be instanced.
    *
@@ -2011,11 +2237,11 @@ interface RenderedEnvironment {
    * an instance has no `Object3D` of its own, and `#updateEffects` places a torch's sparks by
    * reading the matrix of the placement's mesh.
    */
-  instanceKey?: string;
+  instanceKey: string | undefined;
   /** `instanceKey` plus the light lane, built once: the bucket this copy joins in `#updateInstances`. */
-  instanceBucket?: string;
+  instanceBucket: string | undefined;
   /** Its world matrix, computed once when it was placed. Nothing in the environment ever moves. */
-  instanceMatrix?: THREE.Matrix4;
+  instanceMatrix: THREE.Matrix4 | undefined;
   /**
    * Submission serial the grow-in started on, for vegetation only.
    *
@@ -2023,9 +2249,11 @@ interface RenderedEnvironment {
    * matrices stay live, and instancing waits: an instance matrix is exact placement state, and
    * a tree mid-growth is not exact. Cleared with the freeze when it settles.
    */
-  growthStartedAt?: number;
+  growthStartedAt: number | undefined;
   /** Grow-in length in frames for this placement: slow for far trees, quick for near ones. */
-  growthTotal?: number;
+  growthTotal: number | undefined;
+  /** P2-06a: the admission run that last admitted this placement (`#admissionRun`). */
+  drawnRun: number;
   /**
    * Whether this placement has ever been seen grown or whole.
    *
@@ -2033,7 +2261,7 @@ interface RenderedEnvironment {
    * during a fast camera turn motion masks an instant appearance, while a tree inflating
    * mid-turn reads as broken. Only the first sight eases in.
    */
-  everVisible?: boolean;
+  everVisible: boolean | undefined;
   /**
    * A rig, for the scenery that has one.
    *
@@ -2042,10 +2270,10 @@ interface RenderedEnvironment {
    * not frozen, it is not instanced, and it costs a mixer step on every frame it is close enough
    * and on screen.
    */
-  skinned?: SkinnedInstance;
-  template?: SkinnedTemplate;
+  skinned: SkinnedInstance | undefined;
+  template: SkinnedTemplate | undefined;
   /** The model path, kept so the held-back clips can be asked for by name. */
-  model?: string;
+  model: string | undefined;
 }
 
 interface PlacedWmo {
@@ -2061,14 +2289,31 @@ interface PlacedWmo {
   /** Only meshes attached for the final distance/portal demand remain in this map. */
   built: Map<number, RenderedWmoGroup>;
   /**
-   * Player position the cached distance selection below was computed for, if any.
-   * `wmoGroupsInRange` is pure in (model, boxes, player): an exactly unchanged player gets
-   * the identical set back, so standing still inside a city skips hundreds of box-distance
-   * evaluations per building per frame. The portal refinement above it still runs every frame
-   * — it reads the camera, which moves without the player.
+   * P1-12a: the distance selection (`wmoGroupsInRange`) of this placement, answered from a rest
+   * radius: the same array while the player moves less than the nearest leash edge is away. The
+   * portal refinement still runs every frame — it reads the camera, which moves without the player.
+   * The 05.10-7.05-review shell leash of a moving transport is passed to `select` with the player.
    */
-  rangePlayer?: { x: number; y: number; z: number };
-  rangeGroups?: readonly number[];
+  ranges: Pick<WmoRangeTable, "select"> & Partial<Pick<WmoRangeTable, "totals">>;
+  /** P1-12b: the wanted groups of the frame as a mask (allocated once, refilled per full pass). */
+  groupMask?: Uint8Array;
+  /**
+   * P1-12b: the selection the last full pass attached, a copy owned here (the walks hand out
+   * scratch arrays), the cache epoch it saw after its own builds, and whether it left nothing
+   * missing or waiting. All three hold → the same selection again has nothing to do.
+   */
+  appliedSelection?: number[];
+  appliedEpoch?: number;
+  appliedSettled?: boolean;
+  /** 05.10-A7b-2 (7.03 slice 3): the open-air portal walk's scratch and last inputs. */
+  openAir?: WmoOpenAirState;
+  /**
+   * P1-12c: the open-air candidates (`wmoGroupsInRange` on `WMO_OPEN_AIR_ROOM_RANGE`) answered from
+   * a rest radius, as `ranges` answers the distance selection; made on the first open-air frame.
+   */
+  openAirRanges?: WmoRangeTable;
+  /** P1-12c: the indoor portal walk's last inputs and answer (`WmoPortalMemo.ts`). */
+  portalMemo?: WmoPortalMemo;
 }
 
 /** The sole renderer owner of one converted WMO group geometry. */
@@ -2187,28 +2432,29 @@ export function locatedWmoFog(
  * a custom animation can arrive for it out of nowhere.
  */
 interface RenderedGameObject extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   actual: boolean;
   node: THREE.Object3D;
   /** `obj:<guid>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact cache entry borrowed by this object, when it is a built WVM model. */
-  built?: BuiltModel;
+  built: BuiltModel | undefined;
   /** Exact decoded legacy parent and resources borrowed while this object is retained. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** The mesh carrying the model-space rotation, for an unrigged model's emitters. */
-  visual?: THREE.Object3D;
-  wvm?: WvmModel;
-  wmo?: PlacedWmo;
+  visual: THREE.Object3D | undefined;
+  wvm: WvmModel | undefined;
+  wmo: PlacedWmo | undefined;
   /** The model path, so the poses it held back can be asked for by name. */
-  model?: string;
+  model: string | undefined;
   /** The state byte it was last drawn in. Undefined until the first draw, which is what snaps. */
-  state?: number;
+  state: number | undefined;
   /** Display/scale/entry tuple for which the retained static WVM bounds are trusted. */
-  admissionDisplayId?: number;
-  admissionScale?: number;
-  admissionEntry?: number;
+  admissionDisplayId: number | undefined;
+  admissionScale: number | undefined;
+  admissionEntry: number | undefined;
   /**
    * When the object first became visible, in the renderer's clock, for the spawn fade.
    *
@@ -2216,27 +2462,30 @@ interface RenderedGameObject extends PosedModel {
    * their model arrived. Preserved across display rebuilds so a door that changes state does
    * not fade twice; cleared with the record itself.
    */
-  admittedAt?: number | undefined;
+  admittedAt: number | undefined;
   /**
    * The opacity currently applied: 1 once settled. Compared edge-triggered like the units so a
    * settled object costs nothing per frame, and quantized so a fade borrows a bounded handful
    * of private material copies instead of one per frame.
    */
-  fadedOpacity?: number | undefined;
+  fadedOpacity: number | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
-  opacityBorrows?: MaterialBorrow[];
+  opacityBorrows: MaterialBorrow[] | undefined;
   /** Metadata-cache revision that last proved the display id still maps to `model`. */
-  admissionMetadataRevision?: number;
+  admissionMetadataRevision: number | undefined;
   /** `OBJECT_FIELD_ENTRY`: what a transport path is keyed on. Not the display id. */
   entry: number;
+  /** 06.10-7.24: the model box clicks land in (model axes); null when the model has none. */
+  pickBox: ModelBox | null | undefined;
   /** Where it stands when it is not travelling — a lift's path is an offset from this. */
   base: WorldPosition;
   /** How far into its cycle it was at `phaseAt`, so the rest is counted locally. */
-  phaseMs?: number | undefined;
-  phaseAt?: number | undefined;
+  phaseMs: number | undefined;
+  phaseAt: number | undefined;
 }
 
 interface RenderedTerrain {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   material: THREE.MeshLambertMaterial;
   mesh: THREE.Mesh;
   /** Revision of this tile and its eight neighbours, which is what terrain/water edges borrow. */
@@ -2248,14 +2497,14 @@ interface RenderedTerrain {
   /** Which liquid strips had arrived when these surfaces were built. */
   liquidGeneration: number;
   /** One mesh per liquid class the tile contains. */
-  water?: THREE.Mesh[];
+  water: THREE.Mesh[] | undefined;
   /** Hidden splats upload one texture per quiet frame, before they become visible. */
-  textureWarmup?: THREE.Texture[];
+  textureWarmup: THREE.Texture[] | undefined;
 }
 
 interface PreparedTerrain {
   data: TerrainGeometryData;
-  water: Map<LiquidClass, THREE.BufferGeometry>;
+  water: Map<LiquidSurface, THREE.BufferGeometry>; // 05.10-A7b-8
 }
 
 interface TerrainPreparation {
@@ -2270,7 +2519,7 @@ interface TerrainPreparation {
 interface PreparedTerrainRepair {
   data?: TerrainGeometryData;
   boundingSphere?: THREE.Sphere;
-  water?: Map<LiquidClass, THREE.BufferGeometry>;
+  water?: Map<LiquidSurface, THREE.BufferGeometry>; // 05.10-A7b-8
 }
 
 interface TerrainRepair {
@@ -2294,21 +2543,22 @@ interface TerrainRepair {
  * back with its lid closing on a loop.
  */
 interface PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   skinned: SkinnedInstance | undefined;
   template: SkinnedTemplate | undefined;
   /** The locomotion/idle action, kept alive underneath a transient overlay when needed. */
   action: THREE.AnimationAction | undefined;
   animationId: number;
   /** The semantic action currently owning the full-body mixer slot, when it is not locomotion. */
-  actionKind?: UnitAction;
+  actionKind: UnitAction | undefined;
   /** Optional upper-body action. Its filtered clip owns no lower-body tracks. */
-  overlayAction?: THREE.AnimationAction;
-  overlayAnimationId?: number;
+  overlayAction: THREE.AnimationAction | undefined;
+  overlayAnimationId: number | undefined;
   /** The semantic action owning the upper-body slot; needed to cancel a real ranged pose. */
-  overlayActionKind?: UnitAction;
-  overlayPreservesLocomotion?: boolean;
+  overlayActionKind: UnitAction | undefined;
+  overlayPreservesLocomotion: boolean | undefined;
   /** End of the upper-body fade window, set once the one-shot reaches its fade start. */
-  overlayFadeUntil?: number;
+  overlayFadeUntil: number | undefined;
   /** A one-shot playing over the pose — a jump landing, a swing, an emote — and when it ends. */
   overlayUntil: number;
   /**
@@ -2317,10 +2567,10 @@ interface PosedModel {
    * Zero whenever the model is not in a gait at all, so nothing but a stride ever carries a
    * deadline. Both a unit and the mount under it have one, because both change gait on their own.
    */
-  gaitCommittedUntil?: number;
+  gaitCommittedUntil: number | undefined;
   /** The template `flatPoseProgram` was resolved for; see `#flatPose`. */
-  flatPoseTemplate?: SkinnedTemplate;
-  flatPoseProgram?: FastPoseProgram | undefined;
+  flatPoseTemplate: SkinnedTemplate | undefined;
+  flatPoseProgram: FastPoseProgram | undefined;
 }
 
 /** Which unit wears a ring and what colour it is, as the interface works it out. */
@@ -2374,15 +2624,16 @@ export interface GameObjectPreview {
 }
 
 interface RenderedUnit extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   node: THREE.Group;
   /** `unit:<guid>`, the emitter set's key, built on the first frame that asks and kept. */
-  effectKey?: string;
+  effectKey: string | undefined;
   /** Exact appearance build borrowed by the body currently standing in the node. */
   built: BuiltModel | undefined;
   /** Legacy fallback ownership is separate from appearance/WVM builds. */
-  decodedModel?: EnvironmentModel;
-  legacyGeometry?: LegacyGeometryEntry;
-  materialEntries?: readonly WorldMaterialEntry[];
+  decodedModel: EnvironmentModel | undefined;
+  legacyGeometry: LegacyGeometryEntry | undefined;
+  materialEntries: readonly WorldMaterialEntry[] | undefined;
   /** Last shadow policy applied to this model tree; undefined when its children change. */
   shadowCaster: boolean | undefined;
   /** The stand-in capsule, present until a skinned model for the display id has arrived. */
@@ -2397,7 +2648,7 @@ interface RenderedUnit extends PosedModel {
    * seconds before it is drawn, and fading from creation would be over before the first pixel.
    * Units returning from frustum culling keep their stamp and read full opacity at once.
    */
-  admittedAt?: number | undefined;
+  admittedAt: number | undefined;
   /**
    * Where the node stood on the previous posed frame, for stride-tempo measurement.
    *
@@ -2413,9 +2664,9 @@ interface RenderedUnit extends PosedModel {
   /** Yards a second from the last stride measurement, or undefined before the second frame. */
   strideSpeed: number | undefined;
   /** Last rig and its staggered animation clock; a newly attached rig always gets its first pose. */
-  animationClock?: UnitAnimationClock;
-  animationClockRig?: SkinnedInstance;
-  animationClockMountRig?: SkinnedInstance | undefined;
+  animationClock: UnitAnimationClock | undefined;
+  animationClockRig: SkinnedInstance | undefined;
+  animationClockMountRig: SkinnedInstance | undefined;
   height: number;
   radius: number;
   scale: number;
@@ -2430,10 +2681,10 @@ interface RenderedUnit extends PosedModel {
   */
   applied: string;
   /** Display/object-scale pair for which `wvm` is known to be the live wire appearance. */
-  admissionDisplayId?: number;
-  admissionObjectScale?: number;
+  admissionDisplayId: number | undefined;
+  admissionObjectScale: number | undefined;
   /** Whether the settled appearance declares gear hanging outside the body's own WVM bounds. */
-  admissionHasAuthoredAttachments?: boolean;
+  admissionHasAuthoredAttachments: boolean | undefined;
   /**
    * Helmets, pauldrons and weapons hanging off the bones, by `slot/side`. They arrive after the
    * body — each is its own download — so they are attached as they turn up rather than waited for.
@@ -2449,13 +2700,13 @@ interface RenderedUnit extends PosedModel {
    * which is why dismounting used to leave a rigless creature's name plate at saddle height for the
    * rest of the object's life.
    */
-  bodyHeight?: number;
+  bodyHeight: number | undefined;
   /** The file the emitters come from, kept so the effects pass does not re-resolve the model. */
-  wvm?: WvmModel;
+  wvm: WvmModel | undefined;
   /** For an unrigged model, the mesh that carries the model-space rotation. */
-  visual?: THREE.Object3D;
+  visual: THREE.Object3D | undefined;
   /** The second model this one is riding, once it has been built. See `#updateMount`. */
-  mount?: RenderedMount;
+  mount: RenderedMount | undefined;
   /**
    * How opaque this unit is drawn right now: 1 for everything the server says nothing about.
    *
@@ -2465,28 +2716,34 @@ interface RenderedUnit extends PosedModel {
    * when it changes).
    */
   unitOpacity: number;
+  /** 05.10-A7a-H 6.11а: the display's `ParticleColor` row, refreshed every frame from its metadata. */
+  particleColours: readonly number[] | undefined;
   /** Which meshes are wearing private faded copies, and the shared arrays they gave back. */
-  opacityBorrows?: MaterialBorrow[];
+  opacityBorrows: MaterialBorrow[] | undefined;
   /**
    * The body (`unitWarmBody`) the warm hold last let onto the screen. A body that is not this one
    * is new, and is checked against the warm pass before it is drawn; see `#holdUnitUntilWarm`.
    */
-  warmShown?: THREE.Object3D;
+  warmShown: THREE.Object3D | undefined;
   /** Whether a model, not just the capsule, has been on screen: the player's is never hidden again. */
-  modelShown?: boolean;
+  modelShown: boolean | undefined;
   /** Frames a finished fade has kept its copies waiting for the shared programs; see `#unitFadeReturnWaits`. */
-  fadeReturnFrames?: number;
+  fadeReturnFrames: number | undefined;
   /** When, in the renderer's clock, this player's look was first seen with item rows pending. */
-  appearancePendingSince?: number;
+  appearancePendingSince: number | undefined;
   /** Whether the server says this unit is sneaking, for the pose. See `unitAppearance`. */
-  stealthed?: boolean;
+  stealthed: boolean | undefined;
   /**
    * How far the lower body is currently turned off the facing, in radians. See `strafeYawTarget`.
    *
    * Per unit and not per model: two humans strafing in opposite directions share one template and
    * one set of clips, and the turn is the only part of the pose that is theirs alone.
    */
-  strafeYaw?: number;
+  strafeYaw: number | undefined;
+  /** 05.10-A7a-F1 (6.16а): private copies of the batches the file fades under Death. See `BatchDeathFade.ts`. */
+  deathFade: DeathFadeState | undefined;
+  /** 05.10-A7a-C 6.07: the STUNNED/LOOTING bits whose holds are in the queue. See `UnitFlagPoses.ts`. */
+  flagPoses: number | undefined;
 }
 
 /**
@@ -2593,6 +2850,7 @@ function hangsUnder(object: THREE.Object3D, ancestor: THREE.Object3D): boolean {
  * a galloping horse carries the character with it.
  */
 interface RenderedMount extends PosedModel {
+  // P1-09: no optional fields — `T | undefined`, every one in the creation literal (see RenderedEnvironment).
   /** What is built and standing there, under the same name `#unitKey` gives a unit's own model. */
   key: string;
   /** Exact cache entry borrowed by this mount. */
@@ -2611,7 +2869,7 @@ interface RenderedMount extends PosedModel {
    * landing can be told apart down here too. The rider has had one since the jump one-shots were
    * written; the horse under it never did, which is why it had no JumpStart or JumpEnd at all.
    */
-  pose?: UnitPose;
+  pose: UnitPose | undefined;
 }
 
 /**
@@ -3353,7 +3611,8 @@ export class WorldRenderer3D {
   /** Background pass: authored transparent sky layers must be drawn before world depth exists. */
   readonly #skyScene = new THREE.Scene();
   readonly #camera = buildWorldCamera();
-  readonly #environmentGroup = new THREE.Group();
+  // RND-12: does not walk frozen placements every frame (StaticSceneryGroup.ts).
+  readonly #environmentGroup = new StaticSceneryGroup();
   /**
    * Instanced scenery draws, kept apart from the placements they stand in for.
    *
@@ -3378,8 +3637,14 @@ export class WorldRenderer3D {
   /** Rigged scenery (banners, flags): skinned casters grouped for the same reason as `#instanceGroup`. */
   readonly #animatedEnvironmentGroup = new THREE.Group();
   readonly #gameObjectGroup = new THREE.Group();
+  /** 05.10-7.05: scratch viewer for a moving transport's room leash (`transportWmoViewer`). */
+  readonly #transportWmoViewer: WorldPosition = { x: 0, y: 0, z: 0, orientation: 0 };
   /** Spell visuals live in world coordinates, like the particles they are mostly made of. */
   readonly #visualGroup = new THREE.Group();
+  // 05.10-A7a-E (6.13): chain beams (made on first use, under #visualGroup) and camera shakes.
+  #chainBeams: ChainBeams | undefined;
+  readonly #cameraShakes = new CameraShakeBank();
+  readonly #beamTextureOwner = Object.freeze({ owner: "chain-beam" });
   readonly #unitGroup = new THREE.Group();
   /**
    * Where every particle in the world is drawn, in world coordinates and with no transform.
@@ -3405,6 +3670,16 @@ export class WorldRenderer3D {
   #skyboxTemplate: SkinnedTemplate | undefined;
   #skyboxAction: THREE.AnimationAction | undefined;
   #skyboxAnimationMs = 0;
+  // 05.10-A7b-6 (7.04): sun, moons, stars and clouds of the procedural sky; their own texture
+  // loader (a world clear must not take the sky's textures with it), the per-frame input object,
+  // the gateway the textures were bound to, and the stars' shared build (pinned against eviction).
+  readonly #skyCelestials = new SkyCelestials();
+  readonly #skyCelestialInput = createSkyCelestialInput();
+  readonly #skyCelestialTextures = new ModelTextureLoader();
+  /** 05.10-A7b-2 (7.11 P1): the second textures (environment maps) of Env/EnvMetal WMO runs. */
+  readonly #wmoEnvTextures = new ModelTextureLoader({ cache: true });
+  #skyCelestialBaseUrl: string | undefined;
+  #skyStarsBuilt: BuiltModel | undefined;
   /** Live emitter sets, by `kind:id`. Per placement, never shared: two campfires are two fires. */
   readonly #effects = new Map<string, { effects: ModelEffects; source: WvmModel }>();
   /** Everything the spells currently in the air are showing, in world coordinates. */
@@ -3431,6 +3706,10 @@ export class WorldRenderer3D {
   /** Custom animations that arrived before the frame that could play them. */
   readonly #gameObjectAnimations = new Map<bigint, number>();
   readonly #units = new Map<bigint, RenderedUnit>();
+  /** 11.02-H: vehicle passengers' seat poses and their place on the vehicle (VehiclePassengerPose.ts). */
+  readonly #vehiclePassengers = new VehiclePassengerPoser();
+  /** 11.02-tails: scratch for a marked passenger's drawn place, read at once by `#updateSelectionRings`. */
+  readonly #ringSeatDrawn = { x: 0, y: 0, z: 0 };
   /** Mount-special packets can arrive before the rider or mount has been admitted and built. */
   readonly #mountSpecials = new Map<bigint, number>();
   /**
@@ -3455,7 +3734,7 @@ export class WorldRenderer3D {
    */
   #duelRing: DuelRing | undefined;
   #duelRingMesh: RenderedSelectionRing | undefined;
-  #enchantGlow: ((object: WorldObjectState, slot: number) => EnchantGlow | undefined) | undefined;
+  #enchantGlow: ((object: WorldObjectState, slot: number, displayId?: number) => EnchantGlow | undefined) | undefined; // 05.10-A7a-E2: displayId
   /**
    * The ghost of a placing spell's game object, and the borrowed build it was made from.
    *
@@ -3513,6 +3792,8 @@ export class WorldRenderer3D {
     count: BUILT_UNIT_CACHE_COUNT_LIMIT,
     knownBufferBytes: BUILT_UNIT_CACHE_KNOWN_BUFFER_BYTE_LIMIT,
   });
+  /** P2-03b: the vertex attributes `#builtUnits` builds share; replaced whenever the caches are dropped. */
+  #modelBuffers = new SharedModelBuffers();
   /** One name per appearance, so the digest is computed once per look rather than once a frame. */
   readonly #appearanceKeys = new WeakMap<CharacterAppearance, string>();
   /** Bodies, mounts and equipment share one per-frame construction/upload admission slice. */
@@ -3587,6 +3868,9 @@ export class WorldRenderer3D {
    * bench's one 34 ms frame at its eighteenth second, on every run. Held like a new visual, the
    * link runs in the warm pass and the set appears a frame or two later, mid-life.
    */
+  /** 12.08: the camera's frustum for this frame's effects. */
+  readonly #effectFrustum = new THREE.Frustum();
+  readonly #effectFrustumMatrix = new THREE.Matrix4();
   readonly #effectWarmHold = new WarmHold(VISUAL_WARM_HOLD_FRAMES, (object) => this.#effectProgramsWarm(object));
   /** Session-local exact parent identities used only to make cache keys stable and compact. */
   #wmoModelKeys = new WeakMap<WmoModel, string>();
@@ -3818,8 +4102,11 @@ export class WorldRenderer3D {
   }
   readonly #terrains = new Map<string, RenderedTerrain>();
   /** The far horizon: one mesh for every distant tile, rebuilt when the player changes tile. */
-  #horizon: { mesh: THREE.Mesh; key: string } | undefined;
+  /** P1-13b: the horizon mesh and what it was built for — `map * 4096 + cell` and the client revision. */
+  #horizon: { mesh: THREE.Mesh; tile: number; revision: number } | undefined;
   readonly #horizonMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6b4f, fog: true });
+  /** 05.10-A7b-7 (7.08): the classic path's lit, coloured horizon beside the flat one above. */
+  #horizonMaterials: HorizonMaterialSelector | undefined;
   readonly #wmoMaterial = new THREE.MeshStandardMaterial({ color: 0x927d62, roughness: 0.92, side: THREE.DoubleSide, flatShading: true });
   readonly #m2Material = new THREE.MeshStandardMaterial({ color: 0x73835e, roughness: 0.95, side: THREE.DoubleSide, flatShading: true });
   readonly #stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x747b80, roughness: 1, side: THREE.DoubleSide, flatShading: true });
@@ -3835,9 +4122,15 @@ export class WorldRenderer3D {
    * handed back unchanged at quality 0. See CascadedShadows.ts.
    */
   readonly #sunCascades = new CascadedSunShadows(this.#sun, this.#worldLight.wowShadowFade);
-  /** Retained scenery shown for the shadow pass only, restored right after it. */
-  readonly #shadowOnlyNodes: THREE.Object3D[] = [];
+  /**
+   * P2-01a: every mesh whose `castShadow` is on, registered where the flag is written
+   * (the scenery, WMO stand-in and unit shadow policies); the cascades draw this list
+   * instead of walking the scene. See ShadowCasterList.ts.
+   */
+  readonly #shadowCasters = new ShadowCasterList();
   readonly #sunOffset = new THREE.Vector3(0, 400, 0);
+  /** 05.10-sun: scratch for the classic (quality 0) key light from `ClassicSun.ts`. */
+  readonly #classicKeyLight = { x: 0, y: 1, z: 0 };
   /** Allocation-free solar projection scratch; unlike #sunOffset, this may go below the horizon. */
   readonly #godRaySun = new THREE.Vector3();
   readonly #godRayCameraForward = new THREE.Vector3();
@@ -3903,8 +4196,34 @@ export class WorldRenderer3D {
   #sceneryShadowFrame = 0;
   /** Whether any environment mesh may currently carry cast/receive flags set by that leaf. */
   #sceneryShadowsApplied = false;
-  /** Fold of the meshes the cached shadow cascade drew; a different fold re-renders it. */
-  #sceneryFarCasters = 0;
+  /**
+   * P2-02a: scenery owners — placements, instance buckets, WMO rooms — with a mesh in the cached
+   * cascade, each with the id it was folded under. Weak, so an owner dropped by a path that does not
+   * report it is not kept alive.
+   */
+  #sceneryFarOwners = new WeakMap<object, number>();
+  /** P2-02a: fold and count of those owners, kept as they join and leave. */
+  #sceneryFarFold = 0;
+  #sceneryFarCount = 0;
+  /** P2-02b: the terrain fold of the last reconcile. */
+  #sceneryTerrainFold = 0;
+  /**
+   * P2-02b: the folds as they were when the cached cascade last rendered (`#noteFarRendered`): a set
+   * that left and came back between two of its renders is no change, one it rendered without is.
+   */
+  #sceneryFarDrawnFold = 0;
+  #sceneryFarDrawnCount = 0;
+  #sceneryTerrainDrawnFold = 0;
+  /** P2-02b: the cached map's content changed in a way no fold sees (a tree settled, a room light flipped). */
+  #sceneryFarDirty = false;
+  /** P2-02b: rigged placements (sails, mills) among the far owners: their far shadow moves every frame. */
+  #sceneryFarAnimated = new WeakSet<object>();
+  /** P2-02b: one of them was posed on the last environment pass. */
+  #sceneryFarPosed = false;
+  /** P2-02b: rooms held hidden until warm, with the far id they take when they are shown. */
+  readonly #wmoHeldFar = new Map<THREE.Mesh, number>();
+  /** P2-02a: scratch traits of the mesh being flagged. */
+  readonly #sceneryShadowTraits: SceneryShadowTraits = { eligible: false, radius: 0, farRadius: undefined };
   /** Each attached WMO room's depth-only shadow stand-in, or null where it has no solid run. */
   readonly #wmoShadowProxies = new WeakMap<THREE.Mesh, THREE.Mesh | null>();
   /** Water profile with the cinematic water leaves folded in; rebuilt only when either changes. */
@@ -3929,7 +4248,7 @@ export class WorldRenderer3D {
    */
   #glowStrength = 0;
   #glowTargets: GlowChainTargets | undefined;
-  readonly #liquidMaterials = new Map<LiquidClass, LiquidMaterial>();
+  readonly #liquidMaterials = new Map<LiquidSurface, LiquidMaterial>(); // 05.10-A7b-8: by surface
   readonly #waterShaderUniforms: WaterShaderSharedUniforms = createWaterShaderSharedUniforms();
   /** Ripple normal maps for the enhanced water; fetched only once a cinematic water leaf is on. */
   readonly #waterDetailMaps = new WaterDetailNormalMaps(this.#waterShaderUniforms);
@@ -3988,6 +4307,10 @@ export class WorldRenderer3D {
     "units.appearance": 0,
     "units.pose": 0,
     "units.presentation": 0,
+    // P1-04: capture-only, inside `visuals`; `visuals.particles` is inside `visuals.effects`.
+    "visuals.rigs": 0,
+    "visuals.effects": 0,
+    "visuals.particles": 0,
     "submit.sky": 0,
     "submit.world": 0,
     "submit.postprocess": 0,
@@ -4012,6 +4335,10 @@ export class WorldRenderer3D {
   readonly #fullPoseRigs = new WeakSet<RigSkeleton>();
   /** Which of the units drawn last frame are still capsules, and what stopped each of them. */
   readonly #standIns = new StandInLedger();
+  /** 05.10-A7b-9 (7.18): which admitted placements are not their model on this frame, and why. */
+  readonly #environmentStandIns = new EnvironmentStandInLedger();
+  /** 05.10-A7b-9 (7.18): boxes where a model will never come, only while the diagnostics window is open. */
+  readonly #environmentStandInMarkers = new EnvironmentStandInMarkers();
   #gameObjectsDrawn = 0;
   #gameObjectsDropped = 0;
   #doodadsPosed = 0;
@@ -4020,6 +4347,13 @@ export class WorldRenderer3D {
   #wmoPortalModels = 0;
   #wmoPortalCandidates = 0;
   #wmoPortalCulled = 0;
+  /**
+   * P1-12 telemetry: `select` calls and recomputes of every placement's rest-radius tables since
+   * this renderer was made — the distance tables of `#updateWmoGroups` and the open-air candidate
+   * tables apart. Cumulative (a reader takes differences); mutated in place, never reallocated.
+   */
+  readonly #wmoRangeGroups: WmoRangeTotals = { selects: 0, recomputes: 0 };
+  readonly #wmoRangeOpenAir: WmoRangeTotals = { selects: 0, recomputes: 0 };
   /**
    * The same pair for emitters, and what the GPU is holding.
    *
@@ -4040,8 +4374,21 @@ export class WorldRenderer3D {
   } | undefined;
   #admittedMembership: {
     source: readonly RankedEnvironmentObject[];
-    values: ReadonlySet<number>;
+    /** P2-06a: the run its records are stamped with. */
+    run: number;
   } | undefined;
+  /** P2-06a: admission runs so far; a record admitted by the current run carries its number. */
+  #admissionRun = 0;
+  /** P2-04c: the two arrays admission results alternate between, and which one is current. */
+  readonly #admissionBuffers: [RankedEnvironmentObject[], RankedEnvironmentObject[]] = [[], []];
+  #admissionFlip = 0;
+  /** P2-04c: the retained sphere admission asks for, without a closure per run. */
+  readonly #retainedEnvironmentSphere = (object: EnvironmentObject): EnvironmentVisibilitySphere | undefined => {
+    const rendered = this.#environment.get(object.id);
+    return rendered?.source === object
+      ? rendered.visibilitySphere
+      : this.#environmentVisibilitySpheres.get(object);
+  };
   /** Prefetch sweep state: the candidate array the cursor rotates through, if any. */
   #prefetchCandidates: readonly RankedEnvironmentObject[] | undefined;
   #prefetchCursor = 0;
@@ -4067,7 +4414,7 @@ export class WorldRenderer3D {
   #terrainRepair: TerrainRepair | undefined;
   #terrainRepairsPending = 0;
   #environmentObjects: readonly EnvironmentObject[] | undefined;
-  #environmentSpatialIndex: EnvironmentSpatialIndex | undefined;
+  #environmentSpatialIndex: EnvironmentGridIndex | undefined;
   /** One `InstancedMesh` per repeated doodad model, and the placements it stands in for. */
   /** Bucket lists reused across `#updateInstances` rebuilds; see there. */
   readonly #instanceBuckets = new Map<string, RenderedEnvironment[]>();
@@ -4082,6 +4429,10 @@ export class WorldRenderer3D {
     };
   }>();
   readonly #instanceTint = new THREE.Color();
+  /** P2-07: each bucket's copies, in order, as its last full rebuild wrote them. */
+  readonly #instanceMembers = new Map<string, RenderedEnvironment[]>();
+  /** P2-07: placement nodes `#showAsPlain` registered and held, still shown plain since. */
+  readonly #plainShown = new WeakSet<THREE.Object3D>();
   /** Set when a placement is made or dropped: the matrices themselves never change. */
   #instancesDirty = false;
   /**
@@ -4196,6 +4547,7 @@ export class WorldRenderer3D {
     this.#scene.background = null;
     this.#skyboxGroup.renderOrder = 0;
     this.#skyScene.add(this.#sky, this.#skyboxGroup);
+    this.#skyScene.add(this.#skyCelestials.group); // 05.10-A7b-6
     // Its own scene, so nothing in the world pass can sort against it and nothing here can be
     // drawn by accident: this scene is submitted only by `#drawUnderwaterOverlay`, and only on the
     // frames where the camera is in or entering liquid.
@@ -4222,6 +4574,7 @@ export class WorldRenderer3D {
     this.#scene.add(this.#sun, this.#sun.target,
       this.#environmentGroup, this.#animatedEnvironmentGroup, this.#instanceGroup, this.#localLightInstanceGroup,
       this.#groundCoverGroup, this.#gameObjectGroup, this.#unitGroup, this.#effectGroup, this.#visualGroup);
+    this.#scene.add(this.#environmentStandInMarkers.group); // 05.10-A7b-9 7.18
     this.#programWarmup = new ProgramWarmup(this.#renderer, this.#scene);
     // The two leaf scenes compile their own variants — neither has the world's fog — and both are
     // first drawn at a moment the player is looking: a zone's LightSkybox appears on a flight path,
@@ -4231,6 +4584,7 @@ export class WorldRenderer3D {
     this.#overlayWarmup = new ProgramWarmup(this.#renderer, this.#overlayScene);
     this.#glowWarmup = new ProgramWarmup(this.#renderer, this.#glowPasses.scene);
     this.#skyWarmup.registerObject(this.#sky);
+    this.#skyWarmup.registerObject(this.#skyCelestials.group); // 05.10-A7b-6
     this.#overlayWarmup.registerObject(this.#underwaterOverlay);
     // The glow chain swaps one quad's material between four passes, so the materials are parked
     // rather than the node: the setting can be switched on at any moment, and the first frame it
@@ -4328,7 +4682,11 @@ export class WorldRenderer3D {
     copyWaterSkyBands(this.#waterShaderUniforms, this.#skyUniforms);
 
     if (time !== undefined) {
-      const direction = sunDirection(time);
+      // 05.10-sun: the classic preset lights from Wow.exe's fixed north-west key light (0x7eea90);
+      // the shadow light below takes the same direction. Enhanced/cinematic keep the arc.
+      const direction = lightingClassicLook(this.#lightingProfile.quality) // 05.10-7.20: and the comparison level
+        ? classicKeyLightDirection(time, this.#classicKeyLight)
+        : sunDirection(time);
       this.#worldLight.wowSunDirection.value.set(direction.x, direction.y, direction.z);
       this.#waterShaderUniforms.sunDirection.value.copy(this.#worldLight.wowSunDirection.value);
       this.#sunOffset.set(direction.x, direction.y, direction.z).multiplyScalar(400);
@@ -4350,7 +4708,7 @@ export class WorldRenderer3D {
   /** Rim light and the cinematic grade follow the zone's bands and the visible sun; no allocation. */
   #syncCinematicLight(sample: LightSample | undefined): void {
     const profile = this.#cinematic.profile;
-    const sun = godRaySunDirection(this.#lightTime, this.#cinematicSun);
+    const sun = this.#visibleSun(this.#cinematicSun); // 05.10-sun
     // Water glints and the mirrored sun follow the visible disc, which sets; the key light does not.
     this.#waterShaderUniforms.visibleSun.value.copy(sun);
     setWorldLightRim(this.#worldLight,
@@ -4397,7 +4755,8 @@ export class WorldRenderer3D {
    * account asked for; the request is kept and comes back with quality 1 or 2.
    */
   #applyCinematicProfile(): void {
-    const profile = this.#lightingProfile.quality === 0 ? undefined : this.#cinematicRequested;
+    // 05.10-7.20: the comparison level (3) is the same classic frame with shadows: no cinematic leaf.
+    const profile = lightingClassicLook(this.#lightingProfile.quality) ? undefined : this.#cinematicRequested;
     const before = this.#cinematic.profile;
     const postChanged = this.#cinematic.setProfile(profile);
     const next = this.#cinematic.profile;
@@ -4417,10 +4776,18 @@ export class WorldRenderer3D {
 
   /**
    * Static scenery joins the existing directional shadow map while its leaf is on and the lighting
-   * quality has a map at all. Streamed tiles and lazily built WMO rooms arrive between calls, so the
-   * environment is reconciled every thirtieth light push (one walk, no allocation per mesh) rather
-   * than at each of the places that add to it. Off, the flags are cleared once and the environment
-   * is never walked again.
+   * quality has a map at all. Off, the flags are cleared once and the environment is never walked
+   * again.
+   *
+   * P2-02a: streamed tiles, placements, settled trees, instance buckets and lazily built WMO rooms
+   * take their flags where they join the scene (`#sceneryShadowsForPlacement`,
+   * `#sceneryShadowsForInstance`, `#syncWmoRoomShadow`). The whole environment is walked only when
+   * the answer changes for all of it at once: the leaf, the map or the room light flips `wanted`, or
+   * a caller forces it (`setLightingQuality`, `#applyCinematicProfile`). It used to be walked on
+   * every thirtieth light push — 1.6 ms in the Stormwind bench, 0.5 ms on the movement route — and a
+   * newly placed tree waited up to thirty frames for its shadow. The terrain, the horizon and the
+   * ground cover (a few dozen meshes) are still reconciled on that cadence, and the cached cascade
+   * hears about scenery joining or leaving it then, as before.
    *
    * M2 doodads (trees, lamps, statues) cast and receive; terrain already receives. The large ones
    * (`SCENERY_FAR_SHADOW_MIN_RADIUS`) also enter the cached outermost cascade through its layer.
@@ -4438,55 +4805,27 @@ export class WorldRenderer3D {
       && this.#interiorLight === undefined;
     if (!wanted && !this.#sceneryShadowsApplied) return;
     this.#sceneryShadowFrame++;
+    // Switching on still waits for the cadence, as it always did: a camera flickering across an
+    // interior-only building's threshold costs one walk per thirty pushes, not one per flip.
     if (!force && wanted && this.#sceneryShadowFrame % 30 !== 0) return;
+    const transition = force || wanted !== this.#sceneryShadowsApplied;
     const cascades = this.#sunCascades.active;
-    // Which meshes the cached cascade draws, folded into one number: a change means it is stale.
-    let farCasters = 0;
-    const apply = (node: THREE.Object3D, include: boolean): void => {
-      node.traverse((child) => {
-        if (!(child instanceof THREE.Mesh) || child.userData[WMO_SHADOW_PROXY] === true) return;
-        let eligible = wanted && include;
-        if (eligible) {
-          const materials = Array.isArray(child.material) ? child.material : [child.material];
-          eligible = materials.length > 0 && materials.every((material: THREE.Material) => shadowMaterialEligible({
-            lit: material instanceof THREE.MeshLambertMaterial
-              || material instanceof THREE.MeshPhongMaterial
-              || material instanceof THREE.MeshStandardMaterial,
-            transparent: material.transparent,
-            normalBlending: material.blending === THREE.NormalBlending,
-            depthWrite: material.depthWrite,
-          }));
-        }
-        // Small props (crates, flowers, bottles) cost a shadow-pass draw each and barely read in a
-        // 1024-texel map over 92 yards; trees, statues, lamp posts and awnings are what cast.
-        let casts = eligible;
-        let radius = 0;
-        if (casts) {
-          const geometry = child.geometry as THREE.BufferGeometry;
-          if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-          const scale = child instanceof THREE.InstancedMesh ? 1 : child.matrixWorld.getMaxScaleOnAxis();
-          radius = (geometry.boundingSphere?.radius ?? 0) * scale;
-          casts = radius >= SCENERY_SHADOW_MIN_RADIUS;
-        }
-        if (child.castShadow !== casts) child.castShadow = casts;
-        if (child.receiveShadow !== eligible) child.receiveShadow = eligible;
-        const far = casts && cascades && radius >= SCENERY_FAR_SHADOW_MIN_RADIUS;
-        if (far) {
-          child.layers.enable(SHADOW_FAR_LAYER);
-          farCasters = (farCasters + child.id * 2654435761) % 4294967296;
-        } else child.layers.disable(SHADOW_FAR_LAYER);
-      });
-    };
-    for (const rendered of this.#environment.values()) {
-      apply(rendered.node, rendered.wmo === undefined);
-      if (rendered.wmo) farCasters = (farCasters + this.#syncWmoShadows(rendered.wmo, wanted)) % 4294967296;
+    if (transition) {
+      // Every owner is asked again below, so the old membership goes with the old answer.
+      this.#sceneryFarOwners = new WeakMap<object, number>();
+      this.#sceneryFarFold = 0;
+      this.#sceneryFarCount = 0;
+      this.#sceneryFarAnimated = new WeakSet<object>();
+      for (const rendered of this.#environment.values()) this.#sceneryShadowsForPlacement(rendered, wanted, cascades);
+      for (const { mesh } of this.#instances.values()) this.#sceneryShadowsForInstance(mesh, wanted, cascades);
     }
-    for (const { mesh } of this.#instances.values()) apply(mesh, true);
     // Ground cover receives only: a tuft is too small to cast, but lit grass on shadowed ground
     // washes a tree's shadow out.
     for (const { mesh } of this.#groundCoverMeshes.values()) {
       if (mesh.receiveShadow !== wanted) mesh.receiveShadow = wanted;
     }
+    // Which terrain meshes the cached cascade draws, folded into one number: a change means it is stale.
+    let farCasters = 0;
     // The ground casts too: a hill shades its far slope and the valley beyond it at a low sun, the
     // one shadow every zone has and the reference client's most visible one. A tile is one mesh
     // (32,768 triangles), so it costs the near cascades a draw or two where their light frustum
@@ -4495,6 +4834,7 @@ export class WorldRenderer3D {
     for (const terrain of this.#terrains.values()) {
       const mesh = terrain.mesh;
       if (mesh.castShadow !== wanted) mesh.castShadow = wanted;
+      this.#shadowCasters.set(mesh, wanted);
       if (wanted && cascades) {
         mesh.layers.enable(SHADOW_FAR_LAYER);
         farCasters = (farCasters + mesh.id * 2654435761) % 4294967296;
@@ -4504,20 +4844,163 @@ export class WorldRenderer3D {
       const mesh = this.#horizon.mesh;
       const casts = wanted && cascades;
       if (mesh.castShadow !== casts) mesh.castShadow = casts;
+      this.#shadowCasters.set(mesh, casts);
       if (casts) {
         mesh.layers.enable(SHADOW_FAR_LAYER);
         farCasters = (farCasters + mesh.id * 2654435761) % 4294967296;
       } else mesh.layers.disable(SHADOW_FAR_LAYER);
     }
     this.#sceneryShadowsApplied = wanted;
-    if (farCasters !== this.#sceneryFarCasters) {
-      this.#sceneryFarCasters = farCasters;
+    // P2-02b: against what the cached cascade last drew, not the last reconcile: an owner that came
+    // and went between two of its renders leaves it as it was, one it rendered without does not.
+    this.#sceneryTerrainFold = farCasters;
+    if (this.#sceneryFarDirty || farCasters !== this.#sceneryTerrainDrawnFold
+      || this.#sceneryFarFold !== this.#sceneryFarDrawnFold || this.#sceneryFarCount !== this.#sceneryFarDrawnCount) {
+      this.#sceneryFarDirty = false;
       this.#sunCascades.invalidateFar();
     }
   }
 
+  /** P2-02b: the cached cascade just rendered; what it drew is what the folds say now. */
+  readonly #noteFarRendered = (): void => {
+    this.#sceneryFarDrawnFold = this.#sceneryFarFold;
+    this.#sceneryFarDrawnCount = this.#sceneryFarCount;
+    this.#sceneryTerrainDrawnFold = this.#sceneryTerrainFold;
+  };
+
   /**
-   * Shadow flags of one placed WMO's attached rooms; returns a fold of the stand-ins that cast.
+   * P2-02a: notes whether `owner` has a mesh in the cached cascade, folded under `id`; the next
+   * reconcile re-renders the cascade if the fold or the count has changed.
+   *
+   * P2-02b: the id names what casts, not the object drawing it, so churn that leaves the map as it
+   * was does not re-render it: a placement folds under its node's id whether it is drawn alone or
+   * through an instance bucket (buckets are rebuilt whenever admission moves a model across
+   * `INSTANCE_MINIMUM`, and are not owners at all), and a room under its building and group index,
+   * not under the fresh mesh and stand-in every re-hang makes. The city bench re-rendered the cached
+   * cascade on 44 of 46 reconciles for bucket rebuilds alone, with the camera standing still.
+   */
+  #noteSceneryFar(owner: object, id: number, far: boolean, animated = false): void {
+    if (!far) {
+      this.#forgetSceneryFar(owner);
+      return;
+    }
+    const owners = this.#sceneryFarOwners;
+    if (owners.has(owner)) return;
+    owners.set(owner, id);
+    if (animated) this.#sceneryFarAnimated.add(owner);
+    this.#sceneryFarFold = (this.#sceneryFarFold + Math.imul(id, 0x9e3779b1)) >>> 0;
+    this.#sceneryFarCount++;
+  }
+
+  #forgetSceneryFar(owner: object): void {
+    const id = this.#sceneryFarOwners.get(owner);
+    if (id === undefined) return;
+    this.#sceneryFarOwners.delete(owner);
+    this.#sceneryFarAnimated.delete(owner);
+    this.#sceneryFarFold = (this.#sceneryFarFold - Math.imul(id, 0x9e3779b1)) >>> 0;
+    this.#sceneryFarCount--;
+  }
+
+  /**
+   * P2-02a: the flags of one placement — its meshes, and the stand-ins of its attached rooms — for
+   * the leaf's current answer. Called where the placement is built or a tree settles, and by the
+   * full walk; a no-op while the leaf has never been applied, as the walk was.
+   */
+  #sceneryShadowsForPlacement(
+    rendered: RenderedEnvironment,
+    wanted = this.#sceneryShadowsApplied,
+    cascades = this.#sunCascades.active,
+  ): void {
+    if (!wanted && !this.#sceneryShadowsApplied) return;
+    // P2-01a: a placement's meshes register with their placement as owner, so the gate can show
+    // retained scenery the view did not admit to the shadow pass (what `#shadowOnlyToggle` did).
+    const far = this.#applySceneryShadowFlags(rendered.node, rendered.wmo === undefined, rendered, wanted, cascades);
+    this.#noteSceneryFar(rendered, rendered.node.id, far, rendered.skinned !== undefined);
+    if (rendered.wmo) this.#syncWmoShadows(rendered.wmo, wanted, cascades);
+  }
+
+  /**
+   * P2-02a: the flags of one instance bucket's mesh, where it is made and in the full walk. Not a
+   * far owner (P2-02b): its placements already are.
+   */
+  #sceneryShadowsForInstance(
+    mesh: THREE.InstancedMesh,
+    wanted = this.#sceneryShadowsApplied,
+    cascades = this.#sunCascades.active,
+  ): void {
+    if (!wanted && !this.#sceneryShadowsApplied) return;
+    this.#applySceneryShadowFlags(mesh, true, undefined, wanted, cascades);
+  }
+
+  /**
+   * The flags of every mesh under `node` (itself included, stand-ins excepted); answers whether any
+   * of them casts into the cached cascade. A recursion rather than `traverse`, which would need a
+   * closure per call.
+   */
+  #applySceneryShadowFlags(
+    node: THREE.Object3D,
+    include: boolean,
+    rendered: RenderedEnvironment | undefined,
+    wanted: boolean,
+    cascades: boolean,
+  ): boolean {
+    let far = false;
+    const child = node;
+    if (child instanceof THREE.Mesh && child.userData[WMO_SHADOW_PROXY] !== true) {
+      const traits = this.#sceneryShadowTraits;
+      traits.eligible = false;
+      traits.radius = 0;
+      traits.farRadius = undefined;
+      if (wanted && include) {
+        const material = child.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(material)) {
+          let eligible = material.length > 0;
+          for (let index = 0; eligible && index < material.length; index++) {
+            eligible = this.#sceneryMaterialEligible(material[index]!);
+          }
+          traits.eligible = eligible;
+        } else traits.eligible = this.#sceneryMaterialEligible(material);
+        if (traits.eligible) {
+          const geometry = child.geometry as THREE.BufferGeometry;
+          if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+          const scale = child instanceof THREE.InstancedMesh ? 1 : child.matrixWorld.getMaxScaleOnAxis();
+          traits.radius = (geometry.boundingSphere?.radius ?? 0) * scale;
+          // P2-02b: a copy the instance pass may draw takes its bucket's (unscaled) far answer.
+          if (rendered?.instanceKey !== undefined) traits.farRadius = geometry.boundingSphere?.radius ?? 0;
+        }
+      }
+      const flags = sceneryShadowFlags(traits, wanted, include, cascades);
+      const casts = (flags & SCENERY_SHADOW_CAST) !== 0;
+      const receives = (flags & SCENERY_SHADOW_RECEIVE) !== 0;
+      if (child.castShadow !== casts) child.castShadow = casts;
+      if (rendered) this.#shadowCasters.set(child, casts, rendered.node, this.#environmentShadowGate, rendered);
+      else this.#shadowCasters.set(child, casts);
+      if (child.receiveShadow !== receives) child.receiveShadow = receives;
+      if ((flags & SCENERY_SHADOW_FAR) !== 0) {
+        child.layers.enable(SHADOW_FAR_LAYER);
+        far = true;
+      } else child.layers.disable(SHADOW_FAR_LAYER);
+    }
+    const children = node.children;
+    for (let index = 0; index < children.length; index++) {
+      if (this.#applySceneryShadowFlags(children[index]!, include, rendered, wanted, cascades)) far = true;
+    }
+    return far;
+  }
+
+  #sceneryMaterialEligible(material: THREE.Material): boolean {
+    return shadowMaterialEligible({
+      lit: material instanceof THREE.MeshLambertMaterial
+        || material instanceof THREE.MeshPhongMaterial
+        || material instanceof THREE.MeshStandardMaterial,
+      transparent: material.transparent,
+      normalBlending: material.blending === THREE.NormalBlending,
+      depthWrite: material.depthWrite,
+    });
+  }
+
+  /**
+   * Shadow flags of one placed WMO's attached rooms.
    *
    * A group receives wherever it has exterior-lit runs, which is decided per run and not by MOGP's
    * indoor bit: the Stormwind trade-district street at (-8835, 634) sits in an indoor-flagged group,
@@ -4530,40 +5013,63 @@ export class WorldRenderer3D {
    * merged ranges of its solid runs, on the shadow layers only. Translucent, additive and
    * alpha-tested runs (glass, glows, grilles) cast nothing rather than a solid slab.
    */
-  #syncWmoShadows(placed: PlacedWmo, wanted: boolean): number {
-    let fold = 0;
-    for (const [index, built] of placed.built) {
-      const group = placed.model.groups[index];
-      if (!group) continue;
-      const { mesh } = built;
-      const receives = wanted && (Array.isArray(mesh.material) ? mesh.material : [mesh.material])
-        .some((material) => material instanceof THREE.MeshStandardMaterial);
-      if (mesh.receiveShadow !== receives) mesh.receiveShadow = receives;
-      if (mesh.castShadow) mesh.castShadow = false;
-      const casts = wanted && this.#sunCascades.active && (!group.indoor || group.exterior);
-      let proxy = this.#wmoShadowProxies.get(mesh);
-      if (casts && proxy === undefined) {
-        const geometry = wmoShadowProxyGeometry(mesh.geometry, mesh.material);
-        if (geometry) {
-          proxy = new THREE.Mesh(geometry, [WMO_SHADOW_PROXY_MATERIAL]);
-          proxy.userData[WMO_SHADOW_PROXY] = true;
-          proxy.layers.set(SHADOW_PROXY_LAYER);
-          proxy.layers.enable(SHADOW_FAR_LAYER);
-          proxy.matrixAutoUpdate = false;
-          proxy.receiveShadow = false;
-          mesh.add(proxy);
-          proxy.matrixWorld.multiplyMatrices(mesh.matrixWorld, proxy.matrix);
-          this.#wmoShadowProxies.set(mesh, proxy);
-        } else {
-          this.#wmoShadowProxies.set(mesh, null);
-        }
-      }
-      if (!proxy) continue;
-      if (proxy.castShadow !== casts) proxy.castShadow = casts;
-      if (proxy.visible !== casts) proxy.visible = casts;
-      if (casts) fold = (fold + proxy.id * 2654435761) % 4294967296;
+  #syncWmoShadows(placed: PlacedWmo, wanted: boolean, cascades: boolean): void {
+    for (const [index, built] of placed.built) this.#syncWmoRoomShadow(placed, index, built, wanted, cascades);
+  }
+
+  /** P2-02a: one attached room's flags and stand-in; also called where the room is attached. */
+  #syncWmoRoomShadow(placed: PlacedWmo, index: number, built: RenderedWmoGroup, wanted: boolean, cascades: boolean): void {
+    const group = placed.model.groups[index];
+    if (!group) return;
+    const { mesh } = built;
+    let receives = false;
+    if (wanted) {
+      const material = mesh.material as THREE.Material | THREE.Material[];
+      if (Array.isArray(material)) {
+        for (let at = 0; !receives && at < material.length; at++) receives = material[at] instanceof THREE.MeshStandardMaterial;
+      } else receives = material instanceof THREE.MeshStandardMaterial;
     }
-    return fold;
+    if (mesh.receiveShadow !== receives) mesh.receiveShadow = receives;
+    if (mesh.castShadow) mesh.castShadow = false;
+    this.#shadowCasters.set(mesh, false);
+    const casts = wanted && cascades && (!group.indoor || group.exterior);
+    let proxy = this.#wmoShadowProxies.get(mesh);
+    if (casts && proxy === undefined) {
+      const geometry = wmoShadowProxyGeometry(mesh.geometry, mesh.material);
+      if (geometry) {
+        proxy = new THREE.Mesh(geometry, [WMO_SHADOW_PROXY_MATERIAL]);
+        proxy.userData[WMO_SHADOW_PROXY] = true;
+        proxy.layers.set(SHADOW_PROXY_LAYER);
+        proxy.layers.enable(SHADOW_FAR_LAYER);
+        proxy.matrixAutoUpdate = false;
+        proxy.receiveShadow = false;
+        mesh.add(proxy);
+        proxy.matrixWorld.multiplyMatrices(mesh.matrixWorld, proxy.matrix);
+        this.#wmoShadowProxies.set(mesh, proxy);
+      } else {
+        this.#wmoShadowProxies.set(mesh, null);
+      }
+    }
+    if (!proxy) {
+      this.#forgetSceneryFar(mesh);
+      return;
+    }
+    if (proxy.castShadow !== casts) proxy.castShadow = casts;
+    this.#shadowCasters.set(proxy, casts);
+    if (proxy.visible !== casts) proxy.visible = casts;
+    // P2-02b: the building's node (the room hangs on it) and the group, stable across re-hangs.
+    this.#noteSceneryFar(mesh, (mesh.parent?.id ?? 0) * 4096 + index, casts);
+  }
+
+  /**
+   * P2-02a: a room leaving its building. A room is a new mesh on every attach, so its stand-in
+   * never comes back: it leaves the caster list now rather than being walked until it is pruned.
+   */
+  #releaseWmoRoomShadow(mesh: THREE.Mesh): void {
+    this.#forgetSceneryFar(mesh);
+    this.#wmoHeldFar.delete(mesh);
+    const proxy = this.#wmoShadowProxies.get(mesh);
+    if (proxy) this.#shadowCasters.set(proxy, false);
   }
 
   /**
@@ -4573,25 +5079,74 @@ export class WorldRenderer3D {
    * behind the camera, or beside the frame, would drop its shadow out of the ground it falls on,
    * and shadows would come and go at the screen's edges as the camera turns. Three has already built
    * this frame's draw lists when it asks for shadows, so what is shown here reaches the shadow maps
-   * and never the view; the cascades hide it again straight after. Interior doodads, stand-ins and
-   * WMO placements (whose hidden rooms are detached anyway) are left alone.
+   * and never the view. Interior doodads, stand-ins and WMO placements (whose hidden rooms are
+   * detached anyway) are left alone.
+   *
+   * P2-01a: this used to show those nodes around the cascades and hide them again
+   * (`#shadowOnlyToggle`, a walk of every placement each shadow frame). Now each placement's casters
+   * carry it as their owner and this gate answers 2 — "ignore the owner's own `visible`" — for
+   * exactly the placements the toggle showed; every other one keeps the plain visibility rule (1),
+   * so the set of casters is the one the toggle produced.
    */
-  readonly #shadowOnlyToggle = (on: boolean): number => {
-    const nodes = this.#shadowOnlyNodes;
-    if (!on) {
-      for (const node of nodes) node.visible = false;
-      nodes.length = 0;
-      return 0;
-    }
-    if (!this.#sceneryShadowsApplied) return 0;
-    for (const rendered of this.#environment.values()) {
-      if (rendered.admitted || !rendered.actual || rendered.interior || rendered.wmo
-        || rendered.node.visible) continue;
-      rendered.node.visible = true;
-      nodes.push(rendered.node);
-    }
-    return nodes.length;
+  readonly #environmentShadowGate: CasterGate = (ref) => {
+    const rendered = ref as RenderedEnvironment;
+    return !rendered.admitted && this.#sceneryShadowsApplied && rendered.actual && !rendered.interior
+      && rendered.wmo === undefined ? 2 : 1;
   };
+
+  /**
+   * P2-01a census (bench `sceneStats.shadowCasterList`): the caster list against three's walk of
+   * the scene with the old toggle's nodes shown. Undefined at quality 0.
+   */
+  shadowCasterCensus(): ShadowCasterCensus | undefined {
+    const shown = new Set<THREE.Object3D>();
+    const placements = new Map<THREE.Object3D, RenderedEnvironment>();
+    for (const rendered of this.#environment.values()) {
+      placements.set(rendered.node, rendered);
+      if (!this.#sceneryShadowsApplied) continue;
+      if (rendered.admitted || !rendered.actual || rendered.interior || rendered.wmo || rendered.node.visible) continue;
+      shown.add(rendered.node);
+    }
+    // Scenery draws by gate and by whether the placement could join an instance bucket (the
+    // entry condition of P2-01c1: gate-2 draws of instanceable world-lane copies).
+    const classify = (mesh: THREE.Mesh): string | undefined => {
+      for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
+        const rendered = placements.get(node);
+        if (!rendered) continue;
+        // P2-01c2 entry: WMO stand-ins and solid single statics apart from alpha-keyed ones.
+        if (mesh.userData[WMO_SHADOW_PROXY] === true) return `gate${this.#environmentShadowGate(rendered)}|wmoProxy`;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const keyed = materials.some((material) => material.alphaTest > 0);
+        const lane = rendered.instanceKey === undefined ? (keyed ? "single-alpha" : "single-solid")
+          : rendered.source.localLight !== undefined ? "instanceable-local" : "instanceable";
+        return `gate${this.#environmentShadowGate(rendered)}|${lane}`;
+      }
+      return undefined;
+    };
+    return this.#sunCascades.casterCensus(this.#scene, (node) => shown.has(node), classify);
+  }
+
+  // 06.10-shadow: unit casters with hysteresis, and admission of units whose shadow reaches the view
+  // (UnitShadowCasters.ts). Owner's live report 06.10: level 3's unit shadows popped in and out.
+  readonly #unitShadowCasters = new UnitShadowCasterSet<bigint>();
+  readonly #unitShadowSphere: UnitShadowSphere = { x: 0, y: 0, z: 0, radius: 0 };
+  /**
+   * Whether a unit whose body is off screen has to be drawn anyway (posed; three culls its main-pass
+   * draw) because it may cast and its shadow footprint lies in a view-fitted cascade and in the view.
+   * A unit that is not measurable (`radius` undefined) is already admitted as visible.
+   */
+  #unitShadowSeen(
+    position: Readonly<{ x: number; y: number; z: number }>,
+    distance: number,
+    radius: number,
+  ): boolean {
+    if (!this.#sunCascades.active || this.#interiorLight !== undefined
+      || !unitShadowInReach(distance, this.#lightingProfile)) return false;
+    const sphere = this.#unitShadowSphere;
+    return unitShadowFootprint(position.x, position.z, -position.y, radius, this.#sunOffset, sphere)
+      && this.#sunCascades.viewFittedCovers(sphere.x, sphere.y, sphere.z, sphere.radius)
+      && unitSphereVisibleInFrustum(sphere.x, sphere.y, sphere.z, sphere.radius, this.#frustum.planes, UNIT_FRUSTUM_MARGIN);
+  }
 
   /** Terrain tiles and the horizon: the casters a cascade culls by their light-plane footprint. */
   readonly #boundedShadowCasters = (out: THREE.Mesh[]): void => {
@@ -4681,6 +5236,16 @@ export class WorldRenderer3D {
     return this.#godRaysEnabled && this.#lightingProfile.godRayStrength > 0;
   }
 
+  /**
+   * 05.10-sun: the visible (setting) sun — on the classic preset the body `SkyCelestials` draws
+   * (Wow.exe's 45° bearing), otherwise today's east-to-west `godRaySunDirection`. No allocation.
+   */
+  #visibleSun(target: THREE.Vector3): THREE.Vector3 {
+    return lightingClassicLook(this.#lightingProfile.quality) // 05.10-7.20
+      ? classicSunDirection(this.#lightTime, target)
+      : godRaySunDirection(this.#lightTime, target);
+  }
+
   /** Restore the same neutral sky/light state used while a map's Light.dbc rows are loading. */
   #resetLightingDefaults(): void {
     this.#worldLight.wowLocalLightCount.value = 0;
@@ -4744,6 +5309,16 @@ export class WorldRenderer3D {
     readonly animationLod: Readonly<{
       near: number; medium: number; far: number; critical: number;
       full: number; flat: number; skipped: number;
+      /** P1-04: doodads posed last frame (ENV-12). */
+      doodadsPosed: number;
+    }>;
+    /**
+     * P1-12: cumulative `select` calls and recomputes of the rest-radius tables — `groups` for the
+     * `#updateWmoGroups` distance tables, `openAir` for the open-air candidate tables.
+     */
+    readonly wmoRange: Readonly<{
+      groups: Readonly<{ selects: number; recomputes: number }>;
+      openAir: Readonly<{ selects: number; recomputes: number }>;
     }>;
     readonly worldSubmission?: WorldSubmissionSnapshot;
   } {
@@ -4777,11 +5352,17 @@ export class WorldRenderer3D {
       full: this.#unitAnimationFull,
       flat: this.#unitAnimationFlat,
       skipped: this.#unitAnimationSkipped,
+      doodadsPosed: this.#doodadsPosed,
+    });
+    // Copies, so a held snapshot does not move with the live counters.
+    const wmoRange = Object.freeze({
+      groups: Object.freeze({ selects: this.#wmoRangeGroups.selects, recomputes: this.#wmoRangeGroups.recomputes }),
+      openAir: Object.freeze({ selects: this.#wmoRangeOpenAir.selects, recomputes: this.#wmoRangeOpenAir.recomputes }),
     });
     const worldSubmission = this.#worldSubmissionCapture?.snapshot();
     return worldSubmission === undefined
-      ? Object.freeze({ ...snapshot, animationLod })
-      : Object.freeze({ ...snapshot, animationLod, worldSubmission });
+      ? Object.freeze({ ...snapshot, animationLod, wmoRange })
+      : Object.freeze({ ...snapshot, animationLod, wmoRange, worldSubmission });
   }
 
   /** Exact exposed geometry-array residency for every bounded renderer geometry cache. */
@@ -5201,16 +5782,16 @@ export class WorldRenderer3D {
       }
       rendered.action = undefined;
       rendered.animationId = -1;
-      delete rendered.actionKind;
-      delete rendered.overlayAction;
-      delete rendered.overlayAnimationId;
-      delete rendered.overlayActionKind;
+      rendered.actionKind = undefined;
+      rendered.overlayAction = undefined;
+      rendered.overlayAnimationId = undefined;
+      rendered.overlayActionKind = undefined;
       rendered.overlayPreservesLocomotion = false;
-      delete rendered.overlayFadeUntil;
+      rendered.overlayFadeUntil = undefined;
       rendered.overlayUntil = 0;
-      delete rendered.state;
-      delete rendered.phaseMs;
-      delete rendered.phaseAt;
+      rendered.state = undefined;
+      rendered.phaseMs = undefined;
+      rendered.phaseAt = undefined;
     }
     for (const unit of this.#units.values()) {
       if (unit.skinned) {
@@ -5219,12 +5800,12 @@ export class WorldRenderer3D {
       }
       unit.action = undefined;
       unit.animationId = -1;
-      delete unit.actionKind;
-      delete unit.overlayAction;
-      delete unit.overlayAnimationId;
-      delete unit.overlayActionKind;
+      unit.actionKind = undefined;
+      unit.overlayAction = undefined;
+      unit.overlayAnimationId = undefined;
+      unit.overlayActionKind = undefined;
       unit.overlayPreservesLocomotion = false;
-      delete unit.overlayFadeUntil;
+      unit.overlayFadeUntil = undefined;
       unit.overlayUntil = 0;
       unit.pose = undefined;
       const mount = unit.mount;
@@ -5235,12 +5816,12 @@ export class WorldRenderer3D {
       if (mount) {
         mount.action = undefined;
         mount.animationId = -1;
-        delete mount.actionKind;
-        delete mount.overlayAction;
-        delete mount.overlayAnimationId;
-        delete mount.overlayActionKind;
+        mount.actionKind = undefined;
+        mount.overlayAction = undefined;
+        mount.overlayAnimationId = undefined;
+        mount.overlayActionKind = undefined;
         mount.overlayPreservesLocomotion = false;
-        delete mount.overlayFadeUntil;
+        mount.overlayFadeUntil = undefined;
         mount.overlayUntil = 0;
       }
     }
@@ -5272,6 +5853,25 @@ export class WorldRenderer3D {
   /** Height of the drawn body, so the 2D overlay can put a name plate right above it. */
   unitHeight(guid: bigint): number | undefined {
     return this.#units.get(guid)?.height;
+  }
+
+  /**
+   * 06.10-7.24: the eight world corners of a game object's model box as it is drawn this frame —
+   * the drawn position (a lift's included), the object's whole rotation and its scale — for the
+   * overlay's click box (GameObjectPickBox.ts). False until a model with a box is drawn.
+   */
+  gameObjectPickCorners(object: WorldObjectState, out: Float64Array): boolean {
+    const rendered = this.#gameObjects.get(object.guid);
+    if (!rendered || !rendered.actual || !rendered.node.visible) return false;
+    if (rendered.pickBox === undefined) rendered.pickBox = modelPickBox(rendered) ?? null;
+    if (!rendered.pickBox) return false;
+    const at = rendered.node.position;
+    GAME_OBJECT_PICK_AT.x = at.x;
+    GAME_OBJECT_PICK_AT.y = -at.z;
+    GAME_OBJECT_PICK_AT.z = at.y;
+    gameObjectWorldRotation(object, rendered.base.orientation, GAME_OBJECT_PICK_ROTATION);
+    placedBoxCorners(rendered.pickBox, GAME_OBJECT_PICK_AT, GAME_OBJECT_PICK_ROTATION, rendered.node.scale.x, out);
+    return true;
   }
 
   /** Where the camera orbits this unit: the shoulder of the body actually standing there. */
@@ -5330,9 +5930,11 @@ export class WorldRenderer3D {
     // body share is measured against it and put back once, not twice.
     const seat = unit?.mount?.seat ?? 0;
     const body = unit && !unit.body && unit.height - seat > 0 ? unit.height - seat : undefined;
+    // 11.02-H: a passenger drawn on its vehicle's seat point is that much higher than its own place.
+    const vehicleSeatLift = unit === undefined ? 0 : this.#vehiclePassengers.seatLift(unit.node);
     return cameraBodyHeight(
       attachment === undefined ? undefined : attachment * (unit?.scale ?? 1),
-      body, share, fallback) + seat;
+      body, share, fallback) + seat + vehicleSeatLift; // 11.02-H: + vehicleSeatLift
   }
 
   /**
@@ -5343,8 +5945,16 @@ export class WorldRenderer3D {
    * is a symptom, "capsules: 4, model has not downloaded, display 21935" is a defect with an
    * address. Data only — the window formats it, and a test drives the ledger without either.
    */
-  standInReport(): StandInReport {
-    return this.#standIns.report();
+  standInReport(): WorldStandInReport {
+    return { ...this.#standIns.report(), environment: this.#environmentStandIns.report() }; // 05.10-A7b-9 7.18
+  }
+
+  /**
+   * 05.10-A7b-9 (7.18): outlines placements whose model will never come (missing, hull, failed) until
+   * `untilMs` on the `performance.now()` clock. The diagnostics window renews it on each redraw.
+   */
+  showEnvironmentStandInMarkers(untilMs: number): void {
+    this.#environmentStandInMarkers.showUntil(untilMs);
   }
 
   /**
@@ -5378,6 +5988,9 @@ export class WorldRenderer3D {
         textureLeases: new Map(),
       });
     }
+    // 05.10-A7a-E (6.13): the plan's beams under this handle, its shakes into the bank.
+    if (plan.beams && plan.beams.length > 0) this.#beams().add(handle, plan.beams);
+    if (plan.shakes) for (const shake of plan.shakes) this.#cameraShakes.add(shake.shakes, shake.point, shake.at);
     // One unit cannot play two action clips at once. Composite rows often provide both
     // ImpactKit and TargetImpactKit for the same target/time; installing both in a Map<guid,...>
     // used to make the last one win, while minor packet/model timing changes changed which kit was
@@ -5401,6 +6014,8 @@ export class WorldRenderer3D {
   /** Remove spell FX/state and only their particle bookkeeping; portraits and world scenery stay. */
   clearSpellVisuals(): void {
     this.#pendingVisualAnimations.length = 0;
+    this.#chainBeams?.clear(); // 05.10-A7a-E
+    this.#cameraShakes.clear(); // 05.10-A7a-E
     for (const visual of this.#visuals) {
       this.#visualGroup.remove(visual.node);
       this.#dropEffects(visual.key);
@@ -5417,6 +6032,7 @@ export class WorldRenderer3D {
 
   /** Remove only one cast's nodes, emitters and not-yet-started animation requests. */
   cancelSpellVisual(handle: SpellVisualHandle): void {
+    this.#chainBeams?.cancel(handle); // 05.10-A7a-E
     for (let index = this.#pendingVisualAnimations.length - 1; index >= 0; index--) {
       if (this.#pendingVisualAnimations[index]!.handle === handle) this.#pendingVisualAnimations.splice(index, 1);
     }
@@ -5439,6 +6055,7 @@ export class WorldRenderer3D {
   /** Extend or shorten one cast without restarting its particles or creating another node. */
   retimeSpellVisual(handle: SpellVisualHandle, endsAt: number): void {
     if (!Number.isFinite(endsAt)) return;
+    this.#chainBeams?.retime(handle, endsAt); // 05.10-A7a-E
     const now = performance.now();
     for (const visual of this.#visuals) {
       if (visual.handle !== handle || !(visual.instance.endsAt > now)) continue;
@@ -5628,7 +6245,8 @@ export class WorldRenderer3D {
         if (terrain.splatted) setTerrainWetness(terrain.material, next.wetSurfaces, next.rainSplashes);
       }
       setWmoWetness(next.wetSurfaces, next.rainSplashes);
-      for (const [liquidClass, liquid] of this.#liquidMaterials) {
+      for (const [surface, liquid] of this.#liquidMaterials) {
+        const liquidClass = liquidSurfaceClass(surface); // 05.10-A7b-8
         if (liquidClass === "water" || liquidClass === "ocean") setWaterRainRipples(liquid.material, next.rainSplashes);
       }
       for (const [liquidClass, material] of this.#fallbackLiquidMaterials) {
@@ -5724,7 +6342,8 @@ export class WorldRenderer3D {
     // The rain veil: the zone fog pulled in while it rains (0 while rainStreaks is OFF). The fog
     // was restored from the zone's Light.dbc values at the top of this submission, so this never
     // accumulates; interior WMO fog has its own uniforms and is left alone.
-    if (atmosphere.haze > 0 && !this.#underwater) applyPrecipitationHaze(this.#scene.fog as THREE.Fog, atmosphere.haze);
+    // 05.10-A7b-2 (7.12): not under a roof whose fog the frame has taken.
+    if (atmosphere.haze > 0 && !this.#underwater && !this.#wmoRoomFogApplied) applyPrecipitationHaze(this.#scene.fog as THREE.Fog, atmosphere.haze);
   }
 
   /**
@@ -5887,6 +6506,13 @@ export class WorldRenderer3D {
     // fast frame rate cannot make the sky drift away from the LightClient's sampled bands.
     const durationMs = clip && Number.isFinite(clip.duration) ? clip.duration * 1000 : 0;
     this.#skyboxAnimationMs = skyboxAnimationTimeMs(this.#lightTime, durationMs);
+    // 05.10-A7b-6 (7.04 slice 4): only `LightSkybox.Flags & 1` lays the clip over the game day; the
+    // rest loop on the wall clock (Wow.exe 0x7ecf20). A v4 body has no flags and keeps the line above.
+    const skyFlags = this.#lightSample;
+    if (skyFlags?.skyChannels && (skyFlags.skyboxFlags & 1) === 0) {
+      this.#skyboxAnimationMs = skyboxClipTimeMs(this.#lightTime, durationMs, performance.now(),
+        skyFlags.skyboxFlags, true);
+    }
     instance.mixer.setTime(this.#skyboxAnimationMs / 1000);
     if (this.#skyboxModel) applyGlobalSequenceBones(instance, template,
       this.#skyboxModel.globalSequences, this.#waterShaderUniforms.time.value * 1000);
@@ -5919,6 +6545,58 @@ export class WorldRenderer3D {
   }
 
   /**
+   * 05.10-A7b-6 (7.04 slices 1–3): the procedural sky's sun, moons, stars and clouds. Everything is
+   * in `SkyCelestials.ts`; this only gathers the frame's inputs. Off — exactly today's sky — when
+   * the light body has no v5 channels (an old gateway), the dome is hidden (interior-only room),
+   * indoors, under water, or a loaded LightSkybox model without `Flags & 2` covers the sky.
+   */
+  #updateSkyCelestials(client: EnvironmentClient | undefined): void {
+    const sample = this.#lightSample;
+    const input = this.#skyCelestialInput;
+    input.enabled = sample !== undefined && sample.skyChannels && this.#sky.visible && !this.#indoors
+      && !this.#underwater && !skyboxCoversSky(this.#skyboxGroup.children.length > 0, sample.skyboxFlags);
+    if (sample && input.enabled) {
+      if (client && this.#skyCelestialBaseUrl !== client.baseUrl) {
+        this.#skyCelestialBaseUrl = client.baseUrl;
+        this.#skyCelestials.setTextureSource(skyTextureSource(client.baseUrl, this.#skyCelestialTextures));
+      }
+      input.time = this.#lightTime;
+      input.day = Math.floor(Date.now() / 86_400_000);
+      input.sunColour = sample.sunColour;
+      input.sunHalo = sample.sunHalo;
+      input.cloudA = sample.cloudA;
+      input.cloudB = sample.cloudB;
+      input.cloudDensity = sample.cloudDensity;
+      input.storm = this.#weatherFade.storm;
+      // The cinematic post and the sun shafts each draw their own disc at `godRaySunDirection`.
+      // 05.10-A7b-6-review: only when that disc is really drawn (bloom leaf, slider above zero).
+      input.postSun = skyPostDrawsSun(this.#cinematic.active, this.#cinematic.profile.bloom,
+        this.#cinematic.strength, this.#godRaysActive(), this.#godRayStrengthScale);
+      input.seconds = performance.now() / 1000;
+    }
+    this.#skyCelestials.update(input, this.#camera.position);
+    if (!input.enabled || !client) return;
+    if (this.#skyCelestials.hasStars) {
+      // Keeps the decoded model resident while its build is on screen, as the skybox does.
+      if (this.#skyCelestials.group.visible) client.model(SKY_STARS_MODEL, "background");
+      return;
+    }
+    if (!this.#skyCelestials.wantsStars) return;
+    const model = client.model(SKY_STARS_MODEL, "background");
+    // WVM builds only: a legacy decode would need the legacy geometry pins as well.
+    if (!model?.wvm || !drawableModel(model)) return;
+    const node = this.#modelNode({
+      id: -1, name: SKY_STARS_MODEL, kind: "m2", x: 0, y: 0, z: 0,
+      rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1,
+    }, model);
+    const visual = node.userData["visual"];
+    if (visual instanceof THREE.Object3D) visual.quaternion.copy(M2_TO_SCENE);
+    this.#skyStarsBuilt = this.#builtModels.get(this.#builtCacheKey(this.#builtModels, SKY_STARS_MODEL));
+    this.#skyCelestials.setStars(node, skyBasicMaterials(node));
+    this.#skyWarmup.registerObject(node);
+  }
+
+  /**
    * Whether the character is under a roof.
    *
    * Told rather than worked out here, and by the collision world rather than by the artwork. The
@@ -5936,6 +6614,14 @@ export class WorldRenderer3D {
    */
   setIndoors(indoors: boolean): void {
     this.#indoors = indoors;
+  }
+
+  /**
+   * The last `setIndoors` answer — the floor under the character is a WMO group without MOGP 0x8.
+   * Read, not recomputed, by the stock UI's ZONE_CHANGED_INDOORS test (`playerIndoors`).
+   */
+  get indoors(): boolean {
+    return this.#indoors;
   }
 
   /** Where to find a model's own liquid. Told once, like everything else the frame hands over. */
@@ -6054,7 +6740,9 @@ export class WorldRenderer3D {
       geometry.computeVertexNormals();
       geometry.computeBoundingSphere();
       const liquidClass = liquidClassOf(0, liquid.type, this.#liquidTextures?.classes);
-      const mesh = new THREE.Mesh(geometry, this.#liquidMaterial(liquidClass)?.material
+      // 05.10-A7b-8 (7.09 A): the row's own strip family (WMO rows all use their class's today).
+      const mesh = new THREE.Mesh(geometry, this.#liquidMaterial(
+        liquidSurfaceOf(liquidClass, liquid.type, this.#liquidTextures?.surfaces))?.material
         ?? this.#fallbackLiquidMaterial(liquidClass));
       mesh.position.copy(centre);
       mesh.renderOrder = 1;
@@ -6069,7 +6757,7 @@ export class WorldRenderer3D {
       mesh.geometry.dispose();
       this.#scene.remove(mesh);
     }
-    delete rendered.liquid;
+    rendered.liquid = undefined;
   }
 
   /**
@@ -6115,7 +6803,7 @@ export class WorldRenderer3D {
    * draw unlit, like helmets whose model has not arrived.
    */
   setEnchantGlow(
-    resolve: ((object: WorldObjectState, slot: number) => EnchantGlow | undefined) | undefined,
+    resolve: ((object: WorldObjectState, slot: number, displayId?: number) => EnchantGlow | undefined) | undefined, // 05.10-A7a-E2
   ): void {
     this.#enchantGlow = resolve;
   }
@@ -6238,6 +6926,7 @@ export class WorldRenderer3D {
    */
   clearWorldResources(): void {
     this.#worldResourceEpoch++;
+    this.#environmentStandInMarkers.clear(); // 05.10-A7b-9 7.18
     this.#worldTexturesPending = 0;
     this.#worldTextureErrors.clear();
     this.#worldTextureGeneration++;
@@ -6250,6 +6939,7 @@ export class WorldRenderer3D {
     this.#unitPartWarmHolds.clear();
     this.#visualWarmHold.clear();
     this.#effectWarmHold.clear();
+    this.#wmoHeldFar.clear(); // P2-02b
     this.#skyWarmup.reset();
     this.#overlayWarmup.reset();
     this.#glowWarmup.reset();
@@ -6275,8 +6965,11 @@ export class WorldRenderer3D {
     for (const key of [...this.#effects.keys()]) this.#dropEffects(key);
 
     this.#clearSkybox();
+    this.#skyCelestials.clearStars(); // 05.10-A7b-6: its build is about to go with the caches
+    this.#skyStarsBuilt = undefined; // 05.10-A7b-6
     // All world-material borrowers are detached before the shared material/base lane is drained.
     this.#worldMaterials.dispose();
+    this.#wmoEnvTextures.clear(); // 05.10-A7b-2: after the materials sampling them
     this.#worldMaterialGenerationOffset += this.#worldMaterialTextures.stats.generation
       + this.#worldMaterials.revision;
 
@@ -6352,6 +7045,7 @@ export class WorldRenderer3D {
     }
     this.#builtModels.clear();
     this.#builtUnits.clear();
+    this.#modelBuffers = new SharedModelBuffers(); // P2-03b: the old attributes went with the builds
     this.#skinnedTemplates.clear();
     this.#wmoGeometryBuild.clear();
     for (const entry of this.#wmoGeometries.values()) {
@@ -6385,6 +7079,8 @@ export class WorldRenderer3D {
     this.#environmentCandidatesAt = undefined;
     this.#warmPruneAtSerial = -WARM_PRUNE_INTERVAL_FRAMES;
     this.#lastAdmitted = undefined;
+    this.#admissionBuffers[0].length = 0; // P2-04c: no candidate of the old world stays reachable
+    this.#admissionBuffers[1].length = 0;
     this.#admissionCandidates = undefined;
     this.#growingVegetation = 0;
     this.#terrainPlan = undefined;
@@ -6446,6 +7142,8 @@ export class WorldRenderer3D {
     this.#gpuTimer.dispose();
     this.#waterDetailMaps.dispose();
     this.#disposeFullscreenGlowTargets();
+    this.#horizonMaterials?.dispose(); // 05.10-A7b-7
+    this.#environmentStandInMarkers.dispose(); // 05.10-A7b-9 7.18
     for (const geometry of [
       this.#unitBodyGeometry, this.#unitFacingGeometry, this.#foliageGeometry, this.#trunkGeometry,
       this.#sky.geometry, this.#underwaterOverlay.geometry, this.#glowPasses.quad.geometry,
@@ -6462,6 +7160,10 @@ export class WorldRenderer3D {
       this.#glowPasses.godRays,
     ]) material.dispose();
     this.#sunCascades.dispose();
+    this.#shadowCasters.clear(); // P2-01a
+    this.#skyCelestials.dispose(); // 05.10-A7b-6
+    this.#skyCelestialTextures.clear(); // 05.10-A7b-6
+    this.#wmoEnvTextures.clear(); // 05.10-A7b-2
     this.#scene.clear();
     this.#skyScene.clear();
     this.#overlayScene.clear();
@@ -6482,7 +7184,7 @@ export class WorldRenderer3D {
     for (const kind of ["target", "focus"] as const) {
       const wanted = this.#selection[kind];
       const object = wanted === undefined ? undefined : state.objects.get(wanted.guid);
-      const position = object?.position;
+      const position = object === undefined ? undefined : drawnUnitPosition(object, this.#ringSeatDrawn); // 11.02-tails: on the seat
       // A corpse keeps no ring: the renderer lays a dead body down at its full length, so a ring
       // round its feet would sit at one end of it and read as a ring round nothing.
       if (!wanted || !object || !position || isWorldObjectDead(object)) {
@@ -6675,7 +7377,7 @@ export class WorldRenderer3D {
     if (!ghost) return;
     ghost.node.position.set(preview.x, preview.z, -preview.y);
     ghost.node.quaternion.setFromRotationMatrix(mappedVmapRotation(
-      0, THREE.MathUtils.radToDeg(preview.orientation), 0));
+      0, THREE.MathUtils.radToDeg(gameObjectNodeYaw(preview.orientation)), 0)); // 06.10-7.24
     ghost.node.scale.setScalar(Math.max(0.05, Math.min(40, preview.scale)));
   }
 
@@ -6816,6 +7518,7 @@ export class WorldRenderer3D {
             // Only when there is something to draw: many effect models are emitters and nothing
             // else, so the frame remains the emitter anchor without a placeholder mesh.
             const mesh = new THREE.Mesh(built.geometry, built.materials);
+            applySlotDepth(mesh); // P2-03a
             visual.visual = mesh;
             visual.frame.add(mesh);
             this.#programWarmup.registerObject(mesh);
@@ -6834,16 +7537,17 @@ export class WorldRenderer3D {
       }
 
       if (instance.flight) {
-        const progress = visualFlightProgress(instance, now);
-        missilePoint(instance.flight.from, instance.flight.to, progress, _flightPoint);
-        visual.node.position.set(_flightPoint.x, _flightPoint.z, -_flightPoint.y);
-        // Pointed along the actual 3D flight tangent: a bolt drawn facing wherever the model
-        // happened to face is a bolt flying sideways, and yaw alone leaves an upward/downward
-        // shot visibly flat. The helper converts the server's (x, y, z-up) tangent into this
-        // scene's (x, y-up, -z) frame and rotates model +X onto it.
-        spellVisualFlightQuaternion(instance.flight.from, instance.flight.to, progress, visual.node.quaternion);
+        // 05.10-A7a-E (6.12): launched from the caster's attachment, homing on the target's, bowed and
+        // turned by its SpellMissileMotion script (MissileFlight.ts); hidden once it has arrived.
+        if (!flyMissileInstance(instance, now, this.#missilePoints, _missileSample)) {
+          visual.node.visible = false;
+          continue;
+        }
+        const at = _missileSample.position;
+        visual.node.position.set(at.x, at.z, -at.y);
+        missileQuaternion(_missileSample, visual.node.quaternion);
         this.#orientVisualFrame(visual);
-        visual.node.scale.setScalar(instance.scale);
+        visual.node.scale.setScalar(instance.scale * (_missileSample.scale > 0 ? _missileSample.scale : 1));
         this.#applySpellBillboards(visual);
         continue;
       }
@@ -6942,6 +7646,41 @@ export class WorldRenderer3D {
    * human they are 3 centimetres apart, and on a creature with no hands at all the spell points
    * are still there while the item ones may not be.
    */
+  /**
+   * 05.10-A7a-E (6.12): an attachment point of a unit now, in server coordinates, for MissileFlight: the
+   * bone point with its authored offset, or (no rig yet) 0.75 of the unit's height above its feet, the
+   * fallback Wow.exe 0x006ff6d0 uses without an attachment. False when the unit is not here.
+   */
+  readonly #missilePoints: MissilePoints = {
+    point: (guid, attachment, out) => {
+      const unit = this.#units.get(guid);
+      if (!unit) return false;
+      const bone = this.#attachmentBone(guid, attachment);
+      if (bone && unit.wvm && unit.template) {
+        _missilePoint.copy(missileAttachmentOffset(unit.wvm, unit.template.pivots, attachment)).applyMatrix4(bone.matrixWorld);
+      } else {
+        unit.node.getWorldPosition(_missilePoint);
+        _missilePoint.y += unit.height * 0.75;
+      }
+      out.x = _missilePoint.x;
+      out.y = -_missilePoint.z;
+      out.z = _missilePoint.y;
+      return true;
+    },
+  };
+
+  /** 05.10-A7a-E (6.13): the beam set, made on first use; textures are leases on the spell texture cache. */
+  #beams(): ChainBeams {
+    this.#chainBeams ??= new ChainBeams(this.#visualGroup, (path) => {
+      try {
+        return this.#spellTextures.acquire(textureUrl(this.#baseUrl, path), this.#beamTextureOwner);
+      } catch {
+        return undefined;
+      }
+    });
+    return this.#chainBeams;
+  }
+
   #attachmentBone(guid: bigint, attachment: number): THREE.Bone | undefined {
     const unit = this.#units.get(guid);
     if (!unit?.skinned || !unit.wvm) return undefined;
@@ -7030,7 +7769,9 @@ export class WorldRenderer3D {
     this.#wmoFloor = undefined;
     this.#wmoFogVisualId = undefined;
     this.#restoreZoneFog();
-    const player = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+    // 11.02-I: what the camera is built around (game/ViewSubject.ts) — the character, or a possessed
+    // unit or far sight eye once in view. The camera, the sun and every streamed ring are centred on it.
+    const player = viewSubjectIn(state);
     if (!player?.position) {
       this.clearTerrain();
       splatClient?.setActiveTiles(undefined, []);
@@ -7117,6 +7858,7 @@ export class WorldRenderer3D {
     this.#applyWmoFogCandidate();
     this.#updateSkybox(this.#camera, environmentClient);
     this.#updateSkyboxAnimation();
+    this.#updateSkyCelestials(environmentClient); // 05.10-A7b-6
     this.#drawPhaseMs.env = performance.now() - drawPhaseAt;
     drawPhaseAt = performance.now();
     // After the environment, because it borrows that pass's model queue and its built geometry.
@@ -7140,10 +7882,17 @@ export class WorldRenderer3D {
     drawPhaseAt = performance.now();
     // Before the emitters and after the units: a flourish in somebody's hand reads their bone,
     // and its own emitters then read the flourish.
+    // P1-04: detailed clocks run only during an explicit capture; they overlap their parent phases.
+    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    let visualPartAt = detailedCapture ? performance.now() : 0;
     this.#updateVisuals(now, elapsed, environmentClient);
+    if (detailedCapture) this.#drawPhaseMs["visuals.rigs"] = performance.now() - visualPartAt;
+    this.#chainBeams?.update(now, this.#missilePoints, state, this.#camera.position); // 05.10-A7a-E (6.13)
     // After everything has been placed and posed, and before anything is drawn: an emitter reads
     // the matrix of the bone it hangs on, and that matrix is only right once the pose is.
+    if (detailedCapture) visualPartAt = performance.now();
     this.#updateEffects(player.position, now, elapsed);
+    if (detailedCapture) this.#drawPhaseMs["visuals.effects"] = performance.now() - visualPartAt;
     this.#updateFixtureLights(now);
     // New weather materials must enter the same warm pass as every other first-frame draw.
     this.#updateWeather(elapsed);
@@ -7203,8 +7952,8 @@ export class WorldRenderer3D {
     const submitTexturesBefore = this.#textureCount();
     const submitGeometriesBefore = this.#geometryCount();
     const glow = this.#beginFullscreenGlow();
-    // Detailed clocks run only during an explicit capture. These overlap their parent phases.
-    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    // Detailed clocks (`detailedCapture`, above) run only during an explicit capture. These overlap
+    // their parent phases.
     let submitPartAt = detailedCapture ? performance.now() : 0;
     try {
       this.#renderer.autoClear = true;
@@ -7278,6 +8027,9 @@ export class WorldRenderer3D {
     this.#drawPhaseMs["units.appearance"] = 0;
     this.#drawPhaseMs["units.pose"] = 0;
     this.#drawPhaseMs["units.presentation"] = 0;
+    this.#drawPhaseMs["visuals.rigs"] = 0;
+    this.#drawPhaseMs["visuals.effects"] = 0;
+    this.#drawPhaseMs["visuals.particles"] = 0;
     this.#drawPhaseMs["submit.sky"] = 0;
     this.#drawPhaseMs["submit.world"] = 0;
     this.#drawPhaseMs["submit.postprocess"] = 0;
@@ -7300,6 +8052,7 @@ export class WorldRenderer3D {
     this.#effectsDropped = 0;
     this.#groundCoverDrawn = 0;
     this.#standIns.idle();
+    this.#environmentStandIns.idle(); // 05.10-A7b-9 7.18
     this.#wmoPortalModels = 0;
     this.#wmoPortalCandidates = 0;
     this.#wmoPortalCulled = 0;
@@ -7328,6 +8081,7 @@ export class WorldRenderer3D {
       this.#camera.position.y,
       underwaterCrossingBand(this.#camera.near, this.#camera.fov),
       liquidClassOf(surface.flags, surface.entry, this.#liquidTextures?.classes),
+      this.#lightSample, // 05.10-A7b-5 review (7.10)
     );
     if (!frame) return;
     const uniforms = this.#underwaterUniforms;
@@ -7337,6 +8091,10 @@ export class WorldRenderer3D {
     uniforms.invViewProj.value
       .multiplyMatrices(this.#camera.matrixWorld, this.#camera.projectionMatrixInverse);
     uniforms.tint.value.set(frame.tint[0], frame.tint[1], frame.tint[2], frame.fogStrength);
+    // 05.10-A7b-2 (7.12): in a room whose record authors its water half, the tint is that colour.
+    if (this.#wmoRoomFogApplied && this.#underwater) {
+      uniforms.tint.value.set(this.#wmoRoomFog.r, this.#wmoRoomFog.g, this.#wmoRoomFog.b, frame.fogStrength);
+    }
     uniforms.waterZ.value = surface.height;
     // Seconds from the frame's clock — the same one the water materials take, which under a formal
     // replay is the replay's and never `performance.now()`.
@@ -7448,7 +8206,7 @@ export class WorldRenderer3D {
     if (!targets.godRays || !(depth instanceof THREE.DepthTexture)
       || !this.#godRaysActive() || !this.#lightSample || this.#underwater) return 0;
 
-    const sun = godRaySunDirection(this.#lightTime, this.#godRaySun);
+    const sun = this.#visibleSun(this.#godRaySun); // 05.10-sun
     const elevation = sun.y;
     const source = godRayScreenSource(
       this.#camera,
@@ -7695,6 +8453,8 @@ export class WorldRenderer3D {
     const oldMapSize = this.#lightingProfile.shadowMapSize;
     this.#lightingProfile = next;
     setWorldLightImmersiveStrength(this.#worldLight, next.immersiveStrength);
+    setTerrainBakedShadowStrength(terrainBakedShadowStrength(next.quality)); // 05.10-A7b-7 (7.06)
+    setTerrainSpecularStrength(terrainSpecularStrength(next.quality)); // 05.10-A7b-7Г (7.16 Г)
     if (next.localLights === 0) this.#worldLight.wowLocalLightCount.value = 0;
 
     // r185 has physically-correct light units as its only path. Keep the established colour
@@ -7716,7 +8476,8 @@ export class WorldRenderer3D {
     }
     // Map sizes, extents, bias and blur all belong to the cascades (CascadedShadows.ts), which
     // place every map from the camera each frame. Quality 0 hands the sun back as it was.
-    this.#sunCascades.setShadowOnlyCasters(this.#shadowOnlyToggle);
+    this.#sunCascades.setCasterList(this.#shadowCasters); // P2-01a: replaces the shadow-only toggle
+    this.#sunCascades.setFarRenderListener(this.#noteFarRendered); // P2-02b
     this.#sunCascades.setBoundedCasters(this.#boundedShadowCasters);
     this.#sunCascades.configure(this.#scene, this.#renderer, next);
     for (const terrain of this.#terrains.values()) terrain.mesh.receiveShadow = shadows;
@@ -7736,6 +8497,8 @@ export class WorldRenderer3D {
       // the first frame back outside places and renders them all again.
       if (this.#interiorLight !== undefined) return;
       // The camera was placed just before this; the cascades fit themselves to what it sees.
+      // P2-02b: a rigged far caster keeps the cached cascade on its frame interval (no clock floor).
+      this.#sunCascades.setFarAnimated(this.#sceneryFarPosed);
       this.#sunCascades.update(this.#camera, this.#sunOffset, this.#submissionSerial);
       return;
     }
@@ -7801,7 +8564,7 @@ export class WorldRenderer3D {
     const borrows = unit.opacityBorrows;
     if (!borrows) return;
     returnBorrowedMaterials(borrows);
-    delete unit.opacityBorrows;
+    unit.opacityBorrows = undefined;
     unit.shadowCaster = undefined;
   }
 
@@ -7841,7 +8604,7 @@ export class WorldRenderer3D {
     }
     if (current) {
       returnBorrowedMaterials(current);
-      delete rendered.opacityBorrows;
+      rendered.opacityBorrows = undefined;
     }
     rendered.fadedOpacity = wanted;
     if (wanted >= 1 || meshes.length === 0) return;
@@ -7885,6 +8648,7 @@ export class WorldRenderer3D {
     if (unit.skinned) yield unit.skinned.mesh;
     else if (unit.visual instanceof THREE.Mesh) yield unit.visual;
     for (const node of unit.attached.values()) if (node instanceof THREE.Mesh) yield node;
+    for (const node of unit.attached.values()) yield* glowBodyMeshes(glowAnchorsOf(node)); // 05.10: ревью E2 — the glow bodies on them
     const mount = unit.mount;
     if (!mount) return;
     if (mount.skinned) yield mount.skinned.mesh;
@@ -7905,6 +8669,7 @@ export class WorldRenderer3D {
         depthWrite: material.depthWrite,
       }));
       node.castShadow = enabled && eligible;
+      this.#shadowCasters.set(node, enabled && eligible);
       node.receiveShadow = enabled && eligible;
     });
     unit.shadowCaster = enabled;
@@ -8115,7 +8880,8 @@ export class WorldRenderer3D {
         // Indoor WMO lamps already contribute baked room lighting. Keep their pools confined to
         // that path instead of shining an unshadowed point through the building's exterior wall.
         // Outdoor retained lamps remain active when the fixture is just outside the camera view.
-        if (rendered.interior || rendered.source.localLight) continue;
+        // 06.10-render-fix: and no doodad of a building, whose v5 façade lamps are `interior: false`.
+        if (!fixtureLightSource(rendered.source)) continue;
         visit(rendered, rendered.source.name, rendered.node);
       }
       for (const rendered of this.#gameObjects.values()) {
@@ -8137,13 +8903,17 @@ export class WorldRenderer3D {
   #updateEffects(player: WorldPosition, now: number, elapsed: number): void {
     if (!this.#baseUrl) return;
     billboardView(this.#camera, this.#billboard);
+    // 12.08: the view the emitters are drawn in; one off screen writes and draws nothing.
+    this.#effectFrustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
+    this.#effectFrustum.setFromProjectionMatrix(this.#effectFrustumMatrix);
 
     const wanted: {
       key: string;
       wvm: WvmModel;
       /** Squared world distance: identical sort order to the real one, without per-frame sqrt. */
       distance: number;
-      posed?: PosedModel;
+      posed?: Pick<PosedModel, "skinned" | "template" | "action">; // 05.10-A7a-E2: a glow body's rig too
+      fade?: number; // 05.10: ревью E2 — a weapon glow's unit opacity
       visual?: THREE.Object3D;
       spell?: RenderedVisual;
       spellFirstEligible?: boolean;
@@ -8198,12 +8968,28 @@ export class WorldRenderer3D {
       // them on. Emitting anyway would put its sparks at the world origin, because that is what a
       // missing frame is.
       if (!unit.skinned && !unit.visual) return;
+      // 05.10-A7a-G2 (ревью E2): hidden (out of the budget, held for its programs, the first-person rider) — no sparks.
+      if (!glowShown(unit.skinned?.root ?? unit.visual!)) return;
       const at = unit.node.position;
       const distance = nearSquared(at.x, -at.z, at.y);
       if (distance > EFFECT_RANGE_SQUARED) return;
-      const entry: (typeof wanted)[number] = { key: unit.effectKey ??= `unit:${guid}`, wvm: unit.wvm, distance, posed: unit };
+      const entry: (typeof wanted)[number] = { key: unit.effectKey ??= `unit:${guid}`,
+        wvm: particleColouredWvm(unit.wvm, unit.particleColours), distance, posed: unit, // 05.10-A7a-H 6.11а: ParticleColor
+        fade: unit.unitOpacity }; // 05.10-A7a-G2 (ревью E2): a stealthed or invisible unit's emitters fade with it
       if (unit.visual) entry.visual = unit.visual;
       wanted.push(entry);
+    });
+    // 05.10-A7a-E (6.14): enchantment glow effects on worn weapons, ranked with everything else.
+    this.#units.forEach((unit) => {
+      if (unit.attached.size === 0 || !unit.skinned) return;
+      const at = unit.node.position;
+      const distance = nearSquared(at.x, -at.z, at.y);
+      if (distance > EFFECT_RANGE_SQUARED) return;
+      for (const node of unit.attached.values()) {
+        if (!glowAnchorsOf(node) || !glowShown(node)) continue; // 05.10: ревью E2 — a hidden blade (unit turned away, held, first-person rider) emits nothing
+        poseGlowBodies(glowAnchorsOf(node), elapsed, now, this.#camera); // 05.10-A7a-E2: before its emitters read the bones
+        glowEmitterEntries(node, distance, glowEntry, wanted, unit.unitOpacity); // 05.10: ревью E2 — faded with the unit
+      }
     });
 
     // Spell visuals are ranked and budgeted apart from the scenery, for the same reason a tile's
@@ -8372,6 +9158,9 @@ export class WorldRenderer3D {
     }
 
     let effectBuilds = 0;
+    // P1-04: the particle step summed over every group, only during an explicit capture.
+    const detailedCapture = this.#shaderProgramTrace !== undefined;
+    let particleMs = 0;
     for (const entry of wanted) {
       let held = this.#effects.get(entry.key);
       // Rebuilt when the model itself changes — a druid shifting form, a chest opening — because
@@ -8455,6 +9244,7 @@ export class WorldRenderer3D {
       const firstBurst = newSpellEffects && entry.spell !== undefined
         && spellEffectNeedsFirstBurst(entry.spell.instance, firstEligible,
           entry.spell.playbackStartedAt, entry.spell.instance.startedAt, spellAgeMs!, primeSeconds);
+      const particleAt = detailedCapture ? performance.now() : 0;
       updateModelEffects(held.effects, primeSeconds, {
         matrixFor,
         // A unit's emitters follow the clip it is playing; a doodad has no clip to follow, so its
@@ -8478,8 +9268,12 @@ export class WorldRenderer3D {
         catchUp,
         firstBurst,
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
+        frustum: this.#effectFrustum,
       });
+      if (detailedCapture) particleMs += performance.now() - particleAt;
+      if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
+    if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
   }
 
   #markExpiredSpellEffectPhases(now: number): void {
@@ -8592,6 +9386,13 @@ export class WorldRenderer3D {
 
   #updateCamera(player: WorldPosition, yaw: number, pitch: number, distance: number, pivotHeight: number): void {
     const camera = createCamera(player, yaw, pitch, distance, { pivotHeight });
+    // 05.10-A7a-E (6.13): kit camera shakes move the whole camera (CameraShake.ts, Wow.exe 0x00606970).
+    if (this.#cameraShakes.size > 0
+      && this.#cameraShakes.offset(performance.now(), player, player.orientation, _cameraShake)) {
+      camera.position.x += _cameraShake.x;
+      camera.position.y += _cameraShake.y;
+      camera.position.z += _cameraShake.z;
+    }
     this.#camera.position.set(camera.position.x, camera.position.z, -camera.position.y);
     const target = {
       x: camera.position.x + camera.forward.x * 30,
@@ -8648,8 +9449,11 @@ export class WorldRenderer3D {
       || (this.#liquidTextures?.generation ?? 0) !== pendingRepair.liquidGeneration)) {
       this.#cancelTerrainRepair();
     }
-    for (const grid of grids) {
-      const key = `${map}/${grid.x}/${grid.y}`;
+    // P1-13b: the plan's keys, built once per plan (the same `${map}/${x}/${y}` strings).
+    const gridKeys = plan.visibleTileKeys;
+    for (let index = 0; index < grids.length; index++) {
+      const grid = grids[index]!;
+      const key = gridKeys[index]!;
       const revision = terrainClient?.tileRevision(map, grid) ?? 0;
       const ownRevision = terrainClient?.ownRevision(map, grid) ?? 0;
       // The tile under the player is exempt from the budgets below: one tile is bounded
@@ -8755,8 +9559,9 @@ export class WorldRenderer3D {
     const water: THREE.Mesh[] = [];
     try {
       if (prepared.data) geometry = this.#terrainGeometryFromData(prepared.data, prepared.boundingSphere);
-      for (const [liquidClass, surface] of prepared.water ?? []) {
-        const mesh = new THREE.Mesh(surface, this.#liquidMaterial(liquidClass)?.material
+      for (const [liquidSurface, surface] of prepared.water ?? []) {
+        const liquidClass = liquidSurfaceClass(liquidSurface); // 05.10-A7b-8: keyed by surface
+        const mesh = new THREE.Mesh(surface, this.#liquidMaterial(liquidSurface)?.material
           ?? this.#fallbackLiquidMaterial(liquidClass));
         mesh.renderOrder = 1;
         mesh.visible = job.rendered.mesh.visible;
@@ -8774,6 +9579,8 @@ export class WorldRenderer3D {
       rendered.mesh.geometry = geometry;
       this.#programWarmup.registerObject(rendered.mesh);
       previous.dispose();
+      // P2-02b: same mesh, new ground: the terrain fold cannot see it.
+      if (rendered.mesh.castShadow && rendered.mesh.layers.isEnabled(SHADOW_FAR_LAYER)) this.#sunCascades.invalidateFar();
     }
     if (prepared.water) {
       for (const previous of rendered.water ?? []) {
@@ -8782,7 +9589,7 @@ export class WorldRenderer3D {
         previous.geometry.dispose();
       }
       if (water.length > 0) rendered.water = water;
-      else delete rendered.water;
+      else rendered.water = undefined;
       for (const mesh of water) {
         this.#scene.add(mesh);
         this.#programWarmup.registerObject(mesh);
@@ -8797,7 +9604,8 @@ export class WorldRenderer3D {
     terrainClient: TerrainClient | undefined, splatClient: TerrainSplatClient | undefined,
     plan: TerrainStreamingPlan): void {
     const pending = this.#terrainPreparation;
-    if (pending && (!plan.prepare.some(grid => terrainTileKey(map, grid) === pending.key)
+    const prepareKeys = plan.prepareTileKeys; // P1-13b: `terrainTileKey(map, prepare[i])`
+    if (pending && (!prepareKeys.includes(pending.key)
       || terrainClient?.tileRevision(map, pending.grid) !== pending.revision
       || (this.#liquidTextures?.generation ?? 0) !== pending.liquidGeneration)) {
       this.#cancelTerrainPreparation();
@@ -8806,8 +9614,9 @@ export class WorldRenderer3D {
     const deadline = performance.now() + TERRAIN_PREPARE_MS;
     let uploaded = false;
     let requestedSplat = false;
-    for (const grid of plan.prepare) {
-      const key = terrainTileKey(map, grid);
+    for (let index = 0; index < plan.prepare.length; index++) {
+      const grid = plan.prepare[index]!;
+      const key = prepareKeys[index]!;
       // Empty map tiles have no ground textures; wait for their own CPU answer before asking.
       const hasGround = terrainClient.ownRevision(map, grid) > 0
         && terrainClient.heightAt(map, (31.5 - grid.x) * TERRAIN_GRID_SIZE,
@@ -8829,8 +9638,9 @@ export class WorldRenderer3D {
     }
     if (performance.now() >= deadline) return;
     if (!this.#terrainPreparation) {
-      for (const grid of plan.prepare) {
-        const key = terrainTileKey(map, grid);
+      for (let index = 0; index < plan.prepare.length; index++) {
+        const grid = plan.prepare[index]!;
+        const key = prepareKeys[index]!;
         if (this.#terrains.has(key)) continue;
         let ready = true;
         for (let ox = -1; ox <= 1; ox++) {
@@ -8871,7 +9681,7 @@ export class WorldRenderer3D {
       mesh.receiveShadow = this.#lightingProfile.shadowMapSize > 0;
       const rendered: RenderedTerrain = {
         mesh, material, revision: job.revision, ownRevision: job.ownRevision,
-        liquidGeneration: job.liquidGeneration, splatted: false,
+        liquidGeneration: job.liquidGeneration, splatted: false, water: undefined, textureWarmup: undefined,
       };
       this.#terrains.set(job.key, rendered);
       this.#scene.add(mesh);
@@ -8914,9 +9724,10 @@ export class WorldRenderer3D {
    * there is nothing in it that changes as the camera moves.
    */
   #updateHorizon(player: WorldPosition, map: number | undefined, horizonClient: HorizonClient | undefined): void {
-    const centre = map === undefined ? undefined : terrainGrid(player.x, player.y);
+    // P1-13b: the centre tile as one number (`map * 4096 + cell`); its grid object only on a rebuild.
+    const cell = map === undefined ? -1 : terrainGridIndex(player.x, player.y);
     const world = horizonClient?.get(map);
-    if (!centre || !world) {
+    if (map === undefined || cell < 0 || !world) {
       if (this.#horizon) {
         this.#scene.remove(this.#horizon.mesh);
         this.#horizon.mesh.geometry.dispose();
@@ -8924,23 +9735,29 @@ export class WorldRenderer3D {
       }
       return;
     }
-    const key = `${map}/${centre.x}/${centre.y}/${horizonClient?.revision ?? 0}`;
-    if (this.#horizon?.key === key) return;
+    const tile = map * 4096 + cell;
+    const revision = horizonClient?.revision ?? 0;
+    // 05.10-A7b-7 (7.08): lit and coloured on the classic path once the map's picture is in.
+    this.#horizonMaterials ??= new HorizonMaterialSelector(this.#horizonMaterial, this.#worldLight);
+    const horizonMaterial = this.#horizonMaterials.select(this.#lightingProfile.quality, () => horizonClient?.colour(map));
+    if (this.#horizon && this.#horizon.mesh.material !== horizonMaterial) this.#horizon.mesh.material = horizonMaterial;
+    if (this.#horizon?.tile === tile && this.#horizon.revision === revision) return;
     if (this.#horizon) {
       this.#scene.remove(this.#horizon.mesh);
       this.#horizon.mesh.geometry.dispose();
     }
+    const centre = { x: Math.floor(cell / 64), y: cell % 64 };
     const tiles = horizonTiles(world, centre);
     if (tiles.length === 0) {
       this.#horizon = undefined;
       return;
     }
-    const mesh = new THREE.Mesh(buildHorizonGeometry(tiles), this.#horizonMaterial);
+    const mesh = new THREE.Mesh(buildHorizonGeometry(tiles, (x, y) => horizonTileAt(world, x, y)), horizonMaterial); // 05.10-A7b-7
     // The default order, which is to say after the sky. The dome is `renderOrder -1` and writes
     // neither depth nor a depth test, so anything sharing that order is painted over by it —
     // measured as a horizon that loaded, selected its 63 tiles, built its mesh and never appeared.
     mesh.renderOrder = 0;
-    this.#horizon = { mesh, key };
+    this.#horizon = { mesh, tile, revision };
     this.#scene.add(mesh);
   }
 
@@ -8952,7 +9769,10 @@ export class WorldRenderer3D {
     const material = buildTerrainMaterial(this.#worldLight);
     const mesh = new THREE.Mesh(this.#terrainGeometry(map, grid, player, heightAt, terrainClient), material);
     mesh.receiveShadow = this.#lightingProfile.shadowMapSize > 0;
-    const rendered: RenderedTerrain = { material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0 };
+    const rendered: RenderedTerrain = {
+      material, mesh, revision, ownRevision, splatted: false, liquidGeneration: this.#liquidTextures?.generation ?? 0,
+      water: undefined, textureWarmup: undefined,
+    };
     this.#terrains.set(key, rendered);
     this.#scene.add(mesh);
     this.#programWarmup.registerObject(mesh);
@@ -8995,14 +9815,15 @@ export class WorldRenderer3D {
       mesh.geometry.dispose();
       this.#scene.remove(mesh);
     }
-    delete rendered.water;
+    rendered.water = undefined;
     this.#installWater(rendered, this.#waterGeometry(map, grid, heightAt, terrainClient));
   }
 
-  #installWater(rendered: RenderedTerrain, surfaces: Map<LiquidClass, THREE.BufferGeometry>): void {
+  #installWater(rendered: RenderedTerrain, surfaces: Map<LiquidSurface, THREE.BufferGeometry>): void { // 05.10-A7b-8
     const meshes: THREE.Mesh[] = [];
-    for (const [liquidClass, geometry] of surfaces) {
-      const mesh = new THREE.Mesh(geometry, this.#liquidMaterial(liquidClass)?.material
+    for (const [liquidSurface, geometry] of surfaces) {
+      const liquidClass = liquidSurfaceClass(liquidSurface); // 05.10-A7b-8: keyed by surface
+      const mesh = new THREE.Mesh(geometry, this.#liquidMaterial(liquidSurface)?.material
         ?? this.#fallbackLiquidMaterial(liquidClass));
       mesh.renderOrder = 1;
       mesh.visible = rendered.mesh.visible;
@@ -9019,17 +9840,18 @@ export class WorldRenderer3D {
    * The flat sheet stands in meanwhile. A tile is rebuilt when its own data changes, so the
    * stand-in is what the first second or two of a lake looks like on a cold cache and no longer.
    */
-  #liquidMaterial(liquidClass: LiquidClass): LiquidMaterial | undefined {
-    const built = this.#liquidMaterials.get(liquidClass);
+  #liquidMaterial(liquidSurface: LiquidSurface): LiquidMaterial | undefined { // 05.10-A7b-8: by surface
+    const built = this.#liquidMaterials.get(liquidSurface);
     if (built) return built;
-    const strip = this.#liquidTextures?.get(liquidClass);
+    const strip = this.#liquidTextures?.get(liquidSurface);
     if (!strip) return undefined;
-    const material = buildLiquidMaterial(liquidClass, strip);
+    const liquidClass = liquidSurfaceClass(liquidSurface);
+    const material = buildLiquidMaterial(liquidSurface, strip);
     applyLiquidShaderProfile(material, liquidClass, this.#waterProfile(), this.#waterShaderUniforms);
     if (liquidClass === "water" || liquidClass === "ocean") {
       setWaterRainRipples(material.material, this.#atmosphereProfile.rainSplashes);
     }
-    this.#liquidMaterials.set(liquidClass, material);
+    this.#liquidMaterials.set(liquidSurface, material);
     return material;
   }
 
@@ -9080,7 +9902,7 @@ export class WorldRenderer3D {
     return this.#cinematicWaterProfile;
   }
 
-  #waterGeometry(map: number, grid: { x: number; y: number }, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): Map<LiquidClass, THREE.BufferGeometry> {
+  #waterGeometry(map: number, grid: { x: number; y: number }, heightAt: HeightSampler | undefined, terrainClient: TerrainClient | undefined): Map<LiquidSurface, THREE.BufferGeometry> { // 05.10-A7b-8
     const steps = this.#waterGeometrySteps(map, grid, heightAt, terrainClient);
     let result = steps.next();
     while (!result.done) result = steps.next();
@@ -9088,8 +9910,8 @@ export class WorldRenderer3D {
   }
 
   *#waterGeometrySteps(map: number, grid: { x: number; y: number }, heightAt: HeightSampler | undefined,
-    terrainClient: TerrainClient | undefined): Generator<void, Map<LiquidClass, THREE.BufferGeometry>, void> {
-    const surfaces = new Map<LiquidClass, { positions: number[]; uvs: number[]; depths: number[]; calm: number[]; indices: number[] }>();
+    terrainClient: TerrainClient | undefined): Generator<void, Map<LiquidSurface, THREE.BufferGeometry>, void> { // 05.10-A7b-8
+    const surfaces = new Map<LiquidSurface, { positions: number[]; uvs: number[]; depths: number[]; calm: number[]; indices: number[] }>();
     // A water quad used to get one height and one depth for all four vertices.  That made the
     // alpha/deep-colour transition follow the 4.16-yard cell grid, which is especially obvious
     // on shallow shores.  Keep the look-up bounded to this tile: neighbouring cells are cached,
@@ -9168,10 +9990,12 @@ export class WorldRenderer3D {
         // tile-wide level off the hillsides.
         if (!liquid.cells && liquid.height < ground + 0.02) continue;
         const liquidClass = liquidClassOf(liquid.type, liquid.entry, this.#liquidTextures?.classes);
-        let surface = surfaces.get(liquidClass);
+        // 05.10-A7b-8 (7.09 A): grouped by surface (class, or class|family for a row's own strip).
+        const liquidSurface = liquidSurfaceOf(liquidClass, liquid.entry, this.#liquidTextures?.surfaces);
+        let surface = surfaces.get(liquidSurface);
         if (!surface) {
           surface = { positions: [], uvs: [], depths: [], calm: [], indices: [] };
-          surfaces.set(liquidClass, surface);
+          surfaces.set(liquidSurface, surface);
         }
         const base = surface.positions.length / 3;
         const h00 = cornerLiquidHeight(liquid, liquidClass, x, y, 0, 0);
@@ -9206,7 +10030,7 @@ export class WorldRenderer3D {
       }
       if ((row + 1) % 4 === 0) yield;
     }
-    const built = new Map<LiquidClass, THREE.BufferGeometry>();
+    const built = new Map<LiquidSurface, THREE.BufferGeometry>(); // 05.10-A7b-8
     let transferred = false;
     try {
       for (const [liquidClass, surface] of surfaces) {
@@ -9278,18 +10102,20 @@ export class WorldRenderer3D {
     // other half of the question and is exact.
     if (objects !== this.#environmentObjects) {
       this.#environmentObjects = objects;
-      this.#environmentSpatialIndex = new EnvironmentSpatialIndex(objects);
+      // P2-04a: the grid index answers exactly as EnvironmentSpatialIndex (its reference) does.
+      this.#environmentSpatialIndex = new EnvironmentGridIndex(objects);
       this.#environmentGeneration++;
     }
     if (shouldReselect(this.#environmentCandidatesAt, player, this.#environmentGeneration)) {
       const pool = this.#environmentSpatialIndex?.queryCached(
         player.x, player.y, ENVIRONMENT_STREAM_RANGE,
       ).objects ?? objects;
-      this.#environmentCandidates = environmentCandidatesInRange(pool, player, this.#environmentDetail);
-      // The loaded zone: strictly wider than every draw leash, so the line an object crosses
-      // to appear is never the line it crosses to disappear. Draw admission below still reads
-      // the strict set; disposal reads this one.
-      this.#environmentResidents = environmentResidentsInRange(pool, player, this.#environmentDetail);
+      // Candidates and the loaded zone in one pass (P2-04b). The zone is strictly wider than every
+      // draw leash, so the line an object crosses to appear is never the line it crosses to
+      // disappear. Draw admission below still reads the strict set; disposal reads the wide one.
+      const ranked = environmentRankInRange(pool, player, this.#environmentDetail);
+      this.#environmentCandidates = ranked.candidates;
+      this.#environmentResidents = ranked.residents;
       this.#environmentCandidatesAt = {
         x: player.x,
         y: player.y,
@@ -9313,16 +10139,14 @@ export class WorldRenderer3D {
       || this.#admissionCandidates !== this.#environmentCandidates
       || this.#cameraTurnRate > CAMERA_FAST_TURN_RATE
       || (this.#submissionSerial & 1) === 0) {
-      admitted = selectEnvironmentAdmission(
+      // P2-04c: one pass, no allocation; two buffers alternate so a run is a new array identity.
+      this.#admissionFlip ^= 1;
+      admitted = admitEnvironmentInto(
         this.#environmentCandidates,
         this.#frustum.planes,
-        (object) => {
-          const rendered = this.#environment.get(object.id);
-          return rendered?.source === object
-            ? rendered.visibilitySphere
-            : this.#environmentVisibilitySpheres.get(object);
-        },
+        this.#retainedEnvironmentSphere,
         this.#experimentalShaderProfile.vegetationWind ? VEGETATION_WIND_CULL_PADDING : 0,
+        this.#admissionBuffers[this.#admissionFlip]!,
       );
       this.#lastAdmitted = admitted;
       this.#admissionCandidates = this.#environmentCandidates;
@@ -9335,25 +10159,33 @@ export class WorldRenderer3D {
       this.#residentMembership = { source: this.#environmentResidents, values };
     }
     const inRange = this.#residentMembership.values;
+    // P2-06a: membership of a new admission run is a stamp on each admitted record, not a fresh
+    // `Set` of ids per run (`add` was 58 MB of the city bench's 20 s allocation profile).
     if (this.#admittedMembership?.source !== admitted) {
-      const values = new Set<number>();
-      for (const { object } of admitted) values.add(object.id);
-      this.#admittedMembership = { source: admitted, values };
+      const run = ++this.#admissionRun;
+      for (const { object } of admitted) {
+        const rendered = this.#environment.get(object.id);
+        if (rendered) rendered.drawnRun = run;
+      }
+      this.#admittedMembership = { source: admitted, run };
     }
-    const drawn = this.#admittedMembership.values;
-    for (const [id, rendered] of this.#environment) {
+    const drawnRun = this.#admittedMembership.run;
+    // `forEach` rather than `for…of` over entries: the entry iterator hands back a new `[id, record]`
+    // array per record, about 2,800 a frame in the city bench — most of this pass's own allocation
+    // (P2-06a). Deleting the visited entry during `forEach` is safe for a Map.
+    this.#environment.forEach((rendered, id) => {
       if (!inRange.has(id)) {
         this.#removeEnvironment(id, rendered);
-        continue;
+        return;
       }
       // A tile reload may reuse a numeric placement id. Its old transform/model cannot lend bounds
       // or a node to the new immutable snapshot, even while both happen to be in the same range.
       if (rendered.source !== inRange.get(id)) {
         this.#removeEnvironment(id, rendered);
-        continue;
+        return;
       }
-      this.#setEnvironmentAdmitted(rendered, drawn.has(id));
-    }
+      this.#setEnvironmentAdmitted(rendered, rendered.drawnRun === drawnRun);
+    });
     if (this.#submissionSerial - this.#warmPruneAtSerial >= WARM_PRUNE_INTERVAL_FRAMES) {
       this.#warmPruneAtSerial = this.#submissionSerial;
       this.#pruneWarmEnvironment();
@@ -9366,15 +10198,17 @@ export class WorldRenderer3D {
     // ramps in over frames instead of landing in one.
     let environmentBuilds = 0;
     this.#environmentBuildBudget.begin();
+    this.#environmentStandIns.begin(); // 05.10-A7b-9 7.18
+    this.#environmentStandInMarkers.beginFrame(performance.now()); // 05.10-A7b-9 7.18
     for (const { object, distance } of admitted) {
       // The same distance the ranking used: to the building rather than to the pin, or a city is
       // ranked in but still swapped for its stand-in box from most of its own streets. Far-tier
       // shells and far vegetation resolve their model too — the rooms stay on the near leash
       // below, so a far castle costs its shell groups and not its interior. An admitted M2 is
       // inside its own size-scaled leash, so it always resolves: a big rock at 500 yards is art.
-      const model = distance < MODEL_RANGE || object.kind === "m2" || environmentFarEligible(object)
-        || environmentVegetation(object)
-        ? client?.model(object.name, "normal") : undefined;
+      const asked = distance < MODEL_RANGE || object.kind === "m2" || environmentFarEligible(object) // 05.10-A7b-9: named
+        || environmentVegetation(object);
+      const model = asked ? client?.model(object.name, "normal") : undefined;
       let rendered = this.#environment.get(object.id);
       const replacesWmo = rendered !== undefined && model !== undefined
         && (rendered.wmo !== undefined || model.wmo !== undefined)
@@ -9390,8 +10224,11 @@ export class WorldRenderer3D {
         // A first sight that already grew keeps its stamp across a display rebuild, so a tree
         // that changes state does not grow twice. A model landing on a loading stand-in starts
         // unstamped and eases in below.
-        if (environmentBuilds >= ENVIRONMENT_BUILD_BUDGET) continue;
-        if (!this.#environmentBuildBudget.take()) continue;
+        if (environmentBuilds >= ENVIRONMENT_BUILD_BUDGET || !this.#environmentBuildBudget.take()) {
+          // 05.10-A7b-9 (7.18): the stand-in stays up for another frame, and is counted as such.
+          if (rendered?.standIn !== undefined) this.#noteEnvironmentStandIn(object, rendered.standIn, model, asked, client);
+          continue;
+        }
         const everVisible = rendered?.everVisible;
         if (rendered) {
           this.#disposeEnvironment(rendered);
@@ -9406,12 +10243,40 @@ export class WorldRenderer3D {
         const node = building?.node ?? rig?.node ?? this.#environmentNode(object, model);
         rendered = {
           actual: Boolean(model),
+          standIn: undefined,
           node,
+          effectKey: undefined,
           source: object,
           admitted: true,
           interior: object.interior === true,
           lastAdmittedFrame: this.#submissionSerial,
+          visibilitySphere: undefined,
+          built: undefined,
+          decodedModel: undefined,
+          legacyGeometry: undefined,
+          materialEntries: undefined,
+          tintMaterials: undefined,
+          visual: undefined,
+          wvm: undefined,
+          liquid: undefined,
+          liquidGeneration: undefined,
+          wmo: undefined,
+          instanceKey: undefined,
+          instanceBucket: undefined,
+          instanceMatrix: undefined,
+          growthStartedAt: undefined,
+          growthTotal: undefined,
+          everVisible: undefined,
+          // P2-06a: built for an entry of the current admission run.
+          drawnRun: this.#admittedMembership?.run ?? 0,
+          skinned: undefined,
+          template: undefined,
+          model: undefined,
         };
+        // 05.10-A7b-9 (7.18): the shape `#environmentNode` chose when it did not draw the model.
+        if (!building && !rig && !drawableModel(model)) {
+          rendered.standIn = model ? "hull" : standInKind(object) === "tree" ? "canopy" : "empty";
+        }
         if (model && model.wvm === undefined && model.wmo === undefined) {
           rendered.decodedModel = model;
         }
@@ -9478,13 +10343,13 @@ export class WorldRenderer3D {
         node.matrixAutoUpdate = !growing;
         node.updateMatrix();
         node.updateMatrixWorld(true);
-        // Frozen down to the leaves, buildings included. `Object3D.updateMatrixWorld` recurses
-        // into its children whatever the parent's own flags say, so a room hung on a frozen
-        // building afterwards still multiplies itself by the building's world matrix and lands
-        // where it belongs — measured, because the first version of this exempted buildings on the
-        // assumption that it would not. Freezing only the outer node would leave the mesh inside
-        // it composing and multiplying its own matrix sixty times a second for no reason. Growing
-        // trees skip the freeze until they settle; the growth pass owns their matrices meanwhile.
+        // Frozen down to the leaves, buildings included. Freezing only the outer node would leave
+        // the mesh inside it composing and multiplying its own matrix sixty times a second for no
+        // reason. Growing trees skip the freeze until they settle; the growth pass owns their
+        // matrices meanwhile. RND-12: the scenery group (`StaticSceneryGroup`) no longer walks a
+        // frozen placement at all, so anything hung under one afterwards must write its own world
+        // matrix when it is hung — a room is composed and frozen in `#updateWmoGroups`, its shadow
+        // stand-in's world matrix is written when it is made — or it keeps an identity matrix.
         if (!rendered.skinned && !growing) {
           node.traverse((part: THREE.Object3D) => {
             part.matrixAutoUpdate = false;
@@ -9505,6 +10370,8 @@ export class WorldRenderer3D {
         // reading the matrix of this very mesh. A growing tree joins the instances when it
         // settles; its mid-growth matrix is not exact placement state.
         if (!growing) this.#assignEnvironmentInstance(rendered, object, visual, model);
+        // P2-02a: its shadow flags now, after its matrices: no longer at the next thirtieth light push.
+        this.#sceneryShadowsForPlacement(rendered);
         this.#instancesDirty = true;
         environmentBuilds++;
       }
@@ -9537,7 +10404,9 @@ export class WorldRenderer3D {
         }
       }
       if (rendered.actual) this.#realModels++;
+      if (rendered.standIn !== undefined) this.#noteEnvironmentStandIn(object, rendered.standIn, model, asked, client); // 05.10-A7b-9
     }
+    this.#environmentStandInMarkers.endFrame(); // 05.10-A7b-9 7.18
     this.#prefetchEnvironmentModels(client);
     this.#updateVegetationGrowth(client);
     this.#poseDoodads(player, client, elapsed);
@@ -9605,8 +10474,8 @@ export class WorldRenderer3D {
           part.matrixAutoUpdate = false;
           part.matrixWorldAutoUpdate = false;
         });
-        delete rendered.growthStartedAt;
-        delete rendered.growthTotal;
+        rendered.growthStartedAt = undefined;
+        rendered.growthTotal = undefined;
         this.#growingVegetation--;
         this.#assignEnvironmentInstance(
           rendered,
@@ -9614,6 +10483,10 @@ export class WorldRenderer3D {
           rendered.visual,
           client?.model(rendered.source.name, "background"),
         );
+        // P2-02a: at its full size a tree may now pass the casting radius (it was flagged small);
+        // P2-02b: after its instance key, and a tree already in the cached map was drawn too small.
+        if (this.#sceneryFarOwners.has(rendered)) this.#sceneryFarDirty = true;
+        this.#sceneryShadowsForPlacement(rendered);
         settled = true;
         continue;
       }
@@ -9652,6 +10525,11 @@ export class WorldRenderer3D {
     if (rendered.admitted === admitted) return;
     rendered.admitted = admitted;
     this.#instancesDirty = true;
+    // P2-02b: an interior doodad is drawn only while admitted (gate 1), so its shadow in the cached
+    // map comes and goes with admission, which no fold sees; it is left to the 2 s interval on
+    // purpose. Marking it re-rendered the map on 53 of 53 reconciles of the city bench (the orbit
+    // flips interior admission all the time), and the shadow falls inside its building, whose
+    // interior runs do not receive the sun's map.
     if (admitted) {
       // The instance pass may hide this node again after installing it in an InstancedMesh.
       rendered.node.visible = true;
@@ -9659,7 +10537,14 @@ export class WorldRenderer3D {
       return;
     }
     rendered.node.visible = false;
+    this.#plainShown.delete(rendered.node); // P2-07: shown plain again only through `#showAsPlain`
     for (const mesh of rendered.liquid ?? []) mesh.visible = false;
+    // P2-02a: a tree still growing does not settle while hidden; it casts behind the camera (gate 2)
+    // at the size it stopped at, as the old thirty-push walk left it, not at the quarter it began.
+    if (rendered.growthStartedAt !== undefined) {
+      if (this.#sceneryFarOwners.has(rendered)) this.#sceneryFarDirty = true; // P2-02b
+      this.#sceneryShadowsForPlacement(rendered);
+    }
     // WMO room wrappers are demand-side resources. Keep the parent warm, not every hidden room.
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
   }
@@ -9667,7 +10552,7 @@ export class WorldRenderer3D {
   /** Removes one placement after it leaves range or loses the bounded warm LRU. */
   #removeEnvironment(id: number, rendered: RenderedEnvironment): void {
     this.#disposeEnvironment(rendered);
-    delete rendered.liquidGeneration;
+    rendered.liquidGeneration = undefined;
     this.#environment.delete(id);
     this.#dropEffects(`env:${id}`);
     this.#instancesDirty = true;
@@ -9742,17 +10627,18 @@ export class WorldRenderer3D {
     // Paired with the increment where growth starts: a disposed node never settles, so the
     // counter follows the flag rather than the settle path.
     if (rendered.growthStartedAt !== undefined) {
-      delete rendered.growthStartedAt;
-      delete rendered.growthTotal;
+      rendered.growthStartedAt = undefined;
+      rendered.growthTotal = undefined;
       this.#growingVegetation--;
     }
     disposeSkinnedInstance(rendered.skinned);
-    delete rendered.skinned;
-    delete rendered.template;
+    rendered.skinned = undefined;
+    rendered.template = undefined;
     disposeModelPlacementTintMaterials(rendered.tintMaterials);
-    delete rendered.tintMaterials;
+    rendered.tintMaterials = undefined;
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
     rendered.node.removeFromParent();
+    this.#forgetSceneryFar(rendered); // P2-02a
     this.#dropWmoLiquid(rendered);
   }
 
@@ -9787,6 +10673,12 @@ export class WorldRenderer3D {
     });
     posed.sort((left, right) => left.distance - right.distance);
     this.#doodadsPosed = Math.min(posed.length, DOODAD_ANIMATION_BUDGET);
+    // P2-02b: a far shadow that moves keeps the cached cascade on its frame interval.
+    let farPosed = false;
+    for (let index = 0; index < this.#doodadsPosed && !farPosed; index++) {
+      if (this.#sceneryFarAnimated.has(posed[index]!.rendered)) farPosed = true;
+    }
+    this.#sceneryFarPosed = farPosed;
 
     for (let index = 0; index < this.#doodadsPosed; index++) {
       const { rendered } = posed[index]!;
@@ -9864,6 +10756,11 @@ export class WorldRenderer3D {
       if (!built) continue;
       const locallyLit = list[0]!.source.localLight !== undefined;
       let entry = this.#instances.get(key);
+      // P2-07: the same copies in the same order as this bucket's last rebuild write the same
+      // matrices, colours and sphere (placements never move and their tint and light are their
+      // records'), and its copies are already hidden — the rebuild would change nothing.
+      const members = this.#instanceMembers.get(key);
+      if (entry && members && !this.#instanceWarmHolds.has(entry.mesh) && sameInstanceMembers(members, list)) continue;
       let freshMesh = false;
       // An `InstancedMesh` fixes its capacity when it is made, so it is grown in powers of two
       // rather than rebuilt every time one more barrel comes into range.
@@ -9890,12 +10787,14 @@ export class WorldRenderer3D {
           : { mesh, capacity, built };
         this.#instances.set(key, entry);
         (localLight ? this.#localLightInstanceGroup : this.#instanceGroup).add(mesh);
+        this.#sceneryShadowsForInstance(mesh); // P2-02a
       }
       for (const [index, rendered] of list.entries()) {
         entry.mesh.setMatrixAt(index, rendered.instanceMatrix!);
         const localLight = rendered.source.localLight;
         if (entry.localLight && localLight) {
-          entry.localLight.attribute.setXYZ(index, localLight[0], localLight[1], localLight[2]);
+          // 06.10-doodad-light: bytes, not normalized setXYZ (which stored 256 - v: blue furniture).
+          writeInstancedLocalLight(entry.localLight.attribute, index, localLight);
         } else {
           entry.mesh.setColorAt(
             index,
@@ -9903,6 +10802,7 @@ export class WorldRenderer3D {
           );
         }
         rendered.node.visible = false;
+        this.#plainShown.delete(rendered.node); // P2-07
       }
       entry.mesh.count = list.length;
       entry.mesh.instanceMatrix.needsUpdate = true;
@@ -9911,6 +10811,7 @@ export class WorldRenderer3D {
       // `setMatrixAt` does not invalidate it, and three computes it once and keeps it: left alone,
       // the sphere would be the centroid of whichever copies happened to be in range first.
       entry.mesh.computeBoundingSphere();
+      copyInstanceMembers(this.#instanceMembers, key, list); // P2-07
       // Registered after the colours, not at creation: `setColorAt` is what gives the mesh its
       // `instanceColor` attribute, and that attribute is part of the program three compiles.
       if (freshMesh) this.#programWarmup.registerObject(entry.mesh);
@@ -9948,6 +10849,11 @@ export class WorldRenderer3D {
    */
   #showAsPlain(rendered: RenderedEnvironment): void {
     rendered.node.visible = true;
+    // P2-07: a copy already shown plain was registered and held then; the bucket pass asks again
+    // on every rebuild (every admission flip while the camera turns), which only re-derived the
+    // same warm-up keys. Cleared wherever the copy is hidden again.
+    if (this.#plainShown.has(rendered.node)) return;
+    this.#plainShown.add(rendered.node);
     const visual = rendered.node.userData["visual"];
     if (visual instanceof THREE.Mesh) {
       this.#programWarmup.registerObject(rendered.node);
@@ -9964,6 +10870,7 @@ export class WorldRenderer3D {
       } else if (hold.frames >= INSTANCE_WARM_HOLD_FRAMES || this.#instancedMeshWarm(mesh)) {
         for (const node of hold.nodes) node.visible = false;
         mesh.visible = true;
+        for (const node of hold.nodes) this.#plainShown.delete(node); // P2-07: hidden again
         this.#instanceWarmHolds.delete(mesh);
       } else {
         hold.frames++;
@@ -10041,7 +10948,7 @@ export class WorldRenderer3D {
       this.#unitWarmHolds.delete(unit);
       const body = unitWarmBody(unit);
       if (body) this.#markUnitShown(unit, body);
-      unit.node.visible = hold.visible;
+      unit.node.visible = hold.visible && !this.#vehiclePassengers.hides(unit.node); // 11.02-H-review
     }
     for (const [part, hold] of this.#unitPartWarmHolds) {
       if (!hold.unit.node.parent || !hangsUnder(part, hold.unit.node)) {
@@ -10187,7 +11094,7 @@ export class WorldRenderer3D {
    */
   #unitFadeReturnWaits(unit: RenderedUnit, wanted: number): boolean {
     if (wanted < 1 || (unit.opacityBorrows === undefined && !unit.material.transparent)) {
-      if (unit.fadeReturnFrames !== undefined) delete unit.fadeReturnFrames;
+      if (unit.fadeReturnFrames !== undefined) unit.fadeReturnFrames = undefined;
       return false;
     }
     const frames = unit.fadeReturnFrames ?? 0;
@@ -10349,6 +11256,7 @@ export class WorldRenderer3D {
 
   /** Takes one model's instanced draw away and shows the placements it was standing in for. */
   #dropInstance(key: string): void {
+    this.#instanceMembers.delete(key); // P2-07
     const entry = this.#instances.get(key);
     if (!entry) return;
     entry.mesh.removeFromParent();
@@ -10527,6 +11435,11 @@ export class WorldRenderer3D {
       loadTexture: (url) => this.#loadTexture(url),
       deduplicateLoadedTextures: true,
       coalesceAdjacentBatches: cache === this.#builtUnits,
+      // P2-03a: rigged unit bodies fold their passes into slot carriers; nothing else does.
+      slotFold: cache === this.#builtUnits && skinned ? UNIT_SLOT_FOLD : "off",
+      slotLimit: Math.min(WVM_SLOT_SAMPLERS, this.#renderer.capabilities.maxTextures - 8),
+      // P2-03b: unit appearances of one model share its vertex buffers (SharedModelBuffers.ts).
+      ...(cache === this.#builtUnits ? { sharedBuffers: this.#modelBuffers } : {}),
       ...(slots ? { slots } : {}),
       ...(geosets ? { geosets } : {}),
       ...(slotTextures ? { slotTextures } : {}),
@@ -10652,16 +11565,18 @@ export class WorldRenderer3D {
     const node = placeEnvironmentNode(new THREE.Group(), object);
     node.updateMatrixWorld(true);
     const modelToWorld = node.matrixWorld.clone().multiply(VMAP_TO_THREE);
+    const boxes = wmoGroupBoxes(model, object);
     return {
       node,
       placed: {
         visualId: object.id,
         name: object.name,
         model,
-        boxes: wmoGroupBoxes(model, object),
+        boxes,
         modelToWorld,
         worldToModel: modelToWorld.clone().invert(),
         built: new Map(),
+        ranges: new WmoRangeTable(model, boxes, INTERIOR_RANGE, wmoShellRange), // P1-12a
       },
     };
   }
@@ -10682,11 +11597,15 @@ export class WorldRenderer3D {
 
   /** Detaches placement-local borrowers without disposing their shared geometry or materials. */
   #clearWmoGroups(placed: PlacedWmo, node: THREE.Object3D): void {
-    for (const { mesh } of placed.built.values()) {
+    for (const { entry, mesh } of placed.built.values()) {
       this.#programWarmup.unregisterObject(mesh);
       node.remove(mesh);
+      this.#releaseWmoRoomShadow(mesh); // P2-02a
+      // P1-12b: an attached room is no longer touched every frame; it becomes recent as it leaves.
+      this.#wmoGeometries.get(entry.cacheKey);
     }
     placed.built.clear();
+    placed.appliedSettled = false; // P1-12b: the next frame attaches in full
   }
 
   /** Interior-only placements by visual id; retired by `#updateSkybox` once not updated. */
@@ -10737,19 +11656,17 @@ export class WorldRenderer3D {
   }
 
   /**
-   * One entered interior-only building's frame: which rooms show and therefore which of its
-   * doodads, whether the camera stands in a room, and the baked light of the floor under the player.
-   *
-   * The doodads are bound once per environment snapshot. `generate-visual-tile.mjs` ids them
-   * -(placement * 1e6 + ordinal + 1), and the ordinal indexes WME4's table of the placement's set;
-   * binding changes their leash, so the distance pass is asked to run again. `clipped` says the
-   * rooms came through portals, whose screen rectangles were written into `rooms.apertures`.
+   * 05.10-A7b-2 (7.03 slice 3): which rooms of a placement show this frame, and its doodads bound to
+   * them — once per environment snapshot. Moved here from `#noteInteriorOnly` unchanged, so a
+   * building with a street seen through its portals binds the same way; `leash` is how far a
+   * shown doodad of it is drawn (unset: the environment range of a building of rooms alone).
    */
-  #noteInteriorOnly(placed: PlacedWmo, player: WorldPosition, selected: readonly number[], clipped: boolean): void {
+  #bindWmoDoodads(placed: PlacedWmo, selected: readonly number[], clipped: boolean, leash?: number): InteriorOnlyRooms {
     const model = placed.model;
     const rooms = this.#interiorOnlyRoomsOf(placed);
     rooms.visible.fill(0);
-    for (const index of selected) rooms.visible[index] = 1;
+    // P1-12c: indexed — an array iterator per call (every admitted building with a street, every frame).
+    for (let at = 0; at < selected.length; at++) rooms.visible[selected[at]!] = 1;
     rooms.clipped = clipped;
     // The same frame's camera as the portal walk: `#updateEnvironment` set it before admission.
     if (clipped) rooms.clip.set(this.#frustumMatrix.elements);
@@ -10768,16 +11685,31 @@ export class WorldRenderer3D {
       const tables = model.doodadRooms ?? [];
       const table = tables[this.#environment.get(placed.visualId)?.source.doodadSet ?? 0] ?? tables[0];
       if (table) {
-        for (const object of objects) {
-          if (object.interior !== true || object.id >= 0) continue;
+        // 05.10 review A7b-2: this placement's doodads only — the snapshot is grouped once (WmoOpenAir.ts).
+        for (const object of wmoDoodadsOfPlacement(objects, placed.visualId)) {
           const code = -object.id - 1;
           const parent = Math.floor(code / 1_000_000);
-          if (parent !== placed.visualId) continue;
           INTERIOR_ONLY_DOODADS.set(object, { rooms, table, ordinal: code - parent * 1_000_000, at: -1, shown: undefined });
         }
       }
       this.#environmentCandidatesAt = undefined;
     }
+    rooms.leash = leash;
+    return rooms;
+  }
+
+  /**
+   * One entered interior-only building's frame: which rooms show and therefore which of its
+   * doodads, whether the camera stands in a room, and the baked light of the floor under the player.
+   *
+   * The doodads are bound once per environment snapshot. `generate-visual-tile.mjs` ids them
+   * -(placement * 1e6 + ordinal + 1), and the ordinal indexes WME4's table of the placement's set;
+   * binding changes their leash, so the distance pass is asked to run again. `clipped` says the
+   * rooms came through portals, whose screen rectangles were written into `rooms.apertures`.
+   */
+  #noteInteriorOnly(placed: PlacedWmo, player: WorldPosition, selected: readonly number[], clipped: boolean): void {
+    const model = placed.model;
+    const rooms = this.#bindWmoDoodads(placed, selected, clipped); // 05.10-A7b-2: shared with open air
     const camera = this.#wmoCameraModel;
     if (wmoInteriorGroupAt(model, camera.x, camera.y, camera.z) >= 0) this.#interiorOnlyCamera = true;
     const feet = this.#wmoViewerModel.set(player.x, player.z, -player.y).applyMatrix4(placed.worldToModel);
@@ -10798,18 +11730,13 @@ export class WorldRenderer3D {
     node: THREE.Object3D,
     client: EnvironmentClient | undefined,
     staticEnvironment = false,
+    shellRange?: number, // 05.10-7.05-review
   ): void {
-    // Same inputs, same set: the player standing still re-asks the identical question for every
-    // admitted building sixty times a second.
-    let distanceGroups = placed.rangeGroups;
-    if (distanceGroups === undefined
-      || placed.rangePlayer?.x !== player.x
-      || placed.rangePlayer?.y !== player.y
-      || placed.rangePlayer?.z !== player.z) {
-      distanceGroups = wmoGroupsInRange(placed.model, placed.boxes, player);
-      placed.rangePlayer = { x: player.x, y: player.y, z: player.z };
-      placed.rangeGroups = distanceGroups;
-    }
+    // P1-12a: the same set while no group can have crossed its leash — the player re-asks the
+    // question for every admitted building every frame. 05.10-7.05-review: the transport shell leash.
+    // P1-12 telemetry: the table counts into the renderer's totals (a fake `ranges` just gains a field).
+    placed.ranges.totals ??= this.#wmoRangeGroups;
+    let distanceGroups = placed.ranges.select(player.x, player.y, shellRange);
     const fogPlacement = staticEnvironment && placed.visualId === this.#wmoFogVisualId;
     // A building of rooms alone that the camera or the player has entered is chosen through its
     // portals from the far leash (a dungeon's halls outrun sixty yards); seen from outside it keeps
@@ -10819,6 +11746,7 @@ export class WorldRenderer3D {
     if (entered) distanceGroups = this.#interiorOnlyRange(placed, player);
     let selected: readonly number[] = distanceGroups;
     let clipped = false;
+    let walked = false; // 05.10-A7b-2: the indoor walk above answered
     if (fogPlacement || (staticEnvironment && this.#indoors) || entered) {
       this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
       if (fogPlacement) this.#considerWmoFog(placed, this.#wmoCameraModel);
@@ -10827,18 +11755,28 @@ export class WorldRenderer3D {
         this.#wmoModelToClip
           .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
           .premultiply(this.#camera.projectionMatrix);
-        const portalSelection = selectWmoPortalGroups(
-          placed.model.groups,
-          placed.model.portals,
-          distanceGroups,
-          this.#wmoCameraModel,
-          this.#wmoModelToClip.elements,
-          this.#wmoViewerModel,
-          entered ? this.#interiorOnlyRoomsOf(placed).apertures : undefined,
-        );
+        const screenApertures = entered ? this.#interiorOnlyRoomsOf(placed).apertures : undefined;
+        // P1-12c: the same inputs as the last walk of this placement give its answer (`WmoPortalMemo.ts`).
+        const memo = placed.portalMemo ??= createWmoPortalMemo();
+        let portalSelection = wmoPortalMemoAnswer(memo, placed.model, distanceGroups, this.#wmoCameraModel,
+          this.#wmoModelToClip.elements, this.#wmoViewerModel, screenApertures);
+        if (portalSelection === undefined) {
+          portalSelection = selectWmoPortalGroups(
+            placed.model.groups,
+            placed.model.portals,
+            distanceGroups,
+            this.#wmoCameraModel,
+            this.#wmoModelToClip.elements,
+            this.#wmoViewerModel,
+            screenApertures,
+          );
+          wmoPortalMemoNote(memo, placed.model, distanceGroups, this.#wmoCameraModel,
+            this.#wmoModelToClip.elements, this.#wmoViewerModel, screenApertures, portalSelection);
+        }
         if (portalSelection.used) {
           selected = portalSelection.groups;
           clipped = entered;
+          walked = true; // 05.10-A7b-2
           this.#wmoPortalModels++;
           this.#wmoPortalCandidates += portalSelection.candidates;
           this.#wmoPortalCulled += portalSelection.culled;
@@ -10849,8 +11787,11 @@ export class WorldRenderer3D {
     // in no room — the building keeps the sixty-yard rooms rather than every room in 400 yards.
     if (entered && !clipped) selected = roomLeash;
     if (entered) this.#noteInteriorOnly(placed, player, selected, clipped);
-    const wanted = new Set(selected);
-    const missing: number[] = [];
+    // 05.10-A7b-2 (7.03 slice 3): a building with a street — its rooms seen through its doors from
+    // the street, and its furniture bound to the rooms either walk showed.
+    if (staticEnvironment && !entered && this.#wmoOcclusion && placed.model.portals && !wmoInteriorOnly(placed.model)) {
+      selected = this.#wmoRoomsFromOpenAir(placed, player, selected, walked);
+    }
     // Room builds (geometry compose, material setup, uploads) are the building-shaped turn
     // hitch: a newly admitted castle can want dozens of rooms on one frame. Build at most a
     // few per submitted frame across every admitted building — shells first, because they are
@@ -10861,23 +11802,41 @@ export class WorldRenderer3D {
       this.#wmoGroupBuilds = 0;
       this.#wmoGroupBuildBudget.begin();
     }
+    // P1-12b: the selection the last full pass attached in full, over the same cache entries — every
+    // wanted room is attached to its exact current entry and nothing else is, so the pass below
+    // would detach, build and request nothing.
+    if (placed.appliedSettled && placed.appliedEpoch === this.#wmoGeometries.epoch
+      && sameWmoSelection(placed.appliedSelection, selected)) return;
+    const groups = placed.model.groups;
+    let wanted = placed.groupMask;
+    if (wanted === undefined || wanted.length !== groups.length) {
+      wanted = placed.groupMask = new Uint8Array(groups.length);
+    } else wanted.fill(0);
+    for (let at = 0; at < selected.length; at++) wanted[selected[at]!] = 1;
+    const missing: number[] = [];
     const buildable: number[] = [];
-    for (const [index, group] of placed.model.groups.entries()) {
+    for (let index = 0; index < groups.length; index++) {
+      const group = groups[index]!;
       const built = placed.built.get(index);
-      if (!wanted.has(index)) {
+      if (!wanted[index]) {
         if (built) {
           this.#programWarmup.unregisterObject(built.mesh);
           node.remove(built.mesh);
+          this.#releaseWmoRoomShadow(built.mesh); // P2-02a
+          // An attached room is not touched while it stays; it becomes recent as it leaves.
+          this.#wmoGeometries.get(built.entry.cacheKey);
           placed.built.delete(index);
         }
         continue;
       }
       if (built) {
-        const retained = this.#wmoGeometries.get(this.#wmoGroupCacheKey(placed.model, index));
-        if (retained === built.entry) continue;
+        // `peek`: the room is pinned while attached, so its recency matters only once it leaves.
+        if (this.#wmoGeometries.peek(built.entry.cacheKey) === built.entry) continue;
+        this.#wmoGeometries.get(built.entry.cacheKey);
         // A wrapper may never outlive its exact cache entry or decoded parent.
         this.#programWarmup.unregisterObject(built.mesh);
         node.remove(built.mesh);
+        this.#releaseWmoRoomShadow(built.mesh); // P2-02a
         placed.built.delete(index);
       }
       if (!group.mesh) {
@@ -10906,10 +11865,84 @@ export class WorldRenderer3D {
       placed.built.set(index, rendered);
       node.add(rendered.mesh);
       this.#holdWmoGroupUntilWarm(rendered.mesh);
+      // RND-12: a placed building is frozen, so its room is composed once and frozen as it is hung;
+      // the scenery group then never walks it. A transport's rooms move with it and stay live.
+      if (staticEnvironment) {
+        rendered.mesh.updateMatrixWorld(true);
+        rendered.mesh.matrixAutoUpdate = false;
+        rendered.mesh.matrixWorldAutoUpdate = false;
+      }
+      // P2-02a: a placed building's room takes its shadow flags as it is hung (transports never did).
+      if (staticEnvironment && this.#sceneryShadowsApplied) {
+        this.#syncWmoRoomShadow(placed, index, rendered, true, this.#sunCascades.active);
+      }
+      // P2-02b: a held room is hidden, stand-in and all; it joins the far set when it is shown.
+      const heldFar = rendered.mesh.visible ? undefined : this.#sceneryFarOwners.get(rendered.mesh);
+      if (heldFar !== undefined) {
+        this.#forgetSceneryFar(rendered.mesh);
+        this.#wmoHeldFar.set(rendered.mesh, heldFar);
+      }
     }
     this.#wmoGroupsPending += buildable.length - attached;
     // A model that came whole has nothing to ask for, and asking would be a request per frame.
     if (missing.length > 0 && !placed.model.complete) client?.requestModelGroups(placed.name, missing);
+    // P1-12b: the epoch after this pass's own builds; a later set or delete anywhere reopens it.
+    const applied = placed.appliedSelection ??= [];
+    applied.length = selected.length;
+    for (let at = 0; at < selected.length; at++) applied[at] = selected[at]!;
+    placed.appliedEpoch = this.#wmoGeometries.epoch;
+    placed.appliedSettled = missing.length === 0 && attached === buildable.length;
+  }
+
+  /**
+   * 05.10-A7b-2 (7.03 slice 3): the rooms of a building with a street (not `wmoInteriorOnly`).
+   *
+   * With the camera in one of its rooms the indoor walk above has chosen them (`walkedIndoors`); its
+   * furniture then follows those rooms on the old sixty-yard leash. From open air the building's
+   * portals are walked from its outside over the rooms within `WMO_OPEN_AIR_ROOM_RANGE` — a room
+   * behind a door or a window on screen is drawn, one whose every way out is off screen is not —
+   * and its furniture is drawn as far, where a room it stands in shows through its doorway. A
+   * damaged graph or an old artifact answers the unchanged distance rooms. The walk is redone only
+   * when the camera, the player or the placement moved, and reuses its own scratch (`WmoOpenAir.ts`).
+   */
+  #wmoRoomsFromOpenAir(
+    placed: PlacedWmo,
+    player: WorldPosition,
+    selected: readonly number[],
+    walkedIndoors: boolean,
+  ): readonly number[] {
+    const model = placed.model;
+    const binds = (model.doodadRooms?.length ?? 0) > 0;
+    if (walkedIndoors) {
+      if (binds) this.#bindWmoDoodads(placed, selected, false, INTERIOR_RANGE);
+      return selected;
+    }
+    const state = placed.openAir ??= createWmoOpenAirState();
+    if (wmoOpenAirCandidatesStale(state, player.x, player.y, player.z)) {
+      // P1-12c: from a rest radius, the same array while unchanged; noting it still re-walks (the viewer moved).
+      const ranges = placed.openAirRanges ??= new WmoRangeTable(model, placed.boxes, WMO_OPEN_AIR_ROOM_RANGE, wmoShellRange);
+      ranges.totals ??= this.#wmoRangeOpenAir; // P1-12 telemetry
+      wmoOpenAirNoteCandidates(state, ranges.select(player.x, player.y), player.x, player.y, player.z);
+    }
+    const clip = this.#wmoModelToClip
+      .multiplyMatrices(this.#camera.matrixWorldInverse, placed.modelToWorld)
+      .premultiply(this.#camera.projectionMatrix)
+      .elements;
+    const rooms = binds ? this.#interiorOnlyRoomsOf(placed) : undefined;
+    if (wmoOpenAirWalkStale(state, clip, rooms)) {
+      this.#wmoCameraModel.copy(this.#camera.position).applyMatrix4(placed.worldToModel);
+      this.#wmoViewerModel.set(player.x, player.z, -player.y).applyMatrix4(placed.worldToModel);
+      selectWmoPortalGroups(model.groups, model.portals, state.candidates!, this.#wmoCameraModel, clip,
+        this.#wmoViewerModel, rooms?.apertures, state.walk);
+      wmoOpenAirNoteWalk(state, clip, rooms);
+    }
+    const walk = state.scratch.result;
+    if (!walk.used) return selected;
+    this.#wmoPortalModels++;
+    this.#wmoPortalCandidates += walk.candidates;
+    this.#wmoPortalCulled += walk.culled;
+    if (binds) this.#bindWmoDoodads(placed, walk.groups, true, WMO_OPEN_AIR_ROOM_RANGE);
+    return walk.groups;
   }
 
   /** Keep the one collision-proven room answer; render order and asynchronous meshes do not vote. */
@@ -10926,17 +11959,30 @@ export class WorldRenderer3D {
   /** Apply the one room chosen above only to interior WMO materials; outdoor fog stays intact. */
   #applyWmoFogCandidate(): void {
     const candidate = this.#wmoFogCandidate;
-    if (this.#underwater || !candidate) return;
-    const { end, scale, colour } = candidate.fog.land;
-    this.#wmoInteriorFog.colour.value.setRGB(
-      colour[0] / 255,
-      colour[1] / 255,
-      colour[2] / 255,
-      THREE.SRGBColorSpace,
-    );
-    this.#wmoInteriorFog.near.value = end * scale;
-    this.#wmoInteriorFog.far.value = end;
+    this.#wmoRoomFogApplied = false; // 05.10-A7b-2
+    if (!candidate) return;
+    // Switched off, a camera under water keeps the zone's fog everywhere, as before the slice.
+    if (this.#underwater && !renderSwitches.wmoRoomFogOnScene) return;
+    // 05.10-A7b-2 (7.12): the half of the record the camera is in — under water only an authored
+    // water half answers (WmoRoomFog.ts); otherwise the frame keeps the zone's fog, as before.
+    const room = this.#wmoRoomFog;
+    if (!wmoRoomFogFor(candidate.fog, this.#underwater, room)) return;
+    this.#wmoInteriorFog.colour.value.setRGB(room.r, room.g, room.b, THREE.SRGBColorSpace);
+    this.#wmoInteriorFog.near.value = room.near;
+    this.#wmoInteriorFog.far.value = room.far;
+    // 05.10-A7b-2 (7.12): and the frame's one fog — doodads, units, particles, water, the doorway.
+    // `#restoreZoneFog` puts the zone's back at the top of every submission.
+    if (!renderSwitches.wmoRoomFogOnScene) return;
+    const scene = this.#scene.fog as THREE.Fog;
+    scene.color.copy(this.#wmoInteriorFog.colour.value);
+    scene.near = room.near;
+    scene.far = room.far;
+    this.#wmoRoomFogApplied = true;
   }
+
+  /** 05.10-A7b-2 (7.12): this frame's room fog record, written in place; and whether the scene took it. */
+  readonly #wmoRoomFog = createWmoRoomFog();
+  #wmoRoomFogApplied = false;
 
   /**
    * Keeps a room just attached out of both passes until its run materials have linked programs.
@@ -10960,9 +12006,16 @@ export class WorldRenderer3D {
         // Detached while waiting: whatever attaches it again holds it again.
         mesh.visible = true;
         this.#wmoWarmHolds.delete(mesh);
+        this.#wmoHeldFar.delete(mesh); // P2-02b
       } else if (frames >= WMO_WARM_HOLD_FRAMES || this.#wmoGroupProgramsReady(mesh)) {
         mesh.visible = true;
         this.#wmoWarmHolds.delete(mesh);
+        // P2-02b: shown, so its stand-in casts into the cached cascade from now on.
+        const heldFar = this.#wmoHeldFar.get(mesh);
+        if (heldFar !== undefined) {
+          this.#wmoHeldFar.delete(mesh);
+          if (this.#wmoShadowProxies.get(mesh)?.castShadow) this.#noteSceneryFar(mesh, heldFar, true);
+        }
       } else {
         this.#wmoWarmHolds.set(mesh, frames + 1);
       }
@@ -11032,6 +12085,11 @@ export class WorldRenderer3D {
   ): WorldMaterialEntry {
     const interior = wmoRunIsInterior(group, run);
     const url = model.textureUrls[run.material] ?? "";
+    // 05.10-A7b-2 (7.11 P1): the run's MOMT record (v25), and what it changes; undefined otherwise.
+    const record = run.materialIndex;
+    const look = record === undefined
+      ? undefined
+      : wmoRunLook(wmoRunMaterial(model, run), interior, model.materialTextureUrls?.[record]);
     const key = wmoRunMaterialCacheKey(
       this.#wmoModelKey(model),
       run.material,
@@ -11039,6 +12097,7 @@ export class WorldRenderer3D {
       run.blendMode,
       run.materialFlags,
       interior,
+      look === undefined ? undefined : { record: record!, key: wmoRunLookKey(look) }, // 05.10-A7b-2
     );
     return this.#worldMaterials.getOrCreate({
       key,
@@ -11066,6 +12125,10 @@ export class WorldRenderer3D {
           ? THREE.DoubleSide
           : THREE.FrontSide;
         applyBlendMode(value, run.blendMode);
+        if (look) { // 05.10-A7b-2 (7.11 P1)
+          applyWmoRunLook(value, look, { daylight: this.#worldLight.wowDaylight },
+            look.env ? this.#wmoEnvTexture(look.env.url) : undefined);
+        }
         if (value instanceof THREE.MeshBasicMaterial) {
           applyWmoInteriorFog(value, this.#wmoInteriorFog);
         } else if (value instanceof THREE.MeshStandardMaterial) {
@@ -11075,6 +12138,13 @@ export class WorldRenderer3D {
         return value;
       },
     });
+  }
+
+  /** 05.10-A7b-2 (7.11 P1): an Env/EnvMetal run's environment map, one per URL, sampled like its base. */
+  #wmoEnvTexture(url: string): THREE.Texture {
+    const texture = this.#wmoEnvTextures.load(url);
+    configureWmoCanonicalTexture(texture, this.#anisotropy());
+    return texture;
   }
 
   #modelNode(object: EnvironmentObject, model: EnvironmentModel): THREE.Object3D {
@@ -11091,7 +12161,7 @@ export class WorldRenderer3D {
     const { entries: materialEntries, materials } = this.#legacyMaterials(model);
     const mesh = new THREE.Mesh(entry.geometry, materials);
     let node: THREE.Object3D = mesh;
-    if (!model.visual && /tree|oak|pine|willow|bush|shrub/i.test(object.name)) {
+    if (!model.visual && standInKind(object) === "tree") { // 05.10-A7b-0 1.23
       entry.geometry.computeBoundingBox();
       const bounds = entry.geometry.boundingBox;
       if (bounds) {
@@ -11113,10 +12183,10 @@ export class WorldRenderer3D {
 
   /** Clears every part of the proof used to cull a retained static game object. */
   #clearGameObjectAdmissionTrust(rendered: RenderedGameObject): void {
-    delete rendered.admissionDisplayId;
-    delete rendered.admissionScale;
-    delete rendered.admissionEntry;
-    delete rendered.admissionMetadataRevision;
+    rendered.admissionDisplayId = undefined;
+    rendered.admissionScale = undefined;
+    rendered.admissionEntry = undefined;
+    rendered.admissionMetadataRevision = undefined;
   }
 
   /**
@@ -11244,11 +12314,13 @@ export class WorldRenderer3D {
     if (this.#selection.target) pinned.add(this.#selection.target.guid);
     if (this.#selection.focus) pinned.add(this.#selection.focus.guid);
 
-    const candidates: UnitAdmissionCandidate<WorldObjectState>[] = [];
+    const candidates: GameObjectAdmissionCandidate<WorldObjectState>[] = []; // 05.10-7.05
     for (const object of state.objects.values()) {
       if (object.typeId !== 5 || !object.position) continue;
       const distance = hypot2(object.position.x - player.x, object.position.y - player.y);
-      if (distance > GAMEOBJECT_RANGE) continue;
+      // 05.10-7.05: a moving transport (ship, zeppelin, lift) has the far range and its own quota.
+      const transport = gameObjectWireIsMovingTransport(object);
+      if (!gameObjectWithinAdmissionRange(distance, transport, GAMEOBJECT_RANGE)) continue;
       const isPinned = pinned.has(object.guid);
       const radius = this.#gameObjectVisibilityRadius(object, this.#gameObjects.get(object.guid));
       const visible = isPinned || radius === undefined || unitSphereVisibleInFrustum(
@@ -11264,9 +12336,10 @@ export class WorldRenderer3D {
         distance: Number.isFinite(distance) ? distance : Number.MAX_VALUE,
         pinned: isPinned,
         visible,
+        transport, // 05.10-7.05
       });
     }
-    const admission = selectGameObjectAdmission(candidates, GAMEOBJECT_BUDGET);
+    const admission = selectGameObjectAdmissionWithTransports(candidates, GAMEOBJECT_BUDGET); // 05.10-7.05
     this.#gameObjectsDropped = admission.dropped;
     this.#gameObjectsDrawn = admission.admitted.length;
     // In range and over the budget are two different things, exactly as they are for units. The
@@ -11313,7 +12386,7 @@ export class WorldRenderer3D {
           y: position.y,
           z: position.z,
           rotationX: 0,
-          rotationY: THREE.MathUtils.radToDeg(position.orientation),
+          rotationY: THREE.MathUtils.radToDeg(gameObjectNodeYaw(position.orientation)), // 06.10-7.24
           rotationZ: 0,
           // The server's own scale, which used to be the literal 1. A mailbox and the Dark Portal
           // are the same model at different sizes on more objects than one would expect.
@@ -11339,7 +12412,14 @@ export class WorldRenderer3D {
       // any other WMO, and asks for the rooms it needs as it comes into range.
       if (rendered.wmo) {
         if (model?.wmo === rendered.wmo.model) {
-          this.#updateWmoGroups(rendered.wmo, player, rendered.node, client);
+          // 05.10-7.05: a moving transport's room boxes stay where it was built; measure from there.
+          const transportShell = gameObjectWireIsMovingTransport(object); // 05.10-7.05-review
+          const viewer = transportShell
+            ? transportWmoViewer(rendered.wmo.modelToWorld, rendered.node, player, this.#transportWmoViewer)
+            : player;
+          // 05.10-7.05-review: its hull is drawn as far as it is admitted, whatever its size or build yaw.
+          this.#updateWmoGroups(rendered.wmo, viewer, rendered.node, client, false,
+            transportShell ? GAMEOBJECT_TRANSPORT_SHELL_RANGE : undefined);
         } else if (!replacementDeferred) {
           this.#clearWmoGroups(rendered.wmo, rendered.node);
         }
@@ -11420,7 +12500,7 @@ export class WorldRenderer3D {
     this.#programWarmup.unregisterObject(rendered.node);
     if (rendered.opacityBorrows) {
       returnBorrowedMaterials(rendered.opacityBorrows);
-      delete rendered.opacityBorrows;
+      rendered.opacityBorrows = undefined;
     }
     disposeSkinnedInstance(rendered.skinned);
     rendered.skinned = undefined;
@@ -11444,9 +12524,38 @@ export class WorldRenderer3D {
       template: undefined,
       action: undefined,
       animationId: -1,
+      actionKind: undefined,
+      overlayAction: undefined,
+      overlayAnimationId: undefined,
+      overlayActionKind: undefined,
+      overlayPreservesLocomotion: undefined,
+      overlayFadeUntil: undefined,
       overlayUntil: 0,
+      gaitCommittedUntil: undefined,
+      flatPoseTemplate: undefined,
+      flatPoseProgram: undefined,
+      effectKey: undefined,
+      built: undefined,
+      decodedModel: undefined,
+      legacyGeometry: undefined,
+      materialEntries: undefined,
+      visual: undefined,
+      wvm: undefined,
+      wmo: undefined,
+      model: undefined,
+      state: undefined,
+      admissionDisplayId: undefined,
+      admissionScale: undefined,
+      admissionEntry: undefined,
+      admittedAt: undefined,
+      fadedOpacity: undefined,
+      opacityBorrows: undefined,
+      admissionMetadataRevision: undefined,
       entry: object.fields.get(UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset) ?? 0,
+      pickBox: undefined,
       base: { x: placement.x, y: placement.y, z: placement.z, orientation: THREE.MathUtils.degToRad(placement.rotationY) },
+      phaseMs: undefined,
+      phaseAt: undefined,
     };
     if (modelName) rendered.model = modelName;
     if (model && model.wvm === undefined && model.wmo === undefined) {
@@ -11544,26 +12653,33 @@ export class WorldRenderer3D {
       rendered.entry = nextEntry;
       // A transport path is part of the retained identity. Do not carry the
       // old path's phase into a newly admitted entry.
-      delete rendered.phaseMs;
-      delete rendered.phaseAt;
+      rendered.phaseMs = undefined;
+      rendered.phaseAt = undefined;
     }
     const scale = gameObjectScale(object);
     if (scale !== undefined) rendered.node.scale.setScalar(scale);
     if (Number.isFinite(position.orientation)) {
-      rendered.node.quaternion.setFromRotationMatrix(mappedVmapRotation(
-        0, THREE.MathUtils.radToDeg(position.orientation), 0));
+      // `mappedVmapRotation(0, o, 0)` in closed form (a turn about scene +y): no four Matrix4 per
+      // object per frame.
+      sceneYaw(gameObjectNodeYaw(position.orientation), GAME_OBJECT_TILT); // 06.10-7.24: the core's Rz(o) (GameObjectModelFrame.ts)
+      rendered.node.quaternion.set(GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w);
+      // 5.27: a leaning bridge or a toppled pillar carries more rotation than its yaw. The tilt is
+      // in world axes, so it goes on after the yaw; a level object has none and is left as it was.
+      // 11.01-D: aboard a ship the local rotation is in the ship's frame (TransportPassengers.ts).
+      if (passengerGameObjectTilt(object, position.orientation, GAME_OBJECT_TILT)) {
+        toRenderAxes(GAME_OBJECT_TILT, GAME_OBJECT_TILT);
+        rendered.node.quaternion.premultiply(GAME_OBJECT_TILT_SCENE.set(
+          GAME_OBJECT_TILT.x, GAME_OBJECT_TILT.y, GAME_OBJECT_TILT.z, GAME_OBJECT_TILT.w));
+      }
     }
     const path = rendered.entry > 0 ? paths?.path(rendered.entry) : undefined;
     if (!path || path.period <= 0 || path.frames.length === 0) {
       rendered.node.position.set(position.x, position.z, -position.y);
       return;
     }
-    if (rendered.phaseAt === undefined) {
-      rendered.phaseMs = transportPhaseMs(
-        object.fields.get(UPDATE_FIELDS.GAMEOBJECT_DYNAMIC.offset), object.transportTime, path.period);
-      rendered.phaseAt = now;
-    }
-    const offset = sampleTransportPath(path, (rendered.phaseMs ?? 0) + (now - rendered.phaseAt));
+    // 11.01-B: the phase the physics stands the character on (LiftClock.ts): anchored when the
+    // create block was read rather than at first sight, and re-anchored by a new create block.
+    const offset = sampleTransportPath(path, liftPhaseMs(object, path.period, now));
     const at = placeOnTransportPath(rendered.base, offset);
     rendered.node.position.set(at.x, at.z, -at.y);
   }
@@ -11724,6 +12840,7 @@ export class WorldRenderer3D {
     this.#unitAnimationPrefetch.clear();
     this.#atlasFrameDemands.clear();
     this.#atlasFrameActive.clear();
+    this.#vehiclePassengers.begin(state.objects, vehicleCatalog()); // 11.02-H
     // The frustum is composed before admission so invisible neighbours do not consume the same
     // budget as the units on screen. Numeric sphere tests below allocate nothing per candidate.
     this.#frustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
@@ -11741,8 +12858,9 @@ export class WorldRenderer3D {
     if (!this.#formalBenchmarkIsolation) {
       for (const guid of this.#portraits.targetGuids()) pinned.add(guid);
     }
-    for (const object of state.objects.values()) {
-      if ((object.typeId !== 3 && object.typeId !== 4) || !object.position) continue;
+    for (const candidate of state.objects.values()) {
+      const object = candidate.typeId === 7 ? corpseUnitView(candidate) : candidate; // 05.10-A7a-G2 6.05: a corpse as its body (CorpseModel.ts)
+      if (object === undefined || (object.typeId !== 3 && object.typeId !== 4 && object.typeId !== 7) || !object.position) continue; // 05.10-A7a-G2
       const isPinned = pinned.has(object.guid);
       const distance = hypot2(object.position.x - player.x, object.position.y - player.y);
       if (distance > UNIT_DRAW_DISTANCE && !isPinned) continue;
@@ -11759,7 +12877,7 @@ export class WorldRenderer3D {
         value: object,
         distance: Number.isFinite(distance) ? distance : Number.MAX_VALUE,
         pinned: isPinned,
-        visible,
+        visible: visible || this.#unitShadowSeen(object.position, distance, radius!), // 06.10-shadow
       });
     }
     const admission = selectUnitAdmission(candidates, UNIT_BUDGET);
@@ -11773,14 +12891,19 @@ export class WorldRenderer3D {
     const inRange = new Set(candidates.map(({ value }) => value.guid));
 
     const drawn = new Set<bigint>();
+    this.#unitShadowCasters.begin(); // 06.10-shadow
     for (const [rank, { value: object, distance }] of admission.admitted.entries()) {
       drawn.add(object.guid);
       this.#drawUnit(object, state.selfGuid === object.guid, distance, now, elapsed, client, creatureModel, displayAnswered,
         mountModel,
-        unitCastsEnhancedShadow(rank, distance, this.#lightingProfile));
+        this.#unitShadowCasters.decide(object.guid, rank, distance, this.#lightingProfile)); // 06.10-shadow: was unitCastsEnhancedShadow
       const rendered = this.#units.get(object.guid);
       if (rendered?.applied) this.#atlasFrameActive.add(rendered.applied);
     }
+    this.#unitShadowCasters.end(); // 06.10-shadow
+    // 11.02-H: vehicle passengers onto their seats, now that every vehicle stands and is posed.
+    this.#vehiclePassengers.place(admission.admitted, drawn, this.#units); // 11.02-H-review
+    this.afterUnits?.(now); // 05.10-A7a-D2 6.06: melee reactions at the attackers' swing moments
     // Current poses across the whole crowd get first use of the animation slice. Spend any
     // remainder on the resident sidecars so future actions keep the original prefetch behaviour.
     for (const [template, path] of this.#unitAnimationPrefetch) {
@@ -11800,6 +12923,9 @@ export class WorldRenderer3D {
       this.#actions.delete(guid);
       this.#dropEffects(`unit:${guid}`);
     }
+    // 05.10-A7a-D-review: a swing or a victim's reaction queued for a unit that was never drawn (out
+    // of draw range, not a unit) has no loop above to leave with; it goes with the range like the rest.
+    for (const guid of this.#actions.keys()) if (!inRange.has(guid)) this.#actions.delete(guid); // 05.10-A7a-D-review
     // A body that painted without one of its layers — trousers whose picture the gateway failed to
     // generate — is nobody's business but the atlas's from here: the unit is built, its `applied`
     // is set, and the loop above will not ask about it again. This is the only thing that comes
@@ -11814,7 +12940,8 @@ export class WorldRenderer3D {
    */
   #wmoGroupBorrowers(): {
     readonly geometryPins: ReadonlySet<WmoGroupGeometryEntry>;
-    readonly materialPins: ReadonlySet<WorldMaterialEntry>;
+    /** A fresh set each call: `#evictWmoResources` adds the legacy pins to it and commits it. */
+    readonly materialPins: Set<WorldMaterialEntry>;
     readonly wrapperCount: number;
   } {
     const geometryPins = new Set<WmoGroupGeometryEntry>();
@@ -11824,7 +12951,7 @@ export class WorldRenderer3D {
       if (!placed) return;
       wrapperCount += collectAttachedWmoGroupResourcePins(
         node,
-        placed.built.values(),
+        placed.built,
         geometryPins,
         materialPins,
       );
@@ -11880,11 +13007,12 @@ export class WorldRenderer3D {
     for (const { built } of this.#wmoGeometries.evictUnpinned(geometryPins)) {
       built.geometry.dispose();
     }
-    this.#wmoPreparedGeometryPins.clear();
+    if (this.#wmoPreparedGeometryPins.size) this.#wmoPreparedGeometryPins.clear();
     for (const { built } of this.#legacyGeometries.evictUnpinned(legacy.geometryPins)) {
       built.geometry.dispose();
     }
-    const materialPins = new Set<WorldMaterialEntry>(wmo.materialPins);
+    // P1-10c: the room pins' own fresh set, not a copy of it; same entries in the same order.
+    const materialPins = wmo.materialPins;
     for (const entry of legacy.materialPins) materialPins.add(entry);
     this.#worldMaterials.commitPins(materialPins);
   }
@@ -11901,6 +13029,7 @@ export class WorldRenderer3D {
     const modelPins = this.#builtModels.needsEviction ? new Set<BuiltModel>() : undefined;
     if (modelPins) {
       if (this.#skyboxBuilt) modelPins.add(this.#skyboxBuilt);
+      if (this.#skyStarsBuilt && this.#skyCelestials.hasStars) modelPins.add(this.#skyStarsBuilt); // 05.10-A7b-6
       if (this.#gameObjectPreviewNode?.built) modelPins.add(this.#gameObjectPreviewNode.built);
       for (const rendered of this.#environment.values()) {
         if (rendered.built) modelPins.add(rendered.built);
@@ -11945,6 +13074,7 @@ export class WorldRenderer3D {
         for (const node of unit.attached.values()) {
           const built = node.userData["builtModel"];
           if (built) unitPins.add(built as BuiltModel);
+          pinGlowBuilds(glowAnchorsOf(node), unitPins); // 05.10-A7a-E2: the glow bodies' builds
         }
       }
     }
@@ -11990,7 +13120,7 @@ export class WorldRenderer3D {
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let unitPartAt = detailedCapture ? performance.now() : 0;
     const position = object.position!;
-    const dead = isWorldObjectDead(object);
+    const dead = isWorldObjectDead(object) || object.typeId === 7; // 05.10-A7a-G2 6.05: a corpse view lies dead
     const displayId = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0;
     const tint = dead ? CORPSE_TINT
       : self ? SELF_TINT
@@ -12016,7 +13146,18 @@ export class WorldRenderer3D {
         animationId: -1, pose: undefined, overlayUntil: 0,
         strideX: 0, strideY: 0, strideZ: 0, strideReady: false, strideSpeed: undefined,
         height: 0, radius: 0, scale: 1, dead: !dead, tint: tint ^ 1, applied: "",
-        attached: new Map(), unitOpacity: 1,
+        attached: new Map(), unitOpacity: 1, particleColours: undefined, // 05.10-A7a-H: one shape from birth
+        // P1-09b: every optional field present from birth, so no unit ever changes hidden class.
+        actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
+        overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
+        gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
+        effectKey: undefined, decodedModel: undefined, legacyGeometry: undefined, materialEntries: undefined,
+        admittedAt: undefined, animationClock: undefined, animationClockRig: undefined,
+        animationClockMountRig: undefined, admissionDisplayId: undefined, admissionObjectScale: undefined,
+        admissionHasAuthoredAttachments: undefined, bodyHeight: undefined, wvm: undefined, visual: undefined,
+        mount: undefined, opacityBorrows: undefined, warmShown: undefined, modelShown: undefined,
+        fadeReturnFrames: undefined, appearancePendingSince: undefined, stealthed: undefined,
+        strafeYaw: undefined, deathFade: undefined, flagPoses: undefined,
       };
       this.#units.set(object.guid, unit);
       this.#unitGroup.add(node);
@@ -12035,6 +13176,8 @@ export class WorldRenderer3D {
     unit.stealthed = appearance.stealth;
 
     const metadata = creatureModel?.(object);
+    unit.particleColours = metadata?.particleColors; // 05.10-A7a-H 6.11а
+    const displayOpacity = appearance.opacity * creatureDisplayAlpha(metadata); // 05.10-A7a-H 6.11а: CreatureModelAlpha multiplies
     let currentWvm = false;
     let currentObjectScale = 1;
     // Rebuilt whenever the model or the look changes, rather than once and never again. The key
@@ -12108,9 +13251,9 @@ export class WorldRenderer3D {
       unit.admissionObjectScale = currentObjectScale;
       unit.admissionHasAuthoredAttachments = (metadata?.appearance?.attached.length ?? 0) > 0;
     } else {
-      delete unit.admissionDisplayId;
-      delete unit.admissionObjectScale;
-      delete unit.admissionHasAuthoredAttachments;
+      unit.admissionDisplayId = undefined;
+      unit.admissionObjectScale = undefined;
+      unit.admissionHasAuthoredAttachments = undefined;
     }
 
     if (detailedCapture) {
@@ -12138,7 +13281,7 @@ export class WorldRenderer3D {
     // the tree, so a settled unit pays one comparison. A body the warm pass has not linked yet is
     // then kept out of the frame, fade clock stopped, until it has (`#holdUnitUntilWarm`).
     if (unit.shadowCaster === undefined) this.#trackUnitMeshes(unit, self);
-    const held = this.#holdUnitUntilWarm(unit, self, presented, appearance.opacity, now);
+    const held = this.#holdUnitUntilWarm(unit, self, presented, displayOpacity, now); // 05.10-A7a-H
     unit.node.visible = presented && !held;
     if (unit.mount) {
       const rider = unit.skinned?.root ?? unit.visual;
@@ -12160,7 +13303,7 @@ export class WorldRenderer3D {
     // window so streamed crowds arrive instead of popping; appearance opacity (ghosts, spirits)
     // multiplies, it is never replaced. A held unit is dressed here exactly as it will be drawn on
     // the frame it is let go — its clock is stopped, not skipped.
-    const opacity = appearance.opacity * spawnFadeFactor(unit.admittedAt, now);
+    const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now); // 05.10-A7a-H 6.11а
     this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));
     this.#applyUnitShadow(unit, shadowCaster);
     if (detailedCapture) this.#drawPhaseMs["units.presentation"]! += performance.now() - unitPartAt;
@@ -12178,7 +13321,9 @@ export class WorldRenderer3D {
    * male after him.
    */
   #unitKey(metadata: UnitModel): string {
-    const base = modelKey(metadata.model, metadata.textures);
+    let base = modelKey(metadata.model, metadata.textures);
+    // 05.10-A7a-H 6.11а: two displays of one model and skins may differ in CreatureGeosetData only.
+    if (metadata.geosetData !== undefined) base = `${base}#g${metadata.geosetData}`;
     const appearance = metadata.appearance;
     if (!appearance) return base;
     // The client interns one object per look, so the digest is computed once per look rather than
@@ -12213,7 +13358,7 @@ export class WorldRenderer3D {
    */
   #appearanceWaits(unit: RenderedUnit, metadata: UnitModel, now: number): boolean {
     if (metadata.appearancePending !== true) {
-      if (unit.appearancePendingSince !== undefined) delete unit.appearancePendingSince;
+      if (unit.appearancePendingSince !== undefined) unit.appearancePendingSince = undefined;
       return false;
     }
     // A replay epoch rewinds the clock; the wait restarts from there rather than lasting until the
@@ -12274,13 +13419,15 @@ export class WorldRenderer3D {
       // Failed templates are cached: they must not consume every subsequent frame's budget.
       if (this.#skinnedTemplates.get(this.#builtCacheKey(this.#builtUnits, key)) === null) return "template";
       if (!this.#unitBuildBudget.take()) return "queued";
-      const geosets = worldCharacterGeosets(model.wvm, appearance, character);
+      const geosets = creatureGeosetChoice(model.wvm, worldCharacterGeosets(model.wvm, appearance, character),
+        metadata.geosetData); // 05.10-A7a-H 6.11а: Wow.exe 0x004e7790
       const { built, rigged } = this.#buildRigged(key, metadata.model, model.wvm, slots, geosets,
         supplied, client);
       if (rigged === undefined) {
         // No rig at all: 9.5% of the client's creature models have none, and a static mesh is
         // far better than the coloured capsule they used to keep forever.
         const mesh = new THREE.Mesh(built.geometry, built.materials);
+        applySlotDepth(mesh); // P2-03a
         mesh.quaternion.copy(M2_TO_SCENE);
         this.#programWarmup.registerObject(mesh, "unit");
         this.#clearUnitNode(unit);
@@ -12302,7 +13449,7 @@ export class WorldRenderer3D {
       unit.wvm = model.wvm;
       // A rigged unit is posed through its bones, so there is no single mesh matrix to fall back
       // on and the emitter frames come from the skeleton instead.
-      delete unit.visual;
+      unit.visual = undefined;
       return undefined;
     }
 
@@ -12427,6 +13574,7 @@ export class WorldRenderer3D {
       // The unrigged tenth of the table, and the rigs that would not build. A statue of a horse
       // still puts the rider where a rider belongs.
       const mesh = new THREE.Mesh(built.geometry, built.materials);
+      applySlotDepth(mesh); // P2-03a
       mesh.quaternion.copy(M2_TO_SCENE);
       mesh.frustumCulled = false;
       node.add(mesh);
@@ -12436,8 +13584,12 @@ export class WorldRenderer3D {
     unit.mount = {
       key, built, node, metadata, wvm, skinned, template: rigged ?? undefined,
       action: undefined, animationId: -1, overlayUntil: 0,
+      actionKind: undefined, overlayAction: undefined, overlayAnimationId: undefined,
+      overlayActionKind: undefined, overlayPreservesLocomotion: undefined, overlayFadeUntil: undefined,
+      gaitCommittedUntil: undefined, flatPoseTemplate: undefined, flatPoseProgram: undefined,
       scale: metadata.scale,
       seat: mountSeatOffset(wvm, metadata.mountHeight, metadata.scale),
+      pose: undefined,
     };
     unit.shadowCaster = undefined;
   }
@@ -12527,7 +13679,7 @@ export class WorldRenderer3D {
     this.#programWarmup.unregisterObject(mount.node);
     disposeSkinnedInstance(mount.skinned);
     mount.node.removeFromParent();
-    delete unit.mount;
+    unit.mount = undefined;
     unit.shadowCaster = undefined;
     // The body's own height back, for the rigless branch as well as the rigged one. Nothing else
     // writes `unit.height` for a unit that has a model — `#shapeCapsule` returns on `if (!body)`
@@ -12554,7 +13706,7 @@ export class WorldRenderer3D {
    */
   #updateAttachments(unit: RenderedUnit, metadata: UnitModel, object: WorldObjectState,
     client: EnvironmentClient | undefined, decodedModel: EnvironmentModel | undefined): void {
-    const attached = metadata.appearance?.attached;
+    const attached = attachedOf(metadata); // 05.10-A7a-B 6.02: worn pieces and a creature's held weapons
     const instance = unit.skinned;
     const template = unit.template;
     const wvm = decodedModel?.wvm;
@@ -12568,10 +13720,11 @@ export class WorldRenderer3D {
     const sheath = (object.fields.get(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset) ?? 0) & 0xff;
     const wanted = new Map<string, { point: number; model: string; texture: string; build: string; glow: EnchantGlow | undefined }>();
     for (const item of attached ?? []) {
-      const point = attachmentPoint(item, sheath);
+      const point = worldAttachmentPoint(item, sheath, sheatheOf(item, metadata)); // 05.10-A7a-G2 6.08: Wow.exe sheath points
       if (point === undefined) continue;
-      const glow = this.#enchantGlow?.(object, item.slot);
-      const glowKey = glow === undefined ? "0" : `${glow.color.toString(16)}@${glow.intensity}`;
+      const glow = this.#enchantGlow?.(object, item.slot, item.displayId); // 05.10-A7a-E2: the display's own glow
+      const glowKey = glow === undefined ? "0"
+        : `${glow.color.toString(16)}@${glow.intensity}${glowSlotsKey(glow.slots)}`; // 05.10-A7a-E: slots ride the key
       // The point rides in the key: drawing or sheathing moves the blade between bones, and a key
       // without it would leave the mesh hanging off the hand it was built on.
       wanted.set(`${item.slot}/${item.side}`, {
@@ -12610,7 +13763,11 @@ export class WorldRenderer3D {
       // shared material — a glow card is already light, not a surface to light.
       let materials: THREE.Material[] = built.materials;
       let glowClones: THREE.Material[] | undefined;
-      if (item.glow) {
+      // 05.10-A7a-E (6.14): ItemVisuals slots on the weapon's own attachments 0…4 (WeaponGlow.ts); the tint
+      // stays only for a weapon with no such attachment or a glow with no slots.
+      const glowPlacements = item.glow?.slots
+        ? glowPlacement(itemModel.attachments.map((attachment) => attachment.id), item.glow.slots) : [];
+      if (item.glow && glowPlacements.length === 0 && item.glow.intensity > 0) {
         glowClones = [];
         materials = built.materials.map((material) => {
           if (!(material instanceof THREE.MeshStandardMaterial)) return material;
@@ -12622,12 +13779,14 @@ export class WorldRenderer3D {
         });
       }
       const mesh = new THREE.Mesh(built.geometry, materials);
+      applySlotDepth(mesh); // P2-03a
       // Rigid equipment has geometry-local bounds. Three transforms them by this frame's
       // bone-driven matrixWorld for each camera, including the shadow camera.
       mesh.frustumCulled = true;
       mesh.userData["build"] = key;
       mesh.userData["builtModel"] = built;
       if (glowClones !== undefined) mesh.userData["glowClones"] = glowClones;
+      if (glowPlacements.length > 0) attachGlowAnchors(mesh, itemModel, glowPlacements, `unit:${object.guid}:glow:${where}`); // 05.10-A7a-E
       mesh.position.copy(attachmentOffset(wvm, template.pivots, item.point));
       // Hip-sheathed blades point down the leg rather than forward from the grip.
       const hang = attachmentRotation(item.point);
@@ -12637,11 +13796,33 @@ export class WorldRenderer3D {
       unit.attached.set(where, mesh);
       unit.shadowCaster = undefined;
     }
+    // 05.10-A7a-E (6.14): glow effect models load like the pieces do, one request per path.
+    if (client) for (const node of unit.attached.values()) resolveGlowModels(node, (path) => client.model(path, "critical")?.wvm);
+    // 05.10-A7a-E2 (6.14): and their meshes, once landed (WeaponGlowBody.ts); a new body may cast or not.
+    for (const node of unit.attached.values()) if (mountGlowBodies(glowAnchorsOf(node), this.#glowBodyBuild) > 0) unit.shadowCaster = undefined;
+  }
+
+  /** 05.10-A7a-E2 (6.14): one bound builder, so the per-frame mount pass allocates no closure. */
+  readonly #glowBodyBuild = (path: string, wvm: WvmModel): GlowBody | null | undefined => this.#glowBody(path, wvm);
+
+  /**
+   * 05.10-A7a-E2 (6.14): an effect model's own mesh for a glow anchor, built the way a mount is (`#buildRigged`:
+   * shared geometry and materials under `glow|<path>`, the rig's template shared too) and instanced per anchor.
+   * null: the model draws no geometry (its emitters are all there is); undefined: no build budget this frame.
+   */
+  #glowBody(path: string, wvm: WvmModel): GlowBody | null | undefined {
+    if (!glowHasMesh(wvm)) return null;
+    if (!this.#unitBuildBudget.take()) return undefined;
+    const { built, rigged } = this.#buildRigged(`glow|${path}`, path, wvm, NO_GLOW_SLOTS, EVERY_GEOSET);
+    const body = makeGlowBody(built, rigged ?? undefined);
+    this.#programWarmup.registerObject(body.object, "unit");
+    return body;
   }
 
   /** Releases an attached mesh's queued warmup and own glow clones. Its build stays cached. */
   #disposeAttachedGlow(node: THREE.Object3D): void {
     this.#programWarmup.unregisterObject(node);
+    detachGlowAnchors(node); // 05.10-A7a-E (6.14): its emitter keys leave the list next frame
     const clones = node.userData["glowClones"] as THREE.Material[] | undefined;
     if (!clones) return;
     for (const clone of clones) clone.dispose();
@@ -12668,6 +13849,8 @@ export class WorldRenderer3D {
     // shared arrays go back to builds that are about to be handed to somebody else, and the copies
     // are disposed here rather than left to the meshes that are being thrown away.
     this.#releaseUnitOpacity(unit);
+    // 05.10-A7a-F1 (6.16а): after the opacity borrow, which hands back the array the death fade wears.
+    dropDeathFade(unit);
     // And the wanted value is forgotten with the model, so whatever stands here next is faded from
     // scratch instead of inheriting a "already at 0.35" that no mesh is wearing any more.
     unit.unitOpacity = 1;
@@ -12685,21 +13868,21 @@ export class WorldRenderer3D {
     unit.shadowCaster = undefined;
     unit.body = undefined;
     unit.built = undefined;
-    delete unit.wvm;
-    delete unit.visual;
-    delete unit.decodedModel;
-    delete unit.legacyGeometry;
-    delete unit.materialEntries;
+    unit.wvm = undefined;
+    unit.visual = undefined;
+    unit.decodedModel = undefined;
+    unit.legacyGeometry = undefined;
+    unit.materialEntries = undefined;
     unit.skinned = undefined;
     unit.template = undefined;
     // Whatever goes in next writes its own; until it does there is no body to be the height of, and
     // a stale one would put the next capsule's name plate on the last model's head.
-    delete unit.bodyHeight;
+    unit.bodyHeight = undefined;
     unit.action = undefined;
     unit.animationId = -1;
-    delete unit.admissionDisplayId;
-    delete unit.admissionObjectScale;
-    delete unit.admissionHasAuthoredAttachments;
+    unit.admissionDisplayId = undefined;
+    unit.admissionObjectScale = undefined;
+    unit.admissionHasAuthoredAttachments = undefined;
     // A pose carried across a change of model would have the new one land from a jump the old one
     // took, so the unit starts again from whatever the next frame says it is doing.
     unit.pose = undefined;
@@ -12726,7 +13909,7 @@ export class WorldRenderer3D {
     unit.bodyHeight = template.height;
     unit.height = template.height * metadata.scale;
     unit.animationId = -1;
-    delete unit.actionKind;
+    unit.actionKind = undefined;
     unit.applied = key;
   }
 
@@ -12752,11 +13935,14 @@ export class WorldRenderer3D {
       until,
       ...(visualHandle === undefined ? {} : { owner: visualHandle }),
       payload: {
-        wanted: [animation.animation],
+        wanted: [animation.kitWound === true // 05.10-6.21: Wow.exe's flinch rule for a kit AnimID wound
+          ? kitWoundAnimation(animation.animation, this.kitWoundCombat?.(animation.guid) === true) : animation.animation],
         action: undefined,
         stage: animation.followUp ? "lead" : "main",
         ...(animation.followUp
-          ? { followUp: { animation: animation.followUp.animation, mode: animation.followUp.mode } }
+          ? { followUp: { animation: animation.followUp.kitWound === true // 05.10-6.21
+            ? kitWoundAnimation(animation.followUp.animation, this.kitWoundCombat?.(animation.guid) === true)
+            : animation.followUp.animation, mode: animation.followUp.mode } }
           : {}),
         sequenceAt: 0,
         waitUntil: now + ACTION_CLIP_WAIT,
@@ -12767,11 +13953,11 @@ export class WorldRenderer3D {
   }
 
   /** A swing or a shot (melee layer) — or, for the unused spell kinds, a cast. */
-  playUnitAction(guid: bigint, action: UnitAction, hold = 0): void {
+  playUnitAction(guid: bigint, action: UnitAction, hold = 0): UnitActionEntry<UnitActionPayload> | undefined { // 05.10-A7a-D2: the entry is the swing's token
     const now = performance.now();
     const layer: UnitActionLayer = action === "precast" || action === "cast" || action === "channel" ? "cast"
       : action === "loot" ? "emote" : "melee";
-    this.#submitUnitAction(guid, {
+    return this.#submitUnitAction(guid, { // 05.10-A7a-D2
       layer,
       held: hold > 0,
       until: now + (hold > 0 ? hold : ACTION_SIDECAR_WAIT),
@@ -12785,9 +13971,51 @@ export class WorldRenderer3D {
         // metadata window, which is deliberately left alone.
         sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
         source: "external",
+        roll: Math.random(), // 05.10-A7a-D 6.06; 05.10-A7a-D-review: unread (Wow.exe 0x755130 does not roll), kept for 6.16c
       },
     }, now);
   }
+
+  /**
+   * 05.10-A7a-D 6.06: a melee victim's dodge, parry, block or wound (game/CombatAnimations.ts) — a
+   * one-shot in the reaction layer, under the unit's own swing and cast. The parry is chosen by what
+   * the victim holds when the entry is drawn.
+   */
+  playUnitReaction(guid: bigint, reaction: CombatReaction): void {
+    const now = performance.now();
+    this.#submitUnitAction(guid, {
+      layer: "reaction",
+      held: false,
+      until: now + ACTION_SIDECAR_WAIT,
+      payload: {
+        wanted: [], action: undefined, stage: "main", sequenceAt: 0,
+        waitUntil: now + ACTION_CLIP_WAIT, sidecarWaitUntil: now + ACTION_SIDECAR_WAIT,
+        source: "external", reaction,
+      },
+    }, now);
+  }
+
+  /**
+   * 05.10-A7a-D2 6.06: how far the swing queued as `token` has played on `guid` (game/SwingReactionCues.ts
+   * times the victim's reaction by it): the clip fraction while shown, 1 once it ran to its hand-back,
+   * undefined while it waits, null when it went without playing through.
+   */
+  meleeSwingProgress(guid: bigint, token: object, now: number): number | undefined | null {
+    const queue = this.#actions.get(guid);
+    const shown = queue?.shown;
+    if (shown !== undefined && shown.entry === token) {
+      const duration = shown.action.getClip().duration;
+      return duration > 0 ? shown.action.time / duration : 1;
+    }
+    const entry = token as UnitActionEntry<UnitActionPayload>;
+    if (entry.started) return now >= entry.until ? 1 : null;
+    return queue !== undefined && queue.entries.includes(entry) ? undefined : null;
+  }
+
+  /** 05.10-A7a-D2: called once per frame after the units animated (EnterWorld times melee reactions). */
+  afterUnits: ((now: number) => void) | undefined;
+  /** 05.10-6.21: whether a unit has a melee target of its own (`+0xa20`), for a kit's wound (game/SwingReactionHost.ts). */
+  kitWoundCombat: ((guid: bigint) => boolean) | undefined;
 
   /** An emote, which the server names by animation rather than by kind. */
   playUnitEmote(guid: bigint, animation: number, hold = 0): void {
@@ -12813,14 +14041,15 @@ export class WorldRenderer3D {
   }
 
   #submitUnitAction(guid: bigint, request: Parameters<UnitActionQueue<UnitActionPayload, ShownUnitAction>["submit"]>[0],
-    now: number): void {
+    now: number): UnitActionEntry<UnitActionPayload> | undefined { // 05.10-A7a-D2
     let queue = this.#actions.get(guid);
     if (!queue) {
       queue = new UnitActionQueue<UnitActionPayload, ShownUnitAction>();
       this.#actions.set(guid, queue);
     }
-    queue.submit(request, now);
+    const entry = queue.submit(request, now); // 05.10-A7a-D2
     if (queue.idle) this.#actions.delete(guid);
+    return entry; // 05.10-A7a-D2
   }
 
   /**
@@ -12858,7 +14087,8 @@ export class WorldRenderer3D {
       standState: unitFields.standState(object) ?? UNIT_STAND_STATE_STAND,
       // Which tier a hovering unit animates on: the server's word, not the movement bit's. A unit
       // whose byte has not arrived is on the ground tier, which is what the core writes by default.
-      animationTier: unitFields.animationTier(object) ?? 0,
+      // A spline's own tier (a drake's takeoff or landing) overrides it once its effect begins.
+      animationTier: splineAnimationTier(object, now) ?? unitFields.animationTier(object) ?? 0,
       // The built mount rather than the field, so a rider whose horse has not downloaded keeps
       // running instead of gliding along in the seated pose with nothing underneath.
       mounted: unit.mount !== undefined,
@@ -12866,6 +14096,9 @@ export class WorldRenderer3D {
       // the stealth half reaches the pose: an invisible mage walks normally.
       stealth: unit.stealthed === true,
     };
+    // 11.02-H: the vehicle seat this unit sits in, when the tables know it; absent otherwise.
+    const vehicleSeat = unit.mount === undefined ? this.#vehiclePassengers.seatPose(object) : undefined;
+    if (vehicleSeat !== undefined) pose.vehicleSeat = vehicleSeat;
     // Stride tempo before anything poses: the gait scaler below reads it, and the node already
     // stands where this frame drew it.
     unit.strideSpeed = this.#strideSpeed(unit, unit.node.position, elapsed);
@@ -12880,6 +14113,16 @@ export class WorldRenderer3D {
     // a gait: without it a hasted mount replays a 6.94 yd/s stride while travelling at 14.
     this.#poseMount(unit, object.guid, pose, now, client,
       unitTravelSpeed(pose, object.speeds, object.runSpeed));
+    // 05.10-A7a-C 6.03/6.04: the standing base (emote state, combat stance) — after the mount's pose,
+    // which is the horse's and holds neither; 6.07: the STUNNED/LOOTING holds, on an edge only.
+    const oneShotEmote = applyStandingPose(pose, object.fields, attachedOf(metadata), unit.pose);
+    if (oneShotEmote !== undefined) this.playUnitEmote(object.guid, oneShotEmote);
+    const flagPoses = flagPoseBits(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset), isTerminalUnitPose(pose));
+    if (flagPoses !== (unit.flagPoses ?? 0)) {
+      syncFlagPoses(unit.flagPoses ?? 0, flagPoses, isTerminalUnitPose(pose), now, this.#actions.get(object.guid),
+        (request) => this.#submitUnitAction(object.guid, request, now), template.animations); // 05.10-A7a-C-review: claims
+      unit.flagPoses = flagPoses;
+    }
 
     // A transition one-shot owns the unit until it is over: a landing that is crossfaded away after
     // two frames is a landing nobody sees. Packet poses no longer gate the pass — `#poseUnit` runs
@@ -12907,6 +14150,10 @@ export class WorldRenderer3D {
       this.#poseUnit(unit, object.guid, pose, now, client, metadata);
     }
     unit.pose = pose;
+    // 05.10-A7a-F1 (6.16а): the batches the file fades under Death follow the dead unit's own clip.
+    const dyingAction = pose.dead && (unit.overlayAnimationId ?? unit.animationId) === ANIMATION_IDS.Death
+      ? unit.overlayAction ?? unit.action : undefined;
+    if (syncDeathFade(unit, dyingAction, now)) unit.shadowCaster = undefined;
     // Chosen and scheduled above whatever happens next: a clip queued while the unit is off
     // screen must be the one playing when it returns. An invisible unit retains the old paused
     // mixer policy; a visible distant unit instead accumulates every skipped frame's elapsed time
@@ -13257,6 +14504,7 @@ export class WorldRenderer3D {
    * Over plain standing it takes the whole body. Over any other base — moving, mounted, swimming,
    * sitting, crouched — an upper-body-capable pose plays on the upper layer while the base keeps
    * every track the pose does not key, and a whole-body pose gives way unless it is an aura state.
+   * 05.10-6.21b: or a one-shot off Wow.exe's list over a travelling base, which takes the whole body.
    */
   #poseUnit(unit: RenderedUnit, guid: bigint, pose: UnitPose, now: number,
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined): void {
@@ -13270,7 +14518,7 @@ export class WorldRenderer3D {
     if (unit.overlayPreservesLocomotion === true) this.#clearOverlay(unit);
 
     const transition = poseTransition(unit.pose, pose);
-    const overlay = transition === undefined ? undefined : resolveAnimation(unit.template!.clips, [transition]);
+    const overlay = poseTransitionClip(unit.template!.clips, transition); // 05.10-A7a-C-review: no gait one-shot
     if (overlay !== undefined) {
       this.#playAnimation(unit, overlay, false, now);
       return;
@@ -13309,7 +14557,8 @@ export class WorldRenderer3D {
       queue.removeWhere((entry) => unitActionEndsOnMovement(entry.layer, entry.held));
     }
     // The base is idle when the unit's own pose is plain standing; anything else keeps the legs.
-    const baseIdle = poseAnimation(pose).wanted[0] === ANIMATION_IDS.Stand;
+    const baseIdle = isBaseIdle(pose); // 05.10-A7a-C (A7-M1): a stance base is still standing
+    const travelling = isUnitMoving(pose.movementFlags, pose.spline); // 05.10: ревью 6.21b
     for (let entry = queue.top(); entry !== undefined; entry = queue.top()) {
       const animation = this.#entryAnimation(unit, entry, now, client, metadata);
       if (animation === "drop") {
@@ -13320,12 +14569,16 @@ export class WorldRenderer3D {
       // Upper-body only where the rig has a cut for it: a rig with no leg branches keeps the whole
       // clip as its "overlay", and drawing that over a gait would slide the action's own legs.
       const overlay = unit.template!.overlayClips?.get(animation);
-      const upperBody = animationPlaysOnUpperBody(animation) && overlay !== undefined
+      const listed = animationPlaysOnUpperBody(animation, pose.movementFlags); // 05.10-6.21b: + attacks in a fall
+      const upperBody = listed && overlay !== undefined
         && overlay !== unit.template!.clips.get(animation) && overlay.tracks.length > 0;
-      const display: UnitActionDisplay = unitActionDisplay(entry.layer, upperBody, baseIdle);
+      const outlives = wholeBodyOutlivesBase(entry, travelling); // 05.10: ревью 6.21b — begun standing, setting off ends it
+      const display: UnitActionDisplay = unitActionDisplay(entry.layer, upperBody, baseIdle,
+        !baseIdle && poseTakesWholeBody(pose, listed, entry.held) && outlives); // 05.10-6.21b: owner — off the list, whole body
       if (display === "yield") {
         // A one-shot that cannot be drawn over this base is over; a hold waits for the base to settle.
         if (entry.held) break;
+        entry.payload.swingSeconds = unit.template!.clips.get(animation)?.duration; // 05.10-A7a-D3 6.06: the victim's cues still run on this clip
         queue.remove(entry);
         continue;
       }
@@ -13362,6 +14615,10 @@ export class WorldRenderer3D {
     client: EnvironmentClient | undefined, metadata: UnitModel | undefined): number | "wait" | "drop" {
     const pending = entry.payload;
     const template = unit.template!;
+    // 05.10-A7a-G2 6.19: while this rig's sidecar is really on the wire, the wait moves on (to 8 s).
+    if (!entry.started && pending.waitingForClip === true && metadata !== undefined) {
+      extendSidecarWait(entry, now, client?.animationsInFlight(metadata.model, template.parents.length) === true);
+    }
     // Before resolving clips: a sidecar or appearance answer that arrives after the deadline must
     // not revive the shot that was already stale. Both deadlines are about starting; a pose that
     // has started runs to its own hand-back.
@@ -13372,16 +14629,18 @@ export class WorldRenderer3D {
       if (pending.waitingForClip && now >= pending.sidecarWaitUntil) return "drop";
     }
     const shootMetadataPending = pending.action === "shoot"
-      && (metadata === undefined || metadata.appearance === undefined || metadata.appearancePending === true);
+      && weaponMetadataPending(metadata); // 05.10-A7a-B 6.02: a creature's `held` answers the shot too
     // Do not use the inventory-type fallback while the live item row is unresolved: INVTYPE 26 is
     // shared by guns and wands, so choosing gun here would consume the one-shot before subclass 19
     // can arrive. Once the metadata settles, weaponPose selects the exact ranged release.
     const actionWeapon = pending.action === undefined || shootMetadataPending
       ? "unarmed"
-      : weaponPose(metadata?.appearance?.attached, pending.action === "shoot" ? "ranged" : "melee");
-    const wanted = pending.action === undefined ? pending.wanted : actionAnimation(pending.action, actionWeapon);
+      : weaponPose(attachedOf(metadata), pending.action === "shoot" ? "ranged" : "melee"); // 05.10-A7a-B 6.02
+    const combat = combatAnimations(pending, attachedOf(metadata)); // 05.10-A7a-D 6.06: swing variant, victim reaction
+    if (combat !== undefined && combat.length === 0) return "drop"; // 05.10-A7a-D2: a weapon with no parry (0x73b050)
+    const wanted = combat ?? (pending.action === undefined ? pending.wanted : actionAnimation(pending.action, actionWeapon)); // 05.10-A7a-D
     const resolve = (available: ReadonlySet<number> | Map<number, unknown>): number | undefined =>
-      pending.action === undefined
+      combat !== undefined ? resolveAnimation(available, combat) : pending.action === undefined // 05.10-A7a-D 6.06
         ? resolveSpellVisualAnimation(available, wanted)
         : resolveActionAnimation(available, pending.action, actionWeapon);
     let animation = resolve(template.clips);
@@ -13542,6 +14801,9 @@ export class WorldRenderer3D {
     // the committed gait: what may be drawn a fraction of a second from now still has to be here.
     this.#requestAnimations(unit.template!, poseAnimation(pose).wanted, client, metadata,
       poseAnimationFamily(pose));
+    // 05.10-A7a-G2 6.19: the one-shot that ends this pose (KneelEnd, SleepUp, JumpLandRun…), which its fallback hid.
+    const exits = poseExitClips(pose);
+    if (exits.length > 0 && sidecarClaims(unit.template!, exits)) this.#requestAnimations(unit.template!, exits, client, metadata, "any", true);
   }
 
   #playAnimation(
@@ -13574,9 +14836,8 @@ export class WorldRenderer3D {
         current.setLoop(wantedLoop, Infinity);
         current.clampWhenFinished = !loop;
         current.play();
-        if (actionKind === undefined) delete unit.overlayActionKind;
-        else unit.overlayActionKind = actionKind;
-        delete unit.overlayFadeUntil;
+        unit.overlayActionKind = actionKind;
+        unit.overlayFadeUntil = undefined;
         const fade = animationFadeWindow(clip.duration, fullDuration);
         unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
         return;
@@ -13605,10 +14866,9 @@ export class WorldRenderer3D {
       }
       unit.overlayAction = next;
       unit.overlayAnimationId = animation;
-      if (actionKind === undefined) delete unit.overlayActionKind;
-      else unit.overlayActionKind = actionKind;
+      unit.overlayActionKind = actionKind;
       unit.overlayPreservesLocomotion = true;
-      delete unit.overlayFadeUntil;
+      unit.overlayFadeUntil = undefined;
       const fade = animationFadeWindow(clip.duration, fullDuration);
       unit.overlayUntil = loop ? 0 : now + fade.start * 1000;
       return;
@@ -13645,8 +14905,7 @@ export class WorldRenderer3D {
       unit.action.setLoop(wantedLoop, Infinity);
       unit.action.clampWhenFinished = !loop;
       unit.action.play();
-      if (actionKind === undefined) delete unit.actionKind;
-      else unit.actionKind = actionKind;
+      unit.actionKind = actionKind;
       // Restarting the same clip ends the same way it would have if it were a different one, so
       // it leaves the same blend window free. See the tail comment at the bottom of this method.
       const blendDuration = loop ? ANIMATION_BLEND : ACTION_ANIMATION_BLEND;
@@ -13677,8 +14936,7 @@ export class WorldRenderer3D {
     }
     unit.action = next;
     unit.animationId = animation;
-    if (actionKind === undefined) delete unit.actionKind;
-    else unit.actionKind = actionKind;
+    unit.actionKind = actionKind;
     // A one-shot holds the unit for its own length, less the blend that takes it away again — and
     // that subtraction is not optional. `fullDuration` (a spell visual's own animation) used to
     // subtract nothing, so the pose pass came back for the unit at the exact millisecond the clip
@@ -13706,11 +14964,11 @@ export class WorldRenderer3D {
   #clearOverlay(unit: PosedModel, hard = false): void {
     if (hard) unit.overlayAction?.stop();
     else unit.overlayAction?.fadeOut(ACTION_ANIMATION_BLEND);
-    delete unit.overlayAction;
-    delete unit.overlayAnimationId;
-    delete unit.overlayActionKind;
+    unit.overlayAction = undefined;
+    unit.overlayAnimationId = undefined;
+    unit.overlayActionKind = undefined;
     unit.overlayPreservesLocomotion = false;
-    delete unit.overlayFadeUntil;
+    unit.overlayFadeUntil = undefined;
     unit.overlayUntil = 0;
   }
 
@@ -13722,14 +14980,15 @@ export class WorldRenderer3D {
    * never fights never downloads its attacks.
    */
   #requestAnimations(template: SkinnedTemplate, wanted: readonly number[], client: EnvironmentClient | undefined,
-    metadata: UnitModel | undefined, family: AnimationRequestFamily = "any"): boolean {
+    metadata: UnitModel | undefined, family: AnimationRequestFamily = "any",
+    exact = false): boolean { // 05.10-A7a-G2 6.19: `exact` — the caller checked sidecarClaims (pose exits)
     if (!client || !metadata) return false;
     // Only when the model claims the pose and has not built it: otherwise every stand-in creature
     // would ask for a set it does not have. The rule itself is `needsSidecarAnimations`, out in
     // `AnimatedModel` where a test can drive it without a renderer — the seated pose was never
     // fetched at all and nothing at this level could show it. `family` says which boundary the
     // list belongs to, so the request is decided by the same one that will decide the drawing.
-    if (!needsSidecarAnimations(template, wanted, family)) return false;
+    if (!exact && !needsSidecarAnimations(template, wanted, family)) return false; // 05.10-A7a-G2 6.19
     const clips = client.animations(metadata.model, template.parents.length, "critical");
     if (!clips) return false;
     if (!this.#unitAnimationBudget.take()) return true;
@@ -13787,6 +15046,26 @@ export class WorldRenderer3D {
   #environmentNode(object: EnvironmentObject, model: EnvironmentModel | undefined): THREE.Object3D {
     if (drawableModel(model)) return this.#modelNode(object, model);
     return model ? new THREE.Group() : this.#fallbackNode(object);
+  }
+
+  /**
+   * 05.10-A7b-9 (7.18): one admitted placement drawn as a stand-in, with the reason it still is.
+   *
+   * Called only for placements that are not their model, so a warm frame never gets here. A
+   * placement beyond its model leash was never asked for: nothing is owed there, nothing counted.
+   */
+  #noteEnvironmentStandIn(object: EnvironmentObject, shape: "canopy" | "empty" | "hull",
+    model: EnvironmentModel | undefined, asked: boolean, client: EnvironmentClient | undefined): void {
+    let reason: EnvironmentStandInReason;
+    if (shape === "hull") reason = "hull";
+    else if (model !== undefined) reason = "pending"; // arrived; waits for a build slot
+    else if (!asked || !client) return;
+    else {
+      const state = client.modelState(object.name);
+      reason = state === "missing" || state === "failed" ? state : "pending";
+    }
+    this.#environmentStandIns.note(object.name, reason, shape === "canopy");
+    if (reason !== "pending") this.#environmentStandInMarkers.mark(object, reason);
   }
 
   #fallbackNode(object: EnvironmentObject): THREE.Object3D {
@@ -14204,18 +15483,23 @@ const GLOW_BLUR_WEIGHTS: readonly [number, number, number] = [0.2270270270, 0.31
  */
 export const GLOW_BLUR_SPREAD = 2;
 
-/**
- * Yards of bounding radius below which a scenery mesh receives but does not cast the sun shadow.
- * In the Stormwind trade district this halves the extra shadow-pass draws of the scenery leaf.
- */
-export const SCENERY_SHADOW_MIN_RADIUS = 1.5;
+// P2-02a: the scenery shadow thresholds live with the flag function (SceneryShadowFlags.ts).
+export { SCENERY_FAR_SHADOW_MIN_RADIUS, SCENERY_SHADOW_MIN_RADIUS } from "./SceneryShadowFlags.js";
 
-/**
- * Yards of bounding radius from which a scenery mesh also casts into the cached outermost cascade:
- * trees, large rocks, statues. Smaller casters reach only the cascades rendered every frame, which
- * cover them for as far as their shadow still reads.
- */
-export const SCENERY_FAR_SHADOW_MIN_RADIUS = 3;
+/** P2-07: whether a bucket's copies are the ones, in the order, its last rebuild wrote. */
+function sameInstanceMembers(previous: readonly object[], list: readonly object[]): boolean {
+  if (previous.length !== list.length) return false;
+  for (let index = 0; index < list.length; index++) if (previous[index] !== list[index]) return false;
+  return true;
+}
+
+/** P2-07: keeps a copy of a bucket's member list, reusing its array. */
+function copyInstanceMembers<T>(members: Map<string, T[]>, key: string, list: readonly T[]): void {
+  let copy = members.get(key);
+  if (!copy) members.set(key, copy = []);
+  copy.length = list.length;
+  for (let index = 0; index < list.length; index++) copy[index] = list[index]!;
+}
 
 /** `userData` key marking a WMO room's depth-only shadow stand-in. */
 const WMO_SHADOW_PROXY = "wowShadowProxy";
@@ -14534,6 +15818,13 @@ export function buildFullscreenGlowPasses(): FullscreenGlowPasses {
   });
 }
 
+/** Scratch for `#placeGameObject`'s tilt (5.27), so placing a game object allocates nothing more. */
+const GAME_OBJECT_TILT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+/** 06.10-7.24: scratch for `gameObjectPickCorners`, which runs per clickable object per frame. */
+const GAME_OBJECT_PICK_ROTATION: Quat = { x: 0, y: 0, z: 0, w: 1 };
+const GAME_OBJECT_PICK_AT = { x: 0, y: 0, z: 0 };
+const GAME_OBJECT_TILT_SCENE = new THREE.Quaternion();
+
 const VMAP_TO_THREE = new THREE.Matrix4().set(
   -1, 0, 0, 0,
   0, 0, 1, 0,
@@ -14678,7 +15969,24 @@ export function stateVisualKey(guid: bigint, effect: StateVisual): string {
 }
 
 
-const _flightPoint = { x: 0, y: 0, z: 0 };
+// 05.10-A7a-E (6.12): missile scratch (MissileFlight.ts) and attachment offsets cached per model.
+const _missileSample = missileSample();
+const _cameraShake = { x: 0, y: 0, z: 0 }; // 05.10-A7a-E (6.13)
+/** 05.10-A7a-E2 (6.14): an effect model fills no texture slot of its own (all 17 bodies use type 0 only). */
+const NO_GLOW_SLOTS: TextureSlots = new Map();
+/** 05.10-A7a-E (6.14): one glow anchor as an emitter entry (anchored like a doodad; 05.10-A7a-E2: or posed by its body's rig). */
+function glowEntry(key: string, wvm: WvmModel, distance: number, visual: THREE.Object3D, rig: GlowBody | undefined, fade: number): { key: string; wvm: WvmModel; distance: number; visual: THREE.Object3D; posed?: GlowBody; fade: number } {
+  return rig ? { key, wvm, distance, visual, posed: rig, fade } : { key, wvm, distance, visual, fade }; // 05.10-A7a-E2: rig; 05.10: ревью E2 fade
+}
+const _missilePoint = new THREE.Vector3();
+const _missileOffsets = new WeakMap<object, Map<number, THREE.Vector3>>();
+function missileAttachmentOffset(wvm: Parameters<typeof attachmentOffset>[0], pivots: Float32Array, attachment: number): THREE.Vector3 {
+  let byPoint = _missileOffsets.get(wvm);
+  if (!byPoint) _missileOffsets.set(wvm, byPoint = new Map());
+  let offset = byPoint.get(attachment);
+  if (!offset) byPoint.set(attachment, offset = attachmentOffset(wvm, pivots, attachment));
+  return offset;
+}
 const _flightDirection = { x: 0, y: 0, z: 0 };
 const _sceneFlightDirection = new THREE.Vector3();
 const _sceneUp = new THREE.Vector3(0, 1, 0);

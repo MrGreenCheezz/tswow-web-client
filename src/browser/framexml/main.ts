@@ -762,6 +762,7 @@ async function main(): Promise<void> {
         boot.bridge.tick(elapsed);
       });
       renderer?.tickCooldowns(now);
+      renderer?.tickMessageFades();
       publishTrainerPreview();
       window.requestAnimationFrame(step);
     };

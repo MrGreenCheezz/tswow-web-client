@@ -191,6 +191,20 @@ export interface FrameXmlArenaOwnerOptions {
   readonly renderer: Pick<FrameXmlDomRenderer, "addRoots" | "sync">;
   /** Told once, with the reason, when the add-on is demoted. */
   readonly onFailure?: (reason: string) => void;
+  /** Told once when the stock enemy frames passed their gate and own the arena opponents. */
+  readonly onReady?: () => void;
+}
+
+/**
+ * Plan item 3.16: while the stock ArenaEnemyFrames own the opponents, the native `#arena-frames`
+ * would draw the same five units a second time. The world mount hides them under this body class.
+ */
+export const FRAMEXML_ARENA_ENEMY_OWNED_CLASS = "framexml-arena-enemy-owned";
+export const FRAMEXML_NATIVE_ARENA_HIDE_SELECTOR = `body.${FRAMEXML_ARENA_ENEMY_OWNED_CLASS} #arena-frames`;
+
+function setArenaEnemyOwned(owned: boolean): void {
+  if (typeof document === "undefined") return;
+  document.body?.classList.toggle(FRAMEXML_ARENA_ENEMY_OWNED_CLASS, owned);
 }
 
 export function createLazyFrameXmlArenaOwner(options: FrameXmlArenaOwnerOptions): FrameXmlArenaOwner {
@@ -226,7 +240,8 @@ export function createLazyFrameXmlArenaOwner(options: FrameXmlArenaOwnerOptions)
       // What the model saw before the frames existed reaches them now, through stock's handlers.
       const errors = boot.errorCount;
       seam.arena?.replay();
-      if (boot.errorCount !== errors) fail(`${FRAMEXML_ARENA_ADDON} raised replaying the known opponents`);
+      if (boot.errorCount !== errors) { fail(`${FRAMEXML_ARENA_ADDON} raised replaying the known opponents`); return; }
+      try { options.onReady?.(); } catch { /* reporting only */ }
     } catch (error) {
       fail(`${FRAMEXML_ARENA_ADDON} failed: ${String(error)}`);
     }
@@ -276,12 +291,17 @@ export function mountFrameXmlArenaEnemy(
   seam: ArenaSeam,
   boot: Pick<FrameXmlBoot, "loadAddon" | "vm" | "bridge" | "errorCount">,
   renderer: Pick<FrameXmlDomRenderer, "addRoots" | "sync">,
+  setOwned: (owned: boolean) => void = setArenaEnemyOwned,
 ): { readonly owner: FrameXmlArenaOwner; readonly cleanup: () => void } | undefined {
   const model = seam.arena;
   if (!model) return undefined;
   const owner = createLazyFrameXmlArenaOwner({
     seam, boot, renderer,
-    onFailure: (reason) => console.warn(`[FrameXML arena] ${reason}; no enemy arena frames`),
+    onFailure: (reason) => {
+      setOwned(false);
+      console.warn(`[FrameXML arena] ${reason}; no enemy arena frames`);
+    },
+    onReady: () => setOwned(true),
   });
   const inArena = installFrameXmlArenaLoadUI(boot, () => owner.begin());
   if (inArena === undefined) return undefined;
@@ -293,6 +313,7 @@ export function mountFrameXmlArenaEnemy(
     cleanup: () => {
       if (model.onEnter === onEnter) model.onEnter = undefined;
       owner.dispose();
+      setOwned(false);
     },
   };
 }

@@ -180,7 +180,7 @@ export function liveFrameXmlNpcUseContainerItem(
   if (!world || !source?.item) return false;
   const template = world.itemTemplates.get(entryOf(source.item));
   if (windows.petition.useItem(source.guid, template)) return true;
-  return windows.itemText.useItem(source.bag, source.slot, template);
+  return windows.itemText.useItem(source.bag, source.slot, template, source.guid); // 5.28 (L6): the guid for a mail copy
 }
 
 /**

@@ -92,6 +92,18 @@ test("MPQ ReputationFrame occupies Character tab 3 and runs stock rows through C
         "first stock row renders the CannedWorldSeam header");
       assert.equal(frame(boot, "ReputationBar2FactionName").text, CANNED_REPUTATION[1].name,
         "second stock row renders the CannedWorldSeam child");
+      // Plan 1.13: GetText answers the standing label (ReputationFrame.lua:167), gendered by UnitSex.
+      const standingLabel = frame(boot, "ReputationBar2ReputationBarFactionStanding").text;
+      assert.ok(typeof standingLabel === "string" && standingLabel.length > 0,
+        "the stock row's standing label is not empty");
+      const labelProbe = boot.vm.execute(`
+        local _, _, standing = GetFactionInfo(2)
+        local key = "FACTION_STANDING_LABEL" .. standing
+        __fxRepLabel = (UnitSex("player") == 3 and rawget(_G, key .. "_FEMALE")) or rawget(_G, key)
+      `, "@reputation:label");
+      assert.equal(labelProbe.ok, true, labelProbe.error);
+      assert.equal(standingLabel, boot.vm.getGlobal("__fxRepLabel"),
+        "the label is GlobalStrings' FACTION_STANDING_LABEL<n>, in the player's gender");
       assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.min, 0,
         "stock row normalizes the reputation bar minimum");
       assert.equal(frame(boot, "ReputationBar2ReputationBar").statusBar?.max, 6000,

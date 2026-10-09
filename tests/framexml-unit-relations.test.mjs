@@ -158,6 +158,34 @@ test("the live seam publishes the player's swing and combat flag as the stock co
   assert.equal(combatEvents(fired).at(-1), "PLAYER_REGEN_DISABLED");
 });
 
+test("5.21 every SMSG_ATTACK_STOP for the player is a PLAYER_LEAVE_COMBAT, a refused request included", () => {
+  // Wow.exe 0x756800 case 0x144 → 0x756770 clears the attack target and the request word and fires
+  // PLAYER_LEAVE_COMBAT (event 0x9c) whether or not PLAYER_ENTER_COMBAT came first. The stock attack
+  // button lit by ActionButton's PostClick goes dark on that event (ActionButton.lua:404-406).
+  const { seam, world, fired, pump, advance } = fixture();
+  seam.attach(pump);
+  seam.tick(0);
+  world.attackStops = 1;
+  advance(0.016);
+  seam.tick(0.016);
+  assert.deepEqual(combatEvents(fired), ["PLAYER_LEAVE_COMBAT"], "HandleAttackSwingOpcode refused the target");
+  advance(0.016);
+  seam.tick(0.032);
+  assert.deepEqual(combatEvents(fired), ["PLAYER_LEAVE_COMBAT"], "one event per packet");
+  world.attackStops = 2;
+  world.attacking = true;
+  advance(0.016);
+  seam.tick(0.048);
+  assert.deepEqual(combatEvents(fired), ["PLAYER_LEAVE_COMBAT", "PLAYER_LEAVE_COMBAT", "PLAYER_ENTER_COMBAT"],
+    "a stop and a start inside one frame keep their order");
+  world.attacking = false;
+  world.attackStops = 3;
+  advance(0.016);
+  seam.tick(0.064);
+  assert.equal(combatEvents(fired).filter((name) => name === "PLAYER_LEAVE_COMBAT").length, 3,
+    "a swing that ended by packet is announced once");
+});
+
 test("the live seam answers combat of any unit in sight and the group's relations, by token or by name", () => {
   const { seam, pump, call } = fixture();
   seam.attach(pump);

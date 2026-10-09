@@ -50,7 +50,7 @@ test("live Trainer C-API binding sends the selected visible spell ID through Wor
     call("SetTrainerServiceTypeFilter", "used", false);
     call("SetTrainerServiceTypeFilter", "unavailable", false);
     assert.deepEqual(call("GetNumTrainerServices"), [2]);
-    assert.deepEqual(call("GetTrainerServiceInfo", 2), ["Spell 400", "", "available", false]);
+    assert.deepEqual(call("GetTrainerServiceInfo", 2), ["Spell 400", "", "available", true]);
     call("BuyTrainerService", 2);
     call("BuyTrainerService", 3);
 

@@ -159,7 +159,7 @@ export interface FrameXmlTradeSkillNative {
 
 export interface FrameXmlTradeSkillOwnerOptions {
   readonly seam: { readonly tradeSkill?: FrameXmlTradeSkillModel | undefined };
-  readonly boot: Pick<FrameXmlBoot, "loadAddon" | "vm" | "bridge" | "errorCount">;
+  readonly boot: Pick<FrameXmlBoot, "loadAddon" | "vm" | "bridge" | "errorCount"> & Partial<Pick<FrameXmlBoot, "isAddonLoaded">>; // L5c 3.24
   readonly renderer: Pick<FrameXmlDomRenderer, "addRoots" | "sync" | "elementFor">;
   readonly native: FrameXmlTradeSkillNative;
   /** The mount's demotion: unpublish, so the next open reaches the native window directly. */
@@ -296,8 +296,11 @@ export function createLazyFrameXmlTradeSkillOwner(options: FrameXmlTradeSkillOwn
         try { showStock(skillId); } catch { fail(); }
         return true;
       }
-      // The native window is the visible answer until the stock one is proven.
-      fallback = native.open(skillId) ? skillId : undefined;
+      // The native window is the visible answer until the stock one is proven — unless the mount's
+      // loading window already has the add-on in (L5c 3.24): the gate then follows within this task,
+      // and a failed one still opens the native window (`fail`).
+      const preloaded = typeof boot.isAddonLoaded === "function" && boot.isAddonLoaded(FRAMEXML_TRADESKILL_ADDON);
+      fallback = !preloaded && native.open(skillId) ? skillId : undefined;
       pending ??= load().finally(() => { pending = undefined; });
       return true;
     },

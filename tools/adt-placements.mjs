@@ -1,6 +1,13 @@
 const WORLD_MID = 0.5 * 64 * 533.33333333;
 
-export function parseAdtPlacements(data) {
+/**
+ * The M2 and WMO placements of an ADT (or of a WDT's MWMO/MODF).
+ *
+ * 05.10-A7b-1 (7.13): `{ nameSet: true }` also reads MODF `nameSet` (u16 at 60, the WMOAreaTable
+ * NameSetID the vmap extractor writes beside the doodad set, `vmap4_extractor/adtfile.h` `ADT::MODF`)
+ * onto WMO placements; only the `visual-tile-v5` generation asks, so older tiles keep their bytes.
+ */
+export function parseAdtPlacements(data, options = {}) {
   const chunks = new Map();
   for (let offset = 0; offset + 8 <= data.length;) {
     const tag = [...data.subarray(offset, offset + 4)].reverse().map((value) => String.fromCharCode(value)).join("");
@@ -15,7 +22,7 @@ export function parseAdtPlacements(data) {
   const wmoNames = names(chunks.get("MWMO"), chunks.get("MWID"));
   const objects = [
     ...placements(chunks.get("MDDF"), 36, "m2", m2Names),
-    ...placements(chunks.get("MODF"), 64, "wmo", wmoNames),
+    ...placements(chunks.get("MODF"), 64, "wmo", wmoNames, options?.nameSet === true),
   ];
   if (objects.length > 10_000) throw new RangeError(`ADT contains too many visual objects: ${objects.length}`);
   return objects;
@@ -27,13 +34,13 @@ export function parseAdtPlacements(data) {
  * A WDT's MWMO/MODF are the ADT's own chunks (no MWID — the name list is read in order, which is
  * what `parseAdtPlacements` does without one), so the placements come out in the same shape.
  */
-export function globalMapObjects(wdt) {
+export function globalMapObjects(wdt, options = {}) {
   for (let offset = 0; offset + 8 <= wdt.length;) {
     const tag = [...wdt.subarray(offset, offset + 4)].reverse().map((value) => String.fromCharCode(value)).join("");
     const size = wdt.readUInt32LE(offset + 4);
     if (tag === "MPHD") {
       if (size < 4 || (wdt.readUInt32LE(offset + 8) & 0x1) === 0) return undefined;
-      const placements = parseAdtPlacements(wdt).filter((object) => object.kind === "wmo").map(centreGlobalObject);
+      const placements = parseAdtPlacements(wdt, options).filter((object) => object.kind === "wmo").map(centreGlobalObject);
       return placements.length > 0 ? placements : undefined;
     }
     offset += 8 + size;
@@ -113,7 +120,7 @@ function extents(data, at) {
   };
 }
 
-function placements(data, stride, kind, modelNames) {
+function placements(data, stride, kind, modelNames, nameSet = false) {
   if (!data) return [];
   if (data.length % stride !== 0) throw new Error(`ADT ${kind} placement chunk is misaligned`);
   const result = [];
@@ -138,6 +145,8 @@ function placements(data, stride, kind, modelNames) {
       rotationZ: data.readFloatLE(offset + 28),
       scale: kind === "m2" ? data.readUInt16LE(offset + 32) / 1024 : 1,
       ...(kind === "wmo" ? { doodadSet: data.readUInt16LE(offset + 58), bounds: extents(data, offset + 32) } : {}),
+      // 05.10-A7b-1 (7.13): opt-in, see `parseAdtPlacements`.
+      ...(kind === "wmo" && nameSet ? { nameSet: data.readUInt16LE(offset + 60) } : {}),
     });
   }
   return result;

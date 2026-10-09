@@ -52,7 +52,7 @@ async function isolatedBarber(game) {
     "../../world/BarberRules.js": await import("../dist/code/world/BarberRules.js"),
     "../../gateway/BarberMetadata.js": await import("../dist/code/gateway/BarberMetadata.js"),
     "../game/Context.js": { game },
-    "./Widgets.js": { Panel: FakePanel },
+    "./Widgets.js": { Panel: FakePanel, setTip: () => {} },
   };
   new Function("require", "module", "exports", js)(
     (name) => modules[name] ?? new Proxy({}, { get: () => () => {} }), module, module.exports);

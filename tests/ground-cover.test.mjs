@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import * as THREE from "three";
 import { startGateway } from "../dist/code/gateway/Gateway.js";
+import { TERRAIN_SPLAT_GENERATION } from "../dist/code/gateway/TerrainSplatGeneration.js"; // 05.10 suite-fix 2
 import {
   DETAIL_CELL_SIZE, GROUND_COVER_BUDGET, GROUND_COVER_MARGIN, GROUND_COVER_MAX_RADIUS,
   GROUND_COVER_SIZE, GroundCoverClient, createGroundCoverCellCache, decodeGroundCover, scatterGroundCover,
@@ -580,6 +581,12 @@ test("the cover file is served beside its family, and a missing one rebuilds the
       await writeFile(join(textures, String(map), `${gridX}-${gridY}.alpha.png`), Uint8Array.of(0x89, 0x50, 0x4e, 0x47));
       await writeFile(join(textures, String(map), `${gridX}-${gridY}.index.png`), Uint8Array.of(0x89, 0x50, 0x4e, 0x47));
       await writeFile(join(textures, String(map), `${gridX}-${gridY}.splat.json`), JSON.stringify({ layers: [] }));
+      // 05.10 suite-fix 2: since 05.10-A7b-7 the route asks for the named splat generation, so an
+      // unstamped family is rebuilt; the real generator stamps all five files with it, and so does this one.
+      const stamp = JSON.stringify({ generation: TERRAIN_SPLAT_GENERATION, chain: "test", sources: [], files: [] });
+      for (const part of ["cover.bin", "alpha.png", "index.png", "splat.json"]) {
+        await writeFile(join(textures, String(map), `${gridX}-${gridY}.${part}.src`), stamp);
+      }
     },
   });
   try {

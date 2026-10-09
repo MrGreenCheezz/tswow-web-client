@@ -182,10 +182,26 @@ test("the real GlueXML corpus loads through the runtime with no Lua errors", wit
   assert.equal(characterSelect.visible, false, "SetGlueScreen hides the screen it left");
   assert.deepEqual(luaErrors, [], "unhandled Lua errors while showing the character-create screen");
   // `toplevel="true"` is what puts a shown screen in front of everything else in its strata — see
-  // `raiseToplevel`. Both screens declare it, so the one just shown must outrank the one it left.
+  // `raiseToplevel`. 06.10: the old form demanded `charcreate > charselect`, which this assertion
+  // never reached before the GetBuildInfo fix and which is not what the raise promises: the runtime
+  // stores explicit levels only (children are drawn relative to their parent), both screens are
+  // `MEDIUM` level 0 siblings under GlueParent, and `raiseToplevel` deliberately does not climb when
+  // nothing in the strata is above the frame (framexml-dom.test.mjs, "nothing else is in LOW"). The
+  // tie is drawn in DOM order — CharacterCreate.xml follows CharacterSelect.xml in GlueXML.toc — and
+  // CharacterSelect is hidden besides. What must hold is that no other frame of the strata outranks
+  // the screen just shown.
   assert.equal(characterCreate.toplevel, true, "CharacterCreate declares toplevel");
-  assert.ok(characterCreate.frameLevel > characterSelect.frameLevel,
+  assert.ok(characterCreate.frameLevel >= characterSelect.frameLevel,
     `charcreate level ${characterCreate.frameLevel} vs charselect ${characterSelect.frameLevel}`);
+  const insideCreate = (frame) => {
+    for (let node = frame; node; node = node.parent) if (node === characterCreate) return true;
+    return false;
+  };
+  const outranking = runtime.bridge.frames
+    .filter((frame) => frame.frameStrata === characterCreate.frameStrata && !insideCreate(frame)
+      && frame.frameLevel > characterCreate.frameLevel)
+    .map((frame) => `${frame.name}:${frame.frameLevel}`);
+  assert.deepEqual(outranking, [], "nothing else in CharacterCreate's strata is above it");
   runtime.tick(0.016);
   assert.deepEqual(luaErrors, [], "unhandled Lua errors on the creation screen's OnUpdate");
 

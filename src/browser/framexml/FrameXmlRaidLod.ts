@@ -32,7 +32,12 @@ export const FRAMEXML_RAID_ADDON = "Blizzard_RaidUI";
 const GROUPS = 8;
 const GROUP_SLOTS = 5;
 const MEMBER_BUTTONS = 40;
-/** `MAX_RAID_CLASS_BUTTONS` = MAX_CLASSES + 3 (Blizzard_RaidUI.lua:23; 10 classes in 3.3.5). */
+/**
+ * The class buttons Blizzard_RaidUI.xml itself defines (`RaidClassButton1`..`13`), which the gate
+ * requires. Not a class count: `MAX_RAID_CLASS_BUTTONS` = MAX_CLASSES + 3 (Blizzard_RaidUI.lua:23)
+ * is 15 on this dataset's 12 classes and stock nil-guards the two the XML lacks; the demotion hides
+ * up to whichever is larger (9.05).
+ */
 const CLASS_BUTTONS = 13;
 
 /** The host global the owner's `RaidFrame_LoadUI` calls. */
@@ -258,7 +263,8 @@ function restoreBefore(boot: GateBoot): void {
     end
     for index = 1, ${GROUPS} do if _G["RaidGroup" .. index] then _G["RaidGroup" .. index]:Hide() end end
     for index = 1, ${MEMBER_BUTTONS} do if _G["RaidGroupButton" .. index] then _G["RaidGroupButton" .. index]:Hide() end end
-    for index = 1, ${CLASS_BUTTONS} do if _G["RaidClassButton" .. index] then _G["RaidClassButton" .. index]:Hide() end end
+    local classButtons = math.max(${CLASS_BUTTONS}, tonumber(MAX_RAID_CLASS_BUTTONS) or 0)
+    for index = 1, classButtons do if _G["RaidClassButton" .. index] then _G["RaidClassButton" .. index]:Hide() end end
     ${SAVED_GLOBAL} = nil
   `, 0);
 }

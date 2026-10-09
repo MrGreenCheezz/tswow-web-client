@@ -264,7 +264,7 @@ function wmoPortals(top) {
   return { vertices, definitions, references };
 }
 
-export function parseWmoVisual(root, groups, rootPath) {
+export function parseWmoVisual(root, groups, rootPath, options = {}) {
   const dependencies = wmoDependencies(root, rootPath);
   if (groups.length !== dependencies.groups.length) throw new Error("WMO group files are incomplete");
   const vertices = [];
@@ -435,8 +435,71 @@ export function parseWmoVisual(root, groups, rootPath) {
     lights: wmoLights(rootChunks.get("MOLT")),
     fogs: wmoFogs(rootChunks.get("MFOG")),
     portals: wmoPortals(rootChunks),
-    doodadRooms: wmoDoodadRooms(rootChunks, doodadOwners),
+    // 05.10-A7b-1 (7.02): `effectiveDoodadSets` only for a `visual-wmo-v25` artifact.
+    doodadRooms: wmoDoodadRooms(rootChunks, doodadOwners, options?.effectiveDoodadSets === true),
+    // 05.10-A7b-3 (7.11 P2/P4): the whole MOMT record and MOSB only for a `visual-wmo-v25` artifact
+    // (WME5); a job for a gateway on `visual-wmo-v22` never asks, so its bytes stay as they were.
+    ...(options?.materialTable === true ? {
+      materialTable: wmoMaterialTable(rootChunks.get("MOMT"), rootChunks.get("MOTX")),
+      ...(wmoSkybox(rootChunks.get("MOSB")) === undefined ? {} : { skybox: wmoSkybox(rootChunks.get("MOSB")) }),
+    } : {}),
   };
+}
+
+/**
+ * 05.10-A7b-3 (7.11 P2): the MOMT record beyond what the runs carry, one entry per record in file
+ * order (the MOBA material byte indexes it).
+ *
+ * The 64-byte layout, settled against the 25,034 records of the client's 1,985 roots (F:/Circle,
+ * `.runtime/re-2026-10-05/A7b-3/probe-momt.out.txt`): 0 flags (max 0xF0 — every bit fits the run's
+ * byte), 4 shader (0 Diffuse 22,910, 1 Specular 517, 2 Metal 90, 3 Env 192, 5 EnvMetal 1,273,
+ * 6 Composite 52), 8 blend mode, 12 texture, 16 `sidnColour`, 20 `frameSidnColour`, 24 texture 2,
+ * 28 `diffColour`, 32 ground type (0–10), 36 texture 3, 40 `colour2`, 44 `flags2`, 48–63 run-time
+ * words. Colours are CImVector BGRA and travel RGBA like every other colour here. Not carried,
+ * because the files never fill them: `frameSidnColour` is 0 on all 25,034 (the client writes it
+ * while it animates the window light), `flags2` is 0 on all, texture 3 names a texture on none and
+ * the run-time words are 0 on all. Texture 2 is a MOTX offset only where it lands on a `.blp` name —
+ * 1,554 records (EnvMetal 1,243, Env 191, Composite 47, and a few Diffuse/Specular/Metal) — and
+ * is garbage on the other 23,477, so anything else is carried as "".
+ * 05.10-A7b-3-review: this rule accepts 1,557 — the 1,554 plus three Composite records of the Icecrown
+ * Citadel precipice/Frostmourne roots whose word is 0, the first MOTX name (an Arthas floor texture,
+ * a plausible second layer); offset 0 is a valid MOTX offset (`probe-tex2-zero.out.txt`).
+ */
+export function wmoMaterialTable(materials, names) {
+  if (!materials || materials.length % 64 !== 0) return [];
+  const result = [];
+  const rgba = (offset) => [materials[offset + 2], materials[offset + 1], materials[offset], materials[offset + 3]];
+  for (let offset = 0; offset < materials.length; offset += 64) {
+    // The offset must start a name, not land inside one, and the name must be a texture.
+    const at = materials.readUInt32LE(offset + 24);
+    const named = names !== undefined && at < names.length && (at === 0 || names[at - 1] === 0)
+      ? stringAt(names, at) : "";
+    result.push({
+      flags: materials.readUInt32LE(offset),
+      shader: materials.readUInt32LE(offset + 4),
+      blendMode: materials.readUInt32LE(offset + 8),
+      sidnColour: rgba(offset + 16),
+      diffColour: rgba(offset + 28),
+      groundType: materials.readUInt32LE(offset + 32),
+      colour2: rgba(offset + 40),
+      texture2: /\.blp$/i.test(named) ? named : "",
+    });
+  }
+  return result;
+}
+
+/**
+ * 05.10-A7b-3 (7.11 P4): MOSB, the building's own sky model, verbatim (NUL padding dropped), or
+ * undefined when the chunk is absent or empty. 12 of the 1,985 roots name one; two of them
+ * (Icecrown Citadel's precipice and Frostmourne) spell it as an absolute authoring path
+ * (`W:\PROJECTS\WOW\FINALDATA\PATCH_3.3.0\DATA\ENVIRONMENTS\STARS\…MDX`), so the reader resolves it —
+ * the artifact states the file.
+ */
+export function wmoSkybox(data) {
+  if (!data || data.length === 0) return undefined;
+  const end = data.indexOf(0);
+  const value = data.subarray(0, end < 0 ? data.length : end).toString("utf8");
+  return value.length > 0 ? value : undefined;
 }
 
 /**
@@ -456,8 +519,11 @@ export function parseWmoVisual(root, groups, rootPath) {
  * own. Groups share no vertices — measured on both buildings, the group vertex counts sum to the
  * model's exactly — so a group's indices are rebased to its own vertices and it needs nothing else.
  */
-export function wmoGroupMeshes(model) {
+export function wmoGroupMeshes(model, options = undefined) {
   if (model.indices.length / 3 !== model.triangleMaterials.length) throw new Error("WMO material assignments do not match its triangles");
+  // 05.10-A7b-3 (7.11 P2): under `visual-wmo-v25` a run is also one MOMT record, so two records that
+  // share a texture but not a shader or a window colour stay apart, and each run names its record.
+  const materialTable = options?.materialTable === true && Array.isArray(model.materialTable) ? model.materialTable : undefined;
   const materials = model.materials ?? model.materialTextures.map((texture) => ({ texture, flags: 0, blendMode: 0 }));
   const textureIndexes = new Map();
   const textures = [];
@@ -487,14 +553,31 @@ export function wmoGroupMeshes(model) {
       const material = materials[model.triangleMaterials[triangle]] ?? { texture: "", flags: 0, blendMode: 0 };
       const texture = textureIndexOf(material.texture);
       const lighting = model.triangleLighting?.[triangle] ?? WMO_LIGHT_EXTERIOR;
-      const key = `${texture}|${material.blendMode}|${material.flags}|${lighting}`;
+      // 05.10-A7b-3: under the table (v25) the key also holds what the client's programs draw with —
+      // shader, window colour (only under 0x10, the flag that lights it; every record of the client
+      // fills the word) and second texture — so records that differ there stay apart; records the
+      // same in all of it still share a run, named by the first of them. They differ in `diffColour`,
+      // `colour2` or ground type, which no `mapobj*` pixel program reads; `colour2` alone would split
+      // 21 of Stormwind's 35 texture-sharing pairs (`probe-split.out.txt`) — if slice 2 finds a use
+      // for it, it joins this key in the same unreleased v25.
+      const record = materialTable !== undefined && model.triangleMaterials[triangle] < materialTable.length
+        ? model.triangleMaterials[triangle] : undefined;
+      const look = record === undefined ? undefined : materialTable[record];
+      const key = materialTable === undefined
+        ? `${texture}|${material.blendMode}|${material.flags}|${lighting}`
+        : `${texture}|${material.blendMode}|${material.flags}|${lighting}|${look === undefined ? "-"
+          : `${look.shader}|${(look.flags & 0x10) !== 0 ? look.sidnColour.join(",") : ""}|${
+            // 05.10-A7b-3-review: texture 2 only where the effect samples it — Env, EnvMetal,
+            // Composite (all 16 ARB programs of each; the other four never read texture[1]).
+            // 05.10 review A7b-2: Env is shader 3 in Wow.exe's program table (WmoMaterials.ts), not 4.
+            look.shader === 3 || look.shader === 5 || look.shader === 6 ? look.texture2 : ""}`}`;
       let bucket = bucketIndexes.get(key);
       if (bucket === undefined) {
         bucket = buckets.length;
         bucketIndexes.set(key, bucket);
         buckets.push({
           material: texture, blendMode: material.blendMode ?? 0, materialFlags: material.flags ?? 0,
-          lighting, indices: [],
+          lighting, indices: [], ...(record === undefined ? {} : { materialIndex: record }),
         });
       }
       const offset = triangle * 3;
@@ -510,6 +593,7 @@ export function wmoGroupMeshes(model) {
       runs.push({
         start: cursor, count: bucket.indices.length, material: bucket.material,
         blendMode: bucket.blendMode, materialFlags: bucket.materialFlags, lighting: bucket.lighting,
+        ...(bucket.materialIndex === undefined ? {} : { materialIndex: bucket.materialIndex }), // 05.10-A7b-3
       });
       for (const index of bucket.indices) indices[cursor++] = index;
     }
@@ -529,6 +613,10 @@ export function wmoGroupMeshes(model) {
     fogs: model.fogs ?? [], portals: model.portals,
     ...(Number.isInteger(model.renderFlags) ? { renderFlags: model.renderFlags } : {}),
     doodadRooms: model.doodadRooms ?? [],
+    // 05.10-A7b-3 (7.11): WME5's table and MOSB, only when the runs name records.
+    ...(materialTable === undefined ? {} : {
+      materialTable, ...(typeof model.skybox === "string" ? { skybox: model.skybox } : {}),
+    }),
   };
 }
 
@@ -559,27 +647,108 @@ function wmoLocallyLitDoodads(groups) {
   return locallyLit;
 }
 
-function wmoDoodadTable(root, groups) {
+function wmoDoodadTable(root, groups, effective = false) {
   const chunks = chunkMap(root);
   const sets = chunks.get("MODS");
   const names = chunks.get("MODN");
   const placements = chunks.get("MODD");
   if (!sets || !names || !placements) return undefined;
   if (sets.length % 32 !== 0 || placements.length % 40 !== 0) throw new Error("WMO doodad tables are misaligned");
-  return { sets, names, placements, locallyLit: wmoLocallyLitDoodads(groups) };
+  return {
+    sets, names, placements, locallyLit: wmoLocallyLitDoodads(groups),
+    // 05.10-A7b-1 (7.03 slice 1): only the effective form says which doodads only outdoor groups own.
+    ...(effective ? { outdoorOnly: wmoOutdoorOnlyDoodads(groups) } : {}),
+  };
 }
 
-function parseWmoDoodadSet(table, requestedSet) {
+/**
+ * 05.10-A7b-1 (7.03 slice 1): the MODD records every MODR owner of which is an outdoor group.
+ *
+ * A doodad named only by groups without `WMO_GROUP_INDOOR` stands on a porch, a roof or a façade:
+ * a lamp, a sign, a banner. The tile used to mark every WMO doodad `interior`, so these vanished at
+ * the 60-yard interior leash while the walls they hang on stayed up to 250. A record no group names
+ * stays interior (the conservative old answer); one named by an indoor and an outdoor room stays
+ * interior too, since the room is where it is lit and bound.
+ */
+function wmoOutdoorOnlyDoodads(groups) {
+  const indoor = new Set();
+  const outdoor = new Set();
+  if (!Array.isArray(groups)) return outdoor;
+  for (const group of groups) {
+    try {
+      const mogp = chunkMap(group).get("MOGP");
+      if (!mogp || mogp.length < 68) continue;
+      const references = chunkMap(mogp.subarray(68)).get("MODR");
+      if (!references) continue;
+      const owners = (mogp.readUInt32LE(MOGP_FLAGS) & WMO_GROUP_INDOOR) !== 0 ? indoor : outdoor;
+      for (let at = 0; at + 2 <= references.length; at += 2) owners.add(references.readUInt16LE(at));
+    } catch {
+      // Ownership is enrichment: a malformed group leaves its doodads on the interior answer.
+    }
+  }
+  for (const index of indoor) outdoor.delete(index);
+  return outdoor;
+}
+
+/** One MODS entry's MODD range, or undefined when it does not fit the table. */
+function doodadSetRange(sets, placementCount, set) {
+  const first = sets.readUInt32LE(set * 32 + 20);
+  const count = sets.readUInt32LE(set * 32 + 24);
+  if (count > 100_000 || first + count > placementCount) return undefined;
+  return { first, count };
+}
+
+/**
+ * 05.10-A7b-1 (7.02): the MODD records a placement of doodad set `set` draws, in draw order.
+ *
+ * Set 0 (`Set_$DefaultGlobal` in the client's own files) is always placed, and a placement's own set
+ * adds to it rather than replacing it: the Duskwood inn placed with set 2 is 335 of its own records
+ * plus 80 of set 0's tables and barrels. Set 0's records come first, then the placement set's that
+ * set 0 does not already hold (one record is drawn once). wowee `terrain_manager.cpp` loads
+ * `{0, placement set}` with the same de-duplication, benilla `wmo.rs` documents "set 0 always, plus
+ * the one a placement picks". The tile's doodad ordinals and WME4's room tables both walk this list,
+ * so the two can never disagree about which ordinal names which record.
+ * Undefined when either range does not fit the table.
+ */
+export function effectiveDoodadIndices(sets, placementCount, set) {
+  const own = doodadSetRange(sets, placementCount, set);
+  if (!own) return undefined;
+  const indices = [];
+  if (set !== 0 && sets.length >= 32) {
+    const global = doodadSetRange(sets, placementCount, 0);
+    if (!global) return undefined;
+    for (let index = global.first; index < global.first + global.count; index++) indices.push(index);
+  }
+  const globalEnd = indices.length;
+  for (let index = own.first; index < own.first + own.count; index++) {
+    // Set 0 is one contiguous range, so membership is a range test, not a set lookup.
+    if (globalEnd > 0 && index >= indices[0] && index <= indices[globalEnd - 1]) continue;
+    indices.push(index);
+  }
+  return indices;
+}
+
+function parseWmoDoodadSet(table, requestedSet, effective = false) {
   const { sets, names, placements, locallyLit } = table;
   const setCount = sets.length / 32;
   if (setCount === 0) return [];
   const set = Number.isInteger(requestedSet) && requestedSet >= 0 && requestedSet < setCount ? requestedSet : 0;
-  const setOffset = set * 32;
-  const first = sets.readUInt32LE(setOffset + 20);
-  const count = sets.readUInt32LE(setOffset + 24);
-  if (count > 100_000 || first + count > placements.length / 40) throw new Error("WMO doodad set is invalid");
+  let indices;
+  if (effective) {
+    // 05.10-A7b-1 (7.02): set 0 plus the requested set, each record once.
+    indices = effectiveDoodadIndices(sets, placements.length / 40, set);
+    if (!indices) throw new Error("WMO doodad set is invalid");
+  } else {
+    const setOffset = set * 32;
+    const first = sets.readUInt32LE(setOffset + 20);
+    const count = sets.readUInt32LE(setOffset + 24);
+    if (count > 100_000 || first + count > placements.length / 40) throw new Error("WMO doodad set is invalid");
+    indices = { first, count };
+  }
   const result = [];
-  for (let index = first; index < first + count; index++) {
+  const length = effective ? indices.length : indices.count;
+  for (let at = 0; at < length; at++) {
+    const index = effective ? indices[at] : indices.first + at;
     const offset = index * 40;
     const record = keptDoodadRecord(names, placements, index);
     if (!record) continue;
@@ -596,6 +765,10 @@ function parseWmoDoodadSet(table, requestedSet) {
       // an albedo tint, so expose it only when group ownership proves this is the indoor M2 path.
       // Its fourth byte is stored colour alpha, never mesh opacity.
       ...(locallyLit.has(index) ? { localLight } : {}),
+      // 05.10-A7b-1: the MODD record and the owner class, only in the effective (v2 cache) form, so
+      // the v1 cache a gateway on `visual-tile-v4` reads and writes keeps its exact bytes.
+      ...(effective ? { index } : {}),
+      ...(effective && table.outdoorOnly?.has(index) ? { outdoor: true } : {}),
     });
   }
   return result;
@@ -629,19 +802,25 @@ function keptDoodadRecord(names, placements, index) {
  * drawn while any of them is. Per set: `offsets[k]..offsets[k + 1]` indexes `groups` for ordinal k.
  * An unusable table answers no sets rather than a guessed room.
  */
-function wmoDoodadRooms(rootChunks, owners) {
+function wmoDoodadRooms(rootChunks, owners, effective = false) {
   const sets = rootChunks.get("MODS");
   const names = rootChunks.get("MODN");
   const placements = rootChunks.get("MODD");
   if (!sets || !names || !placements || sets.length % 32 !== 0 || placements.length % 40 !== 0) return [];
   const result = [];
   for (let set = 0; set < sets.length / 32; set++) {
+    // 05.10-A7b-1 (7.02): under `visual-wmo-v25` a set's table walks the same effective list the
+    // `visual-tile-v5` tile numbers its doodads by — set 0 first, then the set's own records.
+    const indices = effective ? effectiveDoodadIndices(sets, placements.length / 40, set) : undefined;
+    if (effective && !indices) return [];
     const first = sets.readUInt32LE(set * 32 + 20);
     const count = sets.readUInt32LE(set * 32 + 24);
-    if (count > 100_000 || first + count > placements.length / 40) return [];
+    if (!effective && (count > 100_000 || first + count > placements.length / 40)) return [];
     const offsets = [0];
     const groups = [];
-    for (let index = first; index < first + count; index++) {
+    const length = effective ? indices.length : count;
+    for (let at = 0; at < length; at++) {
+      const index = effective ? indices[at] : first + at;
       if (!keptDoodadRecord(names, placements, index)) continue;
       for (const group of owners.get(index) ?? []) groups.push(group);
       offsets.push(groups.length);
@@ -651,16 +830,41 @@ function wmoDoodadRooms(rootChunks, owners) {
   return result;
 }
 
+/**
+ * 05.10-A7b-1: {@link wmoDoodadRooms} over a root's bytes, for tests that check the room tables walk
+ * the same list the tile numbers (`owners`: MODD record → artifact group indices).
+ */
+export function wmoDoodadRoomTables(root, owners, effective = false) {
+  return wmoDoodadRooms(chunkMap(root), owners, effective);
+}
+
 export function parseWmoDoodads(root, requestedSet = 0, groups = []) {
   const table = wmoDoodadTable(root, groups);
   return table ? parseWmoDoodadSet(table, requestedSet) : [];
 }
 
-/** All authored doodad sets, parsing the potentially large group files only once. */
-export function parseWmoDoodadSets(root, groups = []) {
-  const table = wmoDoodadTable(root, groups);
+/**
+ * All authored doodad sets, parsing the potentially large group files only once.
+ *
+ * 05.10-A7b-1: `{ effective: true }` (the `visual-tile-v5` generation) answers each set as the
+ * placement draws it — set 0 plus the set's own records (7.02) — with each record's MODD `index`
+ * and `outdoor: true` for a record only outdoor groups own (7.03 slice 1). Without it the old form.
+ */
+export function parseWmoDoodadSets(root, groups = [], options = {}) {
+  const effective = options?.effective === true;
+  const table = wmoDoodadTable(root, groups, effective);
   if (!table) return [];
-  return Array.from({ length: table.sets.length / 32 }, (_, set) => parseWmoDoodadSet(table, set));
+  return Array.from({ length: table.sets.length / 32 }, (_, set) => parseWmoDoodadSet(table, set, effective));
+}
+
+/** 05.10-A7b-1 (7.13): `MOHD.wmoID` (u32 at 32), the WMOAreaTable key of the building, or undefined. */
+export function wmoRootId(root) {
+  try {
+    const header = chunkMap(root).get("MOHD");
+    return header && header.length >= 36 ? header.readUInt32LE(32) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Strict validation for the persistent JSON form used by visual-tile generation. */
@@ -683,6 +887,9 @@ export function validParsedWmoDoodadSets(value) {
         if (!Array.isArray(doodad.localLight) || doodad.localLight.length !== 4) return false;
         if (!doodad.localLight.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return false;
       }
+      // 05.10-A7b-1: the effective (v2 cache) form's MODD index and owner class.
+      if (doodad.index !== undefined && !(Number.isInteger(doodad.index) && doodad.index >= 0)) return false;
+      if (doodad.outdoor !== undefined && doodad.outdoor !== true) return false;
     }
   }
   return true;

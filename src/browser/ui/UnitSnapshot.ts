@@ -1,5 +1,5 @@
 import { POWER_DISPLAY_SCALE, unit } from "../../world/Fields.js";
-import { CLASS_ICON_TCOORDS, type ClassIconCell } from "../../generated/classIcons.js";
+import { CLASS_COLOR_DATA, CLASS_ICON_TCOORDS, type ClassIconCell } from "../../generated/classIcons.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
 
 /**
@@ -73,7 +73,10 @@ export function classColor(classId: number | undefined): string | undefined {
   // creature, or a player whose `UNIT_FIELD_BYTES_0` arrived before its character did. Giving that
   // a colour would paint every such nameplate, which is the opposite of what this is for.
   if (classId === undefined || classId <= 0) return undefined;
-  return CLASS_COLORS[classId] ?? generatedClassColor(classId);
+  // The dataset's own RAID_CLASS_COLORS first (9.05: HERO is #d9a340 there, as every Lua frame
+  // draws it), then the compiled ten, then a stable hue for a class neither knows.
+  const token = classFileName(classId);
+  return (token !== undefined ? CLASS_COLOR_DATA[token] : undefined) ?? CLASS_COLORS[classId] ?? generatedClassColor(classId);
 }
 
 /**
@@ -151,10 +154,18 @@ export const RACE_FILE_NAMES: Readonly<Record<number, string>> = {
 
 /** What the dataset said, once somebody has asked it. Empty until then. */
 const learnedClassNames = new Map<number, string>();
+/** `ChrClasses.Name_female_lang`/`Name_male_lang` as the gateway fills them (`genderedNames`). */
+const learnedClassNamesFemale = new Map<number, string>();
+const learnedClassNamesMale = new Map<number, string>();
 const learnedRaceNames = new Map<number, string>();
+/** L3 3.14: `ChrRaces.Name_female_lang`/`Name_male_lang` as the gateway fills them (`genderedNames`). */
+const learnedRaceNamesFemale = new Map<number, string>();
+const learnedRaceNamesMale = new Map<number, string>();
 const learnedClassFiles = new Map<number, string>();
 const learnedRaceFiles = new Map<number, string>();
 const learnedRaceLanguages = new Map<number, number>();
+const learnedClassFlags = new Map<number, number>();
+const learnedClassSpellFamilies = new Map<number, number>();
 
 /**
  * Takes the dataset's own names for races and classes, from `/dbc/character-creation`.
@@ -166,11 +177,18 @@ const learnedRaceLanguages = new Map<number, number>();
  * `Класс 14` instead of showing nothing at all.
  */
 export function learnCreationNames(
-  races: ReadonlyArray<{ id: number; name: string; clientFileString?: string; baseLanguage?: number }>,
-  classes: ReadonlyArray<{ id: number; name: string; fileName?: string }>,
+  races: ReadonlyArray<{
+    id: number; name: string; clientFileString?: string; baseLanguage?: number;
+    nameMale?: string; nameFemale?: string; // L3 3.14
+  }>,
+  classes: ReadonlyArray<{
+    id: number; name: string; nameMale?: string; nameFemale?: string; fileName?: string; flags?: number; spellClassSet?: number;
+  }>,
 ): void {
   for (const race of races) {
     if (race.name) learnedRaceNames.set(race.id, race.name);
+    if (race.nameFemale) learnedRaceNamesFemale.set(race.id, race.nameFemale); // L3 3.14
+    if (race.nameMale) learnedRaceNamesMale.set(race.id, race.nameMale); // L3 3.14
     if (race.clientFileString) learnedRaceFiles.set(race.id, race.clientFileString);
     // `ChrRaces.BaseLanguage`: 7 (Common) for the ten Alliance-side rows of this dataset and 1
     // (Orcish) for the Horde ones, and 7 again for all eleven TSWoW rows (12..21) — which the
@@ -181,8 +199,26 @@ export function learnCreationNames(
   }
   for (const entry of classes) {
     if (entry.name) learnedClassNames.set(entry.id, entry.name);
+    // The gendered columns (10.09): the gateway already applies the client's fallback (the other
+    // sex's column, then the base name); an older gateway sends neither and `className` falls back.
+    if (entry.nameFemale) learnedClassNamesFemale.set(entry.id, entry.nameFemale);
+    if (entry.nameMale) learnedClassNamesMale.set(entry.id, entry.nameMale);
     if (entry.fileName) learnedClassFiles.set(entry.id, entry.fileName);
+    // `ChrClasses.Flags` and `SpellClassSet` (`/dbc/character-creation?v=4`); an older gateway
+    // sends neither, and the readers keep their stock fallback.
+    if (Number.isInteger(entry.flags)) learnedClassFlags.set(entry.id, entry.flags! >>> 0);
+    if (Number.isInteger(entry.spellClassSet)) learnedClassSpellFamilies.set(entry.id, entry.spellClassSet!);
   }
+}
+
+/** `ChrClasses.Flags` of a class, or undefined until a gateway that serves the column has said. */
+export function classFlags(classId: number | undefined): number | undefined {
+  return classId === undefined ? undefined : learnedClassFlags.get(classId);
+}
+
+/** `ChrClasses.SpellClassSet` of a class — its spells' family — or undefined until known. */
+export function classSpellFamily(classId: number | undefined): number | undefined {
+  return classId === undefined ? undefined : learnedClassSpellFamilies.get(classId);
 }
 
 /**
@@ -207,20 +243,56 @@ export function creationClassFilesLearned(): boolean {
  */
 export function forgetCreationNames(): void {
   learnedClassNames.clear();
+  learnedClassNamesFemale.clear();
+  learnedClassNamesMale.clear();
   learnedRaceNames.clear();
+  learnedRaceNamesFemale.clear(); // L3 3.14
+  learnedRaceNamesMale.clear(); // L3 3.14
   learnedClassFiles.clear();
   learnedRaceFiles.clear();
   learnedRaceLanguages.clear();
+  learnedClassFlags.clear();
+  learnedClassSpellFamilies.clear();
 }
 
-export function className(classId: number | undefined): string {
+/**
+ * A class's name; `female` picks `ChrClasses.Name_female_lang` (and `false` the male column) when
+ * the dataset served them, else the base name. Without `female` it is the base `Name_lang`.
+ */
+export function className(classId: number | undefined, female?: boolean): string {
   if (classId === undefined) return "";
-  return learnedClassNames.get(classId) ?? CLASS_NAMES[classId] ?? `Класс ${classId}`;
+  const gendered = female === undefined ? undefined
+    : (female ? learnedClassNamesFemale : learnedClassNamesMale).get(classId);
+  return gendered ?? learnedClassNames.get(classId) ?? CLASS_NAMES[classId] ?? `Класс ${classId}`;
 }
 
-export function raceName(raceId: number | undefined): string {
+/**
+ * Every class id this client can name: the dataset's `ChrClasses` rows once learned, merged with the
+ * compiled ten, ascending. The one list to walk when something needs "all classes" — never 1..11.
+ */
+export function knownClassIds(): number[] {
+  const ids = new Set<number>();
+  for (const id of Object.keys(CLASS_FILE_NAMES)) ids.add(Number(id));
+  for (const id of learnedClassFiles.keys()) ids.add(id);
+  for (const id of learnedClassNames.keys()) ids.add(id);
+  return [...ids].sort((a, b) => a - b);
+}
+
+/**
+ * L3-review: the `female` argument of `raceName`/`className` for a sex byte (UNIT_FIELD_BYTES_0
+ * byte 2, a name answer's or a packet row's): Wow.exe 0x715970/0x7159e0 take the male column for 0,
+ * the female one for 1 and `Name_lang` for anything else.
+ */
+export function femaleOf(gender: number | undefined): boolean | undefined {
+  return gender === 1 ? true : gender === 0 ? false : undefined;
+}
+
+/** L3 3.14: `female` picks the sexed column as `className` does (Wow.exe 0x715970); without it, `Name_lang`. */
+export function raceName(raceId: number | undefined, female?: boolean): string { // L3 3.14: `female?`
   if (raceId === undefined) return "";
-  return learnedRaceNames.get(raceId) ?? RACE_NAMES[raceId] ?? `Раса ${raceId}`;
+  const gendered = female === undefined ? undefined // L3 3.14
+    : (female ? learnedRaceNamesFemale : learnedRaceNamesMale).get(raceId); // L3 3.14
+  return gendered ?? learnedRaceNames.get(raceId) ?? RACE_NAMES[raceId] ?? `Раса ${raceId}`; // L3 3.14: `gendered ??`
 }
 
 /** `ChrClasses.Filename` for an id: what the dataset says, else what this build was compiled with. */

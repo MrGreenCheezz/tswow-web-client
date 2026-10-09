@@ -9,6 +9,7 @@ import { readField } from "../../world/Fields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import { game } from "../game/Context.js";
 import { creatureFamilyIconUrl } from "../ui/IconImage.js";
+import { petFoodClient } from "../PetFoodClient.js"; // 05.10-petfood
 import { FrameXmlStableModel } from "./FrameXmlStable.js";
 
 export function createLiveFrameXmlStable(host: { world(): WorldClient | undefined }): FrameXmlStableModel {
@@ -34,5 +35,6 @@ export function createLiveFrameXmlStable(host: { world(): WorldClient | undefine
       return pet ? readField(pet, "OBJECT_FIELD_ENTRY") : undefined;
     },
     stableSlotPrice: (owned) => game.slotPrices?.stableSlotPrice(owned),
+    petFoods: () => petFoodClient(game.gatewayOrigin)?.table(), // 05.10-petfood
   });
 }

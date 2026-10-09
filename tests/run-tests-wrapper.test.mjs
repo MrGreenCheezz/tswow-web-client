@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -8,7 +8,9 @@ import { pathToFileURL } from "node:url";
 import {
   DEFAULTS,
   needsNewerNode,
+  nodeTestTargets,
   parseArgs,
+  SUITE_GLOB,
   resolveFiles,
   suiteFiles,
   summarizeMemory,
@@ -63,6 +65,16 @@ test("the suite is tests/*.test.mjs and nothing from .runtime or the helpers", (
   assert.throws(() => resolveFiles(["tests/no-such.test.mjs"], root), /no such test file/);
 });
 
+test("the whole suite reaches node --test as one glob that expands to exactly suiteFiles()", () => {
+  // 1126 explicit paths passed the Windows command-line limit (spawn ENAMETOOLONG, 2026-10-04).
+  assert.deepEqual(nodeTestTargets(parseArgs([])), [SUITE_GLOB]);
+  assert.deepEqual(nodeTestTargets(parseArgs(["tests/run-tests-wrapper.test.mjs"])), ["tests/run-tests-wrapper.test.mjs"]);
+  const expanded = globSync(SUITE_GLOB, { cwd: root }).map((file) => file.split("\\").join("/")).sort();
+  assert.deepEqual(expanded, suiteFiles());
+  const args = testArgs(parseArgs([]), nodeTestTargets(parseArgs([])));
+  assert.ok(args.join(" ").length < 1024, "the whole-suite command line stays short");
+});
+
 test("Node without registerHooks is replaced for source tests only", () => {
   assert.equal(needsNewerNode("20.18.0", false, "source"), true);
   assert.equal(needsNewerNode("20.18.0", false, "dist"), true, "the suite targets Node 22");
@@ -113,7 +125,9 @@ test("the guard terminates a process whose own memory passes the limit, even ins
   assert.equal(result.stdout.includes("survived"), false);
   assert.match(result.stderr, /\[test-memory-guard\] .*passed the limit of 256 MB/);
   assert.equal(result.records.killed.length, 1);
-  assert.ok(result.records.killed[0].peakMb > 256 && result.records.killed[0].peakMb < 1024,
+  // 05.10 suite-fix 2: the record is whole MB (Math.round), so a sample of 256.0–256.5 MB — over the
+  // limit in bytes — is reported as 256 (seen once under full-suite load); >= is the exact bound.
+  assert.ok(result.records.killed[0].peakMb >= 256 && result.records.killed[0].peakMb < 1024,
     `terminated at ${result.records.killed[0].peakMb} MB`);
 });
 

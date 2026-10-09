@@ -25,6 +25,7 @@ const talentController = await import("../dist/code/browser/framexml/FrameXmlTal
 const { frameXmlPopupsLiveContext } = await import("../dist/code/browser/framexml/FrameXmlPopupsLive.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
 const canned = await import("../dist/code/browser/framexml/FrameXmlPopupsCanned.js");
+const encounters = await import("../dist/code/browser/DungeonEncounterClient.js");
 const { FRAMEXML_POPUPS_DIALOGS } = await import("../dist/code/browser/framexml/FrameXmlPopupsOwner.js");
 const { FRAMEXML_SEAM_BINDINGS, FRAMEXML_SEAM_NAMES } = await import("../dist/code/browser/framexml/FrameXmlWorldSeam.js");
 
@@ -541,10 +542,10 @@ test("2.09 model: INSTANCE_LOCK_START once; the remaining seconds, the bosses an
   model.popupsOwned = true;
   assert.deepEqual(take(), [["INSTANCE_LOCK_START"]], "a /reload shows the lock again, at what is left of its minute");
   clock.now += 20_500;
-  assert.deepEqual(call(model, "GetInstanceLockTimeRemaining"), [39.5, false, 3, 2],
-    "what is left of the server's 60 s (a /reload must not restart it), three bosses, two killed");
+  assert.deepEqual(call(model, "GetInstanceLockTimeRemaining"), [39, false, 3, 2],
+    "what is left of the server's 60 s in whole seconds (Wow.exe 0x00516340 divides the milliseconds by 1000 as integers; a /reload must not restart it), three bosses, two killed");
   assert.deepEqual([1, 2, 3, 4].map((index) => call(model, "GetInstanceLockTimeRemainingEncounter", index)), [
-    ["Принц Келесет", "", true], ["Скарвальд и Далронн", "", false], ["Ингвар Расхититель", "", true], [],
+    ["Принц Келесет", undefined, true], ["Скарвальд и Далронн", undefined, false], ["Ингвар Расхититель", undefined, true], [],
   ]);
   model.muted(() => call(model, "RespondInstanceLock", true));
   assert.deepEqual(world.calls, [], "a gate probe never answers");
@@ -575,8 +576,8 @@ test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; wit
   });
   world.lockWarning(60_000, 0b100, 574, 0);
   assert.deepEqual(call(model, "GetInstanceLockTimeRemaining").slice(1), [false, 2, 1]);
-  assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 1), ["Второй в таблице", "", true]);
-  assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 2), ["Первый в таблице", "", false]);
+  assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 1), ["Второй в таблице", undefined, true], "no SpellIcon: the texture is nil (0x005538b0)");
+  assert.deepEqual(call(model, "GetInstanceLockTimeRemainingEncounter", 2), ["Первый в таблице", undefined, false]);
   // Without the table stock's «Убито боссов: %d/%d» would be invented, so the native prompt (which
   // says only the killed count) keeps the question — after the same 1.5 s a name gets.
   const bare = scripted({ dungeonEncounters: undefined });
@@ -593,6 +594,20 @@ test("2.09 model: a boss is killed by its DungeonEncounter bit, not its row; wit
   assert.deepEqual(call(bare.model, "GetInstanceLockTimeRemainingEncounter", 1), []);
   call(bare.model, "RespondInstanceLock", true);
   assert.deepEqual(bare.world.calls, [{ kind: "instanceLock", accept: true }], "still answerable through the C API");
+});
+
+test("2.09 model: with no question GetInstanceLockTimeRemaining still counts the current map's bosses (Wow.exe 0x00516340 over 0xbd088c/0xbd0894)", () => {
+  // The client counts the rows of its current map (0xbd088c, written at every world change) and
+  // SMSG_INSTANCE_DIFFICULTY's difficulty (0xbd0894, GetInstanceDifficulty-1) against a zero mask.
+  const { model, world } = scripted();
+  world.mapId = 574;
+  world.instanceDifficulty = 0;
+  assert.deepEqual(call(model, "GetInstanceLockTimeRemaining"), [0, false, 3, 0], "Utgarde Keep normal: three bosses, none killed");
+  world.instanceDifficulty = 1;
+  assert.deepEqual(call(model, "GetInstanceLockTimeRemaining"), [0, false, 0, 0], "no heroic rows in the canned table");
+  const bare = scripted({ dungeonEncounters: undefined });
+  bare.world.mapId = 574;
+  assert.deepEqual(call(bare.model, "GetInstanceLockTimeRemaining"), [0, false, 0, 0], "no table: nothing invented");
 });
 
 // ---- the stock popup model over a real WorldClient -------------------------------------------------
@@ -615,7 +630,7 @@ test("M1 over a real WorldClient: packets become the stock events, answers the r
     model.tick();
     assert.deepEqual(fired.splice(0), [["CONFIRM_BINDER", "Златоземье"], ["CONFIRM_TALENT_WIPE", 50_000], ["INSTANCE_LOCK_START"]]);
     const left = call(model, "GetInstanceLockTimeRemaining");
-    assert.ok(left[0] > 59 && left[0] <= 60, `the server's 60 s, counted from arrival (${left[0]})`);
+    assert.ok(Number.isInteger(left[0]) && left[0] >= 59 && left[0] <= 60, `the server's 60 s in whole seconds, counted from arrival (${left[0]})`);
     for (const name of ["ConfirmBinder", "ConfirmBinder", "ConfirmTalentWipe", "ConfirmTalentWipe"]) call(model, name);
     call(model, "RespondInstanceLock", true);
     call(model, "RespondInstanceLock", true);
@@ -662,7 +677,7 @@ class Body extends Element {
   replaceChildren(...children) { this.rebuilds += 1; super.replaceChildren(...children); }
 }
 
-async function nativePrompts(world) {
+async function nativePrompts(world, extraModules = {}) {
   const panels = [];
   const state = { published: false };
   const original = globalThis.document;
@@ -687,11 +702,15 @@ async function nativePrompts(world) {
     "../../world/PvpProtocol.js": pvp,
     "../../world/LfgProtocol.js": lfg,
     "../framexml/FrameXmlLfdController.js": { frameXmlLfdPublished: () => false },
+    // 05.10 suite-fix 2: since 05.10-A7b-4 the place comes through the live locator, which (no locator
+    // answer here) falls back to this fake's terrain grid, as the real one does.
+    "../AreaLocatorLive.js": { liveAreaIdAt: (mapId, x, y) => game.terrain?.areaAt(mapId, x, y) ?? 0 },
     // The real left-to-native registry, the one the stock model marks.
     "../framexml/FrameXmlPopupsController.js": {
       frameXmlPopupsPublished: () => state.published, frameXmlPopupsOwnBattlefieldEntry: () => false,
       frameXmlPopupsLeftToNative: controller.frameXmlPopupsLeftToNative,
     },
+    ...extraModules,
   });
   const nodes = () => panels.flatMap((panel) => panel.body.children.flatMap((row) => row.children));
   return {
@@ -853,7 +872,8 @@ test("2.09 native: the lock with its countdown and killed bosses; Accept and Lea
     assert.equal(ui.visible(), false, "stock INSTANCE_LOCK asks while published");
     // Published, but no DungeonEncounter table: stock would invent «Убито боссов: N/N», so the stock
     // model leaves the question here, where only the killed count is said.
-    const clock = { now: performance.now() };
+    // Whole milliseconds: `(t + WAIT) - t` of a fractional performance.now() can fall short of WAIT.
+    const clock = { now: Math.ceil(performance.now()) };
     const model = new popups.FrameXmlPopupsModel({
       world: () => client, playerLife: () => "alive", playerPosition: () => undefined, playerFieldBytes: () => 0,
       selfResurrectSpell: () => 0, playerLevel: () => 60, unitGuid: () => undefined, monotonic: () => clock.now,
@@ -873,6 +893,62 @@ test("2.09 native: the lock with its countdown and killed bosses; Accept and Lea
     assert.match(ui.text(), /Убито боссов: 2/);
     assert.doesNotMatch(ui.text(), /Убито боссов: 2\/2/);
     model.detach();
+  } finally {
+    ui.dispose();
+    client.close();
+  }
+});
+
+test("2.09 native: with the DungeonEncounter table the boss line is killed of total, counted by the table's bits", async () => {
+  const { client, push } = await loggedIn();
+  const asked = [];
+  const table = new Map([["574/0", [{ bit: 2, name: "Третий" }, { bit: 0, name: "Первый" }, { bit: 1, name: "Второй" }]]]);
+  const ui = await nativePrompts(client, {
+    "../DungeonEncounterClient.js": {
+      encounterKilled: encounters.encounterKilled,
+      dungeonEncounterClient: (origin) => ({
+        encounters: (mapId, difficulty) => { asked.push([origin, mapId, difficulty]); return table.get(`${mapId}/${difficulty}`); },
+      }),
+    },
+  });
+  try {
+    await push(OPCODES.SMSG_NEW_WORLD, newWorld(574));
+    // Bit 5 is no row of this map: the client counts rows, so it is not a fourth kill.
+    await push(OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY, lockWarning(0b100101));
+    ui.updateInteractionPrompts(performance.now());
+    assert.match(ui.text(), /Убито боссов: 2\/3/);
+    assert.deepEqual(asked.at(-1)?.slice(1), [574, 0], "the lock's own map and difficulty");
+    await push(OPCODES.SMSG_NEW_WORLD, newWorld(575));
+    await push(OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY, lockWarning(0b1));
+    ui.updateInteractionPrompts(performance.now());
+    assert.match(ui.text(), /Убито боссов: 1(?!\/)/, "a map the table does not know: the killed count alone");
+  } finally {
+    ui.dispose();
+    client.close();
+  }
+});
+
+test("2.09 native: the table landing while the question is on screen repaints the boss line with its total", async () => {
+  const { client, push } = await loggedIn();
+  let loaded;
+  const table = new Map([["574/0", [{ bit: 0, name: "Первый" }, { bit: 1, name: "Второй" }, { bit: 2, name: "Третий" }]]]);
+  const ui = await nativePrompts(client, {
+    "../DungeonEncounterClient.js": {
+      encounterKilled: encounters.encounterKilled,
+      dungeonEncounterClient: () => ({
+        get table() { return loaded; },
+        encounters: (mapId, difficulty) => (loaded ? table.get(`${mapId}/${difficulty}`) ?? [] : undefined),
+      }),
+    },
+  });
+  try {
+    await push(OPCODES.SMSG_NEW_WORLD, newWorld(574));
+    await push(OPCODES.SMSG_INSTANCE_LOCK_WARNING_QUERY, lockWarning(0b101));
+    ui.updateInteractionPrompts(performance.now());
+    assert.match(ui.text(), /Убито боссов: 2(?!\/)/, "on its way: the killed count alone");
+    loaded = { rows: 3 };
+    ui.updateInteractionPrompts(performance.now());
+    assert.match(ui.text(), /Убито боссов: 2\/3/, "landed: the next frame says the total");
   } finally {
     ui.dispose();
     client.close();
@@ -936,5 +1012,40 @@ test("live context: the sub-zone from the terrain, the NPC's reach by the core's
     releaseTalent();
     releasePopups();
     client.close();
+  }
+});
+
+test("2.09 live context: the boss table through the page's DungeonEncounter client — asked at the mount, undefined until it lands", async () => {
+  const savedOrigin = game.gatewayOrigin;
+  const savedFetch = globalThis.fetch;
+  const requests = [];
+  let land;
+  const landed = new Promise((resolve) => { land = resolve; });
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    const body = await landed;
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    game.gatewayOrigin = "http://127.0.0.1:18090";
+    const host = {
+      world: () => undefined, self: () => undefined, unitGuid: () => undefined,
+      playerLevel: () => 60, spellName: () => undefined, monotonic: () => performance.now(),
+    };
+    const context = frameXmlPopupsLiveContext(host);
+    assert.deepEqual(requests, ["http://127.0.0.1:18090/dbc/dungeon-encounters?v=1"], "asked when the world mounts, before any lock");
+    assert.equal(context.dungeonEncounters(574, 0), undefined, "on its way: nothing invented, the native prompt keeps a lock meanwhile");
+    frameXmlPopupsLiveContext(host);
+    assert.equal(requests.length, 1, "a second mount while it is in flight adds no request");
+    land({ version: 1, encounters: [[571, 574, 0, 0, "Принц Келесет"], [572, 574, 1, 0, "Принц Келесет"]] });
+    await flush();
+    assert.deepEqual(context.dungeonEncounters(574, 0), [{ bit: 0, name: "Принц Келесет" }]);
+    assert.deepEqual(context.dungeonEncounters(1, 0), [], "loaded, no rows for the map: the client's 0 bosses");
+    frameXmlPopupsLiveContext(host);
+    assert.equal(requests.length, 1, "a landed table is not asked again");
+  } finally {
+    game.gatewayOrigin = savedOrigin;
+    globalThis.fetch = savedFetch;
   }
 });

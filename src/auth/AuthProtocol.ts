@@ -121,7 +121,9 @@ export function buildLogonProof(proof: SrpProof, securityFlags: number, token?: 
     throw new AuthProtocolError("PIN and matrix authentication are not supported by this realm");
   }
   if (securityFlags & AUTH_SECURITY_TOKEN && !/^\d{6}$/.test(token ?? "")) {
-    throw new AuthProtocolError("This account requires a six-digit authenticator token");
+    // Code 4 (WOW_FAIL_UNKNOWN_ACCOUNT) is what the core answers a token that does not validate
+    // (AuthSession.cpp:488-496), so the player reads the same refusal without the round trip.
+    throw new AuthProtocolError("This account requires a six-digit authenticator token", 4);
   }
 
   const writer = new PacketWriter()

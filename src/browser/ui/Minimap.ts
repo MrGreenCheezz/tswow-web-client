@@ -15,6 +15,10 @@ import { rightRail } from "./Dom.js";
 import { skinnable, slot } from "./Slots.js";
 import { toggleTrackingMenu, trackingMatcher } from "./Tracking.js";
 import { toggleWorldMap } from "./WorldMap.js";
+import { setTip } from "./Widgets.js";
+import { partyBlipMembers } from "../game/PartyPositions.js";
+// 05.10-A7b-4 (7.13/7.14): the located area (WMO room → grid → map) and the building's own minimap.
+import { drawLiveWmoMinimap, liveAreaIdAt, liveIndoorZoneTexts, liveWmoMinimapRevision } from "../AreaLocatorLive.js";
 
 /**
  * The minimap: the client's own baked tiles under the character, with the zone name and the
@@ -133,7 +137,7 @@ function build(): MinimapParts {
   const canvas = document.createElement("canvas");
   canvas.id = "minimap-canvas";
   canvas.setAttribute("aria-label", "Миникарта");
-  canvas.title = "Ctrl+клик — метка на карте";
+  setTip(canvas, "Щелчок — метка на миникарте группы");
   const zone = document.createElement("div");
   zone.className = "minimap-zone";
   const subzone = document.createElement("div");
@@ -174,12 +178,11 @@ function build(): MinimapParts {
   // everything else beneath it.
   rightRail.insertBefore(root, rightRail.children[0] ?? null);
 
-  // Ctrl-click puts the world position under the cursor on the party's minimap, which is what the
-  // original client binds it to — a plain click would ping the party by accident all day. Reading
+  // A click puts the world position under the cursor on the party's minimaps, as stock
+  // Minimap_OnClick does on any click inside the circle (Minimap.lua:177-188, OnMouseUp). Ctrl+click
+  // stays the same ping; `click` is the primary button only (the others are `auxclick`). Reading
   // the position back needs the same projection that drew it.
-  canvas.addEventListener("click", (event) => {
-    if (event.ctrlKey) onCanvasClick(event, canvas);
-  });
+  canvas.addEventListener("click", (event) => onCanvasClick(event, canvas));
   return { root, canvas, context, clock, zone, subzone };
 }
 
@@ -375,7 +378,7 @@ function controlButton(label: string, title: string, onClick: () => void): HTMLB
   const button = document.createElement("button");
   button.type = "button";
   button.className = "minimap-button";
-  button.title = title;
+  setTip(button, title);
   // The glyph is decoration; the name has to be readable by something that cannot see it.
   button.setAttribute("aria-label", title);
   button.textContent = label;
@@ -384,6 +387,11 @@ function controlButton(label: string, title: string, onClick: () => void): HTMLB
     onClick();
   });
   return button;
+}
+
+/** `Minimap_ZoomIn`/`Minimap_ZoomOut` (MINIMAPZOOMIN/OUT, 3.11): the + and − buttons' step. */
+export function zoomMinimap(direction: "in" | "out"): void {
+  changeZoom(direction === "in" ? -1 : 1);
 }
 
 function changeZoom(step: number): void {
@@ -474,14 +482,28 @@ function addOptimisticMinimapPing(x: number, y: number, now = performance.now())
   pushMinimapPing(x, y, now, true);
 }
 
+/** The quickest a click repeats a ping: the server relays every MSG_MINIMAP_PING to the group. */
+export const MINIMAP_CLICK_PING_INTERVAL_MS = 500;
+let lastClickPingAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Whether a click at `point` (pixels from the centre) pings: inside the circle, as stock's
+ * `sqrt(x² + y²) < width / 2`, and not sooner than {@link MINIMAP_CLICK_PING_INTERVAL_MS} after the
+ * last one, so a double click is one ping.
+ */
+export function minimapClickPings(point: MinimapPixel, size: number, now: number, lastAt: number): boolean {
+  if (!(size > 0) || Math.hypot(point.column, point.row) >= size / 2) return false;
+  return now - lastAt >= MINIMAP_CLICK_PING_INTERVAL_MS;
+}
+
 function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
   const box = canvas.getBoundingClientRect();
   const size = Math.min(box.width, box.height);
-  if (!(size > 0)) return;
-  pingMinimapAt(
-    { column: event.clientX - box.left - box.width / 2, row: event.clientY - box.top - box.height / 2 },
-    size,
-  );
+  const point = { column: event.clientX - box.left - box.width / 2, row: event.clientY - box.top - box.height / 2 };
+  const now = performance.now();
+  if (!minimapClickPings(point, size, now, lastClickPingAt)) return;
+  lastClickPingAt = now;
+  pingMinimapAt(point, size);
 }
 
 function playerOf(state: WorldState | undefined): WorldObjectState | undefined {
@@ -553,7 +575,8 @@ export function updateMinimap(now: number): void {
   const animating = pings.length > 0;
   const key = `${world.mapId}|${Math.round(self.position.x * 8)}|${Math.round(self.position.y * 8)}`
     + `|${Math.round(self.position.orientation * 256)}|${size}`
-    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`;
+    + `|${game.minimapTiles?.revision ?? -1}|${settings.zoom}|${settings.rotate ? 1 : 0}`
+    + `|${liveWmoMinimapRevision()}`; // 05.10-A7b-4 (7.14): the floor's building and its answer
   // The state is what the blips are made of, and it used to be in the key as its revision — which
   // every packet about anybody moves, so in a crowd the whole circle was repainted every frame for
   // neighbours far outside it. When the revision has moved, the blips are collected (one walk of
@@ -601,7 +624,7 @@ function drawMinimap(
   context: CanvasRenderingContext2D,
   size: number,
   mapId: number,
-  position: { x: number; y: number; orientation: number },
+  position: { x: number; y: number; z?: number; orientation: number },
   blips: MinimapBlips,
   now: number,
 ): void {
@@ -616,7 +639,10 @@ function drawMinimap(
 
   context.translate(radius, radius);
   if (settings.rotate) context.rotate(position.orientation);
-  drawTiles(context, size, mapId, position);
+  // 05.10-A7b-4 (7.14): in an interior room of a building with bakes, its pictures replace the ADT tiles.
+  if (drawLiveWmoMinimap(context, mapId, position, size / (settings.zoom / MINIMAP_YARDS_PER_PIXEL)) === 0) {
+    drawTiles(context, size, mapId, position);
+  }
   drawBlips(context, radius, position, blips, now);
   context.restore();
 
@@ -739,14 +765,14 @@ function collectBlips(radius: number, position: WorldPoint, state: WorldState): 
 
   // The party. The original client shows these and nothing else by default, and they are the one
   // thing a minimap is genuinely needed for.
-  const members = world?.group?.members;
-  if (members) {
-    for (let index = 0; index < members.length; index++) {
-      const guid = members[index]!.guid;
-      if (guid === state.selfGuid) continue;
-      const member = state.objects.get(guid);
-      if (!member?.position) continue;
-      blips.push({ at: blipAt(member.position), colour: "#65a9ff", size: 3.5 });
+  // 4.06: a member out of sight stays, at the whole-yard position SMSG_PARTY_MEMBER_STATS carries,
+  // drawn smaller and paler so a rounded point does not pass for an exact one.
+  if (world?.group?.members.length) {
+    for (const member of partyBlipMembers(world, (zoneId) => game.areas?.area(zoneId)?.mapId)) {
+      // The member record is a fresh copy per collection, so it is the blip's position as it is.
+      blips.push(member.precise
+        ? { at: member, colour: "#65a9ff", size: 3.5 }
+        : { at: member, colour: "#65a9ff99", size: 2.5 });
     }
   }
 
@@ -934,14 +960,21 @@ function updateLabels(
   // tile's own 16×16 area grid, which is the ground half of what `Map::GetAreaId` does.
   if (now - zoneCheckedAt < ZONE_INTERVAL) return;
   zoneCheckedAt = now;
-  const areaId = game.terrain?.areaAt(world.mapId, position.x, position.y) ?? 0;
+  // 05.10-A7b-4 (7.13): the located area — a WMO room's WMOAreaTable area, the grid, then Map.AreaTableID.
+  const areaId = liveAreaIdAt(world.mapId, position.x, position.y);
   if (areaId !== zoneAreaId) zoneAreaId = areaId;
   const areas = game.areas;
   const area = areas?.area(zoneAreaId);
   const zone = areas?.zoneOf(zoneAreaId);
-  const zoneText = zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "";
+  // 05.10-A7b-4 (7.13): a room's names over the outdoor ones (AreaLocator.ts `indoorZoneTexts`).
+  const texts = liveIndoorZoneTexts(
+    zone?.name ?? areas?.map(world.mapId ?? 0)?.name ?? "",
+    area && zone && area.id !== zone.id ? area.name : "",
+    area?.name ?? "",
+  );
+  const zoneText = texts.zoneText;
   if (view.zone.textContent !== zoneText) view.zone.textContent = zoneText;
-  const subzoneText = area && zone && area.id !== zone.id ? area.name : "";
+  const subzoneText = texts.subZoneText;
   if (view.subzone.textContent !== subzoneText) view.subzone.textContent = subzoneText;
 }
 
@@ -956,9 +989,20 @@ export function currentAreaId(): number {
   const world = game.world;
   const self = playerOf(world?.state);
   if (world && self?.position) {
-    zoneAreaId = game.terrain?.areaAt(world.mapId, self.position.x, self.position.y) ?? 0;
+    zoneAreaId = liveAreaIdAt(world.mapId, self.position.x, self.position.y); // 05.10-A7b-4
   }
   return zoneAreaId;
+}
+
+/**
+ * 1.17: a far teleport within the map. The cached zone belongs to the point that was left, so the
+ * next frame re-reads it at once instead of waiting out `ZONE_INTERVAL`; the frame stays shown, its
+ * pings (same map, same coordinates) stay, and the old name stands until that frame replaces it.
+ */
+export function forgetMinimapZone(): void {
+  zoneAreaId = 0;
+  zoneCheckedAt = 0;
+  lastDrawKey = "";
 }
 
 /** Dropped when leaving a realm, so the next one does not inherit a zone name or a ping. */

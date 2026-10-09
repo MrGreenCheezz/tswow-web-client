@@ -84,8 +84,10 @@ function fixture({ ready = true } = {}) {
   const storeListeners = [];
   const store = {
     fieldRange(subject, name, listener) {
+      // Other seam models (FrameXmlWorldEvents: rating words, 3.22) subscribe ranges of their own;
+      // this test watches the skill range alone.
+      if (name !== "PLAYER_SKILL_INFO_1_1") return () => {};
       assert.equal(subject, "self");
-      assert.equal(name, "PLAYER_SKILL_INFO_1_1");
       storeListeners.push(listener);
       return () => {
         const index = storeListeners.indexOf(listener);

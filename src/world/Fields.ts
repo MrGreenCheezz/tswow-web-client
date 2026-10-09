@@ -1,4 +1,5 @@
 import { UPDATE_FIELDS, type UpdateFieldName } from "../generated/updateFields.js";
+import { guidFromWords } from "../protocol/Guid.js";
 import type { WorldObjectState } from "./WorldState.js";
 
 /**
@@ -38,7 +39,7 @@ export function readField<Name extends UpdateFieldName>(
   }
   if (field.type === "LONG") {
     const high = object.fields.get(field.offset + 1) ?? 0;
-    return ((BigInt(high) << 32n) | BigInt(raw)) as FieldValue<Name>;
+    return longFromSlots(raw, high) as FieldValue<Name>;
   }
   return raw as FieldValue<Name>;
 }
@@ -68,14 +69,39 @@ export function attackPower(object: WorldObjectState): number | undefined {
   const low = halves === undefined ? 0 : (halves[0] << 16) >> 16;
   const high = halves === undefined ? 0 : (halves[1] << 16) >> 16;
   const multiplier = readField(object, "UNIT_FIELD_ATTACK_POWER_MULTIPLIER") ?? 0;
-  return Math.max(0, ((base | 0) + low + high) * (1 + multiplier));
+  // L7 4.03: each of the three is scaled on its own and rounded, as Wow.exe's UnitAttackPower
+  // (0x00610b60) does and CharacterStatFields.attackPower repeats — the sum scaled once drifted from
+  // the sheet by a point or two under a «+N % attack power» aura.
+  const scale = Math.fround(1 + (Number.isFinite(multiplier) ? multiplier : 0));
+  const scaled = (value: number): number => roundToEven(Math.fround(scale * Math.fround(value)));
+  return Math.max(0, scaled(base | 0) + scaled(low) + scaled(high));
+}
+
+/** L7 4.03: x87 `fistp` under the default control word — the nearest integer, a tie to the even one. */
+function roundToEven(value: number): number {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  const rounded = fraction > 0.5 || (fraction === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
+  return rounded === 0 ? 0 : rounded;
 }
 
 /** A guid held in a pair of slots at an offset from a named field, which is how the item slots run. */
 export function readGuidAt(object: WorldObjectState, index: number): bigint | undefined {
   const low = object.fields.get(index);
   if (low === undefined) return undefined;
-  return (BigInt(object.fields.get(index + 1) ?? 0) << 32n) | BigInt(low);
+  return longFromSlots(low, object.fields.get(index + 1) ?? 0);
+}
+
+/**
+ * Two slots as one u64. Wire words are u32 and go through `guidFromWords` (one bigint instead of
+ * four, P1-21c); anything else a caller has put in a slot — a bigint, a negative or fractional
+ * number — keeps the old expression's answer, or its TypeError/RangeError.
+ */
+function longFromSlots(low: number, high: number): bigint {
+  if (typeof low === "number" && typeof high === "number" && (low >>> 0) === low && (high >>> 0) === high) {
+    return guidFromWords(low, high);
+  }
+  return (BigInt(high) << 32n) | BigInt(low);
 }
 
 /**
@@ -252,6 +278,13 @@ export const PLAYER_FLAGS_GHOST = 0x0000_0010;
 export const PLAYER_FLAGS_AFK = 0x0000_0002;
 export const PLAYER_FLAGS_DND = 0x0000_0004;
 export const PLAYER_FLAGS_RESTING = 0x0000_0020;
+/**
+ * The PvP pair of the same word: `PLAYER_FLAGS_IN_PVP` (`Player.h:363`), the flag the player asked
+ * for, and `PLAYER_FLAGS_PVP_TIMER` (`:372`), set while the five minutes after switching it off run
+ * (`MiscHandler.cpp:563-572`, cleared by `Player::UpdatePvPFlag`).
+ */
+export const PLAYER_FLAGS_IN_PVP = 0x0000_0200;
+export const PLAYER_FLAGS_PVP_TIMER = 0x0004_0000;
 
 /**
  * How opaque a unit is drawn, and whether it moves like something that is sneaking.

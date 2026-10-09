@@ -9,7 +9,9 @@
  *   line calls `FocusUnit()` — the target — and with a token or a name `FocusUnit(target)`
  *   (ChatFrame.lua:1244-1262).
  * * `AssistUnit(unit)` — SecureTemplates' `assist` action (:422-425) and `/assist`, bare for the
- *   target (ChatFrame.lua:1229-1241): select whatever that unit has selected.
+ *   target (ChatFrame.lua:1229-1241): select whatever that unit has selected. DEC-A 3.11: as Wow.exe
+ *   0x00525eb0 — no unit there is ERR_GENERIC_NO_TARGET / ERR_UNIT_NOT_FOUND, and the assistAttack CVar
+ *   («Автоматическая помощь») attacks the unit assisted.
  * * `Dismount()` — `/dismount` (ChatFrame.lua:2114-2118); `CancelShapeshiftForm()` — `/cancelform`
  *   (:1080-1084).
  *
@@ -39,7 +41,13 @@ const UNIT_TOKEN =
 /** The part of `WorldClient` the commands read and send through. */
 export interface FrameXmlTargetingWorld {
   readonly state: { readonly objects: ReadonlyMap<bigint, WorldObjectState> };
+  /** DEC-A 3.11: the selection, read back after an assist's select. */
+  readonly targetGuid?: bigint | undefined;
   selectTarget?(guid: bigint | undefined): void;
+  /** DEC-A 3.11: StartAttack on the selection (Wow.exe 0x006e4950, the assistAttack swing). */
+  startAttack?(): void;
+  /** DEC-review 3.11: CanAttack (Wow.exe 0x00729740 via 0x006e2610) — WorldClient's hook; absent, no veto. */
+  canAttackUnit?(object: WorldObjectState): boolean;
   dismount?(): void;
   cancelAura?(spellId: number): void;
 }
@@ -54,6 +62,10 @@ export interface FrameXmlTargetingContext {
   setFocus?(guid: bigint | undefined): void;
   /** The stance-bar entries the player has active, in bar order (`formId` only for a MOD_SHAPESHIFT form). */
   activeStanceEntries?(): readonly { readonly spellId: number; readonly formId: number | undefined }[];
+  /** DEC-A 3.11: a UIErrorsFrame line by its GlobalStrings key (Wow.exe 0x005216f0); absent, silent. */
+  uiError?(name: string): void;
+  /** DEC-A 3.11: the assistAttack CVar (Wow.exe 0x00bd0918, registered with "0"); absent, off. */
+  assistAttack?(): boolean;
 }
 
 export interface FrameXmlTargeting {
@@ -100,9 +112,22 @@ export class FrameXmlTargetingModel implements FrameXmlTargeting {
     if (!world) return;
     const guid = this.#resolve(unitOrName)?.guid;
     const object = guid === undefined ? undefined : world.state.objects.get(guid);
-    const selected = object === undefined ? undefined : unitField.target(object);
+    // DEC-A 3.11: Wow.exe 0x00525eb0 looks the token up as a unit (0x004d4db0, TYPEMASK_UNIT): nobody there —
+    // or a corpse, whose words at UNIT_FIELD_TARGET's offset are no selection — is a UI error (0x005216f0).
+    if (object?.typeId !== 3 && object?.typeId !== 4) { // DEC-A 3.11
+      this.#context.uiError?.(assistErrorName(unitOrName));
+      return;
+    }
+    const selected = unitField.target(object);
     if (selected === undefined || selected === 0n || !world.state.objects.has(selected)) return;
     world.selectTarget?.(selected);
+    // DEC-A 3.11: with assistAttack on, 0x006e4950 attacks the unit assisted; WorldClient.startAttack swings at
+    // the selection, so only once the select took (a unit already selected counts — 0x006e4950 runs then too).
+    if (world.targetGuid !== selected || this.#context.assistAttack?.() !== true) return; // DEC-review 3.11: was one `if`
+    // DEC-review 3.11: 0x006e4950 → 0x006e2610 asks CanAttack (0x00729a70 → 0x00729740) and sends no CMSG_ATTACKSWING
+    // when it refuses: an assist that selected the player himself or a friend swings at nothing.
+    const chosen = world.state.objects.get(selected);
+    if (chosen !== undefined && world.canAttackUnit?.(chosen) !== false) world.startAttack?.(); // DEC-review 3.11
   }
 
   dismount(): void {
@@ -113,6 +138,16 @@ export class FrameXmlTargetingModel implements FrameXmlTargeting {
     const form = this.#context.activeStanceEntries?.().find((entry) => entry.formId !== undefined);
     if (form && form.spellId > 0) this.#context.world()?.cancelAura?.(form.spellId);
   }
+}
+
+/**
+ * DEC-A 3.11: AssistUnit's error when its token names no unit — Wow.exe 0x00525eb0 compares the argument
+ * itself: empty (a bare `/assist`) or "target" (Storm's case-insensitive compare) is 0x005216f0(199)
+ * ERR_GENERIC_NO_TARGET, any other token or a name is (314) ERR_UNIT_NOT_FOUND.
+ */
+function assistErrorName(unitOrName: string | undefined): string {
+  const raw = unitOrName ?? "";
+  return raw.length === 0 || raw.toLowerCase() === "target" ? "ERR_GENERIC_NO_TARGET" : "ERR_UNIT_NOT_FOUND";
 }
 
 /** The part of the world seam the bindings read. */

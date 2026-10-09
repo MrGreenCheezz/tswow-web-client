@@ -165,6 +165,17 @@ test("missing player/packet or late metadata is undefined, never fabricated rows
   assert.equal(resolveFrameXmlTalentSnapshot(player(), { ...talents(), pet: true }, metadata()), undefined);
 });
 
+test("a dataset class past 11 (HERO = 13) resolves; 0 and 32 (no ChrClasses mask bit) do not (9.05)", () => {
+  const asked = [];
+  const meta = metadata({ tabsForClass: (classId) => { asked.push(classId); return tabs; } });
+  const snapshot = resolveFrameXmlTalentSnapshot(player(13), talents(), meta);
+  assert.ok(snapshot, "class 13 gets a snapshot");
+  assert.deepEqual(asked, [13], "its own tabs were asked for");
+  assert.deepEqual(snapshot.groups[0].tabs.map((tab) => tab.id), [101, 100]);
+  assert.equal(resolveFrameXmlTalentSnapshot(player(0), talents(), metadata()), undefined);
+  assert.equal(resolveFrameXmlTalentSnapshot(player(32), talents(), metadata()), undefined);
+});
+
 test("cached snapshot refreshes on identity and explicit revision changes", () => {
   const state = {
     player: player(),

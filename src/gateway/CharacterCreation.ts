@@ -32,6 +32,14 @@ export interface CreationRace {
   id: number;
   /** `Name_lang` in the gateway's locale, which is what the form shows. */
   name: string;
+  /**
+   * The name `GetCharacterInfo` prints for each sex (10.09). The client picks by the character's sex
+   * (Wow.exe 0x4e3170 via 0x715970 for races, 0x7159e0 for classes): its own sex's column, else the
+   * other sex's, else `Name_lang` — so a female priest is «Жрица», not «Жрец» (`genderedName`).
+   * Optional: a gateway started before 10.09 does not send them.
+   */
+  nameMale?: string;
+  nameFemale?: string;
   /** `ClientPrefix`: the two letters a race's own art is named with, e.g. `Hu`, `Ta`. */
   clientPrefix: string;
   /**
@@ -100,6 +108,9 @@ export interface CreationRace {
 export interface CreationClass {
   id: number;
   name: string;
+  /** By sex, as for races: see `CreationRace.nameMale`. */
+  nameMale?: string;
+  nameFemale?: string;
   /**
    * `Filename`, e.g. `WARRIOR` — and the key `CLASS_ICON_TCOORDS` in the client's own FrameXML
    * uses, which is how a class id reaches a cell of the class atlas. tswow writes the same token
@@ -113,6 +124,21 @@ export interface CreationClass {
   expansion: number;
   /** Whether any race may take it, i.e. whether `CharBaseInfo` names it at all. */
   playable: boolean;
+  /**
+   * `ChrClasses.Flags` (column 57; the client's record offset 0x24). Bit 0x8 is the relic slot
+   * `UnitHasRelicSlot` reads (Wow.exe 0x611330, plan item 1.15): measured on this dataset it is set
+   * on 2 PALADIN (0x3a), 6 DEATHKNIGHT (0x7a), 7 SHAMAN (0x1a), 11 DRUID (0x0a) and 13 HERO (0x3a).
+   * Optional since `?v=4`: an older gateway does not send it, and the browser then falls back to
+   * the stock class set.
+   */
+  flags?: number;
+  /**
+   * `ChrClasses.SpellClassSet` (column 56; record offset 0x20): the spell family the class's own
+   * spells carry. The original client keeps the player's (0xd397b4) and applies SPELLMOD
+   * modifiers only to spells of that family (0x7fd970) — IsActionInRange's SPELLMOD_RANGE (1.14b).
+   * Optional since `?v=4`, like `flags`.
+   */
+  spellClassSet?: number;
 }
 
 export interface CharacterCreationData {
@@ -122,6 +148,14 @@ export interface CharacterCreationData {
 
 /** `CHRRACES_FLAGS_NOT_PLAYABLE` — see the header. */
 const RACE_FLAG_NOT_PLAYABLE = 0x01;
+
+/**
+ * The client's rule for a sexed name (Wow.exe 0x715970/0x7159e0): the character's own sex's column
+ * if it is not empty, else the other sex's, else `Name_lang`.
+ */
+export function genderedNames(name: string, male: string, female: string): { name: string; nameMale: string; nameFemale: string } {
+  return { name, nameMale: male || female || name, nameFemale: female || male || name };
+}
 
 export async function loadCharacterCreation(dbcDirectory: string): Promise<CharacterCreationData> {
   const [raceTable, classTable, baseTable] = await Promise.all([
@@ -135,14 +169,18 @@ export async function loadCharacterCreation(dbcDirectory: string): Promise<Chara
   for (const row of classTable.rows()) {
     const id = classTable.id(row);
     classIds.add(id);
+    const classNames = genderedNames(classTable.locstring(row, "Name_lang"),
+      classTable.locstring(row, "Name_male_lang"), classTable.locstring(row, "Name_female_lang"));
     classes.push({
       id,
-      name: classTable.locstring(row, "Name_lang"),
+      ...classNames,
       fileName: classTable.string(row, "Filename"),
       classMask: id >= 1 && id <= 32 ? 1 << (id - 1) : 0,
       powerType: classTable.int(row, "DisplayPower"),
       expansion: classTable.int(row, "Required_expansion"),
       playable: false,
+      flags: classTable.int(row, "Flags") >>> 0,
+      spellClassSet: classTable.int(row, "SpellClassSet"),
     });
   }
 
@@ -168,9 +206,11 @@ export async function loadCharacterCreation(dbcDirectory: string): Promise<Chara
   const races: CreationRace[] = [];
   for (const row of raceTable.rows()) {
     const id = raceTable.id(row);
+    const raceNames = genderedNames(raceTable.locstring(row, "Name_lang"),
+      raceTable.locstring(row, "Name_male_lang"), raceTable.locstring(row, "Name_female_lang"));
     races.push({
       id,
-      name: raceTable.locstring(row, "Name_lang"),
+      ...raceNames,
       clientPrefix: raceTable.string(row, "ClientPrefix"),
       clientFileString: raceTable.string(row, "ClientFileString"),
       hairCustomization: raceTable.string(row, "HairCustomization"),

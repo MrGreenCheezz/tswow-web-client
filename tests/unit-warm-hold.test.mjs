@@ -13,6 +13,8 @@ import {
   unitWarmBody, updateBorrowedMaterials,
 } from "../dist/code/browser/WorldRenderer3D.js";
 import { spawnFadeFactor, SPAWN_FADE_WINDOW_MS } from "../dist/code/browser/AnimatedModel.js";
+import { glowBodyMeshes } from "../dist/code/browser/WeaponGlowBody.js"; // 05.10: ревью E2
+import { glowAnchorsOf } from "../dist/code/browser/WeaponGlow.js"; // 05.10: ревью E2
 import { applyWorldLight, createWorldLightUniforms } from "../dist/code/browser/WorldLighting.js";
 
 // The unit warm hold (city-arrival: seven shader programs linked inside the frame a unit was first
@@ -53,6 +55,7 @@ const Harness = (() => {
   const deps = {
     THREE, spawnFadeFactor, programWarmupKind, unitWarmBody, createFadeProgramTwin, createUnitCapsuleMaterial,
     borrowFadedMaterials, returnBorrowedMaterials, updateBorrowedMaterials,
+    glowBodyMeshes, glowAnchorsOf, // 05.10: ревью E2 — `#unitOpacityMeshes` reaches the glow bodies
     UNIT_WARM_HOLD_FRAMES, UNIT_WARM_HOLD_SELF_FRAMES, UNIT_FADE_RETURN_HOLD_FRAMES, APPEARANCE_PENDING_WAIT_MS,
   };
   return Function(...Object.keys(deps), `${code}; return Harness;`)(...Object.values(deps));
@@ -111,6 +114,8 @@ function rig() {
     unitWarmHolds: new Map(), unitPartWarmHolds: new Map(), unitWarmTracked: new WeakSet(),
     fadeTwins: new WeakMap(), capsuleTwins: undefined, worldLight: createWorldLightUniforms(),
     unitBodyGeometry: new THREE.CapsuleGeometry(0.5, 1, 4, 12), submissionSerial: 1,
+    // 11.02-H-review: the release asks the vehicle poser whether a HIDE_PASSENGER seat hid the node.
+    vehiclePassengers: { hides: () => false },
   });
   return { h, renderer };
 }
@@ -228,6 +233,18 @@ test("a held unit the frame did not draw keeps waiting, and one that left the sc
   gone.node.removeFromParent();
   h.releaseWarmUnits();
   assert.equal(h.unitWarmHolds.has(gone), false);
+});
+
+test("11.02-H-review: a passenger a HIDE_PASSENGER seat hid stays hidden through its release", () => {
+  const { h, renderer } = rig();
+  const unit = riggedUnit();
+  h.vehiclePassengers = { hides: (node) => node === unit.node };
+  assert.equal(frame(h, unit, 0), false);
+  renderer.state.ready = true;
+  assert.equal(frame(h, unit, 16), false, "released, and still no model while it sits there");
+  assert.equal(h.unitWarmHolds.size, 0, "the hold itself is over");
+  h.vehiclePassengers = { hides: () => false };
+  assert.equal(frame(h, unit, 32), true, "out of the seat: drawn");
 });
 
 test("the player's first appearance waits at most UNIT_WARM_HOLD_SELF_FRAMES, and is never hidden again", () => {
@@ -641,9 +658,9 @@ test("the renderer holds and releases units in the order the harness above assum
   const order = [
     "if (presented && unit.admittedAt === undefined) unit.admittedAt = now;",
     "if (unit.shadowCaster === undefined) this.#trackUnitMeshes(unit, self);",
-    "const held = this.#holdUnitUntilWarm(unit, self, presented, appearance.opacity, now);",
+    "const held = this.#holdUnitUntilWarm(unit, self, presented, displayOpacity, now);", // 05.10-A7a-H 6.11а: aura opacity × CreatureModelAlpha
     "unit.node.visible = presented && !held;",
-    "const opacity = appearance.opacity * spawnFadeFactor(unit.admittedAt, now);",
+    "const opacity = displayOpacity * spawnFadeFactor(unit.admittedAt, now);", // 05.10-A7a-H 6.11а
     "this.#applyUnitOpacity(unit, opacity, this.#unitFadeReturnWaits(unit, opacity));",
     "this.#applyUnitShadow(unit, shadowCaster);",
   ].map(line => draw.indexOf(line));

@@ -4,9 +4,10 @@ title TSWoW WebClient Gateway
 cd /d "%~dp0"
 
 rem Restarts the WebClient gateway after a TSWoW build changed the client patches.
-rem   restart-gateway.bat         stop the running gateway and start it again; rebuilds first
-rem                               when src/ changed after the last build
-rem   restart-gateway.bat build   also rebuild the WebClient first (after WebClient code changes)
+rem   restart-gateway.bat         stop the running gateway and start it again; rebuilds the
+rem                               gateway first when src/ changed after the last build
+rem   restart-gateway.bat build   always rebuild the gateway first (tools\build-gateway.mjs,
+rem                               a few seconds; the page in dist\web is built by web\build.bat)
 
 set "WEBCLIENT_RUNTIME=%WEBCLIENT_NODE_DIR%"
 if not defined WEBCLIENT_RUNTIME set "WEBCLIENT_RUNTIME=%~dp0.runtime\node"

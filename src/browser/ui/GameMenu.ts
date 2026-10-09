@@ -23,6 +23,7 @@ import {
   toggleFrameXmlGameMenu,
 } from "../framexml/FrameXmlGameMenuController.js";
 import { frameXmlPopupsPublished, registerFrameXmlQuitIntent } from "../framexml/FrameXmlPopupsController.js";
+import { logoutCountdownText, logoutRemaining } from "./LogoutCountdown.js";
 
 /**
  * What Escape opens when nothing else is open.
@@ -37,6 +38,47 @@ let logoutCountdown: Panel | undefined;
 let logoutCancelButton: HTMLButtonElement | undefined;
 let logoutCountdownWorld: WorldClient | undefined;
 let logoutCancelRequested = false;
+/** 4.13: when the granted response arrived (performance.now), the clock the countdown runs from. */
+let logoutStartedAt: number | undefined;
+/** The visible count, and a screen-reader copy that changes only every five seconds. */
+let logoutCountdownLine: HTMLElement | undefined;
+let logoutCountdownAnnounce: HTMLElement | undefined;
+let logoutCountdownTimer: ReturnType<typeof setInterval> | undefined;
+/** How often the count is redrawn: a quarter second keeps `ceil` on the right second. */
+const LOGOUT_TICK_MS = 250;
+const LOGOUT_ANNOUNCE_EVERY_S = 5;
+
+/** Writes the line for the time left: the stock CAMP/QUIT text, then «Ожидание сервера…» at 0. */
+function tickLogoutCountdown(): void {
+  // A panel taken down some other way stops its own clock on the next tick.
+  if (!logoutCountdown?.visible) {
+    stopLogoutTicks();
+    return;
+  }
+  const world = logoutCountdownWorld;
+  if (!world || logoutStartedAt === undefined || !logoutCountdownLine) return;
+  const remaining = logoutRemaining(logoutStartedAt, performance.now(), world.logout?.instant === true);
+  // The server decides the moment (SMSG_LOGOUT_COMPLETE); past the count the panel waits for it.
+  const text = remaining === undefined || remaining <= 0
+    ? "Ожидание сервера…"
+    : logoutCountdownText(remaining, logoutIsQuit());
+  if (logoutCountdownLine.textContent !== text) logoutCountdownLine.textContent = text;
+  const announce = logoutCountdownAnnounce;
+  if (announce && announce.textContent !== text && (remaining === undefined || remaining <= 0
+    || remaining % LOGOUT_ANNOUNCE_EVERY_S === 0 || announce.textContent === "")) {
+    announce.textContent = text;
+  }
+}
+
+function startLogoutTicks(): void {
+  tickLogoutCountdown();
+  logoutCountdownTimer ??= setInterval(tickLogoutCountdown, LOGOUT_TICK_MS);
+}
+
+function stopLogoutTicks(): void {
+  if (logoutCountdownTimer !== undefined) clearInterval(logoutCountdownTimer);
+  logoutCountdownTimer = undefined;
+}
 /**
  * Stock «Выход из игры» (`Quit()`). A browser tab cannot quit the game; the nearest equivalent is
  * what quitting leaves behind — the character logged out by the server and the account signed
@@ -80,12 +122,18 @@ export function updateLogoutPending(world: WorldClient, pending: boolean): void 
   }
   if (pending) {
     if (game.world !== world) return;
-    if (logoutCountdownWorld !== world) logoutCancelRequested = false;
+    if (logoutCountdownWorld !== world) {
+      logoutCancelRequested = false;
+      logoutStartedAt = undefined;
+    }
     logoutCountdownWorld = world;
+    // Counted from the first granted response; a later sync of the same logout keeps the clock.
+    logoutStartedAt ??= performance.now();
     // The stock CAMP dialog counts the server's twenty seconds while the popup owner is published
     // (FrameXmlPopups.ts fires PLAYER_CAMPING); its button is CancelLogout, which reaches the same
     // cancelPendingLogout, so the request state above stays shared and nothing cancels twice.
     if (frameXmlPopupsPublished()) {
+      stopLogoutTicks();
       logoutCountdown?.hide();
       syncLogoutMenuButton();
       return;
@@ -95,9 +143,16 @@ export function updateLogoutPending(world: WorldClient, pending: boolean): void 
       logoutCountdown.root.setAttribute("role", "dialog");
       logoutCountdown.root.setAttribute("aria-label", "Ожидание выхода из мира");
       const message = document.createElement("p");
-      message.textContent = "Сервер завершает выход персонажа. Вы можете отменить его.";
+      message.className = "logout-countdown-time";
+      message.setAttribute("aria-hidden", "true");
+      logoutCountdownLine = message;
+      // What a screen reader hears: the same line, every five seconds rather than every second.
+      const announce = document.createElement("p");
+      announce.className = "logout-countdown-announce";
+      announce.setAttribute("aria-live", "polite");
+      logoutCountdownAnnounce = announce;
       logoutCancelButton = menuButton("Отменить выход", cancelPendingLogout);
-      logoutCountdown.body.append(message, logoutCancelButton);
+      logoutCountdown.body.append(message, announce, logoutCancelButton);
     }
     if (logoutCancelButton) {
       logoutCancelButton.disabled = logoutCancelRequested;
@@ -105,6 +160,7 @@ export function updateLogoutPending(world: WorldClient, pending: boolean): void 
     }
     const opening = !logoutCountdown.visible;
     logoutCountdown.show();
+    startLogoutTicks();
     if (opening) logoutCancelButton?.focus();
   } else if (logoutCountdownWorld === world) {
     resetLogoutPending();
@@ -119,14 +175,20 @@ export function updateLogoutPending(world: WorldClient, pending: boolean): void 
 export function syncLogoutCountdownOwner(): void {
   const world = game.world;
   if (world && world.logout?.result === 0 && !world.loggedOut) updateLogoutPending(world, true);
-  else if (frameXmlPopupsPublished()) logoutCountdown?.hide();
+  else if (frameXmlPopupsPublished()) {
+    stopLogoutTicks();
+    logoutCountdown?.hide();
+  }
 }
 
 /** Called on every world teardown, including a lost connection with no logout packet. */
 export function resetLogoutPending(): void {
   quitRequest = undefined;
+  stopLogoutTicks();
   logoutCountdown?.hide();
   logoutCountdownWorld = undefined;
+  logoutStartedAt = undefined;
+  if (logoutCountdownAnnounce) logoutCountdownAnnounce.textContent = "";
   logoutCancelRequested = false;
   syncLogoutMenuButton();
 }

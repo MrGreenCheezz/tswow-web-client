@@ -1,15 +1,21 @@
 import {
   ACTION_BUTTON_ITEM, ACTION_BUTTON_MACRO, ACTION_BUTTON_SPELL,
 } from "../../world/ActionBarProtocol.js";
+import { onFollowChange } from "../input/Follow.js";
 import {
-  isPlayerGhost, PLAYER_FLAGS_AFK, PLAYER_FLAGS_DND, PLAYER_FLAGS_RESTING,
+  isPlayerGhost, PLAYER_FLAGS_AFK, PLAYER_FLAGS_DND, PLAYER_FLAGS_IN_PVP, PLAYER_FLAGS_PVP_TIMER, PLAYER_FLAGS_RESTING,
   player as playerFields, readByte, readField, unit as unitField,
   UNIT_DYNFLAG_TAPPED, UNIT_DYNFLAG_TAPPED_BY_PLAYER,
 } from "../../world/Fields.js";
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
+import { globalString } from "../../generated/globalStrings.js";
+import { FrameXmlRefundModel } from "./FrameXmlRefund.js";
+import { frameXmlReputationBase } from "./FrameXmlReputationResolver.js";
+import { armGiftWrap, cancelGiftWrap, giftWrapLocks, isWrappingPaper, wrapWithPendingPaper } from "../game/GiftWrap.js";
 import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../../world/FactionRules.js";
 import { isWorldObjectDead } from "../../world/WorldState.js";
 import type { WorldObjectState } from "../../world/WorldState.js";
+import { attackPower as characterAttackPower } from "../../world/CharacterStatFields.js";
 import type { WorldClient } from "../../world/WorldClient.js";
 import type { LevelUpInfo } from "../../world/CharacterProgressProtocol.js";
 import type { WorldStore } from "../../world/WorldStore.js";
@@ -36,6 +42,21 @@ import {
 } from "../Inventory.js";
 import type { BuybackSlotState, ItemSlotState, PlayerInventoryState } from "../Inventory.js";
 import { itemUseSpellId, requestInventoryItemUse } from "../game/GroundTarget.js";
+import {
+  bindEnchantWithCursor, cancelItemTarget, observeItemTarget, pendingItemTarget, replaceEnchantWithCursor,
+  sessionEnchantFlags, targetItemWithCursor, targetTradeSlotWithCursor, type ItemTargetOutcome,
+} from "../game/SpellCursor.js";
+import { END_BOUND_TRADEABLE_ITEM_ENCHANT } from "../game/BoundTradeable.js"; // L1 (2.05/3.22)
+import { frameXmlObservePendingSpells } from "./FrameXmlBoundTradeable.js"; // L1 (2.05)
+import { observeSpellEnchantQuestion } from "../game/MainHandEnchant.js"; // 05.10-2.05
+import { frameXmlResetCursor } from "./FrameXmlSetCursor.js"; // 05.10-5.17 review
+import { currencyTokenSlots } from "../CarriedItems.js"; // L1 (2.05)
+import { frameXmlLiveDropItemOnUnit } from "./FrameXmlDropItemOnUnit.js"; // L1 (1.10)
+import { frameXmlBuyMerchantItemInSlot } from "./FrameXmlMerchantCursor.js"; // L1 (3.23)
+import {
+  FRAMEXML_TRADE_ENCHANT_SLOT, findSpellTargetItem, frameXmlItemTargetErrorText, frameXmlStopSpellTargeting,
+} from "./FrameXmlItemTargeting.js";
+import { runFrameXmlNativeEscape } from "./FrameXmlGameMenuController.js";
 import { bonusBarOffset as worldBonusBarOffset } from "../game/BonusBar.js";
 import type { ItemTemplate } from "../../world/QueryCacheProtocol.js";
 import {
@@ -48,6 +69,20 @@ import {
 import { ITEM_EQUIP_COOLDOWN_MS } from "../../world/ItemProtocol.js";
 import { withEventOwnersExcluded } from "../ui/framexml_compat/FrameXmlRuntime.js";
 import { readSkills } from "../ui/Skills.js";
+import { frameXmlUnitSkinnableLine, type FrameXmlSkinnableLine } from "./FrameXmlSkinnableTooltip.js";
+import { frameXmlUnitSubName } from "./FrameXmlUnitSubName.js";
+import {
+  frameXmlCritChanceFromAgility, frameXmlHealthRegenFromSpirit, frameXmlManaRegenFromSpirit, type FrameXmlRegenUnit,
+} from "./FrameXmlRegenStats.js";
+import type { CharacterRegenTables } from "../CharacterRegenClient.js";
+import { FrameXmlServerPromptsModel } from "./FrameXmlServerPrompts.js";
+import { FrameXmlQuestPoiModel, frameXmlQuestPoiMask, type FrameXmlQuestPoiQuest } from "./FrameXmlQuestPoi.js";
+import { questPoiShiftComplete } from "./FrameXmlQuestPoiLayout.js"; // 3.13d (L6)
+import { frameXmlInstanceIsDynamic, frameXmlInstancePlayerDifficulty } from "./FrameXmlInstanceDynamic.js"; // 5.28 (L6)
+import { frameXmlLootOwnerLines, type FrameXmlLootOwnerLine } from "./FrameXmlLootOwnerTooltip.js"; // 5.28 (L6)
+import {
+  FrameXmlUnitTooltipRefresh, frameXmlUnitGuildName, frameXmlUnitPendingAnswers, frameXmlUnitSummonTitle,
+} from "./FrameXmlUnitTooltipExtras.js"; // 3.12 (04.10, L4)
 import { characterCombatRatingBonus, spellCritFromIntellect, type CharacterStatCatalog } from "../../world/CharacterStatData.js";
 import {
   MIRROR_TIMER_BREATH, MIRROR_TIMER_FATIGUE, MIRROR_TIMER_NAMES, mirrorTimerRemaining,
@@ -67,7 +102,7 @@ import {
   MEMBER_STATUS_GHOST,
   type PartyMemberStats,
 } from "../../world/PartyProtocol.js";
-import { MEMBER_STATUS_AFK, MEMBER_STATUS_DND } from "../../world/PartyProtocol.js";
+import { MEMBER_STATUS_AFK, MEMBER_STATUS_DND, MEMBER_STATUS_PVP_FFA } from "../../world/PartyProtocol.js";
 import {
   frameXmlGroupRoles, frameXmlPartyLeaderIndex, frameXmlPlayerFlagAfk, frameXmlPlayerFlagDnd,
   frameXmlPlayerFlagResting, frameXmlRaidTargetIndex, frameXmlRestState, frameXmlXpExhaustion,
@@ -81,6 +116,8 @@ import {
 } from "./FrameXmlControl.js";
 import { FrameXmlGroupCommandsModel } from "./FrameXmlGroupCommands.js";
 import { FrameXmlTargetingModel } from "./FrameXmlTargetingApi.js";
+import { FRAMEXML_LIVE_TARGET_NEAREST } from "./FrameXmlTargetNearestLive.js"; // L2 1.10
+import { liveCameraViews } from "../game/CameraViewsLive.js"; // DEC-B 3.11
 import { CHAT_MSG_ADDON, LANG_ADDON } from "../../world/SessionProtocol.js";
 import { CHAT_MSG_CHANNEL, CHAT_MSG_SYSTEM, languageForRace } from "../../world/ChatProtocol.js";
 import type { ChatMessage } from "../../world/ChatProtocol.js";
@@ -118,11 +155,46 @@ import { FrameXmlLootModel, type FrameXmlLootHostContext } from "./FrameXmlLoot.
 import { FrameXmlPopupsModel } from "./FrameXmlPopups.js";
 import { FrameXmlFriendsModel, frameXmlSocialAreaLookup } from "./FrameXmlFriends.js";
 import { FrameXmlMailModel } from "./FrameXmlMail.js";
-import { FrameXmlTradeModel } from "./FrameXmlTrade.js";
+import { FrameXmlTradeModel, tradePotentialBindEnchant } from "./FrameXmlTrade.js";
 import { FrameXmlThreatModel } from "./FrameXmlThreat.js";
 import { FrameXmlQuestAbandonModel } from "./FrameXmlQuestAbandon.js";
 import { FrameXmlChatWindowFlags } from "./FrameXmlChatWindowFlags.js";
 import { FrameXmlMechanicsModel } from "./FrameXmlMechanics.js";
+import { FrameXmlPvpFlagModel } from "./FrameXmlPvpFlag.js";
+import { FrameXmlBattlefieldScoreModel } from "./FrameXmlScoreboard.js";
+import { FrameXmlAreaSpiritHealerModel, frameXmlAreaSpiritHealerLiveContext } from "./FrameXmlAreaSpiritHealer.js"; // L3 5.25
+import { FrameXmlDifficultyModel } from "./FrameXmlDifficulty.js";
+import { FrameXmlEncounters, frameXmlBossTokenIndex } from "./FrameXmlEncounters.js";
+import { FrameXmlWorldEvents } from "./FrameXmlWorldEvents.js";
+import {
+  frameXmlCreatureEntry, frameXmlUnitCreatureFamily, frameXmlUnitCreatureType, type FrameXmlCreatureTypeNames,
+} from "./FrameXmlCreatureType.js";
+import {
+  frameXmlTrainerAbilityReq, frameXmlTrainerNumAbilityReq, frameXmlTrainerSkillLine, frameXmlTrainerSkillReq,
+  frameXmlTrainerServiceGroup, type FrameXmlTrainerRequirementSource,
+} from "./FrameXmlTrainerRequirements.js";
+import {
+  FrameXmlTrainerList, TRAINER_STATE_AVAILABLE, TRAINER_STATE_UNAVAILABLE, TRAINER_STATE_USED,
+} from "./FrameXmlTrainerGroups.js";
+import { frameXmlTrainerBuyAll, frameXmlTrainerSkillLineModel } from "./FrameXmlTrainerSkillLines.js"; // L12 3.29
+import type { TrainerSpell } from "../../world/TrainerProtocol.js";
+import type { SpellLearnEffectsTable } from "../SpellLearnEffectsClient.js";
+
+/** The trainer list's empty rows, and the type filter's word for each state (FrameXmlTrainerGroups.ts). */
+const NO_TRAINER_ROWS: readonly TrainerSpell[] = Object.freeze([]);
+const TRAINER_STATE_FILTERS = ["available", "unavailable", "used"] as const;
+import { FrameXmlTalentGroupModel } from "./FrameXmlTalentGroup.js";
+import { FrameXmlGlobalCooldownEdge, frameXmlGlobalCooldownFor, frameXmlLaterCooldown } from "./FrameXmlGlobalCooldown.js"; // L12 5.30; L13-review 5.30: …For (by category) in place of …Answer + globalCooldownDurationIn
+import type { GlobalCooldownView } from "../game/PredictedGlobalCooldown.js"; // L13-review 5.30
+import { FrameXmlTalentPreviewModel } from "./FrameXmlTalentPreview.js";
+import { FrameXmlQuestShareModel } from "./FrameXmlQuestShare.js";
+import { FrameXmlSupportModel } from "./FrameXmlSupport.js";
+import type { FrameXmlQuestLogModel, FrameXmlQuestLogNames } from "./FrameXmlQuestLog.js";
+import { createLiveFrameXmlQuestLog } from "./FrameXmlQuestLogLive.js";
+import { FrameXmlAutoRepeatEdge, frameXmlIsAttackSpell } from "./FrameXmlActionRepeat.js";
+import { frameXmlAutoRepeatShown, frameXmlIsAutoRepeatSpell } from "./FrameXmlAutoRepeatWanted.js"; // L18 5.05
+import { frameXmlClassHasRelicSlot } from "./FrameXmlRelicSlot.js";
+import { FrameXmlArenaRosterModel } from "./FrameXmlArenaRoster.js";
 import type { FrameXmlCurrencyModel } from "./FrameXmlCurrency.js";
 import { createLiveFrameXmlCurrency } from "./FrameXmlCurrencyLive.js";
 import { FrameXmlArenaOpponents } from "./FrameXmlArena.js";
@@ -132,6 +204,15 @@ import type { FrameXmlSocketModel } from "./FrameXmlSocketModel.js";
 import { createLiveFrameXmlSocket } from "./FrameXmlSocketLive.js";
 import type { FrameXmlInspectModel } from "./FrameXmlInspect.js";
 import { createLiveFrameXmlInspect } from "./FrameXmlInspectLive.js";
+import { createFrameXmlRepair, type FrameXmlRepairModel } from "./FrameXmlRepair.js";
+import {
+  FRAMEXML_INVENTORY_ALERT_AMMO, createFrameXmlInventoryAlerts, frameXmlAmmoAlertStatus, frameXmlItemAlertStatus,
+  type FrameXmlInventoryAlerts,
+} from "./FrameXmlInventoryAlerts.js";
+import { FRAMEXML_OFFHAND_EQUIPMENT_SLOT, frameXmlOffhandIsWeapon } from "./FrameXmlDurabilityFrame.js";
+import { createFrameXmlWorldEntry, type FrameXmlWorldEntry } from "./FrameXmlWorldEntry.js";
+import { FrameXmlAutoCompleteModel } from "./FrameXmlAutoComplete.js"; // L5c 3.18
+import { repair as repairSession } from "../Repair.js";
 import type { FrameXmlBarberModel } from "./FrameXmlBarber.js";
 import { createLiveFrameXmlBarber } from "./FrameXmlBarberLive.js";
 import type { FrameXmlGlyphModel } from "./FrameXmlGlyph.js";
@@ -145,7 +226,7 @@ import { createLiveFrameXmlAchievement } from "./FrameXmlAchievementLive.js";
 import type { FrameXmlGuildBankModel } from "./FrameXmlGuildBank.js";
 import { createLiveFrameXmlGuildBank } from "./FrameXmlGuildBankLive.js";
 import { createLiveFrameXmlTradeSkill, type FrameXmlTradeSkillLiveHost, type FrameXmlTradeSkillModel } from "./FrameXmlTradeSkill.js";
-import { frameXmlPopupsLiveContext } from "./FrameXmlPopupsLive.js";
+import { frameXmlLiveDungeonEncounters, frameXmlPopupsLiveContext } from "./FrameXmlPopupsLive.js";
 import {
   FrameXmlMacroModel, createFrameXmlMemoryMacroStore, type FrameXmlMacroIcons, type FrameXmlMacroStore,
 } from "./FrameXmlMacro.js";
@@ -165,17 +246,37 @@ import { frameXmlTaxiMapBounds } from "./FrameXmlTaxi.js";
 import { questGreenRange } from "./FrameXmlWorldSeam.js";
 import type { LfgStockCatalog } from "../LfgDungeons.js";
 import { FrameXmlHudMechanicsLive } from "./FrameXmlHudMechanicsLive.js";
+import { FrameXmlCastEventsLive } from "./FrameXmlCastEvents.js";
+import { FrameXmlCombatLogLive } from "./FrameXmlCombatLogLive.js";
+import { FrameXmlMultiCastLive } from "./FrameXmlMultiCastLive.js";
+import { spellFailureText } from "../../world/SpellProtocol.js";
 import { FrameXmlPetActionBarLive } from "./FrameXmlPetActionBarLive.js";
+import { FrameXmlPossessModel } from "./FrameXmlPossess.js"; // 11.02-IF
+import { POSSESS_BONUS_BAR_OFFSET, POSSESS_FIRST_SLOT, POSSESS_MIRRORED_SLOTS } from "../../world/PossessBar.js"; // 11.02-IF; P1-16 review
+import { FrameXmlVehicleModel } from "./FrameXmlVehicle.js"; // 11.02-F2
+import { FrameXmlPetDeclensionModel } from "./FrameXmlPetDeclension.js"; // L17 3.09
+import { FrameXmlVehicleAimModel } from "./FrameXmlVehicleAim.js"; // 11.02-E
+import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-F2
+import type { VehicleCatalog } from "../../world/VehicleDbc.js"; // 11.02-F2
+/** 11.02-F2: no party members whose stats can name a vehicle seat (alone, or in a raid). */
+const NO_PARTY_GUIDS: readonly bigint[] = Object.freeze([]);
 import { FrameXmlMap, type FrameXmlMapSource } from "./FrameXmlMap.js";
 import { frameXmlPetExperience } from "./FrameXmlPetExperience.js";
 import { frameXmlHunterPet } from "./FrameXmlStable.js";
+import { FRAMEXML_PET_HAPPINESS_EVENT, FrameXmlPetHappinessWatch, frameXmlPetHappiness } from "./FrameXmlPetHappiness.js"; // 3.36 (L14)
+import { frameXmlHasPetUI } from "./FrameXmlHasPetUI.js"; // L15 5.05
+import { frameXmlPetFoodTypes, type FrameXmlPetFoodNames } from "./FrameXmlPetFood.js"; // 05.10-petfood
+import { liveFrameXmlHelmCloak } from "./FrameXmlHelmCloak.js"; // 05.10-A7a-A 6.09
+import { PLAYER_FLAGS_HIDE_CLOAK, PLAYER_FLAGS_HIDE_HELM } from "../../world/CharacterStatFields.js"; // 05.10-A7a-A 6.09
 import { FrameXmlCompanionModel, frameXmlPetCanBeRenamed, frameXmlUnitMounted } from "./FrameXmlCompanions.js";
 import { frameXmlPetSpellBonusDamage } from "./FrameXmlPetSpellPower.js";
 import { createFrameXmlServices, type FrameXmlServices, type FrameXmlSendMailItem } from "./FrameXmlServices.js";
 import type { WorldStateUiRow } from "../../world/WorldStateUiData.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { QUALITY_LINK_COLORS, itemChatLink, spellChatLink } from "../ui/ChatLink.js";
-import { className, classFileName, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
+import { className, classFileName, classSpellFamily, raceBaseLanguage, raceFileName, raceName } from "../ui/UnitSnapshot.js";
+import { femaleOf } from "../ui/UnitSnapshot.js"; // L3-review
+import { frameXmlActionInRange, type ActionRangeHost } from "./FrameXmlActionRange.js";
 import { settledHoveredUnitGuid } from "../game/HoverTarget.js";
 import { clientLocale } from "../Environment.js";
 import {
@@ -340,6 +441,7 @@ const HORDE_RACE_IDS = new Set([2, 5, 6, 8, 10]);
 /** How often the seam re-reads the world; 60 ms is four world ticks and under a rendered frame. */
 const LIVE_POLL_SECONDS = 0.06;
 const EMPTY_SPELL_TABS: readonly FrameXmlSpellTabInfo[] = Object.freeze([]);
+const NO_SPELL_MODIFIERS: readonly never[] = Object.freeze([]);
 
 /**
  * The paper-doll edges stock PaperDollFrame answers with `PaperDollFrame_UpdateStats()` for the
@@ -368,9 +470,15 @@ export interface LiveWorldSeamContext {
   readonly worldStateUi?: () => readonly WorldStateUiRow[] | undefined;
   /** Exact class/level coefficients from the configured dataset's gtChanceToSpellCrit tables. */
   readonly characterStats?: () => CharacterStatCatalog | undefined;
+  /** 3.23C: the melee crit and spirit regeneration tables (CharacterRegenClient.ts); undefined until they land. */
+  readonly characterRegen?: () => CharacterRegenTables | undefined;
+  /** 3.29/3.23F: the LEARN_SPELL/SKILL_STEP effects (SpellLearnEffectsClient.ts); undefined until they land. */
+  readonly spellLearnEffects?: () => SpellLearnEffectsTable | undefined;
   readonly world: () => WorldClient | undefined;
   readonly store: () => WorldStore | undefined;
   readonly spell: (id: number) => SpellMetadata | undefined;
+  /** 11.02-F2: the vehicle tables; absent, the page's `vehicleCatalog()` (browser/VehicleClient.ts). */
+  readonly vehicles?: () => VehicleCatalog | undefined;
   /** Resolved spell cache for the name form of `GetSpellInfo`; never fetches in a Lua C-API read. */
   readonly spells?: () => Iterable<SpellMetadata>;
   /** Authoritative SkillLineAbility supersession rows, cached by TalentClient. */
@@ -402,6 +510,11 @@ export interface LiveWorldSeamContext {
   readonly monotonic: () => number;
   /** The global cooldown's end, in the same milliseconds; `game.globalCooldownUntil`. */
   readonly globalCooldownUntil: () => number;
+  /**
+   * L13-review 5.30: the page's model by row (game/PredictedGlobalCooldown.ts `globalCooldownView`): the end and the
+   * length of the global cooldown of the row's own category, and the redraw edge's revision. Without it: the shared end.
+   */
+  readonly globalCooldown?: GlobalCooldownView | undefined;
   /** Cast a spell the way the rest of the client casts one; `ui/Spellbook.castSpell`. */
   readonly castSpell: (id: number) => void;
   /** Configured bank bag slot price for the number already bought; cache-only. */
@@ -456,6 +569,20 @@ export interface LiveWorldSeamContext {
     zoneId: number | undefined,
     areaId: number | undefined,
   ) => FrameXmlMinimapZone | undefined;
+  /**
+   * Whether the loading curtain is up (`game.worldLoading`). The client takes its zone edges from
+   * the world it has finished loading: under the curtain the map id has already moved while the
+   * world states still name the old zone, so nothing is published until it drops, and then one
+   * edge names where the player actually is. Absent means never loading.
+   */
+  readonly worldLoading?: () => boolean;
+  /**
+   * Whether the player stands inside an indoor WMO group (one without the group's outdoor flag), the
+   * test the client makes when a zone or sub-zone name changes: indoors it raises
+   * ZONE_CHANGED_INDOORS instead of ZONE_CHANGED (Wow.exe 0x005204C0 with 0x007A1480). Absent means
+   * outdoors.
+   */
+  readonly playerIndoors?: () => boolean;
   /** Cached `/dbc/battlegrounds` rows; C-API reads never start a fetch. */
   readonly battlegroundCatalog?: () => FrameXmlBattlegroundCatalog | undefined;
   /**
@@ -481,6 +608,12 @@ export interface LiveWorldSeamContext {
   readonly macroIcons?: FrameXmlMacroIcons;
   /** RunBinding's verb for a compiled-in action (`Actions.runAction`). */
   readonly runBinding?: (action: InputAction) => boolean;
+  /** QuestSort header and QuestInfo tag names (QuestLogNameClient.ts); without them those stay unnamed. */
+  readonly questLogNames?: FrameXmlQuestLogNames | undefined;
+  /** 3.23A: the creature type/family names (CreatureTypeClient.ts); undefined until the route answers. */
+  readonly creatureTypes?: { table(): FrameXmlCreatureTypeNames | undefined } | undefined;
+  /** 05.10-petfood: CreatureFamily.PetFoodMask and ItemPetFood names (PetFoodClient.ts); undefined until the route answers. */
+  readonly petFoods?: { table(): FrameXmlPetFoodNames | undefined } | undefined; // 05.10-petfood
 }
 
 interface LiveCastState {
@@ -567,6 +700,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly socket: FrameXmlSocketModel;
   /** The stock InspectFrame C API over the inspection packets (FrameXmlInspect.ts). */
   readonly inspect: FrameXmlInspectModel;
+  /** Stops the attach-time link between the item-target cursor and the enchant/glyph cursors. */
+  #unobserveSpellCursors: (() => void) | undefined;
+  /** The merchant's repair and the repair cursor (FrameXmlRepair.ts, browser/Repair.ts). */
+  readonly repair: FrameXmlRepairModel = createFrameXmlRepair(repairSession);
+  /** UPDATE_INVENTORY_ALERTS over `inventoryAlertStatus` (FrameXmlInventoryAlerts.ts). */
+  readonly inventoryAlerts: FrameXmlInventoryAlerts = createFrameXmlInventoryAlerts((index) => this.inventoryAlertStatus(index));
+  /** PLAYER_LEAVING_WORLD/PLAYER_ENTERING_WORLD around a loading screen (FrameXmlWorldEntry.ts). */
+  readonly worldEntry: FrameXmlWorldEntry = createFrameXmlWorldEntry();
+  /** 05.10-A7a-A 6.09: ShowHelm/ShowCloak/ShowingHelm/ShowingCloak over PLAYER_FLAGS (FrameXmlHelmCloak.ts). */
+  readonly helmCloak = liveFrameXmlHelmCloak(() => this.#context.world());
+  /** L5c 3.18: GetAutoCompleteResults over contacts, guild roster, group and whispers. */
+  readonly autoComplete = new FrameXmlAutoCompleteModel({
+    world: () => this.#context.world(),
+    inGuild: () => {
+      const player = this.#unit("player");
+      return player?.typeId !== TYPEID_PLAYER || (readField(player, "PLAYER_GUILDID") ?? 0) > 0;
+    },
+    now: () => this.#context.monotonic(),
+  });
   /** The stock BarberShopFrame C API over the chair and the player's appearance (FrameXmlBarber.ts). */
   readonly barber: FrameXmlBarberModel;
   readonly barberPrepare: () => Promise<void>;
@@ -580,6 +732,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly companions: FrameXmlCompanionModel;
   /** The stock PetActionBarFrame and the pet commands over the pet bar packet (FrameXmlPetActionBarLive.ts). */
   readonly petActions: FrameXmlPetActionBarLive;
+  /** 11.02-IF: the possess bar and the possessed unit's spells on the main bar (FrameXmlPossess.ts). */
+  readonly possess: FrameXmlPossessModel;
+  /** 11.02-F2: the vehicle C API and the UNIT_*_VEHICLE events over the vehicle tables (FrameXmlVehicle.ts). */
+  readonly vehicle: FrameXmlVehicleModel;
+  /** 11.02-E: VehicleAim* and VEHICLE_ANGLE_UPDATE on the mover's pitch (FrameXmlVehicleAim.ts). */
+  readonly vehicleAim: FrameXmlVehicleAimModel;
+  /** L17 3.09: PetRename's checks and declensions, PET_FORCE_NAME_DECLENSION (FrameXmlPetDeclension.ts). */
+  readonly petDeclension: FrameXmlPetDeclensionModel;
   /** The stock achievement C API over the achievement packets; the mount hands it the catalog (FrameXmlAchievement.ts). */
   readonly achievement: FrameXmlAchievementModel;
   /** The stock GuildBankFrame C API and its vault cursor (FrameXmlGuildBank.ts). */
@@ -608,6 +768,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly map: FrameXmlMap;
   /** The totem bar, the hit indicator and the temporary weapon enchants (FrameXmlHudMechanicsLive.ts). */
   readonly hudMechanics: FrameXmlHudMechanicsLive;
+  /** 3.02: SENT/SUCCEEDED/FAILED_QUIET/(NOT_)INTERRUPTIBLE and notInterruptible (FrameXmlCastEvents.ts). */
+  readonly castEvents: FrameXmlCastEventsLive;
+  /** 3.01: the combat log's entries, filters and events (FrameXmlCombatLogLive.ts). */
+  readonly combatLog: FrameXmlCombatLogLive;
+  /** 3.07: the Call of the Elements bar (FrameXmlMultiCastLive.ts). */
+  readonly multiCast: FrameXmlMultiCastLive;
   readonly services: FrameXmlServices;
   /** The stock threat C API over `WorldClient.threat` and its two UNIT_THREAT_* edges (FrameXmlThreat.ts). */
   readonly threat: FrameXmlThreatModel;
@@ -617,10 +783,45 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   readonly chatWindows = new FrameXmlChatWindowFlags();
   /** Arena teams, the possess bar, the battlefield winner and the add-on channel (FrameXmlMechanics.ts). */
   readonly mechanics: FrameXmlMechanicsModel;
+  /** The PvP flag, its timer, the scoreboard, difficulty/IsInInstance and the arena roster (plan A1 slice B). */
+  readonly pvpFlag: FrameXmlPvpFlagModel;
+  readonly scoreboard: FrameXmlBattlefieldScoreModel;
+  /** L3 5.25: the battleground spirit guide's queue (FrameXmlAreaSpiritHealer.ts). */
+  readonly areaSpiritHealer: FrameXmlAreaSpiritHealerModel;
+  readonly difficulty: FrameXmlDifficultyModel;
+  /** The boss1…bossN units and INSTANCE_ENCOUNTER_ENGAGE_UNIT (3.16, FrameXmlEncounters.ts). */
+  readonly encounters: FrameXmlEncounters;
+  /** PET_ATTACK_*, CHARACTER_POINTS_CHANGED, COMBAT_RATING_UPDATE, PARTY_LOOT_METHOD_CHANGED, UNIT_PET_EXPERIENCE (3.22). */
+  readonly worldEvents: FrameXmlWorldEvents;
+  /** UnitCreatureType/UnitCreatureFamily (3.23A, FrameXmlCreatureType.ts). */
+  readonly creatureTypes: { type(unit: string): string | undefined; family(unit: string): string | undefined | null };
+  /** SetActiveTalentGroup and ACTIVE_TALENT_GROUP_CHANGED (FrameXmlTalentGroup.ts). */
+  readonly talentGroup: FrameXmlTalentGroupModel;
+  /** The stock talent preview (3.33, FrameXmlTalentPreview.ts). */
+  readonly talentPreview: FrameXmlTalentPreviewModel;
+  /** GetQuestLogPushable, QuestLogPushQuest and the sharer's MSG_QUEST_PUSH_RESULT lines (FrameXmlQuestShare.ts). */
+  readonly questShare: FrameXmlQuestShareModel;
+  /** FlagTutorial, IsTutorialFlagged, GMReportLag (FrameXmlSupport.ts, 5.25/8.17). */
+  readonly support: FrameXmlSupportModel;
+  /** 3.13c: QuestMapUpdateAllQuests, QuestPOIGetQuestIDByVisibleIndex, QuestPOIGetIconInfo, GetQuestPOILeaderBoard (FrameXmlQuestPoi.ts). */
+  readonly questPoi: FrameXmlQuestPoiModel;
+  /** 3.13c: the POI rows of the last quest-log read, per monotonic millisecond (FrameXmlQuestPoi.ts). */
+  #questPoiRows: { at: number; list: object; rows: readonly FrameXmlQuestPoiQuest[] } | undefined;
+  /** 3.22a: INSTANCE_BOOT_*, QUEST_ACCEPT_CONFIRM, GetInstanceBootTimeRemaining, ConfirmAcceptQuest (FrameXmlServerPrompts.ts). */
+  readonly serverPrompts: FrameXmlServerPromptsModel;
+  /** Quest log headers, collapsing and the quest-log extras (FrameXmlQuestLog.ts, plan item 3.13a/b). */
+  readonly questLog: FrameXmlQuestLogModel;
+  /** START/STOP_AUTOREPEAT_SPELL over `WorldClient.autoRepeatSpellId`, read once a frame (FrameXmlActionRepeat.ts). */
+  readonly #autoRepeat = new FrameXmlAutoRepeatEdge();
+  readonly arenaRoster: FrameXmlArenaRosterModel;
   /** The unit menus' assistant and main tank/assist commands over the group packets (FrameXmlGroupCommands.ts). */
   readonly groupCommands: FrameXmlGroupCommandsModel;
   /** Focus, assist, dismount and the stance bar's cancel (FrameXmlTargetingApi.ts). */
   readonly targeting: FrameXmlTargetingModel;
+  /** L2 1.10: TargetNearest* and TargetLast* over the browser's Tab list and target history. */
+  readonly targetNearest = FRAMEXML_LIVE_TARGET_NEAREST;
+  /** DEC-B 3.11: the stock UI's camera views on the page's camera (game/CameraViewsLive.ts). */
+  readonly cameraViews = liveCameraViews;
   /** The last PLAYER_CONTROL_LOST/GAINED told to Lua (FrameXmlControl.ts). */
   readonly #controlEdge = new FrameXmlControlEdge();
   #serviceSignature = "";
@@ -693,12 +894,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * already under way (PlayerFrame keeps its combat glow only from these events).
    */
   #meleeAnnounced = false;
+  /** `WorldClient.attackStops` already announced as PLAYER_LEAVE_COMBAT. */
+  #meleeStops = 0;
   #combatAnnounced = false;
   /** A level-up packet waiting for its level to land, with the free talent points before it. */
   #pendingLevelUp: { info: LevelUpInfo; pointsBefore: number } | undefined;
   /** The last published shape of the bar, so a change fires one event instead of sixty a second. */
   #barSignature = "";
-  #cooldownSignature = "";
+  /** P1-16: spell-slot timers without a snapshot, as `slot:end` (constant while they run). */
+  #actionCooldownSignature = "";
+  /** P1-16 review: the possess/vehicle page's mirrored timers and usability (`#currentMirroredActionSignature`). */
+  #mirroredActionSignature = "";
   #itemCooldownSignature = "";
   #actionPage = 1;
   readonly #mirrorTimerSignatures = new Map<number, string>();
@@ -713,10 +919,29 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #bankerGuid: bigint | undefined;
   /** Last vendor list shape delivered to stock MerchantFrame. */
   #merchantSignature = "";
-  #trainerSelection: number | undefined;
+  /** L12 5.30: the global cooldown's last end, for the stock sweeps' redraw edge (FrameXmlGlobalCooldown.ts). */
+  readonly #globalCooldownEdge = new FrameXmlGlobalCooldownEdge();
   readonly #trainerFilters = new Map<string, boolean>([
     ["available", true], ["unavailable", true], ["used", false],
   ]);
+  /** 3.29: the trainer window's headers, collapsing, order and selection (FrameXmlTrainerGroups.ts). */
+  readonly #trainerList = new FrameXmlTrainerList<TrainerSpell>({
+    rows: () => (this.trainerSupported() ? this.#context.world()?.trainer?.spells : undefined) ?? NO_TRAINER_ROWS,
+    describable: (row) => { const spell = this.#context.spell(row.spellId); return spell !== undefined && spell.hidden !== true; },
+    // Trade skill trainers stay native (trainerSupported); a skill line groups everything else.
+    grouped: () => this.#context.skillMetadata?.() !== undefined && this.#context.spellLearnEffects?.() !== undefined,
+    tradeskill: false,
+    state: (row) => row.usable === TRAINER_SPELL_AVAILABLE ? TRAINER_STATE_AVAILABLE
+      : row.usable === TRAINER_SPELL_KNOWN ? TRAINER_STATE_USED : TRAINER_STATE_UNAVAILABLE,
+    group: (row) => frameXmlTrainerServiceGroup(row.spellId, this.#trainerRequirementSource()) ?? 0,
+    groupName: (group) => this.#context.skillMetadata?.()?.skillLine(group)?.name,
+    name: (row) => this.#context.spell(row.spellId)?.name ?? "",
+    rank: (row) => this.#context.spell(row.spellId)?.rank,
+    shown: (state) => this.#trainerFilters.get(TRAINER_STATE_FILTERS[state]) !== false,
+  });
+  /** L12 3.29: GetTrainerSkillLines and the skill-line filter over that list (FrameXmlTrainerSkillLines.ts). */
+  readonly trainerSkillLines = frameXmlTrainerSkillLineModel(this.#trainerList,
+    () => this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate));
   /** Last published stock bag-id shapes; inventory fields are coalesced by WorldStore.any. */
   #containerSignatures = new Map<number, string>();
   /**
@@ -746,7 +971,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   #questProgressSignature = "";
   #questMetadataPrefetchSignature = "";
   #questMetadataInvalidated = false;
-  #questSelection = 0;
+  /** The selected quest, by id: the client keeps the quest, so a rebuilt log keeps the selection. */
+  #questSelectionId = 0;
   #currentMapQuestIdsCache: readonly number[] | undefined;
   #currentMapQuestWorld: WorldClient | undefined;
   #currentMapQuestMapId: number | undefined;
@@ -782,11 +1008,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * monotonic clock: its clocks are the server's at send time and count on from there.
    */
   readonly #battlefieldStatusSeen = new WeakMap<object, number>();
-  #watchedFactionId: number | undefined;
   readonly #collapsedFactionIds = new Set<number>();
-  /** Explicit UI overrides; absent entries retain the latest server-provided flag. */
-  readonly #inactiveFactionOverrides = new Map<number, boolean>();
-  readonly #atWarFactionOverrides = new Map<number, boolean>();
   /** Quest ids explicitly removed from the client-local watch list. An empty set means "all". */
   readonly #unwatchedQuestIds = new Set<number>();
   #spellEntriesCache: readonly { id: number; slot: number }[] | undefined;
@@ -826,13 +1048,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
    * primitive shape separately so that nil -> known and label/PvP changes still publish one edge;
    * primitive fields also avoid retaining or allocating a per-frame snapshot object here.
    */
-  #zoneShapeKnown = false;
-  #zoneMinimapText: string | undefined;
-  #zoneText: string | undefined;
-  #zoneSubZoneText: string | undefined;
-  #zonePvpType: string | undefined;
-  #zoneIsSubZonePvp: boolean | undefined;
-  #zoneFactionName: string | undefined;
+  /** The zone and sub-zone names last published, "" for none — the two texts the client compares. */
+  #zoneText = "";
+  #zoneSubZoneText = "";
   /** Last aura/metadata shape handed to FrameXML, sampled on the existing 60 ms poll. */
   #auraSignature = "";
   /** The selected target's aura shape; target transitions seed this so the next poll is quiet. */
@@ -900,6 +1118,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           : undefined;
       },
       monotonic: () => context.monotonic(),
+      // The 2.09 boss table: GetLFGProposal's encounter counts and GetLFGProposalEncounter.
+      dungeonEncounters: frameXmlLiveDungeonEncounters,
     });
     this.popups = new FrameXmlPopupsModel(frameXmlPopupsLiveContext({
       world: () => context.world(),
@@ -959,11 +1179,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       },
       areaName: socialAreas.areaName,
       mapInfo: socialAreas.mapInfo,
-      classInfo: (classId) => {
+      classInfo: (classId, female) => { // L3-review: `female` (0x7159e0's sex)
         const token = classFileName(classId);
-        return token === undefined ? undefined : [className(classId), token];
+        return token === undefined ? undefined : [className(classId, female), token];
       },
-      raceName: (raceId) => raceFileName(raceId) === undefined ? undefined : raceName(raceId),
+      // L3-review: `female` (0x715970's sex)
+      raceName: (raceId, female) => raceFileName(raceId) === undefined ? undefined : raceName(raceId, female),
+      female: (guid) => this.#nameFemale(guid), // L3-review
       memberFacts: (guid) => {
         const world = context.world();
         const stats = world?.partyStats.get(guid);
@@ -1024,6 +1246,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           return slot ? { bag: slot.bag, slot: slot.slot } : undefined;
         },
         spellName: (id) => context.spell(id)?.name,
+        // TRADE_POTENTIAL_BIND_ENCHANT (2.05): the item object and the played time the client counts in.
+        potentialBindEnchant: (guid) => {
+          const world = context.world();
+          return tradePotentialBindEnchant(world?.state.objects.get(guid), world?.playedSecondsNow?.(context.monotonic()),
+            sessionEnchantFlags);
+        },
       });
     }
     // The stock auction house's sell slot takes from the same carried bags and bag cursor.
@@ -1163,7 +1391,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       },
     });
     this.keyBindings = new FrameXmlBindingModel(context.runBinding ? { runAction: context.runBinding } : {});
-    this.options = context.settingsCVar ? createFrameXmlOptionsModel(context.settingsCVar) : undefined;
+    // The extra bars live on the server (3.32): PLAYER_FIELD_BYTES byte 2, CMSG_SET_ACTIONBAR_TOGGLES.
+    this.options = context.settingsCVar ? createFrameXmlOptionsModel(context.settingsCVar, {
+      toggles: () => {
+        const self = this.#self();
+        const bits = self ? readByte(self, "PLAYER_FIELD_BYTES", 2) : undefined;
+        return bits === undefined ? undefined : bits & 0x0f;
+      },
+      send: (bars) => context.world()?.setActionBarToggles?.(bars),
+    }) : undefined;
     this.map = new FrameXmlMap(context.mapSource ?? { metadata: () => undefined, location: () => undefined });
     // Totems, the hit indicator and the weapon imbues: the world's packet records and the same
     // unit-token resolution the unit frames use; totem spell names are fetched outside C-API reads.
@@ -1175,6 +1411,43 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       unitGuid: (unit) => this.#unitGuid(unit),
       prefetchSpells: (ids, onLoaded) => ensureSpellNames(ids, onLoaded),
     });
+    this.castEvents = new FrameXmlCastEventsLive({
+      spell: (id) => context.spell(id),
+      castUnit: (guid) => this.#castUnit(guid),
+      book: () => (context.world()?.knownSpells ?? []).map((known) => context.spell(known.id)),
+      // Test worlds stand in for parts of WorldClient; a missing table is no aura and no cast.
+      auras: (guid) => context.world()?.auras?.get(guid),
+      cast: (guid) => context.world()?.casts?.get(guid),
+      guidName: (guid) => {
+        const world = context.world();
+        if (!world) return undefined;
+        return this.#targetNameFor(world.state?.objects?.get(guid)) ?? world.names?.get(guid);
+      },
+      selection: () => this.#target()?.guid,
+    });
+    this.multiCast = new FrameXmlMultiCastLive({
+      world: () => context.world(),
+      spell: (id) => context.spell(id),
+      castSpell: (id) => context.castSpell(id),
+    });
+    this.combatLog = new FrameXmlCombatLogLive({
+      world: () => context.world(),
+      spell: (id) => context.spell(id),
+      prefetchSpells: (ids) => ensureSpellNames(ids),
+      name: (guid) => {
+        const world = context.world();
+        if (!world) return undefined;
+        return this.#targetNameFor(world.state?.objects?.get(guid)) ?? world.names?.get(guid);
+      },
+      reaction: (object) => {
+        const self = this.#self();
+        return self ? context.reaction?.(self, object) : undefined;
+      },
+      targetGuid: () => this.#target()?.guid,
+      focusGuid: () => this.#focus()?.guid,
+      failureText: (spellId, result) => spellFailureText({ castCount: 0, spellId, result }),
+      stateEvents: () => context.store()?.events,
+    });
     // The pet bar: WorldClient's pet packet, timers and swing, the same unit tokens for a target.
     this.petActions = new FrameXmlPetActionBarLive({
       world: () => context.world(),
@@ -1183,6 +1456,38 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       unitGuid: (unit) => this.#unitGuid(unit),
       prefetchSpells: (ids, onLoaded) => ensureSpellNames(ids, onLoaded),
     });
+    // 11.02-IF: the possess bar over the same world and pet bar model; the seam's own bonus-bar edge.
+    this.possess = new FrameXmlPossessModel({
+      world: () => context.world(),
+      spell: (id) => context.spell(id),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      petBar: () => this.petActions,
+      bonusBarChanged: () => this.#reconcileBonusActionBar(),
+      vehicles: () => (context.vehicles ?? vehicleCatalog)(), // 11.02-F2
+    });
+    // 11.02-F2: the vehicle C API and events over the same world and the vehicle tables.
+    this.vehicle = new FrameXmlVehicleModel({
+      world: () => context.world(),
+      catalog: () => (context.vehicles ?? vehicleCatalog)(),
+      unitGuid: (unit) => this.#unitGuid(unit),
+      partyGuids: () => {
+        const group = context.world()?.group;
+        if (!group || (group.groupType & GROUPTYPE_RAID) !== 0 || group.members.length === 0) return NO_PARTY_GUIDS;
+        return group.members.slice(0, 4).map((member) => member.guid);
+      },
+      nameOf: (guid) => {
+        const world = context.world();
+        const object = world?.state.objects.get(guid);
+        return (object ? this.#targetNameFor(object) : undefined) ?? world?.names.get(guid);
+      },
+    });
+    // 11.02-E: the aim over the same world and tables; the pitch is the movement code's (game/VehicleAim.ts).
+    this.vehicleAim = new FrameXmlVehicleAimModel({
+      world: () => context.world(),
+      catalog: () => (context.vehicles ?? vehicleCatalog)(),
+    });
+    // L17 3.09: the pet rename's ruRU declensions over the same world.
+    this.petDeclension = new FrameXmlPetDeclensionModel({ world: () => context.world(), locale: () => this.locale });
     ({
       gossip: this.gossip, bank: this.bank, taxi: this.taxi, itemText: this.itemText,
       tabard: this.tabard, registrar: this.registrar, petition: this.petition, stable: this.stable,
@@ -1251,7 +1556,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       inGroup: () => this.partyMemberCount() > 0 || this.raidMemberCount() > 0,
     });
     this.questAbandon = new FrameXmlQuestAbandonModel({
-      selection: () => this.#questSelection,
+      selection: () => this.#questSelectionIndex(),
       entry: (index) => {
         const entry = this.#questAt(index);
         return entry ? { slot: entry.slot, questId: entry.questId } : undefined;
@@ -1281,6 +1586,107 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       self: () => this.#self(),
       spell: (id) => context.spell(id),
     });
+    const monotonic = (): number => (typeof context.monotonic === "function" ? context.monotonic() : performance.now());
+    this.pvpFlag = new FrameXmlPvpFlagModel({
+      flags: () => this.#playerFlags(),
+      now: monotonic,
+      togglePvp: (enable) => context.world()?.togglePvp(enable),
+    });
+    this.scoreboard = new FrameXmlBattlefieldScoreModel({
+      world: () => context.world(), now: monotonic, worldStateUi: () => context.worldStateUi?.(),
+    });
+    // L3 5.25: acts only while stock owns the confirmations (the AREA_SPIRIT_HEAL dialog is stock's).
+    this.areaSpiritHealer = new FrameXmlAreaSpiritHealerModel(frameXmlAreaSpiritHealerLiveContext({
+      world: () => context.world(),
+      self: () => this.#self(),
+      reaction: (self, other) => context.reaction?.(self, other),
+      owned: () => this.popups.popupsOwned,
+      monotonic: () => context.monotonic(),
+    }));
+    this.encounters = new FrameXmlEncounters({ events: () => context.world()?.events });
+    const creatureTemplate = (object: WorldObjectState) => {
+      const entry = frameXmlCreatureEntry(object);
+      return entry === undefined ? undefined : context.world()?.creatureTemplates.get(entry);
+    };
+    this.creatureTypes = {
+      type: (unit) => {
+        const object = this.#unit(unit);
+        return object ? frameXmlUnitCreatureType(object, creatureTemplate(object), context.creatureTypes?.table()) : undefined;
+      },
+      family: (unit) => {
+        const names = context.creatureTypes?.table();
+        if (!names) return undefined;
+        const object = this.#unit(unit);
+        return (object ? frameXmlUnitCreatureFamily(object, creatureTemplate(object), names) : undefined) ?? null;
+      },
+    };
+    this.worldEvents = new FrameXmlWorldEvents({
+      self: () => this.#self(),
+      object: (guid) => context.world()?.state.objects.get(guid),
+      pet: () => this.#pet(),
+      group: () => context.world()?.group,
+    });
+    this.difficulty = new FrameXmlDifficultyModel({
+      world: () => context.world(),
+      instanceType: () => {
+        const mapId = context.world()?.mapId;
+        return mapId === undefined ? undefined : context.mapSource?.metadata()?.maps.find((row) => row.id === mapId)?.instanceType;
+      },
+      inArena: () => this.arena.inArena(),
+    });
+    this.talentGroup = new FrameXmlTalentGroupModel({
+      talents: () => {
+        const talents = context.world()?.talents;
+        return talents ? { activeSpec: talents.activeSpec, specCount: talents.specs.length } : undefined;
+      },
+      castSpell: (id) => context.castSpell(id),
+    });
+    this.talentPreview = new FrameXmlTalentPreviewModel({
+      snapshot: (pet) => pet ? this.#talentResolvers.petTalentSnapshot() : this.#talentResolvers.talentSnapshot(),
+      packet: (pet) => pet ? context.world()?.petTalents : context.world()?.talents,
+      learn: (pet, talents) => {
+        const world = context.world();
+        if (!world) return;
+        if (!pet) { world.learnPreviewTalents(talents); return; }
+        const guid = world.petSpells?.guid;
+        if (guid !== undefined && guid !== 0n) world.learnPetTalents(guid, talents);
+      },
+    });
+    this.support = new FrameXmlSupportModel(() => context.world());
+    this.questShare = new FrameXmlQuestShareModel({
+      questIdAt: (index) => this.#questAt(index === 0 ? undefined : index)?.questId,
+      questFlags: (questId) => this.#questTemplateById(questId)?.flags,
+      hasPlayer: () => this.#self() !== undefined,
+      partyMemberCount: () => this.partyMemberCount(),
+      raidMemberCount: () => this.raidMemberCount(),
+      share: (questId) => context.world()?.shareQuest(questId),
+      cachedName: (guid) => context.world()?.names.get(guid),
+    });
+    this.serverPrompts = new FrameXmlServerPromptsModel({ world: () => context.world(), monotonic: () => context.monotonic() });
+    const questAreas = frameXmlSocialAreaLookup(() => context.mapSource?.metadata());
+    this.questLog = createLiveFrameXmlQuestLog({
+      world: () => context.world(), rows: () => this.#questRows(), template: (id) => this.#questTemplateById(id),
+      playerLevel: () => this.unitLevel("player"), areaName: questAreas.areaName, names: context.questLogNames,
+      itemLink: (entry) => this.itemInfo(entry)?.[1], itemTexture: (entry) => this.#itemTexture(entry),
+      itemCooldown: (entry) => this.itemCooldown(entry),
+    });
+    // 3.13c: the quest POI C API over the POI responses and the displayed map (FrameXmlQuestPoi.ts).
+    this.questPoi = new FrameXmlQuestPoiModel({
+      enabled: () => this.getCVar("questPOI") !== "0",
+      quests: () => this.#questPoiQuests(),
+      blobs: (questId) => context.world()?.questPoi?.get(questId),
+      point: (blob, x, y) => this.map.questPoiPoint(blob, x, y),
+      mapReady: () => this.map.hasAreaData,
+      fallbackArea: () => this.#resolvedWorldMapAreaId(),
+      player: () => this.#self()?.position,
+      leaderBoardLine: (logIndex, poiIndex) => this.#questPoiLeaderBoard(logIndex, poiIndex),
+      // 3.13d (L6): the icon spread's map size and the POIShiftComplete CVar (FrameXmlQuestPoiLayout.ts).
+      mapWidthYards: () => this.map.questPoiMapWidth(),
+      shiftComplete: () => questPoiShiftComplete(this.getCVar("POIShiftComplete")),
+    });
+    this.arenaRoster = new FrameXmlArenaRosterModel({
+      world: () => context.world(), self: () => this.#self(), now: monotonic,
+    });
     this.groupCommands = new FrameXmlGroupCommandsModel({
       world: () => context.world(), unitGuid: (unit) => this.#unitGuid(unit),
     });
@@ -1290,6 +1696,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       namedGuid: (name) => this.#relationGuid(name) ?? this.#nearestNamed(name, false),
       setFocus: (guid) => context.setFocus?.(guid),
       activeStanceEntries: () => this.#shapeshiftForms().filter((form) => this.#shapeshiftActive(form)),
+      // DEC-A 3.11: AssistUnit's UI error (Wow.exe 0x005216f0) and the assistAttack CVar (0x00bd0918).
+      uiError: (name) => { this.#pump?.fire("UI_ERROR_MESSAGE", globalString(name) ?? name); }, // DEC-A 3.11
+      assistAttack: () => this.getCVarBool("assistAttack") === true, // DEC-A 3.11
     });
     this.#skillResolvers = createFrameXmlSkillResolvers(() => ({
       player: this.#self(),
@@ -1326,6 +1735,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.chatColors.attach(pump);
     this.threat.attach(pump);
     this.mechanics.attach(pump);
+    this.possess.attach(pump); // 11.02-IF
+    this.vehicle.attach(pump); // 11.02-F2
+    this.vehicleAim.attach(pump); // 11.02-E
+    this.petDeclension.attach(pump); // L17 3.09
+    // First look at the player's flags (entering the world) or a re-mount over the same session.
+    this.pvpFlag.flagsChanged();
+    this.scoreboard.attach(pump);
+    this.areaSpiritHealer.attach(pump); // L3 5.25
+    this.difficulty.attach(pump);
+    this.encounters.attach(pump);
+    this.worldEvents.attach(pump, this.#context.store());
+    this.talentGroup.attach(pump);
+    this.talentPreview.attach(pump);
+    this.questShare.attach(pump);
+    this.serverPrompts.attach(pump);
+    this.questPoi.reset();
+    this.questLog.attach(pump);
+    this.#autoRepeat.attach(pump, frameXmlAutoRepeatShown(this.#context.world())); // L18 5.05: was world()?.autoRepeatSpellId
+    this.arenaRoster.attach(pump);
     this.#serviceSignature = this.#servicesSignature();
     this.worldStates.attach(pump);
     this.calendar.attach(pump);
@@ -1341,6 +1769,35 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.auction.attach(pump);
     this.socket.attach(pump);
     this.inspect.attach(pump);
+    this.repair.attach(pump);
+    this.inventoryAlerts.attach(pump);
+    this.autoComplete.attach(); // L5c 3.18
+    this.worldEntry.attach(pump, {
+      world: this.#context.world()?.events, store: this.#context.store()?.events, selfGuid: () => this.#selfGuid(),
+    });
+    // One pending spell, as the client has (Wow.exe DAT_00d3f4e4): the item-target cursor going up
+    // drops a waiting enchant or glyph, and a waiting enchant drops the item-target cursor.
+    this.#unobserveSpellCursors?.();
+    const stopItemCursor = observeItemTarget((armed) => {
+      if (!armed) return;
+      this.tradeSkill.cancelTargeting();
+      this.glyphs.cancelTargeting();
+    });
+    const stopEnchantCursor = this.tradeSkill.observeTargeting((armed) => {
+      if (armed) cancelItemTarget();
+    });
+    // L1 (2.05): every arm and drop of either raises ACTIONBAR_UPDATE_STATE + CURRENT_SPELL_CAST_CHANGED (0x0053b480).
+    const stopPendingSpellEvents = frameXmlObservePendingSpells(() => this.#pump,
+      [observeItemTarget, (observer) => this.tradeSkill.observeTargeting(observer)]);
+    // 05.10-2.05: the weapon pick's question, 0x0081b530(0x28d, "%s", "spellenchant") (game/MainHandEnchant.ts).
+    const stopSpellEnchant = observeSpellEnchantQuestion(() => { this.#pump?.fire("END_BOUND_TRADEABLE", "spellenchant"); });
+    this.#unobserveSpellCursors = () => {
+      stopSpellEnchant(); // 05.10-2.05
+      frameXmlResetCursor(); // 05.10-5.17 review: the interface going away takes its SetCursor choice along
+      stopItemCursor();
+      stopEnchantCursor();
+      stopPendingSpellEvents(); // L1 (2.05)
+    };
     this.barber.attach(pump);
     this.glyphs.attach(pump);
     this.companions.attach(pump);
@@ -1354,6 +1811,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.keyBindings.attach(pump);
     this.map.attach(pump);
     this.hudMechanics.attach(pump);
+    this.combatLog.attach(pump);
+    this.multiCast.attach(pump);
     this.petActions.attach(pump);
     this.#context.world()?.requestWorldStateTime?.();
     this.#releaseNativeBankCursor = publishFrameXmlNativeBankCursor({
@@ -1363,11 +1822,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // state, not compare it with the old world's signatures.
     this.#polledAt = Number.NEGATIVE_INFINITY;
     this.#meleeAnnounced = false;
+    this.#meleeStops = this.#context.world()?.attackStops ?? 0;
     this.#combatAnnounced = false;
     this.#controlEdge.reset();
     this.#pendingLevelUp = undefined;
     this.#barSignature = "";
-    this.#cooldownSignature = "";
+    this.#actionCooldownSignature = "";
+    this.#mirroredActionSignature = "";
     this.#itemCooldownSignature = "";
     this.#actionPage = this.actionBarPage();
     this.#mirrorTimerSignatures.clear();
@@ -1381,7 +1842,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#bankSlotsBought = undefined;
     this.#bankerGuid = undefined;
     this.#merchantSignature = "";
-    this.#trainerSelection = undefined;
+    this.#trainerList.clear();
     this.#trainerFilters.set("available", true);
     this.#trainerFilters.set("unavailable", true);
     this.#trainerFilters.set("used", false);
@@ -1400,7 +1861,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#questProgressSignature = "";
     this.#questMetadataPrefetchSignature = "";
     this.#questMetadataInvalidated = false;
-    this.#questSelection = 0;
+    this.#questSelectionId = 0;
     this.#invalidateCurrentMapQuestIds();
     this.#reputationSignature = "";
     this.#skillSignature = "";
@@ -1435,10 +1896,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#arenaListFresh = true;
       }
     }
-    this.#watchedFactionId = undefined;
     this.#collapsedFactionIds.clear();
-    this.#inactiveFactionOverrides.clear();
-    this.#atWarFactionOverrides.clear();
     this.#unwatchedQuestIds.clear();
     this.#invalidateSpellEntries();
     this.#health = -1;
@@ -1464,13 +1922,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#areaId = undefined;
     this.#worldMapAreaKnown = true;
     this.#worldMapAreaId = this.#resolvedWorldMapAreaId();
-    this.#zoneShapeKnown = false;
-    this.#zoneMinimapText = undefined;
-    this.#zoneText = undefined;
-    this.#zoneSubZoneText = undefined;
-    this.#zonePvpType = undefined;
-    this.#zoneIsSubZonePvp = undefined;
-    this.#zoneFactionName = undefined;
+    this.#zoneText = "";
+    this.#zoneSubZoneText = "";
     this.#auraSignature = this.#auraShapeSignature("player");
     this.#targetAuraSignature = this.#auraShapeSignature("target");
     this.#focusAuraSignature = this.#auraShapeSignature("focus");
@@ -1530,6 +1983,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#reconcileCombat();
         this.#reconcileControl();
       }));
+      // 11.02-IF: Wow.exe's PLAYER_FARSIGHT callback (0x006e4fd0) — the possess bar and
+      // PLAYER_FARSIGHT_FOCUS_CHANGED within the update that moved the field (FrameXmlPossess.ts).
+      this.#unsubscribe.push(store.field(SELF, "PLAYER_FARSIGHT", () => this.possess.tick()));
       this.#unsubscribe.push(store.field(SELF, "UNIT_FIELD_MAXHEALTH", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.maxHealth, "player");
       }));
@@ -1549,6 +2005,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#unsubscribe.push(store.field(SELF, "PLAYER_XP", () => {
         pump.fire(FRAMEXML_SEAM_EVENTS.experience);
       }));
+      // 5.19: the watched faction is this player word; the server writing it is the answer to
+      // SetWatchedFactionIndex (Wow.exe 0x005d0ba0 changes nothing locally).
+      this.#unsubscribe.push(store.field(SELF, "PLAYER_FIELD_WATCHED_FACTION_INDEX", () => {
+        this.#publishReputationChanged();
+      }));
       // One word carries the inn bit, AFK and DND (Player.h:354-359), and stock keeps a listener
       // per family: PLAYER_UPDATE_RESTING repaints the «zzz» (PlayerFrame_UpdateStatus) and
       // PLAYER_FLAGS_CHANGED("player") the «<AFK>» name — so each bit family gets its own edge,
@@ -1558,8 +2019,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         const next = this.#playerFlags() ?? 0;
         const changed = playerFlags ^ next;
         playerFlags = next;
+        // The PvP timer's deadline is decided on the flag change itself (FrameXmlPvpFlag.ts).
+        this.pvpFlag.flagsChanged();
         if ((changed & PLAYER_FLAGS_RESTING) !== 0) pump.fire(FRAMEXML_SEAM_EVENTS.resting);
-        if ((changed & (PLAYER_FLAGS_AFK | PLAYER_FLAGS_DND)) !== 0) pump.fire(FRAMEXML_SEAM_EVENTS.playerFlags, "player");
+        // PlayerFrame shows the PvP timer on PLAYER_FLAGS_CHANGED (PlayerFrame.lua:235-240).
+        // 05.10-A7a-A 6.09: the helm and cloak bits too — the stock Display panel's two boxes re-read
+        // ShowingHelm/ShowingCloak on this event. (Wow.exe's PLAYER_FLAGS handler 0x006e0fd0 fires
+        // event 0x18f, PLAYER_FLAGS_CHANGED, at 0x006e1062 for every change of the word, not per bit.)
+        if ((changed & (PLAYER_FLAGS_AFK | PLAYER_FLAGS_DND | PLAYER_FLAGS_IN_PVP | PLAYER_FLAGS_PVP_TIMER
+          | PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK)) !== 0) {
+          pump.fire(FRAMEXML_SEAM_EVENTS.playerFlags, "player");
+        }
       }));
       // The rested bonus ticks down with every kill (ExhaustionTick_OnEvent redraws the tick).
       this.#unsubscribe.push(store.field(SELF, "PLAYER_REST_STATE_EXPERIENCE", () => {
@@ -1741,6 +2211,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
                   : (FRAMEXML_POWER_MAX_EVENTS[powerType] ?? "UNIT_MAXMANA"), partyUnit);
               }
             }
+            // The boss frames (3.16): the same unit events for each bossN the unit is.
+            const bossIndex = this.encounters.indexOf(guid);
+            if (bossIndex > 0) {
+              const bossUnit = `boss${bossIndex}`;
+              if (event === "UNIT_POWER" || event === "UNIT_MAX_POWER") {
+                const powerType = this.#partyPowerType(guid);
+                pump.fire(event === "UNIT_POWER"
+                  ? (FRAMEXML_POWER_EVENTS[powerType] ?? "UNIT_MANA")
+                  : (FRAMEXML_POWER_MAX_EVENTS[powerType] ?? "UNIT_MAXMANA"), bossUnit);
+              } else {
+                pump.fire(event, bossUnit);
+              }
+            }
           }));
         };
         targetField("UNIT_HEALTH", FRAMEXML_SEAM_EVENTS.health);
@@ -1750,6 +2233,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         targetField("UNIT_DISPLAY_POWER", FRAMEXML_SEAM_EVENTS.unitDisplayPower);
         targetField("UNIT_POWER", "UNIT_POWER");
         targetField("UNIT_MAX_POWER", "UNIT_MAX_POWER");
+        // 3.36 (L14): the pet's POWER5 is its happiness; Wow.exe signals slot 4 as UNIT_HAPPINESS, which
+        // PetFrame.lua:23 listens to. UNIT_POWER names no slot, so the watch compares the word.
+        const petHappiness = new FrameXmlPetHappinessWatch();
+        this.#unsubscribe.push(events.on("UNIT_POWER", ({ guid }) => {
+          if (guid !== this.#petGuid) return;
+          const pet = this.#pet();
+          if (pet?.guid === guid && petHappiness.changed(pet)) pump.fire(FRAMEXML_PET_HAPPINESS_EVENT, "pet");
+        }));
         this.#unsubscribe.push(events.on("PLAYER_QUEST_LOG_UPDATE", ({ guid }) => {
           if (guid !== this.#selfGuid()) return;
           this.#publishQuestUnitChange();
@@ -1827,6 +2318,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         } finally {
           this.#reconcileParty();
           pump.fire(FRAMEXML_SEAM_EVENTS.partyLeaderChanged);
+          this.worldEvents.groupChanged();
           const roles = world.group?.ownRoles;
           if (roles !== ownRoles) {
             ownRoles = roles;
@@ -1842,7 +2334,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       const trainerCallback = () => {
         try { previousTrainerCallback?.(); }
         finally {
-          this.#trainerSelection = this.trainerServiceCount() > 0 ? 1 : undefined;
+          this.#trainerList.listChanged();
           // EnterWorld's single owner routes this callback to either stock or native UI. A direct
           // seam mount has no such callback, so only that standalone path emits the stock edge.
           if (!previousTrainerCallback) pump.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
@@ -1871,6 +2363,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         this.#talentRevision += 1;
         this.#pump?.fire(pet ? FRAMEXML_SEAM_EVENTS.petTalentsChanged
           : FRAMEXML_SEAM_EVENTS.talentsChanged);
+        // Then the group edge, as the client's handler does (0x5c9e50).
+        if (!pet) this.talentGroup.talentsChanged();
+      }));
+      this.#unsubscribe.push(world.events.on("QUEST_PUSH_RESULT", ({ guid, result }) => {
+        this.questShare.result(guid, result);
       }));
       this.#unsubscribe.push(world.events.on("CHAT_MESSAGE", (message) => {
         this.#emitChatMessage(pump, world, message);
@@ -1897,6 +2394,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       }));
       this.#unsubscribe.push(world.events.on("REPUTATION_CHANGED", () => {
         this.#publishReputationChanged();
+      }));
+      // 2.10: SMSG_ITEM_REFUND_RESULT codes 10/11 are UI errors (Wow.exe 0x006d9b40 → 0x005216f0).
+      this.#unsubscribe.push(world.events.on("ITEM_REFUND_ERROR", ({ error }) => {
+        pump.fire("UI_ERROR_MESSAGE", globalString(error) ?? error);
       }));
       // WorldClient already owns the packet parsing and queue/list state. Forward only the exact
       // stock edges; the registrations are removed with the rest of this seam on every detach.
@@ -1961,6 +2462,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           castID: cast?.castCount,
         };
         this.#castStates.set(event.casterGuid, state);
+        this.castEvents.onCastStart(event.casterGuid);
         if (state.channel) {
           pump.fire(FRAMEXML_SEAM_EVENTS.channelStart, unit);
         } else {
@@ -1982,20 +2484,26 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           channel: cast?.channel ?? false,
           castID: cast?.castCount,
         };
+        this.castEvents.onCastStop(event.casterGuid);
+        // 3.02: FAILED and INTERRUPTED come from SPELL_CAST_RESULT (Wow.exe 0x007fecc0), which then
+        // raises STOP only while the spell is the unit's current cast. A failure with no cast this
+        // seam saw start (an instant refused, the second packet of an interrupt pair) stops nothing.
+        const reason = event.reason ?? (event.interrupted ? "interrupted" : "success");
         if (effective.channel) {
-          pump.fire(FRAMEXML_SEAM_EVENTS.channelStop, unit);
-        } else {
-          // `interrupted` remains for older listeners; reason is authoritative when present.
-          const reason = event.reason ?? (event.interrupted ? "interrupted" : "success");
-          const eventName = reason === "failed"
-            ? FRAMEXML_SEAM_EVENTS.castFailed
-            : reason === "interrupted"
-              ? FRAMEXML_SEAM_EVENTS.castInterrupted
-              : FRAMEXML_SEAM_EVENTS.castStop;
-          pump.fire(eventName, unit, ...this.#castIdentity(effective));
+          if (state !== undefined || reason === "success") pump.fire(FRAMEXML_SEAM_EVENTS.channelStop, unit);
+        } else if (state !== undefined || reason === "success") {
+          pump.fire(FRAMEXML_SEAM_EVENTS.castStop, unit, ...this.#castIdentity(effective));
         }
         this.#castStates.delete(event.casterGuid);
       }));
+      // 5.18: AUTOFOLLOW_BEGIN with the name and AUTOFOLLOW_END (Wow.exe events 0x165/0x166).
+      this.#unsubscribe.push(onFollowChange((change) => {
+        if (change.kind === "begin") pump.fire(FRAMEXML_SEAM_EVENTS.autofollowBegin, change.name);
+        else pump.fire(FRAMEXML_SEAM_EVENTS.autofollowEnd);
+      }));
+      // 3.02: the request and the outcome (FrameXmlCastEvents.ts).
+      this.#unsubscribe.push(world.events.on("SPELL_CAST_SENT", (event) => this.castEvents.onSent(pump, event)));
+      this.#unsubscribe.push(world.events.on("SPELL_CAST_RESULT", (event) => this.castEvents.onResult(pump, event)));
       this.#unsubscribe.push(world.events.on("SPELL_CAST_DELAYED", (event) => {
         const unit = this.#castUnit(event.casterGuid);
         if (unit === undefined) return;
@@ -2036,9 +2544,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         pump.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown);
         this.#spellCooldownSignature = this.#spellCooldownShapeSignature(world);
         this.#reconcileItemCooldowns();
+        this.#reconcileActionCooldowns(); // P1-16
       }));
       this.#unsubscribe.push(world.events.on("ITEM_COOLDOWN_STARTED", () => {
         this.#reconcileItemCooldowns();
+        this.#reconcileActionCooldowns(); // P1-16
+      }));
+      // P1-16 review: slots 121–132 under a possess or vehicle bar answer from the pet bar's timers
+      // (FrameXmlPossess.ts), and stock ActionButton redraws them only on these two events. Subscribed
+      // after `petActions.attach`, so its own handler has stamped the new timers by now.
+      this.#unsubscribe.push(world.events.on("PET_COOLDOWNS_CHANGED", () => {
+        if (this.possess.mirrorIndex(POSSESS_FIRST_SLOT) === undefined) return;
+        this.#mirroredActionSignature = this.#currentMirroredActionSignature();
+        pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+        pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
       }));
       this.#unsubscribe.push(world.events.on("QUERY_CACHE_CHANGED", (event) => {
         if (event.kind === "cleared") {
@@ -2100,7 +2619,30 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
           pump.fire(FRAMEXML_SEAM_EVENTS.unitName, unit);
         }
       }));
+      // 5.24: a pet's given name arrived (SMSG_PET_NAME_QUERY_RESPONSE): UNIT_NAME_UPDATE for each
+      // named unit that is that pet, as the creature-template answer above does for a kind's name.
+      this.#unsubscribe.push(world.events.on("PET_NAME_CHANGED", ({ petNumber }) => {
+        const petNumberOffset = UPDATE_FIELDS.UNIT_FIELD_PETNUMBER.offset;
+        const namedPets: readonly ["target" | "focus" | "targettarget" | "pet", WorldObjectState | undefined, string][] = [
+          ["target", this.#target(), this.#targetName],
+          ["focus", this.#focus(), this.#focusName],
+          ["targettarget", this.#targetTarget(), this.#targetTargetName],
+          ["pet", this.#pet(), this.#petName],
+        ];
+        for (const [unit, object, previousName] of namedPets) {
+          if (!object || object.typeId !== TYPEID_UNIT || object.fields.get(petNumberOffset) !== petNumber) continue;
+          const name = this.#targetNameFor(object) ?? "";
+          if (name === previousName) continue;
+          if (unit === "target") this.#targetName = name;
+          else if (unit === "focus") this.#focusName = name;
+          else if (unit === "targettarget") this.#targetTargetName = name;
+          else this.#petName = name;
+          pump.fire(FRAMEXML_SEAM_EVENTS.unitName, unit);
+        }
+      }));
       this.#unsubscribe.push(world.events.on("AURA_CHANGED", ({ guid }) => {
+        // 3.02: a casting unit's immunities may have moved (Wow.exe 0x0072f5d0, before UNIT_AURA).
+        this.castEvents.onAuraChanged(pump, guid);
         // Focus is client-owned and ToT is derived from a mutable target field; reconcile both
         // before accepting an aura packet so an old GUID cannot repaint a newly bound unit token.
         this.#reconcileFocus();
@@ -2164,6 +2706,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   detach(): void {
+    this.encounters.detach();
+    this.worldEvents.detach();
     this.worldStates.detach();
     this.calendar.detach();
     this.lfd.detach();
@@ -2178,6 +2722,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.auction.detach();
     this.socket.detach();
     this.inspect.detach();
+    this.repair.detach();
+    this.inventoryAlerts.detach();
+    this.worldEntry.detach();
+    this.autoComplete.detach(); // L5c 3.18
+    this.#unobserveSpellCursors?.();
+    this.#unobserveSpellCursors = undefined;
     this.barber.detach();
     this.glyphs.detach();
     this.companions.detach();
@@ -2191,10 +2741,26 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.keyBindings.detach();
     this.map.detach();
     this.hudMechanics.detach();
+    this.combatLog.detach();
+    this.multiCast.detach();
     this.petActions.detach();
     this.chatColors.detach();
     this.threat.detach();
     this.mechanics.detach();
+    this.possess.detach(); // 11.02-IF
+    this.vehicle.detach(); // 11.02-F2
+    this.vehicleAim.detach(); // 11.02-E
+    this.petDeclension.detach(); // L17 3.09
+    this.scoreboard.detach();
+    this.areaSpiritHealer.detach(); // L3 5.25
+    this.difficulty.detach();
+    this.talentGroup.detach();
+    this.talentPreview.detach();
+    this.questShare.detach();
+    this.serverPrompts.detach();
+    this.questLog.detach();
+    this.#autoRepeat.detach();
+    this.arenaRoster.detach();
     this.clearCursor();
     this.#releaseNativeBankCursor?.();
     this.#releaseNativeBankCursor = undefined;
@@ -2203,7 +2769,6 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#pump = undefined;
     this.#polledAt = Number.NEGATIVE_INFINITY;
     this.#barSignature = "";
-    this.#cooldownSignature = "";
     this.#spellSignature = "";
     this.#spellCooldownSignature = "";
     this.#merchantSignature = "";
@@ -2222,21 +2787,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#questProgressSignature = "";
     this.#questMetadataPrefetchSignature = "";
     this.#questMetadataInvalidated = false;
-    this.#questSelection = 0;
+    this.#questSelectionId = 0;
     this.#invalidateCurrentMapQuestIds();
     this.#reputationSignature = "";
     this.#honorSignature = "";
     this.#honorCurrencySignature = "";
     this.#selectedFactionId = undefined;
-    this.#watchedFactionId = undefined;
     this.#arenaListWorld = undefined;
     this.#arenaListReference = undefined;
     this.#arenaListFresh = false;
     this.#arenaWasPublished = false;
     this.#arenaClosing = false;
     this.#collapsedFactionIds.clear();
-    this.#inactiveFactionOverrides.clear();
-    this.#atWarFactionOverrides.clear();
     this.#unwatchedQuestIds.clear();
     this.#invalidateSpellEntries();
     this.#health = -1;
@@ -2258,13 +2820,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#areaId = undefined;
     this.#worldMapAreaKnown = false;
     this.#worldMapAreaId = undefined;
-    this.#zoneShapeKnown = false;
-    this.#zoneMinimapText = undefined;
-    this.#zoneText = undefined;
-    this.#zoneSubZoneText = undefined;
-    this.#zonePvpType = undefined;
-    this.#zoneIsSubZonePvp = undefined;
-    this.#zoneFactionName = undefined;
+    this.#zoneText = "";
+    this.#zoneSubZoneText = "";
     this.#auraSignature = "";
     this.#targetAuraSignature = "";
     this.#focusAuraSignature = "";
@@ -2470,6 +3027,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // No world location yet: do not publish a fake initial zone and do not mark this as seen. A
     // later INIT_WORLD_STATES packet remains a real first-area edge.
     if (mapId === undefined && zoneId === undefined && areaId === undefined) return;
+    // Under the loading curtain nothing is compared or recorded: the first tick after it sees the
+    // difference from the last published place and resolves it at once (one edge, not two).
+    if (this.#context.worldLoading?.() === true) return;
     const locationChanged = !this.#zoneKnown
       || this.#zoneMapId !== mapId || this.#zoneId !== zoneId || this.#areaId !== areaId;
     // A raw location transition must resolve immediately to preserve one edge. When IDs are
@@ -2477,41 +3037,35 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // keeps late metadata fresh without turning every rendered frame into an area lookup.
     if (!locationChanged && !resolveShape) return;
     const zone = this.#minimapZone();
-    const shapeKnown = zone !== undefined;
-    const shapeChanged = shapeKnown !== this.#zoneShapeKnown
-      || (shapeKnown && (
-        this.#zoneMinimapText !== zone.minimapZoneText
-        || this.#zoneText !== zone.zoneText
-        || this.#zoneSubZoneText !== zone.subZoneText
-        || this.#zonePvpType !== zone.pvpType
-        || this.#zoneIsSubZonePvp !== zone.isSubZonePvP
-        || this.#zoneFactionName !== zone.factionName
-      ));
-    if (!shapeChanged && !locationChanged) return;
+    const zoneText = zone?.zoneText ?? "";
+    const subZoneText = zone?.subZoneText ?? "";
+    const textChanged = zoneText !== this.#zoneText || subZoneText !== this.#zoneSubZoneText;
+    if (!textChanged && !locationChanged) return;
     const previousMapId = this.#zoneMapId;
+    const previousZoneId = this.#zoneId;
     const first = !this.#zoneKnown;
     this.#zoneKnown = true;
     this.#zoneMapId = mapId;
     this.#zoneId = zoneId;
     this.#areaId = areaId;
-    this.#zoneShapeKnown = shapeKnown;
-    this.#zoneMinimapText = zone?.minimapZoneText;
-    this.#zoneText = zone?.zoneText;
-    this.#zoneSubZoneText = zone?.subZoneText;
-    this.#zonePvpType = zone?.pvpType;
-    this.#zoneIsSubZonePvp = zone?.isSubZonePvP;
-    this.#zoneFactionName = zone?.factionName;
-    // The seam is attached after FrameXML OnLoad. If the world context arrives after that mount,
-    // one initial NEW_AREA edge is the only way for Minimap_Update to paint its now-known labels.
-    // Resolved shape changes after that are ordinary ZONE_CHANGED edges, even if raw IDs are the
-    // same (for example when AreaClient metadata arrives after the world-state packet).
-    if (first) {
+    this.#zoneText = zoneText;
+    this.#zoneSubZoneText = subZoneText;
+    // The client's zone setter (Wow.exe 0x005204C0) raises one event per change, never two:
+    // another zone id is ZONE_CHANGED_NEW_AREA; the same zone with a changed zone or sub-zone name
+    // is ZONE_CHANGED, or ZONE_CHANGED_INDOORS when the player is inside an indoor WMO group; any
+    // other change (another area id with the same names, a PvP answer) raises nothing, the getters
+    // being read on demand. Its zone id is cleared only when the world is torn down for the login
+    // or character screen (0x00529160 from 0x00406510), so the first place after entering the
+    // world is always a NEW_AREA — which is also the one edge a late mount needs for
+    // Minimap_Update. A worldport keeps the id: the same zone after it raises nothing. The server's
+    // zone ids are per map, so another map is another zone here too.
+    if (first || previousMapId !== mapId || previousZoneId !== zoneId) {
       pump.fire(FRAMEXML_SEAM_EVENTS.zoneChangedNewArea);
-      return;
+    } else if (textChanged) {
+      pump.fire(this.#context.playerIndoors?.() === true
+        ? FRAMEXML_SEAM_EVENTS.zoneChangedIndoors
+        : FRAMEXML_SEAM_EVENTS.zoneChanged);
     }
-    pump.fire(previousMapId !== mapId
-      ? FRAMEXML_SEAM_EVENTS.zoneChangedNewArea
-      : FRAMEXML_SEAM_EVENTS.zoneChanged);
   }
 
   #minimapZone(): FrameXmlMinimapZone | undefined {
@@ -2670,10 +3224,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // epochs through the elapsed monotonic interval instead of exposing either raw clock.
     const startMs = pump.now() * 1000 - (this.#context.monotonic() - cast.startedAt);
     const endMs = startMs + cast.duration;
+    const notInterruptible = this.castEvents.notInterruptible(guid);
     if (channel) {
-      return [name, rank, name, texture, startMs, endMs, false, false];
+      return [name, rank, name, texture, startMs, endMs, false, notInterruptible];
     }
-    return [name, rank, name, texture, startMs, endMs, false, cast.castCount, false];
+    return [name, rank, name, texture, startMs, endMs, false, cast.castCount, notInterruptible];
   }
 
   // ---- player containers -----------------------------------------------
@@ -2932,6 +3487,68 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
   }
 
+  /**
+   * P1-16 (UI-6): ACTIONBAR_UPDATE_COOLDOWN + _USABLE once per edge of a spell slot's timer that
+   * #reconcileItemCooldowns does not see — one with no snapshot behind it (a category timer from
+   * SMSG_INITIAL_SPELLS, a bare `cooldowns` end) or one that outlasts its snapshot. `slot:end` is
+   * constant while the timer runs, so a start, a reset and the natural end each change it once.
+   * The pair stays a pair: `actionUsable` reads the remaining time, and stock
+   * `ActionButton_UpdateUsable` repaints the icon only on its event. The global cooldown has its
+   * own edge in `tick` (#globalCooldownEdge, COOLDOWN only; its end is the sweep's own).
+   */
+  #reconcileActionCooldowns(): void {
+    const world = this.#context.world();
+    const pump = this.#pump;
+    if (!world || !pump) return;
+    const now = this.#context.monotonic();
+    let signature = "";
+    for (const button of world.actionButtons) {
+      if (button.type !== ACTION_BUTTON_SPELL) continue;
+      const remaining = world.cooldownRemaining(button.action, now);
+      if (remaining <= 0) continue;
+      const end = now + remaining;
+      const snapshot = world.cooldownSnapshots?.get(button.action);
+      // The snapshot's own start, reset and end are #reconcileItemCooldowns' signature.
+      if (snapshot && snapshot.endsAt > now && Math.abs(snapshot.endsAt - end) < 1) continue;
+      signature += `${button.slot}:${Math.round(end)},`;
+    }
+    if (signature === this.#actionCooldownSignature) return;
+    this.#actionCooldownSignature = signature;
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
+  /**
+   * P1-16 review: the possess/vehicle page's mirrored slots (121–130) as `enable:duration:usable`
+   * each, "" while no such bar is on the main bar. Clock-free: a start comes with
+   * PET_COOLDOWNS_CHANGED (handled in `attach`), so the poll only has to see a timer end (its triple
+   * goes idle) and usability following the pet's power and life.
+   */
+  #currentMirroredActionSignature(): string {
+    if (this.possess.mirrorIndex(POSSESS_FIRST_SLOT) === undefined) return "";
+    let signature = "";
+    for (let slot = POSSESS_FIRST_SLOT; slot < POSSESS_FIRST_SLOT + POSSESS_MIRRORED_SLOTS; slot++) {
+      const index = this.possess.mirrorIndex(slot);
+      if (index === undefined || index < 0) continue;
+      const [, duration, enable] = this.possess.cooldown(index);
+      signature += `${enable}:${duration}:${this.possess.usable(index) ? 1 : 0},`;
+    }
+    return signature;
+  }
+
+  /** P1-16 review: ACTIONBAR_UPDATE_* for the mirrored slots — the pair for a timer, USABLE alone otherwise. */
+  #reconcileMirroredActions(): void {
+    const pump = this.#pump;
+    if (!pump) return;
+    const next = this.#currentMirroredActionSignature();
+    const previous = this.#mirroredActionSignature;
+    if (next === previous) return;
+    this.#mirroredActionSignature = next;
+    const timers = (signature: string): string => signature.replace(/:[01],/g, ",");
+    if (timers(next) !== timers(previous)) pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
+    pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
+  }
+
   // ---- merchant ---------------------------------------------------------
 
   #vendorItems(world: WorldClient | undefined): readonly VendorItem[] {
@@ -3042,8 +3659,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // Stock Lua still offers a click when isUsable=false. The buy method below enforces the
     // same unresolved-cost gate, while this flag makes the pending row visibly unavailable.
     const costKnown = item.extendedCost === 0 || this.#context.vendorCost?.(item.extendedCost) !== undefined;
+    // 5.22: Wow.exe 0x5e9250 also reddens armour and weapons without the proficiency (SMSG_SET_PROFICIENCY).
+    const proficient = !template?.found || (world?.isProficient?.(template.itemClass, template.subClass) ?? true);
     return [name, texture, item.price, item.buyCount, item.leftInStock,
-      available && costKnown, item.extendedCost > 0];
+      available && costKnown && proficient, item.extendedCost > 0];
   }
 
   #merchantTemplateLink(entry: number): string | undefined {
@@ -3067,7 +3686,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   merchantItemMaxStack(index: number): number {
     const item = this.#vendorItem(index);
     if (!item) return 0;
-    return this.#itemTemplate(this.#context.world(), item.itemId)?.stackable ?? 0;
+    // Wow.exe 0x005842d0: 1 for a row sold BuyCount ≥ 2 at a time (a pack of arrows is never
+    // split into 255 packs) and while the item is unknown, else the item's stack.
+    if (item.buyCount >= 2) return 1;
+    return this.#itemTemplate(this.#context.world(), item.itemId)?.stackable ?? 1;
   }
 
   merchantItemCostInfo(index: number): FrameXmlMerchantCostInfo {
@@ -3150,10 +3772,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   closeMerchant(): void { this.#context.world()?.closeVendor(); }
-  canMerchantRepair(): boolean { return false; }
-  repairAllCost(): readonly [number, boolean] { return [0, false]; }
-  canGuildBankRepair(): boolean { return false; }
-  inRepairMode(): boolean { return false; }
+  canMerchantRepair(): boolean { return this.repair.canMerchantRepair(); }
+  repairAllCost(): readonly [number, boolean] { return this.repair.repairAllCost() ?? [0, false]; }
+  canGuildBankRepair(): boolean { return this.repair.canGuildBankRepair(); }
+  inRepairMode(): boolean { return this.repair.inRepairMode(); }
 
   /**
    * Poll the two things no field subscription can see: what is on the bar, and what is recovering.
@@ -3169,15 +3791,23 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!pump || !world) return;
     // A holder that let go on its own (the item moved, the vault closed) takes the grid and picture along.
     this.cursor.sync();
+    // The client raises UPDATE_INVENTORY_ALERTS before UPDATE_INVENTORY_DURABILITY in one pass (0x005e90d0).
+    this.inventoryAlerts.tick();
+    this.repair.tick();
     this.calendar.tick();
     // Loot edges (LOOT_OPENED/…/CANCEL_LOOT_ROLL) follow the packets within one rendered frame.
     this.loot.tick();
     this.map.tick();
     // PLAYER_TOTEM_UPDATE for a totem that ran out or lost its creature; UNIT_INVENTORY_CHANGED for an imbue.
     this.hudMechanics.tick();
+    this.multiCast.tick();
+    // A scoreboard packet waits for its rows' names before UPDATE_BATTLEFIELD_SCORE (FrameXmlScoreboard.ts).
+    this.scoreboard.tick();
     // Mail/trade repaint once item names or sender names arrive (their packet edges are events).
     this.mail.tick();
     this.trade.tick();
+    this.itemText.tick(); // 5.28 (L6): a mail copy's sender name came (ItemTextGetCreator)
+    this.#unitAnswers.tick(); // 3.12 (04.10, L4): a unit tooltip's guild or loot owner name came
     // KNOWN_CURRENCY_TYPES_UPDATE / CURRENCY_DISPLAY_UPDATE edges, once Blizzard_TokenUI took them.
     this.currency.tick();
     // ARENA_OPPONENT_UPDATE, UNIT_PET and the enemy frames' UNIT_* edges (outside an arena: two queue slots).
@@ -3193,6 +3823,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.guildBank.tick();
     // The open trade skill: deferred TRADE_SKILL_* edges, the repeat count, bags and item replies.
     this.tradeSkill.tick();
+    // 3.29: the group tables landed under an open trainer; stock's row indexes changed meaning.
+    if (this.#trainerList.groupingChanged()) pump.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
+    // L12 5.30: the global cooldown's end moved (a request, its refusal or acceptance): as Wow.exe after
+    // its history write (0x00805d70 → 0x005a7cc0, 0x0053bac0), the stock sweeps redraw.
+    if (this.#globalCooldownEdge.changed(this.#context.globalCooldown?.revision() ?? this.#context.globalCooldownUntil())) { // L13-review 5.30: any category
+      pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown); // L12 5.30
+      pump.fire(FRAMEXML_SEAM_EVENTS.spellUpdateCooldown); // L12 5.30
+    }
     // A key changed in the native window or a module action added: UPDATE_BINDINGS (throttled).
     this.keyBindings.tick(now);
     this.#reconcileActionPage();
@@ -3209,6 +3847,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.#reconcileMouseover(world, pump);
     // The player's swing is a plain WorldClient property with no bus edge; one read a frame.
     this.#reconcileMelee(world, pump);
+    // The repeating spell (Auto Shot, Shoot) is a plain WorldClient property too.
+    this.#autoRepeat.sync(frameXmlAutoRepeatShown(world)); // L18 5.05: the wanted shot too (0x007fe140), was world.autoRepeatSpellId
     // Resolving AreaClient metadata can allocate a small result object. Keep that callback on the
     // existing 60 ms seam poll, while still reconciling raw IDs immediately when they move.
     const resolveZone = now - this.#polledAt >= LIVE_POLL_SECONDS;
@@ -3235,6 +3875,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // The server's confirmations (invites, death, summon, ready check …) sit in single-slot world
     // fields with no bus edge; they are compared on this poll, within 60 ms of their packet.
     this.popups.tick();
+    // L3 5.25: the spirit guide in range and SMSG_AREA_SPIRIT_HEALER_TIME (Wow.exe 0x524010 each frame).
+    this.areaSpiritHealer.tick();
     // Guild packets reach only WorldClient's single onGuildChanged slot and the group list only
     // onGroupChanged; the social model compares their field identities on this poll instead.
     this.friends.tick();
@@ -3298,6 +3940,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // PET_BAR_UPDATE for a bar whose kind or spell rows changed without a packet, and
     // PET_BAR_UPDATE_USABLE on the pet's power and life: one pet read a poll, none without a pet.
     this.petActions.tick();
+    // 11.02-IF: the possess bar for a far sight or charm change with no store edge, and late spell rows.
+    this.possess.tick();
+    // 11.02-F2: seat, passenger, kit and mover changes as UNIT_*_VEHICLE and the rest (FrameXmlVehicle.ts).
+    this.vehicle.tick();
+    this.vehicleAim.tick(); // 11.02-E: VEHICLE_ANGLE_UPDATE when the mover's pitch moved (after the mover-change events above)
     // KNOWN_TITLES_UPDATE / UNIT_NAME_UPDATE on the title fields and EQUIPMENT_SETS_CHANGED on the
     // set list: two player-object reads a poll, which is why they sit on this boundary rather than
     // on every rendered frame (the quest log pins zero object reads per sub-60 ms tick).
@@ -3347,16 +3994,10 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       this.#barSignature = bar;
       pump.fire(FRAMEXML_SEAM_EVENTS.actionSlotChanged, 0);
     }
-    const monotonic = this.#context.monotonic();
-    const cooldowns = world.actionButtons
-      .filter((button) => button.type === ACTION_BUTTON_SPELL)
-      .map((button) => `${button.slot}:${Math.round(world.cooldownRemaining(button.action, monotonic) / 250)}`)
-      .join(",");
-    if (cooldowns !== this.#cooldownSignature) {
-      this.#cooldownSignature = cooldowns;
-      pump.fire(FRAMEXML_SEAM_EVENTS.actionCooldown);
-      pump.fire(FRAMEXML_SEAM_EVENTS.actionUsable);
-    }
+    // P1-16 (UI-6): cooldown edges, not a 250 ms bucket of the remaining time (that re-fired the
+    // pair four times a second per recovering slot). Snapshot timers are #reconcileItemCooldowns'.
+    this.#reconcileActionCooldowns();
+    this.#reconcileMirroredActions(); // P1-16 review: the possess/vehicle page
     // Power has no `SELF` field of its own — the index depends on the power type — so it is polled
     // beside the two above rather than subscribed like health.
     const player = this.#self();
@@ -3416,7 +4057,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // server's lock bit is not in the item update state; the client's own locks are: an item
     // attached to the send draft or offered in the trade window is locked, as in the client.
     const locked = this.mail.attached(item.guid) || this.trade.offered(item.guid)
-      || this.auction.selling(item.guid) || this.socket.staged(item.guid) ? true : undefined;
+      || this.auction.selling(item.guid) || this.socket.staged(item.guid)
+      || giftWrapLocks(world, item.guid) ? true : undefined;
     return [this.#itemTexture(entry), stackCount(item), locked,
       template?.found ? template.quality : undefined, undefined];
   }
@@ -3431,6 +4073,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const metadata = this.#context.itemInfo?.(entry);
     return {
       entry, count: stackCount(item), enchantments: itemEnchantmentIds(item.item),
+      durationLeft: readField(item.item, "ITEM_FIELD_DURATION") ?? 0, // 5.22 (04.10, L4): absent is 0
       ...(template?.found === true ? { template } : {}),
       ...(metadata && metadata.name.length > 0 ? { metadata: {
         entry, name: metadata.name, displayId: 0,
@@ -3462,14 +4105,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const item = this.#liveContainerSlot(bagId, slot);
     if (!world || !item?.item || item.guid === 0n) return;
-    // An enchant from the stock TradeSkillFrame is waiting for its item (SpellCanTargetItem): this is it.
-    if (this.tradeSkill.targetItem(item.guid)) return;
     // A locked item (attached to the send draft or offered in the trade) is not used, as in the
-    // client: the letter or the trade already holds it, even on the inbox tab.
+    // client: the letter or the trade already holds it, even on the inbox tab. The client asks its
+    // lock (item+0x394 bit 0) before any spell cursor (0x005d8650).
     if (this.mail.attached(item.guid) || this.trade.offered(item.guid)) return;
     if (this.auction.selling(item.guid)) return;
     // … or staged in a stock socket (FrameXmlSocketModel.staged).
     if (this.socket.staged(item.guid)) return;
+    // … or waiting as gift-wrapping paper (game/GiftWrap.ts: the paper is locked while it waits).
+    if (giftWrapLocks(world, item.guid)) return;
+    // A waiting enchant or item-target spell takes it; any other spell cursor is dropped first.
+    if (this.#spellCursorClick(item.item, item.guid)) return;
+    // The repair cursor repairs a right-clicked item before any window takes it (FrameXmlRepair.ts).
+    if (this.repair.clickItem(item.item, item.guid)) return;
     // As in the client, a right-clicked bag item goes into the open send-mail draft or trade window.
     if (this.mail.useItem(item.guid) || this.trade.useItem(item.guid)) return;
     // … or, with the stock Auctions tab showing, into the auction sell slot (SetAuctionsTabShowing).
@@ -3570,8 +4218,137 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return true;
   }
 
+  /**
+   * The item-target cursor's click (game/SpellCursor.ts): true when it took the item — sent, or
+   * refused with the client's message in UIErrorsFrame and the cursor kept.
+   */
+  #spellCursorTakesItem(item: WorldObjectState | undefined, guid: bigint): boolean {
+    return this.#spellCursorOutcome(targetItemWithCursor(item, guid));
+  }
+
+  /** An item-target outcome told to the stock UI: an error line or the replace question. */
+  #spellCursorOutcome(outcome: ItemTargetOutcome): boolean {
+    if (outcome.kind === "none") return false;
+    if (outcome.kind === "refused") this.#pump?.fire("UI_ERROR_MESSAGE", frameXmlItemTargetErrorText(outcome.error));
+    // END_REFUND carries the kind EndRefund answers with (0x0081b530(0x28c, "%d", 1)): 1, the enchant.
+    if (outcome.kind === "confirm" && outcome.event === "END_REFUND") this.#pump?.fire(outcome.event, 1);
+    // L1 (2.05/3.22): END_BOUND_TRADEABLE carries its kind (0x0081b530(0x28d, "%s", "itemenchant")).
+    else if (outcome.kind === "confirm" && outcome.event === "END_BOUND_TRADEABLE") this.#pump?.fire(outcome.event, END_BOUND_TRADEABLE_ITEM_ENCHANT);
+    else if (outcome.kind === "confirm") this.#pump?.fire(outcome.event, outcome.oldName, outcome.newName);
+    return true;
+  }
+
+  /**
+   * The spell-cursor step of `UseContainerItem`/`UseInventoryItem` (Wow.exe 0x005d8650,
+   * 0x005e8a60): a pending spell that can take an item takes this one (0x005210d0) — the stock
+   * TradeSkillFrame's enchant or the item-target cursor (2.05) — and any other pending spell, the
+   * glyph cursor or the native reticle, is dropped first (0x007fd620 && !0x007fd760 → 0x00809a60)
+   * and the click goes on. True when a cursor took the click.
+   */
+  #spellCursorClick(item: WorldObjectState | undefined, guid: bigint): boolean {
+    if (this.tradeSkill.targetItem(guid)) return true;
+    if (pendingItemTarget() === undefined) {
+      this.glyphs.cancelTargeting();
+      runFrameXmlNativeEscape("stopTargeting");
+      return false;
+    }
+    return this.#spellCursorTakesItem(item, guid);
+  }
+
+  spellTargetItem(query: unknown): void {
+    const world = this.#context.world();
+    if (!world || pendingItemTarget() === undefined) return;
+    const place = findSpellTargetItem(playerInventory(world.state), query,
+      (entry) => world.itemTemplates.get(entry)?.name, currencyTokenSlots(world.state)); // L1 (2.05): 118–149
+    if (place) this.#spellCursorTakesItem(place.item, place.guid);
+  }
+
+  clickTargetTradeButton(index: number): void {
+    const world = this.#context.world();
+    if (!world?.tradeOpen || index !== FRAMEXML_TRADE_ENCHANT_SLOT) return;
+    // The stock TradeSkillFrame's enchant is the usual pending spell here (an enchanter's recipe).
+    if (this.tradeSkill.targetTradeSlot()) return;
+    this.#spellCursorOutcome(targetTradeSlotWithCursor());
+  }
+
+  bindEnchant(): void {
+    if (this.tradeSkill.bindEnchant()) return;
+    this.#spellCursorOutcome(bindEnchantWithCursor());
+  }
+
+  // ---- 2.10 purchase refunds (FrameXmlRefund.ts) ------------------------------------------------
+
+  readonly #refund = new FrameXmlRefundModel({
+    item: (bag, slot, equipped) => {
+      const world = this.#context.world();
+      const place = equipped
+        ? (world && typeof world.state.objects?.get === "function" ? playerInventory(world.state)?.equipment[slot - 1] : undefined)
+        : this.#liveContainerSlot(bag, slot);
+      return place?.item && place.guid !== 0n ? { guid: place.guid, item: place.item } : undefined;
+    },
+    info: (guid) => this.#context.world()?.itemRefunds?.info.get(guid),
+    played: () => this.#context.world()?.playedSecondsNow?.(this.#context.monotonic()),
+    lootGuid: () => this.#context.world()?.loot?.guid,
+    itemTexture: (entry) => this.#itemTexture(entry),
+    itemLink: (entry) => (this.#itemTemplate(this.#context.world(), entry)?.found ? this.#entryLink(entry) : undefined),
+    refund: (guid) => this.#context.world()?.refundItem?.(guid) ?? undefined,
+    ask: (guid) => this.#context.world()?.requestItemRefundInfo?.(guid) === true, // 2.10 (04.10, L4): sent now
+  });
+
+  /** 2.10: the stock item tooltip's refund seconds (Wow.exe 0x006277f0; FrameXmlRefund.tooltipSeconds). */
+  containerItemRefundSeconds(bag: number, slot: number): number | undefined {
+    return this.#refund.tooltipSeconds(bag, slot, false);
+  }
+
+  inventoryItemRefundSeconds(unit: string, slot: number): number | undefined {
+    return unit.toLowerCase() === "player" ? this.#refund.tooltipSeconds(0, slot, true) : undefined;
+  }
+
+  containerItemPurchaseInfo(bag: number, slot: number, equipped: boolean): readonly unknown[] | undefined {
+    return this.#refund.purchaseInfo(bag, slot, equipped);
+  }
+
+  containerItemPurchaseItem(bag: number, slot: number, index: number, equipped: boolean): readonly unknown[] | undefined {
+    return this.#refund.purchaseItem(bag, slot, index, equipped);
+  }
+
+  containerRefundItemPurchase(bag: number, slot: number, equipped: boolean): void {
+    const error = this.#refund.refund(bag, slot, equipped);
+    if (error) this.#pump?.fire("UI_ERROR_MESSAGE", globalString(error) ?? error);
+  }
+
+  /** Wow.exe 0x00523370: 1 → 0x005210d0 with the answer (as BindEnchant), 2 → 0x005c4ff0 (AcceptSockets). */
+  endRefund(kind: number): void {
+    if (kind === 1) this.bindEnchant();
+    else if (kind === 2) this.socket.accept();
+  }
+
+  replaceEnchant(): void {
+    if (this.tradeSkill.replaceEnchant()) return;
+    this.#spellCursorOutcome(replaceEnchantWithCursor());
+  }
+
+  replaceTradeEnchant(): void {
+    if (!this.#context.world()?.tradeOpen) return;
+    if (this.tradeSkill.targetTradeSlot(true)) return;
+    this.#spellCursorOutcome(targetTradeSlotWithCursor(undefined, undefined, true));
+  }
+
   pickupContainerItem(bagId: number, slot: number): void {
     const target = this.#liveContainerSlot(bagId, slot);
+    // With nothing held, a click on a bag item drops any spell cursor and goes on (Wow.exe 0x005d7ff0
+    // → 0x00809a60): stock sends a click meant for the cursor through UseContainerItem instead
+    // (ContainerFrame.lua:698, SpellCanTargetItem), so this is a drag or a macro's pickup.
+    if (!this.cursor.occupied() && target?.item && target.guid !== 0n) frameXmlStopSpellTargeting(this);
+    // The repair cursor repairs what an empty hand clicks (FrameXmlRepair.ts): nothing held at all —
+    // a spell, action or set on the cursor takes the click's other branches in 0x005d7ff0.
+    if (!this.cursor.occupied() && this.repair.clickItem(target?.item, target?.guid ?? 0n)) return;
+    // … then waiting gift-wrapping paper wraps it (Wow.exe 0x005d7ff0 → 0x006dcf20, game/GiftWrap.ts).
+    if (!this.cursor.occupied() && target?.item && target.guid !== 0n && wrapWithPendingPaper(
+      this.#context.world(), target,
+      this.mail.attached(target.guid) || this.trade.offered(target.guid) || this.auction.selling(target.guid)
+        || this.socket.staged(target.guid) || giftWrapLocks(this.#context.world(), target.guid),
+    )) return;
     // A held guild bank stack goes into exactly this bag slot (FrameXmlGuildBank.dropOnBagSlot).
     if (target && this.guildBank.dropOnBagSlot(target)) return;
     // A locked bag item (attached to the send draft or offered in the trade) is neither picked up
@@ -3612,6 +4389,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   clearCursor(): void {
+    // Any cursor reset lets waiting gift-wrapping paper go (Wow.exe 0x00519280 → 0x006cef80).
+    cancelGiftWrap();
     this.macros.clearCursor();
     this.guildBank.clearCursor();
     if (!this.#itemCursor) return;
@@ -3717,18 +4496,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!state?.item) return undefined;
     const entry = entryOf(state.item);
     if (!Number.isSafeInteger(entry) || entry <= 0) return undefined;
-    const result = this.#entryTooltip(entry, stackCount(state), itemEnchantmentIds(state.item));
+    // 5.22 (04.10, L4): the worn item's time left, absent read as 0 (FrameXmlCharacterTooltip.ts).
+    const result = this.#entryTooltip(entry, stackCount(state), itemEnchantmentIds(state.item),
+      readField(state.item, "ITEM_FIELD_DURATION") ?? 0);
     const durability = readField(state.item, "ITEM_FIELD_DURABILITY");
     return typeof durability === "number" && Number.isFinite(durability) && durability >= 0
       ? { ...result, durability } : result;
   }
 
   /** The cached template and the host's metadata of an entry, for GameTooltip; nothing is fetched. */
-  #entryTooltip(entry: number, count: number, enchantments: readonly number[]): FrameXmlInventoryTooltipItem {
+  #entryTooltip(entry: number, count: number, enchantments: readonly number[], durationLeft?: number): FrameXmlInventoryTooltipItem {
     const template = this.#itemTemplate(this.#context.world(), entry);
     const metadata = this.#context.itemInfo?.(entry);
     return {
-      entry, count, enchantments,
+      entry, count, enchantments, durationLeft, // 5.22 (04.10, L4): durationLeft
       ...(template?.found === true ? { template } : {}),
       ...(metadata && metadata.name.length > 0 ? { metadata: {
         entry, name: metadata.name, displayId: 0,
@@ -3774,11 +4555,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     const item = this.#equipmentSlot(unit, slot);
     if (!world || !item?.item || item.guid === 0n) return;
-    // At a merchant a right click on the paper doll sells the piece, as in the client.
-    if (world.vendor !== undefined) {
-      world.sellToVendor(item.guid);
-      return;
-    }
+    // A waiting enchant or item-target spell takes the worn one; any other spell cursor is dropped
+    // first (2.05; Wow.exe 0x005e8a60 asks 0x007fd620/0x007fd760 as UseContainerItem does).
+    if (this.#spellCursorClick(item.item, item.guid)) return;
+    // The repair cursor repairs it (0x005e8a60: cursor mode 0x11 at a merchant). Nothing else of a
+    // merchant's applies: the paper doll's right click goes on to Item::Use (0x00708c20), which has
+    // no sell branch — worn gear is not sold from the paper doll.
+    if (this.repair.clickItem(item.item, item.guid)) return;
     const entry = entryOf(item.item);
     const template = this.#itemTemplate(world, entry);
     if (template === undefined && this.#awaitItemTemplate(world, item, entry, () => this.useInventoryItem(unit, slot))) return;
@@ -3790,13 +4573,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   pickupInventoryItem(unit: string, slot: number): void {
-    // An enchant waiting for its item takes the paper doll's click (PaperDollItemSlotButton_OnClick).
-    if (this.tradeSkill.targetItem(this.#equipmentSlot(unit, slot)?.guid)) return;
     if (unit === "player" && slot === FRAMEXML_INVSLOT_AMMO) {
       this.#dropOnAmmoSlot();
       return;
     }
-    this.#clickItemSlot(this.#equipmentSlot(unit, slot));
+    const target = this.#equipmentSlot(unit, slot);
+    // A waiting enchant or item-target spell takes a worn one (2.05), before the repair cursor, as
+    // 0x005e85d0 asks 0x007fd620 && 0x007fd760 first with nothing held; an empty slot is not its.
+    if (!this.cursor.occupied() && target?.item && target.guid !== 0n
+      && (this.tradeSkill.targetItem(target.guid) || this.#spellCursorTakesItem(target.item, target.guid))) return;
+    // The repair cursor repairs what an empty hand clicks (FrameXmlRepair.ts), as 0x005e85d0: nothing held at all.
+    if (!this.cursor.occupied() && this.repair.clickItem(target?.item, target?.guid ?? 0n)) return;
+    this.#clickItemSlot(target);
   }
 
   /**
@@ -3886,6 +4674,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const entry = entryOf(item.item);
     const template = this.#itemTemplate(world, entry);
     if (template === undefined && this.#awaitItemTemplate(world, item, entry, retry)) return;
+    // Wrapping paper (ITEM_FLAG_IS_WRAPPER) is not used: it waits for the item it wraps (Wow.exe
+    // 0x00708c20 → 0x006d67e0, game/GiftWrap.ts); a wrapped gift goes on and opens (CMSG_OPEN_ITEM).
+    if (isWrappingPaper(item.item, template?.found ? template.flags : undefined)) {
+      armGiftWrap(world, item);
+      return;
+    }
     // Ammo is neither worn nor used: its entry becomes PLAYER_AMMO_ID through CMSG_SET_AMMO, the one
     // handler that takes INVTYPE_AMMO (HandleSetAmmoOpcode, ItemHandler.cpp:814; Player::CanUseAmmo,
     // Player.cpp:12216). Measured before this: Rough Arrow sent CMSG_AUTOEQUIP_ITEM, which
@@ -4064,6 +4858,56 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     this.clearCursor();
     if (template?.found) this.#equipCarriedItem(world, source, template, FRAMEXML_BIND_CONFIRM_EVENTS.autoEquip);
     else world.equipItem(source.bag, source.slot);
+  }
+
+  /** L1 (1.10): `DropItemOnUnit(unit)` (Wow.exe 0x0051bdd0, FrameXmlDropItemOnUnit.ts). */
+  dropItemOnUnit(unit: string): void {
+    const world = this.#context.world();
+    if (!world) return;
+    frameXmlLiveDropItemOnUnit(unit, {
+      world,
+      cursorItem: () => {
+        const source = this.#cursorSource();
+        return source?.item && source.guid !== 0n ? { guid: source.guid, item: source.item } : undefined;
+      },
+      unit: (token) => this.#unit(token),
+      self: () => this.#self(),
+      canAttack: (token) => this.unitCanAttack("player", token),
+      autoEquip: () => this.autoEquipCursorItem(),
+      offered: (guid) => this.trade.offered(guid),
+      clickTradeSlot: (slot) => this.trade.clickPlayerSlot(slot, false),
+      clearCursor: () => this.clearCursor(),
+      error: (name) => { this.#pump?.fire("UI_ERROR_MESSAGE", globalString(name) ?? name); },
+      now: () => this.#context.monotonic(),
+    });
+  }
+
+  /**
+   * L1 (3.23): `PickupMerchantItem` with a bag item held (Wow.exe 0x005853a0): CMSG_SELL_ITEM for the
+   * whole item and the hand lets go; a split part smaller than its stack stays held. False with no
+   * bag item held.
+   */
+  sellCursorItemToMerchant(): boolean {
+    const source = this.#cursorSource();
+    if (!source?.item) return false;
+    if (this.#itemCursor?.count !== undefined) return true;
+    this.#context.world()?.sellToVendor(source.guid);
+    this.clearCursor();
+    return true;
+  }
+
+  /** L1 (3.23): the open merchant's row `index` (one-based) as 0x00584080 finds it: its item entry. */
+  merchantItemEntry(index: number): number | undefined {
+    const item = this.#vendorItem(index);
+    return item && item.slot !== 0 ? item.itemId : undefined;
+  }
+
+  /** L1 (3.23): the held row into a container slot or the player's inventory id − 1 (FrameXmlMerchantCursor.ts). */
+  buyMerchantItemInSlot(index: number, bagId: number | undefined, slot: number): boolean | undefined {
+    const place = bagId === undefined
+      ? (Number.isInteger(slot) && slot >= 1 && slot <= 0xff ? { bag: INVENTORY_SLOT_BAG_0, slot: slot - 1 } : undefined)
+      : this.#liveContainerSlot(bagId, slot);
+    return frameXmlBuyMerchantItemInSlot(this.#context.world(), this.#vendorItem(index), place);
   }
 
   equipCursorItem(slot: number): void {
@@ -4247,17 +5091,28 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   /**
-   * `GetInventoryAlertStatus(index)` over DurabilityFrame's own slot order (FRAMEXML_INVENTORY_ALERT_SLOTS):
-   * 2 for a broken piece, 1 for one worn to a fifth, 0 otherwise — the thresholds the reference client
-   * answers with (CPPClientExample/wowee, lua_inventory_api.cpp); a piece without durability is sound.
+   * `GetInventoryAlertStatus(index)` over DurabilityFrame's own slot order (FRAMEXML_INVENTORY_ALERT_SLOTS)
+   * and the ammo twelfth, by the client's rules (FrameXmlInventoryAlerts.ts, Wow.exe 0x005e8fe0): broken
+   * 2, durability 5 or less 1, 20 or fewer rounds of the AmmoSlot's entry 1.
    */
   inventoryAlertStatus(index: number): number {
+    if (index === FRAMEXML_INVENTORY_ALERT_AMMO) {
+      const ammo = this.#ammoEntry("player");
+      return ammo === undefined ? 0 : frameXmlAmmoAlertStatus(ammo, this.itemCount(ammo, false));
+    }
     const equipmentIndex = FRAMEXML_INVENTORY_ALERT_SLOTS[index - 1];
     if (equipmentIndex === undefined) return 0;
-    const wear = itemWear(this.#inventoryOf(this.#context.world())?.equipment[equipmentIndex]?.item);
-    if (!wear) return 0;
-    if (wear.durability <= 0) return 2;
-    return wear.durability * 5 <= wear.maximum ? 1 : 0;
+    const item = this.#inventoryOf(this.#context.world())?.equipment[equipmentIndex]?.item;
+    return item ? frameXmlItemAlertStatus(readField(item, "ITEM_FIELD_FLAGS"),
+      readField(item, "ITEM_FIELD_DURABILITY"), readField(item, "ITEM_FIELD_MAXDURABILITY")) : 0;
+  }
+
+  /** `OffhandHasWeapon()`: the off-hand item's class is a weapon's (FrameXmlDurabilityFrame.ts, 0x005eac10). */
+  offhandHasWeapon(): boolean {
+    const world = this.#context.world();
+    const item = this.#inventoryOf(world)?.equipment[FRAMEXML_OFFHAND_EQUIPMENT_SLOT]?.item;
+    const template = item ? this.#itemTemplate(world, entryOf(item)) : undefined;
+    return frameXmlOffhandIsWeapon(template?.found ? template.itemClass : undefined);
   }
 
   // ---- quest log and tracker --------------------------------------------
@@ -4302,10 +5157,15 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return player ? playerFields.quests(player) : [];
   }
 
+  /** A 1-based index of the displayed log (headers included, FrameXmlQuestLog.ts), or the selection. */
   #questAt(index: number | undefined): QuestLogEntry | undefined {
-    const resolved = index === undefined ? this.#questSelection : index;
+    const resolved = index === undefined ? this.#questSelectionIndex() : index;
     if (!Number.isInteger(resolved) || resolved < 1) return undefined;
-    return this.#questRows()[resolved - 1];
+    return this.questLog.entryAt(resolved);
+  }
+
+  #questSelectionIndex(): number {
+    return this.#questSelectionId > 0 ? this.#questIndexForId(this.#questSelectionId) ?? 0 : 0;
   }
 
   #questTemplate(entry: QuestLogEntry | undefined): QuestTemplate | undefined {
@@ -4318,8 +5178,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   #questIndexForId(questId: number): number | undefined {
-    const index = this.#questRows().findIndex((entry) => entry.questId === questId);
-    return index < 0 ? undefined : index + 1;
+    return this.questLog.indexOfQuest(questId);
   }
 
   #invalidateCurrentMapQuestIds(): void {
@@ -4440,6 +5299,70 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       ]);
     }
     return rows;
+  }
+
+  /**
+   * 3.13c: the log's quests as the POI code reads them — displayed row, watched, and 0x5e2950's
+   * objective mask from the same counters and carried items the leaderboard reads (FrameXmlQuestPoi.ts).
+   * Built once per log list and monotonic millisecond: WorldMapFrame asks per quest in one update.
+   */
+  #questPoiQuests(): readonly FrameXmlQuestPoiQuest[] {
+    const at = this.#context.monotonic();
+    const list = this.questLog.list();
+    if (this.#questPoiRows?.at === at && this.#questPoiRows.list === list) return this.#questPoiRows.rows;
+    const rows: FrameXmlQuestPoiQuest[] = [];
+    let carried: ReadonlyMap<number, number> | undefined | null = null;
+    for (const [index, row] of list.rows.entries()) {
+      if (row.header) continue;
+      const entry = row.entry;
+      const template = this.#questTemplateById(entry.questId);
+      if (!template) continue;
+      if (template.itemObjectives.length > 0 || (template.sourceItems?.length ?? 0) > 0) carried ??= this.#questCarriedItems();
+      const have = (itemId: number): number | undefined => (carried ? carried.get(itemId) ?? 0 : undefined);
+      const mask = frameXmlQuestPoiMask({
+        failed: (entry.state & QUEST_STATE_FAIL) !== 0,
+        serverComplete: (entry.state & QUEST_STATE_COMPLETE) !== 0,
+        creatures: template.objectives.map((objective, slot) => {
+          const at = objective.slot ?? slot;
+          return { slot: at, done: (entry.counters[at] ?? 0) >= objective.count };
+        }),
+        items: template.itemObjectives.map((objective, slot) => {
+          const count = have(objective.itemId);
+          return { slot: objective.slot ?? slot, done: count !== undefined && count >= objective.count };
+        }),
+        sourceItems: (template.sourceItems ?? []).flatMap((itemId, slot) => itemId > 0 && itemId !== template.startItem
+          ? [{ slot, carried: (have(itemId) ?? 0) > 0 }] : []),
+        eventObjective: (template.flags & 6) !== 0,
+      });
+      rows.push({ questId: entry.questId, logIndex: index + 1, complete: mask === -1,
+        watched: !this.#unwatchedQuestIds.has(entry.questId), mask,
+        // 3.13d (L6): 0x5e0ea0(slot, 1) for the icon spread — met with something to do (objectives,
+        // player kills, an event, a cost); required reputation is not in this client's quest record.
+        spreadMet: mask === -1 && (template.objectives.length > 0 || template.itemObjectives.length > 0
+          || (template.requiredPlayerKills ?? 0) > 0 || (template.flags & 6) !== 0 || (template.requiredMoney ?? 0) > 0) });
+    }
+    this.#questPoiRows = { at, list, rows };
+    return rows;
+  }
+
+  /**
+   * 3.13c: `GetQuestPOILeaderBoard`'s line (0x5e58c0): POI 0..3 the creature/object slot, 4..9 the item
+   * slot, 10..15 the ItemDrop slot's item when it is a required item — the log's own line for it.
+   */
+  #questPoiLeaderBoard(logIndex: number, poiIndex: number): FrameXmlQuestLogLeaderBoard | undefined {
+    const row = this.questLog.rowAt(logIndex);
+    const template = row && !row.header ? this.#questTemplateById(row.entry.questId) : undefined;
+    if (!template) return undefined;
+    let line = -1;
+    if (poiIndex < 4) {
+      line = template.objectives.findIndex((objective, slot) => (objective.slot ?? slot) === poiIndex);
+    } else {
+      const itemId = poiIndex < 10 ? undefined : template.sourceItems?.[poiIndex - 10];
+      const item = template.itemObjectives.findIndex((objective, slot) => itemId === undefined
+        ? (objective.slot ?? slot) === poiIndex - 4 : itemId > 0 && objective.itemId === itemId);
+      if (item >= 0) line = template.objectives.length + item;
+    }
+    return line >= 0 ? this.questLogLeaderBoard(line + 1, logIndex) : undefined;
   }
 
   #questShapeSignature(): string {
@@ -4601,29 +5524,25 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   questLogEntryCount(): readonly [number, number] {
-    const count = this.#questRows().length;
-    return [count, count];
+    return this.questLog.counts();
   }
 
   questLogTitle(index: number): FrameXmlQuestLogTitle {
-    const entry = this.#questAt(index);
-    const template = this.#questTemplate(entry);
-    if (!entry) return ["", 0, undefined, 0, false, false, undefined, false, 0, false];
-    const complete = (entry.state & QUEST_STATE_FAIL) !== 0 ? -1
-      : (entry.state & QUEST_STATE_COMPLETE) !== 0 ? 1 : undefined;
-    return [
-      template?.title ?? "", template?.level ?? 0, undefined, template?.suggestedPlayers ?? 0,
-      false, false, complete, false, entry.questId, false,
-    ];
+    return this.questLog.title(index, (entry) => (entry.state & QUEST_STATE_FAIL) !== 0 ? -1
+      : (entry.state & QUEST_STATE_COMPLETE) !== 0 ? 1 : undefined);
   }
 
   selectQuestLogEntry(index: number): void {
     if (index === 0) {
-      this.#questSelection = 0;
+      this.#questSelectionId = 0;
       return;
     }
+    // 3.13 (L6): Wow.exe 0x5dffa0 leaves the selection as it was for a header row (only a row past the
+    // list clears it), so QuestLog_SetSelection on a header keeps GetQuestLogSelection and the stock
+    // QuestLog_Update does not re-select — and re-expand — after CollapseQuestHeader.
+    if (this.questLog.rowAt(index)?.header) return;
     const entry = this.#questAt(index);
-    this.#questSelection = entry ? index : 0;
+    this.#questSelectionId = entry ? entry.questId : 0;
     if (entry) {
       const world = this.#context.world();
       if (world && world.questTemplates instanceof Map && !world.questTemplates.has(entry.questId)
@@ -4634,7 +5553,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   questLogSelection(): number {
-    return this.#questSelection;
+    return this.#questSelectionIndex();
   }
 
   questLogQuestText(index?: number): readonly [string, string] | undefined {
@@ -4805,7 +5724,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     for (let row = 0; row < rows.length; row++) {
       const entry = rows[row];
       if (!entry || this.#unwatchedQuestIds.has(entry.questId)) continue;
-      if (++watched === index) return row + 1;
+      if (++watched === index) return this.#questIndexForId(entry.questId);
     }
     return undefined;
   }
@@ -4862,12 +5781,19 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return index < 0 ? 0 : index + 1;
   }
 
+  // 5.19: the flags are the world's own copy (WorldClient.setFactionAtWar/setFactionInactive flip
+  // it as they send, like Wow.exe 0x005d0a10/0x005d1c10); the seam keeps no overrides of its own.
   #factionAtWar(row: FrameXmlFactionRow): boolean {
-    return this.#atWarFactionOverrides.get(row.listId) ?? row.atWarWith === true;
+    return row.atWarWith === true;
   }
 
   #factionInactive(row: FrameXmlFactionRow): boolean {
-    return this.#inactiveFactionOverrides.get(row.listId) ?? row.isInactive === true;
+    return row.isInactive === true;
+  }
+
+  /** The player's PLAYER_FIELD_WATCHED_FACTION_INDEX (WorldClient.watchedFactionListId). */
+  #watchedFactionId(): number | undefined {
+    return this.#context.world()?.watchedFactionListId;
   }
 
   #reputationShapeSignature(): string {
@@ -4880,7 +5806,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       ]),
       [...this.#collapsedFactionIds].sort((left, right) => left - right),
       this.#selectedFactionId === undefined ? "none" : this.#selectedFactionId,
-      this.#watchedFactionId === undefined ? "none" : this.#watchedFactionId,
+      this.#watchedFactionId() ?? "none",
     ]);
   }
 
@@ -4910,7 +5836,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       row.isHeader,
       row.isHeader && this.#collapsedFactionIds.has(row.listId),
       row.hasRep,
-      this.#watchedFactionId === row.listId,
+      this.#watchedFactionId() === row.listId,
       row.isChild,
     ];
   }
@@ -4943,15 +5869,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   watchedFactionInfo(): FrameXmlWatchedFactionInfo | undefined {
-    const row = this.#allFactionRows().find((candidate) => candidate.listId === this.#watchedFactionId);
+    const watched = this.#watchedFactionId();
+    const row = watched === undefined ? undefined : this.#allFactionRows().find((candidate) => candidate.listId === watched);
     return row ? [row.name, row.standingId, row.barMin, row.barMax, row.barValue] : undefined;
   }
 
+  /**
+   * Wow.exe 0x005d1420 → 0x005d0ba0: a row's list id, or none for 0, a header or an index past the
+   * list, goes to the server; the answer is the player field's update, nothing changes here.
+   */
   setWatchedFactionIndex(index: number): void {
-    const next = index === 0 ? undefined : this.#factionAt(index)?.listId;
-    if (next === this.#watchedFactionId) return;
-    this.#watchedFactionId = next;
-    this.#publishReputationChanged();
+    const row = this.#factionAt(index);
+    this.#context.world()?.setWatchedFaction(row && !row.isHeader ? row.listId : undefined);
   }
 
   expandFactionHeader(index: number): void {
@@ -4972,24 +5901,35 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return row !== undefined && this.#factionInactive(row);
   }
 
+  /** Wow.exe 0x005d1e50/0x005d1ee0 → 0x005d1c10: sent for any row, whatever its current state. */
   setFactionInactive(index: number): void {
     const row = this.#factionAt(index);
-    if (!row || this.#factionInactive(row)) return;
-    this.#inactiveFactionOverrides.set(row.listId, true);
+    if (!row || row.isHeader) return;
+    this.#context.world()?.setFactionInactive(row.listId, true);
     this.#publishReputationChanged();
   }
 
   setFactionActive(index: number): void {
     const row = this.#factionAt(index);
-    if (!row || !this.#factionInactive(row)) return;
-    this.#inactiveFactionOverrides.set(row.listId, false);
+    if (!row || row.isHeader) return;
+    this.#context.world()?.setFactionInactive(row.listId, false);
     this.#publishReputationChanged();
   }
 
+  /**
+   * Wow.exe 0x005d1390 → 0x005d0a10 (rules on WorldClient.setFactionAtWar). The original does not
+   * test canToggleAtWar here — the stock frame does before calling; peace in combat is refused
+   * with ERR_NOT_IN_COMBAT (game message 0x1c2, a UI error line).
+   */
   factionToggleAtWar(index: number): void {
     const row = this.#factionAt(index);
-    if (!row || row.isHeader || !row.canToggleAtWar) return;
-    this.#atWarFactionOverrides.set(row.listId, !this.#factionAtWar(row));
+    const world = this.#context.world();
+    if (!row || row.isHeader || !world) return;
+    // The -3000 peace test is on base + wire standing (0x005d05b0), as the row itself shows.
+    const base = frameXmlReputationBase(world, this.#context.reputationCatalog?.(), row.listId);
+    if (world.setFactionAtWar(row.listId, !this.#factionAtWar(row), base) === "combat") {
+      this.#pump?.fire("UI_ERROR_MESSAGE", globalString("ERR_NOT_IN_COMBAT") ?? "");
+    }
     this.#publishReputationChanged();
   }
 
@@ -5067,17 +6007,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return [base, effective, base, positive, negative];
   }
 
-  #attackPowerTuple(object: WorldObjectState | undefined, baseName: string, modsName: string): FrameXmlUnitAttackPower {
+  #attackPowerTuple(object: WorldObjectState | undefined, baseName: string, _modsName: string): FrameXmlUnitAttackPower {
     if (!object) return [0, 0, 0];
-    const fieldName = baseName as Parameters<typeof readField>[1];
-    const baseValue = this.#fieldNumber(object, fieldName);
-    const rawModsWord = this.#rawField(object, modsName, 0) ?? 0;
-    // Both modifier fields are one TWO_SHORT update-field word. Keep the signed halves explicit;
-    // the generated metadata intentionally exposes the word as one slot.
-    const rawMods: [number, number] = [rawModsWord & 0xffff, rawModsWord >>> 16];
-    const positive = (rawMods[0] << 16) >> 16;
-    const negative = (rawMods[1] << 16) >> 16;
-    return [baseValue === undefined ? 0 : baseValue | 0, positive, negative];
+    // The signed TWO_SHORT halves, each scaled by the multiplier word and rounded as Wow.exe
+    // 0x00610b60 / 0x00610ca0 answer them (CharacterStatFields.attackPower, shared with the native sheet).
+    const power = characterAttackPower(object, baseName === "UNIT_FIELD_RANGED_ATTACK_POWER");
+    return [power.base, power.positive, power.negative];
   }
 
   unitAttackPower(unit: string): FrameXmlUnitAttackPower {
@@ -5094,8 +6029,21 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return 0;
   }
 
-  critChanceFromAgility(): number {
-    return 0;
+  /**
+   * 3.23C (FrameXmlRegenStats.ts): the unit Wow.exe 0x60e130/0x612980/0x612a00 measure — the active
+   * player or a unit with a pet number — by its own class, level and stats; any other unit none.
+   */
+  #regenUnit(unit: string): FrameXmlRegenUnit | undefined {
+    const object = this.#unitObject(unit);
+    const selfGuid = this.#context.world()?.state.selfGuid;
+    if (!object || (object.guid !== selfGuid && (readField(object, "UNIT_FIELD_PETNUMBER") ?? 0) === 0)) return undefined;
+    const stat = (index: number): number => this.#signed(this.#fieldAtOffset(object, "UNIT_FIELD_STAT0", index));
+    return { classId: unitField.classId(object) ?? 0, level: unitField.level(object) ?? 0,
+      agility: stat(1), intellect: stat(3), spirit: stat(4) };
+  }
+
+  critChanceFromAgility(unit: string): number {
+    return frameXmlCritChanceFromAgility(this.#context.characterRegen?.(), this.#regenUnit(unit));
   }
 
   spellCritChanceFromIntellect(unit: string): number | undefined {
@@ -5111,12 +6059,13 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return 1;
   }
 
-  unitHealthRegenRateFromSpirit(): number {
-    return 0;
+  unitHealthRegenRateFromSpirit(unit: string): number {
+    return frameXmlHealthRegenFromSpirit(this.#context.characterRegen?.(), this.#regenUnit(unit));
   }
 
-  unitManaRegenRateFromSpirit(): number {
-    return 0;
+  unitManaRegenRateFromSpirit(unit: string): number {
+    const regenUnit = this.#regenUnit(unit);
+    return regenUnit ? frameXmlManaRegenFromSpirit(this.#context.characterRegen?.(), regenUnit) : 0;
   }
 
   combatRating(index: number): number {
@@ -5131,8 +6080,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       unitField.level(object) ?? 0, index, this.combatRating(index)) ?? 0 : 0;
   }
 
+  /** 3.23B, Wow.exe 0x60e4e0: CR_ARMOR_PENETRATION's rating bonus (0x6de410), at most 100. */
   armorPenetration(): number {
-    return 0;
+    return Math.min(this.combatRatingBonus(25), 100);
   }
 
   critChance(): number {
@@ -5488,7 +6438,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (unit === "focus-target") return this.#focusTarget();
     if (unit === "pet") return this.#pet();
     if (unit === "mouseover") return this.#mouseover();
+    // 11.02-F2: "vehicle" is the vehicle the character rides (Wow.exe 0x0060abf0); off one (or without the
+    // vehicle tables) the guid-only answer below (#guidOnlyUnit) stays.
+    if (unit === "vehicle") {
+      const guid = this.vehicle.vehicleUnitGuid();
+      if (guid !== undefined) return this.#context.world()?.state.objects.get(guid);
+    }
     if (unit.startsWith("arena")) return this.arena.object(unit);
+    if (unit.startsWith("boss")) {
+      const guid = this.encounters.bossGuid(frameXmlBossTokenIndex(unit) ?? 0);
+      return guid === undefined ? undefined : this.#context.world()?.state.objects.get(guid);
+    }
     return this.#partyObject(unit);
   }
 
@@ -5541,6 +6501,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#partyMember(unit)?.guid ?? this.#guidOnlyUnit(unit);
   }
 
+  /** L17 3.14: a unit token's GUID as a number, for the per-frame map pins (no text form per call). */
+  unitGuidValue(unit: string): bigint | undefined {
+    return this.#unitGuid(unit);
+  }
+
   /** `UnitGUID` in the text form chat's `arg12` already uses, so the two compare equal in Lua. */
   unitGuid(unit: string): string | undefined {
     const guid = this.#unitGuid(unit);
@@ -5585,6 +6550,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       ?? (target.guid === world.state.selfGuid ? world.selfName : undefined);
     if (playerName) return playerName;
     if (target.typeId !== TYPEID_UNIT) return undefined;
+    // 5.24: a player's pet answers UnitName with the name it was given (CMSG_PET_NAME_QUERY).
+    const petName = world.petNameOf?.(target);
+    if (petName) return petName;
     const entry = readField(target, "OBJECT_FIELD_ENTRY");
     const creature = entry === undefined ? undefined : world.creatureTemplates.get(entry);
     return creature?.found && creature.name ? creature.name : undefined;
@@ -5793,6 +6761,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   /** Resolve the stock 1-based slot to its server action identity without treating the slot as a spell id. */
   actionTooltip(slot: number): FrameXmlActionTooltip | undefined {
+    // 11.02-IF: slots 121-132 under the possess bar are the possessed unit's (FrameXmlPossess.ts).
+    const mirrored = this.possess.mirrorIndex(slot);
+    if (mirrored !== undefined) return this.possess.tooltip(mirrored);
     const button = this.#button(slot);
     if (!button || !Number.isSafeInteger(button.action) || button.action <= 0) return undefined;
     if (button.type === ACTION_BUTTON_SPELL) {
@@ -5836,21 +6807,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const monotonic = this.#context.monotonic();
     const snapshot = world.cooldownState(button.action);
     const remaining = world.cooldownRemaining(button.action, monotonic);
+    // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
+    const global = frameXmlGlobalCooldownFor(this.#context, world, this.#metadata(slot), monotonic, pump.now()); // L13-review 5.30: by category
     if (snapshot) {
       const elapsed = (monotonic - snapshot.startedAt) / 1000;
-      return [pump.now() - elapsed, snapshot.duration / 1000, 1];
+      return frameXmlLaterCooldown([pump.now() - elapsed, snapshot.duration / 1000, 1], global); // L12 5.30
     }
     if (remaining > 0) {
       // No snapshot: the packet gave a remaining time and nothing else, so the duration is the
       // remaining time and the sweep starts full. `ui/ActionBar.ts` takes the same fallback.
-      return [pump.now(), remaining / 1000, 1];
+      return frameXmlLaterCooldown([pump.now(), remaining / 1000, 1], global); // L12 5.30
     }
-    const global = this.#context.globalCooldownUntil() - monotonic;
-    const metadata = this.#metadata(slot);
-    if (global > 0 && (metadata?.startRecoveryTime ?? 0) > 0) {
-      return [pump.now() - (metadata!.startRecoveryTime - global) / 1000, metadata!.startRecoveryTime / 1000, 1];
-    }
-    return [0, 0, 0];
+    return global ?? [0, 0, 0]; // L12 5.30
   }
 
   actionUsable(slot: number): readonly [boolean, boolean] {
@@ -5892,21 +6860,86 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!button || !world || button.type !== ACTION_BUTTON_SPELL) return false;
     // A profession's opener while its stock trade skill window shows (FrameXmlTradeSkill.ts).
     if (this.tradeSkill.openerShowing(this.#context.spell(button.action))) return true;
+    // The attack button is current while the player auto-attacks (Wow.exe 0x5aa240).
+    // A sent request already counts: Wow.exe stores the target with the request (0x98e540) and
+    // IsCurrentSpell(6603) reads that target (0x806030); 5.21.
+    if (this.isAttackAction(slot)) return world.attacking === true || world.attackRequested === true;
     return world.isActiveMountSpell(button.action);
   }
 
-  isAttackAction(): boolean {
-    return false;
+  /** The slot's spell has SPELL_EFFECT_ATTACK first (Wow.exe 0x5a96d0, FrameXmlActionRepeat.ts). */
+  isAttackAction(slot: number): boolean {
+    return frameXmlIsAttackSpell(this.#metadata(slot));
   }
 
+  /** The slot's spell is the one being repeated (Wow.exe 0x5a9470), not merely a repeating kind. */
   isAutoRepeatAction(slot: number): boolean {
-    return this.#metadata(slot)?.autoRepeat === true;
+    const button = this.#button(slot);
+    const world = this.#context.world(); // L18 5.05
+    // L18 5.05: 0x005a9470 reads the repeating slot (0x00d397d0) and the controller's wanted one (0x00d397cc).
+    return world !== undefined && button?.type === ACTION_BUTTON_SPELL // L18 5.05
+      && frameXmlIsAutoRepeatSpell(button.action, world.autoRepeatSpellId, world.autoRanged?.wantedSpellId); // L18 5.05
   }
 
-  /** No range check yet: the world knows where the target is, the bar does not ask. */
-  actionInRange(): number | undefined {
-    return undefined;
+  /**
+   * `IsActionInRange(slot [, unit])` (Wow.exe 0x005a9d50 → 0x005a94c0 → 0x00809610,
+   * FrameXmlActionRange.ts): the slot's spell — an item's on-use spell for an item button, as
+   * 0x005a8c30 resolves it — against the named unit, else the current target. 1, 0, or nil for a
+   * target the spell cannot take. Macro buttons stay nil (their spell is not resolved here).
+   */
+  actionInRange(slot: number, unit?: string): number | undefined {
+    const world = this.#context.world();
+    const button = this.#button(slot);
+    if (!world || !button) return undefined;
+    let spellId: number | undefined;
+    if (button.type === ACTION_BUTTON_SPELL) spellId = button.action;
+    else if (button.type === ACTION_BUTTON_ITEM) spellId = itemUseSpellId(this.#itemTemplate(world, button.action));
+    if (spellId === undefined) return undefined;
+    // A unit that names nothing leaves the guid empty, and 0x00809610 then takes the current target.
+    const named = (unit ? this.#unit(unit.toLowerCase()) : undefined) ?? this.#target();
+    return frameXmlActionInRange(this.#context.spell(spellId), this.#self(), named, this.#actionRangeHost);
   }
+
+  /** What the range check asks of the world (FrameXmlActionRange.ts); cache-only reads. */
+  readonly #actionRangeHost: ActionRangeHost = ((): ActionRangeHost => {
+    const seam = this;
+    const group = () => seam.#context.world()?.group;
+    const member = (guid: bigint) => group()?.members.find((entry) => entry.guid === guid);
+    const template = (unit: WorldObjectState) => unit.typeId === TYPEID_UNIT
+      ? seam.#context.world()?.creatureTemplates.get(entryOf(unit)) : undefined;
+    return {
+      object: (guid) => seam.#context.world()?.state.objects.get(guid),
+      reaction: (left, right) => seam.#context.reaction?.(left, right),
+      // ChrRaces.CreatureType is 7 (humanoid) on every row of this dataset; a form's own type is not read.
+      creatureType: (unit) => unit.typeId === TYPEID_PLAYER ? 7 : template(unit)?.creatureType ?? 0,
+      creatureTypeFlags: (unit) => template(unit)?.flags ?? 0,
+      get selfGuid() { return seam.#context.world()?.state.selfGuid; },
+      inParty: (guid) => {
+        const found = member(guid);
+        const state = group();
+        return found !== undefined && state !== undefined
+          && ((state.groupType & GROUPTYPE_RAID) === 0 || found.subGroup === state.ownSubGroup);
+      },
+      inRaid: (guid) => member(guid) !== undefined,
+      rangedModRange: () => {
+        const self = seam.#self();
+        const world = seam.#context.world();
+        if (!self || !world) return undefined;
+        // PLAYER_FIELD_INV_SLOT_HEAD + EQUIPMENT_SLOT_RANGED (17): the client reads the same slot.
+        const at = UPDATE_FIELDS.PLAYER_FIELD_INV_SLOT_HEAD.offset + 17 * 2;
+        const low = self.fields.get(at) ?? 0;
+        const high = self.fields.get(at + 1) ?? 0;
+        if (low === 0 && high === 0) return undefined;
+        const item = world.state.objects.get((BigInt(high) << 32n) | BigInt(low >>> 0));
+        return item ? seam.#itemTemplate(world, entryOf(item))?.rangedModRange : undefined;
+      },
+      playerSpellFamily: () => {
+        const self = seam.#self();
+        return self ? classSpellFamily(unitField.classId(self)) : undefined;
+      },
+      spellModifiers: () => seam.#context.world()?.spellModifiers.values() ?? NO_SPELL_MODIFIERS,
+    };
+  })();
 
   /** Stock arrows and keyboard input share the same main-bar page when the host supplies it. */
   actionBarPage(): number {
@@ -6081,7 +7114,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
 
   spellBookSpellId(index: number, bookType: string | undefined): number | undefined {
-    // The pet book is not modelled (`hasPetSpells` answers false).
+    // Only the player's book is answered here. The pet book is the pet model's
+    // (FrameXmlPetActionBar.ts): FrameXmlCursor resolves a "pet" slot before calling this.
     if (bookType !== undefined && bookType !== "spell") return undefined;
     return this.#spellEntry(index)?.id;
   }
@@ -6200,7 +7234,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (object?.typeId !== TYPEID_PLAYER) return undefined;
     const classId = object ? unitField.classId(object) : undefined;
     const token = classFileName(classId);
-    return token === undefined ? undefined : [className(classId), token];
+    // L3-review: Wow.exe 0x60fec0 → 0x72aab0 → 0x71a590 names a unit in view by its sex byte.
+    return token === undefined ? undefined : [className(classId, femaleOf(unitField.gender(object))), token];
   }
 
   /** `UnitRace` with the dataset's `ChrRaces.ClientFileString`, custom rows included. */
@@ -6209,7 +7244,20 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (object?.typeId !== TYPEID_PLAYER) return undefined;
     const raceId = unitField.race(object);
     const token = raceFileName(raceId);
-    return token === undefined ? undefined : [raceName(raceId), token];
+    // L3-review: Wow.exe 0x60fd40 → 0x72aa70 → 0x71a4b0 names a unit in view by its sex byte.
+    return token === undefined ? undefined : [raceName(raceId, femaleOf(unitField.gender(object))), token];
+  }
+
+  /**
+   * L3-review: the sex a name answer carried (the name cache's +0x144, which GetRaidRosterInfo
+   * 0x573690 and GetFriendInfo 0x6b4130 read), else the sex byte of the player's object in view.
+   */
+  #nameFemale(guid: bigint): boolean | undefined {
+    const world = this.#context.world();
+    const cached = world?.names?.details?.(guid)?.gender;
+    if (cached !== undefined) return femaleOf(cached);
+    const object = world?.state.objects.get(guid);
+    return object?.typeId === TYPEID_PLAYER ? femaleOf(unitField.gender(object)) : undefined;
   }
 
   unitSex(unit: string): number | undefined {
@@ -6259,6 +7307,90 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return undefined;
   }
 
+  /** 3.12e: the creature's sub-name line SetUnit writes under its name (FrameXmlUnitSubName.ts). */
+  unitSubName(unit: string): string | undefined {
+    const world = this.#context.world();
+    return world ? frameXmlUnitSubName(this.#unit(unit), (entry, guid) => world.creatureTemplate(entry, guid)) : undefined;
+  }
+
+  /**
+   * 5.28 (L6): the MASTER_LOOTER/LOOT lines SetUnit writes for a corpse SMSG_LOOT_LIST named
+   * (FrameXmlLootOwnerTooltip.ts); a name not known yet is asked for and its line left out.
+   */
+  unitLootOwners(unit: string): readonly FrameXmlLootOwnerLine[] {
+    const world = this.#context.world();
+    const guid = this.#unit(unit)?.guid;
+    if (!world || guid === undefined) return [];
+    return frameXmlLootOwnerLines(world.lootOwnersByUnit?.get(guid), (owner) => {
+      const name = world.names.get(owner) ?? world.group?.members.find((member) => member.guid === owner)?.name;
+      if (name === undefined) world.requestName(owner);
+      return name;
+    });
+  }
+
+  /** 3.12 (04.10, L4): one unit tooltip waiting for a guild or a name (FrameXmlUnitTooltipExtras.ts). */
+  readonly #unitAnswers = new FrameXmlUnitTooltipRefresh();
+
+  /** 3.12 (04.10, L4): redraw a unit tooltip once its guild or a corpse's loot owner name comes (0x0061ddd0). */
+  watchUnitAnswers(unit: string, redraw: () => void): (() => void) | undefined {
+    const world = this.#context.world();
+    const object = this.#unit(unit);
+    if (!world || !object) return undefined;
+    const ready = frameXmlUnitPendingAnswers(world, object,
+      this.unitIsDead(unit) ? world.lootOwnersByUnit?.get(object.guid) : undefined);
+    return ready ? this.#unitAnswers.watch(ready, redraw) : undefined;
+  }
+
+  /** 3.12 (04.10, L4): any player's guild line from the guild cache (FrameXmlUnitTooltipExtras.ts). */
+  unitGuildName(unit: string): string | undefined {
+    const world = this.#context.world();
+    return world ? frameXmlUnitGuildName(world, this.#unit(unit)) : undefined;
+  }
+
+  /** 3.12 (04.10, L4): the UNITNAME_SUMMON_TITLE line's key and owner (FrameXmlUnitTooltipExtras.ts). */
+  unitSummonTitle(unit: string): { readonly globalName: string; readonly ownerName: string | undefined } | undefined {
+    const world = this.#context.world();
+    return world ? frameXmlUnitSummonTitle(world, this.#unit(unit), {
+      spellEffects: (id) => this.#context.spell(id)?.effects,
+    }) : undefined;
+  }
+
+  /**
+   * The client's own «can be skinned» tooltip line for `unit` (FrameXmlSkinnableTooltip.ts). A
+   * template the realm does not have reads as no type flags — the client's empty cache record does
+   * the same — and one still being queried gives no line yet.
+   */
+  unitSkinnableLine(unit: string, colorblind = false): FrameXmlSkinnableLine | undefined {
+    const world = this.#context.world();
+    const object = this.#unit(unit);
+    if (!world || !object) return undefined;
+    return frameXmlUnitSkinnableLine({
+      object,
+      player: this.#self(),
+      templateFlags: (entry, guid) => {
+        const template = world.creatureTemplate(entry, guid);
+        return template === undefined ? undefined : template.found ? template.flags : 0;
+      },
+      knownSpells: world.knownSpells ?? [],
+      spellRow: (id) => this.#context.spell(id),
+      colorblind,
+    });
+  }
+
+  /**
+   * `GameTooltip:SetInventoryItem`'s third value (Wow.exe 0x0062e050): the player's own item's repair
+   * price (FrameXmlRepair.ts); another unit's or an empty slot's is 0.
+   */
+  inventoryItemRepairCost(unit: string, slot: number): number {
+    if (unit.toLowerCase() !== "player") return 0;
+    return this.repair.itemRepairCost(this.#equipmentSlot("player", slot)?.item);
+  }
+
+  /** `GameTooltip:SetBagItem`'s second value (Wow.exe 0x0062f420), the same price for a bag item. */
+  containerItemRepairCost(bagId: number, slot: number): number {
+    return this.repair.itemRepairCost(this.#liveContainerSlot(bagId, slot)?.item);
+  }
+
   unitClassification(unit: string): string | undefined {
     const object = this.#unit(unit);
     if (!object) return undefined;
@@ -6275,6 +7407,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const l = this.#unitGuid(left);
     const r = this.#unitGuid(right);
     return l !== undefined && r !== undefined && l === r;
+  }
+
+  /** `UnitHasRelicSlot` (Wow.exe 0x611330): a player object whose class has a relic slot. */
+  unitHasRelicSlot(unit: string): boolean {
+    const object = this.#unit(unit);
+    return object?.typeId === TYPEID_PLAYER && frameXmlClassHasRelicSlot(unitField.classId(object));
   }
 
   unitIsPlayer(unit: string): boolean {
@@ -6360,9 +7498,18 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return object !== undefined && (unitField.pvpFlags(object) ?? 0) !== 0;
   }
 
-  /** No FFA bit is retained in the current world-state contract. */
-  unitIsPVPFreeForAll(): boolean {
-    return false;
+  /**
+   * 3.23B, Wow.exe 0x60cfb0: a unit in sight answers UNIT_BYTE2_FLAG_FFA_PVP (0x04) of
+   * UNIT_FIELD_BYTES_2 byte 1; a party or raid member out of sight answers the group cache's
+   * MEMBER_STATUS_PVP_FFA (0x10, Group.h:66).
+   */
+  unitIsPVPFreeForAll(unit: string): boolean {
+    const object = this.#unit(unit);
+    if (object) return ((unitField.pvpFlags(object) ?? 0) & 0x04) !== 0;
+    const member = this.#partyMember(unit);
+    if (!member) return false;
+    const status = this.#context.world()?.partyStats.get(member.guid)?.status ?? member.status;
+    return (status & MEMBER_STATUS_PVP_FFA) !== 0;
   }
 
   unitIsTapped(unit: string): boolean {
@@ -6579,22 +7726,31 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return this.#unit(unit) !== undefined;
   }
 
-  /** Possession is not represented in the current world object or pet packet model. */
-  unitIsPossessed(): boolean {
-    return false;
+  /** 11.02-IF: `UNIT_FLAG_POSSESSED` on the unit (Wow.exe 0x0060d860; FrameXmlPossess.ts). */
+  unitIsPossessed(unit: string): boolean {
+    return this.possess.unitIsPossessed(unit);
   }
 
-  /** The current host has no happiness/damage percentage field for a live pet. */
-  petHappiness(): readonly [number, number] | undefined {
-    return undefined;
+  /** 3.36 (L14): Wow.exe 0x005d3b00 — the pet's UNIT_FIELD_POWER5 against PetPersonality row 1 (FrameXmlPetHappiness.ts). */
+  petHappiness(): readonly [number | undefined, number] {
+    return frameXmlPetHappiness(this.#pet(), (guid) => this.#context.world()?.state.objects.get(guid));
   }
 
   hasPetUI(): readonly [boolean, boolean] {
-    const petSpells = this.#context.world()?.petSpells;
-    const visible = petSpells !== undefined && petSpells.guid !== 0n;
-    // isHunterPet: the pet's UNIT_PET_FLAG_CAN_BE_ABANDONED, set for hunter pets only (FrameXmlStable.ts).
-    return [visible, visible && frameXmlHunterPet(this.#pet())];
+    // L15 5.05: Wow.exe 0x005d3960 → 0x0071b630 — a pet number gives the page, a hunter creator the
+    // hunter's flag (FrameXmlHasPetUI.ts); the abandon byte (FrameXmlStable.ts) is PetCanBeAbandoned's.
+    return frameXmlHasPetUI(this.#pet(), (guid) => this.#context.world()?.state.objects.get(guid)); // L15 5.05
   }
+
+  /** 05.10-petfood: `GetPetFoodTypes()`, Wow.exe 0x005d3bd0 — the hunter pet's diet names (FrameXmlPetFood.ts). */
+  petFoodTypes(): readonly string[] { // 05.10-petfood
+    const world = this.#context.world();
+    const pet = this.#pet();
+    const entry = pet ? frameXmlCreatureEntry(pet) : undefined;
+    const template = entry === undefined ? undefined : world?.creatureTemplates.get(entry);
+    const family = template && template.found !== false ? template.creatureFamily : undefined;
+    return frameXmlPetFoodTypes(pet, (guid) => world?.state.objects.get(guid), family, this.#context.petFoods?.table());
+  } // 05.10-petfood
 
   /** `PetCanBeAbandoned`: the pet's UNIT_CAN_BE_ABANDONED flag — a hunter pet's (FrameXmlStable.ts). */
   petCanBeAbandoned(): boolean {
@@ -6635,8 +7791,67 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return undefined;
   }
 
+  /**
+   * 5.20, Wow.exe 0x00542263: learning a spell whose first effect is STEAL_BENEFICIAL_BUFF (126)
+   * aimed at an enemy (ImplicitTargetA 6) sets the player's steal mask to the SpellDispelType row's
+   * Mask for its misc value, or `1 << misc` when that Mask is 0 — on this dataset only row 7
+   * («Все», Mask 0x1e) has one; «Похищение заклинания» (30449) names 1, Magic, so the mask is 2.
+   * Zero for everyone else, which makes isStealable false for them (0x0053d680 tests it first).
+   * Cached by the world's knownSpells array (replaced, never mutated) once every row has arrived.
+   */
+  #stealMask(): number {
+    const known = this.#context.world()?.knownSpells;
+    if (!Array.isArray(known)) return 0;
+    if (known === this.#stealMaskKnown) return this.#stealMaskValue;
+    let mask = 0;
+    let complete = true;
+    for (const entry of known) {
+      const metadata = this.#context.spell(entry.id);
+      if (!metadata) {
+        complete = false;
+        continue;
+      }
+      if (metadata.effects?.[0] !== 126 || metadata.implicitTargetA?.[0] !== 6) continue;
+      const misc = metadata.effectMiscValue[0] ?? 0;
+      mask = misc === 7 ? 0x1e : misc >= 0 && misc < 32 ? (1 << misc) >>> 0 : 0;
+    }
+    if (complete) {
+      this.#stealMaskKnown = known;
+      this.#stealMaskValue = mask;
+    }
+    return mask;
+  }
+
+  #stealMaskKnown: unknown;
+  #stealMaskValue = 0;
+
+  /**
+   * UnitAura's isStealable, Wow.exe 0x0053d680: the player has a steal mask and can attack the
+   * unit, the aura is not negative (flag 0x80), the spell is not passive (ATTR0 0x40), no active
+   * effect (aura flag bits 0-2) applies aura 27, 35, 65, 119, 128, 129 or 143 (0x0076bed0), the
+   * spell is not channeled (ATTR1 0x44) nor NOT_STEALABLE (ATTR4 0x40), and `1 << DispelType` is in
+   * the mask. Rows from a gateway older than `/dbc/spells?v=15` have no DispelType: false.
+   */
+  #auraStealable(aura: ActiveAura, metadata: SpellMetadata | undefined, unit: string | undefined): boolean {
+    const dispelType = metadata?.dispelType;
+    if (unit === undefined || unit === "player" || dispelType === undefined || dispelType <= 0 || dispelType >= 32) return false;
+    if ((aura.flags & AURA_FLAGS.negative) !== 0 || metadata?.passive) return false;
+    const attributes = metadata?.attributes;
+    if (!attributes || ((attributes[1] ?? 0) & 0x44) !== 0 || ((attributes[4] ?? 0) & 0x40) !== 0) return false;
+    for (let effect = 0; effect < 3; effect++) {
+      if ((aura.flags & (1 << effect)) === 0) continue;
+      const type = metadata.effectAura[effect] ?? 0;
+      if (type === 27 || type === 35 || type === 65 || type === 119 || type === 128 || type === 129 || type === 143) return false;
+    }
+    // The unit test before the mask, as 0x0053d680 orders it (0x00729740 first): a friendly target's
+    // buffs never walk the known spells, which #stealMask does again while any row is missing.
+    if (!this.unitCanAttack("player", unit)) return false;
+    const mask = this.#stealMask();
+    return mask !== 0 && ((1 << dispelType) & mask) !== 0;
+  }
+
   /** Translate one world aura to the exact 3.3.5 UnitAura tuple. */
-  #auraInfo(aura: ActiveAura): FrameXmlAuraInfo {
+  #auraInfo(aura: ActiveAura, unit?: string): FrameXmlAuraInfo {
     const metadata = this.#context.spell(aura.spellId);
     // The packet's `duration` is the remaining duration at receipt; UnitAura's duration is the
     // full duration. `maxDuration` is therefore the authoritative numerator when present.
@@ -6665,12 +7880,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       metadata?.rank ?? "",
       metadata?.iconPath ?? "",
       aura.applications,
-      undefined,
+      // 5.20, Wow.exe 0x006147c0: SpellDispelType.InternalName where ImmunityPossible is set
+      // ("Magic", "Curse", "Disease", "Poison", "" for Enrage) — resolved by the gateway.
+      metadata?.debuffType,
       duration,
       expirationTime,
       unitCaster,
-      false,
-      false,
+      this.#auraStealable(aura, metadata, unit),
+      // shouldConsolidate: SPELL_ATTR7_CONSOLIDATED_RAID_BUFF (AttributesExG 0x10000000), the
+      // bit 0x006147c0 reads at record +0x2c.
+      ((metadata?.attributes?.[7] ?? 0) & 0x10000000) !== 0,
       aura.spellId,
     ];
   }
@@ -6704,6 +7923,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
         metadata?.name ?? `Заклинание ${aura.spellId}`,
         metadata?.rank ?? "",
         metadata?.iconPath ?? "",
+        metadata?.debuffType ?? "\u0003",
       ].join("\u0001");
     }).join("\u0002");
   }
@@ -6712,11 +7932,11 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   unitAura(unit: string, index: number, filter: string | undefined): FrameXmlAuraInfo | undefined {
     const partyAura = this.#partyAura(unit, index, filter);
-    if (partyAura !== undefined) return this.#auraInfo(partyAura);
+    if (partyAura !== undefined) return this.#auraInfo(partyAura, unit);
     if (unit !== "player" && unit !== "target" && unit !== "focus"
       && unit !== "targettarget" && unit !== "pet") return undefined;
     const aura = this.#unitAura(unit, index, filter);
-    return aura === undefined ? undefined : this.#auraInfo(aura);
+    return aura === undefined ? undefined : this.#auraInfo(aura, unit);
   }
 
   unitBuff(unit: string, index: number): FrameXmlAuraInfo | undefined {
@@ -6904,8 +8124,8 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   // ---- player and pet talents -------------------------------------------
 
   talentSnapshot(pet = false): FrameXmlTalentSnapshot | undefined {
-    return pet ? this.#talentResolvers.petTalentSnapshot()
-      : this.#talentResolvers.talentSnapshot();
+    return this.talentPreview.apply(pet, pet ? this.#talentResolvers.petTalentSnapshot()
+      : this.#talentResolvers.talentSnapshot());
   }
 
   learnTalent(tab: number, index: number, pet: boolean | undefined, group: number | undefined): void {
@@ -7179,38 +8399,17 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return type === 0 || type === 1 || type === 3;
   }
 
-  private trainerRows(): NonNullable<WorldClient["trainer"]>["spells"] {
-    const trainer = this.#context.world()?.trainer;
-    if (!trainer || !this.trainerSupported()) return [];
-    return trainer.spells.filter((spell) => {
-      const type = spell.usable === TRAINER_SPELL_AVAILABLE ? "available"
-        : spell.usable === TRAINER_SPELL_KNOWN ? "used" : "unavailable";
-      const metadata = this.#context.spell(spell.spellId);
-      return this.#trainerFilters.get(type) !== false && metadata !== undefined && metadata.hidden !== true;
-    });
+  private trainerRow(index: number): TrainerSpell | undefined {
+    return this.#trainerList.service(index);
   }
 
-  private normalizeTrainerSelection(): void {
-    const count = this.trainerRows().length;
-    if (this.#trainerSelection === undefined || this.#trainerSelection < 1
-      || this.#trainerSelection > count) this.#trainerSelection = count > 0 ? 1 : undefined;
-  }
-
-  private trainerRow(index: number): NonNullable<WorldClient["trainer"]>["spells"][number] | undefined {
-    return Number.isInteger(index) && index > 0 ? this.trainerRows()[index - 1] : undefined;
-  }
-
+  /** 3.29: the visible rows, headers included (FrameXmlTrainerGroups.ts). */
   trainerServiceCount(): number {
-    this.normalizeTrainerSelection();
-    return this.trainerRows().length;
+    return this.#trainerList.count();
   }
 
   trainerServiceInfo(index: number): readonly [string, string | undefined, string, boolean] | undefined {
-    const row = this.trainerRow(index);
-    const metadata = row ? this.#context.spell(row.spellId) : undefined;
-    if (!row || !metadata) return undefined;
-    return [metadata.name, metadata.rank, row.usable === TRAINER_SPELL_AVAILABLE ? "available"
-      : row.usable === TRAINER_SPELL_KNOWN ? "used" : "unavailable", false];
+    return this.#trainerList.info(index);
   }
 
   trainerServiceCost(index: number): readonly [number, number, number] {
@@ -7218,17 +8417,28 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     return row ? [row.moneyCost, row.pointCost[0], row.pointCost[1]] : [0, 0, 0];
   }
   trainerServiceLevelReq(index: number): number { return this.trainerRow(index)?.requiredLevel ?? 0; }
+  // 3.23F: the row's requirements over the skill, spell and SkillLineAbility tables (FrameXmlTrainerRequirements.ts).
+  #trainerRequirementSource(): FrameXmlTrainerRequirementSource {
+    return {
+      skillLineName: (id) => this.#context.skillMetadata?.()?.skillLine(id)?.name,
+      playerSkills: () => { const self = this.#self(); return self ? readSkills(self) : []; },
+      spell: (id) => this.#context.spell(id),
+      knowsSpell: (id) => this.#context.world()?.knownSpells.some((spell) => spell.id === id) === true,
+      spellAbilities: (id) => this.#context.spellAbilities?.(id),
+      raceId: () => { const self = this.#self(); return self ? unitField.race(self) : undefined; },
+      classId: () => { const self = this.#self(); return self ? unitField.classId(self) : undefined; },
+      learnEffects: (id) => this.#context.spellLearnEffects?.()?.effects(id),
+      skillAllowed: (line, race, klass) => this.#context.spellLearnEffects?.()?.skillAllowed(line, race, klass),
+    };
+  }
   trainerServiceSkillReq(index: number): readonly [string | undefined, number, boolean] {
-    const row = this.trainerRow(index);
-    return [undefined, 0, false];
+    return frameXmlTrainerSkillReq(this.trainerRow(index), this.#trainerRequirementSource());
   }
   trainerServiceNumAbilityReq(index: number): number {
-    // Trainer packets expose prerequisite ids but not the localized metadata/state needed by the
-    // stock ability rows. Keep the projection neutral until that tuple is truthful.
-    return 0;
+    return frameXmlTrainerNumAbilityReq(this.trainerRow(index));
   }
-  trainerServiceAbilityReq(_index: number, _requirement: number): readonly [number, boolean] | undefined {
-    return undefined;
+  trainerServiceAbilityReq(index: number, requirement: number): readonly [string | undefined, boolean] | undefined {
+    return frameXmlTrainerAbilityReq(this.trainerRow(index), requirement, this.#trainerRequirementSource());
   }
   trainerServiceStepReq(_index: number): readonly [number | undefined, boolean] { return [undefined, false]; }
   trainerServiceIcon(index: number): string | undefined {
@@ -7239,7 +8449,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const row = this.trainerRow(index);
     return row ? this.#context.spell(row.spellId)?.description : undefined;
   }
-  trainerServiceSkillLine(_index: number): string | undefined { return undefined; }
+  trainerServiceSkillLine(index: number): string | undefined {
+    return frameXmlTrainerSkillLine(this.trainerRow(index), this.#trainerRequirementSource());
+  }
   trainerServiceItemLink(_index: number): string | undefined { return undefined; }
   trainerGreeting(): string | undefined {
     const trainer = this.#context.world()?.trainer;
@@ -7247,9 +8459,7 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   }
   trainerType(): number | undefined { return this.#context.world()?.trainer?.trainerType; }
   trainerSelectionIndex(): number | undefined {
-    if (!this.trainerSupported()) return undefined;
-    this.normalizeTrainerSelection();
-    return this.#trainerSelection;
+    return this.trainerSupported() ? this.#trainerList.selectionIndex() : undefined;
   }
   trainerContextSignature(): string {
     const trainer = this.#context.world()?.trainer;
@@ -7260,10 +8470,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   selectTrainerService(index: number): void {
     // Stock calls this from ClassTrainer_SetSelection and completes the repaint on that stack.
     // A synchronous description event would recursively enter ClassTrainer_SetSelection again.
-    if (this.trainerRow(index)) this.#trainerSelection = index;
+    if (this.trainerSupported()) this.#trainerList.select(index);
   }
   isTradeskillTrainer(): boolean { return this.#context.world()?.trainer?.trainerType === 2; }
   buyTrainerService(index: number): void {
+    // L12 3.29: 0 or less buys every visible available row in turn (0x595e60 → 0x594e50).
+    if (index <= 0) { frameXmlTrainerBuyAll(this.#trainerList.entries(), (id) => this.#context.world()?.learnFromTrainer(id)); return; }
     const row = this.trainerRow(index);
     if (row?.usable === TRAINER_SPELL_AVAILABLE) this.#context.world()?.learnFromTrainer(row.spellId);
   }
@@ -7271,26 +8483,41 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     const world = this.#context.world();
     if (!world?.trainer || !this.trainerSupported()) return;
     world.closeTrainer();
-    this.#trainerSelection = undefined;
+    this.#trainerList.clear();
   }
   trainerChanged(event: "show" | "update" | "closed"): void {
     if (event === "closed") { this.closeTrainer(); return; }
     if (!this.trainerSupported()) return;
-    this.normalizeTrainerSelection();
+    // A list (0x596450) expands every group again; a state change rebuilds and reselects (0x596b00).
+    if (event === "show") this.#trainerList.listChanged(); else this.#trainerList.reselect();
     this.#pump?.fire(event === "show" ? FRAMEXML_SEAM_EVENTS.trainerUpdate : FRAMEXML_SEAM_EVENTS.trainerDescriptionUpdate);
   }
   trainerTypeFilter(type: string): boolean { return this.#trainerFilters.get(type) === true; }
   setTrainerTypeFilter(type: string, enabled: boolean): void {
     if (this.#trainerFilters.has(type)) {
       this.#trainerFilters.set(type, enabled);
-      this.#trainerSelection = undefined;
     }
-    this.normalizeTrainerSelection();
+    this.#trainerList.reselect();
     this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
   }
-  collapseTrainerSkillLine(_index: number): void { this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate); }
-  expandTrainerSkillLine(_index: number): void { this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate); }
-  characterPoints(_unit: string): readonly [number, number] { return [0, 0]; }
+  // 3.29 (0x596150 / 0x5961f0): a header row's group, or all for i <= 0; then TRAINER_UPDATE.
+  collapseTrainerSkillLine(index: number): void {
+    if (this.#trainerList.setExpanded(index, false)) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
+  }
+  expandTrainerSkillLine(index: number): void {
+    if (this.#trainerList.setExpanded(index, true)) this.#pump?.fire(FRAMEXML_SEAM_EVENTS.trainerUpdate);
+  }
+  /**
+   * `UnitCharacterPoints(unit)`: free talent points, then free primary profession slots —
+   * PLAYER_CHARACTER_POINTS1/2 (`Player::SetFreePrimaryProfessions`, `Player.h:1518`). Wow.exe
+   * 0x610fb0 reads both words for the active player only; any other unit answers 0 and 0.
+   */
+  characterPoints(unit: string): readonly [number, number] {
+    const self = this.#self();
+    const selfGuid = this.#context.world()?.state.selfGuid;
+    if (!self || selfGuid === undefined || typeof unit !== "string" || this.#unitGuid(unit) !== selfGuid) return [0, 0];
+    return [readField(self, "PLAYER_CHARACTER_POINTS1") ?? 0, readField(self, "PLAYER_CHARACTER_POINTS2") ?? 0];
+  }
 
   randomBattlegroundHonorBonuses(): readonly [boolean, number, number, number, number] {
     const list = this.#context.world()?.battlefieldList;
@@ -7384,9 +8611,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
   /**
    * `GetSpellLink`, from the same cached rows as `GetSpellName`: a book slot when `bookType` is
    * given, else a spell id, else the name of a spell in the player's book — the highest rank of
-   * it, as the client resolves a name. The pet book is not modelled (`hasPetSpells` answers
-   * false), so a `"pet"` slot has no link. A row that has not arrived is nil, never a link to a
-   * «Spell N» the chat would then carry.
+   * it, as the client resolves a name. A `"pet"` slot never reaches this: `frameXmlWithPetBook`
+   * (FrameXmlPetActionBar.ts) answers it from the pet model, so here it has no link. A row that
+   * has not arrived is nil, never a link to a «Spell N» the chat would then carry.
    */
   spellLink(indexOrSpell: number | string, bookType?: string): string | undefined {
     let id: number | undefined;
@@ -7425,9 +8652,12 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     // dims the icon to 0.4 for anything else — measured on the fixture, every ready spell in the
     // stock book was dimmed.
     if (id !== undefined && world?.isSpellOnHold?.(id)) return [0, 0, 0];
-    if (!snapshot || snapshot.endsAt <= monotonic || !pump) return id === undefined ? [0, 0, 0] : [0, 0, 1];
+    // L12 5.30: the global part beside the spell's own timer; the later end wins (Wow.exe 0x00807980).
+    const global = id === undefined || !pump ? undefined
+      : frameXmlGlobalCooldownFor(this.#context, world, this.#context.spell(id), monotonic, pump.now()); // L13-review 5.30: by category
+    if (!snapshot || snapshot.endsAt <= monotonic || !pump) return id === undefined ? [0, 0, 0] : global ?? [0, 0, 1]; // L12 5.30
     const start = pump.now() - (monotonic - snapshot.startedAt) / 1000;
-    return [start, snapshot.duration / 1000, 1];
+    return frameXmlLaterCooldown([start, snapshot.duration / 1000, 1], global); // L12 5.30
   }
 
   spellAutocast(index: number, _bookType: string | undefined): readonly [boolean, boolean] {
@@ -7603,6 +8833,14 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
 
   /** PLAYER_ENTER_COMBAT / PLAYER_LEAVE_COMBAT: the player's own auto-attack started or stopped. */
   #reconcileMelee(world: WorldClient, pump: FrameXmlSeamPump): void {
+    // Every SMSG_ATTACK_STOP for the player is a LEAVE, a refused request included: Wow.exe
+    // 0x756800 case 0x144 → 0x756770 fires it without asking whether ENTER came first (5.21).
+    const stops = world.attackStops ?? 0;
+    if (stops !== this.#meleeStops) {
+      this.#meleeStops = stops;
+      this.#meleeAnnounced = false;
+      pump.fire("PLAYER_LEAVE_COMBAT");
+    }
     const attacking = world.attacking === true;
     if (attacking === this.#meleeAnnounced) return;
     this.#meleeAnnounced = attacking;
@@ -7676,12 +8914,16 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (this.#macroContext) return this.#macroContext;
     const world = (): WorldClient | undefined => this.#context.world();
     const revision = (): number | undefined => this.#context.talentMetadataRevision?.();
+    // 11.02-IF: the possess bar outside the form memo — GetBonusBarOffset 5 and GetActionBarPage 1 (FrameXmlPossess.ts).
+    const formBonusBar = macroFormMemo(world, revision)(() => this.bonusBarOffset());
+    const source = frameXmlSeamMacroSource(this);
     return this.#macroContext = createMacroContext({
-      ...frameXmlSeamMacroSource(this),
+      ...source,
       world,
       shapeshiftForms: () => this.#shapeshiftForms(),
       spellRevision: revision,
-      bonusBar: macroFormMemo(world, revision)(() => this.bonusBarOffset()),
+      bonusBar: () => (this.possess.onMainBar() ? POSSESS_BONUS_BAR_OFFSET : formBonusBar()),
+      actionBar: () => (this.possess.onMainBar() ? 1 : source.actionBar?.() ?? 0),
       spec: () => {
         const talents = this.#context.world()?.talents;
         return talents ? talents.activeSpec + 1 : 0;
@@ -7838,7 +9080,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
     if (!map) return undefined;
     const type = INSTANCE_TYPES[map.instanceType] ?? "none";
     const raid = type === "raid";
-    let difficulty = (raid ? world.raidDifficulty : world.dungeonDifficulty) ?? 0;
+    // The map's own mode (SMSG_INSTANCE_DIFFICULTY), as Wow.exe GetInstanceInfo reads it (0x51a8c0);
+    // the player's choice only until that packet has come for this map (5.28).
+    let difficulty = world.instanceDifficulty ?? (raid ? world.raidDifficulty : world.dungeonDifficulty) ?? 0;
     const known = this.#context.instanceMaxPlayers?.(mapId, difficulty);
     let maxPlayers: number | undefined;
     if (known !== undefined) maxPlayers = known;
@@ -7855,7 +9099,9 @@ export class LiveWorldSeam implements FrameXmlWorldSeam {
       }
     }
     if (maxPlayers === undefined) return undefined;
-    return [map.name, type, difficulty + 1, "", maxPlayers, 0, false];
+    // 5.28 (L6): the player difficulty word and Map Flags & 0x100 (FrameXmlInstanceDynamic.ts).
+    return [map.name, type, difficulty + 1, "", maxPlayers,
+      frameXmlInstancePlayerDifficulty(world), frameXmlInstanceIsDynamic(mapId)];
   }
 
   /**

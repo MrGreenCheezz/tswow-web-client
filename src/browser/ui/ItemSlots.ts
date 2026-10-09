@@ -11,6 +11,7 @@ import {
   type ItemSlotState, stackCount,
 } from "../Inventory.js";
 import { itemActionDragPayload } from "./ActionBar.js";
+import { beginIconDrag } from "./DragGhost.js";
 import { systemLine } from "./Chat.js";
 import { insertIntoChat } from "./ChatDock.js";
 import { itemChatLink } from "./ChatLink.js";
@@ -19,9 +20,12 @@ import { itemTooltipFor } from "./ItemTooltip.js";
 import { itemEnchantmentIds, itemSocketColors } from "../ItemEnchantments.js";
 import { openSocketing } from "./Socketing.js";
 import { extendItemTooltip, hideItemTooltipExtension } from "./ItemTooltipExtensions.js";
-import { attachTooltip, hideTooltip, type TooltipContent, lastPointer,
+import { attachTooltip, hideTooltip, setTip, type TooltipContent, lastPointer,
 } from "./Widgets.js";
 import { setIconSource } from "./IconImage.js";
+import { clickRepairSlot, repairTooltipLine } from "./VendorRepair.js";
+import { clickItemTargetSlot } from "./ItemTargetClick.js";
+import { armNativeGiftWrap, wrapNativeSlot } from "./NativeGiftWrap.js"; // L1 (2.05 E)
 
 /**
  * One item slot, and everything the player can do to what is in it.
@@ -117,7 +121,8 @@ function showItemMenu(anchor: HTMLElement, slot: ItemSlotState, name: string): v
   else actions.push(["Надеть", () => world.equipItem(slot.bag, slot.slot)]);
   if (!banked) actions.push([opensForLoot ? "Открыть" : "Использовать", () => {
     if (opensForLoot) world.useItem(slot.bag, slot.slot, slot.guid);
-    else requestInventoryItemUse(slot, () => world.useItem(slot.bag, slot.slot, slot.guid));
+    // L1 (2.05 E): wrapping paper waits for its item instead of being used (NativeGiftWrap.ts).
+    else if (!armNativeGiftWrap(slot)) requestInventoryItemUse(slot, () => world.useItem(slot.bag, slot.slot, slot.guid));
   }]);
   // The auto-bank pair is the only route the server checks the banker on, so these are the
   // buttons rather than a swap into a chosen slot: they are what a shift-click does originally.
@@ -364,6 +369,9 @@ export function itemTooltip(slot: ItemSlotState, label: string): TooltipContent 
   const count = stackCount(slot);
   const footer: string[] = [];
   if (!isBuybackSlot(slot)) {
+    // The repair cursor's price (2.02), as the stock bags add REPAIR_COST while InRepairMode.
+    const repairLine = repairTooltipLine(slot.item);
+    if (repairLine) footer.push(repairLine);
     footer.push("Нажмите для действий");
     footer.push("Shift + щелчок — вставить в чат");
     if (count > 1) footer.push("Shift и перетаскивание — разделить стопку");
@@ -376,6 +384,8 @@ export function itemTooltip(slot: ItemSlotState, label: string): TooltipContent 
     // The one line on the whole tooltip that is not in the template: an item's wear is a field of
     // the item object, and only an item the player owns has one.
     durability: slot.item.fields.get(UPDATE_FIELDS.ITEM_FIELD_DURABILITY.offset),
+    // L4-review (5.22): a timed item's own time left (ITEM_FIELD_DURATION, absent read as 0, as the stock path does).
+    durationLeft: slot.item.fields.get(UPDATE_FIELDS.ITEM_FIELD_DURATION.offset) ?? 0,
     enchantments: itemEnchantmentIds(slot.item),
     // An equipped item is not compared with itself.
     equipped: slot.bag === INVENTORY_SLOT_BAG_0 && slot.slot >= 0 && slot.slot < EQUIPMENT_SLOT_NAMES.length,
@@ -415,6 +425,53 @@ export function itemSlot(slot: ItemSlotState, label = "", dim = false): HTMLElem
   ];
   element.setAttribute("aria-label", accessible.join(", "));
   attachTooltip(element, () => itemTooltip(slot, label), { onHide: hideItemTooltipExtension });
+  if (slot.item && !isBuybackSlot(slot) && !isBankSlot(slot.bag, slot.slot)) {
+    // A spell or item waiting for an item (2.05) takes the click first, before the repair cursor,
+    // as the client's UseContainerItem/PickupInventoryItem ask the spell cursor first.
+    let targetedAt = Number.NEGATIVE_INFINITY;
+    element.addEventListener("click", (event) => {
+      if (event.shiftKey || !clickItemTargetSlot(slot.item, slot.guid, element)) return;
+      targetedAt = event.timeStamp;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hideTooltip();
+      closeItemMenu();
+    }, { capture: true });
+    // A double click that began as the cursor's target is spent: its dblclick must not use the item.
+    element.addEventListener("dblclick", (event) => {
+      if (event.timeStamp - targetedAt > 1000) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, { capture: true });
+  }
+  if (slot.item && !isBuybackSlot(slot)) {
+    // The repair cursor (2.02) takes an item's click before its menu: the item is repaired, not used.
+    element.addEventListener("click", (event) => {
+      if (event.shiftKey || !clickRepairSlot(slot.item, slot.guid)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hideTooltip();
+      closeItemMenu();
+    }, { capture: true });
+  }
+  if (slot.item && !isBuybackSlot(slot)) {
+    // L1 (2.05 E): with wrapping paper waiting, a container item's click wraps it (0x005d7ff0 → 0x006dcf20),
+    // after the spell and repair cursors; its double click is spent like the spell cursor's.
+    let wrappedAt = Number.NEGATIVE_INFINITY;
+    element.addEventListener("click", (event) => {
+      if (event.shiftKey || !wrapNativeSlot(slot)) return;
+      wrappedAt = event.timeStamp;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hideTooltip();
+      closeItemMenu();
+    }, { capture: true });
+    element.addEventListener("dblclick", (event) => {
+      if (event.timeStamp - wrappedAt > 1000) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, { capture: true });
+  }
   if (isBankSlot(slot.bag, slot.slot)) {
     element.addEventListener("click", (event) => {
       if (event.shiftKey || !clickFrameXmlNativeBankSlot(slot)) return;
@@ -447,7 +504,7 @@ export function itemSlot(slot: ItemSlotState, label = "", dim = false): HTMLElem
     if (wear && wear.durability < wear.maximum) {
       const bar = document.createElement("span");
       bar.className = wear.durability === 0 ? "item-wear broken" : "item-wear";
-      bar.title = wear.durability === 0 ? "Предмет сломан" : `Прочность ${wear.durability} из ${wear.maximum}`;
+      setTip(bar, wear.durability === 0 ? "Предмет сломан" : `Прочность ${wear.durability} из ${wear.maximum}`);
       const fill = document.createElement("i");
       fill.style.width = `${Math.round((wear.durability / wear.maximum) * 100)}%`;
       bar.append(fill);
@@ -457,7 +514,7 @@ export function itemSlot(slot: ItemSlotState, label = "", dim = false): HTMLElem
     if (itemEnchantPresence(slot.item) !== 0) {
       const marker = document.createElement("span");
       marker.className = "item-enchant";
-      marker.title = "Есть чары или камни";
+      setTip(marker, "Есть чары или камни");
       element.append(marker);
     }
     // Equipment is where an item level reads as the answer to "is this an upgrade"; the tooltip
@@ -467,7 +524,7 @@ export function itemSlot(slot: ItemSlotState, label = "", dim = false): HTMLElem
       const badge = document.createElement("span");
       badge.className = "item-level";
       badge.textContent = String(itemLevel);
-      badge.title = `Уровень предмета ${itemLevel}`;
+      setTip(badge, `Уровень предмета ${itemLevel}`);
       element.append(badge);
     }
   }
@@ -511,7 +568,7 @@ export function itemSlot(slot: ItemSlotState, label = "", dim = false): HTMLElem
         const template = world.itemTemplate(entry);
         if (itemOpensForLoot(slot.item?.fields.get(UPDATE_FIELDS.ITEM_FIELD_FLAGS.offset), template?.flags)) {
           world.useItem(slot.bag, slot.slot, slot.guid);
-        } else requestInventoryItemUse(slot, () => world.useItem(slot.bag, slot.slot, slot.guid));
+        } else if (!armNativeGiftWrap(slot)) requestInventoryItemUse(slot, () => world.useItem(slot.bag, slot.slot, slot.guid)); // L1 (2.05 E)
       }
     });
     element.addEventListener("keydown", (event) => {
@@ -548,6 +605,8 @@ export function attachDragAndDrop(element: HTMLElement, slot: ItemSlotState): vo
       // The same drag can land on an action bar, where an item is stored by entry rather than by
       // where it happens to sit.
       if (entry > 0) event.dataTransfer?.setData(...itemActionDragPayload(entry));
+      // 4.02: the item's icon with its stack count and quality border on the cursor.
+      beginIconDrag(event, element);
     });
   }
   element.addEventListener("dragover", (event) => {

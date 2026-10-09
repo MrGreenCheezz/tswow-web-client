@@ -21,6 +21,8 @@
  * Electron's half — no spell checker, no pinch zoom — is in `electron/main.cjs`.
  */
 
+import { armTip, setTip } from "../ui/Tooltip.js";
+
 /** The stylesheet the module adds: no selection, no image drags, no text caret outside fields. */
 export const NATIVE_APP_SHELL_CSS = `
 html, body {
@@ -210,6 +212,9 @@ export function installNativeAppShell(doc: Document = document, win: Window = wi
   on(doc, "keydown", keepEntry, { capture: true });
   onWindow("popstate", keepEntry, {});
 
+  // The browser's own hint: every `title` becomes the interface's tooltip before it can show (4.01).
+  cleanups.push(installTitleTooltips(doc));
+
   const undo = (): void => {
     installed.delete(doc);
     for (const cleanup of cleanups.splice(0).reverse()) cleanup();
@@ -219,3 +224,87 @@ export function installNativeAppShell(doc: Document = document, win: Window = wi
 }
 
 const installed = new WeakMap<Document, () => void>();
+
+/** Elements whose `aria-label` the safety net wrote, so a later hint replaces its own label only. */
+const labelledByShell = new WeakSet<Element>();
+
+/** Whether an element already has an accessible name of its own (its label, or its own text). */
+function hasOwnName(element: HTMLElement): boolean {
+  if (labelledByShell.has(element)) return false;
+  if (element.hasAttribute("aria-label") || element.hasAttribute("aria-labelledby")) return true;
+  return (element.textContent ?? "").trim() !== "";
+}
+
+/**
+ * Moves one element's `title` into the interface's tooltip ({@link setTip}) and returns whether it
+ * did. The browser shows nothing for an element without the attribute, so removing it before the
+ * browser's own delay runs out is what keeps the page-like hint off the screen. The name is not
+ * lost to a screen reader: an unnamed element (an icon button) gets it as `aria-label`, a named
+ * one as `aria-description`. Form fields keep theirs — a field's `title` is its validation hint.
+ */
+export function nativeShellAdoptTitle(element: Element): boolean {
+  if (typeof HTMLElement === "undefined" || !(element instanceof HTMLElement)) return false;
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+    || element instanceof HTMLSelectElement) return false;
+  const text = element.getAttribute("title");
+  if (text === null) return false;
+  element.removeAttribute("title");
+  if (text.trim() === "") {
+    setTip(element, undefined);
+    return true;
+  }
+  if (!hasOwnName(element)) {
+    element.setAttribute("aria-label", text);
+    labelledByShell.add(element);
+  } else {
+    element.setAttribute("aria-description", text);
+  }
+  setTip(element, text);
+  return true;
+}
+
+/** Whether the pointer is over `element` now; a fake document without `:hover` answers no. */
+function hovered(element: Element): boolean {
+  try {
+    return typeof element.matches === "function" && element.matches(":hover");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The safety net for every `title` in the page — the native interface's, `index.html`'s and the
+ * stock FrameXML DOM's: on the pointer's way into an element (capture `pointerover`, which comes
+ * before the element's own `pointerenter`) and on any later write of the attribute (a
+ * `MutationObserver` on `title` alone, delivered in a microtask), the attribute becomes a tooltip.
+ * Returns the undo.
+ */
+export function installTitleTooltips(doc: Document): () => void {
+  const onOver = (event: Event): void => {
+    const target = event.target;
+    if (typeof Element === "undefined" || !(target instanceof Element)) return;
+    let nearest: Element | undefined;
+    // The browser shows the nearest titled ancestor's hint, then the next one out once that one
+    // is gone: every titled element on the way up is converted, the nearest is armed.
+    for (let node = target.closest("[title]"); node; node = node.parentElement?.closest("[title]") ?? null) {
+      if (nativeShellAdoptTitle(node) && !nearest) nearest = node;
+    }
+    if (nearest instanceof HTMLElement && nearest !== target) armTip(nearest);
+  };
+  doc.addEventListener("pointerover", onOver, { capture: true });
+  let observer: MutationObserver | undefined;
+  if (typeof MutationObserver === "function" && doc.documentElement) {
+    observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const node = record.target;
+        if (!(node instanceof Element) || !node.hasAttribute("title")) continue;
+        if (nativeShellAdoptTitle(node) && node instanceof HTMLElement && hovered(node)) armTip(node);
+      }
+    });
+    observer.observe(doc.documentElement, { subtree: true, attributes: true, attributeFilter: ["title"] });
+  }
+  return () => {
+    doc.removeEventListener("pointerover", onOver, { capture: true });
+    observer?.disconnect();
+  };
+}

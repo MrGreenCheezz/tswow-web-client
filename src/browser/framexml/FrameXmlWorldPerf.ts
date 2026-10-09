@@ -109,11 +109,15 @@ export class FrameXmlWorldPerf implements FrameXmlRenderPerfSink {
       const stepMs = this.#now() - this.#stepStart;
       this.#frameStep += stepMs;
       // The step runs in its own requestAnimationFrame callback, outside the game frame's clock.
-      if (stepMs >= CAPTURE_PROBE_MIN_MS && captureProbeActive()) {
-        captureProbe("frameXmlSteps", this.#stepStart, {
-          stepMs, seamTickMs: this.#frameSeam, onUpdateMs: this.#frameOnUpdate,
-          handlers: this.#frameHandlers, syncInStepMs: this.#frameSyncInStep,
-        });
+      if (captureProbeActive()) {
+        // P1-04: every step's time, for the recording's per-frame column (never an event there).
+        captureProbe("frameXmlStepTime", this.#stepStart, { ms: stepMs });
+        if (stepMs >= CAPTURE_PROBE_MIN_MS) {
+          captureProbe("frameXmlSteps", this.#stepStart, {
+            stepMs, seamTickMs: this.#frameSeam, onUpdateMs: this.#frameOnUpdate,
+            handlers: this.#frameHandlers, syncInStepMs: this.#frameSyncInStep,
+          });
+        }
       }
     }
     this.#stepStart = undefined;

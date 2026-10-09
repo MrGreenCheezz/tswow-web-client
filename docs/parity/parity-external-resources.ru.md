@@ -1,12 +1,12 @@
 # Внешние ресурсы для парного сравнения
 
 Снимок сделан 23 сентября 2026 года только чтением. Полный машинный манифест —
-`parity/parity-external-resources.json`; инструмент — `tools/parity-external-resources.mjs`.
+[`docs/parity/parity-external-resources.json`](parity-external-resources.json); инструмент — `tools/parity-external-resources.mjs`.
 Он использует штатное разрешение путей `tools/paths.mjs` и действующие функции
 `fingerprintDbc` / `fingerprintArchives` gateway. Для повторения:
 
 ```powershell
-& .\.runtime\node\node.exe --import ./tools/register-test-sources.mjs tools/parity-external-resources.mjs --output parity/parity-external-resources.json
+& .\.runtime\node\node.exe --import ./tools/register-test-sources.mjs tools/parity-external-resources.mjs --output docs/parity/parity-external-resources.json
 ```
 
 Выбраны оригинальный клиент `F:\Circle` и dataset

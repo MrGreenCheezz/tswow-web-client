@@ -133,9 +133,11 @@ async function stage({ barrier = false, missing = false, broken = false, inArena
   const warnings = [];
   const warn = console.warn;
   console.warn = (...args) => warnings.push(args.join(" "));
-  const mounted = mountFrameXmlArenaEnemy(seam, boot, renderer);
+  // 3.16: whether the native #arena-frames step aside (the body class the world mount hides them by).
+  const owned = [];
+  const mounted = mountFrameXmlArenaEnemy(seam, boot, renderer, (value) => owned.push(value));
   return {
-    ...fixture, seam, boot, mounted, requests, roots, warnings,
+    ...fixture, seam, boot, mounted, requests, roots, warnings, owned,
     addonReads: () => requests.filter((path) => path.startsWith(ADDON_PREFIX)),
     release: () => release?.(), addon: () => addonResult,
     messages: () => lua(boot, "return table.concat(__arenaMessages, '|')")[0],
@@ -181,7 +183,7 @@ test("Blizzard_ArenaUI: nothing outside an arena; the match loads it through the
     seam.arena.tick();
     await settle(() => run.addonReads().length > 0);
     assert.equal(mounted.owner.state, "loading");
-    assert.deepEqual(lua(boot, "return IsInInstance()", 2), [true, "arena"]);
+    assert.deepEqual(lua(boot, "return IsInInstance()", 2), [1, "arena"]);
     assert.deepEqual(lua(boot, `return LoadAddOn("${FRAMEXML_ARENA_ADDON}")`, 2), [false, "NOT_READY"]);
     // UIParent's PLAYER_ENTERING_WORLD in the arena calls Arena_LoadUI again: no dialog, no second load.
     enteringWorld(boot);
@@ -268,9 +270,11 @@ test("already in an arena at publish: the load starts at once and the gate passe
     const gate = frameXmlArenaGate(seam, boot);
     assert.deepEqual(gate, { opponents: 0, shown: 0, visible: true });
     assert.equal(run.messages(), "");
+    assert.deepEqual(run.owned, [true], "3.16: the stock enemy frames own the opponents; native steps aside");
   } finally {
     run.close();
   }
+  assert.deepEqual(run.owned, [true, false], "the mount's cleanup gives the native frames back");
 });
 
 test("a failed load stays silent: no dialog, no second attempt", { skip }, async () => {
@@ -299,6 +303,7 @@ test("an add-on that fails its gate is silenced: its frames stop listening and h
     await mounted.owner.settled();
     assert.equal(mounted.owner.state, "failed");
     assert.match(run.warnings.join("\n"), /did not pass its gate/);
+    assert.deepEqual(run.owned, [false], "3.16: a failed gate leaves the native enemy frames on");
     const errors = boot.errorCount;
     world.state.objects.set(mage.guid, mage);
     seam.arena.tick();

@@ -294,8 +294,8 @@ test("WMO model-to-scene mapping, gateway namespaces, Terrain compatibility, and
   assert.ok(mapped.distanceTo(new THREE.Vector3(-1, 3, 2)) < 1e-6,
     "WMO model coordinates map as (-x,z,y)");
 
-  assert.equal(visualModelCacheNamespace("World\\Wmo\\HardEdge.wmo"), "visual-wmo-v22");
-  assert.equal(visualModelCacheNamespace("World\\Creature\\Wolf.m2"), "visual-v21");
+  assert.equal(visualModelCacheNamespace("World\\Wmo\\HardEdge.wmo"), "visual-wmo-v25"); // 05.10-A7b-1
+  assert.equal(visualModelCacheNamespace("World\\Creature\\Wolf.m2"), "visual-v23"); // 05.10-A7a-F2
 
   const modern = encodeModel(wmoGroupMeshes(parseFixture()));
   const legacy = encodeModel(noNormalsModel(wmoGroupMeshes(parseFixture({ normals: "missing" }))));

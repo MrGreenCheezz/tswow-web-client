@@ -7,6 +7,8 @@ import type { EnvironmentObject } from "./Terrain.js";
 import { creatureIconSource, type CreatureMetadata } from "./CreatureMetadata.js";
 import { setIconSource } from "./ui/IconImage.js";
 import { drawPlate, plateLayout, stackPlates, type PlateBox, type PlateData } from "./NamePlate.js";
+import { viewSubjectIn } from "./game/ViewSubject.js"; // 11.02-I
+import { drawnUnitPosition, hiddenBySeat, type DrawnPoint } from "./VehiclePassengerOverlay.js"; // 11.02-tails
 
 export interface Vector3 {
   x: number;
@@ -86,6 +88,9 @@ export const CAMERA_MAX_PIVOT_HEIGHT = 3;
 
 /** How far outside its box a click still counts, in pixels. */
 const PICK_SLOP = 12;
+
+/** 11.02-tails: scratch for a seated passenger's drawn place (VehiclePassengerOverlay.ts), read at once. */
+const SEAT_DRAWN: DrawnPoint = { x: 0, y: 0, z: 0 };
 
 /** Pixel focal length of a vertical-fov perspective camera, matching THREE.PerspectiveCamera. */
 const FOCAL_PER_PIXEL_HEIGHT = 1 / (2 * Math.tan(CAMERA_FOV_DEGREES * Math.PI / 360));
@@ -212,6 +217,63 @@ export function projectPoint(point: Vector3, camera: Camera, width: number, heig
   };
 }
 
+/** 06.10-7.24: an axis-aligned screen rectangle. */
+export interface ScreenRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const BOX_CORNERS = new Float64Array(24);
+
+/**
+ * 06.10-7.24: the screen rectangle around a game object's model box (the eight corners
+ * `corners` writes), or undefined when there is no box or a corner is behind the camera.
+ */
+export function projectedBoxRect(
+  object: WorldObjectState,
+  corners: (object: WorldObjectState, out: Float64Array) => boolean,
+  camera: Camera,
+  width: number,
+  height: number,
+): ScreenRect | undefined {
+  if (!corners(object, BOX_CORNERS)) return undefined;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  // 06.10-7.24-review: `projectPoint` inlined — it allocated two objects per corner, sixteen per
+  // clickable object per frame.
+  const focal = height * FOCAL_PER_PIXEL_HEIGHT;
+  const { position, forward, right, up } = camera;
+  for (let corner = 0; corner < 8; corner++) {
+    const rx = BOX_CORNERS[corner * 3]! - position.x;
+    const ry = BOX_CORNERS[corner * 3 + 1]! - position.y;
+    const rz = BOX_CORNERS[corner * 3 + 2]! - position.z;
+    const depth = rx * forward.x + ry * forward.y + rz * forward.z;
+    if (!(depth > 0.2)) return undefined;
+    const px = width / 2 + (rx * right.x + ry * right.y + rz * right.z) * focal / depth;
+    const py = height / 2 - (rx * up.x + ry * up.y + rz * up.z) * focal / depth;
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function unionRect(rect: ScreenRect, x: number, y: number, width: number, height: number): ScreenRect {
+  const left = Math.min(rect.x, x);
+  const top = Math.min(rect.y, y);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(rect.x + rect.width, x + width) - left,
+    height: Math.max(rect.y + rect.height, y + height) - top,
+  };
+}
+
 export function healthRatio(object: WorldObjectState): number | undefined {
   const health = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset);
   const maximum = object.fields.get(UPDATE_FIELDS.UNIT_FIELD_MAXHEALTH.offset);
@@ -250,6 +312,12 @@ const GAMEOBJECT_NAMES: Partial<Record<number, string>> = {
  */
 export function gameObjectType(object: WorldObjectState): number {
   return ((object.fields.get(UPDATE_FIELDS.GAMEOBJECT_BYTES_1.offset) ?? 0) >>> 8) & 0xff;
+}
+
+/** 06.10-7.24-review: whether a click can land on this game object (the test `#drawGameObject` makes). */
+export function clickableGameObject(object: WorldObjectState): boolean {
+  const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
+  return interactiveGameObjectType(gameObjectType(object)) && (flags & GO_FLAG_NOT_SELECTABLE) === 0;
 }
 
 export function gameObjectLabel(object: WorldObjectState): string {
@@ -316,6 +384,8 @@ export class SimpleScene {
      * saying exactly what they said before.
      */
     cameraPivotHeight = CAMERA_DEFAULT_PIVOT_HEIGHT,
+    /** 06.10-7.24: a game object's model box as drawn (world corners), for its click box. */
+    gameObjectCorners?: (object: WorldObjectState, out: Float64Array) => boolean,
   ): void {
     const { width, height } = this.#resize();
     const context = this.#context;
@@ -331,7 +401,9 @@ export class SimpleScene {
       context.fillRect(0, 0, width, height);
     }
 
-    const player = state.selfGuid === undefined ? undefined : state.objects.get(state.selfGuid);
+    // 11.02-I: the camera and the 100-yard reach of the boxes and plates belong to the view subject
+    // (game/ViewSubject.ts) — the character, or a possessed unit or far sight eye once in view.
+    const player = viewSubjectIn(state);
     if (!player?.position) {
       context.fillStyle = "#d8e5ef";
       context.font = "16px system-ui";
@@ -369,7 +441,8 @@ export class SimpleScene {
       if (firstPerson && object.guid === state.selfGuid) continue;
       const squared = squaredDistance(objectPosition, playerPosition);
       if (!(squared < 100 * 100)) continue;
-      const point = projectPoint(objectPosition, camera, width, height);
+      // 11.02-tails: a passenger drawn on a vehicle's seat point is boxed and plated where it is drawn.
+      const point = projectPoint(drawnUnitPosition(object, SEAT_DRAWN) ?? objectPosition, camera, width, height);
       if (point === undefined) continue;
       objects.push({ object, distance: Math.sqrt(squared), point });
     }
@@ -378,11 +451,12 @@ export class SimpleScene {
     const plates: Array<{ box: PlateBox; data: PlateData; depth: number; clickable: boolean }> = [];
     for (const { object, point, distance } of objects) {
       const position = object.position!;
+      const drawnAt = drawnUnitPosition(object, SEAT_DRAWN) ?? position; // 11.02-tails: the seat point, if drawn on one
       const isUnit = object.typeId === 3 || object.typeId === 4;
       const dead = isWorldObjectDead(object);
       // Match the height of the body drawn in the WebGL scene so the plate sits on its head.
       const heightInWorld = isUnit ? unitHeight?.(object.guid) ?? 2 : 1.2;
-      const top = projectPoint({ x: position.x, y: position.y, z: position.z + heightInWorld }, camera, width, height);
+      const top = projectPoint({ x: drawnAt.x, y: drawnAt.y, z: drawnAt.z + heightInWorld }, camera, width, height); // 11.02-tails
       if (!top) continue;
       const bodyHeight = Math.max(4, point.y - top.y);
       const isSelected = object.guid === selectedGuid;
@@ -405,7 +479,8 @@ export class SimpleScene {
         // better, because a trigger no longer had to be under the cursor to steal the click.
         const self = object.guid === state.selfGuid;
         const clickable = self || ((unit.flags(object) ?? 0) & UNIT_FLAGS_UNCLICKABLE) === 0;
-        if (clickable) this.#pushUnitHit(object.guid, point, top.y, bodyHeight, dead, self);
+        // 11.02-tails: a HIDE_PASSENGER seat leaves no model to click (Wow.exe 0x004f8d10); the plate stays.
+        if (clickable && !hiddenBySeat(object)) this.#pushUnitHit(object.guid, point, top.y, bodyHeight, dead, self); // 11.02-tails
         if (this.#drawWorld && !dead) this.#drawUnit(object, point, top.y, bodyHeight, distance, object.guid === state.selfGuid, isSelected, metadata);
         // The dead are no longer refused here. `NamePlates.plateSource` is the one place that
         // decides what carries a plate, and it now keeps a corpse the server still marks lootable;
@@ -429,12 +504,16 @@ export class SimpleScene {
         const data = plateFor?.(object, distance);
         const anchorY = dead ? point.y - Math.max(14, bodyHeight * 0.45) / 2 : top.y;
         if (data) plates.push({ box: plateLayout(data, point.x, anchorY), data, depth: point.depth, clickable: !dead });
-      } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected);
+      } else if (object.typeId === 5) this.#drawGameObject(object, point, top.y, bodyHeight, distance, isSelected,
+        gameObjectCorners && clickableGameObject(object) // 06.10-7.24-review: no box for what nothing can click
+          ? projectedBoxRect(object, gameObjectCorners, camera, width, height) : undefined); // 06.10-7.24
       // A dynamic object is the server-side anchor for a lasting spell area, not authored art of
       // its own. In the Canvas fallback a marker is still useful because no spell model is drawn;
       // over WebGL it was a yellow service bar painted through the real spell effect. Other object
       // types, notably Corpse, keep the marker because WebGL has no authored representation for
       // them yet and this overlay is still the only way the player can see them.
+      // 05.10-A7a-G2 6.05: a corpse the renderer draws as its body or bones (CorpseModel.ts) needs no marker.
+      else if (object.typeId === 7 && unitHeight?.(object.guid) !== undefined) continue;
       else if (this.#drawWorld || object.typeId !== 6) {
         this.#drawMarker(object, point, top.y, bodyHeight, distance, isSelected);
       }
@@ -580,7 +659,8 @@ export class SimpleScene {
     }
   }
 
-  #drawGameObject(object: WorldObjectState, point: ScreenPoint, top: number, bodyHeight: number, distance: number, selected: boolean): void {
+  #drawGameObject(object: WorldObjectState, point: ScreenPoint, top: number, bodyHeight: number, distance: number, selected: boolean,
+    modelRect?: ScreenRect): void { // 06.10-7.24
     const context = this.#context;
     const size = Math.max(10, Math.min(34, bodyHeight * 1.7));
     const centerY = top + bodyHeight / 2;
@@ -595,9 +675,12 @@ export class SimpleScene {
     // anything with an object. Making it only there meant the collision hulls that fill a city —
     // 261 of the 739 objects inside the draw radius on the worst measured circle — could still be
     // picked, become the target, wear a selection ring, and then refuse every interaction.
-    const flags = object.fields.get(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset) ?? 0;
-    if (interactiveGameObjectType(type) && (flags & GO_FLAG_NOT_SELECTABLE) === 0) {
-      this.#hits.push({ guid: object.guid, x: point.x - size / 2 - 4, y: centerY - size / 2 - 4, width: size + 8, height: size + 8 });
+    if (clickableGameObject(object)) { // 06.10-7.24-review: the test moved to `clickableGameObject`
+      // 06.10-7.24: the model's own box on the screen, never smaller than the old marker square.
+      const x = point.x - size / 2 - 4;
+      const y = centerY - size / 2 - 4;
+      const hit = modelRect ? unionRect(modelRect, x, y, size + 8, size + 8) : { x, y, width: size + 8, height: size + 8 };
+      this.#hits.push({ guid: object.guid, x: hit.x, y: hit.y, width: hit.width, height: hit.height });
     }
     // The diamond and the label are the painted fallback's way of saying a door is there. With the
     // real door drawn behind it, it was a yellow lozenge painted over the door.

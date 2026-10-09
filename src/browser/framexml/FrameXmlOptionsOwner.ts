@@ -42,6 +42,7 @@ import {
   normalizeGluePath, parseGlueToc, resolveGluePath, type GlueFileProvider, type GlueTocEntry,
 } from "../glue/GlueLoader.js";
 import { GlueLoadScheduler } from "../glue/GlueLoadScheduler.js";
+import { replayFrameXmlOptionsCategories } from "./FrameXmlOptionsCategoryQueue.js";
 import { FrameXmlCorpus, FRAMEXML_OPTIONS_TOC } from "./FrameXmlCorpus.js";
 import { frameXmlStubPlanAsync } from "./FrameXmlStubPlan.js";
 import { FRAME_XML_SETTINGS_CVARS } from "./FrameXmlSettingsCVar.js";
@@ -53,6 +54,7 @@ import {
   publishFrameXmlOptions, type FrameXmlOptionsOwner, type FrameXmlOptionsWindow,
 } from "./FrameXmlOptionsController.js";
 import { frameXmlSilentProbe } from "./FrameXmlGameMenuOwner.js";
+import { withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 
 /** The synthetic TOC the chain is read and run through, beside the real one. */
 export const FRAMEXML_OPTIONS_TOC_PATH = "interface/framexml/__webclient-options.toc";
@@ -295,6 +297,9 @@ export async function loadFrameXmlOptionsChain(
       await nextTask();
       checkClosed();
     }
+    // The panels add-ons filed before the chain existed, now into the real function — outside the
+    // secure window, as their own calls were (FrameXmlOptionsCategoryQueue.ts).
+    boot.bridge.runInMutationBatch(() => replayFrameXmlOptionsCategories(vm));
     // The rest in one transaction: the category, the panels' first events and the adoption.
     const ok = secureBatch(() => {
       boot.bridge.registerFontObjects();
@@ -323,7 +328,8 @@ export async function loadFrameXmlOptionsChain(
       }
       const adopt = vm.compileFunction(frameXmlOptionsAdoptSource(), "webclient/options-adopt", []);
       if (!adopt) return false;
-      try { disabled = Number(vm.call(adopt, [], 1)[0] ?? 0); } finally { vm.release(adopt); }
+      // L5b 3.27: the reason tooltips are host hooks (FrameXmlHostHooks.ts): an add-on's SetScript keeps them.
+      try { disabled = Number(withFrameXmlHostHooks(boot, () => vm.call(adopt, [], 1))[0] ?? 0); } finally { vm.release(adopt); }
       for (const [uvar, value] of snapshot) vm.setGlobal(uvar, value);
       return true;
     });

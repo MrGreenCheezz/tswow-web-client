@@ -319,7 +319,8 @@ function floatBits(value) {
  */
 function factionTemplateDbc() {
   const alliance = [1, 1, 0, 2, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
-  const horde = [2, 2, 0, 4, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+  // L18 5.05: column 2 is Flags (DBCStructure.h:694); 0x1000 FACTION_TEMPLATE_FLAG_CONTESTED_GUARD.
+  const horde = [2, 2, 0x1000, 4, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0];
   return dbcFixture(14, [alliance, horde], Uint8Array.of(0));
 }
 
@@ -464,13 +465,13 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
   // v12 is where a WMO became its groups: a model over the triangle budget writes one file per
   // group beside the header, and `group` asks for one of them. v13 is where the artifact gained
   // the colour and texture-weight tables and the portrait camera, and v15 the texture transforms.
-  const visualHash = createHash("sha1").update(`visual-v21\0${visualPath.toLowerCase()}`).digest("hex");
+  const visualHash = createHash("sha1").update(`visual-v23\0${visualPath.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${visualHash}.bin`), Buffer.from("WVM2-test"));
   // LightSkybox metadata is normalized to this archive spelling before it reaches the browser.
   // Keep an artifact under the real Dalaran path so the regression covers the final model route,
   // not only the DBC parser's string value.
   const skyboxPath = "ENVIRONMENTS\\Stars\\DalaranSkyBox.m2";
-  const skyboxHash = createHash("sha1").update(`visual-v21\0${skyboxPath.toLowerCase()}`).digest("hex");
+  const skyboxHash = createHash("sha1").update(`visual-v23\0${skyboxPath.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${skyboxHash}.bin`), Buffer.from("WVM2-dalaran-sky"));
   // The poses the model did not ship with live beside it under the same key.
   await writeFile(join(visualModelsDirectory, `${visualHash}.anim.bin`), Buffer.from("WVA1-test"));
@@ -595,9 +596,10 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     // Names travel with the templates: the reputation block on the wire is 128 slots numbered by
     // `ReputationIndex`, and without this the character sheet can only print the number.
     assert.deepEqual(factionBody.names, { 21: "Дарнас" });
+    // L18 5.05: the template flags ride along (/dbc/factions?v=3) — CONTESTED_GUARD for 0x007251c0/0x0071f770.
     assert.deepEqual(factionBody.templates, {
-      1: { faction: 1, factionGroup: 2, friendGroup: 2, enemyGroup: 4, enemies: [], friends: [] },
-      2: { faction: 2, factionGroup: 4, friendGroup: 4, enemyGroup: 2, enemies: [], friends: [] },
+      1: { faction: 1, flags: 0, factionGroup: 2, friendGroup: 2, enemyGroup: 4, enemies: [], friends: [] },
+      2: { faction: 2, flags: 0x1000, factionGroup: 4, friendGroup: 4, enemyGroup: 2, enemies: [], friends: [] },
     });
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/factions`)).status, 403);
     const creatures = await fetch(`http://127.0.0.1:${gateway.port}/data/creatures?entries=123`, {
@@ -742,7 +744,7 @@ test("gateway serves validated local terrain tiles to allowed origins", async ()
     assert.equal(visualTexture.status, 200);
     assert.equal(visualTexture.headers.get("content-type"), "image/png");
     const initialTextureTag = visualTexture.headers.get("etag");
-    assert.match(initialTextureTag ?? "", /^"[0-9a-f]{40}"$/, "WMO textures need a content validator");
+    assert.match(initialTextureTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/, "WMO textures need a content validator");
     assert.equal(visualTexture.headers.get("cache-control"), "public, max-age=0, must-revalidate");
 
     // A republished WMO keeps the same hash-keyed filename. A browser must therefore be able to
@@ -834,6 +836,28 @@ test("Spell DBC metadata resolves localized names, icon paths and cooldowns", ()
     // book's 7,369 spells resolve to row 2, whose 5 yards mean «melee» rather than five of
     // anything, and the browser has nothing else to tell that row from a five-yard spell.
     rangeFlags: 2,
+    // v=14 (1.14b, 2.05): the friendly slot of the same row, the raw target columns and attribute
+    // words IsActionInRange reads, and the lock-pick flag. This row targets nothing and opens nothing.
+    rangeMinFriendly: 0,
+    rangeMaxFriendly: 35,
+    targets: 0,
+    implicitTargetA: [0, 0, 0],
+    implicitTargetB: [0, 0, 0],
+    targetCreatureType: 0,
+    attributes: [0, 0, 0, 0, 0, 0, 0, 0],
+    itemOrObject: false,
+    // v=15 (5.20): DispelType, raw; no SpellDispelType table here, so no debuffType either.
+    dispelType: 0,
+    // v=16 (3.01, 3.02, 3.07): DefenseType, PreventionType, the two interrupt flag words, raw, and
+    // the multi-cast slots of a player totem (none here).
+    dmgClass: 0,
+    preventionType: 0,
+    interruptFlags: 0,
+    channelInterruptFlags: 0,
+    totemSlotMask: 0,
+    // L13 (v=17, 5.30/3.12): StartRecoveryCategory and EffectMiscValueB, raw; no summon effect, no summon rows.
+    startRecoveryCategory: 0,
+    effectMiscValueB: [0, 0, 0],
     castTime: 1500,
     effects: [0, 0, 0],
     effectAura: [0, 0, 0],
@@ -1022,7 +1046,7 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
   const dbcDirectory = await mkdtemp(join(tmpdir(), "webclient-bump-dbc-"));
   const path = "World\\Tree.m2";
   const stale = createHash("sha1").update(`visual-v13\0${path.toLowerCase()}`).digest("hex");
-  const current = createHash("sha1").update(`visual-v21\0${path.toLowerCase()}`).digest("hex");
+  const current = createHash("sha1").update(`visual-v23\0${path.toLowerCase()}`).digest("hex"); // 05.10-A7a-F2
   await writeFile(join(visualModelsDirectory, `${stale}.bin`), Buffer.from("WVM8-artifact"));
   let generated = 0;
   const gateway = await startGateway({
@@ -1060,8 +1084,8 @@ test("a format bump rebuilds one artifact at a time and deletes nothing", async 
 test("the two artifact namespaces move independently and never collide", () => {
   // R5.1 takes WMO to 17 and Э1's WVM9 follows at 16. The families invalidate independently while
   // their generation numbers remain unambiguous to readers and diagnostics.
-  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v21");
-  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v22");
+  assert.equal(visualModelCacheNamespace("World\\Tree.m2"), "visual-v23"); // 05.10-A7a-F2
+  assert.equal(visualModelCacheNamespace("World\\Stormwind.WMO"), "visual-wmo-v25"); // 05.10-A7b-1
 });
 
 test("a rebuilt DBC is answered without restarting the gateway", async () => {
@@ -1324,7 +1348,7 @@ test("same-origin browser texture GETs work and interface art is revalidated", a
     assert.equal(scenery.headers.get("cache-control"), "public, max-age=0, must-revalidate",
       "a module may replace scenery under the same path too");
     const sceneryTag = scenery.headers.get("etag");
-    assert.match(sceneryTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(sceneryTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
     assert.equal(await scenery.text(), "PNG-scenery");
     const unchangedScenery = await fetch(
       `http://127.0.0.1:${gateway.port}/texture?path=${encodeURIComponent(sceneryPath)}`,
@@ -1559,8 +1583,8 @@ test("an HD-to-classic patch switch blocks every paired visual/profile route unt
     assert.equal(hdModel.headers.get("cache-control"), "public, max-age=0, must-revalidate");
     const textureTag = hdTexture.headers.get("etag");
     const modelTag = hdModel.headers.get("etag");
-    assert.match(textureTag ?? "", /^"[0-9a-f]{40}"$/);
-    assert.match(modelTag ?? "", /^"[0-9a-f]{40}"$/);
+    assert.match(textureTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
+    assert.match(modelTag ?? "", /^"e1-[0-9a-f]+-[0-9a-f]+(-[0-9a-f]+)?"$/);
 
     assert.equal((await fetch(textureUrl, {
       headers: { ...headers, "if-none-match": textureTag },

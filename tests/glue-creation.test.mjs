@@ -6,6 +6,7 @@ const {
   GlueCreation, CHAR_CREATE_RESULT_STRINGS, SEX_MALE, SEX_FEMALE, raceFileToken,
 } = await import("../dist/code/browser/glue/GlueCreation.js");
 const { isStartOutfit } = await import("../dist/code/browser/glue/GlueNames.js");
+const { TransportClosedError } = await import("../dist/code/transport/WebSocketByteStream.js");
 
 /**
  * `CharStartOutfit` in 3.3.5, written out by hand.
@@ -374,7 +375,7 @@ test("a successful create sends every chosen value and moves to the character li
   const { model, calls } = creation();
   await model.refreshProfile(true);
   model.cycle(3, 1);
-  const result = await model.createCharacter("  Аларин  ");
+  const result = await model.createCharacter("Аларин");
   assert.equal(result, 47);
   assert.deepEqual(calls.screens, ["charselect"]);
   assert.deepEqual(calls.dialogs, []);
@@ -456,10 +457,47 @@ test("a server name refusal prints its own reason instead of a code", async () =
 });
 
 test("a name the client itself refuses never reaches the wire", async () => {
-  const { model, calls } = creation();
-  assert.equal(await model.createCharacter("A"), undefined);
-  assert.deepEqual(calls.created, [], "MIN_CHAR_NAME_LENGTH is 2");
-  assert.deepEqual(calls.dialogs, ["<CHAR_CREATE_INVALID_NAME>"]);
+  // The client's own check (GlueNameRules, FUN_007e18c0), with the refusal's own string. The name
+  // is checked as typed: a space around it is an invalid character, not something to trim away.
+  const refused = [
+    ["A", "CHAR_NAME_TOO_SHORT"],
+    ["  Аларин  ", "CHAR_NAME_INVALID_CHARACTER"],
+    ["Аларинаааааааа", "CHAR_NAME_THREE_CONSECUTIVE"],
+    ["Абвгдежзийклм", "CHAR_NAME_TOO_LONG"],
+    ["Ьяна", "CHAR_NAME_RUSSIAN_SILENT_CHARACTER_AT_BEGINNING_OR_END"],
+  ];
+  for (const [name, key] of refused) {
+    const { model, calls } = creation();
+    assert.equal(await model.createCharacter(name), undefined, name);
+    assert.deepEqual(calls.created, [], name);
+    assert.deepEqual(calls.dialogs, [`<${key}>`], name);
+  }
+});
+
+test("a create the connection fails shows the client's words, not the exception's", async () => {
+  // A dropped socket is DISCONNECTED; any other failure of the request is the creation's own
+  // CHAR_CREATE_FAILED — never CHAR_LOGIN_FAILED, which would tell the player a login failed.
+  const strings = {
+    CHAR_LOGIN_FAILED: "Ошибка входа",
+    CHAR_CREATE_FAILED: "Не удалось создать персонажа",
+    DISCONNECTED: "Соединение с сервером разорвано",
+  };
+  const cases = [
+    [new Error("socket read failed: ECONNRESET"), "Не удалось создать персонажа"],
+    [new TransportClosedError(1006, "", false), "Соединение с сервером разорвано"],
+  ];
+  for (const [error, text] of cases) {
+    const events = [];
+    const model = new GlueCreation({
+      tables: () => ({ races: RACES, classes: CLASSES }),
+      source: { options: async () => undefined, startOutfit: async () => [], displayId: () => 49 },
+      create: async () => { throw error; },
+      fireEvent: (event, ...args) => { events.push([event, ...args].join(" / ")); },
+      glueString: (key) => strings[key],
+    });
+    assert.equal(await model.createCharacter("Аларин"), undefined);
+    assert.deepEqual(events, [`OPEN_STATUS_DIALOG / OKAY / ${text}`, `UPDATE_STATUS_DIALOG / ${text}`], error.message);
+  }
 });
 
 test("with no world connection the screen says so instead of quoting a server code", async () => {

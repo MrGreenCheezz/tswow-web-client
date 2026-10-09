@@ -165,6 +165,25 @@ export class FrameXmlPetActionBarLive implements FrameXmlPetActionBar {
     return [pump.now() - (monotonic - stamp.startedAt) / 1000, (stamp.endsAt - stamp.startedAt) / 1000, 1];
   }
 
+  /**
+   * 11.02-IF: a word's cooldown and usability on whatever bar is open — the possess page's mirrored
+   * slots read a possessed unit's bar (FrameXmlPossess.ts), which `hasActionBar` leaves to them.
+   */
+  wordCooldown(word: number): FrameXmlPetActionCooldown {
+    const pump = this.#pump;
+    if (!pump || !frameXmlPetSpellWord(word)) return FRAMEXML_PET_ACTION_IDLE_COOLDOWN;
+    const stamp = this.#stamps.get(petActionOf(word));
+    const monotonic = this.#context.monotonic();
+    if (!stamp || stamp.endsAt <= monotonic) return FRAMEXML_PET_ACTION_IDLE_COOLDOWN;
+    return [pump.now() - (monotonic - stamp.startedAt) / 1000, (stamp.endsAt - stamp.startedAt) / 1000, 1];
+  }
+
+  /** 11.02-IF: see `wordCooldown`. */
+  wordUsable(word: number): boolean {
+    const spells = this.#context.world()?.petSpells;
+    return spells !== undefined && !spells.closed && this.#usable(word, this.#petObject(spells));
+  }
+
   castAction(index: number, unit?: string): void {
     const world = this.#context.world();
     const bar = this.#bar();

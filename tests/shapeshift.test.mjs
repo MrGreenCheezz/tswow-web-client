@@ -664,8 +664,9 @@ test("П2 a record with no seat is refused, which is what the version bump is fo
     // HD-1: `forNpc` builds through `forPlayer`, so every unbaked character display in this payload
     // gains the coordinated pack's family-20 foot and its re-extracted body layers.
     const version = Number(/[?&]v=(\d+)[&$]/.exec(asked)?.[1]);
-    assert.equal(CREATURE_MODEL_VERSION, 13,
-      "13 carries the coordinated pack's foot mesh and re-extracted rows into creature payloads");
+    // 05.10-A7a-A 6.11а: 14 adds the display's alpha, geoset data and particle colour (shared with 6.01).
+    assert.equal(CREATURE_MODEL_VERSION, 14,
+      "14 carries the display's own alpha, geoset data and particle colour");
     assert.equal(version, CREATURE_MODEL_VERSION, `the creature route uses the current cache-buster: v=${version}`);
     assert.equal(client.get(RIDING_HORSE)?.mountHeight, 1.8657);
 

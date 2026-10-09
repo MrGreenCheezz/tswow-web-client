@@ -373,3 +373,27 @@ test("the gateway guard validates the real A-Z/locale winner instead of only Dev
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Loose AddOns names the directories, how many load and which the AddOns.txt profile disables (9.07)", async () => {
+  const { looseAddonsMessage } = await import("../tools/tswow-patch-contract.mjs");
+  const root = await mkdtemp(join(tmpdir(), "webclient-loose-addons-"));
+  try {
+    for (const name of ["Kept", "Off"]) {
+      await mkdir(join(root, "Interface", "AddOns", name), { recursive: true });
+      await writeFile(join(root, "Interface", "AddOns", name, `${name}.toc`), `${name}.lua\n`);
+    }
+    await mkdir(join(root, "Interface", "AddOns", "NoToc"), { recursive: true });
+    await mkdir(join(root, "Interface", "AddOns", "Blizzard_Stub"), { recursive: true });
+    await mkdir(join(root, "WTF", "Account", "A", "R", "C"), { recursive: true });
+    await writeFile(join(root, "WTF", "Account", "A", "R", "C", "AddOns.txt"), "Off: disabled\n");
+    const message = await looseAddonsMessage(root);
+    assert.match(message, /^3 root-level add-on directories/);
+    assert.match(message, /of them 1 load/);
+    assert.match(message, /disabled by the AddOns\.txt profile: Off$/);
+    const unbuilt = await looseAddonsMessage(root, async () => undefined);
+    assert.doesNotMatch(unbuilt, /of them/, "without the built discovery the line keeps its old form");
+    assert.equal(await looseAddonsMessage(join(root, "missing")), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

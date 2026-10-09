@@ -296,6 +296,30 @@ test("tracker: under the curtain or on a taxi nothing is reported or made curren
   assert.equal(tracker.update(0, at(1), true), 1, "flown back to the sphere: reported again");
 });
 
+test("tracker: only the point of each tick is tested, never the path between two ticks", () => {
+  const { tracker } = synthetic();
+  assert.equal(tracker.update(0, at(-20), true), undefined);
+  assert.equal(tracker.update(0, at(20), true), undefined, "the sphere at x = −5…5 lay between the ticks: not reported");
+  assert.equal(tracker.update(0, at(-6), true), undefined, "and back across it the same way");
+  assert.equal(tracker.update(0, at(90, 30), true), undefined);
+  assert.equal(tracker.update(0, at(110, -30), true), undefined, "a diagonal through the inn box: not reported");
+  assert.equal(tracker.current, undefined);
+  assert.equal(tracker.update(0, at(4), true), 1, "a tick that lands inside is");
+});
+
+test("watcher: a volume crossed between two 100 ms ticks is not reported", () => {
+  const { index } = synthetic();
+  const log = [];
+  const watcher = new AreaTriggerWatcher({ heartbeat: () => log.push("heartbeat"), enter: (id) => log.push(id) });
+  watcher.start({ triggersOn: (mapId) => index.triggersOn(mapId) });
+  watcher.frame(0, at(-8), true, 0);
+  // Frames inside the sphere between the ticks are not checked; the next tick finds x = 8.
+  for (let now = 16; now < 100; now += 16) watcher.frame(0, at(0), true, now);
+  watcher.frame(0, at(8), true, 100);
+  assert.deepEqual(log, []);
+  assert.equal(watcher.ticks, 2);
+});
+
 test("tracker: another map's volume is not this map's; no map, no position, no catalog: nothing", () => {
   let index;
   const tracker = new AreaTriggerTracker((mapId) => index?.triggersOn(mapId));
@@ -643,7 +667,8 @@ test("a world leave stops the catalog's retries and forgets the session; the nex
 
 test("Loop.ts checks right after the physics step; EnterWorld.ts starts the catalog at the mount and stops it at the leave", async () => {
   const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  const physics = loop.indexOf("advancePhysics(elapsed);");
+  // 5.13 (02.10): the physics takes the real frame, `elapsedRaw`.
+  const physics = loop.indexOf("advancePhysics(elapsedRaw);");
   const check = loop.indexOf("updateAreaTriggers(now);");
   const heartbeat = loop.indexOf("sendMovement(OPCODES.MSG_MOVE_HEARTBEAT)");
   assert.ok(physics > 0 && check > physics, "after the step that moved the character");

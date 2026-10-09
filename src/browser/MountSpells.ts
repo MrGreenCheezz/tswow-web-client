@@ -1,6 +1,8 @@
 import type { WorldClient } from "../world/WorldClient.js";
 import { game } from "./game/Context.js";
 import { SPELL_AURA_MOUNTED } from "./SpellMetadata.js";
+import { SPELL_ATTR4_AUTO_RANGED_COMBAT } from "../world/AutoRangedCombat.js"; // L15 5.05
+import { autoRangedLimits } from "./game/Targeting.js"; // L15 5.05
 
 /**
  * Rebuilds the DBC-derived mount set after any spell metadata batch lands.
@@ -29,4 +31,13 @@ export function syncMountSpellIds(world: WorldClient | undefined = game.world): 
       world.knownSpells.filter(({ id }) => game.spells.get(id)?.autoRepeat === true).map(({ id }) => id),
     );
   }
+  // L15 5.05: the autoRangedCombat controller's spell — SPELL_ATTR4 0x01000000, Auto Shot (Wow.exe
+  // 0x00542030 → 0x00be5d84) — and its range against a target (world/AutoRangedCombat.ts).
+  if (typeof world.setAutoRangedCombatSpellIds === "function") { // L15 5.05
+    world.setAutoRangedCombatSpellIds( // L15 5.05
+      world.knownSpells.filter(({ id }) => ((game.spells.get(id)?.attributes?.[4] ?? 0) & SPELL_ATTR4_AUTO_RANGED_COMBAT) !== 0) // L15 5.05
+        .map(({ id }) => id), // L15 5.05
+    ); // L15 5.05
+    world.autoRangedLimits = autoRangedLimits; // L15 5.05
+  } // L15 5.05
 }

@@ -213,3 +213,52 @@ test("the native prompts step aside for the stock popups but keep the completion
     game.world = undefined;
   }
 });
+
+// 4.14: one server question, one prompt. The native finder window carries its own proposal box with
+// «Принять»/«Отклонить» (Windows.ts lfgAccept/lfgDecline), so while it is up the prompts panel does
+// not ask the same thing; closed, the next frame brings the question back here. The lines name the
+// dungeon and the battleground instead of their ids.
+test("the proposal is asked once beside the native finder, and the prompts name the dungeon and the battleground", () => {
+  const proposal = { dungeonEntry: 40 | (1 << 24), state: 0, proposalId: 7, encounters: 0, showWindow: true,
+    players: [{ roles: 2, self: true, inDungeon: false, sameGroup: false, answered: false, accepted: false }] };
+  const world = lfgWorld({ lfgProposal: proposal, lfgOfferContinue: 40 | (1 << 24) });
+  world.battlefieldQueues.set(0, {
+    queueSlot: 0, status: 1, isArena: false, arenaType: 0, bgTypeId: 2, timeInQueue: 0, averageWaitTime: 0, elapsedTime: 0,
+  });
+  game.world = world;
+  const panel = () => document.body.children.find((element) => element.id === "interaction-prompts");
+  prompts.registerInteractionPromptNames({
+    dungeon: (id) => (id === 40 ? "Вершина Утгард" : undefined),
+    battleground: (id) => (id === 2 ? "Ущелье Песни Войны" : undefined),
+  });
+  try {
+    social.showLfg();
+    assert.equal(dom.lfgWindow.hidden, false, "a proposal opens the native finder with its own answer buttons");
+    prompts.showInteractionPrompts(0);
+    const beside = allText(panel());
+    assert.doesNotMatch(beside, /Войти\?/, "not asked a second time beside the finder");
+    assert.match(beside, /Вершина Утгард пройдено/, "the continue offer names the dungeon");
+    assert.match(beside, /Поле боя «Ущелье Песни Войны»/, "the queue row names the battleground");
+    assert.doesNotMatch(beside, /Подземелье 40|Поле боя 2\b/);
+    social.closeLfgWindow();
+    prompts.updateInteractionPrompts(performance.now());
+    assert.match(allText(panel()), /Вершина Утгард: группа готова .*Войти\?/,
+      "the finder closed: the next frame asks here, by name");
+    // The proposal alone: the panel was hidden (its one-second tick idle), and the closed finder
+    // still brings the question back on the next frame.
+    prompts.resetInteractionPrompts();
+    world.lfgOfferContinue = undefined;
+    world.battlefieldQueues.clear();
+    social.showLfg();
+    prompts.showInteractionPrompts(0);
+    assert.equal(panel().hidden, true, "nothing else to ask: the panel stays down beside the finder");
+    social.closeLfgWindow();
+    prompts.updateInteractionPrompts(performance.now());
+    assert.equal(panel().hidden, false);
+    assert.match(allText(panel()), /Войти\?/);
+  } finally {
+    prompts.registerInteractionPromptNames({ dungeon: undefined, battleground: undefined });
+    prompts.resetInteractionPrompts();
+    game.world = undefined;
+  }
+});

@@ -91,5 +91,6 @@ test("the renderer hangs the tint on cloned materials and lets go of them", asyn
   assert.match(renderer, /clone\.emissive\.setHex\(item\.glow!\.color\)/, "emissive, never the shared base colour");
   assert.match(renderer, /#disposeAttachedGlow\(node\)/, "a rebuild lets go of the old clones");
   const loop = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
-  assert.match(loop, /attachedGlowTint\(object, slot/, "the frame resolves per worn weapon");
+  // 05.10-A7a-E (6.14): `attachedGlow` carries the ItemVisuals slots beside the tint.
+  assert.match(loop, /attachedGlow\(object, slot/, "the frame resolves per worn weapon");
 });

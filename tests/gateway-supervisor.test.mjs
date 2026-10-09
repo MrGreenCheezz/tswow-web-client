@@ -8,7 +8,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { patchChangeMessage, superviseGateway } from "../dist/code/gateway/SupervisedGateway.js";
-import { GatewaySupervisor, SUPERVISOR_DEFAULTS, restartDecision } from "../tools/gateway-supervisor.mjs";
+import { GatewaySupervisor, SUPERVISOR_DEFAULTS, restartDecision, supervisorOptionsFromEnv } from "../tools/gateway-supervisor.mjs";
 import { repositoryRoot } from "../tools/paths.mjs";
 
 test("the restart decision waits for a quiet chain, a finished build and an empty world", () => {
@@ -207,19 +207,150 @@ test("a child that ignores shutdown is killed, and a restart that dies before re
   assert.deepEqual(h.exits, []);
 });
 
-test("a crash or a failed first start ends the supervisor like an unsupervised gateway", () => {
+test("a failed first start, or a clean exit, ends the supervisor like an unsupervised gateway", () => {
   const failedStart = harness();
   new GatewaySupervisor(failedStart.deps).start();
   failedStart.children[0].exit(1);
   assert.deepEqual(failedStart.exits, [1]);
   assert.equal(failedStart.children.length, 1, "no restart loop over a broken configuration");
 
-  const crash = harness();
-  new GatewaySupervisor(crash.deps).start();
-  crash.children[0].reply({ type: "ready" });
-  crash.children[0].exit(3);
-  assert.deepEqual(crash.exits, [3]);
-  assert.equal(crash.children.length, 1);
+  // Ctrl+C reaching the child first: it leaves with 0, and that is not a crash.
+  const clean = harness();
+  new GatewaySupervisor(clean.deps).start();
+  clean.children[0].reply({ type: "ready" });
+  clean.children[0].exit(0);
+  assert.deepEqual(clean.exits, [0]);
+  assert.equal(clean.children.length, 1);
+});
+
+test("10.15 (A): a running gateway that crashes is started again, with growing pauses", async () => {
+  const h = harness();
+  const supervisor = new GatewaySupervisor(h.deps);
+  supervisor.start();
+  h.children[0].reply({ type: "ready" });
+  h.children[0].exit(3);
+  assert.deepEqual(h.exits, [], "the supervisor stays");
+  assert.equal(supervisor.phase, "waiting-retry");
+  assert.ok(h.logs.some((line) => /gateway exited \(code 3\); restarting in 1 s \(crash 1 of 5 allowed in 10 min\)/.test(line)),
+    h.logs.join("\n"));
+  await h.advance(999);
+  assert.equal(h.children.length, 1);
+  await h.advance(1);
+  assert.equal(h.children.length, 2, "forked again after 1 s");
+  h.children[1].reply({ type: "ready" });
+  assert.equal(supervisor.phase, "running");
+  h.children[1].exit(null, "SIGKILL");
+  await h.advance(1_999);
+  assert.equal(h.children.length, 2);
+  await h.advance(1);
+  assert.equal(h.children.length, 3, "the second crash waits 2 s");
+  assert.deepEqual(h.exits, []);
+});
+
+test("10.15 (A): a sixth crash inside ten minutes ends the supervisor; crashes spread wider do not add up", async () => {
+  const h = harness();
+  const supervisor = new GatewaySupervisor(h.deps);
+  supervisor.start();
+  const crashOnce = async () => {
+    const child = h.children.at(-1);
+    child.reply({ type: "ready" });
+    child.exit(1);
+    await h.advance(60_000);
+  };
+  for (let crash = 0; crash < 5; crash++) await crashOnce();
+  assert.deepEqual(h.exits, []);
+  assert.equal(h.children.length, 6, "five restarts");
+  h.children.at(-1).reply({ type: "ready" });
+  h.children.at(-1).exit(7);
+  assert.deepEqual(h.exits, [7], "the sixth crash in the window is not hidden");
+  assert.ok(h.logs.some((line) => /crashed 6 times in 10 min \(code 7\); giving up/.test(line)));
+  assert.equal(supervisor.phase, "exited");
+
+  const spread = harness();
+  new GatewaySupervisor(spread.deps).start();
+  for (let crash = 0; crash < 8; crash++) {
+    const child = spread.children.at(-1);
+    child.reply({ type: "ready" });
+    await spread.advance(5 * 60_000);
+    child.exit(1);
+    await spread.advance(60_000);
+  }
+  assert.deepEqual(spread.exits, [], "one crash every six minutes never reaches five in ten");
+  assert.equal(spread.children.length, 9);
+});
+
+test("10.15 (A): a stop during the pause after a crash forks nothing", async () => {
+  const h = harness();
+  const supervisor = new GatewaySupervisor(h.deps);
+  supervisor.start();
+  h.children[0].reply({ type: "ready" });
+  h.children[0].exit(1);
+  supervisor.stop();
+  await h.advance(120_000);
+  assert.equal(h.children.length, 1);
+  assert.deepEqual(h.exits, [0]);
+});
+
+test("10.15: GATEWAY_SUPERVISE alone restarts crashes and leaves a patch change to the owner", async () => {
+  const h = harness({ marker: new Date(0).toISOString() });
+  const supervisor = new GatewaySupervisor(h.deps, { restartOnPatch: false, buildTimeoutMs: 0, quietMs: 0 });
+  supervisor.start();
+  const child = h.children[0];
+  child.reply({ type: "ready" });
+  child.reply({ type: "patch-chain-changed" });
+  await h.advance(300_000);
+  assert.deepEqual(child.sent, [], "no status?, no shutdown");
+  assert.ok(h.logs.some((line) => /restart the gateway yourself/.test(line)));
+  child.exit(1);
+  await h.advance(1_000);
+  assert.equal(h.children.length, 2, "a crash is still restarted");
+});
+
+test("10.15: the supervisor options come from the environment, and a bad deadline is refused", () => {
+  assert.deepEqual(supervisorOptionsFromEnv({}), { restartOnPatch: false });
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_ON_PATCH: "1" }), { restartOnPatch: true });
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_ON_PATCH: "1", GATEWAY_RESTART_DEADLINE_MIN: "15" }),
+    { restartOnPatch: true, playerDeadlineMs: 15 * 60_000 });
+  assert.deepEqual(supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: "" }), { restartOnPatch: false });
+  for (const bad of ["-1", "1.5", "soon", "100000"]) {
+    assert.throws(() => supervisorOptionsFromEnv({ GATEWAY_RESTART_DEADLINE_MIN: bad }), /GATEWAY_RESTART_DEADLINE_MIN/);
+  }
+  assert.equal(SUPERVISOR_DEFAULTS.playerDeadlineMs, 0, "by default players hold a restart back for ever");
+});
+
+test("10.15 (B): past the owner's deadline players no longer hold the restart back", () => {
+  const base = { latchAt: 100_000, lastChangeAt: 100_000, childStartedAt: 50_000, markerFinishedAt: 104_000 };
+  const players = { auth: 0, world: 2 };
+  assert.deepEqual(restartDecision({ ...base, now: 200_000, clients: players, settledAt: 105_000 }),
+    { action: "wait", reason: "players" }, "no deadline: wait for ever");
+  assert.deepEqual(restartDecision({ ...base, now: 704_999, clients: players, settledAt: 105_000, playerDeadlineMs: 600_000 }),
+    { action: "wait", reason: "players" });
+  assert.deepEqual(restartDecision({ ...base, now: 705_000, clients: players, settledAt: 105_000, playerDeadlineMs: 600_000 }),
+    { action: "restart", reason: "deadline", force: true });
+  assert.deepEqual(restartDecision({ ...base, now: 105_000, playerDeadlineMs: 600_000, settledAt: undefined }),
+    { action: "ask" }, "the deadline counts from when the build settled, not from the latch");
+});
+
+test("10.15 (B): the supervisor forces the restart at the deadline and the gateway leaves with players", async () => {
+  const h = harness();
+  const gateways = supervisedGateways(h);
+  const supervisor = new GatewaySupervisor(h.deps, { buildTimeoutMs: 0, quietMs: 0, playerDeadlineMs: 60_000 });
+  supervisor.start();
+  await flush();
+  const [first] = gateways;
+  first.sessions = [{ auth: 0, world: 1 }];
+  first.channel.send(patchChangeMessage({ at: new Date(h.now).toISOString(), first: true, epoch: 1, changes: 1 }));
+  await flush();
+  await h.advance(30_000);
+  await flush();
+  assert.deepEqual(first.shutdowns, [], "inside the deadline the player keeps the gateway");
+  await h.advance(31_000);
+  await flush();
+  assert.deepEqual(h.children[0].sent.at(-1), { type: "shutdown", reason: "restart", force: true });
+  assert.deepEqual(first.shutdowns, [0], "a forced restart is not declined");
+  assert.ok(h.logs.some((line) => /players held the restart back for 1 min/.test(line)));
+  await flush();
+  assert.equal(h.children.length, 2);
 });
 
 test("Ctrl+C asks the child to close and leaves with it; a closed channel is not a crash", async () => {

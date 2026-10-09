@@ -78,7 +78,8 @@ test("RuneFrame.xml sits at its stock slot; for a death knight it ends the nil R
   const vertical = FRAMEXML_VERTICAL_TOC.map(normalize);
   assert.ok(vertical.includes("runeframe.xml"), "RuneFrame.xml is in the vertical");
   assert.deepEqual(vertical.slice(vertical.indexOf("runeframe.xml"), vertical.indexOf("runeframe.xml") + 3),
-    ["runeframe.xml", "easymenu.lua", "alternatepowerbar.xml"], "stock lines 138, 139 and 143 in their order");
+    // 11.02-F2: VehicleMenuBar.xml (stock line 142) now stands between EasyMenu.lua and AlternatePowerBar.xml.
+    ["runeframe.xml", "easymenu.lua", "vehiclemenubar.xml"], "stock lines 138, 139 and 142 in their order");
   let baseline;
   let candidate;
   try {
@@ -195,4 +196,40 @@ test("a warrior loads the same RuneFrame hidden and raises nothing it did not ra
     candidate?.boot.close();
     baseline?.boot.close();
   }
+});
+
+test("addonsOnly: the death knight's RuneFrame stays loaded but hidden, and its sweeps never tick", withClient, async () => {
+  const { hideFrameXmlRuneFrame } = await import("../dist/code/browser/framexml/FrameXmlRunes.js");
+  const { boot, seam } = await load(FRAMEXML_VERTICAL_TOC);
+  try {
+    const errors = boot.errorCount;
+    assert.equal(lua(boot, "return RuneFrame:IsShown()")[0], true, "stock keeps it for a Human death knight");
+    hideFrameXmlRuneFrame(boot);
+    assert.deepEqual(lua(boot, "return RuneFrame:IsShown(), RuneButtonIndividual5:IsVisible()", 2), [false, false]);
+    // A rune spent after the mount: RuneFrame_OnEvent still hangs RuneButton_OnUpdate on its button,
+    // but a hidden frame's OnUpdate does not run, and nothing in the stock files shows it again.
+    lua(boot, "__runeTicks = 0 local update = RuneButton_OnUpdate RuneButton_OnUpdate = function(...) __runeTicks = __runeTicks + 1 return update(...) end", 0);
+    seam.hudMechanics.runes.useRune(3);
+    // RuneFrame's own PLAYER_ENTERING_WORLD repaint (the whole event would also run MainMenuBar.lua,
+    // which raises over the canned seam on a second PLAYER_ENTERING_WORLD, unrelated to runes).
+    lua(boot, 'RuneFrame_OnEvent(RuneFrame, "PLAYER_ENTERING_WORLD")', 0);
+    boot.bridge.tick(0.016);
+    boot.bridge.tick(0.016);
+    assert.deepEqual(lua(boot, "return RuneFrame:IsShown(), __runeTicks", 2), [false, 0]);
+    assert.equal(boot.errorCount, errors);
+    // A frame the corpus did not load (another TOC) is not an error.
+    hideFrameXmlRuneFrame({ bridge: { getFrame: () => undefined, Hide: () => assert.fail("nothing to hide") } });
+  } finally {
+    boot.close();
+  }
+});
+
+test("the world mount hides RuneFrame in the addonsOnly branch before the session events", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/browser/framexml/FrameXmlWorldMount.ts", import.meta.url), "utf8");
+  const start = source.indexOf("beforeExercise: (loadedBoot) => {");
+  assert.ok(start > 0, "the mount's beforeExercise hook");
+  const body = source.slice(start, source.indexOf("\n    },", start));
+  assert.match(body, /if \(options\.addonsOnly\) \{\s*(?:\/\/[^\n]*\n\s*)*hideFrameXmlRuneFrame\(loadedBoot\);\s*return;\s*\}/,
+    "addonsOnly hides the stock rune bar and returns before the stock HUD adapters");
 });

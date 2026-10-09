@@ -90,7 +90,7 @@ test("client settings are distributed across small, named groups", () => {
     "the old catch-all world group must not survive");
   assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "renderScale")?.group, "Графика");
   assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "godRays")?.group, "Эффекты");
-  assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "cameraMaxDistance")?.group, "Игра");
+  assert.equal(SETTING_DEFINITIONS.find((definition) => definition.id === "cameraDistancePercent")?.group, "Игра");
 });
 
 test("settings search uses player-facing labels and hints", () => {
@@ -241,4 +241,19 @@ test("the settings list is the window's one scroller: per-tab position, wheel co
   assert.match(css, /\.settings-section-title\s*\{[^}]*position:\s*sticky/s);
   assert.match(css, /\.setting-label > span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
     "a long Russian label wraps instead of pushing its control out of the row");
+});
+
+// DEC-A 3.11 (04.10, owner decision 4): the client's assistAttack — the stock Combat panel's ASSIST_ATTACK
+// («Автоматическая помощь», GlobalStrings.lua; tooltip OPTION_TOOLTIP_ASSIST_ATTACK) — is a «Игра» switch,
+// off by default: Wow.exe registers the CVar beside autoRangedCombat with "0" (default string at 0x009e14a0,
+// pointer 0x00bd0918). Native ASSISTTARGET and the stock AssistUnit read it.
+test("DEC-A 3.11: assistAttack is the stock «Автоматическая помощь», a «Игра» switch, off by default", () => {
+  const definition = SETTING_DEFINITIONS.find((entry) => entry.id === "assistAttack");
+  assert.ok(definition, "the setting exists");
+  assert.equal(definition.group, "Игра");
+  assert.equal(definition.kind, "boolean");
+  assert.equal(definition.fallback, false, "Wow.exe's default \"0\"");
+  assert.equal(definition.label, "Автоматическая помощь", "ASSIST_ATTACK in ruRU GlobalStrings.lua");
+  assert.equal(definition.ownWindow, undefined, "drawn in the settings window, not by its own owner");
+  assert.equal(settingMatchesQuery(definition, "помощь"), true);
 });

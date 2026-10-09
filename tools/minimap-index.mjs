@@ -102,6 +102,54 @@ export function tilesOfMap(index, directory) {
   return tiles;
 }
 
+/**
+ * 05.10-A7b-3 (7.14): a WMO group's baked minimap tile, `<root>_<group>_<x>_<y>.blp` — the format
+ * string `%s_%03d_%02d_%02d.blp` beside `%s\map%d_%02d.blp` and `World\` in Wow.exe's minimap code
+ * (`docs/implementation/probes/A7b/probe-exe-around.out.txt`). All 11,106 `wmo\…` keys of the
+ * client's md5translate follow it, over 793 roots (`.runtime/re-2026-10-05/A7b-3/probe-wmo-minimap.out.txt`).
+ */
+const WMO_TILE_NAME = /^(.+)_(\d{3})_(\d{2})_(\d{2})\.blp$/;
+
+/**
+ * 05.10-A7b-3 (7.14): yards per WMO minimap tile, along the group's model X (first number) and Y
+ * (second). Measured, not read: across 497 groups of Stormwind, Undercity and Ironforge every group
+ * holds exactly ceil(box extent / 128) tiles on both axes, and across 80 groups whose two counts
+ * differ the first number follows model X on all 80 and model Y on none — so a tile is 128 yards
+ * from the group box's minimum corner. The picture's orientation inside the tile is not settled by
+ * files; the drawing (slice 4) checks it against a frame.
+ */
+export const WMO_MINIMAP_TILE_YARDS = 128;
+
+/** 05.10-A7b-3: the md5translate root of a WMO path: `World\` and `.wmo` dropped, lower case. */
+export function wmoMinimapRoot(wmoPath) {
+  return String(wmoPath).replaceAll("/", "\\").toLowerCase().replace(/^world\\/, "").replace(/\.wmo$/, "");
+}
+
+/** 05.10-A7b-3 (7.14): one WMO's tiles as `{ "<group>": { "<x>-<y>": hash } }`; `{}` when none. */
+export function wmoTilesOf(index, wmoPath) {
+  const root = wmoMinimapRoot(wmoPath);
+  const tiles = {};
+  for (const [key, hash] of index) {
+    const name = WMO_TILE_NAME.exec(key);
+    if (!name || name[1] !== root) continue;
+    const group = Number(name[2]);
+    (tiles[group] ??= {})[`${Number(name[3])}-${Number(name[4])}`] = hash;
+  }
+  return tiles;
+}
+
+/** 05.10-A7b-3 (7.14): every root's tiles in one pass, `{ "<root>": { "<group>": { "<x>-<y>": hash } } }`. */
+export function wmoMinimapRoots(index) {
+  const roots = {};
+  for (const [key, hash] of index) {
+    const name = WMO_TILE_NAME.exec(key);
+    if (!name) continue;
+    const groups = (roots[name[1]] ??= {});
+    (groups[Number(name[2])] ??= {})[`${Number(name[3])}-${Number(name[4])}`] = hash;
+  }
+  return roots;
+}
+
 /** Where a hash lives once it is a texture path the gateway understands. */
 export function minimapTexturePath(hash) {
   return `textures\\Minimap\\${hash}.blp`;

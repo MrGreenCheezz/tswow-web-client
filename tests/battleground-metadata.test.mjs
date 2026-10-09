@@ -59,11 +59,17 @@ test("/dbc/battlegrounds is CORS-protected and session-cached like other DBC rou
     assert.equal((await fetch(url)).status, 403);
     const first = await fetch(url, { headers: { origin: "http://127.0.0.1:5173" } });
     assert.equal(first.status, 200);
-    assert.equal(first.headers.get("cache-control"), "public, max-age=3600");
+    // 10.12: dataset answers revalidate (CachePolicy.ts) instead of living an hour past a build.
+    assert.equal(first.headers.get("cache-control"), "public, max-age=0, must-revalidate");
+    assert.match(first.headers.get("etag") ?? "", /^"d1-[0-9a-f]+-[0-9a-f]+"$/);
     assert.equal(first.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
     const firstBody = await first.json();
     const second = await fetch(url, { headers: { origin: "http://127.0.0.1:5173" } });
     assert.deepEqual(await second.json(), firstBody);
+    const revalidated = await fetch(url, {
+      headers: { origin: "http://127.0.0.1:5173", "if-none-match": first.headers.get("etag") },
+    });
+    assert.equal(revalidated.status, 304);
   } finally {
     await gateway.close();
   }

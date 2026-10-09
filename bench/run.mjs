@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
-import { summarize } from './metrics.mjs';
-import { DEFAULT_BENCHMARK_TARGET, parseBundleOptions } from './run-options.mjs';
+import { shadowCascadeSummary, summarize, wmoRangeSummary } from './metrics.mjs';
+import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_NAMES, DEFAULT_BENCHMARK_TARGET, heapProfileFileName, heapProfileSamplingOptions, parseBundleOptions,
+  parseHeapProfileMode } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -37,8 +38,10 @@ async function main() {
   // --links: the harness names the draw behind every program linked inside a measured frame.
   const links = args.includes('--links');
   // Allocation sampling over the measured seconds (CDP HeapProfiler): where the frame's garbage comes
-  // from. Its own overhead makes the run incomparable, like --trace.
-  const heapProfile = args.includes('--heap-profile');
+  // from. Its own overhead makes the run incomparable, like --trace. --heap-profile=promoted keeps only
+  // what outlived the young generation (P1-03a): null, 'all' or 'promoted'.
+  const heapProfileMode = parseHeapProfileMode(args);
+  const heapProfile = heapProfileMode !== null;
   const diagnostic = args.includes('--diagnostic');
   const captureAbba = args.includes('--capture-abba');
   // Development runs under background load: the load is still recorded and the result is marked
@@ -96,6 +99,13 @@ async function main() {
   if (variantDir && bundle.variantFiles.length === 0) throw new Error(`--variant ${variantDir} replaced no source file`);
   const bundleTarget = bundle.bundleOptions.target;
   console.log(`Bundle target: ${[bundleTarget].flat().join(',')}${bundleTarget === DEFAULT_BENCHMARK_TARGET ? '' : ' (not the production target: the result is not valid)'}`);
+  // P1-02a: --bench-env dev rebuilds the former bundle (import.meta.env undefined → three's shader
+  // checks on); results before P1-02a compare only with it, and the run is invalid.
+  const bundleEnv = bundle.bundleOptions.env;
+  console.log(`Bundle env: ${bundleEnv}${bundleEnv === DEFAULT_BENCHMARK_ENV ? '' : ' (not the production env: the result is not valid)'}`);
+  // 09.10: --bench-names keep rebuilds the former bundle (esbuild keepNames: a __name wrapper on every closure).
+  const bundleNames = bundle.bundleOptions.names;
+  console.log(`Bundle names: ${bundleNames}${bundleNames === DEFAULT_BENCHMARK_NAMES ? '' : ' (the former keepNames bundle: the result is not valid)'}`);
   const sha = data => createHash('sha256').update(data).digest('hex');
   const sourceHashes = {};
   for (const path of Object.keys(bundle.metafile.inputs).sort()) {
@@ -106,7 +116,7 @@ async function main() {
   for (const path of bundle.variantFiles) sourceHashes[`variant:${path}`] = sha(await readFile(path));
   const sourceHash = sha(JSON.stringify(sourceHashes));
   // How the sources were built, beside their hashes but outside sourceHash: two sides of an A/B that
-  // differ only in --target keep one sourceHash and differ in `bundle`.
+  // differ only in --target or --bench-env keep one sourceHash and differ in `bundle`.
   sourceHashes['bundle-options'] = sha(JSON.stringify(bundle.bundleOptions));
   const configHash = sha(JSON.stringify(config));
   // The asset cache depends on scenes and views, never on which CPUs run the browser.
@@ -122,6 +132,7 @@ async function main() {
   const blobTasks = new Map();
   const requested = new Map();
   const requestFailures = [];
+  const knownMissingTextureLines = new Set(); // 06.10-P1-00b
   let cacheMisses = 0;
   const gateway = new URL(process.env.BENCH_GATEWAY_URL ?? 'http://127.0.0.1:8090');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(gateway.hostname)) throw new Error('Benchmark gateway must be loopback');
@@ -226,7 +237,7 @@ async function main() {
       '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])];
   let browser;
   const result = { schemaVersion: 1, timestamp: stamp, label: value('--label', smoke ? 'smoke' : trace ? 'trace' : 'measurement'),
-    smoke, trace, diagnostic, captureAbba, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
+    smoke, trace, diagnostic, captureAbba, heapProfileMode, config, configHash, sourceHash, sourceHashes, bundle: bundle.bundleOptions,
     git: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), dirty: Boolean(git('status', '--porcelain')) },
     host: { platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, cores: os.cpus().length,
       memoryBytes: os.totalmem(), node: process.version, cpuPolicy },
@@ -295,7 +306,17 @@ async function main() {
     page.setDefaultTimeout(config.timeoutSeconds * 1000);
     const pageErrors = [];
     page.on('pageerror', error => { pageErrors.push(error.message); console.error(`Page error: ${error.message}`); });
-    page.on('console', message => { if (message.type() === 'error') { pageErrors.push(message.text()); console.error(message.text()); } });
+    page.on('console', message => {
+      if (message.type() !== 'error') return;
+      // 06.10-P1-00b: Chrome's own line for a texture the corpus lacks (the cache holds its 404); the
+      // harness accounts for it (KnownMissingTextures.ts) and the result keeps it in readiness.
+      const at = message.location()?.url;
+      if (at && /^Failed to load resource: the server responded with a status of 404\b/.test(message.text())) {
+        const key = (() => { try { const u = new URL(at); return u.origin === origin && u.pathname === '/texture' ? u.pathname + u.search : null; } catch { return null; } })();
+        if (key && cache[key]?.status === 404) { knownMissingTextureLines.add(key); return; }
+      }
+      pageErrors.push(message.text()); console.error(message.text());
+    });
     await page.goto(sceneUrl, { waitUntil: 'load' });
     // The shell has already pinned itself; re-applying its own policy here verifies the mask on
     // every process it owns. With --cpu-class none nothing is touched.
@@ -442,14 +463,13 @@ async function main() {
         if (trace) { await client.send('Profiler.enable'); await client.send('Profiler.setSamplingInterval', { interval: 1000 }); await client.send('Profiler.start'); }
         if (heapProfile) {
           await client.send('HeapProfiler.enable');
-          await client.send('HeapProfiler.startSampling', { samplingInterval: 16384,
-            includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+          await client.send('HeapProfiler.startSampling', heapProfileSamplingOptions(heapProfileMode));
         }
         const missesAtMeasurement = cacheMisses;
         const raw = await page.evaluate(() => window.__bench.run());
         if (heapProfile) {
           const sampled = await client.send('HeapProfiler.stopSampling');
-          await writeFile(join(out, `${scenario}.heapprofile`), JSON.stringify(sampled.profile));
+          await writeFile(join(out, heapProfileFileName(scenario, heapProfileMode)), JSON.stringify(sampled.profile));
         }
         if (trace) raw.programEvents = await page.evaluate(() => window.__benchProgramEvents);
         if (trace) raw.programFirstUse = await page.evaluate(() => window.__benchProgramFirstUse);
@@ -493,12 +513,15 @@ async function main() {
           screenshots.push(name);
         }
         pageErrors.push(...screenshotErrors);
-        const scenarioResult = { ...raw, summary, prepared, screenshots, pageErrors,
+        const scenarioResult = { ...raw, summary, wmoRange: wmoRangeSummary(raw), shadowCascadeSummary: shadowCascadeSummary(raw), prepared, screenshots, pageErrors,
           screenshotPolicy: scenario.startsWith('world-crowd-') || isCityScenario(scenario) ? 'fresh-prepared-scene-v1' : 'after-measurement-v1',
           cacheMisses: cacheMisses - missesBefore, measurementCacheMisses: measurementMisses };
         result.scenarios.push(scenarioResult);
         await writeFile(resultPath, JSON.stringify({ ...result, incomplete: true }, null, 2));
         console.log(`${scenario}: ${summary.averageFps.toFixed(2)} FPS; 1% ${summary.onePercentLowFps.toFixed(2)}; p99 ${summary.p99FrameMs.toFixed(2)}ms; >30ms ${summary.framesOver30Ms}; CPU ${summary.cpuMs.mean.toFixed(2)}ms; GPU ${summary.gpuMs.mean?.toFixed(2) ?? 'unavailable'}ms`);
+        // P2-02b: renders and CPU of each shadow cascade over the measured frames, and why the cached one re-rendered.
+        if (scenarioResult.shadowCascadeSummary) console.log(`${scenario}: shadow cascades ${scenarioResult.shadowCascadeSummary.cascades.map((c, i) => `#${i} ${c.renders} renders (${c.rendersPerMinute?.toFixed(0)}/min) ${c.cpuMsPerRender?.toFixed(3) ?? '-'} ms/render`).join(' · ')}; far reasons ${JSON.stringify(scenarioResult.shadowCascadeSummary.farReasons)}`);
+        if (scenarioResult.wmoRange) console.log(`${scenario}: wmoRange ${scenarioResult.wmoRange.recomputes}/${scenarioResult.wmoRange.selects} recomputes/selects; ${scenarioResult.wmoRange.recomputesPerFrame.toFixed(3)} recomputes/frame`);
         await browser.close(); browser = undefined;
         if (pageErrors.length) result.errors.push(...pageErrors.map(error => `${scenario}: ${error}`));
         if (measurementMisses) result.errors.push(`${scenario}: ${measurementMisses} uncached assets during measurement; run npm run bench -- --prepare, then repeat`);
@@ -551,13 +574,15 @@ async function main() {
     result.assetManifest = Object.fromEntries([...requested.entries()].sort(([a], [b]) => a.localeCompare(b)));
     result.assetHash = sha(JSON.stringify(result.assetManifest));
     result.errors.push(...requestFailures);
+    result.knownMissingTextures = [...knownMissingTextureLines].sort(); // 06.10-P1-00b
     result.allowLoad = allowLoad;
     result.variant = variantDir ? { dir: variantDir, files: bundle.variantFiles } : null;
     // A player-style run (no pinning, a visible window or the desktop shell) answers a different
     // question than the strict P-core headless baseline, so it never replaces one.
     result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir
       && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
-      && bundleTarget === DEFAULT_BENCHMARK_TARGET;
+      && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV
+      && bundleNames === DEFAULT_BENCHMARK_NAMES;
     result.comparable = result.valid && !trace && !captureAbba && !heapProfile;
     await writeFile(resultPath, JSON.stringify(result, null, 2));
     console.log(`Result: ${resultPath}`);

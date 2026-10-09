@@ -3,6 +3,7 @@ import type { WorldObjectState } from "../world/WorldState.js";
 import { POWER, readField } from "../world/Fields.js";
 import { UPDATE_FIELDS } from "../generated/updateFields.js";
 import { game } from "./game/Context.js";
+import { globalCooldownEndFor } from "./game/PredictedGlobalCooldown.js"; // L13 5.30
 import { spellButtonUsable, type SpellMetadata } from "./SpellMetadata.js";
 
 /** The local reasons a browser action can be rejected before it reaches the realm. */
@@ -129,7 +130,8 @@ export function spellCastBlockReason(
   if (self && (self.fields.get(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset) ?? 1) <= 0) return "dead";
   if (world.cooldownRemaining(spellId, now) > 0) return "cooldown";
   if (world.isSpellOnHold?.(spellId)) return "hold";
-  if (metadata.startRecoveryTime > 0 && game.globalCooldownUntil > now) return "global-cooldown";
+  // L13 5.30: by StartRecoveryCategory (a row without it: StartRecoveryTime > 0 and the shared end, as before).
+  if (globalCooldownEndFor(game, metadata) > now) return "global-cooldown";
 
   if (!spellPowerAvailable(world, metadata)) return "power";
   return undefined;

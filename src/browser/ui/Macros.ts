@@ -28,7 +28,9 @@ import {
   isAccountMacro, macroIndexes, macroOptions, macroProblems, macrosForSet, nativeMacroEdit, nextFreeMacro, parseMacros,
   putMacro, removeMacro, serialiseMacros, trimMacroName, type Macro,
 } from "./MacroModel.js";
-import { Panel, Tabs, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, Tabs, confirmPanel } from "./Widgets.js";
+import { macroActionDragPayload } from "./ActionDrag.js";
+import { beginIconDrag } from "./DragGhost.js";
 
 const accountMacros = new AccountStore<Macro[]>({
   slot: GLOBAL_MACROS_CACHE,
@@ -235,9 +237,18 @@ export function showMacros(): void {
     button.textContent = macro ? macro.name : "";
     button.setAttribute("aria-label", macro ? `Макрос ${index}: ${macro.name}` : `Пустой слот ${index}`);
     button.setAttribute("aria-pressed", String(index === selected));
-    button.title = macro ? macro.name : `Создать макрос в слоте ${index}`;
+    setTip(button, macro ? macro.name : `Создать макрос в слоте ${index}`);
     if (!macro) button.classList.add("macro-empty");
     button.addEventListener("click", () => { selected = index; showMacros(); });
+    // 4.05: a macro goes onto a bar the way the original client puts it there — dragged out of
+    // the window. An empty slot has nothing to drag (NativeAppShell lets only draggable="true" go).
+    if (macro) {
+      button.draggable = true;
+      button.addEventListener("dragstart", (event) => {
+        event.dataTransfer?.setData(...macroActionDragPayload(index));
+        beginIconDrag(event, button, { label: macro.name.trim().charAt(0) || "?" });
+      });
+    }
     return button;
   }));
 
@@ -333,9 +344,4 @@ export function showMacros(): void {
     : `Слот ${selected} · только у этого персонажа`;
 
   editor.append(slotNote, name, body, counter, problems, actions, hint);
-}
-
-/** Puts a macro on the bar the way the original client does: drag it out of the window. */
-export function macroDragPayload(index: number): string {
-  return JSON.stringify({ action: index, type: 0x40 });
 }

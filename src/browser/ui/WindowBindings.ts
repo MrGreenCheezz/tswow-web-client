@@ -79,6 +79,7 @@ import { arenaOpponentGuids, engagedBossGuids } from "../game/Encounters.js";
 import type { ExpressionScope } from "./WindowExpression.js";
 import { WINDOW_STATE_ROOTS } from "./WindowSchema.js";
 import { patchRegistry, windowRegistry } from "./WindowRegistry.js";
+import { liveAreaIdAt } from "../AreaLocatorLive.js"; // 05.10-A7b-4
 
 /**
  * `UNIT_FLAG_IN_COMBAT`, `UnitDefines.h:154`. The only thing on the wire that says "in combat".
@@ -676,7 +677,8 @@ export function liveWindowSnapshot(options: LiveSnapshotOptions = {}): Expressio
   // cheap enough to do on every frame rather than on a timer. Reading the server's last
   // `SMSG_INIT_WORLD_STATES` instead would have been cheaper still and would have made a window's
   // zone label disagree with the minimap two feet away from it.
-  const areaId = game.terrain?.areaAt(world?.mapId, self?.position?.x ?? 0, self?.position?.y ?? 0) ?? 0;
+  // 05.10-A7b-4 (7.13): the located area (a WMO room's WMOAreaTable area, the grid, then the map's).
+  const areaId = liveAreaIdAt(world?.mapId, self?.position?.x ?? 0, self?.position?.y ?? 0);
   const area = areas?.area(areaId);
   const zone = areas?.zoneOf(areaId);
   const members = world?.group?.members ?? [];

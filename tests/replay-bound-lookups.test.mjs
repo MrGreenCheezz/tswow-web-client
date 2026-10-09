@@ -273,7 +273,10 @@ test("world player equipment survives metadata arrival and rebuilds all playable
         // 14 is HD-1: the coordinated pack's family-20 foot and the re-extracted body layers.
         // Pinned rather than read off the constant so a bump has to be noticed here too — this
         // fixture answers the fetch itself and would otherwise go on serving a stale shape.
-        assert.equal(CHARACTER_APPEARANCE_VERSION, 14);
+        // 05.10: ревью G2 — 15 (05.10-A7a-A, 6.10): the request may carry `class`, the answer's geosets gain
+        // the ear stub 701 and 1703. The fixture answers from today's gateway index (`forPlayer`), so it serves the
+        // v15 shape; it drops `class`, which only the death knight's 1703 reads and no row here needs.
+        assert.equal(CHARACTER_APPEARANCE_VERSION, 15);
         const items = (url.searchParams.get("items") ?? "").split(",").filter(Boolean).map((entry) => {
           const [slot, inventoryType, displayId] = entry.split(":").map(Number);
           return { slot, inventoryType, displayId };

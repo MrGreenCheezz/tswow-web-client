@@ -20,9 +20,12 @@
 // cut off rather than left standing.
 
 import type {
-  SpellVisualEffectTransform, SpellVisualKit, SpellVisualMetadata,
+  SpellVisualEffectTransform, SpellVisualKit, SpellVisualMetadata, SpellVisualShake,
 } from "../gateway/SpellVisual.js";
+import type { VisualBeam } from "./ChainBeam.js"; // 05.10-A7a-E
 import type { UnitActionLayer } from "./UnitActionArbiter.js";
+import type { MissileFlightPlan } from "./MissileFlight.js"; // 05.10-A7a-E
+import { kitWoundBehavior } from "./game/AnimationSplit.js"; // 05.10-6.21
 export type { SpellVisualEffectTransform };
 
 /**
@@ -90,13 +93,12 @@ export const MISSILE_MAX_SECONDS = 4;
 export const MISSILE_FALLBACK_SPEED = 24;
 /** A persistent area with no finite SpellDuration still gets a bounded visual lifetime. */
 export const PERSISTENT_AREA_FALLBACK_MS = 1_000;
-/**
- * How far a bolt bows upward, as a fraction of the distance it covers.
- *
- * Not in any table. A dead-straight line between two points at chest height passes through
- * everything in between and reads as a slide rather than a throw; the client's own bolts rise.
- */
-export const MISSILE_ARC = 0.08;
+// 05.10-A7a-E (6.12): MISSILE_ARC (an invented 0.08 bow) is gone. Wow.exe flies a missile straight at the
+// target's current point and bows it only by its SpellMissileMotion script (MissileFlight.ts).
+/** The chest: where a missile is aimed on its target (MissileDestinationAttachment is not settled, 6.12). */
+export const MISSILE_TARGET_ATTACHMENT = 34;
+/** SpellMissileMotion.MissileCount is 1…10 on this dataset; never more instances than this per target. */
+export const MISSILE_COUNT_MAX = 10;
 
 export type Point = { x: number; y: number; z: number };
 
@@ -130,8 +132,11 @@ export interface VisualInstance {
   transform?: SpellVisualEffectTransform;
   /** Where it stands, when it stands anywhere. */
   position?: Point;
-  /** A missile flies from one to the other over its whole life. */
-  flight?: { from: Point; to: Point };
+  /**
+   * A missile flies from one to the other over its whole life. 05.10-A7a-E (6.12): `from`/`to` are the
+   * fallbacks; the renderer launches from `launch`'s attachment and homes on `target`'s (MissileFlight.ts).
+   */
+  flight?: MissileFlightPlan;
   startedAt: number;
   endsAt: number;
   /** Allow a finite, non-flight effect to cover its authored model clip once loaded. */
@@ -148,6 +153,8 @@ export interface VisualAnimationFollowUp {
   animation: number;
   mode: VisualAnimationMode;
   hold: number;
+  /** 05.10-6.21: a kit AnimID wound, chosen by Wow.exe's flinch rule when queued (game/AnimationSplit.ts). */
+  kitWound?: true;
 }
 
 /** A pose the cast asks a unit to strike. */
@@ -167,6 +174,8 @@ export interface VisualAnimation {
    * decides what it may interrupt (see `UnitActionArbiter.ts`). Absent only on hand-authored plans.
    */
   layer?: UnitActionLayer;
+  /** 05.10-6.21: `animation` is a kit AnimID wound (see {@link VisualAnimationFollowUp.kitWound}). */
+  kitWound?: true;
 }
 
 /** A SoundEntries row scheduled alongside the visual plan. */
@@ -252,10 +261,54 @@ export function spellAuraPrewarmPaths(visual: SpellVisualMetadata): string[] {
   return spellVisualPhasePaths([visual.state, visual.stateDone]);
 }
 
+/** 05.10-A7a-E (6.13): a kit's camera shakes, from where its unit stood, at an absolute time. */
+export interface VisualShake {
+  shakes: readonly SpellVisualShake[];
+  point: Point;
+  at: number;
+}
+
 export interface SpellVisualPlan {
   instances: VisualInstance[];
   animations: VisualAnimation[];
   sounds: VisualSound[];
+  /** 05.10-A7a-E (6.13): chain beams (ChainBeam.ts); absent when the plan has none. */
+  beams?: VisualBeam[];
+  /** 05.10-A7a-E (6.13): camera shakes (CameraShake.ts); absent when the plan has none. */
+  shakes?: VisualShake[];
+}
+
+/** 05.10-A7a-E (6.13): beam ends — the caster's spell hand for a cast, its chest for a channel, the target's chest. */
+export const BEAM_CAST_ATTACHMENT = 22;
+export const BEAM_CHEST_ATTACHMENT = 34;
+
+/**
+ * 05.10-A7a-E (6.13): a caster-side kit's beams to the cast's targets, in the order the packet lists them,
+ * each target the start of the next segment (Chain Lightning's jumps; a hypothesis for the multi-target
+ * case). A static target (guid 0) ends the band at its point.
+ */
+function addBeams(
+  plan: SpellVisualPlan,
+  kit: SpellVisualKit | undefined,
+  caster: bigint,
+  casterPoint: Point,
+  targets: readonly { guid: bigint; point: Point }[],
+  startedAt: number,
+  endsAt: number,
+): void {
+  if (!kit?.chains || kit.chains.length === 0 || caster === 0n || targets.length === 0) return;
+  const beams = (plan.beams ??= []);
+  for (const chain of kit.chains) {
+    let from: VisualBeam["from"] = { guid: caster, attachment: BEAM_CAST_ATTACHMENT, point: { ...casterPoint } };
+    for (const target of targets) {
+      const to = target.guid !== 0n
+        ? { guid: target.guid, attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } }
+        : { attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } };
+      beams.push({ effect: chain.effect, from, to, startedAt, endsAt });
+      if (target.guid === 0n) break;
+      from = { guid: target.guid, attachment: BEAM_CHEST_ATTACHMENT, point: { ...target.point } };
+    }
+  }
 }
 
 /** Seconds a missile spends covering `distance` yards at `speed` yards a second. */
@@ -271,37 +324,22 @@ export function missileSeconds(distance: number, speed: number): number {
 }
 
 /**
- * Where a missile is, `progress` of the way through its flight.
- *
- * The bow is a parabola that is zero at both ends and highest in the middle, so the bolt leaves
- * the hand and arrives at the target rather than near them.
+ * Where a missile is, `progress` of the way along the straight line (05.10-A7a-E: no bow; the renderer
+ * flies missiles with MissileFlight.ts, this stays for callers that only want the line).
  */
 export function missilePoint(from: Point, to: Point, progress: number, out: Point): Point {
   const t = progress < 0 ? 0 : progress > 1 ? 1 : progress;
   out.x = from.x + (to.x - from.x) * t;
   out.y = from.y + (to.y - from.y) * t;
-  const distance = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
-  out.z = from.z + (to.z - from.z) * t + distance * MISSILE_ARC * 4 * t * (1 - t);
+  out.z = from.z + (to.z - from.z) * t;
   return out;
 }
 
-/**
- * The tangent of a missile's flight curve, in the same server frame as its endpoints.
- *
- * `missilePoint` deliberately bows a flight upwards. A model that is only given the endpoint yaw
- * then slides sideways through that arc (and has no pitch when the target is above or below the
- * caster). The derivative is the direction the model is actually travelling at this frame, so the
- * renderer can turn the model in all three dimensions without putting scene concerns here.
- */
-export function missileDirection(from: Point, to: Point, progress: number, out: Point): Point {
-  const t = progress < 0 ? 0 : progress > 1 ? 1 : progress;
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const dz = to.z - from.z;
-  const distance = Math.hypot(dx, dy, dz);
-  out.x = dx;
-  out.y = dy;
-  out.z = dz + distance * MISSILE_ARC * 4 * (1 - 2 * t);
+/** The direction of that line, in the same server frame as its endpoints (05.10-A7a-E: no bow). */
+export function missileDirection(from: Point, to: Point, _progress: number, out: Point): Point {
+  out.x = to.x - from.x;
+  out.y = to.y - from.y;
+  out.z = to.z - from.z;
   return out;
 }
 
@@ -372,6 +410,7 @@ function addKit(
 ): void {
   if (!kit) return;
   plan.instances.push(...kitInstances(kit, guid, at, startedAt, endsAt, fitToModel, modelPlayback));
+  if (kit.shake) (plan.shakes ??= []).push({ shakes: kit.shake, point: { ...at }, at: startedAt }); // 05.10-A7a-E
   // Synthetic target 0 is a static point, not a unit the renderer can animate. Keep its
   // world-bound effects and sound, but never enqueue a unit action for a GUID that has no model.
   if (guid !== 0n && includeAnimation) {
@@ -400,7 +439,15 @@ function addAreaKit(
 ): void {
   if (!kit) return;
   plan.instances.push(...areaKitInstances(kit, at, startedAt, endsAt, fitToModel, modelPlayback));
+  if (kit.shake) (plan.shakes ??= []).push({ shakes: kit.shake, point: { ...at }, at: startedAt }); // 05.10-A7a-E
   if (kit.sound > 0) plan.sounds.push({ sound: kit.sound, point: { ...at }, at: startedAt });
+}
+
+/** 05.10-A7a-G2 6.05б: a DynamicObject's PersistentAreaKit at its point, held until the object goes (DynamicObjectVisual.ts). */
+export function planPersistentArea(visual: SpellVisualMetadata, at: Point, now: number): SpellVisualPlan {
+  const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
+  addAreaKit(plan, visual.persistentArea, at, now, Number.POSITIVE_INFINITY, false, "hold");
+  return plan;
 }
 
 function areaPoint(cast: SpellCast): Point {
@@ -443,6 +490,8 @@ export function kitAnimations(
   const primaryHold = mode === "hold" ? hold : 0;
   const start = kitNamesPose(kit.startAnimation);
   const primary = kitNamesPose(kit.animation);
+  // 05.10-6.21: Wow.exe 0x73b140 hands a non-state kit's AnimID wound (8..10) to the flinch chooser.
+  const wound = primary && layer !== "state" && kitWoundBehavior(kit.animation) ? { kitWound: true as const } : {};
   if (start && primary) {
     return [{
       guid,
@@ -450,11 +499,11 @@ export function kitAnimations(
       at,
       hold: 0,
       mode: "once",
-      followUp: { animation: kit.animation, mode, hold: primaryHold },
+      followUp: { animation: kit.animation, mode, hold: primaryHold, ...wound }, // 05.10-6.21
       layer,
     }];
   }
-  if (primary) return [{ guid, animation: kit.animation, at, hold: primaryHold, mode, layer }];
+  if (primary) return [{ guid, animation: kit.animation, at, hold: primaryHold, mode, layer, ...wound }]; // 05.10-6.21
   if (start) return [{ guid, animation: kit.startAnimation, at, hold: 0, mode: "once", layer }];
   return [];
 }
@@ -497,15 +546,30 @@ export function planSpellVisual(
     arrivals.push(arrival);
     if (visual.missile) {
       if (arrival > now) {
-        plan.instances.push({
-          path: visual.missile.path,
-          scale: visual.missile.scale,
-          attachment: visual.missile.attachment,
-          flight: { from: { ...cast.casterPoint }, to: { ...target.point } },
-          startedAt: now,
-          endsAt: arrival,
-          modelPlayback: "hold",
-        });
+        // 05.10-A7a-E (6.12): from the caster's missile attachment to the target's chest, homing, with
+        // the motion script; MissileCount missiles per target, each with its own index.
+        const missile = visual.missile;
+        const count = Math.min(MISSILE_COUNT_MAX, Math.max(1, missile.motion?.count ?? 1));
+        for (let missileIndex = 0; missileIndex < count; missileIndex++) {
+          plan.instances.push({
+            path: missile.path,
+            scale: missile.scale,
+            attachment: missile.attachment,
+            flight: {
+              from: { ...cast.casterPoint },
+              to: { ...target.point },
+              ...(cast.caster !== 0n ? { launch: { guid: cast.caster, attachment: missile.attachment } } : {}),
+              ...(target.guid !== 0n ? { target: { guid: target.guid, attachment: MISSILE_TARGET_ATTACHMENT } } : {}),
+              ...(missile.motion ? { motion: missile.motion } : {}),
+              missileIndex,
+              missileCount: count,
+              spellId: visual.id,
+            },
+            startedAt: now,
+            endsAt: arrival,
+            modelPlayback: "hold",
+          });
+        }
       }
     }
     const targetingEnd = arrival > now ? arrival : now + IMPACT_KIT_MS;
@@ -516,6 +580,16 @@ export function planSpellVisual(
     addKit(plan, visual.targetImpact, "reaction", target.guid, target.point, arrival, arrival + IMPACT_KIT_MS,
       true, "once", true);
   }
+
+  // 05.10-A7a-E (6.13): beams of the cast kit (Chain Lightning 321 → 743) over the flourish, and of the
+  // impact kits from the caster to each target over its impact window.
+  addBeams(plan, visual.cast, cast.caster, cast.casterPoint, cast.targets, now, now + CAST_KIT_MS);
+  cast.targets.forEach((target, index) => {
+    const arrival = arrivals[index]!;
+    for (const kit of [visual.impact, visual.targetImpact]) {
+      addBeams(plan, kit, cast.caster, cast.casterPoint, [target], arrival, arrival + IMPACT_KIT_MS);
+    }
+  });
 
   const point = areaPoint(cast);
   const firstImpact = arrivals.length > 0 ? Math.min(...arrivals) : now;
@@ -542,7 +616,9 @@ export function planSpellVisual(
  * kit, NPC Whirlwind channels Whirlwind), and the one-shot SPELL_GO plays for them used to be the
  * only pose of a channel that runs for seconds. 85 of the 212 cast kits name a release pose
  * (SpellCastDirected/Omni), which this loops for the channel; whether the native client does the
- * same is not verified.
+ * same is not verified. (05.10-6.21: "212/85" is not reproducible; measured on this dataset: 184 rows
+ * with a pose on the cast kit and none on the channel kit among channelled spells, 88 of them
+ * SpellCast*; or 45/24 counting SpellVisual rows with a ChannelKit — docs/implementation/line-A10.ru.md.)
  */
 export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast, now: number): SpellVisualPlan {
   const plan: SpellVisualPlan = { instances: [], animations: [], sounds: [] };
@@ -550,6 +626,20 @@ export function planSpellCastStart(visual: SpellVisualMetadata, cast: SpellCast,
   const duration = (cast.castTime !== undefined && cast.castTime > 0 ? cast.castTime : CAST_KIT_MS)
     + CAST_END_GRACE_MS;
   addKit(plan, kit, "cast", cast.caster, cast.casterPoint, now, now + duration, true, "hold", false, "hold");
+  // 05.10-A7a-E (6.13): a channel kit's beams (Drain Life 11762 → 719, Mind Flay 11744 → 750, Drain Mana
+  // 430 → 744, Drain Soul 950 → 723) run from the caster's chest to its channel object, read every frame.
+  if (cast.channel && cast.caster !== 0n && kit?.chains) {
+    const beams = (plan.beams ??= []);
+    for (const chain of kit.chains) {
+      beams.push({
+        effect: chain.effect,
+        from: { guid: cast.caster, attachment: BEAM_CHEST_ATTACHMENT, point: { ...cast.casterPoint } },
+        to: { channelOf: cast.caster, attachment: BEAM_CHEST_ATTACHMENT },
+        startedAt: now,
+        endsAt: now + duration,
+      });
+    }
+  }
   if (cast.channel && cast.caster !== 0n && !kitPoses(visual.channel) && visual.cast && kitPoses(visual.cast)) {
     // The pose only: the cast kit's models and sound already played with SPELL_GO.
     plan.animations.push(...kitAnimations(visual.cast, cast.caster, now, duration, "hold", "cast"));

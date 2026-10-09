@@ -8,7 +8,8 @@
 
 import * as THREE from "three";
 import type { AttachedModel } from "../../gateway/CharacterAppearance.js";
-import { attachmentPoint, attachmentRefusal } from "../Attachment.js";
+import { attachmentRefusal } from "../Attachment.js";
+import { worldAttachmentPoint } from "../SheathPoints.js"; // 05.10-A7a-G2 6.08: the world's walk
 import {
   FLAT_SLOT_COLOUR, buildModel, geosetVisible,
   type BuiltModel, type GeosetChoice, type TextureSlots,
@@ -329,7 +330,7 @@ export function labAttachmentLines(
     inventoryType: item.inventoryType,
     model: item.model,
     texture: item.texture,
-    point: attachmentPoint(item, sheath),
+    point: worldAttachmentPoint(item, sheath, item.sheathe), // 05.10-A7a-G2 6.08
     refusal: attachmentRefusal(item, sheath),
     triangles: 0,
     flatTriangles: 0,

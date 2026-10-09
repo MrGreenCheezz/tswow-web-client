@@ -4,9 +4,13 @@
  * Deliberately the only module both halves of the client import: `app/Login.ts` needs to know
  * where a player who just left the world belongs, and it must not drag the Lua VM into
  * `index.html`'s main chunk to find out. So everything here is either a pure function or a
- * one-slot registry, and nothing in this file imports anything at all — which is also what makes
- * the whole truth table runnable in a node test with no DOM.
+ * one-slot registry. The one run-time import is `Environment.ts`, a leaf module with no imports of
+ * its own (the gateway policy's page defaults) — which keeps the whole truth table runnable in a
+ * node test with no DOM.
  */
+
+import type { GlueAuthMessage } from "./GlueMessages.js";
+import { GATEWAY_ALLOWED_STORAGE_KEY, pageGatewayPolicy, type GatewayPolicy } from "../Environment.js";
 
 export type FrontDoorMode = "glue" | "legacy";
 
@@ -66,7 +70,7 @@ export function storedFrontDoorMode(storage?: Pick<Storage, "getItem"> | null): 
  * `ws(s)://…/auth` URL the old field was pre-filled with. Anything else is refused rather than
  * half-understood, and the page falls back to the compiled default.
  */
-export function frontDoorGatewayOrigin(search: string): string | undefined {
+export function parseGatewayOverride(search: string): string | undefined {
   const raw = new URLSearchParams(search).get("gateway")?.trim();
   if (!raw) return undefined;
   try {
@@ -78,6 +82,68 @@ export function frontDoorGatewayOrigin(search: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+export type { GatewayPolicy };
+
+export type GatewayOverride =
+  | { readonly kind: "none" }
+  | { readonly kind: "use"; readonly origin: string }
+  | { readonly kind: "refused"; readonly origin: string; readonly reason: string };
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1"
+    || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+function normalOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The policy verdict for `?gateway=`, with no DOM: (1) the page's own host on any port, (2) both
+ * page and gateway on loopback — the development case, (3) the compiled default, (4) an explicit
+ * allow-list entry. Anything unparseable is `none`, not `refused`: there is nothing to warn about.
+ */
+export function gatewayOverride(search: string, policy: GatewayPolicy): GatewayOverride {
+  const origin = parseGatewayOverride(search);
+  if (origin === undefined) return { kind: "none" };
+  const hostname = new URL(origin).hostname;
+  const pageHost = policy.pageHostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (hostname.replace(/^\[|\]$/g, "") === pageHost) return { kind: "use", origin };
+  if (isLoopbackHostname(hostname) && isLoopbackHostname(pageHost)) return { kind: "use", origin };
+  if (normalOrigin(policy.defaultOrigin) === origin) return { kind: "use", origin };
+  if (policy.allowedOrigins.some((allowed) => normalOrigin(allowed) === origin)) return { kind: "use", origin };
+  return {
+    kind: "refused",
+    origin,
+    // Printed on the page the link opened, so it carries no instructions: a ready-made command that
+    // trusts the link's own host is exactly what a phishing link would want the player to paste.
+    reason: `?gateway=${origin} не разрешён: страница работает с ${policy.defaultOrigin}.`,
+  };
+}
+
+/** For the console only: where the owner of a browser or a build adds a gateway it trusts. */
+export const GATEWAY_ALLOW_HINT = "Доверенные адреса gateway: VITE_GATEWAY_ALLOWED_ORIGINS при сборке или "
+  + `ключ localStorage "${GATEWAY_ALLOWED_STORAGE_KEY}" (JSON-массив origin) в этом браузере.`;
+
+/**
+ * The override a page may use, or `undefined` — the compiled default then applies.
+ *
+ * `policy` defaults to the one this page is running under (`Environment.pageGatewayPolicy`); tests
+ * pass their own. A refusal is logged here so a page that only wants the origin still tells the
+ * person why their link was ignored.
+ */
+export function frontDoorGatewayOrigin(search: string, policy: GatewayPolicy = pageGatewayPolicy()): string | undefined {
+  const verdict = gatewayOverride(search, policy);
+  if (verdict.kind === "refused") console.warn(`[gateway] ${verdict.reason} ${GATEWAY_ALLOW_HINT}`);
+  return verdict.kind === "use" ? verdict.origin : undefined;
 }
 
 /** The WebSocket URL of one gateway route, from an http(s) origin. */
@@ -140,8 +206,11 @@ export function frontDoorReturn(exit: WorldExit, realmSelected: boolean): FrontD
 export interface FrontDoorHost {
   /** The world is about to cover the screen: stop the music, the 3D and the clock. */
   enteringWorld(): void;
-  /** The world is over. Bring the right glue screen back. */
-  returnFromWorld(exit: WorldExit, message?: string): void;
+  /**
+   * The world is over. Bring the right glue screen back, and say why in the corpus' own words: the
+   * message is a key with a plain fallback (`GlueAuthMessage`), never an exception's text.
+   */
+  returnFromWorld(exit: WorldExit, message?: GlueAuthMessage): void;
 }
 
 let host: FrontDoorHost | undefined;

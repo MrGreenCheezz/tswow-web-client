@@ -186,9 +186,9 @@ const ESCAPABLE: EscapableWindow[] = [
   { isOpen: mailReadOpen, close: closeMailRead },
   { isOpen: mailOpen, close: closeMail },
   { isOpen: socketingOpen, close: closeSocketing },
-  // These three stock-controller entries stay available to isolated FrameXML diagnostics, but the
-  // production world mount does not publish them. They are inert while the native C/P/N windows own
-  // their routes and still provide correct Escape behavior if a diagnostic publishes an owner.
+  // Stock SpellBookFrame: the production world mount publishes this owner once the frame passes its
+  // gate (`publishFrameXmlSpellBook` in FrameXmlWorldMount.ts). Until then the entry is inert and
+  // the native spellbook keeps its route and Escape behaviour.
   { isOpen: frameXmlSpellBookOpen, close: closeFrameXmlSpellBook },
   // The stock ContainerFrame owner is published only after its roots and first real open pass.
   // Before that point this entry is inert and Bags.ts remains the native fallback.
@@ -285,7 +285,7 @@ export function wirePanelButtons(): void {
   wireCharacterTabs();
   attackButton.addEventListener("click", () => {
     if (!game.world) return;
-    game.world.attacking ? game.world.stopAttack() : game.world.startAttack();
+    game.world.attacking || game.world.attackRequested ? game.world.stopAttack() : game.world.startAttack();
     showTarget();
   });
 

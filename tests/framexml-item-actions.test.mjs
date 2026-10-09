@@ -218,12 +218,14 @@ test("consumables and recipes are plain uses", () => {
   assert.deepEqual(prompts(), []);
 });
 
-test("at a merchant a right click sells, from the bags and from the paper doll", () => {
-  const { seam, world, belt, wornBelt, wornTrinket, sent } = fixture();
+test("at a merchant a right click sells from the bags, never from the paper doll", () => {
+  const { seam, world, belt, wornTrinket, sent } = fixture();
   world.vendor = { guid: 0x600n, items: [] };
   call(seam, "UseContainerItem", 0, 1);
   call(seam, "UseInventoryItem", 6);
-  assert.deepEqual(sent, [["sell", belt.guid], ["sell", wornBelt.guid]], "CMSG_SELL_ITEM for the whole stack");
+  // UseInventoryItem (Wow.exe 0x005e8a60) goes from the spell and repair cursors to Item::Use
+  // (0x00708c20), which has no merchant branch: worn gear is not sold.
+  assert.deepEqual(sent, [["sell", belt.guid]], "CMSG_SELL_ITEM for the bag stack only");
 
   world.vendor = undefined;
   sent.length = 0;
@@ -386,7 +388,10 @@ test("the item readers answer from the update fields and the cached templates, n
   assert.deepEqual(call(seam, "GetContainerItemDurability", 0, 1), [10, 40]);
   assert.deepEqual(call(seam, "GetInventoryItemDurability", 6), [8, 40]);
   assert.deepEqual(call(seam, "GetInventoryItemDurability", 13), []);
-  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 4), [1], "the waist at a fifth: low");
+  // The client's «low» is an absolute 5 points or less (Wow.exe 0x005e8fe0), not a fifth.
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 4), [0], "the waist at 8 of 40: sound");
+  wornBelt.fields.set(field("ITEM_FIELD_DURABILITY"), 5);
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 4), [1], "the waist at 5: low");
   wornBelt.fields.set(field("ITEM_FIELD_DURABILITY"), 0);
   assert.deepEqual(call(seam, "GetInventoryAlertStatus", 4), [2], "broken");
   assert.deepEqual(call(seam, "GetInventoryAlertStatus", 1), [0], "an empty head slot is sound");
@@ -586,4 +591,24 @@ test("the Lua half keys GetInventoryItemsForSlot's flat list into the table stoc
   } finally {
     vm.close();
   }
+});
+
+test("GetInventoryAlertStatus(12) is the ammo, low at 20 carried, and the seam's poll raises UPDATE_INVENTORY_ALERTS", () => {
+  // Wow.exe 0x005e8fe0: the twelfth status (table entry -1) counts PLAYER_AMMO_ID's carried rounds.
+  const { seam, player, bag, bagArrows, fired } = withAmmo(fixture());
+  const alerts = () => fired.filter(([event]) => event === "UPDATE_INVENTORY_ALERTS").length;
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 12), [0], "no ammo entry");
+  player.fields.set(field("PLAYER_AMMO_ID"), 2512);
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 12), [0], "255 carried");
+  place(player.fields, field("PLAYER_FIELD_PACK_SLOT_1") + 12, 0n);
+  bagArrows.fields.set(field("ITEM_FIELD_STACK_COUNT"), 21);
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 12), [0], "21 carried");
+  bagArrows.fields.set(field("ITEM_FIELD_STACK_COUNT"), 20);
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 12), [1], "20 carried: low");
+  place(bag.fields, field("CONTAINER_FIELD_SLOT_1") + 2, 0n);
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 12), [1], "none left while the field still names them");
+  assert.deepEqual(call(seam, "GetInventoryAlertStatus", 13), [0], "past the twelve: 0");
+  assert.equal(alerts(), 0);
+  seam.tick(0.1);
+  assert.equal(alerts(), 1, "the first poll after attach finds the low ammo against the zeroed statuses");
 });

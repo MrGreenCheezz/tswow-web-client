@@ -170,3 +170,113 @@ export function castFailedPacket({ castCount = 0, spellId, result, tail = [] }) 
   for (const value of tail) writer.u32(value);
   return writer.toUint8Array();
 }
+
+/**
+ * The create-block spline — `Movement::PacketBuilder::WriteCreate`
+ * (game/Movement/Spline/MovementPacketBuilder.cpp:147-186), field by field: `u32` raw flags (the
+ * low byte is the animation tier); `f32 angle` for Final_Angle (0x20000), else a raw `u64` for
+ * Final_Target (0x10000), else three `f32` for Final_Point (0x8000); `u32 timePassed`,
+ * `u32 duration`, `u32 splineId`; `f32 1, f32 1` (duration mods); `f32 vertical_acceleration`;
+ * `u32 effect_start_time`; `u32` node count and the nodes, which are the whole of
+ * `Spline::points` virtual ends included; `u8` mode; `3×f32` final destination (zero for a cycle).
+ */
+export function writeCreateSpline(writer, {
+  flags = 0, facing, timePassed = 0, duration, splineId = 1, verticalAcceleration = 0, effectStart = 0,
+  nodes, mode = 0, finalDestination = nodes.at(-1) ?? { x: 0, y: 0, z: 0 },
+}) {
+  writer.u32(flags >>> 0);
+  if (flags & 0x20000) writer.f32(facing.angle);
+  else if (flags & 0x10000) writer.u64(facing.guid);
+  else if (flags & 0x8000) writer.f32(facing.x).f32(facing.y).f32(facing.z);
+  writer.u32(timePassed).u32(duration).u32(splineId).f32(1).f32(1).f32(verticalAcceleration).u32(effectStart);
+  writer.u32(nodes.length);
+  for (const node of nodes) writer.f32(node.x).f32(node.y).f32(node.z);
+  writer.u8(mode);
+  const destination = flags & 0x80000 ? { x: 0, y: 0, z: 0 } : finalDestination;
+  return writer.f32(destination.x).f32(destination.y).f32(destination.z);
+}
+
+/**
+ * `Spline::points` as `SplineBase::InitCatmullRom` lays them out (game/Movement/Spline/Spline.cpp,
+ * used for the linear mode too, :50-52): a virtual point `c0 − (cos o, sin o, 0)` first, then the
+ * path, then `c(N-1)` again — or, for a cycle, `c(k), c(k+1)` with `k = 1` under Enter_Cycle.
+ */
+export function splineNodes(path, { orientation = 0, cyclic = false, cyclicPoint = 1 } = {}) {
+  const first = path[0];
+  const virtual = cyclic && cyclicPoint === 0
+    ? path.at(-1)
+    : { x: first.x - Math.cos(orientation), y: first.y - Math.sin(orientation), z: first.z };
+  const tail = cyclic ? [path[cyclicPoint], path[cyclicPoint + 1]] : [path.at(-1)];
+  return [virtual, ...path, ...tail];
+}
+
+/**
+ * A one-block `SMSG_UPDATE_OBJECT` creating a LIVING unit — `Object::BuildMovementUpdate`
+ * (game/Entities/Object/Object.cpp:315-343): `u16` update flags, `MovementInfo`
+ * (`Unit::BuildMovementPacket`: flags, flags2, time, x, y, z, o; with ONTRANSPORT a packed guid,
+ * x, y, z, o, `u32` time, `i8` seat; `f32` pitch when swimming or flying; `u32` fall time; four
+ * `f32` of jump when falling; `f32` spline elevation), nine speeds, then `WriteCreate` when
+ * SPLINE_ENABLED (0x08000000) is set; no field blocks.
+ */
+export function livingSplineCreatePacket(guid, {
+  typeId = 3, updateFlags = 0x0020, movementFlags = 0x08000001, position = { x: 0, y: 0, z: 0, orientation: 0 },
+  transport, spline,
+}) {
+  const writer = new PacketWriter().u32(1).u8(2).packedGuid(guid).u8(typeId).u16(updateFlags);
+  writer.u32(movementFlags >>> 0).u16(0).u32(0)
+    .f32(position.x).f32(position.y).f32(position.z).f32(position.orientation);
+  if (movementFlags & 0x200) {
+    writer.packedGuid(transport.guid).f32(transport.x).f32(transport.y).f32(transport.z).f32(transport.orientation ?? 0)
+      .u32(0).u8(transport.seat ?? 0);
+  }
+  if (movementFlags & (0x200000 | 0x2000000)) writer.f32(0); // pitch: SWIMMING | FLYING
+  writer.u32(0);
+  if (movementFlags & 0x1000) writer.f32(0).f32(0).f32(0).f32(0); // FALLING: jump velocity, sin, cos, speed
+  if (movementFlags & 0x4000000) writer.f32(0); // SPLINE_ELEVATION
+  for (const speed of [2.5, 7, 4.5, 4.722222, 2.5, 7, 4.5, 3.141594, 3.14]) writer.f32(speed);
+  if (movementFlags & 0x08000000) writeCreateSpline(writer, spline);
+  return writer.u8(0).toUint8Array();
+}
+
+/**
+ * `SMSG_MONSTER_MOVE` — `PacketBuilder::WriteMonsterMove` (MovementPacketBuilder.cpp:44-145):
+ * packed guid; `u8 0`; start `3×f32`; `u32 splineId`; `u8` type (0 normal, 1 stop, 2 spot + `3×f32`,
+ * 3 target + raw `u64`, 4 angle + `f32`); for a stop nothing more. Then `u32` flags (facing bits,
+ * tier byte and Done stripped), `u8 tier, u32 effect_start` under Animation (0x200000),
+ * `u32 duration`, `f32 acceleration, u32 effect_start` under Parabolic (0x800), and the path:
+ * `WriteLinearPath` — `u32` count = N−1, the destination, then N−2 packed offsets `middle − c(i)`
+ * (11/11/10 bits, quarter yards) — or, for Flying|Catmullrom, `u32` count and `c1 … c(N-1)` whole.
+ * `path` includes the start point.
+ */
+export function monsterMovePacket({
+  guid, splineId = 1, type = 0, facing, flags = 0, animation, duration = 0, parabolic, path,
+}) {
+  const start = path[0];
+  const writer = new PacketWriter().packedGuid(guid).u8(0).f32(start.x).f32(start.y).f32(start.z).u32(splineId).u8(type);
+  if (type === 2) writer.f32(facing.x).f32(facing.y).f32(facing.z);
+  else if (type === 3) writer.u64(facing.guid);
+  else if (type === 4) writer.f32(facing.angle);
+  if (type === 1) return writer.toUint8Array();
+  writer.u32(flags >>> 0);
+  if (flags & 0x200000) writer.u8(animation.tier).u32(animation.startMs);
+  writer.u32(duration);
+  if (flags & 0x800) writer.f32(parabolic.acceleration).u32(parabolic.startMs);
+  if (flags & (0x2000 | 0x40000)) {
+    writer.u32(path.length - 1);
+    for (const point of path.slice(1)) writer.f32(point.x).f32(point.y).f32(point.z);
+    return writer.toUint8Array();
+  }
+  const last = path.length - 1;
+  writer.u32(last);
+  writer.f32(path[last].x).f32(path[last].y).f32(path[last].z);
+  if (last > 1) {
+    const middle = { x: (start.x + path[last].x) / 2, y: (start.y + path[last].y) / 2, z: (start.z + path[last].z) / 2 };
+    for (let index = 1; index < last; index++) {
+      // `Position::PackedXYZ`: x and y in 11 bits, z in 10, each a signed count of quarter yards.
+      const pack = (value, bits) => Math.trunc(value / 0.25) & ((1 << bits) - 1);
+      const offset = { x: middle.x - path[index].x, y: middle.y - path[index].y, z: middle.z - path[index].z };
+      writer.u32((pack(offset.x, 11) | (pack(offset.y, 11) << 11) | (pack(offset.z, 10) << 22)) >>> 0);
+    }
+  }
+  return writer.toUint8Array();
+}

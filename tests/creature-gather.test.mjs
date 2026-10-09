@@ -76,11 +76,11 @@ const { WorldClient } = await import("../dist/code/world/WorldClient.js");
 const { UNIT_FLAG_SKINNABLE } = await import("../dist/code/world/FactionRules.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
 const {
-  gatherPlan, gatherSkillOf, gatherSpellFor, isSkinnableCorpse, performGather,
+  gatherCursor, gatherPlan, gatherSkillOf, gatherSpellFor, isSkinnableCorpse, performGather,
 } = await import("../dist/code/browser/game/CreatureGather.js");
 const { interactWithGuid } = await import("../dist/code/browser/ui/Npc.js");
 const { resetNotices } = await import("../dist/code/browser/ui/Notices.js");
-const { wireControls } = await import("../dist/code/browser/input/Controls.js");
+const { wireControls, hoverCursorName } = await import("../dist/code/browser/input/Controls.js");
 
 const HEALTH = UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset;
 const UNIT_FLAGS = UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset;
@@ -434,8 +434,8 @@ test("(д) an uncached template asks for it, says so, and the next click casts",
   }
 });
 
-// (е) The pointer over the body: the gatherer's cursor is its own value, drawn with the loot bag
-// until 5.17 gives it the original's picture.
+// (е) The pointer over the body: the gatherer's cursor is its own value (5.17: the original's Skin,
+// GatherHerbs or Mine picture, Wow.exe 0x004F7A50).
 
 test("(е) the cursor over a skinnable body without loot is the gathering one, not the hand", async () => {
   const worldCanvas = document.getElementById("world-canvas");
@@ -449,7 +449,10 @@ test("(е) the cursor over a skinnable body without loot is the gathering one, n
     [4n, body({ guid: 4n, flags: 0 })],
   ]);
   const previousScene = game.scene;
-  game.world = { state: { selfGuid: SELF, objects } };
+  const previousSpells = game.spells;
+  const gatherWorld = planWorld({ known: [8613] });
+  game.world = { state: { selfGuid: SELF, objects }, knownSpells: gatherWorld.knownSpells, creatureTemplate: gatherWorld.creatureTemplate };
+  game.spells = new Map([[8613, metadata(8613)]]);
   game.collision = undefined;
   game.scene = { pick: (x) => (x === 200 ? 2n : x === 300 ? 3n : x === 400 ? 4n : undefined) };
   const cursorAt = async (x) => {
@@ -459,13 +462,52 @@ test("(е) the cursor over a skinnable body without loot is the gathering one, n
     return worldCanvas.style.cursor;
   };
   try {
-    const bag = await cursorAt(200);
-    assert.match(bag, /^url\("data:image\/svg\+xml,/, "a body with loot is the bag");
-    assert.equal(await cursorAt(300), bag, "a skinnable body without loot: the gathering cursor, the bag's picture for now");
-    assert.equal(await cursorAt(400), "pointer", "a spent body that is not skinnable stays the hand");
-    assert.equal(await cursorAt(900), "", "bare ground is left to the stylesheet");
+    await cursorAt(200);
+    assert.equal(hoverCursorName(), "Pickup", "a body with loot is the loot hand");
+    await cursorAt(300);
+    assert.equal(hoverCursorName(), "Skin", "a skinnable body without loot: the gathering cursor");
+    await cursorAt(400);
+    assert.equal(hoverCursorName(), "Point", "a spent body that is not skinnable is the default");
+    await cursorAt(900);
+    assert.equal(hoverCursorName(), "Point", "bare ground is the default");
+    // Review 30.09 (ж): a character without the body's skill is not promised loot or a cast.
+    game.world.knownSpells = [];
+    await cursorAt(300);
+    assert.equal(hoverCursorName(), "Point", "without the gathering spell the skinnable body is the default");
   } finally {
     game.world = undefined;
     game.scene = previousScene;
+    game.spells = previousSpells;
   }
+});
+
+// (ж) Review 30.09, lens B: the original client's pointer over a body it may gather from names the
+// skill and whether this character can use it — Interface/Cursor/{Skin,GatherHerbs,Mine,
+// EngineerSkin}.blp and their Unable* twins in the client's own archives. A character without the
+// skill must not be shown the loot bag (nothing is left to loot there) nor a gathering cursor that
+// promises a cast the click will not make.
+
+test("(ж) the gathering cursor names the body's skill and whether this character has it", () => {
+  assert.deepEqual(gatherCursor(planWorld({ known: [8613] }), body(), handCopied), { skill: 0, able: true });
+  assert.deepEqual(gatherCursor(planWorld({ known: [] }), body(), handCopied), { skill: 0, able: false },
+    "no skinning: the Unable cursor, not the bag");
+  assert.deepEqual(gatherCursor(planWorld({ known: [32605], flags: 0 }), body(), handCopied),
+    { skill: 0, able: false }, "a herbalist at a beast cannot skin it");
+  assert.deepEqual(gatherCursor(planWorld({ known: [32605], flags: SKIN_WITH_HERBALISM }), body(), handCopied),
+    { skill: 1, able: true });
+  assert.deepEqual(gatherCursor(planWorld({ known: [], flags: SKIN_WITH_MINING }), body(), handCopied),
+    { skill: 2, able: false });
+  assert.deepEqual(gatherCursor(planWorld({ known: [49383], flags: SKIN_WITH_ENGINEERING }), body(), handCopied),
+    { skill: 3, able: true });
+});
+
+test("(ж) no gathering cursor where the click would not gather", () => {
+  assert.equal(gatherCursor(planWorld(), body({ dynamicFlags: LOOTABLE }), handCopied), undefined,
+    "loot first: the bag");
+  assert.equal(gatherCursor(planWorld(), body({ flags: 0 }), handCopied), undefined, "not skinnable");
+  assert.equal(gatherCursor(planWorld(), body({ health: 100 }), handCopied), undefined, "alive");
+  assert.equal(gatherCursor(planWorld({ cached: false }), body(), handCopied), undefined,
+    "template not in hand yet: no guessed skill");
+  assert.equal(gatherCursor(planWorld({ found: false }), body(), handCopied), undefined,
+    "a template the realm does not have: the click stays CMSG_LOOT, so no gathering cursor either");
 });

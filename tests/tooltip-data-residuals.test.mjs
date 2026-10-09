@@ -119,7 +119,7 @@ test("the dataset's ItemSubClass words, served whole by /dbc/item-subclasses", w
     assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/dbc/item-subclasses`)).status, 403,
       "the same origin rule as every /dbc route");
 
-    const spells = await fetch(`http://127.0.0.1:${gateway.port}/dbc/spells?ids=78,5143,6673,133&v=13`, { headers });
+    const spells = await fetch(`http://127.0.0.1:${gateway.port}/dbc/spells?ids=78,5143,6673,133&v=14`, { headers });
     assert.equal(spells.status, 200);
     const byId = new Map((await spells.json()).map((row) => [row.id, row]));
     assert.equal(byId.get(78).onNextSwing, true, "«Удар героя» replaces the next swing");
@@ -163,7 +163,7 @@ test("the subclass word is asked once, answers after it lands, and a 404 is retr
   });
 });
 
-test("v=13 spell rows: the new fields are optional, and an old-shape batch is asked once more past the cache", async () => {
+test("v=14 spell rows: the new fields are optional, and an old-shape batch is asked once more past the cache", async () => {
   const base = spell(78, "Удар героя", "Уровень 1", { spellLevel: 1 });
   const calls = [];
   let rows = [base];
@@ -172,17 +172,24 @@ test("v=13 spell rows: the new fields are optional, and an old-shape batch is as
   const first = await client.load([78]);
   assert.equal(first.get(78).name, "Удар героя", "an old gateway's rows are still the book");
   assert.deepEqual(calls, [
-    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=13", undefined],
-    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=13", "reload"],
+    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=17", undefined], // L13: v=17
+    ["http://127.0.0.1:8090/dbc/spells?ids=78&v=17", "reload"],
   ], "the old shape, once more past the browser cache");
   await client.load([79]);
   assert.equal(calls.length, 3, "the gateway itself answered the old shape: no more second asks");
 
   const fresh = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
   calls.length = 0;
-  rows = [{ ...base, id: 80, auraDescription: "", onNextSwing: true, channeled: false }];
+  rows = [{ ...base, id: 80, auraDescription: "", onNextSwing: true, channeled: false, rangeMaxFriendly: 5, dispelType: 0, preventionType: 0,
+    startRecoveryCategory: 0 }]; // L13: the v=17 marker
   assert.equal((await fresh.load([80])).get(80).onNextSwing, true);
-  assert.equal(calls.length, 1, "a v=13 answer is taken as it is");
+  assert.equal(calls.length, 1, "a v=17 answer is taken as it is");
+  // A v=13 gateway (aura text, no friendly range) is still an older gateway for the v=17 key.
+  const midway = new SpellMetadataClient("ws://127.0.0.1:8090/auth", fetcher);
+  calls.length = 0;
+  rows = [{ ...base, id: 82, auraDescription: "", onNextSwing: false, channeled: false }];
+  await midway.load([82]);
+  assert.equal(calls.length, 2, "the v=13 shape is asked once more past the cache");
   rows = [{ ...base, id: 81, onNextSwing: "yes" }];
   await assert.rejects(fresh.load([81]), /invalid data/, "a present field must be what it says");
 });

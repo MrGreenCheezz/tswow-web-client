@@ -44,7 +44,7 @@ function installClock(seconds) {
   };
 }
 
-async function loadCandidate(chain) {
+async function loadCandidate(chain, clock) {
   const requests = [];
   const provider = {
     async read(path) {
@@ -60,6 +60,9 @@ async function loadCandidate(chain) {
     subset: FRAMEXML_VERTICAL_TOC,
     seam,
     screen: () => ({ width: 1024, height: 768 }),
+    // suite-fix: since L5 3.27 GetTime and pump.now read FrameXmlClock (the page's monotonic clock),
+    // not Date.now, so the test's clock goes in through the boot's `clock` option.
+    clock: () => Math.round(clock.now * 1000),
   });
   const inventory = await boot.load();
   return { boot, seam, inventory, requests: new Set(requests) };
@@ -166,7 +169,7 @@ test("MPQ TargetFrame keeps target cast/aura context on the real stock Lua path"
   const clock = installClock(1000);
   let candidate;
   try {
-    candidate = await loadCandidate(chain);
+    candidate = await loadCandidate(chain, clock); // suite-fix: L5 3.27 clock option
     const { boot, seam, inventory, requests } = candidate;
 
     assert.ok(requests.has("interface/framexml/targetframe.xml"));

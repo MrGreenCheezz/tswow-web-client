@@ -209,3 +209,27 @@ The active WDBC headers are decisive: `TaxiNodes` is 24 fields/96 bytes (`ID`, `
 position floats, one 17-slot localized name and two mount-creature ids); `TaxiPath` is four
 32-bit fields/16 bytes (`ID`, from, to and cost). `tests/dbc.test.mjs` checks both layouts against
 the live 3.3.5 dataset.
+
+## Local addition: LockType
+
+Written here for the same reason as the tables above (05.10, plan item 5.17): the hover cursor over a
+locked game object is the CursorName of the lock's first LockType (Wow.exe 0x0070F9B0), and a
+dataset may add lock types of its own, so the gateway's `/dbc/locks` carries the column. The header
+settles it: 22 records of 53 fields and 212 bytes, which is `int ID`, three 17-slot localised
+strings and one string — nothing else fits 53 words. Read that way, the first string is the type's
+name («Взлом замков», «Травничество», «Горное дело» …) and the last is a cursor file name: `PickLock`
+for 1, `GatherHerbs` for 2, `Mine` for 3, `FishingCursor` for 19, `Mine` for the dataset's own
+1000, empty for the rest. TrinityCore does not load this table. Column names follow WoWDBDefs'
+spelling as far as this repository knows it; `tests/dbc.test.mjs` checks the layout against the
+real file, and `node tools/fetch-dbd.mjs` may replace it with the upstream version.
+
+## Local addition: LiquidMaterial
+
+Written here (05.10, plan item 7.09, marker 05.10-A7b-5) because the gateway's `/dbc/liquid-types?v=2`
+names each liquid's vertex format. The dataset's file is 57 bytes: 3 records of 3 fields and 12
+bytes, a one-byte string block — `int ID` and two integers. Read in WoWDBDefs' order (`LVF`, then
+`Flags`), row 1 is format 0 with flag 1, row 2 format 1 with flag 0 and row 3 format 0 with flag 1;
+`LiquidType` points Water/Ocean at 1, Magma/Slime at 2 (whose map chunks carry height and UV,
+format 1) and «Basic Procedural Water» at 3, which agrees. TrinityCore does not load this table.
+`tests/dbc.test.mjs` checks the layout against the real file, and `node tools/fetch-dbd.mjs` may
+replace it with the upstream version.

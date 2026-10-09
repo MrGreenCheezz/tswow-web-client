@@ -169,13 +169,20 @@ test("live socketing: the equipped item's sockets, the bag cursor's gem, the spl
   assert.equal(fired.at(-1)[0], "SOCKET_INFO_CLOSE");
 }));
 
-test("live inspection: visible items, then the answer's enchantments, talents, honor and arena teams", () => {
+test("live inspection: visible items, then the answer's enchantments, talents, honor and arena teams", async () => {
   const { world, seam, sent, fired, events, target } = fixture();
   const inspect = seam.inspect;
   assert.deepEqual(call("CanInspect", seam, "target"), [true]);
   assert.deepEqual(call("CheckInteractDistance", seam, "target", 1), [true]);
   assert.deepEqual(call("CheckInteractDistance", seam, "target", 3), [false], "10 yards is past the duel range");
-  assert.deepEqual(call("CheckInteractDistance", seam, "target", 4), [false], "no follow here: UnitPopup's «Следовать» stays grey");
+  // 5.18: follow is 28 yards in the client's table, and FollowUnit follows.
+  assert.deepEqual(call("CheckInteractDistance", seam, "target", 4), [true], "UnitPopup's «Следовать» lights up");
+  const { followTargetGuid, cancelFollow } = await import("../dist/code/browser/input/Follow.js");
+  call("FollowUnit", seam, "focus");
+  assert.deepEqual(fired.at(-1), ["UI_ERROR_MESSAGE", "ERR_UNIT_NOT_FOUND"], "a token or name that finds nobody");
+  call("FollowUnit", seam, "target");
+  assert.equal(followTargetGuid(), 0x20n, "the friendly mage 10 yards away is followed");
+  cancelFollow();
   call("NotifyInspect", seam, "target");
   assert.deepEqual(sent, [["inspect", 0x20n]]);
   // Epic in the realm's own colour (ItemQualityColors): a chat message with any other is dropped.
@@ -194,7 +201,7 @@ test("live inspection: visible items, then the answer's enchantments, talents, h
   assert.match(call("WebClientInspectItem", seam, "target", 1)[2], /\|Hitem:40416:3820:3621:3518:0:0:0:0:80\|/);
   assert.deepEqual(call("WebClientInspectTalent", seam, "GetTalentTabInfo", 1, true), ["Огонь", "Interface\\Icons\\Spell_Fire_FlameBolt", 2, "MageFire", 0]);
   assert.deepEqual(call("WebClientInspectTalent", seam, "GetTalentInfo", 1, 1, true).slice(4, 6), [2, 3]);
-  assert.deepEqual(call("WebClientInspectRelic", seam, "target"), [true, false], "a mage has no relic slot");
+  assert.deepEqual(call("WebClientInspectRelic", seam, "target"), [true, undefined], "a mage has no relic slot: nil, as 0x611330 answers");
   call("RequestInspectHonorData", seam);
   assert.deepEqual(sent.slice(-2), [["honor", 0x20n], ["arena", 0x20n]]);
   world.inspectedHonor.set(0x20n, { guid: 0x20n, honorPoints: 0, kills: (12 << 16) | 3, todayHonor: 125, yesterdayHonor: 480, lifetimeKills: 2104 });
@@ -279,7 +286,7 @@ test("live barber: appearance bytes, the chair seat, the tables and the formula'
     assert.equal(barber.ready(), false, "nothing fetched yet: the gate would refuse");
     await seam.barberPrepare();
     // The warrior's class: ValidateAppearance refuses a DK-only colour for it, in silence.
-    assert.deepEqual(asked, ["/dbc/barber-cost?v=1", "/dbc/character-creation?v=3", "/dbc/character-options?v=6&race=6&sex=0&class=1"]);
+    assert.deepEqual(asked, ["/dbc/barber-cost?v=1", "/dbc/character-creation?v=4", "/dbc/character-options?v=6&race=6&sex=0&class=1"]);
     assert.equal(barber.ready(), true);
     assert.deepEqual([barber.hairCustomization(), barber.facialHairCustomization(), barber.canAlterSkin()], ["HORNS", "NORMAL", true]);
     barber.owned = true;

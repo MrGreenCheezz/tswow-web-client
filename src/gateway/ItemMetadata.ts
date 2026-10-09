@@ -24,6 +24,8 @@ export interface ItemMetadata {
   subClass?: number;
   soundOverrideSubclass?: number;
   material?: number;
+  /** 05.10-A7a-G2 6.08: `item_template.sheath` (SheatheType) from the same query — where it is stowed. */
+  sheath?: number;
 }
 
 export async function loadItemMetadata(path: string): Promise<Map<number, ItemMetadata>> {

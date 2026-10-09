@@ -14,6 +14,9 @@ try {
   clientDirectory = undefined;
 }
 const withClient = { skip: clientDirectory ? false : "no 3.3.5a client on this machine", concurrency: false };
+const { tswowModuleSkip } = await import("./fixtures/tswow-modules.mjs");
+// The extraction button is the gem-abilities module's; the base dataset (08.10) has no modules.
+const withGemAbilities = { ...withClient, skip: withClient.skip || tswowModuleSkip("gem-abilities") };
 const { clientArchives } = await import("../tools/mpq.mjs");
 const chain = clientDirectory ? await clientArchives(clientDirectory) : undefined;
 after(() => chain?.close());
@@ -209,7 +212,7 @@ test("a failed gate hands the waiting item to the native picker and the legacy p
   }
 });
 
-test("gem-abilities adds its extraction button to the stock frame and still sends OP85 for the selected item", withClient, async () => {
+test("gem-abilities adds its extraction button to the stock frame and still sends OP85 for the selected item", withGemAbilities, async () => {
   const { boot, seam, packets } = await load({ tsAddons: true });
   const owner = createLazyFrameXmlSocketOwner(seam, boot, renderer(), { open() {} });
   try {

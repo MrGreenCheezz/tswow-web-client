@@ -42,7 +42,83 @@ function optionValue(args, name) {
   return found;
 }
 
-/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target }`. */
+/** The bench env the game runs with (P1-02a): `import.meta.env` is the production Vite env. */
+export const DEFAULT_BENCHMARK_ENV = 'prod';
+
+/** `--bench-env` value → 'prod' (none or `prod`) or 'dev' (the bundle before P1-02a); anything else throws. */
+export function resolveBenchmarkEnv(value) {
+  if (value === undefined || value === DEFAULT_BENCHMARK_ENV) return DEFAULT_BENCHMARK_ENV;
+  if (value === 'dev') return 'dev';
+  throw new Error(`--bench-env expects prod or dev, not ${JSON.stringify(value)}`);
+}
+
+/**
+ * 09.10: how the bench bundle names functions. `plain` (default) — as the production build: no
+ * esbuild `keepNames`, so no `__name(...)` wrapper (an `Object.defineProperty`) on every closure the
+ * game creates; with `minify: false` the names are kept anyway. `keep` — the former bundle, for
+ * comparisons with results taken before 09.10; such a run is not valid.
+ */
+export const DEFAULT_BENCHMARK_NAMES = 'plain';
+
+/** `--bench-names` value → 'plain' (none or `plain`) or 'keep'; anything else throws. */
+export function resolveBenchmarkNames(value) {
+  if (value === undefined || value === DEFAULT_BENCHMARK_NAMES) return DEFAULT_BENCHMARK_NAMES;
+  if (value === 'keep') return 'keep';
+  throw new Error(`--bench-names expects plain or keep, not ${JSON.stringify(value)}`);
+}
+
+/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target, env, names }`. */
 export function parseBundleOptions(args) {
-  return { target: resolveBenchmarkTarget(optionValue(args, '--target')) };
+  return {
+    target: resolveBenchmarkTarget(optionValue(args, '--target')),
+    env: resolveBenchmarkEnv(optionValue(args, '--bench-env')),
+    names: resolveBenchmarkNames(optionValue(args, '--bench-names')),
+  };
+}
+
+/** Heap-profile modes (P1-03a): `all` samples every allocation, `promoted` only what survived minor GCs. */
+export const HEAP_PROFILE_MODES = Object.freeze(['all', 'promoted']);
+
+/**
+ * `--heap-profile` → 'all'; `--heap-profile=all|promoted` → that mode; absent → null. An unknown mode,
+ * a separate value (`--heap-profile promoted`, which would pass as a scenario-less flag) or a repeat throws.
+ */
+export function parseHeapProfileMode(args) {
+  let mode = null;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg !== '--heap-profile' && !arg.startsWith('--heap-profile=')) continue;
+    if (mode !== null) throw new Error('--heap-profile is given twice');
+    if (arg === '--heap-profile') {
+      const next = args[index + 1];
+      if (next !== undefined && HEAP_PROFILE_MODES.includes(next)) {
+        throw new Error(`--heap-profile takes its mode after "=": --heap-profile=${next}`);
+      }
+      mode = 'all';
+      continue;
+    }
+    const value = arg.slice('--heap-profile='.length);
+    if (!HEAP_PROFILE_MODES.includes(value)) {
+      throw new Error(`--heap-profile expects all or promoted, not ${JSON.stringify(value)}`);
+    }
+    mode = value;
+  }
+  return mode;
+}
+
+/**
+ * CDP `HeapProfiler.startSampling` parameters for a mode. Without the include flags the profile holds
+ * only objects alive at stop; the major flag adds those a full GC freed, the minor flag those a
+ * scavenge freed. `promoted` leaves the minor flag off: what outlived the young generation (plus what
+ * is still young at stop) — the input of "what feeds the old generation".
+ */
+export function heapProfileSamplingOptions(mode) {
+  if (!HEAP_PROFILE_MODES.includes(mode)) throw new Error(`unknown heap-profile mode ${JSON.stringify(mode)}`);
+  return { samplingInterval: 16384, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: mode === 'all' };
+}
+
+/** `<scenario>.heapprofile` for `all` (the name before P1-03a), `<scenario>.promoted.heapprofile` for `promoted`. */
+export function heapProfileFileName(scenario, mode) {
+  if (!HEAP_PROFILE_MODES.includes(mode)) throw new Error(`unknown heap-profile mode ${JSON.stringify(mode)}`);
+  return mode === 'all' ? `${scenario}.heapprofile` : `${scenario}.${mode}.heapprofile`;
 }

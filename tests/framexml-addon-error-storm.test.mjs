@@ -70,7 +70,7 @@ test("eager client add-ons run frames and unit tooltips without a per-frame Lua 
     assert.deepEqual(storm, [], `per-frame add-on errors: ${storm.slice(0, 3).join(" | ")}`);
     const chunk = boot.vm.compileFunction("return UnitGUID('pet'), UnitGUID('player')", "@storm/guid", []);
     try {
-      assert.deepEqual(boot.vm.call(chunk, [], 2), ["0xf140000000000104", "0x0000000000000001"]);
+      assert.deepEqual(boot.vm.call(chunk, [], 2), ["0xF140000000000104", "0x0000000000000001"]);
     } finally {
       boot.vm.release(chunk);
     }

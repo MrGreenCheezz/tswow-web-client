@@ -89,7 +89,8 @@ test("the live seam gives a learned class 13 player a complete paper doll", with
   forgetCreationNames();
   learnCreationNames(
     [{ id: 1, name: "Человек", clientFileString: "Human", baseLanguage: 7 }],
-    [{ id: 13, name: "Герой", fileName: "HERO" }],
+    [{ id: 13, name: "Герой", fileName: "HERO" },
+      { id: 3, name: "Охотник", nameMale: "Охотник", nameFemale: "Охотница", fileName: "HUNTER" }],
   );
   const fields = new Map();
   const set = (name, value, index = 0) => fields.set(UPDATE_FIELDS[name].offset + index, value >>> 0);
@@ -122,6 +123,18 @@ test("the live seam gives a learned class 13 player a complete paper doll", with
     }
     const shown = parseFrameXmlText(boot.bridge.getFrame("CharacterLevelText").text).map((run) => run.text).join("");
     assert.equal(shown, "Человек, Герой 80-го уровня");
+    // Constants.lua:91-92 filled both lists at load from the learned classes (9.05): HERO past 11,
+    // the female column for the hunter, and this corpus's own class count — the length of the
+    // CLASS_SORT_ORDER the chain's Constants.lua writes (10 on the base dataset of 08.10, 12 with
+    // the modules' two classes), not the learned list.
+    const constants = await (await provider()).read("Interface\\FrameXML\\Constants.lua");
+    const sortOrder = /\nCLASS_SORT_ORDER\s*=\s*\{([^}]*)\}/.exec(constants)?.[1];
+    assert.ok(sortOrder, "Constants.lua declares CLASS_SORT_ORDER");
+    const corpusClasses = sortOrder.match(/"[A-Z]+"/g).length;
+    assert.deepEqual(lua(boot, `return LOCALIZED_CLASS_NAMES_MALE.HERO, LOCALIZED_CLASS_NAMES_FEMALE.HERO,
+      LOCALIZED_CLASS_NAMES_MALE.HUNTER, LOCALIZED_CLASS_NAMES_FEMALE.HUNTER, MAX_CLASSES`, 5),
+    ["Герой", "Герой", "Охотник", "Охотница", corpusClasses]);
+    assert.ok(corpusClasses >= 10, `the stock ten at least: ${corpusClasses}`);
   } finally {
     boot.close();
     forgetCreationNames();

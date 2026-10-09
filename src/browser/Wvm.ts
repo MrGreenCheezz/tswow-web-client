@@ -24,6 +24,11 @@
 // `textureTransform` index was decoded here — it has been on line 421 since v4 — and the table it
 // points at was not in the file, so 517 batches in 174 models under `spells\` drew a texture that
 // should be turning, flowing or breathing as one pinned in place.
+//
+// 05.10-A7a-F2: the optional WVE1 block (flag 0x08, `visual-v23`) — resolved shader ids, the second
+// unit's transform, M2 lights — and stepped bone channels decoded as steps (`WvaChannelKeys.ts`).
+
+import { readChannelKeys, steppedKeyCount } from "./WvaChannelKeys.js"; // 05.10-A7a-F2
 
 /** M2Material.blending_mode, in the file's own order. */
 export const BLEND_OPAQUE = 0;
@@ -96,6 +101,26 @@ export interface WvmBatch {
   colorIndex: number;
   textureWeight: number;
   textureTransform: number;
+  /**
+   * 05.10-A7a-F2 (6.16б): the second texture unit's own `M2TextureTransform`, −1 for none.
+   * Present only on an extended artifact (`WvmModel.shaderIdsResolved`).
+   */
+  textureTransform2?: number;
+}
+
+/** 05.10-A7a-F2 (6.17): one `M2Light`, in the file's own units, with its seven tracks. */
+export interface WvmLight {
+  /** 0 directional, 1 point. */
+  type: number;
+  bone: number;
+  position: [number, number, number];
+  ambientColor: WvmTrack;
+  ambientIntensity: WvmTrack;
+  diffuseColor: WvmTrack;
+  diffuseIntensity: WvmTrack;
+  attenuationStart: WvmTrack;
+  attenuationEnd: WvmTrack;
+  visibility: WvmTrack;
 }
 
 export interface WvmSkeletonClip {
@@ -398,6 +423,15 @@ export interface WvmModel {
    * Never set at the same time as `portraitCamera`; the artifact cannot spell both.
    */
   sceneCamera?: WvmCamera;
+  /**
+   * 05.10-A7a-F2 (6.22): every batch's `shaderId` is the id Wow.exe resolves at load —
+   * `(stage0 << 4) | stage1`, sphere-map stages `| 8`, 0x4000 for UV2, 0x8000 ids untouched — and
+   * not the raw u16 of the skin. Absent on an artifact from the `visual-v21` generation, whose ids
+   * keep their old reading.
+   */
+  shaderIdsResolved?: boolean;
+  /** 05.10-A7a-F2 (6.17): the model's `M2Light` records; absent on an older artifact. */
+  lights?: WvmLight[];
 }
 
 const HEADER_SIZE = 72;
@@ -408,6 +442,11 @@ const SKINNED = 0x01;
 const PORTRAIT_CAMERA = 0x02;
 /** The same 36-byte slot, holding a scene camera rather than a portrait one. See `sceneCamera`. */
 const SCENE_CAMERA = 0x04;
+/** 05.10-A7a-F2: the body ends with the "WVE1" block (tools/wvm.mjs `encodeExtensions`). */
+const EXTENDED = 0x08;
+const WVE1_HEADER_SIZE = 12;
+const WVE1_LIGHT_FIXED_SIZE = 20;
+const WVE1_LIGHT_TRACK_COMPONENTS = [3, 1, 3, 1, 1, 1, 1] as const;
 const CAMERA_SIZE = 36;
 const WVA1_HEADER_SIZE = 12;
 const SKELETON_HEADER_SIZE = 4;
@@ -498,6 +537,7 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   }
   const hasCamera = cameraFlags !== 0;
   const sceneFramed = cameraFlags === SCENE_CAMERA;
+  const extended = (view.getUint8(13) & EXTENDED) !== 0; // 05.10-A7a-F2
 
   if (total !== data.byteLength) throw new Error(`WVM9 says it is ${total} bytes but ${data.byteLength} arrived`);
   if (indexBytes !== 2 && indexBytes !== 4) throw new Error("WVM9 index width is invalid");
@@ -507,7 +547,7 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
   preflightWvm9(view, data.byteLength, {
     vertexCount, indexCount, indexBytes, skinned, submeshCount, batchCount, textureCount,
     skeletonOffset, attachmentCount, animationCount, globalSequenceCount, particleCount,
-    ribbonCount, colourCount, weightCount, transformCount, hasCamera,
+    ribbonCount, colourCount, weightCount, transformCount, hasCamera, extended,
   });
 
   const bounds = {
@@ -671,6 +711,8 @@ export function decodeWvm9(data: ArrayBuffer): WvmModel {
     if (sceneFramed) model.sceneCamera = camera;
     else model.portraitCamera = camera;
   }
+  // 05.10-A7a-F2: the preflight has walked the whole block already.
+  if (extended) readExtensions(view, offset + (hasCamera ? CAMERA_SIZE : 0), model);
   if (boneIndices) model.boneIndices = boneIndices;
   if (boneWeights) model.boneWeights = boneWeights;
   if (skeletonOffset > 0) {
@@ -785,6 +827,8 @@ interface Wvm9Layout {
   weightCount: number;
   transformCount: number;
   hasCamera: boolean;
+  /** 05.10-A7a-F2: the body ends with the WVE1 block. */
+  extended: boolean;
 }
 
 function preflightWvm9(view: DataView, length: number, layout: Wvm9Layout): void {
@@ -838,6 +882,7 @@ function preflightWvm9(view: DataView, length: number, layout: Wvm9Layout): void
   }
   // One slot whichever flag named it, so the preflight neither knows nor needs to know which.
   if (layout.hasCamera) offset = checkedEnd(offset, CAMERA_SIZE, length, "WVM9 camera");
+  if (layout.extended) offset = preflightExtensions(view, offset, length, layout.batchCount); // 05.10-A7a-F2
 
   if ((layout.skeletonOffset !== 0) !== layout.skinned) {
     throw new Error("WVM9 skin flag and skeleton offset disagree");
@@ -1001,6 +1046,71 @@ function preflightTrack(view: DataView, at: number, limit: number, expectedCompo
   return offset;
 }
 
+/**
+ * 05.10-A7a-F2: walks the "WVE1" block (tools/wvm.mjs `encodeExtensions`) and answers where it ends.
+ * The batch record count has to equal the batch table's: the records are positional.
+ */
+function preflightExtensions(view: DataView, at: number, limit: number, batchCount: number): number {
+  checkedEnd(at, WVE1_HEADER_SIZE, limit, "WVM9 extension header");
+  if (decoder.decode(new Uint8Array(view.buffer, view.byteOffset + at, 4)) !== "WVE1") {
+    throw new Error("WVM9 extension block is not WVE1");
+  }
+  const recordSize = view.getUint16(at + 4, true);
+  const records = view.getUint16(at + 6, true);
+  const lights = view.getUint16(at + 8, true);
+  if (recordSize < 2) throw new Error("WVM9 extension batch record is too small");
+  if (records !== batchCount) throw new Error("WVM9 extension batch count disagrees with the batches");
+  let offset = checkedCountEnd(at + WVE1_HEADER_SIZE, records, recordSize, limit, "WVM9 extension batches");
+  for (let index = 0; index < lights; index++) {
+    checkedEnd(offset, 2, limit, "WVM9 light header");
+    const size = view.getUint16(offset, true);
+    if (size < WVE1_LIGHT_FIXED_SIZE) throw new Error("WVM9 light size is out of range");
+    const end = checkedEnd(offset, size, limit, "WVM9 light");
+    let track = offset + WVE1_LIGHT_FIXED_SIZE;
+    for (const components of WVE1_LIGHT_TRACK_COMPONENTS) track = preflightTrack(view, track, end, components);
+    offset = end;
+  }
+  return offset;
+}
+
+/** 05.10-A7a-F2: pours the WVE1 block onto the decoded model; `preflightExtensions` checked it. */
+function readExtensions(view: DataView, at: number, model: WvmModel): void {
+  const recordSize = view.getUint16(at + 4, true);
+  const records = view.getUint16(at + 6, true);
+  const lightCount = view.getUint16(at + 8, true);
+  let offset = at + WVE1_HEADER_SIZE;
+  for (let index = 0; index < records; index++) {
+    const batch = model.batches[index];
+    if (batch) batch.textureTransform2 = view.getInt16(offset, true);
+    offset += recordSize;
+  }
+  const lights: WvmLight[] = [];
+  for (let index = 0; index < lightCount; index++) {
+    const size = view.getUint16(offset, true);
+    let track = offset + WVE1_LIGHT_FIXED_SIZE;
+    const next = (): WvmTrack => {
+      const decoded = decodeTrack(view, track);
+      track += decoded.size;
+      return decoded.track;
+    };
+    lights.push({
+      type: view.getUint16(offset + 2, true),
+      bone: view.getInt16(offset + 4, true),
+      position: [view.getFloat32(offset + 8, true), view.getFloat32(offset + 12, true), view.getFloat32(offset + 16, true)],
+      ambientColor: next(),
+      ambientIntensity: next(),
+      diffuseColor: next(),
+      diffuseIntensity: next(),
+      attenuationStart: next(),
+      attenuationEnd: next(),
+      visibility: next(),
+    });
+    offset += size;
+  }
+  model.shaderIdsResolved = true;
+  model.lights = lights;
+}
+
 function preflightRamp(view: DataView, at: number, limit: number, expectedComponents: number): number {
   checkedEnd(at, 4, limit, "WVM9 ramp header");
   const components = view.getUint8(at);
@@ -1054,7 +1164,8 @@ function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: 
     for (let index = 0; index < channelCount; index++) {
       const rotation = view.getUint8(channelAt + 2) === 1;
       const keys = view.getUint32(channelAt + 4, true);
-      keyFloats += keys * (rotation ? 5 : 4);
+      // 05.10-A7a-F2 (6.16г): a stepped channel decodes into more keys (`WvaChannelKeys.ts`).
+      keyFloats += steppedKeyCount(view.getUint8(channelAt + 3), keys) * (rotation ? 5 : 4);
       channelAt += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
     }
     const keyData = new Float32Array(keyFloats);
@@ -1062,29 +1173,17 @@ function readClips(view: DataView, data: ArrayBuffer, start: number, clipCount: 
     for (let index = 0; index < channelCount; index++) {
       const bone = view.getUint16(offset, true);
       const kind = view.getUint8(offset + 2) as 0 | 1 | 2;
+      const interpolation = view.getUint8(offset + 3); // 05.10-A7a-F2
       const keys = view.getUint32(offset + 4, true);
+      const stored = steppedKeyCount(interpolation, keys);
       offset += 8;
-      const times = keyData.subarray(keyAt, keyAt + keys);
-      keyAt += keys;
-      for (let key = 0; key < keys; key++) {
-        times[key] = view.getUint32(offset + key * 4, true) / 1000;
-      }
-      offset += keys * 4;
       const components = kind === 1 ? 4 : 3;
-      const values = keyData.subarray(keyAt, keyAt + keys * components);
-      keyAt += keys * components;
-      for (let key = 0; key < keys; key++) {
-        for (let part = 0; part < components; part++) {
-          if (kind === 1) {
-            // M2CompQuat: int16 per component, x y z w, mapped back onto [-1, 1].
-            const raw = view.getInt16(offset + (key * 4 + part) * 2, true);
-            values[key * 4 + part] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
-          } else {
-            values[key * components + part] = view.getFloat32(offset + (key * components + part) * 4, true);
-          }
-        }
-      }
-      offset += keys * components * (kind === 1 ? 2 : 4);
+      const times = keyData.subarray(keyAt, keyAt + stored);
+      keyAt += stored;
+      const values = keyData.subarray(keyAt, keyAt + stored * components);
+      keyAt += stored * components;
+      readChannelKeys(view, offset, keys, kind, interpolation, times, values);
+      offset += keys * 4 + keys * components * (kind === 1 ? 2 : 4);
       if (bone < boneCount) channels.push({ bone, kind, times, values });
     }
     clips.push({
@@ -1143,7 +1242,7 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
       const keys = view.getUint32(offset + 4, true);
       if (view.getUint16(offset, true) < boneCount) {
         channelTotal++;
-        keyFloats += keys * (rotation ? 5 : 4);
+        keyFloats += steppedKeyCount(view.getUint8(offset + 3), keys) * (rotation ? 5 : 4); // 05.10-A7a-F2
       }
       offset += CHANNEL_HEADER_SIZE + keys * (rotation ? 12 : 16);
     }
@@ -1172,6 +1271,7 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
     for (let index = 0; index < channelCount; index++) {
       const bone = view.getUint16(offset, true);
       const kind = view.getUint8(offset + 2);
+      const interpolation = view.getUint8(offset + 3); // 05.10-A7a-F2 (6.16г)
       const keys = view.getUint32(offset + 4, true);
       offset += CHANNEL_HEADER_SIZE;
       const components = kind === 1 ? 4 : 3;
@@ -1180,24 +1280,15 @@ function readClipsPacked(view: DataView, start: number, clipCount: number, boneC
         offset += bytes;
         continue;
       }
+      const stored = steppedKeyCount(interpolation, keys);
       channelTable[channelAt * WVA_CHANNEL_STRIDE] = bone | (kind << 16);
-      channelTable[channelAt * WVA_CHANNEL_STRIDE + 1] = keys;
+      channelTable[channelAt * WVA_CHANNEL_STRIDE + 1] = stored;
       channelAt++;
       if (bone >= span) span = bone + 1;
-      for (let key = 0; key < keys; key++) keyData[keyAt + key] = view.getUint32(offset + key * 4, true) / 1000;
-      keyAt += keys;
-      const values = offset + keys * 4;
-      const count = keys * components;
-      if (kind === 1) {
-        // M2CompQuat: int16 per component, x y z w, mapped back onto [-1, 1].
-        for (let at = 0; at < count; at++) {
-          const raw = view.getInt16(values + at * 2, true);
-          keyData[keyAt + at] = (raw < 0 ? raw + 32768 : raw - 32767) / 32767;
-        }
-      } else {
-        for (let at = 0; at < count; at++) keyData[keyAt + at] = view.getFloat32(values + at * 4, true);
-      }
-      keyAt += count;
+      const count = stored * components;
+      readChannelKeys(view, offset, keys, kind, interpolation,
+        keyData.subarray(keyAt, keyAt + stored), keyData.subarray(keyAt + stored, keyAt + stored + count));
+      keyAt += stored + count;
       offset += bytes;
     }
     clipTable[record + WVA_CLIP_CHANNELS] = channelAt - firstChannel;

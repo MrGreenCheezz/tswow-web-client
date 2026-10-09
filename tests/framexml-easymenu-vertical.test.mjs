@@ -51,8 +51,9 @@ test("EasyMenu.lua sits at its stock slot; the closure adds one file, no widget 
   assert.equal(toc[toc.indexOf("easymenu.lua") - 1], "runeframe.xml", "stock TOC line 139 follows RuneFrame.xml (138)");
   const vertical = FRAMEXML_VERTICAL_TOC.map(normalize);
   assert.ok(vertical.includes("easymenu.lua"), "EasyMenu.lua is in the vertical");
-  assert.equal(vertical[vertical.indexOf("easymenu.lua") + 1], "alternatepowerbar.xml",
-    "nothing of stock lines 140-142 is in the vertical, so AlternatePowerBar.xml (143) follows it");
+  // 11.02-F2: VehicleMenuBar.xml (stock line 142) is in the vertical now; 140-141 still are not.
+  assert.equal(vertical[vertical.indexOf("easymenu.lua") + 1], "vehiclemenubar.xml",
+    "nothing of stock lines 140-141 is in the vertical, so VehicleMenuBar.xml (142) follows it");
   let baseline;
   let candidate;
   try {

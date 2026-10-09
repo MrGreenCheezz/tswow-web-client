@@ -25,6 +25,9 @@ function fakeDocument() {
       append(...nodes) { node.children.push(...nodes); },
       replaceChildren(...nodes) { node.children = [...nodes]; },
       addEventListener(name, handler) { node.listeners.set(name, handler); },
+      attributes: new Map(),
+      setAttribute(name, value) { node.attributes.set(name, String(value)); },
+      removeAttribute(name) { node.attributes.delete(name); },
       closest() { return undefined; },
     };
     return node;
@@ -177,4 +180,37 @@ test("a four-row party list preallocates stable portrait canvases and reuses the
     "reorder does not replace party canvases");
   assert.deepEqual(frames.map((frame) => frame.guid), [4n, 3n, 2n, 1n],
     "reorder retargets the stable rows by GUID");
+});
+
+// 4.08: an empty raid slot (guid 0, `emptyGridSlot`) holds its place and is nobody — a click does
+// not select guid 0 and a right click opens no group menu for it.
+test("an empty raid slot takes no click and no context menu; a member's slot does", () => {
+  const clicks = [];
+  const menus = [];
+  const frame = new UnitFrame({ kind: "raid", size: "grid", onClick: (guid) => clicks.push(guid),
+    onContext: (guid) => menus.push(guid) });
+  frame.show(unitSnapshot(0n, "", {}));
+  assert.equal(frame.guid, undefined);
+  assert.equal(frame.root.dataset.empty, "");
+  assert.equal(frame.root.attributes.get("aria-hidden"), "true");
+  frame.root.listeners.get("click")();
+  frame.root.listeners.get("contextmenu")({ preventDefault() {} });
+  assert.deepEqual(clicks, []);
+  assert.deepEqual(menus, []);
+  frame.show(unitSnapshot(GUID, "Лиара", {}));
+  assert.equal(frame.root.dataset.empty, undefined);
+  assert.equal(frame.root.attributes.has("aria-hidden"), false);
+  frame.root.listeners.get("click")();
+  frame.root.listeners.get("contextmenu")({ preventDefault() {} });
+  assert.deepEqual(clicks, [GUID]);
+  assert.deepEqual(menus, [GUID]);
+});
+
+test("the raid grid fills by columns: one subgroup a column of five", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = (await readFile(new URL("../src/browser/style.css", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = /\.ui-raid-grid\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  assert.match(rule, /grid-auto-flow:\s*column/);
+  assert.match(rule, /grid-template-rows:\s*repeat\(5,/);
+  assert.match(css, /\.ui-unit-frame\[data-empty\]\s*\{[^}]*pointer-events:\s*none/);
 });

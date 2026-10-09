@@ -30,6 +30,10 @@ import {
   directionalShadowBasis, frustumSliceSphere, stabiliseDirectionalShadowCenter,
   type LightingProfile,
 } from "./LightingQuality.js";
+import {
+  SHADOW_CASTER_KINDS, ShadowCasterRoot, referenceShadowWalk, shadowCasterKind, shadowDrawCount,
+  type ShadowCasterList,
+} from "./ShadowCasterList.js";
 
 /** Depth-only WMO stand-ins live here: shadow cameras draw them, the view camera never does. */
 export const SHADOW_PROXY_LAYER = 29;
@@ -45,6 +49,15 @@ export const SHADOW_CASTER_REACH = 500;
  * expressed in yards, so nothing else changes.
  */
 export const SHADOW_FAR_CASTER_REACH = 1400;
+/**
+ * P2-02b: the cached cascade's refresh interval as a safety net on the clock. Its casters are static,
+ * and the renderer re-renders it when what it draws changes (`invalidateFar` from the scenery folds
+ * and dirty marks, the margin, the sun), so the frame interval (`shadowFarRefreshFrames`, 208 ms at
+ * 144 Hz) mostly re-drew an unchanged map: 0.86 ms of CPU 2.8 times a second in the city bench. It
+ * now also waits this long. A change none of those see (a warm-up hold of an instance copy) shows
+ * up to this late; a posed rig among the far casters keeps the frame interval (`setFarAnimated`).
+ */
+export const SHADOW_FAR_IDLE_REFRESH_MS = 2000;
 /** Share of a map, from its edge inwards, over which a cascade hands over to the next one. */
 export const SHADOW_CASCADE_BLEND = 0.08;
 /** World-space PCF blur a cascade aims for, in yards, before its texel clamp. */
@@ -67,14 +80,96 @@ export interface ShadowCascadeStats {
   readonly cpuMs: number;
   /** Renders since the cascades were configured. */
   readonly renders: number;
+  /** P2-02b: CPU of every render since the cascades were configured, summed, and the largest one. */
+  readonly cpuMsTotal: number;
+  readonly cpuMsMax: number;
+  /** P2-02b: draw calls of every render since the cascades were configured. */
+  readonly drawCallsTotal: number;
+}
+
+/**
+ * P2-02b: why the cached cascade was rendered again, one reason per render (the first that held,
+ * in this order), counted since the cascades were configured.
+ */
+export interface FarCascadeReasons {
+  /** Asked for (`invalidateFar`, a new configuration) or its map is gone. */
+  readonly dirty: number;
+  /** Its disc changed size (`shadowDistance`). */
+  readonly extent: number;
+  /** The camera left half its margin in the light plane. */
+  readonly offset: number;
+  /** The sun turned. */
+  readonly sun: number;
+  /** The refresh interval passed. */
+  readonly interval: number;
+}
+
+export const FAR_CASCADE_REASONS = ["dirty", "extent", "offset", "sun", "interval"] as const;
+export type FarCascadeReason = typeof FAR_CASCADE_REASONS[number];
+
+/** The reason `farCascadeStale` holds for, in the order `FarCascadeReasons` counts them; undefined when fresh. */
+export function farCascadeReason(input: {
+  dirty: boolean;
+  extentChanged: boolean;
+  framesSinceRender: number;
+  refreshFrames: number;
+  offset: number;
+  margin: number;
+  sunDot: number;
+  msSinceRender?: number | undefined;
+  idleRefreshMs?: number | undefined;
+}): FarCascadeReason | undefined {
+  if (input.dirty) return "dirty";
+  if (input.extentChanged) return "extent";
+  if (!(input.offset <= input.margin * 0.5)) return "offset";
+  if (!(input.sunDot >= 0.999995)) return "sun";
+  if (farIntervalDue(input)) return "interval";
+  return undefined;
 }
 
 export interface ShadowCascadeSnapshot {
   readonly cascades: readonly ShadowCascadeStats[];
   /** Frames the cascades were updated on since they were configured. */
   readonly frames: number;
-  /** Retained-but-hidden scenery made visible for the last shadow pass only. */
-  readonly shadowOnlyCasters: number;
+  /**
+   * Retained-but-hidden scenery cast for the last shadow pass only. With the caster list (P2-01a,
+   * the renderer) it counts owners with an active gate-2 caster; renamed from `shadowOnlyCasters`,
+   * which counted every node the old toggle showed, so recordings from before and after are not
+   * compared as one series. Without a list it is still the toggle's return value.
+   */
+  readonly shadowOnlyOwners: number;
+  /** P2-02b: why the cached cascade was re-rendered, since the cascades were configured. */
+  readonly farReasons: FarCascadeReasons;
+}
+
+/** One cascade of the P2-01a census: three's walk of the scene against the list's root. */
+export interface ShadowCasterCensusCascade {
+  /** Meshes and draws (groups) three's walk of the scene would make. */
+  readonly referenceMeshes: number;
+  readonly referenceDraws: number;
+  /** The same through the caster list's root. */
+  readonly listMeshes: number;
+  readonly listDraws: number;
+  /** Draws in the reference only / in the list only. */
+  readonly missing: number;
+  readonly extra: number;
+  /** Draws through the root per kind. */
+  readonly drawsByKind: Readonly<Record<string, number>>;
+  /** Draws through the root per the caller's classes (the renderer: gate and instancing). */
+  readonly drawsByClass: Readonly<Record<string, number>>;
+  /** A few missing / extra meshes, branch first, for diagnosis. */
+  readonly samples: readonly string[];
+}
+
+export interface ShadowCasterCensus {
+  readonly cascades: readonly ShadowCasterCensusCascade[];
+  readonly entries: number;
+  readonly emitted: number;
+  readonly nested: number;
+  readonly pruned: number;
+  readonly shadowOnlyOwners: number;
+  /** Entries with a visible chain per gate answer 0 / 1 / 2. */
+  readonly byGate: readonly number[];
 }
 
 interface CascadeState {
@@ -91,9 +186,63 @@ interface CascadeState {
   drawCalls: number;
   cpuMs: number;
   renders: number;
+  cpuMsTotal: number;
+  cpuMsMax: number;
+  drawCallsTotal: number;
 }
 
 type ShadowRender = (this: THREE.WebGLShadowMap, lights: THREE.Light[], scene: THREE.Object3D, camera: THREE.Camera) => void;
+
+/*
+ * P2-01d: the cascades sample only the map's depth texture; three's depth materials also write a
+ * packed depth colour into an RGBA8 attachment nobody reads. Three hands every shadow draw's depth
+ * material (its private shared one, a clone per alpha-keyed source, or a custom one) to
+ * `object.onBeforeShadow` just before `renderBufferDirect`, and `Object3D.prototype.onBeforeShadow`
+ * is an empty default. Replacing that default once, and acting only while the cascades render,
+ * turns `colorWrite` off on exactly those materials — it is not part of any program key, so no
+ * program changes. A first try swapped `renderer.renderBufferDirect` around the cascades every
+ * frame instead: city +0.54 ms CPU over three strict pairs (`series-p201d.json`), kept in
+ * `.runtime/perf-step22/p201d1-nogo/`.
+ *
+ * Three shares its depth material (and the clones) with every other shadow render, so the flag is
+ * handed back in `onAfterShadow`, right after the draw: any light that is not a cascade still draws
+ * with colour, as before P2-01d. The colour mask three tracks does not change between two cascade
+ * draws (both off), so the flip costs two property writes a draw and no GL call.
+ */
+let depthOnlyDepth = 0;
+let depthOnlyInstalled = false;
+/** The depth material this hook turned colour off on, for `onAfterShadow` to give it back. */
+let depthOnlyFlipped: THREE.Material | null = null;
+
+function installDepthOnlyHook(): void {
+  if (depthOnlyInstalled) return;
+  depthOnlyInstalled = true;
+  const previous = THREE.Object3D.prototype.onBeforeShadow;
+  THREE.Object3D.prototype.onBeforeShadow = function (
+    renderer, object, camera, shadowCamera, geometry, depthMaterial, group,
+  ): void {
+    if (depthOnlyDepth > 0 && depthMaterial.colorWrite) {
+      depthMaterial.colorWrite = false;
+      depthOnlyFlipped = depthMaterial;
+    }
+    previous.call(this, renderer, object, camera, shadowCamera, geometry, depthMaterial, group);
+  };
+  const after = THREE.Object3D.prototype.onAfterShadow;
+  THREE.Object3D.prototype.onAfterShadow = function (
+    renderer, object, camera, shadowCamera, geometry, depthMaterial, group,
+  ): void {
+    if (depthOnlyFlipped === depthMaterial) {
+      depthMaterial.colorWrite = true;
+      depthOnlyFlipped = null;
+    }
+    after.call(this, renderer, object, camera, shadowCamera, geometry, depthMaterial, group);
+  };
+}
+
+/** Whether the depth-only hook is acting now (tests). */
+export function depthOnlyActive(): boolean {
+  return depthOnlyDepth > 0;
+}
 
 /**
  * Whether the cached cascade has to be rendered again.
@@ -108,11 +257,20 @@ export function farCascadeStale(input: {
   offset: number;
   margin: number;
   sunDot: number;
+  /** P2-02b: with both, the interval also waits `idleRefreshMs` on the clock. */
+  msSinceRender?: number | undefined;
+  idleRefreshMs?: number | undefined;
 }): boolean {
   return input.dirty
-    || input.framesSinceRender >= input.refreshFrames
+    || farIntervalDue(input)
     || !(input.offset <= input.margin * 0.5)
     || !(input.sunDot >= 0.999995);
+}
+
+function farIntervalDue(input: { framesSinceRender: number; refreshFrames: number; msSinceRender?: number | undefined; idleRefreshMs?: number | undefined }): boolean {
+  if (!(input.framesSinceRender >= input.refreshFrames)) return false;
+  return input.msSinceRender === undefined || input.idleRefreshMs === undefined
+    || !(input.msSinceRender < input.idleRefreshMs);
 }
 
 export class CascadedSunShadows {
@@ -125,6 +283,8 @@ export class CascadedSunShadows {
   #installed: THREE.WebGLRenderer | undefined;
   #shadowOnly: ((on: boolean) => number) | undefined;
   #shadowOnlyCount = 0;
+  #casterList: ShadowCasterList | undefined;
+  readonly #casterRoot = new ShadowCasterRoot();
   #boundedCasters: ((out: THREE.Mesh[]) => void) | undefined;
   readonly #boundedList: THREE.Mesh[] = [];
   readonly #boundedHidden: THREE.Mesh[] = [];
@@ -136,6 +296,14 @@ export class CascadedSunShadows {
   // Far-cascade cache state.
   #farDirty = true;
   #farRenderedFrame = -Infinity;
+  #farRenderedAtMs = -Infinity;
+  /** P2-02b: a far caster is animated, so the interval keeps to frames alone. */
+  #farAnimated = false;
+  /** P2-02b: the reason the scheduled far render was asked for, counted when it renders (-1: none). */
+  #farPendingReason = -1;
+  #farRenderListener: (() => void) | undefined;
+  /** P2-02b: re-render reasons in `FAR_CASCADE_REASONS` order. */
+  readonly #farReasons = [0, 0, 0, 0, 0];
   readonly #farCenter = new THREE.Vector3();
   readonly #farSun = new THREE.Vector3();
   // Scratch.
@@ -172,9 +340,16 @@ export class CascadedSunShadows {
         drawCalls: cascade.drawCalls,
         cpuMs: cascade.cpuMs,
         renders: cascade.renders,
+        cpuMsTotal: cascade.cpuMsTotal,
+        cpuMsMax: cascade.cpuMsMax,
+        drawCallsTotal: cascade.drawCallsTotal,
       }))),
       frames: this.#frames,
-      shadowOnlyCasters: this.#shadowOnlyCount,
+      shadowOnlyOwners: this.#shadowOnlyCount,
+      farReasons: Object.freeze({
+        dirty: this.#farReasons[0]!, extent: this.#farReasons[1]!, offset: this.#farReasons[2]!,
+        sun: this.#farReasons[3]!, interval: this.#farReasons[4]!,
+      }),
     });
   }
 
@@ -185,6 +360,93 @@ export class CascadedSunShadows {
    */
   setShadowOnlyCasters(toggle: ((on: boolean) => number) | undefined): void {
     this.#shadowOnly = toggle;
+  }
+
+  /**
+   * P2-01a: with a caster list, each cascade is handed the list's synthetic root instead of the
+   * scene (`ShadowCasterList.ts`); the list's gates replace the shadow-only toggle, which is then
+   * not called. Without one, the scene is walked as before.
+   */
+  setCasterList(list: ShadowCasterList | undefined): void {
+    this.#casterList = list;
+    this.#casterRoot.children.length = 0;
+  }
+
+  /**
+   * P2-01a census for the bench: for every cascade as last placed, three's walk of `scene` (with
+   * `shown` standing in for the shadow-only toggle) against the walk of the list's root. Runs the
+   * list's `beginFrame`, so call it between renders. Undefined without cascades or a list.
+   */
+  casterCensus(
+    scene: THREE.Object3D,
+    shown?: (node: THREE.Object3D) => boolean,
+    classify?: (mesh: THREE.Mesh) => string | undefined,
+  ): ShadowCasterCensus | undefined {
+    const list = this.#casterList;
+    if (!list || this.#cascades.length === 0) return undefined;
+    list.beginFrame(scene);
+    const branch = (mesh: THREE.Object3D): string => {
+      let node = mesh;
+      while (node.parent && node.parent !== scene) node = node.parent;
+      return `${node.name || node.type}/${mesh.name || mesh.type}#${mesh.id}`;
+    };
+    const root = this.#casterRoot;
+    const cascades = this.#cascades.map((cascade, view) => {
+      cascade.light.shadow.updateMatrices(cascade.light);
+      const frustum = cascade.light.shadow.getFrustum();
+      const reference: THREE.Mesh[] = [];
+      referenceShadowWalk(scene, cascade.camera, frustum, reference, shown);
+      const listed: THREE.Mesh[] = [];
+      list.fill(root, view);
+      list.showShadowOnly();
+      try {
+        referenceShadowWalk(root, cascade.camera, frustum, listed);
+      } finally {
+        list.hideShadowOnly();
+      }
+      const inReference = new Map<THREE.Mesh, number>();
+      for (const mesh of reference) inReference.set(mesh, (inReference.get(mesh) ?? 0) + 1);
+      const inList = new Map<THREE.Mesh, number>();
+      for (const mesh of listed) inList.set(mesh, (inList.get(mesh) ?? 0) + 1);
+      let missing = 0, extra = 0;
+      const samples: string[] = [];
+      for (const [mesh, count] of inReference) {
+        const lost = count - (inList.get(mesh) ?? 0);
+        if (lost <= 0) continue;
+        missing += lost * shadowDrawCount(mesh);
+        if (samples.length < 6) samples.push(`missing ${branch(mesh)}`);
+      }
+      for (const [mesh, count] of inList) {
+        const added = count - (inReference.get(mesh) ?? 0);
+        if (added <= 0) continue;
+        extra += added * shadowDrawCount(mesh);
+        if (samples.length < 12) samples.push(`extra ${branch(mesh)}`);
+      }
+      const drawsByKind: Record<string, number> = {};
+      for (const kind of SHADOW_CASTER_KINDS) drawsByKind[kind] = 0;
+      const drawsByClass: Record<string, number> = {};
+      let referenceDraws = 0, listDraws = 0;
+      for (const mesh of reference) referenceDraws += shadowDrawCount(mesh);
+      for (const mesh of listed) {
+        const draws = shadowDrawCount(mesh);
+        listDraws += draws;
+        const kind = SHADOW_CASTER_KINDS[shadowCasterKind(mesh)]!;
+        drawsByKind[kind] = (drawsByKind[kind] ?? 0) + draws;
+        const label = classify?.(mesh);
+        if (label !== undefined) drawsByClass[label] = (drawsByClass[label] ?? 0) + draws;
+      }
+      return Object.freeze({
+        referenceMeshes: reference.length, referenceDraws, listMeshes: listed.length, listDraws,
+        missing, extra, drawsByKind: Object.freeze(drawsByKind), drawsByClass: Object.freeze(drawsByClass),
+        samples: Object.freeze(samples),
+      });
+    });
+    root.children.length = 0;
+    const stats = list.stats;
+    return Object.freeze({
+      cascades: Object.freeze(cascades), entries: stats.entries, emitted: stats.emitted, nested: stats.nested,
+      pruned: stats.pruned, shadowOnlyOwners: stats.shadowOnlyOwners, byGate: Object.freeze([...stats.byGate]),
+    });
   }
 
   /**
@@ -248,6 +510,19 @@ export class CascadedSunShadows {
     hidden.length = 0;
   }
 
+  /**
+   * P2-02b: whether a far caster moves on its own (a rigged doodad's sails): its shadow in the cached
+   * map then refreshes on the frame interval as before, not on `SHADOW_FAR_IDLE_REFRESH_MS`.
+   */
+  setFarAnimated(animated: boolean): void {
+    this.#farAnimated = animated;
+  }
+
+  /** P2-02b: called right after the cached cascade renders, so the caller can note what it drew. */
+  setFarRenderListener(listener: (() => void) | undefined): void {
+    this.#farRenderListener = listener;
+  }
+
   /** Forget the cached cascade: its casters, the sun or the configuration changed. */
   invalidateFar(): void {
     this.#farDirty = true;
@@ -307,11 +582,19 @@ export class CascadedSunShadows {
       this.#cascades.push({
         light, camera, lights: [light], far, mapSize, extent: 0, texel: 0,
         scheduled: false, rendered: false, drawCalls: 0, cpuMs: 0, renders: 0,
+        cpuMsTotal: 0, cpuMsMax: 0, drawCallsTotal: 0,
       });
     }
     this.#fade.value.set(profile.shadowFadeStart, profile.shadowDistance, SHADOW_CASCADE_BLEND);
     this.#farDirty = true;
     this.#frames = 0;
+    this.#farReasons.fill(0);
+  }
+
+  #farRendered(): void {
+    if (this.#farPendingReason >= 0) this.#farReasons[this.#farPendingReason]!++;
+    this.#farPendingReason = -1;
+    this.#farRenderListener?.();
   }
 
   #createExtra(index: number): THREE.DirectionalLight {
@@ -325,7 +608,7 @@ export class CascadedSunShadows {
    * Place every cascade for this frame's camera and decide which ones render. The camera's world
    * matrix must already be current; `sun` points towards the sun.
    */
-  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, frame: number): void {
+  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, frame: number, nowMs = performance.now()): void {
     const profile = this.#profile;
     if (!profile || this.#cascades.length === 0) return;
     const length = sun.length();
@@ -367,12 +650,28 @@ export class CascadedSunShadows {
       offset,
       margin,
       sunDot: this.#farSun.dot(direction),
+      msSinceRender: nowMs - this.#farRenderedAtMs,
+      idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
     });
     if (stale) {
+      const reason = farCascadeReason({
+        dirty: this.#farDirty || farCascade.light.shadow.map === null,
+        extentChanged: farCascade.extent !== extent,
+        framesSinceRender: frame - this.#farRenderedFrame,
+        refreshFrames: Math.max(1, profile.shadowFarRefreshFrames),
+        offset,
+        margin,
+        sunDot: this.#farSun.dot(direction),
+        msSinceRender: nowMs - this.#farRenderedAtMs,
+        idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
+      });
+      // Counted when the render happens: a scheduled cascade three never renders is not a render.
+      if (reason !== undefined) this.#farPendingReason = FAR_CASCADE_REASONS.indexOf(reason);
       this.#place(farCascade, camera.position, direction, basis.up, extent);
       this.#farCenter.copy(camera.position);
       this.#farSun.copy(direction);
       this.#farRenderedFrame = frame;
+      this.#farRenderedAtMs = nowMs;
       this.#farDirty = false;
       farCascade.scheduled = true;
     }
@@ -415,6 +714,25 @@ export class CascadedSunShadows {
     shadow.radius = Math.min(3, Math.max(1, SHADOW_BLUR_YARDS / texel));
   }
 
+  /**
+   * 06.10-shadow: whether a sphere (scene space) overlaps the light-plane square of any view-fitted
+   * cascade as last placed — the only maps a unit's shadow can be drawn into (the cached cascade
+   * never draws units). The renderer admits an off-screen unit for its shadow only when this holds.
+   * False before the first placement. Allocation-free.
+   */
+  viewFittedCovers(x: number, y: number, z: number, radius: number): boolean {
+    const { right, up } = this.#basis;
+    const r = x * right.x + y * right.y + z * right.z;
+    const u = x * up.x + y * up.y + z * up.z;
+    for (const cascade of this.#cascades) {
+      if (cascade.far || !(cascade.extent > 0)) continue;
+      const centre = cascade.light.target.position;
+      const reach = cascade.extent + radius;
+      if (Math.abs(r - centre.dot(right)) <= reach && Math.abs(u - centre.dot(up)) <= reach) return true;
+    }
+    return false;
+  }
+
   /** Visits the added cascades' live render targets; the primary's are its owner's to report. */
   visitMaps(visit: (owner: THREE.DirectionalLight, target: THREE.RenderTarget) => void): void {
     for (const light of this.#extras) {
@@ -442,6 +760,7 @@ export class CascadedSunShadows {
     const original = shadowMap.render as unknown as ShadowRender;
     const owner = this;
     const others: THREE.Light[] = [];
+    installDepthOnlyHook();
     const wrapped: ShadowRender = function (lights, scene, camera) {
       const cascades = owner.#cascades;
       if (cascades.length === 0) {
@@ -461,9 +780,25 @@ export class CascadedSunShadows {
       for (const cascade of cascades) if (cascade.scheduled && lights.includes(cascade.light)) any = true;
       if (!any) return;
       for (const cascade of cascades) cascade.rendered = false;
-      owner.#shadowOnlyCount = owner.#shadowOnly?.(true) ?? 0;
+      // P2-01a: the list picks its casters once for every cascade of this frame, before the first
+      // `#hideBoundedOutside` touches a terrain tile's `visible`; its gates stand for the toggle.
+      const list = owner.#casterList;
+      const root = owner.#casterRoot;
+      if (list) {
+        list.beginFrame(scene);
+        owner.#shadowOnlyCount = list.stats.shadowOnlyOwners;
+      } else {
+        owner.#shadowOnlyCount = owner.#shadowOnly?.(true) ?? 0;
+      }
+      depthOnlyDepth++;
+      // Each cascade's `renderer.clear()` then clears depth only: the colour mask stays off until
+      // the first draw that wants colour, which the restore below makes explicit.
+      renderer.state?.buffers.color.setMask(false);
       try {
-        for (const cascade of cascades) {
+        // A gate-2 caster that is its own (hidden) owner: three would stop at its `visible`.
+        list?.showShadowOnly();
+        for (let view = 0; view < cascades.length; view++) {
+          const cascade = cascades[view]!;
           if (!cascade.scheduled || !lights.includes(cascade.light)) continue;
           cascade.scheduled = false;
           cascade.light.shadow.needsUpdate = true;
@@ -471,7 +806,8 @@ export class CascadedSunShadows {
           const started = performance.now();
           owner.#hideBoundedOutside(cascade);
           try {
-            original.call(this, cascade.lights, scene, cascade.camera);
+            if (list) list.fill(root, view);
+            original.call(this, cascade.lights, list ? root : scene, cascade.camera);
           } finally {
             owner.#showBounded();
           }
@@ -479,9 +815,27 @@ export class CascadedSunShadows {
           cascade.drawCalls = renderer.info.render.calls - calls;
           cascade.rendered = true;
           cascade.renders++;
+          cascade.cpuMsTotal += cascade.cpuMs;
+          if (cascade.cpuMs > cascade.cpuMsMax) cascade.cpuMsMax = cascade.cpuMs;
+          cascade.drawCallsTotal += cascade.drawCalls;
+          if (cascade.far) owner.#farRendered();
         }
       } finally {
-        owner.#shadowOnly?.(false);
+        depthOnlyDepth--;
+        // A draw that threw between the two hooks: give its material colour back here.
+        if (depthOnlyFlipped) {
+          depthOnlyFlipped.colorWrite = true;
+          depthOnlyFlipped = null;
+        }
+        // Before P2-01d the last shadow draw always left the mask on; a clear between this pass and
+        // the first main-pass draw (transmission, a manual clear) relies on that.
+        renderer.state?.buffers.color.setMask(true);
+        if (list) {
+          list.hideShadowOnly();
+          root.children.length = 0;
+        } else {
+          owner.#shadowOnly?.(false);
+        }
       }
     };
     shadowMap.render = wrapped as unknown as typeof shadowMap.render;

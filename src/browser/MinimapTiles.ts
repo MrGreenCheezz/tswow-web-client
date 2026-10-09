@@ -1,4 +1,5 @@
 import { TextureBitmapCache } from "./TextureBitmaps.js";
+import { withGeneration } from "./GatewayGeneration.js";
 
 /**
  * The baked minimap pictures, fetched by grid cell.
@@ -61,6 +62,14 @@ export class MinimapTileClient {
     return this.#pictures.bitmap(`textures\\Minimap\\${hash}.blp`);
   }
 
+  /**
+   * 05.10-A7b-4 (7.14): a bake by its md5 alone — a WMO group's cell (WmoMinimapDraw.ts). The same cache as
+   * the ADT cells, so a picture both use is held once.
+   */
+  picture(hash: string): ImageBitmap | undefined {
+    return this.#pictures.bitmap(`textures\\Minimap\\${hash}.blp`);
+  }
+
   /** Whether the map has any minimap at all, once its index is known. */
   hasTiles(map: number): boolean {
     return (this.index(map)?.size ?? 0) > 0;
@@ -76,7 +85,7 @@ export class MinimapTileClient {
 
   async #loadIndex(map: number): Promise<void> {
     try {
-      const response = await fetch(`${this.#baseUrl}/minimap/${map}/index.json`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/minimap/${map}/index.json`));
       if (!response.ok) throw new Error(`Minimap gateway returned ${response.status}`);
       const value: unknown = await response.json();
       const tiles = (value as { tiles?: Record<string, unknown> } | null)?.tiles;

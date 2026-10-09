@@ -120,15 +120,27 @@ export class SpellMetadataClient {
     // `onNextSwing` («Следующая атака») and `channeled` («Потоковое»). All three are optional
     // below: a gateway process started before them answers v=13 in the v=12 shape, and that
     // must still draw today's rows rather than refuse the book.
-    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=13`;
+    // v=14 adds what IsActionInRange and the lock-pick cursor read (1.14b, 2.05): the friendly
+    // range slot, the raw Targets/ImplicitTarget/TargetCreatureType columns, the eight attribute
+    // words and `itemOrObject`. Optional below like v=13's: a gateway started before them answers
+    // v=14 in the v=13 shape, and the range then stays nil and Pick Lock keeps no cursor.
+    // v=15 adds `dispelType` and `debuffType` (5.20): UnitAura's fifth value and the steal test.
+    // Optional as well: an older gateway leaves debuffType nil and isStealable off.
+    // v=16 adds what the cast events, the combat log and the multi-cast bar read (3.01, 3.02, 3.07):
+    // `dmgClass`, `preventionType`, `interruptFlags`, `channelInterruptFlags`, `totemSlotMask`.
+    // Optional too: an older gateway leaves notInterruptible false and GetMultiCastTotemSpells empty.
+    // L13: v=17 adds `startRecoveryCategory` (5.30: the global cooldown's category), `effectMiscValueB` and
+    // the SummonProperties rows of a summon effect (3.12). Optional: an older gateway's rows keep the one
+    // global cooldown for every spell with a StartRecoveryTime and give a summoned unit no title line.
+    const url = `${this.#baseUrl}/dbc/spells?ids=${chunk.join(",")}&v=17`; // L13: was v=16
     let value = await this.#batch(url);
-    // The key alone cannot tell a restarted gateway from the hour-long browser cache: a v=13
-    // answer the old process gave before the restart is still on disk. A batch whose every row
-    // lacks the new description is asked once more past that cache; if the gateway itself
-    // still answers the old shape, this session stops asking twice.
-    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.auraDescription === undefined)) {
+    // The key alone cannot tell a restarted gateway from the hour-long browser cache: an answer the
+    // old process gave before the restart is still on disk. A batch whose every row lacks the newest
+    // field (L13: `startRecoveryCategory`, present on every v=17 row, 0 included) is asked once more past
+    // that cache; if the gateway itself still answers the old shape, this session stops asking twice.
+    if (!this.#olderGateway && value.length > 0 && value.every((row) => row.startRecoveryCategory === undefined)) { // L13
       value = await this.#batch(url, { cache: "reload" });
-      if (value.every((row) => row.auraDescription === undefined)) this.#olderGateway = true;
+      if (value.every((row) => row.startRecoveryCategory === undefined)) this.#olderGateway = true; // L13
     }
     for (const metadata of value) this.#cache.set(metadata.id, metadata);
     // Answered, and without a row: final for this gateway process (see `#missing`).
@@ -203,5 +215,50 @@ function isSpellMetadata(value: unknown): value is SpellMetadata {
     // v=13's three are optional (see `load`), but a present one must be what it says.
     && (spell.auraDescription === undefined || typeof spell.auraDescription === "string")
     && (spell.onNextSwing === undefined || typeof spell.onNextSwing === "boolean")
-    && (spell.channeled === undefined || typeof spell.channeled === "boolean");
+    && (spell.channeled === undefined || typeof spell.channeled === "boolean")
+    // v=14's are optional too; a present one must be what it says.
+    && optionalNumber(spell.rangeMinFriendly) && optionalNumber(spell.rangeMaxFriendly)
+    && optionalInteger(spell.targets) && optionalInteger(spell.targetCreatureType)
+    && optionalIntegers(spell.implicitTargetA, 3) && optionalIntegers(spell.implicitTargetB, 3)
+    && optionalIntegers(spell.attributes, 8)
+    && (spell.itemOrObject === undefined || typeof spell.itemOrObject === "boolean")
+    // v=15's: DispelType is a small index (SpellDispelType.dbc has 12 rows here), debuffType a string.
+    && (spell.dispelType === undefined
+      || (Number.isInteger(spell.dispelType) && (spell.dispelType as number) >= 0 && (spell.dispelType as number) < 32))
+    && (spell.debuffType === undefined || typeof spell.debuffType === "string")
+    && (spell.dispelName === undefined || typeof spell.dispelName === "string")
+    // v=16's: small enums and raw flag words; absent from an older gateway.
+    && optionalInteger(spell.dmgClass) && optionalInteger(spell.preventionType)
+    && optionalInteger(spell.interruptFlags) && optionalInteger(spell.channelInterruptFlags)
+    && (spell.totemSlotMask === undefined
+      || (Number.isInteger(spell.totemSlotMask) && (spell.totemSlotMask as number) >= 0
+        && (spell.totemSlotMask as number) <= 0xf))
+    // L13 (v=17): a category is a non-negative id; MiscValueB three raw words; the summon rows one per effect.
+    && (spell.startRecoveryCategory === undefined
+      || (Number.isSafeInteger(spell.startRecoveryCategory) && (spell.startRecoveryCategory as number) >= 0))
+    && optionalIntegers(spell.effectMiscValueB, 3)
+    && (spell.summonProperties === undefined
+      || (Array.isArray(spell.summonProperties) && spell.summonProperties.length === 3
+        && spell.summonProperties.every(isSummonPropertiesEntry)));
+}
+
+/** L13 (v=17): a `summonProperties` entry — null, or a SummonProperties row of six integers. */
+function isSummonPropertiesEntry(value: unknown): boolean {
+  if (value === null) return true;
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return Number.isSafeInteger(row.id) && Number.isSafeInteger(row.control) && Number.isSafeInteger(row.faction)
+    && Number.isSafeInteger(row.title) && Number.isSafeInteger(row.slot) && Number.isSafeInteger(row.flags);
+}
+
+function optionalNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
+
+function optionalInteger(value: unknown): boolean {
+  return value === undefined || Number.isSafeInteger(value);
+}
+
+function optionalIntegers(value: unknown, length: number): boolean {
+  return value === undefined || (Array.isArray(value) && value.length === length && value.every((entry) => Number.isSafeInteger(entry)));
 }

@@ -14,6 +14,8 @@ import {
 } from "../dist/code/browser/BenchmarkReplay.js";
 import { WorldState } from "../dist/code/world/WorldState.js";
 import { parseWeather } from "../dist/code/world/WorldMessageProtocol.js";
+import { parseMonsterMove } from "../dist/code/world/MonsterMoveProtocol.js";
+import { monsterMovePacket } from "./fixtures/world-packets.mjs";
 
 const camera = (frameIndex) => ({
   frameIndex,
@@ -362,6 +364,34 @@ test("capture materializes spline and glide midpoints without mutating the live 
   assert.equal(hydrateWorldReplaySnapshot(capturedClear).frames[0].wallView, Infinity);
 });
 
+test("capture samples a spline by its full description and leaves the live lap clock alone", () => {
+  const world = new WorldState();
+  world.selfGuid = 2n;
+  world.move(2n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } }, 0);
+  // A parabola: 40·1²/8 = 5 yd up at half time (MoveSpline::computeParabolicElevation).
+  world.startSpline(parseMonsterMove(monsterMovePacket({
+    guid: 2n, flags: 0x800, duration: 1000, parabolic: { acceleration: 40, startMs: 0 },
+    path: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }],
+  })), 0);
+  const arc = captureWorldReplaySnapshot(world, 500, metadata(), [camera(0)]);
+  assert.equal(arc.objects[0].position.x, 5);
+  assert.equal(arc.objects[0].position.z, 5, "the arc, not the straight line");
+
+  // An Enter_Cycle square one and a quarter laps in: the second lap leaves c0 out.
+  const square = [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 10, y: 10, z: 0 }, { x: 0, y: 10, z: 0 }];
+  world.startSpline(parseMonsterMove(monsterMovePacket({
+    guid: 2n, flags: 0x2000 | 0x80000 | 0x100000, duration: 4000, path: square,
+  })), 0);
+  const track = world.objects.get(2n).motion.track;
+  const before = { looped: track.looped, lapStartMs: track.lapStartMs, lapDurationMs: track.lapDurationMs };
+  const lap = captureWorldReplaySnapshot(world, 5000, metadata(), [camera(0)]);
+  assert.ok(Math.abs(lap.objects[0].position.x - 10) < 1e-3, "on the c1 → c2 leg");
+  assert.ok(Math.abs(lap.objects[0].position.y - (10 + 10 + Math.SQRT2 * 10) / 4) < 1e-3, "measured from c1");
+  assert.deepEqual({ looped: track.looped, lapStartMs: track.lapStartMs, lapDurationMs: track.lapDurationMs }, before);
+  const again = captureWorldReplaySnapshot(world, 5000, metadata(), [camera(0)]);
+  assert.equal(canonicalWorldReplayJson(again), canonicalWorldReplayJson(lap), "deterministic");
+});
+
 test("capture materializes transports independently of object insertion order", () => {
   const makeWorld = (passengerFirst) => {
     const world = new WorldState();
@@ -416,4 +446,36 @@ test("Web Crypto is required for hashing", async () => {
   } finally {
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: original });
   }
+});
+
+// Review 02.10 (5.04/5.27): a capture of a live world is the bench's picture of it. A remote player
+// carried on by extrapolation stands at capture time where the live frame would draw them, and a
+// game object's full rotation survives capture and hydration, so a tilted bridge stays tilted.
+test("capture materializes an extrapolated runner and keeps a game object's rotation", async () => {
+  const MOVE_FORWARD = 0x1;
+  const world = new WorldState();
+  world.selfGuid = 2n;
+  world.move(2n, { flags: 0, position: { x: 0, y: 0, z: 0, orientation: 0 } }, 0);
+  world.move(3n, { flags: MOVE_FORWARD, position: { x: 0, y: 0, z: 0, orientation: 0 } }, 0);
+  world.objects.get(3n).typeId = 4;
+  const runner = world.objects.get(3n);
+  assert.ok(runner.drift, "the live runner is extrapolated");
+  const captured = captureWorldReplaySnapshot(world, 500, metadata(), [camera(0)]);
+  const capturedRunner = captured.objects.find((value) => value.guid === "3");
+  assert.ok(Math.abs(capturedRunner.position.x - 3.5) < 1e-9, `run 7 for half a second: ${capturedRunner.position.x}`);
+  assert.equal(runner.position.x, 0, "the live world is not advanced by a capture");
+  assert.equal(runner.drift.at, 0, "nor its drift");
+
+  world.move(9n, { flags: 0, position: { x: 5, y: 5, z: 0, orientation: 0.4 } }, 0);
+  const bridge = world.objects.get(9n);
+  bridge.typeId = 5;
+  bridge.rotation = { x: 0.17364817766693033, y: 0, z: 0, w: 0.984807753012208 };
+  const withRotation = captureWorldReplaySnapshot(world, 500, metadata(), [camera(0)]);
+  const capturedBridge = withRotation.objects.find((value) => value.guid === "9");
+  assert.deepEqual(capturedBridge.rotation, bridge.rotation);
+  assert.equal("rotation" in withRotation.objects.find((value) => value.guid === "3"), false,
+    "an object without one writes no key, so older captures hash as before");
+  const hydrated = hydrateWorldReplaySnapshot(withRotation).state.objects.get(9n);
+  assert.deepEqual(hydrated.rotation, bridge.rotation);
+  assert.equal(await hashWorldReplaySnapshot(cloneWorldReplaySnapshot(withRotation)), await hashWorldReplaySnapshot(withRotation));
 });

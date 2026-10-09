@@ -126,6 +126,19 @@ test("wire mount and attachment-capable player item slots fail open without meta
     "body-painted slots alone do not claim an out-of-body attachment silhouette");
 });
 
+// 05.10 review A7a-B 6.02: a creature's held weapons come from UNIT_VIRTUAL_ITEM_SLOT_ID, not from
+// the appearance `admissionHasAuthoredAttachments` reads, so the wire words must widen its sphere the
+// way a player's visible-item words do — before the blade is hung, not after.
+test("05.10 review: a creature's virtual item words fail open like a player's weapon slots", () => {
+  const first = UPDATE_FIELDS.UNIT_VIRTUAL_ITEM_SLOT_ID.offset;
+  for (const word of [0, 1, 2]) {
+    const object = { typeId: 3, fields: new Map() };
+    assert.equal(unitWireHasCompositeSilhouette(object), false, "an unarmed creature");
+    object.fields.set(first + word, 1899);
+    assert.equal(unitWireHasCompositeSilhouette(object), true, `virtual item word ${word}`);
+  }
+});
+
 test("renderer admission is lookup-free, current-only, and keeps culled residents dormant", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const updateStart = source.indexOf("  #updateUnits(");
@@ -136,7 +149,11 @@ test("renderer admission is lookup-free, current-only, and keeps culled resident
   assert.ok(updateStart >= 0 && updateEnd > updateStart && frustumAt >= 0 && admissionAt > frustumAt,
     "the camera frustum is composed before unit budget admission");
 
-  const candidatePass = update.slice(update.indexOf("for (const object of state.objects.values())"), admissionAt);
+  // 05.10 suite-fix: since 05.10-A7a-G2 (6.05) the loop takes each `candidate` and views a corpse
+  // (typeId 7) as its body (`corpseUnitView`) before the same `object` checks.
+  const passAt = update.indexOf("for (const candidate of state.objects.values())");
+  assert.ok(passAt >= 0 && passAt < admissionAt, "the candidate pass precedes admission");
+  const candidatePass = update.slice(passAt, admissionAt);
   for (const forbidden of ["creatureModel?.(", "mountModel?.(", "client?.model", "#drawUnit(", "image("]) {
     assert.equal(candidatePass.includes(forbidden), false, `admission must not call ${forbidden}`);
   }

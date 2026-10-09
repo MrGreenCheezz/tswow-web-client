@@ -1,3 +1,5 @@
+import { guidFromWords } from "./Guid.js";
+
 const decoder = new TextDecoder();
 
 export class PacketReader {
@@ -83,13 +85,25 @@ export class PacketReader {
     return value;
   }
 
+  /**
+   * A mask byte, then one byte per set bit, low byte first. The two words are put together in plain
+   * numbers and made a bigint once (`guidFromWords`), instead of four bigints per byte present.
+   * Each byte still comes through `u8()`, so a short packet fails at the same offset with the
+   * same message.
+   */
   packedGuid(): bigint {
     const mask = this.u8();
-    let guid = 0n;
-    for (let index = 0; index < 8; index++) {
-      if (mask & (1 << index)) guid |= BigInt(this.u8()) << BigInt(index * 8);
+    if (mask === 0) return 0n;
+    let low = 0;
+    let high = 0;
+    for (let index = 0; index < 4; index++) {
+      if (mask & (1 << index)) low |= this.u8() << (index * 8);
     }
-    return guid;
+    for (let index = 4; index < 8; index++) {
+      if (mask & (1 << index)) high |= this.u8() << ((index - 4) * 8);
+    }
+    // A byte ≥ 0x80 at index 3 or 7 leaves the word negative; `setUint32` inside takes it modulo 2^32.
+    return guidFromWords(low, high);
   }
 
   assertFinished(): void {

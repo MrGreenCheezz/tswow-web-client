@@ -174,6 +174,36 @@ test("only attached WMO wrappers pin; overflow converges and re-entry uses a fre
   cache.dispose();
 });
 
+test("P1-10c: a Map of WMO borrowers pins exactly what the array of them pins, in the same order", () => {
+  const parent = new THREE.Group();
+  const other = new THREE.Group();
+  const material = (key) => Object.freeze({ key, kind: "wmo", material: new THREE.MeshBasicMaterial() });
+  const [a, b, c, d] = ["a", "b", "c", "d"].map(material);
+  const wrapper = (key, entries, owner) => {
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), entries[0].material);
+    owner.add(mesh);
+    return { entry: Object.freeze({ key }), materialEntries: Object.freeze(entries), mesh };
+  };
+  const wrappers = [
+    wrapper("g0", [c, a, c], parent),
+    wrapper("g1", [d], other),
+    wrapper("g2", [b, a], parent),
+    wrapper("g3", [d, b], parent),
+  ];
+  const byIndex = new Map(wrappers.map((value, index) => [index * 3, value]));
+  const run = (borrowers) => {
+    const geometryPins = new Set();
+    const materialPins = new Set();
+    const count = collectAttachedWmoGroupResourcePins(parent, borrowers, geometryPins, materialPins);
+    return { count, geometry: [...geometryPins].map(({ key }) => key), materials: [...materialPins].map(({ key }) => key) };
+  };
+  const fromArray = run(wrappers);
+  assert.deepEqual(fromArray, { count: 3, geometry: ["g0", "g2", "g3"], materials: ["c", "a", "b", "d"] });
+  assert.deepEqual(run(byIndex), fromArray);
+  assert.deepEqual(run(byIndex.values()), fromArray);
+  assert.deepEqual(run(new Map()), { count: 0, geometry: [], materials: [] });
+});
+
 test("renderer WMO cache wiring detaches before teardown and replaces the late-callback lane", async () => {
   const source = await readFile("src/browser/WorldRenderer3D.ts", "utf8");
   const clear = source.slice(

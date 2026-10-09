@@ -1,7 +1,8 @@
 import { startGlue, type GlueHandle } from "./Bootstrap.js";
-import { frontDoorReturn, gatewaySocketUrl, useFrontDoor, type FrontDoorHost } from "./FrontDoor.js";
-import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
-import { WorldClient } from "../../world/WorldClient.js";
+import { frontDoorReturn, useFrontDoor, type FrontDoorHost } from "./FrontDoor.js";
+import { openStatusDialog } from "./GlueMessages.js";
+import { liveGlueWorldConnector } from "./GlueWorldConnector.js";
+import type { WorldClient } from "../../world/WorldClient.js";
 import { gatewayOrigin as defaultGatewayOrigin } from "../Environment.js";
 import { game } from "../game/Context.js";
 import { adoptWorld } from "../app/Login.js";
@@ -83,8 +84,10 @@ export async function openGlueFrontDoor(
         // cannot give: a socket with a single reader. See `frontDoorReturn`.
         void session.connect(session.selectedRealm);
       }
-      // After the screen, so the corpus' own status dialog is drawn over the screen it belongs to.
-      if (message) handle?.runtime.api.fireEvent("OPEN_STATUS_DIALOG", "OKAY", message);
+      // After the screen, so the corpus' own status dialog is drawn over the screen it belongs to —
+      // in the corpus' words for the message's key (DISCONNECTED, CHAR_LOGIN_FAILED…), never an
+      // exception's text, and re-measured once visible like every other glue dialog.
+      if (message) handle?.runtime.api.showMessage(message);
     },
   };
 
@@ -95,36 +98,20 @@ export async function openGlueFrontDoor(
     gatewayOrigin: origin,
     screen: options.screen ?? null,
     fake: options.fake ?? null,
-    connect: async (realm, auth, progress, signal) => {
-      const stream = await WebSocketByteStream.connect(gatewaySocketUrl(origin, "/world"));
-      // The connecting dialog's Cancel: closing the socket is what ends WorldClient.connect's wait,
-      // in the realm's queue or anywhere before it.
-      const abort = (): void => stream.close();
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) abort();
-      try {
-        progress?.({ stage: "authenticating" });
-        const client = await WorldClient.connect(stream, {
-          username: auth.username, sessionKey: auth.sessionKey, realmId: realm.id, realmName: realm.name,
-        }, { onQueue: (position) => progress?.({ stage: "queued", position }) });
-        // The account, for the half of the client that asks who is signed in. The DOM flow writes
-        // this in its login form; on this road the answer is only known here.
-        game.session = auth;
-        live = client;
-        return client;
-      } catch (error) {
-        stream.close();
-        throw error;
-      } finally {
-        signal?.removeEventListener("abort", abort);
-      }
-    },
+    // The same connector `glue.html` uses (`GlueWorldConnector.ts`), with the one thing this page
+    // adds: it remembers the concrete client to lend to the world half.
+    connect: liveGlueWorldConnector(origin, (client, auth) => {
+      // The account, for the half of the client that asks who is signed in. The DOM flow writes
+      // this in its login form; on this road the answer is only known here.
+      game.session = auth;
+      live = client;
+    }),
     onEnterWorld: ({ character }) => {
       const world = live;
       if (!world || !handle?.session.connected) {
         // `?fake=charselect` lands here by design: a canned session has no socket behind it, and
         // saying so is better than a button that appears to do nothing.
-        handle?.runtime.api.fireEvent("OPEN_STATUS_DIALOG", "OKAY",
+        openStatusDialog((event, ...args) => { handle?.runtime.api.fireEvent(event, ...args); }, "OKAY",
           "Нет живого соединения с миром — войдите в игру заново.");
         return;
       }

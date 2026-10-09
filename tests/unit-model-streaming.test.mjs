@@ -6,6 +6,11 @@ import * as THREE from "three";
 import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
 import { hypot2 } from "../dist/code/browser/GroundCover.js";
 import { selectUnitAdmission } from "../dist/code/browser/RenderAdmission.js";
+import { UnitShadowCasterSet } from "../dist/code/browser/UnitShadowCasters.js"; // 06.10-shadow
+// suite-fix: 11.02-H made #updateUnits seat vehicle passengers (begin/place) every frame.
+import { VehiclePassengerPoser } from "../dist/code/browser/VehiclePassengerPose.js";
+import { vehicleCatalog } from "../dist/code/browser/VehicleClient.js";
+import { extendSidecarWait, poseExitClips, sidecarClaims } from "../dist/code/browser/SidecarWait.js"; // 05.10-A7a-G2 6.19
 
 const source = readFileSync(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
 function methods(names, dependencies = {}) {
@@ -20,12 +25,14 @@ function methods(names, dependencies = {}) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   // `hypot2` is the renderer's exact, allocation-free `Math.hypot`; every harnessed method may call it.
-  const deps = { THREE, hypot2, ...dependencies };
+  // P2-03a: `applySlotDepth` gives a folded build's mesh its slot depth; no-op over these fixtures.
+  const deps = { THREE, hypot2, applySlotDepth: () => {}, ...dependencies };
   return Function(...Object.keys(deps), body + "; return Harness;")(...Object.values(deps));
 }
 function bodyHarness(budget = new FrameBuildBudget(2, 2, () => 0)) {
   const Harness = methods(["#attachSkinnedModel", "#updateMount"], {
     characterSlots: () => new Map(), worldCharacterGeosets: () => new Set([0]),
+    creatureGeosetChoice: (_model, choice) => choice, // 05.10-A7a-H 6.11а: geoset data is not this test's subject
     TEXTURE_TYPE_BODY: 1, M2_TO_SCENE: new THREE.Quaternion(),
     modelKey: (model, textures) => model,
     mountInstanceMatches: (current, wanted) => current === wanted,
@@ -121,10 +128,13 @@ test("renderer continues updating all admitted units and removes objects that le
   const Harness = methods(["#updateUnits"], {
     selectUnitAdmission, UNIT_DRAW_DISTANCE: 200, UNIT_BUDGET: 64, UNIT_FRUSTUM_MARGIN: 1,
     unitSphereVisibleInFrustum: () => true, unitCastsEnhancedShadow: () => false,
+    vehicleCatalog, // suite-fix: 11.02-H (no tables loaded here: undefined, as before /dbc/vehicles answers)
   });
   const h = new Harness();
   const camera = new THREE.PerspectiveCamera();
   Object.assign(h, {
+    vehiclePassengers: new VehiclePassengerPoser(), // suite-fix: 11.02-H
+    unitShadowCasters: new UnitShadowCasterSet(), lightingProfile: { shadowMapSize: 0, shadowCasters: 0, shadowExtent: 0 }, // 06.10-shadow
     unitAnimationBudget: new FrameBuildBudget(), unitAnimationPrefetch: new Map(),
     standIns: { begin() {} }, unitBuildBudget: new FrameBuildBudget(2, 2, () => 0),
     atlasFrameDemands: new Set(), atlasFrameActive: new Set(), frustumMatrix: new THREE.Matrix4(),
@@ -158,8 +168,11 @@ test("equipment requests continue but ready attachment builds share the body and
   const Harness = methods(["#updateAttachments"], {
     UPDATE_FIELDS: { UNIT_FIELD_BYTES_2: { offset: 10 } },
     attachmentPoint: item => item.point, boneOf: () => bone,
+    worldAttachmentPoint: item => item.point, sheatheOf: () => undefined, // 05.10-A7a-G2 6.08
+    glowSlotsKey: () => "", glowPlacement: () => [], attachGlowAnchors() {}, resolveGlowModels() {}, mountGlowBodies: () => 0, glowAnchorsOf: () => [], // 05.10-A7a-G2: 6.14 helpers the harness lacked
     attachmentOffset: () => new THREE.Vector3(), attachmentRotation: () => undefined,
     TEXTURE_TYPE_OBJECT_SKIN: 11, EVERY_GEOSET: "all",
+    attachedOf: (metadata) => metadata?.appearance?.attached, // 05.10-A7a-B 6.02
   });
   const h = new Harness();
   let builds = 0, requests = 0;
@@ -226,9 +239,16 @@ async function actionHarness() {
     pendingActionExpired, pendingActionFate,
     unitActionDisplay: arbiter.unitActionDisplay, unitActionEndsOnMovement: arbiter.unitActionEndsOnMovement,
     animationPlaysOnUpperBody: () => true, ANIMATION_IDS: { Stand: 0 }, poseAnimation: () => ({ wanted: [0] }),
+    isBaseIdle: () => true, // 05.10-A7a-C: #settleUnitAction asks isBaseIdle
+    wholeBodyOutlivesBase: () => true, // 05.10: ревью 6.21b — #settleUnitAction notes the travel a pose began in
     ACTION_CLIP_WAIT: 900, ACTION_SIDECAR_WAIT: 3000,
     isUnitMoving: () => false, isTerminalUnitPose: pose => pose.dead === true,
     weaponPose: () => "unarmed", actionAnimation: () => [7],
+    attachedOf: (metadata) => metadata?.appearance?.attached, // 05.10-A7a-B 6.02
+    combatAnimations: () => undefined, resolveAnimation: resolve, // 05.10-A7a-D 6.06: #entryAnimation asks for a swing variant
+    extendSidecarWait, poseExitClips, sidecarClaims, // 05.10-A7a-G2 6.19
+    weaponMetadataPending: (metadata) => metadata === undefined || metadata.appearance === undefined
+      || metadata.appearancePending === true, // 05.10-A7a-B 6.02
     resolveSpellVisualAnimation: resolve, resolveActionAnimation: clips => resolve(clips, [7]),
     spellVisualAnimationCandidates: wanted => wanted,
     needsSidecarAnimations: template => !template.merged && !template.clips.has(7),

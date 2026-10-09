@@ -82,3 +82,30 @@ test("TalentClient stays not-ready until categories arrive, then exposes an immu
     globalThis.fetch = previousFetch;
   }
 });
+
+test("9.05: TalentClient files a tab under every class bit of its mask, custom classes 12/13 included", async () => {
+  const { TalentClient } = await import("../dist/code/browser/TalentClient.js");
+  const previousFetch = globalThis.fetch;
+  const tab = (id, classMask, orderIndex = 0) => ({ id, name: `tab${id}`, classMask, petTalentMask: 0, orderIndex });
+  const payload = {
+    tabs: [tab(1, 1 << 0), tab(2, 1 << 11), tab(3, 1 << 12, 1), tab(4, 1 << 12, 0), tab(5, (1 << 0) | (1 << 12)),
+      tab(6, 1 << 30), tab(7, 0)],
+    talents: [], glyphs: [], skillLines: [], skillCategories: [], spellSkill: {}, petFamilies: {},
+  };
+  try {
+    globalThis.fetch = async () => ({ ok: true, json: async () => payload });
+    const client = new TalentClient("ws://gateway.test:8090");
+    const loaded = new Promise((resolve) => { client.onLoaded = resolve; });
+    client.load();
+    await loaded;
+    const ids = (classId) => client.tabsForClass(classId).map((entry) => entry.id);
+    assert.deepEqual(ids(1), [1, 5]);
+    assert.deepEqual(ids(12), [2], "class 12 (custom) gets its tab");
+    assert.deepEqual(ids(13), [4, 5, 3], "class 13 (HERO) gets its tabs in orderIndex order");
+    assert.deepEqual(ids(31), [6], "the highest bit a 31-class mask can name");
+    assert.deepEqual(ids(11), [], "no tab names druid here");
+    assert.deepEqual(ids(32), [], "no class past 31");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

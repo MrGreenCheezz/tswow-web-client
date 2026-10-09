@@ -264,15 +264,15 @@ test("the gateway serves localized socket properties and custom enchantments fro
   const russian = Buffer.from("Сила\0");
   const strings = Buffer.concat([Buffer.from([0]), english, russian]);
   const enchantment = Array(38).fill(0);
-  enchantment[0] = 100001; enchantment[14] = 1; enchantment[22] = 1 + english.length; enchantment[33] = 700001;
+  enchantment[0] = 100001; enchantment[14] = 1; enchantment[22] = 1 + english.length; enchantment[32] = 1; enchantment[33] = 700001;
   await writeFile(join(directory, "SpellItemEnchantment.dbc"), dbc(38, [enchantment], strings));
   await writeFile(join(directory, "GemProperties.dbc"), dbc(5, [[10001, 100001, 0, 0, 14]]));
   const gateway = await startGateway({ host: "127.0.0.1", port: 0, auth: { host: "127.0.0.1", port: 1 },
     world: { host: "127.0.0.1", port: 1 }, allowedOrigins: ["http://localhost:5173"], dbcDirectory: directory, datasetPollMs: 0 });
   try {
-    const response = await fetch(`http://127.0.0.1:${gateway.port}/dbc/item-enchantments`, { headers: { origin: "http://localhost:5173" } });
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/dbc/item-enchantments?v=2`, { headers: { origin: "http://localhost:5173" } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { enchantments: [{ id: 100001, name: "Сила", gemItemId: 700001, conditionId: 0, visual: 0 }],
+    assert.deepEqual(await response.json(), { enchantments: [{ id: 100001, name: "Сила", gemItemId: 700001, conditionId: 0, visual: 0, flags: 1 }],
       gems: [{ id: 10001, enchantmentId: 100001, color: 14 }], visuals: {} });
     // The route must discard the memoized index after a build replaces gameplay DBC rows.
     await writeFile(join(directory, "GemProperties.dbc"), dbc(5, [[10002, 100001, 0, 0, 2], [10003, 100001, 0, 0, 8]]));

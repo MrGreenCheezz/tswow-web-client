@@ -19,8 +19,10 @@ import {
   primeParticleSystem, stepParticles, stepParticlesCatchUp,
   resetParticleSystem, resetRibbonSystem, stepRibbon, stepRibbonCatchUp,
   writeParticleQuads, writeRibbonStrip,
+  PARTICLE_FLAG_DO_NOT_TRAIL, PARTICLE_FLAG_PINNED,
   type BillboardView, type EmitterFrame, type ParticleSystem, type QuadBuffers, type RibbonSystem,
 } from "./Particles.js";
+import { renderSwitches } from "./RenderSwitches.js"; // 12.08
 import { MATERIAL_UNFOGGED, TEXTURE_TYPE_OWN, textureUrl, type WvmModel } from "./Wvm.js";
 import type { ResourceOwnerId, RetainedResourceVisitor } from "./ResourceAccounting.js";
 
@@ -120,6 +122,11 @@ export interface EffectUpdateOptions {
   firstBurst?: boolean;
   /** Local animation clock for that seed; global-sequence tracks continue using `worldMs`. */
   firstBurstAnimationMs?: number;
+  /**
+   * 12.08: the view the effects are drawn in. A particle emitter whose quads cannot reach it is
+   * still simulated, but writes, uploads and draws nothing this frame (`particlesOutside`).
+   */
+  frustum?: THREE.Frustum;
 }
 
 /**
@@ -356,6 +363,14 @@ export function updateModelEffects(
       }
       if (options.catchUp) stepParticlesCatchUp(drawn.particles, seconds, emitterFrame);
       else stepParticles(drawn.particles, seconds, emitterFrame);
+      // 12.08: off screen, nothing it would write could be seen; the next visible frame writes
+      // every quad again from the simulation, so skipping is exact. In the city bench ≈ 90 % of
+      // the emitters drawn were outside the view, every one of them written, uploaded and drawn.
+      if (options.frustum && particlesOutside(drawn.particles, options.frustum, drawn.mesh.matrixWorld)) {
+        drawn.geometry.setDrawRange(0, 0);
+        drawn.mesh.visible = false;
+        continue;
+      }
       quads = writeParticleQuads(drawn.particles, view, drawn.buffers);
     } else if (drawn.ribbon) {
       if (options.catchUp) stepRibbonCatchUp(drawn.ribbon, seconds, emitterFrame);
@@ -363,6 +378,8 @@ export function updateModelEffects(
       quads = writeRibbonStrip(drawn.ribbon, drawn.buffers);
     }
     drawn.geometry.setDrawRange(0, quads * 6);
+    // 12.08: three binds the program and submits even an empty range; an empty emitter is hidden.
+    drawn.mesh.visible = quads > 0;
     if (quads === 0) continue;
     // Only the part that was written: uploading the whole allowance every frame is the difference
     // between one campfire's worth of traffic and two hundred and fifty-six.
@@ -370,6 +387,71 @@ export function updateModelEffects(
     markUpdated(drawn.geometry.getAttribute("uv") as THREE.BufferAttribute, quads * 4);
     markUpdated(drawn.geometry.getAttribute("color") as THREE.BufferAttribute, quads * 4);
   }
+}
+
+const SCALE_MAXIMA = new WeakMap<object, number>();
+const OUTSIDE_BOX = new THREE.Box3();
+
+/** The largest value an emitter's scale ramp reaches (keys bound a linear ramp); 1 without one. */
+function scaleMaximum(emitter: ParticleSystem["emitter"]): number {
+  const ramp = emitter.scale;
+  if (!ramp) return 1;
+  let maximum = SCALE_MAXIMA.get(ramp);
+  if (maximum === undefined) {
+    maximum = 0;
+    for (let index = 0; index < ramp.values.length; index++) maximum = Math.max(maximum, Math.abs(ramp.values[index]!));
+    SCALE_MAXIMA.set(ramp, maximum);
+  }
+  return maximum;
+}
+
+/**
+ * 12.08: whether every quad this system would write lies outside `frustum` — a conservative
+ * answer from the simulation alone, without writing. Each quad stays within its half-diagonal of
+ * its particle (any spin, billboard or emitter plane), sized by the scale ramp's largest key and
+ * the particle's own factors, and, in model space, carried through the emitter's matrix; a pinned
+ * streak runs between the particle and its birth point. Twinkle, which can grow a quad past the
+ * ramp, turns the test off.
+ */
+export function particlesOutside(system: ParticleSystem, frustum: THREE.Frustum, meshWorld: THREE.Matrix4): boolean {
+  const particles = system.particles;
+  if (particles.length === 0 || renderSwitches.particleTwinkle) return false;
+  const emitter = system.emitter;
+  const pinned = (emitter.flags & PARTICLE_FLAG_PINNED) !== 0 && (emitter.flags & PARTICLE_FLAG_DO_NOT_TRAIL) === 0;
+  const m = system.matrix;
+  const modelSpace = system.modelSpace;
+  const frameScale = modelSpace ? Math.max(
+    Math.hypot(m[0]!, m[1]!, m[2]!), Math.hypot(m[4]!, m[5]!, m[6]!), Math.hypot(m[8]!, m[9]!, m[10]!)) : 1;
+  const sizeBound = 0.5 * Math.SQRT2 * scaleMaximum(emitter) * frameScale;
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let radius = 0;
+  const extend = (x: number, y: number, z: number): void => {
+    if (modelSpace) {
+      const wx = m[0]! * x + m[4]! * y + m[8]! * z + m[12]!;
+      const wy = m[1]! * x + m[5]! * y + m[9]! * z + m[13]!;
+      const wz = m[2]! * x + m[6]! * y + m[10]! * z + m[14]!;
+      x = wx; y = wy; z = wz;
+    }
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  };
+  for (let index = 0; index < particles.length; index++) {
+    const particle = particles[index]!;
+    extend(particle.x, particle.y, particle.z);
+    if (pinned) extend(particle.bx, particle.by, particle.bz);
+    const size = sizeBound * Math.max(Math.abs(particle.scaleX), Math.abs(particle.scaleY));
+    if (size > radius) radius = size;
+  }
+  // A non-finite coordinate or size: say "inside" and let the writer decide, as before.
+  if (!Number.isFinite(minX + minY + minZ + maxX + maxY + maxZ + radius)) return false;
+  OUTSIDE_BOX.min.set(minX - radius, minY - radius, minZ - radius);
+  OUTSIDE_BOX.max.set(maxX + radius, maxY + radius, maxZ + radius);
+  OUTSIDE_BOX.applyMatrix4(meshWorld);
+  return !frustum.intersectsBox(OUTSIDE_BOX);
 }
 
 /**

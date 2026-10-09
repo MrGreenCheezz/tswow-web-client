@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { sampleRamp, sampleTrack } from "./Particles.js";
+import { renderSwitches } from "./RenderSwitches.js"; // 05.10-A7a-F2
 import {
   BLEND_ADD, BLEND_BLEND_ADD, BLEND_NO_ALPHA_ADD, MATERIAL_UNLIT,
-  type WvmBatch, type WvmModel, type WvmParticleEmitter,
+  type WvmBatch, type WvmLight, type WvmModel, type WvmParticleEmitter, // 05.10-A7a-F2
 } from "./Wvm.js";
 import { WORLD_LOCAL_LIGHT_LIMIT, type WorldLightUniforms } from "./WorldLighting.js";
 
@@ -15,6 +16,30 @@ export interface FixtureLight {
   readonly colour: readonly [number, number, number];
   readonly batch?: WvmBatch;
   readonly emitter?: WvmParticleEmitter;
+  /** 05.10-A7a-F2 (6.17): the model's own `M2Light`, whose tracks drive colour, reach and visibility. */
+  readonly light?: WvmLight;
+}
+
+/** 05.10-A7a-F2 (6.17): `M2Light.type` 1; type 0 (directional) lights nothing in the world. */
+const M2_LIGHT_POINT = 1;
+
+/**
+ * 05.10-A7a-F2 (6.17): the point lights the file itself declares — 104 models in the 05.10 census
+ * (`humanguardtower.m2` ×4, `undeadcampfire.m2`, `smallbrazier01.m2`, …). Named by the file, so the
+ * file-name gate below does not apply to them; everything else keeps the heuristic.
+ */
+function m2PointLights(model: WvmModel): FixtureLight[] {
+  const lights: FixtureLight[] = [];
+  for (const light of model.lights ?? []) {
+    if (light.type !== M2_LIGHT_POINT || !light.position.every(Number.isFinite)) continue;
+    const radius = sampleTrack(light.attenuationEnd, 0, 0, model.globalSequences, 0);
+    lights.push({
+      position: light.position, bone: light.bone, radius: Number.isFinite(radius) && radius > 0 ? radius : 8,
+      intensity: 1, colour: [1, 1, 1], light,
+    });
+    if (lights.length === WORLD_LOCAL_LIGHT_LIMIT) break;
+  }
+  return lights;
 }
 
 const fixtureCache = new WeakMap<WvmModel, Map<string, readonly FixtureLight[]>>();
@@ -36,9 +61,18 @@ function fixtureColour(path: string): readonly [number, number, number] {
  */
 export function modelFixtureLights(model: WvmModel, name: string): readonly FixtureLight[] {
   let byName = fixtureCache.get(model);
-  const cached = byName?.get(name);
+  // 05.10-A7a-F2 (6.17): with `m2Lights` on, a model that declares its lights is lit by them and
+  // only them. Cached apart from the heuristic's answer, so flipping the switch takes effect.
+  const declares = renderSwitches.m2Lights && (model.lights?.length ?? 0) > 0;
+  const cacheKey = declares ? `\u0001${name}` : name;
+  const cached = byName?.get(cacheKey);
   if (cached) return cached;
   if (!byName) { byName = new Map(); fixtureCache.set(model, byName); }
+  if (declares) {
+    const declared = m2PointLights(model);
+    byName.set(cacheKey, declared.length > 0 ? declared : EMPTY);
+    return declared.length > 0 ? declared : EMPTY;
+  }
   const path = name.replaceAll("/", "\\").toLowerCase();
   const filename = path.slice(path.lastIndexOf("\\") + 1);
   if (!/(?:lamp|lantern|torch|brazier|campfire|bonfire|hearth|candle|chandelier|firepit)/.test(filename)
@@ -120,6 +154,7 @@ export function sampleFixtureLight(
     sampleTrack(track, animationMs, worldMs, model.globalSequences, fallback, component);
   let opacity = 1;
   result.colour.set(...fixture.colour);
+  if (fixture.light) return sampleM2Light(fixture, fixture.light, sample, matrix, result); // 05.10-A7a-F2
   if (fixture.batch) {
     const batch = fixture.batch;
     const colour = model.colours[batch.colorIndex];
@@ -152,6 +187,36 @@ export function sampleFixtureLight(
   result.intensity = fixture.intensity * Math.min(1, opacity) * flicker;
   return Number.isFinite(result.radius) && result.radius > 0
     && Number.isFinite(result.intensity)
+    && Number.isFinite(result.colour.x) && Number.isFinite(result.colour.y) && Number.isFinite(result.colour.z)
+    && Number.isFinite(result.position.x) && Number.isFinite(result.position.y) && Number.isFinite(result.position.z);
+}
+
+/**
+ * 05.10-A7a-F2 (6.17): one `M2Light` at a moment — diffuse colour × diffuse intensity, reach =
+ * attenuation end, off while visibility is 0. No synthetic flicker: the file animates its own.
+ * The radius is the file's number times the placement scale, under the heuristic's 12-yard cap;
+ * whether `attenuationEnd` is in yards is the open point the tower check (14.24) settles.
+ */
+function sampleM2Light(
+  fixture: FixtureLight,
+  light: WvmLight,
+  sample: (track: Parameters<typeof sampleTrack>[0], fallback: number, component?: number) => number,
+  matrix: THREE.Matrix4,
+  result: LocalLightSample,
+): boolean {
+  if (sample(light.visibility, 1) <= 0) return false;
+  const intensity = sample(light.diffuseIntensity, 1);
+  const radius = sample(light.attenuationEnd, fixture.radius);
+  if (!(intensity > 0.001) || !(radius > 0)) return false;
+  result.colour.set(sample(light.diffuseColor, 1, 0), sample(light.diffuseColor, 1, 1), sample(light.diffuseColor, 1, 2));
+  result.position.set(...fixture.position).applyMatrix4(matrix);
+  const e = matrix.elements;
+  const scale = Math.max(Math.hypot(e[0]!, e[1]!, e[2]!), Math.hypot(e[4]!, e[5]!, e[6]!),
+    Math.hypot(e[8]!, e[9]!, e[10]!));
+  result.radius = Math.min(12, radius * scale);
+  // Capped at twice the heuristic's 1.1-ish scale until the 14.24 frames say what the file's number means.
+  result.intensity = Math.min(2, intensity);
+  return Number.isFinite(result.radius) && result.radius > 0 && Number.isFinite(result.intensity)
     && Number.isFinite(result.colour.x) && Number.isFinite(result.colour.y) && Number.isFinite(result.colour.z)
     && Number.isFinite(result.position.x) && Number.isFinite(result.position.y) && Number.isFinite(result.position.z);
 }

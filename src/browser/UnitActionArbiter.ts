@@ -13,14 +13,20 @@
 //   stronger or equal request takes over at once; when a pose ends the strongest surviving hold
 //   comes back.
 // * a pose over a base that is not plain standing (moving, mounted, swimming, sitting, crouched)
-//   plays on the upper body when its AnimationData row allows it (Bodyflags bit 0x8), and the
+//   plays on the upper body when Wow.exe's split list allows it (05.10-6.21: 0x71d800, not
+//   Bodyflags bit 0x8 — game/AnimationSplit.ts), and the
 //   base keeps every track the pose does not key; otherwise it gives way, except an aura state,
 //   which keeps the whole body (a Bladestorm spins while it moves).
+//   05.10-6.21b: and except a one-shot off the list over a travelling base, which takes the whole
+//   body as in Wow.exe (owner decision; game/ActionOverBase.ts).
 
 import * as THREE from "three";
-import { ANIMATION_BODY_FLAGS, ANIMATION_IDS } from "../generated/animations.js";
+import { ANIMATION_IDS } from "../generated/animations.js"; // 05.10-6.21: Bodyflags no longer read here
+import { animationSplitsOverBase } from "./game/AnimationSplit.js"; // 05.10-6.21
+import { attackSplitsWhileFalling } from "./game/ActionOverBase.js"; // 05.10-6.21b
 import type { UnitAction } from "./AnimatedModel.js";
 import type { VisualAnimationMode } from "./SpellVisuals.js";
+import type { CombatReaction } from "./game/CombatAnimations.js"; // 05.10-A7a-D 6.06
 
 /**
  * What the renderer keeps per queued pose: what was asked for, and the waits that decide whether
@@ -48,6 +54,12 @@ export interface UnitActionPayload {
   /** A missing clip has entered the bounded network/CPU wait; cleared once it plays. */
   waitingForClip?: boolean;
   source: "external" | "visual";
+  /** 05.10-A7a-D 6.06: a swing's variant roll in [0, 1), drawn once when queued (game/CombatAnimations.ts). */
+  roll?: number;
+  /** 05.10-A7a-D 6.06: a victim's reaction, resolved against what it holds when drawn. */
+  reaction?: CombatReaction;
+  /** 05.10-A7a-D3 6.06: a swing that yielded undrawn — its clip length times the victim's cues (game/SwingReactionCues.ts). */
+  swingSeconds?: number | undefined;
 }
 
 /** What the renderer is showing from one unit's queue, and on which part of the body. */
@@ -189,10 +201,17 @@ export type UnitActionDisplay = "full" | "upper" | "yield";
  * belong to the base: an upper-body-capable pose plays above it, an aura state keeps the whole body
  * (Stun, Bladestorm's Whirlwind), and anything else gives way — a roar or a special attack is not
  * drawn with frozen legs sliding across the ground.
+ *
+ * 05.10-6.21b (owner decision): `wholeBody` — a one-shot off Wow.exe's list over a moving, swimming,
+ * flying, falling or sneaking base takes the whole body, legs frozen in the pose while the unit
+ * travels, as Wow.exe's whole-model track does (game/ActionOverBase.ts); on a rider, a seat or a
+ * sitting base it still gives way.
  */
-export function unitActionDisplay(layer: UnitActionLayer, upperBody: boolean, baseIdle: boolean): UnitActionDisplay {
+export function unitActionDisplay(layer: UnitActionLayer, upperBody: boolean, baseIdle: boolean,
+  wholeBody = false): UnitActionDisplay { // 05.10-6.21b: wholeBody — game/ActionOverBase.ts poseTakesWholeBody
   if (baseIdle) return "full";
   if (upperBody) return "upper";
+  if (wholeBody) return "full"; // 05.10-6.21b: owner decision — a one-shot off the list over travel, as Wow.exe
   return layer === "state" ? "full" : "yield";
 }
 
@@ -214,15 +233,22 @@ export function unitActionEndsOnMovement(layer: UnitActionLayer, held: boolean):
  * attack pose and on the upper-body gestures — SpellCastOmni/Directed, ReadySpellOmni, the
  * Attack* family, CombatWound, EmoteTalk/Wave/Point/Salute/Laugh (all 0x108 or 0x128) — and absent
  * from the whole-body ones: EmoteRoar/Dance/Kneel/Bow (0x100), Special1H/2H, Kick, Whirlwind
- * (0x120), the ChannelCast pair (0x100). An A/B against the native client is still owed.
+ * (0x120), the ChannelCast pair (0x100).
+ *
+ * 05.10-6.21: kept as data only. Wow.exe does not decide the split by it: the pose's BehaviorID must
+ * be in the list at 0x71d800 (game/AnimationSplit.ts), which also splits Special1H/2H, the
+ * ChannelCast pair, SpellCast, Stun and the whole-body emotes, and does not split Mutilate or the
+ * NoSheathe gestures that carry 0x8.
  */
 export const BODY_FLAG_UPPER_BODY = 0x8;
 
-export function animationPlaysOnUpperBody(
-  animation: number,
-  bodyFlags: Readonly<Record<number, number>> = ANIMATION_BODY_FLAGS,
-): boolean {
-  return ((bodyFlags[animation] ?? 0) & BODY_FLAG_UPPER_BODY) !== 0;
+/**
+ * Whether a pose plays on the upper body over a moving base: Wow.exe 0x723e30/0x71d800 (05.10-6.21);
+ * 05.10-6.21b: and an attack-class pose off the list over a fall (0x723fc0).
+ */
+export function animationPlaysOnUpperBody(animation: number, movementFlags = 0): boolean {
+  return animationSplitsOverBase(animation) // 05.10-6.21: was Bodyflags & 0x8
+    || attackSplitsWhileFalling(animation, movementFlags); // 05.10-6.21b
 }
 
 /**
@@ -231,9 +257,13 @@ export function animationPlaysOnUpperBody(
  * Death is what a held `Dead` resolves to on the playable rigs (HumanMale carries no 6 and its
  * fallback is 1), and looping it made quest corpses such as «Мертвый солдат» (45801) fall down,
  * stand up and fall again for as long as their aura lasted.
+ *
+ * 05.10-A7a-C-review: Loot is the same kind of clip — the way down to a corpse, ending 0.56 yd lower
+ * on HumanMale — and it is what a held LootHold (UNIT_FLAG_LOOTING) resolves to on every playable
+ * rig, none of which carries 188. Looped, a looter popped upright and went down again every 500 ms.
  */
 export function heldClipPlaysOnce(animation: number): boolean {
-  return animation === ANIMATION_IDS.Death;
+  return animation === ANIMATION_IDS.Death || animation === ANIMATION_IDS.Loot; // 05.10-A7a-C-review: Loot
 }
 
 const underlays = new WeakMap<THREE.AnimationClip, WeakMap<THREE.AnimationClip, THREE.AnimationClip>>();

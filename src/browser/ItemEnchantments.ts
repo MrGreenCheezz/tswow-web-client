@@ -20,20 +20,29 @@ export class ItemEnchantmentClient {
   }
 
   readonly visuals = new Map<number, readonly string[]>();
+  /** 05.10-A7a-E (6.14): ItemVisuals id → five slots (model path or null), from the answer's `slots`. */
+  readonly itemVisualSlots = new Map<number, readonly (string | null)[]>();
+  /** 05.10-A7a-E (6.14): ItemDisplayInfo id → ItemVisual id, from the answer's `displayVisual`. */
+  readonly displayVisuals = new Map<number, number>();
 
   async #load(): Promise<void> {
-    const response = await fetch(`${this.origin}/dbc/item-enchantments`);
+    // `v=2`: the rows gained `flags` (SpellItemEnchantment.Flags, 2.05). The route does not read the
+    // query, so a gateway not yet restarted answers the old shape and `flags` stays undefined.
+    const response = await fetch(`${this.origin}/dbc/item-enchantments?v=2`);
     if (!response.ok) throw new Error(`Не удалось загрузить сведения о камнях (${response.status})`);
     const data = await response.json() as ItemEnchantmentData;
     if (!Array.isArray(data.enchantments) || !Array.isArray(data.gems)
       || !data.enchantments.every((row) => Number.isInteger(row.id) && typeof row.name === "string"
         && Number.isInteger(row.gemItemId) && Number.isInteger(row.conditionId)
-        && (row.visual === undefined || Number.isInteger(row.visual)))
+        && (row.visual === undefined || Number.isInteger(row.visual))
+        && (row.flags === undefined || Number.isInteger(row.flags)))
       || !data.gems.every((row) => Number.isInteger(row.id) && Number.isInteger(row.enchantmentId)
         && Number.isInteger(row.color))) throw new Error("Некорректные сведения о камнях");
     this.enchantments.clear();
     this.gems.clear();
     this.visuals.clear();
+    this.itemVisualSlots.clear(); // 05.10-A7a-E
+    this.displayVisuals.clear(); // 05.10-A7a-E
     for (const enchantment of data.enchantments) this.enchantments.set(enchantment.id, enchantment);
     for (const gem of data.gems) this.gems.set(gem.id, gem);
     // An older gateway sends no visuals: glow stays off rather than failing the whole table.
@@ -47,20 +56,68 @@ export class ItemEnchantmentClient {
         }
       }
     }
+    // 05.10-A7a-E (6.14): optional, additive; a malformed entry is skipped, never the whole table.
+    const slots = (data as { slots?: Record<string, unknown> }).slots;
+    if (slots && typeof slots === "object") {
+      for (const [id, five] of Object.entries(slots)) {
+        const visualId = Number(id);
+        if (Number.isInteger(visualId) && Array.isArray(five) && five.length === 5
+          && five.every((path) => path === null || (typeof path === "string" && path.length > 0))) {
+          this.itemVisualSlots.set(visualId, Object.freeze([...five] as (string | null)[]));
+        }
+      }
+    }
+    const displays = (data as { displayVisual?: Record<string, unknown> }).displayVisual;
+    if (displays && typeof displays === "object") {
+      for (const [id, visual] of Object.entries(displays)) {
+        const displayId = Number(id);
+        if (Number.isInteger(displayId) && Number.isInteger(visual)) this.displayVisuals.set(displayId, visual as number);
+      }
+    }
     this.ready = true;
   }
 
   /** The glow model files the dataset resolves for this enchant id, if any. */
   glowModels(enchantId: number): readonly string[] {
-    return this.visuals.get(enchantId) ?? [];
+    return this.visuals.get(enchantId) ?? NO_GLOW_MODELS; // 05.10-A7a-E2: one shared empty list, asked per frame
   }
+
+  /** 05.10-A7a-E (6.14): the five ItemVisuals slots of this enchant's ItemVisual, if it has any. */
+  glowSlots(enchantId: number): readonly (string | null)[] | undefined {
+    const visual = this.enchantments.get(enchantId)?.visual;
+    return visual ? this.itemVisualSlots.get(visual) : undefined;
+  }
+
+  /** 05.10-A7a-E (6.14): the five slots of a display's own ItemVisual (a legendary's glow), if any. */
+  displayGlowSlots(displayId: number): readonly (string | null)[] | undefined {
+    const visual = this.displayVisuals.get(displayId);
+    return visual ? this.itemVisualSlots.get(visual) : undefined;
+  }
+}
+
+/**
+ * 05.10-A7a-E (6.14): which five slots glow on a weapon: an enchantment's ItemVisual wins over the display's
+ * own (the enchant ids in the order they are tried — temporary before permanent).
+ */
+export function glowSlots(
+  enchantIds: readonly number[],
+  displayId: number | undefined,
+  source: Pick<ItemEnchantmentClient, "glowSlots" | "displayGlowSlots">,
+): readonly (string | null)[] | undefined {
+  for (const id of enchantIds) {
+    if (id <= 0) continue;
+    const slots = source.glowSlots(id);
+    if (slots) return slots;
+  }
+  return displayId !== undefined && displayId > 0 ? source.displayGlowSlots(displayId) : undefined;
 }
 
 /**
  * An enchant's glow as a tint, read off the glow model filenames the dataset resolved.
  *
- * The original client hangs MDX particle models on the weapon; this client has no MDX particle
- * path, so the glow is an emissive tint in the art's own colour family. Colours come from the
+ * The original client hangs the glow's M2 (MDX) particle models on the weapon. This client does
+ * render M2 particles (ParticleRender.ts), but it does not attach an enchant's glow model to the
+ * weapon, so the glow is an emissive tint in the art's own colour family. Colours come from the
  * colour words the artists put in the filenames (`RedGlow_High`, `WhiteFlame_Low`) and from the
  * element words of the imbue families (`Shaman_Fire`, `PoisonDrip`, `FrozenRuneWeapon_State`).
  * Intensity follows the tier word: High strongest, Low softest.
@@ -72,8 +129,13 @@ export class ItemEnchantmentClient {
  */
 export interface EnchantGlow {
   color: number;
-  /** Emissive strength: High 0.9, Med 0.65, Low 0.45. */
+  /** Emissive strength: High 0.9, Med 0.65, Low 0.45; 0 when only `slots` say anything. */
   intensity: number;
+  /**
+   * 05.10-A7a-E (6.14): the ItemVisuals slots to hang as effect models (WeaponGlow.ts). When the weapon model
+   * has the attachments for them the renderer draws those and no tint; otherwise the tint stays.
+   */
+  slots?: readonly (string | null)[];
 }
 
 const ENCHANT_GLOW_WORDS: ReadonlyArray<readonly [RegExp, number]> = [
@@ -172,6 +234,80 @@ export function attachedGlowTint(
     if (tint) return tint;
   }
   return undefined;
+}
+
+/**
+ * 05.10-A7a-E (6.14): the glow of one worn weapon — its slots (the effect models) and the tint fallback, from
+ * the first of the temporary and the permanent enchant that has either.
+ *
+ * 05.10-A7a-E2: and, when neither has one, the display's own ItemVisual (a legendary's glow) — for a player's
+ * weapon and for a creature's held one (`UNIT_VIRTUAL_ITEM_SLOT_ID`, slots 15–17), through the attached piece's
+ * `displayId` (absent from an older gateway: no display glow, as before). Called per worn weapon per frame, so
+ * the answer is one remembered object per enchant and per display, re-made only when the source's arrays change.
+ */
+export function attachedGlow(
+  object: WorldObjectState, equipmentSlot: number,
+  source: Pick<ItemEnchantmentClient, "glowModels" | "glowSlots" | "displayGlowSlots">,
+  displayId?: number,
+): EnchantGlow | undefined {
+  if (!GLOW_WEAPON_SLOTS.has(equipmentSlot)) return undefined;
+  if (object.typeId === 4) {
+    const first = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_1_ENTRYID.offset;
+    const stride = UPDATE_FIELDS.PLAYER_VISIBLE_ITEM_2_ENTRYID.offset - first;
+    const word = object.fields.get(first + equipmentSlot * stride + 1) ?? 0; // visibleItemEnchants, without its object
+    const glow = enchantGlowOf(source, (word >>> 16) & 0xffff) ?? enchantGlowOf(source, word & 0xffff);
+    if (glow) return glow;
+  } else if (object.typeId !== 3) {
+    return undefined;
+  }
+  return displayId !== undefined && displayId > 0 ? displayGlowOf(source, displayId) : undefined;
+}
+
+// 05.10-A7a-E2: remembered glows, per source (the page's one client; a test's literal).
+type GlowSource = Pick<ItemEnchantmentClient, "glowModels" | "glowSlots" | "displayGlowSlots">;
+interface RememberedGlow {
+  slots: readonly (string | null)[] | undefined;
+  models: readonly string[] | undefined;
+  glow: EnchantGlow | undefined;
+}
+const NO_GLOW_MODELS: readonly string[] = Object.freeze([]);
+const rememberedGlows = new WeakMap<object, { enchants: Map<number, RememberedGlow>; displays: Map<number, RememberedGlow> }>();
+
+function glowMemo(source: GlowSource): { enchants: Map<number, RememberedGlow>; displays: Map<number, RememberedGlow> } {
+  let memo = rememberedGlows.get(source);
+  if (!memo) {
+    memo = { enchants: new Map(), displays: new Map() };
+    rememberedGlows.set(source, memo);
+  }
+  return memo;
+}
+
+function enchantGlowOf(source: GlowSource, enchantId: number): EnchantGlow | undefined {
+  if (enchantId <= 0) return undefined;
+  const slots = source.glowSlots(enchantId);
+  const models = source.glowModels(enchantId);
+  const memo = glowMemo(source).enchants;
+  const known = memo.get(enchantId);
+  if (known && known.slots === slots && known.models === models) return known.glow;
+  const tint = enchantGlowTint(models);
+  const glow = slots || tint ? { color: tint?.color ?? 0, intensity: tint?.intensity ?? 0, ...(slots ? { slots } : {}) } : undefined;
+  memo.set(enchantId, { slots, models, glow });
+  return glow;
+}
+
+/**
+ * The display's own glow: its slots only. No tint stand-in: the tint predates this path and stays where it
+ * already was (an enchant on a weapon the effects cannot be hung on); a display glow never had one, and
+ * inventing it for the 153 attachment-less displays (wands, orbs, bows) is not a fallback but a new guess.
+ */
+function displayGlowOf(source: GlowSource, displayId: number): EnchantGlow | undefined {
+  const slots = source.displayGlowSlots(displayId);
+  const memo = glowMemo(source).displays;
+  const known = memo.get(displayId);
+  if (known && known.slots === slots) return known.glow;
+  const glow = slots ? { color: 0, intensity: 0, slots } : undefined;
+  memo.set(displayId, { slots, models: undefined, glow });
+  return glow;
 }
 
 export function itemSocketColors(sockets: readonly { color: number }[], enchantments: readonly number[] = []): number[] {

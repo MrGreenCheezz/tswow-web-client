@@ -54,6 +54,12 @@ export interface GroupState {
   lootThreshold: number;
   dungeonDifficulty: number;
   raidDifficulty: number;
+  /**
+   * 5.28 (L6): the block's last byte, `raidDifficulty >= RAID_DIFFICULTY_10MAN_HEROIC` (Group.cpp:2091);
+   * Wow.exe keeps it as the player difficulty GetInstanceInfo answers sixth (0x6d8fd0 → 0x00bd1980).
+   * Undefined when the block or the byte is absent.
+   */
+  raidHeroic?: number;
 }
 
 /** The member list excludes the receiving player, so `members` is one short of the real size. */
@@ -98,6 +104,7 @@ export function parseGroupList(payload: Uint8Array): GroupState {
     state.lootThreshold = reader.u8();
     state.dungeonDifficulty = reader.u8();
     state.raidDifficulty = reader.u8();
+    if (reader.remaining >= 1) state.raidHeroic = reader.u8(); // 5.28 (L6)
   }
   return state;
 }
@@ -204,6 +211,15 @@ const LOOT_THRESHOLD_NAMES = ["Бедный", "Обычный", "Необычн�
 export function lootThresholdName(threshold: number): string {
   return LOOT_THRESHOLD_NAMES[threshold] ?? `Качество ${threshold}`;
 }
+
+/**
+ * `PartyResult::ERR_VOTE_KICK_REASON_NEEDED` (SharedDefines.h): a vote-kick in a dungeon-finder group
+ * asked for without a reason. Wow.exe's SMSG_PARTY_COMMAND_RESULT handler (0x6cbec0, case 0x1b) prints
+ * nothing for it and fires VOTE_KICK_REASON_NEEDED with the packet's name instead; LFDFrame.lua then
+ * opens VOTE_BOOT_REASON_REQUIRED, whose OK calls UninviteUnit(name, reason). TrinityCore never sends
+ * it (its LFG starts the vote with an empty reason, LFGScripts.cpp:190-197); another core may.
+ */
+export const ERR_VOTE_KICK_REASON_NEEDED = 27;
 
 // `PartyResult` in SharedDefines.h.
 const PARTY_RESULTS: Record<number, string> = {

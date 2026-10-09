@@ -5,6 +5,7 @@ import ts from "typescript";
 import * as THREE from "three";
 import { WmoGeometryBuild } from "../dist/code/browser/WmoGeometryBuild.js";
 import { FrameBuildBudget } from "../dist/code/browser/FrameBuildBudget.js";
+import { sameWmoSelection } from "../dist/code/browser/WmoGroupRange.js";
 
 const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
 const parsed = ts.createSourceFile("WorldRenderer3D.ts", source, ts.ScriptTarget.ES2022, true);
@@ -14,9 +15,25 @@ const methods = ["#updateWmoGroups", "#wmoGroupMesh", "#clearWmoGroups", "#evict
 const js = ts.transpileModule(`class Harness { ${methods.join("\n")} }`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
-const Harness = Function("THREE", "wmoGroupsInRange", "WMO_GROUP_BUILD_BUDGET", `${js}; return Harness;`)(
-  THREE, model => model.selected, 6,
+// P1-12: the distance selection comes from `placed.ranges` (see `placement` below).
+const Harness = Function("THREE", "sameWmoSelection", "WMO_GROUP_BUILD_BUDGET", `${js}; return Harness;`)(
+  THREE, sameWmoSelection, 6,
 );
+
+/** `BuiltModelCache`'s surface the room pass reads: `peek` without touching, `epoch` on set/delete. */
+class EpochCache extends Map {
+  epoch = 0;
+  peek(key) { return super.get(key); }
+  set(key, value) { this.epoch++; return super.set(key, value); }
+  delete(key) {
+    const had = super.delete(key);
+    if (had) this.epoch++;
+    return had;
+  }
+}
+
+/** A second placement of the same model: its own rooms and node, none of the first's pass state. */
+const sibling = (placed) => ({ model: placed.model, boxes: placed.boxes, ranges: placed.ranges, built: new Map(), node: new THREE.Group() });
 
 function fixture() {
   let time = 0;
@@ -30,7 +47,7 @@ function fixture() {
       return new THREE.BufferGeometry();
     } finally { if (!done) cancelled++; }
   };
-  const cache = new Map();
+  const cache = new EpochCache();
   cache.evictUnpinned = () => [];
   const h = Object.assign(new Harness(), {
     submissionSerial: 0, wmoGroupBuildSerial: -1, wmoGroupBuilds: 0, wmoGroupsPending: 0, worldResourceEpoch: 1,
@@ -50,7 +67,7 @@ function fixture() {
   function placement(name, count = 1) {
     const model = { name, complete: true, selected: Array.from({ length: count }, (_, i) => i),
       groups: Array.from({ length: count }, () => ({ exterior: true, mesh: { runs: [{}] } })) };
-    return { model, built: new Map(), boxes: [], node: new THREE.Group() };
+    return { model, built: new Map(), boxes: [], node: new THREE.Group(), ranges: { select: () => model.selected } };
   }
   function frame(...placements) {
     h.submissionSerial++;
@@ -73,7 +90,7 @@ test("production renderer attaches a room only after its geometry completes, the
   assert.equal(first.built.size, 1);
   assert.equal(first.node.children.length, 1);
   assert.equal(h.wmoGroupsPending, 0);
-  const second = { ...first, built: new Map(), node: new THREE.Group() };
+  const second = sibling(first);
   frame(first, second);
   assert.equal(second.built.size, 1);
   assert.equal(second.node.children[0].geometry, first.node.children[0].geometry);
@@ -97,7 +114,7 @@ test("production final demand cancels removed rooms but keeps another placement'
   const { placement, frame, cancelled, h } = fixture();
   const first = placement("shared");
   frame(first);
-  const second = { ...first, built: new Map(), node: new THREE.Group() };
+  const second = sibling(first);
   frame(second);
   assert.equal(second.built.size, 1);
   assert.equal(cancelled(), 0);

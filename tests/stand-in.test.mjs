@@ -4,6 +4,10 @@ import test from "node:test";
 import {
   STAND_IN_REASONS, STAND_IN_SAMPLE_LIMIT, STAND_IN_SAMPLE_RESERVE, StandInLedger, standInSummary,
 } from "../dist/code/browser/StandIn.js";
+import { // 05.10-A7b-9 (7.18)
+  EnvironmentStandInLedger, environmentStandInSummary, environmentStandInsFault, environmentStandInsWith,
+} from "../dist/code/browser/StandIn.js";
+import { RetryLadder } from "../dist/code/browser/RetryLadder.js";
 
 test("the capsule ledger counts this frame's stand-ins by reason", () => {
   const ledger = new StandInLedger();
@@ -202,4 +206,114 @@ test("the capsule line says how many and why, and says so in words when there ar
   assert.equal(line, "Капсул: 3 · display id без ответа 1 · скелет не собрался 2");
   // A reason that did not happen is left out rather than printed as a zero.
   assert.ok(!line.includes("атлас"));
+});
+
+// ── 05.10-A7b-9 (7.18): the environment's stand-ins ─────────────────────────────────────────────
+
+test("7.18 the environment ledger counts this frame's stand-ins by reason, and forgets the frame", () => {
+  const ledger = new EnvironmentStandInLedger();
+  assert.equal(ledger.report().walked, false);
+  ledger.begin();
+  ledger.note("World\\Tree01.m2", "pending", true);
+  ledger.note("World\\Tree01.m2", "pending", true);
+  ledger.note("World\\Inn.wmo", "hull");
+  ledger.note("World\\Sign.m2", "missing");
+  ledger.note("World\\Broken.m2", "failed");
+  const report = ledger.report();
+  assert.equal(report.walked, true);
+  assert.equal(report.total, 5);
+  assert.deepEqual(report.byReason, { pending: 2, hull: 1, missing: 1, failed: 1 });
+  assert.equal(report.canopy, 2);
+  // One line per model path, permanent facts first.
+  assert.deepEqual(report.samples.map((sample) => [sample.model, sample.reason, sample.count]), [
+    ["World\\Inn.wmo", "hull", 1], ["World\\Sign.m2", "missing", 1], ["World\\Broken.m2", "failed", 1],
+    ["World\\Tree01.m2", "pending", 2],
+  ]);
+  // A report is a copy: the pooled records are reused by the next frame.
+  ledger.begin();
+  assert.equal(report.samples[0].model, "World\\Inn.wmo");
+  const empty = ledger.report();
+  assert.equal(empty.total, 0);
+  assert.equal(empty.samples.length, 0);
+  ledger.idle();
+  assert.equal(ledger.report().walked, false);
+});
+
+test("7.18 a cold frame full of models on their way still names the one that never comes", () => {
+  const ledger = new EnvironmentStandInLedger();
+  ledger.begin();
+  for (let index = 0; index < STAND_IN_SAMPLE_LIMIT + 5; index++) ledger.note(`World\\Rock${index}.m2`, "pending");
+  ledger.note("World\\Gone.m2", "missing");
+  ledger.note("World\\Shell.wmo", "hull");
+  const report = ledger.report();
+  assert.equal(report.total, STAND_IN_SAMPLE_LIMIT + 7, "the counts keep everything");
+  assert.equal(report.samples.length, STAND_IN_SAMPLE_LIMIT);
+  assert.deepEqual(report.samples.slice(0, 2).map((sample) => sample.model).sort(), ["World\\Gone.m2", "World\\Shell.wmo"]);
+  // The pool is reused: a second identical frame reports the same thing.
+  ledger.begin();
+  for (let index = 0; index < STAND_IN_SAMPLE_LIMIT + 5; index++) ledger.note(`World\\Rock${index}.m2`, "pending");
+  ledger.note("World\\Gone.m2", "missing");
+  ledger.note("World\\Shell.wmo", "hull");
+  assert.deepEqual(ledger.report(), report);
+});
+
+test("7.18 the environment line names reasons, canopies, tile losses and retries, and silence in words", () => {
+  const ledger = new EnvironmentStandInLedger();
+  ledger.begin();
+  const quiet = environmentStandInsWith(ledger.report(), {
+    environment: { tileLosses: () => ({ rejected: 0, truncated: 0, generator: 0 }) },
+    splat: { retrying: 0 }, light: { retrying: 0 }, horizon: { retrying: 0 },
+  });
+  assert.equal(environmentStandInSummary(quiet), "Окружение: заглушек нет.");
+  assert.equal(environmentStandInsFault(quiet), false);
+
+  ledger.note("World\\Tree01.m2", "pending", true);
+  ledger.note("World\\Inn.wmo", "hull");
+  const loud = environmentStandInsWith(ledger.report(), {
+    environment: { tileLosses: () => ({ rejected: 2, truncated: 0, generator: 503 }) },
+    splat: { retrying: 1 }, horizon: { retrying: 1 },
+  });
+  assert.deepEqual(loud.retrying, { splat: 1, light: 0, horizon: 1 });
+  assert.equal(environmentStandInSummary(loud),
+    "Окружение: заглушек 2 · модель в пути 1 · только корпус столкновений 1 · из них кроной 1"
+    + " · плитки потеряли: нечитаемых 2, доодадов срезано генератором 503 · ждут повтора: земля 1, горизонт 1");
+  assert.equal(environmentStandInsFault(loud), true);
+
+  // Tile losses alone are a fault even with every model in place.
+  ledger.begin();
+  assert.equal(environmentStandInsFault(environmentStandInsWith(ledger.report(), {
+    environment: { tileLosses: () => ({ rejected: 0, truncated: 1, generator: 0 }) },
+  })), true);
+  ledger.idle();
+  assert.equal(environmentStandInSummary(ledger.report()), "Окружение: кадр до размещений не дошёл.");
+
+  // The unit line carries the environment's under it when the report has one.
+  const units = new StandInLedger();
+  units.begin();
+  assert.equal(standInSummary({ ...units.report(), environment: quiet }),
+    "Капсул: ни одной — все юниты в своих моделях.\nОкружение: заглушек нет.");
+});
+
+test("7.18 retryingCount counts keys that will be asked again, not the ones given up on", () => {
+  let clock = 0;
+  const ladder = new RetryLadder([10], () => clock);
+  ladder.failed("a");
+  ladder.failed("b", true);
+  assert.equal(ladder.retryingCount(), 1);
+  ladder.failed("a");
+  assert.equal(ladder.retryingCount(), 0, "the ladder ran out");
+});
+
+test("7.18 the renderer writes the environment's reason down from the admission loop", async () => {
+  // Read off the source for the same reason as the capsule test above: the loop needs WebGL.
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const update = source.indexOf("#updateEnvironment(player: WorldPosition");
+  const end = source.indexOf("this.#prefetchEnvironmentModels(client);", update);
+  assert.ok(update >= 0 && end > update);
+  const body = source.slice(update, end);
+  assert.match(body, /this\.#environmentStandIns\.begin\(\)/);
+  // Both places a placement leaves the loop with its stand-in still up are counted.
+  assert.equal(body.match(/this\.#noteEnvironmentStandIn\(/g)?.length, 2);
+  assert.match(body, /rendered\.standIn = model \? "hull" : standInKind\(object\) === "tree" \? "canopy" : "empty"/);
+  assert.match(source, /standInReport\(\): WorldStandInReport \{\s*return \{ \.\.\.this\.#standIns\.report\(\), environment: this\.#environmentStandIns\.report\(\) \};/);
 });

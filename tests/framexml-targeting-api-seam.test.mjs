@@ -168,3 +168,165 @@ test("a seam without the model answers every name with nothing; each name is the
     assert.deepEqual(FRAMEXML_SEAM_BINDINGS[name]({}, ["target"]), [], name);
   }
 });
+
+// DEC-A 3.11 (04.10, owner decision 4): the stock AssistUnit as Wow.exe 0x00525eb0 runs it (read-only Ghidra,
+// .runtime/re-2026-10-04/l2-targeting/g1.c): the token is looked up as a unit (0x004d4db0, TYPEMASK_UNIT 8);
+// nobody there is the UI error 0x005216f0(199) ERR_GENERIC_NO_TARGET when the token is empty or "target"
+// (case-insensitive), else (314) ERR_UNIT_NOT_FOUND; a unit with no target of its own is nothing; otherwise
+// its UNIT_FIELD_TARGET is selected (0x005259e0) and, with the assistAttack CVar (0x00bd0918 +0x30, "0" by
+// default), attacked (0x006e4950 — WorldClient.startAttack). Over a real WorldClient and the settings CVars.
+async function liveAssistFixture() {
+  const { WorldClient } = await import("../dist/code/world/WorldClient.js");
+  const { OPCODES } = await import("../dist/code/generated/opcodes.js");
+  const { createFrameXmlSettingsCVar } = await import("../dist/code/browser/framexml/FrameXmlSettingsCVar.js");
+  const { defaultSettings } = await import("../dist/code/browser/ui/SettingsModel.js");
+  const { globalString } = await import("../dist/code/generated/globalStrings.js");
+  const sent = [];
+  const world = new WorldClient({ send(opcode) { sent.push(opcode); }, close() {} });
+  const ENEMY = 0xf130000000000202n;
+  world.state.selfGuid = SELF;
+  world.state.objects.set(SELF, unit(SELF, 4));
+  world.state.objects.set(HEALER, unit(HEALER, 4));
+  world.state.objects.set(ENEMY, unit(ENEMY, 3, [[ENTRY, 299]]));
+  world.state.objects.set(TARGET, unit(TARGET, 3, [[ENTRY, 299]]));
+  setGuidField(world.state.objects.get(HEALER), TARGET_FIELD, ENEMY);
+  let values = defaultSettings();
+  const settingsCVar = createFrameXmlSettingsCVar({
+    getSettings: () => values,
+    setSetting: (id, value) => { values = { ...values, [id]: value }; },
+  });
+  const seam = new LiveWorldSeam({
+    world: () => world, store: () => undefined, spell: () => undefined,
+    monotonic: () => 0, globalCooldownUntil: () => 0, castSpell: () => {}, settingsCVar,
+  });
+  const fired = [];
+  seam.attach({ now: () => 0, fire(event, ...args) { fired.push([event, ...args]); return 1; } });
+  const call = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
+  const text = (name) => globalString(name) ?? name;
+  const take = () => {
+    const errors = fired.filter(([event]) => event === "UI_ERROR_MESSAGE").map(([, line]) => line);
+    const wire = sent.filter((opcode) => opcode === OPCODES.CMSG_SET_SELECTION || opcode === OPCODES.CMSG_ATTACK_SWING)
+      .map((opcode) => (opcode === OPCODES.CMSG_SET_SELECTION ? "select" : "swing"));
+    fired.length = 0;
+    sent.length = 0;
+    return { errors, wire };
+  };
+  return { world, seam, call, text, take, values: () => values, ENEMY };
+}
+
+test("DEC-A 3.11: AssistUnit with nobody there is ERR_GENERIC_NO_TARGET for the target, ERR_UNIT_NOT_FOUND for the rest", async () => {
+  const { call, text, take, world } = await liveAssistFixture();
+  try {
+    assert.deepEqual(call("AssistUnit"), [], "no return value");
+    call("AssistUnit", "target");
+    call("AssistUnit", "TARGET");
+    assert.deepEqual(take(), { errors: [text("ERR_GENERIC_NO_TARGET"), text("ERR_GENERIC_NO_TARGET"), text("ERR_GENERIC_NO_TARGET")], wire: [] },
+      "a bare /assist and the target token: 0x005216f0(199)");
+    call("AssistUnit", "focus");
+    call("AssistUnit", "Никто");
+    assert.deepEqual(take(), { errors: [text("ERR_UNIT_NOT_FOUND"), text("ERR_UNIT_NOT_FOUND")], wire: [] },
+      "any other token or a name nobody carries: 0x005216f0(314)");
+    // A selected corpse (TYPEID_CORPSE 7) is no unit: its CORPSE_FIELD_ITEM words are not a UNIT_FIELD_TARGET.
+    const CORPSE = 0x40n;
+    const corpse = unit(CORPSE, 7);
+    setGuidField(corpse, TARGET_FIELD, HEALER);
+    world.state.objects.set(CORPSE, corpse);
+    world.targetGuid = CORPSE;
+    call("AssistUnit", "target");
+    assert.deepEqual(take(), { errors: [text("ERR_GENERIC_NO_TARGET")], wire: [] });
+    assert.equal(world.targetGuid, CORPSE, "nobody else selected");
+  } finally {
+    world.close();
+  }
+});
+
+test("DEC-A 3.11: AssistUnit selects the unit's target; the assistAttack CVar («Автоматическая помощь») attacks it", async () => {
+  const { call, take, world, values, ENEMY } = await liveAssistFixture();
+  try {
+    world.targetGuid = TARGET;
+    call("AssistUnit", "target");
+    assert.deepEqual(take(), { errors: [], wire: [] }, "a target with no target of its own: nothing, and no error");
+    world.targetGuid = HEALER;
+    assert.deepEqual(call("GetCVar", "assistAttack"), ["0"], "Wow.exe's default");
+    call("AssistUnit", "target");
+    assert.equal(world.targetGuid, ENEMY);
+    assert.deepEqual(take(), { errors: [], wire: ["select"] }, "assistAttack 0: selected, no swing");
+    call("SetCVar", "assistAttack", "1");
+    assert.equal(values().assistAttack, true, "the stock checkbox's CVar is the setting");
+    world.targetGuid = HEALER;
+    call("AssistUnit", "target");
+    assert.equal(world.targetGuid, ENEMY);
+    assert.deepEqual(take(), { errors: [], wire: ["select", "swing"] }, "assistAttack 1: StartAttack on the unit assisted (0x006e4950)");
+    assert.equal(world.attackVictim, ENEMY);
+  } finally {
+    world.close();
+  }
+});
+
+test("DEC-A 3.11: the model swings only at the unit it selected — never at the old target when the select did not take", async () => {
+  const { FrameXmlTargetingModel } = await import("../dist/code/browser/framexml/FrameXmlTargetingApi.js");
+  const calls = [];
+  const OTHER = 0x99n;
+  const healer = unit(HEALER, 4);
+  const world = {
+    targetGuid: TARGET,
+    state: { objects: new Map([[TARGET, unit(TARGET, 3)], [HEALER, healer], [OTHER, unit(OTHER, 5)]]) },
+    selectTarget(guid) { calls.push(["select", guid]); if (this.state.objects.get(guid)?.typeId !== 5) this.targetGuid = guid; },
+    startAttack() { calls.push(["swing", this.targetGuid]); },
+  };
+  let assistAttack = true;
+  const model = new FrameXmlTargetingModel({
+    world: () => world,
+    unitGuid: (token) => (token === "target" ? world.targetGuid : token === "party1" ? HEALER : undefined),
+    uiError: (name) => calls.push(["error", name]),
+    assistAttack: () => assistAttack,
+  });
+  setGuidField(healer, TARGET_FIELD, 0x777n);
+  model.assistUnit("party1");
+  assert.deepEqual(calls, [], "its target is out of sight: nothing selected, nothing attacked");
+  setGuidField(healer, TARGET_FIELD, OTHER);
+  model.assistUnit("party1");
+  assert.deepEqual(calls, [["select", OTHER]], "the world refused the select (a game object): no swing at the old target");
+  calls.length = 0;
+  setGuidField(healer, TARGET_FIELD, TARGET);
+  model.assistUnit("party1");
+  assert.deepEqual(calls, [["select", TARGET], ["swing", TARGET]], "already the selection: the swing still follows, as 0x006e4950 is called");
+  calls.length = 0;
+  assistAttack = false;
+  model.assistUnit("party1");
+  assert.deepEqual(calls, [["select", TARGET]]);
+  calls.length = 0;
+  model.assistUnit("party2");
+  assert.deepEqual(calls, [["error", "ERR_UNIT_NOT_FOUND"]]);
+});
+
+// DEC-review 3.11 (04.10): the assistAttack swing goes only at a unit the player may attack. Wow.exe 0x006e4950 hands
+// a melee StartAttack to 0x006e2610, which asks 0x00729a70 (CanAttack, 0x00729740) first and sends no
+// CMSG_ATTACKSWING (0x141) when it refuses — and the ranged path refuses the same way. So an assist that selects
+// the player himself (a mob that is hitting him) or a friend (a mob on the tank) selects it and swings at nothing;
+// before this review WorldClient.startAttack turned the character to that unit, drew the weapon and sent a swing
+// the core answers with SMSG_ATTACKSTOP (CombatHandler.cpp:40-45, IsValidAttackTarget).
+test("DEC-review 3.11: the assistAttack swing only at a unit CanAttack accepts — never at the player or a friend", async () => {
+  const { call, take, world, ENEMY } = await liveAssistFixture();
+  try {
+    call("SetCVar", "assistAttack", "1");
+    setGuidField(world.state.objects.get(ENEMY), TARGET_FIELD, SELF);
+    world.targetGuid = ENEMY;
+    call("AssistUnit", "target");
+    assert.equal(world.targetGuid, SELF, "the mob's target — the player — is selected (0x005259e0)");
+    assert.deepEqual(take(), { errors: [], wire: ["select"] }, "and not attacked: CanAttack refuses the player himself");
+    assert.equal(world.attackVictim, undefined);
+    setGuidField(world.state.objects.get(ENEMY), TARGET_FIELD, HEALER);
+    world.canAttackUnit = (object) => object.guid !== HEALER; // the browser's faction table: the healer is a friend
+    world.targetGuid = ENEMY;
+    call("AssistUnit", "target");
+    assert.equal(world.targetGuid, HEALER);
+    assert.deepEqual(take(), { errors: [], wire: ["select"] }, "a friend: selected, no swing");
+    world.targetGuid = HEALER;
+    call("AssistUnit", "target");
+    assert.deepEqual(take(), { errors: [], wire: ["select", "swing"] }, "the friend's enemy is still attacked");
+    assert.equal(world.attackVictim, ENEMY);
+  } finally {
+    world.close();
+  }
+});

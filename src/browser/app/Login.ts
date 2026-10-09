@@ -5,6 +5,7 @@ import {
   tokenInput, usernameInput, worldPanel,
 } from "../ui/Dom.js";
 import { clearWorldContext, game } from "../game/Context.js";
+import { cancelItemTarget } from "../game/SpellCursor.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
 import { enterWorld, retireEnterWorldSession } from "./EnterWorld.js";
 import { canSelectRealm, REALM_FLAG_OFFLINE, type RealmInfo } from "../../auth/AuthProtocol.js";
@@ -41,6 +42,7 @@ import { closeGameWindows } from "../ui/Windows.js";
 import { clearQuestLog } from "../ui/QuestLog.js";
 import { bindDeathScreenEffect, resetDeathScreenEffect } from "../ui/DeathScreenEffect.js";
 import { settingsStore } from "../ui/Settings.js";
+import { detachInputAccount } from "../input/InputAccountWiring.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
 import { WorldClient } from "../../world/WorldClient.js";
 import { bindPlayerHud } from "../ui/Frames.js";
@@ -49,8 +51,19 @@ import { forgetMovementState } from "../input/Movement.js";
 import { CHARACTER_OPTIONS_VERSION, isCharacterOptions, type CharacterOptions } from "../CharacterAtlas.js";
 import { clientLocale } from "../Environment.js";
 import { frontDoorHost, type WorldExit } from "../glue/FrontDoor.js";
+import { describeFailure, type GlueAuthMessage, type GlueFailureContext } from "../glue/GlueMessages.js";
 import { adoptWorldConnection } from "./WorldAdoption.js";
 import { LatestConnection } from "./LatestConnection.js";
+/**
+ * What the legacy forms (`?legacy-login=1`) print for a failure: the coded message's plain text, as
+ * the glue screens show it without a corpus (`describeFailure`: a refused login, a dropped socket, a
+ * server behind the gateway gone…). The exception's own English goes to the log only.
+ */
+function failureText(error: unknown, context: GlueFailureContext): string {
+  console.warn(`[legacy-login] ${context} failed:`, error instanceof Error ? error.message : String(error));
+  return describeFailure(error, context).text ?? "Ошибка";
+}
+
 export function worldGatewayUrl(): string {
   const url = new URL(gatewayInput.value);
   url.pathname = "/world";
@@ -275,13 +288,19 @@ function renderCharacters(list: CharacterSummary[]): void {
       remove.disabled = true;
       try {
         const result = await game.world.deleteCharacter(character.guid);
-        if (result !== 71) throw new Error(`Удаление отклонено, код ${result}`);
+        if (result !== 71) {
+          // The glue screen's words for a refusal it finds no string for (GlueSession.deleteCharacter).
+          characterStatus.className = "error";
+          characterStatus.textContent = `Удаление отклонено сервером, код ${result}.`;
+          remove.disabled = false;
+          return;
+        }
         characterStatus.className = "success";
         characterStatus.textContent = `${character.name} удалён.`;
         await refreshCharacters();
       } catch (error) {
         characterStatus.className = "error";
-        characterStatus.textContent = error instanceof Error ? error.message : String(error);
+        characterStatus.textContent = failureText(error, "world");
         remove.disabled = false;
       }
     });
@@ -316,6 +335,9 @@ export function resetWorldUi(): void {
   retireEnterWorldSession();
   game.store?.detach();
   clearWorldContext();
+  // A spell or item waiting for an item dies with the world (2.05): the cast cursor goes with it now,
+  // not at the next question asked of it.
+  cancelItemTarget();
   resetLogoutPending();
   closeGameMenu();
   closeKeyBindingsWindow();
@@ -358,6 +380,7 @@ export function resetWorldUi(): void {
   // Pending writes go out before the world does, so a setting changed in the last second survives.
   settingsStore.detach();
   for (const store of macroStores) store.detach();
+  detachInputAccount();
   showAuctions();
   showLfg();
   // The connection is gone, so the keys are dropped rather than released: a stop packet now
@@ -406,7 +429,7 @@ export function adoptWorld(world: WorldClient): void {
  * socket, so a character list asked for over a used-world connection is two readers on one stream.
  * `connectRealm` closes and reopens, which the session key still allows.
  */
-export function leaveWorld(exit: WorldExit, message?: string): void {
+export function leaveWorld(exit: WorldExit, message?: GlueAuthMessage): void {
   // Held before the reset, because `clearWorldContext` is what drops `game.world`: reaching for it
   // afterwards would find `undefined` and leave the socket open for the life of the tab.
   const world = game.world;
@@ -419,8 +442,9 @@ export function leaveWorld(exit: WorldExit, message?: string): void {
   characterPanel.hidden = false;
   characters.replaceChildren();
   if (message) {
+    // This panel has no corpus to look the key up in, so it prints the message's plain text.
     characterStatus.className = "error";
-    characterStatus.textContent = message;
+    characterStatus.textContent = message.text ?? "Ошибка";
   }
   // Whichever exit this is, the connection the client was playing on is finished with: a logout
   // ended it server-side, a failed enter left it in an unknown read state, and a lost one is
@@ -455,6 +479,7 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
       sessionKey: session.sessionKey,
       realmId: realm.id,
       realmName: realm.name,
+      realmType: realm.type,
     }));
     if (!world) {
       // The obsolete WorldClient has already closed the socket it owns.
@@ -471,7 +496,7 @@ export async function connectRealm(realm: RealmInfo): Promise<void> {
   } catch (error) {
     if (realmConnections.isCurrent(attempt)) {
       characterStatus.className = "error";
-      characterStatus.textContent = error instanceof Error ? error.message : String(error);
+      characterStatus.textContent = failureText(error, "world");
     }
   } finally {
     stream?.close();
@@ -537,7 +562,7 @@ export function wireLoginForms(): void {
     } catch (error) {
       game.session = undefined;
       status.className = "error";
-      status.textContent = error instanceof Error ? error.message : String(error);
+      status.textContent = failureText(error, "auth");
     } finally {
       passwordInput.value = "";
       stream?.close();
@@ -584,14 +609,19 @@ export function wireLoginForms(): void {
         hairColor: look(characterHairColor),
         facialHair: look(characterFacial),
       });
-      if (result !== 47) throw new Error(`Создание отклонено, код ${result}`);
+      if (result !== 47) {
+        // GlueCreation's words for a refusal it finds no string for.
+        characterStatus.className = "error";
+        characterStatus.textContent = `Сервер отказал в создании, код ${result}.`;
+        return;
+      }
       characterStatus.className = "success";
       characterStatus.textContent = `${characterName.value} создан.`;
       characterName.value = "";
       await refreshCharacters();
     } catch (error) {
       characterStatus.className = "error";
-      characterStatus.textContent = error instanceof Error ? error.message : String(error);
+      characterStatus.textContent = failureText(error, "create");
     } finally {
       createSubmit.disabled = false;
     }

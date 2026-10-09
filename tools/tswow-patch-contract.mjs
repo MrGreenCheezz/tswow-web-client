@@ -473,6 +473,36 @@ async function looseAddons(clientRoot) {
   }
 }
 
+/** The gateway's own add-on discovery, from the built code; undefined when it is not built. */
+async function gatewayAddonDiscovery() {
+  try {
+    return await import(pathToFileURL(join(REPOSITORY_ROOT, "dist", "code", "gateway", "ClientAddons.js")).href);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The "Loose AddOns" line: every root directory except `Blizzard_*` (what the browser host could
+ * see), then — when the gateway's discovery is built — how many of them the browser actually loads
+ * and which ones the `AddOns.txt` profile disables (9.07: «6 directories» against «3 load paths»
+ * is the profile, not the loader).
+ */
+export async function looseAddonsMessage(clientRoot, discovery = gatewayAddonDiscovery) {
+  const addons = await looseAddons(clientRoot);
+  if (!addons.length) return undefined;
+  let message = `${addons.length} root-level add-on director${addons.length === 1 ? "y is" : "ies are"} exposed to the browser FrameXML host; arbitrary add-on API compatibility still requires a runtime check: ${sample(addons)}`;
+  const module = await discovery();
+  if (module?.discoverClientAddons && module?.disabledByProfile) {
+    const [enabled, disabled] = await Promise.all([
+      module.discoverClientAddons(clientRoot), module.disabledByProfile(clientRoot),
+    ]);
+    message += `; of them ${enabled.length} load (an add-on is a directory with its own .toc)`
+      + `, disabled by the AddOns.txt profile: ${disabled.length ? disabled.join(", ") : "none"}`;
+  }
+  return message;
+}
+
 function sample(values, limit = 8) {
   return values.length <= limit ? values.join(", ") : `${values.slice(0, limit).join(", ")} (+${values.length - limit})`;
 }
@@ -694,11 +724,8 @@ export async function inspectTswowPatchContract(options = {}) {
     message: `${manifest.insecure} manifest URL(s) use HTTP; executable Lua/DLL patch delivery is not authenticated`,
   });
 
-  const addons = await looseAddons(clientRoot);
-  if (addons.length) results.push({
-    level: "warning", label: "Loose AddOns",
-    message: `${addons.length} root-level add-on director${addons.length === 1 ? "y is" : "ies are"} exposed to the browser FrameXML host; arbitrary add-on API compatibility still requires a runtime check: ${sample(addons)}`,
-  });
+  const addonsMessage = await looseAddonsMessage(clientRoot);
+  if (addonsMessage) results.push({ level: "warning", label: "Loose AddOns", message: addonsMessage });
   results.push({
     level: "ok", label: "Native-only patches",
     message: `game build ${runtime.config.build}; ${runtime.config.binaryPatches} applies to Wow.exe/DLL and is intentionally not executed in the browser sandbox`,

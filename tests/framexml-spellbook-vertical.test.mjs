@@ -164,7 +164,9 @@ test("MPQ SpellBookFrame vertical reaches the stock window and templates", withC
       GetKnownSlotFromHighestRankSlot: 1,
       GetNumSpellTabs: 1,
       GetSpellAutocast: 1,
-      GetSpellCooldown: 1,
+      // suite-fix: two since MultiCastActionBarFrame.xml joined the vertical (3.07, stock TOC line 105):
+      // the book's cooldown and MultiCastActionBarFrame.lua's MultiCastSpellButton_UpdateCooldown.
+      GetSpellCooldown: 2,
       // Two since PetPaperDollFrame.xml joined the vertical: the book's chat link and the pet
       // page's CompanionButton_OnModifiedClick (PetPaperDollFrame.lua) both call GetSpellLink.
       GetSpellLink: 2,

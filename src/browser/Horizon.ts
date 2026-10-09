@@ -2,6 +2,9 @@ import * as THREE from "three";
 import { TERRAIN_GRID_SIZE } from "./Terrain.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { withGeneration } from "./GatewayGeneration.js";
+import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
+import { lightingClassicLook } from "./LightingQuality.js"; // 05.10-7.20
 
 /**
  * The world beyond the tiles that are really loaded, out of the client's own `.wdl`.
@@ -57,6 +60,25 @@ export interface HorizonMap {
 /** `MAOF` is indexed the way the server names its tiles: the x of `%03u%02u%02u.map` first. */
 function tileKey(gridX: number, gridY: number): number {
   return gridX * 64 + gridY;
+}
+
+/** 05.10-A7b-7 (7.08): one tile of a decoded map, or `undefined` where the map has none. */
+export function horizonTileAt(map: HorizonMap, gridX: number, gridY: number): HorizonTile | undefined {
+  return map.tiles.get(tileKey(gridX, gridY));
+}
+
+/** 05.10-A7b-7 (7.08): texels of the colour picture per tile side, and its side (64 tiles). */
+export const HORIZON_COLOUR_TEXELS = 16;
+export const HORIZON_COLOUR_SIDE = 64 * HORIZON_COLOUR_TEXELS;
+
+/**
+ * 05.10-A7b-7 (7.08): whether the horizon draws lit and coloured. The classic path (lighting quality
+ * 0) follows the client: the far ground is lit by the world's own light and carries the zone's
+ * colour. The enhanced and cinematic presets keep the owner's look — the flat aerial-fogged green
+ * they were tuned with — until the owner says otherwise.
+ */
+export function horizonColourWanted(lightingQuality: number, hasColour: boolean): boolean {
+  return lightingClassicLook(lightingQuality) && hasColour; // 05.10-7.20: and the comparison level
 }
 
 /**
@@ -129,10 +151,17 @@ export function horizonTiles(map: HorizonMap, centre: { x: number; y: number }, 
  * stored in: 545 vertices and 1,024 triangles a tile. Merged into one buffer because forty of them
  * as separate meshes is forty draw calls for something nobody looks at closely.
  */
-export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.BufferGeometry {
+export function buildHorizonGeometry(
+  tiles: readonly HorizonTile[],
+  /** 05.10-A7b-7 (7.08): the map's other tiles, so a normal on a tile's edge sees across the join. */
+  neighbour?: (gridX: number, gridY: number) => HorizonTile | undefined,
+): THREE.BufferGeometry {
   const cellsPerTile = INNER * INNER;
   const vertexCount = tiles.length * (OUTER * OUTER + cellsPerTile);
   const positions = new Float32Array(vertexCount * 3);
+  // 05.10-A7b-7 (7.08): lit and coloured on the classic path — a normal and a colour-map UV a vertex.
+  const normals = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
   // The production ring is at most 72 tiles (39,240 vertices), so its indices fit in 16 bits.
   // Retain the wide path for callers that build a larger arbitrary tile collection.
   const indices = vertexCount <= 0x10000
@@ -151,6 +180,12 @@ export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.Buffe
         positions[at] = originX - row * step;
         positions[at + 1] = tile.outer[row * OUTER + column]!;
         positions[at + 2] = -(originY - column * step);
+        // 05.10-A7b-7: central differences over the outer grid, across the tile edge when the
+        // neighbour is known (both tiles then agree on the shared vertex's normal).
+        const southward = outerSlope(tile, row, column, 1, 0, neighbour);
+        const eastward = outerSlope(tile, row, column, 0, 1, neighbour);
+        writeNormal(normals, at, southward, eastward, step);
+        writeUv(uvs, (base + row * OUTER + column) * 2, tile, row, column);
         vertex++;
       }
     }
@@ -161,6 +196,14 @@ export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.Buffe
         positions[at] = originX - (row + 0.5) * step;
         positions[at + 1] = tile.inner[row * INNER + column]!;
         positions[at + 2] = -(originY - (column + 0.5) * step);
+        // 05.10-A7b-7: the four outer corners of its cell.
+        const o = tile.outer;
+        const southward = (o[(row + 1) * OUTER + column]! + o[(row + 1) * OUTER + column + 1]!)
+          - (o[row * OUTER + column]! + o[row * OUTER + column + 1]!);
+        const eastward = (o[row * OUTER + column + 1]! + o[(row + 1) * OUTER + column + 1]!)
+          - (o[row * OUTER + column]! + o[(row + 1) * OUTER + column]!);
+        writeNormal(normals, at, southward / 2, eastward / 2, step);
+        writeUv(uvs, (innerBase + row * INNER + column) * 2, tile, row + 0.5, column + 0.5);
         vertex++;
       }
     }
@@ -190,11 +233,66 @@ export function buildHorizonGeometry(tiles: readonly HorizonTile[]): THREE.Buffe
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  // 05.10-A7b-7 (7.08): analytic normals from the height grid (no `computeVertexNormals` scan over
+  // every triangle) and the colour picture's UVs; the flat basic material ignores both.
+  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-  // The horizon uses MeshBasicMaterial: vertex normals have no effect on its lighting or fog.
-  // Computing them on every tile crossing scans all triangles and allocates another full buffer.
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+/**
+ * 05.10-A7b-7: an outer height by (row, column) of `tile`, stepping into the neighbour tile when
+ * the index leaves it (rows run south with gridX, columns east with gridY); `undefined` past the
+ * edge when that neighbour is not known.
+ */
+function outerHeight(
+  tile: HorizonTile, row: number, column: number,
+  neighbour: ((gridX: number, gridY: number) => HorizonTile | undefined) | undefined,
+): number | undefined {
+  if (row >= 0 && row < OUTER && column >= 0 && column < OUTER) return tile.outer[row * OUTER + column]!;
+  const dx = row < 0 ? -1 : row > OUTER - 1 ? 1 : 0;
+  const dy = column < 0 ? -1 : column > OUTER - 1 ? 1 : 0;
+  const next = neighbour?.(tile.gridX + dx, tile.gridY + dy);
+  return next?.outer[(row - dx * (OUTER - 1)) * OUTER + column - dy * (OUTER - 1)];
+}
+
+/**
+ * 05.10-A7b-7: height change per grid step along (dRow, dColumn) at an outer vertex — the central
+ * difference, or the one-sided one at a map edge with no neighbour.
+ */
+function outerSlope(
+  tile: HorizonTile, row: number, column: number, dRow: number, dColumn: number,
+  neighbour: ((gridX: number, gridY: number) => HorizonTile | undefined) | undefined,
+): number {
+  const centre = tile.outer[row * OUTER + column]!;
+  const ahead = outerHeight(tile, row + dRow, column + dColumn, neighbour);
+  const behind = outerHeight(tile, row - dRow, column - dColumn, neighbour);
+  if (ahead !== undefined && behind !== undefined) return (ahead - behind) / 2;
+  if (ahead !== undefined) return ahead - centre;
+  if (behind !== undefined) return centre - behind;
+  return 0;
+}
+
+/**
+ * 05.10-A7b-7: the up-facing unit normal of a height field whose height grows by `southward` per
+ * row and `eastward` per column, rows `step` yards apart along −x and columns along +z.
+ */
+function writeNormal(normals: Float32Array, at: number, southward: number, eastward: number, step: number): void {
+  // dh/dx = southward / −step, dh/dz = eastward / step; the normal is (−dh/dx, 1, −dh/dz).
+  const x = southward / step;
+  const z = 0 - eastward / step; // not -0 on flat ground
+  const length = Math.hypot(x, 1, z);
+  normals[at] = x / length;
+  normals[at + 1] = 1 / length;
+  normals[at + 2] = z / length;
+}
+
+/** 05.10-A7b-7: where (row, column) of `tile` lies on the map's colour picture (row 0 at v = 0). */
+function writeUv(uvs: Float32Array, at: number, tile: HorizonTile, row: number, column: number): void {
+  uvs[at] = (tile.gridY * HORIZON_COLOUR_TEXELS + column) / HORIZON_COLOUR_SIDE;
+  uvs[at + 1] = (tile.gridX * HORIZON_COLOUR_TEXELS + row) / HORIZON_COLOUR_SIDE;
 }
 
 /** One map's `.wdl`, fetched once and kept: 780 KB for a continent, and it never changes. */
@@ -205,14 +303,93 @@ export class HorizonClient {
   readonly #requested = new Set<number>();
   readonly #loading = new Set<number>();
   readonly #errors = new Set<number>();
+  /** 05.10-A7b-0 1.24: a failed request (network, 5xx) is asked again after 2 s, 8 s, 30 s. */
+  readonly #failures: RetryLadder<number>;
+  /**
+   * 05.10-A7b-7 (7.08): the colour picture of the map being drawn (`null`: the map has none, or
+   * the gateway is older than the route — the horizon stays flat green). Only the current map's
+   * texture is kept: 1024² with mipmaps is 5.6 MB of GPU memory.
+   */
+  readonly #colours = new Map<number, THREE.Texture | null>();
+  readonly #colourLoading = new Set<number>();
+  readonly #colourFailures: RetryLadder<number>;
+  #colourWanted: number | undefined;
   #revision = 0;
   #success = 0;
   #error = 0;
 
-  constructor(gatewayWebSocketUrl: string) {
+  /** `now` (05.10-A7b-0 1.24) is the retry ladder's clock; tests inject their own. */
+  constructor(gatewayWebSocketUrl: string, now?: () => number) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#failures = new RetryLadder<number>(undefined, now);
+    this.#colourFailures = new RetryLadder<number>(undefined, now); // 05.10-A7b-7
+  }
+
+  /**
+   * 05.10-A7b-7 (7.08): the map's colour picture once it is in; asks for it the first time, after the
+   * map's `.wdl` itself has landed. 404 is final (no minimap, or an older gateway); other failures
+   * retry on the ladder. Switching maps releases the previous map's texture.
+   */
+  colour(map: number | undefined): THREE.Texture | undefined {
+    if (map === undefined || !this.#maps.get(map)) return undefined;
+    if (this.#colourWanted !== map) {
+      this.#colourWanted = map;
+      for (const [other, texture] of this.#colours) {
+        if (other === map || !texture) continue;
+        texture.dispose();
+        this.#colours.delete(other);
+      }
+    }
+    const known = this.#colours.get(map);
+    if (known !== undefined) return known ?? undefined;
+    if (this.#colourLoading.has(map) || !this.#colourFailures.ready(map)) return undefined;
+    this.#colourLoading.add(map);
+    void this.#loadColour(map);
+    return undefined;
+  }
+
+  async #loadColour(map: number): Promise<void> {
+    try {
+      // Without a bitmap decoder (no supported browser lacks one) the horizon simply stays flat.
+      if (typeof createImageBitmap !== "function") {
+        this.#colours.set(map, null);
+        return;
+      }
+      const response = await fetch(withGeneration(`${this.#baseUrl}/horizon/${map}/colour.png`));
+      if (response.status === 404) {
+        this.#colourFailures.clear(map);
+        this.#colours.set(map, null);
+        return;
+      }
+      if (!response.ok) throw new Error(`Horizon colour gateway returned ${response.status}`);
+      // Not flipped: picture row 0 is UV v = 0 (`writeUv`), with `flipY` off below.
+      const bitmap = await createImageBitmap(await response.blob(), {
+        premultiplyAlpha: "none", colorSpaceConversion: "none",
+      });
+      if (this.#colourWanted !== map) {
+        bitmap.close();
+        return;
+      }
+      const texture = new THREE.Texture(bitmap);
+      texture.flipY = false;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.magFilter = THREE.LinearFilter;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.generateMipmaps = true;
+      texture.addEventListener("dispose", () => bitmap.close());
+      texture.needsUpdate = true;
+      this.#colourFailures.clear(map);
+      this.#colours.set(map, texture);
+    } catch (error) {
+      this.#colourFailures.failed(map);
+      this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      this.#colourLoading.delete(map);
+    }
   }
 
   /** Bumped when a map's horizon lands, so a scene built without one knows to build it. */
@@ -222,6 +399,11 @@ export class HorizonClient {
 
   get generation(): number {
     return this.#revision;
+  }
+
+  /** 05.10-A7b-9 (7.18): horizon meshes and colour pictures waiting for a retry (1.24). */
+  get retrying(): number {
+    return this.#failures.retryingCount() + this.#colourFailures.retryingCount();
   }
 
   /** Immutable exact request counters; the lifetime requested set is not an active queue. */
@@ -239,6 +421,7 @@ export class HorizonClient {
     const known = this.#maps.get(map);
     if (known) return known;
     if (known === null || this.#requested.has(map)) return undefined;
+    if (!this.#failures.ready(map)) return undefined; // 05.10-A7b-0 1.24: waiting for its retry
     this.#requested.add(map);
     this.#loading.add(map);
     void this.#load(map);
@@ -247,6 +430,7 @@ export class HorizonClient {
 
   /** Adds the outer and inner height arrays from every successful cached map. */
   visitRetainedResources(visitor: RetainedResourceVisitor): void {
+    for (const texture of this.#colours.values()) if (texture) visitor.referenceGpuTexture(this, texture); // 05.10-A7b-7
     for (const map of this.#maps.values()) {
       if (!map) continue;
       for (const tile of map.tiles.values()) {
@@ -267,24 +451,40 @@ export class HorizonClient {
       else this.#error++;
     };
     try {
-      const response = await fetch(`${this.#baseUrl}/horizon/${map}`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/horizon/${map}`));
       if (response.status === 404) {
         // A map without a WDL is a normal absence (instances/battlegrounds), not a failed load.
         this.#maps.set(map, null);
         this.#errors.delete(map);
+        this.#failures.clear(map); // 05.10-A7b-0 1.24
         settle(true);
         return;
       }
       if (!response.ok) throw new Error(`Horizon gateway returned ${response.status}`);
-      const decoded = decodeHorizon(await response.arrayBuffer());
+      const body = await response.arrayBuffer();
+      let decoded: HorizonMap;
+      try {
+        decoded = decodeHorizon(body);
+      } catch (error) {
+        // 05.10-A7b-0 1.24: a file that arrived whole and does not decode will not decode next time.
+        this.#failures.clear(map);
+        this.#maps.set(map, null);
+        this.#errors.add(map);
+        settle(false);
+        this.onStatus?.(error instanceof Error ? error.message : String(error), true);
+        return;
+      }
+      this.#failures.clear(map); // 05.10-A7b-0 1.24
       this.#maps.set(map, decoded);
       this.#errors.delete(map);
       settle(true);
       this.onStatus?.(`Горизонт: ${decoded.tiles.size} тайлов`, false);
     } catch (error) {
-      // Null and never again: a map with no `.wdl` — an instance, a battleground — has no horizon
-      // to draw, and asking once a frame for a file that is not there is a request storm.
-      this.#maps.set(map, null);
+      // 05.10-A7b-0 1.24: a map with no `.wdl` is the 404 above and stays final; this is a failed
+      // request (network, 5xx), asked again on the ladder — `get` holds it off while it waits, so
+      // there is no request storm. Exhausted after the fourth failure.
+      this.#requested.delete(map);
+      this.#failures.failed(map);
       this.#errors.add(map);
       settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);

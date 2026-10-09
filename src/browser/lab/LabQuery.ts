@@ -17,6 +17,8 @@ export interface LabLook {
   hair: number;
   hairColor: number;
   facialHair: number;
+  /** 05.10-A7a-A 6.10: `class=` from the page, passed on (the death knight's eye glow); absent sends none. */
+  classId?: number;
   /** `slot:inventoryType:displayId[:subClass]`, the spelling `parseEquipment` takes on the gateway. */
   items: EquippedItem[];
 }
@@ -131,6 +133,7 @@ export function parseLabQuery(search: string): LabQuery {
     hair: byte(params, "hair"),
     hairColor: byte(params, "hairColor"),
     facialHair: byte(params, "facialHair"),
+    ...(params.get("class") === null ? {} : { classId: byte(params, "class") }), // 05.10-A7a-A 6.10
     items: parseLabItems(params.get("items") ?? ""),
     sheet: sheet ?? undefined,
     display: displayId,
@@ -165,7 +168,8 @@ export function appearanceQuery(look: LabLook): string {
     + (item.subClass === undefined ? "" : `:${item.subClass}`)).sort().join(",");
   return `v=${CHARACTER_APPEARANCE_VERSION}&race=${look.race}&sex=${look.sex}&skin=${look.skin}&face=${look.face}`
     + `&hair=${look.hair}&hairColor=${look.hairColor}&facialHair=${look.facialHair}`
-    + (worn ? `&items=${encodeURIComponent(worn)}` : "");
+    + (worn ? `&items=${encodeURIComponent(worn)}` : "")
+    + (look.classId === undefined ? "" : `&class=${look.classId}`); // 05.10-A7a-A 6.10
 }
 
 /** The address of the gateway, derived from the page exactly as `Dom.ts` derives it for the login. */

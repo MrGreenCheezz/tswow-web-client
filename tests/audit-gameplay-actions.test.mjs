@@ -64,6 +64,23 @@ test("an expired summon cannot be accepted, including a click before the next UI
   world.close();
 });
 
+test("SMSG_RAID_GROUP_ONLY: the boot edge always, a system line except for the 0/0 that ends the warning", async () => {
+  // Wow.exe 0x6e3c10 (case 0x286): a line only for delay 0 with reason 1..4; 0/0 (Player.cpp:22422,
+  // the player joined a raid group) only stops the timer.
+  const { world, transport } = await loggedIn();
+  const boots = []; const lines = [];
+  world.events.on("INSTANCE_BOOT", ({ milliseconds }) => boots.push(milliseconds));
+  world.events.on("WORLD_MESSAGE", ({ text }) => lines.push(text));
+  for (const [delay, reason] of [[60_000, 1], [0, 0], [0, 2]]) {
+    transport.push(OPCODES.SMSG_RAID_GROUP_ONLY, new PacketWriter().u32(delay).u32(reason).toUint8Array());
+    await settle();
+  }
+  assert.deepEqual(boots, [60_000, 0, 0]);
+  assert.equal(lines.length, 2, "no line for the 0/0 reset");
+  assert.match(lines[0], /60 с/);
+  world.close();
+});
+
 test("BG enter is refused while only queued, and after the invite deadline", async () => {
   const { world, transport } = await loggedIn();
   world.battlefieldQueues.set(0, { queueSlot: 0, status: 1, arenaType: 0, bgTypeId: 2 });
@@ -522,7 +539,8 @@ test("role choices and search state are kept for the LFG window", async () => {
     assert.equal(world.lfgSearching, true);
     world.leaveLfg();
     assert.equal(world.lfgRolesChosen.size, 0);
-    assert.equal(world.lfgSearching, false);
+    // 5.21: the search flag is the server's (SMSG_LFG_UPDATE_SEARCH), not cleared by the request.
+    assert.equal(world.lfgSearching, true);
     assert.equal(onlyPackets(transport, OPCODES.CMSG_LFG_LEAVE).length, 1);
   } finally { world.close(); }
 });

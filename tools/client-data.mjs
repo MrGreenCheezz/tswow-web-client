@@ -98,7 +98,9 @@ const SLICES = [
       + `export const CLASS_ICON_DATA_AVAILABLE = false as const;\n`
       + `export const CLASS_ICON_TCOORDS: Readonly<Record<string, {\n`
       + `  left: number; right: number; top: number; bottom: number;\n`
-      + `}>> = {};\n`,
+      + `}>> = {};\n`
+      + `export const CLASS_COLOR_DATA: Readonly<Record<string, string>> = {};\n`
+      + `export const CLASS_SORT_ORDER_DATA: readonly string[] = [];\n`,
   },
 ];
 

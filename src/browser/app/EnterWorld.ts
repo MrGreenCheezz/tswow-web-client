@@ -3,23 +3,25 @@
 // ever called from a world event, long after both modules have finished evaluating — and it is the
 // right side of the cycle, because the way out ends in `connectRealm`, which lives there.
 import { leaveWorld } from "./Login.js";
-import { describeFailure } from "../glue/GlueMessages.js";
+import { describeFailure, WORLD_CONNECTION_LOST } from "../glue/GlueMessages.js";
+import { enterWorldRefusal } from "../glue/GlueEnterGate.js";
 import { formatMoney } from "../ui/Format.js";
 import { EMOTE_ANIMATIONS } from "../../generated/animations.js";
 import { CharacterSummary } from "../../world/CharacterProtocol.js";
 import type { WorldEvents, WorldPacketEvents } from "../../world/EventBus.js";
 import { unit } from "../../world/Fields.js";
 import { game } from "../game/Context.js";
-import { clearFocusOn } from "../game/Targeting.js";
+import { canAttackUnit, clearFocusOn } from "../game/Targeting.js";
 import {
   characterModel, characterStatus, characterWindowTitle, combatStatus, creatureStatus, environmentStatus, gatewayInput,
   modelStatus, movementStatus, playerHudName, spellStatus, terrainStatus, worldPanel, worldStatus,
 } from "../ui/Dom.js";
-import { clearSpellbook, loadSpellMetadata, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
+import { clearSpellbook, loadSpellMetadata, refreshPetSpellbook, showSpells, updateSpellCooldowns } from "../ui/Spellbook.js";
 import { showTarget } from "../ui/Frames.js";
-import { bossDisengaged, bossEngaged, forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
+import { forgetUnitFrames, showUnitFrames } from "../ui/UnitFrames.js";
+import { bindUnitFrameRefresh } from "../ui/UnitFrameRefresh.js"; // P1-20b
+import { bindUnitModelRequests } from "../UnitModelRequests.js"; // P1-20c
 import { applyPortraitVisibility, clearPortraitTargets, mountNativeCharacterPortrait } from "../ui/Portraits.js";
-import { ENCOUNTER_FRAME_DISENGAGE, ENCOUNTER_FRAME_ENGAGE } from "../../world/InstanceProtocol.js";
 import { queueWorldState, showWorldState } from "../ui/WorldView.js";
 import { queueFrameTask } from "../../transport/PacketPump.js";
 import { ENVIRONMENT_NAMES, logSwing, pushCombatLine, showSwingWarning } from "../ui/CombatLog.js";
@@ -31,7 +33,8 @@ import {
 import { itemMetadataChanged, showItemMessage } from "../ui/Bags.js";
 import { ensureSpellNames } from "../ui/SpellNames.js";
 import { showBank } from "../ui/Bank.js";
-import { addMinimapPing, forgetMinimap } from "../ui/Minimap.js";
+import { addMinimapPing, forgetMinimap, forgetMinimapZone } from "../ui/Minimap.js";
+import { handleSameMapTeleport } from "../game/TeleportEffects.js";
 import { showWorldMap } from "../ui/WorldMap.js";
 import { showTracking } from "../ui/Tracking.js";
 import { showEquipmentSets } from "../ui/EquipmentSets.js";
@@ -57,6 +60,9 @@ import { notice, resetNotices } from "../ui/Notices.js";
 import { updateLogoutPending } from "../ui/GameMenu.js";
 import { beginModuleCommandLoad, systemLine } from "../ui/Chat.js";
 import { applySettings, drawSettings, settingOn, settingsStore, watchSettingsApplied } from "../ui/Settings.js";
+import { acceptInputAccount, attachInputAccount } from "../input/InputAccountWiring.js";
+import { attachActionBarAccount } from "../ui/ActionBarAccountWiring.js"; // L7 4.16b/3.32
+import { installHudKeys } from "../ui/HudKeys.js";
 import { macroStores, resetMacroWindow, showMacros } from "../ui/Macros.js";
 import { resetPetBar, showPetBar } from "../ui/PetBar.js";
 import { resetTotems } from "../ui/Totems.js";
@@ -97,6 +103,10 @@ import { SlotPriceClient } from "../SlotPriceClient.js";
 import { VendorCostClient } from "../VendorCostClient.js";
 import { AreaClient } from "../AreaClient.js";
 import { startAreaTriggers, stopAreaTriggers } from "../AreaTriggerClient.js";
+import { startShipMotion, stopShipMotion } from "../TransportMotion.js";
+import { startVehicleData, stopVehicleData } from "../VehicleClient.js"; // 11.02-F1
+import { rideCollisionModels, startTransportRide, stopTransportRide } from "../input/MovementRide.js";
+import { startGameObjectColliders, stopGameObjectColliders } from "../game/GameObjectColliders.js";
 import { MinimapTileClient } from "../MinimapTiles.js";
 import { SoundClient } from "../SoundClient.js";
 import { SoundPlayer } from "../Sound.js";
@@ -114,8 +124,12 @@ import { channelRosterOpen, resetChannelRoster, showChannelRoster } from "../ui/
 import { showProfessions, professionCastStatus } from "../ui/Professions.js";
 import { closeSocketing } from "../ui/Socketing.js";
 import { CollisionSource } from "../game/CollisionSource.js";
+import { attachPredictedGlobalCooldown } from "../game/PredictedGlobalCooldown.js"; // L12 5.30
+import { setPetSpellAttributesSource } from "../../world/PetCastSpell.js"; // L13 11.02-D
+import { setPetSpellPlacementSource } from "../../world/PetCastSpell.js"; // L13-review 11.02-D
 import { clearHeldKeys } from "../input/Controls.js";
-import { isAutoRunning, isWalking } from "../input/Movement.js";
+import { applyKnockback, isAutoRunning, isWalking, reissueHeldMovement, resetCharacterMotion } from "../input/Movement.js";
+import { knockbackImpulse } from "../../world/KnockbackImpulse.js";
 import { showUnhandledOpcodes } from "../ui/Diagnostics.js";
 import { createModuleLoader } from "../ui/ModuleClient.js";
 import { showActionBar } from "../ui/ActionBar.js";
@@ -138,6 +152,10 @@ import {
 } from "../framexml/FrameXmlQuestGiverController.js";
 import { createFrameXmlMerchantMetadataCoordinator } from "../framexml/FrameXmlMerchantMetadata.js";
 import { WorldEntryLifecycle } from "./WorldEntryLifecycle.js";
+import { itemLimitCategoryClient } from "../ItemLimitCategoryClient.js"; // 05.10-3.02
+import { swingAction } from "../game/CombatAnimations.js"; // 05.10-A7a-D 6.06
+import { SwingMeleeReactions } from "../game/SwingReactionHost.js"; // 05.10-A7a-D2 6.06
+import { weaponAnimClient } from "../WeaponAnimations.js"; // 05.10-A7a-D 6.06
 /**
  * Entering the world: the login handshake for a chosen character, the asset clients that realm
  * needs, and the couple of dozen callbacks that connect the world client to the panels.
@@ -207,10 +225,23 @@ export function retireEnterWorldSession(): void {
 
 export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButtonElement): Promise<void> {
   if (!game.world) return;
+  // The client's EnterWorld gate (FUN_004d9bd0): a character locked for transfer or by billing, or
+  // one the core has marked for a new name, is never sent — the core would load it only to refuse
+  // and kick it. The glue screens ask the same function first and answer with their own dialogs; the
+  // DOM character card, which has no rename dialog, says why here and stays on the list.
+  const refusal = enterWorldRefusal(character.flags);
+  if (refusal) {
+    characterStatus.className = "error";
+    characterStatus.textContent = refusal.text;
+    return;
+  }
   const world = game.world;
   const savedVariablesScope = game.session && world.realmName ? {
     account: game.session.username,
-    realm: JSON.stringify([new URL(gatewayInput.value.replace(/^ws/, "http")).origin, world.realmName]),
+    // 9.06: the realm's name only, like the real client's WTF/Account/<account>/<realm>; the
+    // gateway-address form is the v1 key, read once to migrate.
+    realm: world.realmName,
+    legacyRealm: JSON.stringify([new URL(gatewayInput.value.replace(/^ws/, "http")).origin, world.realmName]),
     character: character.guid.toString(),
   } : undefined;
   // Session-scoped: changing this switch takes effect on the next world entry, before either
@@ -355,11 +386,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   world.onWorldError = (error) => {
     if (game.world !== world) return;
     clearHeldKeys();
-    // The client's words for the player (`describeFailure`), the exception's for the log.
-    const lost = describeFailure(error, "world").text ?? "Соединение с сервером разорвано";
+    // A failed read in the world is DISCONNECTED, whatever broke it; the exception goes to the log.
+    const lost = WORLD_CONNECTION_LOST;
     console.warn("[world] connection lost:", error.message);
     worldStatus.className = "error";
-    worldStatus.textContent = lost;
+    worldStatus.textContent = lost.text ?? "";
     // This callback is not "a packet went wrong" — `#deliver` swallows those and reports them
     // through `onPacketError`. It fires when `#connection.read()` itself threw, which means the
     // socket is gone, and a frozen world nobody can leave is worse than a screen that says so.
@@ -415,6 +446,45 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       ? `Карта ${mapId}: ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}`
       : `Карта ${mapId}: ждём позицию персонажа…`;
   };
+  // 5.04: the terrain under somebody else's extrapolated run — the slope they follow, the floor a
+  // fall stops at before their landing packet arrives. Unloaded ground answers nothing.
+  // A terrain hole (a mine or cave mouth, a pit) is no floor: what is under it is a WMO's.
+  world.state.groundProbe = (x, y) => (game.world === world && game.terrain
+    ? game.terrain.groundHeightAt(world.mapId, x, y) : undefined);
+  // 1.17: a teleport within the map (Blink, a same-continent hearthstone, `.tele` nearby) is not a
+  // map change. TeleportEffects decides what it costs — at most 150 yards onto ground that has
+  // already streamed in is a step with keys kept; anything else takes the curtain — and never
+  // resets the map's collision, bosses, music or zone sound.
+  // 5.01: the throw itself, once WorldClient has acknowledged it (no packet from here).
+  world.onKnockBack = (knockBack) => {
+    // 11.02-A: the physics steps the mover (a driven vehicle, else the character); a throw of the
+    // character in its seat is acknowledged by WorldClient and moves nothing here.
+    const mover = world.controlledGuid ?? world.state.selfGuid;
+    if (game.world === world && knockBack.guid === mover) applyKnockback(knockbackImpulse(knockBack));
+  };
+  world.onSameMapTeleport = (mapId, destination, origin) => {
+    if (game.world !== world) return;
+    handleSameMapTeleport({
+      // The loading screen's own release test (LoadingScreen.ts `terrainReady`/`collisionReady`).
+      destinationReady: (map, x, y) => game.terrain?.isReady(map, x, y) === true
+        && game.collision?.isReady(map, x, y) === true,
+      resetCharacterMotion,
+      refreshCollision: (map, x, y) => game.collision?.refresh(map, x, y),
+      reissueHeldMovement,
+      spellVisualsWorldChanged: () => spellVisualCoordinator.worldChanged(world),
+      showLoadingScreen: (map) => showLoadingScreen(world.selfName ?? "персонаж",
+        "Загрузка ландшафта и коллизии вокруг точки прибытия…", { mapId: map, gateway: gatewayInput.value }),
+      clearHeldKeys,
+      invalidateGroundCover: () => game.renderer?.invalidateGroundCover(),
+      clearPortraitTargets: () => {
+        clearPortraitTargets();
+        game.renderer?.clearPortraits();
+        applyPortraitVisibility();
+      },
+      refreshUnitFrames: () => showUnitFrames(),
+      refreshMinimapZone: forgetMinimapZone,
+    }, mapId, destination, origin);
+  };
   world.onMovementStatus = (ready, sentPackets) => {
     movementStatus.className = ready ? "success" : "error";
     // The two modes that are otherwise invisible until the character moves: walking looks like a
@@ -424,6 +494,15 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       ? `Movement: active mover назначен · отправлено пакетов: ${sentPackets}${modes.length ? ` · ${modes.join(", ")}` : ""}`
       : "Movement: active mover не назначен";
   };
+  // 5.05: what a target change consults before carrying the swing over (CanAttack with this
+  // client's reactions), and the stock Combat panel's stopAutoAttackOnTargetChange.
+  world.canAttackUnit = canAttackUnit;
+  world.stopAutoAttackOnTargetChange = () => settingOn("stopAutoAttackOnTargetChange");
+  // L18 5.05: the stock Combat panel's autoRangedCombat (Wow.exe default "1"): the controller of
+  // world/AutoRangedCombat.ts reads it at every StartAttack and tick.
+  world.autoRangedCombat = () => settingOn("autoRangedCombat");
+  // 5.25: the stock Controls panel's blockTrades, read when another player offers a trade.
+  world.blockTrades = () => settingOn("blockTrades");
   world.onCombatStatus = (message, attacking, error) => {
     combatStatus.className = error ? "error" : attacking ? "success" : "muted";
     combatStatus.textContent = message;
@@ -433,11 +512,19 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     showSwingWarning(world);
     showTarget();
   };
+  // 05.10-A7a-D2 6.06: the victim reacts at the attacker's swing events ($CPP parry/dodge/block, $CAH
+  // wound), as Wow.exe does — not when the packet arrives (game/SwingReactionCues.ts).
+  const swingReactions = new SwingMeleeReactions(world.state, () => game.renderer); // 05.10-A7a-D2
+  entryLifecycle.track(() => swingReactions.dispose()); // 05.10-A7a-D2
+  world.onMeleeAttack = (attacker, victim) => swingReactions.meleeAttack(attacker, victim); // 05.10-A7a-D2
   world.onSwing = (swing) => {
     logSwing(world, swing);
     // Which swing it is comes from what the attacker is visibly holding; the renderer knows that
     // and the log does not, so it is told the action rather than the animation.
-    game.renderer?.playUnitAction(swing.attacker, "attack");
+    // 05.10-A7a-D 6.06: HITINFO_OFFHAND swings the left hand; the swing is the held subclass's own
+    // (05.10-A7a-D-review: Wow.exe 0x755130, no AttackAnimKits roll); 05.10-A7a-D2: the victim's
+    // dodge, parry, block or flinch follows from the swing's own clock.
+    swingReactions.swing(swing, swingAction(swing.hitInfo)); // 05.10-A7a-D2
     // And what it sounded like. Whoosh, landing, grunt and cry are all chosen from this one packet,
     // in `CombatSounds`, because none of that needs a DOM and all of it needs testing. This is the
     // only thing in the client that makes a noise for a melee blow, and it can be: `COMBAT_LOG`,
@@ -578,11 +665,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       drawSettings();
     }
     for (const store of macroStores) if (store.accept(change.type)) showMacros();
+    acceptInputAccount(change.type); // 4.12: key bindings (slot 2) and window positions (slot 6)
   });
   // The pet bar and the vehicle bar are the same packet; neither had a reader.
   onWorldEvent("PET_BAR_CHANGED", () => {
     showPetBar();
     showCharacterCollections();
+    refreshPetSpellbook(); // 4.03: the pet tab follows the pet book
   });
   onWorldEvent("VEHICLE_CHANGED", () => showPetBar());
   onWorldEvent("LOGOUT_CHANGED", (state) => {
@@ -657,21 +746,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   onWorldEvent("ARENA_TEAM_CHANGED", () => showArenaWindow());
   onWorldEvent("WEATHER_CHANGED", () => queueWorldState(world.state));
   onWorldEvent("ACTION_BUTTONS_CHANGED", () => showActionBar());
-  // Boss frames. The packet carries one engage or disengage at a time and never a list, so the
-  // list is kept in the frames module and fed from here.
-  onWorldEvent("ENCOUNTER_FRAME", (frame) => {
-    if (frame.type === ENCOUNTER_FRAME_ENGAGE) bossEngaged(frame.guid);
-    else if (frame.type === ENCOUNTER_FRAME_DISENGAGE) bossDisengaged(frame.guid);
-    else return;
-    showUnitFrames();
-  });
-  // A raid mark moved, so somebody's frame gained or lost its star.
-  onWorldEvent("RAID_TARGET_UPDATE", () => showUnitFrames());
-  // The pet bar arriving or coming down is what tells the pet frame there is a pet at all.
-  onWorldEvent("PET_BAR_CHANGED", () => showUnitFrames());
-
-  onWorldEvent("PARTY_MEMBER_STATS", () => showUnitFrames());
-  onWorldEvent("THREAT_CHANGED", () => showUnitFrames());
+  // Boss frames, raid marks, the pet bar, member stats, threat (P1-20b): the boss list is edited at
+  // once, and the frames are painted by the frame's one world refresh rather than once per packet.
+  for (const stop of bindUnitFrameRefresh(world.events, () => queueWorldState(world.state))) entryLifecycle.track(stop);
   // The bank window opens itself the moment the banker grants permission, and closes with it.
   // Someone in the party marked a spot. The packet has been arriving and going nowhere.
   onWorldEvent("MINIMAP_PING", (ping) => addMinimapPing(ping.x, ping.y));
@@ -734,6 +811,14 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   });
   onWorldEvent("QUEST_GIVER_STATUS", () => {
     // Nothing to redraw: the marks are painted from the map every frame by the scene.
+  });
+  // 5.23: what the marks are asked for on — a quest giver or flight master in view, a quest-log
+  // change; the loop's pumpQuestGiverStatus sends them a few per frame.
+  onStoreEvent("OBJECT_CREATED", ({ guid }) => world.noticeObject?.(guid));
+  onStoreEvent("UNIT_NPC_FLAGS", ({ guid }) => world.noticeObject?.(guid));
+  onStoreEvent("GAMEOBJECT_STATE", ({ guid }) => world.noticeObject?.(guid));
+  onStoreEvent("PLAYER_QUEST_LOG_UPDATE", ({ guid }) => {
+    if (guid === world.state.selfGuid) world.questLogChanged?.();
   });
   // Only real spell damage adds a creature effort voice. Authored SpellVisualKit sounds remain
   // untouched; healing and utility rows are deliberately silent here.
@@ -802,6 +887,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // The same, for a cast refusal: it went to a line inside the spellbook and nowhere else.
     if (error) notice(message);
   };
+  // 05.10-3.02: TOO_MANY_OF_ITEM's limit-category sentence (Wow.exe 0x00808200 case 0x81) reads the ItemLimitCategory
+  // rows; until the gateway serves /dbc/item-limit-categories (it waits for a restart) the refusal keeps its plain words.
+  itemLimitCategoryClient(game.gatewayOrigin)?.load(); // 05.10-3.02
+  // 05.10-A7a-D 6.06: the weapon → swing/stance/parry tables; until the gateway serves /dbc/weapon-anims
+  // (it waits for a restart) the stand-in ItemSubClass columns apply and swings have no kit variants.
+  weaponAnimClient(game.gatewayOrigin)?.load(); // 05.10-A7a-D
+  world.castFailureLimitCategory = (id) => itemLimitCategoryClient(game.gatewayOrigin)?.category(id); // 05.10-3.02
   world.onCooldownsChanged = () => updateSpellCooldowns(performance.now());
   world.onCooldownEvent = (spellId) => {
     const metadata = game.spells.get(spellId);
@@ -809,11 +901,21 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   };
   // One world-bound subscription owns the action-bar GCD. The spellbook only submits casts; a
   // click-local listener could survive a failure and attach itself to a later cast of the same id.
-  onWorldEvent("SPELL_CAST_ACCEPTED", ({ spellId, startedAt }) => {
-    if (game.world !== world) return;
-    const gcd = game.spells.get(spellId)?.startRecoveryTime ?? 0;
-    if (gcd > 0) game.globalCooldownUntil = Math.max(game.globalCooldownUntil, startedAt + gcd);
-  });
+  // L12 5.30: from the request on (SPELL_CAST_SENT), taken back by the realm's refusal; L12-review: for
+  // the realm's (hasted) duration, confirmed but not moved by the acceptance (game/PredictedGlobalCooldown.ts).
+  for (const off of attachPredictedGlobalCooldown(world, game, () => game.spells, () => game.world === world)) {
+    entryLifecycle.track(off); // L12 5.30
+  }
+  // L13 11.02-D: the pet bar's AttributesEx4 0x20 spells go out as CMSG_PET_CAST_SPELL (world/PetCastSpell.ts).
+  setPetSpellAttributesSource((spellId) => game.spells.get(spellId)?.attributes); // L13 11.02-D
+  // L13-review 11.02-D: a ground spell (Targets 0x40) of such a bar goes out only at a unit the player may attack.
+  setPetSpellPlacementSource({ // L13-review 11.02-D
+    targets: (spellId) => game.spells.get(spellId)?.targets, // L13-review 11.02-D
+    attackable: (guid) => { // L13-review 11.02-D
+      const unit = game.world?.state.objects.get(guid); // L13-review 11.02-D
+      return unit !== undefined && canAttackUnit(unit); // L13-review 11.02-D
+    }, // L13-review 11.02-D
+  }); // L13-review 11.02-D
   // A lever being pulled, a door being knocked in: the object's own animation, named by number.
   world.onGameObjectAnimation = (guid, animation) => game.renderer?.playGameObjectAnimation(guid, animation);
   /**
@@ -969,6 +1071,9 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
   showUnhandledOpcodes();
   let assetWarmup: SessionAssetWarmup | undefined;
   try {
+    // 9.03: module messages (0x102) are held from here until the JSON windows and the TSWoW Lua
+    // have subscribed, then released in arrival order (`CustomPacketRegistry.beginBacklog`).
+    if (tswowAddonsEnabled) world.customPackets.beginBacklog({ expect: ["modules", "lua"] });
     const location = await world.loginCharacter(character.guid);
     // A logout or a new realm can retire this attempt while its login reply is in flight. Do not
     // rebuild asset clients into the context that now belongs to another world.
@@ -1045,6 +1150,11 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       modelStatus.className = error ? "error" : "success";
       modelStatus.textContent = `Models: ${message}`;
     };
+    // P1-20c: unit models are asked for by the store's events, not by a walk of every object per refresh.
+    if (game.store) {
+      for (const stop of bindUnitModelRequests(game.store, world.state, creatureModels,
+        () => game.creatureModels === creatureModels && game.world === world)) entryLifecycle.track(stop);
+    }
     const itemMetadata = new ItemMetadataClient(gatewayInput.value);
     game.itemMetadata = itemMetadata;
     // Same for items, plus the one thing a slot needs beyond a repaint: the inventory only redraws
@@ -1094,6 +1204,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     locks.load();
     // Every faction template, once. Nothing on the wire says whether a unit is an enemy, so Tab
     // targeting and the reaction a frame shows both come out of this table.
+    game.factions?.abandon?.();
     const factions = new FactionClient(gatewayInput.value);
     game.factions = factions;
     factions.onStatus = (message, error) => {
@@ -1125,6 +1236,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     emoteClient.load();
     // Talent trees, glyphs and skill lines. `SMSG_TALENTS_INFO` carries ids and ranks and nothing
     // that makes a tree, so without this table there is no window to open.
+    game.talentData?.abandon?.();
     const talentData = new TalentClient(gatewayInput.value);
     game.talentData = talentData;
     talentData.onStatus = (message, error) => {
@@ -1195,11 +1307,27 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // and stopped with the session so no retry runs behind the character screen.
     startAreaTriggers(gatewayInput.value);
     entryLifecycle.track(stopAreaTriggers);
+    // 11.01-A1: ships and zeppelins sail on the core's timetable (TransportMotion.ts); until a track
+    // lands, or against a gateway without the route, they stay where their create block put them.
+    startShipMotion(gatewayInput.value, world);
+    entryLifecycle.track(stopShipMotion);
+    // 11.02-F1: the vehicle tables for the seat model (VehicleClient.ts); retried, never fatal.
+    startVehicleData(gatewayInput.value);
+    entryLifecycle.track(stopVehicleData);
     // М-A4-4: names for the ids the world's own texts print — a cast refusal's zone and weapon class.
     // A table still loading answers nothing, and the text says a word instead of a number.
     world.worldNames = worldNameSources({
       area: (id) => areas.area(id)?.name,
       itemSubclassName: (itemClass, subClass) => itemMetadata.tooltipSubclassName(itemClass, subClass),
+      // 1.32: the spell rows this session already holds; a miss is asked for (once, batched, as a
+      // cast bar asks) so the next text has the name. Map names are Map.dbc `MapName_lang`.
+      // Items and quests stay with the world's own query caches, which answer in the realm's locale.
+      spell: (id) => {
+        const row = game.spells.get(id);
+        if (!row) ensureSpellNames([id]);
+        return row?.name;
+      },
+      map: (id) => areas.map(id)?.name,
     });
     // Where pictures come from, and it is set *before* anything that draws one.
     //
@@ -1241,7 +1369,7 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
         if (game.modules !== modules) return;
         showUnhandledOpcodes();
       };
-      void modules.load();
+      void modules.load().finally(() => world.customPackets.consumerReady("modules"));
     }
     // Sound. Three opcodes have carried a `SoundEntries` id into an event since the packet slice
     // and nothing has ever listened; seven sound tables are vendored; the archives hold 19,786
@@ -1299,6 +1427,13 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
       environmentStatus.textContent = message;
     };
     collision.models.onStatus = collision.onStatus;
+    // 11.01-A3: the decks of ships near the character, from the same collision models; until the
+    // gateway serves /vmap/gobject-models nothing is solid and nobody boards, as before.
+    startTransportRide(gatewayInput.value, collision.models);
+    entryLifecycle.track(stopTransportRide);
+    // 11.01-B: closed doors and lifts from the same loader; without the route none are solid, as before.
+    startGameObjectColliders(rideCollisionModels(), game.transportPaths, (entry, guid) => world.gameObjectTemplate(entry, guid));
+    entryLifecycle.track(stopGameObjectColliders);
     // The same models are where a building's own water lives: a WMO carries liquid the tile under
     // it knows nothing about, and Stormwind's canals are five grids inside the city model.
     //
@@ -1330,6 +1465,10 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // per character, and the character is only known now.
     settingsStore.attach(world);
     for (const store of macroStores) store.attach(world);
+    attachInputAccount(world);
+    // L7 4.16b/3.32: extra rows on stock pages (one-time move) and the server's toggles byte.
+    entryLifecycle.track(attachActionBarAccount(world));
+    installHudKeys(); // 4.10: micro-button hints and key shortcuts from the binding table
     applySettings();
     watchMinimapRotation((rotate) => {
       settingsStore.set({ ...settingsStore.value, minimapRotate: rotate });
@@ -1349,8 +1488,18 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
               addonsOnly: !frameXmlEnabled,
               includeActiveTsAddons: tswowAddonsEnabled,
               ...(savedVariablesScope ? { savedVariablesScope } : {}),
+              // 9.06: a variable that will not save is said once, in grey, like a module file.
+              onSavedVariableProblem: (problem) => {
+                const verb = problem.operation === "restore" ? "не восстановлена" : "не сохранена";
+                const text = `Аддон ${problem.module}: переменная ${problem.variable} ${verb} (${problem.message})`;
+                console.warn(`[WebClient] ${text}`);
+                if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
+                notice(text);
+                worldStatus.className = "muted";
+                worldStatus.textContent = text;
+              },
             });
-          } finally { finishModuleCommandLoad(); }
+          } finally { finishModuleCommandLoad(); world.customPackets.consumerReady("lua"); }
         },
       };
     }, (message) => {
@@ -1387,9 +1536,12 @@ export async function enterWorld(character: CharacterSummary, onBusy?: HTMLButto
     // screen or replace the status of the new world that has already taken over.
     if (!entryLifecycle.isCurrent(generation) || game.world !== world) return;
     hideLoadingScreen();
-    const message = error instanceof Error ? error.message : String(error);
+    // The coded message (`describeFailure`: a dropped socket is DISCONNECTED, anything else
+    // CHAR_LOGIN_FAILED) for the player; the exception's own English for the log only.
+    console.warn("[world] enter failed:", error instanceof Error ? error.message : String(error));
+    const message = describeFailure(error, "world");
     characterStatus.className = "error";
-    characterStatus.textContent = message;
+    characterStatus.textContent = message.text ?? "Ошибка входа";
     if (onBusy) onBusy.disabled = false;
     // The way back. It used to be «hide the world panel and leave everything else standing», which
     // was survivable only because the DOM character panel was still behind it; with the GlueXML

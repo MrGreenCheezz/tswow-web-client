@@ -1,0 +1,137 @@
+// 1.23: environment vegetation classifier — lanterns, spines, stumps and logs are not trees.
+import assert from "node:assert/strict";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { environmentVegetationKind } from "../dist/code/browser/EnvironmentNames.js";
+
+// Real outdoor M2 paths from the cached visual tiles (probes/A7b/probe-trees*.out.txt).
+const TREES = [
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\TREES\\ELWYNNTREE01\\ELWYNNTREE01.M2",
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\TREES\\ELWYNNTREE01\\ELWYNNPINE01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DRAGONBLIGHT_TREE03.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DRAGONBLIGHT_TREEINFECTED01.M2",
+  "WORLD\\KALIMDOR\\KALIDAR\\PASSIVEDOODADS\\KALIDARBUSHES\\KALIDARBUSH02.M2",
+  "WORLD\\KALIMDOR\\KALIDAR\\PASSIVEDOODADS\\KALIDARTREES\\KALIDARTREE01.M2",
+  "WORLD\\KALIMDOR\\WINTERSPRING\\PASSIVEDOODADS\\WINTERSPRINGBUSHES\\WINTERSPRINGBUSH01.M2",
+  "WORLD\\EXPANSION01\\DOODADS\\TEROKKAR\\TREES\\TEROKKARTREEMEDIUMPINECONES.M2",
+  "WORLD\\EXPANSION01\\DOODADS\\TEROKKAR\\TREES\\TEROKKARTREELARGEPINECONES.M2",
+  "WORLD\\AZEROTH\\DUSKWOOD\\PASSIVEDOODADS\\SPOOKLESSTREES\\DUSKWOODTREESPOOKLESS01.M2",
+  "WORLD\\KALIMDOR\\DUSTWALLOW\\PASSIVEDOODADS\\BUSHES\\DUSTWALLOWBUSH02.M2",
+  "WORLD\\AZEROTH\\WESTFALL\\PASSIVEDOODADS\\DETAIL\\WESTFALLBUSH01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\HOWLINGFJORD\\HFJORD_BUSH_03.M2",
+  "WORLD\\KALIMDOR\\AZSHARA\\SEAPLANTS\\CORALTREE02_07\\CORALTREE02_07.M2",
+  "WORLD\\AZEROTH\\STRANGLETHORN\\PASSIVEDOODADS\\TREES\\STRANGLETHORNTREE01\\STRANGLETHORNTREE01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\GRIZZLYHILLS\\TREES\\GRIZZLYHILLS_TREE01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\GRIZZLYHILLS\\TREES\\GRIZZLYHILLS_SHRUBS01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\GRIZZLYHILLS\\TREES\\GRIZZLY_AMBERPINETREE.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\BOREANTUNDRA\\BUSHES\\BOREAN_SHRUB_02.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\SCHOLAZAR\\BUSHES\\SHOLAZARSHRUB04.M2",
+  "WORLD\\KALIMDOR\\BARRENS\\PASSIVEDOODADS\\TREES\\BARRENSTREE01.M2",
+  "WORLD\\KHAZMODAN\\BADLANDS\\PASSIVEDOODADS\\BUSHES\\BADLANDSSHRUB03.M2",
+  "WORLD\\KHAZMODAN\\IRONFORGE\\PASSIVEDOODADS\\TREES\\IRONFORGEPINE01.M2",
+  "WORLD\\KHAZMODAN\\LOCHMODAN\\PASSIVEDOODADS\\BUSHES\\LOCHMODANSHRUB01.M2",
+  "WORLD\\KHAZMODAN\\WETLANDS\\PASSIVEDOODADS\\BUSHES\\WETLANDSHRUB01.M2",
+  "WORLD\\LORDAERON\\ALTERACMOUNTAINS\\PASSIVEDOODADS\\BUSHES\\ALTERACSHRUB02.M2",
+  "WORLD\\LORDAERON\\SILVERMOON\\PASSIVEDOODADS\\TREES\\SILVERMOONPINE01.M2",
+  "WORLD\\LORDAERON\\SILVERPINE\\PASSIVEDOODADS\\BUSHES\\SILVERPINEBUSH01.M2",
+  "WORLD\\LORDAERON\\SILVERPINE\\PASSIVEDOODADS\\TREES\\SILVERPINETREE01FALLEN.M2",
+  "World\\Trees\\Oak01.m2",
+  "world/azeroth/elwynn/passivedoodads/trees/elwynntree01/elwynntree01.m2",
+];
+
+const NOT_TREES = [
+  "WORLD\\GENERIC\\NIGHTELF\\PASSIVE DOODADS\\LAMPS\\KALIDARSTREETLAMP02.M2",
+  "WORLD\\GENERIC\\ORC\\PASSIVE DOODADS\\LAMPPOSTS\\ORCBRAZIERSTREETLAMP.M2",
+  "WORLD\\KALIMDOR\\DARKSHORE\\PASSIVEDOODADS\\LAMP\\DARKSTREETLAMP.M2",
+  "WORLD\\GENERIC\\HUMAN\\PASSIVE DOODADS\\LAMPS\\STORMWINDSTREETLAMP01.M2",
+  "WORLD\\GENERIC\\HUMAN\\PASSIVE DOODADS\\LAMPS\\TIRISFALLSTREETLAMP01.M2",
+  "WORLD\\AZEROTH\\THEBLASTEDLANDS\\PASSIVEDOODADS\\BONES\\BLASTEDLANDSSPINE01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DB_DRAGONSPINE02BLUE.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DB_DRAGONSPINE01_GRAY.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\DRAGONBLIGHT\\DB_DRAGONSPINEPIECE03.M2",
+  "WORLD\\KALIMDOR\\DARKSHORE\\GIANTSNAKESPINES\\SNAKESPINEGIANT02.M2",
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\SKELETON\\BATTLEGLADESPINEHUMANDARK.M2",
+  "WORLD\\LORDAERON\\TIRISFALGLADE\\PASSIVEDOODADS\\TREES\\TIRISFALLTREESTUMP01.M2",
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\TREES\\STUMPS\\ELWYNNTREESTUMP01.M2",
+  "WORLD\\LORDAERON\\SILVERPINE\\PASSIVEDOODADS\\TREESTUMPS\\SILVERPINETREESTUMP01.M2",
+  "WORLD\\KHAZMODAN\\IRONFORGE\\PASSIVEDOODADS\\TREES\\IRONSTUMP03.M2",
+  "WORLD\\EXPANSION01\\DOODADS\\TEROKKAR\\TREES\\TEROKKARTREESTUMP.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\GRIZZLYHILLS\\TREES\\GRIZZLYHILLS_LOG01.M2",
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\TREE\\ELWYNNLOG02.M2",
+  "WORLD\\AZEROTH\\SWAMPOSORROW\\PASSIVEDOODADS\\TREELOGS\\SWAMPTREELOG02.M2",
+  "WORLD\\KALIMDOR\\KALIDAR\\PASSIVEDOODADS\\KALIDARTREELOGS\\KALIDARTREELOG01.M2",
+  "WORLD\\AZEROTH\\STRANGLETHORN\\PASSIVEDOODADS\\TREES\\STRANGLETHORNROOT01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\ZULDRAK\\TREES\\ZULDRAK_ROOTS_01.M2",
+  "WORLD\\KALIMDOR\\FERALAS\\PASSIVEDOODADS\\TREE\\FERALASTREEROOTS02.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\GRIZZLYHILLS\\TREES\\GRIZZLYHILLS_TREETRUNK03.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\SCHOLAZAR\\TREES\\SHOLAZARPALM_TRUNK01.M2",
+  "WORLD\\EXPANSION01\\DOODADS\\BONEWASTES\\TREES\\BONEWASTESTREETRUNK02.M2",
+  "WORLD\\KALIMDOR\\WINTERSPRING\\PASSIVEDOODADS\\WINTERSPRINGFALLENTREES\\WINTERSPRINGFALLENBRANCH01.M2",
+  "WORLD\\AZEROTH\\SWAMPOSORROW\\PASSIVEDOODADS\\TREEHUTS\\LOSTTREEHUTS03.M2",
+  "WORLD\\AZEROTH\\BURNINGSTEPPES\\PASSIVEDOODADS\\SMOKE\\ASHTREESMOKE01.M2",
+  "WORLD\\EXPANSION02\\DOODADS\\HOWLINGFJORD\\FIREFX\\BURNTSTONETREESMOKE_VFX.M2",
+  "WORLD\\SKILLACTIVATED\\TRADESKILLNODES\\BUSH_SPINELEAF.M2",
+  "WORLD\\SKILLACTIVATED\\TRADESKILLNODES\\BUSH_MOUNTAINSILVERSAGE.M2",
+  "WORLD\\AZEROTH\\DEADWINDPASS\\PASSIVEDOODADS\\ROCKTREES\\DEADWINDPASSROCKTREE04.M2",
+  "WORLD\\AZEROTH\\REDRIDGE\\PASSIVEDOODADS\\ROCKS\\REDRIDGEROCK01.M2",
+  "WORLD\\GENERIC\\HUMAN\\PASSIVE DOODADS\\BARRELS\\BARREL01.M2",
+  "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\FENCES\\ELWYNNFENCE01.M2",
+  "",
+  "WORLD\\TREES\\",
+  "WORLD\\AZEROTH\\ELWYNN\\BUILDINGS\\HUMANTWOSTORY\\HUMANTWOSTORY.WMO",
+  "WORLD\\AZEROTH\\STORMWIND\\PASSIVEDOODADS\\STREETS\\STORMWINDSTREETSIGN01.M2",
+];
+
+test("1.23 real tree, bush and shrub paths are trees", () => {
+  for (const name of TREES) assert.equal(environmentVegetationKind(name), "tree", name);
+});
+
+test("1.23 lanterns, spines, stumps, logs, roots, trunks, huts, smoke, nodes are not trees", () => {
+  for (const name of NOT_TREES) assert.equal(environmentVegetationKind(name), "none", name);
+});
+
+test("1.23 a basename veto beats a tree directory, a tree directory alone admits", () => {
+  assert.equal(environmentVegetationKind("WORLD\\X\\TREES\\ELWYNNLOG01.M2"), "none");
+  assert.equal(environmentVegetationKind("WORLD\\X\\TREES\\GENERICPLANT01.M2"), "tree", "leaf dir 'trees'");
+  assert.equal(environmentVegetationKind("WORLD\\X\\BUSHES\\GENERICPLANT01.M2"), "tree", "leaf dir 'bushes'");
+  assert.equal(environmentVegetationKind("WORLD\\TREES\\X\\GENERICPLANT01.M2"), "none", "only the leaf directory counts");
+});
+
+const TILES = "data/visual-tiles";
+// The cached tiles are whatever the gateway has published so far, so their totals move as the cache
+// grows (probe-trees3: 92 617 trees of 193 722 outdoor M2; 08.10: 97 978 of 211 224). What does
+// not move is the classifier against the regular expression it replaced, on the same corpus: it
+// only takes things away (the probe added 0 objects) and what it takes away is a few per cent —
+// lanterns, spines, stumps, logs, roots (probe 3 936 of 96 553 = 4.1 %; 08.10 4 698 of 102 676 = 4.6 %).
+const OLD_TREE_RULE = /tree|oak|pine|willow|bush|shrub/i;
+test("1.23 corpus: no street/spine path is a tree, and only a few per cent of the old rule's trees are vetoed", { skip: !existsSync(TILES) }, () => {
+  const counts = new Map();
+  for (const map of readdirSync(TILES)) {
+    const dir = join(TILES, map);
+    if (!statSync(dir).isDirectory()) continue;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".json")) continue;
+      for (const object of JSON.parse(readFileSync(join(dir, file), "utf8"))) {
+        if (object.kind !== "m2" || object.interior) continue;
+        counts.set(object.name, (counts.get(object.name) ?? 0) + 1);
+      }
+    }
+  }
+  let trees = 0;
+  let oldTrees = 0;
+  const added = [];
+  for (const [name, count] of counts) {
+    if (OLD_TREE_RULE.test(name)) oldTrees += count;
+    if (environmentVegetationKind(name) !== "tree") continue;
+    trees += count;
+    if (!OLD_TREE_RULE.test(name)) added.push(name);
+    const base = name.toLowerCase().split(/[\\/]/).at(-1);
+    assert.ok(!/street|spine/.test(base), `${name} is a tree`);
+  }
+  assert.ok(oldTrees > 10_000, `a corpus worth measuring: ${oldTrees} objects the old rule took`);
+  assert.deepEqual(added.slice(0, 5), [], "nothing the old rule rejected becomes a tree");
+  const vetoed = (oldTrees - trees) / oldTrees;
+  assert.ok(vetoed >= 0.02 && vetoed <= 0.07,
+    `vetoed ${oldTrees - trees} of ${oldTrees} (${(vetoed * 100).toFixed(1)} %), trees ${trees}`);
+});

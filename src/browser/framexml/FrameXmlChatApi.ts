@@ -44,6 +44,7 @@ import {
 } from "../macro/MacroOptions.js";
 import { installMacroClickFrames, installMacroLineExecutor } from "../macro/MacroRunner.js";
 import { FRAMEXML_SEAM_NAMES } from "./FrameXmlWorldSeam.js";
+import { frameXmlVehicleLive } from "./FrameXmlVehicle.js"; // 11.02-F2
 
 /** The part of `WorldClient` this module reads and calls; tests pass a recording fake. */
 export type FrameXmlChatWorld = Pick<WorldClient,
@@ -410,11 +411,14 @@ export function installFrameXmlChatApi(
       if (name) world.inviteToGroup(name);
       else deps.notice("Укажите имя или выберите игрока целью.");
     }),
-    UninviteUnit: withWorld((world, [who]) => {
+    UninviteUnit: withWorld((world, [who, reason]) => {
       const typed = text(who).trim();
       const guid = UNIT_TOKEN.test(typed) ? unitToken(world, deps, typed)
         : world.group?.members.find((member) => member.name.toLowerCase() === typed.toLowerCase())?.guid;
-      if (guid !== undefined) world.removeFromGroup(guid);
+      // 5.25: Wow.exe UninviteUnit (0x51a7a0) resolves the unit or name to a guid (0x60abf0) and sends
+      // CMSG_GROUP_UNINVITE_GUID with the second argument as the reason, cut to 64 (0x7e1830) —
+      // never the by-name CMSG_GROUP_UNINVITE.
+      if (guid !== undefined) world.removeFromGroup(guid, text(reason).slice(0, 64));
       else deps.notice(typed ? `${typed} нет в вашей группе.` : "Укажите имя участника группы.");
     }),
     // The player menu's «Покинуть группу» (UnitPopup.lua:1271-1272) is stock's only way out of a
@@ -527,7 +531,12 @@ export function installFrameXmlChatApi(
       });
       cleanups.add(off);
     }),
-    VehicleExit: withWorld((world) => world.leaveVehicle()),
+    // 11.02-F2: with the vehicle tables, Wow.exe's gate (0x005fb660: CAN_ENTER_OR_EXIT, else a UI error).
+    VehicleExit: withWorld((world) => {
+      const vehicle = frameXmlVehicleLive();
+      if (vehicle?.active) vehicle.exit();
+      else world.leaveVehicle();
+    }),
     // Stock indices run 1–8 and 0 clears; the wire's icons run 0–7, and a zero GUID clears one.
     SetRaidTarget: withWorld((world, [unit, index]) => {
       const guid = unitOrNameGuid(world, deps, unit);

@@ -3,7 +3,7 @@ import type { WorldClient } from "../../world/WorldClient.js";
 import { frameXmlCharterPublished } from "../framexml/FrameXmlPetitionController.js";
 import { formatMoney } from "./Format.js";
 import { notice } from "./Notices.js";
-import { Panel, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, confirmPanel } from "./Widgets.js";
 
 interface Parts {
   panel: Panel;
@@ -17,6 +17,7 @@ interface Parts {
   sign: HTMLButtonElement;
   decline: HTMLButtonElement;
   turnIn: HTMLButtonElement;
+  offer: HTMLButtonElement;
   vendor: HTMLElement;
   buyName: HTMLInputElement;
   offers: HTMLElement;
@@ -31,6 +32,16 @@ function button(id: string, label: string, action: () => void): HTMLButtonElemen
   element.id = id; element.type = "button"; element.textContent = label;
   element.addEventListener("click", action);
   return element;
+}
+
+/**
+ * Who «Предложить цели» offers the charter to: the selected player in sight, not the owner. Stock
+ * PetitionFrame's request button is `OfferPetition()`, which offers to the target (4.08).
+ */
+export function petitionOfferTarget(world: WorldClient): bigint | undefined {
+  const target = world.targetGuid;
+  if (target === undefined || target === world.state.selfGuid) return undefined;
+  return world.state.objects.get(target)?.typeId === 4 ? target : undefined;
 }
 
 function build(): Parts {
@@ -79,6 +90,20 @@ function build(): Parts {
         world.turnInPetition(guid);
       } });
   });
+  // 4.08: signatures are collected by offering the charter to a player, from the owner's side.
+  const offer = button("petition-offer", "Предложить цели", () => {
+    const world = owner;
+    const guid = world?.petitionSignatures?.petitionGuid;
+    if (!world || !guid) return;
+    const target = petitionOfferTarget(world);
+    if (target === undefined) {
+      notice("Выберите игрока, которому предложить хартию");
+      return;
+    }
+    world.offerPetition(guid, target);
+    notice(`Предложение отправлено: ${world.displayName(target)}`);
+  });
+  setTip(offer, "Предложить хартию выбранному игроку на подпись");
   const vendor = document.createElement("div");
   vendor.id = "petition-vendor";
   const buyName = document.createElement("input");
@@ -88,8 +113,10 @@ function build(): Parts {
   const offers = document.createElement("div");
   offers.id = "petition-offers";
   vendor.append(buyName, offers);
-  panel.body.append(title, status, info, signatures, renameRow, sign, decline, turnIn, vendor);
-  return { panel, title, status, info, signatures, renameRow, nameInput, rename, sign, decline, turnIn, vendor, buyName, offers };
+  panel.body.append(title, status, info, signatures, renameRow, sign, decline, turnIn, offer, vendor);
+  return {
+    panel, title, status, info, signatures, renameRow, nameInput, rename, sign, decline, turnIn, offer, vendor, buyName, offers,
+  };
 }
 
 /** One vendor row: what it is, what it costs, and the buy button spending it. */
@@ -141,6 +168,8 @@ function render(): void {
   parts.sign.hidden = !charter || isOwner;
   parts.decline.hidden = !charter || isOwner;
   parts.turnIn.hidden = !charter || !isOwner;
+  parts.offer.hidden = !charter || !isOwner;
+  parts.offer.disabled = !hasGuid;
   parts.nameInput.value = info?.name ?? "";
   parts.nameInput.disabled = !hasGuid;
   parts.rename.disabled = !hasGuid;
@@ -151,10 +180,10 @@ function render(): void {
     // charter before reading it — sending without one loses the charter and then throws.
     // There is no emblem designer in this client yet, so the button stays off with the reason.
     parts.turnIn.disabled = true;
-    parts.turnIn.title = "Сдача арены требует эмблему команды, которой здесь пока нет";
+    setTip(parts.turnIn, "Сдача арены требует эмблему команды, которой здесь пока нет");
   } else {
     parts.turnIn.disabled = !hasGuid;
-    parts.turnIn.title = "";
+    setTip(parts.turnIn, "");
   }
   // Charter offers from a petitioner. Buying costs money and is confirmed like every other
   // destructive purchase; the name rides in the same packet, so it is asked here and not later.

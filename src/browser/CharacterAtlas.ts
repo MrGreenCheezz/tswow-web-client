@@ -80,8 +80,11 @@ import type { BodyLayer, CharacterAppearance, CharacterOptions } from "../gatewa
  * form offers, the layers naming a file the live chain does not hold fall from **1,133 of 19,903 to
  * 0 of 18,643**. Both are exactly the kind of change the note above is about — same shape, different
  * values — so an hour of cached pre-HD-1 answers would be an hour of footless characters.
+ *
+ * 15 (05.10-A7a-A, 6.10): the request may carry `class`, and the geosets gain the ear stub 701
+ * under a helmet that covers the ears and the death knight's eye glow 1703 (in place of 1702).
  */
-export const CHARACTER_APPEARANCE_VERSION = 14;
+export const CHARACTER_APPEARANCE_VERSION = 15;
 
 /**
  * And the same for `/dbc/creature-models`, which answers `max-age=3600` too and whose ids are
@@ -107,8 +110,13 @@ export const CHARACTER_APPEARANCE_VERSION = 14;
  * beside it for HD-1: `forNpc` builds its body through `forPlayer`, so every unbaked character
  * display gains the family-20 foot and the neutral belt, and every one of them reads the
  * re-extracted `CreatureDisplayInfo`/`CreatureDisplayInfoExtra`/`CreatureModelData` rows.
+ *
+ * 14 (05.10-A7a-A, 6.11а): the display's own `alpha`, `geosetData` and `particleColor`, and the
+ * ear stub of 6.10 in every helmeted NPC appearance. 6.01 (helmet and shoulders of NPCs) shares
+ * this bump: done before the next release or gateway restart, it must not raise it again.
+ * 05.10-A7a-G 6.20 shares it as well (unreleased): `noMountSpecial`, CreatureModelData.Flags 0x400.
  */
-export const CREATURE_MODEL_VERSION = 13;
+export const CREATURE_MODEL_VERSION = 14;
 
 /**
  * And for `/dbc/character-options`, keyed by race, sex and, on creation screens, class. The

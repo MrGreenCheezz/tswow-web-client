@@ -87,6 +87,7 @@ const RENDERER_MUTATORS = [
   "setPortraitTargets", "renderPortraits", "clearPortraits",
   "markFrameNotRendered", "beginRenderFrame", "endRenderFrame", "resetGpuTimingEpoch", "draw",
   "playGameObjectAnimation", "playUnitAction", "playUnitEmote", "cancelUnitAction",
+  "playUnitReaction", // 05.10-A7a-D 6.06: a melee victim's reaction is a unit action like the swing
   "setLightingQuality", "setWmoOcclusion", "setCharacterAtlasAnisotropy", "setExperimentalShaderProfile", "setRenderScale",
   "setUnderwaterOverlay", "setFullscreenGlow", "setGodRays",
 ] as const;
@@ -1673,7 +1674,8 @@ export class LiveFormalRenderBenchmarkHost implements FormalRenderBenchmarkHost 
     }
     if (name === "cancelSpellVisual" || name === "retimeSpellVisual"
       || name === "playGameObjectAnimation" || name === "playUnitAction"
-      || name === "playUnitEmote" || name === "cancelUnitAction") {
+      || name === "playUnitEmote" || name === "cancelUnitAction"
+      || name === "playUnitReaction") { // 05.10-A7a-D 6.06
       return undefined;
     }
     if (name === "setStateVisuals") {

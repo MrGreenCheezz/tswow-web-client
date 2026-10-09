@@ -5,8 +5,10 @@ import { decodeWvaAnimations } from '../dist/code/browser/Wvm.js';
 import { decodedAnimationResidencyCost, decodedResidencyCost } from '../dist/code/browser/Terrain.js';
 
 const arrayBuffer = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+// 05.10 suite-fix: linear (M2Track.interpolation 1) like nearly every real clip track; since
+// 05.10-A7a-F2 an omitted byte encodes as 0, which decodes stepped (tests/wva-step-keys.test.mjs).
 const channel = (bone, kind, times, values) => ({
-  bone, kind, times: Uint32Array.from(times),
+  bone, kind, interpolation: 1, times: Uint32Array.from(times),
   values: kind === 1 ? Int16Array.from(values) : Float32Array.from(values),
 });
 

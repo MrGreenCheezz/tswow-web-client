@@ -69,7 +69,7 @@ globalThis.performance = { now: () => clock };
 
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 const { game } = await import("../dist/code/browser/game/Context.js");
-const { wireControls } = await import("../dist/code/browser/input/Controls.js");
+const { wireControls, hoverCursorName } = await import("../dist/code/browser/input/Controls.js");
 
 const worldCanvas = document.getElementById("world-canvas");
 wireControls();
@@ -114,16 +114,20 @@ function scene() {
 const move = (x) => pointerMove({ buttons: 0, clientX: x, clientY: 10, movementX: 0, movementY: 0 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, HOVER_INTERVAL * 2));
 
-test("Л1 the cursor answers with the bag only where there is loot, and the hand everywhere else", () => {
+test("Л1/5.17 the cursor is the client's choice: the loot hand over a body with loot, the default elsewhere", () => {
+  // 5.17 (Wow.exe 0x004F7A50): a unit this character cannot attack or deal with answers the default
+  // Point; a body with loot answers Pickup (LootAll only with auto-loot). Before the pictures land
+  // (no texture route here) the keyword stands in: "pointer" for Pickup, the stylesheet's for Point.
   scene();
   clock += 1_000;
   move(100);
-  assert.equal(worldCanvas.style.cursor, "pointer", "a living unit is a hand");
+  assert.equal(hoverCursorName(), "Point", "a unit with nothing to offer is the default");
+  assert.equal(worldCanvas.style.cursor, "");
 
   clock += 1_000;
   move(200);
-  assert.match(worldCanvas.style.cursor, /^url\("data:image\/svg\+xml,/, "a body with loot is the bag");
-  assert.match(worldCanvas.style.cursor, /, pointer$/, "with the keyword a browser falls back to");
+  assert.equal(hoverCursorName(), "Pickup", "a body with loot is the loot hand");
+  assert.equal(worldCanvas.style.cursor, "pointer", "with the keyword until the picture lands");
 
   // The review's second finding. An emptied body used to fall into the same branch as a miss and
   // get the bare ground's `crosshair` — but `pick` had answered with it, `#pushUnitHit` gives it a
@@ -131,14 +135,16 @@ test("Л1 the cursor answers with the bag only where there is loot, and the hand
   // «Обыскать» with a working click. The bit is per viewer and arrives a packet late under a
   // group's round-robin (`LootHandler.cpp:430` is the only forced resend, and only in one branch),
   // so the window where a body is clickable and unmarked is one the slice itself describes.
+  // 5.17: the original's cursor over a spent body is the default — nothing in 0x004F7A50 answers
+  // for it — while its right click still sends the loot request.
   clock += 1_000;
   move(300);
-  assert.equal(worldCanvas.style.cursor, "pointer",
-    "a spent body is still clickable, so the cursor must not say it is ground");
+  assert.equal(hoverCursorName(), "Point", "a spent body answers the default, as in the client");
 
   clock += 1_000;
   move(900);
-  assert.equal(worldCanvas.style.cursor, "", "and bare ground is left to the stylesheet's crosshair");
+  assert.equal(hoverCursorName(), "Point", "bare ground is the default");
+  assert.equal(worldCanvas.style.cursor, "", "left to the stylesheet until Point's picture lands");
 });
 
 test("Л1 a quest giver introduces itself at any range, unless flagged not selectable", () => {
@@ -163,8 +169,9 @@ test("Л1 a quest giver introduces itself at any range, unless flagged not selec
   worldCanvas.style.cursor = "";
   clock += 1_000;
   move(400);
-  assert.equal(worldCanvas.style.cursor, "pointer",
-    "the name is not gated on interaction distance; the server still refuses a far click");
+  assert.equal(hoverCursorName(), "UnableInteract",
+    "the name is not gated on interaction distance; the cursor greys out of use range (0x00711470)");
+  assert.equal(worldCanvas.style.cursor, "not-allowed");
   game.world.gameObjectTemplate = () => ({ type: 2, iconName: "", name: "Квестодатель" });
   objects.get(5n).fields.set(UPDATE_FIELDS.GAMEOBJECT_FLAGS.offset, 0x10);
   clock += 1_000;
@@ -184,14 +191,14 @@ test("Л1 the last sample of a flick is taken, not dropped", async () => {
   scene();
   clock += 1_000;
   move(100);
-  assert.equal(worldCanvas.style.cursor, "pointer");
+  assert.equal(hoverCursorName(), "Point");
 
   // Inside the window: dropped by the leading edge, and armed as a tail.
   clock += 4;
   move(200);
-  assert.equal(worldCanvas.style.cursor, "pointer", "the throttle still holds the leading edge");
+  assert.equal(hoverCursorName(), "Point", "the throttle still holds the leading edge");
   await settle();
-  assert.match(worldCanvas.style.cursor, /^url\("data:image\/svg\+xml,/, "and the tail lands on it");
+  assert.equal(hoverCursorName(), "Pickup", "and the tail lands on it");
 });
 
 test("Л1 a tail pass is dropped when the pointer has already moved on", async () => {
@@ -217,4 +224,46 @@ test("Л1 a tail pass is dropped when the pointer has already moved on", async (
   pointerLeave();
   await settle();
   assert.equal(worldCanvas.style.cursor, "");
+});
+
+test("5.17 the modes: the reticle's glove, the greyed glove of a spell waiting for an item, the wrapping paper's base", async () => {
+  const { armItemTarget, cancelItemTarget } = await import("../dist/code/browser/game/SpellCursor.js");
+  const { armGiftWrap, cancelGiftWrap } = await import("../dist/code/browser/game/GiftWrap.js");
+  scene();
+  // The ground reticle: the glove, greyed while the preview has no point in range (none drawn here).
+  game.groundTarget = 1234;
+  try {
+    clock += 1_000;
+    move(100);
+    assert.equal(hoverCursorName(), "UnableCast", "a reticle point the click would refuse greys the glove (0x004F66C0)");
+  } finally {
+    game.groundTarget = undefined;
+  }
+  // A spell waiting for an item: nothing in the world takes it.
+  assert.equal(armItemTarget(game.world, 13262), true);
+  try {
+    clock += 1_000;
+    move(100);
+    assert.equal(hoverCursorName(), "UnableCast");
+    clock += 1_000;
+    move(900);
+    assert.equal(hoverCursorName(), "UnableCast");
+  } finally {
+    cancelItemTarget();
+  }
+  // Wrapping paper waiting: the glove is the base cursor (0x006d67e0); a unit keeps its own.
+  assert.equal(armGiftWrap(game.world, { bag: 255, slot: 23, guid: 0x40n }), true);
+  try {
+    clock += 1_000;
+    move(900);
+    assert.equal(hoverCursorName(), "Cast");
+    clock += 1_000;
+    move(200);
+    assert.equal(hoverCursorName(), "Pickup");
+  } finally {
+    cancelGiftWrap();
+  }
+  clock += 1_000;
+  move(900);
+  assert.equal(hoverCursorName(), "Point");
 });

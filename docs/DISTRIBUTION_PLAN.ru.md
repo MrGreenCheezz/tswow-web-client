@@ -1,6 +1,7 @@
 # План: игра у других пользователей
 
-Состояние на 27 сентября 2026 года. Ссылки `файл:строка` указывают на исходники на эту дату.
+Состояние на 27 сентября 2026 года. 04.10: прежние ссылки `файл:строка` заменены именами функций,
+констант и маршрутов (номера строк сдвигаются); пункты 2 и 4 «Чего не хватает» сверены с кодом.
 
 ## Сделано
 
@@ -68,8 +69,8 @@
 - **Таблицы в бандле.** Собранная страница содержит таблицы, сгенерированные из клиента:
   `globalStrings`, `classIcons`, `animations`.
 - **Один realm.** Мир всегда подключается к `WORLD_HOST:WORLD_PORT`
-  (`GatewayConfiguration.ts:154-157`), а адрес из списка реалмов только показывается
-  (`Login.ts:495`).
+  (`options.world` в `createGatewayConfiguration`, `GatewayConfiguration.ts`), а адрес из списка
+  реалмов только показывается (`showRealms` в `app/Login.ts`).
 
 ## Вариант 1 — веб по ссылке
 
@@ -78,8 +79,9 @@
 - **Настройки.** Адреса и origin настраиваются: `GATEWAY_HOST`, `ALLOWED_ORIGINS`,
   `VITE_GATEWAY_ORIGIN`, `WEB_ALLOWED_HOSTS` (`.env.example`). `VITE_GATEWAY_ORIGIN` зашивается при
   сборке, поэтому смена домена означает пересборку.
-- **HTTPS.** При `https`-адресе шлюза страница сама переходит на `wss://` (`Environment.ts:30`).
-- **Пароль.** SRP6 выполняется в браузере (`Srp6.ts:98-123`), пароль шлюз не видит.
+- **HTTPS.** При `https`-адресе шлюза страница сама переходит на `wss://` (`gatewayWebSocketUrl`
+  в `src/browser/Environment.ts`).
+- **Пароль.** SRP6 выполняется в браузере (`computeSrpProof` в `src/auth/Srp6.ts`), пароль шлюз не видит.
 - **Лимиты и кеширование:**
   - сообщения до 64 КБ;
   - 256 сокетов всего, 8 на адрес;
@@ -90,17 +92,25 @@
 ### Чего не хватает
 
 1. **Лимит на адрес за прокси.** За reverse proxy у всех игроков один адрес. Лимит 8 сокетов на
-   адрес (`Gateway.ts:67`, `:3317`) становится общим — это 4–8 игроков. Нужна настройка доверенного
+   адрес (`MAX_BRIDGED_SOCKETS_PER_ADDRESS` и его проверка в `startGateway`, `Gateway.ts`)
+   становится общим — это 4–8 игроков. Нужна настройка доверенного
    прокси: брать адрес игрока из `X-Forwarded-For` только если соединение пришло с адреса прокси.
-2. **Запись модулей за прокси.** Защита `PUT /modules/*` (`Gateway.ts:1612`) доверяет loopback-адресу
+2. **Запись модулей за прокси.** Защита `PUT /modules/*` доверяла loopback-адресу
    сокета, а за локальным прокси любой посетитель выглядит как `127.0.0.1`. При размещении нужен
    `MODULE_UI_WRITE=0`, а надёжнее — запрет записи при включённом прокси.
+   *04.10: в коде с 30.09, пункт 10.04 плана работ (действует после перезапуска gateway)*
+   (`src/gateway/ModuleWritePolicy.ts`):
+   `assertModuleWritePolicy` не даёт запустить шлюз с `MODULE_UI_WRITE=1`, если он не замкнут на
+   loopback (адрес и все `ALLOWED_ORIGINS`), а `moduleWriteRefusal` отклоняет запрос с не-loopback
+   сокетом или `Origin` и с любым из заголовков прокси (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`).
 3. **Нет защиты от перегрузки:** ни ограничения частоты HTTP-запросов, ни лимита длины очереди
-   генераторов (`Gateway.ts:386-473`, `:732-755`). Один клиент может завалить сервер извлечением
-   ресурсов.
+   генераторов (очереди `waiting` в `src/gateway/GenerationLane.ts`). Один клиент может завалить
+   сервер извлечением ресурсов.
 4. **Нет `Vary: Origin`.** CORS отвечает эхом `Origin`, но без `Vary: Origin` кеш прокси или CDN
-   может отдать ответ с чужим origin.
-5. **Нет сжатия.** Gzip включён только у `/dbc/declined-words` (`Gateway.ts:2237-2252`). Сжатие
+   может отдать ответ с чужим origin. *04.10: частично, в коде по пункту 10.12 (действует после перезапуска gateway)* — классы кеша
+   с перепроверкой (`src/gateway/CachePolicy.ts`) отдают `Vary: Origin`; ответы с долгим или
+   неизменяемым сроком жизни по всем маршрутам не сверялись.
+5. **Нет сжатия.** Gzip включён только у маршрута `/dbc/declined-words` (`Gateway.ts`). Сжатие
    включить на прокси и замерить трафик.
 6. **Один origin для страницы и шлюза не сработает** (вывод из спецификации fetch, вживую не
    проверено). Почти все маршруты без заголовка `Origin` отвечают 403, а браузер не шлёт `Origin` на
@@ -146,26 +156,28 @@
 
 - **Поставщик ресурсов для Unity-клиента WowTest:** `tools/start-local-assets.mjs`,
   `src/gateway/LocalAssetStdio.ts`, `tools/client-pack.mjs`.
-- **DBC из клиента:** снимок DBC из цепочки патчей (`prepare-local-patches.mjs:102-129`) и визуальные
-  DBC (`extract-visual-dbc-overlay.mjs:212-240`).
+- **DBC из клиента:** снимок DBC из цепочки патчей (`extractDbcs` в `tools/prepare-local-patches.mjs`)
+  и визуальные DBC (`extractClientMediaDbcs` в `tools/extract-visual-dbc-overlay.mjs`).
 - **Метаданные существ и предметов.** Браузер и так запрашивает их у сервера пакетами
-  (`CreatureMetadata.ts:199-209`, `ItemMetadata.ts:201-208`). JSON из БД только ускоряет. Без него
+  (`CreatureMetadata.ts` через `WorldClient.creatureTemplate` — `CMSG_CREATURE_QUERY`, `ItemMetadata.ts`
+  через `WorldClient.itemTemplate` — `CMSG_ITEM_QUERY_SINGLE`). JSON из БД только ускоряет. Без него
   теряется лишь `iconId` предмета, и иконка берётся через `/item-icon/<displayId>`.
 - **Маршруты только из клиента.** Текстуры, модели, звуки, файлы интерфейса, splat-слои земли,
   миникарта, карта мира и иконки уже читаются из клиентских MPQ.
 
 ### Чего нет
 
-1. **Земля.** `/terrain` отдаёт `.map` TrinityCore из dataset (`Gateway.ts:1360`), а без него мира
-   нет (`Terrain.ts:657-660`). Нужен генератор высот, дыр, area и жидкости прямо из ADT клиента
+1. **Земля.** Маршрут `/terrain/<map>/<x>/<y>` отдаёт `.map` TrinityCore из dataset (`Gateway.ts`),
+   а без него мира нет (`TerrainClient.#load` в `Terrain.ts`: на 404 тайла нет). Нужен генератор высот, дыр, area и жидкости прямо из ADT клиента
    (чанки MCVT и MH2O). Такого парсера пока нет.
 2. **Коллизии.** vmaps (`/collision/model`, `/environment`) нужны для столкновений. Без них земля и
-   рендер работают, но сквозь здания можно ходить (`CollisionSource.ts:410-416`). Генератора
+   рендер работают, но сквозь здания можно ходить (`#loadTile` в `game/CollisionSource.ts` принимает
+   404 за пустой тайл). Генератора
    коллизий из WMO/M2 нет: `wmo-visual.mjs` отбрасывает collision-only треугольники.
 3. **Шлюз не стартует без dataset.** Ему нужны:
-   - `dataset.conf` (`tswow-patch-contract.mjs:195`);
-   - `datasetDirectory()` (`paths.mjs:57-66`);
-   - базовый DBC_DIR для списка таблиц (`prepare-local-patches.mjs:156`).
+   - `dataset.conf` (`inspectRuntimePatchAlignment` в `tools/tswow-patch-contract.mjs`);
+   - `datasetDirectory()` (`tools/paths.mjs`);
+   - базовый DBC_DIR для списка таблиц (`prepareLocalPatchSnapshot` в `tools/prepare-local-patches.mjs`).
 
    Нужен режим «только клиент».
 4. **Таблицы в странице** (`globalStrings`, `classIcons`, `animations`) — генерировать при первом

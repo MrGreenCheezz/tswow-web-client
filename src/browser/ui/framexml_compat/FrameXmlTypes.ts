@@ -49,12 +49,26 @@ export interface FrameXmlMessage {
   readonly lineID?: unknown;
   readonly accessID?: unknown;
   readonly extraData?: unknown;
+  /** On the frame's `fadeClock`: when the line stops being fully shown (FrameXmlMessageFade.ts). */
+  visibleUntil?: number;
+  /** On the frame's `fadeClock`: when the line has faded out and is cleared. */
+  fadeUntil?: number;
 }
 
 /** State that the runtime exposes for the stock scrolling message widgets. */
 export interface FrameXmlMessageFrameState {
   maxLines: number;
   displayDuration: number;
+  /** `fade`/`SetFading` (UI.xsd default true): whether the lines' countdowns run at all. */
+  fading: boolean;
+  /** `fadeDuration`/`SetFadeDuration`, seconds (default 3). */
+  fadeDuration: number;
+  /** `insertMode`/`SetInsertMode`: where a MessageFrame puts its newest line (default BOTTOM). */
+  insertMode: "TOP" | "BOTTOM";
+  /** Seconds this frame's lines have been counting; the lines' deadlines are on this clock. */
+  fadeClock: number;
+  /** Increments when the lines' countdowns are restarted or re-timed rather than just running. */
+  fadeRevision: number;
   /** `<FontString nonspacewrap="true">` from ChatFrameTemplate. */
   nonSpaceWrap: boolean;
   messages: FrameXmlMessage[];
@@ -378,6 +392,14 @@ export interface FrameXmlSliderState {
   value: number;
   valueStep: number;
   orientation: string;
+  /**
+   * L5b-review: a Slider's two flags in Wow.exe (bits 2 and 4 of CSimpleSlider +0x29c): a range was
+   * set (XML minValue with maxValue, or SetMinMaxValues), and a value was set while it had one (XML
+   * defaultValue, or SetValue). SetMinMaxValues re-applies the value only once one was set
+   * (0x0096c470). Not used for a StatusBar.
+   */
+  rangeSet?: boolean;
+  valueSet?: boolean;
 }
 
 export interface FrameXmlStatusBarState extends FrameXmlSliderState {

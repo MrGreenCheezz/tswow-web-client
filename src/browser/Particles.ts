@@ -37,6 +37,7 @@
 //     bonfire's particles on a single point above the fire.
 
 import type { WvmParticleEmitter, WvmRamp, WvmRibbonEmitter, WvmTrack } from "./Wvm.js";
+import { twinklePhase, twinkleSize } from "./ParticleTwinkle.js"; // 05.10-A7a-F1
 
 /**
  * `M2Particle.flags`, and only the bits this simulation acts on.
@@ -240,6 +241,8 @@ export interface Particle {
   spinRate: number;
   /** Added to whatever cell the head ramp asks for, for a random flip-book start. */
   cellOffset: number;
+  /** 05.10-A7a-F1 (6.15): this particle's offset into the twinkle noise table (`ParticleTwinkle.ts`). */
+  phase?: number;
 }
 
 /** The emitter's frame this step: where it is, which way it is facing, and what time it is. */
@@ -270,6 +273,8 @@ export interface ParticleSystem {
   matrix: Float64Array;
   /** Particles live in the emitter's frame rather than the world's. */
   readonly modelSpace: boolean;
+  /** 05.10-A7a-F1 (6.15): spawns so far, hashed into each particle's twinkle phase; no random draw. */
+  twinkleSerial?: number;
 }
 
 const IDENTITY = new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -305,6 +310,7 @@ export function resetParticleSystem(system: ParticleSystem, seed: number): void 
   system.originZ = 0;
   system.placed = false;
   system.matrix.set(IDENTITY);
+  system.twinkleSerial = 0; // 05.10-A7a-F1
 }
 
 /** `matrix * (x, y, z, 1)`, written into `out`. */
@@ -752,6 +758,8 @@ function spawn(system: ParticleSystem, frame: EmitterFrame): Particle {
     spin: emitter.baseSpin + emitter.baseSpinVary * spread(random),
     spinRate: emitter.spin + emitter.spinVary * spread(random),
     cellOffset: (emitter.flags & PARTICLE_FLAG_RANDOM_FLIPBOOK) !== 0 ? Math.floor(random() * cells) : 0,
+    // 05.10-A7a-F1 (6.15): from the spawn serial, so the random stream above is unchanged.
+    phase: twinklePhase(system.twinkleSerial = ((system.twinkleSerial ?? 0) + 1) >>> 0),
   };
 }
 
@@ -794,6 +802,13 @@ export function particleAppearance(
   // forty times life size, so the honest answer is to leave it out and say so.
   out.width = scratchRamp[0]! * particle.scaleX;
   out.height = (emitter.scale?.components ?? 1) > 1 ? scratchRamp[1]! * particle.scaleY : out.width;
+  // 05.10-A7a-F1 (6.15): a twinkle reading now exists (`ParticleTwinkle.ts`) — behind the
+  // `particleTwinkle` switch, off by default, so the paragraph above still describes the default.
+  const twinkle = twinkleSize(emitter, particle.age, particle.phase ?? 0);
+  if (twinkle !== 1) {
+    out.width *= twinkle;
+    out.height *= twinkle;
+  }
   const cells = Math.max(1, emitter.textureRows) * Math.max(1, emitter.textureColumns);
   sampleRamp(emitter.headCell, life, scratchRamp, 0);
   const cell = Math.floor(scratchRamp[0]! + particle.cellOffset);

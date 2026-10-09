@@ -100,18 +100,18 @@ test("the token parser takes arena1-5 and arenapet1-5 and nothing else", () => {
   }
 });
 
-test("outside a running arena nothing is an opponent, IsInInstance keeps the neutral answer", () => {
+test("outside a running arena nothing is an opponent, IsInInstance keeps the neutral answer (nil, \"none\": Wow.exe 0x5156a0)", () => {
   const { seam, objects, world, call, arenaEvents, rogue } = fixture();
   objects.set(rogue.guid, rogue);
   seam.arena.tick();
   assert.deepEqual(call("GetNumArenaOpponents"), [0]);
-  assert.deepEqual(call("IsInInstance"), [false, "none"]);
+  assert.deepEqual(call("IsInInstance"), [undefined, "none"]);
   assert.deepEqual(call("UnitExists", "arena1"), [false]);
   assert.deepEqual(call("UnitGUID", "arena1"), []);
   // A queued (not yet running) arena is not an arena either.
   world.battlefieldQueues.set(0, { queueSlot: 0, status: 1, isArena: true, cleared: false });
   seam.arena.tick();
-  assert.deepEqual(call("IsInInstance"), [false, "none"]);
+  assert.deepEqual(call("IsInInstance"), [undefined, "none"]);
   assert.deepEqual(arenaEvents(), []);
 });
 
@@ -122,7 +122,7 @@ test("opponents take slots as they come into sight; teammates never do; the unit
   enterArena();
   seam.arena.tick();
   assert.equal(entered, 1, "the match edge");
-  assert.deepEqual(call("IsInInstance"), [true, "arena"]);
+  assert.deepEqual(call("IsInInstance"), [1, "arena"]);
   assert.deepEqual(call("GetNumArenaOpponents"), [0], "no one in sight yet");
 
   // Both come into sight in one update: slots by GUID, so the hunter (0x31) is arena1.
@@ -221,7 +221,7 @@ test("out of sight is «unseen» with the GUID, class and name kept; back in sig
   ]);
   assert.deepEqual(call("GetNumArenaOpponents"), [0]);
   assert.deepEqual(call("UnitGUID", "arena2"), []);
-  assert.deepEqual(call("IsInInstance"), [false, "none"]);
+  assert.deepEqual(call("IsInInstance"), [undefined, "none"]);
 });
 
 test("a pet in sight whose owner is not yet seen is found by UNIT_FIELD_SUMMONEDBY", () => {

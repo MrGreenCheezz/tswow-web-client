@@ -770,7 +770,8 @@ test("INSTANCE_LOCK counts what is left of the server's minute, names the dungeo
     const [row] = visible(boot);
     assert.equal(visible(boot).length, 1);
     assert.match(row, /^INSTANCE_LOCK\|Вы вошли в подземелье, в котором уже шли сражения\..*Крепость Утгард.*59.*Убито боссов: 2\/3\|Принять\|on\|Покинуть подземелье$/s);
-    assert.deepEqual(lua(boot, "return GetInstanceLockTimeRemainingEncounter(2)", 3), ["Скарвальд и Далронн", "", false]);
+    assert.deepEqual(lua(boot, "local name, texture, killed = GetInstanceLockTimeRemainingEncounter(2); return name, texture == nil, killed", 3),
+      ["Скарвальд и Далронн", true, false], "no SpellIcon: the texture is nil (Wow.exe 0x005538b0)");
     advance(boot, clock, model, 20);
     assert.match(visible(boot)[0], /Крепость Утгард.*39/s, "its own lockTimeleft keeps counting down");
     click(boot, "INSTANCE_LOCK", 2);

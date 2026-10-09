@@ -10,7 +10,13 @@ import {
 import type { FrameXmlUiBridge } from "./FrameXmlRuntime.js";
 import { FRAME_XML_EDGE_PIECES, frameXmlTexturePath, type FrameXmlTextureSource } from "./FrameXmlTextures.js";
 import { hasFrameXmlEscapes, parseFrameXmlText } from "./FrameXmlText.js";
+import { paintFrameXmlAlphaGradient } from "./FrameXmlAlphaGradient.js"; // 05.10-3.21
 import { FrameXmlAccessibility, frameXmlAccessibilityCares } from "./FrameXmlAccessibility.js";
+import { frameXmlPaintLineFade, frameXmlPaintLineFades } from "./FrameXmlMessageFade.js";
+import { frameXmlMessageAlphaReplaced, frameXmlNoteMessageLayout } from "./FrameXmlMessageFade.js"; // L5 3.34
+import { frameXmlSimpleHtmlFontKey, frameXmlSimpleHtmlLevelFont } from "./FrameXmlSimpleHtmlFonts.js"; // L5 3.35
+import { FRAME_XML_SIMPLE_HTML_LINK_FORMAT, parseFrameXmlSimpleHtml } from "./FrameXmlSimpleHtml.js";
+import { buildFrameXmlSimpleHtml, type FrameXmlSimpleHtmlDomHooks } from "./FrameXmlSimpleHtmlDom.js";
 
 /** What one reconciliation pass had to do: see `FrameXmlDomRenderer.syncPass`. */
 export type FrameXmlSyncKind = "structural" | "layout" | "paint" | "noop";
@@ -58,6 +64,16 @@ export interface FrameXmlDomRendererOptions {
    * a world is loading would become an unsolicited top-level overlay.
    */
   readonly includeCreatedRoots?: boolean;
+  /**
+   * 06.10-dropdown: a parentless frame with no anchor point has no rectangle, so Wow.exe draws
+   * neither it nor anything anchored inside it. Without this the renderer laid such a root out at
+   * the stage's top-left corner: Blizzard_CombatLog.xml:6 declares `CombatLogDropDown` (a shown
+   * UIDropDownMenuTemplate, no parent, no anchors), the world admits the addon's roots, and its
+   * empty box and arrow button sat above the player frame. Opt-in, because the fixture suites lay
+   * out an unanchored sized "Screen" root as their stage. Lua state (`IsShown`/`IsVisible`) is
+   * untouched; a later `SetPoint` reveals the root on the next pass.
+   */
+  readonly unanchoredRootsUndrawn?: boolean;
   /** Host-selected subtrees; omitted widgets never paint or receive input. */
   readonly frameFilter?: (frame: FrameXmlFrame) => boolean;
   /** Keep a stock ancestor's geometry/visibility without painting its native UI twice. */
@@ -105,7 +121,30 @@ export interface FrameXmlDomRendererOptions {
    * do and how long it took. Two `performance.now()` reads per pass; nothing when absent.
    */
   readonly perf?: FrameXmlRenderPerfSink;
+  /**
+   * Milliseconds, for the container box's safety expiry (`containerBox`) only. Defaults to
+   * `performance.now()`; a test passes its own to step the 250 ms by hand.
+   */
+  readonly boxClock?: () => number;
 }
+
+/**
+ * The container's page box as `containerBox` keeps it: its client rectangle and its offset (layout)
+ * size, the two reads every cursor move and tooltip clamp needs.
+ */
+interface ContainerBox {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly width: number;
+  readonly height: number;
+  readonly offsetWidth: number;
+  readonly offsetHeight: number;
+}
+
+/** How long a kept container box is trusted with no resize, scroll or observer call in between. */
+const CONTAINER_BOX_TTL_MS = 250;
 
 interface RenderedFrame {
   readonly frame: FrameXmlFrame;
@@ -275,6 +314,11 @@ function px(value: number): string {
   return `${value}px`;
 }
 
+/** 06.10-dropdown: a parentless frame (not a region) with no anchor point, which has no rectangle. */
+function unanchoredRoot(frame: FrameXmlFrame): boolean {
+  return !frame.parent && frame.points.length === 0 && frame.type !== "Texture" && frame.type !== "FontString";
+}
+
 /** WoW colours are 0..1 floats; CSS wants 0..255 with the alpha left as a float. */
 /** The `shadowColor` attribute `SetShadowColor` writes: four channels in [0, 1], space-separated. */
 function shadowColorAttribute(value: string | undefined): FrameXmlColor | undefined {
@@ -356,6 +400,12 @@ function anchorRoles(point: string): { readonly x: "LEFT" | "RIGHT" | "CENTER"; 
     y: name.includes("TOP") ? "TOP" : name.includes("BOTTOM") ? "BOTTOM" : "CENTER",
   };
 }
+
+/**
+ * What `applyFontFace` reads of a widget, empty: a SimpleHTML header block is dressed in its header
+ * font object alone — the widget's `SetTextColor` and font overrides are its default font's (3.35).
+ */
+const SIMPLE_HTML_HEADER_FACE = { attributes: {}, textColor: undefined, justifyH: "" } as unknown as FrameXmlFrame;
 
 const LAYER_Z: Readonly<Record<string, number>> = Object.freeze({
   BACKGROUND: 1, BORDER: 2, ARTWORK: 3, OVERLAY: 4, HIGHLIGHT: 5,
@@ -504,10 +554,21 @@ export class FrameXmlDomRenderer {
   readonly #fontLoader: ((file: string, family: string) => void) | undefined;
   readonly #createdRootParent: string;
   readonly #includeCreatedRoots: boolean;
+  readonly #unanchoredRootsUndrawn: boolean; // 06.10-dropdown
   readonly #frameFilter: ((frame: FrameXmlFrame) => boolean) | undefined;
   readonly #layoutOnly: ((frame: FrameXmlFrame) => boolean) | undefined;
   /** Every mounted `Cooldown` widget, so the sweep is advanced without walking the whole tree. */
   readonly #cooldowns = new Set<RenderedFrame>();
+  /**
+   * Message frames with a drawn line whose alpha can still change (3.34), and how far `tickMessageFades`
+   * got: the clock, line timing and lines it last drew, the first line not yet cleared, and the clock
+   * at which a line next changes. Kept beside the rendered frame so it keeps its shape.
+   */
+  readonly #messageFades = new Map<RenderedFrame, {
+    clock: number; fadeRevision: number; revision: number; from: number; next: number;
+  }>();
+  /** SimpleHTML widgets drawn so far (3.35): their private block layer and what it was built from. */
+  readonly #simpleHtml = new Map<RenderedFrame, { readonly layer: HTMLElement; key: string | undefined }>();
   /**
    * The widgets the layout pass lays out by type, indexed at creation so a layout sync does not scan
    * all ~15,500 rendered frames of the world vertical three times to find a dozen of them.
@@ -578,6 +639,8 @@ export class FrameXmlDomRenderer {
   #passLayout = false;
   readonly #unobserveFrames: (() => void) | undefined;
   #drag: FrameDrag | undefined;
+  /** L1-review: the releases that ended a started drag; they click nothing (finishDrag, registeredClick). */
+  readonly #dragReleases = new WeakSet<Event>();
   #cursor: { readonly x: number; readonly y: number } | undefined;
   #cursorCleanup: (() => void) | undefined;
   /** Buttons under the pointer, for the `<HighlightFont>` their inheriting label switches to. */
@@ -596,6 +659,11 @@ export class FrameXmlDomRenderer {
   #destroyed = false;
   /** The container's resize observer, released by `destroy`; see `watchContainer`. */
   #containerCleanup: (() => void) | undefined;
+  /** See `containerBox`. */
+  #containerBox: ContainerBox | undefined;
+  /** `#boxClock()` when `#containerBox` was read. */
+  #containerBoxAt = 0;
+  readonly #boxClock: () => number;
 
   constructor(container: HTMLElement, options: FrameXmlDomRendererOptions = {}) {
     this.#container = container;
@@ -612,10 +680,12 @@ export class FrameXmlDomRenderer {
     this.#fontLoader = options.fontLoader;
     this.#createdRootParent = options.createdRootParent?.trim() ?? "";
     this.#includeCreatedRoots = options.includeCreatedRoots ?? true;
+    this.#unanchoredRootsUndrawn = options.unanchoredRootsUndrawn ?? false; // 06.10-dropdown
     this.#frameFilter = options.frameFilter;
     this.#layoutOnly = options.layoutOnly;
     this.#clock = options.clock ?? ((): number => Date.now() / 1000);
     this.#perf = options.perf;
+    this.#boxClock = options.boxClock ?? ((): number => performance.now());
     this.#unobserveFrames = options.bridge?.observeFrameMutations((frame, kind) => {
       const bit = kind === "paint" ? CHANGE_PAINT : kind === "layout" ? CHANGE_LAYOUT : CHANGE_STRUCTURE;
       this.#dirty.set(frame, (this.#dirty.get(frame) ?? 0) | bit);
@@ -655,6 +725,8 @@ export class FrameXmlDomRenderer {
     // The observer reports the initial box once; only a box other than the one laid out counts.
     let size = sizeOf();
     const observer = new Observer(() => {
+      // Any call, before the size test: the box can move on the page without changing size.
+      this.invalidateContainerBox();
       const now = sizeOf();
       if (now === size) return;
       size = now;
@@ -716,19 +788,64 @@ export class FrameXmlDomRenderer {
    * chat window for the world canvas left the cursor inside the chat window and the stock fade
    * (`FCF_OnUpdate` asking `chatFrame:IsMouseOver(…)`) could never see it go. On the window, not the
    * document, so it reaches the pointer over the 3D canvas too; Chrome delivers `pointermove` once
-   * per animation frame, so this is one container rectangle read per frame of movement.
+   * per animation frame. The container's box comes from `containerBox`, so a stable page reads no
+   * layout per move; a resize or a scroll anywhere (capture) drops the kept box.
    */
   private trackPointer(): void {
     const view = this.#container.ownerDocument?.defaultView;
     if (!this.#bridge || typeof view?.addEventListener !== "function") return;
     const move = (event: Event): void => this.rememberCursor(event);
-    const resize = (): void => this.#screenRects.clear();
+    const resize = (): void => {
+      this.#screenRects.clear();
+      this.invalidateContainerBox();
+    };
+    const scroll = (): void => this.invalidateContainerBox();
     view.addEventListener("pointermove", move, { capture: true, passive: true });
     view.addEventListener("resize", resize);
+    view.addEventListener("scroll", scroll, { capture: true, passive: true });
     this.#pointerCleanup = () => {
       view.removeEventListener("pointermove", move, { capture: true });
       view.removeEventListener("resize", resize);
+      view.removeEventListener("scroll", scroll, { capture: true });
     };
+  }
+
+  /**
+   * Forget the container's kept box (`containerBox`); the next reader measures it again. For a host
+   * that moves the stage by means the renderer does not hear of.
+   */
+  invalidateContainerBox(): void {
+    this.#containerBox = undefined;
+  }
+
+  /**
+   * The container's client rectangle and offset size, kept between reads.
+   *
+   * `rememberCursor` ran on every window `pointermove`, every widget enter/leave and every press, and
+   * each call read `getBoundingClientRect()` and `offsetWidth/offsetHeight` — a forced layout in the
+   * middle of the frame whenever the page had pending style. The box only changes when the window
+   * resizes, a page scrolls, or the stage is refitted (its logical size: the `ResizeObserver`), and
+   * each of those drops it; a position change with none of them is covered by a 250 ms expiry (at
+   * most four reads a second). Only a measurable box is kept: an unlaid (zero-size) container is
+   * read again each time, as before. The rectangles of the element and its parent stay live.
+   */
+  private containerBox(): ContainerBox | undefined {
+    const now = this.#boxClock();
+    const kept = this.#containerBox;
+    if (kept && now - this.#containerBoxAt < CONTAINER_BOX_TTL_MS && now >= this.#containerBoxAt) return kept;
+    this.#containerBox = undefined;
+    const rect = this.#container.getBoundingClientRect?.();
+    if (!rect) return undefined;
+    const box: ContainerBox = {
+      left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+      width: rect.width, height: rect.height,
+      offsetWidth: this.#container.offsetWidth, offsetHeight: this.#container.offsetHeight,
+    };
+    if (box.width > 0 && box.height > 0) {
+      this.#containerBox = box;
+      this.#containerBoxAt = now;
+    }
+    return box;
   }
 
   /**
@@ -753,6 +870,7 @@ export class FrameXmlDomRenderer {
       return;
     }
     this.#screenRects.clear();
+    this.invalidateContainerBox();
     this.trackPointer();
     this.syncCursorTracking();
   }
@@ -764,6 +882,7 @@ export class FrameXmlDomRenderer {
     for (const rendered of this.#rendered.values()) this.dropRendered(rendered);
     this.#rendered.clear();
     this.#roots.splice(0, this.#roots.length, ...roots);
+    this.invalidateContainerBox();
     this.#lastMutationVersion = -1;
     this.#lastStructureVersion = -1;
     this.sync();
@@ -785,6 +904,7 @@ export class FrameXmlDomRenderer {
       changed = true;
     }
     if (!changed) return;
+    this.invalidateContainerBox();
     this.#lastMutationVersion = -1;
     this.#lastStructureVersion = -1;
     this.sync();
@@ -1126,6 +1246,8 @@ export class FrameXmlDomRenderer {
     rendered.backdropFilters?.svg.remove();
     rendered.backdropFilters = undefined;
     this.#cooldowns.delete(rendered);
+    this.#messageFades.delete(rendered);
+    this.#simpleHtml.delete(rendered);
     this.#tooltips.delete(rendered);
     this.#scrollFrames.delete(rendered);
     this.#sliders.delete(rendered);
@@ -1164,6 +1286,7 @@ export class FrameXmlDomRenderer {
     this.#pointerCleanup = undefined;
     this.#containerCleanup?.();
     this.#containerCleanup = undefined;
+    this.invalidateContainerBox();
     this.#hoveredButtons.clear();
     this.#screenRects.clear();
     this.#cursor = undefined;
@@ -1452,7 +1575,9 @@ export class FrameXmlDomRenderer {
     rendered.trap = trap;
     rendered.syncedPass = this.#pass;
     if (rendered.element.parentElement !== parent) parent.append(rendered.element);
-    const hidden = ancestorHidden || !frame.visible;
+    // 06.10-dropdown: an unanchored root has no rectangle (see `unanchoredRootsUndrawn`).
+    const hidden = ancestorHidden || !frame.visible
+      || (this.#unanchoredRootsUndrawn && unanchoredRoot(frame));
     const wasHidden = rendered.effectiveHidden;
     const firstSync = wasHidden === undefined;
     rendered.effectiveHidden = hidden;
@@ -1538,6 +1663,8 @@ export class FrameXmlDomRenderer {
     // Message lines are private paint state. Keep them dormant with the rest of a hidden subtree;
     // the next reveal applies the latest bounded history exactly once.
     if (!this.#layoutOnly?.(frame)) this.applyMessageFrame(rendered);
+    // SimpleHTML's blocks are private paint state too, built on a reveal when the page changed.
+    if (frame.type === "SimpleHTML" && !this.#layoutOnly?.(frame)) this.applySimpleHtml(rendered);
     // A pass that started at the changed frames reaches their changed descendants on its own.
     if (dirtyWalk && childCascade === APPLY_NONE) return rendered;
 
@@ -2120,6 +2247,10 @@ export class FrameXmlDomRenderer {
     // The drop: the frame under the pointer receives what the drag put on the cursor. A drop
     // consumes the release, so the element listeners below never see it.
     const dropped = dispatch && drag.started && drag.registered && event !== undefined && this.receiveDrag(event);
+    // L1-review: nor is a release after a started drag anybody's click — the reference clicks only a
+    // release over the pressed frame and never after a drag (benilla pointer.rs, cursor/drag.rs). Over a
+    // unit button (no OnReceiveDrag) that click was DropItemOnUnit: a dragged stack fed the pet.
+    if (!dropped && dispatch && drag.started && drag.registered && event !== undefined) this.#dragReleases.add(event);
     if (drag.captureMouseUp) {
       const element = this.#rendered.get(drag.source)?.element;
       const target = event?.target;
@@ -2246,6 +2377,7 @@ export class FrameXmlDomRenderer {
   private registeredClick(frame: FrameXmlFrame, event: Event, down: boolean): void {
     if (this.#layoutOnly?.(frame)) return;
     if (frame.clickRegistrations.size === 0) return;
+    if (!down && this.#dragReleases.has(event)) return; // L1-review: a drag's release clicks nothing
     const button = mouseButtonName(event);
     const phase = down ? "DOWN" : "UP";
     if (!frame.clickRegistrations.has(`${button}${phase}`.toUpperCase()) &&
@@ -2334,7 +2466,13 @@ export class FrameXmlDomRenderer {
       // client's implicit font string does.
       if (owned && (frame.type === "Button" || frame.type === "CheckButton")) this.applyButtonLabel(rendered.label, frame);
     } else if (frame.type === "FontString") {
-      this.applyText(rendered, element, frame.text);
+      // 05.10-3.21: SetAlphaGradient draws the text itself while it fades (FrameXmlAlphaGradient.ts).
+      const gradient = paintFrameXmlAlphaGradient(element, frame);
+      if (gradient === "painted") rendered.textSource = frame.text;
+      else {
+        if (gradient === "cleared") rendered.textSource = undefined;
+        this.applyText(rendered, element, frame.text);
+      }
     }
 
     const placed = !paintOnly || rendered.appliedAnimationTransform !== frame.animationTransform
@@ -2493,39 +2631,48 @@ export class FrameXmlDomRenderer {
     setAttributeIfChanged(layer, "data-framexml-display-duration", String(state.displayDuration));
     setAttributeIfChanged(layer, "data-framexml-nonspacewrap", String(state.nonSpaceWrap));
     setAttributeIfChanged(layer, "data-framexml-scroll-range", String(frame.scroll.verticalScrollRange));
+    if (frame.type === "MessageFrame") {
+      this.paintMessageFrameLines(rendered, layer);
+      return;
+    }
     if (rendered.messageRevision === state.revision
-      && rendered.messageScroll === frame.scroll.verticalScroll) return;
+      && rendered.messageScroll === frame.scroll.verticalScroll) {
+      this.trackMessageFades(rendered);
+      return;
+    }
 
+    // L5 3.34: insertMode TOP (the guild bank log): the newest line first, from the top (Wow.exe
+    // 0x00969fa0 lays the current line in the top slot and the older ones below it). Rebuilt whole;
+    // such a frame is short and refilled at once (Blizzard_GuildBankUI.lua:571-594).
+    if (state.insertMode === "TOP" && rendered.messageRevision !== state.revision) {
+      if (typeof layer.replaceChildren === "function") layer.replaceChildren();
+      else while (layer.children.length > 0) layer.children[layer.children.length - 1]?.remove();
+      rendered.messageNextIndex = 0;
+      const drawn = state.messages.slice().reverse();
+      for (const message of drawn) layer.append(this.createMessageLine(layer, frame, message, this.nextMessageIndex(rendered)));
+      rendered.messageSnapshot = drawn;
+      rendered.messageRevision = state.revision;
+    }
     if (rendered.messageRevision !== state.revision) {
       const previous = rendered.messageSnapshot;
       const current = state.messages;
-      // A bridge transaction may coalesce several message mutations into one sync. Even if its
-      // final arrays happen to look like a one-line shift, the intermediate operation is unknown,
-      // so only a single revision gets an incremental paint.
-      const singleRevision = rendered.messageRevision !== undefined
-        && state.revision === rendered.messageRevision + 1;
-      const canIncrement = previous !== undefined && singleRevision && layer.children.length === previous.length;
-      const pureAppend = canIncrement && current.length === previous.length + 1
-        && previous.every((message, index) => message === current[index]);
-      const shiftOneAppend = canIncrement && previous.length > 0 && current.length === previous.length
-        && current[current.length - 1] !== previous[previous.length - 1]
-        && previous.slice(1).every((message, index) => message === current[index]);
+      // A bridge transaction coalesces every message mutation between two syncs — a deferred world
+      // event burst holds a whole frame's worth (02.10: a dungeon pull prints 20+ combat-log lines
+      // between two frames, and each such frame used to rebuild all 300 lines of ChatFrame2). The
+      // intermediate operations are unknown, but the result is all that is painted: the bridge makes
+      // a new message object per AddMessage and never changes one, so when the old lines from some
+      // point on are, in order and by identity, exactly the first lines now, the paint is "drop that
+      // many from the top, append the rest" whatever happened in between. Anything else — a line
+      // removed from the middle, a clear, a line added at the top — takes the full path.
+      const canIncrement = previous !== undefined && rendered.messageRevision !== undefined
+        && layer.children.length === previous.length;
+      const dropped = canIncrement ? keptTail(previous, current) : -1;
 
-      if (pureAppend) {
-        layer.append(this.createMessageLine(
-          layer,
-          frame,
-          current[current.length - 1]!,
-          this.nextMessageIndex(rendered),
-        ));
-      } else if (shiftOneAppend) {
-        layer.children[0]?.remove();
-        layer.append(this.createMessageLine(
-          layer,
-          frame,
-          current[current.length - 1]!,
-          this.nextMessageIndex(rendered),
-        ));
+      if (dropped >= 0) {
+        for (let index = 0; index < dropped; index++) layer.children[0]?.remove();
+        for (let index = previous!.length - dropped; index < current.length; index++) {
+          layer.append(this.createMessageLine(layer, frame, current[index]!, this.nextMessageIndex(rendered)));
+        }
       } else {
         if (typeof layer.replaceChildren === "function") layer.replaceChildren();
         else while (layer.children.length > 0) layer.children[layer.children.length - 1]?.remove();
@@ -2546,6 +2693,183 @@ export class FrameXmlDomRenderer {
     const held = this.#messageScrolls;
     if (held) held.push(rendered);
     else this.scrollMessageLayer(rendered);
+    this.trackMessageFades(rendered);
+  }
+
+  /**
+   * A MessageFrame's lines (3.34): stacked from the insert edge with the newest there — TOP, the
+   * newest first; BOTTOM, oldest first and packed to the bottom — and never scrolled: the bridge
+   * keeps only the lines the height holds, as the client's slots do. Few lines, so a change rebuilds.
+   */
+  private paintMessageFrameLines(rendered: RenderedFrame, layer: HTMLElement): void {
+    const state = rendered.frame.messageFrame;
+    const top = state.insertMode === "TOP";
+    if (layer.style.display !== "flex") layer.style.display = "flex";
+    if (layer.style.flexDirection !== "column") layer.style.flexDirection = "column";
+    const justify = top ? "flex-start" : "flex-end";
+    if (layer.style.justifyContent !== justify) layer.style.justifyContent = justify;
+    if (rendered.messageRevision !== state.revision) {
+      if (typeof layer.replaceChildren === "function") layer.replaceChildren();
+      else while (layer.children.length > 0) layer.children[layer.children.length - 1]?.remove();
+      rendered.messageNextIndex = 0;
+      const drawn = state.messages.slice();
+      if (top) drawn.reverse();
+      for (const message of drawn) {
+        const line = this.createMessageLine(layer, rendered.frame, message, this.nextMessageIndex(rendered));
+        line.style.flexShrink = "0";
+        layer.append(line);
+      }
+      rendered.messageSnapshot = drawn;
+      rendered.messageRevision = state.revision;
+    }
+    const scrolled = layer as HTMLElement & { scrollTop?: number };
+    if (typeof scrolled.scrollTop === "number" && scrolled.scrollTop !== 0) scrolled.scrollTop = 0;
+    this.trackMessageFades(rendered);
+  }
+
+  /** After a paint: draw the lines' alphas once, and keep ticking the frame while one can change. */
+  private trackMessageFades(rendered: RenderedFrame): void {
+    const state = rendered.frame.messageFrame;
+    const entry = this.#messageFades.get(rendered);
+    if (entry === undefined && (state.messages.length === 0 || !state.fading)) return;
+    if (entry && entry.revision === state.revision && entry.fadeRevision === state.fadeRevision
+      && entry.clock === state.fadeClock) return;
+    this.paintMessageFades(rendered);
+  }
+
+  /** Walk one frame's drawn lines at its clock; stop tracking it once no line can change. */
+  private paintMessageFades(rendered: RenderedFrame): void {
+    const state = rendered.frame.messageFrame;
+    const layer = rendered.messageLayer;
+    const drawn = rendered.messageSnapshot;
+    let entry = this.#messageFades.get(rendered);
+    if (!layer || !drawn || drawn.length === 0) {
+      this.#messageFades.delete(rendered);
+      return;
+    }
+    if (entry === undefined) {
+      entry = { clock: state.fadeClock, fadeRevision: -1, revision: -1, from: 0, next: Infinity };
+      this.#messageFades.set(rendered, entry);
+    }
+    if (entry.revision !== state.revision || entry.fadeRevision !== state.fadeRevision) entry.from = 0;
+    frameXmlPaintLineFades(state, layer.children as unknown as ArrayLike<HTMLElement | undefined>, drawn, entry);
+    entry.clock = state.fadeClock;
+    entry.revision = state.revision;
+    entry.fadeRevision = state.fadeRevision;
+    if (entry.next === Infinity) this.#messageFades.delete(rendered);
+  }
+
+  /**
+   * Advance the drawn alpha of every message line that is fading to its frame's clock (3.34), and
+   * say how many frames had a line to draw. Like `tickCooldowns`, a separate entry point over only
+   * the frames with such a line: a frame whose lines are all shown is passed by until the first of
+   * them is due, a paused or hidden one until its clock moves, so a frame of nothing costs nothing.
+   */
+  tickMessageFades(): number {
+    let walked = 0;
+    for (const rendered of this.#messageFades.keys()) {
+      const entry = this.#messageFades.get(rendered)!;
+      if (rendered.effectiveHidden) continue;
+      const state = rendered.frame.messageFrame;
+      if (entry.revision === state.revision && entry.fadeRevision === state.fadeRevision) {
+        if (entry.clock === state.fadeClock) continue;
+        if (state.fadeClock < entry.next) {
+          entry.clock = state.fadeClock;
+          continue;
+        }
+      }
+      walked += 1;
+      this.paintMessageFades(rendered);
+    }
+    return walked;
+  }
+
+  /**
+   * SimpleHTML (3.35): the page (FrameXmlSimpleHtml.ts) drawn as blocks in a private layer, rebuilt
+   * only when the text, a header font or the link format changed. The widget's own font, colour and
+   * shadow (`applyFontStyle`) are the paragraphs' by inheritance, as the client's default font is
+   * theirs; a header with a font object of its own (`<FontStringHeader1>`, `SetFontObject("h1", …)`)
+   * is dressed in it, one without falls back to the default (0x0096cc90). Text only ever becomes text
+   * nodes — the page is a server's or an add-on's string.
+   */
+  private applySimpleHtml(rendered: RenderedFrame, force = false): void {
+    const { frame, element } = rendered;
+    const linkFormat = frame.attributes["hyperlinkFormat"] ?? FRAME_XML_SIMPLE_HTML_LINK_FORMAT;
+    const h1 = frame.stateFonts.get("FONTSTRINGHEADER1") ?? "";
+    const h2 = frame.stateFonts.get("FONTSTRINGHEADER2") ?? "";
+    const h3 = frame.stateFonts.get("FONTSTRINGHEADER3") ?? "";
+    const key = `${linkFormat}\u0000${h1}\u0000${h2}\u0000${h3}\u0000${frame.text}`
+      + frameXmlSimpleHtmlFontKey(frame); // L5 3.35: the headers' own settings and the line spacing redraw it too
+    let held = this.#simpleHtml.get(rendered);
+    if (!force && held?.key === key) return;
+    if (!held) {
+      const layer = element.ownerDocument?.createElement("div") ?? document.createElement("div");
+      layer.classList.add(`${this.#classPrefix}-html-layer`);
+      layer.setAttribute("data-framexml-html-layer", "true");
+      layer.style.position = "absolute";
+      layer.style.left = "0";
+      layer.style.top = "0";
+      layer.style.width = "100%";
+      layer.style.pointerEvents = "none";
+      layer.style.whiteSpace = "pre-wrap";
+      layer.style.overflowWrap = "break-word";
+      element.append(layer);
+      held = { layer, key: undefined };
+      this.#simpleHtml.set(rendered, held);
+    }
+    held.key = key;
+    let pictures = 0;
+    const hooks: FrameXmlSimpleHtmlDomHooks = {
+      headerFont: (block, level) => {
+        // L5 3.35: the header's own font — a font object or SetFont — with its own colour and shadow
+        // (SetTextColor("h1", …)); a header without one is drawn in the page's (0x0096cc90).
+        const font = frameXmlSimpleHtmlLevelFont(frame, level);
+        if (font.level === 0) return;
+        const face = { ...SIMPLE_HTML_HEADER_FACE, attributes: font.attributes, textColor: font.textColor };
+        this.applyFontFace(block, face as unknown as FrameXmlFrame, font.fontObject);
+      },
+      // L5 3.35: a block's line height and spacing, the numbers GetBoundsRect measures with.
+      metrics: (level) => {
+        const font = frameXmlSimpleHtmlLevelFont(frame, level);
+        const style = font.fontObject ? this.fontStyleOf(font.fontObject) : undefined;
+        const height = font.height ?? style?.height;
+        return height !== undefined && height > 0 ? { height, spacing: font.spacing ?? style?.spacing ?? 0 } : undefined;
+      },
+      hyperlink: (span, link, text) => {
+        span.setAttribute("role", "link");
+        span.setAttribute("tabindex", "0");
+        span.setAttribute("data-framexml-hyperlink", link);
+        span.style.cursor = "pointer";
+        span.style.pointerEvents = "auto";
+        const activate = (button: string): void => {
+          this.#bridge?.fireScript(frame, "OnHyperlinkClick", link, text, button);
+        };
+        span.addEventListener("click", (event) => {
+          event.stopPropagation?.();
+          activate("LeftButton");
+        });
+        span.addEventListener("contextmenu", (event) => {
+          event.preventDefault?.(); event.stopPropagation?.();
+          activate("RightButton");
+        });
+        span.addEventListener("keydown", (event) => {
+          if ((event as KeyboardEvent).key === "Enter" || (event as KeyboardEvent).key === " ") {
+            event.preventDefault?.(); event.stopPropagation?.(); activate("LeftButton");
+          }
+        });
+        span.addEventListener("mouseenter", () => this.#bridge?.fireScript(frame, "OnHyperlinkEnter", link, text));
+        span.addEventListener("mouseleave", () => this.#bridge?.fireScript(frame, "OnHyperlinkLeave", link, text));
+      },
+      picture: (index, src) => {
+        pictures = Math.max(pictures, index + 1);
+        return this.bindPicture(rendered, `html:${index}`, src);
+      },
+    };
+    buildFrameXmlSimpleHtml(held.layer, parseFrameXmlSimpleHtml(frame.text, linkFormat), hooks);
+    // Give back the pictures of a longer page this one replaced.
+    for (const slot of [...rendered.pictures.keys()]) {
+      if (slot.startsWith("html:") && Number(slot.slice(5)) >= pictures) this.bindPicture(rendered, slot, "");
+    }
   }
 
   /** Map a message frame's logical scroll offset to its layer's `scrollTop`; reads its layout. */
@@ -2560,10 +2884,18 @@ export class FrameXmlDomRenderer {
     const logicalRange = frame.scroll.verticalScrollRange;
     const fraction = logicalRange > 0
       ? Math.min(1, Math.max(0, frame.scroll.verticalScroll / logicalRange)) : 0;
+    // L5 3.34: insertMode TOP draws the newest line first, so the current line is near the top.
+    const top = frame.type === "ScrollingMessageFrame" && frame.messageFrame.insertMode === "TOP";
     // The bridge stores a stable logical line offset; the browser owns the actual
     // line wrapping and therefore the pixel range. This keeps bottom pinned after
     // a resize or a long wrapped message instead of treating one line as one pixel.
-    if (typeof layer.scrollTop === "number") layer.scrollTop = pixelRange * fraction;
+    if (typeof layer.scrollTop === "number") layer.scrollTop = pixelRange * (top && logicalRange > 0 ? 1 - fraction : fraction);
+    // L5 3.34: the heights just read, for the runtime's scroll calls — how many lines can be in view
+    // (the font's height in px, one more for a line cut at an edge) and whether every line is.
+    if (frame.type === "ScrollingMessageFrame" && Number.isFinite(scrollHeight) && clientHeight > 0) {
+      const fontPx = Number.parseFloat(layer.style.fontSize);
+      frameXmlNoteMessageLayout(frame.messageFrame, fontPx > 0 ? Math.ceil(clientHeight / fontPx) + 1 : undefined, pixelRange < 1);
+    }
   }
 
   private nextMessageIndex(rendered: RenderedFrame): number {
@@ -2585,6 +2917,8 @@ export class FrameXmlDomRenderer {
     line.style.color = cssColor(message.color);
     line.style.whiteSpace = "pre-wrap";
     line.style.overflowWrap = frame.messageFrame.nonSpaceWrap ? "anywhere" : "normal";
+    // A line drawn after it began to fade (a reveal, a rebuild) starts at its alpha now (3.34).
+    if (frameXmlMessageAlphaReplaced(frame.messageFrame, message)) frameXmlPaintLineFade(line, frame.messageFrame, message); // L5 3.34: a held alpha too
     if (!hasFrameXmlEscapes(message.text)) line.textContent = message.text;
     else for (const run of parseFrameXmlText(message.text, true)) {
       const span = line.ownerDocument.createElement("span");
@@ -2828,6 +3162,11 @@ export class FrameXmlDomRenderer {
             if (!style.width || !style.height) this.relayoutWhenDecoded(rendered);
           } else if (slot === "statusBar") this.applyStatusBar(rendered);
           else if (slot === "backdrop") this.applyBackdrop(rendered);
+          else if (slot.startsWith("html:")) {
+            // A SimpleHTML page's picture (3.35): the page is built again with its URL, once.
+            this.applySimpleHtml(rendered, true);
+            break;
+          }
         }
       }
     };
@@ -3602,10 +3941,13 @@ export class FrameXmlDomRenderer {
       style.position = "absolute";
     }
     if (rows.size === 0) return;
-    const screen = this.#container.getBoundingClientRect?.();
+    const screen = this.containerBox();
     const parent = element.parentElement ?? this.#container;
-    const parentRect = parent.getBoundingClientRect?.();
-    const parentScale = parentRect && parent.offsetWidth > 0 ? parentRect.width / parent.offsetWidth : 1;
+    // A tooltip drawn straight in the container measures against the kept box (`containerBox`).
+    const parentBox = parent === this.#container ? screen : undefined;
+    const parentRect = parentBox ?? parent.getBoundingClientRect?.();
+    const parentWidth = parentBox ? parentBox.offsetWidth : parent.offsetWidth;
+    const parentScale = parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1;
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const available = screen && screen.width > 0 && parentScale > 0
       ? Math.max(1, screen.width / (parentScale * ownScale) - 16) : 640;
@@ -3681,16 +4023,21 @@ export class FrameXmlDomRenderer {
   private clampToScreen(element: HTMLElement, frame: FrameXmlFrame): void {
     this.positionCursorTooltip(element, frame);
     element.style.removeProperty("translate");
-    if (!frame.clampedToScreen || !element.getBoundingClientRect || !this.#container.getBoundingClientRect) return;
-    const screen = this.#container.getBoundingClientRect();
+    if (!frame.clampedToScreen || !element.getBoundingClientRect) return;
+    const screen = this.containerBox();
+    if (!screen) return;
     const rect = element.getBoundingClientRect();
     if (!(screen.width > 0 && screen.height > 0 && rect.width > 0 && rect.height > 0)) return;
     const left = Math.max(screen.left, Math.min(rect.left, screen.right - rect.width));
     const top = Math.max(screen.top, Math.min(rect.top, screen.bottom - rect.height));
     const parent = element.parentElement ?? this.#container;
-    const parentRect = parent.getBoundingClientRect?.();
-    const scaleX = parentRect && parent.offsetWidth > 0 ? parentRect.width / parent.offsetWidth : 1;
-    const scaleY = parentRect && parent.offsetHeight > 0 ? parentRect.height / parent.offsetHeight : 1;
+    // A frame drawn straight in the container measures against the kept box (`containerBox`).
+    const parentBox = parent === this.#container ? screen : undefined;
+    const parentRect = parentBox ?? parent.getBoundingClientRect?.();
+    const parentWidth = parentBox ? parentBox.offsetWidth : parent.offsetWidth;
+    const parentHeight = parentBox ? parentBox.offsetHeight : parent.offsetHeight;
+    const scaleX = parentRect && parentWidth > 0 ? parentRect.width / parentWidth : 1;
+    const scaleY = parentRect && parentHeight > 0 ? parentRect.height / parentHeight : 1;
     if (!(scaleX > 0 && scaleY > 0)) return;
     if (left !== rect.left || top !== rect.top) {
       element.style.translate = `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`;
@@ -3774,11 +4121,11 @@ export class FrameXmlDomRenderer {
     if (cached !== undefined) return cached ?? undefined;
     const rendered = this.#rendered.get(frame);
     let rect: FrameXmlRect | undefined;
-    const box = rendered && !rendered.effectiveHidden ? this.#container.getBoundingClientRect?.() : undefined;
+    const box = rendered && !rendered.effectiveHidden ? this.containerBox() : undefined;
     const drawn = box ? rendered?.element.getBoundingClientRect?.() : undefined;
     if (box && drawn && box.width > 0 && box.height > 0) {
-      const width = this.#container.offsetWidth || box.width;
-      const height = this.#container.offsetHeight || box.height;
+      const width = box.offsetWidth || box.width;
+      const height = box.offsetHeight || box.height;
       const scaleX = width / box.width;
       const scaleY = height / box.height;
       const left = (drawn.left - box.left) * scaleX;
@@ -3795,10 +4142,10 @@ export class FrameXmlDomRenderer {
     const mouse = event as MouseEvent;
     if (Number.isFinite(mouse.clientX) && Number.isFinite(mouse.clientY)) {
       this.#cursor = { x: mouse.clientX, y: mouse.clientY };
-      const rect = this.#container.getBoundingClientRect?.();
+      const rect = this.containerBox();
       if (rect && rect.width > 0 && rect.height > 0) {
-        const width = this.#container.offsetWidth || rect.width;
-        const height = this.#container.offsetHeight || rect.height;
+        const width = rect.offsetWidth || rect.width;
+        const height = rect.offsetHeight || rect.height;
         this.#bridge?.setMousePosition((mouse.clientX - rect.left) * width / rect.width,
           height - (mouse.clientY - rect.top) * height / rect.height);
       }
@@ -3810,10 +4157,14 @@ export class FrameXmlDomRenderer {
     const cursor = this.#cursor;
     if (!anchor || !cursor) return;
     const parent = element.parentElement ?? this.#container;
-    const rect = parent.getBoundingClientRect?.();
+    // A tooltip drawn straight in the container measures against the kept box (`containerBox`).
+    const box = parent === this.#container ? this.containerBox() : undefined;
+    const rect = box ?? parent.getBoundingClientRect?.();
     if (!rect) return;
-    const scaleX = parent.offsetWidth > 0 ? rect.width / parent.offsetWidth : 1;
-    const scaleY = parent.offsetHeight > 0 ? rect.height / parent.offsetHeight : 1;
+    const parentWidth = box ? box.offsetWidth : parent.offsetWidth;
+    const parentHeight = box ? box.offsetHeight : parent.offsetHeight;
+    const scaleX = parentWidth > 0 ? rect.width / parentWidth : 1;
+    const scaleY = parentHeight > 0 ? rect.height / parentHeight : 1;
     if (!(scaleX > 0 && scaleY > 0)) return;
     const ownScale = Number.isFinite(frame.scale) && frame.scale > 0 ? frame.scale : 1;
     const height = element.offsetHeight || numberValue(frame.attributes["height"]) || 0;
@@ -4932,4 +5283,20 @@ function resolveAnchorAxis(
 export function fontFamilyName(file: string): string {
   const leaf = file.replaceAll("\\", "/").split("/").pop() ?? file;
   return `framexml-${leaf.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+/**
+ * How many of `previous`' first lines a paint drops when the rest of it is, in order and by identity,
+ * the start of `current` and at least one line survives (or nothing was painted yet); -1 otherwise.
+ */
+function keptTail(previous: readonly FrameXmlMessage[], current: readonly FrameXmlMessage[]): number {
+  let dropped = 0;
+  if (previous.length > 0) {
+    dropped = current.length > 0 ? previous.indexOf(current[0]!) : -1;
+    if (dropped < 0) return -1;
+  }
+  const kept = previous.length - dropped;
+  if (kept > current.length) return -1;
+  for (let index = 0; index < kept; index++) if (current[index] !== previous[dropped + index]) return -1;
+  return dropped;
 }

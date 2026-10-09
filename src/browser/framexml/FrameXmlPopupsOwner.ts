@@ -15,6 +15,7 @@ import type { FrameXmlPopupsModel } from "./FrameXmlPopups.js";
 import { FRAMEXML_POPUPS_EVENTS } from "./FrameXmlPopups.js";
 import type { FrameXmlPopupsOwner } from "./FrameXmlPopupsController.js";
 import { frameXmlSilentProbe } from "./FrameXmlGameMenuOwner.js";
+import { FRAMEXML_HOST_HOOK_GLOBAL, withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 
 /** `STATICPOPUP_NUMDIALOGS` (StaticPopup.lua:1). */
 export const FRAMEXML_STATIC_POPUP_COUNT = 4;
@@ -100,8 +101,9 @@ export function frameXmlPopupsBattlefieldEntryReady(bridge: Pick<FrameXmlBoot["b
  *   the client, ERR_INVITED_ALREADY_IN_GROUP_SS; a hidden frame prints it on the model's private
  *   WEBCLIENT_PARTY_INVITE_REFUSED event through the stock DEFAULT_CHAT_FRAME, in the SYSTEM colour.
  */
-export function installFrameXmlPopupsAdapters(boot: Pick<FrameXmlBoot, "vm">): number {
-  const installed = frameXmlSilentProbe(boot, "webclient/popups-adapters", `
+export function installFrameXmlPopupsAdapters(boot: Pick<FrameXmlBoot, "vm" | "bridge">): number { // L5b 3.27: bridge
+  // L5b 3.27: the text measure's hooks are the host's (FrameXmlHostHooks.ts): an add-on's SetScript keeps them.
+  const installed = withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "webclient/popups-adapters", `
     local installed = 0
     local campLeft = WebClientCampTimeLeft
     for _, which in ipairs({ "CAMP", "QUIT" }) do
@@ -138,8 +140,8 @@ export function installFrameXmlPopupsAdapters(boot: Pick<FrameXmlBoot, "vm">): n
       for index = 1, STATICPOPUP_NUMDIALOGS or 0 do
         local dialog = _G["StaticPopup" .. index]
         local text = _G["StaticPopup" .. index .. "Text"]
-        dialog:HookScript("OnShow", function(self) self.webclientTextHeight = nil end)
-        dialog:HookScript("OnUpdate", function(self)
+        ${FRAMEXML_HOST_HOOK_GLOBAL}(dialog, "OnShow", function(self) self.webclientTextHeight = nil end) -- L5b 3.27 (was dialog:HookScript)
+        ${FRAMEXML_HOST_HOOK_GLOBAL}(dialog, "OnUpdate", function(self) -- L5b 3.27 (was dialog:HookScript)
           if not self.which then return end
           local height = text:GetHeight()
           if height <= 0 or height == self.webclientTextHeight then return end
@@ -165,7 +167,7 @@ export function installFrameXmlPopupsAdapters(boot: Pick<FrameXmlBoot, "vm">): n
       installed = installed + 1
     end
     return installed
-  `, 1);
+  `, 1)); // L5b 3.27: withFrameXmlHostHooks
   return Number(installed?.[0] ?? 0);
 }
 

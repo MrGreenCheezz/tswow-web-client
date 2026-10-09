@@ -89,13 +89,17 @@ test("a stock control is unavailable, session-only or fixed — never two of the
     assert.match(name, /^(?:Video|Audio|Interface)Options/, name);
     assert.ok(reason.length > 10, `${name} says why`);
   }
-  // «WebClient → Игра» holds the camera's one browser setting; no reason sends a mouse control there.
+  // 5.14: «WebClient → Игра» keeps only the extended zoom; the camera's and the mouse's stock controls
+  // are CVars now, and what has no consumer says so.
   const game = frameXmlOptionsWebClientGroups().find((group) => group.key === "Game");
-  assert.deepEqual(game.controls.map((control) => control.setting), ["cameraMaxDistance"]);
-  for (const [name, reason] of FRAMEXML_OPTIONS_UNAVAILABLE) {
-    if (reason.includes("WebClient → Игра")) assert.match(name, /^InterfaceOptionsCameraPanel/, name);
+  assert.deepEqual(game.controls.map((control) => control.setting), ["cameraExtendedZoom"]);
+  for (const name of ["InterfaceOptionsCameraPanelStyleDropDown", "InterfaceOptionsCameraPanelFollowSpeedSlider",
+    "InterfaceOptionsCameraPanelMaxDistanceSlider", "InterfaceOptionsMousePanelInvertMouse",
+    "InterfaceOptionsMousePanelMouseSensitivitySlider", "InterfaceOptionsMousePanelMouseLookSpeedSlider",
+    "InterfaceOptionsControlsPanelStickyTargeting"]) {
+    assert.equal(unavailable.has(name), false, name);
   }
-  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.get("InterfaceOptionsMousePanelInvertMouse"), "Браузерный клиент этого не поддерживает.");
+  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.get("InterfaceOptionsCameraPanelSmartPivot"), "Камера браузерного клиента этого не поддерживает.");
   // The mapped controls stay usable.
   for (const name of ["VideoOptionsEffectsPanelFullScreenGlow", "VideoOptionsEffectsPanelClutterRadius",
     "VideoOptionsResolutionPanelUIScaleSlider", "AudioOptionsSoundPanelEnableSound", "AudioOptionsSoundPanelAmbienceVolume",
@@ -189,4 +193,21 @@ test("a second publication replaces the first, whose late cleanup cannot unpubli
   assert.deepEqual(log, ["dispose a", "b"]);
   second();
   assert.equal(controller.openFrameXmlOptions("video"), false);
+});
+
+// DEC-A 3.11 (04.10, owner decision 4): the Combat panel's AttackOnAssist (cvar "assistAttack",
+// InterfaceOptionsPanels.xml) has the assistAttack setting behind it now, so it is a live control —
+// neither greyed, nor session-only, nor fixed — and the setting is not repeated in the «WebClient» category.
+test("DEC-A 3.11: the Combat panel's AttackOnAssist is a live control over the assistAttack setting", () => {
+  const name = "InterfaceOptionsCombatPanelAttackOnAssist";
+  assert.equal(FRAMEXML_OPTIONS_UNAVAILABLE.has(name), false, "no longer greyed");
+  assert.equal(FRAMEXML_OPTIONS_SESSION_ONLY.includes(name), false);
+  assert.equal(FRAMEXML_OPTIONS_FIXED_ON.has(name), false);
+  assert.equal(FRAME_XML_SETTINGS_CVARS.find((row) => row.cvar === "assistAttack")?.setting, "assistAttack");
+  const carried = frameXmlOptionsWebClientGroups().flatMap((group) => group.controls.map((control) => control.setting));
+  assert.equal(carried.includes("assistAttack"), false, "the stock checkbox is its one control");
+  const { cvars, values } = settingsModel();
+  assert.equal(cvars.get("assistAttack"), "0");
+  assert.equal(cvars.set("assistAttack", "1"), true);
+  assert.equal(values().assistAttack, true);
 });

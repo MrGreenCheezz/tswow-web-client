@@ -36,8 +36,9 @@ test("cancelGroundTarget drops the arming and both visual pushes at once", () =>
 
 test("Escape backs out of the reticle before windows, target or menu", async () => {
   const source = await readFile(new URL("../src/browser/input/Controls.ts", import.meta.url), "utf8");
-  assert.match(source, /if \(pendingGroundTarget\(\) !== undefined\) \{\s+cancelGroundTarget\(\);/,
-    "backOut() cancels the reticle first");
+  // 4.04: stock ToggleGameMenu's order — SpellStopTargeting comes before CloseAllWindows and ClearTarget.
+  assert.match(source, /NATIVE_ESCAPE\.stopTargeting\(\),\s+\(\) => game\.world !== undefined && NATIVE_ESCAPE\.windows\(\),\s+\(\) => NATIVE_ESCAPE\.clearTarget\(\),/,
+    "backOut() cancels the reticle before windows, target or menu");
 });
 
 test("right-click cancels an armed reticle instead of interacting", async () => {

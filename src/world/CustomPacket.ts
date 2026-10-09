@@ -71,7 +71,7 @@ export const CUSTOM_MIN_SEND_BODY = 1;
  * The server writes every fragment of one message in a single loop —
  * `TSPacketWrite::SendToPlayer` (`TSCustomPacket.cpp:20-31`) builds and sends them back to back in
  * one tick — so nothing but the socket can space them out. 30 seconds is the client's own
- * keep-alive period (`WorldClient.#startPing` sends `CMSG_PING` every 30,000 ms), i.e. the longest
+ * keep-alive period (`WorldClient.startPing` sends `CMSG_PING` every 30,000 ms), i.e. the longest
  * silence this session already treats as "still connected"; a tail that has not arrived by then is
  * lost rather than late. Shorter would throw away real fragments on a slow link, and there is no
  * pressure to be aggressive: the {@link CUSTOM_BUFFER_QUOTA} already bounds what an abandoned tail

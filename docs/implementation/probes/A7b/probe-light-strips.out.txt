@@ -1,0 +1,90 @@
+set 12: HighlightSky=1 LightSkyboxID=0 CloudTypeID=0
+  int  8: #5c5c5c #5c5c5c #6e6e6e #6e6e6e #4d4d4d #4d4d4d #4d4d4d #6e6e6e
+  int  9: #e8f1ff #e8f1ff #ffd296 #ffd296 #fff7de #fff7de #fff7de #ffe2a9
+  int 10: #326184 #3a5f80 #ffb33c #ffb33c #ffc78a #ffc78a #ffc78a #ffd4a0
+  int 11: #123851 #134351 #44a2ab #44a2ab #2b6984 #2b6984 #2b6984 #8a5d48
+  int 12: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 13: #5d5078 #00324b #204c6f #204c6f #6182b7 #6182b7 #5d5078 #5d5078
+  flt 2: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+  flt 3: 0.50 0.50 0.50 0.50 0.50 0.50 0.50 0.50
+  flt 4: 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95
+  flt 5: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+set 3: HighlightSky=0 LightSkyboxID=81 CloudTypeID=0
+  int  8: #585858 #585858 #585858 #585858 #585858 #585858 #585858 #585858
+  int  9: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 10: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 11: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 12: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 13: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  flt 2: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 3: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 4: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 5: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+set 4: HighlightSky=0 LightSkyboxID=90 CloudTypeID=0
+  int  8: #585858 #585858 #585858 #585858 #585858 #585858 #585858 #585858
+  int  9: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 10: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 11: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 12: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 13: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  flt 2: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 3: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 4: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+  flt 5: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+set 21: HighlightSky=0 LightSkyboxID=0 CloudTypeID=0
+  int  8: #646464 #646464 #646464 #646464 #646464 #646464 #646464 #646464
+  int  9: #c38056 #c38056 #c38056 #c38056 #c38056 #c38056 #c38056 #c38056
+  int 10: #67485a #67485a #67485a #67485a #67485a #67485a #67485a #67485a
+  int 11: #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46
+  int 12: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 13: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  flt 2: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+  flt 3: 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85
+  flt 4: 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95
+  flt 5: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+set 22: HighlightSky=0 LightSkyboxID=0 CloudTypeID=0
+  int  8: #646464 #646464 #646464 #646464 #646464 #646464 #646464 #646464
+  int  9: #c38056 #c38056 #c38056 #c38056 #c38056 #c38056 #c38056 #c38056
+  int 10: #67485a #67485a #67485a #67485a #67485a #67485a #67485a #67485a
+  int 11: #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46 #3e3c46
+  int 12: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  int 13: #000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000
+  flt 2: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+  flt 3: 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85
+  flt 4: 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95
+  flt 5: 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00
+Light rows 715; slot 4 differs from slot 0 on 713; sets 3x452 4x234 2x26 5x1 694x1 819x1
+  death set 4: LightSkyboxID=90 Glow=0.80
+  death set 2: LightSkyboxID=82 Glow=0.40
+  death set 3: LightSkyboxID=81 Glow=0.60
+  death set 5: LightSkyboxID=91 Glow=1.00
+  death set 694: LightSkyboxID=0 Glow=0.50
+  death set 819: LightSkyboxID=122 Glow=0.30
+liquid   1 Water                        bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid   2 Ocean                        bank=1 light=0 material=1 darken=30/0.5/0.5/0.25 tex0=XTextures\ocean\ocean_h.%d.blp
+liquid   3 Magma                        bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid   4 Slime                        bank=3 light=6 material=2 darken=0/0/0/0 tex0=XTextures\slime\slime.%d.blp
+liquid   5 Slow Water                   bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid   6 Slow Ocean                   bank=1 light=0 material=1 darken=30/0.5/0.5/0.25 tex0=XTextures\ocean\ocean_h.%d.blp
+liquid   7 Slow Magma                   bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid   8 Slow Slime                   bank=3 light=6 material=2 darken=0/0/0/0 tex0=XTextures\slime\slime.%d.blp
+liquid   9 Fast Water                   bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\fast_a.%d.blp
+liquid  10 Fast Ocean                   bank=1 light=0 material=1 darken=30/0.5/0.5/0.25 tex0=XTextures\ocean\ocean_h.%d.blp
+liquid  11 Fast Magma                   bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid  12 Fast Slime                   bank=3 light=6 material=2 darken=0/0/0/0 tex0=XTextures\slime\slime.%d.blp
+liquid  13 WMO Water                    bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid  14 WMO Ocean                    bank=1 light=0 material=1 darken=30/0.5/0.5/0.25 tex0=XTextures\ocean\ocean_h.%d.blp
+liquid  15 Green Lava                   bank=2 light=6 material=2 darken=0/0/0/0 tex0=XTextures\LavaGreen\lavagreen.%d.blp
+liquid  17 WMO Water - Interior         bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid  19 WMO Magma                    bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid  20 WMO Slime                    bank=3 light=6 material=2 darken=0/0/0/0 tex0=XTextures\slime\slime.%d.blp
+liquid  21 Naxxramas - Slime            bank=3 light=6 material=2 darken=0/0/0/0 tex0=XTextures\slime\slime.%d.blp
+liquid  41 Coilfang Raid - Water        bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid  61 Hyjal Past - Water           bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid  81 Lake Wintergrasp - Water     bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTextures\river\lake_a.%d.blp
+liquid 100 Basic Procedural Water       bank=1 light=0 material=3 darken=30/0.5/0.5/0 tex0=XTextures\procWater\basicReflectionMap.blp
+liquid 121 CoA Black - Magma            bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid 141 Chamber Magma                bank=2 light=7 material=2 darken=0/0/0/0 tex0=XTextures\lava\lava.%d.blp
+liquid 181 Orange Slime                 bank=0 light=0 material=1 darken=0/0/0/0 tex0=XTEXTURES\LavaOrange\LavaOrange.%d.blp
+Light 6: map 0 slots 21,22,454,22,4,0,0,0
+Light 7: map 0 slots 23,24,456,24,4,0,0,0

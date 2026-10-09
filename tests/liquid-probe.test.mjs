@@ -176,8 +176,16 @@ test("Gundrak: a drop into the channel swims, the pool is waded, the entrance st
     assert.ok(channel.position.z > 105 && channel.position.z <= 110.01, `swimming at ${channel.position.z}`);
 
     // Chest-deep in the same channel (bed 108.48): 1.53 yards is over half a 2.031-yard body.
+    const walksBeforeChest = roomWalks;
     const chest = await run({ x: 1733.86, y: 818.26, z: 108.48 }, 1);
-    assert.deepEqual(chest.events, ["startSwim"]);
+    // The slide off that face has no walkable floor under the feet for a few frames, and a column
+    // with no floor hit has no room to lend the liquid query: those walks are its own.
+    roomWalks = walksBeforeChest;
+    // 5.07 (02.10): the bed under this point is a 54.5° face. Wow.exe walks nothing steeper than 50°
+    // (0x0075d1c0, cos 50° at 0x00a37f0c), so the body slides off it before it floats: the swim is
+    // still where it ends, one short drop later.
+    assert.equal(chest.events.at(-1), "startSwim", chest.events.join());
+    assert.equal(chest.motion.mode, "swim");
 
     // The shallow pool of group 8: surface 135.50 over a bed at 135.12 is waded.
     const pool = await run({ x: 1938.03, y: 780.76, z: 135.12 }, 1);

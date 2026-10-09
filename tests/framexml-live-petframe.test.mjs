@@ -150,8 +150,10 @@ test("live PetFrame queries use petSpells.guid without aliasing player", () => {
   ]);
   assert.deepEqual(call("UnitChannelInfo", "pet"), []);
   assert.deepEqual(call("UnitIsPossessed", "pet"), [false]);
-  assert.deepEqual(call("GetPetHappiness"), []);
-  assert.deepEqual(call("HasPetUI"), [true, false]);
+  // 3.36 (L14): a mage's pet without a pet number is no hunter's pet — nil, 100 as Wow.exe 0x005d3b00.
+  assert.deepEqual(call("GetPetHappiness"), [undefined, 100]);
+  // L15 5.05: Wow.exe 0x005d3960 — no pet number, no pet page: both values nil (false here).
+  assert.deepEqual(call("HasPetUI"), [false, false]);
   assert.deepEqual(call("UnitHealth", "player"), [4000], "player remains independent");
 
   call("TargetUnit", "pet");
@@ -186,7 +188,23 @@ test("live PetFrame publishes pet identity, fields, aura and cast edges only whi
 
   fired.length = 0;
   events.emit("SPELL_CAST_START", { casterGuid: petGuid, spellId: 42, castTime: 2_500, channel: false });
-  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.castStart, "pet", "Test Spell", "Rank 2", 7]]);
+  // 11.02-IF-review (03.10): the combat log (3.01) logs this start as well, as Wow.exe does — its
+  // SMSG_SPELL_START handler 0x00806700 (0x0080fee0 dispatches opcode 0x131 to it) posts SPELL_CAST_START
+  // (0x00751920: entry 5, then 0x0074ff20 -> 0x0074f910: COMBAT_LOG_EVENT and _UNFILTERED) for a cast
+  // without CAST_FLAG_PENDING, whoever the caster. This test is about PetFrame's own edge beside it.
+  // 3.01-castlog (03.10): the log hears the packet — WorldClient's SPELL_START, emitted after the cast
+  // bar's SPELL_CAST_START as 0x00806700 calls 0x00805330 (UNIT_SPELLCAST_START) before 0x00751920 — and
+  // writes the START because the cast is timed (virtual +0x148, FrameXmlCombatLogCasts.ts).
+  events.emit("SPELL_START", {
+    casterGuid: petGuid, casterUnit: petGuid, castId: 7, spellId: 42, castFlags: 0x2, castTime: 2_500,
+    schoolImmunityMask: 0, mechanicImmunityMask: 0,
+  });
+  const combatLog = ([event]) => event === "COMBAT_LOG_EVENT" || event === "COMBAT_LOG_EVENT_UNFILTERED";
+  assert.deepEqual(fired.map((entry) => (combatLog(entry) ? [entry[0], entry[2], entry[3]] : entry)), [
+    [FRAMEXML_SEAM_EVENTS.castStart, "pet", "Test Spell", "Rank 2", 7],
+    ["COMBAT_LOG_EVENT", "SPELL_CAST_START", "0x0000000000000020"],
+    ["COMBAT_LOG_EVENT_UNFILTERED", "SPELL_CAST_START", "0x0000000000000020"],
+  ]);
 
   fired.length = 0;
   world.casts.delete(petGuid);
@@ -212,6 +230,40 @@ test("live PetFrame publishes pet identity, fields, aura and cast edges only whi
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.UnitHealth(seam, ["pet"]), [0]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.TargetUnit(seam, ["player"]), [], "player target token is safe");
   seam.detach();
+});
+
+// L15 5.05: HasPetUI as Wow.exe 0x005d3960 → 0x0071b630 answers it (.runtime/re-2026-10-04/l14-small/g1.c,
+// g2.c): a pet number gives the pet page; the hunter's flag is the creator's class, not the abandon byte.
+test("L15 5.05: HasPetUI reads the pet number and the creator's class", async () => {
+  const { seam, state, petGuid, selfGuid } = fixture();
+  const call = (name, ...args) => FRAMEXML_SEAM_BINDINGS[name](seam, args);
+  const pet = state.objects.get(petGuid);
+  const self = state.objects.get(selfGuid);
+  set(pet, "UNIT_FIELD_PETNUMBER", 7);
+  assert.deepEqual(call("HasPetUI"), [true, false], "a pet number and no creator: a pet page, no hunter's");
+  set(pet, "UNIT_FIELD_CREATEDBY", Number(selfGuid));
+  assert.deepEqual(call("HasPetUI"), [true, false], "created by a mage (a water elemental, a demon)");
+  set(self, "UNIT_FIELD_BYTES_0", 1 | (3 << 8) | (1 << 24));
+  assert.deepEqual(call("HasPetUI"), [true, true], "created by a hunter");
+  // The abandon byte is not what decides it (0x0071b630 never reads UNIT_FIELD_BYTES_2).
+  set(pet, "UNIT_FIELD_BYTES_2", 0);
+  assert.deepEqual(call("HasPetUI"), [true, true], "no UNIT_CAN_BE_ABANDONED, still the hunter's pet");
+  set(pet, "UNIT_FIELD_PETNUMBER", 0);
+  assert.deepEqual(call("HasPetUI"), [false, false], "a charmed creature has no pet number");
+  const { frameXmlIsHunterPet } = await import("../dist/code/browser/framexml/FrameXmlHasPetUI.js");
+  assert.equal(frameXmlIsHunterPet(pet, (guid) => state.objects.get(guid)), false, "0x0071b630 wants the pet number too");
+  set(pet, "UNIT_FIELD_PETNUMBER", 7);
+  pet.typeId = 4;
+  assert.deepEqual(call("HasPetUI"), [false, false], "a player under the pet bar (a possessed one) is not a pet (0x005d3960)");
+  pet.typeId = 3;
+  state.objects.delete(selfGuid);
+  assert.deepEqual(call("HasPetUI"), [true, false], "the creator out of view is no hunter (0x004d4db0 finds nothing)");
+});
+
+test("L15 3.36: the canned happy hunter's pet deals 125 % (PetPersonality row 1, Wow.exe 0x005d3b00)", () => {
+  const seam = new CannedWorldSeam();
+  assert.equal(CANNED_PET.happiness, 3);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetPetHappiness(seam, []), [3, 125]);
 });
 
 test("canned PetFrame exposes a bounded pet fixture and stock API shapes", () => {

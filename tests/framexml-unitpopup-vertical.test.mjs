@@ -142,10 +142,10 @@ test("the unit menus: control, the secure entry and the group, focus commands", 
 
     // 1.10: SET_FOCUS on that menu, then the focus frame's own CLEAR_FOCUS.
     assert.equal(click(boot, "SET_FOCUS"), true);
-    assert.deepEqual(seam.focusChanges, ["0xf130000000000101"], "FocusUnit(\"target\"): the target's guid");
+    assert.deepEqual(seam.focusChanges, ["0xF130000000000101"], "FocusUnit(\"target\"): the target's guid");
     run(boot, `CloseDropDownMenus() ToggleDropDownMenu(1, nil, FocusFrameDropDown, "FocusFrame", 120, 10)`);
     assert.equal(click(boot, "CLEAR_FOCUS"), true, `the focus menu: ${rows(boot)}`);
-    assert.deepEqual(seam.focusChanges, ["0xf130000000000101", undefined]);
+    assert.deepEqual(seam.focusChanges, ["0xF130000000000101", undefined]);
 
     // 3.20: «Выбрать целью» exists only inside the secure entry; outside it issecure() is nil.
     run(boot, `CloseDropDownMenus() FriendsFrame_ShowDropdown("Альфа", 1) UnitPopup_OnUpdate(0)`);

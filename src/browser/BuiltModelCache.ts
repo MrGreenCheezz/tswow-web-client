@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { BuiltModel } from "./ModelBuild.js";
+import { recencyStampLimit, renumberRecency } from "./RecencyStamps.js";
 
 export interface BuiltModelCacheLimits {
   readonly count: number;
@@ -19,7 +20,10 @@ export interface EvictedBuiltModel<T extends Pick<BuiltModel, "geometry"> = Buil
   readonly built: T;
 }
 
-type GeometryAttribute = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+/** The shared answer of an eviction pass with nothing to do. */
+const NOTHING_EVICTED: readonly EvictedBuiltModel<never>[] = Object.freeze([]);
+
+type GeometryAttribute =THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 
 interface GeometryBufferResource {
   readonly identity: object;
@@ -68,6 +72,10 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
   readonly #entryResources = new Map<string, readonly GeometryBufferResource[]>();
   readonly #entryExternalKeys = new Map<string, readonly string[]>();
   readonly #resources = new Map<object, { readonly bytes: number; references: number }>();
+  /** P1-10b: recency stamp per key (the entries are frozen), written on `set` and on each `get`. */
+  readonly #used = new Map<string, number>();
+  #clock = 0;
+  #epoch = 0;
   #knownBufferBytes = 0;
 
   constructor(limits: BuiltModelCacheLimits) {
@@ -88,19 +96,31 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
     });
   }
 
+  /**
+   * Bumped by every `set`, `delete` and `clear`, never by `get` or `peek`: a caller holding an
+   * answer derived from the entries knows it is still exact while the epoch is unchanged.
+   */
+  get epoch(): number { return this.#epoch; }
+
   get(key: string): T | undefined {
     const built = this.#entries.get(key);
     if (!built) return undefined;
-    // Map insertion order is the LRU list: a hit becomes newest.
-    this.#entries.delete(key);
-    this.#entries.set(key, built);
+    // P1-10b: a hit becomes newest by its stamp; the entry map keeps its creation order.
+    this.#stamp(key);
     return built;
+  }
+
+  /** The entry without touching its recency. */
+  peek(key: string): T | undefined {
+    return this.#entries.get(key);
   }
 
   set(key: string, built: T, externalKeys: Iterable<string> = []): this {
     this.delete(key);
+    this.#epoch++;
     const resources = geometryBufferResources(built.geometry);
     this.#entries.set(key, built);
+    this.#stamp(key);
     this.#entryResources.set(key, resources);
     this.#entryExternalKeys.set(key, Object.freeze([...new Set(externalKeys)]));
     for (const resource of resources) {
@@ -117,6 +137,8 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
 
   delete(key: string): boolean {
     if (!this.#entries.delete(key)) return false;
+    this.#used.delete(key);
+    this.#epoch++;
     for (const resource of this.#entryResources.get(key) ?? []) {
       const retained = this.#resources.get(resource.identity);
       if (!retained) continue;
@@ -132,6 +154,8 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
 
   clear(): void {
     this.#entries.clear();
+    this.#used.clear();
+    this.#epoch++;
     this.#entryResources.clear();
     this.#entryExternalKeys.clear();
     this.#resources.clear();
@@ -153,14 +177,23 @@ export class BuiltModelCache<T extends Pick<BuiltModel, "geometry"> = BuiltModel
 
   /** Removes oldest unpinned entries until both soft limits are met or only pins remain. */
   evictUnpinned(pinned: ReadonlySet<T>): readonly EvictedBuiltModel<T>[] {
+    if (this.#withinLimits()) return NOTHING_EVICTED;
+    // Oldest stamp first: the order the re-insertion LRU kept its entries in.
+    const order = [...this.#used].sort((left, right) => left[1] - right[1]);
     const evicted: EvictedBuiltModel<T>[] = [];
-    for (const [key, built] of this.#entries) {
+    for (const [key] of order) {
       if (this.#withinLimits()) break;
+      const built = this.#entries.get(key)!;
       if (pinned.has(built)) continue;
       this.delete(key);
       evicted.push({ key, built });
     }
     return evicted;
+  }
+
+  #stamp(key: string): void {
+    if (this.#clock >= recencyStampLimit) this.#clock = renumberRecency(this.#used);
+    this.#used.set(key, ++this.#clock);
   }
 
   #withinLimits(): boolean {

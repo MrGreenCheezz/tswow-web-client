@@ -252,11 +252,27 @@ export function parseFactionVisible(payload: Uint8Array): number {
  * Declares war on a reputation list id, or makes peace (`CMSG_SET_FACTION_ATWAR`).
  *
  * The body is the handler's (`CharacterHandler.cpp:1055-1067`): a list id word and a flag byte.
- * The server owns the verdict — peace-forced factions refuse — and answers with the faction's
- * new state, so this sends and waits rather than flipping anything locally.
+ * The server answers nothing: `ReputationMgr::SendState` carries standings only, so the flag is
+ * flipped on the client's own copy by the caller (`WorldClient.setFactionAtWar`).
  */
 export function buildSetFactionAtWar(listId: number, atWar: boolean): Uint8Array {
   return new PacketWriter().u32(listId).u8(atWar ? 1 : 0).toUint8Array();
+}
+
+/** `PLAYER_FIELD_WATCHED_FACTION_INDEX`'s "no faction" (Player.cpp:561). */
+export const NO_WATCHED_FACTION = 0xFFFF_FFFF;
+
+/**
+ * `CMSG_SET_WATCHED_FACTION`: one list id word the core copies into
+ * `PLAYER_FIELD_WATCHED_FACTION_INDEX` (`CharacterHandler.cpp:1103-1109`); none is `0xFFFFFFFF`.
+ */
+export function buildSetWatchedFaction(listId: number | undefined): Uint8Array {
+  return new PacketWriter().u32(listId ?? NO_WATCHED_FACTION).toUint8Array();
+}
+
+/** `CMSG_SET_FACTION_INACTIVE`: a list id word and a flag byte (`CharacterHandler.cpp:1111-1119`). */
+export function buildSetFactionInactive(listId: number, inactive: boolean): Uint8Array {
+  return new PacketWriter().u32(listId).u8(inactive ? 1 : 0).toUint8Array();
 }
 
 /** `SMSG_SET_FORCED_REACTIONS`: factions whose attitude is fixed regardless of standing. */
@@ -560,6 +576,18 @@ export function buildStandStateChange(state: number): Uint8Array {
 /** `CMSG_LEARN_TALENT`: spends a point. The rank is sent zero-based, as it arrives. */
 export function buildLearnTalent(talentId: number, rank: number): Uint8Array {
   return new PacketWriter().u32(talentId).u32(Math.max(0, rank - 1)).toUint8Array();
+}
+
+/**
+ * `CMSG_LEARN_PREVIEW_TALENTS` (plan item 3.33): `u32 count, (u32 id, u32 rank)…`, the rank
+ * zero-based as in `buildLearnTalent`. Wow.exe 0x5c6a10 (Lua `LearnPreviewTalents`) writes one
+ * pair per talent whose preview rank is above its learned rank; the core learns them in order
+ * (`HandleLearnPreviewTalents`, SkillHandler.cpp:37-59, at most 150 read).
+ */
+export function buildLearnPreviewTalents(talents: ReadonlyArray<{ talentId: number; rank: number }>): Uint8Array {
+  const writer = new PacketWriter().u32(talents.length);
+  for (const talent of talents) writer.u32(talent.talentId).u32(Math.max(0, talent.rank - 1));
+  return writer.toUint8Array();
 }
 
 /** `CMSG_INSPECT`: asks to see another character's talents and gear. */

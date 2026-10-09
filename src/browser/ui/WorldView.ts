@@ -1,8 +1,9 @@
 import { UPDATE_FIELDS } from "../../generated/updateFields.js";
 import { runFrameTasks } from "../../transport/PacketPump.js";
-import { player, unit } from "../../world/Fields.js";
+import { player } from "../../world/Fields.js";
 import { WorldObjectState, WorldState, isWorldObjectDead } from "../../world/WorldState.js";
 import { creatureIconSource } from "../CreatureMetadata.js";
+import { sweepUnitModels } from "../UnitModelRequests.js"; // P1-20c (corpses: 05.10-A7a-G2 6.05)
 import { game } from "../game/Context.js";
 import { renderInventory } from "./Bags.js";
 import { setIconSource } from "./IconImage.js";
@@ -130,21 +131,14 @@ export function showWorldState(state: WorldState): void {
   renderInventory(state);
   showTarget();
 
-  // Every visible unit needs its M2 resolved from UNIT_FIELD_DISPLAYID; the client dedupes.
-  if (game.creatureModels) {
-    for (const object of state.objects.values()) {
-      if (object.typeId !== 3 && object.typeId !== 4) continue;
-      game.creatureModels.request(object.fields.get(UPDATE_FIELDS.UNIT_FIELD_DISPLAYID.offset) ?? 0);
-      // And its mount, which is a display id of the same table and would otherwise never be
-      // asked for: `request` ignores a zero, which is what all but the mounted carry.
-      game.creatureModels.request(unit.mountDisplayId(object) ?? 0);
-    }
-  }
-
   // The sorted prefetch below is throttled (see PREFETCH_INTERVAL_MS): the lists only decide
   // what async metadata to ask for, and rebuilding them per packet costs two full sorts.
   if (performance.now() - lastPrefetchAt >= PREFETCH_INTERVAL_MS) {
     lastPrefetchAt = performance.now();
+    // Every visible unit needs its M2 resolved from UNIT_FIELD_DISPLAYID. P1-20c: the store's events
+    // ask for new units, display ids and mounts as they land (`bindUnitModelRequests`); this sweep
+    // is the net under them — objects from before the binding, corpses, the client's retry ladder.
+    if (game.creatureModels) sweepUnitModels(state, game.creatureModels);
     const nearby = [...state.objects.values()]
       .filter((object) => object.guid !== state.selfGuid && object.position && !isWorldObjectDead(object))
       .sort((left, right) => distanceSquared(left, player) - distanceSquared(right, player))

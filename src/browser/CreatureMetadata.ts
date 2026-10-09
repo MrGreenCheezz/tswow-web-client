@@ -32,19 +32,21 @@ const TYPE_ICONS: Partial<Record<number, number>> = {
   13: 1960,
 };
 
+// L1 (3.23): CreatureType.dbc Name_lang (ruRU) — 1, 8, 10 and 13 were not the table's words (tests/creature-type-names).
 const TYPE_NAMES: Partial<Record<number, string>> = {
-  1: "Зверь",
+  1: "Животное", // L1 (3.23)
   2: "Дракон",
   3: "Демон",
   4: "Элементаль",
   5: "Великан",
   6: "Нежить",
   7: "Гуманоид",
-  8: "Зверёк",
+  8: "Существо", // L1 (3.23)
   9: "Механизм",
+  10: "Не указано", // L1 (3.23)
   11: "Тотем",
   12: "Спутник",
-  13: "Газовое облако",
+  13: "Облако газа", // L1 (3.23)
 };
 
 /**

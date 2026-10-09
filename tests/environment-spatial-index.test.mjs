@@ -287,8 +287,9 @@ test("WorldRenderer builds the spatial index on identity changes and queries it 
   const update = source.slice(updateAt, endAt);
 
   const identityAt = update.indexOf("objects !== this.#environmentObjects");
-  const candidatesAt = update.indexOf("this.#environmentCandidates = environmentCandidatesInRange(");
-  const admissionAt = update.indexOf("selectEnvironmentAdmission(");
+  const candidatesAt = update.indexOf("this.#environmentCandidates = ranked.candidates;");
+  // P2-04c: the update pass admits through the allocation-free single pass.
+  const admissionAt = update.indexOf("admitEnvironmentInto(");
   assert.ok(identityAt >= 0, "environment identity is the rebuild key");
   assert.ok(candidatesAt > identityAt, "exact range candidates remain in the identity/movement-gated update");
   assert.ok(admissionAt > candidatesAt, "camera visibility admission follows the cached range answer");
@@ -306,12 +307,13 @@ test("WorldRenderer builds the spatial index on identity changes and queries it 
   }
   assert.ok(guardEnd > guardStart, "identity guard closes");
   const identityBlock = update.slice(identityAt, guardEnd);
-  assert.match(identityBlock, /new\s+EnvironmentSpatialIndex\s*\(/,
+  // P2-04a: the renderer builds the grid index, whose answers equal this reference (environment-grid-index).
+  assert.match(identityBlock, /new\s+EnvironmentGridIndex\s*\(/,
     "the index is constructed only in the objects-identity branch");
 
   const queryAt = update.indexOf(".queryCached(");
   assert.ok(queryAt > identityAt && queryAt < candidatesAt,
-    "the spatial query feeds exact range filtering before environmentCandidatesInRange runs");
+    "the spatial query feeds exact range filtering before environmentRankInRange runs");
   assert.match(update.slice(candidatesAt, admissionAt), /#environmentCandidatesAt\s*=\s*\{/,
     "only distance candidates share the four-yard cache; frustum admission stays outside it");
 });

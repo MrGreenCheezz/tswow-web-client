@@ -1,4 +1,5 @@
-// The opt-in supervisor `npm run gateway` becomes with GATEWAY_RESTART_ON_PATCH=1.
+// The opt-in supervisor `npm run gateway` becomes with GATEWAY_RESTART_ON_PATCH=1 or GATEWAY_SUPERVISE=1
+// (the second only starts a crashed gateway again, 10.15).
 //
 // A TSWoW `build addon` / `build data` rewrites the client patches under a running gateway, which
 // then latches its client-media routes into 409 `client_patch_chain_changed` until it is restarted
@@ -16,7 +17,7 @@
 // channel:
 //   child → { type: "ready", generation } · { type: "patch-chain-changed", at, first, epoch }
 //         · { type: "status", auth, world, stale, declined? }
-//   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop" }
+//   parent → { type: "status?" } · { type: "shutdown", reason: "restart" | "stop", force? }
 // A child that counts a session when a restart's `shutdown` arrives stays up and answers a
 // `status` with `declined: true` instead: the players were counted a moment earlier, and one may
 // have connected since. A `stop` (Ctrl+C) is never declined.
@@ -44,6 +45,21 @@ export const SUPERVISOR_DEFAULTS = Object.freeze({
   shutdownTimeoutMs: 15_000,
   /** Waits before retrying a restarted child that died before it was ready (a build still writing). */
   retryDelaysMs: Object.freeze([2_000, 5_000, 15_000, 60_000]),
+  /**
+   * 10.15 (A): a running gateway that crashes is started again after these pauses — at most
+   * `crashLimit` times inside `crashWindowMs`; one more crash in the window ends the supervisor with
+   * the child's code, as before, because a gateway that cannot stay up must not be hidden by a loop.
+   */
+  crashDelaysMs: Object.freeze([1_000, 2_000, 5_000, 15_000, 60_000]),
+  crashLimit: 5,
+  crashWindowMs: 10 * 60_000,
+  /** Restart after a settled TSWoW build (GATEWAY_RESTART_ON_PATCH=1); off, only crashes are handled. */
+  restartOnPatch: true,
+  /**
+   * 10.15 (B): how long players may hold a settled build back before the restart goes ahead anyway.
+   * 0 (the default, GATEWAY_RESTART_DEADLINE_MIN unset) waits for them for ever, as before.
+   */
+  playerDeadlineMs: 0,
 });
 
 /**
@@ -53,10 +69,11 @@ export const SUPERVISOR_DEFAULTS = Object.freeze({
  * once the build has settled, which is the only moment it matters.
  */
 export function restartDecision({
-  now, latchAt, lastChangeAt, markerFinishedAt, childStartedAt, clients,
+  now, latchAt, lastChangeAt, markerFinishedAt, childStartedAt, clients, settledAt,
   quietMs = SUPERVISOR_DEFAULTS.quietMs,
   buildTimeoutMs = SUPERVISOR_DEFAULTS.buildTimeoutMs,
   noticeSlackMs = SUPERVISOR_DEFAULTS.noticeSlackMs,
+  playerDeadlineMs = SUPERVISOR_DEFAULTS.playerDeadlineMs,
 }) {
   if (latchAt === undefined) return { action: "wait", reason: "current" };
   if (now - (lastChangeAt ?? latchAt) < quietMs) return { action: "wait", reason: "writing" };
@@ -64,6 +81,11 @@ export function restartDecision({
     && markerFinishedAt > (childStartedAt ?? Number.NEGATIVE_INFINITY)
     && markerFinishedAt >= latchAt - noticeSlackMs;
   if (!built && now - latchAt < buildTimeoutMs) return { action: "wait", reason: "build" };
+  // 10.15 (B): past the owner's deadline (counted from when the build settled) players no longer
+  // hold the restart back; the child is told to leave even with sessions (`force`).
+  if (playerDeadlineMs > 0 && settledAt !== undefined && now - settledAt >= playerDeadlineMs) {
+    return { action: "restart", reason: "deadline", force: true };
+  }
   if (clients === undefined) return { action: "ask" };
   if (clients.auth + clients.world > 0) return { action: "wait", reason: "players" };
   return { action: "restart", reason: built ? "build-finished" : "timeout" };
@@ -83,6 +105,10 @@ export class GatewaySupervisor {
   #phase = "idle";
   #restarts = 0;
   #failedStarts = 0;
+  /** When each running child crashed, inside `crashWindowMs` (10.15 A). */
+  #crashes = [];
+  /** When the build was first seen settled (asking for or waiting on players), for the deadline (10.15 B). */
+  #settledAt;
   #childStartedAt;
   #latchAt;
   #lastChangeAt;
@@ -127,6 +153,7 @@ export class GatewaySupervisor {
     this.#latchAt = undefined;
     this.#lastChangeAt = undefined;
     this.#clients = undefined;
+    this.#settledAt = undefined;
     this.#asked = false;
     this.#reasked = false;
     this.#waitingFor = undefined;
@@ -149,6 +176,13 @@ export class GatewaySupervisor {
       this.#failedStarts = 0;
       if (this.#restarts > 0) this.#deps.log(`gateway restarted (generation ${String(message.generation ?? "?").slice(0, 12)})`);
     } else if (message.type === "patch-chain-changed") {
+      if (!this.#options.restartOnPatch) {
+        if (this.#latchAt === undefined) {
+          this.#latchAt = now;
+          this.#deps.log("client patches changed; restart the gateway yourself (GATEWAY_RESTART_ON_PATCH is off)");
+        }
+        return;
+      }
       if (this.#latchAt === undefined) {
         this.#latchAt = now;
         this.#deps.log("client patches changed; the gateway restarts once the build settles and nobody is in the world");
@@ -156,6 +190,7 @@ export class GatewaySupervisor {
       this.#lastChangeAt = now;
       // A change after the players were counted is a new build: count again when it settles.
       this.#clients = undefined;
+      this.#settledAt = undefined;
       this.#asked = false;
     } else if (message.type === "status") {
       this.#clients = { auth: Number(message.auth) || 0, world: Number(message.world) || 0 };
@@ -187,6 +222,7 @@ export class GatewaySupervisor {
   }
 
   async #onTick() {
+    if (!this.#options.restartOnPatch) return;
     if (this.#phase !== "running" || this.#latchAt === undefined || this.#reading) return;
     // Counted players go stale: ask again on every tick while that is what is being waited for.
     if (this.#waitingFor === "players") this.#clients = undefined;
@@ -194,6 +230,7 @@ export class GatewaySupervisor {
   }
 
   async #evaluate() {
+    if (!this.#options.restartOnPatch) return;
     if (this.#phase !== "running" || this.#latchAt === undefined || this.#reading) return;
     this.#reading = true;
     let markerFinishedAt;
@@ -206,10 +243,14 @@ export class GatewaySupervisor {
       markerFinishedAt,
       childStartedAt: this.#childStartedAt,
       clients: this.#clients,
+      settledAt: this.#settledAt,
       quietMs: this.#options.quietMs,
       buildTimeoutMs: this.#options.buildTimeoutMs,
       noticeSlackMs: this.#options.noticeSlackMs,
+      playerDeadlineMs: this.#options.playerDeadlineMs,
     });
+    if (this.#settledAt === undefined && (decision.action === "ask"
+      || (decision.action === "wait" && decision.reason === "players"))) this.#settledAt = this.#deps.now();
     if (decision.action === "ask") {
       const now = this.#deps.now();
       if (this.#asked && now - this.#askedAt < this.#options.statusTimeoutMs) return;
@@ -234,14 +275,16 @@ export class GatewaySupervisor {
     }
     this.#deps.log(decision.reason === "build-finished"
       ? "the TSWoW build finished and nobody is connected: restarting the gateway"
-      : `no build marker after ${Math.round(this.#options.buildTimeoutMs / 1000)} s and nobody is connected: restarting the gateway`);
+      : decision.reason === "deadline"
+        ? `players held the restart back for ${Math.round(this.#options.playerDeadlineMs / 60_000)} min: restarting the gateway anyway`
+        : `no build marker after ${Math.round(this.#options.buildTimeoutMs / 1000)} s and nobody is connected: restarting the gateway`);
     this.#phase = "restarting";
-    this.#shutdownChild("restart");
+    this.#shutdownChild("restart", decision.force === true);
   }
 
-  #shutdownChild(reason) {
+  #shutdownChild(reason, force = false) {
     const child = this.#child;
-    if (!this.#send(child, { type: "shutdown", reason })) child.kill();
+    if (!this.#send(child, force ? { type: "shutdown", reason, force: true } : { type: "shutdown", reason })) child.kill();
     this.#deps.clearTimeout(this.#killTimer);
     this.#killTimer = this.#deps.setTimeout(() => {
       if (this.#child === child) child.kill();
@@ -288,8 +331,31 @@ export class GatewaySupervisor {
       }, delay);
       return;
     }
-    // The first start failing, or a running gateway crashing, ends the supervisor the way it would
-    // end an unsupervised `npm run gateway`: restarting a crash in a loop would hide it.
+    if (phase === "running" && (code !== 0 || signal !== null)) {
+      // 10.15 (A): a running gateway crashed. Start it again after a pause, unless it has crashed
+      // `crashLimit` times inside the window already — then leave with its code, as an
+      // unsupervised gateway would, because a crash loop must not be hidden.
+      const now = this.#deps.now();
+      this.#crashes = this.#crashes.filter((at) => now - at < this.#options.crashWindowMs);
+      this.#crashes.push(now);
+      if (this.#crashes.length <= this.#options.crashLimit) {
+        const delays = this.#options.crashDelaysMs;
+        const delay = delays[Math.min(this.#crashes.length - 1, delays.length - 1)];
+        this.#deps.log(`gateway exited (${signal ?? `code ${code}`}); restarting in ${Math.round(delay / 1000)} s `
+          + `(crash ${this.#crashes.length} of ${this.#options.crashLimit} allowed in ${Math.round(this.#options.crashWindowMs / 60_000)} min)`);
+        this.#phase = "waiting-retry";
+        this.#retryTimer = this.#deps.setTimeout(() => {
+          if (this.#phase === "waiting-retry") {
+            this.#restarts++;
+            this.#spawn();
+          }
+        }, delay);
+        return;
+      }
+      this.#deps.log(`gateway crashed ${this.#crashes.length} times in ${Math.round(this.#options.crashWindowMs / 60_000)} min (${signal ?? `code ${code}`}); giving up`);
+    }
+    // The first start failing, a clean exit, or a crash loop past the limit ends the supervisor the
+    // way it would end an unsupervised `npm run gateway`.
     this.#finish(code ?? 1);
   }
 
@@ -299,6 +365,25 @@ export class GatewaySupervisor {
     this.#deps.clearTimeout(this.#retryTimer);
     this.#deps.exit(code);
   }
+}
+
+/**
+ * The supervisor options `tools/start-gateway.mjs` reads from the environment (10.15):
+ * GATEWAY_RESTART_ON_PATCH=1 adds the restart after a settled build to the crash restart, and
+ * GATEWAY_RESTART_DEADLINE_MIN (whole minutes, default unset = wait for players for ever) bounds how
+ * long connected players may hold that restart back. A malformed deadline is refused, not guessed.
+ */
+export function supervisorOptionsFromEnv(env) {
+  const options = { restartOnPatch: env.GATEWAY_RESTART_ON_PATCH === "1" };
+  const deadline = env.GATEWAY_RESTART_DEADLINE_MIN;
+  if (deadline !== undefined && deadline !== "") {
+    const minutes = Number(deadline);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 24 * 60) {
+      throw new Error(`GATEWAY_RESTART_DEADLINE_MIN must be a whole number of minutes from 0 to 1440, not "${deadline}"`);
+    }
+    options.playerDeadlineMs = minutes * 60_000;
+  }
+  return options;
 }
 
 /** The real thing: fork the built gateway, read the TSWoW marker, forward Ctrl+C. `options` is for tests. */
@@ -322,7 +407,10 @@ export async function runGatewaySupervisor({ entry, options = {} }) {
     log: (message) => console.log(`[gateway supervisor] ${message}`),
     exit: (code) => process.exit(code),
   }, options);
-  console.log("[gateway supervisor] GATEWAY_RESTART_ON_PATCH=1: the gateway restarts itself after a settled TSWoW build");
+  const restartOnPatch = options.restartOnPatch ?? SUPERVISOR_DEFAULTS.restartOnPatch;
+  console.log(restartOnPatch
+    ? "[gateway supervisor] GATEWAY_RESTART_ON_PATCH=1: the gateway restarts itself after a crash and after a settled TSWoW build"
+    : "[gateway supervisor] GATEWAY_SUPERVISE=1: the gateway restarts itself after a crash");
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => supervisor.stop());
   supervisor.start();
 }

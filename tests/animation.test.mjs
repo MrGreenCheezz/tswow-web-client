@@ -1043,7 +1043,11 @@ test("the renderer measures stride tempo and replays looping gaits at it", async
     "one-shots keep authored timing: only travelling gaits are retimed");
   assert.match(renderer, /unit\.admittedAt === undefined\) unit\.admittedAt = now/,
     "the spawn fade starts at first visibility, not at record creation");
-  assert.match(renderer, /appearance\.opacity \* spawnFadeFactor\(unit\.admittedAt, now\)/,
+  // 05.10 suite-fix: since 05.10-A7a-H (6.11а) the appearance opacity is first multiplied by the
+  // display's CreatureModelAlpha into `displayOpacity`; the fade still multiplies, never replaces.
+  assert.match(renderer, /const displayOpacity = appearance\.opacity \* creatureDisplayAlpha\(metadata\)/,
+    "the display alpha multiplies the appearance opacity rather than replacing it");
+  assert.match(renderer, /displayOpacity \* spawnFadeFactor\(unit\.admittedAt, now\)/,
     "ghosts and spirits keep their own translucency under the fade");
 });
 

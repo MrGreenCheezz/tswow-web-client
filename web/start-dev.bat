@@ -21,7 +21,14 @@ if not exist "node_modules\" (
 set "OPEN_BROWSER=1"
 if /i "%~1"=="--no-browser" set "OPEN_BROWSER="
 
-node tools\port.mjs check 8090 || start "TSWoW WebClient Gateway" "%~dp0..\start-gateway.bat"
+rem 10.11: only the gateway answers /health; anything else on 8090 would just make the page fail.
+node tools\port.mjs check-gateway 8090
+if errorlevel 2 (
+    echo Port 8090 is taken by another program, not the WebClient gateway. Free it and try again.
+    pause
+    exit /b 1
+)
+if errorlevel 1 start "TSWoW WebClient Gateway" "%~dp0..\start-gateway.bat"
 
 node tools\port.mjs check 5173
 if not errorlevel 1 (

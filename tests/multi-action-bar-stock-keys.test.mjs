@@ -5,8 +5,8 @@
 // MultiBarBottomRight, MultiBarRight and MultiBarLeft (:875-877, :959-961, :1043-1045, :1127-1129),
 // and those bars show action pages 6, 5, 3 and 4 (ActionButton.lua:6-9; MultiActionBars.xml:41, 159,
 // 277, 395, inherited at :508-535): 0-based slots 60, 48, 24 and 36. This client binds the four
-// commands to its own extra-bar actions (FrameXmlBinding.ts), whose native rows still stand on
-// pages 7-10 (slots 72, 84, 96, 108) until 4.16b moves them.
+// commands to its own extra-bar actions (FrameXmlBinding.ts), whose native rows stand on the same
+// pages since L7 4.16b (they were on pages 7-10, slots 72, 84, 96, 108, before).
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isolatedModule } from "./fixtures/isolated-ui.mjs";
@@ -60,12 +60,12 @@ test("under the stock HUD a multi-bar key presses the slot its stock button show
   }
 });
 
-test("the native HUD's extra rows keep their slots (4.16b decides where they move)", async () => {
+test("L7 4.16b: the native HUD's extra rows press the same stock slots", async () => {
   const keys = await keyVerbs();
-  assert.deepEqual(keys.runBinding("MULTIACTIONBAR1BUTTON1"), [72]);
-  assert.deepEqual(keys.runBinding("MULTIACTIONBAR2BUTTON1"), [84]);
-  assert.deepEqual(keys.runBinding("MULTIACTIONBAR3BUTTON1"), [96]);
-  assert.deepEqual(keys.runBinding("MULTIACTIONBAR4BUTTON12"), [119]);
+  assert.deepEqual(keys.runBinding("MULTIACTIONBAR1BUTTON1"), [60]);
+  assert.deepEqual(keys.runBinding("MULTIACTIONBAR2BUTTON1"), [48]);
+  assert.deepEqual(keys.runBinding("MULTIACTIONBAR3BUTTON1"), [24]);
+  assert.deepEqual(keys.runBinding("MULTIACTIONBAR4BUTTON12"), [47]);
 });
 
 test("a key bound in the stock window to a multi-bar button takes the same route", async () => {
@@ -79,5 +79,5 @@ test("a key bound in the stock window to a multi-bar button takes the same route
   } finally {
     stockHud(false);
   }
-  assert.deepEqual(keys.pressChord("Alt+F9"), [74], "the native bottom-left row's third button");
+  assert.deepEqual(keys.pressChord("Alt+F9"), [62], "the native bottom-left row's third button: the same slot (L7 4.16b)");
 });

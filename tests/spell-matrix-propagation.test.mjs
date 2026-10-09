@@ -11,6 +11,7 @@ import { boneOf } from '../dist/code/browser/Attachment.js';
 import { updateBatchColours } from '../dist/code/browser/ModelBuild.js';
 import { BONE_SPHERICAL_BILLBOARD as SPHERE, BONE_CYLINDRICAL_BILLBOARD_Z as CYLINDER } from '../dist/code/browser/Wvm.js';
 import { effectFixture, compareArrays } from './fixtures/billboard-effects.mjs';
+import * as missileFlight from '../dist/code/browser/MissileFlight.js'; // 05.10: ревью G2 — straight homing (slice E)
 
 // Execute the production visual/effect passes without a WebGL constructor. Only asset loading,
 // prewarming and expiry are stubbed; placement, billboards, admission and emitters are real.
@@ -24,8 +25,10 @@ const methods = ['#updateVisuals', '#faceModelSpace', '#orientVisualFrame', '#ap
   return member.getText(parsed).replaceAll('#', '');
 });
 const constants = ['EFFECT_RANGE', 'EFFECT_RANGE_SQUARED', 'EFFECT_BUDGET', 'EFFECT_BUILD_BUDGET',
-  'VISUAL_EFFECT_BUDGET', 'EMPTY_EFFECTS', 'IDENTITY_MATRIX', '_flightPoint', '_scratchScale',
-  'IDENTITY_QUATERNION', 'M2_FROM_SCENE'].map(name => {
+  'VISUAL_EFFECT_BUDGET', 'EMPTY_EFFECTS', 'IDENTITY_MATRIX', '_scratchScale', // 05.10: ревью G2 — slice E dropped the arc scratch `_flightPoint`
+  'IDENTITY_QUATERNION', 'M2_FROM_SCENE',
+  '_missileSample', // 05.10: ревью G2 — slice E's homing sample
+].map(name => {
   const declaration = parsed.statements.filter(ts.isVariableStatement)
     .flatMap(s => [...s.declarationList.declarations]).find(d => d.name.getText(parsed) === name);
   assert.ok(declaration, name);
@@ -36,7 +39,7 @@ const js = ts.transpileModule(`${constants.join('\n')}\nclass Harness { ${method
 }).outputText;
 
 function harness(legacy) {
-  const deps = { THREE, ...animation, ...world, ...spells, ...particles, boneOf, updateBatchColours };
+  const deps = { THREE, ...animation, ...world, ...spells, ...particles, ...missileFlight, boneOf, updateBatchColours }; // 05.10: ревью G2 — + MissileFlight
   if (legacy) {
     // Restore exactly the two former eager propagation points around the unchanged real passes.
     deps.applyGlobalSequenceBones = (...args) => {
@@ -51,6 +54,8 @@ function harness(legacy) {
     visuals: [], pendingVisualAnimations: [], units: new Map(), environment: new Map(), gameObjects: new Map(),
     effects: new Map(), visualGroup: new THREE.Group(), effectGroup: new THREE.Group(),
     camera: new THREE.PerspectiveCamera(), billboard: {}, boneMatrix: new THREE.Matrix4(),
+    // 12.08: the effects pass culls emitters against the camera's frustum.
+    effectFrustum: new THREE.Frustum(), effectFrustumMatrix: new THREE.Matrix4(),
     baseUrl: 'fixture', replaySeed: 12340, experimentalShaderProfile: { fantasyGlow: false },
     programWarmup: { registerObject() {} }, pumpSpellPrewarm() {}, markExpiredSpellEffectPhases() {},
     // A new set is held until its programs are warm; this harness has no warm pass, so nothing holds.
@@ -97,7 +102,7 @@ function fixture(legacy, kind, flags, withEmitters = true) {
   const unitNode = new THREE.Group(), unitRig = animation.instantiateSkinned(template, material);
   const unitWvm = { attachments: [{ id: 7, bone: 3, position: [0, 0, 0] }], particleEmitters: [], ribbonEmitters: [] };
   unitNode.add(unitRig.root); scene.add(unitNode);
-  const unit = { node: unitNode, skinned: unitRig, wvm: unitWvm, template };
+  const unit = { node: unitNode, skinned: unitRig, wvm: unitWvm, template, attached: new Map() }; // 05.10: ревью G2 — weapon glows (E) read `attached`
   if (kind === 'root' || kind === 'bone') { instance.anchor = 1n; h.units.set(1n, unit); }
   if (kind === 'bone') instance.attachment = 7;
   const detail = new THREE.Object3D(); detail.position.set(.1, .2, .3); skinned.skeleton.bones[5].add(detail);

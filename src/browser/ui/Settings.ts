@@ -16,7 +16,7 @@ import { game } from "../game/Context.js";
 import { setMinimapRotation } from "./Minimap.js";
 import { setSpellbookRankFilter } from "./Spellbook.js";
 import {
-  SETTING_DEFINITIONS, coerceSetting, defaultSettings, parseSettings,
+  SETTING_DEFINITIONS, cameraCeilingYards, coerceSetting, defaultSettings, parseSettings,
   serialiseSettings, settingBoolean, settingDefinition, settingMatchesQuery, settingNumber,
   type SettingDefinition, type SettingGroup, type SettingValues,
 } from "./SettingsModel.js";
@@ -24,7 +24,7 @@ import { wireSettingsNavigation, type SettingsNavigation } from "./SettingsNavig
 import { sectionSettings } from "./SettingsSections.js";
 import { comparisonGraphicsSettings } from "./ComparisonProfile.js";
 import { enhancedGraphicsSettings } from "./EnhancedGraphics.js";
-import { Panel } from "./Widgets.js";
+import { setTip, Panel } from "./Widgets.js";
 import { setFpsCounterVisible } from "./FpsCounter.js";
 import {
   closeFrameXmlOptions, frameXmlOptionsOpen, toggleFrameXmlOptions,
@@ -80,7 +80,7 @@ export function settingOn(id: string): boolean {
  * visible without touching the wheel.
  */
 export function cameraMaxDistance(): number {
-  return settingNumber(settingsStore.value, "cameraMaxDistance");
+  return cameraCeilingYards(settingsStore.value);
 }
 
 /** The native window, or a stock options frame while the FrameXML interface owns the route. */
@@ -215,7 +215,7 @@ export function applySettings(): void {
   // Lowering the ceiling has to move a camera that is already outside it, or the option does
   // nothing at all until the next notch of the wheel and reads as broken. Raising it does not pull
   // the camera out: where the player put it is still where the player put it.
-  const maxDistance = settingNumber(values, "cameraMaxDistance");
+  const maxDistance = cameraCeilingYards(values);
   if (game.camera.distance > maxDistance) game.camera.distance = maxDistance;
   // The spellbook's own switch, pushed for the same reason as the render scale: the book is drawn
   // long before the account's blob lands, and the checkbox in its header has to follow the value
@@ -295,12 +295,13 @@ function build(): Panel {
   const enhanced = document.createElement("button");
   enhanced.type = "button";
   enhanced.textContent = "Улучшенная графика";
-  enhanced.title = "Мягкие тени, атмосферная дымка, солнечные лучи и эффекты воды. Масштаб отрисовки сохранится.";
+  setTip(enhanced, "Мягкие тени, атмосферная дымка, солнечные лучи и эффекты воды. Масштаб отрисовки сохранится.");
   enhanced.addEventListener("click", () => { applySettingsPreset("enhanced"); });
   const comparison = document.createElement("button");
   comparison.type = "button";
   comparison.textContent = "Контрольный профиль графики";
-  comparison.title = "Масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены.";
+  // 05.10-7.20: the profile now carries the reference install's Config.wtf values (ComparisonProfile.ts).
+  setTip(comparison, "Как оригинал владельца: освещение «сравнение» (исходный свет и тени), объекты 150%, трава 140 ярдов, масштаб 100%, без автокачества и дополнительных эффектов; остальные настройки сохранены.");
   comparison.addEventListener("click", () => { applySettingsPreset("comparison"); });
   const reset = document.createElement("button");
   reset.type = "button";

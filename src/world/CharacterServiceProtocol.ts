@@ -34,7 +34,7 @@ export function barberShopResultText(result: number): string {
 }
 
 export interface CharacterAppearance {
-  /** 0 female, 1 male — as the wire numbers them, which is not how the update fields do. */
+  /** `Gender` on the wire: 0 male, 1 female (SharedDefines.h `GENDER_MALE`/`GENDER_FEMALE`). */
   gender: number;
   skin: number;
   face: number;
@@ -60,6 +60,12 @@ export interface CharacterServiceResult {
  * name, a customise adds six appearance bytes, a faction change adds a seventh for the new race.
  * A failure is a single byte — the guid and the name are written only on success — so a reader
  * that always expects a guid reads the packet after this one on every rejected name.
+ *
+ * The six look bytes are read in the order TrinityCore writes them (gender, skin, face, hairStyle,
+ * hairColor, facialHair — CharacterHandler.cpp:2218-2253). Wow.exe 12340 reads them in the request's
+ * order instead (0x4d9190/0x4d92d0 → 0x4e29e0: gender, skin, hairColor, hairStyle, facialHair, face),
+ * so against this core the original stores a swapped look until the next SMSG_CHAR_ENUM — which
+ * `CharacterSelect_OnShow` asks for at once. This client keeps the core's meaning.
  */
 export function parseCharacterServiceResult(payload: Uint8Array, kind: "rename" | "customize" | "factionChange"): CharacterServiceResult {
   const reader = new PacketReader(payload);
@@ -102,4 +108,72 @@ export function parseCharacterServiceResult(payload: Uint8Array, kind: "rename" 
  */
 export function buildAlterAppearance(hairStyleId: number, hairColor: number, facialHairId: number, skinColorId = 0): Uint8Array {
   return new PacketWriter().u32(hairStyleId).u32(hairColor).u32(facialHairId).u32(skinColorId).toUint8Array();
+}
+
+/**
+ * `CharacterCustomizeFlags` (Player.cpp:181-187): the one value SMSG_CHAR_ENUM carries per character
+ * for the paid services — the core sends exactly one of them, customise first, then faction, then race
+ * (Player.cpp:1560-1567), from the `AT_LOGIN_CUSTOMIZE` (0x8), `AT_LOGIN_CHANGE_FACTION` (0x40) and
+ * `AT_LOGIN_CHANGE_RACE` (0x80) bits of the database row (Player.h:486-490).
+ */
+export const CHAR_CUSTOMIZE_FLAG_CUSTOMIZE = 0x00000001;
+export const CHAR_CUSTOMIZE_FLAG_FACTION = 0x00010000;
+export const CHAR_CUSTOMIZE_FLAG_RACE = 0x00100000;
+
+/** Which paid service a character's list entry offers. */
+export type PaidServiceKind = "customize" | "faction" | "race";
+
+/**
+ * The packet the client's CreateCharacter sends for a character loaded into the creation screen by
+ * CustomizeExistingCharacter (Wow.exe 0x4e0380): the race bit wins, then the faction bit, and anything
+ * else — the customise bit, or no bit at all — is a customisation. Since the core sends only one bit
+ * the order matters only to a list that carries two.
+ */
+export function paidServiceKind(customizeFlags: number): PaidServiceKind {
+  if ((customizeFlags & CHAR_CUSTOMIZE_FLAG_RACE) !== 0) return "race";
+  if ((customizeFlags & CHAR_CUSTOMIZE_FLAG_FACTION) !== 0) return "faction";
+  return "customize";
+}
+
+/** What a paid service sends: the character, the name it is to have and the look it is to wear. */
+export interface CharacterServiceRequest {
+  guid: bigint;
+  name: string;
+  /** 0 male, 1 female. */
+  gender: number;
+  skin: number;
+  face: number;
+  hairStyle: number;
+  hairColor: number;
+  facialHair: number;
+}
+
+function writeServiceBody(request: CharacterServiceRequest): PacketWriter {
+  // HandleCharCustomize (CharacterHandler.cpp:1393-1409) and HandleCharFactionOrRaceChange
+  // (:1645-1663) read guid, name, gender, skin, hairColor, hairStyle, facialHair, face — not
+  // CMSG_CHAR_CREATE's skin, face, hairStyle, hairColor, facialHair. Wow.exe's senders (0x4d8e10,
+  // 0x4d8f20, 0x4d9040) write the same order.
+  return new PacketWriter()
+    .u64(request.guid)
+    .cString(request.name)
+    .u8(request.gender)
+    .u8(request.skin)
+    .u8(request.hairColor)
+    .u8(request.hairStyle)
+    .u8(request.facialHair)
+    .u8(request.face);
+}
+
+/** CMSG_CHAR_CUSTOMIZE (0x473). */
+export function buildCustomizeCharacter(request: CharacterServiceRequest): Uint8Array {
+  return writeServiceBody(request).toUint8Array();
+}
+
+/**
+ * CMSG_CHAR_FACTION_CHANGE (0x4D9) and CMSG_CHAR_RACE_CHANGE (0x4F8): one body, the customisation's
+ * plus the new race's **id** (`ChrRaces`), not a button number. The opcode alone tells the core which
+ * of the two it is (CharacterHandler.cpp:1665).
+ */
+export function buildFactionOrRaceChange(request: CharacterServiceRequest & { race: number }): Uint8Array {
+  return writeServiceBody(request).u8(request.race).toUint8Array();
 }

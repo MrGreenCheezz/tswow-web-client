@@ -13,9 +13,14 @@ export type PlanSlice = "spells" | "quests" | "character" | "world" | "social" |
  * silently; it also fails when an entry here is already handled, so an implemented opcode has to
  * be struck off the list rather than left to rot. The count only ever goes down.
  *
- * Seeded at 347 entries when the coverage report was built and now **empty**: this client handles
- * all 514 live inbound opcodes. The map stays, and so does the test around it — the ratchet's job
- * from here is to fail the build the moment the core gains an opcode nobody has claimed.
+ * Seeded at 347 entries when the coverage report was built and now **empty**: every live inbound
+ * opcode has a branch. The map stays, and so does the test around it — the ratchet's job from here
+ * is to fail the build the moment the core gains an opcode nobody has claimed.
+ *
+ * A branch is not an effect. Accounting of 2026-10-01 (5.29), checked by the same test against
+ * `IgnoredOpcodes.ts`: 514 live inbound opcodes: 485 with an effect, 18 without one by design, 0 planned, 11 without a plan item
+ * yet — the last three counted at run time by `webclientIgnoredOpcodes()` (05.10-A7a-H: MIRRORIMAGE_DATA left, 6.11б). "With an effect" means
+ * the branch changes state or emits something; whether anything reads that state is 5.28's ratchet.
  *
  * The count goes down as slices land, and up when the measurement itself is corrected — which is
  * the point of keeping it. Fixing the MSG_ blind spot in `tools/generate-protocol.mjs` raised the

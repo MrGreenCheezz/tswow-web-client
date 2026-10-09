@@ -140,3 +140,92 @@ test("a worker that dies under a job fails it as retryable, and the next job get
     await box.remove();
   }
 });
+
+/** A stand-in worker: answers each job after a pause, and fails any job that arrives while it is busy. */
+async function scriptedWorker(box) {
+  const script = join(box.textures, "scripted.mjs");
+  await writeFile(script, [
+    "let busy = false;",
+    "process.on('message', (job) => {",
+    "  if (busy) { process.send({ id: job.id, ok: false, message: 'overlap', rss: 0 }); return; }",
+    "  busy = true;",
+    "  setTimeout(() => { busy = false; process.send({ id: job.id, ok: true, rss: 0 }); }, 40);",
+    "});",
+    "process.on('disconnect', () => process.exit(0));",
+  ].join("\n"));
+  return script;
+}
+
+test("10.20: the child gets one job at a time, the most urgent waiting one next, equal ones in arrival order", async () => {
+  const box = await machine();
+  const worker = new AssetWorker(box.options({ script: await scriptedWorker(box) }));
+  try {
+    const finished = [];
+    const job = (name, priority) => worker.run({ kind: "texture", path: name }, priority).then(() => finished.push(name));
+    const all = [
+      job("first", 0),
+      job("low", 0),
+      job("high", 2),
+      job("middle", 1),
+      job("high-later", 2),
+    ];
+    assert.equal(worker.waiting, 4, "one job is with the child, four wait on this side");
+    await Promise.all(all);
+    assert.deepEqual(finished, ["first", "high", "high-later", "middle", "low"]);
+    assert.equal(box.spawned.length, 1, "one process for all of them");
+  } finally {
+    worker.close();
+    await box.remove();
+  }
+});
+
+test("10.20: recycle with jobs waiting sends them to a new child; close rejects them as retryable", async () => {
+  const box = await machine();
+  const worker = new AssetWorker(box.options({ script: await scriptedWorker(box) }));
+  try {
+    const first = worker.run({ kind: "texture", path: "a" }, 0);
+    const second = worker.run({ kind: "texture", path: "b" }, 0);
+    worker.recycle();
+    await first;
+    await second;
+    assert.equal(box.spawned.length, 2, "the waiting job went to a fresh child after the old one finished");
+
+    const running = worker.run({ kind: "texture", path: "c" }, 0);
+    const waiting = worker.run({ kind: "texture", path: "d" }, 0);
+    worker.close();
+    for (const outcome of await Promise.allSettled([running, waiting])) {
+      assert.equal(outcome.status, "rejected");
+      assert.notEqual(outcome.reason.exitCode, SOURCE_MISSING_EXIT, "closing is not «no such file»");
+    }
+  } finally {
+    worker.close();
+    await box.remove();
+  }
+});
+
+test("10.20 review: a job the child never answers times out, the child is killed, and the waiting job gets a fresh one", async () => {
+  // Every family shares one child, so one hung job would otherwise stall every icon, texture and
+  // glue-screen file behind it for the life of the gateway.
+  const box = await machine();
+  const hang = join(box.textures, "hang.mjs");
+  await writeFile(hang, "process.on('message', () => {});\n");
+  const worker = new AssetWorker(box.options({ script: hang, jobTimeoutMs: 300 }));
+  try {
+    const started = Date.now();
+    const stuck = worker.run({ kind: "texture", path: "a" }, 0);
+    const waiting = worker.run({ kind: "texture", path: "b" }, 0);
+    const failure = await stuck.catch((error) => error);
+    assert.ok(failure instanceof Error, "the hung job fails");
+    assert.match(failure.message, /timed out/);
+    assert.notEqual(failure.exitCode, SOURCE_MISSING_EXIT, "a 500 the browser retries, not a final 404");
+    assert.ok(Date.now() - started < 5_000);
+    await Promise.race([exited(box.spawned[0]), new Promise((done) => setTimeout(done, 5_000))]);
+    assert.ok(box.spawned[0].exitCode !== null || box.spawned[0].signalCode !== null, "the hung child is killed");
+    await new Promise((done) => setTimeout(done, 100));
+    assert.equal(box.spawned.length, 2, "the waiting job went to a new child");
+    assert.equal((await waiting.catch((error) => error)).message.includes("timed out"), true, "and times out there too");
+  } finally {
+    worker.close();
+    await box.remove();
+  }
+});

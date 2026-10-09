@@ -251,7 +251,11 @@ export interface KnockBack {
   directionSin: number;
   /** Yards a second across the ground. */
   speedXY: number;
-  /** Yards a second upwards. The wire already carries it negated, so it is used as it arrives. */
+  /**
+   * The vertical speed exactly as the wire carries it: `float(-speedZ)` (Unit.cpp:13237, :13672),
+   * so negative is up. It goes into a MovementInfo jump block as it is (that block uses the same
+   * sign); the physics wants `-speedZ` (`KnockbackImpulse.knockbackImpulse`).
+   */
   speedZ: number;
 }
 
@@ -275,6 +279,35 @@ export function parseKnockBack(payload: Uint8Array): KnockBack {
   const directionSin = reader.f32();
   const speedXY = reader.f32();
   return { guid, counter, directionCos, directionSin, speedXY, speedZ: reader.f32() };
+}
+
+/**
+ * The mover's state right after a knock back (5.01): falling, from a fall clock of zero, along the
+ * jump the server chose. This is what the acknowledgement must say, because `HandleMoveKnockBackAck`
+ * stores it as the mover's movement and relays it with its jump block to everyone in range
+ * (MovementHandler.cpp:651-663) — an acknowledgement that still says "standing" is a knock back
+ * nobody else ever sees. The jump block keeps the wire's sign and the sine-first order of the
+ * MovementInfo (`writeMovementInfoBody`); the packet to the victim had cosine first.
+ */
+export function knockBackMovement(knockBack: KnockBack, movement: MovementInfo): MovementInfo & Required<Pick<MovementInfo, "jump" | "fallTime">> {
+  // L16-review: aboard a transport the block is in its frame, as Wow.exe writes it (0x006e9ff0 turns the
+  // server's world direction by the transport's inverse matrix before the ACK) and as the heartbeats after
+  // it carry it (MovementRide.rideImpulse); the carrier's heading is the world facing less the seat's.
+  let cos = knockBack.directionCos;
+  let sin = knockBack.directionSin;
+  if (movement.transport) {
+    const heading = movement.position.orientation - movement.transport.orientation;
+    const c = Math.cos(heading);
+    const s = Math.sin(heading);
+    cos = knockBack.directionCos * c + knockBack.directionSin * s;
+    sin = knockBack.directionSin * c - knockBack.directionCos * s;
+  }
+  return {
+    ...movement,
+    flags: (movement.flags | MOVEMENT_FLAGS.falling) & ~MOVEMENT_FLAGS.swimming,
+    fallTime: 0,
+    jump: { velocity: knockBack.speedZ, sinAngle: sin, cosAngle: cos, speed: knockBack.speedXY }, // L16-review: `sin`, `cos`
+  };
 }
 
 /** `CMSG_MOVE_KNOCK_BACK_ACK`: `packedGuid, u32 counter, MovementInfo` — `MovementHandler.cpp:611`. */

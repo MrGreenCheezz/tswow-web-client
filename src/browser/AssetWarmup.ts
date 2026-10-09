@@ -14,6 +14,7 @@ import {
 import type { CharacterAppearance } from "../gateway/CharacterAppearance.js";
 import type { SpellVisualMetadata } from "../gateway/SpellVisual.js";
 import type { WorldObjectState } from "../world/WorldState.js";
+import { PLAYER_FLAGS_HIDE_CLOAK, PLAYER_FLAGS_HIDE_HELM } from "../world/CharacterStatFields.js"; // 05.10 review A7a-A 6.09
 import type { ItemMetadataClient } from "./ItemMetadata.js";
 import type { CreatureModelClient, EquippedItem } from "./CreatureModelClient.js";
 import type { SpellVisualClient } from "./SpellVisualClient.js";
@@ -627,7 +628,13 @@ export class SessionAssetWarmup {
     if (player.typeId !== 4) return;
 
     const equipment: EquippedItem[] = [];
+    // 05.10 review A7a-A 6.09: a helm or cloak the player hid is not worn for the look, exactly as
+    // `ui/Frames.ts visibleEquipmentFor` leaves it out — otherwise this asks for a second look.
+    const hiddenWorn = (player.fields.get(UPDATE_FIELDS.PLAYER_FLAGS.offset) ?? 0)
+      & (PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK);
     for (const { slot, entry } of worn) {
+      if ((slot === 0 && (hiddenWorn & PLAYER_FLAGS_HIDE_HELM) !== 0)
+        || (slot === 14 && (hiddenWorn & PLAYER_FLAGS_HIDE_CLOAK) !== 0)) continue; // 05.10 review A7a-A 6.09
       const item = this.#clients.itemMetadata.get(entry);
       // Wait for the complete outfit: asking with a partial list creates and retains a second,
       // obsolete appearance while the remaining item rows arrive.
@@ -645,6 +652,7 @@ export class SessionAssetWarmup {
       bytes & 0xff, (bytes >>> 16) & 0xff,
       look & 0xff, (look >>> 8) & 0xff, (look >>> 16) & 0xff, (look >>> 24) & 0xff,
       look2 & 0xff, equipment,
+      (bytes >>> 8) & 0xff, // 05.10-A7a-A 6.10: the same key `ui/Frames.ts unitModelFor` asks with
     );
     if (!appearance) return;
     this.#addModels(

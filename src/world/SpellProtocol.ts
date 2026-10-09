@@ -142,8 +142,9 @@ export function parseInitialSpells(payload: Uint8Array): InitialSpells {
 }
 
 /**
- * `CMSG_CAST_SPELL` naming no unit, so that the server chooses one, but naming a point, so that a
- * ground spell still lands where the player is looking.
+ * `CMSG_CAST_SPELL` for an ordinary cast: no unit unless the caller names one (`options.unitTarget`
+ * — a macro's `[@unit]`, the ground reticle's unit in `WorldClient`), so that the server chooses,
+ * but a point, so that a ground spell still lands where the player is looking.
  *
  * Writing `TARGET_FLAG_UNIT` and the selected guid is what stopped a heal or a buff landing while
  * an enemy was selected: the explicit target the client names wins, and a friendly spell aimed at
@@ -177,24 +178,16 @@ export function parseInitialSpells(payload: Uint8Array): InitialSpells {
  * the shape for a caller that does not yet know where anybody is standing — before the first
  * `SMSG_UPDATE_OBJECT`, in a test — and it is a worse answer than a point, not an equal one.
  *
- * Three things are still paid for the empty unit flag, and none of them is invisible:
+ * Two things are still paid for the empty unit flag, and neither is invisible:
  * (a) the packet no longer matches what the original client sends when the target is legitimate;
- * (b) «на себя / на выбранную цель» in `WorldClient.castSpell` is now a guess — only
- *     `SMSG_SPELL_GO` knows where the cast actually went;
- * (c) auto-repeat restarts instead of being ignored, and that breaks today rather than later.
- *     `HandleCastSpellOpcode` (`SpellHandler.cpp:388-398`) drops a repeat of an auto-repeat
- *     ranged spell only when the incoming block's `GetUnitTargetGUID` equals the running spell's
- *     (`:392`) — and the running spell's is the selection the server itself wrote there on
- *     `Spell.cpp:706`, while ours is now always zero. So the guard the core's own comment says is
- *     there "to prevent 'interrupt' message" (`:386-387`) never fires: `Spell::prepare` runs
- *     again, `Unit::SetCurrentCastSpell` replaces the running auto-repeat (`Unit.cpp:3290-3294`,
- *     `:3350-3355`) and sets `m_AutoRepeatFirstCast` (`:3341`), which `_UpdateAutoRepeatSpell`
- *     turns into a forced 500 ms ranged timer for everything that is not Auto Shot
- *     (`:3256-3257`). Two auto-repeat ranged spells in this dataset are reachable from the book —
- *     75 Auto Shot and 5019 Shoot, measured over the six that carry
- *     `SPELL_ATTR2_AUTOREPEAT_FLAG` — and `spellButtonUsable` greys out only passives, so pressing
- *     either a second time while it runs is one click away. Fixing it needs the guid back for
- *     exactly those two spells, which needs an attribute this gateway does not serve yet.
+ * (b) with no unit named, «на себя / на выбранную цель» in `WorldClient.castSpell` is a guess —
+ *     only `SMSG_SPELL_GO` knows where the cast actually went.
+ * A third cost — auto-repeat restarting instead of being ignored — is gone. `HandleCastSpellOpcode`
+ * (`SpellHandler.cpp:388-398`) drops a repeat of an auto-repeat ranged spell only when the incoming
+ * block's `GetUnitTargetGUID` equals the running spell's (`:392`); spells with
+ * `SPELL_ATTR2_AUTOREPEAT_FLAG` (Auto Shot and Shoot in the book; `WorldClient.setAutoRepeatSpellIds`)
+ * now go out through `buildAutoRepeatCastSpell` below with the unit named, so that guard sees the
+ * same guid.
  */
 export function buildCastSpell(
   spellId: number,
@@ -389,6 +382,55 @@ export function parseSpellCastHeader(payload: Uint8Array): SpellCastHeader {
     castFlags: reader.u32(),
     castTime: reader.u32(),
   };
+}
+
+/** `CAST_FLAG_*` (Spell.h:80-112) that add words to SMSG_SPELL_START after the target block. */
+const CAST_FLAG_AMMO = 0x20;
+const CAST_FLAG_POWER_LEFT_SELF = 0x800;
+export const CAST_FLAG_PENDING = 0x1;
+export const CAST_FLAG_IMMUNITY = 0x04000000;
+
+/** `SMSG_SPELL_START` with the caster's immunities (3.02: notInterruptible). */
+export interface SpellStart extends SpellCastHeader {
+  targets?: SpellCastTargets;
+  /**
+   * `CAST_FLAG_IMMUNITY`'s two words, written by `Spell::SendSpellStart` (Spell.cpp:4416-4425,
+   * SpellPackets.cpp:162-163): the caster's school immunity mask and the spell's mechanic immunity
+   * mask. Wow.exe keeps them on the casting unit (+0xa64, +0xa68) for 0x007262e0. 0 when absent.
+   */
+  schoolImmunityMask: number;
+  mechanicImmunityMask: number;
+}
+
+/**
+ * `SMSG_SPELL_START` to the immunity words: header, targets (SpellPackets.cpp:65-80), then the
+ * remaining power (`CAST_FLAG_POWER_LEFT_SELF`), the ammo pair (`CAST_FLAG_AMMO`) and the immunities.
+ * A start has no hit list, rune list or missile trajectory (those are GO's). A short tail gives zeros.
+ */
+export function parseSpellStart(payload: Uint8Array): SpellStart {
+  const reader = new PacketReader(payload);
+  const header: SpellCastHeader = {
+    casterGuid: reader.packedGuid(),
+    casterUnit: reader.packedGuid(),
+    castId: reader.u8(),
+    spellId: reader.u32(),
+    castFlags: reader.u32(),
+    castTime: reader.u32(),
+  };
+  const start: SpellStart = { ...header, schoolImmunityMask: 0, mechanicImmunityMask: 0 };
+  const targets = parseSpellCastTargets(reader);
+  if (targets !== undefined) start.targets = targets;
+  try {
+    if ((header.castFlags & CAST_FLAG_POWER_LEFT_SELF) !== 0) reader.u32();
+    if ((header.castFlags & CAST_FLAG_AMMO) !== 0) { reader.u32(); reader.u32(); }
+    if ((header.castFlags & CAST_FLAG_IMMUNITY) !== 0) {
+      start.schoolImmunityMask = reader.u32();
+      start.mechanicImmunityMask = reader.u32();
+    }
+  } catch {
+    // An older capture that stops after the header keeps no immunity.
+  }
+  return start;
 }
 
 /**

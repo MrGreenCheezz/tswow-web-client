@@ -60,7 +60,9 @@ function character(
     y: 0,
     z: 0,
     guildId: 0,
-    flags: 0,
+    // CHARACTER_FLAG_DECLINED, as a core with `DeclinedNames = 0` (the .dist default) marks every
+    // character (Player.cpp:1555): otherwise these Cyrillic names would stop at the declension frame.
+    flags: 0x02000000,
     customizeFlags: 0,
     firstLogin: false,
     petDisplayId: 0,

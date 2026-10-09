@@ -234,10 +234,24 @@ test("live reputation without a resolver remains truthfully unresolved", () => {
 test("live faction fixture maps server at-war/inactive flags without changing the 3.3.5 tuple", () => {
   const events = new FakeEvents();
   const selfGuid = 0x102n;
+  // 5.19: the seam keeps no overrides; it asks the world, which flips its own copy and emits
+  // REPUTATION_CHANGED (WorldClient.setFactionAtWar/setFactionInactive). This double does the same.
+  const sent = [];
   const world = {
     state: { selfGuid, objects: new Map() },
     actionButtons: [], casts: new Map(), channels: new Map(), events,
     cooldownRemaining: () => 0,
+    setFactionAtWar(listId, atWar) {
+      sent.push(["war", listId, atWar]);
+      rows = rows.map((row) => row.listId === listId ? { ...row, atWarWith: atWar } : row);
+      events.emit("REPUTATION_CHANGED");
+      return undefined;
+    },
+    setFactionInactive(listId, inactive) {
+      sent.push(["inactive", listId, inactive]);
+      rows = rows.map((row) => row.listId === listId ? { ...row, isInactive: inactive } : row);
+      events.emit("REPUTATION_CHANGED");
+    },
   };
   const store = { field: () => () => {}, any: () => () => {}, events };
   let rows = [
@@ -301,17 +315,20 @@ test("live faction fixture maps server at-war/inactive flags without changing th
     "repeating operations at the current effective state is idempotent",
   );
 
-  // A metadata refresh must not erase explicit UI overrides, even if the raw server snapshot
-  // arrives with the old values again.
+  // Wow.exe 0x005d1c10 sends whatever the current state; the edge still deduplicates by shape.
+  assert.deepEqual(sent.filter(([kind]) => kind === "inactive"), [
+    ["inactive", 7, false], ["inactive", 8, true], ["inactive", 7, false], ["inactive", 8, true],
+  ]);
+  assert.deepEqual(sent.filter(([kind]) => kind === "war"), [["war", 7, false], ["war", 8, true]]);
+  // The world is the only state: a later server snapshot is what the seam shows.
   rows = rows.map((row) => ({ ...row, atWarWith: row.listId === 7, isInactive: row.listId === 7 }));
   events.emit("REPUTATION_CHANGED");
-  assert.deepEqual(call("GetFactionInfo", seam, 1).slice(6, 8), [false, true]);
-  assert.deepEqual(call("GetFactionInfo", seam, 2).slice(6, 8), [true, true]);
-  assert.deepEqual(call("IsFactionInactive", seam, 1), [false]);
-  assert.deepEqual(call("IsFactionInactive", seam, 2), [true]);
+  assert.deepEqual(call("GetFactionInfo", seam, 1).slice(6, 8), [true, true]);
+  assert.deepEqual(call("GetFactionInfo", seam, 2).slice(6, 8), [false, true]);
+  assert.deepEqual(call("IsFactionInactive", seam, 1), [true]);
+  assert.deepEqual(call("IsFactionInactive", seam, 2), [false]);
   seam.detach();
   const afterDetach = fired.length;
-  call("FactionToggleAtWar", seam, 1);
-  call("SetFactionActive", seam, 2);
-  assert.equal(fired.length, afterDetach, "detached seam ignores local state changes");
+  events.emit("REPUTATION_CHANGED");
+  assert.equal(fired.length, afterDetach, "detached seam ignores world edges");
 });

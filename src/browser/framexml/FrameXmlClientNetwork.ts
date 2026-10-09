@@ -244,15 +244,27 @@ export class FrameXmlClientNetworkBridge {
   #closed = false;
 
   readonly #runCallback: (callback: () => void) => void;
+  readonly #onChange: ((opcodes: ReadonlySet<number>) => void) | undefined;
 
+  /**
+   * `onChange` hears the set of opcodes the Lua is subscribed to whenever it grows, and the empty
+   * set at `close()` — what the JSON windows of the same content-studio screen step aside for (9.08).
+   */
   constructor(
     vm: GlueLuaVm,
     transport: FrameXmlClientNetworkTransport,
     runCallback: (callback: () => void) => void = (callback) => callback(),
+    onChange?: (opcodes: ReadonlySet<number>) => void,
   ) {
     this.#vm = vm;
     this.#transport = transport;
     this.#runCallback = runCallback;
+    this.#onChange = onChange;
+  }
+
+  /** The custom opcodes the Lua has an `OnCustomPacket` subscription for. */
+  opcodes(): ReadonlySet<number> {
+    return new Set(this.#subscriptions.keys());
   }
 
   /** Register the C-API globals before any FrameXML/TSAddon Lua executes. */
@@ -278,10 +290,16 @@ export class FrameXmlClientNetworkBridge {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    const had = this.#subscriptions.size > 0;
     for (const unsubscribe of this.#subscriptions.values()) unsubscribe();
     this.#subscriptions.clear();
     this.#writes.clear();
     this.#read = undefined;
+    if (had) this.#notify();
+  }
+
+  #notify(): void {
+    try { this.#onChange?.(this.opcodes()); } catch { /* an observer must not break the Lua call */ }
   }
 
   #call(args: readonly unknown[]): readonly unknown[] {
@@ -360,6 +378,7 @@ export class FrameXmlClientNetworkBridge {
       }
     });
     this.#subscriptions.set(opcode, unsubscribe);
+    this.#notify();
   }
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { game } from "../game/Context.js";
-import { resolveFrameXmlReputationRows } from "../framexml/FrameXmlReputationResolver.js";
+import { frameXmlReputationBase, resolveFrameXmlReputationRows } from "../framexml/FrameXmlReputationResolver.js";
 import { reputationRankName } from "./Format.js";
 import { Bar, Panel, textLine } from "./Widgets.js";
 
@@ -93,14 +93,17 @@ export function showReputation(): void {
     state.className = "muted";
     state.textContent = row.atWarWith ? "Война" : row.isInactive ? "Неактивна" : "";
     foot.append(state);
-    // War is the one thing the server lets the client change here, and only where the row says
-    // so: peace-forced factions refuse, and the refusal arrives as faction state, not as silence.
+    // War is the one thing this window changes, and only where the row says so. The server
+    // answers nothing: WorldClient.setFactionAtWar flips the world's copy of the flag as it sends
+    // (Wow.exe 0x005d0a10) and REPUTATION_CHANGED repaints this list at once. Peace below -3000
+    // or in combat is refused on the client and the row stays as it was.
     if (row.canToggleAtWar) {
       const war = document.createElement("button");
       war.type = "button";
       war.textContent = row.atWarWith ? "Заключить мир" : "Объявить войну";
       war.setAttribute("aria-pressed", String(row.atWarWith));
-      war.addEventListener("click", () => world.setFactionAtWar(row.listId, !row.atWarWith));
+      war.addEventListener("click", () => world.setFactionAtWar(row.listId, !row.atWarWith,
+        frameXmlReputationBase(world, game.factions?.reputationCatalog, row.listId)));
       foot.append(war);
     }
     block.append(foot);

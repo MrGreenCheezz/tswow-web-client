@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { STOCK_BINDING_COMMANDS } from "../dist/code/generated/stockBindings.js";
 import test from "node:test";
 
 // The binding C API over input/Bindings.ts (FrameXmlBinding.ts): key names, the Bindings.xml-ordered
@@ -7,7 +8,7 @@ import test from "node:test";
 const bindings = await import("../dist/code/browser/input/Bindings.js");
 const {
   FrameXmlBindingModel, FRAMEXML_BINDING_BINDINGS, FRAMEXML_STOCK_BINDING_SECTIONS, FRAMEXML_WEBCLIENT_BINDING_ROWS,
-  frameXmlKeyName, frameXmlKeyToChord, frameXmlChordToKey, frameXmlBindingCommand,
+  frameXmlKeyName, frameXmlKeyToChord, frameXmlChordToKey, frameXmlBindingCommand, FRAMEXML_BINDING_PRELUDE,
 } = await import("../dist/code/browser/framexml/FrameXmlBinding.js");
 
 function memoryStorage() {
@@ -77,7 +78,10 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
   const commands = rows.map((row) => row[0]);
   assert.deepEqual(commands.filter((command) => command.startsWith("HEADER_")), [
     "HEADER_MOVEMENT", "HEADER_CHAT", "HEADER_ACTIONBAR", "HEADER_TARGETING", "HEADER_INTERFACE", "HEADER_MISC",
-    "HEADER_MULTIACTIONBAR", "HEADER_BLANK4", "HEADER_BLANK5", "HEADER_BLANK6", "HEADER_WEBCLIENT",
+    "HEADER_CAMERA", // DEC-B 3.11: the camera views' eighteen rows (input/StockActions.ts)
+    "HEADER_MULTIACTIONBAR", "HEADER_BLANK4", "HEADER_BLANK5", "HEADER_BLANK6",
+    "HEADER_VEHICLE", // 11.02-input: the VEHICLE section's nine rows (input/StockActions.ts)
+    "HEADER_WEBCLIENT",
   ]);
   assert.deepEqual(rows[0], ["HEADER_MOVEMENT"], "a header row has no keys");
   assert.deepEqual(rows[1], ["MOVEFORWARD", "W", "UP"]);
@@ -95,9 +99,25 @@ test("GetBinding lists Bindings.xml's sections in order, then every WebClient-on
   assert.equal(model.label("WEBCLIENT_TOGGLEKEYBINDINGS"), "Привязки клавиш");
   assert.equal(model.binding(0).length, 0);
   assert.equal(model.binding(model.count() + 1).length, 0);
-  // Stock order inside a section: the rows keep Bindings.xml's order (TARGETNEARESTENEMY:84 … FOCUSTARGET:115).
+  // Stock order inside a section: the rows keep Bindings.xml's order, the 3.11 rows (StockActions.ts)
+  // in their own places among them (TARGETNEARESTENEMY … TARGETMOUSEOVER).
   assert.deepEqual(FRAMEXML_STOCK_BINDING_SECTIONS.find((section) => section.header === "TARGETING").rows.map(([command]) => command),
-    ["TARGETNEARESTENEMY", "TARGETPREVIOUSENEMY", "TARGETSELF", "NAMEPLATES", "INTERACTTARGET", "ATTACKTARGET", "PETATTACK", "FOCUSTARGET"]);
+    ["TARGETNEARESTENEMY", "TARGETPREVIOUSENEMY",
+      // L2 3.11: the friend and player modes and the two history keys, in Bindings.xml's places.
+      "TARGETNEARESTFRIEND", "TARGETPREVIOUSFRIEND", "TARGETNEARESTENEMYPLAYER", "TARGETPREVIOUSENEMYPLAYER",
+      "TARGETNEARESTFRIENDPLAYER", "TARGETPREVIOUSFRIENDPLAYER",
+      "TARGETSELF", "TARGETPARTYMEMBER1", "TARGETPARTYMEMBER2",
+      "TARGETPARTYMEMBER3", "TARGETPARTYMEMBER4", "TARGETPET", "TARGETPARTYPET1", "TARGETPARTYPET2", "TARGETPARTYPET3",
+      "TARGETPARTYPET4", "TARGETLASTHOSTILE", "TARGETLASTTARGET", // L2 3.11
+      "NAMEPLATES", "FRIENDNAMEPLATES", "ALLNAMEPLATES", "INTERACTTARGET", "ASSISTTARGET",
+      "ATTACKTARGET", "STARTATTACK", "PETATTACK", "FOCUSTARGET", "TARGETFOCUS", "TARGETMOUSEOVER"]);
+  const order = new Map(STOCK_BINDING_COMMANDS.map((command, index) => [command.name, index]));
+  for (const section of FRAMEXML_STOCK_BINDING_SECTIONS) {
+    const indices = section.rows.map(([command]) => order.get(command));
+    assert.ok(indices.every((index, at) => index !== undefined && (at === 0 || index > indices[at - 1])),
+      `${section.header} rows follow Bindings.xml`);
+    for (const [command] of section.rows) assert.equal(STOCK_BINDING_COMMANDS[order.get(command)].header, section.header, command);
+  }
 });
 
 test("GetBindingKey and GetBindingAction read the live table; Escape is the fixed game menu", () => {
@@ -106,12 +126,15 @@ test("GetBindingKey and GetBindingAction read the live table; Escape is the fixe
   assert.deepEqual(model.bindingKey("TOGGLECHARACTER0"), ["C"]);
   assert.deepEqual(model.bindingKey("OPENCHAT"), ["ENTER", "NUMPADENTER"]);
   assert.deepEqual(model.bindingKey("TOGGLEGAMEMENU"), ["ESCAPE"]);
-  assert.deepEqual(model.bindingKey("TOGGLESHEATH"), [], "a command this client has no verb for has no key");
+  assert.deepEqual(model.bindingKey("TOGGLESHEATH"), ["Z"], "3.11: the stock key DefaultBindings.wtf ships");
+  assert.deepEqual(model.bindingKey("TARGETPARTYMEMBER1"), ["F2"]);
+  assert.deepEqual(model.bindingKey("COMBATLOGPAGEUP"), [], "a command this client has no verb for has no key");
   assert.deepEqual(model.bindingKey("CLICK ActionButton1:LeftButton"), []);
   assert.equal(model.bindingAction("SHIFT-1"), "ACTIONPAGE1");
   assert.equal(model.bindingAction("W"), "MOVEFORWARD");
   assert.equal(model.bindingAction("ESCAPE"), "TOGGLEGAMEMENU");
-  assert.equal(model.bindingAction("F11"), undefined);
+  assert.equal(model.bindingAction("F11"), "TOGGLEBAG4");
+  assert.equal(model.bindingAction("F12"), undefined, "the developer tools' key is left off");
   assert.equal(model.bindingAction("MOUSEWHEELUP"), undefined);
   // A rebinding in the native window (bindKey) is read on the next call.
   bindings.bindKey("action1", 0, "KeyZ");
@@ -140,7 +163,7 @@ test("SetBinding fills key1 then key2, steals the key from its holder and refuse
   assert.equal(model.setBinding("MOUSEWHEELUP", "JUMP"), false);
   assert.equal(model.setBinding("BUTTON3", "JUMP"), false);
   assert.equal(model.setBinding("ESCAPE", "JUMP"), false);
-  assert.equal(model.setBinding("F8", "TOGGLESHEATH"), false);
+  assert.equal(model.setBinding("F8", "COMBATLOGPAGEUP"), false);
   assert.equal(model.setBinding("F8", "TOGGLEGAMEMENU"), false);
   assert.deepEqual(bindings.keysOf("jump"), ["Space", "F7"]);
   // The change is in the table's own saved blob, the one the native window reads.
@@ -258,7 +281,7 @@ test("RunBinding runs the action's verb once on the way down; module actions lis
   model.run("TOGGLEWORLDMAP");
   model.run("TOGGLEWORLDMAP", "up");
   model.run("WEBCLIENT_TOGGLEDIAGNOSTICS", "down");
-  model.run("TOGGLESHEATH");
+  model.run("COMBATLOGPAGEUP");
   assert.deepEqual(runs, ["toggleWorldMap", "toggleDiagnostics"]);
   let ran = 0;
   bindings.addModuleAction({ action: "module:minimap-hub:toggle", module: "test", group: "Модули", label: "Пинг", run: () => { ran += 1; } });
@@ -309,7 +332,73 @@ test("the seam bindings answer the neutral empty table without a model, and the 
   const seam = { keyBindings: model };
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingKey(seam, ["JUMP"]), ["SPACE"]);
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["SPACE"]), ["JUMP"]);
-  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["F11"]), []);
+  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["F11"]), ["TOGGLEBAG4"]);
+  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingByKey(seam, ["F12"]), []);
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.WebClientBindingLabel(seam, ["WEBCLIENT_TOGGLEDIAGNOSTICS"]), ["Диагностика"]);
   assert.deepEqual(FRAMEXML_BINDING_BINDINGS.WebClientBindingLabel(seam, ["JUMP"]), []);
+});
+
+test("3.11 D: SetBindingSpell/Item/Macro bind an unlisted command that presses through the mount's runner", async () => {
+  const { model, events } = fresh();
+  const ran = [];
+  model.setCommandRunner((kind, value) => ran.push([kind, value]));
+  const listedBefore = model.count();
+  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.SetBindingSpell({ keyBindings: model }, ["F7", "Огненный шар"]), [true]);
+  assert.equal(model.setBindingCommand("ITEM", "SHIFT-F7", "Камень возвращения"), true);
+  assert.equal(model.setBindingCommand("MACRO", "CTRL-F7", 3), true);
+  assert.equal(model.setBindingCommand("SPELL", "F8", ""), false, "an empty name is no command");
+  assert.equal(model.setBindingCommand("MACRO", "F8", -1), false);
+  assert.equal(model.bindingAction("F7"), "SPELL Огненный шар");
+  assert.deepEqual(model.bindingKey("SPELL Огненный шар"), ["F7"]);
+  assert.equal(model.count(), listedBefore, "GetBinding does not list them, as KeyBindingFrame does not");
+  bindings.moduleActionFor("F7").run();
+  bindings.moduleActionFor("Shift+F7").run();
+  bindings.moduleActionFor("Ctrl+F7").run();
+  assert.deepEqual(ran, [["SPELL", "Огненный шар"], ["ITEM", "Камень возвращения"], ["MACRO", "3"]]);
+  await settle();
+  assert.ok(events.events.some(([event]) => event === "UPDATE_BINDINGS"));
+  // A VM teardown drops the actions and keeps the keys, as for CLICK bindings.
+  model.detach();
+  assert.equal(bindings.moduleActionFor("F7"), undefined);
+  assert.deepEqual(bindings.keysOf("SPELL Огненный шар"), ["F7", ""]);
+});
+
+test("3.11 D: an override takes the key over the table until its owner clears it, and is never saved", async () => {
+  const { model, storage } = fresh();
+  const seam = { keyBindings: model };
+  const ran = [];
+  model.setCommandRunner((kind, value) => ran.push([kind, value]));
+  model.setClicker((button, mouse) => ran.push(["CLICK", button, mouse]));
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBinding(seam, ["table: 0x1", false, "W", "JUMP"]);
+  assert.equal(model.bindingAction("W"), "MOVEFORWARD", "without checkOverride: the table");
+  assert.deepEqual(FRAMEXML_BINDING_BINDINGS.GetBindingAction(seam, ["W", true]), ["JUMP"]);
+  assert.equal(bindings.overrideFor("KeyW").command, "JUMP");
+  // A priority override beats a normal one; clearing its owner gives the key back to the next.
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBindingSpell(seam, ["table: 0x2", true, "W", "Рывок"]);
+  assert.equal(model.bindingAction("W", true), "SPELL Рывок");
+  bindings.overrideFor("KeyW").run();
+  assert.deepEqual(ran, [["SPELL", "Рывок"]]);
+  // Set after it, a normal override still yields to the priority one.
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBinding(seam, ["table: 0x3", false, "W", "SITORSTAND"]);
+  assert.equal(model.bindingAction("W", true), "SPELL Рывок");
+  FRAMEXML_BINDING_BINDINGS.ClearOverrideBindings(seam, ["table: 0x3"]);
+  FRAMEXML_BINDING_BINDINGS.ClearOverrideBindings(seam, ["table: 0x2"]);
+  assert.equal(model.bindingAction("W", true), "JUMP");
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBindingClick(seam, ["table: 0x1", false, "F9", "ActionButton3"]);
+  bindings.overrideFor("F9").run();
+  assert.deepEqual(ran.at(-1), ["CLICK", "ActionButton3", "LeftButton"]);
+  assert.equal(model.setOverride("table: 0x1", false, "F10", "NOSUCHCOMMAND"), false);
+  // Nil gives one key back; the owner's other keys stay.
+  FRAMEXML_BINDING_BINDINGS.SetOverrideBinding(seam, ["table: 0x1", false, "W", undefined]);
+  assert.equal(bindings.overrideFor("KeyW"), undefined);
+  assert.ok(bindings.overrideFor("F9"));
+  const saved = [...storage.values.values()].join("\n");
+  assert.doesNotMatch(saved, /JUMP|Рывок|ActionButton3/, "overrides are never written to the table's store");
+  model.detach();
+  assert.equal(bindings.overrideFor("F9"), undefined, "the VM going away takes its overrides with it");
+});
+
+test("3.11 D: the prelude hands an override's owner over as its identity string", () => {
+  assert.match(FRAMEXML_BINDING_PRELUDE, /"SetOverrideBinding", "SetOverrideBindingSpell", "SetOverrideBindingItem",/);
+  assert.match(FRAMEXML_BINDING_PRELUDE, /return original\(tostring\(owner\), \.\.\.\)/);
 });

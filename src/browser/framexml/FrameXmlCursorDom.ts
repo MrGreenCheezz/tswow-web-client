@@ -13,6 +13,7 @@
  */
 
 import type { FrameXmlCursorModel } from "./FrameXmlCursor.js";
+import { giftWrapPending } from "../game/GiftWrap.js";
 
 export interface FrameXmlCursorPictureSink {
   setCursorPicture(texture: string | undefined): void;
@@ -35,11 +36,15 @@ export function installFrameXmlCursorDom(
   const unsubscribe = cursor.onPicture((texture) => pictures.setCursorPicture(texture));
   pictures.setCursorPicture(cursor.picture());
   const press = (event: Event): void => {
-    if (!frameXmlCursorWorldTarget(event.target) || !cursor.occupied()) return;
+    if (!frameXmlCursorWorldTarget(event.target)) return;
+    // Waiting gift-wrapping paper (game/GiftWrap.ts) goes with a right click on the world, Wow.exe
+    // 0x0051fb00 → 0x00519280; ClearCursor (the seam's clearCursor) lets it go.
+    if (!cursor.occupied() && !((event as MouseEvent).button === 2 && giftWrapPending())) return;
     cursor.clear();
   };
   const key = (event: Event): void => {
-    if ((event as KeyboardEvent).key !== "Escape" || !cursor.occupied()) return;
+    // Escape resets the cursor before any window when paper waits too (0x0051fa50 → 0x00519280).
+    if ((event as KeyboardEvent).key !== "Escape" || (!cursor.occupied() && !giftWrapPending())) return;
     cursor.clear();
     event.preventDefault();
     event.stopImmediatePropagation();

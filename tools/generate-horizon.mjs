@@ -22,27 +22,44 @@ import { clientDirectory, dbcDirectory } from "./paths.mjs";
 import { sourceStamp, writeSourceStamp } from "./source-stamp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const mapId = Number.parseInt(process.argv[2] ?? "", 10);
-if (!Number.isInteger(mapId) || mapId < 0 || mapId > 9999) {
-  throw new Error("Usage: node tools/generate-horizon.mjs <map>");
+
+/**
+ * Publishes one map's horizon out of an open chain: the persistent tile worker calls this per job
+ * (10.20 slice 2), the command line below once. The directory is read on every call, so a
+ * long-lived worker follows its env. Leaves the chain open.
+ */
+export async function publishHorizon(mapId, archives) {
+  if (!Number.isInteger(mapId) || mapId < 0 || mapId > 9999) throw new Error(`${mapId} is not a map id`);
+  const destination = resolve(root, process.env.HORIZON_DIR ?? "data/horizon");
+  const maps = await openDbcFile(dbcDirectory(), "Map");
+  const row = maps.rowOf(mapId);
+  const mapName = row === undefined ? undefined : maps.string(row, "Directory");
+  if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
+
+  const wdlPath = `World\\Maps\\${mapName}\\${mapName}.wdl`;
+  const wdl = await archives.read(wdlPath);
+  // Taken while the chain is still open, and written after the file it describes.
+  const stamp = await sourceStamp(archives, { paths: [wdlPath] });
+  if (!wdl) throw new Error(`The client has no World\\Maps\\${mapName}\\${mapName}.wdl`);
+  if (wdl.length < 16 + 4096 * 4) throw new Error(`${mapName}.wdl is ${wdl.length} bytes, too small to hold its tile table`);
+
+  await mkdir(destination, { recursive: true });
+  await writeFile(join(destination, `${mapId}.wdl`), wdl);
+  await writeSourceStamp(join(destination, `${mapId}.wdl`), stamp);
+  console.log(`Generated horizon for map ${mapId} (${mapName}): ${wdl.length} bytes`);
+  return { bytes: wdl.length, mapName };
 }
 
-const destination = resolve(root, process.env.HORIZON_DIR ?? "data/horizon");
-const maps = await openDbcFile(dbcDirectory(), "Map");
-const row = maps.rowOf(mapId);
-const mapName = row === undefined ? undefined : maps.string(row, "Directory");
-if (!mapName) throw new Error(`Map.dbc has no map ${mapId}`);
-
-const archives = await clientArchives(clientDirectory());
-const wdlPath = `World\\Maps\\${mapName}\\${mapName}.wdl`;
-const wdl = await archives.read(wdlPath);
-// Taken while the chain is still open, and written after the file it describes.
-const stamp = await sourceStamp(archives, { paths: [wdlPath] });
-archives.close();
-if (!wdl) throw new Error(`The client has no World\\Maps\\${mapName}\\${mapName}.wdl`);
-if (wdl.length < 16 + 4096 * 4) throw new Error(`${mapName}.wdl is ${wdl.length} bytes, too small to hold its tile table`);
-
-await mkdir(destination, { recursive: true });
-await writeFile(join(destination, `${mapId}.wdl`), wdl);
-await writeSourceStamp(join(destination, `${mapId}.wdl`), stamp);
-console.log(`Generated horizon for map ${mapId} (${mapName}): ${wdl.length} bytes`);
+// Run directly: node tools/generate-horizon.mjs <map>
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  const mapId = Number.parseInt(process.argv[2] ?? "", 10);
+  if (!Number.isInteger(mapId) || mapId < 0 || mapId > 9999) {
+    throw new Error("Usage: node tools/generate-horizon.mjs <map>");
+  }
+  const archives = await clientArchives(clientDirectory());
+  try {
+    await publishHorizon(mapId, archives);
+  } finally {
+    archives.close();
+  }
+}

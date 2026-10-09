@@ -419,27 +419,41 @@ test("GetArenaTeam reads the player's slot, asks the world once for the team and
   seam.detach();
 });
 
-test("the possess bar shows for a possessed unit with a pet-style bar, carrying the possessing spell", () => {
+// 11.02-IF: rewritten to Wow.exe's rule (FrameXmlPossess.ts, world/PossessBar.ts; the full seam test is
+// framexml-possess): the possess spell is the character's *own* aura with a possess or charm effect — Mind
+// Control's DUMMY on the caster — looked for when PLAYER_FARSIGHT names an object in view (0x006e4fd0 ->
+// 0x005d62a0); GetPossessInfo(2) is SpellIcon 693, the cancel button, and with no spell 0x005d5820 pushes
+// three nils. The earlier reading (an aura on the controlled unit, both slots the spell) was not Wow.exe's.
+test("the possess bar shows the character's possessing aura once PLAYER_FARSIGHT names the unit", () => {
   const world = fakeWorld();
-  const spells = new Map([[605, { id: 605, name: "Контроль над разумом", iconPath: "Interface\\Icons\\Spell_Shadow_ShadowWordDominate" }]]);
+  const spells = new Map([[605, {
+    id: 605, name: "Контроль над разумом", iconPath: "Interface\\Icons\\Spell_Shadow_ShadowWordDominate", effectAura: [2, 4, 138],
+  }]]);
   const seam = liveSeam(world, spells);
+  seam.attach(pump());
   assert.deepEqual(call(seam, "IsPossessBarVisible"), [false]);
-  assert.deepEqual(call(seam, "GetPossessInfo", 1), [undefined, undefined, false]);
-  const possessed = 0xf130_0000_0000_0900n;
+  assert.deepEqual(call(seam, "GetPossessInfo", 1), [undefined, undefined, undefined]);
+  const possessed = TARGET;
   world.controlledGuid = possessed;
-  assert.deepEqual(call(seam, "IsPossessBarVisible"), [false], "control without a bar is not the possess bar");
-  world.petSpells = { guid: possessed, bar: [{ packed: 0x0700_0001, spellId: 1, type: 7 }] };
-  world.aurasFor = (guid) => guid === possessed
-    ? [{ slot: 0, spellId: 605, flags: 0, casterLevel: 80, applications: 1, casterGuid: SELF }] : [];
+  world.petSpells = { guid: possessed, closed: false, bar: [{ slot: 0, packed: 0x0700_0002, action: 2, type: 7 }], spells: [] };
+  world.aurasFor = (guid) => guid === SELF
+    ? [{ slot: 0, spellId: 605, flags: 0x18, casterLevel: 80, applications: 1, casterGuid: SELF }] : [];
+  seam.possess.tick();
+  assert.deepEqual(call(seam, "IsPossessBarVisible"), [false], "control, a bar and the aura, but no far sight yet");
+  const self = world.state.objects.get(SELF);
+  const farSight = UPDATE_FIELDS.PLAYER_FARSIGHT.offset;
+  self.fields.set(farSight, Number(possessed & 0xffff_ffffn));
+  self.fields.set(farSight + 1, Number(possessed >> 32n));
+  seam.possess.tick();
   assert.deepEqual(call(seam, "IsPossessBarVisible"), [true]);
   assert.deepEqual(call(seam, "GetPossessInfo", 1), ["Interface\\Icons\\Spell_Shadow_ShadowWordDominate", "Контроль над разумом", true]);
-  assert.deepEqual(call(seam, "GetPossessInfo", 2), ["Interface\\Icons\\Spell_Shadow_ShadowWordDominate", "Контроль над разумом", true]);
-  assert.deepEqual(call(seam, "GetPossessInfo", 3), [], "NUM_POSSESS_SLOTS is 2");
-  world.petSpells = { guid: possessed, bar: [{ packed: 0x0800_0001, spellId: 1, type: 8 }] };
-  assert.deepEqual(call(seam, "IsPossessBarVisible"), [false], "a vehicle's bar is the vehicle UI's");
-  world.petSpells = { guid: possessed, bar: [] };
-  world.controlledGuid = SELF;
-  assert.deepEqual(call(seam, "IsPossessBarVisible"), [false], "back in control of the character");
+  assert.deepEqual(call(seam, "GetPossessInfo", 2), ["Interface\\Icons\\Spell_Shadow_SacrificialShield", "Контроль над разумом", true]);
+  assert.deepEqual(call(seam, "GetPossessInfo", 3), [undefined, undefined, undefined], "NUM_POSSESS_SLOTS is 2");
+  self.fields.set(farSight, 0);
+  self.fields.set(farSight + 1, 0);
+  seam.possess.tick();
+  assert.deepEqual(call(seam, "IsPossessBarVisible"), [false], "the far sight cleared: 0x005d30e0(0)");
+  seam.detach();
 });
 
 test("GetBattlefieldWinner and RequestBattlefieldPositions ride the scoreboard and the carrier poll", () => {
@@ -497,7 +511,48 @@ test("the honest constants: no Mac, no play-time limit, no voice, an empty stati
   assert.equal(pairs.length, 20, "ten classes, token then name");
   assert.deepEqual(pairs.slice(0, 2), ["WARRIOR", "Воин"]);
   assert.ok(pairs.includes("DEATHKNIGHT") && pairs.includes("Рыцарь смерти"));
-  assert.deepEqual(call(seam, "FillLocalizedClassList", true), pairs, "one name per class is what the dataset carries");
+  assert.deepEqual(call(seam, "FillLocalizedClassList", true), pairs, "nothing learned: the compiled names serve both sexes");
+});
+
+test("FillLocalizedClassList walks every class the dataset has, past 11, and honours isFemale (9.05)", async () => {
+  const { learnCreationNames, forgetCreationNames, knownClassIds } = await import("../dist/code/browser/ui/UnitSnapshot.js");
+  const seam = new CannedWorldSeam();
+  // This dataset's ChrClasses: 1-9, 11 stock, 12 ARCHAEOLOGIST and 13 HERO (TSWoW). The gateway
+  // fills nameFemale/nameMale by the client's fallback rule, so a stock row with no female column
+  // arrives with the base name in both.
+  const classes = [
+    [1, "WARRIOR", "Воин", "Воин"], [2, "PALADIN", "Паладин", "Паладин"], [3, "HUNTER", "Охотник", "Охотница"],
+    [4, "ROGUE", "Разбойник", "Разбойница"], [5, "PRIEST", "Жрец", "Жрица"], [6, "DEATHKNIGHT", "Рыцарь смерти", "Рыцарь смерти"],
+    [7, "SHAMAN", "Шаман", "Шаманка"], [8, "MAGE", "Маг", "Маг"], [9, "WARLOCK", "Чернокнижник", "Чернокнижница"],
+    [11, "DRUID", "Друид", "Друид"], [12, "ARCHAEOLOGIST", "Археолог", "Археолог"], [13, "HERO", "Герой", "Герой"],
+  ].map(([id, fileName, name, nameFemale]) => ({ id, fileName, name, nameMale: name, nameFemale }));
+  learnCreationNames([], classes);
+  try {
+    assert.deepEqual(knownClassIds(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13]);
+    const male = call(seam, "FillLocalizedClassList", false);
+    const female = call(seam, "FillLocalizedClassList", true);
+    assert.equal(male.length, 24, "twelve classes, token then name");
+    const asMap = (list) => Object.fromEntries(Array.from({ length: list.length / 2 }, (_, i) => [list[2 * i], list[2 * i + 1]]));
+    const m = asMap(male);
+    const f = asMap(female);
+    assert.equal(m.HERO, "Герой");
+    assert.equal(m.ARCHAEOLOGIST, "Археолог");
+    assert.equal(m.HUNTER, "Охотник");
+    assert.equal(f.HUNTER, "Охотница", "isFemale picks the female column");
+    assert.equal(f.PRIEST, "Жрица");
+    assert.equal(f.WARRIOR, "Воин", "no female column: the base name");
+    assert.equal(f.HERO, "Герой");
+  } finally {
+    forgetCreationNames();
+  }
+  // An older gateway (no nameFemale): the female list falls back to the base name.
+  learnCreationNames([], [{ id: 3, fileName: "HUNTER", name: "Охотник" }]);
+  try {
+    const f = call(seam, "FillLocalizedClassList", true);
+    assert.equal(f[f.indexOf("HUNTER") + 1], "Охотник");
+  } finally {
+    forgetCreationNames();
+  }
 });
 
 test("the canned target's threat list: the player tanks it at 100%, party1 stands at 40%", () => {

@@ -1,6 +1,7 @@
 import "./env.mjs";
 
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -66,6 +67,42 @@ function hasExtension(directory, extension) {
   }
 }
 
+/**
+ * 10.04, the doctor's copy of `src/gateway/ModuleWritePolicy.ts` (the gateway itself asserts the
+ * TS one at start-up; this file runs before anything is compiled). `MODULE_UI_WRITE=1` is only for
+ * a gateway bound to loopback that trusts only loopback pages. Kept equal by
+ * `tests/gateway-module-write-guard.test.mjs`, which runs both over one table.
+ */
+function loopbackHostname(hostname) {
+  const host = String(hostname).trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host) || host === "::ffff:127.0.0.1";
+}
+
+function loopbackOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return (url.protocol === "http:" || url.protocol === "https:") && loopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function moduleWriteProblem(env = process.env) {
+  if (env.MODULE_UI_WRITE !== "1") return undefined;
+  const host = env.GATEWAY_HOST ?? "127.0.0.1";
+  const origins = (env.ALLOWED_ORIGINS ?? "http://127.0.0.1:5173,http://localhost:5173")
+    .split(",").map((origin) => origin.trim()).filter(Boolean);
+  const problems = [];
+  if (!loopbackHostname(host)) problems.push(`GATEWAY_HOST=${host}`);
+  if (origins.includes("*")) problems.push("ALLOWED_ORIGINS contains *");
+  const foreign = origins.filter((origin) => origin !== "*" && !loopbackOrigin(origin));
+  if (foreign.length > 0) problems.push(`ALLOWED_ORIGINS has non-loopback ${foreign.join(", ")}`);
+  if (problems.length === 0) return undefined;
+  return "MODULE_UI_WRITE=1 requires GATEWAY_HOST=127.0.0.1 and ALLOWED_ORIGINS listing only loopback "
+    + `pages (no *, no other hosts); now: ${problems.join("; ")}. `
+    + "Set MODULE_UI_WRITE=0 or make the gateway loopback-only.";
+}
+
 export function inspectConfiguration() {
   const results = [];
   const [major] = process.versions.node.split(".").map(Number);
@@ -123,6 +160,10 @@ export function inspectConfiguration() {
     label: "Gateway",
     message: `${process.env.GATEWAY_HOST ?? "127.0.0.1"}:${process.env.GATEWAY_PORT ?? "8090"}`,
   });
+  const writeProblem = moduleWriteProblem();
+  results.push(writeProblem === undefined
+    ? { level: "ok", label: "Module writes", message: process.env.MODULE_UI_WRITE === "1" ? "on, loopback only" : "off" }
+    : { level: "error", label: "Module writes", message: writeProblem });
   results.push({
     level: "ok",
     label: "Backends",
@@ -130,6 +171,37 @@ export function inspectConfiguration() {
       + `world ${process.env.WORLD_HOST ?? "127.0.0.1"}:${process.env.WORLD_PORT ?? "8085"}`,
   });
   return results;
+}
+
+/**
+ * 10.19: whether auth, world and the gateway answer at all — a plain TCP connect, closed at once,
+ * no protocol. Only for the doctor: `assertGatewayConfiguration` must not wait on the backends,
+ * because the gateway has to start while auth or world are down. A silent port is a `warning`.
+ */
+export async function inspectBackends({ env = process.env, connect = netConnect, timeoutMs = 1000 } = {}) {
+  const targets = [
+    ["Auth server", env.AUTH_HOST ?? "127.0.0.1", env.AUTH_PORT ?? "3724", "auth is not running: nobody can log in"],
+    ["World server", env.WORLD_HOST ?? "127.0.0.1", env.WORLD_PORT ?? "8085", "world is not running: realms stay offline"],
+  ];
+  if (env.GATEWAY_HOST || env.GATEWAY_PORT) {
+    const host = env.GATEWAY_HOST ?? "127.0.0.1";
+    targets.push(["Gateway", host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host,
+      env.GATEWAY_PORT ?? "8090", "the gateway is not running"]);
+  }
+  return Promise.all(targets.map(([label, host, port, missing]) => new Promise((resolveResult) => {
+    let settled = false;
+    const finish = (level, message) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolveResult({ level, label, message });
+    };
+    const socket = connect({ host, port: Number(port) });
+    const timer = setTimeout(() => finish("warning", `${host}:${port} does not answer — ${missing}`), timeoutMs);
+    socket.once("connect", () => finish("ok", `${host}:${port} answers`));
+    socket.once("error", () => finish("warning", `${host}:${port} does not answer — ${missing}`));
+  })));
 }
 
 export function assertGatewayConfiguration() {
@@ -148,7 +220,7 @@ function printReport(results) {
 
 const entry = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
 if (entry === import.meta.url) {
-  const results = inspectConfiguration();
+  const results = [...inspectConfiguration(), ...await inspectBackends()];
   printReport(results);
   const errors = results.filter((result) => result.level === "error").length;
   const warnings = results.filter((result) => result.level === "warning").length;

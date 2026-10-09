@@ -15,7 +15,7 @@ const {
 } = await import("../dist/code/browser/game/HoverTarget.js");
 const { UPDATE_FIELDS } = await import("../dist/code/generated/updateFields.js");
 
-/** What `/dbc/character-creation?v=3` answers on this dataset for the rows these tests use. */
+/** What `/dbc/character-creation?v=4` answers on this dataset for the rows these tests use. */
 const CREATION = Object.freeze({
   races: [
     { id: 1, name: "Человек", clientFileString: "Human", baseLanguage: 7 },
@@ -135,7 +135,9 @@ test("the world FrameXML boot learns the class list with the stat catalog, from 
   try {
     await assert.rejects(loadFrameXmlCharacterStats("http://gateway.test", fetchStub),
       /Character stat gateway returned 503/, "a stat catalog failure is still reported");
-    assert.deepEqual(requested.sort(), ["/dbc/character-creation?v=3", "/dbc/character-stats?version=2"]);
+    // CREATION's class rows carry no `flags` (the v=3 shape): asked once more past the browser cache
+    // (`fetchCreationWithClassFlags`, review 30.09), and that second answer stands.
+    assert.deepEqual(requested.sort(), ["/dbc/character-creation?v=4", "/dbc/character-creation?v=4", "/dbc/character-stats?version=2"]);
     const { seam } = liveFixture({ classId: 13 });
     assert.deepEqual(call(seam, "UnitClass", "player"), ["Герой", "HERO"],
       "the class list landed even though the catalog beside it failed");
@@ -165,18 +167,18 @@ test("UnitGUID answers every token the seam resolves, in chat arg12's text form"
   world.partyStats.set(0x21n, { petGuid: 0xf140000000000777n });
 
   assert.deepEqual(call(seam, "UnitGUID", "player"), ["0x0000000000000010"]);
-  assert.deepEqual(call(seam, "UnitGUID", "target"), ["0xf130000000000abc"]);
-  assert.deepEqual(call(seam, "UnitGUID", "pet"), ["0xf140000000000def"]);
+  assert.deepEqual(call(seam, "UnitGUID", "target"), ["0xF130000000000ABC"]);
+  assert.deepEqual(call(seam, "UnitGUID", "pet"), ["0xF140000000000DEF"]);
   assert.deepEqual(call(seam, "UnitGUID", "party1"), ["0x0000000000000021"],
     "a party member out of range still has its roster GUID");
-  assert.deepEqual(call(seam, "UnitGUID", "partypet1"), ["0xf140000000000777"],
+  assert.deepEqual(call(seam, "UnitGUID", "partypet1"), ["0xF140000000000777"],
     "MSBT keys petMap by the party pet GUID from SMSG_PARTY_MEMBER_STATS");
   assert.deepEqual(call(seam, "UnitGUID", "focus"), [], "no focus is nil, as the client answers");
   assert.deepEqual(call(seam, "UnitGUID", "vehicle"), [], "an ordinary pet bar is not a vehicle");
   assert.deepEqual(call(seam, "UnitGUID", "raid1"), [], "no raid, no raid unit");
 
   world.petSpells = { guid: 0xf150000000000999n, bar: [{ packed: 1, type: 8 }] };
-  assert.deepEqual(call(seam, "UnitGUID", "vehicle"), ["0xf150000000000999"],
+  assert.deepEqual(call(seam, "UnitGUID", "vehicle"), ["0xF150000000000999"],
     "VehicleSpellInitialize's bar carries the vehicle GUID");
   world.group = { ...world.group, groupType: 0x02 };
   assert.deepEqual(call(seam, "UnitGUID", "raid1"), ["0x0000000000000021"]);
@@ -232,7 +234,7 @@ test("the live seam resolves the mouseover token and fires UPDATE_MOUSEOVER_UNIT
       [["UPDATE_MOUSEOVER_UNIT"]]);
     assert.deepEqual(call(seam, "UnitExists", "mouseover"), [true]);
     assert.deepEqual(call(seam, "UnitLevel", "mouseover"), [12]);
-    assert.deepEqual(call(seam, "UnitGUID", "mouseover"), ["0xf130000000000066"]);
+    assert.deepEqual(call(seam, "UnitGUID", "mouseover"), ["0xF130000000000066"]);
     assert.deepEqual(call(seam, "UnitHealth", "mouseover"), [100]);
     world.targetGuid = creature.guid;
     assert.deepEqual(call(seam, "UnitIsUnit", "mouseover", "target"), [true]);
@@ -254,7 +256,7 @@ test("the canned seam answers UnitGUID and an optional mouseover unit for offlin
   seam.attach({ fire: (event) => { fired.push(event); return 1; }, now: () => 0 });
   assert.deepEqual(call(seam, "UnitGUID", "player"), ["0x0000000000000001"],
     "the canned SAY line's sender GUID");
-  assert.deepEqual(call(seam, "UnitGUID", "pet"), ["0xf140000000000104"]);
+  assert.deepEqual(call(seam, "UnitGUID", "pet"), ["0xF140000000000104"]);
   assert.deepEqual(call(seam, "UnitGUID", "mouseover"), []);
   fired.length = 0;
   seam.setMouseover("party1");

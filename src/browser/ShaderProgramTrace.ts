@@ -36,9 +36,35 @@ function fingerprint(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+/** A program as `mark()` saw it: the raw strings stay here until `drain()` describes them. */
+interface RawProgram { readonly id: number; readonly type: string | undefined; readonly key: string; }
+interface RawEvent {
+  readonly at: number;
+  readonly phase: ShaderProgramPhase;
+  readonly added: number;
+  readonly programs: readonly RawProgram[];
+  readonly diagnosticMs: number;
+}
+
+/** Built-in switches remain readable; custom keys/defines and shader text are fingerprinted. */
+function describe(program: RawProgram): ShaderProgramEvent["programs"][number] {
+  const key = program.key;
+  return { id: program.id, type: SAFE_TYPES.has(program.type ?? "") ? program.type! : "other",
+    keyHash: fingerprint(key),
+    keyFields: key.split(",", 64).map(field => SAFE_FIELDS.has(field) || /^-?\d{1,10}(?:\.\d{1,6})?$/.test(field)
+      ? field : "#" + fingerprint(field)),
+  };
+}
+
+/**
+ * NET-22 (P1-02c): `mark()` runs inside measured render phases (`prepare`, `warm`, `sky`, `world`,
+ * `overlay`, `postprocess`), so it only records ids, types and references to the cache-key strings;
+ * fingerprints and key fields are computed in `drain()`, which the capture calls after the frame's CPU
+ * clock has stopped. Limits and the drained fields are unchanged; raw keys never leave this class.
+ */
 export class ShaderProgramTrace {
   #lastId = -1;
-  #pending: ShaderProgramEvent[] = [];
+  #pending: RawEvent[] = [];
   #overflow = 0;
   #overflowAt = 0;
 
@@ -50,26 +76,19 @@ export class ShaderProgramTrace {
     if (!programs) return;
     const started = performance.now();
     const previousId = this.#lastId;
-    const described: ShaderProgramEvent["programs"][number][] = [];
+    const recorded: RawProgram[] = [];
     let added = 0;
     for (const identity of programs) {
       // Three r185 program ids are monotonic; array indices change when old programs are freed.
       if (identity.id <= previousId) continue;
       this.#lastId = Math.max(this.#lastId, identity.id);
       added++;
-      if (described.length >= PROGRAM_LIMIT || this.#pending.length >= EVENT_LIMIT) continue;
+      if (recorded.length >= PROGRAM_LIMIT || this.#pending.length >= EVENT_LIMIT) continue;
       const program = identity as ProgramDetails;
-      const key = program.cacheKey ?? "";
-      described.push({ id: program.id, type: SAFE_TYPES.has(program.type ?? "") ? program.type! : "other",
-        keyHash: fingerprint(key),
-        // Built-in switches remain readable; custom keys/defines and shader text are fingerprinted.
-        keyFields: key.split(",", 64).map(field => SAFE_FIELDS.has(field) || /^-?\d{1,10}(?:\.\d{1,6})?$/.test(field)
-          ? field : "#" + fingerprint(field)),
-      });
+      recorded.push({ id: program.id, type: program.type, key: program.cacheKey ?? "" });
     }
     if (added > 0 && this.#pending.length < EVENT_LIMIT) this.#pending.push({
-      at, phase, added, omitted: added - described.length, programs: described,
-      diagnosticMs: performance.now() - started,
+      at, phase, added, programs: recorded, diagnosticMs: performance.now() - started,
     });
     else if (added > 0) {
       this.#overflow += added;
@@ -79,8 +98,14 @@ export class ShaderProgramTrace {
 
   drain(): readonly ShaderProgramEvent[] {
     if (this.#pending.length === 0) return EMPTY_EVENTS;
-    const events = this.#pending;
+    const pending = this.#pending;
     this.#pending = [];
+    const events: ShaderProgramEvent[] = [];
+    for (const event of pending) {
+      const programs = event.programs.map(describe);
+      events.push({ at: event.at, phase: event.phase, added: event.added, omitted: event.added - programs.length,
+        programs, diagnosticMs: event.diagnosticMs });
+    }
     if (this.#overflow > 0) {
       events.push({ at: this.#overflowAt, phase: "overflow", added: this.#overflow,
         omitted: this.#overflow, diagnosticMs: 0, programs: [] });

@@ -178,7 +178,8 @@ test("an eligible game object exposes its server name in a cursor-following hove
     "a world replacement must not leave the previous world's tooltip or inline cursor behind");
   assert.doesNotMatch(controls, /return\s+template\?\.name\s*\|\|\s*gameObjectLabel\(object\)/,
     "a debug gameobject-entry label must not masquerade as a localized server name");
-  assert.match(controls, /worldObjectTooltip\.replaceChildren\(title\)/,
+  // 4.04: through the shared tooltip's cursor mode (ui/Tooltip.ts), not a div of its own.
+  assert.match(controls, /showTooltipAtPoint\(OBJECT_TIP, worldObjectTooltip\.content, point\.clientX, point\.clientY\)/,
     "the resolved hover name is painted in a cursor-following tooltip");
   assert.match(controls, /clearWorldObjectTooltip\(\)/,
     "leaving an object or starting a camera drag must remove the hover tooltip");
@@ -256,8 +257,12 @@ test("technical game objects never enter the pick stack ahead of an interactive 
 
   assert.match(scene, /interactiveGameObjectType/,
     "the scene must know which GO types have a client interaction path");
+  // 06.10-7.24-review: the test moved into `clickableGameObject`, which guards the hit push.
   assert.match(scene,
-    /if\s*\(interactiveGameObjectType\(type\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0\)[^{]*\{[\s\S]{0,240}?this\.#hits\.push/,
+    /function clickableGameObject\([^)]*\)[^{]*\{[\s\S]{0,200}?interactiveGameObjectType\(gameObjectType\(object\)\)\s*&&\s*\(flags\s*&\s*GO_FLAG_NOT_SELECTABLE\)\s*===\s*0/,
+    "a GO is clickable only when its type has an interaction path and it is selectable");
+  assert.match(scene,
+    /if\s*\(clickableGameObject\(object\)\)[^{]*\{[\s\S]{0,400}?this\.#hits\.push/,
     "unsupported collision helpers must be rejected before they can hide a usable GO behind them in the hit stack");
 });
 

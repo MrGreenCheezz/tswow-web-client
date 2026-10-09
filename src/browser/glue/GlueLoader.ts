@@ -9,6 +9,7 @@ import {
 } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { GlueLuaVm } from "./GlueLua.js";
 import { throwIfPatchChainChanged } from "../PatchChainChanged.js";
+import { GlueHttpStatusError, GlueServerUnavailableError, isRetryableGlueFailure, retrying } from "./GlueRetry.js";
 
 /**
  * Where the interface files come from.
@@ -45,6 +46,9 @@ export interface GlueHttpProviderOptions {
   readonly gatewayOrigin: string;
   /** Injected for tests; defaults to the global fetch. */
   readonly fetch?: typeof globalThis.fetch;
+  /** Retry ladder for network failures and 5xx (10.16); tests pass `[]` or a fake `sleep`. */
+  readonly retryDelaysMs?: readonly number[];
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -60,6 +64,9 @@ export interface GlueHttpProviderOptions {
  * A 409 `client_patch_chain_changed` is the gateway saying a TSWoW build replaced the patches it
  * booted with: that one raises the page's «Патчи TSWoW обновились» banner and throws
  * `PatchChainChangedError`, so the screen that failed can say why instead of «returned 409».
+ *
+ * A network failure or 500/502/503/504 is retried (`GlueRetry.ts`, 10.16) and, once the ladder
+ * runs out, becomes `GlueServerUnavailableError` — «server unavailable», not «broken corpus».
  */
 export function createHttpFileProvider(options: GlueHttpProviderOptions): GlueFileProvider {
   const origin = options.gatewayOrigin.replace(/\/+$/, "");
@@ -68,13 +75,26 @@ export function createHttpFileProvider(options: GlueHttpProviderOptions): GlueFi
     async read(path: string): Promise<string | undefined> {
       const url = new URL("/client/file", origin);
       url.searchParams.set("path", path.replaceAll("/", "\\"));
-      const response = await doFetch(url.href, { headers: { accept: "text/plain" } });
-      if (response.status === 404) return undefined;
-      await throwIfPatchChainChanged(response, url.pathname);
-      if (!response.ok) {
-        throw new Error(`${url.pathname}?path=${path} returned ${response.status}`);
+      const attempt = async (): Promise<string | undefined> => {
+        const response = await doFetch(url.href, { headers: { accept: "text/plain" } });
+        if (response.status === 404) return undefined;
+        await throwIfPatchChainChanged(response, url.pathname);
+        if (!response.ok) {
+          throw new GlueHttpStatusError(`${url.pathname}?path=${path} returned ${response.status}`, response.status);
+        }
+        return response.text();
+      };
+      try {
+        return await retrying(attempt, {
+          ...(options.retryDelaysMs ? { delaysMs: options.retryDelaysMs } : {}),
+          ...(options.sleep ? { sleep: options.sleep } : {}),
+        });
+      } catch (error) {
+        // Still failing after the ladder, and in a way waiting could fix: the server is not there.
+        // Anything else (a 4xx, the patch-chain 409) is thrown as it was.
+        if (isRetryableGlueFailure(error)) throw new GlueServerUnavailableError(origin, error);
+        throw error;
       }
-      return response.text();
     },
   };
 }
@@ -257,6 +277,9 @@ export class GlueLoader {
     try {
       source = await this.#provider.read(path);
     } catch (error) {
+      // The gateway is gone (10.16): every later file would fail the same way and the screen would
+      // come up half-built with no explanation. Stop, and let the page say «server unavailable».
+      if (error instanceof GlueServerUnavailableError) throw error;
       this.#diagnostics.push({ file: path, scope: "provider", message: String(error) });
       return undefined;
     }

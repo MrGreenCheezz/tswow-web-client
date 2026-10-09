@@ -27,6 +27,63 @@ import {
 export const FRAME_XML_TALENT_ADDON = "Blizzard_TalentUI";
 export const FRAME_XML_TRAINER_ADDON = "Blizzard_TrainerUI";
 
+/**
+ * What this client does with each of the 3.3.5a client's own load-on-demand add-ons (plan item 3.18).
+ *
+ * * `owner` — a host owner loads and gates it on its window's first use (FrameXmlWorldMount.ts and
+ *   the `FrameXml*Owner.ts`/`*Lod.ts` files), after preparing the host side it needs; a stock
+ *   `LoadAddOn` of it answers `nil, "NOT_READY"` and leaves the load to the owner.
+ * * `disabled` — deliberately not loaded yet: `LoadAddOn` answers `nil, "DISABLED"` at once, without
+ *   reading a file. Blizzard_CombatText has no floating-text renderer to drive, Blizzard_DebugTools and
+ *   Blizzard_GMSurveyUI have no host side. (L17 3.14: Blizzard_BattlefieldMinimap has its owner,
+ *   FrameXmlBattlefieldMinimapLod.ts; in the addonsOnly mode FrameXmlBattlefieldMinimap.ts still refuses it.)
+ *
+ * A name missing here and from the client's add-on list is `MISSING`, as before. The client's own
+ * AddOns directory (`/client/addons`) is the list's source; Blizzard_GMChatUI and Blizzard_VehicleUI
+ * are left out until their items (8.17, 11.02).
+ */
+export type FrameXmlLodPolicy = "owner" | "disabled";
+
+export const FRAMEXML_LOD_POLICY: Readonly<Record<string, FrameXmlLodPolicy>> = Object.freeze({
+  Blizzard_AchievementUI: "owner",
+  Blizzard_ArenaUI: "owner",
+  Blizzard_AuctionUI: "owner",
+  Blizzard_BarbershopUI: "owner",
+  Blizzard_BindingUI: "owner",
+  Blizzard_Calendar: "owner",
+  Blizzard_GlyphUI: "owner",
+  Blizzard_GuildBankUI: "owner",
+  Blizzard_InspectUI: "owner",
+  Blizzard_ItemSocketingUI: "owner",
+  Blizzard_MacroUI: "owner",
+  Blizzard_RaidUI: "owner",
+  Blizzard_TalentUI: "owner",
+  Blizzard_TimeManager: "owner",
+  Blizzard_TokenUI: "owner",
+  Blizzard_TradeSkillUI: "owner",
+  Blizzard_TrainerUI: "owner",
+  // 3.01: loaded by the world mount's loading window (FrameXmlCombatLogOwner.ts).
+  Blizzard_CombatLog: "owner",
+  // L17 3.14: loaded by FrameXmlBattlefieldMinimapLod.ts on the stock paths' first ask.
+  Blizzard_BattlefieldMinimap: "owner",
+  Blizzard_CombatText: "disabled",
+  Blizzard_DebugTools: "disabled",
+  Blizzard_GMSurveyUI: "disabled",
+});
+
+/**
+ * `ADDON_NOT_READY`: the text `UIParentLoadAddOn` formats for this client's own reason (UIParent.lua:
+ * 234-243 reads `_G["ADDON_" .. reason]`). The client has no such string — its `LoadAddOn` is
+ * synchronous — so without it the stock `format` received nil and raised.
+ */
+export function frameXmlAddonNotReadyText(locale: string | undefined): string {
+  return locale === "ruRU" ? "Ещё загружается — повторите" : "Still loading — try again";
+}
+
+const LOD_POLICY_BY_LOWER: ReadonlyMap<string, FrameXmlLodPolicy> = new Map(
+  Object.entries(FRAMEXML_LOD_POLICY).map(([name, policy]) => [name.toLowerCase(), policy]),
+);
+
 /** A result that keeps missing/failing modules distinguishable from successful loads. */
 export interface FrameXmlAddonRuntimeResult {
   readonly ok: boolean;
@@ -171,7 +228,8 @@ export class FrameXmlAddonRuntime {
     const canonical = canonicalName(name);
     if (!canonical) return false;
     const lower = canonical.toLowerCase();
-    return this.#initialModules.has(lower) || this.#loadOnDemand.has(lower) || this.#records.has(lower);
+    return this.#initialModules.has(lower) || this.#loadOnDemand.has(lower) || this.#records.has(lower)
+      || LOD_POLICY_BY_LOWER.get(lower) === "owner";
   }
 
   isLoaded(name: unknown): boolean {
@@ -188,28 +246,80 @@ export class FrameXmlAddonRuntime {
     return [false];
   }
 
-  /** Return the legacy add-on contract without initiating IO. */
+  /**
+   * `LoadAddOn(name)`. The client's is synchronous (0x00528920: it loads and answers 1, or nil and
+   * the reason); files here arrive over the network, so a known add-on that is not in yet — one of
+   * the client's add-ons, MSBTOptions for `/msbt` say — starts loading (the same idempotent
+   * `loadAddon` the owners use) and answers `false, "NOT_READY"`; the next call after the load
+   * answers `true`. An `owner` add-on (FRAMEXML_LOD_POLICY) answers `NOT_READY` and is left to its
+   * owner; a `disabled` one answers `false, "DISABLED"` without reading a file.
+   */
   loadStatus(name: unknown): readonly unknown[] {
     if (this.#closed) return [false, "CLOSED"];
     if (this.isLoaded(name)) return [true];
     const canonical = canonicalName(name);
-    const previous = canonical ? this.#records.get(canonical.toLowerCase())?.result : undefined;
+    const lower = canonical?.toLowerCase();
+    if (lower !== undefined && LOD_POLICY_BY_LOWER.get(lower) === "disabled"
+      && !this.#initialModules.has(lower) && !this.#records.has(lower)) return [false, "DISABLED"];
+    const previous = lower !== undefined ? this.#records.get(lower)?.result : undefined;
     if (previous?.status === "missing") return [false, "MISSING"];
     if (previous?.status === "failed") return [false, "FAILED"];
     if (previous?.status === "closed") return [false, "CLOSED"];
-    // Unknown modules preserve the old FrameXML `MISSING` contract. Known LoD modules have to be
-    // loaded through the async host operation before Lua can observe success.
-    if (!this.isKnown(name)) return [false, "MISSING"];
+    // Unknown modules preserve the old FrameXML `MISSING` contract.
+    if (!canonical || !this.isKnown(canonical)) return [false, "MISSING"];
+    // An owner's add-on is loaded by its owner, which prepares the host side first (a bare Talent
+    // UI load raised in the trainer test); the call only reports that it is not in yet.
+    if (LOD_POLICY_BY_LOWER.get(canonical.toLowerCase()) === "owner") return [false, "NOT_READY"];
+    if (this.#records.get(canonical.toLowerCase())?.state !== "loading") {
+      void this.loadAddon(canonical).then((result) => {
+        if (!result.ok && result.status !== "closed") {
+          console.warn(`FrameXML LoadAddOn(${canonical}) did not load: ${result.message ?? result.status}`);
+        }
+      });
+    }
     return [false, "NOT_READY"];
   }
 
-  /** Synchronous metadata view used while the already-read TOC's Lua files execute. */
+  /**
+   * Synchronous metadata view used while the already-read TOC's Lua files execute.
+   *
+   * L5c 3.18: Wow.exe's `GetAddOnMetadata` (0x00511430 → 0x005f74e0) looks the name up in the add-on
+   * list the client scanned from Interface/AddOns at start — loaded or not — and pushes the key's value
+   * or nil, never an error. So an installed add-on's TOC is answered before it loads (`primeMetadata`
+   * read it), and a TSWoW module, glued into FrameXML.toc and absent from that list, answers nil.
+   */
   metadata(name: unknown, key: unknown): readonly unknown[] {
     const canonical = canonicalName(name);
     if (!canonical || typeof key !== "string" || key.trim().length === 0) return [];
-    const toc = this.#records.get(canonical.toLowerCase())?.toc;
-    const value = toc ? metadata(toc.source, key) : undefined;
+    const source = this.#records.get(canonical.toLowerCase())?.toc?.source
+      ?? this.#installedTocs.get(canonical.toLowerCase()); // L5c 3.18
+    const value = source !== undefined ? metadata(source, key) : undefined;
     return value === undefined ? [] : [value];
+  }
+
+  /** L5c 3.18: installed add-ons' TOC text, read before they load, for `GetAddOnMetadata`. */
+  readonly #installedTocs = new Map<string, string>();
+
+  /**
+   * L5c 3.18: read the TOCs of installed add-ons (the client's own Interface/AddOns list) so
+   * `GetAddOnMetadata` answers for those not loaded yet, as the client's start-up scan does. Reads go
+   * through the same provider (the boot's cached corpus) the later load uses; one that fails is left
+   * unanswered (nil), as a missing TOC is.
+   */
+  async primeMetadata(names: readonly string[]): Promise<void> {
+    const wanted = new Map<string, string>();
+    for (const value of names) {
+      const canonical = canonicalName(value);
+      const lower = canonical?.toLowerCase();
+      if (!canonical || !lower || this.#initialModules.has(lower) || this.#installedTocs.has(lower)) continue;
+      wanted.set(lower, canonical);
+    }
+    await Promise.all([...wanted].map(async ([lower, canonical]) => {
+      try {
+        const source = await this.#provider.read(tocPath(canonical));
+        if (!this.#closed && typeof source === "string") this.#installedTocs.set(lower, source);
+      } catch { /* not answered, as a missing TOC is not */ }
+    }));
   }
 
   async loadAddon(name: string, ancestry: readonly string[] = []): Promise<FrameXmlAddonRuntimeResult> {

@@ -300,3 +300,163 @@ test("the example file in examples/module-example loads and round-trips", async 
   assert.equal(instance.latest("example.State").guid, 0xdeadbeefcafen);
   assert.equal(instance.summary().find((row) => row.opcode === 4002).remainder, 0);
 });
+
+// ---------------------------------------------------------------- 9.03: the entry backlog
+
+/** A schedule the test runs by hand; counts what was cancelled. */
+function manualSchedule() {
+  const timers = [];
+  let cancelled = 0;
+  return {
+    timers,
+    get cancelled() { return cancelled; },
+    schedule(run, ms) {
+      const timer = { run, ms, live: true };
+      timers.push(timer);
+      return () => { if (timer.live) { timer.live = false; cancelled++; } };
+    },
+    fire() { for (const timer of timers.splice(0)) if (timer.live) { timer.live = false; timer.run(); } },
+  };
+}
+const microtask = () => new Promise((resolve) => queueMicrotask(resolve));
+
+test("the entry backlog holds messages until every consumer is ready, then delivers them in arrival order", async () => {
+  const clock = manualSchedule();
+  const { instance } = registry({ schedule: clock.schedule });
+  instance.beginBacklog({ expect: ["modules", "lua"] });
+  assert.equal(instance.offer(4001, bytesOf(shopState, { gold: 1, title: "a" })), "held");
+  assert.equal(instance.offer(4003, new Uint8Array([7, 8])), "held");
+  assert.equal(instance.offer(4001, bytesOf(shopState, { gold: 2, title: "b" })), "held");
+  assert.deepEqual({ ...instance.backlog, waiting: [...instance.backlog.waiting] },
+    { holding: true, queued: 3, bytes: instance.backlog.bytes, waiting: ["lua", "modules"], lastRelease: undefined });
+
+  // Subscribing during the hold delivers nothing — not inside `on`, not inside `define`.
+  const seen = [];
+  instance.define([shopState], "shop");
+  instance.on("shop.State", (value) => seen.push(`state:${value.gold}`));
+  instance.on(4003, (body) => seen.push(`raw:${[...body]}`));
+  assert.deepEqual(seen, []);
+  assert.equal(instance.latest("shop.State"), undefined);
+
+  instance.consumerReady("modules");
+  await microtask();
+  assert.deepEqual(seen, [], "one consumer of two is not enough");
+  instance.consumerReady("lua");
+  assert.deepEqual(seen, [], "released on a microtask, after the consumer's own finally");
+  await microtask();
+  assert.deepEqual(seen, ["state:1", "raw:7,8", "state:2"]);
+  assert.deepEqual(instance.latest("shop.State"), { gold: 2, title: "b" });
+  assert.equal(instance.summary().find((row) => row.opcode === 4001).received, 2);
+  assert.equal(instance.backlog.holding, false);
+  assert.equal(instance.backlog.queued, 0);
+  assert.equal(clock.cancelled, 1, "the fallback timer is cancelled by the release");
+  assert.deepEqual(instance.backlog.lastRelease, { reason: "ready", messages: 3 });
+
+  // After the release, messages go straight through.
+  assert.equal(instance.offer(4001, bytesOf(shopState, { gold: 3, title: "c" })), "delivered");
+  assert.deepEqual(seen.at(-1), "state:3");
+});
+
+test("a held message nobody claimed by the release is reported once each through onBacklogUnclaimed", async () => {
+  const clock = manualSchedule();
+  const unclaimed = [];
+  const { instance } = registry({ schedule: clock.schedule, onBacklogUnclaimed: (opcode, body) => unclaimed.push([opcode, [...body]]) });
+  instance.beginBacklog({ expect: ["lua"] });
+  for (let index = 0; index < 6; index++) instance.offer(4099, new Uint8Array([index]));
+  instance.consumerReady("lua");
+  await microtask();
+  assert.deepEqual(unclaimed, [0, 1, 2, 3, 4, 5].map((index) => [4099, [index]]));
+  const row = instance.unclaimed().find((entry) => entry.opcode === 4099);
+  assert.equal(row.received, 6);
+  assert.ok(row.samples.length <= 4);
+  // Live again: an unclaimed message answers "unclaimed" for the caller to record.
+  assert.equal(instance.offer(4099, new Uint8Array([9])), "unclaimed");
+  assert.equal(unclaimed.length, 6, "the live path is the caller's to record, not the backlog hook's");
+});
+
+test("an overflowing backlog releases early, keeps the order and goes live", () => {
+  const clock = manualSchedule();
+  const { instance } = registry({ schedule: clock.schedule });
+  const seen = [];
+  instance.on(4003, (body) => seen.push(body[0]));
+  instance.beginBacklog({ expect: ["lua"], maxMessages: 3 });
+  for (let index = 1; index <= 3; index++) assert.equal(instance.offer(4003, new Uint8Array([index])), "held");
+  assert.deepEqual(seen, []);
+  assert.equal(instance.offer(4003, new Uint8Array([4])), "delivered", "the fourth releases the queue");
+  assert.deepEqual(seen, [1, 2, 3, 4]);
+  assert.equal(instance.backlog.holding, false);
+  assert.equal(instance.offer(4003, new Uint8Array([5])), "delivered");
+  assert.deepEqual(seen, [1, 2, 3, 4, 5]);
+
+  // By bytes as well.
+  const second = registry({ schedule: clock.schedule }).instance;
+  const got = [];
+  second.on(4003, (body) => got.push(body.byteLength));
+  second.beginBacklog({ expect: ["lua"], maxBytes: 10 });
+  assert.equal(second.offer(4003, new Uint8Array(6)), "held");
+  assert.equal(second.offer(4003, new Uint8Array(6)), "delivered");
+  assert.deepEqual(got, [6, 6]);
+});
+
+test("the fallback timer releases a backlog whose consumers never report; dispose cancels it and drops the queue", () => {
+  const clock = manualSchedule();
+  const { instance } = registry({ schedule: clock.schedule });
+  const seen = [];
+  instance.on(4003, (body) => seen.push(body[0]));
+  instance.beginBacklog({ expect: ["lua"], ttlMs: 1234 });
+  assert.equal(clock.timers[0].ms, 1234);
+  instance.offer(4003, new Uint8Array([1]));
+  clock.fire();
+  assert.deepEqual(seen, [1]);
+  assert.equal(instance.backlog.holding, false);
+
+  instance.beginBacklog({ expect: ["lua"] });
+  assert.equal(clock.timers.at(-1).ms, 30_000, "the default TTL");
+  instance.offer(4003, new Uint8Array([2]));
+  const before = clock.cancelled;
+  instance.dispose();
+  assert.equal(clock.cancelled, before + 1);
+  assert.equal(instance.backlog.queued, 0);
+  clock.fire();
+  assert.deepEqual(seen, [1], "a disposed backlog delivers nothing");
+});
+
+test("an empty expect or a second beginBacklog is a no-op; a new backlog can start after a release", async () => {
+  const clock = manualSchedule();
+  const { instance } = registry({ schedule: clock.schedule });
+  const seen = [];
+  instance.on(4003, (body) => seen.push(body[0]));
+  instance.beginBacklog({ expect: [] });
+  assert.equal(instance.backlog.holding, false);
+  assert.equal(instance.offer(4003, new Uint8Array([1])), "delivered");
+  instance.beginBacklog({ expect: ["lua"] });
+  instance.beginBacklog({ expect: ["modules"] });
+  assert.deepEqual([...instance.backlog.waiting], ["lua"], "the second call changed nothing");
+  instance.offer(4003, new Uint8Array([2]));
+  instance.consumerReady("lua");
+  await microtask();
+  assert.deepEqual(seen, [1, 2]);
+  instance.beginBacklog({ expect: ["modules"] });
+  instance.offer(4003, new Uint8Array([3]));
+  assert.deepEqual(seen, [1, 2]);
+  instance.consumerReady("modules");
+  await microtask();
+  assert.deepEqual(seen, [1, 2, 3]);
+  assert.equal(clock.timers.length, 2, "one timer per backlog, none for the empty expect");
+});
+
+test("released messages are not replayed to a later forget + define (no stale state resurrected)", async () => {
+  const { instance } = registry({ schedule: manualSchedule().schedule });
+  instance.beginBacklog({ expect: ["lua"] });
+  instance.define([shopState], "shop");
+  instance.offer(4001, bytesOf(shopState, { gold: 5, title: "x" }));
+  instance.consumerReady("lua");
+  await microtask();
+  instance.forget("shop");
+  instance.define([shopState], "shop");
+  const seen = [];
+  instance.on("shop.State", (value) => seen.push(value.gold));
+  await microtask();
+  assert.deepEqual(seen, []);
+  assert.equal(instance.latest("shop.State"), undefined);
+});

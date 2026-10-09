@@ -14,6 +14,8 @@
 import { createCamera, projectPoint } from "../SimpleScene.js";
 import { isWorldObjectDead } from "../../world/WorldState.js";
 import { cameraPivotHeight, game } from "../game/Context.js";
+import { viewSubjectPosition } from "../game/ViewSubject.js"; // 11.02-I
+import { drawnUnitPosition, type DrawnPoint } from "../VehiclePassengerOverlay.js"; // 11.02-tails
 import { plainChatText } from "./ChatLink.js";
 import { currentQuestLogEntries } from "./QuestLog.js";
 import {
@@ -27,6 +29,7 @@ import {
   addFloater, expire, floaterOffset, floatingAmountText, floatingCombatTextRelevant, putBubble,
   removeIrrelevantFloaters, type Bubble, type Floater, type FloaterKind,
 } from "./OverlayModel.js";
+import { getTip, setTip } from "./Widgets.js";
 
 /**
  * How far above the crown of the head a bubble hangs, clear of the name plate on the canvas.
@@ -148,7 +151,8 @@ export function updateHeadOverlay(now: number): void {
     return;
   }
   const root = overlayLayer();
-  const player = selfGuid === undefined ? undefined : state?.objects.get(selfGuid)?.position;
+  // 11.02-I: the camera the world was drawn with is built around the view subject (ViewSubject.ts).
+  const player = viewSubjectPosition(world);
   if (!root || !state || !player) return;
 
   measureOverlay(root, now);
@@ -333,7 +337,7 @@ function updateQuestMarker(
     const row = questMarkerProgress(objective);
     return row ? `${objective.label}: ${row}` : objective.label;
   }).join(" · ");
-  if (parts.root.title !== title) parts.root.title = title;
+  if (getTip(parts.root) !== title) setTip(parts.root, title);
 }
 
 /**
@@ -344,6 +348,9 @@ function updateQuestMarker(
  * an ordinary unit is wide, whatever `unitHeight` still answers.
  */
 const CORPSE_CROWN_HEIGHT = 0.9;
+
+/** 11.02-tails: scratch for a seated passenger's drawn place, read at once by `anchorFor`. */
+const ANCHOR_SEAT_DRAWN: DrawnPoint = { x: 0, y: 0, z: 0 };
 
 /**
  * Where the crown of a unit's head is on screen, or undefined when it is not on screen at all.
@@ -357,7 +364,8 @@ const CORPSE_CROWN_HEIGHT = 0.9;
  */
 function anchorFor(guid: bigint, camera: ReturnType<typeof createCamera>, width: number, height: number) {
   const object = game.world?.state.objects.get(guid);
-  const position = object?.position;
+  // 11.02-tails: a vehicle passenger's head is where its model is drawn on the seat (Wow.exe 0x0071fef0).
+  const position = object === undefined ? undefined : drawnUnitPosition(object, ANCHOR_SEAT_DRAWN);
   if (!object || !position) return undefined;
   const isUnit = object.typeId === 3 || object.typeId === 4;
   const standing = isUnit ? game.renderer?.unitHeight(guid) ?? 2 : 1.2;

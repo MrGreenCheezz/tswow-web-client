@@ -20,14 +20,16 @@ import { execFileSync } from "node:child_process";
 import { access, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module"; // L10 (10.17)
 
+const { parseGatewaySettings, playerServerConfig } = createRequire(import.meta.url)("./gateway-target.cjs"); // L10 (10.17)
 const shell = dirname(fileURLToPath(import.meta.url));
 const root = resolve(shell, "..");
 const runtime = join(shell, "node_modules", "electron", "dist");
 const web = join(root, "dist", "web");
 const executable = "WoWWebClient.exe";
 /** What the shell needs at run time; everything else in this folder is for building it. */
-const APP_FILES = ["main.cjs", "static-server.cjs", "gateway.cjs", "cpu-policy.ps1"];
+const APP_FILES = ["main.cjs", "static-server.cjs", "gateway.cjs", "recovery.cjs", "server-config.cjs", "gateway-target.cjs", "cpu-policy.ps1"]; // L10: gateway-target.cjs (10.17)
 
 const player = process.argv.includes("--player");
 
@@ -43,6 +45,21 @@ function playerUrl() {
   if (!host) throw new Error("PUBLIC_HOST is not set in .env (the address players reach the server by), and no --url= was given.");
   const port = Number.parseInt(process.env.PUBLIC_WEB_PORT ?? "8091", 10);
   return new URL(`http://${host}${port === 80 ? "" : `:${port}`}/`).href;
+}
+
+/**
+ * L10 (10.17): the gateway the player app waits for — --gateway-url=, else --gateway-port= or the
+ * server's GATEWAY_PORT from .env (tools/start-server.mjs serves the gateway there); server.json
+ * carries it only when it is not the page host's 8090.
+ */
+function playerGateway() {
+  const given = (name) => process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const url = given("gateway-url");
+  const port = given("gateway-port") ?? process.env.GATEWAY_PORT?.trim();
+  return parseGatewaySettings({
+    ...(url === undefined ? {} : { gatewayUrl: url }),
+    ...(port === undefined || port === "" ? {} : { gatewayPort: Number(port) }),
+  }, "--gateway-url/--gateway-port/GATEWAY_PORT");
 }
 
 /** Electron's runtime under `output`, renamed, with an empty resources/app; returns that app folder. */
@@ -89,6 +106,7 @@ if (!player) {
   console.log("It serves the built page at http://127.0.0.1:5173/ and starts the gateway from this checkout when none is running.");
 } else {
   const url = playerUrl();
+  const gateway = playerGateway(); // L10 (10.17): checked before anything is packed
   const folder = join(root, "dist", "player");
   const output = join(folder, "WoWWebClient");
   const zip = join(folder, "WoWWebClient.zip");
@@ -97,7 +115,7 @@ if (!player) {
   await writeManifest(app, "wow-webclient-player");
   // No CPU pinning by default: on a stranger's machine an unsigned exe running PowerShell with
   // -ExecutionPolicy Bypass is what antivirus heuristics flag. --cpu-class=fastest still turns it on.
-  await writeFile(join(app, "server.json"), `${JSON.stringify({ url, cpuClass: "none", priority: "normal" }, null, 2)}\n`);
+  await writeFile(join(app, "server.json"), `${JSON.stringify(playerServerConfig(url, gateway), null, 2)}\n`); // L10 (10.17)
   await writeFile(join(output, "README.txt"), `\uFEFF${[
     "WoW WebClient",
     "",
@@ -118,6 +136,8 @@ if (!player) {
   execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"),
     ["-a", "-c", "-f", zip, "-C", folder, "WoWWebClient"], { stdio: "inherit" });
   console.log(`Player app packed for ${url}`);
+  const written = playerServerConfig(url, gateway); // L10 (10.17)
+  if (written.gatewayUrl ?? written.gatewayPort) console.log(`  gateway: ${written.gatewayUrl ?? `port ${written.gatewayPort}`}`);
   console.log(`  folder: ${output}`);
   console.log(`  send:   ${zip}`);
 }

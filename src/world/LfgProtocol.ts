@@ -203,6 +203,20 @@ export function buildLfgJoin(roles: number, dungeons: number[], comment = ""): U
   return writer.cString(comment).toUint8Array();
 }
 
+/**
+ * Plan item 3.25, the raid browser: `CMSG_SEARCH_LFG_JOIN`/`_LEAVE` carry one u32, the LFGDungeons id
+ * with the type in the high byte (Wow.exe 0x558ed0/0x558f90); `HandleLfrJoinOpcode`/`HandleLfrLeaveOpcode`
+ * read it and do nothing more on this core (LFGHandler.cpp:259-275).
+ */
+export function buildSearchLfg(packedEntry: number): Uint8Array {
+  return new PacketWriter().u32(packedEntry >>> 0).toUint8Array();
+}
+
+/** `CMSG_SET_LFG_COMMENT`: the comment string (`HandleLfgSetCommentOpcode`, LFGHandler.cpp:122-131). */
+export function buildSetLfgComment(comment: string): Uint8Array {
+  return new PacketWriter().cString(comment).toUint8Array();
+}
+
 /** The server reads nothing from the leave packet. */
 export function buildLfgLeave(): Uint8Array {
   return new Uint8Array(0);
@@ -372,6 +386,14 @@ export interface LfgPlayerReward {
   /** The dungeon that was actually run. */
   dungeonEntry: number;
   reward: LfgReward;
+  /**
+   * L5c 3.25: the three words GetLFGCompletionReward answers beside the base money and experience
+   * (Wow.exe 0x0055bdc0 reads them, 0x00557e40 pushes them): strangers in the group, then the
+   * per-stranger money and experience. TrinityCore writes 1, 0, 0 (LFGHandler.cpp SendLfgPlayerReward).
+   */
+  strangers?: number;
+  moneyVar?: number;
+  experienceVar?: number;
 }
 
 /**
@@ -383,18 +405,18 @@ export function parseLfgPlayerReward(payload: Uint8Array): LfgPlayerReward {
   const randomEntry = reader.u32();
   const dungeonEntry = reader.u32();
   const done = reader.u8() !== 0;
-  reader.u32();
+  const strangers = reader.u32(); // L5c 3.25
   const money = reader.u32();
   const experience = reader.u32();
-  reader.u32();
-  reader.u32();
+  const moneyVar = reader.u32(); // L5c 3.25
+  const experienceVar = reader.u32(); // L5c 3.25
   const itemCount = reader.u8();
   const items: LfgRewardItem[] = [];
   for (let index = 0; index < itemCount; index++) {
     items.push({ itemId: reader.u32(), displayId: reader.u32(), count: reader.u32() });
   }
   reader.assertFinished();
-  return { randomEntry, dungeonEntry, reward: { done, money, experience, items } };
+  return { randomEntry, dungeonEntry, reward: { done, money, experience, items }, strangers, moneyVar, experienceVar };
 }
 
 export interface LfgRoleCheckMember {

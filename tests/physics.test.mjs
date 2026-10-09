@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  DEFAULT_COLLISION_HEIGHT, GRAVITY, JUMP_VELOCITY, LIQUID_RECALL_YARDS, LIQUID_UNKNOWN, MAX_WALKABLE_SLOPE_DEGREES,
-  STEP_HEIGHT, TERMINAL_VELOCITY, newCharacterMotion, stepCharacter,
+  CEILING_MARGIN, DEFAULT_COLLISION_HEIGHT, GRAVITY, JUMP_VELOCITY, LIQUID_RECALL_YARDS, LIQUID_UNKNOWN,
+  LOAD_WAIT_MAX, MAX_WALKABLE_SLOPE_DEGREES, STEP_DOWN, STEP_HEIGHT, SWIM_SETTLE_SPEED, TERMINAL_VELOCITY,
+  newCharacterMotion, stepCharacter, swimSurfaceOffset,
 } from "../dist/code/browser/game/Physics.js";
 
 /** A world made of a few functions, which is all the simulation is allowed to ask about. */
-function world({ ground = () => 0, liquid = () => undefined, hole = () => false, floor, pushOut } = {}) {
+function world({ ground = () => 0, liquid = () => undefined, hole = () => false, floor, pushOut, ceiling, loaded } = {}) {
   const probe = { ground, liquid, hole };
   if (floor) probe.floor = floor;
   if (pushOut) probe.pushOut = pushOut;
+  if (ceiling) probe.ceiling = ceiling;
+  if (loaded) probe.loaded = loaded;
   return probe;
 }
 
@@ -43,9 +46,14 @@ test("the constants are the ones the server computes falls with", () => {
   assert.equal(GRAVITY, 19.29110527038574);
   assert.equal(TERMINAL_VELOCITY, 60.148003);
   assert.equal(DEFAULT_COLLISION_HEIGHT, 2.03128);
-  assert.equal(MAX_WALKABLE_SLOPE_DEGREES, 55);
-  // Six navmesh cells of 0.2666666, which is the height the server's own generator says is a step.
-  assert.ok(Math.abs(STEP_HEIGHT - 1.6) < 0.001, `step height is ${STEP_HEIGHT}`);
+  // 5.07: Wow.exe's walkable test compares the normal with cos 50° (0x00a37f0c); the step-up budget
+  // of a player-controlled mover is its scale ratio, max(1, scale) (0x006e9520 → mover+0xd0, set
+  // by 0x006e9570 from 0x006d78c0/0x006cf350): one yard; the drop that starts a fall keeps 1.6.
+  assert.equal(MAX_WALKABLE_SLOPE_DEGREES, 50);
+  assert.equal(STEP_HEIGHT, 1.0);
+  assert.ok(Math.abs(STEP_DOWN - 1.6) < 0.001, `step down is ${STEP_DOWN}`);
+  // Wow.exe's jump takes -7.955547 (0x00aa33dc), positive up here.
+  assert.equal(JUMP_VELOCITY, 7.955547);
 });
 
 test("a jump rises to the height the impulse and the gravity agree on, and comes back down", () => {
@@ -171,7 +179,10 @@ test("a swimmer floats at the surface and cannot rise out of it", () => {
   assert.equal(motion.mode, "swim");
 
   const events = simulate(position, motion, input({ ascend: true }), lake, 3);
-  assert.equal(position.z, 0, "the surface is a ceiling, not a launch pad");
+  // 5.06: the float line is under the surface — feet at it would be "walking on water" to the server.
+  assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005,
+    `the surface is a ceiling, not a launch pad: ${position.z}`);
+  assert.ok(Math.abs(swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT) - 1.45) < 0.005);
   // Rising is its own opcode, and it is sent once rather than every frame.
   assert.equal(events.filter((event) => event === "startAscend").length, 1);
 });
@@ -261,7 +272,8 @@ test("an unknown liquid answer keeps a swimmer swimming at the surface it last k
   const events = simulate(position, motion, input({ ascend: true }), lake, 2);
   assert.equal(motion.mode, "swim");
   assert.ok(!events.includes("stopSwim") && !events.includes("startFall"), events.join());
-  assert.equal(position.z, 0, "and the remembered surface is still the ceiling");
+  assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005,
+    `and the remembered surface is still the ceiling: ${position.z}`);
 });
 
 test("an unknown liquid answer never starts a swim on its own", () => {
@@ -425,4 +437,235 @@ test("the push out happens before the floor is looked for, not after", () => {
   simulate(position, newCharacterMotion(), input({ forward: 1 }), probe, 2);
   assert.ok(Math.abs(position.x - 3) < 1e-6, `walked through to ${position.x}`);
   assert.equal(position.z, 0, "stood on the ground beyond the wall it never reached");
+});
+
+// ---- 5.07 thresholds -------------------------------------------------------------------------
+
+test("5.07: a 0.9-yard riser is stepped onto, a 1.2-yard ledge is a wall on foot and is taken with a jump", () => {
+  // Wow.exe lifts a player by up to one yard to get over what it walked into (0x00761b00).
+  const riser = world({ ground: (x) => (x > 1 ? 0.9 : 0) });
+  const stepper = at(0, 0, 0);
+  simulate(stepper, newCharacterMotion(), input({ forward: 1 }), riser, 0.5);
+  assert.ok(stepper.x > 1, `stopped at the riser at x ${stepper.x}`);
+  assert.equal(stepper.z, 0.9);
+
+  const ledge = world({ ground: (x) => (x > 1 ? 1.2 : 0) });
+  const walker = at(0, 0, 0);
+  simulate(walker, newCharacterMotion(), input({ forward: 1 }), ledge, 0.5);
+  assert.ok(walker.x < 1, `walked onto the ledge at x ${walker.x}`);
+  assert.equal(walker.z, 0);
+
+  const jumper = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  stepCharacter(jumper, motion, input({ forward: 1, ascend: true }), ledge, 1 / 60);
+  simulate(jumper, motion, input({ forward: 1 }), ledge, 1);
+  assert.ok(jumper.x > 1, `jumped only to x ${jumper.x}`);
+  assert.equal(jumper.z, 1.2, "landed on top of the ledge");
+  assert.equal(motion.mode, "ground");
+});
+
+test("5.07: 52 degrees is not climbed, 48 degrees is", () => {
+  const steep = world({ ground: (x) => Math.max(0, x) * Math.tan(52 * Math.PI / 180) });
+  const blocked = at(0, 0, 0);
+  simulate(blocked, newCharacterMotion(), input({ forward: 1 }), steep, 1);
+  assert.ok(blocked.x < 0.05, `climbed 52° to x ${blocked.x}`);
+
+  const gentle = world({ ground: (x) => Math.max(0, x) * Math.tan(48 * Math.PI / 180) });
+  const climber = at(0, 0, 0);
+  simulate(climber, newCharacterMotion(), input({ forward: 1 }), gentle, 1);
+  assert.ok(climber.x > 3, `stuck on 48° at x ${climber.x}`);
+});
+
+// L8 5.07: was «a one-yard drop is walked down» — Wow.exe probes down 1.8494 × the step (0x007620f0), so at a
+// 7 yd/s run and 60 frames a second only 0.216 yard is walked down and the yard is a short fall that lands on
+// it (tests/physics-step-down.test.mjs has the probe itself).
+// L8-review 5.07: the probe alone is not the rule — the foot's face holds an edge down to (0.389 + 0.1167) × 1.8494 =
+// 0.935 yard here (Physics.footHolds); the yard is still past it, so it still falls (physics-step-down has the foot).
+test("5.07: a one-yard drop is a short fall that lands on it, a two-yard drop is a fall", () => {
+  const kerb = world({ ground: (x) => (x > 1 ? -1.0 : 0) });
+  const down = at(0, 0, 0);
+  const downEvents = simulate(down, newCharacterMotion(), input({ forward: 1 }), kerb, 0.5);
+  assert.deepEqual(downEvents, ["startFall", "land"], downEvents.join()); // L8 5.07: was «no startFall»
+  assert.equal(down.z, -1.0);
+
+  const drop = world({ ground: (x) => (x > 1 ? -2.0 : 0) });
+  const off = at(0, 0, 0);
+  const offEvents = simulate(off, newCharacterMotion(), input({ forward: 1 }), drop, 0.5);
+  assert.ok(offEvents.includes("startFall"), offEvents.join());
+});
+
+// ---- 5.12 ceilings ---------------------------------------------------------------------------
+
+const ceilingAt = (height) => (_x, _y, from, to) => (from <= height && to >= height ? height : undefined);
+
+test("5.12: a jump under a low ceiling stops the head and still lands", () => {
+  let asked = 0;
+  const ceiling = ceilingAt(3);
+  const room = world({ ceiling: (...args) => { asked++; return ceiling(...args); } });
+  const position = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  let top = 0;
+  const events = [];
+  for (let t = 0; t < 2; t += 1 / 60) {
+    events.push(...stepCharacter(position, motion, input({ ascend: t === 0 }), room, 1 / 60));
+    top = Math.max(top, position.z);
+  }
+  assert.ok(top <= 3 - DEFAULT_COLLISION_HEIGHT - CEILING_MARGIN + 1e-6, `head reached ${top + DEFAULT_COLLISION_HEIGHT}`);
+  assert.ok(events.includes("land"), events.join());
+  assert.equal(position.z, 0);
+  asked = 0;
+  simulate(position, motion, input({ forward: 1 }), room, 1);
+  assert.equal(asked, 0, "walking never asks for a ceiling");
+});
+
+test("5.12: a flier rising and a swimmer surfacing stop under what is above them", () => {
+  const position = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  simulate(position, motion, input({ canFly: true, ascend: true }), world({ ceiling: ceilingAt(10) }), 3);
+  assert.ok(position.z + DEFAULT_COLLISION_HEIGHT <= 10 + 1e-6, `flew through to ${position.z}`);
+  assert.ok(position.z > 7, `stopped short at ${position.z}`);
+
+  const dock = world({ ground: () => -10, liquid: () => ({ height: 0, type: 1 }), ceiling: ceilingAt(-3) });
+  const swimmer = at(0, 0, -9);
+  const swim = newCharacterMotion();
+  stepCharacter(swimmer, swim, input(), dock, 1 / 60);
+  simulate(swimmer, swim, input({ ascend: true }), dock, 3);
+  assert.ok(swimmer.z + DEFAULT_COLLISION_HEIGHT <= -3 + 1e-6, `surfaced through the dock to ${swimmer.z}`);
+});
+
+// ---- 5.13 ground that has not arrived ---------------------------------------------------------
+
+test("5.13: ground that has not arrived is waited at, then walked onto once it lands", () => {
+  let ready = false;
+  const streaming = world({ ground: (x) => (x > 0.5 && !ready ? undefined : 0), loaded: (x) => x <= 0.5 || ready });
+  const position = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  const events = simulate(position, motion, input({ forward: 1 }), streaming, 1);
+  assert.ok(position.x <= 0.5, `walked onto missing ground to x ${position.x}`);
+  assert.deepEqual(events, []);
+  ready = true;
+  simulate(position, motion, input({ forward: 1 }), streaming, 0.5);
+  assert.ok(position.x > 2, `did not move on after the tile came: ${position.x}`);
+});
+
+test("5.13: a fall over ground that has not arrived waits, and the wait runs out", () => {
+  const nothing = world({ ground: () => undefined, loaded: () => false });
+  const position = at(0, 0, 50);
+  const motion = newCharacterMotion();
+  motion.mode = "air";
+  simulate(position, motion, input(), nothing, 1);
+  assert.equal(position.z, 50);
+  assert.equal(motion.fallTime, 0);
+  simulate(position, motion, input(), nothing, LOAD_WAIT_MAX / 1000 + 1);
+  assert.ok(position.z < 50, "a tile that never comes must not hold the character for good");
+});
+
+// ---- 5.06 floating ----------------------------------------------------------------------------
+
+test("5.06: the float line stays IN_WATER for any height", () => {
+  for (const height of [1.2, 2.03128, 3.0]) {
+    const lake = world({ ground: () => -20, liquid: () => ({ height: 0, type: 1 }) });
+    const position = at(0, 0, -6);
+    const motion = newCharacterMotion();
+    stepCharacter(position, motion, input({ collisionHeight: height }), lake, 1 / 60);
+    simulate(position, motion, input({ collisionHeight: height, ascend: true }), lake, 3);
+    const delta = 0 - position.z;
+    assert.ok(delta > 0 && delta < height, `height ${height}: surface - feet ${delta}`);
+  }
+});
+
+test("5.06: entering waist deep sinks to the float line instead of jumping to it", () => {
+  const lake = world({ ground: () => -20, liquid: () => ({ height: 0, type: 1 }) });
+  const position = at(0, 0, -1.1);
+  const motion = newCharacterMotion();
+  stepCharacter(position, motion, input(), lake, 1 / 60);
+  assert.equal(motion.mode, "swim");
+  let last = position.z;
+  for (let i = 0; i < 60; i++) {
+    stepCharacter(position, motion, input(), lake, 1 / 60);
+    assert.ok(last - position.z <= SWIM_SETTLE_SPEED / 60 + 1e-9, `a ${last - position.z} jump`);
+    last = position.z;
+  }
+  assert.ok(Math.abs(position.z + swimSurfaceOffset(DEFAULT_COLLISION_HEIGHT)) < 0.005, `settled at ${position.z}`);
+});
+
+// ---- 5.08 backward rates ----------------------------------------------------------------------
+
+test("5.08: backwards goes at the backward rate, sideways at the forward one", () => {
+  const back = at(0, 0, 0);
+  simulate(back, newCharacterMotion(), input({ forward: -1, runBackSpeed: 4.5 }), world(), 1);
+  assert.ok(Math.abs(back.x + 4.5) < 0.1, `ran back ${back.x}`);
+  const side = at(0, 0, 0);
+  simulate(side, newCharacterMotion(), input({ strafe: 1, runBackSpeed: 4.5 }), world(), 1);
+  assert.ok(Math.abs(side.y - 7) < 0.1, `strafed ${side.y}`);
+
+  const lake = world({ ground: () => -20, liquid: () => ({ height: 0, type: 1 }) });
+  const swimmer = at(0, 0, -5);
+  const swim = newCharacterMotion();
+  stepCharacter(swimmer, swim, input(), lake, 1 / 60);
+  simulate(swimmer, swim, input({ forward: -1, swimBackSpeed: 2.5 }), lake, 1);
+  assert.ok(Math.abs(swimmer.x + 2.5) < 0.1, `swam back ${swimmer.x}`);
+
+  const flier = at(0, 0, 50);
+  const fly = newCharacterMotion();
+  fly.mode = "air";
+  simulate(flier, fly, input({ canFly: true, forward: -1, flightSpeed: 7, flightBackSpeed: 4.5 }), world(), 1);
+  assert.ok(Math.abs(flier.x + 4.5) < 0.1, `flew back ${flier.x}`);
+});
+
+// ---- 5.11 control -----------------------------------------------------------------------------
+
+test("5.11: no jump under root, no step or jump under a stun, no rise in water under root", () => {
+  const rooted = at(0, 0, 0);
+  const motion = newCharacterMotion();
+  assert.deepEqual(stepCharacter(rooted, motion, input({ ascend: true, rooted: true }), world(), 1 / 60), []);
+  assert.equal(motion.mode, "ground");
+
+  const stunned = at(0, 0, 0);
+  const stun = newCharacterMotion();
+  const events = simulate(stunned, stun, input({ forward: 1, ascend: true, stunned: true }), world(), 1);
+  assert.deepEqual(events, []);
+  assert.equal(stunned.x, 0);
+
+  const lake = world({ ground: () => -20, liquid: () => ({ height: 0, type: 1 }) });
+  const swimmer = at(0, 0, -10);
+  const swim = newCharacterMotion();
+  stepCharacter(swimmer, swim, input(), lake, 1 / 60);
+  simulate(swimmer, swim, input({ ascend: true, rooted: true }), lake, 1);
+  assert.equal(swimmer.z, -10);
+});
+
+// ---- 5.09 flight ------------------------------------------------------------------------------
+
+test("5.09: on the ground with flight allowed the run rate applies", () => {
+  const position = at(0, 0, 0);
+  simulate(position, newCharacterMotion(), input({ canFly: true, forward: 1, runSpeed: 7, flightSpeed: 21 }), world(), 1);
+  assert.ok(Math.abs(position.x - 7) < 0.1, `ran ${position.x}`);
+});
+
+test("5.09: flying forward follows the pitch, and the rate is live", () => {
+  const position = at(0, 0, 100);
+  const motion = newCharacterMotion();
+  motion.mode = "air";
+  stepCharacter(position, motion, input({ canFly: true, forward: 1, pitch: Math.PI / 6, flightSpeed: 21 }), world(), 1 / 60);
+  assert.ok(Math.abs(motion.velocityZ - 10.5) < 0.01, `vertical ${motion.velocityZ}`);
+  const x0 = position.x;
+  stepCharacter(position, motion, input({ canFly: true, forward: 1, pitch: Math.PI / 6, flightSpeed: 21 }), world(), 1);
+  assert.ok(Math.abs(position.x - x0 - 21 * Math.cos(Math.PI / 6)) < 0.01, `horizontal ${position.x - x0}`);
+  const x1 = position.x;
+  stepCharacter(position, motion, input({ canFly: true, forward: 1, pitch: 0, flightSpeed: 28 }), world(), 1);
+  assert.ok(Math.abs(position.x - x1 - 28) < 0.01, `a faster rate waited for landing: ${position.x - x1}`);
+});
+
+test("5.09: losing flight in the air falls at the run rate", () => {
+  const position = at(0, 0, 100);
+  const motion = newCharacterMotion();
+  motion.mode = "air";
+  stepCharacter(position, motion, input({ canFly: true, forward: 1, flightSpeed: 28 }), world(), 1 / 60);
+  stepCharacter(position, motion, input({ forward: 1, runSpeed: 7 }), world(), 1 / 60);
+  const x0 = position.x;
+  stepCharacter(position, motion, input({ forward: 1, runSpeed: 7 }), world(), 0.5);
+  assert.ok(Math.abs(position.x - x0 - 3.5) < 0.01, `fell forward ${position.x - x0}`);
+  assert.equal(motion.jump?.speed, 7);
+  assert.ok(motion.velocityZ < 0);
 });

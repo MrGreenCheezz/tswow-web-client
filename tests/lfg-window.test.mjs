@@ -44,6 +44,7 @@ const { game } = await import("../dist/code/browser/game/Context.js");
 const social = await import("../dist/code/browser/ui/Social.js");
 const dom = await import("../dist/code/browser/ui/Dom.js");
 const windows = await import("../dist/code/browser/ui/Windows.js");
+const { getTip } = await import("../dist/code/browser/ui/Widgets.js");
 
 function fakeWorld() {
   const sent = [];
@@ -101,7 +102,7 @@ test("the classic window lists random dungeons with rewards, locks and a join en
     assert.match(rewards, /\+1500 опыта/, "the parsed experience reward is finally drawn");
     const lockIcon = radios[1].children.find((child) => child.className === "lfg-lock-icon");
     assert.ok(lockIcon, "a locked random row carries the stock lock icon");
-    assert.equal(typeof lockIcon.title, "string", "the lock icon explains itself on hover");
+    assert.equal(typeof getTip(lockIcon), "string", "the lock icon explains itself on hover (the interface tooltip, 4.01)");
     // Switching to the locked row flips the note and keeps a single join entry.
     const lockedRadio = radios[1].children.find((child) => child.tagName === "INPUT");
     lockedRadio.checked = true;
@@ -116,8 +117,9 @@ test("the classic window lists random dungeons with rewards, locks and a join en
 test("the queue panel shows one stock role slot per role with waits and needs", () => {
   const world = fakeWorld();
   world.lfgQueue = {
-    dungeonId: 258, waitTimeAverage: 120000, waitTime: -1,
-    waitTimeTank: 60000, waitTimeHealer: -1, waitTimeDamage: 90000,
+    // 4.14: seconds, as SMSG_LFG_QUEUE_STATUS carries them (LFGHandler.cpp:464-474).
+    dungeonId: 258, waitTimeAverage: 120, waitTime: -1,
+    waitTimeTank: 60, waitTimeHealer: -1, waitTimeDamage: 150,
     tanksNeeded: 1, healersNeeded: 0, damageNeeded: 2, queuedSeconds: 300,
   };
   game.world = world;
@@ -128,13 +130,65 @@ test("the queue panel shows one stock role slot per role with waits and needs", 
     const slots = dom.lfgQueue.children.filter((child) => child.classList.contains("lfg-queue-role"));
     assert.deepEqual(slots.map((slot) => slot.dataset.lfgRole), ["tank", "healer", "damage"]);
     const label = (slot) => slot.children.map((child) => child.textContent).join("");
-    assert.match(label(slots[0]), /1 мин · нужно 1/);
+    assert.match(label(slots[0]), /1 мин\. · нужно 1/);
     assert.match(label(slots[1]), /\? · нужно 0/, "an unknown wait is a question mark, not a zero");
-    assert.match(label(slots[2]), /2 мин · нужно 2/);
-    assert.equal(dom.lfgQueue.children.some((child) => child.textContent === "В очереди 5 мин"), true);
+    assert.match(label(slots[2]), /2 мин\. · нужно 2/);
+    assert.equal(dom.lfgQueue.children.some((child) => child.textContent === "Время ожидания: 5 мин."), true);
     assert.equal(dom.lfgQueue.children.some((child) => child.textContent === "Подземелье 258"), true);
+    // Stock LFDSearchStatus_Update shows `myWait` (the wire's second wait, the player's role's one,
+    // LFGQueue.cpp:597-624) and hides the statistic at -1 (LFDFrame.lua:1137-1143).
+    const statistic = () => dom.lfgQueue.children.filter((child) => child.className === "lfg-queue-average");
+    assert.equal(statistic().length, 0, "my wait unknown: no statistic line");
+    world.lfgQueue = { ...world.lfgQueue, waitTime: 240 };
+    social.showLfg();
+    assert.deepEqual(statistic().map((child) => child.textContent), ["Среднее время ожидания: 4 мин."]);
     social.closeLfgWindow();
   } finally { reset(); }
+});
+
+test("L7 4.14: the time in queue ticks between status packets, and a fresh packet corrects it", (t) => {
+  // Stock LFDSearchStatus_OnUpdate writes GetTime() - queuedTime every frame (LFDFrame.lua:1149-1151).
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let clock = 1_000_000;
+  const realNow = performance.now;
+  performance.now = () => clock;
+  const world = fakeWorld();
+  const status = (queuedSeconds) => ({
+    dungeonId: 258, waitTimeAverage: -1, waitTime: -1, waitTimeTank: -1, waitTimeHealer: -1, waitTimeDamage: -1,
+    tanksNeeded: 1, healersNeeded: 1, damageNeeded: 3, queuedSeconds,
+  });
+  world.lfgQueue = status(50);
+  game.world = world;
+  const line = () => dom.lfgQueue.children.find((child) => child.className === "lfg-queue-state")?.textContent;
+  try {
+    dom.lfgType.value = "specific";
+    dom.lfgWindow.hidden = true;
+    social.toggleLfgWindow();
+    assert.match(line(), /< 1 минуты|меньше/i, "50 s: under a minute");
+    clock += 15_000;
+    t.mock.timers.tick(1000);
+    assert.equal(line(), "Время ожидания: 1 мин. 5 с.", "65 s without a packet");
+    clock += 60_000;
+    t.mock.timers.tick(1000);
+    assert.equal(line(), "Время ожидания: 2 мин. 5 с.");
+    // The core's next status says 120 s: the packet wins and the count goes on from it.
+    world.lfgQueue = status(120);
+    social.showLfg();
+    assert.equal(line(), "Время ожидания: 2 мин.");
+    clock += 3_000;
+    t.mock.timers.tick(1000);
+    assert.equal(line(), "Время ожидания: 2 мин. 3 с.");
+    // A closed window stops the clock on its next tick.
+    social.closeLfgWindow();
+    const before = line();
+    clock += 10_000;
+    t.mock.timers.tick(1000);
+    t.mock.timers.tick(1000);
+    assert.equal(line(), before, "nothing ticks behind a closed window");
+  } finally {
+    performance.now = realNow;
+    reset();
+  }
 });
 
 test("role buttons paint the stock atlas cells instead of emoji", () => {
@@ -258,7 +312,7 @@ test("LFG rejects leader-only selection before sending and updates Join on role 
     dom.lfgLeader.checked = true;
     dom.lfgLeader.listeners.get("change")?.();
     assert.equal(dom.lfgJoin.disabled, true, "leader alone cannot satisfy a combat role");
-    assert.match(dom.lfgJoin.title, /танк|лекар|урон/i);
+    assert.match(getTip(dom.lfgJoin) ?? "", /танк|лекар|урон/i);
     dom.lfgJoin.listeners.get("click")();
     assert.deepEqual(world.sent, ["locks"], "even a programmatic click cannot send an invalid queue request");
     assert.match(localMessages.at(-1)?.text, /танк|лекар|урон/i);

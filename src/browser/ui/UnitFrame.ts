@@ -1,6 +1,6 @@
 import { REACTION_FRIENDLY, REACTION_HOSTILE } from "../../world/FactionRules.js";
 import { setPortraitCanvasBackingStore, UNIT_FRAME_PORTRAIT_CSS_PIXELS } from "../PortraitCanvas.js";
-import { Bar } from "./Widgets.js";
+import { setTip, Bar } from "./Widgets.js";
 import { classColor, healthFraction, raidMarkGlyph, type UnitSnapshot } from "./UnitSnapshot.js";
 
 /**
@@ -61,6 +61,8 @@ export class UnitFrame {
   #paintedReaction: string | undefined;
   #paintedThreat: string | undefined;
   #paintedTitle: string | undefined;
+  /** 4.08: whether the frame is a raid grid's empty slot (guid 0), which takes no clicks. */
+  #paintedEmpty = false;
 
   constructor(options: UnitFrameOptions) {
     this.#size = options.size ?? "full";
@@ -127,7 +129,24 @@ export class UnitFrame {
 
   hide(): void {
     this.#guid = undefined;
+    this.#markEmpty(false);
     if (!this.root.hidden) this.root.hidden = true;
+  }
+
+  /**
+   * An empty raid slot is a snapshot of guid 0 (`emptyGridSlot`): it holds its place in the
+   * subgroup but is nobody, so a click must not select guid 0 or open the group menu for it.
+   */
+  #markEmpty(empty: boolean): void {
+    if (empty === this.#paintedEmpty) return;
+    this.#paintedEmpty = empty;
+    if (empty) {
+      this.root.dataset["empty"] = "";
+      this.root.setAttribute("aria-hidden", "true");
+    } else {
+      delete this.root.dataset["empty"];
+      this.root.removeAttribute("aria-hidden");
+    }
   }
 
   /**
@@ -149,7 +168,9 @@ export class UnitFrame {
      */
     outOfRange?: boolean | undefined;
   } = {}): void {
-    this.#guid = snapshot.guid;
+    const empty = snapshot.guid === 0n;
+    this.#guid = empty ? undefined : snapshot.guid;
+    this.#markEmpty(empty);
     if (this.root.hidden) this.root.hidden = false;
     if (snapshot.name !== this.#paintedName) {
       this.#paintedName = snapshot.name;
@@ -233,11 +254,11 @@ export class UnitFrame {
     if (options.outOfRange === true) {
       if (this.#paintedTitle !== "Вне дальности исцеления (~40 м)") {
         this.#paintedTitle = "Вне дальности исцеления (~40 м)";
-        this.root.title = this.#paintedTitle;
+        setTip(this.root, this.#paintedTitle);
       }
     } else if (this.#paintedTitle !== undefined && this.#paintedTitle.startsWith("Вне дальности")) {
       this.#paintedTitle = "";
-      this.root.title = "";
+      setTip(this.root, "");
     }
 
     const reaction = snapshot.reaction;

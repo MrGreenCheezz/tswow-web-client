@@ -1273,5 +1273,12 @@ test("NPCItemDisplay slots drive baked NPC belt and boots", withPatchW, async ()
     `NPC waist slot selects the active HumanMale belt: ${appearance.geosets}`);
   assert.ok(appearance.geosets.includes(505),
     `NPC feet slot selects the foot-capable boot: ${appearance.geosets}`);
-  assert.deepEqual(appearance.attached, [], "NPC item columns do not opt into attached gear");
+  // 05.10-A7a-B 6.01: the head and shoulder columns hang their models now (3265 wears a Defias
+  // helmet); the body columns still only paint and choose geosets.
+  assert.ok(appearance.attached.every((item) => item.slot === 0 || item.slot === 2),
+    "only the helmet and pauldrons of NPCItemDisplay are attached gear");
+  // 05.10 review: and the helmet really is there, as the human male's own file.
+  const helmets = appearance.attached.filter((item) => item.slot === 0);
+  assert.equal(helmets.length, 1, "3265's Defias helmet is hung");
+  assert.match(helmets[0].model, /^Item\\ObjectComponents\\Head\\.+_HuM\.m2$/i);
 });

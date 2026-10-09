@@ -413,19 +413,21 @@ export class FrameXmlCorpus implements GlueFileProvider {
  * `BuffFrame.lua`; the player-frame tail follows the same order: `UnitFrame.xml` defines the
  * shared Lua helpers before `PlayerFrame.xml`.
  *
- * Not every entry of the full TOC is here: 32 of its 139 stock entries (the TSWoW blocks aside) are
- * not. Eight are `FRAMEXML_OPTIONS_TOC` below, loaded into the running VM on the options windows'
- * first open. Most of the other 24 wait for an owner of their own in the work plan — for example
- * `DurabilityFrame.xml` (3.06), `MultiCastActionBarFrame.xml` (3.07), `CoinPickupFrame.xml` (3.09),
- * `VehicleMenuBar.xml` and `AnimationSystem.lua` (11.02) — and two are out for a measured reason:
+ * Not every entry of the full TOC is here: 24 of its 138 stock entries (the TSWoW blocks aside; recounted
+ * over the dataset's FrameXML.toc after 11.02-F2, 11.02-F2-review; L5c 3.09: CoinPickupFrame.xml joined;
+ * L17 3.09: LocalizationPost.xml joined)
+ * are not. Eight are `FRAMEXML_OPTIONS_TOC` below, loaded into the running VM on the options windows'
+ * first open. Most of the other 16 wait for an owner of their own in the work plan (`LocalizationPost.xml`
+ * came in with L17 3.09; `VehicleMenuBar.xml` and `AnimationSystem.lua` with 11.02-F2)
+ * — and one is out for a measured reason:
+ * `WorldFrame.xml` — the Three.js world viewport owns rendering and input; the stock world
+ * widget is not an additional browser surface. Its popup positioning is owned by the DOM host.
  *
- * * `Localization.xml` — not for a raise: measured at its stock slot after `FontStyles.xml` over the
- *   canned seam it costs +2 files, +968 B, 0 widgets and 0 Lua errors, since UIParent calls its
- *   `LocalizeFrames()` on VARIABLES_LOADED, long after `PlayerFrame.xml` created the
- *   `PlayerHitIndicator` it re-anchors. It waits for an answer to that function's
- *   `SetEuropeanNumbers(true)` (plan item 3.09), which would otherwise be a new unanswered C API.
- * * `WorldFrame.xml` — the Three.js world viewport owns rendering and input; the stock world
- *   widget is not an additional browser surface. Its popup positioning is owned by the DOM host.
+ * `Localization.xml` sits at its stock slot after `FontStyles.xml` (plan item 3.09): measured over
+ * the canned seam it costs +2 files, +968 B, 0 widgets and 0 Lua errors. UIParent calls its ruRU
+ * `LocalizeFrames()` on VARIABLES_LOADED, long after `PlayerFrame.xml` created the
+ * `PlayerHitIndicator` it re-anchors; its `SetEuropeanNumbers(true)` is answered by
+ * FrameXmlCensusRemainder.ts (tests/framexml-census-remainder.test.mjs runs it).
  *
  * The chat additions are kept to the stock concrete chat cluster: `AutoComplete.xml` follows
  * `TextStatusBar.xml`, and `HistoryKeeper.lua`, `ChatFrame.xml` and `FloatingChatFrame.xml` follow
@@ -460,6 +462,7 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "Constants.lua",
   "Fonts.xml",
   "FontStyles.xml",
+  "Localization.xml",
   "BasicControls.xml",
   "UIParent.xml",
   "AnimTimerFrame.xml",
@@ -489,6 +492,11 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "OptionsPanelTemplates.xml",
   // The realm's breath/fatigue snapshots drive the original three mirror bars and their Lua.
   "MirrorTimer.xml",
+  // L5c 3.09 — stock TOC line 48: the coin-count dialog every money frame's coin button opens
+  // (MoneyFrame.xml's OpenCoinPickupFrame and CoinPickupFrame:Hide), over the cursor money of
+  // FrameXmlCursorMoney.ts. Measured over the canned seam: +2 files, +11,577 B, +27 widgets, 0 Lua
+  // errors (pinned in tests/framexml-coinpickup-vertical.test.mjs).
+  "CoinPickupFrame.xml",
   // Stock TOC line 49. ContainerFrameItemButton_OnClick hides StackSplitFrame after every
   // UseContainerItem; with the real frame loaded (+2 files, +8,205 B, +23 widgets, 0 Lua errors,
   // measured) the bag gate no longer aliases it to GameMenuFrame, which frees the stock menu to show.
@@ -496,12 +504,11 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // Stock TOC lines 50-51: the zone and sub-zone banners (ZoneTextFrame, SubZoneTextFrame) over
   // FadingFrame.lua's fade, driven by the seam's ZONE_CHANGED/ZONE_CHANGED_NEW_AREA and its
   // GetZoneText/GetSubZoneText/GetZonePVPInfo; no native banner duplicates them. ZoneText.xml's third
-  // root, AutoFollowStatus, stays hidden until FollowUnit's AUTOFOLLOW_BEGIN/END exist (plan item 5.18).
+  // root, AutoFollowStatus, shows on FollowUnit's AUTOFOLLOW_BEGIN/END (5.18, input/Follow.ts).
   // FadingFrame first: ZoneText_OnLoad calls FadingFrame_OnLoad. Measured over the canned seam: +4 files
   // (FadingFrame.xml/.lua, ZoneText.xml/.lua), +9,692 B, +8 widgets, 0 new Lua errors
-  // (tests/framexml-zonetext-vertical.test.mjs); kept in the addonsOnly mode too — the four new
-  // entries of slice A2-1 together cost +69 to +112 ms of a ~3.6 s Node boot (median of 7
-  // alternating runs, twice), inside its ±300 ms spread.
+  // (tests/framexml-zonetext-vertical.test.mjs, which pins these increments); kept in the
+  // addonsOnly mode too, where the same four files and eight widgets are the whole cost.
   "FadingFrame.xml",
   "ZoneText.xml",
   "BattlefieldFrame.xml",
@@ -606,9 +613,13 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   "FriendsFrame.xml",
   "RaidFrame.xml",
   "ChannelFrame.xml",
-  // The stance layout calls ShowPetActionBar from this stock dependency. Its commands retain
-  // their native owner until the original pet action API is connected.
+  // The stance layout calls ShowPetActionBar from this stock dependency. The pet action C API is
+  // FrameXmlPetActionBar.ts'; the stock bar takes the pet's commands once FrameXmlWorldMount's
+  // `petActionBarGate` passes, and until then the native #pet-bar keeps them.
   "PetActionBarFrame.xml",
+  // Stock TOC line 105 (3.07): the Call of the Elements bar (FrameXmlMultiCast.ts); hidden unless a
+  // slot has a totem item and spells.
+  "MultiCastActionBarFrame.xml",
   "BonusActionBarFrame.xml",
   "MainMenuBarBagButtons.xml",
   "WorldMapFrame.xml",
@@ -630,13 +641,24 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // +2 files, +25,730 B, +168 widgets (32 title buttons), 0 new Lua errors.
   "GossipFrame.xml",
   // Stock TOC line 119 (after GossipFrame, 118): MailFrame, OpenMailFrame and StationeryPopupFrame
-  // (FrameXmlMail.ts/FrameXmlMailOwner.ts). Its tab template is FriendsFrame.xml's, served by
-  // FrameXmlMailCorpus.ts while FriendsFrame.xml is outside this vertical.
+  // (FrameXmlMail.ts/FrameXmlMailOwner.ts). Its tab template is FriendsFrame.xml's, which this
+  // vertical now carries above, so MailFrame.xml is served untouched; FrameXmlMailCorpus.ts rewrites
+  // the tabs only for a TOC without FriendsFrame.xml.
   "MailFrame.xml",
   // Stock TOC line 120 (after MailFrame, 119): PetStableFrame, the hunter's stable (FrameXmlStable.ts/
   // FrameXmlStableOwner.ts); its purchase dialog is StaticPopup.xml's. Hidden root. Measured over the
   // canned seam: +2 files, +20,218 B, +94 widgets, 0 new Lua errors.
   "PetStable.xml",
+  // Stock TOC line 121: DurabilityFrame, the armoured figure under the minimap. Its
+  // DurabilityFrame_SetAlerts reads GetInventoryAlertStatus 1..11 (FrameXmlItemActions.ts), asks
+  // OffhandHasWeapon() for index 10 and, with any alert, VehicleSeatIndicator:IsShown() unguarded —
+  // that frame is VehicleMenuBar.xml's (TOC 142, loaded below since 11.02-F2); FrameXmlBoot stands in
+  // a hidden frame of that name only for a TOC without it (FrameXmlDurabilityFrame.ts).
+  // UPDATE_INVENTORY_ALERTS is FrameXmlInventoryAlerts.ts'. Visible root under UIParent; addonsOnly
+  // paints no stock HUD. Measured over the canned seam (before VehicleMenuBar.xml joined): +2 files,
+  // +8,460 B, +13 widgets (the frame and its twelve textures; the stand-in was there anyway for
+  // MainMenuBar.lua), 0 new Lua errors (tests/framexml-durability-vertical.test.mjs).
+  "DurabilityFrame.xml",
   "WorldStateFrame.xml",
   // Stock TOC line 123: DressUpFrame, the dressing room behind Ctrl+click's DressUpItemLink
   // (FrameXmlDressUp.ts/FrameXmlDressUpMount.ts). Hidden root. Blizzard_AuctionDressUp.lua captures
@@ -667,18 +689,36 @@ export const FRAMEXML_VERTICAL_TOC: readonly string[] = Object.freeze([
   // GetRuneType/GetRuneCooldown and fires RUNE_POWER_UPDATE/RUNE_TYPE_UPDATE). Not optional, in the
   // addonsOnly mode either: UnitFrame_SetUnit (UnitFrame.lua:64-77) calls RuneFrame:SetScale for a
   // death knight's PlayerFrame and PetFrame unconditionally, so without the file PLAYER_ENTERING_WORLD
-  // raised and PlayerFrame_ToPlayerArt stopped at its first line. RuneFrame_OnLoad hides it for
-  // every other class. Measured over the canned seam as a death knight: +2 files, +10,620 B,
-  // +43 widgets, one Lua error fewer (that raise); as the canned warrior 0 new Lua errors
-  // (tests/framexml-rune-vertical.test.mjs).
+  // raised and PlayerFrame_ToPlayerArt stopped at its first line; there the mount keeps it hidden
+  // (hideFrameXmlRuneFrame), since that mode paints no stock HUD. RuneFrame_OnLoad hides it for
+  // every other class.
+  // Measured over the canned seam as a death knight: +2 files, +10,620 B, +43 widgets, one Lua error
+  // fewer (that raise); as the canned warrior 0 new Lua errors (tests/framexml-rune-vertical.test.mjs).
   "RuneFrame.xml",
   // Stock TOC line 139: EasyMenu/EasyMenu_Initialize, the menu-table front of UIDropDownMenu.lua that
   // Blizzard_CombatLog.xml:85 and third-party add-ons open their menus with. Lua only. Measured over
   // the canned seam: +1 file, +1,009 B, 0 widgets, 0 new Lua errors (tests/framexml-easymenu-vertical.test.mjs).
   "EasyMenu.lua",
+  // 11.02-F2: stock TOC line 142, the vehicle UI — VehicleMenuBar (skins, six action buttons on slots
+  // 121-126, the leave and pitch buttons, the health/power bottles) and VehicleSeatIndicator; their C API
+  // and UNIT_*_VEHICLE events are FrameXmlVehicle.ts', the bar's slots FrameXmlPossess.ts'. It replaces
+  // FrameXmlDurabilityFrame.ts' two stand-ins (the names are taken). Measured over the canned seam:
+  // +2 files, +49,850 B, +133 widgets, 0 new Lua errors (tests/framexml-vehicle-vertical.test.mjs).
+  "VehicleMenuBar.xml",
   // CharacterFrame.lua toggles this real player-frame child while the character sheet is shown.
   // It is a stock XML dependency, not a synthetic placeholder; retain its late retail TOC slot.
   "AlternatePowerBar.xml",
+  // 11.02-F2: stock TOC line 144, SetUpAnimation — MainMenuBar's vehicle art switch finishes in its
+  // post function (MainMenuBar_AnimFinished), PlayerFrame's vehicle art and the seat pulse animate
+  // through it; without it MainMenuBar.busy never clears. It also slides MainMenuBar back in on a
+  // PLAYER_ENTERING_WORLD after the first (MainMenuBar_ToPlayerArt), as Wow.exe does. Measured over the
+  // canned seam: +1 file, +2,563 B, +1 widget (its OnUpdate frame), 0 new Lua errors.
+  "AnimationSystem.lua",
+  // L17 3.09: the stock TOC's last line, after its TSWoW blocks (here before them: the generated
+  // blocks follow this list, and neither side reads the other) — the ruRU DeclensionFrame, opened by
+  // PET_FORCE_NAME_DECLENSION over the pet rename (FrameXmlPetDeclension.ts). Measured over
+  // the canned seam: +2 files, +11,931 B, +47 widgets, 0 new Lua errors (tests/framexml-declension-vertical.test.mjs).
+  "LocalizationPost.xml",
 ]);
 
 /**

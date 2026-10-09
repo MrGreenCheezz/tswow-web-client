@@ -7,6 +7,11 @@
 //
 // Split the same way `LockRules` is: the gateway reads the table off disk, the browser decides,
 // and the rule itself sits where both can import it.
+//
+// D3 (04.10): the comparison `reactionBetween` makes is Wow.exe's own (FactionTemplateReaction.ts,
+// 0x00715440), not the core's IsHostileTo/IsFriendlyTo, which stay below as the realm's predicates.
+
+import { TEMPLATE_RANK_FRIENDLY, TEMPLATE_RANK_HOSTILE, factionTemplateRank } from "./FactionTemplateReaction.js"; // D3
 
 /** `MAX_FACTION_RELATIONS`: four explicit enemies and four explicit friends per template. */
 export const FACTION_RELATIONS = 4;
@@ -26,6 +31,11 @@ export interface FactionTemplate {
   enemyGroup: number;
   enemies: readonly number[];
   friends: readonly number[];
+  /**
+   * D3: `FactionTemplate.Flags` (HOSTILE_BY_DEFAULT 0x2000 for FactionTemplateReaction.ts, CONTESTED_GUARD
+   * 0x1000 for ContestedGuard.ts); absent from a gateway that serves /dbc/factions before v=3 — unknown.
+   */
+  readonly flags?: number; // D3
 }
 
 export interface FactionData {
@@ -43,6 +53,8 @@ export interface FactionData {
 
 /**
  * Reaction of `self` towards `other`, as `FactionTemplateEntry::IsHostileTo` computes it.
+ * D3: the realm's predicate; this client's reaction (`reactionBetween`) reads Wow.exe's comparison
+ * instead (FactionTemplateReaction.ts), which takes the EnemyGroup mask before the lists.
  *
  * The order matters and is the core's: an explicit enemy wins over an explicit friend, both win
  * over the group masks, and both lists are only consulted when the other side belongs to a
@@ -79,9 +91,10 @@ export function reactionBetween(data: FactionData, selfTemplateId: number, other
   // A template the client has never heard of is not made an enemy on a guess: an unknown faction
   // reads as neutral, which is the one reaction that costs nothing to be wrong about.
   if (!self || !other) return REACTION_NEUTRAL;
-  if (isHostileTo(self, other)) return REACTION_HOSTILE;
-  if (isFriendlyTo(self, other)) return REACTION_FRIENDLY;
-  return REACTION_NEUTRAL;
+  // D3 (owner's decision 04.10): Wow.exe 0x00715440 — EnemyGroup first, the target's Friend list, the
+  // viewer's HOSTILE_BY_DEFAULT (FactionTemplateReaction.ts); was isHostileTo, then isFriendlyTo.
+  const rank = factionTemplateRank(self, other); // D3
+  return rank === TEMPLATE_RANK_HOSTILE ? REACTION_HOSTILE : rank === TEMPLATE_RANK_FRIENDLY ? REACTION_FRIENDLY : REACTION_NEUTRAL; // D3
 }
 
 /**

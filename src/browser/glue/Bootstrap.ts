@@ -1,19 +1,24 @@
 import "./glue.css";
 import { clientLocale, gatewayOrigin as defaultGatewayOrigin } from "../Environment.js";
+import { RealmCategoryClient } from "../RealmCategoryClient.js";
 import { FrameXmlDomRenderer } from "../ui/framexml_compat/FrameXmlDomRenderer.js";
 import { FrameXmlFontLoader } from "../ui/framexml_compat/FrameXmlFonts.js";
 import { FrameXmlTextureCache } from "../ui/framexml_compat/FrameXmlTextures.js";
 import { WebSocketByteStream } from "../../transport/WebSocketByteStream.js";
 import { GlueRuntime, glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize, GLUE_LOGICAL_HEIGHT } from "./GlueRuntime.js";
 import { createHttpFileProvider } from "./GlueLoader.js";
+import { browserGlueVideo } from "./GlueVideo.js";
+import { GlueAddonList } from "./GlueAddons.js";
+import { createGlueCVarStore } from "./GlueCVarStore.js";
+import { fetchFrameXmlClientAddons } from "../framexml/FrameXmlClientAddons.js";
 import { GlueBrowserAudio } from "./GlueAudio.js";
 import { GlueModelStage } from "./GlueModelStage.js";
 import { glueLoginSceneModelIsVisible } from "./GlueLoginScenePolicy.js";
 import { GlueCharacterScene, characterLook } from "./GlueCharacterScene.js";
 import { GlueGatewayNames } from "./GlueNames.js";
 import { fakeGlueSession, isFakeGlueSessionName } from "./GlueFakeSession.js";
-import { WorldClient } from "../../world/WorldClient.js";
 import { gatewaySocketUrl } from "./FrontDoor.js";
+import { liveGlueWorldConnector } from "./GlueWorldConnector.js";
 import type { GlueSession, GlueWorldConnector } from "./GlueSession.js";
 import type { GlueEnterWorldRequest } from "./GlueCharacterApi.js";
 
@@ -144,6 +149,9 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     stage.style.transform = `scale(${metrics.scaleX}, ${metrics.scaleY})`;
     stage.style.transformOrigin = "top left";
     runtime.resizeLoginScene(metrics.virtualWidth);
+    // A refit can move or rescale the stage without a resize the renderer hears (a transform-only
+    // change): it measures the container again (P1-18). `pictures` is the renderer once built.
+    pictures?.invalidateContainerBox();
   }
 
   /**
@@ -192,6 +200,19 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
     onDiagnostic: (message) => console.warn("[glue audio]", message),
   });
   const names = new GlueGatewayNames(origin);
+  // Cfg_Categories (10.08, 1.19): asked now, so the realm tabs have their names by the time the
+  // login brings the list; an older gateway answers 404 and the tabs keep their numbers.
+  const realmCategories = new RealmCategoryClient(origin);
+  realmCategories.table();
+  // This browser's site data, or nothing when it is blocked (the getter itself can throw).
+  const siteStorage = (() => { try { return globalThis.localStorage; } catch { return null; } })();
+  // «Модификации» (10.09): the gateway's add-on list, asked once; a failure is an empty list.
+  const addons = new GlueAddonList({
+    origin,
+    load: () => fetchFrameXmlClientAddons(origin),
+    storage: siteStorage,
+  });
+  void addons.load();
   const namesReady = names.load();
 
   /**
@@ -218,24 +239,8 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
   // bridge the runtime owns, so one of the two has to arrive late.
   let characterScene: GlueCharacterScene | undefined;
   let creationScene: GlueCharacterScene | undefined;
-  const liveConnect: GlueWorldConnector = options.connect ?? (async (realm, auth, progress, signal) => {
-    const stream = await WebSocketByteStream.connect(gatewaySocketUrl(origin, "/world"));
-    // The connecting dialog's Cancel closes the socket, which ends a wait in the realm's queue.
-    const abort = (): void => stream.close();
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    try {
-      progress?.({ stage: "authenticating" });
-      return await WorldClient.connect(stream, {
-        username: auth.username, sessionKey: auth.sessionKey, realmId: realm.id, realmName: realm.name,
-      }, { onQueue: (position) => progress?.({ stage: "queued", position }) });
-    } catch (error) {
-      stream.close();
-      throw error;
-    } finally {
-      signal?.removeEventListener("abort", abort);
-    }
-  });
+  // The shared connector (`GlueWorldConnector.ts`) unless the page brought its own wrapping of it.
+  const liveConnect: GlueWorldConnector = options.connect ?? liveGlueWorldConnector(origin);
   const runtime = new GlueRuntime({
     provider: createHttpFileProvider({ gatewayOrigin: origin }),
     lua: {
@@ -259,7 +264,21 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       // navigating on the corpus' say-so.
       onLaunchUrl: (url) => report(`Ссылка из интерфейса: ${url}`),
       cursor: () => pointer,
-      characterView: {
+      // Honest video answers (10.19): the measured paint rate and WebGL2's sample limit.
+      video: browserGlueVideo(),
+      addons,
+      // Account name, realm, last character, usesToken per gateway — never a password (10.07). Not for
+      // a canned session: its realm and characters are not this gateway's.
+      ...(canned ? {} : { cvarStore: createGlueCVarStore(siteStorage, origin) }),
+      // «Выход» (10.09): the Electron window closes and the app quits with it (`window-all-closed`).
+      // A browser only lets a script close a tab it opened, so a tab that is still here a moment
+      // later says what to do instead of leaving the button dead.
+      onQuit: () => {
+        window.close();
+        setTimeout(() => {
+          if (!window.closed) runtime.api.fireEvent("OPEN_STATUS_DIALOG", "OKAY", "Закройте вкладку браузера.");
+        }, 200);
+      },      characterView: {
         update: () => characterScene?.update(),
         setModelFrame: (name) => characterScene?.setModelFrame(name),
       },
@@ -276,6 +295,7 @@ export async function startGlue(options: StartGlueOptions): Promise<GlueHandle> 
       ...(options.onEnterWorld ? { enterWorld: options.onEnterWorld } : {}),
       session: {
         names,
+        realmCategories: () => realmCategories.table(),
         onDiagnostic: (message) => console.warn("[glue session]", message),
         // The glue runtime's own world connection: its own socket, its own `WorldClient`. It is
         // *lent* to the world half of the client on enter-world and taken back on the way out —

@@ -202,6 +202,34 @@ test("the icon client builds client texture paths from the route and fails close
 });
 
 const dataset = "F:/tswowRoot/tswow-install/modules/default/datasets/dataset/dbc";
+
+/**
+ * The two lists counted straight from the tables with the tools' own DBC reader, not the gateway's:
+ * distinct `Interface\Icons\<name>` textures of SpellIcon.dbc (the question mark always among
+ * them) and distinct InventoryIcon names of ItemDisplayInfo.dbc, case-insensitively. The tswow
+ * dataset with modules (2026-09-25) had 3,182 and 4,761; the base dataset of 08.10 has 3,149 of
+ * 3,226 SpellIcon rows and 4,734 of 57,986 ItemDisplayInfo rows.
+ */
+let expectedIconCounts;
+async function iconCounts() {
+  if (expectedIconCounts) return expectedIconCounts;
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const [icons, display] = await Promise.all([
+    openDbcFile(dataset, "SpellIcon"), openDbcFile(dataset, "ItemDisplayInfo"),
+  ]);
+  const spell = new Set(["inv_misc_questionmark"]);
+  for (const row of icons.rows()) {
+    const match = /^interface\\icons\\([^\\/]+)$/i.exec(icons.string(row, "TextureFilename"));
+    if (match) spell.add(match[1].toLowerCase());
+  }
+  const item = new Set();
+  for (const row of display.rows()) {
+    const name = display.string(row, "InventoryIcon", 0);
+    if (name) item.add(name.toLowerCase());
+  }
+  return (expectedIconCounts = { spell: spell.size, item: item.size });
+}
+
 test("the gateway's icon lists: distinct SpellIcon textures with the question mark first, and item icons", {
   skip: existsSync(`${dataset}/SpellIcon.dbc`) ? false : "no dataset DBC on this machine",
 }, async () => {
@@ -213,9 +241,12 @@ test("the gateway's icon lists: distinct SpellIcon textures with the question ma
   assert.ok(catalog.spell.every((name) => !/[\\/]/.test(name)));
   console.log(`[macro icons] spell ${catalog.spell.length} item ${catalog.item.length} json ${JSON.stringify(catalog).length} bytes`);
   // Measured on the tswow dataset (2026-09-25): 3,182 distinct Interface\Icons\ textures in SpellIcon.dbc
-  // and 4,761 distinct inventory icons in ItemDisplayInfo.dbc.
-  assert.equal(catalog.spell.length, 3182);
-  assert.equal(catalog.item.length, 4761);
+  // and 4,761 distinct inventory icons in ItemDisplayInfo.dbc. Since 08.10 the counts come from the
+  // tables themselves (`iconCounts`): the base dataset has 3,149 and 4,734.
+  const expected = await iconCounts();
+  assert.ok(expected.spell > 3000 && expected.item > 4000, JSON.stringify(expected));
+  assert.equal(catalog.spell.length, expected.spell);
+  assert.equal(catalog.item.length, expected.item);
 });
 
 test("/dbc/macro-icons is origin-protected, versioned and served from the active dataset", {
@@ -242,8 +273,9 @@ test("/dbc/macro-icons is origin-protected, versioned and served from the active
     await client.load();
     assert.equal(client.failure, undefined);
     assert.equal(client.spellIcons()[0], "Interface\\Icons\\INV_Misc_QuestionMark");
-    assert.equal(client.spellIcons().length, 3182);
-    assert.equal(client.itemIcons().length, 4761);
+    const expected = await iconCounts();
+    assert.equal(client.spellIcons().length, expected.spell);
+    assert.equal(client.itemIcons().length, expected.item);
     void response.body?.cancel();
   } finally {
     await gateway.close();

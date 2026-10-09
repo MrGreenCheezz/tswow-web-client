@@ -1,3 +1,4 @@
+import { Unzlib } from "three/examples/jsm/libs/fflate.module.js";
 import { PacketReader } from "../protocol/PacketReader.js";
 import { PacketWriter } from "../protocol/PacketWriter.js";
 
@@ -69,7 +70,7 @@ export interface AccountDataBlob {
   time: number;
   /** What the blob expands to. Zero means the server holds nothing for this type. */
   decompressedSize: number;
-  /** Still zlib-compressed: the caller inflates it, because inflating is asynchronous here. */
+  /** Still zlib-compressed: the caller inflates it (`inflateAccountData`), once it knows the size is not zero. */
   compressed: Uint8Array;
 }
 
@@ -505,14 +506,66 @@ export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** The mirror of `deflate`, for a blob that came back from the account-data store. */
-export async function inflate(bytes: Uint8Array, expectedSize: number): Promise<Uint8Array> {
-  const stream = new Blob([bytes.slice()]).stream().pipeThrough(new DecompressionStream("deflate"));
-  const result = new Uint8Array(await new Response(stream).arrayBuffer());
-  if (result.byteLength !== expectedSize) {
-    throw new RangeError(`Account data expanded to ${result.byteLength} bytes, expected ${expectedSize}`);
+/**
+ * The largest account blob this client will inflate.
+ *
+ * The core refuses to store more than `0xFFFF` bytes (`HandleUpdateAccountData`, MiscHandler.cpp),
+ * so nothing it sends back is larger; the margin keeps every size it used to accept accepted, and
+ * the limit itself keeps a hostile u32 from asking for four gigabytes.
+ */
+export const MAX_ACCOUNT_DATA_SIZE = 1 << 20;
+
+/**
+ * The mirror of `deflate`, for a blob that came back from the account-data store — synchronously.
+ *
+ * `DecompressionStream` settles only after several task turns, and the world read loop takes
+ * packets strictly in order, so every packet behind an `SMSG_UPDATE_ACCOUNT_DATA` waited for it —
+ * the same stall `decompressObjectUpdate` removed for 0x1F6. A blob is at most 64 KB; inflating it
+ * here takes a fraction of a millisecond. The Adler-32 trailer is not checked (fflate does not);
+ * the length is.
+ *
+ * P1-21 review: the input is fed a kilobyte at a time and inflation stops as soon as the output
+ * passes the declared size. `unzlibSync` with a bounded `out` still decoded the whole stream: a
+ * 64 KB blob of 64 MiB of zeros cost 150 ms on the main thread; stopped early it costs ≈10 ms.
+ */
+/** Input bytes per inflate step; the output check runs between steps. */
+const ACCOUNT_DATA_INFLATE_STEP = 1024;
+/** Output counted past the declared size before inflation gives up, on top of twice the size. */
+const ACCOUNT_DATA_INFLATE_SLACK = 64 * 1024;
+
+export function inflateAccountData(bytes: Uint8Array, expectedSize: number): Uint8Array {
+  if (!Number.isInteger(expectedSize) || expectedSize < 0 || expectedSize > MAX_ACCOUNT_DATA_SIZE) {
+    throw new RangeError(`Account data is too large: ${expectedSize} bytes, limit ${MAX_ACCOUNT_DATA_SIZE}`);
+  }
+  const result = new Uint8Array(expectedSize);
+  // Past the declared size the output is only counted, so an ordinary mismatch still names its
+  // real length; past the cap inflation stops — the decompression-bomb case.
+  const cap = expectedSize * 2 + ACCOUNT_DATA_INFLATE_SLACK;
+  let length = 0;
+  let over = false;
+  const stream = new Unzlib((chunk) => {
+    if (length + chunk.length <= expectedSize) result.set(chunk, length);
+    length += chunk.length;
+    if (length > cap) over = true;
+  });
+  try {
+    for (let offset = 0; offset < bytes.length && !over; offset += ACCOUNT_DATA_INFLATE_STEP) {
+      const end = Math.min(bytes.length, offset + ACCOUNT_DATA_INFLATE_STEP);
+      stream.push(bytes.subarray(offset, end), end === bytes.length);
+    }
+    if (bytes.length === 0) stream.push(bytes, true);
+  } catch (error) {
+    throw new RangeError(`Account data does not inflate: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (length !== expectedSize) {
+    throw new RangeError(`Account data expanded to ${over ? `more than ${expectedSize}` : length} bytes, expected ${expectedSize}`);
   }
   return result;
+}
+
+/** `inflateAccountData` behind a promise, for callers written against the old stream version. */
+export async function inflate(bytes: Uint8Array, expectedSize: number): Promise<Uint8Array> {
+  return inflateAccountData(bytes, expectedSize);
 }
 
 /** `LANG_ADDON` in SharedDefines.h: `0xFFFFFFFF`, which reads as −1 in the signed field. */

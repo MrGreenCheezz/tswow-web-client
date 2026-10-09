@@ -12,6 +12,7 @@ import { entryOf, playerInventory, stackCount, type ItemSlotState } from "../Inv
 import { itemEnchantmentIds, itemEnchantments, type ItemEnchantmentClient } from "../ItemEnchantments.js";
 import { game } from "../game/Context.js";
 import { FrameXmlSocketModel, type FrameXmlSocketCarried, type FrameXmlSocketGemFacts } from "./FrameXmlSocketModel.js";
+import { frameXmlItemRefundable } from "./FrameXmlRefund.js";
 import type { FrameXmlQuestItemMetadata } from "./FrameXmlWorldSeam.js";
 
 /** Bag template: `ItemClass` container, subclasses ordinary (0) and gem bag (5); `BAG_FAMILY_MASK_GEMS`. */
@@ -104,12 +105,15 @@ export function createLiveFrameXmlSocket(host: LiveFrameXmlSocketHost): FrameXml
       const object: WorldObjectState | undefined = slot?.item;
       if (!slot || !object || slot.guid === 0n) return undefined;
       const entry = entryOf(object);
+      const world = host.world();
       const facts = template(entry);
       return {
         guid: slot.guid, entry, name: name(entry), texture: host.itemTexture?.(entry), quality: quality(entry),
         sockets: facts ? facts.sockets.map((socket) => socket.color) : undefined,
         enchantments: itemEnchantmentIds(object),
         flags: readField(object, "ITEM_FIELD_FLAGS") ?? 0,
+        // 2.10, Wow.exe 0x005c50e0: GetSocketItemRefundable reads the refund record.
+        refundable: frameXmlItemRefundable(object, world?.itemRefunds?.info.get(slot.guid), world?.playedSecondsNow?.()),
       };
     },
     carried: (guid) => carriedOf(carried(guid)),

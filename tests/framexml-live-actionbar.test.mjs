@@ -144,6 +144,160 @@ test("original action, bag and equipped cooldown APIs share stable realm timers 
   assert.deepEqual(fired, [], "unmount releases the new packet subscription");
 });
 
+// P1-16 (UI-6): ACTIONBAR_UPDATE_COOLDOWN/_USABLE fire on a timer's edges, never while it counts down.
+const cooldownEvents = (fired) => fired
+  .filter(([name]) => name === FRAMEXML_SEAM_EVENTS.actionCooldown || name === FRAMEXML_SEAM_EVENTS.actionUsable)
+  .map(([name]) => name);
+const PAIR = [FRAMEXML_SEAM_EVENTS.actionCooldown, FRAMEXML_SEAM_EVENTS.actionUsable];
+/** Advance both clocks by `ms` and run one seam tick (past the 60 ms poll gate for any ms ≥ 60). */
+const step = ({ seam, clock }, ms) => {
+  clock.monotonic += ms;
+  clock.lua += ms / 1000;
+  seam.tick(clock.lua);
+};
+
+test("P1-16: a 60 s snapshot cooldown fires one pair at its start and one at its end, none between", () => {
+  const f = fixture();
+  const { seam, world, clock, pump, emit, fired } = f;
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  fired.length = 0;
+  world.cooldownSnapshots.set(133, { startedAt: clock.monotonic, duration: 60_000, endsAt: clock.monotonic + 60_000 });
+  emit("SPELL_COOLDOWN_STARTED", { spellId: 133 });
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the start");
+  fired.length = 0;
+  for (let index = 0; index < 19; index++) step(f, 3_000);
+  assert.deepEqual(cooldownEvents(fired), [], "57 s of countdown are reads, not events");
+  assert.equal(call(seam, "IsUsableAction", 13)[0], false);
+  step(f, 3_000);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the natural end");
+  assert.deepEqual(call(seam, "IsUsableAction", 13), [true, false]);
+  fired.length = 0;
+  for (let index = 0; index < 5; index++) step(f, 3_000);
+  assert.deepEqual(cooldownEvents(fired), [], "a ready slot stays quiet");
+  seam.detach();
+});
+
+test("P1-16: a timer with no snapshot (a category from SMSG_INITIAL_SPELLS) fires a pair, silence, a pair", () => {
+  const f = fixture();
+  const { seam, world, clock, pump, fired } = f;
+  let categoryEnd = 0;
+  world.cooldownRemaining = (id, now) => id === 133 ? Math.max(0, categoryEnd - now) : 0;
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  fired.length = 0;
+  categoryEnd = clock.monotonic + 15_000;
+  step(f, 60);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the start, on the next poll");
+  assert.equal(call(seam, "GetActionCooldown", 13)[2], 1);
+  fired.length = 0;
+  for (let index = 0; index < 4; index++) step(f, 3_000);
+  assert.deepEqual(cooldownEvents(fired), [], "12 s of countdown");
+  step(f, 3_000);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the end");
+  assert.deepEqual(call(seam, "IsUsableAction", 13), [true, false]);
+  seam.detach();
+});
+
+test("P1-16: the global cooldown fires COOLDOWN alone when it starts, nothing while it runs or ends", () => {
+  let gcd = 0;
+  const f = fixture({ globalCooldownUntil: () => gcd });
+  const { seam, clock, pump, fired } = f;
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  fired.length = 0;
+  gcd = clock.monotonic + 1_500;
+  step(f, 16);
+  assert.deepEqual(cooldownEvents(fired), [FRAMEXML_SEAM_EVENTS.actionCooldown], "the start, without USABLE");
+  fired.length = 0;
+  for (let index = 0; index < 20; index++) step(f, 16);
+  assert.deepEqual(cooldownEvents(fired), [], "the sweep runs on its own");
+  for (let index = 0; index < 20; index++) step(f, 100);
+  assert.deepEqual(cooldownEvents(fired), [], "its end is the sweep's own, not an event");
+  seam.detach();
+});
+
+test("P1-16: a reset (the snapshot or the bare timer removed) fires one pair", () => {
+  const f = fixture();
+  const { seam, world, clock, pump, emit, fired } = f;
+  let categoryEnd = 0;
+  world.cooldownRemaining = (id, now) => Math.max(0,
+    (world.cooldownSnapshots.get(id)?.endsAt ?? 0) - now, id === 133 ? categoryEnd - now : 0);
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  world.cooldownSnapshots.set(133, { startedAt: clock.monotonic, duration: 30_000, endsAt: clock.monotonic + 30_000 });
+  emit("SPELL_COOLDOWN_STARTED", { spellId: 133 });
+  step(f, 1_000);
+  fired.length = 0;
+  world.cooldownSnapshots.delete(133); // SMSG_CLEAR_COOLDOWN
+  step(f, 100);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the snapshot's reset");
+  categoryEnd = clock.monotonic + 20_000;
+  step(f, 100);
+  fired.length = 0;
+  categoryEnd = 0;
+  step(f, 100);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the bare timer's reset");
+  fired.length = 0;
+  step(f, 100);
+  assert.deepEqual(cooldownEvents(fired), []);
+  seam.detach();
+});
+
+test("P1-16: a reattached seam describes the running timer again on its first poll", () => {
+  const f = fixture();
+  const { seam, world, clock, pump, fired } = f;
+  const categoryEnd = clock.monotonic + 20_000;
+  world.cooldownRemaining = (id, now) => id === 133 ? Math.max(0, categoryEnd - now) : 0;
+  // attach seeds one ACTIONBAR_UPDATE_COOLDOWN of its own for the freshly loaded bar; the pair is the poll's.
+  seam.attach(pump);
+  fired.length = 0;
+  seam.tick(clock.lua);
+  assert.deepEqual(cooldownEvents(fired), PAIR);
+  seam.detach();
+  seam.attach(pump);
+  fired.length = 0;
+  step(f, 100);
+  assert.deepEqual(cooldownEvents(fired), PAIR, "the new attach starts from no signature");
+  seam.detach();
+});
+
+test("P1-16: button, cooldown, end gives the same event trace as CannedWorldSeam", async () => {
+  const { CannedWorldSeam } = await import("../dist/code/browser/framexml/CannedWorldSeam.js");
+  const canned = new CannedWorldSeam();
+  const cannedFired = [];
+  let lua = 1_000;
+  canned.attach({ now: () => lua, fire: (name, ...args) => { cannedFired.push([name, ...args]); return 1; } });
+  canned.tick(lua);
+  cannedFired.length = 0;
+  canned.useAction(1);
+  for (let index = 0; index < 12; index++) { lua += 1; canned.tick(lua); }
+  const cannedTrace = cannedEventsOnly(cannedFired);
+
+  const f = fixture();
+  const { seam, world, clock, pump, emit, fired } = f;
+  seam.attach(pump);
+  seam.tick(clock.lua);
+  fired.length = 0;
+  world.cooldownSnapshots.set(133, { startedAt: clock.monotonic, duration: 10_000, endsAt: clock.monotonic + 10_000 });
+  emit("SPELL_COOLDOWN_STARTED", { spellId: 133 });
+  for (let index = 0; index < 12; index++) step(f, 1_000);
+  assert.deepEqual(cooldownEvents(fired), cannedTrace);
+  assert.deepEqual(cannedTrace, [...PAIR, ...PAIR]);
+  seam.detach();
+});
+
+/** The canned seam's cooldown pair only: its rage sine also re-tints (USABLE) on a crossing. */
+function cannedEventsOnly(fired) {
+  const out = [];
+  for (let index = 0; index < fired.length; index++) {
+    if (fired[index][0] !== FRAMEXML_SEAM_EVENTS.actionCooldown) continue;
+    out.push(fired[index][0]);
+    if (fired[index + 1]?.[0] === FRAMEXML_SEAM_EVENTS.actionUsable) out.push(fired[index + 1][0]);
+  }
+  return out;
+}
+
 test("stock page changes and keyboard page changes stay synchronized without duplicate events", () => {
   let page = 1;
   const dispatched = [];

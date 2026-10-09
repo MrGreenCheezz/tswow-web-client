@@ -12,14 +12,19 @@ import {
   decodeWvm9,
 } from "../dist/code/browser/Wvm.js";
 import {
+  VEGETATION_WIND_A_UNIFORM,
+  VEGETATION_WIND_B_UNIFORM,
   VEGETATION_WIND_MARKER,
   VEGETATION_WIND_TIME,
   VEGETATION_WIND_TIME_UNIFORM,
   installVegetationWind,
   isBotanicalTexturePath,
   isVegetationWindBatch,
+  numberText,
   vegetationWindProfileKey,
+  windFieldAmplitude,
 } from "../dist/code/browser/VegetationWind.js";
+import { createModelPlacementTintMaterials } from "../dist/code/browser/ModelPlacementTint.js";
 import ts from "typescript";
 import { readFile } from "node:fs/promises";
 
@@ -27,8 +32,10 @@ async function currentVegetationWind() {
   const source = await readFile(new URL("../src/browser/VegetationWind.ts", import.meta.url), "utf8");
   const wvmUrl = new URL("../dist/code/browser/Wvm.js", import.meta.url).href;
   const windFieldUrl = new URL("../dist/code/browser/WindField.js", import.meta.url).href;
+  // P1-08: the module now builds `THREE.Vector4` uniforms, so "three" is a runtime import too.
   const linked = source.replace('"./Wvm.js"', JSON.stringify(wvmUrl))
-    .replace('"./WindField.js"', JSON.stringify(windFieldUrl));
+    .replace('"./WindField.js"', JSON.stringify(windFieldUrl))
+    .replace('from "three"', `from ${JSON.stringify(import.meta.resolve("three"))}`);
   const javascript = ts.transpileModule(linked, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
   }).outputText;
@@ -233,7 +240,7 @@ test("duplicate or mixed batches sharing one submesh fail closed", () => {
 });
 
 test("profile key is finite and stable", () => {
-  assert.match(vegetationWindProfileKey(PROFILE), /^vegetation-wind-v1:/);
+  assert.match(vegetationWindProfileKey(PROFILE), /^vegetation-wind-v2:/);
   assert.equal(vegetationWindProfileKey({ ...PROFILE, amplitude: Number.NaN }), undefined);
   assert.equal(vegetationWindProfileKey({ ...PROFILE, height: 0 }), undefined);
 });
@@ -274,8 +281,9 @@ test("enabled wind chains the old hook, adds one shared uniform and patches vert
   assert.doesNotMatch(value.vertexShader, /transformed\.z \+=/);
   assert.equal(value.vertexShader.includes("#include <begin_vertex>"), true);
   assert.equal(value.fragmentShader.includes("previous-hook"), true);
-  assert.match(material.customProgramCacheKey(), /^base-material\|vegetation-wind-v1:/);
-  assert.equal(material.customProgramCacheKey(), `base-material|${vegetationWindProfileKey(PROFILE)}`);
+  // P1-08: the key carries the shader version, not the profile's numbers.
+  assert.equal(material.customProgramCacheKey(), `base-material|${VEGETATION_WIND_MARKER}`);
+  assert.equal(material.customProgramCacheKey().includes(vegetationWindProfileKey(PROFILE)), false);
 });
 
 test("enabled wind material keeps the renderer clock live after shader compilation", () => {
@@ -296,16 +304,114 @@ test("enabled wind material keeps the renderer clock live after shader compilati
   }
 });
 
-test("wind shader serializes zero-valued profile constants as GLSL floats", () => {
-  const material = new THREE.MeshBasicMaterial();
-  installVegetationWind(material, { ...PROFILE, phase: 0, baseZ: 0 });
-  const value = shader();
-  material.onBeforeCompile(value, undefined);
+/** The eight numbers the v1 shader printed as literals, in the uniforms' (A, B) order. */
+function v1Literals(profile) {
+  const inverseHeight = 1 / profile.height;
+  const fieldAmplitude = windFieldAmplitude(profile);
+  return [
+    profile.amplitude, profile.frequency, profile.phase, profile.baseZ,
+    inverseHeight, fieldAmplitude, profile.frequency * 0.73, profile.frequency * 4.7,
+  ].map((value) => numberText(value));
+}
 
-  assert.match(value.vertexShader, /position\.z - 0\.0/);
-  assert.match(value.vertexShader, /vegetationWindPhase[^\n]*\+ 0\.0/);
-  assert.doesNotMatch(value.vertexShader, /position\.z - 0(?![.\d])/);
-  assert.doesNotMatch(value.vertexShader, /vegetationWindPhase[^\n]*\+ 0(?![.\d])/);
+function windUniforms(compiled) {
+  const a = compiled.uniforms[VEGETATION_WIND_A_UNIFORM];
+  const b = compiled.uniforms[VEGETATION_WIND_B_UNIFORM];
+  assert.ok(a?.value instanceof THREE.Vector4, "uVegetationWindA is a Vector4 uniform");
+  assert.ok(b?.value instanceof THREE.Vector4, "uVegetationWindB is a Vector4 uniform");
+  return [...a.value.toArray(), ...b.value.toArray()];
+}
+
+test("P1-08: the profile reaches the shader as two vec4 uniforms and no number of it is in the text", () => {
+  const profile = { amplitude: 0.0731, frequency: 1.83, phase: 4.125, baseZ: -0.75, height: 3.5 };
+  const material = new THREE.MeshBasicMaterial();
+  installVegetationWind(material, profile);
+  const compiled = shader();
+  material.onBeforeCompile(compiled, undefined);
+  assert.match(compiled.vertexShader, /uniform vec4 uVegetationWindA;/);
+  assert.match(compiled.vertexShader, /uniform vec4 uVegetationWindB;/);
+  assert.deepEqual(windUniforms(compiled), v1Literals(profile).map(Number));
+  const body = compiled.vertexShader.slice(compiled.vertexShader.indexOf(`// ${VEGETATION_WIND_MARKER}`));
+  for (const text of v1Literals(profile)) {
+    assert.equal(new RegExp(`(?<![\\w.])${text.replace(/[.-]/g, "\\$&")}(?![\\d])`).test(body), false,
+      `profile number ${text} is not printed into the shader`);
+  }
+  assert.match(compiled.vertexShader, /mix\( uVegetationWindA\.x \* vegetationWindWave,/);
+  assert.match(compiled.vertexShader, /position\.z - uVegetationWindA\.w \) \* uVegetationWindB\.x/);
+});
+
+test("P1-08: two profiles share one program key and one vertex text but keep their own values", () => {
+  const first = new THREE.MeshLambertMaterial();
+  const second = new THREE.MeshLambertMaterial();
+  installVegetationWind(first, PROFILE);
+  installVegetationWind(second, { amplitude: 0.2, frequency: 0.9, phase: 2, baseZ: 1.5, height: 9 });
+  assert.equal(first.customProgramCacheKey(), second.customProgramCacheKey());
+  const a = shader();
+  const b = shader();
+  first.onBeforeCompile(a, undefined);
+  second.onBeforeCompile(b, undefined);
+  assert.equal(a.vertexShader, b.vertexShader, "a shared program must get one text from either material");
+  assert.equal(a.fragmentShader, b.fragmentShader);
+  assert.notDeepEqual(windUniforms(a), windUniforms(b));
+  assert.notStrictEqual(a.uniforms[VEGETATION_WIND_A_UNIFORM], b.uniforms[VEGETATION_WIND_A_UNIFORM]);
+  assert.strictEqual(a.uniforms[VEGETATION_WIND_TIME_UNIFORM], b.uniforms[VEGETATION_WIND_TIME_UNIFORM],
+    "the clock stays one shared object");
+});
+
+test("P1-08: every uniform holds the float32 of the v1 literal over a corpus of real-shaped profiles", () => {
+  let seed = 0x2f6b1d3;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const families = ["Plants\\Grass", "Trees\\OakTree", "Bush\\Shrub", "Plants\\Reed", "Detail\\ElwGra", ""];
+  let checked = 0;
+  for (let index = 0; index < 400; index++) {
+    const baseZ = (random() - 0.5) * 12;
+    const height = 0.01 + random() * random() * 60;
+    const family = families[index % families.length];
+    const path = family ? `World\\${family}${index}.m2` : "";
+    const profile = sourceWind.vegetationWindProfile({ min: [0, 0, baseZ], max: [1, 1, baseZ + height], radius: 1 }, path);
+    if (!profile) continue;
+    const material = new THREE.MeshBasicMaterial();
+    installVegetationWind(material, profile);
+    const compiled = shader();
+    material.onBeforeCompile(compiled, undefined);
+    const uploaded = Float32Array.from(windUniforms(compiled));
+    const literal = v1Literals(profile).map((text) => Math.fround(Number(text)));
+    for (let lane = 0; lane < 8; lane++) {
+      assert.ok(Object.is(uploaded[lane], literal[lane]),
+        `${path || "(no path)"} lane ${lane}: ${uploaded[lane]} vs literal ${literal[lane]}`);
+    }
+    checked++;
+  }
+  assert.ok(checked > 350, `corpus covers the profiles (${checked})`);
+});
+
+test("P1-08: a zero profile value is +0 in the uniform, as the v1 literal 0.0 was", () => {
+  const material = new THREE.MeshBasicMaterial();
+  installVegetationWind(material, { ...PROFILE, phase: -0, baseZ: -1e-12 });
+  const compiled = shader();
+  material.onBeforeCompile(compiled, undefined);
+  const values = windUniforms(compiled);
+  assert.ok(Object.is(values[2], 0), "phase");
+  assert.ok(Object.is(values[3], 0), "baseZ");
+});
+
+test("P1-08: a placement-tint copy carries the same wind uniforms and the same program key suffix", () => {
+  const source = new THREE.MeshBasicMaterial();
+  installVegetationWind(source, PROFILE);
+  const [copy] = createModelPlacementTintMaterials([source], [128, 200, 64]);
+  assert.ok(copy);
+  const original = shader();
+  const tinted = shader();
+  source.onBeforeCompile(original, undefined);
+  copy.onBeforeCompile(tinted, undefined);
+  assert.strictEqual(tinted.uniforms[VEGETATION_WIND_A_UNIFORM], original.uniforms[VEGETATION_WIND_A_UNIFORM]);
+  assert.strictEqual(tinted.uniforms[VEGETATION_WIND_B_UNIFORM], original.uniforms[VEGETATION_WIND_B_UNIFORM]);
+  assert.deepEqual(windUniforms(tinted), v1Literals(PROFILE).map(Number));
+  assert.equal(tinted.vertexShader, original.vertexShader);
+  assert.ok(copy.customProgramCacheKey().startsWith(`${source.customProgramCacheKey()}|`));
 });
 
 test("same material/profile is not wrapped twice, conflicting profile is rejected", () => {
@@ -340,14 +446,14 @@ test("buildModel winds only an eligible foliage material and keeps OFF/trunk sou
   const leaves = build("World\\Trees\\OakLeaves.blp", true).materials[0];
   const trunk = build("World\\Trees\\OakBark.blp", true).materials[0];
   assert.doesNotMatch(off.customProgramCacheKey(), /vegetation-wind/);
-  assert.match(leaves.customProgramCacheKey(), /vegetation-wind-v1/);
+  assert.match(leaves.customProgramCacheKey(), /vegetation-wind-v2/);
   assert.doesNotMatch(trunk.customProgramCacheKey(), /vegetation-wind/);
   const leavesShader = shader();
   leaves.onBeforeCompile(leavesShader, undefined);
-  assert.match(leavesShader.vertexShader, /vegetation-wind-v1/);
+  assert.match(leavesShader.vertexShader, /vegetation-wind-v2/);
   const offShader = shader();
   off.onBeforeCompile(offShader, undefined);
-  assert.doesNotMatch(offShader.vertexShader, /vegetation-wind-v1/);
+  assert.doesNotMatch(offShader.vertexShader, /vegetation-wind-v2/);
   assert.deepEqual(sourceWind.vegetationWindProfile({ min: [0, 0, 0], max: [1, 1, 2], radius: 2 }), {
     amplitude: 0.05, frequency: 1.25, phase: 0, baseZ: 0, height: 2,
   });
@@ -377,7 +483,7 @@ test("the real Elwynn tree canopy WVM activates one wind material", () => {
     vegetationWind: true,
   });
   try {
-    const windMaterials = built.materials.filter((material) => /vegetation-wind-v1/.test(material.customProgramCacheKey()));
+    const windMaterials = built.materials.filter((material) => /vegetation-wind-v2/.test(material.customProgramCacheKey()));
     assert.equal(windMaterials.length, 1, "the canopy batch must receive the wind shader variant");
     assertLiveWindMaterial(windMaterials[0]);
   } finally {
@@ -411,7 +517,7 @@ test("the real Elwynn ground-clutter WVM activates its shared grass atlas", () =
     vegetationWind: true,
   });
   try {
-    const windMaterials = built.materials.filter((material) => /vegetation-wind-v1/.test(material.customProgramCacheKey()));
+    const windMaterials = built.materials.filter((material) => /vegetation-wind-v2/.test(material.customProgramCacheKey()));
     assert.equal(windMaterials.length, 1, "the ground-clutter card must receive the wind shader variant");
     assertLiveWindMaterial(windMaterials[0]);
   } finally {

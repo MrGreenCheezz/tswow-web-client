@@ -214,6 +214,39 @@ test("the renderer envelope spans draw entry through dirty portrait readback and
     "a throwing world/portrait pass still closes the renderer envelope");
 });
 
+test("P1-20a: the state section is marked in four pieces, each reaching both the hitch ring and the averages", async () => {
+  const source = await readFile(new URL("../src/browser/game/Loop.ts", import.meta.url), "utf8");
+  const frame = source.slice(source.indexOf("function frame(now: number): void {"),
+    source.indexOf("export function animate(now: number): void {"));
+  const at = (text) => {
+    const index = frame.indexOf(text);
+    assert.ok(index >= 0, `${text} must be in frame()`);
+    return index;
+  };
+  const marks = [
+    at("const stateFlushStart = performance.now();"),
+    at("game.store?.flush();"),
+    at("const stateFlushed = performance.now();"),
+    at("world?.state.updateMotions(now);"),
+    at("const stateMoved = performance.now();"),
+    at("game.spellVisualCoordinator?.tick(now);"),
+    at("const stateVisuals = performance.now();"),
+    at("drainWorldState();"),
+    at("const stateViewed = performance.now();"),
+    at("const hitchState = performance.now();"),
+  ];
+  for (let index = 1; index < marks.length; index++) {
+    assert.ok(marks[index - 1] < marks[index], `mark ${index} is out of order: flush < motions < visuals < view < hitchState`);
+  }
+  for (const name of ["state.flush", "state.motions", "state.visuals", "state.view"]) {
+    assert.ok(frame.includes(`hitchSections["${name}"] =`), `${name} is a hitch section`);
+    assert.ok(frame.includes(`addSectionAverage("${name}",`), `${name} is an average leaf`);
+  }
+  assert.ok(frame.includes(`addSectionAverage("state.rest",`), "the remainder of state is its own leaf");
+  assert.equal(frame.includes(`addSectionAverage("state",`), false, "the averages hold leaves only");
+  assert.ok(frame.includes(`addCheckpointSection("state.view",`), "the capture's checkpoints carry state.view");
+});
+
 test("draw clears per-frame admission counters before a player-less early return", async () => {
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   const resetStart = source.indexOf("  #resetFrameCounters(): void {");
@@ -236,6 +269,47 @@ test("draw clears per-frame admission counters before a player-less early return
   }
   assert.equal(draw.includes("this.#groundCoverSelected = 0;"), false,
     "selection state may survive, but groundCoverDrawn is the frame-submission count");
+});
+
+test("P1-04: the visuals subphases exist, are reset every frame and are clocked only during a capture", async () => {
+  const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
+  const literalStart = source.indexOf("  readonly #drawPhaseMs: Record<string, number> = {");
+  const literal = source.slice(literalStart, source.indexOf("\n  };", literalStart));
+  const resetStart = source.indexOf("  #resetFrameCounters(): void {");
+  const resets = source.slice(resetStart, source.indexOf("\n  }", resetStart));
+  assert.ok(literalStart >= 0 && resetStart >= 0);
+  for (const key of ["visuals.rigs", "visuals.effects", "visuals.particles"]) {
+    assert.ok(literal.includes(`"${key}": 0,`), `${key} is in the #drawPhaseMs literal`);
+    // Unrolled, as every other phase: a missed reset would carry the last capture frame's value on.
+    assert.ok(resets.includes(`this.#drawPhaseMs["${key}"] = 0;`), `${key} is reset in #resetFrameCounters`);
+  }
+
+  // Every write to a visuals subphase sits behind the capture flag, which is the shader trace.
+  const writes = [...source.matchAll(/^.*#drawPhaseMs\["visuals\.\w+"\] = (?!0;).*$/gm)].map(match => match[0]);
+  assert.equal(writes.length, 3, writes.join("\n"));
+  for (const write of writes) assert.match(write, /^\s*if \(detailedCapture\) this\.#drawPhaseMs\["visuals\.\w+"\] = /);
+  const drawStart = source.indexOf("  draw(\n");
+  const draw = source.slice(drawStart, source.indexOf("\n  #resetFrameCounters(): void {", drawStart));
+  const flag = draw.indexOf("const detailedCapture = this.#shaderProgramTrace !== undefined;");
+  const rigs = draw.indexOf("this.#updateVisuals(now, elapsed, environmentClient);");
+  const effects = draw.indexOf("this.#updateEffects(player.position, now, elapsed);");
+  assert.ok(flag >= 0 && flag < rigs && rigs < draw.indexOf(`#drawPhaseMs["visuals.rigs"] = performance.now()`));
+  assert.ok(draw.indexOf(`#drawPhaseMs["visuals.rigs"] = performance.now()`) < effects
+    && effects < draw.indexOf(`#drawPhaseMs["visuals.effects"] = performance.now()`));
+  assert.match(draw, /let visualPartAt = detailedCapture \? performance\.now\(\) : 0;/, "no clock read without a capture");
+
+  // Particles: summed over every updateModelEffects call inside #updateEffects (so inside visuals.effects).
+  const effectsStart = source.indexOf("  #updateEffects(player: WorldPosition, now: number, elapsed: number): void {");
+  const updateEffects = source.slice(effectsStart, source.indexOf("\n  }\n", effectsStart));
+  assert.equal(updateEffects.split("updateModelEffects(").length - 1, 1, "one particle step call site");
+  assert.match(updateEffects, /const particleAt = detailedCapture \? performance\.now\(\) : 0;\n\s*updateModelEffects\(/);
+  assert.match(updateEffects, /if \(detailedCapture\) particleMs \+= performance\.now\(\) - particleAt;/);
+  assert.match(updateEffects, /if \(detailedCapture\) this\.#drawPhaseMs\["visuals\.particles"\] = particleMs;\s*$/);
+
+  // ENV-12: the posed-doodad count rides in telemetry.animationLod.
+  const telemetry = source.slice(source.indexOf("  get telemetry(): "), source.indexOf("  get builtModelResidencyStats("));
+  assert.match(telemetry, /doodadsPosed: number;/);
+  assert.match(telemetry, /doodadsPosed: this\.#doodadsPosed,/);
 });
 
 test("animate re-arms exactly one RAF even when frame work or final telemetry throws", async () => {

@@ -5,6 +5,7 @@ import {
   CollisionMesh, CollisionWorld, transformCollisionBounds, transformCollisionMesh,
   type CollisionFloorHit, type CollisionPlacement,
 } from "./Collision.js";
+import { withGeneration } from "../GatewayGeneration.js";
 
 export { canonicalCollisionModelName };
 
@@ -648,7 +649,7 @@ export class CollisionSource {
     try {
       // The raw vmap route, not the visual one the renderer prefers: these are the spawns the
       // server places its own collision with, named the way its `.vmo` files are named.
-      const response = await fetch(`${this.#baseUrl}/environment/${map}/${gridX}/${gridY}`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/environment/${map}/${gridX}/${gridY}`));
       if (retired()) return;
       if (response.status === 204 || response.status === 404) {
         // A tile with nothing in it: open ground, and the terrain is the whole of the answer there.

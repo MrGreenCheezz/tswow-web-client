@@ -163,6 +163,7 @@ function ability(recipe: CannedRecipe): SpellSkillAbilityInfo {
 export type FrameXmlCannedTradeSkillCall =
   | { readonly kind: "craft"; readonly spellId: number; readonly count: number }
   | { readonly kind: "item"; readonly spellId: number; readonly guid: bigint }
+  | { readonly kind: "trade"; readonly spellId: number }
   | { readonly kind: "stop" };
 
 /** The canned character's side of the trade skill window, and a recording craft queue. */
@@ -186,6 +187,12 @@ export class FrameXmlCannedTradeSkillWorld {
   readonly recipesBySkill: ReadonlyMap<number, readonly FrameXmlTradeSkillRecipeSource[]>;
   /** The queue: casts still to go including the one in flight. */
   queued = 0;
+  /** Enchantments already on carried items, by guid: [old name, new name] REPLACE_ENCHANT asks with. */
+  readonly replaceNames = new Map<bigint, readonly [string, string]>();
+  /** Carried items with a refund record and time left: an enchant on one asks END_REFUND (2.10). */
+  readonly refundItems = new Set<bigint>();
+  /** The trader's seventh-slot item's enchantment, as TRADE_REPLACE_ENCHANT names it; none by default. */
+  tradeReplaceNames: readonly [string, string] | undefined;
   #token = {};
 
   constructor() {
@@ -240,6 +247,11 @@ export class FrameXmlCannedTradeSkillWorld {
     this.queued = 1;
     return true;
   }
+  castOnTradeSlot(spellId: number): boolean {
+    this.calls.push({ kind: "trade", spellId });
+    this.queued = 1;
+    return true;
+  }
   stop(): void {
     this.calls.push({ kind: "stop" });
     // The cast in flight finishes; only what was queued behind it goes.
@@ -259,6 +271,7 @@ export function createCannedFrameXmlTradeSkill(): {
   const craft: FrameXmlTradeSkillCraft = {
     craft: (spellId, count) => world.craftCall(spellId, count),
     castOnItem: (spellId, guid) => world.castOnItem(spellId, guid),
+    castOnTradeSlot: (spellId) => world.castOnTradeSlot(spellId),
     stop: () => world.stop(),
     remaining: () => world.remaining(),
   };
@@ -273,6 +286,9 @@ export function createCannedFrameXmlTradeSkill(): {
     subclassName: (itemClass, subClass) => world.subclassName(itemClass, subClass),
     prefetch: (entries, onChanged) => world.prefetch(entries, onChanged),
     carriedItem: (guid) => world.carriedItem(guid),
+    enchantReplace: (_spell, guid) => world.replaceNames.get(guid),
+    enchantEndsRefund: (_spell, guid) => world.refundItems.has(guid),
+    tradeEnchantReplace: () => world.tradeReplaceNames,
     craft,
     token: () => world.token(),
   };

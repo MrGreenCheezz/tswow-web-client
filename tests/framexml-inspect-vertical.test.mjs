@@ -174,8 +174,8 @@ test("a hostile target cannot be inspected; a target change closes the stock fra
     assert.equal(boot.bridge.isVisible(frame), true);
     const errors = boot.errorCount;
     assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 1), CheckInteractDistance("target", 3)', 2), [true, true]);
-    // Follow (index 4) does not exist here: UnitPopup_OnUpdate keeps «Следовать» grey on it.
-    assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 4)'), [false]);
+    // 5.18: follow (index 4, 28 yards) answers now; UnitPopup_OnUpdate enables «Следовать» by it.
+    assert.deepEqual(lua(boot, 'return CheckInteractDistance("target", 4)'), [true]);
     seam.setTarget(CANNED_TARGET);
     assert.equal(boot.bridge.isVisible(frame), false, "PLAYER_TARGET_CHANGED and CanInspect false hide it");
     assert.deepEqual(lua(boot, 'return CanInspect("target")'), [false]);
@@ -204,6 +204,8 @@ test("a failed gate hands InspectUnit back to the stock function", withClient, a
     assert.equal(owner.failed, true);
     assert.deepEqual(fallbacks, ["target"]);
     assert.equal(frameXmlInspectGate(boot, renderer()) !== undefined, true, "the same tree gates with a rendered DOM");
+    // 05.10 suite-fix: the unitless probe sets the paper doll's own shown flag aside; it must leave it as the XML made it.
+    assert.deepEqual(lua(boot, "return InspectPaperDollFrame:IsShown() and 1 or 0"), [1], "the gate leaves the paper doll shown");
     unroute();
     assert.equal(lua(boot, "return InspectUnit == __fxStockInspectUnit")[0], false);
     assert.equal(lua(boot, "return __fxStockInspectUnit")[0], undefined, "the cleanup restores the stock InspectUnit");

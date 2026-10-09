@@ -4,6 +4,16 @@ export interface BinaryByteStream {
   send(bytes: Uint8Array): void;
   readExactly(length: number): Promise<Uint8Array>;
   close(): void;
+  /**
+   * The synchronous side (P1-21b1), optional so that a stream with only `readExactly` still works:
+   * `WorldConnection.tryRead` checks for it with `typeof`. While a `readExactly` is waiting these
+   * answer 0 / false / undefined — there is one reader, and it is the one already waiting.
+   */
+  readonly buffered?: number;
+  /** Copies the first `length` buffered bytes into `target` without consuming them. */
+  peek?(target: Uint8Array, length: number): boolean;
+  /** Consumes `length` buffered bytes, or nothing and undefined when fewer are held. */
+  readBuffered?(length: number): Uint8Array | undefined;
 }
 
 interface Waiter {
@@ -89,6 +99,19 @@ export class WebSocketByteStream implements BinaryByteStream {
     return new Promise((resolve, reject) => {
       this.#waiters.push({ length, resolve, reject });
     });
+  }
+
+  get buffered(): number {
+    return this.#waiters.length > 0 ? 0 : this.#queue.length;
+  }
+
+  peek(target: Uint8Array, length: number): boolean {
+    return this.#waiters.length === 0 && this.#queue.peek(target, length);
+  }
+
+  readBuffered(length: number): Uint8Array | undefined {
+    if (this.#waiters.length > 0 || !Number.isInteger(length) || length < 0 || this.#queue.length < length) return undefined;
+    return this.#queue.read(length);
   }
 
   close(): void {

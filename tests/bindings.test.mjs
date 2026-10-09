@@ -6,6 +6,12 @@ import {
   addModuleAction, bindAction, bindKey, bindingsOf, chordOf, describeChord, keysOf, loadBindings,
   moduleActionFor, moduleActions, removeModuleActions, resetBindings, strafeInsteadOfTurn,
   useBindingStorage, EXTRA_ACTION_BAR_SLOTS } from "../dist/code/browser/input/Bindings.js";
+import {
+  STOCK_ACTIONS, STOCK_DEFAULTS_HELD, STOCK_KEYS_LEFT_OFF, clientKeyToChord,
+} from "../dist/code/browser/input/StockActions.js";
+import { STOCK_DEFAULT_KEYS } from "../dist/code/generated/stockBindings.js";
+
+const STOCK_ROWS = new Map(STOCK_ACTIONS.map((row) => [row.action, row]));
 
 /** A store the size of the one fact it holds, so the table can be saved and read back without a browser. */
 function fakeStorage(seed) {
@@ -50,6 +56,23 @@ test("every action ships with a key, and no two ship with the same one", () => {
     // either. Measured, for honesty: its own `Bindings.xml` carries no `default` attribute on any
     // of its 275 bindings, so it settles nothing on its own; what settles it is that these keys
     // are conventionally the player's to choose.
+    // The stock rows of 3.11 ship exactly the keys DefaultBindings.wtf gives their command, less a
+    // mouse button, a key left off on purpose and a chord a core action ships on (decision 0.4g);
+    // a stock command the file gives no key ships unbound, as it does in the original.
+    const stock = STOCK_ROWS.get(action);
+    if (stock) {
+      const expected = (STOCK_DEFAULT_KEYS[stock.command] ?? [])
+        .filter((key) => STOCK_KEYS_LEFT_OFF[key] === undefined)
+        .map(clientKeyToChord)
+        .filter((chord) => chord !== undefined && STOCK_DEFAULTS_HELD.get(stock.command) !== chord);
+      assert.deepEqual(pair.filter(Boolean), expected.slice(0, 2), `${action} ships ${stock.command}'s stock keys`);
+      for (const chord of pair) {
+        if (!chord) continue;
+        assert.equal(seen.get(chord), undefined, `${chord} is on both ${seen.get(chord)} and ${action}`);
+        seen.set(chord, action);
+      }
+      continue;
+    }
     if (group.startsWith("Панель: ")) {
       assert.equal(pair[0], "", `${label} is on an optional bar and should ship unbound`);
       continue;
@@ -70,7 +93,9 @@ test("a key resolves to the action that holds it, and to nothing when it holds n
   assert.equal(actionFor("ArrowUp"), "moveForward", "the secondary key reaches the same action");
   assert.equal(actionFor("Shift+Digit1"), "actionPage1");
   assert.equal(actionFor("Digit1"), "action1", "the modifier is part of the chord, not decoration");
-  assert.equal(actionFor("KeyZ"), undefined);
+  // Z is the stock TOGGLESHEATH key (DefaultBindings.wtf), the first of the 3.11 rows; Y holds nothing.
+  assert.equal(actionFor("KeyZ"), "toggleSheath");
+  assert.equal(actionFor("KeyY"), undefined);
   assert.equal(actionFor(""), undefined);
 });
 
@@ -123,7 +148,7 @@ test("with no storage at all the table still works, it just does not survive a r
   bindAction("jump", 0, "KeyZ");
   assert.equal(actionFor("KeyZ"), "jump");
   loadBindings();
-  assert.equal(actionFor("KeyZ"), undefined);
+  assert.equal(actionFor("KeyZ"), "toggleSheath", "the reload brought the default back");
 });
 
 test("shift turns a turn into a strafe and leaves every other action alone", () => {
@@ -135,7 +160,10 @@ test("shift turns a turn into a strafe and leaves every other action alone", () 
   // character. Jump and sit are held as well as pressed: each is one thing tapped on the ground
   // and another held in water or in the air.
   assert.deepEqual([...HELD_ACTIONS].sort(),
-    ["jump", "moveBackward", "moveForward", "sitOrStand", "strafeLeft", "strafeRight", "turnLeft", "turnRight"]);
+    ["jump", "moveBackward", "moveForward", "pitchDown", "pitchUp", "sitOrStand", "strafeLeft", "strafeRight",
+      "turnLeft", "turnRight",
+      "vehicleAimDown", "vehicleAimUp", // 11.02-input: VEHICLEAIMUP/DOWN (runOnUp) — the pitch keys themselves
+    ]);
 });
 
 test("the action bar lists exactly the slots and pages that exist", () => {
@@ -159,10 +187,12 @@ test("a chord is written the way a player reads it", () => {
 
 test("the four extra bars address as fixed pages of the same 144 slots", () => {
   // The server keeps 144 buttons as twelve rows of twelve and the paging keys walk the first six, so
-  // an extra bar needed no new addressing: it is a row pinned to a page. The native rows' pages are
-  // 7–10, which stock gives the stance and form bars (its multi-bars stand on 6, 5, 3 and 4, where the
-  // stock HUD's keys press — `stockBase`); these numbers stay pinned until WORK_PLAN 4.16b moves them.
-  assert.deepEqual(EXTRA_ACTION_BARS.map((bar) => bar.base), [72, 84, 96, 108]);
+  // an extra bar needed no new addressing: it is a row pinned to a page. L7 4.16b: the native rows
+  // stand on stock's multi-bar pages 6, 5, 3 and 4 (MultiActionBars.xml:41, 159, 277, 395) — the
+  // stock HUD's keys press the same slots — and pages 7–10 are left to the stance and form bars.
+  assert.deepEqual(EXTRA_ACTION_BARS.map((bar) => bar.base), [60, 48, 24, 36]);
+  assert.deepEqual(EXTRA_ACTION_BARS.map((bar) => bar.stockBase), [60, 48, 24, 36]);
+  assert.deepEqual(EXTRA_ACTION_BARS.map((bar) => bar.legacyBase), [72, 84, 96, 108], "only the one-time move reads these");
   for (const bar of EXTRA_ACTION_BARS) {
     assert.equal(bar.base % ACTION_BUTTONS_PER_PAGE, 0, `${bar.id} does not start a row`);
     assert.equal(actionPage(bar.base), bar.base / ACTION_BUTTONS_PER_PAGE);
@@ -173,16 +203,12 @@ test("the four extra bars address as fixed pages of the same 144 slots", () => {
       assert.ok(INPUT_ACTIONS.some((entry) => entry.action === action), `${action} is not offered`);
     }
   }
-  // The six main pages and the four bars together are the whole 144, with nothing overlapping.
-  const used = new Set();
-  for (const base of [0, 12, 24, 36, 48, 60, ...EXTRA_ACTION_BARS.map((bar) => bar.base)]) {
-    for (let column = 0; column < ACTION_BUTTONS_PER_PAGE; column++) {
-      const slot = base + column;
-      assert.equal(used.has(slot), false, `slot ${slot} is on two bars`);
-      used.add(slot);
-    }
-  }
-  assert.equal(used.size, 120, "the last two rows of the 144 are the pet bar's, not ours");
+  // As in stock, each bar is one of the six main pages (the paging keys skip it while it is shown),
+  // the four are distinct, and none reaches the bonus pages 7–12 of stances, forms and possession.
+  const pages = EXTRA_ACTION_BARS.map((bar) => actionPage(bar.base));
+  assert.deepEqual(pages, [5, 4, 2, 3]);
+  assert.equal(new Set(pages).size, 4, "no two bars share a page");
+  for (const page of pages) assert.ok(page >= 1 && page < 6, `page ${page + 1} is a main page other than the first`);
 });
 
 /* ---------------------------------------------------------------------------------------------

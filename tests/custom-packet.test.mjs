@@ -342,9 +342,9 @@ test("one module's handler throwing does not silence the next, and the message s
   client.close();
 });
 
-test("a custom packet from the login window is logged as a login drop, not handed to a handler", async () => {
+test("a custom packet from the login window reaches a handler registered before entry, once (9.03)", async () => {
   // Ordered as the socket would deliver it: the module message lands while `#waitFor` still owns
-  // the socket, so it is drained before any window has had the chance to register a handler.
+  // the socket. It used to be filed as a login drop even with a handler waiting for it.
   const connection = fakeConnection([
     { opcode: OPCODES.CMSG_EMOTE, payload: buildCustomPacket(4100, Uint8Array.of(1, 2)) },
     { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: LOGIN_VERIFY },
@@ -356,13 +356,57 @@ test("a custom packet from the login window is logged as a login drop, not hande
   await client.loginCharacter(1n);
   await settle();
 
-  assert.deepEqual(seen, []);
+  assert.deepEqual(seen, [[1, 2]]);
+  assert.equal(client.unhandledOpcodes.entries.has(OPCODES.CMSG_EMOTE), false);
+  assert.equal(client.customPacketBuffer.pendingBytes, 0);
+  client.close();
+});
+
+test("with an entry backlog, the login-window message and a later one wait for the consumer, in order (9.03)", async () => {
+  const connection = fakeConnection([
+    { opcode: OPCODES.CMSG_EMOTE, payload: buildCustomPacket(4100, Uint8Array.of(1)) },
+    { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: LOGIN_VERIFY },
+  ]);
+  const client = new WorldClient(connection);
+  client.customPackets.beginBacklog({ expect: ["lua"] });
+  await client.loginCharacter(1n);
+  await settle();
+  connection.feed({ opcode: OPCODES.CMSG_EMOTE, payload: buildCustomPacket(4100, Uint8Array.of(2)) });
+  await settle();
+  assert.equal(client.customPackets.backlog.queued, 2);
+
+  const seen = [];
+  client.onCustomPacket(4100, (body) => seen.push(body[0]));
+  assert.deepEqual(seen, [], "subscribing does not replay");
+  client.customPackets.consumerReady("lua");
+  await settle();
+  assert.deepEqual(seen, [1, 2]);
+  assert.equal(client.unhandledOpcodes.entries.has(OPCODES.CMSG_EMOTE), false);
+
+  // A held message nobody claimed is counted as unhandled once the backlog lets go.
+  client.customPackets.beginBacklog({ expect: ["lua"] });
+  connection.feed({ opcode: OPCODES.CMSG_EMOTE, payload: buildCustomPacket(4200, Uint8Array.of(3)) });
+  await settle();
+  assert.equal(client.unhandledOpcodes.entries.has(OPCODES.CMSG_EMOTE), false, "held, not yet unhandled");
+  client.customPackets.consumerReady("lua");
+  await settle();
+  assert.equal(client.unhandledOpcodes.entries.get(OPCODES.CMSG_EMOTE)?.count, 1);
+  client.close();
+  assert.equal(client.customPackets.backlog.holding, false);
+});
+
+test("without a backlog an unclaimed login-window message is counted as unhandled, not as a login drop", async () => {
+  const connection = fakeConnection([
+    { opcode: OPCODES.CMSG_EMOTE, payload: buildCustomPacket(4100, Uint8Array.of(1, 2)) },
+    { opcode: OPCODES.SMSG_LOGIN_VERIFY_WORLD, payload: LOGIN_VERIFY },
+  ]);
+  const client = new WorldClient(connection);
+  await client.loginCharacter(1n);
+  await settle();
   const entry = client.unhandledOpcodes.entries.get(OPCODES.CMSG_EMOTE);
-  assert.equal(entry?.droppedDuringLogin, 1);
-  assert.equal(entry?.count, 0);
-  assert.equal(client.customPacketBuffer.pendingBytes, 0, "the login-time frame never reached the reassembler");
-  // And nothing was counted either: the registry never saw a message, so the opcode is not in it.
-  assert.deepEqual(client.customPackets.summary(), []);
+  assert.equal(entry?.count, 1);
+  assert.equal(entry?.droppedDuringLogin ?? 0, 0);
+  assert.equal(client.customPackets.summary().find((row) => row.opcode === 4100)?.received, 1);
   client.close();
 });
 

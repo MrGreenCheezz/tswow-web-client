@@ -18,6 +18,7 @@ import type { FrameXmlFrame } from "../ui/framexml_compat/FrameXmlTypes.js";
 import type { FrameXmlAuctionModel } from "./FrameXmlAuction.js";
 import type { FrameXmlAuctionOwner } from "./FrameXmlAuctionController.js";
 import { frameXmlSilentProbe } from "./FrameXmlGameMenuOwner.js";
+import { FRAMEXML_HOST_HOOK_GLOBAL, withFrameXmlHostHooks } from "./FrameXmlHostHooks.js"; // L5b 3.27
 
 export const FRAMEXML_AUCTION_ADDON = "Blizzard_AuctionUI";
 
@@ -224,8 +225,9 @@ export function frameXmlAuctionGate(
  * Blizzard_AuctionUI.lua:819, :1015, :1244, :1268, :1466 — is the binder's own: on a FontString the
  * vertex colour is the text colour, GlueWidgets.ts.)
  */
-export function installFrameXmlAuctionAdapters(boot: Pick<FrameXmlBoot, "vm">): boolean {
-  const installed = frameXmlSilentProbe(boot, "webclient/auction-adapters", `
+export function installFrameXmlAuctionAdapters(boot: Pick<FrameXmlBoot, "vm" | "bridge">): boolean { // L5b 3.27: bridge
+  // L5b 3.27: the buttons' hooks are the host's (FrameXmlHostHooks.ts): an add-on's SetScript keeps them.
+  const installed = withFrameXmlHostHooks(boot, () => frameXmlSilentProbe(boot, "webclient/auction-adapters", `
     if type(AuctionFrameAuctions) ~= "table" or type(AuctionFrameAuctions_OnEvent) ~= "function" then return 0 end
     AuctionFrameAuctions:SetScript("OnEvent", function(self, event, ...) return AuctionFrameAuctions_OnEvent(self, event, ...) end)
     local function revalidate()
@@ -236,13 +238,13 @@ export function installFrameXmlAuctionAdapters(boot: Pick<FrameXmlBoot, "vm">): 
       UpdateDeposit()
     end
     -- The XML bound SetMaxStackSize itself at load, so the buttons are hooked, not the global.
-    AuctionsStackSizeMaxButton:HookScript("OnClick", revalidate)
-    AuctionsNumStacksMaxButton:HookScript("OnClick", revalidate)
+    ${FRAMEXML_HOST_HOOK_GLOBAL}(AuctionsStackSizeMaxButton, "OnClick", revalidate) -- L5b 3.27 (was :HookScript)
+    ${FRAMEXML_HOST_HOOK_GLOBAL}(AuctionsNumStacksMaxButton, "OnClick", revalidate) -- L5b 3.27 (was :HookScript)
     -- PriceDropDown_Initialize reads this global each time the menu opens.
     hooksecurefunc("PriceDropDown_OnClick", revalidate)
     for _, script in ipairs({ "OnEvent", "OnShow", "OnUpdate" }) do AuctionProgressBar:SetScript(script, nil) end
     return 1
-  `, 1);
+  `, 1)); // L5b 3.27: withFrameXmlHostHooks
   return Number(installed?.[0]) === 1;
 }
 

@@ -195,9 +195,11 @@ test("in a raid a master-loot index is the raid slot: subgroup × 5 + place", ()
   const { model } = harness({ world });
   assert.equal(model.masterLootCandidate(1), "Бета");
   assert.equal(model.masterLootCandidate(2), undefined);
-  assert.equal(model.masterLootCandidate(6), "Сам", "the player sits first in their own subgroup");
-  assert.equal(model.masterLootCandidate(7), undefined, "Гамма is not a candidate");
-  assert.equal(model.masterLootCandidate(8), "Дельта");
+  // 5.28 (04.10, L6): Wow.exe 0x6fa690 packs a subgroup's candidates in packet order — Гамма, not a
+  // candidate, holds no place, so Дельта is 7 (it was 8 by roster order before).
+  assert.equal(model.masterLootCandidate(6), "Сам", "the player comes first in the packet, so first in the subgroup");
+  assert.equal(model.masterLootCandidate(7), "Дельта");
+  assert.equal(model.masterLootCandidate(8), undefined);
 });
 
 test("auto-loot: autoLootDefault or Shift (not both) takes money and free slots; bind asks, locked stays", () => {

@@ -13,7 +13,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { EVERY_GEOSET, buildModel, setBuiltModelFantasyGlow } from "../dist/code/browser/ModelBuild.js";
+import {
+  EVERY_GEOSET, buildModel, setBuiltModelFantasyGlow, updateBatchAppearance, // 05.10-A7a-F2
+} from "../dist/code/browser/ModelBuild.js";
 import { ModelTextureLoader } from "../dist/code/browser/TextureLoad.js";
 
 const MATERIAL_UNLIT = 0x01;
@@ -160,10 +162,12 @@ test("Э1 a batch that needs two substitutions gets both, because the handler is
   assert.equal(built.customProgramCacheKey(), "wvm-layer2-0|wvm-fog-4");
 });
 
-test("Э1 the second texture unit is sampled, and folded the way shaderId says", () => {
+test("Э1 (legacy artifact) the second texture unit is sampled, and folded the way shaderId says", () => {
   // `buildModel` took `batch.textures[0]` and stopped: 528 batches in 207 models under `spells\`
   // drew one layer of two. 0 multiplies, 1 adds, 2 multiplies doubled — and 398 of the 423 batches
   // this path takes are shaderId 0, which is what that reading is worth if it is wrong.
+  // 05.10-A7a-F2: this guess now survives only for artifacts of the visual-v21 generation (no
+  // `shaderIdsResolved`); the extended artifact's reading is the operation table tested below.
   const fold = (shaderId) =>
     compiled(material({ blendMode: 4, shaderId, textures: [0, 1], uvSets: [0, 1] }, { uv1: SECOND_UV_SET }))
       .fragmentShader;
@@ -351,4 +355,119 @@ test("Э1 a batch's own texture still becomes the white pixel when its fetch fai
   assert.ok(map.image?.data instanceof Uint8Array, "with real bytes behind it");
   assert.deepEqual([...map.image.data], [255, 255, 255, 255], "one opaque white pixel");
   assert.deepEqual([map.image.width, map.image.height], [1, 1]);
+});
+
+// --- 05.10-A7a-F2 (6.22, 6.16е, 6.16б): the extended artifact's resolved shader ids. -------------
+
+/** A resolved id: `(stage0 << 4) | stage1`, `| 8` on a sphere-mapped stage. */
+const id = (op0, op1, sphere0 = false, sphere1 = false) => ((op0 | (sphere0 ? 8 : 0)) << 4) | op1 | (sphere1 ? 8 : 0);
+const RESOLVED = { shaderIdsResolved: true };
+const [OPAQUE, MOD, DECAL, ADD, MOD2X, , , ADD_NA] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+test("6.22 a resolved Opaque_Mod2x pair doubles in gamma space, as Combiners_Opaque_Mod2x does", () => {
+  // The most common two-stage pair in the corpus (4,387 batches), drawn by the 0/1/2 reading as a
+  // plain multiply. The client's arbfp1 program: rgb = t0·t1·d·2, a = t1.a·d.a·2.
+  const built = material({ shaderId: id(OPAQUE, MOD2X), textures: [0, 1], uvSets: [0, 1] },
+    { ...RESOLVED, uv1: SECOND_UV_SET });
+  const source = compiled(built).fragmentShader;
+  assert.match(source, /wvm-combiner: Opaque_Mod2x \*\//);
+  assert.ok(source.includes("clamp( t0.rgb * t1.rgb * d.rgb * 2.0, 0.0, 1.0 )"), "the doubled product");
+  assert.ok(source.includes("diffuseColor.a = clamp( t1.a * d.a * 2.0, 0.0, 1.0 );"), "and the second stage's alpha");
+  assert.ok(source.includes("sRGBTransferOETF( texture2D( alphaMap, vAlphaMapUv ) )"), "stage 1 on its own UVs");
+  assert.ok(!source.includes("#include <map_fragment>") && !source.includes("#include <alphamap_fragment>"),
+    "three's own map and alpha-map chunks are replaced, not run twice");
+  assert.equal(built.alphaMap?.channel, 1, "the layer reads UV set 1, as Diffuse_T1_T2 does");
+  assert.equal(built.customProgramCacheKey(), "wvm-comb1-Opaque_Mod2x-00");
+});
+
+test("6.22 a pair the client's table does not have falls back to Mod_Mod", () => {
+  // Wow.exe va 0x836600 has no Decal_* two-stage program; Mod2x_Mod is drawn by Mod_Mod2x.
+  const fold = (shaderId) => compiled(material({ shaderId, textures: [0, 1], uvSets: [0, 1] },
+    { ...RESOLVED, uv1: SECOND_UV_SET })).fragmentShader;
+  assert.match(fold(id(DECAL, ADD)), /wvm-combiner: Mod_Mod \(fallback\)/);
+  assert.match(fold(id(MOD2X, MOD)), /wvm-combiner: Mod_Mod2x \*\//);
+  assert.match(fold(id(MOD2X, MOD2X)), /wvm-combiner: Mod2x_Mod2x \*\//);
+  assert.match(fold(id(ADD, MOD)), /wvm-combiner: Add_Mod \*\//);
+  assert.match(fold(id(MOD, DECAL)), /wvm-combiner: Mod_Mod \*\//, "an unlisted second op is _Mod, not a fallback");
+});
+
+test("6.16е a sphere-mapped second stage samples Diffuse_Env's coordinates, without a second UV set", () => {
+  // ARMORREFLECT and its neighbours: coord combo −1 on unit 1. The layer used to be dropped, because
+  // folding it at the mesh's UVs would paint a picture of a sky on a sword.
+  const built = material({ shaderId: id(OPAQUE, ADD_NA, false, true), textures: [0, 1], uvSets: [0, 0],
+    materialFlags: MATERIAL_UNLIT }, RESOLVED);
+  assert.ok(built.alphaMap, "the reflection is bound, although the batch has no authored second set");
+  const shader = compiled(built);
+  assert.ok(shader.fragmentShader.includes("texture2D( alphaMap, vWvmSphereUv )"));
+  assert.ok(shader.vertexShader.includes("varying vec2 vWvmSphereUv;"));
+  assert.ok(shader.vertexShader.includes("vec3 wvmReflect = 2.0 * wvmViewNormal * dot( wvmViewNormal, wvmEye ) - wvmEye;"));
+  assert.ok(shader.vertexShader.includes("#include <project_vertex>"), "the chunk stays for the hooks that follow");
+  assert.equal(built.customProgramCacheKey(), "wvm-comb1-Opaque_AddNA-01");
+});
+
+test("6.22 an Add term on a lit surface goes to emissive, so three's lighting does not darken it", () => {
+  const lit = material({ shaderId: id(OPAQUE, ADD_NA, false, true), textures: [0, 1], uvSets: [0, 0] }, RESOLVED);
+  assert.ok(lit.isMeshStandardMaterial);
+  const shader = {
+    vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+    uniforms: {}, defines: {},
+  };
+  lit.onBeforeCompile(shader, undefined);
+  assert.ok(shader.fragmentShader.includes("totalEmissiveRadiance += sRGBTransferEOTF( vec4( wvmSum, 1.0 ) ).rgb - wvmLitLinear;"));
+  assert.ok(shader.vertexShader.startsWith("#define WVM_COMBINER_LIT"), "and the lit normal is the transformed one");
+  assert.equal(lit.customProgramCacheKey(), "wvm-comb1-Opaque_AddNA-01-e");
+  const unlit = material({ shaderId: id(OPAQUE, ADD_NA, false, true), textures: [0, 1], uvSets: [0, 0],
+    materialFlags: MATERIAL_UNLIT }, RESOLVED);
+  assert.ok(!compiled(unlit).fragmentShader.includes("totalEmissiveRadiance"), "an unlit batch folds it in directly");
+});
+
+test("6.22 a one-stage Mod batch keeps three's own chunk, so no program is added for it", () => {
+  // Mod is exactly what three's map chunk computes; Opaque on an opaque material differs only in an
+  // alpha nothing reads. The one-stage programs that do differ get a step.
+  assert.equal(material({ blendMode: 2, shaderId: id(MOD, 0) }, RESOLVED).onBeforeCompile,
+    THREE.Material.prototype.onBeforeCompile);
+  assert.equal(material({ shaderId: id(OPAQUE, 0) }, RESOLVED).onBeforeCompile, THREE.Material.prototype.onBeforeCompile);
+  assert.match(compiled(material({ blendMode: 2, shaderId: id(MOD2X, 0) }, RESOLVED)).fragmentShader,
+    /wvm-combiner: Mod2x \*\//);
+  const env = compiled(material({ blendMode: 2, shaderId: id(MOD, 0, true) }, RESOLVED));
+  assert.ok(env.fragmentShader.includes("texture2D( map, vWvmSphereUv )"), "a one-stage sphere map");
+});
+
+test("6.22 a 0x8000 special id keeps the legacy reading even on a resolved artifact", () => {
+  const built = material({ blendMode: 4, shaderId: 0x8001, textures: [0, 1], uvSets: [0, 1] },
+    { ...RESOLVED, uv1: SECOND_UV_SET });
+  assert.equal(built.customProgramCacheKey(), "wvm-layer2-32769|wvm-fog-4");
+});
+
+test("6.16б the second stage moves on its own M2TextureTransform", () => {
+  const key = (components, times, values) => ({
+    interpolation: 1, globalSequence: -1, components,
+    tracks: [{ sequence: 0, times: Uint32Array.from(times), values: Float32Array.from(values) }],
+  });
+  const none = (components) => ({ interpolation: 0, globalSequence: -1, components, tracks: [] });
+  const model = {
+    positions: new Float32Array(9), normals: new Float32Array(9),
+    uv0: new Float32Array(6), uv1: SECOND_UV_SET,
+    indices: new Uint16Array([0, 1, 2]),
+    submeshes: [{ geosetId: 0, indexStart: 0, indexCount: 3 }],
+    batches: [batch({ shaderId: id(OPAQUE, MOD), textures: [0, 1], uvSets: [0, 1], textureTransform2: 0 })],
+    textures: [{ type: 0, flags: 0, path: "Spells\\Layer0.blp" }, { type: 0, flags: 0, path: "Spells\\Layer1.blp" }],
+    attachments: [], bounds: { min: [0, 0, 0], max: [1, 1, 1], radius: 1 },
+    globalSequences: new Uint32Array(0),
+    particleEmitters: [], ribbonEmitters: [], colours: [], textureWeights: [],
+    textureTransforms: [{ translation: key(3, [0, 1000], [0, 0, 0, 0.5, 0, 0]), rotation: none(4), scaling: none(3) }],
+    shaderIdsResolved: true,
+  };
+  const built = buildModel(model, {
+    modelPath: "Spells\\Test.m2", baseUrl: "http://127.0.0.1:8090",
+    loadTexture: () => new THREE.Texture(), geosets: EVERY_GEOSET,
+  });
+  const [surface] = built.materials;
+  assert.equal(built.animatedBatches.length, 1, "the second unit's transform alone makes the batch move");
+  assert.equal(built.animatedBatches[0].map2, surface.alphaMap);
+  assert.equal(surface.alphaMap.matrixAutoUpdate, false);
+  assert.equal(surface.map.matrixAutoUpdate, true, "the first unit has no transform and is not touched");
+  updateBatchAppearance(built.animatedBatches, 500);
+  const moved = new THREE.Vector3(0, 0, 1).applyMatrix3(surface.alphaMap.matrix);
+  assert.ok(Math.abs(moved.x - 0.25) < 1e-6, `half way through the key, got ${moved.x}`);
 });

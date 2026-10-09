@@ -3,222 +3,258 @@ import test from "node:test";
 import { UPDATE_FIELDS } from "../dist/code/generated/updateFields.js";
 import { OPCODES } from "../dist/code/generated/opcodes.js";
 import { PacketWriter } from "../dist/code/protocol/PacketWriter.js";
-import { TARGET_SEARCH_RANGE, enemiesAround, nextTarget } from "../dist/code/world/TargetSearch.js";
+import {
+  TAB_LIST_LIFETIME_MS, TabCycle, collectTabCandidates, enemiesAround, isAttackableUnit, isTabEnemy,
+} from "../dist/code/world/TargetSearch.js";
+import { REACTION_FRIENDLY, REACTION_HOSTILE, REACTION_NEUTRAL } from "../dist/code/world/FactionRules.js";
 import { WorldClient } from "../dist/code/world/WorldClient.js";
 import { game } from "../dist/code/browser/game/Context.js";
-import { clearFocusOn } from "../dist/code/browser/game/Targeting.js";
+import { canAttackUnit, clearFocusOn, cycleEnemyTarget, enemyCandidates, reactionBetween } from "../dist/code/browser/game/Targeting.js";
 
-/** One object as the world state holds it, with only the fields Tab actually reads. */
-function object(guid, { typeId = 3, x = 0, y = 0, z = 0, health = 100, flags = 0, dynamicFlags = 0 } = {}) {
+/*
+ * WORK_PLAN 5.16 (and the predicate shared with 5.05): Tab as Wow.exe 3.3.5a (12340) does it —
+ * TargetNearestEnemy 0x525ad0 → 0x524fc0, candidates 0x524440, order 0x5131d0, filter 0x518e40,
+ * CanAttack 0x729740. Notes: .runtime/re-2026-10-01/a9-combat/ (e1–e5).
+ */
+
+/** One unit as the world state holds it, with only the fields Tab and CanAttack read. */
+function object(guid, {
+  typeId = 3, x = 0, y = 0, z = 0, health = 100, flags = 0, dynamicFlags = 0, bytes1 = 0, pvp = 0, playerFlags = 0,
+} = {}) {
   const fields = new Map();
   fields.set(UPDATE_FIELDS.UNIT_FIELD_HEALTH.offset, health);
   fields.set(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, flags);
   fields.set(UPDATE_FIELDS.UNIT_DYNAMIC_FLAGS.offset, dynamicFlags);
+  fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_1.offset, bytes1);
+  fields.set(UPDATE_FIELDS.UNIT_FIELD_BYTES_2.offset, pvp << 8);
+  if (typeId === 4) fields.set(UPDATE_FIELDS.PLAYER_FLAGS.offset, playerFlags);
   return { guid, typeId, position: { x, y, z, orientation: 0 }, fields };
 }
 
-/** Dead, with `UNIT_DYNFLAG_LOOTABLE` still set: a body the server is showing loot on. */
-const corpseWithLoot = (guid, options = {}) => object(guid, { ...options, health: 0, dynamicFlags: 0x01 });
+/** A player character: player-controlled, as UNIT_FLAG_PLAYER_CONTROLLED says on the wire. */
+const player = (guid, options = {}) => object(guid, { typeId: 4, ...options, flags: 0x8 | (options.flags ?? 0) });
 
+const me = player(1n);
 const here = { x: 0, y: 0, z: 0, orientation: 0 };
 const everyone = () => true;
+const at = (angle, distance) => ({ x: Math.cos(angle) * distance, y: Math.sin(angle) * distance });
 
-test("enemies come back nearest first", () => {
-  const found = enemiesAround([
-    object(3n, { x: 30 }),
-    object(1n, { x: 5 }),
-    object(2n, { x: 12 }),
-  ], here, undefined, everyone);
-  assert.deepEqual(found.map((entry) => entry.guid), [1n, 2n, 3n]);
+test("CanAttack: neutral creatures yes, friendly no, and the flags the server publishes decide the rest", () => {
+  assert.equal(isAttackableUnit(me, object(2n), REACTION_HOSTILE), true);
+  assert.equal(isAttackableUnit(me, object(2n), REACTION_NEUTRAL), true, "a yellow boar is a target");
+  assert.equal(isAttackableUnit(me, object(2n), REACTION_FRIENDLY), false);
+  for (const flags of [0x2, 0x80, 0x10000, 0x100000, 0x2000000, 0x100]) {
+    assert.equal(isAttackableUnit(me, object(2n, { flags }), REACTION_HOSTILE), false, `flags ${flags.toString(16)}`);
+  }
+  assert.equal(isAttackableUnit(me, object(2n, { health: 0 }), REACTION_HOSTILE), false, "nobody swings at the dead");
+  assert.equal(isAttackableUnit(me, object(2n, { typeId: 5 }), REACTION_HOSTILE), false, "a chest is no unit");
+  assert.equal(isAttackableUnit(me, object(2n, { pvp: 0x08 }), REACTION_HOSTILE), false, "a sanctuary creature");
 });
 
-test("two spawns at the same spot keep the same order between presses", () => {
-  // Sorting by distance alone leaves ties to whatever order the map happened to be walked in, and
-  // then Tab swaps between the same two forever instead of moving on.
-  const first = enemiesAround([object(9n, { x: 5 }), object(4n, { x: 5 })], here, undefined, everyone);
-  const second = enemiesAround([object(4n, { x: 5 }), object(9n, { x: 5 })], here, undefined, everyone);
-  assert.deepEqual(first.map((entry) => entry.guid), second.map((entry) => entry.guid));
+test("CanAttack between players: the PvP bit, both FFA, or a duel", () => {
+  assert.equal(isAttackableUnit(me, player(2n), REACTION_HOSTILE), false, "an enemy player without PvP is safe");
+  assert.equal(isAttackableUnit(me, player(2n, { pvp: 0x01 }), REACTION_HOSTILE), true);
+  assert.equal(isAttackableUnit(me, player(2n, { pvp: 0x01 }), REACTION_FRIENDLY), false, "flagged but friendly");
+  assert.equal(isAttackableUnit(me, player(2n, { pvp: 0x01 | 0x08 }), REACTION_HOSTILE), false, "sanctuary");
+  const ffaMe = player(1n, { pvp: 0x04 });
+  assert.equal(isAttackableUnit(ffaMe, player(2n, { pvp: 0x04 }), REACTION_NEUTRAL), true, "both free-for-all");
+  assert.equal(isAttackableUnit(me, player(2n, { pvp: 0x04 }), REACTION_NEUTRAL), false, "only one of them");
+  assert.equal(isAttackableUnit(me, player(2n, { pvp: 0x01, playerFlags: 0x10 }), REACTION_HOSTILE), false, "a ghost");
+  const dueller = player(1n);
+  const other = player(2n);
+  for (const unit of [dueller, other]) {
+    unit.fields.set(UPDATE_FIELDS.PLAYER_DUEL_ARBITER.offset, 77);
+    unit.fields.set(UPDATE_FIELDS.PLAYER_DUEL_ARBITER.offset + 1, 0x1f10_0000);
+  }
+  assert.equal(isAttackableUnit(dueller, other, REACTION_NEUTRAL), true, "the duel flag shares one arbiter");
 });
 
-test("the player, corpses, objects and the unattackable are not enemies", () => {
-  const found = enemiesAround([
-    object(1n, { x: 1 }),
-    object(2n, { x: 2, health: 0 }),
-    object(3n, { x: 3, typeId: 5 }),
-    object(4n, { x: 4, flags: 0x00000002 }),
-    object(5n, { x: 5, flags: 0x02000000 }),
-    object(6n, { x: 6, flags: 0x00010000 }),
-    object(7n, { x: 7 }),
-  ], here, 7n, everyone);
-  assert.deepEqual(found.map((entry) => entry.guid), [1n],
-    "a spent corpse, a chest, three flagged units and the player itself all have to be skipped");
+test("Tab's filter drops the feigned and the lying dead, and critters, pets and gas clouds", () => {
+  assert.equal(isTabEnemy(me, object(2n), REACTION_HOSTILE), true);
+  assert.equal(isTabEnemy(me, object(2n, { dynamicFlags: 0x20 }), REACTION_HOSTILE), false, "UNIT_DYNFLAG_DEAD");
+  assert.equal(isTabEnemy(me, object(2n, { bytes1: 7 }), REACTION_HOSTILE), false, "UNIT_STAND_STATE_DEAD");
+  assert.equal(isTabEnemy(me, object(2n, { health: 0, dynamicFlags: 0x1 }), REACTION_HOSTILE), false, "a corpse with loot too");
+  for (const type of [8, 12, 13]) assert.equal(isTabEnemy(me, object(2n), REACTION_NEUTRAL, type), false, `type ${type}`);
+  assert.equal(isTabEnemy(me, object(2n), REACTION_NEUTRAL, 1), true, "a beast");
+  assert.equal(isTabEnemy(me, object(2n), REACTION_NEUTRAL, 11), true, "a totem");
 });
 
-test("Л1 a corpse with loot on it stays in the cycle, and stays at the end of it", () => {
-  // Tab used to throw out everything dead, so the keyboard had no way at all to select a body —
-  // and the «Обыскать» button lives on the target frame, which means it had no way to reach loot
-  // either. The reference client keeps them and sorts them behind everything alive: «live enemies
-  // cycle first (nearest to farthest); lootable corpses last»
-  // (`wowee/src/game/combat_handler.cpp:1634-1639`).
-  const found = enemiesAround([
-    corpseWithLoot(1n, { x: 2 }),
-    object(2n, { x: 30 }),
-    object(3n, { x: 8 }),
-  ], here, undefined, everyone);
-  assert.deepEqual(found.map((entry) => entry.guid), [3n, 2n, 1n],
-    "the body is two yards away and still comes after the enemy thirty yards off");
-  assert.deepEqual(found.map((entry) => entry.lootable), [false, false, true]);
-
-  // Two bodies keep their own order among themselves, nearest first, so the cycle is stable.
-  const bodies = enemiesAround([corpseWithLoot(5n, { x: 12 }), corpseWithLoot(4n, { x: 3 })], here, undefined, everyone);
-  assert.deepEqual(bodies.map((entry) => entry.guid), [4n, 5n]);
-
-  // And the press after the kill still lands on the next live enemy rather than back on the body.
-  assert.equal(nextTarget(found, 1n), 3n);
-  assert.equal(nextTarget(found, 2n), 1n, "and the press after that comes back to it");
+test("the search: ±30° out to 41 yards, every other bearing only to 10, measured in three dimensions", () => {
+  const found = (unit) => enemiesAround([unit], here, 1n, everyone).length === 1;
+  const unitAt = (angle, distance, z = 0) => object(2n, { ...at(angle, distance), z });
+  assert.equal(found(unitAt(0, 40.9)), true, "straight ahead at 40.9");
+  assert.equal(found(unitAt(0, 41.1)), false, "past 41");
+  assert.equal(found(unitAt(Math.PI / 6 - 0.01, 30)), true, "just inside the cone");
+  assert.equal(found(unitAt(Math.PI / 6 + 0.01, 30)), false, "just outside it, far");
+  assert.equal(found(unitAt(-Math.PI / 6 + 0.01, 30)), true, "the other edge");
+  assert.equal(found(unitAt(Math.PI, 9.9)), true, "behind, within 10");
+  assert.equal(found(unitAt(Math.PI, 10.1)), false, "behind, past 10");
+  assert.equal(found(unitAt(0, 0, 41.5)), false, "straight above counts the height");
+  assert.equal(found(object(1n)), false, "the mover itself never");
 });
 
-test("Л1 an emptied corpse leaves the cycle, and the bit is the only thing that says so", () => {
-  // Indication and cycle alike are built on `UNIT_DYNFLAG_LOOTABLE` and never on health: a body
-  // whose loot has been taken has the same zero health as one that has not, and the core clears
-  // the bit for it (`LootHandler.cpp:411`). Reading health here would leave every kill of the day
-  // in the Tab cycle for as long as the corpse stood.
-  const spent = object(1n, { x: 2, health: 0 });
-  assert.deepEqual(enemiesAround([spent], here, undefined, everyone), []);
-
-  // A corpse is exempt from the reaction test, for the reason the reference client's
-  // `isValidTabTarget` never asks about a corpse's faction (`combat_handler.cpp:1589-1593`): the
-  // bit is already the server saying this body is yours. A live unit is not exempt.
-  const nobodyIsHostile = () => false;
-  const mixed = enemiesAround([corpseWithLoot(1n, { x: 2 }), object(2n, { x: 3 })], here, undefined, nobodyIsHostile);
-  assert.deepEqual(mixed.map((entry) => entry.guid), [1n]);
-
-  // What the server has flagged unselectable stays unselectable, dead or alive.
-  const hidden = corpseWithLoot(3n, { x: 2, flags: 0x02000000 });
-  assert.deepEqual(enemiesAround([hidden], here, undefined, everyone), []);
+test("the order: the cone first, then the nearest, and the same order on every rebuild", () => {
+  const behind = object(2n, { ...at(Math.PI, 3) });
+  const ahead = object(3n, { ...at(0, 25) });
+  const aheadNear = object(4n, { ...at(0.1, 12) });
+  assert.deepEqual(enemiesAround([behind, ahead, aheadNear], here, 1n, everyone).map((entry) => entry.guid), [4n, 3n, 2n]);
+  const turned = { ...here, orientation: Math.PI };
+  assert.deepEqual(enemiesAround([behind, ahead, aheadNear], turned, 1n, everyone).map((entry) => entry.guid), [2n],
+    "facing away, the far ones are out of reach");
+  const twins = [object(9n, { x: 5 }), object(5n, { x: 5 })];
+  assert.deepEqual(enemiesAround(twins, here, 1n, everyone).map((entry) => entry.guid), [5n, 9n]);
+  assert.deepEqual(enemiesAround(twins.reverse(), here, 1n, everyone).map((entry) => entry.guid), [5n, 9n]);
 });
 
-test("Л1 no body is a Tab target while the fight is still on", () => {
-  // The review's finding: sorting corpses last orders the cycle, it does not shorten it, and the
-  // cycle wraps — so the press that should have moved from the second live enemy to the first
-  // moved onto the body instead, where no swing can land. The reference refuses the same body one
-  // step earlier, before its list is built at all (`combat_handler.cpp:1590`, inside
-  // `isValidTabTarget`: `if (unit->getHealth() == 0) { if (playerInCombat) return false; ... }`).
-  const fight = [object(3n, { x: 6 }), object(4n, { x: 8 }), corpseWithLoot(2n, { x: 2 })];
-
-  // Out of combat, which is when a body is worth cycling to, nothing changes.
-  const calm = enemiesAround(fight, here, 1n, everyone, undefined, undefined, false);
-  assert.deepEqual(calm.map((entry) => entry.guid), [3n, 4n, 2n]);
-  assert.equal(nextTarget(calm, 4n), 2n, "the press after the last live enemy reaches the body");
-
-  // In combat the body is gone from the list, so the same press wraps to the nearest enemy.
-  const fighting = enemiesAround(fight, here, 1n, everyone, undefined, undefined, true);
-  assert.deepEqual(fighting.map((entry) => entry.guid), [3n, 4n]);
-  assert.equal(nextTarget(fighting, 4n), 3n);
-  // And it is the corpse that goes, not everything: the living are untouched by the flag.
-  assert.deepEqual(enemiesAround([corpseWithLoot(2n, { x: 2 })], here, 1n, everyone, undefined, undefined, true), []);
+test("a rebuild reuses its entries, so a crowd costs no garbage after the first press", () => {
+  const crowd = Array.from({ length: 30 }, (_, index) => object(BigInt(index + 2), { x: 1 + index * 0.3 }));
+  const out = [];
+  collectTabCandidates(crowd, here, 1n, everyone, out);
+  const before = new Set(out);
+  assert.equal(collectTabCandidates(crowd, here, 1n, everyone, out), 30);
+  assert.equal(out.every((entry) => before.has(entry)), true);
 });
 
-test("Л1 the combat flag Tab reads is the player's own, straight off UNIT_FIELD_FLAGS", async () => {
-  // `enemyCandidates` is where the bit is read, and it reads it off the `self` it already holds
-  // for the position — no second lookup. 0x00080000 is `UNIT_FLAG_IN_COMBAT` (`UnitDefines.h:154`),
-  // which the core sets on the unit when a combat reference is taken and clears when the last one
-  // goes (`CombatManager.cpp:465` and `:475`).
-  const { enemyCandidates } = await import("../dist/code/browser/game/Targeting.js");
-  const previous = game.world;
+/** A Tab source over a fixed list of guids, with a switchable validity. */
+function listSource(guids, invalid = new Set()) {
+  return {
+    builds: 0,
+    collect(out) {
+      this.builds++;
+      out.length = 0;
+      guids.forEach((guid, index) => out.push({ guid, distanceSquared: index, ahead: true }));
+      return guids.length;
+    },
+    valid(guid) { return !invalid.has(guid); },
+  };
+}
+
+test("Tab steps along a kept list and wraps; a wrap rebuilds a list older than one second", () => {
+  const cycle = new TabCycle();
+  const source = listSource([5n, 6n, 7n]);
+  assert.equal(cycle.next(1000, undefined, false, source), 5n, "first press: the best");
+  assert.equal(cycle.next(1100, 5n, false, source), 6n);
+  assert.equal(cycle.next(1200, 6n, false, source), 7n);
+  assert.equal(source.builds, 1, "one list for presses under three seconds apart");
+  assert.equal(cycle.next(1300, 7n, false, source), 5n, "a wrap inside a second keeps the list");
+  assert.equal(source.builds, 1);
+  assert.equal(cycle.next(1400, 5n, false, source), 6n);
+  assert.equal(cycle.next(1500, 6n, false, source), 7n);
+  assert.equal(cycle.next(2100, 7n, false, source), 5n, "a wrap after a second rebuilds and starts over");
+  assert.equal(source.builds, 2);
+});
+
+test("Tab backwards, a three-second pause, a moved selection and a cleared one", () => {
+  const cycle = new TabCycle();
+  const source = listSource([5n, 6n, 7n]);
+  assert.equal(cycle.next(1000, undefined, true, source), 5n, "reverse also starts at the best");
+  assert.equal(cycle.next(1100, 5n, true, source), 7n, "and steps back round the end");
+  assert.equal(cycle.next(1200, 7n, true, source), 6n);
+  assert.equal(cycle.next(1300, 99n, false, source), 6n, "the player picked something else: re-pick where it stood");
+  assert.equal(source.builds, 1);
+  assert.equal(cycle.next(1300 + TAB_LIST_LIFETIME_MS, 6n, false, source), 5n, "three quiet seconds: a new list");
+  assert.equal(source.builds, 2);
+  cycle.invalidate();
+  assert.equal(cycle.next(4400, 5n, false, source), 5n, "a cleared selection drops the list too");
+  assert.equal(source.builds, 3);
+});
+
+test("Tab skips what no longer passes, and with nothing left keeps the selection", () => {
+  const invalid = new Set([6n]);
+  const cycle = new TabCycle();
+  const source = listSource([5n, 6n, 7n], invalid);
+  assert.equal(cycle.next(1000, undefined, false, source), 5n);
+  assert.equal(cycle.next(1100, 5n, false, source), 7n, "6 died since the list was built");
+  invalid.add(5n).add(7n);
+  assert.equal(cycle.next(1200, 7n, false, source), undefined);
+  assert.equal(cycle.list.length, 0, "the list is dropped (0x522220(0))");
+  assert.equal(cycle.next(1300, 7n, false, listSource([])), undefined, "an empty world gives nothing");
+});
+
+test("a forced reaction overrides the faction table, both ways, and only for the player", () => {
+  const previous = { world: game.world, factions: game.factions };
   try {
-    const self = object(1n, { typeId: 4, x: 0 });
-    const objects = new Map([[1n, self], [2n, corpseWithLoot(2n, { x: 2 })], [3n, object(3n, { x: 6 })]]);
-    game.world = { state: { selfGuid: 1n, objects }, targetGuid: undefined };
-    game.factions = undefined;
-
-    assert.deepEqual(enemyCandidates().map((entry) => entry.guid), [3n, 2n],
-      "out of combat the body is at the end of the cycle");
-    self.fields.set(UPDATE_FIELDS.UNIT_FIELD_FLAGS.offset, 0x00080000);
-    assert.deepEqual(enemyCandidates().map((entry) => entry.guid), [3n],
-      "and in combat it is not in it at all");
+    const self = player(1n);
+    self.fields.set(UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 1);
+    const wolf = object(2n);
+    wolf.fields.set(UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 2);
+    const guard = object(3n);
+    guard.fields.set(UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 3);
+    const forcedReactions = new Map();
+    game.world = { state: { selfGuid: 1n, objects: new Map([[1n, self], [2n, wolf], [3n, guard]]) }, forcedReactions };
+    // Template 2 hostile, 3 friendly; FactionTemplate.Faction = template × 10.
+    game.factions = { ready: true, reaction: (_m, t) => (t === 2 ? -1 : 1), factionOf: (template) => template * 10 };
+    assert.equal(reactionBetween(self, wolf, game.factions), REACTION_HOSTILE);
+    assert.equal(canAttackUnit(guard), false);
+    forcedReactions.set(20, 4);
+    forcedReactions.set(30, 0);
+    assert.equal(reactionBetween(self, wolf, game.factions), REACTION_FRIENDLY, "REP_FRIENDLY");
+    assert.equal(canAttackUnit(wolf), false);
+    assert.equal(reactionBetween(self, guard, game.factions), REACTION_HOSTILE, "REP_HATED");
+    assert.equal(canAttackUnit(guard), true);
+    assert.equal(reactionBetween(guard, self, game.factions), REACTION_HOSTILE, "the creature's side looks the same way");
+    assert.equal(reactionBetween(guard, wolf, game.factions), REACTION_HOSTILE, "between two others the table decides");
+    forcedReactions.set(30, 3);
+    assert.equal(reactionBetween(self, guard, game.factions), REACTION_NEUTRAL, "REP_NEUTRAL");
   } finally {
-    game.world = previous;
+    game.world = previous.world;
+    game.factions = previous.factions;
   }
 });
 
-test("a unit with no position yet is skipped rather than placed at the origin", () => {
-  const nowhere = object(2n, { x: 40 });
-  nowhere.position = undefined;
-  const found = enemiesAround([object(1n, { x: 4 }), nowhere], here, undefined, everyone);
-  assert.deepEqual(found.map((entry) => entry.guid), [1n]);
+test("CanAttack waits for the faction table: until it lands no unit is fought on a guess", () => {
+  // Review of 5.05: with no table every unit reads neutral, and neutral is attackable — a right
+  // click on a guard, a party member or a dungeon bot became CMSG_ATTACKSWING (with a dismount and
+  // a stand-up in front of it), and clicking a friend mid-fight carried the swing to them. Wow.exe
+  // always has FactionTemplate.dbc; here the safe answer while it is missing is "no".
+  const previous = { world: game.world, factions: game.factions };
+  try {
+    const self = player(1n);
+    self.fields.set(UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 1);
+    const bot = object(2n);
+    bot.fields.set(UPDATE_FIELDS.UNIT_FIELD_FACTIONTEMPLATE.offset, 35);
+    game.world = { state: { selfGuid: 1n, objects: new Map([[1n, self], [2n, bot]]) }, forcedReactions: new Map() };
+    game.factions = undefined;
+    assert.equal(canAttackUnit(bot), false, "no faction client");
+    game.factions = { ready: false, reaction: () => 0, factionOf: () => undefined };
+    assert.equal(canAttackUnit(bot), false, "the table is still on its way");
+    game.factions = { ready: true, reaction: () => 0, factionOf: () => undefined };
+    assert.equal(canAttackUnit(bot), true, "a neutral unit once the table says so");
+    game.factions = { ready: true, reaction: () => 1, factionOf: () => undefined };
+    assert.equal(canAttackUnit(bot), false, "and a friendly one never");
+  } finally {
+    game.world = previous.world;
+    game.factions = previous.factions;
+  }
 });
 
-test("the search has an edge, and it is measured in three dimensions", () => {
-  const inside = enemiesAround([object(1n, { x: TARGET_SEARCH_RANGE - 1 })], here, undefined, everyone);
-  assert.equal(inside.length, 1);
-  const outside = enemiesAround([object(1n, { x: TARGET_SEARCH_RANGE + 1 })], here, undefined, everyone);
-  assert.equal(outside.length, 0);
-  // Something on the floor below is as far away as something across the field.
-  const below = enemiesAround([object(1n, { z: TARGET_SEARCH_RANGE + 1 })], here, undefined, everyone);
-  assert.equal(below.length, 0);
-});
-
-test("the reaction is the caller's to decide, and it decides everything", () => {
-  const units = [object(1n, { x: 1 }), object(2n, { x: 2 })];
-  const found = enemiesAround(units, here, undefined, (unit) => unit.guid === 2n);
-  assert.deepEqual(found.map((entry) => entry.guid), [2n]);
-  assert.deepEqual(enemiesAround(units, here, undefined, () => false), []);
-});
-
-test("Tab steps along the list and wraps at both ends", () => {
-  const list = [{ guid: 1n, distance: 1 }, { guid: 2n, distance: 2 }, { guid: 3n, distance: 3 }];
-  assert.equal(nextTarget(list, undefined), 1n);
-  assert.equal(nextTarget(list, 1n), 2n);
-  assert.equal(nextTarget(list, 3n), 1n);
-  assert.equal(nextTarget(list, undefined, -1), 3n);
-  assert.equal(nextTarget(list, 1n, -1), 3n);
-  assert.equal(nextTarget([], 1n), undefined, "nothing in range is not a target of nothing");
-});
-
-test("a target that has left the list starts the cycle again rather than ending it", () => {
-  // This is the case that matters in a fight: the thing you were hitting died, so it is no longer
-  // a candidate, and the next press has to find the next one instead of returning undefined.
-  const list = [{ guid: 5n, distance: 1 }, { guid: 6n, distance: 2 }];
-  assert.equal(nextTarget(list, 99n), 5n);
-  assert.equal(nextTarget(list, 99n, -1), 6n);
-});
-
-test("Tab takes what the character faces before what is merely near", () => {
-  // Facing +x. A closer unit behind the shoulder must not beat a further one straight ahead:
-  // the original client's Tab follows the camera, which is why turning changes what it gives you.
-  const behind = object(1n, { x: -4 });
-  const ahead = object(2n, { x: 25 });
-  const found = enemiesAround([behind, ahead], here, undefined, everyone, undefined, 0);
-  assert.deepEqual(found.map((entry) => entry.guid), [2n, 1n]);
-  assert.deepEqual(found.map((entry) => entry.ahead), [true, false]);
-
-  // Turn around and the order turns with the character, without either unit moving.
-  const turned = enemiesAround([behind, ahead], here, undefined, everyone, undefined, Math.PI);
-  assert.deepEqual(turned.map((entry) => entry.guid), [1n, 2n]);
-
-  // Nothing is dropped for being behind: a player who has cleared what is in front keeps cycling
-  // rather than pressing Tab at an empty screen.
-  assert.equal(turned.length, 2);
-});
-
-test("the arc is ninety degrees each way, and its edge is inclusive", () => {
-  const at = (angle, distance = 10) =>
-    object(1n, { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance });
-  const ahead = (angle) => enemiesAround([at(angle)], here, undefined, everyone, undefined, 0)[0].ahead;
-  assert.equal(ahead(0), true, "straight ahead");
-  assert.equal(ahead(Math.PI / 2 - 0.01), true, "just inside the edge");
-  assert.equal(ahead(Math.PI / 2 + 0.01), false, "just outside it");
-  assert.equal(ahead(Math.PI), false, "straight behind");
-  // The wrap has to be an angle and not a winding number: -170 degrees is behind, not ahead.
-  assert.equal(ahead(-Math.PI + 0.05), false);
-  assert.equal(ahead(-0.2), true);
-});
-
-test("without a facing the order is exactly what it was before there was an arc", () => {
-  const found = enemiesAround([object(3n, { x: 30 }), object(1n, { x: 5 })], here, undefined, everyone);
-  assert.deepEqual(found.map((entry) => entry.guid), [1n, 3n]);
-  assert.deepEqual(found.map((entry) => entry.ahead), [true, true]);
+test("Tab in the browser: the cone list, cycling, and a fresh start after the selection is cleared", () => {
+  const previous = { world: game.world, factions: game.factions };
+  try {
+    const self = player(1n);
+    const objects = new Map([[1n, self]]);
+    for (const [guid, x] of [[2n, 6], [3n, 20], [4n, -4]]) objects.set(guid, object(guid, { x }));
+    objects.set(5n, object(5n, { x: 3, health: 0, dynamicFlags: 0x1 }));
+    const world = {
+      state: { selfGuid: 1n, objects }, targetGuid: undefined, forcedReactions: new Map(), selectionClears: 0,
+      creatureTemplates: new Map(), selected: [],
+      selectTarget(guid) { this.selected.push(guid); this.targetGuid = guid; },
+    };
+    game.world = world;
+    game.factions = undefined;
+    assert.deepEqual(enemyCandidates().map((entry) => entry.guid), [2n, 3n, 4n], "no body, the one behind last");
+    cycleEnemyTarget(1);
+    cycleEnemyTarget(1);
+    cycleEnemyTarget(1);
+    assert.deepEqual(world.selected, [2n, 3n, 4n]);
+    world.targetGuid = undefined;
+    world.selectionClears++;
+    cycleEnemyTarget(1);
+    assert.deepEqual(world.selected, [2n, 3n, 4n, 2n], "a clear starts the cycle again from the best");
+  } finally {
+    game.world = previous.world;
+    game.factions = previous.factions;
+  }
 });
 
 /**

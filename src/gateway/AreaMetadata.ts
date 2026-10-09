@@ -52,6 +52,22 @@ export interface AreaInfo {
   ambienceId: number;
   /** `ZoneIntroMusicTable::ID` — the sting on entering, once, before the zone's own track. */
   introSound: number;
+  /**
+   * `Flags`, column 4 of the 3.3.5.12340 layout (tools/dbd/AreaTable.dbd; TrinityCore's
+   * `AreaTableEntry::Flags`, `AreaFlags` in DBCEnums.h). `GetZonePVPInfo` reads the sanctuary
+   * (0x800), arena (0x80) and Wintergrasp (0x01000000) bits of it (FrameXmlZoneInfo.ts).
+   *
+   * Optional because a gateway older than route version 8 does not send it; the client then
+   * answers no PvP status rather than a guessed one.
+   */
+  flags?: number;
+  /**
+   * `FactionGroupMask`, column 28 (after the seventeen `AreaName_lang` slots 11-27): 2 Alliance,
+   * 4 Horde, 6 both, 0 none (TrinityCore `AreaTeams`). Measured on this dataset: 29 rows of 2,
+   * 41 of 4, two of 6 (Shattrath and Dalaran), 2,235 of 0 — set on zones, cities and a few of their
+   * districts, so a sub-area inherits it from the zone above. Optional as `flags` is.
+   */
+  factionGroupMask?: number;
 }
 
 export interface MapAreaInfo {
@@ -172,6 +188,22 @@ export interface MapInfo {
    * 24 raids, 6 battlegrounds, 5 arenas.
    */
   instanceType: number;
+  /**
+   * 05.10-L17t: `MinimapIconScale`, column 58 of the 3.3.5.12340 layout (tools/dbd/Map.dbd; TrinityCore
+   * DBCStructure.h:1089 leaves it unread). Wow.exe answers `GetBattlefieldMapIconScale` (0x0054c740)
+   * with the battlefield map's value (in-memory record +0x28), 1.0 without a row; Arathi Basin's is 1.25
+   * on this dataset, every other battleground's and arena's 1. Optional: a gateway older than route
+   * version 9 does not send it, and the call then answers 1.0 (FrameXmlBattlefieldMapSource.ts).
+   */
+  minimapIconScale?: number;
+  /**
+   * 05.10-A7b-4 (7.01/7.13): `AreaTableID`, column 22 (tools/dbd/Map.dbd; TrinityCore `MapEntry::AreaTableID`)
+   * — the area of a point that neither a WMO room nor the terrain grid names (Map.cpp `GetAreaId`, the last
+   * fallback). Every single-WMO dungeon has one (43 Wailing Caverns 718, 34 the Stockade 717); 0 on the maps
+   * without an AreaTable row (559, 604, 608, 624, 632). Rides the unreleased route version 9: a reply
+   * without it leaves the zone label on the map's name, as before (AreaLocator.ts).
+   */
+  areaTableId?: number;
 }
 
 export interface AreaData {
@@ -212,6 +244,8 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       zoneMusic: areaTable.int(row, "ZoneMusic"),
       ambienceId: areaTable.int(row, "AmbienceID"),
       introSound: areaTable.int(row, "IntroSound"),
+      flags: areaTable.int(row, "Flags"),
+      factionGroupMask: areaTable.int(row, "FactionGroupMask"),
     });
   }
 
@@ -315,6 +349,8 @@ export async function loadAreaData(dbcDirectory: string): Promise<AreaData> {
       directory: mapTable.string(row, "Directory"),
       name: mapTable.locstring(row, "MapName_lang"),
       instanceType: mapTable.int(row, "InstanceType"),
+      minimapIconScale: mapTable.float(row, "MinimapIconScale"), // 05.10-L17t
+      areaTableId: mapTable.int(row, "AreaTableID"), // 05.10-A7b-4
     });
   }
 

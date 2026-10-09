@@ -373,18 +373,29 @@ export const AUTH_RESULT_NAMES = new Map<number, AuthResultName>(
 `;
 }
 
-async function emit(filename, content) {
-  const outputPath = join(generatedDir, filename);
-  if (checkOnly) {
-    const current = await readFile(outputPath, "utf8").catch(() => "");
+/**
+ * Writes one generated table into `directory`, and only when its text changed (10.11): a rewrite
+ * with the same bytes still moved the file's mtime, and `tools/gateway-build-stale.mjs` compares
+ * mtimes, so every `predev`/`prebuild` made the gateway build look stale and forced a rebuild for
+ * nothing. With `check`, nothing is written and a difference is an error. Returns whether it wrote.
+ */
+export async function emitGenerated(directory, filename, content, { check = false } = {}) {
+  const outputPath = join(directory, filename);
+  const current = await readFile(outputPath, "utf8").catch(() => undefined);
+  if (check) {
     if (current !== content) {
       throw new Error(`The ignored protocol-data/${filename} implementation is stale; run npm run protocol:generate`);
     }
-    return;
+    return false;
   }
-
+  if (current === content) return false;
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, content, "utf8");
+  return true;
+}
+
+function emit(filename, content) {
+  return emitGenerated(generatedDir, filename, content, { check: checkOnly });
 }
 
 async function main() {

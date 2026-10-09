@@ -67,6 +67,9 @@ export const DBD_TABLES = [
   "LightFloatBand",
   "LightSkybox",
   "LiquidType",
+  // 05.10-A7b-5 (7.09): the vertex format and flags a LiquidType.MaterialID names (3 rows: 1 water,
+  // 2 magma/slime with height+UV, 3 procedural). Written in this repository — see tools/dbd/README.md.
+  "LiquidMaterial",
   // The world-entry curtain: `Map.LoadingScreenID` names a row here, and the row names the art
   // and whether a `…Wide.blp` twin ships. Written in this repository from the 3.3.5a file's own
   // header (4 fields, 16-byte records).
@@ -113,6 +116,10 @@ export const DBD_TABLES = [
   // spell itself and accepts it even from a player who does not know it, but only if the client
   // sends exactly that one — so the client has to work it out the same way, from here.
   "Lock",
+  // 05.10-5.17: a lock type's CursorName, the cursor 0x0070F9B0 shows over a locked object (a
+  // dataset's own types, such as 1000 «Лесозаготовка» → Mine). Written in this repository — see
+  // tools/dbd/README.md.
+  "LockType",
 
   // Items, factions, emotes.
   "Faction",

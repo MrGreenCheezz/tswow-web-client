@@ -1,6 +1,6 @@
 import { AreaClient } from "../AreaClient.js";
 import { CHARACTER_OPTIONS_VERSION, isCharacterOptions, type CharacterOptions } from "../CharacterAtlas.js";
-import { isCreationData, raceDisplayId, type CharacterCreationData } from "../ui/CharacterCreation.js";
+import { fetchCreationWithClassFlags, raceDisplayId, type CharacterCreationData } from "../ui/CharacterCreation.js";
 import { learnCreationNames } from "../ui/UnitSnapshot.js";
 import type { StartOutfitItem } from "../../gateway/CharStartOutfit.js";
 import type { GlueCreationSource, GlueCreationTables } from "./GlueCreation.js";
@@ -33,8 +33,38 @@ import type { GlueNameLookup } from "./GlueSession.js";
  * answers `max-age=3600`, so without a new query string a browser that asked while `v=2` was
  * current would go on being served an answer with no file token, and every race button would look
  * up `RACE_ICON_TCOORDS[nil]`.
+ *
+ * The race and class rows also carry `nameMale`/`nameFemale` now (10.09): the character list names a
+ * character's race and class by its sex, as `GetCharacterInfo` does. Added without a version bump,
+ * because `FrameXmlCharacterStats.FRAMEXML_CREATION_NAMES_PATH` shares this version (a test pins
+ * the two together) and is another lane's file; both are optional, so a gateway not yet restarted, or
+ * a cached answer (`max-age=3600`), just prints `name` for either sex until it refreshes.
+ *
+ * `v=4` is the class rows gaining `flags` (ChrClasses.Flags — the relic slot, 1.15) and
+ * `spellClassSet` (the SPELLMOD family, 1.14b), bumped together with
+ * `FRAMEXML_CREATION_NAMES_PATH`. Both are optional: a gateway not yet restarted answers `v=4`
+ * with the `v=3` shape (the route does not read the query), and the readers fall back; such an answer
+ * cached from before the restart is asked once more past the cache (`fetchCreationWithClassFlags`).
  */
-export const GLUE_CREATION_VERSION = 3;
+export const GLUE_CREATION_VERSION = 4;
+
+/** A race or class row's names; the sexed two only from a gateway that has 10.09. */
+interface SexedName {
+  readonly name: string;
+  readonly nameMale?: string;
+  readonly nameFemale?: string;
+}
+
+/**
+ * The name the character list prints for a sex: 0 male, 1 female, as the wire says. Without a sex
+ * (the creation lists, the world) it is `Name_lang`, which is what those always showed.
+ */
+export function sexedName(row: SexedName | undefined, sex?: number): string | undefined {
+  if (!row) return undefined;
+  if (sex === 0) return row.nameMale || row.name;
+  if (sex === 1) return row.nameFemale || row.name;
+  return row.name;
+}
 
 /** `/dbc/char-start-outfit` version. `v=1` is the route's first shape. */
 export const CHAR_START_OUTFIT_VERSION = 1;
@@ -44,8 +74,8 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
   readonly #origin: string;
   #creation: CharacterCreationData | undefined;
   #pending: Promise<void> | undefined;
-  #races = new Map<number, string>();
-  #classes = new Map<number, string>();
+  #races = new Map<number, SexedName>();
+  #classes = new Map<number, SexedName>();
 
   /** Called when either table arrives, so whatever is on screen can be drawn again. */
   onLoaded: (() => void) | undefined;
@@ -70,8 +100,8 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
       const data = await this.fetchCreation();
       if (!data) return;
       this.#creation = data;
-      this.#races = new Map(data.races.map((race) => [race.id, race.name]));
-      this.#classes = new Map(data.classes.map((entry) => [entry.id, entry.name]));
+      this.#races = new Map(data.races.map((race) => [race.id, race]));
+      this.#classes = new Map(data.classes.map((entry) => [entry.id, entry]));
       // The world quest/NPC formatter reads UnitSnapshot's shared class/race names. The stock
       // Glue login has its own lookup, so without this bridge a custom class falls back to its id
       // after entering the world even though Glue already loaded its ChrClasses row.
@@ -82,7 +112,7 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
   }
 
   /**
-   * `/dbc/character-creation?v=3`.
+   * `/dbc/character-creation?v=4` (`GLUE_CREATION_VERSION`).
    *
    * Its own fetch rather than `ui/CharacterCreation.ts`'s, because that one is the DOM login page's
    * and asks at `v=2`; the two pages read different shapes of the same route and must not share a
@@ -91,10 +121,8 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
    */
   private async fetchCreation(): Promise<CharacterCreationData | undefined> {
     try {
-      const response = await fetch(`${this.#origin}/dbc/character-creation?v=${GLUE_CREATION_VERSION}`);
-      if (!response.ok) throw new Error(`character creation returned ${response.status}`);
-      const value = await response.json() as unknown;
-      return isCreationData(value) ? value : undefined;
+      // Past the browser cache once when the answer predates the class flags (review 30.09).
+      return await fetchCreationWithClassFlags(`${this.#origin}/dbc/character-creation?v=${GLUE_CREATION_VERSION}`);
     } catch {
       return undefined;
     }
@@ -105,12 +133,12 @@ export class GlueGatewayNames implements GlueNameLookup, GlueCreationSource {
     return { races: this.#creation?.races ?? [], classes: this.#creation?.classes ?? [] };
   }
 
-  raceName(race: number): string {
-    return this.#races.get(race) || `Раса ${race}`;
+  raceName(race: number, sex?: number): string {
+    return sexedName(this.#races.get(race), sex) || `Раса ${race}`;
   }
 
-  className(classId: number): string {
-    return this.#classes.get(classId) || `Класс ${classId}`;
+  className(classId: number, sex?: number): string {
+    return sexedName(this.#classes.get(classId), sex) || `Класс ${classId}`;
   }
 
   zoneName(zone: number): string {

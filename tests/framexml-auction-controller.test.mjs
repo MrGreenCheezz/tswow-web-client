@@ -273,3 +273,46 @@ test("a newer owner published over a stale one keeps its own strings and open re
     game.world = undefined;
   }
 });
+
+// L5c-review 3.24 (owner pending) had an add-on already in wait for the first auctioneer.
+// DEC-A 3.24: the owner decided 04.10 — preload both — so L5c's publish-time begin is back: an add-on
+// the loading window already has in starts the owner at publish (its gate passes before any visit),
+// and one not in yet still waits for the first auctioneer.
+test("an auction add-on already loaded starts the owner at publish; one not in waits for the first auctioneer", async () => { // DEC-A 3.24
+  const run = async (preloaded) => {
+    const canned = createCannedFrameXmlAuction();
+    canned.model.attach({ fire: () => 1, now: () => 1 });
+    const loads = [];
+    const asked = [];
+    const boot = {
+      vm: { compileFunction: () => undefined, call: () => [], release() {}, errors: [], globalString: () => undefined },
+      bridge: { getFrame: () => undefined, isVisible: () => false, diagnostics: [] },
+      errorCount: 0,
+      binder: { stubDiagnostics: [] },
+      isAddonLoaded: (name) => { asked.push(name); return preloaded && name === "Blizzard_AuctionUI"; },
+      loadAddon: async (name) => { loads.push(name); return { ok: false, addon: name, status: "missing", dependencies: [], loaded: [], roots: [] }; },
+    };
+    game.world = world({ auctioneerGuid: 0n });
+    const warn = console.warn;
+    console.warn = () => {};
+    const cleanup = mountFrameXmlAuction({ auction: canned.model }, boot, { elementFor: () => undefined, addRoots() {}, sync() {} });
+    try {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      const atPublish = [...loads];
+      canned.world.open();
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      return { atPublish, afterHello: [...loads], asked };
+    } finally {
+      console.warn = warn;
+      cleanup();
+      game.world = undefined;
+    }
+  };
+  const preloaded = await run(true);
+  assert.deepEqual(preloaded.asked, ["Blizzard_AuctionUI"], "the mount asks about the auction add-on by its name");
+  assert.deepEqual(preloaded.atPublish, ["Blizzard_AuctionUI"], "in already: begun at publish, before any auctioneer");
+  assert.deepEqual(preloaded.afterHello, ["Blizzard_AuctionUI"], "and the first hello starts nothing twice");
+  const cold = await run(false);
+  assert.deepEqual(cold.atPublish, [], "not in: no begin at publish");
+  assert.deepEqual(cold.afterHello, ["Blizzard_AuctionUI"], "the first hello starts it, as before L5c");
+});

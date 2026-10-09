@@ -83,6 +83,17 @@ test("a classic room is lit by its baked colour, a unified one by the colour plu
     "the unified sum is unchanged: MOCV + MOHD ambient");
   assert.deepEqual([...unified.subarray(3, 6)], [128, 100, 122].map((c) => f32(srgbToLinear(c / 255))),
     "which lights a classic room's unlit stone at twice its ambient");
+
+  // 05.10-A7b-2 (7.17): the unified vertex program (`mapobjudiffuse_t1.bls`, lit variants) is
+  // clamp(ambient + sun + Σ lamps) · c28 + MOCV (+ emissive): a lamp the group names adds to the
+  // ambient + MOCV sum; the classic one has no such term — its lamps are in MOCV.
+  const lit = wmoVertexLight(mesh, normals, ambient, [lamp]);
+  let added = 0;
+  for (let index = 0; index < lit.length; index++) {
+    assert.ok(lit[index] >= unified[index] - 1e-6, `the lamp never darkens (${index})`);
+    if (lit[index] > unified[index] + 1e-4) added++;
+  }
+  assert.ok(added > 0, "the unified sum includes the group's lamp");
 });
 
 test("a building of rooms alone keeps its MODR rooms; one with a street does not carry them", () => {
@@ -108,6 +119,27 @@ test("a building of rooms alone keeps its MODR rooms; one with a street does not
   // A table naming a group the model does not have is dropped whole rather than guessed at.
   const damaged = encodeModel({ ...MODEL, renderFlags: 0x5, doodadRooms: [{ offsets: [0, 1], groups: [7] }] });
   assert.deepEqual(damaged.decoded.doodadRooms, []);
+});
+
+test("05.10-A7b-2: a v25 artifact carries MODR rooms for a building with a street too", () => {
+  const rooms = [{ offsets: [0, 1, 3, 3], groups: [0, 0, 1] }];
+  const porch = { ...room([[10, 0, 0, 90, 90, 90, 0], [14, 0, 0, 90, 90, 90, 0], [14, 4, 0, 90, 90, 90, 0]], [[0, 1, 2]]),
+    flags: 0x8 | 0x4, indoor: false };
+  const material = { flags: 0x10, shader: 0, blendMode: 0, groundType: 0, sidnColour: [1, 2, 3, 4],
+    diffColour: [0, 0, 0, 0], colour2: [0, 0, 0, 0], texture2: "" };
+  // v25: the material table rides along (WME5), and so does WME4 before it.
+  const v25 = encodeModel({ ...MODEL, groups: [QUAD, porch], renderFlags: 0x5, doodadRooms: rooms, materialTable: [material] });
+  assert.equal(wmoInteriorOnly(v25.decoded), false);
+  assert.equal(v25.decoded.doodadRooms.length, 1);
+  assert.deepEqual([...v25.decoded.doodadRooms[0].offsets], [0, 1, 3, 3]);
+  assert.deepEqual([...v25.decoded.doodadRooms[0].groups], [0, 0, 1]);
+  assert.equal(v25.decoded.materials?.length, 1, "WME5 is still found behind WME4");
+  assert.deepEqual(v25.decoded.materials[0].sidnColour, [1, 2, 3, 4]);
+  // v22: no table, no rooms — the same bytes as before the slice.
+  const v22 = encodeModel({ ...MODEL, groups: [QUAD, porch], renderFlags: 0x5, doodadRooms: rooms });
+  const plain = encodeModel({ ...MODEL, groups: [QUAD, porch], renderFlags: 0x5 });
+  assert.deepEqual(v22.decoded.doodadRooms, []);
+  assert.equal(Buffer.compare(v22.bytes, plain.bytes), 0);
 });
 
 test("the floor light is the room's own baked light under the feet", () => {
@@ -231,7 +263,8 @@ test("the renderer notes interior-only buildings, lights units by the room and h
   const source = await readFile(new URL("../src/browser/WorldRenderer3D.ts", import.meta.url), "utf8");
   assert.match(source, /const entered = staticEnvironment && wmoInteriorOnly\(placed\.model\) && this\.#enteredInteriorOnly\(placed, player\);/);
   assert.match(source, /if \(entered\) distanceGroups = this\.#interiorOnlyRange\(placed, player\);/);
-  assert.match(source, /entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined,/);
+  // P1-12c: named once, for the walk and for its memo (`WmoPortalMemo.ts`).
+  assert.match(source, /const screenApertures = entered \? this\.#interiorOnlyRoomsOf\(placed\)\.apertures : undefined;/);
   assert.match(source, /if \(portalSelection\.used\) \{\r?\n\s+selected = portalSelection\.groups;\r?\n\s+clipped = entered;/,
     "the rectangles count only when the walk was used");
   assert.match(source, /if \(entered && !clipped\) selected = roomLeash;/,

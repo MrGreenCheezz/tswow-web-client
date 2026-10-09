@@ -316,7 +316,7 @@ test("renderer wiring unions WMO and legacy pins once and tears borrowers down b
   assert.match(unitAttach, /#attachSkinnedModel\(unit, metadata, key, decodedModel, client\)/);
   assert.match(source, /unit\.decodedModel = model;\s*unit\.legacyGeometry = legacy/);
   assert.match(source,
-    /delete unit\.wvm;\s*delete unit\.visual;\s*delete unit\.decodedModel;\s*delete unit\.legacyGeometry/,
+    /unit\.wvm = undefined;\s*unit\.visual = undefined;\s*unit\.decodedModel = undefined;\s*unit\.legacyGeometry = undefined;/,
     "format replacement cannot retain old WVM attachment, portrait, height, or emitter sources");
   assert.match(source, /materialEntries:\s*this\.#worldMaterials\.entryCount\("wmo-run"\)/);
   assert.match(source,

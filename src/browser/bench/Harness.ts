@@ -11,9 +11,11 @@ import { GroundCoverClient } from "../GroundCover.js";
 import { LightClient } from "../LightClient.js";
 import { LiquidTextureClient } from "../Water.js";
 import { HorizonClient } from "../Horizon.js";
+import { environmentStandInsWith } from "../StandIn.js"; // 05.10-A7b-9 (7.18)
 import { CharacterAtlasClient, appearanceKey, CREATURE_MODEL_VERSION } from "../CharacterAtlas.js";
 import type { UnitModel } from "../CreatureModelClient.js";
-import { buildModel, characterSlots, geosetList } from "../ModelBuild.js";
+import { buildModel, characterSlots } from "../ModelBuild.js"; // 05.10-A7a-G 6.18: geosetList → figureGeosets
+import { figureGeosets } from "../FigureGeosets.js"; // 05.10-A7a-G 6.18
 import { addSkinnedClips, buildSkinnedTemplateFrom, instantiateSkinned } from "../AnimatedModel.js";
 import { decodeWvm9, decodeWvaAnimations, visualModelUrl, visualAnimationsUrl, TEXTURE_TYPE_BODY } from "../Wvm.js";
 import { acquireRenderBenchmarkFormalGpuObserver } from "../RenderBenchmarkRuntime.js";
@@ -22,6 +24,7 @@ import { UnitSceneGroup } from "../UnitSceneGroup.js";
 import { applyRendererGraphicsSettings } from "../RendererGraphicsSettings.js";
 import { defaultSettings, type SettingValues } from "../ui/SettingsModel.js";
 import { nextBenchmarkFrame } from "./FrameClock.js";
+import { installKnownMissingTextureLedger, errorsAreKnownMissingTextures } from "./KnownMissingTextures.js"; // 06.10-P1-00b
 
 interface Graphics {
   lightingQuality: number; grassRadius: number; grassDense: boolean; grassDensity: number; fullscreenGlow: boolean;
@@ -100,6 +103,8 @@ Math.random = () => {
   return randomState / 4294967296;
 };
 const baseUrl = location.origin;
+// 06.10-P1-00b: textures the corpus lacks (404) are drawn as the white pixel, as in the game.
+const missingTextures = installKnownMissingTextureLedger(globalThis, baseUrl);
 async function checked(url: string): Promise<Response> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Asset ${response.status}: ${url}`);
@@ -261,6 +266,12 @@ if (movement) {
     for (let i = 1; i < due; i++) if (!state.objects.has(objects[i]!.guid)) state.objects.set(objects[i]!.guid, objects[i]!);
   };
   phases = () => ({ query: queryMs, ...worldRenderer.drawPhaseMs });
+  // 05.10-A7b-9 (7.18): the environment stand-ins with the tile losses and retry waits of this run's clients.
+  const benchStandIns = () => {
+    const report = worldRenderer.standInReport();
+    return { ...report, environment: environmentStandInsWith(report.environment,
+      { environment, splat, light: lighting, horizon }) };
+  };
   readiness = () => {
     const e = environment.stats, t = terrain.stats, s = splat.stats, r = worldRenderer.benchmarkReadiness;
     const async = [cover.stats, lighting.stats, liquids.stats, horizon.stats];
@@ -273,7 +284,8 @@ if (movement) {
     const errors = e.failedModels + e.failedTiles + e.failedGroups + e.failedAnimations
       + r.modelTexturesErrors + r.worldTexturesErrors + r.characterAtlasErrors + t.failed + s.failed + async.reduce((n, x) => n + x.error, 0);
     return { pending, errors, details: { environment: e, terrain: t, splat: s, renderer: r,
-      units: worldRenderer.telemetry.unitsDrawn, standIns: worldRenderer.standInReport() } };
+      units: worldRenderer.telemetry.unitsDrawn, standIns: benchStandIns(),
+      knownMissingTextures: [...missingTextures.missing], textureOtherFailures: missingTextures.otherFailures } }; // 06.10-P1-00b
   };
 } else {
   const appearance = display.appearance;
@@ -289,7 +301,7 @@ if (movement) {
   const textures: Promise<THREE.Texture>[] = [];
   const loader = new THREE.TextureLoader();
   const built = buildModel(model, { modelPath: display.model, baseUrl,
-    slots: characterSlots(display.textures, appearance), geosets: geosetList(appearance.geosets),
+    slots: characterSlots(display.textures, appearance), geosets: figureGeosets(model, appearance), // 05.10-A7a-G 6.18
     slotTextures: new Map([[TEXTURE_TYPE_BODY, body]]), skinned: true,
     coalesceAdjacentBatches: true,
     loadTexture(url) {
@@ -369,7 +381,11 @@ async function settle(fraction: number) {
     const status = readiness();
     stable = status.pending === 0 ? stable + 1 : 0;
     if (stable >= 6) {
-      if (status.errors) throw new Error(`Asset errors: ${JSON.stringify(status)}`);
+      // 06.10-P1-00b: model-texture errors that are all 404s of the corpus settle like a known-missing tile.
+      const modelTexturesErrors = (status.details as { renderer?: { modelTexturesErrors?: number } } | null)?.renderer?.modelTexturesErrors ?? 0;
+      if (status.errors && !errorsAreKnownMissingTextures({ errors: status.errors, modelTexturesErrors }, missingTextures)) {
+        throw new Error(`Asset errors: ${JSON.stringify(status)}`);
+      }
       return status;
     }
   }
@@ -468,7 +484,11 @@ host.__bench = {
     // The seed frame is rendered before timing. Every recorded interval ends after the preceding draw.
     render(0, 0, frame++);
     world?.poseWorkerStats(true);
+    // P1-12: the rest-radius counters are cumulative; the measured frames are the difference.
+    const wmoRangeAtStart = world?.telemetry.wmoRange ?? null;
     const start = await nextFrame();
+    // P2-02b: the cascades' counters are cumulative too.
+    const shadowCascadesAtStart = world?.shadowCascadeStats ?? null;
     let previous = start, sampleCount = 0, repeatedRafCallbacks = 0;
     recording = true;
     performance.mark('bench-start');
@@ -516,7 +536,8 @@ host.__bench = {
       Array.from(samples.subarray(index * columns.length, (index + 1) * columns.length)));
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
       hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
-      telemetry: world?.telemetry ?? null, poseWorker: world?.poseWorkerStats() ?? null,
+      telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
+      shadowCascadesAtStart, shadowCascades: world?.shadowCascadeStats ?? null,
       ...(diagnostic ? { worldSubmissions, textureUploads: [...textureUploads] } : {}),
       ...(links ? { programLinks, holdDebug: debugSink.__benchDebug ?? [], disposals } : {}) };
   },
@@ -660,7 +681,10 @@ host.__bench = {
     const programKeys = (renderer.info.programs ?? []).map((program) => ({
       name: program.name, usedTimes: program.usedTimes, key: (program as { cacheKey?: string }).cacheKey ?? "",
     }));
+    // P2-01a: the caster list against three's own walk of the scene, cascade by cascade, as
+    // that frame left them (`missing = extra = 0` is the condition for P2-01b and c1–c2).
+    const shadowCasterList = world?.shadowCasterCensus() ?? null;
     return { byBranch, drawsByBranch, shadowDraws, materials: materials.size, visibleMaterials: visibleMaterials.size,
-      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys };
+      programs: renderer.info.programs?.length ?? 0, parameterDerivations, programKeys, shadowCasterList };
   },
 };

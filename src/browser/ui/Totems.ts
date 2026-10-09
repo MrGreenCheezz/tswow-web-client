@@ -1,4 +1,5 @@
 import { game } from "../game/Context.js";
+import { setTip } from "./Widgets.js";
 
 /**
  * The four totem slots, with what is left on each.
@@ -6,7 +7,9 @@ import { game } from "../game/Context.js";
  * `SMSG_TOTEM_CREATED` says which slot was filled, with what spell and for how long, and never
  * says when one ends: a totem dies with its duration, and a recast reuses the slot. So each
  * entry is pruned here when its clock runs out rather than waited for on the wire. Display
- * only — destroying a totem early has no client opcode in 3.3.5, so there is no button for it.
+ * only: this native strip has no button to take a totem down early. The opcode for that does
+ * exist (`CMSG_TOTEM_DESTROYED`, `WorldClient.destroyTotem`); the stock TotemFrame sends it through
+ * `DestroyTotem` (FrameXmlHudMechanicsLive.ts).
  */
 
 let container: HTMLElement | undefined;
@@ -106,7 +109,7 @@ export function updateTotems(now: number): void {
       const text = totemClock(totem, now);
       clock.textContent = text;
       row.append(name, clock);
-      row.title = `Слот ${slot + 1}`;
+      setTip(row, `Слот ${slot + 1}`);
       rows.push(row);
       drawn.push({ slot, spellId: totem.spellId, name: label, clock, text });
     }

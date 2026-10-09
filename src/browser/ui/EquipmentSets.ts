@@ -4,7 +4,8 @@ import {
 import { game } from "../game/Context.js";
 import { locateItem, playerInventory } from "../Inventory.js";
 import { equipmentSets as container } from "./Dom.js";
-import { attachTooltip, confirmPanel } from "./Widgets.js";
+import { setTip, attachTooltip, closeFloating, confirmPanel, openFloating } from "./Widgets.js";
+import { equipmentSetPieces, equipmentSlotName, ignoredSlotsOf } from "./EquipmentSetModel.js";
 
 /**
  * The equipment manager: saved sets of worn gear, and the two buttons that use one.
@@ -65,10 +66,61 @@ function setRow(set: EquipmentSet): HTMLElement {
   const overwrite = document.createElement("button");
   overwrite.type = "button";
   overwrite.textContent = "Записать";
-  overwrite.title = "Сохранить надетое в этот набор";
-  overwrite.addEventListener("click", () => saveSet(set.setId, set.name, set.guid));
-  row.append(name, wear, overwrite, remove);
+  setTip(overwrite, "Сохранить надетое в этот набор");
+  // 4.08: «Записать» keeps the slots the set leaves alone; it used to save them as worn.
+  overwrite.addEventListener("click", () => saveSet(set.setId, set.name, set.guid, ignoredSlotsOf(set.pieces)));
+  const slots = document.createElement("button");
+  slots.type = "button";
+  slots.textContent = "Ячейки…";
+  setTip(slots, "Какие ячейки набор не меняет");
+  slots.addEventListener("click", () => openIgnoredSlots(slots, set));
+  row.append(name, wear, overwrite, slots, remove);
   return row;
+}
+
+/**
+ * The slots a set leaves alone, as stock's slot flyout «ignore this slot» sets them: a box per
+ * slot, and «Записать» saves what is worn with the ticked slots ignored.
+ */
+function openIgnoredSlots(anchor: HTMLElement, set: EquipmentSet): void {
+  const box = document.createElement("div");
+  box.className = "ui-menu ui-confirm equipment-set-slots";
+  const heading = document.createElement("strong");
+  heading.textContent = `Не менять в «${set.name || `Набор ${set.setId + 1}`}»`;
+  box.append(heading);
+  const ignored = ignoredSlotsOf(set.pieces);
+  for (let slot = 0; slot < EQUIPMENT_SET_SLOTS; slot++) {
+    const label = document.createElement("label");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = ignored.has(slot);
+    check.addEventListener("change", () => {
+      if (check.checked) ignored.add(slot);
+      else ignored.delete(slot);
+    });
+    label.append(check, equipmentSlotName(slot));
+    box.append(label);
+  }
+  const actions = document.createElement("div");
+  actions.className = "ui-confirm-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Записать";
+  save.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeFloating();
+    saveSet(set.setId, set.name, set.guid, ignored);
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Отмена";
+  cancel.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeFloating();
+  });
+  actions.append(save, cancel);
+  box.append(actions);
+  openFloating(box, anchor);
 }
 
 function saveRow(): HTMLElement {
@@ -98,12 +150,15 @@ function saveRow(): HTMLElement {
   return row;
 }
 
-/** Saves whatever the character has on. The server checks every piece against the worn slot. */
-function saveSet(index: number, name: string, setGuid: bigint): void {
+/**
+ * Saves whatever the character has on, except the slots the set leaves alone. The server checks
+ * every other piece against the worn slot.
+ */
+function saveSet(index: number, name: string, setGuid: bigint, ignored: ReadonlySet<number> = new Set()): void {
   const world = game.world;
   const inventory = world && playerInventory(world.state);
   if (!world || !inventory) return;
-  const pieces = Array.from({ length: EQUIPMENT_SET_SLOTS }, (_, slot) => inventory.equipment[slot]?.guid ?? 0n);
+  const pieces = equipmentSetPieces((slot) => inventory.equipment[slot]?.guid, ignored);
   world.saveEquipmentSet(setGuid, index, name, DEFAULT_SET_ICON, pieces);
 }
 

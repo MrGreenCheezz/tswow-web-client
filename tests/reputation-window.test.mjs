@@ -73,8 +73,8 @@ test("the window lists, searches, bars and toggles war", async () => {
   assert.match(source, /resolveFrameXmlReputationRows\(world, game\.factions\)/,
     "the same resolver as the stock frame, so the two can never disagree");
   assert.match(source, /reputationRankName\(row\.standingId\)/, "ranks in words, not numbers");
-  assert.match(source, /world\.setFactionAtWar\(row\.listId, !row\.atWarWith\)/,
-    "the toggle sends the row's own list id, flipped");
+  assert.match(source, /world\.setFactionAtWar\(row\.listId, !row\.atWarWith,\s*frameXmlReputationBase\(world, game\.factions\?\.reputationCatalog, row\.listId\)\)/,
+    "the toggle sends the row's own list id, flipped; the peace test adds the row's Faction.dbc base");
   assert.match(source, /Заключить мир.*Объявить войну|Объявить войну.*Заключить мир/,
     "the button names what it will do, not the current state");
   const windows = await readFile(new URL("../src/browser/ui/Windows.ts", import.meta.url), "utf8");

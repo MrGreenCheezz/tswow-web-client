@@ -39,6 +39,8 @@ function liveFixture() {
   };
   let resolvedZone = zone;
   let resolvedWorldMapAreaId = 10;
+  let loading = false;
+  let indoors = false;
   const world = {
     mapId: 0,
     worldStateContext: { mapId: 0, zoneId: 12, areaId: 34 },
@@ -80,6 +82,8 @@ function liveFixture() {
       return resolvedZone;
     },
     worldMapAreaId: () => resolvedWorldMapAreaId,
+    worldLoading: () => loading,
+    playerIndoors: () => indoors,
   };
   return {
     seam: new LiveWorldSeam(context),
@@ -92,6 +96,8 @@ function liveFixture() {
     zone,
     setZone: (nextZone) => { resolvedZone = nextZone; },
     setWorldMapAreaId: (nextAreaId) => { resolvedWorldMapAreaId = nextAreaId; },
+    setLoading: (value) => { loading = value; },
+    setIndoors: (value) => { indoors = value; },
   };
 }
 
@@ -100,9 +106,10 @@ test("the measured minimap C APIs keep exact text and PVP tuple shapes", () => {
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetMinimapZoneText(canned, []), [CANNED_MINIMAP_ZONE.minimapZoneText]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZoneText(canned, []), [CANNED_MINIMAP_ZONE.zoneText]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetSubZoneText(canned, []), [CANNED_MINIMAP_ZONE.subZoneText]);
+  // The client pushes 1 or nil for isSubZonePvP (GetZonePVPInfo, Wow.exe 0x0051BA50), never false.
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(canned, []), [
     CANNED_MINIMAP_ZONE.pvpType,
-    CANNED_MINIMAP_ZONE.isSubZonePvP,
+    CANNED_MINIMAP_ZONE.isSubZonePvP ? 1 : undefined,
     CANNED_MINIMAP_ZONE.factionName,
   ]);
   const cannedEvents = [];
@@ -125,7 +132,7 @@ test("the measured minimap C APIs keep exact text and PVP tuple shapes", () => {
   assert.equal(FRAMEXML_SEAM_BINDINGS.GetMinimapRotation, undefined);
 });
 
-test("live minimap labels use authoritative area context and nil when unresolved", () => {
+test("live minimap labels use authoritative area context; unresolved texts are \"\" and the PvP tuple nil", () => {
   const { seam, context, fired, pump } = liveFixture();
   seam.attach(pump);
   assert.deepEqual(fired.filter(([event]) => event.startsWith("ZONE_CHANGED")), [
@@ -136,20 +143,30 @@ test("live minimap labels use authoritative area context and nil when unresolved
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetMinimapZoneText(seam, []), ["Test zone"]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZoneText(seam, []), ["Test zone"]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetSubZoneText(seam, []), ["Test sub-zone"]);
-  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["contested", false, "Alliance"]);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["contested", undefined, "Alliance"]);
   assert.deepEqual(fired, [], "getters do not create world events");
 
   const unresolved = new LiveWorldSeam({
     ...context,
     minimapZone: undefined,
   });
-  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetMinimapZoneText(unresolved, []), []);
+  // The client's three text APIs always answer a string: ZoneText_OnEvent compares
+  // `GetSubZoneText() == ""` and Minimap_SetTooltip `subzoneName == zoneName`.
+  for (const name of ["GetMinimapZoneText", "GetZoneText", "GetSubZoneText", "GetRealZoneText"]) {
+    assert.deepEqual(FRAMEXML_SEAM_BINDINGS[name](unresolved, []), [""], name);
+  }
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(unresolved, []), []);
+  // A zone with no sub-zone answers "" for it too, not nil.
+  const zoneOnly = new LiveWorldSeam({
+    ...context,
+    minimapZone: () => ({ minimapZoneText: "Test zone", zoneText: "Test zone" }),
+  });
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetSubZoneText(zoneOnly, []), [""]);
   seam.detach();
 });
 
 test("live minimap keeps raw world pings out of FrameXML and deduplicates zone edges", () => {
-  const { seam, world, events, fired, pump } = liveFixture();
+  const { seam, world, events, fired, pump, zone, setZone, setIndoors } = liveFixture();
   seam.attach(pump);
   fired.length = 0;
   // Prime the throttled action poll once; the minimap-specific edge below is then isolated from
@@ -163,12 +180,35 @@ test("live minimap keeps raw world pings out of FrameXML and deduplicates zone e
   events.emit("MINIMAP_PING", { guid: 0x10n, x: 100, y: 200 });
   assert.deepEqual(fired, [], "raw world ping coordinates are not promoted to FrameXML");
 
-  world.worldStateContext = { mapId: 0, zoneId: 13, areaId: 35 };
+  // Another area of the same zone with the same names: the client compares texts, not area ids
+  // (the zone setter at Wow.exe 0x005204C0), so nothing fires.
+  world.worldStateContext = { mapId: 0, zoneId: 12, areaId: 35 };
+  events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
+  assert.deepEqual(fired, [], "an area id change with unchanged texts stays quiet");
+
+  // Another sub-zone of the same zone: ZONE_CHANGED, alone.
+  setZone({ ...zone, subZoneText: "Other sub-zone", minimapZoneText: "Other sub-zone" });
+  world.worldStateContext = { mapId: 0, zoneId: 12, areaId: 37 };
   events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
   assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChanged]]);
   fired.length = 0;
   events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
   assert.deepEqual(fired, [], "unchanged world-state updates stay quiet");
+
+  // The same kind of change while the player stands inside an indoor WMO group: the INDOORS name.
+  setIndoors(true);
+  setZone({ ...zone, subZoneText: "An inn", minimapZoneText: "An inn" });
+  world.worldStateContext = { mapId: 0, zoneId: 12, areaId: 38 };
+  events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChangedIndoors]]);
+  fired.length = 0;
+  setIndoors(false);
+
+  // Another zone on the same map: ZONE_CHANGED_NEW_AREA, once, and not a ZONE_CHANGED before it.
+  world.worldStateContext = { mapId: 0, zoneId: 13, areaId: 36 };
+  events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChangedNewArea]]);
+  fired.length = 0;
 
   world.mapId = 1;
   world.worldStateContext = { mapId: 1, zoneId: 13, areaId: 35 };
@@ -193,19 +233,31 @@ test("live minimap publishes one zone edge when the resolved area shape becomes 
   seam.tick(10.1);
   assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChanged]]);
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetMinimapZoneText(seam, []), ["Test zone"]);
-  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["contested", false, "Alliance"]);
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["contested", undefined, "Alliance"]);
 
   fired.length = 0;
   setZone({ ...zone });
   seam.tick(10.1);
   assert.deepEqual(fired, [], "an equivalent resolved shape stays quiet");
 
+  // The PvP answer alone is read on demand; the client raises no event for it.
+  setZone({ ...zone, pvpType: "sanctuary", isSubZonePvP: true });
+  seam.tick(10.15);
+  assert.deepEqual(fired, [], "a PvP-only change stays quiet");
+  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["sanctuary", 1, "Alliance"]);
+
   setZone({ ...zone, subZoneText: "Fresh sub-zone", pvpType: "sanctuary", isSubZonePvP: true });
   seam.tick(10.2);
   assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChanged]],
-    "sub-zone/PvP shape changes publish exactly one normal zone edge");
+    "a sub-zone text change publishes exactly one normal zone edge");
   assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetSubZoneText(seam, []), ["Fresh sub-zone"]);
-  assert.deepEqual(FRAMEXML_SEAM_BINDINGS.GetZonePVPInfo(seam, []), ["sanctuary", true, "Alliance"]);
+
+  fired.length = 0;
+  // A zone name that changes under the same zone id is ZONE_CHANGED too: only another zone id is
+  // ZONE_CHANGED_NEW_AREA in the client.
+  setZone({ ...zone, zoneText: "Other zone", minimapZoneText: "Other zone" });
+  seam.tick(10.3);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChanged]]);
   seam.detach();
 });
 
@@ -234,5 +286,60 @@ test("live WatchFrame POI filter refreshes once when WorldMapArea metadata arriv
   seam.tick(10.3);
   assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.worldMapUpdate]],
     "a WorldMapArea transition refreshes the filter exactly once");
+  seam.detach();
+});
+
+test("the loading curtain holds zone edges back and ends with one ZONE_CHANGED_NEW_AREA for the new place", () => {
+  const { seam, world, events, fired, pump, setLoading } = liveFixture();
+  // Mounted under the curtain at login: the first edge waits for it, as the client's comes after
+  // PLAYER_ENTERING_WORLD.
+  setLoading(true);
+  seam.attach(pump);
+  seam.tick(10);
+  assert.deepEqual(fired.filter(([event]) => event.startsWith("ZONE_CHANGED")), [], "nothing under the curtain");
+  setLoading(false);
+  seam.tick(10.1);
+  assert.deepEqual(fired.filter(([event]) => event.startsWith("ZONE_CHANGED")),
+    [[FRAMEXML_SEAM_EVENTS.zoneChangedNewArea]], "one edge once the curtain is down");
+  fired.length = 0;
+
+  // A worldport: NEW_WORLD moves mapId first while the world states still name the old zone, then
+  // INIT_WORLD_STATES names the new one — two different answers in the gap, neither of them shown.
+  setLoading(true);
+  world.mapId = 1;
+  seam.tick(10.2);
+  world.worldStateContext = { mapId: 1, zoneId: 14, areaId: 14 };
+  events.emit("WORLD_STATE_CHANGED", { variableId: undefined });
+  seam.tick(10.3);
+  assert.deepEqual(fired, [], "no zone edge while the destination loads");
+  setLoading(false);
+  seam.tick(10.4);
+  assert.deepEqual(fired, [[FRAMEXML_SEAM_EVENTS.zoneChangedNewArea]], "the settled destination, once");
+  fired.length = 0;
+  seam.tick(10.5);
+  assert.deepEqual(fired, []);
+
+  // The browser also raises the curtain for a same-map teleport, which the client does without a
+  // loading screen: in the same zone and area that is no zone edge at all.
+  setLoading(true);
+  seam.tick(10.6);
+  setLoading(false);
+  seam.tick(10.7);
+  assert.deepEqual(fired, [], "same place after the curtain stays quiet");
+  seam.detach();
+});
+
+test("a near teleport within the zone raises no zone edge: the position moves, the world states do not", () => {
+  // 1.17: a blink or a short `.tele` has no curtain and no packet naming a place; the core's
+  // UpdateZone sends INIT_WORLD_STATES only for another zone (Player::UpdateZone). Stock frames get
+  // nothing — the zone text is re-read on demand by whoever asks.
+  const { seam, world, fired, pump, selfGuid } = liveFixture();
+  seam.attach(pump);
+  seam.tick(10);
+  fired.length = 0;
+  world.state.objects.get(selfGuid).position = { x: 120, y: 200, z: 3, orientation: 1 };
+  seam.tick(10.1);
+  seam.tick(10.2);
+  assert.deepEqual(fired.filter(([event]) => event.startsWith("ZONE_CHANGED")), [], "no ZONE_CHANGED_NEW_AREA for the same zone");
   seam.detach();
 });

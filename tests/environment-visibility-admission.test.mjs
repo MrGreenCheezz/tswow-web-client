@@ -289,11 +289,11 @@ test("the renderer grows admitted vegetation and freezes it settled", async () =
     "a settled tree is restored to exactly its authored scale");
   assert.match(growth, /part\.matrixWorldAutoUpdate = false;/,
     "settling re-freezes the subtree like any other placement");
-  assert.match(growth, /delete rendered\.growthStartedAt;/,
+  assert.match(growth, /rendered\.growthStartedAt = undefined;/,
     "a settled tree costs no per-frame work afterwards");
   assert.match(growth, /node\.updateMatrix\(\);/,
     "same-frame readers see the stepped scale, not last render's");
-  assert.match(source, /everVisible\?: boolean;/,
+  assert.match(source, /everVisible: boolean \| undefined;/,
     "a seen placement is remembered so frustum re-entry reads whole at once");
 });
 
@@ -347,8 +347,9 @@ test("frustum visibility is applied before independent quotas and all-visible ti
 test("environment update admits candidates before resource lookup and keeps warm residents separate from disposal", async () => {
   const source = await worldSource();
   const update = updateEnvironmentSource(source);
-  const candidateAt = update.indexOf("environmentCandidatesInRange(");
-  const admissionAt = update.indexOf("selectEnvironmentAdmission(");
+  const candidateAt = update.indexOf("environmentRankInRange(");
+  // P2-04c: the update pass admits through the allocation-free single pass.
+  const admissionAt = update.indexOf("admitEnvironmentInto(");
   const modelAt = update.indexOf("client?.model(");
   assert.ok(candidateAt >= 0, "the update pass must produce cheap wire candidates first");
   assert.ok(admissionAt > candidateAt, "frustum/admission follows candidate collection");
@@ -359,9 +360,13 @@ test("environment update admits candidates before resource lookup and keeps warm
     assert.equal(preResource.includes(forbidden), false, `candidate pass must not call ${forbidden}`);
   }
 
-  const retainedVisibilityAt = update.indexOf("selectEnvironmentAdmission(");
+  const retainedVisibilityAt = update.indexOf("admitEnvironmentInto(");
   assert.ok(retainedVisibilityAt >= 0, "static admission must consult the frustum-aware selector");
-  const retainedContext = update.slice(retainedVisibilityAt, retainedVisibilityAt + 600);
+  assert.match(update.slice(retainedVisibilityAt, retainedVisibilityAt + 400), /this\.#retainedEnvironmentSphere,/,
+    "the retained-sphere lookup is the renderer's own field, not a closure per run");
+  const sphereAt = source.indexOf("readonly #retainedEnvironmentSphere = ");
+  assert.ok(sphereAt >= 0);
+  const retainedContext = source.slice(sphereAt, sphereAt + 600);
   assert.match(retainedContext, /rendered(?:\?\.)?source\s*===\s*object/,
     "retained static spheres must be borrowed only from the exact placement entry");
   assert.match(retainedContext, /#environmentVisibilitySpheres\.get\(object\)/,
@@ -515,7 +520,8 @@ test("turn-frame intake is capped for nodes and WMO rooms, shells first", async 
     "a newly admitted castle ramps its rooms instead of hitching one frame");
   const update = updateEnvironmentSource(source);
   assert.match(update, /let environmentBuilds = 0;/, "the node budget resets every frame");
-  assert.match(update, /if \(environmentBuilds >= ENVIRONMENT_BUILD_BUDGET\) continue;/,
+  // 05.10 suite-fix 2: 7.18 (05.10-A7b-9) counts the waiting stand-in inside the skip block.
+  assert.match(update, /if \(environmentBuilds >= ENVIRONMENT_BUILD_BUDGET(?: \|\| !this\.#environmentBuildBudget\.take\(\))?\) \{[^{}]*\bcontinue;\s*\}/,
     "a skipped admission is retried while it is still admitted");
   const wmoStart = source.indexOf("  #updateWmoGroups(");
   const wmoEnd = source.indexOf("\n  #", wmoStart + 10);

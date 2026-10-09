@@ -207,6 +207,44 @@ test("proposal events: SHOW once per proposal and only while stock owns the popu
   assert.deepEqual(names(fired), ["LFG_PROPOSAL_SUCCEEDED", "LFG_UPDATE"]);
 });
 
+test("proposal encounters: the dungeon row's map and difficulty counted over the DungeonEncounter table (Wow.exe 0x00554170, 0x00554380)", () => {
+  const table = new Map([
+    ["329/0", [{ bit: 0, name: "Мясник" }, { bit: 3, name: "Барон" }, { bit: 1, name: "Бальназзар" }]],
+    ["0/0", [{ bit: 0, name: "Никогда" }]],
+  ]);
+  const holiday = { ...FRAMEXML_CANNED_LFD_CATALOG.dungeons.find((row) => row.id === 40), id: 285, flags: 3 | 4 };
+  const catalog = { ...FRAMEXML_CANNED_LFD_CATALOG, dungeons: [...FRAMEXML_CANNED_LFD_CATALOG.dungeons, holiday] };
+  const build = (dungeonEncounters) => {
+    const { model, world } = createCannedFrameXmlLfd({
+      playerLevel: () => 60, playerClassId: () => 11, playerName: () => "Игрок",
+      playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance", dungeonEncounters,
+    }, undefined, catalog);
+    const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+    return { world, call };
+  };
+  const { world, call } = build((mapId, difficulty) => table.get(`${mapId}/${difficulty}`) ?? []);
+  assert.deepEqual(call("GetLFGProposalEncounter", 1), [], "no proposal");
+  world.propose(40 | DUNGEON, 7, 0, false, 0b1010);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [3, 2], "Stratholme (map 329): three rows, bits 1 and 3 killed");
+  assert.deepEqual([1, 2, 3, 4].map((index) => call("GetLFGProposalEncounter", index)), [
+    ["Мясник", undefined, false], ["Барон", undefined, true], ["Бальназзар", undefined, true], [],
+  ], "the i-th row of the map in file order, killed by its own bit");
+  assert.deepEqual(call("GetLFGProposalEncounter", 0), []);
+  // A random row (TypeID 6): no boss list, completed says only whether anything is killed.
+  world.propose(258 | RANDOM, 8, 0, false, 0b110);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [0, 1]);
+  world.propose(258 | RANDOM, 9, 0, false, 0);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [0, 0]);
+  // A holiday row (Flags & 4): one boss, killed if the mask has anything.
+  world.propose(285 | DUNGEON, 10, 0, false, 0b100);
+  assert.deepEqual(call("GetLFGProposal").slice(7, 9), [1, 1]);
+  // Without the table nothing is invented: no total, the mask's own count, no boss asked for.
+  const bare = build(() => undefined);
+  bare.world.propose(40 | DUNGEON, 7, 0, false, 0b1010);
+  assert.deepEqual(bare.call("GetLFGProposal").slice(7, 9), [0, 2]);
+  assert.deepEqual(bare.call("GetLFGProposalEncounter", 1), []);
+});
+
 test("publication hands every prompt still open to the stock popups, once per ownership edge", () => {
   const { model, world } = createCannedFrameXmlLfd({
     playerLevel: () => 60, playerClassId: () => 11, playerName: () => "Игрок",
@@ -307,4 +345,54 @@ test("the seam binds every finder name, and the Lua shim fills tables the host c
     assert.match(FRAMEXML_LFD_PRELUDE, new RegExp(`impl\\.${name} = function`), `${name} is a Lua table filler`);
     assert.equal(FRAMEXML_LFD_BINDINGS[name], undefined, `${name} is not a flat JS binding`);
   }
+});
+
+test("3.25 raid browser: SearchLFGJoin/Leave keep the joined entry, send the packed id and signal UPDATE_LFG_LIST (Wow.exe 0x558ed0/0x558f90)", () => {
+  const { call, world, fired } = fixture();
+  assert.deepEqual(call("SearchLFGGetJoinedID"), []);
+  call("SearchLFGJoin", 2, 999);
+  call("SearchLFGJoin", 7, 40);
+  assert.equal(world.calls.length, 0, "an unknown row or a type past 6 is nothing");
+  call("SearchLFGJoin", 2, 40);
+  assert.deepEqual(world.calls.at(-1), { kind: "search", join: true, entry: 40 | (2 << 24) });
+  assert.deepEqual(call("SearchLFGGetJoinedID"), [40]);
+  assert.deepEqual(names(fired).at(-1), "UPDATE_LFG_LIST");
+  const sends = world.calls.length;
+  call("SearchLFGJoin", 2, 40);
+  assert.equal(world.calls.length, sends, "the same entry again sends nothing");
+  call("RefreshLFGList");
+  assert.equal(world.calls.length, sends, "refresh is local");
+  call("SearchLFGLeave");
+  assert.deepEqual(world.calls.at(-1), { kind: "search", join: false, entry: 40 | (2 << 24) });
+  assert.deepEqual(call("SearchLFGGetJoinedID"), []);
+  call("SearchLFGLeave");
+  assert.equal(world.calls.length, sends + 1, "leaving twice sends once");
+  assert.deepEqual(call("SearchLFGGetNumResults"), [0, 0], "this core lists nobody");
+});
+
+test("3.25 SetLFGComment: kept for JoinLFG; sent while joined, held back past three within two seconds (Wow.exe 0x5539a0)", async () => {
+  const { FrameXmlCannedLfdWorld } = await import("../dist/code/browser/framexml/FrameXmlLfdCanned.js");
+  const world = new FrameXmlCannedLfdWorld();
+  let ms = 50_000;
+  const model = new FrameXmlLfdModel({
+    world: () => world, catalog: () => FRAMEXML_CANNED_LFD_CATALOG, playerLevel: () => 60, playerClassId: () => 11,
+    playerName: () => "x", playerGuid: () => FRAMEXML_CANNED_LFD_PLAYER_GUID, playerFaction: () => "Alliance",
+    partyMemberCount: () => 0, raidMemberCount: () => 0, isPartyLeader: () => false, inDungeonInstance: () => false,
+    monotonic: () => ms,
+  });
+  const call = (name, ...args) => FRAMEXML_LFD_BINDINGS[name]({ lfd: model }, args);
+  call("SetLFGComment", "танк ищет");
+  assert.equal(world.calls.length, 0, "not joined: nothing sent");
+  call("SetLFGDungeon", 40);
+  call("JoinLFG");
+  assert.equal(world.calls.at(-1).comment, "танк ищет");
+  world.queue([40 | DUNGEON], 0);
+  const before = world.calls.length;
+  for (let i = 0; i < 7; i += 1) call("SetLFGComment", `c${i}`);
+  // Two, then the third opens a new window (the last was long ago) and resets the count: three
+  // more go out, and the next within two seconds of that window is held back.
+  assert.deepEqual(world.calls.slice(before).map((c) => c.comment), ["c0", "c1", "c2", "c3", "c4"]);
+  ms += 2_500;
+  call("SetLFGComment", "later");
+  assert.deepEqual(world.calls.at(-1), { kind: "comment", comment: "later" });
 });

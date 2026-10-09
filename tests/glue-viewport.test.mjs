@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
   GLUE_LOGICAL_HEIGHT, GLUE_MIN_LOGICAL_WIDTH, glueViewportMetrics,
   glueStageMapping, glueNeedsHorizontalScroll, gluePinnedSize,
@@ -250,10 +250,8 @@ function fakeDocument() {
 }
 globalThis.document = fakeDocument();
 
-test("the real login scene uses the chosen mode and reflows its authored background after resize", withClient, async () => {
+async function loginAtViewports(chain, { scene: withScene }) {
   const { GlueRuntime } = await import("../dist/code/browser/glue/GlueRuntime.js");
-  const { clientArchives } = await import("../tools/mpq.mjs");
-  const chain = await clientArchives(clientDirectory);
   const provider = {
     async read(path) {
       const data = await chain.read(path.replaceAll("/", "\\"));
@@ -291,6 +289,10 @@ test("the real login scene uses the chosen mode and reflows its authored backgro
     assert.equal(Math.round(runtime.bridge.measure(parent).width), expected,
       `GlueParent width at ${width}x${height} (stage ${stage.width})`);
 
+    if (!withScene) {
+      runtime.close();
+      continue;
+    }
     // `lgzg.lua` sizes every one of its model widgets from `GlueParent:GetSize()`; they are the
     // corpus' only anonymous Model widgets, so that is how they are picked out.
     const scene = [...runtime.bridge.modelFrames].filter((f) => !f.named && f.type === "Model");
@@ -326,8 +328,29 @@ test("the real login scene uses the chosen mode and reflows its authored backgro
     }
     runtime.close();
   }
-  chain.close();
-});
+}
+
+// The login scene below is the login module's `lgzg.lua` (32 anonymous Model widgets, LoginScene,
+// LoginScreenBackground), shipped in the client's patch chain. The base install of 08.10 has the
+// stock GlueXML only, so that half skips there and still runs wherever the module is in the chain.
+const LOGIN_MODULE_FILE = "Interface\\GlueXML\\lgzg.lua";
+// One chain for both tests: the archives behind it are shared, so it is closed once, at the end.
+let loginChain;
+let loginModule = false;
+if (clientDirectory) {
+  const { clientArchives } = await import("../tools/mpq.mjs");
+  loginChain = await clientArchives(clientDirectory);
+  loginModule = await loginChain.has(LOGIN_MODULE_FILE);
+  after(() => loginChain.close());
+}
+
+test("the real login screen sizes GlueParent to the chosen mode at every viewport", withClient,
+  () => loginAtViewports(loginChain, { scene: false }));
+
+test("the real login scene uses the chosen mode and reflows its authored background after resize",
+  { skip: !clientDirectory ? withClient.skip : loginModule ? false
+    : "the login module (" + LOGIN_MODULE_FILE + ") is not in this client's patch chain" },
+  () => loginAtViewports(loginChain, { scene: true }));
 
 test("an anchor to another frame is skipped, because nothing about it is measurable yet", () => {
   const stage = { width: 1365, height: 768 };

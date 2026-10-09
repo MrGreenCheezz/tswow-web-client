@@ -7,7 +7,7 @@ import {
   type ItemSlotState, type PlayerInventoryState,
 } from "../Inventory.js";
 import { bagSection, itemSlot } from "./ItemSlots.js";
-import { Panel, confirmPanel } from "./Widgets.js";
+import { setTip, Panel, confirmPanel } from "./Widgets.js";
 import { frameXmlBankPublished } from "../framexml/FrameXmlBankController.js";
 
 /**
@@ -110,7 +110,7 @@ function renderBank(bank: BankPanel, inventory: PlayerInventoryState): void {
     if (index >= bought) {
       const locked = document.createElement("div");
       locked.className = "item-slot bank-slot-locked";
-      locked.title = `Ячейка ${index + 1} не куплена`;
+      setTip(locked, `Ячейка ${index + 1} не куплена`);
       locked.textContent = "🔒";
       return locked;
     }

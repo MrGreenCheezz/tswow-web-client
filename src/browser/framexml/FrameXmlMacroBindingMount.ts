@@ -50,11 +50,18 @@ export function mountFrameXmlMacroBindingWindows(
           "local button, mouse = ...\nlocal frame = _G[button]\nif type(frame) == 'table' and frame.Click then frame:Click(mouse) end",
           "@webclient/binding-click", [button, mouseButton]);
       });
+      // A SPELL, ITEM or MACRO binding (SetBindingSpell/Item/Macro, 3.11 D) runs the stock call, in this VM.
+      seam.keyBindings?.setCommandRunner((kind, value) => {
+        const call = kind === "SPELL" ? "CastSpellByName" : kind === "ITEM" ? "UseItemByName" : "RunMacro";
+        const argument = kind === "MACRO" && /^\d+$/.test(value) ? Number(value) : value;
+        boot.vm.executeReported(`local value = ...\n${call}(value)`, "@webclient/binding-command", [argument]);
+      });
       let cleaned = false;
       return () => {
         if (cleaned) return;
         cleaned = true;
         seam.keyBindings?.setClicker(undefined);
+        seam.keyBindings?.setCommandRunner(undefined);
         keyboardCleanup();
         bindingCleanup();
         macroCleanup();

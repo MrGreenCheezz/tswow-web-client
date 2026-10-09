@@ -19,6 +19,12 @@ export const TERRAIN_TILE_CACHE_LIMIT = 64;
 export const ENVIRONMENT_TILE_CACHE_LIMIT = 64;
 /** Completed decoded model entries retained by the CPU cache; current-frame pins may exceed it. */
 export const ENVIRONMENT_MODEL_CACHE_LIMIT = 256;
+/** P1-10a: count overflow past which `#evictModels` sorts once instead of scanning per eviction. */
+const MODEL_EVICTION_SORT_THRESHOLD = 16;
+/** P1-10a-2: frames a model key may go undemanded before `#sweepModelDemand` may drop it. */
+const MODEL_DEMAND_IDLE_FRAMES = 600;
+/** P1-10a-2: commits between two checks of `#sweepModelDemand`. */
+const MODEL_DEMAND_SWEEP_INTERVAL = 64;
 /** Completed decoded animation entries retained by the CPU cache; current-frame pins may exceed it. */
 export const ENVIRONMENT_ANIMATION_CACHE_LIMIT = 128;
 /** Queued model requests retained between resource-frame commits. */
@@ -56,6 +62,8 @@ const RESOLUTION = 128;
 const V9_COUNT = 129 * 129;
 const V8_COUNT = 128 * 128;
 const NO_HEIGHT = 0x01;
+/** Upper bound of `TerrainClient`'s tile-key string memo (strings only, ≈ 4,096 tiles visited). */
+const TILE_KEY_MEMO_LIMIT = 4096;
 /**
  * What the map extractor writes where a liquid rectangle covers no liquid.
  *
@@ -186,14 +194,29 @@ function gatewayBaseUrl(gatewayWebSocketUrl: string): string {
   return url.origin;
 }
 
+/**
+ * One axis of `terrainGrid`, or -1 off the closed map bounds (and for NaN/±Infinity). The per-sample
+ * terrain probes use the two axes directly so a height lookup allocates no grid object.
+ */
+function terrainGridAxis(value: number): number {
+  if (!Number.isFinite(value) || value < MAP_MIN || value > MAP_MAX) return -1;
+  return Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - value / TERRAIN_GRID_SIZE)));
+}
+
 export function terrainGrid(x: number, y: number): TerrainGrid | undefined {
-  if (!Number.isFinite(x) || !Number.isFinite(y)
-    || x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) return undefined;
-  const grid = {
-    x: Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - x / TERRAIN_GRID_SIZE))),
-    y: Math.max(0, Math.min(GRID_COUNT - 1, Math.floor(GRID_CENTER - y / TERRAIN_GRID_SIZE))),
-  };
-  return grid.x >= 0 && grid.x < GRID_COUNT && grid.y >= 0 && grid.y < GRID_COUNT ? grid : undefined;
+  const gridX = terrainGridAxis(x);
+  const gridY = terrainGridAxis(y);
+  return gridX < 0 || gridY < 0 ? undefined : { x: gridX, y: gridY };
+}
+
+/**
+ * P1-13a: `terrainGrid` as one number, `gridX * 64 + gridY`, or -1 where it answers undefined.
+ * The same arithmetic, without the grid object: hot paths compare and index cells by it.
+ */
+export function terrainGridIndex(x: number, y: number): number {
+  const gridX = terrainGridAxis(x);
+  const gridY = terrainGridAxis(y);
+  return gridX < 0 || gridY < 0 ? -1 : gridX * GRID_COUNT + gridY;
 }
 
 /** The clipped 5x5 CPU dependency ring around a player's current terrain tile. */
@@ -219,11 +242,29 @@ export function terrainGridDependencyFootprint(x: number, y: number): TerrainGri
  * edge never requests an out-of-range tile, while shared tile edges are not dropped.
  */
 export function terrainGridFootprint(x: number, y: number, range: number): TerrainGrid[] {
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(range)) return [];
+  const count = terrainGridFootprintCells(x, y, range, FOOTPRINT_SCRATCH);
+  const grids: TerrainGrid[] = [];
+  for (let index = 0; index < count; index++) {
+    const cell = FOOTPRINT_SCRATCH[index]!;
+    grids.push({ x: Math.floor(cell / GRID_COUNT), y: cell % GRID_COUNT });
+  }
+  return grids;
+}
+
+/** Scratch of {@link terrainGridFootprint}: the whole map's cells; the call is synchronous. */
+const FOOTPRINT_SCRATCH = new Int32Array(GRID_COUNT * GRID_COUNT);
+
+/**
+ * P1-13a: {@link terrainGridFootprint} as cells (`gridX * 64 + gridY`) written into `out` (room for
+ * the whole map, 4096), in the same order — ascending, so equal footprints are equal sequences.
+ * Returns how many were written.
+ */
+export function terrainGridFootprintCells(x: number, y: number, range: number, out: Int32Array): number {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(range)) return 0;
   const radius = Math.max(0, range);
   const outsideX = Math.max(MAP_MIN - x, 0, x - MAP_MAX);
   const outsideY = Math.max(MAP_MIN - y, 0, y - MAP_MAX);
-  if (outsideX * outsideX + outsideY * outsideY > radius * radius) return [];
+  if (outsideX * outsideX + outsideY * outsideY > radius * radius) return 0;
 
   // Include one index on either side of each extent so a circle tangent to a shared tile edge is
   // considered by both tiles despite floating-point boundaries in the grid calculation.
@@ -236,7 +277,7 @@ export function terrainGridFootprint(x: number, y: number, range: number): Terra
   const maxGridY = Math.min(GRID_COUNT - 1, Math.max(0,
     Math.floor(GRID_CENTER - (y - radius) / TERRAIN_GRID_SIZE) + 1));
   const radiusSquared = radius * radius;
-  const grids: TerrainGrid[] = [];
+  let count = 0;
   for (let gridX = minGridX; gridX <= maxGridX; gridX++) {
     const minX = (GRID_CENTER - gridX - 1) * TERRAIN_GRID_SIZE;
     const maxX = (GRID_CENTER - gridX) * TERRAIN_GRID_SIZE;
@@ -245,10 +286,10 @@ export function terrainGridFootprint(x: number, y: number, range: number): Terra
       const minY = (GRID_CENTER - gridY - 1) * TERRAIN_GRID_SIZE;
       const maxY = (GRID_CENTER - gridY) * TERRAIN_GRID_SIZE;
       const dy = y < minY ? minY - y : y > maxY ? y - maxY : 0;
-      if (dx * dx + dy * dy <= radiusSquared) grids.push({ x: gridX, y: gridY });
+      if (dx * dx + dy * dy <= radiusSquared) out[count++] = gridX * GRID_COUNT + gridY;
     }
   }
-  return grids;
+  return count;
 }
 
 export class TerrainTile {
@@ -438,7 +479,9 @@ export class TerrainTile {
     const holeRow = Math.trunc((row % 8) / 2);
     const holeColumn = Math.trunc((column % 8) / 2);
     const hole = this.#view.getUint16(this.#holesOffset + (cellRow * 16 + cellColumn) * 2, true);
-    return (hole & [0x1111, 0x2222, 0x4444, 0x8888][holeColumn]! & [0x000f, 0x00f0, 0x0f00, 0xf000][holeRow]!) !== 0;
+    // Column mask 0x1111/0x2222/0x4444/0x8888 and row mask 0x000f/0x00f0/0x0f00/0xf000, as shifts:
+    // two array literals per call were young garbage on a per-frame, per-remote-player probe.
+    return (hole & (0x1111 << holeColumn) & (0x000f << (holeRow * 4))) !== 0;
   }
 
   /**
@@ -492,6 +535,11 @@ export class TerrainClient {
   readonly #tiles = new Map<string, TerrainTile | null>();
   readonly #loading = new Set<string>();
   readonly #tileRevisions = new Map<string, number>();
+  /**
+   * P1-13a: `#tileRevisions` by number — map → one revision per cell (`gridX * 64 + gridY`, 0 for
+   * none). Written beside it in the same two places; the per-frame `tileRevision` reads only this.
+   */
+  readonly #revisionCells = new Map<number, Float64Array>();
   #activeTiles = new Set<string>();
   #activeTilesTracked = false;
   #revision = 0;
@@ -506,6 +554,7 @@ export class TerrainClient {
   #lastTileX = -1;
   #lastTileY = -1;
   #lastTile: TerrainTile | null | undefined;
+  readonly #tileKeys = new Map<number, string>();
 
   constructor(gatewayWebSocketUrl: string, tileLimit: number = TERRAIN_TILE_CACHE_LIMIT) {
     if (!Number.isSafeInteger(tileLimit) || tileLimit <= 0) {
@@ -562,7 +611,32 @@ export class TerrainClient {
 
   /** How many times this tile alone changed: this replaces its interior and reopens its holes. */
   ownRevision(map: number, grid: TerrainGrid): number {
-    return this.#tileRevisions.get(`${map}/${grid.x}/${grid.y}`) ?? 0;
+    return this.#cellRevision(map, grid.x, grid.y);
+  }
+
+  /** P1-13a: one tile's revision from the numeric mirror; 0 off the map or for a tile never seen. */
+  #cellRevision(map: number, gridX: number, gridY: number): number {
+    if (!(gridX >= 0 && gridX < GRID_COUNT && gridY >= 0 && gridY < GRID_COUNT)
+      || (gridX | 0) !== gridX || (gridY | 0) !== gridY) return 0;
+    const cells = this.#revisionCells.get(map);
+    return cells?.[gridX * GRID_COUNT + gridY] ?? 0;
+  }
+
+  /** P1-13a: mirrors one `#tileRevisions` write; `key` is `${map}/${x}/${y}` (a rare path). */
+  #setCellRevision(key: string, revision: number): void {
+    const [mapText, xText, yText] = key.split("/");
+    const map = Number(mapText);
+    const gridX = Number(xText);
+    const gridY = Number(yText);
+    if (!Number.isInteger(gridX) || !Number.isInteger(gridY)
+      || gridX < 0 || gridX >= GRID_COUNT || gridY < 0 || gridY >= GRID_COUNT) return;
+    let cells = this.#revisionCells.get(map);
+    if (!cells) {
+      if (revision === 0) return;
+      cells = new Float64Array(GRID_COUNT * GRID_COUNT);
+      this.#revisionCells.set(map, cells);
+    }
+    cells[gridX * GRID_COUNT + gridY] = revision;
   }
 
   /**
@@ -577,28 +651,61 @@ export class TerrainClient {
    * the corner tiles are already in that ring. It does not add downloads.
    */
   tileRevision(map: number, grid: TerrainGrid): number {
-    let revision = this.ownRevision(map, grid);
-    for (const [x, y] of [
-      [1, 0], [-1, 0], [0, 1], [0, -1],
-      [1, 1], [1, -1], [-1, 1], [-1, -1],
-    ] as const) {
-      revision += this.#tileRevisions.get(`${map}/${grid.x + x}/${grid.y + y}`) ?? 0;
-    }
+    const x = grid.x;
+    const y = grid.y;
+    // P1-13a: the same sum in the same order, from the numeric mirror — no key strings, no pairs.
+    let revision = this.#cellRevision(map, x, y);
+    revision += this.#cellRevision(map, x + 1, y);
+    revision += this.#cellRevision(map, x - 1, y);
+    revision += this.#cellRevision(map, x, y + 1);
+    revision += this.#cellRevision(map, x, y - 1);
+    revision += this.#cellRevision(map, x + 1, y + 1);
+    revision += this.#cellRevision(map, x + 1, y - 1);
+    revision += this.#cellRevision(map, x - 1, y + 1);
+    revision += this.#cellRevision(map, x - 1, y - 1);
     return revision;
   }
 
+  /**
+   * Per-sample and allocation-free on a resident tile: no grid object, no key string (memoised),
+   * so the physics probe, ground cover, the camera and every extrapolated remote player can call
+   * it each frame without feeding the young generation.
+   */
   heightAt(map: number | undefined, x: number, y: number): number | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    const tile = this.#tileByGrid(map, grid);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    const tile = this.#tileByGrid(map, gridX, gridY);
     if (tile !== undefined) return tile?.heightAt(x, y);
-    const key = `${map}/${grid.x}/${grid.y}`;
+    this.#request(map, gridX, gridY);
+    return undefined;
+  }
+
+  /**
+   * `isHole(map, x, y) ? undefined : heightAt(map, x, y)` with one tile lookup — the ground under
+   * somebody else's extrapolated run (5.04): a terrain hole is no floor. Like `heightAt` it starts
+   * the load of a tile that has not answered yet.
+   */
+  groundHeightAt(map: number | undefined, x: number, y: number): number | undefined {
+    if (map === undefined) return undefined;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    const tile = this.#tileByGrid(map, gridX, gridY);
+    if (tile === undefined) {
+      this.#request(map, gridX, gridY);
+      return undefined;
+    }
+    return tile === null || tile.isHole(x, y) ? undefined : tile.heightAt(x, y);
+  }
+
+  #request(map: number, gridX: number, gridY: number): void {
+    const key = this.#tileKey(map, gridX, gridY);
     if (!this.#loading.has(key)) {
       this.#loading.add(key);
-      void this.#load(map, grid, key);
+      void this.#load(map, { x: gridX, y: gridY }, key);
     }
-    return undefined;
   }
 
   /**
@@ -611,9 +718,11 @@ export class TerrainClient {
    */
   isReady(map: number | undefined, x: number, y: number): boolean {
     if (map === undefined) return false;
-    const grid = terrainGrid(x, y);
-    if (!grid) return false;
-    const key = `${map}/${grid.x}/${grid.y}`;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return false;
+    // P1-13a: the memoised key — no grid object and no template string per probe.
+    const key = this.#tileKey(map, gridX, gridY);
     if (this.#tiles.has(key)) {
       this.#touchTile(key);
       return true;
@@ -625,9 +734,10 @@ export class TerrainClient {
 
   isHole(map: number | undefined, x: number, y: number): boolean {
     if (map === undefined) return false;
-    const grid = terrainGrid(x, y);
-    if (!grid) return false;
-    return this.#tileByGrid(map, grid)?.isHole(x, y) ?? false;
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return false;
+    return this.#tileByGrid(map, gridX, gridY)?.isHole(x, y) ?? false;
   }
 
   /**
@@ -639,21 +749,23 @@ export class TerrainClient {
    */
   areaAt(map: number | undefined, x: number, y: number): number | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    return this.#tileByGrid(map, grid)?.areaAt(x, y);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    return this.#tileByGrid(map, gridX, gridY)?.areaAt(x, y);
   }
 
   liquidAt(map: number | undefined, x: number, y: number): { height: number; type: number; entry: number; cells: boolean } | undefined {
     if (map === undefined) return undefined;
-    const grid = terrainGrid(x, y);
-    if (!grid) return undefined;
-    return this.#tileByGrid(map, grid)?.liquidAt(x, y);
+    const gridX = terrainGridAxis(x);
+    const gridY = terrainGridAxis(y);
+    if (gridX < 0 || gridY < 0) return undefined;
+    return this.#tileByGrid(map, gridX, gridY)?.liquidAt(x, y);
   }
 
   async #load(map: number, grid: TerrainGrid, key: string): Promise<void> {
     try {
-      const response = await fetch(`${this.#baseUrl}/terrain/${map}/${grid.x}/${grid.y}`);
+      const response = await fetch(withGeneration(`${this.#baseUrl}/terrain/${map}/${grid.x}/${grid.y}`));
       if (response.status === 404) {
         this.#resolve(key, null);
         this.onStatus?.(`Terrain tile ${key} не найден`, true);
@@ -678,6 +790,7 @@ export class TerrainClient {
     this.#invalidateTileCache();
     this.#revision++;
     this.#tileRevisions.set(key, this.#revision);
+    this.#setCellRevision(key, this.#revision);
     this.#evictTiles();
   }
 
@@ -694,16 +807,33 @@ export class TerrainClient {
    * One sample's tile, through the single-entry cache above. Returns the terminal null as-is
    * (a known 404 must not retrigger a load) and undefined for tiles still on the wire.
    */
-  #tileByGrid(map: number, grid: TerrainGrid): TerrainTile | null | undefined {
-    if (map === this.#lastTileMap && grid.x === this.#lastTileX && grid.y === this.#lastTileY) {
+  #tileByGrid(map: number, gridX: number, gridY: number): TerrainTile | null | undefined {
+    if (map === this.#lastTileMap && gridX === this.#lastTileX && gridY === this.#lastTileY) {
       return this.#lastTile;
     }
-    const tile = this.#tile(`${map}/${grid.x}/${grid.y}`);
+    const tile = this.#tile(this.#tileKey(map, gridX, gridY));
     this.#lastTileMap = map;
-    this.#lastTileX = grid.x;
-    this.#lastTileY = grid.y;
+    this.#lastTileX = gridX;
+    this.#lastTileY = gridY;
     this.#lastTile = tile;
     return tile;
+  }
+
+  /**
+   * The `${map}/${x}/${y}` key, built once per tile: remote players on different tiles miss the
+   * single-entry cache on every probe, and a template string per miss was young garbage. The memo
+   * holds strings only (no tiles), so it never decides residency; it is dropped when it grows past
+   * a few continents' worth of visited tiles.
+   */
+  #tileKey(map: number, gridX: number, gridY: number): string {
+    const id = (map * GRID_COUNT + gridX) * GRID_COUNT + gridY;
+    let key = this.#tileKeys.get(id);
+    if (key === undefined) {
+      if (this.#tileKeys.size >= TILE_KEY_MEMO_LIMIT) this.#tileKeys.clear();
+      key = `${map}/${gridX}/${gridY}`;
+      this.#tileKeys.set(id, key);
+    }
+    return key;
   }
 
   /** Drops the single-entry cache: the entry it names no longer exists or has been replaced. */
@@ -719,6 +849,7 @@ export class TerrainClient {
   #deleteTile(key: string): void {
     this.#tiles.delete(key);
     this.#tileRevisions.delete(key);
+    this.#setCellRevision(key, 0);
     this.#invalidateTileCache();
   }
 
@@ -756,10 +887,15 @@ export class EnvironmentClient {
   readonly #tiles = new Map<string, EnvironmentObject[] | null>();
   readonly #knownMissingTiles = new Set<string>();
   readonly #failedTiles = new Set<string>();
+  /** 05.10-A7b-9 (7.18): what each loaded tile could not carry (7.19), for the stand-in report. */
+  readonly #tileLosses = new Map<string, EnvironmentTileLossCounts>();
   readonly #loading = new Set<string>();
   /** Keys in the exact footprint most recently requested by `objectsAround`. */
   #activeTiles = new Set<string>();
   readonly #models = new Map<string, EnvironmentModel | null>();
+  /** P1-10a: recency stamp of every `#models` key, written on insertion and on each hit. */
+  readonly #modelUsed = new Map<string, number>();
+  #modelClock = 0;
   /** Terminal decoded/source-limit failures cached separately from genuine archive absence. */
   readonly #failedModelEntries = new Set<string>();
   readonly #animations = new Map<string, WvmSkeletonClip[] | null>();
@@ -785,11 +921,27 @@ export class EnvironmentClient {
   #animationTypedBackingBytes = 0;
   #animationNumericArrayElements = 0;
   #resourceFrameOpen = false;
-  #frameModelKeys = new Set<string>();
+  /**
+   * P1-10a-2 (MEM-2): every model key a resource frame demanded, kept across frames — the per-frame
+   * `Set` it replaces was rebuilt from empty each frame (`(native add) ← model`, 0.8–2.2 KB a frame).
+   * The value is `frame · 2 + carried`: the number of the last frame that demanded the key, and
+   * whether the frame committed before it had demanded it too, so the committed footprint stays
+   * readable while the next frame is open. `#isModelActive` is the old `#activeModelKeys.has`,
+   * `#isFrameModelDemand` the old `#frameModelKeys.has`. Keys idle for `MODEL_DEMAND_IDLE_FRAMES`
+   * are swept once the map outgrows the footprint (`#sweepModelDemand`).
+   */
+  readonly #modelDemand = new Map<string, number>();
+  /** The number of the open frame, else of the last one opened. */
+  #demandFrame = 0;
+  /** The number of the last committed frame; 0 before the first commit (no key carries it). */
+  #committedFrame = 0;
+  /** Distinct keys the open frame has demanded, and the committed one did. */
+  #frameDemandCount = 0;
+  #committedDemandCount = 0;
+  #nextDemandSweep = 0;
   #frameAnimationKeys = new Set<string>();
   /** Exact WMO group demands made by the currently open frame, keyed by decoded parent identity. */
   #frameGroupDemands = new Map<EnvironmentModel, Set<number>>();
-  #activeModelKeys = new Set<string>();
   /** Position-based speculative interest, renewed each frame independently of the scan cadence. */
   #modelPrefetchInterest: ModelPrefetchInterest | undefined;
   #frameModelPrefetchInterest: ModelPrefetchInterest | undefined;
@@ -817,8 +969,25 @@ export class EnvironmentClient {
   #backgroundReservationReleased = false;
   #backgroundReservationTimer: ReturnType<typeof setTimeout> | undefined;
   #modelDrainScheduled = false;
+  #groupDrainScheduled = false;
+  /**
+   * 10.21 (c): one ceiling over the three request lanes (models, WMO groups, animation sidecars),
+   * which used to add up to ten requests against Chromium's six connections per origin.
+   */
+  readonly #requestBudget = new EnvironmentRequestBudget(
+    ENVIRONMENT_REQUEST_LIMIT, (kind) => this.#requestSlotFreed(kind),
+  );
   #generation = 0;
-  #objectsKey = "";
+  /**
+   * P1-13a: what `#objectsCache` was merged for — map (undefined: nothing valid), tile generation
+   * and the footprint cells (`#footprintCount` of `#footprintCells`); `#footprintNext` is the
+   * buffer the next query writes into, swapped in on a miss.
+   */
+  #objectsMap: number | undefined;
+  #objectsGeneration = 0;
+  #footprintCells = new Int32Array(GRID_COUNT * GRID_COUNT);
+  #footprintNext = new Int32Array(GRID_COUNT * GRID_COUNT);
+  #footprintCount = 0;
   #objectsCache: EnvironmentObject[] = [];
   #resourceFrameCommitted = false;
   #disposed = false;
@@ -897,7 +1066,10 @@ export class EnvironmentClient {
     if (this.#disposed) return;
     if (this.#resourceFrameOpen) throw new Error("Environment resource frame is already open");
     this.#resourceFrameOpen = true;
-    this.#frameModelKeys = new Set();
+    // The values must stay small integers: renumber long before `frame · 2 + 1` leaves the Smi range.
+    if ((this.#demandFrame + 1) * 2 + 1 > recencyStampLimit) this.#rebaseModelDemand();
+    this.#demandFrame++;
+    this.#frameDemandCount = 0;
     this.#frameModelPrefetchInterest = undefined;
     this.#frameAnimationKeys = new Set();
     this.#frameGroupDemands = new Map();
@@ -908,20 +1080,63 @@ export class EnvironmentClient {
     if (this.#disposed) return;
     if (!this.#resourceFrameOpen) return;
     this.#resourceFrameOpen = false;
-    this.#activeModelKeys = this.#frameModelKeys;
+    this.#committedFrame = this.#demandFrame;
+    this.#committedDemandCount = this.#frameDemandCount;
     this.#modelPrefetchInterest = this.#frameModelPrefetchInterest;
     this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys = this.#frameAnimationKeys;
     this.#activeGroupDemands = this.#frameGroupDemands;
-    this.#frameModelKeys = new Set();
-    this.#frameAnimationKeys = new Set();
-    this.#frameGroupDemands = new Map();
+    // P1-10a: the `#frame*` collections keep pointing at the committed ones until the next
+    // `beginResourceFrame` replaces them; every reader of `#frame*` runs only while a frame is open.
     this.#resourceFrameCommitted = true;
     this.#pruneModelWork();
     this.#pruneGroupWork();
     this.#pruneAnimationWork();
     this.#evictModels();
     this.#evictAnimations();
+    this.#sweepModelDemand();
+  }
+
+  /** P1-10a-2: whether the committed frame demanded this model key (the old `#activeModelKeys`). */
+  #isModelActive(key: string): boolean {
+    const value = this.#modelDemand.get(key);
+    if (value === undefined) return false;
+    const frame = value >> 1;
+    if (frame === this.#committedFrame) return true;
+    // Re-demanded by the open frame: the low bit says whether the committed one had it.
+    return this.#resourceFrameOpen && frame === this.#demandFrame && (value & 1) === 1;
+  }
+
+  /** P1-10a-2: whether the open frame has demanded this model key (the old `#frameModelKeys`). */
+  #isFrameModelDemand(key: string): boolean {
+    const value = this.#modelDemand.get(key);
+    return value !== undefined && value >> 1 === this.#demandFrame;
+  }
+
+  /**
+   * P1-10a-2: drops keys no frame has demanded for `MODEL_DEMAND_IDLE_FRAMES` once the map holds
+   * more than four footprints, checked at most every `MODEL_DEMAND_SWEEP_INTERVAL` commits. An idle
+   * key answers neither `#isModelActive` nor `#isFrameModelDemand`, so dropping it changes nothing
+   * but the size of the map.
+   */
+  #sweepModelDemand(): void {
+    const demand = this.#modelDemand;
+    if (demand.size <= 4 * this.#committedDemandCount + 256 || this.#committedFrame < this.#nextDemandSweep) return;
+    this.#nextDemandSweep = this.#committedFrame + MODEL_DEMAND_SWEEP_INTERVAL;
+    const oldest = this.#committedFrame - MODEL_DEMAND_IDLE_FRAMES;
+    for (const [key, value] of demand) if (value >> 1 < oldest) demand.delete(key);
+  }
+
+  /** P1-10a-2: renumbers the frames to 1 (the committed one); every older key is idle and goes. */
+  #rebaseModelDemand(): void {
+    const committed = this.#committedFrame;
+    for (const [key, value] of this.#modelDemand) {
+      if (committed > 0 && value >> 1 === committed) this.#modelDemand.set(key, 2);
+      else this.#modelDemand.delete(key);
+    }
+    this.#committedFrame = committed > 0 ? 1 : 0;
+    this.#demandFrame = 1;
+    this.#nextDemandSweep = 0;
   }
 
   /** Relinquishes only this client's references; renderer-owned decoded payloads are not mutated. */
@@ -936,10 +1151,11 @@ export class EnvironmentClient {
     this.#backgroundReservationTimer = undefined;
     this.#resourceFrameOpen = false;
     this.#resourceFrameCommitted = false;
-    this.#frameModelKeys.clear();
+    this.#modelDemand.clear();
+    this.#frameDemandCount = 0;
+    this.#committedDemandCount = 0;
     this.#frameAnimationKeys.clear();
     this.#frameGroupDemands.clear();
-    this.#activeModelKeys.clear();
     this.#modelPrefetchInterest = undefined;
     this.#frameModelPrefetchInterest = undefined;
     this.#activeAnimationKeys.clear();
@@ -948,8 +1164,10 @@ export class EnvironmentClient {
     this.#tiles.clear();
     this.#knownMissingTiles.clear();
     this.#failedTiles.clear();
+    this.#tileLosses.clear(); // 05.10-A7b-9
     this.#loading.clear();
     this.#models.clear();
+    this.#modelUsed.clear();
     this.#failedModelEntries.clear();
     this.#animations.clear();
     this.#modelCosts.clear();
@@ -973,8 +1191,9 @@ export class EnvironmentClient {
     this.#deferredGroups = 0;
     this.#failedGroups = 0;
     this.#modelDrainScheduled = false;
+    this.#groupDrainScheduled = false;
     this.#animationDrainScheduled = false;
-    this.#objectsKey = "";
+    this.#objectsMap = undefined; // P1-13a
     this.#objectsCache = [];
     this.onStatus = undefined;
   }
@@ -994,7 +1213,7 @@ export class EnvironmentClient {
     let failedModels = 0;
     for (const [key, model] of this.#models) {
       if (model === null && this.#failedModelEntries.has(key)) {
-        if (!this.#resourceFrameCommitted || this.#activeModelKeys.has(key)) failedModels++;
+        if (!this.#resourceFrameCommitted || this.#isModelActive(key)) failedModels++;
       } else if (model === null) knownMissingModels++;
       else residentModels++;
     }
@@ -1083,15 +1302,30 @@ export class EnvironmentClient {
       this.#evictTiles();
       return [];
     }
-    // One key string per footprint tile, shared by the active set, the touch order, the cache key
-    // and the tile lookups below (the old code built three string forms per tile every frame).
-    // Tile loads and evictions both bump `#generation`, so a cache-key hit also means the touch
-    // and eviction passes would be no-ops — return before that churn, not after it.
-    const footprint = terrainGridFootprint(x, y, range);
-    const keys = footprint.map((grid) => `${map}/${grid.x}/${grid.y}`);
-    const sortedKeys = [...keys].sort();
-    const cacheKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
-    if (cacheKey === this.#objectsKey) return this.#objectsCache;
+    // Tile loads and evictions both bump `#generation`, so a hit on (map, generation, footprint)
+    // also means the touch and eviction passes would be no-ops — return before that churn.
+    // P1-13a: the footprint as cells in a reused buffer; they come out ascending, so comparing the
+    // sequences is comparing the sets the sorted key strings used to compare.
+    const next = this.#footprintNext;
+    const count = terrainGridFootprintCells(x, y, range, next);
+    if (map === this.#objectsMap && this.#generation === this.#objectsGeneration
+      && count === this.#footprintCount && sameCells(next, this.#footprintCells, count)) {
+      return this.#objectsCache;
+    }
+    this.#footprintNext = this.#footprintCells;
+    this.#footprintCells = next;
+    this.#footprintCount = count;
+
+    // One key string per footprint tile, shared by the active set, the touch order and the tile
+    // lookups below — built only when the footprint, the map or the tiles changed.
+    const footprint: TerrainGrid[] = [];
+    const keys: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const cell = next[index]!;
+      const grid = { x: Math.floor(cell / GRID_COUNT), y: cell % GRID_COUNT };
+      footprint.push(grid);
+      keys.push(`${map}/${grid.x}/${grid.y}`);
+    }
 
     this.#activeTiles = new Set(keys);
 
@@ -1113,7 +1347,8 @@ export class EnvironmentClient {
         void this.#load(map, grid, key);
       }
     }
-    this.#objectsKey = `${map}:${this.#generation}:${sortedKeys.join(",")}`;
+    this.#objectsMap = map;
+    this.#objectsGeneration = this.#generation;
     this.#objectsCache = [...objects.values()];
     return this.#objectsCache;
   }
@@ -1160,6 +1395,46 @@ export class EnvironmentClient {
     return this.#lookupModel(key, "background");
   }
 
+  /**
+   * 05.10-A7b-9 (7.18): what this client knows about one model, read without asking for it.
+   *
+   * `model()` answers `undefined` for three different facts — on its way, known absent (404),
+   * given up on — and a collision hull comes back as a model the renderer refuses to draw. The
+   * stand-in report needs them apart. No request, no LRU touch, no allocation beyond the key.
+   * A path nobody has asked for yet is `pending`: nothing says it never will be.
+   */
+  modelState(name: string): EnvironmentModelState {
+    const key = modelKey(name);
+    const value = this.#models.get(key);
+    if (value) return value.visual === true ? "resident" : "hull";
+    if (value === null) return this.#failedModelEntries.has(key) ? "failed" : "missing";
+    const failure = this.#modelFailures.get(key);
+    if (failure?.after === Number.POSITIVE_INFINITY && !this.#requestedModels.has(key)) return "failed";
+    return "pending";
+  }
+
+  /**
+   * 05.10-A7b-9 (7.18): placements the tiles under the player lost (7.19), summed over the tiles
+   * of the current footprint only — a tile the player walked away from is not this scene's loss.
+   * For diagnostics and the bench, never per frame.
+   */
+  tileLosses(): EnvironmentTileLossCounts {
+    let rejected = 0;
+    let truncated = 0;
+    let generator = 0;
+    for (const [key, lost] of this.#tileLosses) {
+      if (!this.#tiles.get(key)) {
+        this.#tileLosses.delete(key);
+        continue;
+      }
+      if (!this.#activeTiles.has(key)) continue;
+      rejected += lost.rejected;
+      truncated += lost.truncated;
+      generator += lost.generator;
+    }
+    return { rejected, truncated, generator };
+  }
+
   #isModelPrefetched(key: string): boolean {
     return (this.#resourceFrameOpen ? this.#frameModelPrefetchInterest : this.#modelPrefetchInterest)
       ?.keys.has(key) ?? false;
@@ -1168,11 +1443,11 @@ export class EnvironmentClient {
   #lookupModel(key: string, priority: ModelLoadPriority): EnvironmentModel | undefined {
     const value = this.#models.get(key);
     if (value) {
-      this.#touchModel(key);
+      this.#stampModel(key);
       return value;
     }
     if (value === null) {
-      this.#touchModel(key);
+      this.#stampModel(key);
       return undefined;
     }
     if (this.#requestedModels.has(key)) {
@@ -1301,10 +1576,15 @@ export class EnvironmentClient {
     const controller = this.#beginLoad();
     if (!controller) return;
     const failure = this.#animationFailures.get(job.key);
+    const priority = environmentFetchPriority(job.priority);
     try {
       const response = await fetch(
         visualAnimationsUrl(this.#baseUrl, job.name),
-        { signal: controller.signal, ...(failure?.reload ? { cache: "reload" as const } : {}) },
+        {
+          signal: controller.signal,
+          ...(failure?.reload ? { cache: "reload" as const } : {}),
+          ...(priority ? { priority } : {}),
+        },
       );
       if (this.#disposed) return;
       if (!response.ok) {
@@ -1363,9 +1643,14 @@ export class EnvironmentClient {
     while (this.#activeAnimations < ENVIRONMENT_ANIMATION_LOAD_CONCURRENCY) {
       const job = this.#nextAnimation();
       if (!job) return;
+      const release = this.#requestBudget.tryAcquire("animation", job.priority);
+      // The shared budget is spent: the job stays at its place in the queue until a slot frees.
+      if (!release) return;
+      this.#animationQueue.delete(job.key);
       this.#animationInflight.set(job.key, job);
       this.#activeAnimations++;
       void this.#loadAnimations(job).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#animationInflight.delete(job.key);
         this.#activeAnimations--;
@@ -1402,8 +1687,7 @@ export class EnvironmentClient {
       selected = job;
       selectedPriority = rank;
     }
-    if (!selected) return undefined;
-    this.#animationQueue.delete(selected.key);
+    // Peeked, not taken: the caller removes it once the request budget admits it.
     return selected;
   }
 
@@ -1458,9 +1742,14 @@ export class EnvironmentClient {
         && this.#activeModels >= MODEL_LOAD_CONCURRENCY - 1;
       const wanted = this.#nextModel(criticalOnly);
       if (wanted === undefined) return;
+      const release = this.#requestBudget.tryAcquire("model", wanted.priority);
+      // The shared budget is spent: the model keeps its place in the queue until a slot frees.
+      if (!release) return;
+      this.#modelQueue.delete(wanted.name);
       if (wanted.priority === "critical") this.#releaseBackgroundReservation();
       this.#activeModels++;
-      void this.#loadModel(wanted.name).finally(() => {
+      void this.#loadModel(wanted.name, environmentFetchPriority(wanted.priority)).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#activeModels--;
         this.#scheduleModelDrain();
@@ -1501,9 +1790,8 @@ export class EnvironmentClient {
       selectedPriority = rank;
     }
     if (selected === undefined) return undefined;
-    const priority = this.#modelQueue.get(selected)!;
-    this.#modelQueue.delete(selected);
-    return { name: selected, priority };
+    // Peeked, not taken: the caller removes it once the request budget admits it.
+    return { name: selected, priority: this.#modelQueue.get(selected)! };
   }
 
   #backgroundReservationActive(): boolean {
@@ -1532,8 +1820,11 @@ export class EnvironmentClient {
   #drainGroups(): void {
     if (this.#disposed) return;
     while (this.#activeGroups < MODEL_GROUP_LOAD_CONCURRENCY) {
-      const wanted = this.#groupQueue.shift();
+      const wanted = this.#groupQueue[0];
       if (!wanted) return;
+      const release = this.#requestBudget.tryAcquire("group", "normal");
+      if (!release) return;
+      this.#groupQueue.shift();
       this.#setGroupState(wanted.model, wanted.group, {
         status: "active",
         attempts: this.#groupState(wanted.model, wanted.group)?.attempts ?? 0,
@@ -1541,11 +1832,36 @@ export class EnvironmentClient {
       });
       this.#activeGroups++;
       void this.#loadGroup(wanted).finally(() => {
+        release();
         if (this.#disposed) return;
         this.#activeGroups--;
-        this.#drainGroups();
+        // Behind the wake-ups `release` just queued for the other lanes (10.21 (c)): a synchronous
+        // drain here retook every freed slot and held ordinary models back until the last group.
+        this.#scheduleGroupDrain();
       });
     }
+  }
+
+  #scheduleGroupDrain(): void {
+    if (this.#disposed || this.#groupDrainScheduled) return;
+    this.#groupDrainScheduled = true;
+    queueMicrotask(() => {
+      if (this.#disposed) return;
+      this.#groupDrainScheduled = false;
+      this.#drainGroups();
+    });
+  }
+
+  /**
+   * A shared request slot came back: the other two lanes may have work the budget held back. They
+   * are asked before the releasing lane (whose own `.finally` schedules it next), so a long queue
+   * in one lane cannot keep the other two waiting.
+   */
+  #requestSlotFreed(kind: EnvironmentRequestKind): void {
+    if (this.#disposed) return;
+    if (kind !== "model" && this.#modelQueue.size > 0) this.#scheduleModelDrain();
+    if (kind !== "animation" && this.#animationQueue.size > 0) this.#scheduleAnimationDrain();
+    if (kind !== "group" && this.#groupQueue.length > 0) this.#scheduleGroupDrain();
   }
 
   #beginLoad(): AbortController | undefined {
@@ -1647,15 +1963,16 @@ export class EnvironmentClient {
     });
   }
 
-  async #loadModel(key: string): Promise<void> {
+  async #loadModel(key: string, priority?: RequestPriority): Promise<void> {
     const controller = this.#beginLoad();
     if (!controller) return;
     const separator = key.indexOf("|");
     const name = separator < 0 ? key : key.slice(0, separator);
+    const init: RequestInit = priority ? { signal: controller.signal, priority } : { signal: controller.signal };
     try {
       const response = await fetch(
         visualModelUrl(this.#baseUrl, name),
-        { signal: controller.signal },
+        init,
       );
       if (this.#disposed) return;
       if (response.ok) {
@@ -1674,8 +1991,8 @@ export class EnvironmentClient {
       if (response.status === 404) {
         const basename = name.replaceAll("\\", "/").split("/").at(-1) ?? name;
         const hull = await fetch(
-          `${this.#baseUrl}/environment/model/${encodeURIComponent(basename)}`,
-          { signal: controller.signal },
+          withGeneration(`${this.#baseUrl}/environment/model/${encodeURIComponent(basename)}`),
+          init,
         );
         if (this.#disposed) return;
         // The server's own collision hull, and it is no longer drawn: `drawableModel` in the
@@ -1722,8 +2039,8 @@ export class EnvironmentClient {
     const wait = IMAGE_RETRY_BACKOFF_MS[attempt - 1];
     this.#requestedModels.delete(key);
     const demandedByCurrentFrame = this.#resourceFrameOpen
-      ? this.#frameModelKeys.has(key)
-      : this.#activeModelKeys.has(key);
+      ? this.#isFrameModelDemand(key)
+      : this.#isModelActive(key);
     if (this.#resourceFrameCommitted && !demandedByCurrentFrame && !this.#isModelPrefetched(key)) {
       // A request that finishes after the renderer has moved on must not leave a retry ledger for
       // an unbounded stream of old scenery. Re-entry will make a fresh demand-driven request.
@@ -1746,12 +2063,12 @@ export class EnvironmentClient {
   /** Drop work outside both the current draw footprint and the renewed position-based prefetch set. */
   #pruneModelWork(): void {
     for (const key of this.#modelQueue.keys()) {
-      if (this.#activeModelKeys.has(key) || this.#isModelPrefetched(key)) continue;
+      if (this.#isModelActive(key) || this.#isModelPrefetched(key)) continue;
       this.#modelQueue.delete(key);
       this.#requestedModels.delete(key);
     }
     for (const key of this.#modelFailures.keys()) {
-      if (!this.#activeModelKeys.has(key) && !this.#isModelPrefetched(key)) this.#modelFailures.delete(key);
+      if (!this.#isModelActive(key) && !this.#isModelPrefetched(key)) this.#modelFailures.delete(key);
     }
   }
 
@@ -1813,7 +2130,8 @@ export class EnvironmentClient {
       };
     }
     const stats = { queuedGroups: 0, activeGroups: this.#activeGroups, deferredGroups: 0, failedGroups: 0 };
-    for (const key of this.#activeModelKeys) {
+    for (const key of this.#modelDemand.keys()) {
+      if (!this.#isModelActive(key)) continue;
       const model = this.#models.get(key);
       if (!model) continue;
       const states = this.#requestedGroups.get(model);
@@ -1832,7 +2150,7 @@ export class EnvironmentClient {
 
   #isActiveGroupDemand(wanted: { name: string; group: number; model: EnvironmentModel }): boolean {
     const key = modelKey(wanted.name);
-    return this.#activeModelKeys.has(key)
+    return this.#isModelActive(key)
       && this.#models.get(key) === wanted.model
       && this.#activeGroupDemands.get(wanted.model)?.has(wanted.group) === true;
   }
@@ -1877,8 +2195,15 @@ export class EnvironmentClient {
     }
   }
 
+  /** P1-10a-2: in place for a key seen before — no per-frame `Set` to grow from empty. */
   #touchModelDemand(key: string): void {
-    if (this.#resourceFrameOpen) this.#frameModelKeys.add(key);
+    if (!this.#resourceFrameOpen) return;
+    const frame = this.#demandFrame;
+    const value = this.#modelDemand.get(key);
+    if (value !== undefined && value >> 1 === frame) return;
+    const carried = value !== undefined && value >> 1 === this.#committedFrame ? 1 : 0;
+    this.#modelDemand.set(key, frame * 2 + carried);
+    this.#frameDemandCount++;
   }
 
   #touchAnimationDemand(key: string): void {
@@ -1886,10 +2211,17 @@ export class EnvironmentClient {
   }
 
   #touchModel(key: string): void {
-    if (!this.#models.has(key)) return;
-    const value = this.#models.get(key)!;
-    this.#models.delete(key);
-    this.#models.set(key, value);
+    if (this.#models.has(key)) this.#stampModel(key);
+  }
+
+  /**
+   * P1-10a (MEM-2): a hit is stamped in place rather than re-inserted into `#models`; a `delete`
+   * + `set` per admitted placement rebuilt the table every few frames. `#evictModels` takes the
+   * smallest stamp, which is the entry the re-insertion order used to put first.
+   */
+  #stampModel(key: string): void {
+    if (this.#modelClock >= recencyStampLimit) this.#modelClock = renumberRecency(this.#modelUsed);
+    this.#modelUsed.set(key, ++this.#modelClock);
   }
 
   #touchAnimation(key: string): void {
@@ -1913,6 +2245,7 @@ export class EnvironmentClient {
     }
     this.#deleteModelEntry(key);
     this.#models.set(key, value);
+    this.#stampModel(key);
     if (outcome === "failed") this.#failedModelEntries.add(key);
     if (cost) {
       this.#modelCosts.set(key, cost);
@@ -1984,6 +2317,7 @@ export class EnvironmentClient {
     if (!this.#models.has(key)) return undefined;
     const model = this.#models.get(key)!;
     this.#models.delete(key);
+    this.#modelUsed.delete(key);
     this.#failedModelEntries.delete(key);
     const cost = this.#modelCosts.get(key);
     if (cost) {
@@ -2011,18 +2345,48 @@ export class EnvironmentClient {
     while (this.#models.size > this.#modelLimit
       || this.#modelTypedBackingBytes > this.#modelTypedBackingBudget
       || this.#modelNumericArrayElements > this.#modelNumericArrayBudget) {
-      let removed = false;
+      // The oldest stamp among the inactive entries; the order the re-insertion LRU kept.
+      let oldest: string | undefined;
+      let oldestUsed = Infinity;
+      let inactive = 0;
       for (const key of this.#models.keys()) {
-        if (this.#activeModelKeys.has(key)) continue;
-        const model = this.#deleteModelEntry(key);
-        this.#requestedModels.delete(key);
-        this.#modelFailures.delete(key);
-        if (model) this.#releaseEvictedModelGroups(model);
-        removed = true;
-        break;
+        if (this.#isModelActive(key)) continue;
+        inactive++;
+        const used = this.#modelUsed.get(key)!;
+        if (used < oldestUsed) {
+          oldestUsed = used;
+          oldest = key;
+        }
       }
-      if (!removed) return;
+      if (oldest === undefined) return;
+      if (this.#models.size - this.#modelLimit > MODEL_EVICTION_SORT_THRESHOLD && inactive > 1) {
+        // A teleport overflows by hundreds: one sorted pass instead of a scan per eviction.
+        this.#evictModelsSorted();
+        return;
+      }
+      this.#evictModelKey(oldest);
     }
+  }
+
+  /** Evicts inactive entries oldest stamp first until every model limit holds again. */
+  #evictModelsSorted(): void {
+    const order: string[] = [];
+    for (const key of this.#models.keys()) if (!this.#isModelActive(key)) order.push(key);
+    order.sort((left, right) => this.#modelUsed.get(left)! - this.#modelUsed.get(right)!);
+    for (const key of order) {
+      if (this.#models.size <= this.#modelLimit
+        && this.#modelTypedBackingBytes <= this.#modelTypedBackingBudget
+        && this.#modelNumericArrayElements <= this.#modelNumericArrayBudget) return;
+      // `#releaseEvictedModelGroups` touches only group state, never `#models`; the key is still here.
+      if (this.#models.has(key)) this.#evictModelKey(key);
+    }
+  }
+
+  #evictModelKey(key: string): void {
+    const model = this.#deleteModelEntry(key);
+    this.#requestedModels.delete(key);
+    this.#modelFailures.delete(key);
+    if (model) this.#releaseEvictedModelGroups(model);
   }
 
   #evictAnimations(): void {
@@ -2052,14 +2416,15 @@ export class EnvironmentClient {
     if (!controller) return;
     try {
       let response = await fetch(
-        `${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}`,
+        // 05.10-A7b-1 (M-A7b-1): `?v=5` is the `visual-tile-v5` tile; an older gateway ignores it.
+        withGeneration(`${this.#baseUrl}/visual/environment/${map}/${grid.x}/${grid.y}?v=${VISUAL_TILE_ROUTE_VERSION}`),
         { signal: controller.signal },
       );
       if (this.#disposed) return;
       const hadGatewayError = !response.ok && response.status !== 404;
       if (!response.ok) {
         response = await fetch(
-          `${this.#baseUrl}/environment/${map}/${grid.x}/${grid.y}`,
+          withGeneration(`${this.#baseUrl}/environment/${map}/${grid.x}/${grid.y}`),
           { signal: controller.signal },
         );
         if (this.#disposed) return;
@@ -2074,11 +2439,20 @@ export class EnvironmentClient {
         return;
       }
       if (!response.ok) throw new Error(`Environment gateway returned ${response.status}`);
-      const value = await this.#tileDecoder.decodeResponse(response, controller.signal);
+      const report = await this.#tileDecoder.decodeResponseReport(response, controller.signal);
       if (this.#disposed) return;
+      const value = report.objects;
       this.#resolve(key, value, "resident");
       const loaded = [...this.#tiles.values()].filter((tile): tile is EnvironmentObject[] => Array.isArray(tile));
       this.onStatus?.(`VMAP tiles: ${loaded.length} · объектов: ${loaded.reduce((sum, tile) => sum + tile.length, 0)}`, false);
+      // 05.10-A7b-1 (7.19): what the tile could not carry is said, not swallowed.
+      const lost = environmentTileLosses(report, response.headers?.get?.("x-tile-truncated"));
+      if (lost) this.onStatus?.(`Environment tile ${key}: ${lost}`, true);
+      // 05.10-A7b-9 (7.18): the same counts, kept for the stand-in report while the tile is held.
+      const generator = environmentTileGeneratorCut(response.headers?.get?.("x-tile-truncated"));
+      if (report.rejected > 0 || report.truncated > 0 || generator > 0) {
+        this.#tileLosses.set(key, { rejected: report.rejected, truncated: report.truncated, generator });
+      } else this.#tileLosses.delete(key);
     } catch (error) {
       if (this.#disposed) return;
       this.#resolve(key, null, "failed");
@@ -2151,9 +2525,17 @@ export class EnvironmentClient {
     // A cached objects result may have been computed before this eviction. Force the next query to
     // rebuild it, and expose the transition through the same generation used by load completion.
     this.#generation++;
-    this.#objectsKey = "";
+    this.#objectsMap = undefined; // P1-13a
     this.#objectsCache = [];
   }
+}
+
+/** P1-13a: whether the first `count` cells of two footprint buffers are equal. */
+function sameCells(left: Int32Array, right: Int32Array, count: number): boolean {
+  for (let index = 0; index < count; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 /** Cache key for one model in one set of textures; matches the query the gateway hashes on. */
@@ -2531,7 +2913,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 import type { EnvironmentBounds, EnvironmentObject } from "../gateway/VMapProtocol.js";
-import { EnvironmentTileDecodeClient } from "./EnvironmentTileDecode.js";
+import {
+  EnvironmentTileDecodeClient, VISUAL_TILE_ROUTE_VERSION, environmentTileLosses, // 05.10-A7b-1
+} from "./EnvironmentTileDecode.js";
+import { environmentTileGeneratorCut } from "./EnvironmentTileDecode.js"; // 05.10-A7b-9
+import type { EnvironmentModelState, EnvironmentTileLossCounts } from "./StandIn.js"; // 05.10-A7b-9
 // The same ladder, from the file that measured it: a model the gateway has to build out of the
 // archives fails in exactly the way a body texture does, and two different waits would be two
 // numbers to keep in step for no reason.
@@ -2545,5 +2931,10 @@ import {
 import { wvaClipSetBacking, wvaClipSetConsumed } from "./WvaAnimationDecode.js";
 import type { WvaAnimationDecodeResult } from "./WvaAnimationDecodeProtocol.js";
 import { decodeWwm, decodeWwmGroup } from "./WmoModel.js";
+import { withGeneration } from "./GatewayGeneration.js";
+import { recencyStampLimit, renumberRecency } from "./RecencyStamps.js";
+import {
+  ENVIRONMENT_REQUEST_LIMIT, EnvironmentRequestBudget, environmentFetchPriority, type EnvironmentRequestKind,
+} from "./EnvironmentRequestBudget.js";
 import type { RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { EnvironmentModel, ModelChannel, ModelClip, ModelSkeleton } from "../gateway/VMapModel.js";

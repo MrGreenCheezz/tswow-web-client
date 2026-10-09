@@ -38,9 +38,10 @@ export function formatWorldStateText(
     if (kind === "w") return String(value);
     const seconds = Math.max(0, Math.floor(value - serverTime!));
     const minutes = Math.floor(seconds / 60);
+    // L3-review: Wow.exe 0x576e50 — "%02d:%02d" under an hour (0xa11554), "%d:%02d:%02d" from one on (0xa11560).
     return minutes >= 60
       ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
-      : `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+      : `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`; // L3-review: padded minutes
   });
   return unresolved ? undefined : rendered;
 }

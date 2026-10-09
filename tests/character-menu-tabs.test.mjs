@@ -98,7 +98,8 @@ test("HUD has one centered game-menu button and diagnostics only lives inside th
     source("src/browser/style.css"),
   ]);
 
-  assert.match(html, /id="game-menu-toggle"[^>]*aria-keyshortcuts="Escape"[^>]*aria-haspopup="dialog"[^>]*aria-controls="game-menu"/);
+  // L7 4.10: Escape is written as aria-keyshortcuts by ui/HudKeys.ts (fixedChord), not fixed in the markup.
+  assert.match(html, /id="game-menu-toggle"[^>]*aria-haspopup="dialog"[^>]*aria-controls="game-menu"/);
   assert.doesNotMatch(html, /id="professions-toggle"/);
   assert.doesNotMatch(html, /id="diagnostics-toggle"/);
   assert.match(windows, /gameMenuToggle\.addEventListener\("click",\s*toggleGameMenu\)/);

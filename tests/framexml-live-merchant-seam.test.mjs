@@ -292,3 +292,22 @@ test("extended-cost purchase stays blocked while its DBC row is pending or unava
   assert.deepEqual(calls.buy, [[7, 1], [9, 1]], "the server-validated buy resumes once cost is known");
   seam.detach();
 });
+
+// Wow.exe GetMerchantItemMaxStack (0x005842d0) answers 1 for a row sold BuyCount ≥ 2 at a time and the
+// item's stack otherwise (1 while the item is unknown); BuyMerchantItem (0x005854c0) clamps its count
+// to 255 — the server reads the uint32 into a uint8 (ItemHandler.cpp:602-613, Player.cpp:22181).
+test("stock SPLITSTACK on a vendor row: a pack row is one, the count is a byte", () => {
+  const { seam, world, calls, pump } = fixture();
+  world.vendor.items.push(
+    { slot: 11, itemId: 2512, displayId: 3, leftInStock: -1, price: 10, maxDurability: 0, buyCount: 200, extendedCost: 0 },
+    { slot: 12, itemId: 424242, displayId: 4, leftInStock: -1, price: 10, maxDurability: 0, buyCount: 1, extendedCost: 0 },
+  );
+  world.itemTemplates.set(2512, { found: true, name: "Грубая стрела", stackable: 1000, quality: 1 });
+  seam.attach(pump);
+  assert.deepEqual(call("GetMerchantItemMaxStack", seam, 1), [20], "an ordinary row: the item's stack");
+  assert.deepEqual(call("GetMerchantItemMaxStack", seam, 3), [1], "a pack of 200 arrows is not split");
+  assert.deepEqual(call("GetMerchantItemMaxStack", seam, 4), [1], "an item not in the cache yet");
+  call("BuyMerchantItem", seam, 1, 300);
+  assert.deepEqual(calls.buy, [[7, 255]], "never a count the server's uint8 would wrap");
+  seam.detach();
+});

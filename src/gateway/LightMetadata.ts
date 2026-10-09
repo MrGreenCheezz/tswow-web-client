@@ -16,7 +16,7 @@
 
 import { openDbcFile } from "./Dbc.js";
 import {
-  LIGHT_SLOT_CLEAR, LIGHT_SLOT_STORM, LIGHT_SLOT_UNDERWATER, LIGHT_SLOT_UNDERWATER_STORM,
+  LIGHT_SLOT_CLEAR, LIGHT_SLOT_DEATH, LIGHT_SLOT_STORM, LIGHT_SLOT_UNDERWATER, LIGHT_SLOT_UNDERWATER_STORM,
 } from "../world/WorldMessageProtocol.js";
 
 /** Colour channels per parameter set in `LightIntBand`. */
@@ -70,6 +70,20 @@ const CHANNEL = {
   skyLower: 5,
   skyHorizon: 6,
   fog: 7,
+  // 05.10-A7b-5 (7.04 slice 0): the six channels between the fog and the water, sent since
+  // payload v5 and not yet drawn. The names are the plan's hypotheses H1-H3, checked against the
+  // day curves in `docs/implementation/probes/A7b/probe-light-strips.out.txt`: on set 12 channel 9
+  // runs #e8f1ff at midnight (a pale moon), #ffd296 at dawn and #fff7de at noon, and channel 10
+  // #326184 / #ffb33c / #ffc78a — a glow around whichever body is up; on the death sets 3 and 4
+  // (which carry `DeathSkybox`) channels 9-13 are all zero — no sun and no cloud. Channels 11 to 13
+  // vary with the hour like cloud tones (12 is zero on set 12). Channel 8 is a grey whose purpose
+  // is not established, so it keeps a neutral name, and so does 13.
+  extra8: 8,
+  sunColour: 9,
+  sunHalo: 10,
+  cloudA: 11,
+  cloudB: 12,
+  extra13: 13,
   oceanClose: 14,
   oceanFar: 15,
   riverClose: 16,
@@ -77,7 +91,18 @@ const CHANNEL = {
 } as const;
 
 /** Which distance each `LightFloatBand` channel is. */
-const FLOAT_CHANNEL = { fogEnd: 0, fogScale: 1 } as const;
+const FLOAT_CHANNEL = {
+  fogEnd: 0,
+  fogScale: 1,
+  // 05.10-A7b-5 (7.04 slice 0). Float 2 is 1 on 98.4 % of keys (how much of the sun and moons
+  // shows through cloud, by the plan's reading) and float 3 runs 0-5 (cloud cover); 4 and 5 are
+  // not established and keep neutral names. Dimensionless: unlike `fogEnd` they are not divided
+  // into yards.
+  celestialThrough: 2,
+  cloudDensity: 3,
+  float4: 4,
+  float5: 5,
+} as const;
 
 export type LightColourChannel = keyof typeof CHANNEL;
 
@@ -115,8 +140,34 @@ export interface LightParamSet {
    * exactly 1 and 47 at exactly 0. Read since the first extractor and thrown away until P4.
    */
   glow: number;
+  /** 05.10-A7b-5 (7.04 slice 0): float channels 2-5, see `FLOAT_CHANNEL`. */
+  celestialThrough: LightBand<number>;
+  cloudDensity: LightBand<number>;
+  float4: LightBand<number>;
+  float5: LightBand<number>;
+  /** `LightParams.HighlightSky` (0 on 481 of 850 rows, 1 on 369) and `CloudTypeID` (0 on all 850). */
+  highlightSky: number;
+  cloudType: number;
   /** `LightSkybox.Name` for this profile, when one is authored. */
   skyboxPath?: string;
+  /** `LightSkybox.Flags` beside the path (0x1 on 27 rows, 0x2 on 37); only with a path. */
+  skyboxFlags?: number;
+}
+
+/**
+ * 05.10-A7b-5 (7.10): what a `LiquidType` row says about the light under its surface.
+ *
+ * `lightId` names a `Light.dbc` row whose slots the eye reads when it is under that liquid —
+ * Magma and its kin name 7, Slime and Green Lava name 6, every other row 0 — and the four darkening
+ * columns are set only on the oceans (2, 6, 10, 14: 30 / 0.5 / 0.5 / 0.25) and on row 100
+ * (30 / 0.5 / 0.5 / 0). Absent fields are zero.
+ */
+export interface LiquidLighting {
+  lightId?: number;
+  maxDarkenDepth?: number;
+  fogDarken?: number;
+  ambDarken?: number;
+  dirDarken?: number;
 }
 
 export interface LightVolume {
@@ -175,18 +226,32 @@ export interface MapLighting {
   /** The fallback seen from under water, and that seen under a storm; same rule as a volume's. */
   fallbackUnderwater?: number | undefined;
   fallbackUnderwaterStorm?: number | undefined;
+  /** 05.10-A7b-5 (7.15): the fallback's death set (slot 4), when it differs from its clear one. */
+  fallbackDeath?: number | undefined;
   volumes: LightVolume[];
   params: Record<number, LightParamSet>;
-  /** Every Light.dbc row on this map, keyed by row id for SMSG_OVERRIDE_LIGHT. */
+  /**
+   * Every Light.dbc row on this map, keyed by row id for SMSG_OVERRIDE_LIGHT — plus (05.10-A7b-5,
+   * 7.10) the rows `LiquidType.LightID` names, which sit on map 0 (6 and 7) but colour lava and
+   * slime on every map. They are added for lookup only, never as volumes.
+   */
   lights: Record<number, LightSlots>;
+  /** 05.10-A7b-5 (7.10): `LiquidType` rows with a light row or a darkening, by row id. */
+  liquids?: Record<number, LiquidLighting>;
 }
 
-/** The four of a `Light.dbc` row's eight slots this client reads, absent where they repeat. */
+/** The five of a `Light.dbc` row's eight slots this client reads, absent where they repeat. */
 export interface LightSlots {
   params: number;
   stormParams?: number;
   underwaterParams?: number;
   underwaterStormParams?: number;
+  /**
+   * 05.10-A7b-5 (7.15): slot 4, the death light, when it differs from slot 0 — on 713 of the 715
+   * rows. Six sets in all: 3 (452 rows), 4 (234), 2 (26), 5, 694 and 819 (one each); 2-5 carry
+   * `DeathSkybox` (probe-light-strips.out.txt).
+   */
+  deathParams?: number;
 }
 
 /** The row every map falls back to. It carries no position, no radius and no continent of its own. */
@@ -218,7 +283,7 @@ function normalizeSkyboxPath(value: string): string {
 export type LightIndex = Map<number, MapLighting>;
 
 export async function loadLightMetadata(dbcDirectory: string): Promise<LightIndex> {
-  const [light, params, ints, floats, skybox] = await Promise.all([
+  const [light, params, ints, floats, skybox, liquidTypes] = await Promise.all([
     openDbcFile(dbcDirectory, "Light"),
     openDbcFile(dbcDirectory, "LightParams"),
     openDbcFile(dbcDirectory, "LightIntBand"),
@@ -226,14 +291,20 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
     // LightSkybox.dbc was added to the client data after the first lighting extractor. Keep the
     // table optional: old datasets still get all colour/fog/weather lighting.
     openDbcFile(dbcDirectory, "LightSkybox").catch(() => undefined),
+    // 05.10-A7b-5 (7.10): optional on the same terms — without it lava is lit like water.
+    openDbcFile(dbcDirectory, "LiquidType").catch(() => undefined),
   ]);
 
   const skyboxPaths = new Map<number, string>();
+  const skyboxFlags = new Map<number, number>(); // 05.10-A7b-5 (7.04 slice 0)
   if (skybox) {
     for (const row of skybox.rows()) {
       const id = skybox.id(row);
       const path = skybox.string(row, "Name");
-      if (id > 0 && path) skyboxPaths.set(id, normalizeSkyboxPath(path));
+      if (id > 0 && path) {
+        skyboxPaths.set(id, normalizeSkyboxPath(path));
+        skyboxFlags.set(id, skybox.int(row, "Flags"));
+      }
     }
   }
 
@@ -270,10 +341,21 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
       // colour negative in JSON for no reason.
       colours[name] = band(ints, intBase + channel, (row, key) => ints.int(row, "Data", key) & 0xffffff);
     }
+    const plainFloat = (channel: number) => band(floats, floatBase + channel, (row, key) => floats.float(row, "Data", key));
+    const paramsRow = params.rowOf(id)!;
+    const skyboxId = params.int(paramsRow, "LightSkyboxID");
     const set: LightParamSet = {
       colours,
       fogEnd: band(floats, floatBase + FLOAT_CHANNEL.fogEnd, (row, key) => floats.float(row, "Data", key) / UNITS_PER_YARD),
-      fogScale: band(floats, floatBase + FLOAT_CHANNEL.fogScale, (row, key) => floats.float(row, "Data", key)),
+      fogScale: plainFloat(FLOAT_CHANNEL.fogScale),
+      // 05.10-A7b-5 (7.04 slice 0): the other four float channels and the two integers.
+      celestialThrough: plainFloat(FLOAT_CHANNEL.celestialThrough),
+      cloudDensity: plainFloat(FLOAT_CHANNEL.cloudDensity),
+      float4: plainFloat(FLOAT_CHANNEL.float4),
+      float5: plainFloat(FLOAT_CHANNEL.float5),
+      highlightSky: params.int(paramsRow, "HighlightSky"),
+      cloudType: params.int(paramsRow, "CloudTypeID"),
+      ...(skyboxFlags.has(skyboxId) ? { skyboxFlags: skyboxFlags.get(skyboxId)! } : {}),
       waterShallowAlpha: params.float(params.rowOf(id)!, "WaterShallowAlpha"),
       waterDeepAlpha: params.float(params.rowOf(id)!, "WaterDeepAlpha"),
       oceanShallowAlpha: params.float(params.rowOf(id)!, "OceanShallowAlpha"),
@@ -289,6 +371,12 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
     };
     resolved.set(id, set);
     return set;
+  };
+
+  /** 05.10-A7b-5 (7.15): a row's slot 4 when it names a set of its own, else undefined. */
+  const deathSlot = (row: number, clearId: number): number | undefined => {
+    const deathId = light.int(row, "LightParamsID", LIGHT_SLOT_DEATH);
+    return deathId !== clearId && parameterSet(deathId) ? deathId : undefined;
   };
 
   const index: LightIndex = new Map();
@@ -317,6 +405,8 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
     // as slot 0, so a slot 3 that merely repeats slot 1 must be dropped against *that*.
     const underwaterStorm = underwaterStormId !== (underwater ?? setId) && parameterSet(underwaterStormId)
       ? underwaterStormId : undefined;
+    // 05.10-A7b-5 (7.15): slot 4, measured against slot 0 like slot 1 — it differs on 713 rows.
+    const death = deathSlot(row, setId);
 
     let entry = index.get(map);
     if (!entry) {
@@ -328,11 +418,13 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
       ...(storm === undefined ? {} : { stormParams: storm }),
       ...(underwater === undefined ? {} : { underwaterParams: underwater }),
       ...(underwaterStorm === undefined ? {} : { underwaterStormParams: underwaterStorm }),
+      ...(death === undefined ? {} : { deathParams: death }),
     };
     entry.params[setId] = resolved.get(setId)!;
     if (storm !== undefined) entry.params[storm] = resolved.get(storm)!;
     if (underwater !== undefined) entry.params[underwater] = resolved.get(underwater)!;
     if (underwaterStorm !== undefined) entry.params[underwaterStorm] = resolved.get(underwaterStorm)!;
+    if (death !== undefined) entry.params[death] = resolved.get(death)!;
     entry.lights[id] = slots;
     // A row standing at the grid origin is the map's default, and the falloff it carries means
     // nothing — there is no volume to fall off from. Requiring a zero radius as well threw away
@@ -356,6 +448,7 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
       entry.fallbackStorm = storm;
       entry.fallbackUnderwater = underwater;
       entry.fallbackUnderwaterStorm = underwaterStorm;
+      entry.fallbackDeath = death;
       continue;
     }
     // The stored triple runs (y, height, x) on the tile grid's own axes, the same layout the ADT
@@ -382,6 +475,8 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
   const globalUnderwater = globalUnderwaterSet !== globalSet ? parameterSet(globalUnderwaterSet) : undefined;
   const globalUnderwaterStorm = globalUnderwaterStormSet !== (globalUnderwater ? globalUnderwaterSet : globalSet)
     ? parameterSet(globalUnderwaterStormSet) : undefined;
+  // 05.10-A7b-5 (7.15): Light 1's slot 4 (set 3 in this dataset) for every map that inherits it.
+  const globalDeathSet = globalRow === undefined ? undefined : deathSlot(globalRow, globalSet);
   if (globalParams) {
     for (const entry of index.values()) {
       if (entry.fallback !== undefined) continue;
@@ -408,6 +503,10 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
         entry.fallbackUnderwaterStorm = globalUnderwaterStormSet;
         entry.params[globalUnderwaterStormSet] = globalUnderwaterStorm;
       }
+      if (globalDeathSet !== undefined) { // 05.10-A7b-5 (7.15)
+        entry.fallbackDeath = globalDeathSet;
+        entry.params[globalDeathSet] = resolved.get(globalDeathSet)!;
+      }
     }
     // And the same default once more, standing alone, for the 62 maps that have no entry here to
     // hand it to (see `GLOBAL_FALLBACK_MAP`). Without it the route answers 404, `LightClient`
@@ -431,6 +530,7 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
         ...(globalStorm ? { stormParams: globalStormSet } : {}),
         ...(globalUnderwater ? { underwaterParams: globalUnderwaterSet } : {}),
         ...(globalUnderwaterStorm ? { underwaterStormParams: globalUnderwaterStormSet } : {}),
+        ...(globalDeathSet === undefined ? {} : { deathParams: globalDeathSet }), // 05.10-A7b-5 (7.15)
       },
     };
     index.set(GLOBAL_FALLBACK_MAP, {
@@ -439,15 +539,80 @@ export async function loadLightMetadata(dbcDirectory: string): Promise<LightInde
       fallbackStorm: globalStorm ? globalStormSet : undefined,
       fallbackUnderwater: globalUnderwater ? globalUnderwaterSet : undefined,
       fallbackUnderwaterStorm: globalUnderwaterStorm ? globalUnderwaterStormSet : undefined,
+      fallbackDeath: globalDeathSet, // 05.10-A7b-5 (7.15)
       volumes: [],
       params: {
         [globalSet]: globalParams,
         ...(globalStorm ? { [globalStormSet]: globalStorm } : {}),
         ...(globalUnderwater ? { [globalUnderwaterSet]: globalUnderwater } : {}),
         ...(globalUnderwaterStorm ? { [globalUnderwaterStormSet]: globalUnderwaterStorm } : {}),
+        ...(globalDeathSet === undefined ? {} : { [globalDeathSet]: resolved.get(globalDeathSet)! }),
       },
       lights: globalLights,
     });
   }
+
+  // 05.10-A7b-5 (7.10): the light under lava and slime. `LiquidType.LightID` names a `Light.dbc`
+  // row — 7 for Magma (3, 7, 11, 19, 121, 141), 6 for Slime (4, 8, 12, 20, 21) and Green Lava (15)
+  // — and both rows are volumes on map 0, so a map that lacked them could not colour the view from
+  // under its own lava. Each map gets the rows' slots for lookup (never as volumes) and the sets
+  // they name, plus the per-row darkening the oceans carry. Measured in
+  // `probe-light-strips.out.txt`: Light 6 slots 21,22,454,22,4 and Light 7 slots 23,24,456,24,4.
+  if (liquidTypes) {
+    const liquids: Record<number, LiquidLighting> = {};
+    const liquidLights = new Map<number, LightSlots>();
+    for (const row of liquidTypes.rows()) {
+      const id = liquidTypes.id(row);
+      if (id <= 0) continue;
+      const lighting: LiquidLighting = {};
+      const lightId = liquidTypes.int(row, "LightID");
+      const lightRow = lightId > 0 ? light.rowOf(lightId) : undefined;
+      if (lightRow !== undefined) {
+        const slots = liquidLights.get(lightId) ?? lightRowSlots(lightRow);
+        if (slots) {
+          liquidLights.set(lightId, slots);
+          lighting.lightId = lightId;
+        }
+      }
+      const maxDarkenDepth = liquidTypes.float(row, "MaxDarkenDepth");
+      if (Number.isFinite(maxDarkenDepth) && maxDarkenDepth > 0) {
+        const finite = (value: number) => (Number.isFinite(value) ? value : 0);
+        lighting.maxDarkenDepth = maxDarkenDepth;
+        lighting.fogDarken = finite(liquidTypes.float(row, "FogDarkenIntensity"));
+        lighting.ambDarken = finite(liquidTypes.float(row, "AmbDarkenIntensity"));
+        lighting.dirDarken = finite(liquidTypes.float(row, "DirDarkenIntensity"));
+      }
+      if (lighting.lightId !== undefined || lighting.maxDarkenDepth !== undefined) liquids[id] = lighting;
+    }
+    for (const entry of index.values()) {
+      entry.liquids = liquids;
+      for (const [lightId, slots] of liquidLights) {
+        entry.lights[lightId] ??= slots;
+        for (const setId of [slots.params, slots.stormParams, slots.underwaterParams,
+          slots.underwaterStormParams, slots.deathParams]) {
+          if (setId !== undefined) entry.params[setId] ??= resolved.get(setId)!;
+        }
+      }
+    }
+  }
   return index;
+
+  /** The slots of one `Light.dbc` row on the same repeat rules as the main loop; 05.10-A7b-5. */
+  function lightRowSlots(row: number): LightSlots | undefined {
+    const clear = light.int(row, "LightParamsID", LIGHT_SLOT_CLEAR);
+    if (!parameterSet(clear)) return undefined;
+    const stormId = light.int(row, "LightParamsID", LIGHT_SLOT_STORM);
+    const underwaterId = light.int(row, "LightParamsID", LIGHT_SLOT_UNDERWATER);
+    const underwater = underwaterId !== clear && parameterSet(underwaterId) ? underwaterId : undefined;
+    const underwaterStormId = light.int(row, "LightParamsID", LIGHT_SLOT_UNDERWATER_STORM);
+    const death = deathSlot(row, clear);
+    return {
+      params: clear,
+      ...(stormId !== clear && parameterSet(stormId) ? { stormParams: stormId } : {}),
+      ...(underwater === undefined ? {} : { underwaterParams: underwater }),
+      ...(underwaterStormId !== (underwater ?? clear) && parameterSet(underwaterStormId)
+        ? { underwaterStormParams: underwaterStormId } : {}),
+      ...(death === undefined ? {} : { deathParams: death }),
+    };
+  }
 }

@@ -28,7 +28,7 @@ interface IndexedEntry {
   readonly ordinal: number;
 }
 
-interface CellCoverage {
+export interface CellCoverage {
   readonly minX: number;
   readonly maxX: number;
   readonly minY: number;
@@ -202,15 +202,15 @@ export class EnvironmentSpatialIndex {
   }
 }
 
-function validCellSize(value: number): boolean {
+export function validCellSize(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function validQuery(x: number, y: number, range: number): boolean {
+export function validQuery(x: number, y: number, range: number): boolean {
   return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(range) && range >= 0;
 }
 
-function cellIndex(value: number, cellSize: number): number {
+export function cellIndex(value: number, cellSize: number): number {
   const index = Math.floor(value / cellSize);
   return Number.isSafeInteger(index) ? index : Number.NaN;
 }
@@ -219,7 +219,7 @@ function cellKey(x: number, y: number): string {
   return `${x}/${y}`;
 }
 
-function objectCellCoverage(object: EnvironmentObject, cellSize: number): CellCoverage | undefined {
+export function objectCellCoverage(object: EnvironmentObject, cellSize: number): CellCoverage | undefined {
   if (!object || typeof object !== "object" || !Number.isFinite(object.x) || !Number.isFinite(object.y)) {
     return undefined;
   }

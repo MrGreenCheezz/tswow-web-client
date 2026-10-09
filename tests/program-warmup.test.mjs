@@ -5,6 +5,8 @@ import ts from "typescript";
 import * as THREE from "three";
 import { disposeSkinnedInstance } from "../dist/code/browser/AnimatedModel.js";
 import { disposeModelPlacementTintMaterials } from "../dist/code/browser/ModelPlacementTint.js";
+import { dropDeathFade } from "../dist/code/browser/BatchDeathFade.js"; // 05.10 suite-fix: #clearUnitNode calls it since 05.10-A7a-F1
+import { detachGlowAnchors } from "../dist/code/browser/WeaponGlow.js"; // 05.10 suite-fix: #disposeAttachedGlow calls it since 05.10-A7a-E
 import {
   PROGRAM_WARMUP_BATCH, PROGRAM_WARMUP_BUDGET_MS, ProgramWarmup, programWarmupKind, programWarmupProxy,
 } from "../dist/code/browser/ProgramWarmup.js";
@@ -413,8 +415,8 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
   const js = ts.transpileModule(`class Harness { ${methods.join("\n")} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const Harness = Function("disposeSkinnedInstance", "disposeModelPlacementTintMaterials", js + "; return Harness;")(
-    disposeSkinnedInstance, disposeModelPlacementTintMaterials);
+  const Harness = Function("disposeSkinnedInstance", "disposeModelPlacementTintMaterials", "dropDeathFade", "detachGlowAnchors", js + "; return Harness;")(
+    disposeSkinnedInstance, disposeModelPlacementTintMaterials, dropDeathFade, detachGlowAnchors);
 
   for (const path of ["environment", "gameObject", "unit", "wmo", "attachments", "mount"]) {
     const renderer = fakeRenderer(), warmup = new ProgramWarmup(renderer, targetScene());
@@ -426,11 +428,16 @@ test("renderer detach paths cancel queued borrowers while shared builds remain c
     material.addEventListener("dispose", () => disposed++);
     warmup.registerObject(node);
     const harness = Object.assign(new Harness(), { programWarmup: warmup, environmentGroup: scene,
-      gameObjectGroup: scene, dropWmoLiquid() {}, releaseUnitOpacity() {}, clearOverlay() {}, showCapsule() {} });
+      gameObjectGroup: scene, dropWmoLiquid() {}, releaseUnitOpacity() {}, clearOverlay() {}, showCapsule() {},
+      forgetSceneryFar() {}, releaseWmoRoomShadow() {} }); // P2-02b: shadow bookkeeping, not under test here
     if (path === "environment") harness.disposeEnvironment({ node });
     if (path === "gameObject") harness.disposeGameObject({ node });
     if (path === "unit") harness.clearUnitNode({ node, attached: new Map() });
-    if (path === "wmo") harness.clearWmoGroups({ built: new Map([[0, { mesh }]]) }, node);
+    // P1-12b: a leaving room touches its geometry entry in the built-model cache.
+    if (path === "wmo") {
+      harness.wmoGeometries = new Map();
+      harness.clearWmoGroups({ built: new Map([[0, { mesh, entry: { cacheKey: "room" } }]]) }, node);
+    }
     if (path === "attachments") harness.detachAll({ attached: new Map([["hand", node]]) });
     if (path === "mount") harness.dropMount({ node: scene, mount: { node } });
     assert.equal(warmup.queued, 0, `${path}: detached cached meshes must not be compiled`);

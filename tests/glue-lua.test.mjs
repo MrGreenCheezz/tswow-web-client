@@ -229,3 +229,34 @@ test("securecall returns every result, not the first", () => {
   assert.equal(vm.getGlobal("__nils"), 3, "a nil in the middle of the result list must survive");
   vm.close();
 });
+
+// P1-14c: every host call stages the same traceback handler — it captures nothing, so a closure
+// per call was garbage — and a call that asks for no results hands back no new array.
+test("host calls share one traceback handler and keep the traceback on errors", () => {
+  const errors = [];
+  const vm = new GlueLuaVm({ onError: (message) => errors.push(message) });
+  const fn = vm.compileFunction("return", "@one-handler", []);
+  const fail = vm.compileFunction('error("deep")', "@fails-here", []);
+  const pushed = [];
+  const original = lua.lua_pushjsfunction;
+  lua.lua_pushjsfunction = (state, callback) => { pushed.push(callback); return original(state, callback); };
+  let empty;
+  try {
+    vm.call(fn);
+    vm.call(fn);
+    empty = vm.call(fn, [], 0);
+    vm.call(fail);
+  } finally {
+    lua.lua_pushjsfunction = original;
+  }
+  assert.equal(pushed.length, 4, "one handler pushed per call");
+  assert.equal(new Set(pushed).size, 1, "the same handler every time");
+  assert.equal(empty.length, 0);
+  assert.ok(Object.isFrozen(empty), "no-result calls answer the shared frozen empty list");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /fails-here:2: deep/);
+  assert.match(errors[0], /stack traceback:/, "the handler still appends the traceback");
+  vm.release(fn);
+  vm.release(fail);
+  vm.close();
+});

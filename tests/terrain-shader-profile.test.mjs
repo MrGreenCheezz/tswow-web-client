@@ -98,8 +98,9 @@ test("painted and unpainted terrain keep distinct profile programs", () => {
   applyTerrainSplat(painted, splat(true));
   setTerrainSplatMicroNormals(plain, true);
   setTerrainSplatMicroNormals(painted, true);
-  assert.match(plain.customProgramCacheKey(), /terrain-splat\|terrain-micro-normal-v1$/);
-  assert.match(painted.customProgramCacheKey(), /terrain-splat-mccv\|terrain-micro-normal-v1$/);
+  // 05.10-A7b-7: the splat keys carry the v2 program (baked shadow, per-chunk alpha).
+  assert.match(plain.customProgramCacheKey(), /terrain-splat-v2\|terrain-micro-normal-v1$/);
+  assert.match(painted.customProgramCacheKey(), /terrain-splat-mccv-v2\|terrain-micro-normal-v1$/);
   assert.notEqual(plain.customProgramCacheKey(), painted.customProgramCacheKey());
 });
 

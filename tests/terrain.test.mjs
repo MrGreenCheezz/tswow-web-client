@@ -718,8 +718,10 @@ test("EnvironmentClient stats split queued and active model and animation jobs a
       residentAnimations: 0,
       failedAnimations: 0,
       deferredAnimations: 0,
-      queuedAnimations: 0,
-      activeAnimations: 1,
+      // 10.21 (c): the four critical models fill the shared request budget, so the normal-priority
+      // sidecar waits in its queue instead of opening a fifth connection beside them.
+      queuedAnimations: 1,
+      activeAnimations: 0,
       modelDecodedTypedBackingBytes: 0,
       modelDecodedNumericArrayElements: 0,
       modelDecodedTypedBackingOverflowBytes: 0,
@@ -968,4 +970,109 @@ test("a per-cell liquid tile carries its type id, and its dry cells carry the ex
   assert.deepEqual(wet, { height: 12.5, type: 1, entry: 181, cells: true });
   // One cell along is the filler, and it is not water however low it is.
   assert.equal(tile.liquidAt(-4.2, 0), undefined);
+});
+
+// P1-13a: the revisions are read from a numeric mirror (one array per map) on the per-frame path.
+test("P1-13a: tileRevision is the tile's own revision plus its eight neighbours', at map edges too", async () => {
+  const originalFetch = globalThis.fetch;
+  let next = 1;
+  // A deterministic mix of terrain and 404s; both are answers with a revision.
+  globalThis.fetch = async (url) => {
+    next = (next * 1103515245 + 12345) % 2147483648;
+    return next % 3 === 0 ? new Response(null, { status: 404 }) : new Response(flatTerrainTile(), { status: 200 });
+  };
+  const region = [];
+  for (const x of [0, 1, 2, 31, 32, 61, 62, 63]) for (const y of [0, 1, 62, 63]) region.push({ x, y });
+  const sum = (terrain, map, grid) => {
+    let total = 0;
+    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) total += terrain.ownRevision(map, { x: grid.x + ox, y: grid.y + oy });
+    return total;
+  };
+  try {
+    const terrain = new TerrainClient("ws://example.test:1234/world", 6);
+    let seed = 7;
+    for (let step = 0; step < 60; step++) {
+      seed = (seed * 48271) % 2147483647;
+      const map = seed % 4 === 0 ? 1 : 7;
+      const active = region.filter((_, index) => (seed >> (index % 17)) & 1).slice(0, 8);
+      terrain.setActiveTiles(map, active);
+      for (const grid of active) terrain.heightAt(map, tileCentre(grid.x), tileCentre(grid.y));
+      await settleTerrain();
+      for (const checked of [1, 7]) {
+        for (const grid of region) {
+          assert.equal(terrain.tileRevision(checked, grid), sum(terrain, checked, grid), `step ${step} map ${checked} ${grid.x}/${grid.y}`);
+        }
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("P1-13a: a neighbour off the map edge never reads the cell its index would wrap to", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(flatTerrainTile(), { status: 200 });
+  try {
+    const terrain = new TerrainClient("ws://example.test:1234/world");
+    // (6, 0) is where (5, 64) would land as 5 * 64 + 64; (7, 0) is where (6, 64) would.
+    terrain.setActiveTiles(3, [{ x: 6, y: 0 }, { x: 7, y: 0 }]);
+    terrain.heightAt(3, tileCentre(6), tileCentre(0));
+    terrain.heightAt(3, tileCentre(7), tileCentre(0));
+    await settleTerrain();
+    assert.ok(terrain.ownRevision(3, { x: 6, y: 0 }) > 0);
+    assert.equal(terrain.ownRevision(3, { x: 5, y: 64 }), 0);
+    assert.equal(terrain.ownRevision(3, { x: 6, y: -1 }), 0, "(6, -1) would land on (5, 63)");
+    assert.equal(terrain.tileRevision(3, { x: 5, y: 63 }), 0, "no tile around (5, 63) has answered");
+    assert.equal(terrain.ownRevision(3, { x: 6.5, y: 0 }), 0, "a fractional grid names no tile");
+    assert.equal(terrain.ownRevision(4, { x: 6, y: 0 }), 0, "each map has its own revisions");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("P1-13a: objectsAround rebuilds for a different footprint of the same size", async () => {
+  const originalFetch = globalThis.fetch;
+  // One placement per tile, its id naming the tile.
+  globalThis.fetch = async (url) => {
+    const [x, y] = new URL(String(url)).pathname.split("/").slice(-2).map(Number);
+    return new Response(JSON.stringify([{ id: x * 100 + y, kind: "m2", name: "p.m2", x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, scale: 1 }]),
+      { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const settle = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  const ids = (objects) => objects.map((object) => object.id).sort((a, b) => a - b);
+  const expected = (x, y, range) => terrainGridFootprint(x, y, range).map((grid) => grid.x * 100 + grid.y).sort((a, b) => a - b);
+  try {
+    const client = new EnvironmentClient("ws://example.test:1234/world");
+    // One tile each: the same count, a different set.
+    client.objectsAround(7, tileCentre(32), tileCentre(32), 0);
+    client.objectsAround(7, tileCentre(31), tileCentre(32), 0);
+    await settle();
+    const first = client.objectsAround(7, tileCentre(32), tileCentre(32), 0);
+    assert.deepEqual(ids(first), [3232]);
+    assert.strictEqual(client.objectsAround(7, tileCentre(32), tileCentre(32), 0), first);
+    assert.deepEqual(ids(client.objectsAround(7, tileCentre(31), tileCentre(32), 0)), [3132]);
+
+    // Inside one tile, two circles whose corner tiles differ but whose tile counts agree.
+    const range = 300;
+    const base = tileCentre(32);
+    let pair;
+    for (let a = -260; a <= 260 && !pair; a += 20) {
+      for (let b = -260; b <= 260 && !pair; b += 20) {
+        const left = expected(base + a, base + b, range);
+        const right = expected(base - a, base + b, range);
+        if (left.length === right.length && left.join() !== right.join()) pair = [[base + a, base + b], [base - a, base + b]];
+      }
+    }
+    assert.ok(pair, "two same-size footprints that differ only by their corner tiles");
+    for (const [x, y] of pair) client.objectsAround(7, x, y, range);
+    await settle();
+    for (const [x, y] of [...pair, ...pair]) {
+      assert.deepEqual(ids(client.objectsAround(7, x, y, range)), expected(x, y, range), `${x}, ${y}`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

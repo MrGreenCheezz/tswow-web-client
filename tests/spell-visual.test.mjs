@@ -14,7 +14,8 @@ import {
   loadSpellVisualKits, loadSpellVisuals, parseSpellVisualKits, parseSpellVisuals,
 } from "../dist/code/gateway/SpellVisual.js";
 import {
-  AREA_EFFECT_SIZE_MAX_GROWTH, CAST_END_GRACE_MS, CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_ARC, MISSILE_FALLBACK_SPEED,
+  AREA_EFFECT_SIZE_MAX_GROWTH, CAST_END_GRACE_MS, CAST_KIT_MS, IMPACT_KIT_MS, MISSILE_FALLBACK_SPEED,
+  MISSILE_COUNT_MAX, MISSILE_TARGET_ATTACHMENT,
   MISSILE_MAX_SECONDS, areaEffectScale,
   expiredInstances, missileDirection, missilePoint, missileSeconds, planSpellAuraDone, planSpellAuraState, planSpellCastStart,
   planSpellVisual, planSpellVisualKitEvent, spellVisualTransformEuler, spellVisualTransformOffset,
@@ -218,6 +219,67 @@ test("a spell resolves to the models the client shows for it", withDataset, asyn
   assert.ok(/shadow/i.test(visuals.get(686).precast.effects[0].path), "Shadow Bolt is shadow");
 });
 
+test("05.10-A7a-E: a missile carries its SpellMissileMotion script and its other SpellVisual missile columns", withDataset, async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const read = (name) => readFile(join(dbcDirectory, name));
+  const visuals = parseSpellVisuals(
+    await read("Spell.dbc"), await read("SpellVisual.dbc"),
+    await read("SpellVisualKit.dbc"), await read("SpellVisualEffectName.dbc"), undefined, undefined,
+    await read("SpellMissileMotion.dbc"));
+  const motions = new Set();
+  let withMotion = 0;
+  let withOffsets = 0;
+  for (const visual of visuals.values()) {
+    const missile = visual.missile;
+    if (!missile) continue;
+    assert.equal(typeof missile.dest, "number", "MissileDestinationAttachment travels raw");
+    if (missile.castOffset || missile.impactOffset) withOffsets++;
+    if (!missile.motion) continue;
+    withMotion++;
+    motions.add(missile.motion.id);
+    assert.equal(typeof missile.motion.script, "string");
+    assert.ok(missile.motion.count >= 1 && missile.motion.count <= 10, `${visual.id}: count ${missile.motion.count}`);
+  }
+  // Measured 05.10 on the install with modules: 167 of the 185 scripts SpellVisual names are reachable
+  // from a spell, on 1,195 spells; 56 spells carry a cast or impact offset. Since 08.10 the counts are
+  // taken here from Spell.dbc, SpellVisual.dbc and SpellVisualEffectName.dbc with the tools' own
+  // reader: a spell's missile is that of the first SpellVisualID slot whose MissileModel names an
+  // .mdx/.m2 effect, its motion that visual's MissileMotion row. The base dataset gives 167, 1,193, 56.
+  const { openDbcFile } = await import("../tools/dbc.mjs");
+  const { parseSpellMissileMotions } = await import("../dist/code/gateway/SpellMissileMotion.js");
+  const [spellTable, visualTable, nameTable] = await Promise.all([
+    openDbcFile(dbcDirectory, "Spell"), openDbcFile(dbcDirectory, "SpellVisual"),
+    openDbcFile(dbcDirectory, "SpellVisualEffectName"),
+  ]);
+  const motionRows = parseSpellMissileMotions(await read("SpellMissileMotion.dbc"));
+  const modelNames = new Set();
+  for (const row of nameTable.rows()) {
+    if (/\.(mdx|m2)$/i.test(nameTable.string(row, "FileName"))) modelNames.add(nameTable.id(row));
+  }
+  const offset = (row, field) => {
+    const value = [0, 1, 2].map((index) => visualTable.float(row, field, index));
+    return value.every(Number.isFinite) && value.some((component) => component !== 0);
+  };
+  const expectMotions = new Set();
+  let expectWithMotion = 0;
+  let expectWithOffsets = 0;
+  for (const row of spellTable.rows()) {
+    const missileRow = [0, 1].map((slot) => visualTable.rowOf(spellTable.int(row, "SpellVisualID", slot)))
+      .find((visualRow) => visualRow !== undefined && modelNames.has(visualTable.int(visualRow, "MissileModel")));
+    if (missileRow === undefined) continue;
+    if (offset(missileRow, "MissileCastOffset") || offset(missileRow, "MissileImpactOffset")) expectWithOffsets++;
+    const motion = motionRows.get(visualTable.int(missileRow, "MissileMotion"));
+    if (!motion) continue;
+    expectWithMotion++;
+    expectMotions.add(motion.id);
+  }
+  assert.ok(expectWithMotion > 1000 && expectMotions.size > 100, `${expectWithMotion} / ${expectMotions.size}`);
+  assert.equal(motions.size, expectMotions.size);
+  assert.equal(withMotion, expectWithMotion);
+  assert.equal(withOffsets, expectWithOffsets);
+});
+
 test("SpellVisualKitModelAttach merges kit 1027 with its authored transform and drops dangling parents", withDataset, async () => {
   const { readFile } = await import("node:fs/promises");
   const { join } = await import("node:path");
@@ -379,29 +441,43 @@ test("a bolt takes as long as the distance and the spell's own speed say", () =>
   assert.equal(missileSeconds(1000, 24), MISSILE_MAX_SECONDS, "a long shot is capped, not endless");
 });
 
-test("a bolt leaves the hand and arrives at the target, bowing in between", () => {
+test("05.10-A7a-E: the line helpers are straight — no invented arc (Wow.exe bows only by a motion script)", () => {
   const from = { x: 0, y: 0, z: 10 };
   const to = { x: 30, y: 0, z: 10 };
   const out = { x: 0, y: 0, z: 0 };
-  // Both ends exactly, or the bolt is thrown from beside the caster at something beside the
-  // target. The arc has to vanish there and only there.
   assert.deepEqual(missilePoint(from, to, 0, out), { x: 0, y: 0, z: 10 });
   assert.deepEqual(missilePoint(from, to, 1, out), { x: 30, y: 0, z: 10 });
-  const middle = missilePoint(from, to, 0.5, { x: 0, y: 0, z: 0 });
-  assert.equal(middle.x, 15);
-  assert.ok(Math.abs(middle.z - (10 + 30 * MISSILE_ARC)) < 1e-9, `${middle.z} at the top of the arc`);
-  // Off both ends it holds rather than flying on past.
+  assert.deepEqual(missilePoint(from, to, 0.5, { x: 0, y: 0, z: 0 }), { x: 15, y: 0, z: 10 }, "no bow in the middle");
   assert.deepEqual(missilePoint(from, to, 2, out), { x: 30, y: 0, z: 10 });
+  const direction = { x: 0, y: 0, z: 0 };
+  missileDirection({ x: 0, y: 0, z: 0 }, { x: 30, y: 8, z: 10 }, 0, direction);
+  assert.deepEqual(direction, { x: 30, y: 8, z: 10 }, "the launch direction is the line, not an upward arc");
 });
 
-test("a bolt's facing follows the 3D tangent of its bowed flight", () => {
-  const direction = { x: 0, y: 0, z: 0 };
-  missileDirection({ x: 0, y: 0, z: 0 }, { x: 30, y: 8, z: 10 }, 0.5, direction);
-  // At the apex the bow has no vertical derivative, so the tangent is exactly the endpoint
-  // delta. This catches the old yaw-only path, which could not expose a target's z component.
-  assert.deepEqual(direction, { x: 30, y: 8, z: 10 });
-  missileDirection({ x: 0, y: 0, z: 0 }, { x: 30, y: 8, z: 10 }, 0, direction);
-  assert.ok(direction.z > 10, "the launch tangent follows the upward arc");
+test("05.10-A7a-E: a planned bolt launches from the caster's missile attachment and homes on the target's chest", () => {
+  const motion = { id: 19, script: "transMag = 1", count: 7 };
+  const visual = {
+    id: 5143,
+    missile: { path: "Spells\\Arcane_Missile.m2", scale: 1, attachment: 1, speed: 20, motion },
+  };
+  const plan = planSpellVisual(visual, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 },
+    targets: [{ guid: 2n, point: { x: 20, y: 0, z: 0 } }, { guid: 0n, point: { x: 0, y: 20, z: 0 } }],
+  }, 0);
+  const bolts = plan.instances.filter((one) => one.flight);
+  assert.equal(bolts.length, 14, "MissileCount 7 per target");
+  const first = bolts[0].flight;
+  assert.deepEqual(first.launch, { guid: 1n, attachment: 1 });
+  assert.deepEqual(first.target, { guid: 2n, attachment: MISSILE_TARGET_ATTACHMENT });
+  assert.equal(first.motion, motion);
+  assert.equal(first.spellId, 5143);
+  assert.deepEqual(bolts.slice(0, 7).map((bolt) => bolt.flight.missileIndex), [0, 1, 2, 3, 4, 5, 6]);
+  assert.ok(bolts.every((bolt) => bolt.flight.missileCount === 7));
+  assert.equal(bolts[7].flight.target, undefined, "a static point is not a unit to home on");
+  const many = planSpellVisual({ id: 1, missile: { ...visual.missile, motion: { ...motion, count: 50 } } }, {
+    caster: 1n, casterPoint: { x: 0, y: 0, z: 0 }, targets: [{ guid: 2n, point: { x: 20, y: 0, z: 0 } }],
+  }, 0);
+  assert.equal(many.instances.filter((one) => one.flight).length, MISSILE_COUNT_MAX);
 });
 
 test("a cast plays now and its flash plays when the bolt gets there", () => {

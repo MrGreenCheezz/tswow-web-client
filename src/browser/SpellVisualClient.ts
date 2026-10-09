@@ -160,9 +160,12 @@ export class SpellVisualClient extends BatchedMetadataClient<SpellVisualMetadata
     // v=5 adds DBC model-attach transforms to visual kits, including patched Cone of Cold.
     // v=6 leaves a formerly cached HD-overlay answer behind when switching to classic.
     // v=7 carries `areaSize` on effect placements that author a non-identity AreaEffectSize.
+    // v=8 (05.10-A7a-E, slice E: 6.12–6.14 together) carries the missile's motion script and columns, and
+    // kit shakes and chain beams. An older gateway ignores `v` and answers the v=7 shape, which this
+    // validator still accepts: the new keys are optional and the page flies/draws as before without them.
     // Keeping the cache marker here prevents an older "no visual" response from turning
     // Auto Shot back into a generic cast after the gateway has been upgraded.
-    return `${this.baseUrl}/dbc/spell-visuals?v=7&ids=${ids.join(",")}`;
+    return `${this.baseUrl}/dbc/spell-visuals?v=8&ids=${ids.join(",")}`;
   }
 
   protected override accept(value: unknown): value is SpellVisualMetadata {
@@ -214,7 +217,39 @@ function isKit(value: unknown): value is SpellVisualKit {
   if (typeof shape["startAnimation"] !== "number" || !Number.isFinite(shape["startAnimation"])
     || typeof shape["animation"] !== "number" || !Number.isFinite(shape["animation"])
     || typeof shape["sound"] !== "number" || !Number.isFinite(shape["sound"])) return false;
-  return Array.isArray(shape["effects"]) && shape["effects"].every(isEffect);
+  return Array.isArray(shape["effects"]) && shape["effects"].every(isEffect) && isKitExtras(shape); // 05.10-A7a-E
+}
+
+/** 05.10-A7a-E (6.13): a kit's optional `shake` and `chains` (v=8); malformed is rejected, absent is fine. */
+function isKitExtras(shape: Record<string, unknown>): boolean {
+  const shake = shape["shake"];
+  if (shake !== undefined) {
+    if (!Array.isArray(shake)) return false;
+    for (const row of shake) {
+      if (!row || typeof row !== "object") return false;
+      const fields = row as Record<string, unknown>;
+      if (!["type", "direction", "amplitude", "frequency", "duration", "phase", "coefficient"]
+        .every((field) => finite(fields[field]))) return false;
+    }
+  }
+  const chains = shape["chains"];
+  if (chains !== undefined) {
+    if (!Array.isArray(chains)) return false;
+    for (const chain of chains) {
+      if (!chain || typeof chain !== "object") return false;
+      const slot = chain as Record<string, unknown>;
+      if (!finite(slot["slot"]) || !finite(slot["proc"]) || !finite(slot["param1"])) return false;
+      const effect = slot["effect"];
+      if (!effect || typeof effect !== "object") return false;
+      const fields = effect as Record<string, unknown>;
+      if (typeof fields["texture"] !== "string") return false;
+      if (!["id", "width", "avgSegLen", "noiseScale", "texCoordScale", "textureLength", "segDuration", "segDelay",
+        "flags", "jointCount", "blendMode", "renderLayer"].every((field) => finite(fields[field]))) return false;
+      const color = fields["color"];
+      if (!Array.isArray(color) || color.length !== 4 || !color.every(finite)) return false;
+    }
+  }
+  return true;
 }
 
 function isSpellVisual(value: unknown): value is SpellVisualMetadata {
@@ -240,10 +275,34 @@ function isSpellVisual(value: unknown): value is SpellVisualMetadata {
       || typeof shape["speed"] !== "number" || !Number.isFinite(shape["speed"])) return false;
     if (shape["sound"] !== undefined
       && (typeof shape["sound"] !== "number" || !Number.isFinite(shape["sound"]))) return false;
+    if (!isMissileExtras(shape)) return false; // 05.10-A7a-E
   }
   for (const field of ["missileSound", "animEventSound", "durationMs"]) {
     if (visual[field] !== undefined
       && (typeof visual[field] !== "number" || !Number.isFinite(visual[field]))) return false;
+  }
+  return true;
+}
+
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const finiteTriple = (value: unknown): boolean => Array.isArray(value) && value.length === 3 && value.every(finite);
+
+/** 05.10-A7a-E (6.12): the optional missile columns of v=8; malformed is rejected, absent is fine. */
+function isMissileExtras(shape: Record<string, unknown>): boolean {
+  const motion = shape["motion"];
+  if (motion !== undefined) {
+    if (!motion || typeof motion !== "object") return false;
+    const row = motion as Record<string, unknown>;
+    if (!finite(row["id"]) || typeof row["script"] !== "string" || !finite(row["count"])
+      || !Number.isInteger(row["count"]) || (row["count"] as number) < 1) return false;
+  }
+  for (const field of ["dest", "pathType"]) if (shape[field] !== undefined && !finite(shape[field])) return false;
+  for (const field of ["castOffset", "impactOffset"]) if (shape[field] !== undefined && !finiteTriple(shape[field])) return false;
+  const ground = shape["followGround"];
+  if (ground !== undefined) {
+    if (!ground || typeof ground !== "object") return false;
+    const row = ground as Record<string, unknown>;
+    if (!["height", "dropSpeed", "approach", "flags"].every((field) => finite(row[field]))) return false;
   }
   return true;
 }

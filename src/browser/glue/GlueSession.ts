@@ -1,6 +1,11 @@
 import { canSelectRealm, REALM_FLAG_OFFLINE, type RealmInfo } from "../../auth/AuthProtocol.js";
 import type { AuthSessionResult } from "../../auth/login.js";
-import type { CharacterSummary, RenameResult } from "../../world/CharacterProtocol.js";
+import { RESPONSE_SUCCESS, type CharacterSummary, type RenameResult } from "../../world/CharacterProtocol.js";
+import {
+  CHAR_CUSTOMIZE_FLAG_CUSTOMIZE, CHAR_CUSTOMIZE_FLAG_FACTION, CHAR_CUSTOMIZE_FLAG_RACE,
+  type CharacterServiceRequest, type CharacterServiceResult, type PaidServiceKind,
+} from "../../world/CharacterServiceProtocol.js";
+import { CHARACTER_FLAG_DECLINED, CHARACTER_FLAG_RENAME } from "./GlueEnterGate.js";
 import {
   describeFailure, formatGlueString, messageFor, openStatusDialog, responseKey, showStatusMessage,
   type GlueStringLookup,
@@ -19,6 +24,50 @@ import {
  * `WorldClient.connect` over a `WebSocketByteStream`; the tests pass three canned characters.
  */
 
+/**
+ * How a rename request ended, as far as the screen that asked has to know:
+ * - `answered` — the core's answer to the request the screen is still waiting on;
+ * - `cancelled` — the player cancelled the wait or the connection was replaced; a late success is
+ *   still applied to the list (see `renameCharacter`), silently;
+ * - `unavailable` — the question was never asked: no connection, or one that cannot rename;
+ * - `failed` — the connection failed while waiting, and its dialog is already up.
+ */
+export type GlueRenameOutcome =
+  | { readonly status: "answered"; readonly answer: RenameResult }
+  | { readonly status: "cancelled" | "unavailable" | "failed" };
+
+/**
+ * How a paid-service request (2.08: customise, faction or race change) ended — the same four ends a
+ * rename has (`GlueRenameOutcome`), with the core's answer when it is the current one.
+ */
+export type GluePaidServiceOutcome =
+  | { readonly status: "answered"; readonly answer: CharacterServiceResult }
+  | { readonly status: "cancelled" | "unavailable" | "failed" };
+
+/** What the creation screen hands the session in paid mode: the body, the new race and which packet. */
+export interface GluePaidServiceRequest extends CharacterServiceRequest {
+  readonly kind: PaidServiceKind;
+  /** `ChrRaces` id of the race chosen on the screen; the customisation packet does not carry it. */
+  readonly race: number;
+}
+
+/** One connection's requests, run one at a time (see `GlueSession.request`). */
+interface GlueRequestLane {
+  tail: Promise<void>;
+  pending: number;
+}
+
+const newLane = (): GlueRequestLane => ({ tail: Promise.resolve(), pending: 0 });
+
+/** Runs a request now, a synchronous throw becoming the rejection an async call would give. */
+function startRequest<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return Promise.resolve(run());
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 /** The half of `WorldClient` the glue screens use. */
 export interface GlueWorldConnection {
   characters(): Promise<CharacterSummary[]>;
@@ -31,6 +80,12 @@ export interface GlueWorldConnection {
   createCharacter?(request: GlueCreateCharacterRequest): Promise<number>;
   /** `CMSG_CHAR_RENAME`, optional for the same reason: the answer, with the name the core normalised. */
   renameCharacter?(guid: bigint, name: string): Promise<RenameResult>;
+  /** `CMSG_SET_PLAYER_DECLINED_NAMES` (10.09), optional like the others: `result` 0 is accepted. */
+  declineCharacterNames?(guid: bigint, name: string, cases: readonly string[]): Promise<{ result: number; guid: bigint }>;
+  /** `CMSG_CHAR_CUSTOMIZE` (2.08), optional like the others. */
+  customizeCharacter?(request: CharacterServiceRequest): Promise<CharacterServiceResult>;
+  /** `CMSG_CHAR_FACTION_CHANGE` when `faction`, else `CMSG_CHAR_RACE_CHANGE` (2.08). */
+  changeRaceOrFaction?(request: CharacterServiceRequest & { race: number }, faction: boolean): Promise<CharacterServiceResult>;
   close(): void;
 }
 
@@ -77,8 +132,9 @@ export type GlueWorldConnector = (
  * this file.
  */
 export interface GlueNameLookup {
-  raceName(race: number): string;
-  className(classId: number): string;
+  /** `sex` (0 male, 1 female) picks the sexed name, as `GetCharacterInfo` does; omitted, `Name_lang`. */
+  raceName(race: number, sex?: number): string;
+  className(classId: number, sex?: number): string;
   /** The zone a character is parked in, or "" when the area table has not arrived. */
   zoneName(zone: number): string;
   /** `CreatureDisplayInfo` row for a race and sex, or undefined when the dataset has none. */
@@ -97,6 +153,29 @@ export interface GlueSessionOptions {
   readonly glueString?: GlueStringLookup;
   /** Whether the corpus defines `GlueDialogTypes[type]`, for a refusal the client shows in one. */
   readonly hasDialogType?: (type: string) => boolean;
+  /** A realm was chosen (`ChangeRealm`); the host remembers it as `realmName` (10.07). */
+  readonly onRealmChosen?: (realm: RealmInfo) => void;
+  /**
+   * The 0-based `lastCharacterIndex` CVar: the first list of a connection opens on that character,
+   * as the client's does after EnterWorld wrote it (10.07). Out of range, or absent, changes nothing.
+   */
+  readonly lastCharacterIndex?: () => number | undefined;
+  /**
+   * A fresh realm list from the auth connection that is still open (10.08), or `undefined` when there
+   * is none — then `RequestRealmList` answers from the list the login brought, as before.
+   */
+  readonly refreshRealms?: () => Promise<RealmInfo[]> | undefined;
+  /**
+   * Cfg_Categories by id (`/dbc/realm-categories?v=1`, 10.08), or undefined until the table has
+   * landed — a gateway older than the route never sends it, and the tabs keep their numbers.
+   */
+  readonly realmCategories?: () => ReadonlyMap<number, GlueRealmCategoryRow> | undefined;
+}
+
+/** What the glue reads of a Cfg_Categories row (`browser/RealmCategoryClient.ts`). */
+export interface GlueRealmCategoryRow {
+  readonly name: string;
+  readonly createCharsetMask: number;
 }
 
 /**
@@ -112,16 +191,31 @@ const REALM_FLAG_RECOMMENDED = 0x20;
 const REALM_FLAG_NEW = 0x40;
 const REALM_FLAG_FULL = 0x80;
 
-/** `RealmType`, second column of `Cfg_Configs.dbc` (`Realm.h:49-56`). */
-const REALM_TYPE_PVP = 1;
-const REALM_TYPE_RP = 6;
-const REALM_TYPE_RPPVP = 8;
+/**
+ * `Cfg_Configs.dbc`: RealmType (column 2) → PlayerKillingAllowed (3), Roleplaying (4), the 13 rows of
+ * this dataset (read 2026-09-30; the same as the stock client's). `GetRealmInfo` (Wow.exe 0x4debc0)
+ * walks this table for the first row whose RealmType is the realm-list type byte and answers `pvp`
+ * and `rp` from it; a type with no row is neither. So PvP is 1, 3, 5, 8, 10 and 12 and RP 6, 7 and
+ * 8 — not only the named PVP/RP/RPPVP of `Realm.h:49-56` (10.08).
+ */
+const CFG_CONFIGS: ReadonlyMap<number, { readonly pvp: boolean; readonly rp: boolean }> = new Map([
+  [0, { pvp: false, rp: false }], [1, { pvp: true, rp: false }], [2, { pvp: false, rp: false }],
+  [3, { pvp: true, rp: false }], [4, { pvp: false, rp: false }], [5, { pvp: true, rp: false }],
+  [6, { pvp: false, rp: true }], [7, { pvp: false, rp: true }], [8, { pvp: true, rp: true }],
+  [9, { pvp: false, rp: false }], [10, { pvp: true, rp: false }], [11, { pvp: false, rp: false }],
+  [12, { pvp: true, rp: false }],
+]);
 
-/** `CharacterFlags` / `CharacterCustomizeFlags` (`Player.cpp:144-187`). */
+/** `pvp` and `rp` of a realm type, as `GetRealmInfo` and `GetServerName` answer them. */
+export function realmTypeRules(type: number): { readonly pvp: boolean; readonly rp: boolean } {
+  return CFG_CONFIGS.get(type) ?? { pvp: false, rp: false };
+}
+
+/** `CharacterFlags` (`Player.cpp:144-187`); the customise flags are `CharacterServiceProtocol`'s. */
 const CHARACTER_FLAG_GHOST = 0x00002000;
-const CHAR_CUSTOMIZE_FLAG_CUSTOMIZE = 0x00000001;
-const CHAR_CUSTOMIZE_FLAG_FACTION = 0x00010000;
-const CHAR_CUSTOMIZE_FLAG_RACE = 0x00100000;
+
+/** All three paid-service bits: a success clears them from the row (Wow.exe 0x4e29e0, mask 0xffeefffe). */
+const CHAR_CUSTOMIZE_FLAGS_ALL = CHAR_CUSTOMIZE_FLAG_CUSTOMIZE | CHAR_CUSTOMIZE_FLAG_FACTION | CHAR_CUSTOMIZE_FLAG_RACE;
 
 /** `SMSG_CHAR_DELETE`'s success code, the same number `app/Login.ts:246` checks. */
 export const CHAR_DELETE_SUCCESS = 71;
@@ -204,6 +298,8 @@ export class GlueSession {
   #characterRefresh: Promise<void> | undefined;
   #characters: readonly CharacterSummary[] = [];
   #selectedIndex = 0;
+  /** The realm-list refresh in flight (10.08). */
+  #realmRefresh: Promise<void> | undefined;
   #facing = 0;
   /** Bumped by every connect and every relogin; a late reply from an older one is dropped. */
   #generation = 0;
@@ -214,6 +310,11 @@ export class GlueSession {
   /** Bumped by every rename and every cancel of one; an answer to an older one is dropped. */
   #renameGeneration = 0;
   #renaming = false;
+  /** The paid service's own pair, as the rename's (2.08). */
+  #serviceGeneration = 0;
+  #servicing = false;
+  /** The live connection's request queue; a new one with every connection. */
+  #lane: GlueRequestLane = newLane();
 
   constructor(options: GlueSessionOptions) {
     this.#options = options;
@@ -278,13 +379,31 @@ export class GlueSession {
    * realm's `timezone` byte — so the categories are exactly the distinct timezones the list came
    * with, in order. A private server sends one, and `RealmList_UpdateTabs` hides the tab row
    * entirely when there is only one, which is the original's behaviour and not a shortcut.
+   *
+   * Named as `GetRealmCategories` names them (Wow.exe 0x4df110): the row's `Name_lang`, or
+   * "UNKNOWN" when Cfg_Categories has no row for the number. Until the table has come (an older
+   * gateway answers 404 for `/dbc/realm-categories`) the tab shows the number, as it did before.
    */
   categories(): GlueRealmCategory[] {
     const seen = new Set<number>();
     for (const realm of this.#realms) seen.add(realm.timezone);
     const ids = [...seen].sort((left, right) => left - right);
     if (ids.length === 0) return [];
-    return ids.map((id) => ({ id, name: String(id) }));
+    const table = this.#options.realmCategories?.();
+    return ids.map((id) => ({ id, name: table ? table.get(id)?.name ?? "UNKNOWN" : String(id) }));
+  }
+
+  /**
+   * The alphabet mask a new character's name is checked with (1.19): the chosen realm's category
+   * row's `Create_charset_mask`, which the client hands the name check on its way to the character
+   * list (0x4dab40 → 0x7e2250). No realm, no row or no table yet: 0, every alphabet — the client's
+   * own answer without a row.
+   */
+  nameAlphabetMask(): number {
+    const realm = this.#selectedRealm;
+    if (!realm) return 0;
+    const mask = this.#options.realmCategories?.()?.get(realm.timezone)?.createCharsetMask ?? 0;
+    return Number.isInteger(mask) ? mask >>> 0 : 0;
   }
 
   /** Realms in one category, in the order the authserver listed them. */
@@ -293,6 +412,17 @@ export class GlueSession {
     const wanted = ids[Math.max(0, category - 1)]?.id;
     if (wanted === undefined) return [];
     return this.#realms.filter((realm) => realm.timezone === wanted);
+  }
+
+  /** Where the realm called `name` sits in the list, as `GetRealmInfo(category, index)` counts. */
+  realmPosition(name: string): { category: number; index: number; realm: RealmInfo } | undefined {
+    const categories = this.categories();
+    for (let category = 1; category <= categories.length; category++) {
+      const realms = this.realmsIn(category);
+      const at = realms.findIndex((realm) => realm.name === name);
+      if (at >= 0) return { category, index: at + 1, realm: realms[at]! };
+    }
+    return undefined;
   }
 
   realmRow(category: number, index: number): GlueRealmRow | undefined {
@@ -304,8 +434,7 @@ export class GlueSession {
       invalidRealm: (realm.flags & REALM_FLAG_VERSION_MISMATCH) !== 0,
       realmDown: (realm.flags & REALM_FLAG_OFFLINE) !== 0,
       currentRealm: this.#selectedRealm?.id === realm.id ? 1 : 0,
-      pvp: realm.type === REALM_TYPE_PVP || realm.type === REALM_TYPE_RPPVP,
-      rp: realm.type === REALM_TYPE_RP || realm.type === REALM_TYPE_RPPVP,
+      ...realmTypeRules(realm.type),
       load: realmLoad(realm),
       locked: realm.locked,
     };
@@ -315,8 +444,33 @@ export class GlueSession {
     if (category > 0) this.#selectedCategory = category;
   }
 
-  /** `RequestRealmList()`: the C side answers by opening the dialog the corpus already has. */
+  /**
+   * `RequestRealmList()`: the C side answers by opening the dialog the corpus already has — with a
+   * fresh list when the auth connection is still open (10.08): `RealmList_OnUpdate` asks every
+   * `RealmListUpdateRate()` seconds, so population, status and character counts move while the
+   * dialog is up. A refresh that fails keeps the old list; one answer at a time.
+   */
   requestRealmList(): void {
+    if (this.#realmRefresh) return;
+    const refreshing = this.#options.refreshRealms?.();
+    if (!refreshing) {
+      this.showRealmList();
+      return;
+    }
+    const auth = this.#auth;
+    this.#realmRefresh = refreshing
+      .then((realms) => { if (auth !== undefined && auth === this.#auth) this.#realms = realms; })
+      .catch((error: unknown) => {
+        this.#options.onDiagnostic?.(`realm list: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        this.#realmRefresh = undefined;
+        if (auth === this.#auth) this.showRealmList();
+      });
+  }
+
+  /** OPEN_REALM_LIST over the list as it stands: right after a login it is as fresh as it gets. */
+  showRealmList(): void {
     this.#options.fireEvent("OPEN_REALM_LIST");
   }
 
@@ -348,6 +502,7 @@ export class GlueSession {
     const auth = this.#auth;
     const connector = this.#options.connect;
     this.#selectedRealm = realm;
+    this.#options.onRealmChosen?.(realm);
     this.closeWorld();
     if (!auth || !connector) {
       this.#options.onDiagnostic?.("нет сессии авторизации — подключение к миру невозможно");
@@ -403,9 +558,15 @@ export class GlueSession {
    * dialog ends in StatusDialogClick too, so with nothing in flight this does nothing.
    */
   cancelPending(): void {
+    // The rename's request itself stays in the lane: its answer is still read off the socket (so the
+    // next request has the socket to itself) and a success still lands in the list.
     if (this.#renaming) {
       this.#renaming = false;
       this.#renameGeneration += 1;
+    }
+    if (this.#servicing) {
+      this.#servicing = false;
+      this.#serviceGeneration += 1;
     }
     if (!this.#connecting || !this.#announced) return;
     this.#announced = false;
@@ -434,6 +595,39 @@ export class GlueSession {
     return this.#connecting;
   }
 
+  /**
+   * One request on the connection at a time.
+   *
+   * Every `WorldClient` call here sends and then reads the socket until its answer comes
+   * (`#waitFor`), putting everything else it reads aside. Two of them in flight are two readers on
+   * one stream, each able to swallow the other's answer — which is what a cancelled rename used to
+   * leave behind the next list request. So each request waits for the one before it to have its
+   * answer, cancelled or not, the way the original client reads one stream in one place.
+   */
+  private request<T>(run: () => Promise<T>): Promise<T> {
+    const lane = this.#lane;
+    // Sent at once when nothing is waiting — the packet leaves inside the C call, as the client's
+    // does — and after the previous answer otherwise.
+    const result = lane.pending === 0 ? startRequest(run) : lane.tail.then(run);
+    lane.pending += 1;
+    lane.tail = result.then(() => { lane.pending -= 1; }, () => { lane.pending -= 1; });
+    return result;
+  }
+
+  /** Whether a request is still waiting for its answer on the live connection. */
+  get busy(): boolean {
+    return this.#lane.pending > 0;
+  }
+
+  /**
+   * Settles once no request is waiting on the live connection — before the world takes the socket
+   * over, so its reader is the only one. A connection that is replaced meanwhile settles it too.
+   */
+  async idle(): Promise<void> {
+    const lane = this.#lane;
+    while (lane === this.#lane && lane.pending > 0) await lane.tail;
+  }
+
   /** `GetCharacterListUpdate()`: ask the world again and answer with CHARACTER_LIST_UPDATE. */
   async refreshCharacters(): Promise<void> {
     if (this.#characterRefresh) return this.#characterRefresh;
@@ -455,10 +649,15 @@ export class GlueSession {
     }
     const generation = this.#generation;
     try {
-      const characters = await world.characters();
+      const characters = await this.request(() => world.characters());
       if (generation !== this.#generation) return;
       this.#characters = characters;
       if (this.#selectedIndex > characters.length) this.#selectedIndex = 0;
+      // Nothing chosen yet on this connection: open on the character last taken into the world.
+      if (this.#selectedIndex === 0) {
+        const last = this.#options.lastCharacterIndex?.();
+        if (last !== undefined && last >= 0 && last < characters.length) this.selectCharacter(last + 1);
+      }
       // The connecting dialog comes down as the list it was waiting for goes up.
       if (this.#announced) {
         this.#announced = false;
@@ -477,8 +676,9 @@ export class GlueSession {
     const names = this.#options.names;
     return {
       name: character.name,
-      race: names?.raceName(character.race) ?? String(character.race),
-      className: names?.className(character.classId) ?? String(character.classId),
+      // By the character's sex, as the client's GetCharacterInfo (Wow.exe 0x4e3170) names them.
+      race: names?.raceName(character.race, character.gender) ?? String(character.race),
+      className: names?.className(character.classId, character.gender) ?? String(character.classId),
       level: character.level,
       zone: names?.zoneName(character.zone) ?? "",
       // The protocol's own number — 0 male, 1 female, as `CMSG_CHAR_CREATE` sends it and as
@@ -515,7 +715,7 @@ export class GlueSession {
     if (!character || !world) return undefined;
     const generation = this.#generation;
     try {
-      const result = await world.deleteCharacter(character.guid);
+      const result = await this.request(() => world.deleteCharacter(character.guid));
       if (generation !== this.#generation) return undefined;
       if (result !== CHAR_DELETE_SUCCESS) {
         this.dialog(messageFor(responseKey(result, "delete"), this.#options.glueString,
@@ -544,36 +744,180 @@ export class GlueSession {
    */
   async createCharacter(request: GlueCreateCharacterRequest): Promise<number | undefined> {
     const world = this.#world;
-    if (!world?.createCharacter) return undefined;
+    const create = world?.createCharacter?.bind(world);
+    if (!create) return undefined;
     const generation = this.#generation;
-    const result = await world.createCharacter(request);
+    const result = await this.request(() => create(request));
     if (generation !== this.#generation) return undefined;
     if (result === CHAR_CREATE_SUCCESS) await this.refreshCharacters();
     return result;
   }
 
+  /** Whether `renameCharacter` would ask anything: a live connection that carries the call. */
+  canRename(index: number): boolean {
+    return this.#characters[index - 1] !== undefined && this.#world?.renameCharacter !== undefined;
+  }
+
   /**
    * `CMSG_CHAR_RENAME` for the character at `index` — the wire half of `RenameCharacter`.
    *
-   * `undefined` when the question was never asked (no connection, or one that cannot rename) or its
-   * answer was cancelled; a failed connection is reported like any other. The dialogs and the list
-   * that follow an answer belong to the C API, which is where the client handles them (FUN_004da090).
+   * The dialogs that follow a current answer belong to the C API, which is where the client handles
+   * them (FUN_004da090). An answer that arrives after the player cancelled the wait is not dropped:
+   * the client has no notion of a cancelled rename — its Cancel only resets the dialog state — and
+   * still applies what comes. Here that is a success renaming the row quietly (no dialog, no entering
+   * the world); a refusal nobody waits for says nothing.
    */
-  async renameCharacter(index: number, name: string): Promise<RenameResult | undefined> {
+  async renameCharacter(index: number, name: string): Promise<GlueRenameOutcome> {
     const character = this.#characters[index - 1];
     const world = this.#world;
-    if (!character || !world?.renameCharacter) return undefined;
+    const rename = world?.renameCharacter?.bind(world);
+    if (!character || !rename) return { status: "unavailable" };
     const generation = this.#generation;
     const request = ++this.#renameGeneration;
     this.#renaming = true;
     try {
-      const result = await world.renameCharacter(character.guid, name);
-      return generation === this.#generation && request === this.#renameGeneration ? result : undefined;
+      // As `paidService`: a rename cancelled while it still waits its turn in the queue is never sent.
+      const answer = await this.request(async () => (request === this.#renameGeneration && generation === this.#generation
+        ? await rename(character.guid, name) : undefined));
+      if (answer === undefined || generation !== this.#generation) return { status: "cancelled" };
+      if (request !== this.#renameGeneration) {
+        if (answer.result === RESPONSE_SUCCESS) this.applyRename(answer.guid ?? character.guid, answer.name ?? name);
+        return { status: "cancelled" };
+      }
+      return { status: "answered", answer };
     } catch (error) {
-      if (generation === this.#generation && request === this.#renameGeneration) this.report(error);
-      return undefined;
+      if (generation !== this.#generation || request !== this.#renameGeneration) return { status: "cancelled" };
+      this.report(error);
+      return { status: "failed" };
     } finally {
       if (request === this.#renameGeneration) this.#renaming = false;
+    }
+  }
+
+  /**
+   * A successful rename, in the list the screen draws (FUN_004e2870): the core's name for the row,
+   * the rename and declined flags off it, and CHARACTER_LIST_UPDATE. No second CMSG_CHAR_ENUM: the
+   * answer names the character and the name, which is all the client itself uses.
+   */
+  applyRename(guid: bigint, name: string): boolean {
+    const at = this.#characters.findIndex((character) => character.guid === guid);
+    const character = this.#characters[at];
+    if (!character) return false;
+    const renamed: CharacterSummary = {
+      ...character,
+      name,
+      flags: character.flags & ~(CHARACTER_FLAG_RENAME | CHARACTER_FLAG_DECLINED),
+    };
+    this.#characters = this.#characters.map((entry, index) => (index === at ? renamed : entry));
+    this.#options.fireEvent("CHARACTER_LIST_UPDATE");
+    return true;
+  }
+
+  /** Whether `paidService` would ask anything for `kind`: a live connection that carries the call. */
+  canPaidService(kind: PaidServiceKind): boolean {
+    const world = this.#world;
+    if (!world) return false;
+    return kind === "customize" ? world.customizeCharacter !== undefined : world.changeRaceOrFaction !== undefined;
+  }
+
+  /**
+   * The paid service's packet (2.08) — CMSG_CHAR_CUSTOMIZE, CMSG_CHAR_FACTION_CHANGE or
+   * CMSG_CHAR_RACE_CHANGE by `kind` — for the character `request.guid` names. The dialogs belong to
+   * the creation screen (Wow.exe 0x4d9190 / 0x4d92d0 answer in it). Like a rename, an answer that comes
+   * after the player cancelled the wait still lands: a success updates the row quietly.
+   */
+  async paidService(request: GluePaidServiceRequest): Promise<GluePaidServiceOutcome> {
+    const world = this.#world;
+    const known = this.#characters.some((entry) => entry.guid === request.guid);
+    let send: (() => Promise<CharacterServiceResult>) | undefined;
+    if (world && known) {
+      if (request.kind === "customize") {
+        const customize = world.customizeCharacter?.bind(world);
+        if (customize) send = () => customize(request);
+      } else {
+        const change = world.changeRaceOrFaction?.bind(world);
+        if (change) send = () => change(request, request.kind === "faction");
+      }
+    }
+    if (!send) return { status: "unavailable" };
+    const generation = this.#generation;
+    const asked = ++this.#serviceGeneration;
+    this.#servicing = true;
+    const ask = send;
+    try {
+      // Wow.exe sends inside CreateCharacter, so its CANCEL always comes after the packet. A request
+      // queued behind another one here has not left yet: cancelled meanwhile, it is never sent.
+      const answer = await this.request(async () => (asked === this.#serviceGeneration && generation === this.#generation
+        ? await ask() : undefined));
+      if (answer === undefined || generation !== this.#generation) return { status: "cancelled" };
+      // The row is updated before the screen hears of it (0x4d9190: 0x4e29e0, then the dialogs).
+      if (answer.result === RESPONSE_SUCCESS) this.applyPaidService(answer);
+      if (asked !== this.#serviceGeneration) return { status: "cancelled" };
+      return { status: "answered", answer };
+    } catch (error) {
+      if (generation !== this.#generation || asked !== this.#serviceGeneration) return { status: "cancelled" };
+      this.report(error);
+      return { status: "failed" };
+    } finally {
+      if (asked === this.#serviceGeneration) this.#servicing = false;
+    }
+  }
+
+  /**
+   * A successful paid service, in the list the screen draws (Wow.exe 0x4e29e0): the answer's name,
+   * sex and look, the new race when it carries one, the three paid-service bits cleared, and
+   * CHARACTER_LIST_UPDATE. The character flags stay as they were, as in the client; the core drops the
+   * declension with every customisation (CharacterHandler.cpp:1502-1505), and the character-select
+   * screen the client goes back to asks for a fresh list anyway (`CharacterSelect_OnShow`).
+   */
+  applyPaidService(answer: CharacterServiceResult): boolean {
+    const at = this.#characters.findIndex((character) => character.guid === answer.guid);
+    const character = this.#characters[at];
+    if (!character) return false;
+    const look = answer.appearance;
+    const updated: CharacterSummary = {
+      ...character,
+      name: answer.name || character.name,
+      ...(look ? {
+        gender: look.gender, skin: look.skin, face: look.face, hairStyle: look.hairStyle,
+        hairColor: look.hairColor, facialHair: look.facialHair,
+        ...(look.race !== undefined ? { race: look.race } : {}),
+      } : {}),
+      customizeFlags: character.customizeFlags & ~CHAR_CUSTOMIZE_FLAGS_ALL,
+    };
+    this.#characters = this.#characters.map((entry, index) => (index === at ? updated : entry));
+    this.#options.fireEvent("CHARACTER_LIST_UPDATE");
+    return true;
+  }
+
+  /**
+   * `CMSG_SET_PLAYER_DECLINED_NAMES` for the character at `index` (10.09): `accepted` marks the row
+   * declined (the flag the core now sets too) and redraws the list, `refused` is the core's
+   * `DECLINED_NAMES_RESULT_ERROR`, `unavailable` means nothing was sent, `failed` that the connection
+   * failed while waiting (its dialog is already up).
+   */
+  async declineCharacter(index: number, cases: readonly string[]): Promise<"accepted" | "refused" | "unavailable" | "cancelled" | "failed"> {
+    const character = this.#characters[index - 1];
+    const world = this.#world;
+    const decline = world?.declineCharacterNames?.bind(world);
+    if (!character || !decline) return "unavailable";
+    const generation = this.#generation;
+    try {
+      const answer = await this.request(() => decline(character.guid, character.name, cases));
+      if (generation !== this.#generation) return "cancelled";
+      if (answer.result !== 0) return "refused";
+      const at = this.#characters.findIndex((entry) => entry.guid === character.guid);
+      const row = this.#characters[at];
+      if (row) {
+        const declined: CharacterSummary = { ...row, flags: row.flags | CHARACTER_FLAG_DECLINED };
+        this.#characters = this.#characters.map((entry, position) => (position === at ? declined : entry));
+        this.#options.fireEvent("CHARACTER_LIST_UPDATE");
+      }
+      return "accepted";
+    } catch (error) {
+      if (generation !== this.#generation) return "cancelled";
+      this.report(error);
+      return "failed";
     }
   }
 
@@ -583,8 +927,7 @@ export class GlueSession {
     if (!realm) return undefined;
     return {
       name: realm.name,
-      pvp: realm.type === REALM_TYPE_PVP || realm.type === REALM_TYPE_RPPVP,
-      rp: realm.type === REALM_TYPE_RP || realm.type === REALM_TYPE_RPPVP,
+      ...realmTypeRules(realm.type),
       down: (realm.flags & REALM_FLAG_OFFLINE) !== 0,
     };
   }
@@ -610,6 +953,8 @@ export class GlueSession {
     this.#abort?.abort();
     this.#abort = undefined;
     this.#characterRefresh = undefined;
+    // The old connection's requests die with its socket; the next connection starts an empty queue.
+    this.#lane = newLane();
     this.#world?.close();
     this.#world = undefined;
     this.#characters = [];

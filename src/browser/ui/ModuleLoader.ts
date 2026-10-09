@@ -99,6 +99,19 @@ export interface LoadedWindowFile {
   readonly messages: number;
 }
 
+/**
+ * A window file that loaded but is not shown, because a TSWoW Lua add-on already subscribes to one
+ * of its opcodes: the same content-studio screen, generated twice (9.08). Not a problem — the Lua
+ * screen is the one shown, and the window comes back when the Lua goes.
+ */
+export interface SuppressedWindow {
+  readonly module: string;
+  readonly file: string;
+  readonly windowId: string;
+  /** The opcode the Lua holds that made this window a twin. */
+  readonly opcode: number;
+}
+
 /** One patch file that loaded (М7). */
 export interface LoadedPatchFile {
   readonly module: string;
@@ -223,6 +236,13 @@ export class ModuleLoader {
   readonly windows: LoadedWindowFile[] = [];
   readonly patches: LoadedPatchFile[] = [];
   readonly styles: LoadedStyleFile[] = [];
+  /** Window files held back because the Lua owns their screen (9.08); never in `problems`. */
+  readonly suppressed: SuppressedWindow[] = [];
+  /** Every opcode each suppressed window uses, keyed `<модуль>/<файл>`, to tell when it is free again. */
+  readonly #suppressedOpcodes = new Map<string, readonly number[]>();
+  /** The opcodes the TSWoW Lua subscribes to right now (`FrameXmlClientNetworkBridge`). */
+  #luaOpcodes: ReadonlySet<number> = new Set();
+  #twinsQueued = false;
   /**
    * Every refusal, kept by the file that caused it.
    *
@@ -292,6 +312,78 @@ export class ModuleLoader {
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
     this.#host = host;
+  }
+
+  /**
+   * The opcodes the TSWoW Lua is subscribed to, every time the set changes (9.08).
+   *
+   * A content-studio screen is generated twice — `content/ui/<id>.json` for this loader and a Lua
+   * add-on for the client — and both name the same opcode pair; the studio requires opcodes unique
+   * server-wide, so a shared opcode is the reliable sign of the same screen (names are transliterated
+   * and are not compared). The Lua wins: it cannot be cleanly switched off once its TOC ran, while a
+   * window is one registry entry. Applied on a microtask, since a load subscribes opcode by opcode.
+   */
+  noteLuaOpcodes(opcodes: ReadonlySet<number>): void {
+    this.#luaOpcodes = new Set(opcodes);
+    if (this.#twinsQueued) return;
+    this.#twinsQueued = true;
+    queueMicrotask(() => {
+      this.#twinsQueued = false;
+      this.#applyTwins();
+    });
+  }
+
+  /** Every opcode a window definition sends or reads: its packet pair when enabled, its inline messages. */
+  #opcodesOf(definition: ParsedWindow): number[] {
+    const opcodes = definition.packets.enabled ? [definition.packets.opcodeIn, definition.packets.opcodeOut] : [];
+    for (const message of definition.messages) opcodes.push(message.opcode);
+    // 0 is what the parser answers for a missing opcode; no screen is identified by it.
+    return [...new Set(opcodes.filter((opcode) => opcode > 0))];
+  }
+
+  /** The first of these opcodes the Lua holds, or undefined. */
+  #luaTwin(opcodes: readonly number[]): number | undefined {
+    return opcodes.find((opcode) => this.#luaOpcodes.has(opcode));
+  }
+
+  #suppress(entry: SuppressedWindow, opcodes: readonly number[]): void {
+    this.suppressed.push(entry);
+    this.#suppressedOpcodes.set(`${entry.module}/${entry.file}`, opcodes);
+  }
+
+  #unsuppress(module: string, file: string): boolean {
+    const index = this.suppressed.findIndex((entry) => entry.module === module && entry.file === file);
+    this.#suppressedOpcodes.delete(`${module}/${file}`);
+    if (index < 0) return false;
+    this.suppressed.splice(index, 1);
+    return true;
+  }
+
+  /**
+   * Takes down every live window the Lua now owns, and lets go of every held one it no longer does.
+   * A taken-down window keeps its `#sha` key, so the poll does not fetch it every two seconds; a
+   * released one loses it, so the next poll loads it again the ordinary way.
+   */
+  #applyTwins(): void {
+    for (const window of [...this.windows]) {
+      const definition = this.#host.windows.definition(window.windowId);
+      if (!definition) continue;
+      const opcodes = this.#opcodesOf(definition);
+      const opcode = this.#luaTwin(opcodes);
+      if (opcode === undefined) continue;
+      this.#dropWindow(window.module, window.file);
+      this.#suppress({ module: window.module, file: window.file, windowId: window.windowId, opcode }, opcodes);
+    }
+    let released = false;
+    for (const entry of [...this.suppressed]) {
+      const opcodes = this.#suppressedOpcodes.get(`${entry.module}/${entry.file}`) ?? [];
+      if (this.#luaTwin(opcodes) !== undefined) continue;
+      this.#unsuppress(entry.module, entry.file);
+      this.#sha.delete(`ui/${entry.module}/${entry.file}`);
+      released = true;
+    }
+    // After a round already in flight, which computed its work before these keys were cleared.
+    if (released) void (this.#pending ? this.#pending.finally(() => this.poll()) : this.poll());
   }
 
   /** How many messages are live from this loader's files, the inline ones included. */
@@ -375,6 +467,8 @@ export class ModuleLoader {
     this.windows.length = 0;
     this.patches.length = 0;
     this.styles.length = 0;
+    this.suppressed.length = 0;
+    this.#suppressedOpcodes.clear();
     this.#problems.clear();
     this.#checkProblems = [];
     this.#pressProblems.length = 0;
@@ -637,6 +731,8 @@ export class ModuleLoader {
   }
 
   #dropWindow(module: string, file: string): void {
+    // A held-back copy of this file goes too: a reload decides again, a deleted file is gone.
+    this.#unsuppress(module, file);
     const index = this.windows.findIndex((entry) => entry.module === module && entry.file === file);
     if (index < 0) return;
     const [entry] = this.windows.splice(index, 1);
@@ -759,6 +855,14 @@ export class ModuleLoader {
     if (!definition.enabled) {
       // `"enabled": false` is the studio's own switch, and a screen turned off there must not
       // appear here — otherwise the switch means nothing outside the studio.
+      return;
+    }
+    // 9.08: the Lua add-on of the same studio screen is already subscribed — no window, no inline
+    // schemas, no command, no key; held until the Lua goes (`#applyTwins`).
+    const opcodes = this.#opcodesOf(definition);
+    const twin = this.#luaTwin(opcodes);
+    if (twin !== undefined) {
+      this.#suppress({ module, file: file.file, windowId: definition.id, opcode: twin }, opcodes);
       return;
     }
 

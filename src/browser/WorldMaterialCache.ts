@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { recencyStampLimit, renumberByUsed } from "./RecencyStamps.js";
 import {
   ModelTextureLoader,
   type ModelTextureLease,
@@ -17,7 +18,15 @@ export interface WorldMaterialCacheLimits {
 
 export interface WorldMaterialCacheOptions {
   readonly limits?: Partial<WorldMaterialCacheLimits>;
+  /**
+   * P1-11: run the pre-P1-11 {@link WorldMaterialCache.commitPins} whole — every pass, a pressure
+   * snapshot before each phase. The reference of the differential tests and of P2-05.
+   */
+  readonly legacyScan?: boolean;
 }
+
+/** The shared answer of a commit with nothing evicted on the unchanged-pins path. */
+const EMPTY_EVICTIONS: readonly string[] = Object.freeze([]);
 
 /** Everything required to publish one exact cache-key/material identity. */
 export interface WorldMaterialSpec {
@@ -62,6 +71,13 @@ interface CachedWorldMaterial {
   readonly lease: ModelTextureLease | undefined;
   readonly privateView: THREE.Texture | undefined;
   removed: boolean;
+  /** P1-10b: recency stamp, written at creation and on every touch; the smallest is the oldest. */
+  used: number;
+  /**
+   * P1-11: whether the texture request was pending when the count-limit pass began. That pass
+   * judged "pending" from one snapshot taken before it removed anything, and still does.
+   */
+  pendingAtScan: boolean;
 }
 
 interface PressureIndex {
@@ -79,7 +95,7 @@ interface PressureIndex {
 export class WorldMaterialCache {
   readonly #textures: ModelTextureLoader;
   readonly #limits: WorldMaterialCacheLimits;
-  /** Map insertion order is the true material LRU, oldest first. */
+  /** Creation order; the true material LRU is the `used` stamp of each entry, oldest smallest. */
   readonly #entries = new Map<string, CachedWorldMaterial>();
   readonly #byPublicEntry = new WeakMap<WorldMaterialEntry, CachedWorldMaterial>();
   readonly #byMaterial = new WeakMap<THREE.Material, CachedWorldMaterial>();
@@ -88,6 +104,17 @@ export class WorldMaterialCache {
   /** Distinguishes a valid committed-empty footprint from construction before the first frame. */
   #pinsCommitted = false;
   #revision = 0;
+  readonly #legacyScan: boolean;
+  /**
+   * P1-11: both revisions as they stood when the last full commit pass began. A pass that changed
+   * nothing leaves them equal to the current ones; then the same pins again would find the same
+   * fixed point, and {@link commitPins} only touches them.
+   */
+  #settledRevision = -1;
+  #settledLoaderRevision = -1;
+  /** Scratch flag of {@link #checkUnchangedPin}, so the pin walk needs no iterator or closure. */
+  #pinsUnchanged = false;
+  #clock = 0;
   #disposed = false;
   #activeBuilds = 0;
   #activeTeardowns = 0;
@@ -104,6 +131,7 @@ export class WorldMaterialCache {
       throw new RangeError("world material cache count limit must be a non-negative safe integer");
     }
     this.#limits = Object.freeze({ count });
+    this.#legacyScan = options.legacyScan === true;
   }
 
   get revision(): number { return this.#revision; }
@@ -254,6 +282,8 @@ export class WorldMaterialCache {
         lease,
         privateView,
         removed: false,
+        used: this.#nextUsed(),
+        pendingAtScan: false,
       };
       this.#entries.set(spec.key, entry);
       this.#byPublicEntry.set(publicEntry, entry);
@@ -300,6 +330,142 @@ export class WorldMaterialCache {
    */
   commitPins(pins: ReadonlySet<WorldMaterialEntry>): readonly string[] {
     if (this.#disposed) return Object.freeze([]);
+    if (this.#legacyScan) return this.#commitPinsLegacy(pins);
+    // P1-11: the same pins over an unchanged cache and loader give the same (empty) answer; only
+    // their touches are due, and the walk below has made them in the full pass's order.
+    if (this.#commitUnchanged(pins)) return EMPTY_EVICTIONS;
+    const revision = this.#revision;
+    const loaderRevision = this.#textures.revision;
+    const committed = new Set<WorldMaterialEntry>();
+    for (const pin of pins) {
+      const entry = this.#byPublicEntry.get(pin);
+      if (!entry || entry.removed || this.#entries.get(pin.key) !== entry) continue;
+      if (entry.lease && !this.#textures.touch(entry.lease)) continue;
+      this.#touch(entry);
+      committed.add(pin);
+    }
+    this.#pins = committed;
+    this.#pinsCommitted = true;
+    const evicted: string[] = [];
+
+    // An externally cleared dedicated loader makes old exact leases inert. Admission normally
+    // replaces them before this point; prune any dormant stale entry as well. `owns` answers what
+    // the owner index of a pressure snapshot did: the lease sits in the current record of its URL.
+    let stale: CachedWorldMaterial[] | undefined;
+    for (const entry of this.#entries.values()) {
+      if (!entry.lease || this.#textures.owns(entry.lease)) continue;
+      (stale ??= []).push(entry);
+    }
+    if (stale && stale.length > 1) stale.sort((left, right) => left.used - right.used);
+    for (const entry of stale ?? []) {
+      evicted.push(entry.publicEntry.key);
+      this.#removeEntry(entry, true);
+      if (this.#disposed) return Object.freeze(evicted);
+    }
+
+    if (this.#entries.size > this.#limits.count) {
+      // "Pending" is judged as of this moment for the whole pass, as the snapshot it replaces did;
+      // an entry a dispose listener publishes meanwhile starts with false, as it was absent then.
+      for (const entry of this.#entries.values()) {
+        entry.pendingAtScan = entry.lease !== undefined
+          && this.#textures.leaseStatus(entry.lease) === "pending";
+      }
+      while (this.#entries.size > this.#limits.count) {
+        let candidate: CachedWorldMaterial | undefined;
+        for (const entry of this.#entries.values()) {
+          if ((candidate === undefined || entry.used < candidate.used)
+            && !entry.pendingAtScan && !this.#pins.has(entry.publicEntry)) {
+            candidate = entry;
+          }
+        }
+        if (!candidate) break;
+        evicted.push(candidate.publicEntry.key);
+        this.#removeEntry(candidate, true);
+        if (this.#disposed) return Object.freeze(evicted);
+      }
+    }
+    this.#textures.evictUnleased();
+    if (this.#disposed) return Object.freeze(evicted);
+
+    // Texture pressure is ordered by the base cache's own LRU rather than material LRU. Evict all
+    // owners only when that exact base can become unleased; otherwise a pinned/shared foreign owner
+    // makes the overflow honest rather than sacrificing a material without reducing pressure.
+    for (;;) {
+      const countOverflow = this.#textures.overflowCount > 0;
+      const byteOverflow = this.#textures.overflowKnownLogicalTextureBytes > 0;
+      if (!countOverflow && !byteOverflow) break;
+      const pressure = this.#pressureIndex();
+      const owners = this.#reducibleOwners(pressure, countOverflow, byteOverflow);
+      if (!owners) break;
+      for (const entry of owners) {
+        evicted.push(entry.publicEntry.key);
+        this.#removeEntry(entry, true);
+        if (this.#disposed) return Object.freeze(evicted);
+      }
+      this.#textures.evictUnleased();
+      if (this.#disposed) return Object.freeze(evicted);
+    }
+    // A pass that changed anything moved a revision past these, so the next one runs in full.
+    this.#settledRevision = revision;
+    this.#settledLoaderRevision = loaderRevision;
+    return evicted.length === 0 ? EMPTY_EVICTIONS : Object.freeze(evicted);
+  }
+
+  /** True when `pins` is exactly the committed set and nothing moved since a pass that settled. */
+  #commitUnchanged(pins: ReadonlySet<WorldMaterialEntry>): boolean {
+    if (!this.#pinsCommitted || pins.size !== this.#pins.size
+      || this.#revision !== this.#settledRevision
+      || this.#textures.revision !== this.#settledLoaderRevision) return false;
+    this.#pinsUnchanged = true;
+    // `forEach` with a bound method: a `Set` iterator would allocate its step results.
+    pins.forEach(this.#checkUnchangedPin);
+    return this.#pinsUnchanged;
+  }
+
+  /**
+   * One pin of the unchanged-pins walk: valid and already committed, then touched texture first and
+   * material second, as the full pass touches it. A miss stops the walk; the full pass then touches
+   * every pin again in the same order, which leaves the same recency order.
+   */
+  readonly #checkUnchangedPin = (pin: WorldMaterialEntry): void => {
+    if (!this.#pinsUnchanged) return;
+    const entry = this.#byPublicEntry.get(pin);
+    if (!entry || entry.removed || this.#entries.get(pin.key) !== entry || !this.#pins.has(pin)
+      || (entry.lease !== undefined && !this.#textures.touch(entry.lease))) {
+      this.#pinsUnchanged = false;
+      return;
+    }
+    this.#touch(entry);
+  };
+
+  /** The owners of the oldest texture record whose removal can reduce the violated limit. */
+  #reducibleOwners(
+    pressure: PressureIndex,
+    countOverflow: boolean,
+    byteOverflow: boolean,
+  ): CachedWorldMaterial[] | undefined {
+    for (const record of pressure.records) {
+      if (!countOverflow && byteOverflow
+        && (record.knownLogicalTextureBytes ?? 0) === 0) continue;
+      if (record.status === "pending" || record.ownerTokens.length === 0) continue;
+      const candidateOwners: CachedWorldMaterial[] = [];
+      let reducible = true;
+      for (const token of record.ownerTokens) {
+        const entry = this.#byOwner.get(token);
+        if (!entry || entry.removed || this.#pressureFor(entry, pressure) !== record
+          || this.#isPinned(entry, pressure)) {
+          reducible = false;
+          break;
+        }
+        if (!candidateOwners.includes(entry)) candidateOwners.push(entry);
+      }
+      if (reducible && candidateOwners.length > 0) return candidateOwners;
+    }
+    return undefined;
+  }
+
+  /** The pre-P1-11 commit pass, kept whole: see {@link WorldMaterialCacheOptions.legacyScan}. */
+  #commitPinsLegacy(pins: ReadonlySet<WorldMaterialEntry>): readonly string[] {
     const committed = new Set<WorldMaterialEntry>();
     for (const pin of pins) {
       const entry = this.#byPublicEntry.get(pin);
@@ -315,8 +481,13 @@ export class WorldMaterialCache {
 
     // An externally cleared dedicated loader makes old exact leases inert. Admission normally
     // replaces them before this point; prune any dormant stale entry as well.
-    for (const entry of [...this.#entries.values()]) {
+    let stale: CachedWorldMaterial[] | undefined;
+    for (const entry of this.#entries.values()) {
       if (!entry.lease || this.#pressureFor(entry, pressure)) continue;
+      (stale ??= []).push(entry);
+    }
+    if (stale && stale.length > 1) stale.sort((left, right) => left.used - right.used);
+    for (const entry of stale ?? []) {
       evicted.push(entry.publicEntry.key);
       this.#removeEntry(entry, true);
       if (this.#disposed) return Object.freeze(evicted);
@@ -324,7 +495,12 @@ export class WorldMaterialCache {
 
     pressure = this.#pressureIndex();
     while (this.#entries.size > this.#limits.count) {
-      const candidate = [...this.#entries.values()].find((entry) => !this.#isPinned(entry, pressure));
+      let candidate: CachedWorldMaterial | undefined;
+      for (const entry of this.#entries.values()) {
+        if ((candidate === undefined || entry.used < candidate.used) && !this.#isPinned(entry, pressure)) {
+          candidate = entry;
+        }
+      }
       if (!candidate) break;
       evicted.push(candidate.publicEntry.key);
       this.#removeEntry(candidate, true);
@@ -396,7 +572,7 @@ export class WorldMaterialCache {
     this.#pinsCommitted = true;
     this.#revision++;
     let firstError: unknown;
-    for (const entry of [...this.#entries.values()]) {
+    for (const entry of this.#byRecency()) {
       try {
         this.#removeEntry(entry, false);
       } catch (error) {
@@ -414,8 +590,17 @@ export class WorldMaterialCache {
 
   #touch(entry: CachedWorldMaterial): void {
     if (entry.removed || this.#entries.get(entry.publicEntry.key) !== entry) return;
-    this.#entries.delete(entry.publicEntry.key);
-    this.#entries.set(entry.publicEntry.key, entry);
+    entry.used = this.#nextUsed();
+  }
+
+  #nextUsed(): number {
+    if (this.#clock >= recencyStampLimit) this.#clock = renumberByUsed(this.#entries.values());
+    return ++this.#clock;
+  }
+
+  /** The current entries oldest first, as the re-insertion LRU used to keep them. */
+  #byRecency(): CachedWorldMaterial[] {
+    return [...this.#entries.values()].sort((left, right) => left.used - right.used);
   }
 
   #removeEntry(entry: CachedWorldMaterial, bumpRevision: boolean): boolean {

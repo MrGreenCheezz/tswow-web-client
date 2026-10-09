@@ -31,10 +31,8 @@ const INVENTORY_TYPE_2HWEAPON = 17;
 /** INVTYPE_WEAPONMAINHAND / INVTYPE_WEAPONOFFHAND: the hand-locked one-handers. */
 const INVENTORY_TYPE_MAINHAND = 21;
 const INVENTORY_TYPE_OFFHAND = 22;
-/** INVTYPE_RANGED: bows, guns and crossbows — not wands, which are INVTYPE_RANGEDRIGHT. */
-const INVENTORY_TYPE_RANGED = 15;
-/** ItemSubClass of class-2 weapons that ride the back: bows, guns, crossbows. */
-const RANGED_BACK_SUBCLASSES: ReadonlySet<number> = new Set([2, 3, 18]);
+// 05.10-A7a-H: INVTYPE_RANGED/RANGEDRIGHT and the bow/gun/crossbow subclasses left with the ranged
+// clause of `stowedOnBack` (see there).
 /** UNIT_FIELD_BYTES_2 byte 0: which weapon is drawn, if any. */
 export const SHEATH_UNARMED = 0;
 export const SHEATH_MELEE = 1;
@@ -45,14 +43,15 @@ export const SHEATH_RANGED = 2;
  *
  * Grounded in `Item.dbc` `SheatheType` over this dataset rather than in the slot alone: every
  * two-hander carries 1, every staff 2, every shield 4, while one-handers and daggers carry 3 and
- * fist weapons 7. Bows, guns and crossbows carry 0, so those are named by subclass instead — and
- * a ranged slot whose subclass never arrived stays hidden rather than guessed.
+ * fist weapons 7. Bows, guns and crossbows carry 0, and 05.10-A7a-H (6.08, review G2): Wow.exe hangs
+ * a stowed ranged weapon by that SheatheType (0x0072b7f0(1, …) → 0x004eacd0) and type 0 has no point,
+ * so the ranged slot never rides the back here. The rare ranged item with type 1–4 hangs through
+ * `SheathPoints.worldAttachmentPoint` when its type is known.
  */
 export function stowedOnBack(item: AttachedModel): boolean {
   if (item.inventoryType === INVENTORY_TYPE_2HWEAPON) return true;
   if (item.slot === EQUIPMENT_SLOT_OFFHAND && item.inventoryType === INVENTORY_TYPE_SHIELD) return true;
-  if (item.slot === EQUIPMENT_SLOT_RANGED && item.inventoryType === INVENTORY_TYPE_RANGED
-    && item.subClass !== undefined) return RANGED_BACK_SUBCLASSES.has(item.subClass);
+  // 05.10-A7a-H: the ranged slot (bows, guns, crossbows by subclass since review A7a-B) no longer rides it.
   return false;
 }
 
@@ -96,9 +95,10 @@ export function attachmentRotation(point: number): THREE.Quaternion | undefined 
  * mirrored — LShoulder_Mail_B_01 and RShoulder_Mail_B_01 are different files.
  *
  * The sheath state names which weapon is out, not whether one is: at state 2 it is the bow that is
- * held and the melee weapons that are stowed. A stowed two-hander, shield or bow rides the back
+ * held and the melee weapons that are stowed. A stowed two-hander or shield rides the back
  * (`ATTACHMENT_BACK`); a stowed one-hander rides its own hip — right hip for the main hand, left
- * for the off hand — like the reference client hangs them.
+ * for the off hand — like the reference client hangs them. A stowed ranged weapon is not drawn
+ * (05.10-A7a-H: SheatheType 0, see `stowedOnBack`).
  */
 export function attachmentPoint(item: AttachedModel, sheath: number): number | undefined {
   switch (item.slot) {

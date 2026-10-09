@@ -29,6 +29,7 @@ import { stampGenerated, stampSidecar } from "./source-stamp.mjs";
 // arrangement `generate-texture.mjs` documents, and for the same reason: a class that lives in two
 // places drifts, and the drift shows up as a 400 on a file the client really ships.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
+import { SourceMissing, SOURCE_MISSING_EXIT } from "./source-missing.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,10 +41,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * lists optional files and the loader must be able to move past one — while a child that died is a
  * 500 it retries, and answering 404 for both would silently drop half a login screen.
  */
-export const SOURCE_MISSING_EXIT = 3;
-
-/** The failure that earns that exit code: the path is well formed and the chain has no such file. */
-export class SourceMissing extends Error {}
+export { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 
 /**
  * The four extensions the interface is made of.

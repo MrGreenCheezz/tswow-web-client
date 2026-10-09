@@ -46,6 +46,17 @@ function descendants(frame) {
   return [frame, ...frame.children.flatMap(descendants)];
 }
 
+/** The value of one Lua expression in the booted VM, for scenarios that read add-on state. */
+export function luaProbe(boot, expression) {
+  const chunk = boot.vm.compileFunction(`return ${expression}`, "@tswow-addon-scenario", []);
+  assert.ok(chunk, `probe does not compile: ${expression}`);
+  try {
+    return boot.vm.call(chunk, [], 1)[0];
+  } finally {
+    boot.vm.release(chunk);
+  }
+}
+
 /** Add a scenario here when adding behavior to a module; unknown modules cannot silently pass. */
 export const TSWOW_ADDON_SCENARIOS = {
   "baja-echoes": ({ command, visible, sent }) => {
@@ -119,6 +130,24 @@ export const TSWOW_ADDON_SCENARIOS = {
     sent(85, doublePacket(0, 0, 5));
     assert.equal(boot.bridge.isVisible(frame), false, "Extraction did not close the item window");
     return "socket command selects the chest; the original extraction button sends OP85 and closes";
+  },
+  // Written before the module is built (9.07): it runs once minimap-hub is in the TOC, and from
+  // then on a hub without it fails the check. Its consumers register from PLAYER_ENTERING_WORLD.
+  "minimap-hub": ({ boot, command, visible }) => {
+    if (luaProbe(boot, "#TswowMinimapHub.list()") === 0) boot.bridge.dispatchEvent("PLAYER_ENTERING_WORLD");
+    const ids = String(luaProbe(boot, `(function() local t = {}
+      for _, e in ipairs(TswowMinimapHub.list()) do t[#t + 1] = e.id end
+      return table.concat(t, ",") end)()`)).split(",").filter(Boolean);
+    for (const consumer of ["baja-echoes", "base-building", "custom-companions"]) {
+      assert.ok(ids.some((id) => id.startsWith(`${consumer}.`)), `${consumer} did not register in the hub`);
+    }
+    visible("TswowMinimapHubButton");
+    for (const legacy of ["BajaEchoCollectionMinimapButton", "BaseBuildingMinimapButton", "CustomCompanionsMinimapButton"]) {
+      assert.ok(!boot.bridge.getFrame(legacy), `${legacy} exists next to the hub (stale publish?)`);
+    }
+    command("hub");
+    visible("TswowMinimapHubPanel");
+    return `hub holds ${ids.length} entries; /hub opens the panel; no legacy buttons`;
   },
   "retail-talents": ({ command, visible, sent }) => {
     command("utalent");

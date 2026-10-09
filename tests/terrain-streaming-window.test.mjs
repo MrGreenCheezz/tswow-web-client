@@ -79,3 +79,38 @@ test("formal capture mode removes speculative work and resident history", () => 
   assert.equal(capture.dependencies.length, 25);
   assert.notEqual(at(window, 33, 33, 0.9, 0.9), capture);
 });
+
+// P1-13a: the plan is compared by numbers (map, cell, edge offsets, mode) instead of a joined key.
+test("P1-13a: the same cell and edge give the same plan; any change of its inputs gives a new one", () => {
+  const window = new TerrainStreamingWindow();
+  const middle = at(window, 32, 32);
+  assert.equal(at(window, 32, 32, 0.3, 0.7), middle, "inside the cell, away from the margin");
+  const edge = at(window, 32, 32, 0.95, 0.5);
+  assert.notEqual(edge, middle, "nearing a row is a new plan");
+  assert.equal(at(window, 32, 32, 0.97, 0.45), edge, "the same edge keeps it");
+  const corner = at(window, 32, 32, 0.95, 0.95);
+  assert.notEqual(corner, edge, "a second edge (dy) is a new plan");
+  const otherSide = at(window, 32, 32, 0.05, 0.95);
+  assert.notEqual(otherSide, corner, "the opposite edge (dx) is a new plan");
+  const formal = at(window, 32, 32, 0.05, 0.95, 0, false);
+  assert.notEqual(formal, otherSide, "the formal mode is a new plan");
+  assert.equal(at(window, 32, 32, 0.06, 0.94, 0, false), formal);
+  const moved = at(window, 33, 32, 0.5, 0.5, 0, false);
+  assert.notEqual(moved, formal, "another cell is a new plan");
+  const otherMap = at(window, 33, 32, 0.5, 0.5, 1, false);
+  assert.notEqual(otherMap, moved, "another map is a new plan");
+  assert.ok(otherMap.key.startsWith("1/33/32/"), "the plan key keeps its old form");
+  assert.equal(otherMap.key, [1, 33, 32, 0, 0, false].join("/"));
+});
+
+test("P1-13a: the plan carries its tile keys in the order of its tiles", () => {
+  const window = new TerrainStreamingWindow();
+  for (const [gx, gy, fx, fy, map] of [[32, 32, 0.5, 0.5, 0], [32, 32, 0.95, 0.05, 0], [0, 63, 0.02, 0.98, 7], [63, 0, 0.5, 0.5, 530]]) {
+    const plan = at(window, gx, gy, fx, fy, map);
+    assert.deepEqual(plan.visibleTileKeys, plan.visible.map(grid => terrainTileKey(map, grid)));
+    assert.deepEqual(plan.prepareTileKeys, plan.prepare.map(grid => terrainTileKey(map, grid)));
+    assert.deepEqual(plan.visibleTileKeys, plan.visible.map(grid => `${map}/${grid.x}/${grid.y}`),
+      "the same strings the renderer built per tile");
+    assert.deepEqual(plan.center, { x: gx, y: gy });
+  }
+});

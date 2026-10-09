@@ -41,6 +41,7 @@ import {
   type LfgUpdate,
 } from "../../world/LfgProtocol.js";
 import type { LfgDungeon, LfgDungeonGroupRow, LfgStockCatalog } from "../LfgDungeons.js";
+import type { LfgPlayerReward } from "../../world/LfgProtocol.js"; // L5c 3.25
 
 /** `TYPEID_*` in LFDFrame.lua:5-8. */
 export const FRAMEXML_LFD_TYPE_DUNGEON = 1;
@@ -53,6 +54,11 @@ const LFG_FLAG_SEASONAL = 0x4;
 const LFG_PROPOSAL_INITIATING = 0;
 const LFG_PROPOSAL_FAILED = 1;
 const LFG_PROPOSAL_SUCCESS = 2;
+
+/** Event 0x1d5, which the raid browser signals on every join, leave and refresh. */
+const UPDATE_LFG_LIST = "UPDATE_LFG_LIST";
+/** SetLFGComment's throttle window, seconds (Wow.exe 0x5539a0 against the float at 0xa4040c). */
+const LFG_COMMENT_WINDOW_SECONDS = 2;
 /** `GROUPTYPE_LFG` (Group.h): a group the finder assembled. */
 const GROUPTYPE_LFG = 0x08;
 
@@ -174,12 +180,20 @@ export interface FrameXmlLfdWorld {
   displayName?(guid: bigint): string;
   joinLfg(roles: number, dungeons: number[], comment?: string): void;
   leaveLfg(): void;
+  /** `CMSG_SET_LFG_COMMENT` (3.25). */
+  setLfgComment?(comment: string): void;
+  /** `CMSG_SEARCH_LFG_JOIN`/`_LEAVE` with the packed raid-browser entry (3.25). */
+  searchLfg?(join: boolean, packedEntry: number): void;
   setLfgRoles(roles: number): void;
   answerLfgProposal(accept: boolean): void;
   requestDungeonLocks(): void;
   voteToRemove(agree: boolean): void;
   teleportToDungeon(toDungeon?: boolean): void;
   answerLfgContinue(accept: boolean, dungeons?: number[], roles?: number): void;
+  /** L5c 3.25: SMSG_LFG_PLAYER_REWARD's reward while the native prompt holds it. */
+  readonly lfgReward?: LfgPlayerReward | undefined;
+  /** L5c 3.25: lets the native reward prompt go (WorldClient.dismissLfgReward). */
+  dismissLfgReward?(): void;
 }
 
 export interface FrameXmlLfdItem {
@@ -205,6 +219,17 @@ export interface FrameXmlLfdContext {
   item?(entry: number): FrameXmlLfdItem | undefined;
   /** Monotonic milliseconds on the clock `lfgBootExpiresAt` uses (performance.now in WorldClient). */
   monotonic?(): number;
+  /**
+   * The DungeonEncounter rows of a map and difficulty in file order (the 2.09 route,
+   * DungeonEncounterClient.ts); undefined while the table is unknown.
+   */
+  dungeonEncounters?(mapId: number, difficulty: number): readonly FrameXmlLfdEncounter[] | undefined;
+}
+
+/** One DungeonEncounter row: its bit in the killed-boss mask and its name. */
+export interface FrameXmlLfdEncounter {
+  readonly bit: number;
+  readonly name: string;
 }
 
 interface FrameXmlLfdPump {
@@ -216,6 +241,11 @@ interface FrameXmlLfdPump {
 const QUALITY_HEX: readonly string[] = [
   "ff9d9d9d", "ffffffff", "ff1eff00", "ff0070dd", "ffa335ee", "ffff8000", "ffe6cc80", "ffe6cc80",
 ];
+
+/** Bit `bit` of a killed-boss mask as the client tests it, `1 << (Bit & 31)` (Wow.exe 0x00553830). */
+function encounterBitKilled(mask: number, bit: number): boolean {
+  return ((mask >>> 0) & (1 << (bit & 31))) !== 0;
+}
 
 function popcount(value: number): number {
   let bits = value >>> 0;
@@ -238,6 +268,11 @@ export class FrameXmlLfdModel {
   readonly #collapsed = new Set<number>();
   readonly #selection = new Set<number>();
   #comment = "";
+  /** The raid browser's joined entry, LFGDungeons id with the type in the high byte; 0 when none (Wow.exe DAT_00beaa14). */
+  #searchJoined = 0;
+  /** SetLFGComment's send throttle (Wow.exe 0x5539a0): sends counted since the window opened. */
+  #commentSends = 0;
+  #commentWindowAt = Number.NEGATIVE_INFINITY;
   #muted = false;
   /** Set by the world mount once the stock LFD owner is published; see `popupsOwned`. */
   #popupsOwned = false;
@@ -253,6 +288,13 @@ export class FrameXmlLfdModel {
   #order: readonly number[] = [];
   #index: Map<number, LfgDungeon> | undefined;
   #indexCatalog: LfgStockCatalog | undefined;
+  /** L5c 3.25: the last SMSG_LFG_PLAYER_REWARD, kept as the client keeps it (0x0055bdc0) until the next one. */
+  #completion: LfgPlayerReward | undefined;
+  /**
+   * L5c 3.25: set by the world mount with the stock LFD: loads AlertFrames.xml (its
+   * DungeonCompletionAlertFrame is the reward's stock owner) and answers whether the alert is there.
+   */
+  completionAlert: (() => Promise<boolean>) | undefined;
 
   constructor(context: FrameXmlLfdContext) {
     this.#context = context;
@@ -499,6 +541,47 @@ export class FrameXmlLfdModel {
     return `|c${color}|Hitem:${item.itemId}:0:0:0:0:0:0:0:${this.#context.playerLevel()}|h[${known.name}]|h|r`;
   }
 
+  // ---- L5c 3.25: the completion reward (DungeonCompletionAlertFrame) ----------------------
+
+  async #showCompletion(reward: LfgPlayerReward, load: () => Promise<boolean>): Promise<void> {
+    let ready = false;
+    try { ready = await load(); } catch { ready = false; }
+    // A later reward, a detach or a lost ownership while AlertFrames.xml loaded: this one is not shown.
+    if (!ready || this.#completion !== reward || !this.#pump || !this.#popupsOwned) return;
+    this.#pump.fire("LFG_COMPLETION_REWARD");
+    const world = this.#context.world();
+    if (world?.lfgReward === reward) world.dismissLfgReward?.();
+  }
+
+  /**
+   * `GetLFGCompletionReward()` (0x00557e40): nothing before a reward or when its dungeon is not in the
+   * catalog; else the run dungeon's name, TypeID and TextureFilename, then moneyBase, moneyVar,
+   * experienceBase, experienceVar, numStrangers and the number of reward items.
+   */
+  completionReward(): readonly unknown[] | undefined {
+    const reward = this.#completion;
+    const row = reward && reward.dungeonEntry !== 0 ? this.#row(reward.dungeonEntry & 0x00ffffff) : undefined;
+    if (!reward || !row) return undefined;
+    return [row.name, row.type, row.texture, reward.reward.money, reward.moneyVar ?? 0, reward.reward.experience,
+      reward.experienceVar ?? 0, reward.strangers ?? 0, reward.reward.items.length];
+  }
+
+  /** `GetLFGCompletionRewardItem(index)` (0x00557f70): the item's icon path and the quantity. */
+  completionRewardItem(index: number): readonly [texture: string | undefined, count: number] | undefined {
+    const item = this.#completion?.reward.items[index - 1];
+    return item ? [this.#context.item?.(item.itemId)?.texture, item.count] : undefined;
+  }
+
+  /** `GameTooltip:SetLFGCompletionReward(index)` (0x00630b90) shows that item: its link, for the setter. */
+  completionRewardLink(index: number): string | undefined {
+    const item = this.#completion?.reward.items[index - 1];
+    if (!item) return undefined;
+    const known = this.#context.item?.(item.itemId);
+    if (!known?.name) return undefined;
+    const color = QUALITY_HEX[known.quality ?? 1] ?? QUALITY_HEX[1];
+    return `|c${color}|Hitem:${item.itemId}:0:0:0:0:0:0:0:${this.#context.playerLevel()}|h[${known.name}]|h|r`;
+  }
+
   // ---- queue, proposal, role check, boot ------------------------------------------------
 
   /** `GetLFGInfoServer`: inParty, joined, queued, noPartialClear, achievements, comment, slotCount. */
@@ -527,8 +610,7 @@ export class FrameXmlLfdModel {
   /**
    * `proposalExists, typeID, id, name, texture, role, hasResponded, totalEncounters,
    * completedEncounters, numMembers, isLeader, isHoliday`. The packet's encounter word is the
-   * killed-boss mask; the number of bosses is DungeonEncounter.dbc data no route serves, so
-   * `totalEncounters` is 0 — LFDDungeonReadyDialogInstanceInfo_OnEnter then shows no boss list.
+   * killed-boss mask; the bosses are counted as Wow.exe 0x00554170 counts them (`#proposalEncounters`).
    */
   proposal(): readonly unknown[] {
     const proposal = this.#openProposal();
@@ -538,10 +620,40 @@ export class FrameXmlLfdModel {
     const self = this.#selfProposalPlayer(proposal);
     return [
       true, type || row?.type || FRAMEXML_LFD_TYPE_DUNGEON, dungeonId, row?.name ?? "", row?.texture ?? "",
-      frameXmlLfgRole(self?.roles ?? 0), self?.answered === true, 0, popcount(proposal.encounters),
+      frameXmlLfgRole(self?.roles ?? 0), self?.answered === true, ...this.#proposalEncounters(row, proposal.encounters),
       proposal.players.length, ((self?.roles ?? 0) & LFG_ROLE_LEADER) !== 0,
       row ? (fieldOf(row, "flags") & LFG_FLAG_SEASONAL) !== 0 : false,
     ];
+  }
+
+  /**
+   * `totalEncounters, completedEncounters` of a proposal (Wow.exe 0x00554170): a random row (TypeID
+   * 6) has no boss list — 0, and 1 if the mask is non-zero; a holiday row (Flags & 4) one boss,
+   * killed if the mask is non-zero; any other row the DungeonEncounter rows of its MapID and
+   * Difficulty (0x00553830), each killed by its own Bit. Without the boss table nothing is invented:
+   * no total and the mask's own count, so LFDDungeonReadyDialogInstanceInfo_OnEnter lists no boss.
+   */
+  #proposalEncounters(row: LfgDungeon | undefined, mask: number): readonly [number, number] {
+    const any = (mask >>> 0) !== 0 ? 1 : 0;
+    if (row?.type === FRAMEXML_LFD_TYPE_RANDOM) return [0, any];
+    if (row && (fieldOf(row, "flags") & LFG_FLAG_SEASONAL) !== 0) return [1, any];
+    const encounters = row ? this.#context.dungeonEncounters?.(row.mapId, row.difficulty) : undefined;
+    if (!encounters) return [0, popcount(mask)];
+    return [encounters.length, encounters.filter(({ bit }) => encounterBitKilled(mask, bit)).length];
+  }
+
+  /**
+   * `GetLFGProposalEncounter(i)`: `bossName, texture, isKilled` of the i-th DungeonEncounter row of
+   * the proposal dungeon's MapID and Difficulty in file order (Wow.exe 0x00554380 → 0x005538b0),
+   * killed by the proposal's mask. The texture is the row's SpellIcon, nil for SpellIconID 0 —
+   * every row of this dataset; the route carries none.
+   */
+  proposalEncounter(index: number): readonly [string, undefined, boolean] | undefined {
+    const proposal = this.#openProposal();
+    if (!proposal || !Number.isInteger(index) || index < 1) return undefined;
+    const row = this.#row(splitDungeonEntry(proposal.dungeonEntry).dungeonId);
+    const encounter = row ? this.#context.dungeonEncounters?.(row.mapId, row.difficulty)?.[index - 1] : undefined;
+    return encounter ? [encounter.name, undefined, encounterBitKilled(proposal.encounters, encounter.bit)] : undefined;
   }
 
   /** `isLeader, role, level, responded, accepted, name, class` for proposal slot `index`. */
@@ -666,7 +778,57 @@ export class FrameXmlLfdModel {
 
   clearDungeons(): void { this.#selection.clear(); }
 
-  setComment(comment: string): void { this.#comment = comment.slice(0, 255); }
+  /**
+   * `SetLFGComment(text)` (Wow.exe 0x5539a0): the text is kept for the next JoinLFG; while the player
+   * is already joined it also goes to the server, at most three sends in two seconds.
+   */
+  setComment(comment: string): void {
+    this.#comment = comment.slice(0, 255);
+    const world = this.#context.world();
+    if (!world?.lfgStatus?.joined || typeof world.setLfgComment !== "function") return;
+    this.#commentSends += 1;
+    if (this.#commentSends > 2) {
+      const now = (this.#context.monotonic?.() ?? performance.now()) / 1000;
+      if (now - this.#commentWindowAt < LFG_COMMENT_WINDOW_SECONDS) return;
+      this.#commentWindowAt = now;
+      this.#commentSends = 0;
+    }
+    this.#command((target) => target.setLfgComment?.(this.#comment));
+  }
+
+  // ---- the raid browser (3.25) -----------------------------------------------------------
+  // TrinityCore 3.3.5 answers CMSG_SEARCH_LFG_JOIN with a stub and never lists anyone, so the
+  // browser stays empty; what the client itself keeps — the joined entry — is kept here as it does.
+
+  /** `SearchLFGJoin(typeID, lfgID)` (Wow.exe 0x559400 → 0x558ed0). */
+  searchJoin(type: number, id: number): void {
+    if (type >= 7 || !this.#row(id)) return;
+    const packed = ((id & 0xffffff) | (type << 24)) >>> 0;
+    if (packed === this.#searchJoined) return;
+    this.#searchJoined = packed;
+    this.#pump?.fire(UPDATE_LFG_LIST);
+    this.#command((world) => world.searchLfg?.(true, packed));
+  }
+
+  /** `SearchLFGLeave()` (Wow.exe 0x5594e0 → 0x558f90). */
+  searchLeave(): void {
+    const packed = this.#searchJoined;
+    if (packed === 0) return;
+    this.#command((world) => world.searchLfg?.(false, packed));
+    this.#searchJoined = 0;
+    this.#pump?.fire(UPDATE_LFG_LIST);
+  }
+
+  /** `SearchLFGGetJoinedID()` (Wow.exe 0x5529a0): the id without the type byte, or nothing. */
+  searchJoinedId(): number | undefined {
+    const id = this.#searchJoined & 0xffffff;
+    return id !== 0 ? id : undefined;
+  }
+
+  /** `RefreshLFGList()` (Wow.exe 0x55d280): the (empty) list redrawn through UPDATE_LFG_LIST. */
+  refreshSearchList(): void {
+    this.#pump?.fire(UPDATE_LFG_LIST);
+  }
 
   /** The join selection as wire entries, in catalog order; ids the catalog cannot type are dropped. */
   selectionEntries(): number[] {
@@ -818,14 +980,25 @@ export class FrameXmlLfdModel {
       case "teleportDenied":
         if (change.message) pump.fire("UI_ERROR_MESSAGE", change.message);
         return;
+      case "voteKickReasonNeeded":
+        // Wow.exe 0x6cbec0 (party result 27): LFDFrame.lua answers with VOTE_BOOT_REASON_REQUIRED.
+        if (this.#popupsOwned) pump.fire("VOTE_KICK_REASON_NEEDED", change.name ?? "");
+        return;
       case "search":
       case "disabled":
         pump.fire("LFG_UPDATE");
         return;
-      case "reward":
-        // The completion reward keeps its native prompt: 3.3.5's stock owner for it is
-        // DungeonCompletionAlertFrame (AlertFrames.xml), which this vertical does not load.
+      case "reward": {
+        // L5c 3.25: Wow.exe 0x0055bdc0 keeps the reward and raises LFG_COMPLETION_REWARD (event 0x205),
+        // which AlertFrames.lua turns into DungeonCompletionAlertFrame. With the stock LFD published
+        // that alert is the reward's owner and the native prompt steps aside; without it, or when
+        // AlertFrames.xml does not load, the native prompt keeps the reward.
+        const reward = world.lfgReward;
+        if (!reward) return;
+        this.#completion = reward;
+        if (this.#popupsOwned && this.completionAlert) void this.#showCompletion(reward, this.completionAlert);
         return;
+      }
     }
   }
 }
@@ -881,12 +1054,15 @@ export const FRAMEXML_LFD_BINDINGS: Readonly<Record<string, FrameXmlLfdBinding>>
     lfd.rewardInfo(integerArg(args[0]) ?? 0, integerArg(args[1]) ?? 0) ?? NOTHING),
   GetLFGDungeonRewardLink: withLfd((lfd, args) =>
     optional(lfd.rewardLink(integerArg(args[0]) ?? 0, integerArg(args[1]) ?? 0))),
+  // L5c 3.25: the completion reward DungeonCompletionAlertFrame reads (AlertFrames.lua:80, :139).
+  GetLFGCompletionReward: withLfd((lfd) => lfd.completionReward() ?? NOTHING),
+  GetLFGCompletionRewardItem: withLfd((lfd, args) => lfd.completionRewardItem(integerArg(args[0]) ?? 0) ?? NOTHING),
+  // L5c 3.25: not a client name — the link GameTooltip:SetLFGCompletionReward shows (GlueTooltipExtras.ts).
+  WebClientLFGCompletionRewardLink: withLfd((lfd, args) => optional(lfd.completionRewardLink(integerArg(args[0]) ?? 0))),
   GetLFGInfoServer: withLfd((lfd) => lfd.infoServer()),
   GetLFGProposal: withLfd((lfd) => lfd.proposal()),
   GetLFGProposalMember: withLfd((lfd, args) => lfd.proposalMember(integerArg(args[0]) ?? 0) ?? NOTHING),
-  // Boss names and kill state per encounter are DungeonEncounter.dbc data no route serves; the
-  // proposal reports 0 encounters, so stock never asks for one.
-  GetLFGProposalEncounter: () => NOTHING,
+  GetLFGProposalEncounter: withLfd((lfd, args) => lfd.proposalEncounter(integerArg(args[0]) ?? 0) ?? NOTHING),
   GetLFGRoleUpdate: withLfd((lfd) => lfd.roleUpdate()),
   GetLFGRoleUpdateSlot: withLfd((lfd, args) => lfd.roleUpdateSlot(integerArg(args[0]) ?? 0) ?? NOTHING),
   GetLFGQueueStats: withLfd((lfd) => lfd.queueStats()),
@@ -931,15 +1107,23 @@ export const FRAMEXML_LFD_BINDINGS: Readonly<Record<string, FrameXmlLfdBinding>>
   // LFD_IsEmpowered (UIParent.lua:3560).
   HasLFGRestrictions: withLfd((lfd) => [lfd.isPartyLfg()]),
   // The raid browser: TrinityCore 3.3.5 has no SearchLFG protocol, so nothing is ever listed.
+  // CMSG_SEARCH_LFG_JOIN is answered by a stub (LFGHandler.cpp:259-266, SendLfrUpdateListOpcode
+  // commented out) and SMSG_UPDATE_LFG_LIST is never sent, so SearchLFGGetEncounterResults — Wow.exe
+  // 0x00553c30, the searched LFGDungeons row's map and difficulty over a listed player's or party's
+  // mask — finds no result and answers nothing, as it does here.
   IsListedInLFR: () => [false],
   SearchLFGGetNumResults: () => [0, 0],
   SearchLFGGetResults: () => NOTHING,
   SearchLFGGetPartyResults: () => NOTHING,
   SearchLFGGetEncounterResults: () => NOTHING,
-  SearchLFGGetJoinedID: () => NOTHING,
-  SearchLFGJoin: () => NOTHING,
-  SearchLFGLeave: () => NOTHING,
-  RefreshLFGList: () => NOTHING,
+  SearchLFGGetJoinedID: withLfd((lfd) => { const id = lfd.searchJoinedId(); return id === undefined ? NOTHING : [id]; }),
+  SearchLFGJoin: command((lfd, args) => {
+    const type = integerArg(args[0]);
+    const id = integerArg(args[1]);
+    if (type !== undefined && id !== undefined) lfd.searchJoin(type, id);
+  }),
+  SearchLFGLeave: command((lfd) => lfd.searchLeave()),
+  RefreshLFGList: command((lfd) => lfd.refreshSearchList()),
   WebClientLfdChoiceIds: withLfd((lfd) => lfd.choiceIds()),
   WebClientLfdEnabledIds: withLfd((lfd) => lfd.enabledIds()),
   WebClientLfdCollapsedIds: withLfd((lfd) => lfd.collapsedIds()),

@@ -102,6 +102,15 @@ export interface FrameXmlCurrencySource {
   item(entry: number): FrameXmlCurrencyItem | undefined;
   /** Start loading item names/icons outside a C-API read; `onChanged` when some arrived. */
   prefetch?(entries: readonly number[], onChanged: () => void): void;
+  /**
+   * P1-17 (UI-7): a number that moves whenever anything `snapshot()` or `item()` reads may have
+   * changed, so the same number means the rows built last time are still the rows. Undefined (or
+   * no member: the canned fixture, tests that mutate a world in place) rebuilds on every read.
+   */
+  revision?(): number | undefined;
+  /** Start and stop whatever feeds `revision` (the model's own attach and detach). */
+  attach?(): void;
+  detach?(): void;
 }
 
 export interface FrameXmlCurrencyPump {
@@ -151,6 +160,21 @@ function flagOf(value: unknown): boolean {
 
 const NOTHING: readonly unknown[] = Object.freeze([]);
 
+type FrameXmlCurrencySection = { readonly category: FrameXmlCurrencyCategory; readonly rows: FrameXmlCurrencyRow[] };
+
+/** P1-17: one build of the list, valid while its source revision, view version and catalog stand. */
+interface FrameXmlCurrencyBuild {
+  readonly revision: number | undefined;
+  readonly view: number;
+  readonly catalog: FrameXmlCurrencyCatalog | undefined;
+  readonly sections: readonly FrameXmlCurrencySection[];
+  /** Every known currency row, in list order, collapse not applied. */
+  readonly currencies: readonly FrameXmlCurrencyRow[];
+  rows?: readonly FrameXmlCurrencyRow[];
+  knownSignature?: string;
+  displaySignature?: string;
+}
+
 export class FrameXmlCurrencyModel {
   readonly #source: FrameXmlCurrencySource;
   /** Session view state, keyed by CurrencyTypes id and CurrencyCategory id (module doc). */
@@ -164,6 +188,15 @@ export class FrameXmlCurrencyModel {
   readonly #prefetched = new Set<number>();
   /** Set when a prefetch reports new item names, so the next tick repaints. */
   #itemsChanged = false;
+  /** P1-17: moves with every change of the view state (collapse, unused, backpack). */
+  #view = 0;
+  /** P1-17: the last build, reused while `#source.revision()` and the rest of its key stand. */
+  #build: FrameXmlCurrencyBuild | undefined;
+  /** The build the last tick compared; the same one again (and no item news) is a quiet tick. */
+  #tickedBuild: FrameXmlCurrencyBuild | undefined;
+  /** `snapshot()` once per revision, for the catalog gate as well as the build. */
+  #snapshotRevision: number | undefined;
+  #snapshotValue: FrameXmlCurrencySnapshot | undefined;
   /** The owner's hook: there is something to show, so Blizzard_TokenUI should load. */
   onDemand: (() => void) | undefined;
   /** The gateway's `/dbc/currencies`, handed over by the world mount (FrameXmlTokenOwner.ts). */
@@ -183,19 +216,63 @@ export class FrameXmlCurrencyModel {
     this.#pump = pump;
     this.#knownSignature = undefined;
     this.#displaySignature = undefined;
+    this.#forget();
+    this.#source.attach?.();
   }
 
   detach(): void {
     this.#pump = undefined;
+    this.#source.detach?.();
+    this.#forget();
+  }
+
+  /** Drop the kept build and snapshot: the next read and the next tick start from the source. */
+  #forget(): void {
+    this.#build = undefined;
+    this.#tickedBuild = undefined;
+    this.#snapshotRevision = undefined;
+    this.#snapshotValue = undefined;
+  }
+
+  /** The player's facts: once per source revision, every call without one. */
+  #snapshot(revision: number | undefined): FrameXmlCurrencySnapshot | undefined {
+    if (revision === undefined) return this.#source.snapshot();
+    if (this.#snapshotRevision !== revision) {
+      this.#snapshotValue = this.#source.snapshot();
+      this.#snapshotRevision = revision;
+    }
+    return this.#snapshotValue;
+  }
+
+  /**
+   * P1-17: the list as built for the current key — the source's revision, the view version and the
+   * catalog's identity. Without a revision every call builds afresh, as before.
+   */
+  #current(): FrameXmlCurrencyBuild {
+    return this.#currentAt(this.#source.revision?.());
+  }
+
+  #currentAt(revision: number | undefined): FrameXmlCurrencyBuild {
+    const catalog = this.#catalog();
+    const kept = this.#build;
+    if (revision !== undefined && kept && kept.revision === revision && kept.view === this.#view
+      && kept.catalog === catalog) {
+      return kept;
+    }
+    const sections = this.#currencies(catalog, revision);
+    const build: FrameXmlCurrencyBuild = {
+      revision, view: this.#view, catalog, sections, currencies: sections.flatMap((section) => section.rows),
+    };
+    this.#build = revision === undefined ? undefined : build;
+    return build;
   }
 
   /**
    * Every currency the player knows, in list order, with its heading; collapse is not applied.
    * Empty while the catalog or the player is missing.
    */
-  #currencies(): { readonly category: FrameXmlCurrencyCategory; readonly rows: FrameXmlCurrencyRow[] }[] {
-    const catalog = this.#catalog();
-    const snapshot = catalog ? this.#source.snapshot() : undefined;
+  #currencies(catalog: FrameXmlCurrencyCatalog | undefined, revision: number | undefined): FrameXmlCurrencySection[] {
+    const snapshot = catalog ? this.#snapshot(revision) : undefined;
     if (!catalog || !snapshot) return [];
     const unusedCategory = frameXmlUnusedCurrencyCategory(catalog);
     const sections = catalog.categories.map((category) => ({ category, rows: [] as FrameXmlCurrencyRow[] }));
@@ -228,8 +305,10 @@ export class FrameXmlCurrencyModel {
 
   /** The rows GetCurrencyListInfo indexes: headings, and the currencies of expanded headings. */
   rows(): readonly FrameXmlCurrencyRow[] {
+    const build = this.#current();
+    if (build.rows) return build.rows;
     const rows: FrameXmlCurrencyRow[] = [];
-    for (const { category, rows: currencies } of this.#currencies()) {
+    for (const { category, rows: currencies } of build.sections) {
       const expanded = !this.#collapsed.has(category.id);
       rows.push({
         header: true, categoryId: category.id, name: category.name || undefined, expanded,
@@ -237,6 +316,7 @@ export class FrameXmlCurrencyModel {
       });
       if (expanded) rows.push(...currencies);
     }
+    build.rows = rows;
     return rows;
   }
 
@@ -248,7 +328,7 @@ export class FrameXmlCurrencyModel {
 
   /** True when a currency is known: the add-on has something to show. */
   hasCurrencies(): boolean {
-    return this.#currencies().length > 0;
+    return this.#current().sections.length > 0;
   }
 
   listSize(): number {
@@ -274,6 +354,7 @@ export class FrameXmlCurrencyModel {
     if (!row?.header) return;
     if (flagOf(expand)) this.#collapsed.delete(row.categoryId);
     else this.#collapsed.add(row.categoryId);
+    this.#view += 1;
   }
 
   /** `SetCurrencyUnused(index, flag)`: moves the currency under the unused heading and back. */
@@ -283,6 +364,7 @@ export class FrameXmlCurrencyModel {
     if (!row?.type || !catalog || frameXmlUnusedCurrencyCategory(catalog) === undefined) return;
     if (flagOf(flag)) this.#unused.add(row.type.id);
     else this.#unused.delete(row.type.id);
+    this.#view += 1;
   }
 
   /**
@@ -294,6 +376,7 @@ export class FrameXmlCurrencyModel {
     if (!row?.type) return;
     if (flagOf(flag)) this.#watched.add(row.type.id);
     else this.#watched.delete(row.type.id);
+    this.#view += 1;
   }
 
   /**
@@ -303,7 +386,7 @@ export class FrameXmlCurrencyModel {
   backpackInfo(index: unknown): readonly unknown[] {
     const value = Number(index);
     if (!Number.isInteger(value) || value < 1) return NOTHING;
-    const watched = this.#currencies().flatMap((section) => section.rows).filter((row) => row.watched);
+    const watched = this.#current().currencies.filter((row) => row.watched);
     const row = watched[value - 1];
     if (!row) return NOTHING;
     return [row.name, row.count, row.extraCurrencyType, row.icon, row.type?.itemId];
@@ -318,6 +401,7 @@ export class FrameXmlCurrencyModel {
     this.#released = true;
     this.#knownSignature = undefined;
     this.#displaySignature = undefined;
+    this.#tickedBuild = undefined;
     this.tick();
   }
 
@@ -327,22 +411,28 @@ export class FrameXmlCurrencyModel {
    * amount, name or icon does.
    */
   tick(): void {
+    const revision = this.#source.revision?.();
     // The catalog is fetched the first time the player knows a currency, never for one who knows none.
-    if (!this.#catalog() && this.catalogSource && (this.#source.snapshot()?.knownMask ?? 0n) !== 0n) {
+    if (!this.#catalog() && this.catalogSource && (this.#snapshot(revision)?.knownMask ?? 0n) !== 0n) {
       this.catalogSource.load(() => {});
     }
-    const sections = this.#currencies();
-    const rows = sections.flatMap((section) => section.rows);
-    this.#prefetchMissing(rows);
+    const build = this.#currentAt(revision);
+    const rows = build.currencies;
+    // P1-17: the same build as the last tick saw, and no item news: nothing to prefetch or compare.
+    const quiet = build === this.#tickedBuild && !this.#itemsChanged;
+    this.#tickedBuild = build;
+    if (!quiet) this.#prefetchMissing(rows);
     if (!this.#released) {
       if (rows.length > 0) this.onDemand?.();
       return;
     }
     const pump = this.#pump;
-    if (!pump) return;
+    if (!pump || quiet) return;
     // The known set, not its order: moving a currency under the unused heading is not a new type.
-    const knownSignature = rows.map((row) => row.type?.id ?? 0).sort((left, right) => left - right).join(",");
-    const displaySignature = rows.map((row) => `${row.count}:${row.name ?? ""}:${row.icon ?? ""}`).join("|");
+    const knownSignature = build.knownSignature
+      ??= rows.map((row) => row.type?.id ?? 0).sort((left, right) => left - right).join(",");
+    const displaySignature = build.displaySignature
+      ??= rows.map((row) => `${row.count}:${row.name ?? ""}:${row.icon ?? ""}`).join("|");
     const itemsChanged = this.#itemsChanged;
     this.#itemsChanged = false;
     if (knownSignature !== this.#knownSignature) {
@@ -366,7 +456,13 @@ export class FrameXmlCurrencyModel {
       this.#prefetched.add(entry);
       missing.push(entry);
     }
-    if (missing.length > 0) prefetch.call(this.#source, missing, () => { this.#itemsChanged = true; });
+    if (missing.length > 0) {
+      prefetch.call(this.#source, missing, () => {
+        this.#itemsChanged = true;
+        // The kept build holds the old names and icons; the next read builds with the new ones.
+        this.#build = undefined;
+      });
+    }
   }
 }
 

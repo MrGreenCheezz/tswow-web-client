@@ -168,7 +168,11 @@ test("MPQ ChatFrame routes canned chat and the real edit box through stock Lua",
 
     // These are the concrete AddMessage records emitted by ChatFrame_MessageEventHandler.  The
     // SAY line ID is represented by stock ChatHistory as accessID/extraData; SYSTEM has no line ID.
-    assert.deepEqual(messageFrame.messages, [
+    // 3.34 (review 03.10): each line carries its fade deadlines on the frame's clock — ChatFrameTemplate's
+    // displayDuration 120 and the client's default fadeDuration 3 (ChatFrame.xml:4).
+    assert.deepEqual(messageFrame.messages.map((line) =>
+      [Math.round(line.visibleUntil - messageFrame.fadeClock), line.fadeUntil - line.visibleUntil]), [[120, 3], [120, 3]]);
+    assert.deepEqual(messageFrame.messages.map(({ visibleUntil, fadeUntil, ...line }) => line), [
       {
         // The canned player is Human: GetDefaultLanguage is its racial «всеобщий», so stock
         // ChatFrame.lua:2901 prints no language bracket on its own SAY line.

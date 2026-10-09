@@ -24,6 +24,7 @@ import { stampGenerated, stampSidecar, writeFileAtomic } from "./source-stamp.mj
 // gateway *is* `dist/code/gateway/main.js`, `npm test` builds before it runs, and the two npm
 // scripts that reach it come after `npm run build` in the README's own order.
 import { validAssetPath } from "../dist/code/gateway/AssetPath.js";
+import { SourceMissing, SOURCE_MISSING_EXIT } from "./source-missing.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -39,10 +40,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * `SOURCE_MISSING_EXIT` in `src/gateway/Gateway.ts` is the other half of this agreement, and
  * `npm test` asserts the two are the same number.
  */
-export const SOURCE_MISSING_EXIT = 3;
-
-/** The failure that earns that exit code: the path is well formed and the chain has no such file. */
-export class SourceMissing extends Error {}
+export { SOURCE_MISSING_EXIT, SourceMissing } from "./source-missing.mjs";
 
 /** Stable name for a texture. Case and separators vary between references to the same file. */
 export function textureId(mpqPath) {

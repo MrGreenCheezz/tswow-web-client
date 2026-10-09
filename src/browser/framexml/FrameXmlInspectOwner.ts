@@ -144,12 +144,25 @@ export function frameXmlInspectGate(
     }
     const errors = boot.errorCount;
     const diagnostics = boot.bridge.diagnostics.length;
-    const probe = frameXmlSilentProbe(boot, "webclient/inspect-gate", `
-      ShowUIPanel(InspectFrame)
-      local shown = InspectFrame:IsShown() and 1 or 0
-      HideUIPanel(InspectFrame)
-      return shown, InspectFrame:IsShown() and 1 or 0
-    `, 2);
+    // 05.10 suite-fix: the paper doll is not hidden in the XML and its OnShow formats PLAYER_LEVEL
+    // with UnitRace(InspectFrame.unit) — nil without a unit, which the native string.format (3.27)
+    // rejects as Wow.exe's does. The stock path never shows the frame without a unit
+    // (InspectFrame_Show sets it first), so the unitless probe sets the doll's shown flag aside —
+    // without its scripts — for the pair, and puts it back however the probe ends.
+    const doll = boot.bridge.getFrame("InspectPaperDollFrame");
+    const dollShown = doll?.visible === true;
+    if (doll && dollShown) boot.bridge.update(doll, (mutable) => { mutable.visible = false; });
+    let probe: readonly unknown[] | undefined;
+    try {
+      probe = frameXmlSilentProbe(boot, "webclient/inspect-gate", `
+        ShowUIPanel(InspectFrame)
+        local shown = InspectFrame:IsShown() and 1 or 0
+        HideUIPanel(InspectFrame)
+        return shown, InspectFrame:IsShown() and 1 or 0
+      `, 2);
+    } finally {
+      if (doll && dollShown) boot.bridge.update(doll, (mutable) => { mutable.visible = true; });
+    }
     const [shown, stillShown] = (probe ?? []).map((value) => Number(value));
     if (!probe || shown !== 1 || stillShown !== 0 || root.visible
       || boot.errorCount !== errors || boot.bridge.diagnostics.length !== diagnostics) {

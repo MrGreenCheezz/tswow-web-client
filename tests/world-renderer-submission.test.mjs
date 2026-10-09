@@ -96,7 +96,8 @@ test("world terrain update pins its complete CPU dependency ring and clears inva
   const visible = update.indexOf("if (plan !== this.#terrainPlan)");
   const removal = update.indexOf("this.#removeTerrain", visible);
   const splatPins = update.indexOf("splatClient?.setActiveTiles(map, plan.retained);", visible);
-  const build = update.indexOf("for (const grid of grids)", splatPins);
+  // P1-13b: an indexed walk over the plan's visible tiles and their prebuilt keys.
+  const build = update.indexOf("for (let index = 0; index < grids.length; index++)", splatPins);
   assert.ok(visible >= 0 && removal > visible && splatPins > removal && build > splatPins,
     "old materials are detached before retained splat eviction and new tile lookup");
   assert.match(source, /public clearTerrain\(\): void \{[\s\S]*this\.#removeTerrain/,

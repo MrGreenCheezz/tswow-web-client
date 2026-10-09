@@ -4,6 +4,7 @@ import { openDbc } from "./Dbc.js";
 import { validAssetPath } from "./AssetPath.js";
 import { CharacterAppearanceIndex, type CharacterAppearance } from "./CharacterAppearance.js";
 import type { CharacterTextureIndex } from "./CharacterTextures.js";
+import { attachParticleColors, parseParticleColors } from "./ParticleColors.js"; // 05.10-A7a-H 6.11а
 
 export interface CreatureModelMetadata {
   /** CreatureDisplayInfo id, which is what UNIT_FIELD_DISPLAYID carries. */
@@ -46,6 +47,46 @@ export interface CreatureModelMetadata {
    * baked ahead of time, and the rest are assembled the same way a player is.
    */
   appearance?: CharacterAppearance;
+  /**
+   * 05.10-A7a-A 6.11а: `CreatureModelAlpha / 255`, only where the column is not 255 (1,264 of the
+   * dataset's displays; 128 on 440 of them, 0 on seven). Absent means opaque.
+   */
+  alpha?: number;
+  /**
+   * 05.10-A7a-A 6.11а: `CreatureGeosetData` as stored, only where non-zero — one nibble per geoset
+   * group, decoded by `browser/CreatureGeosetData.ts`.
+   */
+  geosetData?: number;
+  /** 05.10-A7a-A 6.11а: `ParticleColorID` (a `ParticleColor.dbc` row), only where positive. */
+  particleColor?: number;
+  /**
+   * 05.10-A7a-H 6.11а: that `ParticleColor.dbc` row's nine `0xAARRGGBB` words (Start[3], MID[3],
+   * End[3]), where the row exists — `gateway/ParticleColors.ts`, applied by `browser/CreatureDisplayLook.ts`.
+   */
+  particleColors?: number[];
+  /**
+   * 05.10-A7a-G 6.20: the model's `CreatureModelData.Flags` bit 0x400, only where set — Wow.exe
+   * 0x0072eb80 jumps rather than playing the mount trick for such a mount (one model on this dataset
+   * and on the visual overlay: `Creature\MotorcycleVehicle`).
+   */
+  noMountSpecial?: true;
+}
+
+/** 05.10-A7a-G 6.20: `CreatureModelData.Flags` bit read by Wow.exe 0x0072eb80. */
+const MODEL_FLAG_NO_MOUNT_SPECIAL = 0x400;
+
+/**
+ * 05.10-A7a-A 6.11а: the three display columns a creature's look takes beside its model, each only
+ * where it says something (absent fields keep the payload of the 22,000 ordinary displays as it was).
+ */
+export function creatureDisplayFields(alphaByte: number, geosetData: number, particleColor: number):
+  Pick<CreatureModelMetadata, "alpha" | "geosetData" | "particleColor"> {
+  const fields: Pick<CreatureModelMetadata, "alpha" | "geosetData" | "particleColor"> = {};
+  if (Number.isInteger(alphaByte) && alphaByte >= 0 && alphaByte < 255) fields.alpha = alphaByte / 255;
+  // The word is read signed; the nibbles are what count, so it goes out unsigned.
+  if (Number.isInteger(geosetData) && geosetData !== 0) fields.geosetData = geosetData >>> 0;
+  if (Number.isInteger(particleColor) && particleColor > 0) fields.particleColor = particleColor;
+  return fields;
 }
 
 /** Three skin variations per display, held as one array field. */
@@ -72,7 +113,9 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
   const displays = openDbc(buffer(displayInfo), "CreatureDisplayInfo");
   const models = openDbc(buffer(modelData), "CreatureModelData");
 
-  const paths = new Map<number, { path: string; scale: number; collisionHeight: number; mountHeight: number }>();
+  const paths = new Map<number, {
+    path: string; scale: number; collisionHeight: number; mountHeight: number; noMountSpecial: boolean; // 05.10-A7a-G 6.20
+  }>();
   for (const row of models.rows()) {
     const id = models.id(row);
     // MDX and MDL are the authoring extensions; the shipped asset is always the M2.
@@ -88,6 +131,7 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
       scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
       collisionHeight: Number.isFinite(collisionHeight) && collisionHeight > 0 ? collisionHeight : 0,
       mountHeight: Number.isFinite(mountHeight) && mountHeight > 0 ? mountHeight : 0,
+      noMountSpecial: (models.int(row, "Flags") & MODEL_FLAG_NO_MOUNT_SPECIAL) !== 0, // 05.10-A7a-G 6.20
     });
   }
 
@@ -133,8 +177,12 @@ export function parseCreatureModelMetadata(displayInfo: Uint8Array, modelData: U
       // the tallest seat in the table is 17.145, so a `* scale` here would put a rider in orbit.
       mountHeight: model.mountHeight,
       textures: textureSlots(skins),
+      // 05.10-A7a-A 6.11а
+      ...creatureDisplayFields(displays.int(row, "CreatureModelAlpha"),
+        displays.int(row, "CreatureGeosetData"), displays.int(row, "ParticleColorID")),
     };
     if (appearance) metadata.appearance = appearance;
+    if (model.noMountSpecial) metadata.noMountSpecial = true; // 05.10-A7a-G 6.20
     result.set(id, metadata);
   }
   return result;
@@ -156,5 +204,11 @@ export async function loadCreatureModelMetadata(dbcDirectory: string,
     CharacterAppearanceIndex.load(
       dbcDirectory, textures, visualDbcDirectory, coordinatedVisuals).catch(() => undefined),
   ]);
-  return parseCreatureModelMetadata(displayInfo, modelData, characters);
+  const metadata = parseCreatureModelMetadata(displayInfo, modelData, characters);
+  // 05.10-A7a-H 6.11а: the colour rows, from the overlay when it has the file, else the dataset; none
+  // readable leaves the displays as they were.
+  const colors = await readFile(join(visualDbcDirectory, "ParticleColor.dbc"))
+    .catch(() => readFile(join(dbcDirectory, "ParticleColor.dbc"))).catch(() => undefined);
+  if (colors) attachParticleColors(metadata, parseParticleColors(colors));
+  return metadata;
 }

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RenderBone, type RenderBoneRig } from "./RenderBone.js";
+import { slotDepthMaterialFor } from "./SlotMaterial.js"; // P2-03a
 import {
   FastPoseState, createFastPoseProgram, invalidateMixerApply, multiplyFlatMatrices, type FastPoseProgram,
 } from "./FastPose.js";
@@ -11,6 +12,8 @@ import {
   type WvmSkeleton, type WvmSkeletonClip, type WvmSkeletonGlobalChannel,
 } from "./Wvm.js";
 import { markWvaClipSetConsumed, wvaClipSetSpan } from "./WvaAnimationDecode.js";
+import { seatPoseFamily, seatPoseWanted, vehicleSeatTransition, type VehiclePassengerSeatPose } from "./VehicleSeatPose.js"; // 11.02-H
+import { standingAnimations } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
 import { ANIMATION_FALLBACK, ANIMATION_IDS } from "../generated/animations.js";
 import { MOVEMENT_FLAGS } from "../world/MovementProtocol.js";
 import {
@@ -915,7 +918,11 @@ export function needsSidecarAnimations(
 export type AnimationRequestFamily = "any" | "mount" | "stealth";
 
 /** The family a pose's own `poseAnimation` list belongs to, so the two can never drift apart. */
-export function poseAnimationFamily(pose: Pick<UnitPose, "mounted" | "stealth">): AnimationRequestFamily {
+export function poseAnimationFamily(
+  pose: Pick<UnitPose, "mounted" | "stealth" | "vehicleSeat"> & { readonly dead?: boolean }, // 11.02-H: vehicleSeat, dead
+): AnimationRequestFamily {
+  // 11.02-H: a vehicle seat's ride loop is a seat pose like the rider's (`poseAnimation`'s branch).
+  if (seatPoseFamily(pose.vehicleSeat, pose.dead === true)) return "mount";
   if (pose.mounted === true) return "mount";
   return pose.stealth === true ? "stealth" : "any";
 }
@@ -1228,6 +1235,10 @@ function buildClip(clip: ModelClip | WvmSkeletonClip, skeleton: { parents: Int16
   if (movingSpeed !== undefined && Number.isFinite(movingSpeed) && movingSpeed !== 0) {
     built.userData["movingSpeed"] = Math.abs(movingSpeed);
   }
+  // 05.10-A7a-F1 (6.16а): the clip's sequence-table slot, which the batch colour tracks are keyed by
+  // (`BatchDeathFade.ts`); absent for an artifact written before the extras table carried it.
+  const variationIndex = "variationIndex" in clip ? clip.variationIndex : undefined;
+  if (variationIndex !== undefined) built.userData["variationIndex"] = variationIndex;
   return built;
 }
 
@@ -1338,6 +1349,9 @@ export function instantiateSkinned(template: SkinnedTemplate, material: THREE.Ma
   }
 
   const mesh = new THREE.SkinnedMesh(template.geometry, material);
+  // P2-03a: a slot carrier with keyed or mixed-side slots casts through its own depth shader.
+  const slotDepth = slotDepthMaterialFor(material);
+  if (slotDepth) mesh.customDepthMaterial = slotDepth;
   // A skinned silhouette leaves its rest-pose bounds, and the unit is culled by distance anyway.
   mesh.frustumCulled = false;
   // The rest-pose sphere, handed over rather than left null. three sorts every drawn object by its
@@ -1692,6 +1706,13 @@ export interface UnitPose {
    */
   mountSeat?: "upright" | "reclined" | "reclinedPassenger";
   /**
+   * 11.02-H: the vehicle seat the unit sits in, once the vehicle tables are here — the row's ride
+   * loop for the whole body, the one-shot on taking it and HIDE_PASSENGER (`VehicleSeatPose.ts`,
+   * Wow.exe 0x00747b20/0x007485b0). The seat row above arrived this way; `mountSeat` stays the
+   * mount's. Absent off a vehicle, on a ship, a lift or a mount, and without the tables.
+   */
+  vehicleSeat?: VehiclePassengerSeatPose | undefined;
+  /**
    * The unit is sneaking, so its ground locomotion is the crouched ladder.
    *
    * The same flag that fades it (`unitAppearance` in `world/Fields.ts`), and deliberately only the
@@ -1717,6 +1738,12 @@ export interface UnitPose {
    * length over its duration.
    */
   speed?: number;
+  /** 05.10-A7a-C 6.03: the raw `UNIT_NPC_EMOTESTATE`, when not zero (`applyStandingPose`). */
+  npcEmote?: number;
+  /** 05.10-A7a-C 6.03: the AnimationData id a held emote state stands in instead of Stand. */
+  emoteState?: number;
+  /** 05.10-A7a-C 6.04: the combat stance ladder while `UNIT_FLAG_IN_COMBAT` is up. */
+  ready?: readonly number[];
 }
 
 /** Whether a pose is terminal and must take precedence over transient unit actions. */
@@ -1969,6 +1996,10 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   // seat pose that lives in the sidecar and none of them is a base id the fresh template already
   // resolves. That is the same precedent `spellVisualAnimationCandidates` set: what might be drawn
   // and what must be fetched are one question here.
+  // 11.02-H: a vehicle seat's ride loop, by the same rule — the one id, no Stand behind it, resolved
+  // inside the seat family (`poseAnimationFamily`). A seat that names no loop falls through.
+  const seatWanted = seatPoseWanted(pose.vehicleSeat);
+  if (seatWanted !== undefined) return { wanted: seatWanted, loop: true };
   if (pose.mounted) return { wanted: mountedRiderAnimations(pose), loop: true };
 
   const forward = has(MOVEMENT_FLAGS.forward);
@@ -2002,7 +2033,9 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
   }
   // Airborne. The arc's own pose loops until something lands; JumpStart and JumpEnd are played by
   // the transition, not by the state, because they are over in under a second either way.
-  if (has(MOVEMENT_FLAGS.falling) || has(MOVEMENT_FLAGS.fallingFar)) {
+  // 05.10-A7a-C 6.07: a far fall is Fall; the arc of a jump stays Jump.
+  if (has(MOVEMENT_FLAGS.fallingFar)) return { wanted: [Fall, Jump], loop: true };
+  if (has(MOVEMENT_FLAGS.falling)) {
     return { wanted: [Jump, Fall], loop: true };
   }
 
@@ -2029,7 +2062,7 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
         // The crouch is a standing pose and nothing else: a rogue who sits down is sitting, which
         // is why this is the one arm of the switch that asks.
         return {
-          wanted: pose.stealth === true ? animationLadder("StealthStand", "Stand") : [Stand],
+          wanted: standingAnimations(pose) as number[], // 05.10-A7a-C 6.03/6.04: crouch, emote, combat stance, Stand
           loop: true,
         };
     }
@@ -2077,6 +2110,29 @@ export function poseAnimation(pose: UnitPose): { wanted: number[]; loop: boolean
     return { wanted: walking ? [ShuffleRight, RunRight, Walk] : [RunRight, ShuffleRight, Run, Walk], loop: true };
   }
   return { wanted: walking ? [Walk, Run] : [Run, Walk], loop: true };
+}
+
+/**
+ * 05.10-A7a-C (A7-M1): whether the unit's own base is standing on its feet — the branch of
+ * {@link poseAnimation} that ends in {@link standingAnimations} without the crouch — whatever stance
+ * it holds there. The arbiter's `baseIdle`: a swing over a working blacksmith or a guard's combat
+ * stance owns the whole body, as it does over plain Stand. The checks mirror `poseAnimation` in
+ * order; `unit-standing-pose.test.mjs` holds the two to the same answer over every base.
+ */
+export function isBaseIdle(pose: UnitPose): boolean {
+  if (pose.dead || seatPoseWanted(pose.vehicleSeat) !== undefined || pose.mounted) return false;
+  const flags = pose.movementFlags;
+  if ((flags & (MOVEMENT_FLAGS.swimming | MOVEMENT_FLAGS.falling | MOVEMENT_FLAGS.fallingFar)) !== 0) return false;
+  if (isUnitFlying(flags, pose.flight === true) || hoversOnFlightTier(pose)) return false;
+  if (pose.spline || (flags & (MOVEMENT_FLAGS.forward | MOVEMENT_FLAGS.backward
+    | MOVEMENT_FLAGS.strafeLeft | MOVEMENT_FLAGS.strafeRight)) !== 0) return false;
+  switch (pose.standState) {
+    case UNIT_STAND_STATE_SIT: case UNIT_STAND_STATE_SIT_CHAIR: case UNIT_STAND_STATE_SIT_MEDIUM_CHAIR:
+    case UNIT_STAND_STATE_SIT_LOW_CHAIR: case UNIT_STAND_STATE_SIT_HIGH_CHAIR: case UNIT_STAND_STATE_KNEEL:
+    case UNIT_STAND_STATE_DEAD: case UNIT_STAND_STATE_SLEEP:
+      return false;
+  }
+  return pose.stealth !== true;
 }
 
 /**
@@ -2820,6 +2876,10 @@ export function mountSpecialAnimation(flying: boolean): number | undefined {
  */
 export function poseTransition(previous: UnitPose | undefined, next: UnitPose): number | undefined {
   if (!previous || next.dead) return undefined;
+  // 11.02-H: in or out of a vehicle seat, the only one-shot is the seat's own start on taking it
+  // (RideAnimStart / RideUpperAnimStart, Wow.exe 0x00747b20) — the vehicle does any jumping.
+  const seatTransition = vehicleSeatTransition(previous.vehicleSeat, next.vehicleSeat);
+  if (seatTransition !== false) return seatTransition;
   const airborne = isAirborne;
   const swimming = (pose: UnitPose): boolean => (pose.movementFlags & MOVEMENT_FLAGS.swimming) !== 0;
   if (swimming(next) || swimming(previous)) return undefined;
@@ -2829,10 +2889,20 @@ export function poseTransition(previous: UnitPose | undefined, next: UnitPose): 
   // horse every time it went over a rise.
   if (previous.mounted === true || next.mounted === true) return undefined;
   if (!airborne(previous) && airborne(next)) return JumpStart;
-  if (airborne(previous) && !airborne(next)) return JumpEnd;
+  // 05.10-A7a-C 6.07: landing at a run is JumpLandRun (AnimationData falls back to Run), standing JumpEnd.
+  if (airborne(previous) && !airborne(next)) {
+    return (next.movementFlags & MOVEMENT_FLAGS.forward) !== 0 && ANIMATION_IDS["JumpLandRun"] !== undefined
+      ? ANIMATION_IDS["JumpLandRun"] : JumpEnd;
+  }
   if (previous.standState !== next.standState) {
     if (next.standState === UNIT_STAND_STATE_SIT) return SitGroundDown;
     if (previous.standState === UNIT_STAND_STATE_SIT) return SitGroundUp;
+    // 05.10-A7a-C 6.07: kneeling and sleeping have their way down and up (KneelEnd and SleepUp fall
+    // back to KneelStart/SleepDown in AnimationData, as the original resolves them).
+    if (next.standState === UNIT_STAND_STATE_KNEEL) return ANIMATION_IDS["KneelStart"];
+    if (previous.standState === UNIT_STAND_STATE_KNEEL) return ANIMATION_IDS["KneelEnd"];
+    if (next.standState === UNIT_STAND_STATE_SLEEP) return SleepDown;
+    if (previous.standState === UNIT_STAND_STATE_SLEEP) return ANIMATION_IDS["SleepUp"];
   }
   return undefined;
 }

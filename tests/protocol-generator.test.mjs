@@ -168,3 +168,25 @@ test("started through a junction the script still runs, so --check cannot pass b
     rmdirSync(scratch);
   }
 });
+
+test("10.11: a table whose text did not change is not rewritten, so its mtime does not move", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "webclient-protocol-emit-"));
+  try {
+    const { stat, utimes } = await import("node:fs/promises");
+    const file = join(directory, "opcodes.ts");
+    assert.equal(await generator.emitGenerated(directory, "opcodes.ts", "export const A = 1;\n"), true, "a new file is written");
+    const past = new Date(Date.now() - 60_000);
+    await utimes(file, past, past);
+    const before = (await stat(file)).mtimeMs;
+    assert.equal(await generator.emitGenerated(directory, "opcodes.ts", "export const A = 1;\n"), false);
+    assert.equal((await stat(file)).mtimeMs, before, "the same text leaves the file alone");
+    assert.equal(await generator.emitGenerated(directory, "opcodes.ts", "export const A = 2;\n"), true);
+    assert.equal(await readFile(file, "utf8"), "export const A = 2;\n");
+    assert.equal(await generator.emitGenerated(directory, "opcodes.ts", "export const A = 2;\n", { check: true }), false);
+    await assert.rejects(generator.emitGenerated(directory, "opcodes.ts", "export const A = 3;\n", { check: true }), /stale/);
+    await assert.rejects(generator.emitGenerated(directory, "absent.ts", "x", { check: true }), /stale/);
+    assert.equal(await readFile(file, "utf8"), "export const A = 2;\n", "a check writes nothing");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -150,6 +150,9 @@ try {
   clientDirectory = undefined;
 }
 const withClient = { skip: clientDirectory ? false : "no 3.3.5a client on this machine" };
+const { tswowModuleSkip } = await import("./fixtures/tswow-modules.mjs");
+// The TSAddon talent root is the retail-talents module's; the base dataset (08.10) has no modules.
+const withRetailTalents = { skip: withClient.skip || tswowModuleSkip("retail-talents") };
 let archiveChainPromise;
 async function archiveChain() {
   if (!archiveChainPromise) {
@@ -246,7 +249,7 @@ function apiCallCount(boot, name) {
   return Number(boot.vm.getGlobal("__fxTalentCallCount") ?? 0);
 }
 
-test("production subset executes the active retail-talents hook as the only talent root", withClient, async () => {
+test("production subset executes the active retail-talents hook as the only talent root", withRetailTalents, async () => {
   const chain = await archiveChain();
   const decoder = new TextDecoder("utf-8");
   const boot = new FrameXmlBoot({
@@ -289,7 +292,7 @@ test("production subset executes the active retail-talents hook as the only tale
   }
 });
 
-test("production N owner renders the lazy retail-talents root and keeps native fallback hidden", withClient,
+test("production N owner renders the lazy retail-talents root and keeps native fallback hidden", withRetailTalents,
   async () => {
     const chain = await archiveChain();
     const decoder = new TextDecoder("utf-8");

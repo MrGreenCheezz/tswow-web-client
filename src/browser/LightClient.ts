@@ -7,9 +7,10 @@
 // zone, and the sun was placed once when the scene was built and never moved again.
 
 import type {
-  LightIndexEntry, LightParamSet, LightSample, LightSlots, ResolvedColour,
+  LightBand, LightIndexEntry, LightParamSet, LightSample, LightSlots, LiquidLighting, ResolvedColour,
 } from "./LightTypes.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { RetryLadder } from "./RetryLadder.js"; // 05.10-A7b-0 1.24
 
 export type { LightSample };
 
@@ -63,14 +64,25 @@ function sampleBand(times: readonly number[], values: readonly number[], time: n
 
 const mixNumber = (from: number, to: number, t: number) => from + (to - from) * t;
 
-/** Packed 0xRRGGBB blended channel by channel, which is not the same as blending the packed int. */
+/**
+ * Packed 0xRRGGBB blended channel by channel, which is not the same as blending the packed int.
+ * 05.10-A7b-5: written without the per-call closure it used to build — it now also runs for the six
+ * sky channels on every sample, and the answer is the same to the bit.
+ */
 function mixColour(from: number, to: number, t: number): number {
-  const channel = (shift: number) => {
-    const a = (from >> shift) & 0xff;
-    const b = (to >> shift) & 0xff;
-    return Math.round(a + (b - a) * t) & 0xff;
-  };
-  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+  return (mixByte(from >> 16, to >> 16, t) << 16) | (mixByte(from >> 8, to >> 8, t) << 8) | mixByte(from, to, t);
+}
+
+function mixByte(from: number, to: number, t: number): number {
+  const a = from & 0xff;
+  const b = to & 0xff;
+  return Math.round(a + (b - a) * t) & 0xff;
+}
+
+/** 05.10-A7b-5 (7.04 slice 0): a band a v4 body lacks samples as 0 instead of throwing. */
+function sampleOptional(band: LightBand<number> | undefined, time: number,
+  blend: (from: number, to: number, t: number) => number): number {
+  return band === undefined ? 0 : sampleBand(band.times, band.values, time, blend) ?? 0;
 }
 
 function unpack(colour: number): ResolvedColour {
@@ -86,6 +98,7 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
   }
   const fogEnd = sampleBand(set.fogEnd.times, set.fogEnd.values, time, mixNumber) ?? 500;
   const fogScale = sampleBand(set.fogScale.times, set.fogScale.values, time, mixNumber) ?? 0.25;
+  const sky = set.colours;
   return {
     colours, fogEnd, fogStart: fogEnd * fogScale,
     waterShallowAlpha: set.waterShallowAlpha, waterDeepAlpha: set.waterDeepAlpha,
@@ -93,6 +106,25 @@ function sampleSet(set: LightParamSet, time: number): LightSample {
     // A gateway that predates P4 sends no glow at all, and that reads as none — the same tolerance
     // the browser gives every other field a payload version has added.
     glow: set.glow ?? 0,
+    // 05.10-A7b-5 (7.04 slice 0): payload v5. Plain numbers, so the sample gains no object; a v4
+    // body (an old gateway) has none of them and says so through `skyChannels`.
+    skyChannels: sky.sunColour !== undefined,
+    extra8: sampleOptional(sky.extra8, time, mixColour),
+    sunColour: sampleOptional(sky.sunColour, time, mixColour),
+    sunHalo: sampleOptional(sky.sunHalo, time, mixColour),
+    cloudA: sampleOptional(sky.cloudA, time, mixColour),
+    cloudB: sampleOptional(sky.cloudB, time, mixColour),
+    extra13: sampleOptional(sky.extra13, time, mixColour),
+    celestialThrough: sampleOptional(set.celestialThrough, time, mixNumber),
+    cloudDensity: sampleOptional(set.cloudDensity, time, mixNumber),
+    float4: sampleOptional(set.float4, time, mixNumber),
+    float5: sampleOptional(set.float5, time, mixNumber),
+    highlightSky: set.highlightSky ?? 0,
+    cloudType: set.cloudType ?? 0,
+    skyboxFlags: set.skyboxPath ? set.skyboxFlags ?? 0 : 0,
+    // 05.10-A7b-5 review: set by `resolveLighting` on the frame's own sample (overlay hook).
+    liquidLight: false,
+    liquidDarkens: false,
     ...(set.skyboxPath ? { skyboxPath: set.skyboxPath } : {}),
   };
 }
@@ -124,6 +156,24 @@ function blendSamples(base: LightSample, other: LightSample, weight: number): Li
     // read into a uniform every frame, and a step there would pop the whole screen as the player
     // walks out of Stormwind's 0.30 into Elwynn's 0.65.
     glow: between(base.glow, other.glow),
+    // 05.10-A7b-5 (7.04 slice 0): colours channel by channel like the twelve, scalars like the
+    // alphas, and the per-profile integers with the dominant profile like the sky model below.
+    skyChannels: base.skyChannels || other.skyChannels,
+    extra8: mixColour(base.extra8, other.extra8, weight),
+    sunColour: mixColour(base.sunColour, other.sunColour, weight),
+    sunHalo: mixColour(base.sunHalo, other.sunHalo, weight),
+    cloudA: mixColour(base.cloudA, other.cloudA, weight),
+    cloudB: mixColour(base.cloudB, other.cloudB, weight),
+    extra13: mixColour(base.extra13, other.extra13, weight),
+    celestialThrough: between(base.celestialThrough, other.celestialThrough),
+    cloudDensity: between(base.cloudDensity, other.cloudDensity),
+    float4: between(base.float4, other.float4),
+    float5: between(base.float5, other.float5),
+    highlightSky: weight >= 0.5 ? other.highlightSky : base.highlightSky,
+    cloudType: weight >= 0.5 ? other.cloudType : base.cloudType,
+    skyboxFlags: weight >= 0.5 ? other.skyboxFlags : base.skyboxFlags,
+    liquidLight: base.liquidLight || other.liquidLight, // 05.10-A7b-5 review
+    liquidDarkens: base.liquidDarkens || other.liquidDarkens, // 05.10-A7b-5 review
     // A model cannot be blended in the same shader as the procedural sky. Keep only the profile
     // that owns the greater weight; the absence of a path is meaningful and must clear an authored
     // dome when the procedural profile wins. Falling back to the other side here made a Dalaran
@@ -152,7 +202,68 @@ function falloffWeight(distance: number, inner: number, outer: number): number {
 export function resolveLighting(entry: LightIndexEntry, x: number, y: number, time: number,
   storm = 0, maxBlended = 3, z?: number, overrideLightId?: number, overrideWeight = 1,
   overrideAreaLightId?: number, overrideFromLightId?: number,
-  underwater = false): LightSample | undefined {
+  underwater = false, ghost = 0, liquidType?: number, liquidDepth = 0): LightSample | undefined {
+  // 05.10-A7b-5 (7.15): a ghost fading in or out is the two lights crossfaded. Only during the
+  // two-second turn (`GhostLightFade`) does a frame resolve twice; settled, it is one pass.
+  if (ghost > 0 && ghost < 1) {
+    const alive = resolveLighting(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
+      overrideAreaLightId, overrideFromLightId, underwater, 0, liquidType, liquidDepth);
+    const dead = resolveLighting(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
+      overrideAreaLightId, overrideFromLightId, underwater, 1, liquidType, liquidDepth);
+    return alive && dead ? blendSamples(alive, dead, ghost) : dead ?? alive;
+  }
+  const dead = ghost >= 1;
+  // 05.10-A7b-5 (7.10): under a liquid whose `LiquidType` row names a light, that row's slots
+  // stand in for the whole spatial lookup; the darkening applies under any liquid that has one.
+  // 05.10-A7b-5 review: a ghost's death light outranks the liquid's light and its darkening, as it
+  // outranks the zone's underwater slot (`pair`) — under Kalimdor's lava a ghost read Light 7's
+  // slot 4 (set 4) instead of the map's death set 3. Only a v5 body has liquids, so v4 is untouched.
+  const liquid: LiquidLighting | undefined = underwater && !dead && liquidType !== undefined
+    ? entry.liquids?.[liquidType] : undefined;
+  const liquidSlots = liquid?.lightId ? entry.lights?.[liquid.lightId] : undefined;
+  const resolved = resolveSpatial(entry, x, y, time, storm, maxBlended, z, overrideLightId, overrideWeight,
+    overrideAreaLightId, overrideFromLightId, underwater, dead, liquidSlots);
+  if (resolved && liquid?.maxDarkenDepth) {
+    // 05.10-A7b-5 review: the overlay reads this to leave the depth darkening to the light alone.
+    resolved.liquidDarkens = true;
+    darkenUnderLiquid(resolved, liquid, liquidDepth);
+  }
+  return resolved;
+}
+
+/**
+ * 05.10-A7b-5 (7.10): the deeper the eye under an ocean, the darker and closer the world.
+ *
+ * `darkness = clamp(depth / MaxDarkenDepth, 0, 1)`, then the fog distance, the ambient and the
+ * direct light each lose up to their `…DarkenIntensity` share. Reading an intensity as "the largest
+ * share taken off" is the plan's hypothesis (line-A7b 7.10), not Wow.exe's established formula;
+ * the paired frame 14.25 calibrates it. In place: the sample is this frame's own object.
+ */
+export function darkenUnderLiquid(sample: LightSample, liquid: LiquidLighting, depth: number): void {
+  const maxDepth = liquid.maxDarkenDepth ?? 0;
+  if (!(maxDepth > 0) || !(depth > 0)) return;
+  const darkness = Math.min(1, depth / maxDepth);
+  const fog = 1 - clampUnit(liquid.fogDarken ?? 0) * darkness;
+  sample.fogEnd *= fog;
+  sample.fogStart *= fog;
+  scaleColour(sample.colours.ambient, 1 - clampUnit(liquid.ambDarken ?? 0) * darkness);
+  scaleColour(sample.colours.diffuse, 1 - clampUnit(liquid.dirDarken ?? 0) * darkness);
+}
+
+function clampUnit(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
+function scaleColour(colour: ResolvedColour, factor: number): void {
+  colour.r *= factor;
+  colour.g *= factor;
+  colour.b *= factor;
+}
+
+function resolveSpatial(entry: LightIndexEntry, x: number, y: number, time: number,
+  storm: number, maxBlended: number, z: number | undefined, overrideLightId: number | undefined,
+  overrideWeight: number, overrideAreaLightId: number | undefined, overrideFromLightId: number | undefined,
+  underwater: boolean, dead: boolean, liquidSlots: LightSlots | undefined): LightSample | undefined {
   /**
    * Which pair of the row's four slots this camera reads.
    *
@@ -163,6 +274,15 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
    */
   const pair = (slots: LightSlots | undefined): [number | undefined, number | undefined] => {
     if (!slots) return [undefined, undefined];
+    // 05.10-A7b-5 (7.15): the death light has no storm and no water of its own; a body without
+    // slot 4 (v4, or a row whose slot 4 repeats slot 0) reads slot 0.
+    // 05.10-A7b-5 review: only where the body knows slot 4 — a v5 body (its sets carry the sky
+    // channels) or a row naming one. A v4 body (old gateway) keeps the living storm and water
+    // pair, so a ghost there sees exactly the light it saw before v5.
+    if (dead && (slots.deathParams !== undefined
+      || entry.params[slots.params]?.colours.sunColour !== undefined)) {
+      return [slots.deathParams ?? slots.params, undefined];
+    }
     if (!underwater) return [slots.params, slots.stormParams];
     const clear = slots.underwaterParams ?? slots.params;
     const stormy = slots.underwaterStormParams ?? clear;
@@ -224,7 +344,18 @@ export function resolveLighting(entry: LightIndexEntry, x: number, y: number, ti
     ...(entry.fallbackUnderwater === undefined ? {} : { underwaterParams: entry.fallbackUnderwater }),
     ...(entry.fallbackUnderwaterStorm === undefined
       ? {} : { underwaterStormParams: entry.fallbackUnderwaterStorm }),
+    ...(entry.fallbackDeath === undefined ? {} : { deathParams: entry.fallbackDeath }), // 05.10-A7b-5
   };
+  if (liquidSlots) {
+    // 05.10-A7b-5 (7.10): the liquid's light row replaces the zone; a server override naming the
+    // active area still lays over it, through the same layer resolution as the map default.
+    const underLiquid = resolveLayer(entry.fallbackLightId, liquidSlots);
+    if (underLiquid) {
+      underLiquid.liquidLight = true; // 05.10-A7b-5 review: this frame's own sample (overlay hook)
+      return underLiquid;
+    }
+    return resolveLayer(entry.fallbackLightId, fallbackSlots);
+  }
   if (reached.length === 0) {
     return resolveLayer(entry.fallbackLightId, fallbackSlots);
   }
@@ -257,16 +388,28 @@ export class LightClient {
   readonly #baseUrl: string;
   readonly #maps = new Map<number, LightIndexEntry | null>();
   readonly #loading = new Set<number>();
+  /**
+   * 05.10-A7b-0 1.24: a map whose request failed (network, 5xx) is asked again after 2 s, 8 s and
+   * 30 s instead of never — until now one hiccup left "noon" and a 180–640 fog for the session.
+   * A 404 (neither the map nor the global light) and a body that is not a table stay final (`null`).
+   */
+  readonly #failures: RetryLadder<number>;
   #success = 0;
   #error = 0;
   #generation = 0;
+
+  /** 05.10-A7b-9 (7.18): maps lit by the default until a retry lands (1.24). */
+  get retrying(): number {
+    return this.#failures.retryingCount();
+  }
 
   /** Immutable exact request counters; lifetime map cache membership is deliberately excluded. */
   get stats(): Readonly<BenchmarkAsyncReadinessStats> {
     return Object.freeze({
       pending: this.#loading.size,
       success: this.#success,
-      error: [...this.#maps.values()].filter((entry) => entry === null).length,
+      // 05.10-A7b-0 1.24: plus maps failing now (waiting for a retry or out of retries).
+      error: [...this.#maps.values()].filter((entry) => entry === null).length + this.#failures.size,
       generation: this.#generation,
     });
   }
@@ -279,10 +422,12 @@ export class LightClient {
     return this.#generation;
   }
 
-  constructor(gatewayWebSocketUrl: string) {
+  /** `now` (05.10-A7b-0 1.24) is the retry ladder's clock; tests inject their own. */
+  constructor(gatewayWebSocketUrl: string, now?: () => number) {
     const url = new URL(gatewayWebSocketUrl);
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     this.#baseUrl = url.origin;
+    this.#failures = new RetryLadder<number>(undefined, now);
   }
 
   /**
@@ -299,17 +444,19 @@ export class LightClient {
    */
   sample(map: number, x: number, y: number, time: number, storm = 0, z?: number,
     overrideLightId?: number, overrideWeight = 1, overrideAreaLightId?: number,
-    overrideFromLightId?: number, underwater = false): LightSample | undefined {
+    overrideFromLightId?: number, underwater = false, ghost = 0, liquidType?: number,
+    liquidDepth = 0): LightSample | undefined {
     const entry = this.#maps.get(map);
     if (entry === undefined) {
-      if (!this.#loading.has(map)) {
+      if (!this.#loading.has(map) && this.#failures.ready(map)) { // 05.10-A7b-0 1.24
         this.#loading.add(map);
         void this.#load(map);
       }
       return undefined;
     }
     return entry === null ? undefined : resolveLighting(entry, x, y, time, storm, 3, z,
-      overrideLightId, overrideWeight, overrideAreaLightId, overrideFromLightId, underwater);
+      overrideLightId, overrideWeight, overrideAreaLightId, overrideFromLightId, underwater,
+      ghost, liquidType, liquidDepth);
   }
 
   async #load(map: number): Promise<void> {
@@ -322,6 +469,7 @@ export class LightClient {
       if (success) this.#success++;
       else this.#error++;
     };
+    let final = false; // 05.10-A7b-0 1.24: a 404 or a junk body is not asked again
     try {
       // The route caches for an hour, and slice R7 changed the payload's shape by adding the
       // storm set. Without a new query a browser that had already fetched this map would keep the
@@ -332,17 +480,39 @@ export class LightClient {
       // v4 is `LightParams.Glow`, the strength of the full-screen glow. Same argument as v3: the
       // route caches for an hour, and a stale body would look exactly like a client whose zones all
       // happen to author no glow — which 47 of the 850 parameter sets genuinely do.
-      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=4`);
-      if (!response.ok) throw new Error(`Light gateway returned ${response.status}`);
-      const value = await response.json() as LightIndexEntry;
+      // v5 (05.10-A7b-5) is line A7b's slice 5: the eighteen colour and six float channels with
+      // HighlightSky, CloudTypeID and LightSkybox.Flags (7.04), slot 4 for a ghost (7.15) and the
+      // light under lava and slime with the ocean's darkening (7.10). The shape grows only by
+      // optional fields, so a gateway that has not been restarted answers v4 and every new field
+      // reads as absent: the sky as before, a ghost under the living light, lava lit like water.
+      const response = await fetch(`${this.#baseUrl}/dbc/light/${map}?v=5`);
+      if (!response.ok) {
+        final = response.status === 404; // 05.10-A7b-0 1.24
+        throw new Error(`Light gateway returned ${response.status}`);
+      }
+      let value: LightIndexEntry;
+      try {
+        value = await response.json() as LightIndexEntry;
+      } catch (error) {
+        final = error instanceof SyntaxError; // 05.10-A7b-0 1.24: junk is final, a cut stream is not
+        throw error;
+      }
       if (!value || typeof value !== "object" || !Array.isArray(value.volumes) || !value.params) {
+        final = true; // 05.10-A7b-0 1.24
         throw new Error("Light gateway returned an invalid table");
       }
+      this.#failures.clear(map); // 05.10-A7b-0 1.24
       this.#maps.set(map, value);
       settle(true);
       this.onStatus?.(`Свет карты ${map}: ${value.volumes.length} объёмов`, false);
     } catch (error) {
-      this.#maps.set(map, null);
+      // 05.10-A7b-0 1.24: final → `null` as before; otherwise the ladder decides when to ask again.
+      if (final) {
+        this.#failures.clear(map);
+        this.#maps.set(map, null);
+      } else {
+        this.#failures.failed(map);
+      }
       settle(false);
       this.onStatus?.(error instanceof Error ? error.message : String(error), true);
     } finally {

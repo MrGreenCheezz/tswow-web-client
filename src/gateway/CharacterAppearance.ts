@@ -197,6 +197,11 @@ const FAMILY_CLOAK = 15;
 const FAMILY_EYE_GLOW = 17;
 const FAMILY_BELT = 18;
 const FAMILY_FEET = 20;
+/** 05.10-A7a-A 6.10: ChrClasses id 6, whose eyes glow (geoset 1703). */
+const CLASS_DEATH_KNIGHT = 6;
+const DEATH_KNIGHT_EYE_GLOW = 3;
+/** 05.10-A7a-A 6.10: what of the ear a covering helmet leaves (701). */
+const EAR_STUB_VARIANT = 1;
 
 /**
  * The installed HD non-hoof profiles' fifth boot variant carries the foot section, while Tauren's
@@ -479,6 +484,11 @@ export interface EquippedItem {
   displayId: number;
   /** ItemSubClass, when the item query supplied it; needed to distinguish wands from guns. */
   subClass?: number;
+  /**
+   * 05.10-A7a-G2 6.08: `item_template.sheath` from the item query, when it arrived. Browser-side only:
+   * it is not part of the look's key or request (browser/SheathPoints.ts reads it for the stowed point).
+   */
+  sheathe?: number;
 }
 
 /**
@@ -499,6 +509,16 @@ export interface AttachedModel {
   model: string;
   /** Its type 2 slot: an item model almost never names its own diffuse texture. */
   texture: string;
+  /**
+   * 05.10-A7a-E2 (6.14): the ItemDisplayInfo id, so the browser can hang the display's own ItemVisual (a
+   * legendary's glow). Optional and additive: a gateway from before it sends none, and nothing glows by display.
+   */
+  displayId?: number;
+  /**
+   * 05.10-A7a-G2 6.08: SheatheType, for a creature's held weapon (`Item.dbc` by entry, NpcWeapons.ts). The
+   * appearance route never sends it; a player's comes from the item query (browser/SheathPoints.ts).
+   */
+  sheathe?: number;
 }
 
 function texturePath(value: string): string {
@@ -873,7 +893,8 @@ export class CharacterAppearanceIndex {
 
   /** The appearance of a player, from the bytes the server publishes and what it is wearing. */
   forPlayer(race: number, sex: number, skin: number, face: number, hairStyle: number, hairColor: number,
-    facialHair: number, equipment: readonly EquippedItem[] = []): CharacterAppearance {
+    facialHair: number, equipment: readonly EquippedItem[] = [],
+    classId?: number): CharacterAppearance { // 05.10-A7a-A 6.10: the class (UNIT_FIELD_BYTES_0 byte 1) for the DK glow
     const body: BodyLayer[] = [];
 
     // The base skin is a finished 512x512 body; everything else is painted over it.
@@ -925,7 +946,7 @@ export class CharacterAppearanceIndex {
       skinExtra: skinRow?.textures[1] ?? "",
       ...(this.#coordinatedVisuals ? { coordinatedVisuals: true as const } : {}),
       geosets: this.#geosets(race, sex, hairStyle, hairColor, facialHair,
-        families, this.#hiddenFamilies(race, sex, equipment)),
+        families, this.#hiddenFamilies(race, sex, equipment), classId), // 05.10-A7a-A 6.10
       attached: this.#attached(race, sex, equipment),
     };
   }
@@ -976,7 +997,7 @@ export class CharacterAppearanceIndex {
       for (const side of sides) {
         const name = display.models[side === "left" ? 0 : 1];
         if (!name) continue;
-        const stem = item.slot === EQUIPMENT_SLOT_HEAD ? `${name}_${this.#racePrefix(race)}${sex === 1 ? "F" : "M"}` : name;
+        const stem = item.slot === EQUIPMENT_SLOT_HEAD ? this.#helmetStem(race, sex, name) : name; // 05.10-A7a-B 6.01
         const model = modelPath(`Item\\ObjectComponents\\${directory}\\${stem}.m2`);
         if (!model) continue;
         const texture = display.modelTextures[side === "left" ? 0 : 1] || display.modelTextures[0] || "";
@@ -987,14 +1008,51 @@ export class CharacterAppearanceIndex {
           model,
           texture: texture ? texturePath(`Item\\ObjectComponents\\${directory}\\${texture}.blp`) : "",
           ...(item.subClass === undefined ? {} : { subClass: item.subClass }),
+          displayId: item.displayId, // 05.10-A7a-E2 (6.14)
         });
       }
     }
     return attached;
   }
 
+  /**
+   * 05.10-A7a-B 6.02: the held models of slots 15–17 alone — what `/dbc/npc-weapons` answers for a
+   * creature's `UNIT_VIRTUAL_ITEM_SLOT_ID` words. No race and no body: a weapon's file does not
+   * depend on its wearer, and the creature may not wear a character model at all.
+   */
+  weaponModels(items: readonly EquippedItem[]): AttachedModel[] {
+    return this.#attached(0, 0, items.filter((item) => item.slot === EQUIPMENT_SLOT_MAINHAND
+      || item.slot === EQUIPMENT_SLOT_OFFHAND || item.slot === EQUIPMENT_SLOT_RANGED));
+  }
+
   #racePrefix(race: number): string {
     return this.#racePrefixes.get(race) ?? "Hu";
+  }
+
+  /** 05.10-A7a-B 6.01: a helmet's file stem for one wearer, `<name>_<ClientPrefix><M|F>`. */
+  #helmetStem(race: number, sex: number, name: string): string {
+    return `${name}_${this.#racePrefix(race)}${sex === 1 ? "F" : "M"}`;
+  }
+
+  /**
+   * 05.10-A7a-B 6.01: whether an NPC's helmet is drawn at all — a model name in `ItemDisplayInfo`,
+   * and, when the archive listing reached `Item\ObjectComponents\Head`, a file for this race and sex.
+   *
+   * Census of 05.10 (`docs/implementation/probes/A7a/probe-helm-vis.mjs`): 685 of the 5,439
+   * `CreatureDisplayInfoExtra` rows with a helmet name no model, and 622 of those 685 still carry a
+   * `HelmetGeosetVisID` — 544 of them hide something for their own race (565 displays). Of the 4,754
+   * named helmets 4,749 have their race/sex file and 5 do not. Whether Wow.exe applies the hide rule
+   * to a helmet it cannot draw is not settled (a frame of the original, plan 14.25); until it is, a
+   * helmet that is not drawn hides nothing, so those NPCs keep their hair — the one line to switch
+   * is the filter in `forNpc`.
+   */
+  #helmetDrawn(race: number, sex: number, displayId: number): boolean {
+    const name = this.#itemDisplays.get(displayId)?.models[0];
+    if (!name) return false;
+    const path = modelPath(`Item\\ObjectComponents\\Head\\${this.#helmetStem(race, sex, name)}.m2`);
+    if (!path) return false;
+    // Unknown is not missing: without a listing of that shelf the name alone decides.
+    return !(this.#textures?.knows(path) === true && !this.#textures.has(path));
   }
 
   /** The inventory type an item behaves as, which for a robe-flagged chest piece is a robe. */
@@ -1009,10 +1067,12 @@ export class CharacterAppearanceIndex {
     if (!npc) return undefined;
     // The eleven NPCItemDisplay columns carry the same ItemDisplayInfo component/geoset data as
     // player equipment. Their position is authoritative for the inventory type; there is no
-    // Item.dbc row here from which to recover it. This slice intentionally takes only items painted
-    // into the baked body (shirt through cloak). Head and shoulders require their own attached M2s:
-    // feeding them through forPlayer and then discarding `attached` would apply helmet hide rules
-    // without drawing the helmet, which measurably removed the hair from 53 existing NPC looks.
+    // Item.dbc row here from which to recover it.
+    // 05.10-A7a-B 6.01: head and shoulders go through forPlayer like the rest, and the helmet and two
+    // pauldrons it hangs (`attached`) are kept and drawn by the renderer's `#updateAttachments`. Before
+    // this they were filtered out, because applying the hide rules while discarding `attached` took
+    // the hair off 53 looks; now a helmet that is not drawn (`#helmetDrawn`) is left out whole, so its
+    // `HelmetGeosetVisData` hides nothing either.
     const equipment = npc.items
       .map((displayId, slot) => ({
         slot: NPC_EQUIPMENT_SLOTS[slot] ?? -1,
@@ -1020,10 +1080,9 @@ export class CharacterAppearanceIndex {
         displayId,
       }))
       .filter((item) => item.slot >= 0 && item.displayId > 0
-        && item.inventoryType !== 1 && item.inventoryType !== 3);
+        && (item.slot !== EQUIPMENT_SLOT_HEAD || this.#helmetDrawn(npc.race, npc.sex, item.displayId))); // 05.10-A7a-B 6.01
     const appearance = this.forPlayer(
       npc.race, npc.sex, npc.skin, npc.face, npc.hairStyle, npc.hairColor, npc.facialHair, equipment);
-    appearance.attached = [];
     // A baked texture is a finished body and replaces every layer that would have made one.
     // 15,451 of the client's 24,263 displays have one.
     //
@@ -1180,7 +1239,8 @@ export class CharacterAppearanceIndex {
    * death knight one, which is why every humanoid in this client used to have glowing eyes.
    */
   #geosets(race: number, sex: number, hairStyle: number, hairColor: number, facialHair: number,
-    families: ReadonlyMap<number, number>, hidden: ReadonlySet<number>): number[] {
+    families: ReadonlyMap<number, number>, hidden: ReadonlySet<number>,
+    classId?: number): number[] { // 05.10-A7a-A 6.10
     const geosets = new Set<number>([0]);
     // A style the table does not have is not a reason to draw nothing. The appearance byte comes
     // off the wire and the core never checks it against `CharHairGeosets`, so a character created
@@ -1264,8 +1324,18 @@ export class CharacterAppearanceIndex {
       // The fifth column of the same row is the racial eye glow: always 2, on 55 of the 172
       // playable rows, and 1702 exists in exactly the six models those rows belong to. A helmet
       // does not cover it, so it is not subject to the hiding rules.
-      if (facial[3] > 0) geosets.add(geosetId(FAMILY_EYE_GLOW, facial[3]));
+      // 05.10-A7a-A 6.10: a death knight's glow is the same family's variant 3 and replaces it below.
+      if (facial[3] > 0 && classId !== CLASS_DEATH_KNIGHT) geosets.add(geosetId(FAMILY_EYE_GLOW, facial[3]));
     }
+    // 05.10-A7a-A 6.10: the death knight's eye glow, 1703 — present in all twenty playable bodies
+    // (census `docs/implementation/probes/A7a/probe-geosets.mjs`); one variant per family, so it
+    // takes the place of the racial 1702 rather than joining it. Helmets do not cover it, and a
+    // model without it drops the id like any other (`worldCharacterGeosets`).
+    if (classId === CLASS_DEATH_KNIGHT) geosets.add(geosetId(FAMILY_EYE_GLOW, DEATH_KNIGHT_EYE_GLOW));
+    // 05.10-A7a-A 6.10: a helmet that covers the ears leaves the stub, variant 1 (701). Only
+    // HumanMale, OrcMale, GnomeMale and BloodElfMale carry 701 among the playable bodies; on the
+    // other sixteen the id is dropped by the browser and the ears go entirely, as before.
+    if (hidden.has(FAMILY_EARS)) geosets.add(geosetId(FAMILY_EARS, EAR_STUB_VARIANT));
 
     for (const [family, variant] of families) {
       // In stock data, variant 1 on a non-naked garment family means "draw nothing". A coordinated

@@ -25,7 +25,8 @@ function normalized(path) {
 }
 
 /**
- * FrameXmlBoot's public pump uses Date.now for GetTime and for the seam attach anchor. Keep that
+ * FrameXmlBoot's public pump uses this clock for GetTime and for the seam attach anchor (suite-fix: through
+ * the boot's `clock` option since L5 3.27; Date.now stays patched for any other wall-clock reader). Keep that
  * clock under this test's control so all Lua calculations are exact and no wall-clock sleep is
  * needed. The seam itself is advanced through its public `boot.tickSeam(now)` entry point.
  */
@@ -56,6 +57,9 @@ async function loadCandidate(chain, clock) {
     subset: FRAMEXML_VERTICAL_TOC,
     seam,
     screen: () => ({ width: 1024, height: 768 }),
+    // suite-fix: since L5 3.27 GetTime and pump.now read FrameXmlClock (the page's monotonic clock),
+    // not Date.now, so the test's clock goes in through the boot's `clock` option.
+    clock: () => Math.round(clock.now * 1000),
   });
   const inventory = await boot.load();
   return { boot, seam, inventory, requests: new Set(requests), clock };

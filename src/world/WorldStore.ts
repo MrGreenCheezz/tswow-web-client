@@ -21,7 +21,9 @@ const FIELD_EVENTS: ReadonlyArray<readonly [UpdateFieldName, keyof WorldEvents]>
   ["UNIT_FIELD_MAXHEALTH", "UNIT_MAX_HEALTH"],
   ["UNIT_FIELD_LEVEL", "UNIT_LEVEL"],
   ["UNIT_FIELD_TARGET", "UNIT_TARGET"],
+  // These two offsets overlap CONTAINER_FIELD_SLOT_1 (and the index map is type-blind): listeners must check the object type.
   ["UNIT_FIELD_DISPLAYID", "UNIT_DISPLAY_ID"],
+  ["UNIT_FIELD_MOUNTDISPLAYID", "UNIT_MOUNT_DISPLAY_ID"],
   ["UNIT_FIELD_FLAGS", "UNIT_FLAGS"],
   ["UNIT_DYNAMIC_FLAGS", "UNIT_DYNAMIC_FLAGS"],
   ["UNIT_NPC_FLAGS", "UNIT_NPC_FLAGS"],

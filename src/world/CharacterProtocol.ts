@@ -181,6 +181,23 @@ export function parseRenameResult(payload: Uint8Array): RenameResult {
   return renamed;
 }
 
+/** `DeclinedNameResult::DECLINED_NAMES_RESULT_SUCCESS`. */
+export const DECLINED_NAMES_RESULT_SUCCESS = 0;
+
+/**
+ * CMSG_SET_PLAYER_DECLINED_NAMES (0x419): `u64 guid`, the character's name, then the five cases
+ * (`HandleSetPlayerDeclinedNames`, CharacterHandler.cpp:1224-1276; the client's own sender,
+ * Wow.exe 0x4d9a40, writes the same guid, name and five strings).
+ */
+export function buildDeclinedNames(guid: bigint, name: string, cases: readonly string[]): Uint8Array {
+  if (cases.length !== 5) throw new Error(`declined names need five cases, got ${cases.length}`);
+  const writer = new PacketWriter().u64(guid).cString(name);
+  for (const form of cases) writer.cString(form);
+  return writer.toUint8Array();
+}
+
+/* The answer, SMSG_SET_PLAYER_DECLINED_NAMES_RESULT, is `SessionProtocol.parseDeclinedNamesResult`. */
+
 export function parseLoginVerifyWorld(payload: Uint8Array): LoginLocation {
   const reader = new PacketReader(payload);
   const location = {

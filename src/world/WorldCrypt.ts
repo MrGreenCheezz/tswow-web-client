@@ -37,7 +37,30 @@ class Rc4 {
     }
     return output;
   }
+
+  /**
+   * What `process` would make of the first `length` bytes of `input`, into `output`, without moving
+   * the cipher: the keystream runs on a copy of the state. For a header that may not be whole yet —
+   * a stream cipher advanced over a partial packet could never be put back.
+   */
+  peek(input: Uint8Array, output: Uint8Array, length: number): void {
+    const state = PEEK_STATE;
+    state.set(this.#state);
+    let i = this.#i;
+    let j = this.#j;
+    for (let offset = 0; offset < length; offset++) {
+      i = (i + 1) & 0xff;
+      j = (j + state[i]!) & 0xff;
+      const value = state[i]!;
+      state[i] = state[j]!;
+      state[j] = value;
+      output[offset] = input[offset]! ^ state[(state[i]! + state[j]!) & 0xff]!;
+    }
+  }
 }
+
+/** Scratch for `Rc4.peek`: synchronous, so one is enough. */
+const PEEK_STATE = new Uint8Array(256);
 
 export class WorldCrypt {
   readonly #incoming: Rc4;
@@ -62,6 +85,11 @@ export class WorldCrypt {
 
   decryptServerHeader(header: Uint8Array): Uint8Array {
     return this.#incoming.process(header);
+  }
+
+  /** `decryptServerHeader` of the first `length` bytes of `raw` into `out`, leaving the cipher where it was. */
+  peekServerHeader(raw: Uint8Array, length: number, out: Uint8Array): void {
+    this.#incoming.peek(raw, out, length);
   }
 
   encryptClientHeader(header: Uint8Array): Uint8Array {

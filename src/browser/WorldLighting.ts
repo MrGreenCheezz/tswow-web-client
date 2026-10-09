@@ -97,9 +97,9 @@ export function worldLightFactor(
       b: diffuse.b * diffuseScale,
     },
   );
-  const nl = kind === "terrain"
-    ? Math.max(Math.abs(ndotl), 0.2)
-    : kind === "foliage" ? Math.abs(ndotl) : Math.max(ndotl, 0);
+  // 05.10-A7b-0 7.07: terrain is the client's own `Shaders\Vertex\arbvp1\terrain.bls` —
+  // ambient + diffuse * clamp(N.L, 0, 1) — and no longer wowee's max(abs(N.L), 0.2).
+  const nl = kind === "foliage" ? Math.abs(ndotl) : Math.max(ndotl, 0);
   const direct = nl * Math.max(0, shadow);
   return {
     r: scaled.ambient.r + scaled.diffuse.r * direct,
@@ -306,11 +306,19 @@ export const WORLD_LIGHT_BODY = /* glsl */ `
 vec3 wowViewSunDirection = normalize( ( viewMatrix * vec4( wowSunDirection, 0.0 ) ).xyz );
 float wowDot = dot( normalize( normal ), wowViewSunDirection );
 #if defined( WOW_LIGHT_TERRAIN )
-  float wowNL = max( abs( wowDot ), 0.2 );
+  // 05.10-A7b-0 7.07: the client's terrain vertex program (Shaders/Vertex/arbvp1/terrain.bls) is
+  // ambient + diffuse * clamp(N.L, 0, 1): a slope facing away from the sun has the ambient alone.
+  float wowNL = max( wowDot, 0.0 );
+  // The enhanced grade below was tuned against wowee's wrap (abs, floor 0.2) and keeps it, so the
+  // cinematic preset looks as it did; only the classic, authored light follows the client.
+  float wowGradeNL = max( abs( wowDot ), 0.2 );
 #elif defined( WOW_LIGHT_FOLIAGE )
   float wowNL = abs( wowDot );
 #else
   float wowNL = max( wowDot, 0.0 );
+#endif
+#if !defined( WOW_LIGHT_TERRAIN )
+  float wowGradeNL = wowNL;
 #endif
 float wowShadow = 1.0;
 #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
@@ -362,27 +370,33 @@ float wowShadow = 1.0;
   }
 #endif
 vec3 wowAuthoredLight = max( wowAmbient + wowDiffuse * ( wowNL * wowShadow ), vec3( 0.0 ) );
+#if defined( WOW_LIGHT_TERRAIN )
+  // 05.10-A7b-0 7.07: what the enhanced grade mixes against — the authored light as it was.
+  vec3 wowGradeAuthored = max( wowAmbient + wowDiffuse * ( wowGradeNL * wowShadow ), vec3( 0.0 ) );
+#else
+  vec3 wowGradeAuthored = wowAuthoredLight;
+#endif
 
 // Softer transitions and warm bounce retain the zone's authored hue. In particular, shade no
 // longer receives an extra blue multiplier and silhouettes no longer acquire a constant blue rim.
 // Dark profiles get more fill relative to their key, so the effect remains visible at night.
 vec3 wowLight = wowAuthoredLight;
 if ( wowImmersiveStrength > 0.0001 ) {
-  float wowWrappedKey = clamp( ( wowNL + 0.35 ) / 1.35, 0.0, 1.0 );
+  float wowWrappedKey = clamp( ( wowGradeNL + 0.35 ) / 1.35, 0.0, 1.0 );
   float wowAmbientLuma = dot( wowAmbient, vec3( 0.2126, 0.7152, 0.0722 ) );
   float wowDarkness = 1.0 - smoothstep( 0.18, 0.55, wowAmbientLuma );
   float wowViewFacing = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
   float wowRim = pow( 1.0 - wowViewFacing, 3.0 );
   vec3 wowSoftFill = wowAmbient * vec3( 1.10, 1.045, 0.98 )
-    * ( 1.04 + 0.18 * wowDarkness + 0.10 * ( 1.0 - wowNL ) );
+    * ( 1.04 + 0.18 * wowDarkness + 0.10 * ( 1.0 - wowGradeNL ) );
   // Shade leans a little towards the sky: the sun's warmth is in the key, and what a surface the
   // sun does not reach is lit by is the cool light from overhead. Warm sunlit ground against
   // blue-grey shadow is how the reference stills read; a warm fill in the shade had flattened it.
-  float wowSunlit = clamp( wowNL * wowShadow * 1.6, 0.0, 1.0 );
+  float wowSunlit = clamp( wowGradeNL * wowShadow * 1.6, 0.0, 1.0 );
   wowSoftFill *= mix( vec3( 0.93, 0.97, 1.05 ), vec3( 1.0 ), wowSunlit );
   vec3 wowWarmKey = wowDiffuse * vec3( 1.08, 1.025, 0.94 ) * ( wowWrappedKey * wowShadow );
   vec3 wowImmersiveLight = wowSoftFill + wowWarmKey
-    + wowAmbient * 0.10 * wowRim * ( 1.0 - wowNL * wowShadow );
+    + wowAmbient * 0.10 * wowRim * ( 1.0 - wowGradeNL * wowShadow );
   // The authored pair's own headroom (applyLightHeadroom): the brightest channel stops at one and the
   // whole colour scales with it, so the hue holds. A per-channel ceiling of 1.15 used to let sunlit
   // sand, snow and white stone reach 1.36x their texture after the gamma step and clip flat.
@@ -391,9 +405,9 @@ if ( wowImmersiveStrength > 0.0001 ) {
   // Lift the shade, keep the sun: the nearer the authored light already is to its peak, the less the
   // fill and warm key add on top. Full sun keeps a quarter of it — sunlit sand 230 -> 233, not 246,
   // which also kept it under the classic glow's knee instead of glowing on its own.
-  float wowAuthoredPeak = max( max( wowAuthoredLight.r, wowAuthoredLight.g ), wowAuthoredLight.b );
-  wowImmersiveLit = mix( wowAuthoredLight, wowImmersiveLit, 1.0 - 0.75 * smoothstep( 0.7, 1.0, wowAuthoredPeak ) );
-  wowLight = mix( wowAuthoredLight, wowImmersiveLit, wowImmersiveStrength );
+  float wowAuthoredPeak = max( max( wowGradeAuthored.r, wowGradeAuthored.g ), wowGradeAuthored.b );
+  wowImmersiveLit = mix( wowGradeAuthored, wowImmersiveLit, 1.0 - 0.75 * smoothstep( 0.7, 1.0, wowAuthoredPeak ) );
+  wowLight = mix( wowGradeAuthored, wowImmersiveLit, wowImmersiveStrength );
 #if !defined( WOW_LIGHT_TERRAIN )
   if ( wowRimStrength > 0.0001 ) {
     // Low sun behind the subject: a warm sun-coloured edge on silhouettes (characters, leaves,
@@ -442,7 +456,7 @@ interface WorldLightBinding {
 }
 
 const WORLD_LIGHT_BINDINGS = new WeakMap<THREE.Material, WorldLightBinding>();
-const WORLD_LIGHT_KEY = "world-light-r185-v5";
+const WORLD_LIGHT_KEY = "world-light-r185-v6"; // 05.10-A7b-0 7.07: terrain N.L
 
 /**
  * The scene's Light.dbc fog is the floor of this effect. At strength zero the shader below is the

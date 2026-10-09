@@ -25,6 +25,13 @@ export interface PlayerName {
   declined: string[];
 }
 
+/** What a name answer says about the character besides the name. */
+export interface PlayerNameDetails {
+  readonly race: number;
+  readonly gender: number;
+  readonly classId: number;
+}
+
 /** The response leads with a packed GUID and stops right after it when the name is unknown. */
 export function parseNameQueryResponse(payload: Uint8Array): PlayerName {
   const reader = new PacketReader(payload);
@@ -59,14 +66,26 @@ export class NameCache {
   readonly #names = new Map<bigint, string>();
   readonly #declined = new Map<bigint, readonly string[]>();
   readonly #pending = new Set<bigint>();
+  /** Race, gender and class from the same answer: the client's name cache keeps them beside the name. */
+  readonly #details = new Map<bigint, PlayerNameDetails>();
 
   get(guid: bigint): string | undefined {
     return this.#names.get(guid);
   }
 
+  /** The race, gender and class the name answer carried; undefined until it arrived. */
+  details(guid: bigint): PlayerNameDetails | undefined {
+    return this.#details.get(guid);
+  }
+
   /** The five cases of a name, for the emote sentences that ask for one. */
   declined(guid: bigint): readonly string[] | undefined {
     return this.#declined.get(guid);
+  }
+
+  /** A query for this GUID is out and unanswered. */
+  isPending(guid: bigint): boolean {
+    return this.#pending.has(guid);
   }
 
   /** True when the caller should send a query for this GUID. */
@@ -81,12 +100,25 @@ export class NameCache {
     if (!entry.known || !entry.name) return false;
     this.#names.set(entry.guid, entry.name);
     if (entry.declined.length > 0) this.#declined.set(entry.guid, entry.declined);
+    this.#details.set(entry.guid, { race: entry.race, gender: entry.gender, classId: entry.classId });
     return true;
+  }
+
+  /**
+   * Forgets one answer (`SMSG_INVALIDATE_PLAYER`, 5.22: a rename). True when a name was held, so
+   * the caller knows there is something to ask again for.
+   */
+  invalidate(guid: bigint): boolean {
+    const held = this.#names.delete(guid);
+    this.#declined.delete(guid);
+    this.#details.delete(guid);
+    return held;
   }
 
   clear(): void {
     this.#names.clear();
     this.#declined.clear();
+    this.#details.clear();
     this.#pending.clear();
   }
 }

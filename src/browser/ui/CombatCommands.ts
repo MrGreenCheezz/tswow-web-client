@@ -69,6 +69,13 @@ export function macroUnitGuid(unit: string): bigint | undefined {
     const self = world.state.selfGuid;
     return group.members.filter((member) => member.guid !== self)[Number(party[1]) - 1]?.guid;
   }
+  // `partypetN`: the pet SMSG_PARTY_MEMBER_STATS names for that member (GROUP_UPDATE_PET_GUID).
+  const partyPet = /^partypet([1-4])$/.exec(token);
+  if (partyPet) {
+    const member = macroUnitGuid(`party${partyPet[1]}`);
+    const pet = member === undefined ? undefined : world.partyStats.get(member)?.petGuid;
+    return pet === undefined || pet === 0n ? undefined : pet;
+  }
   const raid = /^raid([1-9]\d?)$/.exec(token);
   if (raid && group && (group.groupType & GROUPTYPE_RAID) !== 0) {
     const index = Number(raid[1]) - 1;
@@ -137,8 +144,13 @@ function chooseAction(argument: string, command: "cast" | "use", usage: string):
 export function runCastCommand(argument: string): void {
   const chosen = chooseAction(argument, "cast", "Использование: /cast [условия] ID|Имя; …");
   if (!chosen) return;
-  const id = combatCommandId(chosen.text) ?? spellIdByName(chosen.text);
+  // L18-review: `/cast !Auto Shot` — a leading "!" (passed on by the stock SLASH_CAST to CastSpellByName) means
+  // "do not toggle it off": the name is looked up without it, and a spell already repeating is left to run.
+  const bang = chosen.text.startsWith("!"); // L18-review
+  const name = bang ? chosen.text.slice(1).trim() : chosen.text; // L18-review
+  const id = combatCommandId(name) ?? spellIdByName(name); // L18-review: was chosen.text
   if (id === undefined) return systemLine("Использование: /cast [@цель] ID|Имя — заклинание не найдено.");
+  if (bang && game.world?.autoRepeatSpellId === id) return; // L18-review
   // A named target never changes the player's selection. Trinity reads the unit GUID from the
   // spell target block; changing selection here would also stop a running melee or ranged attack.
   const unit = chosen.target?.toLowerCase();

@@ -22,6 +22,7 @@ const { FRAMEXML_VERTICAL_TOC } = await import("../dist/code/browser/framexml/Fr
 const { frameXmlItemTextGate } = await import("../dist/code/browser/framexml/FrameXmlItemTextOwner.js");
 const { createFrameXmlNpcWindows } = await import("../dist/code/browser/framexml/FrameXmlGossipNpcWindows.js");
 const controller = await import("../dist/code/browser/framexml/FrameXmlItemTextController.js");
+const simpleHtml = await import("../dist/code/browser/ui/framexml_compat/FrameXmlSimpleHtml.js");
 const decoder = new TextDecoder("utf-8");
 
 async function load(seam = new CannedWorldSeam()) {
@@ -108,13 +109,13 @@ test("an HTML page keeps SimpleHTML's blocks: headers and paragraphs on their ow
     // ItemTextFrame_OnEvent's own call shape: "\n" .. ItemTextGetText() .. "\n\n".
     lua(boot, `ItemTextPageText:SetText("\\n<HTML><BODY>\\n<H1 align=\\"center\\">Глава первая</H1>\\n<P>Первая строка.</P><BR/>"
       .. "<P>Вторая &lt;строка&gt; &amp; конец.</P>\\n</BODY></HTML>\\n\\n")`, 0);
-    assert.deepEqual(lua(boot, "return ItemTextPageTextWebClient:GetText()"),
-      ["Глава первая\nПервая строка.\n\nВторая <строка> & конец."],
-      "stripping the tags alone ran «Глава первая» into the paragraph after it");
-    assert.deepEqual(lua(boot, `return WebClientItemTextPage("a<P>b</P><P>c<BR/>d</P>")`), ["a<P>b</P><P>c<BR/>d</P>"],
-      "not an HTML page: plain text, shown as it is");
-    assert.deepEqual(lua(boot, `return WebClientItemTextPage("<html><body>x<p>y</p>z</body></html>")`), ["x\ny\nz"],
-      "a block after inline text starts a new line; tag case does not matter");
+    // Since 3.35 the renderer draws the SimpleHTML page itself (framexml-simple-html.test.mjs); the
+    // FontString mirror that stood in for it is gone, and the page parses into the client's blocks.
+    assert.deepEqual(lua(boot, "return ItemTextPageTextWebClient == nil and 1 or 0"), [1], "no mirror painting the page twice");
+    const [page] = lua(boot, "return ItemTextPageText:GetText()");
+    assert.deepEqual(simpleHtml.parseFrameXmlSimpleHtml(page).map((block) => [block.level, block.align, block.text]), [
+      [1, "CENTER", "Глава первая"], [0, "LEFT", "Первая строка."], [0, "LEFT", ""], [0, "LEFT", "Вторая <строка> & конец."],
+    ]);
     assert.equal(boot.errorCount, errors, newErrors(boot, errors));
   } finally {
     release();

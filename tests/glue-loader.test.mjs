@@ -8,6 +8,10 @@ import {
   resolveGluePath,
 } from "../dist/code/browser/glue/GlueLoader.js";
 import { GLUE_BUILD_INFO } from "../dist/code/browser/glue/GlueApi.js";
+import {
+  GlueServerUnavailableError, probeGlueServer, retrying,
+} from "../dist/code/browser/glue/GlueRetry.js";
+import { PatchChainChangedError } from "../dist/code/browser/PatchChainChanged.js";
 
 // A fixture shaped like the real corpus rather than like a unit test: a TOC
 // whose second entry does not exist, a font chain, a GlueParent every screen
@@ -270,11 +274,14 @@ test("the C API answers where it can and records where it cannot", async () => {
   const vm = runtime.vm;
   vm.execute("BUILD = { GetBuildInfo() }; LOCALE = GetLocale()", "@probe");
   assert.equal(vm.getGlobal("LOCALE"), "ruRU");
-  vm.execute("V, B, D, N = GetBuildInfo()", "@probe2");
+  // 06.10-glue-fix: the glue GetBuildInfo (0x004dbe60) answers VERSION, RELEASE_BUILD and three
+  // strings; the fixture defines neither GlueString, so the first two are "".
+  vm.execute("T, R, V, B, D, N = GetBuildInfo()", "@probe2");
   assert.deepEqual(
-    [vm.getGlobal("V"), vm.getGlobal("B"), vm.getGlobal("D"), vm.getGlobal("N")],
-    [...GLUE_BUILD_INFO],
+    [vm.getGlobal("T"), vm.getGlobal("R"), vm.getGlobal("V"), vm.getGlobal("B"), vm.getGlobal("D")],
+    ["", "", ...GLUE_BUILD_INFO],
   );
+  assert.equal(vm.getGlobal("N"), undefined);
 
   // CVars round-trip through the same map the glue defaults live in.
   assert.equal(runtime.api.cvar("readTOS"), "0");
@@ -313,6 +320,7 @@ test("the HTTP provider follows the gateway's 404-versus-error split", async () 
       if (url.includes("Broken.lua")) return { status: 503, ok: false, text: async () => "" };
       return { status: 200, ok: true, text: async () => "-- ok" };
     },
+    sleep: async () => {},
   });
   assert.equal(await provider.read("Interface/GlueXML/GlueParent.lua"), "-- ok");
   assert.equal(
@@ -323,9 +331,104 @@ test("the HTTP provider follows the gateway's 404-versus-error split", async () 
   assert.equal(await provider.read("Interface/GlueXML/Missing.lua"), undefined, "404 is a skip");
   await assert.rejects(
     provider.read("Interface/GlueXML/Broken.lua"),
-    /returned 503/,
+    (error) => error instanceof GlueServerUnavailableError && /returned 503/.test(error.cause.message)
+      && error.origin === "http://127.0.0.1:8090",
     "a broken gateway must not look like a missing file",
   );
+});
+
+/* --- 10.16: retry on 5xx and network failure, then «server unavailable» ---------------------- */
+
+function scripted(answers) {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(url);
+    const next = answers.shift();
+    if (next instanceof Error) throw next;
+    if (next === 200) return { status: 200, ok: true, text: async () => "-- ok" };
+    if (next === 409) {
+      return { status: 409, ok: false, json: async () => ({ error: "client_patch_chain_changed" }) };
+    }
+    return { status: next, ok: false, text: async () => "" };
+  };
+  return { calls, fetch };
+}
+
+test("a gateway that is gone stops the load instead of building half a screen", async () => {
+  const runtime = new GlueRuntime({
+    provider: {
+      async read(path) {
+        if (path.toLowerCase().endsWith("gluexml.toc")) return FIXTURE["Interface/GlueXML/GlueXML.toc"];
+        throw new GlueServerUnavailableError("http://127.0.0.1:8090", new TypeError("Failed to fetch"));
+      },
+    },
+    lua: { onError: () => {} },
+    api: { locale: "ruRU", screenWidth: 1024, screenHeight: 768 },
+  });
+  try {
+    await assert.rejects(runtime.load(), GlueServerUnavailableError);
+  } finally {
+    runtime.close();
+  }
+});
+test("the HTTP provider retries 5xx and network failures on a short ladder", async () => {
+  const sleeps = [];
+  const sleep = async (ms) => { sleeps.push(ms); };
+  const make = (fetch) => createHttpFileProvider({ gatewayOrigin: "http://127.0.0.1:8090", fetch, sleep });
+
+  let script = scripted([503, 503, 200]);
+  assert.equal(await make(script.fetch).read("Interface/GlueXML/A.lua"), "-- ok");
+  assert.equal(script.calls.length, 3);
+  assert.deepEqual(sleeps, [500, 1500]);
+
+  script = scripted([503, 502, 500, 504]);
+  await assert.rejects(make(script.fetch).read("Interface/GlueXML/A.lua"), GlueServerUnavailableError);
+  assert.equal(script.calls.length, 4, "one try plus three retries");
+
+  script = scripted([new TypeError("Failed to fetch"), 200]);
+  assert.equal(await make(script.fetch).read("Interface/GlueXML/A.lua"), "-- ok", "a dropped connection is retried");
+
+  script = scripted([404]);
+  assert.equal(await make(script.fetch).read("Interface/GlueXML/A.lua"), undefined);
+  assert.equal(script.calls.length, 1, "404 is an answer, not a failure");
+
+  script = scripted([403, 200]);
+  await assert.rejects(make(script.fetch).read("Interface/GlueXML/A.lua"), (error) =>
+    !(error instanceof GlueServerUnavailableError) && /returned 403/.test(error.message));
+  assert.equal(script.calls.length, 1, "a 4xx is not retried: waiting cannot change it");
+
+  script = scripted([409, 200]);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(make(script.fetch).read("Interface/GlueXML/A.lua"), PatchChainChangedError);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(script.calls.length, 1, "the patch-chain latch is the banner's, not the retry's");
+});
+
+test("retrying runs once per delay and stops on a failure it is told not to retry", async () => {
+  let calls = 0;
+  await assert.rejects(retrying(async () => { calls++; throw new Error("no"); },
+    { delaysMs: [1, 1], sleep: async () => {}, isRetryable: () => false }), /no/);
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(retrying(async () => { calls++; throw new TypeError("net"); },
+    { delaysMs: [1, 1], sleep: async () => {} }), TypeError);
+  assert.equal(calls, 3);
+});
+
+test("the unavailable screen's probe asks for the login TOC and reads the answer", async () => {
+  const seen = [];
+  assert.equal(await probeGlueServer("http://127.0.0.1:8090", async (url) => {
+    seen.push(url);
+    return { ok: true, status: 200 };
+  }), true);
+  assert.match(seen[0], /\/client\/file\?path=Interface%5CGlueXML%5CGlueXML\.toc$/);
+  assert.equal(await probeGlueServer("http://127.0.0.1:8090", async () => ({ ok: false, status: 404 })), true);
+  assert.equal(await probeGlueServer("http://127.0.0.1:8090", async () => ({ ok: false, status: 503 })), false);
+  assert.equal(await probeGlueServer("http://127.0.0.1:8090", async () => { throw new TypeError("x"); }), false);
 });
 
 test("the glue viewport scales by height, as GlueParent's own layout implies", () => {

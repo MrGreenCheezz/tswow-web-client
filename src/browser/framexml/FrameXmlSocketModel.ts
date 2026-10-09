@@ -25,9 +25,8 @@
 export const FRAMEXML_SOCKET_META = 1;
 export const FRAMEXML_SOCKET_PRISMATIC = 14;
 
-/** `ITEM_FIELD_FLAG_BOP_TRADEABLE` and `ITEM_FIELD_FLAG_REFUNDABLE` (ItemTemplate.h). */
+/** `ITEM_FIELD_FLAG_BOP_TRADEABLE` (ItemTemplate.h). */
 const ITEM_FIELD_FLAG_BOP_TRADEABLE = 0x100;
-const ITEM_FIELD_FLAG_REFUNDABLE = 0x1000;
 
 /** Enchantment slots 2..4 hold the socketed gems (`SOCK_ENCHANTMENT_SLOT`, ItemDefines.h). */
 const SOCKET_ENCHANTMENT_SLOT = 2;
@@ -85,6 +84,11 @@ export interface FrameXmlSocketItem {
   readonly enchantments: readonly number[];
   /** `ITEM_FIELD_FLAGS`. */
   readonly flags: number;
+  /**
+   * 2.10: the client's refund record with time left and no blocking enchantment (Wow.exe
+   * 0x005c50e0, `frameXmlItemRefundable`) — what `GetSocketItemRefundable` answers, not the flag.
+   */
+  readonly refundable?: boolean | undefined;
 }
 
 /** One carried item, by GUID and where it lies. */
@@ -273,8 +277,9 @@ export class FrameXmlSocketModel {
     return item ? [item.name ?? this.#host.gem(item.entry)?.name, item.texture, item.quality ?? 0] : [];
   }
 
+  /** Wow.exe 0x005c5470 → 0x005c50e0: the refund record, not ITEM_FIELD_FLAG_REFUNDABLE. */
   socketItemRefundable(): boolean {
-    return ((this.#item()?.flags ?? 0) & ITEM_FIELD_FLAG_REFUNDABLE) !== 0;
+    return this.#item()?.refundable === true;
   }
 
   socketItemBoundTradeable(): boolean {

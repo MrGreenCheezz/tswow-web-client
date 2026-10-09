@@ -10,6 +10,7 @@ import { setIconSource, spellIconUrl } from "./IconImage.js";
 import { spellTooltip } from "./Spellbook.js";
 import { unitAuraAppearances } from "./WindowBindings.js";
 import { NATIVE_LANES_REPLACED, NATIVE_TARGET_CONTEXT_REPLACED, nativeHudReplaced } from "./NativeHudReplacement.js";
+import { debuffTypeBorder } from "./DebuffType.js";
 
 export const auraTimers: Array<{ aura: HTMLElement; label: HTMLElement; expiresAt: number }> = [];
 
@@ -191,6 +192,12 @@ export function renderAuraStrip(container: HTMLElement, auras: ReturnType<WorldC
     const removable = container === playerAuras
       && isRemovablePlayerBuff(aura, metadata);
     element.className = `aura-icon ${(aura.flags & 0x80) !== 0 ? "debuff" : "buff"}`;
+    // 5.20: a debuff's border in the stock DebuffTypeColor of its dispel type (debuffTypeBorder).
+    const typeColor = (aura.flags & 0x80) !== 0 ? debuffTypeBorder(metadata?.debuffType) : undefined;
+    if (typeColor) {
+      element.style.borderColor = typeColor;
+      element.dataset["debuffType"] = metadata?.debuffType ?? "";
+    }
     attachTooltip(element, () => metadata ? auraTooltip(aura, metadata, removable) : unresolvedAuraTooltip(aura));
     const unresolved = metadata ? undefined : unresolvedAuraTooltip(aura);
     if (unresolved) element.dataset["metadataState"] = "unresolved";

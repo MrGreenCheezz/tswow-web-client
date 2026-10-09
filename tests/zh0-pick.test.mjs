@@ -39,7 +39,7 @@ function frame(objects, { selfGuid = 1n, distance = undefined, anchor = undefine
 }
 
 /** Text painted by one overlay frame, used to tell a player-facing label from a hit-only pass. */
-function labelsInFrame(objects, drawWorld) {
+function labelsInFrame(objects, drawWorld, unitHeight = () => BODY) {
   const labels = [];
   const context = new Proxy({
     createLinearGradient: () => ({ addColorStop() {} }),
@@ -56,7 +56,7 @@ function labelsInFrame(objects, drawWorld) {
   try {
     const scene = new SimpleScene(canvas, drawWorld);
     scene.draw({ selfGuid: 1n, objects: new Map(objects.map((object) => [object.guid, object])) },
-      () => 0, undefined, [], undefined, 0, undefined, undefined, () => BODY, () => undefined);
+      () => 0, undefined, [], undefined, 0, undefined, undefined, unitHeight, () => undefined);
     return labels;
   } finally {
     globalThis.window = previous;
@@ -179,8 +179,13 @@ test("a spell dynamic object is a marker only in the Canvas fallback", () => {
     typeId: 7,
     fields: new Map([[UPDATE_FIELDS.OBJECT_FIELD_ENTRY.offset, 4321]]),
   };
-  assert.ok(labelsInFrame([self, corpse], false).some((label) => label.includes("Объект 4321")),
-    "a Corpse keeps the overlay marker because WebGL has no other representation for it");
+  // 05.10 suite-fix: since 05.10-A7a-G2 (6.05) WebGL draws a corpse as its body or bones
+  // (CorpseModel.ts) and reports its height; only a corpse it has not drawn keeps the marker.
+  const undrawnCorpse = (guid) => guid === corpse.guid ? undefined : BODY;
+  assert.ok(labelsInFrame([self, corpse], false, undrawnCorpse).some((label) => label.includes("Объект 4321")),
+    "a Corpse WebGL has not drawn keeps the overlay marker as its only representation");
+  assert.equal(labelsInFrame([self, corpse], false).some((label) => label.includes("Объект 4321")), false,
+    "a Corpse WebGL draws as its body needs no marker painted through it");
 });
 
 test("Ж0.2 the click mask is not Tab's, because 0x02 is the innkeeper", () => {

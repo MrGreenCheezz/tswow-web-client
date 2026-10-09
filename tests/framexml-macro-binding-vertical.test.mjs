@@ -243,7 +243,8 @@ test("boot loads neither add-on; the stock bars and micro buttons read the key t
     ["s-1", "CTRL-SHIFT-F"]);
   assert.deepEqual(lua('return GetBindingText("NUMPADDIVIDE", "KEY_"), GetBindingText(GetBindingKey("TOGGLERUN"), "KEY_"), GetBindingText(nil, "KEY_", 1)', 3),
     ["/ (цифр. кл.)", "/ (цифр. кл.)", ""]);
-  assert.deepEqual(lua('return GetBindingFromClick("ESCAPE"), GetBindingFromClick("1"), GetBindingFromClick("F11")', 3),
+  // F11 is TOGGLEBAG4 since 3.11; F12 stays the developer tools' and is bound to nothing.
+  assert.deepEqual(lua('return GetBindingFromClick("ESCAPE"), GetBindingFromClick("1"), GetBindingFromClick("F12")', 3),
     ["TOGGLEGAMEMENU", "ACTIONBUTTON1", undefined]);
   // A WebClient row's label is defined the first time GetBinding lists it.
   assert.deepEqual(lua(`
@@ -259,6 +260,14 @@ test("boot loads neither add-on; the stock bars and micro buttons read the key t
   bindings.bindKey("strafeLeft", 0, "KeyQ");
   seam.keyBindings.tick(2000);
   assert.equal(text("ActionButton1HotKey"), "1");
+  // 3.11 D through the corpus' own globals: a spell binding, and an override keyed by its frame.
+  assert.deepEqual(lua(`
+    local bound = SetBindingSpell("F6", "Огненный шар")
+    SetOverrideBinding(PlayerFrame, false, "F7", "JUMP")
+    local over, plain = GetBindingAction("F7", true), GetBindingAction("F7")
+    ClearOverrideBindings(PlayerFrame)
+    return bound, GetBindingAction("F6"), over, plain, GetBindingAction("F7", true)`, 5),
+  [true, "SPELL Огненный шар", "JUMP", "", ""]);
   console.log(`[macro/binding] vertical boot ${Math.round(loadMs)} ms`);
 });
 

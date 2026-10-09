@@ -22,6 +22,10 @@
  * per slot ever drawn — a few hundred at the very most, and the cache is capped besides.
  */
 
+// `/spell-icon` and `/creature-icon` are `tile` cache routes (10.12): with the gateway's `g` they are
+// cached for good, and a new generation is a new URL.
+import { withGeneration } from "../GatewayGeneration.js";
+
 /**
  * Whether a source has to be fetched rather than assigned.
  *
@@ -57,13 +61,13 @@ export function needsFetch(url: string, pageOrigin: string): boolean {
  */
 export function spellIconUrl(iconId: number, gatewayOrigin: string | undefined): string | undefined {
   if (!Number.isInteger(iconId) || iconId <= 0) return undefined;
-  return gatewayOrigin ? `${gatewayOrigin}/spell-icon/${iconId}` : `/icons/${iconId}.png`;
+  return gatewayOrigin ? withGeneration(`${gatewayOrigin}/spell-icon/${iconId}`) : `/icons/${iconId}.png`;
 }
 
 /** The same, for the picture a hunter pet family shows: `CreatureFamily.IconFile`. */
 export function creatureFamilyIconUrl(familyId: number, gatewayOrigin: string | undefined): string | undefined {
   if (!Number.isInteger(familyId) || familyId <= 0) return undefined;
-  return gatewayOrigin ? `${gatewayOrigin}/creature-icon/${familyId}` : `/creature-icons/${familyId}.png`;
+  return gatewayOrigin ? withGeneration(`${gatewayOrigin}/creature-icon/${familyId}`) : `/creature-icons/${familyId}.png`;
 }
 
 /**

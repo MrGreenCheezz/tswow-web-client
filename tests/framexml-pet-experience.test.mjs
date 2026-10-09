@@ -60,6 +60,16 @@ test("a non-mana pet has no intellect-based spell crit contribution", () => {
 });
 
 test("real MPQ PetExpBar no longer compares nil before a pet owner update", withClient, async () => {
+  // 05.10 suite-fix: the client's Constants.lua lists the dataset's classes (ARCHAEOLOGIST, HERO)
+  // in CLASS_SORT_ORDER, and ChatConfigFrame.xml's class legend formats LOCALIZED_CLASS_NAMES_MALE
+  // for each; Wow.exe fills that table from its ChrClasses.dbc, this client from the dataset rows
+  // the login screen learns (GlueNames.ts). Learn them the same way: the native string.format
+  // (3.27) rejects the nil an unlearned class would leave, as Wow.exe's does.
+  const { loadCharacterCreation } = await import("../dist/code/gateway/CharacterCreation.js");
+  const { learnCreationNames, forgetCreationNames } = await import("../dist/code/browser/ui/UnitSnapshot.js");
+  const { dbcDirectory } = await import("../tools/paths.mjs");
+  const creation = await loadCharacterCreation(dbcDirectory());
+  learnCreationNames(creation.races, creation.classes);
   const chain = await clientArchives(clientDirectory);
   const decoder = new TextDecoder("utf-8");
   const boot = new FrameXmlBoot({
@@ -101,5 +111,6 @@ test("real MPQ PetExpBar no longer compares nil before a pet owner update", with
   } finally {
     boot.close();
     chain.close();
+    forgetCreationNames();
   }
 });

@@ -4,6 +4,12 @@ import test from "node:test";
 // World cast events have two subscribers per attach: the player cast bar and the arena opponents' cast
 // bars (FrameXmlArena.ts). The checks below are about duplicates on re-attach and a clean detach.
 const CAST_SUBSCRIBERS = 2;
+// seam-sweep: the combat log's SPELL_CAST_START entries no longer hear the bar's SPELL_CAST_START — since
+// 3.01-castlog they come from the bus event SPELL_START (the whole SMSG_SPELL_START, Wow.exe 0x00806700 →
+// 0x00805330 → 0x006fbe50 → 0x00751920; WORK_PLAN 3.01, «03.10, линия stock-small (`3.01-castlog`)»), so
+// SPELL_CAST_START has the two bar subscribers and SPELL_START the combat log's one.
+const CAST_START_SUBSCRIBERS = CAST_SUBSCRIBERS;
+const SPELL_START_SUBSCRIBERS = 1;
 
 const { LiveWorldSeam } = await import("../dist/code/browser/framexml/LiveWorldSeam.js");
 const {
@@ -76,6 +82,8 @@ function fixture() {
   let now = 100;
   const pump = {
     fire(event, ...args) {
+      // The combat log (3.01) hears the same world edges; nobody here listens to it.
+      if (event.startsWith("COMBAT_LOG_EVENT")) return 0;
       fired.push([event, ...args]);
       return 1;
     },
@@ -172,7 +180,8 @@ test("LiveWorldSeam mirrors level notifications and detaches every subscription"
     assert.ok(store.listeners.has(field), `${field} keeps a live player-field subscription`);
   }
   assert.ok(store.listeners.size >= 4, "newer player-frame fields may add subscriptions");
-  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS);
+  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS);
+  assert.equal(world.events.listenerCount("SPELL_START"), SPELL_START_SUBSCRIBERS); // seam-sweep
 
   seam.detach();
   fired.length = 0;
@@ -180,13 +189,14 @@ test("LiveWorldSeam mirrors level notifications and detaches every subscription"
   assert.deepEqual(fired, []);
   assert.equal(store.listeners.size, 0);
   assert.equal(world.events.listenerCount("SPELL_CAST_START"), 0);
+  assert.equal(world.events.listenerCount("SPELL_START"), 0); // seam-sweep
 
   seam.attach(pump);
   for (const field of ["UNIT_FIELD_HEALTH", "UNIT_FIELD_MAXHEALTH", "UNIT_FIELD_LEVEL", "PLAYER_XP"]) {
     assert.ok(store.listeners.has(field), `${field} is restored on reattach`);
   }
   assert.ok(store.listeners.size >= 4, "reattach restores all current player-field subscriptions");
-  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_SUBSCRIBERS,
+  assert.equal(world.events.listenerCount("SPELL_CAST_START"), CAST_START_SUBSCRIBERS,
     "reattach does not leak packet listeners");
   seam.detach();
 });

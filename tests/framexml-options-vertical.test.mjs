@@ -132,7 +132,13 @@ test("loaded late: 17 files, no Lua error or diagnostic, nothing written, the st
     { files: 17, bytes: 410017, widgets: boot.bridge.frames.length - framesBefore });
   assert.equal(boot.errorCount, errors);
   assert.equal(boot.bridge.diagnostics.length, diagnostics);
-  assert.deepEqual(writes, [], "opening the options changes no setting");
+  // L5b-review: the stock Camera and Mouse sliders' OnValueChanged calls SetCVar unconditionally
+  // (InterfaceOptionsPanels.xml, e.g. FollowSpeedSlider :3126) and BlizzardOptionsPanel_SetupControl's
+  // SetDisplayValue gives them their first value, which Wow.exe fires as well (CSimpleSlider 0x0096c090):
+  // the same value written back. What must not happen is a change — SetMinMaxValues(90, 270) firing on
+  // the never-set 0 wrote the minimum (0x0096c470 does not re-apply an unset value; GlueWidgets.ts).
+  const initial = { ...defaultSettings(), actionBarBottomLeft: true };
+  assert.deepEqual([...writes].filter(([id, value]) => initial[id] !== value), [], "opening the options changes no setting");
   assert.deepEqual(messages, [], "no «Ошибка загрузки» dialog (Blizzard_CombatText, Blizzard_TimeManager)");
   assert.equal(result.disabled, FRAMEXML_OPTIONS_UNAVAILABLE.size, "every unavailable control exists and is greyed");
   const [categories, addOns, secure, window] = lua(boot, `
@@ -459,5 +465,87 @@ test("a chain that cannot load demotes the route and opens the native window the
     unpublish();
   } finally {
     boot.close();
+  }
+});
+
+test("3.19: «Статус-текст» of the player shows the bar numbers at once through CVAR_UPDATE", withClient, async () => {
+  const { boot } = await loaded();
+  assert.deepEqual(lua(boot, `return PlayerFrameHealthBar.TextString:IsShown() and 1 or 0`), [0]);
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsStatusTextPanel)
+    InterfaceOptionsStatusTextPanelPlayer:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.deepEqual(lua(boot, `return GetCVar("playerStatusText"), PlayerFrameHealthBar.TextString:IsShown() and 1 or 0`, 2), ["1", 1],
+    "TextStatusBar_OnEvent(CVAR_UPDATE, STATUS_TEXT_PLAYER, 1) shows the text without a reload");
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsStatusTextPanel)
+    InterfaceOptionsStatusTextPanelPlayer:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.deepEqual(lua(boot, `return GetCVar("playerStatusText"), PlayerFrameHealthBar.TextString:IsShown() and 1 or 0`, 2), ["0", 0]);
+});
+
+// L18 5.05: the stock Combat panel's «Ближний/дальний бой» (autoRangedCombat, Wow.exe default "1" at
+// 0x0051dbd3) and STOP_AUTO_ATTACK (stopAutoAttackOnTargetChange) are live controls over the settings.
+test("L18 5.05: the Combat panel's auto-range and stop-on-target-change checkboxes read the settings and write them", withClient, async () => {
+  const { boot, writes, values } = await loaded();
+  const from = writes.length;
+  assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    return InterfaceOptionsCombatPanelAutoRange:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelAutoRange:IsEnabled(),
+      InterfaceOptionsCombatPanelStopAutoAttack:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelStopAutoAttack:IsEnabled(),
+      InterfaceOptionsCombatPanelAttackOnAssist:IsEnabled()`, 5), [1, 1, 0, 1, 1]); // DEC-A 3.11: AttackOnAssist is live now (was 0)
+  lua(boot, "InterfaceOptionsCombatPanelAutoRange:Click() InterfaceOptionsCombatPanelStopAutoAttack:Click()", 0);
+  // The Interface panels apply at once (Cancel reverts), as the bar and audio panels above.
+  assert.deepEqual(writes.slice(from).map(([id, value]) => `${id}=${value}`).sort(),
+    ["autoRangedCombat=false", "stopAutoAttackOnTargetChange=true"]);
+  lua(boot, "InterfaceOptionsFrameOkay:Click()", 0);
+  assert.equal(values().autoRangedCombat, false, "Okay keeps it");
+  // Back to the defaults for whatever runs after.
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    InterfaceOptionsCombatPanelAutoRange:Click() InterfaceOptionsCombatPanelStopAutoAttack:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.equal(values().autoRangedCombat, true);
+  assert.equal(values().stopAutoAttackOnTargetChange, false);
+});
+
+// DEC-A 3.11 (04.10, owner decision 4): the Combat panel's «Автоматическая помощь» (AttackOnAssist, cvar
+// "assistAttack", InterfaceOptionsPanels.xml) reads the assistAttack setting — off by default, as Wow.exe
+// registers it with "0" — and writes it at once; Cancel reverts, Okay keeps.
+test("DEC-A 3.11: the Combat panel's AttackOnAssist checkbox reads the assistAttack setting and writes it", withClient, async () => {
+  const { boot, writes, values } = await loaded();
+  const from = writes.length;
+  assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    return InterfaceOptionsCombatPanelAttackOnAssist:GetChecked() and 1 or 0, InterfaceOptionsCombatPanelAttackOnAssist:IsEnabled(),
+      InterfaceOptionsCombatPanelAttackOnAssistText:GetText()`, 3), [0, 1, "Автоматическая помощь"]);
+  lua(boot, "InterfaceOptionsCombatPanelAttackOnAssist:Click()", 0);
+  assert.deepEqual(writes.slice(from).map(([id, value]) => `${id}=${value}`), ["assistAttack=true"]);
+  assert.deepEqual(lua(boot, `return GetCVar("assistAttack")`), ["1"]);
+  lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+  assert.equal(values().assistAttack, false, "Cancel reverts");
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    InterfaceOptionsCombatPanelAttackOnAssist:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.equal(values().assistAttack, true, "Okay keeps it");
+  // Back to the default for whatever runs after.
+  lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsCombatPanel)
+    InterfaceOptionsCombatPanelAttackOnAssist:Click() InterfaceOptionsFrameOkay:Click()`, 0);
+  assert.equal(values().assistAttack, false);
+});
+
+// 05.10-A7a-A 6.09: the Display panel's «Показывать шлем/плащ» (InterfaceOptionsPanels.xml:571-645) read
+// ShowingHelm/ShowingCloak and their click is ShowHelm("1"/"0") — CMSG_SHOWING_HELM/CLOAK only when the
+// flag says otherwise; the flag stays the server's (FrameXmlHelmCloak.ts).
+test("6.09: the Display panel's helm and cloak boxes read PLAYER_FLAGS and send the packet on a click", withClient, async () => {
+  const { boot, seam } = await loaded();
+  seam.pvpWorld.setPlayerFlags(0x400);
+  const from = seam.helmCloakSent.length;
+  try {
+    assert.deepEqual(lua(boot, `ShowUIPanel(InterfaceOptionsFrame) InterfaceOptionsFrame_OpenToCategory(InterfaceOptionsDisplayPanel)
+      return InterfaceOptionsDisplayPanelShowHelm:GetValue(), InterfaceOptionsDisplayPanelShowCloak:GetValue(),
+        InterfaceOptionsDisplayPanelShowHelm:IsEnabled(), InterfaceOptionsDisplayPanelShowCloak:IsEnabled()`, 4),
+    ["0", "1", 1, 1]);
+    lua(boot, "InterfaceOptionsDisplayPanelShowHelm:Click()", 0);
+    assert.deepEqual(seam.helmCloakSent.slice(from), [{ part: "helm", show: true }]);
+    lua(boot, "InterfaceOptionsDisplayPanelShowCloak:Click()", 0);
+    assert.deepEqual(seam.helmCloakSent.slice(from), [{ part: "helm", show: true }, { part: "cloak", show: false }]);
+    // Cancel puts the old values back through SetValue: the helm's "0" matches the unchanged flag and
+    // sends nothing; the cloak's "1" matches too.
+    lua(boot, "InterfaceOptionsFrameCancel:Click()", 0);
+    assert.equal(seam.helmCloakSent.length - from, 2, "Cancel sends nothing the flags already say");
+  } finally {
+    seam.pvpWorld.setPlayerFlags(0);
   }
 });

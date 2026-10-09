@@ -21,7 +21,11 @@ import { game } from "../game/Context.js";
 import { unknownLabel } from "./Format.js";
 import { IconButton, attachTooltip, confirmPanel } from "./Widgets.js";
 import { spellIconUrl } from "./IconImage.js";
+import { beginIconDrag } from "./DragGhost.js";
+import { PET_SPELL_DRAG_FORMAT, nativePetBook } from "./PetSpellbook.js";
 import { notifyHudLayout } from "../GameWindows.js";
+import { nativeVehicleGates, stockOwnsVehicleRow } from "./VehicleBarGates.js"; // 11.02-F2
+import { vehicleCatalog } from "../VehicleClient.js"; // 11.02-F2
 
 let container: HTMLElement | undefined;
 const buttons: IconButton[] = [];
@@ -40,11 +44,22 @@ let observedKind: string | undefined;
  */
 function syncKind(box: HTMLElement): void {
   const world = game.world;
+  // 11.02-F2: `data-stock-vehicle` while the stock UI draws the vehicle row (VehicleBarGates.ts); the world
+  // mount hides the native bar by it.
+  const stock = stockOwnsVehicleRow(world);
+  if (stock !== observedStockVehicle) {
+    observedStockVehicle = stock;
+    if (stock) box.dataset.stockVehicle = "";
+    else delete box.dataset.stockVehicle;
+  }
   const kind = world ? petBarKind(world.petSpells, world.controlledGuid, world.state?.selfGuid) ?? "" : "";
   if (kind === observedKind) return;
   observedKind = kind;
   box.dataset.kind = kind;
 }
+
+/** 11.02-F2: the last `data-stock-vehicle` written. */
+let observedStockVehicle = false;
 
 function root(): HTMLElement | undefined {
   if (container?.isConnected) return container;
@@ -84,12 +99,24 @@ function build(): void {
     button.root.draggable = true;
     button.root.addEventListener("dragstart", (event) => {
       event.dataTransfer?.setData("text/pet-slot", String(index));
+      // 4.02: the slot's icon under the cursor, as on the player's own bars (DragGhost.ts).
+      beginIconDrag(event, button.root);
     });
     button.root.addEventListener("dragover", (event) => event.preventDefault());
     button.root.addEventListener("drop", (event) => {
       event.preventDefault();
-      const from = Number(event.dataTransfer?.getData("text/pet-slot"));
-      if (!Number.isInteger(from) || from === index) return;
+      // 4.03: a spell from the pet book's tab, placed as the stock PickupSpell(i, "pet") drop is.
+      const petSpell = event.dataTransfer?.getData(PET_SPELL_DRAG_FORMAT);
+      if (petSpell) {
+        const spellId = Number(petSpell);
+        if (Number.isSafeInteger(spellId) && spellId > 0) nativePetBook().placeSpell(index + 1, spellId);
+        return;
+      }
+      // Only this bar's own slot drag: any other drop reads "" here, and `Number("")` is slot 0.
+      const carried = event.dataTransfer?.getData("text/pet-slot") ?? "";
+      if (!/^\d+$/.test(carried)) return;
+      const from = Number(carried);
+      if (from >= PET_ACTION_BAR_SIZE || from === index) return;
       game.world?.swapPetActionSlots(from, index);
     });
     buttons.push(button);
@@ -109,6 +136,8 @@ export function resetPetBar(): void {
   observedRevision = -1;
   observedVehicleKey = "";
   observedKind = undefined;
+  observedStockVehicle = false; // 11.02-F2
+  if (container) delete container.dataset.stockVehicle; // 11.02-F2
 }
 
 /** Only state packet changes can alter a seat roster; ordinary rendered frames cannot. */
@@ -122,7 +151,23 @@ function vehicleControlKey(): string {
   const passengers = world.vehicleKits.has(selfGuid)
     ? vehiclePassengers(world.state, selfGuid).filter((guid) => guid !== selfGuid).map(String).sort()
     : [];
-  return `${riding ?? ""}|${passengers.join(",")}`;
+  // 11.02-F2: the seat byte and the vehicle tables' arrival move the gates (VehicleBarGates.ts) too.
+  const gated = riding === undefined && passengers.length === 0 ? "" : `|${world.state.objects.get(selfGuid)?.transport?.seat ?? ""}|${vehicleCatalog() ? 1 : 0}`;
+  return `${riding ?? ""}|${passengers.join(",")}${gated}`;
+}
+
+/**
+ * `PetActionButtonDown(id)` from the keyboard (BONUSACTIONBUTTON1-10, 3.11): the button the click
+ * presses, `id` 1–10. False when there is no pet bar or nothing in that button.
+ */
+export function pressPetButton(id: number): boolean {
+  const button = game.world?.petSpells?.bar[id - 1];
+  if (!button || game.world?.petSpells?.closed) return false;
+  // An empty button is hidden on the bar (showPetBar); a key on it presses nothing either.
+  if (petActionOf(button.packed) === 0 && petActionTypeOf(button.packed) !== ACT_COMMAND
+    && petActionTypeOf(button.packed) !== ACT_REACTION) return false;
+  pressSlot(id - 1);
+  return true;
 }
 
 function pressSlot(slot: number): void {
@@ -237,20 +282,35 @@ export function showPetBar(): void {
     return;
   }
   exitRow.replaceChildren();
+  // 11.02-F2: with the vehicle tables, Wow.exe's gates (VehicleBarGates.ts) — drawn disabled and asked again
+  // on the click; without them every button works as before.
+  const gates = nativeVehicleGates(world);
   if (vehicleBar || ridingVehicle) {
     const previous = document.createElement("button");
     previous.type = "button";
     previous.textContent = "◀ место";
-    previous.addEventListener("click", () => world.changeVehicleSeat(false));
+    previous.disabled = gates !== undefined && !gates.canSwitch; // 11.02-F2
+    previous.addEventListener("click", () => {
+      if (nativeVehicleGates(world)?.canSwitch === false) return; // 11.02-F2
+      world.changeVehicleSeat(false);
+    });
     const next = document.createElement("button");
     next.type = "button";
     next.textContent = "место ▶";
-    next.addEventListener("click", () => world.changeVehicleSeat(true));
+    next.disabled = gates !== undefined && !gates.canSwitch; // 11.02-F2
+    next.addEventListener("click", () => {
+      if (nativeVehicleGates(world)?.canSwitch === false) return; // 11.02-F2
+      world.changeVehicleSeat(true);
+    });
     const leave = document.createElement("button");
     leave.type = "button";
     leave.className = "danger";
     leave.textContent = "Покинуть";
-    leave.addEventListener("click", () => world.leaveVehicle());
+    leave.disabled = gates !== undefined && !gates.canExit; // 11.02-F2
+    leave.addEventListener("click", () => {
+      if (nativeVehicleGates(world)?.canExit === false) return; // 11.02-F2
+      world.leaveVehicle();
+    });
     exitRow.append(previous, next, leave);
   }
   // The core's eject handler accepts only a player who owns the vehicle kit. A controller seated
@@ -261,7 +321,9 @@ export function showPetBar(): void {
     eject.className = "danger";
     eject.textContent = `Высадить: ${world.displayName(passenger)}`;
     eject.setAttribute("aria-label", `Высадить пассажира ${world.displayName(passenger)}`);
+    eject.disabled = gates !== undefined && !gates.canEject(passenger); // 11.02-F2
     eject.addEventListener("click", () => {
+      if (nativeVehicleGates(world)?.canEject(passenger) === false) return; // 11.02-F2
       confirmPanel(eject, {
         title: `Высадить ${world.displayName(passenger)}?`,
         confirm: "Высадить",

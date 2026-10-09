@@ -179,9 +179,14 @@ async function stage({ barrier = false, missing = false, broken = false, raid = 
         const data = await chain.read(path);
         if (data) bytes.set(key, data.byteLength);
         const text = data ? decoder.decode(data) : undefined;
-        // A grid that loads and then raises in its first update: what the gate must catch.
+        // A grid that loads and then raises in its first update: what the gate must catch. It also
+        // stands for a module whose XML has class buttons past the stock thirteen (9.05: a dataset
+        // with 12 classes has MAX_RAID_CLASS_BUTTONS = MAX_CLASSES + 3 = 15): 14 and 15 are created
+        // shown. The base dataset (08.10) has 10 classes and 13, so the patch raises it to 15 itself.
         return broken && text && key.endsWith("/blizzard_raidui.lua")
-          ? `${text}\nfunction RaidGroupFrame_Update() error("broken grid") end\n` : text;
+          ? `${text}\nfunction RaidGroupFrame_Update() error("broken grid") end
+MAX_RAID_CLASS_BUTTONS = math.max(MAX_RAID_CLASS_BUTTONS, 15)
+for i = 14, MAX_RAID_CLASS_BUTTONS do CreateFrame("Button", "RaidClassButton" .. i, RaidFrame):Show() end\n` : text;
       },
     },
     locale: "ruRU", subset: FRAMEXML_VERTICAL_TOC, seam, exercise: false, screen: () => ({ width: 1024, height: 768 }),
@@ -446,6 +451,10 @@ test("a grid that fails its gate is taken back: RaidFrame's own handlers return 
       RaidFrame:GetScript('OnUpdate') == nil, RaidGroup1:IsShown(), RaidGroupButton1:IsShown(), RaidClassButton1:IsShown(),
       SetRaidSubgroup == __raidSet, SwapRaidSubgroup == __raidSwap`, 8),
     [true, true, true, false, false, false, true, true]);
+    // Every class button the add-on's MAX_RAID_CLASS_BUTTONS names is hidden, not just the stock 13.
+    assert.deepEqual(lua(boot, `return MAX_RAID_CLASS_BUTTONS, RaidClassButton14 ~= nil, RaidClassButton15 ~= nil,
+      RaidClassButton14 and RaidClassButton14:IsShown(), RaidClassButton15 and RaidClassButton15:IsShown()`, 5),
+    [15, true, true, false, false]);
     const errors = boot.errorCount;
     const group = seam.socialWorld.group;
     run.roster({ ...group, counter: group.counter + 1, members: group.members.slice(0, -1) });
