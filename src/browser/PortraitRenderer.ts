@@ -8,6 +8,7 @@ import {
   fullBodyCameraSpec, m2ToScene, portraitCameraSpec, type PortraitBounds,
 } from "./PortraitCamera.js";
 import type { BuiltModel } from "./ModelBuild.js";
+import { slotMapsOf } from "./SlotMaterial.js"; // P2-03a
 import {
   type RetainedResourceVisitor,
   visitGeometryBuffers,
@@ -354,7 +355,8 @@ export function portraitTextureRevision(built: Pick<BuiltModel, "materials">): s
       map?: THREE.Texture | null;
       alphaMap?: THREE.Texture | null;
     };
-    for (const texture of [maps.map, maps.alphaMap]) {
+    // P2-03a: a slot carrier's other textures land late too.
+    for (const texture of [maps.map, maps.alphaMap, ...slotMapsOf(material)]) {
       if (!texture) {
         revision.push("-");
         continue;

@@ -74,7 +74,10 @@ export function benchmarkEnvDefine(env) {
  */
 export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = undefined, options = {}) {
   const variant = variantDir ? variantPlugin(variantDir) : undefined;
-  const bundleOptions = { target: options.target ?? 'es2022', env: options.env ?? 'prod' };
+  const bundleOptions = { target: options.target ?? 'es2022', env: options.env ?? 'prod', names: options.names ?? 'plain' };
+  if (bundleOptions.names !== 'plain' && bundleOptions.names !== 'keep') {
+    throw new Error(`bench names must be plain or keep, not ${JSON.stringify(bundleOptions.names)}`);
+  }
   const define = benchmarkEnvDefine(bundleOptions.env);
   const result = await build({
     define,
@@ -90,7 +93,9 @@ export async function buildBenchmarkBundle(outdir = 'bench/build', variantDir = 
     // the benchmark's Chrome runs it; game code has none (the pre-MEM-1 production build had this
     // target), so allowing it changes nothing in how the game's classes are lowered.
     ...(bundleOptions.target === 'es2022' ? {} : { supported: { 'top-level-await': true } }),
-    minify: false, sourcemap: true, metafile: true, keepNames: true,
+    // 09.10: `keepNames` only for the former bundle (`--bench-names keep`): unminified output keeps the
+    // names, and the production build has no `__name` wrapper on every closure the game creates.
+    minify: false, sourcemap: true, metafile: true, keepNames: bundleOptions.names === 'keep',
   });
   result.variantFiles = variant ? [...variant.used].sort() : [];
   result.bundleOptions = bundleOptions;

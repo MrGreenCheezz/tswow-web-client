@@ -38,9 +38,12 @@ const BUCKETS = SHADOW_CASTER_KINDS.length * 2;
  *
  * Contract: once dropped, an entry is gone even if the same object is hung back into the scene
  * later — it casts again only from the next `set(mesh, true)`. Any path that re-attaches a cached
- * node (WMO rooms and their stand-ins, pooled attachments, reused unit meshes) must re-`set` its
- * casters, or rely on a writer that re-sets every caster it flags (the scenery sync does, every
- * 30th light push; the unit shadow policy does whenever `shadowCaster` is forgotten).
+ * node (pooled attachments, reused unit meshes) must re-`set` its casters, or rely on a writer that
+ * re-sets every caster it flags (the unit shadow policy does whenever `shadowCaster` is forgotten).
+ * Since P2-02a the scenery sync no longer re-sets scenery on a cadence: placements, instance
+ * buckets and WMO rooms are set where they are built, settled, made or hung, and in the walk on a
+ * leaf or room-light transition. A path that re-hangs a cached scenery node must call the
+ * renderer's `#sceneryShadowsForPlacement`, `#sceneryShadowsForInstance` or `#syncWmoRoomShadow`.
  */
 export const SHADOW_CASTER_PRUNE_FRAMES = 600;
 

@@ -487,6 +487,8 @@ host.__bench = {
     // P1-12: the rest-radius counters are cumulative; the measured frames are the difference.
     const wmoRangeAtStart = world?.telemetry.wmoRange ?? null;
     const start = await nextFrame();
+    // P2-02b: the cascades' counters are cumulative too.
+    const shadowCascadesAtStart = world?.shadowCascadeStats ?? null;
     let previous = start, sampleCount = 0, repeatedRafCallbacks = 0;
     recording = true;
     performance.mark('bench-start');
@@ -535,6 +537,7 @@ host.__bench = {
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
       hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
       telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
+      shadowCascadesAtStart, shadowCascades: world?.shadowCascadeStats ?? null,
       ...(diagnostic ? { worldSubmissions, textureUploads: [...textureUploads] } : {}),
       ...(links ? { programLinks, holdDebug: debugSink.__benchDebug ?? [], disposals } : {}) };
   },

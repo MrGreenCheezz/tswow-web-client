@@ -31,6 +31,12 @@ import {
 } from "./VegetationWind.js";
 import { syncModelPlacementTintMaterials } from "./ModelPlacementTint.js";
 import { registerPendingTextureView } from "./TextureLoad.js";
+import {
+  WVM_SLOT_ROWS, WVM_SLOT_SAMPLERS, buildSlotAttribute, createSlotDepthMaterial, createSlotUniforms,
+  isFacingCarrier, markFacingCarrier, registerSlotDepth, registerSlotMaps, slotStep,
+  type SlotFoldLevel, type SlotRow,
+} from "./SlotMaterial.js"; // P2-03a
+import type { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
 
 /**
  * Which geoset of each family to draw.
@@ -577,12 +583,15 @@ interface ModelDrawBatch {
   indexCount: number;
 }
 
-function sameBatchMaterial(left: WvmBatch, right: WvmBatch): boolean {
+function sameBatchMaterial(left: WvmBatch, right: WvmBatch, sidedOk = false): boolean {
   // Two-sided transparent rendering has a back/front pass per draw; joining those draws could
   // change compositing order during spawn fades. UV1 selection can also depend on each submesh.
   // Keep both on the authored path, along with explicitly blended/depth-independent batches.
+  // P2-03a (`coalesce`): adjacent equal two-sided passes may join — only the fade copy's
+  // back-then-front order between them changes, which the owner accepted (D13); they never move.
+  const barred = (sidedOk ? 0 : MATERIAL_TWO_SIDED) | MATERIAL_NO_DEPTH_WRITE | MATERIAL_NO_DEPTH_TEST;
   if ((left.blendMode !== BLEND_OPAQUE && left.blendMode !== BLEND_ALPHA_KEY)
-    || (left.materialFlags & (MATERIAL_TWO_SIDED | MATERIAL_NO_DEPTH_WRITE | MATERIAL_NO_DEPTH_TEST)) !== 0
+    || (left.materialFlags & barred) !== 0
     || left.uvSets.some((uv) => uv !== 0)) return false;
   return left.blendMode === right.blendMode && left.materialFlags === right.materialFlags
     && left.priorityPlane === right.priorityPlane && left.materialLayer === right.materialLayer
@@ -629,25 +638,32 @@ function gatherEqualBatches(ordered: Array<{ batch: WvmBatch; index: number }>):
 
 /** Combine adjacent equal passes without changing the ordered triangle stream or vertex data. */
 function modelDrawBatches(model: WvmModel, ordered: Array<{ batch: WvmBatch; index: number }>,
-  coalesce: boolean): { batches: ModelDrawBatch[]; indices: WvmModel["indices"] } {
+  coalesce: boolean, sidedOk = false): { batches: ModelDrawBatch[]; indices: WvmModel["indices"] } {
   const batches: ModelDrawBatch[] = [];
   let merged = false;
-  let totalIndices = 0;
   for (const entry of ordered) {
     const submesh = model.submeshes[entry.batch.submesh]!;
     const previous = batches[batches.length - 1];
-    if (coalesce && previous && sameBatchMaterial(previous.batch, entry.batch)) {
+    if (coalesce && previous && sameBatchMaterial(previous.batch, entry.batch, sidedOk)) {
       previous.indexCount += submesh.indexCount;
       merged = true;
     } else {
       batches.push({ ...entry, indexStart: submesh.indexStart, indexCount: submesh.indexCount });
     }
-    totalIndices += submesh.indexCount;
   }
   if (!merged) return { batches, indices: model.indices };
+  return { batches, indices: concatDrawIndices(model, ordered, batches) };
+}
 
-  // Selected geosets are often disjoint slices. Concatenate exactly their existing draw order:
-  // duplicate/layered passes remain duplicate indices, and hidden alternatives stay absent.
+/**
+ * The draw order's indices as one contiguous run, with each batch's range rewritten into it.
+ * Selected geosets are often disjoint slices. Concatenate exactly their existing draw order:
+ * duplicate/layered passes remain duplicate indices, and hidden alternatives stay absent.
+ */
+function concatDrawIndices(model: WvmModel, ordered: ReadonlyArray<{ batch: WvmBatch }>,
+  batches: ModelDrawBatch[]): WvmModel["indices"] {
+  let totalIndices = 0;
+  for (const { batch } of ordered) totalIndices += model.submeshes[batch.submesh]!.indexCount;
   const indices = model.indices instanceof Uint32Array
     ? new Uint32Array(totalIndices) : new Uint16Array(totalIndices);
   let offset = 0;
@@ -661,7 +677,179 @@ function modelDrawBatches(model: WvmModel, ordered: Array<{ batch: WvmBatch; ind
     batch.indexStart = offset;
     offset += batch.indexCount;
   }
-  return { batches, indices };
+  return indices;
+}
+
+/**
+ * P2-03a: how far unit body builds fold their passes (`SlotMaterial.ts`). `merged` is the slice's
+ * goal; a regression found later steps it back to `sameSide`, `coalesce` or `off`.
+ */
+export const UNIT_SLOT_FOLD: SlotFoldLevel = "merged";
+
+/** What the slot planner needs to know about one geometry group (one draw batch). */
+export interface SlotGroupFacts {
+  /** The pass may join a slot carrier: see `slotFacts`. */
+  foldable: boolean;
+  /** Two-sided pass. */
+  sided: boolean;
+  /** Takes the scene's fog (not `MATERIAL_UNFOGGED`); a carrier has one fog switch. */
+  fogged: boolean;
+  /** Alpha-keyed rather than opaque. */
+  keyed: boolean;
+  /** Identity of the texture it samples (with its wrap flags): equal keys share a sampler. */
+  texture: string;
+  /** Unfolded, the group's material would cast a shadow (lit, opaque or keyed, depth-writing). */
+  caster: boolean;
+  /** Static colour and opacity: the pass's tracks at time zero. */
+  tint: readonly [number, number, number, number];
+}
+
+/** A run of adjacent groups `[start, end)` folded into one slot carrier. */
+export interface SlotSeries {
+  start: number;
+  end: number;
+  /** Distinct textures it samples. */
+  samplers: number;
+  /** Its passes differ in side: the carrier is two-sided and discards per slot. */
+  facing: boolean;
+  /** One of its passes is alpha-keyed. */
+  keyed: boolean;
+}
+
+/** A carrier that needs its own shadow depth material (`customDepthMaterial`). */
+export function slotSeriesNeedsDepth(series: SlotSeries): boolean {
+  return series.keyed || series.facing;
+}
+
+/** The blend modes `applyBlendMode` makes transparent. */
+const TRANSPARENT_BLEND_MODES: ReadonlySet<number> = new Set([
+  BLEND_ALPHA, BLEND_NO_ALPHA_ADD, BLEND_ADD, BLEND_MOD, BLEND_MOD2X, BLEND_BLEND_ADD,
+]);
+
+const SLOT_PROBE_OPTIONS = {
+  baseUrl: "",
+  loadTexture: (): THREE.Texture => { throw new Error("slot probe: a one-texture pass loads no second stage"); },
+  privateView: (texture: THREE.Texture) => texture,
+  authoredSecondUvSet: () => false,
+};
+
+/**
+ * Whether one pass of a unit body can join a slot carrier, and what its slot would hold. Only a pass
+ * whose whole picture is its one texture times a static tint qualifies: lit, opaque or alpha-keyed,
+ * depth-tested and written, one texture on UV set 0 with no transform, no second stage and no
+ * combiner step, tracks that never move and visible at rest, and no other pass over its triangles.
+ * Everything else stays its own group and a barrier between series.
+ */
+export function slotFacts(
+  model: WvmModel,
+  batch: WvmBatch,
+  slot: { type: number; flags: number; path: string } | undefined,
+  path: string,
+  supplied: THREE.Texture | undefined,
+  layered: boolean,
+): SlotGroupFacts {
+  const flags = batch.materialFlags;
+  const keyed = batch.blendMode === BLEND_ALPHA_KEY;
+  // Whether the built material is opaque to the shadow policy (`shadowMaterialEligible`): every mode
+  // `applyBlendMode` does not make transparent, unknown ones included (its default case is opaque).
+  const solid = !TRANSPARENT_BLEND_MODES.has(batch.blendMode);
+  const lit = (flags & MATERIAL_UNLIT) === 0 && !alwaysUnlit(batch.blendMode);
+  const depthWrite = (flags & (MATERIAL_NO_DEPTH_WRITE | MATERIAL_NO_DEPTH_TEST)) === 0;
+  const caster = solid && lit && depthWrite;
+  const foldableMode = batch.blendMode === BLEND_OPAQUE || keyed;
+  const texture = supplied ? `s:${supplied.uuid}`
+    : path ? `p:${path}|${(slot?.flags ?? 0) & (TEXTURE_WRAP_X | TEXTURE_WRAP_Y)}` : "";
+  const facts: SlotGroupFacts = {
+    foldable: false, sided: (flags & MATERIAL_TWO_SIDED) !== 0, fogged: (flags & MATERIAL_UNFOGGED) === 0,
+    keyed, texture, caster, tint: [1, 1, 1, 1],
+  };
+  if (!caster || !foldableMode || layered || texture === "" || batch.textures.length !== 1 || batch.uvSets.some((uv) => uv !== 0)
+    || model.textureTransforms?.[batch.textureTransform] !== undefined) return facts;
+  const combiner = resolvedCombiner(model, batch, true, SLOT_PROBE_OPTIONS);
+  if (combiner !== undefined && (combiner.step !== undefined || combiner.texture !== undefined)) return facts;
+  const { colour, weight } = batchTracks(model, batch);
+  const moves = (track: WvmTrack | undefined): boolean =>
+    track !== undefined && (track.globalSequence >= 0 || track.tracks.some((sub) => sub.times.length > 1));
+  if (moves(colour?.rgb) || moves(colour?.alpha) || moves(weight)) return facts;
+  // The same samples `updateBatchAppearance` writes into a lone pass's colour and opacity.
+  const at = (track: WvmTrack | undefined, component = 0, fallback = 1): number =>
+    sampleTrack(track, 0, 0, model.globalSequences, fallback, component, REST_SEQUENCE);
+  const opacity = Math.max(0, Math.min(1, at(colour?.alpha) * at(weight)));
+  if (!(opacity > BATCH_INVISIBLE)) return facts;
+  const tint: [number, number, number, number] = colour
+    ? [at(colour.rgb, 0), at(colour.rgb, 1), at(colour.rgb, 2), opacity] : [1, 1, 1, opacity];
+  return { ...facts, foldable: true, tint };
+}
+
+/**
+ * Runs of adjacent foldable groups, each at most `samplerLimit` distinct textures and
+ * `WVM_SLOT_ROWS` passes, with one fog switch and — below `merged` — one side. A run of one is left
+ * alone. The groups keep their order, so the triangle stream is the one the unfolded build draws.
+ */
+export function planSlotFolds(
+  facts: readonly SlotGroupFacts[],
+  level: SlotFoldLevel,
+  samplerLimit = WVM_SLOT_SAMPLERS,
+  rowLimit = WVM_SLOT_ROWS,
+): SlotSeries[] {
+  if (level !== "sameSide" && level !== "merged") return [];
+  const limit = Math.max(1, Math.min(WVM_SLOT_SAMPLERS, Math.floor(samplerLimit)));
+  const rows = Math.max(1, Math.min(WVM_SLOT_ROWS, Math.floor(rowLimit)));
+  const series: SlotSeries[] = [];
+  for (let start = 0; start < facts.length;) {
+    const first = facts[start]!;
+    if (!first.foldable) {
+      start++;
+      continue;
+    }
+    const textures = new Set<string>([first.texture]);
+    let end = start + 1;
+    let facing = false;
+    let keyed = first.keyed;
+    while (end < facts.length && end - start < rows) {
+      const next = facts[end]!;
+      if (!next.foldable || next.fogged !== first.fogged) break;
+      if (level === "sameSide" && next.sided !== first.sided) break;
+      if (!textures.has(next.texture) && textures.size >= limit) break;
+      textures.add(next.texture);
+      if (next.sided !== first.sided) facing = true;
+      keyed ||= next.keyed;
+      end++;
+    }
+    if (end - start >= 2) series.push({ start, end, samplers: textures.size, facing, keyed });
+    start = end;
+  }
+  return series;
+}
+
+/**
+ * A mesh has one `customDepthMaterial`, and three uses it for every group of the mesh. So a carrier
+ * that needs slot depth must be the build's only carrier, and no unfolded group may be a shadow
+ * caster — it would be drawn with the carrier's depth shader. Otherwise the build does not fold.
+ */
+export function guardSlotFolds(facts: readonly SlotGroupFacts[], series: readonly SlotSeries[]): SlotSeries[] {
+  const depth = series.filter(slotSeriesNeedsDepth);
+  if (depth.length === 0) return [...series];
+  // Another carrier would also be drawn with the slot depth shader: three copies its alphaTest onto
+  // the shared depth material per group, flipping its program every draw, and it would read the
+  // depth carrier's slot tables.
+  if (depth.length > 1 || series.length > 1) return [];
+  const folded = new Uint8Array(facts.length);
+  for (const run of series) folded.fill(1, run.start, run.end);
+  for (let index = 0; index < facts.length; index++) {
+    if (!folded[index] && facts[index]!.caster) return [];
+  }
+  return [...series];
+}
+
+/** P2-03a: what folding did to one build, for the census and the bench. */
+export interface SlotFoldSummary {
+  /** Groups before folding (after joining equal passes) and after. */
+  groupsBefore: number;
+  groupsAfter: number;
+  series: number;
+  /** A carrier carries slot depth (`customDepthMaterial`). */
+  customDepth: boolean;
 }
 
 export interface BuiltModel {
@@ -708,6 +896,8 @@ export interface BuiltModel {
    * its 22,112 models — and a build with an empty list costs the per-frame pass a length check.
    */
   animatedBatches: AnimatedBatch[];
+  /** P2-03a: present on builds asked to fold (`slotFold` other than `off`). */
+  slotFolds?: SlotFoldSummary;
 }
 
 /** One restrained model-relative wind profile; z is the authored M2 up axis. */
@@ -747,6 +937,19 @@ export function buildModel(
     /** Join adjacent identical unit passes while preserving all triangles and their draw order. */
     coalesceAdjacentBatches?: boolean;
     /**
+     * P2-03a: fold a unit body's passes into slot carriers (`SlotMaterial.ts`). Only with
+     * `coalesceAdjacentBatches`; `off` by default. `slotLimit` caps the textures one carrier samples
+     * (the renderer passes `min(WVM_SLOT_SAMPLERS, maxTextures − 8)`).
+     */
+    slotFold?: SlotFoldLevel;
+    slotLimit?: number;
+    /**
+     * P2-03b: take the model's vertex attributes from this store, shared with its other builds;
+     * the build owns only its index. Only for a cache whose eviction passes every live build as
+     * retained (`SharedModelBuffers.ts`).
+     */
+    sharedBuffers?: SharedModelBuffers;
+    /**
      * `renderer.capabilities.getMaxAnisotropy()`, when the caller has a renderer to ask.
      *
      * Absent it stays at three.js's default of 1, which is what the character lab and the tests
@@ -777,14 +980,26 @@ export function buildModel(
   },
 ): BuiltModel {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(model.positions, 3));
-  geometry.setAttribute("normal", new THREE.BufferAttribute(model.normals, 3));
-  geometry.setAttribute("uv", new THREE.BufferAttribute(model.uv0, 2));
-  // three.js names the second set `uv1`; only env-mapped batches sample it.
-  geometry.setAttribute("uv1", new THREE.BufferAttribute(model.uv1, 2));
-  if (options.skinned && model.boneIndices && model.boneWeights) {
-    geometry.setAttribute("skinIndex", new THREE.BufferAttribute(model.boneIndices, 4));
-    geometry.setAttribute("skinWeight", new THREE.BufferAttribute(model.boneWeights, 4));
+  const shared = options.sharedBuffers?.attributesFor(model, options.skinned === true);
+  if (shared) {
+    geometry.setAttribute("position", shared.position);
+    geometry.setAttribute("normal", shared.normal);
+    geometry.setAttribute("uv", shared.uv);
+    geometry.setAttribute("uv1", shared.uv1);
+    if (options.skinned && shared.skinIndex && shared.skinWeight) {
+      geometry.setAttribute("skinIndex", shared.skinIndex);
+      geometry.setAttribute("skinWeight", shared.skinWeight);
+    }
+  } else {
+    geometry.setAttribute("position", new THREE.BufferAttribute(model.positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(model.normals, 3));
+    geometry.setAttribute("uv", new THREE.BufferAttribute(model.uv0, 2));
+    // three.js names the second set `uv1`; only env-mapped batches sample it.
+    geometry.setAttribute("uv1", new THREE.BufferAttribute(model.uv1, 2));
+    if (options.skinned && model.boneIndices && model.boneWeights) {
+      geometry.setAttribute("skinIndex", new THREE.BufferAttribute(model.boneIndices, 4));
+      geometry.setAttribute("skinWeight", new THREE.BufferAttribute(model.boneWeights, 4));
+    }
   }
   geometry.setIndex(new THREE.BufferAttribute(model.indices, 1));
 
@@ -813,8 +1028,47 @@ export function buildModel(
     : undefined;
   // Wind classification depends on the original batch ordinal. Leave such builds untouched.
   const coalesce = options.coalesceAdjacentBatches === true && !vegetationWind;
-  const draw = modelDrawBatches(model, coalesce ? gatherEqualBatches(ordered) : ordered, coalesce);
-  if (draw.indices !== model.indices) geometry.setIndex(new THREE.BufferAttribute(draw.indices, 1));
+  const level: SlotFoldLevel = coalesce && !options.groundCoverFade ? options.slotFold ?? "off" : "off";
+  const drawOrder = coalesce ? gatherEqualBatches(ordered) : ordered;
+  const draw = modelDrawBatches(model, drawOrder, coalesce, level !== "off");
+  const resolveTexture = (batch: WvmBatch): {
+    slot: { type: number; flags: number; path: string } | undefined; supplied: THREE.Texture | undefined; path: string;
+  } => {
+    const slotIndex = batch.textures[0] ?? -1;
+    const slot = slotIndex >= 0 ? model.textures[slotIndex] : undefined;
+    const supplied = slot ? options.slotTextures?.get(slot.type) : undefined;
+    const path = supplied || !slot ? "" : resolveSlot(slot, slots, directory);
+    return { slot, supplied, path };
+  };
+  // P2-03a: plan the slot carriers over the draw groups, then give the folded runs contiguous
+  // indices and the `wvmSlot` attribute; a vertex two slots would claim cancels the fold.
+  let foldFacts: SlotGroupFacts[] = [];
+  let foldSeries: SlotSeries[] = [];
+  let indices = draw.indices;
+  if (level === "sameSide" || level === "merged") {
+    const uses = new Map<number, number>();
+    for (const { batch } of ordered) uses.set(batch.submesh, (uses.get(batch.submesh) ?? 0) + 1);
+    foldFacts = draw.batches.map(({ batch }) => {
+      const { slot, supplied, path } = resolveTexture(batch);
+      return slotFacts(model, batch, slot, path, supplied, (uses.get(batch.submesh) ?? 0) > 1);
+    });
+    foldSeries = guardSlotFolds(foldFacts, planSlotFolds(foldFacts, level, options.slotLimit ?? WVM_SLOT_SAMPLERS));
+    if (foldSeries.length > 0 && indices === model.indices) indices = concatDrawIndices(model, drawOrder, draw.batches);
+    if (foldSeries.length > 0) {
+      const ranges: Array<{ start: number; count: number; slot: number }> = [];
+      for (const run of foldSeries) {
+        for (let at = run.start; at < run.end; at++) {
+          ranges.push({ start: draw.batches[at]!.indexStart, count: draw.batches[at]!.indexCount, slot: at - run.start });
+        }
+      }
+      const slotAttribute = buildSlotAttribute(model.positions.length / 3, indices, ranges);
+      if (slotAttribute) geometry.setAttribute("wvmSlot", new THREE.BufferAttribute(slotAttribute, 1));
+      else foldSeries = [];
+    }
+  }
+  if (indices !== model.indices) geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  const seriesAt = new Map<number, SlotSeries>();
+  for (const run of foldSeries) seriesAt.set(run.start, run);
 
   const materials: THREE.Material[] = [];
   const materialSlots: number[] = [];
@@ -843,13 +1097,69 @@ export function buildModel(
       }
     : options;
   const animatedBatches: AnimatedBatch[] = [];
-  for (const { batch, index: batchIndex, indexStart, indexCount } of draw.batches) {
+  let customDepth = false;
+  for (let groupIndex = 0; groupIndex < draw.batches.length; groupIndex++) {
+    const { batch, index: batchIndex, indexStart, indexCount } = draw.batches[groupIndex]!;
+    const run = seriesAt.get(groupIndex);
+    if (run) {
+      // P2-03a: one carrier for the run, created where its first pass's material would have been
+      // (material ids, and so three's opaque order, keep their sequence).
+      const keys = new Map<string, number>();
+      const rows: SlotRow[] = [];
+      for (let at = run.start; at < run.end; at++) {
+        const facts = foldFacts[at]!;
+        let sampler = keys.get(facts.texture);
+        if (sampler === undefined) {
+          sampler = keys.size;
+          keys.set(facts.texture, sampler);
+        }
+        rows.push({ sampler, tint: facts.tint, keyed: facts.keyed, sided: facts.sided });
+      }
+      const uniforms = createSlotUniforms([], rows);
+      const first = resolveTexture(batch);
+      if (first.path) texturePaths.push(first.path);
+      const carrier = buildMaterial(model, batch, first.slot, first.path, first.supplied, materialOptions,
+        slotStep(uniforms, run.samplers, run.facing)) as THREE.MeshStandardMaterial;
+      if (run.facing) {
+        carrier.side = THREE.DoubleSide;
+        carrier.shadowSide = THREE.DoubleSide;
+        markFacingCarrier(carrier);
+      }
+      // The keyed slots cut at the client's threshold; the opaque ones are gated off per slot.
+      carrier.alphaTest = run.keyed ? 224 / 255 : 0;
+      const carrierMap = carrier.map;
+      if (carrierMap && carrierMap !== first.supplied && !borrowedTextures.has(carrierMap)) ownedTextures.push(carrierMap);
+      const extra: THREE.Texture[] = [];
+      const loadedKeys = new Set<string>([foldFacts[run.start]!.texture]);
+      let count = 0;
+      for (let at = run.start; at < run.end; at++) {
+        count += draw.batches[at]!.indexCount;
+        const facts = foldFacts[at]!;
+        const resolved = resolveTexture(draw.batches[at]!.batch);
+        if (resolved.path) texturePaths.push(resolved.path);
+        if (loadedKeys.has(facts.texture)) continue;
+        loadedKeys.add(facts.texture);
+        const texture = resolved.supplied ?? loadSlotMap(resolved.slot, resolved.path, materialOptions);
+        if (texture !== resolved.supplied && !borrowedTextures.has(texture)) ownedTextures.push(texture);
+        extra.push(texture);
+      }
+      uniforms.wvmMap1.value = extra[0] ?? null;
+      uniforms.wvmMap2.value = extra[1] ?? null;
+      uniforms.wvmMap3.value = extra[2] ?? null;
+      registerSlotMaps(carrier, extra);
+      if (slotSeriesNeedsDepth(run)) {
+        registerSlotDepth(carrier, createSlotDepthMaterial(uniforms, run.keyed ? run.samplers : 1, run.facing));
+        customDepth = true;
+      }
+      geometry.addGroup(indexStart, count, materials.length);
+      materials.push(carrier);
+      materialSlots.push(first.slot?.type ?? -1);
+      groupIndex = run.end - 1;
+      continue;
+    }
     geometry.addGroup(indexStart, indexCount, materials.length);
 
-    const slotIndex = batch.textures[0] ?? -1;
-    const slot = slotIndex >= 0 ? model.textures[slotIndex] : undefined;
-    const supplied = slot ? options.slotTextures?.get(slot.type) : undefined;
-    const path = supplied || !slot ? "" : resolveSlot(slot, slots, directory);
+    const { slot, supplied, path } = resolveTexture(batch);
     if (path) texturePaths.push(path);
     const material = buildMaterial(model, batch, slot, path, supplied, materialOptions);
     if (vegetationWind && isVegetationWindBatch(model, batchIndex, path, options.modelPath)) {
@@ -915,6 +1225,9 @@ export function buildModel(
     geometry, materials, height, texturePaths: [...new Set(texturePaths)], ownedTextures,
     materialSlots, geosetSubstitutions,
     animatedBatches: animatedBatches.filter(batchMoves),
+    ...(level !== "off" ? { slotFolds: {
+      groupsBefore: draw.batches.length, groupsAfter: geometry.groups.length, series: foldSeries.length, customDepth,
+    } } : {}),
   };
 }
 
@@ -1107,6 +1420,8 @@ function buildMaterial(
     worldLight?: WorldLightUniforms;
     fantasyGlow?: boolean;
   },
+  /** P2-03a: a slot carrier's step, first in the chain and so before the world light. */
+  slotShaderStep?: ShaderStep,
 ): THREE.MeshBasicMaterial | THREE.MeshStandardMaterial {
   const unlit = (batch.materialFlags & MATERIAL_UNLIT) !== 0 || alwaysUnlit(batch.blendMode);
   // An unlit batch must not be shaded by the sun; that is what makes an eye glow a glow rather
@@ -1130,22 +1445,7 @@ function buildMaterial(
   if (supplied) {
     material.map = supplied;
   } else if (path) {
-    const texture = options.loadTexture(textureUrl(options.baseUrl, path));
-    // The wrap flags are per texture and mostly clamp: of 244 slots measured across 62 client
-    // models only 16 asked to tile. Forcing Repeat on the rest makes a face pull in the opposite
-    // edge of its atlas wherever a UV strays outside [0, 1].
-    texture.wrapS = slot && (slot.flags & TEXTURE_WRAP_X) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
-    texture.wrapT = slot && (slot.flags & TEXTURE_WRAP_Y) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
-    texture.colorSpace = THREE.SRGBColorSpace;
-    // The client's UVs are D3D's: v = 0 is the top row of the image. three uploads with
-    // `UNPACK_FLIP_Y_WEBGL` on by default, so every texture in the world was being sampled mirrored
-    // top to bottom. Stone and most tiling surfaces hide it — a flipped brick is a brick — but
-    // anything with a top and a bottom does not: measured by rasterising STORMWINDPLANTER out of
-    // its own artifact both ways, the flipped one is the torn red and green spikes on the screen
-    // and the unflipped one is a stone box with tulips in it.
-    texture.flipY = false;
-    texture.anisotropy = options.anisotropy ?? 1;
-    material.map = texture;
+    material.map = loadSlotMap(slot, path, options);
   } else {
     // Nothing fills this slot. Flat colour is what the old pipeline did silently for every
     // unresolvable slot; here it is at least confined to the batch that asked.
@@ -1184,7 +1484,7 @@ function buildMaterial(
     if (secondUvSet) material.map.channel = 1;
   }
 
-  const steps: ShaderStep[] = [];
+  const steps: ShaderStep[] = slotShaderStep ? [slotShaderStep] : [];
   // 05.10-A7a-F2 (6.22, 6.16е, 6.16б): an extended artifact folds its stages by the id the client
   // resolved (`M2Combiners.ts`); an older one, and a 0x8000 special id, keep `secondLayer`.
   const combiner = resolvedCombiner(model, batch, material instanceof THREE.MeshStandardMaterial, {
@@ -1204,6 +1504,30 @@ function buildMaterial(
   bindSpellFantasyGlow(material, batch.blendMode, options.fantasyGlow);
 
   return material;
+}
+
+/** A pass's own texture, loaded and set up the way its material samples it. */
+function loadSlotMap(
+  slot: { flags: number } | undefined,
+  path: string,
+  options: { baseUrl: string; loadTexture: (url: string) => THREE.Texture; anisotropy?: number },
+): THREE.Texture {
+  const texture = options.loadTexture(textureUrl(options.baseUrl, path));
+  // The wrap flags are per texture and mostly clamp: of 244 slots measured across 62 client
+  // models only 16 asked to tile. Forcing Repeat on the rest makes a face pull in the opposite
+  // edge of its atlas wherever a UV strays outside [0, 1].
+  texture.wrapS = slot && (slot.flags & TEXTURE_WRAP_X) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
+  texture.wrapT = slot && (slot.flags & TEXTURE_WRAP_Y) ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  // The client's UVs are D3D's: v = 0 is the top row of the image. three uploads with
+  // `UNPACK_FLIP_Y_WEBGL` on by default, so every texture in the world was being sampled mirrored
+  // top to bottom. Stone and most tiling surfaces hide it — a flipped brick is a brick — but
+  // anything with a top and a bottom does not: measured by rasterising STORMWINDPLANTER out of
+  // its own artifact both ways, the flipped one is the torn red and green spikes on the screen
+  // and the unflipped one is a stone box with tulips in it.
+  texture.flipY = false;
+  texture.anisotropy = options.anisotropy ?? 1;
+  return texture;
 }
 
 /**
@@ -1466,6 +1790,8 @@ export function cloneMaterialFaded(material: THREE.Material, factor: number): TH
   clone.onBeforeCompile = material.onBeforeCompile;
   const key = material.customProgramCacheKey();
   clone.customProgramCacheKey = () => key;
+  // P2-03a: see `markFacingCarrier` — one pass keeps a folded body's authored compositing order.
+  if (isFacingCarrier(material)) clone.forceSinglePass = true;
   fadeMaterial(clone, factor);
   return clone;
 }

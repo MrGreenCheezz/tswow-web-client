@@ -513,15 +513,24 @@ export function endPerformanceCaptureFrame(rafAt: number, cpuMs: number, failed:
  * renderer telemetry and settings already describe.
  */
 function shadowCheckpoint(stats: undefined | {
-  readonly cascades: readonly { readonly rendered: boolean; readonly drawCalls: number; readonly cpuMs: number; readonly renders: number }[];
+  readonly cascades: readonly {
+    readonly rendered: boolean; readonly drawCalls: number; readonly cpuMs: number; readonly renders: number;
+    readonly cpuMsTotal?: number; readonly cpuMsMax?: number; readonly drawCallsTotal?: number;
+  }[];
   readonly frames: number; readonly shadowOnlyOwners: number;
+  readonly farReasons?: object;
 }): unknown {
   if (stats === undefined) return undefined;
   return {
     cascades: stats.cascades.map((cascade) => ({
       rendered: cascade.rendered, drawCalls: cascade.drawCalls, cpuMs: round2(cascade.cpuMs), renders: cascade.renders,
+      // P2-02b: cumulative since the cascades were configured; the analysis takes differences.
+      ...(cascade.cpuMsTotal !== undefined && cascade.cpuMsMax !== undefined ? {
+        cpuMsTotal: round2(cascade.cpuMsTotal), cpuMsMax: round2(cascade.cpuMsMax), drawCallsTotal: cascade.drawCallsTotal,
+      } : {}),
     })),
     frames: stats.frames, shadowOnlyOwners: stats.shadowOnlyOwners, // P2-01a: was shadowOnlyCasters (old toggle count)
+    ...(stats.farReasons !== undefined ? { farReasons: { ...stats.farReasons } } : {}), // P2-02b
   };
 }
 

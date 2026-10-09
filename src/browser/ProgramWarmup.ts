@@ -21,6 +21,7 @@
  */
 
 import * as THREE from "three";
+import { slotDepthMaterialFor } from "./SlotMaterial.js"; // P2-03a
 
 /** The two `WebGLProgram` calls this module makes, structurally. */
 interface WarmProgram {
@@ -140,13 +141,26 @@ const SHADOW_SIDE: Readonly<Record<number, THREE.Side>> = {
  * concerned, or undefined when the material cannot cast (the renderer's own shadow policy:
  * lit, opaque, normally blended and depth-writing).
  */
-export function shadowDepthStandIn(material: THREE.Material): THREE.MeshDepthMaterial | undefined {
+export function shadowDepthStandIn(
+  material: THREE.Material,
+  custom?: THREE.Material,
+): THREE.MeshDepthMaterial | undefined {
   const lit = material instanceof THREE.MeshLambertMaterial || material instanceof THREE.MeshPhongMaterial
     || material instanceof THREE.MeshStandardMaterial;
   if (!lit || !material.visible || material.transparent || material.blending !== THREE.NormalBlending
     || !material.depthWrite) return undefined;
   const source = material as THREE.Material & { map?: THREE.Texture | null; alphaMap?: THREE.Texture | null };
   const depth = new THREE.MeshDepthMaterial();
+  // P2-03a: a mesh's `customDepthMaterial` (a slot carrier's depth shader) is what the shadow pass
+  // draws it with; three still copies the switches below onto it from the group's material. A
+  // carrier registered without its mesh still names its depth material.
+  custom ??= slotDepthMaterialFor(material);
+  if (custom) {
+    const key = custom.customProgramCacheKey();
+    depth.onBeforeCompile = custom.onBeforeCompile;
+    depth.customProgramCacheKey = () => key;
+    CUSTOM_DEPTH_KEYS.set(depth, key);
+  }
   depth.side = material.shadowSide ?? SHADOW_SIDE[material.side] ?? THREE.BackSide;
   depth.alphaTest = material.alphaToCoverage ? 0.5 : material.alphaTest;
   depth.map = source.map ?? null;
@@ -154,10 +168,13 @@ export function shadowDepthStandIn(material: THREE.Material): THREE.MeshDepthMat
   return depth;
 }
 
+/** Stand-ins built for a custom depth material, with that material's program key. */
+const CUSTOM_DEPTH_KEYS = new WeakMap<THREE.MeshDepthMaterial, string>();
+
 /** The program-relevant switches of a depth stand-in; equal strings compile the same program. */
 function depthVariant(depth: THREE.MeshDepthMaterial, geometry: THREE.BufferGeometry, kind: ProgramWarmupKind): string {
   return `${kind}|${depth.side}|${depth.alphaTest > 0}|${depth.map?.channel ?? -1}|${depth.alphaMap?.channel ?? -1}`
-    + `|${geometryVariant(geometry, depth)}`;
+    + `|${geometryVariant(geometry, depth)}|${CUSTOM_DEPTH_KEYS.get(depth) ?? ""}`;
 }
 
 /** The class of program an object would compile, or undefined for anything not submitted. */
@@ -682,7 +699,7 @@ export class ProgramWarmup {
   ): void {
     if (this.#renderer.shadowMap?.enabled !== true) return;
     if (this.#depthVariants.size >= PROGRAM_WARMUP_DEPTH_VARIANTS) return;
-    const depth = shadowDepthStandIn(material);
+    const depth = shadowDepthStandIn(material, (mesh as THREE.Mesh | undefined)?.customDepthMaterial); // P2-03a
     if (!depth) return;
     const variant = depthVariant(depth, geometry, kind);
     if (this.#depthVariants.has(variant)) {

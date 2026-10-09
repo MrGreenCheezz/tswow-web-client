@@ -52,11 +52,27 @@ export function resolveBenchmarkEnv(value) {
   throw new Error(`--bench-env expects prod or dev, not ${JSON.stringify(value)}`);
 }
 
-/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target, env }`. */
+/**
+ * 09.10: how the bench bundle names functions. `plain` (default) — as the production build: no
+ * esbuild `keepNames`, so no `__name(...)` wrapper (an `Object.defineProperty`) on every closure the
+ * game creates; with `minify: false` the names are kept anyway. `keep` — the former bundle, for
+ * comparisons with results taken before 09.10; such a run is not valid.
+ */
+export const DEFAULT_BENCHMARK_NAMES = 'plain';
+
+/** `--bench-names` value → 'plain' (none or `plain`) or 'keep'; anything else throws. */
+export function resolveBenchmarkNames(value) {
+  if (value === undefined || value === DEFAULT_BENCHMARK_NAMES) return DEFAULT_BENCHMARK_NAMES;
+  if (value === 'keep') return 'keep';
+  throw new Error(`--bench-names expects plain or keep, not ${JSON.stringify(value)}`);
+}
+
+/** Bundle options for bench/build.mjs from bench/run.mjs arguments: `{ target, env, names }`. */
 export function parseBundleOptions(args) {
   return {
     target: resolveBenchmarkTarget(optionValue(args, '--target')),
     env: resolveBenchmarkEnv(optionValue(args, '--bench-env')),
+    names: resolveBenchmarkNames(optionValue(args, '--bench-names')),
   };
 }
 

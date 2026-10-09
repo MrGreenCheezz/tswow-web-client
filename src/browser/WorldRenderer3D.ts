@@ -20,7 +20,7 @@ import { TerrainStreamingWindow, type TerrainStreamingPlan } from "./TerrainStre
 import { ProgramWarmup, programWarmupKind, WarmHold, type ProgramWarmupKind } from "./ProgramWarmup.js";
 import { useFloatUniformSetters } from "./FloatUniformSetters.js";
 import { ShaderProgramTrace, type ShaderProgramEvent } from "./ShaderProgramTrace.js";
-import { EnvironmentSpatialIndex } from "./EnvironmentSpatialIndex.js";
+import { EnvironmentGridIndex } from "./EnvironmentGridIndex.js";
 import { environmentVegetationKind } from "./EnvironmentNames.js"; // 05.10-A7b-0 1.23
 import {
   gameObjectWithinAdmissionRange, selectGameObjectAdmissionWithTransports, transportWmoViewer,
@@ -28,7 +28,7 @@ import {
   type GameObjectAdmissionCandidate,
 } from "./GameObjectTransportAdmission.js"; // 05.10-7.05
 import {
-  selectGameObjectAdmission, selectUnitAdmission, stableBoundedTopKWhere,
+  BoundedTopK, selectGameObjectAdmission, selectUnitAdmission, stableBoundedTopKWhere,
   type UnitAdmissionCandidate,
 } from "./RenderAdmission.js";
 import {
@@ -64,6 +64,9 @@ import {
   CascadedSunShadows, SHADOW_FAR_LAYER, SHADOW_PROXY_LAYER, type ShadowCascadeSnapshot, type ShadowCasterCensus,
 } from "./CascadedShadows.js";
 import { ShadowCasterList, type CasterGate } from "./ShadowCasterList.js"; // P2-01a
+import {
+  SCENERY_SHADOW_CAST, SCENERY_SHADOW_FAR, SCENERY_SHADOW_RECEIVE, sceneryShadowFlags, type SceneryShadowTraits,
+} from "./SceneryShadowFlags.js"; // P2-02a
 import {
   applyHorizonAerialFog, applyWorldLight, createWorldLightUniforms,
   setWorldLightAerialFog, setWorldLightDaylight, setWorldLightImmersiveStrength, setWorldLightUniforms,
@@ -112,11 +115,14 @@ import { poseTakesWholeBody, wholeBodyOutlivesBase } from "./game/ActionOverBase
 import { FastPoseState, type FastPoseProgram } from "./FastPose.js";
 import { SharedPose, pagePoseEngine, type PoseEngine, type PoseEngineStats } from "./PoseEngine.js";
 import {
-  EVERY_GEOSET, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
+  EVERY_GEOSET, UNIT_SLOT_FOLD, applyBlendMode, buildModel, characterSlots, cloneMaterialFaded, fadeMaterial,
   setBuiltModelFantasyGlow,
   unitGeosets, updateBatchColours, worldCharacterGeosets,
   type AnimatedBatch, type BuiltModel, type GeosetChoice, type TextureSlots,
 } from "./ModelBuild.js";
+import { WVM_SLOT_SAMPLERS, applySlotDepth } from "./SlotMaterial.js"; // P2-03a
+import { SharedModelBuffers } from "./SharedModelBuffers.js"; // P2-03b
+import { StaticSceneryGroup } from "./StaticSceneryGroup.js"; // RND-12
 import { dropDeathFade, syncDeathFade, type DeathFadeState } from "./BatchDeathFade.js"; // 05.10-A7a-F1
 import { applyStandingPose } from "./UnitStandingPose.js"; // 05.10-A7a-C 6.03/6.04
 import { combatAnimations, type CombatReaction } from "./game/CombatAnimations.js"; // 05.10-A7a-D 6.06
@@ -1194,6 +1200,34 @@ export function environmentResidentsInRange(
 }
 
 /**
+ * P2-04b: {@link environmentCandidatesInRange} and {@link environmentResidentsInRange} in one pass —
+ * each placement's distance and leash are computed once, and a candidate is the same record as its
+ * resident (every candidate is a resident: its leash is the narrower one). Both arrays come out in
+ * source order, exactly as the two passes give them; the records are never mutated by their readers.
+ * Two passes over the Stormwind pool (≈ 11.8 thousand placements) cost 1.0 ms and 79 KB per
+ * reselection, this one 0.51 ms and 34 KB (`.runtime/perf-step23/probe-env-reselect.mjs`).
+ */
+export function environmentRankInRange(
+  objects: readonly EnvironmentObject[],
+  player: Pick<WorldPosition, "x" | "y">,
+  detail = 1,
+): { candidates: RankedEnvironmentObject[]; residents: RankedEnvironmentObject[] } {
+  const candidates: RankedEnvironmentObject[] = [];
+  const residents: RankedEnvironmentObject[] = [];
+  for (let index = 0; index < objects.length; index++) {
+    const object = objects[index]!;
+    const distance = placementDistance(object, player);
+    const range = environmentDrawRange(object, detail);
+    if (distance < range + ENVIRONMENT_RESIDENT_HYSTERESIS) {
+      const ranked: RankedEnvironmentObject = { object, distance, range };
+      residents.push(ranked);
+      if (distance < range) candidates.push(ranked);
+    }
+  }
+  return { candidates, residents };
+}
+
+/**
  * Wrapped angular distance between two camera angles, in radians.
  *
  * Pure so the flick detector stays testable without a renderer: ±π wraparound must not read a
@@ -1437,6 +1471,55 @@ export function selectEnvironmentAdmission(
     ...pick("far", ENVIRONMENT_FAR_BUDGET, nearest),
     ...pick("interior", INTERIOR_BUDGET, nearest),
   ];
+}
+
+/** P2-04c: one reusable bounded heap per admission tier, in concatenation order. */
+const ADMISSION_HEAPS = [
+  new BoundedTopK<RankedEnvironmentObject>(), new BoundedTopK<RankedEnvironmentObject>(),
+  new BoundedTopK<RankedEnvironmentObject>(), new BoundedTopK<RankedEnvironmentObject>(),
+] as const;
+
+/**
+ * P2-04c: `selectEnvironmentAdmission` in one pass and without allocating: each candidate is asked
+ * its tier once (the four passes asked four times — most of the admission's time in the city
+ * bench), and each tier's reusable heap takes the accepted ones in candidate order, so the picks
+ * and their order are exactly the four passes'. The result is written into `out` (cleared first),
+ * which the caller alternates between two arrays so each run still has a new identity.
+ * `selectEnvironmentAdmission` stays as the reference and for hand-built lists.
+ */
+export function admitEnvironmentInto(
+  candidates: readonly RankedEnvironmentObject[],
+  planes: readonly UnitFrustumPlane[],
+  retainedSphereOf: ((object: EnvironmentObject) => EnvironmentVisibilitySphere | undefined) | undefined,
+  vertexPadding: number,
+  out: RankedEnvironmentObject[],
+): RankedEnvironmentObject[] {
+  const [near, scenery, far, interior] = ADMISSION_HEAPS;
+  near.reset(ENVIRONMENT_BUDGET);
+  scenery.reset(ENVIRONMENT_SCENERY_BUDGET);
+  far.reset(ENVIRONMENT_FAR_BUDGET);
+  interior.reset(INTERIOR_BUDGET);
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index]!;
+    const tier = environmentAdmissionTier(candidate);
+    if (tier === undefined) continue;
+    // A hand-built list is held to the same strict leash the candidate pass applies.
+    if (tier === "scenery" && candidate.distance >= (candidate.range ?? environmentDrawRange(candidate.object))) continue;
+    const retainedSphere = candidate.object.bounds === undefined
+      ? retainedSphereOf?.(candidate.object) ?? environmentSourceVisibilitySphere(candidate.object, vertexPadding)
+      : undefined;
+    if (!environmentObjectVisibleInFrustum(candidate.object, planes, ENVIRONMENT_FRUSTUM_MARGIN, retainedSphere)) continue;
+    if (tier === "near") near.offer(candidate, candidate.distance);
+    else if (tier === "scenery") scenery.offer(candidate, environmentSceneryScore(candidate));
+    else if (tier === "far") far.offer(candidate, candidate.distance);
+    else interior.offer(candidate, candidate.distance);
+  }
+  out.length = 0;
+  near.drainInto(out);
+  scenery.drainInto(out);
+  far.drainInto(out);
+  interior.drainInto(out);
+  return out;
 }
 
 /**
@@ -2169,6 +2252,8 @@ interface RenderedEnvironment {
   growthStartedAt: number | undefined;
   /** Grow-in length in frames for this placement: slow for far trees, quick for near ones. */
   growthTotal: number | undefined;
+  /** P2-06a: the admission run that last admitted this placement (`#admissionRun`). */
+  drawnRun: number;
   /**
    * Whether this placement has ever been seen grown or whole.
    *
@@ -3526,7 +3611,8 @@ export class WorldRenderer3D {
   /** Background pass: authored transparent sky layers must be drawn before world depth exists. */
   readonly #skyScene = new THREE.Scene();
   readonly #camera = buildWorldCamera();
-  readonly #environmentGroup = new THREE.Group();
+  // RND-12: does not walk frozen placements every frame (StaticSceneryGroup.ts).
+  readonly #environmentGroup = new StaticSceneryGroup();
   /**
    * Instanced scenery draws, kept apart from the placements they stand in for.
    *
@@ -3706,6 +3792,8 @@ export class WorldRenderer3D {
     count: BUILT_UNIT_CACHE_COUNT_LIMIT,
     knownBufferBytes: BUILT_UNIT_CACHE_KNOWN_BUFFER_BYTE_LIMIT,
   });
+  /** P2-03b: the vertex attributes `#builtUnits` builds share; replaced whenever the caches are dropped. */
+  #modelBuffers = new SharedModelBuffers();
   /** One name per appearance, so the digest is computed once per look rather than once a frame. */
   readonly #appearanceKeys = new WeakMap<CharacterAppearance, string>();
   /** Bodies, mounts and equipment share one per-frame construction/upload admission slice. */
@@ -3780,6 +3868,9 @@ export class WorldRenderer3D {
    * bench's one 34 ms frame at its eighteenth second, on every run. Held like a new visual, the
    * link runs in the warm pass and the set appears a frame or two later, mid-life.
    */
+  /** 12.08: the camera's frustum for this frame's effects. */
+  readonly #effectFrustum = new THREE.Frustum();
+  readonly #effectFrustumMatrix = new THREE.Matrix4();
   readonly #effectWarmHold = new WarmHold(VISUAL_WARM_HOLD_FRAMES, (object) => this.#effectProgramsWarm(object));
   /** Session-local exact parent identities used only to make cache keys stable and compact. */
   #wmoModelKeys = new WeakMap<WmoModel, string>();
@@ -4105,8 +4196,34 @@ export class WorldRenderer3D {
   #sceneryShadowFrame = 0;
   /** Whether any environment mesh may currently carry cast/receive flags set by that leaf. */
   #sceneryShadowsApplied = false;
-  /** Fold of the meshes the cached shadow cascade drew; a different fold re-renders it. */
-  #sceneryFarCasters = 0;
+  /**
+   * P2-02a: scenery owners — placements, instance buckets, WMO rooms — with a mesh in the cached
+   * cascade, each with the id it was folded under. Weak, so an owner dropped by a path that does not
+   * report it is not kept alive.
+   */
+  #sceneryFarOwners = new WeakMap<object, number>();
+  /** P2-02a: fold and count of those owners, kept as they join and leave. */
+  #sceneryFarFold = 0;
+  #sceneryFarCount = 0;
+  /** P2-02b: the terrain fold of the last reconcile. */
+  #sceneryTerrainFold = 0;
+  /**
+   * P2-02b: the folds as they were when the cached cascade last rendered (`#noteFarRendered`): a set
+   * that left and came back between two of its renders is no change, one it rendered without is.
+   */
+  #sceneryFarDrawnFold = 0;
+  #sceneryFarDrawnCount = 0;
+  #sceneryTerrainDrawnFold = 0;
+  /** P2-02b: the cached map's content changed in a way no fold sees (a tree settled, a room light flipped). */
+  #sceneryFarDirty = false;
+  /** P2-02b: rigged placements (sails, mills) among the far owners: their far shadow moves every frame. */
+  #sceneryFarAnimated = new WeakSet<object>();
+  /** P2-02b: one of them was posed on the last environment pass. */
+  #sceneryFarPosed = false;
+  /** P2-02b: rooms held hidden until warm, with the far id they take when they are shown. */
+  readonly #wmoHeldFar = new Map<THREE.Mesh, number>();
+  /** P2-02a: scratch traits of the mesh being flagged. */
+  readonly #sceneryShadowTraits: SceneryShadowTraits = { eligible: false, radius: 0, farRadius: undefined };
   /** Each attached WMO room's depth-only shadow stand-in, or null where it has no solid run. */
   readonly #wmoShadowProxies = new WeakMap<THREE.Mesh, THREE.Mesh | null>();
   /** Water profile with the cinematic water leaves folded in; rebuilt only when either changes. */
@@ -4257,8 +4374,21 @@ export class WorldRenderer3D {
   } | undefined;
   #admittedMembership: {
     source: readonly RankedEnvironmentObject[];
-    values: ReadonlySet<number>;
+    /** P2-06a: the run its records are stamped with. */
+    run: number;
   } | undefined;
+  /** P2-06a: admission runs so far; a record admitted by the current run carries its number. */
+  #admissionRun = 0;
+  /** P2-04c: the two arrays admission results alternate between, and which one is current. */
+  readonly #admissionBuffers: [RankedEnvironmentObject[], RankedEnvironmentObject[]] = [[], []];
+  #admissionFlip = 0;
+  /** P2-04c: the retained sphere admission asks for, without a closure per run. */
+  readonly #retainedEnvironmentSphere = (object: EnvironmentObject): EnvironmentVisibilitySphere | undefined => {
+    const rendered = this.#environment.get(object.id);
+    return rendered?.source === object
+      ? rendered.visibilitySphere
+      : this.#environmentVisibilitySpheres.get(object);
+  };
   /** Prefetch sweep state: the candidate array the cursor rotates through, if any. */
   #prefetchCandidates: readonly RankedEnvironmentObject[] | undefined;
   #prefetchCursor = 0;
@@ -4284,7 +4414,7 @@ export class WorldRenderer3D {
   #terrainRepair: TerrainRepair | undefined;
   #terrainRepairsPending = 0;
   #environmentObjects: readonly EnvironmentObject[] | undefined;
-  #environmentSpatialIndex: EnvironmentSpatialIndex | undefined;
+  #environmentSpatialIndex: EnvironmentGridIndex | undefined;
   /** One `InstancedMesh` per repeated doodad model, and the placements it stands in for. */
   /** Bucket lists reused across `#updateInstances` rebuilds; see there. */
   readonly #instanceBuckets = new Map<string, RenderedEnvironment[]>();
@@ -4299,6 +4429,10 @@ export class WorldRenderer3D {
     };
   }>();
   readonly #instanceTint = new THREE.Color();
+  /** P2-07: each bucket's copies, in order, as its last full rebuild wrote them. */
+  readonly #instanceMembers = new Map<string, RenderedEnvironment[]>();
+  /** P2-07: placement nodes `#showAsPlain` registered and held, still shown plain since. */
+  readonly #plainShown = new WeakSet<THREE.Object3D>();
   /** Set when a placement is made or dropped: the matrices themselves never change. */
   #instancesDirty = false;
   /**
@@ -4642,10 +4776,18 @@ export class WorldRenderer3D {
 
   /**
    * Static scenery joins the existing directional shadow map while its leaf is on and the lighting
-   * quality has a map at all. Streamed tiles and lazily built WMO rooms arrive between calls, so the
-   * environment is reconciled every thirtieth light push (one walk, no allocation per mesh) rather
-   * than at each of the places that add to it. Off, the flags are cleared once and the environment
-   * is never walked again.
+   * quality has a map at all. Off, the flags are cleared once and the environment is never walked
+   * again.
+   *
+   * P2-02a: streamed tiles, placements, settled trees, instance buckets and lazily built WMO rooms
+   * take their flags where they join the scene (`#sceneryShadowsForPlacement`,
+   * `#sceneryShadowsForInstance`, `#syncWmoRoomShadow`). The whole environment is walked only when
+   * the answer changes for all of it at once: the leaf, the map or the room light flips `wanted`, or
+   * a caller forces it (`setLightingQuality`, `#applyCinematicProfile`). It used to be walked on
+   * every thirtieth light push — 1.6 ms in the Stormwind bench, 0.5 ms on the movement route — and a
+   * newly placed tree waited up to thirty frames for its shadow. The terrain, the horizon and the
+   * ground cover (a few dozen meshes) are still reconciled on that cadence, and the cached cascade
+   * hears about scenery joining or leaving it then, as before.
    *
    * M2 doodads (trees, lamps, statues) cast and receive; terrain already receives. The large ones
    * (`SCENERY_FAR_SHADOW_MIN_RADIUS`) also enter the cached outermost cascade through its layer.
@@ -4663,59 +4805,27 @@ export class WorldRenderer3D {
       && this.#interiorLight === undefined;
     if (!wanted && !this.#sceneryShadowsApplied) return;
     this.#sceneryShadowFrame++;
+    // Switching on still waits for the cadence, as it always did: a camera flickering across an
+    // interior-only building's threshold costs one walk per thirty pushes, not one per flip.
     if (!force && wanted && this.#sceneryShadowFrame % 30 !== 0) return;
+    const transition = force || wanted !== this.#sceneryShadowsApplied;
     const cascades = this.#sunCascades.active;
-    // Which meshes the cached cascade draws, folded into one number: a change means it is stale.
-    let farCasters = 0;
-    // P2-01a: a placement's meshes register with their placement as owner, so the gate can show
-    // retained scenery the view did not admit to the shadow pass (what `#shadowOnlyToggle` did).
-    const apply = (node: THREE.Object3D, include: boolean, rendered?: RenderedEnvironment): void => {
-      node.traverse((child) => {
-        if (!(child instanceof THREE.Mesh) || child.userData[WMO_SHADOW_PROXY] === true) return;
-        let eligible = wanted && include;
-        if (eligible) {
-          const materials = Array.isArray(child.material) ? child.material : [child.material];
-          eligible = materials.length > 0 && materials.every((material: THREE.Material) => shadowMaterialEligible({
-            lit: material instanceof THREE.MeshLambertMaterial
-              || material instanceof THREE.MeshPhongMaterial
-              || material instanceof THREE.MeshStandardMaterial,
-            transparent: material.transparent,
-            normalBlending: material.blending === THREE.NormalBlending,
-            depthWrite: material.depthWrite,
-          }));
-        }
-        // Small props (crates, flowers, bottles) cost a shadow-pass draw each and barely read in a
-        // 1024-texel map over 92 yards; trees, statues, lamp posts and awnings are what cast.
-        let casts = eligible;
-        let radius = 0;
-        if (casts) {
-          const geometry = child.geometry as THREE.BufferGeometry;
-          if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-          const scale = child instanceof THREE.InstancedMesh ? 1 : child.matrixWorld.getMaxScaleOnAxis();
-          radius = (geometry.boundingSphere?.radius ?? 0) * scale;
-          casts = radius >= SCENERY_SHADOW_MIN_RADIUS;
-        }
-        if (child.castShadow !== casts) child.castShadow = casts;
-        if (rendered) this.#shadowCasters.set(child, casts, rendered.node, this.#environmentShadowGate, rendered);
-        else this.#shadowCasters.set(child, casts);
-        if (child.receiveShadow !== eligible) child.receiveShadow = eligible;
-        const far = casts && cascades && radius >= SCENERY_FAR_SHADOW_MIN_RADIUS;
-        if (far) {
-          child.layers.enable(SHADOW_FAR_LAYER);
-          farCasters = (farCasters + child.id * 2654435761) % 4294967296;
-        } else child.layers.disable(SHADOW_FAR_LAYER);
-      });
-    };
-    for (const rendered of this.#environment.values()) {
-      apply(rendered.node, rendered.wmo === undefined, rendered);
-      if (rendered.wmo) farCasters = (farCasters + this.#syncWmoShadows(rendered.wmo, wanted)) % 4294967296;
+    if (transition) {
+      // Every owner is asked again below, so the old membership goes with the old answer.
+      this.#sceneryFarOwners = new WeakMap<object, number>();
+      this.#sceneryFarFold = 0;
+      this.#sceneryFarCount = 0;
+      this.#sceneryFarAnimated = new WeakSet<object>();
+      for (const rendered of this.#environment.values()) this.#sceneryShadowsForPlacement(rendered, wanted, cascades);
+      for (const { mesh } of this.#instances.values()) this.#sceneryShadowsForInstance(mesh, wanted, cascades);
     }
-    for (const { mesh } of this.#instances.values()) apply(mesh, true);
     // Ground cover receives only: a tuft is too small to cast, but lit grass on shadowed ground
     // washes a tree's shadow out.
     for (const { mesh } of this.#groundCoverMeshes.values()) {
       if (mesh.receiveShadow !== wanted) mesh.receiveShadow = wanted;
     }
+    // Which terrain meshes the cached cascade draws, folded into one number: a change means it is stale.
+    let farCasters = 0;
     // The ground casts too: a hill shades its far slope and the valley beyond it at a low sun, the
     // one shadow every zone has and the reference client's most visible one. A tile is one mesh
     // (32,768 triangles), so it costs the near cascades a draw or two where their light frustum
@@ -4741,14 +4851,156 @@ export class WorldRenderer3D {
       } else mesh.layers.disable(SHADOW_FAR_LAYER);
     }
     this.#sceneryShadowsApplied = wanted;
-    if (farCasters !== this.#sceneryFarCasters) {
-      this.#sceneryFarCasters = farCasters;
+    // P2-02b: against what the cached cascade last drew, not the last reconcile: an owner that came
+    // and went between two of its renders leaves it as it was, one it rendered without does not.
+    this.#sceneryTerrainFold = farCasters;
+    if (this.#sceneryFarDirty || farCasters !== this.#sceneryTerrainDrawnFold
+      || this.#sceneryFarFold !== this.#sceneryFarDrawnFold || this.#sceneryFarCount !== this.#sceneryFarDrawnCount) {
+      this.#sceneryFarDirty = false;
       this.#sunCascades.invalidateFar();
     }
   }
 
+  /** P2-02b: the cached cascade just rendered; what it drew is what the folds say now. */
+  readonly #noteFarRendered = (): void => {
+    this.#sceneryFarDrawnFold = this.#sceneryFarFold;
+    this.#sceneryFarDrawnCount = this.#sceneryFarCount;
+    this.#sceneryTerrainDrawnFold = this.#sceneryTerrainFold;
+  };
+
   /**
-   * Shadow flags of one placed WMO's attached rooms; returns a fold of the stand-ins that cast.
+   * P2-02a: notes whether `owner` has a mesh in the cached cascade, folded under `id`; the next
+   * reconcile re-renders the cascade if the fold or the count has changed.
+   *
+   * P2-02b: the id names what casts, not the object drawing it, so churn that leaves the map as it
+   * was does not re-render it: a placement folds under its node's id whether it is drawn alone or
+   * through an instance bucket (buckets are rebuilt whenever admission moves a model across
+   * `INSTANCE_MINIMUM`, and are not owners at all), and a room under its building and group index,
+   * not under the fresh mesh and stand-in every re-hang makes. The city bench re-rendered the cached
+   * cascade on 44 of 46 reconciles for bucket rebuilds alone, with the camera standing still.
+   */
+  #noteSceneryFar(owner: object, id: number, far: boolean, animated = false): void {
+    if (!far) {
+      this.#forgetSceneryFar(owner);
+      return;
+    }
+    const owners = this.#sceneryFarOwners;
+    if (owners.has(owner)) return;
+    owners.set(owner, id);
+    if (animated) this.#sceneryFarAnimated.add(owner);
+    this.#sceneryFarFold = (this.#sceneryFarFold + Math.imul(id, 0x9e3779b1)) >>> 0;
+    this.#sceneryFarCount++;
+  }
+
+  #forgetSceneryFar(owner: object): void {
+    const id = this.#sceneryFarOwners.get(owner);
+    if (id === undefined) return;
+    this.#sceneryFarOwners.delete(owner);
+    this.#sceneryFarAnimated.delete(owner);
+    this.#sceneryFarFold = (this.#sceneryFarFold - Math.imul(id, 0x9e3779b1)) >>> 0;
+    this.#sceneryFarCount--;
+  }
+
+  /**
+   * P2-02a: the flags of one placement — its meshes, and the stand-ins of its attached rooms — for
+   * the leaf's current answer. Called where the placement is built or a tree settles, and by the
+   * full walk; a no-op while the leaf has never been applied, as the walk was.
+   */
+  #sceneryShadowsForPlacement(
+    rendered: RenderedEnvironment,
+    wanted = this.#sceneryShadowsApplied,
+    cascades = this.#sunCascades.active,
+  ): void {
+    if (!wanted && !this.#sceneryShadowsApplied) return;
+    // P2-01a: a placement's meshes register with their placement as owner, so the gate can show
+    // retained scenery the view did not admit to the shadow pass (what `#shadowOnlyToggle` did).
+    const far = this.#applySceneryShadowFlags(rendered.node, rendered.wmo === undefined, rendered, wanted, cascades);
+    this.#noteSceneryFar(rendered, rendered.node.id, far, rendered.skinned !== undefined);
+    if (rendered.wmo) this.#syncWmoShadows(rendered.wmo, wanted, cascades);
+  }
+
+  /**
+   * P2-02a: the flags of one instance bucket's mesh, where it is made and in the full walk. Not a
+   * far owner (P2-02b): its placements already are.
+   */
+  #sceneryShadowsForInstance(
+    mesh: THREE.InstancedMesh,
+    wanted = this.#sceneryShadowsApplied,
+    cascades = this.#sunCascades.active,
+  ): void {
+    if (!wanted && !this.#sceneryShadowsApplied) return;
+    this.#applySceneryShadowFlags(mesh, true, undefined, wanted, cascades);
+  }
+
+  /**
+   * The flags of every mesh under `node` (itself included, stand-ins excepted); answers whether any
+   * of them casts into the cached cascade. A recursion rather than `traverse`, which would need a
+   * closure per call.
+   */
+  #applySceneryShadowFlags(
+    node: THREE.Object3D,
+    include: boolean,
+    rendered: RenderedEnvironment | undefined,
+    wanted: boolean,
+    cascades: boolean,
+  ): boolean {
+    let far = false;
+    const child = node;
+    if (child instanceof THREE.Mesh && child.userData[WMO_SHADOW_PROXY] !== true) {
+      const traits = this.#sceneryShadowTraits;
+      traits.eligible = false;
+      traits.radius = 0;
+      traits.farRadius = undefined;
+      if (wanted && include) {
+        const material = child.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(material)) {
+          let eligible = material.length > 0;
+          for (let index = 0; eligible && index < material.length; index++) {
+            eligible = this.#sceneryMaterialEligible(material[index]!);
+          }
+          traits.eligible = eligible;
+        } else traits.eligible = this.#sceneryMaterialEligible(material);
+        if (traits.eligible) {
+          const geometry = child.geometry as THREE.BufferGeometry;
+          if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+          const scale = child instanceof THREE.InstancedMesh ? 1 : child.matrixWorld.getMaxScaleOnAxis();
+          traits.radius = (geometry.boundingSphere?.radius ?? 0) * scale;
+          // P2-02b: a copy the instance pass may draw takes its bucket's (unscaled) far answer.
+          if (rendered?.instanceKey !== undefined) traits.farRadius = geometry.boundingSphere?.radius ?? 0;
+        }
+      }
+      const flags = sceneryShadowFlags(traits, wanted, include, cascades);
+      const casts = (flags & SCENERY_SHADOW_CAST) !== 0;
+      const receives = (flags & SCENERY_SHADOW_RECEIVE) !== 0;
+      if (child.castShadow !== casts) child.castShadow = casts;
+      if (rendered) this.#shadowCasters.set(child, casts, rendered.node, this.#environmentShadowGate, rendered);
+      else this.#shadowCasters.set(child, casts);
+      if (child.receiveShadow !== receives) child.receiveShadow = receives;
+      if ((flags & SCENERY_SHADOW_FAR) !== 0) {
+        child.layers.enable(SHADOW_FAR_LAYER);
+        far = true;
+      } else child.layers.disable(SHADOW_FAR_LAYER);
+    }
+    const children = node.children;
+    for (let index = 0; index < children.length; index++) {
+      if (this.#applySceneryShadowFlags(children[index]!, include, rendered, wanted, cascades)) far = true;
+    }
+    return far;
+  }
+
+  #sceneryMaterialEligible(material: THREE.Material): boolean {
+    return shadowMaterialEligible({
+      lit: material instanceof THREE.MeshLambertMaterial
+        || material instanceof THREE.MeshPhongMaterial
+        || material instanceof THREE.MeshStandardMaterial,
+      transparent: material.transparent,
+      normalBlending: material.blending === THREE.NormalBlending,
+      depthWrite: material.depthWrite,
+    });
+  }
+
+  /**
+   * Shadow flags of one placed WMO's attached rooms.
    *
    * A group receives wherever it has exterior-lit runs, which is decided per run and not by MOGP's
    * indoor bit: the Stormwind trade-district street at (-8835, 634) sits in an indoor-flagged group,
@@ -4761,42 +5013,63 @@ export class WorldRenderer3D {
    * merged ranges of its solid runs, on the shadow layers only. Translucent, additive and
    * alpha-tested runs (glass, glows, grilles) cast nothing rather than a solid slab.
    */
-  #syncWmoShadows(placed: PlacedWmo, wanted: boolean): number {
-    let fold = 0;
-    for (const [index, built] of placed.built) {
-      const group = placed.model.groups[index];
-      if (!group) continue;
-      const { mesh } = built;
-      const receives = wanted && (Array.isArray(mesh.material) ? mesh.material : [mesh.material])
-        .some((material) => material instanceof THREE.MeshStandardMaterial);
-      if (mesh.receiveShadow !== receives) mesh.receiveShadow = receives;
-      if (mesh.castShadow) mesh.castShadow = false;
-      this.#shadowCasters.set(mesh, false);
-      const casts = wanted && this.#sunCascades.active && (!group.indoor || group.exterior);
-      let proxy = this.#wmoShadowProxies.get(mesh);
-      if (casts && proxy === undefined) {
-        const geometry = wmoShadowProxyGeometry(mesh.geometry, mesh.material);
-        if (geometry) {
-          proxy = new THREE.Mesh(geometry, [WMO_SHADOW_PROXY_MATERIAL]);
-          proxy.userData[WMO_SHADOW_PROXY] = true;
-          proxy.layers.set(SHADOW_PROXY_LAYER);
-          proxy.layers.enable(SHADOW_FAR_LAYER);
-          proxy.matrixAutoUpdate = false;
-          proxy.receiveShadow = false;
-          mesh.add(proxy);
-          proxy.matrixWorld.multiplyMatrices(mesh.matrixWorld, proxy.matrix);
-          this.#wmoShadowProxies.set(mesh, proxy);
-        } else {
-          this.#wmoShadowProxies.set(mesh, null);
-        }
-      }
-      if (!proxy) continue;
-      if (proxy.castShadow !== casts) proxy.castShadow = casts;
-      this.#shadowCasters.set(proxy, casts);
-      if (proxy.visible !== casts) proxy.visible = casts;
-      if (casts) fold = (fold + proxy.id * 2654435761) % 4294967296;
+  #syncWmoShadows(placed: PlacedWmo, wanted: boolean, cascades: boolean): void {
+    for (const [index, built] of placed.built) this.#syncWmoRoomShadow(placed, index, built, wanted, cascades);
+  }
+
+  /** P2-02a: one attached room's flags and stand-in; also called where the room is attached. */
+  #syncWmoRoomShadow(placed: PlacedWmo, index: number, built: RenderedWmoGroup, wanted: boolean, cascades: boolean): void {
+    const group = placed.model.groups[index];
+    if (!group) return;
+    const { mesh } = built;
+    let receives = false;
+    if (wanted) {
+      const material = mesh.material as THREE.Material | THREE.Material[];
+      if (Array.isArray(material)) {
+        for (let at = 0; !receives && at < material.length; at++) receives = material[at] instanceof THREE.MeshStandardMaterial;
+      } else receives = material instanceof THREE.MeshStandardMaterial;
     }
-    return fold;
+    if (mesh.receiveShadow !== receives) mesh.receiveShadow = receives;
+    if (mesh.castShadow) mesh.castShadow = false;
+    this.#shadowCasters.set(mesh, false);
+    const casts = wanted && cascades && (!group.indoor || group.exterior);
+    let proxy = this.#wmoShadowProxies.get(mesh);
+    if (casts && proxy === undefined) {
+      const geometry = wmoShadowProxyGeometry(mesh.geometry, mesh.material);
+      if (geometry) {
+        proxy = new THREE.Mesh(geometry, [WMO_SHADOW_PROXY_MATERIAL]);
+        proxy.userData[WMO_SHADOW_PROXY] = true;
+        proxy.layers.set(SHADOW_PROXY_LAYER);
+        proxy.layers.enable(SHADOW_FAR_LAYER);
+        proxy.matrixAutoUpdate = false;
+        proxy.receiveShadow = false;
+        mesh.add(proxy);
+        proxy.matrixWorld.multiplyMatrices(mesh.matrixWorld, proxy.matrix);
+        this.#wmoShadowProxies.set(mesh, proxy);
+      } else {
+        this.#wmoShadowProxies.set(mesh, null);
+      }
+    }
+    if (!proxy) {
+      this.#forgetSceneryFar(mesh);
+      return;
+    }
+    if (proxy.castShadow !== casts) proxy.castShadow = casts;
+    this.#shadowCasters.set(proxy, casts);
+    if (proxy.visible !== casts) proxy.visible = casts;
+    // P2-02b: the building's node (the room hangs on it) and the group, stable across re-hangs.
+    this.#noteSceneryFar(mesh, (mesh.parent?.id ?? 0) * 4096 + index, casts);
+  }
+
+  /**
+   * P2-02a: a room leaving its building. A room is a new mesh on every attach, so its stand-in
+   * never comes back: it leaves the caster list now rather than being walked until it is pruned.
+   */
+  #releaseWmoRoomShadow(mesh: THREE.Mesh): void {
+    this.#forgetSceneryFar(mesh);
+    this.#wmoHeldFar.delete(mesh);
+    const proxy = this.#wmoShadowProxies.get(mesh);
+    if (proxy) this.#shadowCasters.set(proxy, false);
   }
 
   /**
@@ -6666,6 +6939,7 @@ export class WorldRenderer3D {
     this.#unitPartWarmHolds.clear();
     this.#visualWarmHold.clear();
     this.#effectWarmHold.clear();
+    this.#wmoHeldFar.clear(); // P2-02b
     this.#skyWarmup.reset();
     this.#overlayWarmup.reset();
     this.#glowWarmup.reset();
@@ -6771,6 +7045,7 @@ export class WorldRenderer3D {
     }
     this.#builtModels.clear();
     this.#builtUnits.clear();
+    this.#modelBuffers = new SharedModelBuffers(); // P2-03b: the old attributes went with the builds
     this.#skinnedTemplates.clear();
     this.#wmoGeometryBuild.clear();
     for (const entry of this.#wmoGeometries.values()) {
@@ -6804,6 +7079,8 @@ export class WorldRenderer3D {
     this.#environmentCandidatesAt = undefined;
     this.#warmPruneAtSerial = -WARM_PRUNE_INTERVAL_FRAMES;
     this.#lastAdmitted = undefined;
+    this.#admissionBuffers[0].length = 0; // P2-04c: no candidate of the old world stays reachable
+    this.#admissionBuffers[1].length = 0;
     this.#admissionCandidates = undefined;
     this.#growingVegetation = 0;
     this.#terrainPlan = undefined;
@@ -7241,6 +7518,7 @@ export class WorldRenderer3D {
             // Only when there is something to draw: many effect models are emitters and nothing
             // else, so the frame remains the emitter anchor without a placeholder mesh.
             const mesh = new THREE.Mesh(built.geometry, built.materials);
+            applySlotDepth(mesh); // P2-03a
             visual.visual = mesh;
             visual.frame.add(mesh);
             this.#programWarmup.registerObject(mesh);
@@ -8199,6 +8477,7 @@ export class WorldRenderer3D {
     // Map sizes, extents, bias and blur all belong to the cascades (CascadedShadows.ts), which
     // place every map from the camera each frame. Quality 0 hands the sun back as it was.
     this.#sunCascades.setCasterList(this.#shadowCasters); // P2-01a: replaces the shadow-only toggle
+    this.#sunCascades.setFarRenderListener(this.#noteFarRendered); // P2-02b
     this.#sunCascades.setBoundedCasters(this.#boundedShadowCasters);
     this.#sunCascades.configure(this.#scene, this.#renderer, next);
     for (const terrain of this.#terrains.values()) terrain.mesh.receiveShadow = shadows;
@@ -8218,6 +8497,8 @@ export class WorldRenderer3D {
       // the first frame back outside places and renders them all again.
       if (this.#interiorLight !== undefined) return;
       // The camera was placed just before this; the cascades fit themselves to what it sees.
+      // P2-02b: a rigged far caster keeps the cached cascade on its frame interval (no clock floor).
+      this.#sunCascades.setFarAnimated(this.#sceneryFarPosed);
       this.#sunCascades.update(this.#camera, this.#sunOffset, this.#submissionSerial);
       return;
     }
@@ -8622,6 +8903,9 @@ export class WorldRenderer3D {
   #updateEffects(player: WorldPosition, now: number, elapsed: number): void {
     if (!this.#baseUrl) return;
     billboardView(this.#camera, this.#billboard);
+    // 12.08: the view the emitters are drawn in; one off screen writes and draws nothing.
+    this.#effectFrustumMatrix.multiplyMatrices(this.#camera.projectionMatrix, this.#camera.matrixWorldInverse);
+    this.#effectFrustum.setFromProjectionMatrix(this.#effectFrustumMatrix);
 
     const wanted: {
       key: string;
@@ -8984,6 +9268,7 @@ export class WorldRenderer3D {
         catchUp,
         firstBurst,
         ...(firstBurst ? { firstBurstAnimationMs: 0 } : {}),
+        frustum: this.#effectFrustum,
       });
       if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
@@ -9294,6 +9579,8 @@ export class WorldRenderer3D {
       rendered.mesh.geometry = geometry;
       this.#programWarmup.registerObject(rendered.mesh);
       previous.dispose();
+      // P2-02b: same mesh, new ground: the terrain fold cannot see it.
+      if (rendered.mesh.castShadow && rendered.mesh.layers.isEnabled(SHADOW_FAR_LAYER)) this.#sunCascades.invalidateFar();
     }
     if (prepared.water) {
       for (const previous of rendered.water ?? []) {
@@ -9815,18 +10102,20 @@ export class WorldRenderer3D {
     // other half of the question and is exact.
     if (objects !== this.#environmentObjects) {
       this.#environmentObjects = objects;
-      this.#environmentSpatialIndex = new EnvironmentSpatialIndex(objects);
+      // P2-04a: the grid index answers exactly as EnvironmentSpatialIndex (its reference) does.
+      this.#environmentSpatialIndex = new EnvironmentGridIndex(objects);
       this.#environmentGeneration++;
     }
     if (shouldReselect(this.#environmentCandidatesAt, player, this.#environmentGeneration)) {
       const pool = this.#environmentSpatialIndex?.queryCached(
         player.x, player.y, ENVIRONMENT_STREAM_RANGE,
       ).objects ?? objects;
-      this.#environmentCandidates = environmentCandidatesInRange(pool, player, this.#environmentDetail);
-      // The loaded zone: strictly wider than every draw leash, so the line an object crosses
-      // to appear is never the line it crosses to disappear. Draw admission below still reads
-      // the strict set; disposal reads this one.
-      this.#environmentResidents = environmentResidentsInRange(pool, player, this.#environmentDetail);
+      // Candidates and the loaded zone in one pass (P2-04b). The zone is strictly wider than every
+      // draw leash, so the line an object crosses to appear is never the line it crosses to
+      // disappear. Draw admission below still reads the strict set; disposal reads the wide one.
+      const ranked = environmentRankInRange(pool, player, this.#environmentDetail);
+      this.#environmentCandidates = ranked.candidates;
+      this.#environmentResidents = ranked.residents;
       this.#environmentCandidatesAt = {
         x: player.x,
         y: player.y,
@@ -9850,16 +10139,14 @@ export class WorldRenderer3D {
       || this.#admissionCandidates !== this.#environmentCandidates
       || this.#cameraTurnRate > CAMERA_FAST_TURN_RATE
       || (this.#submissionSerial & 1) === 0) {
-      admitted = selectEnvironmentAdmission(
+      // P2-04c: one pass, no allocation; two buffers alternate so a run is a new array identity.
+      this.#admissionFlip ^= 1;
+      admitted = admitEnvironmentInto(
         this.#environmentCandidates,
         this.#frustum.planes,
-        (object) => {
-          const rendered = this.#environment.get(object.id);
-          return rendered?.source === object
-            ? rendered.visibilitySphere
-            : this.#environmentVisibilitySpheres.get(object);
-        },
+        this.#retainedEnvironmentSphere,
         this.#experimentalShaderProfile.vegetationWind ? VEGETATION_WIND_CULL_PADDING : 0,
+        this.#admissionBuffers[this.#admissionFlip]!,
       );
       this.#lastAdmitted = admitted;
       this.#admissionCandidates = this.#environmentCandidates;
@@ -9872,25 +10159,33 @@ export class WorldRenderer3D {
       this.#residentMembership = { source: this.#environmentResidents, values };
     }
     const inRange = this.#residentMembership.values;
+    // P2-06a: membership of a new admission run is a stamp on each admitted record, not a fresh
+    // `Set` of ids per run (`add` was 58 MB of the city bench's 20 s allocation profile).
     if (this.#admittedMembership?.source !== admitted) {
-      const values = new Set<number>();
-      for (const { object } of admitted) values.add(object.id);
-      this.#admittedMembership = { source: admitted, values };
+      const run = ++this.#admissionRun;
+      for (const { object } of admitted) {
+        const rendered = this.#environment.get(object.id);
+        if (rendered) rendered.drawnRun = run;
+      }
+      this.#admittedMembership = { source: admitted, run };
     }
-    const drawn = this.#admittedMembership.values;
-    for (const [id, rendered] of this.#environment) {
+    const drawnRun = this.#admittedMembership.run;
+    // `forEach` rather than `for…of` over entries: the entry iterator hands back a new `[id, record]`
+    // array per record, about 2,800 a frame in the city bench — most of this pass's own allocation
+    // (P2-06a). Deleting the visited entry during `forEach` is safe for a Map.
+    this.#environment.forEach((rendered, id) => {
       if (!inRange.has(id)) {
         this.#removeEnvironment(id, rendered);
-        continue;
+        return;
       }
       // A tile reload may reuse a numeric placement id. Its old transform/model cannot lend bounds
       // or a node to the new immutable snapshot, even while both happen to be in the same range.
       if (rendered.source !== inRange.get(id)) {
         this.#removeEnvironment(id, rendered);
-        continue;
+        return;
       }
-      this.#setEnvironmentAdmitted(rendered, drawn.has(id));
-    }
+      this.#setEnvironmentAdmitted(rendered, rendered.drawnRun === drawnRun);
+    });
     if (this.#submissionSerial - this.#warmPruneAtSerial >= WARM_PRUNE_INTERVAL_FRAMES) {
       this.#warmPruneAtSerial = this.#submissionSerial;
       this.#pruneWarmEnvironment();
@@ -9972,6 +10267,8 @@ export class WorldRenderer3D {
           growthStartedAt: undefined,
           growthTotal: undefined,
           everVisible: undefined,
+          // P2-06a: built for an entry of the current admission run.
+          drawnRun: this.#admittedMembership?.run ?? 0,
           skinned: undefined,
           template: undefined,
           model: undefined,
@@ -10046,13 +10343,13 @@ export class WorldRenderer3D {
         node.matrixAutoUpdate = !growing;
         node.updateMatrix();
         node.updateMatrixWorld(true);
-        // Frozen down to the leaves, buildings included. `Object3D.updateMatrixWorld` recurses
-        // into its children whatever the parent's own flags say, so a room hung on a frozen
-        // building afterwards still multiplies itself by the building's world matrix and lands
-        // where it belongs — measured, because the first version of this exempted buildings on the
-        // assumption that it would not. Freezing only the outer node would leave the mesh inside
-        // it composing and multiplying its own matrix sixty times a second for no reason. Growing
-        // trees skip the freeze until they settle; the growth pass owns their matrices meanwhile.
+        // Frozen down to the leaves, buildings included. Freezing only the outer node would leave
+        // the mesh inside it composing and multiplying its own matrix sixty times a second for no
+        // reason. Growing trees skip the freeze until they settle; the growth pass owns their
+        // matrices meanwhile. RND-12: the scenery group (`StaticSceneryGroup`) no longer walks a
+        // frozen placement at all, so anything hung under one afterwards must write its own world
+        // matrix when it is hung — a room is composed and frozen in `#updateWmoGroups`, its shadow
+        // stand-in's world matrix is written when it is made — or it keeps an identity matrix.
         if (!rendered.skinned && !growing) {
           node.traverse((part: THREE.Object3D) => {
             part.matrixAutoUpdate = false;
@@ -10073,6 +10370,8 @@ export class WorldRenderer3D {
         // reading the matrix of this very mesh. A growing tree joins the instances when it
         // settles; its mid-growth matrix is not exact placement state.
         if (!growing) this.#assignEnvironmentInstance(rendered, object, visual, model);
+        // P2-02a: its shadow flags now, after its matrices: no longer at the next thirtieth light push.
+        this.#sceneryShadowsForPlacement(rendered);
         this.#instancesDirty = true;
         environmentBuilds++;
       }
@@ -10184,6 +10483,10 @@ export class WorldRenderer3D {
           rendered.visual,
           client?.model(rendered.source.name, "background"),
         );
+        // P2-02a: at its full size a tree may now pass the casting radius (it was flagged small);
+        // P2-02b: after its instance key, and a tree already in the cached map was drawn too small.
+        if (this.#sceneryFarOwners.has(rendered)) this.#sceneryFarDirty = true;
+        this.#sceneryShadowsForPlacement(rendered);
         settled = true;
         continue;
       }
@@ -10222,6 +10525,11 @@ export class WorldRenderer3D {
     if (rendered.admitted === admitted) return;
     rendered.admitted = admitted;
     this.#instancesDirty = true;
+    // P2-02b: an interior doodad is drawn only while admitted (gate 1), so its shadow in the cached
+    // map comes and goes with admission, which no fold sees; it is left to the 2 s interval on
+    // purpose. Marking it re-rendered the map on 53 of 53 reconciles of the city bench (the orbit
+    // flips interior admission all the time), and the shadow falls inside its building, whose
+    // interior runs do not receive the sun's map.
     if (admitted) {
       // The instance pass may hide this node again after installing it in an InstancedMesh.
       rendered.node.visible = true;
@@ -10229,7 +10537,14 @@ export class WorldRenderer3D {
       return;
     }
     rendered.node.visible = false;
+    this.#plainShown.delete(rendered.node); // P2-07: shown plain again only through `#showAsPlain`
     for (const mesh of rendered.liquid ?? []) mesh.visible = false;
+    // P2-02a: a tree still growing does not settle while hidden; it casts behind the camera (gate 2)
+    // at the size it stopped at, as the old thirty-push walk left it, not at the quarter it began.
+    if (rendered.growthStartedAt !== undefined) {
+      if (this.#sceneryFarOwners.has(rendered)) this.#sceneryFarDirty = true; // P2-02b
+      this.#sceneryShadowsForPlacement(rendered);
+    }
     // WMO room wrappers are demand-side resources. Keep the parent warm, not every hidden room.
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
   }
@@ -10323,6 +10638,7 @@ export class WorldRenderer3D {
     rendered.tintMaterials = undefined;
     if (rendered.wmo) this.#clearWmoGroups(rendered.wmo, rendered.node);
     rendered.node.removeFromParent();
+    this.#forgetSceneryFar(rendered); // P2-02a
     this.#dropWmoLiquid(rendered);
   }
 
@@ -10357,6 +10673,12 @@ export class WorldRenderer3D {
     });
     posed.sort((left, right) => left.distance - right.distance);
     this.#doodadsPosed = Math.min(posed.length, DOODAD_ANIMATION_BUDGET);
+    // P2-02b: a far shadow that moves keeps the cached cascade on its frame interval.
+    let farPosed = false;
+    for (let index = 0; index < this.#doodadsPosed && !farPosed; index++) {
+      if (this.#sceneryFarAnimated.has(posed[index]!.rendered)) farPosed = true;
+    }
+    this.#sceneryFarPosed = farPosed;
 
     for (let index = 0; index < this.#doodadsPosed; index++) {
       const { rendered } = posed[index]!;
@@ -10434,6 +10756,11 @@ export class WorldRenderer3D {
       if (!built) continue;
       const locallyLit = list[0]!.source.localLight !== undefined;
       let entry = this.#instances.get(key);
+      // P2-07: the same copies in the same order as this bucket's last rebuild write the same
+      // matrices, colours and sphere (placements never move and their tint and light are their
+      // records'), and its copies are already hidden — the rebuild would change nothing.
+      const members = this.#instanceMembers.get(key);
+      if (entry && members && !this.#instanceWarmHolds.has(entry.mesh) && sameInstanceMembers(members, list)) continue;
       let freshMesh = false;
       // An `InstancedMesh` fixes its capacity when it is made, so it is grown in powers of two
       // rather than rebuilt every time one more barrel comes into range.
@@ -10460,6 +10787,7 @@ export class WorldRenderer3D {
           : { mesh, capacity, built };
         this.#instances.set(key, entry);
         (localLight ? this.#localLightInstanceGroup : this.#instanceGroup).add(mesh);
+        this.#sceneryShadowsForInstance(mesh); // P2-02a
       }
       for (const [index, rendered] of list.entries()) {
         entry.mesh.setMatrixAt(index, rendered.instanceMatrix!);
@@ -10474,6 +10802,7 @@ export class WorldRenderer3D {
           );
         }
         rendered.node.visible = false;
+        this.#plainShown.delete(rendered.node); // P2-07
       }
       entry.mesh.count = list.length;
       entry.mesh.instanceMatrix.needsUpdate = true;
@@ -10482,6 +10811,7 @@ export class WorldRenderer3D {
       // `setMatrixAt` does not invalidate it, and three computes it once and keeps it: left alone,
       // the sphere would be the centroid of whichever copies happened to be in range first.
       entry.mesh.computeBoundingSphere();
+      copyInstanceMembers(this.#instanceMembers, key, list); // P2-07
       // Registered after the colours, not at creation: `setColorAt` is what gives the mesh its
       // `instanceColor` attribute, and that attribute is part of the program three compiles.
       if (freshMesh) this.#programWarmup.registerObject(entry.mesh);
@@ -10519,6 +10849,11 @@ export class WorldRenderer3D {
    */
   #showAsPlain(rendered: RenderedEnvironment): void {
     rendered.node.visible = true;
+    // P2-07: a copy already shown plain was registered and held then; the bucket pass asks again
+    // on every rebuild (every admission flip while the camera turns), which only re-derived the
+    // same warm-up keys. Cleared wherever the copy is hidden again.
+    if (this.#plainShown.has(rendered.node)) return;
+    this.#plainShown.add(rendered.node);
     const visual = rendered.node.userData["visual"];
     if (visual instanceof THREE.Mesh) {
       this.#programWarmup.registerObject(rendered.node);
@@ -10535,6 +10870,7 @@ export class WorldRenderer3D {
       } else if (hold.frames >= INSTANCE_WARM_HOLD_FRAMES || this.#instancedMeshWarm(mesh)) {
         for (const node of hold.nodes) node.visible = false;
         mesh.visible = true;
+        for (const node of hold.nodes) this.#plainShown.delete(node); // P2-07: hidden again
         this.#instanceWarmHolds.delete(mesh);
       } else {
         hold.frames++;
@@ -10920,6 +11256,7 @@ export class WorldRenderer3D {
 
   /** Takes one model's instanced draw away and shows the placements it was standing in for. */
   #dropInstance(key: string): void {
+    this.#instanceMembers.delete(key); // P2-07
     const entry = this.#instances.get(key);
     if (!entry) return;
     entry.mesh.removeFromParent();
@@ -11098,6 +11435,11 @@ export class WorldRenderer3D {
       loadTexture: (url) => this.#loadTexture(url),
       deduplicateLoadedTextures: true,
       coalesceAdjacentBatches: cache === this.#builtUnits,
+      // P2-03a: rigged unit bodies fold their passes into slot carriers; nothing else does.
+      slotFold: cache === this.#builtUnits && skinned ? UNIT_SLOT_FOLD : "off",
+      slotLimit: Math.min(WVM_SLOT_SAMPLERS, this.#renderer.capabilities.maxTextures - 8),
+      // P2-03b: unit appearances of one model share its vertex buffers (SharedModelBuffers.ts).
+      ...(cache === this.#builtUnits ? { sharedBuffers: this.#modelBuffers } : {}),
       ...(slots ? { slots } : {}),
       ...(geosets ? { geosets } : {}),
       ...(slotTextures ? { slotTextures } : {}),
@@ -11258,6 +11600,7 @@ export class WorldRenderer3D {
     for (const { entry, mesh } of placed.built.values()) {
       this.#programWarmup.unregisterObject(mesh);
       node.remove(mesh);
+      this.#releaseWmoRoomShadow(mesh); // P2-02a
       // P1-12b: an attached room is no longer touched every frame; it becomes recent as it leaves.
       this.#wmoGeometries.get(entry.cacheKey);
     }
@@ -11479,6 +11822,7 @@ export class WorldRenderer3D {
         if (built) {
           this.#programWarmup.unregisterObject(built.mesh);
           node.remove(built.mesh);
+          this.#releaseWmoRoomShadow(built.mesh); // P2-02a
           // An attached room is not touched while it stays; it becomes recent as it leaves.
           this.#wmoGeometries.get(built.entry.cacheKey);
           placed.built.delete(index);
@@ -11492,6 +11836,7 @@ export class WorldRenderer3D {
         // A wrapper may never outlive its exact cache entry or decoded parent.
         this.#programWarmup.unregisterObject(built.mesh);
         node.remove(built.mesh);
+        this.#releaseWmoRoomShadow(built.mesh); // P2-02a
         placed.built.delete(index);
       }
       if (!group.mesh) {
@@ -11520,6 +11865,23 @@ export class WorldRenderer3D {
       placed.built.set(index, rendered);
       node.add(rendered.mesh);
       this.#holdWmoGroupUntilWarm(rendered.mesh);
+      // RND-12: a placed building is frozen, so its room is composed once and frozen as it is hung;
+      // the scenery group then never walks it. A transport's rooms move with it and stay live.
+      if (staticEnvironment) {
+        rendered.mesh.updateMatrixWorld(true);
+        rendered.mesh.matrixAutoUpdate = false;
+        rendered.mesh.matrixWorldAutoUpdate = false;
+      }
+      // P2-02a: a placed building's room takes its shadow flags as it is hung (transports never did).
+      if (staticEnvironment && this.#sceneryShadowsApplied) {
+        this.#syncWmoRoomShadow(placed, index, rendered, true, this.#sunCascades.active);
+      }
+      // P2-02b: a held room is hidden, stand-in and all; it joins the far set when it is shown.
+      const heldFar = rendered.mesh.visible ? undefined : this.#sceneryFarOwners.get(rendered.mesh);
+      if (heldFar !== undefined) {
+        this.#forgetSceneryFar(rendered.mesh);
+        this.#wmoHeldFar.set(rendered.mesh, heldFar);
+      }
     }
     this.#wmoGroupsPending += buildable.length - attached;
     // A model that came whole has nothing to ask for, and asking would be a request per frame.
@@ -11644,9 +12006,16 @@ export class WorldRenderer3D {
         // Detached while waiting: whatever attaches it again holds it again.
         mesh.visible = true;
         this.#wmoWarmHolds.delete(mesh);
+        this.#wmoHeldFar.delete(mesh); // P2-02b
       } else if (frames >= WMO_WARM_HOLD_FRAMES || this.#wmoGroupProgramsReady(mesh)) {
         mesh.visible = true;
         this.#wmoWarmHolds.delete(mesh);
+        // P2-02b: shown, so its stand-in casts into the cached cascade from now on.
+        const heldFar = this.#wmoHeldFar.get(mesh);
+        if (heldFar !== undefined) {
+          this.#wmoHeldFar.delete(mesh);
+          if (this.#wmoShadowProxies.get(mesh)?.castShadow) this.#noteSceneryFar(mesh, heldFar, true);
+        }
       } else {
         this.#wmoWarmHolds.set(mesh, frames + 1);
       }
@@ -13058,6 +13427,7 @@ export class WorldRenderer3D {
         // No rig at all: 9.5% of the client's creature models have none, and a static mesh is
         // far better than the coloured capsule they used to keep forever.
         const mesh = new THREE.Mesh(built.geometry, built.materials);
+        applySlotDepth(mesh); // P2-03a
         mesh.quaternion.copy(M2_TO_SCENE);
         this.#programWarmup.registerObject(mesh, "unit");
         this.#clearUnitNode(unit);
@@ -13204,6 +13574,7 @@ export class WorldRenderer3D {
       // The unrigged tenth of the table, and the rigs that would not build. A statue of a horse
       // still puts the rider where a rider belongs.
       const mesh = new THREE.Mesh(built.geometry, built.materials);
+      applySlotDepth(mesh); // P2-03a
       mesh.quaternion.copy(M2_TO_SCENE);
       mesh.frustumCulled = false;
       node.add(mesh);
@@ -13408,6 +13779,7 @@ export class WorldRenderer3D {
         });
       }
       const mesh = new THREE.Mesh(built.geometry, materials);
+      applySlotDepth(mesh); // P2-03a
       // Rigid equipment has geometry-local bounds. Three transforms them by this frame's
       // bone-driven matrixWorld for each camera, including the shadow camera.
       mesh.frustumCulled = true;
@@ -15111,18 +15483,23 @@ const GLOW_BLUR_WEIGHTS: readonly [number, number, number] = [0.2270270270, 0.31
  */
 export const GLOW_BLUR_SPREAD = 2;
 
-/**
- * Yards of bounding radius below which a scenery mesh receives but does not cast the sun shadow.
- * In the Stormwind trade district this halves the extra shadow-pass draws of the scenery leaf.
- */
-export const SCENERY_SHADOW_MIN_RADIUS = 1.5;
+// P2-02a: the scenery shadow thresholds live with the flag function (SceneryShadowFlags.ts).
+export { SCENERY_FAR_SHADOW_MIN_RADIUS, SCENERY_SHADOW_MIN_RADIUS } from "./SceneryShadowFlags.js";
 
-/**
- * Yards of bounding radius from which a scenery mesh also casts into the cached outermost cascade:
- * trees, large rocks, statues. Smaller casters reach only the cascades rendered every frame, which
- * cover them for as far as their shadow still reads.
- */
-export const SCENERY_FAR_SHADOW_MIN_RADIUS = 3;
+/** P2-07: whether a bucket's copies are the ones, in the order, its last rebuild wrote. */
+function sameInstanceMembers(previous: readonly object[], list: readonly object[]): boolean {
+  if (previous.length !== list.length) return false;
+  for (let index = 0; index < list.length; index++) if (previous[index] !== list[index]) return false;
+  return true;
+}
+
+/** P2-07: keeps a copy of a bucket's member list, reusing its array. */
+function copyInstanceMembers<T>(members: Map<string, T[]>, key: string, list: readonly T[]): void {
+  let copy = members.get(key);
+  if (!copy) members.set(key, copy = []);
+  copy.length = list.length;
+  for (let index = 0; index < list.length; index++) copy[index] = list[index]!;
+}
 
 /** `userData` key marking a WMO room's depth-only shadow stand-in. */
 const WMO_SHADOW_PROXY = "wowShadowProxy";

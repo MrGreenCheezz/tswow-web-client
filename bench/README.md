@@ -182,6 +182,11 @@ glow, god rays, трава 80/3. Камера облетает игрока на
   снятыми до P1-02a; такой прогон невалиден. Значение пишется в `bundle.env` и в
   `sourceHashes["bundle-options"]`; `sourceHash` у сторон пары совпадает. Отпечаток стороны в `--trace` —
   `programEvents[0].checkShaderErrors`. `bench/lookdev.mjs` берёт умолчание `prod` (кадры не меняются).
+- `--bench-names <plain|keep>` — как бандл стенда называет функции (`bench/build.mjs`, esbuild `keepNames`).
+  По умолчанию `plain` (с 09.10) — как у боевой сборки: без `keepNames`, то есть без обёртки `__name(...)`
+  (`Object.defineProperty`) на каждое создаваемое замыкание; при `minify: false` имена и так сохраняются.
+  `keep` — прежний бандл: только для сравнения с результатами, снятыми до 09.10; такой прогон невалиден.
+  Значение пишется в `bundle.names` и в `sourceHashes["bundle-options"]`.
 - `--js-flags "<флаги V8>"` — Chrome/Electron с этими флагами V8, например
   `--js-flags "--allow-natives-syntax"` для проверки вида массивов (`%HasDoubleElements`) из варианта
   стенда. Проверку вида делайте до любого кода, который читает массивы разных видов в одном месте:

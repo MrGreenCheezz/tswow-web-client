@@ -205,13 +205,20 @@ function shadowSummary(checkpoints) {
       const values = samples.map((stats) => stats.cascades[index]).filter(isObject);
       const renders = (finite(last.cascades[index]?.renders) ?? 0) - (finite(first.cascades[index]?.renders) ?? 0);
       const cpu = ascending(values.map((cascade) => cascade.cpuMs));
+      // P2-02b: cumulative CPU per render between the first and last checkpoint (recordings from 09.10 on).
+      const cpuTotal = (finite(last.cascades[index]?.cpuMsTotal) ?? NaN) - (finite(first.cascades[index]?.cpuMsTotal) ?? NaN);
       return {
         drawCalls: mean(ascending(values.map((cascade) => cascade.drawCalls))),
         cpuMs: mean(cpu), cpuMaxMs: cpu.at(-1) ?? null,
         rendersPerFrame: samples.length > 1 && frames > 0 ? renders / frames : null,
+        cpuMsPerRender: Number.isFinite(cpuTotal) && renders > 0 ? cpuTotal / renders : null,
+        cpuMsMaxSinceConfigure: finite(last.cascades[index]?.cpuMsMax),
       };
     }),
     frames,
+    // Both ends must carry the counters, or the absolute counts would read as differences.
+    farReasons: isObject(last.farReasons) && isObject(first.farReasons) ? Object.fromEntries(Object.entries(last.farReasons)
+      .map(([key, value]) => [key, (finite(value) ?? 0) - (finite(first.farReasons?.[key]) ?? 0)])) : null,
     // P2-01a renamed the field: owners with an active gate-2 caster. Recordings made before it carry
     // `shadowOnlyCasters` (every node the old toggle showed), reported apart and never mixed in.
     shadowOnlyOwners: mean(ascending(samples.map((stats) => stats.shadowOnlyOwners))),
@@ -583,7 +590,9 @@ function formatTelemetry(telemetry) {
   }
   if (telemetry.shadow) {
     lines.push(`  shadow cascades: ${telemetry.shadow.cascades.map((cascade, index) => `#${index} ${fixed(cascade.drawCalls, 0)} draws`
-      + ` ${fixed(cascade.cpuMs)} ms (max ${fixed(cascade.cpuMaxMs)}) ${percent(cascade.rendersPerFrame, 0)} of frames`).join(' · ')}`
+      + ` ${fixed(cascade.cpuMs)} ms (max ${fixed(cascade.cpuMaxMs)}) ${percent(cascade.rendersPerFrame, 0)} of frames`
+      + (cascade.cpuMsPerRender !== null && cascade.cpuMsPerRender !== undefined ? `, ${fixed(cascade.cpuMsPerRender)} ms/render` : '')).join(' · ')}`
+      + (telemetry.shadow.farReasons ? ` · far reasons ${JSON.stringify(telemetry.shadow.farReasons)}` : '')
       + (telemetry.shadow.shadowOnlyCastersLegacy !== undefined
         ? ` · shadow-only casters (pre-P2-01 toggle count) ${fixed(telemetry.shadow.shadowOnlyCastersLegacy, 1)}`
         : ` · shadow-only owners ${fixed(telemetry.shadow.shadowOnlyOwners, 1)}`));

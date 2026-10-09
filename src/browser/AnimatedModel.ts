@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RenderBone, type RenderBoneRig } from "./RenderBone.js";
+import { slotDepthMaterialFor } from "./SlotMaterial.js"; // P2-03a
 import {
   FastPoseState, createFastPoseProgram, invalidateMixerApply, multiplyFlatMatrices, type FastPoseProgram,
 } from "./FastPose.js";
@@ -1348,6 +1349,9 @@ export function instantiateSkinned(template: SkinnedTemplate, material: THREE.Ma
   }
 
   const mesh = new THREE.SkinnedMesh(template.geometry, material);
+  // P2-03a: a slot carrier with keyed or mixed-side slots casts through its own depth shader.
+  const slotDepth = slotDepthMaterialFor(material);
+  if (slotDepth) mesh.customDepthMaterial = slotDepth;
   // A skinned silhouette leaves its rest-pose bounds, and the unit is culled by distance anyway.
   mesh.frustumCulled = false;
   // The rest-pose sphere, handed over rather than left null. three sorts every drawn object by its

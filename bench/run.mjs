@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import os from 'node:os';
-import { summarize, wmoRangeSummary } from './metrics.mjs';
-import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_TARGET, heapProfileFileName, heapProfileSamplingOptions, parseBundleOptions,
+import { shadowCascadeSummary, summarize, wmoRangeSummary } from './metrics.mjs';
+import { DEFAULT_BENCHMARK_ENV, DEFAULT_BENCHMARK_NAMES, DEFAULT_BENCHMARK_TARGET, heapProfileFileName, heapProfileSamplingOptions, parseBundleOptions,
   parseHeapProfileMode } from './run-options.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -103,6 +103,9 @@ async function main() {
   // checks on); results before P1-02a compare only with it, and the run is invalid.
   const bundleEnv = bundle.bundleOptions.env;
   console.log(`Bundle env: ${bundleEnv}${bundleEnv === DEFAULT_BENCHMARK_ENV ? '' : ' (not the production env: the result is not valid)'}`);
+  // 09.10: --bench-names keep rebuilds the former bundle (esbuild keepNames: a __name wrapper on every closure).
+  const bundleNames = bundle.bundleOptions.names;
+  console.log(`Bundle names: ${bundleNames}${bundleNames === DEFAULT_BENCHMARK_NAMES ? '' : ' (the former keepNames bundle: the result is not valid)'}`);
   const sha = data => createHash('sha256').update(data).digest('hex');
   const sourceHashes = {};
   for (const path of Object.keys(bundle.metafile.inputs).sort()) {
@@ -510,12 +513,14 @@ async function main() {
           screenshots.push(name);
         }
         pageErrors.push(...screenshotErrors);
-        const scenarioResult = { ...raw, summary, wmoRange: wmoRangeSummary(raw), prepared, screenshots, pageErrors,
+        const scenarioResult = { ...raw, summary, wmoRange: wmoRangeSummary(raw), shadowCascadeSummary: shadowCascadeSummary(raw), prepared, screenshots, pageErrors,
           screenshotPolicy: scenario.startsWith('world-crowd-') || isCityScenario(scenario) ? 'fresh-prepared-scene-v1' : 'after-measurement-v1',
           cacheMisses: cacheMisses - missesBefore, measurementCacheMisses: measurementMisses };
         result.scenarios.push(scenarioResult);
         await writeFile(resultPath, JSON.stringify({ ...result, incomplete: true }, null, 2));
         console.log(`${scenario}: ${summary.averageFps.toFixed(2)} FPS; 1% ${summary.onePercentLowFps.toFixed(2)}; p99 ${summary.p99FrameMs.toFixed(2)}ms; >30ms ${summary.framesOver30Ms}; CPU ${summary.cpuMs.mean.toFixed(2)}ms; GPU ${summary.gpuMs.mean?.toFixed(2) ?? 'unavailable'}ms`);
+        // P2-02b: renders and CPU of each shadow cascade over the measured frames, and why the cached one re-rendered.
+        if (scenarioResult.shadowCascadeSummary) console.log(`${scenario}: shadow cascades ${scenarioResult.shadowCascadeSummary.cascades.map((c, i) => `#${i} ${c.renders} renders (${c.rendersPerMinute?.toFixed(0)}/min) ${c.cpuMsPerRender?.toFixed(3) ?? '-'} ms/render`).join(' · ')}; far reasons ${JSON.stringify(scenarioResult.shadowCascadeSummary.farReasons)}`);
         if (scenarioResult.wmoRange) console.log(`${scenario}: wmoRange ${scenarioResult.wmoRange.recomputes}/${scenarioResult.wmoRange.selects} recomputes/selects; ${scenarioResult.wmoRange.recomputesPerFrame.toFixed(3)} recomputes/frame`);
         await browser.close(); browser = undefined;
         if (pageErrors.length) result.errors.push(...pageErrors.map(error => `${scenario}: ${error}`));
@@ -576,7 +581,8 @@ async function main() {
     // question than the strict P-core headless baseline, so it never replaces one.
     result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir
       && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
-      && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV;
+      && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV
+      && bundleNames === DEFAULT_BENCHMARK_NAMES;
     result.comparable = result.valid && !trace && !captureAbba && !heapProfile;
     await writeFile(resultPath, JSON.stringify(result, null, 2));
     console.log(`Result: ${resultPath}`);

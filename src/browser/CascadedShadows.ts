@@ -49,6 +49,15 @@ export const SHADOW_CASTER_REACH = 500;
  * expressed in yards, so nothing else changes.
  */
 export const SHADOW_FAR_CASTER_REACH = 1400;
+/**
+ * P2-02b: the cached cascade's refresh interval as a safety net on the clock. Its casters are static,
+ * and the renderer re-renders it when what it draws changes (`invalidateFar` from the scenery folds
+ * and dirty marks, the margin, the sun), so the frame interval (`shadowFarRefreshFrames`, 208 ms at
+ * 144 Hz) mostly re-drew an unchanged map: 0.86 ms of CPU 2.8 times a second in the city bench. It
+ * now also waits this long. A change none of those see (a warm-up hold of an instance copy) shows
+ * up to this late; a posed rig among the far casters keeps the frame interval (`setFarAnimated`).
+ */
+export const SHADOW_FAR_IDLE_REFRESH_MS = 2000;
 /** Share of a map, from its edge inwards, over which a cascade hands over to the next one. */
 export const SHADOW_CASCADE_BLEND = 0.08;
 /** World-space PCF blur a cascade aims for, in yards, before its texel clamp. */
@@ -71,6 +80,51 @@ export interface ShadowCascadeStats {
   readonly cpuMs: number;
   /** Renders since the cascades were configured. */
   readonly renders: number;
+  /** P2-02b: CPU of every render since the cascades were configured, summed, and the largest one. */
+  readonly cpuMsTotal: number;
+  readonly cpuMsMax: number;
+  /** P2-02b: draw calls of every render since the cascades were configured. */
+  readonly drawCallsTotal: number;
+}
+
+/**
+ * P2-02b: why the cached cascade was rendered again, one reason per render (the first that held,
+ * in this order), counted since the cascades were configured.
+ */
+export interface FarCascadeReasons {
+  /** Asked for (`invalidateFar`, a new configuration) or its map is gone. */
+  readonly dirty: number;
+  /** Its disc changed size (`shadowDistance`). */
+  readonly extent: number;
+  /** The camera left half its margin in the light plane. */
+  readonly offset: number;
+  /** The sun turned. */
+  readonly sun: number;
+  /** The refresh interval passed. */
+  readonly interval: number;
+}
+
+export const FAR_CASCADE_REASONS = ["dirty", "extent", "offset", "sun", "interval"] as const;
+export type FarCascadeReason = typeof FAR_CASCADE_REASONS[number];
+
+/** The reason `farCascadeStale` holds for, in the order `FarCascadeReasons` counts them; undefined when fresh. */
+export function farCascadeReason(input: {
+  dirty: boolean;
+  extentChanged: boolean;
+  framesSinceRender: number;
+  refreshFrames: number;
+  offset: number;
+  margin: number;
+  sunDot: number;
+  msSinceRender?: number | undefined;
+  idleRefreshMs?: number | undefined;
+}): FarCascadeReason | undefined {
+  if (input.dirty) return "dirty";
+  if (input.extentChanged) return "extent";
+  if (!(input.offset <= input.margin * 0.5)) return "offset";
+  if (!(input.sunDot >= 0.999995)) return "sun";
+  if (farIntervalDue(input)) return "interval";
+  return undefined;
 }
 
 export interface ShadowCascadeSnapshot {
@@ -84,6 +138,8 @@ export interface ShadowCascadeSnapshot {
    * compared as one series. Without a list it is still the toggle's return value.
    */
   readonly shadowOnlyOwners: number;
+  /** P2-02b: why the cached cascade was re-rendered, since the cascades were configured. */
+  readonly farReasons: FarCascadeReasons;
 }
 
 /** One cascade of the P2-01a census: three's walk of the scene against the list's root. */
@@ -130,6 +186,9 @@ interface CascadeState {
   drawCalls: number;
   cpuMs: number;
   renders: number;
+  cpuMsTotal: number;
+  cpuMsMax: number;
+  drawCallsTotal: number;
 }
 
 type ShadowRender = (this: THREE.WebGLShadowMap, lights: THREE.Light[], scene: THREE.Object3D, camera: THREE.Camera) => void;
@@ -198,11 +257,20 @@ export function farCascadeStale(input: {
   offset: number;
   margin: number;
   sunDot: number;
+  /** P2-02b: with both, the interval also waits `idleRefreshMs` on the clock. */
+  msSinceRender?: number | undefined;
+  idleRefreshMs?: number | undefined;
 }): boolean {
   return input.dirty
-    || input.framesSinceRender >= input.refreshFrames
+    || farIntervalDue(input)
     || !(input.offset <= input.margin * 0.5)
     || !(input.sunDot >= 0.999995);
+}
+
+function farIntervalDue(input: { framesSinceRender: number; refreshFrames: number; msSinceRender?: number | undefined; idleRefreshMs?: number | undefined }): boolean {
+  if (!(input.framesSinceRender >= input.refreshFrames)) return false;
+  return input.msSinceRender === undefined || input.idleRefreshMs === undefined
+    || !(input.msSinceRender < input.idleRefreshMs);
 }
 
 export class CascadedSunShadows {
@@ -228,6 +296,14 @@ export class CascadedSunShadows {
   // Far-cascade cache state.
   #farDirty = true;
   #farRenderedFrame = -Infinity;
+  #farRenderedAtMs = -Infinity;
+  /** P2-02b: a far caster is animated, so the interval keeps to frames alone. */
+  #farAnimated = false;
+  /** P2-02b: the reason the scheduled far render was asked for, counted when it renders (-1: none). */
+  #farPendingReason = -1;
+  #farRenderListener: (() => void) | undefined;
+  /** P2-02b: re-render reasons in `FAR_CASCADE_REASONS` order. */
+  readonly #farReasons = [0, 0, 0, 0, 0];
   readonly #farCenter = new THREE.Vector3();
   readonly #farSun = new THREE.Vector3();
   // Scratch.
@@ -264,9 +340,16 @@ export class CascadedSunShadows {
         drawCalls: cascade.drawCalls,
         cpuMs: cascade.cpuMs,
         renders: cascade.renders,
+        cpuMsTotal: cascade.cpuMsTotal,
+        cpuMsMax: cascade.cpuMsMax,
+        drawCallsTotal: cascade.drawCallsTotal,
       }))),
       frames: this.#frames,
       shadowOnlyOwners: this.#shadowOnlyCount,
+      farReasons: Object.freeze({
+        dirty: this.#farReasons[0]!, extent: this.#farReasons[1]!, offset: this.#farReasons[2]!,
+        sun: this.#farReasons[3]!, interval: this.#farReasons[4]!,
+      }),
     });
   }
 
@@ -427,6 +510,19 @@ export class CascadedSunShadows {
     hidden.length = 0;
   }
 
+  /**
+   * P2-02b: whether a far caster moves on its own (a rigged doodad's sails): its shadow in the cached
+   * map then refreshes on the frame interval as before, not on `SHADOW_FAR_IDLE_REFRESH_MS`.
+   */
+  setFarAnimated(animated: boolean): void {
+    this.#farAnimated = animated;
+  }
+
+  /** P2-02b: called right after the cached cascade renders, so the caller can note what it drew. */
+  setFarRenderListener(listener: (() => void) | undefined): void {
+    this.#farRenderListener = listener;
+  }
+
   /** Forget the cached cascade: its casters, the sun or the configuration changed. */
   invalidateFar(): void {
     this.#farDirty = true;
@@ -486,11 +582,19 @@ export class CascadedSunShadows {
       this.#cascades.push({
         light, camera, lights: [light], far, mapSize, extent: 0, texel: 0,
         scheduled: false, rendered: false, drawCalls: 0, cpuMs: 0, renders: 0,
+        cpuMsTotal: 0, cpuMsMax: 0, drawCallsTotal: 0,
       });
     }
     this.#fade.value.set(profile.shadowFadeStart, profile.shadowDistance, SHADOW_CASCADE_BLEND);
     this.#farDirty = true;
     this.#frames = 0;
+    this.#farReasons.fill(0);
+  }
+
+  #farRendered(): void {
+    if (this.#farPendingReason >= 0) this.#farReasons[this.#farPendingReason]!++;
+    this.#farPendingReason = -1;
+    this.#farRenderListener?.();
   }
 
   #createExtra(index: number): THREE.DirectionalLight {
@@ -504,7 +608,7 @@ export class CascadedSunShadows {
    * Place every cascade for this frame's camera and decide which ones render. The camera's world
    * matrix must already be current; `sun` points towards the sun.
    */
-  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, frame: number): void {
+  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, frame: number, nowMs = performance.now()): void {
     const profile = this.#profile;
     if (!profile || this.#cascades.length === 0) return;
     const length = sun.length();
@@ -546,12 +650,28 @@ export class CascadedSunShadows {
       offset,
       margin,
       sunDot: this.#farSun.dot(direction),
+      msSinceRender: nowMs - this.#farRenderedAtMs,
+      idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
     });
     if (stale) {
+      const reason = farCascadeReason({
+        dirty: this.#farDirty || farCascade.light.shadow.map === null,
+        extentChanged: farCascade.extent !== extent,
+        framesSinceRender: frame - this.#farRenderedFrame,
+        refreshFrames: Math.max(1, profile.shadowFarRefreshFrames),
+        offset,
+        margin,
+        sunDot: this.#farSun.dot(direction),
+        msSinceRender: nowMs - this.#farRenderedAtMs,
+        idleRefreshMs: this.#farAnimated ? undefined : SHADOW_FAR_IDLE_REFRESH_MS,
+      });
+      // Counted when the render happens: a scheduled cascade three never renders is not a render.
+      if (reason !== undefined) this.#farPendingReason = FAR_CASCADE_REASONS.indexOf(reason);
       this.#place(farCascade, camera.position, direction, basis.up, extent);
       this.#farCenter.copy(camera.position);
       this.#farSun.copy(direction);
       this.#farRenderedFrame = frame;
+      this.#farRenderedAtMs = nowMs;
       this.#farDirty = false;
       farCascade.scheduled = true;
     }
@@ -695,6 +815,10 @@ export class CascadedSunShadows {
           cascade.drawCalls = renderer.info.render.calls - calls;
           cascade.rendered = true;
           cascade.renders++;
+          cascade.cpuMsTotal += cascade.cpuMs;
+          if (cascade.cpuMs > cascade.cpuMsMax) cascade.cpuMsMax = cascade.cpuMs;
+          cascade.drawCallsTotal += cascade.drawCalls;
+          if (cascade.far) owner.#farRendered();
         }
       } finally {
         depthOnlyDepth--;
