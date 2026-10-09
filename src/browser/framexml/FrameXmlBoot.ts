@@ -486,38 +486,45 @@ function debugprofilestop() return 0 end
 -- be the same cascade again.
 --
 -- LuaBitOp normalises to a *signed* 32-bit result, which is what the corpus' own
--- \`COMBATLOG_OBJECT_NONE = 0x80000000\` comparisons expect, so both halves of the conversion are
--- explicit rather than left to 5.3's 64-bit integers.
+-- \`COMBATLOG_OBJECT_NONE = 0x80000000\` comparisons expect.
+--
+-- fengari's integers are 32-bit, not 5.3's 64: \`0xFFFFFFFF\` reads as -1, \`1 << 31\` is negative, and a
+-- number at or past 2^31 (a GUID half, a flag sum, \`3000000000\`) is a float that an integer operator
+-- refuses ("number has no integer representation"). So every argument is brought into the signed
+-- 32-bit range in float arithmetic first — floor, then modulo 2^32 — and only then meets \`&\`, \`|\`,
+-- \`~\` or \`<<\`, which wrap the same way in fengari and in a 64-bit Lua once \`s32\` folds the result.
+-- The shifts that must not sign-extend or must keep the sign are float divisions by 2^n.
 do
-  local floor, tonumber, select = math.floor, tonumber, select
-  local MASK = 0xFFFFFFFF
-  local function u32(value)
-    return floor(tonumber(value) or 0) & MASK
-  end
+  local floor, tonumber, select, tointeger = math.floor, tonumber, select, math.tointeger
+  local TWO32, TWO31 = 4294967296.0, 2147483648.0
   local function s32(value)
-    local raw = value & MASK
-    if raw >= 0x80000000 then return raw - 0x100000000 end
-    return raw
+    local raw = floor(tonumber(value) or 0) % TWO32
+    if raw >= TWO31 then raw = raw - TWO32 end
+    return tointeger(raw) or 0
   end
   local function fold(operation, first, ...)
-    local result = u32(first)
+    local result = s32(first)
     for index = 1, select("#", ...) do
-      result = operation(result, u32((select(index, ...))))
+      result = s32(operation(result, s32((select(index, ...)))))
     end
-    return s32(result)
+    return result
   end
   bit = {
-    tobit = function(value) return s32(u32(value)) end,
-    bnot = function(value) return s32(~u32(value)) end,
+    tobit = function(value) return s32(value) end,
+    bnot = function(value) return s32(~s32(value)) end,
     band = function(first, ...) return fold(function(a, b) return a & b end, first, ...) end,
     bor = function(first, ...) return fold(function(a, b) return a | b end, first, ...) end,
     bxor = function(first, ...) return fold(function(a, b) return a ~ b end, first, ...) end,
-    lshift = function(value, shift) return s32(u32(value) << (u32(shift) & 31)) end,
-    rshift = function(value, shift) return s32(u32(value) >> (u32(shift) & 31)) end,
-    -- Arithmetic, so a negative value keeps its sign: floor division by a power of two, not \`>>\`,
-    -- which on 5.3's 64-bit integers would shift the sign extension in as data.
-    arshift = function(value, shift) return s32(s32(u32(value)) // (1 << (u32(shift) & 31))) end,
-    tohex = function(value) return string.format("%08x", u32(value)) end,
+    lshift = function(value, shift) return s32(s32(value) << (s32(shift) & 31)) end,
+    -- Logical: the unsigned value, divided down.
+    rshift = function(value, shift) return s32(floor((s32(value) % TWO32) / 2 ^ (s32(shift) & 31))) end,
+    -- Arithmetic, so a negative value keeps its sign: floor division by a power of two.
+    arshift = function(value, shift) return s32(floor(s32(value) / 2 ^ (s32(shift) & 31))) end,
+    -- Two 16-bit halves: \`%x\` of a negative integer is 8 digits in fengari but 16 in a 64-bit Lua.
+    tohex = function(value)
+      local unsigned = s32(value) % TWO32
+      return string.format("%04x%04x", floor(unsigned / 65536), unsigned % 65536)
+    end,
   }
 end
 
