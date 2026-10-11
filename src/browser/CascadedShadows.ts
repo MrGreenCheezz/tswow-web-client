@@ -34,6 +34,7 @@ import {
   SHADOW_CASTER_KINDS, ShadowCasterRoot, referenceShadowWalk, shadowCasterKind, shadowDrawCount,
   type ShadowCasterList,
 } from "./ShadowCasterList.js";
+import { windShadowDepth } from "./VegetationWind.js"; // 7.26
 
 /** Depth-only WMO stand-ins live here: shadow cameras draw them, the view camera never does. */
 export const SHADOW_PROXY_LAYER = 29;
@@ -221,6 +222,7 @@ function installDepthOnlyHook(): void {
   THREE.Object3D.prototype.onBeforeShadow = function (
     renderer, object, camera, shadowCamera, geometry, depthMaterial, group,
   ): void {
+    windShadowDepth(object, depthMaterial, group as { readonly materialIndex?: number } | null); // 7.26
     if (depthOnlyDepth > 0 && depthMaterial.colorWrite) {
       depthMaterial.colorWrite = false;
       depthOnlyFlipped = depthMaterial;

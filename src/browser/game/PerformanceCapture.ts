@@ -9,6 +9,7 @@ import { loadingScreenVisible } from "../ui/LoadingScreen.js";
 import { autoQualityStatus } from "../AutoQuality.js";
 import { setCaptureProbe } from "../../world/CaptureProbe.js";
 import { poseWorkerReport } from "../ui/PoseWorkerStatus.js"; // L10 (10.18)
+import { FRAME_BUDGET, frameBudgetProbe, type FrameBudgetReport } from "../FrameBudgetProbe.js"; // P2-09a
 
 interface LongFrameEntry extends PerformanceEntry {
   readonly blockingDuration?: number;
@@ -81,6 +82,8 @@ let completedProfile: unknown;
 let packetsByOpcode = new Map<number, PacketTotals>();
 let packetsPerSecond: PacketTotals[] = [];
 let frameXmlAtStop: unknown;
+/** P2-09a: the frame budget sensor's verdict for the recording, taken when it stops. */
+let budgetProbeAtStop: FrameBudgetReport | undefined;
 /**
  * P1-04: every recorded frame's draw phases, the budget-stacking sensor, and packet/FrameXML time
  * per frame row. Preallocated once (2 × Float32Array(CAPTURE_FRAME_LIMIT) = 160 KB) and reset by
@@ -161,6 +164,7 @@ function probe(kind: string, at: number, details: Readonly<Record<string, unknow
   // the 240-entry log in two seconds.
   if (kind === "frameXmlStepTime") {
     frameExtra.addFrameXml(Number(details["ms"]));
+    frameBudgetProbe.addOutside(FRAME_BUDGET.framexml, Number(details["ms"])); // P2-09a
     return;
   }
   if (kind !== "packets") {
@@ -172,6 +176,7 @@ function probe(kind: string, at: number, details: Readonly<Record<string, unknow
   const ms = Number(details["ms"]);
   if (!Number.isFinite(opcode) || !Number.isFinite(bytes) || !Number.isFinite(ms)) return;
   frameExtra.addNet(ms);
+  frameBudgetProbe.addOutside(FRAME_BUDGET.net, ms); // P2-09a
   const totals = packetsByOpcode.get(opcode) ?? { count: 0, bytes: 0, ms: 0, maxMs: 0 };
   addPacket(totals, bytes, ms);
   packetsByOpcode.set(opcode, totals);
@@ -288,6 +293,8 @@ export function startPerformanceCapture(): boolean {
   completed = undefined;
   completedProfile = undefined;
   frameXmlAtStop = undefined;
+  budgetProbeAtStop = undefined;
+  frameBudgetProbe.setEnabled(true); // P2-09a: periods open at each frame start below
   packetsByOpcode = new Map();
   packetsPerSecond = [];
   lastCheckpoint = Number.NEGATIVE_INFINITY;
@@ -328,6 +335,8 @@ export function stopPerformanceCapture(): void {
   setCaptureProbe(undefined);
   stopJsProfiler(recording.startedAt);
   frameXmlAtStop = frameXmlPerf();
+  budgetProbeAtStop = frameBudgetProbe.report(); // P2-09a
+  frameBudgetProbe.setEnabled(false);
   captureShaderPrograms(recording);
   shaderCaptureRenderer?.setShaderProgramCapture(false);
   shaderCaptureRenderer = undefined;
@@ -364,6 +373,7 @@ export function performanceCaptureReport(): unknown {
       })),
     },
     frameXml: frameXmlAtStop,
+    budgetProbe: budgetProbeAtStop, // P2-09a
     jsProfile: completedProfile,
     notes: [
       "jsProfile is the JS Self-Profiling trace: samples[i] at atMs has stack stackId; a stack is [frameId, parentId]; frames are [name, resourceId, line, column] in the shipped bundle. Resolve with the build's source maps (dist/sourcemaps) via bench/analyze-live-profile.mjs.",
@@ -377,6 +387,7 @@ export function performanceCaptureReport(): unknown {
       "drawPhases (telemetryRevision 2) sums every drawPhaseMs key over every recorded frame; meanMs divides by drawPhases.frames, the recorded frame rows.",
       "frameExtra.netMs[i] and frameExtra.frameXmlMs[i] belong to frames[i]: packet handler time and FrameXML step time since the previous row, i.e. what fills that row's interval outside cpuMs.",
       "stacking counts frames where at least two budgeted phases (budgetsMs, net = packet time) reached fireShare of their budget and together passed sumMs; env includes WMO groups, so it is an upper estimate, not a budget measurement.",
+      "budgetProbe (P2-09a) times each frame-work limiter itself (builds between take and done, terrain, effects, warm-up, collisions, ground cover, atlas paints, packets) per period from one frame callback's start to the next; a limiter fires at fireMs; twoPlusOver4Ms counts periods with two or more fired limiters over stackMs together; withStep counts the FrameXML step as one more; verdict GO means share >= 2 % (build the frame scheduler P2-09b).",
       "checkpoints[].poseWorker are the pose worker's counters since capture start; in checkpoints[].shadow, cascades[].renders and frames are totals since the cascades were configured (difference two checkpoints), rendered/drawCalls/cpuMs describe each cascade's last render.",
       "GPU checkpoints contain delayed rolling query results, not the current frame; pending/unavailable is not zero.",
       "GPU query envelope covers world update/submission and portraits; it can include waits for CPU submission, not just busy GPU time.",
@@ -394,6 +405,7 @@ export function beginPerformanceCaptureFrame(): void {
   if (!frameRecording) return;
   frameStartedAt = performance.now();
   frameWasActive = worldActive();
+  frameBudgetProbe.frameStart(frameWasActive); // P2-09a: the previous period closes here
   clearFrameSections();
   if (!frameWasActive) frameRecording.breakCadence();
 }

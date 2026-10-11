@@ -43,6 +43,8 @@ async function main() {
   const heapProfileMode = parseHeapProfileMode(args);
   const heapProfile = heapProfileMode !== null;
   const diagnostic = args.includes('--diagnostic');
+  // P2-09a: the frame budget sensor (two columns, a `budgetProbe` report per scenario); never valid.
+  const budgetProbe = args.includes('--budget-probe');
   const captureAbba = args.includes('--capture-abba');
   // Development runs under background load: the load is still recorded and the result is marked
   // incomparable, so such numbers can guide work but never replace a strict baseline.
@@ -287,7 +289,7 @@ async function main() {
     return connected;
   }
   async function open(scenario) {
-    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}`;
+    const sceneUrl = `${origin}/?scenario=${scenario}${diagnostic ? '&diagnostic=1' : ''}${links ? '&links=1' : ''}${budgetProbe ? '&budgetprobe=1' : ''}`;
     let page;
     if (browserKind === 'electron') {
       browser = await launchElectron(sceneUrl);
@@ -579,7 +581,8 @@ async function main() {
     result.variant = variantDir ? { dir: variantDir, files: bundle.variantFiles } : null;
     // A player-style run (no pinning, a visible window or the desktop shell) answers a different
     // question than the strict P-core headless baseline, so it never replaces one.
-    result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir
+    result.budgetProbeRun = budgetProbe; // P2-09a: each scenario carries its `budgetProbe` report
+    result.valid = result.errors.length === 0 && !smoke && !prepareOnly && !diagnostic && !allowLoad && !variantDir && !budgetProbe
       && browserKind === 'chrome' && !headed && cpuClass !== 'none' && isolation && !jsProfiling && !jsFlags
       && bundleTarget === DEFAULT_BENCHMARK_TARGET && bundleEnv === DEFAULT_BENCHMARK_ENV
       && bundleNames === DEFAULT_BENCHMARK_NAMES;

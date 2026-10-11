@@ -24,6 +24,7 @@ import { UnitSceneGroup } from "../UnitSceneGroup.js";
 import { applyRendererGraphicsSettings } from "../RendererGraphicsSettings.js";
 import { defaultSettings, type SettingValues } from "../ui/SettingsModel.js";
 import { nextBenchmarkFrame } from "./FrameClock.js";
+import { frameBudgetProbe } from "../FrameBudgetProbe.js"; // P2-09a
 import { installKnownMissingTextureLedger, errorsAreKnownMissingTextures } from "./KnownMissingTextures.js"; // 06.10-P1-00b
 
 interface Graphics {
@@ -63,6 +64,8 @@ const scenario = params.get('scenario') ?? 'movement';
 const diagnostic = params.has('diagnostic');
 // Name the draw behind every program linked inside a measured frame (`--links`); on under --diagnostic too.
 const links = diagnostic || params.has('links');
+// P2-09a: the frame budget sensor's two columns per frame and its report (`--budget-probe`; never valid).
+const budgetProbe = params.has('budgetprobe');
 const canvas = document.querySelector('canvas')!;
 const worldCrowd = scenario.startsWith('world-crowd-');
 /**
@@ -419,7 +422,8 @@ host.__bench = {
     gpuSamplesMs.length = 0;
     textureUploads.length = 0;
     const columns = ['rafAtMs', 'intervalMs', 'cpuMs', ...phaseNames, 'calls', 'triangles', 'programs', 'geometries', 'textures', 'heapBytes',
-      ...(diagnostic ? ['boneUpdates', 'boneWorldUpdates', 'hiddenUnitVisits'] : [])];
+      ...(diagnostic ? ['boneUpdates', 'boneWorldUpdates', 'hiddenUnitVisits'] : []),
+      ...(budgetProbe ? ['budgetMs', 'budgetsFired'] : [])];
     const capacity = Math.ceil(config.durationSeconds * 2000);
     const samples = new Float64Array(capacity * columns.length);
     const worldSubmissions: Array<{ rafAtMs: number; sample: unknown }> = [];
@@ -491,6 +495,11 @@ host.__bench = {
     const shadowCascadesAtStart = world?.shadowCascadeStats ?? null;
     let previous = start, sampleCount = 0, repeatedRafCallbacks = 0;
     recording = true;
+    // P2-09a: a period is one measured frame's render; it closes right after it, for its own row.
+    if (budgetProbe) {
+      frameBudgetProbe.setEnabled(true);
+      frameBudgetProbe.frameStart();
+    }
     performance.mark('bench-start');
     try {
       while (previous - start < config.durationSeconds * 1000) {
@@ -503,13 +512,15 @@ host.__bench = {
         if (arrival) arrive(seconds);
         render(seconds, (now - previous) / 1000, frame++);
         const cpuMs = performance.now() - at;
+        if (budgetProbe) frameBudgetProbe.frameStart();
         const phase = phases(), info = renderer.info;
         const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
         if (sampleCount >= capacity) throw new Error('Frame capacity exceeded');
         const row = [now - start, now - previous, cpuMs, ...phaseNames.map(name => phase[name] ?? 0),
           info.render.calls, info.render.triangles, info.programs?.length ?? 0,
           info.memory.geometries, info.memory.textures, heap,
-          ...(diagnostic ? [counters.boneUpdates, counters.boneWorldUpdates, counters.hiddenUnitVisits] : [])];
+          ...(diagnostic ? [counters.boneUpdates, counters.boneWorldUpdates, counters.hiddenUnitVisits] : []),
+          ...(budgetProbe ? [frameBudgetProbe.lastBudgetMs, frameBudgetProbe.lastFired] : [])];
         samples.set(row, sampleCount++ * columns.length);
         // Every program three linked inside a measured frame, with the frame's cost: a link that
         // the warm pass did not get to first is a 20–40 ms frame, and its cache key names it.
@@ -532,9 +543,12 @@ host.__bench = {
         previous = now;
       }
     } finally { recording = false; performance.mark('bench-end'); }
+    const budgetReport = budgetProbe ? frameBudgetProbe.report() : undefined; // P2-09a
+    if (budgetProbe) frameBudgetProbe.setEnabled(false);
     const frames = Array.from({ length: sampleCount }, (_, index) =>
       Array.from(samples.subarray(index * columns.length, (index + 1) * columns.length)));
     return { scenario, count, columns, phaseNames, frames, gpuSamplesMs: [...gpuSamplesMs],
+      ...(budgetReport ? { budgetProbe: budgetReport } : {}),
       hardware: hardware(), readiness: readiness(), routeHeightMissing, repeatedRafCallbacks,
       telemetry: world?.telemetry ?? null, wmoRangeAtStart, poseWorker: world?.poseWorkerStats() ?? null,
       shadowCascadesAtStart, shadowCascades: world?.shadowCascadeStats ?? null,

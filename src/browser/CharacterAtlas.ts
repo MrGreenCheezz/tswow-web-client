@@ -12,6 +12,7 @@ import * as THREE from "three";
 import { textureUrl } from "./Wvm.js";
 import { knownLogicalTextureBytes, type RetainedResourceVisitor } from "./ResourceAccounting.js";
 import type { BenchmarkAsyncReadinessStats } from "./RenderBenchmarkReadiness.js";
+import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 
 /** Where each piece lands on the body texture. Mirrors BODY_SECTIONS on the gateway. */
 export const BODY_TEXTURE_SIZE = 512;
@@ -787,7 +788,11 @@ export class CharacterAtlasClient {
     canvas.height = BODY_TEXTURE_SIZE;
     const context = canvas.getContext("2d");
     if (!context) return;
-    if (paintBodyLayers(context, layers, arrived.map((lease) => lease?.image)) === 0) return;
+    // P2-09a: the atlas limiter — the paint itself, in the microtasks after its turn's frame callback.
+    const paintAt = frameBudgetProbe.begin();
+    const paintedFirst = paintBodyLayers(context, layers, arrived.map((lease) => lease?.image));
+    frameBudgetProbe.end(FRAME_BUDGET.atlas, paintAt);
+    if (paintedFirst === 0) return;
     const texture = new THREE.CanvasTexture(canvas);
     configureBodyTexture(texture);
     this.#setAtlasEntry({ key: request.key, texture, knownLogicalTextureBytes: undefined });
@@ -869,7 +874,9 @@ export class CharacterAtlasClient {
         return undefined;
       }
 
+      const paintAt = frameBudgetProbe.begin(); // P2-09a: the atlas limiter
       const painted = paintBodyLayers(context, layers, images);
+      frameBudgetProbe.end(FRAME_BUDGET.atlas, paintAt);
       if (painted === 0) {
         this.#defer(key, layers, retryAt);
         return undefined;

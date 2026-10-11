@@ -22,6 +22,8 @@
 
 import * as THREE from "three";
 import { slotDepthMaterialFor } from "./SlotMaterial.js"; // P2-03a
+import { applyShadowDepthWind } from "./VegetationWind.js"; // 7.26
+import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 
 /** The two `WebGLProgram` calls this module makes, structurally. */
 interface WarmProgram {
@@ -160,6 +162,9 @@ export function shadowDepthStandIn(
     depth.onBeforeCompile = custom.onBeforeCompile;
     depth.customProgramCacheKey = () => key;
     CUSTOM_DEPTH_KEYS.set(depth, key);
+  } else if (applyShadowDepthWind(material, depth)) {
+    // 7.26: a swaying alpha-keyed caster's depth clone carries its wind (`windShadowDepth`).
+    CUSTOM_DEPTH_KEYS.set(depth, depth.customProgramCacheKey());
   }
   depth.side = material.shadowSide ?? SHADOW_SIDE[material.side] ?? THREE.BackSide;
   depth.alphaTest = material.alphaToCoverage ? 0.5 : material.alphaTest;
@@ -461,13 +466,18 @@ export class ProgramWarmup {
    * more while the frame's `PROGRAM_WARMUP_BUDGET_MS` lasts.
    */
   tick(camera: THREE.Camera): void {
-    this.#settle();
-    this.#tickDepth(camera);
-    const started = performance.now();
-    do {
-      if (this.#pending.length === 0) return;
-      this.#compileBatch(this.#takeBatch(), camera);
-    } while (performance.now() - started < PROGRAM_WARMUP_BUDGET_MS);
+    const probeAt = frameBudgetProbe.begin(); // P2-09a: every instance's tick is the warm-up limiter
+    try {
+      this.#settle();
+      this.#tickDepth(camera);
+      const started = performance.now();
+      do {
+        if (this.#pending.length === 0) return;
+        this.#compileBatch(this.#takeBatch(), camera);
+      } while (performance.now() - started < PROGRAM_WARMUP_BUDGET_MS);
+    } finally {
+      frameBudgetProbe.end(FRAME_BUDGET.warmup, probeAt);
+    }
   }
 
   /**

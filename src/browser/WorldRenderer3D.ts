@@ -148,6 +148,7 @@ import {
   type WorldMaterialEntry, type WorldMaterialResidencyStats,
 } from "./WorldMaterialCache.js";
 import { FrameBuildBudget } from "./FrameBuildBudget.js";
+import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 import { UnitSceneGroup } from "./UnitSceneGroup.js";
 import { StandInLedger, type StandInReason, type StandInReport, type StandInWearing } from "./StandIn.js";
 import { EnvironmentStandInLedger, type EnvironmentStandInReason, type WorldStandInReport } from "./StandIn.js"; // 05.10-A7b-9 7.18
@@ -3797,13 +3798,16 @@ export class WorldRenderer3D {
   /** One name per appearance, so the digest is computed once per look rather than once a frame. */
   readonly #appearanceKeys = new WeakMap<CharacterAppearance, string>();
   /** Bodies, mounts and equipment share one per-frame construction/upload admission slice. */
-  readonly #unitBuildBudget = new FrameBuildBudget();
-  readonly #unitAnimationBudget = new FrameBuildBudget(2, 1);
+  /** P2-09a: the frame budget sensor, read through this field so a method lifted into a test harness sees undefined. */
+  readonly #budgetProbe = frameBudgetProbe;
+  // P2-09a: each one is a limiter of the frame budget sensor (FrameBudgetProbe.ts); `done()` ends a build.
+  readonly #unitBuildBudget = new FrameBuildBudget(2, 2, undefined, FRAME_BUDGET.units);
+  readonly #unitAnimationBudget = new FrameBuildBudget(2, 1, undefined, FRAME_BUDGET.animations);
   /** Count caps alone allow several expensive ready models to block the same frame. */
-  readonly #environmentBuildBudget = new FrameBuildBudget(ENVIRONMENT_BUILD_BUDGET, 2);
-  readonly #wmoGroupBuildBudget = new FrameBuildBudget(WMO_GROUP_BUILD_BUDGET, 2);
+  readonly #environmentBuildBudget = new FrameBuildBudget(ENVIRONMENT_BUILD_BUDGET, 2, undefined, FRAME_BUDGET.environment);
+  readonly #wmoGroupBuildBudget = new FrameBuildBudget(WMO_GROUP_BUILD_BUDGET, 2, undefined, FRAME_BUDGET.wmoGroups);
   readonly #wmoGeometryBuild = new WmoGeometryBuild();
-  readonly #gameObjectBuildBudget = new FrameBuildBudget(2, 2);
+  readonly #gameObjectBuildBudget = new FrameBuildBudget(2, 2, undefined, FRAME_BUDGET.gameObjects);
   readonly #unitAnimationPrefetch = new Map<SkinnedTemplate, string>();
   /** The interface's aura-derived appearance fallback. See `setUnitAuraAppearance`. */
   #auraAppearance: ReadonlyMap<bigint, UnitAuraAppearance> = new Map();
@@ -9161,6 +9165,8 @@ export class WorldRenderer3D {
     // P1-04: the particle step summed over every group, only during an explicit capture.
     const detailedCapture = this.#shaderProgramTrace !== undefined;
     let particleMs = 0;
+    // P2-09a: the effects limiter — its counted builds and the simulation of every admitted set.
+    const effectsAt = this.#budgetProbe?.begin() ?? 0;
     for (const entry of wanted) {
       let held = this.#effects.get(entry.key);
       // Rebuilt when the model itself changes — a druid shifting form, a chest opening — because
@@ -9273,6 +9279,7 @@ export class WorldRenderer3D {
       if (detailedCapture) particleMs += performance.now() - particleAt;
       if (entry.fade !== undefined) fadeGlowEmitters(held.effects, entry.fade); // 05.10: ревью E2 — a glow fades with its unit
     }
+    this.#budgetProbe?.end(FRAME_BUDGET.effects, effectsAt);
     if (detailedCapture) this.#drawPhaseMs["visuals.particles"] = particleMs;
   }
 
@@ -9463,7 +9470,9 @@ export class WorldRenderer3D {
       if (!rendered) {
         if (!isCenterTile && terrainBuilds >= TERRAIN_BUILD_BUDGET) continue;
         if (this.#terrainPreparation?.key === key) this.#cancelTerrainPreparation();
+        const builtAt = this.#budgetProbe?.begin() ?? 0; // P2-09a
         this.#buildTerrain(key, map, grid, revision, ownRevision, player, heightAt, terrainClient);
+        this.#budgetProbe?.end(FRAME_BUDGET.terrain, builtAt);
         terrainBuilds++;
       } else if (rendered.ownRevision !== ownRevision || rendered.revision !== revision
         || rendered.liquidGeneration !== (this.#liquidTextures?.generation ?? 0)) {
@@ -9486,10 +9495,12 @@ export class WorldRenderer3D {
       if (settled) this.#updateTerrainSplat(map, grid, settled, splatClient);
     }
     // Visible repairs take precedence over speculative CPU work and texture uploads.
+    const stepAt = this.#budgetProbe?.begin() ?? 0; // P2-09a: the repair or the preparation, each on its own deadline
     if (terrainBuilds === 0 && this.#terrainRepair) this.#advanceTerrainRepair();
     else if (terrainBuilds === 0 && this.#terrainRepairsPending === 0) {
       this.#prepareTerrain(map, player, heightAt, terrainClient, splatClient, plan);
     }
+    this.#budgetProbe?.end(FRAME_BUDGET.terrain, stepAt);
   }
 
   #cancelTerrainPreparation(): void {
@@ -10374,6 +10385,7 @@ export class WorldRenderer3D {
         this.#sceneryShadowsForPlacement(rendered);
         this.#instancesDirty = true;
         environmentBuilds++;
+        this.#environmentBuildBudget.done(); // P2-09a
       }
       // Every frame, not only on the frame it was placed: the rooms worth drawing change as the
       // player walks through the building, and the ones that were asked for land later.
@@ -11147,6 +11159,7 @@ export class WorldRenderer3D {
         this.#groundCoverCellsKey = cellsKey;
         this.#groundCoverCells = createGroundCoverCellCache();
       }
+      const scatterAt = this.#budgetProbe?.begin() ?? 0; // P2-09a: the ground cover row (no limit of its own)
       this.#groundCoverField = scatterGroundCover({
         cells: this.#groundCoverCells,
         // The previous field's maps and arrays are written over rather than made again: a
@@ -11168,6 +11181,7 @@ export class WorldRenderer3D {
         cap: Math.round(GROUND_COVER_BUDGET * this.#groundCoverDensity),
         heightAt: sample,
       });
+      this.#budgetProbe?.end(FRAME_BUDGET.groundCover, scatterAt);
       this.#groundCoverPending.clear();
       for (const key of [...this.#groundCoverMeshes.keys()]) {
         if (!this.#groundCoverField.models.has(key)) this.#dropGroundCoverMesh(key);
@@ -12059,6 +12073,7 @@ export class WorldRenderer3D {
     const materials = runEntries.map((materialEntry) => materialEntry.material);
     const mesh = new THREE.Mesh(entry.geometry, materials.length === 1 ? materials[0]! : materials);
     this.#programWarmup.registerObject(mesh);
+    this.#wmoGroupBuildBudget.done(); // P2-09a
     return { entry, materialEntries, mesh };
   }
 
@@ -12397,6 +12412,7 @@ export class WorldRenderer3D {
         if (admittedAt !== undefined) rendered.admittedAt = admittedAt;
         this.#gameObjects.set(object.guid, rendered);
         this.#gameObjectGroup.add(rendered.node);
+        this.#gameObjectBuildBudget.done(); // P2-09a
       }
 
       // A deferred replacement keeps its current body and transform updates. A first sight
@@ -13201,6 +13217,7 @@ export class WorldRenderer3D {
       if (key !== unit.applied || replacesLegacy) {
         standIn = appearanceWaits ? "appearance"
           : this.#attachSkinnedModel(unit, metadata, key, decodedModel, client);
+        this.#unitBuildBudget.done(); // P2-09a: its build, if it took one, ended on any of its returns
       }
       if (unit.applied === key) {
         if (unit.template) this.#unitAnimationPrefetch.set(unit.template, metadata.model);
@@ -13517,6 +13534,7 @@ export class WorldRenderer3D {
     // a later pose request gives its missing animation priority over the remaining tail.
     if (!this.#unitAnimationBudget.take()) return;
     template.merged = mergeSkinnedClips(template, clips, { maxClips: 16, milliseconds: 1 }).complete;
+    this.#unitAnimationBudget.done(); // P2-09a
   }
 
   /**
@@ -13548,6 +13566,7 @@ export class WorldRenderer3D {
       // previous one, which beats dropping them to the ground and putting them back.
       if (wvm && this.#unitBuildBudget.take()) {
         this.#attachMount(unit, metadata, key, wvm, client);
+        this.#unitBuildBudget.done(); // P2-09a
       }
     }
     this.#seatRider(unit);
@@ -13795,6 +13814,7 @@ export class WorldRenderer3D {
       this.#programWarmup.registerObject(mesh, "unit");
       unit.attached.set(where, mesh);
       unit.shadowCaster = undefined;
+      this.#unitBuildBudget.done(); // P2-09a
     }
     // 05.10-A7a-E (6.14): glow effect models load like the pieces do, one request per path.
     if (client) for (const node of unit.attached.values()) resolveGlowModels(node, (path) => client.model(path, "critical")?.wvm);
@@ -13816,6 +13836,7 @@ export class WorldRenderer3D {
     const { built, rigged } = this.#buildRigged(`glow|${path}`, path, wvm, NO_GLOW_SLOTS, EVERY_GEOSET);
     const body = makeGlowBody(built, rigged ?? undefined);
     this.#programWarmup.registerObject(body.object, "unit");
+    this.#unitBuildBudget.done(); // P2-09a
     return body;
   }
 
@@ -14996,6 +15017,7 @@ export class WorldRenderer3D {
     // Once, even if a clip in there turned out to be unbuildable: otherwise a model with one bad
     // sequence walks the whole block again on every frame it is on screen.
     template.merged = merged.complete;
+    this.#unitAnimationBudget.done(); // P2-09a
     return !merged.complete;
   }
 

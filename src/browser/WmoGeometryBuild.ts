@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import { buildWmoGroupGeometrySteps } from "./WmoGeometry.js";
+import { FRAME_BUDGET, frameBudgetProbe } from "./FrameBudgetProbe.js"; // P2-09a
 import type { WmoGroupMesh, WmoModel } from "./WmoModel.js";
 
 /** One unfinished room at a time; converted buffers never accumulate behind the camera. */
@@ -54,7 +55,9 @@ export class WmoGeometryBuild {
       this.clear();
       throw error;
     } finally {
-      this.#spent += this.clock() - started;
+      const spent = this.clock() - started;
+      this.#spent += spent;
+      frameBudgetProbe.addOutside(FRAME_BUDGET.wmoGroups, spent); // P2-09a: the rooms' geometry slice
     }
     return undefined;
   }

@@ -268,17 +268,97 @@ export function installVegetationWind(
   const installed = installedProfiles.get(material);
   const profileKey = vegetationWindProfileKey(safe)!;
   if (installed !== undefined) {
-    if (installed !== profileKey) throw new Error("Vegetation wind profile already installed");
+    if (installed.key !== profileKey) throw new Error("Vegetation wind profile already installed");
     return;
   }
-
-  const previousCompile = material.onBeforeCompile;
-  const previousKey = material.customProgramCacheKey();
   // P1-08: the profile's own uniform objects. Every copy that chains this hook (placement tints,
   // fade twins) closes over the same two, so its values follow the source material's.
   const values = windUniformValues(safe);
-  const windA: IUniform<THREE.Vector4> = { value: values.a };
-  const windB: IUniform<THREE.Vector4> = { value: values.b };
+  chainVegetationWind(material, { key: profileKey, a: { value: values.a }, b: { value: values.b } });
+}
+
+/**
+ * 7.25: give `copy` the wind hook installed on `source`, with the same two uniforms, when the copy's
+ * own chain lost it — `cloneMaterialForPortrait` rolls a world-lit material back to the hook before
+ * `applyWorldLight`, and ModelBuild installs the wind after that, so a locally lit placement copy
+ * (plants inside a lit house, `ModelPlacementTint.ts`) stood still. A copy whose key still names the
+ * wind (an unlit batch, cloned with its chain) is left alone.
+ */
+export function copyVegetationWind(source: THREE.Material, copy: THREE.Material): void {
+  const installed = installedProfiles.get(source);
+  if (installed === undefined) return;
+  if (copy.customProgramCacheKey().split("|").includes(VEGETATION_WIND_MARKER)) return;
+  const existing = installedProfiles.get(copy);
+  if (existing !== undefined) {
+    if (existing.key !== installed.key) throw new Error("Vegetation wind profile already installed");
+    return;
+  }
+  chainVegetationWind(copy, installed);
+}
+
+/**
+ * 7.26: record that `copy` already sways with `source`'s wind because it chains `source`'s whole hook
+ * (a placement-tint copy), so its shadow depth can find that wind (`windShadowDepth`). No hook is added.
+ */
+export function shareVegetationWind(source: THREE.Material, copy: THREE.Material): void {
+  const installed = installedProfiles.get(source);
+  if (installed !== undefined && !installedProfiles.has(copy)) installedProfiles.set(copy, installed);
+}
+
+const WIND_DEPTH_SEEN: unique symbol = Symbol("vegetationWindDepth");
+type SeenDepth = THREE.Material & { [WIND_DEPTH_SEEN]?: true };
+
+/**
+ * 7.26: the shadow of a swaying crown sways with it. Three draws an alpha-keyed caster's shadow with
+ * a depth material cloned for that one source material (`WebGLShadowMap.getDepthMaterial`), and the
+ * clone carries none of the source's hooks — the crown moved and its shadow stood. Called from the
+ * shadow hook (`CascadedShadows.ts`, `onBeforeShadow`) with the depth material three chose for the
+ * draw: the first time it sees a depth material it gives it the wind of the source it was cloned for,
+ * if that sways, and marks it, so a later draw costs one property read. The mark is an own symbol,
+ * which `Material.copy` does not carry: a mark on three's shared depth material never reaches the
+ * clones it makes later (`userData` would). The cached far cascade keeps the pose of its last render
+ * (P2-02b), as it keeps everything else.
+ */
+export function windShadowDepth(
+  object: THREE.Object3D,
+  depth: THREE.Material,
+  group: { readonly materialIndex?: number | undefined } | null | undefined,
+): void {
+  const seen = depth as SeenDepth;
+  if (seen[WIND_DEPTH_SEEN] === true) return;
+  seen[WIND_DEPTH_SEEN] = true;
+  const mesh = object as THREE.Mesh;
+  const material = mesh.material;
+  const source = Array.isArray(material) ? material[group?.materialIndex ?? 0] : material;
+  if (source === undefined || mesh.customDepthMaterial === depth) return;
+  if (applyShadowDepthWind(source, depth)) depth.needsUpdate = true;
+}
+
+/**
+ * 7.26: put `source`'s wind on `depth` when three draws `source`'s shadow with a depth material
+ * cloned for it alone (alpha-keyed: `map` or `alphaMap` under an `alphaTest`) — never on the shared one,
+ * which draws every caster. The program warm-up (`shadowDepthStandIn`) asks the same question.
+ */
+export function applyShadowDepthWind(source: THREE.Material, depth: THREE.Material): boolean {
+  if (!installedProfiles.has(source)) return false;
+  const keyed = source as THREE.Material & { map?: THREE.Texture | null; alphaMap?: THREE.Texture | null };
+  if (!(source.alphaTest > 0 && (keyed.map || keyed.alphaMap))) return false;
+  copyVegetationWind(source, depth);
+  return true;
+}
+
+/** One installed wind: the profile key and the two uniforms the shader reads. */
+interface InstalledWind {
+  readonly key: string;
+  readonly a: IUniform<THREE.Vector4>;
+  readonly b: IUniform<THREE.Vector4>;
+}
+
+function chainVegetationWind(material: THREE.Material, wind: InstalledWind): void {
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey();
+  const windA = wind.a;
+  const windB = wind.b;
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms, renderer: WebGLRenderer) => {
     previousCompile.call(material, shader, renderer);
     if (!shader.vertexShader.includes(BEGIN_VERTEX)) {
@@ -298,10 +378,10 @@ export function installVegetationWind(
   // three asks `onBeforeCompile` per material (its uniforms are the material's own) even when the
   // key finds an existing program, so profiles that share a program still upload their own values.
   material.customProgramCacheKey = () => `${previousKey}|${VEGETATION_WIND_MARKER}`;
-  installedProfiles.set(material, profileKey);
+  installedProfiles.set(material, wind);
 }
 
-const installedProfiles = new WeakMap<THREE.Material, string>();
+const installedProfiles = new WeakMap<THREE.Material, InstalledWind>();
 
 /**
  * The numbers the shader reads, exactly as the former GLSL literals carried them: each passes

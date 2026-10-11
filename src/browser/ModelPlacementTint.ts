@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { WORLD_LIGHT_TARGET, cloneMaterialForPortrait } from "./WorldLighting.js";
+import { copyVegetationWind, shareVegetationWind } from "./VegetationWind.js";
 
 /** Display-order RGBA bytes used by placement colour and authored-light records. */
 export type ModelPlacementTint = readonly [red: number, green: number, blue: number, alpha: number];
@@ -155,6 +156,7 @@ export function createModelPlacementTintMaterials(
     };
 
     registerAnimatedCopy(source, copy);
+    shareVegetationWind(source, copy); // 7.26: its shadow depth sways like the source's
     copy.needsUpdate = true;
     return copy;
   });
@@ -180,6 +182,7 @@ export function createModelPlacementLocalLightMaterials(
     // Unlike Material.clone(), this preserves the M2 second-layer/fog hooks while unwrapping the
     // world-light hook installed last by ModelBuild.
     const copy = cloneMaterialForPortrait(source);
+    copyVegetationWind(source, copy); // 7.25: the wind sat on top of the unwrapped world light
     const previousCompile = copy.onBeforeCompile;
     const previousRender = source.onBeforeRender;
     const previousKey = copy.customProgramCacheKey();
@@ -212,6 +215,7 @@ export function createInstancedModelPlacementLocalLightMaterials(
 ): THREE.Material[] {
   return materials.map((source) => {
     const copy = cloneMaterialForPortrait(source);
+    copyVegetationWind(source, copy); // 7.25
     const previousCompile = copy.onBeforeCompile;
     const previousRender = source.onBeforeRender;
     const previousKey = copy.customProgramCacheKey();

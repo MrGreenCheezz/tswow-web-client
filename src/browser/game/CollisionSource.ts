@@ -6,6 +6,7 @@ import {
   type CollisionFloorHit, type CollisionPlacement,
 } from "./Collision.js";
 import { withGeneration } from "../GatewayGeneration.js";
+import { FRAME_BUDGET, frameBudgetProbe } from "../FrameBudgetProbe.js"; // P2-09a
 
 export { canonicalCollisionModelName };
 
@@ -474,6 +475,7 @@ export class CollisionSource {
    */
   refresh(map: number | undefined, x: number, y: number): void {
     if (map === undefined) return;
+    const probeAt = frameBudgetProbe.begin(); // P2-09a: the collisions limiter
     const started = performance.now();
     const moved = !(Math.abs(x - this.#atX) < REBUILD_DISTANCE && Math.abs(y - this.#atY) < REBUILD_DISTANCE);
     let evaluate = map !== this.#map || moved || this.#tileRevision !== this.#knownTiles || this.#dirty;
@@ -509,6 +511,7 @@ export class CollisionSource {
     }
     if (this.#pending.length > 0) this.#buildPending(x, y, started);
     if (this.#reportDue && this.#pending.length === 0) this.#report();
+    frameBudgetProbe.end(FRAME_BUDGET.collisions, probeAt);
   }
 
   /**
